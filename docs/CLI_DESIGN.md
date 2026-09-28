@@ -325,7 +325,7 @@ implementation of it. Per-step duration and per-step terminal status (the
 slice 3's run-telemetry work. For a task step both are derivable from
 `GetTimeline`'s event history; a skipped step, a `value:` step, and the
 control-flow nodes (`call`, `for_each`, `loop`, `parallel`, `switch`) record no
-step event there, and no response carries any of them per step — see the gap
+outcome event there, and no response carries any of them per step — see the gap
 inventory for exactly what `RunProgress` and `StepOutputs` carry instead. Slice
 3 lands before slice 9 builds this renderer.
 
@@ -649,10 +649,11 @@ built: `RunProgress` holds only the current top-level `step_id`, a partial
 carries either `outputs` (values only, no per-step status or timing) or an
 `error` (the whole run's outcome, not a per-step account). What does exist is
 an event history: `GetTimeline` returns the scheduled, completed, failed,
-timed-out, and canceled events of each task step, with their times, plus timer
-and signal events for waits. A skipped step, a `value:` step, and the
-control-flow nodes (`call`, `for_each`, `loop`, `parallel`, `switch`) record no
-step event. So "task X succeeded in 12s while task Y is still running" can be
+timed-out, and canceled events of every activity, with their times, plus timer
+and signal events for waits. Most activities are task steps; the rest are
+`vars:` evaluation and capability admission, which a consumer tells apart by
+label. A skipped step, a `value:` step, and the control-flow nodes (`call`,
+`for_each`, `loop`, `parallel`, `switch`) record no outcome event. So "task X succeeded in 12s while task Y is still running" can be
 *derived* from the timeline, but a graph overlay also needs an outcome for every
 other node, and nothing carries that today. Supplying it, reusing the timeline
 for what it already records rather than restating it, is therefore its own slice
@@ -785,7 +786,7 @@ Two ways to fix that, and this document picks one rather than leaving both live.
 **(b) — adding an RPC that hands a compiled spec back by workflow id — is
 rejected here, not merely deferred**, because a workflow spec is not a small,
 low-stakes value to add a new authorized read path for: it carries
-*everything* — task inputs, egress rules, secret references — and "add a way to read a run's full spec back
+*everything* — task inputs, request destinations, secret references — and "add a way to read a run's full spec back
 out" is exactly the kind of capability that needs its own authorization and
 bounding argument (who may read whose spec, and what about it is safe to serve
 to a caller who only holds a workflow id) *before* a graph feature's UI
@@ -964,7 +965,7 @@ line. What is not: everything below.
 3. **The run-telemetry schema.** Status, duration, and terminal outcome are
    derivable today from `GetTimeline`'s event history for task steps only. A
    skipped step, a `value:` step, and the control-flow nodes (`call`,
-   `for_each`, `loop`, `parallel`, `switch`) record no step event, and no
+   `for_each`, `loop`, `parallel`, `switch`) record no outcome event, and no
    response carries outcomes as an aggregate: `RunProgress` has only the
    current top-level step, a partial path, and a segment-local completed
    count, and `GetResponse` for a finished run carries output values or an

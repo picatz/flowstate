@@ -653,13 +653,14 @@ Inside `test`, the three long steps did not depend on one another:
 
 ### The same, after
 
-The split's predicted effect was never observed on its own. #1922 made the root
-suite's packages run serially before the split had a clean baseline, so the
-first full run afterwards, `34403410255` on `main`, shows `test` at 26m06s,
-`test-plugins` at 3m08s, `test-ordering` at 3m29s, and `fuzz-smoke` at 9m31s;
-the four-lane matrix above is the response to that `test` time. The per-target
-fuzz selection on a narrowed diff has not been measured: the fuzz notes above
-measure forced-wide runs, where every target runs.
+The split was observed on `main` before #1922: run `34069079624` (2026-09-07)
+took `test` 5m57s with `test-plugins` (3m06s) and `test-ordering` (2m34s)
+beside it, a critical path near the predicted six minutes against the
+twelve-minute baseline. #1922, merged 2026-09-09, made the root suite's packages
+run serially for deadline isolation, and its own `main` run, `34361369250`, took
+`test` 27m03s; the four-lane matrix above is the response. The per-target fuzz
+selection on a narrowed diff has not been measured: runs on `main` are forced
+wide, so every target runs.
 
 ### What the queue is worth
 
