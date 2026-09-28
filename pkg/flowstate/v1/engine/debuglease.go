@@ -176,6 +176,19 @@ type debugControl struct {
 	carry *v1.DebugCarry
 	// parsed is carry's breakpoints, compiled once per segment.
 	parsed []parsedBreakpoint
+
+	// sites are [v1.DebugStaticSites] of the run's specification, and
+	// sitesTruncated whether that enumeration stopped at
+	// [v1.MaxDebugStaticSites]; sitesKnown says they have been taken. The
+	// specification is fixed for the run, so they are enumerated once per
+	// segment ([executor.debugStaticSites]) rather than once for every
+	// breakpoint set and every `until`: a boundary drains up to
+	// [v1.MaxDebugAsksPerBoundary] asks in one workflow task, and a walk of
+	// the whole specification for each would spend the task's deadlock
+	// budget on one program.
+	sites          []v1.DebugStaticSite
+	sitesTruncated bool
+	sitesKnown     bool
 	// held is what the current typed hold is about, for the queries.
 	held heldStop
 	// occurrence is the last boundary this run reached, and arrivals counts

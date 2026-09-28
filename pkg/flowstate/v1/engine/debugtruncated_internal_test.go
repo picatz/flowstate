@@ -2,14 +2,17 @@ package engine
 
 import (
 	"fmt"
+	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.temporal.io/sdk/testsuite"
+	"go.temporal.io/sdk/worker"
 	"go.temporal.io/sdk/workflow"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/internal/conformance"
 )
 
 // truncatedProgram is a run whose site enumeration stops at
@@ -87,6 +90,12 @@ func TestATruncatedProgramArmsABreakpointPastTheCut(t *testing.T) {
 
 		var suite testsuite.WorkflowTestSuite
 		env := suite.NewTestWorkflowEnvironment()
+		// A program at [v1.MaxDebugStaticSites] is at a bound: enumerating
+		// and resolving its sites is workflow-side work the worker's own
+		// budget admits and the SDK's one-second default, under the race
+		// detector, does not (TMPRL1101 on a loaded run). The same budget
+		// the engine_test package's atABound gives.
+		env.SetWorkerOptions(worker.Options{DeadlockDetectionTimeout: conformance.BoundaryDeadlockDetectionTimeout})
 		if before {
 			env.OnGetVersion(truncatedArmChange, workflow.DefaultVersion, 1).Return(workflow.DefaultVersion)
 		}
@@ -135,4 +144,35 @@ func TestATruncatedProgramArmsABreakpointPastTheCut(t *testing.T) {
 		assert.False(t, unholdable.state.GetVerified(), "armed %s, which a durable run never holds at", step)
 		assert.Contains(t, unholdable.state.GetMessage(), "inside a loop body", step)
 	}
+}
+
+// TestTheSitesAreEnumeratedOncePerSegment: the specification is fixed for a
+// run, so its sites are walked once and kept, not once per breakpoint set and
+// per `until` — at MaxDebugStaticSites a walk each, a boundary draining its
+// asks could spend its task's deadlock budget on one program. A breakpoint's
+// listed sites are its own copies, so nothing done to a state reaches the
+// segment's.
+func TestTheSitesAreEnumeratedOncePerSegment(t *testing.T) {
+	t.Parallel()
+
+	spec := truncatedProgram(t)
+	e := &executor{spec: spec, debug: &debugControl{carry: &v1.DebugCarry{
+		Breakpoints: []*v1.DebugBreakpoint{{Id: "wide", Step: "call0/s0"}},
+	}}}
+
+	first, truncated := e.debugStaticSites()
+	require.True(t, truncated)
+	again, _ := e.debugStaticSites()
+	require.NotEmpty(t, first)
+	assert.Same(t, &first[0], &again[0], "the sites were enumerated a second time")
+
+	e.parseDebugBreakpoints()
+	require.Len(t, e.debug.parsed, 1)
+	listed := e.debug.parsed[0].state.GetSites()
+	require.NotEmpty(t, listed, "the breakpoint resolved to no site, so this proves nothing")
+	cached := e.debug.parsed[0].target.Resolve(first)
+	require.NotEmpty(t, cached)
+	want := slices.Clone(cached[0].Site.GetPath())
+	listed[0].Path = []string{"changed"}
+	assert.Equal(t, want, cached[0].Site.GetPath(), "a breakpoint's listed site is the segment's own")
 }
