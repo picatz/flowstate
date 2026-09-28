@@ -10,9 +10,10 @@ this deployment deliberately does not do yet.
 
 It assumes the design recorded on [#558](https://github.com/picatz/flowstate/issues/558)
 and sequenced on [#567](https://github.com/picatz/flowstate/issues/567), and
-describes S7a of that sequence: a token-gated HTTP MCP surface with no scope
-vocabulary and no delegation claims accepted. Read those issues for the
-reasoning; this page is the operator-facing result.
+describes what has landed of that sequence: a token-gated HTTP MCP surface that
+publishes a scope vocabulary but does not yet enforce scopes, and accepts no
+delegation claims. Read those issues for the reasoning; this page is the
+operator-facing result.
 
 The surface is `flow mcp serve` — its own verb, not a flag on `flow mcp`.
 That is #558's decision 2, and the reasoning is in the section below on what
@@ -121,9 +122,11 @@ Two things, both already-familiar shapes rather than new machinery:
   spelled `--protected-resource` (this server's own resource URI) and
   `--authorization-server` (repeatable, one per trusted issuer this surface
   should advertise). Both are required — a `flow mcp serve` with neither
-  refuses to start rather than serving an unauthenticated surface — and both
-  also exist on `flow server`, which serves the same RFC 9728 document for
-  its Connect RPC surface. Every value passed to
+  refuses to start rather than serving an unauthenticated surface. Both flags
+  also exist on `flow server`, where the RFC 9728 document still describes the
+  MCP resource: Connect RPC's 401 challenge points at it only when the two
+  surfaces share one resource URI, which [Deployment](DEPLOYMENT.md#bearer-token-audiences-are-per-surface)
+  recommends against. Every value passed to
   `--authorization-server` must already be a trusted issuer in the policy
   above — advertising one the trust policy does not accept is refused at
   start-up, on the fail-closed principle that a resource server should never

@@ -48,9 +48,9 @@ descend from are in Part I.
 | Asking whether a field was sent at all | `x.?y.hasValue()`, or `has(x.y)` | `x.?y.orValue(false)` | a default cannot tell "absent" from "present and false", so it collapses two answers into one |
 | A fact read more than once | a `value:` step, read as `${steps.<id>.value}` | the same subexpression written out at each site | the sites drift; one of them gets edited and the file still validates |
 | A constant used across steps | workflow `vars:` | repeating the literal | one place to change, and the name says what it is |
-| Splicing a value into a string | `${...}` interpolation | `format()` for the plain case | both spellings stay, because they are not mechanically interconvertible (`%d` on a double truncates where `string()` does not), so the split is by job: interpolation for splicing, `format()` when width, precision or positional reuse is the point |
-| An input constraint expressible as a bound | `min:`, `max:`, `min_len:`, `max_len:`, `min_items:`, `max_items:`, `unique:` | `must:` saying the same thing | `flow breaking` reads these structurally and can name a raised floor as a narrowing; a `must:` predicate is opaque text it must conservatively call a break |
-| Any other input constraint | `must:` | a retired `pattern:` | a regex is as opaque to compatibility analysis as CEL is, which is why `pattern:` died and `min:` lives |
+| Splicing a value into a string | `${...}` interpolation | `format()` for the plain case | both spellings stay, split by job: interpolation for splicing values into text, `format()` when width, precision or positional reuse is the point. `flow fmt` currently writes an interpolated value back as the single `string()` concatenation it compiles to, so formatted files, including every example here, show that form |
+| A length bound on a string or list input | `min_len:`, `max_len:`, `min_items:`, `max_items:` | `must:` saying the same thing | `flow breaking` reads these structurally and can name a raised floor as a narrowing; a `must:` predicate is opaque text it must conservatively call a break |
+| Any other input constraint | `must:` | the retired `pattern:`, `min:`, `max:`, or `unique:` | a regex is as opaque to compatibility analysis as CEL is, and `min:`/`max:` compared integers through a double and misjudged values past 2⁵³, so each is refused with the `must:` that replaces it |
 | Naming a computed value | a `value:` step | the retired `cel:` step | a value is not an effect, and the key named the evaluator instead of the role |
 | Printing a line | `log:` | the retired `echo:` / `printf:` | the capability already existed under another name |
 | Reading a step's scalar output | `${steps.<id>.value}` | a bare `${steps.<id>}` | the six characters buy uniformity in every tool that reads outputs, and this is permanent (anti-goal 7) |
@@ -132,27 +132,32 @@ that shipped the other way.
 
 When two spellings mean the same thing, one is retired at an edition boundary with a
 `flow fix` rewrite. No deprecation windows: the repository's own history (`cel:`,
-`echo:`, `printf:`, `iterator:`, `pattern:`, the fenced-map output shaping #533
-replaced) shows the mechanism works and costs a second of somebody's time.
+`echo:`, `printf:`, `iterator:`, `pattern:`, `min:`, `max:`, `unique:`) shows the
+mechanism works and costs a second of somebody's time. (The fenced-map form of output
+shaping, `outputs: '${ {...} }'`, that #533 replaced with the mapping form is still
+accepted; the mapping form is the one to write, because its names are checked.)
 
 Exactly two exemptions, each with a test a reviewer can apply.
 
 1. **Not mechanically interconvertible.** `flow fix` must never exercise judgment, so
    two spellings whose equivalence is a per-argument judgment both survive.
-   `format()` beside interpolation is the standing example: `%d` on a double
-   truncates where `string()` does not, so no rewrite is provably safe. The test:
+   `format()` beside interpolation is the standing example: a verb's width,
+   precision, and positional reuse have no `string()` equivalent, so no rewrite is
+   provably safe. The test:
    *could `flow fix` rewrite one into the other with byte-level confidence?* If yes,
    one dies. If no, both stay and the documentation shows the split.
 2. **The redundant spelling is consumed as data by a shipped tool answering a
-   question the general spelling cannot.** The declarative constraints (`min_len:`,
-   `max_len:`, `min:`, `max:`, `min_items:`, `max_items:`, `unique:`) duplicate what
-   `must:` can say, and they stay, because `flow breaking` reads them structurally:
-   a raised floor is a narrowing it can name, while any change to a `must:`
-   expression is opaque text it must conservatively treat as a break
-   (`constraintNarrowed`). `pattern:` failed this same test, because a regex is
-   as opaque to compatibility analysis as CEL is, and that is why it died while
-   `min:` lives (`cmd/flow/breaking.go:475`). The test: **name the shipped tool and
-   the question it answers from the structure.** No tool, no second spelling.
+   question the general spelling cannot.** The length bounds (`min_len:`,
+   `max_len:`, `min_items:`, `max_items:`) duplicate what `must:` can say, and they
+   stay, because `flow breaking` reads them structurally: a raised floor is a
+   narrowing it can name, while any change to a `must:` expression is opaque text
+   it must conservatively treat as a break (`constraintNarrowed`). `pattern:`
+   failed this test, because a regex is as opaque to compatibility analysis as CEL
+   is. `min:`, `max:`, and `unique:` were retired as a second vocabulary for what
+   `must:` says, and `min:`/`max:` also compared an `int` through a `double`,
+   accepting a value below the floor past 2⁵³, a bug `must: this >= N` does not
+   have (see [DSL.md](DSL.md)'s audit notes). The test: **name the shipped tool and the
+   question it answers from the structure.** No tool, no second spelling.
 
 Enforcement: review for admission; tier 3 (`flow fix` plus an edition) for retirement.
 

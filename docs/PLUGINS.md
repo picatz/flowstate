@@ -3,27 +3,26 @@
 For someone outside this repository. A plugin is a separate executable a
 Flowstate worker launches; nothing about writing one requires a checkout, a
 `replace` directive, or permission. This page is the path from an empty
-directory to a task of your own showing up in `flow plugins`, and then the five
-places where the contract between your binary and the engine is real but not
-written down anywhere you would look.
+directory to a task of your own showing up in `flow plugins`, then the places
+where the contract between your binary and the engine catches authors out, and
+then the rest of what a plugin can declare and receive.
 
 If you only want to *use* a plugin somebody else wrote,
 [examples/plugins/greet](../examples/plugins/greet) is that page. If you want the
 protocol rather than the Go SDK, skip to
 [Writing one in another language](#writing-one-in-another-language).
 
-Every transcript below is what the command actually printed, run from a module
-outside this repository against `c4ead7c`. The `file:line` references are
-against the current tree: `go test ./tools/citations` fails when a cited file
-or line is gone, or when the cited lines no longer hold the symbol the
-sentence names, so a reference here is one the tree still agrees with.
+Transcripts are real output with local paths shortened; chapters one and two
+were built from a module outside this repository. File references point at the
+code that implements each behavior, so you can check a claim against the
+source.
 
 ## Contents
 
 - [The shape of the thing](#the-shape-of-the-thing)
 - [Chapter one: a plugin that runs](#chapter-one-a-plugin-that-runs)
 - [Chapter two: the schema is the contract](#chapter-two-the-schema-is-the-contract)
-- [Five places the contract is implicit](#five-places-the-contract-is-implicit)
+- [Where the contract catches authors out](#where-the-contract-catches-authors-out)
 - [The rest of the manifest](#the-rest-of-the-manifest)
 - [Distinguishing a rehearsal from production](#distinguishing-a-rehearsal-from-production)
 - [Being configured by an operator](#being-configured-by-an-operator)
@@ -57,7 +56,7 @@ signal handling and the shutdown are
 [`pkg/flowstate/v1/plugin/sdk`](../pkg/flowstate/v1/plugin/sdk)'s, and the host
 half is documented end to end in
 [`pkg/flowstate/v1/plugin`'s package doc](../pkg/flowstate/v1/plugin/doc.go)
-(`pkg/flowstate/v1/plugin/doc.go:70-98` is the handshake, field by field).
+(its section "The handshake, end to end" goes field by field).
 
 ## Chapter one: a plugin that runs
 
@@ -110,7 +109,7 @@ engine sees is derived from that struct rather than written beside it, so a
 plugin built this way cannot advertise a capability it did not implement:
 `Secrets` being set
 is what advertises secret resolution, and a non-empty `Tasks` is what advertises
-tasks (`pkg/flowstate/v1/plugin/sdk/sdk.go:681-723`).
+tasks (`Plugin.manifest` in `pkg/flowstate/v1/plugin/sdk/sdk.go`).
 
 Resolve the dependency, build under the name discovery looks for, and ask what a
 worker would find:
@@ -142,7 +141,7 @@ forge it, which is why two plugins may each provide `post` without colliding
 (`pkg/flowstate/v1/plugin/sdk/sdk.go:194-203`).
 
 Run the binary from a shell and it explains itself rather than speaking a binary
-protocol at your terminal (`pkg/flowstate/v1/plugin/sdk/sdk.go:326-360`):
+protocol at your terminal (`pkg/flowstate/v1/plugin/sdk/sdk.go`):
 
 ```console
 $ ./bin/flowstate-plugin-hello
@@ -284,7 +283,7 @@ $ flow plugins --plugin-dir ./bin
 
 Output field names are the names a later step reads — a step with `id: hi` gives
 a later step `${steps.hi.message}` — because `EncodeOutputs` turns one message
-field into one named output (`pkg/flowstate/v1/plugin/sdk/values.go:269-298`). The `steps.` prefix is not
+field into one named output (`EncodeOutputs` in `pkg/flowstate/v1/plugin/sdk/values.go`). The `steps.` prefix is not
 optional — a bare `${hi.message}` is refused, and the diagnostic says so:
 
 ```console
@@ -425,11 +424,11 @@ whose output can describe an older schema than the one compiled in, and when it
 does the SDK has to drop every comment in that file. When it is set it is used
 in place of the generated comments.
 
-## Five places the contract is implicit
+## Where the contract catches authors out
 
 Everything above works. What follows is what an outside author learns by walking
-that path and hitting the parts nothing says out loud — each of them invisible at
-your build time and visible later, at a host, to somebody who cannot fix it.
+that path: the parts that are invisible at your build time and visible later, at
+a host, to somebody who may not be able to fix them.
 
 ### 1. Declaring no schema is a silent opt-out of the whole contract
 
@@ -443,7 +442,7 @@ described in the same word a task with genuinely no inputs uses.
 Nothing checks the inputs going in: the host has no descriptor to check against,
 and inside the plugin `DecodeInputs` ignores an input the message has no field
 for, on purpose, so a workflow written against a newer version of a task does not
-fail against an older plugin (`pkg/flowstate/v1/plugin/sdk/values.go:42-46`). The two are individually
+fail against an older plugin (`DecodeInputs` in `pkg/flowstate/v1/plugin/sdk/values.go`). The two are individually
 right and jointly silent.
 
 Measured on the two plugins this page builds — chapter one's kept aside as
@@ -494,8 +493,10 @@ Two things follow that are worth knowing before you build on it:
   identical in shape to a built-in one.
 - **The wire protocol is versioned; the Go API is not.** The protocol is
   negotiated at launch and a mismatch is refused at startup with a message saying
-  which side to upgrade (`pkg/flowstate/v1/plugin/sdk/sdk.go:640-658`, `pkg/flowstate/v1/plugin/internal/protocol/protocol.go:361` for the current
-  version, 5, which the egress grant moved it to). Nothing equivalent covers the Go types you compile against.
+  which side to upgrade. The current version is 7 (`Version7`,
+  `pkg/flowstate/v1/plugin/internal/protocol/protocol.go`); [Reaching the
+  network](#reaching-the-network) says what versions 6 and 7 changed. Nothing
+  equivalent covers the Go types you compile against.
 
 The in-tree plugin modules are not the counter-example they look like. Each
 pins `github.com/picatz/flowstate v0.0.0-00010101000000-000000000000` behind a
@@ -503,72 +504,74 @@ pins `github.com/picatz/flowstate v0.0.0-00010101000000-000000000000` behind a
 (`plugins/git/go.mod:66-69`) — correct for a module inside this repository, and
 not a line to copy.
 
-### 3. The manifest's string lists are claims nothing cross-checks
+### 3. The manifest's input lists are checked at launch, and the Flowfile side at run time
 
 `DeferredInputs`, `ExpressionInputs`, `SecretInputs` and
-`RequiredSecretInputs` name inputs by string.
-The SDK copies them into the manifest as given (`pkg/flowstate/v1/plugin/sdk/sdk.go:727-755`), and the
-host's `checkManifest` validates the manifest's shape, its capabilities, its
-schemes and its task-name uniqueness — and never intersects those four lists
-with the descriptors sitting beside them in the same message
-(`pkg/flowstate/v1/plugin/plugin.go:504-594`). A typo in one is therefore accepted at launch and
-discovered at execution.
+`RequiredSecretInputs` name inputs by string, and every name must be a field of
+the task's input message. The SDK checks when it builds the manifest, before the
+plugin announces itself (`checkInputNames`,
+`pkg/flowstate/v1/plugin/sdk/sdk.go`), and the host checks again when it binds
+the task (`checkManifestInputNames`, `pkg/flowstate/v1/plugin/task.go`), so a
+plugin written without the SDK is held to the same rule. `RequiredSecretInputs`
+must also be a subset of `SecretInputs`.
 
-The full path, measured, on a build of the plugin above with
-`SecretInputs: []string{"tokn"}` added, against a Flowfile writing
-`token: ${secret('env:GREET_TOKEN')}`:
+A typo therefore stops the plugin at startup. Measured on the SDK's worked
+example plugin with its `SecretInputs` changed to `[]string{"tokn"}`:
 
 ```console
-$ flow validate --plugin-dir ./bin-typo workflow.yaml
-workflow.yaml: ok
-
-$ flow run local workflow.yaml --plugin-dir ./bin-typo --secret-env GREET_TOKEN \
-    --auth-policy auth.yaml
+$ flow plugins --plugin-dir ./bin
 ERROR
-error running workflow locally: step "hi": task "hello.greet": input "token" is
-a secret reference, which this task did not declare as accepting one; this task
-accepts one in tokn
+plugin "example" (/.../flowstate-plugin-example):
+plugin: handshake failed: plugin: process exited: exit status 1, printing no
+handshake line
 ```
 
-The refusal is a good one — it is deny-by-default and it names what the task
-*does* accept (`pkg/flowstate/v1/plugin/task.go:392-395`, `:410-418`) — and it arrives at
-execution, to whoever is running the workflow rather than to whoever wrote the
-plugin. `flow validate` does not catch it, even told about the plugin: the
-manifest's `secret_inputs` reaches
-the registry as `TaskDef.SecretInputs` (`pkg/flowstate/v1/registry.go:155-172`), but the
+The sentence naming the typo is in the plugin's own log, which the host shows
+only under `--verbose`:
+
+```console
+$ flow plugins --plugin-dir ./bin --verbose
+... level=INFO msg="plugin log" plugin=example pid=12334 line="example: sdk: task \"greet\" secret_inputs names \"tokn\" which is not a field of its input message" ...
+```
+
+Run `flow plugins --plugin-dir` against every build before you release it: it
+is the cheapest place this failure can reach you rather than an operator.
+
+**The Flowfile side is checked later.** A workflow that passes a secret
+reference to an input the task did *not* declare as secret passes
+`flow validate`, even with `--plugin-dir`, and is refused when the step runs:
+
+```console
+$ flow run local workflow.yaml --plugin-dir ./bin --secret-env GREET_TOKEN \
+    --auth-policy auth.yaml
+running locally
+ERROR
+error running workflow locally: step "hello": task "example.greet": input
+"greeting" is a secret reference, which this task did not declare as accepting
+one; this task accepts one in token
+```
+
+The refusal is deny-by-default and names the input that does accept one
+(`pkg/flowstate/v1/plugin/task.go`). It arrives at execution because the
 validator's secret checking consults only `NestedSecretInputs`, for structures
-that hold a reference inside them (`pkg/flowstate/v1/flowfile/secret.go:259-262`, `pkg/flowstate/v1/registry.go:378`).
+that hold a reference inside them (`pkg/flowstate/v1/flowfile/secret.go`), and
+not the manifest's `SecretInputs`. For a `RequiredSecretInputs` input the
+direction is covered: `flow validate` requires the input to be a whole secret
+reference, and the runtime repeats the check before resolution and dispatch, so
+a literal credential cannot enter durable history or reach the plugin.
 
-`flow run local` also prints one `level=INFO msg="loaded plugin"` line per
-plugin on stderr, naming the plugin, its version, its path and its tasks, the
-same line `flow worker` prints at startup: a step failing with `unknown task`
-and a process that quietly found no plugins look identical from a Flowfile, and
-that line is what tells them apart. The verbs that run nothing — `validate`,
-`compile`, `fix` — say it at debug level, shown under `--verbose`, so the
-transcripts above are the whole of what they print. `flow plugins` prints the
-catalog itself, which is that line's content in full, and no line beside it.
-
-(`--secret-env` is what makes `env:GREET_TOKEN` resolvable, and `--auth-policy`
-is what authorizes reading it: a process holding a secret provider with no access
-policy is refused. [examples/plugins/greet](../examples/plugins/greet) has a
-policy file for exactly this and explains why it looks the way it does.)
-
-`RequiredSecretInputs` is the security-specific exception: every name must also
-be in `SecretInputs`, or the host refuses the manifest. For a coherent declaration,
-`flow validate` requires the named input to be a whole secret reference and the
-runtime repeats the check before resolution and dispatch, so a literal cannot
-enter durable history or reach the plugin. The broader descriptor-name typo gap
-for all four lists remains.
-
-All four lists are checkable against the descriptors at `sdk.Run` time, which is
-earlier than both and reaches the person who can fix it. No full check does so today;
-see [known limitations](#known-limitations).
+`flow run local` prints one `level=INFO msg="loaded plugin"` line per plugin on
+stderr, naming the plugin, its version, its path and its tasks, the same line
+`flow worker` prints at startup. A step failing with `unknown task` and a
+process that quietly found no plugins look identical from a Flowfile, and that
+line tells them apart. The verbs that run nothing (`validate`, `compile`,
+`fix`) log it at debug level, shown under `--verbose`.
 
 ### 4. Three traps the code knows about and no authoring surface teaches
 
 **A stray write to stdout before serving corrupts the handshake.** The SDK
 points `os.Stdout` at stderr, but only *after* announcing, because the
-announcement is the one thing stdout is for (`pkg/flowstate/v1/plugin/sdk/sdk.go:479-490`). Anything
+announcement is the one thing stdout is for (`Run` in `pkg/flowstate/v1/plugin/sdk/sdk.go`). Anything
 printed before that — a debug line, a dependency's `init`, a library's banner —
 lands where the host is reading a protocol:
 
@@ -580,12 +583,12 @@ handshake line starts with "debug: starting", want "FLOWSTATE-PLUGIN" — is thi
 a Flowstate plugin?
 ```
 
-That message is as good as it can be (`pkg/flowstate/v1/plugin/internal/protocol/protocol.go:522`), and
+That message is as good as it can be (`ParseHandshake` in `pkg/flowstate/v1/plugin/internal/protocol/protocol.go`), and
 it still names your first debug line as a protocol failure. Log through
 `sdk.WithLogger` or to stderr; after `sdk.Main` is serving, `fmt.Println` is
 harmless, since stdout has been redirected — but Go code writing to file
 descriptor 1 directly, such as linked C, gets through regardless
-(`pkg/flowstate/v1/plugin/sdk/sdk.go:487-490`).
+(`Run` in `pkg/flowstate/v1/plugin/sdk/sdk.go`).
 
 **`ShapesOutputs` is a claim about your executor, and three host surfaces believe
 it.** Setting it says this task reads an input named `outputs` as a mapping of
@@ -599,18 +602,9 @@ have an input called `outputs`.
 **A relaunched plugin must describe itself the same way.** The host restarts a
 plugin that exits, with backoff, and refuses one that comes back claiming
 different schemes or different tasks, because adapters already handed to the
-engine are bound to the first answer (`pkg/flowstate/v1/plugin/doc.go:117-123`). A manifest built
+engine are bound to the first answer (the relaunch paragraph of `pkg/flowstate/v1/plugin/doc.go`). A manifest built
 from anything that varies per launch — an environment lookup, a feature flag, a
 directory listing — is a plugin that works until it restarts.
-
-### 5. There was no walkthrough
-
-This page is that gap closed. The route an outside author previously had was to
-find `pkg/flowstate/v1/plugin/examples/flowstate-plugin-example` by reading the
-SDK's source. That example is still the best worked one in the tree — it
-advertises both capabilities from one process, resolves secrets scoped by
-namespace, and takes a host-managed secret in a task input — and finding it no
-longer requires reading a doc comment to know it exists.
 
 ## The rest of the manifest
 
@@ -971,8 +965,8 @@ against — see [known limitations](#known-limitations).
 ## Known limitations
 
 Gaps rather than design, listed here so that nothing above reads as an
-endorsement of the workaround. Each is tracked on
-[#713](https://github.com/picatz/flowstate/issues/713).
+endorsement of the workaround. [#713](https://github.com/picatz/flowstate/issues/713)
+tracks the plugin-authoring gaps.
 
 1. **A descriptor-less task is reported as `none`, not as unspecified.** There is
    no signal — to the author at `sdk.Run`, or to the operator running
@@ -985,11 +979,13 @@ endorsement of the workaround. Each is tracked on
    tag happens, are open questions. A `plugins/TEMPLATE` module with no
    `replace`, built in CI, would keep the answer honest, since CI would then
    build it the way an outside author does.
-3. **The manifest's `DeferredInputs`, `ExpressionInputs` and `SecretInputs` are
-   not cross-checked against the descriptors** — not at `sdk.Run`, where the
-   message would reach the author, and not at bind time in `checkManifest`, where
-   it would reach the operator. Today a typo is a runtime refusal.
-4. **There is no conformance harness for a non-Go implementation.** The material
+3. **A secret reference in an undeclared input is caught only at run time.**
+   `flow validate --plugin-dir` does not consult a task's `SecretInputs`, so the
+   refusal reaches whoever runs the workflow rather than whoever writes it.
+4. **A plugin that exits before its handshake is reported without its reason.**
+   The plugin's own error line is logged at INFO and shown only under
+   `--verbose`.
+5. **There is no conformance harness for a non-Go implementation.** The material
    exists — the handshake and task-conformance tests in
    `pkg/flowstate/v1/plugin` — but only as tests of this repository's own code. A
    `flow plugin conform <binary>` would turn a prose contract into a checkable

@@ -6,10 +6,9 @@ run it locally in-process or durably against a Temporal worker the program
 owns, and register the program's own Go functions as tasks a workflow can
 call.
 
-[docs/ARCHITECTURE.md](ARCHITECTURE.md) describes what the system is.
-[AGENTS.md](../AGENTS.md) describes how to change it. This describes what an
-embedder meets. [examples/embedding](../examples/embedding) is the runnable
-version of everything below.
+[examples/embedding](../examples/embedding) is the runnable version of
+everything below, and [the architecture](ARCHITECTURE.md) explains the system
+it embeds.
 
 ## Why this package and not `pkg/flowstate/v1` directly
 
@@ -17,8 +16,17 @@ version of everything below.
 executes, not a Go compatibility promise — see that package's own doc. Its
 types and functions change as the interpreter evolves. `pkg/flowstate/embed`
 is deliberately small, built to be the thing an embedder holds onto across an
-upgrade, and reaches into `v1` on an embedder's behalf so a program does not
-have to. Prefer it even where `v1` could do the same thing more directly.
+upgrade. Prefer it even where `v1` could do the same thing more directly.
+
+Two limits, so nobody relies on more:
+
+- **It does not hide `v1`'s types.** A task function is a `v1.TaskFunc`,
+  `RunLocal` answers with a `*v1.Workflow_StepOutputs`, and a durable run is
+  started with `engine.Run` over a `v1.RunState`, so an embedding program
+  imports `v1` and `engine` too, as the example below does.
+- **Nothing is tagged yet.** "Stable" is the intent this package is held to,
+  not a versioned guarantee. Pin a module revision and re-test when you move
+  it; [SUPPORT.md](../SUPPORT.md) says what is and is not supported.
 
 ## The four things an embedder does
 
@@ -69,19 +77,23 @@ outputs, err := embed.RunLocal(ctx, workflow, embed.RunOptions{
 })
 message, ok := embed.StepOutputString(outputs, "greet", "message")
 
-// 4. Or run it durably, against a Temporal worker the program owns.
-// temporalClient is a *client.Client the embedding program dialed itself.
+// 4. Or run it durably. RunDurable registers the interpreter and the tasks on
+// a Temporal worker the program owns; temporalClient is the client.Client the
+// program dialed itself. Start the worker, then start runs with
+// temporalClient.ExecuteWorkflow(ctx, opts, engine.Run, &v1.RunState{...}).
 err = embed.RunDurable(worker.New(temporalClient, engine.RunTaskQueueName, worker.Options{}), tasks)
 ```
 
-`data` and `temporalClient` are elided above — they are the two values an
+`data` and `temporalClient` are elided above: they are the two values an
 embedding program supplies from its own setup, not something this package
-provides. `embed.StepOutput` and `embed.StepOutputString` are how a program
-reads what a run returned: the raw `*v1.Workflow_StepOutputs` is a protobuf
-message, and printing it gives `values:{key:"message" value:{literal:...}}`
-rather than the string. Both report `ok=false` for a step that did not run or
-an output it did not produce, rather than a zero value. [examples/embedding](../examples/embedding) is the runnable version
-with both filled in.
+provides. [examples/embedding/main.go](../examples/embedding/main.go) shows the
+durable start in full, including the `RunState` fields to set.
+
+`embed.StepOutput` and `embed.StepOutputString` are how a program reads what a
+run returned: the raw `*v1.Workflow_StepOutputs` is a protobuf message, and
+printing it gives `values:{key:"message" value:{literal:...}}` rather than the
+string. Both report `ok=false` for a step that did not run or an output it did
+not produce, rather than a zero value.
 
 ## Compile vs. validate
 
