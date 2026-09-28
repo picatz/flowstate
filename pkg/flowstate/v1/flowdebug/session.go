@@ -606,6 +606,17 @@ func New(opts Options) (*Session, error) {
 	if len(opts.Breakpoints) > MaxBreakpoints {
 		return nil, fmt.Errorf("a session may hold %d breakpoints, and %d were named", MaxBreakpoints, len(opts.Breakpoints))
 	}
+	// A source map names the program it describes. One for another program
+	// would verify line breakpoints that never match and point frames at the
+	// wrong lines, so it is refused rather than used.
+	if opts.SourceMap != nil {
+		if opts.Workflow == nil {
+			return nil, errors.New("a source map needs the workflow it describes")
+		}
+		if got, want := opts.SourceMap.GetIrDigest(), v1.WorkflowIRDigest(opts.Workflow); got != want {
+			return nil, fmt.Errorf("the source map describes program %s, and this session runs %s", got, want)
+		}
+	}
 
 	// The inventory's declaration numbers are checked here rather than where
 	// they are rendered, because here is the only place that can answer with an

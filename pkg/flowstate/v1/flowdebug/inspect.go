@@ -258,9 +258,13 @@ func (s *Session) evaluateIn(ctx context.Context, subject promptSubject, express
 // evaluateTyped is evaluateIn answering with the value's CEL type name and its
 // redacted native form, for a caller describing and expanding a value rather
 // than printing it. The native form is nil where evaluate could not convert the
-// value.
+// value, and where it may not be handed out structured: expanding it would
+// hand out, child by child, exactly the structure evaluate withholds.
 func evaluateTyped(ctx context.Context, subject promptSubject, expression string) (string, string, any, error) {
-	text, typeName, native, _, err := evaluate(ctx, subject, expression)
+	text, typeName, native, structured, err := evaluate(ctx, subject, expression)
+	if !structured {
+		native = nil
+	}
 
 	return text, typeName, native, err
 }

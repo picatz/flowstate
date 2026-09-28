@@ -557,7 +557,7 @@ const (
 	DebugResumeAction_DEBUG_RESUME_ACTION_STEP_OVER DebugResumeAction = 3
 	// StepOut stops at the next boundary shallower than the current one.
 	DebugResumeAction_DEBUG_RESUME_ACTION_STEP_OUT DebugResumeAction = 4
-	// RunUntil runs to the boundary [DebugResumeRequest.until] names.
+	// RunUntil runs to the boundary the request's `until` names.
 	DebugResumeAction_DEBUG_RESUME_ACTION_RUN_UNTIL DebugResumeAction = 5
 	// Detach ends the session: breakpoints are cleared and the run continues.
 	// It never ends the run.
@@ -622,7 +622,7 @@ const (
 	// first one that reflects it.
 	DebugCommandStatus_DEBUG_COMMAND_STATUS_APPLIED DebugCommandStatus = 1
 	// Pending means the command was delivered and not yet applied. Delivery is
-	// not application: poll [WorkflowService.DebugGet] or retry with the same
+	// not application: poll `DebugGet` or retry with the same
 	// request id.
 	DebugCommandStatus_DEBUG_COMMAND_STATUS_PENDING DebugCommandStatus = 2
 	// Duplicate means this request id was already applied; nothing advanced
@@ -708,7 +708,9 @@ const (
 	DebugFailureMode_DEBUG_FAILURE_MODE_UNSPECIFIED DebugFailureMode = 0
 	// None never stops on a failure.
 	DebugFailureMode_DEBUG_FAILURE_MODE_NONE DebugFailureMode = 1
-	// Uncaught stops on a failure that will propagate.
+	// Uncaught stops on a failure its own step does not tolerate with
+	// `continue_on_error:`. A container that tolerates the failure further out
+	// is not consulted, so such a stop may precede a run that goes on.
 	DebugFailureMode_DEBUG_FAILURE_MODE_UNCAUGHT DebugFailureMode = 2
 	// All stops on every failure, including those `continue_on_error:`
 	// tolerates.
@@ -2251,8 +2253,9 @@ func (x *DebugSourceEntry) GetLocation() *DebugSourceLocation {
 // It is never part of the program: it does not enter the executable
 // specification, a digest of it, workflow history, or replay. It is bound to
 // the program it describes by [ir_digest] and to each source by that
-// document's own digest, and a map whose binding does not hold is reported as
-// unverified rather than applied.
+// document's own digest, and a map whose program binding does not hold is
+// refused rather than applied. A program past the bounds below is mapped as
+// far as they reach; its remaining sites are debugged by address alone.
 type DebugSourceMap struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// IrDigest is the content digest of the deterministic encoding of the
@@ -2427,7 +2430,9 @@ type DebugCapabilities struct {
 	// ValueExpansion is paged child listing of maps and lists.
 	ValueExpansion bool `protobuf:"varint,12,opt,name=value_expansion,json=valueExpansion,proto3" json:"value_expansion,omitempty"`
 	Observations   bool `protobuf:"varint,13,opt,name=observations,proto3" json:"observations,omitempty"`
-	// Terminate ends the run. Detaching never does.
+	// Terminate ends the run. Detaching never does. Only whoever owns the run
+	// can offer it: a session observing a run it did not start reports false,
+	// and the surface that started the run advertises termination itself.
 	Terminate bool `protobuf:"varint,14,opt,name=terminate,proto3" json:"terminate,omitempty"`
 	// Reverse is backwards navigation. No backend offers it: a rerun is not
 	// history, and nothing here reconstructs one.
@@ -4093,7 +4098,7 @@ func (x *DebugInspectResponse) GetError() string {
 }
 
 // DebugCarry is a durable debug session's state as the run itself holds it,
-// carried across Continue-As-New in [RunState.debug] so a session survives a
+// carried across Continue-As-New in `RunState.debug` so a session survives a
 // new segment. Everything here was decided by workflow code from recorded
 // signals, so a replay rebuilds it exactly; nothing here holds a value from the
 // run's scope.

@@ -127,7 +127,11 @@ type contractState struct {
 	pauseAsked  bool
 	failureMode v1.DebugFailureMode
 	lastFailure error
-	detached    bool
+
+	// lastFailureAt is where lastFailure stopped, so its re-arrival wrapped by
+	// an enclosing step is recognised as the same failure and nothing else is.
+	lastFailureAt *v1.DebugOccurrence
+	detached      bool
 
 	observations []*v1.DebugObservation
 	sequence     uint64
@@ -153,6 +157,10 @@ type contractState struct {
 	sourceMap *v1.DebugSourceMap
 	sources   map[string]*v1.DebugSourceLocation
 	nextID    int
+
+	// irDigest is the digest of the program under debug, when it is known:
+	// what a source map is checked against and what a snapshot reports.
+	irDigest string
 }
 
 func newContractState(opts Options) contractState {
@@ -175,6 +183,7 @@ func newContractState(opts Options) contractState {
 		if profile := opts.Workflow.GetProfile(); profile != "" {
 			c.profile = profile
 		}
+		c.irDigest = v1.WorkflowIRDigest(opts.Workflow)
 	}
 	for _, entry := range opts.SourceMap.GetEntries() {
 		key := v1.DebugSiteKey(entry.GetSite())
@@ -239,8 +248,10 @@ func (s *Session) BeforeStep(ctx context.Context, node *v1.Node, scope *v1.Scope
 // StepFailed implements [v1.StepFailureDebugger]: a failure stop, when the
 // session's failure mode asks for one.
 func (s *Session) StepFailed(ctx context.Context, node *v1.Node, scope *v1.Scope, err error, tolerated bool) error {
+	occurrence := v1.ExecutingOccurrenceFromContext(ctx, node)
+
 	s.mu.Lock()
-	mode, last, detached := s.contract.failureMode, s.contract.lastFailure, s.contract.detached
+	mode, last, lastAt, detached := s.contract.failureMode, s.contract.lastFailure, s.contract.lastFailureAt, s.contract.detached
 	s.mu.Unlock()
 
 	switch {
@@ -252,8 +263,14 @@ func (s *Session) StepFailed(ctx context.Context, node *v1.Node, scope *v1.Scope
 		return nil
 	}
 	// A failure propagating out of a loop, a branch, or a call arrives again
-	// wrapped at each level. One stop is where it was raised.
-	if last != nil && errors.Is(err, last) {
+	// wrapped at each level. One stop is where it was raised: the same error
+	// failing a step that encloses that place. The same error failing some
+	// other step is a failure of its own.
+	if last != nil && errors.Is(err, last) && encloses(occurrence, lastAt) {
+		s.mu.Lock()
+		s.contract.lastFailureAt = occurrence
+		s.mu.Unlock()
+
 		return nil
 	}
 
@@ -261,11 +278,7 @@ func (s *Session) StepFailed(ctx context.Context, node *v1.Node, scope *v1.Scope
 	defer s.promptMu.Unlock()
 
 	s.mu.Lock()
-	s.contract.lastFailure = err
-	s.mu.Unlock()
-
-	occurrence := v1.ExecutingOccurrenceFromContext(ctx, node)
-	s.mu.Lock()
+	s.contract.lastFailure, s.contract.lastFailureAt = err, occurrence
 	occurrence.Arrival = s.contract.arrivals
 	s.mu.Unlock()
 
@@ -280,6 +293,27 @@ func (s *Session) StepFailed(ctx context.Context, node *v1.Node, scope *v1.Scope
 	})
 }
 
+// encloses reports whether outer is the step around inner: the container whose
+// segment inner was reached under, at the same dynamic position.
+func encloses(outer, inner *v1.DebugOccurrence) bool {
+	if outer == nil || inner == nil {
+		return false
+	}
+	o, i := outer.GetSegments(), inner.GetSegments()
+	if len(i) <= len(o) {
+		return false
+	}
+	for n, segment := range o {
+		if !proto.Equal(segment, i[n]) {
+			return false
+		}
+	}
+	container := i[len(o)]
+
+	return container.GetStepId() == outer.GetSite().GetPath()[len(outer.GetSite().GetPath())-1] &&
+		container.GetWorkflow() == outer.GetSite().GetWorkflow()
+}
+
 // arrive records one boundary arrival and returns its occurrence.
 func (s *Session) arrive(ctx context.Context, node *v1.Node) *v1.DebugOccurrence {
 	occurrence := v1.ExecutingOccurrenceFromContext(ctx, node)
@@ -290,6 +324,9 @@ func (s *Session) arrive(ctx context.Context, node *v1.Node) *v1.DebugOccurrence
 	s.contract.arrivals++
 	occurrence.Arrival = s.contract.arrivals
 	s.contract.occurrence = occurrence
+	// A new position is a new snapshot: two snapshots at one revision always
+	// say the same thing.
+	s.bump()
 
 	return occurrence
 }
@@ -487,7 +524,12 @@ func (s *Session) leaveHeld() {
 		return
 	}
 	s.contract.state = v1.DebugRunState_DEBUG_RUN_STATE_RUNNING
-	if s.contract.pauseAsked {
+	if s.contract.detached {
+		// Detach ends the session, not the run: the state is terminal, so
+		// every later command is answered as ended rather than re-arming it.
+		s.contract.state = v1.DebugRunState_DEBUG_RUN_STATE_DETACHED
+		s.contract.message = "the debugger detached; the run continues unattended"
+	} else if s.contract.pauseAsked {
 		s.contract.state = v1.DebugRunState_DEBUG_RUN_STATE_PAUSE_REQUESTED
 	}
 	s.contract.reason = v1.DebugStopReason_DEBUG_STOP_REASON_UNSPECIFIED
@@ -664,7 +706,9 @@ func (s *Session) capabilitiesLocked() *v1.DebugCapabilities {
 		Inspect:                true,
 		ValueExpansion:         true,
 		Observations:           true,
-		Terminate:              controlled,
+		// A session observes a run someone else started, and has no way to
+		// end it; that someone advertises termination (see flowdap's launch).
+		Terminate: false,
 	}
 }
 
@@ -678,6 +722,7 @@ func (s *Session) snapshotLocked() *v1.DebugSnapshot {
 		Capabilities:        s.capabilitiesLocked(),
 		Message:             c.message,
 		ObservationsDropped: c.dropped,
+		IrDigest:            c.irDigest,
 	}
 	for _, observation := range c.observations {
 		snapshot.Observations = append(snapshot.Observations, proto.CloneOf(observation))
@@ -997,13 +1042,21 @@ func (s *Session) Resume(ctx context.Context, req *v1.DebugResumeRequest) (*v1.D
 	defer release()
 
 	// Re-read under the control slot: another controller may have moved the
-	// run while this one waited for it.
+	// run while this one waited for it, and every delivery happens under this
+	// slot, so a same-id request that got here first has left its receipt.
+	if receipt, ok := s.rememberedReceipt(requestID); ok {
+		return receipt, nil
+	}
 	s.mu.Lock()
 	moved := s.contract.revision != revision
+	state = s.contract.state
 	s.mu.Unlock()
-	if moved && req.GetExpectedRevision() != 0 {
+	switch {
+	case moved && req.GetExpectedRevision() != 0:
 		return s.answer(requestID, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_STALE,
 			"another command moved the run first"), nil
+	case terminal(state):
+		return s.answer(requestID, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_ENDED, "the session is over"), nil
 	}
 
 	ack := make(chan acknowledgement, 1)
@@ -1065,8 +1118,13 @@ func (s *Session) ReplaceBreakpoints(_ context.Context, req *v1.DebugSetBreakpoi
 	}
 
 	s.mu.Lock()
-	profile := s.contract.profile
+	profile, state := s.contract.profile, s.contract.state
 	s.mu.Unlock()
+	if terminal(state) {
+		return &v1.DebugSetBreakpointsResponse{
+			Receipt: s.answer(req.GetRequestId(), v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_ENDED, "the session is over"),
+		}, nil
+	}
 
 	// One redactor for the whole answer, taken now: a response whose entries
 	// were redacted under two different postures would say different things

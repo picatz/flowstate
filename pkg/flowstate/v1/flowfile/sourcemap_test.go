@@ -1,8 +1,10 @@
 package flowfile_test
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -85,4 +87,33 @@ func TestSourceMapLeavesOutAChangedCallee(t *testing.T) {
 
 	sourceMap := flowfile.SourceMap(root, []byte(rootText), workflow, positions)
 	require.Len(t, sourceMap.GetDocuments(), 1, "a callee whose bytes changed is not mapped to lines it no longer holds")
+}
+
+// TestSourceMapStopsAtTheSchemasDocumentBound calls more distinct files than
+// a map may name: the map stays inside the bound, and the files past it are
+// left for address-only debugging rather than mapped past what a reader of the
+// schema will accept.
+func TestSourceMapStopsAtTheSchemasDocumentBound(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	var root strings.Builder
+	root.WriteString("edition: v2026.3\nname: main\nsteps:\n")
+	for i := range flowfile.MaxSourceMapDocuments + 4 {
+		name := fmt.Sprintf("c%d", i)
+		require.NoError(t, os.WriteFile(filepath.Join(dir, name+".yaml"), []byte(
+			"edition: v2026.3\nname: "+name+"\nsteps:\n  - id: s\n    log:\n      message: hi\n"), 0o600))
+		fmt.Fprintf(&root, "  - id: %s\n    call: ./%s.yaml\n", name, name)
+	}
+	path := filepath.Join(dir, "main.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(root.String()), 0o600))
+
+	workflow, positions, err := flowfile.ParseFile(path)
+	require.NoError(t, err)
+	sourceMap := flowfile.SourceMap(path, []byte(root.String()), workflow, positions)
+
+	assert.Len(t, sourceMap.GetDocuments(), flowfile.MaxSourceMapDocuments)
+	for _, entry := range sourceMap.GetEntries() {
+		assert.Less(t, int(entry.GetLocation().GetDocument()), flowfile.MaxSourceMapDocuments)
+	}
 }
