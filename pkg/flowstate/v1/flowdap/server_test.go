@@ -1,6 +1,7 @@
 package flowdap_test
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"sync"
@@ -1250,4 +1251,49 @@ func TestBreakpointNumbersGoWithTheirSlots(t *testing.T) {
 		"numbers for slots that are gone were kept for the session's life")
 	assert.Equal(t, kept, set("/kept.yaml", 3)[0].(map[string]any)["id"],
 		"a slot that stayed was renumbered")
+}
+
+// TestARequestIDIsTheAdaptersOwn is an editor reconnecting to a live durable
+// session: its sequence numbers start over, so the adapter's own nonce is what
+// keeps a new movement from reusing an ID the run already answered, while one
+// request keeps a single ID for its retries.
+func TestARequestIDIsTheAdaptersOwn(t *testing.T) {
+	t.Parallel()
+
+	first := flowdap.NewServer(nil, newClient(t))
+	second := flowdap.NewServer(nil, newClient(t))
+
+	assert.Equal(t, flowdap.RequestID(first, 4), flowdap.RequestID(first, 4), "one request's retries must share an ID")
+	assert.NotEqual(t, flowdap.RequestID(first, 4), flowdap.RequestID(second, 4),
+		"two adapters sent the same ID for their fourth request, so a reconnect replays an old receipt")
+	assert.LessOrEqual(t, len(flowdap.RequestID(first, 1<<31)), v1.MaxDebugRequestIDBytes)
+}
+
+// TestEndingServeInterruptsAWriteToAClientThatStoppedReading is a client that
+// keeps its connection but stops reading, so a response blocks while holding
+// the output lock. Ending Serve's context must still end it: the stream is
+// closed under the blocked write rather than waited behind it.
+func TestEndingServeInterruptsAWriteToAClientThatStoppedReading(t *testing.T) {
+	t.Parallel()
+
+	c := newClient(t)
+	t.Cleanup(func() { _ = c.Close() })
+
+	server := flowdap.NewServer(nil, c)
+	ctx, cancel := context.WithCancel(t.Context())
+	served := make(chan error, 1)
+	go func() { served <- server.Serve(ctx) }()
+
+	// More requests than the client buffers answers for, none of them read:
+	// the adapter blocks writing an answer, holding its output lock.
+	for seq := range cap(c.fromAdapter) + 8 {
+		c.send(seq+1, "threads", nil)
+	}
+
+	cancel()
+	select {
+	case <-served:
+	case <-time.After(20 * time.Second):
+		t.Fatal("Serve waited on a blocked write after its context ended")
+	}
 }
