@@ -85,6 +85,12 @@ type Subject struct {
 	// MCPTool is the full registered MCP tool name, e.g. "flowstate_test".
 	MCPTool string
 
+	// RequestField, beside RPC, is a request field that widened the call and
+	// was decided separately, by its full name, such as
+	// "flowstate.v1.GetRequest.reveal_sensitive". The record's action is then
+	// the field's action rather than the RPC's.
+	RequestField string
+
 	// HTTPEndpoint is a bound endpoint outside the RPC service, by the path
 	// suffix its authorization binding names, e.g. "/decode" on the codec
 	// server. Never the request path a caller sent.
@@ -400,6 +406,10 @@ func (r *Recorder) newRecord(ctx context.Context, subject Subject, decision v1.A
 	switch {
 	case named > 1:
 		return nil, errors.New("audit: exactly one of RPC, MCPTool or HTTPEndpoint must identify the decision")
+	case subject.RequestField != "" && subject.RPC == "":
+		return nil, errors.New("audit: a request field is decided beside the RPC it widens, and no RPC was named")
+	case subject.RequestField != "":
+		action, err = v1.AuthorizationActionForRequestField(subject.RequestField)
 	case subject.RPC != "":
 		action, err = v1.AuthorizationActionForRPC(subject.RPC)
 	case subject.MCPTool != "":
@@ -475,7 +485,8 @@ func AuditedActions() []v1.AuthorizationAction {
 
 	actions := make([]v1.AuthorizationAction, 0, len(bindings))
 	for _, binding := range bindings {
-		if len(binding.GetRpcs()) > 0 || len(binding.GetMcpTools()) > 0 || len(binding.GetHttpEndpoints()) > 0 {
+		if len(binding.GetRpcs()) > 0 || len(binding.GetMcpTools()) > 0 || len(binding.GetHttpEndpoints()) > 0 ||
+			len(binding.GetRequestFields()) > 0 {
 			actions = append(actions, binding.GetAction())
 		}
 	}

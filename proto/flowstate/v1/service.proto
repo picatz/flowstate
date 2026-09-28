@@ -268,6 +268,32 @@ message RunResponse {
   bool reused = 8 [(google.api.field_behavior) = OUTPUT_ONLY];
 }
 
+// SensitiveDisclosure is what a server did with a run's `sensitive: true`
+// values when it answered.
+//
+// The server decides, because it is the one party that holds both the run's
+// executed specification and the caller's authority: a client holding
+// neither used to render every declared output as withheld (it could not tell
+// which were sensitive), while the same values reached any API caller
+// unredacted. Now the answer is decided once, at the boundary.
+enum SensitiveDisclosure {
+  // An older server that made no decision. A client treats the response as
+  // unredacted and applies its own rendering rules.
+  SENSITIVE_DISCLOSURE_UNSPECIFIED = 0;
+
+  // The run's workflow declares nothing sensitive, so nothing was withheld.
+  SENSITIVE_DISCLOSURE_NONE_DECLARED = 1;
+
+  // The workflow declares sensitive values and they were withheld: declared
+  // sensitive outputs by name, the step transcript and carried state whole,
+  // and sensitive input values wherever failure text quotes them.
+  SENSITIVE_DISCLOSURE_WITHHELD = 2;
+
+  // The caller asked for the values and holds workload.reveal_sensitive, so
+  // they are in the clear.
+  SENSITIVE_DISCLOSURE_REVEALED = 3;
+}
+
 // GetRequest is the request message for getting a workflow run.
 message GetRequest {
   // WorkflowId identifies the workload, as Run's `workflow_id` reports it.
@@ -285,6 +311,14 @@ message GetRequest {
   // Unset reads the latest run, which is what a caller holding only a
   // workflow id wants.
   optional string run_id = 2 [(buf.validate.field).string.uuid = true];
+
+  // RevealSensitive asks for the values the run's workflow declared
+  // `sensitive: true` in the clear. The server withholds them by default, and
+  // honours this only for a caller whose policy entry lists the
+  // `workload.reveal_sensitive` action explicitly: an entry with no action list
+  // is not granted it. A caller without it is answered normally, with the
+  // values withheld and `sensitive_disclosure` saying so, rather than refused.
+  bool reveal_sensitive = 3;
 }
 
 // GetResponse is the response message for getting a workflow run.
@@ -390,6 +424,12 @@ message GetResponse {
   // count. A client must not assume it is at least one; first_run_id against
   // run_id says whether a run with no count continued at all.
   uint32 segments = 15;
+
+  // SensitiveDisclosure says what this server did with values the run's
+  // workflow declared `sensitive: true`, so a client can render what it was
+  // given instead of guessing. UNSPECIFIED is an older server that said
+  // nothing, which a client must treat as unredacted.
+  SensitiveDisclosure sensitive_disclosure = 16 [(google.api.field_behavior) = OUTPUT_ONLY];
 }
 
 // SignalRequest delivers a signal to a waiting run.
@@ -1081,6 +1121,10 @@ message GetTimelineRequest {
   // Each request reads the segment's history from the start, so resuming
   // re-reads what it skips; that work is bounded by the server's scan budget.
   int64 after_event_id = 4 [(buf.validate.field).int64.gte = 0];
+
+  // RevealSensitive is GetRequest.reveal_sensitive for the timeline's failure
+  // text, under the same action.
+  bool reveal_sensitive = 5;
 }
 
 // GetTimelineResponse is what one run did.
@@ -1129,6 +1173,10 @@ message GetTimelineResponse {
   // Both this and previous_run_id come off the history's own first event, which
   // this read has in hand either way, so neither costs a round trip.
   string first_run_id = 5;
+
+  // SensitiveDisclosure is GetResponse.sensitive_disclosure for the timeline's
+  // failure text.
+  SensitiveDisclosure sensitive_disclosure = 7 [(google.api.field_behavior) = OUTPUT_ONLY];
 }
 
 // CompileRequest is one Flowfile to compile.
