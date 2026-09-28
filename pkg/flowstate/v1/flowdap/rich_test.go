@@ -637,3 +637,36 @@ func TestVariableHandlesAreReusedAndBoundedWithinAStop(t *testing.T) {
 	assert.Zero(t, evaluate("[-1]"), "a stop handed out more references than it may hold")
 	assert.Equal(t, first, evaluate("[1, 2]"), "a reference already issued stopped answering at the bound")
 }
+
+// TestATerminatedLaunchReportsItsEnd is the protocol's order for a terminate:
+// the response, then the run's `terminated` and `exited` once it has stopped,
+// and only then the client's `disconnect`. An adapter that stopped listening at
+// the terminate would leave the client waiting for events that never come.
+func TestATerminatedLaunchReportsItsEnd(t *testing.T) {
+	t.Parallel()
+
+	c, program, finished := launched(t)
+
+	c.send(1, "initialize", map[string]any{"adapterID": "flowstate"})
+	c.await("response", "initialize")
+	c.await("event", "initialized")
+	c.send(2, "launch", map[string]any{"program": program})
+	c.await("response", "launch")
+	c.send(3, "configurationDone", nil)
+	c.await("response", "configurationDone")
+	c.await("event", "stopped")
+
+	c.send(4, "terminate", map[string]any{})
+	require.Equal(t, true, c.await("response", "terminate")["success"])
+	c.await("event", "terminated")
+	c.await("event", "exited")
+	select {
+	case <-finished:
+	case <-time.After(20 * time.Second):
+		t.Fatal("the terminated run did not end")
+	}
+
+	c.send(5, "disconnect", map[string]any{})
+	assert.Equal(t, true, c.await("response", "disconnect")["success"],
+		"the adapter stopped answering after the terminate")
+}

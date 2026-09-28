@@ -372,10 +372,11 @@ func (s *Server) dispatch(ctx context.Context, request inbound) (done bool) {
 
 			return true
 		}
+		// The run this adapter started is cancelled and the conversation
+		// goes on: the run's end arrives as `terminated` and `exited`, which a
+		// client waits for before it sends the `disconnect` that closes it.
 		s.end(true)
 		s.reply(request, nil)
-
-		return true
 
 	case "disconnect":
 		// Answered once the session is released, so a client that reads the
