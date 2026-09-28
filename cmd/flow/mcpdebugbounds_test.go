@@ -887,3 +887,71 @@ func TestAnAttachWhoseAnswerWasLostIsRecoveredByItsRetry(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, result.IsError)
 }
+
+// answeringAttach is [detachRecorder] whose attaches are all answered with one
+// status, under the session the caller names.
+type answeringAttach struct {
+	*detachRecorder
+
+	status v1.DebugCommandStatus
+}
+
+func (a answeringAttach) DebugAttach(_ context.Context, req *connect.Request[v1.DebugAttachRequest]) (*connect.Response[v1.DebugAttachResponse], error) {
+	snapshot := a.snapshot()
+	snapshot.Session.SessionId = req.Msg.GetSessionId()
+
+	return connect.NewResponse(&v1.DebugAttachResponse{
+		SessionId: req.Msg.GetSessionId(), Snapshot: snapshot,
+		Receipt: &v1.DebugReceipt{RequestId: req.Msg.GetRequestId(), Status: a.status, Message: "another session is attached"},
+	}), nil
+}
+
+// TestARefusedKeyedAttachLeavesAKeptSessionHeld: a keyed attach names the
+// session its key derives, which may be one the caller ended with keep to
+// rejoin later. When the run answers it as a duplicate and this server has no
+// room to hold it, the session is left attached — not detached as though this
+// call had made it, which would release the hold the caller kept.
+func TestARefusedKeyedAttachLeavesAKeptSessionHeld(t *testing.T) {
+	t.Parallel()
+
+	service := answeringAttach{detachRecorder: &detachRecorder{}, status: v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_DUPLICATE}
+	mux := http.NewServeMux()
+	mux.Handle(flowstatev1connect.NewWorkflowServiceHandler(service))
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	client := flowstatev1connect.NewWorkflowServiceClient(srv.Client(), srv.URL)
+	r := newDebugSessions(func() flowstatev1connect.WorkflowServiceClient { return client })
+	for range maxDebugSessions {
+		addStepSession(t, r, newStepTarget(true))
+	}
+
+	result, err := r.attach(t.Context(), toolRequest(t, map[string]any{"workflow_id": "w", "request_id": "k"}))
+	require.NoError(t, err)
+	require.True(t, result.IsError, "a server with no room attached a session")
+	assert.Zero(t, service.detaches(), "a refused keyed attach detached the session the caller kept")
+}
+
+// TestARefusedKeyedAttachSaysToUseANewKey: the run remembers its answer under
+// the attach's request id, so a retry under the same key is refused the same
+// way however the run has changed since; the refusal says to use a new key.
+func TestARefusedKeyedAttachSaysToUseANewKey(t *testing.T) {
+	t.Parallel()
+
+	service := answeringAttach{detachRecorder: &detachRecorder{}, status: v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_CONFLICT}
+	mux := http.NewServeMux()
+	mux.Handle(flowstatev1connect.NewWorkflowServiceHandler(service))
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	client := flowstatev1connect.NewWorkflowServiceClient(srv.Client(), srv.URL)
+	r := newDebugSessions(func() flowstatev1connect.WorkflowServiceClient { return client })
+
+	result, err := r.attach(t.Context(), toolRequest(t, map[string]any{"workflow_id": "w", "request_id": "k"}))
+	require.NoError(t, err)
+	require.True(t, result.IsError)
+	assert.Contains(t, replyOf(t, result).raw, "use a new one")
+
+	result, err = r.attach(t.Context(), toolRequest(t, map[string]any{"workflow_id": "w"}))
+	require.NoError(t, err)
+	require.True(t, result.IsError)
+	assert.NotContains(t, replyOf(t, result).raw, "request_id", "an unkeyed attach was told about a key it never sent")
+}
