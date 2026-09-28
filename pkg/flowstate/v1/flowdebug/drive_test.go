@@ -134,6 +134,50 @@ func TestADriverRefusesToDropABreakpointItCannotRebuild(t *testing.T) {
 	require.NoError(t, err)
 }
 
+// TestABreakKeepsAnotherClientsBreakpointOnTheSameStep: the typed contract
+// allows several breakpoints on one step under different ids, so `break build`
+// replaces only the breakpoint the driver owns under id `build`, and keeps a
+// conditional one an editor set on the same step as `dap-7`.
+func TestABreakKeepsAnotherClientsBreakpointOnTheSameStep(t *testing.T) {
+	t.Parallel()
+
+	theirs := &v1.DebugBreakpoint{Id: "dap-7", Step: "build", Condition: "attempt > 2"}
+	target := &scriptedTarget{snapshot: &v1.DebugSnapshot{
+		Revision: 1, State: v1.DebugRunState_DEBUG_RUN_STATE_HELD,
+		Breakpoints: []*v1.DebugBreakpointState{{Id: "dap-7", Verified: true, Definition: theirs}},
+	}}
+	_, err := flowdebug.NewDriver(target).Do(t.Context(), "break build")
+	require.NoError(t, err)
+	require.Len(t, target.sets, 1)
+	ids := make([]string, 0, 2)
+	for _, bp := range target.sets[0] {
+		ids = append(ids, bp.GetId())
+	}
+	assert.ElementsMatch(t, []string{"dap-7", "build"}, ids, "break dropped another client's breakpoint on its step")
+}
+
+// TestADetachedDriverChangesNothing: once a detach is accepted the session is
+// over. A durable pause after it would attach the run anew, so a line that
+// would change the session is refused before it reaches the target, and a
+// read still answers.
+func TestADetachedDriverChangesNothing(t *testing.T) {
+	t.Parallel()
+
+	target := &scriptedTarget{snapshot: &v1.DebugSnapshot{Revision: 1, State: v1.DebugRunState_DEBUG_RUN_STATE_HELD}}
+	driver := flowdebug.NewDriver(target)
+	_, err := driver.Do(t.Context(), "detach")
+	require.NoError(t, err)
+	sent := len(target.requests)
+
+	for _, line := range []string{"pause", "next", "break build", "clear"} {
+		_, err := driver.Do(t.Context(), line)
+		require.Error(t, err, "%s was accepted after the session was detached", line)
+	}
+	assert.Len(t, target.requests, sent, "a refused line reached the target")
+	_, err = driver.Do(t.Context(), "status")
+	assert.NoError(t, err, "a read was refused after a detach")
+}
+
 // TestAFreshDriverLeavesTheFailureModeAlone: a driver that has not been told
 // a mode by `catch` must not reset the one the session has.
 func TestAFreshDriverLeavesTheFailureModeAlone(t *testing.T) {
@@ -235,6 +279,7 @@ type scriptedTarget struct {
 	hang            bool
 	requests        []string
 	modes           []v1.DebugFailureMode
+	sets            [][]*v1.DebugBreakpoint
 	expected        uint64
 }
 
@@ -280,6 +325,7 @@ func (s *scriptedTarget) ReplaceBreakpoints(_ context.Context, req *v1.DebugSetB
 	defer s.mu.Unlock()
 	s.requests = append(s.requests, req.GetRequestId())
 	s.modes = append(s.modes, req.GetFailureMode())
+	s.sets = append(s.sets, req.GetBreakpoints())
 
 	return &v1.DebugSetBreakpointsResponse{Receipt: &v1.DebugReceipt{Status: v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_APPLIED}}, nil
 }

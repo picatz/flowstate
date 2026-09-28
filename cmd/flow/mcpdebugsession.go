@@ -536,7 +536,8 @@ func (a sessionAnswer) result() *mcp.CallToolResult {
 // most afford to lose and saying what went: the transcript's oldest fragments,
 // then the transcript, then the rendered text and the snapshot's observations,
 // and at the floor the snapshot and inspection themselves, which an observe
-// reads again.
+// reads again. An ended case's report is the verdict, so it is kept to the
+// floor and there re-rendered within what the rest of the answer leaves it.
 func (a sessionAnswer) encode() ([]byte, error) {
 	encode := func() ([]byte, error) { return json.Marshal(a) }
 	note := func(format string, args ...any) {
@@ -580,7 +581,34 @@ func (a sessionAnswer) encode() ([]byte, error) {
 			note("The snapshot and any inspection were dropped: the answer exceeded %d bytes even reduced; "+
 				"observe the session to read its snapshot alone.", flowmcp.MaxResultBytes)
 
-			return encode()
+			encoded, err := encode()
+			if a.report == nil {
+				return encoded, err
+			}
+			// The report gets what the rest of the answer leaves it, and each
+			// pass takes the measured overshoot back out of that budget, as
+			// the one-shot debug tool's floor does: the encoded length is the
+			// only length, since the answer's encoding compacts and escapes
+			// the report it carries. The passes are bounded rather than the
+			// convergence argued ([maxDebugFloorPasses]).
+			budget := flowmcp.MaxResultBytes - (len(encoded) - len(a.Report))
+			for range maxDebugFloorPasses {
+				if err != nil {
+					return nil, err
+				}
+				if len(encoded) <= flowmcp.MaxResultBytes || budget < 1 {
+					break
+				}
+				reduced, err := renderTestResultWithin(a.report, budget)
+				if err != nil {
+					return nil, err
+				}
+				a.Report = json.RawMessage(reduced)
+				encoded, err = encode()
+				budget -= max(0, len(encoded)-flowmcp.MaxResultBytes)
+			}
+
+			return encoded, err
 		},
 	)
 
@@ -612,9 +640,10 @@ type sessionAnswer struct {
 	Report     json.RawMessage `json:"report,omitempty"`
 	Note       string          `json:"note,omitempty"`
 
-	// snapshot is what Snapshot renders, kept so [sessionAnswer.encode] can
-	// reduce it.
+	// snapshot and report are what Snapshot and Report render, kept so
+	// [sessionAnswer.encode] can reduce them.
 	snapshot *v1.DebugSnapshot
+	report   *v1.TestReport
 }
 
 // answer reads the session: its snapshot, and the transcript since the last
@@ -999,11 +1028,20 @@ func (r *debugSessions) end(ctx context.Context, req *mcp.CallToolRequest) (*mcp
 
 	finished := entry.end(args.Keep)
 	go r.release(entry)
-	answer := entry.answerAfter(ctx)
+	answer, err := entry.answer(ctx)
+	if err != nil {
+		// Ended either way; the session is gone, so there is nothing to
+		// observe again, only the failed read to report.
+		answer.Note = strings.TrimSpace(answer.Note + " the session ended, and " + err.Error() + ".")
+	}
 	switch {
 	case entry.done == nil:
 	case finished && entry.report != nil:
-		answer.Report = schemaJSON(entry.report)
+		rendered, err := renderTestResult(entry.report)
+		if err != nil {
+			return flowmcp.ToolError(err), nil
+		}
+		answer.report, answer.Report = entry.report, json.RawMessage(rendered)
 	case !finished:
 		answer.Note = strings.TrimSpace("the case was cancelled and has not yet stopped, so it has no report. " + answer.Note)
 	}

@@ -135,6 +135,11 @@ func runDebugAttach(cmd *cobra.Command, args []string) (err error) {
 	if err != nil {
 		return err
 	}
+	// Every way out below releases the run unless it has already been
+	// detached or deliberately left attached: a failed write, a bound
+	// reached, an error from the target. Close after Disconnect or Close is
+	// a no-op, so this only acts where no path chose.
+	defer func() { _ = remote.Close() }()
 	surface := newSurface(cmd)
 	answers := &driveAnswers{out: surface.Out, format: format}
 	defer func() { err = errors.Join(err, answers.flush()) }()
@@ -337,7 +342,13 @@ type driveAnswers struct {
 	out    io.Writer
 	format OutputFormat
 	held   [][]byte
+	// heldBytes is what held holds, for [maxAttachJSONBytes].
+	heldBytes int
 }
+
+// maxAttachJSONBytes bounds the `-o json` document an attach holds until it
+// ends. A session long enough to pass it is one to stream with `-o jsonl`.
+const maxAttachJSONBytes = 16 << 20
 
 func (a *driveAnswers) add(command string, result *flowdebug.DriveResult) error {
 	if a.format != FormatJSON {
@@ -347,7 +358,11 @@ func (a *driveAnswers) add(command string, result *flowdebug.DriveResult) error 
 	if err != nil {
 		return err
 	}
+	if a.heldBytes+len(encoded) > maxAttachJSONBytes {
+		return fmt.Errorf("the -o json document would pass %d bytes; stream a session this long with -o jsonl", maxAttachJSONBytes)
+	}
 	a.held = append(a.held, encoded)
+	a.heldBytes += len(encoded)
 
 	return nil
 }

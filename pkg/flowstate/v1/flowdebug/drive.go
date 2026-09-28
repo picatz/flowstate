@@ -36,6 +36,11 @@ type Driver struct {
 	request  string
 	expected uint64
 
+	// detached is set once a detach this driver sent was accepted: the
+	// session is over, and a line that would change it is refused rather
+	// than sent — a durable pause after a detach would attach the run anew.
+	detached bool
+
 	// Wait bounds how long a movement waits for the next stop. Zero waits
 	// until ctx ends.
 	Wait time.Duration
@@ -107,6 +112,10 @@ func (d *Driver) DoWith(ctx context.Context, line string, opts DoOptions) (*Driv
 	verb, rest := split(line)
 	rest = strings.TrimSpace(rest)
 
+	if d.detached && changesSession(verb) {
+		return nil, errors.New("this session was detached; attach again to debug the run")
+	}
+
 	d.request, d.expected = opts.RequestID, opts.ExpectedRevision
 	defer func() { d.request, d.expected = "", 0 }()
 	if d.expected != 0 && !movement(verb) {
@@ -172,7 +181,7 @@ func (d *Driver) DoWith(ctx context.Context, line string, opts DoOptions) (*Driv
 			return nil, err
 		}
 
-		return d.replace(ctx, append(d.without(target, true), &v1.DebugBreakpoint{
+		return d.replace(ctx, append(d.withoutID("log "+target), &v1.DebugBreakpoint{
 			Id: "log " + target, Step: target, LogMessage: strings.TrimSpace(message),
 		}), d.failureMode)
 	case "delete", "d":
@@ -241,6 +250,17 @@ func (d *Driver) DoWith(ctx context.Context, line string, opts DoOptions) (*Driv
 	}
 }
 
+// changesSession reports whether verb changes the session rather than reads
+// it: a movement, a pause, or a change to its breakpoints.
+func changesSession(verb string) bool {
+	switch verb {
+	case "pause", "break", "b", "log", "delete", "d", "clear", "catch":
+		return true
+	default:
+		return movement(verb)
+	}
+}
+
 // movement reports whether verb resumes the run, and so carries an expected
 // revision to the target rather than having the driver check it.
 func movement(verb string) bool {
@@ -303,6 +323,9 @@ func (d *Driver) move(ctx context.Context, action v1.DebugResumeAction, until st
 	}
 
 	result := &DriveResult{Receipt: receipt}
+	if action == v1.DebugResumeAction_DEBUG_RESUME_ACTION_DETACH && accepted(receipt) {
+		d.detached = true
+	}
 	if !accepted(receipt) || action == v1.DebugResumeAction_DEBUG_RESUME_ACTION_DETACH {
 		result.Text = FormatReceipt(receipt)
 
@@ -375,29 +398,33 @@ func (d *Driver) addBreakpoint(ctx context.Context, rest string) (*DriveResult, 
 		return nil, err
 	}
 
-	return d.replace(ctx, append(d.without(target, false), &v1.DebugBreakpoint{
+	return d.replace(ctx, append(d.withoutID(target), &v1.DebugBreakpoint{
 		Id: target, Step: target, Condition: strings.TrimSpace(condition), HitCondition: hitText,
 	}), d.failureMode)
 }
 
-// without is the current set less the breakpoint on target: the stopping one,
-// or the logpoint when logs is set.
-func (d *Driver) without(target string, logs bool) []*v1.DebugBreakpoint {
+// withoutID is the current set less the breakpoint whose id is id. A line
+// replaces only the breakpoint it owns — `break build` the one under id
+// `build`, `log build` the one under `log build` — so a breakpoint another
+// client set on the same step under its own id is kept.
+func (d *Driver) withoutID(id string) []*v1.DebugBreakpoint {
 	return slices.DeleteFunc(slices.Clone(d.breakpoints), func(bp *v1.DebugBreakpoint) bool {
-		return bp.GetStep() == target && (bp.GetLogMessage() != "") == logs
+		return bp.GetId() == id
 	})
 }
 
 // removing is the current set less what `delete name` names: the breakpoint
 // whose id is name — `log build` for the logpoint `log build ...` set — or,
-// when no id is name, the stopping breakpoint on the step name.
+// when no id is name, every stopping breakpoint on the step name, which is
+// what a person naming a step asks to remove.
 func (d *Driver) removing(name string) []*v1.DebugBreakpoint {
-	byID := func(bp *v1.DebugBreakpoint) bool { return bp.GetId() == name }
-	if slices.ContainsFunc(d.breakpoints, byID) {
-		return slices.DeleteFunc(slices.Clone(d.breakpoints), byID)
+	if slices.ContainsFunc(d.breakpoints, func(bp *v1.DebugBreakpoint) bool { return bp.GetId() == name }) {
+		return d.withoutID(name)
 	}
 
-	return d.without(name, false)
+	return slices.DeleteFunc(slices.Clone(d.breakpoints), func(bp *v1.DebugBreakpoint) bool {
+		return bp.GetStep() == name && bp.GetLogMessage() == ""
+	})
 }
 
 // adopt adds to the driver's set every breakpoint the target holds that the

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/proto"
 
 	flowmcp "github.com/picatz/flowstate/cmd/flow/internal/mcp"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -164,6 +166,19 @@ func TestASessionAnswerIsFittedUnderTheResultBound(t *testing.T) {
 		assert.Empty(t, snapshot["observations"])
 		assert.Equal(t, "3000", snapshot["observationsDropped"], "the snapshot does not count what was dropped")
 	})
+	t.Run("a report is re-rendered within what the rest leaves it", func(t *testing.T) {
+		report := &v1.TestReport{File: "flow_test.yaml"}
+		for i := range 400 {
+			report.Cases = append(report.Cases, &v1.TestCase{
+				Name: fmt.Sprintf("case %d", i), Failures: []*v1.Diagnostic{{Message: strings.Repeat("m", 2048)}},
+			})
+		}
+		answer := answerWith(observations(0), 0)
+		answer.report, answer.Report = report, schemaJSON(report)
+		require.Greater(t, len(answer.Report), flowmcp.MaxResultBytes, "the report fits already, so this proves nothing")
+		document := fits(t, answer)
+		assert.Contains(t, document, "report", "the verdict was dropped rather than reduced")
+	})
 	t.Run("the floor drops what no smaller rung could", func(t *testing.T) {
 		answer := answerWith(observations(0), 0)
 		answer.Inspect = json.RawMessage(`"` + strings.Repeat("i", flowmcp.MaxResultBytes) + `"`)
@@ -194,4 +209,34 @@ func TestTheRetryCacheIsBoundedInBytes(t *testing.T) {
 		total += len(encoded)
 	}
 	assert.Equal(t, total, entry.receiptBytes, "the byte count drifted from what the cache holds")
+}
+
+// TestAnEndedCasesReportIsFittedToo: the report an end answers with is the
+// part of a retained answer a case controls the size of, so it is rendered
+// within the cap and, when the rest of the answer passes it, re-rendered
+// smaller rather than returned whole.
+func TestAnEndedCasesReportIsFittedToo(t *testing.T) {
+	t.Parallel()
+
+	r := newDebugSessions(nil)
+	entry := addStepSession(t, r, newStepTarget(true))
+	report := &v1.TestReport{File: "flow_test.yaml"}
+	for i := range 400 {
+		report.Cases = append(report.Cases, &v1.TestCase{
+			Name: fmt.Sprintf("case %d", i), Failures: []*v1.Diagnostic{{Message: strings.Repeat("m", 2048)}},
+		})
+	}
+	require.Greater(t, proto.Size(report), flowmcp.MaxResultBytes, "the report fits already, so this proves nothing")
+	done := make(chan struct{})
+	close(done)
+	entry.done, entry.report, entry.cancel = done, report, func() {}
+
+	result, err := r.end(t.Context(), toolRequest(t, map[string]any{"session_id": entry.id}))
+	require.NoError(t, err)
+	require.False(t, result.IsError)
+	text := result.Content[0].(*mcp.TextContent).Text
+	assert.LessOrEqual(t, len(text), flowmcp.MaxResultBytes, "the ended case's report was returned unfitted")
+	var document map[string]any
+	require.NoError(t, json.Unmarshal([]byte(text), &document))
+	assert.Contains(t, document, "report", "the verdict was dropped rather than reduced")
 }

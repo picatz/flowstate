@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowdebug"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowstatev1connect"
 )
@@ -67,4 +69,45 @@ func TestDebugAttachJSONIsOneDocument(t *testing.T) {
 	for _, line := range lines {
 		assert.True(t, json.Valid([]byte(line)), "a JSON line is not an object: %s", line)
 	}
+}
+
+// TestDebugAttachReleasesTheRunWhenItCannotAnswer: an attach whose output
+// cannot be written ends in an error, and the session it attached is detached
+// on the way out rather than left holding the run until its lease lapses.
+func TestDebugAttachReleasesTheRunWhenItCannotAnswer(t *testing.T) {
+	recorder := &detachRecorder{}
+	mux := http.NewServeMux()
+	mux.Handle(flowstatev1connect.NewWorkflowServiceHandler(recorder))
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	script := filepath.Join(t.TempDir(), "session.script")
+	require.NoError(t, os.WriteFile(script, []byte("status\n"), 0o600))
+
+	root := newRootCommand()
+	root.SetOut(failingWriter{})
+	root.SetErr(io.Discard)
+	root.SetIn(strings.NewReader(""))
+	root.SetArgs([]string{"debug", "attach", "w", "--script", script, "--address", srv.URL, "-o", "jsonl"})
+	require.Error(t, root.ExecuteContext(t.Context()), "an answer that could not be written was reported as delivered")
+	assert.Equal(t, 1, recorder.detaches(), "the attach left the run held when it could not answer")
+}
+
+// TestDebugAttachJSONIsBounded: the `-o json` document is held until the
+// session ends, so it is bounded, and a session past the bound is told to
+// stream instead.
+func TestDebugAttachJSONIsBounded(t *testing.T) {
+	t.Parallel()
+
+	answers := &driveAnswers{out: io.Discard, format: FormatJSON}
+	result := &flowdebug.DriveResult{Snapshot: &v1.DebugSnapshot{Message: strings.Repeat("x", 1<<20)}}
+	var err error
+	for range maxAttachJSONBytes>>20 + 1 {
+		if err = answers.add("status", result); err != nil {
+			break
+		}
+	}
+	require.Error(t, err, "the held document grew past its bound")
+	assert.Contains(t, err.Error(), "-o jsonl")
+	assert.LessOrEqual(t, answers.heldBytes, maxAttachJSONBytes)
 }
