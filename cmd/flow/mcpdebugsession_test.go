@@ -282,7 +282,7 @@ func TestARetryAfterAnAcceptedCommandLostItsAnswerMovesOnce(t *testing.T) {
 		assert.Equal(t, 1, target.moves, "the retry moved the run a second time")
 		require.Len(t, target.requests, 2)
 		assert.Equal(t, target.requests[0], target.requests[1])
-		assert.Equal(t, targetRequestID(entry.id, "move-1"), target.requests[0])
+		assert.Equal(t, commandRequestID(entry.id, "move-1", commandDigest("next", 0)), target.requests[0])
 	})
 }
 
