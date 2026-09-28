@@ -24,7 +24,7 @@ import (
 // then executes the *built-in* log for every run while [RunLocal] — which
 // always reads a Tasks set directly, install or not — executes the
 // program's own. Two drivers silently disagreeing about what one step does
-// is exactly the thing CLAUDE.md's driver-parity rule exists to catch, so
+// is exactly what the architecture's driver-parity invariant forbids, so
 // this checks ownership (`Tasks.installedExactly`) rather than existence.
 //
 // Unlike [RunLocal], which reads a Tasks set fresh on every call, a durable

@@ -120,6 +120,16 @@ enum AuthorizationAction {
   // open has a lever only if the two are distinguishable. Sharing an action
   // would have made that choice for them, permanently.
   AUTHORIZATION_ACTION_MCP_DEBUG = 17;
+
+  // WorkloadDebug is attaching a debugger to a durable run, reading its debug
+  // state, and controlling it: DebugAttach, DebugGet, DebugResume,
+  // DebugSetBreakpoints, and a Signal on the reserved debug channel. The run's
+  // own `debug:` policy still decides per run.
+  AUTHORIZATION_ACTION_WORKLOAD_DEBUG = 18;
+
+  // WorkloadDebugInspect is evaluating expressions against a held durable run,
+  // which can disclose any value in its scope: DebugInspect.
+  AUTHORIZATION_ACTION_WORKLOAD_DEBUG_INSPECT = 19;
 }
 
 // AuthorizationActionBinding says which operations one action covers.

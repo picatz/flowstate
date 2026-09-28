@@ -231,11 +231,13 @@ func init() {
 				" exactly these named values instead of `status_code`, `body`, `headers`\n" +
 				" and `json`, so a large response is not carried into the run's history.\n" +
 				"\n" +
-				" Each value is a literal or a CEL expression over the response:\n" +
-				"   - status_code (int)\n" +
-				"   - body (string)\n" +
-				"   - headers (map<string,string>)\n" +
-				"   - json (the parsed body, when `parse_json` asked for it)\n" +
+				" Each value is a literal or a CEL expression over the response, which is\n" +
+				" bound as the single root `response`:\n" +
+				"   - response.status_code (int)\n" +
+				"   - response.body (string)\n" +
+				"   - response.headers (map<string, list<string>>: every value of each\n" +
+				"     header; the default outputs flatten each to one string)\n" +
+				"   - response.json (the parsed body, when `parse_json` asked for it)\n" +
 				" An expression that fails to evaluate fails the step without a retry.\n",
 		},
 		{
@@ -278,7 +280,7 @@ func init() {
 		{
 			Name: "flowstate.v1.Task.HTTP.Inputs.expect",
 			Leading: " Which responses count as success, as a CEL expression over the same\n" +
-				" variables `outputs` sees.\n" +
+				" `response` root `outputs` sees.\n" +
 				"\n" +
 				" The default is unchanged and needs no expression: 2xx succeeds, 4xx fails\n" +
 				" permanently, and repeat-safe 5xx responses are retried. This expression\n" +
@@ -286,14 +288,14 @@ func init() {
 				" not replace status classification or make an ambiguous mutation safe to\n" +
 				" repeat. This is for the cases that default cannot express: a 404 that\n" +
 				" means \"not there yet, and that is fine\", or an API that answers 200 with\n" +
-				" an error in the body:\n" +
+				" an error in the body (read with `parse_json: true`):\n" +
 				"\n" +
-				"   expect: ${status_code == 200 || status_code == 404}\n" +
-				"   expect: ${status_code == 200 && !json.error}\n" +
+				"   expect: ${response.status_code == 200 || response.status_code == 404}\n" +
+				"   expect: ${response.status_code == 200 && !response.json.?error.orValue(false)}\n" +
 				"\n" +
 				" One expression rather than a status list plus a predicate, because a list\n" +
-				" is the expression `status_code in [200, 404]` and two spellings of one idea\n" +
-				" is two things to keep in agreement.\n",
+				" is the expression `response.status_code in [200, 404]` and two spellings\n" +
+				" of one idea is two things to keep in agreement.\n",
 		},
 		{
 			Name: "flowstate.v1.Task.HTTP.Inputs.parse_json",

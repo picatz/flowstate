@@ -847,7 +847,7 @@ Serve every workflow-service RPC as an MCP tool over stdin and stdout, with inpu
 
 flowstate_run_local executes a submitted Flowfile here, the way `flow run local` does. What such a run may reach is decided by the flags this process is started with and by nothing a client sends: with no flags, egress is denied and no secret scheme is registered.
 
-Beside the tools, the server publishes read-only resources: the whole DSL reference at flowstate://docs/dsl, the task catalog as JSON at flowstate://catalog/tasks, and every example Flowfile under flowstate://docs/examples/, embedded at build time, so an agent can read the language and working references without a checkout nearby.
+Beside the tools, the server publishes read-only resources: the language guide at flowstate://docs/language, the task catalog as JSON at flowstate://catalog/tasks, every example Flowfile under flowstate://docs/examples/, and the record of the language's design decisions at flowstate://docs/dsl, all embedded at build time, so an agent can read the language and working references without a checkout nearby.
 
 An agent host launches this and speaks to it over the same stdin and stdout this process already has; typing `flow mcp` yourself waits for a host to connect rather than doing anything. Claude Code: `claude mcp add flowstate -- flow mcp`. A host that reads the JSON config MCP servers conventionally use instead: {"mcpServers":{"flowstate":{"command":"flow","args":["mcp"]}}}
 
@@ -930,7 +930,7 @@ flow mcp serve [flags]
 
 Serve the Model Context Protocol over streamable HTTP, requiring every caller to present a bearer token this deployment's own auth policy accepts and whose audience names this resource specifically (RFC 8707 section 2). A request with no token is answered 401 with a WWW-Authenticate header naming the RFC 9728 protected resource metadata document, which this command also serves, so a compliant MCP client can bootstrap from the refusal alone.
 
-This is a different surface from `flow mcp`, not a transport switch on it. Over stdio there is exactly one caller and it is the process that spawned this one, which is what makes every posture flag there a decision taken once at start-up; over HTTP there are many callers and those flags would silently change meaning. So the tools that execute or dispatch anything are not served here: flowstate_run_local is absent, because over HTTP it is remote code execution as a feature, and the run-lifecycle tools are absent because they would spend this process's own credential on a caller's behalf. What is served is what answers in this process and reaches nothing — flowstate_validate, flowstate_compile, flowstate_get_catalog — plus flowstate_test, whose stubbed runs replace every task implementation before a step executes. Sessions and their limits live only in this process: run one replica, and expect a restart to invalidate active sessions. A load-balanced fleet is not a supported horizontally scalable deployment.
+This is a different surface from `flow mcp`, not a transport switch on it. Over stdio there is exactly one caller and it is the process that spawned this one, which is what makes every posture flag there a decision taken once at start-up; over HTTP there are many callers and those flags would silently change meaning. So the tools that execute or dispatch anything are not served here: flowstate_run_local is absent, because over HTTP it is remote code execution as a feature, and the run-lifecycle tools are absent because they would spend this process's own credential on a caller's behalf. What is served is what answers in this process and reaches nothing — flowstate_validate, flowstate_compile, flowstate_get_catalog — plus flowstate_test and flowstate_debug, whose stubbed runs replace every task implementation before a step executes. Sessions and their limits live only in this process: run one replica, and expect a restart to invalidate active sessions. A load-balanced fleet is not a supported horizontally scalable deployment.
 
 Flowstate is not an authorization server: it issues no tokens, runs no authorization or token endpoint, and verifies nothing it did not receive from the identity provider an operator configured. The protected-resource document advertises the schema-owned scope vocabulary, but no request enforces or challenges for a scope yet, and a token carrying an RFC 8693 `act` or `may_act` delegation claim is refused rather than read as its bare subject. See https://github.com/picatz/flowstate/blob/main/docs/MCP_AUTHORIZATION.md.
 
@@ -1922,7 +1922,7 @@ flow test -o jsonl examples/
 | Flag | Type | Default | Environment | Description |
 |---|---|---|---|---|
 | `--coverage-required` | `bool` | `false` | — | fail when a workflow has a step, or a `switch:` arm, no test case reached and no coverage.allow_unreached entry records why |
-| `--debug` | `bool` | `false` | — | stop before each step of one case and read commands from the terminal — step, continue, until, break, inspect, scope, quit; requires `--run` to name exactly one case, and is refused with `--output json` and with seeded exploration |
+| `--debug` | `bool` | `false` | — | stop before each step of one case and read commands from the terminal — step, continue, until, break, inspect, scope, quit; requires exactly one test file and exactly one selected case (narrow with `--run` when the file has more), and is refused with `--output json` and with seeded exploration |
 | `--fail-on-warning` | `bool` | `false` | — | fail when a case reports a warning — a stub declared and never answered through, a task invoked with no stub declared, or an invocation that no declared stub answered — instead of only printing it |
 | `-o, --output <string>` | `string` | `text` | — | output format: text, json, or jsonl |
 | `--run <string>` | `string` | — | — | run only the cases whose name matches this regular expression; the output says how many cases were filtered out, and `--coverage-required` is refused alongside it, because a subset's coverage gaps are not the suite's |
@@ -2126,12 +2126,13 @@ Start a worker that runs workflow steps
 flow worker [flags]
 ```
 
-Start a Temporal worker: the process that actually runs a workflow's steps. The server submits work to Temporal and a worker polling its task queue is what picks it up, so nothing a deployment accepts runs until at least one worker is up: the two never talk to each other, they meet at Temporal. With `--temporal-deployment-name` and `--build-id` it claims a Temporal Worker Deployment version, pinning every run already in flight to the interpreter it started on: a later deploy changes what new runs compute, not what in-flight ones do, until each reaches continue-as-new. With `--tenant` it executes one namespace's runs and refuses every other outright, rather than running them with this worker's secrets, egress policy and plugins, which needs a queue of its own, named by `--task-queue-prefix` (the value the server was started with) or given as `--task-queue`.
+Start a Temporal worker: the process that actually runs a workflow's steps. The server submits work to Temporal and a worker polling its task queue is what picks it up, so nothing a deployment accepts runs until at least one worker is up: the two never talk to each other, they meet at Temporal. With `--temporal-deployment-name` and `--build-id` it claims a Temporal Worker Deployment version, pinning every run already in flight to the interpreter it started on: a later deploy changes what new runs compute, not what in-flight ones do, until each reaches continue-as-new. A version receives new runs only as the deployment's current version, or for its share as a ramping version, and this command sets neither: promote a build with `temporal worker deployment set-current-version`, or ramp it with `set-ramping-version`. With `--tenant` it executes one namespace's runs and refuses every other outright, rather than running them with this worker's secrets, egress policy and plugins, which needs a queue of its own, named by `--task-queue-prefix` (the value the server was started with) or given as `--task-queue`.
 
 Examples:
 
 ```sh
-# Start a worker, pinned so a deploy does not change runs already in flight:
+# Start a worker, pinned so a deploy does not change runs already in flight.
+# It receives new runs once its build is current or ramping.
 flow worker --temporal-deployment-name flowstate \
   --build-id "$(git rev-parse --short HEAD)"
 

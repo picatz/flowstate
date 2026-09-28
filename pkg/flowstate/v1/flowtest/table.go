@@ -17,7 +17,7 @@ import (
 // rather than re-decided). Only the fields `defaults:` has no opinion about
 // are merged here, and all of them take the same one direction: the row's own
 // value wins, and the entry's is what a row that stated none inherits —
-// including Secrets, which docs/CLI.md documents as inherited or replaced
+// including Secrets, which docs/TESTING.md documents as inherited or replaced
 // whole exactly like Trigger, Starter and Signals: a row that names its own
 // secret is deliberately choosing not to bind the entry's, which is how a row
 // exercises the "no matching secrets entry" refusal for a secret its entry

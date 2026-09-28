@@ -1157,6 +1157,13 @@ func init() {
 				" from anything off its own history rather than from here.\n",
 		},
 		{
+			Name: "flowstate.v1.RunState.debug",
+			Leading: " Debug is the run's durable debug session, if one is attached, carried to\n" +
+				" the next segment: a serialized [DebugCarry]. Bytes rather than the message\n" +
+				" because `debug.proto` imports this file, and the carry is only ever read\n" +
+				" back by the engine that wrote it. Empty when no session is attached.\n",
+		},
+		{
 			Name: "flowstate.v1.TimelineEntry",
 			Leading: " TimelineEntry is one thing a run did, read back from its own durable history.\n" +
 				"\n" +

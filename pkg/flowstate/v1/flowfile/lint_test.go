@@ -759,7 +759,7 @@ steps:
 // TestLintIsSilentOnAValueSplicedIntoThreeSentences covers the conversion
 // interpolation writes and nobody types.
 //
-// `${x}` desugars to `string(x)` (`interp.go:436`), so three log lines
+// `${x}` desugars to `string(x)` (`interp.go:437`), so three log lines
 // mentioning one input used to be three statements of one call — a repetition
 // of a rendering rather than of a computation. #413 is the same shape one layer
 // down, where a missing-overload diagnostic named `string` at an author who had

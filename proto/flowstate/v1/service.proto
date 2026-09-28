@@ -4,6 +4,7 @@ package flowstate.v1;
 
 import "buf/validate/validate.proto";
 import "flowstate/v1/catalog.proto";
+import "flowstate/v1/debug.proto";
 import "flowstate/v1/diagnostics.proto";
 import "flowstate/v1/run.proto";
 import "flowstate/v1/schedule.proto";
@@ -895,6 +896,46 @@ service WorkflowService {
   // [TerminateResponse] is empty: the run is already stopped by the time this
   // returns, so a follow-up call to [Get] confirms status rather than awaiting it.
   rpc Terminate(TerminateRequest) returns (TerminateResponse) {}
+
+  // DebugAttach asks a durable run to hold at its next step boundary under a
+  // debug lease, or renews or re-pauses a session the caller already holds.
+  //
+  // The run must declare `debug:` naming the caller. The answer's receipt says
+  // whether the run applied the ask or it is still pending: a run executing a
+  // long step reaches its next boundary only when that step finishes, and a
+  // hold never freezes work already dispatched. Keep the returned `session_id`;
+  // every later command must carry it. Retry with the same `request_id`.
+  rpc DebugAttach(DebugAttachRequest) returns (DebugAttachResponse) {}
+
+  // DebugGet reads a durable run's debug session: state, stop reason, position,
+  // frames, capabilities, and recent observations. It changes nothing.
+  //
+  // Set `after_revision` and `wait` to wait for the next change instead of
+  // polling in a tight loop.
+  rpc DebugGet(DebugGetRequest) returns (DebugGetResponse) {}
+
+  // DebugResume releases a held durable run: continue, step in, step over,
+  // step out, run until a step, or detach.
+  //
+  // Only the session's holder may resume it, naming its `session_id`. Set
+  // `expected_revision` to the snapshot you acted on, so a command meant for a
+  // stop the run has already left is refused as stale rather than applied to
+  // the next one. Detach ends the session; it never ends the run.
+  rpc DebugResume(DebugResumeRequest) returns (DebugResumeResponse) {}
+
+  // DebugSetBreakpoints replaces a durable session's breakpoints and failure
+  // stops, atomically. Only the session's holder may set them.
+  rpc DebugSetBreakpoints(DebugSetBreakpointsRequest) returns (DebugSetBreakpointsResponse) {}
+
+  // DebugInspect evaluates a read-only CEL expression against a held durable
+  // run, or lists its scope, with typed, bounded, paged values.
+  //
+  // Evaluation is a disclosure: an expression can test any value in scope,
+  // including values whose rendering is redacted. It therefore needs its own
+  // authorization scope, only the session's holder may inspect, the run must be
+  // held at the named `revision`, and every request is audited. Inspection
+  // cannot dispatch a task, write history, or change what the run computes.
+  rpc DebugInspect(DebugInspectRequest) returns (DebugInspectResponse) {}
 
   // Validate checks Flowfiles and returns their diagnostics, executing nothing.
   //

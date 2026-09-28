@@ -106,6 +106,16 @@ var authorizationActionBindings = []*AuthorizationActionBinding{
 		Parent:   AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_RUN,
 		McpTools: []string{"flowstate_debug"},
 	},
+	{
+		Action: AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_DEBUG,
+		Parent: AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_SIGNAL,
+		Rpcs:   []string{"DebugAttach", "DebugGet", "DebugResume", "DebugSetBreakpoints"},
+	},
+	{
+		Action: AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_DEBUG_INSPECT,
+		Parent: AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_DEBUG,
+		Rpcs:   []string{"DebugInspect"},
+	},
 }
 
 // authorizationActionScopePrefix is what an enum value name carries in front

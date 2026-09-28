@@ -1,6 +1,9 @@
 package flowstatev1
 
-import "context"
+import (
+	"context"
+	"slices"
+)
 
 // Which workflow's steps are running, carried on the run's own context.
 //
@@ -36,6 +39,11 @@ type executingWorkflowKey struct{}
 type executingPosition struct {
 	workflow string
 	callers  []*DebugStackFrame
+
+	// segments is the dynamic nesting a debugger addresses occurrences by,
+	// outermost first. Only recorded while a [Debugger] is installed; see
+	// [contextWithSegment].
+	segments []*DebugSegment
 }
 
 // contextWithExecutingWorkflow returns ctx carrying name as the workflow whose
@@ -62,9 +70,20 @@ func contextWithExecutingCall(ctx context.Context, callerStep, callerKind, calle
 		Kind:     callerKind,
 	})
 
+	segments := position.segments
+	if DebuggerFromContext(ctx) != nil && len(segments) < MaxDebugSegments {
+		segments = append(slices.Clip(segments), &DebugSegment{
+			Kind:     DebugSegmentKind_DEBUG_SEGMENT_KIND_CALL,
+			StepId:   callerStep,
+			Workflow: position.workflow,
+			Callee:   callee,
+		})
+	}
+
 	return context.WithValue(ctx, executingWorkflowKey{}, executingPosition{
 		workflow: callee,
 		callers:  callers,
+		segments: segments,
 	})
 }
 

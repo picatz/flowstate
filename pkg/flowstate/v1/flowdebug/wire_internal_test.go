@@ -426,7 +426,7 @@ func TestTheProducerCapsWhatOneScopeAnswerCarries(t *testing.T) {
 	// this test wrote down would be a second copy of a number the session
 	// already computes.
 	reachable := 0
-	for _, group := range session.scopeNames(taggedScope("A", names), nil) {
+	for _, group := range scopeNames(taggedScope("A", names), nil) {
 		reachable += len(group.Names)
 	}
 	require.Greater(t, reachable, MaxScopeBindings,

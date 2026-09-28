@@ -95,8 +95,9 @@ Values are reached through these roots: `inputs`, `run`, `steps`, `trigger`, `va
 
 Duration constructors, available to every expression: `days`, `hours`, `minutes`, `seconds`, `weeks`.
 
-Inside a wait's own expressions (`sleep:`, `wait_until:`, and a signal's
-`timeout:`) and nowhere else, `now` is bound to the evaluation moment.
+Inside a wait's own expressions (`sleep:`, `wait_until:`, and a wait's
+`timeout:`, `prompt:` and `outputs:`) and nowhere else, `now` is bound to the
+evaluation moment.
 
 CEL libraries every expression reaches: `bindings`, `comprehensions`, `digest`, `encoders`, `json`, `lists`, `math`, `optional`, `protos`, `regex`, `sets`, `strings`.
 

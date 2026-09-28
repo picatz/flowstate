@@ -1774,6 +1774,9 @@ func recordStepOutcome(ctx context.Context, node *Node, outputs *Node_Outputs, e
 			record := failureRecord(err)
 			scope.Outputs.StepValues[node.GetId()] = record
 			observeStepFinished(ctx, node.GetId(), record, err, false)
+			if held := debuggerStepFailed(ctx, node, scope, err, false); held != nil {
+				return held
+			}
 
 			return fmt.Errorf("step %q: %w", node.GetId(), err)
 		}
@@ -1787,6 +1790,9 @@ func recordStepOutcome(ctx context.Context, node *Node, outputs *Node_Outputs, e
 		record := failureRecord(err)
 		scope.Outputs.StepValues[node.GetId()] = record
 		observeStepFinished(ctx, node.GetId(), record, err, true)
+		if held := debuggerStepFailed(ctx, node, scope, err, true); held != nil {
+			return held
+		}
 
 		return nil
 	}
@@ -1973,21 +1979,21 @@ func runNode(ctx context.Context, node *Node, scope *Scope, undo *UndoLog, place
 			ctx = pushWaitAncestor(ctx, node.GetId())
 		}
 
-		return runForEach(ctx, n.ForEach, scope, undo, depth)
+		return runForEach(ctx, node.GetId(), n.ForEach, scope, undo, depth)
 
 	case *Node_Loop:
 		// The body's placement composes with the scope this loop itself sits in
 		// — see [UndoScope.IntoLoop] — rather than always being [UndoScopeLoop].
 		// A `loop:` written inside a for_each body or a parallel branch is legal,
-		// and must not become an escape hatch out of the concurrency refusal that
+		// and must not become an escape hatch out of the `async:` refusal that
 		// already applies there.
-		return runLoop(pushWaitAncestor(ctx, node.GetId()), n.Loop, scope, undo, placement.IntoLoop(), depth)
+		return runLoop(pushWaitAncestor(ctx, node.GetId()), node.GetId(), n.Loop, scope, undo, placement.IntoLoop(), depth)
 
 	case *Node_Parallel:
 		// Branches are concurrent work, whatever order this driver happens to
 		// run them in, so a wait inside one reports no ancestry: the position
 		// the durable driver refuses to claim.
-		return nil, runParallel(enterConcurrentWait(ctx), n.Parallel, scope, undo, depth)
+		return nil, runParallel(enterConcurrentWait(ctx), node.GetId(), n.Parallel, scope, undo, depth)
 
 	case *Node_Wait:
 		return runWait(ctx, node, n.Wait, scope)
@@ -2006,14 +2012,15 @@ func runNode(ctx context.Context, node *Node, scope *Scope, undo *UndoLog, place
 		// loop's does. placement passes through unchanged: the body runs once,
 		// in order, in the run's own scope, so an `undo:` there means exactly
 		// what it would mean on the same step written under an `if:`.
-		return runSwitch(pushWaitAncestor(ctx, node.GetId()), n.Switch, scope, undo, placement, depth, tolerated)
+		return runSwitch(pushWaitAncestor(ctx, node.GetId()), node.GetId(), n.Switch, scope, undo, placement, depth, tolerated)
 
 	case *Node_Call:
 		// The callee's own placement composes with the scope this call itself
 		// sits in — see [UndoScope.IntoCall] — rather than always being
 		// [UndoScopeCall]. A call reached from inside a for_each body or a
 		// parallel branch must not become an escape hatch out of the
-		// concurrency refusal just because a call sits between the two.
+		// concurrent scope's `async:` refusal just because a call sits between
+		// the two.
 		return runCall(pushWaitAncestor(ctx, node.GetId()), node.GetId(), NodeKind(node), n.Call, scope, undo, placement.IntoCall(), depth+1)
 
 	default:
@@ -2046,14 +2053,15 @@ func runNode(ctx context.Context, node *Node, scope *Scope, undo *UndoLog, place
 //
 // placement is the callee's own body scope, already composed by the caller
 // through [UndoScope.IntoCall] — not always [UndoScopeCall]. A call reached
-// from the top level or from another call's body does run its callee at
-// [UndoScopeCall], which [CheckUndoPlacement] honours for the reason above; a
-// call reached from inside a `for_each` body, a `parallel` branch, or a
-// `loop:` body carries that restriction straight through, because nothing
-// about a call sitting in between changes why the enclosing scope refused
-// `undo:` in the first place. [CheckUndoPlacement] still refuses `undo:` on
-// the `call:` step itself regardless, since a call has no effect of its own —
-// the compensation belongs on the callee's steps, not on the step that
+// from the top level, from another call's body, or from a `loop:` body runs
+// its callee at [UndoScopeCall]; a call reached from inside a `for_each` body
+// or a `parallel` branch carries [UndoScopeConcurrent] straight through,
+// because nothing about a call sitting in between changes what makes the
+// enclosing scope concurrent — a callee's `undo:` is honoured there too, on
+// that child's own log, and its `async:` is refused as it would be in the
+// enclosing scope ([CheckAsyncPlacement]). [CheckUndoPlacement] refuses `undo:`
+// on the `call:` step itself regardless, since a call has no effect of its own
+// — the compensation belongs on the callee's steps, not on the step that
 // reaches them.
 func runCall(ctx context.Context, callerStep, callerKind string, call *Call, scope *Scope, undo *UndoLog, placement UndoScope, depth int) (*Node_Outputs, error) {
 	if err := CheckCallDepth(depth); err != nil {
@@ -2136,7 +2144,7 @@ func runCall(ctx context.Context, callerStep, callerKind string, call *Call, sco
 // written this way because the alternative is the two drivers threading one
 // piece of state differently, which is the shape every disagreement found so
 // far has had.
-func runSwitch(ctx context.Context, sw *Switch, scope *Scope, undo *UndoLog, placement UndoScope, depth int, tolerated map[string]struct{}) (*Node_Outputs, error) {
+func runSwitch(ctx context.Context, id string, sw *Switch, scope *Scope, undo *UndoLog, placement UndoScope, depth int, tolerated map[string]struct{}) (*Node_Outputs, error) {
 	body, outputs, err := SelectSwitchCase(ctx, sw, scope)
 	if err != nil {
 		return nil, err
@@ -2149,7 +2157,8 @@ func runSwitch(ctx context.Context, sw *Switch, scope *Scope, undo *UndoLog, pla
 	// `susp + 1` — a switch is never a suspension position — so a for_each
 	// written in a switch arm runs atomically there and is weighed here too
 	// ([CheckAtomicBlockActivities]).
-	if err := runNodes(enterAtomicBlock(ctx), body, scope, undo, placement, depth, tolerated); err != nil {
+	armCtx := contextWithSegment(enterAtomicBlock(ctx), DebugSegmentKind_DEBUG_SEGMENT_KIND_CASE, id, switchArmIndex(sw, body))
+	if err := runNodes(armCtx, body, scope, undo, placement, depth, tolerated); err != nil {
 		// Wrapped so the selection survives the failure: recordStepOutcome
 		// records this step through failureRecord, which reads the account off
 		// [SwitchBodyError] the same way it reads an exhausted loop's. Without
@@ -2193,7 +2202,7 @@ func inAtomicBlock(ctx context.Context) bool {
 // without reproducing anything an author can act on — and sequential execution
 // makes a local run's output deterministic, which is what makes it useful for
 // comparison.
-func runForEach(ctx context.Context, loop *ForEach, scope *Scope, undo *UndoLog, depth int) (*Node_Outputs, error) {
+func runForEach(ctx context.Context, id string, loop *ForEach, scope *Scope, undo *UndoLog, depth int) (*Node_Outputs, error) {
 	items, err := ResolveItems(ctx, loop, scope)
 	if err != nil {
 		return nil, err
@@ -2266,7 +2275,8 @@ func runForEach(ctx context.Context, loop *ForEach, scope *Scope, undo *UndoLog,
 		// named `error` is never mistaken for a failure.
 		iterationUndo := NewUndoLog(nil)
 		toleratedSteps := map[string]struct{}{}
-		if err := runNodes(bodyCtx, loop.GetBody(), iterationScope, iterationUndo, UndoScopeConcurrent, depth, toleratedSteps); err != nil {
+		iterationCtx := contextWithSegment(bodyCtx, DebugSegmentKind_DEBUG_SEGMENT_KIND_ITERATION, id, i)
+		if err := runNodes(iterationCtx, loop.GetBody(), iterationScope, iterationUndo, UndoScopeConcurrent, depth, toleratedSteps); err != nil {
 			undo.Append(iterationUndo)
 			if loop.GetMaxParallel() > 1 {
 				// A concurrent fan-out launches every iteration before it can
@@ -2343,8 +2353,8 @@ func runForEach(ctx context.Context, loop *ForEach, scope *Scope, undo *UndoLog,
 //
 // placement is the body's own scope, already composed by the caller through
 // [UndoScope.IntoLoop], which is what keeps a loop inside a `for_each` from
-// laundering the concurrency refusal.
-func runLoop(ctx context.Context, loop *Loop, scope *Scope, undo *UndoLog, placement UndoScope, depth int) (*Node_Outputs, error) {
+// laundering the concurrent scope's `async:` refusal.
+func runLoop(ctx context.Context, id string, loop *Loop, scope *Scope, undo *UndoLog, placement UndoScope, depth int) (*Node_Outputs, error) {
 	name := loop.GetState()
 	max := LoopMaxIterations(loop)
 
@@ -2388,11 +2398,12 @@ func runLoop(ctx context.Context, loop *Loop, scope *Scope, undo *UndoLog, place
 		}
 		iterationScope = iterationScope.WithOutputs(iterationOutputs)
 
-		// The run's own log and the composed placement: a body step's `undo:` is
-		// registered onto the same stack a top-level step's is, once per iteration.
-		// Where the composed placement is still [UndoScopeConcurrent] — a loop
-		// inside a for_each body — [CheckUndoPlacement] refuses it rather than this
-		// level quietly ignoring it.
+		// The log this loop was handed and the composed placement: a body step's
+		// `undo:` is registered onto that stack once per iteration — the run-level
+		// log, or a child's private log for a loop inside a for_each body or a
+		// parallel branch, where the composed placement stays
+		// [UndoScopeConcurrent] and `async:` is refused ([CheckAsyncPlacement])
+		// rather than this level quietly ignoring it.
 		//
 		// toleratedSteps collects which body steps failed and were tolerated —
 		// the marker the attach below keys on, per iteration, so a successful
@@ -2403,7 +2414,8 @@ func runLoop(ctx context.Context, loop *Loop, scope *Scope, undo *UndoLog, place
 		// `susp + 1` into every iteration: a for_each written in a loop body
 		// runs atomically inside that iteration there, so it is weighed here
 		// too ([CheckAtomicBlockActivities]).
-		if err := runNodes(enterAtomicBlock(ctx), loop.GetBody(), iterationScope, undo, placement, depth, toleratedSteps); err != nil {
+		iterationCtx := contextWithSegment(enterAtomicBlock(ctx), DebugSegmentKind_DEBUG_SEGMENT_KIND_ITERATION, id, i)
+		if err := runNodes(iterationCtx, loop.GetBody(), iterationScope, undo, placement, depth, toleratedSteps); err != nil {
 			return nil, fmt.Errorf("iteration %d: %w", i, err)
 		}
 
@@ -2465,7 +2477,7 @@ func onlyBodyOutputs(body []*Node, scope *Workflow_StepOutputs) *Workflow_StepOu
 // was declaration order; under a schedule that is free to differ it is not, and a
 // compensation log ordered by who finished first is exactly the completion order
 // #418 promises is never observable.
-func runParallel(ctx context.Context, parallel *Parallel, scope *Scope, undo *UndoLog, depth int) error {
+func runParallel(ctx context.Context, id string, parallel *Parallel, scope *Scope, undo *UndoLog, depth int) error {
 	if err := CheckParallelAtomicBlockActivities(parallel); err != nil {
 		return err
 	}
@@ -2501,7 +2513,8 @@ func runParallel(ctx context.Context, parallel *Parallel, scope *Scope, undo *Un
 		// `susp + 1`: a for_each written inside a `parallel:` branch runs
 		// atomically there whatever its `max_parallel:` says, so it is
 		// weighed here too ([CheckAtomicBlockActivities]).
-		if err := runNodes(enterAtomicBlock(ctx), branch.GetSteps(), branchScope, branchUndo, UndoScopeConcurrent, depth, nil); err != nil {
+		branchCtx := contextWithSegment(enterAtomicBlock(ctx), DebugSegmentKind_DEBUG_SEGMENT_KIND_BRANCH, id, i)
+		if err := runNodes(branchCtx, branch.GetSteps(), branchScope, branchUndo, UndoScopeConcurrent, depth, nil); err != nil {
 			// Branches are concurrent by declaration: the durable driver has
 			// launched every one of them before it can learn that any failed,
 			// then joins, merges every private log, and reports the first
@@ -2623,6 +2636,7 @@ func EvalConditionInScopeWithCost(ctx context.Context, condition *Value, scope *
 // durable driver's two authority-carrying activity entry points write, from the
 // same constant. See [StartTaskSpan].
 func runStepWithPolicy(ctx context.Context, task *Task, policy *StepPolicy, scope *Scope, stepID string) (*Node_Outputs, error) {
+	ctx = contextWithTaskStep(ctx, stepID)
 	// One identity for this logical dispatch, stable across the retry loop
 	// below. A UUID rather than task or step names: both can repeat in loops,
 	// calls, and parallel branches, while an audit consumer needs to collapse

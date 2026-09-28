@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"unicode"
+
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
 
 // Moving a paused run from another goroutine.
@@ -72,6 +74,15 @@ var ErrNotControlled = errors.New("flowdebug: this session was not created with 
 type controlRequest struct {
 	line string
 	at   chan<- controlTaken
+
+	// ack, when set, is answered once the prompt loop has acted on line:
+	// true when it resumed the run or ended it, false when the run is still
+	// held where it was.
+	ack chan<- acknowledgement
+
+	// request is the typed command's request id, under which the prompt loop
+	// records the outcome.
+	request string
 }
 
 // controlTaken is which pause took a command.
@@ -184,16 +195,46 @@ func (s *Session) takeControl(ctx context.Context, line string) (func(), error) 
 // The caller holds the serialization slot; see [Session.takeControl] for why
 // that is the caller's to decide rather than this function's.
 func (s *Session) deliver(ctx context.Context, line string) (controlTaken, error) {
+	return s.deliverAcknowledged(ctx, line, "", nil)
+}
+
+// deliverAcknowledged is deliver with an acknowledgement channel the prompt
+// loop answers once it has acted on the line. It must be buffered.
+//
+// A non-empty requestID is remembered as pending before the send, so a retry
+// that arrives while the line is in flight is answered from memory and never
+// delivered twice; the placeholder is dropped again if the send never happens.
+func (s *Session) deliverAcknowledged(ctx context.Context, line, requestID string, ack chan<- acknowledgement) (controlTaken, error) {
+	if requestID != "" {
+		s.mu.Lock()
+		s.rememberLocked(&v1.DebugReceipt{
+			RequestId: requestID,
+			Status:    v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_PENDING,
+			Revision:  s.contract.revision,
+			Message:   "delivered; not yet acknowledged",
+		})
+		s.mu.Unlock()
+	}
+	unsent := func() {
+		if requestID != "" {
+			s.mu.Lock()
+			s.forgetPendingLocked(requestID)
+			s.mu.Unlock()
+		}
+	}
+
 	// Buffered, so the boundary's answer never depends on this goroutine still
 	// being here to hear it: a caller whose context expires between the send
 	// and the answer must not leave a parked run blocked on writing to nobody.
 	at := make(chan controlTaken, 1)
 
 	select {
-	case s.control <- controlRequest{line: line, at: at}:
+	case s.control <- controlRequest{line: line, at: at, ack: ack, request: requestID}:
 	case <-ctx.Done():
+		unsent()
 		return controlTaken{}, ctx.Err()
 	case <-s.done:
+		unsent()
 		return controlTaken{}, ErrRunOver
 	}
 
@@ -211,6 +252,7 @@ func (s *Session) deliver(ctx context.Context, line string) (controlTaken, error
 	select {
 	case taken := <-at:
 		if taken.refused {
+			unsent()
 			return controlTaken{}, ErrRunOver
 		}
 
@@ -460,7 +502,7 @@ func (s *Session) setBreakpoints(ids []string, redact func(string) string, check
 		// makes: this set replaces rather than adds, so what it may cost is
 		// decided before anything is touched. Duplicates only make the result
 		// smaller than the number checked.
-		s.breakpoints[id] = breakpoint{source: id}
+		s.breakpoints[id] = breakpoint{source: id, id: id, target: v1.ParseDebugTargetOrStep(id)}
 	}
 
 	return nil

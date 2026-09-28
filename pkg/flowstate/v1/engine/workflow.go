@@ -495,6 +495,31 @@ func runWorkflow(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutput
 		return nil, fmt.Errorf("register state query: %w", err)
 	}
 
+	// The run's debug lease and typed session, if anybody attaches one. Built
+	// here rather than with the executor so its queries answer from a run's
+	// first moments too; the session carried from the last segment, if any,
+	// is read back first. See debuglease.go and debugsession.go.
+	debug := &debugControl{
+		run: runAddress(ctx),
+
+		// Enabled only when the workflow declares `debug:`, which is also
+		// what the server gates every ask on — so a run whose workflow
+		// predates `debug:` never reads the channel, and replays exactly the
+		// same history it always did. The drain at Continue-As-New checks the
+		// same presence by construction. See [debugControl.declared].
+		declared: st.GetWorkflow().GetDebug() != nil,
+
+		carry:        restoreDebugCarry(ctx, st.GetDebug()),
+		continuation: int32(st.GetSegment()),
+	}
+	if debug.declared {
+		debug.irDigest = v1.WorkflowIRDigest(st.GetWorkflow())
+		debug.rootSensitive = v1.SensitiveInputValues(st.GetInputs(), v1.SensitiveInputNames(st.GetWorkflow()))
+	}
+	if err := setDebugQueries(ctx, debug, st.GetWorkflow); err != nil {
+		return nil, fmt.Errorf("register debug queries: %w", err)
+	}
+
 	// A continued segment says where the workload began and how many segments
 	// it has run as, in its memo, so that a listing — which sees one execution
 	// per workload and reads nothing but visibility — reports the workload's
@@ -651,15 +676,7 @@ func runWorkflow(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutput
 		// can survive the seam is an ask the run accepted delivery of and has
 		// not yet acted on, and that travels in `PendingSignals` exactly as an
 		// early-arriving approval does. See debuglease.go.
-		debug: &debugControl{
-			run: runAddress(ctx),
-
-			// Read from the run's own specification rather than from the memo,
-			// because workflow code cannot see a memo — and it does not need
-			// to: this is the presence question, and the two copies agree about
-			// presence by construction. See [debugControl.declared].
-			declared: st.GetWorkflow().GetDebug() != nil,
-		},
+		debug: debug,
 
 		progress:   position,
 		detailsCtx: detailsCtx,
@@ -779,6 +796,10 @@ func runWorkflow(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutput
 			// history here, once, and every later one copies it.
 			WorkloadStartedAt: workloadStartedAt(ctx, st),
 			Segment:           st.GetSegment() + 1,
+
+			// A typed debug session survives the new segment: its id, holder,
+			// lease, breakpoints and receipts, never a value from the scope.
+			Debug: exec.debug.encodeDebugCarry(),
 
 			// Evaluated once for the whole run, not once per segment. A continued
 			// run takes whichever interpreter version is current (invariant 10), so

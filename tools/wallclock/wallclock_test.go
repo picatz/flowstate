@@ -202,6 +202,7 @@ var repositoryPolls = map[string]int{
 	"pkg/flowstate/v1/secrets/vault/auth_test.go":                        1,
 	"pkg/flowstate/v1/server/chain_test.go":                              2,
 	"pkg/flowstate/v1/server/concurrency_test.go":                        1,
+	"pkg/flowstate/v1/server/debug_test.go":                              2,
 	"pkg/flowstate/v1/server/durability_test.go":                         1,
 	"pkg/flowstate/v1/server/eagerstart_test.go":                         1,
 	"pkg/flowstate/v1/server/entity_test.go":                             4,

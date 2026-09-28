@@ -119,20 +119,24 @@ func init() {
 				" What it cannot check is the type — an expression returning the wrong thing is\n" +
 				" still wrong, and that is not this field's problem.\n" +
 				"\n" +
-				" # Where it is enforced, and where it still is not\n" +
+				" # Where it is enforced, and where it is not\n" +
 				"\n" +
 				" The host maps this onto TaskDef.ExpressionInputs, and `flow worker` registers\n" +
 				" a host's tasks into the registry every lookup reads — so inside a worker this\n" +
 				" is enforced by the same code that enforces `http`'s `expect:`, because it is\n" +
 				" the same code.\n" +
 				"\n" +
-				" Where it is still not enforced is a process that has not launched the plugin.\n" +
-				" `flow validate` in a terminal and the language server in an editor build their\n" +
-				" registry from the built-ins alone, so a plugin's task is `unknown task` there\n" +
-				" while running correctly on the worker. That split is deliberate for now —\n" +
-				" validating a file would otherwise mean executing plugin binaries on an\n" +
-				" editor's keystroke path — and it is the reason `flow plugins` exists: it is\n" +
-				" the surface that will launch them when you have asked it to.\n" +
+				" `flow validate` and the language server do the same when asked: given\n" +
+				" `--plugin-dir` they launch the plugins there and register them the same way,\n" +
+				" and `flow validate --plugin-catalog` reads the same descriptors out of a\n" +
+				" document `flow plugins --output json` wrote, launching nothing. `flow\n" +
+				" validate` also takes `--plugin-dir`'s default from `$FLOWSTATE_PLUGIN_DIR`;\n" +
+				" the language server ignores that variable. Without plugins configured they\n" +
+				" build their registry from the built-ins alone, so a plugin's task is\n" +
+				" unknown there while running correctly on the worker. The language server's\n" +
+				" default is deliberate: validating a file would otherwise mean executing\n" +
+				" plugin binaries on an editor's keystroke path, so there launching is\n" +
+				" something a person asks for on its command line.\n" +
 				"\n" +
 				" Recorded rather than assumed, because a field whose enforcement is assumed\n" +
 				" rather than checked is how `expect:` got its own reputation.\n",
@@ -608,7 +612,7 @@ func init() {
 				" CAPABILITY_TASK_PROGRESS is simply never asked, so it need not implement\n" +
 				" this at all. Changing Execute itself to stream would be the opposite:\n" +
 				" every plugin that only implements the old shape — in this repository's\n" +
-				" own three other plugin modules or in any language a third party wrote\n" +
+				" own plugin modules under plugins/ or in any language a third party wrote\n" +
 				" one in — would stop answering the call the engine makes to run its tasks\n" +
 				" at all. That is the same \"a break here is every plugin in the wild\"\n" +
 				" reasoning CLAUDE.md already gives for `buf breaking`, applied to a\n" +

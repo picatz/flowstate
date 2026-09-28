@@ -1120,6 +1120,51 @@ func init() {
 				" returns, so a follow-up call to [Get] confirms status rather than awaiting it.\n",
 		},
 		{
+			Name: "flowstate.v1.WorkflowService.DebugAttach",
+			Leading: " DebugAttach asks a durable run to hold at its next step boundary under a\n" +
+				" debug lease, or renews or re-pauses a session the caller already holds.\n" +
+				"\n" +
+				" The run must declare `debug:` naming the caller. The answer's receipt says\n" +
+				" whether the run applied the ask or it is still pending: a run executing a\n" +
+				" long step reaches its next boundary only when that step finishes, and a\n" +
+				" hold never freezes work already dispatched. Keep the returned `session_id`;\n" +
+				" every later command must carry it. Retry with the same `request_id`.\n",
+		},
+		{
+			Name: "flowstate.v1.WorkflowService.DebugGet",
+			Leading: " DebugGet reads a durable run's debug session: state, stop reason, position,\n" +
+				" frames, capabilities, and recent observations. It changes nothing.\n" +
+				"\n" +
+				" Set `after_revision` and `wait` to wait for the next change instead of\n" +
+				" polling in a tight loop.\n",
+		},
+		{
+			Name: "flowstate.v1.WorkflowService.DebugResume",
+			Leading: " DebugResume releases a held durable run: continue, step in, step over,\n" +
+				" step out, run until a step, or detach.\n" +
+				"\n" +
+				" Only the session's holder may resume it, naming its `session_id`. Set\n" +
+				" `expected_revision` to the snapshot you acted on, so a command meant for a\n" +
+				" stop the run has already left is refused as stale rather than applied to\n" +
+				" the next one. Detach ends the session; it never ends the run.\n",
+		},
+		{
+			Name: "flowstate.v1.WorkflowService.DebugSetBreakpoints",
+			Leading: " DebugSetBreakpoints replaces a durable session's breakpoints and failure\n" +
+				" stops, atomically. Only the session's holder may set them.\n",
+		},
+		{
+			Name: "flowstate.v1.WorkflowService.DebugInspect",
+			Leading: " DebugInspect evaluates a read-only CEL expression against a held durable\n" +
+				" run, or lists its scope, with typed, bounded, paged values.\n" +
+				"\n" +
+				" Evaluation is a disclosure: an expression can test any value in scope,\n" +
+				" including values whose rendering is redacted. It therefore needs its own\n" +
+				" authorization scope, only the session's holder may inspect, the run must be\n" +
+				" held at the named `revision`, and every request is audited. Inspection\n" +
+				" cannot dispatch a task, write history, or change what the run computes.\n",
+		},
+		{
 			Name: "flowstate.v1.WorkflowService.Validate",
 			Leading: " Validate checks Flowfiles and returns their diagnostics, executing nothing.\n" +
 				"\n" +

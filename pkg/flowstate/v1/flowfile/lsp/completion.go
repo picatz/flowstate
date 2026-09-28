@@ -519,8 +519,9 @@ func referenceScope(doc *document, pos lsp.Position, clock bool, current *outlin
 	if clock {
 		// Bound by the engine for a wait's expressions and nowhere else, which is
 		// why it is added here rather than living in the scope every expression gets. A task
-		// input has no clock that survives a retry, and the validator says so with
-		// a diagnostic; offering the name there would be walking an author into it.
+		// input may be resolved inside an activity, where each retry would read a
+		// different time, and the validator says so with a diagnostic; offering the
+		// name there would be walking an author into it.
 		scope.locals = append(scope.locals, celcomplete.Candidate{
 			Name:   v1.NowIdentifier,
 			Kind:   celcomplete.KindValue,

@@ -138,5 +138,17 @@ func init() {
 				" open has a lever only if the two are distinguishable. Sharing an action\n" +
 				" would have made that choice for them, permanently.\n",
 		},
+		{
+			Name: "flowstate.v1.AUTHORIZATION_ACTION_WORKLOAD_DEBUG",
+			Leading: " WorkloadDebug is attaching a debugger to a durable run, reading its debug\n" +
+				" state, and controlling it: DebugAttach, DebugGet, DebugResume,\n" +
+				" DebugSetBreakpoints, and a Signal on the reserved debug channel. The run's\n" +
+				" own `debug:` policy still decides per run.\n",
+		},
+		{
+			Name: "flowstate.v1.AUTHORIZATION_ACTION_WORKLOAD_DEBUG_INSPECT",
+			Leading: " WorkloadDebugInspect is evaluating expressions against a held durable run,\n" +
+				" which can disclose any value in its scope: DebugInspect.\n",
+		},
 	})
 }

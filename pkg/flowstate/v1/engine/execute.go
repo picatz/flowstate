@@ -234,6 +234,12 @@ type executor struct {
 	// needed here either.
 	debug *debugControl
 
+	// debugSegments are the calls this executor runs inside, outermost first,
+	// which is how a durable debugger addresses an occurrence: the durable
+	// driver holds only where a position is representable, the top level of
+	// the run and of a callee, so calls are the only nesting a hold can be in.
+	debugSegments []*v1.DebugSegment
+
 	// progress is where the run has got to, for the query handler to answer from.
 	// Shared by pointer for the same reason signals is, and for the sharper version
 	// of it: a copy per level would leave the query reading the root's copy, which
@@ -502,6 +508,7 @@ func (e *executor) runNodes(nodes []*v1.Node, depth, susp int) (err error) {
 		}
 		if !run {
 			workflow.GetLogger(e.ctx).Info("skipping step, condition is false", "id", node.GetId())
+			e.observeForDebug(v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_SKIPPED, node, "")
 			e.yieldWorkflow()
 
 			// A skipped step is still a boundary, and it has to be one: the
@@ -657,6 +664,7 @@ func (e *executor) runNodes(nodes []*v1.Node, depth, susp int) (err error) {
 			}
 		} else {
 			e.processed++
+			e.observeForDebug(v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_FINISHED, node, "")
 		}
 
 		e.progress.finished()
@@ -847,6 +855,7 @@ func (e *executor) recordOutcome(node *v1.Node, err error) error {
 		// The local driver records at the identical point, and it has to, or the
 		// two drivers would disagree about what a failed run did.
 		e.scope.Outputs.StepValues[node.GetId()] = failedStepOutputs(err)
+		e.observeForDebug(v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_FAILED, node, v1.StepErrorText(err))
 
 		// The step's position is added here, on the way out, rather than
 		// where the failure was raised — so that the branch below, which
@@ -859,6 +868,7 @@ func (e *executor) recordOutcome(node *v1.Node, err error) error {
 		"id", node.GetId(), "error", err.Error())
 	e.noteTolerated(node.GetId())
 	e.scope.Outputs.StepValues[node.GetId()] = failedStepOutputs(err)
+	e.observeForDebug(v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_TOLERATED, node, v1.StepErrorText(err))
 
 	return nil
 }
@@ -1100,6 +1110,13 @@ func (e *executor) runCall(node *v1.Node, call *v1.Call, depth, susp int, descen
 		undoScope: e.undoScope.IntoCall(),
 
 		callDepth: e.callDepth + 1,
+
+		debugSegments: append(slices.Clip(e.debugSegments), &v1.DebugSegment{
+			Kind:     v1.DebugSegmentKind_DEBUG_SEGMENT_KIND_CALL,
+			StepId:   node.GetId(),
+			Workflow: e.curSpec.GetName(),
+			Callee:   callee.GetName(),
+		}),
 	}
 	if descend {
 		nested.resume = e.resume
@@ -1979,7 +1996,7 @@ func (e *executor) runLoopIteration(body []string, loop *v1.Loop, stateName stri
 		// accepting placement since #253 (iterations are sequential on both
 		// drivers, and a compensation is resolved when its step succeeds), but a
 		// `loop:` written inside a `for_each` body or a `parallel` branch carries
-		// that scope's refusal straight through rather than laundering it.
+		// that scope's `async:` refusal straight through rather than laundering it.
 		undoScope: e.undoScope.IntoLoop(),
 
 		callDepth: e.callDepth,

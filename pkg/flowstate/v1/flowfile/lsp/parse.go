@@ -479,11 +479,13 @@ func (s *parsedStep) expressionEntries() []*entry {
 
 // bindsNow reports whether an entry is one the engine binds the clock into.
 //
-// The set is the validator's, which takes it from where the engine evaluates
-// waits (flowfile's validateWait): all three of a wait's own expressions
-// (`wait_until:`, an expression-valued `sleep:`, and a signal's `timeout:`) plus
-// a signal's `outputs:` shaping, whose scope validateWait builds from the
-// waiting one, so `now` is bound there alongside the wait's result. The clock is
+// The set follows the validator's, which takes it from where the engine
+// evaluates waits (flowfile's validateWait): `wait_until:`, an
+// expression-valued `sleep:`, and a signal's `timeout:`, plus a signal's
+// `outputs:` shaping. The validator also binds it in a wait's `prompt:`, which
+// this set does not answer for yet. The shaping entries are included because
+// validateWait builds their scope from the waiting one, so `now` is bound
+// there alongside the wait's result. The clock is
 // the node kind's, not one field's, and answering for fewer entries than the
 // validator accepts is the drift #319 pinned.
 //

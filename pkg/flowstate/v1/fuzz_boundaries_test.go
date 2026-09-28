@@ -51,9 +51,12 @@ func FuzzBindRunInputs(f *testing.F) {
 }
 
 // FuzzRootParsers fuzzes the root package's remaining boundary parsers: the
-// task-shape policy an operator writes, a plugin's descriptor prose, and the
-// word parsers a Flowfile's fields go through (#1721). Every input is an
-// error or a value, never both, and never a panic.
+// task-shape policy an operator writes, a plugin's descriptor prose, the
+// word parsers a Flowfile's fields go through (#1721), and the breakpoint
+// targets and hit conditions a remote debugger sends, and the typed debug ask
+// a signal carries into a durable run. Every input is an error or a value,
+// never both — except a typed ask, which reports what it read beside its
+// refusal so the run can answer under its request id — and never a panic.
 func FuzzRootParsers(f *testing.F) {
 	f.Add([]byte("deny:\n  - 'task == \"http\"'\n"))
 	f.Add([]byte("allow:\n  - 'identity.subject == \"ci\"'\ndeny:\n  - \"true\"\n"))
@@ -62,6 +65,11 @@ func FuzzRootParsers(f *testing.F) {
 	f.Add([]byte("10m"))
 	f.Add([]byte("string"))
 	f.Add([]byte("reject"))
+	f.Add([]byte("pages[2]/fetch(child)/fan#1/get"))
+	f.Add([]byte("route?0/y"))
+	f.Add([]byte(">= 3"))
+	f.Add([]byte(`{"breakpoints":[{"id":"a","step":"x","condition":"true"}]}`))
+	f.Add([]byte("DEBUG_RESUME_ACTION_STEP_IN"))
 	f.Add([]byte(""))
 
 	f.Fuzz(func(t *testing.T, data []byte) {
@@ -80,5 +88,26 @@ func FuzzRootParsers(f *testing.F) {
 		_, _ = v1.ParseDeclaredType(word)
 		_, _ = v1.ParseOverlap(word)
 		_, _ = v1.ParseConcurrencyOnConflict(word)
+		if target, err := v1.ParseDebugTarget(word); err != nil && !reflect.DeepEqual(target, v1.DebugTarget{}) {
+			t.Fatalf("ParseDebugTarget returned both an error and a target: %v", err)
+		}
+		_ = v1.ParseDebugTargetOrStep(word)
+		_, _ = v1.ParseDebugHitCondition(word)
+
+		// A typed ask whose every free field is the input: the verb, the
+		// revision, the action, the target, and the protojson breakpoints.
+		ask := &v1.Node_Outputs{NamedValues: map[string]*v1.Value{
+			v1.DebugSessionInput:     v1.NewLiteral("session"),
+			v1.DebugRequestInput:     v1.NewLiteral("request"),
+			v1.DebugVerbInput:        v1.NewLiteral(word),
+			v1.DebugRevisionInput:    v1.NewLiteral(word),
+			v1.DebugActionInput:      v1.NewLiteral(word),
+			v1.DebugUntilInput:       v1.NewLiteral(word),
+			v1.DebugBreakpointsInput: v1.NewLiteral(word),
+			v1.DebugLeaseInput:       v1.NewLiteral(word),
+		}}
+		if parsed, typed, err := v1.ParseTypedDebugAsk(ask); !typed {
+			t.Fatalf("an ask naming a session was read as legacy: %v, %v", parsed, err)
+		}
 	})
 }

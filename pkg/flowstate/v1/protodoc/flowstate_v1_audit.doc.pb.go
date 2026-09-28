@@ -250,6 +250,25 @@ func init() {
 				" is the interval rather than the request.\n",
 		},
 		{
+			Name: "flowstate.v1.AuditRecord.debug",
+			Leading: " Debug describes a debugger decision: which session and command it was\n" +
+				" about. Never the expression an inspection evaluated — that can hold a\n" +
+				" guessed value — only its digest.\n",
+		},
+		{
+			Name:    "flowstate.v1.AuditDebugDetail",
+			Leading: " AuditDebugDetail is what a debugger decision was about.\n",
+		},
+		{
+			Name: "flowstate.v1.AuditDebugDetail.operation",
+			Leading: " Operation names the command: `attach`, `get`, `resume/step_over`,\n" +
+				" `breakpoints`, `inspect`, `signal`.\n",
+		},
+		{
+			Name:    "flowstate.v1.AuditDebugDetail.expression_digest",
+			Leading: " ExpressionDigest is the content digest of an inspected expression.\n",
+		},
+		{
 			Name:    "flowstate.v1.AuditDecision",
 			Leading: " AuditDecision is the answer itself.\n",
 		},

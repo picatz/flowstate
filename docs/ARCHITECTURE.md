@@ -459,7 +459,7 @@ flowchart LR
 Every edge is a rule with code behind it: `SecretRef` is a `Value` kind
 (`proto/flowstate/v1/value.proto:25`, `:155`), so a reference is what compilation produces;
 workflow-side evaluation refuses to resolve one (`pkg/flowstate/v1/eval.go:525-534`) and
-`vars:` may not hold one at all (`v1.CheckVarsHoldNoSecretRef`, `pkg/flowstate/v1/varsecret.go:34`);
+`vars:` may not hold one at all (`v1.CheckVarsHoldNoSecretRef`, `pkg/flowstate/v1/varsecret.go:35`);
 `v1.ResolveSecret` authorizes before the store is consulted, on every resolution
 (`pkg/flowstate/v1/taskruntime.go:90-103`); and the http task reveals through a closure registered with a
 scrubber rather than through a field something can print

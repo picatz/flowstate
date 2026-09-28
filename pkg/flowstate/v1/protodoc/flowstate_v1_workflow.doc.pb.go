@@ -1356,8 +1356,9 @@ func init() {
 			Leading: " Timeout bounds how long the wait may last, for a wait that might otherwise\n" +
 				" never end.\n" +
 				"\n" +
-				" It is meaningful for `until` and `signal`, and meaningless for `duration`,\n" +
-				" where the duration is already the bound. A wait that times out is not a\n" +
+				" It is meaningful for `signal` and `signal_batch`, and refused by\n" +
+				" [ValidateWait] on `duration`, `duration_expr` and `until`, where the\n" +
+				" duration or the moment is already the bound. A wait that times out is not a\n" +
 				" failure: it produces its outputs with `timed_out` true, so an author decides\n" +
 				" what a lapsed approval means with an ordinary `if:` rather than having to\n" +
 				" treat a normal outcome as an error.\n" +
@@ -1408,8 +1409,9 @@ func init() {
 		{
 			Name: "flowstate.v1.ForEach.iterator",
 			Leading: " Iterator names the variable bound to the current item inside the body.\n" +
-				" Defaults to \"item\". It must not collide with a step id, since both are\n" +
-				" resolved from the same namespace.\n" +
+				" Defaults to \"item\". It may share a step's id, since a step is read as\n" +
+				" `steps.<id>` and the iterator bare; `flow validate` refuses `now` and a\n" +
+				" declaration root, either of which a binding of the same name collides with.\n" +
 				"\n" +
 				" Empty is the default, not a name, so the pattern is not applied to it:\n" +
 				" both drivers bind `item` for an empty iterator, and a rule that refused\n" +
@@ -1552,9 +1554,10 @@ func init() {
 				" Bare rather than rooted, the same standing as a `for_each` binding and for the\n" +
 				" same reason (docs/DSL.md principle 5): it is an author-chosen name bound\n" +
 				" lexically where the expressions that read it are written. `flow validate`\n" +
-				" refuses a name that collides with an enclosing bare binding, with `now`, or\n" +
-				" with a declaration root, exactly as it refuses a colliding loop iterator or\n" +
-				" step var: a bare name may mean one thing at a time.\n" +
+				" refuses a name that collides with an enclosing bare binding (a `for_each`\n" +
+				" binding, an outer loop's state, or a step var), with `now`, or with a\n" +
+				" declaration root — the same check a step var gets: a bare name may mean one\n" +
+				" thing at a time.\n" +
 				"\n" +
 				" Optional. A loop that carries nothing (a bounded retry-until) leaves this,\n" +
 				" [initial] and [update] all unset. Setting one without the others is refused by\n" +

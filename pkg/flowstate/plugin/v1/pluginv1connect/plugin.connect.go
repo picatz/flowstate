@@ -258,7 +258,7 @@ type TaskServiceClient interface {
 	// CAPABILITY_TASK_PROGRESS is simply never asked, so it need not implement
 	// this at all. Changing Execute itself to stream would be the opposite:
 	// every plugin that only implements the old shape — in this repository's
-	// own three other plugin modules or in any language a third party wrote
+	// own plugin modules under plugins/ or in any language a third party wrote
 	// one in — would stop answering the call the engine makes to run its tasks
 	// at all. That is the same "a break here is every plugin in the wild"
 	// reasoning CLAUDE.md already gives for `buf breaking`, applied to a
@@ -336,7 +336,7 @@ type TaskServiceHandler interface {
 	// CAPABILITY_TASK_PROGRESS is simply never asked, so it need not implement
 	// this at all. Changing Execute itself to stream would be the opposite:
 	// every plugin that only implements the old shape — in this repository's
-	// own three other plugin modules or in any language a third party wrote
+	// own plugin modules under plugins/ or in any language a third party wrote
 	// one in — would stop answering the call the engine makes to run its tasks
 	// at all. That is the same "a break here is every plugin in the wild"
 	// reasoning CLAUDE.md already gives for `buf breaking`, applied to a

@@ -173,8 +173,9 @@ func init() {
 				"\n" +
 				" These values are written to durable history, which is broadly readable, so\n" +
 				" [principal] is an attested subject and [delivery_id] is a digest rather than\n" +
-				" the idempotency key it names (a webhook's key is frequently a signature\n" +
-				" header). Neither is material anything can authenticate with.\n",
+				" the idempotency key it names (a key is a value read out of the delivery, and\n" +
+				" history should not restate one). Neither is material anything can\n" +
+				" authenticate with.\n",
 		},
 		{
 			Name: "flowstate.v1.TriggerContext.kind",
@@ -215,9 +216,9 @@ func init() {
 				" run against the provider's own record of what it sent.\n" +
 				"\n" +
 				" A digest of the trigger's evaluated `idempotency_key`, never the key: the\n" +
-				" usual key is a signature header, and this is written to a memo and to\n" +
-				" history, both durable and broadly readable. Empty for every kind that has\n" +
-				" no delivery.\n",
+				" key is a value read out of the delivery, and this is written to a memo and\n" +
+				" to history, both durable and broadly readable. Empty for every kind that\n" +
+				" has no delivery.\n",
 		},
 		{
 			Name: "flowstate.v1.WebhookTrigger",
@@ -237,9 +238,10 @@ func init() {
 				" The expressions in `arguments` and in `idempotency_key` are evaluated against\n" +
 				" one bound name, `event`, holding the delivery — its headers and its decoded\n" +
 				" body. That name is bound here and nowhere else in the language: a step body\n" +
-				" that wants to know how the run started is a later slice (`trigger.kind` and\n" +
-				" friends), and payload data must arrive through `arguments` into `inputs:` or\n" +
-				" the file has grown a second input path with no contract.\n" +
+				" that wants to know how the run started reads `trigger.kind` and friends\n" +
+				" ([TriggerContext]), which carry provenance and no payload, and payload data\n" +
+				" must arrive through `arguments` into `inputs:` or the file has grown a second\n" +
+				" input path with no contract.\n" +
 				"\n" +
 				" # Fail closed, declared rather than assumed\n" +
 				"\n" +
@@ -255,12 +257,12 @@ func init() {
 				"     a second run — a fact about the transport, not about this integration's\n" +
 				"     luck.\n" +
 				"\n" +
-				" The remaining bound belongs to the receiver that does not exist yet: a\n" +
-				" request body is attacker-chosen input and gets a byte bound *before* it is\n" +
-				" read into memory. `v1.MaxWebhookPayloadBytes` is that number, and it is\n" +
-				" already enforced by the one reader there is today — `flow test` reading a\n" +
-				" stored delivery off disk — so the receiver inherits a bound rather than\n" +
-				" introducing one.\n",
+				" The remaining bound belongs to the readers of a delivery: a request body is\n" +
+				" attacker-chosen input and gets a byte bound *before* it is read into memory.\n" +
+				" `v1.MaxWebhookPayloadBytes` is that number, and both readers enforce it —\n" +
+				" the receiver `flow server --webhook` serves, and `flow test` reading a\n" +
+				" stored delivery off disk — so a rehearsal and a live delivery share one\n" +
+				" bound.\n",
 		},
 		{
 			Name: "flowstate.v1.WebhookTrigger.name",

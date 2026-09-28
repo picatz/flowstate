@@ -508,6 +508,575 @@ func init() {
 				" is that decision's other half.\n",
 		},
 		{
+			Name:    "flowstate.v1.DebugSite",
+			Leading: " DebugSite is a static execution site in the compiled program.\n",
+		},
+		{
+			Name: "flowstate.v1.DebugSite.workflow",
+			Leading: " Workflow is the name of the workflow that declares the step: the root\n" +
+				" workflow, or the callee a `call:` reached.\n",
+		},
+		{
+			Name: "flowstate.v1.DebugSite.path",
+			Leading: " Path is the chain of step ids from that workflow's top level down to and\n" +
+				" including the step: `[\"pages\", \"page\"]` for a step `page` in the body of a\n" +
+				" loop `pages`. Ids are unique within a visibility domain rather than within a\n" +
+				" file, so the chain, not the last id, is what names one site. It holds at\n" +
+				" most one id more than an occurrence's 128 segments: the step itself.\n",
+		},
+		{
+			Name:    "flowstate.v1.DebugSite.kind",
+			Leading: " Kind is the step's kind as [DebugPosition.kind] spells it.\n",
+		},
+		{
+			Name: "flowstate.v1.DebugSegment",
+			Leading: " DebugSegment is one level of dynamic nesting between the run's top level and\n" +
+				" an occurrence.\n",
+		},
+		{
+			Name:    "flowstate.v1.DebugSegment.kind",
+			Leading: " Kind says how this level was entered.\n",
+		},
+		{
+			Name: "flowstate.v1.DebugSegment.step_id",
+			Leading: " StepId is the container step: the loop, the parallel, the switch, or the\n" +
+				" call step.\n",
+		},
+		{
+			Name:    "flowstate.v1.DebugSegment.workflow",
+			Leading: " Workflow is the workflow that declares the container step.\n",
+		},
+		{
+			Name: "flowstate.v1.DebugSegment.index",
+			Leading: " Index is the iteration, branch, or case index, counting from zero. Zero for\n" +
+				" a call.\n",
+		},
+		{
+			Name:    "flowstate.v1.DebugSegment.callee",
+			Leading: " Callee is the workflow a call entered. Empty for every other kind.\n",
+		},
+		{
+			Name:    "flowstate.v1.DebugOccurrence",
+			Leading: " DebugOccurrence is one dynamic arrival at a site.\n",
+		},
+		{
+			Name:    "flowstate.v1.DebugOccurrence.site",
+			Leading: " Site is the static site reached.\n",
+		},
+		{
+			Name:    "flowstate.v1.DebugOccurrence.segments",
+			Leading: " Segments are the dynamic levels enclosing the arrival, outermost first.\n",
+		},
+		{
+			Name: "flowstate.v1.DebugOccurrence.address",
+			Leading: " Address is the canonical text form of this occurrence: segments joined by\n" +
+				" `/`, an iteration written `id[3]`, a branch `id#1`, a case `id?0`, a call\n" +
+				" `id(callee)`, then the step id. It is what a person types and what a\n" +
+				" breakpoint may name; the structured fields above are what a program reads.\n",
+		},
+		{
+			Name: "flowstate.v1.DebugOccurrence.arrival",
+			Leading: " Arrival counts the boundaries this session has seen, starting at one, so\n" +
+				" two stops at the same address in a `loop:` that revisits it are ordered.\n",
+		},
+		{
+			Name: "flowstate.v1.DebugOccurrence.continuation",
+			Leading: " Continuation counts the Continue-As-New segments before the one this\n" +
+				" occurrence ran in. Always zero for a local run.\n",
+		},
+		{
+			Name:    "flowstate.v1.DebugSourceDocument",
+			Leading: " DebugSourceDocument is one source document a program was produced from.\n",
+		},
+		{
+			Name: "flowstate.v1.DebugSourceDocument.uri",
+			Leading: " Uri names the document as its producer knows it: a file path or URI for\n" +
+				" text, an opaque identifier for a visual canvas.\n",
+		},
+		{
+			Name: "flowstate.v1.DebugSourceDocument.digest",
+			Leading: " Digest is the content digest (`sha256:…`) of the exact bytes the map was\n" +
+				" computed from. A consumer holding different bytes must treat every\n" +
+				" location in this document as unverified rather than guess a line.\n",
+		},
+		{
+			Name: "flowstate.v1.DebugSourceDocument.language",
+			Leading: " Language names the frontend: `flowfile` for YAML+CEL, or any other token a\n" +
+				" generator or visual editor chooses.\n",
+		},
+		{
+			Name: "flowstate.v1.DebugSourceDocument.generated_from",
+			Leading: " GeneratedFrom is the index into [DebugSourceMap.documents] of the document\n" +
+				" this one was generated from, plus one; zero when it is an original.\n",
+		},
+		{
+			Name:    "flowstate.v1.DebugSourceLocation",
+			Leading: " DebugSourceLocation is where one site came from.\n",
+		},
+		{
+			Name:    "flowstate.v1.DebugSourceLocation.document",
+			Leading: " Document indexes [DebugSourceMap.documents].\n",
+		},
+		{
+			Name: "flowstate.v1.DebugSourceLocation.range",
+			Leading: " Range is the text span, for a text document. Unset for a location that is\n" +
+				" not text.\n",
+		},
+		{
+			Name: "flowstate.v1.DebugSourceLocation.node_id",
+			Leading: " NodeId is an opaque locator for a non-text frontend, such as a node on a\n" +
+				" visual canvas. Empty for text.\n",
+		},
+		{
+			Name:    "flowstate.v1.DebugSourceEntry",
+			Leading: " DebugSourceEntry maps one site to where it came from.\n",
+		},
+		{
+			Name: "flowstate.v1.DebugSourceMap",
+			Leading: " DebugSourceMap is a bounded sidecar relating a compiled program's sites to\n" +
+				" its sources.\n" +
+				"\n" +
+				" It is never part of the program: it does not enter the executable\n" +
+				" specification, a digest of it, workflow history, or replay. It is bound to\n" +
+				" the program it describes by [ir_digest] and to each source by that\n" +
+				" document's own digest, and a map whose program binding does not hold is\n" +
+				" refused rather than applied. A program past the bounds below is mapped as\n" +
+				" far as they reach; its remaining sites are debugged by address alone.\n",
+		},
+		{
+			Name: "flowstate.v1.DebugSourceMap.ir_digest",
+			Leading: " IrDigest is the content digest of the deterministic encoding of the\n" +
+				" compiled workflow this map describes, as the producing build encodes it.\n",
+		},
+		{
+			Name: "flowstate.v1.DebugFrame",
+			Leading: " DebugFrame is one level of a stopped run's dynamic nesting, innermost first.\n" +
+				"\n" +
+				" A frame is the step the run is stopped before, or a container enclosing it:\n" +
+				" a loop iteration, a parallel branch, a switch arm, or a call. It is not a\n" +
+				" language stack frame, and a parallel run is described as the branch the stop\n" +
+				" is in rather than as several threads.\n",
+		},
+		{
+			Name:    "flowstate.v1.DebugFrame.id",
+			Leading: " Id identifies the frame within one snapshot revision, from 1.\n",
+		},
+		{
+			Name:    "flowstate.v1.DebugFrame.label",
+			Leading: " Label is the frame's display text. Never an identity.\n",
+		},
+		{
+			Name: "flowstate.v1.DebugFrame.occurrence",
+			Leading: " Occurrence is the occurrence this frame stands for. For a container frame\n" +
+				" its site is the container step.\n",
+		},
+		{
+			Name: "flowstate.v1.DebugFrame.source",
+			Leading: " Source is where the frame's site came from, when a verified source map\n" +
+				" says so; unset otherwise.\n",
+		},
+		{
+			Name: "flowstate.v1.DebugFrame.scoped",
+			Leading: " Scoped marks the frame whose bindings [DebugInspectRequest] reads. Only\n" +
+				" the innermost frame is scoped: a container's own bindings are the ones in\n" +
+				" force at the stop.\n",
+		},
+		{
+			Name: "flowstate.v1.DebugCapabilities",
+			Leading: " DebugCapabilities is what one backend actually does. A surface advertises\n" +
+				" only what is set here, and refuses the rest explicitly.\n",
+		},
+		{
+			Name: "flowstate.v1.DebugCapabilities.pause",
+			Leading: " Pause stops at the next boundary. It never freezes work already\n" +
+				" dispatched: an activity, an HTTP call, or a timer keeps going.\n",
+		},
+		{
+			Name:    "flowstate.v1.DebugCapabilities.inspect",
+			Leading: " Inspect is read-only CEL evaluation against the held scope.\n",
+		},
+		{
+			Name:    "flowstate.v1.DebugCapabilities.value_expansion",
+			Leading: " ValueExpansion is paged child listing of maps and lists.\n",
+		},
+		{
+			Name: "flowstate.v1.DebugCapabilities.terminate",
+			Leading: " Terminate ends the run. Detaching never does. Only whoever owns the run\n" +
+				" can offer it: a session observing a run it did not start reports false,\n" +
+				" and the surface that started the run advertises termination itself.\n",
+		},
+		{
+			Name: "flowstate.v1.DebugCapabilities.reverse",
+			Leading: " Reverse is backwards navigation. No backend offers it: a rerun is not\n" +
+				" history, and nothing here reconstructs one.\n",
+		},
+		{
+			Name: "flowstate.v1.DebugObservation",
+			Leading: " DebugObservation is one thing the run did, recorded when it happened from\n" +
+				" the runtime's own account. Nothing is re-evaluated to produce it.\n",
+		},
+		{
+			Name:    "flowstate.v1.DebugObservation.sequence",
+			Leading: " Sequence orders observations within a session, from 1.\n",
+		},
+		{
+			Name:    "flowstate.v1.DebugObservation.text",
+			Leading: " Text is the rendered account, after the session's redaction.\n",
+		},
+		{
+			Name:    "flowstate.v1.DebugObservation.address",
+			Leading: " Address is the occurrence address, when the backend knows it.\n",
+		},
+		{
+			Name: "flowstate.v1.DebugSnapshot",
+			Leading: " DebugSnapshot is one immutable view of a debug session.\n" +
+				"\n" +
+				" A snapshot is identified by its session and [revision]; a revision is never\n" +
+				" reused, so a handle, frame id, or value read under one revision is refused\n" +
+				" under another rather than silently answering about a different stop.\n",
+		},
+		{
+			Name:    "flowstate.v1.DebugSnapshot.revision",
+			Leading: " Revision increases on every change of state or position.\n",
+		},
+		{
+			Name:    "flowstate.v1.DebugSnapshot.reason",
+			Leading: " Reason is why the run is held. Unspecified unless [state] is held.\n",
+		},
+		{
+			Name:    "flowstate.v1.DebugSnapshot.occurrence",
+			Leading: " Occurrence is where the run is held, or where it last was.\n",
+		},
+		{
+			Name: "flowstate.v1.DebugSnapshot.frames",
+			Leading: " Frames are the stopped occurrence and its enclosing containers, innermost\n" +
+				" first. Empty unless held.\n",
+		},
+		{
+			Name:    "flowstate.v1.DebugSnapshot.breakpoint_ids",
+			Leading: " BreakpointIds names the breakpoints that caused a breakpoint stop.\n",
+		},
+		{
+			Name:    "flowstate.v1.DebugSnapshot.failure",
+			Leading: " Failure is the rendered failure for a failure stop, after redaction.\n",
+		},
+		{
+			Name: "flowstate.v1.DebugSnapshot.message",
+			Leading: " Message explains the state in a sentence where the state alone does not:\n" +
+				" why a session expired, what a run is waiting on.\n",
+		},
+		{
+			Name:    "flowstate.v1.DebugSnapshot.observations",
+			Leading: " Observations are the most recent observations, oldest first, bounded.\n",
+		},
+		{
+			Name: "flowstate.v1.DebugSnapshot.observations_dropped",
+			Leading: " ObservationsDropped counts observations evicted before this snapshot could\n" +
+				" carry them.\n",
+		},
+		{
+			Name: "flowstate.v1.DebugSnapshot.protocol",
+			Leading: " Protocol is the durable debug protocol version the run's interpreter\n" +
+				" speaks. Zero for a local session.\n",
+		},
+		{
+			Name: "flowstate.v1.DebugSnapshot.breakpoints",
+			Leading: " Breakpoints are the session's breakpoints as they stand, with their hit\n" +
+				" counts.\n",
+		},
+		{
+			Name: "flowstate.v1.DebugSnapshot.receipt",
+			Leading: " Receipt is the outcome of the command a read named by request id, when it\n" +
+				" named one.\n",
+		},
+		{
+			Name: "flowstate.v1.DebugSnapshot.ir_digest",
+			Leading: " IrDigest is the content digest of the program the run executes, as its\n" +
+				" interpreter encodes it: what a client's source map must be bound to\n" +
+				" before its lines are trusted to describe this run.\n",
+		},
+		{
+			Name:    "flowstate.v1.DebugReceipt",
+			Leading: " DebugReceipt is the outcome of one command.\n",
+		},
+		{
+			Name:    "flowstate.v1.DebugBreakpoint",
+			Leading: " DebugBreakpoint is one breakpoint as a client asks for it.\n",
+		},
+		{
+			Name: "flowstate.v1.DebugBreakpoint.id",
+			Leading: " Id is a client-chosen identifier, echoed in states and stop snapshots.\n" +
+				" Empty asks the backend to assign one.\n",
+		},
+		{
+			Name: "flowstate.v1.DebugBreakpoint.step",
+			Leading: " Step names where to stop: a bare step id, which arms every site with that\n" +
+				" id, or a site path `a/b/c`, which arms exactly one. Exactly one of [step]\n" +
+				" and [line] is set.\n",
+		},
+		{
+			Name: "flowstate.v1.DebugBreakpoint.line",
+			Leading: " Line names a source line, resolved through the session's source map to the\n" +
+				" innermost site whose span contains it.\n",
+		},
+		{
+			Name: "flowstate.v1.DebugBreakpoint.condition",
+			Leading: " Condition is a CEL boolean, evaluated at each arrival in the step's own\n" +
+				" scope, exactly as an `if:` would be.\n",
+		},
+		{
+			Name: "flowstate.v1.DebugBreakpoint.hit_condition",
+			Leading: " HitCondition filters arrivals whose condition held, by their count: `5`\n" +
+				" or `>= 5` (from the fifth on), `== 5`, `> 5`, `< 5`, `<= 5`, or `% 5`\n" +
+				" (every fifth).\n",
+		},
+		{
+			Name: "flowstate.v1.DebugBreakpoint.log_message",
+			Leading: " LogMessage makes this a logpoint: it never stops, and records the message\n" +
+				" as an observation instead, with each `{expr}` replaced by that CEL\n" +
+				" expression's rendered value.\n",
+		},
+		{
+			Name:    "flowstate.v1.DebugSourceLine",
+			Leading: " DebugSourceLine is one line of one source document.\n",
+		},
+		{
+			Name:    "flowstate.v1.DebugBreakpointState",
+			Leading: " DebugBreakpointState is what became of one requested breakpoint.\n",
+		},
+		{
+			Name: "flowstate.v1.DebugBreakpointState.verified",
+			Leading: " Verified means the breakpoint is armed. An unverified breakpoint is not\n" +
+				" armed, and [message] says why.\n",
+		},
+		{
+			Name:    "flowstate.v1.DebugBreakpointState.hits",
+			Leading: " Hits counts arrivals whose condition held, before the hit condition.\n",
+		},
+		{
+			Name:    "flowstate.v1.DebugBreakpointState.sites",
+			Leading: " Sites are the sites the breakpoint resolved to.\n",
+		},
+		{
+			Name: "flowstate.v1.DebugBreakpointState.last_error",
+			Leading: " LastError is the most recent condition or log evaluation error, after\n" +
+				" redaction. Such an arrival does not stop the run.\n",
+		},
+		{
+			Name:    "flowstate.v1.DebugBreakpointState.source",
+			Leading: " Source is where the resolved site came from, when a source map says so.\n",
+		},
+		{
+			Name: "flowstate.v1.DebugValue",
+			Leading: " DebugValue is one evaluated value, as presented.\n" +
+				"\n" +
+				" The evaluated value itself stays in the backend; this carries its type, its\n" +
+				" rendering after redaction, and how to read its children. Redaction controls\n" +
+				" what is printed. It is not a confidentiality boundary against whoever may\n" +
+				" evaluate expressions: a predicate over a withheld value answers truthfully.\n",
+		},
+		{
+			Name: "flowstate.v1.DebugValue.type",
+			Leading: " Type is the value's CEL type as a person reads it: `int`, `string`,\n" +
+				" `list`, `map`, `null_type`, a message name.\n",
+		},
+		{
+			Name:    "flowstate.v1.DebugValue.truncated",
+			Leading: " Truncated means [rendered] was cut to its bound.\n",
+		},
+		{
+			Name: "flowstate.v1.DebugValue.children",
+			Leading: " Children counts the value's direct children, for a map or list; zero for a\n" +
+				" leaf.\n",
+		},
+		{
+			Name:    "flowstate.v1.DebugValue.expression",
+			Leading: " Expression re-reads this value, and is what a child listing is asked for.\n",
+		},
+		{
+			Name:    "flowstate.v1.DebugVariable",
+			Leading: " DebugVariable is one named child of a scope or a value.\n",
+		},
+		{
+			Name: "flowstate.v1.DebugAttachRequest",
+			Leading: " DebugAttachRequest asks to hold a durable run at its next boundary under a\n" +
+				" lease, or renews or re-pauses a session the caller already holds.\n",
+		},
+		{
+			Name:    "flowstate.v1.DebugAttachRequest.session_id",
+			Leading: " SessionId renews or re-pauses an existing session. Empty mints a new one.\n",
+		},
+		{
+			Name:    "flowstate.v1.DebugAttachRequest.lease",
+			Leading: " Lease is how long to hold, bounded by the engine's ceiling.\n",
+		},
+		{
+			Name: "flowstate.v1.DebugAttachRequest.request_id",
+			Leading: " RequestId makes the ask retry-safe: a retry with the same id returns the\n" +
+				" original receipt and never pauses twice.\n",
+		},
+		{
+			Name: "flowstate.v1.DebugAttachRequest.wait",
+			Leading: " Wait bounds how long the server waits for the run to apply the ask before\n" +
+				" answering pending. At most 30s.\n",
+		},
+		{
+			Name: "flowstate.v1.DebugAttachRequest.renew",
+			Leading: " Renew extends the session's lease without asking for a hold: the\n" +
+				" heartbeat a client sends while the run executes with breakpoints armed.\n" +
+				" Requires [session_id].\n",
+		},
+		{
+			Name:    "flowstate.v1.DebugAttachResponse",
+			Leading: " DebugAttachResponse is the attach receipt and the session as it stands.\n",
+		},
+		{
+			Name: "flowstate.v1.DebugAttachResponse.session_id",
+			Leading: " SessionId is the session the attach is for: the one the request named,\n" +
+				" or the one the server minted. Returned even while the attach is pending,\n" +
+				" so the caller can follow it before the run has reached a boundary.\n",
+		},
+		{
+			Name:    "flowstate.v1.DebugGetRequest",
+			Leading: " DebugGetRequest reads a durable run's debug state.\n",
+		},
+		{
+			Name:    "flowstate.v1.DebugGetRequest.after_revision",
+			Leading: " AfterRevision waits, up to [wait], for a revision greater than this one.\n",
+		},
+		{
+			Name:    "flowstate.v1.DebugGetRequest.wait",
+			Leading: " Wait bounds the wait. At most 30s; unset answers at once.\n",
+		},
+		{
+			Name:    "flowstate.v1.DebugGetResponse",
+			Leading: " DebugGetResponse is the session as it stands.\n",
+		},
+		{
+			Name:    "flowstate.v1.DebugResumeRequest",
+			Leading: " DebugResumeRequest releases a hold: continue, step, run until, or detach.\n",
+		},
+		{
+			Name:    "flowstate.v1.DebugResumeRequest.session_id",
+			Leading: " SessionId must be the session the run holds.\n",
+		},
+		{
+			Name: "flowstate.v1.DebugResumeRequest.expected_revision",
+			Leading: " ExpectedRevision refuses the command as stale unless the session is still\n" +
+				" at this revision. Zero skips the check.\n",
+		},
+		{
+			Name:    "flowstate.v1.DebugResumeRequest.until",
+			Leading: " Until is the step id or site path a run-until command runs to.\n",
+		},
+		{
+			Name:    "flowstate.v1.DebugResumeResponse",
+			Leading: " DebugResumeResponse is the resume receipt and the session as it stands.\n",
+		},
+		{
+			Name:    "flowstate.v1.DebugSetBreakpointsRequest",
+			Leading: " DebugSetBreakpointsRequest replaces a session's breakpoints.\n",
+		},
+		{
+			Name: "flowstate.v1.DebugSetBreakpointsRequest.breakpoints",
+			Leading: " Breakpoints is the whole set. The update is atomic: an invalid request\n" +
+				" leaves the previous set in force, and an individually unverifiable entry\n" +
+				" is reported unverified without disarming the others.\n",
+		},
+		{
+			Name: "flowstate.v1.DebugSetBreakpointsResponse",
+			Leading: " DebugSetBreakpointsResponse reports each breakpoint's state, in request\n" +
+				" order.\n",
+		},
+		{
+			Name:    "flowstate.v1.DebugInspectRequest",
+			Leading: " DebugInspectRequest evaluates a read-only CEL expression against a held run.\n",
+		},
+		{
+			Name: "flowstate.v1.DebugInspectRequest.revision",
+			Leading: " Revision is the snapshot the question is about. A question about a\n" +
+				" revision the session has left is refused as stale.\n",
+		},
+		{
+			Name: "flowstate.v1.DebugInspectRequest.expression",
+			Leading: " Expression is evaluated by the run's own evaluator under its cost bound.\n" +
+				" Empty lists the scope's roots instead.\n",
+		},
+		{
+			Name:    "flowstate.v1.DebugInspectRequest.children",
+			Leading: " Children asks for the value's children, paged by [offset] and [limit].\n",
+		},
+		{
+			Name:    "flowstate.v1.DebugInspectRequest.limit",
+			Leading: " Limit bounds the page. Zero means the backend's default; at most 500.\n",
+		},
+		{
+			Name:    "flowstate.v1.DebugInspectResponse",
+			Leading: " DebugInspectResponse is one evaluation's answer.\n",
+		},
+		{
+			Name: "flowstate.v1.DebugInspectResponse.value",
+			Leading: " Value is the evaluated value. Unset when [error] is set, and when the\n" +
+				" request listed scope roots.\n",
+		},
+		{
+			Name:    "flowstate.v1.DebugInspectResponse.total",
+			Leading: " Total is how many children exist, of which [children] is one page.\n",
+		},
+		{
+			Name:    "flowstate.v1.DebugInspectResponse.error",
+			Leading: " Error is the evaluation failure, rendered after redaction.\n",
+		},
+		{
+			Name: "flowstate.v1.DebugCarry",
+			Leading: " DebugCarry is a durable debug session's state as the run itself holds it,\n" +
+				" carried across Continue-As-New in `RunState.debug` so a session survives a\n" +
+				" new segment. Everything here was decided by workflow code from recorded\n" +
+				" signals, so a replay rebuilds it exactly; nothing here holds a value from the\n" +
+				" run's scope.\n",
+		},
+		{
+			Name:    "flowstate.v1.DebugCarry.session_id",
+			Leading: " SessionId is the session attached, or empty after it ended.\n",
+		},
+		{
+			Name:    "flowstate.v1.DebugCarry.holder",
+			Leading: " Holder is the attested caller who attached it.\n",
+		},
+		{
+			Name:    "flowstate.v1.DebugCarry.deadline",
+			Leading: " Deadline is the absolute end of the session, however often it is renewed.\n",
+		},
+		{
+			Name:    "flowstate.v1.DebugCarry.lease_expires_at",
+			Leading: " LeaseExpiresAt is when the session lapses unless renewed.\n",
+		},
+		{
+			Name:    "flowstate.v1.DebugCarry.lease",
+			Leading: " Lease is the duration each renewal buys.\n",
+		},
+		{
+			Name:    "flowstate.v1.DebugCarry.next",
+			Leading: " Next is what the next boundary does with the session attached.\n",
+		},
+		{
+			Name:    "flowstate.v1.DebugCarry.step_depth",
+			Leading: " StepDepth is the call depth a step over or out left from.\n",
+		},
+		{
+			Name:    "flowstate.v1.DebugCarry.hits",
+			Leading: " Hits counts each breakpoint's arrivals, parallel to [breakpoints].\n",
+		},
+		{
+			Name: "flowstate.v1.DebugCarry.receipts",
+			Leading: " Receipts are the most recent commands' outcomes, oldest first, so a retry\n" +
+				" after a lost response is answered from the run rather than applied twice.\n",
+		},
+		{
+			Name:    "flowstate.v1.DebugCarry.ended",
+			Leading: " Ended is how the last session ended, when none is attached.\n",
+		},
+		{
 			Name: "flowstate.v1.DebugStepState",
 			Leading: " DebugStepState is what a session last watched one step do.\n" +
 				"\n" +
@@ -638,6 +1207,268 @@ func init() {
 		{
 			Name:    "flowstate.v1.DEBUG_COMMAND_VERB_BACKTRACE",
 			Leading: " List the current step and the `call:` chain that reached it.\n",
+		},
+		{
+			Name: "flowstate.v1.DEBUG_COMMAND_VERB_NEXT",
+			Leading: " Next is `next`: run this step, including anything inside it, and stop at\n" +
+				" the next step at this nesting or shallower.\n",
+		},
+		{
+			Name: "flowstate.v1.DEBUG_COMMAND_VERB_FINISH",
+			Leading: " Finish is `finish`: run until the enclosing iteration, branch, switch\n" +
+				" arm, or call is left.\n",
+		},
+		{
+			Name:    "flowstate.v1.DEBUG_COMMAND_VERB_LOG",
+			Leading: " Log is `log <step-id> <message>`: a logpoint.\n",
+		},
+		{
+			Name:    "flowstate.v1.DEBUG_COMMAND_VERB_CATCH",
+			Leading: " Catch is `catch none|uncaught|all`: which step failures stop the run.\n",
+		},
+		{
+			Name: "flowstate.v1.DEBUG_COMMAND_VERB_DETACH",
+			Leading: " Detach is `detach`: clear every breakpoint and let the run finish\n" +
+				" unattended.\n",
+		},
+		{
+			Name:    "flowstate.v1.DebugSegmentKind",
+			Leading: " DebugSegmentKind is how execution entered a nested part of the program.\n",
+		},
+		{
+			Name:    "flowstate.v1.DEBUG_SEGMENT_KIND_UNSPECIFIED",
+			Leading: " Unspecified is never written.\n",
+		},
+		{
+			Name:    "flowstate.v1.DEBUG_SEGMENT_KIND_CALL",
+			Leading: " Call is a `call:` step running its callee.\n",
+		},
+		{
+			Name:    "flowstate.v1.DEBUG_SEGMENT_KIND_ITERATION",
+			Leading: " Iteration is one pass through a `for_each:` or `loop:` body.\n",
+		},
+		{
+			Name:    "flowstate.v1.DEBUG_SEGMENT_KIND_BRANCH",
+			Leading: " Branch is one branch of a `parallel:` step.\n",
+		},
+		{
+			Name:    "flowstate.v1.DEBUG_SEGMENT_KIND_CASE",
+			Leading: " Case is the arm a `switch:` step took.\n",
+		},
+		{
+			Name:    "flowstate.v1.DebugRunState",
+			Leading: " DebugRunState is where a debugged run stands.\n",
+		},
+		{
+			Name:    "flowstate.v1.DEBUG_RUN_STATE_UNSPECIFIED",
+			Leading: " Unspecified is never written.\n",
+		},
+		{
+			Name:    "flowstate.v1.DEBUG_RUN_STATE_RUNNING",
+			Leading: " Running is executing between boundaries.\n",
+		},
+		{
+			Name: "flowstate.v1.DEBUG_RUN_STATE_PAUSE_REQUESTED",
+			Leading: " PauseRequested is running with a pause asked for, which takes effect at\n" +
+				" the next boundary the run reaches. It may never take effect: a run that\n" +
+				" finishes first completes.\n",
+		},
+		{
+			Name:    "flowstate.v1.DEBUG_RUN_STATE_HELD",
+			Leading: " Held is stopped at a boundary.\n",
+		},
+		{
+			Name:    "flowstate.v1.DEBUG_RUN_STATE_COMPLETED",
+			Leading: " Completed is finished successfully.\n",
+		},
+		{
+			Name:    "flowstate.v1.DEBUG_RUN_STATE_FAILED",
+			Leading: " Failed is finished with a failure, or ended by the session.\n",
+		},
+		{
+			Name: "flowstate.v1.DEBUG_RUN_STATE_EXPIRED",
+			Leading: " Expired is a durable session whose lease or absolute deadline lapsed; the\n" +
+				" run resumed on its own.\n",
+		},
+		{
+			Name:    "flowstate.v1.DEBUG_RUN_STATE_DETACHED",
+			Leading: " Detached is a session its controller ended; the run continues unobserved.\n",
+		},
+		{
+			Name:    "flowstate.v1.DebugStopReason",
+			Leading: " DebugStopReason is why a run is held.\n",
+		},
+		{
+			Name:    "flowstate.v1.DEBUG_STOP_REASON_UNSPECIFIED",
+			Leading: " Unspecified is written only when the run is not held.\n",
+		},
+		{
+			Name:    "flowstate.v1.DEBUG_STOP_REASON_ENTRY",
+			Leading: " Entry is the first boundary of a session that stops on entry.\n",
+		},
+		{
+			Name:    "flowstate.v1.DEBUG_STOP_REASON_STEP",
+			Leading: " Step is the boundary a step command ran to.\n",
+		},
+		{
+			Name:    "flowstate.v1.DEBUG_STOP_REASON_BREAKPOINT",
+			Leading: " Breakpoint is a breakpoint whose condition and hit condition held.\n",
+		},
+		{
+			Name:    "flowstate.v1.DEBUG_STOP_REASON_PAUSE",
+			Leading: " Pause is the first boundary after a pause request.\n",
+		},
+		{
+			Name: "flowstate.v1.DEBUG_STOP_REASON_FAILURE",
+			Leading: " Failure is a step that failed, stopped after its failure was recorded and\n" +
+				" before it propagated.\n",
+		},
+		{
+			Name:    "flowstate.v1.DEBUG_STOP_REASON_UNTIL",
+			Leading: " Until is the target of a run-until command.\n",
+		},
+		{
+			Name:    "flowstate.v1.DEBUG_STOP_REASON_AUTOPSY",
+			Leading: " Autopsy is a finished test case held open for questions.\n",
+		},
+		{
+			Name:    "flowstate.v1.DebugObservationKind",
+			Leading: " DebugObservationKind is what a run reported between stops.\n",
+		},
+		{
+			Name:    "flowstate.v1.DEBUG_OBSERVATION_KIND_FINISHED",
+			Leading: " Finished is a step that produced its outputs.\n",
+		},
+		{
+			Name:    "flowstate.v1.DEBUG_OBSERVATION_KIND_SKIPPED",
+			Leading: " Skipped is a step whose `if:` evaluated false.\n",
+		},
+		{
+			Name:    "flowstate.v1.DEBUG_OBSERVATION_KIND_FAILED",
+			Leading: " Failed is a step whose failure propagates.\n",
+		},
+		{
+			Name:    "flowstate.v1.DEBUG_OBSERVATION_KIND_TOLERATED",
+			Leading: " Tolerated is a failure `continue_on_error:` absorbed.\n",
+		},
+		{
+			Name:    "flowstate.v1.DEBUG_OBSERVATION_KIND_WAITING",
+			Leading: " Waiting is a step that began waiting for a signal or a timer.\n",
+		},
+		{
+			Name:    "flowstate.v1.DEBUG_OBSERVATION_KIND_LOG",
+			Leading: " Log is a logpoint's message. It never stopped the run.\n",
+		},
+		{
+			Name: "flowstate.v1.DEBUG_OBSERVATION_KIND_NOTICE",
+			Leading: " Notice is the session saying something about itself, such as a\n" +
+				" breakpoint condition that could not be evaluated.\n",
+		},
+		{
+			Name: "flowstate.v1.DEBUG_OBSERVATION_KIND_TASK",
+			Leading: " Task is a task's own account of its work, reported through\n" +
+				" `NoteTask` while a debugger is watching. Local runs only.\n",
+		},
+		{
+			Name:    "flowstate.v1.DebugResumeAction",
+			Leading: " DebugResumeAction is what a resume asks the run to do next.\n",
+		},
+		{
+			Name:    "flowstate.v1.DEBUG_RESUME_ACTION_CONTINUE",
+			Leading: " Continue runs to the next breakpoint, failure stop, or the end.\n",
+		},
+		{
+			Name: "flowstate.v1.DEBUG_RESUME_ACTION_STEP_IN",
+			Leading: " StepIn stops at the next boundary anywhere, including inside the body of\n" +
+				" the step being left.\n",
+		},
+		{
+			Name: "flowstate.v1.DEBUG_RESUME_ACTION_STEP_OVER",
+			Leading: " StepOver stops at the next boundary at the same nesting or shallower: a\n" +
+				" loop, parallel, switch, or call step runs its whole body first.\n",
+		},
+		{
+			Name:    "flowstate.v1.DEBUG_RESUME_ACTION_STEP_OUT",
+			Leading: " StepOut stops at the next boundary shallower than the current one.\n",
+		},
+		{
+			Name:    "flowstate.v1.DEBUG_RESUME_ACTION_RUN_UNTIL",
+			Leading: " RunUntil runs to the boundary the request's `until` names.\n",
+		},
+		{
+			Name: "flowstate.v1.DEBUG_RESUME_ACTION_DETACH",
+			Leading: " Detach ends the session: breakpoints are cleared and the run continues.\n" +
+				" It never ends the run.\n",
+		},
+		{
+			Name:    "flowstate.v1.DebugCommandStatus",
+			Leading: " DebugCommandStatus is what became of one command.\n",
+		},
+		{
+			Name: "flowstate.v1.DEBUG_COMMAND_STATUS_APPLIED",
+			Leading: " Applied means the run acted on the command; the receipt's revision is the\n" +
+				" first one that reflects it.\n",
+		},
+		{
+			Name: "flowstate.v1.DEBUG_COMMAND_STATUS_PENDING",
+			Leading: " Pending means the command was delivered and not yet applied. Delivery is\n" +
+				" not application: poll `DebugGet` or retry with the same\n" +
+				" request id.\n",
+		},
+		{
+			Name: "flowstate.v1.DEBUG_COMMAND_STATUS_DUPLICATE",
+			Leading: " Duplicate means this request id was already applied; nothing advanced\n" +
+				" twice, and the receipt repeats the original revision.\n",
+		},
+		{
+			Name:    "flowstate.v1.DEBUG_COMMAND_STATUS_STALE",
+			Leading: " Stale means the command named a revision the session has moved past.\n",
+		},
+		{
+			Name: "flowstate.v1.DEBUG_COMMAND_STATUS_CONFLICT",
+			Leading: " Conflict means another controller holds the session, or the session id\n" +
+				" does not match the one the run holds.\n",
+		},
+		{
+			Name: "flowstate.v1.DEBUG_COMMAND_STATUS_REFUSED",
+			Leading: " Refused means the command is invalid in the current state, such as\n" +
+				" stepping a run that is not held.\n",
+		},
+		{
+			Name:    "flowstate.v1.DEBUG_COMMAND_STATUS_UNSUPPORTED",
+			Leading: " Unsupported means this backend does not implement the command.\n",
+		},
+		{
+			Name: "flowstate.v1.DEBUG_COMMAND_STATUS_INCOMPATIBLE",
+			Leading: " Incompatible means the run's interpreter predates the protocol the\n" +
+				" command needs; nothing was sent that it would misread.\n",
+		},
+		{
+			Name:    "flowstate.v1.DEBUG_COMMAND_STATUS_ENDED",
+			Leading: " Ended means the session or the run is over.\n",
+		},
+		{
+			Name:    "flowstate.v1.DebugFailureMode",
+			Leading: " DebugFailureMode selects which step failures stop the run.\n",
+		},
+		{
+			Name:    "flowstate.v1.DEBUG_FAILURE_MODE_UNSPECIFIED",
+			Leading: " Unspecified leaves the mode unchanged; a new session starts with none.\n",
+		},
+		{
+			Name:    "flowstate.v1.DEBUG_FAILURE_MODE_NONE",
+			Leading: " None never stops on a failure.\n",
+		},
+		{
+			Name: "flowstate.v1.DEBUG_FAILURE_MODE_UNCAUGHT",
+			Leading: " Uncaught stops on a failure its own step does not tolerate with\n" +
+				" `continue_on_error:`. A container that tolerates the failure further out\n" +
+				" is not consulted, so such a stop may precede a run that goes on.\n",
+		},
+		{
+			Name: "flowstate.v1.DEBUG_FAILURE_MODE_ALL",
+			Leading: " All stops on every failure, including those `continue_on_error:`\n" +
+				" tolerates.\n",
 		},
 	})
 }

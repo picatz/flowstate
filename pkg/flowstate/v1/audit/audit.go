@@ -100,6 +100,10 @@ type Subject struct {
 	// the TrustedIssuer entry that admitted the caller, never token claims.
 	IssuerName string
 	Role       string
+
+	// Debug, when set, says which debug session and command the decision was
+	// about. It never carries an evaluated expression, only its digest.
+	Debug *v1.AuditDebugDetail
 }
 
 // correlationIDKey carries a request's correlation id through the context
@@ -409,6 +413,7 @@ func (r *Recorder) newRecord(ctx context.Context, subject Subject, decision v1.A
 		IssuerName:    boundString(subject.IssuerName, MaxProvenanceBytes),
 		Role:          boundString(subject.Role, MaxProvenanceBytes),
 		CorrelationId: boundString(CorrelationIDFromContext(ctx), MaxCorrelationIDBytes),
+		Debug:         auditDebugDetail(subject.Debug),
 	}, nil
 }
 
@@ -614,4 +619,19 @@ func (e *writerEmitter) Emit(_ context.Context, record *v1.AuditRecord) error {
 	}
 
 	return nil
+}
+
+// auditDebugDetail is a bounded copy of a debug decision's detail.
+func auditDebugDetail(detail *v1.AuditDebugDetail) *v1.AuditDebugDetail {
+	if detail == nil {
+		return nil
+	}
+
+	return &v1.AuditDebugDetail{
+		SessionId:        boundString(detail.GetSessionId(), 256),
+		RequestId:        boundString(detail.GetRequestId(), 128),
+		Revision:         detail.GetRevision(),
+		Operation:        boundString(detail.GetOperation(), 64),
+		ExpressionDigest: boundString(detail.GetExpressionDigest(), 128),
+	}
 }

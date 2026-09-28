@@ -50,11 +50,7 @@ func TestShownWorkflowsAreLintClean(t *testing.T) {
 			// deciding what that document is for. The guard against a pattern
 			// that quietly stops matching is TestREADMEHasAWorkflowToCheck,
 			// over the document that would certainly notice.
-			blocks := completeWorkflow.FindAllStringSubmatch(string(data), -1)
-
-			for _, block := range blocks {
-				source := block[1]
-
+			for _, source := range shownWorkflowSources(string(data)) {
 				name := "block " + strings.TrimSpace(strings.SplitN(source, "\n", 2)[0])
 				t.Run(name, func(t *testing.T) {
 					wf, positions, err := flowfile.Parse([]byte(source))
@@ -83,6 +79,9 @@ func TestShownWorkflowsAreLintClean(t *testing.T) {
 // document the day somebody adds one.
 var shownDocs = []string{
 	"README.md",
+	filepath.Join("docs", "GETTING_STARTED.md"),
+	filepath.Join("docs", "LANGUAGE.md"),
+	filepath.Join("docs", "TESTING.md"),
 	filepath.Join("docs", "DSL.md"),
 	filepath.Join("docs", "ARCHITECTURE.md"),
 	filepath.Join("docs", "STYLE.md"),

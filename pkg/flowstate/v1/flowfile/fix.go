@@ -1025,9 +1025,9 @@ func (f *fixer) stampEdition(mapping *ast.MappingNode) {
 // refusal. A migration tool that does not migrate the thing whose diagnostic
 // names it is a migration tool nobody will trust twice.
 //
-// Only a marker that is written is updated. A file with no `edition:` is a file
-// that has not asked to be pinned, and stamping one in would be the rewriter
-// adding an opinion the author did not have.
+// Only a marker that is written is updated here. A file with no `edition:` is
+// not this function's business: the marker is required now, so
+// [fixer.stampEdition] adds the current one instead.
 func (f *fixer) edition(entry *ast.MappingValueNode) {
 	declared, ok := editionText(entry.Value)
 	if !ok || declared == CurrentEdition {

@@ -79,7 +79,7 @@
 //     case, and the distinction is worth stating precisely because the
 //     convenient version of it is false. The `flow test` **command** installs
 //     none: `--task-policy` is declared on `flow worker`, `flow run local`,
-//     `flow mcp`, `flow serverdev` and `flow task run`, and deliberately not
+//     `flow mcp`, `flow server dev` and `flow task run`, and deliberately not
 //     on `flow test`, so under that command [v1.TaskPolicyIn] finds nothing
 //     and every dispatch is allowed. But a policy is installed process-wide
 //     by [v1.SetDefaultTaskPolicy], runCase does not clear it with
@@ -454,7 +454,7 @@ type Test struct {
 	// entrySecretMaterial is a table row's entry's `secrets:` plaintext,
 	// carried past [mergeRow]'s whole-replace rule for redaction only —
 	// [casePosture] reads it alongside Secrets. Secrets itself stays
-	// whole-or-nothing (docs/CLI.md): a row naming its own secret is
+	// whole-or-nothing (docs/TESTING.md): a row naming its own secret is
 	// deliberately choosing what the secret backend binds. What the file
 	// holds is not thereby unbound from what a row's diagnostics may print
 	// (#2041): the entry's plaintext is a fact about the file whichever row
@@ -504,7 +504,7 @@ type TriggerDelivery struct {
 	// delivery is both: verification reads a signature header and a key may
 	// read a header of its own, so a fixture holding only a body could not
 	// exercise either. It is read
-	// under [v1.MaxWebhookPayloadBytes], the bound a live receiver will apply to
+	// under [v1.MaxWebhookPayloadBytes], the bound the live receiver applies to
 	// a request body.
 	Payload string `yaml:"payload"`
 
