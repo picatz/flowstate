@@ -51,7 +51,7 @@ const (
 	revealTimelineField = "flowstate.v1.GetTimelineRequest.reveal_sensitive"
 )
 
-// Get implements the RPC: [FlowstateServer.get]'s answer, with the run's
+// Get implements the RPC: FlowstateServer.get's answer, with the run's
 // declared-sensitive values withheld unless the caller asked and may.
 func (s *FlowstateServer) Get(ctx context.Context, req *connect.Request[v1.GetRequest]) (*connect.Response[v1.GetResponse], error) {
 	resp, err := s.get(ctx, req)
@@ -87,7 +87,7 @@ func (s *FlowstateServer) Get(ctx context.Context, req *connect.Request[v1.GetRe
 	return connect.NewResponse(withheld), nil
 }
 
-// GetTimeline implements the RPC: [FlowstateServer.getTimeline]'s answer, with
+// GetTimeline implements the RPC: FlowstateServer.getTimeline's answer, with
 // sensitive input values removed from its failure text unless the caller
 // asked and may. A timeline carries no values but failure text, so that is
 // all there is to withhold.
@@ -243,7 +243,7 @@ func (s *FlowstateServer) sensitiveDeclarationsOf(ctx context.Context, workflowI
 }
 
 // startedRunState reads the RunState a segment was started with, through the
-// client authorization chose for this caller, as [FlowstateServer.get] did,
+// client authorization chose for this caller, as FlowstateServer.get did,
 // so the history read is of the run that was checked.
 //
 // Through the SDK's iterator, which reads one page and is stopped after the
