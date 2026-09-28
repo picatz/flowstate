@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"maps"
+	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strings"
 	"sync"
@@ -11,14 +13,17 @@ import (
 	"testing/synctest"
 	"time"
 
+	"connectrpc.com/connect"
 	"github.com/google/uuid"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 
+	flowmcp "github.com/picatz/flowstate/cmd/flow/internal/mcp"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowdebug"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/flowstatev1connect"
 )
 
 const sessionTests = `tests:
@@ -617,4 +622,130 @@ func TestAStartThatCannotRunTheCaseSaysWhy(t *testing.T) {
 	assert.Contains(t, answer.Snapshot.Message, "shpi", "the reason is only in the report the end returns")
 
 	_, _ = callSession(t, client, debugSessionEndTool, map[string]any{"session_id": started.SessionID})
+}
+
+// heldRun is a debug service holding one run in one session, enough for a
+// retained session to attach to and read.
+type heldRun struct {
+	flowstatev1connect.UnimplementedWorkflowServiceHandler
+}
+
+func (heldRun) snapshot() *v1.DebugSnapshot {
+	return &v1.DebugSnapshot{
+		Revision: 1, State: v1.DebugRunState_DEBUG_RUN_STATE_HELD,
+		Session: &v1.DebugSession{SessionId: "held-1"},
+	}
+}
+
+func (h heldRun) DebugAttach(_ context.Context, req *connect.Request[v1.DebugAttachRequest]) (*connect.Response[v1.DebugAttachResponse], error) {
+	return connect.NewResponse(&v1.DebugAttachResponse{
+		SessionId: "held-1",
+		Receipt:   &v1.DebugReceipt{RequestId: req.Msg.GetRequestId(), Status: v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_APPLIED},
+		Snapshot:  h.snapshot(),
+	}), nil
+}
+
+func (h heldRun) DebugGet(context.Context, *connect.Request[v1.DebugGetRequest]) (*connect.Response[v1.DebugGetResponse], error) {
+	return connect.NewResponse(&v1.DebugGetResponse{Snapshot: h.snapshot()}), nil
+}
+
+// TestRejoiningAHeldSessionKeepsOneEntry: attaching with the id of a session
+// this server already holds rejoins it. The entry, and the driver and lease
+// renewal it owns, stay the ones already there; the second attach's own
+// client is let go rather than left renewing beside them.
+func TestRejoiningAHeldSessionKeepsOneEntry(t *testing.T) {
+	t.Parallel()
+
+	mux := http.NewServeMux()
+	mux.Handle(flowstatev1connect.NewWorkflowServiceHandler(heldRun{}))
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	client := flowstatev1connect.NewWorkflowServiceClient(srv.Client(), srv.URL)
+	r := newDebugSessions(func() flowstatev1connect.WorkflowServiceClient { return client })
+
+	attach := func() sessionReply {
+		t.Helper()
+		result, err := r.attach(t.Context(), toolRequest(t, map[string]any{"workflow_id": "w", "session_id": "held-1"}))
+		require.NoError(t, err)
+		reply := replyOf(t, result)
+		require.False(t, result.IsError, reply.raw)
+
+		return reply
+	}
+
+	first := attach()
+	require.Equal(t, "held-1", first.SessionID)
+	r.mu.Lock()
+	held := r.sessions["held-1"]
+	r.mu.Unlock()
+	require.NotNil(t, held)
+
+	again := attach()
+	assert.Equal(t, "held-1", again.SessionID)
+	assert.Contains(t, again.Note, "rejoined")
+	r.mu.Lock()
+	assert.Len(t, r.sessions, 1)
+	assert.Same(t, held, r.sessions["held-1"], "a rejoin replaced the entry, leaving the old one renewing unowned")
+	r.mu.Unlock()
+
+	result, err := r.end(t.Context(), toolRequest(t, map[string]any{"session_id": "held-1", "keep": true}))
+	require.NoError(t, err)
+	require.False(t, result.IsError)
+}
+
+// TestTheStubbedToolsWaitForNoRetainedSession: while a retained stubbed
+// session holds the registry lock, flowstate_test and the one-shot
+// flowstate_debug are refused by name instead of blocking on it, and they
+// run again once the session ends.
+func TestTheStubbedToolsWaitForNoRetainedSession(t *testing.T) {
+	t.Parallel()
+
+	client := connectMCP(t, defaultLocalRunPosture())
+	result, started := callSession(t, client, debugSessionStartTool, map[string]any{"workflow": debugWorkflow, "tests": sessionTests})
+	require.False(t, result.IsError, started.raw)
+
+	for _, tool := range []string{flowmcp.TestToolName, flowmcp.DebugToolName} {
+		result, refused := callSession(t, client, tool, map[string]any{"workflow": debugWorkflow, "tests": sessionTests})
+		require.True(t, result.IsError, "%s ran beside a stubbed session: %s", tool, refused.raw)
+		assert.Contains(t, refused.raw, started.SessionID)
+		assert.Contains(t, refused.raw, debugSessionEndTool)
+	}
+
+	result, _ = callSession(t, client, debugSessionEndTool, map[string]any{"session_id": started.SessionID})
+	require.False(t, result.IsError)
+	result, after := callSession(t, client, flowmcp.DebugToolName, map[string]any{
+		"workflow": debugWorkflow, "tests": sessionTests, "commands": []string{"continue"},
+	})
+	assert.False(t, result.IsError, after.raw)
+}
+
+// TestACallDoesNotWaitForALapsedSessionToEnd: the sweep a call runs ends a
+// lapsed stubbed session, which can take seconds to stop; the call, about some
+// other session, is answered without waiting for it.
+func TestACallDoesNotWaitForALapsedSessionToEnd(t *testing.T) {
+	t.Parallel()
+
+	synctest.Test(t, func(t *testing.T) {
+		r := newDebugSessions(nil)
+		lapsed := addStepSession(t, r, newStepTarget(true))
+		lapsed.done = make(chan struct{})
+		lapsed.cancel = func() {}
+		lapsed.mu.Lock()
+		lapsed.expires = time.Now().Add(-time.Second)
+		lapsed.mu.Unlock()
+		other := addStepSession(t, r, newStepTarget(true))
+
+		start := time.Now()
+		_, err := r.lookup(other.id)
+		require.NoError(t, err)
+		assert.Zero(t, time.Since(start), "a call waited for another session's end")
+
+		// The end still happens, on its own time.
+		time.Sleep(2 * debugSessionEndSettle)
+		synctest.Wait()
+		r.mu.Lock()
+		_, held := r.sessions[lapsed.id]
+		r.mu.Unlock()
+		assert.False(t, held)
+	})
 }

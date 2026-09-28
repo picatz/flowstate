@@ -264,10 +264,12 @@ func stdioExtraTools(ctx context.Context, cmd *cobra.Command, providers *localSe
 
 	return append([]flowmcp.ToolRegistration{
 		{Tool: flowmcp.RunLocalTool(), Handler: runLocalToolHandler(cmd, providers)},
-		{Tool: flowmcp.TestTool(), Handler: testToolHandler(0)},
+		// Both run a stubbed case under the process-wide registry lock, so
+		// neither may run while a retained stubbed session holds it.
+		{Tool: flowmcp.TestTool(), Handler: sessions.unlessStubbed(testToolHandler(0))},
 		// The debugger's own front (#928 slice 3), beside the tool whose
 		// verdicts it explains.
-		{Tool: flowmcp.DebugTool(), Handler: debugToolHandler(0)},
+		{Tool: flowmcp.DebugTool(), Handler: sessions.unlessStubbed(debugToolHandler(0))},
 	},
 		// Retained sessions (#2127): stdio only, where one caller owns the
 		// process. `flow mcp serve` serializes the process-wide registry

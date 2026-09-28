@@ -157,8 +157,11 @@ func (r *debugSessions) sweep() {
 	}
 	r.mu.Unlock()
 
+	// Ended on their own goroutines: a stubbed case may take twice
+	// [debugSessionEndSettle] to stop, and the call that happened to sweep —
+	// about some other session — must not wait for it.
 	for _, entry := range lapsed {
-		entry.end(false)
+		go entry.end(false)
 	}
 }
 
@@ -198,6 +201,11 @@ func (r *debugSessions) register(entry *debugSessionEntry, request string) (*deb
 			return existing, nil
 		}
 	}
+	// A rejoin of a session this server already holds: one entry, and one
+	// driver, per session. The caller discards the entry it built.
+	if existing, ok := r.sessions[entry.id]; ok {
+		return existing, nil
+	}
 	if len(r.sessions) >= maxDebugSessions {
 		return nil, fmt.Errorf("this server already holds %d debug sessions; end one with %s", maxDebugSessions, debugSessionEndTool)
 	}
@@ -219,6 +227,36 @@ func (r *debugSessions) register(entry *debugSessionEntry, request string) (*deb
 	}
 
 	return nil, nil
+}
+
+// stubbed names the open stubbed session, if there is one.
+func (r *debugSessions) stubbed() (string, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	for _, open := range r.sessions {
+		if open.local != nil {
+			return open.id, true
+		}
+	}
+
+	return "", false
+}
+
+// unlessStubbed refuses handler's call while a retained stubbed session is
+// open: that session's case holds the process-wide task registry lock for as
+// long as it runs, and a stubbed run of handler's own would wait on it,
+// uncancellably, until the session ends. A session started while handler
+// runs waits instead, bounded by handler's own run.
+func (r *debugSessions) unlessStubbed(handler mcp.ToolHandler) mcp.ToolHandler {
+	return func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		if id, open := r.stubbed(); open {
+			return flowmcp.ToolError(fmt.Errorf("retained debug session %s is running a stubbed case, and this "+
+				"server runs one at a time; end it with %s first", id, debugSessionEndTool)), nil
+		}
+
+		return handler(ctx, req)
+	}
 }
 
 // lookup returns a live session and renews its lease.
@@ -598,10 +636,22 @@ func (r *debugSessions) attach(ctx context.Context, req *mcp.CallToolRequest) (*
 		started: time.Now(), expires: time.Now().Add(debugSessionIdle), receipts: map[string]json.RawMessage{},
 	}
 	entry.driver.Wait = maxDebugSessionWait
-	if _, err := r.register(entry, ""); err != nil {
+	existing, err := r.register(entry, "")
+	if err != nil || existing != nil {
+		// Detached from nothing: the session stays attached, renewed by
+		// the entry that already holds it.
 		_ = remote.Disconnect()
+		if err != nil {
+			return flowmcp.ToolError(err), nil
+		}
+		if _, err := r.lookup(existing.id); err != nil {
+			return flowmcp.ToolError(err), nil
+		}
+		answer := existing.answer(ctx)
+		answer.Receipt = schemaJSON(receipt)
+		answer.Note = strings.TrimSpace("this server already holds this session; it was rejoined, not attached again. " + answer.Note)
 
-		return flowmcp.ToolError(err), nil
+		return toolJSON(answer), nil
 	}
 
 	answer := entry.answer(ctx)
