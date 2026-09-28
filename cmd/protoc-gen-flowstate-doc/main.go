@@ -91,6 +91,10 @@ func handle(_ context.Context, _ protoplugin.PluginEnv, w protoplugin.ResponseWr
 // generate writes one Go file per file to generate. With an empty into, each
 // file's comments go into its own Go package.
 func generate(gen *protogen.Plugin, into protogen.GoImportPath) error {
+	// Flattened names can collide (a/b_c.proto and a_b/c.proto both become
+	// a_b_c.doc.pb.go), so each name is claimed once and a second claim is an
+	// error rather than one file silently replacing another.
+	written := make(map[string]string)
 	for _, file := range gen.Files {
 		if !file.Generate {
 			continue
@@ -114,6 +118,10 @@ func generate(gen *protogen.Plugin, into protogen.GoImportPath) error {
 			filename = strings.ReplaceAll(strings.TrimSuffix(file.Desc.Path(), ".proto"), "/", "_") + ".doc.pb.go"
 			importPath = into
 		}
+		if other, taken := written[filename]; taken {
+			return fmt.Errorf("package=%s: %s and %s would both be written to %s", into, other, file.Desc.Path(), filename)
+		}
+		written[filename] = file.Desc.Path()
 		write(gen.NewGeneratedFile(filename, importPath), file, packageName(file, into), comments)
 	}
 	return nil

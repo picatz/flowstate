@@ -228,11 +228,11 @@ $ go get -tool google.golang.org/protobuf/cmd/protoc-gen-go
 $ go get -tool github.com/picatz/flowstate/cmd/protoc-gen-flowstate-doc
 $ go tool buf generate proto
 $ ls gen/hello/v1
-hello.pb.go
+hello.doc.pb.go  hello.pb.go
 ```
 
-(`hello.proto` has no comments yet, so there is no `hello.doc.pb.go` beside it;
-one appears the first time you write one.)
+(`hello.proto` has no comments yet, so `hello.doc.pb.go` registers none; it is
+generated anyway so that it always tracks the `.proto` beside it.)
 
 Then name the messages on the task and decode through them. `main.go` gains one
 import, `hellov1 "example.com/flowstate-plugin-hello/gen/hello/v1"`:

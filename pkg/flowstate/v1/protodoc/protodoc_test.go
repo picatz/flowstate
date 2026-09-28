@@ -227,9 +227,9 @@ func TestMethod(t *testing.T) {
 	}
 }
 
-// A descriptor from the linked-in registry carries no SourceCodeInfo, and the
-// package promises to say so rather than to report the symbol as undocumented in
-// a way a caller could mistake for the schema's own silence.
+// A linked descriptor that carries no SourceCodeInfo and that no generated file
+// describes (google.protobuf's own, here) has no prose, and the package says so
+// rather than borrowing some other declaration's.
 func TestCommentOfRejectsDescriptorsWithoutSourceInfo(t *testing.T) {
 	desc := (&descriptorpb.FileDescriptorSet{}).ProtoReflect().Descriptor()
 	if got, ok := CommentOf(desc); ok || got != "" {

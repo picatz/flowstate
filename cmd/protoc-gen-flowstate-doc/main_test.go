@@ -234,6 +234,27 @@ func TestFileWithoutCommentsRegistersNothing(t *testing.T) {
 	}
 }
 
+// Flattening can map two paths to one name; that is refused rather than one
+// file's comments silently replacing the other's.
+func TestPackageOptionRefusesCollidingFileNames(t *testing.T) {
+	first := thingProto()
+	first.Name = proto.String("a/b_c.proto")
+	second := thingProto()
+	second.Name = proto.String("a_b/c.proto")
+	second.Package = proto.String("thing.v1.other")
+	second.MessageType[0].Field[1].TypeName = proto.String(".thing.v1.other.Thing.Kind")
+	second.Service[0].Method[0].InputType = proto.String(".thing.v1.other.Thing")
+	second.Service[0].Method[0].OutputType = proto.String(".thing.v1.other.Thing")
+
+	resp, err := run(t, "package=example.com/docs/thingdoc", first, second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(resp.GetError(), "would both be written to a_b_c.doc.pb.go") || len(resp.GetFile()) != 0 {
+		t.Errorf("response = %d files, error %q; want no files and a collision error", len(resp.GetFile()), resp.GetError())
+	}
+}
+
 func TestPackageOptionMustNameAGoPackage(t *testing.T) {
 	for _, param := range []string{"package=example.com/not-a-name", "package=example.com/9lives"} {
 		if _, err := run(t, param, thingProto()); err == nil || !strings.Contains(err.Error(), "not a Go package name") {

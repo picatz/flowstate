@@ -2657,12 +2657,16 @@ flow run local examples/hello-world/workflow.yaml --debug`,
 			"never talk to each other, they meet at Temporal. With `--temporal-deployment-name` and `--build-id` " +
 			"it claims a Temporal Worker Deployment version, pinning every run already in flight to the " +
 			"interpreter it started on: a later deploy changes what new runs compute, not what " +
-			"in-flight ones do, until each reaches continue-as-new. With `--tenant` it executes one " +
+			"in-flight ones do, until each reaches continue-as-new. A version receives new runs " +
+			"only as the deployment's current version, or for its share as a ramping version, and " +
+			"this command sets neither: promote a build with `temporal worker deployment " +
+			"set-current-version`, or ramp it with `set-ramping-version`. With `--tenant` it executes one " +
 			"namespace's runs and refuses every other outright, rather than running them with this " +
 			"worker's secrets, egress policy and plugins, which needs a queue of its own, named by " +
 			"`--task-queue-prefix` (the value the server was started with) or given as `--task-queue`.",
 		RunE: runWorker,
-		Example: `# Start a worker, pinned so a deploy does not change runs already in flight:
+		Example: `# Start a worker, pinned so a deploy does not change runs already in flight.
+# It receives new runs once its build is current or ramping.
 flow worker --temporal-deployment-name flowstate \
   --build-id "$(git rev-parse --short HEAD)"
 
@@ -3269,10 +3273,11 @@ flow plugins -o json \
 			"does. What such a run may reach is decided by the flags this process is started " +
 			"with and by nothing a client sends: with no flags, egress is denied and no secret " +
 			"scheme is registered.\n\n" +
-			"Beside the tools, the server publishes read-only resources: the whole DSL " +
-			"reference at flowstate://docs/dsl, the task catalog as JSON at " +
-			"flowstate://catalog/tasks, and every example Flowfile under " +
-			"flowstate://docs/examples/, embedded at build time, so an agent can read the " +
+			"Beside the tools, the server publishes read-only resources: the language guide " +
+			"at flowstate://docs/language, the task catalog as JSON at " +
+			"flowstate://catalog/tasks, every example Flowfile under " +
+			"flowstate://docs/examples/, and the record of the language's design decisions " +
+			"at flowstate://docs/dsl, all embedded at build time, so an agent can read the " +
 			"language and working references without a checkout nearby.\n\n" +
 			"An agent host launches this and speaks to it over the same stdin and stdout " +
 			"this process already has; typing `flow mcp` yourself waits for a host to " +
@@ -3339,8 +3344,9 @@ flow mcp --plugin-dir ./plugins`,
 			"HTTP it is remote code execution as a feature, and the run-lifecycle tools are absent " +
 			"because they would spend this process's own credential on a caller's behalf. What is " +
 			"served is what answers in this process and reaches nothing — flowstate_validate, " +
-			"flowstate_compile, flowstate_get_catalog — plus flowstate_test, whose stubbed runs " +
-			"replace every task implementation before a step executes. Sessions and their limits " +
+			"flowstate_compile, flowstate_get_catalog — plus flowstate_test and flowstate_debug, " +
+			"whose stubbed runs replace every task implementation before a step executes. " +
+			"Sessions and their limits " +
 			"live only in this process: run one replica, and expect a restart to invalidate active " +
 			"sessions. A load-balanced fleet is not a supported horizontally scalable deployment.\n\n" +
 			"Flowstate is not an authorization server: it issues no tokens, runs no authorization " +
