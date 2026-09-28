@@ -614,7 +614,9 @@ every other addition in this schema is):
   *spec's* shape, with an iteration count layered on separately if the
   run-state prerequisite below ever adds one), `PARALLEL_BRANCH` (this step is
   one of several siblings under one parallel node rather than a sequence), and
-  `SWITCH_ARM` (this step is in one arm of a `switch:`).
+  `SWITCH_ARM` (this step is in one arm of a `switch:`; the edge carries which
+  arm — its index among the cases, or `default` — and slice 1 decides how an arm
+  with no steps is drawn, since it has no step to point at).
 - **`Graph`**: `repeated GraphNode nodes`, `repeated GraphEdge edges`, and the
   workflow id or path the graph was built from, so a `Graph` value is
   self-describing rather than needing to be handed back to whoever produced it
@@ -1056,9 +1058,11 @@ line. What is not: everything below.
      `previous_run_id`/`next_run_id` under a stated limit and says when it
      stopped short;
    - which drivers it covers: `GetTimeline` reads Temporal history and the
-     local driver has no equivalent, so any telemetry the overlay needs for
-     both comes from the shared executor path, keeping the two drivers in
-     agreement.
+     local driver has no equivalent. The two drivers walk a spec with separate
+     executors (`runNodes` in `pkg/flowstate/v1/eval.go` locally,
+     `executor.runNodes` in `engine/execute.go` durably), so telemetry the
+     overlay needs from both is one recording contract both call, proved
+     identical by shared conformance cases.
 
    It does not pre-decide the message shape. Two representations of one task
    step's outcome are what it must avoid. This slice blocks the run-state
