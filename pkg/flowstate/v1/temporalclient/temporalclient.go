@@ -116,8 +116,8 @@ type Config struct {
 
 	// refuseUncovered builds a client for a namespace the codec slot holds
 	// no keys for with a codec that refuses every payload, instead of
-	// refusing the client. Set only by NewPool, for a fallback client the
-	// tenancy mapping routes no tenant to.
+	// refusing the client. Set only by [Config.Fallback], for a fallback
+	// client the tenancy mapping routes no tenant to.
 	refuseUncovered bool
 }
 
@@ -187,7 +187,7 @@ func (c Config) Options() (client.Options, error) {
 		if !c.refuseUncovered {
 			return client.Options{}, err
 		}
-		// A client nothing is expected to use (see NewPool): built, but
+		// A client nothing is expected to use (see Config.Fallback): built, but
 		// unable to write or read a payload, rather than built in plaintext.
 		codec = payloadcodec.Refusing(opts.Namespace)
 	}

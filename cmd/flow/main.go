@@ -1299,6 +1299,24 @@ func runServer(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// Whether this deployment routes tenants onto Temporal namespaces of their
+	// own, decided once and read by both branches below.
+	//
+	// One boolean rather than two conditions that happen to be complements,
+	// because something below depends on their being exhaustive: every server
+	// this function builds must be able to name the Temporal namespace it reads
+	// from, and it gets that from exactly one of the two — WithTemporalNamespace
+	// when there is no pool, the pool itself when there is. Written as two
+	// independent conditions, that completeness is an accident a later edit can
+	// take away without touching either site, and the deployment that fell
+	// between them would build a server that cannot answer. See
+	// [server.FlowstateServer] and TestEveryDeploymentShapeCanNameItsTemporalNamespace.
+	pooled := policy != nil && policy.Tenancy != nil
+
+	// On a pooled deployment this is the pool's fallback client, dialed the
+	// way NewPool dials it: a keyring covering only the mapped namespaces
+	// must not refuse the start over a client no tenant is routed to.
+	//
 	// The namespace comes back from the dial rather than from a second
 	// cfg.Options() further down, and that is a correctness requirement rather
 	// than a tidiness one. Options reads the environment and a TOML file every
@@ -1307,7 +1325,11 @@ func runServer(cmd *cobra.Command, args []string) error {
 	// compiling Flowfiles — can answer differently, and everything below would
 	// then name a namespace this client is not connected to. See
 	// [temporalclient.DialWithNamespace].
-	c, temporalNamespace, err := temporalclient.DialWithNamespace(cmd.Context(), cfg)
+	dialCfg := cfg
+	if pooled {
+		dialCfg = cfg.Fallback(policy.Tenancy)
+	}
+	c, temporalNamespace, err := temporalclient.DialWithNamespace(cmd.Context(), dialCfg)
 	if err != nil {
 		return err
 	}
@@ -1363,20 +1385,6 @@ func runServer(cmd *cobra.Command, args []string) error {
 		}
 		serverOpts = append(serverOpts, server.WithCredentialTargets(targets...))
 	}
-
-	// Whether this deployment routes tenants onto Temporal namespaces of their
-	// own, decided once and read by both branches below.
-	//
-	// One boolean rather than two conditions that happen to be complements,
-	// because something below depends on their being exhaustive: every server
-	// this function builds must be able to name the Temporal namespace it reads
-	// from, and it gets that from exactly one of the two — WithTemporalNamespace
-	// when there is no pool, the pool itself when there is. Written as two
-	// independent conditions, that completeness is an accident a later edit can
-	// take away without touching either site, and the deployment that fell
-	// between them would build a server that cannot answer. See
-	// [server.FlowstateServer] and TestEveryDeploymentShapeCanNameItsTemporalNamespace.
-	pooled := policy != nil && policy.Tenancy != nil
 
 	// Search attributes are registered — idempotently, once, before the server
 	// starts serving — only in the single-namespace configuration. A trust
