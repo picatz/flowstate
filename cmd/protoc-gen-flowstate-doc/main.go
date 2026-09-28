@@ -26,7 +26,10 @@
 // file names flattened (flowstate/v1/run.proto becomes
 // flowstate_v1_run.doc.pb.go) directly under the plugin's out directory. The
 // engine uses it to keep its own schema's comments in protodoc, so only a
-// binary that imports protodoc carries them.
+// binary that imports protodoc carries them. Run package= with `strategy: all`:
+// the plugin refuses two files whose flattened names collide, and buf's default
+// strategy invokes it once per directory, where a collision between
+// directories cannot be seen.
 //
 // Comments are recorded raw, in declaration order, one generated line per
 // comment line. Nothing is normalized here: presentation belongs to whoever

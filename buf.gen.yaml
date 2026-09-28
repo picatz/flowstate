@@ -28,8 +28,13 @@ plugins:
   # leading comments into protodoc, where the MCP tool table, LSP hover and the
   # generated reference read them. Built from this module through its `tool`
   # directive, so the version is the one go.mod pins and never one from PATH.
+  #
+  # strategy: all, because package= gathers every directory's files into one
+  # package under flattened names, and only one invocation over all of them
+  # can see two names collide (buf's default runs one per directory).
   - plugin: flowstate-doc
     path: [go, tool, protoc-gen-flowstate-doc]
+    strategy: all
     out: ./pkg/flowstate/v1/protodoc
     opt:
       - package=github.com/picatz/flowstate/pkg/flowstate/v1/protodoc

@@ -1,6 +1,7 @@
 package protodoc
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -37,6 +38,35 @@ func TestEveryLinkedSchemaFileRegistersItsComments(t *testing.T) {
 	})
 	if files < 18 {
 		t.Errorf("walked %d schema files; want every flowstate/v1 file and flowstate/plugin/v1/plugin.proto", files)
+	}
+}
+
+// Every flowstate_*.doc.pb.go in this package must come from a linked .proto.
+// buf generate never deletes output whose source is gone, so a deleted or
+// renamed .proto would otherwise leave its old file registering comments: for
+// declarations that no longer exist, or, after a rename, as a second
+// registration that makes every name in it ambiguous. The drift pin cannot see
+// such a file, because nothing regenerates it.
+func TestEveryGeneratedDocFileHasALinkedSource(t *testing.T) {
+	want := make(map[string]bool)
+	protoregistry.GlobalFiles.RangeFiles(func(file protoreflect.FileDescriptor) bool {
+		if strings.HasPrefix(file.Path(), "flowstate/") {
+			want[strings.ReplaceAll(strings.TrimSuffix(file.Path(), ".proto"), "/", "_")+".doc.pb.go"] = true
+		}
+		return true
+	})
+
+	generated, err := filepath.Glob("*.doc.pb.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(generated) == 0 {
+		t.Fatal("found no generated doc files; this test must run in the protodoc package directory")
+	}
+	for _, name := range generated {
+		if !want[name] {
+			t.Errorf("%s has no linked .proto; its source was deleted or renamed, so delete it and run `buf generate`", name)
+		}
 	}
 }
 
