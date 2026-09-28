@@ -272,7 +272,7 @@ func (e *executor) applyTypedAsk(ask *v1.DebugAsk, parseErr error, sender *v1.Si
 				// answer differs, so a history that applied such a resume
 				// replays applying it.
 				if sites, truncated := v1.DebugStaticSites(e.spec); !truncated {
-					if _, why := durableSites(target, ask.Until, sites, "run until"); why != "" &&
+					if _, why := durableSites(target, ask.Until, sites, false, "run until"); why != "" &&
 						workflow.GetVersion(e.ctx, untilRefusalChange, workflow.DefaultVersion, 1) != workflow.DefaultVersion {
 						d.receipt(ask.Request, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_REFUSED, why)
 
@@ -380,10 +380,18 @@ const untilRefusalChange = "engine.debug.refuseUnholdableUntil"
 // arrival here. verb is how the refusal tells the reader to name the
 // enclosing step instead. Breakpoints and `until` both ask this, so a target
 // one refuses the other refuses in the same words.
-func durableSites(target v1.DebugTarget, text string, sites []v1.DebugStaticSite, verb string) ([]v1.DebugStaticSite, string) {
+//
+// truncated says sites stopped at [v1.MaxDebugStaticSites]. A site past the
+// cut can still be an arrival the target matches, so a truncated enumeration
+// cannot say every match is unholdable, and only the resolution is judged —
+// what the engine did before this check, which a history it recorded replays.
+func durableSites(target v1.DebugTarget, text string, sites []v1.DebugStaticSite, truncated bool, verb string) ([]v1.DebugStaticSite, string) {
 	resolved := target.Resolve(sites)
 	if len(resolved) == 0 {
 		return nil, fmt.Sprintf("no step matches %q", text)
+	}
+	if truncated {
+		return resolved, ""
 	}
 	resolved = slices.DeleteFunc(resolved, func(site v1.DebugStaticSite) bool { return !durablyHeld(site) })
 	if len(resolved) == 0 {
@@ -401,7 +409,7 @@ func (e *executor) parseDebugBreakpoints() {
 		return
 	}
 
-	sites, _ := v1.DebugStaticSites(e.spec)
+	sites, truncated := v1.DebugStaticSites(e.spec)
 	d.parsed = make([]parsedBreakpoint, 0, len(d.carry.GetBreakpoints()))
 	for i, bp := range d.carry.GetBreakpoints() {
 		parsed := parsedBreakpoint{state: debugBreakpointDefined(bp, i)}
@@ -427,7 +435,7 @@ func (e *executor) parseDebugBreakpoints() {
 			// Only a site the durable driver can hold at arms it: a
 			// breakpoint that reported armed elsewhere would claim a stop
 			// that never comes.
-			resolved, why := durableSites(target, bp.GetStep(), sites, "break at")
+			resolved, why := durableSites(target, bp.GetStep(), sites, truncated, "break at")
 			if why != "" {
 				refuse(why)
 
