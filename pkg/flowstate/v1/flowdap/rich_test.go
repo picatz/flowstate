@@ -1080,7 +1080,10 @@ func TestAnEditedFileCanClearItsBreakpoints(t *testing.T) {
 	c.send(5, "configurationDone", nil)
 	c.await("response", "configurationDone")
 	select {
-	case <-finished:
+	case err := <-finished:
+		// The program fails at its `boom` step: that is its end, reached
+		// with nothing left to stop it.
+		assert.ErrorContains(t, err, "boom")
 	case <-time.After(20 * time.Second):
 		t.Fatal("a breakpoint the editor cleared still held the run")
 	}

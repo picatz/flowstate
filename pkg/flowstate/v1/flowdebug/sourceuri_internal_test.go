@@ -16,6 +16,8 @@ func TestSameSourceURIReadsEverySpellingOfOneFile(t *testing.T) {
 		{"file:///c%3A/Users/u/x.yaml", `C:\Users\u\x.yaml`},
 		{"file:///C:/Users/u/x.yaml", "c:/Users/u/x.yaml"},
 		{"file://C:/Users/u/x.yaml", `C:\Users\u\x.yaml`},
+		{"file://localhost/home/u/flows/x.yaml", "/home/u/flows/x.yaml"},
+		{"file://localhost/C:/Users/u/x.yaml", `C:\Users\u\x.yaml`},
 	} {
 		if !SameSourceURI(pair[0], pair[1]) {
 			t.Errorf("SameSourceURI(%q, %q) = false, want true", pair[0], pair[1])

@@ -1358,7 +1358,8 @@ func sourcePath(uri string) string {
 		path = strings.TrimPrefix(uri, "file://")
 		if parsed, err := url.Parse(uri); err == nil && parsed.Path != "" {
 			switch host := parsed.Host; {
-			case host == "":
+			case host == "" || strings.EqualFold(host, "localhost"):
+				// No authority, or localhost, is this machine (RFC 8089 §2).
 				path = parsed.Path
 			case len(host) == 2 && host[1] == ':' && isDriveLetter(host[0]):
 				// file://C:/dir/x.yaml: the drive parsed as an authority.
