@@ -266,20 +266,12 @@ func (e *executor) applyTypedAsk(ask *v1.DebugAsk, parseErr error, sender *v1.Si
 					return
 				}
 				// A target the run can never stop at would release it to
-				// the end: refused, and the run stays held. A truncated
-				// enumeration cannot say a site is absent, so it asks the
-				// program as written instead, as the breakpoints do: a
-				// target it never declares is refused, one it declares
-				// past the cut is not. Behind [untilRefusalChange], asked
-				// only where the answer differs, so a history that applied
-				// such a resume replays applying it.
+				// the end: refused, and the run stays held. Behind
+				// [untilRefusalChange], asked only where the answer
+				// differs, so a history that applied such a resume replays
+				// applying it.
 				sites, truncated := v1.DebugStaticSites(e.spec)
-				why := ""
-				if !truncated {
-					_, why = durableSites(target, ask.Until, sites, false, "run until")
-				} else if !target.DeclaredIn(e.spec) {
-					why = fmt.Sprintf("no step %q is declared by this workflow or a workflow it calls", ask.Until)
-				}
+				_, why := durableSites(target, ask.Until, e.spec, sites, truncated, "run until")
 				if why != "" && workflow.GetVersion(e.ctx, untilRefusalChange, workflow.DefaultVersion, 1) != workflow.DefaultVersion {
 					d.receipt(ask.Request, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_REFUSED, why)
 
@@ -394,25 +386,24 @@ const truncatedArmChange = "engine.debug.armPastTruncatedSites"
 // enclosing step instead. Breakpoints and `until` both ask this, so a target
 // one refuses the other refuses in the same words.
 //
-// truncated says sites stopped at [v1.MaxDebugStaticSites]. A site past the
-// cut can still be an arrival the target matches, so a truncated enumeration
-// cannot say every match is unholdable, and only the resolution is judged —
-// what the engine did before this check, which a history it recorded replays.
-func durableSites(target v1.DebugTarget, text string, sites []v1.DebugStaticSite, truncated bool, verb string) ([]v1.DebugStaticSite, string) {
+// truncated says sites stopped at [v1.MaxDebugStaticSites]. A step past the
+// cut can still be an arrival the target matches, so there the program as
+// written decides: a target it declares where a durable run holds
+// ([v1.DebugTarget.DeclaredOutsideBodiesIn]) is kept, with only the sites
+// enumerated before the cut listed — none, when its only match lies past it —
+// and any other is refused as the complete enumeration would refuse it.
+func durableSites(target v1.DebugTarget, text string, spec *v1.Workflow, sites []v1.DebugStaticSite, truncated bool, verb string) ([]v1.DebugStaticSite, string) {
 	resolved := target.Resolve(sites)
-	if len(resolved) == 0 {
-		return nil, fmt.Sprintf("no step matches %q", text)
-	}
-	if truncated {
-		return resolved, ""
-	}
-	resolved = slices.DeleteFunc(resolved, func(site v1.DebugStaticSite) bool { return !durablyHeld(site) })
-	if len(resolved) == 0 {
+	held := slices.DeleteFunc(slices.Clone(resolved), func(site v1.DebugStaticSite) bool { return !durablyHeld(site) })
+	switch {
+	case len(held) > 0 || truncated && target.DeclaredOutsideBodiesIn(spec):
+		return held, ""
+	case len(resolved) > 0 || truncated && target.DeclaredIn(spec):
 		return nil, fmt.Sprintf("%q is inside a loop body, a parallel branch or a switch arm, which a durable run "+
 			"executes as a unit and never holds in; %s the enclosing step instead", text, verb)
+	default:
+		return nil, fmt.Sprintf("no step matches %q", text)
 	}
-
-	return resolved, ""
 }
 
 // parseDebugBreakpoints compiles the carried breakpoints once per segment.
@@ -448,17 +439,15 @@ func (e *executor) parseDebugBreakpoints() {
 			// Only a site the durable driver can hold at arms it: a
 			// breakpoint that reported armed elsewhere would claim a stop
 			// that never comes.
-			resolved, why := durableSites(target, bp.GetStep(), sites, truncated, "break at")
-			// A truncated enumeration cannot say a step is absent either: a
-			// declared step matching nothing before the cut can match past it,
-			// so it is armed with no sites listed. A target the program never
-			// declares — its step, within the containers it names — stays
-			// refused, as the local driver refuses it. Behind
-			// [truncatedArmChange], asked only where the answer differs, so a
-			// history that refused it replays refusing it.
-			if why != "" && truncated && target.DeclaredIn(e.spec) &&
-				workflow.GetVersion(e.ctx, truncatedArmChange, workflow.DefaultVersion, 1) != workflow.DefaultVersion {
-				why = ""
+			resolved, why := durableSites(target, bp.GetStep(), e.spec, sites, truncated, "break at")
+			// Past a truncated enumeration a target matching no site before
+			// the cut, declared where a durable run holds, is armed. An
+			// engine before [truncatedArmChange] refused it, as matching
+			// nothing, and a history it recorded replays refusing it: asked
+			// only where the answer differs.
+			if why == "" && len(resolved) == 0 && len(target.Resolve(sites)) == 0 &&
+				workflow.GetVersion(e.ctx, truncatedArmChange, workflow.DefaultVersion, 1) == workflow.DefaultVersion {
+				why = fmt.Sprintf("no step matches %q", bp.GetStep())
 			}
 			if why != "" {
 				refuse(why)

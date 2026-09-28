@@ -508,9 +508,10 @@ func TestATypedSessionIsNotReleasedByAMalformedOrLegacyResume(t *testing.T) {
 
 // TestATruncatedDurableUntilRefusesAStepTheProgramNeverDeclares: past
 // [v1.MaxDebugStaticSites] the sites cannot say a step is absent, but the
-// program as written still can. An `until` naming a step no workflow declares
-// would release the held run to its end, so it is refused, as the local driver
-// refuses it; one naming a declared step is not.
+// program as written still can. An `until` naming a step no workflow declares,
+// or one it declares only inside an arm, where a durable run never holds,
+// would release the held run to its end, so it is refused; one naming a step
+// declared where the run holds is not.
 func TestATruncatedDurableUntilRefusesAStepTheProgramNeverDeclares(t *testing.T) {
 	t.Parallel()
 
@@ -526,6 +527,9 @@ func TestATruncatedDurableUntilRefusesAStepTheProgramNeverDeclares(t *testing.T)
 	tl.ask(70*time.Second, sre, &v1.DebugAsk{Verb: v1.DebugVerbResume, Session: "s1", Request: "nowhere",
 		Action: v1.DebugResumeAction_DEBUG_RESUME_ACTION_RUN_UNTIL, Until: "bogus"})
 	tl.read(71*time.Second, "refused", "nowhere")
+	tl.ask(72*time.Second, sre, &v1.DebugAsk{Verb: v1.DebugVerbResume, Session: "s1", Request: "in-arm",
+		Action: v1.DebugResumeAction_DEBUG_RESUME_ACTION_RUN_UNTIL, Until: "s7"})
+	tl.read(73*time.Second, "unholdable", "in-arm")
 	tl.ask(80*time.Second, sre, &v1.DebugAsk{Verb: v1.DebugVerbResume, Session: "s1", Request: "to-second",
 		Action: v1.DebugResumeAction_DEBUG_RESUME_ACTION_RUN_UNTIL, Until: "second"})
 	tl.read(81*time.Second, "arrived", "to-second")
@@ -555,7 +559,12 @@ func TestATruncatedDurableUntilRefusesAStepTheProgramNeverDeclares(t *testing.T)
 
 	held, refused := tl.reads["held"], tl.reads["refused"]
 	assert.Equal(t, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_REFUSED, refused.GetReceipt().GetStatus())
-	assert.Contains(t, refused.GetReceipt().GetMessage(), `no step "bogus"`)
+	assert.Contains(t, refused.GetReceipt().GetMessage(), `no step matches "bogus"`)
 	assert.Equal(t, held.GetRevision(), refused.GetRevision(), "a refused until moved the run")
+	unholdable := tl.reads["unholdable"]
+	assert.Equal(t, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_REFUSED, unholdable.GetReceipt().GetStatus(),
+		"an until the run can never stop at was applied")
+	assert.Contains(t, unholdable.GetReceipt().GetMessage(), "inside a loop body, a parallel branch or a switch arm")
+	assert.Equal(t, held.GetRevision(), unholdable.GetRevision(), "a refused until moved the run")
 	assert.Equal(t, "second", tl.reads["arrived"].GetOccurrence().GetAddress(), "a declared until was refused")
 }

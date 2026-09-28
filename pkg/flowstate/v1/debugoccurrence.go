@@ -490,7 +490,19 @@ func DebugDeclaredSteps(wf *Workflow) iter.Seq[string] {
 // exponentially through [MaxCallDepth] levels. Only indices, which no program declares, are not compared, so it may accept
 // a target [DebugTarget.Resolve] would not, never the reverse. Calls are
 // followed to [MaxCallDepth], as the sites are.
-func (t DebugTarget) DeclaredIn(wf *Workflow) bool {
+func (t DebugTarget) DeclaredIn(wf *Workflow) bool { return t.declaredIn(wf, true) }
+
+// DeclaredOutsideBodiesIn is [DebugTarget.DeclaredIn] asking only of the steps
+// declared outside every loop body, parallel branch and switch arm: at wf's
+// top level, or at the top level of a workflow a call reaches. Those are the
+// only steps a durable run holds at, so a target it rejects is one a durable
+// session can never stop at, however far past a truncated [DebugStaticSites]
+// the step lies.
+func (t DebugTarget) DeclaredOutsideBodiesIn(wf *Workflow) bool { return t.declaredIn(wf, false) }
+
+// declaredIn is [DebugTarget.DeclaredIn], descending into loop bodies,
+// parallel branches and switch arms only when bodies is set.
+func (t DebugTarget) declaredIn(wf *Workflow, bodies bool) bool {
 	if len(t.parts) == 0 {
 		return false
 	}
@@ -549,6 +561,9 @@ func (t DebugTarget) DeclaredIn(wf *Workflow) bool {
 			}
 			into := func(kind DebugSegmentKind, callee string) []*DebugSegment {
 				return append(slices.Clip(chain), &DebugSegment{Kind: kind, StepId: node.GetId(), Callee: callee})
+			}
+			if _, call := node.GetKind().(*Node_Call); !call && !bodies {
+				continue
 			}
 			var found bool
 			switch kind := node.GetKind().(type) {
