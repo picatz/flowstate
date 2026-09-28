@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/signal"
 	"slices"
 	"sync"
@@ -104,10 +105,15 @@ func runDAP(cmd *cobra.Command, _ []string) error {
 	// An editor that dies takes the read end of this process's standard output
 	// with it, and a write to fd 1 after that is a SIGPIPE that kills the
 	// process under a run the session detached from, with its plugins never
-	// closed. Ignored, the write fails with EPIPE, which the adapter discards;
+	// closed. Handled, the write fails with EPIPE, which the adapter discards;
 	// it also stops writing once it sees the client gone, but a message
 	// already in flight when the editor dies would still meet the pipe.
-	signal.Ignore(syscall.SIGPIPE)
+	//
+	// Notify rather than Ignore: an ignored signal stays ignored across exec,
+	// so every plugin and secret command this adapter starts would inherit
+	// it and behave differently under the debugger than under a worker. A
+	// handled one is reset to its default in each child.
+	signal.Notify(make(chan os.Signal, 1), syscall.SIGPIPE)
 
 	writeStdioBanner(cmd.ErrOrStderr(), stdinIsInteractive(cmd), dapBanner)
 
