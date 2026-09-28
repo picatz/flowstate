@@ -518,14 +518,14 @@ type AuditRecord struct {
 	// untrusted tools/call string before lookup. Arguments, prompts and results
 	// are deliberately absent from this record.
 	McpTool string `protobuf:"bytes,9,opt,name=mcp_tool,json=mcpTool,proto3" json:"mcp_tool,omitempty"`
-	// The worker-side seam that made the decision, for an enforcement record.
-	// UNSPECIFIED on a control-plane record, where action names the operation
-	// instead. See "The worker's half" above.
 	// The HTTP endpoint decided about, for an operation that is neither an RPC
 	// nor an MCP tool: the codec server's "/decode" and "/encode". The route's
 	// fixed suffix, resolved against the authorization bindings, never the
 	// request path a caller sent.
-	HttpEndpoint     string                `protobuf:"bytes,21,opt,name=http_endpoint,json=httpEndpoint,proto3" json:"http_endpoint,omitempty"`
+	HttpEndpoint string `protobuf:"bytes,21,opt,name=http_endpoint,json=httpEndpoint,proto3" json:"http_endpoint,omitempty"`
+	// The worker-side seam that made the decision, for an enforcement record.
+	// UNSPECIFIED on a control-plane record, where action names the operation
+	// instead. See "The worker's half" above.
 	EnforcementPoint AuditEnforcementPoint `protobuf:"varint,12,opt,name=enforcement_point,json=enforcementPoint,proto3,enum=flowstate.v1.AuditEnforcementPoint" json:"enforcement_point,omitempty"`
 	// The operator's own policy rule that decided, verbatim.
 	//

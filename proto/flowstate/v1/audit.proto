@@ -228,9 +228,6 @@ message AuditRecord {
     expression: "this == '' || (size(this) <= 64 && this.matches('^[a-z][a-z0-9_]*$'))"
   }];
 
-  // The worker-side seam that made the decision, for an enforcement record.
-  // UNSPECIFIED on a control-plane record, where action names the operation
-  // instead. See "The worker's half" above.
   // The HTTP endpoint decided about, for an operation that is neither an RPC
   // nor an MCP tool: the codec server's "/decode" and "/encode". The route's
   // fixed suffix, resolved against the authorization bindings, never the
@@ -241,6 +238,9 @@ message AuditRecord {
     expression: "this == '' || (size(this) <= 64 && this.matches('^/[a-z][a-z0-9/_-]*$'))"
   }];
 
+  // The worker-side seam that made the decision, for an enforcement record.
+  // UNSPECIFIED on a control-plane record, where action names the operation
+  // instead. See "The worker's half" above.
   AuditEnforcementPoint enforcement_point = 12 [(buf.validate.field).enum.defined_only = true];
 
   // The operator's own policy rule that decided, verbatim.

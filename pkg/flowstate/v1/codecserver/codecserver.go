@@ -273,9 +273,17 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	payloads, err := h.readPayloads(w, r)
+	payloads, tooLarge, err := h.readPayloads(w, r)
 	if err != nil {
-		h.deny(ctx, subject, v1.AuditDenyCode_AUDIT_DENY_CODE_PAYLOAD_TOO_LARGE)
+		// Only a size refusal is a decision worth a record: a body that does
+		// not parse is a malformed request from a caller already authorized,
+		// and the log says so without the body.
+		if tooLarge {
+			h.deny(ctx, subject, v1.AuditDenyCode_AUDIT_DENY_CODE_PAYLOAD_TOO_LARGE)
+		} else {
+			h.opts.Logger.WarnContext(ctx, "codec server: malformed request body",
+				"endpoint", endpoint, "caller", principal.ID())
+		}
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -372,24 +380,26 @@ func (h *Handler) temporalNamespaceOf(tenant string) (string, bool, error) {
 	return ns, shared, nil
 }
 
-func (h *Handler) readPayloads(w http.ResponseWriter, r *http.Request) (*commonpb.Payloads, error) {
+// readPayloads reads and parses the body, reporting whether a refusal was
+// for size (the body or the payload count) rather than for shape.
+func (h *Handler) readPayloads(w http.ResponseWriter, r *http.Request) (*commonpb.Payloads, bool, error) {
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, h.opts.MaxBodyBytes))
 	if err != nil {
-		return nil, fmt.Errorf("the request body is over the %d byte limit or could not be read", h.opts.MaxBodyBytes)
+		return nil, true, fmt.Errorf("the request body is over the %d byte limit or could not be read", h.opts.MaxBodyBytes)
 	}
 	var payloads commonpb.Payloads
 	if err := protojson.Unmarshal(body, &payloads); err != nil {
-		return nil, errors.New("the request body is not a JSON Payloads document")
+		return nil, false, errors.New("the request body is not a JSON Payloads document")
 	}
 	if n := len(payloads.GetPayloads()); n > h.opts.MaxPayloads {
-		return nil, fmt.Errorf("the request holds %d payloads, over the %d limit", n, h.opts.MaxPayloads)
+		return nil, true, fmt.Errorf("the request holds %d payloads, over the %d limit", n, h.opts.MaxPayloads)
 	}
 	for _, p := range payloads.GetPayloads() {
 		if p == nil {
-			return nil, errors.New("the request holds an empty payload")
+			return nil, false, errors.New("the request holds an empty payload")
 		}
 	}
-	return &payloads, nil
+	return &payloads, false, nil
 }
 
 func (h *Handler) allow(ctx context.Context, subject audit.Subject) error {

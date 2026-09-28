@@ -64,7 +64,8 @@ flow codec serve --insecure-no-auth --payload-keyring keyring.yaml \
 		"decode in a Temporal namespace several tenants share, accepting that any tenant authorized "+
 			"there can read every tenant's payloads in it")
 	cmd.Flags().String("temporal-namespace", "",
-		"the Temporal namespace tenants the trust policy does not map run in (default \"default\")")
+		"the Temporal namespace tenants the trust policy does not map run in (default: TEMPORAL_NAMESPACE, "+
+			"the Temporal profile, or \"default\")")
 	addPayloadEncryptionFlags(cmd)
 	addTLSFlags(cmd)
 	addAuditRequiredFlag(cmd)
@@ -112,7 +113,13 @@ func runCodecServe(cmd *cobra.Command, _ []string) error {
 	}
 	defer flushAudit()
 
-	defaultNamespace := cmp.Or(namespace, temporalclient.DefaultNamespace)
+	// Resolved the way every command that dials Temporal resolves it: the
+	// flag, then TEMPORAL_NAMESPACE or the profile, then "default".
+	resolved, err := temporalclient.Config{Namespace: namespace}.Options()
+	if err != nil {
+		return err
+	}
+	defaultNamespace := resolved.Namespace
 	opts := codecserver.Options{
 		Codecs:                codecs,
 		DefaultNamespace:      defaultNamespace,

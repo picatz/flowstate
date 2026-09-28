@@ -315,7 +315,16 @@ namespaces:
 ```
 
 Everything written is still sealed. Remove the setting once the namespace's
-retention has passed. While it is set, anything able to write a plaintext
+retention has passed.
+
+> [!WARNING]
+> `flow server` reads its own memos (a run's tenant, starter, labels) through
+> one reader for every namespace, and that reader accepts unencrypted payloads
+> only if **every** namespace in the keyring does. In a keyring with several
+> namespaces, set `accept_unencrypted` on all of them for the migration, or the
+> server will treat pre-encryption runs in the migrating namespace as not found
+> even though workers can still finish them. Per-namespace server reads are
+> [#2163](https://github.com/picatz/flowstate/issues/2163). While it is set, anything able to write a plaintext
 payload into that namespace's history is read back as though it were
 protected, which is exactly what the default refusal prevents.
 
@@ -347,13 +356,23 @@ engine.Register(w, engine.TaskRuntimeConfig{}.WithDataConverter(mine.DataConvert
 The interpreter's converter is bound to the worker it is registered on, so
 several workers with different keyrings can run in one process.
 
+> [!CAUTION]
+> Pass the converter to `engine.Register` (or `embed.RunDurable`) whenever the
+> client has a codec. Without it, the interpreter falls back to the SDK's
+> default converter for everything it writes from workflow code, and the first
+> activity's arguments reach history unencrypted before the strict activity
+> side refuses them. `flow worker` and `flow server dev` always pass it; an
+> embedding program has to. Removing this requirement is
+> [#2164](https://github.com/picatz/flowstate/issues/2164).
+
 ## Guarantees and limits, by boundary
 
 | Data | Boundary | Enforced by | Proved by | Limitation |
 | --- | --- | --- | --- | --- |
 | Payloads | Worker/server → Temporal history | Envelope codec on every client (`temporalclient.Config.Options`) | `TestEncryptedHistoryHoldsNoPlaintext`, `TestContinueAsNewCarriesOnlyCiphertext` (real Temporal, raw history) | Sizes, types, ids, timing visible |
 | Failure messages and stacks | Worker → history | Failure converter forced to encode | Same tests: every failure message reads `Encoded failure` | Server-generated failures (timeouts) are plaintext, carrying no workload data |
-| Memos | Server → history | Client data converter; server reads through the keyring reader | Same tests, plus `TestCodecMemosAreReadThroughTheConfiguredConverter` | The server's reader holds every namespace's keys, so it cannot detect a memo moved between two of its namespaces |
+| Memos | Server → history | Client data converter; server reads through the keyring reader | Same tests, plus `TestCodecMemosAreReadThroughTheConfiguredConverter` | The server's reader holds every namespace's keys, so it cannot detect a memo moved between two of its namespaces, and it accepts unencrypted memos only if every namespace does |
+| Workflow-side writes in an embedding program | Interpreter → history | The worker's converter, passed with `TaskRuntimeConfig.WithDataConverter` | `TestCodecCoversInputsSignalsAndOutputs`, `TestSignalsAreLostWhenTheInterpreterBypassesTheCodec` | An embedder who omits it writes the first activity's arguments in plaintext |
 | Plaintext payloads in history | History → any reader | Decode refuses unencrypted payloads unless `accept_unencrypted` | `TestUnencryptedPayloadsAreRefusedUnlessAccepted`, `TestAMarkedPayloadNeverDowngrades` | Migration setting reopens it for one namespace |
 | Tampered or spliced payloads | History → worker | AES-GCM with key id and namespace authenticated | `TestTamperingIsRefused`, `TestCrossNamespaceSpliceFailsEvenUnderTheSameKey`, fuzzing | Not bound to a run: a history writer can move or replay a payload within one namespace |
 | Keys | Disk/env → process | Owner-only files, bounded reads, closure-held material | `TestKeyringRefusesKeysItCannotRead`, `TestKeyMaterialDoesNotFormat` | A compromised process holding keys reads everything they seal |
