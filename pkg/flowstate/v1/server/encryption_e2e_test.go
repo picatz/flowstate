@@ -24,6 +24,7 @@ import (
 	"github.com/picatz/flowstate/pkg/flowstate/v1/engine"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/payloadcodec"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/payloadcodec/envelope"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/payloadcodec/keyprovider/local"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/server"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/temporalclient"
 )
@@ -56,10 +57,10 @@ func TestEncryptedHistoryHoldsNoPlaintext(t *testing.T) {
 	// The keyring an operator writes, and the configuration `flow server` and
 	// `flow worker` resolve from it.
 	dir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "k.key"), envelope.GenerateKey(), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "k.key"), local.Generate(), 0o600))
 	cfg, err := envelope.ParseConfig([]byte("namespaces:\n  " + namespace + ":\n    current: e2e-1\n    keys:\n      - {id: e2e-1, file: k.key}\n"))
 	require.NoError(t, err)
-	keyring, err := envelope.Open(cfg, envelope.OpenOptions{BaseDir: dir})
+	keyring, err := envelope.Open(t.Context(), cfg, envelope.OpenOptions{BaseDir: dir})
 	require.NoError(t, err)
 	codecs := keyring.PayloadCodecConfig()
 	require.NoError(t, codecs.Validate())
@@ -148,10 +149,10 @@ func TestContinueAsNewCarriesOnlyCiphertext(t *testing.T) {
 
 	plain, namespace := newTemporalNamespace(t)
 
-	env := map[string]string{"K": string(envelope.GenerateKey())}
+	env := map[string]string{"K": string(local.Generate())}
 	cfg, err := envelope.ParseConfig([]byte("namespaces:\n  " + namespace + ":\n    current: can-1\n    keys:\n      - {id: can-1, env: K}\n"))
 	require.NoError(t, err)
-	keyring, err := envelope.Open(cfg, envelope.OpenOptions{Getenv: func(n string) string { return env[n] }})
+	keyring, err := envelope.Open(t.Context(), cfg, envelope.OpenOptions{Getenv: func(n string) string { return env[n] }})
 	require.NoError(t, err)
 	codecs := keyring.PayloadCodecConfig()
 	encrypted := dialWithCodec(t, namespace, codecs)
@@ -329,11 +330,11 @@ func TestRotationKeepsAnInFlightRunReadable(t *testing.T) {
 	t.Parallel()
 
 	plain, namespace := newTemporalNamespace(t)
-	env := map[string]string{"OLD": string(envelope.GenerateKey()), "NEW": string(envelope.GenerateKey())}
+	env := map[string]string{"OLD": string(local.Generate()), "NEW": string(local.Generate())}
 	open := func(doc string) payloadcodec.Config {
 		cfg, err := envelope.ParseConfig([]byte(doc))
 		require.NoError(t, err)
-		kr, err := envelope.Open(cfg, envelope.OpenOptions{Getenv: func(n string) string { return env[n] }})
+		kr, err := envelope.Open(t.Context(), cfg, envelope.OpenOptions{Getenv: func(n string) string { return env[n] }})
 		require.NoError(t, err)
 		return kr.PayloadCodecConfig()
 	}

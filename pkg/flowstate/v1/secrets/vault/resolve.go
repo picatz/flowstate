@@ -64,22 +64,61 @@ func (p *Provider) Resolve(ctx context.Context, req secrets.Request) (secrets.Se
 
 // read fetches the body of a KV v2 data path, authenticating and classifying the
 // result.
+func (p *Provider) read(ctx context.Context, apiPath string) ([]byte, error) {
+	status, body, err := p.send(ctx, http.MethodGet, apiPath, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	switch {
+	case status == http.StatusOK:
+		return body, nil
+
+	case status == http.StatusForbidden:
+		return nil, fmt.Errorf(
+			"%w: %s refused to read %q",
+			secrets.ErrPermission, p.addr, apiPath,
+		)
+
+	case status == http.StatusNotFound:
+		return nil, p.notFound(apiPath, body)
+
+	case unavailable(status):
+		return nil, unavailableStatus(p.addr, status, apiPath)
+
+	default:
+		// Unclassified, and therefore permanent. A 4xx this provider does not
+		// recognize means the request was wrong rather than badly timed, and
+		// retrying a wrong request only spends the step's attempt budget.
+		return nil, fmt.Errorf("%s answered %d reading %q", p.addr, status, apiPath)
+	}
+}
+
+// send performs one authenticated request and returns the status and body for
+// the caller to classify. Everything that is not a status — authenticating,
+// reaching the host, reading the body — is classified here.
 //
 // A 403 is retried exactly once, and only after a fresh login. Vault answers 403
 // both for a token it no longer accepts and for a path policy forbids, and the API
 // does not say which — so the one retry distinguishes them: if a new token is also
-// refused, the refusal is about the path, and that is permanent. A static token has
-// nothing to retry with, so its 403 is final on the first attempt.
-func (p *Provider) read(ctx context.Context, apiPath string) ([]byte, error) {
+// refused, the refusal is about the path, and that is permanent, and the 403 is
+// returned to the caller. A static token has nothing to retry with, so its 403 is
+// returned on the first attempt.
+//
+// Whatever token is cached after a final 403 is either the one just issued or the
+// only one there will ever be, and in neither case is it the problem. Keeping it
+// is what stops one forbidden path from costing every other request a login —
+// and, for a static token, from making every path unreadable until a restart.
+func (p *Provider) send(ctx context.Context, method, apiPath string, body []byte) (int, []byte, error) {
 	const attempts = 2
 
 	for attempt := range attempts {
 		token, generation, err := p.authToken(ctx)
 		if err != nil {
-			return nil, err
+			return 0, nil, err
 		}
 
-		status, body, err := p.do(ctx, http.MethodGet, apiPath, token, nil)
+		status, response, err := p.do(ctx, method, apiPath, token, body)
 		if err != nil {
 			// A vault that answered "sealed" and then failed to deliver the body of
 			// that answer is an unavailable vault, not an oversized response: the
@@ -88,48 +127,22 @@ func (p *Provider) read(ctx context.Context, apiPath string) ([]byte, error) {
 			// already in hand, and reclassifying it would tell the engine to retry a
 			// step that has been abandoned.
 			if ctx.Err() == nil && unavailable(status) {
-				return nil, unavailableStatus(p.addr, status, apiPath)
+				return status, nil, unavailableStatus(p.addr, status, apiPath)
 			}
 
-			return nil, err
+			return status, nil, err
 		}
 
-		switch {
-		case status == http.StatusOK:
-			return body, nil
-
-		case status == http.StatusForbidden:
-			if attempt == 0 && p.canReauthenticate() {
-				p.forget(generation)
-				continue
-			}
-
-			// Whatever token is cached now is either the one just issued or the only
-			// one there will ever be, and in neither case is it the problem: this
-			// refusal is about the path. Keeping it is what stops one forbidden
-			// secret from costing every other read a login — and, for a static
-			// token, from making every secret unreadable until a restart.
-			return nil, fmt.Errorf(
-				"%w: %s refused to read %q",
-				secrets.ErrPermission, p.addr, apiPath,
-			)
-
-		case status == http.StatusNotFound:
-			return nil, p.notFound(apiPath, body)
-
-		case unavailable(status):
-			return nil, unavailableStatus(p.addr, status, apiPath)
-
-		default:
-			// Unclassified, and therefore permanent. A 4xx this provider does not
-			// recognize means the request was wrong rather than badly timed, and
-			// retrying a wrong request only spends the step's attempt budget.
-			return nil, fmt.Errorf("%s answered %d reading %q", p.addr, status, apiPath)
+		if status == http.StatusForbidden && attempt == 0 && p.canReauthenticate() {
+			p.forget(generation)
+			continue
 		}
+
+		return status, response, nil
 	}
 
 	// Unreachable: the loop either returns or continues exactly once.
-	return nil, fmt.Errorf("%w: %s refused to read %q", secrets.ErrPermission, p.addr, apiPath)
+	return http.StatusForbidden, nil, nil
 }
 
 // notFound reports a 404 as a missing secret, with the hint an operator needs.

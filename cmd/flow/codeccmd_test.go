@@ -11,6 +11,7 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/payloadcodec/keyprovider/local"
 )
 
 // TestCodecKeygenWritesAPrivateKeyAndNeverOverwrites: the key lands owner-only,
@@ -72,4 +73,49 @@ func TestCodecStatusReportsIDsAndFingerprintsOnly(t *testing.T) {
 	// dials Temporal gives.
 	_, _, err = runCLI(t, "codec", "status", "--payload-keyring", "", "--require-payload-encryption")
 	require.ErrorContains(t, err, "payload encryption is required")
+}
+
+// TestCodecKeygenWritesAnEscrowPairAnEscrowKeyringReads: the pair --hpke
+// writes is the pair an escrow keyring names, the private half at 0600 and
+// never printed, and status reports the escrow key as wrap-only on a worker.
+func TestCodecKeygenWritesAnEscrowPairAnEscrowKeyringReads(t *testing.T) {
+	t.Setenv(requirePayloadEncryptionEnv, "")
+	dir := t.TempDir()
+	private := filepath.Join(dir, "break-glass.key")
+
+	stdout, stderr, err := runCLI(t, "codec", "keygen", "--hpke", "--out", private)
+	require.NoError(t, err)
+	secret, err := os.ReadFile(private)
+	require.NoError(t, err)
+	require.True(t, strings.HasPrefix(string(secret), "flowstate-hpke-v1-private:647a:"))
+	require.NotContains(t, stdout+stderr, strings.SplitN(strings.TrimSpace(string(secret)), ":", 3)[2])
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(private)
+		require.NoError(t, err)
+		require.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+	}
+	_, err = os.Stat(private + ".pub")
+	require.NoError(t, err)
+
+	_, _, err = runCLI(t, "codec", "keygen", "--hpke", "--out", private)
+	require.ErrorContains(t, err, "already exists")
+
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "default.key"), local.Generate(), 0o600))
+	keyring := filepath.Join(dir, "keyring.yaml")
+	require.NoError(t, os.WriteFile(keyring, []byte(`
+namespaces:
+  default:
+    current: default-1
+    keys: [{id: default-1, file: default.key}]
+    escrow: [break-glass]
+escrow_keys:
+  - id: break-glass
+    hpke: {public_key: {file: break-glass.key.pub}}
+`), 0o600))
+
+	stdout, _, err = runCLI(t, "codec", "status", "--payload-keyring", keyring)
+	require.NoError(t, err)
+	require.Contains(t, stdout, "seals with AES256_GCM")
+	require.Contains(t, stdout, "escrow, wrap only")
+	require.Contains(t, stdout, "data keys roll over every 10m0s")
 }

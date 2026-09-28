@@ -17,6 +17,7 @@ import (
 	"github.com/picatz/flowstate/pkg/flowstate/v1/authtest"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/codecserver"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/payloadcodec/envelope"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/payloadcodec/keyprovider/local"
 )
 
 // TestCodecServeAuthenticatesWithTheTrustPolicy drives the command's handler
@@ -43,10 +44,10 @@ func TestCodecServeAuthenticatesWithTheTrustPolicy(t *testing.T) {
 	verifier, err := auth.NewOIDCVerifier(policy, auth.WithEgressPolicy(authtest.EgressPolicy()))
 	require.NoError(t, err)
 
-	env := map[string]string{"A": string(envelope.GenerateKey()), "B": string(envelope.GenerateKey())}
+	env := map[string]string{"A": string(local.Generate()), "B": string(local.Generate())}
 	cfg, err := envelope.ParseConfig([]byte("namespaces:\n  ns-a: {current: a-1, keys: [{id: a-1, env: A}]}\n  ns-b: {current: b-1, keys: [{id: b-1, env: B}]}\n"))
 	require.NoError(t, err)
-	kr, err := envelope.Open(cfg, envelope.OpenOptions{Getenv: func(n string) string { return env[n] }})
+	kr, err := envelope.Open(t.Context(), cfg, envelope.OpenOptions{Getenv: func(n string) string { return env[n] }})
 	require.NoError(t, err)
 	codecs := kr.PayloadCodecConfig()
 
