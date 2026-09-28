@@ -275,6 +275,7 @@ func RedactStepValues(values map[string]*Node_Outputs, decision CarriedValues) m
 		marker = StepTranscriptWithheldUnverified
 	}
 
+	arrived, withheld := 0, 0
 	redacted := make(map[string]*Node_Outputs, len(values))
 	for stepID, outputs := range values {
 		named := outputs.GetNamedValues()
@@ -283,6 +284,19 @@ func RedactStepValues(values map[string]*Node_Outputs, decision CarriedValues) m
 			redactedNamed[name] = sensitiveRedactedValue(marker)
 		}
 		redacted[stepID] = &Node_Outputs{NamedValues: redactedNamed}
+		arrived += proto.Size(outputs)
+		withheld += proto.Size(redacted[stepID])
+	}
+
+	// The marker is longer than a short value, so a transcript of many short
+	// outputs would grow in the act of being censored, past the bound it was
+	// admitted under: [redactEntityState]'s rule, and its allowance, apply.
+	// Over it, each step keeps its id and loses its output names, which is
+	// never larger than what arrived.
+	if withheld > max(arrived, RedactedEntityStateAllowance) {
+		for stepID := range redacted {
+			redacted[stepID] = &Node_Outputs{}
+		}
 	}
 
 	return redacted

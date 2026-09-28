@@ -1,10 +1,12 @@
 package flowstatev1_test
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/proto"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
@@ -92,4 +94,29 @@ func TestAValueSetIsCostedByWhatItHolds(t *testing.T) {
 	require.GreaterOrEqual(t, fromInput.RetainedBytes(), len(large), "a passed input was not counted")
 
 	require.Zero(t, v1.SensitiveValues{}.RetainedBytes())
+}
+
+// TestAWithheldTranscriptDoesNotGrowPastWhatArrived: a marker is longer than
+// a short output, so censoring a transcript of many of them would multiply a
+// response admitted under its bound. Past the entity-state allowance, the
+// steps keep their ids and lose their output names instead.
+func TestAWithheldTranscriptDoesNotGrowPastWhatArrived(t *testing.T) {
+	t.Parallel()
+
+	few := map[string]*v1.Node_Outputs{"fetch": {NamedValues: map[string]*v1.Value{"body": v1.NewLiteral("")}}}
+	kept := v1.RedactStepValues(few, v1.CarriedValuesDeclared)
+	require.Contains(t, kept["fetch"].GetNamedValues(), "body", "a small transcript keeps its shape")
+
+	many := map[string]*v1.Node_Outputs{}
+	arrived := 0
+	for i := range 2000 {
+		outputs := &v1.Node_Outputs{NamedValues: map[string]*v1.Value{"o": v1.NewLiteral("")}}
+		many[fmt.Sprintf("s%d", i)] = outputs
+		arrived += proto.Size(outputs)
+	}
+	withheld := 0
+	for _, outputs := range v1.RedactStepValues(many, v1.CarriedValuesDeclared) {
+		withheld += proto.Size(outputs)
+	}
+	require.LessOrEqual(t, withheld, max(arrived, v1.RedactedEntityStateAllowance), "censoring grew the transcript past its bound")
 }
