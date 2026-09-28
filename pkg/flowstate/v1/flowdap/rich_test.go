@@ -2,6 +2,7 @@ package flowdap_test
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -327,27 +328,49 @@ func TestAttachNarrowsWhatTheEditorIsOffered(t *testing.T) {
 		State:        v1.DebugRunState_DEBUG_RUN_STATE_RUNNING,
 		Capabilities: v1.DurableDebugCapabilities(),
 	}}
-	server := flowdap.NewServer(nil, c, flowdap.WithAttach(func(context.Context, flowdap.AttachArguments) (*flowdap.Attachment, error) {
-		return &flowdap.Attachment{Target: remote}, nil
-	}))
+	// Built as `flow dap` builds it, able to launch as well as attach: what it
+	// offers after an attach is the attached run's, not the launch it could
+	// have made.
+	server := flowdap.NewServer(nil, c,
+		flowdap.WithLaunch(func(context.Context, flowdap.LaunchArguments) (*flowdap.Launch, error) {
+			return nil, errors.New("this test only attaches")
+		}),
+		flowdap.WithAttach(func(context.Context, flowdap.AttachArguments) (*flowdap.Attachment, error) {
+			return &flowdap.Attachment{Target: remote}, nil
+		}))
 	go func() { _ = server.Serve(t.Context()) }()
 
 	c.send(1, "initialize", map[string]any{"adapterID": "flowstate"})
-	c.await("response", "initialize")
-	c.send(2, "attach", map[string]any{"workflowId": "wf-1"})
+	initialized := body(c.await("response", "initialize"))
+	assert.Equal(t, true, initialized["supportsTerminateRequest"], "before an attach, an adapter that can launch offers termination")
+
+	// Configured before the backend is known, as an editor does: an exception
+	// filter the durable driver does not offer must not take the rest down.
+	c.send(2, "setExceptionBreakpoints", map[string]any{"filters": []string{"uncaught"}})
+	c.await("response", "setExceptionBreakpoints")
+	c.send(3, "setFunctionBreakpoints", map[string]any{"breakpoints": []map[string]any{{"name": "deploy"}}})
+	c.await("response", "setFunctionBreakpoints")
+
+	c.send(4, "attach", map[string]any{"workflowId": "wf-1"})
 	c.await("response", "attach")
+	dropped := body(c.await("event", "output"))
+	assert.Contains(t, dropped["output"], "exception filter was dropped")
 	caps := body(c.await("event", "capabilities"))["capabilities"].(map[string]any)
 	assert.Equal(t, false, caps["supportsLogPoints"], "the durable driver has no logpoints, so the editor must not offer them")
 	assert.Empty(t, caps["exceptionBreakpointFilters"])
 	assert.Equal(t, true, caps["supportsConditionalBreakpoints"])
+	assert.Equal(t, false, caps["supportsTerminateRequest"], "an attached run is not the adapter's to end")
+	changed := body(c.await("event", "breakpoint"))["breakpoint"].(map[string]any)
+	assert.Equal(t, true, changed["verified"], "the function breakpoint set before the attach was not applied: %v", changed)
 
-	c.send(3, "setExceptionBreakpoints", map[string]any{"filters": []string{"all"}})
+	c.send(6, "setExceptionBreakpoints", map[string]any{"filters": []string{"all"}})
 	assert.Equal(t, false, c.await("response", "setExceptionBreakpoints")["success"],
 		"a failure stop the backend cannot make must be refused, not ignored")
 
-	c.send(4, "disconnect", map[string]any{})
-	c.await("response", "disconnect")
-	assert.True(t, remote.closed, "disconnecting detaches the session")
+	c.send(7, "terminate", map[string]any{})
+	terminated := c.await("response", "terminate")
+	assert.Equal(t, false, terminated["success"], "ending a run the adapter did not start was reported as done")
+	assert.True(t, remote.closed, "a refused terminate still detaches the session")
 }
 
 // fakeRemote is a Target that reports one snapshot and records Close.
@@ -377,7 +400,15 @@ func (f *fakeRemote) ReplaceBreakpoints(_ context.Context, req *v1.DebugSetBreak
 		return &v1.DebugSetBreakpointsResponse{Receipt: &v1.DebugReceipt{Status: v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_UNSUPPORTED}}, nil
 	}
 
-	return &v1.DebugSetBreakpointsResponse{Receipt: &v1.DebugReceipt{Status: v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_APPLIED}}, nil
+	states := make([]*v1.DebugBreakpointState, 0, len(req.GetBreakpoints()))
+	for _, bp := range req.GetBreakpoints() {
+		states = append(states, &v1.DebugBreakpointState{Id: bp.GetId(), Verified: true})
+	}
+
+	return &v1.DebugSetBreakpointsResponse{
+		Receipt:     &v1.DebugReceipt{Status: v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_APPLIED},
+		Breakpoints: states,
+	}, nil
 }
 
 func (f *fakeRemote) Inspect(context.Context, *v1.DebugInspectRequest) (*v1.DebugInspectResponse, error) {
