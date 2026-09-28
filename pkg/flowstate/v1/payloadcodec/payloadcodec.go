@@ -399,6 +399,25 @@ func (c Config) ForNamespace(namespace string) (Config, error) {
 	return Config{Codec: codec}, nil
 }
 
+// ForWriting is [Config.ForNamespace] for a process that writes history: a
+// client, or a worker's interpreter. It also refuses a namespace whose codec
+// is [DecodeOnly], such as a recovery keyring's, which [Config.Validate]
+// accepts because reading is all a codec server needs of it: a writer built
+// with one would start, then fail its first submission and leave running
+// workflows retrying tasks.
+func (c Config) ForWriting(namespace string) (Config, error) {
+	one, err := c.ForNamespace(namespace)
+	if err != nil {
+		return Config{}, err
+	}
+	if reader, ok := one.Codec.(DecodeOnly); ok && reader.DecodeOnly() {
+		return Config{}, fmt.Errorf("payload codec: Temporal namespace %q is decode-only in the keyring (it names no "+
+			"current key), so nothing can write to it: name a current key, or use this keyring only with "+
+			"`flow codec serve` and `flow codec status`", namespace)
+	}
+	return one, nil
+}
+
 // Refusing is the slot for a client dialed for a namespace this deployment
 // holds no keys for but must still construct: every Encode and Decode fails,
 // naming the namespace, so nothing reaches that namespace's history in

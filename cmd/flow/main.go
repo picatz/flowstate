@@ -279,7 +279,7 @@ func initTemporalClient(ctx context.Context, flags temporalFlags) (client.Client
 	if err != nil {
 		return nil, payloadcodec.Config{}, err
 	}
-	codec, err := cfg.Codec.ForNamespace(namespace)
+	codec, err := cfg.Codec.ForWriting(namespace)
 	if err != nil {
 		c.Close()
 		return nil, payloadcodec.Config{}, err

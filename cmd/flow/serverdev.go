@@ -558,7 +558,7 @@ func runServerDev(cmd *cobra.Command, args []string) error {
 
 	// The embedded worker's interpreter decodes with the codec its client was
 	// built with, for the one namespace this stack uses.
-	workerCodec, err := cfg.Codec.ForNamespace(devTemporalNamespace)
+	workerCodec, err := cfg.Codec.ForWriting(devTemporalNamespace)
 	if err != nil {
 		return err
 	}

@@ -105,3 +105,25 @@ func (overExpandingCodec) Name() string { return "over-expanding" }
 func (overExpandingCodec) CurrentKeyID() string { return "over-expanding-key" }
 
 func (overExpandingCodec) MaxEncodedSize(plain int) int { return plain + plain/2 }
+
+// decodeOnly is a codec that says it holds no key to write with.
+type decodeOnly struct{ payloadcodec.Codec }
+
+func (decodeOnly) DecodeOnly() bool     { return true }
+func (decodeOnly) CurrentKeyID() string { return "" }
+
+// TestAClientCannotBeBuiltToWriteThroughADecodeOnlyCodec: a recovery keyring
+// validates, since a codec server only reads with it, but a client writes
+// history, and one built with it would fail its first submission.
+func TestAClientCannotBeBuiltToWriteThroughADecodeOnlyCodec(t *testing.T) {
+	t.Parallel()
+
+	toy, err := toycodec.New(bytes.Repeat([]byte{0x2a}, 32))
+	require.NoError(t, err)
+	reader := decodeOnly{Codec: toy}
+	codecs := payloadcodec.Config{Codec: toy, Namespaces: map[string]payloadcodec.Codec{"recovery": reader}}
+	require.NoError(t, codecs.Validate(), "a decode-only namespace is a valid keyring for a reader")
+
+	_, err = temporalclient.Config{Namespace: "recovery", Codec: codecs}.Options()
+	require.ErrorContains(t, err, "decode-only")
+}
