@@ -618,7 +618,7 @@ held at orders (for_each) — pause, revision 2
   #1 debugging.orders (for_each)
   session 5ae9…, lease until 2026-09-28T00:54:12Z
 debug> break receipt if size(steps.flagged.value) > 0
-breakpoint at receipt
+breakpoint at receipt if size(steps.flagged.value) > 0
 debug> continue
 held at receipt (call "receipt") — breakpoint receipt, revision 4
   #1 debugging.receipt (call "receipt")
