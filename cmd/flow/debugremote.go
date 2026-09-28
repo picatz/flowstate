@@ -2,7 +2,9 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -106,7 +108,7 @@ flow debug do order-1234 --session 5d3f… inspect steps.quote.total -o json`,
 	debugCmd.AddCommand(attachCmd, getCmd, doCmd)
 }
 
-func runDebugAttach(cmd *cobra.Command, args []string) error {
+func runDebugAttach(cmd *cobra.Command, args []string) (err error) {
 	format, err := resolveOutputFormat(cmd)
 	if err != nil {
 		return err
@@ -134,6 +136,8 @@ func runDebugAttach(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	surface := newSurface(cmd)
+	answers := &driveAnswers{out: surface.Out, format: format}
+	defer func() { err = errors.Join(err, answers.flush()) }()
 	if !format.Machine() {
 		fmt.Fprintf(surface.Out, "attached to %s — session %s (%s)\n", args[0], remote.SessionID(),
 			strings.TrimSpace(flowdebug.FormatReceipt(receipt)))
@@ -157,7 +161,7 @@ func runDebugAttach(cmd *cobra.Command, args []string) error {
 			first = &flowdebug.DriveResult{Snapshot: held, Text: flowdebug.FormatSnapshot(held)}
 		}
 	}
-	if err := writeDriveResult(surface.Out, format, "status", first); err != nil {
+	if err := answers.add("status", first); err != nil {
 		return err
 	}
 
@@ -205,7 +209,7 @@ func runDebugAttach(cmd *cobra.Command, args []string) error {
 
 			continue
 		}
-		if err := writeDriveResult(surface.Out, format, line, result); err != nil {
+		if err := answers.add(line, result); err != nil {
 			return err
 		}
 		if line == "detach" || terminalDebugState(result.Snapshot.GetState()) {
@@ -320,6 +324,40 @@ func runDebugDo(cmd *cobra.Command, args []string) error {
 	return writeDriveResult(newSurface(cmd).Out, format, line, result)
 }
 
+// driveAnswers writes an attach's answers as its format asks: each rendering or
+// JSON line as it comes, or, for `-o json`, one array of every answer at the
+// end, since that format is one document per invocation.
+type driveAnswers struct {
+	out    io.Writer
+	format OutputFormat
+	held   [][]byte
+}
+
+func (a *driveAnswers) add(command string, result *flowdebug.DriveResult) error {
+	if a.format != FormatJSON {
+		return writeDriveResult(a.out, a.format, command, result)
+	}
+	encoded, err := encodeDriveResult(command, result)
+	if err != nil {
+		return err
+	}
+	a.held = append(a.held, encoded)
+
+	return nil
+}
+
+// flush writes the `-o json` document, once, if any answer was held.
+func (a *driveAnswers) flush() error {
+	if len(a.held) == 0 {
+		return nil
+	}
+	held := a.held
+	a.held = nil
+	_, err := fmt.Fprintf(a.out, "[%s]\n", bytes.Join(held, []byte(",")))
+
+	return err
+}
+
 // writeDriveResult writes one command's answer: its rendering, or the typed
 // messages it carried as one JSON object.
 func writeDriveResult(out io.Writer, format OutputFormat, command string, result *flowdebug.DriveResult) error {
@@ -328,8 +366,23 @@ func writeDriveResult(out io.Writer, format OutputFormat, command string, result
 
 		return err
 	}
+	encoded, err := encodeDriveResult(command, result)
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(out, "%s\n", encoded)
 
-	parts := []string{fmt.Sprintf("%q:%q", "command", command)}
+	return err
+}
+
+// encodeDriveResult is one command's answer as a JSON object: the command, and
+// each typed message it carried in the schema's JSON.
+func encodeDriveResult(command string, result *flowdebug.DriveResult) ([]byte, error) {
+	name, err := json.Marshal(command)
+	if err != nil {
+		return nil, err
+	}
+	parts := []string{`"command":` + string(name)}
 	for _, part := range []struct {
 		name    string
 		message proto.Message
@@ -344,14 +397,12 @@ func writeDriveResult(out io.Writer, format OutputFormat, command string, result
 		}
 		encoded, err := v1.MarshalSchemaJSON(part.message, false)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		parts = append(parts, fmt.Sprintf("%q:%s", part.name, encoded))
 	}
 
-	_, err := fmt.Fprintf(out, "{%s}\n", strings.Join(parts, ","))
-
-	return err
+	return []byte("{" + strings.Join(parts, ",") + "}"), nil
 }
 
 func newDebugGetRequest(workflowID, runID string) *connect.Request[v1.DebugGetRequest] {

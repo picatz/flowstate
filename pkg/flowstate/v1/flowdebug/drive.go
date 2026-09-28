@@ -83,7 +83,7 @@ pause                        hold at the next step boundary
 break <step> [hit <n>] [if <expr>]   stop there, when the count and condition allow
 log <step> <message>         record {expr} holes at every arrival, without stopping
 catch none|uncaught|all      stop where a step fails
-delete <step>                remove that breakpoint
+delete <step>|log <step>     remove that breakpoint, or that logpoint
 clear                        remove every breakpoint, whoever set it
 breakpoints                  list breakpoints and their hit counts
 inspect, p <expr>            evaluate a read-only CEL expression at this stop
@@ -184,7 +184,7 @@ func (d *Driver) DoWith(ctx context.Context, line string, opts DoOptions) (*Driv
 			return nil, err
 		}
 
-		return d.replace(ctx, d.without(rest, false), d.failureMode)
+		return d.replace(ctx, d.removing(rest), d.failureMode)
 	case "clear":
 		return d.replace(ctx, nil, d.failureMode)
 	case "catch":
@@ -325,19 +325,21 @@ const stillRunningRead = 5 * time.Second
 
 // waitForStop waits past revision for a hold or the end of the session.
 func (d *Driver) waitForStop(ctx context.Context, revision uint64) (*v1.DebugSnapshot, error) {
+	wait := ctx
 	if d.Wait > 0 {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, d.Wait)
+		wait, cancel = context.WithTimeout(ctx, d.Wait)
 		defer cancel()
 	}
 
 	after := revision
 	for {
-		snapshot, err := d.target.WaitSnapshot(ctx, after)
-		if errors.Is(err, context.DeadlineExceeded) {
-			// Still running: say so rather than pretend a stop came. The wait's
-			// own deadline has passed, so the read gets a bound of its own.
-			read, cancel := context.WithTimeout(context.WithoutCancel(ctx), stillRunningRead)
+		snapshot, err := d.target.WaitSnapshot(wait, after)
+		if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
+			// Still running: say so rather than pretend a stop came. Only the
+			// driver's own wait has ended — a caller's deadline is the caller's
+			// error — so the read runs under the caller's context, bounded.
+			read, cancel := context.WithTimeout(ctx, stillRunningRead)
 			snapshot, err := d.target.Snapshot(read)
 			cancel()
 			if err != nil {
@@ -384,6 +386,18 @@ func (d *Driver) without(target string, logs bool) []*v1.DebugBreakpoint {
 	return slices.DeleteFunc(slices.Clone(d.breakpoints), func(bp *v1.DebugBreakpoint) bool {
 		return bp.GetStep() == target && (bp.GetLogMessage() != "") == logs
 	})
+}
+
+// removing is the current set less what `delete name` names: the breakpoint
+// whose id is name — `log build` for the logpoint `log build ...` set — or,
+// when no id is name, the stopping breakpoint on the step name.
+func (d *Driver) removing(name string) []*v1.DebugBreakpoint {
+	byID := func(bp *v1.DebugBreakpoint) bool { return bp.GetId() == name }
+	if slices.ContainsFunc(d.breakpoints, byID) {
+		return slices.DeleteFunc(slices.Clone(d.breakpoints), byID)
+	}
+
+	return d.without(name, false)
 }
 
 // adopt adds to the driver's set every breakpoint the target holds that the
