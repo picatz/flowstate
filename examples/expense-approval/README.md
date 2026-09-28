@@ -22,7 +22,8 @@ Zero infrastructure, no Temporal, no server — and nobody answers either gate, 
 lapse and the report ends up denied:
 
 ```console
-$ flow run local examples/expense-approval/workflow.yaml
+$ flow run local examples/expense-approval/workflow.yaml \
+    --input-file examples/expense-approval/inputs.json
 ```
 
 The same file, unchanged, is what a worker executes durably against Temporal; the
@@ -33,6 +34,7 @@ does here. Answer the first gate to see the ordinary path instead of the lapse:
 
 ```console
 $ flow run local examples/expense-approval/workflow.yaml \
+    --input-file examples/expense-approval/inputs.json \
     --signal manager-approved='{"approved": true}'
 ```
 
@@ -40,7 +42,8 @@ And the same file, run durably instead of in this process (needs a Temporal dev
 server, `flow worker`, and `flow server` — see the main README's Quickstart):
 
 ```console
-$ flow run examples/expense-approval/workflow.yaml
+$ flow run examples/expense-approval/workflow.yaml \
+    --input-file examples/expense-approval/inputs.json
 started workflow expense-approval; come back to it with `flow watch flowstate-workflow-...`
 ```
 
@@ -60,8 +63,9 @@ anything to once it has started.
 - **`timeout: 4s` on `manager_review`.** Short because this is an example to run
   rather than to wait on; the shape at 48 hours is identical. A wait with no
   `timeout:` at all is the right choice for an approval that must genuinely block
-  until a person acts — see `examples/approval-gate` — and a timeout is right
-  whenever the workload has somewhere sensible to go when nobody does.
+  until a person acts — it waits as long as the run lasts, see `wait_for_signal:`
+  in [docs/LANGUAGE.md](../../docs/LANGUAGE.md#wait_for_signal) — and a timeout is
+  right whenever the workload has somewhere sensible to go when nobody does.
 - **`escalate` is a real step, not a comment.** `if: ${steps.manager_review.timed_out}`
   runs it only on the lapsed path, and it is what turns "eventually times out" into
   "escalates": a person reading the run's log sees that the report was asked about

@@ -12,9 +12,10 @@
 #     sends them now, so the receivers deleted themselves exactly as the comment
 #     that used to be here said they would — and with them the volume, the
 #     redirection, and the `docker compose logs` that showed nothing. What Loki
-#     no longer sees is the handful of lines Flowstate does not write through
-#     slog: the Temporal SDK's own logger, and four `log.Printf` warnings. Those
-#     are in `docker compose logs` now that stderr is stderr again.
+#     no longer sees is the handful of lines that never reach the OTLP log
+#     exporter: the Temporal SDK's own logger, and telemetry's own warnings,
+#     which stay off the exporter they may be about. Those are in
+#     `docker compose logs` now that stderr is stderr again.
 #   * Prometheus *pulls* from this collector rather than being pushed to. A
 #     scrape target that is briefly unreachable is a gap in a graph; a push
 #     pipeline that is briefly unreachable is backpressure into the process being
