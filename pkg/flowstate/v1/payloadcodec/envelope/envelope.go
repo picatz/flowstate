@@ -724,10 +724,11 @@ func (c *Codec) Encode(payloads []*commonpb.Payload) ([]*commonpb.Payload, error
 }
 
 func (c *Codec) seal(spec suiteSpec, plaintext []byte) ([]byte, error) {
-	// What Decode refuses on length is never written: a payload past the
-	// blob limit is one Temporal would refuse anyway, and bounding it here
-	// keeps every allocation below sized off a bounded value.
-	if len(plaintext) > maxSealedBytes || len(plaintext) > maxSealedBytes-len(magic)-binary.MaxVarintLen32-c.maxHeader-spec.overhead {
+	// What Temporal would refuse is never written: the whole payload it
+	// stores, metadata and framing included, stays within its blob limit,
+	// and bounding it here keeps every allocation below sized off a bounded
+	// value. The first comparison keeps the sum from overflowing.
+	if len(plaintext) > maxSealedBytes || c.MaxEncodedSize(len(plaintext)) > maxSealedBytes {
 		return nil, fmt.Errorf("envelope: a %d-byte payload seals past the %d-byte limit history holds",
 			len(plaintext), maxSealedBytes)
 	}
