@@ -150,8 +150,8 @@ but its owner can read, or that is owned by any account other than the one
 Flowstate runs as or root. Mode 0600 on a file another account owns protects
 nothing: that account could have written its own key there.
 
-The keyring configuration and an escrow public key are not secret, but they
-decide where keys go: an account that could replace the escrow public key
+The keyring configuration, an escrow public key, and a Vault provider's
+`ca_file` are not secret, but they decide where keys go: an account that could replace the escrow public key
 would have every new data key wrapped to a key it holds. They may be readable
 by anyone, and are refused if the group or others can write them, or if
 another account owns them.

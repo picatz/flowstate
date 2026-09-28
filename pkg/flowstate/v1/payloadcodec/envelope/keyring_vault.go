@@ -1,7 +1,9 @@
 package envelope
 
 import (
+	"crypto/x509"
 	"fmt"
+	"io/fs"
 	"time"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -21,6 +23,26 @@ type vaultConnection struct {
 }
 
 func (c vaultConnection) key(name string) keyprovider.Key { return kpvault.New(c.transit, name) }
+
+// MaxCAFileBytes bounds a provider's CA bundle, which is read at startup:
+// far more than any real bundle, and a bound on what a replaced file costs.
+const MaxCAFileBytes = 1 << 20
+
+// loadCAFile reads a provider's CA bundle as the keyring reads every other
+// file that decides where keys go (see [checkPublicFileMode]): bounded, and
+// refused if another account could have written it, since a substituted CA
+// lets an impersonated server receive the Vault token and every wrap.
+func loadCAFile(path string) (*x509.CertPool, error) {
+	pem, err := readBounded(path, MaxCAFileBytes, func(info fs.FileInfo) error { return checkPublicFileMode(path, info) })
+	if err != nil {
+		return nil, fmt.Errorf("reading CA bundle %q: %w", path, err)
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(pem) {
+		return nil, fmt.Errorf("CA bundle %q holds no PEM certificate", path)
+	}
+	return pool, nil
+}
 
 // openProviders connects every configured key service. Nothing is contacted
 // here: each key's Describe, which Open calls, is the first request, and the
@@ -55,7 +77,11 @@ func openProviders(cfgs []*v1.PayloadKeyProvider, opts OpenOptions) (map[string]
 			vopts = append(vopts, secretsvault.WithVaultNamespace(vc.GetVaultNamespace()))
 		}
 		if vc.GetCaFile() != "" {
-			vopts = append(vopts, secretsvault.WithRootCAsFile(keyLoader{opts: opts}.resolve(vc.GetCaFile())))
+			pool, err := loadCAFile(keyLoader{opts: opts}.resolve(vc.GetCaFile()))
+			if err != nil {
+				return nil, fmt.Errorf("envelope: provider %q: %w", p.GetName(), err)
+			}
+			vopts = append(vopts, secretsvault.WithRootCAs(pool))
 		}
 		// The client's own default when none is configured: that is what a
 		// request is allowed, and what the deadlines here must allow it.
