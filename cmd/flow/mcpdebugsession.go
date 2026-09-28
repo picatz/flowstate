@@ -201,6 +201,18 @@ func (r *debugSessions) register(entry *debugSessionEntry, request string) (*deb
 	if len(r.sessions) >= maxDebugSessions {
 		return nil, fmt.Errorf("this server already holds %d debug sessions; end one with %s", maxDebugSessions, debugSessionEndTool)
 	}
+	// A stubbed case holds the process-wide task registry for as long as it
+	// runs, so a second one would wait, uncancellably, for the first to end.
+	// Refused here instead, before anything is launched; durable sessions
+	// hold no registry and are not counted.
+	if entry.local != nil {
+		for _, open := range r.sessions {
+			if open.local != nil {
+				return nil, fmt.Errorf("this server runs one stubbed debug session at a time, and %s is open; "+
+					"end it with %s before starting another", open.id, debugSessionEndTool)
+			}
+		}
+	}
 	r.sessions[entry.id] = entry
 	if request != "" {
 		r.starts[request] = entry.id
@@ -232,21 +244,31 @@ func errNoDebugSession(id string) error {
 }
 
 // end releases a session: a durable run is detached (or left attached when
-// keep is set); a stubbed case is let finish, and cancelled if it cannot.
-func (e *debugSessionEntry) end(keep bool) {
+// keep is set); a stubbed case is let finish, and cancelled if it cannot. It
+// reports whether the case has finished, and never waits longer than twice
+// [debugSessionEndSettle]: a case blocked where cancellation does not reach —
+// waiting on the process-wide registry lock — is left to finish on its own
+// rather than hang the caller.
+func (e *debugSessionEntry) end(keep bool) bool {
 	if remote, ok := e.target.(*flowdebug.Remote); ok && keep {
 		_ = remote.Disconnect()
 	} else {
 		_ = e.target.Close()
 	}
 	if e.done == nil {
-		return
+		return true
 	}
 	select {
 	case <-e.done:
+		return true
 	case <-time.After(debugSessionEndSettle):
 		e.cancel()
-		<-e.done
+	}
+	select {
+	case <-e.done:
+		return true
+	case <-time.After(debugSessionEndSettle):
+		return false
 	}
 }
 
@@ -672,10 +694,14 @@ func (r *debugSessions) end(ctx context.Context, req *mcp.CallToolRequest) (*mcp
 		return flowmcp.ToolError(errNoDebugSession(entry.id)), nil
 	}
 
-	entry.end(args.Keep)
+	finished := entry.end(args.Keep)
 	answer := entry.answer(ctx)
-	if entry.done != nil && entry.report != nil {
+	switch {
+	case entry.done == nil:
+	case finished && entry.report != nil:
 		answer.Report = schemaJSON(entry.report)
+	case !finished:
+		answer.Note = strings.TrimSpace("the case was cancelled and has not yet stopped, so it has no report. " + answer.Note)
 	}
 
 	return toolJSON(answer), nil

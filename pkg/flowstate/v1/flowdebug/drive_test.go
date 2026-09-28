@@ -60,21 +60,25 @@ func TestTheDriverSpeaksThePromptsVocabularyToATarget(t *testing.T) {
 	require.Error(t, err)
 }
 
-// TestAFreshDriverNeverDropsBreakpointsItDidNotSet is the `flow debug do`
-// case: each invocation is a new driver over the same session, and the
-// target replaces the whole set at once. A driver that cannot rebuild the
-// breakpoints another client installed refuses to replace them rather than
-// drop them in silence, and `clear` is the stated way to discard them.
-func TestAFreshDriverNeverDropsBreakpointsItDidNotSet(t *testing.T) {
+// TestAFreshDriverKeepsTheBreakpointsItFinds is the `flow debug do` case:
+// each invocation is a new driver over the same session, and the target
+// replaces the whole set at once. A fresh driver adopts what is installed,
+// from the definitions the snapshot reports, so its line adds to the set
+// rather than replacing it — conditions included.
+func TestAFreshDriverKeepsTheBreakpointsItFinds(t *testing.T) {
 	t.Parallel()
 
 	run := startDebugRun(t, "main.yaml", map[string]string{"main.yaml": journeyFlowfile, "child.yaml": childFlowfile}, nil)
-	waitHeld(t, run.session, 0)
+	at := waitHeld(t, run.session, 0)
 
-	first := flowdebug.NewDriver(run.session)
-	_, err := first.Do(t.Context(), "break each/touch if item == 2")
-	require.NoError(t, err)
+	do := func(line string) *flowdebug.DriveResult {
+		t.Helper()
+		// A new driver per line, as `flow debug do` makes one.
+		result, err := flowdebug.NewDriver(run.session).Do(t.Context(), line)
+		require.NoError(t, err, line)
 
+		return result
+	}
 	ids := func() []string {
 		t.Helper()
 		snapshot, err := run.session.Snapshot(t.Context())
@@ -87,33 +91,44 @@ func TestAFreshDriverNeverDropsBreakpointsItDidNotSet(t *testing.T) {
 		return ids
 	}
 
-	second := flowdebug.NewDriver(run.session)
-	for _, line := range []string{"break checks", "log done bye", "catch all", "delete nested"} {
-		_, err = second.Do(t.Context(), line)
-		require.Error(t, err, line)
-		assert.Contains(t, err.Error(), "each/touch", line)
-		assert.Contains(t, err.Error(), "`clear`", line)
-		assert.Equal(t, []string{"each/touch"}, ids(), "%s dropped a breakpoint it could not rebuild", line)
-	}
+	do("break each/touch if item == 2")
+	do("break done")
+	assert.ElementsMatch(t, []string{"each/touch", "done"}, ids(), "a fresh driver dropped a breakpoint it found")
+	do("log checks at the checks")
+	do("catch uncaught")
+	assert.ElementsMatch(t, []string{"each/touch", "done", "log checks"}, ids())
+	do("delete done")
+	assert.ElementsMatch(t, []string{"each/touch", "log checks"}, ids())
 
-	// Naming the foreign breakpoint replaces it, which is what was asked.
-	_, err = second.Do(t.Context(), "break each/touch")
-	require.NoError(t, err)
-	assert.Equal(t, []string{"each/touch"}, ids())
+	// The adopted breakpoint kept its condition: the run passes item 1.
+	stop := do("continue")
+	assert.Equal(t, "each[1]/touch", stop.Snapshot.GetOccurrence().GetAddress())
+	assert.Greater(t, stop.Snapshot.GetRevision(), at.GetRevision())
 
-	// The original driver still knows its own set and keeps working.
-	_, err = first.Do(t.Context(), "break checks")
-	require.NoError(t, err)
-	assert.ElementsMatch(t, []string{"each/touch", "checks"}, ids())
-
-	third := flowdebug.NewDriver(run.session)
-	cleared, err := third.Do(t.Context(), "clear")
-	require.NoError(t, err)
+	cleared := do("clear")
 	assert.Equal(t, "no breakpoints\n", cleared.Text)
 	assert.Empty(t, ids())
-	_, err = third.Do(t.Context(), "break checks")
+}
+
+// TestADriverRefusesToDropABreakpointItCannotRebuild: a target that reports a
+// breakpoint without its definition (a server older than the field) cannot
+// have it resent, so a line that would drop it is refused unless it names it.
+func TestADriverRefusesToDropABreakpointItCannotRebuild(t *testing.T) {
+	t.Parallel()
+
+	target := &scriptedTarget{snapshot: &v1.DebugSnapshot{
+		Revision: 1, State: v1.DebugRunState_DEBUG_RUN_STATE_HELD,
+		Breakpoints: []*v1.DebugBreakpointState{{Id: "old", Verified: true}},
+	}}
+	_, err := flowdebug.NewDriver(target).Do(t.Context(), "break build")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "old")
+	assert.Empty(t, target.modes, "nothing was sent")
+
+	_, err = flowdebug.NewDriver(target).Do(t.Context(), "delete old")
+	require.NoError(t, err, "a line naming the breakpoint may replace it")
+	_, err = flowdebug.NewDriver(target).Do(t.Context(), "clear")
 	require.NoError(t, err)
-	assert.Equal(t, []string{"checks"}, ids())
 }
 
 // TestAFreshDriverLeavesTheFailureModeAlone: a driver that has not been told

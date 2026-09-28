@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"google.golang.org/protobuf/proto"
+
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
 
@@ -18,16 +20,12 @@ import (
 // `flow debug attach`, or a retained MCP session.
 //
 // It is a spelling, not a second session. Every line becomes one call on the
-// target, and what comes back is the target's own answer; the driver keeps only
-// the breakpoint set it last sent, because a target replaces the whole set at
-// once and a line adds or removes one.
-//
-// A target reports the breakpoints it holds by id, not by definition, so a
-// driver cannot rebuild a set another client — an earlier `flow debug do`, an
-// editor — installed. Rather than drop those in silence when it resends its
-// own, a line that would replace the set refuses while the target holds an id
-// this driver never sent and the line does not name, and says `clear` is the
-// way to discard them.
+// target, and what comes back is the target's own answer; the driver keeps
+// only the breakpoint set, because a target replaces the whole set at once and
+// a line adds or removes one. Before a line changes the set, the driver adopts
+// every breakpoint the target reports that it does not know — one an earlier
+// `flow debug do` or an editor set — from the definition the target reports
+// with it, so the set it sends keeps them.
 type Driver struct {
 	target Target
 
@@ -86,7 +84,7 @@ break <step> [hit <n>] [if <expr>]   stop there, when the count and condition al
 log <step> <message>         record {expr} holes at every arrival, without stopping
 catch none|uncaught|all      stop where a step fails
 delete <step>                remove that breakpoint
-clear                        remove every breakpoint, including ones another client set
+clear                        remove every breakpoint, whoever set it
 breakpoints                  list breakpoints and their hit counts
 inspect, p <expr>            evaluate a read-only CEL expression at this stop
 expand <expr>                list a map's or list's children
@@ -170,25 +168,23 @@ func (d *Driver) DoWith(ctx context.Context, line string, opts DoOptions) (*Driv
 			return nil, errors.New("log needs a step and a message: log <step> <message>")
 		}
 
-		set := append(d.without(target, true), &v1.DebugBreakpoint{
-			Id: "log " + target, Step: target, LogMessage: strings.TrimSpace(message),
-		})
-		if err := d.keeps(ctx, set, "log "+target); err != nil {
+		if err := d.adopt(ctx, "log "+target); err != nil {
 			return nil, err
 		}
 
-		return d.replace(ctx, set, d.failureMode)
+		return d.replace(ctx, append(d.without(target, true), &v1.DebugBreakpoint{
+			Id: "log " + target, Step: target, LogMessage: strings.TrimSpace(message),
+		}), d.failureMode)
 	case "delete", "d":
 		if rest == "" {
 			return nil, errors.New("delete needs a step: delete <step>")
 		}
 
-		set := d.without(rest, false)
-		if err := d.keeps(ctx, set, rest); err != nil {
+		if err := d.adopt(ctx, rest); err != nil {
 			return nil, err
 		}
 
-		return d.replace(ctx, set, d.failureMode)
+		return d.replace(ctx, d.without(rest, false), d.failureMode)
 	case "clear":
 		return d.replace(ctx, nil, d.failureMode)
 	case "catch":
@@ -201,7 +197,7 @@ func (d *Driver) DoWith(ctx context.Context, line string, opts DoOptions) (*Driv
 			return nil, fmt.Errorf("catch takes none, uncaught, or all, not %q", rest)
 		}
 
-		if err := d.keeps(ctx, d.breakpoints); err != nil {
+		if err := d.adopt(ctx); err != nil {
 			return nil, err
 		}
 
@@ -373,14 +369,13 @@ func (d *Driver) addBreakpoint(ctx context.Context, rest string) (*DriveResult, 
 		return nil, errors.New(usageBreak)
 	}
 
-	set := append(d.without(target, false), &v1.DebugBreakpoint{
-		Id: target, Step: target, Condition: strings.TrimSpace(condition), HitCondition: hitText,
-	})
-	if err := d.keeps(ctx, set, target); err != nil {
+	if err := d.adopt(ctx, target); err != nil {
 		return nil, err
 	}
 
-	return d.replace(ctx, set, d.failureMode)
+	return d.replace(ctx, append(d.without(target, false), &v1.DebugBreakpoint{
+		Id: target, Step: target, Condition: strings.TrimSpace(condition), HitCondition: hitText,
+	}), d.failureMode)
 }
 
 // without is the current set less the breakpoint on target: the stopping one,
@@ -391,30 +386,41 @@ func (d *Driver) without(target string, logs bool) []*v1.DebugBreakpoint {
 	})
 }
 
-// keeps refuses a set that would drop a breakpoint this driver never sent.
-// named are the ids the line itself replaces or removes; any other id the
-// target holds and set lacks was installed by another client, whose
-// definition the target does not report. A client that installs a set between
-// this read and the send is not seen: the contract has no conditional replace.
-func (d *Driver) keeps(ctx context.Context, set []*v1.DebugBreakpoint, named ...string) error {
+// adopt adds to the driver's set every breakpoint the target holds that the
+// driver does not know, from the definition the target reports with it, so the
+// set the line sends keeps what another client installed. A target that
+// reports a breakpoint without its definition — a server older than the field
+// — cannot have it resent, so a line that would drop one refuses rather than
+// drop it in silence, unless the line names it (named: the ids the line itself
+// replaces or removes); `clear` discards every breakpoint either way.
+//
+// A breakpoint another client removes after this driver adopted it is resent
+// by this driver's next line: the contract has no conditional replace.
+func (d *Driver) adopt(ctx context.Context, named ...string) error {
 	current, err := d.target.Snapshot(ctx)
 	if err != nil {
 		return err
 	}
-	has := func(bps []*v1.DebugBreakpoint, id string) bool {
-		return slices.ContainsFunc(bps, func(bp *v1.DebugBreakpoint) bool { return bp.GetId() == id })
-	}
-	var unknown []string
+	var undefined []string
 	for _, state := range current.GetBreakpoints() {
 		id := state.GetId()
-		if !has(d.breakpoints, id) && !has(set, id) && !slices.Contains(named, id) {
-			unknown = append(unknown, id)
+		if slices.ContainsFunc(d.breakpoints, func(bp *v1.DebugBreakpoint) bool { return bp.GetId() == id }) {
+			continue
+		}
+		if definition := state.GetDefinition(); definition != nil {
+			adopted := proto.CloneOf(definition)
+			adopted.Id = id
+			d.breakpoints = append(d.breakpoints, adopted)
+
+			continue
+		}
+		if !slices.Contains(named, id) {
+			undefined = append(undefined, id)
 		}
 	}
-	if len(unknown) > 0 {
-		return fmt.Errorf("this session holds breakpoints this driver did not set (%s); a target names them "+
-			"but does not say how they were defined, so replacing the set would drop them. `clear` removes every "+
-			"breakpoint, after which this driver's lines are the whole set", strings.Join(unknown, ", "))
+	if len(undefined) > 0 {
+		return fmt.Errorf("this session holds breakpoints whose definitions the target does not report (%s), so "+
+			"replacing the set would drop them; `clear` removes every breakpoint", strings.Join(undefined, ", "))
 	}
 
 	return nil

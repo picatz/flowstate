@@ -1153,6 +1153,12 @@ message DebugBreakpointState {
 
   // Source is where the resolved site came from, when a source map says so.
   DebugSourceLocation source = 7;
+
+  // Definition is the breakpoint as it was set, redacted as [id] is, so a
+  // client that did not set it can resend the whole set without dropping it:
+  // a set is replaced whole, and a state alone does not say how to rebuild
+  // the breakpoint it describes.
+  DebugBreakpoint definition = 8;
 }
 
 // DebugFailureMode selects which step failures stop the run.

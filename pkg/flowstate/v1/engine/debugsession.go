@@ -324,6 +324,20 @@ func (e *executor) refuseForeign(ask *v1.DebugAsk) {
 	}
 }
 
+// debugBreakpointDefined is the state of the i-th carried breakpoint before it
+// is compiled: its id, assigned when the client left it empty, and its
+// definition under that id. A durable session redacts no breakpoint text, its
+// ids included; the definition is what the attached client sent.
+func debugBreakpointDefined(bp *v1.DebugBreakpoint, i int) *v1.DebugBreakpointState {
+	state := &v1.DebugBreakpointState{Id: bp.GetId(), Definition: proto.CloneOf(bp)}
+	if state.Id == "" {
+		state.Id = fmt.Sprintf("bp-%d", i+1)
+		state.Definition.Id = state.Id
+	}
+
+	return state
+}
+
 // parseDebugBreakpoints compiles the carried breakpoints once per segment.
 func (e *executor) parseDebugBreakpoints() {
 	d := e.debug
@@ -334,10 +348,7 @@ func (e *executor) parseDebugBreakpoints() {
 	sites, _ := v1.DebugStaticSites(e.spec)
 	d.parsed = make([]parsedBreakpoint, 0, len(d.carry.GetBreakpoints()))
 	for i, bp := range d.carry.GetBreakpoints() {
-		parsed := parsedBreakpoint{state: &v1.DebugBreakpointState{Id: bp.GetId()}}
-		if parsed.state.Id == "" {
-			parsed.state.Id = fmt.Sprintf("bp-%d", i+1)
-		}
+		parsed := parsedBreakpoint{state: debugBreakpointDefined(bp, i)}
 		refuse := func(message string) {
 			parsed.state.Verified = false
 			parsed.state.Message = message
@@ -648,6 +659,15 @@ func (d *debugControl) debugSnapshot(now time.Time, request string) *v1.DebugSna
 				state.Hits = d.carry.GetHits()[i]
 			}
 			snapshot.Breakpoints = append(snapshot.Breakpoints, state)
+		}
+		if d.parsed == nil {
+			// Carried but not yet compiled in this segment: reported with
+			// their definitions, so a client resending the set keeps them.
+			for i, bp := range d.carry.GetBreakpoints() {
+				state := debugBreakpointDefined(bp, i)
+				state.Message = "not yet compiled; the run compiles its breakpoints at its next step boundary"
+				snapshot.Breakpoints = append(snapshot.Breakpoints, state)
+			}
 		}
 		switch {
 		case held && d.held.scope != nil:

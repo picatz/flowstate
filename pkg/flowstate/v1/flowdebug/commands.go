@@ -729,7 +729,8 @@ func (s *Session) addBreakpoint(ctx context.Context, rest string, scope *v1.Scop
 
 	target := v1.ParseDebugTargetOrStep(id)
 
-	at := breakpoint{source: rest, id: id, target: target, hit: hit}
+	at := breakpoint{source: rest, id: id, target: target, hit: hit,
+		definition: &v1.DebugBreakpoint{Id: id, Step: id, HitCondition: hitText}}
 	if hitText != "" {
 		at.source = id + " hit " + hitText + strings.TrimPrefix(rest, id)
 	}
@@ -741,6 +742,7 @@ func (s *Session) addBreakpoint(ctx context.Context, rest string, scope *v1.Scop
 			return
 		}
 		at.condition = compiled
+		at.definition.Condition = strings.TrimSpace(condition)
 	}
 
 	full := !s.holdBreakpoint(id, at)
@@ -1182,7 +1184,8 @@ func (s *Session) addLogpoint(rest string) {
 	}
 
 	source := id + " " + message
-	if !s.holdBreakpoint("log "+id, breakpoint{source: "log " + source, id: "log " + id, target: target, log: template}) {
+	if !s.holdBreakpoint("log "+id, breakpoint{source: "log " + source, id: "log " + id, target: target, log: template,
+		definition: &v1.DebugBreakpoint{Id: "log " + id, Step: id, LogMessage: message}}) {
 		s.printfTone(ToneWarning, "a session holds at most %d breakpoints\n", MaxBreakpoints)
 
 		return

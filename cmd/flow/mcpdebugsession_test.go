@@ -519,3 +519,67 @@ func (s *stepTarget) Close() error {
 
 	return nil
 }
+
+// TestASecondStubbedSessionIsRefusedNotQueued: a stubbed case holds the
+// process-wide task registry while it runs, so a second one would wait on it
+// uncancellably. The second start is refused at once, a durable session is
+// still admitted beside the first, and once the first ends a new one starts.
+func TestASecondStubbedSessionIsRefusedNotQueued(t *testing.T) {
+	t.Parallel()
+
+	r := newDebugSessions(nil)
+	start := func() (*mcp.CallToolResult, sessionReply) {
+		t.Helper()
+		result, err := r.start(t.Context(), toolRequest(t, map[string]any{"workflow": debugWorkflow, "tests": sessionTests}))
+		require.NoError(t, err)
+
+		return result, replyOf(t, result)
+	}
+	end := func(id string) {
+		t.Helper()
+		result, err := r.end(t.Context(), toolRequest(t, map[string]any{"session_id": id}))
+		require.NoError(t, err)
+		require.False(t, result.IsError, replyOf(t, result).raw)
+	}
+
+	result, first := start()
+	require.False(t, result.IsError, first.raw)
+	assert.Equal(t, "DEBUG_RUN_STATE_HELD", first.Snapshot.State)
+
+	result, second := start()
+	require.True(t, result.IsError, "a second stubbed session was launched: %s", second.raw)
+	assert.Contains(t, second.raw, "one stubbed debug session at a time")
+	assert.Contains(t, second.raw, first.SessionID)
+
+	durable := addStepSession(t, r, newStepTarget(true))
+	end(durable.id)
+
+	end(first.SessionID)
+	result, third := start()
+	require.False(t, result.IsError, third.raw)
+	assert.Equal(t, "DEBUG_RUN_STATE_HELD", third.Snapshot.State)
+	end(third.SessionID)
+}
+
+// TestEndingACaseThatCannotStopReturns: a case blocked where cancellation
+// does not reach is left to finish on its own; ending it returns after the
+// bounded settle, cancel included, and says it has not stopped.
+func TestEndingACaseThatCannotStopReturns(t *testing.T) {
+	t.Parallel()
+
+	synctest.Test(t, func(t *testing.T) {
+		cancelled := false
+		entry := &debugSessionEntry{
+			id: "stuck", target: newStepTarget(true), done: make(chan struct{}),
+			cancel: func() { cancelled = true },
+		}
+
+		start := time.Now()
+		assert.False(t, entry.end(false), "a case that never stopped was reported finished")
+		assert.True(t, cancelled)
+		assert.Equal(t, 2*debugSessionEndSettle, time.Since(start))
+
+		close(entry.done)
+		assert.True(t, entry.end(false))
+	})
+}

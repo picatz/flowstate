@@ -201,6 +201,12 @@ func TestATypedSessionStepsIntoAndOutOfACall(t *testing.T) {
 	assert.True(t, stop.GetBreakpoints()[0].GetVerified())
 	assert.EqualValues(t, 1, stop.GetBreakpoints()[0].GetHits())
 	assert.False(t, stop.GetBreakpoints()[1].GetVerified())
+	// Each state carries the breakpoint as it was set, armed or not, so a
+	// client that did not set the set can resend it whole.
+	assert.True(t, proto.Equal(&v1.DebugBreakpoint{Id: "b", Step: "second", Condition: "steps.first != null"},
+		stop.GetBreakpoints()[0].GetDefinition()), "%v", stop.GetBreakpoints()[0].GetDefinition())
+	assert.True(t, proto.Equal(&v1.DebugBreakpoint{Id: "nowhere", Step: "missing"},
+		stop.GetBreakpoints()[1].GetDefinition()), "%v", stop.GetBreakpoints()[1].GetDefinition())
 
 	detached := tl.reads["detached"]
 	assert.Equal(t, v1.DebugRunState_DEBUG_RUN_STATE_DETACHED, detached.GetState())
