@@ -232,6 +232,17 @@ func TestAValueCutByATruncationIsRedactedToo(t *testing.T) {
 	unrelated := "connection refused" + v1.TruncatedSuffix
 	require.Equal(t, unrelated, set.RedactTextWithin(unrelated, "[withheld]", 1024))
 
+	// Two values, where the text's tail begins the second only after the
+	// automaton has left a partial match of the first: the tail is found
+	// through a failure link, not along one pattern from the start.
+	two := v1.RunFailureSensitiveValues(
+		&v1.Workflow{Name: "two", DeclaredInputs: []*v1.InputDeclaration{sensitiveInput("a"), sensitiveInput("b")}},
+		map[string]*v1.Value{"a": v1.NewLiteral("abcXYZ-first"), "b": v1.NewLiteral("bcQ-second-value")},
+	)
+	got := two.RedactTextWithin("id=abcbcQ-sec"+v1.TruncatedSuffix, "[withheld]", 1024)
+	require.NotContains(t, got, "bcQ-sec", "the second value's cut prefix, reached through a failure link: %q", got)
+	require.True(t, strings.HasPrefix(got, "id=a"), "text before it survives: %q", got)
+
 	notCut := "key=" + token[:8]
 	require.Equal(t, notCut, set.RedactTextWithin(notCut, "[withheld]", 1024),
 		"only text that says it was cut is read as cut")

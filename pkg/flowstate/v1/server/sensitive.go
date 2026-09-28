@@ -35,8 +35,11 @@ import (
 // workload.reveal_sensitive, listed explicitly in the caller's policy entry:
 // an entry with no action list, which is unrestricted for every RPC action,
 // is not granted it, because it is a widening nobody configured and the
-// default must not be disclosure. Every reveal request is audited, allowed or
-// not, under the field's own action. A caller who asks without the action is
+// default must not be disclosure. Every reveal request that reaches the
+// service is audited, allowed or not, under the field's own action; one the
+// schema refuses (validate.NewInterceptor, before any handler) is refused
+// before anything is decided or read, and writes no record, exactly as for
+// every other action (cmd/flow/rpcoptions_test.go). A caller who asks without the action is
 // answered with the values withheld rather than refused, so `flow get
 // --reveal-sensitive` degrades to what a caller without the flag sees.
 //

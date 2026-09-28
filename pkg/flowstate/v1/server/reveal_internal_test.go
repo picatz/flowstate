@@ -210,4 +210,10 @@ func TestACompletedRunsOutputsAreReadFromTheRunDescribed(t *testing.T) {
 
 	_, _ = s.Get(revealer(t.Context(), "workload.read"), connect.NewRequest(&v1.GetRequest{WorkflowId: "orders-1"}))
 	require.Equal(t, []string{"r-1"}, fake.resultRuns)
+
+	// A failed run's failure is read from the same run for the same reason.
+	failed := runningFake(t)
+	failed.describe.WorkflowExecutionInfo.Status = enumspb.WORKFLOW_EXECUTION_STATUS_FAILED
+	_, _ = mustNew(t, failed).Get(revealer(t.Context(), "workload.read"), connect.NewRequest(&v1.GetRequest{WorkflowId: "orders-1"}))
+	require.Equal(t, []string{"r-1"}, failed.resultRuns)
 }
