@@ -399,6 +399,42 @@ func TestTheDocumentedKeyringsParse(t *testing.T) {
 // TestTheStartupBudgetCoversEveryStartupCall: a keyring whose providers were
 // given long timeouts gets the time its startup calls may take, so opening it
 // is not cut short by a fixed bound, and a local keyring keeps the floor.
+// TestAVaultCAFileIsCheckedLikeTheKeyring: a provider's CA bundle decides
+// which server receives the Vault token and every wrap, so it is read like
+// the keyring's other such files: bounded, and refused if another account
+// could have written it, before anything is contacted.
+func TestAVaultCAFileIsCheckedLikeTheKeyring(t *testing.T) {
+	t.Setenv("T", "synthetic-token")
+	if runtime.GOOS == "windows" {
+		t.Skip("file modes are not checked on Windows")
+	}
+
+	dir := t.TempDir()
+	config := func(ca string) string {
+		return `
+namespaces:
+  ns: {current: k, keys: [{id: k, vault: {provider: corp, key: k}}]}
+providers:
+  - name: corp
+    vault: {address: 'https://vault.invalid', token_env: T, ca_file: ` + ca + `}
+`
+	}
+
+	// Chmod after writing, so the process umask cannot mask the bits.
+	require.NoError(t, os.Chmod(writeFile(t, dir, "writable.pem", []byte("not a certificate"), 0o644), 0o666))
+	_, err := load(t, dir, config("writable.pem"))
+	require.ErrorContains(t, err, "go-w")
+
+	writeFile(t, dir, "empty.pem", []byte("not a certificate"), 0o644)
+	_, err = load(t, dir, config("empty.pem"))
+	require.ErrorContains(t, err, "holds no PEM certificate")
+
+	big := make([]byte, envelope.MaxCAFileBytes+1)
+	writeFile(t, dir, "big.pem", big, 0o644)
+	_, err = load(t, dir, config("big.pem"))
+	require.Error(t, err)
+}
+
 func TestTheStartupBudgetCoversEveryStartupCall(t *testing.T) {
 	t.Parallel()
 
