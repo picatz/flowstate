@@ -77,6 +77,10 @@ type Server struct {
 	// oversize answers an encrypt with a well-formed but huge ciphertext.
 	oversize bool
 
+	// ignoreAD drops associated_data on every request, as a Vault older
+	// than 1.13 does.
+	ignoreAD bool
+
 	// bodies records every transit request body, to check what crossed the
 	// wire.
 	bodies []string
@@ -171,6 +175,16 @@ func (f *Server) SetHang(hang bool) {
 
 // SetOversize makes every encrypt answer with a well-formed but oversized
 // ciphertext.
+// SetIgnoreAssociatedData makes the server drop associated_data on every
+// request, the way a Vault that predates it does: ciphertexts bound to
+// nothing, and decrypts that accept any associated data.
+func (f *Server) SetIgnoreAssociatedData(ignore bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.ignoreAD = ignore
+}
+
 func (f *Server) SetOversize(oversize bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -233,7 +247,7 @@ func (f *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	f.mu.Lock()
 	f.bodies = append(f.bodies, string(raw))
-	status, hang, oversize := f.status, f.hang, f.oversize
+	status, hang, oversize, ignoreAD := f.status, f.hang, f.oversize, f.ignoreAD
 	valid := f.accepted[r.Header.Get("X-Vault-Token")]
 	f.mu.Unlock()
 
@@ -300,6 +314,9 @@ func (f *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			writeErrors(w, http.StatusBadRequest)
 			return
 		}
+		if ignoreAD {
+			aad = nil
+		}
 		if oversize {
 			writeData(w, map[string]any{"ciphertext": "vault:v1:" + base64.StdEncoding.EncodeToString(make([]byte, 600))})
 			return
@@ -325,6 +342,9 @@ func (f *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		_ = json.Unmarshal(raw, &req)
 		aad, _ := base64.StdEncoding.DecodeString(req.AssociatedData)
+		if ignoreAD {
+			aad = nil
+		}
 
 		rest, ok := strings.CutPrefix(req.Ciphertext, "vault:v")
 		digits, encoded, ok2 := strings.Cut(rest, ":")

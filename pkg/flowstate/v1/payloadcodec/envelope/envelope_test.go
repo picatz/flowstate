@@ -10,6 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/require"
@@ -150,17 +151,20 @@ func TestADataKeyRollsOverAtEachBound(t *testing.T) {
 	}
 }
 
-// TestAnUnreachableProviderStopsWritesNotReads: with no grace, a data key
-// past its window is not stretched and nothing is written unsealed; with
-// grace, sealing continues for exactly that long; reads of cached keys go on.
+// TestAnUnreachableProviderStopsWritesNotReads: while the provider is down,
+// payloads under the data key still in its window are written and read from
+// the cache; past the window, writes stop (nothing is written unsealed) unless
+// a stale grace keeps the old key sealing, and then this process can still
+// read what it wrote in the grace. A failed rollover is not retried on every
+// encode.
 func TestAnUnreachableProviderStopsWritesNotReads(t *testing.T) {
 	t.Parallel()
 
-	var clock atomic.Int64
-	clock.Store(time.Date(2026, 9, 28, 0, 0, 0, 0, time.UTC).UnixNano())
-	now := func() time.Time { return time.Unix(0, clock.Load()) }
-
 	for _, grace := range []time.Duration{0, 30 * time.Second} {
+		var clock atomic.Int64
+		clock.Store(time.Date(2026, 9, 28, 0, 0, 0, 0, time.UTC).UnixNano())
+		now := func() time.Time { return time.Unix(0, clock.Load()) }
+
 		flaky := &flakyKey{Key: localKey(t, 1)}
 		opts := envelope.Options{Binding: "ns", Current: "k1", Keys: []envelope.Recipient{{ID: "k1", Key: flaky}},
 			DataKey: &v1.PayloadDataKeyPolicy{MaxAge: durationpb.New(time.Minute), StaleGrace: durationpb.New(grace)}}
@@ -168,21 +172,42 @@ func TestAnUnreachableProviderStopsWritesNotReads(t *testing.T) {
 		c := newCodec(t, opts)
 		before := seal(t, c, marker)
 
+		// Down, inside the window: the cached data key serves both ways.
 		flaky.down.Store(true)
-		clock.Add(int64(time.Minute + time.Second))
-		_, err := c.Encode([]*commonpb.Payload{plainPayload(marker)})
+		clock.Add(int64(30 * time.Second))
+		inWindow := seal(t, c, marker)
+		_, err := c.Decode([]*commonpb.Payload{before, inWindow})
+		require.NoError(t, err, "grace %s: a cached data key reads while the provider is down", grace)
+
+		// Past the window.
+		clock.Add(int64(31 * time.Second))
+		wrapsBefore := flaky.wraps.Load()
+		_, err = c.Encode([]*commonpb.Payload{plainPayload(marker)})
 		if grace == 0 {
 			require.ErrorIs(t, err, envelope.ErrProviderUnavailable)
+			_, err = c.Decode([]*commonpb.Payload{before})
+			require.ErrorIs(t, err, envelope.ErrProviderUnavailable,
+				"past the window, an uncached data key needs the provider")
 		} else {
 			require.NoError(t, err, "within the grace, the old data key keeps sealing")
+			inGrace := seal(t, c, marker)
+			_, err = c.Decode([]*commonpb.Payload{before, inWindow, inGrace})
+			require.NoError(t, err, "this process reads what it wrote in the grace")
+
 			clock.Add(int64(grace))
 			_, err = c.Encode([]*commonpb.Payload{plainPayload(marker)})
 			require.ErrorIs(t, err, envelope.ErrProviderUnavailable, "past the grace, sealing stops")
 		}
+		for range 10 {
+			_, _ = c.Encode([]*commonpb.Payload{plainPayload(marker)})
+		}
+		require.LessOrEqual(t, flaky.wraps.Load()-wrapsBefore, int64(2),
+			"grace %s: every encode asked the unreachable provider again", grace)
 
-		_, err = c.Decode([]*commonpb.Payload{before})
-		require.NoError(t, err, "a cached data key still reads while the provider is down")
-		clock.Store(time.Date(2026, 9, 28, 0, 0, 0, 0, time.UTC).UnixNano())
+		// Back up: the next attempt after the backoff succeeds.
+		flaky.down.Store(false)
+		clock.Add(int64(3 * time.Second))
+		_ = seal(t, c, marker)
 	}
 }
 
@@ -200,22 +225,29 @@ func TestStartupFailsClosedWhenTheProviderCannotWrap(t *testing.T) {
 func TestConcurrentReadsOfOneDataKeyAskTheProviderOnce(t *testing.T) {
 	t.Parallel()
 
-	key := localKey(t, 1)
-	writer := newCodec(t, envelope.Options{Binding: "ns", Current: "k1", Keys: []envelope.Recipient{{ID: "k1", Key: key}}})
-	sealed := seal(t, writer, marker)
+	// In a bubble, so "every reader has arrived while the first unwrap is
+	// in flight" is a state the test waits for rather than a race it hopes
+	// to win: the provider holds its unwrap until every goroutine is blocked.
+	synctest.Test(t, func(t *testing.T) {
+		key := localKey(t, 1)
+		writer := newCodec(t, envelope.Options{Binding: "ns", Current: "k1", Keys: []envelope.Recipient{{ID: "k1", Key: key}}})
+		sealed := seal(t, writer, marker)
 
-	counting := &countingKey{Key: key, delay: 20 * time.Millisecond}
-	reader := newCodec(t, envelope.Options{Binding: "ns", Keys: []envelope.Recipient{{ID: "k1", Key: counting}}})
+		counting := &countingKey{Key: key, gate: make(chan struct{})}
+		reader := newCodec(t, envelope.Options{Binding: "ns", Keys: []envelope.Recipient{{ID: "k1", Key: counting}}})
 
-	var wg sync.WaitGroup
-	for range 64 {
-		wg.Go(func() {
-			_, err := reader.Decode([]*commonpb.Payload{sealed})
-			require.NoError(t, err)
-		})
-	}
-	wg.Wait()
-	require.EqualValues(t, 1, counting.unwraps.Load())
+		var wg sync.WaitGroup
+		for range 64 {
+			wg.Go(func() {
+				_, err := reader.Decode([]*commonpb.Payload{sealed})
+				require.NoError(t, err)
+			})
+		}
+		synctest.Wait()
+		close(counting.gate)
+		wg.Wait()
+		require.EqualValues(t, 1, counting.unwraps.Load())
+	})
 }
 
 // TestADefinitiveRefusalIsRememberedBriefly: a revoked key is asked once, not
@@ -439,6 +471,56 @@ func TestEscrowRecoversWhatThePrimaryKeyCannot(t *testing.T) {
 	require.ErrorIs(t, err, envelope.ErrReaderCannotEncode)
 }
 
+// TestEscrowCannotVouchForAWriter: anyone holding an escrow public key can
+// wrap a data key to it, so a payload opened through escrow proves nothing
+// about who sealed it. A codec that writes, whose reads drive workflows,
+// therefore never reads through escrow, even holding the private key; and an
+// HPKE key cannot be a namespace's own key at all.
+func TestEscrowCannotVouchForAWriter(t *testing.T) {
+	t.Parallel()
+
+	withPrivate := hpkeRecipient(t, true)
+	lostPrimary := newCodec(t, envelope.Options{Binding: "ns", Current: "k1",
+		Keys: []envelope.Recipient{{ID: "k1", Key: localKey(t, 1)}}, Escrow: []envelope.Recipient{{ID: "break-glass", Key: withPrivate}}})
+
+	// A payload sealed by a writer whose primary key this codec does not hold.
+	elsewhere := newCodec(t, envelope.Options{Binding: "ns", Current: "k9",
+		Keys: []envelope.Recipient{{ID: "k9", Key: localKey(t, 9)}}, Escrow: []envelope.Recipient{{ID: "break-glass", Key: withPrivate}}})
+	_, err := lostPrimary.Decode([]*commonpb.Payload{seal(t, elsewhere, marker)})
+	require.ErrorIs(t, err, envelope.ErrUnknownKey, "a writing codec read through escrow")
+
+	_, err = envelope.New(t.Context(), envelope.Options{Binding: "ns", Current: "h1",
+		Keys: []envelope.Recipient{{ID: "h1", Key: withPrivate}}})
+	require.ErrorContains(t, err, "escrow key", "an HPKE key was accepted as a namespace's own key")
+}
+
+// TestAHeaderMustBeCanonical: a header that parses to the same fields from
+// different bytes, here with a field repeated, is refused before any key is
+// used, so two readers can never disagree about which bytes they checked.
+func TestAHeaderMustBeCanonical(t *testing.T) {
+	t.Parallel()
+
+	c := newCodec(t, oneKey(t, "ns"))
+	sealed := seal(t, c, marker)
+	data := sealed.GetData()
+	n, read := uvarint(data[len(envelope.Magic):])
+	headerEnd := len(envelope.Magic) + read + int(n)
+	h := header(t, sealed)
+
+	// Field 2 (key_id), repeated with the same value: proto's last-wins parse
+	// yields the same header from longer bytes.
+	extra := append([]byte{0x12, byte(len(h.GetKeyId()))}, h.GetKeyId()...)
+	hb := append(append([]byte(nil), data[len(envelope.Magic)+read:headerEnd]...), extra...)
+	out := append([]byte(envelope.Magic), appendUvarint(nil, uint64(len(hb)))...)
+	out = append(append(out, hb...), data[headerEnd:]...)
+	tampered := proto.Clone(sealed).(*commonpb.Payload)
+	tampered.Data = out
+
+	_, err := c.Decode([]*commonpb.Payload{tampered})
+	require.ErrorIs(t, err, envelope.ErrMalformed)
+	require.ErrorContains(t, err, "canonical")
+}
+
 func TestUnencryptedPayloadsAreRefusedUnlessAccepted(t *testing.T) {
 	t.Parallel()
 
@@ -552,11 +634,12 @@ func hpkeRecipient(t testing.TB, withPrivate bool) *hpke.Key {
 	return k
 }
 
-// countingKey counts provider calls, optionally slowing or refusing unwraps.
+// countingKey counts provider calls, optionally holding unwraps until gate
+// is closed, or refusing them.
 type countingKey struct {
 	keyprovider.Key
 	wraps, unwraps atomic.Int64
-	delay          time.Duration
+	gate           chan struct{}
 	refuse         error
 }
 
@@ -567,24 +650,35 @@ func (k *countingKey) Wrap(ctx context.Context, dk []byte, ectx keyprovider.Cont
 
 func (k *countingKey) Unwrap(ctx context.Context, w keyprovider.Wrapped, ectx keyprovider.Context) ([]byte, error) {
 	k.unwraps.Add(1)
-	time.Sleep(k.delay)
+	if k.gate != nil {
+		<-k.gate
+	}
 	if k.refuse != nil {
 		return nil, k.refuse
 	}
 	return k.Key.Unwrap(ctx, w, ectx)
 }
 
-// flakyKey is a provider that can be taken down.
+// flakyKey is a provider that can be taken down, for wraps and unwraps alike.
 type flakyKey struct {
 	keyprovider.Key
-	down atomic.Bool
+	down  atomic.Bool
+	wraps atomic.Int64
 }
 
 func (k *flakyKey) Wrap(ctx context.Context, dk []byte, ectx keyprovider.Context) (keyprovider.Wrapped, error) {
+	k.wraps.Add(1)
 	if k.down.Load() {
 		return keyprovider.Wrapped{}, keyprovider.ErrUnavailable
 	}
 	return k.Key.Wrap(ctx, dk, ectx)
+}
+
+func (k *flakyKey) Unwrap(ctx context.Context, w keyprovider.Wrapped, ectx keyprovider.Context) ([]byte, error) {
+	if k.down.Load() {
+		return nil, keyprovider.ErrUnavailable
+	}
+	return k.Key.Unwrap(ctx, w, ectx)
 }
 
 // describingKey overrides what a key says about itself.

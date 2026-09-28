@@ -66,7 +66,12 @@
 // hands a codec payloads and nothing else (go.temporal.io/sdk@v1.48.0
 // converter/codec.go), so a party able to rewrite history can move a sealed
 // payload between runs of one namespace, and replay an old one. What that party
-// cannot do is read it, forge one, or move it across namespaces.
+// cannot do is read it, move it across namespaces, or forge one that a writing
+// codec accepts; see Escrow for the one reader that can be handed a forgery.
+//
+// The header is also held to its canonical encoding: Decode re-marshals it
+// deterministically and refuses one whose bytes differ, so a non-minimal
+// varint or a repeated field cannot make two readers disagree about it.
 //
 // # Escrow
 //
@@ -77,6 +82,15 @@
 // holding the private half reads history whose primary wrapping key is gone.
 // The commitment is what makes several wrapped copies safe: whichever copy a
 // reader unwraps, only the data key that sealed the payload opens it.
+//
+// What escrow cannot do is vouch for a writer. An HPKE public key is not a
+// secret, so a party able to rewrite history and holding it can wrap a data
+// key of its own choosing and seal a payload a recovery process will open.
+// Three rules keep that from mattering: a namespace's own keys must
+// authenticate the wrapper ([keyprovider.KeyInfo.Authenticates]), so an HPKE
+// key can be only an escrow key; only a decode-only codec, one that writes
+// nothing and so drives no workflow, unwraps through escrow; and what it reads
+// that way is documented as confidential, not authentic.
 //
 // # What stays readable
 //
@@ -111,6 +125,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -249,7 +264,17 @@ type Codec struct {
 
 	rollover sync.Mutex
 	active   atomic.Pointer[activeKey]
+
+	// retryAt and lastErr, guarded by rollover, hold a failed rollover's
+	// answer until the next attempt, so concurrent encodes during an outage
+	// get it at once instead of each waiting out a provider timeout.
+	retryAt time.Time
+	lastErr error
 }
+
+// rolloverBackoff is how long a failed rollover's answer stands before the
+// provider is asked again.
+const rolloverBackoff = 2 * time.Second
 
 // ringEntry is a key together with what payloads sealed under it are
 // authenticated to and may be. These travel with the key rather than with the
@@ -262,6 +287,11 @@ type ringEntry struct {
 	info          keyprovider.KeyInfo
 	binding       string
 	decryptSuites []Suite
+
+	// ttl is how long a data key this entry unwrapped is cached: its
+	// namespace's max_age, the bound on how long a disabled wrapping key
+	// keeps working in a running process.
+	ttl time.Duration
 }
 
 // New returns a codec for one namespace, having asked every key's provider to
@@ -299,7 +329,7 @@ func New(ctx context.Context, opts Options) (*Codec, error) {
 		c.now = time.Now
 	}
 	if c.cache == nil {
-		c.cache = newDecodeCache(int(opts.DataKey.GetDecodeCacheEntries()), c.policy.maxAge, c.now)
+		c.cache = newDecodeCache(int(opts.DataKey.GetDecodeCacheEntries()), c.now)
 	}
 
 	seen := map[string]bool{}
@@ -317,6 +347,7 @@ func New(ctx context.Context, opts Options) (*Codec, error) {
 			if err != nil {
 				return nil, err
 			}
+			e.ttl = c.policy.maxAge
 			set.into[r.ID] = e
 		}
 	}
@@ -324,6 +355,13 @@ func New(ctx context.Context, opts Options) (*Codec, error) {
 		c.escrowIDs = append(c.escrowIDs, r.ID)
 		if !c.escrow[r.ID].info.CanWrap {
 			return nil, fmt.Errorf("envelope: escrow key %q cannot wrap", r.ID)
+		}
+	}
+
+	for id, e := range c.ring {
+		if !e.info.Authenticates {
+			return nil, fmt.Errorf("envelope: key %q is a %s key, which anyone holding its public half can wrap "+
+				"to, so it cannot vouch for who sealed a payload; name it as an escrow key instead", id, e.info.Kind)
 		}
 	}
 
@@ -559,15 +597,22 @@ func (c *Codec) activeFor(size int) (*activeKey, error) {
 	if a != nil && a.fresh(c.policy, now, size) {
 		return a, nil
 	}
-	next, err := c.newActive(now)
-	if err != nil {
-		if a != nil && a.withinGrace(c.policy, now, size) {
-			return a, nil
+	err := c.lastErr
+	if now.Before(c.retryAt) && err != nil {
+		// Asked recently and refused: answer from that, not the provider.
+	} else {
+		var next *activeKey
+		if next, err = c.newActive(now); err == nil {
+			c.lastErr, c.retryAt = nil, time.Time{}
+			c.active.Store(next)
+			return next, nil
 		}
-		return nil, err
+		c.lastErr, c.retryAt = err, now.Add(rolloverBackoff)
 	}
-	c.active.Store(next)
-	return next, nil
+	if a != nil && a.withinGrace(c.policy, now, size) {
+		return a, nil
+	}
+	return nil, err
 }
 
 // newActive generates a data key and wraps it to the current key and every
@@ -585,6 +630,9 @@ func (c *Codec) newActive(now time.Time) (*activeKey, error) {
 		return nil, err
 	}
 	a := &activeKey{dataKey: dk, wrapped: wrapped, created: now}
+	// Cleared once nothing holds the key any more: after rollover, when the
+	// last in-flight seal that loaded it has finished.
+	runtime.AddCleanup(a, func(dk []byte) { clear(dk) }, dk)
 	for _, id := range c.escrowIDs {
 		w, err := c.wrap(ctx, c.escrow[id], dk, ectx)
 		if err != nil {
@@ -593,8 +641,9 @@ func (c *Codec) newActive(now time.Time) (*activeKey, error) {
 		}
 		a.escrow = append(a.escrow, &v1.PayloadEscrowRecipient{KeyId: id, WrappedKey: w.Bytes, KeyVersion: w.Version})
 	}
-	// This process will read what it writes; it need not ask the provider.
-	c.cache.put(cacheKey(ectx, wrapped), dk)
+	// This process will read what it writes, for as long as it may write
+	// with this key, grace included; it need not ask the provider.
+	c.cache.put(cacheKey(c.current.id, ectx, wrapped), dk, c.policy.maxAge+c.policy.staleGrace)
 	return a, nil
 }
 
@@ -791,7 +840,7 @@ func (c *Codec) decodeOne(p *commonpb.Payload) (*commonpb.Payload, error) {
 	spec := suites[Suite(header.GetSuite())]
 
 	ectx := keyprovider.Context{Namespace: binding, KeyID: keyID, Suite: header.GetSuite()}
-	dataKey, err := c.cache.unwrap(unwrapper.key, c.timeout, w, ectx)
+	dataKey, err := c.cache.unwrap(unwrapper, c.timeout, w, ectx)
 	if err != nil {
 		return nil, fmt.Errorf("key %q: %w", keyID, err)
 	}
@@ -842,12 +891,16 @@ func parse(data []byte) (*v1.PayloadEnvelopeHeader, []byte, []byte, error) {
 		return nil, nil, nil, fmt.Errorf("%w: the header length is invalid", ErrMalformed)
 	}
 	end := len(magic) + read + int(n)
+	wire := data[len(magic)+read : end]
 	var header v1.PayloadEnvelopeHeader
-	if err := proto.Unmarshal(data[len(magic)+read:end], &header); err != nil {
+	if err := proto.Unmarshal(wire, &header); err != nil {
 		return nil, nil, nil, fmt.Errorf("%w: the header does not parse", ErrMalformed)
 	}
 	if err := v1.Validate(&header); err != nil {
 		return nil, nil, nil, fmt.Errorf("%w: the header is invalid", ErrMalformed)
+	}
+	if canonical, err := (proto.MarshalOptions{Deterministic: true}).Marshal(&header); err != nil || !bytes.Equal(canonical, wire) {
+		return nil, nil, nil, fmt.Errorf("%w: the header is not in its canonical encoding", ErrMalformed)
 	}
 	return &header, data[:end], data[end:], nil
 }
@@ -868,10 +921,13 @@ func (c *Codec) unwrapperFor(h *v1.PayloadEnvelopeHeader) (ringEntry, string, []
 			return primary, binding, allowed, keyprovider.Wrapped{Bytes: h.GetWrappedKey(), Version: h.GetKeyVersion()}, nil
 		}
 	}
-	// Escrow is for a namespace codec, whose binding is its own. A reader
-	// that does not hold the primary key cannot say which namespace a payload
-	// belongs to, so it does not guess.
-	if binding != "" {
+	// Escrow is for a decode-only namespace codec: a recovery process, whose
+	// binding is its own and which writes nothing. A codec that writes never
+	// reads through escrow, because an escrow wrap does not prove who made it
+	// and what a writer reads drives its workflows. A reader that does not
+	// hold the primary key cannot say which namespace a payload belongs to,
+	// so it does not guess either.
+	if binding != "" && c.current == nil && c.binding != "" {
 		for _, r := range h.GetEscrow() {
 			if e, ok := c.escrow[r.GetKeyId()]; ok && e.info.CanUnwrap {
 				return e, binding, allowed, keyprovider.Wrapped{Bytes: r.GetWrappedKey(), Version: r.GetKeyVersion()}, nil

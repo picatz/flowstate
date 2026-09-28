@@ -129,16 +129,14 @@ func Open(ctx context.Context, cfg *v1.PayloadKeyring, opts OpenOptions) (*Keyri
 		escrow[kc.GetId()] = Recipient{ID: kc.GetId(), Key: key}
 	}
 
-	// One cache for every codec, sized and aged by the most generous
-	// namespace: a data key is cached no longer than its own namespace would
-	// keep sealing with it, since every entry expires by the keyring's
-	// longest window, and the count bound holds across all of them.
-	entries, ttl := 0, time.Duration(0)
+	// One cache for every codec, sized by the most generous namespace. Each
+	// entry expires by its own namespace's window, so one namespace's short
+	// revocation delay is not stretched by another's long one.
+	entries := 0
 	for _, n := range cfg.GetNamespaces() {
 		entries = max(entries, int(n.GetDataKey().GetDecodeCacheEntries()))
-		ttl = max(ttl, resolvePolicy(n.GetDataKey()).maxAge)
 	}
-	cache := newDecodeCache(entries, ttl, opts.now)
+	cache := newDecodeCache(entries, opts.now)
 
 	kr := &Keyring{byNamespace: map[string]*Codec{}}
 	for _, ns := range slices.Sorted(maps.Keys(cfg.GetNamespaces())) {

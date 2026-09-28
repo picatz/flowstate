@@ -141,6 +141,13 @@ type KeyInfo struct {
 	// the key where the process holds something to digest (local material,
 	// an HPKE public key), and empty where it does not (a Vault key).
 	Fingerprint string
+
+	// Authenticates is whether a wrap proves the wrapper held a secret: true
+	// for a symmetric key (local, Vault), false for a public-key recipient
+	// (HPKE), which anyone holding the public key can wrap to. Only an
+	// authenticating key may be a namespace's own key: a payload opened
+	// through it is one some holder of the key sealed.
+	Authenticates bool
 }
 
 // Key is one wrapping key, as a provider exposes it to the envelope. A Key is

@@ -108,6 +108,7 @@ func TestKeyringConfigurationIsChecked(t *testing.T) {
 		"too many escrow": "namespaces: {a: {current: k1, keys: [{id: k1, env: K}], escrow: [e1, e2, e3, e4]}}\n" +
 			"escrow_keys: [{id: e1, env: K}, {id: e2, env: K}, {id: e3, env: K}, {id: e4, env: K}]\n",
 		"a data key window over a day": `namespaces: {ns: {current: k1, keys: [{id: k1, env: K}], data_key: {max_age: 90000s}}}`,
+		"hpke as a namespace key":      `namespaces: {ns: {current: h1, keys: [{id: h1, hpke: {public_key: {env: P}}}]}}`,
 	} {
 		_, err := envelope.ParseConfig([]byte(config))
 		require.Error(t, err, name)
@@ -284,4 +285,26 @@ providers:
 	_, err = load(t, t.TempDir(), config)
 	require.ErrorIs(t, err, envelope.ErrKeyDenied)
 
+}
+
+// TestTheDocumentedKeyringsParse holds docs/ENCRYPTION.md to the schema: every
+// YAML block there that configures a keyring is one ParseConfig accepts, so
+// the page cannot teach a field that was renamed or a rule that was added.
+func TestTheDocumentedKeyringsParse(t *testing.T) {
+	t.Parallel()
+
+	doc, err := os.ReadFile(filepath.Join("..", "..", "..", "..", "..", "docs", "ENCRYPTION.md"))
+	require.NoError(t, err)
+
+	blocks := 0
+	for chunk := range strings.SplitSeq(string(doc), "```yaml\n") {
+		block, _, found := strings.Cut(chunk, "```")
+		if !found || !strings.Contains(block, "namespaces:") {
+			continue
+		}
+		blocks++
+		_, err := envelope.ParseConfig([]byte(block))
+		require.NoError(t, err, "docs/ENCRYPTION.md teaches a keyring the schema refuses:\n%s", block)
+	}
+	require.GreaterOrEqual(t, blocks, 6, "the keyring examples were not found, so nothing was checked")
 }

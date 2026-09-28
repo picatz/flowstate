@@ -24,6 +24,14 @@
 //
 // The context is HPKE's info, so a wrap unwraps only for the namespace, key id
 // and suite it was made for.
+//
+// # What it does not prove
+//
+// Who wrapped. The public key is not a secret, so anyone holding it can wrap a
+// data key of their choosing to it, and a payload opened through that wrap is
+// confidential but not authentic to any writer. That is why an HPKE key can be
+// only an escrow key, and why only a decode-only recovery process reads
+// through one; see package envelope.
 package hpke
 
 import (
@@ -205,6 +213,7 @@ func (k *Key) Describe(context.Context) (keyprovider.KeyInfo, error) {
 		CanWrap:         true,
 		CanUnwrap:       k.private != nil,
 		Fingerprint:     k.fingerprint,
+		Authenticates:   false,
 	}, nil
 }
 

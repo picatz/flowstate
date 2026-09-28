@@ -58,7 +58,7 @@ func Test_Key_roundTrip(t *testing.T) {
 			info, err := key.Describe(t.Context())
 			require.NoError(t, err)
 			require.Equal(t, keyprovider.KeyInfo{
-				Kind: "vault", MaxWrappedBytes: 512, CanWrap: true, CanUnwrap: true, Version: 1,
+				Kind: "vault", MaxWrappedBytes: 512, CanWrap: true, CanUnwrap: true, Authenticates: true, Version: 1,
 			}, info)
 
 			wrapped, err := key.Wrap(t.Context(), dataKey(), testContext)
@@ -428,4 +428,21 @@ func Test_Key_kubernetesAuth(t *testing.T) {
 
 		require.Equal(t, 2, f.Logins())
 	})
+}
+
+// TestAServerThatIgnoresTheContextIsRefused: a Vault that drops
+// associated_data, as one before 1.13 does, would make a wrap unwrap under any
+// context without saying so. Describe asks, and refuses it at startup.
+func TestAServerThatIgnoresTheContextIsRefused(t *testing.T) {
+	f := vaulttest.NewServer(t)
+	f.Create("flowstate", "aes256-gcm96")
+	key := newTestKey(t, f, "flowstate")
+
+	_, err := key.Describe(t.Context())
+	require.NoError(t, err)
+
+	f.SetIgnoreAssociatedData(true)
+	_, err = key.Describe(t.Context())
+	require.ErrorIs(t, err, keyprovider.ErrDenied)
+	require.ErrorContains(t, err, "does not bind the encryption context")
 }

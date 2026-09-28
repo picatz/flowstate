@@ -23,7 +23,9 @@
 package vault
 
 import (
+	"bytes"
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -73,7 +75,8 @@ func (k *Key) LogValue() slog.Value { return slog.StringValue(k.String()) }
 
 // Describe implements [keyprovider.Key]. It reads the key from Vault and
 // refuses one that cannot bind the encryption context: not an AEAD type this
-// provider accepts, unable to encrypt or decrypt, or derived.
+// provider accepts, unable to encrypt or decrypt, or derived. Then it proves
+// the server binds it, by probing it once.
 func (k *Key) Describe(ctx context.Context) (keyprovider.KeyInfo, error) {
 	if k.transit == nil {
 		return keyprovider.KeyInfo{}, fmt.Errorf("%w: vault: %s has no Transit client", keyprovider.ErrUnavailable, k)
@@ -101,14 +104,56 @@ func (k *Key) Describe(ctx context.Context) (keyprovider.KeyInfo, error) {
 		)
 	}
 
+	if err := k.probeContextBinding(ctx); err != nil {
+		return keyprovider.KeyInfo{}, err
+	}
+
 	return keyprovider.KeyInfo{
 		Kind:            kind,
 		MaxWrappedBytes: MaxWrappedBytes,
 		CanWrap:         true,
 		CanUnwrap:       true,
+		Authenticates:   true,
 		Version:         info.LatestVersion,
 	}, nil
 }
+
+// probeContextBinding encrypts a random value under one context and requires
+// that decrypting it under another is refused and under its own is not. A
+// Vault older than 1.13 drops associated_data without an error, and a wrap it
+// made would unwrap under any context; nothing in its answers says so, so it
+// is asked. The envelope binds the context in its own derivation too, so this
+// guards the provider-level guarantee, not the envelope's.
+func (k *Key) probeContextBinding(ctx context.Context) error {
+	probe := make([]byte, keyprovider.DataKeyBytes)
+	_, _ = rand.Read(probe)
+	defer clear(probe)
+	bound := []byte(probeLabel + "/bound")
+
+	ciphertext, _, err := k.transit.Encrypt(ctx, k.name, probe, bound)
+	if err != nil {
+		return classify(k, "probing", err)
+	}
+	if _, err := k.transit.Decrypt(ctx, k.name, ciphertext, []byte(probeLabel+"/other")); err == nil {
+		return fmt.Errorf("%w: vault: %s decrypted under associated data it was not encrypted with, so the "+
+			"server does not bind the encryption context; Vault 1.13 or later (or OpenBao) is required",
+			keyprovider.ErrDenied, k)
+	} else if !errors.Is(err, secretsvault.ErrInvalidCiphertext) {
+		return classify(k, "probing", err)
+	}
+	got, err := k.transit.Decrypt(ctx, k.name, ciphertext, bound)
+	if err != nil {
+		return classify(k, "probing", err)
+	}
+	defer clear(got)
+	if !bytes.Equal(got, probe) {
+		return fmt.Errorf("%w: vault: %s returned a different value than it encrypted", keyprovider.ErrDenied, k)
+	}
+	return nil
+}
+
+// probeLabel is the associated data of the startup probe, never of a wrap.
+const probeLabel = "flowstate/payload-envelope/v1/vault-probe"
 
 // Wrap implements [keyprovider.Key].
 func (k *Key) Wrap(ctx context.Context, dataKey []byte, ectx keyprovider.Context) (keyprovider.Wrapped, error) {

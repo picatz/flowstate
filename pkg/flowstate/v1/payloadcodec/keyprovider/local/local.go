@@ -137,6 +137,7 @@ func (k *Key) Describe(context.Context) (keyprovider.KeyInfo, error) {
 		CanWrap:         true,
 		CanUnwrap:       true,
 		Fingerprint:     k.fingerprint,
+		Authenticates:   true,
 	}, nil
 }
 

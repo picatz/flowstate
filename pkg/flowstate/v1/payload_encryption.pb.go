@@ -406,7 +406,9 @@ type PayloadKey_Vault struct {
 
 type PayloadKey_Hpke struct {
 	// An HPKE (RFC 9180) recipient: data keys are sealed to its public key,
-	// and only a holder of the private key can unwrap them.
+	// and only a holder of the private key can unwrap them. An escrow key
+	// only: anyone holding the public key can wrap to it, so a wrap under it
+	// does not show who made it.
 	Hpke *PayloadHPKEKey `protobuf:"bytes,5,opt,name=hpke,proto3,oneof"`
 }
 
@@ -1449,7 +1451,7 @@ const file_flowstate_v1_payload_encryption_proto_rawDesc = "" +
 	"%payload_keyring.provider_names_unique\x12%each provider name may be listed once\x1a&this.providers.map(p, p.name).unique()\x1ar\n" +
 	"!payload_keyring.escrow_ids_unique\x12%each escrow key id may be listed once\x1a&this.escrow_keys.map(k, k.id).unique()\x1a\xc9\x02\n" +
 	"*payload_keyring.vault_keys_name_a_provider\x127a vault key must name a provider listed under providers\x1a\xe1\x01this.namespaces.all(ns, this.namespaces[ns].keys.all(k, !has(k.vault) || this.providers.exists(p, p.name == k.vault.provider))) && this.escrow_keys.all(k, !has(k.vault) || this.providers.exists(p, p.name == k.vault.provider))\x1a\xcd\x01\n" +
-	"*payload_keyring.escrow_names_an_escrow_key\x12<a namespace's escrow must name keys listed under escrow_keys\x1aathis.namespaces.all(ns, this.namespaces[ns].escrow.all(e, this.escrow_keys.exists(k, k.id == e)))J\x04\b\x04\x10\x05R\aplugins\"\xbe\a\n" +
+	"*payload_keyring.escrow_names_an_escrow_key\x12<a namespace's escrow must name keys listed under escrow_keys\x1aathis.namespaces.all(ns, this.namespaces[ns].escrow.all(e, this.escrow_keys.exists(k, k.id == e)))J\x04\b\x04\x10\x05R\aplugins\"\x91\t\n" +
 	"\x17PayloadKeyringNamespace\x12:\n" +
 	"\acurrent\x18\x01 \x01(\tB \xbaH\x1dr\x1b2\x19^([A-Za-z0-9._-]{1,64})?$R\acurrent\x126\n" +
 	"\x04keys\x18\x02 \x03(\v2\x18.flowstate.v1.PayloadKeyB\b\xbaH\x05\x92\x01\x02\x10@R\x04keys\x12-\n" +
@@ -1457,9 +1459,10 @@ const file_flowstate_v1_payload_encryption_proto_rawDesc = "" +
 	"\x06escrow\x18\x04 \x03(\tB$\xbaH!\x92\x01\x1e\x10\x03\"\x1ar\x182\x16^[A-Za-z0-9._-]{1,64}$R\x06escrow\x12:\n" +
 	"\x05suite\x18\x05 \x01(\x0e2\x1a.flowstate.v1.PayloadSuiteB\b\xbaH\x05\x82\x01\x02\x10\x01R\x05suite\x12T\n" +
 	"\x0edecrypt_suites\x18\x06 \x03(\x0e2\x1a.flowstate.v1.PayloadSuiteB\x11\xbaH\x0e\x92\x01\v\x10\b\"\a\x82\x01\x04\x10\x01 \x00R\rdecryptSuites\x12=\n" +
-	"\bdata_key\x18\a \x01(\v2\".flowstate.v1.PayloadDataKeyPolicyR\adataKey:\xf0\x03\xbaH\xec\x03\x1a\xa4\x01\n" +
+	"\bdata_key\x18\a \x01(\v2\".flowstate.v1.PayloadDataKeyPolicyR\adataKey:\xc3\x05\xbaH\xbf\x05\x1a\xa4\x01\n" +
 	"+payload_keyring_namespace.current_is_listed\x124the current key must be one of this namespace's keys\x1a?this.current == '' || this.keys.exists(k, k.id == this.current)\x1ag\n" +
-	"$payload_keyring_namespace.unique_ids\x12\x1eeach key id may be listed once\x1a\x1fthis.keys.map(k, k.id).unique()\x1ab\n" +
+	"$payload_keyring_namespace.unique_ids\x12\x1eeach key id may be listed once\x1a\x1fthis.keys.map(k, k.id).unique()\x1a\xd0\x01\n" +
+	"+payload_keyring_namespace.keys_authenticate\x12\x80\x01an hpke key can only be an escrow key: anyone holding its public key can wrap to it, so it cannot vouch for who sealed a payload\x1a\x1ethis.keys.all(k, !has(k.hpke))\x1ab\n" +
 	"'payload_keyring_namespace.escrow_unique\x12!each escrow id may be listed once\x1a\x14this.escrow.unique()\x1av\n" +
 	"/payload_keyring_namespace.decrypt_suites_unique\x12%each decrypt suite may be listed once\x1a\x1cthis.decrypt_suites.unique()\"\x94\x02\n" +
 	"\n" +

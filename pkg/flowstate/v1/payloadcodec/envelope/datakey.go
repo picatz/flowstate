@@ -35,6 +35,15 @@ const (
 	maxDecodeCacheEntries     = 1 << 16
 	negativeCacheTTL          = 5 * time.Second
 	maxNegativeCacheEntries   = 1024
+
+	// unwrapRate and unwrapBurst bound how often a keyring asks providers to
+	// unwrap a data key it has not seen. Legitimate reads miss once per data
+	// key, which is one per namespace per window per writer; what exceeds
+	// this is a flood of wrapped keys nobody made, sent to turn the provider
+	// into a quota or audit-log sink. Past it, an unwrap is refused as
+	// unavailable, which Temporal and the codec server's callers retry.
+	unwrapRate  = 200
+	unwrapBurst = 2000
 )
 
 // ErrProviderUnavailable is a data key that could not be wrapped or unwrapped
@@ -109,7 +118,11 @@ func (k *activeKey) withinCounts(p dataKeyPolicy, size int) bool {
 	return k.messages.Load() < p.maxMessages && k.bytes.Load()+uint64(size) <= p.maxBytes
 }
 
-// use charges one payload of size bytes against k.
+// use charges one payload of size bytes against k. The bounds are checked
+// before and charged after, so concurrent seals can pass them by at most the
+// number in flight: they are policy on how long one data key is used, far
+// below any bound the construction needs, since every content key is single
+// use.
 func (k *activeKey) use(size int) {
 	k.messages.Add(1)
 	k.bytes.Add(uint64(size))
@@ -135,12 +148,15 @@ func newDataKey() []byte {
 type decodeCache struct {
 	mu       sync.Mutex
 	capacity int
-	ttl      time.Duration
 	now      func() time.Time
 	entries  map[[sha256.Size]byte]*list.Element
 	order    *list.List // front is most recently used
 	negative map[[sha256.Size]byte]negativeEntry
 	flight   singleflight.Group
+
+	// tokens and refilled are a token bucket over provider unwraps.
+	tokens   float64
+	refilled time.Time
 }
 
 type cacheEntry struct {
@@ -154,24 +170,44 @@ type negativeEntry struct {
 	expires time.Time
 }
 
-func newDecodeCache(capacity int, ttl time.Duration, now func() time.Time) *decodeCache {
+func newDecodeCache(capacity int, now func() time.Time) *decodeCache {
 	if capacity <= 0 {
 		capacity = DefaultDecodeCacheEntries
 	}
 	return &decodeCache{
 		capacity: min(capacity, maxDecodeCacheEntries),
-		ttl:      ttl,
 		now:      now,
 		entries:  make(map[[sha256.Size]byte]*list.Element),
 		order:    list.New(),
 		negative: make(map[[sha256.Size]byte]negativeEntry),
+		tokens:   unwrapBurst,
+		refilled: now(),
 	}
 }
 
-// cacheKey is what one unwrap was bound to: the wrapping key, its version,
-// the wrapped bytes, and the context, each length-prefixed.
-func cacheKey(ectx keyprovider.Context, w keyprovider.Wrapped) [sha256.Size]byte {
+// admit takes one token for a provider unwrap, or reports that the bucket is
+// empty.
+func (c *decodeCache) admit() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	now := c.now()
+	c.tokens = min(unwrapBurst, c.tokens+now.Sub(c.refilled).Seconds()*unwrapRate)
+	c.refilled = now
+	if c.tokens < 1 {
+		return false
+	}
+	c.tokens--
+	return true
+}
+
+// cacheKey is what one unwrap was bound to: the key that unwraps (the
+// primary or an escrow key, by id), the context, the wrapping key's version,
+// and the wrapped bytes, each length-prefixed or fixed-width. Naming the
+// unwrapping key keeps one key's refusal from being remembered against
+// another's wrapped copy.
+func cacheKey(unwrapper string, ectx keyprovider.Context, w keyprovider.Wrapped) [sha256.Size]byte {
 	h := sha256.New()
+	h.Write(appendPrefixed(nil, unwrapper))
 	h.Write(ectx.Bytes())
 	var buf [4]byte
 	binary.BigEndian.PutUint32(buf[:], w.Version)
@@ -206,9 +242,10 @@ func (c *decodeCache) get(key [sha256.Size]byte) ([]byte, error, bool) {
 	return clone(e.dataKey), nil, true
 }
 
-// put stores a copy of dataKey under key, evicting the least recently used
-// entry when full.
-func (c *decodeCache) put(key [sha256.Size]byte, dataKey []byte) {
+// put stores a copy of dataKey under key until ttl from now, evicting the
+// least recently used entry when full. The ttl is the caching namespace's own,
+// so one namespace's short window is not stretched by another's long one.
+func (c *decodeCache) put(key [sha256.Size]byte, dataKey []byte, ttl time.Duration) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if el, ok := c.entries[key]; ok {
@@ -217,17 +254,28 @@ func (c *decodeCache) put(key [sha256.Size]byte, dataKey []byte) {
 	for c.order.Len() >= c.capacity {
 		c.remove(c.order.Back())
 	}
-	c.entries[key] = c.order.PushFront(&cacheEntry{key: key, dataKey: clone(dataKey), expires: c.now().Add(c.ttl)})
+	c.entries[key] = c.order.PushFront(&cacheEntry{key: key, dataKey: clone(dataKey), expires: c.now().Add(ttl)})
 }
 
-// refuse remembers a definitive refusal for a few seconds.
+// refuse remembers a definitive refusal for a few seconds. When full, it
+// drops what has expired and otherwise remembers nothing new: flushing the
+// whole set would let a flood of bad wraps wash out the refusals that are
+// holding back calls for a revoked key.
 func (c *decodeCache) refuse(key [sha256.Size]byte, err error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	now := c.now()
 	if len(c.negative) >= maxNegativeCacheEntries {
-		clear(c.negative)
+		for k, e := range c.negative {
+			if !now.Before(e.expires) {
+				delete(c.negative, k)
+			}
+		}
+		if len(c.negative) >= maxNegativeCacheEntries {
+			return
+		}
 	}
-	c.negative[key] = negativeEntry{err: err, expires: c.now().Add(negativeCacheTTL)}
+	c.negative[key] = negativeEntry{err: err, expires: now.Add(negativeCacheTTL)}
 }
 
 // remove drops an entry and clears its data key.
@@ -237,10 +285,11 @@ func (c *decodeCache) remove(el *list.Element) {
 	delete(c.entries, e.key)
 }
 
-// unwrap returns the data key w wraps under ectx, from the cache or from key,
-// with concurrent misses for one wrapped key coalesced into one provider call.
-func (c *decodeCache) unwrap(key keyprovider.Key, timeout time.Duration, w keyprovider.Wrapped, ectx keyprovider.Context) ([]byte, error) {
-	ck := cacheKey(ectx, w)
+// unwrap returns the data key w wraps under ectx, from the cache or from the
+// entry's key, with concurrent misses for one wrapped key coalesced into one
+// provider call. A data key it fetches is kept for the entry's ttl.
+func (c *decodeCache) unwrap(e ringEntry, timeout time.Duration, w keyprovider.Wrapped, ectx keyprovider.Context) ([]byte, error) {
+	ck := cacheKey(e.id, ectx, w)
 	if dk, err, ok := c.get(ck); ok {
 		return dk, err
 	}
@@ -249,9 +298,12 @@ func (c *decodeCache) unwrap(key keyprovider.Key, timeout time.Duration, w keypr
 		if dk, err, ok := c.get(ck); ok {
 			return dk, err
 		}
+		if !c.admit() {
+			return nil, fmt.Errorf("%w: more unwraps of unseen data keys than %d a second", ErrProviderUnavailable, unwrapRate)
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
-		dk, err := key.Unwrap(ctx, w, ectx)
+		dk, err := e.key.Unwrap(ctx, w, ectx)
 		if err != nil {
 			err = classifyProviderError(err)
 			if !errors.Is(err, ErrProviderUnavailable) {
@@ -263,7 +315,7 @@ func (c *decodeCache) unwrap(key keyprovider.Key, timeout time.Duration, w keypr
 			clear(dk)
 			return nil, fmt.Errorf("%w: the provider returned a data key of the wrong length", ErrAuthentication)
 		}
-		c.put(ck, dk)
+		c.put(ck, dk, e.ttl)
 		return dk, nil
 	})
 	if err != nil {

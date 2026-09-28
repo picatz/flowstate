@@ -141,6 +141,11 @@ message PayloadKeyringNamespace {
     expression: "this.keys.map(k, k.id).unique()"
   };
   option (buf.validate.message).cel = {
+    id: "payload_keyring_namespace.keys_authenticate"
+    message: "an hpke key can only be an escrow key: anyone holding its public key can wrap to it, so it cannot vouch for who sealed a payload"
+    expression: "this.keys.all(k, !has(k.hpke))"
+  };
+  option (buf.validate.message).cel = {
     id: "payload_keyring_namespace.escrow_unique"
     message: "each escrow id may be listed once"
     expression: "this.escrow.unique()"
@@ -219,7 +224,9 @@ message PayloadKey {
     PayloadVaultKey vault = 4;
 
     // An HPKE (RFC 9180) recipient: data keys are sealed to its public key,
-    // and only a holder of the private key can unwrap them.
+    // and only a holder of the private key can unwrap them. An escrow key
+    // only: anyone holding the public key can wrap to it, so a wrap under it
+    // does not show who made it.
     PayloadHPKEKey hpke = 5;
   }
 }
