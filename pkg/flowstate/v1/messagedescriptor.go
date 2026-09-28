@@ -58,7 +58,7 @@ func MessageDescriptorBytes(md protoreflect.MessageDescriptor, alsoProvided ...p
 // [github.com/picatz/flowstate/pkg/flowstate/v1/protodoc]). Without it a plugin
 // author's field comments reached nobody's editor however well the .proto was
 // written (#723). Prose here is the plugin's own, from its generated comments
-// ([GeneratedDescriptorProse]) or a descriptor set, grafted onto the
+// ([DescriptorProseFrom]) or a descriptor set, grafted onto the
 // descriptors this function was already sending — the bytes were always able to
 // carry comments; nothing was putting any in.
 //

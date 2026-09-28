@@ -94,6 +94,7 @@ import (
 	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/metricschema"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin/internal/protocol"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/protodoc/registry"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
 )
 
@@ -838,7 +839,7 @@ func (p Plugin) manifest() (*pluginv1.PluginManifest, error) {
 	// same malformed set as many times as the plugin has tasks. Without one,
 	// the comments protoc-gen-flowstate-doc generated into this binary are
 	// used; a plugin that generated none ships what it always did.
-	prose := flowstatev1.GeneratedDescriptorProse()
+	prose := flowstatev1.DescriptorProseFrom(registry.Lookup)
 	if len(p.SchemaProse) > 0 {
 		parsed, err := flowstatev1.ParseDescriptorProse(p.SchemaProse)
 		if err != nil {

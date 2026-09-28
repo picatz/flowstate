@@ -23,7 +23,7 @@ import (
 // and asking it for each declaration's comment checks every path this package
 // builds: a wrong index or field number would give some declaration another's
 // comment, or none.
-func TestGeneratedSourceInfoAttachesEveryCommentToItsDeclaration(t *testing.T) {
+func TestLookedUpSourceInfoAttachesEveryCommentToItsDeclaration(t *testing.T) {
 	var files, comments int
 	protoregistry.GlobalFiles.RangeFiles(func(linked protoreflect.FileDescriptor) bool {
 		if !strings.HasPrefix(linked.Path(), "flowstate/v1/") {
@@ -32,7 +32,7 @@ func TestGeneratedSourceInfoAttachesEveryCommentToItsDeclaration(t *testing.T) {
 		files++
 
 		fdp := protodesc.ToFileDescriptorProto(linked)
-		fdp.SourceCodeInfo = generatedSourceInfo(linked)
+		fdp.SourceCodeInfo = lookedUpSourceInfo(linked, registry.Lookup)
 		rebuilt, err := protodesc.NewFile(fdp, protoregistry.GlobalFiles)
 		require.NoError(t, err, linked.Path())
 
@@ -57,11 +57,12 @@ func TestGeneratedSourceInfoAttachesEveryCommentToItsDeclaration(t *testing.T) {
 
 // A file nobody generated comments for travels without source info, exactly as
 // it would with nil prose.
-func TestGeneratedSourceInfoForAnUndocumentedFileIsNil(t *testing.T) {
+func TestLookedUpSourceInfoForAnUndocumentedFileIsNil(t *testing.T) {
 	file, err := protoregistry.GlobalFiles.FindFileByPath("google/protobuf/struct.proto")
 	require.NoError(t, err)
-	assert.Nil(t, generatedSourceInfo(file))
-	assert.Nil(t, generatedSourceInfo(nil))
+	assert.Nil(t, lookedUpSourceInfo(file, registry.Lookup))
+	assert.Nil(t, lookedUpSourceInfo(nil, registry.Lookup))
+	assert.Nil(t, DescriptorProseFrom(nil), "a nil lookup is nil prose")
 }
 
 // declarations yields every declaration of a file that a comment can attach to.
