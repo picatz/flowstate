@@ -26,7 +26,7 @@ call rather than whatever happens to be checked out nearby.
 | URI | What it is |
 | --- | --- |
 | `flowstate://docs/language` | [The Flowfile language](LANGUAGE.md): every construct, its defaults, and where each expression root is in scope. Start here. |
-| `flowstate://catalog/tasks` | What this build can execute, as JSON: every task with its typed inputs and outputs, and every CEL function. The same answer as `flowstate_get_catalog`. |
+| `flowstate://catalog/tasks` | What this build can execute, as JSON: every task with its typed inputs and outputs, and every CEL function. Always this process's own registry. `flowstate_get_catalog` gives the same answer unless `--address` or `FLOWSTATE_ADDRESS` names a deployment, in which case the tool asks that deployment and the resource stays local. |
 | `flowstate://docs/examples/<name>` | One example workflow by its directory name under [`examples/`](../examples/), such as `flowstate://docs/examples/release-approval`. Each is also listed by name. |
 | `flowstate://docs/dsl` | [Language design decisions](DSL.md): why each construct is shaped the way it is. Long; read it for rationale, not to learn the syntax. |
 | `ui://flowstate/approval-card` | An [MCP Apps](https://modelcontextprotocol.io/) view a capable host renders for `flowstate_get`: a run's open approval gates. It displays; it grants no authority. |
@@ -40,7 +40,8 @@ request and response messages.
 
 | Tools | Need a server? | What they are for |
 | --- | --- | --- |
-| `flowstate_validate`, `flowstate_compile`, `flowstate_get_catalog` | No | Author: diagnostics with positions, the compiled specification, the catalog. |
+| `flowstate_validate`, `flowstate_compile` | No | Author: diagnostics with positions, and the compiled specification. |
+| `flowstate_get_catalog` | Only when `--address` or `FLOWSTATE_ADDRESS` is set | The tasks and functions available: this process's own without an address, or the addressed deployment's, refusing if that deployment is unreachable. |
 | `flowstate_test` | No | Run `*.test.yaml` cases against stubbed tasks on a virtual clock. The first thing to reach for after validating. |
 | `flowstate_debug` | No | Run a test case under a script of debugger commands (`break`, `continue`, `inspect`, …) and return the session transcript. At most 100 commands per call. |
 | `flowstate_run_local` | No | Rehearse a workflow for real in this process, with inputs and signals, and return the run plus what its `log:` steps wrote. |
