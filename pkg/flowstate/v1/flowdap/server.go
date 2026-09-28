@@ -31,6 +31,16 @@ const MaxScopeVariables = 500
 // until the run moves and the table is cleared.
 const MaxVariableHandles = 4096
 
+// MaxVariableHandleBytes bounds the expression text the references one stop
+// holds, which [MaxVariableHandles] alone does not: each expression may be as
+// long as a command.
+const MaxVariableHandleBytes = 4 << 20
+
+// MaxBreakpointBytes bounds the text the adapter keeps for the breakpoints it
+// holds — each source's path and every condition, hit condition and log
+// message — across all sources, which the count bound alone does not.
+const MaxBreakpointBytes = 1 << 20
+
 // Server is one editor's debug session, over the Debug Adapter Protocol.
 //
 // It is a translation and nothing more: every request becomes a call on a
@@ -95,13 +105,16 @@ type Server struct {
 	held     *v1.DebugSnapshot
 	handles  map[int]handle
 	issued   map[handle]int
-	next     int
-	observed uint64
+	// issuedBytes is the expression text handles holds.
+	issuedBytes int
+	next        int
+	observed    uint64
 
 	lines       map[string][]lineBreakpoint
 	functions   []functionBreakpoint
 	failureMode v1.DebugFailureMode
 	ids         map[string]int
+	idSeq       int
 
 	ended sync.Once
 	exit  int
@@ -376,10 +389,24 @@ func (s *Server) dispatch(ctx context.Context, request inbound) (done bool) {
 
 			return true
 		}
+		// The run this adapter started is cancelled and the conversation
+		// goes on: the run's end arrives as `terminated` and `exited`, which a
+		// client waits for before it sends the `disconnect` that closes it.
+		//
+		// Under order, so the response precedes the events the cancellation
+		// causes, as a movement's does; with the exit code recorded first, so
+		// whichever path reports the end reports a run that did not finish.
+		s.order.Lock()
+		s.Exited(1)
 		s.end(true)
 		s.reply(request, nil)
-
-		return true
+		s.order.Unlock()
+		// A run never released has no goroutine to report its end.
+		select {
+		case <-s.launched:
+		default:
+			s.Finished()
+		}
 
 	case "disconnect":
 		// Answered once the session is released, so a client that reads the
@@ -613,9 +640,29 @@ func (s *Server) breakpointID(id string) int {
 	if n, ok := s.ids[id]; ok {
 		return n
 	}
-	s.ids[id] = len(s.ids) + 1
+	s.idSeq++
+	s.ids[id] = s.idSeq
 
-	return s.ids[id]
+	return s.idSeq
+}
+
+// forgetLines drops the editor numbers of path's line slots from the first
+// one its set no longer has, so a client moving breakpoints across files
+// does not grow the table with slots that are gone.
+func (s *Server) forgetLines(path string, from int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	prefix := "line:" + path + ":"
+	for id := range s.ids {
+		slot, ok := strings.CutPrefix(id, prefix)
+		if !ok {
+			continue
+		}
+		if i, err := strconv.Atoi(slot); err == nil && i >= from {
+			delete(s.ids, id)
+		}
+	}
 }
 
 // release starts the run once the editor has configured it, and begins
@@ -786,6 +833,7 @@ func (s *Server) stopped(snapshot *v1.DebugSnapshot) {
 	s.held = snapshot
 	clear(s.handles)
 	clear(s.issued)
+	s.issuedBytes = 0
 	s.mu.Unlock()
 
 	body := stoppedBody{
@@ -860,6 +908,7 @@ func (s *Server) move(ctx context.Context, request inbound, action v1.DebugResum
 		s.mu.Lock()
 		clear(s.handles)
 		clear(s.issued)
+		s.issuedBytes = 0
 		s.held = nil
 		s.mu.Unlock()
 		if action == v1.DebugResumeAction_DEBUG_RESUME_ACTION_CONTINUE {
@@ -1033,7 +1082,8 @@ func (s *Server) clientBases() (line, column int) {
 
 // issue hands out a variables reference for an expression at a revision: the
 // one already issued for it at this stop, or a new one while the stop holds
-// fewer than [MaxVariableHandles], and otherwise none.
+// fewer than [MaxVariableHandles] and [MaxVariableHandleBytes] allows it, and
+// otherwise none.
 func (s *Server) issue(revision uint64, expression string) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1042,12 +1092,13 @@ func (s *Server) issue(revision uint64, expression string) int {
 	if reference, ok := s.issued[key]; ok {
 		return reference
 	}
-	if len(s.handles) >= MaxVariableHandles {
+	if len(s.handles) >= MaxVariableHandles || s.issuedBytes+len(expression) > MaxVariableHandleBytes {
 		return 0
 	}
 	s.next++
 	s.handles[s.next] = key
 	s.issued[key] = s.next
+	s.issuedBytes += len(expression)
 
 	return s.next
 }
@@ -1212,7 +1263,9 @@ func (s *Server) setLineBreakpoints(ctx context.Context, request inbound) {
 			LogMessage   *string `json:"logMessage"`
 		} `json:"breakpoints"`
 	}
-	if err := json.Unmarshal(request.Arguments, &asked); err != nil || asked.Source == nil || asked.Source.Path == "" {
+	// A missing array is malformed, not an empty replacement: only an explicit
+	// empty set clears a source's breakpoints.
+	if err := json.Unmarshal(request.Arguments, &asked); err != nil || asked.Source == nil || asked.Source.Path == "" || asked.Breakpoints == nil {
 		s.fail(request, errInvalidBreakpoints.Error())
 
 		return
@@ -1226,12 +1279,19 @@ func (s *Server) setLineBreakpoints(ctx context.Context, request inbound) {
 	lineBase, _ := s.clientBases()
 	wanted := make([]lineBreakpoint, 0, len(asked.Breakpoints))
 	for _, want := range asked.Breakpoints {
+		// Positions are uint32 past this edge: a larger line would wrap onto
+		// a small one rather than name no line.
 		if want == nil || want.Line == nil || *want.Line < lineBase || int64(*want.Line)-int64(lineBase)+1 > math.MaxUint32 {
 			s.fail(request, errInvalidBreakpoints.Error())
 
 			return
 		}
 		wanted = append(wanted, lineBreakpoint{line: *want.Line - lineBase + 1, condition: want.Condition, hitCondition: want.HitCondition, logText: want.LogMessage})
+	}
+	if s.retainedBytes(asked.Source.Path, false)+lineBytes(asked.Source.Path, wanted) > MaxBreakpointBytes {
+		s.fail(request, errBreakpointBytes.Error())
+
+		return
 	}
 	if s.totalBreakpoints(asked.Source.Path, len(wanted), -1) > flowdebug.MaxBreakpoints {
 		s.reply(request, breakpointsBody{Breakpoints: refused(len(wanted),
@@ -1263,6 +1323,7 @@ func (s *Server) setLineBreakpoints(ctx context.Context, request inbound) {
 		return
 	}
 
+	s.forgetLines(asked.Source.Path, len(wanted))
 	answers := make([]breakpoint, 0, len(wanted))
 	for i, want := range wanted {
 		answer := answerFor(states[lineID(asked.Source.Path, i)])
@@ -1301,6 +1362,11 @@ func (s *Server) setFunctionBreakpoints(ctx context.Context, request inbound) {
 			return
 		}
 		wanted = append(wanted, functionBreakpoint{name: strings.TrimSpace(*want.Name), condition: want.Condition, hitCondition: want.HitCondition})
+	}
+	if s.retainedBytes("", true)+functionBytes(wanted) > MaxBreakpointBytes {
+		s.fail(request, errBreakpointBytes.Error())
+
+		return
 	}
 	if s.totalBreakpoints("", 0, len(wanted)) > flowdebug.MaxBreakpoints {
 		s.reply(request, breakpointsBody{Breakpoints: refused(len(wanted),
@@ -1387,6 +1453,57 @@ func (s *Server) setExceptionBreakpoints(ctx context.Context, request inbound) {
 		return
 	}
 	s.reply(request, nil)
+}
+
+// errBreakpointBytes fails a request whose breakpoints would take the text the
+// adapter keeps past [MaxBreakpointBytes].
+var errBreakpointBytes = fmt.Errorf("flowdap: the breakpoints' paths, conditions and log messages may total at most %d bytes", MaxBreakpointBytes)
+
+// retainedBytes is the breakpoint text held for every source but skipPath,
+// and for the function breakpoints unless skipFunctions.
+func (s *Server) retainedBytes(skipPath string, skipFunctions bool) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	total := 0
+	for path, set := range s.lines {
+		if path != skipPath {
+			total += lineBytes(path, set)
+		}
+	}
+	if !skipFunctions {
+		total += functionBytes(s.functions)
+	}
+
+	return total
+}
+
+// lineBytes is the text a source's line breakpoints hold, its path included.
+func lineBytes(path string, set []lineBreakpoint) int {
+	total := len(path)
+	for _, b := range set {
+		total += textBytes(b.condition) + textBytes(b.hitCondition) + textBytes(b.logText)
+	}
+
+	return total
+}
+
+// functionBytes is the text a set of function breakpoints holds.
+func functionBytes(set []functionBreakpoint) int {
+	total := 0
+	for _, b := range set {
+		total += len(b.name) + textBytes(b.condition) + textBytes(b.hitCondition)
+	}
+
+	return total
+}
+
+func textBytes(text *string) int {
+	if text == nil {
+		return 0
+	}
+
+	return len(*text)
 }
 
 func (s *Server) totalBreakpoints(path string, lines, functions int) int {
