@@ -91,7 +91,7 @@ var commands = []command{
 	{verb: "info", aliases: []string{"step-info"}, completes: completesNothing,
 		help: "describe the step the run is stopped at"},
 	{verb: "backtrace", aliases: []string{"bt"}, completes: completesNothing,
-		help: "list this step and the call chain that reached it"},
+		help: "list this step and each iteration, branch, arm and call around it"},
 	{verb: "detach", completes: completesNothing,
 		help: "clear every breakpoint and let the run finish unattended"},
 	{verb: "quit", aliases: []string{"q"}, completes: completesNothing,
@@ -360,19 +360,27 @@ func (s *Session) dispatch(ctx context.Context, line string, node *v1.Node, scop
 	}
 }
 
+// showBacktrace prints the held stop's frames: the step, then each iteration,
+// branch, arm and call around it. They are the snapshot's own frames, rendered
+// as the typed Driver renders them, so the prompt, `flow debug do`, MCP and an
+// editor's call stack number and name one stop the same way; the call chain
+// alone could not say which iteration a stop is in.
 func (s *Session) showBacktrace() {
 	trace, err := s.Backtrace()
 	if err != nil {
 		s.printfTone(ToneWarning, "%s\n", err)
 		return
 	}
-	for i, frame := range trace.GetFrames() {
-		name := frame.GetStepId()
-		if frame.GetWorkflow() != "" {
-			name = frame.GetWorkflow() + "." + name
-		}
-		s.printf("#%d %s (%s)\n", i, name, frame.GetKind())
+	// The autopsy's run is over and has no frames to show.
+	if len(trace.GetFrames()) == 0 {
+		return
 	}
+	snapshot, err := s.Snapshot(context.Background())
+	if err != nil {
+		s.printfTone(ToneWarning, "%s\n", err)
+		return
+	}
+	s.printf("%s", formatFrames(snapshot))
 }
 
 // split separates the first word of a line from the rest.
@@ -508,8 +516,8 @@ func (s *Session) showScopeWith(scope *v1.Scope, extra map[string]ref.Val) {
 const (
 	scopeGroupBound        = "bound"
 	scopeGroupSteps        = "steps"
-	scopeGroupVars         = "vars"
-	scopeGroupWorkflowVars = "workflow vars"
+	scopeGroupLocals       = "locals"
+	scopeGroupWorkflowVars = "vars"
 	scopeGroupInputs       = "inputs"
 	scopeGroupRun          = "run"
 	scopeGroupTrigger      = "trigger"
@@ -560,13 +568,14 @@ func scopeNames(scope *v1.Scope, extra map[string]ref.Val) []Names {
 		add(scopeGroupSteps, "steps", names)
 	}
 
-	// These two are the lines a namespace is easiest to get wrong on, because
-	// the labels read the other way round from where the names live.
-	// `Scope.Vars` are the *bare* bindings — a loop's `as:`, a step's own
-	// `vars:` — offered as [celcomplete.Scope.Locals] under no root at all
-	// (complete.go:271). `Scope.AmbientVars` are the workflow's declared
-	// `vars:`, and those are what `vars.` reaches (complete.go:280-282).
-	add(scopeGroupVars, "", sortedKeys(scope.GetVars()))
+	// Labelled by how the names are reached, which is the other way round
+	// from the fields that hold them. `Scope.Vars` are the *bare* bindings — a
+	// loop's `as:`, a step's own `vars:` — offered as
+	// [celcomplete.Scope.Locals] under no root at all (complete.go:271), so
+	// they are "locals". `Scope.AmbientVars` are the workflow's declared
+	// `vars:`, and those are what `vars.` reaches (complete.go:280-282), so
+	// they are "vars".
+	add(scopeGroupLocals, "", sortedKeys(scope.GetVars()))
 	add(scopeGroupWorkflowVars, "vars", sortedKeys(scope.GetAmbientVars()))
 
 	// The arguments the run was started with, which completion has offered

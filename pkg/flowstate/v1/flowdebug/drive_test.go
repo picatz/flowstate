@@ -61,7 +61,7 @@ func TestTheDriverSpeaksThePromptsVocabularyToATarget(t *testing.T) {
 	assert.Equal(t, "2\n", do("inspect item").Text)
 	assert.Contains(t, do("expand [1, [2, 3]]").Text, "list")
 	assert.Contains(t, do("bt").Text, "iteration 1")
-	assert.Contains(t, do("scope").Text, "vars: item")
+	assert.Contains(t, do("scope").Text, "locals: item")
 	assert.Contains(t, do("breakpoints").Text, "each/touch  hits 1")
 
 	out := do("finish")

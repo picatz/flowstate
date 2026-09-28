@@ -76,10 +76,12 @@ answered, once the run has moved on. A snapshot also carries the backend's
 **capabilities**; a front advertises only what they say and refuses the rest by
 name.
 
-The console prompt prints the step and its kind at each stop, and a logpoint's
-address. The structured fronts — `flow debug attach` and `do`, the MCP session
-tools, and Go — print the address itself, and `flow dap` shows the same frames
-as its call stack:
+Every front names a stop by its address, so a stop inside a loop, branch or call
+says which iteration, branch or arrival it is: the console prompt prints `break
+at orders[1]/charge (task "log")`. The prompt's `backtrace` and the structured
+fronts — `flow debug attach` and `do`, the MCP session tools, and Go — list the
+same frames, numbered the same way, and `flow dap` shows them as its call
+stack:
 
 ```text
 held at orders[1]/charge (task "log") — breakpoint orders/charge, revision 6
@@ -107,7 +109,7 @@ nothing here is worth learning twice. `help` lists it.
 | `catch none\|uncaught\|all` | stop where a step fails: never, when its failure will propagate, or always |
 | `delete <step>`, `d` | remove that breakpoint |
 | `breakpoints` | list them |
-| `backtrace`, `bt` | list this step and the calls around it |
+| `backtrace`, `bt` | list this step and each iteration, branch, arm and call around it |
 | `inspect <expr>`, `p` | evaluate a CEL expression against the held run |
 | `complete <partial-command>` | list what could be written at the end of that text |
 | `scope` | list what the run can name right now |

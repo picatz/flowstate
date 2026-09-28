@@ -543,7 +543,8 @@ enum DebugCommandVerb {
   // List the commands.
   DEBUG_COMMAND_VERB_HELP = 12;
 
-  // List the current step and the `call:` chain that reached it.
+  // List the current step and each iteration, branch, arm, and call around
+  // it, innermost first.
   DEBUG_COMMAND_VERB_BACKTRACE = 13;
 
   // Next is `next`: run this step, including anything inside it, and stop at

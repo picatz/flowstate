@@ -306,20 +306,20 @@ debug> continue
   ask completed
   approval -> payload: {"approved":true}, sender: {…}, timed_out: false
   approved -> value: true
-break at deploy (task "log")
+break at rollout[0]/deploy (task "log")
 debug> inspect target
 "api@1.4.0"
 debug> inspect steps.approval.payload
 {"approved":true}
 debug> scope
 steps: approval, approved, ask, plan
-vars: target
+locals: target
 inputs: services, version
 run: identity, local, run_id, workflow_id
 trigger: delivery_id, kind, name, principal
 debug> continue
   deploy completed
-break at deploy (task "log")
+break at rollout[1]/deploy (task "log")
 debug> inspect target
 "worker@1.4.0"
 debug> delete deploy

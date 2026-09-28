@@ -257,7 +257,7 @@ func (s *Session) BeforeStep(ctx context.Context, node *v1.Node, scope *v1.Scope
 		return nil
 	}
 
-	return s.hold(ctx, node, scope, occurrence, reason, hitIDs, "", func() { s.announce(node) })
+	return s.hold(ctx, node, scope, occurrence, reason, hitIDs, "", func() { s.announce(node, occurrence) })
 }
 
 // StepFailed implements [v1.StepFailureDebugger]: a failure stop, when the

@@ -851,10 +851,9 @@ func TestScopeSaysHowManyNamesItDidNotList(t *testing.T) {
 // somewhere the names are provably absent.
 //
 // The pairing is easy to get backwards, which is why it is pinned rather than
-// read. The line labelled `vars:` holds `Scope.Vars` — a loop's `as:`, a step's
-// own `vars:` — which complete *bare*, under no root. The line labelled
-// `workflow vars:` holds `Scope.AmbientVars`, and those are what `vars.`
-// reaches.
+// read. The line labelled `locals:` holds `Scope.Vars` — a loop's `as:`, a
+// step's own `vars:` — which complete *bare*, under no root. The line labelled
+// `vars:` holds `Scope.AmbientVars`, and those are what `vars.` reaches.
 func TestEachScopeLineNamesItsOwnNamespace(t *testing.T) {
 	t.Parallel()
 
@@ -899,14 +898,15 @@ func TestEachScopeLineNamesItsOwnNamespace(t *testing.T) {
 	assert.Contains(t, lines["steps"], "`inspect steps.` lists them",
 		"step outputs are what `steps.` reaches")
 
-	require.Contains(t, lines, "workflow vars")
-	assert.Contains(t, lines["workflow vars"], "`inspect vars.` lists them",
-		"the workflow's declared vars are what `vars.` reaches, despite the label")
-
 	require.Contains(t, lines, "vars")
-	assert.Contains(t, lines["vars"], "more (tab completes them)",
+	assert.Contains(t, lines["vars"], "`inspect vars.` lists them",
+		"the workflow's declared vars are what `vars.` reaches")
+	assert.Contains(t, lines["vars"], "declared_", "the `vars` line holds something other than the workflow's vars")
+
+	require.Contains(t, lines, "locals")
+	assert.Contains(t, lines["locals"], "more (tab completes them)",
 		"bare bindings belong to no namespace, so the notice names none")
-	assert.NotContains(t, lines["vars"], "inspect",
+	assert.NotContains(t, lines["locals"], "inspect",
 		"and must not send a reader to a command that cannot reach them")
 }
 

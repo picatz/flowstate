@@ -992,9 +992,24 @@ func TestAConditionalBreakpointStopsAtTheIterationItNames(t *testing.T) {
 	out, ran := loopingRun(t, 20, "break body if n == 7\ncontinue\ncontinue\n")
 
 	assert.Len(t, ran, 20, "every iteration still runs; a condition decides stopping, not running")
-	assert.Equal(t, 1, strings.Count(out, "break at body"),
+	assert.Equal(t, 1, strings.Count(out, "]/body ("),
 		"stopped once, at the iteration the condition named — not on all twenty")
 	assert.Contains(t, out, "breakpoint at body if n == 7")
+}
+
+// TestAStopInsideALoopSaysWhichIteration: the prompt names a stop by its
+// address, so a stop in a loop says which iteration it is in, and `backtrace`
+// lists that iteration as a frame, numbered as every other front numbers it.
+// The step id alone is the same at all twenty.
+func TestAStopInsideALoopSaysWhichIteration(t *testing.T) {
+	t.Parallel()
+
+	out, _ := loopingRun(t, 20, "break body if n == 7\ncontinue\nbacktrace\ncontinue\n")
+
+	assert.Contains(t, out, "break at each[7]/body (", "the stop did not name its iteration")
+	assert.Contains(t, out, "#1 looping.body (", "the backtrace's first frame is not the step")
+	assert.Contains(t, out, "#2 ", "the backtrace did not list the iteration around the step")
+	assert.Contains(t, out, "iteration 7", "the backtrace did not say which iteration")
 }
 
 // TestAConditionThatIsNeverTrueNeverStops is the negative direction, and the
@@ -1005,7 +1020,7 @@ func TestAConditionThatIsNeverTrueNeverStops(t *testing.T) {
 	out, ran := loopingRun(t, 5, "break body if n == 99\ncontinue\n")
 
 	assert.Len(t, ran, 5)
-	assert.NotContains(t, out, "break at body",
+	assert.NotContains(t, out, "]/body (",
 		"a condition no iteration satisfies is a breakpoint that never fires")
 }
 
@@ -1031,7 +1046,7 @@ func TestABreakpointConditionThatErrorsDoesNotHoldTheRun(t *testing.T) {
 	out, ran := loopingRun(t, 3, "break body if n.missing\ncontinue\n")
 
 	assert.Len(t, ran, 3)
-	assert.NotContains(t, out, "break at body",
+	assert.NotContains(t, out, "]/body (",
 		"an unanswerable condition does not hold the run")
 	assert.Contains(t, out, "could not be evaluated here",
 		"but it says so, which is what keeps a never-firing breakpoint from being silent")
@@ -1052,7 +1067,7 @@ func TestABreakpointWithAMalformedConditionIsRefusedWhenItIsTyped(t *testing.T) 
 
 	assert.Len(t, ran, 3)
 	assert.Contains(t, out, "parse condition", "the refusal names what is wrong, at the moment it is typed")
-	assert.NotContains(t, out, "break at body",
+	assert.NotContains(t, out, "]/body (",
 		"and nothing is set: a refused breakpoint must not half-exist")
 	assert.Contains(t, out, "no breakpoints",
 		"which `breakpoints` confirms rather than leaving to inference")
@@ -1082,7 +1097,7 @@ func TestABareIfIsRefusedRatherThanArmingEveryIteration(t *testing.T) {
 				"the refusal names what is missing")
 			assert.Contains(t, out, "no breakpoints",
 				"and nothing is set — an unconditional breakpoint here would stop on every iteration")
-			assert.NotContains(t, out, "break at body",
+			assert.NotContains(t, out, "]/body (",
 				"which is the behaviour the typo used to produce")
 		})
 	}
@@ -1113,7 +1128,7 @@ func TestANearMissKeywordIsRefusedRatherThanDiscarded(t *testing.T) {
 				"the refusal names the grammar rather than only rejecting")
 			assert.Contains(t, out, "no breakpoints",
 				"and nothing is set, because an unconditional breakpoint here stops on every iteration")
-			assert.NotContains(t, out, "break at body")
+			assert.NotContains(t, out, "]/body (")
 		})
 	}
 }
@@ -1146,7 +1161,7 @@ func TestAConditionThatCannotCompileIsRefusedWhenItIsTyped(t *testing.T) {
 			assert.Len(t, ran, 4)
 			assert.Contains(t, out, tc.want, "the refusal says what is wrong with the condition")
 			assert.Contains(t, out, "no breakpoints", "and nothing is set")
-			assert.NotContains(t, out, "break at body",
+			assert.NotContains(t, out, "]/body (",
 				"an accepted-but-uncompilable condition would stop at every iteration")
 		})
 	}
@@ -1162,7 +1177,7 @@ func TestAConditionThatCannotCompileIsRefusedWhenItIsTyped(t *testing.T) {
 
 		assert.Len(t, ran, 6)
 		assert.Contains(t, out, "breakpoint at body if n == 3", "accepted, though `n` is bound nowhere yet")
-		assert.Equal(t, 1, strings.Count(out, "break at body"), "and it fires once, at the iteration it names")
+		assert.Equal(t, 1, strings.Count(out, "]/body ("), "and it fires once, at the iteration it names")
 	})
 }
 
@@ -1205,7 +1220,7 @@ func TestAConditionMayCallTheProfilesNamespacedFunctions(t *testing.T) {
 				"a namespaced function the profile declares is not a type error")
 			assert.NotContains(t, out, "cannot be trusted",
 				"and it evaluates, rather than erroring at each arrival")
-			assert.Equal(t, 1, strings.Count(out, "break at body"),
+			assert.Equal(t, 1, strings.Count(out, "]/body ("),
 				"stopping once, at the iteration the condition picks out")
 		})
 	}
@@ -1258,7 +1273,7 @@ func TestAConditionFiresOnlyInTheDomainThatCanAnswerIt(t *testing.T) {
 
 	out := console.String()
 
-	assert.Equal(t, 1, strings.Count(out, "break at page"),
+	assert.Equal(t, 1, strings.Count(out, "]/page ("),
 		"once, in the loop that can answer the condition — not in the sibling that cannot")
 
 	// And it is not silent about the occurrences it declined to ask at, so a
@@ -1309,7 +1324,7 @@ func TestAReceiverVariableIsStillARequiredName(t *testing.T) {
 
 	out := console.String()
 
-	assert.Equal(t, 1, strings.Count(out, "break at page"),
+	assert.Equal(t, 1, strings.Count(out, "]/page ("),
 		"a receiver has to resolve like any other name, so the first loop is declined rather than stopped in")
 	assert.Contains(t, out, "could not be evaluated here")
 }
@@ -1383,7 +1398,7 @@ func TestAMacroBindingDoesNotHideAnOuterNameOfTheSameSpelling(t *testing.T) {
 
 	out := console.String()
 
-	assert.Equal(t, 1, strings.Count(out, "break at page"),
+	assert.Equal(t, 1, strings.Count(out, "]/page ("),
 		"the outer `n` is a required name despite the macro binding one too")
 	assert.Contains(t, out, "could not be evaluated here",
 		"and the loop that cannot answer says so")
@@ -1403,7 +1418,7 @@ func TestATwoVariableMacroBindsBothOfItsVariables(t *testing.T) {
 		"break body if n == 3 && [1, 2].exists(i, v, v == 2)\ncontinue\ncontinue\n")
 
 	assert.Len(t, ran, 6)
-	assert.Equal(t, 1, strings.Count(out, "break at body"),
+	assert.Equal(t, 1, strings.Count(out, "]/body ("),
 		"the macro's second variable is the macro's, not a name the step must bind")
 	assert.NotContains(t, out, "could not be evaluated here",
 		"so nothing is declined for a name the expression provides itself")
@@ -1426,7 +1441,7 @@ func TestAConditionShortCircuitsThroughAnUnboundName(t *testing.T) {
 	out, ran := loopingRun(t, 6, "break body if n == 3 || fallback == 4\ncontinue\ncontinue\n")
 
 	assert.Len(t, ran, 6)
-	assert.Equal(t, 1, strings.Count(out, "break at body"),
+	assert.Equal(t, 1, strings.Count(out, "]/body ("),
 		"the left side is true at n == 3, and CEL never reaches the unbound name — "+
 			"which a preflight over both names made impossible")
 
@@ -1482,7 +1497,7 @@ func TestAConditionOnAMemberIsDeclinedWhereTheMemberIsMissing(t *testing.T) {
 
 	out := console.String()
 
-	assert.Equal(t, 2, strings.Count(out, "break at page"),
+	assert.Equal(t, 2, strings.Count(out, "]/page ("),
 		"both iterations of the second loop can answer; neither of the first's can")
 	assert.Contains(t, out, "could not be evaluated here",
 		"and the arrivals that could not answer say so")

@@ -1215,8 +1215,9 @@ func init() {
 			Leading: " List the commands.\n",
 		},
 		{
-			Name:    "flowstate.v1.DEBUG_COMMAND_VERB_BACKTRACE",
-			Leading: " List the current step and the `call:` chain that reached it.\n",
+			Name: "flowstate.v1.DEBUG_COMMAND_VERB_BACKTRACE",
+			Leading: " List the current step and each iteration, branch, arm, and call around\n" +
+				" it, innermost first.\n",
 		},
 		{
 			Name: "flowstate.v1.DEBUG_COMMAND_VERB_NEXT",

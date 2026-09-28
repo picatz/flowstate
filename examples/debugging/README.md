@@ -41,7 +41,7 @@ breakpoint at orders/charge if amount > inputs.threshold
 debug> continue
   settle -> timed_out: false
   charge completed
-break at charge (task "log")
+break at orders[1]/charge (task "log")
 debug> inspect amount
 900
 debug> finish
@@ -54,15 +54,15 @@ breakpoint at checks#1/fraud
 debug> continue
   flagged -> value: [900]
   stock completed
-break at fraud (task "log")
+break at checks#1/fraud (task "log")
 debug> until receipt/send
   fraud completed
   checks completed
   compose -> value: "charged 3 order(s)"
-break at send (task "log")
+break at receipt(receipt)/send (task "log")
 debug> backtrace
-#0 receipt.send (task "log")
-#1 debugging.receipt (call "receipt")
+  #1 receipt.send (task "log")
+  #2 debugging.receipt (call "receipt")
 debug> continue
   send completed
   receipt -> summary: "charged 3 order(s)"

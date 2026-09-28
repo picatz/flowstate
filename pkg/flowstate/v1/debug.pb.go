@@ -163,7 +163,8 @@ const (
 	DebugCommandVerb_DEBUG_COMMAND_VERB_QUIT DebugCommandVerb = 11
 	// List the commands.
 	DebugCommandVerb_DEBUG_COMMAND_VERB_HELP DebugCommandVerb = 12
-	// List the current step and the `call:` chain that reached it.
+	// List the current step and each iteration, branch, arm, and call around
+	// it, innermost first.
 	DebugCommandVerb_DEBUG_COMMAND_VERB_BACKTRACE DebugCommandVerb = 13
 	// Next is `next`: run this step, including anything inside it, and stop at
 	// the next step at this nesting or shallower.
