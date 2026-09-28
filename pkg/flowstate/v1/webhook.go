@@ -64,8 +64,8 @@ const EventRoot = "event"
 // Named here rather than left as strings in three files, so an editor's completion,
 // the mapping below and whatever documents the shape cannot disagree about the
 // spelling. Headers are the transport's metadata (a provider's delivery id may
-// travel in one; a signature header is never an idempotency key), body is the
-// decoded payload.
+// travel in one; a signature header should not be the key, since it changes on
+// every retry), body is the decoded payload.
 const (
 	EventHeadersField = "headers"
 	EventBodyField    = "body"

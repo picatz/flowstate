@@ -664,7 +664,7 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 		{
 			name:    "TEMPORAL_TASK_QUEUE",
 			value:   "flowstate-run-task-queue",
-			purpose: "Default for `flow worker --task-queue`: the queue this worker polls. Only the worker reads it; `flow server` submits runs to `flowstate-run-task-queue`, or to `<prefix>_<namespace>` under `--task-queue-prefix`, so a worker given a different queue here polls one nothing submits to.",
+			purpose: "Default for `flow worker --task-queue`: the queue this worker polls. Only the worker reads it; `flow server` submits runs to `flowstate-run-task-queue`, or to `<prefix>_<namespace>` under `--task-queue-prefix` (`<prefix>__default` for the default tenant), so a worker given a different queue here polls one nothing submits to.",
 			read:    "cmd/flow/main.go",
 		},
 		{

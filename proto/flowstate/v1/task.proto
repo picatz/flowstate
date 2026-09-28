@@ -229,7 +229,8 @@ message Task {
       // bound as the single root `response`:
       //   - response.status_code (int)
       //   - response.body (string)
-      //   - response.headers (map<string,string>)
+      //   - response.headers (map<string, list<string>>: every value of each
+      //     header; the default outputs flatten each to one string)
       //   - response.json (the parsed body, when `parse_json` asked for it)
       // An expression that fails to evaluate fails the step without a retry.
       map<string, Value> outputs = 5;
