@@ -655,9 +655,16 @@ func expressionsFor(ctx context.Context, snapshot *v1.DebugSnapshot) *v1.DebugSn
 		slices.Contains(principal.Actions, v1.AuthorizationActionScope(v1.AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_DEBUG_INSPECT)) {
 		return snapshot
 	}
+	// A run pinned to an interpreter from before definitions were reported
+	// says nothing of what a breakpoint carries, so its state is judged by
+	// what only an expression leaves: an evaluation error, or a refusal of a
+	// condition that did not compile.
 	carries := func(state *v1.DebugBreakpointState) bool {
-		definition := state.GetDefinition()
-		return strings.TrimSpace(definition.GetCondition()) != "" || strings.TrimSpace(definition.GetLogMessage()) != ""
+		if definition := state.GetDefinition(); definition != nil {
+			return strings.TrimSpace(definition.GetCondition()) != "" || strings.TrimSpace(definition.GetLogMessage()) != ""
+		}
+
+		return state.GetLastError() != "" || strings.HasPrefix(state.GetMessage(), "condition:")
 	}
 	if !slices.ContainsFunc(snapshot.GetBreakpoints(), carries) {
 		return snapshot

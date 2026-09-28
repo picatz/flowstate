@@ -119,6 +119,10 @@ type debugSessionEntry struct {
 	// run is the durable run a session attached to, so a rejoin under its
 	// id is checked to name the same run. Empty for a stubbed case.
 	workflowID, runID string
+	// inputs is a stubbed case's [startInputs], so a start retried under
+	// its request id is checked to submit the same case. Empty for a
+	// durable session.
+	inputs string
 
 	cancel context.CancelFunc
 	done   chan struct{}
@@ -336,6 +340,10 @@ func (r *debugSessions) register(entry *debugSessionEntry, request string) (*deb
 			// first only when both asked for the same run.
 			if entry.local == nil && !existing.onRun(entry.workflowID, entry.runID) {
 				return nil, errReusedAttachKey
+			}
+			// And a start only when both submitted the same case.
+			if entry.local != nil && existing.inputs != entry.inputs {
+				return nil, errReusedStartKey
 			}
 
 			return existing, nil
@@ -894,7 +902,7 @@ func (r *debugSessions) start(ctx context.Context, req *mcp.CallToolRequest) (*m
 	}
 	r.sweep()
 
-	key := retryKey(debugSessionStartTool, args.RequestID)
+	key, inputs := retryKey(debugSessionStartTool, args.RequestID), startInputs(args.Workflow, args.Tests, args.Case)
 	if key != "" {
 		r.mu.Lock()
 		existing, started := r.starts[key]
@@ -903,6 +911,9 @@ func (r *debugSessions) start(ctx context.Context, req *mcp.CallToolRequest) (*m
 			entry, err := r.lookup(existing)
 			if err != nil {
 				return flowmcp.ToolError(err), nil
+			}
+			if entry.inputs != inputs {
+				return flowmcp.ToolError(errReusedStartKey), nil
 			}
 
 			return startedAgain(ctx, entry), nil
@@ -941,7 +952,7 @@ func (r *debugSessions) start(ctx context.Context, req *mcp.CallToolRequest) (*m
 	entry := &debugSessionEntry{
 		id: uuid.NewString(), target: session, driver: flowdebug.NewDriver(session), local: session,
 		started: time.Now(), expires: time.Now().Add(debugSessionIdle), receipts: map[string]json.RawMessage{},
-		transcript: transcript, cancel: cancel, done: make(chan struct{}), ready: make(chan struct{}),
+		transcript: transcript, cancel: cancel, done: make(chan struct{}), ready: make(chan struct{}), inputs: inputs,
 	}
 	entry.driver.Wait = maxDebugSessionWait
 	existing, err := r.register(entry, key)
@@ -1307,6 +1318,18 @@ func retryKey(tool, request string) string {
 func (e *debugSessionEntry) onRun(workflowID, runID string) bool {
 	return e.local == nil && e.workflowID == workflowID && (e.runID == "" || runID == "" || e.runID == runID)
 }
+
+// startInputs identifies what a start submitted — the workflow, the tests,
+// and the case chosen — so a request id names one start of one case.
+func startInputs(workflow, tests, testCase string) string {
+	sum := sha256.Sum256([]byte(strings.Join([]string{workflow, tests, testCase}, "\x00")))
+
+	return hex.EncodeToString(sum[:])
+}
+
+// errReusedStartKey refuses a start whose request id already started another
+// case: the key names that call, not this one.
+var errReusedStartKey = errors.New("this request_id already started a session for another workflow, tests, or case; use a new request id")
 
 // errReusedAttachKey refuses an attach whose request id already attached a
 // session to another run: the key names that call, not this one.

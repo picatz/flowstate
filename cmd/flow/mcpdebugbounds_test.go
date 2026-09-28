@@ -730,7 +730,7 @@ func TestAStartRetryWaitsForTheStartItRepeats(t *testing.T) {
 				first := &debugSessionEntry{
 					id: uuid.NewString(), target: target, driver: flowdebug.NewDriver(target),
 					started: time.Now(), expires: time.Now().Add(debugSessionIdle), receipts: map[string]json.RawMessage{},
-					ready: make(chan struct{}),
+					ready: make(chan struct{}), inputs: startInputs(debugWorkflow, sessionTests, ""),
 				}
 				_, err := r.register(first, retryKey(debugSessionStartTool, "k"))
 				require.NoError(t, err)
@@ -954,4 +954,63 @@ func TestARefusedKeyedAttachSaysToUseANewKey(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, result.IsError)
 	assert.NotContains(t, replyOf(t, result).raw, "request_id", "an unkeyed attach was told about a key it never sent")
+}
+
+// TestAStartKeyNamesOneCase: a start retried under its request id is answered
+// with the session it started only when it submits the same case; one reusing
+// the key for another workflow, tests, or case is refused rather than handed
+// a session driving a different experiment.
+func TestAStartKeyNamesOneCase(t *testing.T) {
+	t.Parallel()
+
+	r := newDebugSessions(nil)
+	start := func(workflow string) (*mcp.CallToolResult, sessionReply) {
+		t.Helper()
+		result, err := r.start(t.Context(), toolRequest(t, map[string]any{"workflow": workflow, "tests": sessionTests, "request_id": "k"}))
+		require.NoError(t, err)
+
+		return result, replyOf(t, result)
+	}
+
+	result, first := start(debugWorkflow)
+	require.False(t, result.IsError, first.raw)
+	result, again := start(debugWorkflow)
+	require.False(t, result.IsError, again.raw)
+	assert.Equal(t, first.SessionID, again.SessionID)
+	result, other := start(debugWorkflow + "\n# another experiment\n")
+	require.True(t, result.IsError, "a start key reused for another case was answered with the first: %s", other.raw)
+	assert.Contains(t, other.raw, "use a new request id")
+
+	result, err := r.end(t.Context(), toolRequest(t, map[string]any{"session_id": first.SessionID}))
+	require.NoError(t, err)
+	require.False(t, result.IsError, replyOf(t, result).raw)
+}
+
+// TestARacingStartIsAnsweredOnlyForItsOwnCase: a start that registers after
+// another under the same key — the race the early check cannot see — is
+// handed the first session only when both submitted the same case.
+func TestARacingStartIsAnsweredOnlyForItsOwnCase(t *testing.T) {
+	t.Parallel()
+
+	r := newDebugSessions(nil)
+	key := retryKey(debugSessionStartTool, "k")
+	entry := func(inputs string) *debugSessionEntry {
+		session, err := flowdebug.New(flowdebug.Options{Controlled: true})
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = session.Close() })
+
+		return &debugSessionEntry{id: uuid.NewString(), local: session, inputs: inputs, receipts: map[string]json.RawMessage{}}
+	}
+	first := entry("a")
+	existing, err := r.register(first, key)
+	require.NoError(t, err)
+	require.Nil(t, existing)
+
+	existing, err = r.register(entry("a"), key)
+	require.NoError(t, err)
+	assert.Same(t, first, existing)
+
+	existing, err = r.register(entry("b"), key)
+	require.ErrorIs(t, err, errReusedStartKey, "a start of another case was answered with the first session")
+	assert.Nil(t, existing)
 }

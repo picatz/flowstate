@@ -28,6 +28,10 @@ func TestBreakpointExpressionsNeedTheInspectAction(t *testing.T) {
 		{Id: "said", Message: `condition: ERROR: <input>:1:9: Syntax error | secret == "hunter2`, Definition: &v1.DebugBreakpoint{
 			Id: "said", Step: "after", LogMessage: `saw {secret}`,
 		}},
+		// From a run pinned to an interpreter that reports no definitions.
+		{Id: "old", Verified: true, LastError: `no such key: hunter2`},
+		{Id: "old-refused", Message: `condition: ERROR: <input>:1:9: Syntax error | secret == "hunter2`},
+		{Id: "old-plain", Message: `no step matches "nowhere"`},
 	}}
 	original := proto.CloneOf(snapshot)
 	as := func(actions ...string) context.Context {
@@ -43,9 +47,12 @@ func TestBreakpointExpressionsNeedTheInspectAction(t *testing.T) {
 	}
 
 	withheld := expressionsFor(as("workload.debug"), snapshot)
-	require.Len(t, withheld.GetBreakpoints(), 3)
-	assert.True(t, proto.Equal(original.GetBreakpoints()[0], withheld.GetBreakpoints()[0]), "a plain breakpoint was withheld")
-	for _, state := range withheld.GetBreakpoints()[1:] {
+	require.Len(t, withheld.GetBreakpoints(), 6)
+	for _, plain := range []int{0, 5} {
+		assert.True(t, proto.Equal(original.GetBreakpoints()[plain], withheld.GetBreakpoints()[plain]),
+			"a plain breakpoint was withheld: %s", withheld.GetBreakpoints()[plain].GetId())
+	}
+	for _, state := range withheld.GetBreakpoints()[1:5] {
 		assert.Nil(t, state.GetDefinition(), "%s kept its definition", state.GetId())
 		assert.NotContains(t, state.GetMessage(), "hunter2", "%s kept a message quoting its expression", state.GetId())
 		assert.Empty(t, state.GetLastError(), "%s kept an evaluation error quoting what it read", state.GetId())
