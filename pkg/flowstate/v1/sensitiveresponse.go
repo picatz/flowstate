@@ -615,6 +615,10 @@ func WithholdUndecidedTimelineFailures(response *GetTimelineResponse, revealAcce
 // built, and an empty [SensitiveValues] changes nothing. This is only for
 // the caller that *can* build one.
 //
+// Each is held to the size it arrived at, or the entity-state allowance: a
+// failure quoting a one-byte sensitive value many times would otherwise
+// return several times its bounded size ([SensitiveValues.RedactTextWithin]).
+//
 // The response is mutated in place rather than cloned: every caller of this
 // hands it a message [RedactGetResponse] has already cloned for them.
 func RedactGetResponseFailures(response *GetResponse, sensitive SensitiveValues) *GetResponse {
@@ -626,14 +630,14 @@ func RedactGetResponseFailures(response *GetResponse, sensitive SensitiveValues)
 		// The kind stays: it is a classification this binary chose from a
 		// fixed vocabulary, not a value the workload put there, and it is the
 		// only structured thing left to act on once the message is redacted.
-		failed.Error.Message = sensitive.RedactText(failed.Error.GetMessage(), FailureWithheldMarker)
+		failed.Error.Message = sensitive.RedactTextWithin(failed.Error.GetMessage(), FailureWithheldMarker, RedactedEntityStateAllowance)
 	}
 
 	for _, pending := range response.GetPendingActivities() {
 		if pending.GetLastFailure() == "" {
 			continue
 		}
-		pending.LastFailure = sensitive.RedactText(pending.GetLastFailure(), FailureWithheldMarker)
+		pending.LastFailure = sensitive.RedactTextWithin(pending.GetLastFailure(), FailureWithheldMarker, RedactedEntityStateAllowance)
 	}
 
 	return response

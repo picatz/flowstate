@@ -569,6 +569,22 @@ func (s SensitiveValues) RedactText(rendered, withheld string) string {
 	return s.RedactSubstrings(rendered)
 }
 
+// RedactTextWithin is [SensitiveValues.RedactText] for text that must not grow in the act of
+// being redacted: a marker is longer than a short value, so text holding many
+// occurrences of one would come back several times its size. Past the larger
+// of its own length and allowance, the text is withheld whole instead, and
+// the longer version is never built.
+func (s SensitiveValues) RedactTextWithin(rendered, withheld string, allowance int) string {
+	if s.WithholdAll() {
+		return withheld
+	}
+	out, ok := redactSensitiveSubstringsWithin(rendered, s.held().substringMatcher, max(len(rendered), allowance))
+	if !ok {
+		return withheld
+	}
+	return out
+}
+
 // isSensitiveValue reports whether v is one of sensitiveValues.
 func isSensitiveValue(v any, sensitiveValues []any) bool {
 	for _, sv := range sensitiveValues {
@@ -653,16 +669,40 @@ func redactSensitiveSubstrings(rendered string, substrings []string) string {
 }
 
 func redactSensitiveSubstringsWithMatcher(rendered string, matcher *sensitiveSubstringMatcher) string {
+	out, _ := redactSensitiveSubstringsWithin(rendered, matcher, -1)
+	return out
+}
+
+// redactSensitiveSubstringsWithin is [redactSensitiveSubstringsWithMatcher]
+// that measures before it builds: when limit is not negative and the redacted
+// text would be longer than limit bytes, it answers false having allocated
+// nothing for it.
+func redactSensitiveSubstringsWithin(rendered string, matcher *sensitiveSubstringMatcher, limit int) (string, bool) {
 	if matcher == nil {
-		return rendered
+		return rendered, true
 	}
 	if len(rendered) > maxSensitiveSubstringRedactionWork {
-		return SensitiveMarker
+		return SensitiveMarker, true
 	}
 
 	redacted := make([]bool, len(rendered))
 	if !matcher.markMatches(redacted, rendered) {
-		return rendered
+		return rendered, true
+	}
+
+	if limit >= 0 {
+		size := 0
+		for i := 0; i < len(rendered); i++ {
+			switch {
+			case !redacted[i]:
+				size++
+			case i == 0 || !redacted[i-1]:
+				size += len(SensitiveMarker)
+			}
+		}
+		if size > limit {
+			return "", false
+		}
 	}
 
 	var b strings.Builder
@@ -682,7 +722,7 @@ func redactSensitiveSubstringsWithMatcher(rendered string, matcher *sensitiveSub
 		}
 	}
 
-	return b.String()
+	return b.String(), true
 }
 
 // sensitiveSubstringMatcher is an immutable Aho-Corasick automaton. One is

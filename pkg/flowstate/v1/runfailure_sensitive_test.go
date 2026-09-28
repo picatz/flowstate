@@ -120,3 +120,28 @@ func TestAWithheldTranscriptDoesNotGrowPastWhatArrived(t *testing.T) {
 	}
 	require.LessOrEqual(t, withheld, max(arrived, v1.RedactedEntityStateAllowance), "censoring grew the transcript past its bound")
 }
+
+// TestAWithheldFailureDoesNotGrowPastWhatArrived: a failure quoting a one-byte
+// sensitive value many times would come back several times its bounded size
+// once each occurrence became a marker, so past the allowance it is withheld
+// whole, and a failure that fits is redacted as before.
+func TestAWithheldFailureDoesNotGrowPastWhatArrived(t *testing.T) {
+	t.Parallel()
+
+	values := v1.SensitiveInputValues(map[string]*v1.Value{"pin": v1.NewLiteral("x")}, map[string]bool{"pin": true})
+
+	short := "pin x rejected"
+	require.Equal(t, values.RedactText(short, "withheld"), values.RedactTextWithin(short, "withheld", 64),
+		"a failure within the bound is redacted exactly as RedactText does")
+	exact := values.RedactText(short, "withheld")
+	require.Equal(t, exact, values.RedactTextWithin(short, "withheld", len(exact)),
+		"the measured size disagrees with the built text")
+
+	long := strings.Repeat("x.", 32<<10)
+	got := values.RedactTextWithin(long, "withheld", v1.RedactedEntityStateAllowance)
+	require.Equal(t, "withheld", got, "redaction grew the failure past its bound")
+
+	resp := &v1.GetResponse{Kind: &v1.GetResponse_Error{Error: &v1.RunResponse_Error{Message: long}}}
+	v1.RedactGetResponseFailures(resp, values)
+	require.LessOrEqual(t, len(resp.GetError().GetMessage()), max(len(long), v1.RedactedEntityStateAllowance))
+}
