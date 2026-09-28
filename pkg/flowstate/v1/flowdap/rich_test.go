@@ -465,3 +465,58 @@ func (u *unreadableRemote) WaitSnapshot(context.Context, uint64) (*v1.DebugSnaps
 
 	return nil, errors.New("the server did not answer")
 }
+
+// TestADetachedLaunchIsWaitedFor is the adapter keeping the process a detached
+// run needs: a disconnect without terminateDebuggee ends Serve, and Wait holds
+// until the run it let go of has returned rather than exiting under it.
+func TestADetachedLaunchIsWaitedFor(t *testing.T) {
+	t.Parallel()
+
+	c := newClient(t)
+	t.Cleanup(func() { _ = c.Close() })
+
+	release, started := make(chan struct{}), make(chan struct{})
+	var terminated atomic.Bool
+	server := flowdap.NewServer(nil, c, flowdap.WithLaunch(func(context.Context, flowdap.LaunchArguments) (*flowdap.Launch, error) {
+		session, err := flowdebug.New(flowdebug.Options{Controlled: true})
+		if err != nil {
+			return nil, err
+		}
+
+		return &flowdap.Launch{
+			Target:    session,
+			Start:     func() { close(started); <-release },
+			Terminate: func() { terminated.Store(true) },
+		}, nil
+	}))
+	served := make(chan error, 1)
+	go func() { served <- server.Serve(t.Context()) }()
+
+	c.send(1, "initialize", map[string]any{"adapterID": "flowstate"})
+	c.await("response", "initialize")
+	c.send(2, "launch", map[string]any{"program": "detached.yaml", "stopOnEntry": false})
+	c.await("response", "launch")
+	c.send(3, "configurationDone", nil)
+	c.await("response", "configurationDone")
+	<-started
+
+	c.send(4, "disconnect", map[string]any{"terminateDebuggee": false})
+	c.await("response", "disconnect")
+	require.NoError(t, <-served)
+	assert.False(t, terminated.Load(), "a disconnect that did not ask to terminate ended the run")
+
+	waited := make(chan struct{})
+	go func() { server.Wait(); close(waited) }()
+	select {
+	case <-waited:
+		t.Fatal("Wait returned while the detached run was still going, so the adapter would exit under it")
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	close(release)
+	select {
+	case <-waited:
+	case <-time.After(20 * time.Second):
+		t.Fatal("Wait did not return once the detached run had")
+	}
+}

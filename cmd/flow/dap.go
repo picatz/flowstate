@@ -121,7 +121,13 @@ func runDAP(cmd *cobra.Command, _ []string) error {
 	)
 	console.attach(server)
 
-	return server.Serve(cmd.Context())
+	err := server.Serve(cmd.Context())
+	// A disconnect that did not terminate a launched run detached from it,
+	// and it goes on: the plugins and secret providers deferred above stay
+	// open until it returns, rather than failing it midway.
+	server.Wait()
+
+	return err
 }
 
 // localRunResources is what a local debugged run needs from its process,

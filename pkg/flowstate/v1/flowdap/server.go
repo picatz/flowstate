@@ -61,6 +61,10 @@ type Server struct {
 	launched chan struct{}
 	once     sync.Once
 
+	// running counts the launched run the adapter started, so [Server.Wait]
+	// can outlive the client of a run it let go of.
+	running sync.WaitGroup
+
 	// entered is closed once the first stop is announced (or the run ends),
 	// so a movement that arrives before it waits for the stop it moves from.
 	entered   chan struct{}
@@ -228,6 +232,13 @@ func (s *Server) Finished() {
 		s.emit("exited", exitedBody{ExitCode: code})
 	})
 }
+
+// Wait blocks until a run the adapter launched has returned, and at once when
+// it launched none. A client that disconnects without terminating detaches
+// from a local run rather than ending it, so the process serving the adapter
+// calls Wait after [Server.Serve] to let that run finish with the resources it
+// was started with.
+func (s *Server) Wait() { s.running.Wait() }
 
 // Serve answers requests until the client disconnects or ctx ends.
 func (s *Server) Serve(ctx context.Context) error {
@@ -559,7 +570,7 @@ func (s *Server) release(ctx context.Context) {
 		start := s.start
 		s.mu.Unlock()
 		if start != nil {
-			go start()
+			s.running.Go(start)
 		}
 
 		go s.watch(ctx)
