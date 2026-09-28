@@ -7,6 +7,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -1271,29 +1272,34 @@ func TestARequestIDIsTheAdaptersOwn(t *testing.T) {
 
 // TestEndingServeInterruptsAWriteToAClientThatStoppedReading is a client that
 // keeps its connection but stops reading, so a response blocks while holding
-// the output lock. Ending Serve's context must still end it: the stream is
-// closed under the blocked write rather than waited behind it.
+// the output lock. Ending Serve's context must still end it, rather than wait
+// behind the blocked write to hang up.
 func TestEndingServeInterruptsAWriteToAClientThatStoppedReading(t *testing.T) {
 	t.Parallel()
 
-	c := newClient(t)
-	t.Cleanup(func() { _ = c.Close() })
+	synctest.Test(t, func(t *testing.T) {
+		c := newClient(t)
+		server := flowdap.NewServer(nil, c)
+		ctx, cancel := context.WithCancel(t.Context())
+		served := make(chan error, 1)
+		go func() { served <- server.Serve(ctx) }()
 
-	server := flowdap.NewServer(nil, c)
-	ctx, cancel := context.WithCancel(t.Context())
-	served := make(chan error, 1)
-	go func() { served <- server.Serve(ctx) }()
+		// More requests than the client buffers answers for, none of them
+		// read: once every goroutine is blocked, the adapter is blocked
+		// writing an answer, holding its output lock.
+		for seq := range cap(c.fromAdapter) + 8 {
+			c.send(seq+1, "threads", nil)
+		}
+		synctest.Wait()
+		require.Len(t, c.fromAdapter, cap(c.fromAdapter), "the adapter was not blocked on a write")
 
-	// More requests than the client buffers answers for, none of them read:
-	// the adapter blocks writing an answer, holding its output lock.
-	for seq := range cap(c.fromAdapter) + 8 {
-		c.send(seq+1, "threads", nil)
-	}
-
-	cancel()
-	select {
-	case <-served:
-	case <-time.After(20 * time.Second):
-		t.Fatal("Serve waited on a blocked write after its context ended")
-	}
+		cancel()
+		synctest.Wait()
+		select {
+		case <-served:
+		default:
+			t.Fatal("Serve waited on a blocked write after its context ended")
+		}
+		_ = c.Close()
+	})
 }
