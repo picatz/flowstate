@@ -95,13 +95,53 @@ func TestEveryRevealRequestIsAuditedUnderItsOwnAction(t *testing.T) {
 			require.Equal(t, wantDisclosure, resp.Msg.GetSensitiveDisclosure())
 
 			require.Len(t, sink.records, 2, "the read and the reveal are two decisions")
-			reveal := sink.records[1]
+			reveal := revealRecord(t, sink)
 			require.Equal(t, v1.AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_REVEAL_SENSITIVE, reveal.GetAction())
 			require.Equal(t, "Get", reveal.GetRpc())
 			require.Equal(t, "orders-1", reveal.GetResourceKey())
 			require.Equal(t, tc.want, reveal.GetDecision())
 		})
 	}
+}
+
+func revealRecord(t *testing.T, sink *recordingEmitter) *v1.AuditRecord {
+	t.Helper()
+	for _, r := range sink.records {
+		if r.GetAction() == v1.AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_REVEAL_SENSITIVE {
+			return r
+		}
+	}
+	t.Fatal("no reveal decision was recorded")
+	return nil
+}
+
+// TestARevealOfARunThatCannotBeReadIsStillAudited: the reveal decision
+// depends only on the caller and the field, so it is recorded before the run
+// is read, and a read that fails (a missing run, another tenant's) does not
+// leave the attempted elevated read out of the trail.
+func TestARevealOfARunThatCannotBeReadIsStillAudited(t *testing.T) {
+	t.Parallel()
+
+	fake := &fakeRunClient{describeErr: errors.New("no such workflow execution")}
+	sink := &recordingEmitter{}
+	s := mustNew(t, fake, WithAudit(recorderFor(t, sink)))
+
+	_, err := s.Get(revealer(t.Context(), "workload.read"),
+		connect.NewRequest(&v1.GetRequest{WorkflowId: "orders-1", RevealSensitive: true}))
+	require.Error(t, err)
+	require.Equal(t, v1.AuditDecision_AUDIT_DECISION_DENY, revealRecord(t, sink).GetDecision())
+
+	// The fake serves no history, so the timeline read answers from nothing;
+	// the reveal is recorded first all the same.
+	sink.records = nil
+	_, _ = s.GetTimeline(revealer(t.Context(), "workload.read", "workload.reveal_sensitive"),
+		connect.NewRequest(&v1.GetTimelineRequest{WorkflowId: "orders-1", RevealSensitive: true}))
+	require.NotEmpty(t, sink.records)
+	require.Equal(t, v1.AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_REVEAL_SENSITIVE, sink.records[0].GetAction(),
+		"the reveal was not decided before the run was read")
+	reveal := sink.records[0]
+	require.Equal(t, "GetTimeline", reveal.GetRpc())
+	require.Equal(t, v1.AuditDecision_AUDIT_DECISION_ALLOW, reveal.GetDecision())
 }
 
 // revealUnrecordable fails only the reveal's record, so the read before it

@@ -9,7 +9,6 @@ import (
 
 	"connectrpc.com/connect"
 	enumspb "go.temporal.io/api/enums/v1"
-	"google.golang.org/protobuf/proto"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
@@ -55,22 +54,25 @@ const (
 // Get implements the RPC: FlowstateServer.get's answer, with the run's
 // declared-sensitive values withheld unless the caller asked and may.
 func (s *FlowstateServer) Get(ctx context.Context, req *connect.Request[v1.GetRequest]) (*connect.Response[v1.GetResponse], error) {
+	// A reveal request is decided and audited before the run is read, and
+	// whether or not the run turns out to hold anything to reveal: the record
+	// is of the attempted elevated read, which depends only on the caller and
+	// the field, and a required trail must not miss one because the run was
+	// plain, missing, or someone else's.
+	revealed := false
+	if req.Msg.GetRevealSensitive() {
+		var err error
+		if revealed, err = s.revealAuthorized(ctx, "Get", revealGetField, req.Msg.GetWorkflowId()); err != nil {
+			return nil, err
+		}
+	}
+
 	resp, err := s.get(ctx, req)
 	if err != nil {
 		return nil, err
 	}
 
 	out := resp.Msg
-
-	// A reveal request is decided and audited whether or not this run turns
-	// out to hold anything to reveal: the record is of the attempted elevated
-	// read, and a required trail must not miss one because the run was plain.
-	revealed := false
-	if req.Msg.GetRevealSensitive() {
-		if revealed, err = s.revealAuthorized(ctx, "Get", revealGetField, out.GetWorkflowId()); err != nil {
-			return nil, err
-		}
-	}
 
 	decl := s.sensitiveDeclarationsOf(ctx, out.GetWorkflowId(), out.GetRunId())
 	switch {
@@ -93,20 +95,21 @@ func (s *FlowstateServer) Get(ctx context.Context, req *connect.Request[v1.GetRe
 // asked and may. A timeline carries no values but failure text, so that is
 // all there is to withhold.
 func (s *FlowstateServer) GetTimeline(ctx context.Context, req *connect.Request[v1.GetTimelineRequest]) (*connect.Response[v1.GetTimelineResponse], error) {
+	// Decided and audited before the run is read, as in Get.
+	revealed := false
+	if req.Msg.GetRevealSensitive() {
+		var err error
+		if revealed, err = s.revealAuthorized(ctx, "GetTimeline", revealTimelineField, req.Msg.GetWorkflowId()); err != nil {
+			return nil, err
+		}
+	}
+
 	resp, err := s.getTimeline(ctx, req)
 	if err != nil {
 		return nil, err
 	}
 
 	out := resp.Msg
-
-	// Decided and audited before the run's declarations, as in Get.
-	revealed := false
-	if req.Msg.GetRevealSensitive() {
-		if revealed, err = s.revealAuthorized(ctx, "GetTimeline", revealTimelineField, req.Msg.GetWorkflowId()); err != nil {
-			return nil, err
-		}
-	}
 
 	decl := s.sensitiveDeclarationsOf(ctx, req.Msg.GetWorkflowId(), out.GetRunId())
 	switch {
@@ -235,15 +238,13 @@ func (c *declarationCache) put(key string, d sensitiveDeclarations, cost int) {
 	c.bytes += cost
 }
 
-// declarationCost is what caching d for state retains: its output names, and
-// the sensitive input values its value set holds, as their encoded size.
-func declarationCost(state *v1.RunState, d sensitiveDeclarations) int {
-	cost := 0
+// declarationCost is what caching d retains: its output names, and what its
+// value set holds, which is costed from the set itself because it binds
+// declared defaults as well as the caller's inputs.
+func declarationCost(d sensitiveDeclarations) int {
+	cost := d.values.RetainedBytes()
 	for name := range d.outputs {
 		cost += len(name)
-	}
-	for name := range v1.SensitiveInputNames(state.GetWorkflow()) {
-		cost += proto.Size(state.GetInputs()[name])
 	}
 	return cost
 }
@@ -277,7 +278,7 @@ func (s *FlowstateServer) sensitiveDeclarationsOf(ctx context.Context, workflowI
 		values:   v1.RunFailureSensitiveValues(state.GetWorkflow(), state.GetInputs()),
 	}
 
-	s.declarations.put(key, d, declarationCost(state, d))
+	s.declarations.put(key, d, declarationCost(d))
 	return d
 }
 

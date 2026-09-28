@@ -1,6 +1,7 @@
 package flowstatev1_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -64,4 +65,25 @@ func TestACalleesDeclarationsAreSeenFromTheCaller(t *testing.T) {
 		require.NoError(t, err, name)
 		require.Equal(t, tc.want, got, name)
 	}
+}
+
+// TestAValueSetIsCostedByWhatItHolds: a cache of value sets is bounded by
+// RetainedBytes, so it must count a sensitive default the run's inputs never
+// named as surely as an input the caller passed.
+func TestAValueSetIsCostedByWhatItHolds(t *testing.T) {
+	t.Parallel()
+
+	large := strings.Repeat("d", 32<<10)
+	declared := sensitiveInput("token")
+	declared.Default = v1.NewLiteral(large)
+	wf := &v1.Workflow{Name: "root", DeclaredInputs: []*v1.InputDeclaration{declared}}
+
+	fromDefault := v1.RunFailureSensitiveValues(wf, nil)
+	require.False(t, fromDefault.WithholdAll())
+	require.GreaterOrEqual(t, fromDefault.RetainedBytes(), len(large), "a bound default was not counted")
+
+	fromInput := v1.RunFailureSensitiveValues(wf, map[string]*v1.Value{"token": v1.NewLiteral(large)})
+	require.GreaterOrEqual(t, fromInput.RetainedBytes(), len(large), "a passed input was not counted")
+
+	require.Zero(t, v1.SensitiveValues{}.RetainedBytes())
 }

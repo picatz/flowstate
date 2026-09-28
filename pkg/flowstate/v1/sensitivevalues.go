@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"unicode/utf8"
+	"unsafe"
 )
 
 // This file is the one answer to "which values did this run's `sensitive:`
@@ -148,6 +149,35 @@ func (s SensitiveValues) held() sensitiveState {
 	}
 
 	return s.state()
+}
+
+// RetainedBytes estimates the memory s holds: the values it compares against,
+// the substrings it replaces, and the matcher built over them. It is for a
+// cache that must bound what it keeps, whatever the values were bound from
+// (a caller's input or a declared default), so it errs high rather than low.
+func (s SensitiveValues) RetainedBytes() int {
+	held := s.held()
+	const perValue = 64 // an interface header and a share of a container's own overhead
+	n := 0
+	for _, v := range held.values {
+		n += perValue
+		switch v := v.(type) {
+		case string:
+			n += len(v)
+		case []byte:
+			n += len(v)
+		}
+	}
+	for _, substring := range held.substrings {
+		n += int(unsafe.Sizeof(substring)) + len(substring)
+	}
+	if m := held.substringMatcher; m != nil {
+		n += len(m.nodes) * int(unsafe.Sizeof(sensitiveSubstringNode{}))
+		for _, node := range m.nodes {
+			n += cap(node.edges) * int(unsafe.Sizeof(sensitiveSubstringEdge{}))
+		}
+	}
+	return n
 }
 
 // sensitiveValuesOf returns a [SensitiveValues] closing over state.
