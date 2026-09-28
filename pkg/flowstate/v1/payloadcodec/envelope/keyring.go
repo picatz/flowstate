@@ -296,10 +296,19 @@ func (l keyLoader) resolve(path string) string {
 // private key with loose permissions: a wrapping key readable by the group is
 // a key the group holds. info is the opened file's own, never a second lookup
 // of path, so what is checked is what is read.
+//
+// And the owner, as ssh checks it: mode 0600 says only the owner can read the
+// file, which protects nothing if the owner is an account that could plant a
+// key of its own in a directory it can write to. The file must be owned by
+// this process's user or by root.
 func checkKeyFileMode(path string, info fs.FileInfo) error {
 	if runtime.GOOS != "windows" && info.Mode().Perm()&0o077 != 0 {
 		return fmt.Errorf("%q has mode %04o; a key file must be accessible by its owner only (chmod 600)",
 			path, info.Mode().Perm())
+	}
+	if uid, trusted := keyFileOwner(info); !trusted {
+		return fmt.Errorf("%q is owned by uid %d; a key file must be owned by the user this process runs as, or by root",
+			path, uid)
 	}
 	return nil
 }
