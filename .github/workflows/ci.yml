@@ -681,12 +681,13 @@ jobs:
       # The example plugin is a separate buf module, so it has its own
       # generate: its .pb.go and the comments that carry a plugin author's
       # field prose to an editor (#723, #2148), under the same pin, because a
-      # plugin's prose can go stale exactly the way the engine's can.
+      # plugin's prose can go stale exactly the way the engine's can. --clean
+      # empties its gen/ first, so output whose .proto is gone cannot survive.
       - name: Verify generated code is current
         run: |
           go tool -modfile=tools/external/go.mod buf generate
           E=pkg/flowstate/v1/plugin/examples/flowstate-plugin-example
-          go tool -modfile=tools/external/go.mod buf generate "$E/proto" --template "$E/buf.gen.yaml" -o "$E"
+          go tool -modfile=tools/external/go.mod buf generate "$E/proto" --template "$E/buf.gen.yaml" -o "$E" --clean
           git add --intent-to-add -- .
           git diff --exit-code -- . || {
             echo "::error::generated code does not match the schema; run 'make check' (or the two 'buf generate' lines above) and commit the result"

@@ -109,7 +109,7 @@ check:
 	$(BUF) lint
 	$(BUF) breaking --against '.git#branch=origin/main'
 	$(BUF) generate
-	$(BUF) generate $(EXAMPLE_PLUGIN)/proto --template $(EXAMPLE_PLUGIN)/buf.gen.yaml -o $(EXAMPLE_PLUGIN)
+	$(BUF) generate $(EXAMPLE_PLUGIN)/proto --template $(EXAMPLE_PLUGIN)/buf.gen.yaml -o $(EXAMPLE_PLUGIN) --clean
 	git diff --exit-code
 	$(GOVULNCHECK) ./...
 	$(STATICCHECK) ./...

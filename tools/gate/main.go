@@ -434,7 +434,7 @@ func run(suppliedBase string) error {
 			// buf.gen.yaml of its own, whose generated comments carry
 			// that plugin's field prose to an editor (#723, #2148).
 			// Same pin, its own input.
-			buf("generate", examplePluginProtoDir, "--template", examplePluginTemplate, "-o", examplePluginDir),
+			buf("generate", examplePluginProtoDir, "--template", examplePluginTemplate, "-o", examplePluginDir, "--clean"),
 			generatedClean("generated code disagrees with the schema; stage and commit the regenerated files",
 				"*.pb.go"),
 		)

@@ -84,7 +84,7 @@ func generated(rel string) string {
 	// regenerates are both different, and a refusal naming the wrong .proto
 	// is a refusal that sends somebody to the wrong file.
 	case strings.HasPrefix(rel, examplePlugin+"gen/") && strings.HasSuffix(rel, ".pb.go"):
-		return fmt.Sprintf("%s is generated from the example plugin's own schema. Edit %sproto/example/v1/example.proto, then run `go tool -modfile=tools/external/go.mod buf generate %sproto --template %sbuf.gen.yaml -o %s` and commit the regenerated files.", rel, examplePlugin, examplePlugin, examplePlugin, examplePlugin)
+		return fmt.Sprintf("%s is generated from the example plugin's own schema. Edit %sproto/example/v1/example.proto, then run `go tool -modfile=tools/external/go.mod buf generate %sproto --template %sbuf.gen.yaml -o %s --clean` and commit the regenerated files.", rel, examplePlugin, examplePlugin, examplePlugin, examplePlugin)
 
 	// The schema's comments, which protoc-gen-flowstate-doc writes (#2147).
 	case strings.HasPrefix(rel, "pkg/flowstate/v1/protodoc/") && strings.HasSuffix(rel, ".doc.pb.go"):
