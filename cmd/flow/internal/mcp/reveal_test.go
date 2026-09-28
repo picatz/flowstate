@@ -43,12 +43,22 @@ func TestAnAgentReadsNoTimelineFailureAServerDidNotDecide(t *testing.T) {
 }
 
 // TestAnAgentCannotAskForWhatItsOperatorDidNot: the reveal_sensitive switch
-// an agent writes into a tool call reaches the server only when the operator
-// started the surface with --reveal-sensitive.
+// the server sees is the operator's posture, whatever the agent wrote. An
+// agent cannot turn it on, and cannot leave it off when the operator started
+// the surface with --reveal-sensitive.
 func TestAnAgentCannotAskForWhatItsOperatorDidNot(t *testing.T) {
 	t.Parallel()
 
-	for _, operator := range []bool{false, true} {
+	for _, tc := range []struct {
+		operator bool
+		args     string
+	}{
+		{false, `{"workflowId": "orders-1", "revealSensitive": true}`},
+		{true, `{"workflowId": "orders-1", "revealSensitive": true}`},
+		{true, `{"workflowId": "orders-1"}`},
+		{true, `{"workflowId": "orders-1", "revealSensitive": false}`},
+	} {
+		operator := tc.operator
 		var sent *v1.GetRequest
 		handler := dispatch(ServiceMethod{
 			Name:  "Get",
@@ -65,11 +75,11 @@ func TestAnAgentCannotAskForWhatItsOperatorDidNot(t *testing.T) {
 		})
 
 		_, err := handler(t.Context(), &mcp.CallToolRequest{Params: &mcp.CallToolParamsRaw{
-			Arguments: json.RawMessage(`{"workflowId": "orders-1", "revealSensitive": true}`),
+			Arguments: json.RawMessage(tc.args),
 		}})
 		require.NoError(t, err)
 		require.NotNil(t, sent, "the call never reached the server, so nothing was asserted")
 		require.Equal(t, "orders-1", sent.GetWorkflowId())
-		require.Equal(t, operator, sent.GetRevealSensitive(), "operator posture %v", operator)
+		require.Equal(t, operator, sent.GetRevealSensitive(), "operator posture %v, arguments %s", operator, tc.args)
 	}
 }

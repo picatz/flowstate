@@ -980,9 +980,10 @@ func dispatch(
 			}
 		}
 
-		if !deps.RevealSensitive {
-			clearRevealSensitive(in)
-		}
+		// The operator's posture decides the switch, whatever the agent
+		// wrote: off, it is cleared; on, it is set, so every call this
+		// process serves asks for what the operator chose to show.
+		setRevealSensitive(in, deps.RevealSensitive)
 
 		out, err := method.Call(ctx, local, remote, in)
 		if err != nil {
@@ -1403,11 +1404,18 @@ func NewMessage(md protoreflect.MessageDescriptor) proto.Message {
 	return mt.New().Interface()
 }
 
-// clearRevealSensitive clears a request's `reveal_sensitive` switch, found by
-// name so any request that grows one is covered without being listed here.
-func clearRevealSensitive(in proto.Message) {
+// setRevealSensitive sets a request's `reveal_sensitive` switch to the
+// operator's posture, found by name so any request that grows one is covered
+// without being listed here.
+func setRevealSensitive(in proto.Message, on bool) {
 	m := in.ProtoReflect()
-	if fd := m.Descriptor().Fields().ByName("reveal_sensitive"); fd != nil && fd.Kind() == protoreflect.BoolKind {
+	fd := m.Descriptor().Fields().ByName("reveal_sensitive")
+	if fd == nil || fd.Kind() != protoreflect.BoolKind {
+		return
+	}
+	if on {
+		m.Set(fd, protoreflect.ValueOfBool(true))
+	} else {
 		m.Clear(fd)
 	}
 }
