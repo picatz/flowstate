@@ -806,6 +806,8 @@ func TestVariableHandlesAreBoundedByTheirText(t *testing.T) {
 type pendingRemote struct {
 	fakeRemote
 	applied chan *v1.DebugSnapshot
+	// ended makes the run end without stopping, having installed nothing.
+	ended bool
 }
 
 func (p *pendingRemote) ReplaceBreakpoints(_ context.Context, req *v1.DebugSetBreakpointsRequest) (*v1.DebugSetBreakpointsResponse, error) {
@@ -821,7 +823,11 @@ func (p *pendingRemote) ReplaceBreakpoints(_ context.Context, req *v1.DebugSetBr
 	// here, none — and says nothing of the replacement; then its next hold,
 	// with the replacement installed.
 	p.applied <- &v1.DebugSnapshot{Revision: 2, State: v1.DebugRunState_DEBUG_RUN_STATE_RUNNING}
-	p.applied <- &v1.DebugSnapshot{Revision: 3, State: v1.DebugRunState_DEBUG_RUN_STATE_HELD, Breakpoints: verified}
+	if p.ended {
+		p.applied <- &v1.DebugSnapshot{Revision: 3, State: v1.DebugRunState_DEBUG_RUN_STATE_COMPLETED}
+	} else {
+		p.applied <- &v1.DebugSnapshot{Revision: 3, State: v1.DebugRunState_DEBUG_RUN_STATE_HELD, Breakpoints: verified}
+	}
 
 	return &v1.DebugSetBreakpointsResponse{
 		Receipt:     &v1.DebugReceipt{Status: v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_PENDING, Revision: 1},
@@ -932,4 +938,41 @@ func TestARefusedSecondLaunchChangesNothing(t *testing.T) {
 	c.await("response", "configurationDone")
 	assert.Equal(t, "entry", body(c.await("event", "stopped"))["reason"],
 		"the refused launch's stopOnEntry reached the first launch")
+}
+
+// TestAPendingBreakpointTheRunNeverInstalledIsSettledAtItsEnd is a replacement
+// the run applies while it keeps moving and never stops for — a breakpoint on
+// a step it refuses, say — so its next revision is its end: the editor hears
+// the breakpoint was not installed rather than seeing it pending for good.
+func TestAPendingBreakpointTheRunNeverInstalledIsSettledAtItsEnd(t *testing.T) {
+	t.Parallel()
+
+	c := newClient(t)
+	t.Cleanup(func() { _ = c.Close() })
+
+	remote := &pendingRemote{
+		fakeRemote: fakeRemote{snapshot: &v1.DebugSnapshot{
+			Revision: 1, State: v1.DebugRunState_DEBUG_RUN_STATE_RUNNING, Capabilities: v1.DurableDebugCapabilities(),
+		}},
+		applied: make(chan *v1.DebugSnapshot, 2),
+		ended:   true,
+	}
+	server := flowdap.NewServer(nil, c, flowdap.WithAttach(func(context.Context, flowdap.AttachArguments) (*flowdap.Attachment, error) {
+		return &flowdap.Attachment{Target: remote}, nil
+	}))
+	go func() { _ = server.Serve(t.Context()) }()
+
+	c.send(1, "initialize", map[string]any{"adapterID": "flowstate"})
+	c.await("response", "initialize")
+	c.send(2, "attach", map[string]any{"workflowId": "wf-1"})
+	c.await("response", "attach")
+	c.send(3, "setFunctionBreakpoints", map[string]any{"breakpoints": []map[string]any{{"name": "deplyo"}}})
+	set := body(c.await("response", "setFunctionBreakpoints"))["breakpoints"].([]any)[0].(map[string]any)
+	c.send(4, "configurationDone", nil)
+	c.await("response", "configurationDone")
+
+	changed := body(c.await("event", "breakpoint"))["breakpoint"].(map[string]any)
+	assert.Equal(t, set["id"], changed["id"])
+	assert.Equal(t, false, changed["verified"], "a breakpoint the run never installed was reported verified")
+	assert.NotEmpty(t, changed["message"])
 }

@@ -1692,15 +1692,16 @@ func (s *Server) applyBreakpoints(ctx context.Context) (map[string]*v1.DebugBrea
 }
 
 // relayBreakpoints reports a pending replacement once the run has answered it.
-// A durable run installs a replacement whole, at its next step boundary, and
-// applies what it was sent there before it holds, so its first hold past the
-// acceptance shows exactly the set it installed: each breakpoint of the
-// replacement is there, with its state, or was not installed. A snapshot of a
-// run still moving shows the set it had, and says nothing of this one.
+// A durable run installs a replacement whole, at its next step boundary,
+// before it holds there; and its revision moves only when it holds or ends.
+// So the first snapshot past the acceptance that holds or ends shows exactly
+// the set the run installed: each breakpoint of the replacement is there,
+// with its state, or was not installed — refused, or never reached. A
+// snapshot of a run still moving shows the set it had, and settles nothing.
 func (s *Server) relayBreakpoints(snapshot *v1.DebugSnapshot) {
+	settles := snapshot.GetState() == v1.DebugRunState_DEBUG_RUN_STATE_HELD || terminalState(snapshot.GetState())
 	s.mu.Lock()
-	if len(s.pending) == 0 || snapshot.GetRevision() <= s.pendingAfter ||
-		snapshot.GetState() != v1.DebugRunState_DEBUG_RUN_STATE_HELD {
+	if len(s.pending) == 0 || snapshot.GetRevision() <= s.pendingAfter || !settles {
 		s.mu.Unlock()
 
 		return
