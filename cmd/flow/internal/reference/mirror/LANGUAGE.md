@@ -208,8 +208,10 @@ outputs:
 ```
 
 Outputs are evaluated once, after the last step, in the order written. They can
-read `inputs`, `vars`, `run`, `trigger`, and any step outside a `for_each:` or
-`loop:` body, including the steps of a `switch:` arm or a `parallel:` branch. `value:` is required;
+read `inputs`, `vars`, `run`, `trigger`, and any step the top-level scope can
+see: top-level steps, the steps of the `switch:` arm that ran, and the steps
+written directly in a `parallel:` branch. Steps inside a `for_each:` or `loop:`
+body, or nested in a block inside a `parallel:` branch, are not visible. `value:` is required;
 `type:`, `values:`, and `must:` are checked when the value is computed, and
 `description:` and `sensitive:` mean what they do on an input. If an output
 cannot be computed, or fails its type or `must:`, the run fails and its
@@ -319,7 +321,7 @@ take either a duration literal (`30s`) or a fenced expression.
 | Name | Holds | Where |
 | --- | --- | --- |
 | `inputs.<name>` | The run's arguments, after defaults | Everywhere except workflow `vars:`, `must:`, and trigger expressions |
-| `vars.<name>` | Workflow vars | Everywhere except workflow `vars:`, `must:`, `concurrency.key`, and trigger expressions |
+| `vars.<name>` | Workflow vars | Everywhere except workflow `vars:`, `must:`, `concurrency.key`, a `signals:` or `debug:` rule's `subject:`, and trigger expressions |
 | `steps.<id>.<output>` | An earlier step's outputs | After that step, in the same scope |
 | `run.workflow_id`, `run.run_id` | This run's address, for callbacks. `"local"` under `flow run local`. | Steps and outputs |
 | `run.identity.subject`, `.issuer`, `.namespace`, `.claims` | Who started the run, as the server verified it. Empty when nobody authenticated. | Steps and outputs |
@@ -512,7 +514,7 @@ What a step produces, by kind:
 | `value` | `value` |
 | `switch` | `value` (what it matched on) and `case` (the case that matched, or `null`) |
 | `for_each`, `loop` | `results`: one entry per iteration, each a map from body step id to that step's outputs. A `loop` with `as:` also has `state`. |
-| `parallel` | Nothing under its own id; its branch steps' outputs join the enclosing scope. |
+| `parallel` | Nothing under its own id; the outputs of the steps written directly in each branch join the enclosing scope. |
 | `call` | The callee's declared `outputs:` |
 | `sleep`, `wait_until` | `timed_out` (always `false`) |
 | `wait_for_signal` | `payload`, `sender`, `timed_out`, or the names its `outputs:` defines |
@@ -732,8 +734,9 @@ To cross two lists, build the combinations in `items:`
 
 Each branch runs concurrently on the durable driver and in order on the local
 driver. A branch sees the steps before the block and its own steps, not the
-other branches'. The block waits for every branch. When all succeed, every
-branch step's outputs join the enclosing scope, so a later step reads
+other branches'. The block waits for every branch. When all succeed, the outputs of the
+steps written directly in each branch join the enclosing scope (a step nested
+in a block inside a branch does not join), so a later step reads
 `steps.check_quota.<output>`; the `parallel` step itself has none. If a branch
 fails, the others still finish and the first failure by branch position is
 reported.
