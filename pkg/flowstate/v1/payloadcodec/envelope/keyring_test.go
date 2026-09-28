@@ -288,6 +288,33 @@ providers:
 
 }
 
+// TestARecoveryNamespaceIsNotRefusedOverASuiteItNeverWrites: a decode-only
+// namespace narrowed to the one suite its history used has no encrypt suite
+// to check, and opens; a writing namespace with the same list is still
+// refused, since it would write AES-256-GCM it then could not read.
+func TestARecoveryNamespaceIsNotRefusedOverASuiteItNeverWrites(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeFile(t, dir, "k.key", local.Generate(), 0o600)
+	_, err := load(t, dir, `
+namespaces:
+  ns:
+    keys: [{id: k, file: k.key}]
+    decrypt_suites: [PAYLOAD_SUITE_XCHACHA20_POLY1305]
+`)
+	require.NoError(t, err)
+
+	_, err = load(t, dir, `
+namespaces:
+  ns:
+    current: k
+    keys: [{id: k, file: k.key}]
+    decrypt_suites: [PAYLOAD_SUITE_XCHACHA20_POLY1305]
+`)
+	require.ErrorContains(t, err, "not among the decrypt suites")
+}
+
 // TestAVaultTimeoutReachesTheCodecsDeadline: a provider's configured timeout
 // bounds each request to it, so the deadline the codecs put on a wrap or
 // unwrap must leave room for it, and for the login before it, rather than
