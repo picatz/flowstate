@@ -927,6 +927,27 @@ Either process refuses to start with `federation:` and no key, or a key and no
 files. [Secrets and credentials](SECRETS.md#signing-keys) covers rotation, which
 restarts both.
 
+`FLOWSTATE_IDENTITY_KEY` holds one path, and a rotation needs two for its
+overlap, so for that window the keys go on each unit's command line, new first.
+Repeated `--identity-key` flags replace the variable's value rather than adding
+to it. Give the new key the same ownership as the first before either unit
+opens it:
+
+```console
+$ sudo chown root:flowstate-keys /etc/flowstate/identity-2026-10.pem
+$ sudo chmod 0640 /etc/flowstate/identity-2026-10.pem
+```
+
+```ini
+ExecStart=/usr/local/bin/flow worker --plugin-dir /usr/local/lib/flowstate/plugins \
+    --identity-key /etc/flowstate/identity-2026-10.pem \
+    --identity-key /etc/flowstate/identity-2026-07.pem
+```
+
+The server unit gets the same two flags. After `federation.key_retention`, drop
+the flags, point `FLOWSTATE_IDENTITY_KEY` in both files at the new key, and
+restart both units again.
+
 `FLOWSTATE_RPC_RESOURCE` is what this unit's `flow server` binds its Connect
 RPC audience to, and it is required because `policy.yaml` names a `kind: oidc`
 issuer — write the URI clients actually reach this deployment at, and list that
