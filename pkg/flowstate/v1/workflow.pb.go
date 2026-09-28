@@ -2384,8 +2384,9 @@ type Wait struct {
 	// Timeout bounds how long the wait may last, for a wait that might otherwise
 	// never end.
 	//
-	// It is meaningful for `until` and `signal`, and meaningless for `duration`,
-	// where the duration is already the bound. A wait that times out is not a
+	// It is meaningful for `signal` and `signal_batch`, and refused by
+	// [ValidateWait] on `duration`, `duration_expr` and `until`, where the
+	// duration or the moment is already the bound. A wait that times out is not a
 	// failure: it produces its outputs with `timed_out` true, so an author decides
 	// what a lapsed approval means with an ordinary `if:` rather than having to
 	// treat a normal outcome as an error.
@@ -2623,8 +2624,9 @@ type ForEach struct {
 	// body zero times, which is a normal outcome rather than an error.
 	Items *Value `protobuf:"bytes,1,opt,name=items,proto3" json:"items,omitempty"`
 	// Iterator names the variable bound to the current item inside the body.
-	// Defaults to "item". It must not collide with a step id, since both are
-	// resolved from the same namespace.
+	// Defaults to "item". It may share a step's id, since a step is read as
+	// `steps.<id>` and the iterator bare; `flow validate` refuses `now` and a
+	// declaration root, either of which a binding of the same name collides with.
 	//
 	// Empty is the default, not a name, so the pattern is not applied to it:
 	// both drivers bind `item` for an empty iterator, and a rule that refused
@@ -2857,9 +2859,10 @@ type Loop struct {
 	// Bare rather than rooted, the same standing as a `for_each` binding and for the
 	// same reason (docs/DSL.md principle 5): it is an author-chosen name bound
 	// lexically where the expressions that read it are written. `flow validate`
-	// refuses a name that collides with an enclosing bare binding, with `now`, or
-	// with a declaration root, exactly as it refuses a colliding loop iterator or
-	// step var: a bare name may mean one thing at a time.
+	// refuses a name that collides with an enclosing bare binding (a `for_each`
+	// binding, an outer loop's state, or a step var), with `now`, or with a
+	// declaration root — the same check a step var gets: a bare name may mean one
+	// thing at a time.
 	//
 	// Optional. A loop that carries nothing (a bounded retry-until) leaves this,
 	// [initial] and [update] all unset. Setting one without the others is refused by

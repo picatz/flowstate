@@ -5,11 +5,12 @@
 // "v1" names the schema edition, the wire contract a Flowfile compiles into,
 // not a promise about this package's Go API. Types, function signatures, and
 // even which symbols exist here change as the interpreter evolves; only the
-// proto messages generated into it carry the compatibility the edition number
-// implies. A Go program that wants a stable surface for compiling and running
-// Flowfiles should import [github.com/picatz/flowstate/pkg/flowstate/embed]
-// instead, which is curated and versioned for that use and reaches everything
-// in this package an embedder needs.
+// proto messages generated into it are held to a breaking-change check
+// (`buf breaking`), and nothing in this module is released or tagged yet (see
+// SUPPORT.md). A Go program compiling and running Flowfiles should start from
+// [github.com/picatz/flowstate/pkg/flowstate/embed] instead: a smaller surface
+// curated for that use and intended to stay stable, though still expressed
+// partly in this package's types.
 //
 // # The schema
 //

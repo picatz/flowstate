@@ -504,7 +504,7 @@ type TriggerDelivery struct {
 	// delivery is both: verification reads a signature header and a key may
 	// read a header of its own, so a fixture holding only a body could not
 	// exercise either. It is read
-	// under [v1.MaxWebhookPayloadBytes], the bound a live receiver will apply to
+	// under [v1.MaxWebhookPayloadBytes], the bound the live receiver applies to
 	// a request body.
 	Payload string `yaml:"payload"`
 

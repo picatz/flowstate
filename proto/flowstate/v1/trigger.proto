@@ -180,8 +180,9 @@ message ManualTrigger {
 //
 // These values are written to durable history, which is broadly readable, so
 // [principal] is an attested subject and [delivery_id] is a digest rather than
-// the idempotency key it names (a webhook's key is frequently a signature
-// header). Neither is material anything can authenticate with.
+// the idempotency key it names (a key is a value read out of the delivery, and
+// history should not restate one). Neither is material anything can
+// authenticate with.
 message TriggerContext {
   // Kind is how the run started: `manual`, `webhook`, or `schedule`.
   //
@@ -217,9 +218,9 @@ message TriggerContext {
   // run against the provider's own record of what it sent.
   //
   // A digest of the trigger's evaluated `idempotency_key`, never the key: the
-  // usual key is a signature header, and this is written to a memo and to
-  // history, both durable and broadly readable. Empty for every kind that has
-  // no delivery.
+  // key is a value read out of the delivery, and this is written to a memo and
+  // to history, both durable and broadly readable. Empty for every kind that
+  // has no delivery.
   string delivery_id = 4 [(buf.validate.field).string = {max_len: 128}];
 }
 
@@ -239,9 +240,10 @@ message TriggerContext {
 // The expressions in `arguments` and in `idempotency_key` are evaluated against
 // one bound name, `event`, holding the delivery — its headers and its decoded
 // body. That name is bound here and nowhere else in the language: a step body
-// that wants to know how the run started is a later slice (`trigger.kind` and
-// friends), and payload data must arrive through `arguments` into `inputs:` or
-// the file has grown a second input path with no contract.
+// that wants to know how the run started reads `trigger.kind` and friends
+// ([TriggerContext]), which carry provenance and no payload, and payload data
+// must arrive through `arguments` into `inputs:` or the file has grown a second
+// input path with no contract.
 //
 // # Fail closed, declared rather than assumed
 //
@@ -257,12 +259,12 @@ message TriggerContext {
 //     a second run — a fact about the transport, not about this integration's
 //     luck.
 //
-// The remaining bound belongs to the receiver that does not exist yet: a
-// request body is attacker-chosen input and gets a byte bound *before* it is
-// read into memory. `v1.MaxWebhookPayloadBytes` is that number, and it is
-// already enforced by the one reader there is today — `flow test` reading a
-// stored delivery off disk — so the receiver inherits a bound rather than
-// introducing one.
+// The remaining bound belongs to the readers of a delivery: a request body is
+// attacker-chosen input and gets a byte bound *before* it is read into memory.
+// `v1.MaxWebhookPayloadBytes` is that number, and both readers enforce it —
+// the receiver `flow server --webhook` serves, and `flow test` reading a
+// stored delivery off disk — so a rehearsal and a live delivery share one
+// bound.
 message WebhookTrigger {
   // Name identifies this source, both in a diagnostic (`webhook "stripe" …`)
   // and in a `flow test` case that replays a stored delivery against it. Unique

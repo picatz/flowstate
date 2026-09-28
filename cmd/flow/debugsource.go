@@ -1,33 +1,57 @@
 package main
 
 import (
+	"errors"
+	"fmt"
 	"path/filepath"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 )
 
-// debugSourceMap relates a compiled Flowfile's steps to the lines they are
-// written on, for a debugger to show and to break at.
-//
-// Nil when the file cannot be read again or no longer compiles: a debugger
-// without a source map still addresses every step by name, and one with a map
-// computed from different bytes would point at the wrong lines. The map is
-// bound to workflow — the program actually run — and to the exact bytes read
-// here, by digest.
-func debugSourceMap(path string, workflow *v1.Workflow) *v1.DebugSourceMap {
+// loadDebuggedWorkflow is [loadWorkflow] for a debugger: one read of the file
+// compiles the program and gives the positions its source map is made from,
+// so the lines a debugger shows are those of the bytes that were compiled. A
+// second read could see a file saved in between, and a save that only moves
+// lines compiles to the same program, so no digest could tell the two apart.
+func loadDebuggedWorkflow(path string) (*v1.Workflow, *debugSource, error) {
 	absolute, err := filepath.Abs(path)
 	if err != nil {
-		return nil
+		return nil, nil, err
 	}
-	source, err := readBoundedFile(absolute, "a Flowfile", maxFlowfileSourceBytes)
+	data, err := readBoundedFile(absolute, "a Flowfile", maxFlowfileSourceBytes)
 	if err != nil {
-		return nil
+		return nil, nil, fmt.Errorf("%s: %w", path, err)
 	}
-	_, positions, err := flowfile.ParseAt(source, absolute)
+	workflow, positions, diagnostics, err := flowfile.ParseAndValidateSourceAt(data, absolute)
 	if err != nil {
+		if parsed, ok := errors.AsType[flowfile.Diagnostics](err); ok {
+			return nil, nil, diagnosticsError(path, parsed)
+		}
+
+		return nil, nil, fmt.Errorf("%s: %w", path, err)
+	}
+	if len(diagnostics) > 0 {
+		return nil, nil, diagnosticsError(path, diagnostics)
+	}
+
+	return workflow, &debugSource{path: absolute, data: data, positions: positions}, nil
+}
+
+// debugSource is the read a debugged workflow was compiled from.
+type debugSource struct {
+	path      string
+	data      []byte
+	positions *flowfile.Positions
+}
+
+// sourceMap relates workflow's steps to the lines they are written on in this
+// read, for a debugger to show and to break at. workflow is the program as
+// run, plugins resolved, which is what the map is bound to by digest.
+func (s *debugSource) sourceMap(workflow *v1.Workflow) *v1.DebugSourceMap {
+	if s == nil {
 		return nil
 	}
 
-	return flowfile.SourceMap(absolute, source, workflow, positions)
+	return flowfile.SourceMap(s.path, s.data, workflow, s.positions)
 }

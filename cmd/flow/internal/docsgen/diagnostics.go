@@ -76,7 +76,7 @@ const diagnosticShapeSection = "## Shape\n\n" +
 	"steps:\n" +
 	"  - id: notify\n" +
 	"    retryy:\n" +
-	"      max_attempts: 3\n" +
+	"      attempts: 3\n" +
 	"    log:\n" +
 	"      message: hello\n" +
 	"```\n\n" +

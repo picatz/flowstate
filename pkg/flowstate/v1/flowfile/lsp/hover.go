@@ -1017,20 +1017,20 @@ func hoverConstructOutput(target *parsedStep, kind *v1.Node, ref reference, rng 
 //
 // What it says is the validator's reasoning, not a second account of it. `flowfile`
 // refuses `now` in a task input with the same three claims — the moment the wait is
-// evaluated, resolved inside an activity, no clock that survives a retry — and
-// TestNowIsExplainedTheSameWayTheValidatorRefusesIt asserts both texts still make
-// them, because the string itself is unexported and cannot be shared. That is the
-// weaker guarantee of the two, and it is why the phrasing here follows the
-// diagnostic rather than improving on it.
+// evaluated, a task input may be resolved inside an activity, each retry would read
+// a different time — and TestNowIsExplainedTheSameWayTheValidatorRefusesIt asserts
+// both texts still make them, because the string itself is unexported and cannot
+// be shared. That is the weaker guarantee of the two, and it is why the phrasing
+// here follows the diagnostic rather than improving on it.
 func nowDoc() string {
 	return fmt.Sprintf(
 		"**`%s`** · `timestamp` — the moment the wait is evaluated.\n\n"+
-			"Bound inside a wait (`%s:`, an expression-valued `%s:`, a signal's `%s:`, and a "+
-			"signal's `%s:` shaping) and nowhere else, from the clock the driver controls, so a "+
-			"deadline computed from it survives replay and a worker restart. A task input is "+
-			"resolved inside an activity, which has no clock that survives a retry: a `%s` there "+
-			"would read differently on every attempt, so the name is not bound in one. Compute "+
-			"the moment or the length in the wait itself, or pass a time in as an input.\n\n"+
+			"Bound inside a wait (`%s:`, an expression-valued `%s:`, a wait's `%s:` and `prompt:`, "+
+			"and a signal's `%s:` shaping) and nowhere else, from the clock the driver controls, "+
+			"so a deadline computed from it survives replay and a worker restart. A task input "+
+			"may be resolved inside an activity, where each retry would read a different time: a "+
+			"`%s` there would not be one moment, so the name is not bound in one. Compute the "+
+			"moment or the length in the wait itself, or pass a time in as an input.\n\n"+
 			"Durations build from `%s`, so a deadline reads as `${%s + days(3)}`.",
 		v1.NowIdentifier, waitUntilKey, sleepKey, signalTimeoutKey, taskShapingKey, v1.NowIdentifier,
 		strings.Join(v1.DurationUnits(), "`, `"), v1.NowIdentifier)

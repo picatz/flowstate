@@ -14,10 +14,11 @@ import (
 // Flowfile, and invariant 7 is not a property of the parser.
 //
 // A var is evaluated by the workflow: the top-level block once before the first
-// step, a step's block just before that step, and both results are bound into scope
-// and written to durable state — `RunState.vars` rides Continue-As-New. There is no
-// activity in any of that, so a reference reaching here has no contained place to be
-// resolved and no reader that could keep it out of history. Refusing it at submit is
+// step (durably in the `WorkflowVars` activity), a step's block just before that step,
+// and both results are bound into scope and written to durable state — the activity's
+// result is recorded in history and `RunState.vars` rides Continue-As-New. Nothing on
+// that path resolves a secret, so a reference reaching here has no contained place to
+// be resolved and no reader that could keep it out of history. Refusing it at submit is
 // the fail-closed half of the compile-time diagnostic: a caller is still there to be
 // told, and nothing has run.
 //
