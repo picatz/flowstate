@@ -45,8 +45,8 @@ message every RPC already returns — read by three different tools. See section
    a caller stating which of the three they are, and asking again by checking the
    terminal after they have said so would be answering a question they did not
    ask. `-o` is available on every command that produces an answer worth
-   addressing — see `addOutputFlag` — and refused, not silently ignored, on every
-   command that only produces an account (`flow cancel`, `flow terminate`).
+   addressing — see `addOutputFlag` — including `flow cancel` and
+   `flow terminate`, whose JSON form is the account of what was asked.
 3. **`NO_COLOR` and `--no-color` win over the terminal's own colour capability**,
    folded into the same `colorprofile.Detect` computation `ui.Detect` already runs
    rather than checked separately — see `environForSurface` in `cmd/flow/output.go`.
@@ -61,8 +61,8 @@ text renderer walks field by field; `ui.Capabilities` is detected once per strea
 and every style, every symbol, and every pill downstream of it reads that one
 value. A second code path that reimplements "what would the JSON say" — even one
 that agrees today — is a fork that will disagree the day one side changes and the
-other is not touched, which is the exact shape CLAUDE.md's "both drivers must
-agree" section describes for the engine and this document asserts for output: one
+other is not touched, which is the exact shape AGENTS.md's "both drivers agree"
+invariant describes for the engine and this document asserts for output: one
 value, several readers, never several computations of it.
 
 **Verbosity** is tiered, and a tier only *adds*:
@@ -80,7 +80,7 @@ value, several readers, never several computations of it.
   never the full transcript, which is why `writeStepOutputs` writes the *outputs*
   document to stdout and leaves the transcript to `-o json`, where a consumer who
   wants all of it can ask for all of it by name. `flow watch`'s live view applies
-  the same budget continuously: `visibleSteps` caps the step list to what the
+  the same budget continuously: `watch.VisibleSteps` caps the step list to what the
     terminal's own height allows and states the count it cut, rather than growing
   the screen past what a person can read at a glance.
 
@@ -252,12 +252,12 @@ Two rules keep this from growing:
 
 - **Two-space indent** for a line subordinate to the one above it — the pending-
   activity lines under `flow get`'s status line, a wrapped note's continuation
-  under `flow watch`'s marked block (`watchModel.note`). Not four: the content is
+  under `flow watch`'s marked block (`watch.Model.note`). Not four: the content is
   usually one sentence, and four spaces of indent for one sentence reads as a
   nesting deeper than one level.
 - **A blank line separates sections, never a rule.** `flow watch`'s view puts one
   blank line before the step block and one before a warning or failure note — see
-  `View()` in `watchmodel.go` — because a printed divider is one more thing a
+  `View()` in `cmd/flow/internal/watch/model.go` — because a printed divider is one more thing a
   screen reader announces and a rule of dashes competes with `Divider` for what
   a horizontal line means.
 - **Durations and counts are right-aligned and monospaced-width**, so a column of
@@ -282,10 +282,10 @@ rather than by review: `cmd/flow/internal/appearance/` holds one
 surface, and beside each tape a golden of the terminal screen it produces. CI's
 `appearance` job replays them, and a diff is a surface that changed shape.
 
-Four surfaces are recorded today, chosen because appearance carries meaning in
+Five surfaces are recorded today, chosen because appearance carries meaning in
 each: the task index (`flow tasks`), one task in full (`flow tasks http`, the
-densest aligned surface the CLI has), `flow init`, and the unreachable-server
-error, which is the reference recording for the `NEXT` element the sad paths
+densest aligned surface the CLI has), `flow init`, `flow run local`, and the
+unreachable-server error, which is the reference recording for the `NEXT` element the sad paths
 share. Recording a surface is now part of styling one.
 
 Two boundaries are worth stating, because a pin that is trusted for more than it
@@ -376,7 +376,7 @@ duration once every iteration has reported, the same way a finished call does.
 Today's `flow get` and `flow watch` render a subset of this: a pill-opened summary
 line, a muted position line (`positionPath`, joined with `>` rather than drawn as
 a tree), and a flat list of completed step ids with no duration and no nesting
-(`stepLines` in `watchmodel.go`). The gap between that and the mockup above is
+(`Model.stepLines` in `cmd/flow/internal/watch/model.go`). The gap between that and the mockup above is
 slice 9 of the work plan, blocked on slices 1–3 as stated above.
 
 ### Diagnostics view (`validate`, `fix --check`)
@@ -391,14 +391,14 @@ step name, and a remedy would fight the reader's eye rather than guide it.
 ```
 workflow.yaml:14:3: step "deploy" references unknown step "depoy" — did you mean "deploy"?
 workflow.yaml:22:1: "retry.max_attempts" must be at least 1
-examples/basic/workflow.yaml: ok
+examples/hello-world/workflow.yaml: ok
 ```
 
 The middle line above, un-styled, is exactly what a shell, an editor's problem
 matcher, and a screen reader receive; the styling on the path and on `ok` is
 everything colour adds. `flow fix`'s refusals (a shape it will not guess at) use
 the same shape and the same rule; they are diagnostics, not a different kind of
-message, which is why `refusalDiagnostics` widens them into `*v1.Diagnostic`
+message, which is why `writeErrDiagnostics` widens them into `*v1.Diagnostic`
 rather than formatting a bespoke line.
 
 ### Progress view (`flow watch`'s live shape)
@@ -472,7 +472,7 @@ existed, not the definition the others approximate.
 That has a concrete consequence for this document's step/timeline view: the tree
 needs fields the schema does not carry today — see the gap inventory's slices 1
 and 3 — and the fix is a schema field every renderer gains at once, per the
-proto-first rule in `CLAUDE.md`, rather than a CLI-only lookup that a future web
+proto-first invariant in `AGENTS.md`, rather than a CLI-only lookup that a future web
 UI would have to reimplement or do without. The graph model in section 6 is
 built the same way from the start, for the same reason: see 6.1.
 
@@ -504,7 +504,7 @@ resource for, say, a run's progress would consume `GetResponse` exactly as
 `writeRun` does today — no new data path, only a new renderer subscribing to data
 that already exists. The token system does not travel (an iframe is not a
 terminal and has no `colorprofile` to detect), but the *tokens*-as-concept do: the
-same six roles, the same rule that a status is a word before it is a colour,
+same roles, the same rule that a status is a word before it is a colour,
 translate directly into a small CSS custom-property set keyed to the same names
 this document uses (`--tone-success`, `--tone-danger`, …), which is a design
 decision for whichever slice builds it rather than one this document needs to
@@ -565,7 +565,8 @@ the *spec*: a compiled `Workflow` has a shape whether or not anything has ever r
 it, and that shape is what a graph draws. A run overlays outcome onto that shape;
 it does not define it. Getting that ordering right is what keeps this feature from
 turning into a second, competing definition of what a step is — the exact failure
-mode CLAUDE.md's "one vocabulary" and proto-first sections warn about.
+mode AGENTS.md's "one mechanism per concept" and proto-first invariants warn
+about.
 
 The design is four layers, and the layering is the point stated explicitly rather
 than left to be inferred: **each layer is independently testable, and a defect is
@@ -580,7 +581,7 @@ climbs a layer once the one below is green.
 ### 6.1 The graph model, proto first
 
 **Corrected from an earlier draft of this section, which proposed a hand-written
-Go package as the graph's home.** That draft violated CLAUDE.md's proto-first
+Go package as the graph's home.** That draft violated AGENTS.md's proto-first
 invariant on its own terms: this model is explicitly for CLI, MCP, and web
 consumers, which is precisely the shape the invariant means by "describes things
 that travel," and a type built as a Go struct first guarantees the later
@@ -623,7 +624,7 @@ between being drawn as one summary node and being drawn as its own depth level
 — never a step quietly reappearing at its parent's level, which is the
 flattening #172 forbids.
 
-**Go behaviour attaches to the generated types**, per CLAUDE.md's rule that the
+**Go behaviour attaches to the generated types**, per AGENTS.md's rule that the
 shape comes from the schema and behaviour is hand-written methods on it: a
 `NewGraph(spec *v1.Workflow) *v1.Graph` function, in a hand-written file beside
 the rest of `pkg/flowstate/v1`'s IR-adjacent behaviour (`eval.go`,
@@ -643,8 +644,8 @@ optional argument to the same constructor — `NewGraph(spec, run
 built: `RunProgress` holds only the current top-level `step_id`, a partial
 `path` into it, and a segment-local `completed_steps` count — nothing about any
 *other* step's status or how long it took — and `GetResponse` for a finished run
-is a oneof between `RunOutputs` (values only, no per-step status or timing) and
-an `Error` (which is the whole run's outcome, not a per-step account). There is
+carries either `outputs` (values only, no per-step status or timing) or an
+`error` (the whole run's outcome, not a per-step account). There is
 today no schema path to "step X succeeded in 12s while step Y is still running,"
 which is exactly what an overlay needs and exactly what the failed-run
 post-mortem this document sketches in 6.2 requires. That telemetry — per-step
@@ -700,7 +701,7 @@ one of those two nodes, since both would render as `provision`. The scheme:
 `GraphNode.id` is the full chain of enclosing step ids from the graph's root to
 this node, joined by a separator no step id can itself contain: `/`, which a
 step id's own schema pattern (`Node.id`, `^[A-Za-z0-9-_]+$` in
-`flowstate.proto`) excludes outright, so the join can never collide with a
+`proto/flowstate/v1/workflow.proto`) excludes outright, so the join can never collide with a
 step id that happens to contain the separator — there is no such step id. The
 caller's `provision` node id is `provision` and the callee's is
 `provision/provision`. This is deterministic (the same spec always produces the
@@ -725,7 +726,7 @@ mermaid's own theme directive carry light/dark instead of this exporter
 hard-coding one background's contrast and being wrong on the other; dot uses
 `style=filled` and a fixed colour attribute sourced from the same token names.
 Both formats get golden-file tests, byte-stable: `flow graph
-examples/basic/workflow.yaml -o mermaid` produces the same bytes today and after
+examples/hello-world/workflow.yaml -o mermaid` produces the same bytes today and after
 an unrelated change, checked the way `flow fix`'s and `flow docs generate`'s own
 outputs are pinned elsewhere in this repo's CI.
 
@@ -760,7 +761,7 @@ polling loop that keeps a run's state current, and the split between a styled
 live view on stderr and a plain answer on stdout that section 1's "interactive
 surfaces are optional" rule requires of any TUI here. A second, separately
 constructed `tea.Program` in a `flow graph --interactive` command would duplicate
-all of that plumbing — the poller, the outage handling `watchmodel.go` already
+all of that plumbing — the poller, the outage handling `cmd/flow/internal/watch` already
 gets right, the ctx-cancellation-on-quit behaviour — for no reason the audit could
 find.
 
@@ -776,7 +777,7 @@ today has never had the source file in hand; a run knows only its id.
 Two ways to fix that, and this document picks one rather than leaving both live.
 **(b) — adding an RPC that hands a compiled spec back by workflow id — is
 rejected here, not merely deferred**, because a workflow spec is not a small,
-low-stakes value to add a new authorized read path for: it is CLAUDE.md's own
+low-stakes value to add a new authorized read path for: it is AGENTS.md's own
 example of what a schema type carries when it is *everything* — task inputs,
 egress rules, secret references — and "add a way to read a run's full spec back
 out" is exactly the kind of capability that needs its own authorization and
@@ -786,8 +787,8 @@ convenience earns it a reason to exist. That argument does not belong bolted
 onto this section as a side effect of wanting a nicer flag.
 
 **(a) is the design this document takes: the navigator requires the spec as an
-explicit input.** `flow watch --graph --source <path>` (mnemonic: the same word
-`flow run local` and `flow compile` already use to point at a file) — `--graph`
+explicit input.** `flow watch --graph --source <path>` (a flag, because `flow
+watch` already takes the run id as its argument) — `--graph`
 without `--source` is refused at the flag-parsing stage, per section 1's
 fail-closed principle, rather than silently drawing an empty or partial graph.
 The navigator's model is `NewGraph` (6.1) applied to compiling `--source`
@@ -815,8 +816,7 @@ authorization question.
 | `q`                 | stop watching, exactly as it does in the plain view — the footer line in section 3's mockup is unchanged |
 
 **Mouse**, using bubbletea v2's actual event model rather than v1's — verified
-against `charm.land/bubbletea/v2 v2.0.8` (the version already vendored in
-`go.mod`) rather than assumed from the older API: a `tea.View` sets
+against `charm.land/bubbletea/v2` (v2.0.9 in `go.mod` as of this writing) rather than assumed from the older API: a `tea.View` sets
 `MouseMode: tea.MouseModeCellMotion` (click, release, and wheel events; drag is
 covered too since v2 reports motion while a button is held) rather than a
 `tea.WithMouseCellMotion()` program option the way v1 read. Events arrive as
@@ -826,7 +826,7 @@ the model's `Update` via a type switch or through the `OnMouse` hook `tea.View`
 exposes directly. Mapped as: **click** a node to select it (equivalent to
 navigating there with `j`/`k`), **click a collapsed subgraph's summary node** to
 expand it in place (equivalent to `enter`), and **wheel** to scroll a graph taller
-than the terminal — the same `visibleSteps`-style height budget section 1's
+than the terminal — the same `VisibleSteps`-style height budget section 1's
 verbosity rules require of the plain view, applied to a graph instead of a flat
 list.
 
@@ -890,7 +890,7 @@ against a live compile:
   stream, because bubbletea coalesces and differentially repaints frames, which
   makes the literal bytes on the wire scheduler-dependent — a passing test today
   and a flaking one tomorrow with no code change, exactly the class of test
-  CLAUDE.md's testing sections warn against trusting. `TestWatchViewShowsThePositionAdvancing`
+  AGENTS.md's testing rule warns against trusting. `TestWatchViewShowsThePositionAdvancing`
   is the named example this is checked against. The mechanism the existing test
   actually uses, and the one the graph navigator's tests should copy: a `fold`
   helper (`cmd/flow/watchmodel_test.go`) that threads a model value through a
@@ -899,7 +899,7 @@ against a live compile:
   and a `viewOf` helper that renders the *resulting* model's `View().Content` as
   a plain string, asserted against directly (`require.Contains`,
   `require.Equal`) or via `require.True(t, ok)` on a type-asserted
-  `tm.FinalModel(t).(watchModel)` for a test that needs the program's own event
+  `tm.FinalModel(t).(watch.Model)` for a test that needs the program's own event
   loop rather than a hand-folded sequence. This still uses
   `github.com/charmbracelet/x/exp/teatest/v2` (`teatest.NewTestModel`, `.Send`,
   `.Type`, `.WaitFinished`, `.FinalModel`) for the handful of tests that need a
@@ -928,7 +928,7 @@ layers between the symptom and the cause.
 ## 7. Gap inventory → sliced work plan
 
 Ordered so each slice is buildable and checkable on its own, and each leaves the
-tree green per CLAUDE.md's "leave a green stopping point."
+tree green.
 
 **What is already on the charter**, from the audit in sections 2 and 3: the token
 system itself (`cmd/flow/internal/ui/theme.go`, `symbols.go`, with tests in
@@ -942,7 +942,7 @@ line. What is not: everything below.
    `depth`. No run-state fields yet — see slice 3. `buf generate`, `buf
    breaking` (additive messages are safe by construction, verified rather than
    assumed), and schema-level tests the way `Diagnostic`'s own shape is tested.
-   This is the first slice of the entire plan: proto-first per CLAUDE.md's
+   This is the first slice of the entire plan: proto-first per AGENTS.md's
    invariant 1, and everything else in this section is a consumer of what it
    defines.
 
@@ -969,6 +969,13 @@ line. What is not: everything below.
    duration in section 3 — both are named as blocked on it rather than
    re-solved independently, since it is one gap with two consumers.
 
+   *Since written:* `GetTimeline` (`flow timeline`) returns a run's recorded
+   step events: scheduled, completed, failed, timed out, and canceled, each with
+   its time, step, and attempt. Per-step outcome and duration can be derived
+   from it for a finished run and for the steps a running one has recorded, so
+   this slice should start by deciding whether that timeline is the telemetry
+   or only its source.
+
 4. **The mermaid and dot exporters** (section 6.2): `flow graph`, extending
    `--output`/`-o` with `mermaid` (default), `dot`, and `json` values for this
    command specifically — including the small, explicit change to
@@ -992,7 +999,7 @@ line. What is not: everything below.
    `--source` required, refused without it per section 1's fail-closed rule,
    since no RPC returns a run's spec and this document deliberately does not
    add one (see 6.3's reasoning). The second `View()` mode on the existing
-   `watchModel`, built from slice 2's model compiled from `--source` locally
+   `watch.Model`, built from slice 2's model compiled from `--source` locally
    and coloured against `RunProgress`'s existing position fields; outcome
    colouring for finished steps is blocked on slice 3 the same way the exporter
    overlay is. Never a second poller or a second `tea.Program`. Keyboard first,
@@ -1005,20 +1012,10 @@ line. What is not: everything below.
    the underlying structure is right.
 
 7. **Give `flow fix` and `flow fmt` outcome-tone parity with `flow validate`.**
-   Verified against the current code, not the stale claim an earlier draft of
-   this slice made: `runFmt`/`runFix` already call `newSurface` and `fmtOne`/
-   `fixOne` already render every line through `theme.Muted` (`cmd/flow/fmtcmd.go`
-   lines 152, 215 onward; `cmd/flow/fix.go` lines 138, 211 onward) — that
-   migration is done, and an earlier draft's "route through Theme" framing was a
-   no-op this rewrite removes. What remains, checked line by line: every outcome
-   word in both files — a refusal, `"already formatted"`/`"already current"`, a
-   changed-file report — renders in the same `Muted` regardless of whether it is
-   good or bad news, unlike `runValidate`'s `ok` (`Success`) and diagnostic
-   lines. File: `cmd/flow/fmtcmd.go`'s `fmtOne`, `cmd/flow/fix.go`'s `fixOne`.
-   Give a refusal `theme.Danger`, a clean file `theme.Success`, and a changed
-   file (found something to do, under `--check`) `theme.Warning` — the same
-   word-plus-tone pairing section 2 requires elsewhere — with a golden-output
-   test asserting the `NO_COLOR` form stays byte-identical to today's.
+   **Done**: a refusal renders in `theme.Danger`, "already formatted" and
+   "already current" in `theme.Success`, and a changed or would-be-reformatted
+   file in `theme.Warning` (`cmd/flow/fix.go`, `cmd/flow/fmtcmd.go`), the same
+   word-plus-tone pairing section 2 requires elsewhere.
 
 8. **Give `flow list` an outcome glyph, not only a coloured word.** Per section
    2's colour-is-never-alone rule, `STATUS` in the table today is `Theme.Tone`
@@ -1034,9 +1031,9 @@ line. What is not: everything below.
    second implementation of it) and slice 3 (per-step duration and terminal
    status for a *finished* step, not only the one currently running — neither
    exists on the wire before that slice lands). Once both are available:
-   replace `watchmodel.go`'s flat `stepLines` with the nested form from section
+   replace `watch.Model`'s flat `stepLines` with the nested form from section
    3's mockup, reusing `positionPath`'s existing path-join logic for the live
-   line. Files: `cmd/flow/watchmodel.go`, `cmd/flow/get.go` (for the non-live
+   line. Files: `cmd/flow/internal/watch/model.go`, `cmd/flow/get.go` (for the non-live
    `flow get` equivalent), with golden tests for both the unicode and ASCII
    forms and for a loop deep enough to need two guide levels.
 
@@ -1053,5 +1050,5 @@ today — both already read as one program, which is the audit's headline findin
 alongside the gaps. The load-bearing order is 1 before 2 before 4 and 6 (schema,
 then model, then its two consumers), 3 before the overlay portions of 4 and 6
 and all of 9 (the telemetry gap has three dependents), and 5 before 6 and 9
-(both need the symbols it adds). 7 and 8 depend on nothing above and can run at
-any point in the sequence; 10 depends only on 9.
+(both need the symbols it adds). 7 and 8 are done; they depended on nothing
+above. 10 depends only on 9.
