@@ -2,6 +2,7 @@ package envelope
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/fips140"
 	"errors"
@@ -132,9 +133,12 @@ func Open(ctx context.Context, cfg *v1.PayloadKeyring, opts OpenOptions) (*Keyri
 	// One cache for every codec, sized by the most generous namespace. Each
 	// entry expires by its own namespace's window, so one namespace's short
 	// revocation delay is not stretched by another's long one.
+	// A namespace that leaves the size unset asks for the default, and counts
+	// as asking for it: otherwise one namespace's small explicit size would
+	// shrink the cache every other namespace reads through.
 	entries := 0
 	for _, n := range cfg.GetNamespaces() {
-		entries = max(entries, int(n.GetDataKey().GetDecodeCacheEntries()))
+		entries = max(entries, cmp.Or(int(n.GetDataKey().GetDecodeCacheEntries()), DefaultDecodeCacheEntries))
 	}
 	cache := newDecodeCache(entries, opts.now)
 

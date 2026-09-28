@@ -173,3 +173,51 @@ func TestEachWrapHasItsOwnDeadline(t *testing.T) {
 		require.NoError(t, err, "the escrow wrap inherited the deadline the primary spent")
 	})
 }
+
+// TestAnUnsetCacheSizeAsksForTheDefault: the keyring shares one cache, sized
+// by the most generous namespace, and a namespace that sets no size is asking
+// for the default rather than for nothing.
+func TestAnUnsetCacheSizeAsksForTheDefault(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := ParseConfig([]byte(`
+namespaces:
+  small:
+    current: s1
+    keys: [{id: s1, env: KEY_S}]
+    data_key: {decode_cache_entries: 1}
+  plain:
+    current: p1
+    keys: [{id: p1, env: KEY_P}]
+`))
+	require.NoError(t, err)
+	keys := map[string]string{"KEY_S": string(local.Generate()), "KEY_P": string(local.Generate())}
+	kr, err := Open(t.Context(), cfg, OpenOptions{Getenv: func(k string) string { return keys[k] }})
+	require.NoError(t, err)
+	small, _ := kr.Codec("small")
+	require.Equal(t, DefaultDecodeCacheEntries, small.cache.capacity, "an unset size shrank the shared cache")
+}
+
+// TestStartupWrapsHoldToTheCallersDeadline: each wrap has its own timeout,
+// and all of them stay under the context New was given, so opening a keyring
+// against a stalled provider ends when the caller's bound does.
+func TestStartupWrapsHoldToTheCallersDeadline(t *testing.T) {
+	t.Parallel()
+
+	synctest.Test(t, func(t *testing.T) {
+		primary, err := local.Parse(local.Generate())
+		require.NoError(t, err)
+
+		ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+		defer cancel()
+		start := time.Now()
+		_, err = New(ctx, Options{
+			Binding:         "ns",
+			Current:         "k1",
+			Keys:            []Recipient{{ID: "k1", Key: slowWraps{Key: primary, delay: time.Minute}}},
+			ProviderTimeout: 30 * time.Second,
+		})
+		require.Error(t, err)
+		require.LessOrEqual(t, time.Since(start), time.Second, "startup outlived the caller's deadline")
+	})
+}

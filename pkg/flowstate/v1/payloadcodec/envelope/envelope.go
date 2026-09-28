@@ -389,7 +389,7 @@ func New(ctx context.Context, opts Options) (*Codec, error) {
 	if c.current != nil {
 		// Warm: wrap the first data key now, so a provider that cannot wrap
 		// refuses startup instead of the first write.
-		if _, err := c.activeFor(0); err != nil {
+		if _, err := c.activeFor(ctx, 0); err != nil {
 			return nil, fmt.Errorf("envelope: wrapping the first data key for %q: %w", opts.Binding, err)
 		}
 	}
@@ -464,6 +464,10 @@ func (c *Codec) CurrentKeyID() string {
 // Binding is the namespace this codec authenticates into every payload. A
 // reader, which serves every namespace, answers with the empty string.
 func (c *Codec) Binding() string { return c.binding }
+
+// ProviderTimeout is the deadline c puts on one wrap or unwrap. A server
+// answering with c sizes its own response deadline from it.
+func (c *Codec) ProviderTimeout() time.Duration { return c.timeout }
 
 // DecodeOnly reports whether c has no current key, so that its Encode refuses
 // every payload: a keyring reader, or a namespace configured without
@@ -593,7 +597,11 @@ var ErrReaderCannotEncode = errors.New("envelope: this codec is decode-only: a k
 
 // activeFor returns the data key to seal a payload of size bytes under,
 // rolling it over when it has reached a bound.
-func (c *Codec) activeFor(size int) (*activeKey, error) {
+// activeFor returns the data key to seal a size-byte payload with, rolling
+// over when the window requires it. ctx bounds any wrap a rollover makes:
+// New's startup context for the warm-up, and none beyond the per-call
+// timeout for Encode, whose interface carries none.
+func (c *Codec) activeFor(ctx context.Context, size int) (*activeKey, error) {
 	now := c.now()
 	if a := c.active.Load(); a != nil && a.fresh(c.policy, now, size) {
 		return a, nil
@@ -610,7 +618,7 @@ func (c *Codec) activeFor(size int) (*activeKey, error) {
 		// Asked recently and refused: answer from that, not the provider.
 	} else {
 		var next *activeKey
-		if next, err = c.newActive(now); err == nil {
+		if next, err = c.newActive(ctx, now); err == nil {
 			c.lastErr, c.retryAt = nil, time.Time{}
 			c.active.Store(next)
 			return next, nil
@@ -625,11 +633,11 @@ func (c *Codec) activeFor(size int) (*activeKey, error) {
 
 // newActive generates a data key and wraps it to the current key and every
 // escrow key.
-func (c *Codec) newActive(now time.Time) (*activeKey, error) {
+func (c *Codec) newActive(ctx context.Context, now time.Time) (*activeKey, error) {
 	dk := newDataKey()
 	ectx := keyprovider.Context{Namespace: c.binding, KeyID: c.current.id, Suite: uint32(c.suite)}
 
-	wrapped, err := c.wrap(*c.current, dk, ectx)
+	wrapped, err := c.wrap(ctx, *c.current, dk, ectx)
 	if err != nil {
 		clear(dk)
 		return nil, err
@@ -639,7 +647,7 @@ func (c *Codec) newActive(now time.Time) (*activeKey, error) {
 	// last in-flight seal that loaded it has finished.
 	runtime.AddCleanup(a, func(dk []byte) { clear(dk) }, dk)
 	for _, id := range c.escrowIDs {
-		w, err := c.wrap(c.escrow[id], dk, ectx)
+		w, err := c.wrap(ctx, c.escrow[id], dk, ectx)
 		if err != nil {
 			clear(dk)
 			return nil, fmt.Errorf("escrow key %q: %w", id, err)
@@ -655,9 +663,10 @@ func (c *Codec) newActive(now time.Time) (*activeKey, error) {
 // wrap wraps dk to one key under a deadline of its own, so a slow provider
 // spends only its own budget: a data key wrapped to a primary and three escrow
 // keys waits at most four timeouts, and no provider inherits a deadline an
-// earlier one used up.
-func (c *Codec) wrap(e ringEntry, dk []byte, ectx keyprovider.Context) (keyprovider.Wrapped, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), c.timeout)
+// earlier one used up. Each is still bounded by parent, so a caller's own
+// deadline (startup's) holds across all of them.
+func (c *Codec) wrap(parent context.Context, e ringEntry, dk []byte, ectx keyprovider.Context) (keyprovider.Wrapped, error) {
+	ctx, cancel := context.WithTimeout(parent, c.timeout)
 	defer cancel()
 	w, err := e.key.Wrap(ctx, dk, ectx)
 	if err != nil {
@@ -702,7 +711,7 @@ func (c *Codec) seal(spec suiteSpec, plaintext []byte) ([]byte, error) {
 			len(plaintext), maxSealedBytes)
 	}
 
-	a, err := c.activeFor(len(plaintext))
+	a, err := c.activeFor(context.Background(), len(plaintext))
 	if err != nil {
 		return nil, err
 	}
