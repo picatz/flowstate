@@ -3579,13 +3579,14 @@ day it was added. The reasoning for each is written on the messages themselves.
 
 ### Still open
 
-- Compensation of concurrent work, which needs the ordering key above. *(Since landed:
-  see the note at the end of the placement section.)*
 - Reporting what was compensated through `Get` rather than only in the failure text, so
   `flow get` can show it without anyone parsing a sentence.
 - A compensation for a step that failed *partway*, which today is refused by saying the
   engine will not guess. The shape that would make it expressible is a step declaring
   its effect idempotent, which is a claim about the world that only an author can make.
+
+*Since written:* compensation of concurrent work, the first item this list held, has
+landed; see the note at the end of the placement section.
 
 ## The sixth round: a loop that carries state
 

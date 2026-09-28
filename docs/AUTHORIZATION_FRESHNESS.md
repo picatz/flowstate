@@ -26,17 +26,17 @@ closed. HTTP cache age is never evidence that an authorization decision is fresh
 
 ## Where the identity travels
 
-Both values are carried in MCP session records, OAuth client-cache entries,
+In the design, both values are carried in MCP session records, OAuth client-cache entries,
 authorization decisions, issued delegation capabilities, credential-cache keys,
 audit events, trace attributes (`flowstate.auth.policy_revision` and
 `flowstate.auth.resource_digest`), and administrative diagnostics. Secrets and
 credentials are not inputs to the digest; their identifiers, requirements, and
-policy boundaries are.
+policy boundaries are. None of these carries them yet; see the note above.
 
-Every authorization decision compares its descriptor identity with the current
-local descriptor. A cache hit is usable only after that comparison. A peer result
-from the same revision with another digest is refused and reported as fleet
-inconsistency rather than silently selecting either view.
+In the design, every authorization decision compares its descriptor identity
+with the current local descriptor. A cache hit is usable only after that
+comparison. A peer result from the same revision with another digest is refused
+and reported as fleet inconsistency rather than silently selecting either view.
 
 ## Change classes
 
