@@ -250,7 +250,7 @@ flow codec serve --insecure-no-auth --payload-keyring keyring.yaml \
 | `--listen <string>` | `string` | `127.0.0.1:8089` | `FLOWSTATE_CODEC_ADDRESS` | address to listen on (default $FLOWSTATE_CODEC_ADDRESS, or loopback) |
 | `--payload-keyring <string>` | `string` | — | `FLOWSTATE_PAYLOAD_KEYRING` | payload keyring file: encrypt every payload written to Temporal history under the keys it names (default $FLOWSTATE_PAYLOAD_KEYRING; unset writes payloads unencrypted) |
 | `--require-payload-encryption` | `bool` | `false` | — | refuse to start without a payload keyring, so history is never written unencrypted (default $FLOWSTATE_REQUIRE_PAYLOAD_ENCRYPTION) |
-| `--temporal-namespace <string>` | `string` | — | — | the Temporal namespace tenants the trust policy does not map run in (default "default") |
+| `--temporal-namespace <string>` | `string` | — | — | the Temporal namespace tenants the trust policy does not map run in (default: TEMPORAL_NAMESPACE, the Temporal profile, or "default") |
 | `--tls-cert-file <string>` | `string` | — | `FLOWSTATE_TLS_CERT_FILE` | PEM certificate (or chain) for the public listener; unset serves plain HTTP, which is refused on any address but loopback. Must be given with `--tls-key-file` |
 | `--tls-key-file <string>` | `string` | — | `FLOWSTATE_TLS_KEY_FILE` | PEM private key matching `--tls-cert-file` |
 | `--tls-min-version <string>` | `string` | `1.2` | `FLOWSTATE_TLS_MIN_VERSION` | minimum TLS protocol version to accept: "1.2" (the default and the floor) or "1.3" |
