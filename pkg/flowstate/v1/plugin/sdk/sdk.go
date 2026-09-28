@@ -444,10 +444,10 @@ func WithMeterProvider(provider metric.MeterProvider) Option {
 
 // WithLogger sets where the plugin's own diagnostics go.
 //
-// They go to stderr regardless of what is passed here, because stderr is what
-// the host captures and attributes to this plugin; a logger writing anywhere
-// else writes where nothing is reading. What this changes is the format and the
-// level.
+// The logger is used as given, so point it at stderr: stderr is what the host
+// captures and attributes to this plugin, and a logger writing anywhere else
+// writes where nothing is reading. Without this option the plugin logs text to
+// stderr.
 func WithLogger(logger *slog.Logger) Option {
 	return func(o *options) { o.logger = logger }
 }

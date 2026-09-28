@@ -97,7 +97,7 @@ func resolveProtectedResource(flags protectedResourceFlags, policy *auth.Policy)
 	// proto/flowstate/v1/authorization.proto), and an operator who could
 	// narrow or extend it here would be publishing a spelling policy does not
 	// read. This is the one place it is supplied, which is why
-	// TestProtectedResourceDocumentPublishesTheActionVocabulary pins the
+	// TestProtectedResourceRouteMountedOnlyWhenConfigured pins the
 	// document this function produces rather than a hand-written list.
 	return auth.NewProtectedResource(auth.ProtectedResourceConfig{
 		Resource:             flags.resource,

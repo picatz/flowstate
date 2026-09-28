@@ -26,10 +26,12 @@ import "strings"
 // give. #567's D1 is answered — the vocabulary exists, in the schema, and
 // [ProtectedResource] now publishes it as "scopes_supported" — but a "scope"
 // parameter on a challenge says which scope *this request* needed, and that
-// is an answer only a per-action enforcement point can give. Nothing here
-// consults a token's scopes yet (docs/MCP_AUTHORIZATION.md's "authorization
-// here is coarse"), so naming one would tell a caller to go acquire a scope
-// this deployment will never look at. It lands with the enforcement or not at
+// is an answer only a per-action enforcement point can give. The one that
+// exists, the server package's check of the admitting policy entry's
+// `actions:`, names its scope on its own 403. Nothing consults a token's
+// scopes (docs/MCP_AUTHORIZATION.md's "MCP still does not enforce token
+// scopes"), so naming one on this 401 would tell a caller to go acquire a
+// scope this deployment will never look at. It lands with the enforcement or not at
 // all, which is the same shape #999 was closed for. No "realm": RFC 6750
 // makes it optional and it would say nothing a caller can act on. And no DPoP
 // scheme, which #999 carried a

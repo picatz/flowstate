@@ -17,7 +17,7 @@ import (
 // `Value.kind` a `verify:` entry holds, so `verify: {hmac-sha256: "whsec_live_…"}`
 // satisfied the schema, passed submission, and was written into Temporal history
 // with the specification — durable and broadly readable, which is the one place
-// invariant 8 says a secret must never reach.
+// invariant 7 says a secret must never reach.
 //
 // These are internal because the interesting assertion is about the function every
 // submit path shares, which is reachable without a Temporal server.

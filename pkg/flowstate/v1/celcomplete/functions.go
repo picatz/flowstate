@@ -52,10 +52,10 @@ func FunctionCandidates(profile string) []Candidate {
 		// A macro's Name is not its call form, which [v1.LibraryFunction] says
 		// in as many words: cel-go identifies a macro by the name after the
 		// dot, so `math.greatest(1, 2)` arrives here called `greatest`. Offered
-		// as a bare name it inserted `greatest`, and every one of the twelve
-		// macros the profile adds answered `no function called "greatest"` from
-		// the validator on the very next keystroke — the editor completing a
-		// name into a diagnostic.
+		// as a bare name it inserted `greatest`, and every one of the macros
+		// the profile adds answered `no function called "greatest"` from the
+		// validator on the very next keystroke — the editor completing a name
+		// into a diagnostic.
 		//
 		// Where a macro *is* writable is decided from its example rather than
 		// from its name, because the name cannot tell the two shapes apart. See

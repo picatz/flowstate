@@ -234,7 +234,7 @@ type Options struct {
 	//
 	// Each entry names the workflow that declares it as well as its id, because
 	// an id is not an identity across a `call:`: a caller and a callee may both
-	// declare `build` (`eval.go:1804-1812`), and a flattened inventory of the
+	// declare `build` (`eval.go`, `runCall`), and a flattened inventory of the
 	// two holds two rows nothing can tell apart. [Step.State] is ignored here —
 	// nothing has happened to any of them yet.
 	Steps []Step
@@ -593,10 +593,10 @@ type promptSubject struct {
 	// The two have to be taken together or a race opens between them. A caller
 	// evaluating from its own goroutine snapshots the subject, and evaluation
 	// takes time; `flow test` clears both redactors the moment [Session.Autopsy]
-	// returns (`flowtest/run.go:768,790`), so a console that exits the autopsy
-	// while an evaluation is in flight would leave that evaluation reading a
-	// session with no redactors at all — and returning what they existed to
-	// withhold (Codex, #1120).
+	// returns (`flowtest/run.go`, `runCase`), so a console that exits the
+	// autopsy while an evaluation is in flight would leave that evaluation
+	// reading a session with no redactors at all — and returning what they
+	// existed to withhold (Codex, #1120).
 	redactText  func(string) string
 	redactValue func(any) any
 }
@@ -742,7 +742,7 @@ func declaredStepIDSet(steps []Step) map[string]struct{} {
 // that declares one `build` inside a `for_each` body and another at the top
 // level has two rows a run reaches separately, and a session can still
 // attribute outcomes to them because both are that workflow's steps — the
-// engine's own scope isolation is per call, not per row (`eval.go:1799`,
+// engine's own scope isolation is per call, not per row (`call.go`,
 // `CallScope`). Two `build`s in two workflows are the pair
 // [v1.RunObserver]'s bare ids cannot tell apart.
 //
@@ -803,8 +803,8 @@ func (s *Session) Script() []string {
 }
 
 // ScriptTruncated reports whether the recording stopped early at
-// [MaxScriptCommands]. A truncated script replays a prefix of the session, not
-// the session.
+// [MaxScriptCommands] or [MaxScriptBytes]. A truncated script replays a prefix
+// of the session, not the session.
 func (s *Session) ScriptTruncated() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1411,10 +1411,10 @@ func (s *Session) prompting(at promptSubject) {
 	//
 	// And so is the scope, for the same reason one step further out: the engine
 	// owns `Scope.Outputs.StepValues` and resumes writing to it the moment the
-	// pause ends (`eval.go:1494-1514`), while a caller admitted to this pause
-	// may still be reading it from its own goroutine. A live map read there is
-	// not a stale answer, it is a concurrent map read and write — which Go
-	// answers with a fatal throw no recover reaches (Codex, #1120).
+	// pause ends (`eval.go`, `recordStepOutcome`), while a caller admitted to
+	// this pause may still be reading it from its own goroutine. A live map
+	// read there is not a stale answer, it is a concurrent map read and write —
+	// which Go answers with a fatal throw no recover reaches (Codex, #1120).
 	if at.scope != nil {
 		at.redactText, at.redactValue = s.redact, s.redactValue
 		at.scope = frozen(at.scope)
@@ -1536,7 +1536,7 @@ func (s *Session) sawStep(id string) {
 //
 // Only for an id [Session.sawStep] already admitted, which every caller
 // guarantees by calling that first. Past the bound the state is dropped exactly
-// as the id was, and [Session.StepsTruncated] is what says so — a state written
+// as the id was, and [StepList.Truncated] is what says so — a state written
 // for an id the list does not carry would be an answer nothing can be asked
 // about.
 func (s *Session) noteStep(id string, state StepState) {
@@ -1919,9 +1919,9 @@ func unrenderedText(out ref.Val, withholding bool) string {
 // The one normalization, which is the point. CEL hands back its own backing
 // representation from [ref.Val.Value] — `map[ref.Val]ref.Val` for a map,
 // `[]ref.Val` for a list — and a redactor written against native Go walks
-// neither, so it returns such a container unchanged. `flowtest`'s
-// `redactSensitiveTree` switches on `map[string]any` and `[]any`
-// (`flowtest/stub.go:940-957`).
+// neither, so it returns such a container unchanged. `flowtest`'s value
+// redactor, [v1.SensitiveValues.RedactTree], switches on `map[string]any` and
+// `[]any` (`sensitivevalues.go`, `redactSensitiveTree`).
 //
 // So a second path that reached for `Value()` directly would redact a scalar
 // and hand a map straight through, which is exactly what happened when the
@@ -1975,11 +1975,12 @@ func capRunes(text string, limit int) string {
 //
 // failures are the rendered verdicts, printed as the failures they are. The
 // commands are the session's ordinary ones; the movement verbs (`step`,
-// `continue`, `until`) and `quit` all just leave, because there is no run
-// left to move — and leaving changes nothing: the verdict was reached before
-// this was called, so an autopsy can never turn a red case green or a green
-// one red. Commands accepted here are recorded like any others, so a
-// replayed script re-runs the same questions over the same corpse.
+// `next`, `finish`, `continue`, `until`), `detach` and `quit` all just leave,
+// because there is no run left to move — and leaving changes nothing: the
+// verdict was reached before this was called, so an autopsy can never turn a
+// red case green or a green one red. Commands accepted here are recorded like
+// any others, so a replayed script re-runs the same questions over the same
+// corpse.
 //
 // flowtest calls this only for a failing case under `--debug`, discovering
 // it by capability the way it discovers a session that observes — a

@@ -564,22 +564,23 @@ func scopeNames(scope *v1.Scope, extra map[string]ref.Val) []Names {
 	// the labels read the other way round from where the names live.
 	// `Scope.Vars` are the *bare* bindings — a loop's `as:`, a step's own
 	// `vars:` — offered as [celcomplete.Scope.Locals] under no root at all
-	// (complete.go:271). `Scope.AmbientVars` are the workflow's declared
-	// `vars:`, and those are what `vars.` reaches (complete.go:280-282).
+	// (complete.go, completionScope). `Scope.AmbientVars` are the workflow's
+	// declared `vars:`, and those are what `vars.` reaches (the same function).
 	add(scopeGroupVars, "", sortedKeys(scope.GetVars()))
 	add(scopeGroupWorkflowVars, "vars", sortedKeys(scope.GetAmbientVars()))
 
 	// The arguments the run was started with, which completion has offered
-	// since it learned the `inputs.` root (complete.go:305) and this collector
-	// did not. A value surface narrower than what [Session.Evaluate] resolves
-	// is the failure this function's own comment warns about, so leaving it out
-	// made the warning describe the code (Codex, #1120).
+	// since it learned the `inputs.` root (complete.go, completionScope) and
+	// this collector did not. A value surface narrower than what
+	// [Session.Evaluate] resolves is the failure this function's own comment
+	// warns about, so leaving it out made the warning describe the code (Codex,
+	// #1120).
 	add(scopeGroupInputs, "inputs", sortedKeys(scope.GetInputs()))
 
 	// The last two roots, and the ones that are not keyed by anything in the
 	// scope: `run` and `trigger` are answered *whole* by the activation
-	// (`eval.go:349-358`), so their members come from that answer rather than
-	// from a list written here. A list would be a second spelling of
+	// (`eval.go`, `ambientRoot`), so their members come from that answer rather
+	// than from a list written here. A list would be a second spelling of
 	// [v1.RunRoot]'s and [v1.TriggerRoot]'s own field sets, which is the thing
 	// that drifts — and this collector has now been short a root twice, both
 	// times because it enumerated what it thought a run could name instead of
@@ -680,7 +681,7 @@ func (s *Session) showStep(node *v1.Node) {
 	}
 }
 
-// addBreakpoint takes `<step-id>` or `<step-id> if <expr>`.
+// addBreakpoint takes `<step-id> [hit <count>] [if <expr>]`.
 //
 // The condition is compiled here rather than at each arrival, which is the
 // difference between this and `inspect`. `inspect` parses at evaluation time
@@ -841,7 +842,7 @@ func (s *Session) unknownStep(id string, redact func(string) string) (string, bo
 // nosuchstep", listed it, and never fired, while `until nosuchstep` printed
 // nothing at all and ran the workflow to its end — one mistyped character
 // forfeiting the session, with every queued command after it unanswered. The
-// check that catches it already existed one door over, in [checkScript], over
+// check that catches it already existed one door over, in [CheckScript], over
 // the same inventory; this is that check where a person types rather than
 // where a script is read, so the two fronts stop disagreeing about the same
 // word.

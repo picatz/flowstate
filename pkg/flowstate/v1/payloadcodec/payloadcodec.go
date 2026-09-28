@@ -130,7 +130,7 @@ import (
 //
 // The spelling follows the one this project already uses where it puts a member
 // in a map it does not own, the MCP `_meta` key
-// "picatz.github.io/flowstate.contentDigest" (cmd/flow/mcpui.go). Same rule,
+// "picatz.github.io/flowstate.contentDigest" (cmd/flow/internal/mcp/ui.go). Same rule,
 // same prefix, so there is one answer in the tree to "how do we name a key in
 // somebody else's map" rather than one per protocol. The SDK's own convention
 // is the one thing it cannot be: bare lowercase names are precisely the space
@@ -218,9 +218,10 @@ type Codec interface {
 	// so it is what has to fit the grammar and the size budget at startup. The
 	// ring Decode selects from is wider, holding every key still trusted, and
 	// stays the implementation's business. Nothing here enumerates it, because
-	// nothing here would do anything with the enumeration: `flow shred`
-	// destroys a key in custody, which is `flow keys`' surface rather than this
-	// one.
+	// nothing here would do anything with the enumeration: `flow shred`, which
+	// does not exist yet, will destroy a key in custody, and that is key
+	// custody's surface rather than this one. (`flow keys` today generates and
+	// inspects identity signing keys only.)
 	//
 	// Only the null codec answers with the empty string, and it means what it
 	// says: this codec encrypts nothing, so there is no key, so a payload it
@@ -435,9 +436,10 @@ var serializer = converter.NewCompositeDataConverter(
 // Serializer returns the converter flowstate serializes values with before any
 // codec sees them.
 //
-// Exported for the read paths that need to decode a payload without a codec
-// configured — and for tests that need to assert the decode-both property
-// directly. A caller wiring a client or worker wants [Config.DataConverter] or
+// Exported for tests that need to assert the decode-both property directly;
+// no production read path in this tree calls it, and one that must decode a
+// payload without a codec configured is its other intended caller. A caller
+// wiring a client or worker wants [Config.DataConverter] or
 // [Config.Apply] instead, which pair it with the right codec and failure
 // converter.
 func Serializer() converter.DataConverter { return serializer }

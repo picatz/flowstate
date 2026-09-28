@@ -28,13 +28,13 @@ type Token struct {
 	// ExpiresAt is when the source believes the token stops working, or the
 	// zero time when it cannot say.
 	//
-	// A file or environment token's lifetime is whatever its issuer already
+	// A file or env token's lifetime is whatever its issuer already
 	// committed to, and this package has no way to read it without parsing a
 	// format the token might not even be — so it is left zero, and
 	// [Token.ExpiresWithin] treats zero as "unknown", never as "about to
-	// expire". A github-actions token's expiry comes from its own "exp" claim,
-	// read unverified: nothing here is deciding whether to trust the token,
-	// only when to ask for a new one.
+	// expire". A github-actions, gitlab or terraform-cloud token's expiry
+	// comes from its own "exp" claim, read unverified: nothing here is
+	// deciding whether to trust the token, only when to ask for a new one.
 	ExpiresAt time.Time
 }
 

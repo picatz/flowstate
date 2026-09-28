@@ -27,12 +27,14 @@ const (
 //
 // A reference names a keychain account within the configured service:
 // "keychain:github-token" reads the generic password whose service is
-// "flowstate/<namespace>" and whose account is "github-token". Store one with:
+// "flowstate" and whose account is "github-token". Store one with:
 //
 //	security add-generic-password -s flowstate -a github-token -w
 //
-// The namespace becomes part of the service name, so two tenants on one machine do
-// not share entries. A single-tenant developer machine uses the bare service name.
+// With [WithKeychainNamespaced] the namespace becomes part of the service name
+// ("flowstate/<namespace>"), so two tenants on one machine do not share entries;
+// without it a namespaced request is refused. A single-tenant developer machine
+// uses the bare service name.
 //
 // This is a development convenience and not a production backend: reads may prompt
 // for authorization, the keychain is per-user and per-machine, and there is nothing

@@ -19,9 +19,10 @@
 // # What the seam cannot say, and what that costs
 //
 // v1.Debugger is handed a v1.Node, and a node carries an `id` and no source
-// position. Neither does anything else the session sees: it is given steps, not
-// files. Two consequences, both visible to a person in an editor, both stated
-// here rather than discovered:
+// position. Nothing else the session `flow dap` builds is given carries one
+// either: it has no [flowdebug.Options.SourceMap], the one input that relates a
+// step to a line. Two consequences, both visible to a person in an editor, both
+// stated here rather than discovered:
 //
 //   - **Breakpoints are by step id, not by line.** DAP's `setBreakpoints` is
 //     addressed by source line, which this cannot honour without inventing a
@@ -33,7 +34,8 @@
 //     cannot navigate to it.
 //
 // Both are answerable by parsing the workflow the run is executing and mapping
-// step ids to the positions the parser already records for diagnostics. That is
+// step ids to the positions the parser already records for diagnostics, which
+// is what `flowfile.SourceMap` builds. Handing one to this adapter's session is
 // a separate slice: it needs the file, which only a launch configuration knows,
 // and it is a different kind of work from speaking the protocol. Doing it here
 // would mean guessing at a position when the parse and the run disagree, which
@@ -42,11 +44,10 @@
 // # One thread, deliberately
 //
 // A run has one position — that is [flowdebug.Session]'s own contract, and why
-// its movement commands serialize. So this reports exactly one thread. A
-// `parallel:` block genuinely runs several steps at once and the debugger
-// deliberately does not stop inside one (the engine refuses to suspend there
-// for the same reason), so a second thread would be a fiction the run cannot
-// back.
+// its movement commands serialize. So this reports exactly one thread. The
+// local driver runs a `parallel:` block's branches one at a time, so a stop
+// inside a branch is still the run's one position, and a second thread would
+// be a fiction the run cannot back.
 package flowdap
 
 import (
@@ -191,10 +192,11 @@ type breakpoint struct {
 	//
 	// It is not a claim that the run will reach it, and cannot be: breakpoints
 	// are set before the run starts, and nothing this adapter holds knows what
-	// steps a workflow has — the session is handed each node as the engine
-	// reaches it. So a step id that is simply misspelled verifies here and
-	// never stops anything, which is the cost of setting breakpoints early
-	// enough to be useful. Saying otherwise would be a promise made by the one
+	// steps a workflow has. A session given [flowdebug.Options.Steps] reports an
+	// id it does not declare, which comes back unverified with the reason; the
+	// session `flow dap` builds has no such inventory, so there a step id that
+	// is simply misspelled verifies and never stops anything, which is the cost
+	// of setting breakpoints early enough to be useful. Saying otherwise would be a promise made by the one
 	// component with no way to check it; naming the steps is what the source
 	// mapping in this package's second slice would buy.
 	//

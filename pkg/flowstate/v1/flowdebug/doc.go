@@ -1,5 +1,6 @@
-// Package flowdebug is the interactive step debugger for a local run
-// (issue #928, slice 1).
+// Package flowdebug is the interactive step debugger (issue #928): a [Session]
+// over a local run, and [Remote], the same [Target] over a durable run's debug
+// RPCs.
 //
 // A [Session] implements [v1.Debugger], so it is asked at each step boundary
 // whether the run may proceed, and [v1.RunObserver], so it can say what each
@@ -61,15 +62,18 @@
 //     variable expands; a wire message carrying it would put the structured
 //     half of an inspection on a new surface, which is the hole the redaction
 //     seam closes. `DebugBinding` carries text, and only text.
-//   - [Tone]. It classifies a fragment of *output* so a terminal can colour it,
-//     and streaming a session's output is stage 3's question rather than this
-//     one's; a vocabulary landed before the surface that reads it would be
-//     guessed from the domain.
+//   - [Tone]. It classifies a fragment of *output* so a terminal can colour it.
+//     What the wire carries of a run's output is [v1.DebugObservation],
+//     classified by what the run did rather than by how a terminal draws it.
 //
-// # Local driver only
+// # Local sessions and durable runs
 //
 // [v1.Debugger] is a local-driver seam, like [v1.Scheduler] and
-// [v1.RunObserver] before it. Pausing a durable run is slice 2 of #928 and a
-// different mechanism for stated reasons; nothing here is it — which is also
-// why [Session.SessionProto] reports a local session and nothing else.
+// [v1.RunObserver] before it, which is why [Session.SessionProto] reports a
+// local session and nothing else. Pausing a durable run is a different
+// mechanism for stated reasons: the engine holds the run at a step boundary
+// under a lease, and [Remote] drives that session through the
+// `WorkflowService` debug RPCs as the same [Target]. The durable worker frames
+// a stop through [Frames] and answers an inspection through [InspectScope], so
+// a local and a durable session describe one stop the same way.
 package flowdebug

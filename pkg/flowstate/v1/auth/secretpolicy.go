@@ -17,7 +17,7 @@ import (
 //
 // It names the accessors generated for the flowstate.v1.SecretRef protobuf
 // message, so a compiled reference satisfies it with no conversion, while this
-// package keeps its rule of depending on no other Flowstate package. See
+// package keeps its rule of never importing the generated types. See
 // [IdentitySource] for why that rule exists.
 type SecretReference interface {
 	GetScheme() string

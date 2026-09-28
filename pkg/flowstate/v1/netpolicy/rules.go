@@ -13,10 +13,10 @@ import (
 	"github.com/picatz/flowstate/pkg/flowstate/v1/celrule"
 )
 
-// rule is a compiled CEL policy rule. The program is built once, when the policy
-// is constructed, and is safe to evaluate concurrently.
 // ruleSet holds the allow and deny rules that apply at one evaluation scope:
 // a [celrule.Set], deny first, permitting when only deny rules are configured.
+// Each rule's program is built once, when the policy is constructed, and is
+// safe to evaluate concurrently.
 type ruleSet struct {
 	celrule.Set
 }

@@ -87,7 +87,7 @@ type ProtectedResourceConfig struct {
 // The vocabulary is passed in rather than read, and the reason is the import
 // graph rather than taste: pkg/flowstate/v1 imports this package, so this
 // package cannot import it back to read the list. An option is what keeps the
-// derivation single-sited anyway — TestFlowServerPublishesTheActionVocabulary
+// derivation single-sited anyway — TestProtectedResourceRouteMountedOnlyWhenConfigured
 // in cmd/flow pins that the production path supplies it — and it stays off
 // [ProtectedResourceConfig], which is what an *operator* says: which scopes
 // exist is the schema's answer, never a deployment's.

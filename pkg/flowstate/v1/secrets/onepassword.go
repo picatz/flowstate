@@ -19,8 +19,8 @@ const (
 	// tenant that has no name.
 	DefaultOnePasswordNamespaceVault = "_default"
 
-	// DefaultOnePasswordVault is the vault secrets are read from when a namespace
-	// does not name its own.
+	// DefaultOnePasswordVault is the vault secrets are read from by a provider
+	// that is not namespaced.
 	DefaultOnePasswordVault = "flowstate"
 
 	// DefaultOnePasswordField is the field read from an item when a reference does
@@ -42,10 +42,11 @@ const (
 //	op:github          reads the "password" field of the item "github"
 //	op:github#token    reads the "token" field of that item
 //
-// The namespace selects the vault: a namespaced run reads from the vault named
-// after it, and an unnamespaced one reads from the configured default. Give each
-// tenant its own 1Password vault and the boundary is 1Password's to enforce as
-// well as ours.
+// With [WithOnePasswordNamespaced] the namespace selects the vault: a namespaced
+// run reads from the vault named after it, and an unnamespaced one from
+// [DefaultOnePasswordNamespaceVault]. Without it every run reads the configured
+// default vault and a namespaced request is refused. Give each tenant its own
+// 1Password vault and the boundary is 1Password's to enforce as well as ours.
 //
 // Authentication is the CLI's business, not this provider's. `op` must already be
 // signed in — through the desktop app's integration, a service account token in the
@@ -84,7 +85,8 @@ func WithOnePasswordNamespaced() OnePasswordOption {
 	}
 }
 
-// WithOnePasswordVault replaces the vault read when a run has no namespace.
+// WithOnePasswordVault replaces the vault a provider that is not namespaced
+// reads.
 func WithOnePasswordVault(vault string) OnePasswordOption {
 	return func(p *OnePasswordProvider) {
 		p.vault = vault

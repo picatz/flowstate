@@ -18,9 +18,8 @@ import (
 
 // # The typed contract
 //
-// Every debugger surface — the editor adapter, the retained MCP sessions, the
-// embedding API, and the durable RPCs — speaks [Target], and a local [Session]
-// is one. Its methods take and return the `debug.proto` messages, so a local
+// A local [Session] is a [Target], and so is [Remote], which speaks the durable
+// RPCs. Its methods take and return the `debug.proto` messages, so a local
 // session and a durable one answer the same questions in the same shapes and a
 // surface written against one works against the other.
 //
@@ -33,7 +32,7 @@ import (
 // prompt loop has acted on the command and the run has left the stop; a pause
 // answers pending until the run reaches a boundary it can stop at.
 
-// Target is one debug session, local or durable, as every surface drives it.
+// Target is one debug session, local or durable, as a surface drives it.
 //
 // Snapshots are immutable: a revision names one view, and a question about a
 // revision the session has left is refused as stale rather than answered
@@ -690,8 +689,7 @@ func (s *Session) WaitSnapshot(ctx context.Context, after uint64) (*v1.DebugSnap
 	}
 }
 
-// Capabilities is what a local session does. Every surface advertises from
-// this and nothing else.
+// Capabilities is what a local session does, as its snapshots advertise it.
 func (s *Session) Capabilities() *v1.DebugCapabilities {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -717,7 +715,7 @@ func (s *Session) capabilitiesLocked() *v1.DebugCapabilities {
 		ValueExpansion:         true,
 		Observations:           true,
 		// A session observes a run someone else started, and has no way to
-		// end it; that someone advertises termination (see flowdap's launch).
+		// end it; that someone advertises termination.
 		Terminate: false,
 	}
 }
@@ -901,7 +899,8 @@ func qualified(workflow, step string) string {
 	return workflow + "." + step
 }
 
-// receipt returns the remembered receipt for a request id, marked duplicate.
+// rememberedReceipt returns the remembered receipt for a request id, marked
+// duplicate.
 func (s *Session) rememberedReceipt(requestID string) (*v1.DebugReceipt, bool) {
 	if requestID == "" {
 		return nil, false

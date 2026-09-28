@@ -606,12 +606,12 @@ func (s *Server) setBreakpoints(arguments json.RawMessage) breakpointsBody {
 	}
 	_ = json.Unmarshal(arguments, &asked)
 
-	// Through [flowdebug.Session.SetBreakpoints] and *not* through a command
-	// line, which is the difference between this working and deadlocking. A
-	// command waits for a boundary to deliver it into, and a client sets
-	// breakpoints before the run starts — that is what `configurationDone`
-	// orders — so there is no boundary to wait for and never will be one until
-	// the breakpoints are in place.
+	// Through [flowdebug.Session.SetBreakpointsWithNotices] and *not* through a
+	// command line, which is the difference between this working and
+	// deadlocking. A command waits for a boundary to deliver it into, and a
+	// client sets breakpoints before the run starts — that is what
+	// `configurationDone` orders — so there is no boundary to wait for and never
+	// will be one until the breakpoints are in place.
 	//
 	// It replaces the set for the same reason the method does: a client sends
 	// everything it has each time one changes.

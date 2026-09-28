@@ -96,7 +96,7 @@ var _ [v1.MaxWorkflowIDLen - len(schedulePrefix) - auth.MaxNamespaceLen - len("_
 // separator argument above rests on is guaranteed where the namespace is
 // chosen, not re-asked here. Both of the two ways a namespace reaches this
 // function check it — [WithNamespace] for the deployment's own fallback tenant
-// (#823) and `auth.TrustedIssuer.namespaceFrom` for one a caller's token
+// (#823) and `auth.TrustedIssuer.namespaceFor` for one a caller's token
 // carries — so a value that reaches here has passed [auth.ValidateNamespace]
 // exactly once, which is also why there is no error for a caller to have to
 // turn into a status code.

@@ -24,7 +24,8 @@ const (
 // issuer made about whoever is on the other end of a request.
 //
 // A Principal is only ever produced from a token whose signature, lifetime,
-// issuer, and audience have all been checked, so every field can be trusted for
+// issuer, and audience have all been checked, or from a client certificate
+// chain crypto/tls has verified ([PeerVerifier]), so every field can be trusted for
 // authorization decisions. [Principal.ID] is the stable identity to key those
 // decisions on, such as scoping workflow runs to a tenant.
 //

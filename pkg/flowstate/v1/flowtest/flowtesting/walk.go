@@ -19,10 +19,11 @@ import (
 // # Why this exists
 //
 // [flowtest.RunOptions.Debugger] has always accepted a session, and until now
-// the only things that set it were `flow test --debug` and `flow run local
-// --debug` — both of which drive it from a terminal. A Go test could not: the
-// session's control surface took a *line of text*, and the run parks inside
-// the debugger blocked reading one, so there was nobody to type.
+// the only things that set it were `flow test --debug` and the
+// `flowstate_debug` MCP tool — both of which drive it with lines of text. A Go
+// test could not: the session's control surface took a *line of text*, and the
+// run parks inside the debugger blocked reading one, so there was nobody to
+// type.
 //
 // [flowdebug.Session.Control] changed that, and this is the rung between it and
 // an author. Without it, walking a case from Go means installing a session,
