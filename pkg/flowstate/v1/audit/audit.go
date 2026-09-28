@@ -85,6 +85,11 @@ type Subject struct {
 	// MCPTool is the full registered MCP tool name, e.g. "flowstate_test".
 	MCPTool string
 
+	// HTTPEndpoint is a bound endpoint outside the RPC service, by the path
+	// suffix its authorization binding names, e.g. "/decode" on the codec
+	// server. Never the request path a caller sent.
+	HTTPEndpoint string
+
 	// Identity is the caller as this deployment attested them. Nil for an
 	// unauthenticated caller, which a deployment started with
 	// --insecure-no-auth can have.
@@ -386,15 +391,23 @@ func (r *Recorder) newRecord(ctx context.Context, subject Subject, decision v1.A
 		action v1.AuthorizationAction
 		err    error
 	)
+	named := 0
+	for _, s := range []string{subject.RPC, subject.MCPTool, subject.HTTPEndpoint} {
+		if s != "" {
+			named++
+		}
+	}
 	switch {
-	case subject.RPC != "" && subject.MCPTool != "":
-		return nil, errors.New("audit: exactly one of RPC or MCPTool must identify the decision")
+	case named > 1:
+		return nil, errors.New("audit: exactly one of RPC, MCPTool or HTTPEndpoint must identify the decision")
 	case subject.RPC != "":
 		action, err = v1.AuthorizationActionForRPC(subject.RPC)
 	case subject.MCPTool != "":
 		action, err = v1.AuthorizationActionForMCPTool(subject.MCPTool)
+	case subject.HTTPEndpoint != "":
+		action, err = v1.AuthorizationActionForHTTPEndpoint(subject.HTTPEndpoint)
 	default:
-		return nil, errors.New("audit: no RPC or MCP tool identifies the decision")
+		return nil, errors.New("audit: no RPC, MCP tool or HTTP endpoint identifies the decision")
 	}
 	if err != nil {
 		return nil, fmt.Errorf("audit: %w", err)
@@ -405,6 +418,7 @@ func (r *Recorder) newRecord(ctx context.Context, subject Subject, decision v1.A
 		Decision:      decision,
 		Rpc:           subject.RPC,
 		McpTool:       subject.MCPTool,
+		HttpEndpoint:  subject.HTTPEndpoint,
 		Identity:      auditIdentity(subject.Identity),
 		ResourceKind:  subject.ResourceKind,
 		ResourceKey:   boundResourceKey(subject.ResourceKey),
@@ -461,7 +475,7 @@ func AuditedActions() []v1.AuthorizationAction {
 
 	actions := make([]v1.AuthorizationAction, 0, len(bindings))
 	for _, binding := range bindings {
-		if len(binding.GetRpcs()) > 0 || len(binding.GetMcpTools()) > 0 {
+		if len(binding.GetRpcs()) > 0 || len(binding.GetMcpTools()) > 0 || len(binding.GetHttpEndpoints()) > 0 {
 			actions = append(actions, binding.GetAction())
 		}
 	}

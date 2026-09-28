@@ -1,6 +1,7 @@
 package flowstatev1_test
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -86,7 +87,7 @@ func TestEveryAuthorizationActionIsBoundExactlyOnce(t *testing.T) {
 		require.False(t, bound[binding.GetAction()], "%s is bound twice", binding.GetAction())
 		bound[binding.GetAction()] = true
 
-		require.NotEmpty(t, append(binding.GetRpcs(), binding.GetMcpTools()...),
+		require.NotEmpty(t, slices.Concat(binding.GetRpcs(), binding.GetMcpTools(), binding.GetHttpEndpoints()),
 			"%s names no operation at all, so nothing can ever be authorized as it", binding.GetAction())
 
 		if parent := binding.GetParent(); parent != v1.AuthorizationAction_AUTHORIZATION_ACTION_UNSPECIFIED {

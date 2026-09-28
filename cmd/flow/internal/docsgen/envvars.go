@@ -622,6 +622,14 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 			read: "go.opentelemetry.io/otel/sdk/trace (consulted only when WithSampler is absent)",
 		},
 		{
+			name:  "FLOWSTATE_CODEC_ADDRESS",
+			value: "`127.0.0.1:8089`",
+			purpose: "Default for `flow codec serve --listen`: where the remote payload codec listens. Loopback by " +
+				"default, so the unconfigured server is reachable from this machine's browser only; any other " +
+				"address needs TLS (or `--tls-terminated-upstream`) and a trust policy.",
+			read: "cmd/flow/codecserve.go",
+		},
+		{
 			name:  "FLOWSTATE_PAYLOAD_KEYRING",
 			value: "unset",
 			purpose: "Default for `--payload-keyring` on `flow server` and `flow worker`, and read by `flow server dev`, " +

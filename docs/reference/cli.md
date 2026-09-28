@@ -215,6 +215,47 @@ flow codec keygen --out /etc/flowstate/payload-keys/default-2026-09.key
 |---|---|---|---|---|
 | `--out <string>` | `string` | — | — | path to write the key to (required) |
 
+## `flow codec serve`
+
+Serve Temporal's remote codec protocol, decoding history for authorized callers
+
+```
+flow codec serve [flags]
+```
+
+Serve the remote payload codec that Temporal's Web UI (Codec Server setting) and CLI (`--codec-endpoint`) call to show encrypted history as plaintext, using this deployment's payload keyring. Every caller is authenticated against the trust policy, must hold the `payload.decode` (or `payload.encode`) action explicitly, and may address only the Temporal namespace its own tenant maps to. A namespace shared by several tenants is refused unless `--allow-shared-namespaces` is given, because a payload does not say whose it is. Responses are never cacheable, and every decision is written to the audit trail. Workers and servers do not use this: they decrypt in process with the same keyring.
+
+Examples:
+
+```sh
+# Serve Temporal Web on temporal.example.com, behind TLS:
+flow codec serve --listen 0.0.0.0:8089 \
+  --auth-policy /etc/flowstate/auth.yaml \
+  --payload-keyring /etc/flowstate/payload-keyring.yaml \
+  --cors-origin https://temporal.example.com \
+  --tls-cert-file codec.crt --tls-key-file codec.key
+
+# Local development, loopback only, against a dev keyring:
+flow codec serve --insecure-no-auth --payload-keyring keyring.yaml \
+  --cors-origin http://localhost:8233
+```
+
+| Flag | Type | Default | Environment | Description |
+|---|---|---|---|---|
+| `--allow-shared-namespaces` | `bool` | `false` | — | decode in a Temporal namespace several tenants share, accepting that any tenant authorized there can read every tenant's payloads in it |
+| `--audit-required` | `bool` | `false` | — | fail an operation whose authorization or enforcement decision could not be written to every audit sink, trading availability for a complete trail: an operator's collector outage becomes an outage of this service rather than a gap in the record. Auditing itself is always on — stderr carries every decision unconditionally, and OTEL_LOGS_EXPORTER/OTEL_EXPORTER_OTLP_LOGS_ENDPOINT add an OTel sink — this flag only decides what a sink's own failure does to the caller |
+| `--auth-policy <string>` | `string` | — | `FLOWSTATE_AUTH_POLICY` | path to the trust policy (YAML) that authenticates callers, assigns their actions, and maps each tenant to its Temporal namespace (default $FLOWSTATE_AUTH_POLICY) |
+| `--cors-origin <string,...>` | `stringArray` | — | — | a browser origin allowed to call this server, exactly, such as https://temporal.example.com (repeatable); unset admits no browser |
+| `--insecure-no-auth` | `bool` | `false` | — | serve any caller with no authentication or authorization, for local development: refused on any address but loopback |
+| `--listen <string>` | `string` | `127.0.0.1:8089` | `FLOWSTATE_CODEC_ADDRESS` | address to listen on (default $FLOWSTATE_CODEC_ADDRESS, or loopback) |
+| `--payload-keyring <string>` | `string` | — | `FLOWSTATE_PAYLOAD_KEYRING` | payload keyring file: encrypt every payload written to Temporal history under the keys it names (default $FLOWSTATE_PAYLOAD_KEYRING; unset writes payloads unencrypted) |
+| `--require-payload-encryption` | `bool` | `false` | — | refuse to start without a payload keyring, so history is never written unencrypted (default $FLOWSTATE_REQUIRE_PAYLOAD_ENCRYPTION) |
+| `--temporal-namespace <string>` | `string` | — | — | the Temporal namespace tenants the trust policy does not map run in (default "default") |
+| `--tls-cert-file <string>` | `string` | — | `FLOWSTATE_TLS_CERT_FILE` | PEM certificate (or chain) for the public listener; unset serves plain HTTP, which is refused on any address but loopback. Must be given with `--tls-key-file` |
+| `--tls-key-file <string>` | `string` | — | `FLOWSTATE_TLS_KEY_FILE` | PEM private key matching `--tls-cert-file` |
+| `--tls-min-version <string>` | `string` | `1.2` | `FLOWSTATE_TLS_MIN_VERSION` | minimum TLS protocol version to accept: "1.2" (the default and the floor) or "1.3" |
+| `--tls-terminated-upstream` | `bool` | `false` | — | allow the public listener to serve plain HTTP on a non-loopback address with no certificate configured (default from FLOWSTATE_TLS_TERMINATED_UPSTREAM). Set it only when something in front of this process terminates TLS or bounds who can reach it (a reverse proxy, an Ingress, a load balancer); otherwise configure `--tls-cert-file` and `--tls-key-file`, or bind loopback for local development |
+
 ## `flow codec status`
 
 Report what a payload keyring resolves to, without revealing any key

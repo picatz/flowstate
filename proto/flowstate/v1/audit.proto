@@ -128,13 +128,13 @@ option go_package = "flowstatev1";
 message AuditRecord {
   option (buf.validate.message).cel = {
     id: "audit_record.operation"
-    message: "exactly one of rpc, mcp_tool or enforcement_point must identify the audited operation"
-    expression: "[this.rpc != '', this.mcp_tool != '', this.enforcement_point != 0].filter(set, set).size() == 1"
+    message: "exactly one of rpc, mcp_tool, http_endpoint or enforcement_point must identify the audited operation"
+    expression: "[this.rpc != '', this.mcp_tool != '', this.http_endpoint != '', this.enforcement_point != 0].filter(set, set).size() == 1"
   };
   option (buf.validate.message).cel = {
     id: "audit_record.action"
-    message: "action names the authorization vocabulary and is set for an rpc or mcp_tool decision, never for an enforcement point"
-    expression: "(this.action != 0) == (this.rpc != '' || this.mcp_tool != '')"
+    message: "action names the authorization vocabulary and is set for an rpc, mcp_tool or http_endpoint decision, never for an enforcement point"
+    expression: "(this.action != 0) == (this.rpc != '' || this.mcp_tool != '' || this.http_endpoint != '')"
   };
   option (buf.validate.message).cel = {
     id: "audit_record.dispatch_id"
@@ -231,6 +231,16 @@ message AuditRecord {
   // The worker-side seam that made the decision, for an enforcement record.
   // UNSPECIFIED on a control-plane record, where action names the operation
   // instead. See "The worker's half" above.
+  // The HTTP endpoint decided about, for an operation that is neither an RPC
+  // nor an MCP tool: the codec server's "/decode" and "/encode". The route's
+  // fixed suffix, resolved against the authorization bindings, never the
+  // request path a caller sent.
+  string http_endpoint = 21 [(buf.validate.field).cel = {
+    id: "audit_record.http_endpoint"
+    message: "http_endpoint must be empty or a bound endpoint path"
+    expression: "this == '' || (size(this) <= 64 && this.matches('^/[a-z][a-z0-9/_-]*$'))"
+  }];
+
   AuditEnforcementPoint enforcement_point = 12 [(buf.validate.field).enum.defined_only = true];
 
   // The operator's own policy rule that decided, verbatim.
@@ -609,6 +619,10 @@ enum AuditDenyCode {
   // or an input would not bind. The one refusal a key holder is told about
   // precisely, and recorded under their trigger's identity for that reason.
   AUDIT_DENY_CODE_BINDING_FAILED = 15;
+
+  // The caller exceeded the codec server's per-caller request rate. Refused
+  // before the body is read or a key is touched.
+  AUDIT_DENY_CODE_RATE_LIMITED = 16;
 }
 
 // AuditDebugDetail is what a debugger decision was about.

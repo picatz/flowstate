@@ -23,7 +23,7 @@ func newCodecCommand() *cobra.Command {
 			"reports what a keyring resolves to, by key id and fingerprint, never by material. " +
 			"See docs/ENCRYPTION.md.",
 	}
-	codecCmd.AddCommand(newCodecKeygenCommand(), newCodecStatusCommand())
+	codecCmd.AddCommand(newCodecKeygenCommand(), newCodecStatusCommand(), newCodecServeCommand())
 	return codecCmd
 }
 
