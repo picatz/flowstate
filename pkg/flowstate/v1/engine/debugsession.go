@@ -62,6 +62,10 @@ type parsedBreakpoint struct {
 
 // heldStop is what a typed hold is about, for the queries.
 type heldStop struct {
+	// spec is the workflow whose step the run stopped before, the callee's
+	// when the stop is inside one, so its scope is read against its own
+	// declarations.
+	spec       *v1.Workflow
 	scope      *v1.Scope
 	occurrence *v1.DebugOccurrence
 	reason     v1.DebugStopReason
@@ -184,7 +188,10 @@ func (e *executor) applyTypedAsk(ask *v1.DebugAsk, parseErr error, sender *v1.Si
 	holder := d.attached() && v1.QualifiedSubject(d.carry.GetHolder().GetIssuer(), d.carry.GetHolder().GetSubject()) ==
 		v1.QualifiedSubject(sender.GetIdentity().GetIssuer(), sender.GetIdentity().GetSubject())
 	mine := d.attached() && d.carry.GetSessionId() == ask.Session && holder
-	held := d.lease != nil && v1.DebugLeaseHeld(d.lease, now)
+	// Held is judged at the same fence as expiry: a renewal accepted while
+	// the lease still ran renews it, even when a long step kept the run from
+	// reading the renewal until after the old expiry.
+	held := d.lease != nil && v1.DebugLeaseHeld(d.lease, judged)
 
 	switch ask.Verb {
 	case v1.DebugVerbPause, v1.DebugVerbRenew:
@@ -252,10 +259,25 @@ func (e *executor) applyTypedAsk(ask *v1.DebugAsk, parseErr error, sender *v1.Si
 			d.receipt(ask.Request, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_REFUSED, "run until names no step")
 		default:
 			if ask.Action == v1.DebugResumeAction_DEBUG_RESUME_ACTION_RUN_UNTIL {
-				if _, err := v1.ParseDebugTarget(ask.Until); err != nil {
+				target, err := v1.ParseDebugTarget(ask.Until)
+				if err != nil {
 					d.receipt(ask.Request, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_REFUSED, err.Error())
 
 					return
+				}
+				// A target the run can never stop at would release it to
+				// the end: refused, and the run stays held. A truncated
+				// enumeration cannot say a site is absent, so it judges
+				// nothing. Behind [untilRefusalChange], asked only where the
+				// answer differs, so a history that applied such a resume
+				// replays applying it.
+				if sites, truncated := v1.DebugStaticSites(e.spec); !truncated {
+					if _, why := durableSites(target, ask.Until, sites, "run until"); why != "" &&
+						workflow.GetVersion(e.ctx, untilRefusalChange, workflow.DefaultVersion, 1) != workflow.DefaultVersion {
+						d.receipt(ask.Request, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_REFUSED, why)
+
+						return
+					}
 				}
 			}
 			d.carry.Next = ask.Action
@@ -317,6 +339,61 @@ func (e *executor) refuseForeign(ask *v1.DebugAsk) {
 	}
 }
 
+// debugBreakpointDefined is the state of the i-th carried breakpoint before it
+// is compiled: its id, assigned when the client left it empty, and its
+// definition under that id. A durable session redacts no breakpoint text, its
+// ids included; the definition is what the attached client sent.
+func debugBreakpointDefined(bp *v1.DebugBreakpoint, i int) *v1.DebugBreakpointState {
+	state := &v1.DebugBreakpointState{Id: bp.GetId(), Definition: proto.CloneOf(bp)}
+	if state.Id == "" {
+		state.Id = fmt.Sprintf("bp-%d", i+1)
+		state.Definition.Id = state.Id
+	}
+
+	return state
+}
+
+// durablyHeld reports whether the durable driver holds at site: at the top
+// level of the run or of a called workflow, where a run has one position. Every
+// other container runs its body at `susp > 0` (see debuglease.go).
+func durablyHeld(site v1.DebugStaticSite) bool {
+	for _, segment := range site.Chain {
+		if segment.GetKind() != v1.DebugSegmentKind_DEBUG_SEGMENT_KIND_CALL {
+			return false
+		}
+	}
+
+	return true
+}
+
+// untilRefusalChange is the [workflow.GetVersion] changeID guarding the
+// refusal of a durable `until` whose target the run can never stop at. An
+// engine before it applied such a resume and released the run, and a history
+// it recorded has the resume applied and the run moving on; replaying that
+// history into a refusal would park the run where history has it running, a
+// nondeterminism error. A history without the marker keeps applying it.
+const untilRefusalChange = "engine.debug.refuseUnholdableUntil"
+
+// durableSites resolves target to the sites the durable driver can hold at,
+// or says why there are none: no site matches it, or every one it matches is
+// inside a loop body, a parallel branch or a switch arm, which is never an
+// arrival here. verb is how the refusal tells the reader to name the
+// enclosing step instead. Breakpoints and `until` both ask this, so a target
+// one refuses the other refuses in the same words.
+func durableSites(target v1.DebugTarget, text string, sites []v1.DebugStaticSite, verb string) ([]v1.DebugStaticSite, string) {
+	resolved := target.Resolve(sites)
+	if len(resolved) == 0 {
+		return nil, fmt.Sprintf("no step matches %q", text)
+	}
+	resolved = slices.DeleteFunc(resolved, func(site v1.DebugStaticSite) bool { return !durablyHeld(site) })
+	if len(resolved) == 0 {
+		return nil, fmt.Sprintf("%q is inside a loop body, a parallel branch or a switch arm, which a durable run "+
+			"executes as a unit and never holds in; %s the enclosing step instead", text, verb)
+	}
+
+	return resolved, ""
+}
+
 // parseDebugBreakpoints compiles the carried breakpoints once per segment.
 func (e *executor) parseDebugBreakpoints() {
 	d := e.debug
@@ -327,10 +404,7 @@ func (e *executor) parseDebugBreakpoints() {
 	sites, _ := v1.DebugStaticSites(e.spec)
 	d.parsed = make([]parsedBreakpoint, 0, len(d.carry.GetBreakpoints()))
 	for i, bp := range d.carry.GetBreakpoints() {
-		parsed := parsedBreakpoint{state: &v1.DebugBreakpointState{Id: bp.GetId()}}
-		if parsed.state.Id == "" {
-			parsed.state.Id = fmt.Sprintf("bp-%d", i+1)
-		}
+		parsed := parsedBreakpoint{state: debugBreakpointDefined(bp, i)}
 		refuse := func(message string) {
 			parsed.state.Verified = false
 			parsed.state.Message = message
@@ -350,9 +424,12 @@ func (e *executor) parseDebugBreakpoints() {
 
 				break
 			}
-			resolved := target.Resolve(sites)
-			if len(resolved) == 0 {
-				refuse(fmt.Sprintf("no step matches %q", bp.GetStep()))
+			// Only a site the durable driver can hold at arms it: a
+			// breakpoint that reported armed elsewhere would claim a stop
+			// that never comes.
+			resolved, why := durableSites(target, bp.GetStep(), sites, "break at")
+			if why != "" {
+				refuse(why)
 
 				break
 			}
@@ -448,7 +525,7 @@ func (e *executor) typedArrival(node *v1.Node) {
 	d.carry.PauseRequested = false
 	d.carry.Next = v1.DebugResumeAction_DEBUG_RESUME_ACTION_CONTINUE
 	d.carry.Until = ""
-	d.held = heldStop{scope: e.scope, occurrence: occurrence, reason: reason, hitIDs: hitIDs}
+	d.held = heldStop{spec: e.curSpec, scope: e.scope, occurrence: occurrence, reason: reason, hitIDs: hitIDs}
 	d.lease = &v1.DebugSession{
 		SessionId:      d.carry.GetSessionId(),
 		Run:            d.run,
@@ -482,7 +559,7 @@ func (e *executor) typedStop(occurrence *v1.DebugOccurrence) (v1.DebugStopReason
 			holds, cost, err := v1.EvalConditionInScopeWithCost(evalContext(), bp.condition, e.scope)
 			e.chargeWorkflowCost(cost)
 			if err != nil {
-				bp.state.LastError = err.Error()
+				bp.state.LastError = v1.TruncateDebugReceiptMessage(e.debugRedactText(err.Error()))
 
 				continue
 			}
@@ -543,6 +620,27 @@ func (e *executor) debugHoldEnded() {
 	e.endDebugSession(v1.DebugRunState_DEBUG_RUN_STATE_EXPIRED, "the session's lease lapsed while the run was held; the run resumed")
 }
 
+// sensitiveAt is what a debugger must not be shown at a point in the run: the
+// run's own declared-sensitive inputs, and those spec declares of scope's
+// inputs, which differ inside a callee.
+func (d *debugControl) sensitiveAt(spec *v1.Workflow, scope *v1.Scope) v1.SensitiveValues {
+	return d.rootSensitive.Merge(v1.SensitiveInputValues(scope.GetInputs(), v1.SensitiveInputNames(spec)))
+}
+
+// debugRedactText withholds the declared-sensitive inputs from text the run
+// keeps for a debugger: a task's error can quote the
+// value it was given, and what a session reads back is a transcript like any
+// other. It is presentation, as inspection's redaction is, and deterministic,
+// since it reads only the recorded scope.
+func (e *executor) debugRedactText(text string) string {
+	sensitive := e.debug.sensitiveAt(e.curSpec, e.scope)
+	if sensitive.Empty() {
+		return text
+	}
+
+	return sensitive.RedactText(text, "[redacted]")
+}
+
 // observeForDebug records one step outcome for an attached session's
 // observations: the step and what became of it, never its values.
 func (e *executor) observeForDebug(kind v1.DebugObservationKind, node *v1.Node, detail string) {
@@ -562,6 +660,7 @@ func (e *executor) observeForDebug(kind v1.DebugObservationKind, node *v1.Node, 
 	case v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_TOLERATED:
 		text += " failed, tolerated by continue_on_error: " + detail
 	}
+	text = e.debugRedactText(text)
 	if runes := []rune(text); len(runes) > maxDebugObservationRunes {
 		text = string(runes[:maxDebugObservationRunes]) + "…"
 	}
@@ -619,6 +718,15 @@ func (d *debugControl) debugSnapshot(now time.Time, request string) *v1.DebugSna
 				state.Hits = d.carry.GetHits()[i]
 			}
 			snapshot.Breakpoints = append(snapshot.Breakpoints, state)
+		}
+		if d.parsed == nil {
+			// Carried but not yet compiled in this segment: reported with
+			// their definitions, so a client resending the set keeps them.
+			for i, bp := range d.carry.GetBreakpoints() {
+				state := debugBreakpointDefined(bp, i)
+				state.Message = "not yet compiled; the run compiles its breakpoints at its next step boundary"
+				snapshot.Breakpoints = append(snapshot.Breakpoints, state)
+			}
 		}
 		switch {
 		case held && d.held.scope != nil:
@@ -683,7 +791,11 @@ func setDebugQueries(ctx workflow.Context, d *debugControl, spec func() *v1.Work
 		// not confidentiality: an expression can still test them, which is why
 		// inspection needs its own authorization.
 		scope := d.held.scope
-		sensitive := v1.SensitiveInputValues(scope.GetInputs(), v1.SensitiveInputNames(spec()))
+		held := d.held.spec
+		if held == nil {
+			held = spec()
+		}
+		sensitive := d.sensitiveAt(held, scope)
 		var (
 			redactText  func(string) string
 			redactValue func(any) any

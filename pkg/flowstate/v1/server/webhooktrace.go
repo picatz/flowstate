@@ -210,7 +210,7 @@ func (r *WebhookReceiver) startDeliverySpan(ctx context.Context, route *webhookR
 // recordDeliveryOutcome says how the acceptance ended, in classifications only.
 //
 // The delivery id and never the idempotency key it names — the digest is the
-// value a memo already carries, and the key is frequently a signature header.
+// value a memo already carries, and the key is a value read out of the delivery.
 // The error's own text is never recorded, for the reason
 // [v1.RecordTaskOutcome] states: a start failure quotes whatever the cluster or
 // the binding said, and a span goes to a collector that is not tenant-scoped.

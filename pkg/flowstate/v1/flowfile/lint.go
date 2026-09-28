@@ -507,7 +507,7 @@ func canonicalRepeats(audited []RepeatedExpr) []RepeatedExpr {
 // namedRepeat is the expression a repetition is worth naming, given the one
 // [Audit] counted — and whether there is one at all.
 //
-// Interpolation desugars every fence to `string(<fence>)` (`interp.go:436`), so
+// Interpolation desugars every fence to `string(<fence>)` (`interp.go:437`), so
 // a value spliced into three sentences is counted as three statements of
 // `string(x)`: a call nobody typed, wrapping a read that costs nothing. #413
 // has the same shape one layer down, where a missing-overload diagnostic named

@@ -110,6 +110,35 @@ func TestDebugReplayRefusesABreakOnAStepTheWorkflowDoesNotHave(t *testing.T) {
 		"a refusal of the file named on the command line is a finding, not an invocation mistake")
 }
 
+// TestDebugReplayAcceptsAStepAddressThePromptAccepts: a script naming a step
+// inside a loop body by address is checked with the prompt's own resolver,
+// not refused as a step id nothing declares.
+func TestDebugReplayAcceptsAStepAddressThePromptAccepts(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "orders.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(`edition: v2026.3
+name: orders
+steps:
+  - id: orders
+    for_each:
+      items: ${[1, 2]}
+      as: order
+      steps:
+        - id: charge
+          log:
+            message: charged
+outputs: {}
+`), 0o600))
+
+	res := runFlow(t, "debug", "replay", writeDebugScript(t, "break orders/charge\ncontinue\ncontinue\ncontinue\n"), path)
+	require.NoError(t, res.Err)
+	assert.Contains(t, res.Stderr, "breakpoint at orders/charge")
+	assert.Equal(t, 2, strings.Count(res.Stderr, "break at charge"), "the addressed breakpoint did not hold at each iteration")
+
+	res = runFlow(t, "debug", "replay", writeDebugScript(t, "break orders/refund\ncontinue\n"), path)
+	require.Error(t, res.Err)
+	assert.Contains(t, res.Err.Error(), `no step matches "orders/refund"`)
+}
+
 // TestDebugReplayRefusesAMisspelledCommandBeforeRunningAnything.
 //
 // A prompt answers a typo and asks again, deliberately — ending someone's run

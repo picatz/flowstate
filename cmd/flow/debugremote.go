@@ -64,7 +64,8 @@ func addDebugRemoteCommands(debugCmd *cobra.Command) {
 	attachCmd.Flags().String("session", "", "rejoin this session instead of attaching a new one")
 	attachCmd.Flags().Duration("lease", 2*time.Minute, "how long each renewal holds the session; the engine bounds it")
 	attachCmd.Flags().String("script", "", "read commands from this file instead of the terminal")
-	attachCmd.Flags().String("program", "", "the Flowfile the run was started from, for source lines; used only if it matches the run's program")
+	attachCmd.Flags().String("program", "", "the Flowfile the run was started from, for source lines; used only if it compiles to the program the run executes, "+
+		"the deployment's plugin and task pins aside")
 	attachCmd.Flags().Duration("wait", time.Minute, "how long a movement waits for the next stop before reporting the run still running")
 
 	getCmd := &cobra.Command{
@@ -119,11 +120,11 @@ func runDebugAttach(cmd *cobra.Command, args []string) error {
 
 	var sourceMap *v1.DebugSourceMap
 	if program != "" {
-		workflow, err := loadWorkflow(program)
+		workflow, source, err := loadDebuggedWorkflow(program)
 		if err != nil {
 			return err
 		}
-		sourceMap = debugSourceMap(program, workflow)
+		sourceMap = source.sourceMap(workflow)
 	}
 
 	ctx := cmd.Context()
@@ -210,6 +211,19 @@ func runDebugAttach(cmd *cobra.Command, args []string) error {
 		if line == "detach" || terminalDebugState(result.Snapshot.GetState()) {
 			return remote.Disconnect()
 		}
+	}
+
+	// A line the reader could not take — longer than a command may be — is
+	// not the end of input: the rest of the script was never read. The
+	// session is left attached for a rejoin, its lease bounding the hold,
+	// and the command fails rather than reporting a run it did not drive.
+	if err := scanner.Err(); err != nil {
+		_ = remote.Disconnect()
+		if errors.Is(err, bufio.ErrTooLong) {
+			err = fmt.Errorf("a command is at most %d bytes", flowdebug.MaxCommandBytes)
+		}
+
+		return fmt.Errorf("reading commands: %w; session %s is left attached until its lease lapses", err, remote.SessionID())
 	}
 
 	if keep {

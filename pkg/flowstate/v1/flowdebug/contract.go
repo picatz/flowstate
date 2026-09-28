@@ -628,6 +628,22 @@ func (s *Session) Finished(err error) {
 	s.bump()
 }
 
+// redactedDefinitionLocked is a breakpoint's definition with its text
+// redacted as its id is. The caller holds s.mu.
+func (s *Session) redactedDefinitionLocked(definition *v1.DebugBreakpoint) *v1.DebugBreakpoint {
+	if definition == nil {
+		return nil
+	}
+	redacted := proto.CloneOf(definition)
+	redacted.Id = s.redactTextLocked(redacted.GetId())
+	redacted.Step = s.redactTextLocked(redacted.GetStep())
+	redacted.Condition = s.redactTextLocked(redacted.GetCondition())
+	redacted.HitCondition = s.redactTextLocked(redacted.GetHitCondition())
+	redacted.LogMessage = s.redactTextLocked(redacted.GetLogMessage())
+
+	return redacted
+}
+
 // redactTextLocked is redactText for a caller holding s.mu.
 func (s *Session) redactTextLocked(text string) string {
 	return applyText(s.redact, text)
@@ -743,10 +759,11 @@ func (s *Session) snapshotLocked() *v1.DebugSnapshot {
 	for _, key := range slices.Sorted(maps.Keys(s.breakpoints)) {
 		at := s.breakpoints[key]
 		snapshot.Breakpoints = append(snapshot.Breakpoints, &v1.DebugBreakpointState{
-			Id:        s.redactTextLocked(at.id),
-			Verified:  true,
-			Hits:      at.hits,
-			LastError: at.lastError,
+			Id:         s.redactTextLocked(at.id),
+			Verified:   true,
+			Hits:       at.hits,
+			LastError:  at.lastError,
+			Definition: s.redactedDefinitionLocked(at.definition),
 		})
 	}
 	if c.state == v1.DebugRunState_DEBUG_RUN_STATE_HELD {
@@ -1283,6 +1300,8 @@ func (s *Session) compileBreakpoint(want *v1.DebugBreakpoint, profile string, re
 	}
 
 	state.Verified = true
+	at.definition = proto.CloneOf(want)
+	at.definition.Id = state.GetId()
 
 	return at, state
 }

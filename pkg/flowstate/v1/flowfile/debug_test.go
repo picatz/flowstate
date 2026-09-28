@@ -137,6 +137,45 @@ debug:
 	assert.Contains(t, diagnostics[0].Message, "matches every sender")
 }
 
+// TestADebugStanzaWithNoAllowNamesTheClosedDefault: the shared grammar refuses
+// a policy with no `allow:` in both stanzas, but the remedy differs. Removing a
+// signal's policy opens the signal; removing `debug:` closes debugging, so the
+// sentence a `signals:` entry gets would tell a `debug:` author the opposite of
+// what removing it does.
+func TestADebugStanzaWithNoAllowNamesTheClosedDefault(t *testing.T) {
+	t.Parallel()
+
+	_, err := flowfile.ValidateSource([]byte(`edition: v2026.3
+name: no-allow
+steps:
+  - id: work
+    log:
+      message: hello
+debug:
+  distinct_from_starter: true
+`))
+	require.Error(t, err, "a debug policy with no allow list was accepted")
+
+	assert.Contains(t, err.Error(), "authorizes nobody")
+	assert.Contains(t, err.Error(), "not debuggable at all")
+	assert.NotContains(t, err.Error(), "any authenticated caller",
+		"an absent `debug:` denies every pause ask, so removing it opens nothing")
+
+	// The neighbouring stanza keeps its own remedy, which is true there.
+	_, err = flowfile.ValidateSource([]byte(`edition: v2026.3
+name: no-allow
+steps:
+  - id: approval
+    wait_for_signal:
+      name: go
+signals:
+  go:
+    distinct_from_starter: true
+`))
+	require.Error(t, err, "a signal policy with no allow list was accepted")
+	assert.Contains(t, err.Error(), "any authenticated caller in the run's tenant may deliver it")
+}
+
 // TestADebugSubjectMustBeIssuerQualified: a subject is unique only within its
 // issuer, and the rule that says so is the same one `signals:` follows —
 // refused by the compiler, with a line and a column, because sharing the

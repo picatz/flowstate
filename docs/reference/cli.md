@@ -236,17 +236,20 @@ Debug a workflow from an editor, over the Debug Adapter Protocol
 flow dap [flags]
 ```
 
-Speak the Debug Adapter Protocol on stdin and stdout, so an editor's step, continue and pause buttons drive a real local run, or a durable one.
+Speak the Debug Adapter Protocol on stdin and stdout, so an editor's step and continue buttons drive a Flowstate run.
 
-A `launch` request runs the workflow its configuration names as `program`, so one adapter serves whatever the editor points it at. An `attach` request names a durable run's `workflowId` and reaches it through the server flags below, as their identity; the run's `debug:` policy must allow it.
+A `launch` request runs the Flowfile named as `program` locally. Breakpoints can be set on its lines, or as *function* breakpoints named after a step (`build`, `pages/page`, `pages[2]/page`), with conditions, hit counts and log messages.
 
-Line breakpoints resolve to the innermost step written at that line. Function breakpoints name a step id or an address such as `orders/charge`. A breakpoint that resolves to nothing is answered unverified, saying why.
+An `attach` request with a `workflowId` (and optionally `runId`) debugs a durable run through the server named by --address and this command's credentials, which need `workload.debug` (and `workload.debug_inspect` to inspect values or set conditions). A durable run holds only at step boundaries, has no logpoints or failure stops, and shows step addresses rather than source lines; the editor is told which.
 
 Examples:
 
 ```sh
 # What an editor's launch configuration runs, rather than a person:
 flow dap
+
+# An adapter that can also attach to durable runs on a server:
+flow dap --address https://flowstate.example.com
 
 # The terminal debugger, for a person:
 flow run local --debug examples/hello-world/workflow.yaml
@@ -355,7 +358,7 @@ flow debug attach order-1234 --session 5d3f…
 | `--credential-source <string>` | `string` | — | `FLOWSTATE_CREDENTIAL_SOURCE` | acquire a credential from a named source instead of `--token-file`/FLOWSTATE_TOKEN (overrides FLOWSTATE_CREDENTIAL_SOURCE); one of github-actions, gitlab, terraform-cloud, file, env. An unknown or unusable source is an error, never anonymous |
 | `--lease <duration>` | `duration` | `2m0s` | — | how long each renewal holds the session; the engine bounds it |
 | `-o, --output <string>` | `string` | `text` | — | output format: text, json, or jsonl |
-| `--program <string>` | `string` | — | — | the Flowfile the run was started from, for source lines; used only if it matches the run's program |
+| `--program <string>` | `string` | — | — | the Flowfile the run was started from, for source lines; used only if it compiles to the program the run executes, the deployment's plugin and task pins aside |
 | `--run-id <string>` | `string` | — | — | pin the run, as the first run id of its chain; unset follows the current one |
 | `--script <string>` | `string` | — | — | read commands from this file instead of the terminal |
 | `--session <string>` | `string` | — | — | rejoin this session instead of attaching a new one |
@@ -2044,7 +2047,7 @@ flow test -o jsonl examples/
 | Flag | Type | Default | Environment | Description |
 |---|---|---|---|---|
 | `--coverage-required` | `bool` | `false` | — | fail when a workflow has a step, or a `switch:` arm, no test case reached and no coverage.allow_unreached entry records why |
-| `--debug` | `bool` | `false` | — | stop before each step of one case and read commands from the terminal — step, continue, until, break, inspect, scope, quit; requires `--run` to name exactly one case, and is refused with `--output json` and with seeded exploration |
+| `--debug` | `bool` | `false` | — | stop before each step of one case and read commands from the terminal — step, continue, until, break, inspect, scope, quit; requires exactly one test file and exactly one selected case (narrow with `--run` when the file has more), and is refused with `--output json` and with seeded exploration |
 | `--fail-on-warning` | `bool` | `false` | — | fail when a case reports a warning — a stub declared and never answered through, a task invoked with no stub declared, or an invocation that no declared stub answered — instead of only printing it |
 | `-o, --output <string>` | `string` | `text` | — | output format: text, json, or jsonl |
 | `--run <string>` | `string` | — | — | run only the cases whose name matches this regular expression; the output says how many cases were filtered out, and `--coverage-required` is refused alongside it, because a subset's coverage gaps are not the suite's |
@@ -2248,12 +2251,13 @@ Start a worker that runs workflow steps
 flow worker [flags]
 ```
 
-Start a Temporal worker: the process that actually runs a workflow's steps. The server submits work to Temporal and a worker polling its task queue is what picks it up, so nothing a deployment accepts runs until at least one worker is up: the two never talk to each other, they meet at Temporal. With `--temporal-deployment-name` and `--build-id` it claims a Temporal Worker Deployment version, pinning every run already in flight to the interpreter it started on: a later deploy changes what new runs compute, not what in-flight ones do, until each reaches continue-as-new. With `--tenant` it executes one namespace's runs and refuses every other outright, rather than running them with this worker's secrets, egress policy and plugins, which needs a queue of its own, named by `--task-queue-prefix` (the value the server was started with) or given as `--task-queue`.
+Start a Temporal worker: the process that actually runs a workflow's steps. The server submits work to Temporal and a worker polling its task queue is what picks it up, so nothing a deployment accepts runs until at least one worker is up: the two never talk to each other, they meet at Temporal. With `--temporal-deployment-name` and `--build-id` it claims a Temporal Worker Deployment version, pinning every run already in flight to the interpreter it started on: a later deploy changes what new runs compute, not what in-flight ones do, until each reaches continue-as-new. A version receives new runs only as the deployment's current version, or for its share as a ramping version, and this command sets neither: promote a build with `temporal worker deployment set-current-version`, or ramp it with `set-ramping-version`. With `--tenant` it executes one namespace's runs and refuses every other outright, rather than running them with this worker's secrets, egress policy and plugins, which needs a queue of its own, named by `--task-queue-prefix` (the value the server was started with) or given as `--task-queue`.
 
 Examples:
 
 ```sh
-# Start a worker, pinned so a deploy does not change runs already in flight:
+# Start a worker, pinned so a deploy does not change runs already in flight.
+# It receives new runs once its build is current or ramping.
 flow worker --temporal-deployment-name flowstate \
   --build-id "$(git rev-parse --short HEAD)"
 

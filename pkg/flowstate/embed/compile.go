@@ -38,8 +38,9 @@ type Diagnostics = flowfile.Diagnostics
 // documents. An embedding program that wants `call:` support reads the file
 // itself and uses [flowfile.ParseFile] directly.
 //
-// Compile is the parse, not the validation. [flowfile.Parse] decides a
-// step's task purely from its shape and checks nothing across steps, leaving
+// Compile is the parse, not the validation. [flowfile.Parse] reads the task
+// registry only to decide which of a step's keys names its task (see
+// [flowfile.StepTaskKeys]) and checks nothing across steps, leaving
 // "is this task registered at all" and "does `${steps.nope.x}` name a step
 // that exists" to [flowfile.Validate], which Compile deliberately does not
 // call (see that package's doc on `Parse` vs `Validate`). So a Flowfile

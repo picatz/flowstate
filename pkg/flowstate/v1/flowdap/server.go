@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowdebug"
@@ -21,6 +23,23 @@ const runThreadID = 1
 
 // MaxScopeVariables bounds how many variables one expansion answers with.
 const MaxScopeVariables = 500
+
+// MaxVariableHandles bounds the variables references one stop holds. A
+// reference is reused for an expression already issued at the stop, so an
+// editor refreshing the same scopes does not add to it; distinct expressions
+// past the bound come back without a reference, and so cannot be expanded,
+// until the run moves and the table is cleared.
+const MaxVariableHandles = 4096
+
+// MaxVariableHandleBytes bounds the expression text the references one stop
+// holds, which [MaxVariableHandles] alone does not: each expression may be as
+// long as a command.
+const MaxVariableHandleBytes = 4 << 20
+
+// MaxBreakpointBytes bounds the text the adapter keeps for the breakpoints it
+// holds — each source's path and every condition, hit condition and log
+// message — across all sources, which the count bound alone does not.
+const MaxBreakpointBytes = 1 << 20
 
 // Server is one editor's debug session, over the Debug Adapter Protocol.
 //
@@ -43,6 +62,11 @@ type Server struct {
 	// its next stop before the command that moved it has been answered.
 	order sync.Mutex
 
+	// out serializes outbound messages: their numbering and their writing,
+	// and hungUp, set once the client is gone and nothing more is written.
+	out    sync.Mutex
+	hungUp bool
+
 	target       flowdebug.Target
 	sourceMap    *v1.DebugSourceMap
 	capabilities *v1.DebugCapabilities
@@ -54,8 +78,21 @@ type Server struct {
 	revealSensitive bool
 	stopOnEntry     bool
 
+	// linesFrom0 and columnsFrom0 are the client's coordinates when its
+	// initialize said they start at 0 rather than DAP's default of 1. Every
+	// position is 1-based inside the adapter and translated at the edge.
+	linesFrom0, columnsFrom0 bool
+
+	// bound is set once a launch or attach has given the session its program;
+	// a second is refused rather than replacing a target nobody would close.
+	bound bool
+
 	launched chan struct{}
 	once     sync.Once
+
+	// running counts the launched run the adapter started, so [Server.Wait]
+	// can outlive the client of a run it let go of.
+	running sync.WaitGroup
 
 	// entered is closed once the first stop is announced (or the run ends),
 	// so a movement that arrives before it waits for the stop it moves from.
@@ -67,13 +104,17 @@ type Server struct {
 	revision uint64
 	held     *v1.DebugSnapshot
 	handles  map[int]handle
-	next     int
-	observed uint64
+	issued   map[handle]int
+	// issuedBytes is the expression text handles holds.
+	issuedBytes int
+	next        int
+	observed    uint64
 
 	lines       map[string][]lineBreakpoint
 	functions   []functionBreakpoint
 	failureMode v1.DebugFailureMode
 	ids         map[string]int
+	idSeq       int
 
 	ended sync.Once
 	exit  int
@@ -157,6 +198,7 @@ func NewServer(target flowdebug.Target, stream Stream, opts ...Option) *Server {
 		launched:    make(chan struct{}),
 		entered:     make(chan struct{}),
 		handles:     map[int]handle{},
+		issued:      map[handle]int{},
 		lines:       map[string][]lineBreakpoint{},
 		stopOnEntry: true,
 	}
@@ -225,8 +267,20 @@ func (s *Server) Finished() {
 	})
 }
 
+// Wait blocks until a run the adapter launched has returned, and at once when
+// it launched none. A client that disconnects without terminating detaches
+// from a local run rather than ending it, so the process serving the adapter
+// calls Wait after [Server.Serve] to let that run finish with the resources it
+// was started with.
+func (s *Server) Wait() { s.running.Wait() }
+
 // Serve answers requests until the client disconnects or ctx ends.
 func (s *Server) Serve(ctx context.Context) error {
+	// Whatever ends the conversation, nothing more is written to it: a run the
+	// session detached from goes on narrating, and on stdio a write to a
+	// client that has gone is a broken pipe that kills the process under it.
+	defer s.hangUp()
+
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -234,6 +288,13 @@ func (s *Server) Serve(ctx context.Context) error {
 
 		var request inbound
 		if err := s.stream.ReadObject(&request); err != nil {
+			// A client gone without a disconnect is one: the session detaches,
+			// so a run it left paused goes on rather than waiting for a
+			// command nobody can send, and [Server.Wait] returns. Nobody is
+			// left to read what the detach says.
+			s.hangUp()
+			s.end(false)
+
 			return nil
 		}
 		if request.Type != "request" {
@@ -255,6 +316,15 @@ func (s *Server) currentTarget() flowdebug.Target {
 func (s *Server) dispatch(ctx context.Context, request inbound) (done bool) {
 	switch request.Command {
 	case "initialize":
+		var asked struct {
+			LinesStartAt1   *bool `json:"linesStartAt1"`
+			ColumnsStartAt1 *bool `json:"columnsStartAt1"`
+		}
+		_ = json.Unmarshal(request.Arguments, &asked)
+		s.mu.Lock()
+		s.linesFrom0 = asked.LinesStartAt1 != nil && !*asked.LinesStartAt1
+		s.columnsFrom0 = asked.ColumnsStartAt1 != nil && !*asked.ColumnsStartAt1
+		s.mu.Unlock()
 		s.reply(request, s.capabilitiesBody())
 		s.emit("initialized", nil)
 
@@ -308,10 +378,35 @@ func (s *Server) dispatch(ctx context.Context, request inbound) (done bool) {
 		s.move(ctx, request, v1.DebugResumeAction_DEBUG_RESUME_ACTION_STEP_OUT)
 
 	case "terminate":
+		s.mu.Lock()
+		owned := s.terminate != nil
+		s.mu.Unlock()
+		if !owned {
+			// Never report ending a run this adapter did not start: it detaches,
+			// and says the run goes on.
+			s.end(false)
+			s.fail(request, "flowdap: this adapter attached to the run rather than starting it, so it cannot end it; the session detached and the run continues")
+
+			return true
+		}
+		// The run this adapter started is cancelled and the conversation
+		// goes on: the run's end arrives as `terminated` and `exited`, which a
+		// client waits for before it sends the `disconnect` that closes it.
+		//
+		// Under order, so the response precedes the events the cancellation
+		// causes, as a movement's does; with the exit code recorded first, so
+		// whichever path reports the end reports a run that did not finish.
+		s.order.Lock()
+		s.Exited(1)
 		s.end(true)
 		s.reply(request, nil)
-
-		return true
+		s.order.Unlock()
+		// A run never released has no goroutine to report its end.
+		select {
+		case <-s.launched:
+		default:
+			s.Finished()
+		}
 
 	case "disconnect":
 		// Answered once the session is released, so a client that reads the
@@ -351,9 +446,11 @@ func (s *Server) end(terminate bool) {
 func (s *Server) capabilitiesBody() capabilities {
 	s.mu.Lock()
 	caps := s.capabilities
-	// Termination is the run owner's to offer, and an adapter that launches
-	// the run owns it; one that attached to a durable run does not.
-	terminable := s.launcher != nil
+	// Termination is the run owner's to offer. An adapter that launched the
+	// run owns it, and before either request one that can launch offers it,
+	// a launch being the common case; one that attached to a durable run does
+	// not, whatever else it could have done.
+	terminable := s.terminate != nil || (s.target == nil && !s.remote && s.launcher != nil)
 	s.mu.Unlock()
 	if caps == nil {
 		// Before a launch or attach has said which backend this is, the
@@ -407,10 +504,16 @@ func (s *Server) launch(ctx context.Context, request inbound) {
 		s.stopOnEntry = *asked.StopOnEntry
 	}
 	launcher := s.launcher
+	bound := s.bound
 	s.mu.Unlock()
 
 	if launcher == nil {
 		s.reply(request, nil)
+
+		return
+	}
+	if bound {
+		s.fail(request, errOneProgram.Error())
 
 		return
 	}
@@ -423,6 +526,7 @@ func (s *Server) launch(ctx context.Context, request inbound) {
 	}
 
 	s.mu.Lock()
+	s.bound = true
 	s.target = launched.Target
 	s.sourceMap = launched.SourceMap
 	s.start = launched.Start
@@ -450,6 +554,14 @@ func (s *Server) attach(ctx context.Context, request inbound) {
 		return
 	}
 	asked.Raw = request.Arguments
+	s.mu.Lock()
+	bound := s.bound
+	s.mu.Unlock()
+	if bound {
+		s.fail(request, errOneProgram.Error())
+
+		return
+	}
 
 	attached, err := s.attacher(ctx, asked)
 	if err != nil {
@@ -467,13 +579,26 @@ func (s *Server) attach(ctx context.Context, request inbound) {
 	}
 
 	s.mu.Lock()
+	s.bound = true
 	s.target = attached.Target
 	s.sourceMap = attached.SourceMap
 	s.capabilities = snapshot.GetCapabilities()
 	s.remote = true
+	// An exception filter an editor chose before it knew the backend is one
+	// this backend may not offer. Kept, it would refuse every breakpoint set
+	// sent with it; dropped, the rest of the configuration applies, and the
+	// console says the filter did not.
+	droppedFilter := !s.capabilities.GetFailureBreakpoints() && s.failureMode > v1.DebugFailureMode_DEBUG_FAILURE_MODE_NONE
+	if droppedFilter {
+		s.failureMode = v1.DebugFailureMode_DEBUG_FAILURE_MODE_NONE
+	}
 	s.mu.Unlock()
 
 	s.reply(request, nil)
+	if droppedFilter {
+		s.emit("output", map[string]string{"category": "console",
+			"output": "flowdap: this run cannot stop on failures, so the exception filter was dropped\n"})
+	}
 	// The durable driver does less than a local session; say so before the
 	// editor configures anything it would then find ignored.
 	s.emit("capabilities", map[string]any{"capabilities": s.capabilitiesBody()})
@@ -515,9 +640,29 @@ func (s *Server) breakpointID(id string) int {
 	if n, ok := s.ids[id]; ok {
 		return n
 	}
-	s.ids[id] = len(s.ids) + 1
+	s.idSeq++
+	s.ids[id] = s.idSeq
 
-	return s.ids[id]
+	return s.idSeq
+}
+
+// forgetLines drops the editor numbers of path's line slots from the first
+// one its set no longer has, so a client moving breakpoints across files
+// does not grow the table with slots that are gone.
+func (s *Server) forgetLines(path string, from int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	prefix := "line:" + path + ":"
+	for id := range s.ids {
+		slot, ok := strings.CutPrefix(id, prefix)
+		if !ok {
+			continue
+		}
+		if i, err := strconv.Atoi(slot); err == nil && i >= from {
+			delete(s.ids, id)
+		}
+	}
 }
 
 // release starts the run once the editor has configured it, and begins
@@ -530,12 +675,20 @@ func (s *Server) release(ctx context.Context) {
 		start := s.start
 		s.mu.Unlock()
 		if start != nil {
-			go start()
+			s.running.Go(start)
 		}
 
 		go s.watch(ctx)
 	})
 }
+
+// How long watch keeps trying to read a target whose reads fail: a few
+// attempts, each waiting a little longer, before it gives the run up.
+const maxWatchRetries = 5
+
+// watchRetryBackoff is the first wait between reads; each retry waits one
+// more of it. A variable only so a test can shorten it.
+var watchRetryBackoff = time.Second
 
 // watch reports every stop the target reaches, in order, and the run's end.
 func (s *Server) watch(ctx context.Context) {
@@ -544,17 +697,47 @@ func (s *Server) watch(ctx context.Context) {
 		return
 	}
 
-	var after uint64
+	var (
+		after    uint64
+		failures int
+	)
 	for {
 		snapshot, err := target.WaitSnapshot(ctx, after)
 		if err != nil {
-			if ctx.Err() == nil && !errors.Is(err, context.Canceled) {
-				s.emit("output", map[string]string{"category": "stderr", "output": "flowdap: " + err.Error() + "\n"})
+			if ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, flowdebug.ErrRunOver) {
+				s.enteredAt.Do(func() { close(s.entered) })
+
+				return
 			}
+			// A read that failed is not a session that ended: a durable
+			// run's server can be briefly unreachable. Try again a few times,
+			// and if it stays unreachable, let the run go rather than leave
+			// it held behind a lease this adapter keeps renewing while the
+			// editor hears nothing.
+			failures++
+			if failures == 1 {
+				s.emit("output", map[string]string{"category": "stderr", "output": "flowdap: " + err.Error() + "; retrying\n"})
+			}
+			if failures <= maxWatchRetries {
+				select {
+				case <-time.After(time.Duration(failures) * watchRetryBackoff):
+					continue
+				case <-ctx.Done():
+					s.enteredAt.Do(func() { close(s.entered) })
+
+					return
+				}
+			}
+			s.emit("output", map[string]string{"category": "stderr",
+				"output": "flowdap: the run could not be read, so the session detached and the run continues\n"})
+			_ = target.Close()
 			s.enteredAt.Do(func() { close(s.entered) })
+			s.Exited(1)
+			s.Finished()
 
 			return
 		}
+		failures = 0
 		after = snapshot.GetRevision()
 		s.relayObservations(snapshot)
 
@@ -572,10 +755,7 @@ func (s *Server) watch(ctx context.Context) {
 		case terminalState(state):
 			s.enteredAt.Do(func() { close(s.entered) })
 			if s.isRemote() {
-				code := 0
-				if state != v1.DebugRunState_DEBUG_RUN_STATE_COMPLETED && state != v1.DebugRunState_DEBUG_RUN_STATE_DETACHED {
-					code = 1
-				}
+				code := exitCodeFor(state)
 				if message := snapshot.GetMessage(); message != "" {
 					s.Output(message + "\n")
 				}
@@ -600,6 +780,17 @@ func (s *Server) isRemote() bool {
 	defer s.mu.Unlock()
 
 	return s.remote
+}
+
+// exitCodeFor is the exit code a durable run's terminal state reports: zero
+// for a run that completed or that the debugger let go, one otherwise.
+func exitCodeFor(state v1.DebugRunState) int {
+	switch state {
+	case v1.DebugRunState_DEBUG_RUN_STATE_COMPLETED, v1.DebugRunState_DEBUG_RUN_STATE_DETACHED:
+		return 0
+	default:
+		return 1
+	}
 }
 
 func terminalState(state v1.DebugRunState) bool {
@@ -641,6 +832,8 @@ func (s *Server) stopped(snapshot *v1.DebugSnapshot) {
 	s.revision = snapshot.GetRevision()
 	s.held = snapshot
 	clear(s.handles)
+	clear(s.issued)
+	s.issuedBytes = 0
 	s.mu.Unlock()
 
 	body := stoppedBody{
@@ -714,6 +907,8 @@ func (s *Server) move(ctx context.Context, request inbound, action v1.DebugResum
 		v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_PENDING:
 		s.mu.Lock()
 		clear(s.handles)
+		clear(s.issued)
+		s.issuedBytes = 0
 		s.held = nil
 		s.mu.Unlock()
 		if action == v1.DebugResumeAction_DEBUG_RESUME_ACTION_CONTINUE {
@@ -722,6 +917,15 @@ func (s *Server) move(ctx context.Context, request inbound, action v1.DebugResum
 			s.reply(request, nil)
 		}
 	case v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_ENDED:
+		// A durable run's end is reported with the code its final state
+		// gives, not the default, whichever of this and the watcher gets
+		// there first. A local run's code is recorded before its session
+		// reads as ended.
+		if s.isRemote() {
+			if final, err := target.Snapshot(ctx); err == nil && terminalState(final.GetState()) {
+				s.Exited(exitCodeFor(final.GetState()))
+			}
+		}
 		s.reply(request, nil)
 		go s.Finished()
 	default:
@@ -747,6 +951,12 @@ func (s *Server) pause(ctx context.Context, request inbound) {
 
 		return
 	}
+
+	// Under the order lock, as every movement is: the stop a pause causes
+	// can be ready before this handler answers, and its response must still
+	// reach the client first.
+	s.order.Lock()
+	defer s.order.Unlock()
 
 	receipt, err := target.Pause(ctx, fmt.Sprintf("dap-%d", request.Seq))
 	if err != nil {
@@ -791,6 +1001,7 @@ func (s *Server) stackTrace(arguments json.RawMessage) stackTraceBody {
 		return stackTraceBody{StackFrames: frameWindow(frames, asked.StartFrame, asked.Levels), TotalFrames: 1}
 	}
 
+	lineBase, columnBase := s.clientBases()
 	frames := make([]stackFrame, 0, len(held.GetFrames()))
 	for _, frame := range held.GetFrames() {
 		entry := stackFrame{ID: int(frame.GetId()), Name: frame.GetLabel()}
@@ -800,8 +1011,8 @@ func (s *Server) stackTrace(arguments json.RawMessage) stackTraceBody {
 		if location := frame.GetSource(); location != nil {
 			if source := s.sourceOf(location); source != nil {
 				entry.Source = source
-				entry.Line = int(location.GetRange().GetStartLine())
-				entry.Column = int(location.GetRange().GetStartColumn())
+				entry.Line = toClient(location.GetRange().GetStartLine(), lineBase)
+				entry.Column = toClient(location.GetRange().GetStartColumn(), columnBase)
 			}
 		}
 		frames = append(frames, entry)
@@ -841,13 +1052,53 @@ func frameWindow(frames []stackFrame, start, levels int) []stackFrame {
 	return frames[start:end]
 }
 
-// issue hands out a variables reference for an expression at a revision.
+// toClient translates a 1-based position to the client's base. Zero is an
+// unknown position and stays zero, the value the specification requires in
+// place of an absent one.
+func toClient(position uint32, base int) int {
+	if position == 0 {
+		return 0
+	}
+
+	return int(position) - 1 + base
+}
+
+// clientBases is the first line and column number in the client's
+// coordinates: 1 unless its initialize said 0.
+func (s *Server) clientBases() (line, column int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	line, column = 1, 1
+	if s.linesFrom0 {
+		line = 0
+	}
+	if s.columnsFrom0 {
+		column = 0
+	}
+
+	return line, column
+}
+
+// issue hands out a variables reference for an expression at a revision: the
+// one already issued for it at this stop, or a new one while the stop holds
+// fewer than [MaxVariableHandles] and [MaxVariableHandleBytes] allows it, and
+// otherwise none.
 func (s *Server) issue(revision uint64, expression string) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	key := handle{revision: revision, expression: expression}
+	if reference, ok := s.issued[key]; ok {
+		return reference
+	}
+	if len(s.handles) >= MaxVariableHandles || s.issuedBytes+len(expression) > MaxVariableHandleBytes {
+		return 0
+	}
 	s.next++
-	s.handles[s.next] = handle{revision: revision, expression: expression}
+	s.handles[s.next] = key
+	s.issued[key] = s.next
+	s.issuedBytes += len(expression)
 
 	return s.next
 }
@@ -987,6 +1238,19 @@ func (s *Server) evaluate(ctx context.Context, request inbound) {
 // refused with, which never quotes what was submitted.
 var errInvalidBreakpoints = errors.New("invalid breakpoint arguments")
 
+// errOneProgram refuses a second launch or attach in one session: the first
+// target would be replaced without being closed, and a run it held would
+// wait on a debugger nobody can reach.
+var errOneProgram = errors.New("flowdap: this session already launched or attached to a program; start another debug session for another")
+
+// errTooManyBreakpoints fails a request that alone names more breakpoints than
+// a session holds. It fails whole, before anything is built from it, rather
+// than answering each entry: a frame can carry far more compact entries than a
+// session will ever hold, and one refusal apiece would make the response many
+// times the request. A set within the bound that only overflows with the other
+// sources installed is still answered entry by entry.
+var errTooManyBreakpoints = fmt.Errorf("a breakpoint request may name at most %d breakpoints", flowdebug.MaxBreakpoints)
+
 func (s *Server) setLineBreakpoints(ctx context.Context, request inbound) {
 	var asked struct {
 		Source *struct {
@@ -999,20 +1263,35 @@ func (s *Server) setLineBreakpoints(ctx context.Context, request inbound) {
 			LogMessage   *string `json:"logMessage"`
 		} `json:"breakpoints"`
 	}
-	if err := json.Unmarshal(request.Arguments, &asked); err != nil || asked.Source == nil || asked.Source.Path == "" {
+	// A missing array is malformed, not an empty replacement: only an explicit
+	// empty set clears a source's breakpoints.
+	if err := json.Unmarshal(request.Arguments, &asked); err != nil || asked.Source == nil || asked.Source.Path == "" || asked.Breakpoints == nil {
 		s.fail(request, errInvalidBreakpoints.Error())
 
 		return
 	}
+	if len(asked.Breakpoints) > flowdebug.MaxBreakpoints {
+		s.fail(request, errTooManyBreakpoints.Error())
 
+		return
+	}
+
+	lineBase, _ := s.clientBases()
 	wanted := make([]lineBreakpoint, 0, len(asked.Breakpoints))
 	for _, want := range asked.Breakpoints {
-		if want == nil || want.Line == nil || *want.Line < 1 {
+		// Positions are uint32 past this edge: a larger line would wrap onto
+		// a small one rather than name no line.
+		if want == nil || want.Line == nil || *want.Line < lineBase || int64(*want.Line)-int64(lineBase)+1 > math.MaxUint32 {
 			s.fail(request, errInvalidBreakpoints.Error())
 
 			return
 		}
-		wanted = append(wanted, lineBreakpoint{line: *want.Line, condition: want.Condition, hitCondition: want.HitCondition, logText: want.LogMessage})
+		wanted = append(wanted, lineBreakpoint{line: *want.Line - lineBase + 1, condition: want.Condition, hitCondition: want.HitCondition, logText: want.LogMessage})
+	}
+	if s.retainedBytes(asked.Source.Path, false)+lineBytes(asked.Source.Path, wanted) > MaxBreakpointBytes {
+		s.fail(request, errBreakpointBytes.Error())
+
+		return
 	}
 	if s.totalBreakpoints(asked.Source.Path, len(wanted), -1) > flowdebug.MaxBreakpoints {
 		s.reply(request, breakpointsBody{Breakpoints: refused(len(wanted),
@@ -1044,11 +1323,12 @@ func (s *Server) setLineBreakpoints(ctx context.Context, request inbound) {
 		return
 	}
 
+	s.forgetLines(asked.Source.Path, len(wanted))
 	answers := make([]breakpoint, 0, len(wanted))
 	for i, want := range wanted {
 		answer := answerFor(states[lineID(asked.Source.Path, i)])
 		answer.ID = s.breakpointID(lineID(asked.Source.Path, i))
-		answer.Line = want.line
+		answer.Line = new(want.line - 1 + lineBase)
 		answers = append(answers, answer)
 	}
 	s.reply(request, breakpointsBody{Breakpoints: answers})
@@ -1068,6 +1348,11 @@ func (s *Server) setFunctionBreakpoints(ctx context.Context, request inbound) {
 
 		return
 	}
+	if len(asked.Breakpoints) > flowdebug.MaxBreakpoints {
+		s.fail(request, errTooManyBreakpoints.Error())
+
+		return
+	}
 
 	wanted := make([]functionBreakpoint, 0, len(asked.Breakpoints))
 	for _, want := range asked.Breakpoints {
@@ -1077,6 +1362,11 @@ func (s *Server) setFunctionBreakpoints(ctx context.Context, request inbound) {
 			return
 		}
 		wanted = append(wanted, functionBreakpoint{name: strings.TrimSpace(*want.Name), condition: want.Condition, hitCondition: want.HitCondition})
+	}
+	if s.retainedBytes("", true)+functionBytes(wanted) > MaxBreakpointBytes {
+		s.fail(request, errBreakpointBytes.Error())
+
+		return
 	}
 	if s.totalBreakpoints("", 0, len(wanted)) > flowdebug.MaxBreakpoints {
 		s.reply(request, breakpointsBody{Breakpoints: refused(len(wanted),
@@ -1118,7 +1408,9 @@ func (s *Server) setExceptionBreakpoints(ctx context.Context, request inbound) {
 	var asked struct {
 		Filters []string `json:"filters"`
 	}
-	if err := json.Unmarshal(request.Arguments, &asked); err != nil {
+	// A missing array is malformed, not a request to clear the filters: only
+	// an explicit empty array turns failure stops off.
+	if err := json.Unmarshal(request.Arguments, &asked); err != nil || asked.Filters == nil {
 		s.fail(request, errInvalidBreakpoints.Error())
 
 		return
@@ -1163,6 +1455,57 @@ func (s *Server) setExceptionBreakpoints(ctx context.Context, request inbound) {
 		return
 	}
 	s.reply(request, nil)
+}
+
+// errBreakpointBytes fails a request whose breakpoints would take the text the
+// adapter keeps past [MaxBreakpointBytes].
+var errBreakpointBytes = fmt.Errorf("flowdap: the breakpoints' paths, conditions and log messages may total at most %d bytes", MaxBreakpointBytes)
+
+// retainedBytes is the breakpoint text held for every source but skipPath,
+// and for the function breakpoints unless skipFunctions.
+func (s *Server) retainedBytes(skipPath string, skipFunctions bool) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	total := 0
+	for path, set := range s.lines {
+		if path != skipPath {
+			total += lineBytes(path, set)
+		}
+	}
+	if !skipFunctions {
+		total += functionBytes(s.functions)
+	}
+
+	return total
+}
+
+// lineBytes is the text a source's line breakpoints hold, its path included.
+func lineBytes(path string, set []lineBreakpoint) int {
+	total := len(path)
+	for _, b := range set {
+		total += textBytes(b.condition) + textBytes(b.hitCondition) + textBytes(b.logText)
+	}
+
+	return total
+}
+
+// functionBytes is the text a set of function breakpoints holds.
+func functionBytes(set []functionBreakpoint) int {
+	total := 0
+	for _, b := range set {
+		total += len(b.name) + textBytes(b.condition) + textBytes(b.hitCondition)
+	}
+
+	return total
+}
+
+func textBytes(text *string) int {
+	if text == nil {
+		return 0
+	}
+
+	return len(*text)
 }
 
 func (s *Server) totalBreakpoints(path string, lines, functions int) int {
@@ -1275,42 +1618,62 @@ func refused(n int, message string) []breakpoint {
 	return answers
 }
 
-func (s *Server) nextSeq() int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+// send numbers one outbound message and writes it under one lock, so the
+// sequence the client reads is the order the messages were sent in: a number
+// taken under one lock and written under another could reach the client
+// behind a later one.
+func (s *Server) send(message func(seq int) any) {
+	s.out.Lock()
+	defer s.out.Unlock()
 
+	if s.hungUp {
+		return
+	}
 	s.seq++
+	_ = s.stream.WriteObject(message(s.seq))
+}
 
-	return s.seq
+// hangUp stops every later write to the client.
+func (s *Server) hangUp() {
+	s.out.Lock()
+	defer s.out.Unlock()
+
+	s.hungUp = true
 }
 
 func (s *Server) reply(request inbound, body any) {
-	_ = s.stream.WriteObject(response{
-		Seq:        s.nextSeq(),
-		Type:       "response",
-		RequestSeq: request.Seq,
-		Success:    true,
-		Command:    request.Command,
-		Body:       body,
+	s.send(func(seq int) any {
+		return response{
+			Seq:        seq,
+			Type:       "response",
+			RequestSeq: request.Seq,
+			Success:    true,
+			Command:    request.Command,
+			Body:       body,
+		}
 	})
 }
 
 func (s *Server) fail(request inbound, message string) {
-	_ = s.stream.WriteObject(response{
-		Seq:        s.nextSeq(),
-		Type:       "response",
-		RequestSeq: request.Seq,
-		Success:    false,
-		Command:    request.Command,
-		Message:    message,
+	s.send(func(seq int) any {
+		return response{
+			Seq:        seq,
+			Type:       "response",
+			RequestSeq: request.Seq,
+			Success:    false,
+			Command:    request.Command,
+			Message:    message,
+		}
 	})
 }
 
 func (s *Server) emit(name string, body any) {
-	_ = s.stream.WriteObject(event{
-		Seq:   s.nextSeq(),
-		Type:  "event",
-		Event: name,
-		Body:  body,
+	s.send(func(seq int) any {
+		return event{
+			Seq:   seq,
+			Type:  "event",
+			Event: name,
+			Body:  body,
+		}
 	})
 }

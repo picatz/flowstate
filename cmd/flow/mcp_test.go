@@ -499,14 +499,14 @@ func mcpDepsFor(posture *cobra.Command) flowmcp.Deps {
 // mcpExtraToolsFor builds the tools that are not RPCs, the same set
 // runMCP registers, so a test connects to the identical tool set an agent
 // does.
-func mcpExtraToolsFor(posture *cobra.Command) []flowmcp.ToolRegistration {
-	return mcpExtraToolsForWithProviders(posture, nil)
+func mcpExtraToolsFor(ctx context.Context, posture *cobra.Command) []flowmcp.ToolRegistration {
+	return mcpExtraToolsForWithProviders(ctx, posture, nil)
 }
 
-func mcpExtraToolsForWithProviders(posture *cobra.Command, providers *localSecrets) []flowmcp.ToolRegistration {
+func mcpExtraToolsForWithProviders(ctx context.Context, posture *cobra.Command, providers *localSecrets) []flowmcp.ToolRegistration {
 	// The command's own list, not a copy of it: a tool registered for an agent
 	// and missing here is a tool no test ever calls.
-	return stdioExtraTools(posture, providers, func() flowstatev1connect.WorkflowServiceClient { return nil })
+	return stdioExtraTools(ctx, posture, providers, func() flowstatev1connect.WorkflowServiceClient { return nil })
 }
 
 // connectMCP stands the server up over an in-memory transport and returns a
@@ -528,7 +528,7 @@ func connectMCPWithProviders(t *testing.T, posture *cobra.Command, providers *lo
 		t.Error("a local tool dialed the server")
 
 		return nil
-	}, mcpDepsFor(posture), mcpExtraToolsForWithProviders(posture, providers)...)
+	}, mcpDepsFor(posture), mcpExtraToolsForWithProviders(t.Context(), posture, providers)...)
 
 	serverTransport, clientTransport := mcp.NewInMemoryTransports()
 
@@ -1544,7 +1544,7 @@ func connectRemoteMCP(t *testing.T, posture *cobra.Command, fake *fakeWorkflowSe
 	srv := mcp.NewServer(&mcp.Implementation{Name: "flowstate", Version: "test"}, nil)
 	flowmcp.AddCapabilities(srv, mustNewFlowstateServer(t, nil), func() flowstatev1connect.WorkflowServiceClient {
 		return newWorkflowServiceClient(serverFlags{address: address})
-	}, mcpDepsFor(posture), mcpExtraToolsFor(posture)...)
+	}, mcpDepsFor(posture), mcpExtraToolsFor(t.Context(), posture)...)
 
 	serverTransport, clientTransport := mcp.NewInMemoryTransports()
 	go func() { _ = srv.Run(t.Context(), serverTransport) }()
@@ -1640,7 +1640,7 @@ func connectMCPWithDeps(t *testing.T, posture *cobra.Command, remote func() flow
 	t.Helper()
 
 	srv := mcp.NewServer(&mcp.Implementation{Name: "flowstate", Version: "test"}, nil)
-	flowmcp.AddCapabilities(srv, mustNewFlowstateServer(t, nil), remote, deps, mcpExtraToolsFor(posture)...)
+	flowmcp.AddCapabilities(srv, mustNewFlowstateServer(t, nil), remote, deps, mcpExtraToolsFor(t.Context(), posture)...)
 
 	serverTransport, clientTransport := mcp.NewInMemoryTransports()
 	go func() { _ = srv.Run(t.Context(), serverTransport) }()

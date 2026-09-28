@@ -584,8 +584,8 @@ server. Pass an absolute plugin directory in the editor's adapter arguments:
 $ flow dap --plugin-dir /usr/local/lib/flowstate/plugins
 ```
 
-The adapter launches those plugins before it validates the `program` from the
-launch request and holds them for the debug session. It deliberately ignores
+The adapter starts those plugins on the first `launch`, before it validates the
+`program`, and holds them for the debug session; an `attach` never starts them. It deliberately ignores
 `$FLOWSTATE_PLUGIN_DIR` and refuses relative directories: an opened workspace
 must not choose which executable an editor launches. `flow dap` executes the
 debuggee, so it does not accept `--plugin-catalog`; catalog-only task definitions
@@ -608,9 +608,10 @@ case, which supplies both, or `flow run local --debug` with `--input` and
 
 **What an attach reads.** `workflowId`, required; `runId`, the first run id of
 the chain to pin, unset to follow the current one; `sessionId`, to rejoin a
-session another client left attached; and `program`, the Flowfile the run was
-started from, used for lines only when it compiles to the program the run
-executes.
+session another client left attached. Nothing else: an attach has no source
+map, so it shows step addresses rather than lines. The run records no digest of
+the file it was compiled from, and a file whose lines moved since the run was
+submitted compiles to the same program, so the adapter does not guess.
 
 **A refused launch is a failed launch.** When the adapter will not start a run —
 no `program`, a file that does not compile, a workflow whose sensitive-value
@@ -634,7 +635,7 @@ It advertises what the backend reports, and refuses the rest by name.
 | `next` | steps over: a loop, parallel, switch or call runs whole | the same, at the boundaries a durable run holds |
 | `stepIn`, `stepOut` | into and out of loop iterations, parallel branches, switch arms and calls | into and out of calls |
 | `pause` | holds at the next step boundary; work already running finishes | the same |
-| Line breakpoints | resolved through the file's source map to the innermost step whose span holds the line | resolved the same way on the client when `program` matches; otherwise unverified, saying so |
+| Line breakpoints | resolved through the file's source map to the innermost step whose span holds the line | unverified, saying to name the step instead |
 | Function breakpoints | a step id or an address, such as `orders/charge` or `checks#1/fraud` | the same |
 | Conditions and hit counts | yes | yes |
 | Logpoints | yes | not advertised |
@@ -649,7 +650,7 @@ or attached` — and re-sent, with a `breakpoint` event for each, once it does.
 A run is one thread even where a `parallel:` block is running: a stop inside a
 branch is shown as a frame for that branch, not as a second thread. Frames run
 innermost first — the step, then each iteration, branch, arm or call around it —
-and navigate to the line a verified source map names. Only the innermost frame
+and, on a launch, navigate to the line the source map names. Only the innermost frame
 has a readable scope, because it is the one actually held.
 
 ### Visual Studio Code
@@ -671,8 +672,7 @@ Two configurations in `.vscode/launch.json`, one per request:
       "type": "flowstate",
       "request": "attach",
       "name": "Attach to a durable run",
-      "workflowId": "${input:workflowId}",
-      "program": "${workspaceFolder}/examples/debugging/workflow.yaml"
+      "workflowId": "${input:workflowId}"
     }
   ],
   "inputs": [

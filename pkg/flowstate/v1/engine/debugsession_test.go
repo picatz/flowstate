@@ -1,6 +1,7 @@
 package engine_test
 
 import (
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -201,6 +202,12 @@ func TestATypedSessionStepsIntoAndOutOfACall(t *testing.T) {
 	assert.True(t, stop.GetBreakpoints()[0].GetVerified())
 	assert.EqualValues(t, 1, stop.GetBreakpoints()[0].GetHits())
 	assert.False(t, stop.GetBreakpoints()[1].GetVerified())
+	// Each state carries the breakpoint as it was set, armed or not, so a
+	// client that did not set the set can resend it whole.
+	assert.True(t, proto.Equal(&v1.DebugBreakpoint{Id: "b", Step: "second", Condition: "steps.first != null"},
+		stop.GetBreakpoints()[0].GetDefinition()), "%v", stop.GetBreakpoints()[0].GetDefinition())
+	assert.True(t, proto.Equal(&v1.DebugBreakpoint{Id: "nowhere", Step: "missing"},
+		stop.GetBreakpoints()[1].GetDefinition()), "%v", stop.GetBreakpoints()[1].GetDefinition())
 
 	detached := tl.reads["detached"]
 	assert.Equal(t, v1.DebugRunState_DEBUG_RUN_STATE_DETACHED, detached.GetState())
@@ -211,6 +218,129 @@ func TestATypedSessionStepsIntoAndOutOfACall(t *testing.T) {
 		observed = append(observed, observation.GetText())
 	}
 	assert.Contains(t, observed, "greet finished")
+}
+
+// TestADurableBreakpointInsideABodyIsNotArmed: a durable run holds only at
+// the top level of the run and of a callee, so a breakpoint on a step inside
+// a loop body is reported unarmed, with why, rather than armed and silent.
+func TestADurableBreakpointInsideABodyIsNotArmed(t *testing.T) {
+	t.Parallel()
+
+	tl := newTimeline(t)
+	const sre = "sre-1@example.com"
+	tl.ask(30*time.Second, sre, &v1.DebugAsk{Verb: v1.DebugVerbPause, Session: "s1", Request: "attach", Lease: 5 * time.Minute})
+	tl.ask(65*time.Second, sre, &v1.DebugAsk{Verb: v1.DebugVerbBreakpoints, Session: "s1", Request: "bp",
+		Breakpoints: &v1.DebugSetBreakpointsRequest{Breakpoints: []*v1.DebugBreakpoint{
+			{Id: "body", Step: "each/touch"},
+			{Id: "bare", Step: "touch"},
+			{Id: "top", Step: "second"},
+		}}})
+	tl.read(66*time.Second, "set", "bp")
+	tl.ask(70*time.Second, sre, &v1.DebugAsk{Verb: v1.DebugVerbResume, Session: "s1", Request: "go",
+		Action: v1.DebugResumeAction_DEBUG_RESUME_ACTION_CONTINUE})
+	tl.read(71*time.Second, "stop", "go")
+	tl.ask(80*time.Second, sre, &v1.DebugAsk{Verb: v1.DebugVerbResume, Session: "s1", Request: "bye",
+		Action: v1.DebugResumeAction_DEBUG_RESUME_ACTION_DETACH})
+
+	spec := typedSpec("bodies")
+	spec.Steps = slices.Insert(spec.Steps, 3, &v1.Node{Id: "each", Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{
+		Items: v1.NewLiteralList(v1.NewLiteral("a"), v1.NewLiteral("b")), Iterator: "item",
+		Body: []*v1.Node{logStep("touch", "touched")},
+	}}})
+	tl.env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: spec})
+	require.True(t, tl.env.IsWorkflowCompleted())
+	require.NoError(t, tl.env.GetWorkflowError())
+
+	states := map[string]*v1.DebugBreakpointState{}
+	for _, state := range tl.reads["set"].GetBreakpoints() {
+		states[state.GetId()] = state
+	}
+	require.Len(t, states, 3)
+	for _, id := range []string{"body", "bare"} {
+		assert.False(t, states[id].GetVerified(), "%s is armed where the durable run never holds", id)
+		assert.Contains(t, states[id].GetMessage(), "never holds in")
+		assert.Empty(t, states[id].GetSites())
+	}
+	assert.True(t, states["top"].GetVerified())
+
+	stop := tl.reads["stop"]
+	assert.Equal(t, v1.DebugStopReason_DEBUG_STOP_REASON_BREAKPOINT, stop.GetReason())
+	assert.Equal(t, "second", stop.GetOccurrence().GetAddress())
+}
+
+// TestADurableUntilInsideABodyIsRefused: `until` a step the durable run never
+// holds at would release the run to its end. It is refused with the
+// breakpoint's reasoning, and the run stays held where it was.
+func TestADurableUntilInsideABodyIsRefused(t *testing.T) {
+	t.Parallel()
+
+	tl := newTimeline(t)
+	const sre = "sre-1@example.com"
+	tl.ask(30*time.Second, sre, &v1.DebugAsk{Verb: v1.DebugVerbPause, Session: "s1", Request: "attach", Lease: 5 * time.Minute})
+	tl.read(65*time.Second, "held", "attach")
+	tl.ask(70*time.Second, sre, &v1.DebugAsk{Verb: v1.DebugVerbResume, Session: "s1", Request: "into-body",
+		Action: v1.DebugResumeAction_DEBUG_RESUME_ACTION_RUN_UNTIL, Until: "each/touch"})
+	tl.read(71*time.Second, "refused", "into-body")
+	tl.ask(80*time.Second, sre, &v1.DebugAsk{Verb: v1.DebugVerbResume, Session: "s1", Request: "to-second",
+		Action: v1.DebugResumeAction_DEBUG_RESUME_ACTION_RUN_UNTIL, Until: "second"})
+	tl.read(81*time.Second, "arrived", "to-second")
+	tl.ask(90*time.Second, sre, &v1.DebugAsk{Verb: v1.DebugVerbResume, Session: "s1", Request: "bye",
+		Action: v1.DebugResumeAction_DEBUG_RESUME_ACTION_DETACH})
+
+	spec := typedSpec("until-bodies")
+	spec.Steps = slices.Insert(spec.Steps, 3, &v1.Node{Id: "each", Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{
+		Items: v1.NewLiteralList(v1.NewLiteral("a"), v1.NewLiteral("b")), Iterator: "item",
+		Body: []*v1.Node{logStep("touch", "touched")},
+	}}})
+	tl.env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: spec})
+	require.True(t, tl.env.IsWorkflowCompleted())
+	require.NoError(t, tl.env.GetWorkflowError())
+
+	held, refused := tl.reads["held"], tl.reads["refused"]
+	require.Equal(t, v1.DebugRunState_DEBUG_RUN_STATE_HELD, held.GetState())
+	assert.Equal(t, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_REFUSED, refused.GetReceipt().GetStatus())
+	assert.Contains(t, refused.GetReceipt().GetMessage(), "inside a loop body, a parallel branch or a switch arm")
+	assert.Contains(t, refused.GetReceipt().GetMessage(), "run until the enclosing step instead")
+	assert.Equal(t, v1.DebugRunState_DEBUG_RUN_STATE_HELD, refused.GetState(), "a refused until moved the run")
+	assert.Equal(t, held.GetRevision(), refused.GetRevision())
+	assert.Equal(t, held.GetOccurrence().GetAddress(), refused.GetOccurrence().GetAddress())
+
+	arrived := tl.reads["arrived"]
+	assert.Equal(t, v1.DebugStopReason_DEBUG_STOP_REASON_UNTIL, arrived.GetReason())
+	assert.Equal(t, "second", arrived.GetOccurrence().GetAddress())
+}
+
+// TestAHistoryBeforeTheUntilRefusalStillReleasesTheRun is the replay half of
+// [engine.UntilRefusalChange]: a run recorded by the engine before the refusal
+// applied such a resume and ran on, so a history without the marker must be
+// answered the same way, or its replay parks where history has it running.
+func TestAHistoryBeforeTheUntilRefusalStillReleasesTheRun(t *testing.T) {
+	t.Parallel()
+
+	tl := newTimeline(t)
+	tl.env.OnGetVersion(engine.UntilRefusalChange, workflow.DefaultVersion, 1).Return(workflow.DefaultVersion)
+	const sre = "sre-1@example.com"
+	tl.ask(30*time.Second, sre, &v1.DebugAsk{Verb: v1.DebugVerbPause, Session: "s1", Request: "attach", Lease: 5 * time.Minute})
+	tl.ask(70*time.Second, sre, &v1.DebugAsk{Verb: v1.DebugVerbResume, Session: "s1", Request: "into-body",
+		Action: v1.DebugResumeAction_DEBUG_RESUME_ACTION_RUN_UNTIL, Until: "each/touch"})
+	tl.read(71*time.Second, "applied", "into-body")
+
+	spec := typedSpec("until-before")
+	spec.Steps = slices.Insert(spec.Steps, 3, &v1.Node{Id: "each", Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{
+		Items: v1.NewLiteralList(v1.NewLiteral("a"), v1.NewLiteral("b")), Iterator: "item",
+		Body: []*v1.Node{logStep("touch", "touched")},
+	}}})
+	// Alive when it is read, so the read sees where the resume left it.
+	spec.Steps = append(spec.Steps, sleepStep("linger", time.Hour))
+	tl.env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: spec})
+	require.True(t, tl.env.IsWorkflowCompleted())
+	require.NoError(t, tl.env.GetWorkflowError())
+
+	applied := tl.reads["applied"]
+	require.NotNil(t, applied)
+	assert.Equal(t, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_APPLIED, applied.GetReceipt().GetStatus(),
+		"a history recorded before the refusal applied this resume")
+	assert.Equal(t, v1.DebugRunState_DEBUG_RUN_STATE_RUNNING, applied.GetState(), "the resume did not release the run")
 }
 
 func TestATypedSessionExpiresAndTheRunResumes(t *testing.T) {
@@ -345,4 +475,32 @@ func TestATypedAskIsBoundedWhereTheRunReadsIt(t *testing.T) {
 	assert.Equal(t, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_REFUSED, garbled.GetStatus())
 	assert.LessOrEqual(t, len(garbled.GetMessage()), v1.MaxDebugReceiptMessageBytes)
 	assert.True(t, utf8.ValidString(garbled.GetMessage()), "a capped message was cut inside a rune")
+}
+
+// TestATypedSessionIsNotReleasedByAMalformedOrLegacyResume: while a typed
+// session holds the run, a legacy resume on the same channel, even from the
+// holder, and a typed resume that names no action are both refused. Either
+// would let the run go under a session that still believes it holds it.
+func TestATypedSessionIsNotReleasedByAMalformedOrLegacyResume(t *testing.T) {
+	t.Parallel()
+
+	tl := newTimeline(t)
+	tl.ask(30*time.Second, "sre-1@example.com", &v1.DebugAsk{Verb: v1.DebugVerbPause, Session: "s1", Request: "attach"})
+	tl.env.RegisterDelayedCallback(func() {
+		tl.env.SignalWorkflow(v1.DebugSignal, debugAsk(v1.DebugVerbResume, "sre-1@example.com", 0))
+	}, 62*time.Second)
+	tl.ask(62*time.Second+time.Millisecond, "sre-1@example.com", &v1.DebugAsk{Verb: v1.DebugVerbResume, Session: "s1", Request: "no-action"})
+	tl.read(63*time.Second, "after", "no-action")
+	tl.ask(64*time.Second, "sre-1@example.com", &v1.DebugAsk{Verb: v1.DebugVerbResume, Session: "s1", Request: "bye",
+		Action: v1.DebugResumeAction_DEBUG_RESUME_ACTION_DETACH})
+
+	tl.env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: typedSpec("legacy-resume")})
+	require.NoError(t, tl.env.GetWorkflowError())
+
+	after := tl.reads["after"]
+	require.NotNil(t, after, "the run ended before it was read")
+	assert.Equal(t, v1.DebugRunState_DEBUG_RUN_STATE_HELD, after.GetState(), "the session lost its hold")
+	assert.Equal(t, "s1", after.GetSession().GetSessionId())
+	assert.Equal(t, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_REFUSED, after.GetReceipt().GetStatus(),
+		"a typed resume naming no action was applied")
 }

@@ -514,6 +514,7 @@ func runWorkflow(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutput
 	}
 	if debug.declared {
 		debug.irDigest = v1.WorkflowIRDigest(st.GetWorkflow())
+		debug.rootSensitive = v1.SensitiveInputValues(st.GetInputs(), v1.SensitiveInputNames(st.GetWorkflow()))
 	}
 	if err := setDebugQueries(ctx, debug, st.GetWorkflow); err != nil {
 		return nil, fmt.Errorf("register debug queries: %w", err)

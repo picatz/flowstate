@@ -222,7 +222,9 @@ func replayDebugScript(cmd *cobra.Command, args []string) error {
 		steps = stepIDs(workflow)
 	}
 
-	if problems, total := flowdebug.CheckScript(lines, steps); len(problems) > 0 {
+	// The workflow too, when it parsed, so an address is resolved against its
+	// sites as the prompt resolves it.
+	if problems, total := flowdebug.CheckScriptFor(lines, steps, workflow); len(problems) > 0 {
 		return scriptProblemsError(scriptPath, problems, total)
 	}
 

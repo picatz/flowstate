@@ -84,7 +84,7 @@ func constraintCELType(t InputDeclaration_Type) *cel.Type {
 // mustEnvs caches the CEL environment built for each profile and declared
 // type's `must:` expressions. Building an environment
 // parses and type-checks every declaration in it, per [celenv.go]'s own
-// reasoning for caching — small here because there are only the six declared
+// reasoning for caching — small here because there are only the seven declared
 // types plus the output case, but the same reason applies.
 var mustEnvs sync.Map // map[mustEnvKey]*mustEnvResult
 

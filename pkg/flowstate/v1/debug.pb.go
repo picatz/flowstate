@@ -3085,7 +3085,12 @@ type DebugBreakpointState struct {
 	// redaction. Such an arrival does not stop the run.
 	LastError string `protobuf:"bytes,6,opt,name=last_error,json=lastError,proto3" json:"last_error,omitempty"`
 	// Source is where the resolved site came from, when a source map says so.
-	Source        *DebugSourceLocation `protobuf:"bytes,7,opt,name=source,proto3" json:"source,omitempty"`
+	Source *DebugSourceLocation `protobuf:"bytes,7,opt,name=source,proto3" json:"source,omitempty"`
+	// Definition is the breakpoint as it was set, redacted as [id] is, so a
+	// client that did not set it can resend the whole set without dropping it:
+	// a set is replaced whole, and a state alone does not say how to rebuild
+	// the breakpoint it describes.
+	Definition    *DebugBreakpoint `protobuf:"bytes,8,opt,name=definition,proto3" json:"definition,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3165,6 +3170,13 @@ func (x *DebugBreakpointState) GetLastError() string {
 func (x *DebugBreakpointState) GetSource() *DebugSourceLocation {
 	if x != nil {
 		return x.Source
+	}
+	return nil
+}
+
+func (x *DebugBreakpointState) GetDefinition() *DebugBreakpoint {
+	if x != nil {
+		return x.Definition
 	}
 	return nil
 }
@@ -4443,7 +4455,7 @@ const file_flowstate_v1_debug_proto_rawDesc = "" +
 	"logMessage\"J\n" +
 	"\x0fDebugSourceLine\x12\x1a\n" +
 	"\x03uri\x18\x01 \x01(\tB\b\xbaH\x05r\x03\x18\x80 R\x03uri\x12\x1b\n" +
-	"\x04line\x18\x02 \x01(\rB\a\xbaH\x04*\x02(\x01R\x04line\"\xa2\x02\n" +
+	"\x04line\x18\x02 \x01(\rB\a\xbaH\x04*\x02(\x01R\x04line\"\xe1\x02\n" +
 	"\x14DebugBreakpointState\x12\x18\n" +
 	"\x02id\x18\x01 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x01R\x02id\x12\x1a\n" +
 	"\bverified\x18\x02 \x01(\bR\bverified\x12\"\n" +
@@ -4452,7 +4464,10 @@ const file_flowstate_v1_debug_proto_rawDesc = "" +
 	"\x05sites\x18\x05 \x03(\v2\x17.flowstate.v1.DebugSiteB\t\xbaH\x06\x92\x01\x03\x10\x80\bR\x05sites\x12'\n" +
 	"\n" +
 	"last_error\x18\x06 \x01(\tB\b\xbaH\x05r\x03\x18\x80 R\tlastError\x129\n" +
-	"\x06source\x18\a \x01(\v2!.flowstate.v1.DebugSourceLocationR\x06source\"\xbf\x01\n" +
+	"\x06source\x18\a \x01(\v2!.flowstate.v1.DebugSourceLocationR\x06source\x12=\n" +
+	"\n" +
+	"definition\x18\b \x01(\v2\x1d.flowstate.v1.DebugBreakpointR\n" +
+	"definition\"\xbf\x01\n" +
 	"\n" +
 	"DebugValue\x12\x1c\n" +
 	"\x04type\x18\x01 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x02R\x04type\x12%\n" +
@@ -4760,39 +4775,40 @@ var file_flowstate_v1_debug_proto_depIdxs = []int32{
 	32, // 31: flowstate.v1.DebugBreakpoint.line:type_name -> flowstate.v1.DebugSourceLine
 	19, // 32: flowstate.v1.DebugBreakpointState.sites:type_name -> flowstate.v1.DebugSite
 	23, // 33: flowstate.v1.DebugBreakpointState.source:type_name -> flowstate.v1.DebugSourceLocation
-	34, // 34: flowstate.v1.DebugVariable.value:type_name -> flowstate.v1.DebugValue
-	51, // 35: flowstate.v1.DebugAttachRequest.lease:type_name -> google.protobuf.Duration
-	51, // 36: flowstate.v1.DebugAttachRequest.wait:type_name -> google.protobuf.Duration
-	30, // 37: flowstate.v1.DebugAttachResponse.receipt:type_name -> flowstate.v1.DebugReceipt
-	29, // 38: flowstate.v1.DebugAttachResponse.snapshot:type_name -> flowstate.v1.DebugSnapshot
-	51, // 39: flowstate.v1.DebugGetRequest.wait:type_name -> google.protobuf.Duration
-	29, // 40: flowstate.v1.DebugGetResponse.snapshot:type_name -> flowstate.v1.DebugSnapshot
-	6,  // 41: flowstate.v1.DebugResumeRequest.action:type_name -> flowstate.v1.DebugResumeAction
-	51, // 42: flowstate.v1.DebugResumeRequest.wait:type_name -> google.protobuf.Duration
-	30, // 43: flowstate.v1.DebugResumeResponse.receipt:type_name -> flowstate.v1.DebugReceipt
-	29, // 44: flowstate.v1.DebugResumeResponse.snapshot:type_name -> flowstate.v1.DebugSnapshot
-	31, // 45: flowstate.v1.DebugSetBreakpointsRequest.breakpoints:type_name -> flowstate.v1.DebugBreakpoint
-	8,  // 46: flowstate.v1.DebugSetBreakpointsRequest.failure_mode:type_name -> flowstate.v1.DebugFailureMode
-	51, // 47: flowstate.v1.DebugSetBreakpointsRequest.wait:type_name -> google.protobuf.Duration
-	30, // 48: flowstate.v1.DebugSetBreakpointsResponse.receipt:type_name -> flowstate.v1.DebugReceipt
-	33, // 49: flowstate.v1.DebugSetBreakpointsResponse.breakpoints:type_name -> flowstate.v1.DebugBreakpointState
-	29, // 50: flowstate.v1.DebugSetBreakpointsResponse.snapshot:type_name -> flowstate.v1.DebugSnapshot
-	34, // 51: flowstate.v1.DebugInspectResponse.value:type_name -> flowstate.v1.DebugValue
-	35, // 52: flowstate.v1.DebugInspectResponse.children:type_name -> flowstate.v1.DebugVariable
-	48, // 53: flowstate.v1.DebugCarry.holder:type_name -> flowstate.v1.WorkloadIdentity
-	49, // 54: flowstate.v1.DebugCarry.attached_at:type_name -> google.protobuf.Timestamp
-	49, // 55: flowstate.v1.DebugCarry.deadline:type_name -> google.protobuf.Timestamp
-	49, // 56: flowstate.v1.DebugCarry.lease_expires_at:type_name -> google.protobuf.Timestamp
-	51, // 57: flowstate.v1.DebugCarry.lease:type_name -> google.protobuf.Duration
-	6,  // 58: flowstate.v1.DebugCarry.next:type_name -> flowstate.v1.DebugResumeAction
-	31, // 59: flowstate.v1.DebugCarry.breakpoints:type_name -> flowstate.v1.DebugBreakpoint
-	30, // 60: flowstate.v1.DebugCarry.receipts:type_name -> flowstate.v1.DebugReceipt
-	3,  // 61: flowstate.v1.DebugCarry.ended:type_name -> flowstate.v1.DebugRunState
-	62, // [62:62] is the sub-list for method output_type
-	62, // [62:62] is the sub-list for method input_type
-	62, // [62:62] is the sub-list for extension type_name
-	62, // [62:62] is the sub-list for extension extendee
-	0,  // [0:62] is the sub-list for field type_name
+	31, // 34: flowstate.v1.DebugBreakpointState.definition:type_name -> flowstate.v1.DebugBreakpoint
+	34, // 35: flowstate.v1.DebugVariable.value:type_name -> flowstate.v1.DebugValue
+	51, // 36: flowstate.v1.DebugAttachRequest.lease:type_name -> google.protobuf.Duration
+	51, // 37: flowstate.v1.DebugAttachRequest.wait:type_name -> google.protobuf.Duration
+	30, // 38: flowstate.v1.DebugAttachResponse.receipt:type_name -> flowstate.v1.DebugReceipt
+	29, // 39: flowstate.v1.DebugAttachResponse.snapshot:type_name -> flowstate.v1.DebugSnapshot
+	51, // 40: flowstate.v1.DebugGetRequest.wait:type_name -> google.protobuf.Duration
+	29, // 41: flowstate.v1.DebugGetResponse.snapshot:type_name -> flowstate.v1.DebugSnapshot
+	6,  // 42: flowstate.v1.DebugResumeRequest.action:type_name -> flowstate.v1.DebugResumeAction
+	51, // 43: flowstate.v1.DebugResumeRequest.wait:type_name -> google.protobuf.Duration
+	30, // 44: flowstate.v1.DebugResumeResponse.receipt:type_name -> flowstate.v1.DebugReceipt
+	29, // 45: flowstate.v1.DebugResumeResponse.snapshot:type_name -> flowstate.v1.DebugSnapshot
+	31, // 46: flowstate.v1.DebugSetBreakpointsRequest.breakpoints:type_name -> flowstate.v1.DebugBreakpoint
+	8,  // 47: flowstate.v1.DebugSetBreakpointsRequest.failure_mode:type_name -> flowstate.v1.DebugFailureMode
+	51, // 48: flowstate.v1.DebugSetBreakpointsRequest.wait:type_name -> google.protobuf.Duration
+	30, // 49: flowstate.v1.DebugSetBreakpointsResponse.receipt:type_name -> flowstate.v1.DebugReceipt
+	33, // 50: flowstate.v1.DebugSetBreakpointsResponse.breakpoints:type_name -> flowstate.v1.DebugBreakpointState
+	29, // 51: flowstate.v1.DebugSetBreakpointsResponse.snapshot:type_name -> flowstate.v1.DebugSnapshot
+	34, // 52: flowstate.v1.DebugInspectResponse.value:type_name -> flowstate.v1.DebugValue
+	35, // 53: flowstate.v1.DebugInspectResponse.children:type_name -> flowstate.v1.DebugVariable
+	48, // 54: flowstate.v1.DebugCarry.holder:type_name -> flowstate.v1.WorkloadIdentity
+	49, // 55: flowstate.v1.DebugCarry.attached_at:type_name -> google.protobuf.Timestamp
+	49, // 56: flowstate.v1.DebugCarry.deadline:type_name -> google.protobuf.Timestamp
+	49, // 57: flowstate.v1.DebugCarry.lease_expires_at:type_name -> google.protobuf.Timestamp
+	51, // 58: flowstate.v1.DebugCarry.lease:type_name -> google.protobuf.Duration
+	6,  // 59: flowstate.v1.DebugCarry.next:type_name -> flowstate.v1.DebugResumeAction
+	31, // 60: flowstate.v1.DebugCarry.breakpoints:type_name -> flowstate.v1.DebugBreakpoint
+	30, // 61: flowstate.v1.DebugCarry.receipts:type_name -> flowstate.v1.DebugReceipt
+	3,  // 62: flowstate.v1.DebugCarry.ended:type_name -> flowstate.v1.DebugRunState
+	63, // [63:63] is the sub-list for method output_type
+	63, // [63:63] is the sub-list for method input_type
+	63, // [63:63] is the sub-list for extension type_name
+	63, // [63:63] is the sub-list for extension extendee
+	0,  // [0:63] is the sub-list for field type_name
 }
 
 func init() { file_flowstate_v1_debug_proto_init() }

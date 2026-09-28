@@ -78,6 +78,12 @@ type debugControl struct {
 	// [v1.DebugSession] so the record is complete on its own.
 	run *v1.RunAddress
 
+	// rootSensitive is the run's own declared-sensitive inputs, taken once at
+	// the top of the segment. Sensitivity belongs to a value's origin, so text
+	// kept for a debugger inside a callee is withheld against these as well as
+	// against the callee's own declarations.
+	rootSensitive v1.SensitiveValues
+
 	// lease is the hold, or nil when nothing holds this run. It is
 	// [v1.DebugSession] rather than a struct of its own because that message
 	// is the schema's answer to "who is debugging which run, and until when",
@@ -491,6 +497,17 @@ func (e *executor) applyDebugAsk(delivery *v1.SignalDelivery, parked bool) (defe
 		// the hold is already over, and "you are not the holder" says somebody
 		// else has it. A diagnostic that misdescribes what happened is worse
 		// than no diagnostic, so the arm stays and the reason is here.
+		//
+		// While a typed session is attached, its commands own the hold: a
+		// legacy resume would clear the lease under a session that still
+		// believes it holds the run, and the session would then read as
+		// expired to the client driving it.
+		if e.debug.attached() {
+			logger.Warn("refusing a legacy debug resume: a typed debug session is attached",
+				"sender", who, "session", e.debug.carry.GetSessionId())
+
+			return false
+		}
 		if !held {
 			logger.Info("ignoring a debug resume: this run holds no debug lease",
 				"sender", who)

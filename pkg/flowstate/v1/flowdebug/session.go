@@ -683,7 +683,8 @@ func New(opts Options) (*Session, error) {
 		if notice, unknown := s.unknownStepNotice(id); unknown {
 			return nil, fmt.Errorf("flowdebug: breakpoint: %s", notice)
 		}
-		s.breakpoints[id] = breakpoint{source: id, id: id, target: v1.ParseDebugTargetOrStep(id)}
+		s.breakpoints[id] = breakpoint{source: id, id: id, target: v1.ParseDebugTargetOrStep(id),
+			definition: &v1.DebugBreakpoint{Id: id, Step: id}}
 	}
 
 	// Where the first stop lands, and why it depends on nothing else: an
@@ -929,6 +930,9 @@ type breakpoint struct {
 	// site, when set, arms exactly one site by its key rather than a target:
 	// a source-line breakpoint resolved through the source map.
 	site string
+	// definition is the breakpoint as it was set, which a snapshot reports so
+	// a client that did not set it can resend it.
+	definition *v1.DebugBreakpoint
 }
 
 // conditionHolds answers whether an arrival gated by a condition should stop —

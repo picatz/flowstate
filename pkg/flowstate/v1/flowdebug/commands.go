@@ -729,7 +729,8 @@ func (s *Session) addBreakpoint(ctx context.Context, rest string, scope *v1.Scop
 
 	target := v1.ParseDebugTargetOrStep(id)
 
-	at := breakpoint{source: rest, id: id, target: target, hit: hit}
+	at := breakpoint{source: rest, id: id, target: target, hit: hit,
+		definition: &v1.DebugBreakpoint{Id: id, Step: id, HitCondition: hitText}}
 	if hitText != "" {
 		at.source = id + " hit " + hitText + strings.TrimPrefix(rest, id)
 	}
@@ -741,6 +742,7 @@ func (s *Session) addBreakpoint(ctx context.Context, rest string, scope *v1.Scop
 			return
 		}
 		at.condition = compiled
+		at.definition.Condition = strings.TrimSpace(condition)
 	}
 
 	full := !s.holdBreakpoint(id, at)
@@ -886,7 +888,7 @@ func (s *Session) unknownStepNotice(id string) (string, bool) {
 			return fmt.Sprintf("no step named %q: this workflow declares %s", id, stepList(ids)), true
 		}
 
-		return fmt.Sprintf("no step matches %q: its last part names the step, and each part before it an enclosing loop, parallel, switch, or call", id), true
+		return noSiteMatches(id), true
 	}
 	id = target.Step()
 
@@ -932,6 +934,12 @@ func (s *Session) unknownStepNotice(id string) (string, bool) {
 	// inventory on every refusal is work a redirected stdin chooses the
 	// amount of, and refused commands are not recorded (Codex, #1347).
 	return fmt.Sprintf("no step named %q: this workflow declares %s", id, stepList(names)), true
+}
+
+// noSiteMatches is the refusal of an address no site of the program matches,
+// in the words the prompt and a script check share.
+func noSiteMatches(id string) string {
+	return fmt.Sprintf("no step matches %q: its last part names the step, and each part before it an enclosing loop, parallel, switch, or call", id)
 }
 
 // holdBreakpoint puts one breakpoint in the set, reporting whether there was
@@ -1182,7 +1190,8 @@ func (s *Session) addLogpoint(rest string) {
 	}
 
 	source := id + " " + message
-	if !s.holdBreakpoint("log "+id, breakpoint{source: "log " + source, id: "log " + id, target: target, log: template}) {
+	if !s.holdBreakpoint("log "+id, breakpoint{source: "log " + source, id: "log " + id, target: target, log: template,
+		definition: &v1.DebugBreakpoint{Id: "log " + id, Step: id, LogMessage: message}}) {
 		s.printfTone(ToneWarning, "a session holds at most %d breakpoints\n", MaxBreakpoints)
 
 		return

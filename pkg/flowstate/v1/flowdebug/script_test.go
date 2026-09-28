@@ -2,6 +2,8 @@ package flowdebug_test
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -10,6 +12,7 @@ import (
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowdebug"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 )
 
 // A recorded script is what a session read, written down. The tests here are
@@ -435,4 +438,40 @@ func recordSession(t *testing.T, script string) (*flowdebug.Session, string, []s
 	require.NoError(t, err)
 
 	return session, console.String(), ran.ids
+}
+
+// TestAScriptResolvesAddressesAsThePromptDoes: a `break` or `until` naming a
+// step by address is checked against the workflow's sites with the resolver
+// the prompt uses, so a script is refused for exactly the addresses the
+// prompt would refuse, and for no others.
+func TestAScriptResolvesAddressesAsThePromptDoes(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	for name, text := range map[string]string{"main.yaml": journeyFlowfile, "child.yaml": childFlowfile} {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte(text), 0o600))
+	}
+	workflow, _, err := flowfile.ParseFile(filepath.Join(dir, "main.yaml"))
+	require.NoError(t, err)
+	steps := []string{"start", "each", "touch", "checks", "left", "right", "nested", "greet", "wave", "price", "done"}
+
+	run := startDebugRun(t, "main.yaml", map[string]string{"main.yaml": journeyFlowfile, "child.yaml": childFlowfile}, nil)
+	waitHeld(t, run.session, 0)
+	driver := flowdebug.NewDriver(run.session)
+
+	for _, address := range []string{"each/touch", "checks#1/right", "nested/greet", "touch"} {
+		problems, _ := flowdebug.CheckScriptFor([]string{"break " + address, "until " + address}, steps, workflow)
+		assert.Empty(t, problems, "a script refused %q", address)
+
+		armed, err := driver.Do(t.Context(), "break "+address)
+		require.NoError(t, err)
+		assert.Contains(t, armed.Text, "breakpoint at "+address, "the prompt's resolver refused %q too", address)
+	}
+
+	problems, _ := flowdebug.CheckScriptFor([]string{"break each/nowhere"}, steps, workflow)
+	require.Len(t, problems, 1)
+	assert.Contains(t, problems[0].Message, `no step matches "each/nowhere"`)
+	refused, err := driver.Do(t.Context(), "break each/nowhere")
+	require.NoError(t, err)
+	assert.Contains(t, refused.Text, "not armed")
 }
