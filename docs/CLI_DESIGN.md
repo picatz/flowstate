@@ -652,16 +652,20 @@ carries either `outputs` (values only, no per-step status or timing) or an
 an event history: `GetTimeline` returns the scheduled, completed, failed,
 timed-out, and canceled events of every activity, with their times, plus timer
 and signal events for waits. Most activities are task steps; the rest are
-`vars:` evaluation and capability admission, which a consumer tells apart by
-label. That label is for display, not a key: `engine/summary.go` elides the
-outer step ids of a position past 256 bytes, so two deeply nested steps can
-render the same string, and a run started before labels existed has none. A
-skipped step, a `value:` step, and the control-flow nodes (`call`, `for_each`,
-`loop`, `parallel`, `switch`) record no outcome event. So "task X succeeded in
-12s while task Y is still running" can be *read* from the timeline, but a graph
-overlay needs every event joined losslessly to a `GraphNode.id` and an outcome
-for every other node, and nothing carries either today. Supplying them, reusing
-the timeline for what it already records rather than restating it, is
+compensations (an `undo:` is dispatched through the same activity types as a
+forward step, labelled `` `id` · undo `` by step id alone), `vars:` evaluation,
+and capability admission, and today only the label tells them apart. That label
+is for display, not a key: `engine/summary.go` elides the outer step ids of a
+position past 256 bytes, so two deeply nested steps can render the same string,
+a `for_each` or `loop` body step's iterations all carry one label, and a run
+started before labels existed has none. A skipped step, a `value:` step, and
+the control-flow nodes (`call`, `for_each`, `loop`, `parallel`, `switch`) record
+no outcome event. So "task X succeeded in 12s while task Y is still running"
+can be *read* from the timeline, but a graph overlay needs every event joined
+losslessly to a `GraphNode.id`, compensations told apart from forward steps,
+the occurrences of a repeated node aggregated by a stated rule, and an outcome
+for every other node, and nothing carries any of that today. Supplying it,
+reusing the timeline for what it already records rather than restating it, is
 therefore its own slice
 (gap inventory slice 3), settled and reviewed before any overlay code is
 written, and every overlay-producing path in this
@@ -762,8 +766,7 @@ post-mortem: "show me the shape of this workflow, coloured by how the failed run
 actually went." This is blocked on the same run-telemetry schema 6.1 names
 (gap inventory slice 3) for the identical reason: a finished run's timeline
 records task activity only under a display label that cannot key a node, and
-the other nodes record no outcome; a lossless node identity and those outcomes
-are what that slice adds. The flag and its rendering are designed now so the
+the other nodes record no outcome; what 6.1 lists is what that slice adds. The flag and its rendering are designed now so the
 exporter slice does not have to be revisited when the telemetry lands; the flag
 itself does not ship until slice 3 does.
 
@@ -974,15 +977,26 @@ line. What is not: everything below.
    is elided past 256 bytes and empty on runs started before labels existed —
    not a node identity. A skipped step, a `value:` step, and the control-flow
    nodes (`call`, `for_each`, `loop`, `parallel`, `switch`) record no outcome
-   event, and no response carries outcomes as an aggregate: `RunProgress` has only the
-   current top-level step, a partial path, and a segment-local completed
-   count, and `GetResponse` for a finished run carries output values or an
-   error. This slice adds what the timeline lacks — a canonical node identity
-   that joins each event to its `GraphNode.id` without loss, and outcomes for
-   the nodes that record none — as additive fields or events `buf breaking`
-   accepts, and reuses the timeline for what it already records; it does not
-   pre-decide the message shape. Two representations of
-   one task step's outcome are what it must avoid. This slice blocks the
+   event, and no response carries outcomes as an aggregate: `RunProgress` has
+   only the current top-level step, a partial path, and a segment-local
+   completed count, and `GetResponse` for a finished run carries output values
+   or an error. This slice adds what the timeline lacks, as additive fields or
+   events `buf breaking` accepts, and reuses the timeline for what it already
+   records:
+   - a canonical node identity that joins each event to its `GraphNode.id`
+     without loss;
+   - an occurrence identity for a node that runs more than once (a `for_each`
+     or `loop` body's iterations share one node and one label today), and the
+     rule by which a per-node overlay aggregates those occurrences' outcomes
+     and durations;
+   - compensation events marked as compensations, so a completed `undo:` is
+     never read as its forward step's completion (a compensation is dispatched
+     from the run-level undo stack, whose entries carry a step id and no
+     position);
+   - outcomes for the nodes that record none.
+
+   It does not pre-decide the message shape. Two representations of one task
+   step's outcome are what it must avoid. This slice blocks the
    run-state overlay in 6.1/6.2/6.3 *and* the step/timeline tree's per-step
    duration in section 3 — both are named as blocked on it rather than
    re-solved independently, since it is one gap with two consumers.
