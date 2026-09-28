@@ -514,7 +514,12 @@ func TestATypedSessionIsNotReleasedByAMalformedOrLegacyResume(t *testing.T) {
 func TestATruncatedDurableUntilRefusesAStepTheProgramNeverDeclares(t *testing.T) {
 	t.Parallel()
 
+	// A program at [v1.MaxDebugStaticSites] is at a bound: decoding it and
+	// enumerating its sites is workflow-side work the worker's own budget
+	// admits and the SDK's one-second default, under the race detector,
+	// does not. See [atABound].
 	tl := newTimeline(t)
+	atABound(tl.env)
 	const sre = "sre-1@example.com"
 	tl.ask(30*time.Second, sre, &v1.DebugAsk{Verb: v1.DebugVerbPause, Session: "s1", Request: "attach", Lease: 5 * time.Minute})
 	tl.read(65*time.Second, "held", "attach")
