@@ -317,7 +317,7 @@ func temporalConfig(ctx context.Context, flags temporalFlags) (temporalclient.Co
 	// this same value, one client per mapped Temporal namespace, and a codec
 	// that covered only the fallback client would leave every mapped tenant's
 	// payloads in plaintext. See [payloadCodecConfig].
-	codec, err := payloadCodecConfig(flags.payloadEncryption)
+	codec, err := payloadCodecConfig(ctx, flags.payloadEncryption)
 	if err != nil {
 		return temporalclient.Config{}, err
 	}

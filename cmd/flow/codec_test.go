@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/payloadcodec"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/payloadcodec/keyprovider/local"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/payloadcodec/keyprovider/vault/vaulttest"
 )
 
 // The codec slot has two entry points in this binary, and the parity claim of
@@ -61,7 +63,7 @@ func withResolvedCodec(t *testing.T, codec payloadcodec.Codec) {
 	t.Helper()
 
 	previous := resolvePayloadCodec
-	resolvePayloadCodec = func(payloadEncryptionFlags) (payloadcodec.Config, error) {
+	resolvePayloadCodec = func(context.Context, payloadEncryptionFlags) (payloadcodec.Config, error) {
 		return payloadcodec.Config{Codec: codec}, nil
 	}
 	t.Cleanup(func() { resolvePayloadCodec = previous })
@@ -144,11 +146,11 @@ func TestTheDefaultResolutionStartsBothEntryPoints(t *testing.T) {
 	t.Setenv(payloadKeyringEnv, "")
 	t.Setenv(requirePayloadEncryptionEnv, "")
 
-	cfg, err := payloadCodecConfig(payloadEncryptionFlags{})
+	cfg, err := payloadCodecConfig(t.Context(), payloadEncryptionFlags{})
 	require.NoError(t, err)
 	require.False(t, cfg.Enabled())
 
-	local, err := localPayloadCodec()
+	local, err := localPayloadCodec(t.Context())
 	require.NoError(t, err)
 	require.Equal(t, cfg.Name(), local.Name(),
 		"the rehearsal resolved a different codec than the worker")
@@ -181,7 +183,7 @@ func TestAKeyringResolvesTheSameForBothEntryPoints(t *testing.T) {
 	t.Setenv(payloadKeyringEnv, writeTestKeyring(t))
 	t.Setenv(requirePayloadEncryptionEnv, "true")
 
-	cfg, err := payloadCodecConfig(payloadEncryptionFromEnv())
+	cfg, err := payloadCodecConfig(t.Context(), payloadEncryptionFromEnv())
 	require.NoError(t, err)
 	require.True(t, cfg.Enabled())
 
@@ -256,4 +258,29 @@ func TestTheCodecServerWaitsAsLongAsItsProvidersMay(t *testing.T) {
 	require.Equal(t, 50*time.Second, codecWriteTimeout(payloadcodec.Config{Codec: timedCodec{timeout: 5 * time.Second}}),
 		"a rollover wraps to the current key and every escrow key")
 	require.Equal(t, 270*time.Second, codecWriteTimeout(payloadcodec.Config{Codec: timedCodec{timeout: time.Minute}}))
+}
+
+// TestOpeningAKeyringStopsWithTheCommand: a Vault-backed keyring's startup
+// calls run under the command's context, so an interrupted command stops
+// waiting on them rather than running out the startup budget.
+func TestOpeningAKeyringStopsWithTheCommand(t *testing.T) {
+	t.Setenv("FLOWSTATE_TEST_VAULT_TOKEN", vaulttest.Token)
+	server := vaulttest.NewServer(t)
+	server.Create("k", "aes256-gcm96")
+	path := filepath.Join(t.TempDir(), "keyring.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(`
+namespaces:
+  default: {current: k, keys: [{id: k, vault: {provider: corp, key: k}}]}
+providers:
+  - name: corp
+    vault: {address: '`+server.URL()+`', token_env: FLOWSTATE_TEST_VAULT_TOKEN}
+`), 0o600))
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	_, err := openPayloadKeyring(ctx, path)
+	require.ErrorIs(t, err, context.Canceled, "the keyring kept opening after its command was cancelled")
+
+	_, err = openPayloadKeyring(t.Context(), path)
+	require.NoError(t, err)
 }

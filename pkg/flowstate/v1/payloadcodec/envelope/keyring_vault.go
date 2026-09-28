@@ -76,11 +76,13 @@ func openProviders(cfgs []*v1.PayloadKeyProvider, opts OpenOptions) (map[string]
 const MinStartupBudget = 30 * time.Second
 
 // StartupBudget is how long [Open] allows cfg's startup calls: every one it
-// can make, each within the per-call provider timeout. A key held by a
-// provider is described (one call) and has its encryption-context binding
-// probed (two), each provider may log in once, and each writing namespace
-// wraps its first data key to its current key and every escrow key. Never
-// less than [MinStartupBudget].
+// can make, each within the per-call provider timeout. Each namespace
+// describes every key it names, its own and its escrow keys, and describing a
+// key a provider holds is four calls (reading the key, and an encryption and
+// two decryptions probing that it binds the encryption context); each
+// provider may log in once; and each writing namespace wraps its first data
+// key to its current key and every escrow key. Never less than
+// [MinStartupBudget].
 func StartupBudget(cfg *v1.PayloadKeyring) time.Duration {
 	var longest time.Duration
 	for _, p := range cfg.GetProviders() {
@@ -90,17 +92,21 @@ func StartupBudget(cfg *v1.PayloadKeyring) time.Duration {
 }
 
 func startupBudget(cfg *v1.PayloadKeyring, perCall time.Duration) time.Duration {
+	const describeCalls = 4
 	calls := len(cfg.GetProviders())
-	remote := func(k *v1.PayloadKey) bool { return k.GetVault() != nil }
+	remoteEscrow := map[string]bool{}
 	for _, k := range cfg.GetEscrowKeys() {
-		if remote(k) {
-			calls += 3
-		}
+		remoteEscrow[k.GetId()] = k.GetVault() != nil
 	}
 	for _, n := range cfg.GetNamespaces() {
 		for _, k := range n.GetKeys() {
-			if remote(k) {
-				calls += 3
+			if k.GetVault() != nil {
+				calls += describeCalls
+			}
+		}
+		for _, id := range n.GetEscrow() {
+			if remoteEscrow[id] {
+				calls += describeCalls
 			}
 		}
 		if n.GetCurrent() != "" {
