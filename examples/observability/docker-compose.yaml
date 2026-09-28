@@ -5,8 +5,9 @@
 # the default posture and it stays that way — see README.md, which says so first
 # and says why.
 #
-# Eight services, three of which are Flowstate's and five of which are the stack
-# watching it:
+# Ten services: three that run workloads (Flowstate's server and worker, and
+# Temporal) and seven that watch them, one of which (tempo-init) only prepares
+# Tempo's storage and exits:
 #
 #   flow run (on your host) ─traceparent─▶ flowstate-server ─▶ temporal ─▶ flowstate-worker
 #            │                                   │                              │

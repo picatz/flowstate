@@ -35,11 +35,14 @@ $ flow run local examples/onepassword-secret/workflow.yaml \
     --auth-policy examples/onepassword-secret/auth-policy.yaml
 ```
 
-This directory has no `*.test.yaml`: CI has no signed-in `op` CLI to run against,
-and a stub standing in for one would prove nothing about the actual configuration
-surface below. What CI does check is that `op` being absent refuses at startup
-rather than mysteriously — `TestSecretRegistryOnePasswordFailsClosedWithoutTheCLI`
-in [`cmd/flow/secrets_test.go`](../../cmd/flow/secrets_test.go) pins exactly that —
+CI has no signed-in `op` CLI to run against, so
+[`workflow.test.yaml`](workflow.test.yaml) runs none: its `secrets:` block binds
+`op:github#token`, field included, and its two cases check that the bound value
+reaches the step and that an unbound reference is refused rather than resolved
+empty. That proves nothing about the configuration surface below. What CI does check
+there is that `op` being absent refuses at startup rather than mysteriously —
+`TestSecretRegistryOnePasswordFailsClosedWithoutTheCLI` in
+[`cmd/flow/secrets_test.go`](../../cmd/flow/secrets_test.go) pins exactly that —
 plus `flow fix --check` and `flow validate` holding this file to the grammar, which
 is what the rest of CI does with it.
 

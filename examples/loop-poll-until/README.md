@@ -32,4 +32,4 @@ what `as:`/`init:`/`update:` are for (see `examples/loop-accumulate`).
 
 For the stateful counterpart — a loop that carries a value between iterations — see
 `examples/loop-accumulate` (a running total) and
-`examples/plugins/git/log-paginate` (a pagination cursor).
+`examples/plugins/git/log-paginate.yaml` (a pagination cursor).

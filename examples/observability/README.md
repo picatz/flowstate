@@ -149,8 +149,9 @@ this list acceptable, and you own what follows.
   (`tls: insecure: true`).
 - **No credentials appear anywhere in this directory**, real or fake. There is
   nothing here to leak and nothing to rotate. Check that this stays true.
-- **The Temporal database and the three time-series stores are unbounded**, in named volumes,
-  with no rotation. `docker compose down -v` is the cleanup, and you will want it.
+- **The Temporal database and Loki are unbounded**, in named volumes, with no
+  rotation; Prometheus, Tempo and ClickHouse keep 24 hours. `docker compose down -v`
+  is the cleanup, and you will want it.
 
 ## Why the worker is unversioned, honestly
 
@@ -213,8 +214,11 @@ that used to reach Loki because they landed on the same stderr:
 - **The Temporal SDK's own logger.** The Temporal client is not given a `slog`
   logger, so its lines — poller errors, task failures the SDK reports itself — go
   to stderr and stop there.
-- **Four `log.Printf` warnings** in `cmd/flow`, about telemetry that could not
-  start and about talking to a server over plain HTTP.
+- **Telemetry's own warnings**, about a resource attribute dropped, an interceptor
+  that could not be built, or an exporter that cannot reach its collector.
+  `telemetryLogger` in `cmd/flow/telemetry.go` writes them through `slog` to stderr
+  without the OTLP bridge, on purpose: a warning about a failing exporter should not
+  depend on that exporter.
 
 Both are in `docker compose logs`. Wiring the Temporal SDK's logger into `slog` is
 a real improvement and a separate change; until then this is the boundary, and it
@@ -232,7 +236,7 @@ $ docker compose -f examples/observability/docker-compose.yaml up -d --build
 ```
 
 First run builds the Flowstate image from this repository's `go.mod` (one build,
-two services) and pulls six images. Wait for Temporal to report healthy — the
+two services) and pulls eight images. Wait for Temporal to report healthy — the
 Flowstate services depend on it and will not start before it does:
 
 ```console
@@ -377,7 +381,7 @@ becomes a child of whatever span the caller had in context, which is the point o
 opening it on the ambient context rather than as a new root.
 
 A schedule's run has no caller because Temporal's own scheduler starts it
-(`server/schedules.go:309-323` creates a `ScheduleWorkflowAction`), so no inbound
+(`FlowstateServer.CreateSchedule` creates a `ScheduleWorkflowAction`), so no inbound
 trace context exists to propagate and the workflow span begins a trace of its own.
 That is the honest shape, not a gap: nothing traced asked for that run except a
 clock.
@@ -403,11 +407,11 @@ selects a chain:
 | Temporal run id | one segment; a fresh one is minted per handover | `temporalRunID` |
 | Flowstate's `run_id` | the whole chain — it is Temporal's `FirstRunID` | not a span tag |
 
-`engine.RunAddressFrom` (`workflow.go:1046-1056`) says why the third exists and
-picks `FirstRunID` deliberately: an address built from the *current* run id would
-name one thing before a run suspended and another after, for a handover the author
-never asked for. So a TraceQL selector for a whole run is the workflow id, exactly
-as section 5's query already spells it:
+`engine.RunAddressFrom` says why the third exists and picks `FirstRunID`
+deliberately: an address built from the *current* run id would name one thing
+before a run suspended and another after, for a handover the author never asked
+for. So a TraceQL selector for a whole run is the workflow id, exactly as section
+3's query already spells it:
 
 ```
 {span.temporalWorkflowID="flowstate-workflow-8b1f…"}
@@ -432,7 +436,7 @@ readable; it is just not the thing to group by when measuring.
 "Covering the run" is not the same as "the root of the trace", and on the
 instrumented server path they differ. When someone types `flow run`, the context
 propagates in over the RPC boundary and through `StartWorkflow:Run`, so
-`RunWorkflow:Run` has a *parent* — the whole point of section 5 above, where the
+`RunWorkflow:Run` has a *parent* — the whole point of section 3 above, where the
 one trace runs `flowstate` → `flowstate-server` → `flowstate-worker`. The trace's
 root there is the caller, not the run. The two rows that genuinely start a new
 trace are the ones with nothing trusted above them: a local run, which no RPC
@@ -483,9 +487,9 @@ carries no link.
 $ docker compose -f examples/observability/docker-compose.yaml down -v
 ```
 
-`-v` matters: the Temporal database and three time-series stores are in named
-volumes and none of them are bounded. (The log-file volume is gone — logs go over
-OTLP now, so there is no file to grow.)
+`-v` matters: every store here is in a named volume, and neither the Temporal
+database nor Loki is bounded. (The log-file volume is gone — logs go over OTLP
+now, so there is no file to grow.)
 
 ## What CI checks, and what it does not
 
@@ -498,7 +502,7 @@ $ docker compose -f examples/observability/docker-compose.yaml config -q
 That is a real check — it catches a malformed YAML anchor, an unknown key, a
 service referring to a volume that does not exist — and it needs no Docker daemon
 and pulls no images. It is not a smoke test. Standing the full stack up in CI
-would mean pulling seven images and waiting on a Temporal cluster for a signal
+would mean pulling eight images and waiting on a Temporal cluster for a signal
 about eight upstream projects rather than about this repository.
 
 **The full-stack smoke is a manual step**, and it is the walkthrough above. Run it
