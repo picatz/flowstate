@@ -1,43 +1,34 @@
-// Package flowdap speaks the Debug Adapter Protocol over a paused
-// [flowdebug.Session], so an editor's step and continue buttons drive a real
-// flowstate run.
+// Package flowdap speaks the Debug Adapter Protocol over a
+// [flowdebug.Target], so an editor's step and continue buttons drive a real
+// flowstate run: a local [flowdebug.Session] the adapter launched, or a durable
+// run reached through [flowdebug.Remote].
 //
-// # Why this can exist now
+// # A translation, nothing else
 //
-// It could not before. A session's whole control surface was a *line of text*
-// and the run parks inside the debugger blocked reading one, so an adapter had
-// nobody to type: it would have had to compose command strings and parse the
-// human-readable output back. [flowdebug.Session.Control] and the value surface
-// beside it are what this maps onto, and every DAP request below is one call
-// into them.
+// Every DAP request is one call into the target's typed contract — its
+// snapshot, its breakpoint set, its movements and its value reads — which is
+// the same contract the terminal debugger, the CLI and the MCP tools drive.
+// This package holds no idea about stepping, no breakpoint semantics and no
+// scope of its own: a second implementation of any of those would be free to
+// disagree with the one people type at, which is this repository's
+// most-paid-for shape.
 //
-// That is the whole design. This package holds no idea about stepping, no
-// breakpoint set, no scope of its own — a second implementation of any of those
-// would be free to disagree with the one people type at, which is this
-// repository's most-paid-for shape. It is a translation and nothing else.
+// # Where source positions come from
 //
-// # What the seam cannot say, and what that costs
+// A step carries an `id` and no position, and so does the compiled program a
+// run executes. Lines come from a [v1.DebugSourceMap] built from the bytes the
+// launch compiled, bound to the program by its IR digest. With one, line
+// breakpoints (`setBreakpoints`) resolve to the step sites on that line, and
+// stack frames name their file and line. Function breakpoints are addressed by
+// step address (`build`, `pages/page`, `pages[2]/page`) and need no map.
 //
-// v1.Debugger is handed a v1.Node, and a node carries an `id` and no source
-// position. Neither does anything else the session sees: it is given steps, not
-// files. Two consequences, both visible to a person in an editor, both stated
-// here rather than discovered:
-//
-//   - **Breakpoints are by step id, not by line.** DAP's `setBreakpoints` is
-//     addressed by source line, which this cannot honour without inventing a
-//     mapping it has no basis for. `setFunctionBreakpoints` is addressed by
-//     *name*, and a step id is a name, so that is the request this answers.
-//     In VS Code they appear under the Breakpoints view's function-breakpoint
-//     section rather than as red dots in the gutter.
-//   - **Stack frames carry no source.** A client shows the frame's name and
-//     cannot navigate to it.
-//
-// Both are answerable by parsing the workflow the run is executing and mapping
-// step ids to the positions the parser already records for diagnostics. That is
-// a separate slice: it needs the file, which only a launch configuration knows,
-// and it is a different kind of work from speaking the protocol. Doing it here
-// would mean guessing at a position when the parse and the run disagree, which
-// is worse than admitting there is none.
+// A durable attach has no map. The IR carries no positions, so a local file
+// whose lines moved since the run was submitted compiles to the same digest and
+// would put frames and breakpoints on the wrong lines; the run records no
+// digest of its source to check a file against. An attached session therefore
+// shows step addresses, answers line breakpoints unverified, and narrows the
+// capabilities it offers (no logpoints, no failure stops) with a capabilities
+// event once it knows the backend.
 //
 // # One thread, deliberately
 //
