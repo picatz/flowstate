@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowdebug"
@@ -538,9 +539,18 @@ func TestLineBreakpointsResolveThroughTheSourceMap(t *testing.T) {
 	require.NoError(t, err)
 	sourceMap := flowfile.SourceMap(root, []byte(journeyFlowfile), workflow, positions)
 
+	// A map for another program is refused, not used.
+	other := proto.CloneOf(sourceMap)
+	other.IrDigest = "sha256:" + strings.Repeat("0", 64)
+	_, err = flowdebug.New(flowdebug.Options{Controlled: true, Workflow: workflow, SourceMap: other})
+	require.Error(t, err, "a source map for another program was accepted")
+	_, err = flowdebug.New(flowdebug.Options{Controlled: true, SourceMap: sourceMap})
+	require.Error(t, err, "a source map was accepted with no program to check it against")
+
 	run := startDebugWorkflow(t, workflow, func(opts *flowdebug.Options) { opts.SourceMap = sourceMap })
 	target := flowdebug.Target(run.session)
 	at := waitHeld(t, target, 0)
+	assert.Equal(t, sourceMap.GetIrDigest(), at.GetIrDigest(), "the snapshot does not name the program its source map is bound to")
 	require.True(t, at.GetCapabilities().GetSourceBreakpoints())
 	require.NotNil(t, at.GetFrames()[0].GetSource(), "the entry frame names where its step is written")
 	assert.EqualValues(t, 6, at.GetFrames()[0].GetSource().GetRange().GetStartLine())
@@ -602,4 +612,42 @@ func TestTheTypedSurfaceIsRedacted(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.NotEqual(t, "mutated", again.GetBreakpoints()[0].GetSites()[0].GetPath()[0])
+}
+
+// TestDetachEndsTheSessionNotTheRun: once detached, the session is over, and
+// neither a pause nor a new breakpoint can take the run back.
+func TestDetachEndsTheSessionNotTheRun(t *testing.T) {
+	t.Parallel()
+
+	run := startDebugRun(t, "main.yaml", map[string]string{"main.yaml": journeyFlowfile, "child.yaml": childFlowfile}, nil)
+	target := flowdebug.Target(run.session)
+	at := waitHeld(t, target, 0)
+
+	receipt, err := target.Resume(t.Context(), &v1.DebugResumeRequest{
+		RequestId: "leave", ExpectedRevision: at.GetRevision(), Action: v1.DebugResumeAction_DEBUG_RESUME_ACTION_DETACH,
+	})
+	require.NoError(t, err)
+	require.Equal(t, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_APPLIED, receipt.GetStatus(), receipt.GetMessage())
+
+	detached := waitHeld(t, target, at.GetRevision())
+	assert.Equal(t, v1.DebugRunState_DEBUG_RUN_STATE_DETACHED, detached.GetState())
+
+	paused, err := target.Pause(t.Context(), "again")
+	require.NoError(t, err)
+	assert.Equal(t, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_ENDED, paused.GetStatus(), "a detached session was paused again")
+
+	rearmed, err := target.ReplaceBreakpoints(t.Context(), &v1.DebugSetBreakpointsRequest{
+		RequestId:   "rearm",
+		Breakpoints: []*v1.DebugBreakpoint{{Id: "at", Step: "touch"}},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_ENDED, rearmed.GetReceipt().GetStatus())
+	assert.Empty(t, rearmed.GetBreakpoints(), "a detached session armed a breakpoint")
+
+	select {
+	case err := <-run.done:
+		require.NoError(t, err, "the detached run did not finish on its own")
+	case <-time.After(10 * time.Second):
+		t.Fatal("the detached run never finished")
+	}
 }

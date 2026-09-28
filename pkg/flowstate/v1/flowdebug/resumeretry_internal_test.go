@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -22,6 +23,38 @@ import (
 // between it and a second step.
 func TestARetryAfterTheCallerGaveUpNeverAdvancesTwice(t *testing.T) {
 	t.Parallel()
+
+	session, held := startRetryRun(t)
+	at := held(0)
+	require.Equal(t, "one", at.GetOccurrence().GetAddress())
+
+	// Deliver the step as Resume does, then walk away without reading the
+	// acknowledgement: the caller's context ended between the two.
+	release, err := session.takeControl(t.Context(), "step")
+	require.NoError(t, err)
+	_, err = session.deliverAcknowledged(t.Context(), "step", "gave-up", make(chan acknowledgement, 1))
+	release()
+	require.NoError(t, err)
+
+	moved := held(at.GetRevision())
+	require.Equal(t, "two", moved.GetOccurrence().GetAddress())
+
+	retry, err := session.Resume(t.Context(), &v1.DebugResumeRequest{
+		RequestId: "gave-up", Action: v1.DebugResumeAction_DEBUG_RESUME_ACTION_STEP_IN,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_DUPLICATE, retry.GetStatus(), retry.GetMessage())
+
+	still, err := session.Snapshot(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, "two", still.GetOccurrence().GetAddress(), "a retried command advanced the run a second time")
+
+}
+
+// startRetryRun starts a controlled session over three log steps and returns
+// it with a wait for its next hold.
+func startRetryRun(t *testing.T) (*Session, func(after uint64) *v1.DebugSnapshot) {
+	t.Helper()
 
 	dir := t.TempDir()
 	path := filepath.Join(dir, "main.yaml")
@@ -69,28 +102,44 @@ outputs: {}
 			after = snapshot.GetRevision()
 		}
 	}
-	at := held(0)
-	require.Equal(t, "one", at.GetOccurrence().GetAddress())
 
-	// Deliver the step as Resume does, then walk away without reading the
-	// acknowledgement: the caller's context ended between the two.
-	release, err := session.takeControl(t.Context(), "step")
-	require.NoError(t, err)
-	_, err = session.deliverAcknowledged(t.Context(), "step", "gave-up", make(chan acknowledgement, 1))
-	release()
-	require.NoError(t, err)
+	return session, held
+}
 
-	moved := held(at.GetRevision())
-	require.Equal(t, "two", moved.GetOccurrence().GetAddress())
+// TestTwoRequestsUnderOneIDAdvanceOnce is the concurrent retry: both copies
+// arrive while another controller holds the slot, and only one may act.
+func TestTwoRequestsUnderOneIDAdvanceOnce(t *testing.T) {
+	t.Parallel()
 
-	retry, err := session.Resume(t.Context(), &v1.DebugResumeRequest{
-		RequestId: "gave-up", Action: v1.DebugResumeAction_DEBUG_RESUME_ACTION_STEP_IN,
+	synctest.Test(t, func(t *testing.T) {
+		session, held := startRetryRun(t)
+		at := held(0)
+
+		release, err := session.takeControl(t.Context(), "hold")
+		require.NoError(t, err)
+		receipts := make(chan *v1.DebugReceipt, 2)
+		for range 2 {
+			go func() {
+				receipt, err := session.Resume(t.Context(), &v1.DebugResumeRequest{
+					RequestId: "same", Action: v1.DebugResumeAction_DEBUG_RESUME_ACTION_STEP_IN,
+				})
+				assert.NoError(t, err)
+				receipts <- receipt
+			}()
+		}
+		// Both are past their first look at the id and blocked on the slot.
+		synctest.Wait()
+		release()
+
+		var statuses []v1.DebugCommandStatus
+		for range 2 {
+			statuses = append(statuses, (<-receipts).GetStatus())
+		}
+		assert.ElementsMatch(t, []v1.DebugCommandStatus{
+			v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_APPLIED,
+			v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_DUPLICATE,
+		}, statuses)
+		assert.Equal(t, "two", held(at.GetRevision()).GetOccurrence().GetAddress(),
+			"two requests under one id advanced the run twice")
 	})
-	require.NoError(t, err)
-	assert.Equal(t, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_DUPLICATE, retry.GetStatus(), retry.GetMessage())
-
-	still, err := session.Snapshot(t.Context())
-	require.NoError(t, err)
-	assert.Equal(t, "two", still.GetOccurrence().GetAddress(), "a retried command advanced the run a second time")
-
 }

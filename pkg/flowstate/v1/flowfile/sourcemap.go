@@ -8,13 +8,20 @@ import (
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
 
-// SourceLanguage is the [v1.DebugSourceDocument.language] a Flowfile's
+// SourceLanguage is the [v1.DebugSourceDocument.Language] a Flowfile's
 // documents carry.
 const SourceLanguage = "flowfile"
 
 // maxSourceMapCallDepth bounds how far [SourceMap] follows `call:` into
 // callee files, which is the engine's own nesting bound.
 const maxSourceMapCallDepth = v1.MaxCallDepth
+
+// The schema's bounds on a [v1.DebugSourceMap]. A program past them is mapped
+// as far as they reach, and its remaining sites are debugged by address alone.
+const (
+	MaxSourceMapDocuments = 256
+	MaxSourceMapEntries   = 1 << 16
+)
 
 // SourceMap relates the steps of a compiled Flowfile to where they are written,
 // for the step debugger (#1568).
@@ -23,7 +30,7 @@ const maxSourceMapCallDepth = v1.MaxCallDepth
 // language server, and the debugger agree about where a step is; nothing here
 // parses YAML a second time. Each document is bound to the exact bytes the map
 // was computed from by its content digest, and the map as a whole to the
-// compiled program by [v1.DebugSourceMap.ir_digest].
+// compiled program by [v1.DebugSourceMap.IrDigest].
 //
 // A callee is included only when its file can be read beside its caller and
 // its bytes still match the digest the compiler recorded on the `call:` step.
@@ -38,6 +45,9 @@ func SourceMap(path string, source []byte, workflow *v1.Workflow, positions *Pos
 	add = func(path string, source []byte, workflow *v1.Workflow, positions *Positions, depth int) {
 		index, seen := documents[path]
 		if !seen {
+			if len(sourceMap.Documents) >= MaxSourceMapDocuments {
+				return
+			}
 			index = len(sourceMap.Documents)
 			documents[path] = index
 			sourceMap.Documents = append(sourceMap.Documents, &v1.DebugSourceDocument{
@@ -46,7 +56,12 @@ func SourceMap(path string, source []byte, workflow *v1.Workflow, positions *Pos
 				Language: SourceLanguage,
 			})
 		}
-		sourceMap.Entries = append(sourceMap.Entries, positions.siteEntries(workflow.GetName(), int32(index))...)
+		entries := positions.siteEntries(workflow.GetName(), int32(index))
+		room := MaxSourceMapEntries - len(sourceMap.Entries)
+		sourceMap.Entries = append(sourceMap.Entries, entries[:min(len(entries), room)]...)
+		if len(entries) > room {
+			return
+		}
 
 		if depth >= maxSourceMapCallDepth || path == "" {
 			return
