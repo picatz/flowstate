@@ -223,7 +223,17 @@ func runDebugAttach(cmd *cobra.Command, args []string) (err error) {
 		if err := answers.add(line, result); err != nil {
 			return err
 		}
-		if line == "detach" || terminalDebugState(result.Snapshot.GetState()) {
+		if line == "detach" {
+			// A detach the run did not accept leaves it held; Close sends
+			// one that cannot be refused as stale, rather than walking
+			// away from it.
+			if !debugReceiptAccepted(result.Receipt) {
+				return remote.Close()
+			}
+
+			return remote.Disconnect()
+		}
+		if terminalDebugState(result.Snapshot.GetState()) {
 			return remote.Disconnect()
 		}
 	}
@@ -253,6 +263,18 @@ func runDebugAttach(cmd *cobra.Command, args []string) (err error) {
 	// The end of input releases the run: a debugger that is gone must not
 	// keep a production run held.
 	return remote.Close()
+}
+
+// debugReceiptAccepted reports whether the run took the command: applied, a
+// duplicate of one it applied, or pending its next step boundary.
+func debugReceiptAccepted(receipt *v1.DebugReceipt) bool {
+	switch receipt.GetStatus() {
+	case v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_APPLIED, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_DUPLICATE,
+		v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_PENDING:
+		return true
+	default:
+		return false
+	}
 }
 
 func terminalDebugState(state v1.DebugRunState) bool {
@@ -325,8 +347,7 @@ func runDebugDo(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	if receipt := result.Receipt; receipt != nil && receipt.GetStatus() != v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_APPLIED &&
-		receipt.GetStatus() != v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_DUPLICATE && receipt.GetStatus() != v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_PENDING {
+	if receipt := result.Receipt; receipt != nil && !debugReceiptAccepted(receipt) {
 		_ = writeDriveResult(newSurface(cmd).Out, format, line, result)
 
 		return errors.New("the command was not applied: " + strings.TrimSpace(flowdebug.FormatReceipt(receipt)))

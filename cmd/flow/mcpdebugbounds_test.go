@@ -30,15 +30,22 @@ type detachRecorder struct {
 
 	mu      sync.Mutex
 	actions []v1.DebugResumeAction
+	// refuseFirst answers the first resume refused, as a run that could not
+	// take it would.
+	refuseFirst bool
 }
 
 func (d *detachRecorder) DebugResume(_ context.Context, req *connect.Request[v1.DebugResumeRequest]) (*connect.Response[v1.DebugResumeResponse], error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.actions = append(d.actions, req.Msg.GetAction())
+	status := v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_APPLIED
+	if d.refuseFirst && len(d.actions) == 1 {
+		status = v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_REFUSED
+	}
 
 	return connect.NewResponse(&v1.DebugResumeResponse{Receipt: &v1.DebugReceipt{
-		RequestId: req.Msg.GetRequestId(), Status: v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_APPLIED,
+		RequestId: req.Msg.GetRequestId(), Status: status,
 	}}), nil
 }
 

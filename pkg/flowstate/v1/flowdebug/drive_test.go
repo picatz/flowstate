@@ -1,6 +1,7 @@
 package flowdebug_test
 
 import (
+	"cmp"
 	"context"
 	"sync"
 	"testing"
@@ -178,6 +179,29 @@ func TestADetachedDriverChangesNothing(t *testing.T) {
 	assert.NoError(t, err, "a read was refused after a detach")
 }
 
+// TestADetachIsNeverStaleUnlessPinned: a detach lets the run go wherever it
+// has got to, so a driver sends it without the revision it last read — a stop
+// landing in between must not leave the run held. A refused detach leaves the
+// driver able to try again.
+func TestADetachIsNeverStaleUnlessPinned(t *testing.T) {
+	t.Parallel()
+
+	target := &scriptedTarget{snapshot: &v1.DebugSnapshot{Revision: 4, State: v1.DebugRunState_DEBUG_RUN_STATE_RUNNING}}
+	target.resumeStatus = v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_REFUSED
+	driver := flowdebug.NewDriver(target)
+	_, err := driver.Do(t.Context(), "detach")
+	require.NoError(t, err)
+	assert.Zero(t, target.expected, "a detach was pinned to the revision the driver read")
+
+	target.resumeStatus = v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_UNSPECIFIED
+	_, err = driver.Do(t.Context(), "detach")
+	require.NoError(t, err, "a refused detach left the driver refusing to try again")
+
+	_, err = flowdebug.NewDriver(target).DoWith(t.Context(), "detach", flowdebug.DoOptions{ExpectedRevision: 4})
+	require.NoError(t, err)
+	assert.Equal(t, uint64(4), target.expected, "a caller's pinned revision was dropped")
+}
+
 // TestAFreshDriverLeavesTheFailureModeAlone: a driver that has not been told
 // a mode by `catch` must not reset the one the session has.
 func TestAFreshDriverLeavesTheFailureModeAlone(t *testing.T) {
@@ -276,11 +300,13 @@ type scriptedTarget struct {
 	mu              sync.Mutex
 	snapshot        *v1.DebugSnapshot
 	hangAfterResume bool
-	hang            bool
-	requests        []string
-	modes           []v1.DebugFailureMode
-	sets            [][]*v1.DebugBreakpoint
-	expected        uint64
+	// resumeStatus, when set, is the status every resume is answered with.
+	resumeStatus v1.DebugCommandStatus
+	hang         bool
+	requests     []string
+	modes        []v1.DebugFailureMode
+	sets         [][]*v1.DebugBreakpoint
+	expected     uint64
 }
 
 func (s *scriptedTarget) read(ctx context.Context) (*v1.DebugSnapshot, error) {
@@ -309,7 +335,7 @@ func (s *scriptedTarget) Resume(_ context.Context, req *v1.DebugResumeRequest) (
 	s.expected = req.GetExpectedRevision()
 	s.hang = s.hangAfterResume
 
-	return &v1.DebugReceipt{RequestId: req.GetRequestId(), Status: v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_APPLIED, Revision: 1}, nil
+	return &v1.DebugReceipt{RequestId: req.GetRequestId(), Status: cmp.Or(s.resumeStatus, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_APPLIED), Revision: 1}, nil
 }
 
 func (s *scriptedTarget) Pause(_ context.Context, id string) (*v1.DebugReceipt, error) {

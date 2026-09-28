@@ -304,8 +304,12 @@ func accepted(receipt *v1.DebugReceipt) bool {
 
 // move resumes and waits for the run's next stop or end.
 func (d *Driver) move(ctx context.Context, action v1.DebugResumeAction, until string) (*DriveResult, error) {
+	// A detach is never judged stale unless the caller pinned it: it asks
+	// to let the run go wherever it has got to, and a stop that lands
+	// between reading the revision and sending it must not leave the run
+	// held by a session its client has left.
 	expected := d.expected
-	if expected == 0 {
+	if expected == 0 && action != v1.DebugResumeAction_DEBUG_RESUME_ACTION_DETACH {
 		current, err := d.target.Snapshot(ctx)
 		if err != nil {
 			return nil, err

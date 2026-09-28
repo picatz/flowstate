@@ -111,3 +111,22 @@ func TestDebugAttachJSONIsBounded(t *testing.T) {
 	assert.Contains(t, err.Error(), "-o jsonl")
 	assert.LessOrEqual(t, answers.heldBytes, maxAttachJSONBytes)
 }
+
+// TestDebugAttachReleasesTheRunWhenItsDetachIsRefused: `detach` (or `quit`)
+// whose detach the run did not take has not released it, so the attach
+// detaches again on the way out instead of only disconnecting and leaving the
+// run held by a session nobody drives.
+func TestDebugAttachReleasesTheRunWhenItsDetachIsRefused(t *testing.T) {
+	recorder := &detachRecorder{refuseFirst: true}
+	mux := http.NewServeMux()
+	mux.Handle(flowstatev1connect.NewWorkflowServiceHandler(recorder))
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	script := filepath.Join(t.TempDir(), "session.script")
+	require.NoError(t, os.WriteFile(script, []byte("quit\n"), 0o600))
+
+	res := runFlow(t, "debug", "attach", "w", "--script", script, "--address", srv.URL)
+	require.NoError(t, res.Err)
+	assert.Equal(t, 2, recorder.detaches(), "a refused detach was walked away from, leaving the run held")
+}
