@@ -94,7 +94,7 @@ process may do.
 | `--egress-policy` | What `http:` steps in `flowstate_run_local` may reach. **Without it, egress is denied entirely**, which is stricter than `flow run local`: the caller here is a model, not the file's author. |
 | `--secret-env`, `--secret-dir`, and the other [secret flags](SECRETS.md) | Which secret references `flowstate_run_local` may resolve. None, unless a flag says so. |
 | `--as-subject`, `--as-issuer`, `--as-namespace`, `--as-deployment`, `--as-claim` | The identity a local run rehearses policy as. |
-| `--task-policy` | Which tasks a dispatch may run, for `flowstate_run_local` and for `flowstate_test` suites alike. A stubbed dispatch in a test is checked too, against the empty identity a test case runs as. Unset, every task is allowed. |
+| `--task-policy` | Which tasks a dispatch may run, for `flowstate_run_local` and for the test cases `flowstate_test` and `flowstate_debug` run alike. A stubbed dispatch in a test is checked too, against the empty identity a test case runs as. Unset, every task is allowed. |
 | `--run-local-timeout` (default `2m`) | Bounds one `flowstate_run_local` call, since `sleep: 24h` is a legal Flowfile and a tool call holds a model's turn open. |
 | `--plugin-dir` | Load plugin tasks, so validation and rehearsal know them. |
 

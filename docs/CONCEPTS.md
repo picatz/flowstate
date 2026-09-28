@@ -85,8 +85,9 @@ named by its key:
 | waits | `sleep:`, `wait_until:`, `wait_for_signal:`, `wait_for_signals:` |
 
 Any step can also carry `if:` to run conditionally, `vars:` for named values,
-`retry:` and `timeout:` for its work, `continue_on_error:` to tolerate failure,
-and `undo:` to compensate if the run fails later.
+and `continue_on_error:` to tolerate failure. A task step can also carry
+`retry:` and `timeout:` to bound its work, and `undo:` to compensate if the run
+fails later.
 
 A workflow declares typed `inputs:` (its arguments) and `outputs:` (its
 result). `vars:` holds named constants. Everything a step produces is recorded
