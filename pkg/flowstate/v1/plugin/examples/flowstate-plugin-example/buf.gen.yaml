@@ -1,9 +1,25 @@
 version: v1
-# The example plugin's schema is generated with the locally installed
-# protoc-gen-go rather than a remote plugin, so that regenerating it needs no
-# network. The version is whatever go.mod pins for google.golang.org/protobuf.
+# The example plugin's schema is generated with plugins built from this
+# repository's go.mod rather than remote ones, so that regenerating it needs no
+# network and never picks up whichever protoc-gen-go happens to be on PATH:
+# `go tool` builds exactly the version the `tool` directives pin. From
+# the repository root:
+#
+#   E=pkg/flowstate/v1/plugin/examples/flowstate-plugin-example
+#   go tool -modfile=tools/external/go.mod buf generate $E/proto --template $E/buf.gen.yaml -o $E
+#
+# (`make check` and CI run the same thing.)
 plugins:
   - plugin: go
+    path: [go, tool, protoc-gen-go]
+    out: ./gen
+    opt:
+      - paths=source_relative
+  # The comments written in example.proto, as Go source beside example.pb.go,
+  # so they reach an editor's hover through this plugin's manifest (#723,
+  # #2148). This is the whole of what a plugin author adds to get that.
+  - plugin: flowstate-doc
+    path: [go, tool, protoc-gen-flowstate-doc]
     out: ./gen
     opt:
       - paths=source_relative

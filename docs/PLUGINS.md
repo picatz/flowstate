@@ -203,23 +203,36 @@ version: v1
 version: v1
 plugins:
   - plugin: go
+    path: [go, tool, protoc-gen-go]
+    out: ./gen
+    opt:
+      - paths=source_relative
+  - plugin: flowstate-doc
+    path: [go, tool, protoc-gen-flowstate-doc]
     out: ./gen
     opt:
       - paths=source_relative
 ```
 
-Generated the way the in-tree example generates its own, with `protoc-gen-go`
-built from the version your `go.mod` already pins rather than a remote plugin, so
-regenerating needs no network beyond the module cache (see
-[`examples/flowstate-plugin-example/buf.gen.yaml`](../pkg/flowstate/v1/plugin/examples/flowstate-plugin-example/buf.gen.yaml)):
+Generated the way the in-tree example generates its own, with both plugins built
+from the versions your `go.mod` pins rather than remote ones, so regenerating
+needs no network beyond the module cache and never runs whatever happens to be on
+`PATH` (see
+[`examples/flowstate-plugin-example/buf.gen.yaml`](../pkg/flowstate/v1/plugin/examples/flowstate-plugin-example/buf.gen.yaml)).
+The second plugin carries your field comments to an editor; see
+[Your field comments, in somebody else's editor](#your-field-comments-in-somebody-elses-editor).
 
 ```console
 $ go get -tool github.com/bufbuild/buf/cmd/buf@latest
-$ GOBIN=$PWD/tools go install google.golang.org/protobuf/cmd/protoc-gen-go
-$ PATH=$PWD/tools:$PATH go tool buf generate proto
+$ go get -tool google.golang.org/protobuf/cmd/protoc-gen-go
+$ go get -tool github.com/picatz/flowstate/cmd/protoc-gen-flowstate-doc
+$ go tool buf generate proto
 $ ls gen/hello/v1
 hello.pb.go
 ```
+
+(`hello.proto` has no comments yet, so there is no `hello.doc.pb.go` beside it;
+one appears the first time you write one.)
 
 Then name the messages on the task and decode through them. `main.go` gains one
 import, `hellov1 "example.com/flowstate-plugin-hello/gen/hello/v1"`:
@@ -371,32 +384,20 @@ them — and the reason is protoc's rather than this SDK's. `protoc-gen-go` stri
 at run time has the shape of your schema and none of its prose. There is nothing
 for the SDK to forward.
 
-`buf build` is the command that keeps the comments. Build a descriptor set beside
-the generated code, from the same `.proto`, and hand it to the SDK:
+`protoc-gen-flowstate-doc` is what keeps them. It runs beside `protoc-gen-go`
+(it is the second plugin in the `buf.gen.yaml` above) and writes each file's
+comments into a `.doc.pb.go` beside its `.pb.go`, which registers them when the
+package is linked. There is nothing to hand the SDK: it looks up the comments by
+each declaration's name and attaches them to the descriptors your manifest ships.
 
 ```console
-$ go get -tool github.com/bufbuild/buf/cmd/buf@latest   # once per module, as above
-$ go tool buf build --exclude-imports -o schema.descriptorset.binpb proto
+$ go get -tool github.com/picatz/flowstate/cmd/protoc-gen-flowstate-doc   # once per module
+$ go tool buf generate proto
 ```
 
-```go
-//go:embed schema.descriptorset.binpb
-var schemaProse []byte
-
-func main() {
-	sdk.Main(sdk.Plugin{
-		Name:        "hello",
-		Version:     "0.1.0",
-		SchemaProse: schemaProse,
-		Tasks:       []sdk.Task{{ /* ... */ }},
-	})
-}
-```
-
-`--exclude-imports` for the reason the engine's own artifact uses it: the
-comments worth carrying are the ones you wrote, and carrying protobuf's and
-protovalidate's as well would multiply the bytes to document files nobody asks
-about.
+`go get -tool` pins the generator to the same `github.com/picatz/flowstate`
+version as the SDK you already build against, so the code it writes and the
+registry that code calls come from one release.
 
 Hovering `greeting:` in a Flowfile then shows what you wrote over that field,
 the same way hovering a built-in task's input shows what the engine's schema
@@ -407,18 +408,22 @@ attached to the descriptors your manifest already shipped
 
 Three properties worth knowing, all of them the fail-closed direction:
 
-- **It is opt-in, and omitting it costs only the paragraph.** A plugin that sets
-  no `SchemaProse` behaves exactly as every plugin did before the field existed.
-  Hover renders one paragraph fewer; nothing errors.
-- **A descriptor set built from a `.proto` that has since changed is ignored.**
-  A comment's location addresses a declaration by index, so stale prose does not
-  fail to apply — it applies to whichever field now sits at that index. The SDK
-  compares the declarations it is describing against the ones this binary
-  compiled in and drops the prose when they disagree, because a sentence attached
-  to the wrong field is worse than no sentence. Rebuild the artifact whenever you
-  regenerate, and pin it in CI the way this repository pins its own.
-- **Bytes that are not a descriptor set fail at startup**, where you see them,
-  rather than silently.
+- **Omitting it costs only the paragraph.** A plugin that generates no comments
+  behaves exactly as every plugin did before this existed. Hover renders one
+  paragraph fewer; nothing errors.
+- **A comment is attached by name, never by position.** The comments are
+  generated in the same `buf generate` as your `.pb.go`, and each is keyed by the
+  full name of the declaration it was written over, so one that is present is
+  attached to the field it describes. Pin the generated code in CI the way this
+  repository pins its own, and a stale comment is caught like a stale type.
+- **A name registered twice with different text is not described at all**,
+  rather than described by whichever copy happened to register first.
+
+`Plugin.SchemaProse`, which took a `buf build --exclude-imports` descriptor set
+for the same purpose, still works and is deprecated: it is a second build step
+whose output can describe an older schema than the one compiled in, and when it
+does the SDK has to drop every comment in that file. When it is set it is used
+in place of the generated comments.
 
 ## Five places the contract is implicit
 

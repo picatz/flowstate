@@ -8,98 +8,59 @@
 // comments readable at run time so those surfaces can inherit them instead.
 //
 // The one technical fact that shapes the design: runtime descriptors compiled
-// into generated code carry no comments. protoc strips SourceCodeInfo from what
-// a .pb.go embeds, so protoreflect over the linked-in registry finds shape and
-// no prose. The prose therefore travels in a separate artifact,
-// flowstate.descriptorset.binpb, built by the same pinned buf toolchain that
-// writes the .pb.go and held by the same git diff --exit-code pin, so it cannot
-// drift from the schema it describes.
+// into generated code carry no comments. protoc-gen-go strips SourceCodeInfo
+// from what a .pb.go embeds, so protoreflect over the linked-in registry finds
+// shape and no prose. The prose is therefore generated separately, by
+// protoc-gen-flowstate-doc in the same `buf generate` run that writes the .pb.go:
+// the flowstate_*.doc.pb.go files beside this one register every file's leading
+// comments with [registry] at init. They are held by the same git diff
+// --exit-code pin as the types, so they cannot drift from the schema they
+// describe, and a comment change reviews as a text diff.
 //
-// Everything here fails closed. An unknown name, a corrupt artifact, a
-// descriptor with no comment: the answer is the empty string and false. Nothing
-// here panics, and nothing here reports a comment it did not find.
+// The generated files live in this package rather than beside the .pb.go, so a
+// binary pays for the schema's prose only when it imports this package.
+//
+// Everything here fails closed. An unknown name, an ambiguous one, a descriptor
+// with no comment: the answer is the empty string and false. Nothing here
+// panics, and nothing here reports a comment it did not find.
 package protodoc
 
 import (
-	_ "embed"
 	"strings"
-	"sync"
 	"unicode"
 
-	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/reflect/protodesc"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/protodoc/registry"
 	"google.golang.org/protobuf/reflect/protoreflect"
-	"google.golang.org/protobuf/reflect/protoregistry"
-	"google.golang.org/protobuf/types/descriptorpb"
 )
-
-// rawDescriptorSet is the FileDescriptorSet for this repository's schema, built
-// with source info retained.
-//
-// Built by `buf build --exclude-imports`, which is the whole of the artifact's
-// contract: imports are excluded because the prose this package serves is the
-// prose this repository wrote, and carrying googleapis and protovalidate along
-// would double the bytes to describe files nobody asks this package about. The
-// cost of that choice is that the set does not link on its own, which is why
-// Files below allows unresolvable references rather than failing on them.
-//
-//go:embed flowstate.descriptorset.binpb
-var rawDescriptorSet []byte
-
-// files is parsed once, on first use, and never mutated afterwards.
-var files = sync.OnceValues(func() (*protoregistry.Files, error) {
-	set := &descriptorpb.FileDescriptorSet{}
-	if err := proto.Unmarshal(rawDescriptorSet, set); err != nil {
-		return nil, err
-	}
-	// AllowUnresolvable, because the set deliberately excludes its imports: a
-	// field typed google.protobuf.Struct resolves to a placeholder rather than
-	// failing the whole registry. A placeholder still has a name, which is all
-	// a caller walking for prose needs, and IsPlaceholder tells a caller that
-	// asked for more.
-	return protodesc.FileOptions{AllowUnresolvable: true}.NewFiles(set)
-})
-
-// Files returns the schema's descriptors, with comments attached.
-//
-// Callers that need to walk the schema (a presence check over a service, a
-// generator over a message) take it from here rather than from
-// protoregistry.GlobalFiles, because only these descriptors carry
-// SourceLocations. Returns an error rather than a nil registry if the embedded
-// artifact cannot be read, so a caller cannot mistake "no schema" for "no
-// prose".
-func Files() (*protoregistry.Files, error) {
-	return files()
-}
 
 // Comment returns the normalized leading comment for a schema element, and
 // whether one was found.
 //
 // The name is a protobuf full name: a message (flowstate.v1.RunRequest), a
 // field (flowstate.v1.RunRequest.workflow), an enum value, a service, or a
-// method (flowstate.v1.WorkflowService.Signal). A name this schema does not
-// declare, or one that declares no leading comment, returns "" and false. Those
-// two cases are deliberately indistinguishable: a caller that wants prose has
-// nothing to say either way, and a caller that wants to know whether a symbol
-// exists should ask Files.
+// method (flowstate.v1.WorkflowService.Signal). A name no linked schema
+// documents returns "" and false. The cases are deliberately
+// indistinguishable: a caller that wants prose has nothing to say either way,
+// and a caller that wants to know whether a symbol exists should ask
+// protoregistry.GlobalFiles.
 func Comment(name protoreflect.FullName) (string, bool) {
-	reg, err := files()
-	if err != nil {
+	leading, _, ok := registry.Lookup(name)
+	if !ok {
 		return "", false
 	}
-	desc, err := reg.FindDescriptorByName(name)
-	if err != nil || desc == nil {
-		return "", false
-	}
-	return CommentOf(desc)
+	return normalize(leading)
 }
 
 // CommentOf returns the normalized leading comment for a descriptor a caller
 // already holds, and whether one was found.
 //
-// The descriptor must come from Files. One from protoregistry.GlobalFiles
-// carries no SourceCodeInfo, so this answers false for it rather than pretending
-// the symbol has no documentation.
+// The descriptor's own source info is asked first, so a descriptor that
+// arrived carrying comments (a plugin's task input, reconstructed from the
+// bytes its manifest sent) is described in its author's words. Otherwise the
+// generated comments are asked, which is what answers for a descriptor from
+// protoregistry.GlobalFiles; they answer only when they were generated from
+// the file the descriptor was declared in, so a same-named declaration from
+// some other schema is not given this one's prose.
 func CommentOf(desc protoreflect.Descriptor) (string, bool) {
 	if desc == nil {
 		return "", false
@@ -108,8 +69,14 @@ func CommentOf(desc protoreflect.Descriptor) (string, bool) {
 	if file == nil {
 		return "", false
 	}
-	loc := file.SourceLocations().ByDescriptor(desc)
-	return normalize(loc.LeadingComments)
+	if text, ok := normalize(file.SourceLocations().ByDescriptor(desc).LeadingComments); ok {
+		return text, true
+	}
+	leading, path, ok := registry.Lookup(desc.FullName())
+	if !ok || path != file.Path() {
+		return "", false
+	}
+	return normalize(leading)
 }
 
 // Method returns the normalized leading comment for one RPC, addressed the way

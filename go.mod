@@ -11,6 +11,7 @@ require (
 	connectrpc.com/connect v1.21.0
 	connectrpc.com/otelconnect v0.9.0
 	connectrpc.com/validate v0.7.0
+	github.com/bufbuild/protoplugin v0.0.0-20260414125817-25d1d281b46b
 	github.com/charmbracelet/colorprofile v0.4.3
 	github.com/charmbracelet/x/exp/charmtone v0.0.0-20250603201427-c31516f43444
 	github.com/charmbracelet/x/exp/golden v0.0.0-20251109135125-8916d276318f
@@ -114,4 +115,9 @@ require (
 	golang.org/x/text v0.42.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260819154853-08b0e4226688 // indirect
+)
+
+tool (
+	github.com/picatz/flowstate/cmd/protoc-gen-flowstate-doc
+	google.golang.org/protobuf/cmd/protoc-gen-go
 )

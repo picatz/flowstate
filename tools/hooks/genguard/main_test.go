@@ -23,8 +23,9 @@ func TestGenerated(t *testing.T) {
 		{"docs/reference/envvars.md", []string{"cmd/flow/internal/docsgen/envvars.go"}},
 		{"cmd/flow/internal/reference/mirror/DSL.md", []string{"docs/DSL.md", "go generate ./cmd/flow/internal/reference"}},
 		{"cmd/flow/internal/reference/mirror/examples/hello.yaml", []string{"go generate ./cmd/flow/internal/reference"}},
-		{"pkg/flowstate/v1/protodoc/flowstate.descriptorset.binpb", []string{"buf", "build"}},
-		{"pkg/flowstate/v1/plugin/examples/flowstate-plugin-example/schema.descriptorset.binpb", []string{"example.proto", "buf", "build"}},
+		{"pkg/flowstate/v1/protodoc/flowstate_v1_run.doc.pb.go", []string{"comment", "proto/", "buf generate"}},
+		{"pkg/flowstate/v1/plugin/examples/flowstate-plugin-example/gen/example/v1/example.pb.go", []string{"example.proto", "buf generate", "--template"}},
+		{"pkg/flowstate/v1/plugin/examples/flowstate-plugin-example/gen/example/v1/example.doc.pb.go", []string{"example.proto", "buf generate", "--template"}},
 	}
 	for _, tt := range refuse {
 		msg := generated(tt.rel)
@@ -48,8 +49,11 @@ func TestGenerated(t *testing.T) {
 		"cmd/flow/internal/reference/reference.go",
 		"cmd/flow/internal/reference/reference_test.go",
 		"cmd/flow/internal/reference/sync.go",
-		// Sibling of the descriptor set that is not the descriptor set.
+		// Siblings of the generated comments that are source.
 		"pkg/flowstate/v1/protodoc/protodoc.go",
+		"pkg/flowstate/v1/protodoc/registry/registry.go",
+		"pkg/flowstate/v1/plugin/examples/flowstate-plugin-example/main.go",
+		"cmd/protoc-gen-flowstate-doc/main.go",
 		// A name that merely contains a guarded substring.
 		"pkg/flowstate/v1/pbgo_helpers.go",
 	}

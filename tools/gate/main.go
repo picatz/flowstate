@@ -19,7 +19,7 @@
 // packages' test files actually read example workflows off disk at runtime
 // (see exampleDataDepPackages) — a data dependency the import graph alone
 // cannot see (#589). The conditional legs fire only when their inputs
-// changed: the buf trio and the descriptorset pin on proto/, the docs mirror
+// changed: the buf trio and the generated-code pin on proto/, the docs mirror
 // and reference drift checks on docs/DSL.md and the registry/cobra/MCP
 // surfaces, example fix and coverage checks on examples/, and the -cpu=1
 // ordering line when the flowtest package is affected. Every leg prints one
@@ -419,27 +419,27 @@ func run(suppliedBase string) error {
 		g.skip("ordering", "flowtest package not affected")
 	}
 
-	// Conditional: the buf trio plus the descriptorset pin, when the schema
-	// (or buf's own config) changed. The verification is scoped to the
-	// generated artifacts so unrelated uncommitted work does not fail it,
-	// and covers both drift in tracked artifacts and artifacts the
-	// generator newly created (a .pb.go for a proto file this diff adds).
+	// Conditional: the buf trio plus the generated-code pin, when the schema
+	// (or buf's own config, or the comment generator) changed. The
+	// verification is scoped to the generated artifacts so unrelated
+	// uncommitted work does not fail it, and covers both drift in tracked
+	// artifacts and artifacts the generator newly created (a .pb.go and a
+	// .doc.pb.go for a proto file this diff adds).
 	if p.proto {
 		g.leg("proto", p.reasons["proto"]+" changed",
 			buf("lint"),
 			buf("breaking", "--against", ".git#branch=origin/main"),
 			buf("generate"),
-			buf("build", "--exclude-imports", "-o", "pkg/flowstate/v1/protodoc/flowstate.descriptorset.binpb"),
 			// The example plugin's schema is a second module with a
-			// descriptor set of its own, carrying that plugin's
-			// field comments to an editor (#723). Same command,
-			// same pin, its own input.
-			buf("build", "--exclude-imports", "-o", examplePluginProse, examplePluginProtoDir),
+			// buf.gen.yaml of its own, whose generated comments carry
+			// that plugin's field prose to an editor (#723, #2148).
+			// Same pin, its own input.
+			buf("generate", examplePluginProtoDir, "--template", examplePluginTemplate, "-o", examplePluginDir),
 			generatedClean("generated code disagrees with the schema; stage and commit the regenerated files",
-				"*.pb.go", "pkg/flowstate/v1/protodoc/", examplePluginProse),
+				"*.pb.go"),
 		)
 	} else {
-		g.skip("proto", "no changes under proto/, the example plugin's proto/, or to buf config")
+		g.skip("proto", "no changes under proto/, the example plugin's schema, the comment generator, or to buf config")
 	}
 
 	// Conditional: the derived-docs surfaces. Editing docs/DSL.md requires

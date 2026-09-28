@@ -86,10 +86,7 @@ func fieldDoc(fd protoreflect.FieldDescriptor) string {
 	if fd == nil {
 		return ""
 	}
-	if doc, ok := protodoc.CommentOf(fd); ok {
-		return doc
-	}
-	doc, _ := protodoc.Comment(fd.FullName())
+	doc, _ := protodoc.CommentOf(fd)
 
 	return doc
 }

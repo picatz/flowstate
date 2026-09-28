@@ -138,43 +138,33 @@ type Plugin struct {
 	Tasks []Task
 
 	// SchemaProse, when set, is a descriptor set of this plugin's own .proto
-	// files built with source info retained, so the comments an author wrote on
-	// their task's fields reach an editor's hover and the engine's
-	// documentation.
+	// files built with source info retained (`buf build --exclude-imports`),
+	// whose comments are attached to the descriptors this plugin's manifest
+	// ships.
 	//
-	// It is opt-in, and a plugin that sets nothing here behaves exactly as every
-	// plugin did before it existed: shape, types, required-ness and protovalidate
-	// bounds all still travel, and only the per-field explanatory paragraph is
-	// absent (#723). The reason it cannot be derived is protoc's: the descriptor
-	// compiled into a .pb.go has SourceCodeInfo stripped, so a comment simply is
-	// not present in this process at run time however well the .proto was
-	// written. `buf build` is what keeps it, and this is where the artifact it
-	// writes is handed over:
+	// Leave it unset. The comments an author writes on their task's fields
+	// reach an editor's hover and the engine's documentation when the plugin's
+	// schema is generated with protoc-gen-flowstate-doc beside protoc-gen-go:
 	//
-	//	//go:embed schema.descriptorset.binpb
-	//	var schemaProse []byte
+	//	plugins:
+	//	  - plugin: go
+	//	    out: gen
+	//	    opt: paths=source_relative
+	//	  - plugin: flowstate-doc
+	//	    path: [go, tool, protoc-gen-flowstate-doc]
+	//	    out: gen
+	//	    opt: paths=source_relative
 	//
-	//	sdk.Main(sdk.Plugin{
-	//		// ...
-	//		SchemaProse: schemaProse,
-	//	})
+	// That writes the comments as Go source beside the .pb.go, which registers
+	// them when the package is linked, and the SDK attaches them by name
+	// (#2148). A descriptor set is a second build step whose output can
+	// describe an older schema than the one compiled in; a file whose
+	// declarations have drifted has all its comments dropped, because a
+	// sentence attached to the wrong field is worse than none. Bytes that are
+	// not a descriptor set fail at startup, where an author sees them.
 	//
-	// with the artifact built beside the generated code, from the same .proto:
-	//
-	//	buf build --exclude-imports -o schema.descriptorset.binpb proto
-	//
-	// --exclude-imports for the reason the engine's own artifact uses it: the
-	// comments worth carrying are the ones this plugin wrote, and carrying
-	// protobuf's and protovalidate's as well would multiply the bytes to
-	// document files nobody asks about.
-	//
-	// The prose is attached to the descriptors the manifest already carried
-	// rather than sent beside them, so nothing new crosses the boundary. It is
-	// documentation and never a source of truth about a type: a file whose
-	// declarations have drifted from the ones this binary compiled in has its
-	// comments dropped, because a sentence attached to the wrong field is worse
-	// than no sentence. Bytes that are not a descriptor set at all fail at
-	// startup, where an author sees them.
+	// Deprecated: Generate the schema with protoc-gen-flowstate-doc instead.
+	// When SchemaProse is set it is used in place of the generated comments.
 	SchemaProse []byte
 
 	// Health reports whether the plugin can serve. Leaving it nil reports
@@ -845,10 +835,16 @@ func (p Plugin) manifest() (*pluginv1.PluginManifest, error) {
 
 	// Read once for the whole manifest rather than once per task: it is one
 	// artifact describing one schema, and parsing it per task would report the
-	// same malformed set as many times as the plugin has tasks.
-	prose, err := flowstatev1.ParseDescriptorProse(p.SchemaProse)
-	if err != nil {
-		return nil, fmt.Errorf("sdk: SchemaProse: %w", err)
+	// same malformed set as many times as the plugin has tasks. Without one,
+	// the comments protoc-gen-flowstate-doc generated into this binary are
+	// used; a plugin that generated none ships what it always did.
+	prose := flowstatev1.GeneratedDescriptorProse()
+	if len(p.SchemaProse) > 0 {
+		parsed, err := flowstatev1.ParseDescriptorProse(p.SchemaProse)
+		if err != nil {
+			return nil, fmt.Errorf("sdk: SchemaProse: %w", err)
+		}
+		prose = parsed
 	}
 
 	if len(p.Tasks) > 0 {
@@ -969,12 +965,13 @@ func (t Task) checkInputNames() error {
 // would otherwise carry protobuf's, protovalidate's, and CEL's descriptors along
 // with it — without hardcoding an assumption about the engine that could quietly
 // stop being true.
-// The comments those descriptors carry are the plugin author's own, taken from
-// [Plugin.SchemaProse] and attached here rather than sent beside the bytes: a
-// descriptor set has always been able to carry SourceCodeInfo, and what was
-// missing was any comment to put in it, since the compiled-in descriptor this
-// reads had them stripped by protoc (#723). A nil prose leaves the bytes exactly
-// as they were before that field existed.
+// The comments those descriptors carry are the plugin author's own, generated
+// by protoc-gen-flowstate-doc (or taken from [Plugin.SchemaProse]) and attached
+// here rather than sent beside the bytes: a descriptor set has always been able
+// to carry SourceCodeInfo, and what was missing was any comment to put in it,
+// since the compiled-in descriptor this reads had them stripped by protoc
+// (#723). A nil prose leaves the bytes exactly as they were before either
+// existed.
 func describeMessage(msg proto.Message, prose *flowstatev1.DescriptorProse) ([]byte, string, error) {
 	if msg == nil {
 		return nil, "", nil

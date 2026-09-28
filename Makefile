@@ -14,6 +14,10 @@ GOVULNCHECK := GOTOOLCHAIN=go1.27.0 go tool -modfile=$(TOOLS_MODFILE) govulnchec
 STATICCHECK := GOTOOLCHAIN=go1.27.0 go tool -modfile=$(TOOLS_MODFILE) staticcheck
 PKGSITE := go tool -modfile=$(TOOLS_MODFILE) pkgsite
 
+# The example plugin is its own buf module: `make check`, ci.yml and tools/gate
+# regenerate its code, schema comments included, from its own buf.gen.yaml.
+EXAMPLE_PLUGIN := pkg/flowstate/v1/plugin/examples/flowstate-plugin-example
+
 # gofmt from the toolchain go.mod pins, rather than whichever build sits on
 # PATH (#1061).
 #
@@ -105,8 +109,7 @@ check:
 	$(BUF) lint
 	$(BUF) breaking --against '.git#branch=origin/main'
 	$(BUF) generate
-	$(BUF) build --exclude-imports -o pkg/flowstate/v1/protodoc/flowstate.descriptorset.binpb
-	$(BUF) build --exclude-imports -o pkg/flowstate/v1/plugin/examples/flowstate-plugin-example/schema.descriptorset.binpb pkg/flowstate/v1/plugin/examples/flowstate-plugin-example/proto
+	$(BUF) generate $(EXAMPLE_PLUGIN)/proto --template $(EXAMPLE_PLUGIN)/buf.gen.yaml -o $(EXAMPLE_PLUGIN)
 	git diff --exit-code
 	$(GOVULNCHECK) ./...
 	$(STATICCHECK) ./...
