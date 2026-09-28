@@ -130,9 +130,7 @@ func (d *debugControl) receipt(request string, status v1.DebugCommandStatus, mes
 	if request == "" || len(request) > v1.MaxDebugRequestIDBytes {
 		return
 	}
-	if runes := []rune(message); len(runes) > v1.MaxDebugReceiptMessageRunes {
-		message = string(runes[:v1.MaxDebugReceiptMessageRunes-1]) + "…"
-	}
+	message = v1.TruncateDebugReceiptMessage(message)
 	d.carry.Receipts = append(d.carry.Receipts, &v1.DebugReceipt{
 		RequestId: request,
 		Status:    status,

@@ -327,7 +327,7 @@ func TestATypedAskIsBoundedWhereTheRunReadsIt(t *testing.T) {
 	tl.ask(30*time.Second, "sre-1@example.com", &v1.DebugAsk{Verb: v1.DebugVerbPause, Session: "s1", Request: "attach"})
 	tl.ask(31*time.Second, "sre-1@example.com", &v1.DebugAsk{Verb: v1.DebugVerbResume, Session: "s1", Request: oversized,
 		Action: v1.DebugResumeAction_DEBUG_RESUME_ACTION_CONTINUE})
-	tl.ask(32*time.Second, "sre-1@example.com", &v1.DebugAsk{Verb: strings.Repeat("v", 4*v1.MaxDebugReceiptMessageRunes), Session: "s1", Request: "garbled"})
+	tl.ask(32*time.Second, "sre-1@example.com", &v1.DebugAsk{Verb: strings.Repeat("é", 4*v1.MaxDebugReceiptMessageBytes), Session: "s1", Request: "garbled"})
 	tl.read(63*time.Second, "oversized", oversized)
 	tl.read(63*time.Second+time.Millisecond, "garbled", "garbled")
 	tl.ask(64*time.Second, "sre-1@example.com", &v1.DebugAsk{Verb: v1.DebugVerbResume, Session: "s1", Request: "bye",
@@ -343,5 +343,6 @@ func TestATypedAskIsBoundedWhereTheRunReadsIt(t *testing.T) {
 	garbled := tl.reads["garbled"].GetReceipt()
 	require.NotNil(t, garbled)
 	assert.Equal(t, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_REFUSED, garbled.GetStatus())
-	assert.LessOrEqual(t, utf8.RuneCountInString(garbled.GetMessage()), v1.MaxDebugReceiptMessageRunes)
+	assert.LessOrEqual(t, len(garbled.GetMessage()), v1.MaxDebugReceiptMessageBytes)
+	assert.True(t, utf8.ValidString(garbled.GetMessage()), "a capped message was cut inside a rune")
 }
