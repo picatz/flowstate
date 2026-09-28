@@ -511,6 +511,10 @@ type FlowstateServer struct {
 	// details. It is set in [New] and never nil. See [WithDataConverter].
 	dataConverter converter.DataConverter
 
+	// declarations caches what each run's executed specification declares
+	// sensitive, read once from its start input. See sensitive.go.
+	declarations declarationCache
+
 	// listTokenKey authenticates the page tokens List issues, so that a token
 	// coming back is one this process handed out rather than one a caller
 	// built. Derived in [New] from the system's random source and held nowhere
@@ -2270,8 +2274,10 @@ func manualStartPrincipal(ctx context.Context) string {
 	return principal.ID()
 }
 
-// Get retrieves the status of a workflow execution by its ID (and optionally its run ID).
-func (s *FlowstateServer) Get(ctx context.Context, req *connect.Request[v1.GetRequest]) (*connect.Response[v1.GetResponse], error) {
+// get retrieves the status of a workflow execution by its ID (and optionally its
+// run ID), with every value in it; [FlowstateServer.Get] decides which of them
+// the caller may read.
+func (s *FlowstateServer) get(ctx context.Context, req *connect.Request[v1.GetRequest]) (*connect.Response[v1.GetResponse], error) {
 	// Validated here rather than left to the CLI's protovalidate interceptor,
 	// for the reason [FlowstateServer.Run] gives: an embedder that builds a
 	// server without it would otherwise send an unbounded id to Temporal.

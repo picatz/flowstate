@@ -164,8 +164,9 @@ const (
 	maxTimelineBytes = 4 << 20
 )
 
-// GetTimeline reports what a run did, event by event.
-func (s *FlowstateServer) GetTimeline(
+// getTimeline reports what a run did, event by event; [FlowstateServer.GetTimeline]
+// decides what of its failure text the caller may read.
+func (s *FlowstateServer) getTimeline(
 	ctx context.Context, req *connect.Request[v1.GetTimelineRequest],
 ) (*connect.Response[v1.GetTimelineResponse], error) {
 	if err := v1.Validate(req.Msg); err != nil {

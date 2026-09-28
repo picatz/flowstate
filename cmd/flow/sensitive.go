@@ -168,8 +168,39 @@ func redactEntityState(state *v1.EntityState, decision carriedValues) *v1.Entity
 	return v1.RedactEntityState(state, decision)
 }
 
+// redactGetResponse is where a server's decision meets this process's own.
+//
+// A current server decides before a response leaves it (sensitive_disclosure):
+// it withholds against the specification the run executed, which this process
+// usually does not hold, so its answer is both more precise and safer than one
+// made here, and is rendered as given. Two answers are still redacted here: an
+// older server's, which decided nothing (UNSPECIFIED), and a REVEALED answer
+// that this process's own posture did not ask for. The second is how a
+// request field set by something other than the operator, an agent's MCP tool
+// call among them, gains nothing: the server honours the caller's authority,
+// and this process honours its operator's intent.
 func redactGetResponse(response *v1.GetResponse, workflow *v1.Workflow, reveal bool) *v1.GetResponse {
+	switch response.GetSensitiveDisclosure() {
+	case v1.SensitiveDisclosure_SENSITIVE_DISCLOSURE_NONE_DECLARED, v1.SensitiveDisclosure_SENSITIVE_DISCLOSURE_WITHHELD:
+		return response
+	case v1.SensitiveDisclosure_SENSITIVE_DISCLOSURE_REVEALED:
+		if reveal {
+			return response
+		}
+	}
 	return v1.RedactGetResponse(response, workflow, reveal)
+}
+
+// noteWithheldDespiteReveal says, once, that --reveal-sensitive was typed and
+// the server withheld anyway, so the operator is told what to change rather
+// than left wondering why the flag did nothing.
+func noteWithheldDespiteReveal(surface *ui.UI, response *v1.GetResponse) {
+	if response.GetSensitiveDisclosure() != v1.SensitiveDisclosure_SENSITIVE_DISCLOSURE_WITHHELD {
+		return
+	}
+	fmt.Fprintf(surface.Err, "%s the server withheld this run's sensitive values: revealing them needs the "+
+		"workload.reveal_sensitive action, listed explicitly in the caller's trust policy entry\n",
+		surface.ErrTheme.Pill(ui.ToneWarning, "withheld"))
 }
 
 func redactFailureText(response *v1.GetResponse, sensitive v1.SensitiveValues) *v1.GetResponse {

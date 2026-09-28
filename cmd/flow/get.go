@@ -44,7 +44,10 @@ func runGet(cmd *cobra.Command, args []string) error {
 	surface := newSurface(cmd)
 	workflowID := args[0]
 
-	request := &v1.GetRequest{WorkflowId: workflowID}
+	// Asked of the server, which decides: it withholds declared-sensitive
+	// values unless this caller's policy grants workload.reveal_sensitive.
+	reveal := revealSensitiveRequested(cmd)
+	request := &v1.GetRequest{WorkflowId: workflowID, RevealSensitive: reveal}
 
 	// Left absent rather than empty when unset. The schema requires a run id to be
 	// a UUID when present, so sending "" would be refused for not looking like one
@@ -64,14 +67,13 @@ func runGet(cmd *cobra.Command, args []string) error {
 		return refusedRun("reading", workflowID, server, err)
 	}
 
-	// `flow get` asks about a run by id alone, on a separate invocation from
-	// whatever started it — it never holds the workflow specification that
-	// declared which of these outputs are sensitive. That is exactly the
-	// fail-closed case [redactGetResponse] documents: workflow is nil, so every
-	// declared output is withheld unless --reveal-sensitive asked otherwise.
-	reveal := revealSensitiveRequested(cmd)
+	// A current server has already decided (see [redactGetResponse]); an older
+	// one has not, and `flow get` holds no specification to redact against,
+	// so the fail-closed case applies: every declared output is withheld
+	// unless --reveal-sensitive asked otherwise.
 	if reveal {
 		noteRevealedSensitiveValues(surface)
+		noteWithheldDespiteReveal(surface, response.Msg)
 	}
 
 	msg := redactGetResponse(response.Msg, nil, reveal)

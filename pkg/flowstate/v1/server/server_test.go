@@ -240,6 +240,9 @@ func TestFlowstateServer(t *testing.T) {
 		Status:     v1.RunResponse_STATUS_COMPLETED,
 		// One segment, so the run that began the workload is the run itself.
 		FirstRunId: runResp.Msg.GetRunId(),
+		// The workflow declares nothing sensitive, and the server says so
+		// rather than leaving a client to guess.
+		SensitiveDisclosure: v1.SensitiveDisclosure_SENSITIVE_DISCLOSURE_NONE_DECLARED,
 		Kind: &v1.GetResponse_Outputs{
 			Outputs: &v1.Workflow_StepOutputs{
 				StepValues: map[string]*v1.Node_Outputs{

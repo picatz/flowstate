@@ -182,6 +182,18 @@ specifications are size-bounded at submit (`pkg/flowstate/v1/size.go:39`, `:103`
 and `List` is bounded by executions read and by requests made
 (`pkg/flowstate/v1/server/list.go:56`, `:68`).
 
+**Declared-sensitive values.** `Get` and `GetTimeline` withhold values a run's
+workflow declared `sensitive: true` before the response leaves `flow server`,
+decided against the specification the run executed (read from its start input), and
+say so in `sensitive_disclosure` (`pkg/flowstate/v1/server/sensitive.go`). A caller
+receives them only by asking (`reveal_sensitive`) while holding
+`workload.reveal_sensitive`, which an entry with no action list is not granted; every
+such request is audited under that action. Before this, the RPCs returned the values
+raw to any `workload.read` caller and only the CLI's renderer hid them. This is display
+control at the API boundary: the values are in history (sealed only by payload
+encryption), a transformed value is not followed, and debug inspection has its own
+action (`workload.debug_inspect`).
+
 **Limits.** `flow server` serves plain HTTP when it is given no certificate, and it
 refuses to do that on any address but loopback unless `--tls-terminated-upstream`
 asserts that something in front of it either terminates TLS or bounds who can reach

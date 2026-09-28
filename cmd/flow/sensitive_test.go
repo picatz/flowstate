@@ -371,3 +371,33 @@ func TestRedactStepValuesLeavesTranscriptUntouchedWhenNothingIsSensitive(t *test
 		redacted.GetOutputs().GetStepValues()["place"].GetNamedValues()["region"].GetLiteral().GetStringValue(),
 		"a specification that declared nothing sensitive must leave the transcript exactly as produced")
 }
+
+// TestTheClientRendersWhatTheServerDecided is the client half of server-side
+// disclosure: a current server's answer is rendered as given, an older
+// server's is redacted here as before, and a REVEALED answer this process did
+// not ask for (an agent's MCP tool call setting the field itself) is redacted
+// here anyway.
+func TestTheClientRendersWhatTheServerDecided(t *testing.T) {
+	t.Parallel()
+
+	answer := func(disclosure v1.SensitiveDisclosure) *v1.GetResponse {
+		return &v1.GetResponse{
+			Status:              v1.RunResponse_STATUS_COMPLETED,
+			RunOutputs:          &v1.RunOutputs{Values: map[string]*v1.Value{"plain": v1.NewLiteral("visible")}},
+			SensitiveDisclosure: disclosure,
+		}
+	}
+	value := func(r *v1.GetResponse) string {
+		return r.GetRunOutputs().GetValues()["plain"].GetLiteral().GetStringValue()
+	}
+
+	require.Equal(t, "visible", value(redactGetResponse(answer(v1.SensitiveDisclosure_SENSITIVE_DISCLOSURE_NONE_DECLARED), nil, false)),
+		"a server that found nothing declared was second-guessed")
+	require.Equal(t, "visible", value(redactGetResponse(answer(v1.SensitiveDisclosure_SENSITIVE_DISCLOSURE_WITHHELD), nil, false)))
+	require.Equal(t, "visible", value(redactGetResponse(answer(v1.SensitiveDisclosure_SENSITIVE_DISCLOSURE_REVEALED), nil, true)))
+
+	require.Equal(t, redactedMarker("plain"), value(redactGetResponse(answer(v1.SensitiveDisclosure_SENSITIVE_DISCLOSURE_UNSPECIFIED), nil, false)),
+		"an older server's answer, with no specification held here, must fail closed")
+	require.Equal(t, redactedMarker("plain"), value(redactGetResponse(answer(v1.SensitiveDisclosure_SENSITIVE_DISCLOSURE_REVEALED), nil, false)),
+		"a reveal this process did not ask for was rendered")
+}

@@ -407,6 +407,12 @@ func (c *fakeRunClient) DescribeWorkflowExecution(_ context.Context, _, runID st
 // QueryWorkflow refuses: a running run's progress query is beside the point
 // here, and [runProgress] treating an unavailable answer as "no progress" is
 // what a real worker that has not started answering looks like.
+// GetWorkflowHistory answers with no history, which the server's sensitive
+// value decision treats as unreadable and so fails closed on.
+func (c *fakeRunClient) GetWorkflowHistory(context.Context, string, string, bool, enumspb.HistoryEventFilterType) client.HistoryEventIterator {
+	return nil
+}
+
 func (c *fakeRunClient) QueryWorkflow(context.Context, string, string, string, ...any) (converter.EncodedValue, error) {
 	return nil, errors.New("no worker is answering queries")
 }

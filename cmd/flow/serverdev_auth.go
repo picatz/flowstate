@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"io"
 	"os"
 	"path/filepath"
@@ -105,6 +106,11 @@ func configureDevAuthentication(flags devFlags, address string) (devAuthenticati
 		Role:           "developer",
 		NamespaceClaim: "namespace",
 		JWKSFile:       jwksPath,
+		// Every action, listed rather than left unrestricted, so the
+		// developer this dev stack mints tokens for also holds the ones that
+		// must be granted explicitly (workload.reveal_sensitive,
+		// payload.decode): it is their own machine and their own runs.
+		Actions: v1.AuthorizationActionScopes(),
 	}}}
 	policyPath := filepath.Join(dir, "trust-policy.json")
 	if err := writeDevAuthJSON(policyPath, policy, 0o600); err != nil {

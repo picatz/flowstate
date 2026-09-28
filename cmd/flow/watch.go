@@ -183,7 +183,7 @@ type clientPoller struct {
 }
 
 func (p clientPoller) Poll(ctx context.Context) (*v1.GetResponse, error) {
-	request := &v1.GetRequest{WorkflowId: p.workflowID}
+	request := &v1.GetRequest{WorkflowId: p.workflowID, RevealSensitive: p.reveal}
 	if p.runID != "" {
 		request.RunId = &p.runID
 	}
