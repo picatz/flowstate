@@ -24,7 +24,7 @@ copying, and `workflow.test.yaml` checks each rather than asserting it in prose:
   `attempts: 1`, because a retried agentic turn is a *new* turn: new cost, new
   nondeterminism, and for a turn permitted to write, possibly new writes. `land` gets
   `attempts: 1` for a different reason — a retried write may be the *same* write
-  applied twice, and the http task's default of five attempts retries a 5xx whatever
+  applied twice, and the http task's default of five attempts retries a 500 whatever
   the method, so a tracker that created the patch and then answered 500 would be sent
   the identical body again. Say nothing on a step and you get the default, which is
   right for exactly one of these three.
@@ -49,16 +49,16 @@ before writing, not after a step fails with `unknown task`.
 ### 2. `flowstate_validate` — is this a file at all
 
 Pure: reads nothing, writes nothing, starts nothing, so it is the one tool in the
-loop that can be hammered unattended. A draft with `wait_for_signals:` in it:
+loop that can be hammered unattended. A draft with `wait_for_signl:` in it:
 
 ```json
 {"report": {"files": [{"file": "workflow.yaml", "diagnostics": [
-  {"line": 116, "column": 5,
-   "message": "unknown key \"wait_for_signals\"; did you mean \"wait_for_signal\"?",
+  {"line": 111, "column": 5,
+   "message": "unknown key \"wait_for_signl\"; did you mean \"wait_for_signal\"?",
    "step": "review", "code": "general",
    "edits": [{"title": "rename to `wait_for_signal`",
-              "changes": [{"range": {"startLine": 116, "startColumn": 5,
-                                     "endLine": 116, "endColumn": 21},
+              "changes": [{"range": {"startLine": 111, "startColumn": 5,
+                                     "endLine": 111, "endColumn": 19},
                            "newText": "wait_for_signal"}]}]}]}]}}
 ```
 
@@ -146,7 +146,8 @@ is what CI runs over this directory.
 
 `flow run local examples/agentic-loop/workflow.yaml` needs a model gateway and a
 tracker at the two hosts its `http:` steps name — neither of which exists — so it
-fails at the first step, with DNS rather than with a policy:
+fails at the first step, where the egress policy cannot resolve the name it has to
+judge:
 
 ```console
 $ flow run local examples/agentic-loop/workflow.yaml
@@ -155,11 +156,14 @@ this workload waits for signal "turn-approved", which nothing here will send; it
   to answer it now:  --signal turn-approved='{"approved": true}'
 ERROR
 error running workflow locally: step "brief": task "http": Get
-"https://tracker.internal.example.com/issues/241": dial tcp: lookup
-tracker.internal.example.com on 8.8.8.8:53: no such host
+"https://tracker.internal.example.com/issues/241": egress policy evaluation for
+tracker.internal.example.com:443 ended before it decided because the resolver
+failed: dial tcp: lookup tracker.internal.example.com on 8.8.8.8:53: no such
+host
 ```
 
 The two failures are worth putting side by side: the command a person runs on their
-own machine reaches the network by default, and the MCP surface an agent drives does
-not. Same file, same engine, different answer — because one of them is deciding what
-an untrusted caller may reach.
+own machine reaches public addresses by default, and has to resolve a name to know
+whether it is one, while the MCP surface an agent drives refuses before any lookup.
+Same file, same engine, different answer — because one of them is deciding what an
+untrusted caller may reach.

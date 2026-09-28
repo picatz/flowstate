@@ -25,14 +25,16 @@ already registered by the time that crash could happen.
 The ordinary path — everything succeeds, and the run reports what it did:
 
 ```console
-$ flow run local examples/order-fulfillment/workflow.yaml
+$ flow run local examples/order-fulfillment/workflow.yaml \
+    --input-file examples/order-fulfillment/inputs.json
 ```
 
-The path this example exists for — the carrier cannot take the order, so the last
-two steps' effects come back:
+The path this example exists for — the carrier cannot take the order, so the first
+two steps' effects come back, the charge before the hold:
 
 ```console
-$ flow run local examples/order-fulfillment/workflow.yaml --input carrier_outage=true
+$ flow run local examples/order-fulfillment/workflow.yaml \
+    --input-file examples/order-fulfillment/inputs.json --input carrier_outage=true
 ```
 
 Both are the same file. Run durably instead of in this process (needs a Temporal
@@ -43,8 +45,10 @@ compensation depends on it being the same worker that ran `reserve_inventory` in
 the first place:
 
 ```console
-$ flow run examples/order-fulfillment/workflow.yaml
-$ flow run examples/order-fulfillment/workflow.yaml --input carrier_outage=true
+$ flow run examples/order-fulfillment/workflow.yaml \
+    --input-file examples/order-fulfillment/inputs.json
+$ flow run examples/order-fulfillment/workflow.yaml \
+    --input-file examples/order-fulfillment/inputs.json --input carrier_outage=true
 ```
 
 The compensation is exercised durably across a forced hand-over in this

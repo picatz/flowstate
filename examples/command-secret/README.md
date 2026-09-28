@@ -44,12 +44,13 @@ $ flow run local examples/command-secret/workflow.yaml \
     --auth-policy examples/command-secret/auth-policy.yaml
 ```
 
-The example still points `url:` at `api.example.com`, which is why this directory
-has no `*.test.yaml` of its own: `flow test` stubs a workflow's tasks *before* the
-activity that would resolve a secret ever runs, so a stubbed `http` step proves
-nothing about `command:` — the resolution this example is about never happens on
-that path, for any of the four backends this issue wires up. What actually keeps the
-mechanism honest in CI is
+The example still points `url:` at `api.example.com`, so that run ends at the
+request. [`workflow.test.yaml`](workflow.test.yaml) proves the workflow asks for
+`command:github-token` and that the step receiving it gets exactly the value a case
+bound that reference to, with no command run at all — `flow test`'s `secrets:` block
+resolves the reference itself, in place of the configured command — and that a case
+which forgets to bind it is refused, naming the reference, rather than handed an
+empty bearer token. What keeps the command half honest in CI is
 [`TestSecretRegistryWiresCommandProvider`](../../cmd/flow/secrets_test.go), which
 runs this exact CLI-flag-to-provider path with `printf` for real, on every platform
 CI runs on, and asserts the resolved value. `flow fix --check` and `flow validate`

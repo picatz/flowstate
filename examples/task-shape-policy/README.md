@@ -36,9 +36,10 @@ The first runs `deploy` unrestricted — the zero case. The second refuses it, a
 rehearsal is governed by the rules production applies.
 
 What a Flowfile cannot rehearse is a *real* attested identity — a local run's
-`identity.namespace` always reads empty, which this policy's rule happens to deny
-regardless (`"" != "platform"` is true). The durable half, with a genuinely
-attested identity on both sides of the rule — denied outside the platform team's
-namespace, permitted inside it — is `engine.TestTaskPolicyIdentityNamespaceDenial`
-in `pkg/flowstate/v1/engine`, run under the durable test harness as part of
-`make check`.
+`identity.namespace` reads empty unless `--as-namespace` sets it, and this policy's
+rule denies the empty one (`"" != "platform"` is true), while
+`--as-namespace platform` runs `deploy` on nothing but the word of whoever typed
+the flag. The durable half, with a genuinely attested identity on both sides of the
+rule — denied outside the platform team's namespace, permitted inside it — is
+`engine.TestTaskPolicyIdentityNamespaceDenial` in `pkg/flowstate/v1/engine`, run
+under the durable test harness as part of `make check`.
