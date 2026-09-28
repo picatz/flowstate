@@ -36,7 +36,8 @@ func TestResourcesMatchTheInventory(t *testing.T) {
 	t.Parallel()
 
 	inventory := map[string]string{
-		flowmcp.DSLResourceURI: flowmcp.MarkdownMIME,
+		flowmcp.LanguageResourceURI: flowmcp.MarkdownMIME,
+		flowmcp.DSLResourceURI:      flowmcp.MarkdownMIME,
 		// The one resource on this surface that is not reference material and
 		// not addressed to a model at all: the MCP Apps view a host renders for
 		// flowstate_get. It is listed because the extension requires a view to be
@@ -124,7 +125,7 @@ func TestEveryListedResourceIsReadable(t *testing.T) {
 
 // TestTheDSLResourceServesTheWholeReference.
 //
-// Whole is the decision recorded in mcpDSLResourceHandler, so it is the thing
+// Whole is the decision recorded in mcpMarkdownResourceHandler, so it is the thing
 // asserted: not that the read answered, but that what came back is the entire
 // document. A reference truncated somewhere in the middle would still pass every
 // test that only checks for a heading, and would leave an agent authoring
@@ -140,6 +141,24 @@ func TestTheDSLResourceServesTheWholeReference(t *testing.T) {
 
 	assert.Equal(t, reference.DSL(), result.Contents[0].Text)
 	assert.Equal(t, flowmcp.MarkdownMIME, result.Contents[0].MIMEType)
+}
+
+// TestTheLanguageResourceServesTheWholeGuide is the same claim for the guide an
+// agent is told to author from, and the two must not be one document served
+// twice: the point of the pair is that the smaller one is the one to read.
+func TestTheLanguageResourceServesTheWholeGuide(t *testing.T) {
+	t.Parallel()
+
+	session := connectMCP(t, defaultLocalRunPosture())
+
+	result, err := session.ReadResource(t.Context(), &mcp.ReadResourceParams{URI: flowmcp.LanguageResourceURI})
+	require.NoError(t, err)
+	require.Len(t, result.Contents, 1)
+
+	assert.Equal(t, reference.Language(), result.Contents[0].Text)
+	assert.Equal(t, flowmcp.MarkdownMIME, result.Contents[0].MIMEType)
+	assert.Less(t, len(reference.Language()), len(reference.DSL()),
+		"the guide served for authoring should be the smaller of the two documents")
 }
 
 // TestTheCatalogResourceIsTheCatalogTheToolAnswers.

@@ -29,7 +29,7 @@ import (
 //
 // The named fields stay the idiomatic spelling for structure claims — `ran:`
 // and `skipped:` feed coverage and read the transcript's record — and
-// `check:` is for value, shape, and error claims. Stated in docs/CLI.md.
+// `check:` is for value, shape, and error claims. Stated in docs/TESTING.md.
 
 // MaxCheckWitnesses bounds how many referenced values a failing check prints.
 // The resource is lines in a report an author did not size: a check over a

@@ -39,6 +39,11 @@ func TestTheMirrorMatchesTheRepository(t *testing.T) {
 	assert.Equal(t, string(original), DSL(),
 		"the embedded copy of docs/DSL.md is stale: %s", regenerate)
 
+	guide, err := os.ReadFile(filepath.Join(repoRoot, "docs", "LANGUAGE.md"))
+	require.NoError(t, err)
+	assert.Equal(t, string(guide), Language(),
+		"the embedded copy of docs/LANGUAGE.md is stale: %s", regenerate)
+
 	sources, err := filepath.Glob(filepath.Join(repoRoot, "examples", "*", "workflow.yaml"))
 	require.NoError(t, err)
 	require.NotEmpty(t, sources, "no examples found; the glob is wrong")

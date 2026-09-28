@@ -57,11 +57,13 @@ import (
 //     this surface can authorize per principal (S7b), it serves only what
 //     answers in this process and touches no run and no tenant:
 //     [flowmcp.LocalTools] — validate, compile, get_catalog — plus
-//     flowstate_test.
+//     flowstate_test and flowstate_debug.
 //   - flowstate_test **is** served, per #558's Q3: a stubbed run replaces
 //     every task's implementation before a step executes, so it reaches
 //     nothing whatever this process was started with. See cmd/flow/mcp.go's
 //     comment above [testToolHandler] for the two independent proofs.
+//     flowstate_debug is served for the same reason: it steps through a test
+//     case, under the same stubs and the same virtual clock.
 //
 // And three postures, all fail-closed: no protected-resource configuration
 // means no surface at all rather than an unauthenticated one; --insecure-no-auth

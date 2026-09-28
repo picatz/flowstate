@@ -3269,10 +3269,11 @@ flow plugins -o json \
 			"does. What such a run may reach is decided by the flags this process is started " +
 			"with and by nothing a client sends: with no flags, egress is denied and no secret " +
 			"scheme is registered.\n\n" +
-			"Beside the tools, the server publishes read-only resources: the whole DSL " +
-			"reference at flowstate://docs/dsl, the task catalog as JSON at " +
-			"flowstate://catalog/tasks, and every example Flowfile under " +
-			"flowstate://docs/examples/, embedded at build time, so an agent can read the " +
+			"Beside the tools, the server publishes read-only resources: the language guide " +
+			"at flowstate://docs/language, the task catalog as JSON at " +
+			"flowstate://catalog/tasks, every example Flowfile under " +
+			"flowstate://docs/examples/, and the record of the language's design decisions " +
+			"at flowstate://docs/dsl, all embedded at build time, so an agent can read the " +
 			"language and working references without a checkout nearby.\n\n" +
 			"An agent host launches this and speaks to it over the same stdin and stdout " +
 			"this process already has; typing `flow mcp` yourself waits for a host to " +
@@ -3339,8 +3340,9 @@ flow mcp --plugin-dir ./plugins`,
 			"HTTP it is remote code execution as a feature, and the run-lifecycle tools are absent " +
 			"because they would spend this process's own credential on a caller's behalf. What is " +
 			"served is what answers in this process and reaches nothing — flowstate_validate, " +
-			"flowstate_compile, flowstate_get_catalog — plus flowstate_test, whose stubbed runs " +
-			"replace every task implementation before a step executes. Sessions and their limits " +
+			"flowstate_compile, flowstate_get_catalog — plus flowstate_test and flowstate_debug, " +
+			"whose stubbed runs replace every task implementation before a step executes. " +
+			"Sessions and their limits " +
 			"live only in this process: run one replica, and expect a restart to invalidate active " +
 			"sessions. A load-balanced fleet is not a supported horizontally scalable deployment.\n\n" +
 			"Flowstate is not an authorization server: it issues no tokens, runs no authorization " +

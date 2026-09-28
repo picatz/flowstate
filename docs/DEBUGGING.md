@@ -12,7 +12,7 @@ doors, so a habit learned at one carries to the others:
 
 | You are | Reach for | What it is |
 | --- | --- | --- |
-| a person, debugging a test case | `flow test --debug --run '<case>' <dir>` | a prompt, at the step boundary |
+| a person, debugging a test case | `flow test --debug --run '<case>' <file>` | a prompt, at the step boundary |
 | a person, debugging a real local run | `flow run local --debug <workflow>` | the same prompt, over a real run |
 | an agent | the `flowstate_debug` MCP tool | the same session, driven by a script |
 
@@ -24,11 +24,15 @@ $ flow run local --debug examples/loop-accumulate/workflow.yaml
 $ flow debug replay examples/loop-accumulate/debug.script examples/loop-accumulate/workflow.yaml
 ```
 
+`flow test --debug` steps through exactly one case in one test file; `--run`
+selects it when the file holds more than one. An editor can drive the same
+session through [`flow dap`](EDITORS.md#stepping-a-run-flow-dap).
+
 These are local surfaces. The architecture's [driver parity
 boundary](ARCHITECTURE.md#execution-model) names what they prove and what still needs
-a durable or integration run. Inspect a durable run with [`flow get` and `flow
-timeline`](#reading-a-durable-run); operate a shared service using the
-[deployment guide](DEPLOYMENT.md).
+a durable run. A durable run is read with [`flow get` and `flow
+timeline`](#reading-a-durable-run), and can be [held](#holding-a-durable-run) at a
+step boundary for a bounded time, but not stepped or inspected from here.
 
 ## The commands
 
@@ -275,11 +279,8 @@ applies here rather than a second, weaker one.
 
 ## Reading a durable run
 
-The debugger is a local-driver instrument, so the question for a run already
-executing on a worker somewhere else is what it can *tell* you rather than
-where you can stop it.
-
-Two verbs, answering two questions.
+For a run executing on a worker somewhere else, two verbs answer two
+questions.
 
 `flow get <id>` answers what a run **is** doing: its status and timing, where
 it has reached, the steps Temporal is retrying right now and why the last
@@ -324,22 +325,11 @@ verb that answers it, which is the same split as everywhere else: `get` for now,
 `timeline` for what happened. The row appears here as soon as the next attempt
 begins.
 
-Getting the rest right needed two facts Temporal does not hand over directly. Only
-a *final*, retries-exhausted failure gets an event of its own; a failure that
-will be retried is carried on the next attempt's start, so reporting it as
-detail on a scheduling row would leave anything filtering on failures seeing
-none of them — which is to say none of the failures a retrying run has. And no
-terminal event names an attempt at all: `ActivityTaskFailed` references the
-scheduling and the start and stops there, so the account carries the number
-forward from the start it belongs to.
-
-Failure text is read through the deployment's own converter, which matters on
-one shape in particular: a deployment running a payload codec has Flowstate's
-failure encoding on with it — that is what keeps a rejected value out of history
-in the clear — and the encoding moves the real message into `encoded_attributes`
-and writes the literal string `Encoded failure` in its place. Read naively, a
-timeline there would be structurally perfect and diagnostically empty. `flow
-get`'s account of a retrying step reads it the same way, for the same reason.
+Every failed attempt gets a row with its attempt number, including attempts
+Temporal records only as detail on the next attempt's start, so filtering the
+timeline for failures finds all of them. Failure text is decoded through the
+deployment's own payload converter, so a deployment that encrypts payloads still
+sees the real message rather than `Encoded failure`.
 
 A failure's message is bounded, and says so when it was cut. A task fails with
 whatever string it likes, and a run started by an outside party is not ours to
@@ -420,16 +410,64 @@ On a deployment running a payload codec these are encrypted with everything
 else and read back through its codec server, exactly as the workflow-level
 summary beside them is.
 
+## Holding a durable run
+
+A durable run can be paused at its next step boundary, for a bounded time, by a
+caller the workflow's `debug:` policy allows. A hold gives you time: to look at
+the systems the run touches before its next step acts, or to stop a run from
+advancing while you decide what to do. It does not attach the interactive
+debugger; inspecting, stepping, and breakpoints are local only.
+
+The workflow has to allow it. `debug:` has the grammar of one `signals:` entry,
+and **without it, nobody may pause the run**, including the person who started
+it:
+
+```yaml
+debug:
+  allow:
+    - claims:
+        team: sre
+```
+
+A hold is requested with an ordinary signal on the reserved channel
+`flowstate_debug`, authenticated and checked like any other signal:
+
+```console
+$ flow signal <workflow-id> flowstate_debug --data '{"verb": "pause", "lease": "5m"}'
+delivered flowstate_debug to <workflow-id>
+$ flow timeline <workflow-id>
+…
+22:20:17Z  waiting  debug lease 01a0e4f4-…/debug/1 held by https://idp.example.com#alex expires …
+$ flow signal <workflow-id> flowstate_debug --data '{"verb": "resume"}'
+```
+
+- **The hold is a lease.** It lasts `lease` (default 2 minutes, at most 10 per
+  request). Pausing again renews it, but a hold ends at most 10 minutes after it
+  was first granted. When the lease expires, the run resumes on its own, so an
+  abandoned hold cannot park a production run.
+- **One holder.** The caller whose pause was granted holds the run. Another
+  caller's pause is refused, not queued, and only the holder may resume.
+- **Where the run is at one position.** A run holds before a step at its own
+  top level, not inside a `loop:` body, a `parallel:` block, a `switch:` branch,
+  or a `for_each` with `max_parallel:`, where it can be at several positions at
+  once. The local debugger stops in more places.
+- **Visible in the timeline.** `flow timeline` and the Temporal UI show the
+  signal and the lease with its holder and expiry. `flow get` does not show the
+  lease yet.
+
+A local run needs none of this: `flow run local --debug` holds at every step
+with no lease and no policy.
+
 ## What it does not do yet
 
-Pausing a durable run. Reading one is the section above; *stopping* one is a
-different problem — it needs a wire protocol, a lease so an abandoned session
-cannot park a production run forever, and a policy for who may attach — and it
-is [#928](https://github.com/picatz/flowstate/issues/928)'s slice 2. Today the
-debugger is a local-driver instrument, which is where authoring happens.
+- Attach the interactive debugger to a durable run: `inspect`, stepping, and
+  breakpoints work on local runs and test cases only.
+- Change a value. The debugger reads a run; it cannot edit it.
+- Share a session. A local session has one driver: one terminal, one DAP client,
+  or one MCP call. A durable hold has one holder.
 
-An editor's own debug UI can drive the same session through `flow dap` — see
-[EDITORS.md](EDITORS.md#stepping-a-run-flow-dap). The VS Code extension does not
-yet contribute a debug type for it.
+An editor's own debug UI can drive a local session through `flow dap`; see
+[EDITORS.md](EDITORS.md#stepping-a-run-flow-dap) for what it supports. The VS
+Code extension does not yet contribute a debug type for it.
 
 [`DefaultCostLimit`]: https://pkg.go.dev/github.com/picatz/flowstate/pkg/flowstate/v1#DefaultCostLimit

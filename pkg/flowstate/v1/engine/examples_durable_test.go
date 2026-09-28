@@ -131,6 +131,14 @@ var exampleSignals = map[string]map[string]*v1.Node_Outputs{
 		}},
 	},
 
+	// release-approval is the getting-started tutorial's workflow, and this is
+	// the payload the tutorial's own `flow signal` line sends.
+	"release-approval": {
+		"release-approved": {NamedValues: map[string]*v1.Value{
+			"approved": v1.NewLiteral(true),
+		}},
+	},
+
 	// webhook-approval-bridge's gate is answered by a webhook delivery in
 	// production, and by this payload here — the same shape the trigger's
 	// `signal.with:` maps a click to. The example's loop then asks again and
