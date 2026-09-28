@@ -231,6 +231,24 @@ namespaces: {ns: {escrow: [break-glass]}}
 escrow_keys: [{id: break-glass, hpke: {public_key: {file: break-glass.key.pub}, private_key: {file: break-glass.key}}}]
 `)
 		require.Error(t, err)
+
+		// The public key is not secret, but it decides who can unwrap every
+		// new data key: one another account could have written is refused,
+		// and so is a keyring configuration it could have written.
+		require.NoError(t, os.Chmod(filepath.Join(dir, "break-glass.key.pub"), 0o664))
+		_, err = load(t, dir, `
+namespaces: {ns: {current: primary, keys: [{id: primary, file: primary.key}], escrow: [break-glass]}}
+escrow_keys: [{id: break-glass, hpke: {public_key: {file: break-glass.key.pub}}}]
+`)
+		require.ErrorContains(t, err, "go-w")
+
+		require.NoError(t, os.Chmod(filepath.Join(dir, "break-glass.key.pub"), 0o644))
+		config := writeFile(t, dir, "shared.yaml", []byte(`namespaces: {ns: {current: primary, keys: [{id: primary, file: primary.key}]}}`), 0o644)
+		_, err = envelope.LoadFile(t.Context(), config, envelope.OpenOptions{})
+		require.NoError(t, err, "a configuration readable by others is fine")
+		require.NoError(t, os.Chmod(config, 0o666))
+		_, err = envelope.LoadFile(t.Context(), config, envelope.OpenOptions{})
+		require.ErrorContains(t, err, "go-w")
 	}
 }
 

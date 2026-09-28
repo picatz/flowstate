@@ -249,9 +249,9 @@ type timedCodec struct {
 func (c timedCodec) ProviderTimeout() time.Duration { return c.timeout }
 
 // TestTheCodecServerWaitsAsLongAsItsProvidersMay: the handler stops starting
-// work at its budget, and the payload started just before may take a
-// provider's deadline twice over for a login; the response deadline leaves
-// room for both, so the answer is written rather than cut off.
+// work at its budget, and the payload started just before may take its
+// provider's whole per-call deadline; the response deadline leaves room for
+// both, so the answer is written rather than cut off.
 func TestTheCodecServerWaitsAsLongAsItsProvidersMay(t *testing.T) {
 	t.Parallel()
 

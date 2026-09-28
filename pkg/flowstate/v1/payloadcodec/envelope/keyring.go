@@ -214,7 +214,7 @@ func newReader(byNamespace map[string]*Codec, cache *decodeCache) *Codec {
 // resolving relative paths against the file's directory unless opts names
 // another.
 func LoadFile(ctx context.Context, path string, opts OpenOptions) (*Keyring, error) {
-	data, err := readBounded(path, MaxConfigBytes, nil)
+	data, err := readBounded(path, MaxConfigBytes, func(info fs.FileInfo) error { return checkPublicFileMode(path, info) })
 	if err != nil {
 		return nil, fmt.Errorf("envelope: reading keyring configuration %q: %w", path, err)
 	}
@@ -290,7 +290,7 @@ func (l keyLoader) material(file, env string, secret bool) ([]byte, error) {
 		return []byte(text), nil
 	}
 	path := l.resolve(file)
-	var check func(fs.FileInfo) error
+	check := func(info fs.FileInfo) error { return checkPublicFileMode(path, info) }
 	if secret {
 		check = func(info fs.FileInfo) error { return checkKeyFileMode(path, info) }
 	}
@@ -324,6 +324,24 @@ func checkKeyFileMode(path string, info fs.FileInfo) error {
 	}
 	if uid, trusted := keyFileOwner(info); !trusted {
 		return fmt.Errorf("%q is owned by uid %d; a key file must be owned by the user this process runs as, or by root",
+			path, uid)
+	}
+	return nil
+}
+
+// checkPublicFileMode refuses a file that is not secret but decides where
+// keys go, such as an escrow public key or the keyring configuration, when
+// another account could have written it: one that can replace an escrow
+// public key has every new data key wrapped to a key it holds. Readable by
+// anyone is fine; writable by the group or others, or owned by another
+// account, is not. info is the opened file's own.
+func checkPublicFileMode(path string, info fs.FileInfo) error {
+	if runtime.GOOS != "windows" && info.Mode().Perm()&0o022 != 0 {
+		return fmt.Errorf("%q has mode %04o; a file that decides where keys go must be writable by its owner only (chmod go-w)",
+			path, info.Mode().Perm())
+	}
+	if uid, trusted := keyFileOwner(info); !trusted {
+		return fmt.Errorf("%q is owned by uid %d; a file that decides where keys go must be owned by the user this process runs as, or by root",
 			path, uid)
 	}
 	return nil

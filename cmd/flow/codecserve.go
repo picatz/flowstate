@@ -261,7 +261,8 @@ func codecServeHandler(logger *slog.Logger, verifier auth.Verifier, peerVerifier
 //
 // The costliest payload is an encode that rolls the data key over: one wrap
 // to the current key and one to each escrow key, each within the codec's
-// provider timeout (which already allows for a login).
+// provider timeout (which already allows for a login, and for a second
+// login and a retry after a 403).
 func codecWriteTimeout(codecs payloadcodec.Config) time.Duration {
 	const margin = 10 * time.Second
 	var provider time.Duration
