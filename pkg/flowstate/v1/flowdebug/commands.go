@@ -273,7 +273,11 @@ func (s *Session) dispatch(ctx context.Context, line string, node *v1.Node, scop
 		// silence, behind a prompt that said it was set (Copilot, #1274).
 		s.clearDeclined(declinedUntil, id)
 		s.record("until " + strings.TrimSpace(rest))
-		s.resumeUntil(modeUntil, target, compiled)
+		conditionText := ""
+		if compiled != nil {
+			conditionText = strings.TrimSpace(condition)
+		}
+		s.resumeUntil(modeUntil, target, compiled, conditionText)
 
 		return true, nil
 

@@ -602,20 +602,21 @@ func (s *Session) acknowledge(applied bool) {
 
 // resume sets what happens at the next boundary.
 func (s *Session) resume(m mode, until v1.DebugTarget) {
-	s.resumeUntil(m, until, nil)
+	s.resumeUntil(m, until, nil, "")
 }
 
 // resumeUntil is resume carrying `until`'s optional condition. Every resume
 // writes the condition — nil from every other verb — because `until` is
 // one-shot: a condition that outlived its resume would turn some later
 // `continue` into a conditional stop nobody asked for.
-func (s *Session) resumeUntil(m mode, until v1.DebugTarget, condition *v1.Value) {
+func (s *Session) resumeUntil(m mode, until v1.DebugTarget, condition *v1.Value, conditionText string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	s.mode = m
 	s.until = until
 	s.untilCondition = condition
+	s.untilConditionText = conditionText
 	s.contract.stepDepth = len(s.contract.occurrence.GetSegments())
 }
 
@@ -635,7 +636,13 @@ func (s *Session) RunReturned(err error) {
 	s.mu.Lock()
 	missed := ""
 	if err == nil && s.mode == modeUntil && !s.untilNoted && !terminal(s.contract.state) {
+		// As it was asked: a conditional `until` can reach its target with
+		// the condition never holding, and naming the bare target would say
+		// the step was never reached.
 		missed = s.until.String()
+		if s.untilConditionText != "" {
+			missed += " if " + s.untilConditionText
+		}
 		s.untilNoted = true
 	}
 	s.mu.Unlock()

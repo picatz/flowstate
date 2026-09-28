@@ -77,6 +77,11 @@ func TestAnUntilTheRunNeverReachesIsSaid(t *testing.T) {
 	missed := finished("until each[9]/body\n")
 	assert.Contains(t, missed, "the run completed without stopping at `until each[9]/body`")
 
+	// Reached, but the condition never held: said as it was asked, not as
+	// a bare target the run did reach.
+	declined := finished("until body if n == 99\n")
+	assert.Contains(t, declined, "the run completed without stopping at `until body if n == 99`")
+
 	reached := finished("until each[1]/body\ncontinue\n")
 	assert.Contains(t, reached, "break at")
 	assert.NotContains(t, reached, "without stopping at", "an until the run reached was reported missed")

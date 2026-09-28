@@ -413,6 +413,9 @@ type Session struct {
 	// same declined-arrival notice. One-shot with the mode that carries it —
 	// every resume clears both.
 	untilCondition *v1.Value
+	// untilConditionText is untilCondition as it was written, for saying what
+	// was asked when the stop never came. Set and cleared with it.
+	untilConditionText string
 	// untilNoted records that [Session.RunReturned] has said an armed
 	// `until` was never reached, so a driver that reports the run's return and
 	// then its verdict ([Session.Finished]) says it once.
