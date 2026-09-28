@@ -423,12 +423,19 @@ issuers:
 These disjoint entries let the dashboard inspect and CI submit while neither may
 terminate. `actions` omitted preserves the pre-action-policy behavior for the RPC
 actions and adds no restriction there; `actions: []` grants no control-plane
-action. Disclosure actions are the exception: `payload.decode` and
-`payload.encode` ([Payload encryption](ENCRYPTION.md)) are granted only to an
-entry that lists them, so an entry written before they existed cannot decrypt
-history. Grants match exactly:
-`workload.run` does not imply cancel or terminate, and token `scope`/`scp` claims
-do not grant authority in this slice.
+action. Disclosure actions are the exception: `workload.reveal_sensitive`
+([Secrets](SECRETS.md)), `payload.decode`, and `payload.encode`
+([Payload encryption](ENCRYPTION.md)) are granted only to an entry that lists
+them, so an entry written before they existed can neither read declared-sensitive
+values nor decrypt history. A reader that may see sensitive values lists both
+the read and the reveal:
+
+```yaml
+    actions: [workload.read, workload.reveal_sensitive]
+```
+
+Grants match exactly: `workload.run` does not imply cancel or terminate, and
+token `scope`/`scp` claims do not grant authority in this slice.
 
 - ✅ The Flowstate API refuses every cross-tenant verb: one shared addressing
   gate checks Flowstate execution membership and then `ownedBy`, reported as
