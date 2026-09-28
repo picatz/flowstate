@@ -654,19 +654,22 @@ timed-out, and canceled events of every activity, with their times, plus timer
 and signal events for waits. Most activities are task steps; the rest are
 compensations (an `undo:` is dispatched through the same activity types as a
 forward step, labelled `` `id` · undo `` by step id alone), `vars:` evaluation,
-and capability admission, and today only the label tells them apart. That label
-is for display, not a key: `engine/summary.go` elides the outer step ids of a
-position past 256 bytes, so two deeply nested steps can render the same string,
-a `for_each` or `loop` body step's iterations all carry one label, and a run
-started before labels existed has none. A skipped step, a `value:` step, and
+and capability admission, and today only the label tells them apart. Waits are
+no better keyed: a signal event carries the signal's name rather than the
+waiting step's, and a signal sent before its wait parks is recorded when it
+arrives, not when the wait consumes it. The activity label is for display, not
+a key: `engine/summary.go` elides the outer step ids of a position past 256
+bytes, so two deeply nested steps can render the same string, a `for_each` or
+`loop` body step's iterations all carry one label, and a run started before
+labels existed has none. A skipped step, a `value:` step, and
 the control-flow nodes (`call`, `for_each`, `loop`, `parallel`, `switch`) record
 no outcome event. So "task X succeeded in 12s while task Y is still running"
 can be *read* from the timeline, but a graph overlay needs every event joined
 losslessly to a `GraphNode.id`, compensations told apart from forward steps,
-the occurrences of a repeated node aggregated by a stated rule, and an outcome
-for every other node, and nothing carries any of that today. Supplying it,
-reusing the timeline for what it already records rather than restating it, is
-therefore its own slice
+the occurrences of a repeated node aggregated by a stated rule, each signal
+joined to the wait that consumed it, and an outcome for every other node, and
+nothing carries any of that today. Supplying it, reusing the timeline for what
+it already records rather than restating it, is therefore its own slice
 (gap inventory slice 3), settled and reviewed before any overlay code is
 written, and every overlay-producing path in this
 document (6.2's `--run` variant, 6.3's outcome colouring, section 3's
@@ -982,17 +985,21 @@ line. What is not: everything below.
    completed count, and `GetResponse` for a finished run carries output values
    or an error. This slice adds what the timeline lacks, as additive fields or
    events `buf breaking` accepts, and reuses the timeline for what it already
-   records:
+   records. It starts from an inventory of what each graph node kind records
+   today and closes every gap that finds, which includes at least:
    - a canonical node identity that joins each event to its `GraphNode.id`
      without loss;
    - an occurrence identity for a node that runs more than once (a `for_each`
-     or `loop` body's iterations share one node and one label today), and the
-     rule by which a per-node overlay aggregates those occurrences' outcomes
-     and durations;
+     or `loop` body's iterations share one node and one label today), stable
+     across a continue-as-new boundary, where timeline event ids restart at 1,
+     and the rule by which a per-node overlay aggregates those occurrences'
+     outcomes and durations;
    - compensation events marked as compensations, so a completed `undo:` is
      never read as its forward step's completion (a compensation is dispatched
      from the run-level undo stack, whose entries carry a step id and no
      position);
+   - the wait that consumed each signal, and when (a signal event names the
+     signal, not the step, and a signal sent early is recorded on arrival);
    - outcomes for the nodes that record none.
 
    It does not pre-decide the message shape. Two representations of one task
@@ -1055,7 +1062,7 @@ line. What is not: everything below.
    reuse the same spec-to-tree join `NewGraph` already performs rather than a
    second implementation of it) and slice 3 (per-step duration and terminal
    status for a *finished* step, not only the one currently running — neither
-   exists on the wire before that slice lands). Once both are available:
+   exists per node before that slice lands). Once both are available:
    replace `watch.Model`'s flat `stepLines` with the nested form from section
    3's mockup, reusing `positionPath`'s existing path-join logic for the live
    line. Files: `cmd/flow/internal/watch/model.go`, `cmd/flow/get.go` (for the non-live
