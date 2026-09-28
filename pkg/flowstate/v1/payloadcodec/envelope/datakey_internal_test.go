@@ -35,7 +35,7 @@ func TestUnwrapsOfUnseenDataKeysAreRateLimited(t *testing.T) {
 	t.Parallel()
 
 	clock := newFakeClock()
-	c := newDecodeCache(0, clock.now)
+	c := newDecodeCache(0, clock.now, true)
 	for range unwrapBurst {
 		require.True(t, c.admit())
 	}
@@ -45,6 +45,13 @@ func TestUnwrapsOfUnseenDataKeysAreRateLimited(t *testing.T) {
 		require.True(t, c.admit())
 	}
 	require.False(t, c.admit())
+
+	// A worker's keyring is not limited: its unwraps are of history
+	// processes holding the keys wrote, and a replay burst is legitimate.
+	worker := newDecodeCache(0, clock.now, false)
+	for range 2 * unwrapBurst {
+		require.True(t, worker.admit())
+	}
 }
 
 // TestTheNegativeCacheCannotBeFlushed: a flood of distinct refusals does not
@@ -53,7 +60,7 @@ func TestTheNegativeCacheCannotBeFlushed(t *testing.T) {
 	t.Parallel()
 
 	clock := newFakeClock()
-	c := newDecodeCache(0, clock.now)
+	c := newDecodeCache(0, clock.now, false)
 	held := [32]byte{1}
 	c.refuse(held, ErrKeyDenied)
 	for i := range maxNegativeCacheEntries * 2 {
@@ -82,7 +89,7 @@ func TestEachNamespaceKeepsItsOwnWindow(t *testing.T) {
 	t.Parallel()
 
 	clock := newFakeClock()
-	cache := newDecodeCache(0, clock.now)
+	cache := newDecodeCache(0, clock.now, false)
 	material := bytes.Repeat([]byte{7}, local.KeyBytes)
 
 	codec := func(ns, id string, maxAge time.Duration, key keyprovider.Key) *Codec {

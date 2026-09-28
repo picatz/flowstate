@@ -95,6 +95,13 @@ type OpenOptions struct {
 	// Getenv reads environment variables. Nil uses [os.Getenv].
 	Getenv func(string) string
 
+	// LimitUnwraps bounds how often the keyring asks providers to unwrap data
+	// keys it has not seen, refusing the excess as [ErrProviderUnavailable].
+	// For a process whose callers choose the payloads it decodes, the codec
+	// server; a worker or `flow server` leaves it off, because a refusal in
+	// workflow code fails a run rather than a request.
+	LimitUnwraps bool
+
 	// now, for tests.
 	now func() time.Time
 }
@@ -147,7 +154,7 @@ func Open(ctx context.Context, cfg *v1.PayloadKeyring, opts OpenOptions) (*Keyri
 	for _, n := range cfg.GetNamespaces() {
 		entries = max(entries, cmp.Or(int(n.GetDataKey().GetDecodeCacheEntries()), DefaultDecodeCacheEntries))
 	}
-	cache := newDecodeCache(entries, opts.now)
+	cache := newDecodeCache(entries, opts.now, opts.LimitUnwraps)
 
 	kr := &Keyring{byNamespace: map[string]*Codec{}}
 	for _, ns := range slices.Sorted(maps.Keys(cfg.GetNamespaces())) {
@@ -203,9 +210,10 @@ func newReader(byNamespace map[string]*Codec, cache *decodeCache) *Codec {
 	return r
 }
 
-// LoadFile parses the keyring configuration at path and opens it, resolving
-// relative paths against the file's directory.
-func LoadFile(ctx context.Context, path string) (*Keyring, error) {
+// LoadFile parses the keyring configuration at path and opens it with opts,
+// resolving relative paths against the file's directory unless opts names
+// another.
+func LoadFile(ctx context.Context, path string, opts OpenOptions) (*Keyring, error) {
 	data, err := readBounded(path, MaxConfigBytes, nil)
 	if err != nil {
 		return nil, fmt.Errorf("envelope: reading keyring configuration %q: %w", path, err)
@@ -214,7 +222,8 @@ func LoadFile(ctx context.Context, path string) (*Keyring, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
-	return Open(ctx, cfg, OpenOptions{BaseDir: filepath.Dir(path)})
+	opts.BaseDir = cmp.Or(opts.BaseDir, filepath.Dir(path))
+	return Open(ctx, cfg, opts)
 }
 
 // keyLoader turns one configured key into a [keyprovider.Key].

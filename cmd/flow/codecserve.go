@@ -104,6 +104,9 @@ func runCodecServe(cmd *cobra.Command, _ []string) error {
 	}
 
 	flags := payloadEncryptionFlagsOf(cmd)
+	// Callers choose the payloads this server decodes, so a flood of wrapped
+	// keys nobody made is bounded before it reaches a provider.
+	flags.limitUnwraps = true
 	codecs, err := payloadCodecConfig(cmd.Context(), flags)
 	if err != nil {
 		return err

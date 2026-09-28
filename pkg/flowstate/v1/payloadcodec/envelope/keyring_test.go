@@ -29,7 +29,7 @@ func writeFile(t *testing.T, dir, name string, data []byte, mode os.FileMode) st
 
 func load(t *testing.T, dir, config string) (*envelope.Keyring, error) {
 	t.Helper()
-	return envelope.LoadFile(t.Context(), writeFile(t, dir, "keyring.yaml", []byte(config), 0o600))
+	return envelope.LoadFile(t.Context(), writeFile(t, dir, "keyring.yaml", []byte(config), 0o600), envelope.OpenOptions{})
 }
 
 // twoTenants is the shape the two-tenant scenarios share: identical key ids

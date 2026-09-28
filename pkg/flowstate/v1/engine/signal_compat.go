@@ -126,11 +126,14 @@ func (c *signalDeliveryCompatConverter) FromPayloads(payloads *commonpb.Payloads
 	return nil
 }
 
-// FromPayload is where the fallback lives.
+// FromPayload is where the fallback lives, and where a payload this process
+// cannot read is kept from being taken for a corrupt one.
 func (c *signalDeliveryCompatConverter) FromPayload(payload *commonpb.Payload, valuePtr any) error {
 	delivery, ok := valuePtr.(*v1.SignalDelivery)
 	if !ok {
-		return c.DataConverter.FromPayload(payload, valuePtr)
+		err := c.DataConverter.FromPayload(payload, valuePtr)
+		failIfUnreadableHere(err)
+		return err
 	}
 
 	// The current shape, tried first: what every up-to-date server sends.
@@ -138,15 +141,7 @@ func (c *signalDeliveryCompatConverter) FromPayload(payload *commonpb.Payload, v
 	if err == nil {
 		return nil
 	}
-	if errors.Is(err, payloadcodec.ErrUnavailable) {
-		// The codec could not reach a key provider: the signal is not
-		// corrupt, and an error returned here is one the channel drops as if
-		// it were, losing an approval. Nothing workflow code can do makes the
-		// task retry instead (every panic meets the worker's panic policy), so
-		// the run fails, loudly and recoverably, with the signal still in its
-		// history: see panicpolicy.go.
-		panic(fmt.Errorf("decoding a signal: %w", err))
-	}
+	failIfUnreadableHere(err)
 
 	// Falls back to the shape every signal used before #194. Sender is left
 	// nil rather than an empty-but-present SignalSender — nil is what
@@ -163,4 +158,24 @@ func (c *signalDeliveryCompatConverter) FromPayload(payload *commonpb.Payload, v
 
 	*delivery = v1.SignalDelivery{Payload: &legacy}
 	return nil
+}
+
+// failIfUnreadableHere fails the run when err says the payload could not be
+// decoded by this process rather than that it is wrong: a key provider that
+// did not answer, or a key or envelope version this worker lacks.
+//
+// Returned, such an error is taken for the payload's own. A signal channel
+// drops a signal it cannot decode as corrupt, losing an approval; an activity
+// or child result that fails to decode fails its step, which runs
+// `continue_on_error:` or `undo:` for a step that succeeded, and a replay on a
+// worker that can read it then takes the other branch. Either way the run's
+// decisions would depend on which worker read it and whether a provider
+// answered, not on its history. Workflow code cannot make the task retry
+// instead (every panic meets the worker's panic policy), so the run fails,
+// loudly and recoverably, with the payload still in its history: see
+// panicpolicy.go.
+func failIfUnreadableHere(err error) {
+	if errors.Is(err, payloadcodec.ErrUnavailable) || errors.Is(err, payloadcodec.ErrNotReadableHere) {
+		panic(fmt.Errorf("decoding a payload in workflow code: %w", err))
+	}
 }
