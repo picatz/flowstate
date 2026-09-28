@@ -115,3 +115,8 @@ require (
 	golang.org/x/time v0.15.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260819154853-08b0e4226688 // indirect
 )
+
+tool (
+	github.com/picatz/flowstate/cmd/protoc-gen-flowstate-doc
+	google.golang.org/protobuf/cmd/protoc-gen-go
+)

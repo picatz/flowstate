@@ -32,15 +32,22 @@ const agentConfigPkg = modulePath + "/tools/agentconfig"
 // independent test dependency.
 const agentConfigDataRoot = "agent-config"
 
-// The example plugin's schema and the descriptor set built from it, which is
-// how that plugin's field comments reach an editor's hover (#723). Both are
-// named here rather than at their two use sites, so the trigger and the
-// command it runs cannot come to disagree about where the artifact lives.
+// The example plugin's schema, the buf.gen.yaml that generates from it, and the
+// generated code, whose comments are how that plugin's field prose reaches an
+// editor's hover (#723, #2148). All are named here rather than at their use
+// sites, so the trigger and the command it runs cannot come to disagree about
+// where they live.
 const (
 	examplePluginDir      = "pkg/flowstate/v1/plugin/examples/flowstate-plugin-example/"
 	examplePluginProtoDir = examplePluginDir + "proto/"
-	examplePluginProse    = examplePluginDir + "schema.descriptorset.binpb"
+	examplePluginTemplate = examplePluginDir + "buf.gen.yaml"
+	examplePluginGenDir   = examplePluginDir + "gen/"
 )
+
+// docGeneratorDir is protoc-gen-flowstate-doc, the plugin that writes the
+// schema's comments as Go source. A change to it changes generated output as
+// surely as a change to a .proto does.
+const docGeneratorDir = "cmd/protoc-gen-flowstate-doc/"
 
 // plan is what the changed-file list alone decides: which conditional legs
 // fire, which files gofmt checks, and which directories feed the
@@ -73,7 +80,7 @@ type plan struct {
 	ciWide bool
 
 	// Conditional legs, keyed on changed paths.
-	proto    bool // buf lint/breaking/generate + descriptorset pin
+	proto    bool // buf lint/breaking/generate + generated-code pin
 	docs     bool // reference mirror + generated docs drift
 	examples bool // flow fix --check, flow test, flow breaking
 
@@ -226,7 +233,13 @@ func buildPlan(changed []string) plan {
 		}
 
 		// proto/: the schema is a public contract; regenerate and re-pin.
-		if strings.HasPrefix(f, "proto/") || f == "buf.gen.yaml" || f == "buf.work.yaml" {
+		// The comment generator and the comments it wrote into protodoc are
+		// inputs to the same regeneration: the generator decides what those
+		// files say, and a hand edit to one is re-derived rather than
+		// trusted.
+		if strings.HasPrefix(f, "proto/") || f == "buf.gen.yaml" || f == "buf.work.yaml" ||
+			strings.HasPrefix(f, docGeneratorDir) ||
+			(strings.HasPrefix(f, "pkg/flowstate/v1/protodoc/") && strings.HasSuffix(f, ".doc.pb.go")) {
 			p.proto = true
 			reason("proto", f)
 
@@ -246,19 +259,19 @@ func buildPlan(changed []string) plan {
 			reason("docs", f)
 		}
 
-		// The example plugin's own schema, which is a second
-		// descriptor-set artifact under the same pin and for the same
-		// reason: it is what carries that plugin's field comments to an
-		// editor (#723), and one built from a .proto that has moved on
-		// is a set of sentences about a file that no longer exists. It
-		// rides the proto leg rather than gaining one of its own —
-		// there is one answer to "a schema in this repository changed",
-		// and two legs would be two places to keep it.
-		// The artifact itself is a trigger as well as its source, because a
-		// diff-only pin over a file nothing in this run rebuilt proves nothing:
-		// the leg has to re-derive it from the .proto to have an opinion about
-		// whether what is committed is what that .proto produces.
-		if strings.HasPrefix(f, examplePluginProtoDir) || f == examplePluginProse {
+		// The example plugin's own schema, which is a second buf module
+		// under the same pin and for the same reason: its generated
+		// comments are what carry that plugin's field prose to an editor
+		// (#723, #2148), and comments generated from a .proto that has moved
+		// on are sentences about a file that no longer exists. It rides the
+		// proto leg rather than gaining one of its own — there is one answer
+		// to "a schema in this repository changed", and two legs would be
+		// two places to keep it. The generated code and its template are
+		// triggers as well as the .proto, because a diff-only pin over files
+		// nothing in this run regenerated proves nothing: the leg has to
+		// re-derive them to have an opinion about whether what is committed
+		// is what the .proto produces.
+		if strings.HasPrefix(f, examplePluginProtoDir) || f == examplePluginTemplate || strings.HasPrefix(f, examplePluginGenDir) {
 			p.proto = true
 			reason("proto", f)
 		}
@@ -681,6 +694,15 @@ func pluginSkipNotices(p plan, moduleExists func(mod string) bool) []string {
 			notices = append(notices,
 				mod+" (via examples/plugins/"+name+" data dependency, not a change under plugins/)")
 		}
+	}
+	// The schema, the comment generator and the example plugin all reach
+	// what plugins ship in their manifests, and examples/plugins/plugins.lock.json
+	// pins those descriptors, comments included: a change to any of them can
+	// move the catalog without touching a plugin (#2156). CI's test-plugins
+	// job runs plugin-examples; this says so locally.
+	if p.proto {
+		notices = append(notices,
+			"the schema or its generated code (via "+p.reasons["proto"]+"; plugin-examples pins the descriptors plugins ship)")
 	}
 	return notices
 }

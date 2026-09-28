@@ -14,13 +14,17 @@ import (
 )
 
 func TestSourceInfoBehaviorIsExplicit(t *testing.T) {
+	// The linked descriptor carries no source info of its own; protodoc
+	// answers for it from the schema's generated comments.
 	linked := (&flowstatev1.GetRequest{}).ProtoReflect().Descriptor()
-	_, linkedHasComment := protodoc.CommentOf(linked)
-	assert.False(t, linkedHasComment, "linked generated descriptors unexpectedly retained SourceCodeInfo")
+	assert.Zero(t, linked.ParentFile().SourceLocations().Len(), "linked generated descriptors unexpectedly retained SourceCodeInfo")
 
 	comment, sourceHasComment := protodoc.Comment(linked.FullName())
 	assert.True(t, sourceHasComment)
 	assert.Contains(t, comment, "request message for getting a workflow run")
+	linkedComment, linkedHasComment := protodoc.CommentOf(linked)
+	assert.True(t, linkedHasComment)
+	assert.Equal(t, comment, linkedComment)
 	fieldComment, fieldHasComment := protodoc.Comment(linked.FullName().Append("run_id"))
 	require.True(t, fieldHasComment, "GetRequest.run_id is documented in the schema")
 

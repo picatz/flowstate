@@ -1,92 +1,162 @@
 package protodoc
 
 import (
+	"io/fs"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	_ "github.com/picatz/flowstate/pkg/flowstate/plugin/v1"
+	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/protodoc/protodocimpl"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protodesc"
 	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/reflect/protoregistry"
 	"google.golang.org/protobuf/types/descriptorpb"
 )
 
-// The embedded artifact is the whole reason this package can answer anything, so
-// it is checked before anything that reads it: a set that does not parse, or one
-// built without source info, would otherwise show up as every other test in this
-// file quietly finding no prose.
-func TestEmbeddedDescriptorSetCarriesSourceInfo(t *testing.T) {
-	if len(rawDescriptorSet) == 0 {
-		t.Fatal("embedded descriptor set is empty; run the buf build step in the Makefile's check target")
-	}
-	// A sanity bound, not a budget. The schema is one file and its comments; if
-	// this artifact ever arrives at megabytes it is carrying something it was
-	// not meant to, most likely its imports.
-	if len(rawDescriptorSet) > 4<<20 {
-		t.Errorf("embedded descriptor set is %d bytes, which is larger than this schema can account for", len(rawDescriptorSet))
-	}
-
-	set := &descriptorpb.FileDescriptorSet{}
-	if err := proto.Unmarshal(rawDescriptorSet, set); err != nil {
-		t.Fatalf("embedded descriptor set does not parse: %v", err)
-	}
-	if len(set.GetFile()) == 0 {
-		t.Fatal("embedded descriptor set holds no files")
-	}
-
-	// Every file of the schema, named. Counting instead — or asking only that
-	// some flowstate/v1 file is present — passes on an artifact holding one
-	// file and missing the other eleven, which is the failure this is for:
-	// reports.proto is reached by no other test here, so a descriptorset that
-	// silently lost it would cost the documentation of every message in it and
-	// nothing would say so.
-	want := map[string]bool{
-		"flowstate/v1/audit.proto":         false,
-		"flowstate/v1/authorization.proto": false,
-		"flowstate/v1/catalog.proto":       false,
-		"flowstate/v1/debug.proto":         false,
-		"flowstate/v1/diagnostics.proto":   false,
-		"flowstate/v1/identity.proto":      false,
-		"flowstate/v1/reports.proto":       false,
-		"flowstate/v1/run.proto":           false,
-		"flowstate/v1/schedule.proto":      false,
-		"flowstate/v1/schema.proto":        false,
-		"flowstate/v1/service.proto":       false,
-		"flowstate/v1/signal.proto":        false,
-		"flowstate/v1/task.proto":          false,
-		"flowstate/v1/trigger.proto":       false,
-		"flowstate/v1/type.proto":          false,
-		"flowstate/v1/value.proto":         false,
-		"flowstate/v1/workflow.proto":      false,
-	}
-
-	for _, file := range set.GetFile() {
-		name := file.GetName()
-		if !strings.HasPrefix(name, "flowstate/v1/") {
-			continue
+// The generated comments are the whole reason this package can answer
+// anything, so they are checked before anything that reads them. Every file of
+// the linked schema must have registered prose: a file the generator skipped,
+// or a new .proto that nobody regenerated for, would otherwise show up as every
+// test below quietly finding no prose for it.
+//
+// The files are taken from protoregistry.GlobalFiles rather than listed, so a
+// new schema file is covered the day it is linked. The count is a floor that
+// catches the opposite failure, a walk that silently found nothing.
+func TestEveryLinkedSchemaFileRegistersItsComments(t *testing.T) {
+	var files int
+	protoregistry.GlobalFiles.RangeFiles(func(file protoreflect.FileDescriptor) bool {
+		if !strings.HasPrefix(file.Path(), "flowstate/") {
+			return true
 		}
-		if _, expected := want[name]; !expected {
-			t.Errorf("embedded descriptor set holds unexpected schema file %s; add it here if the schema gained a file", name)
-			continue
+		files++
+		if !registersAny(file) {
+			t.Errorf("%s registered no comments; run `buf generate` and commit the flowstate_*.doc.pb.go it writes", file.Path())
 		}
-		want[name] = true
-		if len(file.GetSourceCodeInfo().GetLocation()) == 0 {
-			t.Fatalf("%s carries no SourceCodeInfo; the artifact must be built without --exclude-source-info", name)
+		return true
+	})
+	if files < 18 {
+		t.Errorf("walked %d schema files; want every flowstate/v1 file and flowstate/plugin/v1/plugin.proto", files)
+	}
+}
+
+// Every flowstate_*.doc.pb.go in this package must come from a .proto in the
+// schema's source tree. buf generate never deletes output whose source is gone,
+// so a deleted or renamed .proto would otherwise leave its old file registering
+// comments: for declarations that no longer exist, or, after a rename, as a
+// second registration that makes every name in it ambiguous. The drift pin
+// cannot see such a file, because nothing regenerates it. The source tree is
+// read rather than the linked registry, because a deleted .proto's stale .pb.go
+// would still be linked and vouch for its stale doc file.
+func TestEveryGeneratedDocFileHasASource(t *testing.T) {
+	const protoRoot = "../../../../proto"
+	want := make(map[string]bool)
+	err := fs.WalkDir(os.DirFS(protoRoot), "flowstate", func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
 		}
+		if !d.IsDir() && strings.HasSuffix(path, ".proto") {
+			want[strings.ReplaceAll(strings.TrimSuffix(path, ".proto"), "/", "_")+".doc.pb.go"] = true
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("reading the schema under %s: %v", protoRoot, err)
+	}
+	if len(want) == 0 {
+		t.Fatalf("found no .proto files under %s/flowstate", protoRoot)
 	}
 
-	for name, seen := range want {
-		if !seen {
-			t.Errorf("embedded descriptor set is missing %s; every message it declares would lose its prose", name)
+	generated, err := filepath.Glob("*.doc.pb.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(generated) == 0 {
+		t.Fatal("found no generated doc files; this test must run in the protodoc package directory")
+	}
+	for _, name := range generated {
+		if !want[name] {
+			t.Errorf("%s has no .proto under proto/flowstate; its source was deleted or renamed, so delete it and run `buf generate`", name)
 		}
 	}
 }
 
-func TestFilesResolves(t *testing.T) {
-	reg, err := Files()
-	if err != nil {
-		t.Fatalf("Files: %v", err)
+// registersAny reports whether any top-level declaration of file has a
+// registered comment attributed to that file.
+func registersAny(file protoreflect.FileDescriptor) bool {
+	var decls []protoreflect.Descriptor
+	for i := range file.Messages().Len() {
+		decls = append(decls, file.Messages().Get(i))
 	}
-	if _, err := reg.FindDescriptorByName("flowstate.v1.WorkflowService"); err != nil {
-		t.Fatalf("WorkflowService not found in the embedded schema: %v", err)
+	for i := range file.Enums().Len() {
+		decls = append(decls, file.Enums().Get(i))
+	}
+	for i := range file.Services().Len() {
+		decls = append(decls, file.Services().Get(i))
+	}
+	for i := range file.Extensions().Len() {
+		decls = append(decls, file.Extensions().Get(i))
+	}
+	for _, d := range decls {
+		if _, path, ok := protodocimpl.Lookup(d.FullName()); ok && path == file.Path() {
+			return true
+		}
+	}
+	return false
+}
+
+// The descriptors this binary links carry no source info, which is the case
+// the generated comments exist for: CommentOf must answer for one directly,
+// without a caller having to find the same symbol somewhere else by name.
+func TestCommentOfAnswersForALinkedDescriptor(t *testing.T) {
+	desc := (&flowstatev1.RunRequest{}).ProtoReflect().Descriptor()
+	if n := desc.ParentFile().SourceLocations().Len(); n != 0 {
+		t.Fatalf("the linked %s carries %d source locations; this test needs one without any", desc.ParentFile().Path(), n)
+	}
+
+	got, ok := CommentOf(desc)
+	want, wantOK := Comment(desc.FullName())
+	if !ok || !wantOK || got != want {
+		t.Errorf("CommentOf(linked RunRequest) = %q, %v; want %q, true", got, ok, want)
+	}
+}
+
+// A descriptor that carries its own comments is described in its own words,
+// and a same-named declaration from a different file is not given this
+// schema's prose.
+func TestCommentOfPrefersItsOwnSourceAndChecksTheFile(t *testing.T) {
+	build := func(path, comment string) protoreflect.MessageDescriptor {
+		t.Helper()
+		fdp := &descriptorpb.FileDescriptorProto{
+			Name:        proto.String(path),
+			Package:     proto.String("flowstate.v1"),
+			Syntax:      proto.String("proto3"),
+			MessageType: []*descriptorpb.DescriptorProto{{Name: proto.String("RunRequest")}},
+		}
+		if comment != "" {
+			fdp.SourceCodeInfo = &descriptorpb.SourceCodeInfo{Location: []*descriptorpb.SourceCodeInfo_Location{{
+				Path:            []int32{4, 0},
+				Span:            []int32{0, 0, 1},
+				LeadingComments: proto.String(comment),
+			}}}
+		}
+		// A private registry: these files would conflict with the linked schema
+		// in GlobalFiles, which is the point.
+		file, err := protodesc.NewFile(fdp, new(protoregistry.Files))
+		if err != nil {
+			t.Fatalf("building %s: %v", path, err)
+		}
+		return file.Messages().Get(0)
+	}
+
+	if got, ok := CommentOf(build("flowstate/v1/service.proto", " Its own words.\n")); !ok || got != "Its own words." {
+		t.Errorf("CommentOf(descriptor with source info) = %q, %v; want its own comment", got, ok)
+	}
+	if got, ok := CommentOf(build("elsewhere/run.proto", "")); ok {
+		t.Errorf("CommentOf(same name, other file) = %q, true; want no prose", got)
 	}
 }
 
@@ -128,10 +198,7 @@ func TestManualAllowedPrincipalsDocumentationIsIssuerQualified(t *testing.T) {
 // where generated API documentation attributed both descriptions to the
 // identity message and left RunState unnamed.
 func TestDocumentedTopLevelDeclarationsNameThemselves(t *testing.T) {
-	files, err := Files()
-	if err != nil {
-		t.Fatalf("Files: %v", err)
-	}
+	files := protoregistry.GlobalFiles
 	check := func(declaration protoreflect.Descriptor) {
 		name := declaration.FullName()
 		comment, ok := CommentOf(declaration)
@@ -204,9 +271,9 @@ func TestMethod(t *testing.T) {
 	}
 }
 
-// A descriptor from the linked-in registry carries no SourceCodeInfo, and the
-// package promises to say so rather than to report the symbol as undocumented in
-// a way a caller could mistake for the schema's own silence.
+// A linked descriptor that carries no SourceCodeInfo and that no generated file
+// describes (google.protobuf's own, here) has no prose, and the package says so
+// rather than borrowing some other declaration's.
 func TestCommentOfRejectsDescriptorsWithoutSourceInfo(t *testing.T) {
 	desc := (&descriptorpb.FileDescriptorSet{}).ProtoReflect().Descriptor()
 	if got, ok := CommentOf(desc); ok || got != "" {

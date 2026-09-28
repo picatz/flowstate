@@ -2,6 +2,7 @@ package main
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -81,15 +82,58 @@ func TestBuildPlan(t *testing.T) {
 			},
 		},
 		{
-			// The artifact as well as its source: a pin over a file
-			// nothing rebuilt is not a pin.
-			name:    "the example plugin's descriptor set fires the proto leg",
-			changed: []string{examplePluginProse},
+			// The generated code as well as its source: a pin over a
+			// file nothing regenerated is not a pin.
+			name:    "the example plugin's generated code fires the proto leg",
+			changed: []string{examplePluginGenDir + "example/v1/example.doc.pb.go"},
+			want: plan{
+				goFiles:  []string{examplePluginGenDir + "example/v1/example.doc.pb.go"},
+				fileDirs: []string{examplePluginGenDir + "example/v1"},
+				proto:    true,
+				reasons: map[string]string{
+					"proto": examplePluginGenDir + "example/v1/example.doc.pb.go",
+				},
+			},
+		},
+		{
+			name:    "the example plugin's buf.gen.yaml fires the proto leg",
+			changed: []string{examplePluginTemplate},
 			want: plan{
 				fileDirs: []string{"pkg/flowstate/v1/plugin/examples/flowstate-plugin-example"},
 				proto:    true,
 				reasons: map[string]string{
-					"proto": examplePluginProse,
+					"proto": examplePluginTemplate,
+				},
+			},
+		},
+		{
+			// The comment generator decides what protodoc's generated
+			// files say, and those feed docs/reference/ like any other
+			// schema change.
+			name:    "the comment generator fires the proto and docs legs",
+			changed: []string{docGeneratorDir + "main.go"},
+			want: plan{
+				goFiles:  []string{docGeneratorDir + "main.go"},
+				fileDirs: []string{"cmd/protoc-gen-flowstate-doc"},
+				proto:    true,
+				docs:     true,
+				reasons: map[string]string{
+					"proto": docGeneratorDir + "main.go",
+					"docs":  docGeneratorDir + "main.go",
+				},
+			},
+		},
+		{
+			name:    "a generated comment file in protodoc fires the proto and docs legs",
+			changed: []string{"pkg/flowstate/v1/protodoc/flowstate_v1_run.doc.pb.go"},
+			want: plan{
+				goFiles:  []string{"pkg/flowstate/v1/protodoc/flowstate_v1_run.doc.pb.go"},
+				fileDirs: []string{"pkg/flowstate/v1/protodoc"},
+				proto:    true,
+				docs:     true,
+				reasons: map[string]string{
+					"proto": "pkg/flowstate/v1/protodoc/flowstate_v1_run.doc.pb.go",
+					"docs":  "pkg/flowstate/v1/protodoc/flowstate_v1_run.doc.pb.go",
 				},
 			},
 		},
@@ -828,6 +872,18 @@ func TestPluginSkipNotices(t *testing.T) {
 		want := []string{"plugins/vcs"}
 		if !reflect.DeepEqual(got, want) {
 			t.Errorf("pluginSkipNotices = %v, want %v (no duplicate entry)", got, want)
+		}
+	})
+
+	// A schema change moves the descriptors plugins ship without touching a
+	// plugin, which is how #2156 drifted examples/plugins/plugins.lock.json
+	// with the local gate silent about it.
+	t.Run("a schema change names the plugin catalog", func(t *testing.T) {
+		t.Parallel()
+		p := plan{proto: true, reasons: map[string]string{"proto": "buf.gen.yaml"}}
+		got := pluginSkipNotices(p, exists)
+		if len(got) != 1 || !strings.Contains(got[0], "via buf.gen.yaml") || !strings.Contains(got[0], "plugin-examples") {
+			t.Errorf("pluginSkipNotices = %v, want one notice naming the trigger and plugin-examples", got)
 		}
 	})
 
