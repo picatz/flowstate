@@ -47,7 +47,7 @@ Every task takes `base_url` (the provider's SCIM root, HTTPS) and `token`:
 | Task | Other inputs | Outputs |
 | --- | --- | --- |
 | `scim.user_get` | exactly one of `id`, `user_name` | `id`, `user_name`, `display_name`, `active`, `primary_email`, `external_id`, `version`, `groups`, `resource` |
-| `scim.user_list` | `filter`, `count`, `start_index` | `users` (maps of the same attributes), `total_results`, `next_start_index` (zero on the last page) |
+| `scim.user_list` | `filter`, `count`, `start_index` | `users` (maps of `user_get`'s attributes except `resource`), `total_results`, `next_start_index` (zero on the last page) |
 | `scim.user_deactivate` | `id`, optional `expected_version` | `id`, `active`, `already_inactive`, `version` |
 
 Because the write is idempotent, a lost connection is `Unavailable` — retryable —

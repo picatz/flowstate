@@ -39,17 +39,8 @@ tests:
               annotations: {}
           count: 1
           truncated: false
-      - step: attestation
-        returns:
-          digest: sha256:1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b
-          size: 842
-          content: '{"_type":"https://in-toto.io/Statement/v1","predicateType":"https://slsa.dev/provenance/v1"}'
-          media_type: application/vnd.in-toto+json
-          json:
-            _type: https://in-toto.io/Statement/v1
-            predicateType: https://slsa.dev/provenance/v1
     expect:
-      ran: [pin, attached, attestation_present, attestation, predicate_type, approval]
+      ran: [pin, attached, attestation_present, approval]
       outputs:
         reference: ghcr.io/acme/api@sha256:9f6d0e6a3a2c1b5e4d8f7a0c9b2e1d4a7c6f5b8e3d2a1c0b9f8e7d6c5b4a3f21
         digest: sha256:9f6d0e6a3a2c1b5e4d8f7a0c9b2e1d4a7c6f5b8e3d2a1c0b9f8e7d6c5b4a3f21
@@ -90,8 +81,8 @@ tests:
           count: 0
           truncated: false
     expect:
-      # The attestation steps do not run, and the gate still does: an
-      # unattested image is a decision for a person, not a silent pass.
+      # The gate still runs: an unattested image is a decision for a person,
+      # not a silent pass.
       ran: [pin, attached, attestation_present, approval]
       outputs:
         reference: ghcr.io/acme/api@sha256:9f6d0e6a3a2c1b5e4d8f7a0c9b2e1d4a7c6f5b8e3d2a1c0b9f8e7d6c5b4a3f21

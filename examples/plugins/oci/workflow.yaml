@@ -1,6 +1,6 @@
 edition: v2026.3
 name: oci-verify-before-deploy
-description: Pins a tag to the digest a registry serves today, asks what is attached to those exact bytes, reads the in-toto attestation, and gates the deploy on a human approving the digest rather than the tag.
+description: Pins a tag to the digest a registry serves today, asks whether an in-toto attestation is attached to those exact bytes, and gates the deploy on a human approving the digest rather than the tag.
 # The supply-chain shape this plugin exists for, and the reason each step is a
 # separate one: everything after `pin` is about the same bytes.
 #
@@ -15,12 +15,12 @@ description: Pins a tag to the digest a registry serves today, asks what is atta
 #                    workflow that an image is unattested, and a gate that read
 #                    it that way would fail open.
 #
-#   oci.blob       - the attestation itself, fetched by its own digest and
-#                    refused unless the bytes hash to it. This is the step an
-#                    `http:` call cannot stand in for.
-#
 #   wait_for_signal - a person approves the digest. The prompt names it, so what
 #                    was approved and what is deployed are the same string.
+#
+# The attestation itself is not read. A referrer's digest names its manifest,
+# and no oci task returns a manifest's layers yet (#2170), so this gate checks
+# that an attestation of the required type is attached, not what it says.
 #
 # Everything here is a read. Nothing in this file deploys anything - the last
 # step is the decision, and what consumes it is a deployment workflow this one
@@ -69,15 +69,6 @@ steps:
       reference: ${steps.pin.reference}
   - id: attestation_present
     value: ${steps.attached.count > 0}
-  - id: attestation
-    if: ${steps.attestation_present.value}
-    oci.blob:
-      max_bytes: 262144
-      parse_json: true
-      reference: ${steps.pin.registry + "/" + steps.pin.repository + "@" + steps.attached.referrers[0].digest}
-  - id: predicate_type
-    if: ${steps.attestation_present.value}
-    value: ${steps.attestation.json.predicateType}
   - id: approval
     wait_for_signal:
       name: digest-approved

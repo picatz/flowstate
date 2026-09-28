@@ -51,7 +51,7 @@ The approver's token must be issued by `https://issuer.example.com` to the
 subject `expected_approver` names, with `team: release-managers`;
 `distinct_from_starter: true` refuses the starter's own.
 
-## The four steps, and why each is separate
+## The steps, and why each is separate
 
 1. **`pin`** (`oci.resolve`) turns the tag into `ghcr.io/acme/api@sha256:…`,
    once. Every step below carries `steps.pin.reference`. If the tag moves
@@ -63,12 +63,13 @@ subject `expected_approver` names, with `team: release-managers`;
    specific bytes - `oci.referrers` refuses a tag outright rather than answering
    about whatever the tag pointed at when the call landed.
 
-3. **`attestation`** (`oci.blob`) fetches the first referrer by its digest,
-   and refuses it unless the bytes hash to that digest. A referrer's digest
-   names its manifest, which points at the attestation in its layers, so what
-   comes back is that manifest rather than the in-toto statement itself. This
-   is the step an `http:` call cannot stand in for: a generic client has no way
-   to know what the bytes were supposed to be.
+3. **`attestation_present`** turns the referrer count into the one fact the
+   gate reports: whether an artifact of the required type is attached. It does
+   not read the attestation. A referrer's digest names its manifest, which
+   points at the statement in its layers, and no oci task returns a manifest's
+   layers yet (#2170). `oci.blob` reads `/blobs/`, not `/manifests/`, and even a
+   manifest it did fetch carries no `predicateType`. So this example checks
+   presence, not content.
 
 4. **`approval`** (`wait_for_signal`) puts the digest in front of a person. The
    prompt names the pinned reference, so what a human approved and what a
@@ -88,9 +89,9 @@ subject `expected_approver` names, with `team: release-managers`;
 
 ## Testing it without a registry
 
-[`workflow.test.yaml`](workflow.test.yaml) stubs all three plugin steps, so the
-control flow - the skipped steps, the signal, the outputs - is exercised with no
-network and no plugin process:
+[`workflow.test.yaml`](workflow.test.yaml) stubs both plugin steps, so the
+control flow - the attached and unattested paths, the signal, the outputs - is
+exercised with no network and no plugin process:
 
 ```console
 $ flow test examples/plugins/oci/

@@ -10,7 +10,7 @@ specification](https://github.com/opencontainers/distribution-spec/blob/main/spe
 over `net/http` and the SDK's governed client - no registry client library, no
 subprocess, and no dependency outside what the SDK already brings.
 
-An example that runs all three lives at
+An example that runs `oci.resolve` and `oci.referrers` as a deploy gate lives at
 [`examples/plugins/oci`](../../examples/plugins/oci); read that first if you
 want to see it work rather than read about it.
 
@@ -151,6 +151,11 @@ either as "no attestation" would fail open.
 - **Push, tag, copy, delete.** This is the read side, which is the side a
   decision is made from. A write task needs the unknown-outcome posture
   described above and a credential story with more than pull scope.
+- **Reading a manifest's content.** `oci.resolve` returns a manifest's digest,
+  media type, and size, not its layers, and `oci.blob` reads `/blobs/`, which is
+  not where a registry serves manifests. A referrer is a manifest, so a workflow
+  can see that an attestation is attached but cannot follow it to the statement
+  in its layers (#2170).
 - **Signature and attestation *verification*.** See above; it needs trust roots,
   which are operator configuration this plugin deliberately does not yet have.
 - **Pagination beyond the first page of referrers.** The `Link` header is read

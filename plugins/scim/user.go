@@ -116,8 +116,9 @@ func outputsFor(user userResource, raw json.RawMessage, etag string) (*scimv1.Us
 	}, nil
 }
 
-// summaryValue renders one user as a map for the list task, carrying the same
-// attributes user_get names so a workflow reads one shape either way.
+// summaryValue renders one user as a map for the list task, carrying the
+// attributes user_get names except resource, so a workflow reads the same
+// named attributes either way.
 func summaryValue(user userResource) *expr.Value {
 	return sdk.Literal(map[string]any{
 		"id":            user.ID,
