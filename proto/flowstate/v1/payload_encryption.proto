@@ -313,7 +313,10 @@ message PayloadVaultProvider {
     PayloadVaultKubernetesAuth kubernetes = 6;
   }
 
-  // How long one Transit call may take. Unset is five seconds.
+  // How long one request to the server may take. Unset is five seconds. A
+  // wrap or unwrap that must log in first makes two requests, so a keyring's
+  // codecs give each call twice the largest timeout their providers set, and
+  // never less than five seconds.
   google.protobuf.Duration timeout = 7 [(buf.validate.field).duration = {
     gte: {}
     lte: {seconds: 60}

@@ -209,8 +209,11 @@ func init() {
 				" Vault token under role, and renewed.\n",
 		},
 		{
-			Name:    "flowstate.v1.PayloadVaultProvider.timeout",
-			Leading: " How long one Transit call may take. Unset is five seconds.\n",
+			Name: "flowstate.v1.PayloadVaultProvider.timeout",
+			Leading: " How long one request to the server may take. Unset is five seconds. A\n" +
+				" wrap or unwrap that must log in first makes two requests, so a keyring's\n" +
+				" codecs give each call twice the largest timeout their providers set, and\n" +
+				" never less than five seconds.\n",
 		},
 		{
 			Name:    "flowstate.v1.PayloadVaultKubernetesAuth",

@@ -2,6 +2,7 @@ package envelope
 
 import (
 	"fmt"
+	"time"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/payloadcodec/keyprovider"
@@ -13,6 +14,10 @@ import (
 // shared by every key that names it, so they share one token and its renewal.
 type vaultConnection struct {
 	transit *secretsvault.Transit
+
+	// timeout is the configured bound on one request to the server, or zero
+	// for the client's default.
+	timeout time.Duration
 }
 
 func (c vaultConnection) key(name string) keyprovider.Key { return kpvault.New(c.transit, name) }
@@ -52,7 +57,9 @@ func openProviders(cfgs []*v1.PayloadKeyProvider, opts OpenOptions) (map[string]
 		if vc.GetCaFile() != "" {
 			vopts = append(vopts, secretsvault.WithRootCAsFile(keyLoader{opts: opts}.resolve(vc.GetCaFile())))
 		}
+		var timeout time.Duration
 		if d := vc.GetTimeout().AsDuration(); vc.GetTimeout() != nil && d > 0 {
+			timeout = d
 			vopts = append(vopts, secretsvault.WithTimeout(d))
 		}
 
@@ -60,7 +67,20 @@ func openProviders(cfgs []*v1.PayloadKeyProvider, opts OpenOptions) (map[string]
 		if err != nil {
 			return nil, fmt.Errorf("envelope: provider %q: %w", p.GetName(), err)
 		}
-		out[p.GetName()] = vaultConnection{transit: transit}
+		out[p.GetName()] = vaultConnection{transit: transit, timeout: timeout}
 	}
 	return out, nil
+}
+
+// providerTimeout is the deadline a keyring's codecs put on one wrap or
+// unwrap: never shorter than a configured provider allows its own calls. A
+// configured timeout bounds one request, and a wrap may first have to log in,
+// so a call is given two of them; the default stays the floor, since a shorter
+// provider timeout already ends its own request first.
+func providerTimeout(providers map[string]vaultConnection) time.Duration {
+	d := DefaultProviderTimeout
+	for _, c := range providers {
+		d = max(d, 2*c.timeout)
+	}
+	return d
 }

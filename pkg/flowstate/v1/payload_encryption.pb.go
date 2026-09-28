@@ -715,7 +715,10 @@ type PayloadVaultProvider struct {
 	//	*PayloadVaultProvider_TokenEnv
 	//	*PayloadVaultProvider_Kubernetes
 	Auth isPayloadVaultProvider_Auth `protobuf_oneof:"auth"`
-	// How long one Transit call may take. Unset is five seconds.
+	// How long one request to the server may take. Unset is five seconds. A
+	// wrap or unwrap that must log in first makes two requests, so a keyring's
+	// codecs give each call twice the largest timeout their providers set, and
+	// never less than five seconds.
 	Timeout       *durationpb.Duration `protobuf:"bytes,7,opt,name=timeout,proto3" json:"timeout,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

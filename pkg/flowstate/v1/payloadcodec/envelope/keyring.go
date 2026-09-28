@@ -148,6 +148,7 @@ func Open(ctx context.Context, cfg *v1.PayloadKeyring, opts OpenOptions) (*Keyri
 			DecryptSuites:     n.GetDecryptSuites(),
 			AcceptUnencrypted: n.GetAcceptUnencrypted(),
 			DataKey:           n.GetDataKey(),
+			ProviderTimeout:   providerTimeout(providers),
 			now:               opts.now,
 			cache:             cache,
 		}

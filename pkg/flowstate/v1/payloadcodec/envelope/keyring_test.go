@@ -6,6 +6,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	commonpb "go.temporal.io/api/common/v1"
@@ -285,6 +286,43 @@ providers:
 	_, err = load(t, t.TempDir(), config)
 	require.ErrorIs(t, err, envelope.ErrKeyDenied)
 
+}
+
+// TestAVaultTimeoutReachesTheCodecsDeadline: a provider's configured timeout
+// bounds each request to it, so the deadline the codecs put on a wrap or
+// unwrap must leave room for it, and for the login before it, rather than
+// cutting a call the provider was told it could take off at the default.
+func TestAVaultTimeoutReachesTheCodecsDeadline(t *testing.T) {
+	t.Setenv("FLOWSTATE_TEST_VAULT_TOKEN", vaulttest.Token)
+
+	server := vaulttest.NewServer(t)
+	server.Create("flowstate-ns", "aes256-gcm96")
+	config := func(timeout string) string {
+		return `
+namespaces:
+  ns:
+    current: ns-vault
+    keys: [{id: ns-vault, vault: {provider: corp, key: flowstate-ns}}]
+providers:
+  - name: corp
+    vault: {address: '` + server.URL() + `', token_env: FLOWSTATE_TEST_VAULT_TOKEN` + timeout + `}
+`
+	}
+
+	for _, tc := range []struct {
+		timeout string
+		want    time.Duration
+	}{
+		{"", envelope.DefaultProviderTimeout},
+		{", timeout: 1s", envelope.DefaultProviderTimeout},
+		{", timeout: 30s", time.Minute},
+	} {
+		kr, err := load(t, t.TempDir(), config(tc.timeout))
+		require.NoError(t, err)
+		c, _ := kr.Codec("ns")
+		require.Equal(t, tc.want, c.ProviderTimeout(), "codec, timeout%q", tc.timeout)
+		require.Equal(t, tc.want, kr.Reader().ProviderTimeout(), "reader, timeout%q", tc.timeout)
+	}
 }
 
 // TestTheDocumentedKeyringsParse holds docs/ENCRYPTION.md to the schema: every
