@@ -213,6 +213,19 @@ func runDebugAttach(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	// A line the reader could not take — longer than a command may be — is
+	// not the end of input: the rest of the script was never read. The
+	// session is left attached for a rejoin, its lease bounding the hold,
+	// and the command fails rather than reporting a run it did not drive.
+	if err := scanner.Err(); err != nil {
+		_ = remote.Disconnect()
+		if errors.Is(err, bufio.ErrTooLong) {
+			err = fmt.Errorf("a command is at most %d bytes", flowdebug.MaxCommandBytes)
+		}
+
+		return fmt.Errorf("reading commands: %w; session %s is left attached until its lease lapses", err, remote.SessionID())
+	}
+
 	if keep {
 		if !format.Machine() {
 			fmt.Fprintf(surface.Out, "left session %s attached; rejoin with `flow debug attach %s --session %s` before its lease lapses\n",
