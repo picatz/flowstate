@@ -651,7 +651,8 @@ carries either `outputs` (values only, no per-step status or timing) or an
 `error` (the whole run's outcome, not a per-step account). What does exist is
 an event history: `GetTimeline` returns the scheduled, completed, failed,
 timed-out, and canceled events of every activity, with their times, plus timer
-and signal events for waits. Most activities are task steps; the rest are
+events and signal events (a signal answers a wait, or carries a debug ask on
+the reserved debug channel). Most activities are task steps; the rest are
 compensations (an `undo:` is dispatched through the same activity types as a
 forward step, labelled `` `id` · undo `` by step id alone), `vars:` evaluation,
 and capability admission, and today only the label tells them apart. Waits are
@@ -661,15 +662,19 @@ arrives, not when the wait consumes it. The activity label is for display, not
 a key: `engine/summary.go` elides the outer step ids of a position past 256
 bytes, so two deeply nested steps can render the same string, a `for_each` or
 `loop` body step's iterations all carry one label, and a run started before
-labels existed has none. A skipped step, a `value:` step, and
+labels existed has none. Nor is an activity's outcome always its step's: a task
+step can fail in workflow code before its activity is scheduled (resolving its
+inputs or its own `vars:`) or after the activity completes (registering its
+`undo:`), and neither leaves a step event. A skipped step, a `value:` step, and
 the control-flow nodes (`call`, `for_each`, `loop`, `parallel`, `switch`) record
-no outcome event. So "task X succeeded in 12s while task Y is still running"
-can be *read* from the timeline, but a graph overlay needs every event joined
-losslessly to a `GraphNode.id`, compensations told apart from forward steps,
-the occurrences of a repeated node aggregated by a stated rule, each signal
-joined to the wait that consumed it, and an outcome for every other node, and
-nothing carries any of that today. Supplying it, reusing the timeline for what
-it already records rather than restating it, is therefore its own slice
+no outcome event. So "task X's activity completed in 12s while task Y's is
+still running" can be *read* from the timeline, but a graph overlay needs every
+event joined losslessly to a `GraphNode.id`, compensations told apart from
+forward steps, the occurrences of a repeated node aggregated by a stated rule,
+each signal joined to the wait that consumed it, and a terminal outcome for
+every node, and nothing carries any of that today. Supplying it, reusing the
+timeline for what it already records rather than restating it, is therefore
+its own slice
 (gap inventory slice 3), settled and reviewed before any overlay code is
 written, and every overlay-producing path in this
 document (6.2's `--run` variant, 6.3's outcome colouring, section 3's
@@ -974,19 +979,23 @@ line. What is not: everything below.
    The dependency every other graph slice below sits on; nothing in 4 or 6 can
    start correctly before this one is settled and reviewed.
 
-3. **The run-telemetry schema.** Status, duration, and terminal outcome are
-   recorded today in `GetTimeline`'s event history for task steps only, and
-   those events name their step by `TimelineEntry.step`, a display label that
-   is elided past 256 bytes and empty on runs started before labels existed —
-   not a node identity. A skipped step, a `value:` step, and the control-flow
-   nodes (`call`, `for_each`, `loop`, `parallel`, `switch`) record no outcome
-   event, and no response carries outcomes as an aggregate: `RunProgress` has
-   only the current top-level step, a partial path, and a segment-local
-   completed count, and `GetResponse` for a finished run carries output values
-   or an error. This slice adds what the timeline lacks, as additive fields or
+3. **The run-telemetry schema.** Status and duration are recorded today in
+   `GetTimeline`'s event history only for the activities task steps schedule,
+   and those events name their step by `TimelineEntry.step`, a display label
+   that is elided past 256 bytes and empty on runs started before labels
+   existed — not a node identity. An activity's outcome is not its step's
+   terminal outcome either: a step that fails resolving its inputs or `vars:`
+   schedules nothing, and one whose `undo:` fails to register after its
+   activity completed shows only the completion. A skipped step, a `value:`
+   step, and the control-flow nodes (`call`, `for_each`, `loop`, `parallel`,
+   `switch`) record no outcome event, and no response carries outcomes as an
+   aggregate: `RunProgress` has only the current top-level step, a partial
+   path, and a segment-local completed count, and `GetResponse` for a finished
+   run carries output values or an error. This slice adds what the timeline lacks, as additive fields or
    events `buf breaking` accepts, and reuses the timeline for what it already
-   records. It starts from an inventory of what each graph node kind records
-   today and closes every gap that finds, which includes at least:
+   records. It starts from an inventory of what each `Node` kind in
+   `workflow.proto` records today and closes every gap that finds, which
+   includes at least:
    - a canonical node identity that joins each event to its `GraphNode.id`
      without loss;
    - an occurrence identity for a node that runs more than once (a `for_each`
@@ -1000,13 +1009,16 @@ line. What is not: everything below.
      position);
    - the wait that consumed each signal, and when (a signal event names the
      signal, not the step, and a signal sent early is recorded on arrival);
+   - a task step's terminal outcome where workflow code decides it around the
+     activity: input or `vars:` resolution failing before anything is
+     scheduled, and `undo:` registration failing after the activity completed;
    - outcomes for the nodes that record none.
 
    It does not pre-decide the message shape. Two representations of one task
-   step's outcome are what it must avoid. This slice blocks the
-   run-state overlay in 6.1/6.2/6.3 *and* the step/timeline tree's per-step
-   duration in section 3 — both are named as blocked on it rather than
-   re-solved independently, since it is one gap with two consumers.
+   step's outcome are what it must avoid. This slice blocks the run-state
+   overlay in 6.1/6.2/6.3 *and* the step/timeline tree's per-step duration in
+   section 3 — both are named as blocked on it rather than re-solved
+   independently, since it is one gap with two consumers.
 
 4. **The mermaid and dot exporters** (section 6.2): `flow graph`, extending
    `--output`/`-o` with `mermaid` (default), `dot`, and `json` values for this
