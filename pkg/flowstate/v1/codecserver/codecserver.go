@@ -99,12 +99,16 @@ const NamespaceHeader = "X-Namespace"
 // what the UI sends for one view with room to spare, and refuses a request
 // that is trying to use the server as a bulk decryption service.
 const (
-	DefaultMaxBodyBytes        = 4 << 20
-	DefaultMaxPayloads         = 256
-	DefaultRequestsPerMinute   = 600
-	DefaultWorkTimeout         = 20 * time.Second
-	DefaultMaxConcurrent       = 16
-	defaultMaxTrackedCallers   = 10_000
+	DefaultMaxBodyBytes      = 4 << 20
+	DefaultMaxPayloads       = 256
+	DefaultRequestsPerMinute = 600
+	DefaultWorkTimeout       = 20 * time.Second
+	DefaultMaxConcurrent     = 16
+	defaultMaxTrackedCallers = 10_000
+	// bodyReadTimeout bounds how long a request that holds an in-flight slot
+	// may take to send its body: four mebibytes in ten seconds is a slow
+	// link, and anything slower is holding a slot other tenants need.
+	bodyReadTimeout            = 10 * time.Second
 	rateWindow                 = time.Minute
 	maxNamespaceHeaderBytes    = 255
 	decodeFailureUserFacingMsg = "one or more payloads could not be decoded in this namespace"
@@ -165,7 +169,8 @@ type Options struct {
 	// read. The per-caller rate bounds how many a caller sends in a minute,
 	// not how many are in memory together, and callers are many; this is
 	// what makes MaxConcurrent × MaxBodyBytes the most body this server
-	// holds. Zero is DefaultMaxConcurrent.
+	// holds. One caller holds at most a quarter of them (at least one), so
+	// one tenant cannot fill them. Zero is DefaultMaxConcurrent.
 	MaxConcurrent int
 
 	// WorkTimeout bounds the codec work one request may start: payloads are
@@ -183,8 +188,39 @@ type Options struct {
 type Handler struct {
 	opts    Options
 	limiter *limiter
-	// inFlight holds one token per request being read or decoded.
+	// inFlight holds one token per request being read or decoded, and held
+	// counts them per caller.
 	inFlight chan struct{}
+	held     callerSlots
+}
+
+// callerSlots counts the in-flight slots each caller holds.
+type callerSlots struct {
+	mu sync.Mutex
+	n  map[string]int
+}
+
+// take reserves one of caller's slots if it holds fewer than limit.
+func (c *callerSlots) take(caller string, limit int) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.n[caller] >= limit {
+		return false
+	}
+	if c.n == nil {
+		c.n = map[string]int{}
+	}
+	c.n[caller]++
+	return true
+}
+
+// give returns one of caller's slots.
+func (c *callerSlots) give(caller string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.n[caller]--; c.n[caller] <= 0 {
+		delete(c.n, caller)
+	}
 }
 
 // New returns a handler, or an error naming what is wrong with opts.
@@ -344,6 +380,17 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Taken before the body is read, and without waiting: a server at its
 	// bound refuses at once rather than queueing bodies it would then hold.
+	// A caller holds at most a share of the slots, so one tenant cannot fill
+	// them all, and a body must arrive promptly once a slot is held, so a
+	// slow one gives its slot back rather than keeping it until the server's
+	// read timeout.
+	caller := cmp.Or(principal.ID(), "anonymous")
+	if !h.held.take(caller, max(1, h.opts.MaxConcurrent/4)) {
+		header.Set("Retry-After", "1")
+		h.refuse(ctx, w, subject, v1.AuditDenyCode_AUDIT_DENY_CODE_RATE_LIMITED, http.StatusServiceUnavailable, "server busy")
+		return
+	}
+	defer h.held.give(caller)
 	select {
 	case h.inFlight <- struct{}{}:
 		defer func() { <-h.inFlight }()
@@ -352,6 +399,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.refuse(ctx, w, subject, v1.AuditDenyCode_AUDIT_DENY_CODE_RATE_LIMITED, http.StatusServiceUnavailable, "server busy")
 		return
 	}
+	// Not every ResponseWriter supports a deadline (an in-process recorder
+	// does not); the server's own read timeout still bounds those.
+	_ = http.NewResponseController(w).SetReadDeadline(h.opts.now().Add(bodyReadTimeout))
 
 	payloads, tooLarge, err := h.readPayloads(w, r)
 	if err != nil {

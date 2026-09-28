@@ -535,6 +535,36 @@ func TestRequestsInFlightAreBoundedAcrossCallers(t *testing.T) {
 	require.Equal(t, http.StatusOK, resp.StatusCode, "the slot was not given back")
 }
 
+// TestOneCallerCannotHoldEveryInFlightSlot: a caller holds at most a quarter
+// of the in-flight slots, so a tenant trickling bodies on many connections
+// cannot starve the others.
+func TestOneCallerCannotHoldEveryInFlightSlot(t *testing.T) {
+	t.Parallel()
+
+	f := newFixture(t, func(o *codecserver.Options) { o.MaxConcurrent = 4 })
+
+	body := &heldBody{reading: make(chan struct{}), release: make(chan struct{})}
+	req := httptest.NewRequest(http.MethodPost, "/codec"+codecserver.DecodeEndpoint, body)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer a-decoder")
+	req.Header.Set(codecserver.NamespaceHeader, "ns-a")
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		f.handler.ServeHTTP(httptest.NewRecorder(), req)
+	}()
+	<-body.reading
+
+	resp, _ := f.post(t, codecserver.DecodeEndpoint, "a-decoder", "ns-a", f.seal(t, "ns-a", markerA))
+	require.Equal(t, http.StatusServiceUnavailable, resp.StatusCode, "a caller held a second of four slots")
+
+	resp, _ = f.post(t, codecserver.DecodeEndpoint, "b-decoder", "ns-b", f.seal(t, "ns-b", markerB))
+	require.Equal(t, http.StatusOK, resp.StatusCode, "another caller was starved by the first")
+
+	close(body.release)
+	<-done
+}
+
 // heldBody is a request body whose first read reports it, then waits.
 type heldBody struct {
 	reading, release chan struct{}
