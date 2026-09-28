@@ -675,8 +675,8 @@ no outcome event. So "task X's activity completed in 12s while task Y's has not
 finished" can be *read* from the timeline — not that Y is running, since its
 rows cannot tell a running activity from one waiting to start or backing off
 between attempts — but a graph overlay needs every step-scoped event joined
-losslessly to a `GraphNode.id` (run `vars:`, admission, and a run ending or
-continuing belong to no node), compensations told apart from forward steps, the
+losslessly to a `GraphNode.id` (run `vars:`, admission, a debug lease's expiry
+and pacing timers, and a run ending or continuing belong to no node), compensations told apart from forward steps, the
 occurrences of a repeated node aggregated by a stated rule, tolerated failures
 told apart from fatal ones, each consumed signal joined to the
 wait that consumed it (and a signal no wait consumes — a debug ask, an
@@ -1015,7 +1015,8 @@ line. What is not: everything below.
    - a canonical node identity that joins each step-scoped event to its
      `GraphNode.id` without loss, and a run-level class for the events that
      belong to no node: run `vars:` evaluation, plugin and task-capability
-     admission, and a run ending or continuing as new;
+     admission, a debug lease's expiry and pacing timers, and a run ending or
+     continuing as new;
    - an occurrence identity for a node that runs more than once (a `for_each`
      or `loop` body's iterations share one node and one label today), stable
      across a continue-as-new boundary, where timeline event ids restart at 1,
