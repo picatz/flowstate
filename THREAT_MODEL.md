@@ -518,15 +518,16 @@ often it is renewed, after which the run resumes on its own
 indefinitely.
 
 The fronts bound what a client can make them hold. `flow dap` keeps at most
-1024 breakpoints and 1 MiB of their text, and at one stop 4096 variable
-references over 4 MiB of expressions (`pkg/flowstate/v1/flowdap/server.go`).
-`flow mcp` holds at most eight retained sessions, one of them over a test case,
-each ended by a sweeper ten minutes after its last call and an hour after it
-began (`cmd/flow/mcpdebugsession.go`).
+1024 breakpoints and 1 MiB of their text, a source path counted for each
+breakpoint that carries it and refused past 4096 bytes, and at one stop 4096
+variable references over 4 MiB of expressions
+(`pkg/flowstate/v1/flowdap/server.go`). `flow mcp` holds at most eight retained
+sessions, one of them over a test case, each ended by a sweeper ten minutes
+after its last call and an hour after it began (`cmd/flow/mcpdebugsession.go`).
 
 Durable history holds the debug protocol, not the run's secrets: the asks (session
-ids, request ids, breakpoint targets and their conditions and hit counts, as the
-caller wrote them), the receipts, and the attested holder's identity. Inspection
+ids, request ids, breakpoint targets with their conditions, log messages and hit
+counts, and `until` targets, as the caller wrote them), the receipts, and the attested holder's identity. Inspection
 is a query and writes nothing to history. A condition is the caller's own
 expression; `secret(...)` is compiled to a reference and is never a function a
 debugger can call, so no resolved secret reaches a condition, an answer, or
@@ -538,8 +539,9 @@ inputs as `[redacted]`, and a local session applies the case's or run's own
 redaction to everything it prints, but a predicate over a withheld value answers
 truthfully: `inputs.token == "guess"` is a yes or no about the real value. That
 is what `workload.debug_inspect` gates, and a deployment that must not disclose
-a run's values to an operator does not grant it. A condition's text is written
-to history in the ask that carries it, readable by whoever can read history. A
+a run's values to an operator does not grant it. A condition's or log message's
+text is written to history in the ask that carries it, readable by whoever can
+read history. A
 hold stops workflow code only: activities, timers and called work already
 dispatched keep going, and so does the run's execution timeout. Local debugging
 (`flow run local --debug`, `flow test --debug`, a `flow dap` launch,

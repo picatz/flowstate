@@ -643,23 +643,38 @@ It advertises what the backend reports, and refuses the rest by name.
 | Conditions and hit counts | yes | yes |
 | Logpoints | yes | not advertised |
 | Exception filters `uncaught`, `all` | stop where a step fails and the failure will propagate, or at every failure | not offered; the durable driver has no failure stops |
-| `terminate` | ends the run: answered first, then `terminated` and `exited` with code 1, and the adapter waits for the editor's `disconnect` | never ends the run; the session detaches and says so |
+| `terminate` | ends the run: answered first, then `terminated` and `exited` with code 1, and the adapter waits for the editor's `disconnect` | never ends the run: the request fails, the session detaches, and the conversation ends |
 
 An attach sends a `capabilities` event as soon as it knows the backend, so an
 editor stops offering what a durable run does not do. A breakpoint set before
 the run exists is answered unverified — `pending until the program is launched
 or attached` — and re-sent, with a `breakpoint` event for each, once it does.
+A durable run installs a breakpoint set only at its next step boundary, so a
+set sent while it is moving is answered unverified — `the run applies this
+breakpoint at its next step boundary` — and each breakpoint is reported again
+by a `breakpoint` event when the run next holds (installed, or `the run did not
+install this breakpoint`) or ends (`the run ended before it applied this
+breakpoint`).
 
 Disconnecting without `terminateDebuggee` detaches rather than ends, and so
-does an editor that goes away without disconnecting: a launched run finishes
-unattended, and `flow dap` keeps its plugins and secret providers open and does
-not exit until that run returns. An attached durable run continues.
+does an editor that goes away without disconnecting, or whose output can no
+longer be written: a launched run finishes unattended, and `flow dap` keeps its
+plugins and secret providers open and does not exit until that run returns. An
+attached durable run continues. An interrupt (SIGINT or SIGTERM) detaches the
+session without waiting on the editor's input and exits 0, and a write to an
+editor that has gone is handled rather than killing the adapter with SIGPIPE.
+Each command the adapter sends a durable run carries a request id that names
+the adapter as well as the request, so a reconnected editor's numbering is
+never answered from an earlier adapter's receipts.
 
 Lines and columns are 1-based unless the editor's `initialize` says
-`linesStartAt1` or `columnsStartAt1` is false. What a client can make the
-adapter hold is bounded. A session holds at most 1024 breakpoints, and a
-request past that is not applied; their paths, conditions, hit conditions and
-log messages together take at most 1 MiB, and a request past that fails whole.
+`linesStartAt1` or `columnsStartAt1` is false, and source paths are `file://`
+URIs when it says `pathFormat: "uri"`. What a client can make the adapter hold
+is bounded. A session holds at most 1024 breakpoints, and a request past that
+is not applied. A line breakpoint's source path may be at most 4096 bytes, and
+a longer one is refused as malformed. The paths, conditions, hit conditions and
+log messages together take at most 1 MiB, a source's path counted once for
+each breakpoint that carries it, and a request past that fails whole.
 One stop issues at most 4096 variable references, over at most 4 MiB of the
 expressions behind them; past either, a value comes back without a reference
 to expand until the run moves. A breakpoint request missing its `breakpoints`

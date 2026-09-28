@@ -66,9 +66,9 @@ every `page`, a caller's and a callee's alike; `pages/page` arms the `page` in
 `pages`; `pages[2]/page` arms that one iteration's. A target never guesses
 between two sites — anything longer than a bare id narrows it.
 
-Each stop is a **snapshot**: the run's state (running, held, completed, failed,
-expired, detached), why it is held (entry, step, breakpoint, pause, failure,
-until), the occurrence, its frames innermost first — the step, then each
+Each stop is a **snapshot**: the run's state (running, pause requested, held,
+completed, failed, expired, detached), why it is held (entry, step, breakpoint,
+pause, failure, until, or autopsy for a finished test case), the occurrence, its frames innermost first — the step, then each
 iteration, branch, arm or call around it — and the session's breakpoints with
 their hit counts. A snapshot carries a **revision** that increases on every
 change and is never reused, so a question asked about one stop is refused, not
@@ -120,7 +120,10 @@ attach` and `do`, the MCP session tools, and `embed`'s `Driver` — read the sam
 lines, less the prompt's own `complete` and `quit`, plus four: `status` prints
 the current snapshot, `pause` holds a running run at its next boundary,
 `expand <expr>` pages a map's or list's children, and `clear` removes every
-breakpoint, whoever set it.
+breakpoint, whoever set it. One prompt form they do not take is
+`until <step> if <expr>`: a typed resume names a step and nothing more, so the
+condition is refused rather than dropped. `break <step> if <expr>` and
+`continue` say the same thing there.
 
 A condition is the step's own `if:`, evaluated where the breakpoint is: the
 same function, the same scope, and the same refusal of anything that is not a
@@ -352,7 +355,11 @@ them over a test case: while it is open, a second `start`, `flowstate_test`
 and `flowstate_debug` are refused, naming it, because its case holds the
 process's task registry until it ends. Attaching with the `session_id` of a
 session this process already holds answers that session rather than a second
-one. A case that fails before it can hold — a stub or an expectation naming no
+one, but only on the same run: a different `workflow_id`, or a different pinned
+`run_id`, is refused. A session that is still ending is waited for, up to ten
+seconds, by a rejoin of it and by a new `start`, `flowstate_test` or
+`flowstate_debug` while it is a test case, and after that the call is refused
+as still ending. A case that fails before it can hold — a stub or an expectation naming no
 step — says why in the snapshot's message, as well as in the report `end`
 returns.
 `expected_revision` refuses a command meant for a stop the run has already left,
@@ -622,7 +629,9 @@ with `--session` before the lease lapses. `--program <file>` names the Flowfile
 the run was started from so frames can show lines; it is used only when it
 compiles to the program the run executes, the plugin and task pins the
 deployment wrote on admission aside, and otherwise the attach says the file
-does not match and lines are not shown.
+does not match and lines are not shown. The check is on the compiled program,
+which records no positions, so a file whose lines moved without changing what
+it compiles to still matches, and its lines can be wrong.
 
 Two more verbs work without holding anything open:
 
@@ -651,8 +660,11 @@ names one, so those bodies run as a unit. `step` from a `call:` step enters the
 callee; `step` from a loop runs the whole loop. A breakpoint on a step inside
 such a body is reported not armed, saying to break at the enclosing step instead,
 and an `until` whose step is inside one, or that names no step at all, is
-refused and the run stays held, rather than released to the end. The local
-driver runs those bodies one step at a time and stops everywhere.
+refused and the run stays held, rather than released to the end. Both checks
+need every site of the program: past `MaxDebugStaticSites` (65,536 step sites)
+the run cannot rule a site out, so it neither reports such a breakpoint not
+armed nor refuses the `until`. The local driver runs those bodies one step at a
+time and stops everywhere.
 
 **What a hold does not stop.** A hold parks workflow code before a step starts.
 Work already dispatched — an activity, an HTTP call, a timer, a called
@@ -683,7 +695,7 @@ a session follows the current one.
 | Conditional and hit-count breakpoints | yes | yes; a condition needs `workload.debug_inspect` |
 | Logpoints (`log`) | yes | refused as unsupported |
 | Failure stops (`catch`) | yes | refused as unsupported |
-| A breakpoint or `until` inside a loop body, branch or arm | yes | the breakpoint is not armed and the `until` is refused |
+| A breakpoint or `until` inside a loop body, branch or arm | yes | the breakpoint is not armed and the `until` is refused, up to `MaxDebugStaticSites` step sites |
 | Source-line breakpoints | when a source map is known | resolved by the client to a step, only through a source map that matches the run's program; `flow dap`'s attach has none |
 | `inspect`, `expand`, `scope` | yes | yes, while held, needing `workload.debug_inspect` |
 | Task notes (`NoteTask`) | yes | no |

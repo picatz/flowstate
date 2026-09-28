@@ -165,7 +165,9 @@ next step boundary, and never interrupts work in flight. The run held at
 steps and a callee's top-level steps — so `continue` ran the loop and the
 parallel block whole, and `step` from `receipt` entered the callee. A breakpoint
 on `orders/charge` is reported not armed here, saying to break at the enclosing
-step instead, and `until orders/charge` is refused with the run still held.
+step instead, and `until orders/charge` is refused with the run still held. (A
+program past `MaxDebugStaticSites` step sites is too large for the run to rule a
+site out, and there neither is refused.)
 
 `disconnect`, instead of `detach`, leaves the session attached for a later
 command. Each of these is one call, for a script or an agent:
