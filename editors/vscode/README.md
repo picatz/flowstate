@@ -1,16 +1,16 @@
 # Flowstate Flowfile — VS Code client
 
-A thin client over `flow lsp`, following the design in
-[#585](https://github.com/picatz/flowstate/issues/585). It is **not published to
-any marketplace**, has no publish step wired to anything, and holds no token or
-secret. Install it by hand from source, as described below.
+A VS Code client for `flow lsp`: diagnostics, hover, completion, go to
+definition, an outline, formatting, and fix-all for Flowfiles and their test
+files, plus commands that run `flow validate`, `flow test`, `flow fix`, and
+`flow run local`. It is **not published to any marketplace**; install it from
+source as described below. It holds no token or secret.
 
-Everything it adds beyond starting the server has to justify not being in the
-engine (`CLAUDE.md`, "A capability is not done until it is reachable from a
-Flowfile"; #585 §3). Concretely: no YAML parsing here, no diagnostics of this
-extension's own, no policy evaluation. If it looks like the extension is
-deciding something about a Flowfile, that decision belongs in
-`flowfile/validate.go`, not here.
+The extension decides nothing about a Flowfile itself: every diagnostic and
+edit comes from `flow lsp`, so what it shows matches `flow validate` exactly. A
+change that would have the extension judge a Flowfile belongs in
+`flowfile/validate.go` instead. The design is
+[#585](https://github.com/picatz/flowstate/issues/585).
 
 ## What it does
 
@@ -35,26 +35,23 @@ deciding something about a Flowfile, that decision belongs in
    { "files.associations": { "**/workflow.yaml": "flowfile" } }
    ```
 3. **Commands that shell out.** `Flowstate: Validate/Test/Fix/Run Local` run
-   `flow validate|test|fix|run local <file>` on the active Flowfile as a VS
-   Code task, and show the CLI's own output in a dedicated terminal panel. The
+   `flow validate|test|fix|run local <file>` on the active file as a VS Code
+   task, and show the CLI's own output in a dedicated terminal panel. The
    extension never re-parses that output to decide pass or fail — the
    process's exit status is the answer, same as running it yourself.
+   `Flowstate: Test` needs a `*.test.yaml` to be the active file: it is also
+   offered on a workflow file, where `flow test` refuses it.
 
-## What it deliberately does not do
+## What it does not do yet
 
-Per #585 §2–3, left out of this first slice on purpose:
-
-- **The workflow tree view and the step-graph webview.** Both are named in
-  the design as worth having, but the design also flags the graph as the
-  riskiest slice to get right (it must render `flow compile`'s protojson, not
-  re-parsed YAML) and recommends shipping the LSP client and language
-  contribution alone first. This PR is that first slice plus the palette
-  commands; the tree view and graph are follow-ups, not abandoned.
-- **Run progress / watch integration**, **deployment management**, and **any
-  "ask AI" surface** — all explicitly out of scope in #585 §2–3.
+- **A workflow tree view or a step-graph webview.** Both are planned; the graph
+  has to render `flow compile`'s output rather than re-parse YAML.
+- **A debug type.** `flow dap` works with editors that can launch an adapter
+  directly (see [Editor setup](../../docs/EDITORS.md#stepping-a-run-flow-dap)),
+  but this extension does not register one.
+- **Run progress, deployment management, or an AI assistant.** Out of scope.
 - **Bundling `flow`.** The binary must be on `PATH`, or pointed to with
-  `flowstate.path`. Shipping a Go binary through npm is a second, per-platform
-  distribution channel the design recommends against for a first version.
+  `flowstate.path`.
 
 ## Settings
 
