@@ -127,11 +127,12 @@ const (
 	// Every position that *does* carry a reference carries it to a worker — a task
 	// input, or an entry of a structure a task applies inside its own activity. A
 	// var has no such destination. It is evaluated by the workflow, at the top of
-	// the run or just before a step, and its value is bound into the scope every
+	// the run (durably in the `WorkflowVars` activity, whose result is recorded in
+	// history) or just before a step, and its value is bound into the scope every
 	// later expression reads and written into durable state — `RunState.vars` on
 	// the durable driver, carried across Continue-As-New — before anything has
-	// asked what it is for. So there is no activity to resolve it in and no moment
-	// at which the resolved value is not already in history.
+	// asked what it is for. So nothing on that path resolves a secret, and there is
+	// no moment at which a resolved value would not already be in history.
 	//
 	// Refused rather than deferred, and refused at both levels, because the
 	// alternative is a var that holds a reference until something reads it — which
@@ -141,8 +142,8 @@ const (
 	// the input that needs it reaches the worker unresolved, which is the whole of
 	// what a var here was being asked to arrange.
 	notInVarHelp = "a secret reference cannot be stored in `vars:`; a var is evaluated by the " +
-		"workflow and its value is written to durable history, and there is no activity here to " +
-		"resolve it in. Write ${secret('...')} directly on the task input that consumes the " +
+		"workflow and its value is written to durable history, and nothing that evaluates it " +
+		"resolves secrets. Write ${secret('...')} directly on the task input that consumes the " +
 		"secret instead"
 
 	// notInWaitOutputsHelp is the refusal for a `wait_for_signal:`'s shaped

@@ -476,13 +476,15 @@ func withSelfOutputs(scope *Scope, id string, outputs *Node_Outputs) *Workflow_S
 // which is the schema's own phrasing and the whole point of the design.
 //
 // The other half of the argument is the one that keeps [UndoScopeConcurrent]
-// refused, and it is worth stating as the difference rather than as a rule:
-// what makes a fan-out unsafe is that the two drivers disagree about the order
-// work registers in. Loop iterations are sequential on both — `runLoop` in
-// eval.go and the executor's own `runLoop` are each a plain `for` that finishes
-// an iteration before starting the next — so reverse-registration order across
-// them is exactly as well defined as it is for top-level steps. That is the
-// same argument #219 used to let a compensation compose through a `call:`.
+// on private logs rather than the run-level one, and it is worth stating as the
+// difference rather than as a rule: what makes a fan-out's completion order
+// unusable is that the two drivers disagree about the order work registers in,
+// which is why its children merge by structural position instead. Loop
+// iterations are sequential on both — `runLoop` in eval.go and the executor's
+// own `runLoop` are each a plain `for` that finishes an iteration before
+// starting the next — so reverse-registration order across them is exactly as
+// well defined as it is for top-level steps. That is the same argument #219
+// used to let a compensation compose through a `call:`.
 //
 // A loop body's own `undo:` and a `call:` from a loop body are therefore opened
 // together, deliberately. Opening only the call path would have made a `call:`
@@ -538,12 +540,13 @@ const (
 // guaranteed.
 //
 // One rule, called by both execution drivers and the validator, is what keeps
-// a `call:` inside a `for_each` from becoming an escape hatch out of the
-// concurrency refusal on one of them and not the other — see issue #219's
-// review, which found exactly that gap: a naive "descending into a call is
-// always [UndoScopeCall]" let a callee's `undo:` validate and run wherever the
-// call itself was nested, in whatever order the enclosing construct happened
-// to produce.
+// a `call:` inside a `for_each` from becoming an escape hatch out of what the
+// concurrent scope still refuses (`async:`, [CheckAsyncPlacement]) on one of
+// them and not the other — see issue #219's review, which found exactly that
+// gap when the concurrent scope still refused `undo:`: a naive "descending
+// into a call is always [UndoScopeCall]" let a callee's `undo:` validate and
+// run wherever the call itself was nested, in whatever order the enclosing
+// construct happened to produce.
 func (s UndoScope) IntoCall() UndoScope {
 	switch s {
 	case UndoScopeTopLevel, UndoScopeCall, UndoScopeLoop:
@@ -560,11 +563,13 @@ func (s UndoScope) IntoCall() UndoScope {
 // against the same failure. A `loop:` may legitimately be written inside a
 // `for_each` body or a `parallel` branch — only a loop directly inside another
 // loop is refused — so a loop body that always claimed [UndoScopeLoop] would
-// hand a compensation an accepting placement one construct after a refusing
-// one. That is #219's escape hatch with `loop:` in the place of `call:`, and it
-// became reachable the moment a loop body started accepting compensations at
-// all: before #253 the value was refused wherever it came from, so composing it
-// bought nothing and its absence cost nothing.
+// hand a step an accepting placement one construct after a refusing one: for a
+// compensation while the concurrent scope still refused `undo:`, and for
+// `async:` ([CheckAsyncPlacement]) today. That is #219's escape hatch with
+// `loop:` in the place of `call:`, and it became reachable the moment a loop
+// body started accepting compensations at all: before #253 the value was
+// refused wherever it came from, so composing it bought nothing and its absence
+// cost nothing.
 //
 // [UndoScopeConcurrent] therefore passes straight through, and everything else
 // becomes [UndoScopeLoop]. Both drivers and the validator call this at the one

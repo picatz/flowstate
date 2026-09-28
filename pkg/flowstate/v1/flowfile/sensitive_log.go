@@ -8,13 +8,15 @@ import (
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
 
-// An input declared `sensitive:` is one the author has told the system to keep
-// out of the clear — it is redacted in output, and a run resolves it as a
-// reference rather than carrying its value through history. A `log:` message
-// undoes all of that: its whole purpose is to emit text, and that text is
-// written to Temporal history — durable and broadly readable — and to the
-// worker's stdout. So a message that interpolates a sensitive input writes the
-// value everywhere the sensitive declaration exists to keep it out of.
+// An input declared `sensitive:` is one the author has told the system not to
+// display casually — it is redacted in what Flowstate renders (a transcript, a
+// schedule's arguments, a failure sentence), though the value itself still rides
+// in history like any other input; only a secret reference is kept out of it. A
+// `log:` message undoes the redaction: its whole purpose is to emit text, and
+// that text is written to the worker's stdout and, as the step's input, to
+// Temporal history — durable and broadly readable. So a message that
+// interpolates a sensitive input prints the value exactly where the sensitive
+// declaration exists to keep it off screen.
 //
 // This is #234's V5: a lint that is a property of the file, cheap, and refuses
 // exactly the leak the declaration is supposed to prevent. It follows

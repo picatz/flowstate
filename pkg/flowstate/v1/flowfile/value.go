@@ -314,8 +314,9 @@ func blockText(n *ast.LiteralNode) string {
 // exactly where an author writes a sentence. Refusing there would leave the
 // language with two rules about what a `${` means, decided by which field it is
 // in, and an author with no way to predict which they were in. A condition that
-// interpolates is a type error, which the type checker reports as a type error;
-// that is a better thing to be told than that the syntax is wrong.
+// interpolates is a type error rather than a syntax error: `flow validate` does
+// not report it today, and the run fails when the condition is evaluated with
+// "condition must evaluate to a boolean, got string".
 func (c *compiler) scalarString(n ast.Node, text, path string, r ref, exprCtx bool) *v1.Value {
 	// A whole scalar is the one place a secret reference can go, and only when
 	// the scalar is a task input: a field the workflow evaluates itself cannot

@@ -18,8 +18,8 @@ import (
 // Replaying a stored delivery is what makes a trigger's argument mapping a unit
 // test instead of the one part of a workflow debuggable only in production.
 //
-// A delivery on disk is read here and nowhere else, under the byte bound a live
-// receiver will apply to a request body ([v1.MaxWebhookPayloadBytes]). It is the
+// A delivery on disk is read here and nowhere else, under the byte bound the live
+// receiver applies to a request body ([v1.MaxWebhookPayloadBytes]). It is the
 // ordinary treatment of untrusted input in this repository, and a fixture is
 // untrusted like anything else: a `*.test.yaml` and its testdata can arrive with a
 // called workflow's repository or out of a fork.

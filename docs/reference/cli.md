@@ -1922,7 +1922,7 @@ flow test -o jsonl examples/
 | Flag | Type | Default | Environment | Description |
 |---|---|---|---|---|
 | `--coverage-required` | `bool` | `false` | — | fail when a workflow has a step, or a `switch:` arm, no test case reached and no coverage.allow_unreached entry records why |
-| `--debug` | `bool` | `false` | — | stop before each step of one case and read commands from the terminal — step, continue, until, break, inspect, scope, quit; requires `--run` to name exactly one case, and is refused with `--output json` and with seeded exploration |
+| `--debug` | `bool` | `false` | — | stop before each step of one case and read commands from the terminal — step, continue, until, break, inspect, scope, quit; requires exactly one test file and exactly one selected case (narrow with `--run` when the file has more), and is refused with `--output json` and with seeded exploration |
 | `--fail-on-warning` | `bool` | `false` | — | fail when a case reports a warning — a stub declared and never answered through, a task invoked with no stub declared, or an invocation that no declared stub answered — instead of only printing it |
 | `-o, --output <string>` | `string` | `text` | — | output format: text, json, or jsonl |
 | `--run <string>` | `string` | — | — | run only the cases whose name matches this regular expression; the output says how many cases were filtered out, and `--coverage-required` is refused alongside it, because a subset's coverage gaps are not the suite's |
@@ -2126,12 +2126,13 @@ Start a worker that runs workflow steps
 flow worker [flags]
 ```
 
-Start a Temporal worker: the process that actually runs a workflow's steps. The server submits work to Temporal and a worker polling its task queue is what picks it up, so nothing a deployment accepts runs until at least one worker is up: the two never talk to each other, they meet at Temporal. With `--temporal-deployment-name` and `--build-id` it claims a Temporal Worker Deployment version, pinning every run already in flight to the interpreter it started on: a later deploy changes what new runs compute, not what in-flight ones do, until each reaches continue-as-new. With `--tenant` it executes one namespace's runs and refuses every other outright, rather than running them with this worker's secrets, egress policy and plugins, which needs a queue of its own, named by `--task-queue-prefix` (the value the server was started with) or given as `--task-queue`.
+Start a Temporal worker: the process that actually runs a workflow's steps. The server submits work to Temporal and a worker polling its task queue is what picks it up, so nothing a deployment accepts runs until at least one worker is up: the two never talk to each other, they meet at Temporal. With `--temporal-deployment-name` and `--build-id` it claims a Temporal Worker Deployment version, pinning every run already in flight to the interpreter it started on: a later deploy changes what new runs compute, not what in-flight ones do, until each reaches continue-as-new. A version receives new runs only as the deployment's current version, or for its share as a ramping version, and this command sets neither: promote a build with `temporal worker deployment set-current-version`, or ramp it with `set-ramping-version`. With `--tenant` it executes one namespace's runs and refuses every other outright, rather than running them with this worker's secrets, egress policy and plugins, which needs a queue of its own, named by `--task-queue-prefix` (the value the server was started with) or given as `--task-queue`.
 
 Examples:
 
 ```sh
-# Start a worker, pinned so a deploy does not change runs already in flight:
+# Start a worker, pinned so a deploy does not change runs already in flight.
+# It receives new runs once its build is current or ramping.
 flow worker --temporal-deployment-name flowstate \
   --build-id "$(git rev-parse --short HEAD)"
 

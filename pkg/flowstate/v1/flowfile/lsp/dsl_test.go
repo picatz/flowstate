@@ -746,8 +746,8 @@ edition: v2026.3
 	// order to understand the rule rather than merely obey it.
 	for _, claim := range []string{
 		"the moment the wait is evaluated",
-		"resolved inside an activity",
-		"no clock that survives a retry",
+		"may be resolved inside an activity",
+		"each retry would read a different time",
 	} {
 		assert.Contains(t, refusal, claim,
 			"the validator no longer makes this claim; the editor's copy in nowDoc has drifted from it")

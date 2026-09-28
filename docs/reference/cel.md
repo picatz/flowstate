@@ -122,7 +122,7 @@ task input, an `if:`, a `wait_until:` — every expression on this page.
 
 It matters most for the Idioms section below. A `.filter().map()` chain
 costs nothing beyond the work it does per element, and is still charged per
-element: run over a response whose size this build does not bound, it
+element: run over a large response (refused past 10,000 list elements in total), it
 accumulates cost across every item the chain touches, so an expression that
 works against a small fixture can still exceed the budget against production
 data. An expression that exceeds the budget fails whatever evaluation it is
@@ -144,21 +144,21 @@ evaluation error.
 
 Units, largest first: `weeks`, `days`, `hours`, `minutes`, `seconds`.
 
-Inside a wait (`sleep:`, `wait_until:`, a signal's `timeout:`), `now` is the
-moment the wait is evaluated — so a deadline is `${now + days(3)}` and a
-remaining bound is `${deadline - now}`. See examples/computed-durations and
-examples/wait-until-a-moment.
+Inside a wait (`sleep:`, `wait_until:`, a wait's `timeout:`, `prompt:` and
+`outputs:`), `now` is the moment the wait is evaluated — so a deadline is
+`${now + days(3)}` and a remaining bound is `${deadline - now}`. See
+examples/computed-durations and examples/wait-until-a-moment.
 
 ## Idioms
 
 ### A three-way optional dispatch
 
-`payload.approved` may be true, false, or missing entirely — a signal can arrive with no payload at all. `.orValue(false)` on that read is a bug: it makes "missing" and "present and false" the same branch, when they mean "nobody answered" and "answered no." Keep the absence visible with `optional.of`/`hasValue`, or read the optional itself and dispatch on it, rather than defaulting it away before the question that matters gets asked. See examples/optional-dispatch.
+`payload.approved` may be true, false, or missing entirely — a signal can arrive with no payload at all. `.orValue(false)` on that read is a bug: it makes "missing" and "present and false" the same branch, when they mean "nobody answered" and "answered no." Keep the absence visible instead: `optMap` decides between the two answers only when one was sent, and `orValue` names the case where none was, so three outcomes take one conditional rather than a conditional inside a conditional (which `flow lint` reports, docs/STYLE.md R5). examples/expense-approval dispatches this way; examples/optional-dispatch reaches the same three answers with `hasValue()` and two `value:` steps.
 
 ```cel
-payload.?approved.hasValue()
-  ? (payload.approved ? "approved" : "rejected")
-  : "no_response"
+payload.?approved
+  .optMap(approved, approved ? "approved" : "rejected")
+  .orValue("no_response")
 ```
 
 ### A safe read with a default, replacing has()

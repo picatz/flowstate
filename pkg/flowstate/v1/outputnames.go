@@ -159,7 +159,7 @@ func waitOutputNames(wait *Wait) []NamedOutput {
 		// [TimerOutputs].
 		return []NamedOutput{{
 			Name:        TimedOutOutput,
-			Description: "Whether the wait ended because the duration or moment was reached rather than being cancelled.",
+			Description: "Always false: a sleep or wait_until has no timeout to lapse, and reaching its duration or moment is how it ends. Recorded so every wait answers the same name.",
 		}}
 	}
 
