@@ -623,7 +623,8 @@ applied
 
 `flow debug attach` reads commands from the terminal or `--script`, and prints
 each answer as text; with `-o jsonl` each answer is a line of the schema's JSON,
-and with `-o json` they are one array, written when the session ends. It renews the
+and with `-o json` they are one array, written when the session ends; with
+either, the prompt goes to stderr. It renews the
 session's lease while it runs. `detach`, `quit`, or the end of input releases
 the run; `disconnect` leaves the session attached, and prints how to rejoin it
 with `--session` before the lease lapses. `--program <file>` names the Flowfile
@@ -665,8 +666,9 @@ and an `until` whose step is inside one, or that names no step at all, is
 refused and the run stays held, rather than released to the end. Both checks
 need every site of the program: past `MaxDebugStaticSites` (65,536 step sites)
 the run cannot rule a site out, so it neither reports such a breakpoint not
-armed nor refuses the `until`, and it arms a breakpoint whose step lies beyond
-the cut rather than refusing it as matching no step. The local driver runs those bodies one step at a
+armed nor refuses the `until`, and it arms a breakpoint on a step the program
+declares that lies beyond the cut; a step the program never declares is still
+refused, as the local driver refuses it. The local driver runs those bodies one step at a
 time and stops everywhere.
 
 **What a hold does not stop.** A hold parks workflow code before a step starts.
