@@ -21,8 +21,8 @@ $ flow run examples/plugins/oci/workflow.yaml \
     --token-file /path/to/starter.token
 ```
 
-The server takes `--plugin-dir` too, because the file declares `plugins:` and
-the server resolves that block against the plugins it launched itself. It takes
+The server takes `--plugin-dir` too, because it checks each task the file names,
+and its `plugins:` block, against the plugins it launched itself. It takes
 an `--auth-policy` trusting a real issuer, with the `--rpc-resource` its tokens
 are minted for, rather than `--insecure-no-auth`, because the approval below is
 a signal only an attested release manager other than the starter may send.
@@ -69,11 +69,29 @@ subject `expected_approver` names, with `team: release-managers`;
    points at the statement in its layers, and no oci task returns a manifest's
    layers yet (#2170). `oci.blob` reads `/blobs/`, not `/manifests/`, and even a
    manifest it did fetch carries no `predicateType`. So this example checks
-   presence, not content.
+   presence, not content; [reading the statement](#reading-the-statement-by-its-layer-digest)
+   is a second file.
 
 4. **`approval`** (`wait_for_signal`) puts the digest in front of a person. The
    prompt names the pinned reference, so what a human approved and what a
    deployment pulls are the same string.
+
+## Reading the statement by its layer digest
+
+[`read-statement.yaml`](read-statement.yaml) is the half of the attestation read
+that works today: given the statement's own layer digest, `oci.blob` fetches it,
+refuses it unless the bytes hash to that digest, and the workflow reports its
+`predicateType`. The digest comes from outside the workflow until an oci task can
+read a manifest (#2170), for example `layers[0].digest` in what `crane manifest`
+prints for the referrer the gate found:
+
+```console
+$ flow run local examples/plugins/oci/read-statement.yaml \
+    --plugin-dir ./plugins --egress-policy examples/plugins/oci/egress-policy.yaml \
+    --input statement=ghcr.io/acme/api@sha256:<layer digest>
+```
+
+`flow run` refuses this file today for the same reason as the gate (#1548).
 
 ## What fails closed here
 
@@ -89,7 +107,8 @@ subject `expected_approver` names, with `team: release-managers`;
 
 ## Testing it without a registry
 
-[`workflow.test.yaml`](workflow.test.yaml) stubs both plugin steps, so the
+[`workflow.test.yaml`](workflow.test.yaml) stubs the gate's two plugin steps, and
+[`read-statement.test.yaml`](read-statement.test.yaml) the blob read, so the
 control flow - the attached and unattested paths, the signal, the outputs - is
 exercised with no network and no plugin process:
 

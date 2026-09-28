@@ -31,8 +31,8 @@ $ flow run examples/plugins/docker/workflow.yaml \
     --token-file /path/to/starter.token
 ```
 
-The server takes `--plugin-dir` too, because the file declares `plugins:` and
-the server resolves that block against the plugins it launched itself. It takes
+The server takes `--plugin-dir` too, because it checks each task the file names,
+and its `plugins:` block, against the plugins it launched itself. It takes
 an `--auth-policy` trusting a real issuer, with the `--rpc-resource` its tokens
 are minted for, rather than `--insecure-no-auth`, because the approval below is
 a signal only an attested release manager other than the starter may send, and

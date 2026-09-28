@@ -1,0 +1,31 @@
+edition: v2026.3
+name: oci-read-statement
+description: Reads one in-toto statement from a registry by the layer digest the caller already holds, refuses it unless the bytes hash to that digest, and reports its predicate type.
+# oci.blob reads a blob the caller can already name by digest - an attestation
+# layer, an SBOM, an image config. It is not how a referrer is read: a
+# referrer's digest names its manifest, and no oci task returns a manifest's
+# layers yet (#2170). Until one does, the layer digest comes from outside this
+# workflow, for example `layers[0].digest` in what `crane manifest` prints for
+# the referrer workflow.yaml found.
+plugins:
+  oci: v0.1.0
+inputs:
+  statement:
+    type: string
+    required: true
+    description: the statement's layer, as registry/repository@sha256:hex - its own digest, not an image's
+    example: ghcr.io/acme/api@sha256:4e1f0c2b7a9d8e3f6a5b4c3d2e1f0a9b8c7d6e5f4a3b2c1d0e9f8a7b6c5d4e3f
+    must: size(this) > 0 && size(this) <= 1024
+steps:
+  - id: statement
+    oci.blob:
+      max_bytes: 262144
+      parse_json: true
+      reference: ${inputs.statement}
+outputs:
+  digest:
+    value: ${steps.statement.digest}
+    description: the digest the bytes hashed to, which is the one that was asked for
+  predicate_type:
+    value: ${steps.statement.json.?predicateType.orValue("")}
+    description: the statement's predicateType, or empty when the document has none

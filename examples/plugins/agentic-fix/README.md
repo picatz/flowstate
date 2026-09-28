@@ -172,7 +172,7 @@ git plugin's `git:` scheme is another) refuses to start without an
 `--auth-policy` that has a `secrets:` section;
 [`examples/plugins/greet/auth.yaml`](../greet/auth.yaml) is a rehearsal policy
 that allows every reference. The server takes `--plugin-dir` as well, because
-this file declares `plugins:` and the server resolves that block against the
+it checks each task this file names, and its `plugins:` block, against the
 plugins it launched itself.
 
 `flow run` refuses this file today (#1548): it checks the file against its own

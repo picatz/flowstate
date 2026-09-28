@@ -41,7 +41,7 @@ $ go -C plugins/vcs build -o ../../plugins/flowstate-plugin-vcs .
 $ flow plugins --plugin-dir ./plugins
 $ flow worker --allow-unversioned-interpreter --plugin-dir ./plugins \
     --auth-policy examples/plugins/greet/auth.yaml &
-$ flow server --insecure-no-auth &
+$ flow server --insecure-no-auth --plugin-dir ./plugins &
 $ flow run examples/plugins/vcs/workflow.yaml
 ```
 

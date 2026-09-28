@@ -61,7 +61,7 @@ $ go -C plugins/git build -o ../../plugins/flowstate-plugin-git .
 $ flow plugins --plugin-dir ./plugins
 $ flow worker --allow-unversioned-interpreter --plugin-dir ./plugins \
     --auth-policy examples/plugins/greet/auth.yaml &
-$ flow server --insecure-no-auth &
+$ flow server --insecure-no-auth --plugin-dir ./plugins &
 $ flow run examples/plugins/git/workflow.yaml
 ```
 
@@ -90,20 +90,29 @@ network examples one level up.
 
 ## Running the private-read example
 
-Needs a real credential and a real private repository this token can read:
+Needs a real credential and a real private repository this token can read. Put
+the token in a file only you can read (mode 0600), `./plugin-env.yaml`:
+
+```yaml
+env:
+  git:
+    GIT_SECRET_0__TOKEN: ghp_...
+```
 
 ```console
 $ flow worker --allow-unversioned-interpreter --plugin-dir ./plugins \
     --auth-policy examples/plugins/greet/auth.yaml \
-    --plugin-env git=GIT_SECRET_0__TOKEN=ghp_... &
+    --plugin-env-file ./plugin-env.yaml &
 $ flow run examples/plugins/git/ls-remote-private.yaml \
     --input url=https://github.com/your-org/your-private-repo.git
 ```
 
 `${secret('git:token')}` is resolved by the plugin from its own environment,
-which starts empty, so the variable is named to the worker with
-`--plugin-env`; one exported in the shell that starts the worker never reaches
-the plugin.
+which starts empty, so the variable is named to the worker in
+`--plugin-env-file`; one exported in the shell that starts the worker never
+reaches the plugin. `--plugin-env git=GIT_SECRET_0__TOKEN=...` works too, but
+puts the token in the worker's argv, which any local user can read, and in
+your shell history.
 
 Compare this file to `workflow.yaml` line by line: the only difference is
 `token: ${secret('git:token')}` on the `git.ls_remote:` step. Nothing about
@@ -118,7 +127,7 @@ $ go -C plugins/git build -o ../../plugins/flowstate-plugin-git .
 $ flow plugins --plugin-dir ./plugins
 $ flow worker --allow-unversioned-interpreter --plugin-dir ./plugins \
     --auth-policy examples/plugins/greet/auth.yaml &
-$ flow server --insecure-no-auth &
+$ flow server --insecure-no-auth --plugin-dir ./plugins &
 $ flow run examples/plugins/git/log-and-read-file.yaml
 ```
 
@@ -138,7 +147,7 @@ $ go -C plugins/git build -o ../../plugins/flowstate-plugin-git .
 $ flow plugins --plugin-dir ./plugins
 $ flow worker --allow-unversioned-interpreter --plugin-dir ./plugins \
     --auth-policy examples/plugins/greet/auth.yaml &
-$ flow server --insecure-no-auth &
+$ flow server --insecure-no-auth --plugin-dir ./plugins &
 $ flow run examples/plugins/git/log-resume.yaml
 ```
 
@@ -154,12 +163,13 @@ exhaustion.
 ## Running the write example
 
 Do not run this against a repository you do not want a real commit pushed
-to. It needs a real credential and a real target:
+to. It needs a real credential, in the same `./plugin-env.yaml` as above, and a
+real target:
 
 ```console
 $ flow worker --allow-unversioned-interpreter --plugin-dir ./plugins \
     --auth-policy examples/plugins/greet/auth.yaml \
-    --plugin-env git=GIT_SECRET_0__TOKEN=ghp_... &
+    --plugin-env-file ./plugin-env.yaml &
 $ flow run examples/plugins/git/commit-push.yaml \
     --input url=https://github.com/your-org/your-repo.git \
     --input branch=main \

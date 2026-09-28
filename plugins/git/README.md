@@ -147,9 +147,10 @@ GIT_SECRET_6_TEAM_A_DEPLOY_TOKEN=<https-password>
 ```
 
 The plugin reads these from its own environment, which starts empty: name each
-to the worker with `--plugin-env git=GIT_SECRET_0__DEPLOY_TOKEN=...` (or in
-`--plugin-env-file`), since one exported in the worker's shell never reaches
-the plugin. And because this plugin registers the `git:` scheme whether a
+to the worker in a `--plugin-env-file` only the worker's user can read
+(`env: {git: {GIT_SECRET_0__DEPLOY_TOKEN: ...}}`), since one exported in the
+worker's shell never reaches the plugin. `--plugin-env git=KEY=VALUE` also
+works, but puts the value in the worker's argv, which any local user can read. And because this plugin registers the `git:` scheme whether a
 Flowfile uses it or not, a worker that loads it needs `--auth-policy` with a
 `secrets:` section: a worker holding a secret provider with no access policy
 refuses to start.

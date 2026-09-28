@@ -23,8 +23,8 @@ $ flow server --insecure-no-auth --plugin-dir ./plugins &
 $ flow run examples/plugins/jose/workflow.yaml --input callback_token="$TOKEN"
 ```
 
-The server takes `--plugin-dir` too, because the file declares `plugins:` and
-the server resolves that block against the plugins it launched itself.
+The server takes `--plugin-dir` too, because it checks each task the file names,
+and its `plugins:` block, against the plugins it launched itself.
 `--insecure-no-auth` makes this a rehearsal: every caller is anonymous, which is
 only right on a machine nobody else can reach.
 

@@ -63,9 +63,10 @@ VCS_SECRET_6_TEAM_A_ACME_ORG=<https-password>
 ```
 
 The plugin reads these from its own environment, which starts empty: name each
-to the worker with `--plugin-env vcs=VCS_SECRET_0__ACME_ORG=...` (or in
-`--plugin-env-file`), since one exported in the worker's shell never reaches
-the plugin. And because this plugin registers the `vcs:` scheme whether a
+to the worker in a `--plugin-env-file` only the worker's user can read
+(`env: {vcs: {VCS_SECRET_0__ACME_ORG: ...}}`), since one exported in the
+worker's shell never reaches the plugin. `--plugin-env vcs=KEY=VALUE` also
+works, but puts the value in the worker's argv, which any local user can read. And because this plugin registers the `vcs:` scheme whether a
 Flowfile uses it or not, a worker that loads it needs `--auth-policy` with a
 `secrets:` section: a worker holding a secret provider with no access policy
 refuses to start.

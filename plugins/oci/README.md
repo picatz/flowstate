@@ -10,9 +10,10 @@ specification](https://github.com/opencontainers/distribution-spec/blob/main/spe
 over `net/http` and the SDK's governed client - no registry client library, no
 subprocess, and no dependency outside what the SDK already brings.
 
-An example that runs `oci.resolve` and `oci.referrers` as a deploy gate lives at
-[`examples/plugins/oci`](../../examples/plugins/oci); read that first if you
-want to see it work rather than read about it.
+Examples live at [`examples/plugins/oci`](../../examples/plugins/oci): a deploy
+gate over `oci.resolve` and `oci.referrers`, and an `oci.blob` read of a statement
+by its layer digest. Read that first if you want to see it work rather than read
+about it.
 
 ## Building
 

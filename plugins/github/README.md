@@ -637,10 +637,11 @@ silently falling back to a PAT and running every request as the wrong
 identity without saying so.
 
 The plugin reads every variable in this section from its own environment,
-which starts empty: name each to the worker with
-`--plugin-env github=GITHUB_TOKEN=...` (or in `--plugin-env-file`, which also
-holds a multi-line PEM more easily), since one exported in the worker's shell
-never reaches the plugin. And because this plugin registers the `github:`
+which starts empty: name each to the worker in a `--plugin-env-file` only the
+worker's user can read (`env: {github: {GITHUB_TOKEN: ...}}`, which also holds
+a multi-line PEM more easily), since one exported in the worker's shell never
+reaches the plugin. `--plugin-env github=KEY=VALUE` also works, but puts the
+value in the worker's argv, which any local user can read. And because this plugin registers the `github:`
 scheme whether a Flowfile uses it or not, a worker that loads it needs
 `--auth-policy` with a `secrets:` section: a worker holding a secret provider
 with no access policy refuses to start.
