@@ -237,7 +237,7 @@ func buildPlan(changed []string) plan {
 		// inputs to the same regeneration: the generator decides what those
 		// files say, and a hand edit to one is re-derived rather than
 		// trusted.
-		if strings.HasPrefix(f, "proto/") || f == "buf.gen.yaml" || f == "buf.work.yaml" ||
+		if strings.HasPrefix(f, "proto/") || f == "buf.yaml" || f == "buf.lock" || f == "buf.gen.yaml" ||
 			strings.HasPrefix(f, docGeneratorDir) ||
 			(strings.HasPrefix(f, "pkg/flowstate/v1/protodoc/") && strings.HasSuffix(f, ".doc.pb.go")) {
 			p.proto = true

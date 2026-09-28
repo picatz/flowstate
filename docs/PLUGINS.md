@@ -193,24 +193,20 @@ The `go_package` matters: it is where the generated code lands and therefore wha
 `proto/buf.yaml`, which is what marks that directory as the module `buf` compiles:
 
 ```yaml
-version: v1
+version: v2
 ```
 
 `buf.gen.yaml`, at the module root beside `go.mod`:
 
 ```yaml
-version: v1
+version: v2
 plugins:
-  - plugin: go
-    path: [go, tool, protoc-gen-go]
+  - local: [go, tool, protoc-gen-go]
     out: ./gen
-    opt:
-      - paths=source_relative
-  - plugin: flowstate-doc
-    path: [go, tool, protoc-gen-flowstate-doc]
+    opt: paths=source_relative
+  - local: [go, tool, protoc-gen-flowstate-doc]
     out: ./gen
-    opt:
-      - paths=source_relative
+    opt: paths=source_relative
 ```
 
 Generated the way the in-tree example generates its own, with both plugins built

@@ -1,4 +1,4 @@
-version: v1
+version: v2
 # The example plugin's schema is generated with plugins built from this
 # repository's go.mod rather than remote ones, so that regenerating it needs no
 # network and never picks up whichever protoc-gen-go happens to be on PATH:
@@ -12,16 +12,12 @@ version: v1
 # holds nothing but this template's output, so a file whose .proto is gone
 # does not survive regeneration.
 plugins:
-  - plugin: go
-    path: [go, tool, protoc-gen-go]
+  - local: [go, tool, protoc-gen-go]
     out: ./gen
-    opt:
-      - paths=source_relative
+    opt: paths=source_relative
   # The comments written in example.proto, as Go source beside example.pb.go,
   # so they reach an editor's hover through this plugin's manifest (#723,
   # #2148). This is the whole of what a plugin author adds to get that.
-  - plugin: flowstate-doc
-    path: [go, tool, protoc-gen-flowstate-doc]
+  - local: [go, tool, protoc-gen-flowstate-doc]
     out: ./gen
-    opt:
-      - paths=source_relative
+    opt: paths=source_relative

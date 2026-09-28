@@ -15,16 +15,16 @@ managed:
 #
 # buf refuses a workspace directory that reaches outside the directory it was
 # invoked against, and this plugin's schema needs the repository root's
-# proto/flowstate/v1/value.proto beside its own, so the root's workspace is
-# borrowed for the duration of one command (the recipe plugins/vcs records):
+# proto/flowstate/v1/value.proto beside its own, so the root's proto/ is
+# declared as a second module with --config for the duration of one command
+# (the recipe plugins/vcs records):
 #
 #   GOBIN=$PWD/tools go install google.golang.org/protobuf/cmd/protoc-gen-go
 #
 #   # from the repository root, with protoc-gen-go on $PATH:
-#   printf 'version: v1\ndirectories:\n  - proto\n  - plugins/oci/proto\n' > buf.work.yaml
 #   go tool -modfile=tools/external/go.mod buf generate \
+#     --config '{"version":"v2","modules":[{"path":"proto"},{"path":"plugins/oci/proto"}],"deps":["buf.build/bufbuild/protovalidate","buf.build/googleapis/googleapis"]}' \
 #     --template plugins/oci/buf.gen.yaml --path plugins/oci/proto/oci -o plugins/oci
-#   git checkout -- buf.work.yaml
 plugins:
   - plugin: go
     out: gen

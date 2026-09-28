@@ -146,8 +146,8 @@ migration-compatible provider behind that same host path.
 workspace, temporarily.** `buf` refuses a workspace directory that reaches
 outside the directory it was invoked against, and this plugin's schema
 imports `flowstate/v1/value.proto` from the repository root - the only
-way to satisfy both is to run `buf generate` from the root with the root's
-own `buf.work.yaml` temporarily listing this plugin's proto directory too.
+way to satisfy both is to run `buf generate` from the root with `--config`
+declaring this plugin's proto directory as a second module beside the root's.
 See `buf.gen.yaml`'s own comment for the exact recipe. This works, but it is
 friction a plugin author outside this repository would not have (they would
 vendor or fetch the schema some other way); it is recorded here rather than

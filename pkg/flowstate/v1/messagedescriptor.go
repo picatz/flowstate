@@ -57,14 +57,14 @@ func MessageDescriptorBytes(md protoreflect.MessageDescriptor, alsoProvided ...p
 // are generated separately, by protoc-gen-flowstate-doc (see
 // [github.com/picatz/flowstate/pkg/flowstate/v1/protodoc]). Without them a
 // plugin author's field comments reached nobody's editor however well the
-// .proto was written (#723). Here each serialized file is given the comments
-// what comments records for its declarations — the bytes were always able to carry
-// comments; nothing was putting any in.
+// .proto was written (#723). Here each serialized file is given whatever
+// comments the lookup records for its declarations — the bytes were always
+// able to carry comments; nothing was putting any in.
 //
-// A nil comments is the documented fallback and behaves exactly as
+// A nil lookup is the documented fallback and behaves exactly as
 // [MessageDescriptorBytes] does: shape travels, prose does not, and the reader
-// renders one paragraph fewer rather than an error. So does a file comments
-// has nothing for.
+// renders one paragraph fewer rather than an error. So does a file the lookup
+// has no comments for.
 func MessageDescriptorBytesWithComments(md protoreflect.MessageDescriptor, comments CommentLookup, alsoProvided ...protoreflect.FileDescriptor) ([]byte, string, error) {
 	if md == nil {
 		return nil, "", nil
