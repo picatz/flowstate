@@ -1742,9 +1742,19 @@ func (s *Server) relayBreakpoints(snapshot *v1.DebugSnapshot) {
 
 		return
 	}
+	// A run that ended at the revision it accepted the replacement at may
+	// have ended before the boundary that would have installed it, and then
+	// still lists its old set under the same slot ids: its states say nothing
+	// of the replacement, which is reported not applied rather than read off
+	// a definition it replaced.
 	installed := map[string]*v1.DebugBreakpointState{}
-	for _, state := range snapshot.GetBreakpoints() {
-		installed[state.GetId()] = state
+	unapplied := "the run did not install this breakpoint"
+	if ended && snapshot.GetRevision() <= s.pendingAfter {
+		unapplied = "the run ended before it applied this breakpoint"
+	} else {
+		for _, state := range snapshot.GetBreakpoints() {
+			installed[state.GetId()] = state
+		}
 	}
 	type applied struct {
 		id    string
@@ -1755,7 +1765,7 @@ func (s *Server) relayBreakpoints(snapshot *v1.DebugSnapshot) {
 	for id, line := range s.pending {
 		state, ok := installed[id]
 		if !ok {
-			state = &v1.DebugBreakpointState{Id: id, Message: "the run did not install this breakpoint"}
+			state = &v1.DebugBreakpointState{Id: id, Message: unapplied}
 		}
 		ready = append(ready, applied{id: id, line: line, state: state})
 	}

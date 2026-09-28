@@ -825,8 +825,9 @@ func (p *pendingRemote) ReplaceBreakpoints(_ context.Context, req *v1.DebugSetBr
 	// with the replacement installed.
 	p.applied <- &v1.DebugSnapshot{Revision: 2, State: v1.DebugRunState_DEBUG_RUN_STATE_RUNNING}
 	if p.ended {
-		// Ending moves no revision: the run completes at the one it had.
-		p.applied <- &v1.DebugSnapshot{Revision: 1, State: v1.DebugRunState_DEBUG_RUN_STATE_COMPLETED}
+		// Ending moves no revision: the run completes at the one it had,
+		// still listing the old set under the reused slot ids.
+		p.applied <- &v1.DebugSnapshot{Revision: 1, State: v1.DebugRunState_DEBUG_RUN_STATE_COMPLETED, Breakpoints: verified}
 	} else {
 		p.applied <- &v1.DebugSnapshot{Revision: 3, State: v1.DebugRunState_DEBUG_RUN_STATE_HELD, Breakpoints: verified}
 	}
