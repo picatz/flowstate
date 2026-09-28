@@ -124,6 +124,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"runtime"
 	"slices"
@@ -357,6 +358,17 @@ func New(ctx context.Context, opts Options) (*Codec, error) {
 			return nil, fmt.Errorf("envelope: escrow key %q cannot wrap", r.ID)
 		}
 	}
+	// A decode-only codec exists to read, so one with nothing to unwrap with
+	// (only an escrow public key, say) is a configuration error now rather
+	// than at every read.
+	if opts.Current == "" {
+		canRead := func(e ringEntry) bool { return e.info.CanUnwrap }
+		if !slices.ContainsFunc(slices.Collect(maps.Values(c.ring)), canRead) &&
+			!slices.ContainsFunc(slices.Collect(maps.Values(c.escrow)), canRead) {
+			return nil, fmt.Errorf("envelope: namespace %q is decode-only and holds no key that can unwrap: "+
+				"a recovery keyring needs an escrow private key, or a primary key", opts.Binding)
+		}
+	}
 
 	for id, e := range c.ring {
 		if !e.info.Authenticates {
@@ -389,9 +401,11 @@ func New(ctx context.Context, opts Options) (*Codec, error) {
 	if c.current != nil {
 		// Warm: wrap the first data key now, so a provider that cannot wrap
 		// refuses startup instead of the first write.
-		if _, err := c.activeFor(ctx, 0); err != nil {
+		a, err := c.activeFor(ctx, 0)
+		if err != nil {
 			return nil, fmt.Errorf("envelope: wrapping the first data key for %q: %w", opts.Binding, err)
 		}
+		a.release(0)
 	}
 	return c, nil
 }
@@ -595,10 +609,10 @@ func derive(dataKey, salt []byte, suite uint32, keyID, binding string) (contentK
 var ErrReaderCannotEncode = errors.New("envelope: this codec is decode-only: a keyring reader, which decodes " +
 	"for every configured namespace and encodes for none, or a namespace with no current key")
 
-// activeFor returns the data key to seal a payload of size bytes under,
-// rolling it over when it has reached a bound.
-// activeFor returns the data key to seal a size-byte payload with, rolling
-// over when the window requires it. ctx bounds any wrap a rollover makes:
+// activeFor returns the data key to seal a size-byte payload with, the
+// payload already reserved against its bounds (release it if the seal does
+// not happen), rolling over when the window requires it. ctx bounds any wrap
+// a rollover makes:
 // New's startup context for the warm-up, and none beyond the per-call
 // timeout for Encode, whose interface carries none.
 func (c *Codec) activeFor(ctx context.Context, size int) (*activeKey, error) {
@@ -625,6 +639,7 @@ func (c *Codec) activeFor(ctx context.Context, size int) (*activeKey, error) {
 		var next *activeKey
 		if next, err = c.newActive(ctx, now); err == nil {
 			c.lastErr, c.retryAt = nil, time.Time{}
+			next.charge(size)
 			c.active.Store(next)
 			return next, nil
 		}
@@ -721,6 +736,12 @@ func (c *Codec) seal(spec suiteSpec, plaintext []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	sealed := false
+	defer func() {
+		if !sealed {
+			a.release(len(plaintext))
+		}
+	}()
 
 	salt := make([]byte, saltBytes)
 	// crypto/rand never fails on supported platforms (Go 1.24+).
@@ -759,7 +780,7 @@ func (c *Codec) seal(spec suiteSpec, plaintext []byte) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("envelope: sealing: %w", err)
 	}
-	a.use(len(plaintext))
+	sealed = true
 	return append(framed, body...), nil
 }
 

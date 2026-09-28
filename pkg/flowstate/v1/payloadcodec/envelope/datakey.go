@@ -102,30 +102,57 @@ type activeKey struct {
 	bytes    atomic.Uint64
 }
 
-// fresh reports whether k may seal another payload of size bytes now.
+// fresh reports whether k may seal another payload of size bytes now, and if
+// so reserves it: see [activeKey.reserve].
 func (k *activeKey) fresh(p dataKeyPolicy, now time.Time, size int) bool {
-	return now.Sub(k.created) < p.maxAge && k.withinCounts(p, size)
+	return now.Sub(k.created) < p.maxAge && k.reserve(p, size)
 }
 
-// withinGrace reports whether k may keep sealing because its successor could
-// not be wrapped: only on age, and only by the configured grace. The message
-// and byte bounds are never stretched.
+// withinGrace is [activeKey.fresh] for a key whose successor could not be
+// wrapped: only its age is stretched, and only by the configured grace. The
+// message and byte bounds never are.
 func (k *activeKey) withinGrace(p dataKeyPolicy, now time.Time, size int) bool {
-	return p.staleGrace > 0 && now.Sub(k.created) < p.maxAge+p.staleGrace && k.withinCounts(p, size)
+	return p.staleGrace > 0 && now.Sub(k.created) < p.maxAge+p.staleGrace && k.reserve(p, size)
 }
 
-func (k *activeKey) withinCounts(p dataKeyPolicy, size int) bool {
-	return k.messages.Load() < p.maxMessages && k.bytes.Load()+uint64(size) <= p.maxBytes
+// reserve charges one payload of size bytes against k if its message and
+// byte bounds allow it, atomically, so concurrent seals cannot all pass a
+// bound one of them reaches: a key with max_messages 1 seals one payload
+// however many callers arrive together. A caller that reserves and then does
+// not seal gives it back with [activeKey.release].
+func (k *activeKey) reserve(p dataKeyPolicy, size int) bool {
+	for {
+		m := k.messages.Load()
+		if m >= p.maxMessages {
+			return false
+		}
+		if k.messages.CompareAndSwap(m, m+1) {
+			break
+		}
+	}
+	for {
+		b := k.bytes.Load()
+		if b+uint64(size) > p.maxBytes {
+			k.messages.Add(^uint64(0))
+			return false
+		}
+		if k.bytes.CompareAndSwap(b, b+uint64(size)) {
+			return true
+		}
+	}
 }
 
-// use charges one payload of size bytes against k. The bounds are checked
-// before and charged after, so concurrent seals can pass them by at most the
-// number in flight: they are policy on how long one data key is used, far
-// below any bound the construction needs, since every content key is single
-// use.
-func (k *activeKey) use(size int) {
+// charge is reserve without the bounds, for a key's first payload: a key just
+// wrapped for a payload larger than max_bytes still seals it, once.
+func (k *activeKey) charge(size int) {
 	k.messages.Add(1)
 	k.bytes.Add(uint64(size))
+}
+
+// release returns a reservation that was not used.
+func (k *activeKey) release(size int) {
+	k.messages.Add(^uint64(0))
+	k.bytes.Add(^uint64(size - 1))
 }
 
 // newDataKey returns 32 fresh random bytes.

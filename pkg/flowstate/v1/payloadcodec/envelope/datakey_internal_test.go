@@ -3,6 +3,7 @@ package envelope
 import (
 	"bytes"
 	"context"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"testing/synctest"
@@ -267,4 +268,39 @@ func TestAFailedRolloverDoesNotSealPastTheGrace(t *testing.T) {
 
 	_, err = c.Encode([]*commonpb.Payload{{Data: []byte("x")}})
 	require.Error(t, err, "sealed with the old data key after the grace had passed during the rollover")
+}
+
+// TestConcurrentSealsReserveTheBudget: callers arriving together as a data
+// key reaches max_messages cannot all pass the bound, since each reserves its
+// payload before sealing; the key seals exactly as many as it allows.
+func TestConcurrentSealsReserveTheBudget(t *testing.T) {
+	t.Parallel()
+
+	p := dataKeyPolicy{maxAge: time.Hour, maxMessages: 3, maxBytes: 1 << 20}
+	k := &activeKey{created: time.Now()}
+
+	var admitted atomic.Int64
+	var wg sync.WaitGroup
+	for range 64 {
+		wg.Go(func() {
+			if k.fresh(p, time.Now(), 10) {
+				admitted.Add(1)
+			}
+		})
+	}
+	wg.Wait()
+	require.EqualValues(t, 3, admitted.Load(), "concurrent seals passed max_messages together")
+	require.EqualValues(t, 3, k.messages.Load())
+	require.EqualValues(t, 30, k.bytes.Load())
+
+	// A reservation that is not sealed is given back.
+	k.release(10)
+	require.True(t, k.fresh(p, time.Now(), 10))
+
+	// And the byte bound is reserved the same way.
+	byBytes := &activeKey{created: time.Now()}
+	bp := dataKeyPolicy{maxAge: time.Hour, maxMessages: 100, maxBytes: 25}
+	require.True(t, byBytes.fresh(bp, time.Now(), 20))
+	require.False(t, byBytes.fresh(bp, time.Now(), 10))
+	require.EqualValues(t, 1, byBytes.messages.Load(), "a refused reservation kept its message")
 }
