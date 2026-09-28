@@ -188,6 +188,13 @@ const (
 // before any cryptographic work.
 const maxSealedBytes = v1.TemporalDefaultBlobLimitBytes
 
+// maxWrittenBytes bounds the whole payload Encode produces. Temporal weighs a
+// payload inside the Payloads, command, and history-event framing it wraps
+// around it, so a payload written right at the blob limit would be refused
+// there; the ceiling leaves the same reserve [payloadcodec] checks a codec's
+// expansion against.
+const maxWrittenBytes = v1.TemporalDefaultBlobLimitBytes - v1.ContinueAsNewFramingReserveBytes
+
 // Recipient is a wrapping key under its keyring id.
 type Recipient struct {
 	ID  string
@@ -724,13 +731,14 @@ func (c *Codec) Encode(payloads []*commonpb.Payload) ([]*commonpb.Payload, error
 }
 
 func (c *Codec) seal(spec suiteSpec, plaintext []byte) ([]byte, error) {
-	// What Temporal would refuse is never written: the whole payload it
-	// stores, metadata and framing included, stays within its blob limit,
-	// and bounding it here keeps every allocation below sized off a bounded
-	// value. The first comparison keeps the sum from overflowing.
-	if len(plaintext) > maxSealedBytes || c.MaxEncodedSize(len(plaintext)) > maxSealedBytes {
+	// What Temporal would refuse is never written: the whole payload,
+	// metadata and framing included, stays under the blob limit less the
+	// framing Temporal adds above it, and bounding it here keeps every
+	// allocation below sized off a bounded value. The first comparison keeps
+	// the sum from overflowing.
+	if len(plaintext) > maxWrittenBytes || c.MaxEncodedSize(len(plaintext)) > maxWrittenBytes {
 		return nil, fmt.Errorf("envelope: a %d-byte payload seals past the %d-byte limit history holds",
-			len(plaintext), maxSealedBytes)
+			len(plaintext), maxWrittenBytes)
 	}
 
 	a, err := c.activeFor(context.Background(), len(plaintext))
