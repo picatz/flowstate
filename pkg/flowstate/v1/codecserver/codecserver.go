@@ -107,6 +107,11 @@ const (
 	decodeFailureUserFacingMsg = "one or more payloads could not be decoded in this namespace"
 )
 
+// logSafe strips line breaks from a caller-supplied value before it is
+// logged, so a header cannot forge a log line. net/http already refuses them
+// in header values; this does not rely on that.
+var logSafe = strings.NewReplacer("\n", "", "\r", "")
+
 // Auditor records decisions. [*audit.Recorder] implements it.
 type Auditor interface {
 	Allow(ctx context.Context, subject audit.Subject) error
@@ -196,23 +201,39 @@ func New(opts Options) (*Handler, error) {
 	}, nil
 }
 
-// ServeHTTP implements [http.Handler].
-func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+// Headers sets the response headers every answer carries (no-store, and the
+// exact-origin CORS grant) and reports whether the request may proceed; when
+// it may not, the refusal is already written.
+//
+// ServeHTTP calls it first. A server that authenticates in front of this
+// handler calls it too, before authenticating, so a browser at an allowed
+// origin can read an authentication refusal instead of seeing it as an opaque
+// CORS failure.
+func (h *Handler) Headers(w http.ResponseWriter, r *http.Request) bool {
 	header := w.Header()
 	// Nothing this server answers may be kept by anything between it and the
 	// caller: a decoded payload is plaintext.
 	header.Set("Cache-Control", "no-store")
 	header.Set("Pragma", "no-cache")
 	header.Set("X-Content-Type-Options", "nosniff")
-	header.Add("Vary", "Origin")
+	header.Set("Vary", "Origin")
 
 	if origin := r.Header.Get("Origin"); origin != "" {
 		if !slices.Contains(h.opts.AllowedOrigins, origin) {
 			http.Error(w, "origin not allowed", http.StatusForbidden)
-			return
+			return false
 		}
 		header.Set("Access-Control-Allow-Origin", origin)
 		header.Set("Access-Control-Allow-Credentials", "true")
+	}
+	return true
+}
+
+// ServeHTTP implements [http.Handler].
+func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	header := w.Header()
+	if !h.Headers(w, r) {
+		return
 	}
 
 	if r.Method == http.MethodOptions {
@@ -267,9 +288,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if status, msg, code := h.authorize(principal, endpoint, namespace); status != 0 {
-		if status == http.StatusForbidden && principal.Actions != nil {
-			header.Set("WWW-Authenticate", fmt.Sprintf(`Bearer error="insufficient_scope", scope=%q`,
-				v1.AuthorizationActionScope(mustAction(endpoint))))
+		// Only a missing action is a scope problem a new token can fix; a
+		// namespace or shared-namespace refusal is not, and a client told
+		// otherwise would keep asking for a scope it already holds.
+		if scope := v1.AuthorizationActionScope(mustAction(endpoint)); status == http.StatusForbidden &&
+			!slices.Contains(principal.Actions, scope) {
+			header.Set("WWW-Authenticate", fmt.Sprintf(`Bearer error="insufficient_scope", scope=%q`, scope))
 		}
 		h.refuse(ctx, w, subject, code, status, msg)
 		return
@@ -317,7 +341,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// response, so the endpoint is not an oracle for which edit got
 		// further.
 		h.opts.Logger.WarnContext(ctx, "codec server: a payload could not be processed",
-			"endpoint", endpoint, "namespace", namespace, "caller", principal.ID(), "class", errorClass(err))
+			"endpoint", endpoint, "namespace", logSafe.Replace(namespace), "caller", principal.ID(), "class", errorClass(err))
 		if err := h.allow(ctx, subject); err != nil {
 			http.Error(w, auditUnavailableMsg, http.StatusServiceUnavailable)
 			return

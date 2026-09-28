@@ -192,8 +192,10 @@ func runCodecServe(cmd *cobra.Command, _ []string) error {
 // a browser's CORS preflight answered before authentication (it carries no
 // credentials by specification, and it reveals and releases nothing), and
 // everything else authenticated by the trust policy's verifier before the
-// codec handler sees it.
-func codecServeHandler(logger *slog.Logger, verifier auth.Verifier, handler http.Handler) http.Handler {
+// codec handler sees it. The handler's own headers go on first, so an
+// authentication refusal reaches an allowed browser origin as a readable 401
+// rather than an opaque CORS failure.
+func codecServeHandler(logger *slog.Logger, verifier auth.Verifier, handler *codecserver.Handler) http.Handler {
 	authenticated := authn.NewMiddleware(auth.NewAuthenticator(verifier,
 		auth.WithFailureObserver(func(ctx context.Context, req *http.Request, err error) {
 			logger.WarnContext(ctx, "codec server: rejected unauthenticated request",
@@ -205,6 +207,9 @@ func codecServeHandler(logger *slog.Logger, verifier auth.Verifier, handler http
 	mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodOptions {
 			handler.ServeHTTP(w, r)
+			return
+		}
+		if !handler.Headers(w, r) {
 			return
 		}
 		authenticated.ServeHTTP(w, r)

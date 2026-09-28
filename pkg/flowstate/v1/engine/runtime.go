@@ -83,8 +83,8 @@ func (c TaskRuntimeConfig) WithPluginCatalog(catalog *v1.PluginCatalog) TaskRunt
 // Carried here, it is bound into the workflow registration of the one worker
 // it belongs to. See [Register].
 //
-// Pass the converter from the same [payloadcodec.Config] the worker's client
-// was built with, for the client's own namespace ([payloadcodec.Config.ForNamespace]).
+// Pass the converter from the same payloadcodec.Config the worker's client
+// was built with, for the client's own namespace (its ForNamespace).
 // Nil keeps the SDK default, which is what a deployment with no codec writes.
 func (c TaskRuntimeConfig) WithDataConverter(dc converter.DataConverter) TaskRuntimeConfig {
 	c.dataConverter = dc
