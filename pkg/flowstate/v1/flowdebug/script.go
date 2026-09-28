@@ -248,15 +248,7 @@ func CheckScript(lines []string, steps []string) (problems []ScriptProblem, tota
 // ([v1.DebugTarget.DeclaredIn]); without one, by the step it ends in — each as
 // the prompt judges it then.
 func CheckScriptFor(lines []string, steps []string, workflow *v1.Workflow) (problems []ScriptProblem, total int) {
-	var inventory scriptSites
-	if workflow != nil {
-		var truncated bool
-		inventory.sites, truncated = v1.DebugStaticSites(workflow)
-		inventory.known = !truncated
-		if truncated {
-			inventory.program = workflow
-		}
-	}
+	inventory := newScriptSites(workflow)
 
 	known := make(map[string]struct{}, len(steps))
 	for _, id := range steps {
@@ -434,7 +426,7 @@ func checkStepArgument(
 
 		return
 	case inventory.program != nil:
-		if target.DeclaredIn(inventory.program) {
+		if inventory.declares(target, id) {
 			return
 		}
 		if strings.ContainsRune(id, '/') {
@@ -468,8 +460,53 @@ type scriptSites struct {
 	known bool
 	// program is the workflow when its sites were too many to enumerate, so
 	// an address is judged by the steps the program declares, within the
-	// containers it names, as the prompt judges it then.
-	program *v1.Workflow
+	// containers it names, as the prompt judges it then. declared is every
+	// step id it declares, built once, so a line naming none is refused by a
+	// lookup; only a qualified address naming a declared step walks the
+	// program, once per distinct address (walked), however often a script
+	// repeats it.
+	program  *v1.Workflow
+	declared map[string]struct{}
+	walked   map[string]bool
+}
+
+// newScriptSites is the inventory a script is checked against: workflow's
+// sites, or, when they are too many to enumerate, the program and the ids it
+// declares. The zero value, for no workflow, knows nothing.
+func newScriptSites(workflow *v1.Workflow) scriptSites {
+	var inventory scriptSites
+	if workflow == nil {
+		return inventory
+	}
+	var truncated bool
+	inventory.sites, truncated = v1.DebugStaticSites(workflow)
+	inventory.known = !truncated
+	if truncated {
+		inventory.program, inventory.walked = workflow, map[string]bool{}
+		inventory.declared = map[string]struct{}{}
+		for id := range v1.DebugDeclaredSteps(workflow) {
+			inventory.declared[id] = struct{}{}
+		}
+	}
+
+	return inventory
+}
+
+// declares reports whether the program declares the step target names, as
+// the session judges it ([Session.unknownStepNotice]): by a lookup, and for a
+// qualified address naming a declared step by [v1.DebugTarget.DeclaredIn],
+// remembered by address so a script repeating it walks the program once.
+func (s scriptSites) declares(target v1.DebugTarget, id string) bool {
+	if _, ok := s.declared[target.Step()]; !ok || !strings.ContainsRune(id, '/') {
+		return ok
+	}
+	found, ok := s.walked[id]
+	if !ok {
+		found = target.DeclaredIn(s.program)
+		s.walked[id] = found
+	}
+
+	return found
 }
 
 // leadingSpace is the byte offset of a line's first word.

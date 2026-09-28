@@ -93,4 +93,21 @@ func TestATruncatedScriptIsCheckedAsItsSessionJudges(t *testing.T) {
 	}
 	problems, _ := CheckScriptFor([]string{"break bogus/last"}, steps, spec)
 	require.Len(t, problems, 1)
+
+	// A script may repeat a refused line up to MaxScriptCommands times, so
+	// a line naming a step the program never declares is refused by a
+	// lookup, and a qualified address walks the program once, however often
+	// it repeats.
+	inventory := newScriptSites(spec)
+	known := map[string]struct{}{}
+	for _, id := range steps {
+		known[id] = struct{}{}
+	}
+	for range 3 {
+		for _, id := range []string{"lsat", "nowhere/lsat", "bogus/last", "call3/s7"} {
+			checkStepArgument(func(int, int, string, ...any) {}, 1, "break "+id, id, known, inventory, nil, false)
+		}
+	}
+	assert.Equal(t, map[string]bool{"bogus/last": false, "call3/s7": true}, inventory.walked,
+		"a line was walked that a lookup answers, or an address walked more than once")
 }
