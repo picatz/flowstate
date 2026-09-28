@@ -418,7 +418,7 @@ type slowCodec struct {
 
 func (c *slowCodec) Decode(p []*commonpb.Payload) ([]*commonpb.Payload, error) {
 	c.calls++
-	time.Sleep(time.Second)
+	<-time.After(time.Second) // fake time: only ever called inside synctest.Test
 	return p, nil
 }
 
