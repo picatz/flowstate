@@ -269,9 +269,10 @@ request and is not in `verdict`'s `needs:`.
 
 `commitcheck.yml` (**Commit conventions**) runs whenever a pull request is
 opened, edited, or pushed to, and runs `go run ./tools/commitcheck -strict`
-over its title and body: a scope-prefixed lowercase subject, an issue reference
-or `No-Issue:` trailer, and a verification line. It checks the words of the
-change, not its code, so it is not one of the plan's outputs.
+over its title and body. Among its rules: a scope-prefixed lowercase subject, an
+issue reference or `No-Issue:` trailer, and a `Verification:` line or
+`Unverified:` trailer; `internal/commitcheck` holds the full list. It checks the
+words of the change, not its code, so it is not one of the plan's outputs.
 
 ### Parallel test lanes, and a fuzz job that runs what the diff reaches
 
@@ -652,9 +653,13 @@ Inside `test`, the three long steps did not depend on one another:
 
 ### The same, after
 
-The split's measured effect is recorded with the `test` lanes above (runs
-`34403410255` and `34400366207`); the per-target fuzz selection's is in the
-`fuzz-smoke` notes.
+The split's predicted effect was never observed on its own. #1922 made the root
+suite's packages run serially before the split had a clean baseline, so the
+first full run afterwards, `34403410255` on `main`, shows `test` at 26m06s,
+`test-plugins` at 3m08s, `test-ordering` at 3m29s, and `fuzz-smoke` at 9m31s;
+the four-lane matrix above is the response to that `test` time. The per-target
+fuzz selection on a narrowed diff has not been measured: the fuzz notes above
+measure forced-wide runs, where every target runs.
 
 ### What the queue is worth
 
@@ -771,7 +776,7 @@ repository's merge-queue settings show `Squash and merge`, matching
 
 ### 3. Nothing else changes
 
-`allow_auto_merge` was `false` when this section was written (it was not re-read on 2026-09-28; check it before applying the recipe) and can stay so — the queue's "merge
+`allow_auto_merge` was `false` when read through the public API on 2026-09-28 and can stay so — the queue's "merge
 when ready" replaces it. `delete_branch_on_merge` is unrelated.
 
 ### After applying
@@ -790,6 +795,10 @@ plan selects run beneath them.
   `bash` and `jq`. The `merge_group` path, the full unconditional set the force
   branch in `ciForceReason` selects, runs only once this repository's settings
   require a queue.
+- **The "after" numbers for #659 and the 12-file change are computed, not
+  observed.** They multiply measured per-job durations from runs `31912978683`
+  and `31909221065` by the plan's decisions on those diffs, plus modelled costs
+  for `plan` (~30s) and `verdict` (~10s).
 - **Merge-queue behaviour is from the documented contract**, not from watching a
   queue run here: in particular, that required checks are evaluated against the
   `merge_group` ref, and that batching follows `max_entries_to_build`.

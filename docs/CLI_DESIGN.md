@@ -80,7 +80,7 @@ value, several readers, never several computations of it.
   never the full transcript, which is why `writeStepOutputs` writes the *outputs*
   document to stdout and leaves the transcript to `-o json`, where a consumer who
   wants all of it can ask for all of it by name. `flow watch`'s live view applies
-  the same budget continuously: `watch.VisibleSteps` caps the step list to what the
+  the same budget continuously: `watch.Model.VisibleSteps` caps the step list to what the
     terminal's own height allows and states the count it cut, rather than growing
   the screen past what a person can read at a glance.
 
@@ -322,8 +322,9 @@ solvable at render time.** Nesting depends on slice 1/2's graph schema and
 model — reusing the same spec-to-tree join the graph gets, rather than a second
 implementation of it. Per-step duration and per-step terminal status (the
 `✓`/`✗`/`—` on a *finished* step, not only the one currently running) depend on
-slice 3's run-telemetry decision: both are derivable from `GetTimeline`'s event
-history, but no response carries them per step, and see the gap inventory for
+slice 3's run-telemetry decision: for activity-backed steps both are derivable
+from `GetTimeline`'s event history, but a skipped step or one evaluated in
+workflow code records no timeline event, and no response carries them per step, and see the gap inventory for
 exactly what `RunProgress` and `StepOutputs` carry instead. Whichever source
 slice 3 settles on, it lands before slice 9 builds this renderer — see the gap
 inventory for the ordering.
@@ -584,8 +585,8 @@ climbs a layer once the one below is green.
 **Corrected from an earlier draft of this section, which proposed a hand-written
 Go package as the graph's home.** That draft violated AGENTS.md's proto-first
 invariant on its own terms: this model is explicitly for CLI, MCP, and web
-consumers, which is precisely the shape the invariant means by "describes things
-that travel," and a type built as a Go struct first guarantees the later
+consumers, which is precisely what the invariant means by a boundary-crossing
+shape, and a type built as a Go struct first guarantees the later
 migration the invariant exists to avoid — a second, competing definition of what
 a graph is the moment a non-Go consumer needs one, with every field renamed by
 hand to match. The graph shape is schema from the start, exactly like
@@ -647,8 +648,10 @@ built: `RunProgress` holds only the current top-level `step_id`, a partial
 *other* step's status or how long it took — and `GetResponse` for a finished run
 carries either `outputs` (values only, no per-step status or timing) or an
 `error` (the whole run's outcome, not a per-step account). What does exist is
-an event history: `GetTimeline` returns each step's scheduled, completed,
-failed, timed-out, and canceled events with their times. "Step X succeeded in
+an event history: `GetTimeline` returns the scheduled, completed, failed,
+timed-out, and canceled events of each step that runs an activity, with their
+times; a step skipped by `if:` or evaluated in workflow code, such as `value:`,
+records none. "Step X succeeded in
 12s while step Y is still running" can be *derived* from it, but no response
 carries that aggregate shape directly. Deciding whether the overlay derives its
 view from the timeline or a new aggregate message is added is therefore its own
@@ -750,8 +753,8 @@ duration folded in — nodes styled by outcome, the form worth having for a
 post-mortem: "show me the shape of this workflow, coloured by how the failed run
 actually went." This is blocked on the same run-telemetry decision 6.1 names
 (gap inventory slice 3) for the identical reason: a finished run's per-step
-status and duration are derivable from its timeline, but which source this flag
-reads is that slice's call. The flag and its rendering are designed now so the exporter slice does not
+status and duration are derivable from its timeline only for activity-backed
+steps, and which source this flag reads is that slice's call. The flag and its rendering are designed now so the exporter slice does not
 have to be revisited when the telemetry lands; the flag itself does not ship
 until slice 3 does.
 
@@ -779,9 +782,8 @@ today has never had the source file in hand; a run knows only its id.
 Two ways to fix that, and this document picks one rather than leaving both live.
 **(b) — adding an RPC that hands a compiled spec back by workflow id — is
 rejected here, not merely deferred**, because a workflow spec is not a small,
-low-stakes value to add a new authorized read path for: it is AGENTS.md's own
-example of what a schema type carries when it is *everything* — task inputs,
-egress rules, secret references — and "add a way to read a run's full spec back
+low-stakes value to add a new authorized read path for: it carries
+*everything* — task inputs, egress rules, secret references — and "add a way to read a run's full spec back
 out" is exactly the kind of capability that needs its own authorization and
 bounding argument (who may read whose spec, and what about it is safe to serve
 to a caller who only holds a workflow id) *before* a graph feature's UI
@@ -891,8 +893,8 @@ against a live compile:
   own precedent: that file deliberately avoids pinning bubbletea's emitted byte
   stream, because bubbletea coalesces and differentially repaints frames, which
   makes the literal bytes on the wire scheduler-dependent — a passing test today
-  and a flaking one tomorrow with no code change, exactly the class of test
-  AGENTS.md's testing rule warns against trusting. `TestWatchViewShowsThePositionAdvancing`
+  and a flaking one tomorrow with no code change, which is a test nobody can
+  trust. `TestWatchViewShowsThePositionAdvancing`
   is the named example this is checked against. The mechanism the existing test
   actually uses, and the one the graph navigator's tests should copy: a `fold`
   helper (`cmd/flow/watchmodel_test.go`) that threads a model value through a
@@ -959,7 +961,9 @@ line. What is not: everything below.
 
 3. **The run-telemetry decision.** Per-step status, per-step duration, and
    per-step terminal outcome are derivable today from `GetTimeline`'s event
-   history, but no response carries them as an aggregate: `RunProgress` has
+   history for steps that run an activity; a skipped step or a workflow-side
+   step such as `value:` records no event there, and no response carries them
+   as an aggregate: `RunProgress` has
    only the current top-level step, a partial path, and a segment-local
    completed count, and `GetResponse` for a finished run carries output values
    or an error. This slice decides whether the overlay derives its view from
