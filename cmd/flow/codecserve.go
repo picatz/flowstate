@@ -17,6 +17,7 @@ import (
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/codecserver"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/payloadcodec"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/payloadcodec/envelope"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/temporalclient"
 )
 
@@ -220,15 +221,19 @@ func codecServeHandler(logger *slog.Logger, verifier auth.Verifier, handler *cod
 
 // codecWriteTimeout is how long `flow codec serve` gives a response: the
 // handler's work budget ([codecserver.DefaultWorkTimeout]), plus the one
-// payload that may have started just before it passed, which can wait out a
-// key provider's login and call, plus room to write. A request that needs
-// more than the budget is answered 503 inside this deadline rather than cut
-// off, and the data keys it unwrapped are cached for the retry.
+// payload that may have started just before it passed, plus room to write. A
+// request that needs more than the budget is answered 503 inside this
+// deadline rather than cut off, and the data keys it unwrapped are cached for
+// the retry.
+//
+// The costliest payload is an encode that rolls the data key over: one wrap
+// to the current key and one to each escrow key, each within the codec's
+// provider timeout (which already allows for a login).
 func codecWriteTimeout(codecs payloadcodec.Config) time.Duration {
 	const margin = 10 * time.Second
 	var provider time.Duration
 	if timed, ok := codecs.Codec.(interface{ ProviderTimeout() time.Duration }); ok {
-		provider = 2 * timed.ProviderTimeout()
+		provider = (1 + envelope.MaxEscrow) * timed.ProviderTimeout()
 	}
 	return codecserver.DefaultWorkTimeout + provider + margin
 }

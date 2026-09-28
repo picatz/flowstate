@@ -253,6 +253,7 @@ func TestTheCodecServerWaitsAsLongAsItsProvidersMay(t *testing.T) {
 	t.Parallel()
 
 	require.Equal(t, 30*time.Second, codecWriteTimeout(payloadcodec.Config{}))
-	require.Equal(t, 40*time.Second, codecWriteTimeout(payloadcodec.Config{Codec: timedCodec{timeout: 5 * time.Second}}))
-	require.Equal(t, 150*time.Second, codecWriteTimeout(payloadcodec.Config{Codec: timedCodec{timeout: time.Minute}}))
+	require.Equal(t, 50*time.Second, codecWriteTimeout(payloadcodec.Config{Codec: timedCodec{timeout: 5 * time.Second}}),
+		"a rollover wraps to the current key and every escrow key")
+	require.Equal(t, 270*time.Second, codecWriteTimeout(payloadcodec.Config{Codec: timedCodec{timeout: time.Minute}}))
 }
