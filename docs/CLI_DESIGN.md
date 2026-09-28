@@ -760,12 +760,12 @@ get`'s `--run-id` does), producing the identical export with per-node status and
 duration folded in — nodes styled by outcome, the form worth having for a
 post-mortem: "show me the shape of this workflow, coloured by how the failed run
 actually went." This is blocked on the same run-telemetry schema 6.1 names
-(gap inventory slice 3) for the identical reason: a finished run's status and
-duration are derivable from its timeline only for task steps, and the other
-nodes' outcomes are what that slice adds. The flag and its rendering are
-designed now so the exporter slice does not
-have to be revisited when the telemetry lands; the flag itself does not ship
-until slice 3 does.
+(gap inventory slice 3) for the identical reason: a finished run's timeline
+records task activity only under a display label that cannot key a node, and
+the other nodes record no outcome; a lossless node identity and those outcomes
+are what that slice adds. The flag and its rendering are designed now so the
+exporter slice does not have to be revisited when the telemetry lands; the flag
+itself does not ship until slice 3 does.
 
 ### 6.3 TUI navigator
 
