@@ -106,6 +106,14 @@ func AttachRemote(ctx context.Context, client flowstatev1connect.WorkflowService
 		return nil, receipt, fmt.Errorf("flowdebug: attach %s: %s",
 			strings.ToLower(strings.TrimPrefix(receipt.GetStatus().String(), "DEBUG_COMMAND_STATUS_")), receipt.GetMessage())
 	}
+	// A duplicate is the run's memory of an attach it applied under this
+	// request id, not an attach now: that session may since have been
+	// detached, or its lease lapsed. It is an attach only while the run still
+	// names it as its session.
+	if session := response.Msg.GetSessionId(); receipt.GetStatus() == v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_DUPLICATE &&
+		response.Msg.GetSnapshot().GetSession().GetSessionId() != session {
+		return nil, receipt, fmt.Errorf("flowdebug: attach: this request already attached session %s, which no longer holds the run; attach under a new request id", session)
+	}
 
 	remote := &Remote{
 		client:     client,
