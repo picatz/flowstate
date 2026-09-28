@@ -99,6 +99,9 @@ func TestAFreshDriverKeepsTheBreakpointsItFinds(t *testing.T) {
 	assert.ElementsMatch(t, []string{"each/touch", "done", "log checks"}, ids())
 	do("delete done")
 	assert.ElementsMatch(t, []string{"each/touch", "log checks"}, ids())
+	// A logpoint is deleted by the id it was set under.
+	do("delete log checks")
+	assert.ElementsMatch(t, []string{"each/touch"}, ids(), "a logpoint could not be deleted")
 
 	// The adopted breakpoint kept its condition: the run passes item 1.
 	stop := do("continue")
@@ -172,6 +175,29 @@ func TestAMovementsWaitEndsEvenWhenTheTargetStopsAnswering(t *testing.T) {
 		assert.ErrorIs(t, err, context.DeadlineExceeded)
 		assert.Contains(t, err.Error(), "had not stopped")
 		assert.Equal(t, time.Second+5*time.Second, time.Since(start), "the wait and the read are each bounded")
+	})
+}
+
+// TestAMovementEndsAtTheCallersDeadline: a caller's deadline that passes
+// before the driver's own wait is the caller's error, answered at once — not a
+// "still running" read that outlives it.
+func TestAMovementEndsAtTheCallersDeadline(t *testing.T) {
+	t.Parallel()
+
+	synctest.Test(t, func(t *testing.T) {
+		target := &scriptedTarget{snapshot: &v1.DebugSnapshot{Revision: 1, State: v1.DebugRunState_DEBUG_RUN_STATE_HELD}}
+		driver := flowdebug.NewDriver(target)
+		driver.Wait = time.Minute
+
+		// Accepted, and then the target hangs on every read.
+		target.hangAfterResume = true
+		ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+		defer cancel()
+		start := time.Now()
+		_, err := driver.Do(ctx, "next")
+		require.ErrorIs(t, err, context.DeadlineExceeded)
+		assert.NotContains(t, err.Error(), "had not stopped", "the caller's deadline was read as the driver's wait")
+		assert.Equal(t, time.Second, time.Since(start), "the command outlived its caller's deadline")
 	})
 }
 

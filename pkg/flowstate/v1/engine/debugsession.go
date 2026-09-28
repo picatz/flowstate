@@ -374,6 +374,13 @@ func durablyHeld(site v1.DebugStaticSite) bool {
 // nondeterminism error. A history without the marker keeps applying it.
 const untilRefusalChange = "engine.debug.refuseUnholdableUntil"
 
+// truncatedArmChange is the [workflow.GetVersion] changeID guarding the arming
+// of a breakpoint that matches no enumerated site when the enumeration stopped
+// at [v1.MaxDebugStaticSites]. An engine before it refused such a breakpoint,
+// and a history it recorded has the run passing the step unheld; replaying
+// that history into a hold would be a nondeterminism error.
+const truncatedArmChange = "engine.debug.armPastTruncatedSites"
+
 // durableSites resolves target to the sites the durable driver can hold at,
 // or says why there are none: no site matches it, or every one it matches is
 // inside a loop body, a parallel branch or a switch arm, which is never an
@@ -436,6 +443,15 @@ func (e *executor) parseDebugBreakpoints() {
 			// breakpoint that reported armed elsewhere would claim a stop
 			// that never comes.
 			resolved, why := durableSites(target, bp.GetStep(), sites, truncated, "break at")
+			// A truncated enumeration cannot say a step is absent either: a
+			// target matching nothing before the cut can match past it, so it
+			// is armed with no sites listed. Behind [truncatedArmChange], asked
+			// only where the answer differs, so a history that refused it
+			// replays refusing it.
+			if why != "" && truncated &&
+				workflow.GetVersion(e.ctx, truncatedArmChange, workflow.DefaultVersion, 1) != workflow.DefaultVersion {
+				why = ""
+			}
 			if why != "" {
 				refuse(why)
 
