@@ -1,12 +1,63 @@
 # Deployment
 
-This is a reference for putting Flowstate somewhere real: what isolation you
-actually get, what each topology looks like as commands and unit files, and
-where the sharp edges are. It says what is true today, traced to the code that
-makes it true — not what would be nice.
+A Flowstate deployment runs three kinds of process. This page is the reference
+for running them for a team: what isolation each arrangement gives you, what
+each topology looks like as commands and unit files, and where the sharp edges
+are. It states what is true today and cites the code that makes it true.
 
-Read [Deployment portability](ARCHITECTURE.md#deployment-portability) first for
-the shape of the connection layer; this document is what to do with it.
+[Get started](GETTING_STARTED.md) covers `flow server dev`, the single-process
+stack for a laptop. Everything below is about running the pieces separately.
+
+## What you run
+
+| Process | What it does | What it needs |
+| --- | --- | --- |
+| **Temporal** | Stores every run's history, timers, and signals, and hands work to workers. | A Temporal service you operate, or Temporal Cloud, and a namespace per isolation boundary ([below](#read-this-before-you-share-a-temporal-namespace)). |
+| **`flow server`** | Serves the ConnectRPC API: authenticates each caller, then starts, signals, cancels, and reads runs through Temporal. Also serves webhooks and, when federating, publishes signing keys. | A trust policy (`--auth-policy`) naming the issuers it accepts; `--rpc-resource` when an issuer mints bearer tokens; TLS, or `--tls-terminated-upstream` behind a proxy, off loopback. |
+| **`flow worker`** | Executes runs: evaluates the workflow, calls tasks and plugins, resolves secrets, and enforces egress and task policy. | A Worker Deployment version (`--temporal-deployment-name`, `--build-id`) that has been made current; the policies, secret providers, and plugins its runs need. |
+
+The server and the workers never talk to each other: they meet at Temporal. A
+run submitted with no worker polling its task queue is accepted and waits.
+
+```mermaid
+flowchart LR
+  Caller["flow CLI, API client,<br/>webhook sender"] -->|"bearer token or mTLS"| Server["flow server"]
+  Server <--> Temporal[("Temporal")]
+  Temporal <--> Worker["flow worker"]
+  Worker --> Targets["HTTP services,<br/>plugins, secret providers"]
+```
+
+### Before a production rollout
+
+1. **Decide how tenants are isolated.** Anyone with Temporal access to a
+   namespace can read every run in it. Choose a tier from
+   [the four-tier isolation model](#the-four-tier-isolation-model).
+2. **Configure the server.** A trust policy with at least one issuer,
+   `--rpc-resource` set to the URI clients reach, and TLS
+   ([blockers](#blockers)).
+3. **Version the workers, and promote each build.** Give every build a
+   `--build-id`, then make it the deployment's current version with Temporal's
+   CLI or UI; `flow` does not. See [Worker versioning, every
+   time](#worker-versioning-every-time).
+4. **Write an egress policy.** With none, the `http` task refuses internal
+   addresses and may reach any public one. An `--egress-policy` file with `allow:`
+   rules turns that into an allowlist.
+5. **Grant secrets deliberately.** Nothing is readable until a `secrets:` rule
+   allows it; configure only the providers you use. See
+   [Secrets and credentials](SECRETS.md).
+6. **Restrict tasks if you need to.** With no `--task-policy`, every identity
+   may dispatch every task; see the [task policy reference](reference/task-policy.md).
+7. **Pin plugins.** Keep the plugin directory writable only by its owner, and
+   [pin each plugin's digest](#pinning-which-bytes-a-plugin-name-may-run).
+8. **Watch it.** Wire [health checks](#health-checks-and-probes),
+   [metrics](#metrics), and the [audit trail](#audit-trail) before the first
+   real run, and decide whether an audit outage should stop work
+   (`--audit-required`).
+
+The [systemd recipe](#single-vm-ec2-or-similar-systemd--the-best-supported-production-shape)
+is the best-supported starting point, and
+[Architecture: Deployment portability](ARCHITECTURE.md#deployment-portability)
+shows the same process shapes against local, self-hosted, and Temporal Cloud.
 
 ## Read this before you share a Temporal namespace
 
@@ -20,10 +71,11 @@ That access is Temporal's, not Flowstate's — Temporal's own visibility and
 namespace permissions are what would have to gate it, and most self-hosted
 clusters don't gate per-workflow.
 
-Flowstate's own tenancy checks are real: the API refuses every cross-tenant
-verb (`Get`, `List`, `Cancel`, `Terminate`, `Signal`, `Describe` — one
-`ownedBy` check, all six, reported as `NotFound` rather than
-`PermissionDenied` so a probe learns nothing about what exists), and a run's
+Flowstate's own tenancy checks are real: `Get`, `GetTimeline`, `Signal`,
+`Cancel`, and `Terminate` on another tenant's run all answer `NotFound` (one
+`ownedBy` check, reported as not found rather than `PermissionDenied` so a
+probe learns nothing about what exists), `List` returns only the caller's own
+runs, and a run's
 namespace comes from the authenticated caller, never from the workload itself
 (`docs/ARCHITECTURE.md#tenancy`). None of that reaches someone who talks to
 Temporal directly instead of through the Flowstate API. **The Flowstate API's
@@ -767,40 +819,92 @@ $ docker compose -f examples/observability/docker-compose.yaml up
 No Kubernetes needed. Two systemd units on one host, or split across two hosts
 for Tier 2: one worker unit per tenant's Temporal namespace.
 
+Each unit runs as its own system user, so the server — the process that faces
+the network — cannot read the worker's secrets. The two share one group, and
+that group can read only the federation signing key, which both processes open.
+Neither user's home is under `/home`: the worker's `ProtectHome=yes` makes that
+unreadable, and `flow worker` reads Temporal's client configuration from
+`$HOME` and refuses to start on a file it cannot read. `PrivateTmp=yes` gives
+each unit a writable `/tmp`, where a worker makes its plugins' socket
+directories; `ProtectSystem=strict` otherwise leaves it read-only. `flow keys
+generate` writes a key with mode 0600, owned by whoever ran it, so hand it to
+the shared group and the secret directory to the worker alone:
+
+```console
+$ sudo groupadd --system flowstate-keys
+$ sudo useradd --system --user-group --home-dir /var/lib/flowstate --no-create-home \
+    --shell /usr/sbin/nologin flowstate-worker
+$ sudo useradd --system --user-group --home-dir /nonexistent --no-create-home \
+    --shell /usr/sbin/nologin flowstate-server
+$ sudo install -d -o flowstate-worker -g flowstate-worker -m 0750 /var/lib/flowstate
+$ sudo chown root:flowstate-keys /etc/flowstate/identity-2026-07.pem
+$ sudo chmod 0640 /etc/flowstate/identity-2026-07.pem
+$ sudo chown -R root:flowstate-worker /etc/flowstate/secrets
+$ sudo chmod -R u=rwX,g=rX,o= /etc/flowstate/secrets
+```
+
 `/etc/flowstate/worker.env`:
 
 ```env
 TEMPORAL_ADDRESS=temporal.internal:7233
 TEMPORAL_NAMESPACE=production
 FLOWSTATE_TEMPORAL_DEPLOYMENT_NAME=flowstate
-FLOWSTATE_BUILD_ID=2026.08.06-a1b2c3d
 FLOWSTATE_AUTH_POLICY=/etc/flowstate/policy.yaml
+FLOWSTATE_IDENTITY_KEY=/etc/flowstate/identity-2026-07.pem
 FLOWSTATE_SECRET_DIR=/etc/flowstate/secrets
 ```
 
-`/etc/systemd/system/flowstate-worker.service`:
+The worker unit is a template with one instance per build, because a promotion
+needs the old build's worker running beside the new one until the runs pinned
+to it finish. The instance name is the build id, passed as `--build-id` so no
+`FLOWSTATE_BUILD_ID` left in `worker.env` can override it, and each build's
+binary lives in its own directory. Keep build ids to letters, digits, `.`, `_`,
+and `-`: systemd escapes anything else in an instance name, and the escaped form
+would no longer match the id you promote. `/etc/systemd/system/flowstate-worker@.service`:
 
 ```ini
 [Unit]
-Description=Flowstate worker
+Description=Flowstate worker, build %i
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=exec
 EnvironmentFile=/etc/flowstate/worker.env
-ExecStart=/usr/local/bin/flow worker --plugin-dir /usr/local/lib/flowstate/plugins
+ExecStart=/usr/local/lib/flowstate/%i/flow worker --build-id %i --plugin-dir /usr/local/lib/flowstate/plugins
 Restart=on-failure
 RestartSec=5s
-DynamicUser=yes
+User=flowstate-worker
+Group=flowstate-worker
+SupplementaryGroups=flowstate-keys
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
+PrivateTmp=yes
 ReadWritePaths=/var/lib/flowstate
 
 [Install]
 WantedBy=multi-user.target
 ```
+
+To deploy a build, install its binary and start its instance, then, once its
+worker is polling (a version with no pollers is refused), make it the current
+version (or ramp a share of new runs to it with `set-ramping-version`),
+or it receives no new runs. The `temporal` CLI does not read the units'
+environment files, so give it the same Temporal address (and TLS or API-key
+options, if the units use them):
+
+```console
+$ sudo install -D -m 0755 ./flow /usr/local/lib/flowstate/2026.08.06-a1b2c3d/flow
+$ sudo systemctl enable --now flowstate-worker@2026.08.06-a1b2c3d
+$ temporal worker deployment set-current-version --yes \
+    --address temporal.internal:7233 --namespace production \
+    --deployment-name flowstate --build-id 2026.08.06-a1b2c3d
+```
+
+Leave the previous build's instance running until `temporal worker deployment
+describe --name flowstate` (with the same connection options) shows it drained,
+then `sudo systemctl disable --now flowstate-worker@<previous-build-id>`.
 
 `/etc/flowstate/server.env`:
 
@@ -819,7 +923,7 @@ FLOWSTATE_RPC_RESOURCE=https://flowstate.example.com/rpc
 ```ini
 [Unit]
 Description=Flowstate API server
-After=network-online.target flowstate-worker.service
+After=network-online.target
 Wants=network-online.target
 
 [Service]
@@ -828,13 +932,55 @@ EnvironmentFile=/etc/flowstate/server.env
 ExecStart=/usr/local/bin/flow server
 Restart=on-failure
 RestartSec=5s
-DynamicUser=yes
+User=flowstate-server
+Group=flowstate-server
+SupplementaryGroups=flowstate-keys
 NoNewPrivileges=yes
 ProtectSystem=strict
+PrivateTmp=yes
 
 [Install]
 WantedBy=multi-user.target
 ```
+
+Both units name the same `FLOWSTATE_IDENTITY_KEY` because this `policy.yaml`
+configures `federation:`: the worker signs the short-lived assertions a step
+exchanges for credentials, and the server publishes the matching public keys.
+Either process refuses to start with `federation:` and no key, or a key and no
+`federation:`, so a deployment that does not federate removes the line from both
+files. [Secrets and credentials](SECRETS.md#signing-keys) covers rotation, which
+restarts both.
+
+Sharing that key is a trust boundary this recipe does not split. The server and
+every worker that federates hold the same private key, and whoever holds it can
+sign an assertion for any subject or namespace
+([THREAT_MODEL.md §7](../THREAT_MODEL.md#7-the-issuer-as-a-single-point-of-failure)).
+So a compromise of the server, or of any one tenant's worker, reaches every
+tenant's federated credentials. The per-user isolation above keeps secret files
+apart; it does not narrow federation.
+
+`FLOWSTATE_IDENTITY_KEY` holds one path, and a rotation needs two for its
+overlap, so for that window the keys go on each unit's command line, new first.
+Repeated `--identity-key` flags replace the variable's value rather than adding
+to it. Give the new key the same ownership as the first before either unit
+opens it:
+
+```console
+$ sudo chown root:flowstate-keys /etc/flowstate/identity-2026-10.pem
+$ sudo chmod 0640 /etc/flowstate/identity-2026-10.pem
+```
+
+```ini
+ExecStart=/usr/local/lib/flowstate/%i/flow worker --build-id %i --plugin-dir /usr/local/lib/flowstate/plugins \
+    --identity-key /etc/flowstate/identity-2026-10.pem \
+    --identity-key /etc/flowstate/identity-2026-07.pem
+```
+
+The server unit gets the same two flags. After editing the units, run `sudo
+systemctl daemon-reload`, then restart the server before any worker instance,
+so it publishes the new key before a worker signs with it. After
+`federation.key_retention`, drop the flags, point `FLOWSTATE_IDENTITY_KEY` in
+both files at the new key, and reload and restart again.
 
 `FLOWSTATE_RPC_RESOURCE` is what this unit's `flow server` binds its Connect
 RPC audience to, and it is required because `policy.yaml` names a `kind: oidc`
@@ -858,12 +1004,13 @@ finish it, and this recipe assumes the first:
   needed — a certificate configured is what [blockers](#blockers) below calls
   the ordinary way past the refusal.
 
-To reach Tier 2 on this shape: run one `flowstate-worker` unit per tenant, each
-with its own `TEMPORAL_NAMESPACE` and its own `--egress-policy` /
-`--auth-policy` files, and map each tenant onto its namespace in the trust
+To reach Tier 2 on this shape: run a worker template per tenant, each as its
+own system user with its own secret and state directories (sharing only
+`flowstate-keys`, so one tenant's worker cannot read another's secrets, though
+federation stays shared as above), its own `TEMPORAL_NAMESPACE`, and its own
+`--egress-policy` / `--auth-policy` files, and map each tenant onto its namespace in the trust
 policy the server loads (`tenancy:` under `--auth-policy`, `auth.Tenancy` /
-`temporalclient.Pool`). This is the "N worker units" the audit refers to as
-the least-documented production shape — it is systemd units, not Kubernetes.
+`temporalclient.Pool`).
 
 ### Kubernetes
 
@@ -936,13 +1083,13 @@ request (`healthzHandler`, `cmd/flow/routing.go:148-156`). It is mounted in
 two places:
 
 - On the **public** listener, unauthenticated, always — `serverHandler`,
-  `cmd/flow/routing.go:94`.
+  `cmd/flow/routing.go:112`.
 - On the **internal** listener, if `--internal-listen`
   (`FLOWSTATE_INTERNAL_ADDRESS`) names a loopback address — `internalHandler`,
   `cmd/flow/routing.go:187`. The internal listener also carries `/debug/pprof/*`
-  (`cmd/flow/routing.go:167-171`), which is why it has no default and is
+  (`cmd/flow/routing.go:197-201`), which is why it has no default and is
   refused off loopback (`checkInternalListenAddress`,
-  `cmd/flow/internallistener.go:79-90`): pprof can read this process's memory
+  `cmd/flow/internallistener.go:95-110`): pprof can read this process's memory
   and running goroutines, and the listener has no TLS or authentication of its
   own.
 
@@ -1024,7 +1171,7 @@ routes to. That is exactly what the public listener is, per the "pod's
 `FLOWSTATE_ADDRESS` needs a flag alongside it" note above (`0.0.0.0:9233`,
 wildcard bind). The internal listener is the opposite on purpose: refused
 off loopback (`checkInternalListenAddress`,
-`cmd/flow/internallistener.go:79-90`), so it never accepts a connection that
+`cmd/flow/internallistener.go:95-110`), so it never accepts a connection that
 didn't originate in the same network namespace — which rules it out for a
 `httpGet` probe target, not just as a matter of style. So:
 
@@ -1036,13 +1183,13 @@ line up. If the pod terminates TLS itself
 (`FLOWSTATE_TLS_CERT_FILE`/`FLOWSTATE_TLS_KEY_FILE` instead), `/healthz`
 shares that listener with everything else `flow server` serves
 (`healthzHandler` is mounted on the same mux the TLS-wrapped `http.Server`
-answers — `cmd/flow/main.go:974`, `:1032-1033`) and comes back over HTTPS
+answers — `cmd/flow/main.go:1484`, `:1576`) and comes back over HTTPS
 only; an `httpGet` probe with no `scheme:` then dials plaintext against a
 TLS port and every probe fails, which reads as a healthy pod stuck in a
 restart loop, not as a TLS error anywhere the kubelet reports. Setting
 `scheme: HTTPS` gets the handshake started, but does not finish it if the
 pod also requires client certificates (`--tls-client-auth` /
-`client_certificate_required`, `cmd/flow/main.go:996`) — the kubelet's probe
+`client_certificate_required`, `cmd/flow/main.go:1526`) — the kubelet's probe
 client presents none, and a `Kubernetes` probe has no field to give it one.
 When the pod terminates TLS itself, point the probes at the loopback `exec`
 probe below instead of `httpGet`.
@@ -1780,9 +1927,9 @@ says a request was permitted and nothing else when nobody answered it.
 
 ## Worker capacity
 
-`flow worker` builds its Temporal worker from exactly five fixed fields —
-`DeploymentOptions`, `Interceptors`, `DeadlockDetectionTimeout`, `Identity`,
-`WorkerStopTimeout` — plus, as of #783, four capacity options an operator can
+`flow worker` builds its Temporal worker from six fixed fields —
+`DeploymentOptions`, `Interceptors`, `DeadlockDetectionTimeout`,
+`WorkflowPanicPolicy`, `Identity`, `WorkerStopTimeout` — plus, as of #783, four capacity options an operator can
 set: `--max-concurrent-activities`, `--max-concurrent-workflow-tasks`,
 `--max-activities-per-second`, and `--task-queue-activities-per-second`
 (`FLOWSTATE_WORKER_MAX_CONCURRENT_ACTIVITIES`,
@@ -2040,9 +2187,12 @@ heavily-limited host wants a retry policy with room in it.
 **Two more properties worth knowing before writing a number.** The key is the
 host with no port and no wildcards, normalized the way the `host` rule attribute
 is (case, the trailing root dot, Punycode, and canonical IP literals) — so one
-host serving two services on two ports shares one budget. And this covers the
-`http` task only: a plugin making its own outbound calls is a separate process
-with its own client and is not governed by the egress policy at all.
+host serving two services on two ports shares one budget. And the budget is
+counted per process: the worker's `http` task keeps one, and a plugin that
+enforces the egress policy it is granted at launch (the first-party `git`,
+`github`, `slack`, `sql`, and `vcs` plugins do) keeps its own. A third-party
+plugin that opens connections without the SDK's governed client is not bound by
+the policy at all; confine it at the substrate.
 
 ## Worker versioning, every time
 
@@ -2054,3 +2204,22 @@ start** with neither — see
 A deployment that discovers this at its first production rollout, rather than
 while reading a deployment guide, has already had a worse morning than
 necessary.
+
+A versioned worker also receives **no new runs until its version is the
+deployment's current or ramping version**, and nothing in `flow` sets either.
+Promote each build once its workers are polling, against the same Temporal
+address and namespace they poll (`--address`, `--namespace`, and any TLS or
+API-key options; the CLI defaults to `localhost:7233`):
+
+```console
+$ temporal worker deployment set-current-version --yes \
+    --deployment-name flowstate --build-id 2026.08.06-a1b2c3d
+```
+
+A run that no polling version receives is accepted and waits with nothing
+recorded until one does. After a promotion, runs already in flight stay pinned to the version
+they started on, so keep the previous build's workers running until
+`temporal worker deployment describe --name flowstate` shows it drained.
+Ramping a share of new runs to a version first is Temporal's
+`set-ramping-version`. [examples/operations/worker-versioning](../examples/operations/worker-versioning/README.md)
+walks through a promotion end to end.
