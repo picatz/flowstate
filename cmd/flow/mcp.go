@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
 	"slices"
 	"strings"
@@ -1098,12 +1099,23 @@ func jsonRunInputs(workflow *v1.Workflow, submitted map[string]json.RawMessage, 
 	// Absent rather than empty, so a source declaring no `inputs:` is run
 	// exactly as it is without the object.
 	if len(submitted) > 0 {
-		document, err := json.Marshal(submitted)
-		if err != nil {
-			return nil, fmt.Errorf("reading %s: %w", source, err)
-		}
-		if inputs, err = inputsFromJSON(source, document, declaredInputs(workflow)); err != nil {
-			return nil, err
+		// Each value is decoded where it arrived rather than the object being
+		// re-encoded and read back whole: the same per-name decoder
+		// [inputsFromJSON] applies, in the same sorted order so two bad values
+		// report the same one first, without a second copy of whatever the
+		// sender chose to send.
+		declared := declaredInputs(workflow)
+		inputs = make(map[string]*v1.Value, len(submitted))
+		for _, name := range slices.Sorted(maps.Keys(submitted)) {
+			decoded, err := decodeInputJSON(string(submitted[name]))
+			if err != nil {
+				return nil, fmt.Errorf("%s: input %q: %w", source, name, err)
+			}
+			value, err := valueFromJSON(name, decoded, declared[name])
+			if err != nil {
+				return nil, fmt.Errorf("%s: %w", source, err)
+			}
+			inputs[name] = value
 		}
 	}
 	bound, err := v1.BindRunInputs(workflow, inputs)
