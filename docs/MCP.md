@@ -91,7 +91,7 @@ process may do.
 
 | Flags | Effect |
 | --- | --- |
-| `--address` (or `FLOWSTATE_ADDRESS`), `--token-file`, `--credential-source`, `--audience`, TLS client flags | Which server the durable tools call, and as whom. The local tools never dial. |
+| `--address` (or `FLOWSTATE_ADDRESS`), `--token-file`, `--credential-source`, `--audience`, TLS client flags | Which server the durable tools and `flowstate_get_catalog` call, and as whom. `flowstate_validate`, `flowstate_compile`, `flowstate_test`, `flowstate_debug`, and `flowstate_run_local` never dial. |
 | `--egress-policy` | What `http:` steps in `flowstate_run_local` may reach. **Without it, egress is denied entirely**, which is stricter than `flow run local`: the caller here is a model, not the file's author. |
 | `--secret-env`, `--secret-dir`, and the other [secret flags](SECRETS.md) | Which secret references `flowstate_run_local` may resolve. None, unless a flag says so. |
 | `--as-subject`, `--as-issuer`, `--as-namespace`, `--as-deployment`, `--as-claim` | The identity a local run rehearses policy as. |
