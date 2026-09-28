@@ -609,6 +609,11 @@ func (c *Codec) activeFor(ctx context.Context, size int) (*activeKey, error) {
 
 	c.rollover.Lock()
 	defer c.rollover.Unlock()
+	// Read again after every wait: another caller's rollover, or this one's,
+	// can take several provider timeouts, and a decision about whether the old
+	// key is still within its window made with a time from before the wait
+	// could seal past max_age + stale_grace.
+	now = c.now()
 	a := c.active.Load()
 	if a != nil && a.fresh(c.policy, now, size) {
 		return a, nil
@@ -623,6 +628,7 @@ func (c *Codec) activeFor(ctx context.Context, size int) (*activeKey, error) {
 			c.active.Store(next)
 			return next, nil
 		}
+		now = c.now()
 		c.lastErr, c.retryAt = err, now.Add(rolloverBackoff)
 	}
 	if a != nil && a.withinGrace(c.policy, now, size) {

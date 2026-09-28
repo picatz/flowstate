@@ -221,3 +221,50 @@ func TestStartupWrapsHoldToTheCallersDeadline(t *testing.T) {
 		require.LessOrEqual(t, time.Since(start), time.Second, "startup outlived the caller's deadline")
 	})
 }
+
+// clockedWraps wraps normally until failing is set; then it spends advance on
+// the clock, as a provider timing out would, and refuses.
+type clockedWraps struct {
+	keyprovider.Key
+	clock   *fakeClock
+	advance time.Duration
+	failing atomic.Bool
+}
+
+func (k *clockedWraps) Wrap(ctx context.Context, dk []byte, ectx keyprovider.Context) (keyprovider.Wrapped, error) {
+	if !k.failing.Load() {
+		return k.Key.Wrap(ctx, dk, ectx)
+	}
+	k.clock.advance(k.advance)
+	return keyprovider.Wrapped{}, keyprovider.ErrUnavailable
+}
+
+// TestAFailedRolloverDoesNotSealPastTheGrace: a rollover that starts inside
+// stale_grace and fails after the grace has passed must not seal with the old
+// data key, since the revocation bound is max_age + stale_grace of real time,
+// not of the moment the rollover began.
+func TestAFailedRolloverDoesNotSealPastTheGrace(t *testing.T) {
+	t.Parallel()
+
+	clock := newFakeClock()
+	primary, err := local.Parse(local.Generate())
+	require.NoError(t, err)
+	key := &clockedWraps{Key: primary, clock: clock, advance: 30 * time.Second}
+
+	o := Options{
+		Binding: "ns",
+		Current: "k1",
+		Keys:    []Recipient{{ID: "k1", Key: key}},
+		DataKey: &v1.PayloadDataKeyPolicy{MaxAge: durationpb.New(time.Minute), StaleGrace: durationpb.New(time.Minute)},
+	}
+	SetClock(&o, clock.now)
+	c, err := New(t.Context(), o)
+	require.NoError(t, err)
+
+	// Past max_age, inside the grace by ten seconds.
+	clock.advance(time.Minute + 50*time.Second)
+	key.failing.Store(true)
+
+	_, err = c.Encode([]*commonpb.Payload{{Data: []byte("x")}})
+	require.Error(t, err, "sealed with the old data key after the grace had passed during the rollover")
+}
