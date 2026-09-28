@@ -322,10 +322,10 @@ solvable at render time.** Nesting depends on slice 1/2's graph schema and
 model — reusing the same spec-to-tree join the graph gets, rather than a second
 implementation of it. Per-step duration and per-step terminal status (the
 `✓`/`✗`/`—` on a *finished* step, not only the one currently running) depend on
-slice 3's run-telemetry schema addition, because neither exists on the wire
-today: see the gap inventory for exactly what `RunProgress` and `StepOutputs`
-carry instead. Both are additive, per-invariant-10 schema changes, gated on
-being proposed and landed before slice 9 builds this renderer — see the gap
+slice 3's run-telemetry decision: both are derivable from `GetTimeline`'s event
+history, but no response carries them per step, and see the gap inventory for
+exactly what `RunProgress` and `StepOutputs` carry instead. Whichever source
+slice 3 settles on, it lands before slice 9 builds this renderer — see the gap
 inventory for the ordering.
 
 ```
@@ -398,8 +398,9 @@ The middle line above, un-styled, is exactly what a shell, an editor's problem
 matcher, and a screen reader receive; the styling on the path and on `ok` is
 everything colour adds. `flow fix`'s refusals (a shape it will not guess at) use
 the same shape and the same rule; they are diagnostics, not a different kind of
-message, which is why `writeErrDiagnostics` widens them into `*v1.Diagnostic`
-rather than formatting a bespoke line.
+message, which is why they are converted to diagnostics (`errDiagnosticsProto`
+for the `*v1.Diagnostic` machine form, `writeErrDiagnostics` for the text
+lines) rather than formatted as a bespoke line.
 
 ### Progress view (`flow watch`'s live shape)
 
@@ -645,13 +646,14 @@ built: `RunProgress` holds only the current top-level `step_id`, a partial
 `path` into it, and a segment-local `completed_steps` count — nothing about any
 *other* step's status or how long it took — and `GetResponse` for a finished run
 carries either `outputs` (values only, no per-step status or timing) or an
-`error` (the whole run's outcome, not a per-step account). There is
-today no schema path to "step X succeeded in 12s while step Y is still running,"
-which is exactly what an overlay needs and exactly what the failed-run
-post-mortem this document sketches in 6.2 requires. That telemetry — per-step
-status, per-step duration, per-step terminal outcome — is therefore its own
-additive schema slice (gap inventory slice 3), landed and reviewed on its own
-before any overlay code is written, and every overlay-producing path in this
+`error` (the whole run's outcome, not a per-step account). What does exist is
+an event history: `GetTimeline` returns each step's scheduled, completed,
+failed, timed-out, and canceled events with their times. "Step X succeeded in
+12s while step Y is still running" can be *derived* from it, but no response
+carries that aggregate shape directly. Deciding whether the overlay derives its
+view from the timeline or a new aggregate message is added is therefore its own
+slice (gap inventory slice 3), settled and reviewed before any overlay code is
+written, and every overlay-producing path in this
 document (6.2's `--run` variant, 6.3's outcome colouring, section 3's
 step/timeline view) is blocked on it. `NewGraph` in this slice takes a spec and
 nothing else.
@@ -746,10 +748,10 @@ graph <id> --run <run-id>` (or `--run` reading the current run the way `flow
 get`'s `--run-id` does), producing the identical export with per-node status and
 duration folded in — nodes styled by outcome, the form worth having for a
 post-mortem: "show me the shape of this workflow, coloured by how the failed run
-actually went." This is blocked on the same run-telemetry schema prerequisite
-6.1 names (gap inventory slice 3) for the identical reason: there is no field
-today carrying a finished run's per-step status or duration for this flag to
-read. The flag and its rendering are designed now so the exporter slice does not
+actually went." This is blocked on the same run-telemetry decision 6.1 names
+(gap inventory slice 3) for the identical reason: a finished run's per-step
+status and duration are derivable from its timeline, but which source this flag
+reads is that slice's call. The flag and its rendering are designed now so the exporter slice does not
 have to be revisited when the telemetry lands; the flag itself does not ship
 until slice 3 does.
 
@@ -795,7 +797,7 @@ The navigator's model is `NewGraph` (6.1) applied to compiling `--source`
 locally — the same compile `flow validate`/`flow compile` already perform, no
 new RPC, no new server-side capability — joined against the *position* fields
 `RunProgress` already provides for colouring the live step, and against nothing
-further until the run-telemetry schema (gap inventory slice 3) lands. A
+further until the run-telemetry decision (gap inventory slice 3) lands. A
 workflow that has never run works identically: `flow graph <path>
 --interactive` is the entry point that needs no run at all, and it is the same
 code path with `run` simply absent, per 6.1's "run-state overlay is optional"
@@ -839,7 +841,7 @@ a third palette invented for it would be precisely the bespoke-per-view styling
 section 5 refuses.
 
 Mockup, a `promote` call two nodes deep, `each-region` collapsed — **this depicts
-the state once slice 3's run-telemetry schema has landed; against a spec-only or
+the state once slice 3's run-telemetry decision has landed; against a spec-only or
 pre-slice-3 graph, the finished-step marks and durations below are not yet real
 data and would not yet be drawn**:
 
@@ -955,26 +957,18 @@ line. What is not: everything below.
    The dependency every other graph slice below sits on; nothing in 4 or 6 can
    start correctly before this one is settled and reviewed.
 
-3. **The run-telemetry schema.** Additive fields — per-step status, per-step
-   duration, per-step terminal outcome — landing wherever the schema review
-   decides they belong (extending `GetResponse`'s finished-run shape, a new
-   message, or something else `buf breaking` accepts as additive; this document
-   deliberately does not pre-decide the exact message shape, only that the
-   fields do not exist anywhere today and must be proposed and reviewed on
-   their own). Verified necessary, not assumed: `RunProgress` carries only the
-   current top-level step, a partial path, and a segment-local completed count;
-   `GetResponse` for a finished run is a oneof between output values and an
-   error, neither of which is a per-step account. This slice blocks the
-   run-state overlay in 6.1/6.2/6.3 *and* the step/timeline tree's per-step
+3. **The run-telemetry decision.** Per-step status, per-step duration, and
+   per-step terminal outcome are derivable today from `GetTimeline`'s event
+   history, but no response carries them as an aggregate: `RunProgress` has
+   only the current top-level step, a partial path, and a segment-local
+   completed count, and `GetResponse` for a finished run carries output values
+   or an error. This slice decides whether the overlay derives its view from
+   the timeline (one source, no schema change) or whether an additive aggregate
+   message earns its place, and does not pre-decide the answer. Two
+   representations of one step outcome are what it must avoid. This slice
+   blocks the run-state overlay in 6.1/6.2/6.3 *and* the step/timeline tree's per-step
    duration in section 3 — both are named as blocked on it rather than
    re-solved independently, since it is one gap with two consumers.
-
-   *Since written:* `GetTimeline` (`flow timeline`) returns a run's recorded
-   step events: scheduled, completed, failed, timed out, and canceled, each with
-   its time, step, and attempt. Per-step outcome and duration can be derived
-   from it for a finished run and for the steps a running one has recorded, so
-   this slice should start by deciding whether that timeline is the telemetry
-   or only its source.
 
 4. **The mermaid and dot exporters** (section 6.2): `flow graph`, extending
    `--output`/`-o` with `mermaid` (default), `dot`, and `json` values for this

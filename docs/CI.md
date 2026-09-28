@@ -771,7 +771,7 @@ repository's merge-queue settings show `Squash and merge`, matching
 
 ### 3. Nothing else changes
 
-`allow_auto_merge` was `false` when this was written and can stay so — the queue's "merge
+`allow_auto_merge` was `false` when this section was written (it was not re-read on 2026-09-28; check it before applying the recipe) and can stay so — the queue's "merge
 when ready" replaces it. `delete_branch_on_merge` is unrelated.
 
 ### After applying
