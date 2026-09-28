@@ -674,9 +674,11 @@ the control-flow nodes (`call`, `for_each`, `loop`, `parallel`, `switch`) record
 no outcome event. So "task X's activity completed in 12s while task Y's has not
 finished" can be *read* from the timeline — not that Y is running, since its
 rows cannot tell a running activity from one waiting to start or backing off
-between attempts — but a graph overlay needs every event joined losslessly to a
-`GraphNode.id`, compensations told apart from forward steps, the occurrences of
-a repeated node aggregated by a stated rule, each consumed signal joined to the
+between attempts — but a graph overlay needs every step-scoped event joined
+losslessly to a `GraphNode.id` (run `vars:`, admission, and a run ending or
+continuing belong to no node), compensations told apart from forward steps, the
+occurrences of a repeated node aggregated by a stated rule, tolerated failures
+told apart from fatal ones, each consumed signal joined to the
 wait that consumed it (and a signal no wait consumes — a debug ask, an
 undeclared name, a dropped duplicate — marked as such), activity state beyond
 scheduled and finished, and a terminal outcome for every node. Nothing carries
@@ -1009,15 +1011,20 @@ line. What is not: everything below.
    for a parked wait's position. It starts from an inventory of what each
    `Node` kind in `workflow.proto` records today and closes every gap that
    finds, which includes at least:
-   - a canonical node identity that joins each event to its `GraphNode.id`
-     without loss;
+   - a canonical node identity that joins each step-scoped event to its
+     `GraphNode.id` without loss, and a run-level class for the events that
+     belong to no node: run `vars:` evaluation, plugin and task-capability
+     admission, and a run ending or continuing as new;
    - an occurrence identity for a node that runs more than once (a `for_each`
      or `loop` body's iterations share one node and one label today), stable
      across a continue-as-new boundary, where timeline event ids restart at 1,
      and the rule by which a per-node overlay aggregates those occurrences'
-     outcomes and durations. The identity is positional (segment and
-     iteration index), never derived from a `for_each` item, which may be
-     `sensitive` and would otherwise reach durable, broadly readable history;
+     outcomes and durations. An occurrence is one execution, not one attempt:
+     the attempts of one scheduled activity, which the timeline already groups
+     by `scheduled_event_id`, are one occurrence. The identity is positional
+     (segment and iteration index), never derived from a `for_each` item,
+     which may be `sensitive` and would otherwise reach durable, broadly
+     readable history;
    - compensation events marked as compensations, so a completed `undo:` is
      never read as its forward step's completion (a compensation is dispatched
      from the run-level undo stack, whose entries carry a step id and no
@@ -1037,6 +1044,9 @@ line. What is not: everything below.
      activity: an `if:`, input, or `vars:` evaluation failing, or the `async:`
      width being exceeded, before anything is scheduled, and `undo:`
      registration failing after the activity completed;
+   - whether a failed step's failure was tolerated by `continue_on_error:` or
+     ended the run, which `recordOutcome` in `engine/execute.go` decides and
+     nothing reports per step;
    - outcomes for the nodes that record none;
    - a bound on the work an overlay spends: `GetTimeline` stops at the
      server's scan budget and is per segment, so an overlay over a large or
