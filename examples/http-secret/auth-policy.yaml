@@ -1,5 +1,8 @@
 # A real deployment normally keeps inbound trust and worker-side secret rules in
 # the same reviewed policy file.
+# As written, this file is for a worker or a local run. To load it on
+# `flow server` too, list the URI clients reach the server at in `audiences:`
+# (in place of the bare `flowstate`) and pass that URI as `--rpc-resource`.
 issuers:
   - name: github-actions
     issuer: https://token.actions.githubusercontent.com

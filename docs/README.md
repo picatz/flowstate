@@ -48,7 +48,7 @@ doing. [The repository README](../README.md) is the one-page overview.
 | [Secrets and credentials](SECRETS.md) | Configure secret providers and access policy, and mint short-lived credentials instead of storing long-lived ones. |
 | [Workload identity federation](WORKLOAD_IDENTITY_FEDERATION.md) | Understand the metadata documents Flowstate publishes as an issuer, and what each cloud's relying party requires. |
 | [MCP over HTTP](MCP_AUTHORIZATION.md) | Authorize agents that reach `flow mcp serve` over HTTP. |
-| [Authorization freshness](AUTHORIZATION_FRESHNESS.md) | The design for ordering policy changes across a fleet. Mostly not yet implemented. |
+| [Authorization freshness](AUTHORIZATION_FRESHNESS.md) | The design for ordering policy changes across a fleet. Mostly not yet implemented; the page says which parts exist. |
 | [Command reference](reference/cli.md) | *Generated.* Every command and flag. |
 | [Environment variables](reference/envvars.md) | *Generated.* Every environment variable the binary reads. |
 | [Task policy reference](reference/task-policy.md) | *Generated.* The fields of a `--task-policy` file. |

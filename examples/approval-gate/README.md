@@ -60,13 +60,18 @@ TOKEN_DIR=$(dirname "$KEY")
 
 flow jwt sign --key "$KEY" --id flowstate-dev --issuer "$ISSUER" \
   --subject release-requester@example.com --audience "$AUDIENCE" \
-  --claim namespace="$NAMESPACE" > "$TOKEN_DIR/requester.jwt"
+  --claim namespace="$NAMESPACE" --ttl 1h > "$TOKEN_DIR/requester.jwt"
 flow jwt sign --key "$KEY" --id flowstate-dev --issuer "$ISSUER" \
   --subject sre-lead@example.com --audience "$AUDIENCE" \
-  --claim namespace="$NAMESPACE" --claim team=release-managers \
+  --claim namespace="$NAMESPACE" --claim team=release-managers --ttl 1h \
   > "$TOKEN_DIR/approver.jwt"
 chmod 600 "$TOKEN_DIR/requester.jwt" "$TOKEN_DIR/approver.jwt"
 ```
+
+`--ttl 1h` is the longest a token from `flow jwt sign` may live. The default is
+five minutes, and both tokens are used again at the end of the walkthrough; if
+one expires first, the command fails as `unauthenticated` and the fix is to run
+its `flow jwt sign` line again.
 
 The workflow's `signals:` rule names `https://issuer.example.com`, which is the
 deployment's own line to edit and deliberately not read from the request: a

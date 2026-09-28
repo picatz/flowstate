@@ -138,8 +138,9 @@ Within each rule the two constraints are ANDed. The `claims:` half is literal �
 file's author wrote `team: release-managers` and no caller's input can touch it. The
 `subject:` half is interpolated from an input, so a caller can narrow which release
 manager this particular run accepts, and cannot invent an approver outside the team the
-file already named. `flow validate` refuses an interpolated subject with no literal
-constraint beside it, for that reason.
+file already named. `flow validate` refuses an interpolated subject unless the rule
+carries `claims:` or the policy sets `distinct_from_starter: true`; either satisfies it,
+but only the literal `claims:` keeps the approver inside the team.
 
 `workflow.test.yaml` writes the negative direction rather than only the positive one: a
 sender who satisfies the claim exactly, is distinct from the starter, and is simply not
@@ -191,12 +192,11 @@ $ flow run examples/approval-escalation/workflow.yaml \
 $ flow signal <workflow-id> approval-decision --data '{"approved": true}'
 ```
 
-One note if you try that against the Quickstart's dev setup, the same one the main
-README makes for `approval-gate`: `--insecure-no-auth` makes every caller the same
-anonymous principal, and this gate names two qualified approver subjects and sets
-`distinct_from_starter: true`, so that `flow signal` is refused and the chase keeps
-chasing — which is the gate working. Rehearse the answered paths with `flow test`
-above, or run the server with `--auth-policy` and real identities
+One note if you try that against the Quickstart's `flow server dev`: without `--auth`
+it makes every caller the same anonymous principal, and this gate names two qualified
+approver subjects and sets `distinct_from_starter: true`, so that `flow signal` is
+refused and the chase keeps chasing — which is the gate working. Rehearse the answered
+paths with `flow test` above, or run the server with `--auth-policy` and real identities
 ([docs/DEPLOYMENT.md](../../docs/DEPLOYMENT.md)).
 
 ## The interesting lines
