@@ -117,9 +117,10 @@ nothing here is worth learning twice. `help` lists it.
 
 A `<step>` is a bare id or an address. The structured fronts — `flow debug
 attach` and `do`, the MCP session tools, and `embed`'s `Driver` — read the same
-lines, less the prompt's own `complete` and `quit`, plus three: `status` prints
-the current snapshot, `pause` holds a running run at its next boundary, and
-`expand <expr>` pages a map's or list's children.
+lines, less the prompt's own `complete` and `quit`, plus four: `status` prints
+the current snapshot, `pause` holds a running run at its next boundary,
+`expand <expr>` pages a map's or list's children, and `clear` removes every
+breakpoint, whoever set it.
 
 A condition is the step's own `if:`, evaluated where the breakpoint is: the
 same function, the same scope, and the same refusal of anything that is not a
@@ -345,7 +346,15 @@ calls instead:
 ```
 
 A session is leased: every call renews it, one idle for ten minutes is ended,
-and none lives longer than an hour. One `flow mcp` process holds at most eight.
+and none lives longer than an hour — a sweeper ends it whether or not anyone
+calls again. One `flow mcp` process holds at most eight, and at most one of
+them over a test case: while it is open, a second `start`, `flowstate_test`
+and `flowstate_debug` are refused, naming it, because its case holds the
+process's task registry until it ends. Attaching with the `session_id` of a
+session this process already holds answers that session rather than a second
+one. A case that fails before it can hold — a stub or an expectation naming no
+step — says why in the snapshot's message, as well as in the report `end`
+returns.
 `expected_revision` refuses a command meant for a stop the run has already left,
 rather than applying it to the next one. A command carrying a `request_id` is
 answered from memory when retried, so a lost response never moves a run twice,
@@ -611,7 +620,9 @@ session's lease while it runs. `detach`, `quit`, or the end of input releases
 the run; `disconnect` leaves the session attached, and prints how to rejoin it
 with `--session` before the lease lapses. `--program <file>` names the Flowfile
 the run was started from so frames can show lines; it is used only when it
-compiles to the program the run executes, and otherwise lines are not shown.
+compiles to the program the run executes, the plugin and task pins the
+deployment wrote on admission aside, and otherwise the attach says the file
+does not match and lines are not shown.
 
 Two more verbs work without holding anything open:
 
@@ -620,6 +631,11 @@ $ flow debug get <workflow-id>                          # the snapshot; changes 
 $ flow debug do <workflow-id> --session 5ae9… next      # one command in a session left attached
 $ flow debug do <workflow-id> --session 5ae9… inspect steps.orders.results.size() -o json
 ```
+
+Each `flow debug do` is a fresh client, and a breakpoint set is replaced
+whole, so before a line changes the set it adopts every breakpoint the run
+reports from the definition reported with it: `break` and `delete` add to or
+take from what an earlier call or an editor set, and `clear` removes the lot.
 
 The same five RPCs are on the [API](API.md) and are MCP tools of their own
 (`flowstate_debug_attach` and its neighbours); `flow dap`'s attach and the
@@ -633,8 +649,10 @@ workflow a `call:` reached. Inside a `for_each` or `loop:` body, a `parallel:`
 branch, or a `switch:` arm the run can be at several places at once and a hold
 names one, so those bodies run as a unit. `step` from a `call:` step enters the
 callee; `step` from a loop runs the whole loop. A breakpoint on a step inside
-such a body resolves, but never holds a durable run. The local driver runs those
-bodies one step at a time and stops everywhere.
+such a body is reported not armed, saying to break at the enclosing step instead,
+and an `until` whose step is inside one, or that names no step at all, is
+refused and the run stays held, rather than released to the end. The local
+driver runs those bodies one step at a time and stops everywhere.
 
 **What a hold does not stop.** A hold parks workflow code before a step starts.
 Work already dispatched — an activity, an HTTP call, a timer, a called
@@ -665,7 +683,8 @@ a session follows the current one.
 | Conditional and hit-count breakpoints | yes | yes; a condition needs `workload.debug_inspect` |
 | Logpoints (`log`) | yes | refused as unsupported |
 | Failure stops (`catch`) | yes | refused as unsupported |
-| Source-line breakpoints | when a source map is known | resolved by the client to a step, when its program matches |
+| A breakpoint or `until` inside a loop body, branch or arm | yes | the breakpoint is not armed and the `until` is refused |
+| Source-line breakpoints | when a source map is known | resolved by the client to a step, only through a source map that matches the run's program; `flow dap`'s attach has none |
 | `inspect`, `expand`, `scope` | yes | yes, while held, needing `workload.debug_inspect` |
 | Task notes (`NoteTask`) | yes | no |
 | Lease, holder, audit | none: it is your process | yes |
@@ -709,7 +728,9 @@ shows each one and each lease:
 The earlier untyped hold still works for a run whose workflow declares `debug:`:
 `flow signal <workflow-id> flowstate_debug --data '{"verb": "pause", "lease": "5m"}'`
 holds at the next boundary and `{"verb": "resume"}` releases it, with the same
-lease and holder rules, and with `workload.debug` required as above.
+lease and holder rules, and with `workload.debug` required as above. While a
+typed session is attached, its commands own the hold and an untyped resume is
+ignored.
 
 A local run needs none of this: `flow run local --debug` holds at every step
 with no lease and no policy.

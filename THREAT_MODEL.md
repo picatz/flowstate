@@ -517,6 +517,13 @@ often it is renewed, after which the run resumes on its own
 (`pkg/flowstate/v1/debuglease.go`). An abandoned debugger cannot park a run
 indefinitely.
 
+The fronts bound what a client can make them hold. `flow dap` keeps at most
+1024 breakpoints and 1 MiB of their text, and at one stop 4096 variable
+references over 4 MiB of expressions (`pkg/flowstate/v1/flowdap/server.go`).
+`flow mcp` holds at most eight retained sessions, one of them over a test case,
+each ended by a sweeper ten minutes after its last call and an hour after it
+began (`cmd/flow/mcpdebugsession.go`).
+
 Durable history holds the debug protocol, not the run's secrets: the asks (session
 ids, request ids, breakpoint targets and their conditions and hit counts, as the
 caller wrote them), the receipts, and the attested holder's identity. Inspection

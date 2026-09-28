@@ -599,7 +599,8 @@ name that identity, and its token must carry `workload.debug`, and
 
 **What a launch reads.** `program`, the workflow to run; `revealSensitive`, the
 deliberate reveal [Debugging](DEBUGGING.md#sensitive-values) describes; and
-`stopOnEntry`, true unless set false, which holds the run at its first step.
+`stopOnEntry`, true unless set false, which holds the run at its first step;
+false runs it to the first breakpoint, failure stop or `pause` instead.
 The run starts with no inputs and no signals, so a workflow with a required
 input that has no default cannot be launched this way today, and a
 `wait_for_signal:` step can only time out. Use `flow test --debug` on a test
@@ -624,7 +625,9 @@ flowdap: the workflow declares sensitive inputs or outputs whose values the debu
 ```
 
 An attach the server refuses — no `debug:` naming you, or a token without
-`workload.debug` — fails the same way, with the server's reason.
+`workload.debug` — fails the same way, with the server's reason. So does a
+second `launch` or `attach` in one session: a session debugs one program, and
+another needs another session.
 
 ### What the adapter does
 
@@ -636,22 +639,38 @@ It advertises what the backend reports, and refuses the rest by name.
 | `stepIn`, `stepOut` | into and out of loop iterations, parallel branches, switch arms and calls | into and out of calls |
 | `pause` | holds at the next step boundary; work already running finishes | the same |
 | Line breakpoints | resolved through the file's source map to the innermost step whose span holds the line | unverified, saying to name the step instead |
-| Function breakpoints | a step id or an address, such as `orders/charge` or `checks#1/fraud` | the same |
+| Function breakpoints | a step id or an address, such as `orders/charge` or `checks#1/fraud` | the same, but one inside a loop body, branch or arm is unverified, saying to break at the enclosing step |
 | Conditions and hit counts | yes | yes |
 | Logpoints | yes | not advertised |
 | Exception filters `uncaught`, `all` | stop where a step fails and the failure will propagate, or at every failure | not offered; the durable driver has no failure stops |
-| `terminate` | ends the run | never ends the run; disconnecting detaches |
+| `terminate` | ends the run: answered first, then `terminated` and `exited` with code 1, and the adapter waits for the editor's `disconnect` | never ends the run; the session detaches and says so |
 
 An attach sends a `capabilities` event as soon as it knows the backend, so an
 editor stops offering what a durable run does not do. A breakpoint set before
 the run exists is answered unverified — `pending until the program is launched
 or attached` — and re-sent, with a `breakpoint` event for each, once it does.
 
+Disconnecting without `terminateDebuggee` detaches rather than ends, and so
+does an editor that goes away without disconnecting: a launched run finishes
+unattended, and `flow dap` keeps its plugins and secret providers open and does
+not exit until that run returns. An attached durable run continues.
+
+Lines and columns are 1-based unless the editor's `initialize` says
+`linesStartAt1` or `columnsStartAt1` is false. What a client can make the
+adapter hold is bounded. A session holds at most 1024 breakpoints, and a
+request past that is not applied; their paths, conditions, hit conditions and
+log messages together take at most 1 MiB, and a request past that fails whole.
+One stop issues at most 4096 variable references, over at most 4 MiB of the
+expressions behind them; past either, a value comes back without a reference
+to expand until the run moves. A breakpoint request missing its `breakpoints`
+array, or an exception request missing `filters`, is refused as malformed
+rather than read as clearing them.
+
 A run is one thread even where a `parallel:` block is running: a stop inside a
 branch is shown as a frame for that branch, not as a second thread. Frames run
 innermost first — the step, then each iteration, branch, arm or call around it —
-and, on a launch, navigate to the line the source map names. Only the innermost frame
-has a readable scope, because it is the one actually held.
+and, on a launch, navigate to the line the source map names. Only the innermost
+frame has a readable scope, because it is the one actually held.
 
 ### Visual Studio Code
 

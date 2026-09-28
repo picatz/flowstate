@@ -265,6 +265,9 @@ outputs, err := debugging.Wait(ctx)
 `Pause`, `ReplaceBreakpoints` and `Inspect` are the typed contract, and
 `Driver()` takes the debugger's command lines — `next`, `break charge if amount
 > 500`, `inspect steps.fetch` — for a program that would rather speak those.
+Each call returns a fresh driver, which adopts the breakpoints already set —
+through `DebugOptions`, `ReplaceBreakpoints` or another driver — before a line
+changes the set, so `break` adds to them rather than replacing them.
 `Wait` returns what `RunLocal` would have; a run held at a stop does not finish
 until something moves it or `Close` detaches. `Cancel`, or cancelling `ctx`,
 ends the run. `DebugOptions.Output` receives the session's narration, and
