@@ -71,12 +71,12 @@ func TestStyleGuideShowsBothKinds(t *testing.T) {
 	require.NoError(t, err, "docs/STYLE.md moved and this test did not")
 	source := string(data)
 
-	blocks := completeWorkflow.FindAllStringSubmatch(source, -1)
+	blocks := shownWorkflowSources(source)
 	assert.NotEmpty(t, blocks,
 		"docs/STYLE.md shows no complete workflow; either it lost its positive examples or the pattern stopped matching them")
 
 	for i, block := range blocks {
-		assert.NotContains(t, block[1], negativeExample,
+		assert.NotContains(t, block, negativeExample,
 			"docs/STYLE.md positive example %d is marked %q: a negative example must be a fragment, "+
 				"or the compile harness will present it as something to copy", i+1, negativeExample)
 	}

@@ -45,6 +45,38 @@ import (
 // skipped for a machine.
 var completeWorkflow = regexp.MustCompile("(?s)```yaml\n(edition:.*?)```")
 
+// shownWorkflowSources returns the complete Flowfiles a document shows, and
+// shownTestSources the complete `*.test.yaml` documents.
+//
+// A test file opens with `edition:` too, so [completeWorkflow] finds both, and
+// a teaching page that shows a workflow beside the tests that pin it would
+// otherwise have its test file compiled as a workflow and refused for a
+// `tests:` key. [flowfile.LooksLikeFlowfileTest] is the routing `flow fmt` and
+// `flow validate` already use to tell the two apart, so a block is sorted here
+// exactly as a file on disk would be. Every check over shown workflows reads
+// through this rather than the pattern directly, so they agree about which
+// blocks they are checking.
+func shownWorkflowSources(document string) []string {
+	var out []string
+	for _, block := range completeWorkflow.FindAllStringSubmatch(document, -1) {
+		if flowfile.LooksLikeFlowfileTest([]byte(block[1])) {
+			continue
+		}
+		out = append(out, block[1])
+	}
+	return out
+}
+
+func shownTestSources(document string) []string {
+	var out []string
+	for _, block := range completeWorkflow.FindAllStringSubmatch(document, -1) {
+		if flowfile.LooksLikeFlowfileTest([]byte(block[1])) {
+			out = append(out, block[1])
+		}
+	}
+	return out
+}
+
 // TestREADMEWorkflowsCompile checks the documented Flowfiles against the compiler.
 func TestREADMEWorkflowsCompile(t *testing.T) {
 	t.Parallel()
@@ -68,10 +100,7 @@ func TestREADMEWorkflowsCompile(t *testing.T) {
 			data, err := os.ReadFile(path)
 			require.NoError(t, err, "%s moved and this test did not", doc)
 
-			blocks := completeWorkflow.FindAllStringSubmatch(string(data), -1)
-			for i, block := range blocks {
-				source := block[1]
-
+			for i, source := range shownWorkflowSources(string(data)) {
 				// Reported with the workflow's own name rather than an index, so a
 				// failure says which example rather than which position.
 				name := "block " + strings.TrimSpace(strings.SplitN(source, "\n", 2)[0])
@@ -103,7 +132,6 @@ func TestREADMEHasAWorkflowToCheck(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join("..", "..", "..", "..", "README.md"))
 	require.NoError(t, err)
 
-	blocks := completeWorkflow.FindAllStringSubmatch(string(data), -1)
-	assert.NotEmpty(t, blocks,
+	assert.NotEmpty(t, shownWorkflowSources(string(data)),
 		"no complete workflow found in the README; either it lost its examples or the pattern stopped matching them")
 }

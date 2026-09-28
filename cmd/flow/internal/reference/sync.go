@@ -4,7 +4,7 @@
 // documents it mirrors.
 //
 // Run it with `go generate ./cmd/flow/internal/reference` after editing
-// docs/DSL.md or adding an example. TestTheMirrorMatchesTheRepository is what
+// docs/LANGUAGE.md or docs/DSL.md, or adding an example. TestTheMirrorMatchesTheRepository is what
 // makes forgetting the mirror a failure rather than a silently stale answer,
 // and TestDSLTOCHasNoDrift is the same guarantee for the contents list.
 package main
@@ -62,6 +62,17 @@ func run() error {
 		return err
 	}
 
+	// The language guide is mirrored as written: it keeps its own contents
+	// list by hand, because its sections are chosen for a reader rather than
+	// derived from every heading.
+	language, err := readBounded(filepath.Join(repo, "docs", "LANGUAGE.md"), maxSourceBytes)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join("mirror", "LANGUAGE.md"), language, 0o644); err != nil {
+		return err
+	}
+
 	// Every directory under examples/ holding a workflow.yaml, flattened to
 	// <name>.yaml: the directory name is the whole of an example's identity on
 	// the resource surface, and a nested path would put a second thing in the
@@ -88,7 +99,7 @@ func run() error {
 		}
 	}
 
-	fmt.Fprintf(os.Stderr, "sync: mirrored docs/DSL.md and %d examples\n", len(sources))
+	fmt.Fprintf(os.Stderr, "sync: mirrored docs/LANGUAGE.md, docs/DSL.md and %d examples\n", len(sources))
 
 	return nil
 }

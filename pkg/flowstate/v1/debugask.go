@@ -77,11 +77,12 @@ const MaxDebugReceipts = 64
 // The bounds a typed ask is read under, the schema's own for the fields a
 // receipt keeps: a run carries its receipts across Continue-As-New, so what one
 // may hold is decided where the run reads it, not only where an RPC validated
-// it. With [MaxDebugReceipts] they bound a run's receipts to under 80 KiB.
+// it. With [MaxDebugReceipts] they bound a run's receipts to under 80 KiB:
+// 64 × (128 + 1024) bytes of id and message, plus a few bytes of framing each.
 const (
 	MaxDebugSessionIDBytes      = 256
 	MaxDebugRequestIDBytes      = 128
-	MaxDebugReceiptMessageRunes = 1024
+	MaxDebugReceiptMessageBytes = 1024
 )
 
 // DebugAsk is one typed debug ask.
@@ -227,4 +228,15 @@ func truncateBytes(text string, limit int) string {
 	}
 
 	return text[:cut]
+}
+
+// TruncateDebugReceiptMessage cuts message to [MaxDebugReceiptMessageBytes] on
+// a rune boundary, ending in an elision when anything was cut.
+func TruncateDebugReceiptMessage(message string) string {
+	if len(message) <= MaxDebugReceiptMessageBytes {
+		return message
+	}
+	const elision = "…"
+
+	return truncateBytes(message, MaxDebugReceiptMessageBytes-len(elision)) + elision
 }
