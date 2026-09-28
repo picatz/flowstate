@@ -424,11 +424,12 @@ func literalText(segs []segment) string {
 //
 // `string()` is the single named conversion, chosen because it is CEL's own and
 // because an author can write it themselves and get the same answer. It is
-// defined for string, int, uint, double, bool, duration and timestamp. On a map,
-// a list, a null or bytes it has no overload, which is not an oversight: a
+// defined for string, bytes, int, uint, double, bool, duration and timestamp. On
+// a map, a list or a null it has no overload, which is not an oversight: a
 // message that wants a structure rendered should say which rendering it wants,
-// and [checkExpressionTypes] reports the missing overload with that advice
-// whenever the document knows the type.
+// and [checkExpressionTypes] reports the missing overload with that advice for a
+// map or a list whenever the document knows the type. A null is not caught
+// there: the checker accepts it, and the call fails when it is evaluated.
 func interpolationSource(segs []segment) string {
 	parts := make([]string, 0, len(segs))
 	for _, sg := range segs {

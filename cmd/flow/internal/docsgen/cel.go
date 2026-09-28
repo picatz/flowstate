@@ -164,7 +164,7 @@ func renderCELLimits(b *strings.Builder) {
 	b.WriteString("task input, an `if:`, a `wait_until:` — every expression on this page.\n\n")
 	b.WriteString("It matters most for the Idioms section below. A `.filter().map()` chain\n")
 	b.WriteString("costs nothing beyond the work it does per element, and is still charged per\n")
-	b.WriteString("element: run over a response whose size this build does not bound, it\n")
+	b.WriteString("element: run over a large response (refused past 10,000 list elements in total), it\n")
 	b.WriteString("accumulates cost across every item the chain touches, so an expression that\n")
 	b.WriteString("works against a small fixture can still exceed the budget against production\n")
 	b.WriteString("data. An expression that exceeds the budget fails whatever evaluation it is\n")
@@ -214,13 +214,12 @@ func renderCELDurations(b *strings.Builder) {
 	}
 	fmt.Fprintf(b, "Units, largest first: %s.\n\n", strings.Join(units, ", "))
 
-	fmt.Fprintf(b, "Inside a wait (`sleep:`, `wait_until:`, a signal's `timeout:`), `%s` is the\n",
+	fmt.Fprintf(b, "Inside a wait (`sleep:`, `wait_until:`, a wait's `timeout:`, `prompt:` and\n"+
+		"`outputs:`), `%s` is the moment the wait is evaluated — so a deadline is\n",
 		v1.NowIdentifier)
-	fmt.Fprintf(b, "moment the wait is evaluated — so a deadline is `${%s + days(3)}` and a\n",
-		v1.NowIdentifier)
-	fmt.Fprintf(b, "remaining bound is `${deadline - %s}`. See examples/computed-durations and\n",
-		v1.NowIdentifier)
-	b.WriteString("examples/wait-until-a-moment.\n\n")
+	fmt.Fprintf(b, "`${%s + days(3)}` and a remaining bound is `${deadline - %s}`. See\n",
+		v1.NowIdentifier, v1.NowIdentifier)
+	b.WriteString("examples/computed-durations and examples/wait-until-a-moment.\n\n")
 }
 
 // renderCELIdioms is the prose a table cannot carry: which function to reach
@@ -269,12 +268,15 @@ var celIdioms = []celIdiom{
 		prose: "`payload.approved` may be true, false, or missing entirely — a signal can " +
 			"arrive with no payload at all. `.orValue(false)` on that read is a bug: it makes " +
 			"\"missing\" and \"present and false\" the same branch, when they mean \"nobody " +
-			"answered\" and \"answered no.\" Keep the absence visible with `optional.of`/`hasValue`, " +
-			"or read the optional itself and dispatch on it, rather than defaulting it away before " +
-			"the question that matters gets asked. See examples/optional-dispatch.",
-		expr: `payload.?approved.hasValue()
-  ? (payload.approved ? "approved" : "rejected")
-  : "no_response"`,
+			"answered\" and \"answered no.\" Keep the absence visible instead: `optMap` decides " +
+			"between the two answers only when one was sent, and `orValue` names the case where " +
+			"none was, so three outcomes take one conditional rather than a conditional inside a " +
+			"conditional (which `flow lint` reports, docs/STYLE.md R5). examples/expense-approval " +
+			"dispatches this way; examples/optional-dispatch reaches the same three answers with " +
+			"`hasValue()` and two `value:` steps.",
+		expr: `payload.?approved
+  .optMap(approved, approved ? "approved" : "rejected")
+  .orValue("no_response")`,
 	},
 	{
 		title: "A safe read with a default, replacing has()",

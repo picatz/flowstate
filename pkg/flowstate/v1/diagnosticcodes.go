@@ -68,8 +68,9 @@ const (
 	DiagnosticCodeConstraintViolation DiagnosticCode = "constraint-violation"
 
 	// DiagnosticCodePlacementRefusal marks a construct the grammar refuses at
-	// this position — a `undo:` nested where compensation cannot be ordered, a
-	// loop nested inside another loop.
+	// this position — an `undo:` on a step with no effect of its own to take
+	// back, an `async:` inside a concurrent block, a loop nested inside another
+	// loop.
 	DiagnosticCodePlacementRefusal DiagnosticCode = "placement-refusal"
 
 	// DiagnosticCodeRetiredKey marks a bare name that is the pre-rooting
@@ -175,8 +176,9 @@ func DiagnosticCodes() []DiagnosticCodeInfo {
 		},
 		{
 			Code: DiagnosticCodePlacementRefusal,
-			Description: "A construct is refused at the position it is written — an `undo:` the " +
-				"engine cannot order, a loop nested inside another loop.",
+			Description: "A construct is refused at the position it is written — an `undo:` on a " +
+				"step with no effect of its own to take back, an `async:` inside a `for_each` body " +
+				"or a `parallel` branch, a loop nested inside another loop.",
 		},
 		{
 			Code: DiagnosticCodeRetiredKey,
