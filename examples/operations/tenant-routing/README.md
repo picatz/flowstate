@@ -58,7 +58,7 @@ $ flow worker --tenant team-b --task-queue-prefix flowstate-run \
 nothing to do with tenancy — see [worker-versioning](../worker-versioning/), and note that a
 worker refuses to start without them. A Worker Deployment belongs to one Temporal
 namespace, so make the build current in each tenant's namespace before
-submitting (`temporal worker deployment set-current-version --namespace
+submitting (`temporal worker deployment set-current-version --yes --namespace
 temporal-team-a ...`); until then that fleet receives no runs.
 
 Note what makes those two fleets actually different: `--egress-policy` and

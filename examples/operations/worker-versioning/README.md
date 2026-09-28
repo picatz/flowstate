@@ -60,14 +60,15 @@ do.
 3. In a third terminal, make that build the deployment's **current version**:
 
    ```console
-   $ temporal worker deployment set-current-version \
+   $ temporal worker deployment set-current-version --yes \
        --deployment-name flowstate --build-id "$(git rev-parse --short HEAD)"
+   ...
    Successfully set the current worker deployment version
    ```
 
    A versioned worker receives new runs only once its version is current, and
    nothing in `flow` sets it. Skip this step and a run submitted next is
-   accepted, then waits with nothing recorded (`flow timeline` says *This run
+   accepted, then waits with nothing recorded (`flow timeline` says *this run
    has recorded nothing yet*) until some version is made current.
 
 4. Submit a run that will still be going when you deploy again. The
@@ -90,7 +91,7 @@ do.
    Back in the third, make it current:
 
    ```console
-   $ temporal worker deployment set-current-version \
+   $ temporal worker deployment set-current-version --yes \
        --deployment-name flowstate --build-id "$(git rev-parse --short HEAD)-next"
    ```
 

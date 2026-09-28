@@ -40,8 +40,8 @@ flowchart LR
    CLI or UI; `flow` does not. See [Worker versioning, every
    time](#worker-versioning-every-time).
 4. **Write an egress policy.** With none, the `http` task refuses internal
-   addresses and may reach any public one. An `--egress-policy` file turns that
-   into an allowlist.
+   addresses and may reach any public one. An `--egress-policy` file with `allow:`
+   rules turns that into an allowlist.
 5. **Grant secrets deliberately.** Nothing is readable until a `secrets:` rule
    allows it; configure only the providers you use. See
    [Secrets and credentials](SECRETS.md).
@@ -822,13 +822,20 @@ for Tier 2: one worker unit per tenant's Temporal namespace.
 Each unit runs as its own system user, so the server — the process that faces
 the network — cannot read the worker's secrets. The two share one group, and
 that group can read only the federation signing key, which both processes open.
-`flow keys generate` writes a key with mode 0600, owned by whoever ran it, so
-hand it to the shared group and the secret directory to the worker alone:
+Neither user's home is under `/home`: the worker's `ProtectHome=yes` makes that
+unreadable, and `flow worker` reads Temporal's client configuration from
+`$HOME` and refuses to start on a file it cannot read. `PrivateTmp=yes` gives
+each unit a writable `/tmp`, where a worker makes its plugins' socket
+directories; `ProtectSystem=strict` otherwise leaves it read-only. `flow keys
+generate` writes a key with mode 0600, owned by whoever ran it, so hand it to
+the shared group and the secret directory to the worker alone:
 
 ```console
 $ sudo groupadd --system flowstate-keys
-$ sudo useradd --system --user-group --no-create-home --shell /usr/sbin/nologin flowstate-worker
-$ sudo useradd --system --user-group --no-create-home --shell /usr/sbin/nologin flowstate-server
+$ sudo useradd --system --user-group --home-dir /var/lib/flowstate --no-create-home \
+    --shell /usr/sbin/nologin flowstate-worker
+$ sudo useradd --system --user-group --home-dir /nonexistent --no-create-home \
+    --shell /usr/sbin/nologin flowstate-server
 $ sudo install -d -o flowstate-worker -g flowstate-worker -m 0750 /var/lib/flowstate
 $ sudo chown root:flowstate-keys /etc/flowstate/identity-2026-07.pem
 $ sudo chmod 0640 /etc/flowstate/identity-2026-07.pem
@@ -868,6 +875,7 @@ SupplementaryGroups=flowstate-keys
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
+PrivateTmp=yes
 ReadWritePaths=/var/lib/flowstate
 
 [Install]
@@ -879,7 +887,7 @@ build is running, make it the current version (or ramp a share of new runs to
 it with `set-ramping-version`), or it receives no new runs:
 
 ```console
-$ temporal worker deployment set-current-version \
+$ temporal worker deployment set-current-version --yes \
     --namespace production --deployment-name flowstate --build-id 2026.08.06-a1b2c3d
 ```
 
@@ -914,6 +922,7 @@ Group=flowstate-server
 SupplementaryGroups=flowstate-keys
 NoNewPrivileges=yes
 ProtectSystem=strict
+PrivateTmp=yes
 
 [Install]
 WantedBy=multi-user.target
@@ -944,9 +953,12 @@ ExecStart=/usr/local/bin/flow worker --plugin-dir /usr/local/lib/flowstate/plugi
     --identity-key /etc/flowstate/identity-2026-07.pem
 ```
 
-The server unit gets the same two flags. After `federation.key_retention`, drop
-the flags, point `FLOWSTATE_IDENTITY_KEY` in both files at the new key, and
-restart both units again.
+The server unit gets the same two flags. Restart the server first, so it
+publishes the new key before any worker signs with it; the worker unit's
+`After=` ordering would otherwise start the worker first when both restart
+together. After `federation.key_retention`, drop the flags, point
+`FLOWSTATE_IDENTITY_KEY` in both files at the new key, and restart both units
+again.
 
 `FLOWSTATE_RPC_RESOURCE` is what this unit's `flow server` binds its Connect
 RPC audience to, and it is required because `policy.yaml` names a `kind: oidc`
@@ -970,9 +982,11 @@ finish it, and this recipe assumes the first:
   needed — a certificate configured is what [blockers](#blockers) below calls
   the ordinary way past the refusal.
 
-To reach Tier 2 on this shape: run one `flowstate-worker` unit per tenant, each
-with its own `TEMPORAL_NAMESPACE` and its own `--egress-policy` /
-`--auth-policy` files, and map each tenant onto its namespace in the trust
+To reach Tier 2 on this shape: run one worker unit per tenant, each as its own
+system user with its own secret and state directories (sharing only
+`flowstate-keys`, so one tenant's worker cannot read another's secrets), its
+own `TEMPORAL_NAMESPACE`, and its own `--egress-policy` / `--auth-policy`
+files, and map each tenant onto its namespace in the trust
 policy the server loads (`tenancy:` under `--auth-policy`, `auth.Tenancy` /
 `temporalclient.Pool`).
 
@@ -2175,7 +2189,7 @@ Promote each build once its workers are polling, in the Temporal namespace they
 poll:
 
 ```console
-$ temporal worker deployment set-current-version \
+$ temporal worker deployment set-current-version --yes \
     --deployment-name flowstate --build-id 2026.08.06-a1b2c3d
 ```
 

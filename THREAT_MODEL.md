@@ -374,7 +374,7 @@ plugin is trusted code with the worker's authority. The output
 scrubber matches known plaintext and is defeated by any deliberate transform:
 base64, hex, a hash, splitting across two fields. It is a containment tier for
 accidents and is explicitly not containment against an adversarial plugin
-([docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#secrets), `pkg/flowstate/v1/secrets/scrub.go:56`).
+([docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#plugins), `pkg/flowstate/v1/secrets/scrub.go:56`).
 
 **Planned.** Vetting or signing what runs before a binary is trusted with a socket,
 #146, not landed. Isolation tiers with plugins declaring the tier they require and a
@@ -680,7 +680,7 @@ is already in `pkg/flowstate/v1/auth/` has landed.
   Temporal's namespace limits ([docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#noisy-neighbor)).
 - The scrubber will not be hardened toward adversarial transforms; doing so would
   spend effort on a tier it was never meant to occupy
-  ([docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#secrets)).
+  ([docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#plugins)).
 
 **Honest gaps, all present-tense.**
 
