@@ -219,7 +219,7 @@ func TestNowDocNamesEveryPositionTheValidatorBinds(t *testing.T) {
 // (block form: `outputs: { audit: { observed_at: ... } }`) rather than binding
 // it directly. validateWait builds the shaping scope once, from the waiting
 // one, and walks every entry the shaping mapping holds regardless of depth
-// (validate.go:1889-1897), so the clock is bound just as much two levels down
+// (validateWait in validate.go), so the clock is bound just as much two levels down
 // as it is at the top of `outputs:`.
 const waitClockNestedShapingFile = `edition: v2026.3
 name: wait-clock-nested

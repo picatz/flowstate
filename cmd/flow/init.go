@@ -444,7 +444,7 @@ steps:
   - id: greet
     log:
       # ${...} is CEL. Text may surround a fence (hello, ${inputs.name}), and
-      # flow fmt writes that as the single expression below. A run's inputs,
+      # flow fmt rewrites that as one expression, wrapping the fence in string(). A run's inputs,
       # earlier steps' outputs, and anything enclosing control flow bound are
       # all in scope. One YAML rule to know: an expression holding ": " (a
       # ternary, ${a ? b : c}) is quoted whole, '${a ? b : c}', or YAML reads

@@ -2666,7 +2666,7 @@ flow run local examples/hello-world/workflow.yaml --debug`,
 			"`--task-queue-prefix` (the value the server was started with) or given as `--task-queue`.",
 		RunE: runWorker,
 		Example: `# Start a worker, pinned so a deploy does not change runs already in flight.
-# It receives new runs once its build is made the current version.
+# It receives new runs once its build is current or ramping.
 flow worker --temporal-deployment-name flowstate \
   --build-id "$(git rev-parse --short HEAD)"
 

@@ -164,7 +164,7 @@ func renderCELLimits(b *strings.Builder) {
 	b.WriteString("task input, an `if:`, a `wait_until:` — every expression on this page.\n\n")
 	b.WriteString("It matters most for the Idioms section below. A `.filter().map()` chain\n")
 	b.WriteString("costs nothing beyond the work it does per element, and is still charged per\n")
-	b.WriteString("element: run over a large response (each list is capped at 10,000 elements), it\n")
+	b.WriteString("element: run over a large response (refused past 10,000 list elements in total), it\n")
 	b.WriteString("accumulates cost across every item the chain touches, so an expression that\n")
 	b.WriteString("works against a small fixture can still exceed the budget against production\n")
 	b.WriteString("data. An expression that exceeds the budget fails whatever evaluation it is\n")

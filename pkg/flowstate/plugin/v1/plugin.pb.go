@@ -396,12 +396,14 @@ type TaskManifest struct {
 	// `flow validate` and the language server do the same when asked: given
 	// `--plugin-dir` they launch the plugins there and register them the same way,
 	// and `flow validate --plugin-catalog` reads the same descriptors out of a
-	// document `flow plugins --output json` wrote, launching nothing. Without
-	// either flag they build their registry from the built-ins alone, so a
-	// plugin's task is unknown there while running correctly on the worker. That
-	// default is deliberate — validating a file would otherwise mean executing
-	// plugin binaries on an editor's keystroke path — so launching is something
-	// a person asks for on the command line.
+	// document `flow plugins --output json` wrote, launching nothing. `flow
+	// validate` also takes `--plugin-dir`'s default from `$FLOWSTATE_PLUGIN_DIR`;
+	// the language server ignores that variable. Without plugins configured they
+	// build their registry from the built-ins alone, so a plugin's task is
+	// unknown there while running correctly on the worker. The language server's
+	// default is deliberate: validating a file would otherwise mean executing
+	// plugin binaries on an editor's keystroke path, so there launching is
+	// something a person asks for on its command line.
 	//
 	// Recorded rather than assumed, because a field whose enforcement is assumed
 	// rather than checked is how `expect:` got its own reputation.
