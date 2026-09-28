@@ -5,6 +5,7 @@ import (
 	"context"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/require"
@@ -131,4 +132,44 @@ func TestEachNamespaceKeepsItsOwnWindow(t *testing.T) {
 
 func policyWithAge(d time.Duration) *v1.PayloadDataKeyPolicy {
 	return &v1.PayloadDataKeyPolicy{MaxAge: durationpb.New(d)}
+}
+
+// slowWraps takes delay to wrap, or gives up when its context does.
+type slowWraps struct {
+	keyprovider.Key
+	delay time.Duration
+}
+
+func (k slowWraps) Wrap(ctx context.Context, dk []byte, ectx keyprovider.Context) (keyprovider.Wrapped, error) {
+	select {
+	case <-time.After(k.delay):
+		return k.Key.Wrap(ctx, dk, ectx)
+	case <-ctx.Done():
+		return keyprovider.Wrapped{}, ctx.Err()
+	}
+}
+
+// TestEachWrapHasItsOwnDeadline: a data key wrapped to a primary and an escrow
+// key asks two providers, and each may take what the timeout allows one call.
+// Sharing one deadline would let a slow primary spend the escrow's budget and
+// fail a rollover in which every call was within its bound.
+func TestEachWrapHasItsOwnDeadline(t *testing.T) {
+	t.Parallel()
+
+	synctest.Test(t, func(t *testing.T) {
+		primary, err := local.Parse(local.Generate())
+		require.NoError(t, err)
+		escrow, err := local.Parse(local.Generate())
+		require.NoError(t, err)
+
+		const timeout = time.Second
+		_, err = New(t.Context(), Options{
+			Binding:         "ns",
+			Current:         "k1",
+			Keys:            []Recipient{{ID: "k1", Key: slowWraps{Key: primary, delay: timeout * 3 / 4}}},
+			Escrow:          []Recipient{{ID: "e1", Key: slowWraps{Key: escrow, delay: timeout * 3 / 4}}},
+			ProviderTimeout: timeout,
+		})
+		require.NoError(t, err, "the escrow wrap inherited the deadline the primary spent")
+	})
 }

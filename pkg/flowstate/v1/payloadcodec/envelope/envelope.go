@@ -629,10 +629,7 @@ func (c *Codec) newActive(now time.Time) (*activeKey, error) {
 	dk := newDataKey()
 	ectx := keyprovider.Context{Namespace: c.binding, KeyID: c.current.id, Suite: uint32(c.suite)}
 
-	ctx, cancel := context.WithTimeout(context.Background(), c.timeout)
-	defer cancel()
-
-	wrapped, err := c.wrap(ctx, *c.current, dk, ectx)
+	wrapped, err := c.wrap(*c.current, dk, ectx)
 	if err != nil {
 		clear(dk)
 		return nil, err
@@ -642,7 +639,7 @@ func (c *Codec) newActive(now time.Time) (*activeKey, error) {
 	// last in-flight seal that loaded it has finished.
 	runtime.AddCleanup(a, func(dk []byte) { clear(dk) }, dk)
 	for _, id := range c.escrowIDs {
-		w, err := c.wrap(ctx, c.escrow[id], dk, ectx)
+		w, err := c.wrap(c.escrow[id], dk, ectx)
 		if err != nil {
 			clear(dk)
 			return nil, fmt.Errorf("escrow key %q: %w", id, err)
@@ -655,7 +652,13 @@ func (c *Codec) newActive(now time.Time) (*activeKey, error) {
 	return a, nil
 }
 
-func (c *Codec) wrap(ctx context.Context, e ringEntry, dk []byte, ectx keyprovider.Context) (keyprovider.Wrapped, error) {
+// wrap wraps dk to one key under a deadline of its own, so a slow provider
+// spends only its own budget: a data key wrapped to a primary and three escrow
+// keys waits at most four timeouts, and no provider inherits a deadline an
+// earlier one used up.
+func (c *Codec) wrap(e ringEntry, dk []byte, ectx keyprovider.Context) (keyprovider.Wrapped, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), c.timeout)
+	defer cancel()
 	w, err := e.key.Wrap(ctx, dk, ectx)
 	if err != nil {
 		return keyprovider.Wrapped{}, classifyProviderError(err)
