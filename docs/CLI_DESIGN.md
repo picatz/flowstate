@@ -599,20 +599,22 @@ every other addition in this schema is):
 
 - **`GraphNode`**: `id` (the deterministic, path-qualified identifier — see
   6.2's node-id fix below for why a bare step id is not unique), `label` (the
-  authored step id, for display), `kind` (an enum: `TASK`, `FOR_EACH`,
-  `PARALLEL`, `CALL`), and `depth` (the nesting level, per the depth rule
-  below). What this message does **not** yet carry: a status or a duration.
+  authored step id, for display), `kind` (an enum with one value per `Node`
+  kind in `workflow.proto`: `TASK`, `FOR_EACH`, `PARALLEL`, `WAIT`, `CALL`,
+  `LOOP`, `VALUE`, `SWITCH`), and `depth` (the nesting level, per the depth
+  rule below). What this message does **not** yet carry: a status or a duration.
   Those are run facts, and no schema field for them exists anywhere in this
   proto today — see the run-state prerequisite below, which is a fenced-off,
   separately landed addition rather than something this message grows silently.
 - **`GraphEdge`**: `from`, `to` (both `GraphNode.id` values), and `kind` — an
   enum of `SEQUENCE` (this step follows that one), `CALL_EXPANSION` (this
   step's body is the callee's own graph, computed recursively from the callee's
-  compiled `Workflow`), `LOOP_BODY` (this step is inside a `for_each`, once,
-  regardless of how many iterations a run performed — the *spec's* shape, with
-  an iteration count layered on separately if the run-state prerequisite below
-  ever adds one), and `PARALLEL_BRANCH` (this step is one of several siblings
-  under one parallel node rather than a sequence).
+  compiled `Workflow`), `LOOP_BODY` (this step is inside a `for_each` or a
+  `loop:`, once, regardless of how many iterations a run performed — the
+  *spec's* shape, with an iteration count layered on separately if the
+  run-state prerequisite below ever adds one), `PARALLEL_BRANCH` (this step is
+  one of several siblings under one parallel node rather than a sequence), and
+  `SWITCH_ARM` (this step is in one arm of a `switch:`).
 - **`Graph`**: `repeated GraphNode nodes`, `repeated GraphEdge edges`, and the
   workflow id or path the graph was built from, so a `Graph` value is
   self-describing rather than needing to be handed back to whoever produced it
@@ -668,17 +670,19 @@ step can fail in workflow code before its activity is scheduled (evaluating its
 width) or after the activity completes (registering its `undo:`), and neither
 leaves a step event. A skipped step, a `value:` step, and
 the control-flow nodes (`call`, `for_each`, `loop`, `parallel`, `switch`) record
-no outcome event. So "task X's activity completed in 12s while task Y's is
-still running" can be *read* from the timeline, but a graph overlay needs every
-event joined losslessly to a `GraphNode.id`, compensations told apart from
-forward steps, the occurrences of a repeated node aggregated by a stated rule,
-each signal joined to the wait that consumed it, and a terminal outcome for
-every node, and nothing carries any of that today. Supplying it, reusing the
-timeline for what it already records rather than restating it, is therefore
-its own slice
-(gap inventory slice 3), settled and reviewed before any overlay code is
-written, and every overlay-producing path in this
-document (6.2's `--run` variant, 6.3's outcome colouring, section 3's
+no outcome event. So "task X's activity completed in 12s while task Y's has not
+finished" can be *read* from the timeline — not that Y is running, since its
+rows cannot tell a running activity from one waiting to start or backing off
+between attempts — but a graph overlay needs every event joined losslessly to a
+`GraphNode.id`, compensations told apart from forward steps, the occurrences of
+a repeated node aggregated by a stated rule, each consumed signal joined to the
+wait that consumed it (and a signal no wait consumes — a debug ask, an
+undeclared name, a dropped duplicate — marked as such), activity state beyond
+scheduled and finished, and a terminal outcome for every node, and nothing
+carries any of that today. Supplying it, reusing the timeline for what it
+already records rather than restating it, is therefore its own slice (gap
+inventory slice 3), settled and reviewed before any overlay code is written,
+and every overlay-producing path in this document (6.2's `--run` variant, 6.3's outcome colouring, section 3's
 step/timeline view) is blocked on it. `NewGraph` in this slice takes a spec and
 nothing else.
 
@@ -1009,8 +1013,12 @@ line. What is not: everything below.
      never read as its forward step's completion (a compensation is dispatched
      from the run-level undo stack, whose entries carry a step id and no
      position);
-   - the wait that consumed each signal, and when (a signal event names the
-     signal, not the step, and a signal sent early is recorded on arrival);
+   - for each signal, whether a wait consumed it and which one, and when (a
+     signal event names the signal, not the step; a signal sent early is
+     recorded on arrival; and a debug ask, an undeclared name, or a dropped
+     duplicate is consumed by no wait);
+   - whether an unfinished activity is running, waiting to start, or backing
+     off between attempts, which the timeline cannot tell apart;
    - a task step's terminal outcome where workflow code decides it around the
      activity: an `if:`, input, or `vars:` evaluation failing, or the `async:`
      width being exceeded, before anything is scheduled, and `undo:`
