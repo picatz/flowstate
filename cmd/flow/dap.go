@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os/signal"
 	"slices"
 	"sync"
+	"syscall"
 
 	"github.com/spf13/cobra"
 
@@ -98,6 +100,14 @@ func runDAP(cmd *cobra.Command, _ []string) error {
 	// not fail on a plugin it never runs.
 	var local localRunResources
 	defer local.close()
+
+	// An editor that dies takes the read end of this process's standard output
+	// with it, and a write to fd 1 after that is a SIGPIPE that kills the
+	// process under a run the session detached from, with its plugins never
+	// closed. Ignored, the write fails with EPIPE, which the adapter discards;
+	// it also stops writing once it sees the client gone, but a message
+	// already in flight when the editor dies would still meet the pipe.
+	signal.Ignore(syscall.SIGPIPE)
 
 	writeStdioBanner(cmd.ErrOrStderr(), stdinIsInteractive(cmd), dapBanner)
 

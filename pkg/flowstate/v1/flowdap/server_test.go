@@ -966,8 +966,15 @@ func TestARefusedBreakpointSetVerifiesNothing(t *testing.T) {
 	assert.Contains(t, failed["message"], "at most")
 	assert.Nil(t, failed["body"], "a refused oversized set was answered entry by entry")
 
-	c.send(20, "setBreakpoints", map[string]any{"source": map[string]any{"path": "/w.yaml"}, "breakpoints": tooMany})
-	assert.Equal(t, false, c.await("response", "setBreakpoints")["success"])
+	tooManyLines := make([]map[string]any, 0, flowdebug.MaxBreakpoints+1)
+	for i := range flowdebug.MaxBreakpoints + 1 {
+		tooManyLines = append(tooManyLines, map[string]any{"line": i + 1})
+	}
+	c.send(20, "setBreakpoints", map[string]any{"source": map[string]any{"path": "/w.yaml"}, "breakpoints": tooManyLines})
+	failedLines := c.await("response", "setBreakpoints")
+	assert.Equal(t, false, failedLines["success"])
+	assert.Contains(t, failedLines["message"], "at most")
+	assert.Nil(t, failedLines["body"], "a refused oversized line set was answered entry by entry")
 
 	// A set within the bound that overflows only beside another source's is
 	// refused entry by entry, where a client shows breakpoint state.
