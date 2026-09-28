@@ -7,6 +7,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/nearest"
 )
 
@@ -235,6 +236,24 @@ func splitScriptLines(text string) []string {
 // a session does with a line it is given. A script that passes runs exactly as
 // the same bytes on stdin would.
 func CheckScript(lines []string, steps []string) (problems []ScriptProblem, total int) {
+	return CheckScriptFor(lines, steps, nil)
+}
+
+// CheckScriptFor is [CheckScript] with the workflow the script will run
+// against, so a `break` or `until` naming a step by address — `orders/charge`,
+// `checks#1/fraud` — is resolved against the workflow's sites exactly as the
+// prompt resolves it, rather than read as a bare
+// step id no step is named. Without a workflow, or with one too large to
+// enumerate, an address is judged by the step it ends in, as the prompt judges
+// it then.
+func CheckScriptFor(lines []string, steps []string, workflow *v1.Workflow) (problems []ScriptProblem, total int) {
+	var inventory scriptSites
+	if workflow != nil {
+		var truncated bool
+		inventory.sites, truncated = v1.DebugStaticSites(workflow)
+		inventory.known = !truncated
+	}
+
 	known := make(map[string]struct{}, len(steps))
 	for _, id := range steps {
 		known[id] = struct{}{}
@@ -324,7 +343,7 @@ func CheckScript(lines []string, steps []string) (problems []ScriptProblem, tota
 
 				continue
 			}
-			checkStepArgument(report, number, line, id, known, candidates, len(problems) < MaxScriptProblems)
+			checkStepArgument(report, number, line, id, known, inventory, candidates, len(problems) < MaxScriptProblems)
 
 		case "break":
 			id, condition, conditional, err := splitCondition(rest, grammarBreak)
@@ -351,7 +370,7 @@ func CheckScript(lines []string, steps []string) (problems []ScriptProblem, tota
 
 				continue
 			}
-			checkStepArgument(report, number, line, id, known, candidates, len(problems) < MaxScriptProblems)
+			checkStepArgument(report, number, line, id, known, inventory, candidates, len(problems) < MaxScriptProblems)
 
 		case "inspect":
 			if strings.TrimSpace(rest) == "" {
@@ -387,6 +406,7 @@ func checkStepArgument(
 	line string,
 	id string,
 	known map[string]struct{},
+	inventory scriptSites,
 	names []string,
 	detail bool,
 ) {
@@ -397,7 +417,23 @@ func checkStepArgument(
 		return
 	}
 
+	// The address grammar, as the prompt reads it: a site path is resolved
+	// against the program's sites when they are known, and otherwise judged
+	// by its step.
+	target := v1.ParseDebugTargetOrStep(id)
 	column := columnOf(line, argumentOffset(line))
+	switch {
+	case inventory.known && len(target.Resolve(inventory.sites)) > 0:
+		return
+	case inventory.known && strings.ContainsRune(id, '/'):
+		report(number, column, "%s", noSiteMatches(id))
+
+		return
+	case !inventory.known:
+		if _, ok := known[target.Step()]; ok {
+			return
+		}
+	}
 	if !detail {
 		report(number, column, "no step named %q", id)
 
@@ -410,6 +446,13 @@ func checkStepArgument(
 		return
 	}
 	report(number, column, "no step named %q: this workflow declares %s", id, stepList(names))
+}
+
+// scriptSites are the sites a script's workflow declares, when [CheckScriptFor]
+// was given one it could enumerate whole.
+type scriptSites struct {
+	sites []v1.DebugStaticSite
+	known bool
 }
 
 // leadingSpace is the byte offset of a line's first word.

@@ -355,7 +355,7 @@ flow debug attach order-1234 --session 5d3f…
 | `--credential-source <string>` | `string` | — | `FLOWSTATE_CREDENTIAL_SOURCE` | acquire a credential from a named source instead of `--token-file`/FLOWSTATE_TOKEN (overrides FLOWSTATE_CREDENTIAL_SOURCE); one of github-actions, gitlab, terraform-cloud, file, env. An unknown or unusable source is an error, never anonymous |
 | `--lease <duration>` | `duration` | `2m0s` | — | how long each renewal holds the session; the engine bounds it |
 | `-o, --output <string>` | `string` | `text` | — | output format: text, json, or jsonl |
-| `--program <string>` | `string` | — | — | the Flowfile the run was started from, for source lines; used only if it matches the run's program |
+| `--program <string>` | `string` | — | — | the Flowfile the run was started from, for source lines; used only if it compiles to the program the run executes, the deployment's plugin and task pins aside |
 | `--run-id <string>` | `string` | — | — | pin the run, as the first run id of its chain; unset follows the current one |
 | `--script <string>` | `string` | — | — | read commands from this file instead of the terminal |
 | `--session <string>` | `string` | — | — | rejoin this session instead of attaching a new one |

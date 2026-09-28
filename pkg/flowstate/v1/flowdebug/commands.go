@@ -888,7 +888,7 @@ func (s *Session) unknownStepNotice(id string) (string, bool) {
 			return fmt.Sprintf("no step named %q: this workflow declares %s", id, stepList(ids)), true
 		}
 
-		return fmt.Sprintf("no step matches %q: its last part names the step, and each part before it an enclosing loop, parallel, switch, or call", id), true
+		return noSiteMatches(id), true
 	}
 	id = target.Step()
 
@@ -934,6 +934,12 @@ func (s *Session) unknownStepNotice(id string) (string, bool) {
 	// inventory on every refusal is work a redirected stdin chooses the
 	// amount of, and refused commands are not recorded (Codex, #1347).
 	return fmt.Sprintf("no step named %q: this workflow declares %s", id, stepList(names)), true
+}
+
+// noSiteMatches is the refusal of an address no site of the program matches,
+// in the words the prompt and a script check share.
+func noSiteMatches(id string) string {
+	return fmt.Sprintf("no step matches %q: its last part names the step, and each part before it an enclosing loop, parallel, switch, or call", id)
 }
 
 // holdBreakpoint puts one breakpoint in the set, reporting whether there was

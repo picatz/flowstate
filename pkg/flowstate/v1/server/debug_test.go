@@ -90,6 +90,10 @@ func TestTheDurableDebuggerEndToEnd(t *testing.T) {
 	assert.Equal(t, "after", held.GetOccurrence().GetAddress())
 	assert.Equal(t, session, held.GetSession().GetSessionId())
 	assert.EqualValues(t, v1.DebugProtocol, held.GetProtocol())
+	// The program the run reports is the one submitted: the attestation the
+	// server writes onto it at admission is not part of the program a source
+	// map describes, so a client's map of the same file binds.
+	assert.Equal(t, v1.WorkflowIRDigest(debuggableWorkflow()), held.GetIrDigest())
 
 	// The retry of the attach is answered from the run's receipt.
 	retried, err := fixture.teamA.DebugAttach(sre1, connect.NewRequest(&v1.DebugAttachRequest{

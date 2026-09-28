@@ -1,6 +1,7 @@
 package engine_test
 
 import (
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -217,6 +218,54 @@ func TestATypedSessionStepsIntoAndOutOfACall(t *testing.T) {
 		observed = append(observed, observation.GetText())
 	}
 	assert.Contains(t, observed, "greet finished")
+}
+
+// TestADurableBreakpointInsideABodyIsNotArmed: a durable run holds only at
+// the top level of the run and of a callee, so a breakpoint on a step inside
+// a loop body is reported unarmed, with why, rather than armed and silent.
+func TestADurableBreakpointInsideABodyIsNotArmed(t *testing.T) {
+	t.Parallel()
+
+	tl := newTimeline(t)
+	const sre = "sre-1@example.com"
+	tl.ask(30*time.Second, sre, &v1.DebugAsk{Verb: v1.DebugVerbPause, Session: "s1", Request: "attach", Lease: 5 * time.Minute})
+	tl.ask(65*time.Second, sre, &v1.DebugAsk{Verb: v1.DebugVerbBreakpoints, Session: "s1", Request: "bp",
+		Breakpoints: &v1.DebugSetBreakpointsRequest{Breakpoints: []*v1.DebugBreakpoint{
+			{Id: "body", Step: "each/touch"},
+			{Id: "bare", Step: "touch"},
+			{Id: "top", Step: "second"},
+		}}})
+	tl.read(66*time.Second, "set", "bp")
+	tl.ask(70*time.Second, sre, &v1.DebugAsk{Verb: v1.DebugVerbResume, Session: "s1", Request: "go",
+		Action: v1.DebugResumeAction_DEBUG_RESUME_ACTION_CONTINUE})
+	tl.read(71*time.Second, "stop", "go")
+	tl.ask(80*time.Second, sre, &v1.DebugAsk{Verb: v1.DebugVerbResume, Session: "s1", Request: "bye",
+		Action: v1.DebugResumeAction_DEBUG_RESUME_ACTION_DETACH})
+
+	spec := typedSpec("bodies")
+	spec.Steps = slices.Insert(spec.Steps, 3, &v1.Node{Id: "each", Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{
+		Items: v1.NewLiteralList(v1.NewLiteral("a"), v1.NewLiteral("b")), Iterator: "item",
+		Body: []*v1.Node{logStep("touch", "touched")},
+	}}})
+	tl.env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: spec})
+	require.True(t, tl.env.IsWorkflowCompleted())
+	require.NoError(t, tl.env.GetWorkflowError())
+
+	states := map[string]*v1.DebugBreakpointState{}
+	for _, state := range tl.reads["set"].GetBreakpoints() {
+		states[state.GetId()] = state
+	}
+	require.Len(t, states, 3)
+	for _, id := range []string{"body", "bare"} {
+		assert.False(t, states[id].GetVerified(), "%s is armed where the durable run never holds", id)
+		assert.Contains(t, states[id].GetMessage(), "never holds in")
+		assert.Empty(t, states[id].GetSites())
+	}
+	assert.True(t, states["top"].GetVerified())
+
+	stop := tl.reads["stop"]
+	assert.Equal(t, v1.DebugStopReason_DEBUG_STOP_REASON_BREAKPOINT, stop.GetReason())
+	assert.Equal(t, "second", stop.GetOccurrence().GetAddress())
 }
 
 func TestATypedSessionExpiresAndTheRunResumes(t *testing.T) {

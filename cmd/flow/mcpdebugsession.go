@@ -525,7 +525,7 @@ func (r *debugSessions) start(ctx context.Context, req *mcp.CallToolRequest) (*m
 		// Published by closing done, which is what a reader waits on.
 		entry.report = result.Report
 		if testReportFailed(result.Report) {
-			session.Finished(errors.New("the case did not pass"))
+			session.Finished(caseFailure(result.Report))
 		} else {
 			session.Finished(nil)
 		}
@@ -544,6 +544,33 @@ func (r *debugSessions) start(ctx context.Context, req *mcp.CallToolRequest) (*m
 	}
 
 	return toolJSON(entry.answer(ctx)), nil
+}
+
+// caseFailure is why a case did not pass, for the session's snapshot: a case
+// refused before it ran — a stub naming no step, an expectation naming none —
+// otherwise fails at start with nothing but "did not pass", and the reason only
+// in the report the end answers with. The text is the report's own, which
+// flowtest has already redacted under the case's posture; the session redacts
+// it again and bounds it as it does any failure.
+func caseFailure(report *v1.TestReport) error {
+	reason := report.GetRefused()
+	for _, c := range report.GetCases() {
+		if reason != "" {
+			break
+		}
+		if c.GetPassed() {
+			continue
+		}
+		reason = c.GetError()
+		if reason == "" && len(c.GetFailures()) > 0 {
+			reason = c.GetFailures()[0].GetMessage()
+		}
+	}
+	if reason == "" {
+		return errors.New("the case did not pass")
+	}
+
+	return fmt.Errorf("the case did not pass: %s", reason)
 }
 
 func (r *debugSessions) attach(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {

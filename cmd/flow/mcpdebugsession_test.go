@@ -583,3 +583,38 @@ func TestEndingACaseThatCannotStopReturns(t *testing.T) {
 		assert.True(t, entry.end(false))
 	})
 }
+
+// TestAStartThatCannotRunTheCaseSaysWhy: a case refused before any step ran
+// ends at start, and the start's own snapshot says why rather than only that
+// it did not pass.
+func TestAStartThatCannotRunTheCaseSaysWhy(t *testing.T) {
+	t.Parallel()
+
+	client := connectMCP(t, defaultLocalRunPosture())
+	result, started := callSession(t, client, debugSessionStartTool, map[string]any{
+		"workflow": debugWorkflow,
+		"tests": `tests:
+  - name: it ships
+    inputs:
+      release: "2026.9.0"
+    stubs:
+      - step: shpi
+        returns: {}
+    expect:
+      ran: [build, ship]
+`,
+	})
+	require.False(t, result.IsError, started.raw)
+	assert.Equal(t, "DEBUG_RUN_STATE_FAILED", started.Snapshot.State)
+
+	var answer struct {
+		Snapshot struct {
+			Message string `json:"message"`
+		} `json:"snapshot"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(started.raw), &answer))
+	assert.Contains(t, answer.Snapshot.Message, "the case did not pass: ")
+	assert.Contains(t, answer.Snapshot.Message, "shpi", "the reason is only in the report the end returns")
+
+	_, _ = callSession(t, client, debugSessionEndTool, map[string]any{"session_id": started.SessionID})
+}

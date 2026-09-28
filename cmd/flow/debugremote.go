@@ -64,7 +64,8 @@ func addDebugRemoteCommands(debugCmd *cobra.Command) {
 	attachCmd.Flags().String("session", "", "rejoin this session instead of attaching a new one")
 	attachCmd.Flags().Duration("lease", 2*time.Minute, "how long each renewal holds the session; the engine bounds it")
 	attachCmd.Flags().String("script", "", "read commands from this file instead of the terminal")
-	attachCmd.Flags().String("program", "", "the Flowfile the run was started from, for source lines; used only if it matches the run's program")
+	attachCmd.Flags().String("program", "", "the Flowfile the run was started from, for source lines; used only if it compiles to the program the run executes, "+
+		"the deployment's plugin and task pins aside")
 	attachCmd.Flags().Duration("wait", time.Minute, "how long a movement waits for the next stop before reporting the run still running")
 
 	getCmd := &cobra.Command{

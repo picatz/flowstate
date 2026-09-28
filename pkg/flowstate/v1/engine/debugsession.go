@@ -338,6 +338,19 @@ func debugBreakpointDefined(bp *v1.DebugBreakpoint, i int) *v1.DebugBreakpointSt
 	return state
 }
 
+// durablyHeld reports whether the durable driver holds at site: at the top
+// level of the run or of a called workflow, where a run has one position. Every
+// other container runs its body at `susp > 0` (see debuglease.go).
+func durablyHeld(site v1.DebugStaticSite) bool {
+	for _, segment := range site.Chain {
+		if segment.GetKind() != v1.DebugSegmentKind_DEBUG_SEGMENT_KIND_CALL {
+			return false
+		}
+	}
+
+	return true
+}
+
 // parseDebugBreakpoints compiles the carried breakpoints once per segment.
 func (e *executor) parseDebugBreakpoints() {
 	d := e.debug
@@ -371,6 +384,17 @@ func (e *executor) parseDebugBreakpoints() {
 			resolved := target.Resolve(sites)
 			if len(resolved) == 0 {
 				refuse(fmt.Sprintf("no step matches %q", bp.GetStep()))
+
+				break
+			}
+			// Only a site the durable driver can hold at arms it: one inside
+			// a loop body, a parallel branch or a switch arm is never an
+			// arrival here, and a breakpoint there that reported armed would
+			// claim a stop that never comes.
+			resolved = slices.DeleteFunc(resolved, func(site v1.DebugStaticSite) bool { return !durablyHeld(site) })
+			if len(resolved) == 0 {
+				refuse(fmt.Sprintf("%q is inside a loop body, a parallel branch or a switch arm, which a durable run "+
+					"executes as a unit and never holds in; break at the enclosing step instead", bp.GetStep()))
 
 				break
 			}
