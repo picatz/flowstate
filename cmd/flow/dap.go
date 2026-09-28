@@ -165,13 +165,16 @@ func (r *localRunResources) open(cmd *cobra.Command) (*v1.PluginCatalog, *localS
 	if err != nil {
 		return nil, nil, fmt.Errorf("flowdap: configuring secrets for the debug adapter: %w", err)
 	}
-	r.closers = append(r.closers, providers.close)
 
 	catalog, closePlugins, err := startPlugins(cmd, providers.registry)
 	if err != nil {
+		// Released now rather than at exit: a client that retries the launch
+		// would otherwise open another set of providers each time.
+		providers.close()
+
 		return nil, nil, fmt.Errorf("flowdap: starting plugins for the debug adapter: %w", err)
 	}
-	r.closers = append(r.closers, closePlugins)
+	r.closers = append(r.closers, providers.close, closePlugins)
 
 	r.opened, r.catalog, r.providers = true, catalog, providers
 

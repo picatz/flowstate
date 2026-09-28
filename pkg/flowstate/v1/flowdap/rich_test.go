@@ -734,6 +734,11 @@ func TestBreakpointRequestsAreBoundedAtTheEdge(t *testing.T) {
 	assert.Equal(t, true, body(kept)["breakpoints"].([]any)[0].(map[string]any)["verified"],
 		"the malformed request disturbed the installed set")
 
+	c.send(seq, "setExceptionBreakpoints", map[string]any{})
+	seq++
+	assert.Equal(t, false, c.await("response", "setExceptionBreakpoints")["success"],
+		"a request with no filters array cleared the failure stops")
+
 	assert.Equal(t, false, set(program, []map[string]any{{"line": int64(1)<<32 + 13}})["success"],
 		"a line past 2^32 was taken, and would have been set on line 13")
 
