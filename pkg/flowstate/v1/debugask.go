@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strconv"
 	"time"
+	"unicode/utf8"
 
 	"google.golang.org/protobuf/encoding/protojson"
 )
@@ -73,6 +74,16 @@ const DebugConditionStale = "stale"
 // MaxDebugReceipts bounds the receipts a run keeps for retries.
 const MaxDebugReceipts = 64
 
+// The bounds a typed ask is read under, the schema's own for the fields a
+// receipt keeps: a run carries its receipts across Continue-As-New, so what one
+// may hold is decided where the run reads it, not only where an RPC validated
+// it. With [MaxDebugReceipts] they bound a run's receipts to under 80 KiB.
+const (
+	MaxDebugSessionIDBytes      = 256
+	MaxDebugRequestIDBytes      = 128
+	MaxDebugReceiptMessageRunes = 1024
+)
+
 // DebugAsk is one typed debug ask.
 type DebugAsk struct {
 	Verb        string
@@ -133,6 +144,12 @@ func ParseTypedDebugAsk(payload *Node_Outputs) (*DebugAsk, bool, error) {
 	session := text(DebugSessionInput)
 	if session == "" {
 		return nil, false, nil
+	}
+	if len(session) > MaxDebugSessionIDBytes || len(text(DebugRequestInput)) > MaxDebugRequestIDBytes {
+		// Typed, and refused with nothing to answer under: a request id this
+		// long is not one the run will keep a receipt for.
+		return &DebugAsk{Session: truncateBytes(session, MaxDebugSessionIDBytes)}, true,
+			fmt.Errorf("a typed debug ask's session id may be %d bytes and its request id %d", MaxDebugSessionIDBytes, MaxDebugRequestIDBytes)
 	}
 
 	ask := &DebugAsk{
@@ -197,4 +214,17 @@ func DurableDebugCapabilities() *DebugCapabilities {
 		ValueExpansion:         true,
 		Observations:           true,
 	}
+}
+
+// truncateBytes cuts text to at most limit bytes on a rune boundary.
+func truncateBytes(text string, limit int) string {
+	if len(text) <= limit {
+		return text
+	}
+	cut := limit
+	for cut > 0 && !utf8.RuneStart(text[cut]) {
+		cut--
+	}
+
+	return text[:cut]
 }

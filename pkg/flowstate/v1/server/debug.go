@@ -462,9 +462,17 @@ func (s *FlowstateServer) DebugSetBreakpoints(ctx context.Context, req *connect.
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
-	run, err := s.authorizeDebug(ctx, "DebugSetBreakpoints", req.Msg.GetWorkflowId(), req.Msg.GetRunId(), &v1.AuditDebugDetail{
+	detail := &v1.AuditDebugDetail{
 		SessionId: req.Msg.GetSessionId(), RequestId: req.Msg.GetRequestId(), Operation: "breakpoints",
-	})
+		ExpressionDigest: debugConditionsDigest(req.Msg),
+	}
+	if detail.GetExpressionDigest() != "" {
+		if err := s.requireDebugAction(ctx, "DebugSetBreakpoints", req.Msg.GetWorkflowId(),
+			v1.AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_DEBUG_INSPECT, detail); err != nil {
+			return nil, err
+		}
+	}
+	run, err := s.authorizeDebug(ctx, "DebugSetBreakpoints", req.Msg.GetWorkflowId(), req.Msg.GetRunId(), detail)
 	if err != nil {
 		return nil, err
 	}
@@ -548,23 +556,66 @@ func (s *FlowstateServer) DebugInspect(ctx context.Context, req *connect.Request
 }
 
 // authorizeDebugChannel refuses a raw Signal onto the reserved debug channel
-// from a caller without `workload.debug`, and records the refusal against the
-// Signal it arrived as.
-func (s *FlowstateServer) authorizeDebugChannel(ctx context.Context, workflowID string) error {
+// from a caller without `workload.debug`, and one carrying a breakpoint
+// condition from a caller without `workload.debug_inspect` too, recording the
+// refusal against the Signal it arrived as.
+func (s *FlowstateServer) authorizeDebugChannel(ctx context.Context, workflowID string, payload *v1.Node_Outputs) error {
+	detail := &v1.AuditDebugDetail{Operation: "signal"}
+	if err := s.requireDebugAction(ctx, "Signal", workflowID, v1.AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_DEBUG, detail); err != nil {
+		return err
+	}
+	// A typed ask that cannot be read is refused by the run itself; only one
+	// that can be read carries conditions to evaluate.
+	if ask, typed, err := v1.ParseTypedDebugAsk(payload); typed && err == nil {
+		if digest := debugConditionsDigest(ask.Breakpoints); digest != "" {
+			detail.ExpressionDigest = digest
+			return s.requireDebugAction(ctx, "Signal", workflowID, v1.AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_DEBUG_INSPECT, detail)
+		}
+	}
+
+	return nil
+}
+
+// requireDebugAction refuses a caller whose token carries an action list
+// without action, auditing the refusal under rpc. A caller with no action list
+// keeps the legacy posture [FlowstateServer.authorizeAction] documents.
+func (s *FlowstateServer) requireDebugAction(ctx context.Context, rpc, workflowID string, action v1.AuthorizationAction, detail *v1.AuditDebugDetail) error {
 	principal, ok := auth.PrincipalFromContext(ctx)
 	if !ok || principal.Actions == nil {
 		return nil
 	}
 
-	scope := v1.AuthorizationActionScope(v1.AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_DEBUG)
+	scope := v1.AuthorizationActionScope(action)
 	if slices.Contains(principal.Actions, scope) {
 		return nil
 	}
 
 	refusal := connect.NewError(connect.CodePermissionDenied,
-		fmt.Errorf("a signal on the reserved debug channel requires action %q", scope))
+		fmt.Errorf("the caller is not authorized for required action %q", scope))
 	refusal.Meta().Set("WWW-Authenticate", fmt.Sprintf(`Bearer error="insufficient_scope", scope=%q`, scope))
 
-	return s.auditDebugDeny(ctx, "Signal", workflowID, &v1.AuditDebugDetail{Operation: "signal"},
-		v1.AuditDenyCode_AUDIT_DENY_CODE_POLICY_DENIED, refusal)
+	return s.auditDebugDeny(ctx, rpc, workflowID, detail, v1.AuditDenyCode_AUDIT_DENY_CODE_POLICY_DENIED, refusal)
+}
+
+// debugConditionsDigest is the digest of every expression a breakpoint set
+// would evaluate against the run's scope — conditions and log messages — or ""
+// when it evaluates none. Evaluating an expression against the scope is a
+// disclosure: a condition that holds or not is one bit of whatever it reads,
+// and a set of them is as many bits as there are breakpoints. So a set that
+// evaluates anything needs the inspect action, and its audit record names what
+// it asked, as an inspection's does.
+func debugConditionsDigest(set *v1.DebugSetBreakpointsRequest) string {
+	var expressions []string
+	for _, breakpoint := range set.GetBreakpoints() {
+		for _, expression := range []string{breakpoint.GetCondition(), breakpoint.GetLogMessage()} {
+			if strings.TrimSpace(expression) != "" {
+				expressions = append(expressions, expression)
+			}
+		}
+	}
+	if len(expressions) == 0 {
+		return ""
+	}
+
+	return v1.ContentDigest([]byte(strings.Join(expressions, "\x00")))
 }
