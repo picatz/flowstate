@@ -51,11 +51,14 @@ func NoteTask(ctx context.Context, text string) {
 	step, _ := ctx.Value(taskStepKey{}).(string)
 
 	if len(text) > MaxTaskNoteBytes {
-		cut := MaxTaskNoteBytes
+		// The elision counts against the bound, so a cut note is never
+		// longer than an uncut one may be.
+		const elision = "…"
+		cut := MaxTaskNoteBytes - len(elision)
 		for cut > 0 && !utf8.RuneStart(text[cut]) {
 			cut--
 		}
-		text = text[:cut] + "…"
+		text = text[:cut] + elision
 	}
 
 	observeSafely(func() { noter.TaskNoted(step, text) })

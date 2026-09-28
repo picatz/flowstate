@@ -206,7 +206,7 @@ func (r *Remote) Snapshot(ctx context.Context) (*v1.DebugSnapshot, error) {
 	return r.remember(response.Msg.GetSnapshot()), nil
 }
 
-// WaitSnapshot implements [Target], long-polling [WorkflowService.DebugGet].
+// WaitSnapshot implements [Target], long-polling [flowstatev1connect.WorkflowServiceClient.DebugGet].
 func (r *Remote) WaitSnapshot(ctx context.Context, after uint64) (*v1.DebugSnapshot, error) {
 	for {
 		response, err := r.client.DebugGet(ctx, connect.NewRequest(&v1.DebugGetRequest{
