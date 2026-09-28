@@ -325,6 +325,11 @@ The server's rules:
   lists all their audiences, and without this a token minted for the RPC or
   MCP surface could be spent here to decode history. It is required whenever
   the trust policy trusts a token issuer.
+- **Client certificates as `flow server` takes them.** A trust policy's
+  `kind: mtls` entry needs `--tls-client-auth require`, and a verified
+  certificate authenticates the caller only with
+  `--tls-client-auth-identity`; a policy naming one without the flag is
+  refused at startup rather than admitting no one.
 - **Explicit action.** The caller's policy entry must list `payload.decode`
   (or `payload.encode` to encrypt what someone types into the UI). An entry
   that lists no actions is *not* granted it. This differs from the RPC

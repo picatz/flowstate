@@ -311,3 +311,57 @@ func TestAResultTheCodecCannotReadFailsTheRunNotTheStep(t *testing.T) {
 	require.ErrorContains(t, env.GetWorkflowError(), "unavailable",
 		"the result was taken for a failed step and the run went on without it")
 }
+
+// approvalUnreadableCodec reads everything but one sender's signal, the way a
+// worker reads a signal sealed under a data key it has not cached while its
+// key provider is down.
+type approvalUnreadableCodec struct{ payloadcodec.Codec }
+
+func (c approvalUnreadableCodec) Decode(p []*commonpb.Payload) ([]*commonpb.Payload, error) {
+	out, err := c.Codec.Decode(p)
+	if err != nil {
+		return nil, err
+	}
+	for _, decoded := range out {
+		if bytes.Contains(decoded.GetData(), []byte("early-approver@example.com")) {
+			return nil, fmt.Errorf("toy key provider timed out: %w", payloadcodec.ErrUnavailable)
+		}
+	}
+	return out, nil
+}
+
+// TestASignalThatArrivesBeforeItsGateFailsTheRunWhenUnreadable: a signal
+// delivered before workflow code has asked for its channel lands on a channel
+// the SDK made itself, with the workflow's root converter rather than the
+// interpreter's. The check must hold there too, or an early approval this
+// worker cannot read is dropped as corrupt and the gate carries on without it.
+func TestASignalThatArrivesBeforeItsGateFailsTheRunWhenUnreadable(t *testing.T) {
+	t.Parallel()
+
+	toy, err := toycodec.New(bytes.Repeat([]byte{0x2a}, 32))
+	require.NoError(t, err)
+	cfg := payloadcodec.Config{Codec: approvalUnreadableCodec{Codec: toy}}
+
+	env := newCodecEnv(t, engine.TaskRuntimeConfig{}.WithDataConverter(cfg.DataConverter()))
+	env.SetDataConverter(cfg.DataConverter())
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow("deploy-approved", testSignalDelivery("early-approver@example.com", map[string]*v1.Value{
+			"approved": v1.NewLiteral(true),
+		}))
+	}, 30*time.Second)
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow("opened", testSignalDelivery("opener@example.com", nil))
+	}, time.Minute)
+
+	env.ExecuteWorkflow(engine.RunWorkflowType, &v1.RunState{Workflow: &v1.Workflow{
+		Name: "codec-early-signal",
+		Steps: []*v1.Node{
+			signalStep("open", "opened", 5*time.Minute),
+			signalStep("approval", "deploy-approved", 5*time.Minute),
+		},
+	}})
+
+	require.True(t, env.IsWorkflowCompleted())
+	require.ErrorContains(t, env.GetWorkflowError(), "unavailable",
+		"the early approval was dropped as corrupt and the gate went on without it")
+}

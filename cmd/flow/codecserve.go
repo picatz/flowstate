@@ -76,6 +76,7 @@ flow codec serve --insecure-no-auth --payload-keyring keyring.yaml \
 			"an issuer that mints bearer tokens")
 	addPayloadEncryptionFlags(cmd)
 	addTLSFlags(cmd)
+	addMTLSFlags(cmd)
 	addAuditRequiredFlag(cmd)
 
 	return cmd
@@ -116,6 +117,14 @@ func runCodecServe(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
+	// Client certificates, exactly as `flow server` resolves them: a trust
+	// policy's kind: mtls entry is refused unless --tls-client-auth require
+	// makes the listener ask for one, and a verified certificate
+	// authenticates the caller only with --tls-client-auth-identity.
+	peerVerifier, err := resolveMTLS(mtlsFlagsOf(cmd), policy, tlsFlags.tlsTerminatedUpstream, tlsCfg)
+	if err != nil {
+		return err
+	}
 	codecResource, _ := cmd.Flags().GetString("codec-resource")
 	resource, err := resolveCodecResource(codecResource, authCfg, policy)
 	if err != nil {
@@ -153,7 +162,7 @@ func runCodecServe(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	mux := codecServeHandler(logger, verifier, resource, handler)
+	mux := codecServeHandler(logger, verifier, peerVerifier, resource, handler)
 
 	httpServer := &http.Server{
 		Addr:                listen,
@@ -214,13 +223,19 @@ func runCodecServe(cmd *cobra.Command, _ []string) error {
 //
 // resource is the audience a bearer token must name to be spent here
 // ([auth.WithExpectedResource]), or empty where there is no bearer issuer.
-func codecServeHandler(logger *slog.Logger, verifier auth.Verifier, resource string, handler *codecserver.Handler) http.Handler {
-	authenticated := authn.NewMiddleware(auth.NewAuthenticator(verifier,
+func codecServeHandler(logger *slog.Logger, verifier auth.Verifier, peerVerifier *auth.MTLSVerifier, resource string, handler *codecserver.Handler) http.Handler {
+	opts := []auth.AuthenticatorOption{
 		auth.WithExpectedResource(resource),
 		auth.WithFailureObserver(func(ctx context.Context, req *http.Request, err error) {
 			logger.WarnContext(ctx, "codec server: rejected unauthenticated request",
 				"peer", req.RemoteAddr, "reason", auth.PublicReason(err))
-		})).Authenticate).Wrap(handler)
+		}),
+	}
+	// nil unless --tls-client-auth-identity: see resolveMTLS.
+	if peerVerifier != nil {
+		opts = append(opts, auth.WithPeerVerifier(peerVerifier))
+	}
+	authenticated := authn.NewMiddleware(auth.NewAuthenticator(verifier, opts...).Authenticate).Wrap(handler)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", healthzHandler())
