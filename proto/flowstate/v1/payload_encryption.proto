@@ -120,3 +120,48 @@ message PayloadKeySource {
     string env = 3 [(buf.validate.field).string.pattern = "^[A-Za-z_][A-Za-z0-9_]{0,127}$"];
   }
 }
+
+// PayloadEncryptionStatus is what a process reports about the payload
+// protection it runs with, safe to print, log, and send anywhere: key ids and
+// one-way fingerprints, never material. `flow codec status` writes it.
+message PayloadEncryptionStatus {
+  // Whether a keyring is configured, so payloads are written encrypted.
+  bool enabled = 1;
+
+  // Whether the process refuses to start without a keyring
+  // (`--require-payload-encryption`).
+  bool required = 2;
+
+  // Each Temporal namespace the keyring covers, in name order.
+  repeated PayloadEncryptionNamespaceStatus namespaces = 3 [(buf.validate.field).repeated.max_items = 256];
+}
+
+// PayloadEncryptionNamespaceStatus is one namespace's keys as the process holds
+// them.
+message PayloadEncryptionNamespaceStatus {
+  string namespace = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 255
+  }];
+
+  // The id of the key new payloads are sealed under.
+  string current_key_id = 2 [(buf.validate.field).string.pattern = "^[A-Za-z0-9._-]{1,64}$"];
+
+  // Every key this namespace's history can be read with, current first.
+  repeated PayloadKeyStatus keys = 3 [(buf.validate.field).repeated.max_items = 64];
+
+  // Whether unencrypted payloads are read, for pre-encryption history.
+  bool accept_unencrypted = 4;
+}
+
+// PayloadKeyStatus identifies one key without revealing it.
+message PayloadKeyStatus {
+  string id = 1 [(buf.validate.field).string.pattern = "^[A-Za-z0-9._-]{1,64}$"];
+
+  // Sixteen hex characters of a one-way, domain-separated digest of the key
+  // material. Two processes whose fingerprints for one id differ hold different
+  // keys under that id, and each will refuse the other's payloads.
+  string fingerprint = 2 [(buf.validate.field).string.pattern = "^[0-9a-f]{16}$"];
+
+  bool current = 3;
+}

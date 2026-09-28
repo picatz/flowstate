@@ -244,3 +244,22 @@ func (k *Keyring) PayloadCodecConfig() payloadcodec.Config {
 	}
 	return payloadcodec.Config{Codec: k.reader, Namespaces: byNS}
 }
+
+// Status reports the keyring's namespaces and keys by id and fingerprint,
+// without material.
+func (k *Keyring) Status() *v1.PayloadEncryptionStatus {
+	status := &v1.PayloadEncryptionStatus{Enabled: true}
+	for _, ns := range k.Namespaces() {
+		c := k.byNamespace[ns]
+		n := &v1.PayloadEncryptionNamespaceStatus{
+			Namespace:         ns,
+			CurrentKeyId:      c.CurrentKeyID(),
+			AcceptUnencrypted: c.AcceptsUnencrypted(),
+		}
+		for _, key := range c.Keys() {
+			n.Keys = append(n.Keys, &v1.PayloadKeyStatus{Id: key.ID, Fingerprint: key.Fingerprint, Current: key.Current})
+		}
+		status.Namespaces = append(status.Namespaces, n)
+	}
+	return status
+}

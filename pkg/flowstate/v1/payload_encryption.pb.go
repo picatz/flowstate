@@ -256,6 +256,210 @@ func (*PayloadKeySource_File) isPayloadKeySource_Source() {}
 
 func (*PayloadKeySource_Env) isPayloadKeySource_Source() {}
 
+// PayloadEncryptionStatus is what a process reports about the payload
+// protection it runs with, safe to print, log, and send anywhere: key ids and
+// one-way fingerprints, never material. `flow codec status` writes it.
+type PayloadEncryptionStatus struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Whether a keyring is configured, so payloads are written encrypted.
+	Enabled bool `protobuf:"varint,1,opt,name=enabled,proto3" json:"enabled,omitempty"`
+	// Whether the process refuses to start without a keyring
+	// (`--require-payload-encryption`).
+	Required bool `protobuf:"varint,2,opt,name=required,proto3" json:"required,omitempty"`
+	// Each Temporal namespace the keyring covers, in name order.
+	Namespaces    []*PayloadEncryptionNamespaceStatus `protobuf:"bytes,3,rep,name=namespaces,proto3" json:"namespaces,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PayloadEncryptionStatus) Reset() {
+	*x = PayloadEncryptionStatus{}
+	mi := &file_flowstate_v1_payload_encryption_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PayloadEncryptionStatus) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PayloadEncryptionStatus) ProtoMessage() {}
+
+func (x *PayloadEncryptionStatus) ProtoReflect() protoreflect.Message {
+	mi := &file_flowstate_v1_payload_encryption_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PayloadEncryptionStatus.ProtoReflect.Descriptor instead.
+func (*PayloadEncryptionStatus) Descriptor() ([]byte, []int) {
+	return file_flowstate_v1_payload_encryption_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *PayloadEncryptionStatus) GetEnabled() bool {
+	if x != nil {
+		return x.Enabled
+	}
+	return false
+}
+
+func (x *PayloadEncryptionStatus) GetRequired() bool {
+	if x != nil {
+		return x.Required
+	}
+	return false
+}
+
+func (x *PayloadEncryptionStatus) GetNamespaces() []*PayloadEncryptionNamespaceStatus {
+	if x != nil {
+		return x.Namespaces
+	}
+	return nil
+}
+
+// PayloadEncryptionNamespaceStatus is one namespace's keys as the process holds
+// them.
+type PayloadEncryptionNamespaceStatus struct {
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	Namespace string                 `protobuf:"bytes,1,opt,name=namespace,proto3" json:"namespace,omitempty"`
+	// The id of the key new payloads are sealed under.
+	CurrentKeyId string `protobuf:"bytes,2,opt,name=current_key_id,json=currentKeyId,proto3" json:"current_key_id,omitempty"`
+	// Every key this namespace's history can be read with, current first.
+	Keys []*PayloadKeyStatus `protobuf:"bytes,3,rep,name=keys,proto3" json:"keys,omitempty"`
+	// Whether unencrypted payloads are read, for pre-encryption history.
+	AcceptUnencrypted bool `protobuf:"varint,4,opt,name=accept_unencrypted,json=acceptUnencrypted,proto3" json:"accept_unencrypted,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *PayloadEncryptionNamespaceStatus) Reset() {
+	*x = PayloadEncryptionNamespaceStatus{}
+	mi := &file_flowstate_v1_payload_encryption_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PayloadEncryptionNamespaceStatus) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PayloadEncryptionNamespaceStatus) ProtoMessage() {}
+
+func (x *PayloadEncryptionNamespaceStatus) ProtoReflect() protoreflect.Message {
+	mi := &file_flowstate_v1_payload_encryption_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PayloadEncryptionNamespaceStatus.ProtoReflect.Descriptor instead.
+func (*PayloadEncryptionNamespaceStatus) Descriptor() ([]byte, []int) {
+	return file_flowstate_v1_payload_encryption_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *PayloadEncryptionNamespaceStatus) GetNamespace() string {
+	if x != nil {
+		return x.Namespace
+	}
+	return ""
+}
+
+func (x *PayloadEncryptionNamespaceStatus) GetCurrentKeyId() string {
+	if x != nil {
+		return x.CurrentKeyId
+	}
+	return ""
+}
+
+func (x *PayloadEncryptionNamespaceStatus) GetKeys() []*PayloadKeyStatus {
+	if x != nil {
+		return x.Keys
+	}
+	return nil
+}
+
+func (x *PayloadEncryptionNamespaceStatus) GetAcceptUnencrypted() bool {
+	if x != nil {
+		return x.AcceptUnencrypted
+	}
+	return false
+}
+
+// PayloadKeyStatus identifies one key without revealing it.
+type PayloadKeyStatus struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Id    string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	// Sixteen hex characters of a one-way, domain-separated digest of the key
+	// material. Two processes whose fingerprints for one id differ hold different
+	// keys under that id, and each will refuse the other's payloads.
+	Fingerprint   string `protobuf:"bytes,2,opt,name=fingerprint,proto3" json:"fingerprint,omitempty"`
+	Current       bool   `protobuf:"varint,3,opt,name=current,proto3" json:"current,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PayloadKeyStatus) Reset() {
+	*x = PayloadKeyStatus{}
+	mi := &file_flowstate_v1_payload_encryption_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PayloadKeyStatus) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PayloadKeyStatus) ProtoMessage() {}
+
+func (x *PayloadKeyStatus) ProtoReflect() protoreflect.Message {
+	mi := &file_flowstate_v1_payload_encryption_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PayloadKeyStatus.ProtoReflect.Descriptor instead.
+func (*PayloadKeyStatus) Descriptor() ([]byte, []int) {
+	return file_flowstate_v1_payload_encryption_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *PayloadKeyStatus) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *PayloadKeyStatus) GetFingerprint() string {
+	if x != nil {
+		return x.Fingerprint
+	}
+	return ""
+}
+
+func (x *PayloadKeyStatus) GetCurrent() bool {
+	if x != nil {
+		return x.Current
+	}
+	return false
+}
+
 var File_flowstate_v1_payload_encryption_proto protoreflect.FileDescriptor
 
 const file_flowstate_v1_payload_encryption_proto_rawDesc = "" +
@@ -280,7 +484,23 @@ const file_flowstate_v1_payload_encryption_proto_rawDesc = "" +
 	"\x04file\x18\x02 \x01(\tB\n" +
 	"\xbaH\ar\x05\x10\x01\x18\x80 H\x00R\x04file\x129\n" +
 	"\x03env\x18\x03 \x01(\tB%\xbaH\"r 2\x1e^[A-Za-z_][A-Za-z0-9_]{0,127}$H\x00R\x03envB\x0f\n" +
-	"\x06source\x12\x05\xbaH\x02\b\x01B\xb5\x01\n" +
+	"\x06source\x12\x05\xbaH\x02\b\x01\"\xaa\x01\n" +
+	"\x17PayloadEncryptionStatus\x12\x18\n" +
+	"\aenabled\x18\x01 \x01(\bR\aenabled\x12\x1a\n" +
+	"\brequired\x18\x02 \x01(\bR\brequired\x12Y\n" +
+	"\n" +
+	"namespaces\x18\x03 \x03(\v2..flowstate.v1.PayloadEncryptionNamespaceStatusB\t\xbaH\x06\x92\x01\x03\x10\x80\x02R\n" +
+	"namespaces\"\xfe\x01\n" +
+	" PayloadEncryptionNamespaceStatus\x12(\n" +
+	"\tnamespace\x18\x01 \x01(\tB\n" +
+	"\xbaH\ar\x05\x10\x01\x18\xff\x01R\tnamespace\x12C\n" +
+	"\x0ecurrent_key_id\x18\x02 \x01(\tB\x1d\xbaH\x1ar\x182\x16^[A-Za-z0-9._-]{1,64}$R\fcurrentKeyId\x12<\n" +
+	"\x04keys\x18\x03 \x03(\v2\x1e.flowstate.v1.PayloadKeyStatusB\b\xbaH\x05\x92\x01\x02\x10@R\x04keys\x12-\n" +
+	"\x12accept_unencrypted\x18\x04 \x01(\bR\x11acceptUnencrypted\"\x94\x01\n" +
+	"\x10PayloadKeyStatus\x12-\n" +
+	"\x02id\x18\x01 \x01(\tB\x1d\xbaH\x1ar\x182\x16^[A-Za-z0-9._-]{1,64}$R\x02id\x127\n" +
+	"\vfingerprint\x18\x02 \x01(\tB\x15\xbaH\x12r\x102\x0e^[0-9a-f]{16}$R\vfingerprint\x12\x18\n" +
+	"\acurrent\x18\x03 \x01(\bR\acurrentB\xb5\x01\n" +
 	"\x10com.flowstate.v1B\x16PayloadEncryptionProtoP\x01Z8github.com/picatz/flowstate/pkg/flowstate/v1;flowstatev1\xa2\x02\x03FXX\xaa\x02\fFlowstate.V1\xca\x02\fFlowstate\\V1\xe2\x02\x18Flowstate\\V1\\GPBMetadata\xea\x02\rFlowstate::V1b\x06proto3"
 
 var (
@@ -295,22 +515,27 @@ func file_flowstate_v1_payload_encryption_proto_rawDescGZIP() []byte {
 	return file_flowstate_v1_payload_encryption_proto_rawDescData
 }
 
-var file_flowstate_v1_payload_encryption_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
+var file_flowstate_v1_payload_encryption_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
 var file_flowstate_v1_payload_encryption_proto_goTypes = []any{
-	(*PayloadKeyring)(nil),          // 0: flowstate.v1.PayloadKeyring
-	(*PayloadKeyringNamespace)(nil), // 1: flowstate.v1.PayloadKeyringNamespace
-	(*PayloadKeySource)(nil),        // 2: flowstate.v1.PayloadKeySource
-	nil,                             // 3: flowstate.v1.PayloadKeyring.NamespacesEntry
+	(*PayloadKeyring)(nil),                   // 0: flowstate.v1.PayloadKeyring
+	(*PayloadKeyringNamespace)(nil),          // 1: flowstate.v1.PayloadKeyringNamespace
+	(*PayloadKeySource)(nil),                 // 2: flowstate.v1.PayloadKeySource
+	(*PayloadEncryptionStatus)(nil),          // 3: flowstate.v1.PayloadEncryptionStatus
+	(*PayloadEncryptionNamespaceStatus)(nil), // 4: flowstate.v1.PayloadEncryptionNamespaceStatus
+	(*PayloadKeyStatus)(nil),                 // 5: flowstate.v1.PayloadKeyStatus
+	nil,                                      // 6: flowstate.v1.PayloadKeyring.NamespacesEntry
 }
 var file_flowstate_v1_payload_encryption_proto_depIdxs = []int32{
-	3, // 0: flowstate.v1.PayloadKeyring.namespaces:type_name -> flowstate.v1.PayloadKeyring.NamespacesEntry
+	6, // 0: flowstate.v1.PayloadKeyring.namespaces:type_name -> flowstate.v1.PayloadKeyring.NamespacesEntry
 	2, // 1: flowstate.v1.PayloadKeyringNamespace.keys:type_name -> flowstate.v1.PayloadKeySource
-	1, // 2: flowstate.v1.PayloadKeyring.NamespacesEntry.value:type_name -> flowstate.v1.PayloadKeyringNamespace
-	3, // [3:3] is the sub-list for method output_type
-	3, // [3:3] is the sub-list for method input_type
-	3, // [3:3] is the sub-list for extension type_name
-	3, // [3:3] is the sub-list for extension extendee
-	0, // [0:3] is the sub-list for field type_name
+	4, // 2: flowstate.v1.PayloadEncryptionStatus.namespaces:type_name -> flowstate.v1.PayloadEncryptionNamespaceStatus
+	5, // 3: flowstate.v1.PayloadEncryptionNamespaceStatus.keys:type_name -> flowstate.v1.PayloadKeyStatus
+	1, // 4: flowstate.v1.PayloadKeyring.NamespacesEntry.value:type_name -> flowstate.v1.PayloadKeyringNamespace
+	5, // [5:5] is the sub-list for method output_type
+	5, // [5:5] is the sub-list for method input_type
+	5, // [5:5] is the sub-list for extension type_name
+	5, // [5:5] is the sub-list for extension extendee
+	0, // [0:5] is the sub-list for field type_name
 }
 
 func init() { file_flowstate_v1_payload_encryption_proto_init() }
@@ -328,7 +553,7 @@ func file_flowstate_v1_payload_encryption_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_flowstate_v1_payload_encryption_proto_rawDesc), len(file_flowstate_v1_payload_encryption_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   4,
+			NumMessages:   7,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

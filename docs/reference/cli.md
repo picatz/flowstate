@@ -184,6 +184,60 @@ flow cancel flowstate-workflow-3f7c -o json | jq -r '.workflowId, .result'
 | `--tls-client-key-file <string>` | `string` | — | `FLOWSTATE_TLS_CLIENT_KEY_FILE` | PEM private key matching `--tls-client-cert-file` (overrides FLOWSTATE_TLS_CLIENT_KEY_FILE) |
 | `--token-file <string>` | `string` | — | `FLOWSTATE_TOKEN_FILE` | file holding the bearer token to authenticate with (overrides FLOWSTATE_TOKEN_FILE); re-read per request, so a rotating token keeps working. Without it, FLOWSTATE_TOKEN is used, and neither means anonymous |
 
+## `flow codec`
+
+Generate payload encryption keys and inspect a payload keyring
+
+```
+flow codec [command]
+```
+
+Payload encryption seals every payload a run writes to Temporal history under keys this deployment holds. `flow codec keygen` writes a new key; `flow codec status` reports what a keyring resolves to, by key id and fingerprint, never by material. See docs/ENCRYPTION.md.
+
+## `flow codec keygen`
+
+Write a new 256-bit payload encryption key to a file
+
+```
+flow codec keygen [flags]
+```
+
+Write 32 random bytes, base64-encoded on one line, to `--out` at file mode 0600, and print nothing of the key. Refuses to overwrite an existing file: rotating a key is adding a new one to the keyring beside the old, which must stay while any history sealed under it is still needed.
+
+Examples:
+
+```sh
+# A key for the default namespace, named for when it was made:
+flow codec keygen --out /etc/flowstate/payload-keys/default-2026-09.key
+```
+
+| Flag | Type | Default | Environment | Description |
+|---|---|---|---|---|
+| `--out <string>` | `string` | — | — | path to write the key to (required) |
+
+## `flow codec status`
+
+Report what a payload keyring resolves to, without revealing any key
+
+```
+flow codec status [flags]
+```
+
+Load the keyring the way `flow server` and `flow worker` would, reading every key, and report each namespace's current key id, every key it can decrypt with, and a one-way fingerprint of each. Two processes whose fingerprints for one id differ hold different keys under that id. Exits non-zero if the keyring would refuse to start.
+
+Examples:
+
+```sh
+flow codec status --payload-keyring /etc/flowstate/payload-keyring.yaml
+flow codec status -o json
+```
+
+| Flag | Type | Default | Environment | Description |
+|---|---|---|---|---|
+| `-o, --output <string>` | `string` | `text` | — | output format: text, json, or jsonl |
+| `--payload-keyring <string>` | `string` | — | `FLOWSTATE_PAYLOAD_KEYRING` | payload keyring file: encrypt every payload written to Temporal history under the keys it names (default $FLOWSTATE_PAYLOAD_KEYRING; unset writes payloads unencrypted) |
+| `--require-payload-encryption` | `bool` | `false` | — | refuse to start without a payload keyring, so history is never written unencrypted (default $FLOWSTATE_REQUIRE_PAYLOAD_ENCRYPTION) |
+
 ## `flow compile`
 
 Print the workflow specification a Flowfile compiles to
@@ -1500,6 +1554,7 @@ flow server --insecure-no-auth
 | `--insecure-no-auth` | `bool` | `false` | — | allow unauthenticated access, for local development only; cannot be combined with `--auth-policy` (or an inherited FLOWSTATE_AUTH_POLICY) |
 | `--internal-listen <string>` | `string` | — | `FLOWSTATE_INTERNAL_ADDRESS` | address for health and pprof, on a private socket of this process's own; empty (the default) means no internal listener at all. Pass a loopback address, such as `--internal-listen 127.0.0.1:9090`, to turn it on — nothing else is accepted: it serves pprof, whose profiles carry this process's memory and running goroutines (secret values resolved into it among them), and it carries no authentication and no TLS configuration of its own, so reach it over a private network rather than exposing it |
 | `--listen <string>` | `string` | `localhost:9233` | `FLOWSTATE_ADDRESS` | address this server listens on, as host:port (default $FLOWSTATE_ADDRESS); not a URL, and not the client's `--address`. Off loopback it requires `--tls-cert-file` and `--tls-key-file` (or `--tls-acme-hosts`), or `--tls-terminated-upstream` |
+| `--payload-keyring <string>` | `string` | — | `FLOWSTATE_PAYLOAD_KEYRING` | payload keyring file: encrypt every payload written to Temporal history under the keys it names (default $FLOWSTATE_PAYLOAD_KEYRING; unset writes payloads unencrypted) |
 | `--plugin <string,...>` | `stringArray` | — | — | launch only the named plugin, repeatable; a name with no binary is an error |
 | `--plugin-dir <string,...>` | `stringArray` | — | `FLOWSTATE_PLUGIN_DIR` | directory to discover plugins in, repeatable, in precedence order (default $FLOWSTATE_PLUGIN_DIR) |
 | `--plugin-env <string,...>` | `stringArray` | — | — | configure one plugin's processes, plugin=KEY=VALUE, repeatable. The variable reaches that plugin alone and nothing else this worker launches. A plugin environment is readable to anything running as this user, so name a path to a file rather than a secret value |
@@ -1508,6 +1563,7 @@ flow server --insecure-no-auth
 | `--plugin-pins <string>` | `string` | — | `FLOWSTATE_PLUGIN_PINS` | path to a YAML pins file (default $FLOWSTATE_PLUGIN_PINS), the file form of `--plugin-pin` for a deployment that pins more than a couple of plugins: `pins: {name: sha256:hex}`; merged with any `--plugin-pin`, and a name given by both is refused |
 | `--plugin-scheme <string,...>` | `stringArray` | — | — | secret reference scheme a plugin may claim, repeatable (default: any) |
 | `--protected-resource <string>` | `string` | — | `FLOWSTATE_PROTECTED_RESOURCE` | canonical resource URI (RFC 8707 section 2) this deployment's MCP surface identifies as, with no fragment or trailing slash. With `--authorization-server`, RFC 9728 protected resource metadata is served at /.well-known/oauth-protected-resource followed by the resource's own path (a resource ending in /mcp is served at /.well-known/oauth-protected-resource/mcp), and every 401 challenge names that document. Unset, the route does not exist and a 401 challenge names no metadata document |
+| `--require-payload-encryption` | `bool` | `false` | — | refuse to start without a payload keyring, so history is never written unencrypted (default $FLOWSTATE_REQUIRE_PAYLOAD_ENCRYPTION) |
 | `--rpc-resource <string>` | `string` | — | `FLOWSTATE_RPC_RESOURCE` | canonical resource URI required in the aud claim of every bearer token spent on the Connect RPC surface (default $FLOWSTATE_RPC_RESOURCE); must be an absolute HTTPS URI with no fragment or trailing slash and appear in at least one kind: oidc issuer's audiences. Required whenever `--auth-policy` trusts an issuer that mints bearer tokens |
 | `--secret-command <string,...>` | `stringArray` | — | `FLOWSTATE_SECRET_COMMAND` | argv of the command that resolves command: secrets, repeatable in order (executable first);"{{name}}" and, with `--secret-command-namespaced`, "{{namespace}}" are substituted literally into one argument, never through a shell (default $FLOWSTATE_SECRET_COMMAND, :-separated) |
 | `--secret-command-namespaced` | `bool` | `false` | — | substitute "{{namespace}}" in `--secret-command` with the tenant's namespace |
@@ -2163,6 +2219,7 @@ flow worker --temporal-namespace production \
 | `--max-activities-per-second <string>` | `string` | `0` | `FLOWSTATE_WORKER_MAX_ACTIVITIES_PER_SECOND` | maximum rate, per second, at which this worker process starts activity tasks; 0 takes the Temporal SDK default (effectively unlimited). Enforced locally, per worker process — see `--task-queue-activities-per-second` for the server-enforced, per-queue limit |
 | `--max-concurrent-activities <string>` | `string` | `0` | `FLOWSTATE_WORKER_MAX_CONCURRENT_ACTIVITIES` | maximum number of activity tasks executing at once in this process; 0 takes the Temporal SDK default (1000). Raising this trades worker CPU/memory for throughput on a single replica; see the capacity section of https://github.com/picatz/flowstate/blob/main/docs/DEPLOYMENT.md for when to raise this versus scaling out |
 | `--max-concurrent-workflow-tasks <string>` | `string` | `0` | `FLOWSTATE_WORKER_MAX_CONCURRENT_WORKFLOW_TASKS` | maximum number of workflow tasks executing at once in this process; 0 takes the Temporal SDK default (1000). The value 1 is refused: a worker with a single workflow-task slot never polls its regular queue, which the SDK enforces by panicking |
+| `--payload-keyring <string>` | `string` | — | `FLOWSTATE_PAYLOAD_KEYRING` | payload keyring file: encrypt every payload written to Temporal history under the keys it names (default $FLOWSTATE_PAYLOAD_KEYRING; unset writes payloads unencrypted) |
 | `--plugin <string,...>` | `stringArray` | — | — | launch only the named plugin, repeatable; a name with no binary is an error |
 | `--plugin-dir <string,...>` | `stringArray` | — | `FLOWSTATE_PLUGIN_DIR` | directory to discover plugins in, repeatable, in precedence order (default $FLOWSTATE_PLUGIN_DIR) |
 | `--plugin-env <string,...>` | `stringArray` | — | — | configure one plugin's processes, plugin=KEY=VALUE, repeatable. The variable reaches that plugin alone and nothing else this worker launches. A plugin environment is readable to anything running as this user, so name a path to a file rather than a secret value |
@@ -2170,6 +2227,7 @@ flow worker --temporal-namespace production \
 | `--plugin-pin <string,...>` | `stringArray` | — | — | pin a plugin name to a digest, name=sha256:hex, repeatable; a discovered binary answering to that name must match it or is refused before it runs. A name with no pin, here or in `--plugin-pins`, launches unpinned, so pinning is adopted one plugin at a time |
 | `--plugin-pins <string>` | `string` | — | `FLOWSTATE_PLUGIN_PINS` | path to a YAML pins file (default $FLOWSTATE_PLUGIN_PINS), the file form of `--plugin-pin` for a deployment that pins more than a couple of plugins: `pins: {name: sha256:hex}`; merged with any `--plugin-pin`, and a name given by both is refused |
 | `--plugin-scheme <string,...>` | `stringArray` | — | — | secret reference scheme a plugin may claim, repeatable (default: any) |
+| `--require-payload-encryption` | `bool` | `false` | — | refuse to start without a payload keyring, so history is never written unencrypted (default $FLOWSTATE_REQUIRE_PAYLOAD_ENCRYPTION) |
 | `--secret-command <string,...>` | `stringArray` | — | `FLOWSTATE_SECRET_COMMAND` | argv of the command that resolves command: secrets, repeatable in order (executable first);"{{name}}" and, with `--secret-command-namespaced`, "{{namespace}}" are substituted literally into one argument, never through a shell (default $FLOWSTATE_SECRET_COMMAND, :-separated) |
 | `--secret-command-namespaced` | `bool` | `false` | — | substitute "{{namespace}}" in `--secret-command` with the tenant's namespace |
 | `--secret-dir <string>` | `string` | — | `FLOWSTATE_SECRET_DIR` | directory containing file: secrets (default $FLOWSTATE_SECRET_DIR) |

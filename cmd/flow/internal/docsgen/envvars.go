@@ -622,6 +622,24 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 			read: "go.opentelemetry.io/otel/sdk/trace (consulted only when WithSampler is absent)",
 		},
 		{
+			name:  "FLOWSTATE_PAYLOAD_KEYRING",
+			value: "unset",
+			purpose: "Default for `--payload-keyring` on `flow server` and `flow worker`, and read by `flow server dev`, " +
+				"`flow run local` and `flow codec status`: a payload keyring file naming each Temporal namespace's " +
+				"encryption keys. Set, every payload written to history is sealed under its namespace's current key " +
+				"and a namespace the keyring does not cover is refused. Unset, payloads are written unencrypted. " +
+				"See docs/ENCRYPTION.md.",
+			read: "cmd/flow/codec.go",
+		},
+		{
+			name:  "FLOWSTATE_REQUIRE_PAYLOAD_ENCRYPTION",
+			value: "unset",
+			purpose: "Default for `--require-payload-encryption`: refuse to start without a payload keyring, so a " +
+				"deployment that lost its keyring variable cannot come up writing plaintext. A value that does not " +
+				"parse as a boolean requires encryption rather than waiving it.",
+			read: "cmd/flow/codec.go",
+		},
+		{
 			name:  "FLOWSTATE_TASK_QUEUE_PREFIX",
 			value: "unset",
 			purpose: "Default for `--task-queue-prefix` on both `flow server` and `flow worker`: route each " +

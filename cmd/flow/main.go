@@ -3267,6 +3267,7 @@ flow plugins -o json \
 	// generated key publishes, and what a token actually claims and verifies
 	// against, without needing a throwaway Go program to find out.
 	keysCmd := newKeysCommand()
+	codecCmd := newCodecCommand()
 	jwtCmd := newJWTCommand()
 	authCmd := newAuthCommand()
 
@@ -3468,6 +3469,7 @@ flow lsp --plugin-dir /opt/flowstate/plugins`,
 	authCmd.GroupID = "infrastructure"
 	lspCmd.GroupID = "development"
 	keysCmd.GroupID = "development"
+	codecCmd.GroupID = "infrastructure"
 	jwtCmd.GroupID = "development"
 	versionCmd.GroupID = "development"
 
@@ -3584,6 +3586,7 @@ flow lsp --plugin-dir /opt/flowstate/plugins`,
 	debugCmd.GroupID = "development"
 	rootCmd.AddCommand(debugCmd)
 	rootCmd.AddCommand(keysCmd)
+	rootCmd.AddCommand(codecCmd)
 	rootCmd.AddCommand(jwtCmd)
 	rootCmd.AddCommand(versionCmd)
 
