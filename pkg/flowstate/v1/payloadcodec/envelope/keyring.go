@@ -103,7 +103,12 @@ type OpenOptions struct {
 // and wraps each writing namespace's first data key. Anything that fails is an
 // error: a keyring that came up without one of its keys, or with a provider it
 // cannot reach, would refuse that key's history at the first read or write,
-// long after startup. ctx bounds the startup calls.
+// long after startup.
+//
+// ctx cancels the startup calls, and Open bounds them itself by
+// [StartupBudget]: a fixed bound would cut short a configuration whose
+// providers were given longer timeouts, and none would let one provider that
+// stopped answering hold startup indefinitely.
 func Open(ctx context.Context, cfg *v1.PayloadKeyring, opts OpenOptions) (*Keyring, error) {
 	if err := check(cfg); err != nil {
 		return nil, err
@@ -119,6 +124,8 @@ func Open(ctx context.Context, cfg *v1.PayloadKeyring, opts OpenOptions) (*Keyri
 	if err != nil {
 		return nil, err
 	}
+	ctx, cancel := context.WithTimeout(ctx, startupBudget(cfg, providerTimeout(providers)))
+	defer cancel()
 	loader := keyLoader{opts: opts, providers: providers}
 
 	escrow := map[string]Recipient{}

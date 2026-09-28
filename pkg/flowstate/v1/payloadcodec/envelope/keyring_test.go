@@ -373,3 +373,30 @@ func TestTheDocumentedKeyringsParse(t *testing.T) {
 	}
 	require.GreaterOrEqual(t, blocks, 6, "the keyring examples were not found, so nothing was checked")
 }
+
+// TestTheStartupBudgetCoversEveryStartupCall: a keyring whose providers were
+// given long timeouts gets the time its startup calls may take, so opening it
+// is not cut short by a fixed bound, and a local keyring keeps the floor.
+func TestTheStartupBudgetCoversEveryStartupCall(t *testing.T) {
+	t.Parallel()
+
+	plain, err := envelope.ParseConfig([]byte(`
+namespaces:
+  ns: {current: k, keys: [{id: k, env: K}]}
+`))
+	require.NoError(t, err)
+	require.Equal(t, envelope.MinStartupBudget, envelope.StartupBudget(plain))
+
+	vault, err := envelope.ParseConfig([]byte(`
+namespaces:
+  a: {current: a, keys: [{id: a, vault: {provider: corp, key: a}}]}
+  b: {current: b, keys: [{id: b, vault: {provider: corp, key: b}}]}
+providers:
+  - name: corp
+    vault: {address: 'https://vault.example.com', token_env: T, timeout: 60s}
+`))
+	require.NoError(t, err)
+	// One login, three calls per key, one wrap per writing namespace: 9 calls,
+	// each within twice the 60s request timeout.
+	require.Equal(t, 9*2*time.Minute, envelope.StartupBudget(vault))
+}

@@ -72,6 +72,44 @@ func openProviders(cfgs []*v1.PayloadKeyProvider, opts OpenOptions) (map[string]
 	return out, nil
 }
 
+// MinStartupBudget is the least time [Open] allows for its startup calls.
+const MinStartupBudget = 30 * time.Second
+
+// StartupBudget is how long [Open] allows cfg's startup calls: every one it
+// can make, each within the per-call provider timeout. A key held by a
+// provider is described (one call) and has its encryption-context binding
+// probed (two), each provider may log in once, and each writing namespace
+// wraps its first data key to its current key and every escrow key. Never
+// less than [MinStartupBudget].
+func StartupBudget(cfg *v1.PayloadKeyring) time.Duration {
+	var longest time.Duration
+	for _, p := range cfg.GetProviders() {
+		longest = max(longest, p.GetVault().GetTimeout().AsDuration())
+	}
+	return startupBudget(cfg, max(DefaultProviderTimeout, 2*longest))
+}
+
+func startupBudget(cfg *v1.PayloadKeyring, perCall time.Duration) time.Duration {
+	calls := len(cfg.GetProviders())
+	remote := func(k *v1.PayloadKey) bool { return k.GetVault() != nil }
+	for _, k := range cfg.GetEscrowKeys() {
+		if remote(k) {
+			calls += 3
+		}
+	}
+	for _, n := range cfg.GetNamespaces() {
+		for _, k := range n.GetKeys() {
+			if remote(k) {
+				calls += 3
+			}
+		}
+		if n.GetCurrent() != "" {
+			calls += 1 + len(n.GetEscrow())
+		}
+	}
+	return max(MinStartupBudget, time.Duration(calls)*perCall)
+}
+
 // providerTimeout is the deadline a keyring's codecs put on one wrap or
 // unwrap: never shorter than a configured provider allows its own calls. A
 // configured timeout bounds one request, and a wrap may first have to log in,
