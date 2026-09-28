@@ -621,8 +621,9 @@ every other addition in this schema is):
   to be identified.
 
 **Depth is a level, not a coordinate**: top-level steps are depth 0, a `call:`'s
-callee is a subgraph rooted one level down, a loop or parallel body is a
-subgraph one level down from the step that declares it. This is the same
+callee is a subgraph rooted one level down, and a loop body, a parallel
+branch, or a `switch:` arm is a subgraph one level down from the step that
+declares it. This is the same
 never-flatten rule section 3 states for the step view, generalized: depth *is*
 the zoom control, and expanding or collapsing a subgraph is moving a step
 between being drawn as one summary node and being drawn as its own depth level
@@ -678,12 +679,16 @@ between attempts — but a graph overlay needs every event joined losslessly to 
 a repeated node aggregated by a stated rule, each consumed signal joined to the
 wait that consumed it (and a signal no wait consumes — a debug ask, an
 undeclared name, a dropped duplicate — marked as such), activity state beyond
-scheduled and finished, and a terminal outcome for every node, and nothing
-carries any of that today. Supplying it, reusing the timeline for what it
-already records rather than restating it, is therefore its own slice (gap
-inventory slice 3), settled and reviewed before any overlay code is written,
-and every overlay-producing path in this document (6.2's `--run` variant, 6.3's outcome colouring, section 3's
-step/timeline view) is blocked on it. `NewGraph` in this slice takes a spec and
+scheduled and finished, and a terminal outcome for every node. Nothing carries
+most of that today. Live state is the exception, and it is keyed by neither:
+`GetResponse.pending_activities` carries each in-flight activity's attempt,
+last failure, and next attempt time (which separates backing off from
+running), deliberately not named by step, and `RunProgress.pending_waits` names
+each parked wait by step id and path. Supplying the rest, reusing the timeline
+and those live fields for what they already report rather than restating it,
+is therefore its own slice (gap inventory slice 3), settled and reviewed before any overlay code is written,
+and every overlay-producing path in this document (6.2's `--run` variant,
+6.3's outcome colouring, section 3's step/timeline view) is blocked on it. `NewGraph` in this slice takes a spec and
 nothing else.
 
 **This is what makes the feature programmable, not merely drawable.** An MCP
@@ -997,18 +1002,22 @@ line. What is not: everything below.
    `switch`) record no outcome event, and no response carries outcomes as an
    aggregate: `RunProgress` has only the current top-level step, a partial
    path, and a segment-local completed count, and `GetResponse` for a finished
-   run carries output values or an error. This slice adds what the timeline lacks, as additive fields or
-   events `buf breaking` accepts, and reuses the timeline for what it already
-   records. It starts from an inventory of what each `Node` kind in
-   `workflow.proto` records today and closes every gap that finds, which
-   includes at least:
+   run carries output values or an error. This slice adds what those lack, as
+   additive fields or events `buf breaking` accepts, and reuses what already
+   exists: the timeline for what it records, `GetResponse.pending_activities`
+   for a live activity's attempt and backoff, and `RunProgress.pending_waits`
+   for a parked wait's position. It starts from an inventory of what each
+   `Node` kind in `workflow.proto` records today and closes every gap that
+   finds, which includes at least:
    - a canonical node identity that joins each event to its `GraphNode.id`
      without loss;
    - an occurrence identity for a node that runs more than once (a `for_each`
      or `loop` body's iterations share one node and one label today), stable
      across a continue-as-new boundary, where timeline event ids restart at 1,
      and the rule by which a per-node overlay aggregates those occurrences'
-     outcomes and durations;
+     outcomes and durations. The identity is positional (segment and
+     iteration index), never derived from a `for_each` item, which may be
+     `sensitive` and would otherwise reach durable, broadly readable history;
    - compensation events marked as compensations, so a completed `undo:` is
      never read as its forward step's completion (a compensation is dispatched
      from the run-level undo stack, whose entries carry a step id and no
@@ -1018,12 +1027,25 @@ line. What is not: everything below.
      recorded on arrival; and a debug ask, an undeclared name, or a dropped
      duplicate is consumed by no wait);
    - whether an unfinished activity is running, waiting to start, or backing
-     off between attempts, which the timeline cannot tell apart;
+     off between attempts: the timeline cannot tell these apart, and
+     `pending_activities` separates backing off but is not keyed to a node and
+     drops whether an attempt has started; history keeps no per-attempt
+     account, so a node's attempt history after it closes is its final attempt
+     and last failure;
    - a task step's terminal outcome where workflow code decides it around the
      activity: an `if:`, input, or `vars:` evaluation failing, or the `async:`
      width being exceeded, before anything is scheduled, and `undo:`
      registration failing after the activity completed;
-   - outcomes for the nodes that record none.
+   - outcomes for the nodes that record none;
+   - a bound on the work an overlay spends: `GetTimeline` stops at the
+     server's scan budget and is per segment, so an overlay over a large or
+     long-lived run either reads a bounded aggregate or walks
+     `previous_run_id`/`next_run_id` under a stated limit and says when it
+     stopped short;
+   - which drivers it covers: `GetTimeline` reads Temporal history and the
+     local driver has no equivalent, so any telemetry the overlay needs for
+     both comes from the shared executor path, keeping the two drivers in
+     agreement.
 
    It does not pre-decide the message shape. Two representations of one task
    step's outcome are what it must avoid. This slice blocks the run-state
