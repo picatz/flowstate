@@ -306,15 +306,15 @@ flow run local --debug examples/hello-world/workflow.yaml
 
 ## `flow debug`
 
-Replay a debugging session from a script of its commands
+Debug a durable run, or replay a debugging session from a script
 
 ```
 flow debug [command]
 ```
 
-Work with the step debugger's scripts: the commands a debugging session accepted, one per line.
+Attach the step debugger to a durable run, read its debug state, and drive it one command at a time; or play back a script of the commands a local debugging session accepted, one per line.
 
-The debugger itself is reached as `flow run local --debug` (a real run, at a terminal), as `flow test --debug` (one test case), and as `flow dap` (from an editor). None of those writes a script to disk; the `flowstate_debug` MCP tool's answer carries one, and a script can be written by hand. This is where a script is played back.
+A local run is debugged as `flow run local --debug` (a real run, at a terminal), as `flow test --debug` (one test case), and as `flow dap` (from an editor, which can also attach to a durable run). None of those writes a script to disk; the `flowstate_debug` MCP tool's answer carries one, and a script can be written by hand.
 
 ## `flow debug attach`
 

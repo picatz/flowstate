@@ -1,0 +1,17 @@
+edition: v2026.3
+name: receipt
+inputs:
+  count:
+    type: int
+    required: true
+    description: how many orders the batch charged
+steps:
+  - id: compose
+    value: ${"charged %d order(s)".format([inputs.count])}
+  - id: send
+    log:
+      message: ${steps.compose.value}
+outputs:
+  summary:
+    value: ${steps.compose.value}
+    description: the receipt line

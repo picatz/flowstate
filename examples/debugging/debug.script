@@ -1,0 +1,26 @@
+# A recorded session over this example, kept so anyone can re-run it:
+#
+#   flow debug replay examples/debugging/debug.script examples/debugging/workflow.yaml
+#
+# A line starting with `#` is a comment and every other line is a command. There
+# are no blank lines: at a prompt an empty line means `step`.
+#
+# A step is named by its id or by its address, as at the prompt.
+#
+# Stop inside the loop at the one order over the threshold, not at every order.
+# `amount` is the loop's binding, in scope exactly where `charge` runs.
+break orders/charge if amount > inputs.threshold
+continue
+inspect amount
+# Record the remaining orders without stopping at them: a logpoint.
+delete orders/charge
+log orders/charge charging {amount}
+# A step in the second branch of the parallel block.
+break checks#1/fraud
+continue
+inspect steps.flagged.value
+# Run to a step inside the called workflow, and see the call around it.
+until receipt/send
+backtrace
+inspect steps.compose.value
+continue
