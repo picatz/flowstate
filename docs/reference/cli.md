@@ -2043,7 +2043,7 @@ flow version [flags]
 
 Print what the toolchain stamped into this binary: version, commit, the commit's date, the Go version it was compiled with, and the platform it was built for. The date is the commit's, because that is what a module-aware build records; nothing stamps the moment of compilation.
 
-Answered entirely from what this binary already carries, no network call, so it works the same offline as everything else here. When nothing was stamped (no -ldflags, built outside a git checkout or with -buildvcs=false) it says so honestly: "devel" for the version, "unknown" for the commit and its date, rather than a number invented for the occasion.
+Answered entirely from what this binary already carries, no network call, so it works the same offline as everything else here. The version is what -ldflags stamped, or else the module version the toolchain recorded, which a build inside a git checkout derives from the commit; the commit and its date come from that checkout's VCS stamp. What was not recorded is said honestly rather than invented: "devel" for a version nothing stamped, and "unknown" for the commit and its date when the build had no VCS stamp (outside a git checkout, or -buildvcs=false).
 
 Examples:
 

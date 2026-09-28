@@ -274,9 +274,9 @@ func writeAuditText(surface *ui.UI, report auditReport) error {
 	// workflow which genuinely will not compile.
 	if len(report.Skipped) > 0 {
 		fmt.Fprintf(out, "%s\n", theme.Muted.Render(fmt.Sprintf(
-			"%d file(s) the walk found are not workflows this could read, a `*.test.yaml` "+
-				"beside a workflow most often, and were not counted; `flow validate` is the verb "+
-				"with something to say about one that should have been",
+			"%d file(s) are not workflows this could read, a `*.test.yaml` beside a "+
+				"workflow most often, and were not counted; `flow validate` is the verb with "+
+				"something to say about one that should have been",
 			len(report.Skipped))))
 	}
 
