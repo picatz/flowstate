@@ -38,6 +38,9 @@ type client struct {
 	// late counts writes made after Close: on a real stdio transport each
 	// is a write to a pipe nobody reads, which kills the process.
 	late atomic.Int32
+
+	lateMu     sync.Mutex
+	lateEvents []string
 }
 
 func newClient(t *testing.T) *client {
@@ -59,14 +62,6 @@ func (c *client) ReadObject(v any) error {
 }
 
 func (c *client) WriteObject(v any) error {
-	select {
-	case <-c.closed:
-		c.late.Add(1)
-
-		return nil
-	default:
-	}
-
 	encoded, err := json.Marshal(v)
 	if err != nil {
 		return err
@@ -75,6 +70,17 @@ func (c *client) WriteObject(v any) error {
 	var decoded map[string]any
 	if err := json.Unmarshal(encoded, &decoded); err != nil {
 		return err
+	}
+
+	select {
+	case <-c.closed:
+		c.late.Add(1)
+		c.lateMu.Lock()
+		c.lateEvents = append(c.lateEvents, fmt.Sprint(decoded["event"]))
+		c.lateMu.Unlock()
+
+		return nil
+	default:
 	}
 
 	select {

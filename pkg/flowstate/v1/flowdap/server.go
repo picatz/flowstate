@@ -1408,7 +1408,9 @@ func (s *Server) setExceptionBreakpoints(ctx context.Context, request inbound) {
 	var asked struct {
 		Filters []string `json:"filters"`
 	}
-	if err := json.Unmarshal(request.Arguments, &asked); err != nil {
+	// A missing array is malformed, not a request to clear the filters: only
+	// an explicit empty array turns failure stops off.
+	if err := json.Unmarshal(request.Arguments, &asked); err != nil || asked.Filters == nil {
 		s.fail(request, errInvalidBreakpoints.Error())
 
 		return

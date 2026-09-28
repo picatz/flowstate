@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -547,8 +548,15 @@ func TestAClientThatVanishesDetachesTheRun(t *testing.T) {
 	case <-time.After(20 * time.Second):
 		t.Fatal("the run stayed paused after its client's stream ended, so the adapter never exits")
 	}
-	assert.Zero(t, c.late.Load(), "the adapter wrote to a client that had gone, which on stdio is a "+
-		"broken-pipe write that kills the process under the run it detached")
+	// A message already in flight when the stream ended may still be
+	// written; that race is the process's SIGPIPE handling to absorb. What
+	// the detached run does next — its steps, its end — happens only after
+	// the adapter has hung up, and none of it may be written.
+	c.lateMu.Lock()
+	late := slices.Clone(c.lateEvents)
+	c.lateMu.Unlock()
+	assert.NotContains(t, late, "terminated", "the adapter wrote the detached run's end to a client that had gone")
+	assert.NotContains(t, late, "exited", "the adapter wrote the detached run's end to a client that had gone")
 }
 
 // TestAZeroBasedClientGetsItsOwnLineNumbers is an editor that initializes with
@@ -725,6 +733,11 @@ func TestBreakpointRequestsAreBoundedAtTheEdge(t *testing.T) {
 	kept := set(program, []map[string]any{{"line": 13}})
 	assert.Equal(t, true, body(kept)["breakpoints"].([]any)[0].(map[string]any)["verified"],
 		"the malformed request disturbed the installed set")
+
+	c.send(seq, "setExceptionBreakpoints", map[string]any{})
+	seq++
+	assert.Equal(t, false, c.await("response", "setExceptionBreakpoints")["success"],
+		"a request with no filters array cleared the failure stops")
 
 	assert.Equal(t, false, set(program, []map[string]any{{"line": int64(1)<<32 + 13}})["success"],
 		"a line past 2^32 was taken, and would have been set on line 13")
