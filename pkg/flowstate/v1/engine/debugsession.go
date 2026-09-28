@@ -268,9 +268,12 @@ func (e *executor) applyTypedAsk(ask *v1.DebugAsk, parseErr error, sender *v1.Si
 				// A target the run can never stop at would release it to
 				// the end: refused, and the run stays held. A truncated
 				// enumeration cannot say a site is absent, so it judges
-				// nothing.
+				// nothing. Behind [untilRefusalChange], asked only where the
+				// answer differs, so a history that applied such a resume
+				// replays applying it.
 				if sites, truncated := v1.DebugStaticSites(e.spec); !truncated {
-					if _, why := durableSites(target, ask.Until, sites, "run until"); why != "" {
+					if _, why := durableSites(target, ask.Until, sites, "run until"); why != "" &&
+						workflow.GetVersion(e.ctx, untilRefusalChange, workflow.DefaultVersion, 1) != workflow.DefaultVersion {
 						d.receipt(ask.Request, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_REFUSED, why)
 
 						return
@@ -362,6 +365,14 @@ func durablyHeld(site v1.DebugStaticSite) bool {
 
 	return true
 }
+
+// untilRefusalChange is the [workflow.GetVersion] changeID guarding the
+// refusal of a durable `until` whose target the run can never stop at. An
+// engine before it applied such a resume and released the run, and a history
+// it recorded has the resume applied and the run moving on; replaying that
+// history into a refusal would park the run where history has it running, a
+// nondeterminism error. A history without the marker keeps applying it.
+const untilRefusalChange = "engine.debug.refuseUnholdableUntil"
 
 // durableSites resolves target to the sites the durable driver can hold at,
 // or says why there are none: no site matches it, or every one it matches is

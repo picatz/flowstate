@@ -310,6 +310,39 @@ func TestADurableUntilInsideABodyIsRefused(t *testing.T) {
 	assert.Equal(t, "second", arrived.GetOccurrence().GetAddress())
 }
 
+// TestAHistoryBeforeTheUntilRefusalStillReleasesTheRun is the replay half of
+// [engine.UntilRefusalChange]: a run recorded by the engine before the refusal
+// applied such a resume and ran on, so a history without the marker must be
+// answered the same way, or its replay parks where history has it running.
+func TestAHistoryBeforeTheUntilRefusalStillReleasesTheRun(t *testing.T) {
+	t.Parallel()
+
+	tl := newTimeline(t)
+	tl.env.OnGetVersion(engine.UntilRefusalChange, workflow.DefaultVersion, 1).Return(workflow.DefaultVersion)
+	const sre = "sre-1@example.com"
+	tl.ask(30*time.Second, sre, &v1.DebugAsk{Verb: v1.DebugVerbPause, Session: "s1", Request: "attach", Lease: 5 * time.Minute})
+	tl.ask(70*time.Second, sre, &v1.DebugAsk{Verb: v1.DebugVerbResume, Session: "s1", Request: "into-body",
+		Action: v1.DebugResumeAction_DEBUG_RESUME_ACTION_RUN_UNTIL, Until: "each/touch"})
+	tl.read(71*time.Second, "applied", "into-body")
+
+	spec := typedSpec("until-before")
+	spec.Steps = slices.Insert(spec.Steps, 3, &v1.Node{Id: "each", Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{
+		Items: v1.NewLiteralList(v1.NewLiteral("a"), v1.NewLiteral("b")), Iterator: "item",
+		Body: []*v1.Node{logStep("touch", "touched")},
+	}}})
+	// Alive when it is read, so the read sees where the resume left it.
+	spec.Steps = append(spec.Steps, sleepStep("linger", time.Hour))
+	tl.env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: spec})
+	require.True(t, tl.env.IsWorkflowCompleted())
+	require.NoError(t, tl.env.GetWorkflowError())
+
+	applied := tl.reads["applied"]
+	require.NotNil(t, applied)
+	assert.Equal(t, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_APPLIED, applied.GetReceipt().GetStatus(),
+		"a history recorded before the refusal applied this resume")
+	assert.Equal(t, v1.DebugRunState_DEBUG_RUN_STATE_RUNNING, applied.GetState(), "the resume did not release the run")
+}
+
 func TestATypedSessionExpiresAndTheRunResumes(t *testing.T) {
 	t.Parallel()
 
