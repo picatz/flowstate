@@ -819,6 +819,19 @@ $ docker compose -f examples/observability/docker-compose.yaml up
 No Kubernetes needed. Two systemd units on one host, or split across two hosts
 for Tier 2: one worker unit per tenant's Temporal namespace.
 
+Both units run as a dedicated system user, whose group is what lets them read
+the signing key and secret files without making those readable by anyone else.
+`flow keys generate` writes a key with mode 0600, owned by whoever ran it, so
+hand it and the secret directory to that group:
+
+```console
+$ sudo useradd --system --user-group --no-create-home --shell /usr/sbin/nologin flowstate
+$ sudo install -d -o flowstate -g flowstate -m 0750 /var/lib/flowstate
+$ sudo chown -R root:flowstate /etc/flowstate/identity-2026-07.pem /etc/flowstate/secrets
+$ sudo chmod 0640 /etc/flowstate/identity-2026-07.pem
+$ sudo chmod -R u=rwX,g=rX,o= /etc/flowstate/secrets
+```
+
 `/etc/flowstate/worker.env`:
 
 ```env
@@ -845,7 +858,8 @@ EnvironmentFile=/etc/flowstate/worker.env
 ExecStart=/usr/local/bin/flow worker --plugin-dir /usr/local/lib/flowstate/plugins
 Restart=on-failure
 RestartSec=5s
-DynamicUser=yes
+User=flowstate
+Group=flowstate
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
@@ -890,7 +904,8 @@ EnvironmentFile=/etc/flowstate/server.env
 ExecStart=/usr/local/bin/flow server
 Restart=on-failure
 RestartSec=5s
-DynamicUser=yes
+User=flowstate
+Group=flowstate
 NoNewPrivileges=yes
 ProtectSystem=strict
 

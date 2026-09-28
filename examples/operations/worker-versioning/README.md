@@ -29,8 +29,9 @@ a shipped capability depends on the guarantee rather than merely benefiting from
 ## Run it
 
 You need the `flow` binary, the [Temporal CLI](https://docs.temporal.io/cli), and
-three terminals. The Temporal CLI is what makes a build current, which `flow`
-does not do.
+four terminals: one for Temporal, one for each of two workers, and one for the
+commands. The Temporal CLI is what makes a build current, which `flow` does not
+do.
 
 1. Start a Temporal development server:
 
@@ -38,7 +39,7 @@ does not do.
    $ temporal server start-dev
    ```
 
-2. Start a Flowstate server and a versioned worker:
+2. In a second terminal, start a Flowstate server and a versioned worker:
 
    ```console
    $ flow server --insecure-no-auth &
@@ -56,7 +57,7 @@ does not do.
 
    > starting worker task_queue=flowstate-run-task-queue deployment=flowstate build_id=1a2b3c4
 
-3. Make that build the deployment's **current version**:
+3. In a third terminal, make that build the deployment's **current version**:
 
    ```console
    $ temporal worker deployment set-current-version \
@@ -80,10 +81,15 @@ does not do.
      waiting at approval for signal "release-approved", lapsing in 59m56s
    ```
 
-5. Deploy a second build beside the first, and make it current:
+5. In a fourth terminal, deploy a second build beside the first:
 
    ```console
    $ flow worker --temporal-deployment-name flowstate --build-id "$(git rev-parse --short HEAD)-next"
+   ```
+
+   Back in the third, make it current:
+
+   ```console
    $ temporal worker deployment set-current-version \
        --deployment-name flowstate --build-id "$(git rev-parse --short HEAD)-next"
    ```
