@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/reflect/protoregistry"
 )
 
 // The service every public surface is derived from. Walking it is what makes
@@ -67,10 +68,7 @@ func TestEveryRPCFirstSentenceStandsAlone(t *testing.T) {
 func workflowServiceMethods(t *testing.T) []protoreflect.MethodDescriptor {
 	t.Helper()
 
-	reg, err := Files()
-	if err != nil {
-		t.Fatalf("Files: %v", err)
-	}
+	reg := protoregistry.GlobalFiles
 	desc, err := reg.FindDescriptorByName(workflowService)
 	if err != nil {
 		t.Fatalf("%s not found: %v", workflowService, err)
@@ -126,10 +124,7 @@ var waitResultSymbols = []protoreflect.FullName{
 // own name, because the surfaces here print the name themselves, immediately
 // above the sentence.
 func TestEverySymbolHoverReadsIsDocumented(t *testing.T) {
-	reg, err := Files()
-	if err != nil {
-		t.Fatalf("Files: %v", err)
-	}
+	reg := protoregistry.GlobalFiles
 
 	desc, err := reg.FindDescriptorByName(taskMessages)
 	if err != nil {
@@ -156,7 +151,7 @@ func TestEverySymbolHoverReadsIsDocumented(t *testing.T) {
 
 	var visit func(m protoreflect.MessageDescriptor)
 	visit = func(m protoreflect.MessageDescriptor) {
-		if m == nil || m.IsPlaceholder() || m.IsMapEntry() {
+		if m == nil || imported(m) || m.IsMapEntry() {
 			return
 		}
 		for i := 0; i < m.Fields().Len(); i++ {
@@ -201,10 +196,7 @@ func TestEverySymbolHoverReadsIsDocumented(t *testing.T) {
 // what it does. The mechanism is the one that already keeps generated code
 // honest: a check that fails, in the same list CI runs.
 func TestSchemaProseIsPresent(t *testing.T) {
-	reg, err := Files()
-	if err != nil {
-		t.Fatalf("Files: %v", err)
-	}
+	reg := protoregistry.GlobalFiles
 
 	desc, err := reg.FindDescriptorByName(workflowService)
 	if err != nil {
@@ -241,9 +233,9 @@ func TestSchemaProseIsPresent(t *testing.T) {
 	var messages []protoreflect.MessageDescriptor
 	var visit func(m protoreflect.MessageDescriptor)
 	visit = func(m protoreflect.MessageDescriptor) {
-		// A placeholder is a type from an excluded import: it has a name and
-		// nothing else, so there is no comment to demand and no fields to walk.
-		if m == nil || m.IsPlaceholder() || seen[m.FullName()] {
+		// A type from an import (google.protobuf.Duration, CEL's Expr) is
+		// someone else's schema, so there is no comment to demand of it.
+		if m == nil || imported(m) || seen[m.FullName()] {
 			return
 		}
 		seen[m.FullName()] = true
@@ -299,10 +291,7 @@ func TestSchemaProseIsPresent(t *testing.T) {
 // whole protocol file: plugin authors consume its manifests and task messages
 // directly, not only the types reachable from one service.
 func TestPluginProtocolProseIsPresent(t *testing.T) {
-	reg, err := Files()
-	if err != nil {
-		t.Fatalf("Files: %v", err)
-	}
+	reg := protoregistry.GlobalFiles
 	file, err := reg.FindFileByPath("flowstate/plugin/v1/plugin.proto")
 	if err != nil {
 		t.Fatalf("plugin protocol descriptor: %v", err)
@@ -363,10 +352,7 @@ func TestPluginProtocolProseIsPresent(t *testing.T) {
 // TestCatalogProseIsPresent keeps every catalog message and field useful to
 // descriptor consumers, generated Go documentation, and editor hovers.
 func TestCatalogProseIsPresent(t *testing.T) {
-	reg, err := Files()
-	if err != nil {
-		t.Fatalf("Files: %v", err)
-	}
+	reg := protoregistry.GlobalFiles
 	file, err := reg.FindFileByPath("flowstate/v1/catalog.proto")
 	if err != nil {
 		t.Fatalf("catalog descriptor: %v", err)
@@ -411,10 +397,7 @@ func TestCatalogProseIsPresent(t *testing.T) {
 // TestRunAndReportsProseIsPresent keeps the durable run model, timeline, and
 // machine-readable command reports documented for RPC, MCP, and Go consumers.
 func TestRunAndReportsProseIsPresent(t *testing.T) {
-	reg, err := Files()
-	if err != nil {
-		t.Fatalf("Files: %v", err)
-	}
+	reg := protoregistry.GlobalFiles
 
 	var missing []string
 	checked := 0
@@ -490,10 +473,7 @@ func TestRunAndReportsProseIsPresent(t *testing.T) {
 // TestTaskProtocolProseIsPresent keeps every task declaration useful to the
 // registry, generated Go documentation, task reference, and editor hovers.
 func TestTaskProtocolProseIsPresent(t *testing.T) {
-	reg, err := Files()
-	if err != nil {
-		t.Fatalf("Files: %v", err)
-	}
+	reg := protoregistry.GlobalFiles
 	file, err := reg.FindFileByPath("flowstate/v1/task.proto")
 	if err != nil {
 		t.Fatalf("task protocol descriptor: %v", err)
@@ -556,4 +536,10 @@ func TestTaskProtocolProseIsPresent(t *testing.T) {
 		sort.Strings(missing)
 		t.Errorf("task protocol declarations missing leading comments: %s", strings.Join(missing, ", "))
 	}
+}
+
+// imported reports whether a message belongs to a schema this repository
+// imports rather than declares.
+func imported(m protoreflect.MessageDescriptor) bool {
+	return !strings.HasPrefix(m.ParentFile().Path(), "flowstate/")
 }

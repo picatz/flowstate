@@ -254,9 +254,9 @@ func TestAPluginsOwnProseReachesHover(t *testing.T) {
 
 // TestATaskWithNoSchemaProseStillHovers is the fail-closed half, and since #723
 // it pins a documented fallback rather than the only behaviour there is: a plugin
-// shipping no descriptor set — every plugin built before [sdk.Plugin.SchemaProse]
-// existed, and every one that declines it since — has no sentence to inherit, and
-// hover must render one paragraph fewer rather than a placeholder or a panic.
+// whose descriptors carry no comments — every plugin built before #723, and every
+// one that generates none since — has no sentence to inherit, and hover must
+// render one paragraph fewer rather than a placeholder or a panic.
 func TestATaskWithNoSchemaProseStillHovers(t *testing.T) {
 	t.Parallel()
 

@@ -40,10 +40,9 @@ import (
 // executables are the leading bytes of a compiled program, by format.
 //
 // Matched on magic rather than on size or on a name pattern, because the
-// question is "is this a program" and those two answer something else. The
-// largest thing this repository legitimately tracks is a 412 KB protobuf
-// descriptor set, which a size rule would have to be tuned around and which
-// this does not look at twice.
+// question is "is this a program" and those two answer something else: a size
+// rule would have to be tuned around every large file this repository
+// legitimately tracks, and this does not look at them twice.
 //
 // The list is *measured* rather than remembered, and the first version was
 // remembered — ELF, Mach-O and PE, which is what a person thinks of and leaves

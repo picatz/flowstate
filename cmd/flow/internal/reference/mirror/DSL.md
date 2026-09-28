@@ -4083,7 +4083,7 @@ protocol into its own package — is a FILE-level break that has to be spent
 deliberately. Meanwhile the *other* forty-one lint rules were going unenforced
 while everyone waited for it. They now run in CI, with the pair suppressed for
 that one file and nowhere else, so the move gets to be its own reviewed change
-and deleting four lines from `proto/buf.yaml` is the whole of what it owes here.
+and deleting four lines from `buf.yaml` is the whole of what it owes here.
 
 The general shape is worth naming, because it recurs: when one known problem
 blocks a check, scope the exception to the problem rather than deferring the
@@ -4238,7 +4238,7 @@ The field is `reserved` in the schema — `InputDeclaration.pattern` was field
 specification some worker may still be replaying must never come back with a
 new meaning. `buf breaking` needed the one-commit `ignore_only` scoped to
 `FIELD_NO_DELETE` that pattern always needs when a field goes from present to
-reserved in a single diff — see `proto/buf.yaml`'s own comment, due to come
+reserved in a single diff — see `buf.yaml`'s own comment, due to come
 out in the commit after this one reaches `main`. (*Since written:* it came
 out as promised — `buf.yaml` today suppresses nothing, and its comment
 records the pattern as "used six times and removed six times".)
@@ -4327,7 +4327,7 @@ were field numbers 11 and 12, `unique` was 15; none of the three is a map, so
 (unlike `Workflow.inputs`) there is no synthesized entry message to reserve
 alongside any of them. `buf breaking` needed the identical one-commit `ignore_only`
 scoped to `FIELD_NO_DELETE` that `pattern:`'s retirement needed, for the identical
-reason — see `proto/buf.yaml`'s own comment, due to come out in the commit after
+reason — see `buf.yaml`'s own comment, due to come out in the commit after
 this one reaches `main`. (*Since written:* it did — `buf.yaml` today suppresses
 nothing, and its comment records the pattern as "used six times and removed six
 times".)

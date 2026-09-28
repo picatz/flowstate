@@ -489,9 +489,6 @@ func fieldDescription(fd protoreflect.FieldDescriptor, depth int) string {
 
 	comment, ok := protodoc.CommentOf(fd)
 	if !ok {
-		comment, ok = protodoc.Comment(fd.FullName())
-	}
-	if !ok {
 		return ""
 	}
 
