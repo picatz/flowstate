@@ -363,7 +363,9 @@ as still ending. A case that fails before it can hold — a stub or an expectati
 step — says why in the snapshot's message, as well as in the report `end`
 returns.
 `expected_revision` refuses a command meant for a stop the run has already left,
-rather than applying it to the next one. A command carrying a `request_id` is
+rather than applying it to the next one. A movement or an inspection carries it
+to the run, which judges it in the same step as the command; a pause or a
+breakpoint change, which no stop binds, is checked just before it is sent. A command carrying a `request_id` is
 answered from memory when retried, so a lost response never moves a run twice,
 a start carrying one never starts a second run, and an attach carrying one
 answers with the session it attached, whose id the lost response carried,
