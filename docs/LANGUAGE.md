@@ -208,7 +208,8 @@ outputs:
 ```
 
 Outputs are evaluated once, after the last step, in the order written. They can
-read `inputs`, `vars`, every step, `run`, and `trigger`. `value:` is required;
+read `inputs`, `vars`, `run`, `trigger`, and any step outside a `for_each:` or
+`loop:` body, including the steps of a `switch:` arm or a `parallel:` branch. `value:` is required;
 `type:`, `values:`, and `must:` are checked when the value is computed, and
 `description:` and `sensitive:` mean what they do on an input. If an output
 cannot be computed, or fails its type or `must:`, the run fails and its
@@ -216,8 +217,8 @@ cannot be computed, or fails its type or `must:`, the run fails and its
 
 ### Vars
 
-Workflow `vars:` are named constants, read as `${vars.<name>}` anywhere in the
-file.
+Workflow `vars:` are named constants, read as `${vars.<name>}` in steps and
+outputs.
 
 ```yaml
 vars:
@@ -305,8 +306,8 @@ means:
 | Kind | An unfenced value is | Fields |
 | --- | --- | --- |
 | Expression | CEL | `if:`, `value:`, `for_each.items`, `loop.until`, `switch.value`, `wait_until:`, an output's `value:`, webhook `idempotency_key:` and `correlate:` |
-| Value | Literal text | Task inputs, `vars:`, `with:`, loop `init:` and `update:`, a wait's `prompt:` and `outputs:`, input defaults |
-| Literal | Literal; a fence is refused | `id`, `name`, `description`, `as:`, `must:`, the step `timeout:` and `retry:` settings, a signal's `name:`, and other fields read when the file compiles |
+| Value | Literal text | Task inputs, `vars:`, `with:`, loop `init:` and `update:`, a wait's `prompt:` and `outputs:` |
+| Literal | Literal; a fence is refused | `id`, `name`, `description`, `as:`, `must:`, input defaults, the step `timeout:` and `retry:` settings, a signal's `name:`, and other fields read when the file compiles |
 
 In an expression field, `value: yes` is a reference to an unknown name and
 `value: "42"` is the integer 42. Write the fence everywhere an expression is
@@ -317,8 +318,8 @@ take either a duration literal (`30s`) or a fenced expression.
 
 | Name | Holds | Where |
 | --- | --- | --- |
-| `inputs.<name>` | The run's arguments, after defaults | Everywhere except workflow `vars:` and trigger expressions |
-| `vars.<name>` | Workflow vars | Everywhere except workflow `vars:` and trigger expressions |
+| `inputs.<name>` | The run's arguments, after defaults | Everywhere except workflow `vars:`, `must:`, and trigger expressions |
+| `vars.<name>` | Workflow vars | Everywhere except workflow `vars:`, `must:`, `concurrency.key`, and trigger expressions |
 | `steps.<id>.<output>` | An earlier step's outputs | After that step, in the same scope |
 | `run.workflow_id`, `run.run_id` | This run's address, for callbacks. `"local"` under `flow run local`. | Steps and outputs |
 | `run.identity.subject`, `.issuer`, `.namespace`, `.claims` | Who started the run, as the server verified it. Empty when nobody authenticated. | Steps and outputs |
@@ -1077,8 +1078,9 @@ does not work.
 
 ## Starting runs: triggers
 
-Any workflow can be started by hand with `flow run` or the `Run` RPC. `triggers:`
-adds other ways, and narrows the manual one. Declaring a trigger does nothing on
+Unless its `manual:` says otherwise, any workflow can be started by hand with
+`flow run` or the `Run` RPC. `triggers:` adds other ways, and narrows the manual
+one. Declaring a trigger does nothing on
 its own: a schedule starts firing only when someone runs
 `flow schedule create`, and a webhook is served only by a server started with
 `flow server --webhook`. `flow run local` ignores triggers.
