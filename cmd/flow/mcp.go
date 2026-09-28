@@ -243,16 +243,33 @@ func runMCP(cmd *cobra.Command, args []string) error {
 	serve, stop := context.WithCancel(cmd.Context())
 	defer stop()
 
-	// A retained stubbed session holds the process-wide task registry, a
-	// synthetic task registered in it, across its pauses: what answers from
-	// that registry is refused until the session ends, rather than
-	// advertising or compiling a task that vanishes with it.
-	sessions := newDebugSessions(remoteClient)
+	extra := stdioSurface(serve, cmd, providers, remoteClient, &deps)
+
+	return flowmcp.ServeTools(serve, flowmcp.NewServer(version), local, remoteClient, deps, extra...)
+}
+
+// stdioSurface is what stdio serves beside the RPC tools: the extra tools,
+// and on deps the fence their retained sessions need, over one set of
+// sessions. The tests stand their server up through it, so what they exercise
+// is the wiring an agent connects to.
+func stdioSurface(ctx context.Context, cmd *cobra.Command, providers *localSecrets,
+	remote func() flowstatev1connect.WorkflowServiceClient, deps *flowmcp.Deps,
+) []flowmcp.ToolRegistration {
+	sessions := newDebugSessions(remote)
+	fenceRegistryReaders(deps, sessions)
+
+	return stdioExtraTools(ctx, cmd, providers, sessions)
+}
+
+// fenceRegistryReaders sets deps to refuse what answers from the process-wide
+// task registry while one of sessions is a retained stubbed session, which
+// holds that registry, a synthetic task registered in it, across its pauses —
+// rather than advertising or compiling a task that vanishes when it ends. The
+// sessions are the ones [stdioExtraTools] serves, so the fence and the tools
+// agree about which sessions are open.
+func fenceRegistryReaders(deps *flowmcp.Deps, sessions *debugSessions) {
 	deps.WrapHandler = sessions.guardRegistryReaders
 	deps.WrapResourceHandler = sessions.guardRegistryResource
-
-	return flowmcp.ServeTools(serve, flowmcp.NewServer(version), local, remoteClient, deps,
-		stdioExtraTools(serve, cmd, providers, sessions)...)
 }
 
 // stdioExtraTools is the three tools on this surface that are not RPCs, in one

@@ -420,12 +420,15 @@ func DebugStaticSites(wf *Workflow) ([]DebugStaticSite, bool) {
 // workflow it calls declares: at a top level, or in a loop body, parallel
 // branch or switch arm, in document order, with repeats. It is the question a
 // truncated [DebugStaticSites] leaves open, asked of the program as written
-// rather than of its sites: each node the program holds is visited once, so the
-// walk is bounded by the program's own size, which is already in memory, not
-// by what its calls expand to. Calls are followed to [MaxCallDepth], as
-// [DebugStaticSites] follows them.
+// rather than of its sites. A callee is walked again only from a shallower
+// call than any before, which may reach calls the deeper one could not: a
+// workflow built in memory may share one callee among many calls, and walking
+// it once per call would expand exponentially through [MaxCallDepth] levels.
+// So the walk is bounded by the program's own size, times the call depth. Calls
+// are followed to [MaxCallDepth], as [DebugStaticSites] follows them.
 func DebugDeclaredSteps(wf *Workflow) iter.Seq[string] {
 	return func(yield func(string) bool) {
+		shallowest := map[*Workflow]int{}
 		var walk func(nodes []*Node, depth int) bool
 		walk = func(nodes []*Node, depth int) bool {
 			for _, node := range nodes {
@@ -457,7 +460,12 @@ func DebugDeclaredSteps(wf *Workflow) iter.Seq[string] {
 						return false
 					}
 				case *Node_Call:
-					if depth < MaxCallDepth && !walk(kind.Call.GetWorkflow().GetSteps(), depth+1) {
+					callee := kind.Call.GetWorkflow()
+					if seen, ok := shallowest[callee]; depth >= MaxCallDepth || (ok && seen <= depth+1) {
+						continue
+					}
+					shallowest[callee] = depth + 1
+					if !walk(callee.GetSteps(), depth+1) {
 						return false
 					}
 				}
@@ -475,9 +483,11 @@ func DebugDeclaredSteps(wf *Workflow) iter.Seq[string] {
 // call of the callee it names — `bogus/last` and `each#0/touch`, for a loop
 // `each`, name nothing however many steps are called `last` or `touch`. It is
 // the question a truncated [DebugStaticSites] leaves open, asked of the
-// program as written: each node the program holds is visited once, so the
-// walk is bounded by the program's own size, not by what its calls expand to.
-// Only indices, which no program declares, are not compared, so it may accept
+// program as written. A callee is walked once for each depth and each chain of
+// containers the target's qualifiers can see around it, since the answer
+// inside depends on nothing else: a workflow built in memory may share one
+// callee among many calls, and walking it once per call would expand
+// exponentially through [MaxCallDepth] levels. Only indices, which no program declares, are not compared, so it may accept
 // a target [DebugTarget.Resolve] would not, never the reverse. Calls are
 // followed to [MaxCallDepth], as the sites are.
 func (t DebugTarget) DeclaredIn(wf *Workflow) bool {
@@ -502,6 +512,24 @@ func (t DebugTarget) DeclaredIn(wf *Workflow) bool {
 		}
 
 		return true
+	}
+
+	// visited is each callee walked, with the depth it was walked at and the
+	// part of the chain around it a qualifier can reach; a walk that found
+	// the target returned at once, so each recorded one found nothing.
+	type visit struct {
+		callee *Workflow
+		depth  int
+		around string
+	}
+	visited := map[visit]bool{}
+	around := func(chain []*DebugSegment) string {
+		var b strings.Builder
+		for _, segment := range chain[max(0, len(chain)-len(qualifiers)):] {
+			fmt.Fprintf(&b, "%s\x00%d\x00%s\x00", segment.GetStepId(), segment.GetKind(), segment.GetCallee())
+		}
+
+		return b.String()
 	}
 
 	var walk func(nodes []*Node, chain []*DebugSegment, depth int) bool
@@ -530,9 +558,17 @@ func (t DebugTarget) DeclaredIn(wf *Workflow) bool {
 					return walk(arm.GetSteps(), inner, depth)
 				}) || walk(kind.Switch.GetDefault().GetSteps(), inner, depth)
 			case *Node_Call:
+				if depth >= MaxCallDepth {
+					break
+				}
 				callee := kind.Call.GetWorkflow()
-				found = depth < MaxCallDepth &&
-					walk(callee.GetSteps(), into(DebugSegmentKind_DEBUG_SEGMENT_KIND_CALL, callee.GetName()), depth+1)
+				inner := into(DebugSegmentKind_DEBUG_SEGMENT_KIND_CALL, callee.GetName())
+				key := visit{callee: callee, depth: depth + 1, around: around(inner)}
+				if visited[key] {
+					break
+				}
+				visited[key] = true
+				found = walk(callee.GetSteps(), inner, depth+1)
 			}
 			if found {
 				return true

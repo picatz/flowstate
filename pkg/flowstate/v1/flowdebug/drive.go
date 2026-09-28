@@ -36,6 +36,13 @@ type Driver struct {
 	request  string
 	expected uint64
 
+	// sent is the request ids of the lines this driver has sent a target, the
+	// latest [maxRememberedRequests] of them, oldest first. A line repeated
+	// under one of them is a retry of a line whose answer was lost, so it goes
+	// to the target again — which answers from its receipts — rather than
+	// being judged stale here for a revision the first sending moved.
+	sent []string
+
 	// detached is set once a detach this driver sent was accepted: the
 	// session is over, and a line that would change it is refused rather
 	// than sent — a durable pause after a detach would attach the run anew.
@@ -76,6 +83,10 @@ type DriveResult struct {
 	Breakpoints []*v1.DebugBreakpointState
 	Text        string
 }
+
+// maxRememberedRequests bounds [Driver]'s memory of the request ids it has
+// sent: as many as a retained session keeps answers for.
+const maxRememberedRequests = 64
 
 // DriverHelp lists the lines a [Driver] understands.
 const DriverHelp = `status, info                 where the run is, and why
@@ -118,9 +129,16 @@ func (d *Driver) DoWith(ctx context.Context, line string, opts DoOptions) (*Driv
 
 	d.request, d.expected = opts.RequestID, opts.ExpectedRevision
 	defer func() { d.request, d.expected = "", 0 }()
-	if d.expected != 0 && !movement(verb) {
+	retry := d.request != "" && slices.Contains(d.sent, d.request)
+	if d.expected != 0 && !movement(verb) && !retry {
 		if stale, err := d.staleAt(ctx); stale != nil || err != nil {
 			return stale, err
+		}
+	}
+	if d.request != "" && !retry {
+		d.sent = append(d.sent, d.request)
+		if len(d.sent) > maxRememberedRequests {
+			d.sent = d.sent[1:]
 		}
 	}
 

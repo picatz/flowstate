@@ -145,3 +145,22 @@ func TestDebugAttachReleasesTheRunWhenItCannotReadIt(t *testing.T) {
 	require.Error(t, res.Err)
 	assert.Equal(t, 1, recorder.detaches(), "an attach that could not read the run left it held")
 }
+
+// TestAScriptedAttachFailsOnACommandThatFails: a script's later lines assume
+// its earlier ones ran, so a line that fails fails the attach — releasing the
+// run — instead of the script exiting 0 having run in part.
+func TestAScriptedAttachFailsOnACommandThatFails(t *testing.T) {
+	recorder := &detachRecorder{}
+	mux := http.NewServeMux()
+	mux.Handle(flowstatev1connect.NewWorkflowServiceHandler(recorder))
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	script := filepath.Join(t.TempDir(), "session.script")
+	require.NoError(t, os.WriteFile(script, []byte("frobnicate\nstatus\n"), 0o600))
+
+	res := runFlow(t, "debug", "attach", "w", "--script", script, "--address", srv.URL)
+	require.Error(t, res.Err, "a script with a failing line exited 0")
+	assert.Contains(t, res.Err.Error(), "frobnicate")
+	assert.Equal(t, 1, recorder.detaches(), "the failed script left the run held")
+}

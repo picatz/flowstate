@@ -237,6 +237,36 @@ func TestADetachIsNeverStaleUnlessPinned(t *testing.T) {
 	assert.Equal(t, uint64(4), target.expected, "a caller's pinned revision was dropped")
 }
 
+// TestARetryIsAnsweredFromTheTargetNotJudgedStale: a line sent under a request
+// id whose answer was lost moved the run, so its retry — the same id, the same
+// expected revision — reaches the target, which answers from its receipts,
+// rather than being refused here as stale for the revision the first sending
+// moved. A new id is still judged against the revision it names.
+func TestARetryIsAnsweredFromTheTargetNotJudgedStale(t *testing.T) {
+	t.Parallel()
+
+	target := &scriptedTarget{snapshot: &v1.DebugSnapshot{Revision: 1, State: v1.DebugRunState_DEBUG_RUN_STATE_HELD}}
+	driver := flowdebug.NewDriver(target)
+	_, err := driver.DoWith(t.Context(), "pause", flowdebug.DoOptions{RequestID: "p-1", ExpectedRevision: 1})
+	require.NoError(t, err)
+
+	// The pause moved the run on; its answer never reached the caller.
+	target.mu.Lock()
+	target.snapshot = &v1.DebugSnapshot{Revision: 2, State: v1.DebugRunState_DEBUG_RUN_STATE_HELD}
+	target.mu.Unlock()
+
+	retried, err := driver.DoWith(t.Context(), "pause", flowdebug.DoOptions{RequestID: "p-1", ExpectedRevision: 1})
+	require.NoError(t, err)
+	assert.NotEqual(t, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_STALE, retried.Receipt.GetStatus(),
+		"a retry was judged stale instead of reaching the target")
+	assert.Equal(t, []string{"p-1", "p-1"}, target.requests, "the retry did not reach the target under its id")
+
+	fresh, err := driver.DoWith(t.Context(), "pause", flowdebug.DoOptions{RequestID: "p-2", ExpectedRevision: 1})
+	require.NoError(t, err)
+	assert.Equal(t, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_STALE, fresh.Receipt.GetStatus(),
+		"a new line meant for a revision the run has left was not refused")
+}
+
 // TestAFreshDriverLeavesTheFailureModeAlone: a driver that has not been told
 // a mode by `catch` must not reset the one the session has.
 func TestAFreshDriverLeavesTheFailureModeAlone(t *testing.T) {

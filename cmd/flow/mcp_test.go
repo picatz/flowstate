@@ -524,11 +524,15 @@ func connectMCPWithProviders(t *testing.T, posture *cobra.Command, providers *lo
 
 	srv := flowmcp.NewServer("test")
 
+	// Wired as runMCP wires it: one set of sessions behind both the
+	// retained-session tools and the registry fence.
+	deps := mcpDepsFor(posture)
+	extra := stdioSurface(t.Context(), posture, providers, func() flowstatev1connect.WorkflowServiceClient { return nil }, &deps)
 	flowmcp.AddCapabilities(srv, mustNewFlowstateServer(t, nil), func() flowstatev1connect.WorkflowServiceClient {
 		t.Error("a local tool dialed the server")
 
 		return nil
-	}, mcpDepsFor(posture), mcpExtraToolsForWithProviders(t.Context(), posture, providers)...)
+	}, deps, extra...)
 
 	serverTransport, clientTransport := mcp.NewInMemoryTransports()
 

@@ -216,6 +216,14 @@ func runDebugAttach(cmd *cobra.Command, args []string) (err error) {
 			if ctx.Err() != nil {
 				break
 			}
+			// A person at a terminal reads the error and types the line
+			// again. A script cannot, and the lines after this one were
+			// written assuming it ran, so the attach fails — and the run is
+			// released on the way out — rather than exiting 0 on a script
+			// that ran in part.
+			if !interactive {
+				return fmt.Errorf("%q: %w", line, err)
+			}
 			fmt.Fprintf(surface.Err, "%v\n", err)
 
 			continue

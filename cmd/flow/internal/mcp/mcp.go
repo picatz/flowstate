@@ -303,7 +303,8 @@ type Deps struct {
 	// reason and would be pointless without it — flowstate://catalog/tasks
 	// answers from [v1.DefaultRegistry] exactly as flowstate_get_catalog
 	// does, so a guard applied only to tools leaves the identical read
-	// reachable one request away. Also read only by [AddLocalCapabilities].
+	// reachable one request away. Applied wherever resources are
+	// registered, by [AddCapabilities] and [AddLocalCapabilities] alike.
 	WrapResourceHandler func(uri string, next mcp.ResourceHandler) mcp.ResourceHandler
 
 	// reduced marks the registration [AddLocalCapabilities] performs, where

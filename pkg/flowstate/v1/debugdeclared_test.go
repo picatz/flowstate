@@ -1,10 +1,12 @@
 package flowstatev1_test
 
 import (
+	"fmt"
 	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
@@ -89,4 +91,52 @@ func TestDeclaredInLooksEverywhereAStepCanBeWritten(t *testing.T) {
 	} {
 		assert.False(t, declared(text), "%s is not declared but was found", text)
 	}
+}
+
+// TestTheDeclarationWalksSurviveASharedCallee: a workflow built in memory may
+// share one callee among many calls. Walked once per call, thirty calls a level
+// through every call level is 30^8 walks; walked once per callee and depth
+// (and, for a target, per chain its qualifiers see), it answers at once.
+func TestTheDeclarationWalksSurviveASharedCallee(t *testing.T) {
+	t.Parallel()
+
+	leaf := &v1.Workflow{Name: "leaf", Steps: []*v1.Node{{Id: "bottom", Kind: &v1.Node_Task{Task: &v1.Task{Name: "log"}}}}}
+	level := leaf
+	for range v1.MaxCallDepth {
+		next := &v1.Workflow{Name: "level"}
+		for i := range 30 {
+			next.Steps = append(next.Steps, &v1.Node{Id: fmt.Sprintf("c%d", i), Kind: &v1.Node_Call{Call: &v1.Call{Workflow: level}}})
+		}
+		level = next
+	}
+
+	assert.Contains(t, slices.Collect(v1.DebugDeclaredSteps(level)), "bottom")
+	target, err := v1.ParseDebugTarget("c7/bottom")
+	require.NoError(t, err)
+	assert.True(t, target.DeclaredIn(level))
+	missing, err := v1.ParseDebugTarget("nowhere")
+	require.NoError(t, err)
+	assert.False(t, missing.DeclaredIn(level), "the walk answered for a step no workflow declares")
+}
+
+// TestTheDeclarationWalkRevisitsACalleeFromShallower: a callee first reached at
+// the call-depth limit cannot follow its own calls there; reached again from a
+// shallower call it can, so the inventory is not settled by the first visit.
+func TestTheDeclarationWalkRevisitsACalleeFromShallower(t *testing.T) {
+	t.Parallel()
+
+	call := func(id string, wf *v1.Workflow) *v1.Node {
+		return &v1.Node{Id: id, Kind: &v1.Node_Call{Call: &v1.Call{Workflow: wf}}}
+	}
+	inner := &v1.Workflow{Name: "inner", Steps: []*v1.Node{{Id: "innermost", Kind: &v1.Node_Task{Task: &v1.Task{Name: "log"}}}}}
+	shared := &v1.Workflow{Name: "shared", Steps: []*v1.Node{call("down", inner)}}
+	// A chain long enough that `shared` is first reached at MaxCallDepth.
+	deep := shared
+	for range v1.MaxCallDepth - 1 {
+		deep = &v1.Workflow{Name: "chain", Steps: []*v1.Node{call("hop", deep)}}
+	}
+	root := &v1.Workflow{Name: "root", Steps: []*v1.Node{call("far", deep), call("near", shared)}}
+
+	assert.Contains(t, slices.Collect(v1.DebugDeclaredSteps(root)), "innermost",
+		"a callee walked first at the depth limit was not walked again from a shallower call")
 }
