@@ -243,15 +243,19 @@ func CheckScript(lines []string, steps []string) (problems []ScriptProblem, tota
 // against, so a `break` or `until` naming a step by address — `orders/charge`,
 // `checks#1/fraud` — is resolved against the workflow's sites exactly as the
 // prompt resolves it, rather than read as a bare
-// step id no step is named. Without a workflow, or with one too large to
-// enumerate, an address is judged by the step it ends in, as the prompt judges
-// it then.
+// step id no step is named. With a workflow too large to enumerate, an address
+// is judged by the steps it declares within the containers the address names
+// ([v1.DebugTarget.DeclaredIn]); without one, by the step it ends in — each as
+// the prompt judges it then.
 func CheckScriptFor(lines []string, steps []string, workflow *v1.Workflow) (problems []ScriptProblem, total int) {
 	var inventory scriptSites
 	if workflow != nil {
 		var truncated bool
 		inventory.sites, truncated = v1.DebugStaticSites(workflow)
 		inventory.known = !truncated
+		if truncated {
+			inventory.program = workflow
+		}
 	}
 
 	known := make(map[string]struct{}, len(steps))
@@ -429,6 +433,15 @@ func checkStepArgument(
 		report(number, column, "%s", noSiteMatches(id))
 
 		return
+	case inventory.program != nil:
+		if target.DeclaredIn(inventory.program) {
+			return
+		}
+		if strings.ContainsRune(id, '/') {
+			report(number, column, "%s", noSiteMatches(id))
+
+			return
+		}
 	case !inventory.known:
 		if _, ok := known[target.Step()]; ok {
 			return
@@ -453,6 +466,10 @@ func checkStepArgument(
 type scriptSites struct {
 	sites []v1.DebugStaticSite
 	known bool
+	// program is the workflow when its sites were too many to enumerate, so
+	// an address is judged by the steps the program declares, within the
+	// containers it names, as the prompt judges it then.
+	program *v1.Workflow
 }
 
 // leadingSpace is the byte offset of a line's first word.
