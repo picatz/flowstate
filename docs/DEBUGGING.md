@@ -594,7 +594,7 @@ expressions, never their text.
 The reserved channel is closed to other doors: `SignalWithStart` refuses a
 `flowstate_` name outright, and a raw `Signal` onto `flowstate_debug` needs
 `workload.debug` beside `workload.signal`, plus `workload.debug_inspect` when it
-carries a condition.
+carries a condition or a log message.
 
 ### Attach, read, drive
 
@@ -622,7 +622,8 @@ applied
 (The lease line after each stop is left out here.)
 
 `flow debug attach` reads commands from the terminal or `--script`, and prints
-each answer as text or, with `-o jsonl`, as the schema's JSON. It renews the
+each answer as text; with `-o jsonl` each answer is a line of the schema's JSON,
+and with `-o json` they are one array, written when the session ends. It renews the
 session's lease while it runs. `detach`, `quit`, or the end of input releases
 the run; `disconnect` leaves the session attached, and prints how to rejoin it
 with `--session` before the lease lapses. `--program <file>` names the Flowfile
@@ -644,7 +645,8 @@ $ flow debug do <workflow-id> --session 5ae9… inspect steps.orders.results.siz
 Each `flow debug do` is a fresh client, and a breakpoint set is replaced
 whole, so before a line changes the set it adopts every breakpoint the run
 reports from the definition reported with it: `break` and `delete` add to or
-take from what an earlier call or an editor set, and `clear` removes the lot.
+take from what an earlier call or an editor set, `delete log <step>` removes a
+logpoint, and `clear` removes the lot.
 
 The same five RPCs are on the [API](API.md) and are MCP tools of their own
 (`flowstate_debug_attach` and its neighbours); `flow dap`'s attach and the
@@ -663,7 +665,8 @@ and an `until` whose step is inside one, or that names no step at all, is
 refused and the run stays held, rather than released to the end. Both checks
 need every site of the program: past `MaxDebugStaticSites` (65,536 step sites)
 the run cannot rule a site out, so it neither reports such a breakpoint not
-armed nor refuses the `until`. The local driver runs those bodies one step at a
+armed nor refuses the `until`, and it arms a breakpoint whose step lies beyond
+the cut rather than refusing it as matching no step. The local driver runs those bodies one step at a
 time and stops everywhere.
 
 **What a hold does not stop.** A hold parks workflow code before a step starts.

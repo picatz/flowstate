@@ -597,7 +597,8 @@ An attach reaches a server with the adapter's own `--address`, `--token-file`
 (or `--credential-source`) and TLS flags, exactly as `flow debug attach` does, so
 the durable session is the adapter's caller's: the run's `debug:` policy must
 name that identity, and its token must carry `workload.debug`, and
-`workload.debug_inspect` to evaluate or set a conditional breakpoint.
+`workload.debug_inspect` to evaluate, or to set a breakpoint carrying a
+condition or a log message.
 
 **What a launch reads.** `program`, the workflow to run; `revealSensitive`, the
 deliberate reveal [Debugging](DEBUGGING.md#sensitive-values) describes; and
@@ -671,7 +672,14 @@ never answered from an earlier adapter's receipts.
 
 Lines and columns are 1-based unless the editor's `initialize` says
 `linesStartAt1` or `columnsStartAt1` is false, and source paths are `file://`
-URIs when it says `pathFormat: "uri"`. What a client can make the adapter hold
+URIs when it says `pathFormat: "uri"`. A line breakpoint's source matches the
+program's by path, however the editor spells it: a `file:` URI is read as the
+path it names, percent-escapes decoded, with an empty or `localhost` authority
+dropped, a Windows drive letter's case ignored, and a share host kept as
+`//host`. A breakpoint set on a file the editor reports as `sourceModified` is
+answered unverified, saying to restart the session, because its lines no
+longer name the steps the compiled program runs; an empty set on such a file
+still clears its breakpoints. What a client can make the adapter hold
 is bounded. A session holds at most 1024 breakpoints, and a request past that
 is not applied. A line breakpoint's source path may be at most 4096 bytes, and
 a longer one is refused as malformed. The paths, conditions, hit conditions and

@@ -495,7 +495,8 @@ while the run is held at the revision named. The server holds no session state.
 
 The reserved channel has no side door. The typed RPCs deliver on
 `flowstate_debug`; a raw `Signal` onto it needs `workload.debug` beside
-`workload.signal`, and the inspect action when it carries a condition, and
+`workload.signal`, and the inspect action when it carries a condition or a log
+message, and
 `SignalWithStart` refuses every `flowstate_` name (`pkg/flowstate/v1/server/lifecycle.go`).
 Every debug decision, allowed or denied, is an audit record naming the session,
 request id, revision and operation (`AuditDebugDetail` in
