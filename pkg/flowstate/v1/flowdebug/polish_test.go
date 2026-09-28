@@ -127,3 +127,47 @@ func TestTheDriversBreakpointEchoCarriesWhatDecidesTheStop(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, <-run.done)
 }
+
+// TestARunsReturnReportedTwiceSaysTheMissedUntilOnce: the stateful MCP session
+// hears its run return twice — from flowtest, then through [flowdebug.Session.Finished]
+// with the case's verdict — and says a missed `until` once, in the transcript
+// and in the observations, while the verdict it reports is still its own.
+func TestARunsReturnReportedTwiceSaysTheMissedUntilOnce(t *testing.T) {
+	t.Parallel()
+
+	for _, verdict := range []error{nil, errors.New("the case did not pass")} {
+		var out strings.Builder
+		session, err := flowdebug.New(flowdebug.Options{In: strings.NewReader("until each[9]/body\n"), Out: &out})
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = session.Close() })
+
+		ctx := v1.NewContextWithDebugger(t.Context(), session)
+		_, runErr := v1.Run(ctx, &v1.Workflow{Name: "looping", Steps: []*v1.Node{{
+			Id: "each",
+			Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{
+				Items:    v1.NewLiteralList(0, 1),
+				Iterator: "n",
+				Body:     []*v1.Node{{Id: "body", Kind: &v1.Node_Value{Value: v1.NewExpr("n")}}},
+			}},
+		}}})
+		require.NoError(t, runErr)
+		session.RunReturned(runErr)
+		session.Finished(verdict)
+
+		assert.Equal(t, 1, strings.Count(out.String(), "without stopping at"), "verdict %v: %q", verdict, out.String())
+		snapshot, err := session.Snapshot(t.Context())
+		require.NoError(t, err)
+		notices := 0
+		for _, observation := range snapshot.GetObservations() {
+			if strings.Contains(observation.GetText(), "without stopping at") {
+				notices++
+			}
+		}
+		assert.Equal(t, 1, notices, "verdict %v: the notice was recorded %d times", verdict, notices)
+		want := v1.DebugRunState_DEBUG_RUN_STATE_COMPLETED
+		if verdict != nil {
+			want = v1.DebugRunState_DEBUG_RUN_STATE_FAILED
+		}
+		assert.Equal(t, want, snapshot.GetState(), "reporting the run's return changed the verdict")
+	}
+}
