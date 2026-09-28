@@ -856,7 +856,8 @@ WantedBy=multi-user.target
 ```
 
 Each build sets its own `FLOWSTATE_BUILD_ID`. Once the worker unit for a new
-build is running, promote it, or it receives no new runs:
+build is running, make it the current version (or ramp a share of new runs to
+it with `set-ramping-version`), or it receives no new runs:
 
 ```console
 $ temporal worker deployment set-current-version \
@@ -2127,16 +2128,17 @@ while reading a deployment guide, has already had a worse morning than
 necessary.
 
 A versioned worker also receives **no new runs until its version is the
-deployment's current version**, and nothing in `flow` sets that. Promote each
-build once its workers are polling, in the Temporal namespace they poll:
+deployment's current or ramping version**, and nothing in `flow` sets either.
+Promote each build once its workers are polling, in the Temporal namespace they
+poll:
 
 ```console
 $ temporal worker deployment set-current-version \
     --deployment-name flowstate --build-id 2026.08.06-a1b2c3d
 ```
 
-Until a version is current, a submitted run is accepted and waits with nothing
-recorded. After a promotion, runs already in flight stay pinned to the version
+A run that no polling version receives is accepted and waits with nothing
+recorded until one does. After a promotion, runs already in flight stay pinned to the version
 they started on, so keep the previous build's workers running until
 `temporal worker deployment describe --name flowstate` shows it drained.
 Ramping a share of new runs to a version first is Temporal's
