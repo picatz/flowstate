@@ -228,7 +228,8 @@ type breakpoint struct {
 	Message  string `json:"message,omitempty"`
 
 	// Line is the line a source breakpoint was set on.
-	Line int `json:"line,omitempty"`
+	// A pointer so a zero-based client's first line is sent, not omitted.
+	Line *int `json:"line,omitempty"`
 }
 
 type breakpointsBody struct {

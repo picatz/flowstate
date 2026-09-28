@@ -3,6 +3,7 @@ package flowdap_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync/atomic"
@@ -547,4 +548,92 @@ func TestAClientThatVanishesDetachesTheRun(t *testing.T) {
 	}
 	assert.Zero(t, c.late.Load(), "the adapter wrote to a client that had gone, which on stdio is a "+
 		"broken-pipe write that kills the process under the run it detached")
+}
+
+// TestAZeroBasedClientGetsItsOwnLineNumbers is an editor that initializes with
+// linesStartAt1 and columnsStartAt1 false: its breakpoints are read, and its
+// frames and answers written, in its coordinates rather than DAP's default.
+func TestAZeroBasedClientGetsItsOwnLineNumbers(t *testing.T) {
+	t.Parallel()
+
+	c, program, _ := launched(t)
+
+	c.send(1, "initialize", map[string]any{"adapterID": "flowstate", "linesStartAt1": false, "columnsStartAt1": false})
+	c.await("response", "initialize")
+	c.await("event", "initialized")
+	c.send(2, "launch", map[string]any{"program": program})
+	c.await("response", "launch")
+
+	// Line 12 is the 1-based 13 inside `touch`; line 0 is the file's first
+	// line, which holds no step but is a line this client can name.
+	c.send(3, "setBreakpoints", map[string]any{
+		"source":      map[string]any{"path": program},
+		"breakpoints": []map[string]any{{"line": 12}, {"line": 0}},
+	})
+	answer := c.await("response", "setBreakpoints")
+	require.Equal(t, true, answer["success"], "a zero-based client's first line was refused as malformed")
+	lines := body(answer)["breakpoints"].([]any)
+	require.Len(t, lines, 2)
+	assert.Equal(t, true, lines[0].(map[string]any)["verified"], lines[0])
+	assert.EqualValues(t, 12, lines[0].(map[string]any)["line"])
+	assert.Equal(t, false, lines[1].(map[string]any)["verified"])
+	assert.EqualValues(t, 0, lines[1].(map[string]any)["line"])
+
+	c.send(4, "configurationDone", nil)
+	c.await("response", "configurationDone")
+	c.await("event", "stopped")
+
+	// The entry step is written on the 1-based line 4.
+	c.send(5, "stackTrace", map[string]any{"threadId": 1})
+	first := body(c.await("response", "stackTrace"))["stackFrames"].([]any)[0].(map[string]any)
+	assert.EqualValues(t, 3, first["line"])
+	assert.GreaterOrEqual(t, first["column"].(float64), float64(0))
+
+	c.send(6, "continue", map[string]any{"threadId": 1})
+	c.await("response", "continue")
+	c.await("event", "stopped")
+	c.send(7, "stackTrace", map[string]any{"threadId": 1})
+	frame := body(c.await("response", "stackTrace"))["stackFrames"].([]any)[0].(map[string]any)
+	// The stop is reported where its step, `touch`, is written: the 1-based
+	// line 12, whose zero-based number is 11.
+	assert.EqualValues(t, 11, frame["line"], "the stop is reported in the wrong client coordinates")
+}
+
+// TestVariableHandlesAreReusedAndBoundedWithinAStop is an editor refreshing
+// the same value at one stop, and one asking for more distinct values than a
+// stop holds references for: the first reuses its reference, and the second
+// stops being handed new ones rather than growing the table without end.
+func TestVariableHandlesAreReusedAndBoundedWithinAStop(t *testing.T) {
+	t.Parallel()
+
+	c, program, _ := launched(t)
+
+	c.send(1, "initialize", map[string]any{"adapterID": "flowstate"})
+	c.await("response", "initialize")
+	c.await("event", "initialized")
+	c.send(2, "launch", map[string]any{"program": program})
+	c.await("response", "launch")
+	c.send(3, "configurationDone", nil)
+	c.await("response", "configurationDone")
+	c.await("event", "stopped")
+
+	seq := 4
+	evaluate := func(expression string) float64 {
+		c.send(seq, "evaluate", map[string]any{"expression": expression, "frameId": 1})
+		seq++
+		answer := c.await("response", "evaluate")
+		require.Equal(t, true, answer["success"], answer)
+
+		return body(answer)["variablesReference"].(float64)
+	}
+
+	first := evaluate("[1, 2]")
+	require.NotZero(t, first)
+	assert.Equal(t, first, evaluate("[1, 2]"), "the same value at the same stop was issued a second reference")
+
+	for i := range flowdap.MaxVariableHandles - 1 {
+		require.NotZero(t, evaluate(fmt.Sprintf("[%d]", i)), "reference %d was refused below the bound", i)
+	}
+	assert.Zero(t, evaluate("[-1]"), "a stop handed out more references than it may hold")
+	assert.Equal(t, first, evaluate("[1, 2]"), "a reference already issued stopped answering at the bound")
 }
