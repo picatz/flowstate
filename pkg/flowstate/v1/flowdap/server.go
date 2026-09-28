@@ -44,8 +44,10 @@ type Server struct {
 	// its next stop before the command that moved it has been answered.
 	order sync.Mutex
 
-	// out serializes outbound messages: their numbering and their writing.
-	out sync.Mutex
+	// out serializes outbound messages: their numbering and their writing,
+	// and hungUp, set once the client is gone and nothing more is written.
+	out    sync.Mutex
+	hungUp bool
 
 	target       flowdebug.Target
 	sourceMap    *v1.DebugSourceMap
@@ -242,6 +244,11 @@ func (s *Server) Wait() { s.running.Wait() }
 
 // Serve answers requests until the client disconnects or ctx ends.
 func (s *Server) Serve(ctx context.Context) error {
+	// Whatever ends the conversation, nothing more is written to it: a run the
+	// session detached from goes on narrating, and on stdio a write to a
+	// client that has gone is a broken pipe that kills the process under it.
+	defer s.hangUp()
+
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -251,7 +258,9 @@ func (s *Server) Serve(ctx context.Context) error {
 		if err := s.stream.ReadObject(&request); err != nil {
 			// A client gone without a disconnect is one: the session detaches,
 			// so a run it left paused goes on rather than waiting for a
-			// command nobody can send, and [Server.Wait] returns.
+			// command nobody can send, and [Server.Wait] returns. Nobody is
+			// left to read what the detach says.
+			s.hangUp()
 			s.end(false)
 
 			return nil
@@ -1389,8 +1398,19 @@ func (s *Server) send(message func(seq int) any) {
 	s.out.Lock()
 	defer s.out.Unlock()
 
+	if s.hungUp {
+		return
+	}
 	s.seq++
 	_ = s.stream.WriteObject(message(s.seq))
+}
+
+// hangUp stops every later write to the client.
+func (s *Server) hangUp() {
+	s.out.Lock()
+	defer s.out.Unlock()
+
+	s.hungUp = true
 }
 
 func (s *Server) reply(request inbound, body any) {

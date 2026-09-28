@@ -545,4 +545,6 @@ func TestAClientThatVanishesDetachesTheRun(t *testing.T) {
 	case <-time.After(20 * time.Second):
 		t.Fatal("the run stayed paused after its client's stream ended, so the adapter never exits")
 	}
+	assert.Zero(t, c.late.Load(), "the adapter wrote to a client that had gone, which on stdio is a "+
+		"broken-pipe write that kills the process under the run it detached")
 }

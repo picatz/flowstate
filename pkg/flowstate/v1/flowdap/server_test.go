@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -33,6 +34,10 @@ type client struct {
 
 	closeOnce sync.Once
 	closed    chan struct{}
+
+	// late counts writes made after Close: on a real stdio transport each
+	// is a write to a pipe nobody reads, which kills the process.
+	late atomic.Int32
 }
 
 func newClient(t *testing.T) *client {
@@ -54,6 +59,14 @@ func (c *client) ReadObject(v any) error {
 }
 
 func (c *client) WriteObject(v any) error {
+	select {
+	case <-c.closed:
+		c.late.Add(1)
+
+		return nil
+	default:
+	}
+
 	encoded, err := json.Marshal(v)
 	if err != nil {
 		return err
