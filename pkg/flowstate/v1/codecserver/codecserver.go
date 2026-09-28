@@ -9,7 +9,10 @@
 // this server. This server exists for the humans and tools that inspect
 // history from outside a Flowstate process, and it is therefore the one place
 // in a deployment that releases plaintext over the network on request. It is
-// built as that: deny by default, and every decision audited.
+// built as that: deny by default, and every decision about an authenticated
+// caller audited. A request the trust policy's verifier refuses never reaches
+// this handler and is logged rather than audited, as it is for `flow server`:
+// an unauthenticated caller must not be able to write the audit trail at will.
 //
 // # The protocol
 //
@@ -257,19 +260,17 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if status, msg, code := h.authorize(principal, endpoint, namespace); status != 0 {
-		h.deny(ctx, subject, code)
 		if status == http.StatusForbidden && principal.Actions != nil {
 			header.Set("WWW-Authenticate", fmt.Sprintf(`Bearer error="insufficient_scope", scope=%q`,
 				v1.AuthorizationActionScope(mustAction(endpoint))))
 		}
-		http.Error(w, msg, status)
+		h.refuse(ctx, w, subject, code, status, msg)
 		return
 	}
 
 	if !h.limiter.allow(cmp.Or(principal.ID(), "anonymous")) {
-		h.deny(ctx, subject, v1.AuditDenyCode_AUDIT_DENY_CODE_RATE_LIMITED)
 		header.Set("Retry-After", "60")
-		http.Error(w, "too many requests", http.StatusTooManyRequests)
+		h.refuse(ctx, w, subject, v1.AuditDenyCode_AUDIT_DENY_CODE_RATE_LIMITED, http.StatusTooManyRequests, "too many requests")
 		return
 	}
 
@@ -279,11 +280,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// not parse is a malformed request from a caller already authorized,
 		// and the log says so without the body.
 		if tooLarge {
-			h.deny(ctx, subject, v1.AuditDenyCode_AUDIT_DENY_CODE_PAYLOAD_TOO_LARGE)
-		} else {
-			h.opts.Logger.WarnContext(ctx, "codec server: malformed request body",
-				"endpoint", endpoint, "caller", principal.ID())
+			h.refuse(ctx, w, subject, v1.AuditDenyCode_AUDIT_DENY_CODE_PAYLOAD_TOO_LARGE, http.StatusBadRequest, err.Error())
+			return
 		}
+		h.opts.Logger.WarnContext(ctx, "codec server: malformed request body",
+			"endpoint", endpoint, "caller", principal.ID())
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -292,8 +293,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		// Authorized, and the keyring does not cover it: an operator gap, not
 		// the caller's. Said as not found, without naming the keyring.
-		h.deny(ctx, subject, v1.AuditDenyCode_AUDIT_DENY_CODE_NOT_CONFIGURED)
-		http.Error(w, "this server holds no keys for that namespace", http.StatusNotFound)
+		h.refuse(ctx, w, subject, v1.AuditDenyCode_AUDIT_DENY_CODE_NOT_CONFIGURED, http.StatusNotFound,
+			"this server holds no keys for that namespace")
 		return
 	}
 
@@ -310,14 +311,17 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// further.
 		h.opts.Logger.WarnContext(ctx, "codec server: a payload could not be processed",
 			"endpoint", endpoint, "namespace", namespace, "caller", principal.ID(), "class", errorClass(err))
-		_ = h.allow(ctx, subject)
+		if err := h.allow(ctx, subject); err != nil {
+			http.Error(w, auditUnavailableMsg, http.StatusServiceUnavailable)
+			return
+		}
 		http.Error(w, decodeFailureUserFacingMsg, http.StatusBadRequest)
 		return
 	}
 
 	if err := h.allow(ctx, subject); err != nil {
 		// A required recorder that could not record: nothing is released.
-		http.Error(w, "the decision could not be recorded", http.StatusServiceUnavailable)
+		http.Error(w, auditUnavailableMsg, http.StatusServiceUnavailable)
 		return
 	}
 
@@ -409,10 +413,26 @@ func (h *Handler) allow(ctx context.Context, subject audit.Subject) error {
 	return h.opts.Auditor.Allow(ctx, subject)
 }
 
-func (h *Handler) deny(ctx context.Context, subject audit.Subject, code v1.AuditDenyCode) {
-	if h.opts.Auditor != nil {
-		_ = h.opts.Auditor.Deny(ctx, subject, code)
+func (h *Handler) deny(ctx context.Context, subject audit.Subject, code v1.AuditDenyCode) error {
+	if h.opts.Auditor == nil {
+		return nil
 	}
+	return h.opts.Auditor.Deny(ctx, subject, code)
+}
+
+// auditUnavailableMsg is the answer when a required audit recorder could not
+// record a decision: whatever the decision was, it is not acted on.
+const auditUnavailableMsg = "the decision could not be recorded"
+
+// refuse records a refusal and answers it. When the recorder is required and
+// could not record, the answer is 503 instead of the refusal, so a gap in a
+// required trail is an outage the operator sees rather than a quiet 4xx.
+func (h *Handler) refuse(ctx context.Context, w http.ResponseWriter, subject audit.Subject, code v1.AuditDenyCode, status int, msg string) {
+	if err := h.deny(ctx, subject, code); err != nil {
+		http.Error(w, auditUnavailableMsg, http.StatusServiceUnavailable)
+		return
+	}
+	http.Error(w, msg, status)
 }
 
 func mustAction(endpoint string) v1.AuthorizationAction {

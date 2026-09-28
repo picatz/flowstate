@@ -239,8 +239,12 @@ The server's rules:
 - **Nothing kept or echoed.** Responses are `Cache-Control: no-store`. Errors
   never contain a payload, a key, or which of wrong key, wrong namespace or
   tampering made a payload undecodable. CORS origins are compared exactly.
-- **Audited.** Every decision, allow or deny, is an audit record with
-  `httpEndpoint: /decode`, the caller, and their tenant, and no payload.
+- **Audited.** Every decision about an authenticated caller, allow or deny,
+  is an audit record with `httpEndpoint: /decode`, the caller, and their
+  tenant, and no payload. With `--audit-required`, a decision that cannot be
+  recorded is answered 503 and not acted on. A request the trust policy
+  refuses before it reaches the codec is logged, not audited, as on
+  `flow server`, so an unauthenticated caller cannot write the trail at will.
 
 The protocol names a namespace and nothing else, so no codec server can
 authorize per run. A person who may decode a namespace may decode every run in

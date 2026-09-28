@@ -522,10 +522,17 @@ func (c *Codec) Decode(payloads []*commonpb.Payload) ([]*commonpb.Payload, error
 
 func (c *Codec) decodeOne(p *commonpb.Payload) (*commonpb.Payload, error) {
 	encoding := string(p.GetMetadata()[encodingMetadataKey])
+	_, stamped := p.GetMetadata()[payloadcodec.KeyIDMetadataKey]
 	switch {
 	case encoding == Encoding:
 	case strings.HasPrefix(encoding, encodingFamily):
 		return nil, ErrUnknownVersion
+	case stamped:
+		// A payload naming a Flowstate key is one some Flowstate codec sealed,
+		// whatever its encoding now says. Letting it through as unencrypted
+		// would let an edit to one unauthenticated metadata entry move a
+		// sealed payload onto the plaintext path.
+		return nil, fmt.Errorf("%w: it names a Flowstate key but is not marked as this envelope", ErrMalformed)
 	case c.acceptUnencrypted:
 		return p, nil
 	default:

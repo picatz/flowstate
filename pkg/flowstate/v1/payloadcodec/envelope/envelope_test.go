@@ -245,6 +245,10 @@ func TestAMarkedPayloadNeverDowngrades(t *testing.T) {
 		"too short":      {Metadata: map[string][]byte{"encoding": []byte(envelope.Encoding), payloadcodec.KeyIDMetadataKey: []byte("k")}, Data: []byte("x")},
 		"too long":       {Metadata: map[string][]byte{"encoding": []byte(envelope.Encoding), payloadcodec.KeyIDMetadataKey: []byte("k")}, Data: make([]byte, v1.TemporalDefaultBlobLimitBytes+1)},
 		"garbage":        {Metadata: map[string][]byte{"encoding": []byte(envelope.Encoding), payloadcodec.KeyIDMetadataKey: []byte("k")}, Data: bytes.Repeat([]byte(marker), 4)},
+		// The encoding rewritten to a plaintext one, the key id left: still
+		// a sealed payload, and still refused.
+		"encoding rewritten": {Metadata: map[string][]byte{"encoding": []byte("json/plain"), payloadcodec.KeyIDMetadataKey: []byte("k")}, Data: []byte(marker)},
+		"encoding removed":   {Metadata: map[string][]byte{payloadcodec.KeyIDMetadataKey: []byte("k")}, Data: []byte(marker)},
 	}
 	for name, p := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -259,6 +263,23 @@ func TestAMarkedPayloadNeverDowngrades(t *testing.T) {
 			t.Fatalf("refusal is not classified: %v", err)
 		})
 	}
+}
+
+// TestARewrittenEncodingDoesNotDowngradeASealedPayload is the tamper the
+// migration setting would otherwise admit: a real envelope, its encoding
+// edited to a plaintext one, handed to a codec that accepts unencrypted
+// history.
+func TestARewrittenEncodingDoesNotDowngradeASealedPayload(t *testing.T) {
+	t.Parallel()
+
+	c := newCodec(t, envelope.Options{Keys: []envelope.Key{testKey(t, "k", 1)}, Current: "k", Binding: "ns", AcceptUnencrypted: true})
+	sealed, err := c.Encode([]*commonpb.Payload{plainPayload(marker)})
+	require.NoError(t, err)
+
+	tampered := proto.Clone(sealed[0]).(*commonpb.Payload)
+	tampered.Metadata["encoding"] = []byte("json/plain")
+	_, err = c.Decode([]*commonpb.Payload{tampered})
+	require.ErrorIs(t, err, envelope.ErrMalformed)
 }
 
 func TestOneBadPayloadFailsTheBatch(t *testing.T) {

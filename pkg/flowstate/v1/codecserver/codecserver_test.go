@@ -2,7 +2,9 @@ package codecserver_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -349,4 +351,39 @@ func jsonBase64(text string) string {
 	raw, _ := json.Marshal(text)
 	b, _ := json.Marshal(raw)
 	return strings.Trim(string(b), `"`)
+}
+
+// failingAuditor is a required recorder whose sink is down.
+type failingAuditor struct{}
+
+func (failingAuditor) Allow(context.Context, audit.Subject) error { return errors.New("sink down") }
+
+func (failingAuditor) Deny(context.Context, audit.Subject, v1.AuditDenyCode) error {
+	return errors.New("sink down")
+}
+
+// TestARequiredTrailThatCannotRecordIsAnOutage: with a recorder that cannot
+// record, no decision is acted on, allowed or refused, and nothing is
+// released. A refusal answered normally would leave a gap in a trail the
+// operator required to be complete.
+func TestARequiredTrailThatCannotRecordIsAnOutage(t *testing.T) {
+	t.Parallel()
+
+	f := newFixture(t, func(o *codecserver.Options) { o.Auditor = failingAuditor{} })
+	a := f.seal(t, "ns-a", markerA)
+	b := f.seal(t, "ns-b", markerB)
+
+	for name, c := range map[string]struct {
+		token, ns string
+		payload   *commonpb.Payload
+	}{
+		"allowed":          {"a-decoder", "ns-a", a},
+		"refused":          {"a-reader", "ns-a", a},
+		"forged namespace": {"a-decoder", "ns-b", b},
+		"undecodable":      {"a-decoder", "ns-a", b},
+	} {
+		resp, body := f.post(t, codecserver.DecodeEndpoint, c.token, c.ns, c.payload)
+		require.Equal(t, http.StatusServiceUnavailable, resp.StatusCode, name)
+		require.NotContains(t, body, jsonBase64(markerA), name)
+	}
 }
