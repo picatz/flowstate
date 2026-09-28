@@ -256,7 +256,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Role:         principal.Role,
 	}
 	if !principal.IsZero() {
-		subject.Identity = &v1.WorkloadIdentity{Subject: principal.ID(), Namespace: principal.Namespace}
+		// The same coordinates an RPC decision records, from the same
+		// derivation, so one caller's codec and RPC records correlate.
+		derived := auth.IdentityFromPrincipal(principal, "", "")
+		subject.Identity = &v1.WorkloadIdentity{
+			Subject:   derived.Subject,
+			Issuer:    derived.Issuer,
+			Namespace: derived.Namespace,
+		}
 	}
 
 	if status, msg, code := h.authorize(principal, endpoint, namespace); status != 0 {

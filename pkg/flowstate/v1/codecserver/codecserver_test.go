@@ -207,6 +207,12 @@ func TestTwoTenantsCannotReadEachOther(t *testing.T) {
 		require.NoError(t, protojson.Unmarshal([]byte(line), &rec), line)
 		require.NoError(t, v1.Validate(&rec))
 		require.Contains(t, []string{codecserver.DecodeEndpoint, codecserver.EncodeEndpoint}, rec.GetHttpEndpoint())
+		if id := rec.GetIdentity(); id.GetSubject() != "" {
+			// The coordinates an RPC record carries for the same caller, so
+			// the two correlate: issuer and subject apart, never joined.
+			require.Equal(t, "https://issuer.example", id.GetIssuer(), line)
+			require.Contains(t, []string{"alice", "ann", "abe", "bob"}, id.GetSubject(), line)
+		}
 		switch rec.GetDecision() {
 		case v1.AuditDecision_AUDIT_DECISION_ALLOW:
 			allows++
