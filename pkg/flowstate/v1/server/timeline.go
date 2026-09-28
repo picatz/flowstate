@@ -703,7 +703,7 @@ func boundedFailure(message string) string {
 		return message
 	}
 
-	return textbound.Cut(message, maxTimelineFailureBytes) + "…(truncated)"
+	return textbound.Cut(message, maxTimelineFailureBytes) + v1.TruncatedSuffix
 }
 
 // summaryText reads the label the interpreter wrote onto a command.

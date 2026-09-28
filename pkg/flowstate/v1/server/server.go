@@ -2333,7 +2333,11 @@ func (s *FlowstateServer) get(ctx context.Context, req *connect.Request[v1.GetRe
 		// Through the client authorization used, so the run whose outputs are
 		// read is the run that was checked. A completed run returns the whole of
 		// its outputs, which is the workload's data and not merely its existence.
-		if err := temporal.GetWorkflow(ctx, req.Msg.GetWorkflowId(), req.Msg.GetRunId()).Get(ctx, &result); err != nil {
+		// Pinned to the run that was described, not the request's run id: an
+		// empty one follows the latest run, which a run started under the same
+		// id since would change, and the outputs of one run would then be
+		// redacted under another's declarations.
+		if err := temporal.GetWorkflow(ctx, req.Msg.GetWorkflowId(), resp.GetWorkflowExecutionInfo().GetExecution().GetRunId()).Get(ctx, &result); err != nil {
 			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("error getting workflow result: %w", err))
 		}
 		start, closed := runTimes(resp.GetWorkflowExecutionInfo())
@@ -2385,7 +2389,7 @@ func (s *FlowstateServer) get(ctx context.Context, req *connect.Request[v1.GetRe
 				// predates the memo key.
 				Starter: s.reportedStarter(resp),
 				Kind: &v1.GetResponse_Error{
-					Error: failureError(ctx, temporal, req.Msg.GetWorkflowId(), req.Msg.GetRunId(), respStatus),
+					Error: failureError(ctx, temporal, req.Msg.GetWorkflowId(), resp.GetWorkflowExecutionInfo().GetExecution().GetRunId(), respStatus),
 				},
 			},
 		), nil

@@ -390,6 +390,9 @@ type fakeRunClient struct {
 	// progress, when set, is what the progress query answers.
 	progress *v1.RunProgress
 
+	// resultRuns records the run id each result read asked for.
+	resultRuns []string
+
 	// describes counts the lookups a request actually spent, which is what
 	// makes "the run was never addressed" assertable rather than inferred from
 	// a status code that has more than one reason to be what it is.
@@ -423,6 +426,26 @@ func (c *fakeRunClient) QueryWorkflow(_ context.Context, _, _, query string, _ .
 		return progressAnswer{c.progress}, nil
 	}
 	return nil, errors.New("no worker is answering queries")
+}
+
+// GetWorkflow records which run a result read addressed and answers with no
+// result: the point is where the read went, not what came back.
+func (c *fakeRunClient) GetWorkflow(_ context.Context, workflowID, runID string) client.WorkflowRun {
+	c.resultRuns = append(c.resultRuns, runID)
+	return noResultRun{workflowID: workflowID, runID: runID}
+}
+
+type noResultRun struct{ workflowID, runID string }
+
+func (r noResultRun) GetID() string    { return r.workflowID }
+func (r noResultRun) GetRunID() string { return r.runID }
+
+func (r noResultRun) GetFirstExecutionRunID() string { return r.runID }
+func (r noResultRun) Get(context.Context, any) error {
+	return errors.New("no result in this fake")
+}
+func (r noResultRun) GetWithOptions(context.Context, any, client.WorkflowRunGetOptions) error {
+	return errors.New("no result in this fake")
 }
 
 // progressAnswer is a progress query's answer, as a worker would give it.

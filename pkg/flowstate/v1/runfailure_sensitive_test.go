@@ -206,3 +206,58 @@ func TestAPromptIsWithheldBesideASensitiveOutput(t *testing.T) {
 		require.Contains(t, got.GetPrompt(), token, name)
 	}
 }
+
+// TestAValueCutByATruncationIsRedactedToo: failure text is bounded before it
+// is redacted, so a sensitive value can straddle the cut and reach the
+// redactor as a prefix no whole-value match finds. What the cut left of it is
+// redacted; text that was not cut, and a cut that splits nothing, are not.
+func TestAValueCutByATruncationIsRedactedToo(t *testing.T) {
+	t.Parallel()
+
+	const token = "synthetic-token-3f9a2c7d"
+	root := &v1.Workflow{Name: "root", DeclaredInputs: []*v1.InputDeclaration{sensitiveInput("token")}}
+	set := v1.RunFailureSensitiveValues(root, map[string]*v1.Value{"token": v1.NewLiteral(token)})
+	require.False(t, set.WithholdAll())
+
+	for cut := 2; cut < len(token); cut++ {
+		text := "GET https://api.example/?key=" + token[:cut] + v1.TruncatedSuffix
+		got := set.RedactTextWithin(text, "[withheld]", 1024)
+		require.NotContains(t, got, token[:cut], "cut after %d bytes", cut)
+		require.True(t, strings.HasPrefix(got, "GET https://api.example/?key="), "the text before the value survives: %q", got)
+	}
+
+	whole := "GET https://api.example/?key=" + token + " failed"
+	require.Equal(t, "GET https://api.example/?key=[redacted] failed", set.RedactTextWithin(whole, "[withheld]", 1024))
+
+	unrelated := "connection refused" + v1.TruncatedSuffix
+	require.Equal(t, unrelated, set.RedactTextWithin(unrelated, "[withheld]", 1024))
+
+	notCut := "key=" + token[:8]
+	require.Equal(t, notCut, set.RedactTextWithin(notCut, "[withheld]", 1024),
+		"only text that says it was cut is read as cut")
+}
+
+// TestACalleesDeclarationWithholdsTheCallersResponse: a caller that declares
+// nothing sensitive itself but embeds a callee that does is withheld whole,
+// outputs and prompts, by the redaction a local run renders with, which is
+// what `flow server` answers for the same run.
+func TestACalleesDeclarationWithholdsTheCallersResponse(t *testing.T) {
+	t.Parallel()
+
+	callee := &v1.Workflow{Name: "callee", DeclaredOutputs: []*v1.OutputDeclaration{{Name: "token", Sensitive: true}}}
+	caller := &v1.Workflow{Name: "caller", Steps: []*v1.Node{callOf(callee)},
+		DeclaredOutputs: []*v1.OutputDeclaration{{Name: "x"}}}
+	response := &v1.GetResponse{
+		RunOutputs: &v1.RunOutputs{Values: map[string]*v1.Value{"x": v1.NewLiteral("synthetic-token-61be")}},
+		Progress: &v1.RunProgress{PendingWaits: []*v1.PendingWait{
+			{StepId: "approve", SignalName: "go", Prompt: "approve synthetic-token-61be?"},
+		}},
+	}
+
+	got := v1.RedactGetResponse(response, caller, false)
+	require.NotContains(t, got.GetRunOutputs().GetValues()["x"].String(), "synthetic-token-61be")
+	require.Equal(t, v1.PromptWithheldSensitive, got.GetProgress().GetPendingWaits()[0].GetPrompt())
+
+	shown := v1.RedactGetResponse(response, caller, true)
+	require.Contains(t, shown.GetRunOutputs().GetValues()["x"].String(), "synthetic-token-61be", "--reveal-sensitive still shows it")
+}

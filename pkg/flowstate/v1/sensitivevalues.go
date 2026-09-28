@@ -53,6 +53,12 @@ import (
 // like a value a workload could have produced itself.
 const SensitiveMarker = "[redacted]"
 
+// TruncatedSuffix ends text that was cut to a size bound. Redaction reads it
+// as "this may have been cut through a sensitive value", and removes a
+// trailing prefix of one as well as whole occurrences, because the cut runs
+// before the text reaches a redactor that knows the values.
+const TruncatedSuffix = "…(truncated)"
+
 // minSensitiveSubstringRunes is the shortest *descendant* string
 // [SensitiveValues.RedactSubstrings] will replace textually. A one-rune leaf
 // is not a redaction, it is a shredder: replacing every `a` in the rendered
@@ -700,7 +706,19 @@ func redactSensitiveSubstringsWithin(rendered string, matcher *sensitiveSubstrin
 	}
 
 	redacted := make([]bool, len(rendered))
-	if !matcher.markMatches(redacted, rendered) {
+	found := matcher.markMatches(redacted, rendered)
+	if body, cut := strings.CutSuffix(rendered, TruncatedSuffix); cut {
+		// Text that was cut before it reached here may end part-way through
+		// a sensitive value, which no whole-value match finds: the prefix the
+		// cut left is redacted too.
+		if n := matcher.openTail(body); n > 0 {
+			for i := len(body) - n; i < len(body); i++ {
+				redacted[i] = true
+			}
+			found = true
+		}
+	}
+	if !found {
 		return rendered, true
 	}
 
@@ -751,6 +769,9 @@ type sensitiveSubstringNode struct {
 	edges   []sensitiveSubstringEdge
 	failure int
 	longest int
+	// depth is the length of the prefix this node spells: at the end of a
+	// text, how much of that text's tail begins some sensitive substring.
+	depth int
 }
 
 type sensitiveSubstringEdge struct {
@@ -785,7 +806,7 @@ func newSensitiveSubstringMatcher(substrings []string) (*sensitiveSubstringMatch
 			next, ok := matcher.nextLinear(state, substring[i])
 			if !ok {
 				next = len(matcher.nodes)
-				matcher.nodes = append(matcher.nodes, sensitiveSubstringNode{})
+				matcher.nodes = append(matcher.nodes, sensitiveSubstringNode{depth: i + 1})
 				matcher.nodes[state].edges = append(matcher.nodes[state].edges,
 					sensitiveSubstringEdge{byteValue: substring[i], next: next})
 			}
@@ -848,6 +869,26 @@ func (m *sensitiveSubstringMatcher) next(state int, value byte) (int, bool) {
 		return edges[i].next, true
 	}
 	return 0, false
+}
+
+// openTail reports how many trailing bytes of text begin a sensitive
+// substring without completing it: the depth of the automaton's state after
+// the whole text, which is the longest suffix of text that is a prefix of a
+// pattern. One more pass over text.
+func (m *sensitiveSubstringMatcher) openTail(text string) int {
+	state := 0
+	for i := 0; i < len(text); i++ {
+		for state != 0 {
+			if _, ok := m.next(state, text[i]); ok {
+				break
+			}
+			state = m.nodes[state].failure
+		}
+		if next, ok := m.next(state, text[i]); ok {
+			state = next
+		}
+	}
+	return m.nodes[state].depth
 }
 
 func (m *sensitiveSubstringMatcher) markMatches(redacted []bool, text string) bool {

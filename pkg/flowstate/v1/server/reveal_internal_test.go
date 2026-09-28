@@ -195,3 +195,19 @@ func TestARevealThatCannotBeRecordedReleasesNothing(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, v1.SensitiveDisclosure_SENSITIVE_DISCLOSURE_WITHHELD, resp.Msg.GetSensitiveDisclosure())
 }
+
+// TestACompletedRunsOutputsAreReadFromTheRunDescribed: a Get with no run id
+// describes the latest run and decides redaction from that run's
+// specification, so its outputs must be read from that same run. Read by
+// workflow id alone they follow whatever run is latest by then, and one run's
+// values would be redacted under another's declarations.
+func TestACompletedRunsOutputsAreReadFromTheRunDescribed(t *testing.T) {
+	t.Parallel()
+
+	fake := runningFake(t)
+	fake.describe.WorkflowExecutionInfo.Status = enumspb.WORKFLOW_EXECUTION_STATUS_COMPLETED
+	s := mustNew(t, fake)
+
+	_, _ = s.Get(revealer(t.Context(), "workload.read"), connect.NewRequest(&v1.GetRequest{WorkflowId: "orders-1"}))
+	require.Equal(t, []string{"r-1"}, fake.resultRuns)
+}

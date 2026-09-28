@@ -477,6 +477,17 @@ func RedactGetResponse(response *GetResponse, workflow *Workflow, reveal bool) *
 		return response
 	}
 
+	// A callee's declarations reach the caller's values through expressions
+	// nothing here traces, so a run embedding one is withheld whole, prompts
+	// included: the answer `flow server` gives the same run.
+	if workflow != nil {
+		if callee, err := CalleeDeclaresSensitiveValues(workflow); err != nil || callee {
+			withheld := RedactGetResponseDecided(response, nil, CarriedValuesUnverified)
+			WithholdPendingWaitPrompts(withheld)
+			return withheld
+		}
+	}
+
 	return RedactGetResponseDecided(response, SensitiveOutputNames(workflow), DecideCarriedValues(workflow, reveal))
 }
 
