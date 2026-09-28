@@ -509,9 +509,12 @@ func sensitiveOverflowWords(refusal error, names map[string]bool) []string {
 }
 
 // runSensitiveValues is the redaction set for a run this process is starting:
-// every value the workflow's `sensitive:` inputs carry, bound the way the
-// engine will bind them so that a declared default is in the set exactly like
-// a submitted argument.
+// [v1.RunFailureSensitiveValues], the set `flow server` uses for the same run,
+// so that both drivers withhold the same failure text. That is every value
+// the workflow's `sensitive:` inputs carry, bound the way the engine will bind
+// them so that a declared default is in the set exactly like a submitted
+// argument, or the withhold-all set where a callee's sensitive input or a
+// sensitive output cannot be enumerated from those arguments.
 //
 // reveal is `--reveal-sensitive`, which empties the set here rather than being
 // checked at each use, so the one deliberate escape hatch stays one decision.
@@ -532,15 +535,9 @@ func sensitiveOverflowWords(refusal error, names map[string]bool) []string {
 // own bind, so a refusal here means the arguments could not be enumerated, and
 // [v1.SensitiveValues]'s answer for that is to withhold rather than to allow.
 func runSensitiveValues(workflow *v1.Workflow, submitted map[string]*v1.Value, reveal bool) v1.SensitiveValues {
-	names := v1.SensitiveInputNames(workflow)
-	if reveal || len(names) == 0 {
+	if reveal {
 		return v1.SensitiveValues{}
 	}
 
-	bound, err := v1.BindRunInputs(workflow, submitted)
-	if err != nil {
-		return v1.WithheldSensitiveValues()
-	}
-
-	return v1.SensitiveInputValues(bound, names)
+	return v1.RunFailureSensitiveValues(workflow, submitted)
 }

@@ -299,3 +299,33 @@ func TestASensitiveRunWhoseArgumentsCannotBeBoundWithholdsItsFailureText(t *test
 		}
 	}
 }
+
+// TestLocalAndServerWithholdTheSameFailureText: a local run's failure set is
+// the one `flow server` builds for the same run, so a callee's sensitive
+// argument, bound from an expression the run's own inputs cannot enumerate,
+// is withheld by both drivers, as is failure text beside a sensitive output.
+func TestLocalAndServerWithholdTheSameFailureText(t *testing.T) {
+	t.Parallel()
+
+	callee := &v1.Workflow{Name: "callee", DeclaredInputs: []*v1.InputDeclaration{
+		{Name: "password", Type: v1.InputDeclaration_TYPE_STRING, Sensitive: true},
+	}}
+	withCallee := &v1.Workflow{Name: "caller", Steps: []*v1.Node{
+		{Id: "sub", Kind: &v1.Node_Call{Call: &v1.Call{Workflow: callee}}},
+	}}
+	withOutput := &v1.Workflow{Name: "out", DeclaredOutputs: []*v1.OutputDeclaration{{Name: "token", Sensitive: true}}}
+	plain := &v1.Workflow{Name: "plain"}
+
+	for name, workflow := range map[string]*v1.Workflow{
+		"a callee's sensitive input": withCallee,
+		"a sensitive output":         withOutput,
+		"nothing sensitive":          plain,
+	} {
+		local := runSensitiveValues(workflow, nil, false)
+		server := v1.RunFailureSensitiveValues(workflow, nil)
+		require.Equal(t, server.WithholdAll(), local.WithholdAll(), name)
+		require.Equal(t, server.Empty(), local.Empty(), name)
+		require.Equal(t, workflow != plain, local.WithholdAll(), name)
+		require.True(t, runSensitiveValues(workflow, nil, true).Empty(), "%s: --reveal-sensitive empties the set", name)
+	}
+}
