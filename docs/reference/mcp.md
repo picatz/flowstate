@@ -283,7 +283,7 @@ Read a retained session: its typed snapshot and the transcript since the last ob
 
 ## `flowstate_debug_session_command`
 
-Run one debugger command in a retained session and answer with its typed result. Commands: step, next, finish, continue, until <step>, pause, break <step> [hit <n>] [if <expr>], log <step> <msg>, catch none|uncaught|all, delete <step>, clear, breakpoints, inspect <expr>, expand <expr>, scope, backtrace, detach, status. Movements answer with the next stop. Set expected_revision to the snapshot you acted on, so a command meant for a stop the run has left is refused as stale.
+Run one debugger command in a retained session and answer with its typed result. Commands: step, next, finish, continue, until <step>, pause, break <step> [hit <n>] [if <expr>], log <step> <msg>, catch none|uncaught|all, delete <step>, clear, breakpoints, inspect <expr>, expand <expr>, scope, backtrace, detach, status. Movements answer with the next stop. Set expected_revision to the snapshot you acted on, so a command meant for a stop the run has left is refused as stale: a movement or an inspection is judged by the run in the same step as the command; any other command is checked just before it is sent.
 
 ## `flowstate_debug_session_end`
 

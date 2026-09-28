@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -802,4 +803,87 @@ func TestAStartRetryIsToldTheStartFailed(t *testing.T) {
 		assert.Empty(t, r.sessions)
 		r.registry.Release(1)
 	})
+}
+
+// lossyAttach is [heldRun] that applies every attach under the session the
+// caller names, as the server does, and answers the first as if its response
+// were lost; it records each attach it is sent.
+type lossyAttach struct {
+	heldRun
+
+	mu       sync.Mutex
+	attaches []*v1.DebugAttachRequest
+}
+
+func (l *lossyAttach) DebugAttach(_ context.Context, req *connect.Request[v1.DebugAttachRequest]) (*connect.Response[v1.DebugAttachResponse], error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.attaches = append(l.attaches, proto.CloneOf(req.Msg))
+	if len(l.attaches) == 1 {
+		return nil, connect.NewError(connect.CodeUnavailable, errors.New("the response was lost"))
+	}
+	status := v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_APPLIED
+	if slices.ContainsFunc(l.attaches[:len(l.attaches)-1], func(earlier *v1.DebugAttachRequest) bool {
+		return earlier.GetRequestId() == req.Msg.GetRequestId()
+	}) {
+		status = v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_DUPLICATE
+	}
+	snapshot := l.snapshot()
+	snapshot.Session.SessionId = req.Msg.GetSessionId()
+
+	return connect.NewResponse(&v1.DebugAttachResponse{
+		SessionId: req.Msg.GetSessionId(), Snapshot: snapshot,
+		Receipt: &v1.DebugReceipt{RequestId: req.Msg.GetRequestId(), Status: status},
+	}), nil
+}
+
+// TestAnAttachWhoseAnswerWasLostIsRecoveredByItsRetry: the server applied the
+// attach but its answer never came, so nothing here registered the session.
+// The retry under the same request id sends the same attach — the same
+// session and request ids — which the run answers from its receipts, so the
+// caller gets the session the first made rather than a second one the run
+// refuses while the first holds it.
+func TestAnAttachWhoseAnswerWasLostIsRecoveredByItsRetry(t *testing.T) {
+	t.Parallel()
+
+	service := &lossyAttach{}
+	mux := http.NewServeMux()
+	mux.Handle(flowstatev1connect.NewWorkflowServiceHandler(service))
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	client := flowstatev1connect.NewWorkflowServiceClient(srv.Client(), srv.URL)
+	r := newDebugSessions(func() flowstatev1connect.WorkflowServiceClient { return client })
+	attach := func() (*mcp.CallToolResult, sessionReply) {
+		t.Helper()
+		result, err := r.attach(t.Context(), toolRequest(t, map[string]any{"workflow_id": "w", "request_id": "k"}))
+		require.NoError(t, err)
+
+		return result, replyOf(t, result)
+	}
+
+	result, lost := attach()
+	require.True(t, result.IsError, "the lost answer was reported as an attach: %s", lost.raw)
+	result, retried := attach()
+	require.False(t, result.IsError, retried.raw)
+
+	service.mu.Lock()
+	sent := slices.Clone(service.attaches)
+	service.mu.Unlock()
+	require.Len(t, sent, 2)
+	assert.NotEmpty(t, sent[0].GetSessionId(), "a keyed attach let the server mint its session, which a retry cannot name")
+	assert.Equal(t, sent[0].GetSessionId(), sent[1].GetSessionId(), "the retry asked for another session")
+	assert.Equal(t, sent[0].GetRequestId(), sent[1].GetRequestId(), "the retry was not answerable from the run's receipts")
+	assert.False(t, sent[0].GetRenew(), "a new attach was sent as a renewal")
+	assert.Equal(t, sent[0].GetSessionId(), retried.SessionID)
+
+	// The ids are the process's own: another process, or another key, asks
+	// for another session.
+	other, _ := newDebugSessions(nil).attachIDs("w", "", "", "k")
+	assert.NotEqual(t, sent[0].GetSessionId(), other)
+	elsewhere, _ := r.attachIDs("w", "", "", "k2")
+	assert.NotEqual(t, sent[0].GetSessionId(), elsewhere)
+
+	result, err := r.end(t.Context(), toolRequest(t, map[string]any{"session_id": retried.SessionID, "keep": true}))
+	require.NoError(t, err)
+	require.False(t, result.IsError)
 }
