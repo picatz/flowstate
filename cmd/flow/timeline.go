@@ -128,6 +128,9 @@ func runTimeline(cmd *cobra.Command, args []string) error {
 		noteRevealedSensitiveValues(surface)
 		noteWithheldDespiteReveal(surface, response.Msg.GetSensitiveDisclosure())
 	}
+	// Before either rendering: a server too old to decide has redacted
+	// nothing, and its failure text is withheld here instead.
+	v1.WithholdUndecidedTimelineFailures(response.Msg, reveal)
 
 	if format != FormatText {
 		// The footer below is prose, and prose has no place in a document a

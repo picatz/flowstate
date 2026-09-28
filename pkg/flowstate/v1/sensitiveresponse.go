@@ -568,6 +568,29 @@ func RedactGetResponseDecided(response *GetResponse, sensitive map[string]bool, 
 // to be told which thing went missing.
 const FailureWithheldMarker = "failure text withheld: a sensitive input could not be enumerated, so no part of this message is provably safe"
 
+// WithholdUndecidedTimelineFailures is what a client does with a timeline
+// whose failure text the server did not decide for it: a server that decided
+// (WITHHELD, NONE_DECLARED) is trusted, and otherwise every failure, which can
+// quote a task's sensitive arguments, is withheld whole. That covers an older
+// server, which answers UNSPECIFIED having redacted nothing, and a REVEALED
+// answer the client did not accept by asking for it.
+func WithholdUndecidedTimelineFailures(response *GetTimelineResponse, revealAccepted bool) {
+	switch response.GetSensitiveDisclosure() {
+	case SensitiveDisclosure_SENSITIVE_DISCLOSURE_WITHHELD,
+		SensitiveDisclosure_SENSITIVE_DISCLOSURE_NONE_DECLARED:
+		return
+	case SensitiveDisclosure_SENSITIVE_DISCLOSURE_REVEALED:
+		if revealAccepted {
+			return
+		}
+	}
+	for _, entry := range response.GetEntries() {
+		if entry.GetFailure() != "" {
+			entry.Failure = FailureWithheldMarker
+		}
+	}
+}
+
 // redactFailureText applies the same redaction to the two failure strings a
 // [GetResponse] carries: the reason a failed run reports, and the last
 // failure of a pending activity on a run still going.

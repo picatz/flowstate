@@ -574,6 +574,23 @@ func timelineFits(assembled, size, entries int) bool {
 	return entries == 0 || assembled+size <= maxTimelineBytes
 }
 
+// refitTimeline reports how many of entries fit the answer's byte bound, by
+// the rule the assembly applied. Redaction runs after assembly and can
+// lengthen a failure, so what fit then is measured again; the entries past the
+// bound are cut, which the caller reports as a truncation and a resumption
+// reads again.
+func refitTimeline(entries []*v1.TimelineEntry) int {
+	assembled := 0
+	for i, entry := range entries {
+		size := proto.Size(entry)
+		if !timelineFits(assembled, size, i) {
+			return i
+		}
+		assembled += size
+	}
+	return len(entries)
+}
+
 // failureMessage is what a failure says, read through the deployment's own
 // converter and cut to [maxTimelineFailureBytes].
 //

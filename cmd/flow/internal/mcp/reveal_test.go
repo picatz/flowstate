@@ -37,7 +37,7 @@ func TestAnAgentReadsNoTimelineFailureAServerDidNotDecide(t *testing.T) {
 			SensitiveDisclosure: tc.disclosure,
 			Entries:             []*v1.TimelineEntry{{Failure: quoted}},
 		}
-		withholdTimelineFailures(response, tc.operator)
+		v1.WithholdUndecidedTimelineFailures(response, tc.operator)
 		require.Equal(t, tc.shown, response.GetEntries()[0].GetFailure() == quoted, "%v operator=%v", tc.disclosure, tc.operator)
 	}
 }

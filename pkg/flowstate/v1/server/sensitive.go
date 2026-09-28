@@ -126,6 +126,12 @@ func (s *FlowstateServer) GetTimeline(ctx context.Context, req *connect.Request[
 			entry.Failure = decl.values.RedactText(entry.GetFailure(), v1.FailureWithheldMarker)
 		}
 	}
+	// A marker can be longer than the value it replaces, so the answer's byte
+	// bound, applied as it was assembled, is applied again to what leaves.
+	if kept := refitTimeline(out.GetEntries()); kept < len(out.GetEntries()) {
+		out.Entries = out.Entries[:kept]
+		out.Truncated = true
+	}
 	out.SensitiveDisclosure = v1.SensitiveDisclosure_SENSITIVE_DISCLOSURE_WITHHELD
 	return resp, nil
 }
