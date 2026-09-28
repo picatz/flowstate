@@ -619,25 +619,41 @@ func (s *Session) resumeUntil(m mode, until v1.DebugTarget, condition *v1.Value)
 	s.contract.stepDepth = len(s.contract.occurrence.GetSegments())
 }
 
+// RunReturned tells the session the run has returned, with the run's own
+// error, and nothing about the verdict.
+//
+// An `until` still armed when the run completes named a stop the run never
+// made — an address past the last iteration, a condition that never held —
+// and without a word the run would simply end, as if it had. This says so,
+// once, on the prompt and as a notice observation for the structured fronts.
+// It changes no state, so a driver that learns the verdict later still
+// reports it through [Session.Finished], which calls this too. Every driver
+// calls one or the other when its run returns; the prompt drivers, which
+// report no verdict to a session, call this, found on the context's debugger
+// the way flowtest finds its autopsy.
+func (s *Session) RunReturned(err error) {
+	s.mu.Lock()
+	missed := ""
+	if err == nil && s.mode == modeUntil && !s.untilNoted && !terminal(s.contract.state) {
+		missed = s.until.String()
+		s.untilNoted = true
+	}
+	s.mu.Unlock()
+	if missed == "" {
+		return
+	}
+
+	text := fmt.Sprintf("the run completed without stopping at `until %s`", missed)
+	s.printfTone(ToneWarning, "%s\n", text)
+	s.observe(v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_NOTICE, "", text)
+}
+
 // Finished records how the run ended. A driver calls it when the run returns,
 // so a surface can say completed or failed rather than only "over".
 func (s *Session) Finished(err error) {
-	// An `until` still armed when the run completes named a stop the run
-	// never made — an address past the last iteration, a condition that never
-	// held — and without a word the run would simply end, as if it had.
-	// Said, and recorded for the structured fronts, before the run reads as
-	// over, so a reader of the final snapshot has it.
-	s.mu.Lock()
-	missed := ""
-	if err == nil && s.mode == modeUntil && !terminal(s.contract.state) {
-		missed = s.until.String()
-	}
-	s.mu.Unlock()
-	if missed != "" {
-		text := fmt.Sprintf("the run completed without stopping at `until %s`", missed)
-		s.printfTone(ToneWarning, "%s\n", text)
-		s.observe(v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_NOTICE, "", text)
-	}
+	// Before the run reads as over, so a reader of the final snapshot has the
+	// notice.
+	s.RunReturned(err)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()

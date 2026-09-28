@@ -1006,6 +1006,14 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	outputs, runErr = v1.RunWithInputs(ctx, workflow, inputs)
 	close(runFinished)
 
+	// Told the run has returned, with the run's own error rather than the
+	// case's verdict, so a debugger can say what the run never did (an
+	// `until` it never reached) while the verdict stays its driver's to report.
+	// Capability-discovered, as the autopsy below is.
+	if returned, ok := v1.DebuggerFromContext(ctx).(interface{ RunReturned(error) }); ok {
+		returned.RunReturned(runErr)
+	}
+
 	// The transcript coverage reads is the same one the verdict does. A failed
 	// run hands back the partial one ([v1.PartialTranscript]): the steps it ran
 	// before it stopped, and the step it stopped on. So a case whose whole point

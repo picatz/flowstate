@@ -413,7 +413,11 @@ type Session struct {
 	// same declined-arrival notice. One-shot with the mode that carries it —
 	// every resume clears both.
 	untilCondition *v1.Value
-	breakpoints    map[string]breakpoint
+	// untilNoted records that [Session.RunReturned] has said an armed
+	// `until` was never reached, so a driver that reports the run's return and
+	// then its verdict ([Session.Finished]) says it once.
+	untilNoted  bool
+	breakpoints map[string]breakpoint
 
 	// notedUnbound remembers which condition-gated stops — breakpoints and
 	// `until` — have already reported a condition they could not evaluate, so

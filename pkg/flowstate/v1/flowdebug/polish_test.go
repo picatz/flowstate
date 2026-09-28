@@ -104,3 +104,26 @@ func TestAScriptsCommentsDrawNoPromptOfTheirOwn(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 1, strings.Count(out, flowdebug.Prompt), "comments drew prompts of their own: %q", out)
 }
+
+// TestTheDriversBreakpointEchoCarriesWhatDecidesTheStop: the typed Driver —
+// retained MCP sessions, embed, durable `flow debug` — echoes a breakpoint
+// with its hit count and condition, as the prompt does, through one renderer.
+func TestTheDriversBreakpointEchoCarriesWhatDecidesTheStop(t *testing.T) {
+	t.Parallel()
+
+	run := startDebugRun(t, "main.yaml", map[string]string{"main.yaml": journeyFlowfile, "child.yaml": childFlowfile}, nil)
+	waitHeld(t, run.session, 0)
+	driver := flowdebug.NewDriver(run.session)
+
+	counted, err := driver.Do(t.Context(), "break touch hit 2")
+	require.NoError(t, err)
+	assert.Contains(t, counted.Text, "breakpoint at touch hit 2\n")
+
+	both, err := driver.Do(t.Context(), "break each/touch hit 2 if item == 2")
+	require.NoError(t, err)
+	assert.Contains(t, both.Text, "breakpoint at each/touch hit 2 if item == 2\n")
+
+	_, err = driver.Do(t.Context(), "detach")
+	require.NoError(t, err)
+	require.NoError(t, <-run.done)
+}
