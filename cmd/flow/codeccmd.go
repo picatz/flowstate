@@ -58,10 +58,20 @@ flow codec keygen --hpke --out break-glass.key`,
 					return err
 				}
 				defer clear(private)
+				// Both halves or neither: a private key left without its
+				// public half is one nobody can name, and blocks the retry.
+				if _, err := os.Lstat(out + ".pub"); err == nil {
+					return fmt.Errorf("%s.pub already exists; write the pair under a new file name", out)
+				}
 				if err := writeKeyFile(out, private); err != nil {
 					return err
 				}
 				if err := writeFileExclusive(out+".pub", public, 0o644); err != nil {
+					// The private key was created by this call, so removing it
+					// destroys nothing that protects history.
+					if rmErr := os.Remove(out); rmErr != nil {
+						return fmt.Errorf("%w; removing the private key it was paired with: %w", err, rmErr)
+					}
 					return err
 				}
 				fmt.Fprintf(surface.Err, "wrote an HPKE private key to %s (mode 0600) and its public key to %s.pub; "+

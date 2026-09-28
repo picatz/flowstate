@@ -465,6 +465,11 @@ func (c *Codec) CurrentKeyID() string {
 // reader, which serves every namespace, answers with the empty string.
 func (c *Codec) Binding() string { return c.binding }
 
+// DecodeOnly reports whether c has no current key, so that its Encode refuses
+// every payload: a keyring reader, or a namespace configured without
+// `current`, such as a recovery keyring's. See [payloadcodec.DecodeOnly].
+func (c *Codec) DecodeOnly() bool { return c.current == nil }
+
 // AcceptsUnencrypted reports whether Decode passes unencrypted payloads through.
 func (c *Codec) AcceptsUnencrypted() bool { return c.acceptUnencrypted }
 
@@ -939,4 +944,7 @@ func (c *Codec) unwrapperFor(h *v1.PayloadEnvelopeHeader) (ringEntry, string, []
 		"otherwise this process was started without it", ErrUnknownKey, h.GetKeyId())
 }
 
-var _ payloadcodec.Codec = (*Codec)(nil)
+var (
+	_ payloadcodec.Codec      = (*Codec)(nil)
+	_ payloadcodec.DecodeOnly = (*Codec)(nil)
+)

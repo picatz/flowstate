@@ -118,4 +118,35 @@ escrow_keys:
 	require.Contains(t, stdout, "seals with AES256_GCM")
 	require.Contains(t, stdout, "escrow, wrap only")
 	require.Contains(t, stdout, "data keys roll over every 10m0s")
+
+	// The recovery keyring docs/ENCRYPTION.md teaches: the private half, and
+	// the namespace decode-only. It has no current key to name, and must
+	// start anyway, since reading lost history is all it is for.
+	recovery := filepath.Join(dir, "recovery.yaml")
+	require.NoError(t, os.WriteFile(recovery, []byte(`
+namespaces:
+  default:
+    escrow: [break-glass]
+escrow_keys:
+  - id: break-glass
+    hpke:
+      public_key: {file: break-glass.key.pub}
+      private_key: {file: break-glass.key}
+`), 0o600))
+	_, _, err = runCLI(t, "codec", "status", "--payload-keyring", recovery)
+	require.NoError(t, err, "the documented recovery keyring does not start")
+}
+
+// TestCodecKeygenLeavesNoHalfAPair: an HPKE pair is written whole or not at
+// all, so a public half already in the way leaves no private key behind to
+// block the retry.
+func TestCodecKeygenLeavesNoHalfAPair(t *testing.T) {
+	t.Setenv(requirePayloadEncryptionEnv, "")
+	private := filepath.Join(t.TempDir(), "break-glass.key")
+	require.NoError(t, os.WriteFile(private+".pub", []byte("someone else's"), 0o644))
+
+	_, _, err := runCLI(t, "codec", "keygen", "--hpke", "--out", private)
+	require.ErrorContains(t, err, "already exists")
+	_, err = os.Stat(private)
+	require.ErrorIs(t, err, os.ErrNotExist, "a private key was left without its public half")
 }
