@@ -73,7 +73,7 @@ func runGet(cmd *cobra.Command, args []string) error {
 	// unless --reveal-sensitive asked otherwise.
 	if reveal {
 		noteRevealedSensitiveValues(surface)
-		noteWithheldDespiteReveal(surface, response.Msg)
+		noteWithheldDespiteReveal(surface, response.Msg.GetSensitiveDisclosure())
 	}
 
 	msg := redactGetResponse(response.Msg, nil, reveal)

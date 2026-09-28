@@ -74,6 +74,7 @@ flow timeline flowstate-workflow-3f7c --run-id 0198f1e2-... \
 	}
 
 	addOutputFlag(cmd)
+	addRevealSensitiveFlag(cmd)
 
 	cmd.Flags().String("run-id", "",
 		runIDUsage)
@@ -100,12 +101,14 @@ func runTimeline(cmd *cobra.Command, args []string) error {
 	runID, _ := cmd.Flags().GetString("run-id")
 	maxEntries, _ := cmd.Flags().GetInt32("max-entries")
 	afterEventID, _ := cmd.Flags().GetInt64("after-event-id")
+	reveal := revealSensitiveRequested(cmd)
 
 	request := &v1.GetTimelineRequest{
-		WorkflowId:   workflowID,
-		RunId:        runID,
-		MaxEntries:   maxEntries,
-		AfterEventId: afterEventID,
+		WorkflowId:      workflowID,
+		RunId:           runID,
+		MaxEntries:      maxEntries,
+		AfterEventId:    afterEventID,
+		RevealSensitive: reveal,
 	}
 	if err := v1.Validate(request); err != nil {
 		return err
@@ -120,6 +123,10 @@ func runTimeline(cmd *cobra.Command, args []string) error {
 	response, err := client.GetTimeline(cmd.Context(), connect.NewRequest(request))
 	if err != nil {
 		return refusedRun("reading the timeline of", workflowID, server, err)
+	}
+	if reveal {
+		noteRevealedSensitiveValues(surface)
+		noteWithheldDespiteReveal(surface, response.Msg.GetSensitiveDisclosure())
 	}
 
 	if format != FormatText {
@@ -141,7 +148,7 @@ func runTimeline(cmd *cobra.Command, args []string) error {
 	// this one is about something no account can hold, so it reads as the
 	// ending rather than as a second afterthought — and its own sentence says
 	// outright that continuing the rows above will not produce it.
-	noteRetryingSteps(cmd.Context(), surface, client, workflowID, response.Msg)
+	noteRetryingSteps(cmd.Context(), surface, client, workflowID, reveal, response.Msg)
 
 	return nil
 }
@@ -225,13 +232,14 @@ func noteRetryingSteps(
 	surface *ui.UI,
 	reader timelineRunReader,
 	workflowID string,
+	reveal bool,
 	msg *v1.GetTimelineResponse,
 ) {
 	if timelineHoldsTheSegmentsEnding(msg) {
 		return
 	}
 
-	request := &v1.GetRequest{WorkflowId: workflowID}
+	request := &v1.GetRequest{WorkflowId: workflowID, RevealSensitive: reveal}
 
 	// The segment the rows above are about, not whichever is current. A
 	// timeline is per segment and a workload can continue as new between two

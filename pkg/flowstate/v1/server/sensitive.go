@@ -8,10 +8,7 @@ import (
 	"sync"
 
 	"connectrpc.com/connect"
-	commonpb "go.temporal.io/api/common/v1"
 	enumspb "go.temporal.io/api/enums/v1"
-	historypb "go.temporal.io/api/history/v1"
-	"go.temporal.io/api/workflowservice/v1"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
@@ -63,21 +60,25 @@ func (s *FlowstateServer) Get(ctx context.Context, req *connect.Request[v1.GetRe
 	}
 
 	out := resp.Msg
-	decl := s.sensitiveDeclarationsOf(ctx, out.GetWorkflowId(), out.GetRunId())
-	if !decl.declares {
-		out.SensitiveDisclosure = v1.SensitiveDisclosure_SENSITIVE_DISCLOSURE_NONE_DECLARED
-		return resp, nil
-	}
 
+	// A reveal request is decided and audited whether or not this run turns
+	// out to hold anything to reveal: the record is of the attempted elevated
+	// read, and a required trail must not miss one because the run was plain.
+	revealed := false
 	if req.Msg.GetRevealSensitive() {
-		revealed, err := s.revealAuthorized(ctx, "Get", revealGetField, out.GetWorkflowId())
-		if err != nil {
+		if revealed, err = s.revealAuthorized(ctx, "Get", revealGetField, out.GetWorkflowId()); err != nil {
 			return nil, err
 		}
-		if revealed {
-			out.SensitiveDisclosure = v1.SensitiveDisclosure_SENSITIVE_DISCLOSURE_REVEALED
-			return resp, nil
-		}
+	}
+
+	decl := s.sensitiveDeclarationsOf(ctx, out.GetWorkflowId(), out.GetRunId())
+	switch {
+	case !decl.declares:
+		out.SensitiveDisclosure = v1.SensitiveDisclosure_SENSITIVE_DISCLOSURE_NONE_DECLARED
+		return resp, nil
+	case revealed:
+		out.SensitiveDisclosure = v1.SensitiveDisclosure_SENSITIVE_DISCLOSURE_REVEALED
+		return resp, nil
 	}
 
 	withheld := v1.RedactGetResponseDecided(out, decl.outputs, decl.carried)
@@ -97,21 +98,23 @@ func (s *FlowstateServer) GetTimeline(ctx context.Context, req *connect.Request[
 	}
 
 	out := resp.Msg
-	decl := s.sensitiveDeclarationsOf(ctx, req.Msg.GetWorkflowId(), out.GetRunId())
-	if !decl.declares {
-		out.SensitiveDisclosure = v1.SensitiveDisclosure_SENSITIVE_DISCLOSURE_NONE_DECLARED
-		return resp, nil
-	}
 
+	// Decided and audited before the run's declarations, as in Get.
+	revealed := false
 	if req.Msg.GetRevealSensitive() {
-		revealed, err := s.revealAuthorized(ctx, "GetTimeline", revealTimelineField, req.Msg.GetWorkflowId())
-		if err != nil {
+		if revealed, err = s.revealAuthorized(ctx, "GetTimeline", revealTimelineField, req.Msg.GetWorkflowId()); err != nil {
 			return nil, err
 		}
-		if revealed {
-			out.SensitiveDisclosure = v1.SensitiveDisclosure_SENSITIVE_DISCLOSURE_REVEALED
-			return resp, nil
-		}
+	}
+
+	decl := s.sensitiveDeclarationsOf(ctx, req.Msg.GetWorkflowId(), out.GetRunId())
+	switch {
+	case !decl.declares:
+		out.SensitiveDisclosure = v1.SensitiveDisclosure_SENSITIVE_DISCLOSURE_NONE_DECLARED
+		return resp, nil
+	case revealed:
+		out.SensitiveDisclosure = v1.SensitiveDisclosure_SENSITIVE_DISCLOSURE_REVEALED
+		return resp, nil
 	}
 
 	for _, entry := range out.GetEntries() {
@@ -221,14 +224,18 @@ func (s *FlowstateServer) sensitiveDeclarationsOf(ctx context.Context, workflowI
 	if err != nil {
 		return failClosedDeclarations
 	}
+	// A callee's declarations reach the caller's values through expressions
+	// this cannot trace, so a run embedding one is withheld whole.
+	if callee, err := v1.CalleeDeclaresSensitiveValues(state.GetWorkflow()); err != nil || callee {
+		s.declarations.put(key, failClosedDeclarations)
+		return failClosedDeclarations
+	}
 
 	d := sensitiveDeclarations{
 		declares: declares,
 		outputs:  v1.SensitiveOutputNames(state.GetWorkflow()),
 		carried:  v1.DecideCarriedValues(state.GetWorkflow(), false),
-	}
-	if names := v1.SensitiveInputNames(state.GetWorkflow()); len(names) > 0 {
-		d.values = v1.SensitiveInputValues(state.GetInputs(), names)
+		values:   v1.RunFailureSensitiveValues(state.GetWorkflow(), state.GetInputs()),
 	}
 
 	s.declarations.put(key, d)
@@ -237,37 +244,25 @@ func (s *FlowstateServer) sensitiveDeclarationsOf(ctx context.Context, workflowI
 
 // startedRunState reads the RunState a segment was started with, through the
 // client authorization chose for this caller, as [FlowstateServer.get] did,
-// so the history read is of the run that was checked. It asks for one event,
-// the start, rather than a page of history it would discard.
+// so the history read is of the run that was checked.
+//
+// Through the SDK's iterator, which reads one page and is stopped after the
+// first event. A raw GetWorkflowExecutionHistory call would ask for less, but
+// some frontends answer raw reads in RawHistory, which only the SDK
+// deserializes (timeline.go says more); read raw, those deployments would see
+// no start event and withhold every run.
 func (s *FlowstateServer) startedRunState(ctx context.Context, namespace, workflowID, runID string) (*v1.RunState, error) {
-	var event *historypb.HistoryEvent
-	if temporal, temporalNamespace, err := s.clientAndTemporalNamespaceFor(namespace); err == nil {
-		resp, err := temporal.WorkflowService().GetWorkflowExecutionHistory(ctx, &workflowservice.GetWorkflowExecutionHistoryRequest{
-			Namespace:       temporalNamespace,
-			Execution:       &commonpb.WorkflowExecution{WorkflowId: workflowID, RunId: runID},
-			MaximumPageSize: 1,
-		})
-		if err != nil {
-			return nil, err
-		}
-		if events := resp.GetHistory().GetEvents(); len(events) > 0 {
-			event = events[0]
-		}
-	} else {
-		// A server built without its Temporal namespace named (an embedding
-		// that never passed WithTemporalNamespace) reads through the SDK's
-		// iterator instead, which fetches a page.
-		temporal, err := s.clientFor(namespace)
-		if err != nil {
-			return nil, err
-		}
-		iter := temporal.GetWorkflowHistory(ctx, workflowID, runID, false, enumspb.HISTORY_EVENT_FILTER_TYPE_ALL_EVENT)
-		if iter == nil || !iter.HasNext() {
-			return nil, errors.New("the run has no history")
-		}
-		if event, err = iter.Next(); err != nil {
-			return nil, err
-		}
+	temporal, err := s.clientFor(namespace)
+	if err != nil {
+		return nil, err
+	}
+	iter := temporal.GetWorkflowHistory(ctx, workflowID, runID, false, enumspb.HISTORY_EVENT_FILTER_TYPE_ALL_EVENT)
+	if iter == nil || !iter.HasNext() {
+		return nil, errors.New("the run has no history")
+	}
+	event, err := iter.Next()
+	if err != nil {
+		return nil, err
 	}
 	if event == nil {
 		return nil, errors.New("the run has no history")

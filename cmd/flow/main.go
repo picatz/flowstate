@@ -1107,6 +1107,7 @@ func runWorkflow(cmd *cobra.Command, args []string) error {
 			// substituted a specification cannot make it untrue. See
 			// [runSensitiveValues].
 			sensitive: runSensitiveValues(workflow, inputs, reveal),
+			withheld:  noteWithheldOnce(surface),
 		},
 		clampWatchInterval(interval), plain, workflowID, startedRun(started.Msg), namedRun(subject))
 }

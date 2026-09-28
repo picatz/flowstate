@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/spf13/cobra"
 
@@ -130,17 +131,6 @@ func sensitiveOutputNames(workflow *v1.Workflow) map[string]bool {
 	return v1.SensitiveOutputNames(workflow)
 }
 
-func redactRunOutputsValues(values map[string]*v1.Value, sensitive map[string]bool, reveal bool) map[string]*v1.Value {
-	return v1.RedactRunOutputsValues(values, sensitive, reveal)
-}
-
-func redactRunOutputs(outputs *v1.RunOutputs, sensitive map[string]bool, reveal bool) *v1.RunOutputs {
-	if outputs == nil {
-		return nil
-	}
-	return &v1.RunOutputs{Values: v1.RedactRunOutputsValues(outputs.GetValues(), sensitive, reveal)}
-}
-
 type carriedValues = v1.CarriedValues
 
 const (
@@ -158,14 +148,6 @@ const (
 
 func decideCarriedValues(workflow *v1.Workflow, reveal bool) carriedValues {
 	return v1.DecideCarriedValues(workflow, reveal)
-}
-
-func redactStepValues(values map[string]*v1.Node_Outputs, decision carriedValues) map[string]*v1.Node_Outputs {
-	return v1.RedactStepValues(values, decision)
-}
-
-func redactEntityState(state *v1.EntityState, decision carriedValues) *v1.EntityState {
-	return v1.RedactEntityState(state, decision)
 }
 
 // redactGetResponse is where a server's decision meets this process's own.
@@ -194,14 +176,22 @@ func redactGetResponse(response *v1.GetResponse, workflow *v1.Workflow, reveal b
 // noteWithheldDespiteReveal says, once, that --reveal-sensitive was typed and
 // the server withheld anyway, so the operator is told what to change rather
 // than left wondering why the flag did nothing.
-func noteWithheldDespiteReveal(surface *ui.UI, response *v1.GetResponse) {
-	if response.GetSensitiveDisclosure() != v1.SensitiveDisclosure_SENSITIVE_DISCLOSURE_WITHHELD {
+func noteWithheldDespiteReveal(surface *ui.UI, disclosure v1.SensitiveDisclosure) {
+	if disclosure != v1.SensitiveDisclosure_SENSITIVE_DISCLOSURE_WITHHELD {
 		return
 	}
 	fmt.Fprintf(surface.Err, "%s the server withheld this run's sensitive values: revealing them needs an "+
 		"authenticated caller whose trust policy entry lists the workload.reveal_sensitive action explicitly "+
 		"(a server without authentication never reveals them)\n",
 		surface.ErrTheme.Pill(ui.ToneWarning, "withheld"))
+}
+
+// noteWithheldOnce is [noteWithheldDespiteReveal] for a follow, which polls
+// many times and should say so once.
+func noteWithheldOnce(surface *ui.UI) func() {
+	return sync.OnceFunc(func() {
+		noteWithheldDespiteReveal(surface, v1.SensitiveDisclosure_SENSITIVE_DISCLOSURE_WITHHELD)
+	})
 }
 
 func redactFailureText(response *v1.GetResponse, sensitive v1.SensitiveValues) *v1.GetResponse {

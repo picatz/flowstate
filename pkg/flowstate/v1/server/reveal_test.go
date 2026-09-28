@@ -3,6 +3,7 @@ package server_test
 import (
 	"context"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -12,9 +13,11 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/audit"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/engine"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/server"
 )
 
 const revealToken = "synthetic-token-5d0c"
@@ -153,7 +156,10 @@ func TestARunDeclaringNothingSensitiveIsUntouched(t *testing.T) {
 
 	temporal, _ := newTemporalNamespace(t)
 	startWorker(t, temporal)
-	s := mustNew(t, temporal)
+	trail := &revealTrail{}
+	recorder, err := audit.NewRecorder(audit.WithoutStderr(), audit.WithEmitter(trail))
+	require.NoError(t, err)
+	s := mustNew(t, temporal, server.WithAudit(recorder))
 
 	plain := strings.ReplaceAll(revealFlowfile, "    sensitive: true\n", "")
 	started, err := s.Run(t.Context(), connect.NewRequest(&v1.RunRequest{
@@ -168,6 +174,39 @@ func TestARunDeclaringNothingSensitiveIsUntouched(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, v1.SensitiveDisclosure_SENSITIVE_DISCLOSURE_NONE_DECLARED, resp.Msg.GetSensitiveDisclosure())
 	require.Equal(t, revealToken, resp.Msg.GetRunOutputs().GetValues()["echo"].GetLiteral().GetStringValue())
+
+	// Asking to reveal is an attempted elevated read, recorded whether or not
+	// the run turns out to hold anything to reveal.
+	require.Zero(t, trail.reveals(), "no reveal was asked for yet")
+	resp, err = s.Get(caller(t.Context(), "workload.read"), connect.NewRequest(&v1.GetRequest{WorkflowId: id, RevealSensitive: true}))
+	require.NoError(t, err)
+	require.Equal(t, v1.SensitiveDisclosure_SENSITIVE_DISCLOSURE_NONE_DECLARED, resp.Msg.GetSensitiveDisclosure())
+	require.Equal(t, 1, trail.reveals(), "the reveal request on a run declaring nothing was not audited")
+}
+
+// revealTrail counts the reveal decisions a recorder emits.
+type revealTrail struct {
+	mu      sync.Mutex
+	records []*v1.AuditRecord
+}
+
+func (r *revealTrail) Emit(_ context.Context, record *v1.AuditRecord) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.records = append(r.records, record)
+	return nil
+}
+
+func (r *revealTrail) reveals() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	n := 0
+	for _, record := range r.records {
+		if record.GetAction() == v1.AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_REVEAL_SENSITIVE {
+			n++
+		}
+	}
+	return n
 }
 
 // TestAContinuedRunIsDecidedByTheSegmentReported: after Continue-As-New, Get

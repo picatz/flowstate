@@ -601,3 +601,60 @@ func RedactGetResponseFailures(response *GetResponse, sensitive SensitiveValues)
 
 	return response
 }
+
+// CalleeDeclaresSensitiveValues reports whether any workflow a `call:` embeds
+// in workflow declares a sensitive input or output. A caller passes an
+// ordinary value into a callee's sensitive input, or reads a callee's
+// sensitive output into its own ordinary one, by expression, and nothing here
+// can trace which of the caller's values that made sensitive. A run for which
+// this is true is withheld whole rather than by name.
+func CalleeDeclaresSensitiveValues(workflow *Workflow) (bool, error) {
+	for current, err := range specWorkflows(workflow) {
+		if err != nil {
+			return false, err
+		}
+		if current == workflow {
+			continue
+		}
+		if len(sensitiveInputNames(current)) > 0 {
+			return true, nil
+		}
+		for _, output := range current.GetDeclaredOutputs() {
+			if output.GetSensitive() {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
+}
+
+// RunFailureSensitiveValues is the set a run's failure text is redacted with
+// when the reader may not see its sensitive values: every value the run's own
+// `sensitive:` inputs carry, bound as the engine binds them so a declared
+// default is included.
+//
+// A callee's sensitive input is bound at the call, from an expression this
+// cannot evaluate, so its value cannot be enumerated here. A run whose
+// specification embeds a callee declaring one therefore gets the fail-closed
+// set, which withholds failure text whole, as does a run whose inputs do not
+// bind or whose specification cannot be walked.
+func RunFailureSensitiveValues(workflow *Workflow, inputs map[string]*Value) SensitiveValues {
+	for current, err := range specWorkflows(workflow) {
+		if err != nil {
+			return WithheldSensitiveValues()
+		}
+		if current != workflow && len(sensitiveInputNames(current)) > 0 {
+			return WithheldSensitiveValues()
+		}
+	}
+
+	names := sensitiveInputNames(workflow)
+	if len(names) == 0 {
+		return SensitiveValues{}
+	}
+	bound, err := BindRunInputs(workflow, inputs)
+	if err != nil {
+		return WithheldSensitiveValues()
+	}
+	return SensitiveInputValues(bound, names)
+}

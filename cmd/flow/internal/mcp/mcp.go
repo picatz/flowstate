@@ -1001,6 +1001,9 @@ func dispatch(
 		if response, ok := out.(*v1.GetResponse); ok {
 			out = deps.Redact(response)
 		}
+		if response, ok := out.(*v1.GetTimelineResponse); ok {
+			withholdTimelineFailures(response, deps.RevealSensitive)
+		}
 
 		// An agent reads the catalog for summaries, types and constraints —
 		// not the base64 FileDescriptorSet bytes it cannot decode. Strip
@@ -1398,6 +1401,28 @@ func NewMessage(md protoreflect.MessageDescriptor) proto.Message {
 	}
 
 	return mt.New().Interface()
+}
+
+// withholdTimelineFailures is the timeline's half of what Deps.Redact does
+// for a run: a server that decided (WITHHELD, NONE_DECLARED) is trusted, and
+// otherwise the failure text, which can quote a task's sensitive arguments,
+// is withheld whole. That covers an older server, which decided nothing, and
+// a REVEALED answer this surface's operator did not ask for.
+func withholdTimelineFailures(response *v1.GetTimelineResponse, operatorRevealed bool) {
+	switch response.GetSensitiveDisclosure() {
+	case v1.SensitiveDisclosure_SENSITIVE_DISCLOSURE_WITHHELD,
+		v1.SensitiveDisclosure_SENSITIVE_DISCLOSURE_NONE_DECLARED:
+		return
+	case v1.SensitiveDisclosure_SENSITIVE_DISCLOSURE_REVEALED:
+		if operatorRevealed {
+			return
+		}
+	}
+	for _, entry := range response.GetEntries() {
+		if entry.GetFailure() != "" {
+			entry.Failure = v1.FailureWithheldMarker
+		}
+	}
 }
 
 // clearRevealSensitive clears a request's `reveal_sensitive` switch, found by
