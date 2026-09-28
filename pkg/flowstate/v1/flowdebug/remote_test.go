@@ -27,10 +27,18 @@ type waitRecorder struct {
 	waits map[string][]time.Duration
 }
 
+// sentNone is recorded for a command that carried no wait at all, which the
+// server answers with its own default.
+const sentNone = time.Duration(-1)
+
 func (w *waitRecorder) record(rpc string, wait *durationpb.Duration) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	w.waits[rpc] = append(w.waits[rpc], wait.AsDuration())
+	recorded := sentNone
+	if wait != nil {
+		recorded = wait.AsDuration()
+	}
+	w.waits[rpc] = append(w.waits[rpc], recorded)
 }
 
 func (w *waitRecorder) seen(rpc string) []time.Duration {
@@ -66,21 +74,28 @@ func (w *waitRecorder) DebugSetBreakpoints(_ context.Context, req *connect.Reque
 	return connect.NewResponse(&v1.DebugSetBreakpointsResponse{Receipt: applied(req.Msg.GetRequestId()), Snapshot: w.snapshot()}), nil
 }
 
-// TestRemoteOptionsWaitBoundsEveryCommand: the wait an attach is given is the
-// wait of every command after it — each resume, pause and breakpoint set asks
-// the server to answer once the run has applied it — and a command that
-// carries its own wait keeps it. Before, only the attach carried it, and every
-// later command was answered pending (#2175).
-func TestRemoteOptionsWaitBoundsEveryCommand(t *testing.T) {
-	t.Parallel()
+func serveWaits(t *testing.T) (*waitRecorder, flowstatev1connect.WorkflowServiceClient) {
+	t.Helper()
 
 	recorder := &waitRecorder{waits: map[string][]time.Duration{}}
 	mux := http.NewServeMux()
 	mux.Handle(flowstatev1connect.NewWorkflowServiceHandler(recorder))
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
-	client := flowstatev1connect.NewWorkflowServiceClient(srv.Client(), srv.URL)
 
+	return recorder, flowstatev1connect.NewWorkflowServiceClient(srv.Client(), srv.URL)
+}
+
+// TestRemoteOptionsWaitBoundsEveryCommand: the wait an attach is given is the
+// wait of every command after it — each resume, pause and breakpoint set asks
+// the server to answer once the run has applied it — and a command that
+// carries its own wait keeps it. Before, only the attach carried it, and every
+// later command waited the server's default whatever the caller had set
+// (#2175).
+func TestRemoteOptionsWaitBoundsEveryCommand(t *testing.T) {
+	t.Parallel()
+
+	recorder, client := serveWaits(t)
 	remote, _, err := flowdebug.AttachRemote(t.Context(), client, "w", "", flowdebug.RemoteOptions{
 		Wait: 3 * time.Second, Heartbeat: time.Hour,
 	})
@@ -103,4 +118,40 @@ func TestRemoteOptionsWaitBoundsEveryCommand(t *testing.T) {
 	assert.Equal(t, []time.Duration{3 * time.Second, time.Second}, recorder.seen("resume"),
 		"a resume did not carry the session's wait, or overrode its own")
 	assert.Equal(t, []time.Duration{3 * time.Second}, recorder.seen("breakpoints"))
+}
+
+// TestAZeroWaitSendsNone: a session given no wait sends none with any
+// command, leaving each to the server's default, rather than a zero the
+// server would read as a wait of its own.
+func TestAZeroWaitSendsNone(t *testing.T) {
+	t.Parallel()
+
+	recorder, client := serveWaits(t)
+	remote, _, err := flowdebug.AttachRemote(t.Context(), client, "w", "", flowdebug.RemoteOptions{Heartbeat: time.Hour})
+	require.NoError(t, err)
+	_, err = remote.Resume(t.Context(), &v1.DebugResumeRequest{Action: v1.DebugResumeAction_DEBUG_RESUME_ACTION_STEP_OVER})
+	require.NoError(t, err)
+	_, err = remote.ReplaceBreakpoints(t.Context(), &v1.DebugSetBreakpointsRequest{})
+	require.NoError(t, err)
+	require.NoError(t, remote.Disconnect())
+
+	assert.Equal(t, []time.Duration{sentNone}, recorder.seen("attach"))
+	assert.Equal(t, []time.Duration{sentNone}, recorder.seen("resume"))
+	assert.Equal(t, []time.Duration{sentNone}, recorder.seen("breakpoints"))
+}
+
+// TestACloseDetachWaitsWithinItsOwnDeadline: the detach Close sends asks the
+// server for a bounded wait, whatever the session's own, so a session with a
+// longer one is not held past the close's deadline by a run in a long step.
+func TestACloseDetachWaitsWithinItsOwnDeadline(t *testing.T) {
+	t.Parallel()
+
+	recorder, client := serveWaits(t)
+	remote, _, err := flowdebug.AttachRemote(t.Context(), client, "w", "", flowdebug.RemoteOptions{
+		Wait: 20 * time.Second, Heartbeat: time.Hour,
+	})
+	require.NoError(t, err)
+	require.NoError(t, remote.Close())
+
+	assert.Equal(t, []time.Duration{5 * time.Second}, recorder.seen("resume"), "the detach carried the session's wait past the close's deadline")
 }

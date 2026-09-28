@@ -69,8 +69,10 @@ type RemoteOptions struct {
 
 	// Wait bounds how long each command waits for the run to apply it: the
 	// attach, and every resume, pause and breakpoint set after it that does
-	// not carry a wait of its own. Zero answers each at once, pending until
-	// the run's next step boundary; the server bounds it either way.
+	// not carry a wait of its own. Zero sends none, leaving each command to
+	// the server's default wait; the server bounds any wait it is sent. A
+	// detach on [Remote.Close] waits at most [closeDetachWait] whatever this
+	// says, so a close is not held past its own deadline.
 	Wait time.Duration
 
 	// SourceMap relates the program to its sources. It is used only when its
@@ -410,6 +412,14 @@ func (r *Remote) Disconnect() error {
 	return r.close(false)
 }
 
+// closeTimeout bounds the detach a close sends, and closeDetachWait is the
+// wait that detach asks of the server: well inside the timeout, so a run in a
+// long step answers pending rather than holding the close past its deadline.
+const (
+	closeTimeout    = 10 * time.Second
+	closeDetachWait = 5 * time.Second
+)
+
 func (r *Remote) close(detach bool) error {
 	r.mu.Lock()
 	if r.closed {
@@ -426,9 +436,11 @@ func (r *Remote) close(detach bool) error {
 	if !detach {
 		return nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), closeTimeout)
 	defer cancel()
-	receipt, err := r.Resume(ctx, &v1.DebugResumeRequest{Action: v1.DebugResumeAction_DEBUG_RESUME_ACTION_DETACH})
+	receipt, err := r.Resume(ctx, &v1.DebugResumeRequest{
+		Action: v1.DebugResumeAction_DEBUG_RESUME_ACTION_DETACH, Wait: durationpb.New(closeDetachWait),
+	})
 	if err != nil {
 		return err
 	}
