@@ -1463,8 +1463,10 @@ func (r *debugSessions) end(ctx context.Context, req *mcp.CallToolRequest) (*mcp
 	result := answer.result()
 	// A case that did not pass is a failed call, as flowstate_test and the
 	// one-shot flowstate_debug report it, not a success whose report says
-	// otherwise; so is an end that left the run held.
-	if (entry.report != nil && finished && testReportFailed(entry.report)) || detach != nil {
+	// otherwise; so is an end that left the run held. The report is read
+	// only once the case has finished: until then its goroutine may still
+	// write it.
+	if (finished && entry.report != nil && testReportFailed(entry.report)) || detach != nil {
 		result.IsError = true
 	}
 
