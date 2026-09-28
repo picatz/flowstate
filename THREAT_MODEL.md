@@ -51,10 +51,10 @@ The boundaries, in the order an attacker meets them:
 
 1. **Workflow history.** Durable, and broadly readable by anyone with Temporal
    access to the namespace: the full compiled specification, every step's inputs and
-   outputs, identity claims, and memos (`docs/DEPLOYMENT.md:11-33`).
+   outputs, identity claims, and memos ([docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#read-this-before-you-share-a-temporal-namespace)).
 2. **Secrets.** Values resolved worker-side, inside the activity that needs them,
    never carried in the spec or in history (invariant 7,
-   `docs/ARCHITECTURE.md:154-157`).
+   [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#invariants)).
 3. **Identity keys and issuer material.** The private key Flowstate signs workload
    assertions with, and the trust policy naming which issuers it believes.
 4. **Deployment policy files.** The crown jewel. `--auth-policy`, `--egress-policy`,
@@ -64,7 +64,7 @@ The boundaries, in the order an attacker meets them:
 5. **Plugin binaries.** Launched code running with the worker's authority.
 6. **Examples and walkthroughs.** Files people copy. `examples/observability/`
    deliberately runs `--insecure-no-auth` and `--allow-unversioned-interpreter`
-   (`docs/DEPLOYMENT.md:313-319`), which is correct for a demo and wrong everywhere
+   ([docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#docker-compose)), which is correct for a demo and wrong everywhere
    else.
 
 ## 3. Adversaries and their reach
@@ -109,7 +109,7 @@ which becomes step output, which becomes history and possibly an agent's context
 **A compromised or malicious plugin.** Holds the worker's process authority. This is
 not contained and is not claimed to be: separate processes buy protection against a
 crash or a runtime bug, not against code doing deliberately what its author wrote
-(`docs/ARCHITECTURE.md:470-481`, `docs/DEPLOYMENT.md:35-51`). It reaches every
+([docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#plugins), [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#the-worker-is-the-tenancy-boundary)). It reaches every
 tenant that worker serves. It does not inherit the worker's environment: plugin
 environments are built from nothing, plus the deployment's egress policy and —
 only when that policy sets `proxy_from_environment` — the worker's own
@@ -131,7 +131,7 @@ decided at process start-up and never per call (`cmd/flow/mcp.go:647-694`).
 **An insider with history read access.** Reads everything in asset 1 for every
 tenant in that namespace. Nothing in Flowstate mitigates this today; the encryption
 seam that would is specified in #353 A.1 and #113, not landed
-(`docs/ARCHITECTURE.md:663-678`, #271 tracks the gap).
+([docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#data-flow-between-steps), #271 tracks the gap).
 
 ## 4. Per boundary: enforcement, limits, planned hardening
 
@@ -145,10 +145,10 @@ an author may weaken or delete it, and a signal name with no policy admits any
 authenticated caller in the tenant. An approval gate is therefore author-declared
 and deployment-attested, not author-proof; the author-proof layer is deployment
 policy of the #187 shape, which can require that a workflow of a given shape carry
-the gate. Egress, secret access, and task shape are configured on the worker and on
-the server, never in the file. `flow validate` reports properties of the file and stays silent
+the gate. Egress, secret access, and task shape are configured on the worker, never
+in the file; the server resolves secrets only for webhook `verify:` keys. `flow validate` reports properties of the file and stays silent
 about deployment decisions, deliberately, so a diagnostic never asserts a rule the
-author's machine may not share (`docs/DEPLOYMENT.md:134-152`,
+author's machine may not share ([docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#tier-1b--shared-worker-per-tenant-policy-rules),
 `pkg/flowstate/v1/eval_task_http_check.go:17-25`).
 
 **Limits.** Task-shape policy is opt-in: a nil policy permits every task
@@ -199,7 +199,7 @@ refuses to send a token over plaintext to anything but this machine
 posture. `--insecure-no-auth` admits everyone as anonymous and is a
 development posture (read at `cmd/flow/main.go:220`, resolved to
 `auth.InsecureAnonymousVerifier` at `cmd/flow/main.go:1758`;
-`pkg/flowstate/v1/auth/connect.go:142-160`, `docs/DEPLOYMENT.md:306-311`).
+`pkg/flowstate/v1/auth/connect.go:142-160`, [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#the-four-tier-isolation-model)).
 
 **Planned.** OAuth 2.1 alignment for the remote MCP surface and webhook ingress as
 attested signals, #337, not landed.
@@ -300,7 +300,7 @@ every later request (`pkg/flowstate/v1/server/server.go:234`, `:710`,
 `--tenant`, each tenant's runs go to a queue derived from the authenticated tenant,
 and a worker refuses a run belonging to anyone else; the composed queue name cannot
 be forged across a tenant boundary because the separator is the one character the
-namespace grammar forbids (`docs/DEPLOYMENT.md:186-223`). Signal authorization is
+namespace grammar forbids ([docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#tier-2--per-tenant-temporal-namespace--per-tenant-worker)). Signal authorization is
 per name, checked against the run's declared policy and its recorded starter, and
 fails closed on an unreadable memo or a missing starter where the policy demands the
 comparison (`pkg/flowstate/v1/server/lifecycle.go:140-234`,
@@ -308,8 +308,8 @@ comparison (`pkg/flowstate/v1/server/lifecycle.go:140-234`,
 
 **Limits.** Mapping completeness is a warning, not a refusal: a tenant routed to a
 queue nothing polls gets runs that sit RUNNING with nothing wrong reported
-(`docs/DEPLOYMENT.md:235-251`). Fairness keys are set correctly; whether they are
-enforced is a property of the Temporal deployment (`docs/DEPLOYMENT.md:517-532`).
+([docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#tier-2--per-tenant-temporal-namespace--per-tenant-worker)). Fairness keys are set correctly; whether they are
+enforced is a property of the Temporal deployment ([docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#noisy-neighbor)).
 
 **Planned.** Pending-wait reporting so a surface can show what a run is blocked on,
 #347, not landed. Gate prompts and starter exposure so an approver sees what and
@@ -321,13 +321,13 @@ whose before clicking, #348, not landed.
 relative search path, or one writable by any user other than its owner (group
 or world), is refused, with
 `--allow-insecure-plugin-dir` as the named escape hatch
-(`pkg/flowstate/v1/plugin/doc.go:50-52`, `docs/DEPLOYMENT.md:508-515`). Plugin
+(`pkg/flowstate/v1/plugin/doc.go:50-52`, [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#blockers)). Plugin
 environments are built from nothing rather than inherited, save for the egress
 grant and, under a policy that sets `proxy_from_environment`, the worker's proxy
 variables — whose URLs may carry userinfo
 (`pkg/flowstate/v1/plugin/launch.go:644`). Secret inputs a plugin task consumes are
 resolved host-side, before `Execute`, and only for inputs the `TaskManifest` named;
-an unnamed input is refused (`docs/ARCHITECTURE.md:432-448`). Responses from a
+an unnamed input is refused ([docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#plugins)). Responses from a
 plugin are byte-bounded at the RoundTripper, below the RPC library, so no error path
 the library treats specially can miss the cap
 (`pkg/flowstate/v1/plugin/transport.go:124`, `CLAUDE.md`). The distribution digest a
@@ -374,7 +374,7 @@ plugin is trusted code with the worker's authority. The output
 scrubber matches known plaintext and is defeated by any deliberate transform:
 base64, hex, a hash, splitting across two fields. It is a containment tier for
 accidents and is explicitly not containment against an adversarial plugin
-(`docs/ARCHITECTURE.md:450-481`, `pkg/flowstate/v1/secrets/scrub.go:56`).
+([docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#plugins), `pkg/flowstate/v1/secrets/scrub.go:56`).
 
 **Planned.** Vetting or signing what runs before a binary is trusted with a socket,
 #146, not landed. Isolation tiers with plugins declaring the tier they require and a
@@ -399,7 +399,7 @@ a host that cannot open that address family; a non-canonical IPv4 spelling
 type-checked when configuration loads, deny beats allow, and a rule that errors
 denies (`:91-111`). Rules may key on the run's identity, including namespace, so one
 worker can serve two tenants with different reach
-(`pkg/flowstate/v1/eval_task_http_run.go:316`, `docs/DEPLOYMENT.md:153-166`).
+(`pkg/flowstate/v1/eval_task_http_run.go:316`, [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#tier-1b--shared-worker-per-tenant-policy-rules)).
 
 **Limits.** HTTP enforcement lives *inside* the Go `http` task
 (`pkg/flowstate/v1/eval_task_http_run.go:595`, `:833`). The first-party SQL plugin
@@ -436,7 +436,7 @@ dispatch, #341 E, not landed.
 ### Tenant to tenant
 
 **Today.** Namespace comes from the authenticated caller and is unforgeable by the
-workload (`docs/ARCHITECTURE.md:502-513`). Secret providers are namespaced
+workload ([docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#tenancy)). Secret providers are namespaced
 explicitly and fail closed per backend: the env provider refuses a namespace it has
 no configured prefix for, and prefixes are checked disjoint at construction rather
 than derived, because every character legal in a prefix is legal in a name
@@ -445,7 +445,7 @@ rules and egress rules all read the same identity object.
 
 **Limits.** On one Temporal namespace, history is shared. On one worker, material is
 shared: anything achieving code execution in a worker reaches every secret that
-worker holds for every tenant it serves (`docs/DEPLOYMENT.md:48-51`). Per-tenant
+worker holds for every tenant it serves ([docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#the-worker-is-the-tenancy-boundary)). Per-tenant
 history and per-tenant blast radius are Tier 2 properties requiring separate
 namespaces and separate fleets, not policy-rule properties.
 
@@ -456,9 +456,9 @@ namespaces and separate fleets, not policy-rule properties.
 **Today.** Secrets stay references through compilation, submission and workflow-side
 resolution; only the activity resolves the value (invariant 7). The `Secret` type
 marshals redacted, refuses to deserialize, and redacts when formatted
-(`docs/ARCHITECTURE.md:340-349`). Heartbeat phases are a closed vocabulary with no
+([docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#secrets)). Heartbeat phases are a closed vocabulary with no
 constructor because heartbeat details are written into history
-(`docs/ARCHITECTURE.md:235`). Containment is tested across `%v`, `%+v`, `%#v` and
+([docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#leaning-into-temporal)). Containment is tested across `%v`, `%+v`, `%#v` and
 `%s`, on the value, in a struct, and in a slice (`CLAUDE.md`).
 
 **Limits.** Everything that legitimately goes into history goes in unsealed. History
@@ -558,7 +558,7 @@ hosts only where a proxy is configured, which is why it is kept out of the valid
 plugin tasks unless a person passes `--plugin-dir` on the command line their editor
 starts the server with, because executing plugin binaries to check a file is not
 something an editor or a cloned repository may decide
-(`docs/ARCHITECTURE.md:406-425`). `flow fix` must know what the grammar binds; two
+([docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#plugins)). `flow fix` must know what the grammar binds; two
 corruption classes are documented in `CLAUDE.md` and are the reason the rewriter
 takes scope from where the engine evaluates a thing.
 
@@ -673,12 +673,18 @@ rule: **the first occurrence signs, and every later one is published for
 verification only**, without its private half being retained. Nothing is derived
 from the file name or its modification time.
 
+Workers sign assertions and the server publishes the key set, so every step below
+restarts the server *and every worker* with the same ordered list. A process left
+on the old list either signs with a key the others have stopped publishing or
+publishes a set missing the key in use. The commands show the server; a worker
+takes the same `--identity-key` flags.
+
 ```sh
 # 1. Generate the new key. Naming the file names the published key id.
 flow keys generate --out /etc/flowstate/keys/2026-09.pem
 
-# 2. Restart with both, newest first. The process signs with 2026-09 and keeps
-#    publishing 2026-08, so assertions the previous process signed keep verifying.
+# 2. Restart with both, newest first. Processes sign with 2026-09 and keep
+#    publishing 2026-08, so assertions signed before the restart keep verifying.
 flow server --auth-policy /etc/flowstate/auth.yaml \
   --rpc-resource https://flowstate.example.com/rpc \
   --identity-key /etc/flowstate/keys/2026-09.pem \
@@ -686,7 +692,7 @@ flow server --auth-policy /etc/flowstate/auth.yaml \
 
 # 3. After the retention window (federation.key_retention, default 24h, which has
 #    to outlast both the old assertions and every relying party's cached key set),
-#    restart with the new key alone and delete the old one.
+#    restart everything with the new key alone and delete the old one.
 flow server --auth-policy /etc/flowstate/auth.yaml \
   --rpc-resource https://flowstate.example.com/rpc \
   --identity-key /etc/flowstate/keys/2026-09.pem
@@ -738,14 +744,14 @@ is already in `pkg/flowstate/v1/auth/` has landed.
 **Non-goals.**
 
 - Flowstate does not reimplement substrate isolation. Tier 3 is documented, not built,
-  deliberately (`docs/DEPLOYMENT.md:278-290`).
+  deliberately ([docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#tier-3--substrate-isolation)).
 - Flowstate is not an identity provider beyond its workload-identity broker (#337).
 - No multi-region machinery; residency is declaration plus validation (#353 A.4).
 - No app-layer rate limiter in front of `flow server`; the volume dimension is
-  Temporal's namespace limits (`docs/DEPLOYMENT.md:534-542`).
+  Temporal's namespace limits ([docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#noisy-neighbor)).
 - The scrubber will not be hardened toward adversarial transforms; doing so would
   spend effort on a tier it was never meant to occupy
-  (`docs/ARCHITECTURE.md:460-466`).
+  ([docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#plugins)).
 
 **Honest gaps, all present-tense.**
 
@@ -760,7 +766,7 @@ is already in `pkg/flowstate/v1/auth/` has landed.
 4. Egress enforcement is in-process and therefore honest only while every task is our
    code (#341 invariant 1).
 5. A launched plugin is trusted code with the worker's authority
-   (`docs/ARCHITECTURE.md:470-481`).
+   ([docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#plugins)).
 6. Task-shape policy's zero case permits everything
    (`pkg/flowstate/v1/taskpolicy.go:133-146`).
 7. The worker records its own decisions — task dispatch, secret access, the built-in
@@ -778,8 +784,8 @@ is already in `pkg/flowstate/v1/auth/` has landed.
 8. The stdio agent surface authenticates the process, not the request (#350, #337).
 9. No token revocation, inbound or outbound, within a credential's lifetime.
 10. Windows is an authoring platform, not a worker platform; plugins are AF_UNIX only
-    (`docs/DEPLOYMENT.md:499-507`).
+    ([docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#blockers)).
 11. Fairness keys are set; enforcement is a property of your Temporal deployment
-    (`docs/DEPLOYMENT.md:525-532`).
+    ([docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#noisy-neighbor)).
 12. Mapping completeness is a startup warning, not a refusal
-    (`docs/DEPLOYMENT.md:235-246`).
+    ([docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#tier-2--per-tenant-temporal-namespace--per-tenant-worker)).

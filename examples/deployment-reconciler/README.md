@@ -49,9 +49,10 @@ pass happens, never what it decides. The payload of a `spec-changed` carrying
 `desired_replicas: 7` updates what this run is responsible for; it is still the
 next pass's own observation that decides whether anything needs writing. And
 because a signal is an untrusted input the input constraint never saw, a payload
-count is adopted only when it is an int in the same `(0, 100]` range — a wrong
-type or an out-of-range value is ignored rather than POSTed or allowed to crash
-the run.
+count is adopted only when it is a whole number in the same `(0, 100]` range — an
+int, or a double with no fraction, which is what a JSON number sent from the CLI
+arrives as. A wrong type, a fraction or an out-of-range value is ignored rather
+than POSTed or allowed to crash the run.
 
 **The stop condition is read from the world, not from the event.** Retirement is
 `observed.retired`, taken from the control plane every pass — not a `retired: true`
@@ -80,24 +81,32 @@ is one operators learn to ignore.
 $ flow test examples/deployment-reconciler/
 ```
 
-Eight cases on a virtual clock: drift nobody announced and corrected by the
-resync with no signal at all, a spec change mid-interval converged on, a workload
+Eighteen cases on a virtual clock: drift nobody announced and corrected by the
+resync with no signal at all, a spec change mid-interval converged on (sent as an
+int, sent from the CLI as a double, and adopted on the final pass), a workload
 already matching its spec left untouched, a retired workload never scaled even
-when drifted and with a spec change queued behind it (the ordering case), an
-out-of-range and a wrong-type signal count both ignored, a bounded watch ending on
-its own pass budget, and a refused input. The intervals are thirty seconds each
-and the whole file runs in milliseconds. The scripted control plane answers on
-`goal.passes` — the loop's own carried counter — so it can report one thing on
-the first pass and another after this reconciler wrote to it, which is what lets
-a test assert convergence rather than assert that a loop ran.
+when drifted and with a spec change queued behind it (the ordering case),
+out-of-range, wrong-type, fractional and absurd signal counts all ignored, a spec
+change from an authenticated caller who is not the controller refused, a bounded
+watch ending on its own pass budget, unreadable control-plane answers that make a
+pass wait rather than end the run or spend its budget, and two refused inputs.
+The intervals are thirty seconds each and the whole file runs in milliseconds.
+The scripted control plane answers on `goal.passes` — the loop's own carried
+counter — so it can report one thing on the first pass and another after this
+reconciler wrote to it, which is what lets a test assert convergence rather than
+assert that a loop ran.
 
 ```console
 $ flow run local examples/deployment-reconciler/workflow.yaml --input max_passes=1
 ```
 
-The same file with a real clock and no stubs — it reaches for a control plane at
-`control-plane.internal.example.com`, which does not exist, so this is the command
-that shows you what a failing step says rather than a working reconciler.
+The same file with a real clock and no stubs reaches for a control plane at
+`control-plane.internal.example.com`, which does not exist — and does not fail
+there. `observed` tolerates its own failure and an unreadable pass does not count
+toward `max_passes`, so the run wakes every thirty seconds, reads nothing, and
+waits again until `max_iterations:` fails the loop a thousand wakes later: hours,
+not a failing step. Point `url:` at a real control plane to run it locally, and
+rehearse it with `flow test` above until then.
 
 Durably, on a server and a worker, it is the same file again and the sleeping is
 real:
@@ -106,6 +115,16 @@ real:
 $ flow run examples/deployment-reconciler/workflow.yaml
 $ flow signal <workflow-id> spec-changed --data '{"desired_replicas": 7}'
 ```
+
+That signal is admitted only from the controller the file's `signals:` block names:
+the subject the `spec_controller` input holds
+(`https://issuer.example.com#deploy-controller` by default), carrying the claim
+`team: platform-controllers`. So it needs a server that authenticates callers and
+keeps the `team` claim (`--identity-claim team`, as
+[approval-gate](../approval-gate/README.md) shows), and that controller's
+credential; any other caller, including the anonymous one
+`flow server dev` makes of everybody unless started with `--auth`, is refused
+before the run hears anything.
 
 Retirement is not a signal: this reconciler stops when the control plane reports
 the workload retired, which the next pass picks up on its own.

@@ -50,7 +50,9 @@ each level is answered from a different place:
    wait's own expressions (`wait_until:`, an expression-valued `sleep:`, a
    signal's `timeout:`) it is `now`; and inside a `wait_for_signal:`'s
    `outputs:` shaping it is `payload`, `sender`, and `timed_out`, with `now`
-   still bound because the shaping is evaluated in the wait's own scope.
+   still bound because the shaping is evaluated in the wait's own scope. A
+   signal wait's `prompt:` binds `now` too, but completion does not offer it
+   there yet.
 2. **After `steps.`** — the ids of the steps whose outputs exist at that point,
    labelled with what each one runs: the task's name, or `for_each`, `loop` or
    `parallel` for a block.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -51,8 +52,15 @@ steps:
 func launched(t *testing.T) (*client, string, <-chan error) {
 	t.Helper()
 
-	dir := t.TempDir()
-	program := filepath.Join(dir, "rich.yaml")
+	return launchedAt(t, "rich.yaml")
+}
+
+// launchedAt is [launched] with the program at name under a fresh directory.
+func launchedAt(t *testing.T, name string) (*client, string, <-chan error) {
+	t.Helper()
+
+	program := filepath.Join(t.TempDir(), name)
+	require.NoError(t, os.MkdirAll(filepath.Dir(program), 0o700))
 	require.NoError(t, os.WriteFile(program, []byte(richFlowfile), 0o600))
 
 	c := newClient(t)
@@ -824,7 +832,9 @@ func (p *pendingRemote) ReplaceBreakpoints(_ context.Context, req *v1.DebugSetBr
 	// with the replacement installed.
 	p.applied <- &v1.DebugSnapshot{Revision: 2, State: v1.DebugRunState_DEBUG_RUN_STATE_RUNNING}
 	if p.ended {
-		p.applied <- &v1.DebugSnapshot{Revision: 3, State: v1.DebugRunState_DEBUG_RUN_STATE_COMPLETED}
+		// Ending moves no revision: the run completes at the one it had,
+		// still listing the old set under the reused slot ids.
+		p.applied <- &v1.DebugSnapshot{Revision: 1, State: v1.DebugRunState_DEBUG_RUN_STATE_COMPLETED, Breakpoints: verified}
 	} else {
 		p.applied <- &v1.DebugSnapshot{Revision: 3, State: v1.DebugRunState_DEBUG_RUN_STATE_HELD, Breakpoints: verified}
 	}
@@ -975,4 +985,106 @@ func TestAPendingBreakpointTheRunNeverInstalledIsSettledAtItsEnd(t *testing.T) {
 	assert.Equal(t, set["id"], changed["id"])
 	assert.Equal(t, false, changed["verified"], "a breakpoint the run never installed was reported verified")
 	assert.NotEmpty(t, changed["message"])
+}
+
+// TestAURIClientGetsURIPaths is an editor that initializes with pathFormat
+// "uri", on a program whose path needs escaping: the frames it is sent name
+// their source as a file URI, and the URI it sends its breakpoints under names
+// the same document.
+func TestAURIClientGetsURIPaths(t *testing.T) {
+	t.Parallel()
+
+	c, program, _ := launchedAt(t, "my flows/rich #1.yaml")
+	uri := (&url.URL{Scheme: "file", Path: program}).String()
+	require.Contains(t, uri, "%20", "the path needs no escaping, so the test proves nothing")
+
+	c.send(1, "initialize", map[string]any{"adapterID": "flowstate", "pathFormat": "uri"})
+	c.await("response", "initialize")
+	c.await("event", "initialized")
+	c.send(2, "launch", map[string]any{"program": program})
+	c.await("response", "launch")
+
+	c.send(3, "setBreakpoints", map[string]any{
+		"source":      map[string]any{"path": uri},
+		"breakpoints": []map[string]any{{"line": 13}},
+	})
+	set := body(c.await("response", "setBreakpoints"))["breakpoints"].([]any)[0].(map[string]any)
+	assert.Equal(t, true, set["verified"], "a breakpoint under the program's URI named no source: %v", set)
+
+	c.send(4, "configurationDone", nil)
+	c.await("response", "configurationDone")
+	c.await("event", "stopped")
+
+	c.send(5, "stackTrace", map[string]any{"threadId": 1})
+	first := body(c.await("response", "stackTrace"))["stackFrames"].([]any)[0].(map[string]any)
+	path, _ := first["source"].(map[string]any)["path"].(string)
+	assert.Equal(t, uri, path, "a URI client was not sent the program's URI")
+}
+
+// TestBreakpointsInAModifiedSourceAreNotBound is an editor that changed the
+// Flowfile after launch: its lines are not the compiled program's, so its
+// breakpoints are answered unverified rather than bound through a source map
+// of bytes that no longer match, and the set already installed stands.
+func TestBreakpointsInAModifiedSourceAreNotBound(t *testing.T) {
+	t.Parallel()
+
+	c, program, _ := launched(t)
+
+	c.send(1, "initialize", map[string]any{"adapterID": "flowstate"})
+	c.await("response", "initialize")
+	c.await("event", "initialized")
+	c.send(2, "launch", map[string]any{"program": program})
+	c.await("response", "launch")
+
+	c.send(3, "setBreakpoints", map[string]any{"source": map[string]any{"path": program}, "breakpoints": []map[string]any{{"line": 13}}})
+	require.Equal(t, true, body(c.await("response", "setBreakpoints"))["breakpoints"].([]any)[0].(map[string]any)["verified"])
+
+	c.send(4, "setBreakpoints", map[string]any{
+		"source": map[string]any{"path": program}, "breakpoints": []map[string]any{{"line": 5}}, "sourceModified": true,
+	})
+	modified := body(c.await("response", "setBreakpoints"))["breakpoints"].([]any)[0].(map[string]any)
+	assert.Equal(t, false, modified["verified"], "a breakpoint in an edited file was bound through the old lines")
+	assert.Contains(t, modified["message"], "changed")
+
+	// The installed breakpoint still stops the run.
+	c.send(5, "configurationDone", nil)
+	c.await("response", "configurationDone")
+	c.await("event", "stopped")
+	c.send(6, "continue", map[string]any{"threadId": 1})
+	c.await("response", "continue")
+	assert.Equal(t, "breakpoint", body(c.await("event", "stopped"))["reason"], "the set installed before the edit was dropped")
+}
+
+// TestAnEditedFileCanClearItsBreakpoints is an editor that removes the last
+// breakpoint of a file it edited: the empty set names no line, so it clears
+// the source rather than leave an invisible breakpoint armed.
+func TestAnEditedFileCanClearItsBreakpoints(t *testing.T) {
+	t.Parallel()
+
+	c, program, finished := launched(t)
+
+	c.send(1, "initialize", map[string]any{"adapterID": "flowstate"})
+	c.await("response", "initialize")
+	c.await("event", "initialized")
+	c.send(2, "launch", map[string]any{"program": program, "stopOnEntry": false})
+	c.await("response", "launch")
+
+	c.send(3, "setBreakpoints", map[string]any{"source": map[string]any{"path": program}, "breakpoints": []map[string]any{{"line": 13}}})
+	require.Equal(t, true, body(c.await("response", "setBreakpoints"))["breakpoints"].([]any)[0].(map[string]any)["verified"])
+	c.send(4, "setBreakpoints", map[string]any{
+		"source": map[string]any{"path": program}, "breakpoints": []map[string]any{}, "sourceModified": true,
+	})
+	require.Equal(t, true, c.await("response", "setBreakpoints")["success"])
+
+	// Nothing is left to stop the run: it goes to its end.
+	c.send(5, "configurationDone", nil)
+	c.await("response", "configurationDone")
+	select {
+	case err := <-finished:
+		// The program fails at its `boom` step: that is its end, reached
+		// with nothing left to stop it.
+		assert.ErrorContains(t, err, "boom")
+	case <-time.After(20 * time.Second):
+		t.Fatal("a breakpoint the editor cleared still held the run")
+	}
 }

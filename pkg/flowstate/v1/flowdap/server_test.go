@@ -3,10 +3,12 @@ package flowdap_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -42,6 +44,10 @@ type client struct {
 
 	lateMu     sync.Mutex
 	lateEvents []string
+
+	// failWrites makes every write fail, as a client whose output half has
+	// closed while its input stays open.
+	failWrites atomic.Bool
 }
 
 func newClient(t *testing.T) *client {
@@ -63,6 +69,10 @@ func (c *client) ReadObject(v any) error {
 }
 
 func (c *client) WriteObject(v any) error {
+	if c.failWrites.Load() {
+		return errors.New("broken pipe")
+	}
+
 	encoded, err := json.Marshal(v)
 	if err != nil {
 		return err
@@ -1271,29 +1281,108 @@ func TestARequestIDIsTheAdaptersOwn(t *testing.T) {
 
 // TestEndingServeInterruptsAWriteToAClientThatStoppedReading is a client that
 // keeps its connection but stops reading, so a response blocks while holding
-// the output lock. Ending Serve's context must still end it: the stream is
-// closed under the blocked write rather than waited behind it.
+// the output lock. Ending Serve's context must still end it, rather than wait
+// behind the blocked write to hang up.
 func TestEndingServeInterruptsAWriteToAClientThatStoppedReading(t *testing.T) {
+	t.Parallel()
+
+	synctest.Test(t, func(t *testing.T) {
+		c := newClient(t)
+		server := flowdap.NewServer(nil, c)
+		ctx, cancel := context.WithCancel(t.Context())
+		served := make(chan error, 1)
+		go func() { served <- server.Serve(ctx) }()
+
+		// More requests than the client buffers answers for, none of them
+		// read: once every goroutine is blocked, the adapter is blocked
+		// writing an answer, holding its output lock.
+		for seq := range cap(c.fromAdapter) + 8 {
+			c.send(seq+1, "threads", nil)
+		}
+		synctest.Wait()
+		require.Len(t, c.fromAdapter, cap(c.fromAdapter), "the adapter was not blocked on a write")
+
+		cancel()
+		synctest.Wait()
+		select {
+		case <-served:
+		default:
+			t.Fatal("Serve waited on a blocked write after its context ended")
+		}
+		_ = c.Close()
+	})
+}
+
+// TestAFailedWriteDetachesTheTarget is a client whose output closed while its
+// input stays open: the adapter's next write fails, and the session detaches
+// rather than go on renewing a durable target nobody can hear about.
+func TestAFailedWriteDetachesTheTarget(t *testing.T) {
 	t.Parallel()
 
 	c := newClient(t)
 	t.Cleanup(func() { _ = c.Close() })
 
-	server := flowdap.NewServer(nil, c)
-	ctx, cancel := context.WithCancel(t.Context())
+	remote := &detachRecorder{closed: make(chan struct{})}
+	server := flowdap.NewServer(nil, c, flowdap.WithAttach(func(context.Context, flowdap.AttachArguments) (*flowdap.Attachment, error) {
+		return &flowdap.Attachment{Target: remote}, nil
+	}))
 	served := make(chan error, 1)
-	go func() { served <- server.Serve(ctx) }()
+	go func() { served <- server.Serve(t.Context()) }()
 
-	// More requests than the client buffers answers for, none of them read:
-	// the adapter blocks writing an answer, holding its output lock.
-	for seq := range cap(c.fromAdapter) + 8 {
-		c.send(seq+1, "threads", nil)
-	}
+	c.send(1, "initialize", map[string]any{"adapterID": "flowstate"})
+	c.await("response", "initialize")
+	c.send(2, "attach", map[string]any{"workflowId": "wf-1"})
+	c.await("response", "attach")
 
-	cancel()
+	c.failWrites.Store(true)
+	c.send(3, "threads", nil)
+
 	select {
 	case <-served:
 	case <-time.After(20 * time.Second):
-		t.Fatal("Serve waited on a blocked write after its context ended")
+		t.Fatal("Serve went on reading after its writes to the client failed")
 	}
+	select {
+	case <-remote.closed:
+	default:
+		t.Fatal("the target was left attached after the client's output was lost")
+	}
+}
+
+// detachRecorder is a durable target that records its detach.
+type detachRecorder struct {
+	closed chan struct{}
+	once   sync.Once
+}
+
+func (d *detachRecorder) Snapshot(context.Context) (*v1.DebugSnapshot, error) {
+	return &v1.DebugSnapshot{Revision: 1, State: v1.DebugRunState_DEBUG_RUN_STATE_RUNNING, Capabilities: v1.DurableDebugCapabilities()}, nil
+}
+
+func (d *detachRecorder) WaitSnapshot(ctx context.Context, _ uint64) (*v1.DebugSnapshot, error) {
+	<-ctx.Done()
+
+	return nil, ctx.Err()
+}
+
+func (d *detachRecorder) Resume(context.Context, *v1.DebugResumeRequest) (*v1.DebugReceipt, error) {
+	return &v1.DebugReceipt{Status: v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_REFUSED}, nil
+}
+
+func (d *detachRecorder) Pause(context.Context, string) (*v1.DebugReceipt, error) {
+	return &v1.DebugReceipt{Status: v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_REFUSED}, nil
+}
+
+func (d *detachRecorder) ReplaceBreakpoints(context.Context, *v1.DebugSetBreakpointsRequest) (*v1.DebugSetBreakpointsResponse, error) {
+	return &v1.DebugSetBreakpointsResponse{Receipt: &v1.DebugReceipt{Status: v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_APPLIED}}, nil
+}
+
+func (d *detachRecorder) Inspect(context.Context, *v1.DebugInspectRequest) (*v1.DebugInspectResponse, error) {
+	return nil, flowdebug.ErrNotPaused
+}
+
+func (d *detachRecorder) Close() error {
+	d.once.Do(func() { close(d.closed) })
+
+	return nil
 }

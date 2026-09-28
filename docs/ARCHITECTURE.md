@@ -6,10 +6,12 @@ Flowstate is a **durable, policy-governed workload engine**. You declare a workl
 YAML with CEL expressions; Flowstate compiles it into a typed Protobuf specification and
 executes it on [Temporal]'s durable execution substrate.
 
-The emphasis matters: Flowstate is not a CI/CD system. CI is one workload shape among
-many, and a fairly simple one. The engine is built for any workload that has to *finish
-correctly* despite process crashes, network failures, and long waits:
+Flowstate is not a build system: CI remains where code is built and tested. What happens
+around and after that (approvals, staged rollouts, rollbacks) is one workload shape among
+many. The engine is built for any workload that has to *finish correctly* despite process
+crashes, network failures, and long waits:
 
+- release approvals, progressive rollouts, and compensating rollbacks
 - data pipelines and ETL
 - infrastructure provisioning and orchestration
 - incident-response and operational runbooks
@@ -43,8 +45,10 @@ how to write an egress rule.
 
 **Protobuf** provides a typed, versioned, wire-stable specification. The YAML DSL is
 deliberately sugar over a real API: the compiled spec is the durable artifact Temporal
-persists, and it can be produced by hand, by another tool, or by a future UI without
-going through YAML at all.
+persists, and a program can build one and submit it without going through YAML at all.
+Today the server applies the schema's constraints and admission checks to such a spec,
+while the cross-step checks `flow validate` runs are a Go function a builder calls itself
+(see [API.md](API.md#building-a-workflow-without-yaml)); no other frontend ships yet.
 
 That split is also where the language's own versioning stops. A Flowfile may name the
 grammar it is written in with a top-level `edition:`, which is read when the file
@@ -54,9 +58,9 @@ across the boundary, and nothing already running is affected: what a run carries
 compiled spec, which the change never touched. Surface syntax is cheap to change exactly
 because it is not the contract.
 
-**Connect RPC** provides an HTTP/1.1 and HTTP/2 API that is browser-compatible and
-gRPC-compatible without gRPC's operational weight, which keeps the self-hosted story
-light.
+**Connect RPC** serves one API to plain HTTP and JSON clients, gRPC, and gRPC-Web,
+without gRPC's operational weight, which keeps the self-hosted story light. (gRPC needs
+HTTP/2, which the server negotiates on its TLS listener.)
 
 [Common Expression Language]: https://cel.dev/
 
@@ -358,8 +362,8 @@ default and the primary target.
 | | Temporal connection | Identity | Egress | Secrets |
 | --- | --- | --- | --- | --- |
 | **Local development** | `temporal server start-dev` on loopback | anonymous, explicit opt-in flag | loopback allowed via explicit opt-in | environment |
-| **Self-hosted production** | mTLS to your own cluster | OIDC or workload identity federation | default-deny plus CEL rules | environment or KMS |
-| **Temporal Cloud** (optional) | API key or mTLS, namespace and endpoint config | OIDC or WIF | default-deny plus CEL rules | KMS |
+| **Self-hosted production** | mTLS to your own cluster | OIDC or workload identity federation | internal addresses denied; an allowlist of CEL rules | files, Vault, or a KMS through `command:` or a plugin |
+| **Temporal Cloud** (optional) | API key or mTLS, namespace and endpoint config | OIDC or WIF | internal addresses denied; an allowlist of CEL rules | Vault, or a KMS through `command:` or a plugin |
 
 The local-development row is what `flow server dev` assembles: a `temporal server start-dev`
 child process, the control plane, and a worker, in one process on loopback, stating each of
@@ -900,15 +904,15 @@ those forward — both when scheduling a step and when performing Continue-As-Ne
 Payload discipline matters, but the framing is about defaults rather than hard ceilings.
 Temporal's default per-payload and history limits mean an unbounded blob flowing through
 history will fail a run, and carrying only what is needed keeps ordinary workloads well
-inside them. Payload *encryption* is a solved problem in this tree: `pkg/flowstate/v1/payloadcodec`
-is the seam, wrapping `converter.PayloadCodec` in `converter.NewCodecDataConverter` and
-setting it on both drivers' `client.Options.DataConverter` from one configuration,
-forcing the failure converter's `EncodeCommonAttributes` on whenever a codec is
-configured so error strings can't leak plaintext the codec was meant to hide, and
-validating worst-case ciphertext expansion against Temporal's blob limit at startup.
-History confidentiality, where a codec is configured, is therefore the codec's — not
-merely the cluster's database and filesystem encryption — and Flowstate still keeps
-secrets *out* of history regardless (invariant 7).
+inside them. Payload *encryption* has a seam and no shipped codec yet:
+`pkg/flowstate/v1/payloadcodec` wraps a `converter.PayloadCodec` in
+`converter.NewCodecDataConverter`, sets it on both drivers' clients from one
+configuration, forces the failure converter's `EncodeCommonAttributes` on whenever a codec
+is configured so error strings cannot leak plaintext, and checks worst-case ciphertext
+expansion against Temporal's blob limit at startup. `flow` resolves only the null codec
+today (`cmd/flow/codec.go`), so history confidentiality is currently the Temporal
+cluster's own storage encryption and namespace separation. Flowstate keeps secrets *out*
+of history regardless (invariant 7).
 
 Payload *offload* — the claim-check pattern, carrying a reference through history to a
 blob stored externally — is the part not yet solved *in this tree*: the seam a codec

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net/url"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -84,6 +85,15 @@ type Server struct {
 	// initialize said they start at 0 rather than DAP's default of 1. Every
 	// position is 1-based inside the adapter and translated at the edge.
 	linesFrom0, columnsFrom0 bool
+
+	// uriPaths is set when the client's initialize asked for source paths as
+	// URIs rather than file system paths.
+	uriPaths bool
+
+	// lost is closed once a write to the client fails: the conversation is
+	// over, whether or not its input has noticed.
+	lost     chan struct{}
+	loseOnce sync.Once
 
 	// bound is set once a launch or attach has given the session its program;
 	// a second is refused rather than replacing a target nobody would close.
@@ -214,6 +224,7 @@ func NewServer(target flowdebug.Target, stream Stream, opts ...Option) *Server {
 		stream:      stream,
 		target:      target,
 		launched:    make(chan struct{}),
+		lost:        make(chan struct{}),
 		entered:     make(chan struct{}),
 		handles:     map[int]handle{},
 		issued:      map[handle]int{},
@@ -330,7 +341,17 @@ func (s *Server) Serve(ctx context.Context) error {
 	}()
 
 	for {
+		// A lost output ends the conversation before anything else is read.
 		select {
+		case <-s.lost:
+			return s.leaveLost(ctx)
+		default:
+		}
+
+		select {
+		case <-s.lost:
+			return s.leaveLost(ctx)
+
 		case <-ctx.Done():
 			// Ended from outside: the session detaches as it does when the
 			// client goes, rather than leave a durable target renewing its
@@ -361,6 +382,27 @@ func (s *Server) Serve(ctx context.Context) error {
 	}
 }
 
+// fileURI is the file URI naming path: slashed, and with a drive letter's
+// path rooted as a URI's must be ("C:\\x" is "file:///C:/x").
+func fileURI(path string) string {
+	slashed := filepath.ToSlash(path)
+	if !strings.HasPrefix(slashed, "/") {
+		slashed = "/" + slashed
+	}
+
+	return (&url.URL{Scheme: "file", Path: slashed}).String()
+}
+
+// leaveLost ends a conversation whose output is gone: the session detaches
+// and the stream is closed. It answers ctx's error when ctx has ended too, so
+// a caller sees the same result whichever of the two Serve noticed first.
+func (s *Server) leaveLost(ctx context.Context) error {
+	s.end(false)
+	_ = s.stream.Close()
+
+	return ctx.Err()
+}
+
 // received is one read from the client: a request, or why there was none.
 type received struct {
 	request inbound
@@ -378,13 +420,15 @@ func (s *Server) dispatch(ctx context.Context, request inbound) (done bool) {
 	switch request.Command {
 	case "initialize":
 		var asked struct {
-			LinesStartAt1   *bool `json:"linesStartAt1"`
-			ColumnsStartAt1 *bool `json:"columnsStartAt1"`
+			LinesStartAt1   *bool  `json:"linesStartAt1"`
+			ColumnsStartAt1 *bool  `json:"columnsStartAt1"`
+			PathFormat      string `json:"pathFormat"`
 		}
 		_ = json.Unmarshal(request.Arguments, &asked)
 		s.mu.Lock()
 		s.linesFrom0 = asked.LinesStartAt1 != nil && !*asked.LinesStartAt1
 		s.columnsFrom0 = asked.ColumnsStartAt1 != nil && !*asked.ColumnsStartAt1
+		s.uriPaths = asked.PathFormat == "uri"
 		s.mu.Unlock()
 		s.reply(request, s.capabilitiesBody())
 		s.emit("initialized", nil)
@@ -1091,7 +1135,7 @@ func (s *Server) stackTrace(arguments json.RawMessage) stackTraceBody {
 // sourceOf is a location's document as an editor names it.
 func (s *Server) sourceOf(location *v1.DebugSourceLocation) *source {
 	s.mu.Lock()
-	sourceMap := s.sourceMap
+	sourceMap, uriPaths := s.sourceMap, s.uriPaths
 	s.mu.Unlock()
 
 	documents := sourceMap.GetDocuments()
@@ -1100,6 +1144,11 @@ func (s *Server) sourceOf(location *v1.DebugSourceLocation) *source {
 		return nil
 	}
 	path := strings.TrimPrefix(documents[index].GetUri(), "file://")
+	if uriPaths {
+		// In the form the client asked for, so a frame and a breakpoint it
+		// set name one document.
+		return &source{Name: filepath.Base(path), Path: fileURI(path)}
+	}
 
 	return &source{Name: filepath.Base(path), Path: path}
 }
@@ -1330,6 +1379,7 @@ func (s *Server) setLineBreakpoints(ctx context.Context, request inbound) {
 			HitCondition *string `json:"hitCondition"`
 			LogMessage   *string `json:"logMessage"`
 		} `json:"breakpoints"`
+		SourceModified bool `json:"sourceModified"`
 	}
 	// A missing array is malformed, not an empty replacement: only an explicit
 	// empty set clears a source's breakpoints.
@@ -1341,6 +1391,17 @@ func (s *Server) setLineBreakpoints(ctx context.Context, request inbound) {
 	}
 	if len(asked.Breakpoints) > flowdebug.MaxBreakpoints {
 		s.fail(request, errTooManyBreakpoints.Error())
+
+		return
+	}
+	// Lines in a file edited since the program was compiled are not the lines
+	// the source map knows: set through it, a breakpoint would stop on
+	// another step or never. They are answered unverified, and the set
+	// already installed stands. An empty set names no line, and clears the
+	// source's breakpoints as it would for an unedited file.
+	if asked.SourceModified && len(asked.Breakpoints) > 0 {
+		s.reply(request, breakpointsBody{Breakpoints: refused(len(asked.Breakpoints),
+			"the file changed since the program was compiled, so its lines no longer name the steps that run; restart the debug session to break on the edited file")})
 
 		return
 	}
@@ -1693,22 +1754,34 @@ func (s *Server) applyBreakpoints(ctx context.Context) (map[string]*v1.DebugBrea
 
 // relayBreakpoints reports a pending replacement once the run has answered it.
 // A durable run installs a replacement whole, at its next step boundary,
-// before it holds there; and its revision moves only when it holds or ends.
-// So the first snapshot past the acceptance that holds or ends shows exactly
-// the set the run installed: each breakpoint of the replacement is there,
-// with its state, or was not installed — refused, or never reached. A
-// snapshot of a run still moving shows the set it had, and settles nothing.
+// before it holds there, and a hold moves its revision: so a hold past the
+// acceptance shows exactly the set the run installed. A run that ends shows
+// its final set whatever its revision, which ending need not move. Either
+// way each breakpoint of the replacement is there, with its state, or was not
+// installed — refused, or never reached. A snapshot of a run still moving
+// shows the set it had, and settles nothing.
 func (s *Server) relayBreakpoints(snapshot *v1.DebugSnapshot) {
-	settles := snapshot.GetState() == v1.DebugRunState_DEBUG_RUN_STATE_HELD || terminalState(snapshot.GetState())
+	held := snapshot.GetState() == v1.DebugRunState_DEBUG_RUN_STATE_HELD
+	ended := terminalState(snapshot.GetState())
 	s.mu.Lock()
-	if len(s.pending) == 0 || snapshot.GetRevision() <= s.pendingAfter || !settles {
+	if len(s.pending) == 0 || !(ended || held && snapshot.GetRevision() > s.pendingAfter) {
 		s.mu.Unlock()
 
 		return
 	}
+	// A run that ended at the revision it accepted the replacement at may
+	// have ended before the boundary that would have installed it, and then
+	// still lists its old set under the same slot ids: its states say nothing
+	// of the replacement, which is reported not applied rather than read off
+	// a definition it replaced.
 	installed := map[string]*v1.DebugBreakpointState{}
-	for _, state := range snapshot.GetBreakpoints() {
-		installed[state.GetId()] = state
+	unapplied := "the run did not install this breakpoint"
+	if ended && snapshot.GetRevision() <= s.pendingAfter {
+		unapplied = "the run ended before it applied this breakpoint"
+	} else {
+		for _, state := range snapshot.GetBreakpoints() {
+			installed[state.GetId()] = state
+		}
 	}
 	type applied struct {
 		id    string
@@ -1719,7 +1792,7 @@ func (s *Server) relayBreakpoints(snapshot *v1.DebugSnapshot) {
 	for id, line := range s.pending {
 		state, ok := installed[id]
 		if !ok {
-			state = &v1.DebugBreakpointState{Id: id, Message: "the run did not install this breakpoint"}
+			state = &v1.DebugBreakpointState{Id: id, Message: unapplied}
 		}
 		ready = append(ready, applied{id: id, line: line, state: state})
 	}
@@ -1779,7 +1852,12 @@ func (s *Server) send(message func(seq int) any) {
 		return
 	}
 	s.seq++
-	_ = s.stream.WriteObject(message(s.seq))
+	if err := s.stream.WriteObject(message(s.seq)); err != nil {
+		// Nobody can hear the session any more: Serve detaches it rather than
+		// go on reading from a client whose output is gone.
+		s.hungUp.Store(true)
+		s.loseOnce.Do(func() { close(s.lost) })
+	}
 }
 
 // hangUp stops every later write to the client.

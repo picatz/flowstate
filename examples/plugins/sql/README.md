@@ -86,7 +86,7 @@ See [`egress-policy.yaml`](egress-policy.yaml) for a deliberately local-only
 example policy and the plugin README for the secret setup.
 
 For installation integrity and SDK compatibility limits, use the canonical
-[plugin contract guide](../../../docs/PLUGINS.md#five-places-the-contract-is-implicit).
+[plugin contract guide](../../../docs/PLUGINS.md#where-the-contract-catches-authors-out).
 Task schemas and capabilities come from discovered descriptors; this README
 does not maintain a second inventory.
 

@@ -14,15 +14,14 @@ managed:
 #
 # buf refuses a workspace directory that reaches outside the directory it was
 # invoked against, and this plugin's proto needs the root repository's
-# proto/flowstate/v1/value.proto beside its own. Borrow the root's
-# buf.work.yaml for the duration of one command, from the repository root:
+# proto/flowstate/v1/value.proto beside its own. Declare both as modules for
+# the duration of one command with --config, from the repository root:
 #
 #   go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.11
 #
-#   printf 'version: v1\ndirectories:\n  - proto\n  - plugins/git/proto\n' > buf.work.yaml
 #   go run github.com/bufbuild/buf/cmd/buf@v1.72.0 generate \
+#     --config '{"version":"v2","modules":[{"path":"proto"},{"path":"plugins/git/proto"}],"deps":["buf.build/bufbuild/protovalidate","buf.build/googleapis/googleapis"]}' \
 #     --template plugins/git/buf.gen.yaml --path plugins/git/proto/git -o plugins/git
-#   git checkout -- buf.work.yaml
 plugins:
   - plugin: go
     out: gen
