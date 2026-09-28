@@ -55,6 +55,11 @@ type debugSessions struct {
 	mu       sync.Mutex
 	sessions map[string]*debugSessionEntry
 	starts   map[string]string
+	// ending are sessions no longer answered for, still being ended: a
+	// durable one's detach not yet sent, a stubbed case still holding the
+	// registry lock. A session is here from the moment it is forgotten until
+	// its end returns and its case, if any, has stopped.
+	ending map[string]*debugSessionEntry
 }
 
 type debugSessionEntry struct {
@@ -79,8 +84,15 @@ type debugSessionEntry struct {
 	transcript *lockedTranscript
 	cursor     int
 
+	// run is the durable run a session attached to, so a rejoin under its
+	// id is checked to name the same run. Empty for a stubbed case.
+	workflowID, runID string
+
 	cancel context.CancelFunc
 	done   chan struct{}
+	// released is closed once the session has finished ending; see
+	// [debugSessions.ending].
+	released chan struct{}
 	// report is the case's verdict, written before done is closed and read
 	// only after.
 	report *v1.TestReport
@@ -120,7 +132,10 @@ func (t *lockedTranscript) note() string {
 }
 
 func newDebugSessions(remote func() flowstatev1connect.WorkflowServiceClient) *debugSessions {
-	return &debugSessions{remote: remote, sessions: map[string]*debugSessionEntry{}, starts: map[string]string{}}
+	return &debugSessions{
+		remote: remote, sessions: map[string]*debugSessionEntry{}, starts: map[string]string{},
+		ending: map[string]*debugSessionEntry{},
+	}
 }
 
 // keep ends lapsed sessions on its own clock until ctx ends, so a session
@@ -152,18 +167,84 @@ func (r *debugSessions) sweep() {
 		entry.mu.Unlock()
 		if expired {
 			lapsed = append(lapsed, entry)
-			r.forgetLocked(id)
+			r.retireLocked(id)
 		}
 	}
 	r.mu.Unlock()
 
 	// Ended on their own goroutines: a stubbed case may take twice
 	// [debugSessionEndSettle] to stop, and the call that happened to sweep —
-	// about some other session — must not wait for it.
+	// about some other session — must not wait for it. Until each is ended
+	// it stays in [debugSessions.ending], where what depends on it waits.
 	for _, entry := range lapsed {
-		go entry.end(false)
+		go func() {
+			entry.end(false)
+			r.release(entry)
+		}()
 	}
 }
+
+// retireLocked forgets a session and moves it to ending, returning it, or nil
+// when the server holds no session by that id. The caller holds r.mu.
+func (r *debugSessions) retireLocked(id string) *debugSessionEntry {
+	entry, ok := r.sessions[id]
+	if !ok {
+		return nil
+	}
+	r.forgetLocked(id)
+	entry.released = make(chan struct{})
+	r.ending[id] = entry
+
+	return entry
+}
+
+// release takes an ended session out of ending once its case, if it has one,
+// has stopped holding the registry lock.
+func (r *debugSessions) release(entry *debugSessionEntry) {
+	if entry.done != nil {
+		<-entry.done
+	}
+
+	r.mu.Lock()
+	if r.ending[entry.id] == entry {
+		delete(r.ending, entry.id)
+	}
+	r.mu.Unlock()
+	close(entry.released)
+}
+
+// debugSessionEndWait bounds how long a call waits for a session that is
+// ending before it gives up and says so: the end itself takes at most this.
+const debugSessionEndWait = 2 * debugSessionEndSettle
+
+// settle waits, bounded, for every ending session that matches to finish
+// ending, and names one that has not.
+func (r *debugSessions) settle(ctx context.Context, match func(*debugSessionEntry) bool) error {
+	r.mu.Lock()
+	var waiting []*debugSessionEntry
+	for _, entry := range r.ending {
+		if match(entry) {
+			waiting = append(waiting, entry)
+		}
+	}
+	r.mu.Unlock()
+
+	bound := time.NewTimer(debugSessionEndWait)
+	defer bound.Stop()
+	for _, entry := range waiting {
+		select {
+		case <-entry.released:
+		case <-bound.C:
+			return fmt.Errorf("debug session %s is still ending; try again shortly", entry.id)
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+
+	return nil
+}
+
+func stubbedEntry(entry *debugSessionEntry) bool { return entry.local != nil }
 
 // forgetLocked drops a session and the start request ids that name it. The
 // caller holds r.mu.
@@ -176,16 +257,13 @@ func (r *debugSessions) forgetLocked(id string) {
 	}
 }
 
-// remove drops a session, reporting whether this caller was the one to, so a
-// session is ended once.
+// remove retires a session, reporting whether this caller was the one to, so
+// a session is ended once. The caller ends it and then releases it.
 func (r *debugSessions) remove(id string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	_, ok := r.sessions[id]
-	r.forgetLocked(id)
-
-	return ok
+	return r.retireLocked(id) != nil
 }
 
 // register admits a new session, within the bound. A start request id is
@@ -202,9 +280,18 @@ func (r *debugSessions) register(entry *debugSessionEntry, request string) (*deb
 		}
 	}
 	// A rejoin of a session this server already holds: one entry, and one
-	// driver, per session. The caller discards the entry it built.
+	// driver, per session, on one run. The caller discards the entry it
+	// built.
 	if existing, ok := r.sessions[entry.id]; ok {
+		if existing.workflowID != entry.workflowID ||
+			(existing.runID != "" && entry.runID != "" && existing.runID != entry.runID) {
+			return nil, fmt.Errorf("debug session %s is attached to workflow %s here, not %s", entry.id, existing.workflowID, entry.workflowID)
+		}
+
 		return existing, nil
+	}
+	if _, ending := r.ending[entry.id]; ending {
+		return nil, fmt.Errorf("debug session %s is still ending; try again shortly", entry.id)
 	}
 	if len(r.sessions) >= maxDebugSessions {
 		return nil, fmt.Errorf("this server already holds %d debug sessions; end one with %s", maxDebugSessions, debugSessionEndTool)
@@ -218,6 +305,11 @@ func (r *debugSessions) register(entry *debugSessionEntry, request string) (*deb
 			if open.local != nil {
 				return nil, fmt.Errorf("this server runs one stubbed debug session at a time, and %s is open; "+
 					"end it with %s before starting another", open.id, debugSessionEndTool)
+			}
+		}
+		for _, ending := range r.ending {
+			if ending.local != nil {
+				return nil, fmt.Errorf("stubbed debug session %s is still ending; try again shortly", ending.id)
 			}
 		}
 	}
@@ -250,6 +342,11 @@ func (r *debugSessions) stubbed() (string, bool) {
 // runs waits instead, bounded by handler's own run.
 func (r *debugSessions) unlessStubbed(handler mcp.ToolHandler) mcp.ToolHandler {
 	return func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		// A stubbed session that is ending still holds the lock until its
+		// case stops: waited for, bounded, rather than run into.
+		if err := r.settle(ctx, stubbedEntry); err != nil {
+			return flowmcp.ToolError(err), nil
+		}
 		if id, open := r.stubbed(); open {
 			return flowmcp.ToolError(fmt.Errorf("retained debug session %s is running a stubbed case, and this "+
 				"server runs one at a time; end it with %s first", id, debugSessionEndTool)), nil
@@ -521,6 +618,10 @@ func (r *debugSessions) start(ctx context.Context, req *mcp.CallToolRequest) (*m
 	if err := checkDebugSource(&oneShot); err != nil {
 		return flowmcp.ToolError(err), nil
 	}
+	// A stubbed session that is ending still holds the registry lock.
+	if err := r.settle(ctx, stubbedEntry); err != nil {
+		return flowmcp.ToolError(err), nil
+	}
 	selected, err := debugCaseSelector([]byte(args.Tests), args.Case)
 	if err != nil {
 		return flowmcp.ToolError(err), nil
@@ -624,6 +725,13 @@ func (r *debugSessions) attach(ctx context.Context, req *mcp.CallToolRequest) (*
 		return flowmcp.ToolError(errors.New("workflow_id is required")), nil
 	}
 	r.sweep()
+	// A rejoin of a session this server is still ending waits for the end,
+	// so the answer says what the run did rather than racing its detach.
+	if args.SessionID != "" {
+		if err := r.settle(ctx, func(entry *debugSessionEntry) bool { return entry.id == args.SessionID }); err != nil {
+			return flowmcp.ToolError(err), nil
+		}
+	}
 
 	remote, receipt, err := flowdebug.AttachRemote(ctx, r.remote(), args.WorkflowID, args.RunID,
 		flowdebug.RemoteOptions{SessionID: args.SessionID, Wait: 5 * time.Second})
@@ -634,6 +742,7 @@ func (r *debugSessions) attach(ctx context.Context, req *mcp.CallToolRequest) (*
 	entry := &debugSessionEntry{
 		id: remote.SessionID(), target: remote, driver: flowdebug.NewDriver(remote),
 		started: time.Now(), expires: time.Now().Add(debugSessionIdle), receipts: map[string]json.RawMessage{},
+		workflowID: args.WorkflowID, runID: args.RunID,
 	}
 	entry.driver.Wait = maxDebugSessionWait
 	existing, err := r.register(entry, "")
@@ -772,6 +881,7 @@ func (r *debugSessions) end(ctx context.Context, req *mcp.CallToolRequest) (*mcp
 	}
 
 	finished := entry.end(args.Keep)
+	go r.release(entry)
 	answer := entry.answer(ctx)
 	switch {
 	case entry.done == nil:

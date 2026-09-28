@@ -18,3 +18,6 @@ func BreakpointIDs(s *Server) int {
 
 	return len(s.ids)
 }
+
+// RequestID is the retry key s sends for the client request numbered seq.
+func RequestID(s *Server, seq int) string { return s.requestID(seq) }

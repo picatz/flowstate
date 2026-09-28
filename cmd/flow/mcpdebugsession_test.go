@@ -721,15 +721,18 @@ func TestTheStubbedToolsWaitForNoRetainedSession(t *testing.T) {
 
 // TestACallDoesNotWaitForALapsedSessionToEnd: the sweep a call runs ends a
 // lapsed stubbed session, which can take seconds to stop; the call, about some
-// other session, is answered without waiting for it.
+// other session, is answered without waiting for it, and the session is still
+// ended — its target closed and its case stopped — on its own time.
 func TestACallDoesNotWaitForALapsedSessionToEnd(t *testing.T) {
 	t.Parallel()
 
 	synctest.Test(t, func(t *testing.T) {
 		r := newDebugSessions(nil)
-		lapsed := addStepSession(t, r, newStepTarget(true))
+		target := newStepTarget(true)
+		lapsed := addStepSession(t, r, target)
+		// A case that stops only when cancelled, as a stubbed run does.
 		lapsed.done = make(chan struct{})
-		lapsed.cancel = func() {}
+		lapsed.cancel = func() { close(lapsed.done) }
 		lapsed.mu.Lock()
 		lapsed.expires = time.Now().Add(-time.Second)
 		lapsed.mu.Unlock()
@@ -740,12 +743,127 @@ func TestACallDoesNotWaitForALapsedSessionToEnd(t *testing.T) {
 		require.NoError(t, err)
 		assert.Zero(t, time.Since(start), "a call waited for another session's end")
 
-		// The end still happens, on its own time.
-		time.Sleep(2 * debugSessionEndSettle)
+		time.Sleep(debugSessionEndSettle)
 		synctest.Wait()
+		assert.True(t, target.isClosed(), "the lapsed session's target was never closed")
+		select {
+		case <-lapsed.done:
+		default:
+			t.Fatal("the lapsed session's case was never ended")
+		}
 		r.mu.Lock()
-		_, held := r.sessions[lapsed.id]
+		assert.Empty(t, r.ending, "an ended session was never released")
 		r.mu.Unlock()
-		assert.False(t, held)
 	})
+}
+
+// slowTarget is a stepTarget whose Close takes a while, as a durable
+// session's detach does over the network: it runs detach first.
+type slowTarget struct {
+	*stepTarget
+	detach func()
+}
+
+func (s slowTarget) Close() error {
+	s.detach()
+
+	return s.stepTarget.Close()
+}
+
+// TestARejoinWaitsForTheSessionToFinishEnding: a session the sweep forgot is
+// still ending until its detach returns. A rejoin under its id in that window
+// is refused by the registry and waited out by the attach, so the answer
+// never says attached a moment before the late detach ends the session.
+func TestARejoinWaitsForTheSessionToFinishEnding(t *testing.T) {
+	t.Parallel()
+
+	synctest.Test(t, func(t *testing.T) {
+		r := newDebugSessions(nil)
+		lapsed := addStepSession(t, r, slowTarget{newStepTarget(true), func() { time.Sleep(3 * time.Second) }})
+		lapsed.mu.Lock()
+		lapsed.expires = time.Now().Add(-time.Second)
+		lapsed.mu.Unlock()
+		r.sweep()
+
+		rejoin := &debugSessionEntry{id: lapsed.id, target: newStepTarget(true), receipts: map[string]json.RawMessage{}}
+		_, err := r.register(rejoin, "")
+		require.Error(t, err, "a rejoin was registered over a session still ending")
+		assert.Contains(t, err.Error(), "still ending")
+
+		start := time.Now()
+		require.NoError(t, r.settle(t.Context(), func(entry *debugSessionEntry) bool { return entry.id == lapsed.id }))
+		assert.Equal(t, 3*time.Second, time.Since(start), "the wait did not last until the detach returned")
+
+		_, err = r.register(rejoin, "")
+		require.NoError(t, err)
+	})
+}
+
+// TestTheStubbedToolsWaitForAnEndingStubbedSession: a stubbed session the
+// sweep forgot still holds the registry lock until its case stops. The
+// stubbed tools wait for that, bounded, and are refused by name if the case
+// has not stopped by then, rather than blocking on the lock.
+func TestTheStubbedToolsWaitForAnEndingStubbedSession(t *testing.T) {
+	t.Parallel()
+
+	synctest.Test(t, func(t *testing.T) {
+		r := newDebugSessions(nil)
+		session, err := flowdebug.New(flowdebug.Options{Controlled: true})
+		require.NoError(t, err)
+		lapsed := addStepSession(t, r, newStepTarget(true))
+		lapsed.local = session
+		lapsed.done = make(chan struct{})
+		lapsed.cancel = func() {}
+		lapsed.mu.Lock()
+		lapsed.expires = time.Now().Add(-time.Second)
+		lapsed.mu.Unlock()
+
+		ran := 0
+		tool := r.unlessStubbed(func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			ran++
+
+			return &mcp.CallToolResult{}, nil
+		})
+
+		r.sweep()
+		id, open := r.stubbed()
+		assert.False(t, open, "a forgotten session reads as open: %s", id)
+
+		// A case that has not stopped, even after its end has returned:
+		// refused after the bound, not run.
+		time.Sleep(debugSessionEndWait + time.Second)
+		start := time.Now()
+		result, err := tool(t.Context(), toolRequest(t, map[string]any{}))
+		require.NoError(t, err)
+		require.True(t, result.IsError, "a stubbed tool ran beside a case still holding the registry lock")
+		assert.Contains(t, replyOf(t, result).raw, "still ending")
+		assert.Equal(t, debugSessionEndWait, time.Since(start))
+		assert.Zero(t, ran)
+
+		// Once it stops, the tool runs.
+		close(lapsed.done)
+		synctest.Wait()
+		result, err = tool(t.Context(), toolRequest(t, map[string]any{}))
+		require.NoError(t, err)
+		assert.False(t, result.IsError)
+		assert.Equal(t, 1, ran)
+	})
+}
+
+// TestARejoinNamingAnotherRunIsRefused: a session id this server holds for
+// one run does not rejoin under another run's address.
+func TestARejoinNamingAnotherRunIsRefused(t *testing.T) {
+	t.Parallel()
+
+	r := newDebugSessions(nil)
+	held := addStepSession(t, r, newStepTarget(true))
+	held.workflowID, held.runID = "orders-1", "run-a"
+
+	for _, other := range []struct{ workflow, run string }{{"orders-2", ""}, {"orders-1", "run-b"}} {
+		_, err := r.register(&debugSessionEntry{id: held.id, workflowID: other.workflow, runID: other.run}, "")
+		require.Error(t, err, "%s/%s rejoined a session held for orders-1/run-a", other.workflow, other.run)
+	}
+	existing, err := r.register(&debugSessionEntry{id: held.id, workflowID: "orders-1"}, "")
+	require.NoError(t, err)
+	assert.Same(t, held, existing)
 }

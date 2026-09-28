@@ -2,6 +2,7 @@ package flowdap
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -65,7 +67,7 @@ type Server struct {
 	// out serializes outbound messages: their numbering and their writing,
 	// and hungUp, set once the client is gone and nothing more is written.
 	out    sync.Mutex
-	hungUp bool
+	hungUp atomic.Bool
 
 	target       flowdebug.Target
 	sourceMap    *v1.DebugSourceMap
@@ -87,8 +89,24 @@ type Server struct {
 	// a second is refused rather than replacing a target nobody would close.
 	bound bool
 
+	// pending are the breakpoints a durable run accepted but has not yet
+	// applied — it installs a replacement at its next step boundary — by id,
+	// with the source line each was set on. Each is reported to the editor
+	// once a snapshot shows it applied.
+	pending map[string]uint32
+	// pendingAfter is the revision the pending replacement was accepted at:
+	// the first hold past it is the run's answer to all of it.
+	pendingAfter uint64
+
 	launched chan struct{}
 	once     sync.Once
+
+	// nonce names this adapter in the request IDs it sends. A client's
+	// sequence numbers restart with each connection, and a durable run keeps
+	// the receipts of the commands it applied: an editor reconnecting to the
+	// same session would otherwise send an ID the run already answered, and
+	// have a new movement taken for a retry of an old one.
+	nonce string
 
 	// running counts the launched run the adapter started, so [Server.Wait]
 	// can outlive the client of a run it let go of.
@@ -201,6 +219,7 @@ func NewServer(target flowdebug.Target, stream Stream, opts ...Option) *Server {
 		issued:      map[handle]int{},
 		lines:       map[string][]lineBreakpoint{},
 		stopOnEntry: true,
+		nonce:       rand.Text(),
 	}
 	if session, ok := target.(*flowdebug.Session); ok {
 		s.capabilities = session.Capabilities()
@@ -281,29 +300,71 @@ func (s *Server) Serve(ctx context.Context) error {
 	// client that has gone is a broken pipe that kills the process under it.
 	defer s.hangUp()
 
-	for {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
+	// Ending ctx closes the stream, for a stream whose Close interrupts what
+	// is blocked on it; the loop below does not depend on that.
+	stop := context.AfterFunc(ctx, func() {
+		s.hangUp()
+		_ = s.stream.Close()
+	})
+	defer stop()
 
-		var request inbound
-		if err := s.stream.ReadObject(&request); err != nil {
-			// A client gone without a disconnect is one: the session detaches,
-			// so a run it left paused goes on rather than waiting for a
-			// command nobody can send, and [Server.Wait] returns. Nobody is
-			// left to read what the detach says.
+	// Reads happen on a goroutine of their own, so a read blocked on the
+	// client never keeps ctx's end from detaching the session: an editor's
+	// stdin is a blocking pipe, and closing it does not interrupt a read.
+	reads := make(chan received)
+	quit := make(chan struct{})
+	defer close(quit)
+	go func() {
+		for {
+			var got received
+			got.err = s.stream.ReadObject(&got.request)
+			select {
+			case reads <- got:
+			case <-quit:
+				return
+			}
+			if got.err != nil {
+				return
+			}
+		}
+	}()
+
+	for {
+		select {
+		case <-ctx.Done():
+			// Ended from outside: the session detaches as it does when the
+			// client goes, rather than leave a durable target renewing its
+			// lease for a conversation that is over.
 			s.hangUp()
 			s.end(false)
 
-			return nil
-		}
-		if request.Type != "request" {
-			continue
-		}
-		if done := s.dispatch(ctx, request); done {
-			return nil
+			return ctx.Err()
+
+		case got := <-reads:
+			if got.err != nil {
+				// A client gone without a disconnect is one: the session
+				// detaches, so a run it left paused goes on rather than
+				// waiting for a command nobody can send, and [Server.Wait]
+				// returns. Nobody is left to read what the detach says.
+				s.hangUp()
+				s.end(false)
+
+				return ctx.Err()
+			}
+			if got.request.Type != "request" {
+				continue
+			}
+			if done := s.dispatch(ctx, got.request); done {
+				return nil
+			}
 		}
 	}
+}
+
+// received is one read from the client: a request, or why there was none.
+type received struct {
+	request inbound
+	err     error
 }
 
 func (s *Server) currentTarget() flowdebug.Target {
@@ -498,22 +559,24 @@ func (s *Server) launch(ctx context.Context, request inbound) {
 	asked.Raw = request.Arguments
 
 	s.mu.Lock()
+	if s.bound && s.launcher != nil {
+		s.mu.Unlock()
+		// Refused before anything is recorded: a second launch must not
+		// change the first one's options, such as its stop on entry.
+		s.fail(request, errOneProgram.Error())
+
+		return
+	}
 	s.program = asked.Program
 	s.revealSensitive = asked.RevealSensitive
 	if asked.StopOnEntry != nil {
 		s.stopOnEntry = *asked.StopOnEntry
 	}
 	launcher := s.launcher
-	bound := s.bound
 	s.mu.Unlock()
 
 	if launcher == nil {
 		s.reply(request, nil)
-
-		return
-	}
-	if bound {
-		s.fail(request, errOneProgram.Error())
 
 		return
 	}
@@ -740,6 +803,7 @@ func (s *Server) watch(ctx context.Context) {
 		failures = 0
 		after = snapshot.GetRevision()
 		s.relayObservations(snapshot)
+		s.relayBreakpoints(snapshot)
 
 		switch state := snapshot.GetState(); {
 		case state == v1.DebugRunState_DEBUG_RUN_STATE_HELD:
@@ -892,7 +956,7 @@ func (s *Server) move(ctx context.Context, request inbound, action v1.DebugResum
 	s.mu.Unlock()
 
 	receipt, err := target.Resume(ctx, &v1.DebugResumeRequest{
-		RequestId:        fmt.Sprintf("dap-%d", request.Seq),
+		RequestId:        s.requestID(request.Seq),
 		Action:           action,
 		ExpectedRevision: revision,
 	})
@@ -958,7 +1022,7 @@ func (s *Server) pause(ctx context.Context, request inbound) {
 	s.order.Lock()
 	defer s.order.Unlock()
 
-	receipt, err := target.Pause(ctx, fmt.Sprintf("dap-%d", request.Seq))
+	receipt, err := target.Pause(ctx, s.requestID(request.Seq))
 	if err != nil {
 		s.fail(request, err.Error())
 
@@ -1062,6 +1126,10 @@ func toClient(position uint32, base int) int {
 
 	return int(position) - 1 + base
 }
+
+// requestID is the retry key for the command a client request carries: stable
+// for that request, and distinct from every other adapter's.
+func (s *Server) requestID(seq int) string { return fmt.Sprintf("dap-%s-%d", s.nonce, seq) }
 
 // clientBases is the first line and column number in the client's
 // coordinates: 1 unless its initialize said 0.
@@ -1265,7 +1333,8 @@ func (s *Server) setLineBreakpoints(ctx context.Context, request inbound) {
 	}
 	// A missing array is malformed, not an empty replacement: only an explicit
 	// empty set clears a source's breakpoints.
-	if err := json.Unmarshal(request.Arguments, &asked); err != nil || asked.Source == nil || asked.Source.Path == "" || asked.Breakpoints == nil {
+	if err := json.Unmarshal(request.Arguments, &asked); err != nil || asked.Source == nil || asked.Source.Path == "" ||
+		len(asked.Source.Path) > maxSourcePathBytes || asked.Breakpoints == nil {
 		s.fail(request, errInvalidBreakpoints.Error())
 
 		return
@@ -1457,6 +1526,11 @@ func (s *Server) setExceptionBreakpoints(ctx context.Context, request inbound) {
 	s.reply(request, nil)
 }
 
+// maxSourcePathBytes is the longest source path a line breakpoint may name:
+// the bound the debug contract puts on a source line's URI, enforced where the
+// adapter first keeps the path rather than where the backend later refuses it.
+const maxSourcePathBytes = 4096
+
 // errBreakpointBytes fails a request whose breakpoints would take the text the
 // adapter keeps past [MaxBreakpointBytes].
 var errBreakpointBytes = fmt.Errorf("flowdap: the breakpoints' paths, conditions and log messages may total at most %d bytes", MaxBreakpointBytes)
@@ -1480,11 +1554,13 @@ func (s *Server) retainedBytes(skipPath string, skipFunctions bool) int {
 	return total
 }
 
-// lineBytes is the text a source's line breakpoints hold, its path included.
+// lineBytes is the text a source's line breakpoints hold. The path is
+// charged once for the source and again for each breakpoint, whose identity
+// carries it.
 func lineBytes(path string, set []lineBreakpoint) int {
 	total := len(path)
 	for _, b := range set {
-		total += textBytes(b.condition) + textBytes(b.hitCondition) + textBytes(b.logText)
+		total += len(path) + textBytes(b.condition) + textBytes(b.hitCondition) + textBytes(b.logText)
 	}
 
 	return total
@@ -1589,7 +1665,76 @@ func (s *Server) applyBreakpoints(ctx context.Context) (map[string]*v1.DebugBrea
 		states[id] = state
 	}
 
+	// A replacement the run accepted but will install only at its next step
+	// boundary: what it has not applied yet is remembered, so the editor
+	// hears when it has rather than showing it unverified for good.
+	//
+	// Every breakpoint of the replacement is pending, not only those the
+	// answer shows unverified: the states the run returned are of the set it
+	// has installed, and a verified one under a reused id is the old
+	// definition, not this one. One the target refused before sending keeps
+	// its reason now, and is settled with the rest.
+	pending := map[string]uint32{}
+	if response.GetReceipt().GetStatus() == v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_PENDING {
+		for _, want := range set {
+			pending[want.GetId()] = want.GetLine().GetLine()
+			if states[want.GetId()].GetVerified() {
+				states[want.GetId()] = &v1.DebugBreakpointState{Id: want.GetId(), Message: "the run applies this breakpoint at its next step boundary"}
+			}
+		}
+	}
+	s.mu.Lock()
+	s.pending = pending
+	s.pendingAfter = response.GetReceipt().GetRevision()
+	s.mu.Unlock()
+
 	return states, nil
+}
+
+// relayBreakpoints reports a pending replacement once the run has answered it.
+// A durable run installs a replacement whole, at its next step boundary,
+// before it holds there; and its revision moves only when it holds or ends.
+// So the first snapshot past the acceptance that holds or ends shows exactly
+// the set the run installed: each breakpoint of the replacement is there,
+// with its state, or was not installed — refused, or never reached. A
+// snapshot of a run still moving shows the set it had, and settles nothing.
+func (s *Server) relayBreakpoints(snapshot *v1.DebugSnapshot) {
+	settles := snapshot.GetState() == v1.DebugRunState_DEBUG_RUN_STATE_HELD || terminalState(snapshot.GetState())
+	s.mu.Lock()
+	if len(s.pending) == 0 || snapshot.GetRevision() <= s.pendingAfter || !settles {
+		s.mu.Unlock()
+
+		return
+	}
+	installed := map[string]*v1.DebugBreakpointState{}
+	for _, state := range snapshot.GetBreakpoints() {
+		installed[state.GetId()] = state
+	}
+	type applied struct {
+		id    string
+		line  uint32
+		state *v1.DebugBreakpointState
+	}
+	ready := make([]applied, 0, len(s.pending))
+	for id, line := range s.pending {
+		state, ok := installed[id]
+		if !ok {
+			state = &v1.DebugBreakpointState{Id: id, Message: "the run did not install this breakpoint"}
+		}
+		ready = append(ready, applied{id: id, line: line, state: state})
+	}
+	s.pending = nil
+	s.mu.Unlock()
+
+	lineBase, _ := s.clientBases()
+	for _, bp := range ready {
+		answer := answerFor(bp.state)
+		answer.ID = s.breakpointID(bp.id)
+		if bp.line > 0 {
+			answer.Line = new(toClient(bp.line, lineBase))
+		}
+		s.emit("breakpoint", map[string]any{"reason": "changed", "breakpoint": answer})
+	}
 }
 
 func deref(text *string) string {
@@ -1623,10 +1768,14 @@ func refused(n int, message string) []breakpoint {
 // taken under one lock and written under another could reach the client
 // behind a later one.
 func (s *Server) send(message func(seq int) any) {
+	if s.hungUp.Load() {
+		return
+	}
 	s.out.Lock()
 	defer s.out.Unlock()
 
-	if s.hungUp {
+	// Again under the lock: a hang-up while this waited for it stands.
+	if s.hungUp.Load() {
 		return
 	}
 	s.seq++
@@ -1634,12 +1783,10 @@ func (s *Server) send(message func(seq int) any) {
 }
 
 // hangUp stops every later write to the client.
-func (s *Server) hangUp() {
-	s.out.Lock()
-	defer s.out.Unlock()
-
-	s.hungUp = true
-}
+//
+// It takes no lock, so ending a conversation never waits behind a write that
+// is blocked on a client that stopped reading.
+func (s *Server) hangUp() { s.hungUp.Store(true) }
 
 func (s *Server) reply(request inbound, body any) {
 	s.send(func(seq int) any {
