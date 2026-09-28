@@ -37,8 +37,22 @@ func TestTheDriverSpeaksThePromptsVocabularyToATarget(t *testing.T) {
 
 	armed := do("break each/touch if item == 2")
 	assert.Contains(t, armed.Text, "breakpoint at each/touch")
-	assert.Contains(t, do("log touch saw {item}").Text, "breakpoint at touch")
-	assert.Contains(t, do("break nowhere").Text, "not armed: nowhere")
+	assert.Nil(t, armed.Unarmed, "an armed breakpoint was reported unarmed")
+	logged := do("log touch saw {item}")
+	assert.Contains(t, logged.Text, "breakpoint at touch")
+	assert.Nil(t, logged.Unarmed, "an armed logpoint was reported unarmed")
+	refused := do("break nowhere")
+	assert.Contains(t, refused.Text, "not armed: nowhere")
+	require.NotNil(t, refused.Unarmed, "a breakpoint the run refused was not reported unarmed")
+	assert.Equal(t, "nowhere", refused.Unarmed.GetId())
+	unlogged := do("log nowhere saw {item}")
+	require.NotNil(t, unlogged.Unarmed, "a logpoint the run refused was not reported unarmed")
+	assert.Equal(t, "log nowhere", unlogged.Unarmed.GetId())
+	malformed := do("break touch if (")
+	require.NotNil(t, malformed.Unarmed, "a condition that does not compile was not reported unarmed")
+	assert.Equal(t, "touch", malformed.Unarmed.GetId())
+	cleared := do("delete touch")
+	assert.Nil(t, cleared.Unarmed, "a line that sets no breakpoint reported one unarmed")
 
 	stop := do("continue")
 	require.NotNil(t, stop.Snapshot)
@@ -177,6 +191,26 @@ func TestADetachedDriverChangesNothing(t *testing.T) {
 	assert.Len(t, target.requests, sent, "a refused line reached the target")
 	_, err = driver.Do(t.Context(), "status")
 	assert.NoError(t, err, "a read was refused after a detach")
+}
+
+// TestAPendingSetIsNotReportedUnarmed: a set the target has not applied yet
+// answers with the states from before it, so the breakpoint the line set is
+// not yet refused — nor armed — and the driver does not call it unarmed.
+func TestAPendingSetIsNotReportedUnarmed(t *testing.T) {
+	t.Parallel()
+
+	for status, unarmed := range map[v1.DebugCommandStatus]bool{
+		v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_PENDING: false,
+		v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_APPLIED: true,
+	} {
+		target := &scriptedTarget{
+			snapshot:  &v1.DebugSnapshot{Revision: 1, State: v1.DebugRunState_DEBUG_RUN_STATE_RUNNING},
+			setStatus: status,
+		}
+		result, err := flowdebug.NewDriver(target).Do(t.Context(), "break build if (")
+		require.NoError(t, err)
+		assert.Equal(t, unarmed, result.Unarmed != nil, "%s", status)
+	}
 }
 
 // honestTarget is a [scriptedTarget] whose WaitSnapshot waits for a revision
@@ -384,6 +418,9 @@ type scriptedTarget struct {
 	modes        []v1.DebugFailureMode
 	sets         [][]*v1.DebugBreakpoint
 	expected     uint64
+	// setStatus, when set, is the status every breakpoint set is answered
+	// with, each breakpoint in it reported unverified.
+	setStatus v1.DebugCommandStatus
 }
 
 func (s *scriptedTarget) read(ctx context.Context) (*v1.DebugSnapshot, error) {
@@ -429,6 +466,14 @@ func (s *scriptedTarget) ReplaceBreakpoints(_ context.Context, req *v1.DebugSetB
 	s.requests = append(s.requests, req.GetRequestId())
 	s.modes = append(s.modes, req.GetFailureMode())
 	s.sets = append(s.sets, req.GetBreakpoints())
+	if s.setStatus != v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_UNSPECIFIED {
+		states := make([]*v1.DebugBreakpointState, 0, len(req.GetBreakpoints()))
+		for _, bp := range req.GetBreakpoints() {
+			states = append(states, &v1.DebugBreakpointState{Id: bp.GetId(), Message: "not yet armed"})
+		}
+
+		return &v1.DebugSetBreakpointsResponse{Receipt: &v1.DebugReceipt{Status: s.setStatus}, Breakpoints: states}, nil
+	}
 
 	return &v1.DebugSetBreakpointsResponse{Receipt: &v1.DebugReceipt{Status: v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_APPLIED}}, nil
 }

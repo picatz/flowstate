@@ -558,3 +558,99 @@ func TestAStartThatCannotClaimTheRegistryLeavesNothingBehind(t *testing.T) {
 	r.registry.Release(1)
 	assert.True(t, r.registry.TryAcquire(registryReaders), "a start that gave up kept a share of the registry")
 }
+
+// attachCounter is [heldRun] that counts the attaches it is sent, so a test
+// can tell a session attached again from one answered from a retry.
+type attachCounter struct {
+	heldRun
+
+	mu       sync.Mutex
+	attaches int
+}
+
+func (a *attachCounter) DebugAttach(ctx context.Context, req *connect.Request[v1.DebugAttachRequest]) (*connect.Response[v1.DebugAttachResponse], error) {
+	a.mu.Lock()
+	a.attaches++
+	a.mu.Unlock()
+
+	return a.heldRun.DebugAttach(ctx, req)
+}
+
+// TestAnOversizedSessionIDIsRefusedUnechoed: a session id no session can have
+// is refused before it is looked up or sent, so a caller cannot make a
+// refusal echo megabytes of it past the surface's result bound.
+func TestAnOversizedSessionIDIsRefusedUnechoed(t *testing.T) {
+	t.Parallel()
+
+	service := &attachCounter{}
+	mux := http.NewServeMux()
+	mux.Handle(flowstatev1connect.NewWorkflowServiceHandler(service))
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	client := flowstatev1connect.NewWorkflowServiceClient(srv.Client(), srv.URL)
+	r := newDebugSessions(func() flowstatev1connect.WorkflowServiceClient { return client })
+
+	huge := strings.Repeat("s", 1<<20)
+	for name, call := range map[string]struct {
+		handler func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error)
+		args    map[string]any
+	}{
+		debugSessionCommandTool: {r.command, map[string]any{"session_id": huge, "command": "status"}},
+		debugSessionObserveTool: {r.observe, map[string]any{"session_id": huge}},
+		debugSessionAttachTool:  {r.attach, map[string]any{"session_id": huge, "workflow_id": "w"}},
+	} {
+		result, err := call.handler(t.Context(), toolRequest(t, call.args))
+		require.NoError(t, err, name)
+		require.True(t, result.IsError, "%s took an oversized session id", name)
+		text := result.Content[0].(*mcp.TextContent).Text
+		assert.Less(t, len(text), 1024, "%s echoed the session id", name)
+		assert.Contains(t, text, "at most", name)
+	}
+	service.mu.Lock()
+	defer service.mu.Unlock()
+	assert.Zero(t, service.attaches, "an oversized session id was sent to the server")
+}
+
+// TestAnAttachRetryIsAnsweredWithTheSessionItAttached: an attach whose answer
+// was lost left a session the caller never learned the id of. A retry under
+// the same request id is answered with that session rather than attaching
+// again — which a held run would refuse, leaving the first held by nobody.
+func TestAnAttachRetryIsAnsweredWithTheSessionItAttached(t *testing.T) {
+	t.Parallel()
+
+	service := &attachCounter{}
+	mux := http.NewServeMux()
+	mux.Handle(flowstatev1connect.NewWorkflowServiceHandler(service))
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	client := flowstatev1connect.NewWorkflowServiceClient(srv.Client(), srv.URL)
+	r := newDebugSessions(func() flowstatev1connect.WorkflowServiceClient { return client })
+
+	attach := func(workflow string) (*mcp.CallToolResult, sessionReply) {
+		t.Helper()
+		result, err := r.attach(t.Context(), toolRequest(t, map[string]any{"workflow_id": workflow, "request_id": "attach-1"}))
+		require.NoError(t, err)
+
+		return result, replyOf(t, result)
+	}
+
+	result, first := attach("w")
+	require.False(t, result.IsError, first.raw)
+	result, again := attach("w")
+	require.False(t, result.IsError, again.raw)
+	assert.Equal(t, first.SessionID, again.SessionID)
+	assert.Contains(t, again.Note, "not attached again")
+	result, elsewhere := attach("other")
+	assert.True(t, result.IsError, "a retry key answered with a session on another workflow: %s", elsewhere.raw)
+
+	service.mu.Lock()
+	assert.Equal(t, 1, service.attaches, "a retry attached again")
+	service.mu.Unlock()
+	r.mu.Lock()
+	assert.Len(t, r.sessions, 1)
+	r.mu.Unlock()
+
+	result, err := r.end(t.Context(), toolRequest(t, map[string]any{"session_id": first.SessionID, "keep": true}))
+	require.NoError(t, err)
+	require.False(t, result.IsError)
+}

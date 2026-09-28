@@ -492,6 +492,9 @@ func (r *debugSessions) guardRegistryResource(uri string, next mcp.ResourceHandl
 
 // lookup returns a live session and renews its lease.
 func (r *debugSessions) lookup(id string) (*debugSessionEntry, error) {
+	if err := checkSessionID(id); err != nil {
+		return nil, err
+	}
 	r.sweep()
 
 	r.mu.Lock()
@@ -578,6 +581,9 @@ func (r *debugSessions) tools() []flowmcp.ToolRegistration {
 	request := str("Optional retry key. A call repeated with the same key is answered with the first call's answer, " +
 		"so a lost response never moves the run twice.")
 	request["maxLength"] = v1.MaxDebugRequestIDBytes
+	session["maxLength"] = v1.MaxDebugSessionIDBytes
+	rejoin := str("Optional: rejoin this session instead of attaching a new one.")
+	rejoin["maxLength"] = v1.MaxDebugSessionIDBytes
 
 	return []flowmcp.ToolRegistration{
 		{Tool: &mcp.Tool{
@@ -603,7 +609,8 @@ func (r *debugSessions) tools() []flowmcp.ToolRegistration {
 			InputSchema: object(map[string]any{
 				"workflow_id": str("The durable run's workflow id."),
 				"run_id":      str("Optional: the chain's first run id."),
-				"session_id":  str("Optional: rejoin this session instead of attaching a new one."),
+				"session_id":  rejoin,
+				"request_id":  request,
 			}, "workflow_id"),
 		}, Handler: r.attach},
 		{Tool: &mcp.Tool{
@@ -1006,6 +1013,7 @@ func (r *debugSessions) attach(ctx context.Context, req *mcp.CallToolRequest) (*
 		WorkflowID string `json:"workflow_id"`
 		RunID      string `json:"run_id"`
 		SessionID  string `json:"session_id"`
+		RequestID  string `json:"request_id"`
 	}
 	if err := decode(req, &args); err != nil {
 		return flowmcp.ToolError(fmt.Errorf("arguments do not match %s: %w", debugSessionAttachTool, err)), nil
@@ -1013,7 +1021,32 @@ func (r *debugSessions) attach(ctx context.Context, req *mcp.CallToolRequest) (*
 	if args.WorkflowID == "" {
 		return flowmcp.ToolError(errors.New("workflow_id is required")), nil
 	}
+	if err := errors.Join(checkSessionID(args.SessionID), checkRequestID(args.RequestID)); err != nil {
+		return flowmcp.ToolError(err), nil
+	}
 	r.sweep()
+
+	// A retry of an attach whose answer was lost is answered with the session
+	// it attached — whose id the caller never learned — rather than
+	// attaching again beside it.
+	if args.RequestID != "" {
+		r.mu.Lock()
+		id, attached := r.starts[args.RequestID]
+		r.mu.Unlock()
+		if attached {
+			entry, err := r.lookup(id)
+			if err != nil {
+				return flowmcp.ToolError(err), nil
+			}
+			if entry.workflowID != args.WorkflowID {
+				return flowmcp.ToolError(fmt.Errorf("request_id %q already attached a session to another workflow; use a new request id", args.RequestID)), nil
+			}
+			answer := entry.answerAfter(ctx)
+			answer.Note = strings.TrimSpace("this request id already attached this session; it was not attached again. " + answer.Note)
+
+			return answer.result(), nil
+		}
+	}
 	// A rejoin of a session this server is still ending waits for the end,
 	// so the answer says what the run did rather than racing its detach.
 	if args.SessionID != "" {
@@ -1034,13 +1067,14 @@ func (r *debugSessions) attach(ctx context.Context, req *mcp.CallToolRequest) (*
 		workflowID: args.WorkflowID, runID: args.RunID,
 	}
 	entry.driver.Wait = maxDebugSessionWait
-	existing, err := r.register(entry, "")
+	existing, err := r.register(entry, args.RequestID)
 	if err != nil || existing != nil {
 		switch {
-		case err != nil && args.SessionID == "":
-			// A session this call attached, which no entry will hold: it is
-			// detached, so a refusal never leaves a run held by nobody
-			// until its lease lapses.
+		case err != nil && args.SessionID == "", existing != nil && existing.id != remote.SessionID():
+			// A session this call attached, which no entry will hold — the
+			// server refused it, or a concurrent retry under this request
+			// id attached first: it is detached, so a run is never left
+			// held by nobody until its lease lapses.
 			_ = remote.Close()
 		default:
 			// A session someone else holds — the entry already here, or
@@ -1055,7 +1089,11 @@ func (r *debugSessions) attach(ctx context.Context, req *mcp.CallToolRequest) (*
 		}
 		answer := existing.answerAfter(ctx)
 		answer.Receipt = schemaJSON(receipt)
-		answer.Note = strings.TrimSpace("this server already holds this session; it was rejoined, not attached again. " + answer.Note)
+		said := "this server already holds this session; it was rejoined, not attached again. "
+		if existing.id != remote.SessionID() {
+			said = "this request id already attached this session; it was not attached again. "
+		}
+		answer.Note = strings.TrimSpace(said + answer.Note)
 
 		return answer.result(), nil
 	}
@@ -1187,6 +1225,16 @@ func (r *debugSessions) commandOn(ctx context.Context, entry *debugSessionEntry,
 	}
 
 	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(encoded)}}}, nil
+}
+
+// checkSessionID refuses a session id longer than any session's: one that
+// matches nothing is echoed in the refusal, so it is bounded before it is.
+func checkSessionID(id string) error {
+	if len(id) > v1.MaxDebugSessionIDBytes {
+		return fmt.Errorf("session_id is at most %d bytes", v1.MaxDebugSessionIDBytes)
+	}
+
+	return nil
 }
 
 // checkRequestID refuses a retry key longer than a target's own request id may

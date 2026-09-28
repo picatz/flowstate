@@ -82,6 +82,13 @@ type DriveResult struct {
 	Inspect     *v1.DebugInspectResponse
 	Breakpoints []*v1.DebugBreakpointState
 	Text        string
+
+	// Unarmed is the state of the breakpoint the line itself set — `break`
+	// or `log` — when the target took the set but refused that breakpoint,
+	// its message saying why: a condition that does not compile, a step the
+	// program never declares. Nil when the line set none, the target armed
+	// it, or the set is pending and its verdict not yet known.
+	Unarmed *v1.DebugBreakpointState
 }
 
 // maxRememberedRequests bounds [Driver]'s memory of the request ids it has
@@ -199,7 +206,7 @@ func (d *Driver) DoWith(ctx context.Context, line string, opts DoOptions) (*Driv
 
 		return d.replace(ctx, append(d.withoutID("log "+target), &v1.DebugBreakpoint{
 			Id: "log " + target, Step: target, LogMessage: strings.TrimSpace(message),
-		}), d.failureMode)
+		}), d.failureMode, "log "+target)
 	case "delete", "d":
 		if rest == "" {
 			return nil, errors.New("delete needs a step: delete <step>")
@@ -209,9 +216,9 @@ func (d *Driver) DoWith(ctx context.Context, line string, opts DoOptions) (*Driv
 			return nil, err
 		}
 
-		return d.replace(ctx, d.removing(rest), d.failureMode)
+		return d.replace(ctx, d.removing(rest), d.failureMode, "")
 	case "clear":
-		return d.replace(ctx, nil, d.failureMode)
+		return d.replace(ctx, nil, d.failureMode, "")
 	case "catch":
 		modes := map[string]v1.DebugFailureMode{
 			"none": v1.DebugFailureMode_DEBUG_FAILURE_MODE_NONE, "uncaught": v1.DebugFailureMode_DEBUG_FAILURE_MODE_UNCAUGHT,
@@ -226,7 +233,7 @@ func (d *Driver) DoWith(ctx context.Context, line string, opts DoOptions) (*Driv
 			return nil, err
 		}
 
-		return d.replace(ctx, d.breakpoints, mode)
+		return d.replace(ctx, d.breakpoints, mode, "")
 	case "breakpoints":
 		snapshot, err := d.target.Snapshot(ctx)
 		if err != nil {
@@ -437,7 +444,7 @@ func (d *Driver) addBreakpoint(ctx context.Context, rest string) (*DriveResult, 
 
 	return d.replace(ctx, append(d.withoutID(target), &v1.DebugBreakpoint{
 		Id: target, Step: target, Condition: strings.TrimSpace(condition), HitCondition: hitText,
-	}), d.failureMode)
+	}), d.failureMode, target)
 }
 
 // withoutID is the current set less the breakpoint whose id is id. A line
@@ -504,7 +511,10 @@ func (d *Driver) adopt(ctx context.Context, named ...string) error {
 	return nil
 }
 
-func (d *Driver) replace(ctx context.Context, set []*v1.DebugBreakpoint, mode v1.DebugFailureMode) (*DriveResult, error) {
+// replace sends set as the session's breakpoints. own is the id of the
+// breakpoint the line itself sets, empty when it sets none, so the answer can
+// say whether that one was armed.
+func (d *Driver) replace(ctx context.Context, set []*v1.DebugBreakpoint, mode v1.DebugFailureMode, own string) (*DriveResult, error) {
 	d.sending()
 	response, err := d.target.ReplaceBreakpoints(ctx, &v1.DebugSetBreakpointsRequest{
 		RequestId: cmp.Or(d.request, newRequestID()), Breakpoints: set, FailureMode: mode,
@@ -533,7 +543,17 @@ func (d *Driver) replace(ctx context.Context, set []*v1.DebugBreakpoint, mode v1
 		b.WriteString("no breakpoints\n")
 	}
 
-	return &DriveResult{Receipt: response.GetReceipt(), Breakpoints: response.GetBreakpoints(), Snapshot: response.GetSnapshot(), Text: b.String()}, nil
+	result := &DriveResult{Receipt: response.GetReceipt(), Breakpoints: response.GetBreakpoints(), Snapshot: response.GetSnapshot(), Text: b.String()}
+	// A pending set has no verdict yet: its states are the ones before it.
+	if own != "" && response.GetReceipt().GetStatus() != v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_PENDING {
+		if i := slices.IndexFunc(result.Breakpoints, func(state *v1.DebugBreakpointState) bool {
+			return state.GetId() == own
+		}); i >= 0 && !result.Breakpoints[i].GetVerified() {
+			result.Unarmed = result.Breakpoints[i]
+		}
+	}
+
+	return result, nil
 }
 
 func (d *Driver) formatBreakpoints(snapshot *v1.DebugSnapshot) string {

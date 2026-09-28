@@ -241,6 +241,13 @@ func runDebugAttach(cmd *cobra.Command, args []string) (err error) {
 
 			return remote.Disconnect()
 		}
+		// The same holds for a line the run answered but did not do: a
+		// refused command, or a breakpoint it would not arm.
+		if !interactive {
+			if err := notDone(result); err != nil {
+				return fmt.Errorf("%q: %w", line, err)
+			}
+		}
 		if terminalDebugState(result.Snapshot.GetState()) {
 			return remote.Disconnect()
 		}
@@ -343,13 +350,27 @@ func runDebugDo(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	if receipt := result.Receipt; receipt != nil && !flowdebug.Accepted(receipt) {
+	if err := notDone(result); err != nil {
 		_ = writeDriveResult(newSurface(cmd).Out, format, line, result)
 
-		return errors.New("the command was not applied: " + strings.TrimSpace(flowdebug.FormatReceipt(receipt)))
+		return err
 	}
 
 	return writeDriveResult(newSurface(cmd).Out, format, line, result)
+}
+
+// notDone is why a line the target answered did not do what it asked: a
+// receipt refusing the command, or a breakpoint the line set that the target
+// took but would not arm. Nil when the line was done, or is pending.
+func notDone(result *flowdebug.DriveResult) error {
+	if receipt := result.Receipt; receipt != nil && !flowdebug.Accepted(receipt) {
+		return errors.New("the command was not applied: " + strings.TrimSpace(flowdebug.FormatReceipt(receipt)))
+	}
+	if state := result.Unarmed; state != nil {
+		return fmt.Errorf("the breakpoint %s was not armed: %s", state.GetId(), state.GetMessage())
+	}
+
+	return nil
 }
 
 // driveAnswers writes an attach's answers as its format asks: each rendering or

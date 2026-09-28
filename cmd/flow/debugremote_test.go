@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"connectrpc.com/connect"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -163,4 +165,61 @@ func TestAScriptedAttachFailsOnACommandThatFails(t *testing.T) {
 	require.Error(t, res.Err, "a script with a failing line exited 0")
 	assert.Contains(t, res.Err.Error(), "frobnicate")
 	assert.Equal(t, 1, recorder.detaches(), "the failed script left the run held")
+}
+
+// unarmingRun is [detachRecorder] whose breakpoint sets are taken and every
+// breakpoint in them refused, as a run refuses a condition that does not
+// compile; pending answers the sets pending instead, their verdict not yet
+// known.
+type unarmingRun struct {
+	*detachRecorder
+
+	pending bool
+}
+
+func (u unarmingRun) DebugSetBreakpoints(_ context.Context, req *connect.Request[v1.DebugSetBreakpointsRequest]) (*connect.Response[v1.DebugSetBreakpointsResponse], error) {
+	status := v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_APPLIED
+	if u.pending {
+		status = v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_PENDING
+	}
+	states := make([]*v1.DebugBreakpointState, 0, len(req.Msg.GetBreakpoints()))
+	for _, bp := range req.Msg.GetBreakpoints() {
+		states = append(states, &v1.DebugBreakpointState{Id: bp.GetId(), Message: "the condition does not compile"})
+	}
+
+	return connect.NewResponse(&v1.DebugSetBreakpointsResponse{
+		Receipt:     &v1.DebugReceipt{RequestId: req.Msg.GetRequestId(), Status: status},
+		Breakpoints: states,
+		Snapshot:    u.snapshot(),
+	}), nil
+}
+
+// TestAScriptedAttachFailsOnABreakpointTheRunWillNotArm: a breakpoint the run
+// takes the set for but refuses to arm travels in the answer, not as an error,
+// yet the script's later lines assume it is armed, so the attach fails and
+// releases the run. A pending set has no verdict yet, so it does not.
+func TestAScriptedAttachFailsOnABreakpointTheRunWillNotArm(t *testing.T) {
+	script := filepath.Join(t.TempDir(), "session.script")
+	require.NoError(t, os.WriteFile(script, []byte("break build if (\nstatus\n"), 0o600))
+
+	serve := func(t *testing.T, run unarmingRun) string {
+		t.Helper()
+		mux := http.NewServeMux()
+		mux.Handle(flowstatev1connect.NewWorkflowServiceHandler(run))
+		srv := httptest.NewServer(mux)
+		t.Cleanup(srv.Close)
+
+		return srv.URL
+	}
+
+	refused := unarmingRun{detachRecorder: &detachRecorder{}}
+	res := runFlow(t, "debug", "attach", "w", "--script", script, "--address", serve(t, refused))
+	require.Error(t, res.Err, "a script whose breakpoint was not armed exited 0")
+	assert.Contains(t, res.Err.Error(), "not armed")
+	assert.Contains(t, res.Err.Error(), "the condition does not compile")
+	assert.Equal(t, 1, refused.detaches(), "the failed script left the run held")
+
+	pending := unarmingRun{detachRecorder: &detachRecorder{}, pending: true}
+	res = runFlow(t, "debug", "attach", "w", "--script", script, "--address", serve(t, pending))
+	require.NoError(t, res.Err, "a pending set was judged unarmed before the run answered it")
 }
