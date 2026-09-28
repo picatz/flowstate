@@ -1240,7 +1240,8 @@ func (s *Server) setLineBreakpoints(ctx context.Context, request inbound) {
 	}
 	// A missing array is malformed, not an empty replacement: only an explicit
 	// empty set clears a source's breakpoints.
-	if err := json.Unmarshal(request.Arguments, &asked); err != nil || asked.Source == nil || asked.Source.Path == "" || asked.Breakpoints == nil {
+	if err := json.Unmarshal(request.Arguments, &asked); err != nil || asked.Source == nil || asked.Source.Path == "" ||
+		len(asked.Source.Path) > maxSourcePathBytes || asked.Breakpoints == nil {
 		s.fail(request, errInvalidBreakpoints.Error())
 
 		return
@@ -1432,6 +1433,11 @@ func (s *Server) setExceptionBreakpoints(ctx context.Context, request inbound) {
 	s.reply(request, nil)
 }
 
+// maxSourcePathBytes is the longest source path a line breakpoint may name:
+// the bound the debug contract puts on a source line's URI, enforced where the
+// adapter first keeps the path rather than where the backend later refuses it.
+const maxSourcePathBytes = 4096
+
 // errBreakpointBytes fails a request whose breakpoints would take the text the
 // adapter keeps past [MaxBreakpointBytes].
 var errBreakpointBytes = fmt.Errorf("flowdap: the breakpoints' paths, conditions and log messages may total at most %d bytes", MaxBreakpointBytes)
@@ -1455,11 +1461,13 @@ func (s *Server) retainedBytes(skipPath string, skipFunctions bool) int {
 	return total
 }
 
-// lineBytes is the text a source's line breakpoints hold, its path included.
+// lineBytes is the text a source's line breakpoints hold. The path is
+// charged once for the source and again for each breakpoint, whose identity
+// carries it.
 func lineBytes(path string, set []lineBreakpoint) int {
 	total := len(path)
 	for _, b := range set {
-		total += textBytes(b.condition) + textBytes(b.hitCondition) + textBytes(b.logText)
+		total += len(path) + textBytes(b.condition) + textBytes(b.hitCondition) + textBytes(b.logText)
 	}
 
 	return total

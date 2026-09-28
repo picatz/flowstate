@@ -742,6 +742,19 @@ func TestBreakpointRequestsAreBoundedAtTheEdge(t *testing.T) {
 	assert.Equal(t, false, set(program, []map[string]any{{"line": int64(1)<<32 + 13}})["success"],
 		"a line past 2^32 was taken, and would have been set on line 13")
 
+	assert.Equal(t, false, set("/"+strings.Repeat("p", 4096)+".yaml", []map[string]any{{"line": 1}})["success"],
+		"a source path past the contract's bound was kept")
+
+	// A path is carried by every breakpoint's identity, so a long one across
+	// many breakpoints is charged each time, not once.
+	many := make([]map[string]any, 0, 600)
+	for i := range 600 {
+		many = append(many, map[string]any{"line": i + 1})
+	}
+	amplified := set("/"+strings.Repeat("a", 4000)+".yaml", many)
+	assert.Equal(t, false, amplified["success"], "a long path repeated across many breakpoints was charged once")
+	assert.Contains(t, amplified["message"], "at most")
+
 	condition := "true" + strings.Repeat(" ", 60<<10)
 	refused := false
 	for i := range flowdap.MaxBreakpointBytes/len(condition) + 2 {
