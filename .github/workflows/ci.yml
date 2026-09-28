@@ -662,8 +662,8 @@ jobs:
           : "${BASE_SHA:?no breaking-check base from plan}"
           git fetch --no-tags --depth=1 origin "+$BASE_SHA:refs/remotes/origin/main"
 
-      # proto/buf.yaml has declared FILE and WIRE breaking rules from the start and
-      # nothing ran them.
+      # buf.yaml (proto/buf.yaml until #2149) has declared FILE and WIRE breaking
+      # rules from the start and nothing ran them.
       - name: Check for breaking changes
         run: go tool -modfile=tools/external/go.mod buf breaking --against '.git#branch=origin/main'
 

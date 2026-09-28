@@ -11,12 +11,12 @@
 //
 // Run it next to protoc-gen-go:
 //
+//	version: v2
 //	plugins:
-//	  - plugin: go
+//	  - local: [go, tool, protoc-gen-go]
 //	    out: gen
 //	    opt: paths=source_relative
-//	  - plugin: flowstate-doc
-//	    path: [go, tool, protoc-gen-flowstate-doc]
+//	  - local: [go, tool, protoc-gen-flowstate-doc]
 //	    out: gen
 //	    opt: paths=source_relative
 //

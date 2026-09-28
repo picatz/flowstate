@@ -1,40 +1,47 @@
-version: v1
-managed:
-  enabled: true
-  go_package_prefix:
-    default: github.com/picatz/flowstate/pkg
-    except:
-      - buf.build/googleapis/googleapis
-      - buf.build/bufbuild/protovalidate
-# Plugin versions are pinned to match the corresponding runtime libraries in
-# go.mod, so generated code and runtime never drift apart.
+version: v2
+# Every plugin is built from this module's go.mod through a `tool` directive and
+# run with `go tool`, so the generated code and the runtime libraries it calls
+# are always the same versions, and generating needs no network beyond the
+# module cache and never picks up a binary from PATH (#2149). Bumping
+# google.golang.org/protobuf or connectrpc.com/connect in go.mod is therefore a
+# regeneration, which the proto job's drift check requires be committed.
 #
 # Validation is NOT generated: the schema declares its rules with protovalidate
 # (buf.validate options), which are enforced at runtime by buf.build/go/protovalidate
 # reading the descriptors. See pkg/flowstate/v1/validate.go.
+managed:
+  enabled: true
+  disable:
+    - file_option: go_package
+      module: buf.build/googleapis/googleapis
+    - file_option: go_package
+      module: buf.build/bufbuild/protovalidate
+  override:
+    - file_option: go_package_prefix
+      value: github.com/picatz/flowstate/pkg
+# The schema module only. buf.yaml names proto/ as the workspace's one
+# module, and naming it here too keeps a generate from the root scoped to it
+# explicitly: the plugins/*/proto schemas have recipes of their own.
+inputs:
+  - directory: proto
 plugins:
   # google.golang.org/protobuf
-  - plugin: buf.build/protocolbuffers/go:v1.36.11
+  - local: [go, tool, protoc-gen-go]
     out: ./pkg
-    opt:
-      - paths=source_relative
+    opt: paths=source_relative
   # connectrpc.com/connect
-  - plugin: buf.build/connectrpc/go:v1.20.0
+  - local: [go, tool, protoc-gen-connect-go]
     out: ./pkg
-    opt:
-      - paths=source_relative
+    opt: paths=source_relative
   # The schema's comments, as Go source (#2147). protoc-gen-go strips
   # SourceCodeInfo from what a .pb.go embeds, so this plugin writes each file's
   # leading comments into protodoc, where the MCP tool table, LSP hover and the
-  # generated reference read them. Built from this module through its `tool`
-  # directive, so the version is the one go.mod pins and never one from PATH.
+  # generated reference read them.
   #
   # strategy: all, because package= gathers every directory's files into one
   # package under flattened names, and only one invocation over all of them
   # can see two names collide (buf's default runs one per directory).
-  - plugin: flowstate-doc
-    path: [go, tool, protoc-gen-flowstate-doc]
+  - local: [go, tool, protoc-gen-flowstate-doc]
     strategy: all
     out: ./pkg/flowstate/v1/protodoc
-    opt:
-      - package=github.com/picatz/flowstate/pkg/flowstate/v1/protodoc
+    opt: package=github.com/picatz/flowstate/pkg/flowstate/v1/protodoc

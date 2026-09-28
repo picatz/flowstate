@@ -51,6 +51,38 @@ func TestBuildPlan(t *testing.T) {
 			},
 		},
 		{
+			// The v2 workspace config and its lock live at the root, not
+			// under proto/ (#2149), and change what lint, breaking and
+			// generate see.
+			name:    "buf.yaml fires the proto leg",
+			changed: []string{"buf.yaml"},
+			want: plan{
+				fileDirs: []string{"."},
+				proto:    true,
+				docs:     true,
+				reasons: map[string]string{
+					"proto": "buf.yaml",
+					"docs":  "buf.yaml",
+				},
+			},
+		},
+		{
+			// The v2 workspace config and its lock live at the root, not
+			// under proto/ (#2149), and change what lint, breaking and
+			// generate see.
+			name:    "buf.lock fires the proto leg",
+			changed: []string{"buf.lock"},
+			want: plan{
+				fileDirs: []string{"."},
+				proto:    true,
+				docs:     true,
+				reasons: map[string]string{
+					"proto": "buf.lock",
+					"docs":  "buf.lock",
+				},
+			},
+		},
+		{
 			name:    "buf config fires the proto leg without living under proto/",
 			changed: []string{"buf.gen.yaml"},
 			want: plan{
@@ -308,11 +340,24 @@ func TestBuildPlan(t *testing.T) {
 			},
 		},
 		{
-			name:    "go.mod flips the module-wide switch",
+			// go.mod pins the buf.gen.yaml plugins through `tool`
+			// directives (#2149), so it is a generator input as well.
+			name:    "go.mod flips the module-wide switch and fires the proto leg",
 			changed: []string{"go.mod", "go.sum"},
 			want: plan{
 				moduleWide: true,
-				reasons:    map[string]string{"module": "go.mod"},
+				proto:      true,
+				reasons:    map[string]string{"module": "go.mod", "proto": "go.mod"},
+			},
+		},
+		{
+			// go.sum alone records hashes, not versions: no generator
+			// changes, so no regeneration.
+			name:    "go.sum alone does not fire the proto leg",
+			changed: []string{"go.sum"},
+			want: plan{
+				moduleWide: true,
+				reasons:    map[string]string{"module": "go.sum"},
 			},
 		},
 		{
