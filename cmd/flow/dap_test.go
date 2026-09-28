@@ -202,29 +202,17 @@ func flowDAPFailedLaunch(t *testing.T, workflow, messageFragment string) (stdout
 	conn.send("initialize", map[string]any{"adapterID": "flowstate"})
 	conn.await("response", "initialize")
 	conn.await("event", "initialized")
+	// A refused launch is answered as the protocol says an editor expects: a
+	// failed launch response carrying the reason, and no debuggee to exit.
 	conn.send("launch", map[string]any{"program": workflow})
-	conn.await("response", "launch")
-	conn.send("configurationDone", nil)
-	conn.await("response", "configurationDone")
+	launched := conn.await("response", "launch")
+	require.Equal(t, false, launched["success"], "the refused workflow launched")
+	require.Contains(t, launched["message"], messageFragment)
 
-	var failure strings.Builder
-	for range 30 {
-		message := conn.read()
-		encoded, marshalErr := json.Marshal(message)
-		require.NoError(t, marshalErr)
-		failure.Write(encoded)
-		require.NotEqual(t, "stopped", message["event"], "the refused workflow started")
-		if message["event"] == "output" && strings.Contains(string(encoded), messageFragment) {
-			break
-		}
-	}
-	require.Contains(t, failure.String(), messageFragment)
-
-	exited := conn.await("event", "exited")
-	require.Equal(t, float64(1), exited["body"].(map[string]any)["exitCode"])
+	conn.send("disconnect", nil)
+	conn.await("response", "disconnect")
 	_ = stdin.Close()
-	_ = cmd.Process.Kill()
-	_ = cmd.Wait()
+	require.NoError(t, cmd.Wait(), "the adapter did not end cleanly after a refused launch")
 
 	return conn.seen.String(), stderr.String()
 }
@@ -543,43 +531,16 @@ outputs: {}
 	conn.await("response", "initialize")
 	conn.await("event", "initialized")
 
+	// The refusal is the launch's own failed response: an editor shows its
+	// message where the person is looking, and success=false is the
+	// machine-readable answer that nothing ran. A launch that succeeded here
+	// would let the person's next continue perform the earlier steps for a file
+	// that was never going to work.
 	conn.send("launch", map[string]any{"program": workflow})
-	conn.await("response", "launch")
-
-	conn.send("configurationDone", nil)
-	conn.await("response", "configurationDone")
-
-	// The refusal reaches the debug console, which is the only place a person
-	// is looking — the adapter's own standard output is the protocol stream.
-	var said strings.Builder
-	for range 30 {
-		message := conn.read()
-
-		require.NotEqual(t, "stopped", message["event"],
-			"the adapter stopped a run on a workflow that cannot finish, so the person's "+
-				"next continue performs the earlier steps for a file that was never going "+
-				"to work")
-
-		if message["event"] != "output" {
-			continue
-		}
-
-		said.WriteString(message["body"].(map[string]any)["output"].(string))
-		if strings.Contains(said.String(), "http") {
-			break
-		}
-	}
-
-	assert.Contains(t, said.String(), `requires input "url"`,
-		"the console was not told why nothing ran:\n\n%s", said.String())
-
-	// And the editor is told the run failed. A client reads the `exited` event
-	// to decide what the debuggee did, so a zero here says a workflow that was
-	// refused before it started succeeded — the console message says otherwise
-	// and nothing machine-readable agrees with it.
-	exited := conn.await("event", "exited")
-	assert.Equal(t, float64(1), exited["body"].(map[string]any)["exitCode"],
-		"a workflow refused by validation reported a clean exit")
+	launched := conn.await("response", "launch")
+	require.Equal(t, false, launched["success"], "a workflow refused by validation launched")
+	assert.Contains(t, launched["message"], `requires input "url"`,
+		"the editor was not told why nothing ran")
 }
 
 // TestFlowDAPAtATerminalSaysWhatItIs keeps `flow dap` from reading as a hang.
