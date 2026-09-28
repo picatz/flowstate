@@ -43,6 +43,9 @@ type Server struct {
 	// its next stop before the command that moved it has been answered.
 	order sync.Mutex
 
+	// out serializes outbound messages: their numbering and their writing.
+	out sync.Mutex
+
 	target       flowdebug.Target
 	sourceMap    *v1.DebugSourceMap
 	capabilities *v1.DebugCapabilities
@@ -308,6 +311,17 @@ func (s *Server) dispatch(ctx context.Context, request inbound) (done bool) {
 		s.move(ctx, request, v1.DebugResumeAction_DEBUG_RESUME_ACTION_STEP_OUT)
 
 	case "terminate":
+		s.mu.Lock()
+		owned := s.terminate != nil
+		s.mu.Unlock()
+		if !owned {
+			// Never report ending a run this adapter did not start: it detaches,
+			// and says the run goes on.
+			s.end(false)
+			s.fail(request, "flowdap: this adapter attached to the run rather than starting it, so it cannot end it; the session detached and the run continues")
+
+			return true
+		}
 		s.end(true)
 		s.reply(request, nil)
 
@@ -351,9 +365,11 @@ func (s *Server) end(terminate bool) {
 func (s *Server) capabilitiesBody() capabilities {
 	s.mu.Lock()
 	caps := s.capabilities
-	// Termination is the run owner's to offer, and an adapter that launches
-	// the run owns it; one that attached to a durable run does not.
-	terminable := s.launcher != nil
+	// Termination is the run owner's to offer. An adapter that launched the
+	// run owns it, and before either request one that can launch offers it,
+	// a launch being the common case; one that attached to a durable run does
+	// not, whatever else it could have done.
+	terminable := s.terminate != nil || (s.target == nil && !s.remote && s.launcher != nil)
 	s.mu.Unlock()
 	if caps == nil {
 		// Before a launch or attach has said which backend this is, the
@@ -471,9 +487,21 @@ func (s *Server) attach(ctx context.Context, request inbound) {
 	s.sourceMap = attached.SourceMap
 	s.capabilities = snapshot.GetCapabilities()
 	s.remote = true
+	// An exception filter an editor chose before it knew the backend is one
+	// this backend may not offer. Kept, it would refuse every breakpoint set
+	// sent with it; dropped, the rest of the configuration applies, and the
+	// console says the filter did not.
+	droppedFilter := !s.capabilities.GetFailureBreakpoints() && s.failureMode > v1.DebugFailureMode_DEBUG_FAILURE_MODE_NONE
+	if droppedFilter {
+		s.failureMode = v1.DebugFailureMode_DEBUG_FAILURE_MODE_NONE
+	}
 	s.mu.Unlock()
 
 	s.reply(request, nil)
+	if droppedFilter {
+		s.emit("output", map[string]string{"category": "console",
+			"output": "flowdap: this run cannot stop on failures, so the exception filter was dropped\n"})
+	}
 	// The durable driver does less than a local session; say so before the
 	// editor configures anything it would then find ignored.
 	s.emit("capabilities", map[string]any{"capabilities": s.capabilitiesBody()})
@@ -572,10 +600,7 @@ func (s *Server) watch(ctx context.Context) {
 		case terminalState(state):
 			s.enteredAt.Do(func() { close(s.entered) })
 			if s.isRemote() {
-				code := 0
-				if state != v1.DebugRunState_DEBUG_RUN_STATE_COMPLETED && state != v1.DebugRunState_DEBUG_RUN_STATE_DETACHED {
-					code = 1
-				}
+				code := exitCodeFor(state)
 				if message := snapshot.GetMessage(); message != "" {
 					s.Output(message + "\n")
 				}
@@ -600,6 +625,17 @@ func (s *Server) isRemote() bool {
 	defer s.mu.Unlock()
 
 	return s.remote
+}
+
+// exitCodeFor is the exit code a durable run's terminal state reports: zero
+// for a run that completed or that the debugger let go, one otherwise.
+func exitCodeFor(state v1.DebugRunState) int {
+	switch state {
+	case v1.DebugRunState_DEBUG_RUN_STATE_COMPLETED, v1.DebugRunState_DEBUG_RUN_STATE_DETACHED:
+		return 0
+	default:
+		return 1
+	}
 }
 
 func terminalState(state v1.DebugRunState) bool {
@@ -722,6 +758,15 @@ func (s *Server) move(ctx context.Context, request inbound, action v1.DebugResum
 			s.reply(request, nil)
 		}
 	case v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_ENDED:
+		// A durable run's end is reported with the code its final state
+		// gives, not the default, whichever of this and the watcher gets
+		// there first. A local run's code is recorded before its session
+		// reads as ended.
+		if s.isRemote() {
+			if final, err := target.Snapshot(ctx); err == nil && terminalState(final.GetState()) {
+				s.Exited(exitCodeFor(final.GetState()))
+			}
+		}
 		s.reply(request, nil)
 		go s.Finished()
 	default:
@@ -747,6 +792,12 @@ func (s *Server) pause(ctx context.Context, request inbound) {
 
 		return
 	}
+
+	// Under the order lock, as every movement is: the stop a pause causes
+	// can be ready before this handler answers, and its response must still
+	// reach the client first.
+	s.order.Lock()
+	defer s.order.Unlock()
 
 	receipt, err := target.Pause(ctx, fmt.Sprintf("dap-%d", request.Seq))
 	if err != nil {
@@ -1275,42 +1326,51 @@ func refused(n int, message string) []breakpoint {
 	return answers
 }
 
-func (s *Server) nextSeq() int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+// send numbers one outbound message and writes it under one lock, so the
+// sequence the client reads is the order the messages were sent in: a number
+// taken under one lock and written under another could reach the client
+// behind a later one.
+func (s *Server) send(message func(seq int) any) {
+	s.out.Lock()
+	defer s.out.Unlock()
 
 	s.seq++
-
-	return s.seq
+	_ = s.stream.WriteObject(message(s.seq))
 }
 
 func (s *Server) reply(request inbound, body any) {
-	_ = s.stream.WriteObject(response{
-		Seq:        s.nextSeq(),
-		Type:       "response",
-		RequestSeq: request.Seq,
-		Success:    true,
-		Command:    request.Command,
-		Body:       body,
+	s.send(func(seq int) any {
+		return response{
+			Seq:        seq,
+			Type:       "response",
+			RequestSeq: request.Seq,
+			Success:    true,
+			Command:    request.Command,
+			Body:       body,
+		}
 	})
 }
 
 func (s *Server) fail(request inbound, message string) {
-	_ = s.stream.WriteObject(response{
-		Seq:        s.nextSeq(),
-		Type:       "response",
-		RequestSeq: request.Seq,
-		Success:    false,
-		Command:    request.Command,
-		Message:    message,
+	s.send(func(seq int) any {
+		return response{
+			Seq:        seq,
+			Type:       "response",
+			RequestSeq: request.Seq,
+			Success:    false,
+			Command:    request.Command,
+			Message:    message,
+		}
 	})
 }
 
 func (s *Server) emit(name string, body any) {
-	_ = s.stream.WriteObject(event{
-		Seq:   s.nextSeq(),
-		Type:  "event",
-		Event: name,
-		Body:  body,
+	s.send(func(seq int) any {
+		return event{
+			Seq:   seq,
+			Type:  "event",
+			Event: name,
+			Body:  body,
+		}
 	})
 }

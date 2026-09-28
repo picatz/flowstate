@@ -80,6 +80,29 @@ type debugRun struct {
 	sender     *v1.SignalSender
 }
 
+// refresh re-reads the run's status, so a read that waits sees the run close
+// rather than the status authorization saw. A run that continued as new is
+// followed to its chain's current execution, and only within the chain that
+// was authorized: an execution whose first run differs is a different chain
+// under the same id, and is never adopted. A failed read keeps what was known.
+func (r *debugRun) refresh(ctx context.Context) {
+	resp, err := r.temporal.DescribeWorkflowExecution(ctx, r.workflowID, r.runID)
+	if err != nil {
+		return
+	}
+	if resp.GetWorkflowExecutionInfo().GetStatus() == enums.WORKFLOW_EXECUTION_STATUS_CONTINUED_AS_NEW {
+		current, err := r.temporal.DescribeWorkflowExecution(ctx, r.workflowID, "")
+		if err != nil || current.GetWorkflowExecutionInfo().GetFirstRunId() != resp.GetWorkflowExecutionInfo().GetFirstRunId() {
+			// The chain goes on somewhere this read could not follow; the
+			// segment that continued is not the run closing.
+			return
+		}
+		resp = current
+		r.runID = current.GetWorkflowExecutionInfo().GetExecution().GetRunId()
+	}
+	r.describe = resp
+}
+
 // open reports whether the run can still be commanded.
 func (r *debugRun) open() bool {
 	return r.describe.GetWorkflowExecutionInfo().GetStatus() == enums.WORKFLOW_EXECUTION_STATUS_RUNNING
@@ -89,8 +112,13 @@ func (r *debugRun) open() bool {
 // the reserved-channel protocol, and the run's own `debug:` policy. It audits
 // the decision with detail.
 func (s *FlowstateServer) authorizeDebug(ctx context.Context, rpc, workflowID, runID string, detail *v1.AuditDebugDetail) (*debugRun, error) {
-	kind := v1.AuditResourceKind_AUDIT_RESOURCE_KIND_RUN
-	if err := s.authorizeAction(ctx, rpc, kind, workflowID); err != nil {
+	// The action gate, before the run is resolved, audited with the debug
+	// detail like every other decision this RPC makes.
+	action, err := v1.AuthorizationActionForRPC(rpc)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if err := s.requireDebugAction(ctx, rpc, workflowID, action, detail); err != nil {
 		return nil, err
 	}
 
@@ -165,6 +193,8 @@ func (s *FlowstateServer) auditDebugDeny(ctx context.Context, rpc, workflowID st
 func (r *debugRun) snapshot(ctx context.Context, request string) (*v1.DebugSnapshot, error) {
 	ctx, cancel := context.WithTimeout(ctx, debugQueryTimeout)
 	defer cancel()
+
+	r.refresh(ctx)
 
 	encoded, err := r.temporal.QueryWorkflow(ctx, r.workflowID, r.runID, v1.DebugQuery, request)
 	if err != nil {
@@ -542,7 +572,17 @@ func (s *FlowstateServer) DebugInspect(ctx context.Context, req *connect.Request
 	if err != nil {
 		var queryFailed *serviceerror.QueryFailed
 		if errors.As(err, &queryFailed) {
-			return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New(queryFailed.Message))
+			refused := connect.NewError(connect.CodeFailedPrecondition, errors.New(queryFailed.Message))
+			// The run may have moved between the check above and the query:
+			// resumed, or its lease lapsed. When a fresh read confirms it has
+			// left the stop this inspection was about, the answer is the stale
+			// condition a client acts on, not an unexplained refusal.
+			if again, readErr := run.snapshot(ctx, ""); readErr == nil &&
+				(again.GetRevision() != snapshot.GetRevision() || again.GetState() != v1.DebugRunState_DEBUG_RUN_STATE_HELD) {
+				refused.Meta().Set(v1.DebugConditionHeader, v1.DebugConditionStale)
+			}
+
+			return nil, refused
 		}
 
 		return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("the run's worker did not answer the inspection: %w", err))

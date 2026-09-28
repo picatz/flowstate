@@ -346,3 +346,31 @@ func TestATypedAskIsBoundedWhereTheRunReadsIt(t *testing.T) {
 	assert.LessOrEqual(t, len(garbled.GetMessage()), v1.MaxDebugReceiptMessageBytes)
 	assert.True(t, utf8.ValidString(garbled.GetMessage()), "a capped message was cut inside a rune")
 }
+
+// TestATypedSessionIsNotReleasedByAMalformedOrLegacyResume: while a typed
+// session holds the run, a legacy resume on the same channel, even from the
+// holder, and a typed resume that names no action are both refused. Either
+// would let the run go under a session that still believes it holds it.
+func TestATypedSessionIsNotReleasedByAMalformedOrLegacyResume(t *testing.T) {
+	t.Parallel()
+
+	tl := newTimeline(t)
+	tl.ask(30*time.Second, "sre-1@example.com", &v1.DebugAsk{Verb: v1.DebugVerbPause, Session: "s1", Request: "attach"})
+	tl.env.RegisterDelayedCallback(func() {
+		tl.env.SignalWorkflow(v1.DebugSignal, debugAsk(v1.DebugVerbResume, "sre-1@example.com", 0))
+	}, 62*time.Second)
+	tl.ask(62*time.Second+time.Millisecond, "sre-1@example.com", &v1.DebugAsk{Verb: v1.DebugVerbResume, Session: "s1", Request: "no-action"})
+	tl.read(63*time.Second, "after", "no-action")
+	tl.ask(64*time.Second, "sre-1@example.com", &v1.DebugAsk{Verb: v1.DebugVerbResume, Session: "s1", Request: "bye",
+		Action: v1.DebugResumeAction_DEBUG_RESUME_ACTION_DETACH})
+
+	tl.env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: typedSpec("legacy-resume")})
+	require.NoError(t, tl.env.GetWorkflowError())
+
+	after := tl.reads["after"]
+	require.NotNil(t, after, "the run ended before it was read")
+	assert.Equal(t, v1.DebugRunState_DEBUG_RUN_STATE_HELD, after.GetState(), "the session lost its hold")
+	assert.Equal(t, "s1", after.GetSession().GetSessionId())
+	assert.Equal(t, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_REFUSED, after.GetReceipt().GetStatus(),
+		"a typed resume naming no action was applied")
+}

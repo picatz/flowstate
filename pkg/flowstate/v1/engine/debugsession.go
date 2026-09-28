@@ -62,6 +62,10 @@ type parsedBreakpoint struct {
 
 // heldStop is what a typed hold is about, for the queries.
 type heldStop struct {
+	// spec is the workflow whose step the run stopped before, the callee's
+	// when the stop is inside one, so its scope is read against its own
+	// declarations.
+	spec       *v1.Workflow
 	scope      *v1.Scope
 	occurrence *v1.DebugOccurrence
 	reason     v1.DebugStopReason
@@ -184,7 +188,10 @@ func (e *executor) applyTypedAsk(ask *v1.DebugAsk, parseErr error, sender *v1.Si
 	holder := d.attached() && v1.QualifiedSubject(d.carry.GetHolder().GetIssuer(), d.carry.GetHolder().GetSubject()) ==
 		v1.QualifiedSubject(sender.GetIdentity().GetIssuer(), sender.GetIdentity().GetSubject())
 	mine := d.attached() && d.carry.GetSessionId() == ask.Session && holder
-	held := d.lease != nil && v1.DebugLeaseHeld(d.lease, now)
+	// Held is judged at the same fence as expiry: a renewal accepted while
+	// the lease still ran renews it, even when a long step kept the run from
+	// reading the renewal until after the old expiry.
+	held := d.lease != nil && v1.DebugLeaseHeld(d.lease, judged)
 
 	switch ask.Verb {
 	case v1.DebugVerbPause, v1.DebugVerbRenew:
@@ -448,7 +455,7 @@ func (e *executor) typedArrival(node *v1.Node) {
 	d.carry.PauseRequested = false
 	d.carry.Next = v1.DebugResumeAction_DEBUG_RESUME_ACTION_CONTINUE
 	d.carry.Until = ""
-	d.held = heldStop{scope: e.scope, occurrence: occurrence, reason: reason, hitIDs: hitIDs}
+	d.held = heldStop{spec: e.curSpec, scope: e.scope, occurrence: occurrence, reason: reason, hitIDs: hitIDs}
 	d.lease = &v1.DebugSession{
 		SessionId:      d.carry.GetSessionId(),
 		Run:            d.run,
@@ -482,7 +489,7 @@ func (e *executor) typedStop(occurrence *v1.DebugOccurrence) (v1.DebugStopReason
 			holds, cost, err := v1.EvalConditionInScopeWithCost(evalContext(), bp.condition, e.scope)
 			e.chargeWorkflowCost(cost)
 			if err != nil {
-				bp.state.LastError = err.Error()
+				bp.state.LastError = v1.TruncateDebugReceiptMessage(e.debugRedactText(err.Error()))
 
 				continue
 			}
@@ -543,6 +550,27 @@ func (e *executor) debugHoldEnded() {
 	e.endDebugSession(v1.DebugRunState_DEBUG_RUN_STATE_EXPIRED, "the session's lease lapsed while the run was held; the run resumed")
 }
 
+// sensitiveAt is what a debugger must not be shown at a point in the run: the
+// run's own declared-sensitive inputs, and those spec declares of scope's
+// inputs, which differ inside a callee.
+func (d *debugControl) sensitiveAt(spec *v1.Workflow, scope *v1.Scope) v1.SensitiveValues {
+	return d.rootSensitive.Merge(v1.SensitiveInputValues(scope.GetInputs(), v1.SensitiveInputNames(spec)))
+}
+
+// debugRedactText withholds the declared-sensitive inputs from text the run
+// keeps for a debugger: a task's error can quote the
+// value it was given, and what a session reads back is a transcript like any
+// other. It is presentation, as inspection's redaction is, and deterministic,
+// since it reads only the recorded scope.
+func (e *executor) debugRedactText(text string) string {
+	sensitive := e.debug.sensitiveAt(e.curSpec, e.scope)
+	if sensitive.Empty() {
+		return text
+	}
+
+	return sensitive.RedactText(text, "[redacted]")
+}
+
 // observeForDebug records one step outcome for an attached session's
 // observations: the step and what became of it, never its values.
 func (e *executor) observeForDebug(kind v1.DebugObservationKind, node *v1.Node, detail string) {
@@ -562,6 +590,7 @@ func (e *executor) observeForDebug(kind v1.DebugObservationKind, node *v1.Node, 
 	case v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_TOLERATED:
 		text += " failed, tolerated by continue_on_error: " + detail
 	}
+	text = e.debugRedactText(text)
 	if runes := []rune(text); len(runes) > maxDebugObservationRunes {
 		text = string(runes[:maxDebugObservationRunes]) + "…"
 	}
@@ -683,7 +712,11 @@ func setDebugQueries(ctx workflow.Context, d *debugControl, spec func() *v1.Work
 		// not confidentiality: an expression can still test them, which is why
 		// inspection needs its own authorization.
 		scope := d.held.scope
-		sensitive := v1.SensitiveInputValues(scope.GetInputs(), v1.SensitiveInputNames(spec()))
+		held := d.held.spec
+		if held == nil {
+			held = spec()
+		}
+		sensitive := d.sensitiveAt(held, scope)
 		var (
 			redactText  func(string) string
 			redactValue func(any) any

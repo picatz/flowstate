@@ -11,7 +11,9 @@ import (
 	"google.golang.org/protobuf/types/known/durationpb"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/audit"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/server"
 )
 
 // The durable debugger's RPCs against a real Temporal server and worker:
@@ -224,6 +226,74 @@ func TestABreakpointConditionIsAnInspection(t *testing.T) {
 			EntityKey: "debug-door", Workflow: entity, Name: v1.DebugSignal, Payload: payload,
 		}))
 	require.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err), "SignalWithStart delivered onto the reserved debug channel")
+}
+
+// TestAWaitingReadSeesTheRunClose: a long-polled DebugGet started while the
+// run is open answers as soon as the run closes, with the closed state, rather
+// than reporting the status it read when the wait began until the wait ends.
+func TestAWaitingReadSeesTheRunClose(t *testing.T) {
+	t.Parallel()
+
+	fixture := newTenantFixture(t)
+	started, err := fixture.teamA.Run(t.Context(), connect.NewRequest(&v1.RunRequest{Workflow: debuggableWorkflow()}))
+	require.NoError(t, err)
+	workflowID := started.Msg.GetWorkflowId()
+	waitUntilParkedAtTheGate(t, fixture.temporal, workflowID)
+
+	sre1 := as(t.Context(), "sre-1@example.com")
+	before, err := fixture.teamA.DebugGet(sre1, connect.NewRequest(&v1.DebugGetRequest{WorkflowId: workflowID}))
+	require.NoError(t, err)
+
+	type answer struct {
+		snapshot *v1.DebugSnapshot
+		took     time.Duration
+		err      error
+	}
+	answered := make(chan answer, 1)
+	go func() {
+		began := time.Now()
+		resp, err := fixture.teamA.DebugGet(sre1, connect.NewRequest(&v1.DebugGetRequest{
+			WorkflowId: workflowID, AfterRevision: before.Msg.GetSnapshot().GetRevision(), Wait: durationpb.New(25 * time.Second),
+		}))
+		answered <- answer{snapshot: resp.Msg.GetSnapshot(), took: time.Since(began), err: err}
+	}()
+
+	_, err = fixture.teamA.Signal(t.Context(), connect.NewRequest(&v1.SignalRequest{
+		WorkflowId: workflowID, Name: "deploy-approved",
+		Payload: &v1.Node_Outputs{NamedValues: map[string]*v1.Value{"approved": v1.NewLiteral(false)}},
+	}))
+	require.NoError(t, err)
+
+	got := <-answered
+	require.NoError(t, got.err)
+	assert.Equal(t, v1.DebugRunState_DEBUG_RUN_STATE_COMPLETED, got.snapshot.GetState(), "the wait did not see the run close")
+	assert.Less(t, got.took, 20*time.Second, "the wait ran out instead of answering when the run closed")
+}
+
+// TestADebugActionRefusalIsAuditedWithItsDetail: a caller without the debug
+// action is refused before the run is resolved, and the refusal is recorded
+// with the debug detail every other debug decision carries.
+func TestADebugActionRefusalIsAuditedWithItsDetail(t *testing.T) {
+	t.Parallel()
+
+	temporal, _ := newTemporalNamespace(t)
+	sink := &recordingEmitter{}
+	recorder, err := audit.NewRecorder(audit.WithoutStderr(), audit.WithEmitter(sink))
+	require.NoError(t, err)
+	s := mustNew(t, temporal, server.WithNamespace("acme"), server.WithAudit(recorder))
+
+	_, err = s.DebugGet(as(t.Context(), "sre-1@example.com", "workload.signal"), connect.NewRequest(&v1.DebugGetRequest{
+		WorkflowId: "debug-audit", AfterRevision: 7,
+	}))
+	require.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
+
+	require.NotEmpty(t, sink.records)
+	record := sink.records[len(sink.records)-1]
+	assert.Equal(t, "DebugGet", record.GetRpc())
+	assert.Equal(t, v1.AuditDecision_AUDIT_DECISION_DENY, record.GetDecision())
+	require.NotNil(t, record.GetDebug(), "the refusal was recorded without its debug detail")
+	assert.Equal(t, "get", record.GetDebug().GetOperation())
+	assert.EqualValues(t, 7, record.GetDebug().GetRevision())
 }
 
 func TestARunWithoutADebugPolicyCannotBeAttached(t *testing.T) {

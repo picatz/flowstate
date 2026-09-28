@@ -189,8 +189,12 @@ func launchDebuggedRun(
 			ctx := v1.NewContextWithDebugger(runCtx, session)
 			ctx = v1.NewContextWithRunObserver(ctx, session)
 			ctx, err := withLocalTaskRuntimeUsing(cmd, ctx, workflow, providers)
+			// The exit code is recorded before the session reads as ended: a
+			// movement answered ENDED reports the run's end at once, and must
+			// report this code rather than the default.
 			if err != nil {
 				exit = 1
+				server.Exited(exit)
 				session.Finished(err)
 				server.Output(fmt.Sprintf("flowdap: configuring the local task runtime: %v\n", err))
 
@@ -198,9 +202,12 @@ func launchDebuggedRun(
 			}
 
 			_, runErr := v1.RunWithInputs(ctx, workflow, nil)
-			session.Finished(runErr)
 			if runErr != nil {
 				exit = 1
+				server.Exited(exit)
+			}
+			session.Finished(runErr)
+			if runErr != nil {
 				server.Output(session.RedactText(fmt.Sprintf("run failed: %v\n", runErr)))
 			}
 		},
@@ -208,27 +215,21 @@ func launchDebuggedRun(
 }
 
 // attachDebuggedRun attaches to a durable run through the server this command
-// was pointed at, with the caller's own credentials. A program, when named, is
-// compiled for its source map, which is used only if it matches the program
-// the run executes.
+// was pointed at, with the caller's own credentials.
 func attachDebuggedRun(ctx context.Context, cmd *cobra.Command, args flowdap.AttachArguments) (*flowdap.Attachment, error) {
-	var sourceMap *v1.DebugSourceMap
-	if args.Program != "" {
-		if workflow, err := loadWorkflow(args.Program); err == nil {
-			sourceMap = debugSourceMap(args.Program, workflow)
-		}
-	}
-
+	// No source map on a durable attach. A map is bound to its program by the
+	// IR digest, and the IR carries no positions: a file whose lines moved
+	// since the run was submitted compiles to the same digest, and would put
+	// frames and line breakpoints on the wrong lines. The run records no digest
+	// of its source to check a local file against, so an attach shows step
+	// addresses and answers line breakpoints unverified rather than guess.
 	remote, _, err := flowdebug.AttachRemote(ctx, newWorkflowServiceClient(serverFlagsOf(cmd)),
-		args.WorkflowID, args.RunID, flowdebug.RemoteOptions{SessionID: args.SessionID, SourceMap: sourceMap})
+		args.WorkflowID, args.RunID, flowdebug.RemoteOptions{SessionID: args.SessionID})
 	if err != nil {
 		return nil, fmt.Errorf("flowdap: attaching to %s: %w", args.WorkflowID, err)
 	}
-	if sourceMap != nil && !remote.SourceMapVerified() {
-		sourceMap = nil
-	}
 
-	return &flowdap.Attachment{Target: remote, SourceMap: sourceMap}, nil
+	return &flowdap.Attachment{Target: remote}, nil
 }
 
 type dapConsole struct {
