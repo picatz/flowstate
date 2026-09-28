@@ -62,6 +62,10 @@ type parsedBreakpoint struct {
 
 // heldStop is what a typed hold is about, for the queries.
 type heldStop struct {
+	// spec is the workflow whose step the run stopped before, the callee's
+	// when the stop is inside one, so its scope is read against its own
+	// declarations.
+	spec       *v1.Workflow
 	scope      *v1.Scope
 	occurrence *v1.DebugOccurrence
 	reason     v1.DebugStopReason
@@ -451,7 +455,7 @@ func (e *executor) typedArrival(node *v1.Node) {
 	d.carry.PauseRequested = false
 	d.carry.Next = v1.DebugResumeAction_DEBUG_RESUME_ACTION_CONTINUE
 	d.carry.Until = ""
-	d.held = heldStop{scope: e.scope, occurrence: occurrence, reason: reason, hitIDs: hitIDs}
+	d.held = heldStop{spec: e.curSpec, scope: e.scope, occurrence: occurrence, reason: reason, hitIDs: hitIDs}
 	d.lease = &v1.DebugSession{
 		SessionId:      d.carry.GetSessionId(),
 		Run:            d.run,
@@ -546,13 +550,20 @@ func (e *executor) debugHoldEnded() {
 	e.endDebugSession(v1.DebugRunState_DEBUG_RUN_STATE_EXPIRED, "the session's lease lapsed while the run was held; the run resumed")
 }
 
-// debugRedactText withholds the declared-sensitive inputs of the workflow in
-// scope from text the run keeps for a debugger: a task's error can quote the
+// sensitiveAt is what a debugger must not be shown at a point in the run: the
+// run's own declared-sensitive inputs, and those spec declares of scope's
+// inputs, which differ inside a callee.
+func (d *debugControl) sensitiveAt(spec *v1.Workflow, scope *v1.Scope) v1.SensitiveValues {
+	return d.rootSensitive.Merge(v1.SensitiveInputValues(scope.GetInputs(), v1.SensitiveInputNames(spec)))
+}
+
+// debugRedactText withholds the declared-sensitive inputs from text the run
+// keeps for a debugger: a task's error can quote the
 // value it was given, and what a session reads back is a transcript like any
 // other. It is presentation, as inspection's redaction is, and deterministic,
 // since it reads only the recorded scope.
 func (e *executor) debugRedactText(text string) string {
-	sensitive := v1.SensitiveInputValues(e.scope.GetInputs(), v1.SensitiveInputNames(e.curSpec))
+	sensitive := e.debug.sensitiveAt(e.curSpec, e.scope)
 	if sensitive.Empty() {
 		return text
 	}
@@ -701,7 +712,11 @@ func setDebugQueries(ctx workflow.Context, d *debugControl, spec func() *v1.Work
 		// not confidentiality: an expression can still test them, which is why
 		// inspection needs its own authorization.
 		scope := d.held.scope
-		sensitive := v1.SensitiveInputValues(scope.GetInputs(), v1.SensitiveInputNames(spec()))
+		held := d.held.spec
+		if held == nil {
+			held = spec()
+		}
+		sensitive := d.sensitiveAt(held, scope)
 		var (
 			redactText  func(string) string
 			redactValue func(any) any
