@@ -347,6 +347,17 @@ func TestAnEncodedPayloadFitsTheBlobLimitWhole(t *testing.T) {
 	require.ErrorContains(t, err, "past the")
 }
 
+// An unreachable provider is the codec-neutral unavailability workflow-side
+// decoding keys on, and still this package's own sentinel.
+func TestAnUnreachableProviderIsUnavailable(t *testing.T) {
+	t.Parallel()
+
+	wrapped := fmt.Errorf("unwrapping: %w", envelope.ErrProviderUnavailable)
+	require.ErrorIs(t, wrapped, payloadcodec.ErrUnavailable)
+	require.ErrorIs(t, wrapped, envelope.ErrProviderUnavailable)
+	require.NotErrorIs(t, envelope.ErrMalformed, payloadcodec.ErrUnavailable)
+}
+
 func TestPassesTheStartupCheck(t *testing.T) {
 	t.Parallel()
 

@@ -103,6 +103,7 @@
 package payloadcodec
 
 import (
+	"errors"
 	"fmt"
 	"maps"
 	"slices"
@@ -111,9 +112,17 @@ import (
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/converter"
 	"go.temporal.io/sdk/temporal"
+	"go.temporal.io/sdk/workflow"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
+
+// ErrUnavailable is a codec that could not decode or encode for want of
+// something outside the process, such as a key provider that did not answer,
+// rather than because the payload is wrong. A codec's own error for that case
+// matches it with [errors.Is], so a caller can tell a transient refusal from a
+// corrupt payload without knowing which codec is configured.
+var ErrUnavailable = errors.New("payload codec: unavailable")
 
 // KeyIDMetadataKey is the payload metadata entry carrying the id of the key a
 // payload was encrypted under. One name, owned here, written by every codec and
@@ -561,7 +570,11 @@ func (c Config) DataConverter() converter.DataConverter {
 		// deployment hands its codec.
 		return serializer
 	}
-	return converter.NewCodecDataConverter(serializer, c.codec())
+	// Workflow code decodes through this converter too, and a codec may call
+	// a key provider. That call is bounded by the codec's own timeout, which
+	// may exceed the deadlock detector's budget; a provider answering within
+	// its timeout must not be mistaken for workflow code that stopped yielding.
+	return workflow.DataConverterWithoutDeadlockDetection(converter.NewCodecDataConverter(serializer, c.codec()))
 }
 
 // FailureConverter returns the failure converter that must accompany

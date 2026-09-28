@@ -224,3 +224,46 @@ func TestSignalsAreLostWhenTheInterpreterBypassesTheCodec(t *testing.T) {
 	require.Error(t, env.GetWorkflowError(),
 		"the run neither completed nor failed, so this says nothing about the lost signal")
 }
+
+// unavailableCodec is a codec whose key provider stops answering once down is
+// set: every decode after that fails with [payloadcodec.ErrUnavailable].
+type unavailableCodec struct {
+	payloadcodec.Codec
+	down atomic.Bool
+}
+
+func (c *unavailableCodec) Decode(p []*commonpb.Payload) ([]*commonpb.Payload, error) {
+	if c.down.Load() {
+		return nil, fmt.Errorf("toy key provider timed out: %w", payloadcodec.ErrUnavailable)
+	}
+	return c.Codec.Decode(p)
+}
+
+// TestASignalTheCodecCannotReachAKeyForFailsTheRun: a signal whose codec
+// could not reach its key provider is not a corrupt signal. The SDK drops a
+// signal whose decode returns an error, so returned, the approval would be
+// lost and the gate would time out; the run fails instead, naming why, with
+// the signal still in its history.
+func TestASignalTheCodecCannotReachAKeyForFailsTheRun(t *testing.T) {
+	t.Parallel()
+
+	toy, err := toycodec.New(bytes.Repeat([]byte{0x2a}, 32))
+	require.NoError(t, err)
+	codec := &unavailableCodec{Codec: toy}
+	cfg := payloadcodec.Config{Codec: codec}
+
+	env := newCodecEnv(t, engine.TaskRuntimeConfig{}.WithDataConverter(cfg.DataConverter()))
+	env.SetDataConverter(cfg.DataConverter())
+	env.RegisterDelayedCallback(func() {
+		codec.down.Store(true)
+		env.SignalWorkflow("deploy-approved", testSignalDelivery("approver@example.com", map[string]*v1.Value{
+			"approved": v1.NewLiteral(true),
+		}))
+	}, time.Minute)
+
+	env.ExecuteWorkflow(engine.RunWorkflowType, &v1.RunState{Workflow: gatedWorkflow()})
+
+	require.True(t, env.IsWorkflowCompleted())
+	require.ErrorContains(t, env.GetWorkflowError(), "unavailable",
+		"the signal was dropped as corrupt and the gate carried on without it")
+}

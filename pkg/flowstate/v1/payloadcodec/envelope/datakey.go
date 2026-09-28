@@ -16,6 +16,7 @@ import (
 	"google.golang.org/protobuf/types/known/durationpb"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/payloadcodec"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/payloadcodec/keyprovider"
 )
 
@@ -47,9 +48,16 @@ const (
 )
 
 // ErrProviderUnavailable is a data key that could not be wrapped or unwrapped
-// because the key provider did not answer. Transient: Temporal retries the
-// task that needed it, and nothing is written unsealed meanwhile.
-var ErrProviderUnavailable = errors.New("envelope: the key provider is unavailable")
+// because the key provider did not answer. Transient, and nothing is written
+// unsealed meanwhile. It matches [payloadcodec.ErrUnavailable], which is how
+// workflow-side decoding tells it from a corrupt payload.
+var ErrProviderUnavailable error = providerUnavailable{}
+
+type providerUnavailable struct{}
+
+func (providerUnavailable) Error() string { return "envelope: the key provider is unavailable" }
+
+func (providerUnavailable) Is(target error) bool { return target == payloadcodec.ErrUnavailable }
 
 // dataKeyPolicy is a PayloadDataKeyPolicy with its defaults applied.
 type dataKeyPolicy struct {
