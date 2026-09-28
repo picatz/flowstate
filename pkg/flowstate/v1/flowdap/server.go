@@ -249,6 +249,11 @@ func (s *Server) Serve(ctx context.Context) error {
 
 		var request inbound
 		if err := s.stream.ReadObject(&request); err != nil {
+			// A client gone without a disconnect is one: the session detaches,
+			// so a run it left paused goes on rather than waiting for a
+			// command nobody can send, and [Server.Wait] returns.
+			s.end(false)
+
 			return nil
 		}
 		if request.Type != "request" {

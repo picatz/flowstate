@@ -520,3 +520,29 @@ func TestADetachedLaunchIsWaitedFor(t *testing.T) {
 		t.Fatal("Wait did not return once the detached run had")
 	}
 }
+
+// TestAClientThatVanishesDetachesTheRun is the other way a client leaves: its
+// stream ends with no disconnect while the run is paused. The session detaches
+// as a disconnect would, so the run finishes rather than waiting forever for
+// a command, and an adapter waiting on it can exit.
+func TestAClientThatVanishesDetachesTheRun(t *testing.T) {
+	t.Parallel()
+
+	c, program, finished := launched(t)
+
+	c.send(1, "initialize", map[string]any{"adapterID": "flowstate"})
+	c.await("response", "initialize")
+	c.send(2, "launch", map[string]any{"program": program, "stopOnEntry": true})
+	c.await("response", "launch")
+	c.send(3, "configurationDone", nil)
+	c.await("response", "configurationDone")
+	c.await("event", "stopped")
+
+	require.NoError(t, c.Close())
+
+	select {
+	case <-finished:
+	case <-time.After(20 * time.Second):
+		t.Fatal("the run stayed paused after its client's stream ended, so the adapter never exits")
+	}
+}
