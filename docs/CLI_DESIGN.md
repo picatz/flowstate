@@ -616,7 +616,9 @@ every other addition in this schema is):
   one of several siblings under one parallel node rather than a sequence), and
   `SWITCH_ARM` (this step is in one arm of a `switch:`; the edge carries which
   arm — its index among the cases, or `default` — and slice 1 decides how an arm
-  with no steps is drawn, since it has no step to point at).
+  with no steps is drawn, since it has no step to point at, keeping a `switch:`
+  with no `default:` distinct from one whose `default:` is empty, as
+  `workflow.proto` does).
 - **`Graph`**: `repeated GraphNode nodes`, `repeated GraphEdge edges`, and the
   workflow id or path the graph was built from, so a `Graph` value is
   self-describing rather than needing to be handed back to whoever produced it
@@ -1056,10 +1058,15 @@ line. What is not: everything below.
    - whether a failed step's failure was tolerated by `continue_on_error:` or
      ended the run, which `recordOutcome` in `engine/execute.go` decides.
      `StepOutputs` already records the failure's `error` under the step on
-     both drivers, and slice 3 reuses that; what it lacks is the verdict,
-     because its shape cannot tell a tolerated failure from a successful step
-     that declares an output named `error` (the executors keep that fact in a
-     tolerated set, attached only to loop and `for_each` iteration records);
+     both drivers, and slice 3 reuses that where it reaches a caller: a
+     completed run hands it back on both drivers, but a durable run that
+     failed returns only its error, because Temporal drops a failed
+     workflow's result, so the step that ended it is recorded structurally
+     only in the local driver's partial transcript. What it lacks is the
+     verdict, because its shape cannot tell a tolerated failure from a
+     successful step that declares an output named `error` (the executors
+     keep that fact in a tolerated set, attached only to loop and `for_each`
+     iteration records);
    - outcomes for the nodes that record none;
    - a bound on the work an overlay spends: `GetTimeline` stops at the
      server's scan budget and is per segment, so an overlay over a large or
