@@ -22,7 +22,8 @@ plugins:
   - plugin: buf.build/connectrpc/go:v1.20.0
     out: ./pkg
     opt:
-      - paths=source_relative  # The schema's comments, as Go source (#2147). protoc-gen-go strips
+      - paths=source_relative
+  # The schema's comments, as Go source (#2147). protoc-gen-go strips
   # SourceCodeInfo from what a .pb.go embeds, so this plugin writes each file's
   # leading comments into protodoc, where the MCP tool table, LSP hover and the
   # generated reference read them. Built from this module through its `tool`

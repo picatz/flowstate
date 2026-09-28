@@ -88,8 +88,8 @@ func handle(_ context.Context, _ protoplugin.PluginEnv, w protoplugin.ResponseWr
 	return nil
 }
 
-// generate writes one Go file per file to generate that declares at least one
-// comment. With an empty into, each file's comments go into its own Go package.
+// generate writes one Go file per file to generate. With an empty into, each
+// file's comments go into its own Go package.
 func generate(gen *protogen.Plugin, into protogen.GoImportPath) error {
 	for _, file := range gen.Files {
 		if !file.Generate {
@@ -102,10 +102,12 @@ func generate(gen *protogen.Plugin, into protogen.GoImportPath) error {
 			return fmt.Errorf("%s: the request carries no source info, so its comments cannot be read", file.Desc.Path())
 		}
 
+		// A file is written even when the .proto declares no comments, so
+		// the generated files track the .proto files one for one: a file
+		// whose last comment was deleted is rewritten to register nothing,
+		// which the drift pin sees, rather than left behind still
+		// registering the old text.
 		comments := collect(file.Desc)
-		if len(comments) == 0 {
-			continue
-		}
 
 		filename, importPath := file.GeneratedFilenamePrefix+".doc.pb.go", file.GoImportPath
 		if into != "" {

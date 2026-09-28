@@ -216,16 +216,21 @@ func TestRequestWithoutSourceInfoIsAnError(t *testing.T) {
 	}
 }
 
-// A file with source info and no comments generates nothing.
-func TestFileWithoutCommentsGeneratesNothing(t *testing.T) {
+// A file with source info and no comments still generates a file, registering
+// nothing, so a .proto whose last comment is deleted has its old comments
+// rewritten away rather than left registered by a file nothing regenerates.
+func TestFileWithoutCommentsRegistersNothing(t *testing.T) {
 	file := thingProto()
 	file.SourceCodeInfo.Location = file.SourceCodeInfo.Location[:1]
 	resp, err := run(t, "paths=source_relative", file)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resp.GetError() != "" || len(resp.GetFile()) != 0 {
-		t.Errorf("response = %d files, error %q; want neither", len(resp.GetFile()), resp.GetError())
+	if resp.GetError() != "" || len(resp.GetFile()) != 1 {
+		t.Fatalf("response = %d files, error %q; want one file and no error", len(resp.GetFile()), resp.GetError())
+	}
+	if content := resp.GetFile()[0].GetContent(); !strings.Contains(content, `registry.RegisterFile("thing/v1/thing.proto", []registry.Comment{})`) {
+		t.Errorf("content does not register an empty set:\n%s", content)
 	}
 }
 
