@@ -472,13 +472,14 @@ func TestRunAndReportsProseIsPresent(t *testing.T) {
 		}
 	}
 
-	// 196 since [v1.HeldFailure] and [v1.Frame.held_failures] joined the run
-	// model: a message, its five fields, and the field that holds them. The
-	// count is pinned so that adding a declaration is a deliberate act with its
-	// prose written at the same moment, rather than something the walk silently
-	// absorbs.
-	if checked != 196 {
-		t.Errorf("run/report walk checked %d declarations; want 196", checked)
+	// 197 since RunState.debug joined the run model to carry a debug session
+	// across Continue-As-New; 196 before it, when HeldFailure and
+	// Frame.held_failures joined: a message, its five fields, and the field
+	// that holds them. The count is pinned so that adding a declaration is a
+	// deliberate act with its prose written at the same moment, rather than
+	// something the walk silently absorbs.
+	if checked != 197 {
+		t.Errorf("run/report walk checked %d declarations; want 197", checked)
 	}
 	if len(missing) > 0 {
 		sort.Strings(missing)
