@@ -663,9 +663,10 @@ a key: `engine/summary.go` elides the outer step ids of a position past 256
 bytes, so two deeply nested steps can render the same string, a `for_each` or
 `loop` body step's iterations all carry one label, and a run started before
 labels existed has none. Nor is an activity's outcome always its step's: a task
-step can fail in workflow code before its activity is scheduled (resolving its
-inputs or its own `vars:`) or after the activity completes (registering its
-`undo:`), and neither leaves a step event. A skipped step, a `value:` step, and
+step can fail in workflow code before its activity is scheduled (evaluating its
+`if:`, resolving its inputs or its own `vars:`, or exceeding the `async:`
+width) or after the activity completes (registering its `undo:`), and neither
+leaves a step event. A skipped step, a `value:` step, and
 the control-flow nodes (`call`, `for_each`, `loop`, `parallel`, `switch`) record
 no outcome event. So "task X's activity completed in 12s while task Y's is
 still running" can be *read* from the timeline, but a graph overlay needs every
@@ -984,9 +985,10 @@ line. What is not: everything below.
    and those events name their step by `TimelineEntry.step`, a display label
    that is elided past 256 bytes and empty on runs started before labels
    existed — not a node identity. An activity's outcome is not its step's
-   terminal outcome either: a step that fails resolving its inputs or `vars:`
-   schedules nothing, and one whose `undo:` fails to register after its
-   activity completed shows only the completion. A skipped step, a `value:`
+   terminal outcome either: a step that fails evaluating its `if:`, resolving
+   its inputs or `vars:`, or exceeding the `async:` width schedules nothing,
+   and one whose `undo:` fails to register after its activity completed shows
+   only the completion. A skipped step, a `value:`
    step, and the control-flow nodes (`call`, `for_each`, `loop`, `parallel`,
    `switch`) record no outcome event, and no response carries outcomes as an
    aggregate: `RunProgress` has only the current top-level step, a partial
@@ -1010,8 +1012,9 @@ line. What is not: everything below.
    - the wait that consumed each signal, and when (a signal event names the
      signal, not the step, and a signal sent early is recorded on arrival);
    - a task step's terminal outcome where workflow code decides it around the
-     activity: input or `vars:` resolution failing before anything is
-     scheduled, and `undo:` registration failing after the activity completed;
+     activity: an `if:`, input, or `vars:` evaluation failing, or the `async:`
+     width being exceeded, before anything is scheduled, and `undo:`
+     registration failing after the activity completed;
    - outcomes for the nodes that record none.
 
    It does not pre-decide the message shape. Two representations of one task
