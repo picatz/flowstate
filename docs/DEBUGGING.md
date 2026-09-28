@@ -672,13 +672,14 @@ names one, so those bodies run as a unit. `step` from a `call:` step enters the
 callee; `step` from a loop runs the whole loop. A breakpoint on a step inside
 such a body is reported not armed, saying to break at the enclosing step instead,
 and an `until` whose step is inside one, or that names no step at all, is
-refused and the run stays held, rather than released to the end. Both checks
-need every site of the program: past `MaxDebugStaticSites` (65,536 step sites)
-the run cannot rule a site out, so it neither reports such a breakpoint not
-armed nor refuses the `until`, and it arms a breakpoint on a step the program
-declares that lies beyond the cut; a step the program never declares is still
-refused, as the local driver refuses it. The local driver runs those bodies one step at a
-time and stops everywhere.
+refused and the run stays held, rather than released to the end. Past
+`MaxDebugStaticSites` (65,536 step sites) the run cannot list every site, so it
+asks the program as written instead: a breakpoint or `until` on a step the
+program declares where a run holds — at its top level or a callee's — is
+armed or applied, even when that step lies beyond the cut, and one on a step it
+declares only inside such a body, or never declares, is refused as it would be
+below the cap. The local driver runs those bodies one step at a time and stops
+everywhere.
 
 **What a hold does not stop.** A hold parks workflow code before a step starts.
 Work already dispatched — an activity, an HTTP call, a timer, a called
@@ -709,7 +710,7 @@ a session follows the current one.
 | Conditional and hit-count breakpoints | yes | yes; a condition needs `workload.debug_inspect` |
 | Logpoints (`log`) | yes | refused as unsupported |
 | Failure stops (`catch`) | yes | refused as unsupported |
-| A breakpoint or `until` inside a loop body, branch or arm | yes | the breakpoint is not armed and the `until` is refused, up to `MaxDebugStaticSites` step sites |
+| A breakpoint or `until` inside a loop body, branch or arm | yes | the breakpoint is not armed and the `until` is refused |
 | Source-line breakpoints | when a source map is known | resolved by the client to a step, only through a source map that matches the run's program; `flow dap`'s attach has none |
 | `inspect`, `expand`, `scope` | yes | yes, while held, needing `workload.debug_inspect` |
 | Task notes (`NoteTask`) | yes | no |
