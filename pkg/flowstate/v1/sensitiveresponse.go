@@ -661,6 +661,12 @@ func CalleeDeclaresSensitiveValues(workflow *Workflow) (bool, error) {
 // specification embeds a callee declaring one therefore gets the fail-closed
 // set, which withholds failure text whole, as does a run whose inputs do not
 // bind or whose specification cannot be walked.
+//
+// So does a run declaring a sensitive output, its own or a callee's. An
+// output is computed by expression from ordinary inputs and step results, and
+// the value it names can reach a failure (a URL a tolerated step quoted)
+// before it is ever an output; which of the run's values those were cannot be
+// enumerated from its inputs.
 func RunFailureSensitiveValues(workflow *Workflow, inputs map[string]*Value) SensitiveValues {
 	for current, err := range specWorkflows(workflow) {
 		if err != nil {
@@ -668,6 +674,11 @@ func RunFailureSensitiveValues(workflow *Workflow, inputs map[string]*Value) Sen
 		}
 		if current != workflow && len(sensitiveInputNames(current)) > 0 {
 			return WithheldSensitiveValues()
+		}
+		for _, output := range current.GetDeclaredOutputs() {
+			if output.GetSensitive() {
+				return WithheldSensitiveValues()
+			}
 		}
 	}
 

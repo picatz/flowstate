@@ -40,6 +40,12 @@ func TestRunFailureSensitiveValuesCoverCallees(t *testing.T) {
 	})}}
 	require.True(t, v1.RunFailureSensitiveValues(nested, nil).WithholdAll(),
 		"a callee's sensitive input cannot be enumerated, so failure text must be withheld whole")
+
+	// An output is computed from values that are not themselves declared, so
+	// what it carries cannot be enumerated from the run's inputs either.
+	output := &v1.Workflow{Name: "root", DeclaredOutputs: []*v1.OutputDeclaration{{Name: "token", Sensitive: true}}}
+	require.True(t, v1.RunFailureSensitiveValues(output, nil).WithholdAll(),
+		"a sensitive output's source value can reach failure text, so failure text must be withheld whole")
 }
 
 // TestACalleesDeclarationsAreSeenFromTheCaller: a caller reads a callee's
