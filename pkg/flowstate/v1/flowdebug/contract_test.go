@@ -661,3 +661,50 @@ func TestDetachEndsTheSessionNotTheRun(t *testing.T) {
 		t.Fatal("the detached run never finished")
 	}
 }
+
+// TestAnEndedSessionIsNeverHeldAgain: after a detach, or a Close, nothing puts
+// the session back on hold — not an autopsy of a failed case, which would
+// otherwise park a run on a debugger that was told it had ended.
+func TestAnEndedSessionIsNeverHeldAgain(t *testing.T) {
+	t.Parallel()
+
+	for name, end := range map[string]func(t *testing.T, target flowdebug.Target, at *v1.DebugSnapshot){
+		"detach": func(t *testing.T, target flowdebug.Target, at *v1.DebugSnapshot) {
+			receipt, err := target.Resume(t.Context(), &v1.DebugResumeRequest{
+				RequestId: "leave", ExpectedRevision: at.GetRevision(), Action: v1.DebugResumeAction_DEBUG_RESUME_ACTION_DETACH,
+			})
+			require.NoError(t, err)
+			require.Equal(t, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_APPLIED, receipt.GetStatus(), receipt.GetMessage())
+		},
+		"close": func(t *testing.T, target flowdebug.Target, _ *v1.DebugSnapshot) {
+			require.NoError(t, target.Close())
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			run := startDebugRun(t, "main.yaml", map[string]string{"main.yaml": journeyFlowfile, "child.yaml": childFlowfile}, nil)
+			target := flowdebug.Target(run.session)
+			at := waitHeld(t, target, 0)
+			end(t, target, at)
+			ended := waitHeld(t, target, at.GetRevision())
+			require.Equal(t, v1.DebugRunState_DEBUG_RUN_STATE_DETACHED, ended.GetState())
+			<-run.done
+
+			autopsied := make(chan struct{})
+			go func() {
+				run.session.Autopsy(t.Context(), nil, nil, []string{"an expectation failed"})
+				close(autopsied)
+			}()
+			select {
+			case <-autopsied:
+			case <-time.After(10 * time.Second):
+				t.Fatal("an autopsy held a session that had ended")
+			}
+
+			final, err := target.Snapshot(t.Context())
+			require.NoError(t, err)
+			assert.Equal(t, v1.DebugRunState_DEBUG_RUN_STATE_DETACHED, final.GetState(), "an ended session left its terminal state")
+		})
+	}
+}
