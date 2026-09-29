@@ -817,8 +817,9 @@ func GuardCases() []GuardCase {
 				},
 			},
 			// The field is withheld too: a sensitive structure's keys are
-			// withheld by text wherever it is rendered.
-			Skipped: []string{"rotate skipped: `if: inputs.creds.[redacted] != \"[redacted]\"` was false"},
+			// what its set withholds, and the renderer quotes a field name
+			// that is not an identifier.
+			Skipped: []string{"rotate skipped: `if: inputs.creds.`[redacted]` != \"[redacted]\"` was false"},
 			// "hun" as the renderer writes it in a bytes literal.
 			Secret: `\150\165\156`,
 		},
@@ -886,6 +887,30 @@ func GuardCases() []GuardCase {
 			// "hun" as the renderer writes it in a bytes literal; the pin's
 			// exponent form is checked by the same substring.
 			Secret: `\150\165\156`,
+		},
+		{
+			// A field name is not a constant, and a one-rune key is too short
+			// for any text match to look for, so a sensitive structure's key
+			// is withheld where the condition selects it (Codex, #2227).
+			Name: "a skip inside a callee withholds a one-rune key of a sensitive structure",
+			Workflow: &v1.Workflow{
+				Name:    "guard-sensitive-key",
+				Profile: v1.CurrentProfile,
+				Steps: []*v1.Node{
+					says("first", "one"),
+					{Id: "nested", Kind: &v1.Node_Call{Call: &v1.Call{
+						Workflow: &v1.Workflow{
+							Name:           "child",
+							Profile:        v1.CurrentProfile,
+							DeclaredInputs: []*v1.InputDeclaration{{Name: "creds", Type: v1.InputDeclaration_TYPE_STRUCT, Sensitive: true}},
+							Steps:          []*v1.Node{guarded("rotate", `inputs.creds.k != "hunter2-onerune"`, "never")},
+						},
+						Arguments: map[string]*v1.Value{"creds": v1.NewValue(map[string]any{"k": "hunter2-onerune"})},
+					}}},
+				},
+			},
+			Skipped: []string{"rotate skipped: `if: inputs.creds.`[redacted]` != \"[redacted]\"` was false"},
+			Secret:  "hunter2-onerune",
 		},
 		{
 			Name: "an if: that cannot be evaluated is its step failing",

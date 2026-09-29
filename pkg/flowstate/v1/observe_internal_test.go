@@ -156,6 +156,15 @@ func TestASkipWithholdsAConstantByValue(t *testing.T) {
 		"a double that is no int was taken for one")
 	word := func(value any) bool { return value == "hunter2" }
 	require.Equal(t, "gate skipped: `if: inputs.x != \"[redacted]\"` was false", SkippedText("gate", NewExpr(`inputs.x != b"hunter2"`), word))
+
+	// A field name is no constant, but a sensitive structure's keys are what
+	// its set withholds, whether selected or written in a message literal.
+	key := func(value any) bool { return value == "string_value" }
+	for _, source := range []string{`inputs.x.string_value != "a"`, `google.protobuf.Value{string_value: "a"} != inputs.x`} {
+		rendered := SkippedText("gate", NewExpr(source), key)
+		require.NotContains(t, rendered, "string_value", source)
+		require.Contains(t, rendered, SensitiveMarker, source)
+	}
 }
 
 // guardOnlyObserver is an embedder's observer that implements the guard

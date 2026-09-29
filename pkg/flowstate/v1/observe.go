@@ -206,18 +206,31 @@ func conditionText(condition *Value, withheld func(any) bool) string {
 	return text
 }
 
-// withholdConstants writes [SensitiveMarker] in place of every constant in m
-// that withheld reports true for, at any depth: the expression, a map entry's
-// key, and the macro calls the renderer writes back from. Every message is
+// withholdConstants writes [SensitiveMarker] in place of every constant, field
+// name and field key in m that withheld reports true for, at any depth: the
+// expression, a map entry's key, and the macro calls the renderer writes back
+// from. Every message is
 // visited rather than each expression kind, so a kind this walk does not name
 // is not a place a constant can hide.
 func withholdConstants(m protoreflect.Message, withheld func(any) bool) {
-	if constant, ok := m.Interface().(*expr.Constant); ok {
-		if slices.ContainsFunc(constantForms(constant), withheld) {
-			constant.ConstantKind = &expr.Constant_StringValue{StringValue: SensitiveMarker}
+	switch node := m.Interface().(type) {
+	case *expr.Constant:
+		if slices.ContainsFunc(constantForms(node), withheld) {
+			node.ConstantKind = &expr.Constant_StringValue{StringValue: SensitiveMarker}
 		}
 
 		return
+	case *expr.Expr_Select:
+		// A field name is a string of the author's too, and a sensitive
+		// structure's keys are what its set withholds, one rune long
+		// included, which no text match looks for (Codex, #2227).
+		if withheld(node.GetField()) {
+			node.Field = SensitiveMarker
+		}
+	case *expr.Expr_CreateStruct_Entry:
+		if key, ok := node.GetKeyKind().(*expr.Expr_CreateStruct_Entry_FieldKey); ok && withheld(key.FieldKey) {
+			key.FieldKey = SensitiveMarker
+		}
 	}
 	m.Range(func(field protoreflect.FieldDescriptor, value protoreflect.Value) bool {
 		switch {
