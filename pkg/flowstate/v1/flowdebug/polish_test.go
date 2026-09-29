@@ -3,7 +3,9 @@ package flowdebug_test
 import (
 	"errors"
 	"strings"
+	"sync"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -208,4 +210,106 @@ func TestAFailedRunWhoseCasePassedIsNotCalledCompleted(t *testing.T) {
 	for _, observation := range snapshot.GetObservations() {
 		assert.NotContains(t, observation.GetText(), "without stopping at", "a failed run was recorded as completed")
 	}
+}
+
+// TestARenderedSnapshotSaysAMissedUntil: the Driver's fronts render a
+// completed run through [flowdebug.FormatSnapshot], so the missed-`until`
+// notice a durable run records (#2201) or a local session records is printed
+// there. Only that notice, only on a completed run.
+func TestARenderedSnapshotSaysAMissedUntil(t *testing.T) {
+	t.Parallel()
+
+	missed := &v1.DebugObservation{
+		Kind: v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_NOTICE,
+		Text: flowdebug.MissedUntilNotice("each[9]/body", nil),
+	}
+	other := &v1.DebugObservation{Kind: v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_NOTICE, Text: "body: the condition could not be evaluated"}
+	logged := &v1.DebugObservation{Kind: v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_LOG, Text: flowdebug.MissedUntilNotice("a log line", nil)}
+
+	completed := flowdebug.FormatSnapshot(&v1.DebugSnapshot{
+		State: v1.DebugRunState_DEBUG_RUN_STATE_COMPLETED, Observations: []*v1.DebugObservation{other, missed, logged},
+	})
+	assert.Contains(t, completed, "\n  the run completed without stopping at `until each[9]/body`\n")
+	assert.NotContains(t, completed, "could not be evaluated", "another notice was rendered")
+	assert.NotContains(t, completed, "a log line", "a log observation was rendered as the notice")
+
+	failed := flowdebug.FormatSnapshot(&v1.DebugSnapshot{
+		State: v1.DebugRunState_DEBUG_RUN_STATE_FAILED, Observations: []*v1.DebugObservation{missed},
+	})
+	assert.NotContains(t, failed, "without stopping at", "a failed run was called completed")
+}
+
+// TestTheDriverSaysALocalRunsMissedUntil drives a real local run through the
+// Driver the MCP session tools and embed use: the session records the notice,
+// and the Driver's answer carries it once.
+func TestTheDriverSaysALocalRunsMissedUntil(t *testing.T) {
+	t.Parallel()
+
+	run := startDebugRun(t, "main.yaml", map[string]string{"main.yaml": journeyFlowfile, "child.yaml": childFlowfile}, nil)
+	waitHeld(t, run.session, 0)
+
+	result, err := flowdebug.NewDriver(run.session).Do(t.Context(), "until each[9]/touch")
+	require.NoError(t, err)
+	require.Equal(t, v1.DebugRunState_DEBUG_RUN_STATE_COMPLETED, result.Snapshot.GetState())
+	assert.Equal(t, 1, strings.Count(result.Text, "the run completed without stopping at `until each[9]/touch`"), result.Text)
+}
+
+// TestAMissedUntilNoticeIsBoundedAndWellFormed: a target may be 4 KiB, and
+// each driver caps an observation, the durable one at 512 runes. The notice
+// cuts the target itself, so it closes its quote and reads the same whichever
+// driver records it.
+func TestAMissedUntilNoticeIsBoundedAndWellFormed(t *testing.T) {
+	t.Parallel()
+
+	long := strings.Repeat("segment/", 512) + "step"
+	notice := flowdebug.MissedUntilNotice(long, nil)
+	assert.LessOrEqual(t, utf8.RuneCountInString(notice), 512, "the notice would be clipped by the durable driver's cap")
+	assert.True(t, strings.HasSuffix(notice, "…`"), "the cut notice does not say it was cut, or does not close its quote: %q", notice[len(notice)-20:])
+	assert.Equal(t, "the run completed without stopping at `until each[9]/body`", flowdebug.MissedUntilNotice("each[9]/body", nil),
+		"an ordinary target was changed")
+}
+
+// TestARedactedMissedUntilIsStillSaid: a sensitive value can be in the
+// `until`, or be one of the notice's fixed words. The session redacts the
+// `until` alone, so the prompt, the recorded observation and the Driver's
+// rendering all say the notice, withholding the value (Codex, #2204).
+func TestARedactedMissedUntilIsStillSaid(t *testing.T) {
+	t.Parallel()
+
+	redact := strings.NewReplacer("run", "[redacted]", "touch", "[redacted]").Replace
+	var printed strings.Builder
+	var mu sync.Mutex
+	run := startDebugRun(t, "main.yaml", map[string]string{"main.yaml": journeyFlowfile, "child.yaml": childFlowfile},
+		func(opts *flowdebug.Options) {
+			opts.Emit = func(text string, _ flowdebug.Tone) {
+				mu.Lock()
+				defer mu.Unlock()
+				printed.WriteString(text)
+			}
+		},
+		func(session *flowdebug.Session) { session.SetRedactor(redact) })
+	waitHeld(t, run.session, 0)
+
+	result, err := flowdebug.NewDriver(run.session).Do(t.Context(), "until each[9]/touch")
+	require.NoError(t, err)
+	require.Equal(t, v1.DebugRunState_DEBUG_RUN_STATE_COMPLETED, result.Snapshot.GetState())
+
+	const want = "the run completed without stopping at `until each[9]/[redacted]`"
+	assert.Equal(t, want, flowdebug.MissedUntilNotice("each[9]/touch", redact))
+	assert.Equal(t, 1, strings.Count(result.Text, want), "the Driver did not say the redacted notice once: %s", result.Text)
+	mu.Lock()
+	assert.Contains(t, printed.String(), want+"\n", "the prompt did not say the redacted notice")
+	mu.Unlock()
+}
+
+// TestAMissedUntilNoticeIsBoundedAfterRedaction: redaction can lengthen the
+// `until`, so the notice bounds it after redacting it.
+func TestAMissedUntilNoticeIsBoundedAfterRedaction(t *testing.T) {
+	t.Parallel()
+
+	redact := strings.NewReplacer("ab", "[redacted]").Replace
+	notice := flowdebug.MissedUntilNotice(strings.Repeat("ab/", 85)+"ab", redact)
+	assert.LessOrEqual(t, utf8.RuneCountInString(notice), 512, "the notice would be clipped by the durable driver's cap")
+	assert.True(t, strings.HasSuffix(notice, "…`"), "the redacted notice was not cut, or does not close its quote: %q", notice)
+	assert.NotContains(t, strings.ReplaceAll(notice, "[redacted]", ""), "ab", "the notice carried the redacted value")
 }

@@ -84,6 +84,16 @@ type debugControl struct {
 	// against the callee's own declarations.
 	rootSensitive v1.SensitiveValues
 
+	// untilSensitive is what the hold that applied the pending resume
+	// withheld, kept for the notice a run that completes past its `until`
+	// records ([executor.debugRunCompleted]). That hold may have been inside a
+	// callee whose own declared-sensitive inputs the root does not see, and
+	// the target was written there. untilSensitiveKnown says it was taken in
+	// this segment; a segment that inherited the `until` through
+	// Continue-As-New does not have it.
+	untilSensitive      v1.SensitiveValues
+	untilSensitiveKnown bool
+
 	// lease is the hold, or nil when nothing holds this run. It is
 	// [v1.DebugSession] rather than a struct of its own because that message
 	// is the schema's answer to "who is debugging which run, and until when",

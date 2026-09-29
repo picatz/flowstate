@@ -282,6 +282,8 @@ func (e *executor) applyTypedAsk(ask *v1.DebugAsk, parseErr error, sender *v1.Si
 			d.carry.Until = ask.Until
 			d.carry.StepDepth = int32(callDepthOf(d.held.occurrence))
 			d.carry.Revision++
+			d.untilSensitive = d.sensitiveAt(d.held.spec, d.held.scope)
+			d.untilSensitiveKnown = true
 			d.lease = nil
 			d.held = heldStop{}
 			d.receipt(ask.Request, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_APPLIED, "")
@@ -700,23 +702,74 @@ func (e *executor) observeForDebug(kind v1.DebugObservationKind, node *v1.Node, 
 	case v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_TOLERATED:
 		text += " failed, tolerated by continue_on_error: " + detail
 	}
+	e.recordDebugObservation(kind, node.GetId(), v1.FormatDebugAddress(e.debugSegments, node.GetId()), text)
+}
+
+// recordDebugObservation appends one observation, redacted and bounded, to
+// what an attached session reads back.
+func (e *executor) recordDebugObservation(kind v1.DebugObservationKind, stepID, address, text string) {
 	text = e.debugRedactText(text)
 	if runes := []rune(text); len(runes) > maxDebugObservationRunes {
 		text = string(runes[:maxDebugObservationRunes]) + "…"
 	}
+	e.debug.appendDebugObservation(kind, stepID, address, text)
+}
 
+// appendDebugObservation records one observation whose text is already
+// redacted and bounded.
+func (d *debugControl) appendDebugObservation(kind v1.DebugObservationKind, stepID, address, text string) {
 	d.sequence++
 	d.observations = append(d.observations, &v1.DebugObservation{
 		Sequence: d.sequence,
 		Kind:     kind,
-		StepId:   node.GetId(),
+		StepId:   stepID,
 		Text:     text,
-		Address:  v1.FormatDebugAddress(e.debugSegments, node.GetId()),
+		Address:  address,
 	})
 	if over := len(d.observations) - maxDebugObservations; over > 0 {
 		d.observations = slices.Delete(d.observations, 0, over)
 		d.dropped += uint64(over)
 	}
+}
+
+// debugRunCompleted says, when a run completes with a session's `until` still
+// armed, that it never stopped there: an address past the last iteration, a
+// step the run had already passed. The local session says it in the same
+// words ([flowdebug.MissedUntilNotice]).
+//
+// Recorded as an observation, which lives in the executor and nowhere in
+// history: a read of the completed run replays to this point and finds it,
+// so it is in every later snapshot and every output format that carries one,
+// and it changes nothing a replay compares.
+//
+// The pending movement is the whole test: a detach or an expiry replaces the
+// carry, a stop at the target resets it, and a run-until naming no step is
+// refused before it is carried.
+func (e *executor) debugRunCompleted() {
+	d := e.debug
+	if d.carry.GetNext() != v1.DebugResumeAction_DEBUG_RESUME_ACTION_RUN_UNTIL {
+		return
+	}
+	// Withheld against what the hold that applied it withheld as well as what
+	// the run withholds here: that hold may have been inside a callee, whose
+	// own declared-sensitive inputs the root does not see (Codex, #2204). A
+	// segment that inherited the `until` through Continue-As-New from a hold
+	// inside a callee does not know them, and withholds the target whole.
+	redact := func(text string) string {
+		sensitive := e.debug.sensitiveAt(e.curSpec, e.scope).Merge(d.untilSensitive)
+		if sensitive.Empty() {
+			return text
+		}
+
+		return sensitive.RedactText(text, "[redacted]")
+	}
+	if !d.untilSensitiveKnown && d.carry.GetStepDepth() > 0 {
+		redact = func(string) string { return "[redacted]" }
+	}
+	// Redacted and bounded by the notice itself, which redacts only the
+	// `until`, so it is recorded as it is.
+	d.appendDebugObservation(v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_NOTICE, "", "",
+		flowdebug.MissedUntilNotice(d.carry.GetUntil(), redact))
 }
 
 // debugSnapshot answers [v1.DebugQuery]: the session as the run holds it. A
