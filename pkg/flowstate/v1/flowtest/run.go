@@ -859,13 +859,6 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	var sensitive sensitiveInputs
 	if b, bindErr := v1.BindRunInputs(workflow, inputs); bindErr == nil {
 		bound = b
-		resolved, err := v1.ResolveSignalPolicySubjects(ctx, workflow, bound)
-		if err != nil {
-			caseError("resolving workflow %q's signal policy: %v", test.Workflow, err)
-			return
-		}
-		policies = resolved
-
 		// The redaction set, built from the same bound inputs and the same
 		// `sensitive:` declarations the stub diagnostics read
 		// ([sensitiveNativeValues]) — one set, shared by the transcript's
@@ -874,6 +867,18 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 		// records no step events carrying input-derived values: the run
 		// fails at the same bind before any step runs.
 		sensitive = sensitiveNativeValues(&v1.Scope{Inputs: bound}, v1.SensitiveInputNames(workflow))
+
+		resolved, err := v1.ResolveSignalPolicySubjects(ctx, workflow, bound)
+		if err != nil {
+			// A `subject:` that resolved to something other than
+			// `<issuer>#<subject>` is refused quoting what it resolved to,
+			// which can be a sensitive input's value (#2100): rendered
+			// through the run's own set, as every exit below it is.
+			posture = posture.Merge(sensitive)
+			caseError("resolving workflow %q's signal policy: %v", test.Workflow, err)
+			return
+		}
+		policies = resolved
 	} else {
 		// The run refuses at the same bind, and its refusal can quote the
 		// value it refused (`must satisfy …; got <value>`), which no step

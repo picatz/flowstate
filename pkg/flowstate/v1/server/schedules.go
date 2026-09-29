@@ -257,6 +257,9 @@ func (s *FlowstateServer) CreateSchedule(ctx context.Context, req *connect.Reque
 	// that impossible to reintroduce by editing one path and not the other.
 	signalEntry, err := policyMemoEntries(ctx, workflow, inputs)
 	if err != nil {
+		// Withheld here only where the client cannot redact it, as
+		// [FlowstateServer.prepareCreate] withholds it.
+		err = withheldPolicyRefusal(err, unknownSensitiveInputs(workflow, submitted, req.Msg.GetInputs(), trusted), inputs)
 		// Symmetric with Run's own refusal: an InvalidArgument covers a
 		// caller-supplied input that a rule's subject_from cannot resolve to
 		// a qualified subject; anything else is this handler unable to

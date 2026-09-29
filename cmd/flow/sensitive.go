@@ -3,8 +3,10 @@ package main
 import (
 	"errors"
 	"fmt"
+	"net"
 	"strings"
 
+	"connectrpc.com/connect"
 	"github.com/spf13/cobra"
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 	"google.golang.org/protobuf/proto"
@@ -1006,4 +1008,22 @@ func runSensitiveValues(workflow *v1.Workflow, submitted map[string]*v1.Value, r
 	}
 
 	return v1.SensitiveInputValues(bound, names)
+}
+
+// noServerAnswered reports whether err is a failure to reach a server rather
+// than a server's own answer: a transport error, or one this process raised
+// before any bytes left it ([clientSideError]). Connect reports both as
+// unavailable, and so can a server that answered, with detail of its own, so
+// the code alone does not say which. Such a failure quotes no argument a run
+// was sent, and a refusal that names the address it dialed is left readable.
+func noServerAnswered(err error) bool {
+	if connect.CodeOf(err) != connect.CodeUnavailable {
+		return false
+	}
+	if _, ok := errors.AsType[*clientSideError](err); ok {
+		return true
+	}
+	_, transport := errors.AsType[net.Error](err)
+
+	return transport
 }

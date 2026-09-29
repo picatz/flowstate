@@ -1728,7 +1728,7 @@ func TestLifecycleToolsExplainAnUnreachableDeployment(t *testing.T) {
 			return newWorkflowServiceClient(flags)
 		}, flowmcp.Deps{
 			Redact:           func(r *v1.GetResponse) *v1.GetResponse { return r },
-			DecorateRPCError: mcpRPCErrorDecorator(flags, explicit),
+			DecorateRPCError: mcpRPCErrorDecorator(defaultLocalRunPosture(), flags, explicit),
 		})
 
 		result, err := session.CallTool(t.Context(), &mcp.CallToolParams{
@@ -1769,9 +1769,9 @@ func TestLifecycleToolsExplainAnUnreachableDeployment(t *testing.T) {
 	// the missing-server case alone, and every other error already names its
 	// subject.
 	t.Run("non-unavailable errors pass through", func(t *testing.T) {
-		decorate := mcpRPCErrorDecorator(serverFlags{address: address}, true)
+		decorate := mcpRPCErrorDecorator(defaultLocalRunPosture(), serverFlags{address: address}, true)
 		refusal := connect.NewError(connect.CodeNotFound, fmt.Errorf("no run %q is addressable", "x"))
-		assert.Equal(t, refusal, decorate("Get", refusal))
+		assert.Equal(t, refusal, decorate("Get", &v1.GetRequest{}, refusal))
 	})
 
 	// A refusal this process produced before any bytes reached the network —
@@ -1787,7 +1787,7 @@ func TestLifecycleToolsExplainAnUnreachableDeployment(t *testing.T) {
 			return newWorkflowServiceClient(flags)
 		}, flowmcp.Deps{
 			Redact:           func(r *v1.GetResponse) *v1.GetResponse { return r },
-			DecorateRPCError: mcpRPCErrorDecorator(flags, true),
+			DecorateRPCError: mcpRPCErrorDecorator(defaultLocalRunPosture(), flags, true),
 		})
 
 		result, err := session.CallTool(t.Context(), &mcp.CallToolParams{

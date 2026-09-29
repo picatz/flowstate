@@ -202,7 +202,10 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 
 	ctx, err := withLocalSignals(cmd.Context(), cmd, workflow, inputs, localSignals)
 	if err != nil {
-		return err
+		// A gate's `subject_from:` is evaluated against these arguments, and
+		// its refusal quotes what it resolved to, which can be a sensitive
+		// input's value (#2100). Through the same seam as the refusals above.
+		return redactFailureError(err, refusedRunSensitiveValues(cmd, workflow, inputs, err, reveal))
 	}
 	reportUnansweredGates(cmd.ErrOrStderr(), workflow, localSignals)
 	ctx, err = withLocalTaskRuntimeUsing(cmd, ctx, workflow, providers)

@@ -116,12 +116,25 @@ func addressExplicitlyConfigured(cmd *cobra.Command) bool {
 // GetCatalog is skipped because its remote path already explains itself, in
 // terms specific to what a wrong catalog would cost; a second sentence on top
 // would say less by saying more.
-func mcpRPCErrorDecorator(flags serverFlags, explicit bool) func(rpc string, err error) error {
-	return func(rpc string, err error) error {
+//
+// A refusal of a submission is the one server answer this does touch: a
+// gate's `subject:` resolved from a sensitive input is refused quoting what it
+// resolved to (#2100), and the request holds the workflow and arguments that
+// say which values those are, so it is redacted as `flow run` redacts it.
+func mcpRPCErrorDecorator(posture *cobra.Command, flags serverFlags, explicit bool) func(rpc string, request proto.Message, err error) error {
+	return func(rpc string, request proto.Message, err error) error {
 		if rpc == "GetCatalog" {
 			return err
 		}
-		if connect.CodeOf(err) != connect.CodeUnavailable {
+		// Read before the redaction below, which keeps the text and not the
+		// code, so a redacted unavailable answer still gets its remedy.
+		code := connect.CodeOf(err)
+		if !noServerAnswered(err) {
+			// A server's answer, unavailable included, can quote an
+			// argument; it is redacted before any decoration wraps it.
+			err = redactedSubmissionRefusal(posture, request, err)
+		}
+		if code != connect.CodeUnavailable {
 			return err
 		}
 
@@ -147,6 +160,28 @@ func mcpRPCErrorDecorator(flags serverFlags, explicit bool) func(rpc string, err
 			"`flow server dev`, or point --address/FLOWSTATE_ADDRESS at a deployment that is already "+
 			"running, then retry", tool, flags.address, err)
 	}
+}
+
+// redactedSubmissionRefusal is err, a server's refusal of a submission,
+// redacted against the arguments request carried, through the seam `flow run`
+// and `flow schedule create` use. Any other request's refusal is err itself.
+func redactedSubmissionRefusal(posture *cobra.Command, request proto.Message, err error) error {
+	var (
+		workflow *v1.Workflow
+		inputs   map[string]*v1.Value
+	)
+	switch submitted := request.(type) {
+	case *v1.RunRequest:
+		workflow, inputs = submitted.GetWorkflow(), submitted.GetInputs()
+	case *v1.CreateScheduleRequest:
+		workflow, inputs = submitted.GetWorkflow(), submitted.GetInputs()
+	case *v1.SignalWithStartRequest:
+		workflow, inputs = submitted.GetWorkflow(), submitted.GetInputs()
+	default:
+		return err
+	}
+
+	return redactFailureError(err, refusedRunSensitiveValues(posture, workflow, inputs, err, revealSensitiveRequested(posture)))
 }
 
 // runMCP implements the mcp sub-command.
@@ -236,7 +271,7 @@ func runMCP(cmd *cobra.Command, args []string) error {
 		},
 
 		RemoteCatalogAddress: remoteCatalogAddressFor(cmd, flags),
-		DecorateRPCError:     mcpRPCErrorDecorator(flags, addressExplicitlyConfigured(cmd)),
+		DecorateRPCError:     mcpRPCErrorDecorator(cmd, flags, addressExplicitlyConfigured(cmd)),
 	}
 
 	// The server's lifetime, which the retained debug sessions' sweeper
@@ -584,7 +619,10 @@ func runLocalToolHandler(posture *cobra.Command, providers *localSecrets) mcp.To
 
 		ctx, err = withLocalSignals(ctx, posture, workflow, inputs, signals)
 		if err != nil {
-			return flowmcp.ToolError(err), nil
+			// A `subject_from:` refusal quotes what it resolved to, as on
+			// `flow run local`, and through the same seam (#2100).
+			sensitive := refusedRunSensitiveValues(posture, workflow, inputs, err, revealSensitiveRequested(posture))
+			return flowmcp.ToolError(redactFailureError(err, sensitive)), nil
 		}
 
 		if providers == nil {
