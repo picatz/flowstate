@@ -386,8 +386,14 @@ func (c *decodeCache) unwrap(e ringEntry, timeout time.Duration, w keyprovider.W
 	if err != nil {
 		return nil, err
 	}
-	// Every caller of a coalesced unwrap gets its own copy to clear.
-	return clone(v.(*sharedKey).dataKey), nil
+	// Every caller of a coalesced unwrap gets its own copy to clear. The
+	// shared key is kept reachable until the copy is made: the cleanup is on
+	// it, not on the bytes, so a collection between reading the field and
+	// copying from it would clear the key mid-copy.
+	shared := v.(*sharedKey)
+	dataKey := clone(shared.dataKey)
+	runtime.KeepAlive(shared)
+	return dataKey, nil
 }
 
 // sharedKey is the one copy of a data key a coalesced unwrap hands to every
