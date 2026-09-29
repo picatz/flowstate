@@ -317,6 +317,12 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 	// the declared defaults exactly as the server does before a durable run starts.
 	// The check above is for the message; this is the one that decides.
 	outputs, runErr := v1.RunWithInputs(ctx, workflow, inputs)
+	// A debugger is told the run has returned, so it can say what the run
+	// never did, an `until` it never reached, while its console still owns
+	// the line. Found on the context, as flowtest finds it.
+	if returned, ok := v1.DebuggerFromContext(ctx).(interface{ RunReturned(error) }); ok {
+		returned.RunReturned(runErr)
+	}
 
 	// The console owned the line for as long as the run did, and no longer:
 	// everything below prints an answer and an account onto what should be an

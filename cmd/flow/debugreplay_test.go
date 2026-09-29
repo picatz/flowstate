@@ -501,3 +501,32 @@ func TestDebugReplayIsFoundWhereSomebodyWouldLookForIt(t *testing.T) {
 	debug := flowCommand(t, "debug")
 	assert.Equal(t, "development", debug.GroupID)
 }
+
+// TestAnUntilTheRunNeverReachesIsSaidAtThePrompt: `flow debug replay` and
+// `flow run local --debug` report the run's return to the session, so an
+// `until` naming an arrival the run never makes, an iteration past the last,
+// is said rather than the run ending as if it had stopped there.
+func TestAnUntilTheRunNeverReachesIsSaidAtThePrompt(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "orders.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(`edition: v2026.3
+name: orders
+steps:
+  - id: orders
+    for_each:
+      items: ${[1, 2]}
+      as: order
+      steps:
+        - id: charge
+          log:
+            message: charged
+outputs: {}
+`), 0o600))
+
+	res := runFlow(t, "debug", "replay", writeDebugScript(t, "until orders[9]/charge\n"), path)
+	require.NoError(t, res.Err)
+	assert.Contains(t, res.Stderr, "the run completed without stopping at `until orders[9]/charge`")
+
+	res = runFlow(t, "debug", "replay", writeDebugScript(t, "until orders[1]/charge\ncontinue\n"), path)
+	require.NoError(t, res.Err)
+	assert.NotContains(t, res.Stderr, "without stopping at", "an until the run reached was reported missed")
+}
