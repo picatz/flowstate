@@ -160,6 +160,12 @@ func TestAConditionReadingANameNothingBindsIsRefused(t *testing.T) {
 		{step: "compose", condition: `size(steps) > 0 && inputs.a == 1 && vars.b == 1 && run.local && trigger.kind == ""`},
 		{step: "compose", condition: "[1, 2].exists(x, x > 1) && [3].all(x, [x].exists(y, y == x))"},
 		{step: "compose", condition: "math.greatest(1, 2) > 1"},
+		// Type values parse as identifiers and are resolved by the
+		// environment, bare and qualified (Copilot, #2202).
+		{step: "charge", condition: "type(order) == int"},
+		{step: "compose", condition: `type("x") == string && type([]) == list && type({}) == map && type(null) == null_type`},
+		{step: "compose", condition: "type(steps) != google.protobuf.Timestamp"},
+		{step: "compose", condition: "type(nosuch) == int", refused: "`nosuch` is not bound"},
 	} {
 		compiled, err := v1.CompileDebugCondition(test.condition, v1.CurrentProfile)
 		require.NoError(t, err, "%s if %s", test.step, test.condition)

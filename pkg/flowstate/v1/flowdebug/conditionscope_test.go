@@ -29,6 +29,7 @@ func TestThePromptRefusesAConditionNothingCanBind(t *testing.T) {
 		"break compose if n > 1",
 		"until compose if nosuch",
 		"break body if n == 1",
+		"break compose if type(1) == string",
 		"breakpoints",
 		"continue",
 		"continue",
@@ -59,6 +60,8 @@ func TestThePromptRefusesAConditionNothingCanBind(t *testing.T) {
 	assert.NotContains(t, out, "break at compose", "a refused `until` or breakpoint still stopped at compose")
 	assert.Equal(t, 1, strings.Count(out, "break at each[1]/body ("), "the condition set before the loop bound `n` did not fire")
 	assert.NotContains(t, out, "could not be evaluated", "a refused condition was armed and declined at an arrival")
+	assert.Contains(t, out, "breakpoint at compose if type(1) == string", "a type value was refused as a name nothing binds")
+	assert.NotContains(t, out, "did you mean `run`", "a binding that exists elsewhere was offered an unrelated near name")
 }
 
 // TestTheTypedContractRefusesAConditionNothingCanBind: the contract DAP, the

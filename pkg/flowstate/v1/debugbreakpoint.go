@@ -217,7 +217,17 @@ func CheckDebugConditionScope(condition *Value, profile string, at, program []De
 	slices.Sort(locals)
 
 	free := map[string]struct{}{}
-	collectDebugFreeRoots(parsed.GetExpr(), map[string]int{}, env.Functions(), free)
+	walk := &debugRootWalk{
+		functions: env.Functions(),
+		resolves: func(name string) bool {
+			_, found := env.CELTypeProvider().FindIdent(name)
+
+			return found
+		},
+		bound: map[string]int{},
+		free:  free,
+	}
+	walk.walk(parsed.GetExpr())
 	for _, name := range slices.Sorted(maps.Keys(free)) {
 		if !bindable[name] {
 			return debugUnboundName(name, locals, program)
@@ -241,13 +251,10 @@ func debugUnboundName(name string, locals []string, program []DebugStaticSite) e
 	}
 
 	message := fmt.Sprintf("`%s` is not bound where this breakpoint fires", name)
-	for _, site := range program {
-		if slices.Contains(site.Locals, name) {
-			message = fmt.Sprintf("`%s` is bound only inside the loops and steps that declare it, "+
-				"and this breakpoint fires outside them", name)
-
-			break
-		}
+	elsewhere := slices.ContainsFunc(program, func(site DebugStaticSite) bool { return slices.Contains(site.Locals, name) })
+	if elsewhere {
+		message = fmt.Sprintf("`%s` is bound only inside the loops and steps that declare it, "+
+			"and this breakpoint fires outside them", name)
 	}
 	message += "; a condition reads what the step's `if:` reads: `" + strings.Join(debugConditionRoots, "`, `") + "`"
 	if len(locals) > 0 {
@@ -257,68 +264,92 @@ func debugUnboundName(name string, locals []string, program []DebugStaticSite) e
 			message += fmt.Sprintf(" and %d more", more)
 		}
 	}
-	if suggestion, ok := nearest.Name(name, slices.Concat(debugConditionRoots, locals)); ok {
+	// A name bound elsewhere is spelled right, so a near name would only
+	// mislead.
+	if suggestion, ok := nearest.Name(name, slices.Concat(debugConditionRoots, locals)); ok && !elsewhere {
 		message += fmt.Sprintf("; did you mean `%s`?", suggestion)
 	}
 
 	return errors.New(message)
 }
 
-// collectDebugFreeRoots gathers the bare names an expression reads from its
-// scope: every identifier not bound by one of its own comprehensions, and not
-// the qualifier of a namespaced function the profile declares (`math` in
-// `math.greatest(a, b)`), which the parser presents as an identifier.
+// debugRootWalk gathers the bare names an expression reads from its scope:
+// every identifier not bound by one of its own comprehensions and not a name
+// the environment itself resolves. Those are two kinds of name the parser
+// presents as identifiers:
+//
+//   - the qualifier of a namespaced function the profile declares (`math` in
+//     `math.greatest(a, b)`);
+//   - a type or enum value, bare or qualified (`int` in `type(n) == int`,
+//     `google.protobuf.Timestamp`).
 //
 // bound counts the comprehension bindings in force, so a nested macro that
 // rebinds a name unbinds only its own.
-func collectDebugFreeRoots(e *expr.Expr, bound map[string]int, functions map[string]*decls.FunctionDecl, into map[string]struct{}) {
+type debugRootWalk struct {
+	functions map[string]*decls.FunctionDecl
+	resolves  func(name string) bool
+	bound     map[string]int
+	free      map[string]struct{}
+}
+
+func (w *debugRootWalk) walk(e *expr.Expr) {
 	switch kind := e.GetExprKind().(type) {
 	case *expr.Expr_IdentExpr:
-		if name := kind.IdentExpr.GetName(); bound[name] == 0 {
-			into[name] = struct{}{}
+		if name := kind.IdentExpr.GetName(); w.bound[name] == 0 && !w.resolves(name) {
+			w.free[name] = struct{}{}
 		}
 
 	case *expr.Expr_SelectExpr:
-		collectDebugFreeRoots(kind.SelectExpr.GetOperand(), bound, functions, into)
+		if qualified, ok := debugQualifiedName(e); ok && w.bound[debugRootOf(qualified)] == 0 && w.resolves(qualified) {
+			return
+		}
+		w.walk(kind.SelectExpr.GetOperand())
 
 	case *expr.Expr_CallExpr:
 		call := kind.CallExpr
-		if qualifier, ok := debugQualifiedName(call.GetTarget()); !ok || functions[qualifier+"."+call.GetFunction()] == nil {
-			collectDebugFreeRoots(call.GetTarget(), bound, functions, into)
+		if qualifier, ok := debugQualifiedName(call.GetTarget()); !ok || w.functions[qualifier+"."+call.GetFunction()] == nil {
+			w.walk(call.GetTarget())
 		}
 		for _, arg := range call.GetArgs() {
-			collectDebugFreeRoots(arg, bound, functions, into)
+			w.walk(arg)
 		}
 
 	case *expr.Expr_ListExpr:
 		for _, element := range kind.ListExpr.GetElements() {
-			collectDebugFreeRoots(element, bound, functions, into)
+			w.walk(element)
 		}
 
 	case *expr.Expr_StructExpr:
 		for _, entry := range kind.StructExpr.GetEntries() {
-			collectDebugFreeRoots(entry.GetMapKey(), bound, functions, into)
-			collectDebugFreeRoots(entry.GetValue(), bound, functions, into)
+			w.walk(entry.GetMapKey())
+			w.walk(entry.GetValue())
 		}
 
 	case *expr.Expr_ComprehensionExpr:
 		// The range and the accumulator's start are read outside the
 		// comprehension; the rest inside it, with its variables bound.
 		comprehension := kind.ComprehensionExpr
-		collectDebugFreeRoots(comprehension.GetIterRange(), bound, functions, into)
-		collectDebugFreeRoots(comprehension.GetAccuInit(), bound, functions, into)
+		w.walk(comprehension.GetIterRange())
+		w.walk(comprehension.GetAccuInit())
 
 		names := []string{comprehension.GetIterVar(), comprehension.GetIterVar2(), comprehension.GetAccuVar()}
 		for _, name := range names {
-			bound[name]++
+			w.bound[name]++
 		}
-		collectDebugFreeRoots(comprehension.GetLoopCondition(), bound, functions, into)
-		collectDebugFreeRoots(comprehension.GetLoopStep(), bound, functions, into)
-		collectDebugFreeRoots(comprehension.GetResult(), bound, functions, into)
+		w.walk(comprehension.GetLoopCondition())
+		w.walk(comprehension.GetLoopStep())
+		w.walk(comprehension.GetResult())
 		for _, name := range names {
-			bound[name]--
+			w.bound[name]--
 		}
 	}
+}
+
+// debugRootOf is the first segment of a dotted name.
+func debugRootOf(qualified string) string {
+	root, _, _ := strings.Cut(qualified, ".")
+
+	return root
 }
 
 // debugQualifiedName renders a select chain rooted at an identifier as the
