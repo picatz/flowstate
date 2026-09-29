@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/require"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -328,4 +329,25 @@ func TestLocalAndServerWithholdTheSameFailureText(t *testing.T) {
 		require.Equal(t, workflow != plain, local.WithholdAll(), name)
 		require.True(t, runSensitiveValues(workflow, nil, true).Empty(), "%s: --reveal-sensitive empties the set", name)
 	}
+}
+
+// TestTheRunLocalToolKeepsALoopItemOutOfTheFailureText is the same claim on
+// flowstate_run_local: an agent's context is a surface like a terminal, and
+// the tool bound the arguments, so the failure it returns is redacted against
+// them exactly as `flow run local` redacts its own (Codex, #2173).
+func TestTheRunLocalToolKeepsALoopItemOutOfTheFailureText(t *testing.T) {
+	// Not t.Parallel(), for the process-wide egress policy reason above.
+	session := connectMCP(t, defaultLocalRunPosture())
+
+	result, answer := callRunLocal(t, session, map[string]any{
+		"source": sensitiveLoopWorkflow,
+		"inputs": map[string]any{"customers": []any{sensitiveLoopItem}},
+	})
+	require.True(t, result.IsError, "the loop body dials a port nothing listens on")
+
+	text := result.Content[0].(*mcp.TextContent).Text
+	require.NotContains(t, text, sensitiveLoopItem,
+		"the bound item of a sensitive input reached the agent in the failure text")
+	require.Equal(t, "STATUS_FAILED", answer.Run.Status)
+	require.Contains(t, text, v1.SensitiveMarker, "the failure was withheld rather than redacted")
 }

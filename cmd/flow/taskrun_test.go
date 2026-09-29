@@ -643,3 +643,27 @@ func loopbackEgressPolicy(t *testing.T) string {
 
 	return path
 }
+
+// TestATaskRunKeepsASensitiveInputOutOfItsFailure: an input marked sensitive
+// is withheld from the invocation echo, and a failure that quotes it must not
+// print it either, on any stream: the http task names the URL it dialed.
+func TestATaskRunKeepsASensitiveInputOutOfItsFailure(t *testing.T) {
+	// Not parallel: the loopback denial reads the process-wide egress policy.
+	const token = "synthetic-token-4e8f"
+	stdout, stderr, err := taskRun(t, "http",
+		"--input", "method=GET",
+		"--input", "url=http://127.0.0.1:1/"+token,
+		"--sensitive", "url",
+		"-o", "json")
+	require.Error(t, err, "nothing listens on port 1")
+
+	require.NotContains(t, stdout, token, "the failure document quoted the sensitive url")
+	require.NotContains(t, stderr, token, "the failure prose quoted the sensitive url")
+	require.NotContains(t, err.Error(), token, "the returned error quoted the sensitive url")
+	require.Contains(t, stdout, v1.SensitiveMarker,
+		"the failure document is redacted, not dropped")
+	// Which task failed survives around the value. The tail of the sentence is
+	// not asserted, for the process-wide egress policy reason
+	// TestALoopItemFromASensitiveInputStaysOutOfTheFailureText gives.
+	require.Contains(t, stdout, `task \"http\"`, "what went wrong survives around the value")
+}

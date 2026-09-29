@@ -213,7 +213,7 @@ func (p clientPoller) Poll(ctx context.Context) (*v1.GetResponse, error) {
 		p.withheld()
 	}
 
-	return redactFailureText(redactGetResponse(response.Msg, p.spec, p.reveal), p.sensitive), nil
+	return redactStartedRun(response.Msg, p.spec, p.sensitive, p.reveal), nil
 }
 
 // classifyPollError explains a refused poll and records whether it is worth another

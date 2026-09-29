@@ -588,7 +588,10 @@ func runLocalToolHandler(posture *cobra.Command, providers *localSecrets) mcp.To
 		// does. workflow was just parsed from the submitted source, so redaction
 		// here is precise against its own declarations rather than the
 		// fail-closed case a spec-less renderer falls back to; see sensitive.go.
-		response = redactGetResponse(response, workflow, revealSensitiveRequested(posture))
+		// Failure sentence included, as `flow run local` redacts it: this call
+		// bound the arguments, so it can enumerate what a failure might quote.
+		reveal := revealSensitiveRequested(posture)
+		response = redactStartedRun(response, workflow, runSensitiveValues(workflow, inputs, reveal), reveal)
 
 		encoded, err := renderRunLocalResult(response, logs.records(), preflightNotes)
 		if err != nil {

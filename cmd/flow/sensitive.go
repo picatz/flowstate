@@ -212,6 +212,22 @@ func redactFailureText(response *v1.GetResponse, sensitive v1.SensitiveValues) *
 	return v1.RedactGetResponseFailures(response, sensitive)
 }
 
+// redactStartedRun is the one redaction for a run this process started: `flow
+// run local`, `flow task run`, `flow run`'s follow, and the MCP run_local tool.
+// Such a caller holds both halves the two redactions need, the specification
+// and the arguments, so it applies both: [redactGetResponse] for what the
+// specification declares, and [redactFailureText] for a failure sentence that
+// quotes an argument.
+//
+// sensitive is required rather than defaulted, so a caller decides what the
+// arguments make sensitive instead of forgetting that they do. A caller that
+// holds a specification must come through here rather than calling
+// [redactGetResponse] alone; TestEveryRunThisProcessStartsIsRedactedAsOne
+// holds every surface to that.
+func redactStartedRun(response *v1.GetResponse, workflow *v1.Workflow, sensitive v1.SensitiveValues, reveal bool) *v1.GetResponse {
+	return redactFailureText(redactGetResponse(response, workflow, reveal), sensitive)
+}
+
 // executedSpecification is the specification a follow may redact against: the one
 // this process submitted, when the server attested that it is also the one that
 // ran, and nil — the fail-closed case every function above already handles —

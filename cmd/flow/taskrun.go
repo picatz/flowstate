@@ -174,7 +174,16 @@ func runTaskRun(cmd *cobra.Command, args []string) error {
 	// written them under `with:`. What this still buys is every check that boundary
 	// makes about a specification, made about this one.
 	outputs, runErr := v1.RunWithInputs(ctx, workflow, nil)
-	response := localRun(outputs, runErr, cmd.Context().Err(), started, time.Now())
+
+	// The inputs this invocation withholds from its echo are the ones a failure
+	// sentence must not quote either: a task that dials a sensitive URL names it
+	// when the dial fails.
+	failure := v1.SensitiveValues{}
+	if !reveal {
+		failure = v1.SensitiveInputValues(values, sensitive)
+	}
+	response := redactStartedRun(localRun(outputs, runErr, cmd.Context().Err(), started, time.Now()),
+		workflow, failure, reveal)
 
 	if runErr != nil {
 		// The half of the failure path `flow run local` had to learn: a caller that
@@ -188,7 +197,7 @@ func runTaskRun(cmd *cobra.Command, args []string) error {
 			}
 		}
 
-		return fmt.Errorf("running task %s: %w", def.Name, runErr)
+		return redactFailureError(fmt.Errorf("running task %s: %w", def.Name, runErr), failure)
 	}
 
 	if format == FormatText {
@@ -269,7 +278,8 @@ func newTaskCommand() *cobra.Command {
 
 	taskRunCmd.Flags().StringArray(sensitiveInputFlagName, nil,
 		"treat this input as `sensitive: true` is treated in a file: withheld from the "+
-			"invocation echo unless `--reveal-sensitive` is typed (repeatable). An input the "+
+			"invocation echo and redacted from a failure that quotes it, unless "+
+			"`--reveal-sensitive` is typed (repeatable). An input the "+
 			"task's own schema declares as carrying authority is withheld without being named "+
 			"here. Display etiquette only: the value still reaches the task, and a value that "+
 			"must not is a ${secret(...)} reference instead")
@@ -724,8 +734,9 @@ func checkTaskInputs(def v1.TaskDef, workflow *v1.Workflow) error {
 // Everything else is the author's call, and in a Flowfile it is `sensitive: true`
 // on the input's declaration; there is no file here, so it is a flag.
 //
-// It governs the echo and nothing else, which is exactly what `sensitive:` governs
-// everywhere else in this system: it is display etiquette, not containment, see
+// It governs what this invocation displays: the echo, and a failure sentence
+// that quotes the value, which is exactly what `sensitive:` governs everywhere
+// else in this system. It is display etiquette, not containment, see
 // sensitive.go's own header, which this must not be read as extending. The value
 // still reaches the task, and a value that must never do that is a
 // `${secret(...)}` reference and not this.
