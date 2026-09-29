@@ -321,6 +321,7 @@ func TestCatalogOmitsDescriptorBytesFromTheMCPSurface(t *testing.T) {
 // filesystem the resource embedding is built from.
 var examplesNeedingAFile = map[string]bool{
 	"call-a-workflow":                true,
+	"debugging":                      true,
 	"enterprise-customer-onboarding": true,
 	"fan-out-calls":                  true,
 	"pinned-call":                    true,

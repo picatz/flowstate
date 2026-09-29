@@ -197,7 +197,7 @@ differs, and the last column says, because several allow by default.
 | May this caller use the API at all, and for which actions? | The server, on every RPC | The deployment's trust policy: which token issuers are trusted, and an optional per-issuer `actions:` list such as `workload.run` or `workload.read` | A server refuses to start without a trust policy, unless told `--insecure-no-auth`. An issuer with no `actions:` list may use every RPC action; the codec server's `payload.decode` and `payload.encode` are granted only when listed. |
 | May this caller start this workflow? | The server, at `Run` | The workflow's `triggers.manual:` | Any authenticated caller in the workflow's tenant. |
 | May this caller send this signal? | The server, at `Signal` | The workflow's `signals:` block | Any authenticated caller in the run's tenant. |
-| May this caller hold a durable run for debugging? | The server, at `Signal` | The workflow's `debug:` block | Nobody. |
+| May this caller debug a durable run? | The server, at the debug RPCs and at `Signal` on the reserved debug channel | The workflow's `debug:` block, beside the `workload.debug` and `workload.debug_inspect` actions | Nobody. |
 | May this task reach this host? | The worker, as the connection is made | The deployment's egress policy, with CEL rules | Internal and loopback addresses are refused; public ones are allowed. |
 | May this identity dispatch this task? | The worker, before each attempt | The deployment's task policy, in CEL | Every task is allowed. |
 | May this step read this secret? | The worker, before the provider is asked | The trust policy's `secrets:` rules, in CEL | Nothing may be read. |

@@ -256,7 +256,9 @@ type Deps struct {
 	RemoteCatalogAddress string
 
 	// DecorateRPCError, when set, rewrites the error a dispatched RPC failed
-	// with before it becomes the tool result, given the RPC's name.
+	// with before it becomes the tool result, given the RPC's name and the
+	// request it was sent: a refusal can quote an argument the request
+	// carried, and only the request says which of its values are sensitive.
 	//
 	// It exists because only the embedding binary knows where the call was
 	// going and why: the lifecycle verbs address durable runs, which only a
@@ -269,7 +271,7 @@ type Deps struct {
 	// Applied to dispatched RPC errors only — argument-decode refusals answer
 	// as themselves, and the extra tools (run_local, test, debug) never dial.
 	// Nil is the identity.
-	DecorateRPCError func(rpc string, err error) error
+	DecorateRPCError func(rpc string, request proto.Message, err error) error
 
 	// Audit records each registered tool's authorization decision at the last
 	// shared seam before its handler runs. Nil on stdio, whose local process
@@ -285,14 +287,14 @@ type Deps struct {
 	// registers — derived and caller-supplied alike — with the tool's own
 	// name in hand.
 	//
-	// Read only there, deliberately. It exists for a serving surface with
-	// several callers at once, where a tool that mutates process-wide state
-	// for the duration of one call needs that call serialized against every
-	// other tool that reads the same state — `flow mcp serve`'s guard around
-	// [v1.DefaultRegistry] (cmd/flow/mcpserve.go) is the whole reason it is
-	// here. Stdio has one caller and needs none of it, so [AddTools] ignores
-	// this field and the surface an agent host launches is byte for byte the
-	// one it always was.
+	// It exists for a tool that mutates process-wide state needing to be
+	// kept apart from every tool that reads the same state: `flow mcp
+	// serve`'s guard around [v1.DefaultRegistry] (cmd/flow/mcpserve.go),
+	// where several callers share one process, and stdio's refusal of the
+	// registry's readers while a retained stubbed debug session holds a
+	// synthetic task in it (cmd/flow/mcpdebugsession.go). [AddTools] applies
+	// it to the RPC tools only; the extra tools a caller passes are its own
+	// to wrap. Nil leaves every handler as it is.
 	WrapHandler func(tool string, next mcp.ToolHandler) mcp.ToolHandler
 
 	// WrapResourceHandler is [WrapHandler] for the read-only half of the
@@ -303,7 +305,8 @@ type Deps struct {
 	// reason and would be pointless without it — flowstate://catalog/tasks
 	// answers from [v1.DefaultRegistry] exactly as flowstate_get_catalog
 	// does, so a guard applied only to tools leaves the identical read
-	// reachable one request away. Also read only by [AddLocalCapabilities].
+	// reachable one request away. Applied wherever resources are
+	// registered, by [AddCapabilities] and [AddLocalCapabilities] alike.
 	WrapResourceHandler func(uri string, next mcp.ResourceHandler) mcp.ResourceHandler
 
 	// reduced marks the registration [AddLocalCapabilities] performs, where
@@ -544,7 +547,11 @@ func AddTools(
 			method.Call = remoteCatalogCall(deps.RemoteCatalogAddress)
 		}
 
-		srv.AddTool(tool, dispatch(method, local, remote, deps))
+		handler := dispatch(method, local, remote, deps)
+		if deps.WrapHandler != nil {
+			handler = deps.WrapHandler(tool.Name, handler)
+		}
+		srv.AddTool(tool, handler)
 	}
 
 	for _, reg := range extra {
@@ -976,7 +983,7 @@ func dispatch(
 		out, err := method.Call(ctx, local, remote, in)
 		if err != nil {
 			if deps.DecorateRPCError != nil {
-				err = deps.DecorateRPCError(method.Name, err)
+				err = deps.DecorateRPCError(method.Name, in, err)
 			}
 
 			return ToolError(err), nil

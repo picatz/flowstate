@@ -1290,7 +1290,7 @@ func eval(ctx context.Context, w *Workflow, inputs map[string]*Value) (*Workflow
 	// Which workflow's steps are about to run. Stamped here, unconditionally,
 	// because it is a fact about the run and not about how the run was
 	// configured — see [ExecutingWorkflowFromContext].
-	ctx = contextWithExecutingWorkflow(ctx, w.GetName())
+	ctx = contextWithExecutingWorkflow(ctx, w.GetName(), debugSensitiveInputs(ctx, w, inputs))
 
 	// Registered for the whole run, not per wait: a [VirtualClock] must not see
 	// this goroutine as "gone" between two waits, or a second, unrelated
@@ -1387,6 +1387,14 @@ func eval(ctx context.Context, w *Workflow, inputs map[string]*Value) (*Workflow
 	// something the saga contract turns on. Written twice, the second copy is
 	// where the cancellation arm goes missing.
 	failRun := func(err error) (*Workflow_StepOutputs, error) {
+		// The run's final message is rendered from the root's declarations,
+		// which know nothing of what its calls handed back, and any way the
+		// run fails can quote such a value: a step, a later step's `if:`, or
+		// a declared output. So the failure carries what the root's position
+		// withholds (#2213). A callee's own failure carried its set out of
+		// the call already.
+		err = WithFailureSensitiveValues(err, ExecutingSensitiveFromContext(ctx))
+
 		// A cancellation compensates too, and it is the one case that cannot use
 		// the context it arrived on. Every call made with a cancelled context
 		// fails immediately, so compensating on `ctx` would attempt each entry,
@@ -1427,17 +1435,17 @@ func eval(ctx context.Context, w *Workflow, inputs map[string]*Value) (*Workflow
 				// compensation budget); this is the fallback for the cases nothing
 				// more specific was running, most visibly a run parked at a `wait:`
 				// when the stop arrives.
-				return PartialTranscript(stepOutputs), UndoRunError(withCancellationCause(ctx, err), results)
+				return PartialTranscript(stepOutputs), undoRunError(withCancellationCause(ctx, err), undo, results)
 			}
 
 			// Compensated on the surviving scope, but reported as what actually
 			// went wrong: a run that failed on its own terms while a stop was
 			// arriving did not fail *because* of the stop, and saying so would
 			// lose the only account of why.
-			return PartialTranscript(stepOutputs), UndoRunError(err, results)
+			return PartialTranscript(stepOutputs), undoRunError(err, undo, results)
 		}
 
-		return PartialTranscript(stepOutputs), UndoRunError(err, RunUndoLog(undo, func(entry *PendingUndo) error {
+		return PartialTranscript(stepOutputs), undoRunError(err, undo, RunUndoLog(undo, func(entry *PendingUndo) error {
 			return runUndoTask(ctx, w.GetProfile(), entry)
 		}))
 	}
@@ -1581,7 +1589,7 @@ func runNodes(ctx context.Context, nodes []*Node, scope *Scope, undo *UndoLog, p
 			outputs, err = outcome.run()
 		}
 
-		return recordStepOutcome(ctx, outcome.node, outputs, err, scope, tolerated)
+		return recordStepOutcome(ctx, outcome.node, outputs, err, scope, tolerated, SensitiveValues{})
 	}
 
 	for _, node := range nodes {
@@ -1677,8 +1685,15 @@ func runNodes(ctx context.Context, nodes []*Node, scope *Scope, undo *UndoLog, p
 			continue
 		}
 
+		// A call step's slot for what its callee withholds once it returns,
+		// which its account renders under (#2212). Only a call fills one, and
+		// only in order: `async:` is a task step's.
+		var returned *SensitiveValues
+		if _, ok := node.GetKind().(*Node_Call); ok {
+			nodeCtx, returned = contextWithCallReturn(nodeCtx)
+		}
 		outputs, err := runNodeWithVars(nodeCtx, node, scope, undo, placement, depth, registerAtCompletion, tolerated)
-		if err := recordStepOutcome(ctx, node, outputs, err, scope, tolerated); err != nil {
+		if err := recordStepOutcome(ctx, node, outputs, err, scope, tolerated, returnedCallSensitive(returned)); err != nil {
 			return err
 		}
 	}
@@ -1747,7 +1762,10 @@ const registerAtCompletion = -1
 // `continue_on_error:` tolerate it, what is recorded under the step's id — must
 // come out the same either way. The durable driver keeps the same two callers on
 // one body for the same reason.
-func recordStepOutcome(ctx context.Context, node *Node, outputs *Node_Outputs, err error, scope *Scope, tolerated map[string]struct{}) error {
+//
+// returned is what a call step's callee withholds, for the account of what it
+// handed back.
+func recordStepOutcome(ctx context.Context, node *Node, outputs *Node_Outputs, err error, scope *Scope, tolerated map[string]struct{}, returned SensitiveValues) error {
 	if err != nil {
 		// Cancellation is not a step failure, so `continue_on_error` does not
 		// get to tolerate it — the durable driver says the same thing at the
@@ -1773,7 +1791,10 @@ func recordStepOutcome(ctx context.Context, node *Node, outputs *Node_Outputs, e
 			// point, for the identical reason.
 			record := failureRecord(err)
 			scope.Outputs.StepValues[node.GetId()] = record
-			observeStepFinished(ctx, node.GetId(), record, err, false)
+			// The record can quote what a callee withheld, and a hold on
+			// this failure reads it (#2213).
+			returnToWorkflow(ctx, FailureSensitiveValues(err))
+			observeStepFinished(ctx, node.GetId(), record, err, false, SensitiveValues{})
 			if held := debuggerStepFailed(ctx, node, scope, err, false); held != nil {
 				return held
 			}
@@ -1789,7 +1810,10 @@ func recordStepOutcome(ctx context.Context, node *Node, outputs *Node_Outputs, e
 		}
 		record := failureRecord(err)
 		scope.Outputs.StepValues[node.GetId()] = record
-		observeStepFinished(ctx, node.GetId(), record, err, true)
+		// `${steps.<id>.error}` keeps the failure's text for every later
+		// step to read, and it can quote what a callee withheld (#2213).
+		returnToWorkflow(ctx, FailureSensitiveValues(err))
+		observeStepFinished(ctx, node.GetId(), record, err, true, SensitiveValues{})
 		if held := debuggerStepFailed(ctx, node, scope, err, true); held != nil {
 			return held
 		}
@@ -1800,7 +1824,10 @@ func recordStepOutcome(ctx context.Context, node *Node, outputs *Node_Outputs, e
 	if outputs != nil {
 		scope.Outputs.StepValues[node.GetId()] = outputs
 	}
-	observeStepFinished(ctx, node.GetId(), outputs, nil, false)
+	// A call's outputs sit in this workflow's scope from here on, and a later
+	// step or hold reads them from this position (#2213).
+	returnToWorkflow(ctx, returned)
+	observeStepFinished(ctx, node.GetId(), outputs, nil, false, returned)
 
 	return nil
 }
@@ -1890,6 +1917,9 @@ func runNodeWithVars(ctx context.Context, node *Node, scope *Scope, undo *UndoLo
 		undo.Register(entry)
 	} else {
 		undo.Fill(slot, entry)
+	}
+	if entry != nil {
+		undo.withhold(ExecutingSensitiveFromContext(ctx))
 	}
 
 	return outputs, nil
@@ -2089,7 +2119,11 @@ func runCall(ctx context.Context, callerStep, callerKind string, call *Call, sco
 
 	inner, err := CallScope(scope, callee, arguments, vars)
 	if err != nil {
-		return nil, err
+		// Binding the callee's inputs can refuse one and quote it (`must
+		// satisfy …; got <value>`), before the callee has a position to say
+		// what it withholds; the arguments are what it would have bound
+		// (#2212).
+		return nil, WithFailureSensitiveValues(err, debugSensitiveInputs(ctx, callee, arguments))
 	}
 
 	// A callee's step ids belong to the callee, not to its caller. Move the
@@ -2104,7 +2138,7 @@ func runCall(ctx context.Context, callerStep, callerKind string, call *Call, sco
 	// `callee.GetName()`, so there is one source and two audiences rather than
 	// two spellings — and the first is what a step boundary reads, because a
 	// run with no secrets configured still has a workflow.
-	calleeCtx := contextWithExecutingCall(ctx, callerStep, callerKind, callee.GetName())
+	calleeCtx := contextWithExecutingCall(ctx, callerStep, callerKind, callee.GetName(), debugSensitiveInputs(ctx, callee, inner.GetInputs()))
 	if runtime, ok := ctx.Value(secretRuntimeKey{}).(TaskRuntime); ok {
 		calleeCtx = ContextWithSecretStep(calleeCtx, callee.GetName(), runtime.Step.Run, "")
 	}
@@ -2112,10 +2146,33 @@ func runCall(ctx context.Context, callerStep, callerKind string, call *Call, sco
 		// Named, because a failure inside a called workflow reported without
 		// saying which one leaves a reader looking through the caller for a step
 		// that is not there.
-		return nil, fmt.Errorf("workflow %q: %w", callee.GetName(), err)
+		//
+		// Carrying what the callee withholds, for a debugger rendering it at
+		// the caller (#2210). Empty, and so nothing, without one.
+		return nil, fmt.Errorf("workflow %q: %w", callee.GetName(), WithFailureSensitiveValues(err, ExecutingSensitiveFromContext(calleeCtx)))
 	}
 
-	return CallOutputs(ctx, callee, inner)
+	// The callee's outputs are computed from its own scope, so both what they
+	// hand back and an error computing them can quote what the callee
+	// withholds (#2212).
+	outputs, err := CallOutputs(ctx, callee, inner)
+	if err != nil {
+		return nil, WithFailureSensitiveValues(err, ExecutingSensitiveFromContext(calleeCtx))
+	}
+	// And the outputs the callee declared sensitive, whatever they were
+	// computed from (#2213).
+	returnCallSensitive(ctx, ExecutingSensitiveFromContext(calleeCtx).Merge(debugSensitiveOutputs(ctx, callee, outputs)))
+
+	return outputs, nil
+}
+
+// undoRunError is [UndoRunError] carrying what the positions that registered
+// the compensations withhold, for a debugger rendering the run's final
+// message: a compensation's failure can quote the inputs it was registered
+// with, a callee's sensitive input among them, and the failure that
+// triggered the unwind carries none of it (#2213).
+func undoRunError(err error, undo *UndoLog, results []UndoResult) error {
+	return WithFailureSensitiveValues(UndoRunError(err, results), undo.withheld.Values())
 }
 
 // runSwitch dispatches on one value and runs the body [SelectSwitchCase] picks.

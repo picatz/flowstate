@@ -977,6 +977,50 @@ outputs: {}
 	}
 }
 
+// TestTheDebugToolRefusesAConditionNothingCanBind is #2194 on the scripted
+// tool: the session is given the submitted program, so a condition naming a
+// loop's binding at a step outside the loop is refused, and one on the loop's
+// own step fires.
+func TestTheDebugToolRefusesAConditionNothingCanBind(t *testing.T) {
+	t.Parallel()
+
+	session := connectMCP(t, defaultLocalRunPosture())
+
+	result, answer := callDebug(t, session, map[string]any{
+		"workflow": `edition: v2026.3
+name: orders
+steps:
+  - id: orders
+    for_each:
+      items: ${[1, 2]}
+      as: order
+      steps:
+        - id: charge
+          log:
+            message: charged
+  - id: done
+    log:
+      message: done
+outputs: {}
+`,
+		"tests": `tests:
+  - name: both orders
+    stubs:
+      - task: log
+        returns: {}
+    expect:
+      ran: [orders, done]
+`,
+		"commands": []any{"break done if order == 2", "break charge if order == 2", "continue", "continue"},
+	})
+	require.False(t, result.IsError, result.Content[0].(*mcp.TextContent).Text)
+
+	joined := answer.transcript()
+	assert.Contains(t, joined, "break done: `order` is bound only inside the loops and steps that declare it")
+	assert.Contains(t, joined, "break at orders[1]/charge (", "the condition on the loop's own binding did not fire")
+	assert.NotContains(t, joined, "break at done", "a refused breakpoint held the run")
+}
+
 // TestTheDebugAnswerBoundsARefusedDocument (Codex, #1109): a `tests` document
 // the loader will not read at all produces no cases and one `refused` string —
 // and that string quotes what it refused, out of a document that may be a

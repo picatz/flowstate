@@ -41,14 +41,16 @@ func newDAPCommand() *cobra.Command {
 		Short: "Debug a workflow from an editor, over the Debug Adapter Protocol",
 		Long: "Speak the Debug Adapter Protocol on stdin and stdout, so an editor's step and " +
 			"continue buttons drive a Flowstate run.\n\n" +
-			"A `launch` request runs the Flowfile named as `program` locally. Breakpoints can be set " +
+			"A `launch` request runs the Flowfile named as `program` locally, with its `inputs` object as the " +
+			"run's arguments. Breakpoints can be set " +
 			"on its lines, or as *function* breakpoints named after a step (`build`, " +
 			"`pages/page`, `pages[2]/page`), with conditions, hit counts and log messages.\n\n" +
 			"An `attach` request with a `workflowId` (and optionally `runId`) debugs a durable run " +
 			"through the server named by --address and this command's credentials, which need " +
-			"`workload.debug` (and `workload.debug_inspect` to inspect values or set conditions). " +
-			"A durable run holds only at step boundaries, has no logpoints or failure stops, and " +
-			"shows step addresses rather than source lines; the editor is told which.",
+			"`workload.debug` (and `workload.debug_inspect` to inspect values or to set or read conditions). " +
+			"A durable run holds only at step boundaries and has no logpoints or failure stops; the " +
+			"editor is told which. It shows source lines, and takes line breakpoints, when the attach's " +
+			"`program` is the file the run executes, and step addresses otherwise.",
 		Args: cobra.NoArgs,
 		RunE: runDAP,
 		Example: `# What an editor's launch configuration runs, rather than a person:
@@ -235,6 +237,15 @@ func launchDebuggedRun(
 	if err := v1.ResolvePlugins(workflow, catalog); err != nil {
 		return nil, fmt.Errorf("flowdap: resolving plugins before this run: %w", err)
 	}
+	// The run's arguments, bound before anything runs and after the
+	// disclosure decision, so a refusal quoting one is shown only where
+	// values may be. A launch missing a required input could only fail, and
+	// the launch's own response is where an editor shows why.
+	inputs, err := jsonRunInputs(workflow, args.Inputs, "the launch configuration's inputs",
+		"arguments go in the `inputs` object of the launch configuration, keyed by the name the workflow declares under `inputs:`")
+	if err != nil {
+		return nil, fmt.Errorf("flowdap: %w", err)
+	}
 
 	sourceMap := source.sourceMap(workflow)
 	session, err := flowdebug.New(flowdebug.Options{
@@ -243,6 +254,13 @@ func launchDebuggedRun(
 		Emit:       func(text string, _ flowdebug.Tone) { console.write(text) },
 		Workflow:   workflow,
 		SourceMap:  sourceMap,
+		// Authorized above, or the program declares nothing to withhold.
+		RevealSensitive: reveal,
+		// Held at the first step only when the editor asked to be: the
+		// breakpoints are set before the run starts, so a run that is not
+		// to stop on entry need not hold there only to be released at once,
+		// narrating a stop the editor never shows.
+		Continue: args.StopOnEntry != nil && !*args.StopOnEntry,
 	})
 	if err != nil {
 		return nil, err
@@ -279,14 +297,14 @@ func launchDebuggedRun(
 				return
 			}
 
-			_, runErr := v1.RunWithInputs(ctx, workflow, nil)
+			_, runErr := v1.RunWithInputs(ctx, workflow, inputs)
 			if runErr != nil {
 				exit = 1
 				server.Exited(exit)
 			}
 			session.Finished(runErr)
 			if runErr != nil {
-				server.Output(session.RedactText(fmt.Sprintf("run failed: %v\n", runErr)))
+				server.Output("run failed: " + session.FailureText(runErr) + "\n")
 			}
 		},
 	}, nil
@@ -294,20 +312,45 @@ func launchDebuggedRun(
 
 // attachDebuggedRun attaches to a durable run through the server this command
 // was pointed at, with the caller's own credentials.
+//
+// The configuration's `program`, when it names one, is compiled for its
+// source map alone, and the map is used only when it names the program the
+// run executes ([flowdebug.Remote.SourceMapVerified]). The compiled program
+// records the digest of the bytes it came from ([v1.Workflow.SourceDigest]),
+// so a file whose lines moved since the run was submitted names a different
+// program, and an attach shows step addresses and answers line breakpoints
+// unverified rather than put them on the wrong lines.
 func attachDebuggedRun(ctx context.Context, cmd *cobra.Command, args flowdap.AttachArguments) (*flowdap.Attachment, error) {
-	// No source map on a durable attach. A map is bound to its program by the
-	// IR digest, and the IR carries no positions: a file whose lines moved
-	// since the run was submitted compiles to the same digest, and would put
-	// frames and line breakpoints on the wrong lines. The run records no digest
-	// of its source to check a local file against, so an attach shows step
-	// addresses and answers line breakpoints unverified rather than guess.
+	var sourceMap *v1.DebugSourceMap
+	if args.Program != "" {
+		workflow, source, err := loadMappedWorkflow(args.Program)
+		if err != nil {
+			// Diagnostics withheld, as a launch withholds them without a
+			// reveal: the file is read only for its lines, and an invalid
+			// one has no trusted declarations saying which of its values may
+			// be shown. Any other failure, a file that cannot be read, says
+			// what it is.
+			if _, diagnostics := errors.AsType[flowfile.Diagnostics](err); !diagnostics {
+				return nil, fmt.Errorf("flowdap: reading the attach configuration's `program`: %w", err)
+			}
+			return nil, fmt.Errorf("flowdap: the attach configuration's `program` %s does not compile; "+
+				"run `flow validate` on it, or leave `program` out to attach without lines", args.Program)
+		}
+		sourceMap = source.sourceMap(workflow)
+	}
+
 	remote, _, err := flowdebug.AttachRemote(ctx, newWorkflowServiceClient(serverFlagsOf(cmd)),
-		args.WorkflowID, args.RunID, flowdebug.RemoteOptions{SessionID: args.SessionID})
+		args.WorkflowID, args.RunID, flowdebug.RemoteOptions{SessionID: args.SessionID, SourceMap: sourceMap})
 	if err != nil {
 		return nil, fmt.Errorf("flowdap: attaching to %s: %w", args.WorkflowID, err)
 	}
 
-	return &flowdap.Attachment{Target: remote}, nil
+	attachment := &flowdap.Attachment{Target: remote}
+	if remote.SourceMapVerified() {
+		attachment.SourceMap = sourceMap
+	}
+
+	return attachment, nil
 }
 
 type dapConsole struct {

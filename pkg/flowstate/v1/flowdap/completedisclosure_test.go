@@ -3,6 +3,7 @@ package flowdap_test
 import (
 	"encoding/json"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -113,10 +114,12 @@ func TestVariablesResponseKeepsOnePauseSnapshot(t *testing.T) {
 	session, err := flowdebug.New(flowdebug.Options{Controlled: true})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = session.Close() })
-	blocked := false
+	// Atomic: the run's goroutine redacts its stop announcement while the
+	// adapter's redacts the variables response, so the redactor is called
+	// from both, and only the first call carrying the value may block.
+	var blocked atomic.Bool
 	session.SetRedactor(func(text string) string {
-		if !blocked && strings.Contains(text, sensitive) {
-			blocked = true
+		if strings.Contains(text, sensitive) && blocked.CompareAndSwap(false, true) {
 			close(entered)
 			<-release
 		}

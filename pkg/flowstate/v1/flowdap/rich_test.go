@@ -59,9 +59,17 @@ func launched(t *testing.T) (*client, string, <-chan error) {
 func launchedAt(t *testing.T, name string) (*client, string, <-chan error) {
 	t.Helper()
 
+	return launchedWith(t, name, richFlowfile, nil)
+}
+
+// launchedWith is [launchedAt] for source, with the run's context passed
+// through wrap when it is set.
+func launchedWith(t *testing.T, name, source string, wrap func(context.Context) context.Context) (*client, string, <-chan error) {
+	t.Helper()
+
 	program := filepath.Join(t.TempDir(), name)
 	require.NoError(t, os.MkdirAll(filepath.Dir(program), 0o700))
-	require.NoError(t, os.WriteFile(program, []byte(richFlowfile), 0o600))
+	require.NoError(t, os.WriteFile(program, []byte(source), 0o600))
 
 	c := newClient(t)
 	t.Cleanup(func() { _ = c.Close() })
@@ -69,15 +77,15 @@ func launchedAt(t *testing.T, name string) (*client, string, <-chan error) {
 	finished := make(chan error, 1)
 	var server *flowdap.Server
 	server = flowdap.NewServer(nil, c, flowdap.WithLaunch(func(ctx context.Context, args flowdap.LaunchArguments) (*flowdap.Launch, error) {
-		source, err := os.ReadFile(args.Program)
+		read, err := os.ReadFile(args.Program)
 		if err != nil {
 			return nil, err
 		}
-		workflow, positions, err := flowfile.ParseAt(source, args.Program)
+		workflow, positions, err := flowfile.ParseAt(read, args.Program)
 		if err != nil {
 			return nil, err
 		}
-		sourceMap := flowfile.SourceMap(args.Program, source, workflow, positions)
+		sourceMap := flowfile.SourceMap(args.Program, read, workflow, positions)
 		session, err := flowdebug.New(flowdebug.Options{
 			Controlled: true, Workflow: workflow, SourceMap: sourceMap,
 			Emit: func(text string, _ flowdebug.Tone) { server.Output(text) },
@@ -94,6 +102,9 @@ func launchedAt(t *testing.T, name string) (*client, string, <-chan error) {
 			Start: func() {
 				ctx := v1.NewContextWithDebugger(runCtx, session)
 				ctx = v1.NewContextWithRunObserver(ctx, session)
+				if wrap != nil {
+					ctx = wrap(ctx)
+				}
 				_, err := v1.RunWithInputs(ctx, workflow, nil)
 				session.Finished(err)
 				if err != nil {
@@ -254,11 +265,14 @@ func TestPauseStopsARunningRunAtItsNextStep(t *testing.T) {
 	c.send(2, "launch", map[string]any{"program": program, "stopOnEntry": false})
 	c.await("response", "launch")
 	// Paused before anything runs: the pause is pending until the first
-	// boundary, which is where the run then stops.
+	// boundary, which is where the run then stops, and the pause is
+	// answered there, just ahead of the stop.
 	c.send(3, "pause", map[string]any{"threadId": 1})
-	assert.Equal(t, true, c.await("response", "pause")["success"])
 	c.send(4, "configurationDone", nil)
 	c.await("response", "configurationDone")
+	// Awaited in this order, so a stop sent ahead of the answer is skipped
+	// and never arrives.
+	assert.Equal(t, true, c.await("response", "pause")["success"])
 	stop := c.await("event", "stopped")
 	assert.Equal(t, "pause", body(stop)["reason"])
 
@@ -389,6 +403,8 @@ func TestAttachNarrowsWhatTheEditorIsOffered(t *testing.T) {
 type fakeRemote struct {
 	snapshot *v1.DebugSnapshot
 	closed   bool
+	// paused counts the pauses that reached the run.
+	paused atomic.Int32
 }
 
 func (f *fakeRemote) Snapshot(context.Context) (*v1.DebugSnapshot, error) { return f.snapshot, nil }
@@ -404,6 +420,8 @@ func (f *fakeRemote) Resume(context.Context, *v1.DebugResumeRequest) (*v1.DebugR
 }
 
 func (f *fakeRemote) Pause(context.Context, string) (*v1.DebugReceipt, error) {
+	f.paused.Add(1)
+
 	return &v1.DebugReceipt{Status: v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_PENDING}, nil
 }
 
@@ -948,6 +966,56 @@ func TestARefusedSecondLaunchChangesNothing(t *testing.T) {
 	c.await("response", "configurationDone")
 	assert.Equal(t, "entry", body(c.await("event", "stopped"))["reason"],
 		"the refused launch's stopOnEntry reached the first launch")
+}
+
+// TestALaunchWhoseArgumentsDoNotDecodeIsRefused: a launch configuration with a
+// field of the wrong shape — an `inputs` that is a list — is refused whole,
+// not read in part, so a program never runs on arguments nobody gave it. Its
+// other options are not recorded either: the launch after it still stops on
+// entry, as the default says.
+func TestALaunchWhoseArgumentsDoNotDecodeIsRefused(t *testing.T) {
+	t.Parallel()
+
+	c, program, _ := launched(t)
+
+	c.send(1, "initialize", map[string]any{"adapterID": "flowstate"})
+	c.await("response", "initialize")
+	c.await("event", "initialized")
+	c.send(2, "launch", map[string]any{"program": program, "stopOnEntry": false, "inputs": []any{"release"}})
+	refused := c.await("response", "launch")
+	require.Equal(t, false, refused["success"], "a launch whose inputs are not an object was taken")
+	assert.Contains(t, refused["message"], "could not be read")
+
+	c.send(3, "launch", map[string]any{"program": program})
+	require.Equal(t, true, c.await("response", "launch")["success"])
+	c.send(4, "configurationDone", nil)
+	c.await("response", "configurationDone")
+	assert.Equal(t, "entry", body(c.await("event", "stopped"))["reason"],
+		"the refused launch's stopOnEntry reached the next one")
+}
+
+// TestALaunchTheLauncherRefusedLeavesNoOptionsBehind: a launch the launcher
+// refuses — here, a program that does not exist — records none of its options,
+// so the retry that corrects it and says nothing about `stopOnEntry` stops on
+// entry, as the default says, rather than inheriting the refused launch's
+// `false` and being released past a stop the editor never sees.
+func TestALaunchTheLauncherRefusedLeavesNoOptionsBehind(t *testing.T) {
+	t.Parallel()
+
+	c, program, _ := launched(t)
+
+	c.send(1, "initialize", map[string]any{"adapterID": "flowstate"})
+	c.await("response", "initialize")
+	c.await("event", "initialized")
+	c.send(2, "launch", map[string]any{"program": program + ".missing", "stopOnEntry": false})
+	require.Equal(t, false, c.await("response", "launch")["success"], "a launch of a missing program was taken")
+
+	c.send(3, "launch", map[string]any{"program": program})
+	require.Equal(t, true, c.await("response", "launch")["success"])
+	c.send(4, "configurationDone", nil)
+	c.await("response", "configurationDone")
+	assert.Equal(t, "entry", body(c.await("event", "stopped"))["reason"],
+		"the refused launch's stopOnEntry reached the retry")
 }
 
 // TestAPendingBreakpointTheRunNeverInstalledIsSettledAtItsEnd is a replacement

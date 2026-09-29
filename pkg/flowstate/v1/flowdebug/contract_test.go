@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -189,7 +190,8 @@ func TestTypedSteppingIsCallAware(t *testing.T) {
 	at = move(t, target, at, v1.DebugResumeAction_DEBUG_RESUME_ACTION_STEP_OVER, "")
 	assert.Equal(t, "each[1]/touch", at.GetOccurrence().GetAddress())
 
-	// Out: leaves the loop, stopping at the next step at the top level.
+	// Out: leaves the whole loop, not the iteration — each[2] runs without a
+	// stop, and the next stop is the next step at the top level.
 	at = move(t, target, at, v1.DebugResumeAction_DEBUG_RESUME_ACTION_STEP_OUT, "")
 	assert.Equal(t, "checks", at.GetOccurrence().GetAddress())
 
@@ -230,6 +232,24 @@ func TestParallelBranchesAreAddressedByBranch(t *testing.T) {
 	assert.Equal(t, v1.DebugStopReason_DEBUG_STOP_REASON_UNTIL, at.GetReason())
 	assert.Equal(t, "checks#1/right", at.GetOccurrence().GetAddress())
 	assert.Contains(t, at.GetFrames()[1].GetLabel(), "branch 1")
+}
+
+// TestStepOutLeavesTheWholeParallel: out of a branch is out of the parallel,
+// as out of an iteration is out of the loop. The sibling branch runs without
+// a stop, and the next stop is the step after the parallel.
+func TestStepOutLeavesTheWholeParallel(t *testing.T) {
+	t.Parallel()
+
+	run := startDebugRun(t, "main.yaml", map[string]string{"main.yaml": journeyFlowfile, "child.yaml": childFlowfile}, nil)
+	target := flowdebug.Target(run.session)
+
+	at := waitHeld(t, target, 0)
+	at = move(t, target, at, v1.DebugResumeAction_DEBUG_RESUME_ACTION_RUN_UNTIL, "checks#0/left")
+	require.Equal(t, "checks#0/left", at.GetOccurrence().GetAddress())
+
+	at = move(t, target, at, v1.DebugResumeAction_DEBUG_RESUME_ACTION_STEP_OUT, "")
+	assert.Equal(t, v1.DebugStopReason_DEBUG_STOP_REASON_STEP, at.GetReason())
+	assert.Equal(t, "nested", at.GetOccurrence().GetAddress(), "step out stopped inside the parallel it was leaving")
 }
 
 func TestRichBreakpoints(t *testing.T) {
@@ -707,4 +727,47 @@ func TestAnEndedSessionIsNeverHeldAgain(t *testing.T) {
 			assert.Equal(t, v1.DebugRunState_DEBUG_RUN_STATE_DETACHED, final.GetState(), "an ended session left its terminal state")
 		})
 	}
+}
+
+// TestADeclinedTypedBreakpointIsNamedByWhereItWasSet: a typed breakpoint's id
+// is the client's own key — DAP's is an index into its request — so the notice
+// that its condition could not be evaluated names the step it was set on, not
+// the id, which names nothing the author wrote.
+func TestADeclinedTypedBreakpointIsNamedByWhereItWasSet(t *testing.T) {
+	t.Parallel()
+
+	var mu sync.Mutex
+	var printed strings.Builder
+	run := startDebugRun(t, "main.yaml", map[string]string{"main.yaml": journeyFlowfile, "child.yaml": childFlowfile},
+		func(opts *flowdebug.Options) {
+			opts.Emit = func(text string, _ flowdebug.Tone) {
+				mu.Lock()
+				defer mu.Unlock()
+				printed.WriteString(text)
+			}
+		})
+	target := flowdebug.Target(run.session)
+	waitHeld(t, target, 0)
+
+	response, err := target.ReplaceBreakpoints(t.Context(), &v1.DebugSetBreakpointsRequest{
+		RequestId: "bp",
+		Breakpoints: []*v1.DebugBreakpoint{
+			{Id: "function:1", Step: "each/touch", Condition: "steps.nothing.value == 1"},
+		},
+	})
+	require.NoError(t, err)
+	require.True(t, response.GetBreakpoints()[0].GetVerified(), response.GetBreakpoints()[0].GetMessage())
+
+	receipt, err := target.Resume(t.Context(), &v1.DebugResumeRequest{
+		RequestId: "go", ExpectedRevision: response.GetReceipt().GetRevision(), Action: v1.DebugResumeAction_DEBUG_RESUME_ACTION_CONTINUE,
+	})
+	require.NoError(t, err)
+	require.Equal(t, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_APPLIED, receipt.GetStatus(), receipt.GetMessage())
+	require.NoError(t, <-run.done)
+
+	mu.Lock()
+	out := printed.String()
+	mu.Unlock()
+	assert.Contains(t, out, "breakpoint at each/touch: the condition could not be evaluated here")
+	assert.NotContains(t, out, "function:1", "the notice named the client's key rather than the step")
 }

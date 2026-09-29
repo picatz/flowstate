@@ -146,6 +146,45 @@ type Server struct {
 
 	ended sync.Once
 	exit  int
+
+	// pauses are the pause requests the run has taken but not yet held for,
+	// kept as no more than their answer needs and at most [maxPendingPauses].
+	// DAP answers a pause with a success that a `stopped` event follows, so
+	// each is answered at the next stop, just before its event, or refused
+	// when the run ends without one (#1297).
+	pauses []inbound
+
+	// endState is how the run ended, as the adapter last saw it, which words
+	// the refusal of a pause the run ended before holding for.
+	endState v1.DebugRunState
+}
+
+// maxPendingPauses bounds the pause requests waiting on one stop: each gets
+// the same answer, and a client repeating a request it is still waiting on
+// must not grow the adapter without limit (Codex, #2220).
+const maxPendingPauses = 64
+
+// pauseRefusal is how a pause the run ended before holding for is refused:
+// in the words both drivers use for a run that completed first
+// ([flowdebug.MissedPauseNotice]), or saying what ended instead.
+func pauseRefusal(state v1.DebugRunState, exit int) string {
+	switch {
+	case state == v1.DebugRunState_DEBUG_RUN_STATE_COMPLETED,
+		state == v1.DebugRunState_DEBUG_RUN_STATE_UNSPECIFIED && exit == 0:
+		return flowdebug.MissedPauseNotice
+	case state == v1.DebugRunState_DEBUG_RUN_STATE_DETACHED, state == v1.DebugRunState_DEBUG_RUN_STATE_EXPIRED:
+		return "the debug session ended before the run reached a step boundary to pause at"
+	default:
+		return "the run ended before it reached a step boundary to pause at"
+	}
+}
+
+// recordEnd notes how the run ended, for [pauseRefusal].
+func (s *Server) recordEnd(state v1.DebugRunState) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.endState = state
 }
 
 type handle struct {
@@ -165,10 +204,13 @@ type functionBreakpoint struct {
 
 // LaunchArguments are a launch request's arguments.
 type LaunchArguments struct {
-	Program         string          `json:"program"`
-	RevealSensitive bool            `json:"revealSensitive"`
-	StopOnEntry     *bool           `json:"stopOnEntry"`
-	Raw             json.RawMessage `json:"-"`
+	Program         string `json:"program"`
+	RevealSensitive bool   `json:"revealSensitive"`
+	StopOnEntry     *bool  `json:"stopOnEntry"`
+	// Inputs are the run's arguments, keyed by the name the workflow
+	// declares under `inputs:`, each a JSON value.
+	Inputs map[string]json.RawMessage `json:"inputs"`
+	Raw    json.RawMessage            `json:"-"`
 }
 
 // Launch is what a [LaunchFunc] prepared: the session to drive, the source
@@ -288,9 +330,12 @@ func (s *Server) Finished() {
 
 	s.ended.Do(func() {
 		s.mu.Lock()
-		code := s.exit
+		code, state := s.exit, s.endState
 		s.mu.Unlock()
 
+		for _, request := range s.takePauses() {
+			s.fail(request, pauseRefusal(state, code))
+		}
 		s.enteredAt.Do(func() { close(s.entered) })
 		s.emit("terminated", nil)
 		s.emit("exited", exitedBody{ExitCode: code})
@@ -599,7 +644,17 @@ func localCapabilities() *v1.DebugCapabilities {
 
 func (s *Server) launch(ctx context.Context, request inbound) {
 	var asked LaunchArguments
-	_ = json.Unmarshal(request.Arguments, &asked)
+	// Refused rather than read in part: a field of the wrong shape — an
+	// `inputs` that is a list, a `stopOnEntry` that is a string — would
+	// otherwise be dropped while the rest launches, running the program with
+	// arguments nobody gave it.
+	if len(request.Arguments) > 0 {
+		if err := json.Unmarshal(request.Arguments, &asked); err != nil {
+			s.fail(request, fmt.Sprintf("flowdap: the launch configuration could not be read: %v", err))
+
+			return
+		}
+	}
 	asked.Raw = request.Arguments
 
 	s.mu.Lock()
@@ -611,20 +666,19 @@ func (s *Server) launch(ctx context.Context, request inbound) {
 
 		return
 	}
-	s.program = asked.Program
-	s.revealSensitive = asked.RevealSensitive
-	if asked.StopOnEntry != nil {
-		s.stopOnEntry = *asked.StopOnEntry
-	}
 	launcher := s.launcher
-	s.mu.Unlock()
-
 	if launcher == nil {
+		s.adoptLocked(asked)
+		s.mu.Unlock()
 		s.reply(request, nil)
 
 		return
 	}
+	s.mu.Unlock()
 
+	// The options are adopted only once the launch is taken: one the launcher
+	// refused, a missing input say, must not leave its `stopOnEntry` behind
+	// for the retry that corrects it.
 	launched, err := launcher(ctx, asked)
 	if err != nil {
 		s.fail(request, err.Error())
@@ -633,6 +687,7 @@ func (s *Server) launch(ctx context.Context, request inbound) {
 	}
 
 	s.mu.Lock()
+	s.adoptLocked(asked)
 	s.bound = true
 	s.target = launched.Target
 	s.sourceMap = launched.SourceMap
@@ -645,6 +700,15 @@ func (s *Server) launch(ctx context.Context, request inbound) {
 
 	s.reply(request, nil)
 	s.reapply(ctx)
+}
+
+// adoptLocked records a taken launch's options. Callers hold s.mu.
+func (s *Server) adoptLocked(asked LaunchArguments) {
+	s.program = asked.Program
+	s.revealSensitive = asked.RevealSensitive
+	if asked.StopOnEntry != nil {
+		s.stopOnEntry = *asked.StopOnEntry
+	}
 }
 
 func (s *Server) attach(ctx context.Context, request inbound) {
@@ -861,6 +925,7 @@ func (s *Server) watch(ctx context.Context) {
 			s.stopped(snapshot)
 
 		case terminalState(state):
+			s.recordEnd(state)
 			s.enteredAt.Do(func() { close(s.entered) })
 			if s.isRemote() {
 				code := exitCodeFor(state)
@@ -957,6 +1022,11 @@ func (s *Server) stopped(snapshot *v1.DebugSnapshot) {
 	case v1.DebugStopReason_DEBUG_STOP_REASON_AUTOPSY:
 		body.Description = "autopsy"
 	}
+	// A pause taken while running is answered by this stop, whatever held
+	// the run first, and its answer goes ahead of the event.
+	for _, request := range s.takePauses() {
+		s.reply(request, nil)
+	}
 	s.emit("stopped", body)
 	s.enteredAt.Do(func() { close(s.entered) })
 }
@@ -1031,6 +1101,7 @@ func (s *Server) move(ctx context.Context, request inbound, action v1.DebugResum
 		// reads as ended.
 		if s.isRemote() {
 			if final, err := target.Snapshot(ctx); err == nil && terminalState(final.GetState()) {
+				s.recordEnd(final.GetState())
 				s.Exited(exitCodeFor(final.GetState()))
 			}
 		}
@@ -1066,6 +1137,18 @@ func (s *Server) pause(ctx context.Context, request inbound) {
 	s.order.Lock()
 	defer s.order.Unlock()
 
+	// Refused before it reaches the run, so a client repeating a pause it is
+	// still waiting on sends the run nothing more (Codex, #2220). Under
+	// order, as every change to the waiting pauses is, so none is answered
+	// between this check and the append.
+	s.mu.Lock()
+	full := len(s.pauses) >= maxPendingPauses
+	s.mu.Unlock()
+	if full {
+		s.fail(request, "flowdap: a pause is already waiting on the run's next step boundary")
+
+		return
+	}
 	receipt, err := target.Pause(ctx, s.requestID(request.Seq))
 	if err != nil {
 		s.fail(request, err.Error())
@@ -1073,12 +1156,30 @@ func (s *Server) pause(ctx context.Context, request inbound) {
 		return
 	}
 	switch receipt.GetStatus() {
-	case v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_APPLIED, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_PENDING,
-		v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_DUPLICATE:
+	case v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_PENDING:
+		// Answered by the stop it causes, or refused by the end of a run
+		// that reached no boundary to hold at: a success no stop follows is
+		// the one answer DAP does not allow.
+		s.mu.Lock()
+		s.pauses = append(s.pauses, inbound{Seq: request.Seq, Command: request.Command})
+		s.mu.Unlock()
+	case v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_APPLIED, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_DUPLICATE:
 		s.reply(request, nil)
 	default:
 		s.fail(request, receiptText(receipt))
 	}
+}
+
+// takePauses is the pause requests still waiting on the run, which the
+// caller answers.
+func (s *Server) takePauses() []inbound {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	pauses := s.pauses
+	s.pauses = nil
+
+	return pauses
 }
 
 func (s *Server) currentStop() (*v1.DebugSnapshot, uint64) {

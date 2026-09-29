@@ -116,8 +116,8 @@ func TestCheckStepArgumentSkipsSuggestionWorkPastTheCap(t *testing.T) {
 		messages = append(messages, fmt.Sprintf(format, args...))
 	}
 
-	checkStepArgument(report, 1, "break biuld", "biuld", known, names, true)
-	checkStepArgument(report, 2, "break biuld", "biuld", known, names, false)
+	checkStepArgument(report, 1, "break biuld", "biuld", known, scriptSites{}, names, true)
+	checkStepArgument(report, 2, "break biuld", "biuld", known, scriptSites{}, names, false)
 
 	require.Len(t, messages, 2, "each call should report exactly one message")
 	assert.Equal(t, `no step named "biuld": did you mean "build"?`, messages[0],

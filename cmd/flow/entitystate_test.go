@@ -120,7 +120,7 @@ func TestGetWithholdsTheCarriedStateOfARunningRun(t *testing.T) {
 //
 // `vars:` is very often `${inputs.<name>}`, so a file that marks one *input*
 // sensitive and declares no sensitive outputs at all still puts that value into
-// [v1.EntityState.Vars]. Deciding on [sensitiveOutputNames] would answer "this
+// [v1.EntityState.Vars]. Deciding on [v1.SensitiveOutputNames] would answer "this
 // file declares nothing sensitive" for exactly that file and pass the value
 // through — see [decideCarriedValues], which is why the decision reads both.
 //

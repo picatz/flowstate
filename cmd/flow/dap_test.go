@@ -601,3 +601,77 @@ func TestFlowDAPRefusesAPolicyItCannotLoad(t *testing.T) {
 		})
 	}
 }
+
+// TestFlowDAPLaunchCarriesTheRunsInputs: a launch configuration's `inputs`
+// are the run's arguments, bound before anything runs. A launch missing a
+// required one is refused, saying where it goes, rather than accepted into a
+// run that can only fail; one carrying it runs with it. And a launch that
+// does not stop on entry never narrates the entry stop it did not make.
+func TestFlowDAPLaunchCarriesTheRunsInputs(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	workflow := filepath.Join(dir, "workflow.yaml")
+	require.NoError(t, os.WriteFile(workflow, []byte(`
+edition: v2026.3
+name: released
+inputs:
+  release:
+    type: string
+    required: true
+steps:
+  - id: tagged
+    value: "${'v' + inputs.release}"
+  - id: done
+    value: "'shipped'"
+outputs: {}
+`), 0o600))
+
+	cmd := flowBinaryCommand(buildFlowBinary(t), "dap")
+	stdin, err := cmd.StdinPipe()
+	require.NoError(t, err)
+	stdout, err := cmd.StdoutPipe()
+	require.NoError(t, err)
+	require.NoError(t, cmd.Start())
+	t.Cleanup(func() {
+		_ = stdin.Close()
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	})
+
+	conn := &dapConn{t: t, in: stdin, out: bufio.NewReader(stdout)}
+	conn.send("initialize", map[string]any{"adapterID": "flowstate"})
+	conn.await("response", "initialize")
+	conn.await("event", "initialized")
+
+	conn.send("launch", map[string]any{"program": workflow})
+	refused := conn.await("response", "launch")
+	require.Equal(t, false, refused["success"], "a launch missing a required input was accepted")
+	assert.Contains(t, refused["message"], `"release"`)
+	assert.Contains(t, refused["message"], "`inputs` object of the launch configuration",
+		"the refusal did not say where the input goes")
+
+	conn.send("launch", map[string]any{"program": workflow, "stopOnEntry": false,
+		"inputs": map[string]any{"release": "2026.9"}})
+	launched := conn.await("response", "launch")
+	require.Equal(t, true, launched["success"], "the launch carrying its input was refused: %v", launched["message"])
+
+	conn.send("setFunctionBreakpoints", map[string]any{"breakpoints": []map[string]any{{"name": "done"}}})
+	conn.await("response", "setFunctionBreakpoints")
+	conn.send("configurationDone", nil)
+	conn.await("response", "configurationDone")
+
+	stopped := conn.await("event", "stopped")
+	assert.Equal(t, "breakpoint", stopped["body"].(map[string]any)["reason"], "the first stop was not the breakpoint")
+
+	conn.send("evaluate", map[string]any{"expression": "steps.tagged.value", "context": "repl"})
+	evaluated := conn.await("response", "evaluate")
+	require.Equal(t, true, evaluated["success"], "evaluate failed: %v", evaluated["message"])
+	assert.Contains(t, evaluated["body"].(map[string]any)["result"], "v2026.9", "the run did not see its input")
+
+	conn.send("continue", map[string]any{"threadId": 1})
+	conn.await("response", "continue")
+	conn.await("event", "terminated")
+	assert.NotContains(t, conn.seen.String(), "break at tagged",
+		"the console narrated an entry stop the editor was never sent")
+}

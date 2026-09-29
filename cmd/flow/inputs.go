@@ -333,12 +333,14 @@ func readInputsFile(path string, r io.Reader) ([]byte, error) {
 	return data, nil
 }
 
-// inputsFromJSON turns a JSON object into the map a run is started with.
+// inputsFromJSON turns a JSON object into the map a run is started with, for
+// `--input-file`.
 //
-// Shared by `--input-file` and by the MCP tool's `inputs` argument, so a document
-// means the same thing whichever surface it arrived on — a second decoder is how
-// two surfaces of one contract start disagreeing, which is the divergence this
-// repository keeps rediscovering.
+// Its values are read by [inputsFromDecoded], which the JSON surfaces with no
+// file — MCP's `inputs` argument and a DAP launch's `inputs`, through
+// [jsonRunInputs] — share, so a value means the same thing whichever surface it
+// arrived on. A second decoder is how two surfaces of one contract start
+// disagreeing, which is the divergence this repository keeps rediscovering.
 //
 // The source names where the document came from, because a file path and "the
 // arguments of a tool call" are different things to go and look at.
@@ -348,6 +350,12 @@ func inputsFromJSON(source string, data []byte, declared map[string]*v1.InputDec
 		return nil, fmt.Errorf("%s is not a JSON object of arguments keyed by input name: %w", source, err)
 	}
 
+	return inputsFromDecoded(source, fields, declared)
+}
+
+// inputsFromDecoded converts decoded JSON values, keyed by input name, into the
+// map a run is started with, each against its declaration.
+func inputsFromDecoded(source string, fields map[string]any, declared map[string]*v1.InputDeclaration) (map[string]*v1.Value, error) {
 	inputs := make(map[string]*v1.Value, len(fields))
 
 	// Sorted so a document with two bad values reports the same one first every

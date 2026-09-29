@@ -102,9 +102,18 @@ var authorizationActionBindings = []*AuthorizationActionBinding{
 		McpTools: []string{"flowstate_test"},
 	},
 	{
-		Action:   AuthorizationAction_AUTHORIZATION_ACTION_MCP_DEBUG,
-		Parent:   AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_RUN,
-		McpTools: []string{"flowstate_debug"},
+		Action: AuthorizationAction_AUTHORIZATION_ACTION_MCP_DEBUG,
+		Parent: AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_RUN,
+		McpTools: []string{
+			"flowstate_debug",
+			// The retained sessions over the same stubbed run, and over a
+			// durable run the server's own debug RPCs authorize.
+			"flowstate_debug_session_start",
+			"flowstate_debug_session_attach",
+			"flowstate_debug_session_observe",
+			"flowstate_debug_session_command",
+			"flowstate_debug_session_end",
+		},
 	},
 	{
 		Action: AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_DEBUG,

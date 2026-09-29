@@ -200,7 +200,7 @@ refuses to send a token over plaintext to anything but this machine
 (`cmd/flow/credentials.go:63`), which protects the client, not the server's own
 posture. `--insecure-no-auth` admits everyone as anonymous and is a
 development posture (read at `cmd/flow/main.go:220`, resolved to
-`auth.InsecureAnonymousVerifier` at `cmd/flow/main.go:1754`;
+`auth.InsecureAnonymousVerifier` at `cmd/flow/main.go:1791`;
 `pkg/flowstate/v1/auth/connect.go:142-160`, [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#the-four-tier-isolation-model)).
 
 **Planned.** OAuth 2.1 alignment for the remote MCP surface and webhook ingress as
@@ -516,6 +516,85 @@ provider plugin is not landed.
 
 **Planned.** A claim-check offload codec for payloads too large for history, and
 `flow shred` (#353 A.2), not landed.
+
+### Debugger to run
+
+**Today.** A durable run is debuggable only by a caller its workflow's `debug:`
+policy names; without the block nobody may hold, step or inspect it, including
+its starter (`pkg/flowstate/v1/debuglease.go`). Authority is split in two
+actions (`proto/flowstate/v1/authorization.proto`): `workload.debug` attaches,
+reads, resumes and sets breakpoints; `workload.debug_inspect` evaluates CEL
+against the held scope. A breakpoint condition or log message is evaluation too
+— whether the run stopped answers one bit of whatever the expression reads — so
+a set carrying one needs the inspect action as well
+(`pkg/flowstate/v1/server/debug.go`). The run, not the server, decides
+everything after that: a command is applied only for the session's attested
+holder, a resume only at the revision the caller last saw, and inspection only
+while the run is held at the revision named. The server holds no session state.
+
+The reserved channel has no side door. The typed RPCs deliver on
+`flowstate_debug`; a raw `Signal` onto it needs `workload.debug` beside
+`workload.signal`, and the inspect action when it carries a condition or a log
+message, and
+`SignalWithStart` refuses every `flowstate_` name (`pkg/flowstate/v1/server/lifecycle.go`).
+Every debug authorization decision, allowed or denied, is an audit record naming the session,
+request id, revision and operation (`AuditDebugDetail` in
+`proto/flowstate/v1/audit.proto`); an inspection or a conditional breakpoint
+set is recorded by the digest of its expressions, never their text, because the
+text can be a guessed value.
+
+Inputs are bounded where the boundary can refuse them: a request id is at most
+128 bytes of `[A-Za-z0-9._:-]`, a session id 128 on the RPC and 256 in the run,
+a condition or inspected expression 64 KiB, a log message 16 KiB, a breakpoint
+set 1024 entries, an inspection page 500 children, a server-side wait 30 seconds
+(`proto/flowstate/v1/debug.proto`). The run bounds what it keeps for retries —
+64 receipts, each message cut to 1 KiB — because those cross Continue-As-New
+in its own state (`pkg/flowstate/v1/debugask.go`), and applies at most 64
+buffered asks per step boundary. An inspection runs under the evaluator's cost
+limit and a two-second wall-clock bound on the worker. A hold is a lease: two
+minutes by default, ten at most per ask, and ten for the whole session however
+often it is renewed, after which the run resumes on its own
+(`pkg/flowstate/v1/debuglease.go`). An abandoned debugger cannot park a run
+indefinitely.
+
+The fronts bound what a client can make them hold. `flow dap` keeps at most
+1024 breakpoints and 1 MiB of their text, a source path counted for each
+breakpoint that carries it and refused past 4096 bytes, and at one stop 4096
+variable references over 4 MiB of expressions
+(`pkg/flowstate/v1/flowdap/server.go`). `flow mcp` holds at most eight retained
+sessions, one of them over a test case, each ended by a sweeper ten minutes
+after its last call and an hour after it began (`cmd/flow/mcpdebugsession.go`).
+
+Durable history holds the debug protocol, not the run's secrets: the asks (session
+ids, request ids, breakpoint targets with their conditions, log messages and hit
+counts, and `until` targets, as the caller wrote them), the receipts, and the attested holder's identity. Inspection
+is a query and writes nothing to history. A condition is the caller's own
+expression; `secret(...)` is compiled to a reference and is never a function a
+debugger can call, so no resolved secret reaches a condition, an answer, or
+history (invariant 7).
+
+**Limits.** Redaction in a debugger is a transcript control, not a
+confidentiality boundary. A durable inspection renders declared-`sensitive:`
+inputs as `[redacted]`, and a test case's session (`flow test --debug`,
+`flowstate_debug`, the retained MCP sessions) applies the case's own redaction to
+everything it prints. A local run's session (`flow run local --debug`, `flow
+dap`'s launch, `embed.Debug`) redacts nothing, so it refuses a workflow that
+declares a sensitive value, or whose declarations cannot be read, unless
+disclosure is authorized: `--reveal-sensitive`, `"revealSensitive": true`, or
+`DebugOptions.RevealSensitive`. Either way a predicate over a withheld value answers
+truthfully: `inputs.token == "guess"` is a yes or no about the real value. That
+is what `workload.debug_inspect` gates. A caller whose token carries no action
+list keeps the legacy posture and holds every action, this one included, so a
+deployment that must not disclose a run's values to an operator gives that
+operator's issuer an `actions:` list that omits it. A condition's or log message's
+text is written to history in the ask that carries it, readable by whoever can
+read history. A
+hold stops workflow code only: activities, timers and called work already
+dispatched keep going, and so does the run's execution timeout. Local debugging
+(`flow run local --debug`, `flow test --debug`, a `flow dap` launch,
+`flowstate_debug` and `flowstate_debug_session_start`, `embed.Debug`) has no policy, lease or audit, because the run is
+the caller's own process; `flow run local --debug` and `flow dap` refuse a
+workflow with sensitive declarations unless the reveal is stated.
 
 ### Editor and agent tooling to workspace
 

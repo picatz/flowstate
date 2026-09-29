@@ -184,7 +184,7 @@ func validateConcurrency(wf *v1.Workflow) Diagnostics {
 	}
 
 	field := "concurrency.key"
-	rooted, vars, _, run, trigger, bare := referencedIdentifiers(parsed)
+	rooted, vars, _, run, trigger, bare, types := referencedIdentifiers(parsed)
 
 	// `inputs` is deliberately absent from what follows: it is the one root this
 	// position may read, because binding a run's arguments is the last thing that
@@ -250,7 +250,7 @@ func validateConcurrency(wf *v1.Workflow) Diagnostics {
 			continue
 		}
 
-		if functionNamespaces[ref] {
+		if functionNamespaces[ref] || types.has(ref) {
 			continue
 		}
 

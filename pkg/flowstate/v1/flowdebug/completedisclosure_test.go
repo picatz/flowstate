@@ -2,7 +2,9 @@ package flowdebug_test
 
 import (
 	"context"
+	"io"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -295,4 +297,67 @@ func TestBacktraceLabelsKeepThePauseRedactorWhileRendering(t *testing.T) {
 	require.NoError(t, <-runDone)
 	require.NoError(t, session.Close())
 	require.ErrorIs(t, <-moveDone, flowdebug.ErrRunOver)
+}
+
+// lockedBuffer is an io.Writer a session writes from its own goroutine and a
+// test reads once the run has ended.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf strings.Builder
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	return b.buf.String()
+}
+
+// TestThePromptsBacktraceKeepsThePauseRedactor: the prompt's `backtrace`
+// prints under the redaction posture the pause was taken under, like
+// [flowdebug.Session.BacktraceLabels], even when the session's redactor is
+// cleared while the run is still held there.
+func TestThePromptsBacktraceKeepsThePauseRedactor(t *testing.T) {
+	t.Parallel()
+
+	const sensitive = `outer.nested (call "inner")`
+	commands, script := io.Pipe()
+	var out lockedBuffer
+	session, err := flowdebug.New(flowdebug.Options{In: commands, Out: &out, Breakpoints: []string{"leaf"}})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+	session.SetRedactor(func(text string) string { return strings.ReplaceAll(text, sensitive, "[redacted]") })
+
+	ctx := v1.NewContextWithDebugger(t.Context(), session)
+	ctx = v1.NewContextWithRunObserver(ctx, session)
+	callee := &v1.Workflow{Name: "inner", Steps: []*v1.Node{{Id: "leaf", Kind: &v1.Node_Value{Value: v1.NewLiteral("done")}}}}
+	workflow := &v1.Workflow{Name: "outer", Steps: []*v1.Node{{Id: "nested", Kind: &v1.Node_Call{Call: &v1.Call{Workflow: callee}}}}}
+	runDone := make(chan error, 1)
+	go func() {
+		_, runErr := v1.Run(ctx, workflow)
+		runDone <- runErr
+	}()
+
+	at, err := session.WaitForPause(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, "leaf", at.Step)
+
+	// Cleared while the pause is held: the pause keeps the posture it was
+	// taken under.
+	session.SetRedactor(nil)
+	_, err = io.WriteString(script, "backtrace\ncontinue\n")
+	require.NoError(t, err)
+	require.NoError(t, <-runDone)
+	_ = script.Close()
+
+	printed := out.String()
+	assert.Contains(t, printed, "#2 [redacted]", "the caller's frame was not printed under the pause's redactor")
+	assert.NotContains(t, printed, sensitive, "the backtrace printed what the pause's redactor withholds")
 }

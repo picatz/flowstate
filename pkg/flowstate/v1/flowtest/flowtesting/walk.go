@@ -226,11 +226,12 @@ type ranCase struct {
 // walked runs one case under a session drive can move, and returns the case's
 // result exactly as an unwalked run would.
 //
-// The ordering is the whole of it. drive starts first and immediately parks on
-// its first command, because there is no run yet to take it; the run then
-// starts and stops at its first boundary, where that command is waiting. When
-// drive returns the session is closed, which is what releases the run — a
-// session that is merely abandoned holds the case forever.
+// The ordering is the whole of it. The run starts first and stops at its
+// first boundary, which a controlled session always holds; drive starts there,
+// once the session knows the case's program, so its first command finds the
+// run waiting for it. When drive returns the session is closed, which is what
+// releases the run — a session that is merely abandoned holds the case
+// forever.
 func walked(t testing.TB, cfg config, run func(v1.Debugger) flowtest.RunResult) flowtest.RunResult {
 	t.Helper()
 
@@ -386,10 +387,34 @@ func walked(t testing.TB, cfg config, run func(v1.Debugger) flowtest.RunResult) 
 			result = finished.result
 		}()
 
+		// Not before the run's first stop, or its end: flowtest hands the
+		// session the case's program just before the run starts
+		// ([flowdebug.Session.Program]), and a breakpoint set before then would
+		// be admitted without being judged against it (exact-head review,
+		// #2202). A controlled session holds the run at its first stop, and the
+		// run's goroutine closes the session when it ends, so this wait ends.
+		awaitFirstStop(t.Context(), session)
 		cfg.walkDrive(&Walk{t: t, ctx: t.Context(), session: session})
 	}()
 
 	return result
+}
+
+// awaitFirstStop waits until session's run holds at its first stop, or is
+// over, or ctx ends. What a driver then does is ordered after the run started.
+//
+// Over is read from the wait rather than from a list of states: a snapshot
+// that did not advance past the last one is the answer [flowdebug.Session.WaitSnapshot]
+// gives for a session that has ended, whichever way it ended.
+func awaitFirstStop(ctx context.Context, session *flowdebug.Session) {
+	var after uint64
+	for {
+		snapshot, err := session.WaitSnapshot(ctx, after)
+		if err != nil || snapshot.GetState() == v1.DebugRunState_DEBUG_RUN_STATE_HELD || snapshot.GetRevision() <= after {
+			return
+		}
+		after = snapshot.GetRevision()
+	}
 }
 
 // walkedCase reports whether this case is the one a walk was asked for.

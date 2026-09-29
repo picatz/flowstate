@@ -212,6 +212,39 @@ type Result struct {
 	//
 	// [conformance.UndoCase]: https://pkg.go.dev/github.com/picatz/flowstate/pkg/flowstate/v1/internal/conformance#UndoCase
 	UnorderedPrefix int
+
+	// Withheld is what this run's caller must not disclose to a person, or nil
+	// when it withholds nothing. Equality is still decided on the result
+	// itself, so withholding a value never hides a divergence; only
+	// [Observation.Rendering] is rendered from [Result.Show], and it says so
+	// (#2214).
+	Withheld Withholding
+
+	// Show is this result as a person may be shown it under withheld: its own
+	// [Result.Withheld], or, for the two sides of a [Divergence], what either
+	// side withholds, since a reader sees both at once. A caller that supplies
+	// Withheld on any run supplies Show on every run; a side shown under a
+	// withholding it has no Show for is shown as nothing.
+	Show func(withheld Withholding) Result
+}
+
+// Withholding is what a caller withholds from a person when a result is shown.
+// Opaque to this package, which only joins two of them.
+type Withholding interface {
+	// Join is what this and other withhold together.
+	Join(other Withholding) Withholding
+}
+
+// joined is what a and b withhold together, where either may withhold nothing.
+func joined(a, b Withholding) Withholding {
+	switch {
+	case a == nil:
+		return b
+	case b == nil:
+		return a
+	default:
+		return a.Join(b)
+	}
 }
 
 // RunFunc runs one schedule. ctx already carries the scheduler; a caller passes
@@ -231,7 +264,9 @@ type Observation struct {
 	// encoding of the transcript, the failure text, and the ordered effects.
 	Digest string
 
-	// Rendering is the same content in a form a person can read in a failure.
+	// Rendering is the same content in a form a person can read in a failure,
+	// or, for a run that withholds anything ([Result.Withheld]), what
+	// [Result.Show] leaves of it.
 	Rendering string
 
 	// Decisions is how many scheduling choices this run asked for. Zero on every
@@ -341,7 +376,7 @@ func (r *Report) Truncated() bool {
 func Explore(ctx context.Context, budget Budget, run RunFunc) *Report {
 	report := &Report{}
 
-	baseline := observe(ctx, nil, run)
+	baseline, baselineResult := observe(ctx, nil, run)
 	report.Observations = append(report.Observations, baseline)
 
 	for _, seed := range budget.seeds() {
@@ -350,19 +385,34 @@ func Explore(ctx context.Context, budget Budget, run RunFunc) *Report {
 		}
 
 		scheduler := v1.NewSeededScheduler(seed)
-		observation := observe(ctx, scheduler, run)
+		observation, result := observe(ctx, scheduler, run)
 		report.Observations = append(report.Observations, observation)
 
 		if observation.Digest != baseline.Digest && report.Divergence == nil {
-			report.Divergence = &Divergence{Baseline: baseline, Diverged: observation}
+			report.Divergence = shownTogether(baseline, baselineResult, observation, result)
 		}
 	}
 
 	return report
 }
 
-// observe runs one schedule and renders what it produced.
-func observe(ctx context.Context, scheduler *v1.SeededScheduler, run RunFunc) Observation {
+// shownTogether is the divergence between baseline and diverged, each rendered
+// under what either withholds. A reader sees both renderings at once, so a
+// value only one run withholds, which the other run's rendering could show
+// as recorded, is withheld from both (Codex, #2214).
+func shownTogether(baseline Observation, baselineResult Result, diverged Observation, divergedResult Result) *Divergence {
+	withheld := joined(baselineResult.Withheld, divergedResult.Withheld)
+	if withheld != nil {
+		baseline.Rendering = shownUnder(baselineResult, withheld)
+		diverged.Rendering = shownUnder(divergedResult, withheld)
+	}
+
+	return &Divergence{Baseline: baseline, Diverged: diverged}
+}
+
+// observe runs one schedule and renders what it produced, returning the result
+// as well for [shownTogether].
+func observe(ctx context.Context, scheduler *v1.SeededScheduler, run RunFunc) (Observation, Result) {
 	observation := Observation{Baseline: scheduler == nil}
 	if scheduler != nil {
 		observation.Seed = scheduler.Seed()
@@ -373,14 +423,33 @@ func observe(ctx context.Context, scheduler *v1.SeededScheduler, run RunFunc) Ob
 	observation.Rendering = render(result)
 	sum := sha256.Sum256([]byte(observation.Rendering))
 	observation.Digest = hex.EncodeToString(sum[:])
+	if result.Withheld != nil {
+		observation.Rendering = shownUnder(result, result.Withheld)
+	}
 
 	if scheduler != nil {
 		observation.Decisions = scheduler.Decisions()
 		observation.Truncated = scheduler.Truncated()
 	}
 
-	return observation
+	return observation, result
 }
+
+// shownUnder is result's rendering under withheld, ending with
+// [withheldNotice]. A result with no [Result.Show] is shown as nothing but the
+// notice, since nothing says what of it is safe to show.
+func shownUnder(result Result, withheld Withholding) string {
+	if result.Show == nil {
+		return withheldNotice
+	}
+
+	return render(result.Show(withheld)) + withheldNotice
+}
+
+// withheldNotice ends a rendering made by [Result.Show], so a reader who finds
+// two schedules' renderings identical knows the difference is in what they are
+// not shown rather than nowhere.
+const withheldNotice = "withheld: values this run does not disclose; the comparison read them\n"
 
 // render turns a result into the exact text two schedules are compared by.
 //
@@ -389,7 +458,8 @@ func observe(ctx context.Context, scheduler *v1.SeededScheduler, run RunFunc) Ob
 // reliably the same string — which would make this harness report divergences
 // that are the encoder's and miss none of its own. The bytes are hex so the
 // rendering a failure prints is the same thing the comparison used, rather than
-// a second rendering that could disagree with it.
+// a second rendering that could disagree with it. A caller that must withhold
+// part of a run supplies [Result.Withheld], and only then do the two differ.
 //
 // [canonicalTranscript] closes the same hole one layer down, and the layer is
 // the whole of why it is needed: `Deterministic: true` sorts a *proto* map's

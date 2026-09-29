@@ -64,7 +64,7 @@ inventory below remains the source of truth for every directory.
 | Schedules and trigger context | [scheduled-report](scheduled-report), [schedule-overlap-policies](schedule-overlap-policies), [webhook-trigger](webhook-trigger), [webhook-approval-bridge](webhook-approval-bridge), [trigger-context](trigger-context) | focused feature demonstration |
 | Local rehearsal and durable execution | [deployment-reconciler](deployment-reconciler), [approval-gate](approval-gate) | local-vs-Temporal parity |
 | `flow test`, directory fixtures, and `testdefaults.yaml` | [testing-defaults](testing-defaults), then any sibling `workflow.test.yaml` | testing/debugging/editor/agent journey; regression fixture |
-| CLI, MCP, and DAP debugging | [loop-accumulate](loop-accumulate), [debugger guide](../docs/DEBUGGING.md) | testing/debugging/editor/agent journey |
+| CLI, MCP, and DAP debugging, local and durable | [debugging](debugging), [loop-accumulate](loop-accumulate), [debugger guide](../docs/DEBUGGING.md) | testing/debugging/editor/agent journey |
 | LSP and editor setup | [editor setup](../docs/EDITORS.md), [VS Code client](../editors/vscode/README.md) | testing/debugging/editor/agent journey |
 | Task, egress, and identity policy | [task-shape-policy](task-shape-policy), [signal-rule-identity](signal-rule-identity), [http-secret](http-secret) | policy/governance |
 | Holding a credential a step needs | [http-secret](http-secret), then [vault-secret](vault-secret), [http-federated](http-federated) | policy/governance |
@@ -166,6 +166,7 @@ says otherwise.
 | [computed-outputs](computed-outputs) | `outputs:` — what the run answers with, computed from its steps and its arguments | no |
 | [utilization-guard](utilization-guard) | `must:` on a declared output, refusing a computed percentage two individually valid inputs produced together — a bound no single input's own `must:` could ever state | no |
 | [call-a-workflow](call-a-workflow) | `call:` — running another Flowfile as a step, isolated from the caller, with `with:` binding its declared inputs and its `outputs:` read back under the step id | no |
+| [debugging](debugging/README.md) | The step debugger over one workflow with a `for_each`, a `parallel:` block and a `call:`: occurrence addresses such as `orders[1]/charge` and `checks#1/fraud`, conditional breakpoints and logpoints at a prompt, a `debug:` policy, and the same session attached to a durable run, from an editor, and over MCP. Read its README | no |
 | [pinned-call](pinned-call) | `digest:` on a `call:`, pinning the callee to the bytes the caller reviewed and verified when the file compiles, so a callee that changed since cannot reach a run without somebody reading the change | no |
 | [scheduled-report](scheduled-report) | `triggers:` — the cadence a file declares, which `flow schedule create` turns into a schedule and `flow run` ignores | no |
 | [schedule-interval](schedule-interval) | The other cadence and the other kind of bound: `every:` rather than `cron:`, and `start_at:`/`end_at:` closing a schedule's firing window rather than leaving it open-ended | no |

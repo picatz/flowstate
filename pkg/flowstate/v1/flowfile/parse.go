@@ -559,6 +559,14 @@ func parse(data []byte, path string, callStack []string, callBudget *int) (*v1.W
 		// error, preserving their contract.
 		return workflow, c.pos, c.sorted()
 	}
+	// A root compiled from a file records which bytes it came from, as a call
+	// records its callee's, so the program's identity covers where its steps
+	// are written ([v1.Workflow.SourceDigest]). Only a root: a callee's
+	// digest is its call's, and bytes with no file behind them name no source
+	// a debugger could open.
+	if path != "" && len(callStack) == 0 {
+		workflow.SourceDigest = v1.ContentDigest(data)
+	}
 	return workflow, c.pos, nil
 }
 
