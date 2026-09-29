@@ -1891,18 +1891,16 @@ func checkSignalNames(signals []SignalScript, spec *v1.Workflow) error {
 	return nil
 }
 
-// enumerableSets are sets that can each be enumerated, applied one after
-// another. Merged into one they could pass the bound together, and a set that
-// withholds everything names nothing a rendering can replace (Codex, #2215).
+// enumerableSets are sets that can each be enumerated, kept apart: merged
+// into one they could pass the bound together, and a set that withholds
+// everything names nothing a rendering can replace (Codex, #2215).
 type enumerableSets []sensitiveInputs
 
-// RedactSubstrings replaces what each set names wherever it occurs in text.
+// RedactSubstrings replaces what any set names wherever it occurs in text,
+// every set's matches marked against the text as it was given
+// ([v1.RedactSubstringsOf]).
 func (e enumerableSets) RedactSubstrings(text string) string {
-	for _, set := range e {
-		text = set.RedactSubstrings(text)
-	}
-
-	return text
+	return v1.RedactSubstringsOf(text, e...)
 }
 
 // enumerablePosture is what of a case's posture can be enumerated: its own

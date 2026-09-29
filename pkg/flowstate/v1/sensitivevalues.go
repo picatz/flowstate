@@ -648,8 +648,35 @@ func redactSensitiveSubstrings(rendered string, substrings []string) string {
 	return redactSensitiveSubstringsWithMatcher(rendered, matcher)
 }
 
+// RedactSubstringsOf is [SensitiveValues.RedactSubstrings] for several sets
+// at once: every match of every set is marked against the original text and
+// the marked spans spliced out in one pass, as one set's own matches are. Sets
+// kept apart because together they would pass the bound that makes one set
+// withhold everything are applied this way, rather than one after another,
+// since a replacement made for one set can split another's value and leave
+// its remainder in the clear (exact-head review, #2215). A set that
+// withholds everything has no matcher, and adds nothing here.
+func RedactSubstringsOf(rendered string, sets ...SensitiveValues) string {
+	matchers := make([]*sensitiveSubstringMatcher, 0, len(sets))
+	for _, set := range sets {
+		if matcher := set.held().substringMatcher; matcher != nil {
+			matchers = append(matchers, matcher)
+		}
+	}
+
+	return redactSensitiveSubstringsWithMatchers(rendered, matchers...)
+}
+
 func redactSensitiveSubstringsWithMatcher(rendered string, matcher *sensitiveSubstringMatcher) string {
 	if matcher == nil {
+		return rendered
+	}
+
+	return redactSensitiveSubstringsWithMatchers(rendered, matcher)
+}
+
+func redactSensitiveSubstringsWithMatchers(rendered string, matchers ...*sensitiveSubstringMatcher) string {
+	if len(matchers) == 0 {
 		return rendered
 	}
 	if len(rendered) > maxSensitiveSubstringRedactionWork {
@@ -657,7 +684,13 @@ func redactSensitiveSubstringsWithMatcher(rendered string, matcher *sensitiveSub
 	}
 
 	redacted := make([]bool, len(rendered))
-	if !matcher.markMatches(redacted, rendered) {
+	marked := false
+	for _, matcher := range matchers {
+		if matcher.markMatches(redacted, rendered) {
+			marked = true
+		}
+	}
+	if !marked {
 		return rendered
 	}
 

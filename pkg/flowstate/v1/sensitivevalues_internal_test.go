@@ -834,3 +834,20 @@ func TestAnAccumulatorTellsANilByteStringFromAnEmptyOne(t *testing.T) {
 	require.False(t, gathered.Values().WithholdAll(), "variants unequal under the redaction's equality filled one bucket")
 	assert.Len(t, gathered.Values().held().values, 16)
 }
+
+// TestSeveralSetsRedactAsOne: matches from sets kept apart are marked against
+// the text as given, so a value one set names inside another's is withheld
+// whole, whichever set comes first. Applied one after another, the first
+// replacement split the second's value and left its remainder in the clear
+// (exact-head review, #2215).
+func TestSeveralSetsRedactAsOne(t *testing.T) {
+	t.Parallel()
+
+	inner := SensitiveValues{}.WithValues("password")
+	outer := SensitiveValues{}.WithValues("hunter2passwordtail")
+	for _, sets := range [][]SensitiveValues{{inner, outer}, {outer, inner}} {
+		got := RedactSubstringsOf("url: https://x/hunter2passwordtail/y", sets...)
+		assert.Equal(t, "url: https://x/"+SensitiveMarker+"/y", got)
+	}
+	assert.Equal(t, "plain", RedactSubstringsOf("plain", WithheldSensitiveValues(), SensitiveValues{}))
+}

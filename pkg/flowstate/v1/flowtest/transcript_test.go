@@ -1820,3 +1820,59 @@ tests:
 	assert.NotContains(t, message, "alpha0005", "the first input's value printed")
 	assert.NotContains(t, message, "beta0007", "the second input's value printed")
 }
+
+// TestAReportWithholdsOverlappingValuesWhole: under an opaque root, a case's
+// `secrets:` plaintext found inside a root input's value written into a
+// `where:` leaves no fragment of either in the printed diagnostic (exact-head
+// review, #2215).
+func TestAReportWithholdsOverlappingValuesWhole(t *testing.T) {
+	t.Parallel()
+
+	var bulk strings.Builder
+	for i := range 1100 {
+		fmt.Fprintf(&bulk, "\n        - element-%d", i)
+	}
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
+edition: v2026.3
+name: overlap
+inputs:
+  bulk:
+    type: list
+    sensitive: true
+    required: true
+  token:
+    type: string
+    sensitive: true
+    required: true
+steps:
+  - id: call
+    http:
+      url: https://example.invalid/probe
+`)
+	path := filepath.Join(dir, "workflow.test.yaml")
+	writeFile(t, path, `
+tests:
+  - name: the unmatched stub is reported
+    workflow: ./workflow.yaml
+    inputs:
+      token: hunter2passwordtail
+      bulk:`+bulk.String()+`
+    secrets:
+      env:TOKEN: password
+    stubs:
+      - task: http
+        where: inputs.url == 'https://nope.invalid/hunter2passwordtail'
+    expect:
+      failed: false
+`)
+
+	result := flowtest.RunPath(t.Context(), path, flowtest.RunOptions{})
+	cases := result.Report.GetCases()
+	require.Len(t, cases, 1)
+	require.NotEmpty(t, cases[0].GetFailures(), "the case reported no failure, so this proves nothing: %s", cases[0].GetError())
+	message := cases[0].GetFailures()[0].GetMessage()
+	assert.Contains(t, message, "nope.invalid/[redacted]'", "the stub's where: is not quoted as withheld whole")
+	assert.NotContains(t, message, "hunter2", "a fragment of the root input's value printed")
+	assert.NotContains(t, message, "tail'", "a fragment of the root input's value printed")
+}
