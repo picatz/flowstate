@@ -1256,3 +1256,48 @@ tests:
 	assert.Contains(t, message, "[withheld]", "the failure was not withheld whole")
 	assert.NotContains(t, message, "calleesecret0000", "the report showed the callee's sensitive input")
 }
+
+// TestAReportUnderAnUnenumerablePostureWithholdsAnUnshapedError: a case whose
+// own posture withholds everything prints a run's error as it is only when the
+// stub boundary shaped it. An evaluation error quoting the value it could not
+// find was shaped by nothing, and is withheld whole (exact-head review, #2215).
+func TestAReportUnderAnUnenumerablePostureWithholdsAnUnshapedError(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
+edition: v2026.3
+name: parent
+inputs:
+  items:
+    type: list
+    required: true
+    sensitive: true
+steps:
+  - id: boom
+    value: ${{"a":1}[inputs.items[0]]}
+`)
+	items := make([]string, 0, 1100)
+	for i := range 1100 {
+		items = append(items, fmt.Sprintf("      - rootsecret%04d", i))
+	}
+	path := filepath.Join(dir, "workflow.test.yaml")
+	writeFile(t, path, `
+tests:
+  - name: the failure is reported
+    workflow: ./workflow.yaml
+    inputs:
+      items:
+`+strings.Join(items, "\n")+`
+    expect:
+      failed: false
+`)
+
+	result := flowtest.RunPath(t.Context(), path, flowtest.RunOptions{})
+	cases := result.Report.GetCases()
+	require.Len(t, cases, 1)
+	require.NotEmpty(t, cases[0].GetFailures(), "the case reported no failure, so this proves nothing: %s", cases[0].GetError())
+	message := cases[0].GetFailures()[0].GetMessage()
+	assert.Contains(t, message, "[withheld]", "the failure was not withheld whole")
+	assert.NotContains(t, message, "rootsecret0000", "the report showed the root's sensitive input")
+}

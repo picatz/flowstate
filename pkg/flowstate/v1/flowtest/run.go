@@ -2003,12 +2003,15 @@ func assertExpectation(want *Expectation, spec *v1.Workflow, outputs *v1.Workflo
 		// would erase the only actionable detail. Otherwise this is the outer
 		// substring backstop for material carried here by a computed var.
 		//
-		// Only where the run itself ran under that posture: a set that came
-		// to withhold everything once the run was over — a callee's that
-		// could not be enumerated, gathered afterward — shaped nothing, so the
-		// error is withheld whole rather than printed as it is (#2215).
+		// Only for a diagnostic the stub boundary built, and only where the
+		// run itself ran under that posture: an evaluation error (`no such
+		// key: <value>`) was shaped by nothing, and neither was anything under
+		// a set that came to withhold everything once the run was over — a
+		// callee's that could not be enumerated, gathered afterward. Those are
+		// withheld whole rather than printed as they are (#2215).
+		var stubShaped *stubUnmatchedError
 		renderedRunErr = runErr.Error()
-		if !sensitive.WithholdAll() || !shaped {
+		if !sensitive.WithholdAll() || !shaped || !errors.As(runErr, &stubShaped) {
 			renderedRunErr = redactedErrorText(renderedRunErr, sensitive)
 		}
 	}

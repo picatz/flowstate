@@ -495,9 +495,9 @@ skipped by `if:` does not count. `switch:` arms are counted separately.
 
 **A failing case** prints its transcript: each step's outputs, the virtual time
 it happened at, which stub answered (marked `from defaults` when inherited),
-each signal, and each `switch:` arm taken. A value any workflow the run
-reached declares `sensitive:` renders `[redacted]` there and in the case's
-failures, including a value only a called workflow declares. Claims still read
+each signal, and each `switch:` arm taken. The value of any input declared
+`sensitive:` renders `[redacted]` there and in the case's failures, whichever
+workflow the run reached declares it, a called one included. Claims still read
 the real value. Exit status is 0 when everything passed, 1 when a case failed,
 and 2 for a usage error.
 

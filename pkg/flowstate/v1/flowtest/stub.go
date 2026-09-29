@@ -1136,8 +1136,17 @@ func unmatchedStubError(name string, declared int, native map[string]any, secret
 		}
 	}
 
-	return errors.New(b.String())
+	return &stubUnmatchedError{text: b.String()}
 }
+
+// stubUnmatchedError is [unmatchedStubError]'s diagnostic: text the stub
+// boundary shaped under the case's posture, withholding what it could not
+// enumerate, which a run's error can carry out to the case's report as it is.
+// Its own type so that the report can tell it from an error nothing shaped
+// ([assertExpectation]).
+type stubUnmatchedError struct{ text string }
+
+func (e *stubUnmatchedError) Error() string { return e.text }
 
 // unusedStubWarnings reports, after one case's run, every stub the case
 // declared and the run never answered through — the account a green case owes
