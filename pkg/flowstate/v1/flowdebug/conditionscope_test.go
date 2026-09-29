@@ -100,3 +100,81 @@ func TestTheTypedContractRefusesAConditionNothingCanBind(t *testing.T) {
 	assert.Equal(t, "each[1]/touch", at.GetOccurrence().GetAddress())
 	assert.Equal(t, []string{"inside"}, at.GetBreakpointIds())
 }
+
+// TestEachCasesProgramReplacesTheLast: one session may hold several cases'
+// runs ([flowtest.RunOptions.Debugger]), and each case may run a different
+// program. Each [flowdebug.Session.Program] replaces the last, so a breakpoint
+// set while the second case is held is judged against the second program, and
+// one set against the first that the second refuses is removed with a notice
+// saying why (Codex, #2202). A session given its program keeps it.
+func TestEachCasesProgramReplacesTheLast(t *testing.T) {
+	t.Parallel()
+
+	looping := &v1.Workflow{Name: "looping", Steps: []*v1.Node{
+		{Id: "each", Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{
+			Items: v1.NewLiteralList(1, 2), Iterator: "n",
+			Body: []*v1.Node{{Id: "body", Kind: &v1.Node_Value{Value: v1.NewExpr("n")}}},
+		}}},
+	}}
+	flat := &v1.Workflow{Name: "flat", Steps: []*v1.Node{
+		{Id: "body", Kind: &v1.Node_Value{Value: v1.NewExpr("1")}},
+		{Id: "later", Kind: &v1.Node_Value{Value: v1.NewExpr("2")}},
+	}}
+	set := func(session *flowdebug.Session, breakpoints ...*v1.DebugBreakpoint) map[string]*v1.DebugBreakpointState {
+		t.Helper()
+		response, err := session.ReplaceBreakpoints(t.Context(), &v1.DebugSetBreakpointsRequest{Breakpoints: breakpoints})
+		require.NoError(t, err)
+		states := map[string]*v1.DebugBreakpointState{}
+		for _, state := range response.GetBreakpoints() {
+			states[state.GetId()] = state
+		}
+
+		return states
+	}
+	armed := func(session *flowdebug.Session) []string {
+		t.Helper()
+		snapshot, err := session.Snapshot(t.Context())
+		require.NoError(t, err)
+		var ids []string
+		for _, state := range snapshot.GetBreakpoints() {
+			ids = append(ids, state.GetId())
+		}
+
+		return ids
+	}
+
+	var printed strings.Builder
+	session, err := flowdebug.New(flowdebug.Options{Emit: func(text string, _ flowdebug.Tone) { printed.WriteString(text) }})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+
+	session.Program(looping)
+	states := set(session,
+		&v1.DebugBreakpoint{Id: "bound", Step: "body", Condition: "n > 1"},
+		&v1.DebugBreakpoint{Id: "plain", Step: "body"},
+		&v1.DebugBreakpoint{Id: "later", Step: "later"},
+	)
+	require.True(t, states["bound"].GetVerified(), states["bound"].GetMessage())
+	require.False(t, states["later"].GetVerified(), "a step the first program lacks was armed")
+
+	session.Program(flat)
+	assert.Equal(t, []string{"plain"}, armed(session), "a breakpoint the new program cannot answer is still armed")
+	assert.Contains(t, printed.String(), "breakpoint body if n > 1 no longer applies to this program: condition: `n` is not bound")
+	snapshot, err := session.Snapshot(t.Context())
+	require.NoError(t, err)
+	var notices []string
+	for _, observation := range snapshot.GetObservations() {
+		notices = append(notices, observation.GetText())
+	}
+	assert.Contains(t, strings.Join(notices, "\n"), "breakpoint body if n > 1 no longer applies to this program")
+
+	states = set(session, &v1.DebugBreakpoint{Id: "later", Step: "later"})
+	assert.True(t, states["later"].GetVerified(), "a step of the second program was judged against the first: %s", states["later"].GetMessage())
+
+	given, err := flowdebug.New(flowdebug.Options{Workflow: looping})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = given.Close() })
+	given.Program(flat)
+	states = set(given, &v1.DebugBreakpoint{Id: "later", Step: "later"})
+	assert.False(t, states["later"].GetVerified(), "a session given its program took another")
+}

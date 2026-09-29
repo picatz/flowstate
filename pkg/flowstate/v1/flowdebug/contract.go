@@ -173,6 +173,9 @@ type contractState struct {
 	// irDigest is the digest of the program under debug, when it is known:
 	// what a source map is checked against and what a snapshot reports.
 	irDigest string
+	// programGiven says the program came from [Options.Workflow], which
+	// [Session.Program] never replaces.
+	programGiven bool
 }
 
 func newContractState(opts Options) contractState {
@@ -188,6 +191,7 @@ func newContractState(opts Options) contractState {
 	}
 	if opts.Workflow != nil {
 		c.setProgram(opts.Workflow)
+		c.programGiven = true
 	}
 	for _, entry := range opts.SourceMap.GetEntries() {
 		key := v1.DebugSiteKey(entry.GetSite())
@@ -207,6 +211,8 @@ func (c *contractState) setProgram(wf *v1.Workflow) {
 	var truncated bool
 	c.sites, truncated = v1.DebugStaticSites(wf)
 	c.sitesKnown = !truncated
+	c.names, c.program, c.declaredInProgram = nil, nil, nil
+	c.profile = v1.CurrentProfile
 	if !truncated {
 		c.names = v1.NewDebugProgramNames(c.sites)
 	}
@@ -225,20 +231,64 @@ func (c *contractState) setProgram(wf *v1.Workflow) {
 
 // Program gives a session built without [Options.Workflow] the program its
 // run executes, so a breakpoint's target and condition are judged against
-// where they can fire. flowtest calls it with the case's compiled program
-// before the run starts, which is how `flow test --debug`, the scripted MCP
+// where they can fire. flowtest calls it with each case's compiled program
+// before that case runs, which is how `flow test --debug`, the scripted MCP
 // tool and flowtesting.WithWalk sessions get one (Codex, #2202). A session
 // that was given a program keeps it.
+//
+// Cases may run different programs under one session ([flowtest.RunOptions]
+// holds each case's run), so each call replaces the last (Codex, #2202). A
+// breakpoint set against the program before is judged again against this
+// one, as [Session.ReplaceBreakpoints] would judge it now, and one this
+// program refuses is removed with a notice saying why, rather than left armed
+// for a case it cannot answer in. A line breakpoint is judged by the source
+// map, which a program does not change, and is kept.
 func (s *Session) Program(wf *v1.Workflow) {
 	if wf == nil {
 		return
 	}
+	digest := v1.WorkflowIRDigest(wf)
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.contract.sitesKnown || s.contract.program != nil {
+	if s.contract.programGiven || (s.contract.irDigest == digest && (s.contract.sitesKnown || s.contract.program != nil)) {
+		s.mu.Unlock()
+
 		return
 	}
 	s.contract.setProgram(wf)
+	profile := s.contract.profile
+	installed := make(map[string]breakpoint, len(s.breakpoints))
+	maps.Copy(installed, s.breakpoints)
+	s.mu.Unlock()
+
+	redact := s.snapshotTextRedactor()
+	var refused []string
+	for _, key := range slices.Sorted(maps.Keys(installed)) {
+		at := installed[key]
+		if at.definition == nil || at.definition.GetLine() != nil {
+			continue
+		}
+		definition := proto.CloneOf(at.definition)
+		definition.Id = at.id
+		if _, state := s.compileBreakpoint(definition, profile, redact); !state.GetVerified() {
+			refused = append(refused, key)
+			text := fmt.Sprintf("breakpoint %s no longer applies to this program: %s", breakpointLabel(at.definition), state.GetMessage())
+			s.printfTone(ToneWarning, "%s\n", text)
+			s.observe(v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_NOTICE, "", text)
+		}
+	}
+	if len(refused) == 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, key := range refused {
+		// Only the breakpoint that was judged: one replaced meanwhile is the
+		// replacement's, and was judged when it was set.
+		if current, ok := s.breakpoints[key]; ok && current.source == installed[key].source {
+			delete(s.breakpoints, key)
+		}
+	}
+	s.bump()
 }
 
 // bump records a change: a new revision, and a wake for every waiter. Callers
