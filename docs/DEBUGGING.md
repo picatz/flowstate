@@ -100,7 +100,7 @@ nothing here is worth learning twice. `help` lists it.
 | `next`, `n` | run this step whole, including a loop, parallel, switch or call; stop at the next step at this level or above |
 | `finish`, `out` | run until the loop, parallel, switch or call around this step is left, stopping at the next step outside it — not at the next iteration or branch, which `next` reaches |
 | `continue`, `c` | run to the next breakpoint, or to the end |
-| `until <step>`, `u` | run to that step without stopping in between |
+| `until <step>`, `u` | run to that step without stopping in between; a local run that completes without reaching it says so |
 | `until <step> if <expr>` | run to that step, stopping only where the expression holds |
 | `break <step>`, `b` | stop there whenever it is reached |
 | `break <step> if <expr>` | stop there only when the expression holds |
@@ -278,7 +278,9 @@ a check was ever judged under and the only place they can still be read.
 **The verdict is already in, and nothing here can change it.** The autopsy runs
 after the expectations are judged, so a debugged run cannot be argued into
 passing. `quit` is the one exception in the other direction: abandoning a run is
-a verdict, and a case whose run was abandoned did not pass.
+a verdict, and a case whose run was abandoned did not pass. A command with
+nothing left to act on — `break`, `backtrace`, `info` — says so rather than
+reading as a typo.
 
 ## Driving it as an agent
 
@@ -618,7 +620,7 @@ held at orders (for_each) — pause, revision 2
   #1 debugging.orders (for_each)
   session 5ae9…, lease until 2026-09-28T00:54:12Z
 debug> break receipt if size(steps.flagged.value) > 0
-breakpoint at receipt
+breakpoint at receipt if size(steps.flagged.value) > 0
 debug> continue
 held at receipt (call "receipt") — breakpoint receipt, revision 4
   #1 debugging.receipt (call "receipt")

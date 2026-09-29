@@ -563,12 +563,12 @@ func (d *Driver) replace(ctx context.Context, set []*v1.DebugBreakpoint, mode v1
 
 	var b strings.Builder
 	for i, state := range response.GetBreakpoints() {
-		name := state.GetId()
+		name, label := state.GetId(), state.GetId()
 		if i < len(set) {
-			name = set[i].GetStep()
+			name, label = set[i].GetStep(), breakpointLabel(set[i])
 		}
 		if state.GetVerified() {
-			fmt.Fprintf(&b, "breakpoint at %s\n", name)
+			fmt.Fprintf(&b, "breakpoint at %s\n", label)
 		} else {
 			fmt.Fprintf(&b, "not armed: %s: %s\n", name, state.GetMessage())
 		}

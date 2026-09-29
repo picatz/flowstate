@@ -273,7 +273,11 @@ func (s *Session) dispatch(ctx context.Context, line string, node *v1.Node, scop
 		// silence, behind a prompt that said it was set (Copilot, #1274).
 		s.clearDeclined(declinedUntil, id)
 		s.record("until " + strings.TrimSpace(rest))
-		s.resumeUntil(modeUntil, target, compiled)
+		conditionText := ""
+		if compiled != nil {
+			conditionText = strings.TrimSpace(condition)
+		}
+		s.resumeUntil(modeUntil, target, compiled, conditionText)
 
 		return true, nil
 
@@ -767,12 +771,24 @@ func (s *Session) addBreakpoint(ctx context.Context, rest string, scope *v1.Scop
 		return
 	}
 	s.record("break " + at.source)
-	if at.condition == nil {
-		s.printf("breakpoint at %s\n", id)
+	s.printf("breakpoint at %s\n", breakpointLabel(at.definition))
+}
 
-		return
+// breakpointLabel is how every front echoes an armed breakpoint: its step or
+// address, then what decides when it stops — the hit count and the condition
+// — as they were set. An echo that drops either says the breakpoint is
+// broader than it is. The prompt and the typed [Driver] both render through
+// this, so one breakpoint reads the same on each.
+func breakpointLabel(definition *v1.DebugBreakpoint) string {
+	label := definition.GetStep()
+	if hit := strings.TrimSpace(definition.GetHitCondition()); hit != "" {
+		label += " hit " + hit
 	}
-	s.printf("breakpoint at %s if %s\n", id, strings.TrimSpace(condition))
+	if condition := strings.TrimSpace(definition.GetCondition()); condition != "" {
+		label += " if " + condition
+	}
+
+	return label
 }
 
 // maxStepSuggestionInput bounds the typed id a did-you-mean is computed for:
