@@ -1763,3 +1763,60 @@ tests:
 	assert.NotContains(t, message, "casesecretplain", "the case's secret printed")
 	assert.NotContains(t, message, "element-7", "the unenumerable input printed")
 }
+
+// TestAReportWithholdsInputsThatPassTheBoundOnlyTogether: two root inputs
+// declared sensitive, each enumerable on its own, together past the bound.
+// The case's posture withholds everything, a stub diagnostic shaped under it
+// is printed as it is, and a value of each written into its `where:` is still
+// withheld, by each input's own set (Codex, #2215).
+func TestAReportWithholdsInputsThatPassTheBoundOnlyTogether(t *testing.T) {
+	t.Parallel()
+
+	var alpha, beta strings.Builder
+	for i := range 600 {
+		fmt.Fprintf(&alpha, "\n        - alpha%04d", i)
+		fmt.Fprintf(&beta, "\n        - beta%04d", i)
+	}
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
+edition: v2026.3
+name: two-lists
+inputs:
+  alpha:
+    type: list
+    sensitive: true
+    required: true
+  beta:
+    type: list
+    sensitive: true
+    required: true
+steps:
+  - id: call
+    http:
+      url: https://example.invalid/probe
+`)
+	path := filepath.Join(dir, "workflow.test.yaml")
+	writeFile(t, path, `
+tests:
+  - name: the unmatched stub is reported
+    workflow: ./workflow.yaml
+    inputs:
+      alpha:`+alpha.String()+`
+      beta:`+beta.String()+`
+    stubs:
+      - task: http
+        where: inputs.url == 'https://nope.invalid/alpha0005/beta0007'
+    expect:
+      failed: false
+`)
+
+	result := flowtest.RunPath(t.Context(), path, flowtest.RunOptions{})
+	cases := result.Report.GetCases()
+	require.Len(t, cases, 1)
+	require.NotEmpty(t, cases[0].GetFailures(), "the case reported no failure, so this proves nothing: %s", cases[0].GetError())
+	message := cases[0].GetFailures()[0].GetMessage()
+	assert.Contains(t, message, "could not be enumerated", "the stub's diagnostic was not printed, so this proves nothing")
+	assert.Contains(t, message, "nope.invalid/", "the stub's where: is not quoted, so this proves nothing")
+	assert.NotContains(t, message, "alpha0005", "the first input's value printed")
+	assert.NotContains(t, message, "beta0007", "the second input's value printed")
+}

@@ -1891,22 +1891,36 @@ func checkSignalNames(signals []SignalScript, spec *v1.Workflow) error {
 	return nil
 }
 
+// enumerableSets are sets that can each be enumerated, applied one after
+// another. Merged into one they could pass the bound together, and a set that
+// withholds everything names nothing a rendering can replace (Codex, #2215).
+type enumerableSets []sensitiveInputs
+
+// RedactSubstrings replaces what each set names wherever it occurs in text.
+func (e enumerableSets) RedactSubstrings(text string) string {
+	for _, set := range e {
+		text = set.RedactSubstrings(text)
+	}
+
+	return text
+}
+
 // enumerablePosture is what of a case's posture can be enumerated: its own
 // material ([casePosture]), and each root input declared sensitive whose
-// values can be enumerated on its own. Merged whole, one input too large to
-// enumerate makes the posture withhold everything, and a set that withholds
-// everything names nothing a rendering can replace; a diagnostic printed as
-// it is under that posture would then keep another input's value, or a
-// `secrets:` plaintext, that an author wrote into a `where:` (Codex, #2215).
-func enumerablePosture(casePosture sensitiveInputs, inputs map[string]*v1.Value, names map[string]bool) sensitiveInputs {
-	enumerable := sensitiveInputs{}
-	if !casePosture.WithholdAll() {
-		enumerable = casePosture
+// values can be enumerated on its own, each kept as its own set. Merged whole,
+// one input too large to enumerate, or several together past the bound, make
+// the posture withhold everything; a diagnostic printed as it is under that
+// posture would then keep another input's value, or a `secrets:` plaintext,
+// that an author wrote into a `where:` (Codex, #2215).
+func enumerablePosture(casePosture sensitiveInputs, inputs map[string]*v1.Value, names map[string]bool) enumerableSets {
+	var enumerable enumerableSets
+	if !casePosture.WithholdAll() && !casePosture.Empty() {
+		enumerable = append(enumerable, casePosture)
 	}
 	for _, name := range slices.Sorted(maps.Keys(names)) {
 		one := sensitiveNativeValues(&v1.Scope{Inputs: map[string]*v1.Value{name: inputs[name]}}, map[string]bool{name: true})
-		if !one.WithholdAll() {
-			enumerable = enumerable.Merge(one)
+		if !one.WithholdAll() && !one.Empty() {
+			enumerable = append(enumerable, one)
 		}
 	}
 
@@ -2027,7 +2041,7 @@ func (f *File) CheckSignalNames(test *Test, spec *v1.Workflow) error {
 // ([enumerablePosture]): what a stub diagnostic printed as it is still
 // withholds, since a set that withholds everything says nothing it can
 // replace text by.
-func assertExpectation(want *Expectation, spec *v1.Workflow, outputs *v1.Workflow_StepOutputs, runErr error, sensitive, before sensitiveInputs) []*v1.Diagnostic {
+func assertExpectation(want *Expectation, spec *v1.Workflow, outputs *v1.Workflow_StepOutputs, runErr error, sensitive sensitiveInputs, before enumerableSets) []*v1.Diagnostic {
 	var failures []*v1.Diagnostic
 	renderedRunErr := "<nil>"
 	if runErr != nil {
