@@ -301,14 +301,19 @@ func init() {
 		},
 		{
 			Name: "flowstate.v1.ScheduleDivergenceReport.written_order",
-			Leading: " WrittenOrder is the baseline rendering used for the comparison: the\n" +
-				" observable account of the ordinary run, for a person reading the failure\n" +
-				" rather than replaying it.\n",
+			Leading: " WrittenOrder is the display rendering of the baseline: the observable\n" +
+				" account of the ordinary run, for a person reading the failure rather than\n" +
+				" replaying it. The comparison is made over the runs themselves, not over\n" +
+				" this. Values the case withholds, a called workflow's declared-sensitive\n" +
+				" inputs included, are withheld here as in the rest of the report, and the\n" +
+				" rendering then ends by saying so. What either run withholds is withheld\n" +
+				" from both renderings, since a reader sees them together.\n",
 		},
 		{
 			Name: "flowstate.v1.ScheduleDivergenceReport.seeded",
-			Leading: " Seeded is the corresponding observable account produced by [seed]. It may\n" +
-				" contain task output and must be handled with the same trust as test output.\n",
+			Leading: " Seeded is the corresponding display rendering of the run produced by\n" +
+				" [seed], with the same values withheld. It may contain task output and must\n" +
+				" be handled with the same trust as test output.\n",
 		},
 		{
 			Name: "flowstate.v1.CoverageReport",

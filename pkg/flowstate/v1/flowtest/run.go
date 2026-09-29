@@ -249,7 +249,7 @@ func runSuite(ctx context.Context, file *File, opts RunOptions, loaderFor func(*
 		}
 
 		result, spec, transcript, account := schedules.run(caseCtx,
-			func(ctx context.Context) (*v1.TestCase, *v1.Workflow, *v1.Workflow_StepOutputs, []TranscriptLine, error) {
+			func(ctx context.Context) (*v1.TestCase, *v1.Workflow, *v1.Workflow_StepOutputs, []TranscriptLine, caseShown, error) {
 				// The account is recorded only for runs whose account is
 				// kept. Under an exploring budget, [scheduleAccumulator.run]
 				// retains the written-order baseline's and discards every
@@ -616,7 +616,7 @@ func caseContextWithin(base context.Context, wallTime time.Duration) (context.Co
 // here would take the choice away from the only caller with a reason to make it
 // ([RunFileUnderSchedules]). With no scheduler on base the driver takes
 // [v1.WrittenOrder], which is what every `flow test` case has always run under.
-func runCase(base context.Context, test *Test, deliveryPath string, load func() (*v1.Workflow, error), record bool, vars fileVars) (result *v1.TestCase, spec *v1.Workflow, transcript *v1.Workflow_StepOutputs, account []TranscriptLine, runErr error) {
+func runCase(base context.Context, test *Test, deliveryPath string, load func() (*v1.Workflow, error), record bool, vars fileVars) (result *v1.TestCase, spec *v1.Workflow, transcript *v1.Workflow_StepOutputs, account []TranscriptLine, shown caseShown, runErr error) {
 	started := time.Now()
 	result = &v1.TestCase{Name: test.Name}
 	defer func() {
@@ -1009,6 +1009,19 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 		returned.RunReturned(runErr)
 	}
 
+	// Widened with what the run withheld as it went: a callee's declared
+	// `sensitive:` inputs, which the case's posture (the root's) never saw
+	// (#2211). The gatherer was told each step's set, a failing call's
+	// carried one included, so what the run's error quotes is in it. Every
+	// rendering from here on — the expectations, the claims, the autopsy,
+	// the transcript itself and what a schedule divergence shows of this run
+	// (#2214) — withholds them; the verdicts read real values. Before the
+	// exits below, which return the run's error and transcript too.
+	if gatherer != nil {
+		sensitive = widenedBy(sensitive, gatherer.withheld())
+	}
+	shown = caseShown{sensitive: sensitive, runErr: runErr}
+
 	// The transcript coverage reads is the same one the verdict does. A failed
 	// run hands back the partial one ([v1.PartialTranscript]): the steps it ran
 	// before it stopped, and the step it stopped on. So a case whose whole point
@@ -1038,17 +1051,6 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 		result.Passed = false
 
 		return
-	}
-
-	// Widened with what the run withheld as it went: a callee's declared
-	// `sensitive:` inputs, which the case's posture (the root's) never saw
-	// (#2211). The gatherer was told each step's set, a failing call's
-	// carried one included, so what the run's error quotes is in it. Every
-	// rendering from here on — the expectations, the claims, the autopsy
-	// and the transcript itself — withholds them; the verdicts read real
-	// values.
-	if gatherer != nil {
-		sensitive = widenedBy(sensitive, gatherer.withheld())
 	}
 
 	result.Failures = assertExpectation(&test.Expect, workflow, outputs, runErr, sensitive)
@@ -2000,35 +2002,7 @@ func assertExpectation(want *Expectation, spec *v1.Workflow, outputs *v1.Workflo
 	var failures []*v1.Diagnostic
 	renderedRunErr := "<nil>"
 	if runErr != nil {
-		// Under WithholdAll the task/stub boundary has already shaped the
-		// diagnostic, preserving author-written expressions while withholding
-		// values it could not enumerate. Replacing that safe message wholesale
-		// would erase the only actionable detail. Otherwise this is the outer
-		// substring backstop for material carried here by a computed var.
-		//
-		// Only for a diagnostic the stub boundary built, only where it was
-		// shaped under that posture where it was raised ([stubDiagnostic]'s
-		// shaped: the root's, or a callee's that could not be enumerated),
-		// and only where every error wrapping it added nothing after it
-		// ([onlyPrefixed]), so that what precedes it is the positions the
-		// engine wraps around a failure. An evaluation error (`no such key:
-		// <value>`) was shaped by nothing; neither was a compensation's
-		// failure the run appends after it ([v1.UndoRunError]), nor a
-		// diagnostic raised under a position that could enumerate what it
-		// withholds, and so withheld only that, before a set gathered
-		// elsewhere came to withhold everything. Those are withheld whole
-		// rather than printed as they are (#2215).
-		//
-		// Printed as it is, it holds no text an author wrote beyond names: a
-		// diagnostic shaped under that posture withholds each stub's `where:`
-		// as well, since an author can write a sensitive value into one
-		// ([unmatchedStubError], #2215).
-		var stubShaped *stubDiagnostic
-		renderedRunErr = runErr.Error()
-		if !sensitive.WithholdAll() || !errors.As(runErr, &stubShaped) || !stubShaped.shaped ||
-			!onlyPrefixed(runErr, stubShaped) {
-			renderedRunErr = redactedErrorText(renderedRunErr, sensitive)
-		}
+		renderedRunErr = renderedRunError(runErr, sensitive)
 	}
 
 	failed := runErr != nil
@@ -2182,6 +2156,59 @@ func assertExpectation(want *Expectation, spec *v1.Workflow, outputs *v1.Workflo
 	}
 
 	return failures
+}
+
+// renderedRunError is the run's failure as a case's report prints it, under
+// the posture sensitive.
+func renderedRunError(runErr error, sensitive sensitiveInputs) string {
+	// Under WithholdAll the task/stub boundary has already shaped the
+	// diagnostic, preserving author-written expressions while withholding
+	// values it could not enumerate. Replacing that safe message wholesale
+	// would erase the only actionable detail. Otherwise this is the outer
+	// substring backstop for material carried here by a computed var.
+	//
+	// Only for a diagnostic the stub boundary built, only where it was
+	// shaped under that posture where it was raised ([stubDiagnostic]'s
+	// shaped: the root's, or a callee's that could not be enumerated), and
+	// only where every error wrapping it added nothing after it
+	// ([onlyPrefixed]), so that what precedes it is the positions the engine
+	// wraps around a failure. An evaluation error (`no such key: <value>`)
+	// was shaped by nothing; neither was a compensation's failure the run
+	// appends after it ([v1.UndoRunError]), nor a diagnostic raised under a
+	// position that could enumerate what it withholds, and so withheld only
+	// that, before a set gathered elsewhere came to withhold everything.
+	// Those are withheld whole rather than printed as they are (#2215).
+	//
+	// Printed as it is, it holds no text an author wrote beyond names: a
+	// diagnostic shaped under that posture withholds each stub's `where:` as
+	// well, since an author can write a sensitive value into one
+	// ([unmatchedStubError], #2215).
+	var stubShaped *stubDiagnostic
+	if sensitive.WithholdAll() && errors.As(runErr, &stubShaped) && stubShaped.shaped && onlyPrefixed(runErr, stubShaped) {
+		return runErr.Error()
+	}
+
+	return redactedErrorText(runErr.Error(), sensitive)
+}
+
+// caseShown is what a person may be shown of one run of a case: the posture
+// its renderings withhold, widened with what the run withheld as it went, and
+// the run's failure, rendered under a posture by [caseShown.runErrorUnder].
+// Schedule exploration compares the run itself and shows this
+// ([dst.Result.Show]).
+type caseShown struct {
+	sensitive sensitiveInputs
+	runErr    error
+}
+
+// runErrorUnder is the run's failure as the case's own report prints it under
+// sensitive, or nil.
+func (c caseShown) runErrorUnder(sensitive sensitiveInputs) error {
+	if c.runErr == nil {
+		return nil
+	}
+
+	return errors.New(renderedRunError(c.runErr, sensitive))
 }
 
 // topLevelStepUniverse collects every step id that can appear in a run's

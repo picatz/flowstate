@@ -457,7 +457,7 @@ applies here rather than a second, weaker one.
   caller's scope is not yet withheld when the caller reads it later, as a
   returned output or a tolerated call's recorded error. The case's own
   transcript and report withhold these values everywhere, with or without a
-  debugger, apart from a `--seeds` divergence report. They are rendered after
+  debugger, a `--seeds` divergence report included. They are rendered after
   the run, from everything its steps withheld.
 - A durable inspection renders a run's declared-`sensitive:` inputs as
   `[redacted]`, and the same holds: a predicate over one answers truthfully.
