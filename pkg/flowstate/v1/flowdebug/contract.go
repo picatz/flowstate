@@ -260,12 +260,15 @@ func (s *Session) Program(wf *v1.Workflow) {
 	profile := s.contract.profile
 	installed := make(map[string]breakpoint, len(s.breakpoints))
 	maps.Copy(installed, s.breakpoints)
-	pending, until, untilCondition, untilText := s.mode == modeUntil, s.until, s.untilCondition, s.untilConditionText
+	pending, until, untilCondition, untilText, untilSensitive := s.mode == modeUntil, s.until, s.untilCondition, s.untilConditionText, s.untilSensitive
 	s.mu.Unlock()
 
 	redact := s.snapshotTextRedactor()
 	if pending {
-		s.rejudgeUntil(until, untilCondition, untilText, profile, redact)
+		// With what the hold it was applied at withheld, as the notice that it
+		// was never reached is (exact-head review, #2209).
+		withheld, _ := withholdingAt(redact, nil, untilSensitive)
+		s.rejudgeUntil(until, untilCondition, untilText, profile, withheld)
 	}
 	var refused []string
 	for _, key := range slices.Sorted(maps.Keys(installed)) {
