@@ -56,8 +56,9 @@ func (*sensitiveGatherer) StepFinished(string, *v1.Node_Outputs, error, bool) {}
 func (*sensitiveGatherer) StepSkipped(string)                                 {}
 func (*sensitiveGatherer) WaitStarted(string, string, time.Duration, bool)    {}
 
-// StepFinishedWithholding implements [v1.WithholdingRunObserver].
-func (g *sensitiveGatherer) StepFinishedWithholding(_ string, _ *v1.Node_Outputs, _ error, _ bool, withhold v1.SensitiveValues) {
+// StepWithheld implements [v1.WithholdingOnlyRunObserver]: a discarded
+// account has no use for the outputs, so the engine copies none for it.
+func (g *sensitiveGatherer) StepWithheld(_ string, withhold v1.SensitiveValues) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.gathered.Add(withhold)
@@ -128,11 +129,14 @@ func (t teeObserver) StepFinished(id string, outputs *v1.Node_Outputs, err error
 // it is: what either withholds changes a rendering, never a verdict.
 func (t teeObserver) StepFinishedWithholding(id string, outputs *v1.Node_Outputs, err error, tolerated bool, withhold v1.SensitiveValues) {
 	for _, listener := range []v1.RunObserver{t.first, t.second} {
-		if withholding, ok := listener.(v1.WithholdingRunObserver); ok {
-			withholding.StepFinishedWithholding(id, outputs, err, tolerated, withhold)
-			continue
+		switch listener := listener.(type) {
+		case v1.WithholdingRunObserver:
+			listener.StepFinishedWithholding(id, outputs, err, tolerated, withhold)
+		case v1.WithholdingOnlyRunObserver:
+			listener.StepWithheld(id, withhold)
+		default:
+			listener.StepFinished(id, outputs, err, tolerated)
 		}
-		listener.StepFinished(id, outputs, err, tolerated)
 	}
 }
 

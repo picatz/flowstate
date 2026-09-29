@@ -237,16 +237,21 @@ func debugSensitiveInputs(ctx context.Context, wf *Workflow, inputs map[string]*
 }
 
 // withholdingRead reports whether anything on ctx reads what a position
-// withholds: a [Debugger], which renders at holds and arrivals, or a
+// withholds: a [Debugger], which renders at holds and arrivals, a
 // [WithholdingRunObserver], which renders each step's outcome — `flow test`'s
-// transcript among them (#2211). Neither is installed on an ordinary run.
+// transcript among them (#2211) — or a [WithholdingOnlyRunObserver], which
+// gathers the sets for a rendering made after the run. None is installed on
+// an ordinary run.
 func withholdingRead(ctx context.Context) bool {
 	if DebuggerFromContext(ctx) != nil {
 		return true
 	}
-	_, ok := RunObserverFromContext(ctx).(WithholdingRunObserver)
+	switch RunObserverFromContext(ctx).(type) {
+	case WithholdingRunObserver, WithholdingOnlyRunObserver:
+		return true
+	}
 
-	return ok
+	return false
 }
 
 // ExecutingWorkflowFromContext reports which workflow's steps are running on
