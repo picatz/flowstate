@@ -482,3 +482,22 @@ func TestANameThatSpellsAWithheldValueIsWithheld(t *testing.T) {
 	assert.Contains(t, steps, "public")
 	assert.NotContains(t, steps, secret)
 }
+
+// TestARunThatWithholdsEverythingShowsNoStepOfItsOwn: a run whose posture
+// withholds everything rendered its values that way, but a step id is the
+// file's own text, printed as written in a diagnostic and in its message, so a
+// divergence's rendering of that run withholds it too (Codex, #2224).
+func TestARunThatWithholdsEverythingShowsNoStepOfItsOwn(t *testing.T) {
+	t.Parallel()
+
+	const secret = "hunter2-step"
+	result := &v1.TestCase{Name: "case " + secret, Failures: []*v1.Diagnostic{{
+		Field: "expect.ran", Step: secret, Message: "expected step \"" + secret + "\" to have run",
+	}}}
+	shown := caseShown{sensitive: v1.WithheldSensitiveValues()}
+
+	rendered := shownCase(result, nil, shown, shownPosture{sensitive: v1.WithheldSensitiveValues()})
+	require.Error(t, rendered.Err, "the verdict was not rendered, so this proves nothing")
+	assert.NotContains(t, rendered.Err.Error(), secret)
+	assert.Equal(t, secret, result.GetFailures()[0].GetStep(), "the recorded verdict must be left as it was")
+}

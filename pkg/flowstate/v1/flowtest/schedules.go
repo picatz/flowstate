@@ -292,14 +292,14 @@ func (a *scheduleAccumulator) reshown(ctx context.Context, once caseRun, result 
 			// And through the verdict's own seam under everything: the run
 			// renders values through its posture, and a diagnostic's step
 			// id, which it prints as the file names it, through this.
-			return verdictUnder(again, caseShown{}, everything), againAccount
+			return verdictUnder(again, everything), againAccount
 		}
 	}
 
 	// Everything withheld but the case's name, which is the file's own text
 	// and is withheld under everything as the re-shown report's would be:
 	// a report that could not say which case it is would be no report.
-	withheld := verdictUnder(result, caseShown{}, v1.WithheldSensitiveValues())
+	withheld := verdictUnder(result, v1.WithheldSensitiveValues())
 	withheld.Name = redactedErrorText(result.GetName(), everything)
 
 	return withheld, []TranscriptLine{{
@@ -389,10 +389,8 @@ func (p shownPosture) Join(other dst.Withholding) dst.Withholding {
 // transcript ([withheldTranscript]), its failure, and its verdict, each with
 // what withheld holds taken out.
 //
-// The verdict was rendered under the run's own posture. Where that posture
-// withheld everything, it was already rendered under the most any posture
-// withholds and is kept; otherwise each line is withheld again under
-// withheld, which holds at least as much as the run's own posture did.
+// The verdict is withheld again under withheld ([verdictUnder]), which holds at
+// least as much as the run's own posture did.
 func shownCase(result *v1.TestCase, transcript *v1.Workflow_StepOutputs, shown caseShown, withheld dst.Withholding) dst.Result {
 	sensitive := v1.WithheldSensitiveValues()
 	if posture, ok := withheld.(shownPosture); ok {
@@ -401,7 +399,7 @@ func shownCase(result *v1.TestCase, transcript *v1.Workflow_StepOutputs, shown c
 
 	return dst.Result{
 		Transcript: withheldTranscript(transcript, sensitive),
-		Err:        caseObservables(verdictUnder(result, shown, sensitive), shown.runErrorUnder(sensitive)),
+		Err:        caseObservables(verdictUnder(result, sensitive), shown.runErrorUnder(sensitive)),
 	}
 }
 
@@ -411,12 +409,13 @@ func shownCase(result *v1.TestCase, transcript *v1.Workflow_StepOutputs, shown c
 // author can write a sensitive value into as readily as a step id (Codex,
 // #2224).
 //
-// The verdict was rendered under the run's own posture. Where that posture
-// withheld everything, it was already rendered under the most any posture
-// withholds and is kept; otherwise each line is withheld again under
-// sensitive, which holds at least as much as the run's own posture did.
-func verdictUnder(result *v1.TestCase, shown caseShown, sensitive sensitiveInputs) *v1.TestCase {
-	if shown.sensitive.WithholdAll() || sensitive.Empty() {
+// Each line is withheld again under sensitive, which holds at least as much as
+// the run's own posture did, even where that posture withheld everything: the
+// run renders values under its posture, but a name or a step id is the file's
+// own text, printed as written in the diagnostic and in its message, so no
+// posture already took it out (Codex, #2224).
+func verdictUnder(result *v1.TestCase, sensitive sensitiveInputs) *v1.TestCase {
+	if sensitive.Empty() {
 		return result
 	}
 	verdict := proto.CloneOf(result)
