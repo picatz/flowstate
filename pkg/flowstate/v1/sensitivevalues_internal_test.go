@@ -740,7 +740,7 @@ func TestAnAccumulatorHashesAlikeInEveryProcess(t *testing.T) {
 	var first, second SensitiveAccumulator
 	first.Add(oneSensitiveInput("token", NewLiteral("first")))
 	second.Add(oneSensitiveInput("token", NewLiteral("second")))
-	assert.Equal(t, uint64(0xf630cd5573ef33c3), first.state.hash(value))
+	assert.Equal(t, uint64(0xc01e540087d0a1ca), first.state.hash(value))
 	assert.Equal(t, first.state.hash(value), second.state.hash(value))
 }
 
@@ -762,4 +762,41 @@ func TestAnAccumulatorRefusesASetPastTheBoundUnread(t *testing.T) {
 	var within SensitiveAccumulator
 	within.Add(atTheBound)
 	assert.False(t, within.Values().WithholdAll())
+}
+
+// TestAnAccumulatorFramesWhatItHashes: values split differently across their
+// strings encode differently, so they do not share a bucket unless the hash
+// itself collides (Codex, #2215).
+func TestAnAccumulatorFramesWhatItHashes(t *testing.T) {
+	t.Parallel()
+
+	var gathered SensitiveAccumulator
+	gathered.Add(oneSensitiveInput("token", NewLiteral("hunter2-token")))
+	for _, pair := range [][2]any{
+		{[]any{"a", "\x01b"}, []any{"a\x01", "b"}},
+		{map[string]any{"a": "\x01b"}, map[string]any{"a\x01": "b"}},
+		{[]any{[]byte("a"), "b"}, []any{[]byte("ab")}},
+	} {
+		assert.NotEqual(t, gathered.state.hash(pair[0]), gathered.state.hash(pair[1]), "%#v and %#v", pair[0], pair[1])
+	}
+}
+
+// TestAnAccumulatorRefusesABucketThatGrows: the hash is unkeyed, so values
+// colliding in it can be chosen. Past a few in one bucket, the accumulator
+// withholds everything rather than compare each addition against them all
+// (Codex, #2215).
+func TestAnAccumulatorRefusesABucketThatGrows(t *testing.T) {
+	t.Parallel()
+
+	for _, colliding := range []int{maxSensitiveBucket - 1, maxSensitiveBucket} {
+		var gathered SensitiveAccumulator
+		gathered.Add(oneSensitiveInput("token", NewLiteral("hunter2-token")))
+		// Stand-ins for values built to collide with the one added next.
+		key := gathered.state.hash("hunter2-colliding")
+		for i := range colliding {
+			gathered.state.index[key] = append(gathered.state.index[key], int64(i))
+		}
+		gathered.Add(oneSensitiveInput("token", NewLiteral("hunter2-colliding")))
+		assert.Equal(t, colliding == maxSensitiveBucket, gathered.Values().WithholdAll(), "%d colliding values", colliding)
+	}
 }

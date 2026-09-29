@@ -64,6 +64,12 @@ type sensitiveAccumulation struct {
 	stale bool
 }
 
+// maxSensitiveBucket bounds how many unequal values share one hash. Values
+// that happen to collide in 64 bits among the few a set may hold never come
+// near it; values built to collide, which an unkeyed hash allows, reach it
+// and withhold everything, so no addition compares against more than this.
+const maxSensitiveBucket = 8
+
 // maxSeenSensitiveSets bounds how many set identities an accumulator
 // remembers. A loop of calls makes a set per call, and remembering each
 // would be memory the loop's length decides.
@@ -102,8 +108,16 @@ func (a *SensitiveAccumulator) Add(s SensitiveValues) {
 	}
 	for _, value := range held.values {
 		key := st.hash(value)
-		if slices.ContainsFunc(st.index[key], func(other any) bool { return sameSensitiveValue(value, other) }) {
+		bucket := st.index[key]
+		if slices.ContainsFunc(bucket, func(other any) bool { return sameSensitiveValue(value, other) }) {
 			continue
+		}
+		if len(bucket) >= maxSensitiveBucket {
+			// Fail closed rather than scan a bucket that grows: the hash is
+			// unkeyed, so values colliding in it can be chosen (Codex, #2215).
+			*st = sensitiveAccumulation{withholdAll: true}
+
+			return
 		}
 		st.index[key] = append(st.index[key], value)
 		st.values = append(st.values, value)
@@ -184,15 +198,17 @@ func (st *sensitiveAccumulation) hash(value any) uint64 {
 }
 
 // appendSensitiveHash appends what [sensitiveAccumulation.hash] hashes of
-// value to b.
+// value to b: a tag for its shape, and every variable-width part led by its
+// length, so two different values never encode alike and only a collision in
+// the hash itself puts them in one bucket (Codex, #2215).
 func appendSensitiveHash(b []byte, value any) []byte {
 	switch value := value.(type) {
 	case nil:
 		b = append(b, 0)
 	case string:
-		b = append(append(b, 1), value...)
+		b = appendSensitiveBytes(append(b, 1), value)
 	case []byte:
-		b = append(append(b, 2), value...)
+		b = appendSensitiveBytes(append(b, 2), value)
 	case bool:
 		b = append(b, 3)
 		if value {
@@ -221,14 +237,19 @@ func appendSensitiveHash(b []byte, value any) []byte {
 	case map[string]any:
 		b = binary.LittleEndian.AppendUint64(append(b, 8), uint64(len(value)))
 		for _, key := range slices.Sorted(maps.Keys(value)) {
-			b = append(append(b, key...), 0)
+			b = appendSensitiveBytes(b, key)
 			b = appendSensitiveHash(b, value[key])
 		}
 	default:
 		// No other shape reaches here from [LiteralToGo]. Hashed by type
 		// alone, so every such value shares a bucket and equality decides.
-		b = append(append(b, 9), reflect.TypeOf(value).String()...)
+		b = appendSensitiveBytes(append(b, 9), reflect.TypeOf(value).String())
 	}
 
 	return b
+}
+
+// appendSensitiveBytes appends payload to b, led by its length.
+func appendSensitiveBytes[P string | []byte](b []byte, payload P) []byte {
+	return append(binary.LittleEndian.AppendUint64(b, uint64(len(payload))), payload...)
 }
