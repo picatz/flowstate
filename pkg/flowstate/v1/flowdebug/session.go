@@ -10,6 +10,7 @@ import (
 	"io"
 	"maps"
 	"math"
+	"reflect"
 	"slices"
 	"sort"
 	"strings"
@@ -905,7 +906,7 @@ func (s *Session) StepFinishedWithholding(id string, outputs *v1.Node_Outputs, e
 // [Session.StepSkippedBy] instead, and this is the account of a skip whose
 // condition nobody quoted.
 func (s *Session) StepSkipped(id string) {
-	s.StepSkippedBy(id, v1.SkippedText(id, nil), v1.SensitiveValues{})
+	s.StepSkippedBy(id, nil, v1.SensitiveValues{})
 }
 
 // StepSkippedBy implements [v1.GuardRunObserver]. A skipped step never reaches
@@ -915,7 +916,7 @@ func (s *Session) StepSkipped(id string) {
 // gives. The account withholds what the workflow it is in declares sensitive
 // ([withholdingAt]), as a durable session's does, unless
 // [Options.RevealSensitive] authorized showing it.
-func (s *Session) StepSkippedBy(id, account string, withhold v1.SensitiveValues) {
+func (s *Session) StepSkippedBy(id string, condition *v1.Value, withhold v1.SensitiveValues) {
 	// Remembered as a step this run reaches even though it did not run: a
 	// breakpoint on a step whose `if:` was false this time is exactly what
 	// somebody sets when they are trying to find out why.
@@ -926,10 +927,15 @@ func (s *Session) StepSkippedBy(id, account string, withhold v1.SensitiveValues)
 	}
 
 	s.mu.Lock()
-	redact, _ := withholdingAt(s.redact, s.redactValue, withhold)
+	redact, redactValue := withholdingAt(s.redact, s.redactValue, withhold)
 	s.mu.Unlock()
-	// Withheld, then bounded, never the other way round: a cut first could
-	// keep the start of a sensitive value no whole-value match then finds.
+	// A constant is withheld by value before the condition is written, then
+	// the sentence by text; withheld, then bounded, never the other way
+	// round: a cut first could keep the start of a sensitive value no
+	// whole-value match then finds.
+	account := v1.SkippedText(id, condition, func(value any) bool {
+		return redactValue != nil && !reflect.DeepEqual(redactValue(value), value)
+	})
 	line := capRunes(applyText(redact, account), maxObservationRunes)
 	s.emitTone(ToneInfo, "  "+line+"\n")
 	s.observeRedacted(v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_SKIPPED, id, line)

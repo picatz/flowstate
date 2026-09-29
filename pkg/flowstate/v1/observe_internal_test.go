@@ -109,11 +109,39 @@ func TestASkipQuotesAWholeConditionOrNone(t *testing.T) {
 	t.Parallel()
 
 	long := NewExpr(`"` + strings.Repeat("é", 1000) + `" == ""`)
-	text := SkippedText("gate", long)
+	text := SkippedText("gate", long, nil)
 	require.True(t, strings.HasPrefix(text, "gate skipped: `if: \""), text)
 	require.Equal(t, 1000, strings.Count(text, "é"), "the quote was cut before a driver could withhold it")
 
-	require.Equal(t, "gate skipped (`if:` was false)", SkippedText("gate", NewLiteral("no")),
+	require.Equal(t, "gate skipped (`if:` was false)", SkippedText("gate", NewLiteral("no"), nil),
 		"a literal that is not a boolean has no condition to quote")
-	require.Equal(t, "gate skipped (`if:` was false)", SkippedText("gate", nil))
+	require.Equal(t, "gate skipped (`if:` was false)", SkippedText("gate", nil, nil))
+}
+
+// TestASkipWithholdsAConstantByValue: a constant the predicate withholds is
+// written as the marker before the condition is rendered, wherever it is, a
+// macro's body and a map's key included, and whatever the renderer would have
+// spelled it as: a bytes literal is written in octal escapes, which no match
+// for its text finds (Codex, #2227). The run's own condition is left as it was.
+func TestASkipWithholdsAConstantByValue(t *testing.T) {
+	t.Parallel()
+
+	secret := []byte("hunter2")
+	condition := NewExpr(`inputs.token != b"hunter2" && ["a"].exists(x, x == "hunter2") && {"hunter2": 1}.size() == 2`)
+	withheld := func(value any) bool {
+		switch v := value.(type) {
+		case []byte:
+			return string(v) == string(secret)
+		case string:
+			return v == string(secret)
+		}
+		return false
+	}
+
+	text := SkippedText("gate", condition, withheld)
+	require.NotContains(t, text, "hunter2")
+	require.NotContains(t, text, `\150`, "the bytes literal was written in octal, so this proves nothing")
+	require.Equal(t, 3, strings.Count(text, `"`+SensitiveMarker+`"`), text)
+	require.Contains(t, SkippedText("gate", condition, nil), `b"\150`, "the renderer no longer writes bytes in octal, so this proves nothing")
+	require.Contains(t, SkippedText("gate", condition, nil), `"hunter2"`, "the run's own condition was edited")
 }

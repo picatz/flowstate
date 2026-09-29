@@ -879,7 +879,12 @@ func (e *executor) observeForDebug(kind v1.DebugObservationKind, node *v1.Node, 
 	case v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_FINISHED:
 		text += " finished"
 	case v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_SKIPPED:
-		text = v1.SkippedText(node.GetId(), node.GetCondition())
+		// A constant withheld by value before the condition is written, and
+		// the sentence by text below, as the local session does.
+		sensitive := d.sensitiveAt(e.curSpec, e.scope, e.positionSensitive())
+		text = v1.SkippedText(node.GetId(), node.GetCondition(), func(value any) bool {
+			return sensitive.WithholdAll() || sensitive.IsSensitive(value)
+		})
 	case v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_FAILED:
 		text += " failed: " + detail
 	case v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_TOLERATED:

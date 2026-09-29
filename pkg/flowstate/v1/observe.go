@@ -9,6 +9,7 @@ import (
 	"github.com/google/cel-go/cel"
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
 // RunObserver receives the local driver's own account of a run as it happens:
@@ -131,12 +132,13 @@ type WithholdingOnlyRunObserver interface {
 type GuardRunObserver interface {
 	RunObserver
 
-	// StepSkippedBy is called in place of StepSkipped, with the account both
-	// drivers give of the skip ([SkippedText]). withhold is what a rendering
-	// of it must withhold, as for [WithholdingRunObserver]: the condition is
-	// the author's text, and an author can write a value there that the
-	// workflow declares sensitive.
-	StepSkippedBy(id, account string, withhold SensitiveValues)
+	// StepSkippedBy is called in place of StepSkipped, with the condition
+	// that decided, the observer's own copy, for the account both drivers give
+	// of the skip ([SkippedText]). withhold is what a rendering of it must
+	// withhold, as for [WithholdingRunObserver]: the condition is the
+	// author's text, and an author can write a value there that the workflow
+	// declares sensitive.
+	StepSkippedBy(id string, condition *Value, withhold SensitiveValues)
 
 	// GuardFailed reports a step whose `if:` could not be evaluated. The step
 	// did not run, and err, a snapshot of the failure the run propagates, ends
@@ -151,12 +153,17 @@ type GuardRunObserver interface {
 // never stopped reads why beside the skip. A condition the renderer cannot
 // write back, such as one using a comprehension macro, is not quoted.
 //
-// The quote is whole. Each driver withholds what the sentence must not show
-// and only then bounds it, as it does every observation: a sentence cut first
-// could keep the start of a sensitive value too long to fit, which nothing
-// matching the whole value would then find (Codex, #2227).
-func SkippedText(id string, condition *Value) string {
-	switch text := conditionText(condition); text {
+// Every constant withheld reports true for is written as [SensitiveMarker]
+// before the condition is rendered. By value, because the renderer's spelling
+// of a constant is its own: a bytes literal is written in octal escapes, which
+// no match for the value's text finds (Codex, #2227). withheld may be nil.
+//
+// The quote is whole. Each driver then withholds what the sentence must not
+// show by text too, and only then bounds it, as it does every observation: a
+// sentence cut first could keep the start of a sensitive value too long to
+// fit, which nothing matching the whole value would then find (Codex, #2227).
+func SkippedText(id string, condition *Value, withheld func(any) bool) string {
+	switch text := conditionText(condition, withheld); text {
 	case "":
 		return id + " skipped (`if:` was false)"
 	case "false":
@@ -167,10 +174,10 @@ func SkippedText(id string, condition *Value) string {
 	}
 }
 
-// conditionText renders condition as an author would write it, or "" when it
-// cannot be rendered. The rendering is linear in the compiled expression,
-// whose source the compiler already bounds.
-func conditionText(condition *Value) string {
+// conditionText renders condition as an author would write it, with what
+// withheld reports withheld, or "" when it cannot be rendered. The rendering is
+// linear in the compiled expression, whose source the compiler already bounds.
+func conditionText(condition *Value, withheld func(any) bool) string {
 	var text string
 	switch kind := condition.GetKind().(type) {
 	case *Value_Literal:
@@ -180,7 +187,12 @@ func conditionText(condition *Value) string {
 		}
 		text = fmt.Sprint(b.BoolValue)
 	case *Value_Expr:
-		rendered, err := cel.AstToString(cel.ParsedExprToAst(kind.Expr))
+		parsed := kind.Expr
+		if withheld != nil {
+			parsed = proto.CloneOf(parsed)
+			withholdConstants(parsed.ProtoReflect(), withheld)
+		}
+		rendered, err := cel.AstToString(cel.ParsedExprToAst(parsed))
 		if err != nil {
 			return ""
 		}
@@ -190,6 +202,62 @@ func conditionText(condition *Value) string {
 	}
 
 	return text
+}
+
+// withholdConstants writes [SensitiveMarker] in place of every constant in m
+// that withheld reports true for, at any depth: the expression, a map entry's
+// key, and the macro calls the renderer writes back from. Every message is
+// visited rather than each expression kind, so a kind this walk does not name
+// is not a place a constant can hide.
+func withholdConstants(m protoreflect.Message, withheld func(any) bool) {
+	if constant, ok := m.Interface().(*expr.Constant); ok {
+		if value, ok := constantValue(constant); ok && withheld(value) {
+			constant.ConstantKind = &expr.Constant_StringValue{StringValue: SensitiveMarker}
+		}
+
+		return
+	}
+	m.Range(func(field protoreflect.FieldDescriptor, value protoreflect.Value) bool {
+		switch {
+		case field.IsMap():
+			if field.MapValue().Message() != nil {
+				value.Map().Range(func(_ protoreflect.MapKey, entry protoreflect.Value) bool {
+					withholdConstants(entry.Message(), withheld)
+					return true
+				})
+			}
+		case field.IsList():
+			if field.Message() != nil {
+				for i := range value.List().Len() {
+					withholdConstants(value.List().Get(i).Message(), withheld)
+				}
+			}
+		case field.Message() != nil:
+			withholdConstants(value.Message(), withheld)
+		}
+
+		return true
+	})
+}
+
+// constantValue is a constant as the native value a sensitive set compares.
+func constantValue(constant *expr.Constant) (any, bool) {
+	switch kind := constant.GetConstantKind().(type) {
+	case *expr.Constant_StringValue:
+		return kind.StringValue, true
+	case *expr.Constant_BytesValue:
+		return kind.BytesValue, true
+	case *expr.Constant_Int64Value:
+		return kind.Int64Value, true
+	case *expr.Constant_Uint64Value:
+		return kind.Uint64Value, true
+	case *expr.Constant_DoubleValue:
+		return kind.DoubleValue, true
+	case *expr.Constant_BoolValue:
+		return kind.BoolValue, true
+	default:
+		return nil, false
+	}
 }
 
 type runObserverKey struct{}
@@ -277,9 +345,11 @@ func observeStepSkipped(ctx context.Context, node *Node) {
 		return
 	}
 	if guard, ok := observer.(GuardRunObserver); ok {
-		account := SkippedText(node.GetId(), node.GetCondition())
+		// The observer's own copy, as a finished step's outputs are: the
+		// condition is the run's, and an account must not be able to edit it.
+		condition := proto.CloneOf(node.GetCondition())
 		withhold := ExecutingSensitiveFromContext(ctx)
-		observeSafely(func() { guard.StepSkippedBy(node.GetId(), account, withhold) })
+		observeSafely(func() { guard.StepSkippedBy(node.GetId(), condition, withhold) })
 
 		return
 	}
