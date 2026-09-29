@@ -417,7 +417,9 @@ func (s *Session) StepFailed(ctx context.Context, node *v1.Node, scope *v1.Scope
 	occurrence.Arrival = s.contract.arrivals
 	s.mu.Unlock()
 
-	text := s.redactText(v1.StepErrorText(err))
+	// With what the failing workflow declares sensitive: a callee's error can
+	// quote its own sensitive input (Codex, #2209).
+	text := s.redactTextAt(ctx, v1.StepErrorText(err))
 	how := "failed"
 	if tolerated {
 		how = "failed (tolerated by continue_on_error)"
@@ -574,7 +576,7 @@ func (s *Session) hold(
 	s.prompting(promptSubject{
 		scope: scope, step: node.GetId(), kind: kind, workflow: workflow,
 		backtrace: v1.ExecutingBacktraceFromContext(ctx, node.GetId(), kind),
-		sensitive: v1.ExecutingSensitiveFromContext(ctx),
+		sensitive: s.sensitiveAt(ctx),
 	})
 	defer s.prompting(promptSubject{})
 	if !s.enterHeld(occurrence, reason, hitIDs, failure) {
@@ -1743,7 +1745,8 @@ func parseLogTemplate(message string) (*logTemplate, error) {
 // place rather than dropping the message.
 func (s *Session) logpoint(ctx context.Context, at breakpoint, scope *v1.Scope, occurrence *v1.DebugOccurrence) {
 	s.mu.Lock()
-	subject := promptSubject{scope: scope, redactText: s.redact, redactValue: s.redactValue}
+	subject := promptSubject{scope: scope}
+	subject.redactText, subject.redactValue = withholdingAt(s.redact, s.redactValue, s.sensitiveAt(ctx))
 	s.mu.Unlock()
 
 	var b strings.Builder

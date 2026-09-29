@@ -466,8 +466,13 @@ func (s *Session) inspectWith(ctx context.Context, expression string, scope *v1.
 
 	// Redacted before the cap, for the reason [Session.stepOutcomeText] gives:
 	// truncating first would leave the first MaxInspectRunes of a long secret
-	// in a string no substring match can recognise (Codex, #1109).
-	s.printf("%s\n", capRunes(s.redactText(s.refValText(out)), MaxInspectRunes))
+	// in a string no substring match can recognise (Codex, #1109). And with
+	// the pause's own redactors, which withhold what the workflow held there
+	// declares sensitive, a callee's included, as the typed contract's
+	// inspection does (#2208, exact-head review): the session's alone know
+	// only what its caller installed.
+	text, value := s.pauseRedactors()
+	s.printf("%s\n", capRunes(applyText(text, refValTextWith(out, text, value)), MaxInspectRunes))
 }
 
 // showCompletion answers `complete`, which is tab made into a command.

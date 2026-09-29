@@ -2,6 +2,7 @@ package flowdebug_test
 
 import (
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -12,11 +13,6 @@ import (
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowdebug"
 )
 
-// TestAHoldInsideACalleeWithholdsItsSensitiveInputs is #2208: a value only a
-// callee declares `sensitive: true` is withheld at a hold inside that callee,
-// by the typed contract's inspection and by the prompt's, as the durable
-// driver withholds it — although the session was given no redactor of its
-// own, and the root declares nothing sensitive.
 const calleeSecret = "hunter2-callee-only-secret"
 
 // calleeSensitiveFiles is a root that passes a literal to a callee declaring
@@ -48,6 +44,11 @@ steps:
 	return map[string]string{"main.yaml": root, "child.yaml": child}
 }
 
+// TestAHoldInsideACalleeWithholdsItsSensitiveInputs is #2208: a value only a
+// callee declares `sensitive: true` is withheld at a hold inside that callee,
+// by the typed contract's inspection and the Driver's, as the durable
+// driver withholds it — although the session was given no redactor of its
+// own, and the root declares nothing sensitive.
 func TestAHoldInsideACalleeWithholdsItsSensitiveInputs(t *testing.T) {
 	t.Parallel()
 
@@ -72,7 +73,7 @@ func TestAHoldInsideACalleeWithholdsItsSensitiveInputs(t *testing.T) {
 
 	result, err := flowdebug.NewDriver(run.session).Do(t.Context(), "inspect inputs.api_key")
 	require.NoError(t, err)
-	assert.NotContains(t, result.Text, secret, "the prompt's inspect showed the callee's sensitive input")
+	assert.NotContains(t, result.Text, secret, "the Driver's inspect showed the callee's sensitive input")
 	assert.True(t, strings.Contains(result.Text, "[redacted]") || strings.Contains(result.Text, "withheld"),
 		"the prompt's inspect did not say the value was withheld: %s", result.Text)
 
@@ -180,4 +181,113 @@ steps:
 
 	move(t, target, at, v1.DebugResumeAction_DEBUG_RESUME_ACTION_CONTINUE, "")
 	require.NoError(t, <-run.done)
+}
+
+// TestAnArrivalInsideACalleeWithholdsItsSensitiveInputs: text rendered from a
+// callee's scope at an arrival — a failure stop's error, a logpoint's
+// message, a declined condition's error — withholds what the callee declares
+// sensitive, as the hold's inspections do (Codex, #2209).
+func TestAnArrivalInsideACalleeWithholdsItsSensitiveInputs(t *testing.T) {
+	t.Parallel()
+
+	child := `edition: v2026.3
+name: child
+inputs:
+  api_key:
+    type: string
+    required: true
+    sensitive: true
+steps:
+  - id: use
+    log:
+      message: hi
+  - id: boom
+    value: ${{"a":1}[inputs.api_key]}
+`
+	root := `edition: v2026.3
+name: parent
+steps:
+  - id: first
+    value: ${1}
+  - id: nested
+    call: ./child.yaml
+    with:
+      api_key: ${"` + calleeSecret + `"}
+`
+	run := startDebugRun(t, "main.yaml", map[string]string{"main.yaml": root, "child.yaml": child}, nil)
+	target := flowdebug.Target(run.session)
+	at := waitHeld(t, target, 0)
+
+	_, err := target.ReplaceBreakpoints(t.Context(), &v1.DebugSetBreakpointsRequest{
+		FailureMode: v1.DebugFailureMode_DEBUG_FAILURE_MODE_ALL,
+		Breakpoints: []*v1.DebugBreakpoint{
+			{Id: "log", Step: "nested/use", LogMessage: "key={inputs.api_key}"},
+			{Id: "declined", Step: "nested/use", Condition: `{"a": 1}[inputs.api_key] > 0`},
+		},
+	})
+	require.NoError(t, err)
+
+	at = move(t, target, at, v1.DebugResumeAction_DEBUG_RESUME_ACTION_CONTINUE, "")
+	require.Equal(t, v1.DebugStopReason_DEBUG_STOP_REASON_FAILURE, at.GetReason(), at.GetMessage())
+	assert.Contains(t, at.GetFailure(), "no such key", "the failure does not quote its error, so this proves nothing: %s", at.GetFailure())
+	assert.NotContains(t, at.GetFailure(), calleeSecret, "the failure stop showed the callee's sensitive input")
+
+	// What the arrivals rendered: the logpoint's message and the declined
+	// condition's notice and last error. The observer's own FAILED lines are
+	// the transcript's rendering, which has no position (#2210).
+	var rendered []string
+	for _, observation := range at.GetObservations() {
+		switch observation.GetKind() {
+		case v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_LOG, v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_NOTICE:
+			rendered = append(rendered, observation.GetText())
+		}
+	}
+	for _, state := range at.GetBreakpoints() {
+		rendered = append(rendered, state.GetLastError())
+	}
+	joined := strings.Join(rendered, "\n")
+	assert.Contains(t, joined, "key=", "the logpoint did not record its message")
+	assert.Contains(t, joined, "no such key", "the declined condition's error is not quoted, so this proves nothing")
+	assert.NotContains(t, joined, calleeSecret, "an arrival's rendering showed the callee's sensitive input")
+
+	move(t, target, at, v1.DebugResumeAction_DEBUG_RESUME_ACTION_CONTINUE, "")
+	require.Error(t, <-run.done)
+}
+
+// TestThePromptsInspectInsideACalleeWithholdsItsSensitiveInputs is the #2208
+// reproduction on the path it was found on: the prompt's own `inspect`, typed
+// as a line at a hold inside the callee — what `flow test --debug`, the
+// scripted MCP tool and [flowdebug.Session.Control] feed — rather than the
+// typed contract's inspection the Driver asks (exact-head review).
+func TestThePromptsInspectInsideACalleeWithholdsItsSensitiveInputs(t *testing.T) {
+	t.Parallel()
+
+	var mu sync.Mutex
+	var printed strings.Builder
+	run := startDebugRun(t, "main.yaml", calleeSensitiveFiles(), func(opts *flowdebug.Options) {
+		opts.Emit = func(text string, _ flowdebug.Tone) {
+			mu.Lock()
+			defer mu.Unlock()
+			printed.WriteString(text)
+		}
+	})
+	target := flowdebug.Target(run.session)
+	at := waitHeld(t, target, 0)
+	at = move(t, target, at, v1.DebugResumeAction_DEBUG_RESUME_ACTION_RUN_UNTIL, "nested/use")
+	require.Equal(t, "nested(child)/use", at.GetOccurrence().GetAddress())
+
+	for _, line := range []string{"inspect inputs.api_key", `inspect "k:" + inputs.api_key`, "inspect inputs"} {
+		err := run.session.Control(t.Context(), line)
+		require.NoError(t, err, line)
+	}
+
+	// Read once the run is over, so every answer has been printed.
+	move(t, target, at, v1.DebugResumeAction_DEBUG_RESUME_ACTION_CONTINUE, "")
+	require.NoError(t, <-run.done)
+
+	mu.Lock()
+	out := printed.String()
+	mu.Unlock()
+	assert.NotContains(t, out, calleeSecret, "the prompt's inspect showed the callee's sensitive input")
+	assert.Equal(t, 3, strings.Count(out, "[redacted]"), "each inspection did not say its value was withheld:\n%s", out)
 }
