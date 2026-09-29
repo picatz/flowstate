@@ -196,9 +196,9 @@ tests:
 `)
 
 	flowtesting.RunFile(t, path, flowtesting.WithWalk("it ships", func(walk *flowtesting.Walk) {
-		_, ok := walk.Step()
-		require.True(walk.T(), ok)
-
+		// Before any movement, the order a driver most often takes: the walk
+		// starts once the case's program is known, so these are judged
+		// against it rather than admitted blind.
 		response, err := walk.Session().ReplaceBreakpoints(walk.T().Context(), &v1.DebugSetBreakpointsRequest{
 			Breakpoints: []*v1.DebugBreakpoint{
 				{Id: "nothing", Step: "deploy", Condition: "nosuch > 1"},
@@ -213,5 +213,8 @@ tests:
 		assert.False(walk.T(), states["nothing"].GetVerified(), "a condition nothing can bind was armed")
 		assert.Contains(walk.T(), states["nothing"].GetMessage(), "`nosuch` is not bound")
 		assert.True(walk.T(), states["root"].GetVerified(), states["root"].GetMessage())
+
+		_, ok := walk.Step()
+		require.True(walk.T(), ok)
 	}))
 }

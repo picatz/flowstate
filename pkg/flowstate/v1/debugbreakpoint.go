@@ -216,14 +216,17 @@ func CheckDebugConditionScope(condition *Value, profile string, at, program []De
 	}
 	slices.Sort(locals)
 
-	// A bare name the program binds anywhere is a scope read wherever it is
-	// written, even one spelled like a type: the activation answers a bound
-	// name before the type provider does, so `string` in a loop that binds
-	// `string` is the binding, and outside that loop it is a read of nothing
-	// rather than the type (Codex, #2202). A qualified name is not: cel-go
-	// asks the activation for the whole dotted name, which no binding is, so
-	// `google.protobuf.Timestamp` is the type even where `google` is bound,
-	// and the match is on the exact name (exact-head review).
+	// A bare name the program binds anywhere is judged as a scope read
+	// wherever it is written, even one spelled like a type: the activation
+	// answers a bound name before the type provider does, so `string` in a
+	// loop that binds `string` is the binding (Codex, #2202). Outside that
+	// loop the runtime would read the type, and the condition would be
+	// answered against something its author did not mean; it is refused
+	// instead, naming where the binding is. A qualified name is not a scope
+	// read: cel-go asks the activation for the whole dotted name, which no
+	// binding is, so `google.protobuf.Timestamp` is the type even where
+	// `google` is bound, and the match is on the exact name (exact-head
+	// review).
 	boundInProgram := map[string]bool{}
 	for scope := range debugScopesOf(program) {
 		for _, name := range scope.names {

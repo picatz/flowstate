@@ -386,10 +386,33 @@ func walked(t testing.TB, cfg config, run func(v1.Debugger) flowtest.RunResult) 
 			result = finished.result
 		}()
 
+		// Not before the run's first stop, or its end: flowtest hands the
+		// session the case's program just before the run starts
+		// ([flowdebug.Session.Program]), and a breakpoint set before then would
+		// be admitted without being judged against it (exact-head review,
+		// #2202). A controlled session holds the run at its first stop, and the
+		// run's goroutine closes the session when it ends, so this wait ends.
+		awaitFirstStop(t.Context(), session)
 		cfg.walkDrive(&Walk{t: t, ctx: t.Context(), session: session})
 	}()
 
 	return result
+}
+
+// awaitFirstStop waits until session's run holds at its first stop, or is
+// over, or ctx ends. What a driver then does is ordered after the run started.
+func awaitFirstStop(ctx context.Context, session *flowdebug.Session) {
+	var after uint64
+	for {
+		snapshot, err := session.WaitSnapshot(ctx, after)
+		if err != nil || snapshot.GetState() == v1.DebugRunState_DEBUG_RUN_STATE_HELD ||
+			snapshot.GetState() == v1.DebugRunState_DEBUG_RUN_STATE_COMPLETED ||
+			snapshot.GetState() == v1.DebugRunState_DEBUG_RUN_STATE_FAILED ||
+			snapshot.GetState() == v1.DebugRunState_DEBUG_RUN_STATE_DETACHED {
+			return
+		}
+		after = snapshot.GetRevision()
+	}
 }
 
 // walkedCase reports whether this case is the one a walk was asked for.
