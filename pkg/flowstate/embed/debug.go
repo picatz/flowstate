@@ -91,10 +91,11 @@ func Debug(ctx context.Context, workflow *Workflow, opts DebugOptions) (*Debuggi
 	}
 
 	session, err := flowdebug.New(flowdebug.Options{
-		Controlled: true,
-		Continue:   opts.Continue,
-		Workflow:   workflow,
-		SourceMap:  opts.SourceMap,
+		Controlled:      true,
+		Continue:        opts.Continue,
+		Workflow:        workflow,
+		SourceMap:       opts.SourceMap,
+		RevealSensitive: opts.RevealSensitive,
 		Emit: func(text string, _ flowdebug.Tone) {
 			if opts.Output != nil {
 				opts.Output(text)

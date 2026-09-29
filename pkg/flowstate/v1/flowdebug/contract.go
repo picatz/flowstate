@@ -574,6 +574,7 @@ func (s *Session) hold(
 	s.prompting(promptSubject{
 		scope: scope, step: node.GetId(), kind: kind, workflow: workflow,
 		backtrace: v1.ExecutingBacktraceFromContext(ctx, node.GetId(), kind),
+		sensitive: v1.ExecutingSensitiveFromContext(ctx),
 	})
 	defer s.prompting(promptSubject{})
 	if !s.enterHeld(occurrence, reason, hitIDs, failure) {

@@ -256,6 +256,15 @@ type Options struct {
 	// terminal makes, and the same escape — see [Session.Control].
 	Controlled bool
 
+	// RevealSensitive says the caller has authorized showing the values the
+	// program declares sensitive: `--reveal-sensitive` on `flow run --debug`,
+	// `flow debug replay` and `flow dap`, or embed's
+	// DebugOptions.RevealSensitive, each of which refuses to debug a program
+	// declaring such values without it. Without it, a hold withholds the
+	// declared-sensitive inputs of the root and of the workflow held there, a
+	// callee's included, as the durable driver does (#2208).
+	RevealSensitive bool
+
 	// Workflow is the program being debugged. When set, breakpoint and
 	// run-until targets are resolved against its sites, so a target that can
 	// never match is refused rather than armed.
@@ -534,7 +543,10 @@ type Session struct {
 	// controlled is [Options.Controlled], and control carries the lines
 	// [Session.Control] delivers. See control.go.
 	controlled bool
-	control    chan controlRequest
+
+	// reveal is [Options.RevealSensitive].
+	reveal  bool
+	control chan controlRequest
 
 	// controlSlot admits one [Session.Control] at a time. A run has one
 	// position, so two callers moving it at once is not a thing to arbitrate
@@ -609,6 +621,11 @@ type promptSubject struct {
 	// withhold (Codex, #1120).
 	redactText  func(string) string
 	redactValue func(any) any
+
+	// sensitive is what the workflow held here declares sensitive, with the
+	// root's ([v1.ExecutingSensitiveFromContext]), folded into redactText and
+	// redactValue when the pause is captured.
+	sensitive v1.SensitiveValues
 }
 
 // New returns a session configured by opts.
@@ -658,6 +675,7 @@ func New(opts Options) (*Session, error) {
 		declaredIDs: declaredStepIDSet(opts.Steps),
 
 		controlled:   opts.Controlled,
+		reveal:       opts.RevealSensitive,
 		control:      make(chan controlRequest),
 		controlSlot:  make(chan struct{}, 1),
 		pauseChanged: make(chan struct{}),
@@ -1449,7 +1467,10 @@ func (s *Session) prompting(at promptSubject) {
 	// not a stale answer, it is a concurrent map read and write — which Go
 	// answers with a fatal throw no recover reaches (Codex, #1120).
 	if at.scope != nil {
-		at.redactText, at.redactValue = s.redact, s.redactValue
+		if s.reveal {
+			at.sensitive = v1.SensitiveValues{}
+		}
+		at.redactText, at.redactValue = withholdingAt(s.redact, s.redactValue, at.sensitive)
 		at.scope = frozen(at.scope)
 	}
 
@@ -1463,6 +1484,32 @@ func (s *Session) prompting(at promptSubject) {
 	s.pauseGen++
 	close(s.pauseChanged)
 	s.pauseChanged = make(chan struct{})
+}
+
+// withholdingAt is the session's redactors with what the workflow held at a
+// pause declares sensitive added to both (#2208). The session's own come from
+// its caller — `flow test` installs the case's — and know nothing of a
+// callee's declarations, so a hold inside a callee showed a value only the
+// callee declares sensitive, which the durable driver withholds. Added rather
+// than substituted: the session's rule still applies first, and a session
+// with none still withholds what the held workflow declares.
+func withholdingAt(text func(string) string, value func(any) any, sensitive v1.SensitiveValues) (func(string) string, func(any) any) {
+	if sensitive.Empty() {
+		return text, value
+	}
+
+	return func(rendered string) string {
+			return sensitive.RedactText(applyText(text, rendered), "[withheld]")
+		}, func(native any) any {
+			if sensitive.WithholdAll() {
+				return "[withheld]"
+			}
+			if value != nil {
+				native = value(native)
+			}
+
+			return sensitive.RedactTree(native)
+		}
 }
 
 // frozen is the scope as it was when a pause began, copied so that nothing the

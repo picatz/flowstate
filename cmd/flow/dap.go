@@ -253,6 +253,8 @@ func launchDebuggedRun(
 		Emit:       func(text string, _ flowdebug.Tone) { console.write(text) },
 		Workflow:   workflow,
 		SourceMap:  sourceMap,
+		// Authorized above, or the program declares nothing to withhold.
+		RevealSensitive: reveal,
 		// Held at the first step only when the editor asked to be: the
 		// breakpoints are set before the run starts, so a run that is not
 		// to stop on entry need not hold there only to be released at once,

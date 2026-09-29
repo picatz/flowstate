@@ -44,6 +44,12 @@ type executingPosition struct {
 	// outermost first. Only recorded while a [Debugger] is installed; see
 	// [contextWithSegment].
 	segments []*DebugSegment
+
+	// root and here are what a debugger holding a step on this context
+	// withholds: the root workflow's declared-sensitive inputs, and those of
+	// the workflow whose steps are running here. Only recorded while a
+	// [Debugger] is installed; see [ExecutingSensitiveFromContext].
+	root, here SensitiveValues
 }
 
 // contextWithExecutingWorkflow returns ctx carrying name as the workflow whose
@@ -54,14 +60,19 @@ type executingPosition struct {
 // engine sets the root here and moves calls through
 // [contextWithExecutingCall], both immediately before interpreting that
 // workflow.
-func contextWithExecutingWorkflow(ctx context.Context, name string) context.Context {
-	return context.WithValue(ctx, executingWorkflowKey{}, executingPosition{workflow: name})
+//
+// sensitive is the root's declared-sensitive inputs, as bound, when a
+// [Debugger] is installed; see [ExecutingSensitiveFromContext].
+func contextWithExecutingWorkflow(ctx context.Context, name string, sensitive SensitiveValues) context.Context {
+	return context.WithValue(ctx, executingWorkflowKey{}, executingPosition{workflow: name, root: sensitive})
 }
 
 // contextWithExecutingCall moves execution into callee and records the caller
 // frame that reached it. The list is bounded by CheckCallDepth before this is
 // called, and copied so a nested call cannot mutate its parent's context.
-func contextWithExecutingCall(ctx context.Context, callerStep, callerKind, callee string) context.Context {
+// sensitive is the callee's own declared-sensitive inputs, as bound, when a
+// [Debugger] is installed.
+func contextWithExecutingCall(ctx context.Context, callerStep, callerKind, callee string, sensitive SensitiveValues) context.Context {
 	position, _ := ctx.Value(executingWorkflowKey{}).(executingPosition)
 	callers := append([]*DebugStackFrame(nil), position.callers...)
 	callers = append(callers, &DebugStackFrame{
@@ -84,7 +95,36 @@ func contextWithExecutingCall(ctx context.Context, callerStep, callerKind, calle
 		workflow: callee,
 		callers:  callers,
 		segments: segments,
+		root:     position.root,
+		here:     sensitive,
 	})
+}
+
+// ExecutingSensitiveFromContext is what a debugger holding a step on ctx
+// withholds from what it shows: the root workflow's declared-sensitive inputs
+// and those of the workflow whose steps are running there, a callee's
+// included (#2208). It is the durable driver's rule
+// (engine/debugsession.go, sensitiveAt): sensitivity belongs to a value's
+// origin, so the root's are withheld inside a callee too, and a callee's own
+// declarations reach no caller's redactor any other way.
+//
+// Empty where no [Debugger] was installed when the workflow began, or the
+// engine never ran.
+func ExecutingSensitiveFromContext(ctx context.Context) SensitiveValues {
+	position, _ := ctx.Value(executingWorkflowKey{}).(executingPosition)
+
+	return position.root.Merge(position.here)
+}
+
+// debugSensitiveInputs is what [ExecutingSensitiveFromContext] records for
+// one workflow's bound inputs: only while a [Debugger] is installed, which is
+// the only reader, so an ordinary run does not pay for it.
+func debugSensitiveInputs(ctx context.Context, wf *Workflow, inputs map[string]*Value) SensitiveValues {
+	if DebuggerFromContext(ctx) == nil {
+		return SensitiveValues{}
+	}
+
+	return SensitiveInputValues(inputs, SensitiveInputNames(wf))
 }
 
 // ExecutingWorkflowFromContext reports which workflow's steps are running on

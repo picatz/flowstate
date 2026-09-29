@@ -1290,7 +1290,7 @@ func eval(ctx context.Context, w *Workflow, inputs map[string]*Value) (*Workflow
 	// Which workflow's steps are about to run. Stamped here, unconditionally,
 	// because it is a fact about the run and not about how the run was
 	// configured — see [ExecutingWorkflowFromContext].
-	ctx = contextWithExecutingWorkflow(ctx, w.GetName())
+	ctx = contextWithExecutingWorkflow(ctx, w.GetName(), debugSensitiveInputs(ctx, w, inputs))
 
 	// Registered for the whole run, not per wait: a [VirtualClock] must not see
 	// this goroutine as "gone" between two waits, or a second, unrelated
@@ -2104,7 +2104,7 @@ func runCall(ctx context.Context, callerStep, callerKind string, call *Call, sco
 	// `callee.GetName()`, so there is one source and two audiences rather than
 	// two spellings — and the first is what a step boundary reads, because a
 	// run with no secrets configured still has a workflow.
-	calleeCtx := contextWithExecutingCall(ctx, callerStep, callerKind, callee.GetName())
+	calleeCtx := contextWithExecutingCall(ctx, callerStep, callerKind, callee.GetName(), debugSensitiveInputs(ctx, callee, inner.GetInputs()))
 	if runtime, ok := ctx.Value(secretRuntimeKey{}).(TaskRuntime); ok {
 		calleeCtx = ContextWithSecretStep(calleeCtx, callee.GetName(), runtime.Step.Run, "")
 	}
