@@ -842,10 +842,22 @@ func (c *Codec) MaxEncodedSize(plain int) int {
 // Decode errors. Each is a distinct sentinel so callers, and the codec server,
 // can classify a refusal without parsing its text, and none carries payload
 // bytes.
+//
+// A refusal that is this process's rather than the payload's (a key, a
+// version, a suite or an unencrypted payload this worker does not accept, or
+// a provider that refuses it the key) matches [payloadcodec.ErrNotReadableHere]:
+// another worker, configured otherwise, reads the same history, so workflow
+// code fails the run on it rather than dropping a signal or failing a step,
+// either of which would diverge from that worker's replay. Only a payload
+// that is itself wrong does not. TestEveryDecodeErrorIsClassified holds every
+// sentinel here to one of the two.
 var (
 	// ErrUnencrypted is a payload with no encryption, refused because the
-	// codec does not accept unencrypted payloads.
-	ErrUnencrypted = errors.New("envelope: payload is not encrypted, and this deployment requires encryption")
+	// codec does not accept unencrypted payloads. This worker's policy, not
+	// the payload's fault: during a migration another worker accepts it.
+	ErrUnencrypted error = &classifiedError{
+		msg: "envelope: payload is not encrypted, and this deployment requires encryption", class: payloadcodec.ErrNotReadableHere,
+	}
 
 	// ErrUnknownVersion is a payload marked as a version of this envelope
 	// this build cannot read.
@@ -860,8 +872,11 @@ var (
 	}
 
 	// ErrSuiteRefused is a payload sealed with a suite the namespace does not
-	// accept.
-	ErrSuiteRefused = errors.New("envelope: payload was sealed with a suite this namespace does not accept")
+	// accept: a FIPS worker reading XChaCha20 history, or workers with
+	// different decrypt_suites during a rollout.
+	ErrSuiteRefused error = &classifiedError{
+		msg: "envelope: payload was sealed with a suite this namespace does not accept", class: payloadcodec.ErrNotReadableHere,
+	}
 
 	// ErrMalformed is a payload whose envelope is structurally invalid.
 	ErrMalformed = errors.New("envelope: malformed payload")

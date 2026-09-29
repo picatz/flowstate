@@ -505,7 +505,10 @@ A payload names its suite in its header, and each namespace says what it seals
 with and what it reads, so changing algorithm is a configuration change, not a
 migration: add the new suite to `decrypt_suites` everywhere, then switch
 `suite`, then remove the old one from `decrypt_suites` once no history needs
-it.
+it. The order matters: a worker reading, in workflow code, a payload sealed
+with a suite it does not accept fails that run rather than dropping a signal
+or failing a step, because another worker may accept it. The same holds for
+a worker without `accept_unencrypted` reading pre-encryption history.
 
 Under Go's FIPS 140-3 mode (`GODEBUG=fips140=on`), only approved suites are
 used: AES-256-GCM, through the FIPS module's own random-nonce construction.
