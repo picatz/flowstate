@@ -17,7 +17,7 @@ import (
 func TestDebugGetSaysAMissedUntilOnce(t *testing.T) {
 	t.Parallel()
 
-	notice := flowdebug.MissedUntilNotice("settle")
+	notice := flowdebug.MissedUntilNotice("settle", nil)
 	out := formatDebugGet(&v1.DebugSnapshot{
 		State: v1.DebugRunState_DEBUG_RUN_STATE_COMPLETED,
 		Observations: []*v1.DebugObservation{

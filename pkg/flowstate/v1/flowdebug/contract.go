@@ -653,9 +653,12 @@ func (s *Session) RunReturned(err error) {
 		return
 	}
 
-	text := MissedUntilNotice(missed)
-	s.printfTone(ToneWarning, "%s\n", text)
-	s.observe(v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_NOTICE, "", text)
+	// Redacted by the notice, which passes only the `until` through the
+	// redactor, and so printed and recorded as it is: redacting the whole
+	// line again would reach the fixed words that identify it (Codex, #2204).
+	text := MissedUntilNotice(missed, s.redactText)
+	s.emitTone(ToneWarning, text+"\n")
+	s.observeRedacted(v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_NOTICE, "", text)
 }
 
 // MissedUntilNotice is the notice a run that completed with an `until` still
@@ -664,11 +667,20 @@ func (s *Session) RunReturned(err error) {
 // [Session.RunReturned], a durable run in the snapshot it answers once it has
 // completed — so a script or an agent matching one matches the other.
 //
-// The `until` is cut to [maxMissedUntilRunes], so the whole notice stays
-// under both drivers' observation caps (512 runes durable, 1024 local): a
-// target may be 4 KiB, and clipping it anywhere else would close neither the
-// quote nor the two drivers' texts on the same rune (Copilot, #2204).
-func MissedUntilNotice(asked string) string {
+// redact, when it is not nil, is the driver's transcript redaction, and it is
+// given the `until` alone: the notice's fixed words are the same for every
+// run, so they reveal nothing, and they are how a rendered snapshot picks the
+// notice out ([FormatSnapshotShows]) even when a sensitive value is one of
+// them (Codex, #2204). A driver records the result as it is, without
+// redacting it again.
+//
+// The redacted `until` is then cut to [maxMissedUntilRunes], so the whole
+// notice stays under both drivers' observation caps (512 runes durable, 1024
+// local): a target may be 4 KiB, redaction can lengthen it, and clipping it
+// anywhere else would close neither the quote nor the two drivers' texts on
+// the same rune (Copilot and Codex, #2204).
+func MissedUntilNotice(asked string, redact func(string) string) string {
+	asked = applyText(redact, asked)
 	if runes := []rune(asked); len(runes) > maxMissedUntilRunes {
 		asked = string(runes[:maxMissedUntilRunes]) + "…"
 	}
@@ -736,8 +748,12 @@ func (s *Session) redactTextLocked(text string) string {
 
 // observe records one observation.
 func (s *Session) observe(kind v1.DebugObservationKind, step, text string) {
-	text = capRunes(s.redactText(strings.TrimRight(text, "\n")), maxObservationRunes)
+	s.observeRedacted(kind, step, capRunes(s.redactText(strings.TrimRight(text, "\n")), maxObservationRunes))
+}
 
+// observeRedacted records one observation whose text is already redacted and
+// bounded.
+func (s *Session) observeRedacted(kind v1.DebugObservationKind, step, text string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 

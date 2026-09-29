@@ -1678,8 +1678,11 @@ func (s *Session) record(line string) {
 // installed one, to Out otherwise. Every write in this package goes through
 // here, so a session is colourable without a second output path.
 func (s *Session) printfTone(tone Tone, format string, args ...any) {
-	text := s.redactText(fmt.Sprintf(format, args...))
+	s.emitTone(tone, s.redactText(fmt.Sprintf(format, args...)))
+}
 
+// emitTone prints text that is already redacted, as it is.
+func (s *Session) emitTone(tone Tone, text string) {
 	// Held across the call, not just around a field read: Emit is the
 	// caller's, and the two this repository ships both accumulate — the MCP
 	// adapter appends to a slice and adds up bytes, the CLI writes to a

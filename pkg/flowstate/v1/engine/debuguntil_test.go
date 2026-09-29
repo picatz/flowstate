@@ -50,7 +50,7 @@ func TestADurableRunCompletedPastItsUntilSaysSo(t *testing.T) {
 	require.Equal(t, v1.DebugRunState_DEBUG_RUN_STATE_HELD, tl.reads["held"].GetState())
 
 	after := querySnapshot(t, tl.env, "")
-	assert.Equal(t, []string{flowdebug.MissedUntilNotice("settle")}, missedUntilNotices(after),
+	assert.Equal(t, []string{flowdebug.MissedUntilNotice("settle", nil)}, missedUntilNotices(after),
 		"a completed run said nothing of the `until` it never stopped at")
 }
 
@@ -147,7 +147,7 @@ func TestTheDurableDriverSaysTheCorpussMissedUntil(t *testing.T) {
 			require.Equal(t, v1.DebugRunState_DEBUG_RUN_STATE_HELD, held.GetState())
 			require.Equal(t, test.HeldAt, held.GetOccurrence().GetAddress())
 
-			assert.Equal(t, []string{flowdebug.MissedUntilNotice(test.Until)}, missedUntilNotices(querySnapshot(t, tl.env, "")))
+			assert.Equal(t, []string{flowdebug.MissedUntilNotice(test.Until, nil)}, missedUntilNotices(querySnapshot(t, tl.env, "")))
 		})
 	}
 }

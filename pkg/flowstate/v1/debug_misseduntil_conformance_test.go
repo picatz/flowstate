@@ -69,7 +69,7 @@ func TestTheLocalDriverSaysTheCorpussMissedUntil(t *testing.T) {
 					notices = append(notices, observation.GetText())
 				}
 			}
-			assert.Equal(t, []string{flowdebug.MissedUntilNotice(test.Until)}, notices)
+			assert.Equal(t, []string{flowdebug.MissedUntilNotice(test.Until, nil)}, notices)
 		})
 	}
 }

@@ -706,12 +706,16 @@ func (e *executor) observeForDebug(kind v1.DebugObservationKind, node *v1.Node, 
 // recordDebugObservation appends one observation, redacted and bounded, to
 // what an attached session reads back.
 func (e *executor) recordDebugObservation(kind v1.DebugObservationKind, stepID, address, text string) {
-	d := e.debug
 	text = e.debugRedactText(text)
 	if runes := []rune(text); len(runes) > maxDebugObservationRunes {
 		text = string(runes[:maxDebugObservationRunes]) + "…"
 	}
+	e.debug.appendDebugObservation(kind, stepID, address, text)
+}
 
+// appendDebugObservation records one observation whose text is already
+// redacted and bounded.
+func (d *debugControl) appendDebugObservation(kind v1.DebugObservationKind, stepID, address, text string) {
 	d.sequence++
 	d.observations = append(d.observations, &v1.DebugObservation{
 		Sequence: d.sequence,
@@ -744,8 +748,10 @@ func (e *executor) debugRunCompleted() {
 	if d.carry.GetNext() != v1.DebugResumeAction_DEBUG_RESUME_ACTION_RUN_UNTIL {
 		return
 	}
-	e.recordDebugObservation(v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_NOTICE, "", "",
-		flowdebug.MissedUntilNotice(d.carry.GetUntil()))
+	// Redacted and bounded by the notice itself, which redacts only the
+	// `until`, so it is recorded as it is.
+	d.appendDebugObservation(v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_NOTICE, "", "",
+		flowdebug.MissedUntilNotice(d.carry.GetUntil(), e.debugRedactText))
 }
 
 // debugSnapshot answers [v1.DebugQuery]: the session as the run holds it. A
