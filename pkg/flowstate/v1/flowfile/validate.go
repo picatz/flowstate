@@ -6,7 +6,9 @@ import (
 	"maps"
 	"slices"
 	"strings"
+	"sync"
 
+	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/common/operators"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/nearest"
@@ -540,7 +542,7 @@ func validateWorkflowVars(wf *v1.Workflow) Diagnostics {
 		}
 
 		field := v1.VarsRoot + "." + name
-		rooted, vars, inputs, run, trigger, bare := referencedIdentifiers(parsed)
+		rooted, vars, inputs, run, trigger, bare, types := referencedIdentifiers(parsed)
 
 		for _, ref := range inputs {
 			// A run's arguments *are* known before the first step, so this refusal is
@@ -635,9 +637,10 @@ func validateWorkflowVars(wf *v1.Workflow) Diagnostics {
 				continue
 			}
 
-			if functionNamespaces[ref] {
-				// The profile's own functions, which a var may absolutely use — the
-				// sentence below says so and this used to refuse them anyway.
+			if functionNamespaces[ref] || types.has(ref) {
+				// The profile's own functions and type values, which a var may
+				// absolutely use — the sentence below says so and this used to
+				// refuse them anyway.
 				continue
 			}
 
@@ -1607,7 +1610,7 @@ func validateInputRefs(stepID, inputName string, val *v1.Value, scope refScope, 
 		return ds
 	}
 
-	rooted, vars, inputs, run, trigger, bare := referencedIdentifiers(parsed)
+	rooted, vars, inputs, run, trigger, bare, types := referencedIdentifiers(parsed)
 
 	// `trigger`'s shape is statically known and closed — four strings — for the
 	// reason `run`'s is, and with one extra consequence: the closure is what keeps
@@ -1718,6 +1721,11 @@ func validateInputRefs(stepID, inputName string, val *v1.Value, scope refScope, 
 					ref, v1.StepsRoot, ref),
 				Code: v1.DiagnosticCodeRetiredKey,
 			})
+			continue
+		}
+		if types.has(ref) {
+			// A type value — `int` in `type(x) == int` — asked after the retired
+			// spelling above ([typeValues]).
 			continue
 		}
 
@@ -1868,7 +1876,8 @@ func unresolvedInput(stepID, inputName, ref string, scope refScope) Diagnostic {
 	return Diagnostic{Step: stepID, Field: inputName, Value: ref, Message: message, Code: v1.DiagnosticCodeUnresolvedReference}
 }
 
-// referencedIdentifiers returns the names an expression references, in six groups:
+// referencedIdentifiers returns the names an expression references, in six groups,
+// and which of the bare ones are type values ([typeValues]):
 // steps reached under the `steps.` root, vars reached under the `vars.` root, inputs
 // reached under the `inputs.` root, fields reached under the `run.` root, fields
 // reached under the `trigger.` root, and whatever is written bare.
@@ -1887,15 +1896,37 @@ func unresolvedInput(stepID, inputName, ref string, scope refScope) Diagnostic {
 // Identifiers bound by a comprehension are excluded: in `items.map(x, x + 1)`
 // the name `x` is introduced by the expression itself and is not a step
 // reference. Reporting those would make every use of a comprehension look broken.
-func referencedIdentifiers(parsed *expr.ParsedExpr) (rooted []stepRef, vars, inputs []string, run []runRef, trigger, bare []string) {
+func referencedIdentifiers(parsed *expr.ParsedExpr) (rooted []stepRef, vars, inputs []string, run []runRef, trigger, bare []string, types typeValues) {
 	roots := map[stepRef]struct{}{}
-	varNames, inputNames, free := map[string]struct{}{}, map[string]struct{}{}, map[string]struct{}{}
+	varNames, inputNames, free, selected := map[string]struct{}{}, map[string]struct{}{}, map[string]struct{}{}, map[string]struct{}{}
 	runFields := map[runRef]struct{}{}
 	triggerFields := map[string]struct{}{}
-	collectReferences(parsed.GetExpr(), map[string]struct{}{}, roots, varNames, inputNames, runFields, triggerFields, free)
+	collectReferences(parsed.GetExpr(), map[string]struct{}{}, roots, varNames, inputNames, runFields, triggerFields, free, selected)
 
 	return sortedStepRefs(roots), sortedNames(varNames), sortedNames(inputNames), sortedRunRefs(runFields),
-		sortedNames(triggerFields), sortedNames(free)
+		sortedNames(triggerFields), sortedNames(free), typeValues{selected: selected}
+}
+
+// typeValues answers which of an expression's bare names are type values:
+// `int` in `type(x) == int`, which cel-go parses as an identifier (#2203).
+//
+// A caller asks it after the names a bare word may otherwise be, because at
+// run time a bound name, and a step's retired bare spelling, are answered
+// before the type provider is: a step named `map` is what `${map}` reads once
+// that step has run. A name selected through (`int.nosuch`) is never one: a
+// type has no fields.
+type typeValues struct {
+	selected map[string]struct{}
+}
+
+// has reports whether ref, written bare, is a type value the profile's
+// environment resolves.
+func (t typeValues) has(ref string) bool {
+	if _, through := t.selected[ref]; through {
+		return false
+	}
+
+	return isTypeValue(ref)
 }
 
 // A stepRef is one reference to a step: which step, and which of its outputs.
@@ -1989,7 +2020,7 @@ func sortedNames(set map[string]struct{}) []string {
 // the spelling this grammar retired, and those want different diagnostics. They
 // are collected apart rather than merged and sorted out afterwards, because the
 // distinction is exactly what the caller needs and is lost by then.
-func collectReferences(e *expr.Expr, bound map[string]struct{}, rooted map[stepRef]struct{}, vars, inputs map[string]struct{}, run map[runRef]struct{}, trigger, free map[string]struct{}) {
+func collectReferences(e *expr.Expr, bound map[string]struct{}, rooted map[stepRef]struct{}, vars, inputs map[string]struct{}, run map[runRef]struct{}, trigger, free, selected map[string]struct{}) {
 	if e == nil {
 		return
 	}
@@ -2027,6 +2058,22 @@ func collectReferences(e *expr.Expr, bound map[string]struct{}, rooted map[stepR
 				return
 			}
 		}
+		// A qualified type or enum value — `google.protobuf.Timestamp` — is
+		// parsed as a select chain, and is not a reference to its first segment.
+		// Any other chain over a free name reads that name, even one spelled like
+		// a type: `int.nosuch` selects from the type, which has no fields, and
+		// `has(…)` of a type is no question at all. A bare type value is the
+		// callers' to admit ([typeValues]), after the names a bare word may
+		// otherwise be: at run time a bound name, and a step's retired bare
+		// spelling, are answered before the type is.
+		if root, name, ok := qualifiedName(sel, bound); ok {
+			if sel.GetTestOnly() || !isTypeValue(name) {
+				free[root] = struct{}{}
+				selected[root] = struct{}{}
+			}
+
+			return
+		}
 	}
 	switch kind := e.GetExprKind().(type) {
 	case *expr.Expr_IdentExpr:
@@ -2035,28 +2082,28 @@ func collectReferences(e *expr.Expr, bound map[string]struct{}, rooted map[stepR
 			free[name] = struct{}{}
 		}
 	case *expr.Expr_SelectExpr:
-		collectReferences(kind.SelectExpr.GetOperand(), bound, rooted, vars, inputs, run, trigger, free)
+		collectReferences(kind.SelectExpr.GetOperand(), bound, rooted, vars, inputs, run, trigger, free, selected)
 	case *expr.Expr_CallExpr:
-		collectReferences(kind.CallExpr.GetTarget(), bound, rooted, vars, inputs, run, trigger, free)
+		collectReferences(kind.CallExpr.GetTarget(), bound, rooted, vars, inputs, run, trigger, free, selected)
 		for _, arg := range kind.CallExpr.GetArgs() {
-			collectReferences(arg, bound, rooted, vars, inputs, run, trigger, free)
+			collectReferences(arg, bound, rooted, vars, inputs, run, trigger, free, selected)
 		}
 	case *expr.Expr_ListExpr:
 		for _, el := range kind.ListExpr.GetElements() {
-			collectReferences(el, bound, rooted, vars, inputs, run, trigger, free)
+			collectReferences(el, bound, rooted, vars, inputs, run, trigger, free, selected)
 		}
 	case *expr.Expr_StructExpr:
 		for _, entry := range kind.StructExpr.GetEntries() {
-			collectReferences(entry.GetMapKey(), bound, rooted, vars, inputs, run, trigger, free)
-			collectReferences(entry.GetValue(), bound, rooted, vars, inputs, run, trigger, free)
+			collectReferences(entry.GetMapKey(), bound, rooted, vars, inputs, run, trigger, free, selected)
+			collectReferences(entry.GetValue(), bound, rooted, vars, inputs, run, trigger, free, selected)
 		}
 	case *expr.Expr_ComprehensionExpr:
 		c := kind.ComprehensionExpr
 
 		// The range and the accumulator's start are evaluated outside the
 		// comprehension's own scope.
-		collectReferences(c.GetIterRange(), bound, rooted, vars, inputs, run, trigger, free)
-		collectReferences(c.GetAccuInit(), bound, rooted, vars, inputs, run, trigger, free)
+		collectReferences(c.GetIterRange(), bound, rooted, vars, inputs, run, trigger, free, selected)
+		collectReferences(c.GetAccuInit(), bound, rooted, vars, inputs, run, trigger, free, selected)
 
 		inner := make(map[string]struct{}, len(bound)+3)
 		for name := range bound {
@@ -2067,9 +2114,9 @@ func collectReferences(e *expr.Expr, bound map[string]struct{}, rooted map[stepR
 				inner[name] = struct{}{}
 			}
 		}
-		collectReferences(c.GetLoopCondition(), inner, rooted, vars, inputs, run, trigger, free)
-		collectReferences(c.GetLoopStep(), inner, rooted, vars, inputs, run, trigger, free)
-		collectReferences(c.GetResult(), inner, rooted, vars, inputs, run, trigger, free)
+		collectReferences(c.GetLoopCondition(), inner, rooted, vars, inputs, run, trigger, free, selected)
+		collectReferences(c.GetLoopStep(), inner, rooted, vars, inputs, run, trigger, free, selected)
+		collectReferences(c.GetResult(), inner, rooted, vars, inputs, run, trigger, free, selected)
 	}
 }
 
@@ -3444,6 +3491,62 @@ var functionNamespaces = func() map[string]bool {
 
 	return out
 }()
+
+// isTypeValue reports whether name, bare or dotted, is a type or enum value the
+// profile's environment resolves: `int` in `type(x) == int`, `null_type`,
+// `google.protobuf.Timestamp`. cel-go parses one as an identifier, or a select
+// chain over one, so it reaches the reference walk looking exactly like a name
+// nobody bound, and `flow validate` refused expressions both drivers evaluate
+// (#2203).
+//
+// The environment answers rather than a list, for the reason
+// [functionNamespaces] records. A name a comprehension binds is decided before
+// this is asked, and a loop binding spelled like a type is admitted either way:
+// inside its loop it is the binding, and outside it the type.
+func isTypeValue(name string) bool {
+	env := typeValueEnv()
+	if env == nil {
+		return false
+	}
+	_, found := env.CELTypeProvider().FindIdent(name)
+
+	return found
+}
+
+// typeValueEnv is the environment [isTypeValue] asks, built once. Nil when the
+// current profile's environment cannot be built, which admits no type value:
+// the same trade [functionNamespaces] makes.
+var typeValueEnv = sync.OnceValue(func() *cel.Env {
+	env, err := v1.DefaultEvaluator().ProfileEnv(v1.CurrentProfile)
+	if err != nil {
+		return nil
+	}
+
+	return env
+})
+
+// qualifiedName spells a select chain that bottoms out in an identifier no
+// comprehension bound as one dotted name, `google.protobuf.Timestamp`, and
+// returns that identifier as root. ok is false for any other chain.
+func qualifiedName(sel *expr.Expr_Select, bound map[string]struct{}) (root, name string, ok bool) {
+	fields := []string{sel.GetField()}
+	operand := sel.GetOperand()
+	for operand.GetSelectExpr() != nil {
+		fields = append(fields, operand.GetSelectExpr().GetField())
+		operand = operand.GetSelectExpr().GetOperand()
+	}
+	ident := operand.GetIdentExpr()
+	if ident == nil {
+		return "", "", false
+	}
+	if _, shadowed := bound[ident.GetName()]; shadowed {
+		return "", "", false
+	}
+	fields = append(fields, ident.GetName())
+	slices.Reverse(fields)
+
+	return ident.GetName(), strings.Join(fields, "."), true
+}
 
 // Proto renders a diagnostic as the schema message every surface reads.
 //
