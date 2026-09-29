@@ -1209,8 +1209,16 @@ func requireRoundTripAt(t *testing.T, workflow *v1.Workflow, path string) {
 		t.Errorf("round trip produced profile %q, want the compiler's %q",
 			again.GetProfile(), v1.CurrentProfile)
 	}
+	// The source digest is the same kind of stamp: the digest of the bytes a
+	// file was compiled from, which Marshal's rendering is not. Asserted
+	// against those bytes rather than ignored, and only where the compile had
+	// a file to record.
+	if want := v1.ContentDigest(data); path != "" && again.GetSourceDigest() != want {
+		t.Errorf("round trip recorded source digest %q, want the rendered bytes' %q", again.GetSourceDigest(), want)
+	}
 	normalized := proto.Clone(again).(*v1.Workflow)
 	normalized.Profile = workflow.GetProfile()
+	normalized.SourceDigest = workflow.GetSourceDigest()
 
 	if !proto.Equal(workflow, normalized) {
 		t.Errorf("round trip changed the workflow:\n%s\nwritten as:\n%s",

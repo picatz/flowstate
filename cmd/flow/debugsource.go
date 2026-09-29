@@ -38,6 +38,33 @@ func loadDebuggedWorkflow(path string) (*v1.Workflow, *debugSource, error) {
 	return workflow, &debugSource{path: absolute, data: data, positions: positions}, nil
 }
 
+// loadMappedWorkflow compiles the Flowfile at path for its source map alone,
+// for an attach to a run that executes somewhere else. Compiled without
+// validating it against what this process can run: a plugin task the
+// deployment runs need not be registered here, and a compile that would pass
+// there names the same program here. Whether it is the program the run
+// executes is the program digest's to say ([flowdebug.Remote.SourceMapVerified]).
+func loadMappedWorkflow(path string) (*v1.Workflow, *debugSource, error) {
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	data, err := readBoundedFile(absolute, "a Flowfile", maxFlowfileSourceBytes)
+	if err != nil {
+		return nil, nil, fmt.Errorf("%s: %w", path, err)
+	}
+	workflow, positions, err := flowfile.ParseAt(data, absolute)
+	if err != nil {
+		if parsed, ok := errors.AsType[flowfile.Diagnostics](err); ok {
+			return nil, nil, diagnosticsError(path, parsed)
+		}
+
+		return nil, nil, fmt.Errorf("%s: %w", path, err)
+	}
+
+	return workflow, &debugSource{path: absolute, data: data, positions: positions}, nil
+}
+
 // debugSource is the read a debugged workflow was compiled from.
 type debugSource struct {
 	path      string

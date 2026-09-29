@@ -122,7 +122,7 @@ func runDebugAttach(cmd *cobra.Command, args []string) (err error) {
 
 	var sourceMap *v1.DebugSourceMap
 	if program != "" {
-		workflow, source, err := loadDebuggedWorkflow(program)
+		workflow, source, err := loadMappedWorkflow(program)
 		if err != nil {
 			return err
 		}
