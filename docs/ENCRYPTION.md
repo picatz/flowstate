@@ -400,7 +400,10 @@ no Flowstate process needs to change. Raising the key's
 unreadable.
 
 **Data keys** rotate themselves: every `data_key.max_age`, or sooner at the
-message or byte bound. Nothing to do.
+message or byte bound. Nothing to do. A key's age counts from before it is
+wrapped, so a rollover whose wraps (to the current key and every escrow key,
+one after another) take the whole `max_age` is refused, and the error names
+how long they took; keep `max_age` well above your providers' latency.
 
 **A local key** rotates in two rollouts, so no process ever meets a payload
 sealed under a key it has not been given:

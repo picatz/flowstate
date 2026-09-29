@@ -683,7 +683,7 @@ func (c *Codec) activeFor(ctx context.Context, size int) (*activeKey, error) {
 				c.retire.Stop()
 			}
 			wp := weak.Make(next)
-			c.retire = time.AfterFunc(c.policy.maxAge+c.policy.staleGrace, func() {
+			c.retire = time.AfterFunc(next.created.Add(c.policy.maxAge+c.policy.staleGrace).Sub(c.now()), func() {
 				if a := wp.Value(); a != nil && c.active.CompareAndSwap(a, nil) {
 					a.retire()
 				}
@@ -732,9 +732,20 @@ func (c *Codec) newActive(ctx context.Context, now time.Time) (*activeKey, error
 		}
 		a.escrow = append(a.escrow, &v1.PayloadEscrowRecipient{KeyId: id, WrappedKey: w.Bytes, KeyVersion: w.Version})
 	}
+	// The wraps are serial calls to remote providers, and can take longer
+	// than a short max_age: a key already past it when they return would seal
+	// its first payload out of its window, under a primary that may have been
+	// disabled since it wrapped. Its age runs from before the wraps, and so do
+	// the deadlines below.
+	elapsed := c.now().Sub(now)
+	if elapsed >= c.policy.maxAge {
+		clear(dk)
+		return nil, fmt.Errorf("envelope: wrapping a data key took %s, past its %s max_age; "+
+			"raise data_key.max_age or find what slows the key providers", elapsed, c.policy.maxAge)
+	}
 	// This process will read what it writes, for as long as it may write
 	// with this key, grace included; it need not ask the provider.
-	c.cache.put(cacheKey(c.current.id, ectx, wrapped), dk, c.policy.maxAge+c.policy.staleGrace)
+	c.cache.put(cacheKey(c.current.id, ectx, wrapped), dk, c.policy.maxAge+c.policy.staleGrace-elapsed)
 	return a, nil
 }
 
