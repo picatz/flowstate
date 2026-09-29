@@ -673,10 +673,14 @@ func TestATaskRunKeepsASensitiveInputOutOfItsFailure(t *testing.T) {
 // say why. The reference names no material and the resolved value never
 // reaches the redaction set, so the reason is not withheld on its account.
 func TestASecretReferenceKeepsTheFailureReason(t *testing.T) {
+	// Its own egress policy, so the refusal is the reference's whatever an
+	// earlier test left in the process-wide registry, and put back after.
+	restoreDefaultRegistryAfter(t)
 	stdout, stderr, err := taskRun(t, "http",
 		"--input", "method=GET",
 		"--input", "url=http://127.0.0.1:1/x",
 		"--input", `bearer=${secret("env:API_TOKEN")}`,
+		"--egress-policy", loopbackEgressPolicy(t),
 		"-o", "json")
 	require.Error(t, err, "a secret reference with no provider configured is refused")
 

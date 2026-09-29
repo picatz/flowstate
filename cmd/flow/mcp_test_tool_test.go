@@ -239,7 +239,7 @@ outputs:
 // come from a policy this process happens to have, but from never reaching a
 // real task in the first place.
 func TestTheTestToolNeedsNoEgressPolicy(t *testing.T) {
-	t.Parallel()
+	restoreDefaultRegistryAfter(t) // applyMCPEgressPolicy replaces the process-wide http task.
 
 	posture := defaultLocalRunPosture()
 	require.NoError(t, applyMCPEgressPolicy(posture))

@@ -99,6 +99,7 @@ func TestSQLPluginReceivesThePolicySnapshotTheHostParsed(t *testing.T) {
 }
 
 func TestAnOversizedEgressPolicyIsRefusedBeforeItCanReachAPluginEnvironment(t *testing.T) {
+	restoreDefaultRegistryAfter(t) // applyEgressPolicy replaces the process-wide http task.
 	cmd := &cobra.Command{Use: "oversized"}
 	addEgressPolicyFlag(cmd)
 
@@ -127,7 +128,7 @@ func TestAnOversizedEgressPolicyIsRefusedBeforeItCanReachAPluginEnvironment(t *t
 // default the http task on this worker is enforcing, not that it looks like a
 // default.
 func TestAWorkerWithNoPolicyGrantsItsOwnDefault(t *testing.T) {
-	t.Parallel()
+	restoreDefaultRegistryAfter(t) // applyEgressPolicy replaces the process-wide http task.
 
 	cmd := &cobra.Command{Use: "default-grant"}
 	addEgressPolicyFlag(cmd)
@@ -171,7 +172,7 @@ func TestACommandThatOnlyDescribesPluginsGrantsTheSameDefault(t *testing.T) {
 // refuse under an operator's real policy that claimed to be one. The refusal is
 // here, where an operator's own bytes enter, rather than in each plugin.
 func TestAnOperatorPolicyCannotClaimToBeTheDeploymentDefault(t *testing.T) {
-	t.Parallel()
+	restoreDefaultRegistryAfter(t) // applyEgressPolicy replaces the process-wide http task.
 
 	cmd := &cobra.Command{Use: "claimed-default"}
 	addEgressPolicyFlag(cmd)
@@ -280,7 +281,7 @@ func TestTheEgressPolicyFlagSaysWhichPluginsEnforceTheGrantAndWhereItStops(t *te
 // against what this command registers for its own http task, and against the
 // deployment default it must not be.
 func TestTheMCPPostureReachesLaunchedPluginsToo(t *testing.T) {
-	t.Parallel()
+	restoreDefaultRegistryAfter(t) // applyMCPEgressPolicy replaces the process-wide http task.
 
 	cmd := &cobra.Command{Use: "mcp-grant"}
 	addEgressPolicyFlag(cmd)
