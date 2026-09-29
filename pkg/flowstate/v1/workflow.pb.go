@@ -547,8 +547,22 @@ type Workflow struct {
 	// record preserves the logical parameter and stable binding identity for
 	// inspection. No endpoint or credential material is carried here.
 	ResolvedCapabilityBindings []*ResolvedCapabilityBinding `protobuf:"bytes,18,rep,name=resolved_capability_bindings,json=resolvedCapabilityBindings,proto3" json:"resolved_capability_bindings,omitempty"`
-	unknownFields              protoimpl.UnknownFields
-	sizeCache                  protoimpl.SizeCache
+	// SourceDigest is a content digest of the bytes this workflow was compiled
+	// from, formatted `sha256:<hex>`, when a client compiled it from a file. It
+	// is the root's counterpart of [Call.source_digest], recorded by the same
+	// compiler from the same read.
+	//
+	// Recorded rather than verified, and never a basis for trust: nothing
+	// resolves it, and a caller may send any value. What it buys is that the
+	// program's identity ([DebugSourceMap.ir_digest]) covers where its steps are
+	// written. The compiled steps carry no positions, so without it a file whose
+	// lines moved compiles to the same program, and a debugger attaching to a
+	// durable run with that file would put frames and line breakpoints on the
+	// wrong lines. With it, a file whose bytes differ from the ones the run was
+	// compiled from names a different program, and its lines are not used.
+	SourceDigest  string `protobuf:"bytes,19,opt,name=source_digest,json=sourceDigest,proto3" json:"source_digest,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Workflow) Reset() {
@@ -698,6 +712,13 @@ func (x *Workflow) GetResolvedCapabilityBindings() []*ResolvedCapabilityBinding 
 		return x.ResolvedCapabilityBindings
 	}
 	return nil
+}
+
+func (x *Workflow) GetSourceDigest() string {
+	if x != nil {
+		return x.SourceDigest
+	}
+	return ""
 }
 
 // Concurrency is "at most one run of this workflow per key", answered at submit.
@@ -3819,7 +3840,7 @@ var File_flowstate_v1_workflow_proto protoreflect.FileDescriptor
 
 const file_flowstate_v1_workflow_proto_rawDesc = "" +
 	"\n" +
-	"\x1bflowstate/v1/workflow.proto\x12\fflowstate.v1\x1a\x1bbuf/validate/validate.proto\x1a\x19flowstate/v1/signal.proto\x1a\x17flowstate/v1/task.proto\x1a\x1aflowstate/v1/trigger.proto\x1a\x17flowstate/v1/type.proto\x1a\x18flowstate/v1/value.proto\x1a\x1fgoogle/api/field_behavior.proto\x1a\x1egoogle/protobuf/duration.proto\"\xd7\x0e\n" +
+	"\x1bflowstate/v1/workflow.proto\x12\fflowstate.v1\x1a\x1bbuf/validate/validate.proto\x1a\x19flowstate/v1/signal.proto\x1a\x17flowstate/v1/task.proto\x1a\x1aflowstate/v1/trigger.proto\x1a\x17flowstate/v1/type.proto\x1a\x18flowstate/v1/value.proto\x1a\x1fgoogle/api/field_behavior.proto\x1a\x1egoogle/protobuf/duration.proto\"\x8a\x0f\n" +
 	"\bWorkflow\x127\n" +
 	"\x04name\x18\x01 \x01(\tB#\xe2A\x01\x02\xbaH\x1c\xc8\x01\x01r\x17\x10\x01\x18\x80\x012\x10^[A-Za-z0-9-_]+$R\x04name\x12/\n" +
 	"\vdescription\x18\x02 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x02H\x00R\vdescription\x88\x01\x01\x12;\n" +
@@ -3839,7 +3860,8 @@ const file_flowstate_v1_workflow_proto_rawDesc = "" +
 	"\x05debug\x18\x0f \x01(\v2\x1a.flowstate.v1.SignalPolicyB\x04\xe2A\x01\x01R\x05debug\x12j\n" +
 	"\x1aresolved_task_capabilities\x18\x10 \x01(\v2&.flowstate.v1.ResolvedTaskCapabilitiesB\x04\xe2A\x01\x01R\x18resolvedTaskCapabilities\x12d\n" +
 	"\x15capability_parameters\x18\x11 \x03(\v2!.flowstate.v1.CapabilityParameterB\f\xe2A\x01\x01\xbaH\x05\x92\x01\x02\x10@R\x14capabilityParameters\x12w\n" +
-	"\x1cresolved_capability_bindings\x18\x12 \x03(\v2'.flowstate.v1.ResolvedCapabilityBindingB\f\xe2A\x01\x01\xbaH\x05\x92\x01\x02\x10@R\x1aresolvedCapabilityBindings\x1a\x8d\x02\n" +
+	"\x1cresolved_capability_bindings\x18\x12 \x03(\v2'.flowstate.v1.ResolvedCapabilityBindingB\f\xe2A\x01\x01\xbaH\x05\x92\x01\x02\x10@R\x1aresolvedCapabilityBindings\x121\n" +
+	"\rsource_digest\x18\x13 \x01(\tB\f\xe2A\x01\x01\xbaH\x05r\x03\x18\x80\x01R\fsourceDigest\x1a\x8d\x02\n" +
 	"\vStepOutputs\x12h\n" +
 	"\vstep_values\x18\x01 \x03(\v22.flowstate.v1.Workflow.StepOutputs.StepValuesEntryB\x13\xe2A\x01\x02\xbaH\f\xc8\x01\x01\x9a\x01\x06\"\x04r\x02\x10\x01R\n" +
 	"stepValues\x129\n" +

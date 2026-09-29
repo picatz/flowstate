@@ -202,7 +202,10 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 
 	ctx, err := withLocalSignals(cmd.Context(), cmd, workflow, inputs, localSignals)
 	if err != nil {
-		return err
+		// A gate's `subject_from:` is evaluated against these arguments, and
+		// its refusal quotes what it resolved to, which can be a sensitive
+		// input's value (#2100). Through the same seam as the refusals above.
+		return redactFailureError(err, refusedRunSensitiveValues(cmd, workflow, inputs, err, reveal))
 	}
 	reportUnansweredGates(cmd.ErrOrStderr(), workflow, localSignals)
 	ctx, err = withLocalTaskRuntimeUsing(cmd, ctx, workflow, providers)
@@ -247,11 +250,8 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 		//
 		// Refused before the terminal is touched, so a refusal cannot leave one
 		// in raw mode.
-		if decideCarriedValues(workflow, reveal) != carriedValuesShown {
-			return fmt.Errorf("--debug narrates step values and evaluates expressions over them, and "+
-				"%q declares sensitive inputs or outputs whose transcript this command would otherwise "+
-				"withhold; add --reveal-sensitive to debug it with values shown, or drop --debug",
-				workflow.GetName())
+		if err := debugRevealRefusal(workflow.GetName(), decideCarriedValues(workflow, reveal)); err != nil {
+			return err
 		}
 
 		console, narrate, restore = debugConsoleFor(cmd.InOrStdin(), surface.Err, surface.ErrTheme)
@@ -291,6 +291,12 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 			// complete over every step the run may reach rather than only the
 			// ones it has been to.
 			Steps: stepList(workflow),
+			// And the program itself, so a target or a condition is judged
+			// against where it can fire, as every other front judges it.
+			Workflow: workflow,
+			// Authorized by --reveal-sensitive, without which a program
+			// declaring sensitive values is refused above.
+			RevealSensitive: reveal,
 		})
 		if err != nil {
 			return err
@@ -317,6 +323,12 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 	// the declared defaults exactly as the server does before a durable run starts.
 	// The check above is for the message; this is the one that decides.
 	outputs, runErr := v1.RunWithInputs(ctx, workflow, inputs)
+	// A debugger is told the run has returned, so it can say what the run
+	// never did, an `until` it never reached, while its console still owns
+	// the line. Found on the context, as flowtest finds it.
+	if returned, ok := v1.DebuggerFromContext(ctx).(interface{ RunReturned(error) }); ok {
+		returned.RunReturned(runErr)
+	}
 
 	// The console owned the line for as long as the run did, and no longer:
 	// everything below prints an answer and an account onto what should be an
@@ -481,5 +493,25 @@ func interruptedStatus(interrupted error) v1.RunResponse_Status {
 
 	default:
 		return v1.RunResponse_STATUS_FAILED
+	}
+}
+
+// debugRevealRefusal is why `--debug` will not attach to the workflow named
+// name, given what its declarations decided: nil when its values may be shown.
+// A workflow that declares something sensitive and one whose declarations
+// could not be fully inspected are both refused, and told apart, since the
+// remedy is the same but the reason is not.
+func debugRevealRefusal(name string, decided carriedValues) error {
+	switch decided {
+	case carriedValuesShown:
+		return nil
+	case carriedValuesDeclared:
+		return fmt.Errorf("--debug narrates step values and evaluates expressions over them, and "+
+			"%q declares sensitive inputs or outputs whose transcript this command would otherwise "+
+			"withhold; add --reveal-sensitive to debug it with values shown, or drop --debug", name)
+	default:
+		return fmt.Errorf("--debug narrates step values and evaluates expressions over them, and "+
+			"%q's sensitive-value declarations could not be fully inspected, so it is not debugged "+
+			"without explicit disclosure; add --reveal-sensitive to debug it with values shown, or drop --debug", name)
 	}
 }

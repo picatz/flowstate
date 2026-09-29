@@ -27,7 +27,9 @@ import (
 //   - The halves redactStartedRun is made of (redactFailureText and v1's
 //     RedactGetResponse, RedactGetResponseDecided and
 //     RedactGetResponseFailures) are called only in sensitive.go, so no
-//     surface assembles a partial redaction of its own.
+//     surface assembles a partial redaction of its own. A function listed in
+//     redactsFailureEarly may also call redactFailureText, for the reason
+//     given, and must still call redactStartedRun.
 func TestEveryRunThisProcessStartsIsRedactedAsOne(t *testing.T) {
 	t.Parallel()
 
@@ -36,6 +38,14 @@ func TestEveryRunThisProcessStartsIsRedactedAsOne(t *testing.T) {
 	startsRunsRedactedElsewhere := map[string]string{
 		"launchDebuggedRun": "flowdap prints the failure through session.RedactText, against the debug session's own sensitive set",
 	}
+
+	// redactsFailureEarly names a function that must redact the failure
+	// sentence before something cuts it, with that reason.
+	redactsFailureEarly := map[string]string{
+		"runLocalToolHandler": "flowmcp.CapErrorMessage cuts the sentence in boundRunLocalResponse, and a value " +
+			"straddling the cut would leave a prefix no later redaction matches (#2188)",
+	}
+	early := map[string]bool{}
 
 	paths := nonTestGoFiles(t)
 
@@ -86,7 +96,9 @@ func TestEveryRunThisProcessStartsIsRedactedAsOne(t *testing.T) {
 				case *ast.Ident:
 					switch fun.Name {
 					case "redactFailureText":
-						if !assembles {
+						if _, ok := redactsFailureEarly[fn.Name.Name]; ok {
+							early[fn.Name.Name] = true
+						} else if !assembles {
 							t.Errorf("%s: %s calls redactFailureText alone; use redactStartedRun, "+
 								"which applies it together with the declared-output redaction",
 								fset.Position(call.Pos()), fn.Name.Name)
@@ -107,6 +119,10 @@ func TestEveryRunThisProcessStartsIsRedactedAsOne(t *testing.T) {
 				}
 				return true
 			})
+			if early[fn.Name.Name] && !redactsStarted {
+				t.Errorf("%s: %s redacts the failure sentence early and does not call redactStartedRun",
+					fset.Position(fn.Pos()), fn.Name.Name)
+			}
 			if !startsRun {
 				continue
 			}
@@ -126,6 +142,9 @@ func TestEveryRunThisProcessStartsIsRedactedAsOne(t *testing.T) {
 	// still names a function that exists and starts a run.
 	require.GreaterOrEqual(t, starters, 4, "too few run starters were found; the walk is wrong, not the package")
 	require.Positive(t, redactions, "no redactGetResponse call was found; the walk is wrong, not the package")
+	for name := range redactsFailureEarly {
+		require.True(t, early[name], "%s no longer redacts early; drop it from redactsFailureEarly", name)
+	}
 	for name := range startsRunsRedactedElsewhere {
 		require.True(t, allowed[name], "%s no longer starts a run; drop it from startsRunsRedactedElsewhere", name)
 	}

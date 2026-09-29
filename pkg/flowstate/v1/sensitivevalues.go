@@ -147,7 +147,17 @@ type sensitiveState struct {
 type SensitiveValues struct {
 	// state closes over the built set. nil means the empty set.
 	state func() sensitiveState
+
+	// identity tells one built set from another without reading it, so a
+	// [SensitiveAccumulator] told the same set again can skip it. A pointer,
+	// which reflection prints as an address: it carries no material. nil
+	// for the empty set.
+	identity *sensitiveIdentity
 }
+
+// sensitiveIdentity is what [SensitiveValues.identity] points at. Never read;
+// only its address matters, so it holds a byte to have one of its own.
+type sensitiveIdentity struct{ _ byte }
 
 // held returns the set this value closes over, or the empty one.
 func (s SensitiveValues) held() sensitiveState {
@@ -196,7 +206,7 @@ func sensitiveValuesOf(state sensitiveState) SensitiveValues {
 			state = sensitiveState{withholdAll: true}
 		}
 	}
-	return SensitiveValues{state: func() sensitiveState { return state }}
+	return SensitiveValues{state: func() sensitiveState { return state }, identity: new(sensitiveIdentity)}
 }
 
 // WithheldSensitiveValues is the fail-closed set: it can enumerate nothing, so
@@ -516,19 +526,35 @@ func (s SensitiveValues) WithValues(plaintexts ...string) SensitiveValues {
 // everything exactly as blowing it while building a set does, rather than
 // quietly handing every later caller a set larger than the one bound this
 // package has for how much comparison work a single redaction may cost.
+//
+// A union, each value held once: two sets that share values — a callee's
+// position holds the root's, and so does a failure it carries — count what
+// they share once against that bound, rather than reaching it, and
+// withholding everything, merely by repeating each other (#2215).
 func (s SensitiveValues) Merge(other SensitiveValues) SensitiveValues {
 	a, b := s.held(), other.held()
-	if a.withholdAll || b.withholdAll {
+	switch {
+	case a.withholdAll || b.withholdAll:
 		return WithheldSensitiveValues()
-	}
-	if len(a.values)+len(b.values) > maxSensitiveDescendants {
+	// Either side past the bound fails closed before anything returns it
+	// unread, as [SensitiveAccumulator.Add] refuses it: [SensitiveValues.WithValues]
+	// builds a set without one, and the shortcut below would otherwise hand
+	// it back whole (Codex, #2215).
+	case len(a.values) > maxSensitiveDescendants || len(b.values) > maxSensitiveDescendants:
 		return WithheldSensitiveValues()
+	// A side that adds nothing leaves the other as it was, the same set, so a
+	// merge with the empty set — the common case, a step whose failure
+	// carries nothing — builds no new matcher and keeps its identity.
+	case len(b.values) == 0 && len(b.substrings) == 0:
+		return s
+	case len(a.values) == 0 && len(a.substrings) == 0:
+		return other
 	}
+	var both SensitiveAccumulator
+	both.Add(s)
+	both.Add(other)
 
-	return sensitiveValuesOf(sensitiveState{
-		values:     append(append([]any(nil), a.values...), b.values...),
-		substrings: append(append([]string(nil), a.substrings...), b.substrings...),
-	})
+	return both.Values()
 }
 
 // WithholdAll reports the fail-closed case: the set could not be built

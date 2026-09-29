@@ -128,6 +128,21 @@ type executor struct {
 	// their enclosing workflow's own tree.
 	curSpec *v1.Workflow
 
+	// callerSensitive is the declared-sensitive inputs of every workflow
+	// between the root and curSpec, as bound: what a debugger at a point in
+	// curSpec withholds beside the root's own ([debugControl.rootSensitive])
+	// and curSpec's ([debugControl.sensitiveAt]). Empty at the root and in a
+	// run declaring no `debug:` stanza, and copied unchanged into a loop body,
+	// a branch or an async step, which share curSpec.
+	callerSensitive v1.SensitiveValues
+
+	// returned is what this workflow's calls withheld once they returned into
+	// its scope ([executor.returnToWorkflow], #2213): shared with the loop
+	// bodies, branches and async steps that share curSpec, and fresh in a
+	// callee, which inherits it through callerSensitive instead. Nil in a run
+	// declaring no `debug:` stanza.
+	returned *v1.SensitiveAccumulator
+
 	// path is the enclosing steps this executor runs inside, outermost first —
 	// the `loop:`, `parallel:` or `call:` steps descended through to get here,
 	// and empty at the top level.
@@ -508,7 +523,7 @@ func (e *executor) runNodes(nodes []*v1.Node, depth, susp int) (err error) {
 		}
 		if !run {
 			workflow.GetLogger(e.ctx).Info("skipping step, condition is false", "id", node.GetId())
-			e.observeForDebug(v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_SKIPPED, node, "")
+			e.observeForDebug(v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_SKIPPED, node, nil)
 			e.yieldWorkflow()
 
 			// A skipped step is still a boundary, and it has to be one: the
@@ -664,7 +679,7 @@ func (e *executor) runNodes(nodes []*v1.Node, depth, susp int) (err error) {
 			}
 		} else {
 			e.processed++
-			e.observeForDebug(v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_FINISHED, node, "")
+			e.observeForDebug(v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_FINISHED, node, nil)
 		}
 
 		e.progress.finished()
@@ -855,7 +870,10 @@ func (e *executor) recordOutcome(node *v1.Node, err error) error {
 		// The local driver records at the identical point, and it has to, or the
 		// two drivers would disagree about what a failed run did.
 		e.scope.Outputs.StepValues[node.GetId()] = failedStepOutputs(err)
-		e.observeForDebug(v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_FAILED, node, v1.StepErrorText(err))
+		// The record can quote what a callee withheld, and a hold on this
+		// failure reads it (#2213).
+		e.returnToWorkflow(v1.FailureSensitiveValues(err))
+		e.observeForDebug(v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_FAILED, node, err)
 
 		// The step's position is added here, on the way out, rather than
 		// where the failure was raised — so that the branch below, which
@@ -868,7 +886,10 @@ func (e *executor) recordOutcome(node *v1.Node, err error) error {
 		"id", node.GetId(), "error", err.Error())
 	e.noteTolerated(node.GetId())
 	e.scope.Outputs.StepValues[node.GetId()] = failedStepOutputs(err)
-	e.observeForDebug(v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_TOLERATED, node, v1.StepErrorText(err))
+	// `${steps.<id>.error}` keeps the failure's text for every later step to
+	// read, and it can quote what a callee withheld (#2213).
+	e.returnToWorkflow(v1.FailureSensitiveValues(err))
+	e.observeForDebug(v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_TOLERATED, node, err)
 
 	return nil
 }
@@ -951,6 +972,7 @@ func (e *executor) registerUndo(node *v1.Node, scope *v1.Scope) error {
 	} else {
 		e.undo.Register(entry)
 	}
+	e.debugUndoRegistered()
 
 	return nil
 }
@@ -1028,7 +1050,10 @@ func (e *executor) runCall(node *v1.Node, call *v1.Call, depth, susp int, descen
 
 	inner, err := v1.CallScope(e.scope, callee, arguments, vars)
 	if err != nil {
-		return nodeFailed(err)
+		// Binding can quote the input it refuses, before the callee has a
+		// scope to say what it withholds; the arguments are what it would
+		// have bound, as the local driver's runCall carries (#2212).
+		return withFailureSensitive(nodeFailed(err), e.debugArgumentsSensitive(callee, arguments))
 	}
 
 	// The callee's own step outputs accumulated before the run suspended,
@@ -1061,10 +1086,15 @@ func (e *executor) runCall(node *v1.Node, call *v1.Call, depth, susp int, descen
 		// Descending into a callee's own steps: [v1.LoopResultsReferenced] for a
 		// loop inside it has to walk the callee's tree, not the caller's — see
 		// curSpec's doc.
-		curSpec:  callee,
-		identity: e.identity,
-		runID:    e.runID,
-		scope:    inner,
+		curSpec: callee,
+		// Every caller's declared-sensitive inputs between the root and this
+		// callee, so a hold inside it withholds a value a middle workflow
+		// declared sensitive and forwarded under a plain name (Codex, #2209).
+		callerSensitive: e.calleeCallerSensitive(),
+		returned:        e.debug.newReturned(),
+		identity:        e.identity,
+		runID:           e.runID,
+		scope:           inner,
 
 		// A callee's steps run inside the step that called it, which is what
 		// keeps two call sites of one workflow apart in history.
@@ -1138,15 +1168,23 @@ func (e *executor) runCall(node *v1.Node, call *v1.Call, depth, susp int, descen
 		// step that is not there. `workflow %q` matches the local driver's
 		// runCall spelling exactly, which is what lets
 		// `${steps.<id>.error}` read identically under both drivers.
-		return stepFailed(err, "workflow %q", callee.GetName())
+		//
+		// Carrying what the callee withholds, for a debugger rendering the
+		// failure at the caller (#2210), as the local driver's runCall does.
+		return withFailureSensitive(stepFailed(err, "workflow %q", callee.GetName()), nested.debugFailureSensitive())
 	}
 
 	outputs, cost, err := v1.CallOutputsWithCost(evalContext(), callee, inner)
 	e.chargeWorkflowCost(cost)
 	if err != nil {
-		return nodeFailed(err)
+		// Computed from the callee's scope, so its error can quote what the
+		// callee withholds, as the local driver's runCall carries (#2212).
+		return withFailureSensitive(nodeFailed(err), nested.debugFailureSensitive())
 	}
 	e.scope.Outputs.StepValues[node.GetId()] = outputs
+	// The outputs sit in this workflow's scope from here on, and a later step
+	// or hold reads them from this position (#2213).
+	e.returnToWorkflow(nested.debugPositionSensitive().Merge(e.debugOutputsSensitive(callee, outputs)))
 	return nil
 }
 
@@ -1972,6 +2010,8 @@ func (e *executor) runLoopIteration(body []string, loop *v1.Loop, stateName stri
 		ctx:                    e.ctx,
 		spec:                   e.spec,
 		curSpec:                e.curSpec,
+		callerSensitive:        e.callerSensitive,
+		returned:               e.returned,
 		identity:               e.identity,
 		runID:                  e.runID,
 		scope:                  scope,
@@ -2058,11 +2098,13 @@ func (e *executor) runIteration(body []string, loop *v1.ForEach, iterator string
 	iterationOutputs := cloneOutputs(e.scope.GetOutputs())
 
 	nested := &executor{
-		ctx:      e.ctx,
-		spec:     e.spec,
-		curSpec:  e.curSpec,
-		identity: e.identity,
-		runID:    e.runID,
+		ctx:             e.ctx,
+		spec:            e.spec,
+		curSpec:         e.curSpec,
+		callerSensitive: e.callerSensitive,
+		returned:        e.returned,
+		identity:        e.identity,
+		runID:           e.runID,
 		// The iteration's scope: outputs visible before the loop, plus the
 		// current item bound to the iterator's name.
 		scope:                  e.scope.WithLocal(iterator, item).WithOutputs(iterationOutputs),
@@ -2150,6 +2192,8 @@ func (e *executor) runIterationsConcurrently(body []string, loop *v1.ForEach, it
 					ctx:                    gctx,
 					spec:                   e.spec,
 					curSpec:                e.curSpec,
+					callerSensitive:        e.callerSensitive,
+					returned:               e.returned,
 					identity:               e.identity,
 					runID:                  e.runID,
 					scope:                  e.scope.WithLocal(iterator, items[i]).WithOutputs(cloneOutputs(e.scope.GetOutputs())),
@@ -2257,12 +2301,14 @@ func (e *executor) runParallel(node *v1.Node, parallel *v1.Parallel, depth, susp
 			// make the result depend on scheduling.
 			branchOutputs := cloneOutputs(e.scope.GetOutputs())
 			worker := &executor{
-				ctx:      gctx,
-				spec:     e.spec,
-				curSpec:  e.curSpec,
-				identity: e.identity,
-				runID:    e.runID,
-				scope:    e.scope.WithOutputs(branchOutputs),
+				ctx:             gctx,
+				spec:            e.spec,
+				curSpec:         e.curSpec,
+				callerSensitive: e.callerSensitive,
+				returned:        e.returned,
+				identity:        e.identity,
+				runID:           e.runID,
+				scope:           e.scope.WithOutputs(branchOutputs),
 
 				// Carried where [progress] deliberately is not: a run has no
 				// single *position* while branches are in flight, and a

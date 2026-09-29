@@ -1,0 +1,154 @@
+package flowfile_test
+
+import (
+	"testing"
+
+	"github.com/stretchr/testify/require"
+)
+
+// TestATypeValueIsNotAnUnknownName is #2203. cel-go parses a type value — `int`
+// in `type(x) == int`, a qualified `google.protobuf.Timestamp` — as an
+// identifier, or a select chain over one, so it reached the reference walk
+// looking like a name nobody bound, and a valid expression failed `flow
+// validate` in every position the language has.
+func TestATypeValueIsNotAnUnknownName(t *testing.T) {
+	t.Parallel()
+
+	const types = `type(1) == int && type("") == string && type([]) == list && type({}) == map && ` +
+		`type(null) == null_type && type(1) != google.protobuf.Timestamp && ` +
+		// A comprehension's binding selected through is the binding, even one
+		// spelled like a type.
+		`[{"a":1}].exists(m, m.a == 1) && [{"a":1}].exists(int, int.a == 1)`
+	for name, src := range map[string]string{
+		"a task input": `edition: v2026.3
+name: t
+steps:
+  - id: s
+    log:
+      message: ${string(` + types + `)}
+`,
+		"a workflow var": `edition: v2026.3
+name: t
+vars:
+  typed: ${` + types + `}
+steps:
+  - id: s
+    log:
+      message: ${string(vars.typed)}
+`,
+		"a step's own var": `edition: v2026.3
+name: t
+steps:
+  - id: s
+    vars:
+      typed: ${` + types + `}
+    log:
+      message: ${string(typed)}
+`,
+		"a condition": `edition: v2026.3
+name: t
+steps:
+  - id: s
+    if: ${` + types + `}
+    log:
+      message: hi
+`,
+		"a value step": `edition: v2026.3
+name: t
+steps:
+  - id: s
+    value: ${` + types + `}
+`,
+		"an output": `edition: v2026.3
+name: t
+steps:
+  - id: s
+    value: ${1}
+outputs:
+  typed:
+    value: ${type(steps.s.value) == int}
+`,
+		"a trigger mapping": `edition: v2026.3
+name: t
+inputs:
+  typed:
+    type: bool
+    required: true
+triggers:
+  - webhook: payments
+    verify:
+      stripe: ${secret("env:STRIPE_WEBHOOK")}
+    idempotency_key: ${event.headers["stripe-signature"]}
+    with:
+      typed: ${type(event.body) == map}
+steps:
+  - id: s
+    log:
+      message: ${string(inputs.typed)}
+`,
+		"a concurrency key": `edition: v2026.3
+name: t
+inputs:
+  cluster:
+    type: string
+    required: true
+concurrency:
+  key: ${string(type(inputs.cluster) == string)}
+  on_conflict: reject
+steps:
+  - id: s
+    log:
+      message: hi
+`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			require.Empty(t, diagnose(t, src),
+				"a type value the profile resolves was reported as an unknown name")
+		})
+	}
+}
+
+// TestAnUnknownNameBesideATypeIsStillUnknown is the negative direction: a
+// name the environment does not resolve is reported as before, bare or as the
+// first segment of a qualified name that names no type.
+func TestAnUnknownNameBesideATypeIsStillUnknown(t *testing.T) {
+	t.Parallel()
+
+	using := func(expr string) string {
+		return "edition: v2026.3\nname: t\nsteps:\n  - id: s\n    if: ${" + expr + "}\n    log:\n      message: hi\n"
+	}
+
+	require.Contains(t, diagnose(t, using("type(1) == nosuch")), `references unknown name "nosuch"`)
+	require.Contains(t, diagnose(t, using("type(1) == google.protobuf.Nonsense")), `references unknown name "google"`,
+		"a qualified name that resolves to no type was admitted")
+	require.Contains(t, diagnose(t, using("int.nosuch == 1")), `references unknown name "int"`,
+		"a selection through a type value was admitted as a qualified type")
+}
+
+// TestAStepSpelledLikeATypeIsStillAStep: a step may be named `map`, and once
+// it has run the activation answers `map` with that step's outputs before the
+// type provider is asked. So a bare `map` in a file declaring that step is the
+// retired spelling of a step reference, told to run `flow fix`, not a type
+// value (exact-head review, #2205). And `has(…)` of a type is no question.
+func TestAStepSpelledLikeATypeIsStillAStep(t *testing.T) {
+	t.Parallel()
+
+	src := `edition: v2026.3
+name: t
+steps:
+  - id: map
+    value: ${1}
+  - id: s
+    if: ${type(steps.map.value) == map}
+    log:
+      message: hi
+`
+	require.Contains(t, diagnose(t, src), "`map` is a step, and a step is named `steps.map` now",
+		"a bare name that is a step was taken for the type it is spelled like")
+
+	has := "edition: v2026.3\nname: t\nsteps:\n  - id: s\n    if: ${has(google.protobuf.Timestamp)}\n    log:\n      message: hi\n"
+	require.Contains(t, diagnose(t, has), `references unknown name "google"`,
+		"a has() of a qualified type was admitted as the type")
+}

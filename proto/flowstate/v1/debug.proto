@@ -439,9 +439,10 @@ message DebugBinding {
 // debug adapter renders one pane per group, and a person reading `scope` is
 // looking for which *kind* of name they can reach.
 message DebugScopeGroup {
-  // Group is the root the names hang from as a reader sees it — `steps`,
-  // `vars`, the workflow's declared vars, and the bare bindings an autopsy
-  // adds.
+  // Group is the label a reader sees, named for how the names are reached:
+  // `steps`, `inputs`, `vars` (the workflow's declared `vars:`), `run`,
+  // `trigger`, `locals` (a loop's `as:` and a step's own `vars:`, bound
+  // bare), and `bound` (the bare bindings an autopsy adds).
   string group = 1;
 
   // Root is the expression prefix these names hang from — `steps`, `inputs`,
@@ -543,15 +544,16 @@ enum DebugCommandVerb {
   // List the commands.
   DEBUG_COMMAND_VERB_HELP = 12;
 
-  // List the current step and the `call:` chain that reached it.
+  // List the current step and each iteration, branch, arm, and call around
+  // it, innermost first.
   DEBUG_COMMAND_VERB_BACKTRACE = 13;
 
   // Next is `next`: run this step, including anything inside it, and stop at
   // the next step at this nesting or shallower.
   DEBUG_COMMAND_VERB_NEXT = 14;
 
-  // Finish is `finish`: run until the enclosing iteration, branch, switch
-  // arm, or call is left.
+  // Finish is `finish`: run until the loop, parallel, switch, or call around
+  // this step is left. It does not stop at a sibling iteration or branch.
   DEBUG_COMMAND_VERB_FINISH = 15;
 
   // Log is `log <step-id> <message>`: a logpoint.
@@ -1148,11 +1150,20 @@ message DebugBreakpointState {
   repeated DebugSite sites = 5 [(buf.validate.field).repeated = {max_items: 1024}];
 
   // LastError is the most recent condition or log evaluation error, after
-  // redaction. Such an arrival does not stop the run.
+  // redaction. Such an arrival does not stop the run. Like [definition], it is
+  // withheld from a caller without `workload.debug_inspect`.
   string last_error = 6 [(buf.validate.field).string = {max_len: 4096}];
 
   // Source is where the resolved site came from, when a source map says so.
   DebugSourceLocation source = 7;
+
+  // Definition is the breakpoint as it was set, redacted as [id] is, so a
+  // client that did not set it can resend the whole set without dropping it:
+  // a set is replaced whole, and a state alone does not say how to rebuild
+  // the breakpoint it describes. A breakpoint with a condition or a log
+  // message is reported to a caller without `workload.debug_inspect` without
+  // it, its message, or its last error, since setting one needs that action.
+  DebugBreakpoint definition = 8;
 }
 
 // DebugFailureMode selects which step failures stop the run.
@@ -1499,4 +1510,11 @@ message DebugCarry {
   DebugRunState ended = 15 [(buf.validate.field).enum.defined_only = true];
 
   string message = 16 [(buf.validate.field).string = {max_len: 4096}];
+
+  // ReturnedWithheld says a call returned, before this seam, something its
+  // caller withholds from a debugger: an output or a recorded failure that
+  // can quote a value the callee declared sensitive. The values themselves
+  // are not carried, so a segment that inherits this withholds everything a
+  // session is shown rather than less than the segment before it did.
+  bool returned_withheld = 17;
 }

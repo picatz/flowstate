@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -47,11 +46,11 @@ func compileOutput(t *testing.T, args ...string) (string, string, error) {
 func TestCompileWritesTheSpecificationTheCompilerProduces(t *testing.T) {
 	path := filepath.Join("..", "..", "examples", "hello-world", "workflow.yaml")
 
-	data, err := os.ReadFile(path)
+	// From the file, as `flow compile` compiles it: a program compiled from a
+	// file records the digest of its bytes.
+	want, _, err := flowfile.ParseFile(path)
 	require.NoError(t, err)
-
-	want, err := flowfile.Unmarshal(data)
-	require.NoError(t, err)
+	require.NotEmpty(t, want.GetSourceDigest())
 
 	out, errOut, err := compileOutput(t, path)
 	require.NoError(t, err, "a valid example was refused; stderr said:\n%s", errOut)

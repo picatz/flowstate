@@ -84,6 +84,35 @@ type debugControl struct {
 	// against the callee's own declarations.
 	rootSensitive v1.SensitiveValues
 
+	// returnedBefore says an earlier segment's calls handed back something
+	// their callers withheld ([v1.DebugCarry.returned_withheld]). Those values
+	// are in this segment's scope, and what withheld them was not carried, so
+	// [debugControl.sensitiveAt] withholds everything (#2213).
+	returnedBefore bool
+
+	// returnedHere says a call in this segment handed back something its
+	// caller withholds. Kept here rather than on the carry, which an attach
+	// or a session's end replaces, so [debugControl.encodeDebugCarry] carries
+	// it to the next segment whatever sessions came and went.
+	returnedHere bool
+
+	// undoWithheld is what the positions that registered this run's
+	// compensations withheld, as the local driver's undo log gathers it
+	// ([v1.UndoLog]): a compensation registered inside a callee can quote
+	// what only the callee declares, and a run cancelled before that callee
+	// returned has nothing else to say so ([executor.withheldUndoResults]).
+	undoWithheld v1.SensitiveAccumulator
+
+	// untilSensitive is what the hold that applied the pending resume
+	// withheld, kept for the notice a run that completes past its `until`
+	// records ([executor.debugRunCompleted]). That hold may have been inside a
+	// callee whose own declared-sensitive inputs the root does not see, and
+	// the target was written there. untilSensitiveKnown says it was taken in
+	// this segment; a segment that inherited the `until` through
+	// Continue-As-New does not have it.
+	untilSensitive      v1.SensitiveValues
+	untilSensitiveKnown bool
+
 	// lease is the hold, or nil when nothing holds this run. It is
 	// [v1.DebugSession] rather than a struct of its own because that message
 	// is the schema's answer to "who is debugging which run, and until when",
@@ -176,6 +205,19 @@ type debugControl struct {
 	carry *v1.DebugCarry
 	// parsed is carry's breakpoints, compiled once per segment.
 	parsed []parsedBreakpoint
+
+	// sites are [v1.DebugStaticSites] of the run's specification, and
+	// sitesTruncated whether that enumeration stopped at
+	// [v1.MaxDebugStaticSites]; sitesKnown says they have been taken. The
+	// specification is fixed for the run, so they are enumerated once per
+	// segment ([executor.debugStaticSites]) rather than once for every
+	// breakpoint set and every `until`: a boundary drains up to
+	// [v1.MaxDebugAsksPerBoundary] asks in one workflow task, and a walk of
+	// the whole specification for each would spend the task's deadlock
+	// budget on one program.
+	sites          []v1.DebugStaticSite
+	sitesTruncated bool
+	sitesKnown     bool
 	// held is what the current typed hold is about, for the queries.
 	held heldStop
 	// occurrence is the last boundary this run reached, and arrivals counts
@@ -184,8 +226,13 @@ type debugControl struct {
 	arrivals   uint64
 	// continuation is this segment's position in the run's chain.
 	continuation int32
-	// pendingPause is the request id a pause is receipted under once it holds.
-	pendingPause string
+	// pendingPauses are the request ids the pause asks taken since the last
+	// hold are receipted under once it holds, or once the run completes
+	// without holding: every one, since each was a distinct ask that its
+	// client waits on (Copilot, #2220), except in a history recorded before
+	// [pauseReceiptsChange], which keeps only the last. It holds at most
+	// [v1.MaxDebugAsksPerBoundary]; a pause past that is refused at once.
+	pendingPauses []string
 	// irDigest identifies the program this run executes, for a client binding
 	// its source map; computed once, when the queries are installed.
 	irDigest string

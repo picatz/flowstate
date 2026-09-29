@@ -339,9 +339,10 @@ func init() {
 		},
 		{
 			Name: "flowstate.v1.DebugScopeGroup.group",
-			Leading: " Group is the root the names hang from as a reader sees it — `steps`,\n" +
-				" `vars`, the workflow's declared vars, and the bare bindings an autopsy\n" +
-				" adds.\n",
+			Leading: " Group is the label a reader sees, named for how the names are reached:\n" +
+				" `steps`, `inputs`, `vars` (the workflow's declared `vars:`), `run`,\n" +
+				" `trigger`, `locals` (a loop's `as:` and a step's own `vars:`, bound\n" +
+				" bare), and `bound` (the bare bindings an autopsy adds).\n",
 		},
 		{
 			Name: "flowstate.v1.DebugScopeGroup.root",
@@ -860,11 +861,21 @@ func init() {
 		{
 			Name: "flowstate.v1.DebugBreakpointState.last_error",
 			Leading: " LastError is the most recent condition or log evaluation error, after\n" +
-				" redaction. Such an arrival does not stop the run.\n",
+				" redaction. Such an arrival does not stop the run. Like [definition], it is\n" +
+				" withheld from a caller without `workload.debug_inspect`.\n",
 		},
 		{
 			Name:    "flowstate.v1.DebugBreakpointState.source",
 			Leading: " Source is where the resolved site came from, when a source map says so.\n",
+		},
+		{
+			Name: "flowstate.v1.DebugBreakpointState.definition",
+			Leading: " Definition is the breakpoint as it was set, redacted as [id] is, so a\n" +
+				" client that did not set it can resend the whole set without dropping it:\n" +
+				" a set is replaced whole, and a state alone does not say how to rebuild\n" +
+				" the breakpoint it describes. A breakpoint with a condition or a log\n" +
+				" message is reported to a caller without `workload.debug_inspect` without\n" +
+				" it, its message, or its last error, since setting one needs that action.\n",
 		},
 		{
 			Name: "flowstate.v1.DebugValue",
@@ -1077,6 +1088,14 @@ func init() {
 			Leading: " Ended is how the last session ended, when none is attached.\n",
 		},
 		{
+			Name: "flowstate.v1.DebugCarry.returned_withheld",
+			Leading: " ReturnedWithheld says a call returned, before this seam, something its\n" +
+				" caller withholds from a debugger: an output or a recorded failure that\n" +
+				" can quote a value the callee declared sensitive. The values themselves\n" +
+				" are not carried, so a segment that inherits this withholds everything a\n" +
+				" session is shown rather than less than the segment before it did.\n",
+		},
+		{
 			Name: "flowstate.v1.DebugStepState",
 			Leading: " DebugStepState is what a session last watched one step do.\n" +
 				"\n" +
@@ -1205,8 +1224,9 @@ func init() {
 			Leading: " List the commands.\n",
 		},
 		{
-			Name:    "flowstate.v1.DEBUG_COMMAND_VERB_BACKTRACE",
-			Leading: " List the current step and the `call:` chain that reached it.\n",
+			Name: "flowstate.v1.DEBUG_COMMAND_VERB_BACKTRACE",
+			Leading: " List the current step and each iteration, branch, arm, and call around\n" +
+				" it, innermost first.\n",
 		},
 		{
 			Name: "flowstate.v1.DEBUG_COMMAND_VERB_NEXT",
@@ -1215,8 +1235,8 @@ func init() {
 		},
 		{
 			Name: "flowstate.v1.DEBUG_COMMAND_VERB_FINISH",
-			Leading: " Finish is `finish`: run until the enclosing iteration, branch, switch\n" +
-				" arm, or call is left.\n",
+			Leading: " Finish is `finish`: run until the loop, parallel, switch, or call around\n" +
+				" this step is left. It does not stop at a sibling iteration or branch.\n",
 		},
 		{
 			Name:    "flowstate.v1.DEBUG_COMMAND_VERB_LOG",

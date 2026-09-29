@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
 	"slices"
 	"strings"
@@ -115,12 +116,25 @@ func addressExplicitlyConfigured(cmd *cobra.Command) bool {
 // GetCatalog is skipped because its remote path already explains itself, in
 // terms specific to what a wrong catalog would cost; a second sentence on top
 // would say less by saying more.
-func mcpRPCErrorDecorator(flags serverFlags, explicit bool) func(rpc string, err error) error {
-	return func(rpc string, err error) error {
+//
+// A refusal of a submission is the one server answer this does touch: a
+// gate's `subject:` resolved from a sensitive input is refused quoting what it
+// resolved to (#2100), and the request holds the workflow and arguments that
+// say which values those are, so it is redacted as `flow run` redacts it.
+func mcpRPCErrorDecorator(posture *cobra.Command, flags serverFlags, explicit bool) func(rpc string, request proto.Message, err error) error {
+	return func(rpc string, request proto.Message, err error) error {
 		if rpc == "GetCatalog" {
 			return err
 		}
-		if connect.CodeOf(err) != connect.CodeUnavailable {
+		// Read before the redaction below, which keeps the text and not the
+		// code, so a redacted unavailable answer still gets its remedy.
+		code := connect.CodeOf(err)
+		if !noServerAnswered(err) {
+			// A server's answer, unavailable included, can quote an
+			// argument; it is redacted before any decoration wraps it.
+			err = redactedSubmissionRefusal(posture, request, err)
+		}
+		if code != connect.CodeUnavailable {
 			return err
 		}
 
@@ -146,6 +160,28 @@ func mcpRPCErrorDecorator(flags serverFlags, explicit bool) func(rpc string, err
 			"`flow server dev`, or point --address/FLOWSTATE_ADDRESS at a deployment that is already "+
 			"running, then retry", tool, flags.address, err)
 	}
+}
+
+// redactedSubmissionRefusal is err, a server's refusal of a submission,
+// redacted against the arguments request carried, through the seam `flow run`
+// and `flow schedule create` use. Any other request's refusal is err itself.
+func redactedSubmissionRefusal(posture *cobra.Command, request proto.Message, err error) error {
+	var (
+		workflow *v1.Workflow
+		inputs   map[string]*v1.Value
+	)
+	switch submitted := request.(type) {
+	case *v1.RunRequest:
+		workflow, inputs = submitted.GetWorkflow(), submitted.GetInputs()
+	case *v1.CreateScheduleRequest:
+		workflow, inputs = submitted.GetWorkflow(), submitted.GetInputs()
+	case *v1.SignalWithStartRequest:
+		workflow, inputs = submitted.GetWorkflow(), submitted.GetInputs()
+	default:
+		return err
+	}
+
+	return redactFailureError(err, refusedRunSensitiveValues(posture, workflow, inputs, err, revealSensitiveRequested(posture)))
 }
 
 // runMCP implements the mcp sub-command.
@@ -236,11 +272,41 @@ func runMCP(cmd *cobra.Command, args []string) error {
 		RevealSensitive: revealSensitiveRequested(cmd),
 
 		RemoteCatalogAddress: remoteCatalogAddressFor(cmd, flags),
-		DecorateRPCError:     mcpRPCErrorDecorator(flags, addressExplicitlyConfigured(cmd)),
+		DecorateRPCError:     mcpRPCErrorDecorator(cmd, flags, addressExplicitlyConfigured(cmd)),
 	}
 
-	return flowmcp.ServeTools(cmd.Context(), flowmcp.NewServer(version), local, remoteClient, deps,
-		stdioExtraTools(cmd, providers)...)
+	// The server's lifetime, which the retained debug sessions' sweeper
+	// shares: it stops when the server does.
+	serve, stop := context.WithCancel(cmd.Context())
+	defer stop()
+
+	extra := stdioSurface(serve, cmd, providers, remoteClient, &deps)
+
+	return flowmcp.ServeTools(serve, flowmcp.NewServer(version), local, remoteClient, deps, extra...)
+}
+
+// stdioSurface is what stdio serves beside the RPC tools: the extra tools,
+// and on deps the fence their retained sessions need, over one set of
+// sessions. The tests stand their server up through it, so what they exercise
+// is the wiring an agent connects to.
+func stdioSurface(ctx context.Context, cmd *cobra.Command, providers *localSecrets,
+	remote func() flowstatev1connect.WorkflowServiceClient, deps *flowmcp.Deps,
+) []flowmcp.ToolRegistration {
+	sessions := newDebugSessions(remote)
+	fenceRegistryReaders(deps, sessions)
+
+	return stdioExtraTools(ctx, cmd, providers, sessions)
+}
+
+// fenceRegistryReaders sets deps to refuse what answers from the process-wide
+// task registry while one of sessions is a retained stubbed session, which
+// holds that registry, a synthetic task registered in it, across its pauses —
+// rather than advertising or compiling a task that vanishes when it ends. The
+// sessions are the ones [stdioExtraTools] serves, so the fence and the tools
+// agree about which sessions are open.
+func fenceRegistryReaders(deps *flowmcp.Deps, sessions *debugSessions) {
+	deps.WrapHandler = sessions.guardRegistryReaders
+	deps.WrapResourceHandler = sessions.guardRegistryResource
 }
 
 // stdioExtraTools is the three tools on this surface that are not RPCs, in one
@@ -251,14 +317,27 @@ func runMCP(cmd *cobra.Command, args []string) error {
 // None takes a timeout: stdio's single caller is the process that launched
 // this one, and this surface is unchanged by the bound `flow mcp serve`
 // applies for its own reasons. See [testToolHandler].
-func stdioExtraTools(cmd *cobra.Command, providers *localSecrets) []flowmcp.ToolRegistration {
-	return []flowmcp.ToolRegistration{
-		{Tool: flowmcp.RunLocalTool(), Handler: runLocalToolHandler(cmd, providers)},
-		{Tool: flowmcp.TestTool(), Handler: testToolHandler(0)},
+//
+// ctx is the server's lifetime: the retained sessions' sweeper runs until it
+// ends.
+func stdioExtraTools(ctx context.Context, cmd *cobra.Command, providers *localSecrets, sessions *debugSessions) []flowmcp.ToolRegistration {
+	go sessions.keep(ctx)
+
+	return append([]flowmcp.ToolRegistration{
+		// Runs a workflow's tasks from the registry a stubbed session holds.
+		{Tool: flowmcp.RunLocalTool(), Handler: sessions.readsRegistry(runLocalToolHandler(cmd, providers))},
+		// Both run a stubbed case under the process-wide registry lock, so
+		// neither may run while a retained stubbed session holds it.
+		{Tool: flowmcp.TestTool(), Handler: sessions.unlessStubbed(testToolHandler(0))},
 		// The debugger's own front (#928 slice 3), beside the tool whose
 		// verdicts it explains.
-		{Tool: flowmcp.DebugTool(), Handler: debugToolHandler(0)},
-	}
+		{Tool: flowmcp.DebugTool(), Handler: sessions.unlessStubbed(debugToolHandler(0))},
+	},
+		// Retained sessions (#2127): stdio only, where one caller owns the
+		// process. `flow mcp serve` serializes the process-wide registry
+		// around every stubbed run, and a session held open for minutes
+		// would hold that lock against every other caller.
+		sessions.tools()...)
 }
 
 // The one tool that is not an RPC.
@@ -520,9 +599,9 @@ func runLocalToolHandler(posture *cobra.Command, providers *localSecrets) mcp.To
 			// machine-readable record an agent carries forward that
 			// refusedRunSensitiveValues' own doc names as the reason this
 			// exists. inputs is what runLocalToolInputs decoded before the
-			// failure — nil for a failure inputsFromJSON itself raised (a
+			// failure — nil for a failure decoding them raised (a
 			// numeric overflow, say), the bound map for one
-			// checkToolRunInputs raised on top of it (a `must:` failure) — the
+			// jsonRunInputs raised on top of it (a `must:` failure) — the
 			// same distinction the CLI's two call sites of
 			// refusedRunSensitiveValues draw between a collection failure and
 			// a bind failure (#2076).
@@ -541,7 +620,10 @@ func runLocalToolHandler(posture *cobra.Command, providers *localSecrets) mcp.To
 
 		ctx, err = withLocalSignals(ctx, posture, workflow, inputs, signals)
 		if err != nil {
-			return flowmcp.ToolError(err), nil
+			// A `subject_from:` refusal quotes what it resolved to, as on
+			// `flow run local`, and through the same seam (#2100).
+			sensitive := refusedRunSensitiveValues(posture, workflow, inputs, err, revealSensitiveRequested(posture))
+			return flowmcp.ToolError(redactFailureError(err, sensitive)), nil
 		}
 
 		if providers == nil {
@@ -575,6 +657,18 @@ func runLocalToolHandler(posture *cobra.Command, providers *localSecrets) mcp.To
 		// this context expiring means the call ran out of time.
 		response := localRun(outputs, runErr, ctx.Err(), started, time.Now())
 
+		// The failure sentence, against the same set `flow run local` builds
+		// for the same run (#2188): [redactGetResponse] below leaves it alone,
+		// since most of its callers hold no arguments to redact against, and
+		// this one bound them above. Before the bound rather than after it,
+		// unlike the values: [flowmcp.CapErrorMessage] cuts the sentence, and
+		// a value straddling the cut would leave a prefix no redaction
+		// matches. The response is this handler's own, so mutating it here
+		// changes nothing a caller holds.
+		reveal := revealSensitiveRequested(posture)
+		sensitive := runSensitiveValues(workflow, inputs, reveal)
+		response = redactFailureText(response, sensitive)
+
 		// Bounded before redaction, deliberately: redactGetResponse clones its
 		// input outright, so handing it the raw response re-pays exactly the
 		// workflow-sized allocation the preflight refuses (Codex, #1083). The
@@ -588,10 +682,10 @@ func runLocalToolHandler(posture *cobra.Command, providers *localSecrets) mcp.To
 		// does. workflow was just parsed from the submitted source, so redaction
 		// here is precise against its own declarations rather than the
 		// fail-closed case a spec-less renderer falls back to; see sensitive.go.
-		// Failure sentence included, as `flow run local` redacts it: this call
-		// bound the arguments, so it can enumerate what a failure might quote.
-		reveal := revealSensitiveRequested(posture)
-		response = redactStartedRun(response, workflow, runSensitiveValues(workflow, inputs, reveal), reveal)
+		// Through the one redaction for a run this process started, so this
+		// surface cannot drift from `flow run local`: its failure half finds
+		// nothing left to redact, having run before the cap above.
+		response = redactStartedRun(response, workflow, sensitive, reveal)
 
 		encoded, err := renderRunLocalResult(response, logs.records(), preflightNotes)
 		if err != nil {
@@ -1025,44 +1119,69 @@ func runLocalSignalFlags(signals map[string]json.RawMessage) ([]string, error) {
 // runLocalToolInputs binds the tool's `inputs` object against the submitted
 // source's declarations.
 //
-// Reassembled into one document and handed to [inputsFromJSON] rather than
-// converted here, so this surface and `--input-file` read a value through one
-// decoder: the same reason [runLocalSignalFlags] renders signals as the flags the
-// CLI already parses. An agent and a person composing the same arguments get the
-// same run, or the same refusal.
+// Its values are read through [jsonRunInputs], with the decoder `--input-file`
+// uses ([inputsFromDecoded]): the same reason [runLocalSignalFlags] renders
+// signals as the flags the CLI already parses. An agent and a person composing
+// the same arguments get the same run, or the same refusal.
 //
 // The refusal is checked here rather than left to the driver for the reason the
 // CLI checks early: [v1.RunWithInputs] binds authoritatively a moment later, and
 // its error would arrive wrapped in an account of a run that never started.
 func runLocalToolInputs(workflow *v1.Workflow, submitted map[string]json.RawMessage) (map[string]*v1.Value, error) {
-	if len(submitted) == 0 {
-		// Absent rather than empty, so a source declaring no `inputs:` is run
-		// exactly as it is without this argument.
-		return nil, checkToolRunInputs(workflow, nil)
-	}
-
-	document, err := json.Marshal(submitted)
-	if err != nil {
-		return nil, fmt.Errorf("reading the inputs argument: %w", err)
-	}
-
-	inputs, err := inputsFromJSON("the inputs argument", document, declaredInputs(workflow))
-	if err != nil {
-		return nil, err
-	}
-
-	return inputs, checkToolRunInputs(workflow, inputs)
+	return jsonRunInputs(workflow, submitted, "the inputs argument",
+		"arguments go in the `inputs` object of this call, keyed by the name the source declares under `inputs:`")
 }
 
-// checkToolRunInputs is [checkRunInputs] with the CLI's closing advice replaced by
-// this surface's, since an agent has no flags to correct.
-func checkToolRunInputs(workflow *v1.Workflow, inputs map[string]*v1.Value) error {
-	if _, err := v1.BindRunInputs(workflow, inputs); err != nil {
-		return fmt.Errorf("%w\n  arguments go in the `inputs` object of this call, keyed by the name the "+
-			"source declares under `inputs:`", err)
+// maxRunInputs is how many arguments a run can take: a workflow declares at
+// most this many under `inputs:` (Workflow.declared_inputs, max_items) and a
+// started run carries at most this many (RunRequest.inputs, max_pairs). An
+// object naming more can never bind, so [jsonRunInputs] refuses it before
+// decoding any of an object whose size the sender chose.
+const maxRunInputs = 64
+
+// jsonRunInputs binds a surface's JSON object of arguments against workflow's
+// declarations, for a surface with no flags to correct: source names the
+// object in a refusal, and advice, which replaces the CLI's closing advice,
+// says where its arguments go.
+func jsonRunInputs(workflow *v1.Workflow, submitted map[string]json.RawMessage, source, advice string) (map[string]*v1.Value, error) {
+	if len(submitted) > maxRunInputs {
+		return nil, fmt.Errorf("%s names %d inputs, and a run takes at most %d\n  %s", source, len(submitted), maxRunInputs, advice)
 	}
 
-	return nil
+	var inputs map[string]*v1.Value
+	// Absent rather than empty, so a source declaring no `inputs:` is run
+	// exactly as it is without the object.
+	if len(submitted) > 0 {
+		// Each value is decoded where it arrived rather than the object being
+		// re-encoded and read back whole, which would make a second copy of
+		// whatever the sender chose to send. Sorted, as [inputsFromDecoded]
+		// sorts, so two bad values report the same one first.
+		fields := make(map[string]any, len(submitted))
+		for _, name := range slices.Sorted(maps.Keys(submitted)) {
+			decoded, err := decodeInputJSON(string(submitted[name]))
+			if err != nil {
+				return nil, fmt.Errorf("%s: input %q: %w", source, name, err)
+			}
+			fields[name] = decoded
+		}
+		var err error
+		if inputs, err = inputsFromDecoded(source, fields, declaredInputs(workflow)); err != nil {
+			return nil, err
+		}
+	}
+	bound, err := v1.BindRunInputs(workflow, inputs)
+	if err != nil {
+		return inputs, fmt.Errorf("%w\n  %s", err, advice)
+	}
+	// Weighed as the run will carry it, defaults filled in: the same pair of
+	// checks the local driver's submit boundary makes ([v1.RunWithInputs]),
+	// made here so a submission that can never start is refused while the
+	// caller can still correct it, not at its first step.
+	if err := v1.CheckSubmissionSize(workflow, bound); err != nil {
+		return inputs, err
+	}
+
+	return inputs, nil
 }
 
 // runLocalResult is the document the tool answers with.

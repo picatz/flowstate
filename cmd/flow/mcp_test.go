@@ -210,10 +210,23 @@ func (e *mcpAuditEmitter) Emit(_ context.Context, record *v1.AuditRecord) error 
 // above: a verdict and a transcript of questions are different documents, and
 // a tool choosing between them by which arguments were set is the implicit
 // mode this surface keeps refusing.
+//
+// The flowstate_debug_session_* tools (#2127) are the same conversation made
+// incremental: a session this process retains across calls, over the stubbed
+// run above or over a durable run through the server's own debug RPCs, which
+// authorize it. A retained session is process state, not a service method, and
+// the durable half is already served as the DebugAttach…DebugInspect tools for
+// a caller who wants no retained state at all.
 var documentedLocalTools = map[string]bool{
 	flowmcp.RunLocalToolName: true,
 	flowmcp.TestToolName:     true,
 	flowmcp.DebugToolName:    true,
+
+	debugSessionStartTool:   true,
+	debugSessionAttachTool:  true,
+	debugSessionObserveTool: true,
+	debugSessionCommandTool: true,
+	debugSessionEndTool:     true,
 }
 
 func documentedLocalToolNames() []string {
@@ -486,14 +499,14 @@ func mcpDepsFor(posture *cobra.Command) flowmcp.Deps {
 // mcpExtraToolsFor builds the tools that are not RPCs, the same set
 // runMCP registers, so a test connects to the identical tool set an agent
 // does.
-func mcpExtraToolsFor(posture *cobra.Command) []flowmcp.ToolRegistration {
-	return mcpExtraToolsForWithProviders(posture, nil)
+func mcpExtraToolsFor(ctx context.Context, posture *cobra.Command) []flowmcp.ToolRegistration {
+	return mcpExtraToolsForWithProviders(ctx, posture, nil)
 }
 
-func mcpExtraToolsForWithProviders(posture *cobra.Command, providers *localSecrets) []flowmcp.ToolRegistration {
+func mcpExtraToolsForWithProviders(ctx context.Context, posture *cobra.Command, providers *localSecrets) []flowmcp.ToolRegistration {
 	// The command's own list, not a copy of it: a tool registered for an agent
 	// and missing here is a tool no test ever calls.
-	return stdioExtraTools(posture, providers)
+	return stdioExtraTools(ctx, posture, providers, newDebugSessions(func() flowstatev1connect.WorkflowServiceClient { return nil }))
 }
 
 // connectMCP stands the server up over an in-memory transport and returns a
@@ -511,11 +524,15 @@ func connectMCPWithProviders(t *testing.T, posture *cobra.Command, providers *lo
 
 	srv := flowmcp.NewServer("test")
 
+	// Wired as runMCP wires it: one set of sessions behind both the
+	// retained-session tools and the registry fence.
+	deps := mcpDepsFor(posture)
+	extra := stdioSurface(t.Context(), posture, providers, func() flowstatev1connect.WorkflowServiceClient { return nil }, &deps)
 	flowmcp.AddCapabilities(srv, mustNewFlowstateServer(t, nil), func() flowstatev1connect.WorkflowServiceClient {
 		t.Error("a local tool dialed the server")
 
 		return nil
-	}, mcpDepsFor(posture), mcpExtraToolsForWithProviders(posture, providers)...)
+	}, deps, extra...)
 
 	serverTransport, clientTransport := mcp.NewInMemoryTransports()
 
@@ -1035,7 +1052,7 @@ func TestTheRunLocalToolNumericOverflowLeavesAnOrdinaryFieldInTheClear(t *testin
 
 // TestTheRunLocalToolRedactsAMustFailureOnASensitiveInput is #2076's other
 // required case: a submitted value that binds to its declared type cleanly
-// and then fails its own `must:`, which is checkToolRunInputs' refusal
+// and then fails its own `must:`, which is jsonRunInputs' refusal
 // (v1.BindRunInputs) rather than inputsFromJSON's.
 func TestTheRunLocalToolRedactsAMustFailureOnASensitiveInput(t *testing.T) {
 	t.Parallel()
@@ -1531,7 +1548,7 @@ func connectRemoteMCP(t *testing.T, posture *cobra.Command, fake *fakeWorkflowSe
 	srv := mcp.NewServer(&mcp.Implementation{Name: "flowstate", Version: "test"}, nil)
 	flowmcp.AddCapabilities(srv, mustNewFlowstateServer(t, nil), func() flowstatev1connect.WorkflowServiceClient {
 		return newWorkflowServiceClient(serverFlags{address: address})
-	}, mcpDepsFor(posture), mcpExtraToolsFor(posture)...)
+	}, mcpDepsFor(posture), mcpExtraToolsFor(t.Context(), posture)...)
 
 	serverTransport, clientTransport := mcp.NewInMemoryTransports()
 	go func() { _ = srv.Run(t.Context(), serverTransport) }()
@@ -1627,7 +1644,7 @@ func connectMCPWithDeps(t *testing.T, posture *cobra.Command, remote func() flow
 	t.Helper()
 
 	srv := mcp.NewServer(&mcp.Implementation{Name: "flowstate", Version: "test"}, nil)
-	flowmcp.AddCapabilities(srv, mustNewFlowstateServer(t, nil), remote, deps, mcpExtraToolsFor(posture)...)
+	flowmcp.AddCapabilities(srv, mustNewFlowstateServer(t, nil), remote, deps, mcpExtraToolsFor(t.Context(), posture)...)
 
 	serverTransport, clientTransport := mcp.NewInMemoryTransports()
 	go func() { _ = srv.Run(t.Context(), serverTransport) }()
@@ -1711,7 +1728,7 @@ func TestLifecycleToolsExplainAnUnreachableDeployment(t *testing.T) {
 			return newWorkflowServiceClient(flags)
 		}, flowmcp.Deps{
 			Redact:           func(r *v1.GetResponse) *v1.GetResponse { return r },
-			DecorateRPCError: mcpRPCErrorDecorator(flags, explicit),
+			DecorateRPCError: mcpRPCErrorDecorator(defaultLocalRunPosture(), flags, explicit),
 		})
 
 		result, err := session.CallTool(t.Context(), &mcp.CallToolParams{
@@ -1752,9 +1769,9 @@ func TestLifecycleToolsExplainAnUnreachableDeployment(t *testing.T) {
 	// the missing-server case alone, and every other error already names its
 	// subject.
 	t.Run("non-unavailable errors pass through", func(t *testing.T) {
-		decorate := mcpRPCErrorDecorator(serverFlags{address: address}, true)
+		decorate := mcpRPCErrorDecorator(defaultLocalRunPosture(), serverFlags{address: address}, true)
 		refusal := connect.NewError(connect.CodeNotFound, fmt.Errorf("no run %q is addressable", "x"))
-		assert.Equal(t, refusal, decorate("Get", refusal))
+		assert.Equal(t, refusal, decorate("Get", &v1.GetRequest{}, refusal))
 	})
 
 	// A refusal this process produced before any bytes reached the network —
@@ -1770,7 +1787,7 @@ func TestLifecycleToolsExplainAnUnreachableDeployment(t *testing.T) {
 			return newWorkflowServiceClient(flags)
 		}, flowmcp.Deps{
 			Redact:           func(r *v1.GetResponse) *v1.GetResponse { return r },
-			DecorateRPCError: mcpRPCErrorDecorator(flags, true),
+			DecorateRPCError: mcpRPCErrorDecorator(defaultLocalRunPosture(), flags, true),
 		})
 
 		result, err := session.CallTool(t.Context(), &mcp.CallToolParams{

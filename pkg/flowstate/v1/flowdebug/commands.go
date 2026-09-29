@@ -67,7 +67,7 @@ var commands = []command{
 	{verb: "next", aliases: []string{"n"}, completes: completesNothing,
 		help: "run this step, including anything inside it, and stop at the next step at this level or above"},
 	{verb: "finish", aliases: []string{"fin", "out"}, completes: completesNothing,
-		help: "run until the enclosing loop iteration, branch, switch arm, or call is left"},
+		help: "run until the loop, parallel, switch, or call around this step is left"},
 	{verb: "continue", aliases: []string{"c"}, completes: completesNothing,
 		help: "run until the next breakpoint, or to the end"},
 	{verb: "until", aliases: []string{"u"}, argument: "<step-id> [if <expr>]", completes: completesStep,
@@ -91,7 +91,7 @@ var commands = []command{
 	{verb: "info", aliases: []string{"step-info"}, completes: completesNothing,
 		help: "describe the step the run is stopped at"},
 	{verb: "backtrace", aliases: []string{"bt"}, completes: completesNothing,
-		help: "list this step and the call chain that reached it"},
+		help: "list this step and each iteration, branch, arm and call around it"},
 	{verb: "detach", completes: completesNothing,
 		help: "clear every breakpoint and let the run finish unattended"},
 	{verb: "quit", aliases: []string{"q"}, completes: completesNothing,
@@ -257,9 +257,15 @@ func (s *Session) dispatch(ctx context.Context, line string, node *v1.Node, scop
 		}
 		target := v1.ParseDebugTargetOrStep(id)
 
-		var compiled *v1.Value
+		var (
+			compiled *v1.Value
+			note     string
+		)
 		if conditional {
 			compiled, err = compileCondition(condition, scope, grammarUntil)
+			if err == nil {
+				note, err = s.conditionInScope(compiled, scope.GetProfile(), target.Resolve)
+			}
 			if err != nil {
 				s.printfTone(ToneWarning, "until %s: %v\n", id, err)
 
@@ -273,7 +279,14 @@ func (s *Session) dispatch(ctx context.Context, line string, node *v1.Node, scop
 		// silence, behind a prompt that said it was set (Copilot, #1274).
 		s.clearDeclined(declinedUntil, id)
 		s.record("until " + strings.TrimSpace(rest))
-		s.resumeUntil(modeUntil, target, compiled)
+		if note != "" {
+			s.printfTone(ToneWarning, "until %s: %s\n", id, note)
+		}
+		conditionText := ""
+		if compiled != nil {
+			conditionText = strings.TrimSpace(condition)
+		}
+		s.resumeUntil(modeUntil, target, compiled, conditionText)
 
 		return true, nil
 
@@ -360,19 +373,32 @@ func (s *Session) dispatch(ctx context.Context, line string, node *v1.Node, scop
 	}
 }
 
+// showBacktrace prints the held stop's frames: the step, then each iteration,
+// branch, arm and call around it. They are the snapshot's own frames, rendered
+// as the typed Driver renders them, so the prompt, `flow debug do`, MCP and an
+// editor's call stack number and name one stop the same way; the call chain
+// alone could not say which iteration a stop is in.
 func (s *Session) showBacktrace() {
 	trace, err := s.Backtrace()
 	if err != nil {
 		s.printfTone(ToneWarning, "%s\n", err)
 		return
 	}
-	for i, frame := range trace.GetFrames() {
-		name := frame.GetStepId()
-		if frame.GetWorkflow() != "" {
-			name = frame.GetWorkflow() + "." + name
-		}
-		s.printf("#%d %s (%s)\n", i, name, frame.GetKind())
+	// The autopsy's run is over and has no frames to show.
+	if len(trace.GetFrames()) == 0 {
+		return
 	}
+	// Assembled unredacted from the held occurrence, then redacted once and
+	// whole by the redactor this pause was taken under, as
+	// [Session.BacktraceLabels] is: joined fields can recreate a protected
+	// substring, and the session's live redactor may already have changed.
+	redact := s.snapshotTextRedactor()
+	s.mu.Lock()
+	frames := Frames(s.contract.occurrence, func(site *v1.DebugSite) *v1.DebugSourceLocation {
+		return s.contract.sources[v1.DebugSiteKey(site)]
+	}, nil)
+	s.mu.Unlock()
+	s.printf("%s", applyText(redact, formatFrames(&v1.DebugSnapshot{Frames: frames})))
 }
 
 // split separates the first word of a line from the rest.
@@ -424,6 +450,14 @@ func (s *Session) inspectWith(ctx context.Context, expression string, scope *v1.
 		return
 	}
 
+	// The pause's own redactors, which withhold what the workflow held there
+	// declares sensitive, a callee's included, as the typed contract's
+	// inspection does (#2208, exact-head review): the session's alone know
+	// only what its caller installed. The answer and the error alike, since an
+	// evaluation error quotes the scope as readily as an answer shows it
+	// (`no such key: <value>`).
+	text, value := s.pauseRedactors()
+
 	activation := scope.Activation(ctx)
 	if len(extra) > 0 {
 		activation = scope.ActivationWith(ctx, extra)
@@ -433,7 +467,7 @@ func (s *Session) inspectWith(ctx context.Context, expression string, scope *v1.
 		// An author's expression failing is an ordinary event at a debugger
 		// prompt, not a session-ending one: they are asking questions, and
 		// some of them will not compile.
-		s.printfTone(ToneWarning, "%v\n", err)
+		s.emitTone(ToneWarning, applyText(text, err.Error())+"\n")
 
 		return
 	}
@@ -441,7 +475,7 @@ func (s *Session) inspectWith(ctx context.Context, expression string, scope *v1.
 	// Redacted before the cap, for the reason [Session.stepOutcomeText] gives:
 	// truncating first would leave the first MaxInspectRunes of a long secret
 	// in a string no substring match can recognise (Codex, #1109).
-	s.printf("%s\n", capRunes(s.redactText(s.refValText(out)), MaxInspectRunes))
+	s.printf("%s\n", capRunes(applyText(text, refValTextWith(out, text, value)), MaxInspectRunes))
 }
 
 // showCompletion answers `complete`, which is tab made into a command.
@@ -508,8 +542,8 @@ func (s *Session) showScopeWith(scope *v1.Scope, extra map[string]ref.Val) {
 const (
 	scopeGroupBound        = "bound"
 	scopeGroupSteps        = "steps"
-	scopeGroupVars         = "vars"
-	scopeGroupWorkflowVars = "workflow vars"
+	scopeGroupLocals       = "locals"
+	scopeGroupWorkflowVars = "vars"
 	scopeGroupInputs       = "inputs"
 	scopeGroupRun          = "run"
 	scopeGroupTrigger      = "trigger"
@@ -560,13 +594,14 @@ func scopeNames(scope *v1.Scope, extra map[string]ref.Val) []Names {
 		add(scopeGroupSteps, "steps", names)
 	}
 
-	// These two are the lines a namespace is easiest to get wrong on, because
-	// the labels read the other way round from where the names live.
-	// `Scope.Vars` are the *bare* bindings — a loop's `as:`, a step's own
-	// `vars:` — offered as [celcomplete.Scope.Locals] under no root at all
-	// (complete.go:271). `Scope.AmbientVars` are the workflow's declared
-	// `vars:`, and those are what `vars.` reaches (complete.go:280-282).
-	add(scopeGroupVars, "", sortedKeys(scope.GetVars()))
+	// Labelled by how the names are reached, which is the other way round
+	// from the fields that hold them. `Scope.Vars` are the *bare* bindings — a
+	// loop's `as:`, a step's own `vars:` — offered as
+	// [celcomplete.Scope.Locals] under no root at all (complete.go:271), so
+	// they are "locals". `Scope.AmbientVars` are the workflow's declared
+	// `vars:`, and those are what `vars.` reaches (complete.go:280-282), so
+	// they are "vars".
+	add(scopeGroupLocals, "", sortedKeys(scope.GetVars()))
 	add(scopeGroupWorkflowVars, "vars", sortedKeys(scope.GetAmbientVars()))
 
 	// The arguments the run was started with, which completion has offered
@@ -729,18 +764,24 @@ func (s *Session) addBreakpoint(ctx context.Context, rest string, scope *v1.Scop
 
 	target := v1.ParseDebugTargetOrStep(id)
 
-	at := breakpoint{source: rest, id: id, target: target, hit: hit}
+	at := breakpoint{source: rest, id: id, target: target, hit: hit,
+		definition: &v1.DebugBreakpoint{Id: id, Step: id, HitCondition: hitText}}
 	if hitText != "" {
 		at.source = id + " hit " + hitText + strings.TrimPrefix(rest, id)
 	}
+	var note string
 	if conditional {
 		compiled, err := compileCondition(condition, scope, grammarBreak)
+		if err == nil {
+			note, err = s.conditionInScope(compiled, scope.GetProfile(), target.Resolve)
+		}
 		if err != nil {
 			s.printfTone(ToneWarning, "break %s: %v\n", id, err)
 
 			return
 		}
 		at.condition = compiled
+		at.definition.Condition = strings.TrimSpace(condition)
 	}
 
 	full := !s.holdBreakpoint(id, at)
@@ -751,12 +792,27 @@ func (s *Session) addBreakpoint(ctx context.Context, rest string, scope *v1.Scop
 		return
 	}
 	s.record("break " + at.source)
-	if at.condition == nil {
-		s.printf("breakpoint at %s\n", id)
-
-		return
+	s.printf("breakpoint at %s\n", breakpointLabel(at.definition))
+	if note != "" {
+		s.printfTone(ToneWarning, "break %s: %s\n", id, note)
 	}
-	s.printf("breakpoint at %s if %s\n", id, strings.TrimSpace(condition))
+}
+
+// breakpointLabel is how every front echoes an armed breakpoint: its step or
+// address, then what decides when it stops — the hit count and the condition
+// — as they were set. An echo that drops either says the breakpoint is
+// broader than it is. The prompt and the typed [Driver] both render through
+// this, so one breakpoint reads the same on each.
+func breakpointLabel(definition *v1.DebugBreakpoint) string {
+	label := definition.GetStep()
+	if hit := strings.TrimSpace(definition.GetHitCondition()); hit != "" {
+		label += " hit " + hit
+	}
+	if condition := strings.TrimSpace(definition.GetCondition()); condition != "" {
+		label += " if " + condition
+	}
+
+	return label
 }
 
 // maxStepSuggestionInput bounds the typed id a did-you-mean is computed for:
@@ -863,6 +919,7 @@ func (s *Session) unknownStepNotice(id string) (string, bool) {
 
 	s.mu.Lock()
 	sitesKnown, sites := s.contract.sitesKnown, s.contract.sites
+	program, inProgram := s.contract.program, s.contract.declaredInProgram
 	s.mu.Unlock()
 	if sitesKnown {
 		if len(target.Resolve(sites)) > 0 {
@@ -886,29 +943,53 @@ func (s *Session) unknownStepNotice(id string) (string, bool) {
 			return fmt.Sprintf("no step named %q: this workflow declares %s", id, stepList(ids)), true
 		}
 
-		return fmt.Sprintf("no step matches %q: its last part names the step, and each part before it an enclosing loop, parallel, switch, or call", id), true
+		return noSiteMatches(id), true
 	}
+	address, qualified := id, strings.ContainsRune(id, '/')
 	id = target.Step()
 
 	// Built once at construction ([declaredStepIDs]); this is a lookup rather
 	// than a walk, because a refused command is not recorded and so may be
-	// repeated without bound.
-	_, known := s.declaredIDs[id]
+	// repeated without bound. A program whose sites were cut short answers
+	// from what it declares instead, as the durable driver does: its ids,
+	// built once too, refuse a step it never declares at once, and only a
+	// qualified target naming a declared step walks the program for the
+	// containers it names ([v1.DebugTarget.DeclaredIn]).
+	var known bool
+	if program != nil {
+		_, known = inProgram[id]
+		if known && qualified {
+			known = target.DeclaredIn(program)
+		}
+	} else {
+		_, known = s.declaredIDs[id]
+	}
 
 	s.mu.Lock()
 	// An id this session has watched go past is reachable whatever the
 	// inventory said, so it is admitted — but it never *makes* an inventory:
 	// what has run so far is not what the workflow declares, and reading it
 	// that way would refuse every step the run has not reached yet, which on
-	// an empty inventory is all of them.
-	if !known {
+	// an empty inventory is all of them. A program answers for itself: every
+	// id it has run is one it declares, so the fallback could only admit a
+	// qualified target the program has already refused.
+	if !known && program == nil {
 		_, known = s.seen[id]
 	}
 	s.mu.Unlock()
 
 	names := s.declared
-	if known || len(names) == 0 {
+	if known || (len(names) == 0 && inProgram == nil) {
 		return "", false
+	}
+	if qualified && program != nil {
+		// No declared step answers to the address as written — whether its
+		// step or the containers it names are what is missing — and a notice
+		// about the bare step alone would misstate which.
+		return noSiteMatches(address), true
+	}
+	if len(names) == 0 {
+		return fmt.Sprintf("no step named %q is declared by this workflow or a workflow it calls", id), true
 	}
 
 	// The suggestion is skipped for input too long to have been a typo of
@@ -932,6 +1013,12 @@ func (s *Session) unknownStepNotice(id string) (string, bool) {
 	// inventory on every refusal is work a redirected stdin chooses the
 	// amount of, and refused commands are not recorded (Codex, #1347).
 	return fmt.Sprintf("no step named %q: this workflow declares %s", id, stepList(names)), true
+}
+
+// noSiteMatches is the refusal of an address no site of the program matches,
+// in the words the prompt and a script check share.
+func noSiteMatches(id string) string {
+	return fmt.Sprintf("no step matches %q: its last part names the step, and each part before it an enclosing loop, parallel, switch, or call", id)
 }
 
 // holdBreakpoint puts one breakpoint in the set, reporting whether there was
@@ -1182,7 +1269,8 @@ func (s *Session) addLogpoint(rest string) {
 	}
 
 	source := id + " " + message
-	if !s.holdBreakpoint("log "+id, breakpoint{source: "log " + source, id: "log " + id, target: target, log: template}) {
+	if !s.holdBreakpoint("log "+id, breakpoint{source: "log " + source, id: "log " + id, target: target, log: template,
+		definition: &v1.DebugBreakpoint{Id: "log " + id, Step: id, LogMessage: message}}) {
 		s.printfTone(ToneWarning, "a session holds at most %d breakpoints\n", MaxBreakpoints)
 
 		return

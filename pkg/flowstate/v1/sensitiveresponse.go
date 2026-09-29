@@ -49,33 +49,6 @@ func sensitiveRedactedValue(name string) *Value {
 	}
 }
 
-// sensitiveOutputNames is the set of declared output names a workflow specification
-// marked `sensitive: true`, or nil when no specification is available to consult at
-// all.
-//
-// nil and "empty set" are different answers and callers below rely on the
-// difference: an empty, non-nil set from a real specification means "this file
-// declared no sensitive outputs," which redacts nothing; nil means "there is no
-// file to ask," which is the fail-closed case that redacts everything. Collapsing
-// the two would either reveal a declared-sensitive value when the wrong renderer
-// forgot to pass its spec, or redact every unsensitive value the moment any
-// workflow anywhere declares one sensitive output — neither is the answer this
-// function's callers want.
-func SensitiveOutputNames(workflow *Workflow) map[string]bool {
-	if workflow == nil {
-		return nil
-	}
-
-	names := make(map[string]bool)
-	for _, declared := range workflow.GetDeclaredOutputs() {
-		if declared.GetSensitive() {
-			names[declared.GetName()] = true
-		}
-	}
-
-	return names
-}
-
 // redactRunOutputsValues returns values with every entry this call site cannot
 // vouch for replaced by [sensitiveRedactedValue].
 //

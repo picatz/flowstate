@@ -283,12 +283,14 @@ func (e *executor) startAsync(node *v1.Node, depth, susp int) *asyncStep {
 
 	workflow.Go(e.ctx, func(gctx workflow.Context) {
 		worker := &executor{
-			ctx:      gctx,
-			spec:     e.spec,
-			curSpec:  e.curSpec,
-			identity: e.identity,
-			runID:    e.runID,
-			scope:    e.scope.WithOutputs(snapshot),
+			ctx:             gctx,
+			spec:            e.spec,
+			curSpec:         e.curSpec,
+			callerSensitive: e.callerSensitive,
+			returned:        e.returned,
+			identity:        e.identity,
+			runID:           e.runID,
+			scope:           e.scope.WithOutputs(snapshot),
 
 			// The *same* position, not a nested one: an async step is a step of
 			// this level that happens to run alongside the ones after it, so its

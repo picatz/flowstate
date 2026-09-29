@@ -34,8 +34,8 @@ call rather than whatever happens to be checked out nearby.
 ### Tools
 
 One tool per RPC of the [control-plane API](API.md), with input schemas derived
-from the same protobuf messages, plus three that run in the MCP process itself.
-The generated [MCP tool reference](reference/mcp.md) lists every tool with its
+from the same protobuf messages, plus the tools that run in the MCP process
+itself. The generated [MCP tool reference](reference/mcp.md) lists every tool with its
 request and response messages.
 
 | Tools | Need a server? | What they are for |
@@ -44,8 +44,10 @@ request and response messages.
 | `flowstate_get_catalog` | Only when `--address` or `FLOWSTATE_ADDRESS` is set | The tasks and functions available: this process's own without an address, or the addressed deployment's, refusing if that deployment is unreachable. |
 | `flowstate_test` | No | Run `*.test.yaml` cases against stubbed tasks on a virtual clock. The first thing to reach for after validating. |
 | `flowstate_debug` | No | Run a test case under a script of debugger commands (`break`, `continue`, `inspect`, …) and return the session transcript. At most 100 commands per call. |
+| `flowstate_debug_session_start`, `_attach`, `_observe`, `_command`, `_end` | Only `_attach` | Keep one debug session open across calls: over a test case, or attached to a durable run. Stdio only, and one test-case session at a time: while it is open, `flowstate_test` and `flowstate_debug` are refused. See [Debugging](DEBUGGING.md#a-session-that-outlives-the-call). |
 | `flowstate_run_local` | No | Rehearse a workflow for real in this process, with inputs and signals, and return the run plus what its `log:` steps wrote. |
 | `flowstate_run`, `flowstate_get`, `flowstate_get_timeline`, `flowstate_list`, `flowstate_signal`, `flowstate_signal_with_start`, `flowstate_cancel`, `flowstate_terminate` | Yes | Start and operate durable runs. |
+| `flowstate_debug_attach`, `flowstate_debug_get`, `flowstate_debug_resume`, `flowstate_debug_set_breakpoints`, `flowstate_debug_inspect` | Yes | The durable debugger's RPCs, one call each; the run's `debug:` policy must name you. |
 | `flowstate_create_schedule` and the other schedule tools | Yes | Manage a workflow's schedule. |
 
 A tool that needs a server and has no `--address` says so instead of failing

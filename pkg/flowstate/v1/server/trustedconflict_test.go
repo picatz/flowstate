@@ -193,3 +193,30 @@ func TestANamelessTrustedRegistrationRefusesConstruction(t *testing.T) {
 		})
 	}
 }
+
+// TestATrustedRegistrationFromOtherBytesIsNotAConflict: two registrations of
+// one program compiled from different bytes, or one from none, differ only in
+// the root's source digest, which records which bytes a client compiled from
+// and not what the program does. They say one thing, so the policy still
+// binds rather than the key being refused as registered twice.
+func TestATrustedRegistrationFromOtherBytesIsNotAConflict(t *testing.T) {
+	t.Parallel()
+
+	sourced := narrowedWorkflow()
+	sourced.SourceDigest = v1.ContentDigest([]byte("the file it came from"))
+
+	temporal, _ := newTemporalNamespace(t)
+	flowstate := mustNew(t, temporal,
+		server.WithTrustedWorkflows("", narrowedWorkflow()),
+		server.WithTrustedWorkflows("", sourced),
+	)
+
+	_, err := flowstate.Run(t.Context(), connect.NewRequest(&v1.RunRequest{
+		Workflow: openWorkflow(),
+		Reason:   "trying to bypass the deployment policy",
+	}))
+
+	require.Error(t, err, "the trusted narrowed policy stopped binding")
+	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err),
+		"one program registered from two sources was treated as a conflict: %v", err)
+}

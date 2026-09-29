@@ -1,6 +1,7 @@
 package flowdebug
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -30,7 +31,11 @@ type Remote struct {
 	runID      string
 	session    string
 	lease      time.Duration
+	wait       time.Duration
 	sourceMap  *v1.DebugSourceMap
+	// mapOffered is whether the attach was given a source map at all, which
+	// is what a line breakpoint's refusal says was missing.
+	mapOffered bool
 
 	mu      sync.Mutex
 	last    *v1.DebugSnapshot
@@ -47,6 +52,16 @@ type RemoteOptions struct {
 	// the reconnect after a client restart.
 	SessionID string
 
+	// NewSessionID names the session a new attach creates, when SessionID is
+	// empty; empty lets the server mint one. With RequestID it makes an attach
+	// retryable: a retry whose first answer was lost sends the same attach,
+	// which the run answers from its receipts with the same session, rather
+	// than a second session the run refuses while the first holds it.
+	NewSessionID string
+
+	// RequestID is the attach's request id; empty mints a fresh one.
+	RequestID string
+
 	// Lease is how long each renewal holds the session. Zero asks the engine
 	// for its default; the engine bounds it either way.
 	Lease time.Duration
@@ -55,7 +70,12 @@ type RemoteOptions struct {
 	// the lease, or every 30 seconds without one.
 	Heartbeat time.Duration
 
-	// Wait bounds how long each command waits for the run to apply it.
+	// Wait bounds how long each command waits for the run to apply it: the
+	// attach, and every resume, pause and breakpoint set after it that does
+	// not carry a wait of its own. Zero sends none, leaving each command to
+	// the server's default wait; the server bounds any wait it is sent. A
+	// detach on [Remote.Close] waits at most [closeDetachWait] whatever this
+	// says, so a close is not held past its own deadline.
 	Wait time.Duration
 
 	// SourceMap relates the program to its sources. It is used only when its
@@ -71,8 +91,8 @@ func AttachRemote(ctx context.Context, client flowstatev1connect.WorkflowService
 	request := &v1.DebugAttachRequest{
 		WorkflowId: workflowID,
 		RunId:      runID,
-		SessionId:  opts.SessionID,
-		RequestId:  newRequestID(),
+		SessionId:  cmp.Or(opts.SessionID, opts.NewSessionID),
+		RequestId:  cmp.Or(opts.RequestID, newRequestID()),
 		Renew:      opts.SessionID != "",
 	}
 	if opts.Lease > 0 {
@@ -95,6 +115,14 @@ func AttachRemote(ctx context.Context, client flowstatev1connect.WorkflowService
 		return nil, receipt, fmt.Errorf("flowdebug: attach %s: %s",
 			strings.ToLower(strings.TrimPrefix(receipt.GetStatus().String(), "DEBUG_COMMAND_STATUS_")), receipt.GetMessage())
 	}
+	// A duplicate is the run's memory of an attach it applied under this
+	// request id, not an attach now: that session may since have been
+	// detached, or its lease lapsed. It is an attach only while the run still
+	// names it as its session.
+	if session := response.Msg.GetSessionId(); receipt.GetStatus() == v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_DUPLICATE &&
+		response.Msg.GetSnapshot().GetSession().GetSessionId() != session {
+		return nil, receipt, fmt.Errorf("flowdebug: attach: this request already attached session %s, which no longer holds the run; attach under a new request id", session)
+	}
 
 	remote := &Remote{
 		client:     client,
@@ -102,9 +130,11 @@ func AttachRemote(ctx context.Context, client flowstatev1connect.WorkflowService
 		runID:      runID,
 		session:    response.Msg.GetSessionId(),
 		lease:      opts.Lease,
+		wait:       opts.Wait,
 		last:       response.Msg.GetSnapshot(),
 		stopped:    make(chan struct{}),
 	}
+	remote.mapOffered = opts.SourceMap != nil
 	if snapshot := response.Msg.GetSnapshot(); opts.SourceMap != nil && snapshot.GetIrDigest() != "" &&
 		snapshot.GetIrDigest() == opts.SourceMap.GetIrDigest() {
 		remote.sourceMap = opts.SourceMap
@@ -155,6 +185,16 @@ func (r *Remote) renew(ctx context.Context, every time.Duration) {
 }
 
 func newRequestID() string { return "r-" + uuid.NewString() }
+
+// waitOf is the wait a command carries to the server: its own, or the one
+// [RemoteOptions.Wait] set for every command.
+func (r *Remote) waitOf(asked *durationpb.Duration) *durationpb.Duration {
+	if asked != nil || r.wait <= 0 {
+		return asked
+	}
+
+	return durationpb.New(r.wait)
+}
 
 func requestID(id string) string {
 	if id == "" {
@@ -235,7 +275,7 @@ func (r *Remote) Resume(ctx context.Context, req *v1.DebugResumeRequest) (*v1.De
 		ExpectedRevision: req.GetExpectedRevision(),
 		Action:           req.GetAction(),
 		Until:            req.GetUntil(),
-		Wait:             req.GetWait(),
+		Wait:             r.waitOf(req.GetWait()),
 	}))
 	if err != nil {
 		return nil, err
@@ -249,6 +289,7 @@ func (r *Remote) Resume(ctx context.Context, req *v1.DebugResumeRequest) (*v1.De
 func (r *Remote) Pause(ctx context.Context, id string) (*v1.DebugReceipt, error) {
 	request := &v1.DebugAttachRequest{
 		WorkflowId: r.workflowID, RunId: r.runID, SessionId: r.session, RequestId: requestID(id),
+		Wait: r.waitOf(nil),
 	}
 	if r.lease > 0 {
 		request.Lease = durationpb.New(r.lease)
@@ -276,8 +317,11 @@ func (r *Remote) ReplaceBreakpoints(ctx context.Context, req *v1.DebugSetBreakpo
 		}
 		site, location, reason := siteAtLine(r.sourceMap, want.GetLine())
 		if site == nil {
-			if r.sourceMap == nil {
+			switch {
+			case r.sourceMap == nil && r.mapOffered:
 				reason = "the source map does not match the program this run executes, so a line cannot be trusted to name a step; name the step instead"
+			case r.sourceMap == nil:
+				reason = "no program was given to map lines from; name the step instead, or attach with the program the run was submitted from"
 			}
 			local[i] = &v1.DebugBreakpointState{Id: want.GetId(), Message: reason}
 
@@ -301,7 +345,7 @@ func (r *Remote) ReplaceBreakpoints(ctx context.Context, req *v1.DebugSetBreakpo
 		RequestId:   requestID(req.GetRequestId()),
 		Breakpoints: sent,
 		FailureMode: req.GetFailureMode(),
-		Wait:        req.GetWait(),
+		Wait:        r.waitOf(req.GetWait()),
 	}))
 	if err != nil {
 		return nil, err
@@ -375,6 +419,14 @@ func (r *Remote) Disconnect() error {
 	return r.close(false)
 }
 
+// closeTimeout bounds the detach a close sends, and closeDetachWait is the
+// wait that detach asks of the server: well inside the timeout, so a run in a
+// long step answers pending rather than holding the close past its deadline.
+const (
+	closeTimeout    = 10 * time.Second
+	closeDetachWait = 5 * time.Second
+)
+
 func (r *Remote) close(detach bool) error {
 	r.mu.Lock()
 	if r.closed {
@@ -391,9 +443,11 @@ func (r *Remote) close(detach bool) error {
 	if !detach {
 		return nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), closeTimeout)
 	defer cancel()
-	receipt, err := r.Resume(ctx, &v1.DebugResumeRequest{Action: v1.DebugResumeAction_DEBUG_RESUME_ACTION_DETACH})
+	receipt, err := r.Resume(ctx, &v1.DebugResumeRequest{
+		Action: v1.DebugResumeAction_DEBUG_RESUME_ACTION_DETACH, Wait: durationpb.New(closeDetachWait),
+	})
 	if err != nil {
 		return err
 	}

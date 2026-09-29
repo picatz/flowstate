@@ -3,9 +3,11 @@ package main
 import (
 	"errors"
 	"fmt"
+	"net"
 	"strings"
 	"sync"
 
+	"connectrpc.com/connect"
 	"github.com/spf13/cobra"
 
 	"github.com/picatz/flowstate/cmd/flow/internal/ui"
@@ -397,7 +399,7 @@ func redactFailureError(err error, sensitive v1.SensitiveValues) error {
 // arguments the binder refuses. All four surfaces read the same `inputs:`
 // declarations the same way and refuse the same two calls — [runInputs] (or
 // the tool's own [runLocalToolInputs]) and [checkRunInputs] (or
-// [checkToolRunInputs]) — so one set serves every refusal rather than one per
+// [jsonRunInputs]) — so one set serves every refusal rather than one per
 // caller (#2076).
 //
 // cmd carries [sensitiveInputWords]'s one CLI-specific source, `--input
@@ -570,4 +572,22 @@ func runSensitiveValues(workflow *v1.Workflow, submitted map[string]*v1.Value, r
 	}
 
 	return v1.RunFailureSensitiveValues(workflow, submitted)
+}
+
+// noServerAnswered reports whether err is a failure to reach a server rather
+// than a server's own answer: a transport error, or one this process raised
+// before any bytes left it ([clientSideError]). Connect reports both as
+// unavailable, and so can a server that answered, with detail of its own, so
+// the code alone does not say which. Such a failure quotes no argument a run
+// was sent, and a refusal that names the address it dialed is left readable.
+func noServerAnswered(err error) bool {
+	if connect.CodeOf(err) != connect.CodeUnavailable {
+		return false
+	}
+	if _, ok := errors.AsType[*clientSideError](err); ok {
+		return true
+	}
+	_, transport := errors.AsType[net.Error](err)
+
+	return transport
 }

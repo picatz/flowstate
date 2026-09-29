@@ -90,6 +90,10 @@ func TestTheDurableDebuggerEndToEnd(t *testing.T) {
 	assert.Equal(t, "after", held.GetOccurrence().GetAddress())
 	assert.Equal(t, session, held.GetSession().GetSessionId())
 	assert.EqualValues(t, v1.DebugProtocol, held.GetProtocol())
+	// The program the run reports is the one submitted: the attestation the
+	// server writes onto it at admission is not part of the program a source
+	// map describes, so a client's map of the same file binds.
+	assert.Equal(t, v1.WorkflowIRDigest(debuggableWorkflow()), held.GetIrDigest())
 
 	// The retry of the attach is answered from the run's receipt.
 	retried, err := fixture.teamA.DebugAttach(sre1, connect.NewRequest(&v1.DebugAttachRequest{
@@ -226,6 +230,59 @@ func TestABreakpointConditionIsAnInspection(t *testing.T) {
 			EntityKey: "debug-door", Workflow: entity, Name: v1.DebugSignal, Payload: payload,
 		}))
 	require.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err), "SignalWithStart delivered onto the reserved debug channel")
+}
+
+// TestBreakpointExpressionsAreWithheldWithoutTheInspectAction: setting a
+// condition needs workload.debug_inspect, so a caller the run's debug policy
+// admits but whose token lacks that action reads the breakpoint without its
+// definition, and the holder reads it whole.
+func TestBreakpointExpressionsAreWithheldWithoutTheInspectAction(t *testing.T) {
+	t.Parallel()
+
+	fixture := newTenantFixture(t)
+	started, err := fixture.teamA.Run(t.Context(), connect.NewRequest(&v1.RunRequest{Workflow: debuggableWorkflow()}))
+	require.NoError(t, err)
+	workflowID := started.Msg.GetWorkflowId()
+	waitUntilParkedAtTheGate(t, fixture.temporal, workflowID)
+
+	sre1 := as(t.Context(), "sre-1@example.com")
+	attached, err := fixture.teamA.DebugAttach(sre1, connect.NewRequest(&v1.DebugAttachRequest{
+		WorkflowId: workflowID, RequestId: "attach-1", Lease: durationpb.New(5 * time.Minute),
+	}))
+	require.NoError(t, err)
+	session := attached.Msg.GetSessionId()
+	_, err = fixture.teamA.Signal(t.Context(), connect.NewRequest(&v1.SignalRequest{
+		WorkflowId: workflowID, Name: "deploy-approved",
+		Payload: &v1.Node_Outputs{NamedValues: map[string]*v1.Value{"approved": v1.NewLiteral(false)}},
+	}))
+	require.NoError(t, err)
+	waitForDebugState(t, fixture.teamA, sre1, workflowID, v1.DebugRunState_DEBUG_RUN_STATE_HELD)
+
+	const condition = `steps.approval.payload.approved == true`
+	set, err := fixture.teamA.DebugSetBreakpoints(sre1, connect.NewRequest(&v1.DebugSetBreakpointsRequest{
+		WorkflowId: workflowID, SessionId: session, RequestId: "peek", Wait: durationpb.New(10 * time.Second),
+		Breakpoints: []*v1.DebugBreakpoint{{Id: "peek", Step: "after", Condition: condition}},
+	}))
+	require.NoError(t, err)
+	require.Equal(t, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_APPLIED, set.Msg.GetReceipt().GetStatus())
+
+	definitionOf := func(ctx context.Context) *v1.DebugBreakpoint {
+		t.Helper()
+		got, err := fixture.teamA.DebugGet(ctx, connect.NewRequest(&v1.DebugGetRequest{WorkflowId: workflowID}))
+		require.NoError(t, err)
+		require.Len(t, got.Msg.GetSnapshot().GetBreakpoints(), 1)
+
+		return got.Msg.GetSnapshot().GetBreakpoints()[0].GetDefinition()
+	}
+	assert.Equal(t, condition, definitionOf(sre1).GetCondition(), "the holder could not read its own condition")
+	assert.Nil(t, definitionOf(as(t.Context(), "sre-2@example.com", "workload.debug")),
+		"a caller without the inspect action read the condition")
+	assert.Equal(t, condition, definitionOf(as(t.Context(), "sre-2@example.com", "workload.debug", "workload.debug_inspect")).GetCondition())
+
+	_, err = fixture.teamA.DebugResume(sre1, connect.NewRequest(&v1.DebugResumeRequest{
+		WorkflowId: workflowID, SessionId: session, RequestId: "bye", Action: v1.DebugResumeAction_DEBUG_RESUME_ACTION_DETACH,
+	}))
+	require.NoError(t, err)
 }
 
 // TestAWaitingReadSeesTheRunClose: a long-polled DebugGet started while the

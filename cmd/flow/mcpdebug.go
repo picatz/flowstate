@@ -285,6 +285,21 @@ func debugToolHandler(timeout time.Duration) mcp.ToolHandler {
 
 // checkDebugArguments refuses what cannot be a session, naming the fix.
 func checkDebugArguments(args *debugToolArguments) error {
+	if err := checkDebugSource(args); err != nil {
+		return err
+	}
+	if len(args.Commands) == 0 {
+		return errors.New("commands is required: pass the script that drives the session, e.g. " +
+			"[\"step\", \"inspect steps.hi\", \"continue\"]. An empty script would run the case " +
+			"unattended, which is what " + flowmcp.TestToolName + " already does")
+	}
+
+	return checkDebugCommands(args.Commands)
+}
+
+// checkDebugSource checks what a session runs: the workflow, its tests, and
+// the case named. A retained session takes these and no script.
+func checkDebugSource(args *debugToolArguments) error {
 	if strings.TrimSpace(args.Workflow) == "" {
 		return errors.New("workflow is required: pass the Flowfile YAML to debug, e.g. " +
 			"\"edition: v2026.3\\nname: demo\\nsteps:\\n- id: hi\\n  log:\\n    message: hello\"")
@@ -298,19 +313,20 @@ func checkDebugArguments(args *debugToolArguments) error {
 			"it names one of the cases in the `tests` document, so this is not one of them",
 			len(args.Case), maxDebugCaseBytes)
 	}
-	if len(args.Commands) == 0 {
-		return errors.New("commands is required: pass the script that drives the session, e.g. " +
-			"[\"step\", \"inspect steps.hi\", \"continue\"]. An empty script would run the case " +
-			"unattended, which is what " + flowmcp.TestToolName + " already does")
-	}
-	if len(args.Commands) > maxDebugCommands {
+
+	return nil
+}
+
+// checkDebugCommands bounds a one-shot script.
+func checkDebugCommands(commands []string) error {
+	if len(commands) > maxDebugCommands {
 		return fmt.Errorf("a session takes at most %d commands and this script has %d; "+
 			"submit the first %d, read the transcript, and send the rest with the answers in hand "+
 			"— which is what a debugging conversation looks like anyway",
-			maxDebugCommands, len(args.Commands), maxDebugCommands)
+			maxDebugCommands, len(commands), maxDebugCommands)
 	}
 	total := 0
-	for _, command := range args.Commands {
+	for _, command := range commands {
 		total += len(command)
 	}
 	if total > maxDebugScriptBytes {
@@ -319,7 +335,7 @@ func checkDebugArguments(args *debugToolArguments) error {
 			"can read. Ask shorter questions, or compute the value in the file",
 			total, maxDebugScriptBytes)
 	}
-	for i, command := range args.Commands {
+	for i, command := range commands {
 		if len(command) > flowdebug.MaxCommandBytes {
 			return fmt.Errorf("commands[%d] is %d bytes, and a command may be at most %d: an "+
 				"expression that long is one to compute in the file rather than at a prompt",

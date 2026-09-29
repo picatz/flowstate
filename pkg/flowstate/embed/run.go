@@ -140,15 +140,27 @@ type RunOptions struct {
 //     discards its own registry, and nothing about running one mutates
 //     [v1.DefaultRegistry] or any other RunLocal call's registry.
 func RunLocal(ctx context.Context, workflow *Workflow, opts RunOptions) (*v1.Workflow_StepOutputs, error) {
+	ctx, err := localContext(ctx, workflow, opts, "RunLocal")
+	if err != nil {
+		return nil, err
+	}
+
+	return v1.RunWithInputs(ctx, workflow, v1.NewNamedValues(opts.Inputs))
+}
+
+// localContext prepares the context one local run executes under: its own
+// registry, egress policy, tasks, clock, signals, and secrets, exactly as
+// [RunLocal] documents. verb names the caller in its refusals.
+func localContext(ctx context.Context, workflow *Workflow, opts RunOptions, verb string) (context.Context, error) {
 	if workflow == nil {
-		return nil, fmt.Errorf("flowstate/embed: RunLocal: workflow is nil")
+		return nil, fmt.Errorf("flowstate/embed: %s: workflow is nil", verb)
 	}
 
 	registry := v1.NewRegistry()
 	for _, def := range v1.DefaultRegistry().All() {
 		if err := registry.Register(def); err != nil {
 			// Every def just came from a registry that already accepted it.
-			return nil, fmt.Errorf("flowstate/embed: RunLocal: copying the default registry: %w", err)
+			return nil, fmt.Errorf("flowstate/embed: %s: copying the default registry: %w", verb, err)
 		}
 	}
 
@@ -167,7 +179,7 @@ func RunLocal(ctx context.Context, workflow *Workflow, opts RunOptions) (*v1.Wor
 		egressPolicy = v1.DefaultEgressPolicy()
 	}
 	if err := registry.Replace(v1.HTTPTaskDef(egressPolicy)); err != nil {
-		return nil, fmt.Errorf("flowstate/embed: RunLocal: registering the http task for the given egress policy: %w", err)
+		return nil, fmt.Errorf("flowstate/embed: %s: registering the http task for the given egress policy: %w", verb, err)
 	}
 
 	if opts.Tasks != nil {
@@ -176,7 +188,7 @@ func RunLocal(ctx context.Context, workflow *Workflow, opts RunOptions) (*v1.Wor
 				// [Tasks.Register] already validated this definition; a
 				// failure here means this package's own bookkeeping
 				// disagreed with what it accepted.
-				return nil, fmt.Errorf("flowstate/embed: RunLocal: registering task %q: %w", def.Name, err)
+				return nil, fmt.Errorf("flowstate/embed: %s: registering task %q: %w", verb, def.Name, err)
 			}
 		}
 	}
@@ -191,7 +203,7 @@ func RunLocal(ctx context.Context, workflow *Workflow, opts RunOptions) (*v1.Wor
 
 	if opts.Secrets != nil {
 		if err := opts.Secrets.Identity.Validate(); err != nil {
-			return nil, fmt.Errorf("flowstate/embed: RunLocal: %w", err)
+			return nil, fmt.Errorf("flowstate/embed: %s: %w", verb, err)
 		}
 
 		var targets []string
@@ -204,7 +216,7 @@ func RunLocal(ctx context.Context, workflow *Workflow, opts RunOptions) (*v1.Wor
 		// federate is a mistake worth reporting once, up front, rather than
 		// at whichever step happens to reach it first.
 		if err := v1.ValidateCredentialTargets(workflow, targets); err != nil {
-			return nil, fmt.Errorf("flowstate/embed: RunLocal: %w", err)
+			return nil, fmt.Errorf("flowstate/embed: %s: %w", verb, err)
 		}
 
 		ctx = v1.ContextWithTaskRuntime(ctx, v1.TaskRuntime{
@@ -219,7 +231,7 @@ func RunLocal(ctx context.Context, workflow *Workflow, opts RunOptions) (*v1.Wor
 	// exactly what [v1.ResolveSecret] and [v1.AuthorizeCredential] treat as
 	// "not configured on this worker" and refuse — see [Secrets]'s doc.
 
-	return v1.RunWithInputs(ctx, workflow, v1.NewNamedValues(opts.Inputs))
+	return ctx, nil
 }
 
 // StepOutput returns the named output of a step from what [RunLocal]

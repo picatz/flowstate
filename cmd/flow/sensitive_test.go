@@ -14,20 +14,20 @@ import (
 const secretString = "sk-live-0123456789abcdef"
 
 // TestSensitiveOutputNamesDistinguishesNoSpecFromNoSensitiveOutputs is the
-// difference [sensitiveOutputNames]'s own comment insists matters: nil (no
+// difference [v1.SensitiveOutputNames]'s own comment insists matters: nil (no
 // specification) and an empty, non-nil set (a real specification that declared
 // nothing sensitive) must not collapse into one answer, or one of the two
 // direction's callers gets the wrong default.
 func TestSensitiveOutputNamesDistinguishesNoSpecFromNoSensitiveOutputs(t *testing.T) {
-	require.Nil(t, sensitiveOutputNames(nil), "no specification must answer nil, not an empty set")
+	require.Nil(t, v1.SensitiveOutputNames(nil), "no specification must answer nil, not an empty set")
 
 	workflow := &v1.Workflow{DeclaredOutputs: []*v1.OutputDeclaration{{Name: "url"}}}
-	names := sensitiveOutputNames(workflow)
+	names := v1.SensitiveOutputNames(workflow)
 	require.NotNil(t, names, "a real specification must answer a non-nil set even when nothing is sensitive")
 	require.Empty(t, names)
 
 	workflow.DeclaredOutputs = append(workflow.DeclaredOutputs, &v1.OutputDeclaration{Name: "token", Sensitive: true})
-	names = sensitiveOutputNames(workflow)
+	names = v1.SensitiveOutputNames(workflow)
 	require.True(t, names["token"])
 	require.False(t, names["url"])
 }
@@ -344,7 +344,7 @@ func TestRedactGetResponseRevealShowsStepTranscript(t *testing.T) {
 // wipes the whole transcript unconditionally would still pass the Codex
 // reproduction above. This is the workflow with a real specification that
 // declares no sensitive output at all — the same "empty, non-nil set" case
-// [sensitiveOutputNames] documents — and the transcript a step computed a
+// [v1.SensitiveOutputNames] documents — and the transcript a step computed a
 // non-sensitive output from must render exactly as produced.
 func TestRedactStepValuesLeavesTranscriptUntouchedWhenNothingIsSensitive(t *testing.T) {
 	workflow := &v1.Workflow{

@@ -73,7 +73,7 @@ func TestDebugReplayRunsTheScriptShippedBesideAnExample(t *testing.T) {
 		filepath.Join("..", "..", "examples", "loop-accumulate", "workflow.yaml"))
 	require.NoError(t, res.Err)
 
-	assert.Contains(t, res.Stderr, "break at term", "the conditional breakpoint never fired")
+	assert.Contains(t, res.Stderr, "break at countup[2]/term", "the conditional breakpoint never fired, or not at the iteration it names")
 	assert.Contains(t, res.Stderr, `{"n":3,"sum":3}`,
 		"the inspection did not answer with the carried value at the third pass")
 	assert.Contains(t, res.Stderr, "true", "the arithmetic the example's own output describes did not hold")
@@ -108,6 +108,54 @@ func TestDebugReplayRefusesABreakOnAStepTheWorkflowDoesNotHave(t *testing.T) {
 	assert.Empty(t, res.Stdout, "the workflow ran anyway, before the script was refused")
 	assert.Equal(t, exitCodeFailure, res.ExitCode,
 		"a refusal of the file named on the command line is a finding, not an invocation mistake")
+}
+
+// TestDebugReplayAcceptsAStepAddressThePromptAccepts: a script naming a step
+// inside a loop body by address is checked with the prompt's own resolver,
+// not refused as a step id nothing declares.
+func TestDebugReplayAcceptsAStepAddressThePromptAccepts(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "orders.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(`edition: v2026.3
+name: orders
+steps:
+  - id: orders
+    for_each:
+      items: ${[1, 2]}
+      as: order
+      steps:
+        - id: charge
+          log:
+            message: charged
+outputs: {}
+`), 0o600))
+
+	res := runFlow(t, "debug", "replay", writeDebugScript(t, "break orders/charge\ncontinue\ncontinue\ncontinue\n"), path)
+	require.NoError(t, res.Err)
+	assert.Contains(t, res.Stderr, "breakpoint at orders/charge")
+	assert.Equal(t, 2, strings.Count(res.Stderr, "]/charge ("), "the addressed breakpoint did not hold at each iteration")
+
+	res = runFlow(t, "debug", "replay", writeDebugScript(t, "break orders/refund\ncontinue\n"), path)
+	require.Error(t, res.Err)
+	assert.Contains(t, res.Err.Error(), `no step matches "orders/refund"`)
+}
+
+// TestDebugReplayRefusesAConditionNothingCanBind is #2194 at the prompt a
+// replay drives: the session holds the program, so a condition reading a name
+// no site of its step binds is refused when it is typed rather than armed to
+// decline at every arrival, and one reading the loop's own binding, set before
+// the loop runs, still fires.
+func TestDebugReplayRefusesAConditionNothingCanBind(t *testing.T) {
+	res := runFlow(t, "debug", "replay",
+		writeDebugScript(t, "break receipt if amount > 500\nbreak charge if amont > 500\nbreak charge if amount > 500\ncontinue\ncontinue\n"),
+		filepath.Join("..", "..", "examples", "debugging", "workflow.yaml"))
+	require.NoError(t, res.Err)
+
+	assert.Contains(t, res.Stderr, "break receipt: `amount` is bound only inside the loops and steps that declare it")
+	assert.Contains(t, res.Stderr, "break charge: `amont` is not bound where this breakpoint fires")
+	assert.Contains(t, res.Stderr, "did you mean `amount`?")
+	assert.Contains(t, res.Stderr, "break at orders[1]/charge (", "the condition on the loop's own binding did not fire")
+	assert.NotContains(t, res.Stderr, "break at receipt", "a refused breakpoint held the run")
+	assert.NotContains(t, res.Stderr, "could not be evaluated", "a refused condition was armed and declined")
 }
 
 // TestDebugReplayRefusesAMisspelledCommandBeforeRunningAnything.
@@ -452,4 +500,33 @@ func TestDebugReplayIsFoundWhereSomebodyWouldLookForIt(t *testing.T) {
 
 	debug := flowCommand(t, "debug")
 	assert.Equal(t, "development", debug.GroupID)
+}
+
+// TestAnUntilTheRunNeverReachesIsSaidAtThePrompt: `flow debug replay` and
+// `flow run local --debug` report the run's return to the session, so an
+// `until` naming an arrival the run never makes, an iteration past the last,
+// is said rather than the run ending as if it had stopped there.
+func TestAnUntilTheRunNeverReachesIsSaidAtThePrompt(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "orders.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(`edition: v2026.3
+name: orders
+steps:
+  - id: orders
+    for_each:
+      items: ${[1, 2]}
+      as: order
+      steps:
+        - id: charge
+          log:
+            message: charged
+outputs: {}
+`), 0o600))
+
+	res := runFlow(t, "debug", "replay", writeDebugScript(t, "until orders[9]/charge\n"), path)
+	require.NoError(t, res.Err)
+	assert.Contains(t, res.Stderr, "the run completed without stopping at `until orders[9]/charge`")
+
+	res = runFlow(t, "debug", "replay", writeDebugScript(t, "until orders[1]/charge\ncontinue\n"), path)
+	require.NoError(t, res.Err)
+	assert.NotContains(t, res.Stderr, "without stopping at", "an until the run reached was reported missed")
 }

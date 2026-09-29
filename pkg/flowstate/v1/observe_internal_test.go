@@ -46,11 +46,57 @@ func TestAPanickingObserverDoesNotTakeTheRunWithIt(t *testing.T) {
 	ctx := NewContextWithRunObserver(t.Context(), observer)
 
 	require.NotPanics(t, func() {
-		observeStepFinished(ctx, "build", nil, nil, false)
+		observeStepFinished(ctx, "build", nil, nil, false, SensitiveValues{})
 		observeStepSkipped(ctx, "prod_gate")
 		observeWaitStarted(ctx, "approval", "ship-approved", time.Hour, true)
 	})
 
 	require.Equal(t, []string{"build", "prod_gate", "approval"}, observer.saw,
 		"a panic in one callback stopped a later observation point from being reached")
+}
+
+// onlyWithholding is a [WithholdingOnlyRunObserver] that counts what it is
+// told.
+type onlyWithholding struct{ told int }
+
+func (*onlyWithholding) StepFinished(string, *Node_Outputs, error, bool) {}
+func (*onlyWithholding) StepSkipped(string)                              {}
+func (*onlyWithholding) WaitStarted(string, string, time.Duration, bool) {}
+func (o *onlyWithholding) StepWithheld(string, SensitiveValues)          { o.told++ }
+
+// TestAWithholdingOnlyObserverCostsNoCopy: an observer that reads only what a
+// step withholds is told it, and the engine copies no outputs for it, where
+// an observer reading the outputs gets its own copy of each (Codex, #2215).
+func TestAWithholdingOnlyObserverCostsNoCopy(t *testing.T) {
+	named := make(map[string]*Value, 200)
+	for i := range 200 {
+		named[string(rune('a'+i%26))+string(rune('a'+i/26))] = NewLiteral("value")
+	}
+	outputs := &Node_Outputs{NamedValues: named}
+
+	only := &onlyWithholding{}
+	onlyCtx := NewContextWithRunObserver(t.Context(), only)
+	require.True(t, withholdingRead(onlyCtx), "the engine would compute no set for it")
+	onlyAllocs := testing.AllocsPerRun(20, func() {
+		observeStepFinished(onlyCtx, "step", outputs, nil, false, SensitiveValues{})
+	})
+	require.Positive(t, only.told, "the observer was not told")
+
+	copyingCtx := NewContextWithRunObserver(t.Context(), &withholdingCounter{})
+	copyingAllocs := testing.AllocsPerRun(20, func() {
+		observeStepFinished(copyingCtx, "step", outputs, nil, false, SensitiveValues{})
+	})
+
+	require.Less(t, onlyAllocs, 5.0, "a withholding-only observer's step copied its outputs")
+	require.Greater(t, copyingAllocs, 100.0, "the copying observer's step did not copy, so this proves nothing")
+}
+
+// withholdingCounter is a [WithholdingRunObserver] that discards what it is
+// told.
+type withholdingCounter struct{}
+
+func (withholdingCounter) StepFinished(string, *Node_Outputs, error, bool) {}
+func (withholdingCounter) StepSkipped(string)                              {}
+func (withholdingCounter) WaitStarted(string, string, time.Duration, bool) {}
+func (withholdingCounter) StepFinishedWithholding(string, *Node_Outputs, error, bool, SensitiveValues) {
 }

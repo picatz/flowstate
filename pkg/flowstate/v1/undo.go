@@ -97,6 +97,14 @@ var ErrUndoBudgetExpired = errors.New("the compensation budget for this cancelle
 // outside this type ever sees a hole.
 type UndoLog struct {
 	pending []*PendingUndo
+
+	// withheld is what the positions that registered these compensations
+	// withhold from a debugger ([UndoLog.withhold]): a compensation's
+	// failure quotes the inputs it was registered with, which can be a
+	// callee's sensitive input, and the failure it is reported beside came
+	// from somewhere else (#2213). Local only, and never carried: the durable
+	// driver renders no compensation's failure to a debugger.
+	withheld SensitiveAccumulator
 }
 
 // NewUndoLog returns a log holding the compensations carried from a previous
@@ -137,6 +145,15 @@ func (l *UndoLog) Append(child *UndoLog) {
 		return
 	}
 	l.pending = append(l.pending, child.Pending()...)
+	l.withhold(child.withheld.Values())
+}
+
+// withhold gathers what the position registering a compensation withholds.
+func (l *UndoLog) withhold(sensitive SensitiveValues) {
+	if l == nil || sensitive.Empty() {
+		return
+	}
+	l.withheld.Add(sensitive)
 }
 
 // Reserve takes the position an async step will occupy, before that step has
