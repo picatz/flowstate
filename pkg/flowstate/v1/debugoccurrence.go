@@ -410,7 +410,8 @@ func debugScopesOf(sites []DebugStaticSite) iter.Seq[*DebugBindings] {
 // own `vars:`, a `for_each`'s [IteratorName], and a `loop:`'s `state:`. These
 // are the bindings both drivers install around a container's body, and the
 // rules [promptWalk.nodes] documents; a leaf binds its `vars:` for its own
-// inputs, which no step inside it reads because it has none.
+// inputs, which no step inside it reads because it has none. The order is
+// unspecified.
 func BodyLocals(node *Node) []string {
 	names := slices.Collect(maps.Keys(node.GetVars()))
 	switch kind := node.GetKind().(type) {

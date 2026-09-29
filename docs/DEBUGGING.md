@@ -146,8 +146,8 @@ bind (a `for_each`'s `as:`, a `loop:`'s state, an enclosing step's `vars:`). It
 can read those before the run reaches them, so a condition on a loop's binding,
 typed at the first step before the loop has run, is armed. A name bound nowhere,
 or bound only inside a loop the step is not in, is refused on every front, local
-and durable, and a near name is suggested. Against `examples/debugging`, whose
-`orders` loop binds `amount`:
+and durable, and a misspelling gets a near name suggested. Against
+`examples/debugging`, whose `orders` loop binds `amount`:
 
 ```text
 debug> break receipt if amount > 500

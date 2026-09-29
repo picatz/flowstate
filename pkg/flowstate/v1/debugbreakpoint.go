@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/google/cel-go/cel"
+	"github.com/google/cel-go/common/decls"
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 
 	"github.com/picatz/flowstate/pkg/flowstate/v1/nearest"
@@ -229,6 +230,7 @@ func CheckDebugConditionScope(condition *Value, profile string, at, program []De
 
 	free := map[string]struct{}{}
 	walk := &debugRootWalk{
+		functions: env.Functions(),
 		resolves: func(name string) bool {
 			if boundInProgram[debugRootOf(name)] {
 				return false
@@ -286,17 +288,24 @@ func debugUnboundName(name string, locals []string, program []DebugStaticSite, e
 }
 
 // debugRootWalk gathers the bare names an expression reads from its scope:
-// every identifier not bound by one of its own comprehensions and not a name
-// the environment itself resolves: a type or enum value, which the parser
-// presents as an identifier, bare or qualified (`int` in `type(n) == int`,
-// `google.protobuf.Timestamp`).
+// every identifier not bound by one of its own comprehensions, and not a name
+// the environment itself resolves: a namespaced function's qualifier, or a
+// type or enum value (`int` in `type(n) == int`, `google.protobuf.Timestamp`).
+//
+// A condition from [CompileDebugCondition] has been through cel-go's checker,
+// which rewrites both in place: a namespaced call to one targetless call, a
+// qualified type name to one identifier. One the checker could not reach
+// (its environment would not build) arrives as parsed, with a qualifier as a
+// call's target and a type name as a chain of selects, and the walk reads
+// that shape too.
 //
 // bound counts the comprehension bindings in force, so a nested macro that
 // rebinds a name unbinds only its own.
 type debugRootWalk struct {
-	resolves func(name string) bool
-	bound    map[string]int
-	free     map[string]struct{}
+	functions map[string]*decls.FunctionDecl
+	resolves  func(name string) bool
+	bound     map[string]int
+	free      map[string]struct{}
 }
 
 func (w *debugRootWalk) walk(e *expr.Expr) {
@@ -313,12 +322,14 @@ func (w *debugRootWalk) walk(e *expr.Expr) {
 		w.walk(kind.SelectExpr.GetOperand())
 
 	case *expr.Expr_CallExpr:
-		// A namespaced function the profile declares arrives with no
-		// target: the parser, which knows the profile's functions, resolves
-		// `math.ceil(x)` to one call named `math.ceil`. A target left here
-		// is a receiver the expression reads.
+		// A namespaced function's qualifier is not a read. A checked
+		// condition has none to skip: cel-go's checker rewrites
+		// `math.ceil(x)` in place to one targetless call named `math.ceil`.
+		// A parse-only one still carries `math` as the target.
 		call := kind.CallExpr
-		w.walk(call.GetTarget())
+		if qualifier, ok := debugQualifiedName(call.GetTarget()); !ok || w.functions[qualifier+"."+call.GetFunction()] == nil {
+			w.walk(call.GetTarget())
+		}
 		for _, arg := range call.GetArgs() {
 			w.walk(arg)
 		}

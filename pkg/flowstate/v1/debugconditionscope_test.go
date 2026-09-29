@@ -230,3 +230,37 @@ func TestABindingSpelledLikeATypeIsAScopeRead(t *testing.T) {
 	}
 	assert.NoError(t, check("done", "type(1) == int"), "a type name the program never binds was refused")
 }
+
+// TestAParseOnlyConditionIsJudgedAlike: a condition [v1.CompileDebugCondition]
+// returns has been through cel-go's checker, which rewrites a namespaced call
+// to one targetless call and a qualified type name to one identifier. One it
+// could not check, when the checking environment cannot be built, arrives as
+// parsed: `math` a call's target and `google.protobuf.Timestamp` a chain of
+// selects. The walk reads both shapes the same way.
+func TestAParseOnlyConditionIsJudgedAlike(t *testing.T) {
+	t.Parallel()
+
+	sites, truncated := v1.DebugStaticSites(scopedProgram())
+	require.False(t, truncated)
+	target, err := v1.ParseDebugTarget("compose")
+	require.NoError(t, err)
+	at := target.Resolve(sites)
+
+	for condition, refused := range map[string]string{
+		`math.ceil(1.5) > 1.0 && base64.encode(b"x") != ""`: "",
+		"type(steps) != google.protobuf.Timestamp":          "",
+		"nosuch.size() > 1":                                 "`nosuch` is not bound",
+	} {
+		parsed := v1.NewExpr(condition)
+		require.NotNil(t, parsed.GetExpr(), condition)
+		err := v1.CheckDebugConditionScope(parsed, v1.CurrentProfile, at, sites)
+		if refused == "" {
+			assert.NoError(t, err, condition)
+
+			continue
+		}
+		if assert.Error(t, err, condition) {
+			assert.Contains(t, err.Error(), refused, condition)
+		}
+	}
+}
