@@ -498,10 +498,11 @@ it happened at, which stub answered (marked `from defaults` when inherited),
 each signal, and each `switch:` arm taken. The value of any input declared
 `sensitive:` renders `[redacted]` there, in the case's failures and in a
 `--seeds` divergence report, whichever workflow the run reached declares it, a
-called one included. A divergence report shows both of its runs under what
-either run withholds, since they are read together. Claims, and the comparison
-`--seeds` makes, still read the real value. Exit status is 0 when everything
-passed, 1 when a case failed, and 2 for a usage error.
+called one included. So does a called workflow's output declared `sensitive:`.
+A divergence report shows both of its runs under what either run withholds,
+since they are read together. Claims, and the comparison `--seeds` makes, still
+read the real value. Exit status is 0 when everything passed, 1 when a case
+failed, and 2 for a usage error.
 
 ## Tests in Go
 

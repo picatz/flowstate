@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"sync"
 )
 
 // Which workflow's steps are running, carried on the run's own context.
@@ -58,6 +59,78 @@ type executingPosition struct {
 	// step — is what lets a reader gathering them recognize a set it has
 	// already heard ([SensitiveAccumulator], Copilot on #2215).
 	all SensitiveValues
+
+	// returned gathers what this workflow's calls withheld once they returned
+	// into its scope, shared by every context of the one workflow's run; nil
+	// where nothing reads the sets. See [returnedSensitive].
+	returned *returnedSensitive
+}
+
+// returnedSensitive is what one workflow's run has taken back from the
+// workflows it called (#2213). A callee's outputs can hand back a value only
+// the callee declared sensitive, and a tolerated call's recorded error can
+// quote one; once either sits in the caller's scope, a later step or hold
+// there reads it from a position whose own declarations never named it. So
+// each call step's return widens its workflow's position for everything that
+// runs after it, and every call it makes after that inherits the widening.
+//
+// Shared by the parallel branches, loop iterations and async steps of the one
+// workflow, which is why it locks: a branch's return widens its siblings as
+// well, which withholds more than the branch alone would, and never less.
+type returnedSensitive struct {
+	mu       sync.Mutex
+	base     SensitiveValues
+	gathered SensitiveAccumulator
+
+	// widened is base with everything gathered, rebuilt only when something
+	// new was gathered, so every step between two returns reports one set.
+	widened SensitiveValues
+	stale   bool
+}
+
+// add gathers what one return handed back.
+func (r *returnedSensitive) add(sensitive SensitiveValues) {
+	if r == nil || sensitive.Empty() {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.gathered.Add(sensitive)
+	r.stale = true
+}
+
+// values is the position's own set widened with everything gathered.
+func (r *returnedSensitive) values() SensitiveValues {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.stale {
+		r.widened = r.base.Merge(r.gathered.Values())
+		r.stale = false
+	}
+
+	return r.widened
+}
+
+// gatheredValues is everything gathered, without the position's own set; the
+// empty set for a nil gatherer.
+func (r *returnedSensitive) gatheredValues() SensitiveValues {
+	if r == nil {
+		return SensitiveValues{}
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	return r.gathered.Values()
+}
+
+// newReturnedSensitive is a workflow run's gatherer over its position's own
+// set, or nil where nothing reads the sets.
+func newReturnedSensitive(ctx context.Context, base SensitiveValues) *returnedSensitive {
+	if !withholdingRead(ctx) {
+		return nil
+	}
+
+	return &returnedSensitive{base: base, widened: base}
 }
 
 // contextWithExecutingWorkflow returns ctx carrying name as the workflow whose
@@ -72,7 +145,12 @@ type executingPosition struct {
 // sensitive is the root's declared-sensitive inputs, as bound, when a
 // [Debugger] is installed; see [ExecutingSensitiveFromContext].
 func contextWithExecutingWorkflow(ctx context.Context, name string, sensitive SensitiveValues) context.Context {
-	return context.WithValue(ctx, executingWorkflowKey{}, executingPosition{workflow: name, root: sensitive, all: sensitive})
+	return context.WithValue(ctx, executingWorkflowKey{}, executingPosition{
+		workflow: name,
+		root:     sensitive,
+		all:      sensitive,
+		returned: newReturnedSensitive(ctx, sensitive),
+	})
 }
 
 // contextWithExecutingCall moves execution into callee and records the caller
@@ -101,8 +179,11 @@ func contextWithExecutingCall(ctx context.Context, callerStep, callerKind, calle
 
 	// Every caller's as well as the callee's own: a value a middle workflow
 	// declared sensitive and forwarded under a plain name stays withheld
-	// below it (Codex, #2209), as the durable driver withholds it.
-	here := position.here.Merge(sensitive)
+	// below it (Codex, #2209), as the durable driver withholds it. And what
+	// the caller has taken back from its earlier calls, which it can pass on
+	// under a plain name just the same (#2213).
+	here := position.here.Merge(position.returned.gatheredValues()).Merge(sensitive)
+	all := position.root.Merge(here)
 
 	return context.WithValue(ctx, executingWorkflowKey{}, executingPosition{
 		workflow: callee,
@@ -110,7 +191,8 @@ func contextWithExecutingCall(ctx context.Context, callerStep, callerKind, calle
 		segments: segments,
 		root:     position.root,
 		here:     here,
-		all:      position.root.Merge(here),
+		all:      all,
+		returned: newReturnedSensitive(ctx, all),
 	})
 }
 
@@ -123,12 +205,29 @@ func contextWithExecutingCall(ctx context.Context, callerStep, callerKind, calle
 // withheld in whatever it is passed to, and a callee's own declarations reach
 // no caller's redactor any other way.
 //
-// Empty where no [Debugger] was installed when the workflow began, or the
-// engine never ran.
+// It includes what the workflow's calls handed back into its scope before
+// now, a returned output or a tolerated call's recorded error ([returnToWorkflow],
+// #2213).
+//
+// Empty where nothing read the sets when the workflow began, or the engine
+// never ran.
 func ExecutingSensitiveFromContext(ctx context.Context) SensitiveValues {
 	position, _ := ctx.Value(executingWorkflowKey{}).(executingPosition)
+	if position.returned == nil {
+		return position.all
+	}
 
-	return position.all
+	return position.returned.values()
+}
+
+// returnToWorkflow widens the position of the workflow running on ctx with
+// what one of its steps took back from a callee: a returned call's set, or
+// what a failure raised inside one carries ([FailureSensitiveValues]). Every
+// step and hold of that workflow after it withholds it, and every call it
+// makes afterward inherits it.
+func returnToWorkflow(ctx context.Context, sensitive SensitiveValues) {
+	position, _ := ctx.Value(executingWorkflowKey{}).(executingPosition)
+	position.returned.add(sensitive)
 }
 
 // WithFailureSensitiveValues returns err carrying sensitive beside it: what a
@@ -234,6 +333,17 @@ func debugSensitiveInputs(ctx context.Context, wf *Workflow, inputs map[string]*
 	}
 
 	return SensitiveInputValues(inputs, SensitiveInputNames(wf))
+}
+
+// debugSensitiveOutputs is what a called workflow's declared-sensitive
+// outputs hand back to its caller: only while something reads it
+// ([withholdingRead]).
+func debugSensitiveOutputs(ctx context.Context, wf *Workflow, outputs *Node_Outputs) SensitiveValues {
+	if !withholdingRead(ctx) {
+		return SensitiveValues{}
+	}
+
+	return SensitiveInputValues(outputs.GetNamedValues(), SensitiveOutputNames(wf))
 }
 
 // withholdingRead reports whether anything on ctx reads what a position

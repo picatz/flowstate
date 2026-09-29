@@ -1088,6 +1088,14 @@ func init() {
 			Leading: " Ended is how the last session ended, when none is attached.\n",
 		},
 		{
+			Name: "flowstate.v1.DebugCarry.returned_withheld",
+			Leading: " ReturnedWithheld says a call returned, before this seam, something its\n" +
+				" caller withholds from a debugger: an output or a recorded failure that\n" +
+				" can quote a value the callee declared sensitive. The values themselves\n" +
+				" are not carried, so a segment that inherits this withholds everything a\n" +
+				" session is shown rather than less than the segment before it did.\n",
+		},
+		{
 			Name: "flowstate.v1.DebugStepState",
 			Leading: " DebugStepState is what a session last watched one step do.\n" +
 				"\n" +

@@ -63,6 +63,7 @@ func TestTheLocalDriverWithholdsTheCorpussHeldSensitive(t *testing.T) {
 			encoded, err := protojson.Marshal(inspected)
 			require.NoError(t, err)
 			assert.NotContains(t, string(encoded), test.Secret)
+			assert.Contains(t, string(encoded), "[redacted]", "nothing was withheld, so the value may never have been reached")
 		})
 	}
 }

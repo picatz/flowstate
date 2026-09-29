@@ -98,10 +98,20 @@ func restoreDebugCarry(ctx workflow.Context, encoded []byte) *v1.DebugCarry {
 
 // encodeDebugCarry is the carry for the next segment, or nil when nothing is
 // worth carrying.
+//
+// Whether a call has handed back something withheld is decided here, from
+// this segment and the ones before it, rather than read off the carry: an
+// attach or a session's end replaces the carry, and the next segment must
+// withhold what those calls handed back all the same (#2213).
 func (d *debugControl) encodeDebugCarry() []byte {
-	if d == nil || (!d.attached() && len(d.carry.GetReceipts()) == 0) {
+	if d == nil {
 		return nil
 	}
+	returned := d.returnedBefore || d.returnedHere
+	if !d.attached() && len(d.carry.GetReceipts()) == 0 && !returned {
+		return nil
+	}
+	d.carry.ReturnedWithheld = returned
 	encoded, err := proto.MarshalOptions{Deterministic: true}.Marshal(d.carry)
 	if err != nil {
 		return nil
@@ -597,7 +607,7 @@ func (e *executor) typedArrival(node *v1.Node) {
 	d.carry.PauseRequested = false
 	d.carry.Next = v1.DebugResumeAction_DEBUG_RESUME_ACTION_CONTINUE
 	d.carry.Until = ""
-	d.held = heldStop{spec: e.curSpec, scope: e.scope, callers: e.callerSensitive, occurrence: occurrence, reason: reason, hitIDs: hitIDs}
+	d.held = heldStop{spec: e.curSpec, scope: e.scope, callers: e.positionSensitive(), occurrence: occurrence, reason: reason, hitIDs: hitIDs}
 	d.lease = &v1.DebugSession{
 		SessionId:      d.carry.GetSessionId(),
 		Run:            d.run,
@@ -699,6 +709,12 @@ func (e *executor) debugHoldEnded() {
 // value a middle workflow declared sensitive stays withheld in whatever it
 // calls with it.
 func (d *debugControl) sensitiveAt(spec *v1.Workflow, scope *v1.Scope, callers v1.SensitiveValues) v1.SensitiveValues {
+	if d.returnedBefore {
+		// What an earlier segment's calls handed back is in this scope, and
+		// what it withheld was not carried ([v1.DebugCarry.returned_withheld]).
+		return v1.WithheldSensitiveValues()
+	}
+
 	return d.rootSensitive.Merge(callers).Merge(v1.SensitiveInputValues(scope.GetInputs(), v1.SensitiveInputNames(spec)))
 }
 
@@ -709,10 +725,10 @@ func (d *debugControl) sensitiveAt(spec *v1.Workflow, scope *v1.Scope, callers v
 // withhold anything from.
 func (e *executor) calleeCallerSensitive() v1.SensitiveValues {
 	if e.debug == nil || !e.debug.declared || e.curSpec == e.spec {
-		return e.callerSensitive
+		return e.positionSensitive()
 	}
 
-	return e.callerSensitive.Merge(v1.SensitiveInputValues(e.scope.GetInputs(), v1.SensitiveInputNames(e.curSpec)))
+	return e.positionSensitive().Merge(v1.SensitiveInputValues(e.scope.GetInputs(), v1.SensitiveInputNames(e.curSpec)))
 }
 
 // debugRedactText withholds the declared-sensitive inputs from text the run
@@ -728,7 +744,7 @@ func (e *executor) debugRedactText(text string) string {
 // raised inside a callee carries ([v1.FailureSensitiveValues]), which this
 // executor's position does not see (#2210).
 func (e *executor) debugWithhold(text string, carried v1.SensitiveValues) string {
-	sensitive := e.debug.sensitiveAt(e.curSpec, e.scope, e.callerSensitive).Merge(carried)
+	sensitive := e.debug.sensitiveAt(e.curSpec, e.scope, e.positionSensitive()).Merge(carried)
 	if sensitive.Empty() {
 		return text
 	}
@@ -740,20 +756,90 @@ func (e *executor) debugWithhold(text string, carried v1.SensitiveValues) string
 // carries to its caller ([ErrRunFailed.FailureSensitiveValues]): what a
 // debugger is not shown here. A caller's step outcome quotes the failure, and
 // the caller's position knows nothing of this workflow's declarations (#2210).
-// Nothing while no session is attached, since only a session reads it.
+// Computed in any run declaring `debug:`, since a session attaching later
+// reads what a failure already carried (#2213).
 func (e *executor) debugFailureSensitive() v1.SensitiveValues {
-	if !e.debug.attached() {
+	return e.debugPositionSensitive()
+}
+
+// debugPositionSensitive is what a debugger at this executor's position
+// withholds: [debugControl.sensitiveAt] over what its calls handed back. In
+// any run declaring `debug:`, attached or not, because what a call hands back
+// stays in its caller's scope for a session that attaches later (#2213).
+func (e *executor) debugPositionSensitive() v1.SensitiveValues {
+	if e.debug == nil || !e.debug.declared {
 		return v1.SensitiveValues{}
 	}
 
-	return e.debug.sensitiveAt(e.curSpec, e.scope, e.callerSensitive)
+	return e.debug.sensitiveAt(e.curSpec, e.scope, e.positionSensitive())
+}
+
+// debugOutputsSensitive is what callee's declared-sensitive outputs hand
+// back to this executor's workflow, as the local driver's runCall hands it
+// back (#2213). Nothing in a run declaring no `debug:` stanza.
+func (e *executor) debugOutputsSensitive(callee *v1.Workflow, outputs *v1.Node_Outputs) v1.SensitiveValues {
+	if e.debug == nil || !e.debug.declared {
+		return v1.SensitiveValues{}
+	}
+
+	return v1.SensitiveInputValues(outputs.GetNamedValues(), v1.SensitiveOutputNames(callee))
+}
+
+// positionSensitive is [executor.callerSensitive] widened with what this
+// workflow's calls handed back into its scope ([executor.returned]).
+func (e *executor) positionSensitive() v1.SensitiveValues {
+	if e.returned == nil {
+		return e.callerSensitive
+	}
+
+	return e.callerSensitive.Merge(e.returned.Values())
+}
+
+// returnToWorkflow widens this workflow's position with what one of its steps
+// took back from a callee: a returned call's set, or what a failure raised
+// inside one carries. Every later step and hold of this workflow withholds
+// it, and every call it makes afterward inherits it, as the local driver's
+// position does (#2213). The values stay in this segment's memory; the carry
+// records only that there were some ([v1.DebugCarry.returned_withheld]).
+func (e *executor) returnToWorkflow(sensitive v1.SensitiveValues) {
+	if e.returned == nil || sensitive.Empty() {
+		return
+	}
+	e.returned.Add(sensitive)
+	e.debug.returnedHere = true
+}
+
+// debugUndoRegistered gathers what this executor's position withholds for
+// the compensation it just registered ([debugControl.undoWithheld]). One
+// registered inside a callee also marks the segment, as a call handing a
+// value back does: the callee's declarations are not in the root's scope
+// after a seam, so the next segment withholds everything instead (#2213).
+func (e *executor) debugUndoRegistered() {
+	sensitive := e.debugPositionSensitive()
+	if sensitive.Empty() {
+		return
+	}
+	e.debug.undoWithheld.Add(sensitive)
+	if e.curSpec != e.spec {
+		e.debug.returnedHere = true
+	}
+}
+
+// newReturned is a workflow's [executor.returned], or nil in a run declaring
+// no `debug:` stanza.
+func (d *debugControl) newReturned() *v1.SensitiveAccumulator {
+	if d == nil || !d.declared {
+		return nil
+	}
+
+	return new(v1.SensitiveAccumulator)
 }
 
 // debugArgumentsSensitive is what callee declares sensitive of the arguments
 // a call would bind, for a failure binding them ([executor.debugFailureSensitive]
-// before the callee has a scope). Nothing while no session is attached.
+// before the callee has a scope). Nothing in a run declaring no `debug:`.
 func (e *executor) debugArgumentsSensitive(callee *v1.Workflow, arguments map[string]*v1.Value) v1.SensitiveValues {
-	if !e.debug.attached() {
+	if e.debug == nil || !e.debug.declared {
 		return v1.SensitiveValues{}
 	}
 
@@ -839,7 +925,7 @@ func (e *executor) debugRunCompleted() {
 	// segment that inherited the `until` through Continue-As-New from a hold
 	// inside a callee does not know them, and withholds the target whole.
 	redact := func(text string) string {
-		sensitive := e.debug.sensitiveAt(e.curSpec, e.scope, e.callerSensitive).Merge(d.untilSensitive)
+		sensitive := e.debug.sensitiveAt(e.curSpec, e.scope, e.positionSensitive()).Merge(d.untilSensitive)
 		if sensitive.Empty() {
 			return text
 		}

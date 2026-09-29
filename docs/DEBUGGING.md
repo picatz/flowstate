@@ -453,12 +453,25 @@ applies here rather than a second, weaker one.
   value. It is also withheld from each step's account and from a failure that
   quotes it. That covers the failing step, every call the failure passes
   through, the failed run's final message, and the call's own account of the
-  outputs the callee hands back. A value that has crossed back into the
-  caller's scope is not yet withheld when the caller reads it later, as a
-  returned output or a tolerated call's recorded error. The case's own
-  transcript and report withhold these values everywhere, with or without a
-  debugger, a `--seeds` divergence report included. They are rendered after
-  the run, from everything its steps withheld.
+  outputs the callee hands back.
+- A value that crosses back into the caller's scope stays withheld there. That
+  covers a returned output and a tolerated call's recorded error, whether they
+  are read at a later hold, in a later step's account, or inside another callee
+  the caller passes them to under a plain name. It also covers an output the
+  callee declares `sensitive:`, whatever it was computed from, and a
+  compensation's failure in the run's final message that quotes the inputs it
+  was registered with. On the durable driver, a run declaring `debug:` withholds
+  these values from the failure it records, a failed compensation's text
+  included, since that failure is printed by a reader that knows only the
+  root's declarations. They are withheld at the source, so revealing sensitive
+  values when reading that run does not bring them back. On the durable
+  driver, what a call handed back is kept in the run's memory and never
+  written to its history. So after Continue-As-New, a run whose calls handed
+  back anything withheld withholds everything a session is shown, rather than
+  less than it did before the seam.
+- The case's own transcript and report withhold these values everywhere, with
+  or without a debugger, a `--seeds` divergence report included. They are
+  rendered after the run, from everything its steps withheld.
 - A durable inspection renders a run's declared-`sensitive:` inputs as
   `[redacted]`, and the same holds: a predicate over one answers truthfully.
   That is why evaluating anything against a durable run needs its own action,

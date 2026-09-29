@@ -1014,7 +1014,7 @@ func redactedInputValue(name string) *v1.Value {
 // sensitiveInputNames is the set of declared input names a workflow
 // specification marked `sensitive: true`, or nil when no specification is
 // available to consult — the same nil-vs-empty-set distinction
-// cmd/flow/sensitive.go's sensitiveOutputNames documents and for the same
+// v1.SensitiveOutputNames documents and for the same
 // reason: nil is the fail-closed case that withholds everything, and an empty,
 // non-nil set is a real specification that declared nothing sensitive, which
 // withholds nothing.
@@ -1043,7 +1043,7 @@ func sensitiveInputNames(workflow *v1.Workflow) map[string]bool {
 // caller only calls it inside the `state != nil` branch, and state is exactly
 // what sensitiveInputNames needs a non-nil answer from — but redactInputs stays
 // fail-closed on its own rather than depend on that being true forever, the
-// same discipline sensitiveOutputNames documents for the same shape.
+// same discipline v1.SensitiveOutputNames documents for the same shape.
 //
 // A non-nil sensitive redacts precisely the names it names and nothing else,
 // which is also how an older run's or an untagged declaration's inputs pass

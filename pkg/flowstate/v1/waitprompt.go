@@ -269,6 +269,36 @@ func sensitiveInputNames(wf *Workflow) map[string]bool {
 	return names
 }
 
+// SensitiveOutputNames is the set of a workflow's declared outputs marked
+// `sensitive:`, or nil when there is no specification to consult at all.
+//
+// nil and an empty set are different answers, and callers rely on the
+// difference: an empty, non-nil set from a real specification means "this
+// file declared no sensitive outputs," which withholds nothing; nil means
+// "there is no file to ask," which is the fail-closed case `flow run`'s
+// renderers withhold everything for. Collapsing the two would either reveal
+// a declared-sensitive value when a renderer forgot to pass its spec, or
+// withhold every value the moment any workflow declares one sensitive
+// output.
+//
+// The one rule for both a CLI rendering a run's outputs and a debugger
+// withholding what a called workflow's outputs hand back to its caller
+// (#2213).
+func SensitiveOutputNames(wf *Workflow) map[string]bool {
+	if wf == nil {
+		return nil
+	}
+
+	names := make(map[string]bool)
+	for _, declared := range wf.GetDeclaredOutputs() {
+		if declared.GetSensitive() {
+			names[declared.GetName()] = true
+		}
+	}
+
+	return names
+}
+
 // promptReach is what one value reaches: which of the workflow's inputs it names,
 // and whether it reaches the `inputs` root in some way this walk cannot name.
 //

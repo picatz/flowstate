@@ -353,6 +353,119 @@ func HeldSensitiveCases() []HeldSensitiveCase {
 		HeldAt:     "outer(middle)/inner(leaf)/use",
 		Expression: "inputs.who",
 		Secret:     secret,
+	}, {
+		// #2213: the value crosses back into the caller's scope, as an output
+		// the callee does not declare sensitive and as a later caller step's
+		// copy of it, and the caller's own declarations never named it.
+		Name: "a callee's sensitive input, handed back as a plain output and read later in the caller",
+		Workflow: &v1.Workflow{
+			Name:    "returned-sensitive",
+			Profile: v1.CurrentProfile,
+			Steps: []*v1.Node{
+				says("first", "one"),
+				{Id: "nested", Kind: &v1.Node_Call{Call: &v1.Call{
+					Workflow: &v1.Workflow{
+						Name:            "child",
+						Profile:         v1.CurrentProfile,
+						DeclaredInputs:  []*v1.InputDeclaration{{Name: "api_key", Type: v1.InputDeclaration_TYPE_STRING, Sensitive: true}},
+						Steps:           []*v1.Node{says("use", "hi")},
+						DeclaredOutputs: []*v1.OutputDeclaration{{Name: "key", Value: v1.NewExpr("inputs.api_key")}},
+					},
+					Arguments: map[string]*v1.Value{"api_key": v1.NewLiteral(secret)},
+				}}},
+				{Id: "copied", Kind: &v1.Node_Value{Value: v1.NewExpr(`"Bearer " + steps.nested.key`)}},
+				says("later", "two"),
+			},
+		},
+		Until:      "later",
+		HeldAt:     "later",
+		Expression: "[steps.nested.key, steps.copied]",
+		Secret:     secret,
+	}, {
+		// #2213: a tolerated call's failure is kept for later steps to read,
+		// and it quotes what the callee declared sensitive.
+		Name: "a tolerated call's recorded failure, quoting the callee's sensitive input",
+		Workflow: &v1.Workflow{
+			Name:    "tolerated-sensitive",
+			Profile: v1.CurrentProfile,
+			Steps: []*v1.Node{
+				says("first", "one"),
+				{Id: "nested", Policy: &v1.StepPolicy{ContinueOnError: true}, Kind: &v1.Node_Call{Call: &v1.Call{
+					Workflow: &v1.Workflow{
+						Name:           "child",
+						Profile:        v1.CurrentProfile,
+						DeclaredInputs: []*v1.InputDeclaration{{Name: "api_key", Type: v1.InputDeclaration_TYPE_STRING, Sensitive: true}},
+						Steps:          []*v1.Node{{Id: "boom", Kind: &v1.Node_Value{Value: v1.NewExpr(`{"a": 1}[inputs.api_key]`)}}},
+					},
+					Arguments: map[string]*v1.Value{"api_key": v1.NewLiteral(secret)},
+				}}},
+				says("later", "two"),
+			},
+		},
+		Until:      "later",
+		HeldAt:     "later",
+		Expression: "steps.nested",
+		Secret:     secret,
+	}, {
+		// #2213: what a caller took back, passed on to a later callee under a
+		// plain name, is withheld at a hold inside that callee.
+		Name: "a callee's sensitive input, handed back and passed on to another callee under a plain name",
+		Workflow: &v1.Workflow{
+			Name:    "returned-passed-on",
+			Profile: v1.CurrentProfile,
+			Steps: []*v1.Node{
+				says("first", "one"),
+				{Id: "nested", Kind: &v1.Node_Call{Call: &v1.Call{
+					Workflow: &v1.Workflow{
+						Name:            "child",
+						Profile:         v1.CurrentProfile,
+						DeclaredInputs:  []*v1.InputDeclaration{{Name: "api_key", Type: v1.InputDeclaration_TYPE_STRING, Sensitive: true}},
+						Steps:           []*v1.Node{says("use", "hi")},
+						DeclaredOutputs: []*v1.OutputDeclaration{{Name: "key", Value: v1.NewExpr("inputs.api_key")}},
+					},
+					Arguments: map[string]*v1.Value{"api_key": v1.NewLiteral(secret)},
+				}}},
+				{Id: "passed", Kind: &v1.Node_Call{Call: &v1.Call{
+					Workflow: &v1.Workflow{
+						Name:           "leaf",
+						Profile:        v1.CurrentProfile,
+						DeclaredInputs: []*v1.InputDeclaration{{Name: "who", Type: v1.InputDeclaration_TYPE_STRING}},
+						Steps:          []*v1.Node{says("greet", "hi")},
+					},
+					Arguments: map[string]*v1.Value{"who": v1.NewExpr("steps.nested.key")},
+				}}},
+			},
+		},
+		Until:      "passed/greet",
+		HeldAt:     "passed(leaf)/greet",
+		Expression: "inputs.who",
+		Secret:     secret,
+	}, {
+		// #2213: an output the callee declares sensitive, computed from
+		// nothing it declares sensitive, is withheld where it is handed back.
+		Name: "a callee's declared-sensitive output, read later in the caller",
+		Workflow: &v1.Workflow{
+			Name:    "sensitive-output",
+			Profile: v1.CurrentProfile,
+			Steps: []*v1.Node{
+				says("first", "one"),
+				{Id: "nested", Kind: &v1.Node_Call{Call: &v1.Call{
+					Workflow: &v1.Workflow{
+						Name:            "child",
+						Profile:         v1.CurrentProfile,
+						DeclaredInputs:  []*v1.InputDeclaration{{Name: "seed", Type: v1.InputDeclaration_TYPE_STRING}},
+						Steps:           []*v1.Node{says("use", "hi")},
+						DeclaredOutputs: []*v1.OutputDeclaration{{Name: "token", Sensitive: true, Value: v1.NewExpr(`"token-" + inputs.seed`)}},
+					},
+					Arguments: map[string]*v1.Value{"seed": v1.NewLiteral(secret)},
+				}}},
+				says("later", "two"),
+			},
+		},
+		Until:      "later",
+		HeldAt:     "later",
+		Expression: "steps.nested.token",
+		Secret:     secret,
 	}}
 }
 

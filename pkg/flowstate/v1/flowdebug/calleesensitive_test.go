@@ -521,3 +521,181 @@ steps:
 		})
 	}
 }
+
+// TestALaterStepsAccountWithholdsWhatACallHandedBack: once a callee's value
+// sits in the caller's scope, as an output the callee does not declare
+// sensitive or as a tolerated call's recorded failure, a later step's account
+// reads it from the caller's position, and so does a callee the caller passes
+// it on to under a plain name (#2213).
+func TestALaterStepsAccountWithholdsWhatACallHandedBack(t *testing.T) {
+	t.Parallel()
+
+	const failingSecret = "hunter2-failing-callee-secret"
+	child := `edition: v2026.3
+name: child
+inputs:
+  api_key:
+    type: string
+    required: true
+    sensitive: true
+steps:
+  - id: use
+    value: ${1}
+outputs:
+  key:
+    value: ${inputs.api_key}
+`
+	failing := `edition: v2026.3
+name: failing
+inputs:
+  api_key:
+    type: string
+    required: true
+    sensitive: true
+steps:
+  - id: boom
+    value: ${{"a":1}[inputs.api_key]}
+`
+	leaf := `edition: v2026.3
+name: leaf
+inputs:
+  who:
+    type: string
+    required: true
+steps:
+  - id: greet
+    value: ${inputs.who}
+`
+	root := `edition: v2026.3
+name: parent
+steps:
+  - id: nested
+    call: ./child.yaml
+    with:
+      api_key: ${"` + calleeSecret + `"}
+  - id: copied
+    value: ${"Bearer " + steps.nested.key}
+  - id: tolerated
+    call: ./failing.yaml
+    continue_on_error: true
+    with:
+      api_key: ${"` + failingSecret + `"}
+  - id: echoed
+    value: ${steps.tolerated.error}
+  - id: passed
+    call: ./leaf.yaml
+    with:
+      who: ${steps.nested.key}
+`
+	for _, reveal := range []bool{false, true} {
+		t.Run(fmt.Sprintf("reveal=%t", reveal), func(t *testing.T) {
+			t.Parallel()
+
+			run := startDebugRun(t, "main.yaml", map[string]string{
+				"main.yaml": root, "child.yaml": child, "failing.yaml": failing, "leaf.yaml": leaf,
+			}, func(opts *flowdebug.Options) {
+				opts.RevealSensitive = reveal
+			})
+			target := flowdebug.Target(run.session)
+			move(t, target, waitHeld(t, target, 0), v1.DebugResumeAction_DEBUG_RESUME_ACTION_CONTINUE, "")
+			require.NoError(t, <-run.done)
+
+			final, err := target.Snapshot(t.Context())
+			require.NoError(t, err)
+			accounts := map[string]string{}
+			for _, observation := range final.GetObservations() {
+				accounts[observation.GetStepId()] = observation.GetText()
+			}
+			for step, secret := range map[string]string{"copied": calleeSecret, "echoed": failingSecret, "greet": calleeSecret} {
+				require.Contains(t, accounts[step], "-> value:", "%s's value was not recorded, so this proves nothing", step)
+				if reveal {
+					assert.Contains(t, accounts[step], secret, "an authorized reveal withheld %s's value", step)
+				} else {
+					assert.NotContains(t, accounts[step], secret, "%s's account showed what a call handed back", step)
+				}
+			}
+		})
+	}
+}
+
+// TestARunsFailureWithholdsWhatACallHandedBack: a caller fails quoting a
+// value a call handed back, and the run ends on it: through a step, a later
+// step's `if:`, or a declared output. The run's final message and the
+// session's account of it are rendered from the root, which declares nothing,
+// so the failure carries what the root's position withholds (#2213).
+func TestARunsFailureWithholdsWhatACallHandedBack(t *testing.T) {
+	t.Parallel()
+
+	child := `edition: v2026.3
+name: child
+inputs:
+  api_key:
+    type: string
+    required: true
+    sensitive: true
+steps:
+  - id: use
+    value: ${1}
+outputs:
+  key:
+    value: ${inputs.api_key}
+`
+	nested := `edition: v2026.3
+name: parent
+steps:
+  - id: nested
+    call: ./child.yaml
+    with:
+      api_key: ${"` + calleeSecret + `"}
+`
+	for name, root := range map[string]string{
+		"a step": nested + `  - id: boom
+    value: ${{"a":1}[steps.nested.key]}
+`,
+		"a later step's if": nested + `  - id: guarded
+    if: ${{"a":true}[steps.nested.key]}
+    value: ${1}
+`,
+		"a declared output": nested + `outputs:
+  out:
+    value: ${{"a":1}[steps.nested.key]}
+`,
+	} {
+		for _, reveal := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/reveal=%t", name, reveal), func(t *testing.T) {
+				t.Parallel()
+
+				var mu sync.Mutex
+				var printed strings.Builder
+				run := startDebugRun(t, "main.yaml", map[string]string{"main.yaml": root, "child.yaml": child}, func(opts *flowdebug.Options) {
+					opts.RevealSensitive = reveal
+					opts.Emit = func(text string, _ flowdebug.Tone) {
+						mu.Lock()
+						defer mu.Unlock()
+						printed.WriteString(text)
+					}
+				})
+				target := flowdebug.Target(run.session)
+				move(t, target, waitHeld(t, target, 0), v1.DebugResumeAction_DEBUG_RESUME_ACTION_CONTINUE, "")
+				runErr := <-run.done
+				require.ErrorContains(t, runErr, calleeSecret, "the run's failure does not quote the handed-back value, so this proves nothing")
+
+				final, err := target.Snapshot(t.Context())
+				require.NoError(t, err)
+				failure := run.session.FailureText(runErr)
+				require.Contains(t, failure, "no such key", "the failure says nothing, so this proves nothing")
+				mu.Lock()
+				out := printed.String()
+				mu.Unlock()
+
+				for i, text := range []string{final.GetMessage(), failure, out} {
+					if reveal {
+						assert.Contains(t, text, calleeSecret, "rendering %d withheld what an authorized reveal shows", i)
+					} else {
+						assert.NotContains(t, text, calleeSecret, "rendering %d showed what a call handed back", i)
+					}
+				}
+			})
+		}
+	}
+}

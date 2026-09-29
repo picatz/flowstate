@@ -1,6 +1,7 @@
 package flowstatev1_test
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"testing"
@@ -93,4 +94,64 @@ func TestTheSetsAreComputedOnlyForAReader(t *testing.T) {
 	assert.True(t, v1.FailureSensitiveValues(err).IsSensitive(secret), "the failure did not carry the callee's set")
 	require.NotEmpty(t, reader.withheld)
 	assert.True(t, reader.withheld[0].IsSensitive(secret), "the callee's step was not told its set")
+}
+
+// TestAFailedCompensationCarriesWhatItsRegistrationWithheld: a compensation is
+// registered with inputs taken where its step ran, a callee's sensitive input
+// among them, and its failure quotes them in the run's final message. The
+// failure that set off the unwind came from the caller and carries none of it,
+// so the run's error carries what each registering position withheld (#2213).
+func TestAFailedCompensationCarriesWhatItsRegistrationWithheld(t *testing.T) {
+	t.Parallel()
+
+	const secret = "hunter2-callee-only-secret"
+	registry := v1.NewRegistry()
+	require.NoError(t, registry.Register(v1.TaskDef{Name: "make", Fn: func(context.Context, map[string]*v1.Value, *v1.Scope) (*v1.Node_Outputs, error) {
+		return &v1.Node_Outputs{}, nil
+	}}))
+	require.NoError(t, registry.Register(v1.TaskDef{Name: "release", Fn: func(_ context.Context, inputs map[string]*v1.Value, _ *v1.Scope) (*v1.Node_Outputs, error) {
+		// Not retryable, so the compensation fails once rather than until its
+		// retries run out.
+		return nil, v1.NewTaskError("release", v1.ErrorKindInvalidInput,
+			fmt.Errorf("refused to release %s", inputs["key"].GetLiteral().GetStringValue()))
+	}}))
+	nested := &v1.Node{Id: "nested", Kind: &v1.Node_Call{Call: &v1.Call{
+		Workflow: &v1.Workflow{
+			Name:           "child",
+			Profile:        v1.CurrentProfile,
+			DeclaredInputs: []*v1.InputDeclaration{{Name: "api_key", Type: v1.InputDeclaration_TYPE_STRING, Sensitive: true}},
+			Steps: []*v1.Node{{
+				Id:   "made",
+				Kind: &v1.Node_Task{Task: &v1.Task{Name: "make"}},
+				Undo: &v1.Compensation{Task: &v1.Task{Name: "release", Inputs: map[string]*v1.Value{"key": v1.NewExpr("inputs.api_key")}}},
+			}},
+		},
+		Arguments: map[string]*v1.Value{"api_key": v1.NewLiteral(secret)},
+	}}}
+	boom := &v1.Node{Id: "boom", Kind: &v1.Node_Value{Value: v1.NewExpr(`{"a": 1}["b"]`)}}
+	ctx := v1.NewContextWithRegistry(t.Context(), registry)
+
+	// In order, and inside a parallel branch, whose compensations its parent
+	// takes over when the branch joins.
+	for name, steps := range map[string][]*v1.Node{
+		"in order": {nested, boom},
+		"in a branch": {{Id: "both", Kind: &v1.Node_Parallel{Parallel: &v1.Parallel{Branches: []*v1.Parallel_Branch{
+			{Steps: []*v1.Node{nested}},
+		}}}}, boom},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			spec := &v1.Workflow{Name: "parent", Profile: v1.CurrentProfile, Steps: steps}
+			_, err := v1.RunWithInputs(v1.NewContextWithRunObserver(ctx, &withholdingObserver{}), spec, nil)
+			require.ErrorContains(t, err, "could not undo", "no compensation failed, so this proves nothing")
+			require.ErrorContains(t, err, secret, "the compensation's failure does not quote its input, so this proves nothing")
+			carried := v1.FailureSensitiveValues(err)
+			assert.NotContains(t, carried.RedactText(err.Error(), "[withheld]"), secret, "the run's final message showed the callee's sensitive input")
+
+			_, err = v1.RunWithInputs(v1.NewContextWithRunObserver(ctx, plainObserver{}), spec, nil)
+			require.ErrorContains(t, err, secret)
+			assert.True(t, v1.FailureSensitiveValues(err).Empty(), "a run with no reader carried a set")
+		})
+	}
 }

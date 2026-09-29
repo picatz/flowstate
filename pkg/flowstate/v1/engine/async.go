@@ -287,6 +287,7 @@ func (e *executor) startAsync(node *v1.Node, depth, susp int) *asyncStep {
 			spec:            e.spec,
 			curSpec:         e.curSpec,
 			callerSensitive: e.callerSensitive,
+			returned:        e.returned,
 			identity:        e.identity,
 			runID:           e.runID,
 			scope:           e.scope.WithOutputs(snapshot),

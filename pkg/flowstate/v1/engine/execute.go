@@ -136,6 +136,13 @@ type executor struct {
 	// a branch or an async step, which share curSpec.
 	callerSensitive v1.SensitiveValues
 
+	// returned is what this workflow's calls withheld once they returned into
+	// its scope ([executor.returnToWorkflow], #2213): shared with the loop
+	// bodies, branches and async steps that share curSpec, and fresh in a
+	// callee, which inherits it through callerSensitive instead. Nil in a run
+	// declaring no `debug:` stanza.
+	returned *v1.SensitiveAccumulator
+
 	// path is the enclosing steps this executor runs inside, outermost first —
 	// the `loop:`, `parallel:` or `call:` steps descended through to get here,
 	// and empty at the top level.
@@ -863,6 +870,9 @@ func (e *executor) recordOutcome(node *v1.Node, err error) error {
 		// The local driver records at the identical point, and it has to, or the
 		// two drivers would disagree about what a failed run did.
 		e.scope.Outputs.StepValues[node.GetId()] = failedStepOutputs(err)
+		// The record can quote what a callee withheld, and a hold on this
+		// failure reads it (#2213).
+		e.returnToWorkflow(v1.FailureSensitiveValues(err))
 		e.observeForDebug(v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_FAILED, node, err)
 
 		// The step's position is added here, on the way out, rather than
@@ -876,6 +886,9 @@ func (e *executor) recordOutcome(node *v1.Node, err error) error {
 		"id", node.GetId(), "error", err.Error())
 	e.noteTolerated(node.GetId())
 	e.scope.Outputs.StepValues[node.GetId()] = failedStepOutputs(err)
+	// `${steps.<id>.error}` keeps the failure's text for every later step to
+	// read, and it can quote what a callee withheld (#2213).
+	e.returnToWorkflow(v1.FailureSensitiveValues(err))
 	e.observeForDebug(v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_TOLERATED, node, err)
 
 	return nil
@@ -959,6 +972,7 @@ func (e *executor) registerUndo(node *v1.Node, scope *v1.Scope) error {
 	} else {
 		e.undo.Register(entry)
 	}
+	e.debugUndoRegistered()
 
 	return nil
 }
@@ -1077,6 +1091,7 @@ func (e *executor) runCall(node *v1.Node, call *v1.Call, depth, susp int, descen
 		// callee, so a hold inside it withholds a value a middle workflow
 		// declared sensitive and forwarded under a plain name (Codex, #2209).
 		callerSensitive: e.calleeCallerSensitive(),
+		returned:        e.debug.newReturned(),
 		identity:        e.identity,
 		runID:           e.runID,
 		scope:           inner,
@@ -1167,6 +1182,9 @@ func (e *executor) runCall(node *v1.Node, call *v1.Call, depth, susp int, descen
 		return withFailureSensitive(nodeFailed(err), nested.debugFailureSensitive())
 	}
 	e.scope.Outputs.StepValues[node.GetId()] = outputs
+	// The outputs sit in this workflow's scope from here on, and a later step
+	// or hold reads them from this position (#2213).
+	e.returnToWorkflow(nested.debugPositionSensitive().Merge(e.debugOutputsSensitive(callee, outputs)))
 	return nil
 }
 
@@ -1993,6 +2011,7 @@ func (e *executor) runLoopIteration(body []string, loop *v1.Loop, stateName stri
 		spec:                   e.spec,
 		curSpec:                e.curSpec,
 		callerSensitive:        e.callerSensitive,
+		returned:               e.returned,
 		identity:               e.identity,
 		runID:                  e.runID,
 		scope:                  scope,
@@ -2083,6 +2102,7 @@ func (e *executor) runIteration(body []string, loop *v1.ForEach, iterator string
 		spec:            e.spec,
 		curSpec:         e.curSpec,
 		callerSensitive: e.callerSensitive,
+		returned:        e.returned,
 		identity:        e.identity,
 		runID:           e.runID,
 		// The iteration's scope: outputs visible before the loop, plus the
@@ -2173,6 +2193,7 @@ func (e *executor) runIterationsConcurrently(body []string, loop *v1.ForEach, it
 					spec:                   e.spec,
 					curSpec:                e.curSpec,
 					callerSensitive:        e.callerSensitive,
+					returned:               e.returned,
 					identity:               e.identity,
 					runID:                  e.runID,
 					scope:                  e.scope.WithLocal(iterator, items[i]).WithOutputs(cloneOutputs(e.scope.GetOutputs())),
@@ -2284,6 +2305,7 @@ func (e *executor) runParallel(node *v1.Node, parallel *v1.Parallel, depth, susp
 				spec:            e.spec,
 				curSpec:         e.curSpec,
 				callerSensitive: e.callerSensitive,
+				returned:        e.returned,
 				identity:        e.identity,
 				runID:           e.runID,
 				scope:           e.scope.WithOutputs(branchOutputs),
