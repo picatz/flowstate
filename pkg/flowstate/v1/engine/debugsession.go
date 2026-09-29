@@ -437,6 +437,9 @@ func (e *executor) parseDebugBreakpoints() {
 	}
 
 	sites, truncated := e.debugStaticSites()
+	// What the whole program binds, taken once for every condition below
+	// rather than once per condition (Codex, #2202).
+	var names *v1.DebugProgramNames
 	d.parsed = make([]parsedBreakpoint, 0, len(d.carry.GetBreakpoints()))
 	for i, bp := range d.carry.GetBreakpoints() {
 		parsed := parsedBreakpoint{state: debugBreakpointDefined(bp, i)}
@@ -497,10 +500,13 @@ func (e *executor) parseDebugBreakpoints() {
 				// a truncated enumeration they are not known, and the
 				// condition is armed with that said. Asked of the version
 				// only where the answer differs, as [truncatedArmChange] is.
+				if !truncated && names == nil {
+					names = v1.NewDebugProgramNames(sites)
+				}
 				if truncated {
 					parsed.state.Message = fmt.Sprintf("the condition's names are not checked: "+
 						"this program's steps were enumerated only to %d", v1.MaxDebugStaticSites)
-				} else if err := v1.CheckDebugConditionScope(compiled, e.spec.GetProfile(), resolved, sites); err != nil &&
+				} else if err := v1.CheckDebugConditionScope(compiled, e.spec.GetProfile(), resolved, names); err != nil &&
 					workflow.GetVersion(e.ctx, conditionScopeChange, workflow.DefaultVersion, 1) != workflow.DefaultVersion {
 					refuse("condition: " + e.debugRedactText(err.Error()))
 

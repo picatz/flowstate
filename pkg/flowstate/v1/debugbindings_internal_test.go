@@ -71,3 +71,44 @@ func TestASitesBindingsCostTheProgramNotItsDepth(t *testing.T) {
 	}
 	assert.Equal(t, (levels+1)*(perLevel+1), seen, "a leaf does not see every enclosing container's names")
 }
+
+// TestAConditionsCheckCostsNotTheProgram: a request may carry many
+// conditional breakpoints against one large program, and the whole-program
+// half of the check is taken once ([NewDebugProgramNames]) rather than once
+// per condition, so one check costs its own sites, not the program's (Codex,
+// #2202). Measured as allocations, which a walk of the program's scopes makes
+// in proportion to its size.
+func TestAConditionsCheckCostsNotTheProgram(t *testing.T) {
+	program := func(containers int) (*DebugProgramNames, []DebugStaticSite) {
+		steps := make([]*Node, 0, containers)
+		for i := range containers {
+			steps = append(steps, &Node{Id: fmt.Sprintf("c%d", i), Kind: &Node_ForEach{ForEach: &ForEach{
+				Items: NewLiteralList(1), Iterator: fmt.Sprintf("it%d", i),
+				Body: []*Node{{Id: fmt.Sprintf("leaf%d", i), Kind: &Node_Value{Value: NewExpr("1")}}},
+			}}})
+		}
+		sites, truncated := DebugStaticSites(&Workflow{Name: "wide", Steps: steps})
+		require.False(t, truncated)
+		for _, site := range sites {
+			if path := site.Site.GetPath(); path[len(path)-1] == "leaf0" {
+				return NewDebugProgramNames(sites), []DebugStaticSite{site}
+			}
+		}
+		t.Fatal("no site for leaf0")
+
+		return nil, nil
+	}
+	condition, err := CompileDebugCondition("it0 > 0 && steps.c0 != null", CurrentProfile)
+	require.NoError(t, err)
+
+	allocs := func(containers int) float64 {
+		names, at := program(containers)
+		require.NoError(t, CheckDebugConditionScope(condition, CurrentProfile, at, names))
+
+		return testing.AllocsPerRun(20, func() {
+			_ = CheckDebugConditionScope(condition, CurrentProfile, at, names)
+		})
+	}
+	small, large := allocs(4), allocs(4000)
+	assert.Equal(t, small, large, "a check allocated %v against 4 containers and %v against 4000", small, large)
+}

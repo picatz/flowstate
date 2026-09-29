@@ -155,6 +155,9 @@ type contractState struct {
 	// sitesKnown distinguishes "no program was given" from "the program has
 	// no such site".
 	sitesKnown bool
+	// names is what the program's sites bind and which steps they are, taken
+	// once for every condition checked against them; nil unless sitesKnown.
+	names *v1.DebugProgramNames
 	// program and declaredInProgram are the program and every step id it
 	// declares, when its sites were cut short at [v1.MaxDebugStaticSites]:
 	// what a target is then judged by, as the durable driver judges it
@@ -204,6 +207,9 @@ func (c *contractState) setProgram(wf *v1.Workflow) {
 	var truncated bool
 	c.sites, truncated = v1.DebugStaticSites(wf)
 	c.sitesKnown = !truncated
+	if !truncated {
+		c.names = v1.NewDebugProgramNames(c.sites)
+	}
 	if truncated {
 		c.program = wf
 		c.declaredInProgram = map[string]struct{}{}
@@ -1306,7 +1312,7 @@ func (s *Session) ReplaceBreakpoints(_ context.Context, req *v1.DebugSetBreakpoi
 // has no sites to ask and admits it without one, as it always has.
 func (s *Session) conditionInScope(condition *v1.Value, profile string, resolve func([]v1.DebugStaticSite) []v1.DebugStaticSite) (string, error) {
 	s.mu.Lock()
-	known, sites, truncated := s.contract.sitesKnown, s.contract.sites, s.contract.program != nil
+	known, sites, names, truncated := s.contract.sitesKnown, s.contract.sites, s.contract.names, s.contract.program != nil
 	s.mu.Unlock()
 	if !known {
 		if truncated {
@@ -1317,7 +1323,7 @@ func (s *Session) conditionInScope(condition *v1.Value, profile string, resolve 
 		return "", nil
 	}
 
-	return "", v1.CheckDebugConditionScope(condition, profile, resolve(sites), sites)
+	return "", v1.CheckDebugConditionScope(condition, profile, resolve(sites), names)
 }
 
 // compileBreakpoint checks one requested breakpoint, returning it armed or a

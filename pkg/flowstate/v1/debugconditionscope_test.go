@@ -172,7 +172,7 @@ func TestAConditionReadingANameNothingBindsIsRefused(t *testing.T) {
 		compiled, err := v1.CompileDebugCondition(test.condition, v1.CurrentProfile)
 		require.NoError(t, err, "%s if %s", test.step, test.condition)
 
-		err = v1.CheckDebugConditionScope(compiled, v1.CurrentProfile, at(test.step), sites)
+		err = v1.CheckDebugConditionScope(compiled, v1.CurrentProfile, at(test.step), v1.NewDebugProgramNames(sites))
 		if test.refused == "" {
 			assert.NoError(t, err, "%s if %s", test.step, test.condition)
 
@@ -220,7 +220,7 @@ func TestABindingSpelledLikeATypeIsAScopeRead(t *testing.T) {
 		compiled, err := v1.CompileDebugCondition(condition, v1.CurrentProfile)
 		require.NoError(t, err)
 
-		return v1.CheckDebugConditionScope(compiled, v1.CurrentProfile, target.Resolve(sites), sites)
+		return v1.CheckDebugConditionScope(compiled, v1.CurrentProfile, target.Resolve(sites), v1.NewDebugProgramNames(sites))
 	}
 
 	assert.NoError(t, check("body", `string == "x"`), "the binding was refused inside the loop that binds it")
@@ -249,16 +249,16 @@ func TestABindingSpelledLikeATypeIsAScopeRead(t *testing.T) {
 		target, err := v1.ParseDebugTarget(step)
 		require.NoError(t, err)
 		at := target.Resolve(sites)
-		assert.NoError(t, v1.CheckDebugConditionScope(compiled, v1.CurrentProfile, at, sites),
+		assert.NoError(t, v1.CheckDebugConditionScope(compiled, v1.CurrentProfile, at, v1.NewDebugProgramNames(sites)),
 			"a qualified type was taken for its bound first segment at %s", step)
-		assert.NoError(t, v1.CheckDebugConditionScope(v1.NewExpr(timestamp), v1.CurrentProfile, at, sites),
+		assert.NoError(t, v1.CheckDebugConditionScope(v1.NewExpr(timestamp), v1.CurrentProfile, at, v1.NewDebugProgramNames(sites)),
 			"a parse-only qualified type was taken for its bound first segment at %s", step)
 	}
 	target, err := v1.ParseDebugTarget("done")
 	require.NoError(t, err)
 	bare, err := v1.CompileDebugCondition(`google == "x"`, v1.CurrentProfile)
 	require.NoError(t, err)
-	err = v1.CheckDebugConditionScope(bare, v1.CurrentProfile, target.Resolve(sites), sites)
+	err = v1.CheckDebugConditionScope(bare, v1.CurrentProfile, target.Resolve(sites), v1.NewDebugProgramNames(sites))
 	if assert.Error(t, err, "the bare binding was admitted outside its loop") {
 		assert.Contains(t, err.Error(), "`google` is bound only inside")
 	}
@@ -286,7 +286,7 @@ func TestAParseOnlyConditionIsJudgedAlike(t *testing.T) {
 	} {
 		parsed := v1.NewExpr(condition)
 		require.NotNil(t, parsed.GetExpr(), condition)
-		err := v1.CheckDebugConditionScope(parsed, v1.CurrentProfile, at, sites)
+		err := v1.CheckDebugConditionScope(parsed, v1.CurrentProfile, at, v1.NewDebugProgramNames(sites))
 		if refused == "" {
 			assert.NoError(t, err, condition)
 

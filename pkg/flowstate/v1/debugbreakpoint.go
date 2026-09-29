@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"github.com/google/cel-go/cel"
-	"github.com/google/cel-go/common/decls"
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 
 	"github.com/picatz/flowstate/pkg/flowstate/v1/nearest"
@@ -171,6 +170,40 @@ func collectDebugIdentifiers(e *expr.Expr, into map[string]struct{}) {
 // evaluated ([StepsOutputActivation.ResolveName]).
 var debugConditionRoots = []string{StepsRoot, VarsRoot, InputsRoot, RunRoot, TriggerRoot}
 
+// DebugProgramNames is what a program's sites bind and which steps they are:
+// the whole-program half of [CheckDebugConditionScope]'s question, taken once
+// from the program's [DebugStaticSites] and shared by every condition checked
+// against it, so a request of many conditional breakpoints costs the program
+// once rather than once per condition (Codex, #2202).
+type DebugProgramNames struct {
+	bound map[string]bool
+	steps map[string]bool
+}
+
+// NewDebugProgramNames takes the names sites bind, visiting each distinct
+// binding scope once ([DebugBindings]), and the step each site is.
+func NewDebugProgramNames(sites []DebugStaticSite) *DebugProgramNames {
+	names := &DebugProgramNames{bound: map[string]bool{}, steps: map[string]bool{}}
+	for scope := range debugScopesOf(sites) {
+		for _, name := range scope.names {
+			names.bound[name] = true
+		}
+	}
+	for _, site := range sites {
+		if path := site.Site.GetPath(); len(path) > 0 {
+			names.steps[path[len(path)-1]] = true
+		}
+	}
+
+	return names
+}
+
+// binds reports whether some site of the program binds name.
+func (p *DebugProgramNames) binds(name string) bool { return p != nil && p.bound[name] }
+
+// isStep reports whether name is the id of some step of the program.
+func (p *DebugProgramNames) isStep(name string) bool { return p != nil && p.steps[name] }
+
 // maxDebugConditionNamesListed bounds how many bare names a refusal lists.
 const maxDebugConditionNamesListed = 8
 
@@ -187,9 +220,12 @@ const maxDebugConditionNamesListed = 8
 //
 // at empty means where the breakpoint fires is not known — the enumeration
 // was cut short at [MaxDebugStaticSites] — and the condition is admitted as
-// before this check existed; the caller says so. program is every site, for
-// naming a step written bare and a binding that exists elsewhere.
-func CheckDebugConditionScope(condition *Value, profile string, at, program []DebugStaticSite) error {
+// before this check existed; the caller says so. program is what the whole
+// program binds and which steps it has, for naming a step written bare and a
+// binding that exists elsewhere; a caller takes it once from the program's
+// sites and passes it to every check, and nil reads as a program that binds
+// nothing.
+func CheckDebugConditionScope(condition *Value, profile string, at []DebugStaticSite, program *DebugProgramNames) error {
 	parsed := condition.GetExpr()
 	if parsed == nil || len(at) == 0 {
 		return nil
@@ -227,18 +263,11 @@ func CheckDebugConditionScope(condition *Value, profile string, at, program []De
 	// binding is, so `google.protobuf.Timestamp` is the type even where
 	// `google` is bound, and the match is on the exact name (exact-head
 	// review).
-	boundInProgram := map[string]bool{}
-	for scope := range debugScopesOf(program) {
-		for _, name := range scope.names {
-			boundInProgram[name] = true
-		}
-	}
-
 	free := map[string]struct{}{}
 	walk := &debugRootWalk{
-		functions: env.Functions(),
+		functions: env.HasFunction,
 		resolves: func(name string) bool {
-			if boundInProgram[name] {
+			if program.binds(name) {
 				return false
 			}
 			_, found := env.CELTypeProvider().FindIdent(name)
@@ -251,7 +280,7 @@ func CheckDebugConditionScope(condition *Value, profile string, at, program []De
 	walk.walk(parsed.GetExpr())
 	for _, name := range slices.Sorted(maps.Keys(free)) {
 		if !bindable[name] {
-			return debugUnboundName(name, locals, program, boundInProgram[name])
+			return debugUnboundName(name, locals, program)
 		}
 	}
 
@@ -260,17 +289,16 @@ func CheckDebugConditionScope(condition *Value, profile string, at, program []De
 
 // debugUnboundName says why name is not bound where a breakpoint fires, and
 // what is. elsewhere reports that the program binds it at some other site.
-func debugUnboundName(name string, locals []string, program []DebugStaticSite, elsewhere bool) error {
+func debugUnboundName(name string, locals []string, program *DebugProgramNames) error {
 	if name == NowIdentifier {
 		return errors.New("`now` is bound only inside a wait's own expressions, and a condition is " +
 			"evaluated where the step's `if:` is, before the step is entered")
 	}
-	for _, site := range program {
-		if path := site.Site.GetPath(); len(path) > 0 && path[len(path)-1] == name {
-			return fmt.Errorf("`%s` is a step, and a step's outputs are read as `%s.%s.<output>`", name, StepsRoot, name)
-		}
+	if program.isStep(name) {
+		return fmt.Errorf("`%s` is a step, and a step's outputs are read as `%s.%s.<output>`", name, StepsRoot, name)
 	}
 
+	elsewhere := program.binds(name)
 	message := fmt.Sprintf("`%s` is not bound where this breakpoint fires", name)
 	if elsewhere {
 		message = fmt.Sprintf("`%s` is bound only inside the loops and steps that declare it, "+
@@ -308,7 +336,7 @@ func debugUnboundName(name string, locals []string, program []DebugStaticSite, e
 // bound counts the comprehension bindings in force, so a nested macro that
 // rebinds a name unbinds only its own.
 type debugRootWalk struct {
-	functions map[string]*decls.FunctionDecl
+	functions func(name string) bool
 	resolves  func(name string) bool
 	bound     map[string]int
 	free      map[string]struct{}
@@ -333,7 +361,7 @@ func (w *debugRootWalk) walk(e *expr.Expr) {
 		// `math.ceil(x)` in place to one targetless call named `math.ceil`.
 		// A parse-only one still carries `math` as the target.
 		call := kind.CallExpr
-		if qualifier, ok := debugQualifiedName(call.GetTarget()); !ok || w.functions[qualifier+"."+call.GetFunction()] == nil {
+		if qualifier, ok := debugQualifiedName(call.GetTarget()); !ok || !w.functions(qualifier+"."+call.GetFunction()) {
 			w.walk(call.GetTarget())
 		}
 		for _, arg := range call.GetArgs() {
