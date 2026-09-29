@@ -355,11 +355,55 @@ type DebugStaticSite struct {
 	// Locals are the bare names bound where the site's `if:` is evaluated,
 	// which is where a breakpoint's condition is evaluated too: what each
 	// enclosing container in the site's own workflow binds for its body
-	// ([BodyLocals]), sorted. A call binds none of its caller's, and the
-	// site's own `vars:` are not among them, because both drivers evaluate a
-	// condition before installing them. Shared among the sites of one body,
-	// so it is read and never written.
-	Locals []string
+	// ([BodyLocals]). A call binds none of its caller's, and the site's own
+	// `vars:` are not among them, because both drivers evaluate a condition
+	// before installing them. Nil where nothing is bound.
+	Locals *DebugBindings
+}
+
+// DebugBindings is the bare names bound at a site, as a chain: the names one
+// container binds for its body, linked to the scope the container sits in.
+//
+// Linked rather than flattened, so a container costs its own names and no
+// more. A flattened list copies every enclosing name into each container, and
+// a specification the size bound admits can nest enough containers, each
+// binding enough names, to make that copying the largest thing a worker
+// holds. Every container's sites share its one node, and nothing writes one
+// once the walk has built it.
+type DebugBindings struct {
+	names  []string
+	parent *DebugBindings
+}
+
+// All yields every name the scope binds, innermost container first. A name
+// two containers both bind is yielded for each.
+func (s *DebugBindings) All() iter.Seq[string] {
+	return func(yield func(string) bool) {
+		for scope := s; scope != nil; scope = scope.parent {
+			for _, name := range scope.names {
+				if !yield(name) {
+					return
+				}
+			}
+		}
+	}
+}
+
+// debugScopesOf yields each distinct scope node the sites reach, once, so a
+// question asked of many sites costs the program's names rather than the
+// sites times the names each can see.
+func debugScopesOf(sites []DebugStaticSite) iter.Seq[*DebugBindings] {
+	return func(yield func(*DebugBindings) bool) {
+		seen := map[*DebugBindings]bool{}
+		for _, site := range sites {
+			for scope := site.Locals; scope != nil && !seen[scope]; scope = scope.parent {
+				seen[scope] = true
+				if !yield(scope) {
+					return
+				}
+			}
+		}
+	}
 }
 
 // BodyLocals returns the bare names node binds for the steps inside it: its
@@ -394,8 +438,8 @@ func DebugStaticSites(wf *Workflow) ([]DebugStaticSite, bool) {
 		truncated bool
 	)
 
-	var walk func(workflow *Workflow, chain []*DebugSegment, locals []string, nodes []*Node, depth int)
-	walk = func(workflow *Workflow, chain []*DebugSegment, locals []string, nodes []*Node, depth int) {
+	var walk func(workflow *Workflow, chain []*DebugSegment, locals *DebugBindings, nodes []*Node, depth int)
+	walk = func(workflow *Workflow, chain []*DebugSegment, locals *DebugBindings, nodes []*Node, depth int) {
 		for _, node := range nodes {
 			if len(sites) >= MaxDebugStaticSites {
 				truncated = true
@@ -415,16 +459,15 @@ func DebugStaticSites(wf *Workflow) ([]DebugStaticSite, bool) {
 				})
 			}
 
-			// Taken once per container and shared by its body's sites, so a
-			// program pays per body rather than per site. A call is left
-			// out: its body is the callee's, which binds none of these.
+			// One node per container that binds anything, holding only what
+			// it binds, shared by its body's sites. A call is left out: its
+			// body is the callee's, which binds none of these.
 			inner := locals
 			switch node.GetKind().(type) {
 			case *Node_ForEach, *Node_Loop, *Node_Parallel, *Node_Switch:
 				if bound := BodyLocals(node); len(bound) > 0 {
-					inner = slices.Concat(locals, bound)
-					slices.Sort(inner)
-					inner = slices.Clip(slices.Compact(inner))
+					slices.Sort(bound)
+					inner = &DebugBindings{names: slices.Clip(slices.Compact(bound)), parent: locals}
 				}
 			}
 

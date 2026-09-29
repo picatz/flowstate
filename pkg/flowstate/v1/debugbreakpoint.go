@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"github.com/google/cel-go/cel"
-	"github.com/google/cel-go/common/decls"
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 
 	"github.com/picatz/flowstate/pkg/flowstate/v1/nearest"
@@ -206,8 +205,8 @@ func CheckDebugConditionScope(condition *Value, profile string, at, program []De
 		bindable[root] = true
 	}
 	var locals []string
-	for _, site := range at {
-		for _, name := range site.Locals {
+	for scope := range debugScopesOf(at) {
+		for _, name := range scope.names {
 			if !bindable[name] {
 				bindable[name] = true
 				locals = append(locals, name)
@@ -218,7 +217,6 @@ func CheckDebugConditionScope(condition *Value, profile string, at, program []De
 
 	free := map[string]struct{}{}
 	walk := &debugRootWalk{
-		functions: env.Functions(),
 		resolves: func(name string) bool {
 			_, found := env.CELTypeProvider().FindIdent(name)
 
@@ -251,7 +249,14 @@ func debugUnboundName(name string, locals []string, program []DebugStaticSite) e
 	}
 
 	message := fmt.Sprintf("`%s` is not bound where this breakpoint fires", name)
-	elsewhere := slices.ContainsFunc(program, func(site DebugStaticSite) bool { return slices.Contains(site.Locals, name) })
+	elsewhere := false
+	for scope := range debugScopesOf(program) {
+		if slices.Contains(scope.names, name) {
+			elsewhere = true
+
+			break
+		}
+	}
 	if elsewhere {
 		message = fmt.Sprintf("`%s` is bound only inside the loops and steps that declare it, "+
 			"and this breakpoint fires outside them", name)
@@ -275,21 +280,16 @@ func debugUnboundName(name string, locals []string, program []DebugStaticSite) e
 
 // debugRootWalk gathers the bare names an expression reads from its scope:
 // every identifier not bound by one of its own comprehensions and not a name
-// the environment itself resolves. Those are two kinds of name the parser
-// presents as identifiers:
-//
-//   - the qualifier of a namespaced function the profile declares (`math` in
-//     `math.greatest(a, b)`);
-//   - a type or enum value, bare or qualified (`int` in `type(n) == int`,
-//     `google.protobuf.Timestamp`).
+// the environment itself resolves: a type or enum value, which the parser
+// presents as an identifier, bare or qualified (`int` in `type(n) == int`,
+// `google.protobuf.Timestamp`).
 //
 // bound counts the comprehension bindings in force, so a nested macro that
 // rebinds a name unbinds only its own.
 type debugRootWalk struct {
-	functions map[string]*decls.FunctionDecl
-	resolves  func(name string) bool
-	bound     map[string]int
-	free      map[string]struct{}
+	resolves func(name string) bool
+	bound    map[string]int
+	free     map[string]struct{}
 }
 
 func (w *debugRootWalk) walk(e *expr.Expr) {
@@ -306,10 +306,12 @@ func (w *debugRootWalk) walk(e *expr.Expr) {
 		w.walk(kind.SelectExpr.GetOperand())
 
 	case *expr.Expr_CallExpr:
+		// A namespaced function the profile declares arrives with no
+		// target: the parser, which knows the profile's functions, resolves
+		// `math.ceil(x)` to one call named `math.ceil`. A target left here
+		// is a receiver the expression reads.
 		call := kind.CallExpr
-		if qualifier, ok := debugQualifiedName(call.GetTarget()); !ok || w.functions[qualifier+"."+call.GetFunction()] == nil {
-			w.walk(call.GetTarget())
-		}
+		w.walk(call.GetTarget())
 		for _, arg := range call.GetArgs() {
 			w.walk(arg)
 		}
@@ -353,7 +355,7 @@ func debugRootOf(qualified string) string {
 }
 
 // debugQualifiedName renders a select chain rooted at an identifier as the
-// dotted name it spells, the shape a namespaced function's qualifier takes.
+// dotted name it spells, the shape a qualified type name takes.
 func debugQualifiedName(e *expr.Expr) (string, bool) {
 	switch kind := e.GetExprKind().(type) {
 	case *expr.Expr_IdentExpr:

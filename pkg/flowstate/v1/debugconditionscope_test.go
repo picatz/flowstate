@@ -98,14 +98,14 @@ func TestAStaticSitesLocalsAreWhatTheRunBindsThere(t *testing.T) {
 		key := v1.DebugSiteKey(site.Site)
 		bound, reached := gate.seen[key]
 		require.True(t, reached, "the run never reached %s", key)
-		assert.Equal(t, slices.Concat([]string{}, bound), slices.Concat([]string{}, site.Locals), "at %s", key)
+		assert.Equal(t, slices.Concat([]string{}, bound), slices.Concat([]string{}, slices.Compact(slices.Sorted(site.Locals.All()))), "at %s", key)
 	}
 
 	// And the program does bind something, somewhere: an agreement over
 	// empty sets would prove nothing.
 	byStep := map[string][]string{}
 	for _, site := range sites {
-		byStep[site.Site.GetPath()[len(site.Site.GetPath())-1]] = site.Locals
+		byStep[site.Site.GetPath()[len(site.Site.GetPath())-1]] = slices.Sorted(site.Locals.All())
 	}
 	assert.Equal(t, []string{"order", "rate"}, byStep["charge"], "the loop's iterator and its own vars; not the step's own")
 	assert.Equal(t, []string{"lane", "order", "rate"}, byStep["notify"], "a parallel block's vars reach its branches")
@@ -160,6 +160,8 @@ func TestAConditionReadingANameNothingBindsIsRefused(t *testing.T) {
 		{step: "compose", condition: `size(steps) > 0 && inputs.a == 1 && vars.b == 1 && run.local && trigger.kind == ""`},
 		{step: "compose", condition: "[1, 2].exists(x, x > 1) && [3].all(x, [x].exists(y, y == x))"},
 		{step: "compose", condition: "math.greatest(1, 2) > 1"},
+		{step: "compose", condition: `math.ceil(1.5) > 1.0 && base64.encode(b"x") != "" && sets.contains([1], [1])`},
+		{step: "compose", condition: "nosuch.size() > 1", refused: "`nosuch` is not bound"},
 		// Type values parse as identifiers and are resolved by the
 		// environment, bare and qualified (Copilot, #2202).
 		{step: "charge", condition: "type(order) == int"},

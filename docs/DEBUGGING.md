@@ -140,14 +140,14 @@ or is not a boolean. A breakpoint accepted broken looks armed and never fires,
 which is a failure with no symptom.
 
 A condition that reads a name nothing can bind where the breakpoint fires is
-refused too. A condition reads what the step's `if:` reads: `steps`, `inputs`, `vars`, `run`
-and `trigger`, and the bare names the loops and steps around it bind (a
-`for_each`'s `as:`, a `loop:`'s state, an enclosing step's `vars:`). It can read
-those before the run reaches them, so `break charge if item.amount > 500` typed
-at the first step is armed. A name bound nowhere, or bound only inside a loop
-the step is not in, is refused on every front, local and durable, and a near
-name is suggested. Against `examples/debugging`, whose `orders` loop binds
-`amount`:
+refused too. A condition reads what the step's `if:` reads: `steps`, `inputs`,
+`vars`, `run` and `trigger`, and the bare names the loops and steps around it
+bind (a `for_each`'s `as:`, a `loop:`'s state, an enclosing step's `vars:`). It
+can read those before the run reaches them, so a condition on a loop's binding,
+typed at the first step before the loop has run, is armed. A name bound nowhere,
+or bound only inside a loop the step is not in, is refused on every front, local
+and durable, and a near name is suggested. Against `examples/debugging`, whose
+`orders` loop binds `amount`:
 
 ```text
 debug> break receipt if amount > 500
