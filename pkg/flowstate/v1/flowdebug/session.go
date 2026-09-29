@@ -926,8 +926,11 @@ func (s *Session) StepSkippedBy(id string, condition *v1.Value, withhold v1.Sens
 		withhold = v1.SensitiveValues{}
 	}
 
+	// In the durable driver's marker: the sentence is one both drivers give
+	// ([v1.SkippedText]), and a word the text pass withholds must read the
+	// same in each (Codex, #2227).
 	s.mu.Lock()
-	redact, redactValue := withholdingAt(s.redact, s.redactValue, withhold)
+	redact, redactValue := withholdingAtMarked(s.redact, s.redactValue, withhold, v1.SensitiveMarker)
 	s.mu.Unlock()
 	// A constant is withheld by value before the condition is written, then
 	// the sentence by text; withheld, then bounded, never the other way
@@ -1556,6 +1559,13 @@ func (s *Session) prompting(at promptSubject) {
 // than substituted: the session's rule still applies first, and a session
 // with none still withholds what the held workflow declares.
 func withholdingAt(text func(string) string, value func(any) any, sensitive v1.SensitiveValues) (func(string) string, func(any) any) {
+	return withholdingAtMarked(text, value, sensitive, "[withheld]")
+}
+
+// withholdingAtMarked is [withholdingAt] writing marker where the held set
+// withholds text. A rendering both drivers give in one sentence passes the
+// durable driver's marker, [v1.SensitiveMarker], so the sentences agree.
+func withholdingAtMarked(text func(string) string, value func(any) any, sensitive v1.SensitiveValues, marker string) (func(string) string, func(any) any) {
 	if sensitive.Empty() {
 		return text, value
 	}
@@ -1570,14 +1580,14 @@ func withholdingAt(text func(string) string, value func(any) any, sensitive v1.S
 			// (Copilot, #2209) — structured values reach here a leaf at a
 			// time ([withheldLeaves]), so that costs a leaf, not an answer.
 			own := applyText(text, rendered)
-			held := sensitive.RedactText(rendered, "[withheld]")
+			held := sensitive.RedactText(rendered, marker)
 			switch {
 			case held == rendered:
 				return own
 			case own == rendered:
 				return held
 			default:
-				return "[withheld]"
+				return marker
 			}
 		}, func(native any) any {
 			if sensitive.WithholdAll() {

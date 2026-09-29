@@ -930,6 +930,34 @@ func GuardCases() []GuardCase {
 			Secret:  "hunter2-onerune",
 		},
 		{
+			// A sensitive structure's bool leaf is asked about by a literal
+			// `if:` too, and the words the text pass withholds read alike on
+			// both drivers (Codex, #2227).
+			Name: "a skip inside a callee withholds a literal condition a sensitive structure holds",
+			Workflow: &v1.Workflow{
+				Name:    "guard-sensitive-literal",
+				Profile: v1.CurrentProfile,
+				Steps: []*v1.Node{
+					says("first", "one"),
+					{Id: "nested", Kind: &v1.Node_Call{Call: &v1.Call{
+						Workflow: &v1.Workflow{
+							Name:           "child",
+							Profile:        v1.CurrentProfile,
+							DeclaredInputs: []*v1.InputDeclaration{{Name: "flags", Type: v1.InputDeclaration_TYPE_STRUCT, Sensitive: true}},
+							Steps: []*v1.Node{{
+								Id:        "rotate",
+								Condition: v1.NewLiteral(false),
+								Kind:      says("rotate", "never").GetKind(),
+							}},
+						},
+						Arguments: map[string]*v1.Value{"flags": v1.NewExpr(`{"enabled": false}`)},
+					}}},
+				},
+			},
+			// "false" is a word the text pass withholds here as well.
+			Skipped: []string{"rotate skipped: `if: \"[redacted]\"` was [redacted]"},
+		},
+		{
 			Name: "an if: that cannot be evaluated is its step failing",
 			Workflow: &v1.Workflow{
 				Name:    "guard-error",

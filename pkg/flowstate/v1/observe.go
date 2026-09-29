@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"slices"
+	"strconv"
 	"time"
 
 	"github.com/google/cel-go/cel"
@@ -188,6 +189,11 @@ func conditionText(condition *Value, withheld func(any) bool) string {
 			return ""
 		}
 		text = fmt.Sprint(b.BoolValue)
+		// Asked about as an expression's constants are, since a sensitive
+		// structure can hold a bool leaf (Codex, #2227).
+		if withheld != nil && withheld(b.BoolValue) {
+			text = strconv.Quote(SensitiveMarker)
+		}
 	case *Value_Expr:
 		parsed := kind.Expr
 		if withheld != nil {
