@@ -145,16 +145,16 @@ type GuardRunObserver interface {
 	GuardFailed(id string, err error, withhold SensitiveValues)
 }
 
-// maxConditionTextRunes bounds the `if:` an account quotes. A condition is
-// the author's own text and usually short; one that is not still has to leave
-// room in a bounded observation for the step it explains.
-const maxConditionTextRunes = 200
-
 // SkippedText is the account of a step whose `if:` evaluated false, in the one
 // sentence both drivers' debuggers give (#2124). It quotes the condition that
 // decided, rendered from the compiled expression, so someone whose breakpoint
 // never stopped reads why beside the skip. A condition the renderer cannot
 // write back, such as one using a comprehension macro, is not quoted.
+//
+// The quote is whole. Each driver withholds what the sentence must not show
+// and only then bounds it, as it does every observation: a sentence cut first
+// could keep the start of a sensitive value too long to fit, which nothing
+// matching the whole value would then find (Codex, #2227).
 func SkippedText(id string, condition *Value) string {
 	switch text := conditionText(condition); text {
 	case "":
@@ -167,8 +167,9 @@ func SkippedText(id string, condition *Value) string {
 	}
 }
 
-// conditionText renders condition as an author would write it, bounded to
-// [maxConditionTextRunes], or "" when it cannot be rendered.
+// conditionText renders condition as an author would write it, or "" when it
+// cannot be rendered. The rendering is linear in the compiled expression,
+// whose source the compiler already bounds.
 func conditionText(condition *Value) string {
 	var text string
 	switch kind := condition.GetKind().(type) {
@@ -186,9 +187,6 @@ func conditionText(condition *Value) string {
 		text = rendered
 	default:
 		return ""
-	}
-	if runes := []rune(text); len(runes) > maxConditionTextRunes {
-		text = string(runes[:maxConditionTextRunes]) + "…"
 	}
 
 	return text

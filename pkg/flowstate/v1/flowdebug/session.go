@@ -928,9 +928,11 @@ func (s *Session) StepSkippedBy(id, account string, withhold v1.SensitiveValues)
 	s.mu.Lock()
 	redact, _ := withholdingAt(s.redact, s.redactValue, withhold)
 	s.mu.Unlock()
-	line := applyText(redact, account)
+	// Withheld, then bounded, never the other way round: a cut first could
+	// keep the start of a sensitive value no whole-value match then finds.
+	line := capRunes(applyText(redact, account), maxObservationRunes)
 	s.emitTone(ToneInfo, "  "+line+"\n")
-	s.observeRedacted(v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_SKIPPED, id, capRunes(line, maxObservationRunes))
+	s.observeRedacted(v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_SKIPPED, id, line)
 }
 
 // GuardFailed implements [v1.GuardRunObserver]: a step whose `if:` could not

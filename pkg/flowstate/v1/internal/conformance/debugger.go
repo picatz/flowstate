@@ -1,6 +1,7 @@
 package conformance
 
 import (
+	"strings"
 	"time"
 
 	"google.golang.org/protobuf/types/known/durationpb"
@@ -741,6 +742,11 @@ type GuardCase struct {
 
 // GuardCases is the corpus for [GuardCase].
 func GuardCases() []GuardCase {
+	// Longer than any bound an observation is cut to, so a driver that cut
+	// the sentence before withholding it would keep the value's start
+	// (Codex, #2227).
+	longSecret := "hunter2-guard-secret-" + strings.Repeat("x", 1024)
+
 	return []GuardCase{
 		{
 			Name: "a skip quotes the if: that decided it",
@@ -778,14 +784,16 @@ func GuardCases() []GuardCase {
 							Name:           "child",
 							Profile:        v1.CurrentProfile,
 							DeclaredInputs: []*v1.InputDeclaration{{Name: "api_key", Type: v1.InputDeclaration_TYPE_STRING, Sensitive: true}},
-							Steps:          []*v1.Node{guarded("rotate", `inputs.api_key != "hunter2-guard-secret"`, "never")},
+							Steps:          []*v1.Node{guarded("rotate", `inputs.api_key != "`+longSecret+`"`, "never")},
 						},
-						Arguments: map[string]*v1.Value{"api_key": v1.NewLiteral("hunter2-guard-secret")},
+						Arguments: map[string]*v1.Value{"api_key": v1.NewLiteral(longSecret)},
 					}}},
 				},
 			},
 			Skipped: []string{"rotate skipped: `if: inputs.api_key != \"[redacted]\"` was false"},
-			Secret:  "hunter2-guard-secret",
+			// Its first runes, which a sentence cut before it was withheld
+			// would keep.
+			Secret: longSecret[:24],
 		},
 		{
 			Name: "an if: that cannot be evaluated is its step failing",
