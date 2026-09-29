@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"maps"
@@ -56,7 +57,7 @@ import (
 // because the whole point of this verb is composition: stdout is the answer and
 // nothing else, so the invocation echo, the status line and anything a task logs
 // all go to stderr.
-func runTaskRun(cmd *cobra.Command, args []string) error {
+func runTaskRun(cmd *cobra.Command, args []string) (err error) {
 	rendering, err := resolveRunRendering(cmd)
 	if err != nil {
 		return err
@@ -120,6 +121,16 @@ func runTaskRun(cmd *cobra.Command, args []string) error {
 	reveal := revealSensitiveRequested(cmd)
 	sensitive := sensitiveTaskInputs(cmd, def)
 
+	// From here on any refusal can quote an input: a coercion names the word,
+	// a parse the source, a check the literal, and the runtime's preflight the
+	// credential target it could not find. So every error leaves through one
+	// redaction, over the inputs bound so far, rather than each return having
+	// to remember to (a return that forgot is how the preflight's did).
+	var bound map[string]*v1.Value
+	defer func() {
+		err = withholdTaskInputs(cmd, err, bound, sensitive, reveal)
+	}()
+
 	// The task's own input schema plays the role a workflow's `inputs:` block plays
 	// for `flow run`, which is what lets the flags be reached rather than reread.
 	// See [collectInputs] and [taskInputDeclarations].
@@ -127,13 +138,15 @@ func runTaskRun(cmd *cobra.Command, args []string) error {
 
 	supplied, err := collectInputs(cmd, declared)
 	if err != nil {
-		return refuseTaskInputs(cmd, err, nil, sensitive, reveal)
+		return newUsageError(err)
 	}
+	bound = supplied
 
 	values, written, err := taskInputValues(def, supplied, withheldTaskInputs(sensitive, reveal))
 	if err != nil {
-		return refuseTaskInputs(cmd, err, supplied, sensitive, reveal)
+		return newUsageError(err)
 	}
+	bound = values
 
 	workflow := syntheticTaskWorkflow(def, values)
 
@@ -145,7 +158,7 @@ func runTaskRun(cmd *cobra.Command, args []string) error {
 	// is the function `flow validate` calls, so a refusal here and a refusal about
 	// a Flowfile are the same refusal.
 	if err := checkTaskInputs(def, workflow); err != nil {
-		return refuseTaskInputs(cmd, err, values, sensitive, reveal)
+		return newUsageError(err)
 	}
 
 	surface := newSurface(cmd)
@@ -532,14 +545,15 @@ func taskInputValues(def v1.TaskDef, supplied map[string]*v1.Value, withheld map
 // inputExpressionError is the refusal of an input's `${...}`, which names the
 // input and, unless it is withheld, what the parser said about the source.
 //
-// A withheld input's refusal says only that the source is not an expression.
+// A withheld input's refusal says only that its `${...}` was refused: one that
+// does not parse, or a `${secret(...)}` whose reference does not.
 // The parser's sentence quotes the source escaped (`"\"token\" + "`), and may
 // quote any token of it, so no redaction by value finds it afterward: the answer
 // [inputCoercionError] gives a word it cannot coerce, given here at
 // construction for the same reason (#2073).
 func inputExpressionError(name string, err error, withheld bool) error {
 	if withheld {
-		return fmt.Errorf("--input %s: %s is not a valid expression; --reveal-sensitive shows why", name, v1.SensitiveMarker)
+		return fmt.Errorf("--input %s: %s was refused as an expression; --reveal-sensitive shows why", name, v1.SensitiveMarker)
 	}
 
 	return fmt.Errorf("--input %s: %w", name, err)
@@ -790,27 +804,29 @@ func sensitiveTaskInputs(cmd *cobra.Command, def v1.TaskDef) map[string]bool {
 	return names
 }
 
-// refuseTaskInputs is the usage error for an invocation whose inputs were
-// refused before anything ran, with every sensitive input's value kept out of
-// it.
+// withholdTaskInputs is err with every sensitive input's value kept out of
+// it: the one exit [runTaskRun] gives every error once its inputs are known.
 //
 // The counterpart of [refusedRunSensitiveValues] for a task, and built from the
 // same parts: the values bound so far, the `--input` words as the shell handed
 // them over, for a refusal that never produced a value, and the text a numeric
-// overflow quotes. One exit for every refusal before the run, rather than a
-// set at each, because what a refusal can quote is whatever reached it: a
-// coercion names the word, an expression refusal names the source, and the
-// schema check names the literal.
-func refuseTaskInputs(cmd *cobra.Command, refusal error, values map[string]*v1.Value, sensitive map[string]bool, reveal bool) error {
-	if reveal {
-		return newUsageError(refusal)
+// overflow quotes. A usage error stays one, so the exit status still says the
+// invocation was wrong; an error the set does not change is returned as
+// itself, as [redactFailureError] returns it.
+func withholdTaskInputs(cmd *cobra.Command, err error, values map[string]*v1.Value, sensitive map[string]bool, reveal bool) error {
+	if err == nil || reveal || len(sensitive) == 0 {
+		return err
 	}
 
 	words := sensitiveInputWords(cmd, sensitive)
-	words = append(words, sensitiveOverflowWords(refusal, sensitive)...)
+	words = append(words, sensitiveOverflowWords(err, sensitive)...)
 	set := v1.SensitiveInputValues(taskFailureMaterial(values), sensitive).WithValues(words...)
 
-	return newUsageError(redactFailureError(refusal, set))
+	if usage, ok := errors.AsType[*usageError](err); ok {
+		return newUsageError(redactFailureError(usage.err, set))
+	}
+
+	return redactFailureError(err, set)
 }
 
 // taskFailureMaterial is the part of an invocation's inputs a failure sentence

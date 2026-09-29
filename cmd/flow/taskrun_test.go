@@ -698,28 +698,42 @@ func TestASecretReferenceKeepsTheFailureReason(t *testing.T) {
 // own check of an expression.
 func TestATaskRunRefusalKeepsASensitiveInputOut(t *testing.T) {
 	const token, name = "synthetic-token-7d2a", "synthetic_token_7d2a"
+	policy := filepath.Join("..", "..", "examples", "http-secret", "auth-policy.yaml")
 	for _, tc := range []struct {
 		name   string
 		input  string
 		quoted string
+		flags  []string
 	}{
-		{"a word that is not the declared type", "parse_json=" + token, token},
-		{"an expression that does not parse", `url=${ "` + token + `" + }`, token},
-		{"an expression the task refuses", "url=${ " + name + " }", name},
+		{name: "a word that is not the declared type", input: "parse_json=" + token, quoted: token},
+		// One rune, under the floor a redaction by value matches at, so only
+		// the declaration carrying `--sensitive` can keep it out.
+		{name: "a short word that is not the declared type", input: "parse_json=q", quoted: "parse_json=q"},
+		{name: "an expression that does not parse", input: `url=${ "` + token + `" + }`, quoted: token},
+		{name: "an expression the task refuses", input: "url=${ " + name + " }", quoted: name},
+		// The runtime's preflight, after the inputs are checked: an auth policy
+		// makes it look the credential target up, and it names the one it
+		// could not find. `credential` is an authority input, withheld unasked.
+		{name: "a credential target the preflight refuses", input: "credential=" + token, quoted: token,
+			flags: []string{"--input", "url=https://127.0.0.1:1/", "--auth-policy", policy}},
 	} {
 		input, _, _ := strings.Cut(tc.input, "=")
-		_, stderr, err := taskRun(t, "http",
+		_, stderr, err := taskRun(t, append([]string{"http",
 			"--input", "method=GET",
 			"--input", tc.input,
-			"--sensitive", input)
+			"--sensitive", input}, tc.flags...)...)
 		require.Error(t, err, "%s: refused", tc.name)
 		require.NotContains(t, err.Error(), tc.quoted, "%s: the refusal quoted the sensitive input", tc.name)
 		require.NotContains(t, stderr, tc.quoted, "%s: stderr quoted the sensitive input", tc.name)
 
-		// Without the flag the same refusal quotes it, so the case reaches the
-		// refusal it names rather than failing earlier for another reason.
-		_, _, err = taskRun(t, "http", "--input", "method=GET", "--input", tc.input)
-		require.Error(t, err, "%s: refused unmarked", tc.name)
-		require.Contains(t, err.Error(), tc.quoted, "%s: the unmarked refusal quotes the input", tc.name)
+		// Revealed, the same refusal quotes it, so the case reaches the refusal
+		// it names rather than failing earlier for another reason. Revealed
+		// rather than unmarked, because `credential` is withheld unmarked too.
+		_, _, err = taskRun(t, append([]string{"http",
+			"--input", "method=GET",
+			"--input", tc.input,
+			"--reveal-sensitive"}, tc.flags...)...)
+		require.Error(t, err, "%s: refused revealed", tc.name)
+		require.Contains(t, err.Error(), tc.quoted, "%s: the revealed refusal quotes the input", tc.name)
 	}
 }
