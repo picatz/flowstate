@@ -72,6 +72,21 @@ func (t teeObserver) StepFinished(id string, outputs *v1.Node_Outputs, err error
 	t.second.StepFinished(id, outputs, err, tolerated)
 }
 
+// StepFinishedWithholding implements [v1.WithholdingRunObserver] for whichever
+// listener renders with it, so teeing a debugger with the recorder does not
+// cost the debugger what a step's rendering must withhold. The recorder is
+// told the plain outcome: it is the case's record, which the case's own
+// posture renders, and what a debugger withholds must not change a verdict.
+func (t teeObserver) StepFinishedWithholding(id string, outputs *v1.Node_Outputs, err error, tolerated bool, withhold v1.SensitiveValues) {
+	for _, listener := range []v1.RunObserver{t.first, t.second} {
+		if withholding, ok := listener.(v1.WithholdingRunObserver); ok {
+			withholding.StepFinishedWithholding(id, outputs, err, tolerated, withhold)
+			continue
+		}
+		listener.StepFinished(id, outputs, err, tolerated)
+	}
+}
+
 func (t teeObserver) StepSkipped(id string) {
 	t.first.StepSkipped(id)
 	t.second.StepSkipped(id)

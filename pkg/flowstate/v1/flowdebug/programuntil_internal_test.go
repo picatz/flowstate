@@ -66,6 +66,26 @@ func TestAPendingUntilIsJudgedAgainstTheNextProgram(t *testing.T) {
 		assert.Contains(t, snapshot.GetObservations()[len(snapshot.GetObservations())-1].GetText(), "until body if n > 1 no longer applies")
 	})
 
+	t.Run("refused, applied inside a callee", func(t *testing.T) {
+		t.Parallel()
+
+		// The hold the `until` was applied at withheld a callee's input, and
+		// the condition quotes it: the notice withholds it too.
+		const secret = "hunter2-callee-only-secret"
+		session, printed := pend(t, "body", `n > 1 && "`+secret+`" != ""`)
+		session.mu.Lock()
+		session.untilSensitive = v1.SensitiveInputValues(map[string]*v1.Value{"k": v1.NewLiteral(secret)}, map[string]bool{"k": true})
+		session.mu.Unlock()
+		session.Program(flat)
+
+		assert.Contains(t, printed.String(), "no longer applies to this program", "the notice was not said, so this proves nothing")
+		assert.NotContains(t, printed.String(), secret)
+		snapshot, err := session.Snapshot(t.Context())
+		require.NoError(t, err)
+		require.NotEmpty(t, snapshot.GetObservations())
+		assert.NotContains(t, snapshot.GetObservations()[len(snapshot.GetObservations())-1].GetText(), secret)
+	})
+
 	t.Run("admitted", func(t *testing.T) {
 		t.Parallel()
 

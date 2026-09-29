@@ -33,3 +33,44 @@ func TestATeeCarriesATasksNotesToTheDebugger(t *testing.T) {
 		t.Fatalf("notes = %q, want the one note", debugger.notes)
 	}
 }
+
+type withholdingObserver struct {
+	silentObserver
+	plain, withheld int
+	withhold        v1.SensitiveValues
+}
+
+func (o *withholdingObserver) StepFinished(string, *v1.Node_Outputs, error, bool) { o.plain++ }
+
+func (o *withholdingObserver) StepFinishedWithholding(_ string, _ *v1.Node_Outputs, _ error, _ bool, withhold v1.SensitiveValues) {
+	o.withheld++
+	o.withhold = withhold
+}
+
+type countingObserver struct {
+	silentObserver
+	plain int
+}
+
+func (o *countingObserver) StepFinished(string, *v1.Node_Outputs, error, bool) { o.plain++ }
+
+// TestATeeTellsTheDebuggerWhatToWithhold: a debugged case tees the recorder
+// with the session, and the session must still be told what a step's
+// account withholds (#2210), while the recorder, the case's record, is told
+// the plain outcome.
+func TestATeeTellsTheDebuggerWhatToWithhold(t *testing.T) {
+	recorder, debugger := &countingObserver{}, &withholdingObserver{}
+	withhold := v1.SensitiveInputValues(map[string]*v1.Value{"api_key": v1.NewLiteral("hunter2")}, map[string]bool{"api_key": true})
+
+	teeObserver{first: recorder, second: debugger}.StepFinishedWithholding("boom", nil, nil, false, withhold)
+
+	if recorder.plain != 1 {
+		t.Fatalf("the recorder heard %d plain outcomes, want 1", recorder.plain)
+	}
+	if debugger.withheld != 1 || debugger.plain != 0 {
+		t.Fatalf("the debugger heard %d withholding and %d plain outcomes, want 1 and 0", debugger.withheld, debugger.plain)
+	}
+	if !debugger.withhold.IsSensitive("hunter2") {
+		t.Fatal("the debugger was not told what to withhold")
+	}
+}

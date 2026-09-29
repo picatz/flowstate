@@ -1,6 +1,7 @@
 package flowdebug_test
 
 import (
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -233,14 +234,10 @@ steps:
 	assert.NotContains(t, at.GetFailure(), calleeSecret, "the failure stop showed the callee's sensitive input")
 
 	// What the arrivals rendered: the logpoint's message and the declined
-	// condition's notice and last error. The observer's own FAILED lines are
-	// the transcript's rendering, which has no position (#2210).
+	// condition's notice and last error, and every step's account (#2210).
 	var rendered []string
 	for _, observation := range at.GetObservations() {
-		switch observation.GetKind() {
-		case v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_LOG, v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_NOTICE:
-			rendered = append(rendered, observation.GetText())
-		}
+		rendered = append(rendered, observation.GetText())
 	}
 	for _, state := range at.GetBreakpoints() {
 		rendered = append(rendered, state.GetLastError())
@@ -331,4 +328,196 @@ func TestAMissedUntilAppliedInsideACalleeWithholdsItsSensitiveInputs(t *testing.
 	encoded, err := protojson.Marshal(final)
 	require.NoError(t, err)
 	assert.NotContains(t, string(encoded), calleeSecret, "the recorded notice showed the callee's sensitive input")
+}
+
+// TestAStepsAccountWithholdsWhatItsCalleeDeclaresSensitive is #2210: the
+// account a session gives of each step as it finishes — printed, and recorded
+// as an observation — withholds what the step's workflow declares sensitive,
+// and so does the account of each call a callee's failure passes through, and
+// the failed run's own message. A revealed session shows them.
+func TestAStepsAccountWithholdsWhatItsCalleeDeclaresSensitive(t *testing.T) {
+	t.Parallel()
+
+	child := `edition: v2026.3
+name: child
+inputs:
+  api_key:
+    type: string
+    required: true
+    sensitive: true
+steps:
+  - id: echo
+    value: ${inputs.api_key}
+  - id: boom
+    value: ${{"a":1}[inputs.api_key]}
+`
+	root := `edition: v2026.3
+name: parent
+steps:
+  - id: first
+    value: ${1}
+  - id: nested
+    call: ./child.yaml
+    with:
+      api_key: ${"` + calleeSecret + `"}
+`
+	for _, reveal := range []bool{false, true} {
+		t.Run(fmt.Sprintf("reveal=%t", reveal), func(t *testing.T) {
+			t.Parallel()
+
+			var mu sync.Mutex
+			var printed strings.Builder
+			run := startDebugRun(t, "main.yaml", map[string]string{"main.yaml": root, "child.yaml": child}, func(opts *flowdebug.Options) {
+				opts.RevealSensitive = reveal
+				opts.Emit = func(text string, _ flowdebug.Tone) {
+					mu.Lock()
+					defer mu.Unlock()
+					printed.WriteString(text)
+				}
+			})
+			target := flowdebug.Target(run.session)
+			at := waitHeld(t, target, 0)
+			move(t, target, at, v1.DebugResumeAction_DEBUG_RESUME_ACTION_CONTINUE, "")
+			runErr := <-run.done
+			require.Error(t, runErr)
+
+			final, err := target.Snapshot(t.Context())
+			require.NoError(t, err)
+			accounts := map[string]string{}
+			for _, observation := range final.GetObservations() {
+				accounts[observation.GetStepId()] = observation.GetText()
+			}
+			require.Contains(t, accounts["echo"], "-> value:", "the callee step's value was not recorded, so this proves nothing")
+			for _, step := range []string{"boom", "nested"} {
+				require.Contains(t, accounts[step], "no such key", "%s's failure was not recorded, so this proves nothing", step)
+			}
+			mu.Lock()
+			out := printed.String()
+			mu.Unlock()
+			failure := run.session.FailureText(runErr)
+			require.Contains(t, failure, "no such key", "the failure says nothing, so this proves nothing")
+
+			shown := []string{out, accounts["echo"], accounts["boom"], accounts["nested"], final.GetMessage(), failure}
+			for i, text := range shown {
+				if reveal {
+					assert.Contains(t, text, calleeSecret, "rendering %d withheld what an authorized reveal shows", i)
+				} else {
+					assert.NotContains(t, text, calleeSecret, "rendering %d showed the callee's sensitive input", i)
+				}
+			}
+		})
+	}
+}
+
+// TestALongSensitiveValueInACalleesAccountIsWithheldBeforeTheCap: a step's
+// account is capped, and a sensitive value longer than the cap would survive
+// it as a prefix no match can find, so the callee's set is applied before
+// the cap, as the session's own redactor is (#2210).
+func TestALongSensitiveValueInACalleesAccountIsWithheldBeforeTheCap(t *testing.T) {
+	t.Parallel()
+
+	secret := strings.Repeat("s3cr3t-", flowdebug.MaxInspectRunes/7+100)
+	child := `edition: v2026.3
+name: child
+inputs:
+  api_key:
+    type: string
+    required: true
+    sensitive: true
+steps:
+  - id: echo
+    value: ${inputs.api_key}
+`
+	root := `edition: v2026.3
+name: parent
+steps:
+  - id: first
+    value: ${1}
+  - id: nested
+    call: ./child.yaml
+    with:
+      api_key: ${"` + secret + `"}
+`
+	run := startDebugRun(t, "main.yaml", map[string]string{"main.yaml": root, "child.yaml": child}, nil)
+	target := flowdebug.Target(run.session)
+	move(t, target, waitHeld(t, target, 0), v1.DebugResumeAction_DEBUG_RESUME_ACTION_CONTINUE, "")
+	require.NoError(t, <-run.done)
+
+	final, err := target.Snapshot(t.Context())
+	require.NoError(t, err)
+	var echo string
+	for _, observation := range final.GetObservations() {
+		if observation.GetStepId() == "echo" {
+			echo = observation.GetText()
+		}
+	}
+	require.Contains(t, echo, "-> value:", "the step's value was not recorded, so this proves nothing")
+	assert.NotContains(t, echo, secret[:64], "a prefix of the long sensitive value survived the cap")
+}
+
+// TestACallsAccountWithholdsWhatItsCalleeHandsBack: a callee's outputs are
+// rendered in the call step's account from the caller's position, and can hand
+// back a value only the callee declares sensitive; a short sensitive value
+// inside a structured input is caught by value, where no substring match of
+// the rendered line can (Codex, #2212).
+func TestACallsAccountWithholdsWhatItsCalleeHandsBack(t *testing.T) {
+	t.Parallel()
+
+	child := `edition: v2026.3
+name: child
+inputs:
+  api_key:
+    type: string
+    required: true
+    sensitive: true
+  codes:
+    type: list
+    required: true
+    sensitive: true
+steps:
+  - id: first_code
+    value: ${inputs.codes[0]}
+outputs:
+  key:
+    value: ${inputs.api_key}
+`
+	root := `edition: v2026.3
+name: parent
+steps:
+  - id: first
+    value: ${1}
+  - id: nested
+    call: ./child.yaml
+    with:
+      api_key: ${"` + calleeSecret + `"}
+      codes: ${[7]}
+`
+	for _, reveal := range []bool{false, true} {
+		t.Run(fmt.Sprintf("reveal=%t", reveal), func(t *testing.T) {
+			t.Parallel()
+
+			run := startDebugRun(t, "main.yaml", map[string]string{"main.yaml": root, "child.yaml": child}, func(opts *flowdebug.Options) {
+				opts.RevealSensitive = reveal
+			})
+			target := flowdebug.Target(run.session)
+			move(t, target, waitHeld(t, target, 0), v1.DebugResumeAction_DEBUG_RESUME_ACTION_CONTINUE, "")
+			require.NoError(t, <-run.done)
+
+			final, err := target.Snapshot(t.Context())
+			require.NoError(t, err)
+			accounts := map[string]string{}
+			for _, observation := range final.GetObservations() {
+				accounts[observation.GetStepId()] = observation.GetText()
+			}
+			require.Contains(t, accounts["nested"], "key:", "the call's outputs were not recorded, so this proves nothing")
+			require.Contains(t, accounts["first_code"], "-> value:", "the step's value was not recorded, so this proves nothing")
+			if reveal {
+				assert.Contains(t, accounts["nested"], calleeSecret, "an authorized reveal withheld what the callee handed back")
+				assert.Contains(t, accounts["first_code"], "value: 7", "an authorized reveal withheld the short value")
+			} else {
+				assert.NotContains(t, accounts["nested"], calleeSecret, "the call's account showed what its callee handed back")
+				assert.NotContains(t, accounts["first_code"], "value: 7", "a short sensitive value was shown in its step's account")
+			}
+		})
+	}
 }

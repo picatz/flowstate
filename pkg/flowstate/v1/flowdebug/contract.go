@@ -260,12 +260,15 @@ func (s *Session) Program(wf *v1.Workflow) {
 	profile := s.contract.profile
 	installed := make(map[string]breakpoint, len(s.breakpoints))
 	maps.Copy(installed, s.breakpoints)
-	pending, until, untilCondition, untilText := s.mode == modeUntil, s.until, s.untilCondition, s.untilConditionText
+	pending, until, untilCondition, untilText, untilSensitive := s.mode == modeUntil, s.until, s.untilCondition, s.untilConditionText, s.untilSensitive
 	s.mu.Unlock()
 
 	redact := s.snapshotTextRedactor()
 	if pending {
-		s.rejudgeUntil(until, untilCondition, untilText, profile, redact)
+		// With what the hold it was applied at withheld, as the notice that it
+		// was never reached is (exact-head review, #2209).
+		withheld, _ := withholdingAt(redact, nil, untilSensitive)
+		s.rejudgeUntil(until, untilCondition, untilText, profile, withheld)
 	}
 	var refused []string
 	for _, key := range slices.Sorted(maps.Keys(installed)) {
@@ -845,7 +848,7 @@ func (s *Session) Finished(err error) {
 		s.contract.message = "the debug session ended the run"
 	default:
 		s.contract.state = v1.DebugRunState_DEBUG_RUN_STATE_FAILED
-		s.contract.message = capRunes(s.redactTextLocked(err.Error()), maxObservationRunes)
+		s.contract.message = capRunes(s.failureTextLocked(err), maxObservationRunes)
 	}
 	s.contract.reason = v1.DebugStopReason_DEBUG_STOP_REASON_UNSPECIFIED
 	s.bump()
@@ -870,6 +873,32 @@ func (s *Session) redactedDefinitionLocked(definition *v1.DebugBreakpoint) *v1.D
 // redactTextLocked is redactText for a caller holding s.mu.
 func (s *Session) redactTextLocked(text string) string {
 	return applyText(s.redact, text)
+}
+
+// FailureText is err's text as this session shows it: redacted by the
+// session's redactor, and withholding what a failure raised inside a callee
+// carries of that callee's sensitive inputs ([v1.FailureSensitiveValues]),
+// which the session's redactor never knew (#2210). A front printing the run's
+// failure itself renders it here, as [Session.Finished] does.
+func (s *Session) FailureText(err error) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.failureTextLocked(err)
+}
+
+// failureTextLocked is [Session.FailureText]. The caller holds s.mu.
+func (s *Session) failureTextLocked(err error) string {
+	if err == nil {
+		return ""
+	}
+	withhold := v1.SensitiveValues{}
+	if !s.reveal {
+		withhold = v1.FailureSensitiveValues(err)
+	}
+	redact, _ := withholdingAt(s.redact, nil, withhold)
+
+	return applyText(redact, err.Error())
 }
 
 // observe records one observation.
