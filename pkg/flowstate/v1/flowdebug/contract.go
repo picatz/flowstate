@@ -653,9 +653,18 @@ func (s *Session) RunReturned(err error) {
 		return
 	}
 
-	text := fmt.Sprintf("the run completed without stopping at `until %s`", missed)
+	text := missedUntil(missed)
 	s.printfTone(ToneWarning, "%s\n", text)
 	s.observe(v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_NOTICE, "", text)
+}
+
+// missedUntilNotice begins the notice a run that completed past an armed
+// `until` gets, on the prompt and from the typed [Driver].
+const missedUntilNotice = "the run completed without stopping at "
+
+// missedUntil renders that notice for the `until` as it was asked.
+func missedUntil(asked string) string {
+	return missedUntilNotice + "`until " + asked + "`"
 }
 
 // Finished records how the run ended. A driver calls it when the run returns,

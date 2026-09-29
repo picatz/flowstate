@@ -209,3 +209,36 @@ func TestAFailedRunWhoseCasePassedIsNotCalledCompleted(t *testing.T) {
 		assert.NotContains(t, observation.GetText(), "without stopping at", "a failed run was recorded as completed")
 	}
 }
+
+// A durable run records no notice when it completes past an `until` it never
+// stopped at, so the typed Driver, which knows what it asked, says it. A local
+// session already recorded the notice, and a run that failed or is held is
+// past no `until`: none of those gets the line.
+func TestTheDriverSaysAnUntilTheRunCompletedPast(t *testing.T) {
+	t.Parallel()
+
+	said := &v1.DebugObservation{
+		Kind: v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_NOTICE,
+		Text: "the run completed without stopping at `until each[9]/body`",
+	}
+	for name, test := range map[string]struct {
+		state        v1.DebugRunState
+		observations []*v1.DebugObservation
+		line         string
+		want         int
+	}{
+		"a durable run completed past it": {state: v1.DebugRunState_DEBUG_RUN_STATE_COMPLETED, line: "until each[9]/body", want: 1},
+		"a local session already said it": {state: v1.DebugRunState_DEBUG_RUN_STATE_COMPLETED, observations: []*v1.DebugObservation{said}, line: "until each[9]/body"},
+		"the run failed":                  {state: v1.DebugRunState_DEBUG_RUN_STATE_FAILED, line: "until each[9]/body"},
+		"the run is held":                 {state: v1.DebugRunState_DEBUG_RUN_STATE_HELD, line: "until each[9]/body"},
+		"no until was asked":              {state: v1.DebugRunState_DEBUG_RUN_STATE_COMPLETED, line: "continue"},
+	} {
+		target := &scriptedTarget{snapshot: &v1.DebugSnapshot{Revision: 2, State: test.state, Observations: test.observations}}
+		result, err := flowdebug.NewDriver(target).Do(t.Context(), test.line)
+		require.NoError(t, err, name)
+		assert.Equal(t, test.want, strings.Count(result.Text, "without stopping at"), "%s: %q", name, result.Text)
+		if test.want > 0 {
+			assert.Contains(t, result.Text, said.GetText(), name)
+		}
+	}
+}

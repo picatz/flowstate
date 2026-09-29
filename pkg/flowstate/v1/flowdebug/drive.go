@@ -415,8 +415,27 @@ func (d *Driver) move(ctx context.Context, action v1.DebugResumeAction, until st
 		return nil, err
 	}
 	result.Text = FormatSnapshot(result.Snapshot)
+	if action == v1.DebugResumeAction_DEBUG_RESUME_ACTION_RUN_UNTIL && saidNoMissedUntil(result.Snapshot) {
+		result.Text += missedUntil(until) + "\n"
+	}
 
 	return result, nil
+}
+
+// saidNoMissedUntil reports whether a snapshot is of a run that completed
+// without anything having said so of an `until` it never stopped at. A local
+// session records that notice itself ([Session.RunReturned]); a durable run
+// records none, so the driver, which knows what it asked, says it, and a
+// remote attach does not end in silence past a stop it never made.
+func saidNoMissedUntil(snapshot *v1.DebugSnapshot) bool {
+	if snapshot.GetState() != v1.DebugRunState_DEBUG_RUN_STATE_COMPLETED {
+		return false
+	}
+
+	return !slices.ContainsFunc(snapshot.GetObservations(), func(observation *v1.DebugObservation) bool {
+		return observation.GetKind() == v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_NOTICE &&
+			strings.HasPrefix(observation.GetText(), missedUntilNotice)
+	})
 }
 
 // stillRunningRead bounds the read that reports a run still moving when a
