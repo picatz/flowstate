@@ -3,6 +3,7 @@ package flowstatev1
 import (
 	"fmt"
 	"math"
+	"slices"
 	"strings"
 	"testing"
 
@@ -726,4 +727,39 @@ func TestMergingWithNothingKeepsTheSet(t *testing.T) {
 	assert.Same(t, token.identity, token.Merge(SensitiveValues{}).identity)
 	assert.Same(t, token.identity, SensitiveValues{}.Merge(token).identity)
 	assert.True(t, token.Merge(WithheldSensitiveValues()).WithholdAll())
+}
+
+// TestAnAccumulatorHashesAlikeInEveryProcess: a merge runs workflow-side, so
+// its index must not hang on a per-process random seed. Two accumulators hash
+// one value alike, and to the same number every process computes (Codex,
+// #2215).
+func TestAnAccumulatorHashesAlikeInEveryProcess(t *testing.T) {
+	t.Parallel()
+
+	value := map[string]any{"token": "hunter2", "pins": []any{int64(7), 1.5, true, nil, []byte("b")}}
+	var first, second SensitiveAccumulator
+	first.Add(oneSensitiveInput("token", NewLiteral("first")))
+	second.Add(oneSensitiveInput("token", NewLiteral("second")))
+	assert.Equal(t, uint64(0xf630cd5573ef33c3), first.state.hash(value))
+	assert.Equal(t, first.state.hash(value), second.state.hash(value))
+}
+
+// TestAnAccumulatorRefusesASetPastTheBoundUnread: a set holding more values
+// than the bound withholds everything, however few distinct values it holds,
+// as an appending merge of it did. Deduplicated first, a thousand repeats of
+// one secret kept the union small, and the bound never limited the work of
+// reading them (Codex, #2215).
+func TestAnAccumulatorRefusesASetPastTheBoundUnread(t *testing.T) {
+	t.Parallel()
+
+	repeated := SensitiveValues{}.WithValues(slices.Repeat([]string{"a"}, maxSensitiveDescendants+1)...)
+	var gathered SensitiveAccumulator
+	gathered.Add(repeated)
+	assert.True(t, gathered.Values().WithholdAll())
+	assert.True(t, oneSensitiveInput("token", NewLiteral("hunter2-token")).Merge(repeated).WithholdAll())
+
+	atTheBound := SensitiveValues{}.WithValues(slices.Repeat([]string{"a"}, maxSensitiveDescendants)...)
+	var within SensitiveAccumulator
+	within.Add(atTheBound)
+	assert.False(t, within.Values().WithholdAll())
 }
