@@ -222,8 +222,20 @@ func redactFailureText(response *v1.GetResponse, sensitive v1.SensitiveValues) *
 // holds a specification must come through here rather than calling
 // [redactGetResponse] alone; TestEveryRunThisProcessStartsIsRedactedAsOne
 // holds every surface to that.
+//
+// workflow is nil only for `flow run`'s follow of a run whose executed
+// specification the server did not attest: a deployment may have substituted
+// a registered copy. Every declared output, the transcript and carried state
+// are then withheld here whatever the server decided, since its decision is
+// about the workflow it ran, which need not mark sensitive what this process's
+// file marked about the arguments it sent (Codex, #2173).
+// [noteUnattestedSpecification] says so to the reader.
 func redactStartedRun(response *v1.GetResponse, workflow *v1.Workflow, sensitive v1.SensitiveValues, reveal bool) *v1.GetResponse {
-	return redactFailureText(redactGetResponse(response, workflow, reveal), sensitive)
+	redacted := redactGetResponse(response, workflow, reveal)
+	if workflow == nil && !reveal {
+		redacted = v1.RedactGetResponse(redacted, nil, reveal)
+	}
+	return redactFailureText(redacted, sensitive)
 }
 
 // executedSpecification is the specification a follow may redact against: the one

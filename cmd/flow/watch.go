@@ -167,6 +167,13 @@ type clientPoller struct {
 	// path above.
 	reveal bool
 
+	// started is whether this process submitted the run: `flow run`, which
+	// redacts through [redactStartedRun] with spec as the attested copy or
+	// nil. A poller holding a spec is one too, since only `flow run` holds
+	// one. `flow watch <id>` did neither, holds no file, and renders the
+	// server's decision as `flow get` does.
+	started bool
+
 	// sensitive is the run's own arguments, for the one surface redaction by
 	// name cannot reach: the failure sentence a task composed around a value
 	// it was given (#974). Set by `flow run`, which submitted those arguments
@@ -213,6 +220,9 @@ func (p clientPoller) Poll(ctx context.Context) (*v1.GetResponse, error) {
 		p.withheld()
 	}
 
+	if !p.started && p.spec == nil {
+		return redactGetResponse(response.Msg, nil, p.reveal), nil
+	}
 	return redactStartedRun(response.Msg, p.spec, p.sensitive, p.reveal), nil
 }
 

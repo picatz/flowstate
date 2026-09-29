@@ -351,3 +351,47 @@ func TestTheRunLocalToolKeepsALoopItemOutOfTheFailureText(t *testing.T) {
 	require.Equal(t, "STATUS_FAILED", answer.Run.Status)
 	require.Contains(t, text, v1.SensitiveMarker, "the failure was withheld rather than redacted")
 }
+
+// TestAnUnattestedFollowDoesNotTakeTheServersWordForIt: `flow run` submitted a
+// file marking its input sensitive, the server did not attest that file ran
+// (a deployment may have substituted a registered copy), and the server
+// answers NONE_DECLARED about the workflow it did run. That decision does not
+// cover this process's arguments, so the follow withholds as its notice says
+// (Codex, #2173). `flow watch <id>` holds no file and no arguments, and an
+// attested follow holds the executed file, so both render the server's word.
+func TestAnUnattestedFollowDoesNotTakeTheServersWordForIt(t *testing.T) {
+	// Not t.Parallel(): [serveFake] points the client at itself with Setenv.
+	const echoed = "synthetic-token-9c1b"
+	fake := &fakeWorkflowService{getResponse: &v1.GetResponse{
+		Status:              v1.RunResponse_STATUS_COMPLETED,
+		SensitiveDisclosure: v1.SensitiveDisclosure_SENSITIVE_DISCLOSURE_NONE_DECLARED,
+		RunOutputs:          &v1.RunOutputs{Values: map[string]*v1.Value{"echo": v1.NewLiteral(echoed)}},
+	}}
+	address := serveFake(t, fake)
+
+	submitted := &v1.Workflow{
+		DeclaredInputs: []*v1.InputDeclaration{
+			{Name: "token", Type: v1.InputDeclaration_TYPE_STRING, Sensitive: true},
+		},
+		DeclaredOutputs: []*v1.OutputDeclaration{{Name: "echo"}},
+	}
+	sensitive := runSensitiveValues(submitted, map[string]*v1.Value{"token": v1.NewLiteral(echoed)}, false)
+
+	for _, tc := range []struct {
+		name   string
+		poller clientPoller
+		shown  bool
+	}{
+		{"an unattested follow", clientPoller{started: true, sensitive: sensitive}, false},
+		{"an attested follow", clientPoller{started: true, spec: submitted, sensitive: sensitive}, true},
+		{"flow watch <id>", clientPoller{}, true},
+	} {
+		tc.poller.workflowID = "flowstate-workflow-3f7c"
+		tc.poller.server = serverFlags{address: address}
+		got, err := tc.poller.Poll(t.Context())
+		require.NoError(t, err, tc.name)
+
+		value := got.GetRunOutputs().GetValues()["echo"].GetLiteral().GetStringValue()
+		require.Equal(t, tc.shown, value == echoed, "%s: output %q", tc.name, value)
+	}
+}
