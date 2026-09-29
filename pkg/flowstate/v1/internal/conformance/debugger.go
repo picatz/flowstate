@@ -273,3 +273,55 @@ func MissedUntilCases() []MissedUntilCase {
 		Until:  "first",
 	}}
 }
+
+// HeldSensitiveCase is a run both drivers hold inside a callee that declares
+// one of its inputs sensitive, where the caller passed it a value it does not
+// itself declare sensitive. At that hold, inspecting Expression must withhold
+// Secret on both drivers (#2208): the local session from what the engine
+// records for the held position, the durable run from its own sensitiveAt.
+type HeldSensitiveCase struct {
+	// Name labels the case.
+	Name string
+
+	// Workflow is the program, with no `debug:` policy: the durable caller
+	// adds the one its harness attaches under.
+	Workflow *v1.Workflow
+
+	// Until is the target both drivers run to from their first stop, and
+	// HeldAt the address they must then be held at.
+	Until, HeldAt string
+
+	// Expression is inspected at that hold, and Secret must not appear in
+	// the answer.
+	Expression, Secret string
+}
+
+// HeldSensitiveCases is the corpus for [HeldSensitiveCase].
+func HeldSensitiveCases() []HeldSensitiveCase {
+	const secret = "hunter2-callee-only-secret"
+	child := &v1.Workflow{
+		Name:           "child",
+		Profile:        v1.CurrentProfile,
+		DeclaredInputs: []*v1.InputDeclaration{{Name: "api_key", Type: v1.InputDeclaration_TYPE_STRING, Sensitive: true}},
+		Steps:          []*v1.Node{says("use", "hi")},
+	}
+
+	return []HeldSensitiveCase{{
+		Name: "a callee's own sensitive input, passed a plain value",
+		Workflow: &v1.Workflow{
+			Name:    "held-sensitive",
+			Profile: v1.CurrentProfile,
+			Steps: []*v1.Node{
+				says("first", "one"),
+				{Id: "nested", Kind: &v1.Node_Call{Call: &v1.Call{
+					Workflow:  child,
+					Arguments: map[string]*v1.Value{"api_key": v1.NewLiteral(secret)},
+				}}},
+			},
+		},
+		Until:      "nested/use",
+		HeldAt:     "nested(child)/use",
+		Expression: "inputs.api_key",
+		Secret:     secret,
+	}}
+}

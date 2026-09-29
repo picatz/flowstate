@@ -1498,7 +1498,24 @@ func withholdingAt(text func(string) string, value func(any) any, sensitive v1.S
 	}
 
 	return func(rendered string) string {
-			return sensitive.RedactText(applyText(text, rendered), "[withheld]")
+			// Each rule matches the text as it was, never the other's output:
+			// applied in turn, one secret overlapping another is cut by the
+			// first and missed by the second (`abc` withheld, then `abcdef`
+			// no longer found, leaving `def`), and no order is safe for
+			// both. So each is asked of the original, and where both would
+			// withhold something the whole rendering is withheld instead
+			// (Copilot, #2209) — structured values reach here a leaf at a
+			// time ([withheldLeaves]), so that costs a leaf, not an answer.
+			own := applyText(text, rendered)
+			held := sensitive.RedactText(rendered, "[withheld]")
+			switch {
+			case held == rendered:
+				return own
+			case own == rendered:
+				return held
+			default:
+				return "[withheld]"
+			}
 		}, func(native any) any {
 			if sensitive.WithholdAll() {
 				return "[withheld]"
