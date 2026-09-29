@@ -256,7 +256,9 @@ type Deps struct {
 	RemoteCatalogAddress string
 
 	// DecorateRPCError, when set, rewrites the error a dispatched RPC failed
-	// with before it becomes the tool result, given the RPC's name.
+	// with before it becomes the tool result, given the RPC's name and the
+	// request it was sent: a refusal can quote an argument the request
+	// carried, and only the request says which of its values are sensitive.
 	//
 	// It exists because only the embedding binary knows where the call was
 	// going and why: the lifecycle verbs address durable runs, which only a
@@ -269,7 +271,7 @@ type Deps struct {
 	// Applied to dispatched RPC errors only — argument-decode refusals answer
 	// as themselves, and the extra tools (run_local, test, debug) never dial.
 	// Nil is the identity.
-	DecorateRPCError func(rpc string, err error) error
+	DecorateRPCError func(rpc string, request proto.Message, err error) error
 
 	// Audit records each registered tool's authorization decision at the last
 	// shared seam before its handler runs. Nil on stdio, whose local process
@@ -981,7 +983,7 @@ func dispatch(
 		out, err := method.Call(ctx, local, remote, in)
 		if err != nil {
 			if deps.DecorateRPCError != nil {
-				err = deps.DecorateRPCError(method.Name, err)
+				err = deps.DecorateRPCError(method.Name, in, err)
 			}
 
 			return ToolError(err), nil
