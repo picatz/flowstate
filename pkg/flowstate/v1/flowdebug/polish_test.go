@@ -209,3 +209,45 @@ func TestAFailedRunWhoseCasePassedIsNotCalledCompleted(t *testing.T) {
 		assert.NotContains(t, observation.GetText(), "without stopping at", "a failed run was recorded as completed")
 	}
 }
+
+// TestARenderedSnapshotSaysAMissedUntil: the Driver's fronts render a
+// completed run through [flowdebug.FormatSnapshot], so the missed-`until`
+// notice a durable run records (#2201) or a local session records is printed
+// there. Only that notice, only on a completed run.
+func TestARenderedSnapshotSaysAMissedUntil(t *testing.T) {
+	t.Parallel()
+
+	missed := &v1.DebugObservation{
+		Kind: v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_NOTICE,
+		Text: flowdebug.MissedUntilNotice("each[9]/body"),
+	}
+	other := &v1.DebugObservation{Kind: v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_NOTICE, Text: "body: the condition could not be evaluated"}
+	logged := &v1.DebugObservation{Kind: v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_LOG, Text: flowdebug.MissedUntilNotice("a log line")}
+
+	completed := flowdebug.FormatSnapshot(&v1.DebugSnapshot{
+		State: v1.DebugRunState_DEBUG_RUN_STATE_COMPLETED, Observations: []*v1.DebugObservation{other, missed, logged},
+	})
+	assert.Contains(t, completed, "\n  the run completed without stopping at `until each[9]/body`\n")
+	assert.NotContains(t, completed, "could not be evaluated", "another notice was rendered")
+	assert.NotContains(t, completed, "a log line", "a log observation was rendered as the notice")
+
+	failed := flowdebug.FormatSnapshot(&v1.DebugSnapshot{
+		State: v1.DebugRunState_DEBUG_RUN_STATE_FAILED, Observations: []*v1.DebugObservation{missed},
+	})
+	assert.NotContains(t, failed, "without stopping at", "a failed run was called completed")
+}
+
+// TestTheDriverSaysALocalRunsMissedUntil drives a real local run through the
+// Driver the MCP session tools and embed use: the session records the notice,
+// and the Driver's answer carries it once.
+func TestTheDriverSaysALocalRunsMissedUntil(t *testing.T) {
+	t.Parallel()
+
+	run := startDebugRun(t, "main.yaml", map[string]string{"main.yaml": journeyFlowfile, "child.yaml": childFlowfile}, nil)
+	waitHeld(t, run.session, 0)
+
+	result, err := flowdebug.NewDriver(run.session).Do(t.Context(), "until each[9]/touch")
+	require.NoError(t, err)
+	require.Equal(t, v1.DebugRunState_DEBUG_RUN_STATE_COMPLETED, result.Snapshot.GetState())
+	assert.Equal(t, 1, strings.Count(result.Text, "the run completed without stopping at `until each[9]/touch`"), result.Text)
+}

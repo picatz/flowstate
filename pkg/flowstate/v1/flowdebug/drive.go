@@ -719,6 +719,17 @@ func FormatSnapshot(snapshot *v1.DebugSnapshot) string {
 			fmt.Fprintf(&b, ", last at %s", address)
 		}
 		fmt.Fprintf(&b, ", revision %d\n", snapshot.GetRevision())
+		// A completed run that never stopped at its `until` says so, as the
+		// local prompt does, here where the Driver's fronts read the end of
+		// a run: a durable attach, the MCP session tools, embed.
+		if snapshot.GetState() == v1.DebugRunState_DEBUG_RUN_STATE_COMPLETED {
+			for _, observation := range snapshot.GetObservations() {
+				if observation.GetKind() == v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_NOTICE &&
+					strings.HasPrefix(observation.GetText(), missedUntilPrefix) {
+					fmt.Fprintf(&b, "  %s\n", observation.GetText())
+				}
+			}
+		}
 	}
 	if message := snapshot.GetMessage(); message != "" {
 		fmt.Fprintf(&b, "  %s\n", message)

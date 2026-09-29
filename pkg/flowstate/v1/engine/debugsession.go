@@ -700,6 +700,13 @@ func (e *executor) observeForDebug(kind v1.DebugObservationKind, node *v1.Node, 
 	case v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_TOLERATED:
 		text += " failed, tolerated by continue_on_error: " + detail
 	}
+	e.recordDebugObservation(kind, node.GetId(), v1.FormatDebugAddress(e.debugSegments, node.GetId()), text)
+}
+
+// recordDebugObservation appends one observation, redacted and bounded, to
+// what an attached session reads back.
+func (e *executor) recordDebugObservation(kind v1.DebugObservationKind, stepID, address, text string) {
+	d := e.debug
 	text = e.debugRedactText(text)
 	if runes := []rune(text); len(runes) > maxDebugObservationRunes {
 		text = string(runes[:maxDebugObservationRunes]) + "…"
@@ -709,14 +716,36 @@ func (e *executor) observeForDebug(kind v1.DebugObservationKind, node *v1.Node, 
 	d.observations = append(d.observations, &v1.DebugObservation{
 		Sequence: d.sequence,
 		Kind:     kind,
-		StepId:   node.GetId(),
+		StepId:   stepID,
 		Text:     text,
-		Address:  v1.FormatDebugAddress(e.debugSegments, node.GetId()),
+		Address:  address,
 	})
 	if over := len(d.observations) - maxDebugObservations; over > 0 {
 		d.observations = slices.Delete(d.observations, 0, over)
 		d.dropped += uint64(over)
 	}
+}
+
+// debugRunCompleted says, when a run completes with a session's `until` still
+// armed, that it never stopped there: an address past the last iteration, a
+// step the run had already passed. The local session says it in the same
+// words ([flowdebug.MissedUntilNotice]).
+//
+// Recorded as an observation, which lives in the executor and nowhere in
+// history: a read of the completed run replays to this point and finds it,
+// so it is in every later snapshot and every output format that carries one,
+// and it changes nothing a replay compares.
+//
+// The pending movement is the whole test: a detach or an expiry replaces the
+// carry, a stop at the target resets it, and a run-until naming no step is
+// refused before it is carried.
+func (e *executor) debugRunCompleted() {
+	d := e.debug
+	if d.carry.GetNext() != v1.DebugResumeAction_DEBUG_RESUME_ACTION_RUN_UNTIL {
+		return
+	}
+	e.recordDebugObservation(v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_NOTICE, "", "",
+		flowdebug.MissedUntilNotice(d.carry.GetUntil()))
 }
 
 // debugSnapshot answers [v1.DebugQuery]: the session as the run holds it. A

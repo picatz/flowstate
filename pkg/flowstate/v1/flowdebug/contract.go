@@ -653,10 +653,23 @@ func (s *Session) RunReturned(err error) {
 		return
 	}
 
-	text := fmt.Sprintf("the run completed without stopping at `until %s`", missed)
+	text := MissedUntilNotice(missed)
 	s.printfTone(ToneWarning, "%s\n", text)
 	s.observe(v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_NOTICE, "", text)
 }
+
+// MissedUntilNotice is the notice a run that completed with an `until` still
+// armed gets, for the `until` as it was asked: its target, and its condition
+// when it had one. Both drivers say it in these words — a local session from
+// [Session.RunReturned], a durable run in the snapshot it answers once it has
+// completed — so a script or an agent matching one matches the other.
+func MissedUntilNotice(asked string) string {
+	return missedUntilPrefix + "`until " + asked + "`"
+}
+
+// missedUntilPrefix begins every [MissedUntilNotice], which is how a rendered
+// snapshot picks that notice out of the rest.
+const missedUntilPrefix = "the run completed without stopping at "
 
 // Finished records how the run ended. A driver calls it when the run returns,
 // so a surface can say completed or failed rather than only "over".

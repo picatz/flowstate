@@ -746,6 +746,7 @@ func runWorkflow(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutput
 			return v1.PartialTranscript(stepOutputs),
 				compensate(ctx, exec, &ErrRunFailed{Message: outputsErr.Error()})
 		}
+		exec.debugRunCompleted()
 
 		return stepOutputs, nil
 
