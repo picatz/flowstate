@@ -1,6 +1,7 @@
 package conformance
 
 import (
+	"strings"
 	"time"
 
 	"google.golang.org/protobuf/types/known/durationpb"
@@ -602,6 +603,30 @@ func FailedSensitiveCases() []FailedSensitiveCase {
 		Quoted: "no such key",
 		Secret: secret,
 	}, {
+		// The failure is the step's `if:`, which records no outcome of its
+		// own, so the only report of it is the one the guard seam gives
+		// (#2124), and it has to withhold what a failed step's does.
+		Name: "a callee's sensitive input, quoted by an if: that could not be evaluated",
+		Workflow: &v1.Workflow{
+			Name:    "failed-sensitive-guard",
+			Profile: v1.CurrentProfile,
+			Steps: []*v1.Node{
+				says("first", "one"),
+				{Id: "nested", Kind: &v1.Node_Call{Call: &v1.Call{
+					Workflow: &v1.Workflow{
+						Name:           "child",
+						Profile:        v1.CurrentProfile,
+						DeclaredInputs: []*v1.InputDeclaration{{Name: "api_key", Type: v1.InputDeclaration_TYPE_STRING, Sensitive: true}},
+						Steps:          []*v1.Node{guarded("boom", `{"a": 1}[inputs.api_key] == 1`, "never")},
+					},
+					Arguments: map[string]*v1.Value{"api_key": v1.NewLiteral(secret)},
+				}}},
+			},
+		},
+		Failed: []string{"boom", "nested"},
+		Quoted: "no such key",
+		Secret: secret,
+	}, {
 		// Only the leaf declares anything: what its failure carries has to
 		// survive the middle's own report of it to reach the root's.
 		Name: "a leaf's own sensitive input, quoted two calls deep",
@@ -685,4 +710,266 @@ func FailedSensitiveCases() []FailedSensitiveCase {
 		Quoted: "must satisfy",
 		Secret: secret,
 	}}
+}
+
+// GuardCase is a run both drivers debug through while its steps' `if:`s
+// decide against them. Each driver must give the same account of every
+// decision, taken from the evaluation that made it (#2124): a skip quotes the
+// condition that decided it, in [v1.SkippedText]'s words, and a condition
+// that could not be evaluated is reported as its step failing, which a
+// session would otherwise show as a step the run never reached.
+type GuardCase struct {
+	// Name labels the case.
+	Name string
+
+	// Workflow is the program, with no `debug:` policy: the durable caller
+	// adds the one its harness attaches under. Its first step always runs,
+	// so both drivers hold there before the resume.
+	Workflow *v1.Workflow
+
+	// Skipped is the account of each skip, in order.
+	Skipped []string
+
+	// Failed is the step whose `if:` could not be evaluated, which ends the
+	// run, or "" for a run that completes. Quoted is what its report must
+	// say of the error.
+	Failed, Quoted string
+
+	// Secret, when set, is a value a callee declares sensitive and its `if:`
+	// quotes, which no account may show.
+	Secret string
+}
+
+// GuardCases is the corpus for [GuardCase].
+func GuardCases() []GuardCase {
+	// Longer than any bound an observation is cut to, so a driver that cut
+	// the sentence before withholding it would keep the value's start
+	// (Codex, #2227).
+	longSecret := "hunter2-guard-secret-" + strings.Repeat("x", 1024)
+
+	return []GuardCase{
+		{
+			Name: "a skip quotes the if: that decided it",
+			Workflow: &v1.Workflow{
+				Name:    "guard-skip",
+				Profile: v1.CurrentProfile,
+				Steps: []*v1.Node{
+					says("first", "one"),
+					guarded("discount", "size(['a']) > 1", "never"),
+					// Written back from the macro call the parse keeps.
+					guarded("macro", "['a'].exists(x, x == 'b')", "never"),
+					// A compiled `if: false` is a literal, not an expression.
+					{Id: "literal", Condition: v1.NewLiteral(false), Kind: says("literal", "never").GetKind()},
+					says("last", "two"),
+				},
+			},
+			Skipped: []string{
+				"discount skipped: `if: size([\"a\"]) > 1` was false",
+				"macro skipped: `if: [\"a\"].exists(x, x == \"b\")` was false",
+				"literal skipped (`if: false`)",
+			},
+		},
+		{
+			// The condition is the author's text, and here quotes the value a
+			// callee declares sensitive, which the root does not. Each driver
+			// withholds it where the skip is, as it would any rendering there.
+			Name: "a skip inside a callee withholds what the callee declares sensitive",
+			Workflow: &v1.Workflow{
+				Name:    "guard-sensitive",
+				Profile: v1.CurrentProfile,
+				Steps: []*v1.Node{
+					says("first", "one"),
+					{Id: "nested", Kind: &v1.Node_Call{Call: &v1.Call{
+						Workflow: &v1.Workflow{
+							Name:           "child",
+							Profile:        v1.CurrentProfile,
+							DeclaredInputs: []*v1.InputDeclaration{{Name: "api_key", Type: v1.InputDeclaration_TYPE_STRING, Sensitive: true}},
+							Steps:          []*v1.Node{guarded("rotate", `inputs.api_key != "`+longSecret+`"`, "never")},
+						},
+						Arguments: map[string]*v1.Value{"api_key": v1.NewLiteral(longSecret)},
+					}}},
+				},
+			},
+			Skipped: []string{"rotate skipped: `if: inputs.api_key != \"[redacted]\"` was false"},
+			// Its first runes, which a sentence cut before it was withheld
+			// would keep.
+			Secret: longSecret[:24],
+		},
+		{
+			// A bytes literal is written in octal escapes, so a sensitive
+			// value in one is withheld by value before the condition is
+			// written, or no match for its text finds it (Codex, #2227).
+			Name: "a skip inside a callee withholds a sensitive bytes value it quotes",
+			Workflow: &v1.Workflow{
+				Name:    "guard-sensitive-bytes",
+				Profile: v1.CurrentProfile,
+				Steps: []*v1.Node{
+					says("first", "one"),
+					{Id: "nested", Kind: &v1.Node_Call{Call: &v1.Call{
+						Workflow: &v1.Workflow{
+							Name:           "child",
+							Profile:        v1.CurrentProfile,
+							DeclaredInputs: []*v1.InputDeclaration{{Name: "creds", Type: v1.InputDeclaration_TYPE_STRUCT, Sensitive: true}},
+							Steps: []*v1.Node{
+								guarded("rotate", `inputs.creds.token != b"hunter2-bytes"`, "never"),
+								// The same bytes written as a string literal.
+								guarded("recheck", `string(inputs.creds.token) != "hunter2-bytes"`, "never"),
+							},
+						},
+						Arguments: map[string]*v1.Value{"creds": v1.NewExpr(`{"token": b"hunter2-bytes"}`)},
+					}}},
+				},
+			},
+			// The field is withheld too: a sensitive structure's keys are
+			// what its set withholds, and the renderer quotes a field name
+			// that is not an identifier.
+			Skipped: []string{
+				"rotate skipped: `if: inputs.creds.`[redacted]` != \"[redacted]\"` was false",
+				"recheck skipped: `if: string(inputs.creds.`[redacted]`) != \"[redacted]\"` was false",
+			},
+			// "hun" as the renderer writes it in a bytes literal; the
+			// string literal is checked by the expected sentences.
+			Secret: `\150\165\156`,
+		},
+		{
+			// The renderer escapes the quote, so the value's own text is
+			// no longer in the sentence to be matched; a literal that merely
+			// contains it is withheld from its unescaped text (Copilot,
+			// #2227).
+			Name: "a skip inside a callee withholds a literal containing a sensitive value the renderer escapes",
+			Workflow: &v1.Workflow{
+				Name:    "guard-sensitive-escaped",
+				Profile: v1.CurrentProfile,
+				Steps: []*v1.Node{
+					says("first", "one"),
+					{Id: "nested", Kind: &v1.Node_Call{Call: &v1.Call{
+						Workflow: &v1.Workflow{
+							Name:           "child",
+							Profile:        v1.CurrentProfile,
+							DeclaredInputs: []*v1.InputDeclaration{{Name: "api_key", Type: v1.InputDeclaration_TYPE_STRING, Sensitive: true}},
+							Steps:          []*v1.Node{guarded("rotate", `"key: hunter2\"quoted" != "key: " + inputs.api_key`, "never")},
+						},
+						Arguments: map[string]*v1.Value{"api_key": v1.NewLiteral(`hunter2"quoted`)},
+					}}},
+				},
+			},
+			Skipped: []string{"rotate skipped: `if: \"[redacted]\" != \"key: \" + inputs.api_key` was false"},
+			Secret:  "hunter2",
+		},
+		{
+			// A value written as a literal of another type is spelled the
+			// renderer's own way, a string in octal inside a bytes literal and
+			// an int in exponent form as a double, which no match for the
+			// value's text finds, so each is asked about as every type it
+			// could be held as (#2227).
+			Name: "a skip inside a callee withholds sensitive values written as literals of another type",
+			Workflow: &v1.Workflow{
+				Name:    "guard-sensitive-retyped",
+				Profile: v1.CurrentProfile,
+				Steps: []*v1.Node{
+					says("first", "one"),
+					{Id: "nested", Kind: &v1.Node_Call{Call: &v1.Call{
+						Workflow: &v1.Workflow{
+							Name:    "child",
+							Profile: v1.CurrentProfile,
+							DeclaredInputs: []*v1.InputDeclaration{
+								{Name: "api_key", Type: v1.InputDeclaration_TYPE_STRING, Sensitive: true},
+								{Name: "pin", Type: v1.InputDeclaration_TYPE_INT, Sensitive: true},
+								{Name: "vault", Type: v1.InputDeclaration_TYPE_STRUCT, Sensitive: true},
+							},
+							Steps: []*v1.Node{
+								guarded("bearer", `bytes("Bearer " + inputs.api_key) != b"Bearer hunter2-retyped"`, "never"),
+								guarded("unlock", `double(inputs.pin) != 918273645.0`, "never"),
+								// Past the signed range, where only the unsigned
+								// form holds it.
+								guarded("vault", `double(inputs.vault.n) != 9223372036854775808.0`, "never"),
+								// A null leaf, which the set holds as nil.
+								guarded("absent", `inputs.vault.gone != null`, "never"),
+							},
+						},
+						Arguments: map[string]*v1.Value{
+							"api_key": v1.NewLiteral("hunter2-retyped"),
+							"pin":     v1.NewLiteral(int64(918273645)),
+							"vault":   v1.NewExpr(`{"n": 9223372036854775808u, "gone": null}`),
+						},
+					}}},
+				},
+			},
+			Skipped: []string{
+				"bearer skipped: `if: bytes(\"Bearer \" + inputs.api_key) != \"[redacted]\"` was false",
+				"unlock skipped: `if: double(inputs.pin) != \"[redacted]\"` was false",
+				"vault skipped: `if: double(inputs.vault.`[redacted]`) != \"[redacted]\"` was false",
+				"absent skipped: `if: inputs.vault.`[redacted]` != \"[redacted]\"` was false",
+			},
+			// "hun" as the renderer writes it in a bytes literal; the pin's
+			// exponent form is checked by the same substring.
+			Secret: `\150\165\156`,
+		},
+		{
+			// A field name is not a constant, and a one-rune key is too short
+			// for any text match to look for, so a sensitive structure's key
+			// is withheld where the condition selects it (Codex, #2227).
+			Name: "a skip inside a callee withholds a one-rune key of a sensitive structure",
+			Workflow: &v1.Workflow{
+				Name:    "guard-sensitive-key",
+				Profile: v1.CurrentProfile,
+				Steps: []*v1.Node{
+					says("first", "one"),
+					{Id: "nested", Kind: &v1.Node_Call{Call: &v1.Call{
+						Workflow: &v1.Workflow{
+							Name:           "child",
+							Profile:        v1.CurrentProfile,
+							DeclaredInputs: []*v1.InputDeclaration{{Name: "creds", Type: v1.InputDeclaration_TYPE_STRUCT, Sensitive: true}},
+							Steps:          []*v1.Node{guarded("rotate", `inputs.creds.k != "hunter2-onerune"`, "never")},
+						},
+						Arguments: map[string]*v1.Value{"creds": v1.NewValue(map[string]any{"k": "hunter2-onerune"})},
+					}}},
+				},
+			},
+			Skipped: []string{"rotate skipped: `if: inputs.creds.`[redacted]` != \"[redacted]\"` was false"},
+			Secret:  "hunter2-onerune",
+		},
+		{
+			// A sensitive structure's bool leaf is asked about by a literal
+			// `if:` too, and the words the text pass withholds read alike on
+			// both drivers (Codex, #2227).
+			Name: "a skip inside a callee withholds a literal condition a sensitive structure holds",
+			Workflow: &v1.Workflow{
+				Name:    "guard-sensitive-literal",
+				Profile: v1.CurrentProfile,
+				Steps: []*v1.Node{
+					says("first", "one"),
+					{Id: "nested", Kind: &v1.Node_Call{Call: &v1.Call{
+						Workflow: &v1.Workflow{
+							Name:           "child",
+							Profile:        v1.CurrentProfile,
+							DeclaredInputs: []*v1.InputDeclaration{{Name: "flags", Type: v1.InputDeclaration_TYPE_STRUCT, Sensitive: true}},
+							Steps: []*v1.Node{{
+								Id:        "rotate",
+								Condition: v1.NewLiteral(false),
+								Kind:      says("rotate", "never").GetKind(),
+							}},
+						},
+						Arguments: map[string]*v1.Value{"flags": v1.NewExpr(`{"enabled": false}`)},
+					}}},
+				},
+			},
+			// "false" is a word the text pass withholds here as well.
+			Skipped: []string{"rotate skipped: `if: \"[redacted]\"` was [redacted]"},
+		},
+		{
+			Name: "an if: that cannot be evaluated is its step failing",
+			Workflow: &v1.Workflow{
+				Name:    "guard-error",
+				Profile: v1.CurrentProfile,
+				Steps: []*v1.Node{
+					says("first", "one"),
+					guarded("bad", "['a'][5] == 'never'", "never"),
+					says("after", "two"),
+				},
+			},
+			Failed: "bad",
+			Quoted: "evaluating condition",
+		},
+	}
 }

@@ -879,7 +879,21 @@ func (e *executor) observeForDebug(kind v1.DebugObservationKind, node *v1.Node, 
 	case v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_FINISHED:
 		text += " finished"
 	case v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_SKIPPED:
-		text += " skipped (`if:` was false)"
+		// A constant withheld by value before the condition is written, and
+		// the sentence by text below, as the local session does.
+		sensitive := d.sensitiveAt(e.curSpec, e.scope, e.positionSensitive())
+		text = v1.SkippedText(node.GetId(), node.GetCondition(), func(value any) bool {
+			if sensitive.WithholdAll() || sensitive.IsSensitive(value) {
+				return true
+			}
+			// A string's own text, before the renderer escapes it, so a
+			// sensitive value it merely contains is found too (Copilot,
+			// #2227). A bytes literal is asked about as its text as well
+			// ([v1.SkippedText]).
+			text, ok := value.(string)
+
+			return ok && sensitive.RedactText(text, v1.SensitiveMarker) != text
+		})
 	case v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_FAILED:
 		text += " failed: " + detail
 	case v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_TOLERATED:

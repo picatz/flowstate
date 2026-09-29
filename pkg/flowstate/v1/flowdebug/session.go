@@ -10,6 +10,7 @@ import (
 	"io"
 	"maps"
 	"math"
+	"reflect"
 	"slices"
 	"sort"
 	"strings"
@@ -901,18 +902,62 @@ func (s *Session) StepFinishedWithholding(id string, outputs *v1.Node_Outputs, e
 	s.observeRedacted(observationKind(state), id, capRunes(line, maxObservationRunes))
 }
 
-// StepSkipped implements [v1.RunObserver]. A skipped step never reaches
-// [Session.BeforeStep] — there is no work to hold — so this is the only place
-// a session can say the `if:` decided against it.
+// StepSkipped implements [v1.RunObserver]. The engine calls
+// [Session.StepSkippedBy] instead, and this is the account of a skip whose
+// condition nobody quoted.
 func (s *Session) StepSkipped(id string) {
+	s.StepSkippedBy(id, nil, v1.SensitiveValues{})
+}
+
+// StepSkippedBy implements [v1.GuardRunObserver]. A skipped step never reaches
+// [Session.BeforeStep] — there is no work to hold — so this is the only place
+// a session can say the `if:` decided against it, and the account quotes the
+// condition that did ([v1.SkippedText]), in the sentence a durable session
+// gives. The account withholds what the workflow it is in declares sensitive
+// ([withholdingAt]), as a durable session's does, unless
+// [Options.RevealSensitive] authorized showing it.
+func (s *Session) StepSkippedBy(id string, condition *v1.Value, withhold v1.SensitiveValues) {
 	// Remembered as a step this run reaches even though it did not run: a
 	// breakpoint on a step whose `if:` was false this time is exactly what
 	// somebody sets when they are trying to find out why.
 	s.sawStep(id)
 	s.noteStep(id, StepSkipped)
+	if s.reveal {
+		withhold = v1.SensitiveValues{}
+	}
 
-	s.printf("  %s skipped (`if:` was false)\n", id)
-	s.observe(v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_SKIPPED, id, id+" skipped (`if:` was false)")
+	// In the durable driver's marker: the sentence is one both drivers give
+	// ([v1.SkippedText]), and a word the text pass withholds must read the
+	// same in each (Codex, #2227).
+	s.mu.Lock()
+	redact, redactValue := withholdingAtMarked(s.redact, s.redactValue, withhold, v1.SensitiveMarker)
+	s.mu.Unlock()
+	// A constant is withheld by value before the condition is written, then
+	// the sentence by text; withheld, then bounded, never the other way
+	// round: a cut first could keep the start of a sensitive value no
+	// whole-value match then finds.
+	account := v1.SkippedText(id, condition, func(value any) bool {
+		// A string's own text, before the renderer escapes it, so a
+		// sensitive value it merely contains is found too (Copilot, #2227).
+		// A bytes literal is asked about as its text as well
+		// ([v1.SkippedText]).
+		if text, ok := value.(string); ok && applyText(redact, text) != text {
+			return true
+		}
+
+		return redactValue != nil && !reflect.DeepEqual(redactValue(value), value)
+	})
+	line := capRunes(applyText(redact, account), maxObservationRunes)
+	s.emitTone(ToneInfo, "  "+line+"\n")
+	s.observeRedacted(v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_SKIPPED, id, line)
+}
+
+// GuardFailed implements [v1.GuardRunObserver]: a step whose `if:` could not
+// be evaluated is a step that failed, and without this the step list would
+// show it as never reached. Its account is a failed step's, since that is
+// what the run reports.
+func (s *Session) GuardFailed(id string, err error, withhold v1.SensitiveValues) {
+	s.StepFinishedWithholding(id, nil, err, false, withhold)
 }
 
 // WaitStarted implements [v1.RunObserver], reporting a wait as it parks.
@@ -1514,6 +1559,13 @@ func (s *Session) prompting(at promptSubject) {
 // than substituted: the session's rule still applies first, and a session
 // with none still withholds what the held workflow declares.
 func withholdingAt(text func(string) string, value func(any) any, sensitive v1.SensitiveValues) (func(string) string, func(any) any) {
+	return withholdingAtMarked(text, value, sensitive, "[withheld]")
+}
+
+// withholdingAtMarked is [withholdingAt] writing marker where the held set
+// withholds text. A rendering both drivers give in one sentence passes the
+// durable driver's marker, [v1.SensitiveMarker], so the sentences agree.
+func withholdingAtMarked(text func(string) string, value func(any) any, sensitive v1.SensitiveValues, marker string) (func(string) string, func(any) any) {
 	if sensitive.Empty() {
 		return text, value
 	}
@@ -1528,14 +1580,14 @@ func withholdingAt(text func(string) string, value func(any) any, sensitive v1.S
 			// (Copilot, #2209) — structured values reach here a leaf at a
 			// time ([withheldLeaves]), so that costs a leaf, not an answer.
 			own := applyText(text, rendered)
-			held := sensitive.RedactText(rendered, "[withheld]")
+			held := sensitive.RedactText(rendered, marker)
 			switch {
 			case held == rendered:
 				return own
 			case own == rendered:
 				return held
 			default:
-				return "[withheld]"
+				return marker
 			}
 		}, func(native any) any {
 			if sensitive.WithholdAll() {

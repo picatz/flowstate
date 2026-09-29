@@ -1623,13 +1623,18 @@ func runNodes(ctx context.Context, nodes []*Node, scope *Scope, undo *UndoLog, p
 		}
 		run, err := EvalConditionInScope(nodeCtx, node.GetCondition(), scope)
 		if err != nil {
+			// Recorded nowhere else: the step never ran, so it has no outcome
+			// to report, and a debugger would otherwise show it as never
+			// reached (#2124).
+			observeGuardFailed(ctx, node.GetId(), err)
+
 			return fmt.Errorf("step %q: %w", node.GetId(), err)
 		}
 		if !run {
 			// The one fact the transcript cannot carry — a skipped step
 			// records nothing — reported here for whoever is listening
 			// ([RunObserver]).
-			observeStepSkipped(ctx, node.GetId())
+			observeStepSkipped(ctx, node)
 
 			continue
 		}
