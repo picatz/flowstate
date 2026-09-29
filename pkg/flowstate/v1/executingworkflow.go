@@ -164,6 +164,44 @@ func FailureSensitiveValues(err error) SensitiveValues {
 	return SensitiveValues{}
 }
 
+// callReturnKey carries, while one call step runs under a debugger, the slot
+// [runCall] fills with what its callee withholds once it returns (#2212). A
+// callee's outputs can hand back a value only the callee declared sensitive,
+// and the call step's account renders them from the caller's position, which
+// knows nothing of the callee's declarations. The failure path carries the
+// same set on the error ([WithFailureSensitiveValues]); this is its success
+// path.
+type callReturnKey struct{}
+
+// contextWithCallReturn installs a fresh slot for one call step while a
+// [Debugger] is installed, the only reader, and returns it; nil, and ctx
+// unchanged, otherwise.
+func contextWithCallReturn(ctx context.Context) (context.Context, *SensitiveValues) {
+	if DebuggerFromContext(ctx) == nil {
+		return ctx, nil
+	}
+	slot := new(SensitiveValues)
+
+	return context.WithValue(ctx, callReturnKey{}, slot), slot
+}
+
+// returnCallSensitive fills the slot of the call step running on ctx, if it
+// has one.
+func returnCallSensitive(ctx context.Context, sensitive SensitiveValues) {
+	if slot, ok := ctx.Value(callReturnKey{}).(*SensitiveValues); ok && slot != nil {
+		*slot = sensitive
+	}
+}
+
+// returnedCallSensitive is what a call step's slot holds, or nothing.
+func returnedCallSensitive(slot *SensitiveValues) SensitiveValues {
+	if slot == nil {
+		return SensitiveValues{}
+	}
+
+	return *slot
+}
+
 // sensitiveFailure is [WithFailureSensitiveValues]'s carrier.
 type sensitiveFailure struct {
 	err       error

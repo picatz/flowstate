@@ -452,9 +452,12 @@ applies here rather than a second, weaker one.
   withheld at a hold inside that callee, and in whatever it calls with the
   value. It is also withheld from each step's account and from a failure that
   quotes it. That covers the failing step, every call the failure passes
-  through, and the failed run's final message. The same run under plain
-  `flow test`, with no debugger, prints the case's transcript under the case's
-  posture alone.
+  through, the failed run's final message, and the call's own account of the
+  outputs the callee hands back. A value that has crossed back into the
+  caller's scope is not yet withheld when the caller reads it later, as a
+  returned output or a tolerated call's recorded error. The same run under
+  plain `flow test`, with no debugger, prints the case's transcript under the
+  case's posture alone.
 - A durable inspection renders a run's declared-`sensitive:` inputs as
   `[redacted]`, and the same holds: a predicate over one answers truthfully.
   That is why evaluating anything against a durable run needs its own action,

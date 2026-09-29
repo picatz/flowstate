@@ -1036,7 +1036,10 @@ func (e *executor) runCall(node *v1.Node, call *v1.Call, depth, susp int, descen
 
 	inner, err := v1.CallScope(e.scope, callee, arguments, vars)
 	if err != nil {
-		return nodeFailed(err)
+		// Binding can quote the input it refuses, before the callee has a
+		// scope to say what it withholds; the arguments are what it would
+		// have bound, as the local driver's runCall carries (#2212).
+		return withFailureSensitive(nodeFailed(err), e.debugArgumentsSensitive(callee, arguments))
 	}
 
 	// The callee's own step outputs accumulated before the run suspended,
@@ -1159,7 +1162,9 @@ func (e *executor) runCall(node *v1.Node, call *v1.Call, depth, susp int, descen
 	outputs, cost, err := v1.CallOutputsWithCost(evalContext(), callee, inner)
 	e.chargeWorkflowCost(cost)
 	if err != nil {
-		return nodeFailed(err)
+		// Computed from the callee's scope, so its error can quote what the
+		// callee withholds, as the local driver's runCall carries (#2212).
+		return withFailureSensitive(nodeFailed(err), nested.debugFailureSensitive())
 	}
 	e.scope.Outputs.StepValues[node.GetId()] = outputs
 	return nil

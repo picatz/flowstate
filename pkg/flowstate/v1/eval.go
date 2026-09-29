@@ -1581,7 +1581,7 @@ func runNodes(ctx context.Context, nodes []*Node, scope *Scope, undo *UndoLog, p
 			outputs, err = outcome.run()
 		}
 
-		return recordStepOutcome(ctx, outcome.node, outputs, err, scope, tolerated)
+		return recordStepOutcome(ctx, outcome.node, outputs, err, scope, tolerated, SensitiveValues{})
 	}
 
 	for _, node := range nodes {
@@ -1677,8 +1677,15 @@ func runNodes(ctx context.Context, nodes []*Node, scope *Scope, undo *UndoLog, p
 			continue
 		}
 
+		// A call step's slot for what its callee withholds once it returns,
+		// which its account renders under (#2212). Only a call fills one, and
+		// only in order: `async:` is a task step's.
+		var returned *SensitiveValues
+		if _, ok := node.GetKind().(*Node_Call); ok {
+			nodeCtx, returned = contextWithCallReturn(nodeCtx)
+		}
 		outputs, err := runNodeWithVars(nodeCtx, node, scope, undo, placement, depth, registerAtCompletion, tolerated)
-		if err := recordStepOutcome(ctx, node, outputs, err, scope, tolerated); err != nil {
+		if err := recordStepOutcome(ctx, node, outputs, err, scope, tolerated, returnedCallSensitive(returned)); err != nil {
 			return err
 		}
 	}
@@ -1747,7 +1754,10 @@ const registerAtCompletion = -1
 // `continue_on_error:` tolerate it, what is recorded under the step's id — must
 // come out the same either way. The durable driver keeps the same two callers on
 // one body for the same reason.
-func recordStepOutcome(ctx context.Context, node *Node, outputs *Node_Outputs, err error, scope *Scope, tolerated map[string]struct{}) error {
+//
+// returned is what a call step's callee withholds, for the account of what it
+// handed back.
+func recordStepOutcome(ctx context.Context, node *Node, outputs *Node_Outputs, err error, scope *Scope, tolerated map[string]struct{}, returned SensitiveValues) error {
 	if err != nil {
 		// Cancellation is not a step failure, so `continue_on_error` does not
 		// get to tolerate it — the durable driver says the same thing at the
@@ -1773,7 +1783,7 @@ func recordStepOutcome(ctx context.Context, node *Node, outputs *Node_Outputs, e
 			// point, for the identical reason.
 			record := failureRecord(err)
 			scope.Outputs.StepValues[node.GetId()] = record
-			observeStepFinished(ctx, node.GetId(), record, err, false)
+			observeStepFinished(ctx, node.GetId(), record, err, false, SensitiveValues{})
 			if held := debuggerStepFailed(ctx, node, scope, err, false); held != nil {
 				return held
 			}
@@ -1789,7 +1799,7 @@ func recordStepOutcome(ctx context.Context, node *Node, outputs *Node_Outputs, e
 		}
 		record := failureRecord(err)
 		scope.Outputs.StepValues[node.GetId()] = record
-		observeStepFinished(ctx, node.GetId(), record, err, true)
+		observeStepFinished(ctx, node.GetId(), record, err, true, SensitiveValues{})
 		if held := debuggerStepFailed(ctx, node, scope, err, true); held != nil {
 			return held
 		}
@@ -1800,7 +1810,7 @@ func recordStepOutcome(ctx context.Context, node *Node, outputs *Node_Outputs, e
 	if outputs != nil {
 		scope.Outputs.StepValues[node.GetId()] = outputs
 	}
-	observeStepFinished(ctx, node.GetId(), outputs, nil, false)
+	observeStepFinished(ctx, node.GetId(), outputs, nil, false, returned)
 
 	return nil
 }
@@ -2089,7 +2099,11 @@ func runCall(ctx context.Context, callerStep, callerKind string, call *Call, sco
 
 	inner, err := CallScope(scope, callee, arguments, vars)
 	if err != nil {
-		return nil, err
+		// Binding the callee's inputs can refuse one and quote it (`must
+		// satisfy …; got <value>`), before the callee has a position to say
+		// what it withholds; the arguments are what it would have bound
+		// (#2212).
+		return nil, WithFailureSensitiveValues(err, debugSensitiveInputs(ctx, callee, arguments))
 	}
 
 	// A callee's step ids belong to the callee, not to its caller. Move the
@@ -2118,7 +2132,16 @@ func runCall(ctx context.Context, callerStep, callerKind string, call *Call, sco
 		return nil, fmt.Errorf("workflow %q: %w", callee.GetName(), WithFailureSensitiveValues(err, ExecutingSensitiveFromContext(calleeCtx)))
 	}
 
-	return CallOutputs(ctx, callee, inner)
+	// The callee's outputs are computed from its own scope, so both what they
+	// hand back and an error computing them can quote what the callee
+	// withholds (#2212).
+	outputs, err := CallOutputs(ctx, callee, inner)
+	if err != nil {
+		return nil, WithFailureSensitiveValues(err, ExecutingSensitiveFromContext(calleeCtx))
+	}
+	returnCallSensitive(ctx, ExecutingSensitiveFromContext(calleeCtx))
+
+	return outputs, nil
 }
 
 // runSwitch dispatches on one value and runs the body [SelectSwitchCase] picks.

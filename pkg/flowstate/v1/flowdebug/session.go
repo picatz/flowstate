@@ -875,9 +875,9 @@ func (s *Session) StepFinishedWithholding(id string, outputs *v1.Node_Outputs, e
 	}
 
 	s.mu.Lock()
-	redact, _ := withholdingAt(s.redact, nil, withhold)
+	redact, redactValue := withholdingAt(s.redact, s.redactValue, withhold)
 	s.mu.Unlock()
-	text := s.stepOutcomeText(redact, outputs, err, tolerated)
+	text := s.stepOutcomeText(redact, redactValue, outputs, err, tolerated)
 	line := applyText(redact, id+" "+text)
 
 	s.mu.Lock()
@@ -1896,22 +1896,6 @@ func (s *Session) SetValueRedactor(redact func(any) any) {
 	s.redactValue = redact
 }
 
-// redactedValue is v through the installed value redactor, then with the text
-// redactor applied to its leaves — both seams, on the tree, before anything
-// renders it. See [withheldLeaves] for why the text half cannot wait for the
-// rendered line: JSON escapes or encodes exactly the leaves it must find.
-func (s *Session) redactedValue(v any) any {
-	s.mu.Lock()
-	redactValue, redactText := s.redactValue, s.redact
-	s.mu.Unlock()
-
-	if redactValue != nil {
-		v = redactValue(v)
-	}
-
-	return withheldLeaves(redactText, v)
-}
-
 func (s *Session) redactText(text string) string {
 	s.mu.Lock()
 	redact := s.redact
@@ -1959,8 +1943,8 @@ func (s *Session) printf(format string, args ...any) {
 }
 
 // stepOutcomeText renders one step's recorded outcome for the console, its
-// values redacted by redact.
-func (s *Session) stepOutcomeText(redact func(string) string, outputs *v1.Node_Outputs, err error, tolerated bool) string {
+// values redacted by redactValue and the rendering by redact.
+func (s *Session) stepOutcomeText(redact func(string) string, redactValue func(any) any, outputs *v1.Node_Outputs, err error, tolerated bool) string {
 	if err != nil {
 		if tolerated {
 			return "failed (tolerated by continue_on_error): " + err.Error()
@@ -1982,7 +1966,7 @@ func (s *Session) stepOutcomeText(redact func(string) string, outputs *v1.Node_O
 
 	parts := make([]string, 0, len(names))
 	for _, name := range names {
-		parts = append(parts, name+": "+s.valueText(named[name]))
+		parts = append(parts, name+": "+valueText(named[name], redact, redactValue))
 	}
 
 	// Redacted *before* the cap, not after. capRunes keeps the first
@@ -1996,7 +1980,7 @@ func (s *Session) stepOutcomeText(redact func(string) string, outputs *v1.Node_O
 // valueText renders one output value. A value that is not a resolved literal
 // — a secret reference above all — renders as what it is rather than as what
 // it points at.
-func (s *Session) valueText(value *v1.Value) string {
+func valueText(value *v1.Value, redact func(string) string, redactValue func(any) any) string {
 	if ref := value.GetSecretRef(); ref != nil {
 		return fmt.Sprintf("secret(%s://%s)", ref.GetScheme(), ref.GetName())
 	}
@@ -2009,7 +1993,17 @@ func (s *Session) valueText(value *v1.Value) string {
 		return "…"
 	}
 
-	return nativeText(s.redactedValue(native))
+	// Both seams, on the tree, before anything renders it. The value
+	// redactor catches a structured value's short sensitive descendant — `7`
+	// in `codes: [7]` — which no substring match of the rendered line can
+	// (Codex, #2212); see [withheldLeaves] for why the text half cannot wait
+	// for the rendered line either: JSON escapes or encodes exactly the leaves
+	// it must find.
+	if redactValue != nil {
+		native = redactValue(native)
+	}
+
+	return nativeText(withheldLeaves(redact, native))
 }
 
 // nativeText renders a plain Go value the way an author reads data: as JSON,

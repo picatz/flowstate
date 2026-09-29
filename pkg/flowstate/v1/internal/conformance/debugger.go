@@ -471,5 +471,57 @@ func FailedSensitiveCases() []FailedSensitiveCase {
 		Failed: []string{"boom", "inner", "outer"},
 		Quoted: "no such key",
 		Secret: secret,
+	}, {
+		// No step of the callee fails: its declared output does, computed
+		// from the callee's scope and reported by the call.
+		Name: "a callee's output quoting its sensitive input",
+		Workflow: &v1.Workflow{
+			Name:    "failed-sensitive-output",
+			Profile: v1.CurrentProfile,
+			Steps: []*v1.Node{
+				says("first", "one"),
+				{Id: "nested", Kind: &v1.Node_Call{Call: &v1.Call{
+					Workflow: &v1.Workflow{
+						Name:           "child",
+						Profile:        v1.CurrentProfile,
+						DeclaredInputs: []*v1.InputDeclaration{{Name: "api_key", Type: v1.InputDeclaration_TYPE_STRING, Sensitive: true}},
+						Steps:          []*v1.Node{says("use", "hi")},
+						DeclaredOutputs: []*v1.OutputDeclaration{{
+							Name: "bad", Value: v1.NewExpr(`{"a": 1}[inputs.api_key]`),
+						}},
+					},
+					Arguments: map[string]*v1.Value{"api_key": v1.NewLiteral(secret)},
+				}}},
+			},
+		},
+		Failed: []string{"nested"},
+		Quoted: "no such key",
+		Secret: secret,
+	}, {
+		// Refused while the callee's inputs are bound, before it has a
+		// position of its own.
+		Name: "a callee's sensitive input its constraint refuses",
+		Workflow: &v1.Workflow{
+			Name:    "failed-sensitive-binding",
+			Profile: v1.CurrentProfile,
+			Steps: []*v1.Node{
+				says("first", "one"),
+				{Id: "nested", Kind: &v1.Node_Call{Call: &v1.Call{
+					Workflow: &v1.Workflow{
+						Name:    "child",
+						Profile: v1.CurrentProfile,
+						DeclaredInputs: []*v1.InputDeclaration{{
+							Name: "api_key", Type: v1.InputDeclaration_TYPE_STRING, Sensitive: true,
+							Must: new(`this.startsWith("never-")`),
+						}},
+						Steps: []*v1.Node{says("use", "hi")},
+					},
+					Arguments: map[string]*v1.Value{"api_key": v1.NewExpr(`"` + secret + `"`)},
+				}}},
+			},
+		},
+		Failed: []string{"nested"},
+		Quoted: "must satisfy",
+		Secret: secret,
 	}}
 }

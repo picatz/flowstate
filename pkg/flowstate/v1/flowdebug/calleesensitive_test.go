@@ -454,3 +454,70 @@ steps:
 	require.Contains(t, echo, "-> value:", "the step's value was not recorded, so this proves nothing")
 	assert.NotContains(t, echo, secret[:64], "a prefix of the long sensitive value survived the cap")
 }
+
+// TestACallsAccountWithholdsWhatItsCalleeHandsBack: a callee's outputs are
+// rendered in the call step's account from the caller's position, and can hand
+// back a value only the callee declares sensitive; a short sensitive value
+// inside a structured input is caught by value, where no substring match of
+// the rendered line can (Codex, #2212).
+func TestACallsAccountWithholdsWhatItsCalleeHandsBack(t *testing.T) {
+	t.Parallel()
+
+	child := `edition: v2026.3
+name: child
+inputs:
+  api_key:
+    type: string
+    required: true
+    sensitive: true
+  codes:
+    type: list
+    required: true
+    sensitive: true
+steps:
+  - id: first_code
+    value: ${inputs.codes[0]}
+outputs:
+  key:
+    value: ${inputs.api_key}
+`
+	root := `edition: v2026.3
+name: parent
+steps:
+  - id: first
+    value: ${1}
+  - id: nested
+    call: ./child.yaml
+    with:
+      api_key: ${"` + calleeSecret + `"}
+      codes: ${[7]}
+`
+	for _, reveal := range []bool{false, true} {
+		t.Run(fmt.Sprintf("reveal=%t", reveal), func(t *testing.T) {
+			t.Parallel()
+
+			run := startDebugRun(t, "main.yaml", map[string]string{"main.yaml": root, "child.yaml": child}, func(opts *flowdebug.Options) {
+				opts.RevealSensitive = reveal
+			})
+			target := flowdebug.Target(run.session)
+			move(t, target, waitHeld(t, target, 0), v1.DebugResumeAction_DEBUG_RESUME_ACTION_CONTINUE, "")
+			require.NoError(t, <-run.done)
+
+			final, err := target.Snapshot(t.Context())
+			require.NoError(t, err)
+			accounts := map[string]string{}
+			for _, observation := range final.GetObservations() {
+				accounts[observation.GetStepId()] = observation.GetText()
+			}
+			require.Contains(t, accounts["nested"], "key:", "the call's outputs were not recorded, so this proves nothing")
+			require.Contains(t, accounts["first_code"], "-> value:", "the step's value was not recorded, so this proves nothing")
+			if reveal {
+				assert.Contains(t, accounts["nested"], calleeSecret, "an authorized reveal withheld what the callee handed back")
+				assert.Contains(t, accounts["first_code"], "value: 7", "an authorized reveal withheld the short value")
+			} else {
+				assert.NotContains(t, accounts["nested"], calleeSecret, "the call's account showed what its callee handed back")
+				assert.NotContains(t, accounts["first_code"], "value: 7", "a short sensitive value was shown in its step's account")
+			}
+		})
+	}
+}

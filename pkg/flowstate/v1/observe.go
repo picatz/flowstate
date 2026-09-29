@@ -90,7 +90,8 @@ type RunObserver interface {
 // (#2210): the declared-sensitive inputs of the workflow the step belongs to
 // and of every workflow on the way to it ([ExecutingSensitiveFromContext]),
 // and, for a failure raised inside a callee, what that failure carries
-// ([FailureSensitiveValues]). A step id says none of that, and an observer's
+// ([FailureSensitiveValues]), and, for a call that returned, what its callee
+// withholds of the outputs it handed back. A step id says none of that, and an observer's
 // own redactor knows only what its caller gave it — never a callee's
 // declarations.
 //
@@ -136,7 +137,9 @@ func observeSafely(call func()) {
 	call()
 }
 
-func observeStepFinished(ctx context.Context, id string, outputs *Node_Outputs, err error, tolerated bool) {
+// returned is what a call step's callee withholds of the outputs it handed
+// back ([WithholdingRunObserver]).
+func observeStepFinished(ctx context.Context, id string, outputs *Node_Outputs, err error, tolerated bool, returned SensitiveValues) {
 	observer := RunObserverFromContext(ctx)
 	if observer == nil {
 		return
@@ -164,7 +167,7 @@ func observeStepFinished(ctx context.Context, id string, outputs *Node_Outputs, 
 	}
 	if withholding, ok := observer.(WithholdingRunObserver); ok {
 		// Taken from the live error, before the snapshot drops its chain.
-		withhold := ExecutingSensitiveFromContext(ctx).Merge(FailureSensitiveValues(err))
+		withhold := ExecutingSensitiveFromContext(ctx).Merge(FailureSensitiveValues(err)).Merge(returned)
 		observeSafely(func() { withholding.StepFinishedWithholding(id, copied, snapshot, tolerated, withhold) })
 
 		return

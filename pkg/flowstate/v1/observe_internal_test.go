@@ -46,7 +46,7 @@ func TestAPanickingObserverDoesNotTakeTheRunWithIt(t *testing.T) {
 	ctx := NewContextWithRunObserver(t.Context(), observer)
 
 	require.NotPanics(t, func() {
-		observeStepFinished(ctx, "build", nil, nil, false)
+		observeStepFinished(ctx, "build", nil, nil, false, SensitiveValues{})
 		observeStepSkipped(ctx, "prod_gate")
 		observeWaitStarted(ctx, "approval", "ship-approved", time.Hour, true)
 	})

@@ -749,6 +749,17 @@ func (e *executor) debugFailureSensitive() v1.SensitiveValues {
 	return e.debug.sensitiveAt(e.curSpec, e.scope, e.callerSensitive)
 }
 
+// debugArgumentsSensitive is what callee declares sensitive of the arguments
+// a call would bind, for a failure binding them ([executor.debugFailureSensitive]
+// before the callee has a scope). Nothing while no session is attached.
+func (e *executor) debugArgumentsSensitive(callee *v1.Workflow, arguments map[string]*v1.Value) v1.SensitiveValues {
+	if !e.debug.attached() {
+		return v1.SensitiveValues{}
+	}
+
+	return v1.SensitiveInputValues(arguments, v1.SensitiveInputNames(callee))
+}
+
 // observeForDebug records one step outcome for an attached session's
 // observations: the step and what became of it, never its values. failure is
 // the step's error, for the kinds that report one.
