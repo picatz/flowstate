@@ -108,3 +108,29 @@ func TestAnUnknownNameBesideATypeIsStillUnknown(t *testing.T) {
 	require.Contains(t, diagnose(t, using("int.nosuch == 1")), `references unknown name "int"`,
 		"a selection through a type value was admitted as a qualified type")
 }
+
+// TestAStepSpelledLikeATypeIsStillAStep: a step may be named `map`, and once
+// it has run the activation answers `map` with that step's outputs before the
+// type provider is asked. So a bare `map` in a file declaring that step is the
+// retired spelling of a step reference, told to run `flow fix`, not a type
+// value (exact-head review, #2205). And `has(…)` of a type is no question.
+func TestAStepSpelledLikeATypeIsStillAStep(t *testing.T) {
+	t.Parallel()
+
+	src := `edition: v2026.3
+name: t
+steps:
+  - id: map
+    value: ${1}
+  - id: s
+    if: ${type(steps.map.value) == map}
+    log:
+      message: hi
+`
+	require.Contains(t, diagnose(t, src), "`map` is a step, and a step is named `steps.map` now",
+		"a bare name that is a step was taken for the type it is spelled like")
+
+	has := "edition: v2026.3\nname: t\nsteps:\n  - id: s\n    if: ${has(google.protobuf.Timestamp)}\n    log:\n      message: hi\n"
+	require.Contains(t, diagnose(t, has), `references unknown name "google"`,
+		"a has() of a qualified type was admitted as the type")
+}

@@ -1692,7 +1692,7 @@ func validateTriggerExpr(field, webhook, what string, value *v1.Value) Diagnosti
 		return nil
 	}
 
-	rooted, vars, inputs, run, trigger, bare := referencedIdentifiers(parsed)
+	rooted, vars, inputs, run, trigger, bare, types := referencedIdentifiers(parsed)
 
 	unresolvable := make([]string, 0, len(rooted)+len(vars)+len(inputs)+len(run)+len(trigger)+len(bare))
 	for _, ref := range rooted {
@@ -1717,10 +1717,11 @@ func validateTriggerExpr(field, webhook, what string, value *v1.Value) Diagnosti
 		unresolvable = append(unresolvable, v1.TriggerRoot+"."+ref)
 	}
 	for _, ref := range bare {
-		if ref == v1.EventRoot || functionNamespaces[ref] {
-			// The one name a trigger binds, and the qualifier of a namespaced
-			// function from the profile — `regex.replace(...)` — which cel-go parses
-			// as an identifier and which is not a reference to anything.
+		if ref == v1.EventRoot || functionNamespaces[ref] || types.has(ref) {
+			// The one name a trigger binds, the qualifier of a namespaced function
+			// from the profile — `regex.replace(...)` — and a type value — `int` —
+			// each of which cel-go parses as an identifier and none of which is a
+			// reference to anything.
 			continue
 		}
 		unresolvable = append(unresolvable, ref)
