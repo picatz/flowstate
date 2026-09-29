@@ -198,8 +198,9 @@ func (st *sensitiveAccumulation) hash(value any) uint64 {
 }
 
 // appendSensitiveHash appends what [sensitiveAccumulation.hash] hashes of
-// value to b: a tag for its shape, and every variable-width part led by its
-// length, so two different values never encode alike and only a collision in
+// value to b: a tag for its shape, every fixed-width part at its full width,
+// and every variable-width part led by its length, so two different values
+// never encode alike and only a collision in
 // the hash itself puts them in one bucket (Codex, #2215).
 func appendSensitiveHash(b []byte, value any) []byte {
 	switch value := value.(type) {
@@ -210,10 +211,13 @@ func appendSensitiveHash(b []byte, value any) []byte {
 	case []byte:
 		b = appendSensitiveBytes(append(b, 2), value)
 	case bool:
-		b = append(b, 3)
+		// One byte either way: a `false` shorter than a `true` would make
+		// the two a prefix of each other and the encoding ambiguous.
+		flag := byte(0)
 		if value {
-			b = append(b, 1)
+			flag = 1
 		}
+		b = append(b, 3, flag)
 	case int64:
 		b = binary.LittleEndian.AppendUint64(append(b, 4), uint64(value))
 	case uint64:
