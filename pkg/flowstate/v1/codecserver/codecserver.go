@@ -71,6 +71,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	commonpb "go.temporal.io/api/common/v1"
@@ -119,7 +120,9 @@ const (
 // in header values; this does not rely on that.
 var logSafe = strings.NewReplacer("\n", "", "\r", "")
 
-// Auditor records decisions. [*audit.Recorder] implements it.
+// Auditor records decisions. [*audit.Recorder] implements it. An Auditor
+// that also has a Required() bool method says whether its trail may have gaps;
+// one without it is treated as required.
 type Auditor interface {
 	Allow(ctx context.Context, subject audit.Subject) error
 	Deny(ctx context.Context, subject audit.Subject, code v1.AuditDenyCode) error
@@ -192,6 +195,17 @@ type Handler struct {
 	// counts them per caller.
 	inFlight chan struct{}
 	held     callerSlots
+
+	// refusals holds one token per refusal being recorded. A refusal is
+	// answered before a request is admitted (rate limit, authorization), so
+	// the in-flight bound does not reach it, and each one is an audit record
+	// the sink writes synchronously: without this, one caller over its limit
+	// starts as many exports as it sends requests (Codex, #2167).
+	refusals chan struct{}
+	// unrecorded counts refusals answered without a record because refusals
+	// was full, for a best-effort trail; loggedAt is when that was last said.
+	unrecorded atomic.Uint64
+	loggedAt   atomic.Int64
 }
 
 // callerSlots counts the in-flight slots each caller holds.
@@ -262,6 +276,7 @@ func New(opts Options) (*Handler, error) {
 		opts:     opts,
 		limiter:  &limiter{limit: opts.RequestsPerMinute, windows: map[string]*window{}, now: opts.now},
 		inFlight: make(chan struct{}, opts.MaxConcurrent),
+		refusals: make(chan struct{}, opts.MaxConcurrent),
 	}, nil
 }
 
@@ -604,12 +619,47 @@ const auditUnavailableMsg = "the decision could not be recorded"
 // refuse records a refusal and answers it. When the recorder is required and
 // could not record, the answer is 503 instead of the refusal, so a gap in a
 // required trail is an outage the operator sees rather than a quiet 4xx.
+//
+// Recording is bounded like the work it refuses: at most MaxConcurrent
+// refusals are recorded at once. Past that, a required trail answers 503, the
+// same outage an unrecordable decision is, and a best-effort one answers the
+// refusal unrecorded and says, at most once a second, how many it could not
+// record.
 func (h *Handler) refuse(ctx context.Context, w http.ResponseWriter, subject audit.Subject, code v1.AuditDenyCode, status int, msg string) {
+	if h.opts.Auditor != nil {
+		select {
+		case h.refusals <- struct{}{}:
+			defer func() { <-h.refusals }()
+		default:
+			if required, ok := h.opts.Auditor.(interface{ Required() bool }); !ok || required.Required() {
+				w.Header().Set("Retry-After", "1")
+				http.Error(w, auditUnavailableMsg, http.StatusServiceUnavailable)
+				return
+			}
+			h.noteUnrecorded(ctx)
+			http.Error(w, msg, status)
+			return
+		}
+	}
 	if err := h.deny(ctx, subject, code); err != nil {
 		http.Error(w, auditUnavailableMsg, http.StatusServiceUnavailable)
 		return
 	}
 	http.Error(w, msg, status)
+}
+
+// noteUnrecorded counts a refusal a best-effort trail could not record, and
+// logs the count at most once a second, so a flood is visible without a line
+// per request.
+func (h *Handler) noteUnrecorded(ctx context.Context) {
+	h.unrecorded.Add(1)
+	now := h.opts.now().UnixNano()
+	last := h.loggedAt.Load()
+	if now-last < int64(time.Second) || !h.loggedAt.CompareAndSwap(last, now) {
+		return
+	}
+	h.opts.Logger.WarnContext(ctx, "codec server: refusals answered without an audit record: too many being recorded at once",
+		"count", h.unrecorded.Swap(0))
 }
 
 func mustAction(endpoint string) v1.AuthorizationAction {

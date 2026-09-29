@@ -361,6 +361,10 @@ The server's rules:
   recorded is answered 503 and not acted on. A request the trust policy
   refuses before it reaches the codec is logged, not audited, as on
   `flow server`, so an unauthenticated caller cannot write the trail at will.
+  At most 16 refusals are recorded at once, so a caller
+  over its rate limit cannot start a record per request: past that, a required
+  trail answers 503 and a best-effort one answers the refusal unrecorded and
+  logs how many it skipped.
 
 The protocol names a namespace and nothing else, so no codec server can
 authorize per run. A person who may decode a namespace may decode every run in

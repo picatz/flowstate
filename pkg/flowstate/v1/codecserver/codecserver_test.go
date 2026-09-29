@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"testing/iotest"
 	"testing/synctest"
@@ -593,5 +594,67 @@ func TestNegativeLimitsAreRefused(t *testing.T) {
 		mutate(&opts)
 		_, err := codecserver.New(opts)
 		require.ErrorContains(t, err, "negative", name)
+	}
+}
+
+// blockingAuditor holds its first refusal until released, and counts them.
+type blockingAuditor struct {
+	required bool
+	entered  chan struct{}
+	release  chan struct{}
+	denies   atomic.Int64
+}
+
+func (a *blockingAuditor) Allow(context.Context, audit.Subject) error { return nil }
+
+// Deny blocks on its first call only, so a second refusal the bound failed to
+// stop is counted and answered rather than hanging the test.
+func (a *blockingAuditor) Deny(context.Context, audit.Subject, v1.AuditDenyCode) error {
+	if a.denies.Add(1) == 1 {
+		a.entered <- struct{}{}
+		<-a.release
+	}
+	return nil
+}
+
+func (a *blockingAuditor) Required() bool { return a.required }
+
+// TestRefusalsAreRecordedWithinTheBound: a refusal is answered before a
+// request is admitted, so the in-flight bound does not reach it, and each is
+// a record the sink writes. Recording them is bounded too: past MaxConcurrent
+// at once, a required trail answers 503 without starting another record, and
+// a best-effort one answers the refusal unrecorded.
+func TestRefusalsAreRecordedWithinTheBound(t *testing.T) {
+	t.Parallel()
+
+	for _, required := range []bool{true, false} {
+		auditor := &blockingAuditor{required: required, entered: make(chan struct{}), release: make(chan struct{})}
+		f := newFixture(t, func(o *codecserver.Options) {
+			o.Auditor = auditor
+			o.MaxConcurrent = 1
+		})
+		a := f.seal(t, "ns-a", markerA)
+		// Registered after the fixture, so it runs before the fixture's server
+		// waits for the request this auditor holds.
+		release := sync.OnceFunc(func() { close(auditor.release) })
+		t.Cleanup(release)
+
+		first := make(chan int, 1)
+		go func() {
+			resp, _ := f.post(t, codecserver.DecodeEndpoint, "a-reader", "ns-a", a)
+			first <- resp.StatusCode
+		}()
+		<-auditor.entered // the first refusal holds the one recording slot
+
+		resp, _ := f.post(t, codecserver.DecodeEndpoint, "a-reader", "ns-a", a)
+		if required {
+			require.Equal(t, http.StatusServiceUnavailable, resp.StatusCode, "a required trail answered a refusal it did not record")
+		} else {
+			require.Equal(t, http.StatusForbidden, resp.StatusCode, "a best-effort trail did not answer the refusal")
+		}
+		require.EqualValues(t, 1, auditor.denies.Load(), "a refusal past the bound started another record")
+
+		release()
+		require.Equal(t, http.StatusForbidden, <-first)
 	}
 }
