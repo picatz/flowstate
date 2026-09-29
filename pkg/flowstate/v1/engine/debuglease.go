@@ -226,8 +226,13 @@ type debugControl struct {
 	arrivals   uint64
 	// continuation is this segment's position in the run's chain.
 	continuation int32
-	// pendingPause is the request id a pause is receipted under once it holds.
-	pendingPause string
+	// pendingPauses are the request ids the pause asks taken since the last
+	// hold are receipted under once it holds, or once the run completes
+	// without holding: every one, since each was a distinct ask that its
+	// client waits on (Copilot, #2220), except in a history recorded before
+	// [pauseReceiptsChange], which keeps only the last. It holds at most
+	// [v1.MaxDebugAsksPerBoundary]; a pause past that is refused at once.
+	pendingPauses []string
 	// irDigest identifies the program this run executes, for a client binding
 	// its source map; computed once, when the queries are installed.
 	irDigest string

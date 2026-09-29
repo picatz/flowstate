@@ -239,6 +239,29 @@ func TestARenderedSnapshotSaysAMissedUntil(t *testing.T) {
 	assert.NotContains(t, failed, "without stopping at", "a failed run was called completed")
 }
 
+// TestARenderedSnapshotSaysAMissedPause: the missed-pause notice both drivers
+// record (#1297) is printed by [flowdebug.FormatSnapshot] once, on a completed
+// run, and a log line carrying the same words is not taken for it.
+func TestARenderedSnapshotSaysAMissedPause(t *testing.T) {
+	t.Parallel()
+
+	missed := &v1.DebugObservation{Kind: v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_NOTICE, Text: flowdebug.MissedPauseNotice}
+	logged := &v1.DebugObservation{Kind: v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_LOG, Text: flowdebug.MissedPauseNotice}
+
+	completed := flowdebug.FormatSnapshot(&v1.DebugSnapshot{
+		State: v1.DebugRunState_DEBUG_RUN_STATE_COMPLETED, Observations: []*v1.DebugObservation{missed},
+	})
+	assert.Equal(t, 1, strings.Count(completed, "\n  "+flowdebug.MissedPauseNotice+"\n"), completed)
+	completedSnapshot := &v1.DebugSnapshot{State: v1.DebugRunState_DEBUG_RUN_STATE_COMPLETED}
+	assert.True(t, flowdebug.FormatSnapshotShows(completedSnapshot, missed))
+	assert.False(t, flowdebug.FormatSnapshotShows(completedSnapshot, logged), "a log line was taken for the notice")
+
+	failed := flowdebug.FormatSnapshot(&v1.DebugSnapshot{
+		State: v1.DebugRunState_DEBUG_RUN_STATE_FAILED, Observations: []*v1.DebugObservation{missed},
+	})
+	assert.NotContains(t, failed, flowdebug.MissedPauseNotice, "a failed run was called completed")
+}
+
 // TestTheDriverSaysALocalRunsMissedUntil drives a real local run through the
 // Driver the MCP session tools and embed use: the session records the notice,
 // and the Driver's answer carries it once.
@@ -312,4 +335,21 @@ func TestAMissedUntilNoticeIsBoundedAfterRedaction(t *testing.T) {
 	assert.LessOrEqual(t, utf8.RuneCountInString(notice), 512, "the notice would be clipped by the durable driver's cap")
 	assert.True(t, strings.HasSuffix(notice, "…`"), "the redacted notice was not cut, or does not close its quote: %q", notice)
 	assert.NotContains(t, strings.ReplaceAll(notice, "[redacted]", ""), "ab", "the notice carried the redacted value")
+}
+
+// TestAPauseAfterTheRunReturnedIsEnded: a driver that reports its verdict
+// after the run returns leaves the session running between the two. A pause
+// asked there has no boundary left to hold at, so it is answered ENDED rather
+// than accepted and then never held for or said (Codex, #2220).
+func TestAPauseAfterTheRunReturnedIsEnded(t *testing.T) {
+	t.Parallel()
+
+	session, err := flowdebug.New(flowdebug.Options{Controlled: true, Workflow: &v1.Workflow{Name: "w", Profile: v1.CurrentProfile}})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+
+	session.RunReturned(nil)
+	receipt, err := session.Pause(t.Context(), "late")
+	require.NoError(t, err)
+	assert.Equal(t, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_ENDED, receipt.GetStatus(), receipt.GetMessage())
 }

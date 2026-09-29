@@ -228,7 +228,7 @@ func (e *executor) applyTypedAsk(ask *v1.DebugAsk, parseErr error, sender *v1.Si
 				Receipts:       d.carry.GetReceipts(),
 			}
 			d.parsed = nil
-			d.pendingPause = ask.Request
+			e.debugPausePending(ask.Request)
 			logger.Info("debug session attached", "session", ask.Session,
 				"holder", v1.QualifiedSubject(sender.GetIdentity().GetIssuer(), sender.GetIdentity().GetSubject()),
 				"lease_expires_at", d.carry.GetLeaseExpiresAt().AsTime(), "session_ends_at", deadline)
@@ -251,7 +251,7 @@ func (e *executor) applyTypedAsk(ask *v1.DebugAsk, parseErr error, sender *v1.Si
 			default:
 				d.carry.PauseRequested = true
 				d.carry.Revision++
-				d.pendingPause = ask.Request
+				e.debugPausePending(ask.Request)
 			}
 		}
 
@@ -401,6 +401,21 @@ const truncatedArmChange = "engine.debug.armPastTruncatedSites"
 // rooting retired, so such a breakpoint could also stop the run. A history it
 // recorded replays arming it.
 const conditionScopeChange = "engine.debug.refuseUnboundConditionNames"
+
+// lateAskChange is the [workflow.GetVersion] changeID guarding the debug asks
+// a completing run applies after its last step ([executor.debugRunCompleted]).
+// An engine before it left them on the channel, and a history it recorded has
+// them unread; applying one on replay can record a version marker that
+// history lacks.
+const lateAskChange = "engine.debug.applyAsksAtCompletion"
+
+// pauseReceiptsChange is the [workflow.GetVersion] changeID guarding the
+// receipt of every pause asked before a hold ([debugControl.pendingPauses]).
+// An engine before it receipted only the last, and a receipt decides whether
+// a retry of the same request is applied again: replaying a history it
+// recorded, in which an earlier request's retry paused the run once more,
+// into one that ignores the retry would be a nondeterminism error.
+const pauseReceiptsChange = "engine.debug.receiptEveryPause"
 
 // durableSites resolves target to the sites the durable driver can hold at,
 // or says why there are none: no site matches it, or every one it matches is
@@ -572,7 +587,7 @@ func (e *executor) endDebugSession(state v1.DebugRunState, message string) {
 		Message:  message,
 	}
 	d.parsed = nil
-	d.pendingPause = ""
+	d.pendingPauses = nil
 	d.held = heldStop{}
 	if d.lease != nil {
 		d.lease = nil
@@ -615,10 +630,10 @@ func (e *executor) typedArrival(node *v1.Node) {
 		AttachedAt:     d.carry.GetAttachedAt(),
 		LeaseExpiresAt: d.carry.GetLeaseExpiresAt(),
 	}
-	if d.pendingPause != "" {
-		d.receipt(d.pendingPause, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_APPLIED, "")
-		d.pendingPause = ""
+	for _, request := range d.pendingPauses {
+		d.receipt(request, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_APPLIED, "")
 	}
+	d.pendingPauses = nil
 	workflow.GetLogger(e.ctx).Info("debug session holding the run", "session", d.carry.GetSessionId(),
 		"at", occurrence.GetAddress(), "reason", reason.String())
 }
@@ -914,11 +929,130 @@ func (d *debugControl) appendDebugObservation(kind v1.DebugObservationKind, step
 // The pending movement is the whole test: a detach or an expiry replaces the
 // carry, a stop at the target resets it, and a run-until naming no step is
 // refused before it is carried.
+//
+// A pause asked while the last step was under way is the same kind of
+// silence. Asks are applied at step boundaries, and the run reaches none
+// after it, so the pause asks still waiting are applied here first
+// ([executor.debugPausesAtCompletion]): without that, a pause asked then is
+// answered by nothing at all. A pause that was, and
+// has no boundary left to hold at, is answered as over and said, in the
+// local session's words ([flowdebug.MissedPauseNotice]), after the
+// `until`'s, as the local session orders them (#1297).
 func (e *executor) debugRunCompleted() {
 	d := e.debug
-	if d.carry.GetNext() != v1.DebugResumeAction_DEBUG_RESUME_ACTION_RUN_UNTIL {
+	if d.declared && workflow.GetVersion(e.ctx, lateAskChange, workflow.DefaultVersion, 1) != workflow.DefaultVersion {
+		e.debugPausesAtCompletion()
+	}
+	if d.carry.GetNext() == v1.DebugResumeAction_DEBUG_RESUME_ACTION_RUN_UNTIL {
+		e.debugMissedUntil()
+	}
+	if d.carry.GetPauseRequested() {
+		d.appendDebugObservation(v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_NOTICE, "", "", flowdebug.MissedPauseNotice)
+		for _, request := range d.pendingPauses {
+			d.receipt(request, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_ENDED, flowdebug.MissedPauseNotice)
+		}
+		d.pendingPauses = nil
+		// Answered, so a read of the completed run no longer says it
+		// holds at its next boundary.
+		d.carry.PauseRequested = false
+	}
+}
+
+// debugPausePending takes a pause request to receipt when the run holds or
+// completes. A pause asked while another waits is where [pauseReceiptsChange]
+// differs, so the version is asked only there: a history recorded before it
+// keeps only the latest request, as that engine did.
+func (e *executor) debugPausePending(request string) {
+	d := e.debug
+	if len(d.pendingPauses) > 0 && workflow.GetVersion(e.ctx, pauseReceiptsChange, workflow.DefaultVersion, 1) == workflow.DefaultVersion {
+		d.pendingPauses = []string{request}
+
 		return
 	}
+	d.pausePending(request)
+}
+
+// pausePending takes a pause request to receipt when the run holds or
+// completes ([debugControl.pendingPauses]), or refuses it at once past
+// [v1.MaxDebugAsksPerBoundary] waiting: a run inside a body it cannot hold in
+// applies asks at boundaries it does not hold at, and repeated pauses must
+// not grow it without limit (Codex, #2220). A retry of a request already
+// waiting is the same ask, taken once.
+func (d *debugControl) pausePending(request string) {
+	if slices.Contains(d.pendingPauses, request) {
+		return
+	}
+	if len(d.pendingPauses) >= v1.MaxDebugAsksPerBoundary {
+		d.receipt(request, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_REFUSED,
+			"a pause is already waiting on this run's next step boundary")
+
+		return
+	}
+	d.pendingPauses = append(d.pendingPauses, request)
+}
+
+// debugPausesAtCompletion applies the typed pause asks still waiting when the
+// run completes, so each is answered, and reads past the rest unapplied.
+//
+// Only pauses, because only a pause has something to say once no boundary is
+// left: a breakpoint set or a resume applied here would be receipted and
+// installed at a run that will never reach them, where an editor reports
+// such a set as one the run ended before applying (Codex, #2220).
+//
+// Every waiting ask is read, the ones an earlier segment carried across
+// Continue-As-New first, since they arrived before anything on the channel
+// ([executor.applyDebugAsks]): this is the last chance to answer them
+// (Codex, #2220). Batches are bounded as at a boundary and paced by
+// [v1.DebugBacklogPace], so a peer-sized backlog is not read in one task.
+func (e *executor) debugPausesAtCompletion() {
+	channel := workflow.GetSignalChannel(e.ctx, v1.DebugSignal)
+	for {
+		for range v1.MaxDebugAsksPerBoundary {
+			delivery, ok := e.takeWaitingDebugAsk(channel)
+			if !ok {
+				return
+			}
+			if ask, typed, err := v1.ParseTypedDebugAsk(delivery.GetPayload()); typed && err == nil && ask.Verb == v1.DebugVerbPause {
+				e.applyTypedAsk(ask, nil, delivery.GetSender())
+			}
+		}
+		if !e.hasCarriedDebugAsk() && channel.Len() == 0 {
+			return
+		}
+		if err := workflow.NewTimerWithOptions(e.ctx, v1.DebugBacklogPace, workflow.TimerOptions{
+			Summary: "pacing debug asks at completion",
+		}).Get(e.ctx, nil); err != nil {
+			return
+		}
+	}
+}
+
+// takeWaitingDebugAsk consumes the oldest debug ask still waiting: the first
+// one carried across Continue-As-New, or else the next on the channel.
+func (e *executor) takeWaitingDebugAsk(channel workflow.ReceiveChannel) (*v1.SignalDelivery, bool) {
+	if e.signals != nil {
+		for i, pending := range e.signals.pending {
+			if pending.GetName() != v1.DebugSignal {
+				continue
+			}
+			// A copy, as [executor.takeCarriedDebugAsk] makes: the carry's
+			// backing array is the run state's.
+			e.signals.pending = append(e.signals.pending[:i:i], e.signals.pending[i+1:]...)
+
+			return &v1.SignalDelivery{Payload: pending.GetPayload(), Sender: pending.GetSender()}, true
+		}
+	}
+	var delivery v1.SignalDelivery
+	if !channel.ReceiveAsync(&delivery) {
+		return nil, false
+	}
+
+	return &delivery, true
+}
+
+// debugMissedUntil records [debugRunCompleted]'s missed-`until` notice.
+func (e *executor) debugMissedUntil() {
+	d := e.debug
 	// Withheld against what the hold that applied it withheld as well as what
 	// the run withholds here: that hold may have been inside a callee, whose
 	// own declared-sensitive inputs the root does not see (Codex, #2204). A
