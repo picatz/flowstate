@@ -4,6 +4,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -15,13 +16,18 @@ import (
 // local` learned it in #974, and the MCP run_local tool and `flow task run`
 // had not by #2173 (Codex), each with the arguments in hand.
 //
-// Two rules over every non-test Go file under cmd/flow:
+// Three rules over every non-test Go file under cmd/flow, with the v1 package
+// recognised by its import path, so an alias does not hide a call:
 //
 //   - A function that calls v1.RunWithInputs calls redactStartedRun, unless it
 //     is listed in startsRunsRedactedElsewhere with the reason.
 //   - redactGetResponse is called with a literal nil specification, or from
 //     redactStartedRun. A caller holding a specification started the run, or
 //     is following one it started, and holds its arguments too.
+//   - The halves redactStartedRun is made of (redactFailureText and v1's
+//     RedactGetResponse, RedactGetResponseDecided and
+//     RedactGetResponseFailures) are called only in sensitive.go, so no
+//     surface assembles a partial redaction of its own.
 func TestEveryRunThisProcessStartsIsRedactedAsOne(t *testing.T) {
 	t.Parallel()
 
@@ -33,12 +39,25 @@ func TestEveryRunThisProcessStartsIsRedactedAsOne(t *testing.T) {
 
 	paths := nonTestGoFiles(t)
 
+	const v1Path = `"github.com/picatz/flowstate/pkg/flowstate/v1"`
+	halves := map[string]bool{"RedactGetResponse": true, "RedactGetResponseDecided": true, "RedactGetResponseFailures": true}
+
 	fset := token.NewFileSet()
 	starters, redactions := 0, 0
 	allowed := map[string]bool{}
 	for _, path := range paths {
 		file, err := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
 		require.NoError(t, err)
+		v1Name := ""
+		for _, spec := range file.Imports {
+			if spec.Path.Value == v1Path {
+				v1Name = "v1"
+				if spec.Name != nil {
+					v1Name = spec.Name.Name
+				}
+			}
+		}
+		assembles := filepath.Base(path) == "sensitive.go" && filepath.Dir(path) == "."
 		for _, decl := range file.Decls {
 			fn, ok := decl.(*ast.FuncDecl)
 			if !ok || fn.Body == nil {
@@ -52,11 +71,26 @@ func TestEveryRunThisProcessStartsIsRedactedAsOne(t *testing.T) {
 				}
 				switch fun := call.Fun.(type) {
 				case *ast.SelectorExpr:
-					if pkg, ok := fun.X.(*ast.Ident); ok && pkg.Name == "v1" && fun.Sel.Name == "RunWithInputs" {
+					pkg, ok := fun.X.(*ast.Ident)
+					if !ok || v1Name == "" || pkg.Name != v1Name {
+						return true
+					}
+					if fun.Sel.Name == "RunWithInputs" {
 						startsRun = true
+					}
+					if halves[fun.Sel.Name] && !assembles {
+						t.Errorf("%s: %s calls v1.%s directly; redact a started run through redactStartedRun, "+
+							"or a spec-less answer through redactGetResponse",
+							fset.Position(call.Pos()), fn.Name.Name, fun.Sel.Name)
 					}
 				case *ast.Ident:
 					switch fun.Name {
+					case "redactFailureText":
+						if !assembles {
+							t.Errorf("%s: %s calls redactFailureText alone; use redactStartedRun, "+
+								"which applies it together with the declared-output redaction",
+								fset.Position(call.Pos()), fn.Name.Name)
+						}
 					case "redactStartedRun":
 						redactsStarted = true
 					case "redactGetResponse":

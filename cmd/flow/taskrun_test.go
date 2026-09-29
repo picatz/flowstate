@@ -667,3 +667,22 @@ func TestATaskRunKeepsASensitiveInputOutOfItsFailure(t *testing.T) {
 	// TestALoopItemFromASensitiveInputStaysOutOfTheFailureText gives.
 	require.Contains(t, stdout, `task \"http\"`, "what went wrong survives around the value")
 }
+
+// TestASecretReferenceKeepsTheFailureReason: a `${secret(...)}` bearer is the
+// documented way to hand the http task a token, and a failed run must still
+// say why. The reference names no material and the resolved value never
+// reaches the redaction set, so the reason is not withheld on its account.
+func TestASecretReferenceKeepsTheFailureReason(t *testing.T) {
+	stdout, stderr, err := taskRun(t, "http",
+		"--input", "method=GET",
+		"--input", "url=http://127.0.0.1:1/x",
+		"--input", `bearer=${secret("env:API_TOKEN")}`,
+		"-o", "json")
+	require.Error(t, err, "a secret reference with no provider configured is refused")
+
+	for name, text := range map[string]string{"stdout": stdout, "stderr": stderr, "error": err.Error()} {
+		require.NotContains(t, text, v1.FailureWithheldMarker,
+			"%s: the failure's reason was withheld on account of a secret reference", name)
+	}
+	require.Contains(t, err.Error(), "API_TOKEN", "the reason names the reference it could not resolve")
+}

@@ -180,7 +180,7 @@ func runTaskRun(cmd *cobra.Command, args []string) error {
 	// when the dial fails.
 	failure := v1.SensitiveValues{}
 	if !reveal {
-		failure = v1.SensitiveInputValues(values, sensitive)
+		failure = v1.SensitiveInputValues(taskFailureMaterial(values), sensitive)
 	}
 	response := redactStartedRun(localRun(outputs, runErr, cmd.Context().Err(), started, time.Now()),
 		workflow, failure, reveal)
@@ -752,6 +752,24 @@ func sensitiveTaskInputs(cmd *cobra.Command, def v1.TaskDef) map[string]bool {
 	}
 
 	return names
+}
+
+// taskFailureMaterial is the part of an invocation's inputs a failure sentence
+// could quote. A `${secret(...)}` input is left out: it holds a reference, which
+// names no secret material, and the value it resolves to never enters this
+// map, so there is nothing of it to redact. Kept in, it would reach
+// [v1.SensitiveInputValues] as a value that set cannot read and withhold every
+// failure's reason whole, on exactly the bearer form the docs recommend.
+// Any other non-literal still reaches it, and still fails closed there.
+func taskFailureMaterial(values map[string]*v1.Value) map[string]*v1.Value {
+	material := make(map[string]*v1.Value, len(values))
+	for name, value := range values {
+		if value.GetSecretRef() == nil {
+			material[name] = value
+		}
+	}
+
+	return material
 }
 
 // sensitiveInputFlagName is the command-line spelling of an input declaration's
