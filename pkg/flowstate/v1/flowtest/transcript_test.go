@@ -1704,3 +1704,62 @@ tests:
 	assert.Contains(t, message, "[withheld]", "a diagnostic shaped under less than the report withholds was printed")
 	assert.NotContains(t, message, "calleesecret0000", "the report showed the callee's sensitive input")
 }
+
+// TestAReportUnderAnUnenumerableRootWithholdsWhatItCanStillEnumerate: one
+// root input too large to enumerate makes the case's posture withhold
+// everything, and a stub diagnostic shaped under it is printed as it is. Its
+// `where:` is kept as written, and another root input's value, or the case's
+// own `secrets:` plaintext, written into it is still withheld (Codex, #2215).
+func TestAReportUnderAnUnenumerableRootWithholdsWhatItCanStillEnumerate(t *testing.T) {
+	t.Parallel()
+
+	var bulk strings.Builder
+	for i := range 1100 {
+		fmt.Fprintf(&bulk, "\n        - element-%d", i)
+	}
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
+edition: v2026.3
+name: bulk
+inputs:
+  bulk:
+    type: list
+    sensitive: true
+    required: true
+  token:
+    type: string
+    sensitive: true
+    required: true
+steps:
+  - id: call
+    http:
+      url: https://example.invalid/probe
+`)
+	path := filepath.Join(dir, "workflow.test.yaml")
+	writeFile(t, path, `
+tests:
+  - name: the unmatched stub is reported
+    workflow: ./workflow.yaml
+    inputs:
+      token: rootsecretvalue
+      bulk:`+bulk.String()+`
+    secrets:
+      env:TOKEN: casesecretplain
+    stubs:
+      - task: http
+        where: inputs.url == 'https://nope.invalid/rootsecretvalue/casesecretplain'
+    expect:
+      failed: false
+`)
+
+	result := flowtest.RunPath(t.Context(), path, flowtest.RunOptions{})
+	cases := result.Report.GetCases()
+	require.Len(t, cases, 1)
+	require.NotEmpty(t, cases[0].GetFailures(), "the case reported no failure, so this proves nothing: %s", cases[0].GetError())
+	message := cases[0].GetFailures()[0].GetMessage()
+	assert.Contains(t, message, "could not be enumerated", "the stub's diagnostic was not printed, so this proves nothing")
+	assert.Contains(t, message, "nope.invalid/", "the stub's where: is not quoted, so this proves nothing")
+	assert.NotContains(t, message, "rootsecretvalue", "another root input's value printed")
+	assert.NotContains(t, message, "casesecretplain", "the case's secret printed")
+	assert.NotContains(t, message, "element-7", "the unenumerable input printed")
+}
