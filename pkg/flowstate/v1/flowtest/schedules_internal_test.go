@@ -41,7 +41,7 @@ type fakeCase struct {
 // back a transcript naming it, so the accumulator has something to disagree
 // about.
 func (f *fakeCase) run(transcriptFor func(scheduler v1.Scheduler) string) caseRun {
-	return func(ctx context.Context) (*v1.TestCase, *v1.Workflow, *v1.Workflow_StepOutputs, []TranscriptLine, error) {
+	return func(ctx context.Context) (*v1.TestCase, *v1.Workflow, *v1.Workflow_StepOutputs, []TranscriptLine, caseShown, error) {
 		scheduler := v1.SchedulerFromContext(ctx)
 		f.runs++
 		if seeded, ok := scheduler.(*v1.SeededScheduler); ok {
@@ -60,6 +60,7 @@ func (f *fakeCase) run(transcriptFor func(scheduler v1.Scheduler) string) caseRu
 				}},
 			}},
 			nil,
+			caseShown{},
 			nil
 	}
 }

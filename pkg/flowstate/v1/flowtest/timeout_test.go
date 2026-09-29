@@ -51,7 +51,7 @@ steps:
 		started := time.Now()
 		ctx, cancel := caseContextWithin(t.Context(), limit)
 		defer cancel()
-		result, _, transcript, _, _ := runCase(ctx, &Test{Name: "missing signal"}, "", load, false, fileVars{})
+		result, _, transcript, _, _, _ := runCase(ctx, &Test{Name: "missing signal"}, "", load, false, fileVars{})
 
 		require.False(t, result.GetPassed())
 		require.Contains(t, result.GetError(), "wall-clock limit")
@@ -85,7 +85,7 @@ steps:
 	defer cancelCase()
 	failed := true
 
-	result, _, _, _, _ := runCase(caseCtx, &Test{
+	result, _, _, _, _, _ := runCase(caseCtx, &Test{
 		Name:   "caller deadline",
 		Expect: Expectation{Failed: &failed},
 	}, "", load, false, fileVars{})
@@ -101,10 +101,10 @@ func TestCaseWallLimitIsSharedBySeededSchedules(t *testing.T) {
 	accumulator := newScheduleAccumulator(dst.Budget{Schedules: 100, Seed0: 1})
 	runs := 0
 
-	accumulator.run(ctx, func(ctx context.Context) (*v1.TestCase, *v1.Workflow, *v1.Workflow_StepOutputs, []TranscriptLine, error) {
+	accumulator.run(ctx, func(ctx context.Context) (*v1.TestCase, *v1.Workflow, *v1.Workflow_StepOutputs, []TranscriptLine, caseShown, error) {
 		runs++
 		<-ctx.Done()
-		return &v1.TestCase{Name: "blocked"}, nil, nil, nil, ctx.Err()
+		return &v1.TestCase{Name: "blocked"}, nil, nil, nil, caseShown{}, ctx.Err()
 	})
 
 	require.Equal(t, 1, runs,
