@@ -393,6 +393,22 @@ func init() {
 				" inspection. No endpoint or credential material is carried here.\n",
 		},
 		{
+			Name: "flowstate.v1.Workflow.source_digest",
+			Leading: " SourceDigest is a content digest of the bytes this workflow was compiled\n" +
+				" from, formatted `sha256:<hex>`, when a client compiled it from a file. It\n" +
+				" is the root's counterpart of [Call.source_digest], recorded by the same\n" +
+				" compiler from the same read.\n" +
+				"\n" +
+				" Recorded rather than verified, and never a basis for trust: nothing\n" +
+				" resolves it, and a caller may send any value. What it buys is that the\n" +
+				" program's identity ([DebugSourceMap.ir_digest]) covers where its steps are\n" +
+				" written. The compiled steps carry no positions, so without it a file whose\n" +
+				" lines moved compiles to the same program, and a debugger attaching to a\n" +
+				" durable run with that file would put frames and line breakpoints on the\n" +
+				" wrong lines. With it, a file whose bytes differ from the ones the run was\n" +
+				" compiled from names a different program, and its lines are not used.\n",
+		},
+		{
 			Name: "flowstate.v1.Workflow.StepOutputs",
 			Leading: " StepOutputs is a map of step IDs to their outputs. Each step's outputs are\n" +
 				" represented as a map of named values, allowing for structured outputs that\n" +

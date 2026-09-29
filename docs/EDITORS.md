@@ -618,10 +618,13 @@ signals, so a `wait_for_signal:` step can only time out; use `flow test
 
 **What an attach reads.** `workflowId`, required; `runId`, the first run id of
 the chain to pin, unset to follow the current one; `sessionId`, to rejoin a
-session another client left attached. Nothing else: an attach has no source
-map, so it shows step addresses rather than lines. The run records no digest of
-the file it was compiled from, and a file whose lines moved since the run was
-submitted compiles to the same program, so the adapter does not guess.
+session another client left attached; and `program`, optional, the Flowfile the
+run was submitted from, read only to map lines. A program compiled from a file
+records the digest of the file's bytes, so the adapter uses `program`'s lines
+only when it compiles to the program the run executes, those bytes included,
+and otherwise shows step addresses rather than lines. Where a deployment runs
+its own copy of a workflow in place of the one submitted, the run executes that
+copy, so `program` must be the deployed file, not the submitter's.
 
 **A refused launch is a failed launch.** When the adapter will not start a run —
 no `program`, a file that does not compile, a workflow whose sensitive-value
@@ -647,7 +650,7 @@ It advertises what the backend reports, and refuses the rest by name.
 | `next` | steps over: a loop, parallel, switch or call runs whole | the same, at the boundaries a durable run holds |
 | `stepIn`, `stepOut` | `stepIn` enters loop iterations, parallel branches, switch arms and calls; `stepOut` leaves the whole loop, parallel, switch or call around the step | into and out of calls |
 | `pause` | holds at the next step boundary, where the request is answered just ahead of its `stopped`; work already running finishes, and a run that ends first refuses the request and says `the run completed before it reached a step boundary to pause at` | the same, and the pause ask's receipt ends with those words |
-| Line breakpoints | resolved through the file's source map to the innermost step whose span holds the line | unverified, saying to name the step instead |
+| Line breakpoints | resolved through the file's source map to the innermost step whose span holds the line | the same, when the attach configuration's `program` is the file the run executes; otherwise unverified, saying to name the step instead |
 | Function breakpoints | a step id or an address, such as `orders/charge` or `checks#1/fraud` | the same, but one inside a loop body, branch or arm is unverified, saying to break at the enclosing step |
 | Conditions and hit counts | yes | yes |
 | Logpoints | yes | not advertised |
@@ -722,7 +725,8 @@ Two configurations in `.vscode/launch.json`, one per request:
       "type": "flowstate",
       "request": "attach",
       "name": "Attach to a durable run",
-      "workflowId": "${input:workflowId}"
+      "workflowId": "${input:workflowId}",
+      "program": "${workspaceFolder}/examples/debugging/workflow.yaml"
     }
   ],
   "inputs": [
@@ -732,7 +736,12 @@ Two configurations in `.vscode/launch.json`, one per request:
 ```
 
 `program` is read from the configuration rather than from the adapter's own
-arguments — one `flow dap` serves whatever you point it at. The attach reaches
+arguments — one `flow dap` serves whatever you point it at. On an attach it is
+optional and only maps lines: it is used when it is byte for byte the file the
+run executes, which the compiled program records by digest (the deployment's
+own copy, where one replaced the submitted workflow), and otherwise the attach
+shows step addresses and answers line breakpoints unverified. A `program` that
+does not compile fails the attach without its diagnostics. The attach reaches
 whichever server the adapter was started against, so the debug type's adapter
 command carries `--address` and `--token-file` beside `dap`. Registering the
 `flowstate` debug type, and with it that command, needs an extension

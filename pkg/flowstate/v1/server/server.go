@@ -370,7 +370,7 @@ func WithTrustedWorkflows(namespace string, workflows ...*v1.Workflow) Option {
 				continue
 			}
 
-			if existing, ok := s.trustedWorkflows[key]; ok && !proto.Equal(existing, workflow) {
+			if existing, ok := s.trustedWorkflows[key]; ok && !sameProgram(existing, workflow) {
 				// Two registrations disagree about one tenant's workflow.
 				// Last-writer-wins here would let a later, weaker copy
 				// replace `manual: denied` or a narrower
@@ -628,7 +628,7 @@ func (s *FlowstateServer) registerTrustedWorkflows(namespace string, workflows [
 			return fmt.Errorf("workflow %q cannot be trusted as a deployment-owned specification "+
 				"because this deployment refuses it: %w", workflow.GetName(), err)
 		}
-		if existing, ok := s.trustedWorkflows[key]; ok && !proto.Equal(existing, workflow) {
+		if existing, ok := s.trustedWorkflows[key]; ok && !sameProgram(existing, workflow) {
 			return fmt.Errorf("workflow %q is already registered for this namespace with a different "+
 				"specification; two deployment-owned copies under one name are two `manual:` policies "+
 				"this server would have to choose between, so serve one of them", workflow.GetName())
@@ -1779,7 +1779,22 @@ func specificationAsSubmitted(submitted, executed *v1.Workflow) bool {
 	}
 	got := proto.Clone(executed).(*v1.Workflow)
 	got.ResolvedTaskCapabilities = nil
-	return proto.Equal(submitted, got)
+	return sameProgram(submitted, got)
+}
+
+// sameProgram reports whether two specifications are one program: equal in
+// everything but the root's [v1.Workflow.SourceDigest], which records which
+// bytes a client compiled the program from rather than anything the program
+// does. A deployment-owned copy compiled from other bytes, or from none, is
+// still the program a client submitted when nothing else differs.
+func sameProgram(a, b *v1.Workflow) bool {
+	if a.GetSourceDigest() == b.GetSourceDigest() {
+		return proto.Equal(a, b)
+	}
+	a, b = proto.CloneOf(a), proto.CloneOf(b)
+	a.SourceDigest, b.SourceDigest = "", ""
+
+	return proto.Equal(a, b)
 }
 
 // validateSubmission is the submission-validation pipeline shared by

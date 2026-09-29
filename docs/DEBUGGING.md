@@ -698,9 +698,13 @@ with `--session` before the lease lapses. `--program <file>` names the Flowfile
 the run was started from so frames can show lines; it is used only when it
 compiles to the program the run executes, the plugin and task pins the
 deployment wrote on admission aside, and otherwise the attach says the file
-does not match and lines are not shown. The check is on the compiled program,
-which records no positions, so a file whose lines moved without changing what
-it compiles to still matches, and its lines can be wrong.
+does not match and lines are not shown. A program compiled from a file records
+the digest of the file's bytes, so a file whose lines moved, even without
+changing a step, names a different program and its lines are not used. A run
+submitted without a file, through the API, records no digest and shows no
+lines. Where a deployment runs its own copy of a workflow in place of the one
+submitted, the run executes that copy, so `--program` must name the deployed
+file.
 
 Two more verbs work without holding anything open:
 

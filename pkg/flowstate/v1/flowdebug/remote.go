@@ -33,6 +33,9 @@ type Remote struct {
 	lease      time.Duration
 	wait       time.Duration
 	sourceMap  *v1.DebugSourceMap
+	// mapOffered is whether the attach was given a source map at all, which
+	// is what a line breakpoint's refusal says was missing.
+	mapOffered bool
 
 	mu      sync.Mutex
 	last    *v1.DebugSnapshot
@@ -131,6 +134,7 @@ func AttachRemote(ctx context.Context, client flowstatev1connect.WorkflowService
 		last:       response.Msg.GetSnapshot(),
 		stopped:    make(chan struct{}),
 	}
+	remote.mapOffered = opts.SourceMap != nil
 	if snapshot := response.Msg.GetSnapshot(); opts.SourceMap != nil && snapshot.GetIrDigest() != "" &&
 		snapshot.GetIrDigest() == opts.SourceMap.GetIrDigest() {
 		remote.sourceMap = opts.SourceMap
@@ -313,8 +317,11 @@ func (r *Remote) ReplaceBreakpoints(ctx context.Context, req *v1.DebugSetBreakpo
 		}
 		site, location, reason := siteAtLine(r.sourceMap, want.GetLine())
 		if site == nil {
-			if r.sourceMap == nil {
+			switch {
+			case r.sourceMap == nil && r.mapOffered:
 				reason = "the source map does not match the program this run executes, so a line cannot be trusted to name a step; name the step instead"
+			case r.sourceMap == nil:
+				reason = "no program was given to map lines from; name the step instead, or attach with the program the run was submitted from"
 			}
 			local[i] = &v1.DebugBreakpointState{Id: want.GetId(), Message: reason}
 

@@ -69,3 +69,20 @@ func TestTaskCapabilityAttestationDoesNotHideACallerSuppliedSnapshot(t *testing.
 	require.False(t, specificationAsSubmitted(submitted, executed),
 		"overwriting a caller-supplied attestation was reported as unchanged")
 }
+
+// TestADeploymentCopyFromOtherBytesIsTheSubmittedProgram: a root's source
+// digest records which bytes a client compiled from, not anything the program
+// does, so a deployment-owned copy that differs only there is still the
+// program submitted. Anything else differing is not.
+func TestADeploymentCopyFromOtherBytesIsTheSubmittedProgram(t *testing.T) {
+	submitted := &v1.Workflow{Name: "sourced", SourceDigest: v1.ContentDigest([]byte("name: sourced\n"))}
+	executed := proto.CloneOf(submitted)
+	executed.SourceDigest = ""
+	require.True(t, specificationAsSubmitted(submitted, executed),
+		"a copy compiled from no file was reported as a substitution")
+	require.Equal(t, submitted.GetSourceDigest(), v1.ContentDigest([]byte("name: sourced\n")), "the comparison changed its argument")
+
+	executed.Description = proto.String("another program")
+	require.False(t, specificationAsSubmitted(submitted, executed),
+		"a copy that differs beyond its source digest was reported as submitted")
+}

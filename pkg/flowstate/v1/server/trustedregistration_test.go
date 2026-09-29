@@ -113,3 +113,19 @@ func TestAReceiverCannotServeAWorkflowWhoseTrustIsPoisoned(t *testing.T) {
 			"deployment cannot decide")
 	assert.Contains(t, err.Error(), "registered twice")
 }
+
+// TestAReceiverServingATrustedProgramFromAFileIsNotAConflict: a receiver
+// serving the program a deployment registered, compiled from a file where the
+// registration was built from none, differs only in the root's source digest,
+// so it is the same specification and is served.
+func TestAReceiverServingATrustedProgramFromAFileIsNotAConflict(t *testing.T) {
+	t.Parallel()
+
+	temporal, _ := newTemporalNamespace(t)
+	flowstate := mustNew(t, temporal, server.WithTrustedWorkflows("", webhookOnlyWorkflowWithManualDenied()))
+
+	sourced := webhookOnlyWorkflowWithManualDenied()
+	sourced.SourceDigest = v1.ContentDigest([]byte("the file it came from"))
+	_, err := flowstate.NewWebhookReceiver(t.Context(), "", []*v1.Workflow{sourced}, keyStore(t, webhookSecret))
+	require.NoError(t, err, "a receiver serving the registered program from a file was refused as a conflict")
+}

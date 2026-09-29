@@ -522,6 +522,24 @@ message Workflow {
     (google.api.field_behavior) = OPTIONAL,
     (buf.validate.field).repeated = {max_items: 64}
   ];
+
+  // SourceDigest is a content digest of the bytes this workflow was compiled
+  // from, formatted `sha256:<hex>`, when a client compiled it from a file. It
+  // is the root's counterpart of [Call.source_digest], recorded by the same
+  // compiler from the same read.
+  //
+  // Recorded rather than verified, and never a basis for trust: nothing
+  // resolves it, and a caller may send any value. What it buys is that the
+  // program's identity ([DebugSourceMap.ir_digest]) covers where its steps are
+  // written. The compiled steps carry no positions, so without it a file whose
+  // lines moved compiles to the same program, and a debugger attaching to a
+  // durable run with that file would put frames and line breakpoints on the
+  // wrong lines. With it, a file whose bytes differ from the ones the run was
+  // compiled from names a different program, and its lines are not used.
+  string source_digest = 19 [
+    (google.api.field_behavior) = OPTIONAL,
+    (buf.validate.field).string = {max_len: 128}
+  ];
 }
 
 // Concurrency is "at most one run of this workflow per key", answered at submit.

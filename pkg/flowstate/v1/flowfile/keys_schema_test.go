@@ -24,7 +24,7 @@ func TestDocumentKeysCoverWorkflowSchema(t *testing.T) {
 	for i := range fields.Len() {
 		name := string(fields.Get(i).Name())
 		switch name {
-		case "profile", "resolved_plugins", "resolved_task_capabilities", "capability_parameters", "resolved_capability_bindings":
+		case "profile", "resolved_plugins", "resolved_task_capabilities", "capability_parameters", "resolved_capability_bindings", "source_digest":
 			// Compiler- or submit-time facts, never author input.
 		case "declared_inputs":
 			schema = append(schema, "inputs")
