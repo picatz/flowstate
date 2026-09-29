@@ -319,7 +319,7 @@ func (s *Session) rejudgeUntil(until v1.DebugTarget, condition *v1.Value, condit
 	// was set.
 	current := s.mode == modeUntil && s.until.String() == until.String() && s.untilCondition == condition
 	if current {
-		s.mode, s.until, s.untilCondition, s.untilConditionText = modeRun, v1.DebugTarget{}, nil, ""
+		s.mode, s.until, s.untilCondition, s.untilConditionText, s.untilSensitive = modeRun, v1.DebugTarget{}, nil, "", v1.SensitiveValues{}
 	}
 	s.mu.Unlock()
 	if !current {
@@ -739,6 +739,7 @@ func (s *Session) resumeUntil(m mode, until v1.DebugTarget, condition *v1.Value,
 	s.until = until
 	s.untilCondition = condition
 	s.untilConditionText = conditionText
+	s.untilSensitive = s.at.sensitive
 	s.contract.stepDepth = len(s.contract.occurrence.GetSegments())
 }
 
@@ -761,6 +762,7 @@ func (s *Session) RunReturned(err error) {
 	first := !s.returnReported
 	s.returnReported = true
 	missed := ""
+	redact, _ := withholdingAt(s.redact, nil, s.untilSensitive)
 	if first && err == nil && s.mode == modeUntil && !terminal(s.contract.state) {
 		// As it was asked: a conditional `until` can reach its target with
 		// the condition never holding, and naming the bare target would say
@@ -778,7 +780,9 @@ func (s *Session) RunReturned(err error) {
 	// Redacted by the notice, which passes only the `until` through the
 	// redactor, and so printed and recorded as it is: redacting the whole
 	// line again would reach the fixed words that identify it (Codex, #2204).
-	text := MissedUntilNotice(missed, s.redactText)
+	// With what the hold it was applied at withheld, as the durable driver
+	// words it (exact-head review, #2209).
+	text := MissedUntilNotice(missed, func(until string) string { return applyText(redact, until) })
 	s.emitTone(ToneWarning, text+"\n")
 	s.observeRedacted(v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_NOTICE, "", text)
 }

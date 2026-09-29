@@ -425,6 +425,12 @@ type Session struct {
 	// untilConditionText is untilCondition as it was written, for saying what
 	// was asked when the stop never came. Set and cleared with it.
 	untilConditionText string
+	// untilSensitive is what the hold `until` was applied at withheld
+	// ([promptSubject.sensitive]), for saying what was asked when the stop
+	// never came: an `until` applied inside a callee can quote a value only
+	// that callee declares sensitive, as the durable driver's untilSensitive
+	// records. Set and cleared with it.
+	untilSensitive v1.SensitiveValues
 	// returnReported records that [Session.RunReturned] has heard the run's
 	// own return. The first report decides whether a missed `until` is said:
 	// a driver that reports the return and then the case's verdict
