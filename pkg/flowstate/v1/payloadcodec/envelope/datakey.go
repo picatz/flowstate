@@ -8,12 +8,10 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"golang.org/x/sync/singleflight"
 	"google.golang.org/protobuf/types/known/durationpb"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -231,7 +229,9 @@ type decodeCache struct {
 	entries  map[[sha256.Size]byte]*list.Element
 	order    *list.List // front is most recently used
 	negative map[[sha256.Size]byte]negativeEntry
-	flight   singleflight.Group
+
+	flightsMu sync.Mutex
+	flights   map[[sha256.Size]byte]*unwrapFlight
 
 	// tokens and refilled are a token bucket over provider unwraps, spent
 	// only when limited.
@@ -260,6 +260,7 @@ func newDecodeCache(capacity int, now func() time.Time, limited bool) *decodeCac
 		capacity: min(capacity, maxDecodeCacheEntries),
 		now:      now,
 		entries:  make(map[[sha256.Size]byte]*list.Element),
+		flights:  make(map[[sha256.Size]byte]*unwrapFlight),
 		order:    list.New(),
 		negative: make(map[[sha256.Size]byte]negativeEntry),
 		limited:  limited,
@@ -397,55 +398,95 @@ func (c *decodeCache) unwrap(e ringEntry, timeout time.Duration, w keyprovider.W
 		return dk, err
 	}
 
-	v, err, _ := c.flight.Do(string(ck[:]), func() (any, error) {
-		if dk, err, ok := c.get(ck); ok {
-			return sharedDataKey(dk), err
-		}
-		if !c.admit() {
-			return nil, fmt.Errorf("%w: more unwraps of unseen data keys than %d a second", ErrProviderUnavailable, unwrapRate)
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), timeout)
-		defer cancel()
-		dk, err := e.key.Unwrap(ctx, w, ectx)
-		if err != nil {
-			err = classifyProviderError(err)
-			if !errors.Is(err, ErrProviderUnavailable) {
-				c.refuse(ck, err)
-			}
-			return nil, err
-		}
-		if len(dk) != keyprovider.DataKeyBytes {
-			clear(dk)
-			return nil, fmt.Errorf("%w: the provider returned a data key of the wrong length", ErrAuthentication)
-		}
-		c.put(ck, dk, e.ttl)
-		return sharedDataKey(dk), nil
-	})
-	if err != nil {
-		return nil, err
+	// Join the flight for this wrapped key, or start it. Every caller counts
+	// itself in while the flight is still listed, so the count cannot reach
+	// zero until the last of them has taken its copy.
+	c.flightsMu.Lock()
+	f, joined := c.flights[ck]
+	if !joined {
+		f = &unwrapFlight{done: make(chan struct{})}
+		c.flights[ck] = f
 	}
-	// Every caller of a coalesced unwrap gets its own copy to clear. The
-	// shared key is kept reachable until the copy is made: the cleanup is on
-	// it, not on the bytes, so a collection between reading the field and
-	// copying from it would clear the key mid-copy.
-	shared := v.(*sharedKey)
-	dataKey := clone(shared.dataKey)
-	runtime.KeepAlive(shared)
-	return dataKey, nil
+	f.waiters++
+	c.flightsMu.Unlock()
+
+	if !joined {
+		c.fly(f, ck, e, timeout, w, ectx)
+	}
+	<-f.done
+
+	var dataKey []byte
+	if f.err == nil {
+		dataKey = clone(f.dataKey)
+	}
+	c.flightsMu.Lock()
+	f.waiters--
+	last := f.waiters == 0
+	c.flightsMu.Unlock()
+	if last {
+		clear(f.dataKey)
+	}
+	return dataKey, f.err
 }
 
-// sharedKey is the one copy of a data key a coalesced unwrap hands to every
-// caller waiting on it, each of which clones it. The copy itself belongs to
-// no caller, so none clears it: it is cleared when the last of them has let
-// go, which is when nothing reaches this any more. Without that, the
-// provider's own slice outlived the cache entry it was copied into, and a
-// data key the cache had expired stayed in the heap (Codex, #2167).
-type sharedKey struct{ dataKey []byte }
+// unwrapFlight is one provider unwrap that every concurrent miss for the same
+// wrapped key waits on, each taking its own copy of the answer.
+//
+// Its data key belongs to none of them, so it is cleared by whichever takes
+// its copy last, which waiters counts (guarded by flightsMu). A flight is
+// dropped from the map before it lands, so nobody joins one whose count may
+// already have reached zero. singleflight.Group cannot say when the last
+// caller has copied what it shared, which left the provider's own slice to a
+// runtime cleanup with no deadline (Codex, #2167).
+type unwrapFlight struct {
+	done    chan struct{}
+	dataKey []byte
+	err     error
+	waiters int
+}
 
-func sharedDataKey(dk []byte) *sharedKey {
-	shared := &sharedKey{dataKey: dk}
-	runtime.AddCleanup(shared, func(dk []byte) { clear(dk) }, dk)
-	return shared
+// errFlightAbandoned is what the waiters on a flight get when the call that
+// was flying it panicked instead of answering.
+var errFlightAbandoned = fmt.Errorf("%w: the unwrap this read was waiting on did not finish", ErrProviderUnavailable)
+
+// fly makes f's provider call and lands it: out of the map, then done.
+func (c *decodeCache) fly(f *unwrapFlight, ck [sha256.Size]byte, e ringEntry, timeout time.Duration, w keyprovider.Wrapped, ectx keyprovider.Context) {
+	f.err = errFlightAbandoned
+	defer func() {
+		c.flightsMu.Lock()
+		delete(c.flights, ck)
+		c.flightsMu.Unlock()
+		close(f.done)
+	}()
+	f.dataKey, f.err = c.unwrapUncached(ck, e, timeout, w, ectx)
+}
+
+// unwrapUncached asks the provider for a data key not in the cache, and
+// caches the answer: the key for e's ttl, or a definitive refusal briefly.
+// The key it returns is its own, for [decodeCache.unwrap] to clear.
+func (c *decodeCache) unwrapUncached(ck [sha256.Size]byte, e ringEntry, timeout time.Duration, w keyprovider.Wrapped, ectx keyprovider.Context) ([]byte, error) {
+	if dk, err, ok := c.get(ck); ok {
+		return dk, err
+	}
+	if !c.admit() {
+		return nil, fmt.Errorf("%w: more unwraps of unseen data keys than %d a second", ErrProviderUnavailable, unwrapRate)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	dk, err := e.key.Unwrap(ctx, w, ectx)
+	if err != nil {
+		err = classifyProviderError(err)
+		if !errors.Is(err, ErrProviderUnavailable) {
+			c.refuse(ck, err)
+		}
+		return nil, err
+	}
+	if len(dk) != keyprovider.DataKeyBytes {
+		clear(dk)
+		return nil, fmt.Errorf("%w: the provider returned a data key of the wrong length", ErrAuthentication)
+	}
+	c.put(ck, dk, e.ttl)
+	return dk, nil
 }
 
 // classifyProviderError maps a provider's sentinel onto the envelope's
