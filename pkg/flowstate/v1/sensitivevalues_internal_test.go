@@ -776,8 +776,12 @@ func TestAnAccumulatorFramesWhatItHashes(t *testing.T) {
 		{[]any{"a", "\x01b"}, []any{"a\x01", "b"}},
 		{map[string]any{"a": "\x01b"}, map[string]any{"a\x01": "b"}},
 		{[]any{[]byte("a"), "b"}, []any{[]byte("ab")}},
-		// A bool's width, and a byte string's length, each at one list length.
+		// A bool's width, a map key's length and a byte string's length, each
+		// on its own: a key ended by a NUL, as it once was, let a key absorb
+		// its value's encoding.
 		{[]any{false, "\x00"}, []any{true, ""}},
+		{map[string]any{"a": ""}, map[string]any{"a\x00\x01\x00\x00\x00\x00\x00\x00": nil}},
+		{map[string]any{"a": "\x00"}, map[string]any{"a\x01": ""}},
 		{[]any{[]byte("a"), []byte("\x02")}, []any{[]byte("a\x02"), []byte("")}},
 	} {
 		assert.NotEqual(t, gathered.state.hash(pair[0]), gathered.state.hash(pair[1]), "%#v and %#v", pair[0], pair[1])

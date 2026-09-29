@@ -211,8 +211,9 @@ func appendSensitiveHash(b []byte, value any) []byte {
 	case []byte:
 		b = appendSensitiveBytes(append(b, 2), value)
 	case bool:
-		// One byte either way: a `false` shorter than a `true` would make
-		// the two a prefix of each other and the encoding ambiguous.
+		// The tag and one flag byte either way: a `false` shorter than a
+		// `true` would make the two a prefix of each other and the encoding
+		// ambiguous.
 		flag := byte(0)
 		if value {
 			flag = 1
