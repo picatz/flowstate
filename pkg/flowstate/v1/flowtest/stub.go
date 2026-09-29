@@ -1149,6 +1149,29 @@ type stubDiagnostic struct{ text string }
 
 func (e *stubDiagnostic) Error() string { return e.text }
 
+// onlyPrefixed reports that err is d with nothing but text in front of it:
+// every error from err down to d, one [errors.Unwrap] at a time, renders as
+// its child's text with something before it and nothing after. Comparing the
+// whole rendering's end with d's alone is not enough — a compensation's
+// failure appended after d can itself end in the same diagnostic, when both
+// reach one unstubbed task (exact-head review, #2215). A layer wrapping
+// several errors, or one whose text does not end with its child's, is not
+// prefixes only.
+func onlyPrefixed(err error, d *stubDiagnostic) bool {
+	for err != nil {
+		if diagnostic, ok := err.(*stubDiagnostic); ok && diagnostic == d {
+			return true
+		}
+		child := errors.Unwrap(err)
+		if child == nil || !strings.HasSuffix(err.Error(), child.Error()) {
+			return false
+		}
+		err = child
+	}
+
+	return false
+}
+
 // unusedStubWarnings reports, after one case's run, every stub the case
 // declared and the run never answered through — the account a green case owes
 // about its own scaffolding (#926). A shipped example asserted in prose that

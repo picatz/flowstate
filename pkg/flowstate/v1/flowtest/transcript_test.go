@@ -1405,3 +1405,124 @@ tests:
 	require.NotEmpty(t, cases[0].GetFailures(), "the case reported no failure, so this proves nothing: %s", cases[0].GetError())
 	assert.Contains(t, cases[0].GetFailures()[0].GetMessage(), `task "http" was invoked, but this case declares no stub for it`)
 }
+
+// TestAnUnmetErrorContainsWithholdsItsOwnExpectation: a case can expect the
+// very value it withholds, and when that expectation is unmet its diagnostic
+// quotes it. It is rendered as the run's error is (Codex, #2215); the
+// comparison still reads it as written.
+func TestAnUnmetErrorContainsWithholdsItsOwnExpectation(t *testing.T) {
+	t.Parallel()
+
+	const secret = "hunter2-callee-only-secret"
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "child.yaml"), `
+edition: v2026.3
+name: child
+inputs:
+  api_key:
+    type: string
+    required: true
+    sensitive: true
+steps:
+  - id: boom
+    value: ${{"a":1}[inputs.api_key]}
+`)
+	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
+edition: v2026.3
+name: parent
+steps:
+  - id: nested
+    call: ./child.yaml
+    with:
+      api_key: ${"`+secret+`"}
+`)
+	path := filepath.Join(dir, "workflow.test.yaml")
+	writeFile(t, path, `
+tests:
+  - name: expects a failure the run does not report
+    workflow: ./workflow.yaml
+    expect:
+      failed: true
+      error_contains: "denied: `+secret+`"
+`)
+
+	result := flowtest.RunPath(t.Context(), path, flowtest.RunOptions{})
+	cases := result.Report.GetCases()
+	require.Len(t, cases, 1)
+	var message string
+	for _, failure := range cases[0].GetFailures() {
+		if failure.GetField() == "expect.error_contains" {
+			message = failure.GetMessage()
+		}
+	}
+	require.NotEmpty(t, message, "no error_contains diagnostic, so this proves nothing: %v", cases[0].GetFailures())
+	assert.Contains(t, message, "denied: ", "the expectation was not quoted, so this proves nothing")
+	assert.NotContains(t, message, secret, "the unmet expectation showed the callee's sensitive input")
+}
+
+// TestAReportIsNotFooledByADiagnosticRepeatedAtTheEnd: a compensation that
+// reaches the same unstubbed task as the failure ends the run's error with the
+// same diagnostic, so its end alone cannot tell the diagnostic from what was
+// appended; another compensation's failure between them quotes a value. The
+// error is judged layer by layer, and withheld whole (exact-head review,
+// #2215).
+func TestAReportIsNotFooledByADiagnosticRepeatedAtTheEnd(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
+edition: v2026.3
+name: parent
+inputs:
+  items:
+    type: list
+    required: true
+    sensitive: true
+steps:
+  - id: first
+    log:
+      message: hi
+    undo:
+      http:
+        url: https://example.invalid/first
+  - id: second
+    log:
+      message: hi
+    undo:
+      log:
+        message: ${"undo " + inputs.items[0]}
+  - id: volume
+    http:
+      url: https://example.invalid/volume
+`)
+	items := make([]string, 0, 1100)
+	for i := range 1100 {
+		items = append(items, fmt.Sprintf("      - rootsecret%04d", i))
+	}
+	path := filepath.Join(dir, "workflow.test.yaml")
+	writeFile(t, path, `
+tests:
+  - name: the failure and its compensations are reported
+    workflow: ./workflow.yaml
+    inputs:
+      items:
+`+strings.Join(items, "\n")+`
+    stubs:
+      - task: log
+        where: inputs.message == "hi"
+        returns: {}
+      - task: log
+        returns:
+          said: ${{"a":1}[inputs.message]}
+    expect:
+      failed: false
+`)
+
+	result := flowtest.RunPath(t.Context(), path, flowtest.RunOptions{})
+	cases := result.Report.GetCases()
+	require.Len(t, cases, 1)
+	require.NotEmpty(t, cases[0].GetFailures(), "the case reported no failure, so this proves nothing: %s", cases[0].GetError())
+	message := cases[0].GetFailures()[0].GetMessage()
+	assert.NotContains(t, message, "rootsecret0000", "a compensation's failure rode out between two copies of the diagnostic")
+	assert.Contains(t, message, "[withheld]", "the error was not withheld whole")
+}

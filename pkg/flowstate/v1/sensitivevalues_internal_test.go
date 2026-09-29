@@ -695,6 +695,27 @@ func TestAnAccumulatorHoldsANaNOnce(t *testing.T) {
 	assert.Len(t, gathered.Values().held().values, 1)
 }
 
+// TestAnAccumulatorHashesByItsOwnEquality: values its equality calls one —
+// NaNs whatever their payload, -0 and 0, a NaN inside a list — must hash
+// alike, or equality is never asked and each copy is gathered again until the
+// bound withholds everything (Codex, #2215).
+func TestAnAccumulatorHashesByItsOwnEquality(t *testing.T) {
+	t.Parallel()
+
+	payloads := []float64{math.NaN(), math.Float64frombits(0x7ff8000000000001), math.Float64frombits(0xfff8000000000002)}
+	var gathered SensitiveAccumulator
+	for i := range maxSensitiveDescendants + 1 {
+		nan := payloads[i%len(payloads)]
+		zero := 0.0
+		if i%2 == 1 {
+			zero = math.Copysign(0, -1)
+		}
+		gathered.Add(sensitiveValuesOf(sensitiveState{values: []any{nan, zero, []any{nan}, map[string]any{"z": zero}}}))
+	}
+	require.False(t, gathered.Values().WithholdAll(), "values equal by the accumulator's own relation reached the bound")
+	assert.Len(t, gathered.Values().held().values, 4)
+}
+
 // TestMergingWithNothingKeepsTheSet: a merge where one side adds nothing is
 // the other side itself, so a step whose failure carries nothing reports the
 // same set its position holds, and a reader can recognize it.

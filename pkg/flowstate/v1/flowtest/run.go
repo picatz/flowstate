@@ -2004,18 +2004,19 @@ func assertExpectation(want *Expectation, spec *v1.Workflow, outputs *v1.Workflo
 		// substring backstop for material carried here by a computed var.
 		//
 		// Only for a diagnostic the stub boundary built, only where the run
-		// itself ran under that posture, and only where it is the end of the
-		// run's error, so that what precedes it is the positions the engine
-		// wraps around a failure. An evaluation error (`no such key: <value>`)
-		// was shaped by nothing; neither was a compensation's failure the run
-		// appends after it ([v1.UndoRunError]), nor anything under a set that
-		// came to withhold everything once the run was over — a callee's that
-		// could not be enumerated, gathered afterward. Those are withheld
-		// whole rather than printed as they are (#2215).
+		// itself ran under that posture, and only where every error wrapping
+		// it added nothing after it ([onlyPrefixed]), so that what precedes it
+		// is the positions the engine wraps around a failure. An evaluation
+		// error (`no such key: <value>`) was shaped by nothing; neither was a
+		// compensation's failure the run appends after it ([v1.UndoRunError]),
+		// nor anything under a set that came to withhold everything once the
+		// run was over — a callee's that could not be enumerated, gathered
+		// afterward. Those are withheld whole rather than printed as they are
+		// (#2215).
 		var stubShaped *stubDiagnostic
 		renderedRunErr = runErr.Error()
 		if !sensitive.WithholdAll() || !shaped || !errors.As(runErr, &stubShaped) ||
-			!strings.HasSuffix(renderedRunErr, stubShaped.Error()) {
+			!onlyPrefixed(runErr, stubShaped) {
 			renderedRunErr = redactedErrorText(renderedRunErr, sensitive)
 		}
 	}
@@ -2043,10 +2044,12 @@ func assertExpectation(want *Expectation, spec *v1.Workflow, outputs *v1.Workflo
 	}
 	if want.ErrorContains != "" {
 		if runErr == nil || !strings.Contains(runErr.Error(), want.ErrorContains) {
+			// Compared as written, rendered as the error is: a case can
+			// expect the very value it withholds (Codex, #2215).
 			failures = append(failures, &v1.Diagnostic{
 				Field: "expect.error_contains",
 				Message: fmt.Sprintf("expected the run's error to contain %q, got: %s",
-					want.ErrorContains, renderedRunErr),
+					redactedErrorText(want.ErrorContains, sensitive), renderedRunErr),
 			})
 		}
 	}

@@ -134,14 +134,25 @@ func (a *SensitiveAccumulator) Values() SensitiveValues {
 	return st.built
 }
 
-// sameSensitiveValue is [isSensitiveValue]'s equality, and a NaN equal to
-// itself: a NaN never equals anything under [reflect.DeepEqual], so it would
-// be gathered anew from every set until the bound withheld everything.
+// sameSensitiveValue is [isSensitiveValue]'s equality, with every NaN equal
+// to every other, at any depth: a NaN never equals anything under
+// [reflect.DeepEqual], so a set holding one — alone, or inside a list or a
+// map — would be gathered anew each time until the bound withheld
+// everything. [hashSensitiveValue] hashes by the same relation.
 func sameSensitiveValue(a, b any) bool {
-	if x, ok := a.(float64); ok && math.IsNaN(x) {
+	switch x := a.(type) {
+	case float64:
 		y, ok := b.(float64)
 
-		return ok && math.IsNaN(y)
+		return ok && (x == y || math.IsNaN(x) && math.IsNaN(y))
+	case []any:
+		y, ok := b.([]any)
+
+		return ok && slices.EqualFunc(x, y, sameSensitiveValue)
+	case map[string]any:
+		y, ok := b.(map[string]any)
+
+		return ok && maps.EqualFunc(x, y, sameSensitiveValue)
 	}
 
 	return reflect.DeepEqual(a, b)
@@ -183,8 +194,17 @@ func writeSensitiveHash(h *maphash.Hash, value any) {
 		binary.LittleEndian.PutUint64(number[:], value)
 		h.Write(number[:])
 	case float64:
+		// By [sameSensitiveValue]'s relation: every NaN one value whatever
+		// its payload, and -0 the same as 0, which compare equal.
+		bits := math.Float64bits(value)
+		switch {
+		case math.IsNaN(value):
+			bits = math.Float64bits(math.NaN())
+		case value == 0:
+			bits = 0
+		}
 		h.WriteByte(6)
-		binary.LittleEndian.PutUint64(number[:], math.Float64bits(value))
+		binary.LittleEndian.PutUint64(number[:], bits)
 		h.Write(number[:])
 	case []any:
 		h.WriteByte(7)
