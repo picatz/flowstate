@@ -6,7 +6,9 @@ import (
 	"maps"
 	"slices"
 	"strings"
+	"sync"
 
+	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/common/operators"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/nearest"
@@ -2027,11 +2029,22 @@ func collectReferences(e *expr.Expr, bound map[string]struct{}, rooted map[stepR
 				return
 			}
 		}
+		// A qualified type or enum value — `google.protobuf.Timestamp` — is
+		// parsed as a select chain, and is not a reference to its first segment.
+		// Any other chain over a free name reads that name, even one spelled like
+		// a type: `int.nosuch` selects from the type, which has no fields.
+		if root, name, ok := qualifiedName(sel, bound); ok {
+			if !isTypeValue(name) {
+				free[root] = struct{}{}
+			}
+
+			return
+		}
 	}
 	switch kind := e.GetExprKind().(type) {
 	case *expr.Expr_IdentExpr:
 		name := kind.IdentExpr.GetName()
-		if _, isBound := bound[name]; !isBound {
+		if _, isBound := bound[name]; !isBound && !isTypeValue(name) {
 			free[name] = struct{}{}
 		}
 	case *expr.Expr_SelectExpr:
@@ -3444,6 +3457,62 @@ var functionNamespaces = func() map[string]bool {
 
 	return out
 }()
+
+// isTypeValue reports whether name, bare or dotted, is a type or enum value the
+// profile's environment resolves: `int` in `type(x) == int`, `null_type`,
+// `google.protobuf.Timestamp`. cel-go parses one as an identifier, or a select
+// chain over one, so it reaches the reference walk looking exactly like a name
+// nobody bound, and `flow validate` refused expressions both drivers evaluate
+// (#2203).
+//
+// The environment answers rather than a list, for the reason
+// [functionNamespaces] records. A name a comprehension binds is decided before
+// this is asked, and a loop binding spelled like a type is admitted either way:
+// inside its loop it is the binding, and outside it the type.
+func isTypeValue(name string) bool {
+	env := typeValueEnv()
+	if env == nil {
+		return false
+	}
+	_, found := env.CELTypeProvider().FindIdent(name)
+
+	return found
+}
+
+// typeValueEnv is the environment [isTypeValue] asks, built once. Nil when the
+// current profile's environment cannot be built, which admits no type value:
+// the same trade [functionNamespaces] makes.
+var typeValueEnv = sync.OnceValue(func() *cel.Env {
+	env, err := v1.DefaultEvaluator().ProfileEnv(v1.CurrentProfile)
+	if err != nil {
+		return nil
+	}
+
+	return env
+})
+
+// qualifiedName spells a select chain that bottoms out in an identifier no
+// comprehension bound as one dotted name, `google.protobuf.Timestamp`, and
+// returns that identifier as root. ok is false for any other chain.
+func qualifiedName(sel *expr.Expr_Select, bound map[string]struct{}) (root, name string, ok bool) {
+	fields := []string{sel.GetField()}
+	operand := sel.GetOperand()
+	for operand.GetSelectExpr() != nil {
+		fields = append(fields, operand.GetSelectExpr().GetField())
+		operand = operand.GetSelectExpr().GetOperand()
+	}
+	ident := operand.GetIdentExpr()
+	if ident == nil {
+		return "", "", false
+	}
+	if _, shadowed := bound[ident.GetName()]; shadowed {
+		return "", "", false
+	}
+	fields = append(fields, ident.GetName())
+	slices.Reverse(fields)
+
+	return ident.GetName(), strings.Join(fields, "."), true
+}
 
 // Proto renders a diagnostic as the schema message every surface reads.
 //
