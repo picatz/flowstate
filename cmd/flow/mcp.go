@@ -618,6 +618,16 @@ func runLocalToolHandler(posture *cobra.Command, providers *localSecrets) mcp.To
 		// this context expiring means the call ran out of time.
 		response := localRun(outputs, runErr, ctx.Err(), started, time.Now())
 
+		// The failure sentence, against the same set `flow run local` builds
+		// for the same run (#2188): [redactGetResponse] below leaves it alone,
+		// since most of its callers hold no arguments to redact against, and
+		// this one bound them above. Before the bound rather than after it,
+		// unlike the values: [flowmcp.CapErrorMessage] cuts the sentence, and
+		// a value straddling the cut would leave a prefix no redaction
+		// matches. The response is this handler's own, so mutating it here
+		// changes nothing a caller holds.
+		response = redactFailureText(response, runSensitiveValues(workflow, inputs, revealSensitiveRequested(posture)))
+
 		// Bounded before redaction, deliberately: redactGetResponse clones its
 		// input outright, so handing it the raw response re-pays exactly the
 		// workflow-sized allocation the preflight refuses (Codex, #1083). The
