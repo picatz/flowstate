@@ -8,6 +8,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -360,7 +361,7 @@ func (c *decodeCache) unwrap(e ringEntry, timeout time.Duration, w keyprovider.W
 
 	v, err, _ := c.flight.Do(string(ck[:]), func() (any, error) {
 		if dk, err, ok := c.get(ck); ok {
-			return dk, err
+			return sharedDataKey(dk), err
 		}
 		if !c.admit() {
 			return nil, fmt.Errorf("%w: more unwraps of unseen data keys than %d a second", ErrProviderUnavailable, unwrapRate)
@@ -380,13 +381,27 @@ func (c *decodeCache) unwrap(e ringEntry, timeout time.Duration, w keyprovider.W
 			return nil, fmt.Errorf("%w: the provider returned a data key of the wrong length", ErrAuthentication)
 		}
 		c.put(ck, dk, e.ttl)
-		return dk, nil
+		return sharedDataKey(dk), nil
 	})
 	if err != nil {
 		return nil, err
 	}
 	// Every caller of a coalesced unwrap gets its own copy to clear.
-	return clone(v.([]byte)), nil
+	return clone(v.(*sharedKey).dataKey), nil
+}
+
+// sharedKey is the one copy of a data key a coalesced unwrap hands to every
+// caller waiting on it, each of which clones it. The copy itself belongs to
+// no caller, so none clears it: it is cleared when the last of them has let
+// go, which is when nothing reaches this any more. Without that, the
+// provider's own slice outlived the cache entry it was copied into, and a
+// data key the cache had expired stayed in the heap (Codex, #2167).
+type sharedKey struct{ dataKey []byte }
+
+func sharedDataKey(dk []byte) *sharedKey {
+	shared := &sharedKey{dataKey: dk}
+	runtime.AddCleanup(shared, func(dk []byte) { clear(dk) }, dk)
+	return shared
 }
 
 // classifyProviderError maps a provider's sentinel onto the envelope's

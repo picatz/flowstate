@@ -419,3 +419,56 @@ func TestARolledOverDataKeyIsNotKeptByItsTimer(t *testing.T) {
 	}
 	require.NotNil(t, c.active.Load())
 }
+
+// retainingUnwraps keeps the slice the provider handed back, so a test can see
+// whether the envelope cleared it.
+type retainingUnwraps struct {
+	keyprovider.Key
+	mu       sync.Mutex
+	returned [][]byte
+}
+
+func (k *retainingUnwraps) Unwrap(ctx context.Context, w keyprovider.Wrapped, ectx keyprovider.Context) ([]byte, error) {
+	dk, err := k.Key.Unwrap(ctx, w, ectx)
+	k.mu.Lock()
+	k.returned = append(k.returned, dk)
+	k.mu.Unlock()
+	return dk, err
+}
+
+// TestTheProvidersCopyOfADataKeyIsCleared: a cold unwrap copies the provider's
+// data key into the cache and into each waiting caller, and the provider's own
+// slice belongs to none of them. It is cleared once the last of them has let
+// go, so expiring the cache entry leaves no copy of the key in the heap.
+func TestTheProvidersCopyOfADataKeyIsCleared(t *testing.T) {
+	t.Parallel()
+
+	material := bytes.Repeat([]byte{9}, local.KeyBytes)
+	key, err := local.NewKey(material)
+	require.NoError(t, err)
+	writer, err := New(t.Context(), Options{Binding: "ns", Current: "k1", Keys: []Recipient{{ID: "k1", Key: key}}})
+	require.NoError(t, err)
+	sealed, err := writer.Encode([]*commonpb.Payload{{Data: []byte("x")}})
+	require.NoError(t, err)
+
+	retaining := &retainingUnwraps{Key: key}
+	reader, err := New(t.Context(), Options{Binding: "ns", Keys: []Recipient{{ID: "k1", Key: retaining}}})
+	require.NoError(t, err)
+	_, err = reader.Decode(sealed)
+	require.NoError(t, err)
+
+	retaining.mu.Lock()
+	require.Len(t, retaining.returned, 1, "the reader did not ask the provider")
+	provided := retaining.returned[0]
+	retaining.mu.Unlock()
+
+	zero := make([]byte, len(provided))
+	for range 50 {
+		runtime.GC()
+		runtime.Gosched()
+		if bytes.Equal(provided, zero) {
+			break
+		}
+	}
+	require.Equal(t, zero, provided, "the provider's copy of the data key was never cleared")
+}
