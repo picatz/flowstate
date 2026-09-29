@@ -1,12 +1,14 @@
 package flowtest_test
 
 import (
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/encoding/protojson"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/dst"
@@ -1036,6 +1038,58 @@ tests:
 	assert.True(t, cases[1].GetPassed(), "a claim over the real failure text failed: %v / %v", cases[1].GetError(), cases[1].GetFailures())
 }
 
+// TestASeededRunWithholdsACalleesSensitiveInputAsTheRecordedOneDoes: a
+// seeded schedule's run discards its account, but renders its failures as the
+// recorded written-order run does. Otherwise the two differ by the withheld
+// value alone, which is reported as a divergence the schedule never made, and
+// carries that value (Codex, #2215).
+func TestASeededRunWithholdsACalleesSensitiveInputAsTheRecordedOneDoes(t *testing.T) {
+	t.Parallel()
+
+	const secret = "hunter2-callee-only-secret"
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "child.yaml"), `
+edition: v2026.3
+name: child
+inputs:
+  api_key:
+    type: string
+    required: true
+    sensitive: true
+steps:
+  - id: boom
+    value: ${{"a":1}[inputs.api_key]}
+`)
+	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
+edition: v2026.3
+name: parent
+steps:
+  - id: nested
+    call: ./child.yaml
+    with:
+      api_key: ${"`+secret+`"}
+`)
+	path := filepath.Join(dir, "workflow.test.yaml")
+	writeFile(t, path, `
+tests:
+  - name: the failure is reported
+    workflow: ./workflow.yaml
+    expect:
+      failed: false
+`)
+
+	result := flowtest.RunPath(t.Context(), path, flowtest.RunOptions{Budget: dst.Budget{Schedules: 3, Seed0: 1}})
+	require.NotNil(t, result.Schedules, "nothing was explored, so this proves nothing")
+	require.Equal(t, 3, result.Schedules.Schedules)
+	if divergence := result.Schedules.Divergence; divergence != nil {
+		t.Fatalf("a schedule-insensitive case diverged under seed %d:\nwritten order:\n%s\nseeded:\n%s",
+			divergence.Seed, divergence.WrittenOrder, divergence.Seeded)
+	}
+	encoded, err := protojson.Marshal(result.Report)
+	require.NoError(t, err)
+	assert.NotContains(t, string(encoded), secret, "the report showed the callee's sensitive input")
+}
+
 // TestTranscriptWithholdsACalleesSensitiveInputReadBackByTheCaller: the
 // transcript is rendered after the run, from everything its steps withheld, so
 // a callee's sensitive input handed back as an output and read by a later step
@@ -1090,4 +1144,115 @@ tests:
 	text := transcriptText(result.Transcripts[0])
 	assert.Contains(t, text, "echo", "the caller's step is not in the transcript, so this proves nothing")
 	assert.NotContains(t, text, secret, "the transcript showed a callee's sensitive input read back by the caller")
+}
+
+// TestAReportUnderARootsLargeSensitiveInputStaysRedacted: a callee's position
+// holds the root's sensitive values, and so does the failure it carries out.
+// Counted twice, 600 of them passed the bound, the gathered set withheld
+// everything, and the expectation's message printed the run's error as it
+// was (exact-head review, #2215). Held once, they stay under it.
+func TestAReportUnderARootsLargeSensitiveInputStaysRedacted(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "child.yaml"), `
+edition: v2026.3
+name: child
+inputs:
+  k:
+    type: string
+    required: true
+steps:
+  - id: boom
+    value: ${{"a":1}[inputs.k]}
+`)
+	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
+edition: v2026.3
+name: parent
+inputs:
+  items:
+    type: list
+    required: true
+    sensitive: true
+steps:
+  - id: nested
+    call: ./child.yaml
+    with:
+      k: ${inputs.items[0]}
+`)
+	items := make([]string, 0, 600)
+	for i := range 600 {
+		items = append(items, fmt.Sprintf("      - rootsecret%04d", i))
+	}
+	path := filepath.Join(dir, "workflow.test.yaml")
+	writeFile(t, path, `
+tests:
+  - name: the failure is reported
+    workflow: ./workflow.yaml
+    inputs:
+      items:
+`+strings.Join(items, "\n")+`
+    expect:
+      failed: false
+`)
+
+	result := flowtest.RunPath(t.Context(), path, flowtest.RunOptions{})
+	cases := result.Report.GetCases()
+	require.Len(t, cases, 1)
+	require.NotEmpty(t, cases[0].GetFailures(), "the case reported no failure, so this proves nothing")
+	message := cases[0].GetFailures()[0].GetMessage()
+	assert.Contains(t, message, "no such key: [redacted]", "the failure was not redacted value by value")
+	assert.NotContains(t, message, "rootsecret0000", "the report showed the root's sensitive input")
+}
+
+// TestAReportWithholdsWhatACalleesUnenumerableSetQuotes: a callee whose own
+// sensitive input is too large to enumerate makes the gathered set withhold
+// everything. The run did not run under that posture, so nothing at the stub
+// boundary shaped its error, and the expectation's message withholds it whole
+// rather than printing it (exact-head review, #2215).
+func TestAReportWithholdsWhatACalleesUnenumerableSetQuotes(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "child.yaml"), `
+edition: v2026.3
+name: child
+inputs:
+  items:
+    type: list
+    required: true
+    sensitive: true
+steps:
+  - id: boom
+    value: ${{"a":1}[inputs.items[0]]}
+`)
+	items := make([]string, 0, 1100)
+	for i := range 1100 {
+		items = append(items, fmt.Sprintf("%q", fmt.Sprintf("calleesecret%04d", i)))
+	}
+	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
+edition: v2026.3
+name: parent
+steps:
+  - id: nested
+    call: ./child.yaml
+    with:
+      items: ${[`+strings.Join(items, ", ")+`]}
+`)
+	path := filepath.Join(dir, "workflow.test.yaml")
+	writeFile(t, path, `
+tests:
+  - name: the failure is reported
+    workflow: ./workflow.yaml
+    expect:
+      failed: false
+`)
+
+	result := flowtest.RunPath(t.Context(), path, flowtest.RunOptions{})
+	cases := result.Report.GetCases()
+	require.Len(t, cases, 1)
+	require.NotEmpty(t, cases[0].GetFailures(), "the case reported no failure, so this proves nothing: %s", cases[0].GetError())
+	message := cases[0].GetFailures()[0].GetMessage()
+	assert.Contains(t, message, "[withheld]", "the failure was not withheld whole")
+	assert.NotContains(t, message, "calleesecret0000", "the report showed the callee's sensitive input")
 }

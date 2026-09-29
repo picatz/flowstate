@@ -3,7 +3,6 @@ package flowstatev1
 import (
 	"fmt"
 	"reflect"
-	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -140,7 +139,17 @@ type sensitiveState struct {
 type SensitiveValues struct {
 	// state closes over the built set. nil means the empty set.
 	state func() sensitiveState
+
+	// identity tells one built set from another without reading it, so a
+	// [SensitiveAccumulator] told the same set again can skip it. A pointer,
+	// which reflection prints as an address: it carries no material. nil
+	// for the empty set.
+	identity *sensitiveIdentity
 }
+
+// sensitiveIdentity is what [SensitiveValues.identity] points at. Never read;
+// only its address matters, so it holds a byte to have one of its own.
+type sensitiveIdentity struct{ _ byte }
 
 // held returns the set this value closes over, or the empty one.
 func (s SensitiveValues) held() sensitiveState {
@@ -160,7 +169,7 @@ func sensitiveValuesOf(state sensitiveState) SensitiveValues {
 			state = sensitiveState{withholdAll: true}
 		}
 	}
-	return SensitiveValues{state: func() sensitiveState { return state }}
+	return SensitiveValues{state: func() sensitiveState { return state }, identity: new(sensitiveIdentity)}
 }
 
 // WithheldSensitiveValues is the fail-closed set: it can enumerate nothing, so
@@ -467,82 +476,29 @@ func (s SensitiveValues) WithValues(plaintexts ...string) SensitiveValues {
 // everything exactly as blowing it while building a set does, rather than
 // quietly handing every later caller a set larger than the one bound this
 // package has for how much comparison work a single redaction may cost.
+//
+// A union, each value held once: two sets that share values — a callee's
+// position holds the root's, and so does a failure it carries — count what
+// they share once against that bound, rather than reaching it, and
+// withholding everything, merely by repeating each other (#2215).
 func (s SensitiveValues) Merge(other SensitiveValues) SensitiveValues {
 	a, b := s.held(), other.held()
-	if a.withholdAll || b.withholdAll {
-		return WithheldSensitiveValues()
-	}
-	if len(a.values)+len(b.values) > maxSensitiveDescendants {
-		return WithheldSensitiveValues()
-	}
-
-	return sensitiveValuesOf(sensitiveState{
-		values:     append(append([]any(nil), a.values...), b.values...),
-		substrings: append(append([]string(nil), a.substrings...), b.substrings...),
-	})
-}
-
-// Union is [SensitiveValues.Merge] for a set that accumulates: a value or
-// substring other holds that s already holds is not held twice, and a union
-// that adds nothing returns s itself. A renderer gathering what every step of
-// a run withheld (#2211) is told mostly the same sets over and over, and
-// Merge, which appends, would reach [maxSensitiveDescendants] — and withhold
-// everything — after a few hundred steps of one loop.
-//
-// Values are matched by their type and Go syntax (`%#v`, which sorts map
-// keys), so two equal structured values are one; a key that merely renders
-// alike but differs in [reflect.DeepEqual] cannot arise from [LiteralToGo],
-// the only source of these values.
-func (s SensitiveValues) Union(other SensitiveValues) SensitiveValues {
-	a, b := s.held(), other.held()
 	switch {
-	case a.withholdAll:
-		return s
-	case b.withholdAll:
+	case a.withholdAll || b.withholdAll:
 		return WithheldSensitiveValues()
+	// A side that adds nothing leaves the other as it was, the same set, so a
+	// merge with the empty set — the common case, a step whose failure
+	// carries nothing — builds no new matcher and keeps its identity.
 	case len(b.values) == 0 && len(b.substrings) == 0:
 		return s
+	case len(a.values) == 0 && len(a.substrings) == 0:
+		return other
 	}
+	var both SensitiveAccumulator
+	both.Add(s)
+	both.Add(other)
 
-	values := make(map[string]struct{}, len(a.values))
-	for _, value := range a.values {
-		values[sensitiveValueKey(value)] = struct{}{}
-	}
-	substrings := make(map[string]struct{}, len(a.substrings))
-	for _, substring := range a.substrings {
-		substrings[substring] = struct{}{}
-	}
-	var addValues []any
-	for _, value := range b.values {
-		key := sensitiveValueKey(value)
-		if _, held := values[key]; !held {
-			values[key] = struct{}{}
-			addValues = append(addValues, value)
-		}
-	}
-	var addSubstrings []string
-	for _, substring := range b.substrings {
-		if _, held := substrings[substring]; !held {
-			substrings[substring] = struct{}{}
-			addSubstrings = append(addSubstrings, substring)
-		}
-	}
-	if len(addValues) == 0 && len(addSubstrings) == 0 {
-		return s
-	}
-	if len(a.values)+len(addValues) > maxSensitiveDescendants {
-		return WithheldSensitiveValues()
-	}
-
-	return sensitiveValuesOf(sensitiveState{
-		values:     append(slices.Clip(a.values), addValues...),
-		substrings: append(slices.Clip(a.substrings), addSubstrings...),
-	})
-}
-
-// sensitiveValueKey is what [SensitiveValues.Union] matches a value by.
-func sensitiveValueKey(value any) string {
-	return fmt.Sprintf("%T\x00%#v", value, value)
+	return both.Values()
 }
 
 // WithholdAll reports the fail-closed case: the set could not be built

@@ -180,11 +180,14 @@ type runRecorder struct {
 	// sensitive is the redaction set every rendered value passes through —
 	// the same [sensitiveInputs] the unmatched-stub diagnostic uses, built
 	// from the same declarations, so what `flow test` refuses to print in one
-	// place it refuses to print everywhere. The case sets it before the run,
-	// and every step widens it with what its own workflow and its callees
-	// withhold ([runRecorder.StepFinishedWithholding]), which the case's
-	// posture — the root's declarations — never saw (#2211).
+	// place it refuses to print everywhere. The case sets it before the run;
+	// the rendering widens it with gathered.
 	sensitive sensitiveInputs
+
+	// gathered is what each step's own workflow and its callees withheld
+	// ([runRecorder.StepFinishedWithholding]), which the case's posture —
+	// the root's declarations — never saw (#2211).
+	gathered v1.SensitiveAccumulator
 
 	// switches records, per step id, that the compiled workflow declares a
 	// `switch:` there and whether it has a `default:` — carried from the spec
@@ -328,16 +331,16 @@ func (r *runRecorder) StepFinishedWithholding(id string, outputs *v1.Node_Output
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.sensitive = r.sensitive.Union(withhold)
+	r.gathered.Add(withhold)
 }
 
-// withheld is the case's posture widened with everything the run's steps
-// withheld, for what the case renders once the run is over.
+// withheld is everything the run's steps withheld, for what the case renders
+// once the run is over.
 func (r *runRecorder) withheld() sensitiveInputs {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	return r.sensitive
+	return r.gathered.Values()
 }
 
 func (r *runRecorder) StepSkipped(id string) {
@@ -408,7 +411,7 @@ func (r *runRecorder) render() []TranscriptLine {
 	r.mu.Lock()
 	events := r.events
 	eventsFull, bytesFull := r.eventsFull, r.bytesFull
-	sensitive := r.sensitive
+	sensitive := widenedBy(r.sensitive, r.gathered.Values())
 	switches := r.switches
 	r.mu.Unlock()
 

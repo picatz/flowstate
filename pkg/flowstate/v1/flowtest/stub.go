@@ -886,9 +886,12 @@ func (s *stubbedTask) fn(name string, sensitiveInputNames map[string]bool, unstu
 		if sawEvalErr {
 			kind = v1.ErrorKindExpression
 		}
+		// sensitiveInputNames are the root's declarations, and scope may be a
+		// callee's: what the invocation's own position withholds — its
+		// workflow's declarations and every caller's — is added (#2211).
 		return nil, v1.NewTaskError(name, kind,
 			unmatchedStubError(name, len(s.matchers), native, secretNames,
-				sensitiveNativeValues(scope, sensitiveInputNames), verdicts))
+				sensitiveNativeValues(scope, sensitiveInputNames).Merge(v1.ExecutingSensitiveFromContext(ctx)), verdicts))
 	}
 }
 

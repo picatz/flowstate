@@ -2,6 +2,7 @@ package flowstatev1
 
 import (
 	"fmt"
+	"math"
 	"strings"
 	"testing"
 
@@ -615,37 +616,93 @@ func TestMergeWithholdsPastTheCombinedDescendantBound(t *testing.T) {
 	require.True(t, b.Merge(a).WithholdAll(), "order must not matter")
 }
 
-// TestAUnionHoldsEachValueOnce: a set gathered step by step is told the same
-// sets over and over (#2211). Union holds each value once, so it stays under
-// the bound however often it is told; Merge, which appends, withholds
-// everything once the repeats reach it.
-func TestAUnionHoldsEachValueOnce(t *testing.T) {
+// TestAnAccumulatorHoldsEachValueOnce: a set gathered step by step is told
+// the same sets over and over (#2211). The accumulator holds each value once,
+// however often and in however many separately built sets it is told, so it
+// stays under the bound — 1025 repeats of even a one-value set would pass it
+// if each were held again. Merge, a union built on it, does the same
+// (#2215).
+func TestAnAccumulatorHoldsEachValueOnce(t *testing.T) {
 	t.Parallel()
 
-	token := oneSensitiveInput("token", NewLiteral("hunter2-token"))
-	codes := oneSensitiveInput("codes", NewLiteralList(7, 8))
-
-	var unioned, merged SensitiveValues
+	var gathered SensitiveAccumulator
+	var merged SensitiveValues
 	for range maxSensitiveDescendants + 1 {
-		unioned = unioned.Union(token).Union(codes)
-		merged = merged.Merge(token)
+		// Built afresh each time, so only equality, not identity, can see
+		// that nothing is new.
+		gathered.Add(oneSensitiveInput("token", NewLiteral("hunter2-token")))
+		gathered.Add(oneSensitiveInput("codes", NewLiteralList(7, 8)))
+		merged = merged.Merge(oneSensitiveInput("token", NewLiteral("hunter2-token")))
 	}
-	require.True(t, merged.WithholdAll(), "the repeats never reached the bound, so this proves nothing")
-	require.False(t, unioned.WithholdAll(), "a union of the same two sets reached the bound")
-	assert.Len(t, unioned.held().values, len(token.held().values)+len(codes.held().values))
-	assert.Len(t, unioned.held().substrings, len(token.held().substrings)+len(codes.held().substrings))
-	assert.True(t, unioned.IsSensitive("hunter2-token"))
-	assert.True(t, unioned.IsSensitive(int64(7)) || unioned.IsSensitive(7), "a structured set's descendant was lost")
-	assert.Equal(t, "the [redacted] travels", unioned.RedactText("the hunter2-token travels", "[redacted]"))
+	require.False(t, merged.WithholdAll(), "merging the same set again and again reached the bound")
+	assert.Len(t, merged.held().values, len(oneSensitiveInput("token", NewLiteral("hunter2-token")).held().values))
+
+	all := gathered.Values()
+	token, codes := oneSensitiveInput("token", NewLiteral("hunter2-token")), oneSensitiveInput("codes", NewLiteralList(7, 8))
+	require.False(t, all.WithholdAll(), "gathering the same two sets reached the bound")
+	assert.Len(t, all.held().values, len(token.held().values)+len(codes.held().values))
+	assert.Len(t, all.held().substrings, len(token.held().substrings)+len(codes.held().substrings))
+	assert.True(t, all.IsSensitive("hunter2-token"))
+	assert.Equal(t, "the [redacted] travels", all.RedactText("the hunter2-token travels", "[redacted]"))
+	assert.Equal(t, SensitiveMarker, all.RedactTree(int64(7)), "a structured set's short descendant was lost")
 }
 
-// TestAUnionFailsClosed: a union with a set that could not be built withholds
-// everything, whichever side it is on, as Merge does.
-func TestAUnionFailsClosed(t *testing.T) {
+// TestAnAccumulatorToldASetAgainDoesNoWork: the cost Copilot measured on
+// #2215 — every step formatting everything gathered — is gone. A set already
+// gathered is skipped by identity, and asking for the result again rebuilds
+// nothing.
+func TestAnAccumulatorToldASetAgainDoesNoWork(t *testing.T) {
+	large := oneSensitiveInput("key", NewLiteral(strings.Repeat("s3cr3t-", 5000)))
+	var gathered SensitiveAccumulator
+	gathered.Add(large)
+	first := gathered.Values()
+
+	allocs := testing.AllocsPerRun(100, func() {
+		gathered.Add(large)
+		_ = gathered.Values()
+	})
+	assert.Zero(t, allocs, "gathering a set already gathered did work")
+	assert.Same(t, first.identity, gathered.Values().identity, "the gathered set was rebuilt with nothing new")
+}
+
+// TestAnAccumulatorFailsClosed: a set that could not be built withholds
+// everything from then on, whichever order it arrives in, and an accumulator
+// told nothing withholds nothing.
+func TestAnAccumulatorFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	var before, after, empty SensitiveAccumulator
+	before.Add(WithheldSensitiveValues())
+	before.Add(oneSensitiveInput("token", NewLiteral("hunter2-token")))
+	after.Add(oneSensitiveInput("token", NewLiteral("hunter2-token")))
+	after.Add(WithheldSensitiveValues())
+	assert.True(t, before.Values().WithholdAll())
+	assert.True(t, after.Values().WithholdAll())
+	assert.True(t, empty.Values().Empty())
+}
+
+// TestAnAccumulatorHoldsANaNOnce: a NaN never equals itself under
+// reflect.DeepEqual, so without its own rule it would be gathered anew from
+// every set until the bound withheld everything.
+func TestAnAccumulatorHoldsANaNOnce(t *testing.T) {
+	t.Parallel()
+
+	var gathered SensitiveAccumulator
+	for range maxSensitiveDescendants + 1 {
+		gathered.Add(sensitiveValuesOf(sensitiveState{values: []any{math.NaN()}}))
+	}
+	require.False(t, gathered.Values().WithholdAll())
+	assert.Len(t, gathered.Values().held().values, 1)
+}
+
+// TestMergingWithNothingKeepsTheSet: a merge where one side adds nothing is
+// the other side itself, so a step whose failure carries nothing reports the
+// same set its position holds, and a reader can recognize it.
+func TestMergingWithNothingKeepsTheSet(t *testing.T) {
 	t.Parallel()
 
 	token := oneSensitiveInput("token", NewLiteral("hunter2-token"))
-	assert.True(t, token.Union(WithheldSensitiveValues()).WithholdAll())
-	assert.True(t, WithheldSensitiveValues().Union(token).WithholdAll())
-	assert.True(t, SensitiveValues{}.Union(SensitiveValues{}).Empty())
+	assert.Same(t, token.identity, token.Merge(SensitiveValues{}).identity)
+	assert.Same(t, token.identity, SensitiveValues{}.Merge(token).identity)
+	assert.True(t, token.Merge(WithheldSensitiveValues()).WithholdAll())
 }

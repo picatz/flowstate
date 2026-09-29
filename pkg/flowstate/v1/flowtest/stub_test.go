@@ -854,3 +854,68 @@ tests:
 	}
 	require.True(t, found, "expected an expect.failed diagnostic carrying the truncated value; got %v", c.GetFailures())
 }
+
+// TestUnmatchedStubRedactsACalleesShortSensitiveValue: an unmatched stub's
+// diagnostic is built while the run is in a callee, from that callee's scope,
+// and the case's posture holds only the root's declarations. A short value
+// inside a callee's structured sensitive input — the 7 in `pins: [7]` — is
+// below the substring floor, so only the callee's own set, matched by value,
+// withholds it (exact-head review, #2215).
+func TestUnmatchedStubRedactsACalleesShortSensitiveValue(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeFile(t, dir+"/child.yaml", `
+edition: v2026.3
+name: child
+inputs:
+  pins:
+    type: list
+    sensitive: true
+    required: true
+steps:
+  - id: call
+    http:
+      url: https://example.invalid/probe
+      json: '${ {"pin": inputs.pins[0]} }'
+`)
+	writeFile(t, dir+"/workflow.yaml", `
+edition: v2026.3
+name: parent
+steps:
+  - id: nested
+    call: ./child.yaml
+    with:
+      pins: ${[7]}
+outputs: {}
+`)
+	writeFile(t, dir+"/workflow.test.yaml", `
+tests:
+  - name: no stub matches the callee's call
+    workflow: ./workflow.yaml
+    stubs:
+      - task: http
+        where: inputs.url == 'https://nope.invalid/'
+    expect:
+      outputs: {}
+`)
+
+	report := flowtest.RunFile(dir + "/workflow.test.yaml")
+	require.Empty(t, report.GetRefused())
+	require.Len(t, report.GetCases(), 1)
+
+	c := report.GetCases()[0]
+	require.False(t, c.GetPassed())
+	found := false
+	for _, f := range c.GetFailures() {
+		if f.GetField() != "expect.failed" {
+			continue
+		}
+		msg := f.GetMessage()
+		require.Contains(t, msg, "pin:", "the invocation's inputs were not reported, so this proves nothing: %s", msg)
+		require.NotContains(t, msg, "pin:7", "the callee's short sensitive value was shown: %s", msg)
+		require.Contains(t, msg, "pin:[redacted]", "the callee's short sensitive value was not withheld: %s", msg)
+		found = true
+	}
+	require.True(t, found, "expected an expect.failed diagnostic; got %v", c.GetFailures())
+}

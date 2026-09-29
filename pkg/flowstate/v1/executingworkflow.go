@@ -49,9 +49,15 @@ type executingPosition struct {
 	// root and here are what a debugger holding a step on this context
 	// withholds: the root workflow's declared-sensitive inputs, and those of
 	// every workflow called on the way here, the one whose steps are running
-	// included. Only recorded while a [Debugger] is installed; see
-	// [ExecutingSensitiveFromContext].
+	// included. Only recorded while something reads them ([withholdingRead]);
+	// see [ExecutingSensitiveFromContext].
 	root, here SensitiveValues
+
+	// all is root and here merged, once, where the position is made: every
+	// step on it asks, and one set per position — rather than one built per
+	// step — is what lets a reader gathering them recognize a set it has
+	// already heard ([SensitiveAccumulator], Copilot on #2215).
+	all SensitiveValues
 }
 
 // contextWithExecutingWorkflow returns ctx carrying name as the workflow whose
@@ -66,7 +72,7 @@ type executingPosition struct {
 // sensitive is the root's declared-sensitive inputs, as bound, when a
 // [Debugger] is installed; see [ExecutingSensitiveFromContext].
 func contextWithExecutingWorkflow(ctx context.Context, name string, sensitive SensitiveValues) context.Context {
-	return context.WithValue(ctx, executingWorkflowKey{}, executingPosition{workflow: name, root: sensitive})
+	return context.WithValue(ctx, executingWorkflowKey{}, executingPosition{workflow: name, root: sensitive, all: sensitive})
 }
 
 // contextWithExecutingCall moves execution into callee and records the caller
@@ -93,15 +99,18 @@ func contextWithExecutingCall(ctx context.Context, callerStep, callerKind, calle
 		})
 	}
 
+	// Every caller's as well as the callee's own: a value a middle workflow
+	// declared sensitive and forwarded under a plain name stays withheld
+	// below it (Codex, #2209), as the durable driver withholds it.
+	here := position.here.Merge(sensitive)
+
 	return context.WithValue(ctx, executingWorkflowKey{}, executingPosition{
 		workflow: callee,
 		callers:  callers,
 		segments: segments,
 		root:     position.root,
-		// Every caller's as well as the callee's own: a value a middle
-		// workflow declared sensitive and forwarded under a plain name stays
-		// withheld below it (Codex, #2209), as the durable driver withholds it.
-		here: position.here.Merge(sensitive),
+		here:     here,
+		all:      position.root.Merge(here),
 	})
 }
 
@@ -119,7 +128,7 @@ func contextWithExecutingCall(ctx context.Context, callerStep, callerKind, calle
 func ExecutingSensitiveFromContext(ctx context.Context) SensitiveValues {
 	position, _ := ctx.Value(executingWorkflowKey{}).(executingPosition)
 
-	return position.root.Merge(position.here)
+	return position.all
 }
 
 // WithFailureSensitiveValues returns err carrying sensitive beside it: what a
