@@ -259,12 +259,12 @@ func withholdConstants(m protoreflect.Message, withheld func(any) bool) {
 // it as. A set compares by value and type, and an author can write a value in
 // a literal of another type, which the renderer then spells its own way: a
 // string in a bytes literal (in octal), an int as a double (in exponent
-// form). So bytes are also their text, and a number is also each other
-// numeric type that holds it exactly (#2227).
+// form). So bytes are also their text and text is also its bytes, and a
+// number is also each other numeric type that holds it exactly (#2227).
 func constantForms(constant *expr.Constant) []any {
 	switch kind := constant.GetConstantKind().(type) {
 	case *expr.Constant_StringValue:
-		return []any{kind.StringValue}
+		return []any{kind.StringValue, []byte(kind.StringValue)}
 	case *expr.Constant_BytesValue:
 		return []any{kind.BytesValue, string(kind.BytesValue)}
 	case *expr.Constant_Int64Value:
@@ -275,21 +275,27 @@ func constantForms(constant *expr.Constant) []any {
 		return numericForms(kind.DoubleValue, kind.DoubleValue)
 	case *expr.Constant_BoolValue:
 		return []any{kind.BoolValue}
+	case *expr.Constant_NullValue:
+		// A sensitive structure's null leaf is held as nil (Codex, #2227).
+		return []any{nil}
 	default:
 		return nil
 	}
 }
 
-// numericForms is value, and f as each of int64, uint64 and float64 that
-// represents it exactly. Bounded by 2^63 before converting, since converting a
-// float64 at or past it to an int64 is not defined.
+// numericForms is value, and f as each of float64, int64 and uint64 that
+// holds it. Each integer type is asked about only inside its own range, since
+// converting a float64 outside it is not defined, and separately, since the
+// unsigned range runs on past the signed one (Codex, #2227).
 func numericForms(f float64, value any) []any {
-	forms := []any{value}
-	if f != math.Trunc(f) || math.Abs(f) >= 1<<63 {
-		return append(forms, f)
+	forms := []any{value, f}
+	if f != math.Trunc(f) {
+		return forms
 	}
-	forms = append(forms, f, int64(f))
-	if f >= 0 {
+	if f >= -(1<<63) && f < 1<<63 {
+		forms = append(forms, int64(f))
+	}
+	if f >= 0 && f < 1<<64 {
 		forms = append(forms, uint64(f))
 	}
 

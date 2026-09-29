@@ -157,6 +157,16 @@ func TestASkipWithholdsAConstantByValue(t *testing.T) {
 	word := func(value any) bool { return value == "hunter2" }
 	require.Equal(t, "gate skipped: `if: inputs.x != \"[redacted]\"` was false", SkippedText("gate", NewExpr(`inputs.x != b"hunter2"`), word))
 
+	// An unsigned value past the signed range, written as a double, and a
+	// null leaf, which a sensitive structure's set holds as nil.
+	top := func(value any) bool { return value == uint64(1<<63) }
+	require.Equal(t, "gate skipped: `if: double(inputs.x) != \"[redacted]\"` was false",
+		SkippedText("gate", NewExpr(`double(inputs.x) != 9223372036854775808.0`), top))
+	null := func(value any) bool { return value == nil }
+	require.Equal(t, "gate skipped: `if: inputs.x != \"[redacted]\"` was false", SkippedText("gate", NewExpr(`inputs.x != null`), null))
+	require.Equal(t, "gate skipped: `if: inputs.x != null` was false", SkippedText("gate", NewExpr(`inputs.x != null`), nil),
+		"the renderer no longer writes null, so this proves nothing")
+
 	// A field name is no constant, but a sensitive structure's keys are what
 	// its set withholds, whether selected or written in a message literal.
 	key := func(value any) bool { return value == "string_value" }

@@ -810,7 +810,11 @@ func GuardCases() []GuardCase {
 							Name:           "child",
 							Profile:        v1.CurrentProfile,
 							DeclaredInputs: []*v1.InputDeclaration{{Name: "creds", Type: v1.InputDeclaration_TYPE_STRUCT, Sensitive: true}},
-							Steps:          []*v1.Node{guarded("rotate", `inputs.creds.token != b"hunter2-bytes"`, "never")},
+							Steps: []*v1.Node{
+								guarded("rotate", `inputs.creds.token != b"hunter2-bytes"`, "never"),
+								// The same bytes written as a string literal.
+								guarded("recheck", `string(inputs.creds.token) != "hunter2-bytes"`, "never"),
+							},
 						},
 						Arguments: map[string]*v1.Value{"creds": v1.NewExpr(`{"token": b"hunter2-bytes"}`)},
 					}}},
@@ -819,8 +823,12 @@ func GuardCases() []GuardCase {
 			// The field is withheld too: a sensitive structure's keys are
 			// what its set withholds, and the renderer quotes a field name
 			// that is not an identifier.
-			Skipped: []string{"rotate skipped: `if: inputs.creds.`[redacted]` != \"[redacted]\"` was false"},
-			// "hun" as the renderer writes it in a bytes literal.
+			Skipped: []string{
+				"rotate skipped: `if: inputs.creds.`[redacted]` != \"[redacted]\"` was false",
+				"recheck skipped: `if: string(inputs.creds.`[redacted]`) != \"[redacted]\"` was false",
+			},
+			// "hun" as the renderer writes it in a bytes literal; the
+			// string literal is checked by the expected sentences.
 			Secret: `\150\165\156`,
 		},
 		{
@@ -867,15 +875,22 @@ func GuardCases() []GuardCase {
 							DeclaredInputs: []*v1.InputDeclaration{
 								{Name: "api_key", Type: v1.InputDeclaration_TYPE_STRING, Sensitive: true},
 								{Name: "pin", Type: v1.InputDeclaration_TYPE_INT, Sensitive: true},
+								{Name: "vault", Type: v1.InputDeclaration_TYPE_STRUCT, Sensitive: true},
 							},
 							Steps: []*v1.Node{
 								guarded("bearer", `bytes("Bearer " + inputs.api_key) != b"Bearer hunter2-retyped"`, "never"),
 								guarded("unlock", `double(inputs.pin) != 918273645.0`, "never"),
+								// Past the signed range, where only the unsigned
+								// form holds it.
+								guarded("vault", `double(inputs.vault.n) != 9223372036854775808.0`, "never"),
+								// A null leaf, which the set holds as nil.
+								guarded("absent", `inputs.vault.gone != null`, "never"),
 							},
 						},
 						Arguments: map[string]*v1.Value{
 							"api_key": v1.NewLiteral("hunter2-retyped"),
 							"pin":     v1.NewLiteral(int64(918273645)),
+							"vault":   v1.NewExpr(`{"n": 9223372036854775808u, "gone": null}`),
 						},
 					}}},
 				},
@@ -883,6 +898,8 @@ func GuardCases() []GuardCase {
 			Skipped: []string{
 				"bearer skipped: `if: bytes(\"Bearer \" + inputs.api_key) != \"[redacted]\"` was false",
 				"unlock skipped: `if: double(inputs.pin) != \"[redacted]\"` was false",
+				"vault skipped: `if: double(inputs.vault.`[redacted]`) != \"[redacted]\"` was false",
+				"absent skipped: `if: inputs.vault.`[redacted]` != \"[redacted]\"` was false",
 			},
 			// "hun" as the renderer writes it in a bytes literal; the pin's
 			// exponent form is checked by the same substring.
