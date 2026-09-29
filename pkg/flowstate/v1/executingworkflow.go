@@ -49,9 +49,15 @@ type executingPosition struct {
 	// root and here are what a debugger holding a step on this context
 	// withholds: the root workflow's declared-sensitive inputs, and those of
 	// every workflow called on the way here, the one whose steps are running
-	// included. Only recorded while a [Debugger] is installed; see
-	// [ExecutingSensitiveFromContext].
+	// included. Only recorded while something reads them ([withholdingRead]);
+	// see [ExecutingSensitiveFromContext].
 	root, here SensitiveValues
+
+	// all is root and here merged, once, where the position is made: every
+	// step on it asks, and one set per position — rather than one built per
+	// step — is what lets a reader gathering them recognize a set it has
+	// already heard ([SensitiveAccumulator], Copilot on #2215).
+	all SensitiveValues
 }
 
 // contextWithExecutingWorkflow returns ctx carrying name as the workflow whose
@@ -66,7 +72,7 @@ type executingPosition struct {
 // sensitive is the root's declared-sensitive inputs, as bound, when a
 // [Debugger] is installed; see [ExecutingSensitiveFromContext].
 func contextWithExecutingWorkflow(ctx context.Context, name string, sensitive SensitiveValues) context.Context {
-	return context.WithValue(ctx, executingWorkflowKey{}, executingPosition{workflow: name, root: sensitive})
+	return context.WithValue(ctx, executingWorkflowKey{}, executingPosition{workflow: name, root: sensitive, all: sensitive})
 }
 
 // contextWithExecutingCall moves execution into callee and records the caller
@@ -93,15 +99,18 @@ func contextWithExecutingCall(ctx context.Context, callerStep, callerKind, calle
 		})
 	}
 
+	// Every caller's as well as the callee's own: a value a middle workflow
+	// declared sensitive and forwarded under a plain name stays withheld
+	// below it (Codex, #2209), as the durable driver withholds it.
+	here := position.here.Merge(sensitive)
+
 	return context.WithValue(ctx, executingWorkflowKey{}, executingPosition{
 		workflow: callee,
 		callers:  callers,
 		segments: segments,
 		root:     position.root,
-		// Every caller's as well as the callee's own: a value a middle
-		// workflow declared sensitive and forwarded under a plain name stays
-		// withheld below it (Codex, #2209), as the durable driver withholds it.
-		here: position.here.Merge(sensitive),
+		here:     here,
+		all:      position.root.Merge(here),
 	})
 }
 
@@ -119,7 +128,7 @@ func contextWithExecutingCall(ctx context.Context, callerStep, callerKind, calle
 func ExecutingSensitiveFromContext(ctx context.Context) SensitiveValues {
 	position, _ := ctx.Value(executingWorkflowKey{}).(executingPosition)
 
-	return position.root.Merge(position.here)
+	return position.all
 }
 
 // WithFailureSensitiveValues returns err carrying sensitive beside it: what a
@@ -173,11 +182,11 @@ func FailureSensitiveValues(err error) SensitiveValues {
 // path.
 type callReturnKey struct{}
 
-// contextWithCallReturn installs a fresh slot for one call step while a
-// [Debugger] is installed, the only reader, and returns it; nil, and ctx
+// contextWithCallReturn installs a fresh slot for one call step while
+// something reads it ([withholdingRead]), and returns it; nil, and ctx
 // unchanged, otherwise.
 func contextWithCallReturn(ctx context.Context) (context.Context, *SensitiveValues) {
-	if DebuggerFromContext(ctx) == nil {
+	if !withholdingRead(ctx) {
 		return ctx, nil
 	}
 	slot := new(SensitiveValues)
@@ -217,14 +226,32 @@ func (f *sensitiveFailure) Unwrap() error { return f.err }
 func (f *sensitiveFailure) FailureSensitiveValues() SensitiveValues { return f.sensitive }
 
 // debugSensitiveInputs is what [ExecutingSensitiveFromContext] records for
-// one workflow's bound inputs: only while a [Debugger] is installed, which is
-// the only reader, so an ordinary run does not pay for it.
+// one workflow's bound inputs: only while something reads it
+// ([withholdingRead]), so an ordinary run does not pay for it.
 func debugSensitiveInputs(ctx context.Context, wf *Workflow, inputs map[string]*Value) SensitiveValues {
-	if DebuggerFromContext(ctx) == nil {
+	if !withholdingRead(ctx) {
 		return SensitiveValues{}
 	}
 
 	return SensitiveInputValues(inputs, SensitiveInputNames(wf))
+}
+
+// withholdingRead reports whether anything on ctx reads what a position
+// withholds: a [Debugger], which renders at holds and arrivals, a
+// [WithholdingRunObserver], which renders each step's outcome — `flow test`'s
+// transcript among them (#2211) — or a [WithholdingOnlyRunObserver], which
+// gathers the sets for a rendering made after the run. None is installed on
+// an ordinary run.
+func withholdingRead(ctx context.Context) bool {
+	if DebuggerFromContext(ctx) != nil {
+		return true
+	}
+	switch RunObserverFromContext(ctx).(type) {
+	case WithholdingRunObserver, WithholdingOnlyRunObserver:
+		return true
+	}
+
+	return false
 }
 
 // ExecutingWorkflowFromContext reports which workflow's steps are running on

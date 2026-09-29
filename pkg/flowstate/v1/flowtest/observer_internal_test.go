@@ -74,3 +74,19 @@ func TestATeeTellsTheDebuggerWhatToWithhold(t *testing.T) {
 		t.Fatal("the debugger was not told what to withhold")
 	}
 }
+
+// TestATeeTellsAGathererWhatToWithhold: a gatherer teed with a debugger hears
+// each step's set, as it does alone, though it reads nothing else.
+func TestATeeTellsAGathererWhatToWithhold(t *testing.T) {
+	gatherer, debugger := &sensitiveGatherer{}, &withholdingObserver{}
+	withhold := v1.SensitiveInputValues(map[string]*v1.Value{"api_key": v1.NewLiteral("hunter2")}, map[string]bool{"api_key": true})
+
+	teeObserver{first: gatherer, second: debugger}.StepFinishedWithholding("boom", nil, nil, false, withhold)
+
+	if !gatherer.withheld().IsSensitive("hunter2") {
+		t.Fatal("the gatherer was not told what to withhold")
+	}
+	if debugger.withheld != 1 {
+		t.Fatalf("the debugger heard %d withholding outcomes, want 1", debugger.withheld)
+	}
+}

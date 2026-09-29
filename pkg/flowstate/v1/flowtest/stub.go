@@ -886,9 +886,12 @@ func (s *stubbedTask) fn(name string, sensitiveInputNames map[string]bool, unstu
 		if sawEvalErr {
 			kind = v1.ErrorKindExpression
 		}
+		// sensitiveInputNames are the root's declarations, and scope may be a
+		// callee's: what the invocation's own position withholds — its
+		// workflow's declarations and every caller's — is added (#2211).
 		return nil, v1.NewTaskError(name, kind,
 			unmatchedStubError(name, len(s.matchers), native, secretNames,
-				sensitiveNativeValues(scope, sensitiveInputNames), verdicts))
+				sensitiveNativeValues(scope, sensitiveInputNames).Merge(v1.ExecutingSensitiveFromContext(ctx)), verdicts))
 	}
 }
 
@@ -1106,7 +1109,7 @@ func unmatchedStubError(name string, declared int, native map[string]any, secret
 	// nothing knows it is a refusal rather than a bug (CLAUDE.md,
 	// "diagnostics are a feature").
 	if sensitive.WithholdAll() {
-		b.WriteString("  (every input above is withheld: this run's sensitive inputs could not be enumerated, " +
+		b.WriteString("  (every input above, and every stub's where:, is withheld: this run's sensitive inputs could not be enumerated, " +
 			"so nothing on this invocation can be shown to be safe to print)\n")
 	}
 
@@ -1116,8 +1119,14 @@ func unmatchedStubError(name string, declared int, native map[string]any, secret
 		b.WriteString("  stub verdicts:")
 		for i, v := range verdicts {
 			where := v.whereSource
-			if where == "" {
+			switch {
+			case where == "":
 				where = "(no where:)"
+			case sensitive.WithholdAll():
+				// Author text, and an author can write a sensitive value into
+				// it: under a set that names nothing, nothing shows it is safe,
+				// and this diagnostic is printed as it is (#2215).
+				where = "[withheld: where:]"
 			}
 			switch {
 			case v.drained > 0:
@@ -1133,7 +1142,48 @@ func unmatchedStubError(name string, declared int, native map[string]any, secret
 		}
 	}
 
-	return errors.New(b.String())
+	return &stubDiagnostic{text: b.String(), shaped: sensitive.WithholdAll()}
+}
+
+// stubDiagnostic is a diagnostic the stub boundary built — an unmatched
+// stub's ([unmatchedStubError]) or an unstubbed task's ([unstubbedTaskFn]) —
+// shaped where it was raised, so a run's error can carry it out to the case's
+// report as it is. Its own type so that the report can tell it from an error
+// nothing shaped ([assertExpectation]).
+type stubDiagnostic struct {
+	text string
+
+	// shaped says the diagnostic holds nothing a set withholding everything
+	// would withhold: an unmatched stub's built under a position that could
+	// not enumerate what it withholds, which withholds every input it
+	// quotes, the callee's own included when it was raised in one (Codex,
+	// #2215); or an unstubbed task's, which quotes no value at all.
+	shaped bool
+}
+
+func (e *stubDiagnostic) Error() string { return e.text }
+
+// onlyPrefixed reports that err is d with nothing but text in front of it:
+// every error from err down to d, one [errors.Unwrap] at a time, renders as
+// its child's text with something before it and nothing after. Comparing the
+// whole rendering's end with d's alone is not enough — a compensation's
+// failure appended after d can itself end in the same diagnostic, when both
+// reach one unstubbed task (exact-head review, #2215). A layer wrapping
+// several errors, or one whose text does not end with its child's, is not
+// prefixes only.
+func onlyPrefixed(err error, d *stubDiagnostic) bool {
+	for err != nil {
+		if diagnostic, ok := err.(*stubDiagnostic); ok && diagnostic == d {
+			return true
+		}
+		child := errors.Unwrap(err)
+		if child == nil || !strings.HasSuffix(err.Error(), child.Error()) {
+			return false
+		}
+		err = child
+	}
+
+	return false
 }
 
 // unusedStubWarnings reports, after one case's run, every stub the case

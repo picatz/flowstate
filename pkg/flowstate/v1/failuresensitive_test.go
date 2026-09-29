@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -45,4 +46,51 @@ func TestAFailureCarryingNothingIsItself(t *testing.T) {
 	assert.True(t, v1.FailureSensitiveValues(cause).Empty())
 	assert.True(t, v1.FailureSensitiveValues(nil).Empty())
 	assert.NoError(t, v1.WithFailureSensitiveValues(nil, v1.WithheldSensitiveValues()))
+}
+
+type plainObserver struct{}
+
+func (plainObserver) StepFinished(string, *v1.Node_Outputs, error, bool) {}
+func (plainObserver) StepSkipped(string)                                 {}
+func (plainObserver) WaitStarted(string, string, time.Duration, bool)    {}
+
+type withholdingObserver struct {
+	plainObserver
+	withheld []v1.SensitiveValues
+}
+
+func (o *withholdingObserver) StepFinishedWithholding(_ string, _ *v1.Node_Outputs, _ error, _ bool, withhold v1.SensitiveValues) {
+	o.withheld = append(o.withheld, withhold)
+}
+
+// TestTheSetsAreComputedOnlyForAReader: a run computes what a position
+// withholds only while something reads it — a debugger, or an observer that
+// renders with it, as `flow test`'s transcript does (#2211). An ordinary
+// observer costs a run nothing, and the failure it returns carries nothing.
+func TestTheSetsAreComputedOnlyForAReader(t *testing.T) {
+	t.Parallel()
+
+	const secret = "hunter2-callee-only-secret"
+	spec := &v1.Workflow{Name: "parent", Profile: v1.CurrentProfile, Steps: []*v1.Node{{
+		Id: "nested", Kind: &v1.Node_Call{Call: &v1.Call{
+			Workflow: &v1.Workflow{
+				Name:           "child",
+				Profile:        v1.CurrentProfile,
+				DeclaredInputs: []*v1.InputDeclaration{{Name: "api_key", Type: v1.InputDeclaration_TYPE_STRING, Sensitive: true}},
+				Steps:          []*v1.Node{{Id: "boom", Kind: &v1.Node_Value{Value: v1.NewExpr(`{"a": 1}[inputs.api_key]`)}}},
+			},
+			Arguments: map[string]*v1.Value{"api_key": v1.NewLiteral(secret)},
+		}},
+	}}}
+
+	_, err := v1.RunWithInputs(v1.NewContextWithRunObserver(t.Context(), plainObserver{}), spec, nil)
+	require.ErrorContains(t, err, secret)
+	assert.True(t, v1.FailureSensitiveValues(err).Empty(), "a run with no reader carried a set")
+
+	reader := &withholdingObserver{}
+	_, err = v1.RunWithInputs(v1.NewContextWithRunObserver(t.Context(), reader), spec, nil)
+	require.ErrorContains(t, err, secret, "reading the sets changed the failure's text")
+	assert.True(t, v1.FailureSensitiveValues(err).IsSensitive(secret), "the failure did not carry the callee's set")
+	require.NotEmpty(t, reader.withheld)
+	assert.True(t, reader.withheld[0].IsSensitive(secret), "the callee's step was not told its set")
 }

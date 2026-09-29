@@ -447,7 +447,7 @@ applies here rather than a second, weaker one.
   `inspect vars.token == "the real value"` answers false at the autopsy even
   where the same check was true, while `inputs` and `steps` still compare
   against real values. The autopsy prints a note saying which is which.
-- A value a **called** workflow declares `sensitive:` is withheld too, on both
+- An input a **called** workflow declares `sensitive:` is withheld too, on both
   drivers, although the case's posture never saw that declaration. It is
   withheld at a hold inside that callee, and in whatever it calls with the
   value. It is also withheld from each step's account and from a failure that
@@ -455,9 +455,10 @@ applies here rather than a second, weaker one.
   through, the failed run's final message, and the call's own account of the
   outputs the callee hands back. A value that has crossed back into the
   caller's scope is not yet withheld when the caller reads it later, as a
-  returned output or a tolerated call's recorded error. The same run under
-  plain `flow test`, with no debugger, prints the case's transcript under the
-  case's posture alone.
+  returned output or a tolerated call's recorded error. The case's own
+  transcript and report withhold these values everywhere, with or without a
+  debugger, apart from a `--seeds` divergence report. They are rendered after
+  the run, from everything its steps withheld.
 - A durable inspection renders a run's declared-`sensitive:` inputs as
   `[redacted]`, and the same holds: a predicate over one answers truthfully.
   That is why evaluating anything against a durable run needs its own action,

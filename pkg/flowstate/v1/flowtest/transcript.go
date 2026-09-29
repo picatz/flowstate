@@ -180,8 +180,14 @@ type runRecorder struct {
 	// sensitive is the redaction set every rendered value passes through —
 	// the same [sensitiveInputs] the unmatched-stub diagnostic uses, built
 	// from the same declarations, so what `flow test` refuses to print in one
-	// place it refuses to print everywhere.
+	// place it refuses to print everywhere. The case sets it before the run;
+	// the rendering widens it with gathered.
 	sensitive sensitiveInputs
+
+	// gathered is what each step's own workflow and its callees withheld
+	// ([runRecorder.StepFinishedWithholding]), which the case's posture —
+	// the root's declarations — never saw (#2211).
+	gathered v1.SensitiveAccumulator
 
 	// switches records, per step id, that the compiled workflow declares a
 	// `switch:` there and whether it has a `default:` — carried from the spec
@@ -316,6 +322,27 @@ func (r *runRecorder) StepFinished(id string, outputs *v1.Node_Outputs, err erro
 	r.record(event)
 }
 
+// StepFinishedWithholding implements [v1.WithholdingRunObserver]. The event is
+// recorded as it is, because it is the case's record and a claim reads it; the
+// set only widens what this recorder's rendering, and the case's report,
+// withhold ([runRecorder.withheld]).
+func (r *runRecorder) StepFinishedWithholding(id string, outputs *v1.Node_Outputs, err error, tolerated bool, withhold v1.SensitiveValues) {
+	r.StepFinished(id, outputs, err, tolerated)
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.gathered.Add(withhold)
+}
+
+// withheld is everything the run's steps withheld, for what the case renders
+// once the run is over.
+func (r *runRecorder) withheld() sensitiveInputs {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	return r.gathered.Values()
+}
+
 func (r *runRecorder) StepSkipped(id string) {
 	r.record(transcriptEvent{kind: eventStepSkipped, step: id})
 }
@@ -384,7 +411,7 @@ func (r *runRecorder) render() []TranscriptLine {
 	r.mu.Lock()
 	events := r.events
 	eventsFull, bytesFull := r.eventsFull, r.bytesFull
-	sensitive := r.sensitive
+	sensitive := widenedBy(r.sensitive, r.gathered.Values())
 	switches := r.switches
 	r.mu.Unlock()
 

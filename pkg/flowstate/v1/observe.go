@@ -95,12 +95,27 @@ type RunObserver interface {
 // own redactor knows only what its caller gave it — never a callee's
 // declarations.
 //
-// It is called in place of StepFinished. The set is empty unless a [Debugger]
-// was installed when the run began, the only case where anything reads it.
+// It is called in place of StepFinished. Installing one is what makes the
+// engine compute the sets at all, as a [Debugger] does; an ordinary run
+// computes nothing.
 type WithholdingRunObserver interface {
 	RunObserver
 
 	StepFinishedWithholding(id string, outputs *Node_Outputs, err error, tolerated bool, withhold SensitiveValues)
+}
+
+// WithholdingOnlyRunObserver is a [RunObserver] that reads, of each finished
+// step, only what a rendering of it must withhold: the set a
+// [WithholdingRunObserver] is told, without the outputs and the error. A
+// reader gathering the sets for a rendering made elsewhere wants nothing
+// else, and the engine then copies no step's outputs for it (Codex, #2215).
+//
+// StepWithheld is called in place of StepFinished. Installing one makes the
+// engine compute the sets, as a [WithholdingRunObserver] does.
+type WithholdingOnlyRunObserver interface {
+	RunObserver
+
+	StepWithheld(id string, withhold SensitiveValues)
 }
 
 type runObserverKey struct{}
@@ -142,6 +157,13 @@ func observeSafely(call func()) {
 func observeStepFinished(ctx context.Context, id string, outputs *Node_Outputs, err error, tolerated bool, returned SensitiveValues) {
 	observer := RunObserverFromContext(ctx)
 	if observer == nil {
+		return
+	}
+	if only, ok := observer.(WithholdingOnlyRunObserver); ok {
+		// Before the copies below, which it never reads.
+		withhold := ExecutingSensitiveFromContext(ctx).Merge(FailureSensitiveValues(err)).Merge(returned)
+		observeSafely(func() { only.StepWithheld(id, withhold) })
+
 		return
 	}
 
