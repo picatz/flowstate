@@ -65,8 +65,10 @@ type heldStop struct {
 	// spec is the workflow whose step the run stopped before, the callee's
 	// when the stop is inside one, so its scope is read against its own
 	// declarations.
-	spec       *v1.Workflow
-	scope      *v1.Scope
+	spec  *v1.Workflow
+	scope *v1.Scope
+	// callers is [executor.callerSensitive] where the run stopped.
+	callers    v1.SensitiveValues
 	occurrence *v1.DebugOccurrence
 	reason     v1.DebugStopReason
 	hitIDs     []string
@@ -282,7 +284,7 @@ func (e *executor) applyTypedAsk(ask *v1.DebugAsk, parseErr error, sender *v1.Si
 			d.carry.Until = ask.Until
 			d.carry.StepDepth = int32(callDepthOf(d.held.occurrence))
 			d.carry.Revision++
-			d.untilSensitive = d.sensitiveAt(d.held.spec, d.held.scope)
+			d.untilSensitive = d.sensitiveAt(d.held.spec, d.held.scope, d.held.callers)
 			d.untilSensitiveKnown = true
 			d.lease = nil
 			d.held = heldStop{}
@@ -595,7 +597,7 @@ func (e *executor) typedArrival(node *v1.Node) {
 	d.carry.PauseRequested = false
 	d.carry.Next = v1.DebugResumeAction_DEBUG_RESUME_ACTION_CONTINUE
 	d.carry.Until = ""
-	d.held = heldStop{spec: e.curSpec, scope: e.scope, occurrence: occurrence, reason: reason, hitIDs: hitIDs}
+	d.held = heldStop{spec: e.curSpec, scope: e.scope, callers: e.callerSensitive, occurrence: occurrence, reason: reason, hitIDs: hitIDs}
 	d.lease = &v1.DebugSession{
 		SessionId:      d.carry.GetSessionId(),
 		Run:            d.run,
@@ -691,10 +693,26 @@ func (e *executor) debugHoldEnded() {
 }
 
 // sensitiveAt is what a debugger must not be shown at a point in the run: the
-// run's own declared-sensitive inputs, and those spec declares of scope's
-// inputs, which differ inside a callee.
-func (d *debugControl) sensitiveAt(spec *v1.Workflow, scope *v1.Scope) v1.SensitiveValues {
-	return d.rootSensitive.Merge(v1.SensitiveInputValues(scope.GetInputs(), v1.SensitiveInputNames(spec)))
+// run's own declared-sensitive inputs, those of every caller between the root
+// and the workflow running there, and those spec declares of scope's inputs,
+// which differ inside a callee. Sensitivity belongs to a value's origin, so a
+// value a middle workflow declared sensitive stays withheld in whatever it
+// calls with it.
+func (d *debugControl) sensitiveAt(spec *v1.Workflow, scope *v1.Scope, callers v1.SensitiveValues) v1.SensitiveValues {
+	return d.rootSensitive.Merge(callers).Merge(v1.SensitiveInputValues(scope.GetInputs(), v1.SensitiveInputNames(spec)))
+}
+
+// calleeCallerSensitive is what a callee of this executor inherits as
+// [executor.callerSensitive]: this executor's own, and, inside a callee, the
+// inputs curSpec declares sensitive. The root's are the debug control's
+// already, and a run that declares no `debug:` stanza has no debugger to
+// withhold anything from.
+func (e *executor) calleeCallerSensitive() v1.SensitiveValues {
+	if e.debug == nil || !e.debug.declared || e.curSpec == e.spec {
+		return e.callerSensitive
+	}
+
+	return e.callerSensitive.Merge(v1.SensitiveInputValues(e.scope.GetInputs(), v1.SensitiveInputNames(e.curSpec)))
 }
 
 // debugRedactText withholds the declared-sensitive inputs from text the run
@@ -703,7 +721,7 @@ func (d *debugControl) sensitiveAt(spec *v1.Workflow, scope *v1.Scope) v1.Sensit
 // other. It is presentation, as inspection's redaction is, and deterministic,
 // since it reads only the recorded scope.
 func (e *executor) debugRedactText(text string) string {
-	sensitive := e.debug.sensitiveAt(e.curSpec, e.scope)
+	sensitive := e.debug.sensitiveAt(e.curSpec, e.scope, e.callerSensitive)
 	if sensitive.Empty() {
 		return text
 	}
@@ -784,7 +802,7 @@ func (e *executor) debugRunCompleted() {
 	// segment that inherited the `until` through Continue-As-New from a hold
 	// inside a callee does not know them, and withholds the target whole.
 	redact := func(text string) string {
-		sensitive := e.debug.sensitiveAt(e.curSpec, e.scope).Merge(d.untilSensitive)
+		sensitive := e.debug.sensitiveAt(e.curSpec, e.scope, e.callerSensitive).Merge(d.untilSensitive)
 		if sensitive.Empty() {
 			return text
 		}
@@ -916,7 +934,7 @@ func setDebugQueries(ctx workflow.Context, d *debugControl, spec func() *v1.Work
 		if held == nil {
 			held = spec()
 		}
-		sensitive := d.sensitiveAt(held, scope)
+		sensitive := d.sensitiveAt(held, scope, d.held.callers)
 		var (
 			redactText  func(string) string
 			redactValue func(any) any

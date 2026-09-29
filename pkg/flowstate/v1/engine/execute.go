@@ -128,6 +128,14 @@ type executor struct {
 	// their enclosing workflow's own tree.
 	curSpec *v1.Workflow
 
+	// callerSensitive is the declared-sensitive inputs of every workflow
+	// between the root and curSpec, as bound: what a debugger at a point in
+	// curSpec withholds beside the root's own ([debugControl.rootSensitive])
+	// and curSpec's ([debugControl.sensitiveAt]). Empty at the root and in a
+	// run declaring no `debug:` stanza, and copied unchanged into a loop body,
+	// a branch or an async step, which share curSpec.
+	callerSensitive v1.SensitiveValues
+
 	// path is the enclosing steps this executor runs inside, outermost first —
 	// the `loop:`, `parallel:` or `call:` steps descended through to get here,
 	// and empty at the top level.
@@ -1061,10 +1069,14 @@ func (e *executor) runCall(node *v1.Node, call *v1.Call, depth, susp int, descen
 		// Descending into a callee's own steps: [v1.LoopResultsReferenced] for a
 		// loop inside it has to walk the callee's tree, not the caller's — see
 		// curSpec's doc.
-		curSpec:  callee,
-		identity: e.identity,
-		runID:    e.runID,
-		scope:    inner,
+		curSpec: callee,
+		// Every caller's declared-sensitive inputs between the root and this
+		// callee, so a hold inside it withholds a value a middle workflow
+		// declared sensitive and forwarded under a plain name (Codex, #2209).
+		callerSensitive: e.calleeCallerSensitive(),
+		identity:        e.identity,
+		runID:           e.runID,
+		scope:           inner,
 
 		// A callee's steps run inside the step that called it, which is what
 		// keeps two call sites of one workflow apart in history.
@@ -1972,6 +1984,7 @@ func (e *executor) runLoopIteration(body []string, loop *v1.Loop, stateName stri
 		ctx:                    e.ctx,
 		spec:                   e.spec,
 		curSpec:                e.curSpec,
+		callerSensitive:        e.callerSensitive,
 		identity:               e.identity,
 		runID:                  e.runID,
 		scope:                  scope,
@@ -2058,11 +2071,12 @@ func (e *executor) runIteration(body []string, loop *v1.ForEach, iterator string
 	iterationOutputs := cloneOutputs(e.scope.GetOutputs())
 
 	nested := &executor{
-		ctx:      e.ctx,
-		spec:     e.spec,
-		curSpec:  e.curSpec,
-		identity: e.identity,
-		runID:    e.runID,
+		ctx:             e.ctx,
+		spec:            e.spec,
+		curSpec:         e.curSpec,
+		callerSensitive: e.callerSensitive,
+		identity:        e.identity,
+		runID:           e.runID,
 		// The iteration's scope: outputs visible before the loop, plus the
 		// current item bound to the iterator's name.
 		scope:                  e.scope.WithLocal(iterator, item).WithOutputs(iterationOutputs),
@@ -2150,6 +2164,7 @@ func (e *executor) runIterationsConcurrently(body []string, loop *v1.ForEach, it
 					ctx:                    gctx,
 					spec:                   e.spec,
 					curSpec:                e.curSpec,
+					callerSensitive:        e.callerSensitive,
 					identity:               e.identity,
 					runID:                  e.runID,
 					scope:                  e.scope.WithLocal(iterator, items[i]).WithOutputs(cloneOutputs(e.scope.GetOutputs())),
@@ -2257,12 +2272,13 @@ func (e *executor) runParallel(node *v1.Node, parallel *v1.Parallel, depth, susp
 			// make the result depend on scheduling.
 			branchOutputs := cloneOutputs(e.scope.GetOutputs())
 			worker := &executor{
-				ctx:      gctx,
-				spec:     e.spec,
-				curSpec:  e.curSpec,
-				identity: e.identity,
-				runID:    e.runID,
-				scope:    e.scope.WithOutputs(branchOutputs),
+				ctx:             gctx,
+				spec:            e.spec,
+				curSpec:         e.curSpec,
+				callerSensitive: e.callerSensitive,
+				identity:        e.identity,
+				runID:           e.runID,
+				scope:           e.scope.WithOutputs(branchOutputs),
 
 				// Carried where [progress] deliberately is not: a run has no
 				// single *position* while branches are in flight, and a

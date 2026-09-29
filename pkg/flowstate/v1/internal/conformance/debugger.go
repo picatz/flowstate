@@ -323,5 +323,35 @@ func HeldSensitiveCases() []HeldSensitiveCase {
 		HeldAt:     "nested(child)/use",
 		Expression: "inputs.api_key",
 		Secret:     secret,
+	}, {
+		Name: "a middle workflow's sensitive input, forwarded to a leaf under a plain name",
+		Workflow: &v1.Workflow{
+			Name:    "held-sensitive-forwarded",
+			Profile: v1.CurrentProfile,
+			Steps: []*v1.Node{
+				says("first", "one"),
+				{Id: "outer", Kind: &v1.Node_Call{Call: &v1.Call{
+					Workflow: &v1.Workflow{
+						Name:           "middle",
+						Profile:        v1.CurrentProfile,
+						DeclaredInputs: []*v1.InputDeclaration{{Name: "token", Type: v1.InputDeclaration_TYPE_STRING, Sensitive: true}},
+						Steps: []*v1.Node{{Id: "inner", Kind: &v1.Node_Call{Call: &v1.Call{
+							Workflow: &v1.Workflow{
+								Name:           "leaf",
+								Profile:        v1.CurrentProfile,
+								DeclaredInputs: []*v1.InputDeclaration{{Name: "who", Type: v1.InputDeclaration_TYPE_STRING}},
+								Steps:          []*v1.Node{says("use", "hi")},
+							},
+							Arguments: map[string]*v1.Value{"who": v1.NewExpr("inputs.token")},
+						}}}},
+					},
+					Arguments: map[string]*v1.Value{"token": v1.NewLiteral(secret)},
+				}}},
+			},
+		},
+		Until:      "outer/inner/use",
+		HeldAt:     "outer(middle)/inner(leaf)/use",
+		Expression: "inputs.who",
+		Secret:     secret,
 	}}
 }

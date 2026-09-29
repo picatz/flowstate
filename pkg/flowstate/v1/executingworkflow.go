@@ -47,8 +47,9 @@ type executingPosition struct {
 
 	// root and here are what a debugger holding a step on this context
 	// withholds: the root workflow's declared-sensitive inputs, and those of
-	// the workflow whose steps are running here. Only recorded while a
-	// [Debugger] is installed; see [ExecutingSensitiveFromContext].
+	// every workflow called on the way here, the one whose steps are running
+	// included. Only recorded while a [Debugger] is installed; see
+	// [ExecutingSensitiveFromContext].
 	root, here SensitiveValues
 }
 
@@ -96,17 +97,21 @@ func contextWithExecutingCall(ctx context.Context, callerStep, callerKind, calle
 		callers:  callers,
 		segments: segments,
 		root:     position.root,
-		here:     sensitive,
+		// Every caller's as well as the callee's own: a value a middle
+		// workflow declared sensitive and forwarded under a plain name stays
+		// withheld below it (Codex, #2209), as the durable driver withholds it.
+		here: position.here.Merge(sensitive),
 	})
 }
 
 // ExecutingSensitiveFromContext is what a debugger holding a step on ctx
 // withholds from what it shows: the root workflow's declared-sensitive inputs
-// and those of the workflow whose steps are running there, a callee's
-// included (#2208). It is the durable driver's rule
+// and those of every workflow called on the way there, the one whose steps
+// are running included (#2208). It is the durable driver's rule
 // (engine/debugsession.go, sensitiveAt): sensitivity belongs to a value's
-// origin, so the root's are withheld inside a callee too, and a callee's own
-// declarations reach no caller's redactor any other way.
+// origin, so a value the root or a middle workflow declared sensitive is
+// withheld in whatever it is passed to, and a callee's own declarations reach
+// no caller's redactor any other way.
 //
 // Empty where no [Debugger] was installed when the workflow began, or the
 // engine never ran.
