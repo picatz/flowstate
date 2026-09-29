@@ -43,6 +43,22 @@ func TestEveryLinkedSchemaFileRegistersItsComments(t *testing.T) {
 	}
 }
 
+// A name two generated files disagree about is answered by nobody, and Lookup
+// stays silent about it on purpose. So the engine's own schema is held to
+// agreeing here: two generations of one .proto linked into this test binary, or
+// a name declared by two files, would otherwise show up only as prose quietly
+// missing from hover, MCP and the reference (#2171). The conflicts are reported
+// first, since they are the cause; the floor after them keeps an empty list from
+// passing because nothing registered at all.
+func TestNoGeneratedCommentIsAmbiguous(t *testing.T) {
+	for _, c := range protodocimpl.Conflicts() {
+		t.Errorf("ambiguous generated comment, so it reads as no comment: %s", c)
+	}
+	if _, _, ok := protodocimpl.Lookup("flowstate.v1.RunRequest"); !ok {
+		t.Error("flowstate.v1.RunRequest has no usable comment (unregistered or ambiguous), so an empty conflict list would prove nothing")
+	}
+}
+
 // Every flowstate_*.doc.pb.go in this package must come from a .proto in the
 // schema's source tree. buf generate never deletes output whose source is gone,
 // so a deleted or renamed .proto would otherwise leave its old file registering

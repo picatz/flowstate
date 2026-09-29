@@ -428,7 +428,7 @@ func (r *runRecorder) render() []TranscriptLine {
 	// id does not push every other line's account off the screen.
 	width := 0
 	for _, e := range events {
-		if label := transcriptLabel(e); len(label) > width && len(label) <= 24 {
+		if label := withheldName(transcriptLabel(e), sensitive); len(label) > width && len(label) <= 24 {
 			width = len(label)
 		}
 	}
@@ -445,8 +445,8 @@ func (r *runRecorder) render() []TranscriptLine {
 		switch e.kind {
 		case eventStubAnswered:
 			if e.step == "" {
-				lines = append(lines, transcriptLine(e.at, width, e.task,
-					fmt.Sprintf("compensation answered by %s", stubIdentity(e)), ToneInfo))
+				lines = append(lines, transcriptLine(e.at, width, withheldName(e.task, sensitive),
+					fmt.Sprintf("compensation answered by %s", stubIdentity(e, sensitive)), ToneInfo))
 				continue
 			}
 			pendingStub[e.step] = e
@@ -458,25 +458,25 @@ func (r *runRecorder) render() []TranscriptLine {
 			text, tone := stepOutcomeText(e, sensitive, switches)
 			if stub, ok := pendingStub[e.step]; ok {
 				delete(pendingStub, e.step)
-				text += "  " + stubIdentity(stub)
+				text += "  " + stubIdentity(stub, sensitive)
 			}
-			lines = append(lines, transcriptLine(e.at, width, e.step, text, tone))
+			lines = append(lines, transcriptLine(e.at, width, withheldName(e.step, sensitive), text, tone))
 
 		case eventStepSkipped:
-			lines = append(lines, transcriptLine(e.at, width, e.step, "skipped by its if:", ToneInfo))
+			lines = append(lines, transcriptLine(e.at, width, withheldName(e.step, sensitive), "skipped by its if:", ToneInfo))
 
 		case eventWaitStarted:
 			text := fmt.Sprintf("sleeping %s", shortDuration(e.timeout))
-			if e.signal != "" {
-				text = fmt.Sprintf("waiting: %s (timeout %s)", e.signal, shortDuration(e.timeout))
+			if signal := withheldName(e.signal, sensitive); signal != "" {
+				text = fmt.Sprintf("waiting: %s (timeout %s)", signal, shortDuration(e.timeout))
 				if !e.bounded {
-					text = fmt.Sprintf("waiting: %s (no timeout)", e.signal)
+					text = fmt.Sprintf("waiting: %s (no timeout)", signal)
 				}
 			}
-			lines = append(lines, transcriptLine(e.at, width, e.step, text, ToneInfo))
+			lines = append(lines, transcriptLine(e.at, width, withheldName(e.step, sensitive), text, ToneInfo))
 
 		case eventSignalDelivered:
-			text := fmt.Sprintf("signal %s %s", e.signal, redactedGoValue(e.payload, sensitive))
+			text := fmt.Sprintf("signal %s %s", withheldName(e.signal, sensitive), redactedGoValue(e.payload, sensitive))
 			if e.sender != "" {
 				// Through the same redaction as every other value: a case may
 				// spell its sender from the same sensitive input the policy
@@ -488,7 +488,7 @@ func (r *runRecorder) render() []TranscriptLine {
 
 		case eventSignalRefused:
 			lines = append(lines, transcriptLine(e.at, width, "",
-				fmt.Sprintf("signal %s refused: %s", e.signal, redactedBareText(e.failure, sensitive)), ToneWarning))
+				fmt.Sprintf("signal %s refused: %s", withheldName(e.signal, sensitive), redactedBareText(e.failure, sensitive)), ToneWarning))
 		}
 	}
 
@@ -510,6 +510,19 @@ func (r *runRecorder) render() []TranscriptLine {
 	}
 
 	return lines
+}
+
+// withheldName is a name the file wrote, a step id, a task or a signal,
+// spelled as the account spells an output's name: whole where it is a value
+// the posture withholds ([redactedKeyText]), then at each substring it carries.
+// An author can spell a sensitive value as a name as readily as anywhere else,
+// and the account must not be the one surface that prints it (Codex, #2224).
+func withheldName(name string, sensitive sensitiveInputs) string {
+	if name == "" {
+		return ""
+	}
+
+	return sensitive.RedactSubstrings(redactedKeyText(name, sensitive))
 }
 
 // transcriptLabel is what an event puts in the step column.
@@ -552,10 +565,10 @@ func escapeControlRunes(s string) string {
 
 // stubIdentity renders which stub answered, in the numbering every other stub
 // diagnostic uses.
-func stubIdentity(e transcriptEvent) string {
-	target := fmt.Sprintf("task %q", e.task)
+func stubIdentity(e transcriptEvent, sensitive sensitiveInputs) string {
+	target := fmt.Sprintf("task %q", withheldName(e.task, sensitive))
 	if e.stubStep != "" {
-		target = fmt.Sprintf("step %q", e.stubStep)
+		target = fmt.Sprintf("step %q", withheldName(e.stubStep, sensitive))
 	}
 	if e.stubInherited {
 		target += ", from defaults"

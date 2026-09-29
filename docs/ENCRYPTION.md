@@ -361,6 +361,10 @@ The server's rules:
   recorded is answered 503 and not acted on. A request the trust policy
   refuses before it reaches the codec is logged, not audited, as on
   `flow server`, so an unauthenticated caller cannot write the trail at will.
+  At most 16 refusals are recorded at once, so a caller
+  over its rate limit cannot start a record per request: past that, a required
+  trail answers 503 and a best-effort one answers the refusal unrecorded and
+  logs how many it skipped.
 
 The protocol names a namespace and nothing else, so no codec server can
 authorize per run. A person who may decode a namespace may decode every run in
@@ -505,7 +509,10 @@ A payload names its suite in its header, and each namespace says what it seals
 with and what it reads, so changing algorithm is a configuration change, not a
 migration: add the new suite to `decrypt_suites` everywhere, then switch
 `suite`, then remove the old one from `decrypt_suites` once no history needs
-it.
+it. The order matters: a worker reading, in workflow code, a payload sealed
+with a suite it does not accept fails that run rather than dropping a signal
+or failing a step, because another worker may accept it. The same holds for
+a worker without `accept_unencrypted` reading pre-encryption history.
 
 Under Go's FIPS 140-3 mode (`GODEBUG=fips140=on`), only approved suites are
 used: AES-256-GCM, through the FIPS module's own random-nonce construction.
