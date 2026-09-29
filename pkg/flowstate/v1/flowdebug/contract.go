@@ -242,7 +242,9 @@ func (c *contractState) setProgram(wf *v1.Workflow) {
 // one, as [Session.ReplaceBreakpoints] would judge it now, and one this
 // program refuses is removed with a notice saying why, rather than left armed
 // for a case it cannot answer in. A line breakpoint is judged by the source
-// map, which a program does not change, and is kept.
+// map, which a program does not change, and is kept. A pending `until` is
+// judged the same way, and one this program refuses is dropped for
+// `continue`, which it was already: a run to its breakpoints.
 func (s *Session) Program(wf *v1.Workflow) {
 	if wf == nil {
 		return
@@ -258,9 +260,13 @@ func (s *Session) Program(wf *v1.Workflow) {
 	profile := s.contract.profile
 	installed := make(map[string]breakpoint, len(s.breakpoints))
 	maps.Copy(installed, s.breakpoints)
+	pending, until, untilCondition, untilText := s.mode == modeUntil, s.until, s.untilCondition, s.untilConditionText
 	s.mu.Unlock()
 
 	redact := s.snapshotTextRedactor()
+	if pending {
+		s.rejudgeUntil(until, untilCondition, untilText, profile, redact)
+	}
 	var refused []string
 	for _, key := range slices.Sorted(maps.Keys(installed)) {
 		at := installed[key]
@@ -289,6 +295,39 @@ func (s *Session) Program(wf *v1.Workflow) {
 		}
 	}
 	s.bump()
+}
+
+// rejudgeUntil judges a pending `until` against the program [Session.Program]
+// just installed, and drops one it refuses for `continue`, saying why.
+func (s *Session) rejudgeUntil(until v1.DebugTarget, condition *v1.Value, conditionText, profile string, redact func(string) string) {
+	why, refused := s.unknownStepNotice(until.String())
+	if !refused && condition != nil {
+		if _, err := s.conditionInScope(condition, profile, until.Resolve); err != nil {
+			why, refused = "condition: "+err.Error(), true
+		}
+	}
+	if !refused {
+		return
+	}
+
+	asked := until.String()
+	if conditionText != "" {
+		asked += " if " + conditionText
+	}
+	s.mu.Lock()
+	// Only the `until` that was judged: one set meanwhile was judged when it
+	// was set.
+	current := s.mode == modeUntil && s.until.String() == until.String() && s.untilCondition == condition
+	if current {
+		s.mode, s.until, s.untilCondition, s.untilConditionText = modeRun, v1.DebugTarget{}, nil, ""
+	}
+	s.mu.Unlock()
+	if !current {
+		return
+	}
+	text := applyText(redact, fmt.Sprintf("until %s no longer applies to this program: %s; the run continues to its breakpoints", asked, why))
+	s.printfTone(ToneWarning, "%s\n", text)
+	s.observe(v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_NOTICE, "", text)
 }
 
 // bump records a change: a new revision, and a wake for every waiter. Callers
