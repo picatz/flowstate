@@ -690,3 +690,36 @@ func TestASecretReferenceKeepsTheFailureReason(t *testing.T) {
 	}
 	require.Contains(t, err.Error(), "API_TOKEN", "the reason names the reference it could not resolve")
 }
+
+// TestATaskRunRefusalKeepsASensitiveInputOut: a refusal made about the inputs
+// before anything runs quotes what it refused, and `--sensitive` withholds
+// that the same as a failure. Each case reaches a different refusal on that
+// path: the coercion of a word, the parsing of an expression, and the task's
+// own check of an expression.
+func TestATaskRunRefusalKeepsASensitiveInputOut(t *testing.T) {
+	const token, name = "synthetic-token-7d2a", "synthetic_token_7d2a"
+	for _, tc := range []struct {
+		name   string
+		input  string
+		quoted string
+	}{
+		{"a word that is not the declared type", "parse_json=" + token, token},
+		{"an expression that does not parse", `url=${ "` + token + `" + }`, token},
+		{"an expression the task refuses", "url=${ " + name + " }", name},
+	} {
+		input, _, _ := strings.Cut(tc.input, "=")
+		_, stderr, err := taskRun(t, "http",
+			"--input", "method=GET",
+			"--input", tc.input,
+			"--sensitive", input)
+		require.Error(t, err, "%s: refused", tc.name)
+		require.NotContains(t, err.Error(), tc.quoted, "%s: the refusal quoted the sensitive input", tc.name)
+		require.NotContains(t, stderr, tc.quoted, "%s: stderr quoted the sensitive input", tc.name)
+
+		// Without the flag the same refusal quotes it, so the case reaches the
+		// refusal it names rather than failing earlier for another reason.
+		_, _, err = taskRun(t, "http", "--input", "method=GET", "--input", tc.input)
+		require.Error(t, err, "%s: refused unmarked", tc.name)
+		require.Contains(t, err.Error(), tc.quoted, "%s: the unmarked refusal quotes the input", tc.name)
+	}
+}

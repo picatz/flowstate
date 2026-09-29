@@ -117,19 +117,22 @@ func runTaskRun(cmd *cobra.Command, args []string) error {
 		return newUsageError(unknownTaskRunError(name))
 	}
 
+	reveal := revealSensitiveRequested(cmd)
+	sensitive := sensitiveTaskInputs(cmd, def)
+
 	// The task's own input schema plays the role a workflow's `inputs:` block plays
 	// for `flow run`, which is what lets the flags be reached rather than reread.
 	// See [collectInputs] and [taskInputDeclarations].
-	declared := taskInputDeclarations(def)
+	declared := taskInputDeclarations(def, sensitive)
 
 	supplied, err := collectInputs(cmd, declared)
 	if err != nil {
-		return newUsageError(err)
+		return refuseTaskInputs(cmd, err, nil, sensitive, reveal)
 	}
 
-	values, written, err := taskInputValues(def, supplied)
+	values, written, err := taskInputValues(def, supplied, withheldTaskInputs(sensitive, reveal))
 	if err != nil {
-		return newUsageError(err)
+		return refuseTaskInputs(cmd, err, supplied, sensitive, reveal)
 	}
 
 	workflow := syntheticTaskWorkflow(def, values)
@@ -142,12 +145,10 @@ func runTaskRun(cmd *cobra.Command, args []string) error {
 	// is the function `flow validate` calls, so a refusal here and a refusal about
 	// a Flowfile are the same refusal.
 	if err := checkTaskInputs(def, workflow); err != nil {
-		return newUsageError(err)
+		return refuseTaskInputs(cmd, err, values, sensitive, reveal)
 	}
 
 	surface := newSurface(cmd)
-	reveal := revealSensitiveRequested(cmd)
-	sensitive := sensitiveTaskInputs(cmd, def)
 
 	ctx, err := withLocalTaskRuntimeUsing(cmd, cmd.Context(), workflow, providers)
 	if err != nil {
@@ -391,7 +392,11 @@ func unknownTaskRunError(name string) error {
 // as `any`, gets no declared type on purpose. That is [coerceInput]'s default arm:
 // the characters as given, which is the only honest reading of a word for a field
 // that will hold whatever it is handed.
-func taskInputDeclarations(def v1.TaskDef) map[string]*v1.InputDeclaration {
+//
+// sensitive is [sensitiveTaskInputs], carried onto each declaration as its
+// `sensitive: true`, so a refusal [collectInputs] makes about a word it cannot
+// read asks the declaration exactly as it does for a Flowfile's input.
+func taskInputDeclarations(def v1.TaskDef, sensitive map[string]bool) map[string]*v1.InputDeclaration {
 	if def.Inputs == nil {
 		return nil
 	}
@@ -409,6 +414,7 @@ func taskInputDeclarations(def v1.TaskDef) map[string]*v1.InputDeclaration {
 			// in a coercion refusal. `list[string]` says more about what to write
 			// than `list` does, and it is the same phrase `flow tasks` prints.
 			Description: proto.String("the " + def.Name + " task's " + v1.InputTypeName(field)),
+			Sensitive:   sensitive[name],
 		}
 	}
 
@@ -467,7 +473,10 @@ func declaredTypeOfField(field protoreflect.FieldDescriptor) v1.InputDeclaration
 // The second return is what to echo: the value as it was written, never the value
 // as it resolved. A secret reference echoes as the reference, which is the whole
 // point of it being one.
-func taskInputValues(def v1.TaskDef, supplied map[string]*v1.Value) (map[string]*v1.Value, map[string]string, error) {
+//
+// withheld names the inputs whose expression a refusal must not quote; see
+// [inputExpressionError].
+func taskInputValues(def v1.TaskDef, supplied map[string]*v1.Value, withheld map[string]bool) (map[string]*v1.Value, map[string]string, error) {
 	if len(supplied) == 0 {
 		return nil, nil, nil
 	}
@@ -499,12 +508,12 @@ func taskInputValues(def v1.TaskDef, supplied map[string]*v1.Value) (map[string]
 			continue
 		}
 		if err := flowfile.ExprError(text); err != nil {
-			return nil, nil, fmt.Errorf("--input %s: %w", name, err)
+			return nil, nil, inputExpressionError(name, err, withheld[name])
 		}
 
 		reference, isSecret, err := secretReference(source)
 		if err != nil {
-			return nil, nil, fmt.Errorf("--input %s: %w", name, err)
+			return nil, nil, inputExpressionError(name, err, withheld[name])
 		}
 		if isSecret {
 			values[name] = reference
@@ -518,6 +527,33 @@ func taskInputValues(def v1.TaskDef, supplied map[string]*v1.Value) (map[string]
 	}
 
 	return values, written, nil
+}
+
+// inputExpressionError is the refusal of an input's `${...}`, which names the
+// input and, unless it is withheld, what the parser said about the source.
+//
+// A withheld input's refusal says only that the source is not an expression.
+// The parser's sentence quotes the source escaped (`"\"token\" + "`), and may
+// quote any token of it, so no redaction by value finds it afterward: the answer
+// [inputCoercionError] gives a word it cannot coerce, given here at
+// construction for the same reason (#2073).
+func inputExpressionError(name string, err error, withheld bool) error {
+	if withheld {
+		return fmt.Errorf("--input %s: %s is not a valid expression; --reveal-sensitive shows why", name, v1.SensitiveMarker)
+	}
+
+	return fmt.Errorf("--input %s: %w", name, err)
+}
+
+// withheldTaskInputs is the set of inputs whose values this invocation keeps
+// out of what it prints: [sensitiveTaskInputs], or none under
+// `--reveal-sensitive`.
+func withheldTaskInputs(sensitive map[string]bool, reveal bool) map[string]bool {
+	if reveal {
+		return nil
+	}
+
+	return sensitive
 }
 
 // literalString reports the text of a value that is a string literal.
@@ -752,6 +788,29 @@ func sensitiveTaskInputs(cmd *cobra.Command, def v1.TaskDef) map[string]bool {
 	}
 
 	return names
+}
+
+// refuseTaskInputs is the usage error for an invocation whose inputs were
+// refused before anything ran, with every sensitive input's value kept out of
+// it.
+//
+// The counterpart of [refusedRunSensitiveValues] for a task, and built from the
+// same parts: the values bound so far, the `--input` words as the shell handed
+// them over, for a refusal that never produced a value, and the text a numeric
+// overflow quotes. One exit for every refusal before the run, rather than a
+// set at each, because what a refusal can quote is whatever reached it: a
+// coercion names the word, an expression refusal names the source, and the
+// schema check names the literal.
+func refuseTaskInputs(cmd *cobra.Command, refusal error, values map[string]*v1.Value, sensitive map[string]bool, reveal bool) error {
+	if reveal {
+		return newUsageError(refusal)
+	}
+
+	words := sensitiveInputWords(cmd, sensitive)
+	words = append(words, sensitiveOverflowWords(refusal, sensitive)...)
+	set := v1.SensitiveInputValues(taskFailureMaterial(values), sensitive).WithValues(words...)
+
+	return newUsageError(redactFailureError(refusal, set))
 }
 
 // taskFailureMaterial is the part of an invocation's inputs a failure sentence

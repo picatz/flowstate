@@ -228,12 +228,15 @@ func redactFailureText(response *v1.GetResponse, sensitive v1.SensitiveValues) *
 // a registered copy. Every declared output, the transcript and carried state
 // are then withheld here whatever the server decided, since its decision is
 // about the workflow it ran, which need not mark sensitive what this process's
-// file marked about the arguments it sent (Codex, #2173).
+// file marked about the arguments it sent (Codex, #2173). A pending wait's
+// prompt goes with them: it is an expression over those same values, and a
+// server that marked nothing sensitive left it as rendered.
 // [noteUnattestedSpecification] says so to the reader.
 func redactStartedRun(response *v1.GetResponse, workflow *v1.Workflow, sensitive v1.SensitiveValues, reveal bool) *v1.GetResponse {
 	redacted := redactGetResponse(response, workflow, reveal)
 	if workflow == nil && !reveal {
 		redacted = v1.RedactGetResponse(redacted, nil, reveal)
+		v1.WithholdPendingWaitPrompts(redacted)
 	}
 	return redactFailureText(redacted, sensitive)
 }

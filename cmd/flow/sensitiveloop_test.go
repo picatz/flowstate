@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -366,6 +367,11 @@ func TestAnUnattestedFollowDoesNotTakeTheServersWordForIt(t *testing.T) {
 		Status:              v1.RunResponse_STATUS_COMPLETED,
 		SensitiveDisclosure: v1.SensitiveDisclosure_SENSITIVE_DISCLOSURE_NONE_DECLARED,
 		RunOutputs:          &v1.RunOutputs{Values: map[string]*v1.Value{"echo": v1.NewLiteral(echoed)}},
+		// A prompt is an expression over the same arguments, so it is held to
+		// the same answer as the output it could equally have echoed.
+		Progress: &v1.RunProgress{PendingWaits: []*v1.PendingWait{
+			{StepId: "approve", SignalName: "approve", Prompt: "approve " + echoed + "?"},
+		}},
 	}}
 	address := serveFake(t, fake)
 
@@ -393,5 +399,8 @@ func TestAnUnattestedFollowDoesNotTakeTheServersWordForIt(t *testing.T) {
 
 		value := got.GetRunOutputs().GetValues()["echo"].GetLiteral().GetStringValue()
 		require.Equal(t, tc.shown, value == echoed, "%s: output %q", tc.name, value)
+
+		prompt := got.GetProgress().GetPendingWaits()[0].GetPrompt()
+		require.Equal(t, tc.shown, strings.Contains(prompt, echoed), "%s: prompt %q", tc.name, prompt)
 	}
 }
