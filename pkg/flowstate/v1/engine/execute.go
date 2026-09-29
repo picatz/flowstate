@@ -519,6 +519,10 @@ func (e *executor) runNodes(nodes []*v1.Node, depth, susp int) (err error) {
 		run, cost, err := v1.EvalConditionInScopeWithCost(evalContext(), node.GetCondition(), e.scope)
 		e.chargeWorkflowCost(cost)
 		if err != nil {
+			// The step never ran, so this is the only account an attached
+			// session gets of why it stopped here (#2124).
+			e.observeForDebug(v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_FAILED, node, err)
+
 			return stepFailed(err, "step %q", node.GetId())
 		}
 		if !run {

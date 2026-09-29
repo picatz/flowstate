@@ -3,8 +3,11 @@ package flowstatev1
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
+	"github.com/google/cel-go/cel"
+	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -118,6 +121,79 @@ type WithholdingOnlyRunObserver interface {
 	StepWithheld(id string, withhold SensitiveValues)
 }
 
+// A GuardRunObserver is a [RunObserver] told how a step's `if:` decided
+// against it (#2124): the condition a skip came from, and a condition that
+// raised an error instead of an answer. The second otherwise reaches no
+// observer at all, because the step never ran and so records no outcome.
+//
+// Both are the deciding evaluation's own result, reported where the driver
+// reads it. Nothing is evaluated again to explain it.
+type GuardRunObserver interface {
+	RunObserver
+
+	// StepSkippedBy is called in place of StepSkipped, with the account both
+	// drivers give of the skip ([SkippedText]). withhold is what a rendering
+	// of it must withhold, as for [WithholdingRunObserver]: the condition is
+	// the author's text, and an author can write a value there that the
+	// workflow declares sensitive.
+	StepSkippedBy(id, account string, withhold SensitiveValues)
+
+	// GuardFailed reports a step whose `if:` could not be evaluated. The step
+	// did not run, and err, a snapshot of the failure the run propagates, ends
+	// it. withhold is what a rendering must withhold, as for
+	// [WithholdingRunObserver].
+	GuardFailed(id string, err error, withhold SensitiveValues)
+}
+
+// maxConditionTextRunes bounds the `if:` an account quotes. A condition is
+// the author's own text and usually short; one that is not still has to leave
+// room in a bounded observation for the step it explains.
+const maxConditionTextRunes = 200
+
+// SkippedText is the account of a step whose `if:` evaluated false, in the one
+// sentence both drivers' debuggers give (#2124). It quotes the condition that
+// decided, rendered from the compiled expression, so someone whose breakpoint
+// never stopped reads why beside the skip. A condition the renderer cannot
+// write back, such as one using a comprehension macro, is not quoted.
+func SkippedText(id string, condition *Value) string {
+	switch text := conditionText(condition); text {
+	case "":
+		return id + " skipped (`if:` was false)"
+	case "false":
+		// Nothing to explain beyond the condition itself.
+		return id + " skipped (`if: false`)"
+	default:
+		return id + " skipped: `if: " + text + "` was false"
+	}
+}
+
+// conditionText renders condition as an author would write it, bounded to
+// [maxConditionTextRunes], or "" when it cannot be rendered.
+func conditionText(condition *Value) string {
+	var text string
+	switch kind := condition.GetKind().(type) {
+	case *Value_Literal:
+		b, ok := kind.Literal.GetKind().(*expr.Value_BoolValue)
+		if !ok {
+			return ""
+		}
+		text = fmt.Sprint(b.BoolValue)
+	case *Value_Expr:
+		rendered, err := cel.AstToString(cel.ParsedExprToAst(kind.Expr))
+		if err != nil {
+			return ""
+		}
+		text = rendered
+	default:
+		return ""
+	}
+	if runes := []rune(text); len(runes) > maxConditionTextRunes {
+		text = string(runes[:maxConditionTextRunes]) + "…"
+	}
+
+	return text
+}
+
 type runObserverKey struct{}
 
 // NewContextWithRunObserver installs an observer for every step the local
@@ -197,10 +273,32 @@ func observeStepFinished(ctx context.Context, id string, outputs *Node_Outputs, 
 	observeSafely(func() { observer.StepFinished(id, copied, snapshot, tolerated) })
 }
 
-func observeStepSkipped(ctx context.Context, id string) {
-	if observer := RunObserverFromContext(ctx); observer != nil {
-		observeSafely(func() { observer.StepSkipped(id) })
+func observeStepSkipped(ctx context.Context, node *Node) {
+	observer := RunObserverFromContext(ctx)
+	if observer == nil {
+		return
 	}
+	if guard, ok := observer.(GuardRunObserver); ok {
+		account := SkippedText(node.GetId(), node.GetCondition())
+		withhold := ExecutingSensitiveFromContext(ctx)
+		observeSafely(func() { guard.StepSkippedBy(node.GetId(), account, withhold) })
+
+		return
+	}
+	observeSafely(func() { observer.StepSkipped(node.GetId()) })
+}
+
+// observeGuardFailed reports a step whose `if:` raised err
+// ([GuardRunObserver]). An observer that is not told about guards hears
+// nothing, as it always has.
+func observeGuardFailed(ctx context.Context, id string, err error) {
+	guard, ok := RunObserverFromContext(ctx).(GuardRunObserver)
+	if !ok {
+		return
+	}
+	withhold := ExecutingSensitiveFromContext(ctx).Merge(FailureSensitiveValues(err))
+	snapshot := errors.New(err.Error())
+	observeSafely(func() { guard.GuardFailed(id, snapshot, withhold) })
 }
 
 func observeWaitStarted(ctx context.Context, id, signal string, timeout time.Duration, bounded bool) {

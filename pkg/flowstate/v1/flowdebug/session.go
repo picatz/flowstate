@@ -901,18 +901,44 @@ func (s *Session) StepFinishedWithholding(id string, outputs *v1.Node_Outputs, e
 	s.observeRedacted(observationKind(state), id, capRunes(line, maxObservationRunes))
 }
 
-// StepSkipped implements [v1.RunObserver]. A skipped step never reaches
-// [Session.BeforeStep] — there is no work to hold — so this is the only place
-// a session can say the `if:` decided against it.
+// StepSkipped implements [v1.RunObserver]. The engine calls
+// [Session.StepSkippedBy] instead, and this is the account of a skip whose
+// condition nobody quoted.
 func (s *Session) StepSkipped(id string) {
+	s.StepSkippedBy(id, v1.SkippedText(id, nil), v1.SensitiveValues{})
+}
+
+// StepSkippedBy implements [v1.GuardRunObserver]. A skipped step never reaches
+// [Session.BeforeStep] — there is no work to hold — so this is the only place
+// a session can say the `if:` decided against it, and the account quotes the
+// condition that did ([v1.SkippedText]), in the sentence a durable session
+// gives. The account withholds what the workflow it is in declares sensitive
+// ([withholdingAt]), as a durable session's does, unless
+// [Options.RevealSensitive] authorized showing it.
+func (s *Session) StepSkippedBy(id, account string, withhold v1.SensitiveValues) {
 	// Remembered as a step this run reaches even though it did not run: a
 	// breakpoint on a step whose `if:` was false this time is exactly what
 	// somebody sets when they are trying to find out why.
 	s.sawStep(id)
 	s.noteStep(id, StepSkipped)
+	if s.reveal {
+		withhold = v1.SensitiveValues{}
+	}
 
-	s.printf("  %s skipped (`if:` was false)\n", id)
-	s.observe(v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_SKIPPED, id, id+" skipped (`if:` was false)")
+	s.mu.Lock()
+	redact, _ := withholdingAt(s.redact, s.redactValue, withhold)
+	s.mu.Unlock()
+	line := applyText(redact, account)
+	s.emitTone(ToneInfo, "  "+line+"\n")
+	s.observeRedacted(v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_SKIPPED, id, capRunes(line, maxObservationRunes))
+}
+
+// GuardFailed implements [v1.GuardRunObserver]: a step whose `if:` could not
+// be evaluated is a step that failed, and without this the step list would
+// show it as never reached. Its account is a failed step's, since that is
+// what the run reports.
+func (s *Session) GuardFailed(id string, err error, withhold v1.SensitiveValues) {
+	s.StepFinishedWithholding(id, nil, err, false, withhold)
 }
 
 // WaitStarted implements [v1.RunObserver], reporting a wait as it parks.

@@ -879,7 +879,7 @@ func (e *executor) observeForDebug(kind v1.DebugObservationKind, node *v1.Node, 
 	case v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_FINISHED:
 		text += " finished"
 	case v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_SKIPPED:
-		text += " skipped (`if:` was false)"
+		text = v1.SkippedText(node.GetId(), node.GetCondition())
 	case v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_FAILED:
 		text += " failed: " + detail
 	case v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_TOLERATED:

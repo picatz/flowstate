@@ -90,3 +90,44 @@ func TestATeeTellsAGathererWhatToWithhold(t *testing.T) {
 		t.Fatalf("the debugger heard %d withholding outcomes, want 1", debugger.withheld)
 	}
 }
+
+type guardObserver struct {
+	silentObserver
+	accounts, failed []string
+}
+
+func (o *guardObserver) StepSkippedBy(_, account string, _ v1.SensitiveValues) {
+	o.accounts = append(o.accounts, account)
+}
+func (o *guardObserver) GuardFailed(id string, _ error, _ v1.SensitiveValues) {
+	o.failed = append(o.failed, id)
+}
+
+type skipCounter struct {
+	silentObserver
+	skipped []string
+}
+
+func (o *skipCounter) StepSkipped(id string) { o.skipped = append(o.skipped, id) }
+
+// TestATeeCarriesAGuardsAccountToTheDebugger: a debugged case tees the
+// recorder with the session, and the session must still hear the condition a
+// skip came from and a condition that failed, while the recorder, which
+// quotes neither, still hears the skip (#2124).
+func TestATeeCarriesAGuardsAccountToTheDebugger(t *testing.T) {
+	recorder, debugger := &skipCounter{}, &guardObserver{}
+	tee := teeObserver{first: recorder, second: debugger}
+
+	tee.StepSkippedBy("gate", "gate skipped (`if: false`)", v1.SensitiveValues{})
+	tee.GuardFailed("bad", nil, v1.SensitiveValues{})
+
+	if len(recorder.skipped) != 1 || recorder.skipped[0] != "gate" {
+		t.Fatalf("recorder skips = %q, want the one skip", recorder.skipped)
+	}
+	if len(debugger.accounts) != 1 || debugger.accounts[0] != "gate skipped (`if: false`)" {
+		t.Fatalf("debugger accounts = %q, want the one account", debugger.accounts)
+	}
+	if len(debugger.failed) != 1 || debugger.failed[0] != "bad" {
+		t.Fatalf("debugger guard failures = %q, want the one", debugger.failed)
+	}
+}

@@ -186,6 +186,20 @@ log orders[0]/charge: charging 120 of 3
 log orders[1]/charge: charging 900 of 3
 ```
 
+A step whose `if:` is false is never a boundary, so a breakpoint on it does
+not stop. The session says why instead, on every front and on both drivers, by
+quoting the condition that decided:
+
+```text
+discount skipped: `if: steps.price.value > 5000` was false
+```
+
+The quote comes from the evaluation that made the decision, and nothing is
+evaluated again to produce it; `inspect` at the next stop is how you find which
+operand made it false. An `if:` that raises an error instead of answering fails
+its step, and the step list and observations show that step as failed rather
+than as one the run never reached.
+
 `catch uncaught` stops at a step whose failure its own step does not tolerate
 with `continue_on_error:`, after the failure is recorded and before it
 propagates; `catch all` stops at tolerated failures too. A container that
@@ -325,7 +339,7 @@ verdict, because a debugged run is the run.
 ```text
 [break  ] break at price (value)
 [info   ]   price -> value: 4000
-[info   ]   discount skipped (`if:` was false)
+[info   ]   discount skipped: `if: steps.price.value > 5000` was false
 [break  ] break at charge (task "log")
 [info   ]   charge completed
 [break  ] autopsy: the case failed 1 expectation(s); the run is over, but its scope is still here

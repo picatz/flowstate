@@ -1,6 +1,7 @@
 package flowstatev1
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -47,7 +48,7 @@ func TestAPanickingObserverDoesNotTakeTheRunWithIt(t *testing.T) {
 
 	require.NotPanics(t, func() {
 		observeStepFinished(ctx, "build", nil, nil, false, SensitiveValues{})
-		observeStepSkipped(ctx, "prod_gate")
+		observeStepSkipped(ctx, &Node{Id: "prod_gate"})
 		observeWaitStarted(ctx, "approval", "ship-approved", time.Hour, true)
 	})
 
@@ -99,4 +100,22 @@ func (withholdingCounter) StepFinished(string, *Node_Outputs, error, bool) {}
 func (withholdingCounter) StepSkipped(string)                              {}
 func (withholdingCounter) WaitStarted(string, string, time.Duration, bool) {}
 func (withholdingCounter) StepFinishedWithholding(string, *Node_Outputs, error, bool, SensitiveValues) {
+}
+
+// TestASkipQuotesABoundedConditionOrNone: the account quotes the `if:` it
+// can render, cut to [maxConditionTextRunes] so the step it explains still
+// fits, and falls back to naming the skip for a condition it cannot render.
+func TestASkipQuotesABoundedConditionOrNone(t *testing.T) {
+	t.Parallel()
+
+	long := NewExpr(`"` + strings.Repeat("é", 2*maxConditionTextRunes) + `" == ""`)
+	text := SkippedText("gate", long)
+	require.True(t, strings.HasPrefix(text, "gate skipped: `if: \""), text)
+	require.Contains(t, text, "…` was false")
+	// The rendering opens with the string literal's quote, then the runes.
+	require.Equal(t, maxConditionTextRunes-1, strings.Count(text, "é"), "the quote was not cut at the bound")
+
+	require.Equal(t, "gate skipped (`if:` was false)", SkippedText("gate", NewLiteral("no")),
+		"a literal that is not a boolean has no condition to quote")
+	require.Equal(t, "gate skipped (`if:` was false)", SkippedText("gate", nil))
 }
