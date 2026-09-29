@@ -59,9 +59,17 @@ func launched(t *testing.T) (*client, string, <-chan error) {
 func launchedAt(t *testing.T, name string) (*client, string, <-chan error) {
 	t.Helper()
 
+	return launchedWith(t, name, richFlowfile, nil)
+}
+
+// launchedWith is [launchedAt] for source, with the run's context passed
+// through wrap when it is set.
+func launchedWith(t *testing.T, name, source string, wrap func(context.Context) context.Context) (*client, string, <-chan error) {
+	t.Helper()
+
 	program := filepath.Join(t.TempDir(), name)
 	require.NoError(t, os.MkdirAll(filepath.Dir(program), 0o700))
-	require.NoError(t, os.WriteFile(program, []byte(richFlowfile), 0o600))
+	require.NoError(t, os.WriteFile(program, []byte(source), 0o600))
 
 	c := newClient(t)
 	t.Cleanup(func() { _ = c.Close() })
@@ -69,15 +77,15 @@ func launchedAt(t *testing.T, name string) (*client, string, <-chan error) {
 	finished := make(chan error, 1)
 	var server *flowdap.Server
 	server = flowdap.NewServer(nil, c, flowdap.WithLaunch(func(ctx context.Context, args flowdap.LaunchArguments) (*flowdap.Launch, error) {
-		source, err := os.ReadFile(args.Program)
+		read, err := os.ReadFile(args.Program)
 		if err != nil {
 			return nil, err
 		}
-		workflow, positions, err := flowfile.ParseAt(source, args.Program)
+		workflow, positions, err := flowfile.ParseAt(read, args.Program)
 		if err != nil {
 			return nil, err
 		}
-		sourceMap := flowfile.SourceMap(args.Program, source, workflow, positions)
+		sourceMap := flowfile.SourceMap(args.Program, read, workflow, positions)
 		session, err := flowdebug.New(flowdebug.Options{
 			Controlled: true, Workflow: workflow, SourceMap: sourceMap,
 			Emit: func(text string, _ flowdebug.Tone) { server.Output(text) },
@@ -94,6 +102,9 @@ func launchedAt(t *testing.T, name string) (*client, string, <-chan error) {
 			Start: func() {
 				ctx := v1.NewContextWithDebugger(runCtx, session)
 				ctx = v1.NewContextWithRunObserver(ctx, session)
+				if wrap != nil {
+					ctx = wrap(ctx)
+				}
 				_, err := v1.RunWithInputs(ctx, workflow, nil)
 				session.Finished(err)
 				if err != nil {
