@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"iter"
+	"maps"
 	"slices"
 	"strconv"
 	"strings"
@@ -350,6 +351,34 @@ type DebugStaticSite struct {
 	// including calls, as segments without indices: a segment's Index is zero
 	// and meaningless here.
 	Chain []*DebugSegment
+
+	// Locals are the bare names bound where the site's `if:` is evaluated,
+	// which is where a breakpoint's condition is evaluated too: what each
+	// enclosing container in the site's own workflow binds for its body
+	// ([BodyLocals]), sorted. A call binds none of its caller's, and the
+	// site's own `vars:` are not among them, because both drivers evaluate a
+	// condition before installing them. Shared among the sites of one body,
+	// so it is read and never written.
+	Locals []string
+}
+
+// BodyLocals returns the bare names node binds for the steps inside it: its
+// own `vars:`, a `for_each`'s [IteratorName], and a `loop:`'s `state:`. These
+// are the bindings both drivers install around a container's body, and the
+// rules [promptWalk.nodes] documents; a leaf binds its `vars:` for its own
+// inputs, which no step inside it reads because it has none.
+func BodyLocals(node *Node) []string {
+	names := slices.Collect(maps.Keys(node.GetVars()))
+	switch kind := node.GetKind().(type) {
+	case *Node_ForEach:
+		names = append(names, IteratorName(kind.ForEach))
+	case *Node_Loop:
+		if state := kind.Loop.GetState(); state != "" {
+			names = append(names, state)
+		}
+	}
+
+	return names
 }
 
 // MaxDebugStaticSites bounds how many sites [DebugStaticSites] enumerates.
@@ -365,8 +394,8 @@ func DebugStaticSites(wf *Workflow) ([]DebugStaticSite, bool) {
 		truncated bool
 	)
 
-	var walk func(workflow *Workflow, chain []*DebugSegment, nodes []*Node, depth int)
-	walk = func(workflow *Workflow, chain []*DebugSegment, nodes []*Node, depth int) {
+	var walk func(workflow *Workflow, chain []*DebugSegment, locals []string, nodes []*Node, depth int)
+	walk = func(workflow *Workflow, chain []*DebugSegment, locals []string, nodes []*Node, depth int) {
 		for _, node := range nodes {
 			if len(sites) >= MaxDebugStaticSites {
 				truncated = true
@@ -375,7 +404,7 @@ func DebugStaticSites(wf *Workflow) ([]DebugStaticSite, bool) {
 			}
 
 			occurrence := NewDebugOccurrence(workflow.GetName(), chain, node.GetId(), NodeKind(node))
-			sites = append(sites, DebugStaticSite{Site: occurrence.GetSite(), Chain: slices.Clone(chain)})
+			sites = append(sites, DebugStaticSite{Site: occurrence.GetSite(), Chain: slices.Clone(chain), Locals: locals})
 
 			if len(chain) >= MaxDebugSegments {
 				continue
@@ -386,20 +415,33 @@ func DebugStaticSites(wf *Workflow) ([]DebugStaticSite, bool) {
 				})
 			}
 
+			// Taken once per container and shared by its body's sites, so a
+			// program pays per body rather than per site. A call is left
+			// out: its body is the callee's, which binds none of these.
+			inner := locals
+			switch node.GetKind().(type) {
+			case *Node_ForEach, *Node_Loop, *Node_Parallel, *Node_Switch:
+				if bound := BodyLocals(node); len(bound) > 0 {
+					inner = slices.Concat(locals, bound)
+					slices.Sort(inner)
+					inner = slices.Clip(slices.Compact(inner))
+				}
+			}
+
 			switch kind := node.GetKind().(type) {
 			case *Node_ForEach:
-				walk(workflow, into(DebugSegmentKind_DEBUG_SEGMENT_KIND_ITERATION), kind.ForEach.GetBody(), depth)
+				walk(workflow, into(DebugSegmentKind_DEBUG_SEGMENT_KIND_ITERATION), inner, kind.ForEach.GetBody(), depth)
 			case *Node_Loop:
-				walk(workflow, into(DebugSegmentKind_DEBUG_SEGMENT_KIND_ITERATION), kind.Loop.GetBody(), depth)
+				walk(workflow, into(DebugSegmentKind_DEBUG_SEGMENT_KIND_ITERATION), inner, kind.Loop.GetBody(), depth)
 			case *Node_Parallel:
 				for _, branch := range kind.Parallel.GetBranches() {
-					walk(workflow, into(DebugSegmentKind_DEBUG_SEGMENT_KIND_BRANCH), branch.GetSteps(), depth)
+					walk(workflow, into(DebugSegmentKind_DEBUG_SEGMENT_KIND_BRANCH), inner, branch.GetSteps(), depth)
 				}
 			case *Node_Switch:
 				for _, arm := range kind.Switch.GetCases() {
-					walk(workflow, into(DebugSegmentKind_DEBUG_SEGMENT_KIND_CASE), arm.GetSteps(), depth)
+					walk(workflow, into(DebugSegmentKind_DEBUG_SEGMENT_KIND_CASE), inner, arm.GetSteps(), depth)
 				}
-				walk(workflow, into(DebugSegmentKind_DEBUG_SEGMENT_KIND_CASE), kind.Switch.GetDefault().GetSteps(), depth)
+				walk(workflow, into(DebugSegmentKind_DEBUG_SEGMENT_KIND_CASE), inner, kind.Switch.GetDefault().GetSteps(), depth)
 			case *Node_Call:
 				if depth >= MaxCallDepth {
 					continue
@@ -407,11 +449,13 @@ func DebugStaticSites(wf *Workflow) ([]DebugStaticSite, bool) {
 				callee := kind.Call.GetWorkflow()
 				call := into(DebugSegmentKind_DEBUG_SEGMENT_KIND_CALL)
 				call[len(call)-1].Callee = callee.GetName()
-				walk(callee, call, callee.GetSteps(), depth+1)
+				// Isolated: a callee sees its own arguments and none of
+				// the caller's bare names ([CallScope]).
+				walk(callee, call, nil, callee.GetSteps(), depth+1)
 			}
 		}
 	}
-	walk(wf, nil, wf.GetSteps(), 0)
+	walk(wf, nil, nil, wf.GetSteps(), 0)
 
 	return sites, truncated
 }

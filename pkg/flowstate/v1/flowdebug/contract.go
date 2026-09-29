@@ -1231,6 +1231,28 @@ func (s *Session) ReplaceBreakpoints(_ context.Context, req *v1.DebugSetBreakpoi
 	}, nil
 }
 
+// conditionInScope refuses a condition that reads a bare name none of the
+// sites it can fire at binds ([v1.CheckDebugConditionScope]); resolve picks
+// those sites from the program's. Past a truncated enumeration the names
+// cannot be checked, and the condition is admitted with a note saying so,
+// which the caller shows beside the breakpoint. A session given no program
+// has no sites to ask and admits it without one, as it always has.
+func (s *Session) conditionInScope(condition *v1.Value, profile string, resolve func([]v1.DebugStaticSite) []v1.DebugStaticSite) (string, error) {
+	s.mu.Lock()
+	known, sites, truncated := s.contract.sitesKnown, s.contract.sites, s.contract.program != nil
+	s.mu.Unlock()
+	if !known {
+		if truncated {
+			return fmt.Sprintf("the condition's names are not checked: this program's steps were enumerated only to %d",
+				v1.MaxDebugStaticSites), nil
+		}
+
+		return "", nil
+	}
+
+	return "", v1.CheckDebugConditionScope(condition, profile, resolve(sites), sites)
+}
+
 // compileBreakpoint checks one requested breakpoint, returning it armed or a
 // state saying why it is not.
 func (s *Session) compileBreakpoint(want *v1.DebugBreakpoint, profile string, redact func(string) string) (breakpoint, *v1.DebugBreakpointState) {
@@ -1297,6 +1319,21 @@ func (s *Session) compileBreakpoint(want *v1.DebugBreakpoint, profile string, re
 		compiled, err := v1.CompileDebugCondition(condition, profile)
 		if err != nil {
 			return refuse("condition: %v", err)
+		}
+		note, err := s.conditionInScope(compiled, profile, func(sites []v1.DebugStaticSite) []v1.DebugStaticSite {
+			if at.target.Step() != "" {
+				return at.target.Resolve(sites)
+			}
+
+			return slices.DeleteFunc(slices.Clone(sites), func(site v1.DebugStaticSite) bool {
+				return v1.DebugSiteKey(site.Site) != at.site
+			})
+		})
+		if err != nil {
+			return refuse("condition: %v", err)
+		}
+		if note != "" {
+			state.Message = strings.TrimPrefix(state.GetMessage()+"; "+note, "; ")
 		}
 		at.condition = compiled
 		at.source += " if " + condition

@@ -14,6 +14,7 @@ import (
 	flowmcp "github.com/picatz/flowstate/cmd/flow/internal/mcp"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowdebug"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowtest"
 )
 
@@ -223,12 +224,20 @@ func debugToolHandler(timeout time.Duration) mcp.ToolHandler {
 			return flowmcp.ToolError(err), nil
 		}
 
+		// The program, as the stateful session reads it, so a target or a
+		// condition is judged against where it can fire. A workflow that does
+		// not parse contributes nothing: the run reports that properly.
+		var program *v1.Workflow
+		if workflow, _, err := flowfile.Parse([]byte(args.Workflow)); err == nil {
+			program = workflow
+		}
 		transcript := &debugTranscript{}
 		session, err := flowdebug.New(flowdebug.Options{
 			// The script, as the stream slice 1 already reads. A trailing
 			// newline so the last command is a line like every other.
-			In:   strings.NewReader(strings.Join(args.Commands, "\n") + "\n"),
-			Emit: transcript.add,
+			In:       strings.NewReader(strings.Join(args.Commands, "\n") + "\n"),
+			Emit:     transcript.add,
+			Workflow: program,
 		})
 		if err != nil {
 			return flowmcp.ToolError(err), nil

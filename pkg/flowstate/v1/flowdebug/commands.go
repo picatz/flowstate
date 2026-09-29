@@ -257,9 +257,15 @@ func (s *Session) dispatch(ctx context.Context, line string, node *v1.Node, scop
 		}
 		target := v1.ParseDebugTargetOrStep(id)
 
-		var compiled *v1.Value
+		var (
+			compiled *v1.Value
+			note     string
+		)
 		if conditional {
 			compiled, err = compileCondition(condition, scope, grammarUntil)
+			if err == nil {
+				note, err = s.conditionInScope(compiled, scope.GetProfile(), target.Resolve)
+			}
 			if err != nil {
 				s.printfTone(ToneWarning, "until %s: %v\n", id, err)
 
@@ -273,6 +279,9 @@ func (s *Session) dispatch(ctx context.Context, line string, node *v1.Node, scop
 		// silence, behind a prompt that said it was set (Copilot, #1274).
 		s.clearDeclined(declinedUntil, id)
 		s.record("until " + strings.TrimSpace(rest))
+		if note != "" {
+			s.printfTone(ToneWarning, "until %s: %s\n", id, note)
+		}
 		s.resumeUntil(modeUntil, target, compiled)
 
 		return true, nil
@@ -748,8 +757,12 @@ func (s *Session) addBreakpoint(ctx context.Context, rest string, scope *v1.Scop
 	if hitText != "" {
 		at.source = id + " hit " + hitText + strings.TrimPrefix(rest, id)
 	}
+	var note string
 	if conditional {
 		compiled, err := compileCondition(condition, scope, grammarBreak)
+		if err == nil {
+			note, err = s.conditionInScope(compiled, scope.GetProfile(), target.Resolve)
+		}
 		if err != nil {
 			s.printfTone(ToneWarning, "break %s: %v\n", id, err)
 
@@ -773,6 +786,9 @@ func (s *Session) addBreakpoint(ctx context.Context, rest string, scope *v1.Scop
 		return
 	}
 	s.printf("breakpoint at %s if %s\n", id, strings.TrimSpace(condition))
+	if note != "" {
+		s.printfTone(ToneWarning, "break %s: %s\n", id, note)
+	}
 }
 
 // maxStepSuggestionInput bounds the typed id a did-you-mean is computed for:

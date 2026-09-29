@@ -111,3 +111,38 @@ func TestATruncatedScriptIsCheckedAsItsSessionJudges(t *testing.T) {
 	assert.Equal(t, map[string]bool{"bogus/last": false, "call3/s7": true}, inventory.walked,
 		"a line was walked that a lookup answers")
 }
+
+// TestATruncatedProgramSaysItsConditionIsUnchecked: past the cut, the sites a
+// breakpoint fires at are not known, so its condition's names cannot be judged
+// ([v1.CheckDebugConditionScope]). It is armed, as before the check, and its
+// state says the names went unchecked rather than reading as checked — the
+// durable driver's answer too.
+func TestATruncatedProgramSaysItsConditionIsUnchecked(t *testing.T) {
+	t.Parallel()
+
+	log := func(id string) *v1.Node {
+		return &v1.Node{Id: id, Kind: &v1.Node_Task{Task: &v1.Task{Name: "log"}}}
+	}
+	callee := &v1.Workflow{Name: "wide"}
+	for i := range 512 {
+		callee.Steps = append(callee.Steps, log(fmt.Sprintf("s%d", i)))
+	}
+	spec := &v1.Workflow{Name: "fanout", Profile: v1.CurrentProfile}
+	for i := range v1.MaxDebugStaticSites/len(callee.Steps) + 1 {
+		spec.Steps = append(spec.Steps, &v1.Node{Id: fmt.Sprintf("call%d", i), Kind: &v1.Node_Call{Call: &v1.Call{Workflow: callee}}})
+	}
+	spec.Steps = append(spec.Steps, log("last"))
+
+	session, err := New(Options{Workflow: spec, Controlled: true})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+
+	response, err := session.ReplaceBreakpoints(t.Context(), &v1.DebugSetBreakpointsRequest{
+		Breakpoints: []*v1.DebugBreakpoint{{Id: "last", Step: "last", Condition: "nosuch > 1"}},
+	})
+	require.NoError(t, err)
+	require.Len(t, response.GetBreakpoints(), 1)
+	state := response.GetBreakpoints()[0]
+	assert.True(t, state.GetVerified(), "refused past the cut: %s", state.GetMessage())
+	assert.Contains(t, state.GetMessage(), "the condition's names are not checked")
+}

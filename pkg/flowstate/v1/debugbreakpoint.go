@@ -3,11 +3,16 @@ package flowstatev1
 import (
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"strconv"
 	"strings"
 
 	"github.com/google/cel-go/cel"
+	"github.com/google/cel-go/common/decls"
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
+
+	"github.com/picatz/flowstate/pkg/flowstate/v1/nearest"
 )
 
 // The breakpoint rules both drivers share: how a condition is compiled and how
@@ -23,7 +28,8 @@ import (
 // It is compiled against an environment declaring the names *the expression
 // itself mentions*, because a breakpoint is usually set before the run reaches
 // the step it names, and the binding its condition reads — a loop's `as:` —
-// does not exist yet.
+// does not exist yet. Whether those names can be bound where the breakpoint
+// fires is [CheckDebugConditionScope]'s question, asked of the program.
 func CompileDebugCondition(expression, profile string) (*Value, error) {
 	if strings.TrimSpace(expression) == "" {
 		return nil, errors.New("a condition needs an expression")
@@ -158,6 +164,179 @@ func collectDebugIdentifiers(e *expr.Expr, into map[string]struct{}) {
 		collectDebugIdentifiers(comprehension.GetLoopStep(), into)
 		collectDebugIdentifiers(comprehension.GetResult(), into)
 	}
+}
+
+// debugConditionRoots are the rooted namespaces a condition may read at any
+// site, because the activation answers each whole wherever a step's `if:` is
+// evaluated ([StepsOutputActivation.ResolveName]).
+var debugConditionRoots = []string{StepsRoot, VarsRoot, InputsRoot, RunRoot, TriggerRoot}
+
+// maxDebugConditionNamesListed bounds how many bare names a refusal lists.
+const maxDebugConditionNamesListed = 8
+
+// CheckDebugConditionScope refuses a compiled condition that reads a bare name
+// none of the sites in at can bind, answering in the words `flow validate`
+// uses for the same mistake in a step's `if:`.
+//
+// [CompileDebugCondition] cannot ask this: it declares whatever the expression
+// mentions, because a condition is usually set before the run reaches the
+// binding it reads. The sites answer it instead: a condition is evaluated
+// where the step's `if:` is, so what it can read there is the five roots and
+// the site's [DebugStaticSite.Locals]. A name bound at any site in at is
+// admitted, since the breakpoint may fire at any of them.
+//
+// at empty means where the breakpoint fires is not known — the enumeration
+// was cut short at [MaxDebugStaticSites] — and the condition is admitted as
+// before this check existed; the caller says so. program is every site, for
+// naming a step written bare and a binding that exists elsewhere.
+func CheckDebugConditionScope(condition *Value, profile string, at, program []DebugStaticSite) error {
+	parsed := condition.GetExpr()
+	if parsed == nil || len(at) == 0 {
+		return nil
+	}
+	env, err := DefaultEvaluator().ProfileEnv(profile)
+	if err != nil {
+		// This build's problem, not the author's: admitted, as
+		// [debugCheckedInScope] admits a condition it cannot check.
+		return nil
+	}
+
+	bindable := map[string]bool{}
+	for _, root := range debugConditionRoots {
+		bindable[root] = true
+	}
+	var locals []string
+	for _, site := range at {
+		for _, name := range site.Locals {
+			if !bindable[name] {
+				bindable[name] = true
+				locals = append(locals, name)
+			}
+		}
+	}
+	slices.Sort(locals)
+
+	free := map[string]struct{}{}
+	collectDebugFreeRoots(parsed.GetExpr(), map[string]int{}, env.Functions(), free)
+	for _, name := range slices.Sorted(maps.Keys(free)) {
+		if !bindable[name] {
+			return debugUnboundName(name, locals, program)
+		}
+	}
+
+	return nil
+}
+
+// debugUnboundName says why name is not bound where a breakpoint fires, and
+// what is.
+func debugUnboundName(name string, locals []string, program []DebugStaticSite) error {
+	if name == NowIdentifier {
+		return errors.New("`now` is bound only inside a wait's own expressions, and a condition is " +
+			"evaluated where the step's `if:` is, before the step is entered")
+	}
+	for _, site := range program {
+		if path := site.Site.GetPath(); len(path) > 0 && path[len(path)-1] == name {
+			return fmt.Errorf("`%s` is a step, and a step's outputs are read as `%s.%s.<output>`", name, StepsRoot, name)
+		}
+	}
+
+	message := fmt.Sprintf("`%s` is not bound where this breakpoint fires", name)
+	for _, site := range program {
+		if slices.Contains(site.Locals, name) {
+			message = fmt.Sprintf("`%s` is bound only inside the loops and steps that declare it, "+
+				"and this breakpoint fires outside them", name)
+
+			break
+		}
+	}
+	message += "; a condition reads what the step's `if:` reads: `" + strings.Join(debugConditionRoots, "`, `") + "`"
+	if len(locals) > 0 {
+		listed := locals[:min(len(locals), maxDebugConditionNamesListed)]
+		message += ", and here `" + strings.Join(listed, "`, `") + "`"
+		if more := len(locals) - len(listed); more > 0 {
+			message += fmt.Sprintf(" and %d more", more)
+		}
+	}
+	if suggestion, ok := nearest.Name(name, slices.Concat(debugConditionRoots, locals)); ok {
+		message += fmt.Sprintf("; did you mean `%s`?", suggestion)
+	}
+
+	return errors.New(message)
+}
+
+// collectDebugFreeRoots gathers the bare names an expression reads from its
+// scope: every identifier not bound by one of its own comprehensions, and not
+// the qualifier of a namespaced function the profile declares (`math` in
+// `math.greatest(a, b)`), which the parser presents as an identifier.
+//
+// bound counts the comprehension bindings in force, so a nested macro that
+// rebinds a name unbinds only its own.
+func collectDebugFreeRoots(e *expr.Expr, bound map[string]int, functions map[string]*decls.FunctionDecl, into map[string]struct{}) {
+	switch kind := e.GetExprKind().(type) {
+	case *expr.Expr_IdentExpr:
+		if name := kind.IdentExpr.GetName(); bound[name] == 0 {
+			into[name] = struct{}{}
+		}
+
+	case *expr.Expr_SelectExpr:
+		collectDebugFreeRoots(kind.SelectExpr.GetOperand(), bound, functions, into)
+
+	case *expr.Expr_CallExpr:
+		call := kind.CallExpr
+		if qualifier, ok := debugQualifiedName(call.GetTarget()); !ok || functions[qualifier+"."+call.GetFunction()] == nil {
+			collectDebugFreeRoots(call.GetTarget(), bound, functions, into)
+		}
+		for _, arg := range call.GetArgs() {
+			collectDebugFreeRoots(arg, bound, functions, into)
+		}
+
+	case *expr.Expr_ListExpr:
+		for _, element := range kind.ListExpr.GetElements() {
+			collectDebugFreeRoots(element, bound, functions, into)
+		}
+
+	case *expr.Expr_StructExpr:
+		for _, entry := range kind.StructExpr.GetEntries() {
+			collectDebugFreeRoots(entry.GetMapKey(), bound, functions, into)
+			collectDebugFreeRoots(entry.GetValue(), bound, functions, into)
+		}
+
+	case *expr.Expr_ComprehensionExpr:
+		// The range and the accumulator's start are read outside the
+		// comprehension; the rest inside it, with its variables bound.
+		comprehension := kind.ComprehensionExpr
+		collectDebugFreeRoots(comprehension.GetIterRange(), bound, functions, into)
+		collectDebugFreeRoots(comprehension.GetAccuInit(), bound, functions, into)
+
+		names := []string{comprehension.GetIterVar(), comprehension.GetIterVar2(), comprehension.GetAccuVar()}
+		for _, name := range names {
+			bound[name]++
+		}
+		collectDebugFreeRoots(comprehension.GetLoopCondition(), bound, functions, into)
+		collectDebugFreeRoots(comprehension.GetLoopStep(), bound, functions, into)
+		collectDebugFreeRoots(comprehension.GetResult(), bound, functions, into)
+		for _, name := range names {
+			bound[name]--
+		}
+	}
+}
+
+// debugQualifiedName renders a select chain rooted at an identifier as the
+// dotted name it spells, the shape a namespaced function's qualifier takes.
+func debugQualifiedName(e *expr.Expr) (string, bool) {
+	switch kind := e.GetExprKind().(type) {
+	case *expr.Expr_IdentExpr:
+		return kind.IdentExpr.GetName(), true
+	case *expr.Expr_SelectExpr:
+		if kind.SelectExpr.GetTestOnly() {
+			return "", false
+		}
+		operand, ok := debugQualifiedName(kind.SelectExpr.GetOperand())
+
+		return operand + "." + kind.SelectExpr.GetField(), ok
+	}
+
+	return "", false
 }
 
 // DebugHitCondition filters a breakpoint's arrivals by their count.
