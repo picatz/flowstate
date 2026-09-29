@@ -72,6 +72,12 @@ type ErrRunFailed struct {
 	// this field only carries it there.
 	Kind v1.ErrorKind
 
+	// sensitive is what the failure's text may quote that the position
+	// reporting it does not withhold: a callee's declared-sensitive inputs,
+	// carried out of the call for a debugger's rendering (#2210). Kept across
+	// [failedAt]'s rebuild at each level, which a wrapper would not survive.
+	sensitive v1.SensitiveValues
+
 	// cause is populated only for #1163's server shape. Most run failures remain
 	// deliberately flattened; this one must retain the last attempt's classified
 	// dependency failure beneath the outer Timeout classification.
@@ -83,6 +89,22 @@ func (e *ErrRunFailed) Error() string {
 }
 
 func (e *ErrRunFailed) Unwrap() error { return e.cause }
+
+// FailureSensitiveValues is what [v1.FailureSensitiveValues] reads off e: the
+// sensitive values a callee's failure carried to this level.
+func (e *ErrRunFailed) FailureSensitiveValues() v1.SensitiveValues { return e.sensitive }
+
+// withFailureSensitive adds sensitive to what the failure err carries, when
+// err is one. It returns err.
+func withFailureSensitive(err error, sensitive v1.SensitiveValues) error {
+	var failed *ErrRunFailed
+	if sensitive.Empty() || !errors.As(err, &failed) {
+		return err
+	}
+	failed.sensitive = failed.sensitive.Merge(sensitive)
+
+	return err
+}
 
 // errorKind reports e's classification, defaulting to [v1.ErrorKindInternal]
 // when nothing along the way classified it — the same default
@@ -280,6 +302,7 @@ func failedAt(err error, position string) error {
 		recordedFromTask: fromTask,
 		recordedOwn:      recordedOwn,
 		Kind:             recordedStepKind(err),
+		sensitive:        v1.FailureSensitiveValues(err),
 		cause:            cause,
 	}
 }

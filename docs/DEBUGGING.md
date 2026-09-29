@@ -447,6 +447,14 @@ applies here rather than a second, weaker one.
   `inspect vars.token == "the real value"` answers false at the autopsy even
   where the same check was true, while `inputs` and `steps` still compare
   against real values. The autopsy prints a note saying which is which.
+- A value a **called** workflow declares `sensitive:` is withheld too, on both
+  drivers, although the case's posture never saw that declaration. It is
+  withheld at a hold inside that callee, and in whatever it calls with the
+  value. It is also withheld from each step's account and from a failure that
+  quotes it. That covers the failing step, every call the failure passes
+  through, and the failed run's final message. The same run under plain
+  `flow test`, with no debugger, prints the case's transcript under the case's
+  posture alone.
 - A durable inspection renders a run's declared-`sensitive:` inputs as
   `[redacted]`, and the same holds: a predicate over one answers truthfully.
   That is why evaluating anything against a durable run needs its own action,

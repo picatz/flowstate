@@ -2112,7 +2112,10 @@ func runCall(ctx context.Context, callerStep, callerKind string, call *Call, sco
 		// Named, because a failure inside a called workflow reported without
 		// saying which one leaves a reader looking through the caller for a step
 		// that is not there.
-		return nil, fmt.Errorf("workflow %q: %w", callee.GetName(), err)
+		//
+		// Carrying what the callee withholds, for a debugger rendering it at
+		// the caller (#2210). Empty, and so nothing, without one.
+		return nil, fmt.Errorf("workflow %q: %w", callee.GetName(), WithFailureSensitiveValues(err, ExecutingSensitiveFromContext(calleeCtx)))
 	}
 
 	return CallOutputs(ctx, callee, inner)

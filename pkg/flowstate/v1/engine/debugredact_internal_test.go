@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -22,7 +23,7 @@ func TestADurableObservationWithholdsSensitiveInputs(t *testing.T) {
 	}
 
 	e.observeForDebug(v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_FAILED, &v1.Node{Id: "call"},
-		"request to https://example.com/?t="+secret+" failed")
+		errors.New("request to https://example.com/?t="+secret+" failed"))
 
 	if len(e.debug.observations) != 1 {
 		t.Fatalf("observations = %d, want one", len(e.debug.observations))
@@ -53,7 +54,7 @@ func TestACalleeObservationWithholdsTheRunsSensitiveInputs(t *testing.T) {
 	}
 
 	e.observeForDebug(v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_FAILED, &v1.Node{Id: "call"},
-		"authorization "+secret+" was refused")
+		errors.New("authorization "+secret+" was refused"))
 
 	if text := e.debug.observations[0].GetText(); strings.Contains(text, secret) {
 		t.Fatalf("a callee's observation carried the run's sensitive input: %q", text)

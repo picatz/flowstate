@@ -2,6 +2,7 @@ package flowstatev1
 
 import (
 	"context"
+	"errors"
 	"slices"
 )
 
@@ -120,6 +121,62 @@ func ExecutingSensitiveFromContext(ctx context.Context) SensitiveValues {
 
 	return position.root.Merge(position.here)
 }
+
+// WithFailureSensitiveValues returns err carrying sensitive beside it: what a
+// called workflow, and every workflow on the way to it, declared sensitive,
+// for a debugger rendering the failure where the callee's position is gone
+// (#2210). A failure raised inside a callee is reported by its caller, in the
+// caller's step outcome and in the run's final message, and its text can quote
+// a value only the callee declared sensitive: `no such key: <api_key>`. The
+// caller's position knows nothing of the callee's declarations, so the failure
+// has to say what its own text may hold.
+//
+// The error's text, and everything [errors.Is] and [errors.As] find through
+// it, are err's: a run carrying the set behaves exactly as one that does not.
+// What a failure already carries is kept, so wrapping at each call boundary
+// accumulates the chain's. An empty set returns err itself.
+func WithFailureSensitiveValues(err error, sensitive SensitiveValues) error {
+	if err == nil {
+		return nil
+	}
+	sensitive = sensitive.Merge(FailureSensitiveValues(err))
+	if sensitive.Empty() {
+		return err
+	}
+
+	return &sensitiveFailure{err: err, sensitive: sensitive}
+}
+
+// FailureSensitiveValues is what err carries of the sensitive values its text
+// may quote ([WithFailureSensitiveValues]), or the empty set. The outermost
+// carrier answers, since each one holds what the failures it wraps carried.
+//
+// A driver's own failure type joins by implementing
+// `FailureSensitiveValues() SensitiveValues`, as the durable driver's
+// ErrRunFailed does: that driver rebuilds the failure at each level rather
+// than wrapping it, and a wrapper would not survive that.
+func FailureSensitiveValues(err error) SensitiveValues {
+	var carrier interface{ FailureSensitiveValues() SensitiveValues }
+	if errors.As(err, &carrier) {
+		return carrier.FailureSensitiveValues()
+	}
+
+	return SensitiveValues{}
+}
+
+// sensitiveFailure is [WithFailureSensitiveValues]'s carrier.
+type sensitiveFailure struct {
+	err       error
+	sensitive SensitiveValues
+}
+
+func (f *sensitiveFailure) Error() string { return f.err.Error() }
+
+func (f *sensitiveFailure) Unwrap() error { return f.err }
+
+// FailureSensitiveValues implements the carrier [FailureSensitiveValues]
+// discovers.
+func (f *sensitiveFailure) FailureSensitiveValues() SensitiveValues { return f.sensitive }
 
 // debugSensitiveInputs is what [ExecutingSensitiveFromContext] records for
 // one workflow's bound inputs: only while a [Debugger] is installed, which is

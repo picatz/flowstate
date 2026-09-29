@@ -303,7 +303,7 @@ func launchDebuggedRun(
 			}
 			session.Finished(runErr)
 			if runErr != nil {
-				server.Output(session.RedactText(fmt.Sprintf("run failed: %v\n", runErr)))
+				server.Output("run failed: " + session.FailureText(runErr) + "\n")
 			}
 		},
 	}, nil

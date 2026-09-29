@@ -721,7 +721,14 @@ func (e *executor) calleeCallerSensitive() v1.SensitiveValues {
 // other. It is presentation, as inspection's redaction is, and deterministic,
 // since it reads only the recorded scope.
 func (e *executor) debugRedactText(text string) string {
-	sensitive := e.debug.sensitiveAt(e.curSpec, e.scope, e.callerSensitive)
+	return e.debugWithhold(text, v1.SensitiveValues{})
+}
+
+// debugWithhold is [executor.debugRedactText] withholding also what a failure
+// raised inside a callee carries ([v1.FailureSensitiveValues]), which this
+// executor's position does not see (#2210).
+func (e *executor) debugWithhold(text string, carried v1.SensitiveValues) string {
+	sensitive := e.debug.sensitiveAt(e.curSpec, e.scope, e.callerSensitive).Merge(carried)
 	if sensitive.Empty() {
 		return text
 	}
@@ -729,12 +736,30 @@ func (e *executor) debugRedactText(text string) string {
 	return sensitive.RedactText(text, "[redacted]")
 }
 
+// debugFailureSensitive is what a failure leaving this executor's workflow
+// carries to its caller ([ErrRunFailed.FailureSensitiveValues]): what a
+// debugger is not shown here. A caller's step outcome quotes the failure, and
+// the caller's position knows nothing of this workflow's declarations (#2210).
+// Nothing while no session is attached, since only a session reads it.
+func (e *executor) debugFailureSensitive() v1.SensitiveValues {
+	if !e.debug.attached() {
+		return v1.SensitiveValues{}
+	}
+
+	return e.debug.sensitiveAt(e.curSpec, e.scope, e.callerSensitive)
+}
+
 // observeForDebug records one step outcome for an attached session's
-// observations: the step and what became of it, never its values.
-func (e *executor) observeForDebug(kind v1.DebugObservationKind, node *v1.Node, detail string) {
+// observations: the step and what became of it, never its values. failure is
+// the step's error, for the kinds that report one.
+func (e *executor) observeForDebug(kind v1.DebugObservationKind, node *v1.Node, failure error) {
 	d := e.debug
 	if !d.attached() {
 		return
+	}
+	detail := ""
+	if failure != nil {
+		detail = v1.StepErrorText(failure)
 	}
 
 	text := node.GetId()
@@ -748,13 +773,14 @@ func (e *executor) observeForDebug(kind v1.DebugObservationKind, node *v1.Node, 
 	case v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_TOLERATED:
 		text += " failed, tolerated by continue_on_error: " + detail
 	}
-	e.recordDebugObservation(kind, node.GetId(), v1.FormatDebugAddress(e.debugSegments, node.GetId()), text)
+	e.recordDebugObservation(kind, node.GetId(), v1.FormatDebugAddress(e.debugSegments, node.GetId()), text, v1.FailureSensitiveValues(failure))
 }
 
 // recordDebugObservation appends one observation, redacted and bounded, to
-// what an attached session reads back.
-func (e *executor) recordDebugObservation(kind v1.DebugObservationKind, stepID, address, text string) {
-	text = e.debugRedactText(text)
+// what an attached session reads back. carried is what a failure the text
+// quotes carries beyond this position's own set.
+func (e *executor) recordDebugObservation(kind v1.DebugObservationKind, stepID, address, text string, carried v1.SensitiveValues) {
+	text = e.debugWithhold(text, carried)
 	if runes := []rune(text); len(runes) > maxDebugObservationRunes {
 		text = string(runes[:maxDebugObservationRunes]) + "…"
 	}

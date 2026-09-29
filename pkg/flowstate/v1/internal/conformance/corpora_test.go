@@ -65,6 +65,7 @@ func corpusSizes() map[string]int {
 		"DebuggerCases":                   len(DebuggerCases()),
 		"MissedUntilCases":                len(MissedUntilCases()),
 		"HeldSensitiveCases":              len(HeldSensitiveCases()),
+		"FailedSensitiveCases":            len(FailedSensitiveCases()),
 		"ErrorKindCases":                  len(ErrorKindCases(standIn)),
 		"ErrorTextCases":                  len(ErrorTextCases(standIn)),
 		"ExpectedTaskSpans":               len(ExpectedTaskSpans()),

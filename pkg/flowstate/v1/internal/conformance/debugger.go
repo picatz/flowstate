@@ -355,3 +355,121 @@ func HeldSensitiveCases() []HeldSensitiveCase {
 		Secret:     secret,
 	}}
 }
+
+// FailedSensitiveCase is a run whose callee fails with an error quoting a
+// value that callee, or a workflow on the way to it, declares sensitive,
+// where the root declares nothing sensitive. Every step the failure passes
+// through is reported failed to an attached session, and on both drivers
+// none of those reports may show Secret (#2210): the failing step's from its
+// own position, each calling step's from what the failure carries out of
+// its callee, since the caller's position knows nothing of the callee's
+// declarations.
+type FailedSensitiveCase struct {
+	// Name labels the case.
+	Name string
+
+	// Workflow is the program, with no `debug:` policy: the durable caller
+	// adds the one its harness attaches under.
+	Workflow *v1.Workflow
+
+	// Failed are the steps, innermost first, whose failure each driver must
+	// report, and Quoted a fragment of the error every one of those reports
+	// carries, so a report that says nothing does not pass for one that
+	// withheld the secret.
+	Failed []string
+	Quoted string
+
+	// Secret must appear in none of the reports.
+	Secret string
+}
+
+// FailedSensitiveCases is the corpus for [FailedSensitiveCase].
+func FailedSensitiveCases() []FailedSensitiveCase {
+	const secret = "hunter2-callee-only-secret"
+	fails := func(id, reads string) *v1.Node {
+		return &v1.Node{Id: id, Kind: &v1.Node_Value{Value: v1.NewExpr(`{"a": 1}[` + reads + `]`)}}
+	}
+
+	return []FailedSensitiveCase{{
+		Name: "a callee's own sensitive input, quoted by its failure",
+		Workflow: &v1.Workflow{
+			Name:    "failed-sensitive",
+			Profile: v1.CurrentProfile,
+			Steps: []*v1.Node{
+				says("first", "one"),
+				{Id: "nested", Kind: &v1.Node_Call{Call: &v1.Call{
+					Workflow: &v1.Workflow{
+						Name:           "child",
+						Profile:        v1.CurrentProfile,
+						DeclaredInputs: []*v1.InputDeclaration{{Name: "api_key", Type: v1.InputDeclaration_TYPE_STRING, Sensitive: true}},
+						Steps:          []*v1.Node{fails("boom", "inputs.api_key")},
+					},
+					Arguments: map[string]*v1.Value{"api_key": v1.NewLiteral(secret)},
+				}}},
+			},
+		},
+		Failed: []string{"boom", "nested"},
+		Quoted: "no such key",
+		Secret: secret,
+	}, {
+		Name: "a middle workflow's sensitive input, forwarded to a leaf whose failure quotes it",
+		Workflow: &v1.Workflow{
+			Name:    "failed-sensitive-forwarded",
+			Profile: v1.CurrentProfile,
+			Steps: []*v1.Node{
+				says("first", "one"),
+				{Id: "outer", Kind: &v1.Node_Call{Call: &v1.Call{
+					Workflow: &v1.Workflow{
+						Name:           "middle",
+						Profile:        v1.CurrentProfile,
+						DeclaredInputs: []*v1.InputDeclaration{{Name: "token", Type: v1.InputDeclaration_TYPE_STRING, Sensitive: true}},
+						Steps: []*v1.Node{{Id: "inner", Kind: &v1.Node_Call{Call: &v1.Call{
+							Workflow: &v1.Workflow{
+								Name:           "leaf",
+								Profile:        v1.CurrentProfile,
+								DeclaredInputs: []*v1.InputDeclaration{{Name: "who", Type: v1.InputDeclaration_TYPE_STRING}},
+								Steps:          []*v1.Node{fails("boom", "inputs.who")},
+							},
+							Arguments: map[string]*v1.Value{"who": v1.NewExpr("inputs.token")},
+						}}}},
+					},
+					Arguments: map[string]*v1.Value{"token": v1.NewLiteral(secret)},
+				}}},
+			},
+		},
+		Failed: []string{"boom", "inner", "outer"},
+		Quoted: "no such key",
+		Secret: secret,
+	}, {
+		// Only the leaf declares anything: what its failure carries has to
+		// survive the middle's own report of it to reach the root's.
+		Name: "a leaf's own sensitive input, quoted two calls deep",
+		Workflow: &v1.Workflow{
+			Name:    "failed-sensitive-deep",
+			Profile: v1.CurrentProfile,
+			Steps: []*v1.Node{
+				says("first", "one"),
+				{Id: "outer", Kind: &v1.Node_Call{Call: &v1.Call{
+					Workflow: &v1.Workflow{
+						Name:           "middle",
+						Profile:        v1.CurrentProfile,
+						DeclaredInputs: []*v1.InputDeclaration{{Name: "key", Type: v1.InputDeclaration_TYPE_STRING}},
+						Steps: []*v1.Node{{Id: "inner", Kind: &v1.Node_Call{Call: &v1.Call{
+							Workflow: &v1.Workflow{
+								Name:           "leaf",
+								Profile:        v1.CurrentProfile,
+								DeclaredInputs: []*v1.InputDeclaration{{Name: "api_key", Type: v1.InputDeclaration_TYPE_STRING, Sensitive: true}},
+								Steps:          []*v1.Node{fails("boom", "inputs.api_key")},
+							},
+							Arguments: map[string]*v1.Value{"api_key": v1.NewExpr("inputs.key")},
+						}}}},
+					},
+					Arguments: map[string]*v1.Value{"key": v1.NewLiteral(secret)},
+				}}},
+			},
+		},
+		Failed: []string{"boom", "inner", "outer"},
+		Quoted: "no such key",
+		Secret: secret,
+	}}
+}

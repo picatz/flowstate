@@ -855,12 +855,27 @@ var errQuit = fmt.Errorf("%w by the `quit` command", v1.ErrDebugSessionEnded)
 // produced, and this is the same record `flow test`'s transcript renders, from
 // the same seam, rather than a second bookkeeping of it.
 func (s *Session) StepFinished(id string, outputs *v1.Node_Outputs, err error, tolerated bool) {
-	s.sawStep(id)
+	s.StepFinishedWithholding(id, outputs, err, tolerated, v1.SensitiveValues{})
+}
 
-	text := s.stepOutcomeText(outputs, err, tolerated)
+// StepFinishedWithholding implements [v1.WithholdingRunObserver]: the account
+// of a step inside a callee, or of a call whose callee failed, withholds what
+// those workflows declare sensitive (#2210), as a hold there withholds it
+// ([withholdingAt]) — unless [Options.RevealSensitive] authorized showing it.
+func (s *Session) StepFinishedWithholding(id string, outputs *v1.Node_Outputs, err error, tolerated bool, withhold v1.SensitiveValues) {
+	s.sawStep(id)
+	if s.reveal {
+		withhold = v1.SensitiveValues{}
+	}
 
 	s.mu.Lock()
-	s.lastOutcome = id + " " + text
+	redact, _ := withholdingAt(s.redact, nil, withhold)
+	s.mu.Unlock()
+	text := s.stepOutcomeText(redact, outputs, err, tolerated)
+	line := applyText(redact, id+" "+text)
+
+	s.mu.Lock()
+	s.lastOutcome = line
 	s.mu.Unlock()
 
 	// The tone is the outcome's, matching the transcript's reading of the
@@ -876,8 +891,8 @@ func (s *Session) StepFinished(id string, outputs *v1.Node_Outputs, err error, t
 		tone, state = ToneDanger, StepFailed
 	}
 	s.noteStep(id, state)
-	s.printfTone(tone, "  %s %s\n", id, text)
-	s.observe(observationKind(state), id, id+" "+text)
+	s.emitTone(tone, "  "+line+"\n")
+	s.observeRedacted(observationKind(state), id, capRunes(line, maxObservationRunes))
 }
 
 // StepSkipped implements [v1.RunObserver]. A skipped step never reaches
@@ -1937,8 +1952,9 @@ func (s *Session) printf(format string, args ...any) {
 	s.printfTone(ToneInfo, format, args...)
 }
 
-// stepOutcomeText renders one step's recorded outcome for the console.
-func (s *Session) stepOutcomeText(outputs *v1.Node_Outputs, err error, tolerated bool) string {
+// stepOutcomeText renders one step's recorded outcome for the console, its
+// values redacted by redact.
+func (s *Session) stepOutcomeText(redact func(string) string, outputs *v1.Node_Outputs, err error, tolerated bool) string {
 	if err != nil {
 		if tolerated {
 			return "failed (tolerated by continue_on_error): " + err.Error()
@@ -1968,7 +1984,7 @@ func (s *Session) stepOutcomeText(outputs *v1.Node_Outputs, err error, tolerated
 	// truncation as a prefix no substring match can find — so a cap applied
 	// first would expose the first 4096 runes of exactly the value the
 	// redactor exists to withhold (Codex, #1109). Order is the whole fix.
-	return "-> " + capRunes(s.redactText(strings.Join(parts, ", ")), MaxInspectRunes)
+	return "-> " + capRunes(applyText(redact, strings.Join(parts, ", ")), MaxInspectRunes)
 }
 
 // valueText renders one output value. A value that is not a resolved literal

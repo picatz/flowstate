@@ -85,6 +85,23 @@ type RunObserver interface {
 	WaitStarted(id string, signal string, timeout time.Duration, bounded bool)
 }
 
+// A WithholdingRunObserver is a [RunObserver] that renders a step's outcome
+// for a person, and so is told, with it, what that rendering must withhold
+// (#2210): the declared-sensitive inputs of the workflow the step belongs to
+// and of every workflow on the way to it ([ExecutingSensitiveFromContext]),
+// and, for a failure raised inside a callee, what that failure carries
+// ([FailureSensitiveValues]). A step id says none of that, and an observer's
+// own redactor knows only what its caller gave it — never a callee's
+// declarations.
+//
+// It is called in place of StepFinished. The set is empty unless a [Debugger]
+// was installed when the run began, the only case where anything reads it.
+type WithholdingRunObserver interface {
+	RunObserver
+
+	StepFinishedWithholding(id string, outputs *Node_Outputs, err error, tolerated bool, withhold SensitiveValues)
+}
+
 type runObserverKey struct{}
 
 // NewContextWithRunObserver installs an observer for every step the local
@@ -144,6 +161,13 @@ func observeStepFinished(ctx context.Context, id string, outputs *Node_Outputs, 
 	snapshot := err
 	if err != nil {
 		snapshot = errors.New(err.Error())
+	}
+	if withholding, ok := observer.(WithholdingRunObserver); ok {
+		// Taken from the live error, before the snapshot drops its chain.
+		withhold := ExecutingSensitiveFromContext(ctx).Merge(FailureSensitiveValues(err))
+		observeSafely(func() { withholding.StepFinishedWithholding(id, copied, snapshot, tolerated, withhold) })
+
+		return
 	}
 	observeSafely(func() { observer.StepFinished(id, copied, snapshot, tolerated) })
 }

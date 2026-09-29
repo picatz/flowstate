@@ -516,7 +516,7 @@ func (e *executor) runNodes(nodes []*v1.Node, depth, susp int) (err error) {
 		}
 		if !run {
 			workflow.GetLogger(e.ctx).Info("skipping step, condition is false", "id", node.GetId())
-			e.observeForDebug(v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_SKIPPED, node, "")
+			e.observeForDebug(v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_SKIPPED, node, nil)
 			e.yieldWorkflow()
 
 			// A skipped step is still a boundary, and it has to be one: the
@@ -672,7 +672,7 @@ func (e *executor) runNodes(nodes []*v1.Node, depth, susp int) (err error) {
 			}
 		} else {
 			e.processed++
-			e.observeForDebug(v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_FINISHED, node, "")
+			e.observeForDebug(v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_FINISHED, node, nil)
 		}
 
 		e.progress.finished()
@@ -863,7 +863,7 @@ func (e *executor) recordOutcome(node *v1.Node, err error) error {
 		// The local driver records at the identical point, and it has to, or the
 		// two drivers would disagree about what a failed run did.
 		e.scope.Outputs.StepValues[node.GetId()] = failedStepOutputs(err)
-		e.observeForDebug(v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_FAILED, node, v1.StepErrorText(err))
+		e.observeForDebug(v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_FAILED, node, err)
 
 		// The step's position is added here, on the way out, rather than
 		// where the failure was raised — so that the branch below, which
@@ -876,7 +876,7 @@ func (e *executor) recordOutcome(node *v1.Node, err error) error {
 		"id", node.GetId(), "error", err.Error())
 	e.noteTolerated(node.GetId())
 	e.scope.Outputs.StepValues[node.GetId()] = failedStepOutputs(err)
-	e.observeForDebug(v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_TOLERATED, node, v1.StepErrorText(err))
+	e.observeForDebug(v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_TOLERATED, node, err)
 
 	return nil
 }
@@ -1150,7 +1150,10 @@ func (e *executor) runCall(node *v1.Node, call *v1.Call, depth, susp int, descen
 		// step that is not there. `workflow %q` matches the local driver's
 		// runCall spelling exactly, which is what lets
 		// `${steps.<id>.error}` read identically under both drivers.
-		return stepFailed(err, "workflow %q", callee.GetName())
+		//
+		// Carrying what the callee withholds, for a debugger rendering the
+		// failure at the caller (#2210), as the local driver's runCall does.
+		return withFailureSensitive(stepFailed(err, "workflow %q", callee.GetName()), nested.debugFailureSensitive())
 	}
 
 	outputs, cost, err := v1.CallOutputsWithCost(evalContext(), callee, inner)
