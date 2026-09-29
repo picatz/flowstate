@@ -1,9 +1,7 @@
 package flowstatev1_test
 
 import (
-	"context"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -36,26 +34,13 @@ func TestTheLocalDriverWithholdsTheCorpussFailedSensitive(t *testing.T) {
 				session.Finished(runErr)
 			}()
 
-			next := func(after uint64, want v1.DebugRunState) *v1.DebugSnapshot {
-				ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
-				defer cancel()
-				for {
-					snapshot, err := session.WaitSnapshot(ctx, after)
-					require.NoError(t, err)
-					if snapshot.GetState() == want {
-						return snapshot
-					}
-					after = snapshot.GetRevision()
-				}
-			}
-
-			at := next(0, v1.DebugRunState_DEBUG_RUN_STATE_HELD)
+			at := awaitDebugState(t, session, 0, v1.DebugRunState_DEBUG_RUN_STATE_HELD)
 			receipt, err := session.Resume(t.Context(), &v1.DebugResumeRequest{
 				RequestId: "on", ExpectedRevision: at.GetRevision(), Action: v1.DebugResumeAction_DEBUG_RESUME_ACTION_CONTINUE,
 			})
 			require.NoError(t, err)
 			require.Equal(t, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_APPLIED, receipt.GetStatus(), receipt.GetMessage())
-			final := next(receipt.GetRevision(), v1.DebugRunState_DEBUG_RUN_STATE_FAILED)
+			final := awaitDebugState(t, session, receipt.GetRevision(), v1.DebugRunState_DEBUG_RUN_STATE_FAILED)
 
 			failed := map[string]string{}
 			for _, observation := range final.GetObservations() {

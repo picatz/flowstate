@@ -39,27 +39,14 @@ func TestTheLocalDriverExplainsTheCorpussGuards(t *testing.T) {
 			if test.Failed != "" {
 				want = v1.DebugRunState_DEBUG_RUN_STATE_FAILED
 			}
-			next := func(after uint64, want v1.DebugRunState) *v1.DebugSnapshot {
-				ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
-				defer cancel()
-				for {
-					snapshot, err := session.WaitSnapshot(ctx, after)
-					require.NoError(t, err)
-					if snapshot.GetState() == want {
-						return snapshot
-					}
-					after = snapshot.GetRevision()
-				}
-			}
-
-			at := next(0, v1.DebugRunState_DEBUG_RUN_STATE_HELD)
+			at := awaitDebugState(t, session, 0, v1.DebugRunState_DEBUG_RUN_STATE_HELD)
 			receipt, err := session.Resume(t.Context(), &v1.DebugResumeRequest{
 				RequestId: "on", ExpectedRevision: at.GetRevision(), Action: v1.DebugResumeAction_DEBUG_RESUME_ACTION_CONTINUE,
 			})
 			require.NoError(t, err)
 			require.Equal(t, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_APPLIED, receipt.GetStatus(), receipt.GetMessage())
 
-			assertGuardAccount(t, test, next(receipt.GetRevision(), want).GetObservations())
+			assertGuardAccount(t, test, awaitDebugState(t, session, receipt.GetRevision(), want).GetObservations())
 			if test.Failed != "" {
 				states := map[string]flowdebug.StepState{}
 				for _, step := range session.Steps(0, 100).Steps {
@@ -98,4 +85,21 @@ func assertGuardAccount(t *testing.T, test conformance.GuardCase, observations [
 	}
 	require.Contains(t, failed, test.Failed, "the condition that could not be evaluated was not reported")
 	assert.Contains(t, failed[test.Failed], test.Quoted)
+}
+
+// awaitDebugState waits past revision after for session to reach want, the
+// state a conformance case expects next, failing the test after ten seconds.
+func awaitDebugState(t *testing.T, session *flowdebug.Session, after uint64, want v1.DebugRunState) *v1.DebugSnapshot {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	for {
+		snapshot, err := session.WaitSnapshot(ctx, after)
+		require.NoError(t, err)
+		if snapshot.GetState() == want {
+			return snapshot
+		}
+		after = snapshot.GetRevision()
+	}
 }
