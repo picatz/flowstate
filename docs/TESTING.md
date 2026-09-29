@@ -498,7 +498,8 @@ it happened at, which stub answered (marked `from defaults` when inherited),
 each signal, and each `switch:` arm taken. The value of any input declared
 `sensitive:` renders `[redacted]` there, in the case's failures and in a
 `--seeds` divergence report, whichever workflow the run reached declares it, a
-called one included. So does a called workflow's output declared `sensitive:`.
+called one included. So does a called workflow's output declared `sensitive:`,
+and a step, task or signal name the transcript prints that spells such a value.
 A divergence report shows both of its runs under what either run withholds,
 since they are read together, and the diverging case's own report, printed
 beside it, withholds what any schedule's run withheld, its name and warnings
