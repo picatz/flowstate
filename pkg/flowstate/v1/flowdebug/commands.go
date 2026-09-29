@@ -450,6 +450,14 @@ func (s *Session) inspectWith(ctx context.Context, expression string, scope *v1.
 		return
 	}
 
+	// The pause's own redactors, which withhold what the workflow held there
+	// declares sensitive, a callee's included, as the typed contract's
+	// inspection does (#2208, exact-head review): the session's alone know
+	// only what its caller installed. The answer and the error alike, since an
+	// evaluation error quotes the scope as readily as an answer shows it
+	// (`no such key: <value>`).
+	text, value := s.pauseRedactors()
+
 	activation := scope.Activation(ctx)
 	if len(extra) > 0 {
 		activation = scope.ActivationWith(ctx, extra)
@@ -459,7 +467,7 @@ func (s *Session) inspectWith(ctx context.Context, expression string, scope *v1.
 		// An author's expression failing is an ordinary event at a debugger
 		// prompt, not a session-ending one: they are asking questions, and
 		// some of them will not compile.
-		s.printfTone(ToneWarning, "%v\n", err)
+		s.emitTone(ToneWarning, applyText(text, err.Error())+"\n")
 
 		return
 	}
@@ -467,7 +475,7 @@ func (s *Session) inspectWith(ctx context.Context, expression string, scope *v1.
 	// Redacted before the cap, for the reason [Session.stepOutcomeText] gives:
 	// truncating first would leave the first MaxInspectRunes of a long secret
 	// in a string no substring match can recognise (Codex, #1109).
-	s.printf("%s\n", capRunes(s.redactText(s.refValText(out)), MaxInspectRunes))
+	s.printf("%s\n", capRunes(applyText(text, refValTextWith(out, text, value)), MaxInspectRunes))
 }
 
 // showCompletion answers `complete`, which is tab made into a command.

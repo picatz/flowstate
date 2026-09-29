@@ -256,6 +256,15 @@ type Options struct {
 	// terminal makes, and the same escape — see [Session.Control].
 	Controlled bool
 
+	// RevealSensitive says the caller has authorized showing the values the
+	// program declares sensitive: `--reveal-sensitive` on `flow run --debug`,
+	// `flow debug replay` and `flow dap`, or embed's
+	// DebugOptions.RevealSensitive, each of which refuses to debug a program
+	// declaring such values without it. Without it, a hold withholds the
+	// declared-sensitive inputs of the root and of the workflow held there, a
+	// callee's included, as the durable driver does (#2208).
+	RevealSensitive bool
+
 	// Workflow is the program being debugged. When set, breakpoint and
 	// run-until targets are resolved against its sites, so a target that can
 	// never match is refused rather than armed.
@@ -416,6 +425,12 @@ type Session struct {
 	// untilConditionText is untilCondition as it was written, for saying what
 	// was asked when the stop never came. Set and cleared with it.
 	untilConditionText string
+	// untilSensitive is what the hold `until` was applied at withheld
+	// ([promptSubject.sensitive]), for saying what was asked when the stop
+	// never came: an `until` applied inside a callee can quote a value only
+	// that callee declares sensitive, as the durable driver's untilSensitive
+	// records. Set and cleared with it.
+	untilSensitive v1.SensitiveValues
 	// returnReported records that [Session.RunReturned] has heard the run's
 	// own return. The first report decides whether a missed `until` is said:
 	// a driver that reports the return and then the case's verdict
@@ -534,7 +549,10 @@ type Session struct {
 	// controlled is [Options.Controlled], and control carries the lines
 	// [Session.Control] delivers. See control.go.
 	controlled bool
-	control    chan controlRequest
+
+	// reveal is [Options.RevealSensitive].
+	reveal  bool
+	control chan controlRequest
 
 	// controlSlot admits one [Session.Control] at a time. A run has one
 	// position, so two callers moving it at once is not a thing to arbitrate
@@ -609,6 +627,11 @@ type promptSubject struct {
 	// withhold (Codex, #1120).
 	redactText  func(string) string
 	redactValue func(any) any
+
+	// sensitive is what the workflow held here declares sensitive, with the
+	// root's ([v1.ExecutingSensitiveFromContext]), folded into redactText and
+	// redactValue when the pause is captured.
+	sensitive v1.SensitiveValues
 }
 
 // New returns a session configured by opts.
@@ -658,6 +681,7 @@ func New(opts Options) (*Session, error) {
 		declaredIDs: declaredStepIDSet(opts.Steps),
 
 		controlled:   opts.Controlled,
+		reveal:       opts.RevealSensitive,
 		control:      make(chan controlRequest),
 		controlSlot:  make(chan struct{}, 1),
 		pauseChanged: make(chan struct{}),
@@ -1021,7 +1045,9 @@ func (s *Session) conditionHolds(ctx context.Context, what, id string, condition
 		return false, ctx.Err()
 
 	case err != nil:
-		s.noteDeclined(what, id, err)
+		// An evaluation error can quote what it read, and what it read here
+		// is this arrival's scope.
+		s.noteDeclined(what, id, errors.New(s.redactTextAt(ctx, err.Error())))
 
 		return false, nil
 	}
@@ -1449,7 +1475,7 @@ func (s *Session) prompting(at promptSubject) {
 	// not a stale answer, it is a concurrent map read and write — which Go
 	// answers with a fatal throw no recover reaches (Codex, #1120).
 	if at.scope != nil {
-		at.redactText, at.redactValue = s.redact, s.redactValue
+		at.redactText, at.redactValue = withholdingAt(s.redact, s.redactValue, at.sensitive)
 		at.scope = frozen(at.scope)
 	}
 
@@ -1463,6 +1489,76 @@ func (s *Session) prompting(at promptSubject) {
 	s.pauseGen++
 	close(s.pauseChanged)
 	s.pauseChanged = make(chan struct{})
+}
+
+// withholdingAt is the session's redactors with what the workflow held at a
+// pause declares sensitive added to both (#2208). The session's own come from
+// its caller — `flow test` installs the case's — and know nothing of a
+// callee's declarations, so a hold inside a callee showed a value only the
+// callee declares sensitive, which the durable driver withholds. Added rather
+// than substituted: the session's rule still applies first, and a session
+// with none still withholds what the held workflow declares.
+func withholdingAt(text func(string) string, value func(any) any, sensitive v1.SensitiveValues) (func(string) string, func(any) any) {
+	if sensitive.Empty() {
+		return text, value
+	}
+
+	return func(rendered string) string {
+			// Each rule matches the text as it was, never the other's output:
+			// applied in turn, one secret overlapping another is cut by the
+			// first and missed by the second (`abc` withheld, then `abcdef`
+			// no longer found, leaving `def`), and no order is safe for
+			// both. So each is asked of the original, and where both would
+			// withhold something the whole rendering is withheld instead
+			// (Copilot, #2209) — structured values reach here a leaf at a
+			// time ([withheldLeaves]), so that costs a leaf, not an answer.
+			own := applyText(text, rendered)
+			held := sensitive.RedactText(rendered, "[withheld]")
+			switch {
+			case held == rendered:
+				return own
+			case own == rendered:
+				return held
+			default:
+				return "[withheld]"
+			}
+		}, func(native any) any {
+			if sensitive.WithholdAll() {
+				return "[withheld]"
+			}
+			if value != nil {
+				native = value(native)
+			}
+
+			return sensitive.RedactTree(native)
+		}
+}
+
+// sensitiveAt is what text rendered from the run's position on ctx withholds
+// beyond the session's own redactors: the declared-sensitive inputs of the
+// root and of the workflow running there ([v1.ExecutingSensitiveFromContext]),
+// or nothing where [Options.RevealSensitive] authorized showing them. Every
+// rendering from an arrival's scope asks it — a hold's pause, a failure stop's
+// text, a logpoint's message, a declined condition's error — because each can
+// quote a value only the callee there declares sensitive.
+func (s *Session) sensitiveAt(ctx context.Context) v1.SensitiveValues {
+	if s.reveal {
+		return v1.SensitiveValues{}
+	}
+
+	return v1.ExecutingSensitiveFromContext(ctx)
+}
+
+// redactTextAt is [Session.redactText] plus what the position on ctx
+// withholds ([Session.sensitiveAt]).
+func (s *Session) redactTextAt(ctx context.Context, text string) string {
+	s.mu.Lock()
+	redact := s.redact
+	s.mu.Unlock()
+
+	withhold, _ := withholdingAt(redact, nil, s.sensitiveAt(ctx))
+
+	return applyText(withhold, text)
 }
 
 // frozen is the scope as it was when a pause began, copied so that nothing the
@@ -1913,26 +2009,40 @@ func nativeText(native any) string {
 	return string(encoded)
 }
 
-// refValText renders an inspection's result through the same conversion a
-// `value:` step's result takes — [cel.RefValueToValue] then [v1.LiteralToGo],
-// exactly as EvalValueNode does — so what an inspection prints and what the
-// same expression would produce in the file are one rendering of one value,
-// rather than two that can drift.
+// refValTextWith renders an inspection's result through the same conversion
+// a `value:` step's result takes — [cel.RefValueToValue] then
+// [v1.LiteralToGo], exactly as EvalValueNode does — so what an inspection
+// prints and what the same expression would produce in the file are one
+// rendering of one value, rather than two that can drift.
 //
-// Redacted as a tree first, through [Session.redactedValue], for the reason
-// [withheldLeaves] gives; the caller's pass over the rendered line is the
-// backstop behind it.
-func (s *Session) refValText(out ref.Val) string {
+// Redacted as a tree first, through value and then [withheldLeaves] with
+// text, for the reason [withheldLeaves] gives; the caller's pass over the
+// rendered line is the backstop behind it.
+func refValTextWith(out ref.Val, text func(string) string, value func(any) any) string {
 	native, ok := redactedNative(out, nil)
 	if !ok {
-		s.mu.Lock()
-		withholding := s.redact != nil || s.redactValue != nil
-		s.mu.Unlock()
-
-		return unrenderedText(out, withholding)
+		return unrenderedText(out, text != nil || value != nil)
+	}
+	if value != nil {
+		native = value(native)
 	}
 
-	return nativeText(s.redactedValue(native))
+	return nativeText(withheldLeaves(text, native))
+}
+
+// pauseRedactors are the redactors an answer at the current pause renders
+// under: the pause's own, captured with its scope ([promptSubject.redactText])
+// and carrying what the workflow held there declares sensitive, or the
+// session's where there is no pause.
+func (s *Session) pauseRedactors() (func(string) string, func(any) any) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.at.scope != nil {
+		return s.at.redactText, s.at.redactValue
+	}
+
+	return s.redact, s.redactValue
 }
 
 // unrenderedText is what prints for a value [redactedNative] cannot convert —

@@ -11,7 +11,7 @@ import (
 // cost: a run nobody is debugging records no segments and allocates nothing
 // for them, and its failure hook is a nil check.
 func TestOccurrenceTrackingCostsNothingWithoutADebugger(t *testing.T) {
-	ctx := contextWithExecutingWorkflow(context.Background(), "root")
+	ctx := contextWithExecutingWorkflow(context.Background(), "root", SensitiveValues{})
 
 	allocs := testing.AllocsPerRun(100, func() {
 		if contextWithSegment(ctx, DebugSegmentKind_DEBUG_SEGMENT_KIND_ITERATION, "loop", 3) != ctx {
@@ -36,9 +36,9 @@ type recordingDebugger struct{}
 func (recordingDebugger) BeforeStep(context.Context, *Node, *Scope) error { return nil }
 
 func TestOccurrenceTrackingRecordsNestingUnderADebugger(t *testing.T) {
-	ctx := NewContextWithDebugger(contextWithExecutingWorkflow(context.Background(), "root"), recordingDebugger{})
+	ctx := NewContextWithDebugger(contextWithExecutingWorkflow(context.Background(), "root", SensitiveValues{}), recordingDebugger{})
 	ctx = contextWithSegment(ctx, DebugSegmentKind_DEBUG_SEGMENT_KIND_ITERATION, "pages", 2)
-	ctx = contextWithExecutingCall(ctx, "fetch", "call", "child")
+	ctx = contextWithExecutingCall(ctx, "fetch", "call", "child", SensitiveValues{})
 	ctx = contextWithSegment(ctx, DebugSegmentKind_DEBUG_SEGMENT_KIND_BRANCH, "fan", 1)
 
 	occurrence := ExecutingOccurrenceFromContext(ctx, &Node{Id: "get"})
@@ -78,9 +78,9 @@ func TestAnOccurrenceStaysInsideTheSchemasBounds(t *testing.T) {
 		t.Fatalf("a shortened address lost the step it names: ...%s", address[len(address)-32:])
 	}
 
-	ctx := NewContextWithDebugger(contextWithExecutingWorkflow(context.Background(), "root"), recordingDebugger{})
+	ctx := NewContextWithDebugger(contextWithExecutingWorkflow(context.Background(), "root", SensitiveValues{}), recordingDebugger{})
 	for range MaxDebugSegments + 4 {
-		ctx = contextWithExecutingCall(ctx, "caller", "call", "callee")
+		ctx = contextWithExecutingCall(ctx, "caller", "call", "callee", SensitiveValues{})
 	}
 	position, _ := ctx.Value(executingWorkflowKey{}).(executingPosition)
 	if got := len(position.segments); got > MaxDebugSegments {

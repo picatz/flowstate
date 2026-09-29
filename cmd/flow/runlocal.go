@@ -291,6 +291,9 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 			// And the program itself, so a target or a condition is judged
 			// against where it can fire, as every other front judges it.
 			Workflow: workflow,
+			// Authorized by --reveal-sensitive, without which a program
+			// declaring sensitive values is refused above.
+			RevealSensitive: reveal,
 		})
 		if err != nil {
 			return err
