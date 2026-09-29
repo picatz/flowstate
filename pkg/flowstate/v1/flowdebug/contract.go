@@ -155,6 +155,9 @@ type contractState struct {
 	// sitesKnown distinguishes "no program was given" from "the program has
 	// no such site".
 	sitesKnown bool
+	// names is what the program's sites bind and which steps they are, taken
+	// once for every condition checked against them; nil unless sitesKnown.
+	names *v1.DebugProgramNames
 	// program and declaredInProgram are the program and every step id it
 	// declares, when its sites were cut short at [v1.MaxDebugStaticSites]:
 	// what a target is then judged by, as the durable driver judges it
@@ -170,6 +173,9 @@ type contractState struct {
 	// irDigest is the digest of the program under debug, when it is known:
 	// what a source map is checked against and what a snapshot reports.
 	irDigest string
+	// programGiven says the program came from [Options.Workflow], which
+	// [Session.Program] never replaces.
+	programGiven bool
 }
 
 func newContractState(opts Options) contractState {
@@ -184,22 +190,8 @@ func newContractState(opts Options) contractState {
 		sources:     map[string]*v1.DebugSourceLocation{},
 	}
 	if opts.Workflow != nil {
-		// A truncated enumeration cannot say a step is absent, so targets are
-		// then judged by step id, as they are without a workflow.
-		var truncated bool
-		c.sites, truncated = v1.DebugStaticSites(opts.Workflow)
-		c.sitesKnown = !truncated
-		if truncated {
-			c.program = opts.Workflow
-			c.declaredInProgram = map[string]struct{}{}
-			for id := range v1.DebugDeclaredSteps(opts.Workflow) {
-				c.declaredInProgram[id] = struct{}{}
-			}
-		}
-		if profile := opts.Workflow.GetProfile(); profile != "" {
-			c.profile = profile
-		}
-		c.irDigest = v1.WorkflowIRDigest(opts.Workflow)
+		c.setProgram(opts.Workflow)
+		c.programGiven = true
 	}
 	for _, entry := range opts.SourceMap.GetEntries() {
 		key := v1.DebugSiteKey(entry.GetSite())
@@ -209,6 +201,133 @@ func newContractState(opts Options) contractState {
 	}
 
 	return c
+}
+
+// setProgram records the program under debug: its sites, what it declares
+// when those were cut short, its profile and its digest.
+func (c *contractState) setProgram(wf *v1.Workflow) {
+	// A truncated enumeration cannot say a step is absent, so targets are
+	// then judged by step id, as they are without a workflow.
+	var truncated bool
+	c.sites, truncated = v1.DebugStaticSites(wf)
+	c.sitesKnown = !truncated
+	c.names, c.program, c.declaredInProgram = nil, nil, nil
+	c.profile = v1.CurrentProfile
+	if !truncated {
+		c.names = v1.NewDebugProgramNames(c.sites)
+	}
+	if truncated {
+		c.program = wf
+		c.declaredInProgram = map[string]struct{}{}
+		for id := range v1.DebugDeclaredSteps(wf) {
+			c.declaredInProgram[id] = struct{}{}
+		}
+	}
+	if profile := wf.GetProfile(); profile != "" {
+		c.profile = profile
+	}
+	c.irDigest = v1.WorkflowIRDigest(wf)
+}
+
+// Program gives a session built without [Options.Workflow] the program its
+// run executes, so a breakpoint's target and condition are judged against
+// where they can fire. flowtest calls it with each case's compiled program
+// before that case runs, which is how `flow test --debug`, the scripted MCP
+// tool and flowtesting.WithWalk sessions get one (Codex, #2202). A session
+// that was given a program keeps it.
+//
+// Cases may run different programs under one session (`flowtest.RunOptions`
+// holds each case's run), so each call replaces the last (Codex, #2202). A
+// breakpoint set against the program before is judged again against this
+// one, as [Session.ReplaceBreakpoints] would judge it now, and one this
+// program refuses is removed with a notice saying why, rather than left armed
+// for a case it cannot answer in. A line breakpoint is judged by the source
+// map, which a program does not change, and is kept. A pending `until` is
+// judged the same way, and one this program refuses is dropped for
+// `continue`, which it was already: a run to its breakpoints.
+func (s *Session) Program(wf *v1.Workflow) {
+	if wf == nil {
+		return
+	}
+	digest := v1.WorkflowIRDigest(wf)
+	s.mu.Lock()
+	if s.contract.programGiven || (s.contract.irDigest == digest && (s.contract.sitesKnown || s.contract.program != nil)) {
+		s.mu.Unlock()
+
+		return
+	}
+	s.contract.setProgram(wf)
+	profile := s.contract.profile
+	installed := make(map[string]breakpoint, len(s.breakpoints))
+	maps.Copy(installed, s.breakpoints)
+	pending, until, untilCondition, untilText := s.mode == modeUntil, s.until, s.untilCondition, s.untilConditionText
+	s.mu.Unlock()
+
+	redact := s.snapshotTextRedactor()
+	if pending {
+		s.rejudgeUntil(until, untilCondition, untilText, profile, redact)
+	}
+	var refused []string
+	for _, key := range slices.Sorted(maps.Keys(installed)) {
+		at := installed[key]
+		if at.definition == nil || at.definition.GetLine() != nil {
+			continue
+		}
+		definition := proto.CloneOf(at.definition)
+		definition.Id = at.id
+		if _, state := s.compileBreakpoint(definition, profile, redact); !state.GetVerified() {
+			refused = append(refused, key)
+			text := fmt.Sprintf("breakpoint %s no longer applies to this program: %s", breakpointLabel(at.definition), state.GetMessage())
+			s.printfTone(ToneWarning, "%s\n", text)
+			s.observe(v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_NOTICE, "", text)
+		}
+	}
+	if len(refused) == 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, key := range refused {
+		// Only the breakpoint that was judged: one replaced meanwhile is the
+		// replacement's, and was judged when it was set.
+		if current, ok := s.breakpoints[key]; ok && current.source == installed[key].source {
+			delete(s.breakpoints, key)
+		}
+	}
+	s.bump()
+}
+
+// rejudgeUntil judges a pending `until` against the program [Session.Program]
+// just installed, and drops one it refuses for `continue`, saying why.
+func (s *Session) rejudgeUntil(until v1.DebugTarget, condition *v1.Value, conditionText, profile string, redact func(string) string) {
+	why, refused := s.unknownStepNotice(until.String())
+	if !refused && condition != nil {
+		if _, err := s.conditionInScope(condition, profile, until.Resolve); err != nil {
+			why, refused = "condition: "+err.Error(), true
+		}
+	}
+	if !refused {
+		return
+	}
+
+	asked := until.String()
+	if conditionText != "" {
+		asked += " if " + conditionText
+	}
+	s.mu.Lock()
+	// Only the `until` that was judged: one set meanwhile was judged when it
+	// was set.
+	current := s.mode == modeUntil && s.until.String() == until.String() && s.untilCondition == condition
+	if current {
+		s.mode, s.until, s.untilCondition, s.untilConditionText = modeRun, v1.DebugTarget{}, nil, ""
+	}
+	s.mu.Unlock()
+	if !current {
+		return
+	}
+	text := applyText(redact, fmt.Sprintf("until %s no longer applies to this program: %s; the run continues to its breakpoints", asked, why))
+	s.printfTone(ToneWarning, "%s\n", text)
+	s.observe(v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_NOTICE, "", text)
 }
 
 // bump records a change: a new revision, and a wake for every waiter. Callers
@@ -1316,6 +1435,28 @@ func (s *Session) ReplaceBreakpoints(_ context.Context, req *v1.DebugSetBreakpoi
 	}, nil
 }
 
+// conditionInScope refuses a condition that reads a bare name none of the
+// sites it can fire at binds ([v1.CheckDebugConditionScope]); resolve picks
+// those sites from the program's. Past a truncated enumeration the names
+// cannot be checked, and the condition is admitted with a note saying so,
+// which the caller shows beside the breakpoint. A session given no program
+// has no sites to ask and admits it without one, as it always has.
+func (s *Session) conditionInScope(condition *v1.Value, profile string, resolve func([]v1.DebugStaticSite) []v1.DebugStaticSite) (string, error) {
+	s.mu.Lock()
+	known, sites, names, truncated := s.contract.sitesKnown, s.contract.sites, s.contract.names, s.contract.program != nil
+	s.mu.Unlock()
+	if !known {
+		if truncated {
+			return fmt.Sprintf("the condition's names are not checked: this program's steps were enumerated only to %d",
+				v1.MaxDebugStaticSites), nil
+		}
+
+		return "", nil
+	}
+
+	return "", v1.CheckDebugConditionScope(condition, profile, resolve(sites), names)
+}
+
 // compileBreakpoint checks one requested breakpoint, returning it armed or a
 // state saying why it is not.
 func (s *Session) compileBreakpoint(want *v1.DebugBreakpoint, profile string, redact func(string) string) (breakpoint, *v1.DebugBreakpointState) {
@@ -1382,6 +1523,21 @@ func (s *Session) compileBreakpoint(want *v1.DebugBreakpoint, profile string, re
 		compiled, err := v1.CompileDebugCondition(condition, profile)
 		if err != nil {
 			return refuse("condition: %v", err)
+		}
+		note, err := s.conditionInScope(compiled, profile, func(sites []v1.DebugStaticSite) []v1.DebugStaticSite {
+			if at.target.Step() != "" {
+				return at.target.Resolve(sites)
+			}
+
+			return slices.DeleteFunc(slices.Clone(sites), func(site v1.DebugStaticSite) bool {
+				return v1.DebugSiteKey(site.Site) != at.site
+			})
+		})
+		if err != nil {
+			return refuse("condition: %v", err)
+		}
+		if note != "" {
+			state.Message = strings.TrimPrefix(state.GetMessage()+"; "+note, "; ")
 		}
 		at.condition = compiled
 		at.source += " if " + condition

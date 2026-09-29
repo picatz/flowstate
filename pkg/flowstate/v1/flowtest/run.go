@@ -998,6 +998,13 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 		return
 	}
 
+	// Handed the program this case runs before the run starts, so a debugger
+	// built without one judges a breakpoint's target and condition against
+	// where they can fire. Capability-discovered, as RunReturned below is.
+	if programmed, ok := v1.DebuggerFromContext(ctx).(interface{ Program(*v1.Workflow) }); ok {
+		programmed.Program(workflow)
+	}
+
 	// runErr is this function's named result, assigned here rather than
 	// redeclared: it is reported to the caller beside the verdict, because a
 	// case can pass with a failed run and schedule exploration compares the

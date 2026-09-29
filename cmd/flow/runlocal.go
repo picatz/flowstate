@@ -288,6 +288,9 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 			// complete over every step the run may reach rather than only the
 			// ones it has been to.
 			Steps: stepList(workflow),
+			// And the program itself, so a target or a condition is judged
+			// against where it can fire, as every other front judges it.
+			Workflow: workflow,
 		})
 		if err != nil {
 			return err

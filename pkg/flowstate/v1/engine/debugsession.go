@@ -381,6 +381,15 @@ const untilRefusalChange = "engine.debug.refuseUnholdableUntil"
 // that history into a hold would be a nondeterminism error.
 const truncatedArmChange = "engine.debug.armPastTruncatedSites"
 
+// conditionScopeChange is the [workflow.GetVersion] changeID guarding the
+// refusal of a breakpoint whose condition reads a bare name none of its sites
+// binds ([v1.CheckDebugConditionScope]). An engine before it armed such a
+// breakpoint and evaluated the condition at each arrival, charging its cost
+// to the segment; a bare step id still resolves there, in the spelling
+// rooting retired, so such a breakpoint could also stop the run. A history it
+// recorded replays arming it.
+const conditionScopeChange = "engine.debug.refuseUnboundConditionNames"
+
 // durableSites resolves target to the sites the durable driver can hold at,
 // or says why there are none: no site matches it, or every one it matches is
 // inside a loop body, a parallel branch or a switch arm, which is never an
@@ -430,6 +439,9 @@ func (e *executor) parseDebugBreakpoints() {
 	}
 
 	sites, truncated := e.debugStaticSites()
+	// What the whole program binds, taken once for every condition below
+	// rather than once per condition (Codex, #2202).
+	var names *v1.DebugProgramNames
 	d.parsed = make([]parsedBreakpoint, 0, len(d.carry.GetBreakpoints()))
 	for i, bp := range d.carry.GetBreakpoints() {
 		parsed := parsedBreakpoint{state: debugBreakpointDefined(bp, i)}
@@ -483,6 +495,22 @@ func (e *executor) parseDebugBreakpoints() {
 				compiled, err := v1.CompileDebugCondition(condition, e.spec.GetProfile())
 				if err != nil {
 					refuse("condition: " + err.Error())
+
+					break
+				}
+				// The sites it can fire at, as the local driver asks it. Past
+				// a truncated enumeration they are not known, and the
+				// condition is armed with that said. Asked of the version
+				// only where the answer differs, as [truncatedArmChange] is.
+				if !truncated && names == nil {
+					names = v1.NewDebugProgramNames(sites)
+				}
+				if truncated {
+					parsed.state.Message = fmt.Sprintf("the condition's names are not checked: "+
+						"this program's steps were enumerated only to %d", v1.MaxDebugStaticSites)
+				} else if err := v1.CheckDebugConditionScope(compiled, e.spec.GetProfile(), resolved, names); err != nil &&
+					workflow.GetVersion(e.ctx, conditionScopeChange, workflow.DefaultVersion, 1) != workflow.DefaultVersion {
+					refuse("condition: " + e.debugRedactText(err.Error()))
 
 					break
 				}

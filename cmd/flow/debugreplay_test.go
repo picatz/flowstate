@@ -139,6 +139,25 @@ outputs: {}
 	assert.Contains(t, res.Err.Error(), `no step matches "orders/refund"`)
 }
 
+// TestDebugReplayRefusesAConditionNothingCanBind is #2194 at the prompt a
+// replay drives: the session holds the program, so a condition reading a name
+// no site of its step binds is refused when it is typed rather than armed to
+// decline at every arrival, and one reading the loop's own binding, set before
+// the loop runs, still fires.
+func TestDebugReplayRefusesAConditionNothingCanBind(t *testing.T) {
+	res := runFlow(t, "debug", "replay",
+		writeDebugScript(t, "break receipt if amount > 500\nbreak charge if amont > 500\nbreak charge if amount > 500\ncontinue\ncontinue\n"),
+		filepath.Join("..", "..", "examples", "debugging", "workflow.yaml"))
+	require.NoError(t, res.Err)
+
+	assert.Contains(t, res.Stderr, "break receipt: `amount` is bound only inside the loops and steps that declare it")
+	assert.Contains(t, res.Stderr, "break charge: `amont` is not bound where this breakpoint fires")
+	assert.Contains(t, res.Stderr, "did you mean `amount`?")
+	assert.Contains(t, res.Stderr, "break at orders[1]/charge (", "the condition on the loop's own binding did not fire")
+	assert.NotContains(t, res.Stderr, "break at receipt", "a refused breakpoint held the run")
+	assert.NotContains(t, res.Stderr, "could not be evaluated", "a refused condition was armed and declined")
+}
+
 // TestDebugReplayRefusesAMisspelledCommandBeforeRunningAnything.
 //
 // A prompt answers a typo and asks again, deliberately — ending someone's run
