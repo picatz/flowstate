@@ -294,3 +294,72 @@ func Test_Transit_refusesBeforeRequesting(t *testing.T) {
 	require.Len(t, served(), 1)
 	require.Equal(t, "transit/keys/"+longest, served()[0].path)
 }
+
+// chunkedReader hands its data over a few bytes at a time and keeps every
+// buffer it was asked to fill, so a test can see what a reader left behind.
+type chunkedReader struct {
+	data  []byte
+	given [][]byte
+}
+
+func (r *chunkedReader) Read(p []byte) (int, error) {
+	if len(r.data) == 0 {
+		return 0, io.EOF
+	}
+	r.given = append(r.given, p[:cap(p)])
+	n := copy(p, r.data[:min(len(r.data), 7)])
+	r.data = r.data[n:]
+	return n, nil
+}
+
+// Test_readAllClearing: every buffer a response outgrows is cleared before it
+// is let go, so the returned slice is the only copy of the body left.
+func Test_readAllClearing(t *testing.T) {
+	t.Parallel()
+
+	body := []byte(strings.Repeat("key-material ", 200))
+	r := &chunkedReader{data: body}
+	got, err := readAllClearing(r)
+	require.NoError(t, err)
+	require.Equal(t, body, got)
+
+	outgrown := 0
+	for _, buf := range r.given {
+		if &buf[:cap(buf)][cap(buf)-1] == &got[:cap(got)][cap(got)-1] {
+			continue
+		}
+		outgrown++
+		require.Equal(t, make([]byte, len(buf)), buf, "an outgrown buffer kept the body")
+	}
+	require.Positive(t, outgrown, "the body never outgrew a buffer, so nothing was tested")
+}
+
+// Test_decodeBase64String: the plaintext is decoded from the raw JSON into a
+// buffer the caller can clear, including the one escape base64 meets in JSON.
+func Test_decodeBase64String(t *testing.T) {
+	t.Parallel()
+
+	key := []byte{0xfb, 0xff, 0xbf, 0x01, 0x02, 0x03}
+	encoded := base64.StdEncoding.EncodeToString(key)
+	require.Contains(t, encoded, "/", "the case needs a slash to escape")
+
+	for name, raw := range map[string]string{
+		"plain":   `"` + encoded + `"`,
+		"escaped": `"` + strings.ReplaceAll(encoded, "/", `\/`) + `"`,
+	} {
+		got, err := decodeBase64String(json.RawMessage(raw))
+		require.NoError(t, err, name)
+		require.Equal(t, key, got, name)
+	}
+
+	for name, raw := range map[string]string{
+		"not a string":         `12`,
+		"null":                 `null`,
+		"another escape":       `"\u0041AAA"`,
+		"a trailing backslash": `"AAA\"`,
+		"not base64":           `"%%%%"`,
+	} {
+		_, err := decodeBase64String(json.RawMessage(raw))
+		require.Error(t, err, name)
+	}
+}

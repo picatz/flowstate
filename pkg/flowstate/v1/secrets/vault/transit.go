@@ -120,16 +120,20 @@ func (t *Transit) Encrypt(ctx context.Context, key string, plaintext, associated
 		return "", 0, err
 	}
 
-	body, err := json.Marshal(struct {
-		Plaintext      string `json:"plaintext"`
-		AssociatedData string `json:"associated_data,omitempty"`
-	}{
-		Plaintext:      base64.StdEncoding.EncodeToString(plaintext),
-		AssociatedData: base64.StdEncoding.EncodeToString(associatedData),
-	})
-	if err != nil {
-		return "", 0, fmt.Errorf("building the encrypt request: %w", err)
+	// Written out rather than marshaled: the plaintext is a data key, and
+	// json.Marshal would take it as a base64 string, which nothing can clear.
+	// Base64 needs no JSON escaping, so appending it between quotes is the
+	// encoding.
+	body := make([]byte, 0, 64+base64.StdEncoding.EncodedLen(len(plaintext))+base64.StdEncoding.EncodedLen(len(associatedData)))
+	body = append(body, `{"plaintext":"`...)
+	body = base64.StdEncoding.AppendEncode(body, plaintext)
+	body = append(body, '"')
+	if len(associatedData) > 0 {
+		body = append(body, `,"associated_data":"`...)
+		body = base64.StdEncoding.AppendEncode(body, associatedData)
+		body = append(body, '"')
 	}
+	body = append(body, '}')
 	defer clear(body)
 
 	response, err := t.call(ctx, http.MethodPost, apiPath, body, false)
@@ -185,25 +189,63 @@ func (t *Transit) Decrypt(ctx context.Context, key, ciphertext string, associate
 	// The response holds the plaintext.
 	defer clear(response)
 
+	// The plaintext is a data key, so it is taken as raw bytes rather than a
+	// string, which nothing could clear, and decoded by json.Unmarshal in
+	// place rather than through a json.Decoder, whose buffer would be a copy
+	// of the response nothing clears either.
 	var payload struct {
 		Data struct {
-			Plaintext string `json:"plaintext"`
+			Plaintext json.RawMessage `json:"plaintext"`
 		} `json:"data"`
 	}
-	if err := decodeJSON(response, &payload); err != nil {
-		return nil, fmt.Errorf("%s answered %q with %w", t.p.addr, apiPath, err)
+	err = json.Unmarshal(response, &payload)
+	defer clear(payload.Data.Plaintext)
+	if err != nil {
+		return nil, fmt.Errorf("%s answered %q with %w", t.p.addr, apiPath, describeJSONError(err, response))
 	}
 
-	plaintext, err := base64.StdEncoding.DecodeString(payload.Data.Plaintext)
+	plaintext, err := decodeBase64String(payload.Data.Plaintext)
 	if err != nil {
 		// The decoder's error quotes the offending byte; report only the length.
 		return nil, fmt.Errorf(
-			"%s answered %q with a plaintext that is not base64 (%d characters)",
+			"%s answered %q with a plaintext that is not a base64 string (%d bytes)",
 			t.p.addr, apiPath, len(payload.Data.Plaintext),
 		)
 	}
 
 	return plaintext, nil
+}
+
+// decodeBase64String decodes a JSON string of standard base64 into a buffer
+// the caller owns and clears, clearing it itself on failure. The one escape
+// base64 can meet in JSON, `\/`, is undone in place; any other is not base64.
+func decodeBase64String(raw json.RawMessage) ([]byte, error) {
+	if len(raw) < 2 || raw[0] != '"' || raw[len(raw)-1] != '"' {
+		return nil, errors.New("not a JSON string")
+	}
+	text := raw[1 : len(raw)-1]
+	n := 0
+	for i := 0; i < len(text); i++ {
+		c := text[i]
+		if c == '\\' {
+			if i+1 == len(text) || text[i+1] != '/' {
+				return nil, errors.New("an escape base64 does not use")
+			}
+			c = '/'
+			i++
+		}
+		text[n] = c
+		n++
+	}
+	text = text[:n]
+
+	plaintext := make([]byte, base64.StdEncoding.DecodedLen(len(text)))
+	written, err := base64.StdEncoding.Decode(plaintext, text)
+	if err != nil {
+		clear(plaintext)
+		return nil, err
+	}
+	return plaintext[:written], nil
 }
 
 // ReadKey reports the named key's type, versions, and capabilities. It reads
