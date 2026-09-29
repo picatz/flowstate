@@ -2209,14 +2209,20 @@ type caseShown struct {
 	runErr    error
 }
 
-// runErrorUnder is the run's failure as the case's own report prints it under
+// runErrorUnder is the run's failure as a schedule divergence shows it under
 // sensitive, or nil.
+//
+// Withheld whole under a posture that withholds everything, with no exception
+// for a diagnostic the stub boundary shaped: the case's own report keeps that
+// one readable ([renderedRunError]), but it names the step and task as the
+// file wrote them, and a divergence shows it beside a verdict whose names it
+// withholds (Codex, #2224).
 func (c caseShown) runErrorUnder(sensitive sensitiveInputs) error {
 	if c.runErr == nil {
 		return nil
 	}
 
-	return errors.New(renderedRunError(c.runErr, sensitive))
+	return errors.New(redactedErrorText(c.runErr.Error(), sensitive))
 }
 
 // topLevelStepUniverse collects every step id that can appear in a run's

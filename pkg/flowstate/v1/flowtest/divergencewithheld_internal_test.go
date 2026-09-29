@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -485,8 +486,9 @@ func TestANameThatSpellsAWithheldValueIsWithheld(t *testing.T) {
 
 // TestARunThatWithholdsEverythingShowsNoStepOfItsOwn: a run whose posture
 // withholds everything rendered its values that way, but a step id is the
-// file's own text, printed as written in a diagnostic and in its message, so a
-// divergence's rendering of that run withholds it too (Codex, #2224).
+// file's own text, printed as written in a diagnostic, in its message, and in
+// the run's failure a stub diagnostic shaped, so a divergence's rendering of
+// that run withholds it in each (Codex, #2224).
 func TestARunThatWithholdsEverythingShowsNoStepOfItsOwn(t *testing.T) {
 	t.Parallel()
 
@@ -494,7 +496,13 @@ func TestARunThatWithholdsEverythingShowsNoStepOfItsOwn(t *testing.T) {
 	result := &v1.TestCase{Name: "case " + secret, Failures: []*v1.Diagnostic{{
 		Field: "expect.ran", Step: secret, Message: "expected step \"" + secret + "\" to have run",
 	}}}
-	shown := caseShown{sensitive: v1.WithheldSensitiveValues()}
+	// The run's failure is a diagnostic the stub boundary shaped, which the
+	// case's own report prints as it is, naming the step as the file wrote it.
+	shaped := &stubDiagnostic{text: "flow test: task \"http\" was invoked, but this case declares no stub for it", shaped: true}
+	runErr := fmt.Errorf("step %q: task \"http\": %w", secret, shaped)
+	require.Contains(t, renderedRunError(runErr, v1.WithheldSensitiveValues()), secret,
+		"the case's own report withheld the shaped diagnostic, so this proves nothing about the divergence")
+	shown := caseShown{sensitive: v1.WithheldSensitiveValues(), runErr: runErr}
 
 	rendered := shownCase(result, nil, shown, shownPosture{sensitive: v1.WithheldSensitiveValues()})
 	require.Error(t, rendered.Err, "the verdict was not rendered, so this proves nothing")
