@@ -273,7 +273,9 @@ func TestThePromptsInspectInsideACalleeWithholdsItsSensitiveInputs(t *testing.T)
 	at = move(t, target, at, v1.DebugResumeAction_DEBUG_RESUME_ACTION_RUN_UNTIL, "nested/use")
 	require.Equal(t, "nested(child)/use", at.GetOccurrence().GetAddress())
 
-	for _, line := range []string{"inspect inputs.api_key", `inspect "k:" + inputs.api_key`, "inspect inputs"} {
+	// The last fails, and its error quotes the value it could not find
+	// (exact-head review).
+	for _, line := range []string{"inspect inputs.api_key", `inspect "k:" + inputs.api_key`, "inspect inputs", `inspect {"a": 1}[inputs.api_key]`} {
 		err := run.session.Control(t.Context(), line)
 		require.NoError(t, err, line)
 	}
@@ -286,7 +288,46 @@ func TestThePromptsInspectInsideACalleeWithholdsItsSensitiveInputs(t *testing.T)
 	out := printed.String()
 	mu.Unlock()
 	assert.NotContains(t, out, calleeSecret, "the prompt's inspect showed the callee's sensitive input")
-	assert.Equal(t, 3, strings.Count(out, "[redacted]"), "each inspection did not say its value was withheld:\n%s", out)
+	assert.Equal(t, 4, strings.Count(out, "[redacted]"), "each inspection, and the failing one's error, did not say its value was withheld:\n%s", out)
+	assert.Contains(t, out, "no such key", "the failing inspection printed no error, so this proves nothing:\n%s", out)
+}
+
+// TestAMissedUntilAppliedInsideACalleeWithholdsItsSensitiveInputs: an `until`
+// applied at a hold inside a callee can quote a value only that callee
+// declares sensitive, and the notice that it was never reached withholds it,
+// as the durable driver's does (exact-head review, #2209).
+func TestAMissedUntilAppliedInsideACalleeWithholdsItsSensitiveInputs(t *testing.T) {
+	t.Parallel()
+
+	var mu sync.Mutex
+	var printed strings.Builder
+	run := startDebugRun(t, "main.yaml", calleeSensitiveFiles(), func(opts *flowdebug.Options) {
+		opts.Emit = func(text string, _ flowdebug.Tone) {
+			mu.Lock()
+			defer mu.Unlock()
+			printed.WriteString(text)
+		}
+	})
+	target := flowdebug.Target(run.session)
+	at := waitHeld(t, target, 0)
+	at = move(t, target, at, v1.DebugResumeAction_DEBUG_RESUME_ACTION_RUN_UNTIL, "nested/use")
+	require.Equal(t, "nested(child)/use", at.GetOccurrence().GetAddress())
+
+	// `use` is not reached again, so the run completes without stopping.
+	require.NoError(t, run.session.Control(t.Context(), `until use if inputs.api_key != "`+calleeSecret+`"`))
+	require.NoError(t, <-run.done)
+
+	mu.Lock()
+	out := printed.String()
+	mu.Unlock()
+	assert.Contains(t, out, "the run completed without stopping at", "the notice was not said, so this proves nothing:\n%s", out)
+	assert.NotContains(t, out, calleeSecret, "the missed-until notice showed the callee's sensitive input")
+
+	final, err := target.Snapshot(t.Context())
+	require.NoError(t, err)
+	encoded, err := protojson.Marshal(final)
+	require.NoError(t, err)
+	assert.NotContains(t, string(encoded), calleeSecret, "the recorded notice showed the callee's sensitive input")
 }
 
 // TestAStepsAccountWithholdsWhatItsCalleeDeclaresSensitive is #2210: the
