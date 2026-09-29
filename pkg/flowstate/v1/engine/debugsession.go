@@ -282,6 +282,8 @@ func (e *executor) applyTypedAsk(ask *v1.DebugAsk, parseErr error, sender *v1.Si
 			d.carry.Until = ask.Until
 			d.carry.StepDepth = int32(callDepthOf(d.held.occurrence))
 			d.carry.Revision++
+			d.untilSensitive = d.sensitiveAt(d.held.spec, d.held.scope)
+			d.untilSensitiveKnown = true
 			d.lease = nil
 			d.held = heldStop{}
 			d.receipt(ask.Request, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_APPLIED, "")
@@ -748,10 +750,26 @@ func (e *executor) debugRunCompleted() {
 	if d.carry.GetNext() != v1.DebugResumeAction_DEBUG_RESUME_ACTION_RUN_UNTIL {
 		return
 	}
+	// Withheld against what the hold that applied it withheld as well as what
+	// the run withholds here: that hold may have been inside a callee, whose
+	// own declared-sensitive inputs the root does not see (Codex, #2204). A
+	// segment that inherited the `until` through Continue-As-New from a hold
+	// inside a callee does not know them, and withholds the target whole.
+	redact := func(text string) string {
+		sensitive := e.debug.sensitiveAt(e.curSpec, e.scope).Merge(d.untilSensitive)
+		if sensitive.Empty() {
+			return text
+		}
+
+		return sensitive.RedactText(text, "[redacted]")
+	}
+	if !d.untilSensitiveKnown && d.carry.GetStepDepth() > 0 {
+		redact = func(string) string { return "[redacted]" }
+	}
 	// Redacted and bounded by the notice itself, which redacts only the
 	// `until`, so it is recorded as it is.
 	d.appendDebugObservation(v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_NOTICE, "", "",
-		flowdebug.MissedUntilNotice(d.carry.GetUntil(), e.debugRedactText))
+		flowdebug.MissedUntilNotice(d.carry.GetUntil(), redact))
 }
 
 // debugSnapshot answers [v1.DebugQuery]: the session as the run holds it. A

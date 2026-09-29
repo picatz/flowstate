@@ -151,3 +151,36 @@ func TestTheDurableDriverSaysTheCorpussMissedUntil(t *testing.T) {
 		})
 	}
 }
+
+// TestADurableMissedUntilWithholdsTheAcceptingCalleesSensitiveInputs: an
+// `until` applied while held inside a callee was written against that
+// callee's scope, and a value only the callee declares sensitive is withheld
+// from the notice the completed run records, although completion is judged
+// in the root, which does not declare it (Codex, #2204).
+func TestADurableMissedUntilWithholdsTheAcceptingCalleesSensitiveInputs(t *testing.T) {
+	t.Parallel()
+
+	spec := typedSpec("until-in-callee")
+	call := spec.GetSteps()[1].GetCall()
+	call.Workflow.DeclaredInputs = []*v1.InputDeclaration{{Name: "word", Type: v1.InputDeclaration_TYPE_STRING, Sensitive: true}}
+	call.Arguments = map[string]*v1.Value{"word": v1.NewLiteral("greet")}
+
+	tl := newTimeline(t)
+	const sre = "sre-1@example.com"
+	tl.ask(30*time.Second, sre, &v1.DebugAsk{Verb: v1.DebugVerbPause, Session: "s1", Request: "attach", Lease: 5 * time.Minute})
+	tl.ask(70*time.Second, sre, &v1.DebugAsk{Verb: v1.DebugVerbResume, Session: "s1", Request: "in", Revision: 2,
+		Action: v1.DebugResumeAction_DEBUG_RESUME_ACTION_STEP_IN})
+	tl.read(71*time.Second, "in", "in")
+	tl.ask(80*time.Second, sre, &v1.DebugAsk{Verb: v1.DebugVerbResume, Session: "s1", Request: "back",
+		Action: v1.DebugResumeAction_DEBUG_RESUME_ACTION_RUN_UNTIL, Until: "nested/greet"})
+
+	tl.env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: spec})
+	require.True(t, tl.env.IsWorkflowCompleted())
+	require.NoError(t, tl.env.GetWorkflowError())
+	require.Equal(t, v1.DebugRunState_DEBUG_RUN_STATE_HELD, tl.reads["in"].GetState())
+	require.Equal(t, "greet", tl.reads["in"].GetOccurrence().GetSite().GetPath()[len(tl.reads["in"].GetOccurrence().GetSite().GetPath())-1],
+		"the run was not held inside the callee")
+
+	assert.Equal(t, []string{"the run completed without stopping at `until nested/[redacted]`"},
+		missedUntilNotices(querySnapshot(t, tl.env, "")), "the callee's sensitive input reached the notice")
+}

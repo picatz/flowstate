@@ -100,3 +100,32 @@ func TestADurableMissedUntilIsRedactedAndStillSaid(t *testing.T) {
 		t.Errorf("the notice carried a sensitive input: %q", text)
 	}
 }
+
+// TestAMissedUntilInheritedFromACalleesHoldIsWithheld: a segment that
+// inherited a pending `until` through Continue-As-New from a hold inside a
+// callee does not know what that callee withheld, so the notice withholds the
+// target whole rather than show a value only the callee declared sensitive
+// (Codex, #2204).
+func TestAMissedUntilInheritedFromACalleesHoldIsWithheld(t *testing.T) {
+	notice := func(depth int32) string {
+		e := &executor{
+			scope: &v1.Scope{Identity: &v1.WorkloadIdentity{Namespace: "team-a"}},
+			debug: &debugControl{carry: &v1.DebugCarry{
+				SessionId: "s", Next: v1.DebugResumeAction_DEBUG_RESUME_ACTION_RUN_UNTIL, Until: "nested/greet", StepDepth: depth,
+			}},
+		}
+		e.debugRunCompleted()
+		if len(e.debug.observations) != 1 {
+			t.Fatalf("observations = %d, want one", len(e.debug.observations))
+		}
+
+		return e.debug.observations[0].GetText()
+	}
+
+	if got, want := notice(1), "the run completed without stopping at `until [redacted]`"; got != want {
+		t.Errorf("an inherited `until` from a callee's hold: notice = %q, want %q", got, want)
+	}
+	if got, want := notice(0), "the run completed without stopping at `until nested/greet`"; got != want {
+		t.Errorf("an inherited `until` from the root's hold: notice = %q, want %q", got, want)
+	}
+}
