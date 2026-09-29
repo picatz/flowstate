@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -250,4 +251,19 @@ func TestTheDriverSaysALocalRunsMissedUntil(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, v1.DebugRunState_DEBUG_RUN_STATE_COMPLETED, result.Snapshot.GetState())
 	assert.Equal(t, 1, strings.Count(result.Text, "the run completed without stopping at `until each[9]/touch`"), result.Text)
+}
+
+// TestAMissedUntilNoticeIsBoundedAndWellFormed: a target may be 4 KiB, and
+// each driver caps an observation, the durable one at 512 runes. The notice
+// cuts the target itself, so it closes its quote and reads the same whichever
+// driver records it.
+func TestAMissedUntilNoticeIsBoundedAndWellFormed(t *testing.T) {
+	t.Parallel()
+
+	long := strings.Repeat("segment/", 512) + "step"
+	notice := flowdebug.MissedUntilNotice(long)
+	assert.LessOrEqual(t, utf8.RuneCountInString(notice), 512, "the notice would be clipped by the durable driver's cap")
+	assert.True(t, strings.HasSuffix(notice, "…`"), "the cut notice does not say it was cut, or does not close its quote: %q", notice[len(notice)-20:])
+	assert.Equal(t, "the run completed without stopping at `until each[9]/body`", flowdebug.MissedUntilNotice("each[9]/body"),
+		"an ordinary target was changed")
 }

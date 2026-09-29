@@ -318,12 +318,25 @@ func runDebugGet(cmd *cobra.Command, args []string) error {
 	if format.Machine() {
 		return writeJSON(surface, format, snapshot)
 	}
-	fmt.Fprint(surface.Out, flowdebug.FormatSnapshot(snapshot))
-	for _, observation := range snapshot.GetObservations() {
-		fmt.Fprintf(surface.Out, "  · %s\n", observation.GetText())
-	}
+	fmt.Fprint(surface.Out, formatDebugGet(snapshot))
 
 	return nil
+}
+
+// formatDebugGet renders `flow debug get`'s text: the snapshot, then every
+// observation it did not already print. A notice [flowdebug.FormatSnapshot]
+// prints itself is not listed again.
+func formatDebugGet(snapshot *v1.DebugSnapshot) string {
+	var b strings.Builder
+	b.WriteString(flowdebug.FormatSnapshot(snapshot))
+	for _, observation := range snapshot.GetObservations() {
+		if flowdebug.FormatSnapshotShows(snapshot, observation) {
+			continue
+		}
+		fmt.Fprintf(&b, "  · %s\n", observation.GetText())
+	}
+
+	return b.String()
 }
 
 func runDebugDo(cmd *cobra.Command, args []string) error {

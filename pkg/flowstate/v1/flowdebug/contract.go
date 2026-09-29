@@ -663,9 +663,22 @@ func (s *Session) RunReturned(err error) {
 // when it had one. Both drivers say it in these words — a local session from
 // [Session.RunReturned], a durable run in the snapshot it answers once it has
 // completed — so a script or an agent matching one matches the other.
+//
+// The `until` is cut to [maxMissedUntilRunes], so the whole notice stays
+// under both drivers' observation caps (512 runes durable, 1024 local): a
+// target may be 4 KiB, and clipping it anywhere else would close neither the
+// quote nor the two drivers' texts on the same rune (Copilot, #2204).
 func MissedUntilNotice(asked string) string {
+	if runes := []rune(asked); len(runes) > maxMissedUntilRunes {
+		asked = string(runes[:maxMissedUntilRunes]) + "…"
+	}
+
 	return missedUntilPrefix + "`until " + asked + "`"
 }
+
+// maxMissedUntilRunes bounds the `until` a [MissedUntilNotice] quotes: room
+// for any ordinary address, with the prefix, well inside the smaller cap.
+const maxMissedUntilRunes = 256
 
 // missedUntilPrefix begins every [MissedUntilNotice], which is how a rendered
 // snapshot picks that notice out of the rest.

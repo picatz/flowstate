@@ -693,6 +693,15 @@ func FormatReceipt(receipt *v1.DebugReceipt) string {
 	return status + ": " + receipt.GetMessage() + "\n"
 }
 
+// FormatSnapshotShows reports whether [FormatSnapshot] prints observation
+// itself: the missed-`until` notice of a completed run. A front that also
+// lists a snapshot's observations skips these, so the notice reads once.
+func FormatSnapshotShows(snapshot *v1.DebugSnapshot, observation *v1.DebugObservation) bool {
+	return snapshot.GetState() == v1.DebugRunState_DEBUG_RUN_STATE_COMPLETED &&
+		observation.GetKind() == v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_NOTICE &&
+		strings.HasPrefix(observation.GetText(), missedUntilPrefix)
+}
+
 // FormatSnapshot renders a snapshot for a person: the state, where, why, and
 // the frames.
 func FormatSnapshot(snapshot *v1.DebugSnapshot) string {
@@ -722,12 +731,9 @@ func FormatSnapshot(snapshot *v1.DebugSnapshot) string {
 		// A completed run that never stopped at its `until` says so, as the
 		// local prompt does, here where the Driver's fronts read the end of
 		// a run: a durable attach, the MCP session tools, embed.
-		if snapshot.GetState() == v1.DebugRunState_DEBUG_RUN_STATE_COMPLETED {
-			for _, observation := range snapshot.GetObservations() {
-				if observation.GetKind() == v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_NOTICE &&
-					strings.HasPrefix(observation.GetText(), missedUntilPrefix) {
-					fmt.Fprintf(&b, "  %s\n", observation.GetText())
-				}
+		for _, observation := range snapshot.GetObservations() {
+			if FormatSnapshotShows(snapshot, observation) {
+				fmt.Fprintf(&b, "  %s\n", observation.GetText())
 			}
 		}
 	}

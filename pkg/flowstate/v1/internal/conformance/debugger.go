@@ -233,3 +233,43 @@ func DebuggerCases() []DebuggerCase {
 		},
 	}
 }
+
+// MissedUntilCase is a run both drivers hold at HeldAt and then resume with
+// `until Until`, a target the run never reaches from there. Each driver must
+// record the missed-`until` notice once, in the same words, when the run
+// completes (#2201): the local session from its run's return, the durable run
+// in the snapshot it answers afterwards.
+//
+// One program and one `until` for both, rather than a test per driver that
+// happens to share a string: two drivers disagreeing about whether an `until`
+// is still armed at the end of a given run is what this exists to catch.
+type MissedUntilCase struct {
+	// Name labels the case.
+	Name string
+
+	// Workflow is the program, with no `debug:` policy: the durable caller
+	// adds the one its harness attaches under.
+	Workflow *v1.Workflow
+
+	// HeldAt is where both drivers hold the run before the resume: the
+	// first boundary, which a local session holds at on entry and a durable
+	// pause asked before the run starts holds at too.
+	HeldAt string
+
+	// Until is the target the resume names.
+	Until string
+}
+
+// MissedUntilCases is the corpus for [MissedUntilCase].
+func MissedUntilCases() []MissedUntilCase {
+	return []MissedUntilCase{{
+		Name: "an until naming the step the run is already past",
+		Workflow: &v1.Workflow{
+			Name:    "missed-until",
+			Profile: v1.CurrentProfile,
+			Steps:   []*v1.Node{says("first", "one"), says("second", "two"), says("third", "three")},
+		},
+		HeldAt: "first",
+		Until:  "first",
+	}}
+}
