@@ -296,7 +296,13 @@ func (a *scheduleAccumulator) reshown(ctx context.Context, once caseRun, result 
 		}
 	}
 
-	return verdictUnder(result, caseShown{}, v1.WithheldSensitiveValues()), []TranscriptLine{{
+	// Everything withheld but the case's name, which is the file's own text
+	// and is withheld under everything as the re-shown report's would be:
+	// a report that could not say which case it is would be no report.
+	withheld := verdictUnder(result, caseShown{}, v1.WithheldSensitiveValues())
+	withheld.Name = redactedErrorText(result.GetName(), everything)
+
+	return withheld, []TranscriptLine{{
 		Text: "account withheld: it could not be shown again under what the explored schedules withheld",
 		Tone: ToneWarning,
 	}}
@@ -399,8 +405,11 @@ func shownCase(result *v1.TestCase, transcript *v1.Workflow_StepOutputs, shown c
 	}
 }
 
-// verdictUnder is a case's verdict with what sensitive holds taken out of its
-// error and failures.
+// verdictUnder is a case's verdict with what sensitive holds taken out of
+// every line a report prints: its name, its error, and its failures' and
+// warnings' text. The name and a warning are the file's own words, which an
+// author can write a sensitive value into as readily as a step id (Codex,
+// #2224).
 //
 // The verdict was rendered under the run's own posture. Where that posture
 // withheld everything, it was already rendered under the most any posture
@@ -411,23 +420,38 @@ func verdictUnder(result *v1.TestCase, shown caseShown, sensitive sensitiveInput
 		return result
 	}
 	verdict := proto.CloneOf(result)
+	verdict.Name = redactedErrorText(verdict.GetName(), sensitive)
 	if verdict.GetError() != "" {
 		verdict.Error = redactedErrorText(verdict.GetError(), sensitive)
 	}
-	for _, failure := range verdict.GetFailures() {
-		failure.Message = redactedErrorText(failure.GetMessage(), sensitive)
-		if failure.GetValue() != "" {
-			failure.Value = redactedErrorText(failure.GetValue(), sensitive)
-		}
-		// A step id is the file's own name, which a case's report prints as
-		// it is; one that spells a value this posture withholds is withheld
-		// too (Codex, #2224).
-		if failure.GetStep() != "" {
-			failure.Step = redactedErrorText(failure.GetStep(), sensitive)
-		}
+	for _, diagnostic := range slices.Concat(verdict.GetFailures(), verdict.GetWarnings()) {
+		withholdDiagnostic(diagnostic, sensitive)
 	}
 
 	return verdict
+}
+
+// withholdDiagnostic takes what sensitive holds out of every string field of
+// one failure or warning that a report prints. A step id or a field path is
+// the file's own name, printed as it is, and one that spells a withheld value
+// is withheld too (Codex, #2224). A suggested edit that would write a
+// withheld value is dropped rather than cut, since a cut edit is a wrong one.
+func withholdDiagnostic(diagnostic *v1.Diagnostic, sensitive sensitiveInputs) {
+	diagnostic.Message = redactedErrorText(diagnostic.GetMessage(), sensitive)
+	for _, field := range []*string{&diagnostic.Value, &diagnostic.Step, &diagnostic.Field} {
+		if *field != "" {
+			*field = redactedErrorText(*field, sensitive)
+		}
+	}
+	diagnostic.Edits = slices.DeleteFunc(diagnostic.Edits, func(edit *v1.SuggestedEdit) bool {
+		if redactedErrorText(edit.GetTitle(), sensitive) != edit.GetTitle() {
+			return true
+		}
+
+		return slices.ContainsFunc(edit.GetChanges(), func(change *v1.TextChange) bool {
+			return redactedErrorText(change.GetNewText(), sensitive) != change.GetNewText()
+		})
+	})
 }
 
 // withheldTranscript is transcript with every value sensitive withholds taken

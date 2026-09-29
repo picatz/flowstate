@@ -300,8 +300,11 @@ func TestTheReportBesideADivergenceWithholdsWhatADivergingRunWithholds(t *testin
 			// A diagnostic's step id is printed as the file names it, and here
 			// spells the value a seeded run withholds.
 			failures := []*v1.Diagnostic{{Field: "expect.ran", Step: quietOnly, Message: "step did not run"}}
+			// So is a warning's and the case's own name, both the file's words.
+			warnings := []*v1.Diagnostic{{Step: quietOnly, Message: "stub for " + quietOnly + " never answered"}}
 
-			return &v1.TestCase{Name: "moves", Error: text, Failures: failures}, nil, transcript, []TranscriptLine{{Text: "pick → " + text}}, shown, nil
+			return &v1.TestCase{Name: "moves " + quietOnly, Error: text, Failures: failures, Warnings: warnings},
+				nil, transcript, []TranscriptLine{{Text: "pick → " + text}}, shown, nil
 		})
 
 		if !diverges {
@@ -310,6 +313,7 @@ func TestTheReportBesideADivergenceWithholdsWhatADivergingRunWithholds(t *testin
 			assert.Empty(t, reshowns)
 			assert.Contains(t, result.GetError(), quietOnly, "a report with no divergence beside it was withheld")
 			assert.Equal(t, quietOnly, result.GetFailures()[0].GetStep(), "a step with no divergence beside it was withheld")
+			assert.Equal(t, "moves "+quietOnly, result.GetName(), "a name with no divergence beside it was withheld")
 
 			continue
 		}
@@ -319,6 +323,10 @@ func TestTheReportBesideADivergenceWithholdsWhatADivergingRunWithholds(t *testin
 		assert.NotContains(t, result.GetError(), quietOnly, "the case's error shows what a seeded run withholds")
 		assert.NotContains(t, account[0].Text, quietOnly, "the case's account shows what a seeded run withholds")
 		assert.NotContains(t, result.GetFailures()[0].GetStep(), quietOnly, "a diagnostic's step shows what a seeded run withholds")
+		assert.Equal(t, "moves "+sensitiveMarker, result.GetName(), "the case's name shows what a seeded run withholds")
+		assert.Equal(t, "moves "+sensitiveMarker, accumulator.result().Divergence.Case, "the divergence names the case with what a seeded run withholds")
+		assert.NotContains(t, result.GetWarnings()[0].GetStep(), quietOnly, "a warning's step shows what a seeded run withholds")
+		assert.NotContains(t, result.GetWarnings()[0].GetMessage(), quietOnly, "a warning shows what a seeded run withholds")
 	}
 }
 
@@ -406,7 +414,7 @@ func TestAReportThatCannotBeShownAgainKeepsItsVerdict(t *testing.T) {
 					"pick": {NamedValues: map[string]*v1.Value{"moved": v1.NewLiteral(moved)}},
 				}}
 
-				return &v1.TestCase{Name: "moves", Passed: passed, Error: "saw " + secret}, nil, transcript,
+				return &v1.TestCase{Name: "moves " + secret, Passed: passed, Error: "saw " + secret}, nil, transcript,
 					[]TranscriptLine{{Text: "pick → " + secret}}, shown, nil
 			})
 
@@ -414,6 +422,10 @@ func TestAReportThatCannotBeShownAgainKeepsItsVerdict(t *testing.T) {
 			assert.Equal(t, !cutShort, reran, "whether the report was run again")
 			assert.True(t, result.GetPassed(), "a report shown beside a divergence changed the case's verdict")
 			assert.NotContains(t, result.GetError(), secret)
+			// Named still, and without the secret: a report that cannot say
+			// which case it is would be no report.
+			assert.Equal(t, "moves "+sensitiveMarker, result.GetName())
+			assert.Equal(t, "moves "+sensitiveMarker, accumulator.result().Divergence.Case)
 			require.Len(t, account, 1)
 			assert.NotContains(t, account[0].Text, secret)
 		})
