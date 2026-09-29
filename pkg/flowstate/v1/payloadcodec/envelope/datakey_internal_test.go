@@ -371,6 +371,8 @@ func TestAnIdleCodecLetsItsDataKeyGo(t *testing.T) {
 		time.Sleep(time.Nanosecond)
 		synctest.Wait()
 		require.Nil(t, c.active.Load(), "an idle codec held its data key past max_age + stale_grace")
+		require.Equal(t, make([]byte, keyprovider.DataKeyBytes), first.dataKey,
+			"the retired data key waited for a collection to be cleared")
 		require.Zero(t, cachedEntries(c.cache), "the codec's own copy outlived its window in the cache")
 
 		_, err = c.Encode([]*commonpb.Payload{{Data: []byte("y")}})
@@ -418,6 +420,46 @@ func TestARolledOverDataKeyIsNotKeptByItsTimer(t *testing.T) {
 		require.Nil(t, w.Value(), "rolled-over key %d is still reachable", i)
 	}
 	require.NotNil(t, c.active.Load())
+}
+
+// TestARetiredDataKeyIsClearedWhenItsLastSealLetsGo: a rollover clears the
+// key it replaces as soon as no seal holds it, with no collection involved:
+// the test keeps the key reachable throughout, so only the holds can clear it.
+// A seal still between loading the key and deriving from it keeps it intact.
+func TestARetiredDataKeyIsClearedWhenItsLastSealLetsGo(t *testing.T) {
+	t.Parallel()
+
+	primary, err := local.Parse(local.Generate())
+	require.NoError(t, err)
+	c, err := New(t.Context(), Options{
+		Binding: "ns",
+		Current: "k1",
+		Keys:    []Recipient{{ID: "k1", Key: primary}},
+		DataKey: &v1.PayloadDataKeyPolicy{MaxMessages: 1},
+	})
+	require.NoError(t, err)
+	cleared := make([]byte, keyprovider.DataKeyBytes)
+
+	first := c.active.Load()
+	_, err = c.Encode([]*commonpb.Payload{{Data: []byte("x")}})
+	require.NoError(t, err)
+	require.NotEqual(t, cleared, first.dataKey, "the active key was cleared while still active")
+
+	_, err = c.Encode([]*commonpb.Payload{{Data: []byte("y")}})
+	require.NoError(t, err)
+	second := c.active.Load()
+	require.NotSame(t, first, second, "the message bound did not roll the key")
+	require.Equal(t, cleared, first.dataKey, "a rolled-over key with no seal holding it was not cleared")
+
+	require.True(t, second.acquire(), "an in-flight seal could not hold the active key")
+
+	_, err = c.Encode([]*commonpb.Payload{{Data: []byte("z")}})
+	require.NoError(t, err)
+	require.NotSame(t, second, c.active.Load(), "the message bound did not roll the key")
+	require.NotEqual(t, cleared, second.dataKey, "a key was cleared under a seal still holding it")
+	second.drop()
+	require.Equal(t, cleared, second.dataKey, "the last seal to let go did not clear the retired key")
+	require.False(t, second.acquire(), "a cleared key could be held again")
 }
 
 // retainingUnwraps keeps the slice the provider handed back, so a test can see

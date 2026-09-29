@@ -423,6 +423,7 @@ func New(ctx context.Context, opts Options) (*Codec, error) {
 			return nil, fmt.Errorf("envelope: wrapping the first data key for %q: %w", opts.Binding, err)
 		}
 		a.release(0)
+		a.drop()
 	}
 	return c, nil
 }
@@ -632,10 +633,16 @@ var ErrReaderCannotEncode = errors.New("envelope: this codec is decode-only: a k
 // a rollover makes:
 // New's startup context for the warm-up, and none beyond the per-call
 // timeout for Encode, whose interface carries none.
+//
+// The key comes back held: the caller drops it once its content key is
+// derived, which is the last read of the data key a seal makes.
 func (c *Codec) activeFor(ctx context.Context, size int) (*activeKey, error) {
 	now := c.now()
-	if a := c.active.Load(); a != nil && a.fresh(c.policy, now, size) {
-		return a, nil
+	if a := c.active.Load(); a != nil && a.acquire() {
+		if a.fresh(c.policy, now, size) {
+			return a, nil
+		}
+		a.drop()
 	}
 
 	c.rollover.Lock()
@@ -646,6 +653,9 @@ func (c *Codec) activeFor(ctx context.Context, size int) (*activeKey, error) {
 	// could seal past max_age + stale_grace.
 	now = c.now()
 	a := c.active.Load()
+	if a != nil && !a.acquire() {
+		a = nil
+	}
 	if a != nil && a.fresh(c.policy, now, size) {
 		return a, nil
 	}
@@ -656,10 +666,16 @@ func (c *Codec) activeFor(ctx context.Context, size int) (*activeKey, error) {
 		var next *activeKey
 		if next, err = c.newActive(ctx, now); err == nil {
 			c.lastErr, c.retryAt = nil, time.Time{}
-			c.active.Store(next)
+			next.acquire()
+			if old := c.active.Swap(next); old != nil {
+				old.retire()
+			}
+			if a != nil {
+				a.drop()
+			}
 			// Past max_age + stale_grace no seal may use it, so an idle codec
-			// lets it go then rather than at its next seal; the cleanup
-			// newActive registered clears it once no in-flight seal holds it.
+			// lets it go then rather than at its next seal, and it is cleared
+			// as soon as no in-flight seal holds it.
 			// The timer holds it weakly: a stopped timer can stay on the
 			// runtime's heap for a while, and must not keep every key a busy
 			// codec rolled past alive for the whole window.
@@ -668,13 +684,14 @@ func (c *Codec) activeFor(ctx context.Context, size int) (*activeKey, error) {
 			}
 			wp := weak.Make(next)
 			c.retire = time.AfterFunc(c.policy.maxAge+c.policy.staleGrace, func() {
-				if a := wp.Value(); a != nil {
-					c.active.CompareAndSwap(a, nil)
+				if a := wp.Value(); a != nil && c.active.CompareAndSwap(a, nil) {
+					a.retire()
 				}
 			})
 			// A fresh key's budget holds any payload seal admits: max_bytes
 			// is at least the blob limit, and max_messages at least one.
 			if !next.reserve(c.policy, size) {
+				next.drop()
 				return nil, fmt.Errorf("envelope: a %d-byte payload does not fit a fresh data key's budget", size)
 			}
 			return next, nil
@@ -682,8 +699,11 @@ func (c *Codec) activeFor(ctx context.Context, size int) (*activeKey, error) {
 		now = c.now()
 		c.lastErr, c.retryAt = err, now.Add(rolloverBackoff)
 	}
-	if a != nil && a.withinGrace(c.policy, now, size) {
-		return a, nil
+	if a != nil {
+		if a.withinGrace(c.policy, now, size) {
+			return a, nil
+		}
+		a.drop()
 	}
 	return nil, err
 }
@@ -700,8 +720,9 @@ func (c *Codec) newActive(ctx context.Context, now time.Time) (*activeKey, error
 		return nil, err
 	}
 	a := &activeKey{dataKey: dk, wrapped: wrapped, created: now}
-	// Cleared once nothing holds the key any more: after rollover, when the
-	// last in-flight seal that loaded it has finished.
+	// The codec's own hold; see [activeKey]. The cleanup is for a codec that
+	// is dropped while a key is still active, which retires nothing.
+	a.refs.Store(1)
 	runtime.AddCleanup(a, func(dk []byte) { clear(dk) }, dk)
 	for _, id := range c.escrowIDs {
 		w, err := c.wrap(ctx, c.escrow[id], dk, ectx)
@@ -785,6 +806,7 @@ func (c *Codec) seal(spec suiteSpec, plaintext []byte) ([]byte, error) {
 	// crypto/rand never fails on supported platforms (Go 1.24+).
 	_, _ = rand.Read(salt)
 	contentKey, commitment, err := derive(a.dataKey, salt, uint32(c.suite), c.current.id, c.binding)
+	a.drop()
 	if err != nil {
 		return nil, fmt.Errorf("envelope: deriving a content key: %w", err)
 	}

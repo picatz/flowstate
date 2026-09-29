@@ -113,6 +113,12 @@ func (p dataKeyPolicy) proto() *v1.PayloadDataKeyPolicy {
 // activeKey is the data key a codec is sealing under, with its wrapped
 // copies. Immutable but for its counters, and replaced whole at rollover, so
 // an encode that loaded it keeps a consistent key even as another rolls it.
+//
+// dataKey is cleared the moment nothing holds it, not at a collection the
+// runtime owes no deadline: refs counts the codec, while this is its active
+// key, and each seal from [Codec.activeFor] until it has derived its content
+// key. [activeKey.retire] drops the codec's hold, and whichever hold is last
+// to [activeKey.drop] clears the bytes.
 type activeKey struct {
 	dataKey []byte
 	wrapped keyprovider.Wrapped
@@ -121,6 +127,38 @@ type activeKey struct {
 
 	messages atomic.Uint64
 	bytes    atomic.Uint64
+
+	refs    atomic.Int64
+	retired atomic.Bool
+}
+
+// acquire takes a hold on k's data key, reporting false for a key already
+// cleared: one retired and let go while the caller was loading it.
+func (k *activeKey) acquire() bool {
+	for {
+		n := k.refs.Load()
+		if n == 0 {
+			return false
+		}
+		if k.refs.CompareAndSwap(n, n+1) {
+			return true
+		}
+	}
+}
+
+// drop lets go of a hold, clearing the data key if it was the last.
+func (k *activeKey) drop() {
+	if k.refs.Add(-1) == 0 {
+		clear(k.dataKey)
+	}
+}
+
+// retire drops the codec's own hold, once however many paths retire k: a
+// rollover replacing it and the timer closing its window can race.
+func (k *activeKey) retire() {
+	if k.retired.CompareAndSwap(false, true) {
+		k.drop()
+	}
 }
 
 // fresh reports whether k may seal another payload of size bytes now, and if
