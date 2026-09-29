@@ -279,6 +279,64 @@ func TestAFailedRolloverDoesNotSealPastTheGrace(t *testing.T) {
 	require.Error(t, err, "sealed with the old data key after the grace had passed during the rollover")
 }
 
+// slowWrapping wraps, spending took on the clock first once slow is set, as
+// a remote provider that answers slowly would.
+type slowWrapping struct {
+	keyprovider.Key
+	clock *fakeClock
+	took  time.Duration
+	slow  atomic.Bool
+}
+
+func (k *slowWrapping) Wrap(ctx context.Context, dk []byte, ectx keyprovider.Context) (keyprovider.Wrapped, error) {
+	if k.slow.Load() {
+		k.clock.advance(k.took)
+	}
+	return k.Key.Wrap(ctx, dk, ectx)
+}
+
+// TestARolloverSlowerThanMaxAgeDoesNotSeal: a key's age runs from before its
+// wraps, so one whose wraps outlast max_age is refused rather than handed its
+// first payload already out of its window. A rollover inside the window
+// still seals.
+func TestARolloverSlowerThanMaxAgeDoesNotSeal(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		took  time.Duration
+		seals bool
+	}{
+		{took: 30 * time.Second, seals: true},
+		{took: time.Minute, seals: false},
+	} {
+		clock := newFakeClock()
+		primary, err := local.Parse(local.Generate())
+		require.NoError(t, err)
+		key := &slowWrapping{Key: primary, clock: clock, took: tc.took}
+
+		o := Options{
+			Binding: "ns",
+			Current: "k1",
+			Keys:    []Recipient{{ID: "k1", Key: key}},
+			DataKey: &v1.PayloadDataKeyPolicy{MaxAge: durationpb.New(time.Minute)},
+		}
+		SetClock(&o, clock.now)
+		c, err := New(t.Context(), o)
+		require.NoError(t, err)
+
+		old := c.active.Load()
+		clock.advance(time.Minute)
+		key.slow.Store(true)
+		_, err = c.Encode([]*commonpb.Payload{{Data: []byte("x")}})
+		if tc.seals {
+			require.NoError(t, err, "a rollover taking %s of a one-minute max_age", tc.took)
+			continue
+		}
+		require.Error(t, err, "sealed under a key whose wraps took its whole %s max_age", time.Minute)
+		require.Same(t, old, c.active.Load(), "a key already past max_age was installed")
+	}
+}
+
 // TestConcurrentSealsReserveTheBudget: callers arriving together as a data
 // key reaches max_messages cannot all pass the bound, since each reserves its
 // payload before sealing; the key seals exactly as many as it allows.
