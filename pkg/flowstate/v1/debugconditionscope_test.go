@@ -194,3 +194,39 @@ func TestAConditionWhereItFiresIsNotKnownIsAdmitted(t *testing.T) {
 	require.NoError(t, err)
 	assert.NoError(t, v1.CheckDebugConditionScope(compiled, v1.CurrentProfile, nil, nil))
 }
+
+// TestABindingSpelledLikeATypeIsAScopeRead: a name the program binds is read
+// from scope wherever it is written, even when it is also a type's name. The
+// activation answers a bound name first, so inside the loop that binds
+// `string` the condition reads the binding, and outside it the name reads
+// nothing: refused, not taken for the type (Codex, #2202). A type name the
+// program never binds is still the type.
+func TestABindingSpelledLikeATypeIsAScopeRead(t *testing.T) {
+	t.Parallel()
+
+	wf := &v1.Workflow{Name: "typed", Steps: []*v1.Node{
+		{Id: "each", Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{
+			Items: v1.NewLiteralList("x", "y"), Iterator: "string",
+			Body: []*v1.Node{{Id: "body", Kind: &v1.Node_Value{Value: v1.NewExpr("string")}}},
+		}}},
+		{Id: "done", Kind: &v1.Node_Value{Value: v1.NewExpr("1")}},
+	}}
+	sites, truncated := v1.DebugStaticSites(wf)
+	require.False(t, truncated)
+	check := func(step, condition string) error {
+		t.Helper()
+		target, err := v1.ParseDebugTarget(step)
+		require.NoError(t, err)
+		compiled, err := v1.CompileDebugCondition(condition, v1.CurrentProfile)
+		require.NoError(t, err)
+
+		return v1.CheckDebugConditionScope(compiled, v1.CurrentProfile, target.Resolve(sites), sites)
+	}
+
+	assert.NoError(t, check("body", `string == "x"`), "the binding was refused inside the loop that binds it")
+	err := check("done", `string == "x"`)
+	if assert.Error(t, err, "a binding named outside its loop was taken for the type") {
+		assert.Contains(t, err.Error(), "`string` is bound only inside")
+	}
+	assert.NoError(t, check("done", "type(1) == int"), "a type name the program never binds was refused")
+}

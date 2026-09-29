@@ -215,9 +215,24 @@ func CheckDebugConditionScope(condition *Value, profile string, at, program []De
 	}
 	slices.Sort(locals)
 
+	// A name the program binds anywhere is a scope read wherever it is
+	// written, even one spelled like a type: the activation answers a bound
+	// name before the type provider does, so `string` in a loop that binds
+	// `string` is the binding, and outside that loop it is a read of nothing
+	// rather than the type (Codex, #2202).
+	boundInProgram := map[string]bool{}
+	for scope := range debugScopesOf(program) {
+		for _, name := range scope.names {
+			boundInProgram[name] = true
+		}
+	}
+
 	free := map[string]struct{}{}
 	walk := &debugRootWalk{
 		resolves: func(name string) bool {
+			if boundInProgram[debugRootOf(name)] {
+				return false
+			}
 			_, found := env.CELTypeProvider().FindIdent(name)
 
 			return found
@@ -228,7 +243,7 @@ func CheckDebugConditionScope(condition *Value, profile string, at, program []De
 	walk.walk(parsed.GetExpr())
 	for _, name := range slices.Sorted(maps.Keys(free)) {
 		if !bindable[name] {
-			return debugUnboundName(name, locals, program)
+			return debugUnboundName(name, locals, program, boundInProgram[name])
 		}
 	}
 
@@ -236,8 +251,8 @@ func CheckDebugConditionScope(condition *Value, profile string, at, program []De
 }
 
 // debugUnboundName says why name is not bound where a breakpoint fires, and
-// what is.
-func debugUnboundName(name string, locals []string, program []DebugStaticSite) error {
+// what is. elsewhere reports that the program binds it at some other site.
+func debugUnboundName(name string, locals []string, program []DebugStaticSite, elsewhere bool) error {
 	if name == NowIdentifier {
 		return errors.New("`now` is bound only inside a wait's own expressions, and a condition is " +
 			"evaluated where the step's `if:` is, before the step is entered")
@@ -249,14 +264,6 @@ func debugUnboundName(name string, locals []string, program []DebugStaticSite) e
 	}
 
 	message := fmt.Sprintf("`%s` is not bound where this breakpoint fires", name)
-	elsewhere := false
-	for scope := range debugScopesOf(program) {
-		if slices.Contains(scope.names, name) {
-			elsewhere = true
-
-			break
-		}
-	}
 	if elsewhere {
 		message = fmt.Sprintf("`%s` is bound only inside the loops and steps that declare it, "+
 			"and this breakpoint fires outside them", name)
