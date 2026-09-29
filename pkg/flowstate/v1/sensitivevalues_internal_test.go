@@ -757,6 +757,10 @@ func TestAnAccumulatorRefusesASetPastTheBoundUnread(t *testing.T) {
 	gathered.Add(repeated)
 	assert.True(t, gathered.Values().WithholdAll())
 	assert.True(t, oneSensitiveInput("token", NewLiteral("hunter2-token")).Merge(repeated).WithholdAll())
+	// And merged with nothing, where the set would otherwise come back as
+	// it was (Codex, #2215).
+	assert.True(t, repeated.Merge(SensitiveValues{}).WithholdAll())
+	assert.True(t, SensitiveValues{}.Merge(repeated).WithholdAll())
 
 	atTheBound := SensitiveValues{}.WithValues(slices.Repeat([]string{"a"}, maxSensitiveDescendants)...)
 	var within SensitiveAccumulator

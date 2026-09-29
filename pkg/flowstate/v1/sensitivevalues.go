@@ -486,6 +486,12 @@ func (s SensitiveValues) Merge(other SensitiveValues) SensitiveValues {
 	switch {
 	case a.withholdAll || b.withholdAll:
 		return WithheldSensitiveValues()
+	// Either side past the bound fails closed before anything returns it
+	// unread, as [SensitiveAccumulator.Add] refuses it: [SensitiveValues.WithValues]
+	// builds a set without one, and the shortcut below would otherwise hand
+	// it back whole (Codex, #2215).
+	case len(a.values) > maxSensitiveDescendants || len(b.values) > maxSensitiveDescendants:
+		return WithheldSensitiveValues()
 	// A side that adds nothing leaves the other as it was, the same set, so a
 	// merge with the empty set — the common case, a step whose failure
 	// carries nothing — builds no new matcher and keeps its identity.
