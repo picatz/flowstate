@@ -265,11 +265,14 @@ func TestPauseStopsARunningRunAtItsNextStep(t *testing.T) {
 	c.send(2, "launch", map[string]any{"program": program, "stopOnEntry": false})
 	c.await("response", "launch")
 	// Paused before anything runs: the pause is pending until the first
-	// boundary, which is where the run then stops.
+	// boundary, which is where the run then stops, and the pause is
+	// answered there, just ahead of the stop.
 	c.send(3, "pause", map[string]any{"threadId": 1})
-	assert.Equal(t, true, c.await("response", "pause")["success"])
 	c.send(4, "configurationDone", nil)
 	c.await("response", "configurationDone")
+	// Awaited in this order, so a stop sent ahead of the answer is skipped
+	// and never arrives.
+	assert.Equal(t, true, c.await("response", "pause")["success"])
 	stop := c.await("event", "stopped")
 	assert.Equal(t, "pause", body(stop)["reason"])
 
@@ -400,6 +403,8 @@ func TestAttachNarrowsWhatTheEditorIsOffered(t *testing.T) {
 type fakeRemote struct {
 	snapshot *v1.DebugSnapshot
 	closed   bool
+	// paused counts the pauses that reached the run.
+	paused atomic.Int32
 }
 
 func (f *fakeRemote) Snapshot(context.Context) (*v1.DebugSnapshot, error) { return f.snapshot, nil }
@@ -415,6 +420,8 @@ func (f *fakeRemote) Resume(context.Context, *v1.DebugResumeRequest) (*v1.DebugR
 }
 
 func (f *fakeRemote) Pause(context.Context, string) (*v1.DebugReceipt, error) {
+	f.paused.Add(1)
+
 	return &v1.DebugReceipt{Status: v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_PENDING}, nil
 }
 

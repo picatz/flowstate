@@ -751,8 +751,10 @@ func (s *Session) resumeUntil(m mode, until v1.DebugTarget, condition *v1.Value,
 //
 // An `until` still armed when the run completes named a stop the run never
 // made — an address past the last iteration, a condition that never held —
-// and without a word the run would simply end, as if it had. This says so,
-// once, on the prompt and as a notice observation for the structured fronts.
+// and without a word the run would simply end, as if it had. So did a pause
+// asked while the last step was under way, which was answered and then held
+// nowhere (#1297). This says so, once, on the prompt and as a notice
+// observation for the structured fronts.
 // It changes no state, so a driver that learns the verdict later still
 // reports it through [Session.Finished], which calls this too; only the first
 // report is heard, because it is the run's own error and a later one may be a
@@ -766,7 +768,8 @@ func (s *Session) RunReturned(err error) {
 	s.returnReported = true
 	missed := ""
 	redact, _ := withholdingAt(s.redact, nil, s.untilSensitive)
-	if first && err == nil && s.mode == modeUntil && !terminal(s.contract.state) {
+	completed := first && err == nil && !terminal(s.contract.state)
+	if completed && s.mode == modeUntil {
 		// As it was asked: a conditional `until` can reach its target with
 		// the condition never holding, and naming the bare target would say
 		// the step was never reached.
@@ -775,19 +778,26 @@ func (s *Session) RunReturned(err error) {
 			missed += " if " + s.untilConditionText
 		}
 	}
+	pauseMissed := completed && s.contract.pauseAsked
 	s.mu.Unlock()
-	if missed == "" {
-		return
-	}
 
-	// Redacted by the notice, which passes only the `until` through the
-	// redactor, and so printed and recorded as it is: redacting the whole
-	// line again would reach the fixed words that identify it (Codex, #2204).
-	// With what the hold it was applied at withheld, as the durable driver
-	// words it (exact-head review, #2209).
-	text := MissedUntilNotice(missed, func(until string) string { return applyText(redact, until) })
-	s.emitTone(ToneWarning, text+"\n")
-	s.observeRedacted(v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_NOTICE, "", text)
+	var notices []string
+	if missed != "" {
+		// Redacted by the notice, which passes only the `until` through the
+		// redactor, and so printed and recorded as it is: redacting the
+		// whole line again would reach the fixed words that identify it
+		// (Codex, #2204). With what the hold it was applied at withheld, as
+		// the durable driver words it (exact-head review, #2209).
+		notices = append(notices, MissedUntilNotice(missed, func(until string) string { return applyText(redact, until) }))
+	}
+	if pauseMissed {
+		// Fixed words, holding nothing the run computed.
+		notices = append(notices, MissedPauseNotice)
+	}
+	for _, text := range notices {
+		s.emitTone(ToneWarning, text+"\n")
+		s.observeRedacted(v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_NOTICE, "", text)
+	}
 }
 
 // MissedUntilNotice is the notice a run that completed with an `until` still
@@ -820,6 +830,12 @@ func MissedUntilNotice(asked string, redact func(string) string) string {
 // maxMissedUntilRunes bounds the `until` a [MissedUntilNotice] quotes: room
 // for any ordinary address, with the prefix, well inside the smaller cap.
 const maxMissedUntilRunes = 256
+
+// MissedPauseNotice is the notice a run that completed with a pause still
+// asked gets: the pause holds at a step boundary, and the run reached none
+// after it was asked, because its last step was already under way. Both
+// drivers say it in these words, as they do [MissedUntilNotice] (#1297).
+const MissedPauseNotice = "the run completed before it reached a step boundary to pause at"
 
 // missedUntilPrefix begins every [MissedUntilNotice], which is how a rendered
 // snapshot picks that notice out of the rest.
@@ -1381,6 +1397,15 @@ func (s *Session) Pause(_ context.Context, requestID string) (*v1.DebugReceipt, 
 		s.mu.Unlock()
 
 		return s.answer(requestID, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_APPLIED, "the run is already held"), nil
+	case s.returnReported:
+		// The run has returned, and a driver that reports its verdict
+		// later has not yet said so: no boundary is left to hold at, and
+		// [Session.RunReturned] has already said what it missed (Codex,
+		// #2220).
+		s.mu.Unlock()
+
+		return s.answer(requestID, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_ENDED,
+			"the run has returned; no step boundary is left to pause at"), nil
 	}
 	s.contract.pauseAsked = true
 	if state != v1.DebugRunState_DEBUG_RUN_STATE_PAUSE_REQUESTED {

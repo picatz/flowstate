@@ -646,7 +646,7 @@ It advertises what the backend reports, and refuses the rest by name.
 | --- | --- | --- |
 | `next` | steps over: a loop, parallel, switch or call runs whole | the same, at the boundaries a durable run holds |
 | `stepIn`, `stepOut` | `stepIn` enters loop iterations, parallel branches, switch arms and calls; `stepOut` leaves the whole loop, parallel, switch or call around the step | into and out of calls |
-| `pause` | holds at the next step boundary; work already running finishes | the same |
+| `pause` | holds at the next step boundary, where the request is answered just ahead of its `stopped`; work already running finishes, and a run that ends first refuses the request and says `the run completed before it reached a step boundary to pause at` | the same, and the pause ask's receipt ends with those words |
 | Line breakpoints | resolved through the file's source map to the innermost step whose span holds the line | unverified, saying to name the step instead |
 | Function breakpoints | a step id or an address, such as `orders/charge` or `checks#1/fraud` | the same, but one inside a loop body, branch or arm is unverified, saying to break at the enclosing step |
 | Conditions and hit counts | yes | yes |

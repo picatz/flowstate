@@ -1,6 +1,10 @@
 package conformance
 
 import (
+	"time"
+
+	"google.golang.org/protobuf/types/known/durationpb"
+
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
 
@@ -258,6 +262,50 @@ type MissedUntilCase struct {
 
 	// Until is the target the resume names.
 	Until string
+}
+
+// MissedPauseCase is a run both drivers are asked to pause while its last
+// step, Sleeping, a `sleep:`, is under way. The pause holds at the next step
+// boundary, and there is none: the run completes. Each driver must record
+// the missed-pause notice once, in the same words, rather than answer the
+// pause and then say nothing (#1297).
+//
+// A sleep because it is the one step each driver's harness can hold under
+// way without spending real time on it: the local driver's on a clock the
+// test releases, the durable driver's on its test environment's skipped
+// time, with the ask arriving partway through.
+type MissedPauseCase struct {
+	// Name labels the case.
+	Name string
+
+	// Workflow is the program, with no `debug:` policy: the durable caller
+	// adds the one its harness attaches under.
+	Workflow *v1.Workflow
+
+	// Sleeping is the last step, a `sleep:`, the pause is asked during.
+	Sleeping string
+
+	// Sleep is how long Sleeping sleeps.
+	Sleep time.Duration
+}
+
+// MissedPauseCases is the corpus for [MissedPauseCase].
+func MissedPauseCases() []MissedPauseCase {
+	const sleep = 4 * time.Second
+
+	return []MissedPauseCase{{
+		Name: "a pause asked while the last step sleeps",
+		Workflow: &v1.Workflow{
+			Name:    "missed-pause",
+			Profile: v1.CurrentProfile,
+			Steps: []*v1.Node{
+				says("first", "one"),
+				{Id: "nap", Kind: &v1.Node_Wait{Wait: &v1.Wait{Kind: &v1.Wait_Duration{Duration: durationpb.New(sleep)}}}},
+			},
+		},
+		Sleeping: "nap",
+		Sleep:    sleep,
+	}}
 }
 
 // MissedUntilCases is the corpus for [MissedUntilCase].

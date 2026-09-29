@@ -2,6 +2,7 @@ package engine
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -128,5 +129,36 @@ func TestAMissedUntilInheritedFromACalleesHoldIsWithheld(t *testing.T) {
 	}
 	if got, want := notice(0), "the run completed without stopping at `until nested/greet`"; got != want {
 		t.Errorf("an inherited `until` from the root's hold: notice = %q, want %q", got, want)
+	}
+}
+
+// TestPendingPausesAreBounded: a run applying asks at boundaries it cannot
+// hold at keeps at most [v1.MaxDebugAsksPerBoundary] pauses waiting, and
+// refuses the next at once rather than keep it (Codex, #2220).
+func TestPendingPausesAreBounded(t *testing.T) {
+	d := &debugControl{carry: &v1.DebugCarry{SessionId: "s"}}
+	for i := range v1.MaxDebugAsksPerBoundary + 1 {
+		d.pausePending(fmt.Sprintf("pause-%d", i))
+	}
+
+	if got := len(d.pendingPauses); got != v1.MaxDebugAsksPerBoundary {
+		t.Fatalf("pending pauses = %d, want %d", got, v1.MaxDebugAsksPerBoundary)
+	}
+	receipt := d.receiptFor(fmt.Sprintf("pause-%d", v1.MaxDebugAsksPerBoundary))
+	if receipt.GetStatus() != v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_REFUSED {
+		t.Fatalf("the pause past the bound was answered %v, want REFUSED", receipt.GetStatus())
+	}
+}
+
+// TestARetriedPauseIsTakenOnce: a pause retried under its request id while it
+// still waits takes no second place, so it is neither receipted twice nor
+// counted twice against the bound.
+func TestARetriedPauseIsTakenOnce(t *testing.T) {
+	d := &debugControl{carry: &v1.DebugCarry{SessionId: "s"}}
+	d.pausePending("pause")
+	d.pausePending("pause")
+
+	if got := len(d.pendingPauses); got != 1 {
+		t.Fatalf("pending pauses = %d, want 1", got)
 	}
 }

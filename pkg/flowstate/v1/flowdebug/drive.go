@@ -694,12 +694,19 @@ func FormatReceipt(receipt *v1.DebugReceipt) string {
 }
 
 // FormatSnapshotShows reports whether [FormatSnapshot] prints observation
-// itself: the missed-`until` notice of a completed run. A front that also
-// lists a snapshot's observations skips these, so the notice reads once.
+// itself: the missed-`until` or missed-pause notice of a completed run. A
+// front that also lists a snapshot's observations skips these, so the notice
+// reads once.
 func FormatSnapshotShows(snapshot *v1.DebugSnapshot, observation *v1.DebugObservation) bool {
 	return snapshot.GetState() == v1.DebugRunState_DEBUG_RUN_STATE_COMPLETED &&
 		observation.GetKind() == v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_NOTICE &&
-		strings.HasPrefix(observation.GetText(), missedUntilPrefix)
+		missedStopNotice(observation.GetText())
+}
+
+// missedStopNotice reports whether text is a notice that a completed run
+// never made a stop it was asked for.
+func missedStopNotice(text string) bool {
+	return strings.HasPrefix(text, missedUntilPrefix) || text == MissedPauseNotice
 }
 
 // FormatSnapshot renders a snapshot for a person: the state, where, why, and
