@@ -1526,3 +1526,169 @@ tests:
 	assert.NotContains(t, message, "rootsecret0000", "a compensation's failure rode out between two copies of the diagnostic")
 	assert.Contains(t, message, "[withheld]", "the error was not withheld whole")
 }
+
+// TestAReportKeepsADiagnosticShapedInsideAnUnenumerableCallee: an unmatched
+// stub inside a callee whose sensitive input cannot be enumerated builds its
+// diagnostic under that callee's position, which withholds every input it
+// quotes. The report prints it as it is, as it does for the same diagnostic
+// under a root that cannot be enumerated, rather than withholding the task's
+// name and the remedy with it (Codex, #2215).
+func TestAReportKeepsADiagnosticShapedInsideAnUnenumerableCallee(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "child.yaml"), `
+edition: v2026.3
+name: child
+inputs:
+  items:
+    type: list
+    required: true
+    sensitive: true
+steps:
+  - id: probe
+    http:
+      url: ${"https://example.invalid/" + inputs.items[0]}
+`)
+	items := make([]string, 0, 1100)
+	for i := range 1100 {
+		items = append(items, fmt.Sprintf("%q", fmt.Sprintf("calleesecret%04d", i)))
+	}
+	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
+edition: v2026.3
+name: parent
+steps:
+  - id: nested
+    call: ./child.yaml
+    with:
+      items: ${[`+strings.Join(items, ", ")+`]}
+`)
+	path := filepath.Join(dir, "workflow.test.yaml")
+	writeFile(t, path, `
+tests:
+  - name: the unmatched stub is reported
+    workflow: ./workflow.yaml
+    stubs:
+      - task: http
+        where: inputs.url == 'https://nope.invalid/'
+    expect:
+      failed: false
+`)
+
+	result := flowtest.RunPath(t.Context(), path, flowtest.RunOptions{})
+	cases := result.Report.GetCases()
+	require.Len(t, cases, 1)
+	require.NotEmpty(t, cases[0].GetFailures(), "the case reported no failure, so this proves nothing: %s", cases[0].GetError())
+	message := cases[0].GetFailures()[0].GetMessage()
+	assert.Contains(t, message, "could not be enumerated", "the stub's own diagnostic was withheld with the values it withholds")
+	assert.Contains(t, message, "[redacted: url]")
+	assert.NotContains(t, message, "calleesecret0000", "the report showed the callee's sensitive input")
+}
+
+// TestAReportWithholdsASensitiveRootInputTheBindRefused: a root input
+// declared `sensitive:` that its own `must:` refuses is quoted by the
+// refusal, and no step ever holds it for the run's gatherer to hear. The
+// case's report withholds it by what the case submitted, as `cmd/flow`
+// withholds the same failure (Codex, #2215).
+func TestAReportWithholdsASensitiveRootInputTheBindRefused(t *testing.T) {
+	t.Parallel()
+
+	const secret = "hunter2-refused-root-secret"
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
+edition: v2026.3
+name: refused
+inputs:
+  token:
+    type: string
+    required: true
+    sensitive: true
+    must: this == "expected"
+steps:
+  - id: use
+    value: ${inputs.token}
+`)
+	path := filepath.Join(dir, "workflow.test.yaml")
+	writeFile(t, path, `
+tests:
+  - name: the refusal is reported
+    workflow: ./workflow.yaml
+    inputs:
+      token: `+secret+`
+    expect:
+      failed: false
+`)
+
+	result := flowtest.RunPath(t.Context(), path, flowtest.RunOptions{})
+	cases := result.Report.GetCases()
+	require.Len(t, cases, 1)
+	var shown []string
+	for _, failure := range cases[0].GetFailures() {
+		shown = append(shown, failure.GetMessage())
+	}
+	joined := strings.Join(shown, "\n") + "\n" + cases[0].GetError()
+	require.Contains(t, joined, "must satisfy", "the refusal is not reported, so this proves nothing")
+	assert.NotContains(t, joined, secret, "the report showed the refused sensitive input")
+	assert.Contains(t, joined, "[redacted]")
+}
+
+// TestAReportWithholdsADiagnosticRaisedBeforeEverythingWasWithheld: an
+// unmatched stub at the root, whose position enumerates what it withholds,
+// quotes a value a callee that could not enumerate its set handed back. The
+// case's gathered set withholds everything, and that diagnostic was not
+// shaped under it, so the report withholds it whole (Codex, #2215).
+func TestAReportWithholdsADiagnosticRaisedBeforeEverythingWasWithheld(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "child.yaml"), `
+edition: v2026.3
+name: child
+inputs:
+  items:
+    type: list
+    required: true
+    sensitive: true
+steps:
+  - id: use
+    value: ${1}
+outputs:
+  first:
+    value: ${inputs.items[0]}
+`)
+	items := make([]string, 0, 1100)
+	for i := range 1100 {
+		items = append(items, fmt.Sprintf("%q", fmt.Sprintf("calleesecret%04d", i)))
+	}
+	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
+edition: v2026.3
+name: parent
+steps:
+  - id: nested
+    call: ./child.yaml
+    with:
+      items: ${[`+strings.Join(items, ", ")+`]}
+  - id: probe
+    http:
+      url: ${"https://example.invalid/" + steps.nested.first}
+`)
+	path := filepath.Join(dir, "workflow.test.yaml")
+	writeFile(t, path, `
+tests:
+  - name: the unmatched stub is reported
+    workflow: ./workflow.yaml
+    stubs:
+      - task: http
+        where: inputs.url == 'https://nope.invalid/'
+    expect:
+      failed: false
+`)
+
+	result := flowtest.RunPath(t.Context(), path, flowtest.RunOptions{})
+	cases := result.Report.GetCases()
+	require.Len(t, cases, 1)
+	require.NotEmpty(t, cases[0].GetFailures(), "the case reported no failure, so this proves nothing: %s", cases[0].GetError())
+	message := cases[0].GetFailures()[0].GetMessage()
+	assert.Contains(t, message, "[withheld]", "a diagnostic shaped under less than the report withholds was printed")
+	assert.NotContains(t, message, "calleesecret0000", "the report showed the callee's sensitive input")
+}

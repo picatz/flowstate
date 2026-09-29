@@ -1136,16 +1136,24 @@ func unmatchedStubError(name string, declared int, native map[string]any, secret
 		}
 	}
 
-	return &stubDiagnostic{text: b.String()}
+	return &stubDiagnostic{text: b.String(), shaped: sensitive.WithholdAll()}
 }
 
 // stubDiagnostic is a diagnostic the stub boundary built — an unmatched
 // stub's ([unmatchedStubError]) or an unstubbed task's ([unstubbedTaskFn]) —
-// shaped under the case's posture, withholding what it could not enumerate,
-// so a run's error can carry it out to the case's report as it is. Its own
-// type so that the report can tell it from an error nothing shaped
-// ([assertExpectation]).
-type stubDiagnostic struct{ text string }
+// shaped where it was raised, so a run's error can carry it out to the case's
+// report as it is. Its own type so that the report can tell it from an error
+// nothing shaped ([assertExpectation]).
+type stubDiagnostic struct {
+	text string
+
+	// shaped says the diagnostic holds nothing a set withholding everything
+	// would withhold: an unmatched stub's built under a position that could
+	// not enumerate what it withholds, which withholds every input it
+	// quotes, the callee's own included when it was raised in one (Codex,
+	// #2215); or an unstubbed task's, which quotes no value at all.
+	shaped bool
+}
 
 func (e *stubDiagnostic) Error() string { return e.text }
 

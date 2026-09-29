@@ -209,7 +209,13 @@ func appendSensitiveHash(b []byte, value any) []byte {
 	case string:
 		b = appendSensitiveBytes(append(b, 1), value)
 	case []byte:
-		b = appendSensitiveBytes(append(b, 2), value)
+		// A nil slice and an empty one are two values to the equality
+		// [isSensitiveValue] redacts by, so two here too (Codex, #2215).
+		if value == nil {
+			b = append(b, 10)
+		} else {
+			b = appendSensitiveBytes(append(b, 2), value)
+		}
 	case bool:
 		// The tag and one flag byte either way: a `false` shorter than a
 		// `true` would make the two a prefix of each other and the encoding

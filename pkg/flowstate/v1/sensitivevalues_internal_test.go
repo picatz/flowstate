@@ -807,3 +807,26 @@ func TestAnAccumulatorRefusesABucketThatGrows(t *testing.T) {
 		assert.Equal(t, colliding == maxSensitiveBucket, gathered.Values().WithholdAll(), "%d colliding values", colliding)
 	}
 }
+
+// TestAnAccumulatorTellsANilByteStringFromAnEmptyOne: the redaction's
+// equality holds a nil byte string and an empty one apart, so the hash must
+// too, or lists differing only in which empty leaves are nil share a bucket
+// and reach its cap (Codex, #2215).
+func TestAnAccumulatorTellsANilByteStringFromAnEmptyOne(t *testing.T) {
+	t.Parallel()
+
+	var gathered SensitiveAccumulator
+	for variant := range 16 {
+		leaves := make([]any, 4)
+		for bit := range leaves {
+			if variant&(1<<bit) != 0 {
+				leaves[bit] = []byte(nil)
+			} else {
+				leaves[bit] = []byte{}
+			}
+		}
+		gathered.Add(sensitiveValuesOf(sensitiveState{values: []any{leaves}}))
+	}
+	require.False(t, gathered.Values().WithholdAll(), "variants unequal under the redaction's equality filled one bucket")
+	assert.Len(t, gathered.Values().held().values, 16)
+}

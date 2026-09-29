@@ -874,6 +874,13 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 		// records no step events carrying input-derived values: the run
 		// fails at the same bind before any step runs.
 		sensitive = sensitiveNativeValues(&v1.Scope{Inputs: bound}, v1.SensitiveInputNames(workflow))
+	} else {
+		// The run refuses at the same bind, and its refusal can quote the
+		// value it refused (`must satisfy …; got <value>`), which no step
+		// ever holds for the gatherer to hear. What the case submitted is
+		// what it quotes, and what `cmd/flow` redacts the same failure
+		// against (Codex, #2215).
+		sensitive = sensitiveNativeValues(&v1.Scope{Inputs: inputs}, v1.SensitiveInputNames(workflow))
 	}
 
 	// The posture widens to the run's own set here — by extending, not
@@ -1040,12 +1047,11 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	// rendering from here on — the expectations, the claims, the autopsy
 	// and the transcript itself — withholds them; the verdicts read real
 	// values.
-	shaped := sensitive.WithholdAll()
 	if gatherer != nil {
 		sensitive = widenedBy(sensitive, gatherer.withheld())
 	}
 
-	result.Failures = assertExpectation(&test.Expect, workflow, outputs, runErr, sensitive, shaped)
+	result.Failures = assertExpectation(&test.Expect, workflow, outputs, runErr, sensitive)
 	// The CEL claims (#1072), after the named fields so a report reads
 	// structure first, values second — the order the file states them in.
 	result.Failures = append(result.Failures, assertChecks(ctx, test.Expect.Check, workflow, bound, vars, outputs, runErr, sensitive)...)
@@ -1364,7 +1370,7 @@ func unstubbedTaskFn(name string, seen *unstubbedTasks) v1.TaskFunc {
 	return func(ctx context.Context, inputs map[string]*v1.Value, scope *v1.Scope) (*v1.Node_Outputs, error) {
 		seen.record(ctx, name)
 
-		return nil, v1.NewTaskError(name, v1.ErrorKindInvalidInput, &stubDiagnostic{text: fmt.Sprintf(
+		return nil, v1.NewTaskError(name, v1.ErrorKindInvalidInput, &stubDiagnostic{shaped: true, text: fmt.Sprintf(
 			"flow test: task %q was invoked, but this case declares no stub for it; "+
 				"add a `stubs:` entry naming %q — flow test never lets an unstubbed task run for real",
 			name, name)})
@@ -1990,10 +1996,7 @@ func (f *File) CheckSignalNames(test *Test, spec *v1.Workflow) error {
 // failure mode a test framework may not have — a green test that should be
 // red is worse than a framework that cannot run at all, because the second
 // one is at least visibly broken.
-//
-// shaped says the posture the run ran under already withheld everything, so
-// the task/stub boundary shaped the run's error; see below.
-func assertExpectation(want *Expectation, spec *v1.Workflow, outputs *v1.Workflow_StepOutputs, runErr error, sensitive sensitiveInputs, shaped bool) []*v1.Diagnostic {
+func assertExpectation(want *Expectation, spec *v1.Workflow, outputs *v1.Workflow_StepOutputs, runErr error, sensitive sensitiveInputs) []*v1.Diagnostic {
 	var failures []*v1.Diagnostic
 	renderedRunErr := "<nil>"
 	if runErr != nil {
@@ -2003,19 +2006,21 @@ func assertExpectation(want *Expectation, spec *v1.Workflow, outputs *v1.Workflo
 		// would erase the only actionable detail. Otherwise this is the outer
 		// substring backstop for material carried here by a computed var.
 		//
-		// Only for a diagnostic the stub boundary built, only where the run
-		// itself ran under that posture, and only where every error wrapping
-		// it added nothing after it ([onlyPrefixed]), so that what precedes it
-		// is the positions the engine wraps around a failure. An evaluation
-		// error (`no such key: <value>`) was shaped by nothing; neither was a
-		// compensation's failure the run appends after it ([v1.UndoRunError]),
-		// nor anything under a set that came to withhold everything once the
-		// run was over — a callee's that could not be enumerated, gathered
-		// afterward. Those are withheld whole rather than printed as they are
-		// (#2215).
+		// Only for a diagnostic the stub boundary built, only where it was
+		// shaped under that posture where it was raised ([stubDiagnostic]'s
+		// shaped: the root's, or a callee's that could not be enumerated),
+		// and only where every error wrapping it added nothing after it
+		// ([onlyPrefixed]), so that what precedes it is the positions the
+		// engine wraps around a failure. An evaluation error (`no such key:
+		// <value>`) was shaped by nothing; neither was a compensation's
+		// failure the run appends after it ([v1.UndoRunError]), nor a
+		// diagnostic raised under a position that could enumerate what it
+		// withholds, and so withheld only that, before a set gathered
+		// elsewhere came to withhold everything. Those are withheld whole
+		// rather than printed as they are (#2215).
 		var stubShaped *stubDiagnostic
 		renderedRunErr = runErr.Error()
-		if !sensitive.WithholdAll() || !shaped || !errors.As(runErr, &stubShaped) ||
+		if !sensitive.WithholdAll() || !errors.As(runErr, &stubShaped) || !stubShaped.shaped ||
 			!onlyPrefixed(runErr, stubShaped) {
 			renderedRunErr = redactedErrorText(renderedRunErr, sensitive)
 		}
