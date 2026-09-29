@@ -783,7 +783,10 @@ tests:
 		msg := f.GetMessage()
 		require.NotContains(t, msg, "division by zero",
 			"the error text itself is withheld when nothing can be shown safe, not just the invocation's inputs")
-		require.Contains(t, msg, "1 / (1 - 1) == 1", "the where: source is the author's own text and still prints")
+		// Author text, and under a set that names nothing an author can
+		// have written a sensitive value into it (#2215).
+		require.NotContains(t, msg, "1 / (1 - 1) == 1", "the where: source printed under a posture that names nothing")
+		require.Contains(t, msg, "[withheld: where:]")
 		require.Contains(t, msg, "-> error:")
 		require.Contains(t, msg, "[redacted: where: evaluation error]")
 		found = true

@@ -857,7 +857,6 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	var policies map[string]*v1.SignalPolicy
 	var bound map[string]*v1.Value
 	var sensitive sensitiveInputs
-	rootInputs := inputs
 	if b, bindErr := v1.BindRunInputs(workflow, inputs); bindErr == nil {
 		bound = b
 		resolved, err := v1.ResolveSignalPolicySubjects(ctx, workflow, bound)
@@ -875,7 +874,6 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 		// records no step events carrying input-derived values: the run
 		// fails at the same bind before any step runs.
 		sensitive = sensitiveNativeValues(&v1.Scope{Inputs: bound}, v1.SensitiveInputNames(workflow))
-		rootInputs = bound
 	} else {
 		// The run refuses at the same bind, and its refusal can quote the
 		// value it refused (`must satisfy …; got <value>`), which no step
@@ -917,7 +915,6 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	// pin directly. A test built to fail on this line alone would have to
 	// invent a fourth source no real `casePosture` call site produces, which
 	// tests a hypothetical rather than this function.
-	enumerable := enumerablePosture(posture, rootInputs, v1.SensitiveInputNames(workflow))
 	posture = posture.Merge(sensitive)
 	sensitive = posture
 
@@ -1050,12 +1047,11 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	// rendering from here on — the expectations, the claims, the autopsy
 	// and the transcript itself — withholds them; the verdicts read real
 	// values.
-	before := enumerable
 	if gatherer != nil {
 		sensitive = widenedBy(sensitive, gatherer.withheld())
 	}
 
-	result.Failures = assertExpectation(&test.Expect, workflow, outputs, runErr, sensitive, before)
+	result.Failures = assertExpectation(&test.Expect, workflow, outputs, runErr, sensitive)
 	// The CEL claims (#1072), after the named fields so a report reads
 	// structure first, values second — the order the file states them in.
 	result.Failures = append(result.Failures, assertChecks(ctx, test.Expect.Check, workflow, bound, vars, outputs, runErr, sensitive)...)
@@ -1891,40 +1887,6 @@ func checkSignalNames(signals []SignalScript, spec *v1.Workflow) error {
 	return nil
 }
 
-// enumerableSets are sets that can each be enumerated, kept apart: merged
-// into one they could pass the bound together, and a set that withholds
-// everything names nothing a rendering can replace (Codex, #2215).
-type enumerableSets []sensitiveInputs
-
-// RedactSubstrings replaces what any set names wherever it occurs in text,
-// every set's matches marked against the text as it was given
-// ([v1.RedactSubstringsOf]).
-func (e enumerableSets) RedactSubstrings(text string) string {
-	return v1.RedactSubstringsOf(text, e...)
-}
-
-// enumerablePosture is what of a case's posture can be enumerated: its own
-// material ([casePosture]), and each root input declared sensitive whose
-// values can be enumerated on its own, each kept as its own set. Merged whole,
-// one input too large to enumerate, or several together past the bound, make
-// the posture withhold everything; a diagnostic printed as it is under that
-// posture would then keep another input's value, or a `secrets:` plaintext,
-// that an author wrote into a `where:` (Codex, #2215).
-func enumerablePosture(casePosture sensitiveInputs, inputs map[string]*v1.Value, names map[string]bool) enumerableSets {
-	var enumerable enumerableSets
-	if !casePosture.WithholdAll() && !casePosture.Empty() {
-		enumerable = append(enumerable, casePosture)
-	}
-	for _, name := range slices.Sorted(maps.Keys(names)) {
-		one := sensitiveNativeValues(&v1.Scope{Inputs: map[string]*v1.Value{name: inputs[name]}}, map[string]bool{name: true})
-		if !one.WithholdAll() && !one.Empty() {
-			enumerable = append(enumerable, one)
-		}
-	}
-
-	return enumerable
-}
-
 // casePosture is what one case's rendered text may not carry, as much of it as
 // is knowable before the case runs: the material a `vars:` entry withholds,
 // the case's own `secrets:` plaintext, and — for a table row — its entry's
@@ -2034,12 +1996,7 @@ func (f *File) CheckSignalNames(test *Test, spec *v1.Workflow) error {
 // failure mode a test framework may not have — a green test that should be
 // red is worse than a framework that cannot run at all, because the second
 // one is at least visibly broken.
-//
-// before is what of the case's posture could be enumerated before its run
-// ([enumerablePosture]): what a stub diagnostic printed as it is still
-// withholds, since a set that withholds everything says nothing it can
-// replace text by.
-func assertExpectation(want *Expectation, spec *v1.Workflow, outputs *v1.Workflow_StepOutputs, runErr error, sensitive sensitiveInputs, before enumerableSets) []*v1.Diagnostic {
+func assertExpectation(want *Expectation, spec *v1.Workflow, outputs *v1.Workflow_StepOutputs, runErr error, sensitive sensitiveInputs) []*v1.Diagnostic {
 	var failures []*v1.Diagnostic
 	renderedRunErr := "<nil>"
 	if runErr != nil {
@@ -2062,17 +2019,15 @@ func assertExpectation(want *Expectation, spec *v1.Workflow, outputs *v1.Workflo
 		// elsewhere came to withhold everything. Those are withheld whole
 		// rather than printed as they are (#2215).
 		//
-		// Printed as it is, it still passes through what the case's posture
-		// could enumerate before the run: the diagnostic keeps each stub's
-		// `where:` as written, and an author can write a root's sensitive
-		// value or a `secrets:` plaintext into one (exact-head review, #2215).
+		// Printed as it is, it holds no text an author wrote beyond names: a
+		// diagnostic shaped under that posture withholds each stub's `where:`
+		// as well, since an author can write a sensitive value into one
+		// ([unmatchedStubError], #2215).
 		var stubShaped *stubDiagnostic
 		renderedRunErr = runErr.Error()
 		if !sensitive.WithholdAll() || !errors.As(runErr, &stubShaped) || !stubShaped.shaped ||
 			!onlyPrefixed(runErr, stubShaped) {
 			renderedRunErr = redactedErrorText(renderedRunErr, sensitive)
-		} else {
-			renderedRunErr = before.RedactSubstrings(renderedRunErr)
 		}
 	}
 

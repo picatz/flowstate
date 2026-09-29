@@ -1532,7 +1532,8 @@ tests:
 // diagnostic under that callee's position, which withholds every input it
 // quotes. The report prints it as it is, as it does for the same diagnostic
 // under a root that cannot be enumerated, rather than withholding the task's
-// name and the remedy with it (Codex, #2215).
+// name and the remedy with it (Codex, #2215). Its `where:` is withheld, so a
+// root secret written into one does not print.
 func TestAReportKeepsADiagnosticShapedInsideAnUnenumerableCallee(t *testing.T) {
 	t.Parallel()
 
@@ -1593,7 +1594,7 @@ tests:
 	// The root's value, written into a `where:` the diagnostic keeps as
 	// written, is still withheld by the posture that could enumerate it
 	// (exact-head review, #2215).
-	assert.Contains(t, message, "nope.invalid/", "the stub's where: is not quoted, so this proves nothing")
+	assert.Contains(t, message, "[withheld: where:]", "the stub's where: was not withheld")
 	assert.NotContains(t, message, "rootsecretvalue", "the report showed a root's sensitive value written into a where:")
 }
 
@@ -1708,8 +1709,8 @@ tests:
 // TestAReportUnderAnUnenumerableRootWithholdsWhatItCanStillEnumerate: one
 // root input too large to enumerate makes the case's posture withhold
 // everything, and a stub diagnostic shaped under it is printed as it is. Its
-// `where:` is kept as written, and another root input's value, or the case's
-// own `secrets:` plaintext, written into it is still withheld (Codex, #2215).
+// `where:` is withheld, so another root input's value, or the case's own
+// `secrets:` plaintext, written into it does not print (Codex, #2215).
 func TestAReportUnderAnUnenumerableRootWithholdsWhatItCanStillEnumerate(t *testing.T) {
 	t.Parallel()
 
@@ -1758,7 +1759,7 @@ tests:
 	require.NotEmpty(t, cases[0].GetFailures(), "the case reported no failure, so this proves nothing: %s", cases[0].GetError())
 	message := cases[0].GetFailures()[0].GetMessage()
 	assert.Contains(t, message, "could not be enumerated", "the stub's diagnostic was not printed, so this proves nothing")
-	assert.Contains(t, message, "nope.invalid/", "the stub's where: is not quoted, so this proves nothing")
+	assert.Contains(t, message, "[withheld: where:]", "the stub's where: was not withheld")
 	assert.NotContains(t, message, "rootsecretvalue", "another root input's value printed")
 	assert.NotContains(t, message, "casesecretplain", "the case's secret printed")
 	assert.NotContains(t, message, "element-7", "the unenumerable input printed")
@@ -1767,8 +1768,8 @@ tests:
 // TestAReportWithholdsInputsThatPassTheBoundOnlyTogether: two root inputs
 // declared sensitive, each enumerable on its own, together past the bound.
 // The case's posture withholds everything, a stub diagnostic shaped under it
-// is printed as it is, and a value of each written into its `where:` is still
-// withheld, by each input's own set (Codex, #2215).
+// is printed as it is, and its `where:`, holding a value of each, is withheld
+// (Codex, #2215).
 func TestAReportWithholdsInputsThatPassTheBoundOnlyTogether(t *testing.T) {
 	t.Parallel()
 
@@ -1816,15 +1817,15 @@ tests:
 	require.NotEmpty(t, cases[0].GetFailures(), "the case reported no failure, so this proves nothing: %s", cases[0].GetError())
 	message := cases[0].GetFailures()[0].GetMessage()
 	assert.Contains(t, message, "could not be enumerated", "the stub's diagnostic was not printed, so this proves nothing")
-	assert.Contains(t, message, "nope.invalid/", "the stub's where: is not quoted, so this proves nothing")
+	assert.Contains(t, message, "[withheld: where:]", "the stub's where: was not withheld")
 	assert.NotContains(t, message, "alpha0005", "the first input's value printed")
 	assert.NotContains(t, message, "beta0007", "the second input's value printed")
 }
 
 // TestAReportWithholdsOverlappingValuesWhole: under an opaque root, a case's
 // `secrets:` plaintext found inside a root input's value written into a
-// `where:` leaves no fragment of either in the printed diagnostic (exact-head
-// review, #2215).
+// `where:` leaves no fragment of either in the printed diagnostic, since the
+// `where:` is withheld whole (exact-head review, #2215).
 func TestAReportWithholdsOverlappingValuesWhole(t *testing.T) {
 	t.Parallel()
 
@@ -1872,7 +1873,7 @@ tests:
 	require.Len(t, cases, 1)
 	require.NotEmpty(t, cases[0].GetFailures(), "the case reported no failure, so this proves nothing: %s", cases[0].GetError())
 	message := cases[0].GetFailures()[0].GetMessage()
-	assert.Contains(t, message, "nope.invalid/[redacted]'", "the stub's where: is not quoted as withheld whole")
+	assert.Contains(t, message, "[withheld: where:]", "the stub's where: was not withheld")
 	assert.NotContains(t, message, "hunter2", "a fragment of the root input's value printed")
 	assert.NotContains(t, message, "tail'", "a fragment of the root input's value printed")
 }

@@ -1109,7 +1109,7 @@ func unmatchedStubError(name string, declared int, native map[string]any, secret
 	// nothing knows it is a refusal rather than a bug (CLAUDE.md,
 	// "diagnostics are a feature").
 	if sensitive.WithholdAll() {
-		b.WriteString("  (every input above is withheld: this run's sensitive inputs could not be enumerated, " +
+		b.WriteString("  (every input above, and every stub's where:, is withheld: this run's sensitive inputs could not be enumerated, " +
 			"so nothing on this invocation can be shown to be safe to print)\n")
 	}
 
@@ -1119,8 +1119,14 @@ func unmatchedStubError(name string, declared int, native map[string]any, secret
 		b.WriteString("  stub verdicts:")
 		for i, v := range verdicts {
 			where := v.whereSource
-			if where == "" {
+			switch {
+			case where == "":
 				where = "(no where:)"
+			case sensitive.WithholdAll():
+				// Author text, and an author can write a sensitive value into
+				// it: under a set that names nothing, nothing shows it is safe,
+				// and this diagnostic is printed as it is (#2215).
+				where = "[withheld: where:]"
 			}
 			switch {
 			case v.drained > 0:
