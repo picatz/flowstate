@@ -878,8 +878,8 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 		// The run refuses at the same bind, and its refusal can quote the
 		// value it refused (`must satisfy …; got <value>`), which no step
 		// ever holds for the gatherer to hear. What the case submitted is
-		// what it quotes, and what `cmd/flow` redacts the same failure
-		// against (Codex, #2215).
+		// what it quotes, and `cmd/flow` redacts the same failure against
+		// the submitted arguments too (Codex, #2215).
 		sensitive = sensitiveNativeValues(&v1.Scope{Inputs: inputs}, v1.SensitiveInputNames(workflow))
 	}
 
@@ -1047,11 +1047,12 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	// rendering from here on — the expectations, the claims, the autopsy
 	// and the transcript itself — withholds them; the verdicts read real
 	// values.
+	before := sensitive
 	if gatherer != nil {
 		sensitive = widenedBy(sensitive, gatherer.withheld())
 	}
 
-	result.Failures = assertExpectation(&test.Expect, workflow, outputs, runErr, sensitive)
+	result.Failures = assertExpectation(&test.Expect, workflow, outputs, runErr, sensitive, before)
 	// The CEL claims (#1072), after the named fields so a report reads
 	// structure first, values second — the order the file states them in.
 	result.Failures = append(result.Failures, assertChecks(ctx, test.Expect.Check, workflow, bound, vars, outputs, runErr, sensitive)...)
@@ -1996,7 +1997,11 @@ func (f *File) CheckSignalNames(test *Test, spec *v1.Workflow) error {
 // failure mode a test framework may not have — a green test that should be
 // red is worse than a framework that cannot run at all, because the second
 // one is at least visibly broken.
-func assertExpectation(want *Expectation, spec *v1.Workflow, outputs *v1.Workflow_StepOutputs, runErr error, sensitive sensitiveInputs) []*v1.Diagnostic {
+//
+// before is the case's posture ahead of what its run gathered: what a stub
+// diagnostic printed as it is still withholds, since a set that came to
+// withhold everything afterward says nothing it can replace text by.
+func assertExpectation(want *Expectation, spec *v1.Workflow, outputs *v1.Workflow_StepOutputs, runErr error, sensitive, before sensitiveInputs) []*v1.Diagnostic {
 	var failures []*v1.Diagnostic
 	renderedRunErr := "<nil>"
 	if runErr != nil {
@@ -2018,11 +2023,18 @@ func assertExpectation(want *Expectation, spec *v1.Workflow, outputs *v1.Workflo
 		// withholds, and so withheld only that, before a set gathered
 		// elsewhere came to withhold everything. Those are withheld whole
 		// rather than printed as they are (#2215).
+		//
+		// Printed as it is, it still passes through what the case's posture
+		// could enumerate before the run: the diagnostic keeps each stub's
+		// `where:` as written, and an author can write a root's sensitive
+		// value or a `secrets:` plaintext into one (exact-head review, #2215).
 		var stubShaped *stubDiagnostic
 		renderedRunErr = runErr.Error()
 		if !sensitive.WithholdAll() || !errors.As(runErr, &stubShaped) || !stubShaped.shaped ||
 			!onlyPrefixed(runErr, stubShaped) {
 			renderedRunErr = redactedErrorText(renderedRunErr, sensitive)
+		} else {
+			renderedRunErr = before.RedactSubstrings(renderedRunErr)
 		}
 	}
 

@@ -1557,6 +1557,11 @@ steps:
 	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
 edition: v2026.3
 name: parent
+inputs:
+  token:
+    type: string
+    required: true
+    sensitive: true
 steps:
   - id: nested
     call: ./child.yaml
@@ -1568,9 +1573,11 @@ steps:
 tests:
   - name: the unmatched stub is reported
     workflow: ./workflow.yaml
+    inputs:
+      token: rootsecretvalue
     stubs:
       - task: http
-        where: inputs.url == 'https://nope.invalid/'
+        where: inputs.url == 'https://nope.invalid/rootsecretvalue'
     expect:
       failed: false
 `)
@@ -1583,6 +1590,11 @@ tests:
 	assert.Contains(t, message, "could not be enumerated", "the stub's own diagnostic was withheld with the values it withholds")
 	assert.Contains(t, message, "[redacted: url]")
 	assert.NotContains(t, message, "calleesecret0000", "the report showed the callee's sensitive input")
+	// The root's value, written into a `where:` the diagnostic keeps as
+	// written, is still withheld by the posture that could enumerate it
+	// (exact-head review, #2215).
+	assert.Contains(t, message, "nope.invalid/", "the stub's where: is not quoted, so this proves nothing")
+	assert.NotContains(t, message, "rootsecretvalue", "the report showed a root's sensitive value written into a where:")
 }
 
 // TestAReportWithholdsASensitiveRootInputTheBindRefused: a root input
