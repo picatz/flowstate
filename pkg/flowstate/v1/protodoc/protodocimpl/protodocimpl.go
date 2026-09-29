@@ -21,6 +21,10 @@
 package protodocimpl
 
 import (
+	"fmt"
+	"maps"
+	"slices"
+	"strings"
 	"sync"
 
 	"google.golang.org/protobuf/reflect/protoreflect"
@@ -45,6 +49,7 @@ type Comment struct {
 // comment twice is harmless. A name registered twice with different text or
 // from a different file is ambiguous, so [Lookup] reports no comment for it
 // rather than choosing one; a misattributed sentence is worse than none.
+// [Conflicts] lists the names that ended up that way.
 func RegisterFile(path string, comments []Comment) {
 	global.registerFile(path, comments)
 }
@@ -58,15 +63,68 @@ func Lookup(name protoreflect.FullName) (comment, path string, ok bool) {
 	return global.lookup(name)
 }
 
+// Conflict is one name that registrations disagree about, so [Lookup] answers
+// no comment for it.
+type Conflict struct {
+	// Name is the declaration's protobuf full name.
+	Name protoreflect.FullName
+
+	// Paths are the .proto files that registered Name, sorted and without
+	// repeats. One path means a single file was registered with two different
+	// comments, as two generations of one generated package linked into one
+	// binary would; several mean different files each claim the name.
+	Paths []string
+}
+
+// String describes the conflict for a test failure or a log line.
+func (c Conflict) String() string {
+	if len(c.Paths) == 1 {
+		return fmt.Sprintf("%s: %s registered it with different comments", c.Name, c.Paths[0])
+	}
+	return fmt.Sprintf("%s: registered by %s", c.Name, strings.Join(c.Paths, ", "))
+}
+
+// Conflicts lists, in name order, every name that was registered with
+// disagreeing comments or from disagreeing files, and so is no longer answered
+// by [Lookup]. It is empty when every registration agrees.
+//
+// Like the rest of this package it is for tests and tooling that check a linked
+// schema, not an API to build behavior on: Lookup stays silent about a conflict
+// on purpose, and this is how someone who can fix one finds out. The engine's
+// own schema is held to it by protodoc's tests, and a plugin author can do the
+// same for the schema their binary links.
+func Conflicts() []Conflict {
+	return global.conflicts()
+}
+
 // global is the process-wide table. Generated code writes it during package
 // initialization; readers take the read lock afterwards.
 var global = newTable()
 
-// entry is what the table knows about one name.
+// entry is what the table knows about one name: the first registration, and any
+// later one that disagreed with it. A name with a disagreement is ambiguous.
+// Nothing is allocated for the common, agreeing case.
 type entry struct {
-	path      string
-	leading   string
-	ambiguous bool
+	path    string
+	leading string
+	others  []variant
+}
+
+// variant is one registration that disagreed with an entry's first.
+type variant struct {
+	path    string
+	leading string
+}
+
+func (e entry) ambiguous() bool { return len(e.others) > 0 }
+
+// has reports whether a registration of leading from path repeats one already
+// recorded for the name.
+func (e entry) has(path, leading string) bool {
+	if e.path == path && e.leading == leading {
+		return true
+	}
+	return slices.Contains(e.others, variant{path, leading})
 }
 
 // table is the registry's state, separate from the global so tests can build
@@ -92,8 +150,8 @@ func (t *table) registerFile(path string, comments []Comment) {
 		switch {
 		case !seen:
 			t.entries[c.Name] = entry{path: path, leading: c.Leading}
-		case prev.path != path || prev.leading != c.Leading:
-			prev.ambiguous = true
+		case !prev.has(path, c.Leading):
+			prev.others = append(prev.others, variant{path, c.Leading})
 			t.entries[c.Name] = prev
 		}
 	}
@@ -104,8 +162,28 @@ func (t *table) lookup(name protoreflect.FullName) (comment, path string, ok boo
 	defer t.mu.RUnlock()
 
 	e, found := t.entries[name]
-	if !found || e.ambiguous {
+	if !found || e.ambiguous() {
 		return "", "", false
 	}
 	return e.leading, e.path, true
+}
+
+func (t *table) conflicts() []Conflict {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
+	var out []Conflict
+	for _, name := range slices.Sorted(maps.Keys(t.entries)) {
+		e := t.entries[name]
+		if !e.ambiguous() {
+			continue
+		}
+		paths := []string{e.path}
+		for _, v := range e.others {
+			paths = append(paths, v.path)
+		}
+		slices.Sort(paths)
+		out = append(out, Conflict{Name: name, Paths: slices.Compact(paths)})
+	}
+	return out
 }
