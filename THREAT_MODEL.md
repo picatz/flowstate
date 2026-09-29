@@ -189,7 +189,11 @@ say so in `sensitive_disclosure` (`pkg/flowstate/v1/server/sensitive.go`). A cal
 receives them only by asking (`reveal_sensitive`) while holding
 `workload.reveal_sensitive`, which an entry with no action list is not granted; every
 such request is audited under that action. Before this, the RPCs returned the values
-raw to any `workload.read` caller and only the CLI's renderer hid them. This is display
+raw to any `workload.read` caller and only the CLI's renderer hid them, which is still
+what a client does against such a server: it withholds declared outputs, transcript and
+carried state, and shows failure text and wait prompts as sent, because the server is the
+boundary and has already returned them. A client withholds an answer revealed without
+its asking whole, failure text and prompts included. This is display
 control at the API boundary: the values are in history (sealed only by payload
 encryption), a transformed value is not followed, and debug inspection has its own
 action (`workload.debug_inspect`).

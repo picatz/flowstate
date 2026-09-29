@@ -1003,7 +1003,7 @@ func dispatch(
 			out = deps.Redact(response)
 		}
 		if response, ok := out.(*v1.GetTimelineResponse); ok {
-			v1.WithholdUndecidedTimelineFailures(response, deps.RevealSensitive)
+			v1.WithholdUnrequestedTimelineFailures(response, deps.RevealSensitive)
 		}
 
 		// An agent reads the catalog for summaries, types and constraints —

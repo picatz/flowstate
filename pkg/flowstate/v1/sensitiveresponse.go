@@ -625,25 +625,40 @@ func WithholdPendingWaitPrompts(response *GetResponse) {
 // to be told which thing went missing.
 const FailureWithheldMarker = "failure text withheld: a sensitive input could not be enumerated, so no part of this message is provably safe"
 
-// WithholdUndecidedTimelineFailures is what a client does with a timeline
-// whose failure text the server did not decide for it: a server that decided
-// (WITHHELD, NONE_DECLARED) is trusted, and otherwise every failure, which can
-// quote a task's sensitive arguments, is withheld whole. That covers an older
-// server, which answers UNSPECIFIED having redacted nothing, and a REVEALED
-// answer the client did not accept by asking for it.
-func WithholdUndecidedTimelineFailures(response *GetTimelineResponse, revealAccepted bool) {
-	switch response.GetSensitiveDisclosure() {
-	case SensitiveDisclosure_SENSITIVE_DISCLOSURE_WITHHELD,
-		SensitiveDisclosure_SENSITIVE_DISCLOSURE_NONE_DECLARED:
+// WithholdUnrequestedTimelineFailures withholds, whole, every failure in a
+// timeline the server revealed without being asked: a REVEALED answer the
+// client did not accept by requesting it. A conformant server never sends
+// one, so this is an anomaly, and failing closed on it costs nothing.
+//
+// Every other answer is rendered as the server sent it. A server that decided
+// (WITHHELD, NONE_DECLARED) is trusted. An older server's UNSPECIFIED answer
+// is rendered as a client before sensitive_disclosure rendered every answer,
+// for the reason [RedactGetResponse] gives for its two failure texts: failure
+// text is the only field that says why a run failed, and that server has
+// already handed it to every caller allowed to read the run, so withholding it
+// here would protect a terminal and nothing else.
+func WithholdUnrequestedTimelineFailures(response *GetTimelineResponse, revealAccepted bool) {
+	if response.GetSensitiveDisclosure() != SensitiveDisclosure_SENSITIVE_DISCLOSURE_REVEALED || revealAccepted {
 		return
-	case SensitiveDisclosure_SENSITIVE_DISCLOSURE_REVEALED:
-		if revealAccepted {
-			return
-		}
 	}
 	for _, entry := range response.GetEntries() {
 		if entry.GetFailure() != "" {
 			entry.Failure = FailureWithheldMarker
+		}
+	}
+}
+
+// WithholdGetResponseFailures replaces the two failure texts a [GetResponse]
+// carries, the reason a failed run reports and each pending activity's last
+// failure, with [FailureWithheldMarker], in place. It is for the answer
+// [WithholdUnrequestedTimelineFailures] describes, on the Get side.
+func WithholdGetResponseFailures(response *GetResponse) {
+	if failed := response.GetError(); failed.GetMessage() != "" {
+		failed.Message = FailureWithheldMarker
+	}
+	for _, pending := range response.GetPendingActivities() {
+		if pending.GetLastFailure() != "" {
+			pending.LastFailure = FailureWithheldMarker
 		}
 	}
 }

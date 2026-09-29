@@ -120,6 +120,14 @@ import (
 //
 // What deliberately keeps travelling in the clear, and why, is written down in
 // [redactGetResponse]'s own comment rather than left to the absence of a line.
+//
+// The same holds for a server older than sensitive_disclosure, which answers
+// UNSPECIFIED: `flow get`, `flow watch`, `flow timeline` and the MCP tools
+// withhold its declared outputs, transcript and carried state as they always
+// did, and show its failure text and wait prompts as it sent them, because it
+// has already sent them to every caller allowed to read the run. Upgrading
+// the server is what withholds those. An answer REVEALED without this process
+// asking is the one case withheld whole, failure text and prompts included.
 
 // The redaction itself is pkg/flowstate/v1's (sensitiveresponse.go), where the
 // server applies it too; these names are this package's view of it, kept so
@@ -169,6 +177,12 @@ func redactGetResponse(response *v1.GetResponse, workflow *v1.Workflow, reveal b
 		if reveal {
 			return response
 		}
+		// Revealed without being asked: no conformant server answers so,
+		// and the answer is withheld whole, failure text and prompts too.
+		redacted := v1.RedactGetResponse(response, workflow, reveal)
+		v1.WithholdGetResponseFailures(redacted)
+		v1.WithholdPendingWaitPrompts(redacted)
+		return redacted
 	}
 	return v1.RedactGetResponse(response, workflow, reveal)
 }

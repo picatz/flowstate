@@ -14,10 +14,11 @@ import (
 	"github.com/picatz/flowstate/pkg/flowstate/v1/server"
 )
 
-// TestAnAgentReadsNoTimelineFailureAServerDidNotDecide: an older server
-// answers UNSPECIFIED and has redacted nothing, and a REVEALED answer the
-// operator did not ask for is not the agent's to read.
-func TestAnAgentReadsNoTimelineFailureAServerDidNotDecide(t *testing.T) {
+// TestAnAgentReadsNoTimelineFailureAServerRevealedUnasked: a REVEALED answer
+// the operator did not ask for is not the agent's to read. An older server's
+// UNSPECIFIED answer is read as `flowstate_get` reads one, failure text and
+// all, since that server has already handed it to every caller.
+func TestAnAgentReadsNoTimelineFailureAServerRevealedUnasked(t *testing.T) {
 	t.Parallel()
 
 	const quoted = `GET https://api.example/synthetic-token-3c9d failed`
@@ -26,8 +27,8 @@ func TestAnAgentReadsNoTimelineFailureAServerDidNotDecide(t *testing.T) {
 		operator   bool
 		shown      bool
 	}{
-		{v1.SensitiveDisclosure_SENSITIVE_DISCLOSURE_UNSPECIFIED, false, false},
-		{v1.SensitiveDisclosure_SENSITIVE_DISCLOSURE_UNSPECIFIED, true, false},
+		{v1.SensitiveDisclosure_SENSITIVE_DISCLOSURE_UNSPECIFIED, false, true},
+		{v1.SensitiveDisclosure_SENSITIVE_DISCLOSURE_UNSPECIFIED, true, true},
 		{v1.SensitiveDisclosure_SENSITIVE_DISCLOSURE_REVEALED, false, false},
 		{v1.SensitiveDisclosure_SENSITIVE_DISCLOSURE_REVEALED, true, true},
 		{v1.SensitiveDisclosure_SENSITIVE_DISCLOSURE_WITHHELD, false, true},
@@ -37,7 +38,7 @@ func TestAnAgentReadsNoTimelineFailureAServerDidNotDecide(t *testing.T) {
 			SensitiveDisclosure: tc.disclosure,
 			Entries:             []*v1.TimelineEntry{{Failure: quoted}},
 		}
-		v1.WithholdUndecidedTimelineFailures(response, tc.operator)
+		v1.WithholdUnrequestedTimelineFailures(response, tc.operator)
 		require.Equal(t, tc.shown, response.GetEntries()[0].GetFailure() == quoted, "%v operator=%v", tc.disclosure, tc.operator)
 	}
 }

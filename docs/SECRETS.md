@@ -62,7 +62,11 @@ passes `--reveal-sensitive`, and `flow server` withholds the values from its
 entry. A server running without authentication has no caller to grant it to,
 so it never reveals them; `flow server dev` grants it to its developer
 identity. An agent reaching Flowstate through `flow mcp` cannot ask for them
-unless the operator started it with `--reveal-sensitive`. Use a secret
+unless the operator started it with `--reveal-sensitive`. Against a server
+older than this decision, the CLI and `flow mcp` withhold declared outputs, the
+step transcript and carried state as before, and show failure text and wait
+prompts as the server sent them, since that server returns them to any caller
+allowed to read the run; upgrade the server to withhold those too. Use a secret
 reference for anything that must stay out of history.
 
 ## How a reference is resolved
