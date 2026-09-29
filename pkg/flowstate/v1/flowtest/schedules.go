@@ -199,6 +199,9 @@ func (a *scheduleAccumulator) run(ctx context.Context, once caseRun) (*v1.TestCa
 		spec       *v1.Workflow
 		transcript *v1.Workflow_StepOutputs
 		account    []TranscriptLine
+		// everything is what every explored run withheld, for showing the
+		// written-order run's report beside a divergence.
+		everything sensitiveInputs
 	)
 
 	report := dst.Explore(ctx, a.budget, func(ctx context.Context) dst.Result {
@@ -212,6 +215,7 @@ func (a *scheduleAccumulator) run(ctx context.Context, once caseRun) (*v1.TestCa
 		if v1.SchedulerFromContext(ctx) == v1.WrittenOrder {
 			result, spec, transcript, account = caseResult, caseSpec, caseTranscript, caseAccount
 		}
+		everything = widenedBy(everything, shown.sensitive)
 
 		// Compared as it is, shown as the case's own report would show it: a
 		// divergence is printed and emitted with `-o json`, and it must not be
@@ -241,6 +245,22 @@ func (a *scheduleAccumulator) run(ctx context.Context, once caseRun) (*v1.TestCa
 	}
 	a.truncated = a.truncated || report.Truncated()
 
+	// A divergence is printed beside the case's own report, each of its sides
+	// withheld under what either run withholds. The report is the
+	// written-order run's, rendered under that run's posture alone, and would
+	// show a value only a diverging run withholds right beside a divergence
+	// that withholds it (#2218). So once there is a divergence, the
+	// written-order case runs once more with what every explored run withheld
+	// in its posture from the start, and its report is that run's: rendered by
+	// the renderers every report goes through, from the values rather than
+	// from text another posture already cut or passed, so a value too short to
+	// match as a substring, or one a renderer shortened, is withheld as the
+	// run's own posture withholds it. The written order is deterministic, so
+	// that run is the one already reported, withholding more.
+	if report.Divergence != nil && !everything.Empty() {
+		result, account = a.reshown(ctx, once, result, account, everything)
+	}
+
 	if report.Divergence != nil && a.divergence == nil {
 		a.divergence = &ScheduleDivergence{
 			Case:         result.GetName(),
@@ -253,6 +273,45 @@ func (a *scheduleAccumulator) run(ctx context.Context, once caseRun) (*v1.TestCa
 	}
 
 	return result, spec, transcript, account
+}
+
+// reshown is the written-order run's report shown under everything: the
+// report of that case run once more with everything withheld from the start.
+//
+// The run is taken only when it could be the reported run withholding more:
+// the case's time was not spent before or during it, and it reached the same
+// verdict. A run cut short by the case's wall-clock limit, which exploration
+// shares, would otherwise replace a verdict with a timeout, and seeds must
+// never change which cases pass. Where it cannot be taken, the reported
+// verdict stands and its text is withheld whole, as is its account: failing
+// closed on what is shown rather than on what passed.
+func (a *scheduleAccumulator) reshown(ctx context.Context, once caseRun, result *v1.TestCase, account []TranscriptLine, everything sensitiveInputs) (*v1.TestCase, []TranscriptLine) {
+	if ctx.Err() == nil {
+		again, _, _, againAccount, _, _ := once(withReshownPosture(v1.NewContextWithScheduler(ctx, v1.WrittenOrder), everything))
+		if ctx.Err() == nil && again.GetPassed() == result.GetPassed() {
+			// And through the verdict's own seam under everything: the run
+			// renders values through its posture, and a diagnostic's step
+			// id, which it prints as the file names it, through this.
+			// Shown as the re-run renders it, timed as the run it stands
+			// for: Duration is what judges the suite's speed, and the re-run
+			// exists only to withhold more (Codex, #2224).
+			shown := proto.CloneOf(verdictUnder(again, everything))
+			shown.Duration = result.GetDuration()
+
+			return shown, againAccount
+		}
+	}
+
+	// Everything withheld but the case's name, which is the file's own text
+	// and is withheld under everything as the re-shown report's would be:
+	// a report that could not say which case it is would be no report.
+	withheld := verdictUnder(result, v1.WithheldSensitiveValues())
+	withheld.Name = redactedErrorText(result.GetName(), everything)
+
+	return withheld, []TranscriptLine{{
+		Text: "account withheld: it could not be shown again under what the explored schedules withheld",
+		Tone: ToneWarning,
+	}}
 }
 
 // result renders what this file's exploration found, or nil when it explored
@@ -336,34 +395,70 @@ func (p shownPosture) Join(other dst.Withholding) dst.Withholding {
 // transcript ([withheldTranscript]), its failure, and its verdict, each with
 // what withheld holds taken out.
 //
-// The verdict was rendered under the run's own posture. Where that posture
-// withheld everything, it was already rendered under the most any posture
-// withholds and is kept; otherwise each line is withheld again under
-// withheld, which holds at least as much as the run's own posture did.
+// The verdict is withheld again under withheld ([verdictUnder]), which holds at
+// least as much as the run's own posture did.
 func shownCase(result *v1.TestCase, transcript *v1.Workflow_StepOutputs, shown caseShown, withheld dst.Withholding) dst.Result {
 	sensitive := v1.WithheldSensitiveValues()
 	if posture, ok := withheld.(shownPosture); ok {
 		sensitive = posture.sensitive
 	}
 
-	verdict := result
-	if !shown.sensitive.WithholdAll() && !sensitive.Empty() {
-		verdict = proto.CloneOf(result)
-		if verdict.GetError() != "" {
-			verdict.Error = redactedErrorText(verdict.GetError(), sensitive)
-		}
-		for _, failure := range verdict.GetFailures() {
-			failure.Message = redactedErrorText(failure.GetMessage(), sensitive)
-			if failure.GetValue() != "" {
-				failure.Value = redactedErrorText(failure.GetValue(), sensitive)
-			}
-		}
-	}
-
 	return dst.Result{
 		Transcript: withheldTranscript(transcript, sensitive),
-		Err:        caseObservables(verdict, shown.runErrorUnder(sensitive)),
+		Err:        caseObservables(verdictUnder(result, sensitive), shown.runErrorUnder(sensitive)),
 	}
+}
+
+// verdictUnder is a case's verdict with what sensitive holds taken out of
+// every line a report prints: its name, its error, and its failures' and
+// warnings' text. The name and a warning are the file's own words, which an
+// author can write a sensitive value into as readily as a step id (Codex,
+// #2224).
+//
+// Each line is withheld again under sensitive, which holds at least as much as
+// the run's own posture did, even where that posture withheld everything: the
+// run renders values under its posture, but a name or a step id is the file's
+// own text, printed as written in the diagnostic and in its message, so no
+// posture already took it out (Codex, #2224).
+func verdictUnder(result *v1.TestCase, sensitive sensitiveInputs) *v1.TestCase {
+	if sensitive.Empty() {
+		return result
+	}
+	verdict := proto.CloneOf(result)
+	verdict.Name = redactedErrorText(verdict.GetName(), sensitive)
+	if verdict.GetError() != "" {
+		verdict.Error = redactedErrorText(verdict.GetError(), sensitive)
+	}
+	for _, diagnostic := range slices.Concat(verdict.GetFailures(), verdict.GetWarnings()) {
+		withholdDiagnostic(diagnostic, sensitive)
+	}
+
+	return verdict
+}
+
+// withholdDiagnostic takes what sensitive holds out of the text of one failure
+// or warning that a report prints. A step id is the file's own name, printed
+// as it is, and one that spells a withheld value is withheld too (Codex,
+// #2224). The field path is the harness's own word, `expect.outputs` or
+// `stubs`, from which the diagnostic's code and position are later derived,
+// and is kept. A suggested edit that would write a withheld value is dropped
+// rather than cut, since a cut edit is a wrong one.
+func withholdDiagnostic(diagnostic *v1.Diagnostic, sensitive sensitiveInputs) {
+	diagnostic.Message = redactedErrorText(diagnostic.GetMessage(), sensitive)
+	for _, field := range []*string{&diagnostic.Value, &diagnostic.Step} {
+		if *field != "" {
+			*field = redactedErrorText(*field, sensitive)
+		}
+	}
+	diagnostic.Edits = slices.DeleteFunc(diagnostic.Edits, func(edit *v1.SuggestedEdit) bool {
+		if redactedErrorText(edit.GetTitle(), sensitive) != edit.GetTitle() {
+			return true
+		}
+
+		return slices.ContainsFunc(edit.GetChanges(), func(change *v1.TextChange) bool {
+			return redactedErrorText(change.GetNewText(), sensitive) != change.GetNewText()
+		})
+	})
 }
 
 // withheldTranscript is transcript with every value sensitive withholds taken
@@ -382,8 +477,13 @@ func withheldTranscript(transcript *v1.Workflow_StepOutputs, sensitive sensitive
 	withheld := &v1.Workflow_StepOutputs{
 		StepValues: make(map[string]*v1.Node_Outputs, len(transcript.GetStepValues())),
 	}
-	for id, outputs := range transcript.GetStepValues() {
-		withheld.StepValues[id] = &v1.Node_Outputs{NamedValues: withheldNamedValues(outputs.GetNamedValues(), sensitive)}
+	// A step id is spelled as the case's account spells it ([withheldName]),
+	// and made distinct again as a name is.
+	steps := transcript.GetStepValues()
+	for _, id := range slices.Sorted(maps.Keys(steps)) {
+		withheld.StepValues[distinctName(withheld.StepValues, withheldName(id, sensitive))] = &v1.Node_Outputs{
+			NamedValues: withheldNamedValues(steps[id].GetNamedValues(), sensitive),
+		}
 	}
 	if run := transcript.GetRunOutputs(); run != nil {
 		withheld.RunOutputs = &v1.RunOutputs{Values: withheldNamedValues(run.GetValues(), sensitive)}
@@ -399,26 +499,26 @@ func withheldTranscript(transcript *v1.Workflow_StepOutputs, sensitive sensitive
 //
 // Two names that withhold to one spelling are made distinct again, in the
 // order of the names as recorded, so neither is lost and the rendering does
-// not depend on map order. Step ids are not names a run chose, and are kept.
+// not depend on map order.
 func withheldNamedValues(values map[string]*v1.Value, sensitive sensitiveInputs) map[string]*v1.Value {
 	withheld := make(map[string]*v1.Value, len(values))
 	for _, name := range slices.Sorted(maps.Keys(values)) {
-		spelled := sensitive.RedactSubstrings(redactedKeyText(name, sensitive))
-		distinct := spelled
-		for n := 2; taken(withheld, distinct); n++ {
-			distinct = fmt.Sprintf("%s#%d", spelled, n)
-		}
-		withheld[distinct] = withheldValue(values[name], sensitive)
+		withheld[distinctName(withheld, withheldName(name, sensitive))] = withheldValue(values[name], sensitive)
 	}
 
 	return withheld
 }
 
-// taken reports whether values already holds name, nil or not.
-func taken(values map[string]*v1.Value, name string) bool {
-	_, ok := values[name]
-
-	return ok
+// distinctName is spelled, or spelled with the first `#n` suffix the map does
+// not already hold, so two names that withhold to one spelling both survive.
+func distinctName[V any](taken map[string]V, spelled string) string {
+	distinct := spelled
+	for n := 2; ; n++ {
+		if _, ok := taken[distinct]; !ok {
+			return distinct
+		}
+		distinct = fmt.Sprintf("%s#%d", spelled, n)
+	}
 }
 
 // withheldValue is [withheldTranscript] for one recorded value.
@@ -462,4 +562,21 @@ func withheldValue(value *v1.Value, sensitive sensitiveInputs) *v1.Value {
 	default:
 		return value
 	}
+}
+
+// reshownPostureKey is the context key [withReshownPosture] sets.
+type reshownPostureKey struct{}
+
+// withReshownPosture is ctx carrying sensitive, which a case run under it
+// withholds from the start, beside its own posture ([reshownPosture]).
+func withReshownPosture(ctx context.Context, sensitive sensitiveInputs) context.Context {
+	return context.WithValue(ctx, reshownPostureKey{}, sensitive)
+}
+
+// reshownPosture is what ctx asks a case run under it to withhold beyond its
+// own posture: nothing, unless a divergence is being shown beside it.
+func reshownPosture(ctx context.Context) sensitiveInputs {
+	sensitive, _ := ctx.Value(reshownPostureKey{}).(sensitiveInputs)
+
+	return sensitive
 }
