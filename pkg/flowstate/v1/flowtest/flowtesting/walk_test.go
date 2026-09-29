@@ -7,6 +7,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowdebug"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowtest/flowtesting"
 )
@@ -172,5 +173,45 @@ tests:
 		assert.False(walk.T(), position.Autopsy)
 
 		_ = flowdebug.ErrRunOver
+	}))
+}
+
+// TestAWalksConditionIsJudgedAgainstTheProgram: a breakpoint set through the
+// session a walk hands back is judged against the case's own program, which
+// flowtest gives the session before the run starts. A condition reading a name
+// nothing binds is refused, as on every other front (Codex, #2202); one
+// reading a root is armed.
+func TestAWalksConditionIsJudgedAgainstTheProgram(t *testing.T) {
+	dir := t.TempDir()
+	write(t, filepath.Join(dir, "workflow.yaml"), stagedWorkflow)
+	path := write(t, filepath.Join(dir, "workflow.test.yaml"), `
+tests:
+  - name: it ships
+    workflow: ./workflow.yaml
+    stubs:
+      - task: log
+        returns: {}
+    expect:
+      ran: [build, test, deploy]
+`)
+
+	flowtesting.RunFile(t, path, flowtesting.WithWalk("it ships", func(walk *flowtesting.Walk) {
+		_, ok := walk.Step()
+		require.True(walk.T(), ok)
+
+		response, err := walk.Session().ReplaceBreakpoints(walk.T().Context(), &v1.DebugSetBreakpointsRequest{
+			Breakpoints: []*v1.DebugBreakpoint{
+				{Id: "nothing", Step: "deploy", Condition: "nosuch > 1"},
+				{Id: "root", Step: "deploy", Condition: `steps.build.value == "web.tar.gz"`},
+			},
+		})
+		require.NoError(walk.T(), err)
+		states := map[string]*v1.DebugBreakpointState{}
+		for _, state := range response.GetBreakpoints() {
+			states[state.GetId()] = state
+		}
+		assert.False(walk.T(), states["nothing"].GetVerified(), "a condition nothing can bind was armed")
+		assert.Contains(walk.T(), states["nothing"].GetMessage(), "`nosuch` is not bound")
+		assert.True(walk.T(), states["root"].GetVerified(), states["root"].GetMessage())
 	}))
 }

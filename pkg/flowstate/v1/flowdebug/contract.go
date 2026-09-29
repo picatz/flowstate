@@ -184,22 +184,7 @@ func newContractState(opts Options) contractState {
 		sources:     map[string]*v1.DebugSourceLocation{},
 	}
 	if opts.Workflow != nil {
-		// A truncated enumeration cannot say a step is absent, so targets are
-		// then judged by step id, as they are without a workflow.
-		var truncated bool
-		c.sites, truncated = v1.DebugStaticSites(opts.Workflow)
-		c.sitesKnown = !truncated
-		if truncated {
-			c.program = opts.Workflow
-			c.declaredInProgram = map[string]struct{}{}
-			for id := range v1.DebugDeclaredSteps(opts.Workflow) {
-				c.declaredInProgram[id] = struct{}{}
-			}
-		}
-		if profile := opts.Workflow.GetProfile(); profile != "" {
-			c.profile = profile
-		}
-		c.irDigest = v1.WorkflowIRDigest(opts.Workflow)
+		c.setProgram(opts.Workflow)
 	}
 	for _, entry := range opts.SourceMap.GetEntries() {
 		key := v1.DebugSiteKey(entry.GetSite())
@@ -209,6 +194,45 @@ func newContractState(opts Options) contractState {
 	}
 
 	return c
+}
+
+// setProgram records the program under debug: its sites, what it declares
+// when those were cut short, its profile and its digest.
+func (c *contractState) setProgram(wf *v1.Workflow) {
+	// A truncated enumeration cannot say a step is absent, so targets are
+	// then judged by step id, as they are without a workflow.
+	var truncated bool
+	c.sites, truncated = v1.DebugStaticSites(wf)
+	c.sitesKnown = !truncated
+	if truncated {
+		c.program = wf
+		c.declaredInProgram = map[string]struct{}{}
+		for id := range v1.DebugDeclaredSteps(wf) {
+			c.declaredInProgram[id] = struct{}{}
+		}
+	}
+	if profile := wf.GetProfile(); profile != "" {
+		c.profile = profile
+	}
+	c.irDigest = v1.WorkflowIRDigest(wf)
+}
+
+// Program gives a session built without [Options.Workflow] the program its
+// run executes, so a breakpoint's target and condition are judged against
+// where they can fire. flowtest calls it with the case's compiled program
+// before the run starts, which is how `flow test --debug`, the scripted MCP
+// tool and flowtesting.WithWalk sessions get one (Codex, #2202). A session
+// that was given a program keeps it.
+func (s *Session) Program(wf *v1.Workflow) {
+	if wf == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.contract.sitesKnown || s.contract.program != nil {
+		return
+	}
+	s.contract.setProgram(wf)
 }
 
 // bump records a change: a new revision, and a wake for every waiter. Callers

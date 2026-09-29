@@ -89,7 +89,6 @@ func debugSession(
 	emit, panes := debugPanesFor(cmd.Context(), console, out, surface.Theme, surface.Caps,
 		debugEmitter(out, surface.Theme))
 
-	program := workflowForDebug(flowtest.WorkflowPath(files[0], &only))
 	session, err := flowdebug.New(flowdebug.Options{
 		In:      cmd.InOrStdin(),
 		Console: consoleOrNil(console),
@@ -109,10 +108,7 @@ func debugSession(
 		// A workflow that does not parse contributes nothing and says nothing:
 		// the run is about to report that properly, with positions, and a
 		// second complaint from the completer would be the same news told worse.
-		Steps: stepList(program),
-		// And the program itself, so a target or a condition is judged
-		// against where it can fire, as every other front judges it.
-		Workflow: program,
+		Steps: workflowStepList(flowtest.WorkflowPath(files[0], &only)),
 	})
 	if err != nil {
 		restore()
@@ -161,17 +157,16 @@ func consoleOrNil(console *debugConsole) flowdebug.Console {
 	return console
 }
 
-// workflowForDebug parses a workflow this command has not parsed yet, for the
-// session's inventory and its program, or nil where it does not parse.
+// workflowStepList is [stepList] for a workflow this command has not parsed yet.
 //
 // Errors are deliberately silent — see the call site.
-func workflowForDebug(path string) *v1.Workflow {
+func workflowStepList(path string) []flowdebug.Step {
 	workflow, _, err := flowfile.ParseFile(path)
 	if err != nil {
 		return nil
 	}
 
-	return workflow
+	return stepList(workflow)
 }
 
 // stepIDs are the ids of every step a workflow declares, for completing

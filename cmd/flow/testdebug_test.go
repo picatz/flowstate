@@ -73,7 +73,7 @@ steps:
 func TestTheStepInventoryReachesIntoACall(t *testing.T) {
 	t.Parallel()
 
-	steps := stepList(workflowForDebug(callingFixture(t)))
+	steps := workflowStepList(callingFixture(t))
 
 	ids := make([]string, 0, len(steps))
 	for _, step := range steps {
@@ -106,7 +106,7 @@ func TestTheStepInventoryReachesIntoACall(t *testing.T) {
 func TestTheStepInventoryNamesTheWorkflowThatDeclaresEachStep(t *testing.T) {
 	t.Parallel()
 
-	steps := stepList(workflowForDebug(callingFixture(t)))
+	steps := workflowStepList(callingFixture(t))
 	require.NotEmpty(t, steps, "the fixture produced no inventory, so nothing below is asserted")
 
 	declaring := map[string]string{}
