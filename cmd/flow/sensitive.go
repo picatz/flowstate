@@ -59,10 +59,10 @@ import (
 // marked, because there is no specification to ask. The same rule covers an older
 // run whose spec predates this field even when one is nominally in hand: a
 // [*v1.Workflow] with no [v1.OutputDeclaration] naming a value at all answers
-// [sensitiveOutputNames] with an empty set, which redacts nothing for that name —
+// [v1.SensitiveOutputNames] with an empty set, which redacts nothing for that name —
 // deliberately not fail-closed in that one case, because a value the file never
 // declared sensitive is not this file's business to guess about; see
-// [sensitiveOutputNames]'s own comment.
+// [v1.SensitiveOutputNames]'s own comment.
 //
 // # The transcript, which is not [v1.RunOutputs]
 //
@@ -136,10 +136,6 @@ import (
 // the renderers read as they always have.
 
 func redactedMarker(name string) string { return v1.SensitiveRedactedMarker(name) }
-
-func sensitiveOutputNames(workflow *v1.Workflow) map[string]bool {
-	return v1.SensitiveOutputNames(workflow)
-}
 
 type carriedValues = v1.CarriedValues
 
