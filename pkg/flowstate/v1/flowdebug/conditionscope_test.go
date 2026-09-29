@@ -102,7 +102,7 @@ func TestTheTypedContractRefusesAConditionNothingCanBind(t *testing.T) {
 }
 
 // TestEachCasesProgramReplacesTheLast: one session may hold several cases'
-// runs ([flowtest.RunOptions.Debugger]), and each case may run a different
+// runs (`flowtest.RunOptions.Debugger`), and each case may run a different
 // program. Each [flowdebug.Session.Program] replaces the last, so a breakpoint
 // set while the second case is held is judged against the second program, and
 // one set against the first that the second refuses is removed with a notice

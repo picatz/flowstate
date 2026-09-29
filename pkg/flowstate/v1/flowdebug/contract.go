@@ -236,7 +236,7 @@ func (c *contractState) setProgram(wf *v1.Workflow) {
 // tool and flowtesting.WithWalk sessions get one (Codex, #2202). A session
 // that was given a program keeps it.
 //
-// Cases may run different programs under one session ([flowtest.RunOptions]
+// Cases may run different programs under one session (`flowtest.RunOptions`
 // holds each case's run), so each call replaces the last (Codex, #2202). A
 // breakpoint set against the program before is judged again against this
 // one, as [Session.ReplaceBreakpoints] would judge it now, and one this
