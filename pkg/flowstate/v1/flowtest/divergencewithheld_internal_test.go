@@ -414,7 +414,10 @@ func TestAReportThatCannotBeShownAgainKeepsItsVerdict(t *testing.T) {
 					"pick": {NamedValues: map[string]*v1.Value{"moved": v1.NewLiteral(moved)}},
 				}}
 
-				return &v1.TestCase{Name: "moves " + secret, Passed: passed, Error: "saw " + secret}, nil, transcript,
+				failures := []*v1.Diagnostic{{Field: "expect.outputs", Message: "saw " + secret}}
+				warnings := []*v1.Diagnostic{{Field: "stubs", Message: "stub never answered"}}
+
+				return &v1.TestCase{Name: "moves " + secret, Passed: passed, Error: "saw " + secret, Failures: failures, Warnings: warnings}, nil, transcript,
 					[]TranscriptLine{{Text: "pick → " + secret}}, shown, nil
 			})
 
@@ -426,6 +429,13 @@ func TestAReportThatCannotBeShownAgainKeepsItsVerdict(t *testing.T) {
 			// which case it is would be no report.
 			assert.Equal(t, "moves "+sensitiveMarker, result.GetName())
 			assert.Equal(t, "moves "+sensitiveMarker, accumulator.result().Divergence.Case)
+			// A field path is the harness's word, from which the report's code
+			// and position are derived, and survives even withholding it all.
+			require.Len(t, result.GetFailures(), 1)
+			assert.NotContains(t, result.GetFailures()[0].GetMessage(), secret)
+			assert.Equal(t, "expect.outputs", result.GetFailures()[0].GetField())
+			require.Len(t, result.GetWarnings(), 1)
+			assert.Equal(t, "stubs", result.GetWarnings()[0].GetField())
 			require.Len(t, account, 1)
 			assert.NotContains(t, account[0].Text, secret)
 		})

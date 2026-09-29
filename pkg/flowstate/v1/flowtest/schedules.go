@@ -431,14 +431,16 @@ func verdictUnder(result *v1.TestCase, shown caseShown, sensitive sensitiveInput
 	return verdict
 }
 
-// withholdDiagnostic takes what sensitive holds out of every string field of
-// one failure or warning that a report prints. A step id or a field path is
-// the file's own name, printed as it is, and one that spells a withheld value
-// is withheld too (Codex, #2224). A suggested edit that would write a
-// withheld value is dropped rather than cut, since a cut edit is a wrong one.
+// withholdDiagnostic takes what sensitive holds out of the text of one failure
+// or warning that a report prints. A step id is the file's own name, printed
+// as it is, and one that spells a withheld value is withheld too (Codex,
+// #2224). The field path is the harness's own word, `expect.outputs` or
+// `stubs`, from which the diagnostic's code and position are later derived,
+// and is kept. A suggested edit that would write a withheld value is dropped
+// rather than cut, since a cut edit is a wrong one.
 func withholdDiagnostic(diagnostic *v1.Diagnostic, sensitive sensitiveInputs) {
 	diagnostic.Message = redactedErrorText(diagnostic.GetMessage(), sensitive)
-	for _, field := range []*string{&diagnostic.Value, &diagnostic.Step, &diagnostic.Field} {
+	for _, field := range []*string{&diagnostic.Value, &diagnostic.Step} {
 		if *field != "" {
 			*field = redactedErrorText(*field, sensitive)
 		}
