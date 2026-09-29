@@ -229,6 +229,39 @@ func TestABindingSpelledLikeATypeIsAScopeRead(t *testing.T) {
 		assert.Contains(t, err.Error(), "`string` is bound only inside")
 	}
 	assert.NoError(t, check("done", "type(1) == int"), "a type name the program never binds was refused")
+
+	// A qualified type is the type even where its first segment is bound:
+	// cel-go asks the activation for the whole dotted name, which no binding
+	// is. Checked, the name is one identifier; parse-only, a chain of selects.
+	qualified := &v1.Workflow{Name: "qualified", Steps: []*v1.Node{
+		{Id: "each", Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{
+			Items: v1.NewLiteralList("x"), Iterator: "google",
+			Body: []*v1.Node{{Id: "body", Kind: &v1.Node_Value{Value: v1.NewExpr("google")}}},
+		}}},
+		{Id: "done", Kind: &v1.Node_Value{Value: v1.NewExpr("1")}},
+	}}
+	sites, truncated = v1.DebugStaticSites(qualified)
+	require.False(t, truncated)
+	const timestamp = "type(1) != google.protobuf.Timestamp"
+	compiled, err := v1.CompileDebugCondition(timestamp, v1.CurrentProfile)
+	require.NoError(t, err)
+	for _, step := range []string{"body", "done"} {
+		target, err := v1.ParseDebugTarget(step)
+		require.NoError(t, err)
+		at := target.Resolve(sites)
+		assert.NoError(t, v1.CheckDebugConditionScope(compiled, v1.CurrentProfile, at, sites),
+			"a qualified type was taken for its bound first segment at %s", step)
+		assert.NoError(t, v1.CheckDebugConditionScope(v1.NewExpr(timestamp), v1.CurrentProfile, at, sites),
+			"a parse-only qualified type was taken for its bound first segment at %s", step)
+	}
+	target, err := v1.ParseDebugTarget("done")
+	require.NoError(t, err)
+	bare, err := v1.CompileDebugCondition(`google == "x"`, v1.CurrentProfile)
+	require.NoError(t, err)
+	err = v1.CheckDebugConditionScope(bare, v1.CurrentProfile, target.Resolve(sites), sites)
+	if assert.Error(t, err, "the bare binding was admitted outside its loop") {
+		assert.Contains(t, err.Error(), "`google` is bound only inside")
+	}
 }
 
 // TestAParseOnlyConditionIsJudgedAlike: a condition [v1.CompileDebugCondition]

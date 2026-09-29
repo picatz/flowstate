@@ -216,11 +216,14 @@ func CheckDebugConditionScope(condition *Value, profile string, at, program []De
 	}
 	slices.Sort(locals)
 
-	// A name the program binds anywhere is a scope read wherever it is
+	// A bare name the program binds anywhere is a scope read wherever it is
 	// written, even one spelled like a type: the activation answers a bound
 	// name before the type provider does, so `string` in a loop that binds
 	// `string` is the binding, and outside that loop it is a read of nothing
-	// rather than the type (Codex, #2202).
+	// rather than the type (Codex, #2202). A qualified name is not: cel-go
+	// asks the activation for the whole dotted name, which no binding is, so
+	// `google.protobuf.Timestamp` is the type even where `google` is bound,
+	// and the match is on the exact name (exact-head review).
 	boundInProgram := map[string]bool{}
 	for scope := range debugScopesOf(program) {
 		for _, name := range scope.names {
@@ -232,7 +235,7 @@ func CheckDebugConditionScope(condition *Value, profile string, at, program []De
 	walk := &debugRootWalk{
 		functions: env.Functions(),
 		resolves: func(name string) bool {
-			if boundInProgram[debugRootOf(name)] {
+			if boundInProgram[name] {
 				return false
 			}
 			_, found := env.CELTypeProvider().FindIdent(name)
