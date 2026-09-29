@@ -212,33 +212,67 @@ func TestAFailedRunWhoseCasePassedIsNotCalledCompleted(t *testing.T) {
 
 // A durable run records no notice when it completes past an `until` it never
 // stopped at, so the typed Driver, which knows what it asked, says it. A local
-// session already recorded the notice, and a run that failed or is held is
-// past no `until`: none of those gets the line.
+// session says it itself, and only it knows whether its run completed: a case
+// that expected its run to fail passes, and its snapshot reads completed. A
+// run that failed or is held is past no `until`.
 func TestTheDriverSaysAnUntilTheRunCompletedPast(t *testing.T) {
 	t.Parallel()
 
-	said := &v1.DebugObservation{
-		Kind: v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_NOTICE,
-		Text: "the run completed without stopping at `until each[9]/body`",
-	}
+	local := &v1.DebugSession{Local: true}
 	for name, test := range map[string]struct {
-		state        v1.DebugRunState
-		observations []*v1.DebugObservation
-		line         string
-		want         int
+		state   v1.DebugRunState
+		session *v1.DebugSession
+		line    string
+		want    int
 	}{
-		"a durable run completed past it": {state: v1.DebugRunState_DEBUG_RUN_STATE_COMPLETED, line: "until each[9]/body", want: 1},
-		"a local session already said it": {state: v1.DebugRunState_DEBUG_RUN_STATE_COMPLETED, observations: []*v1.DebugObservation{said}, line: "until each[9]/body"},
-		"the run failed":                  {state: v1.DebugRunState_DEBUG_RUN_STATE_FAILED, line: "until each[9]/body"},
-		"the run is held":                 {state: v1.DebugRunState_DEBUG_RUN_STATE_HELD, line: "until each[9]/body"},
-		"no until was asked":              {state: v1.DebugRunState_DEBUG_RUN_STATE_COMPLETED, line: "continue"},
+		"a durable run completed past it":           {state: v1.DebugRunState_DEBUG_RUN_STATE_COMPLETED, line: "until each[9]/body", want: 1},
+		"a local session, whose own word it is":     {state: v1.DebugRunState_DEBUG_RUN_STATE_COMPLETED, session: local, line: "until each[9]/body"},
+		"a durable run failed":                      {state: v1.DebugRunState_DEBUG_RUN_STATE_FAILED, line: "until each[9]/body"},
+		"a durable run is held":                     {state: v1.DebugRunState_DEBUG_RUN_STATE_HELD, line: "until each[9]/body"},
+		"a durable run completed and no until sent": {state: v1.DebugRunState_DEBUG_RUN_STATE_COMPLETED, line: "continue"},
 	} {
-		target := &scriptedTarget{snapshot: &v1.DebugSnapshot{Revision: 2, State: test.state, Observations: test.observations}}
+		target := &scriptedTarget{snapshot: &v1.DebugSnapshot{Revision: 2, State: test.state, Session: test.session}}
 		result, err := flowdebug.NewDriver(target).Do(t.Context(), test.line)
 		require.NoError(t, err, name)
 		assert.Equal(t, test.want, strings.Count(result.Text, "without stopping at"), "%s: %q", name, result.Text)
 		if test.want > 0 {
-			assert.Contains(t, result.Text, said.GetText(), name)
+			assert.Contains(t, result.Text, "the run completed without stopping at `until each[9]/body`", name)
 		}
 	}
+}
+
+// TestAFailedRunWhoseCasePassedIsNotCalledCompletedByTheDriver is
+// [TestAFailedRunWhoseCasePassedIsNotCalledCompleted] through the Driver a
+// stateful MCP session drives: the run fails past the `until`, the case
+// expected it to, and the snapshot the Driver reads says completed. Nothing
+// calls the failed run completed.
+func TestAFailedRunWhoseCasePassedIsNotCalledCompletedByTheDriver(t *testing.T) {
+	t.Parallel()
+
+	session, err := flowdebug.New(flowdebug.Options{Controlled: true})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+
+	finished := make(chan error, 1)
+	go func() {
+		ctx := v1.NewContextWithDebugger(t.Context(), session)
+		_, runErr := v1.Run(ctx, &v1.Workflow{Name: "failing", Steps: []*v1.Node{
+			{Id: "each", Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{
+				Items:    v1.NewLiteralList(0, 1),
+				Iterator: "n",
+				Body:     []*v1.Node{{Id: "body", Kind: &v1.Node_Value{Value: v1.NewExpr("n")}}},
+			}}},
+			{Id: "boom", Kind: &v1.Node_Value{Value: v1.NewExpr("1 / 0")}},
+		}})
+		session.RunReturned(runErr)
+		session.Finished(nil)
+		finished <- runErr
+	}()
+
+	waitHeld(t, session, 0)
+	result, err := flowdebug.NewDriver(session).Do(t.Context(), "until each[9]/body")
+	require.NoError(t, err)
+	require.Error(t, <-finished, "the fixture's run did not fail")
+	assert.Equal(t, v1.DebugRunState_DEBUG_RUN_STATE_COMPLETED, result.Snapshot.GetState(), "the case's verdict is not what the Driver read")
+	assert.NotContains(t, result.Text, "without stopping at", "the Driver called a failed run completed")
 }

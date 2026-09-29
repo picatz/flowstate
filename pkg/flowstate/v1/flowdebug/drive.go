@@ -415,27 +415,25 @@ func (d *Driver) move(ctx context.Context, action v1.DebugResumeAction, until st
 		return nil, err
 	}
 	result.Text = FormatSnapshot(result.Snapshot)
-	if action == v1.DebugResumeAction_DEBUG_RESUME_ACTION_RUN_UNTIL && saidNoMissedUntil(result.Snapshot) {
+	if action == v1.DebugResumeAction_DEBUG_RESUME_ACTION_RUN_UNTIL && missedRemotely(result.Snapshot) {
 		result.Text += missedUntil(until) + "\n"
 	}
 
 	return result, nil
 }
 
-// saidNoMissedUntil reports whether a snapshot is of a run that completed
-// without anything having said so of an `until` it never stopped at. A local
-// session records that notice itself ([Session.RunReturned]); a durable run
-// records none, so the driver, which knows what it asked, says it, and a
-// remote attach does not end in silence past a stop it never made.
-func saidNoMissedUntil(snapshot *v1.DebugSnapshot) bool {
-	if snapshot.GetState() != v1.DebugRunState_DEBUG_RUN_STATE_COMPLETED {
-		return false
-	}
-
-	return !slices.ContainsFunc(snapshot.GetObservations(), func(observation *v1.DebugObservation) bool {
-		return observation.GetKind() == v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_NOTICE &&
-			strings.HasPrefix(observation.GetText(), missedUntilNotice)
-	})
+// missedRemotely reports whether a snapshot is of a durable run that
+// completed, which is past any `until` the driver sent it: a hold there would
+// have been answered instead. A durable run records no notice saying so, so
+// the driver, which knows what it asked, says it, and a remote attach does not
+// end in silence past a stop it never made.
+//
+// A local session is left to say it itself ([Session.RunReturned]), because
+// only it knows how its run ended: its snapshot's state is the verdict it was
+// given, and a case that expected its run to fail passes, so a failed run
+// reads as completed here.
+func missedRemotely(snapshot *v1.DebugSnapshot) bool {
+	return snapshot.GetState() == v1.DebugRunState_DEBUG_RUN_STATE_COMPLETED && !snapshot.GetSession().GetLocal()
 }
 
 // stillRunningRead bounds the read that reports a run still moving when a
