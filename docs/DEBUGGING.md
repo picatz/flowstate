@@ -455,9 +455,10 @@ applies here rather than a second, weaker one.
   through, the failed run's final message, and the call's own account of the
   outputs the callee hands back. A value that has crossed back into the
   caller's scope is not yet withheld when the caller reads it later, as a
-  returned output or a tolerated call's recorded error. The same run under
-  plain `flow test`, with no debugger, prints the case's transcript under the
-  case's posture alone.
+  returned output or a tolerated call's recorded error. The case's own
+  transcript and report withhold these values everywhere, with or without a
+  debugger. They are rendered after the run, from everything its steps
+  withheld.
 - A durable inspection renders a run's declared-`sensitive:` inputs as
   `[redacted]`, and the same holds: a predicate over one answers truthfully.
   That is why evaluating anything against a durable run needs its own action,

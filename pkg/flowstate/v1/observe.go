@@ -95,8 +95,9 @@ type RunObserver interface {
 // own redactor knows only what its caller gave it — never a callee's
 // declarations.
 //
-// It is called in place of StepFinished. The set is empty unless a [Debugger]
-// was installed when the run began, the only case where anything reads it.
+// It is called in place of StepFinished. Installing one is what makes the
+// engine compute the sets at all, as a [Debugger] does; an ordinary run
+// computes nothing.
 type WithholdingRunObserver interface {
 	RunObserver
 

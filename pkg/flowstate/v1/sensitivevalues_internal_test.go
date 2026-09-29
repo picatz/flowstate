@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 )
@@ -612,4 +613,39 @@ func TestMergeWithholdsPastTheCombinedDescendantBound(t *testing.T) {
 	require.True(t, a.Merge(b).WithholdAll(),
 		"two sets each under the bound combined past it and Merge did not fail closed")
 	require.True(t, b.Merge(a).WithholdAll(), "order must not matter")
+}
+
+// TestAUnionHoldsEachValueOnce: a set gathered step by step is told the same
+// sets over and over (#2211). Union holds each value once, so it stays under
+// the bound however often it is told; Merge, which appends, withholds
+// everything once the repeats reach it.
+func TestAUnionHoldsEachValueOnce(t *testing.T) {
+	t.Parallel()
+
+	token := oneSensitiveInput("token", NewLiteral("hunter2-token"))
+	codes := oneSensitiveInput("codes", NewLiteralList(7, 8))
+
+	var unioned, merged SensitiveValues
+	for range maxSensitiveDescendants + 1 {
+		unioned = unioned.Union(token).Union(codes)
+		merged = merged.Merge(token)
+	}
+	require.True(t, merged.WithholdAll(), "the repeats never reached the bound, so this proves nothing")
+	require.False(t, unioned.WithholdAll(), "a union of the same two sets reached the bound")
+	assert.Len(t, unioned.held().values, len(token.held().values)+len(codes.held().values))
+	assert.Len(t, unioned.held().substrings, len(token.held().substrings)+len(codes.held().substrings))
+	assert.True(t, unioned.IsSensitive("hunter2-token"))
+	assert.True(t, unioned.IsSensitive(int64(7)) || unioned.IsSensitive(7), "a structured set's descendant was lost")
+	assert.Equal(t, "the [redacted] travels", unioned.RedactText("the hunter2-token travels", "[redacted]"))
+}
+
+// TestAUnionFailsClosed: a union with a set that could not be built withholds
+// everything, whichever side it is on, as Merge does.
+func TestAUnionFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	token := oneSensitiveInput("token", NewLiteral("hunter2-token"))
+	assert.True(t, token.Union(WithheldSensitiveValues()).WithholdAll())
+	assert.True(t, WithheldSensitiveValues().Union(token).WithholdAll())
+	assert.True(t, SensitiveValues{}.Union(SensitiveValues{}).Empty())
 }

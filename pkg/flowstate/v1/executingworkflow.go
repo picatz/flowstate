@@ -173,11 +173,11 @@ func FailureSensitiveValues(err error) SensitiveValues {
 // path.
 type callReturnKey struct{}
 
-// contextWithCallReturn installs a fresh slot for one call step while a
-// [Debugger] is installed, the only reader, and returns it; nil, and ctx
+// contextWithCallReturn installs a fresh slot for one call step while
+// something reads it ([withholdingRead]), and returns it; nil, and ctx
 // unchanged, otherwise.
 func contextWithCallReturn(ctx context.Context) (context.Context, *SensitiveValues) {
-	if DebuggerFromContext(ctx) == nil {
+	if !withholdingRead(ctx) {
 		return ctx, nil
 	}
 	slot := new(SensitiveValues)
@@ -217,14 +217,27 @@ func (f *sensitiveFailure) Unwrap() error { return f.err }
 func (f *sensitiveFailure) FailureSensitiveValues() SensitiveValues { return f.sensitive }
 
 // debugSensitiveInputs is what [ExecutingSensitiveFromContext] records for
-// one workflow's bound inputs: only while a [Debugger] is installed, which is
-// the only reader, so an ordinary run does not pay for it.
+// one workflow's bound inputs: only while something reads it
+// ([withholdingRead]), so an ordinary run does not pay for it.
 func debugSensitiveInputs(ctx context.Context, wf *Workflow, inputs map[string]*Value) SensitiveValues {
-	if DebuggerFromContext(ctx) == nil {
+	if !withholdingRead(ctx) {
 		return SensitiveValues{}
 	}
 
 	return SensitiveInputValues(inputs, SensitiveInputNames(wf))
+}
+
+// withholdingRead reports whether anything on ctx reads what a position
+// withholds: a [Debugger], which renders at holds and arrivals, or a
+// [WithholdingRunObserver], which renders each step's outcome — `flow test`'s
+// transcript among them (#2211). Neither is installed on an ordinary run.
+func withholdingRead(ctx context.Context) bool {
+	if DebuggerFromContext(ctx) != nil {
+		return true
+	}
+	_, ok := RunObserverFromContext(ctx).(WithholdingRunObserver)
+
+	return ok
 }
 
 // ExecutingWorkflowFromContext reports which workflow's steps are running on

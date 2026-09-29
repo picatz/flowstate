@@ -968,3 +968,126 @@ tests:
 	assert.Less(t, len([]rune(message)), 200,
 		"a mismatch message is a diagnostic, not a copy of the value it is about")
 }
+
+// TestTranscriptWithholdsACalleesSensitiveInput is #2211: a value only a
+// called workflow declares `sensitive: true` is withheld from the case's
+// transcript and its report, as the root's own declarations are, although the
+// case's posture is built from the root's alone. Rendering only: a claim over
+// the failure's real text still holds.
+func TestTranscriptWithholdsACalleesSensitiveInput(t *testing.T) {
+	t.Parallel()
+
+	const secret = "hunter2-callee-only-secret"
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "child.yaml"), `
+edition: v2026.3
+name: child
+inputs:
+  api_key:
+    type: string
+    required: true
+    sensitive: true
+steps:
+  - id: boom
+    value: ${{"a":1}[inputs.api_key]}
+`)
+	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
+edition: v2026.3
+name: parent
+steps:
+  - id: nested
+    call: ./child.yaml
+    with:
+      api_key: ${"`+secret+`"}
+`)
+	path := filepath.Join(dir, "workflow.test.yaml")
+	writeFile(t, path, `
+tests:
+  - name: the failure is reported
+    workflow: ./workflow.yaml
+    expect:
+      failed: false
+  - name: the failure's real text is what claims read
+    workflow: ./workflow.yaml
+    expect:
+      failed: true
+      error_contains: "no such key: `+secret+`"
+`)
+
+	result := flowtest.RunPath(t.Context(), path, flowtest.RunOptions{})
+	cases := result.Report.GetCases()
+	require.Len(t, cases, 2)
+
+	reported := cases[0]
+	require.False(t, reported.GetPassed(), "the case expecting success passed, so its report proves nothing")
+	var messages []string
+	for _, failure := range reported.GetFailures() {
+		messages = append(messages, failure.GetMessage())
+	}
+	joined := strings.Join(messages, "\n") + "\n" + reported.GetError()
+	assert.Contains(t, joined, "no such key", "the failure is not quoted, so this proves nothing")
+	assert.NotContains(t, joined, secret, "the report showed the callee's sensitive input")
+
+	require.Len(t, result.Transcripts, 2)
+	text := transcriptText(result.Transcripts[0])
+	assert.Contains(t, text, "FAILED", "the transcript has no failure, so this proves nothing")
+	assert.NotContains(t, text, secret, "the transcript showed the callee's sensitive input")
+
+	assert.True(t, cases[1].GetPassed(), "a claim over the real failure text failed: %v / %v", cases[1].GetError(), cases[1].GetFailures())
+}
+
+// TestTranscriptWithholdsACalleesSensitiveInputReadBackByTheCaller: the
+// transcript is rendered after the run, from everything its steps withheld, so
+// a callee's sensitive input handed back as an output and read by a later step
+// of the caller is withheld there too (#2211). A claim still reads the value.
+func TestTranscriptWithholdsACalleesSensitiveInputReadBackByTheCaller(t *testing.T) {
+	t.Parallel()
+
+	const secret = "hunter2-callee-only-secret"
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "child.yaml"), `
+edition: v2026.3
+name: child
+inputs:
+  api_key:
+    type: string
+    required: true
+    sensitive: true
+steps:
+  - id: use
+    value: ${1}
+outputs:
+  key:
+    value: ${inputs.api_key}
+`)
+	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
+edition: v2026.3
+name: parent
+steps:
+  - id: nested
+    call: ./child.yaml
+    with:
+      api_key: ${"`+secret+`"}
+  - id: echo
+    value: ${steps.nested.key}
+`)
+	path := filepath.Join(dir, "workflow.test.yaml")
+	writeFile(t, path, `
+tests:
+  - name: the caller reads what the callee handed back
+    workflow: ./workflow.yaml
+    expect:
+      ran: [nested, echo]
+      check:
+        - that: steps.echo.value == "`+secret+`"
+`)
+
+	result := flowtest.RunPath(t.Context(), path, flowtest.RunOptions{})
+	c := result.Report.GetCases()[0]
+	require.True(t, c.GetPassed(), "a claim over the real value failed: %v / %v", c.GetError(), c.GetFailures())
+
+	require.Len(t, result.Transcripts, 1)
+	text := transcriptText(result.Transcripts[0])
+	assert.Contains(t, text, "echo", "the caller's step is not in the transcript, so this proves nothing")
+	assert.NotContains(t, text, secret, "the transcript showed a callee's sensitive input read back by the caller")
+}

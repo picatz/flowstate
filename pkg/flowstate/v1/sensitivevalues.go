@@ -3,6 +3,7 @@ package flowstatev1
 import (
 	"fmt"
 	"reflect"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -479,6 +480,69 @@ func (s SensitiveValues) Merge(other SensitiveValues) SensitiveValues {
 		values:     append(append([]any(nil), a.values...), b.values...),
 		substrings: append(append([]string(nil), a.substrings...), b.substrings...),
 	})
+}
+
+// Union is [SensitiveValues.Merge] for a set that accumulates: a value or
+// substring other holds that s already holds is not held twice, and a union
+// that adds nothing returns s itself. A renderer gathering what every step of
+// a run withheld (#2211) is told mostly the same sets over and over, and
+// Merge, which appends, would reach [maxSensitiveDescendants] — and withhold
+// everything — after a few hundred steps of one loop.
+//
+// Values are matched by their type and Go syntax (`%#v`, which sorts map
+// keys), so two equal structured values are one; a key that merely renders
+// alike but differs in [reflect.DeepEqual] cannot arise from [LiteralToGo],
+// the only source of these values.
+func (s SensitiveValues) Union(other SensitiveValues) SensitiveValues {
+	a, b := s.held(), other.held()
+	switch {
+	case a.withholdAll:
+		return s
+	case b.withholdAll:
+		return WithheldSensitiveValues()
+	case len(b.values) == 0 && len(b.substrings) == 0:
+		return s
+	}
+
+	values := make(map[string]struct{}, len(a.values))
+	for _, value := range a.values {
+		values[sensitiveValueKey(value)] = struct{}{}
+	}
+	substrings := make(map[string]struct{}, len(a.substrings))
+	for _, substring := range a.substrings {
+		substrings[substring] = struct{}{}
+	}
+	var addValues []any
+	for _, value := range b.values {
+		key := sensitiveValueKey(value)
+		if _, held := values[key]; !held {
+			values[key] = struct{}{}
+			addValues = append(addValues, value)
+		}
+	}
+	var addSubstrings []string
+	for _, substring := range b.substrings {
+		if _, held := substrings[substring]; !held {
+			substrings[substring] = struct{}{}
+			addSubstrings = append(addSubstrings, substring)
+		}
+	}
+	if len(addValues) == 0 && len(addSubstrings) == 0 {
+		return s
+	}
+	if len(a.values)+len(addValues) > maxSensitiveDescendants {
+		return WithheldSensitiveValues()
+	}
+
+	return sensitiveValuesOf(sensitiveState{
+		values:     append(slices.Clip(a.values), addValues...),
+		substrings: append(slices.Clip(a.substrings), addSubstrings...),
+	})
+}
+
+// sensitiveValueKey is what [SensitiveValues.Union] matches a value by.
+func sensitiveValueKey(value any) string {
+	return fmt.Sprintf("%T\x00%#v", value, value)
 }
 
 // WithholdAll reports the fail-closed case: the set could not be built

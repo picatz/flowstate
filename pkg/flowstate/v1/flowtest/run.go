@@ -1052,6 +1052,17 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 		return
 	}
 
+	// Widened with what the run withheld as it went: a callee's declared
+	// `sensitive:` inputs, which the case's posture (the root's) never saw
+	// (#2211). The recorder was told each step's set, a failing call's
+	// carried one included, so what the run's error quotes is in it. Every
+	// rendering from here on — the expectations, the claims, the autopsy
+	// and the transcript itself — withholds them; the verdicts read real
+	// values.
+	if recorder != nil {
+		sensitive = sensitive.Union(recorder.withheld())
+	}
+
 	result.Failures = assertExpectation(&test.Expect, workflow, outputs, runErr, sensitive)
 	// The CEL claims (#1072), after the named fields so a report reads
 	// structure first, values second — the order the file states them in.
