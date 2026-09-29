@@ -651,7 +651,10 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	// inline literal plaintext value ([secretHoldingVars] only seeds a var it
 	// matches a `${vars.x}` reference in) never joins [withheldVars] and has no
 	// other way to reach this posture.
-	posture := casePosture(test, vars)
+	//
+	// And what a divergence shown beside this run's report withholds, when
+	// this is the written-order run reported beside one ([withReshownPosture]).
+	posture := widenedBy(casePosture(test, vars), reshownPosture(base))
 
 	// caseError is the one rendering seam for [v1.TestCase.Error] — the sixth
 	// surface in vars.go's containment table, and the one its own row predicted

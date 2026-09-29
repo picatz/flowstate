@@ -251,3 +251,171 @@ func nestedPast(depth int, leaf string) *expr.Value {
 
 	return value
 }
+
+// TestTheReportBesideADivergenceWithholdsWhatADivergingRunWithholds is
+// #2218: the written-order run's own report, its verdict and its account, is
+// printed beside a divergence, so once there is one the written-order case is
+// run again withholding what every explored run withheld, and its report is
+// that run's. Two seeded schedules, the first withholding a value without
+// diverging and the second diverging, so what is withheld is every run's and
+// not only the diverging one's. With no divergence, the report is the run's
+// as recorded, and the case runs once per schedule.
+func TestTheReportBesideADivergenceWithholdsWhatADivergingRunWithholds(t *testing.T) {
+	t.Parallel()
+
+	const quietOnly = "quiet-seeded-secret"
+	for _, diverges := range []bool{true, false} {
+		var (
+			runs     int
+			reshowns []sensitiveInputs
+		)
+		accumulator := newScheduleAccumulator(dst.Budget{Schedules: 2, Seed0: 1})
+		result, _, _, account := accumulator.run(t.Context(), func(ctx context.Context) (*v1.TestCase, *v1.Workflow, *v1.Workflow_StepOutputs, []TranscriptLine, caseShown, error) {
+			runs++
+			shown, moved := caseShown{}, "written"
+			if v1.SchedulerFromContext(ctx) != v1.WrittenOrder {
+				switch runs {
+				case 2:
+					shown.sensitive = v1.SensitiveValues{}.WithValues(quietOnly)
+				case 3:
+					if diverges {
+						moved = "seeded"
+					}
+				}
+			}
+			// The case's own renderers withhold what its posture holds; a
+			// re-shown run's posture is widened by what it is asked to hold.
+			reshown := reshownPosture(ctx)
+			if !reshown.Empty() {
+				reshowns = append(reshowns, reshown)
+			}
+			text := "no such key: " + quietOnly
+			if reshown.IsSensitive(quietOnly) {
+				text = "no such key: " + sensitiveMarker
+			}
+			transcript := &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
+				"pick": {NamedValues: map[string]*v1.Value{"moved": v1.NewLiteral(moved)}},
+			}}
+
+			// A diagnostic's step id is printed as the file names it, and here
+			// spells the value a seeded run withholds.
+			failures := []*v1.Diagnostic{{Field: "expect.ran", Step: quietOnly, Message: "step did not run"}}
+
+			return &v1.TestCase{Name: "moves", Error: text, Failures: failures}, nil, transcript, []TranscriptLine{{Text: "pick → " + text}}, shown, nil
+		})
+
+		if !diverges {
+			require.Nil(t, accumulator.result().Divergence, "the runs diverged, so this proves nothing")
+			assert.Equal(t, 3, runs, "a case with no divergence ran again")
+			assert.Empty(t, reshowns)
+			assert.Contains(t, result.GetError(), quietOnly, "a report with no divergence beside it was withheld")
+			assert.Equal(t, quietOnly, result.GetFailures()[0].GetStep(), "a step with no divergence beside it was withheld")
+
+			continue
+		}
+		require.NotNil(t, accumulator.result().Divergence, "the runs did not diverge, so this proves nothing")
+		require.Len(t, reshowns, 1, "the written-order case was not run again for the report")
+		assert.True(t, reshowns[0].IsSensitive(quietOnly), "the report was not shown under what a non-diverging run withheld")
+		assert.NotContains(t, result.GetError(), quietOnly, "the case's error shows what a seeded run withholds")
+		assert.NotContains(t, account[0].Text, quietOnly, "the case's account shows what a seeded run withholds")
+		assert.NotContains(t, result.GetFailures()[0].GetStep(), quietOnly, "a diagnostic's step shows what a seeded run withholds")
+	}
+}
+
+// TestACaseRunUnderAReshownPostureWithholdsItByValue: a case run to be shown
+// beside a divergence withholds what it is asked to from the start, through the
+// renderers every report goes through. So a value too short to be replaced as
+// a substring of finished text, here a one-rune output, is still withheld in
+// the account and the verdict, which redacting the text afterward could not do
+// (#2218).
+func TestACaseRunUnderAReshownPostureWithholdsItByValue(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.yaml"), []byte(`edition: v2026.3
+name: one-rune
+steps:
+  - id: pick
+    value: ${"7"}
+outputs:
+  picked:
+    value: ${steps.pick.value}
+`), 0o600))
+	path := filepath.Join(dir, "workflow.test.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(`tests:
+  - name: picks
+    workflow: ./workflow.yaml
+    expect:
+      outputs:
+        picked: "8"
+`), 0o600))
+
+	for _, reshown := range []bool{false, true} {
+		ctx := t.Context()
+		if reshown {
+			ctx = withReshownPosture(ctx, v1.SensitiveValues{}.WithValues("7"))
+		}
+		result := RunPath(ctx, path, RunOptions{})
+		c := result.Report.GetCases()[0]
+		require.NotEmpty(t, c.GetFailures(), "the case passed, so this proves nothing")
+		var shown strings.Builder
+		for _, line := range result.Transcripts[0] {
+			shown.WriteString(line.Text + "\n")
+		}
+		shown.WriteString(c.GetFailures()[0].GetMessage() + c.GetFailures()[0].GetValue())
+		if !reshown {
+			require.Contains(t, shown.String(), `"7"`, "the value never reached the report, so this proves nothing")
+
+			continue
+		}
+		assert.NotContains(t, shown.String(), `"7"`, "a one-rune value the report was asked to withhold was shown")
+	}
+}
+
+// TestAReportThatCannotBeShownAgainKeepsItsVerdict: the run that shows a
+// report beside a divergence shares the case's time, so it may be cut short,
+// and a run that is cut short, or reaches another verdict, cannot replace the
+// report: seeds never change which cases pass. The reported verdict stands and
+// its text is withheld whole, as is its account.
+func TestAReportThatCannotBeShownAgainKeepsItsVerdict(t *testing.T) {
+	t.Parallel()
+
+	const secret = "seeded-only-secret"
+	for name, cutShort := range map[string]bool{"the case's time is spent": true, "the run reaches another verdict": false} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			var reran bool
+			accumulator := newScheduleAccumulator(dst.Budget{Schedules: 1, Seed0: 1})
+			result, _, _, account := accumulator.run(ctx, func(ctx context.Context) (*v1.TestCase, *v1.Workflow, *v1.Workflow_StepOutputs, []TranscriptLine, caseShown, error) {
+				shown, moved, passed := caseShown{}, "written", true
+				switch {
+				case !reshownPosture(ctx).Empty():
+					reran = true
+					passed = false
+				case v1.SchedulerFromContext(ctx) != v1.WrittenOrder:
+					shown.sensitive = v1.SensitiveValues{}.WithValues(secret)
+					moved = "seeded"
+					if cutShort {
+						cancel()
+					}
+				}
+				transcript := &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
+					"pick": {NamedValues: map[string]*v1.Value{"moved": v1.NewLiteral(moved)}},
+				}}
+
+				return &v1.TestCase{Name: "moves", Passed: passed, Error: "saw " + secret}, nil, transcript,
+					[]TranscriptLine{{Text: "pick → " + secret}}, shown, nil
+			})
+
+			require.NotNil(t, accumulator.result().Divergence, "the runs did not diverge, so this proves nothing")
+			assert.Equal(t, !cutShort, reran, "whether the report was run again")
+			assert.True(t, result.GetPassed(), "a report shown beside a divergence changed the case's verdict")
+			assert.NotContains(t, result.GetError(), secret)
+			require.Len(t, account, 1)
+			assert.NotContains(t, account[0].Text, secret)
+		})
+	}
+}

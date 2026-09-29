@@ -500,7 +500,8 @@ each signal, and each `switch:` arm taken. The value of any input declared
 `--seeds` divergence report, whichever workflow the run reached declares it, a
 called one included. So does a called workflow's output declared `sensitive:`.
 A divergence report shows both of its runs under what either run withholds,
-since they are read together. Claims, and the comparison `--seeds` makes, still
+since they are read together, and the diverging case's own report, printed
+beside it, withholds what any schedule's run withheld. Claims, and the comparison `--seeds` makes, still
 read the real value. Exit status is 0 when everything passed, 1 when a case
 failed, and 2 for a usage error.
 
