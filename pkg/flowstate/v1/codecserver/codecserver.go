@@ -251,6 +251,21 @@ func New(opts Options) (*Handler, error) {
 			return nil, fmt.Errorf("codec server: %w", err)
 		}
 	}
+	// Every Temporal namespace a caller can be authorized for needs keys
+	// here, the rule a worker dialing it is held to: otherwise the server
+	// starts, authorizes the caller, and answers every request 404 (Codex,
+	// #2167). These are the namespaces [Handler.temporalNamespaceOf] can
+	// answer: the tenancy's, or the one this deployment dials when it maps
+	// none.
+	reachable := opts.Tenancy.TemporalNamespaces()
+	if len(reachable) == 0 {
+		reachable = []string{opts.DefaultNamespace}
+	}
+	for _, ns := range reachable {
+		if _, err := opts.Codecs.ForNamespace(ns); err != nil {
+			return nil, fmt.Errorf("codec server: callers can be authorized for Temporal namespace %q: %w", ns, err)
+		}
+	}
 	for _, origin := range opts.AllowedOrigins {
 		if !isSerializedOrigin(origin) {
 			return nil, fmt.Errorf("codec server: allowed origin %q must be an exact lowercase http(s)://host[:port] "+

@@ -11,6 +11,7 @@ import (
 	"time"
 	"weak"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	commonpb "go.temporal.io/api/common/v1"
 	"google.golang.org/protobuf/types/known/durationpb"
@@ -562,13 +563,64 @@ func TestTheProvidersCopyOfADataKeyIsCleared(t *testing.T) {
 	provided := retaining.returned[0]
 	retaining.mu.Unlock()
 
-	zero := make([]byte, len(provided))
-	for range 50 {
-		runtime.GC()
-		runtime.Gosched()
-		if bytes.Equal(provided, zero) {
-			break
+	// No collection: the last caller to take its copy clears it, before
+	// Decode returns.
+	require.Equal(t, make([]byte, len(provided)), provided, "the provider's copy of the data key outlived the read")
+}
+
+// gatedUnwraps holds every unwrap until open is closed.
+type gatedUnwraps struct {
+	retainingUnwraps
+	open chan struct{}
+}
+
+func (k *gatedUnwraps) Unwrap(ctx context.Context, w keyprovider.Wrapped, ectx keyprovider.Context) ([]byte, error) {
+	<-k.open
+	return k.retainingUnwraps.Unwrap(ctx, w, ectx)
+}
+
+// TestACoalescedUnwrapIsClearedByItsLastReader: many reads waiting on one
+// unwrap each get the key, the provider is asked once, and its copy is
+// cleared once all of them have theirs, with nothing left for a collection.
+func TestACoalescedUnwrapIsClearedByItsLastReader(t *testing.T) {
+	t.Parallel()
+
+	synctest.Test(t, func(t *testing.T) {
+		material := bytes.Repeat([]byte{7}, local.KeyBytes)
+		key, err := local.NewKey(material)
+		require.NoError(t, err)
+		writer, err := New(t.Context(), Options{Binding: "ns", Current: "k1", Keys: []Recipient{{ID: "k1", Key: key}}})
+		require.NoError(t, err)
+		sealed, err := writer.Encode([]*commonpb.Payload{{Data: []byte("x")}})
+		require.NoError(t, err)
+
+		gated := &gatedUnwraps{retainingUnwraps: retainingUnwraps{Key: key}, open: make(chan struct{})}
+		reader, err := New(t.Context(), Options{Binding: "ns", Keys: []Recipient{{ID: "k1", Key: gated}}})
+		require.NoError(t, err)
+
+		const readers = 16
+		var wg sync.WaitGroup
+		for range readers {
+			wg.Go(func() {
+				opened, err := reader.Decode(sealed)
+				assert.NoError(t, err)
+				assert.Equal(t, []byte("x"), opened[0].GetData())
+			})
 		}
-	}
-	require.Equal(t, zero, provided, "the provider's copy of the data key was never cleared")
+		synctest.Wait()
+		reader.cache.flightsMu.Lock()
+		require.Len(t, reader.cache.flights, 1, "the reads did not wait on one unwrap")
+		for _, f := range reader.cache.flights {
+			require.Equal(t, readers, f.waiters, "not every read joined the unwrap")
+		}
+		reader.cache.flightsMu.Unlock()
+
+		close(gated.open)
+		wg.Wait()
+
+		gated.mu.Lock()
+		defer gated.mu.Unlock()
+		require.Len(t, gated.returned, 1, "the reads were not coalesced")
+		require.Equal(t, make([]byte, keyprovider.DataKeyBytes), gated.returned[0], "the provider's copy outlived its last reader")
+	})
 }

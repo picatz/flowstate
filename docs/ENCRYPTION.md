@@ -224,6 +224,9 @@ flow worker
 `flow run local` read the environment variables. Every client is built with
 its own namespace's codec. A process that dials a namespace the keyring does
 not cover refuses to start, instead of writing that namespace in plaintext.
+`flow codec serve` holds the same rule for every namespace its trust policy's
+tenancy can send a caller to, so a gap is found at startup rather than as a
+404 for every request that caller makes.
 
 ### 4. Check it
 

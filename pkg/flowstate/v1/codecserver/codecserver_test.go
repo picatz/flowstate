@@ -313,11 +313,11 @@ func TestBrowserOriginsAreExact(t *testing.T) {
 		"*", "https://x.example/", "", "null", "https://x.example/path", "https://user@x.example",
 		"ftp://x.example", "https://x.example?q=1", "https://x.example#f", "https://X.example", "x.example",
 	} {
-		_, err := codecserver.New(codecserver.Options{Codecs: f.codecs, AllowedOrigins: []string{origin}})
+		_, err := codecserver.New(codecserver.Options{Codecs: f.codecs, DefaultNamespace: "ns-a", AllowedOrigins: []string{origin}})
 		require.Error(t, err, "origin %q was accepted", origin)
 	}
 	for _, origin := range []string{"https://x.example", "http://localhost:8233", "https://[::1]:8080"} {
-		_, err := codecserver.New(codecserver.Options{Codecs: f.codecs, AllowedOrigins: []string{origin}})
+		_, err := codecserver.New(codecserver.Options{Codecs: f.codecs, DefaultNamespace: "ns-a", AllowedOrigins: []string{origin}})
 		require.NoError(t, err, "origin %q was refused", origin)
 	}
 }
@@ -461,9 +461,10 @@ namespaces:
 		slow := &slowCodec{Codec: sealer}
 
 		h, err := codecserver.New(codecserver.Options{
-			Codecs:      payloadcodec.Config{Codec: kr.Reader(), Namespaces: map[string]payloadcodec.Codec{"ns-a": slow}},
-			Insecure:    true,
-			WorkTimeout: 3 * time.Second,
+			Codecs:           payloadcodec.Config{Codec: kr.Reader(), Namespaces: map[string]payloadcodec.Codec{"ns-a": slow}},
+			Insecure:         true,
+			WorkTimeout:      3 * time.Second,
+			DefaultNamespace: "ns-a",
 		})
 		require.NoError(t, err)
 
@@ -490,7 +491,7 @@ func TestABodyThatCannotBeReadIsNotASizeRefusal(t *testing.T) {
 	t.Parallel()
 
 	f := newFixture(t, nil)
-	h, err := codecserver.New(codecserver.Options{Codecs: f.codecs, Insecure: true})
+	h, err := codecserver.New(codecserver.Options{Codecs: f.codecs, DefaultNamespace: "ns-a", Insecure: true})
 	require.NoError(t, err)
 	req := httptest.NewRequest(http.MethodPost, "/codec"+codecserver.DecodeEndpoint, iotest.ErrReader(errors.New("connection reset")))
 	req.Header.Set("Content-Type", "application/json")
@@ -590,7 +591,7 @@ func TestNegativeLimitsAreRefused(t *testing.T) {
 		"WorkTimeout":       func(o *codecserver.Options) { o.WorkTimeout = -time.Second },
 		"MaxConcurrent":     func(o *codecserver.Options) { o.MaxConcurrent = -1 },
 	} {
-		opts := codecserver.Options{Codecs: newFixture(t, nil).codecs}
+		opts := codecserver.Options{Codecs: newFixture(t, nil).codecs, DefaultNamespace: "ns-a"}
 		mutate(&opts)
 		_, err := codecserver.New(opts)
 		require.ErrorContains(t, err, "negative", name)
@@ -657,4 +658,34 @@ func TestRefusalsAreRecordedWithinTheBound(t *testing.T) {
 		release()
 		require.Equal(t, http.StatusForbidden, <-first)
 	}
+}
+
+// TestEveryAuthorizableNamespaceNeedsKeys: a server that could authorize a
+// caller for a Temporal namespace it holds no keys for refuses to start,
+// as a worker dialing that namespace does, rather than answer every one of
+// that caller's requests 404.
+func TestEveryAuthorizableNamespaceNeedsKeys(t *testing.T) {
+	t.Parallel()
+
+	codecs := newFixture(t, nil).codecs
+	for name, opts := range map[string]codecserver.Options{
+		"a tenant mapped to a namespace with no keys": {
+			Codecs:  codecs,
+			Tenancy: &auth.Tenancy{Temporal: map[string]string{"team-a": "ns-a", "team-c": "ns-c"}},
+		},
+		"a tenancy default with no keys": {
+			Codecs:  codecs,
+			Tenancy: &auth.Tenancy{Temporal: map[string]string{"team-a": "ns-a"}, Default: "ns-c"},
+		},
+		"an unmapped deployment dialing a namespace with no keys": {
+			Codecs:           codecs,
+			DefaultNamespace: "ns-c",
+		},
+	} {
+		_, err := codecserver.New(opts)
+		require.ErrorContains(t, err, `"ns-c"`, name)
+	}
+
+	_, err := codecserver.New(codecserver.Options{Codecs: codecs, DefaultNamespace: "ns-b"})
+	require.NoError(t, err, "an unmapped deployment dialing a namespace it holds keys for")
 }
