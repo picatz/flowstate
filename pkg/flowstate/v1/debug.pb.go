@@ -4146,10 +4146,16 @@ type DebugCarry struct {
 	// after a lost response is answered from the run rather than applied twice.
 	Receipts []*DebugReceipt `protobuf:"bytes,14,rep,name=receipts,proto3" json:"receipts,omitempty"`
 	// Ended is how the last session ended, when none is attached.
-	Ended         DebugRunState `protobuf:"varint,15,opt,name=ended,proto3,enum=flowstate.v1.DebugRunState" json:"ended,omitempty"`
-	Message       string        `protobuf:"bytes,16,opt,name=message,proto3" json:"message,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Ended   DebugRunState `protobuf:"varint,15,opt,name=ended,proto3,enum=flowstate.v1.DebugRunState" json:"ended,omitempty"`
+	Message string        `protobuf:"bytes,16,opt,name=message,proto3" json:"message,omitempty"`
+	// ReturnedWithheld says a call returned, before this seam, something its
+	// caller withholds from a debugger: an output or a recorded failure that
+	// can quote a value the callee declared sensitive. The values themselves
+	// are not carried, so a segment that inherits this withholds everything a
+	// session is shown rather than less than the segment before it did.
+	ReturnedWithheld bool `protobuf:"varint,17,opt,name=returned_withheld,json=returnedWithheld,proto3" json:"returned_withheld,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *DebugCarry) Reset() {
@@ -4292,6 +4298,13 @@ func (x *DebugCarry) GetMessage() string {
 		return x.Message
 	}
 	return ""
+}
+
+func (x *DebugCarry) GetReturnedWithheld() bool {
+	if x != nil {
+		return x.ReturnedWithheld
+	}
+	return false
 }
 
 var File_flowstate_v1_debug_proto protoreflect.FileDescriptor
@@ -4564,7 +4577,7 @@ const file_flowstate_v1_debug_proto_rawDesc = "" +
 	"\x05value\x18\x02 \x01(\v2\x18.flowstate.v1.DebugValueR\x05value\x127\n" +
 	"\bchildren\x18\x03 \x03(\v2\x1b.flowstate.v1.DebugVariableR\bchildren\x12\x1d\n" +
 	"\x05total\x18\x04 \x01(\x05B\a\xbaH\x04\x1a\x02(\x00R\x05total\x12\x1f\n" +
-	"\x05error\x18\x05 \x01(\tB\t\xbaH\x06r\x04\x18\x80\x80\x01R\x05error\"\x9f\x06\n" +
+	"\x05error\x18\x05 \x01(\tB\t\xbaH\x06r\x04\x18\x80\x80\x01R\x05error\"\xcc\x06\n" +
 	"\n" +
 	"DebugCarry\x12'\n" +
 	"\n" +
@@ -4586,7 +4599,8 @@ const file_flowstate_v1_debug_proto_rawDesc = "" +
 	"\x0fpause_requested\x18\r \x01(\bR\x0epauseRequested\x12@\n" +
 	"\breceipts\x18\x0e \x03(\v2\x1a.flowstate.v1.DebugReceiptB\b\xbaH\x05\x92\x01\x02\x10@R\breceipts\x12;\n" +
 	"\x05ended\x18\x0f \x01(\x0e2\x1b.flowstate.v1.DebugRunStateB\b\xbaH\x05\x82\x01\x02\x10\x01R\x05ended\x12\"\n" +
-	"\amessage\x18\x10 \x01(\tB\b\xbaH\x05r\x03\x18\x80 R\amessage*\xe4\x01\n" +
+	"\amessage\x18\x10 \x01(\tB\b\xbaH\x05r\x03\x18\x80 R\amessage\x12+\n" +
+	"\x11returned_withheld\x18\x11 \x01(\bR\x10returnedWithheld*\xe4\x01\n" +
 	"\x0eDebugStepState\x12 \n" +
 	"\x1cDEBUG_STEP_STATE_UNSPECIFIED\x10\x00\x12\x1c\n" +
 	"\x18DEBUG_STEP_STATE_PENDING\x10\x01\x12\x1c\n" +

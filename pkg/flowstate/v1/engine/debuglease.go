@@ -84,6 +84,25 @@ type debugControl struct {
 	// against the callee's own declarations.
 	rootSensitive v1.SensitiveValues
 
+	// returnedBefore says an earlier segment's calls handed back something
+	// their callers withheld ([v1.DebugCarry.returned_withheld]). Those values
+	// are in this segment's scope, and what withheld them was not carried, so
+	// [debugControl.sensitiveAt] withholds everything (#2213).
+	returnedBefore bool
+
+	// returnedHere says a call in this segment handed back something its
+	// caller withholds. Kept here rather than on the carry, which an attach
+	// or a session's end replaces, so [debugControl.encodeDebugCarry] carries
+	// it to the next segment whatever sessions came and went.
+	returnedHere bool
+
+	// undoWithheld is what the positions that registered this run's
+	// compensations withheld, as the local driver's undo log gathers it
+	// ([v1.UndoLog]): a compensation registered inside a callee can quote
+	// what only the callee declares, and a run cancelled before that callee
+	// returned has nothing else to say so ([executor.withheldUndoResults]).
+	undoWithheld v1.SensitiveAccumulator
+
 	// untilSensitive is what the hold that applied the pending resume
 	// withheld, kept for the notice a run that completes past its `until`
 	// records ([executor.debugRunCompleted]). That hold may have been inside a

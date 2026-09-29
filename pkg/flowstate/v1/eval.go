@@ -1387,6 +1387,14 @@ func eval(ctx context.Context, w *Workflow, inputs map[string]*Value) (*Workflow
 	// something the saga contract turns on. Written twice, the second copy is
 	// where the cancellation arm goes missing.
 	failRun := func(err error) (*Workflow_StepOutputs, error) {
+		// The run's final message is rendered from the root's declarations,
+		// which know nothing of what its calls handed back, and any way the
+		// run fails can quote such a value: a step, a later step's `if:`, or
+		// a declared output. So the failure carries what the root's position
+		// withholds (#2213). A callee's own failure carried its set out of
+		// the call already.
+		err = WithFailureSensitiveValues(err, ExecutingSensitiveFromContext(ctx))
+
 		// A cancellation compensates too, and it is the one case that cannot use
 		// the context it arrived on. Every call made with a cancelled context
 		// fails immediately, so compensating on `ctx` would attempt each entry,
@@ -1427,17 +1435,17 @@ func eval(ctx context.Context, w *Workflow, inputs map[string]*Value) (*Workflow
 				// compensation budget); this is the fallback for the cases nothing
 				// more specific was running, most visibly a run parked at a `wait:`
 				// when the stop arrives.
-				return PartialTranscript(stepOutputs), UndoRunError(withCancellationCause(ctx, err), results)
+				return PartialTranscript(stepOutputs), undoRunError(withCancellationCause(ctx, err), undo, results)
 			}
 
 			// Compensated on the surviving scope, but reported as what actually
 			// went wrong: a run that failed on its own terms while a stop was
 			// arriving did not fail *because* of the stop, and saying so would
 			// lose the only account of why.
-			return PartialTranscript(stepOutputs), UndoRunError(err, results)
+			return PartialTranscript(stepOutputs), undoRunError(err, undo, results)
 		}
 
-		return PartialTranscript(stepOutputs), UndoRunError(err, RunUndoLog(undo, func(entry *PendingUndo) error {
+		return PartialTranscript(stepOutputs), undoRunError(err, undo, RunUndoLog(undo, func(entry *PendingUndo) error {
 			return runUndoTask(ctx, w.GetProfile(), entry)
 		}))
 	}
@@ -1783,6 +1791,9 @@ func recordStepOutcome(ctx context.Context, node *Node, outputs *Node_Outputs, e
 			// point, for the identical reason.
 			record := failureRecord(err)
 			scope.Outputs.StepValues[node.GetId()] = record
+			// The record can quote what a callee withheld, and a hold on
+			// this failure reads it (#2213).
+			returnToWorkflow(ctx, FailureSensitiveValues(err))
 			observeStepFinished(ctx, node.GetId(), record, err, false, SensitiveValues{})
 			if held := debuggerStepFailed(ctx, node, scope, err, false); held != nil {
 				return held
@@ -1799,6 +1810,9 @@ func recordStepOutcome(ctx context.Context, node *Node, outputs *Node_Outputs, e
 		}
 		record := failureRecord(err)
 		scope.Outputs.StepValues[node.GetId()] = record
+		// `${steps.<id>.error}` keeps the failure's text for every later
+		// step to read, and it can quote what a callee withheld (#2213).
+		returnToWorkflow(ctx, FailureSensitiveValues(err))
 		observeStepFinished(ctx, node.GetId(), record, err, true, SensitiveValues{})
 		if held := debuggerStepFailed(ctx, node, scope, err, true); held != nil {
 			return held
@@ -1810,6 +1824,9 @@ func recordStepOutcome(ctx context.Context, node *Node, outputs *Node_Outputs, e
 	if outputs != nil {
 		scope.Outputs.StepValues[node.GetId()] = outputs
 	}
+	// A call's outputs sit in this workflow's scope from here on, and a later
+	// step or hold reads them from this position (#2213).
+	returnToWorkflow(ctx, returned)
 	observeStepFinished(ctx, node.GetId(), outputs, nil, false, returned)
 
 	return nil
@@ -1900,6 +1917,9 @@ func runNodeWithVars(ctx context.Context, node *Node, scope *Scope, undo *UndoLo
 		undo.Register(entry)
 	} else {
 		undo.Fill(slot, entry)
+	}
+	if entry != nil {
+		undo.withhold(ExecutingSensitiveFromContext(ctx))
 	}
 
 	return outputs, nil
@@ -2139,9 +2159,20 @@ func runCall(ctx context.Context, callerStep, callerKind string, call *Call, sco
 	if err != nil {
 		return nil, WithFailureSensitiveValues(err, ExecutingSensitiveFromContext(calleeCtx))
 	}
-	returnCallSensitive(ctx, ExecutingSensitiveFromContext(calleeCtx))
+	// And the outputs the callee declared sensitive, whatever they were
+	// computed from (#2213).
+	returnCallSensitive(ctx, ExecutingSensitiveFromContext(calleeCtx).Merge(debugSensitiveOutputs(ctx, callee, outputs)))
 
 	return outputs, nil
+}
+
+// undoRunError is [UndoRunError] carrying what the positions that registered
+// the compensations withhold, for a debugger rendering the run's final
+// message: a compensation's failure can quote the inputs it was registered
+// with, a callee's sensitive input among them, and the failure that
+// triggered the unwind carries none of it (#2213).
+func undoRunError(err error, undo *UndoLog, results []UndoResult) error {
+	return WithFailureSensitiveValues(UndoRunError(err, results), undo.withheld.Values())
 }
 
 // runSwitch dispatches on one value and runs the body [SelectSwitchCase] picks.

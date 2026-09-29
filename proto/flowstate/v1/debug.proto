@@ -1510,4 +1510,11 @@ message DebugCarry {
   DebugRunState ended = 15 [(buf.validate.field).enum.defined_only = true];
 
   string message = 16 [(buf.validate.field).string = {max_len: 4096}];
+
+  // ReturnedWithheld says a call returned, before this seam, something its
+  // caller withholds from a debugger: an output or a recorded failure that
+  // can quote a value the callee declared sensitive. The values themselves
+  // are not carried, so a segment that inherits this withholds everything a
+  // session is shown rather than less than the segment before it did.
+  bool returned_withheld = 17;
 }

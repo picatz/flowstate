@@ -3,6 +3,7 @@ package engine
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -538,6 +539,7 @@ func runWorkflow(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutput
 	if debug.declared {
 		debug.irDigest = v1.WorkflowIRDigest(st.GetWorkflow())
 		debug.rootSensitive = v1.SensitiveInputValues(st.GetInputs(), v1.SensitiveInputNames(st.GetWorkflow()))
+		debug.returnedBefore = debug.carry.GetReturnedWithheld()
 	}
 	if err := setDebugQueries(ctx, debug, st.GetWorkflow); err != nil {
 		return nil, fmt.Errorf("register debug queries: %w", err)
@@ -665,6 +667,7 @@ func runWorkflow(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutput
 		curSpec:  st.Workflow,
 		identity: st.GetIdentity(),
 		runID:    workflow.GetInfo(ctx).WorkflowExecution.RunID,
+		returned: debug.newReturned(),
 		// The profile comes from the spec in RunState, not from this build. A run
 		// that suspended and continued as new is picked up by whichever worker takes
 		// the next task, and that worker must evaluate against the vocabulary the
@@ -976,7 +979,7 @@ func runWorkflow(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutput
 // what a new one would cost every reader of a closed run.
 func compensate(ctx workflow.Context, exec *executor, err error) error {
 	if exec.undo.Len() == 0 {
-		return err
+		return exec.withheldRunFailure(ctx, err, nil)
 	}
 
 	if temporal.IsCanceledError(err) {
@@ -1005,23 +1008,55 @@ func compensate(ctx workflow.Context, exec *executor, err error) error {
 		})
 	}
 
-	// Composed from the inner failure's own message, exactly as failedAt does, so
-	// the run's failure reads as one sentence rather than restating this driver's
-	// preamble in the middle of it. What is appended is [v1.UndoSummary]'s output
-	// and nothing else, which is the string the local driver appends to its own
-	// failure — the one value that has to be identical for a local run to rehearse
-	// what a compensated production run will say.
-	if inner, ok := errors.AsType[*ErrRunFailed](err); ok {
-		return &ErrRunFailed{
-			Message:          inner.Message + v1.UndoSummary(results),
-			Recorded:         inner.Recorded,
-			recordedFromTask: inner.recordedFromTask,
-			Kind:             inner.Kind,
-			cause:            inner.cause,
+	return exec.withheldRunFailure(ctx, err, results)
+}
+
+// withheldRunFailure is err with results' summary appended, each withheld as
+// [executor.failureWithheld] says.
+//
+// Composed from the inner failure's own message, exactly as failedAt does, so
+// the run's failure reads as one sentence rather than restating this driver's
+// preamble in the middle of it. What is appended is [v1.UndoSummary]'s output
+// and nothing else, which is the string the local driver appends to its own
+// failure — the one value that has to be identical for a local run to rehearse
+// what a compensated production run will say, but for the values a run
+// declaring `debug:` withholds from it.
+func (e *executor) withheldRunFailure(ctx workflow.Context, err error, results []v1.UndoResult) error {
+	inner, ok := errors.AsType[*ErrRunFailed](err)
+	if !ok && len(results) == 0 {
+		return err
+	}
+	sensitive, withholds := e.failureWithheld(ctx, err, ok, results)
+	if !withholds && len(results) == 0 {
+		return err
+	}
+	if withholds {
+		results = withheldUndoResults(results, sensitive)
+		if ok {
+			inner = &ErrRunFailed{
+				Message:          sensitive.RedactText(inner.Message, "[withheld]"),
+				Recorded:         inner.Recorded,
+				recordedFromTask: inner.recordedFromTask,
+				Kind:             inner.Kind,
+				cause:            inner.cause,
+				sensitive:        inner.sensitive,
+			}
 		}
 	}
+	if !ok {
+		return v1.UndoRunError(err, results)
+	}
+	if len(results) == 0 {
+		return inner
+	}
 
-	return v1.UndoRunError(err, results)
+	return &ErrRunFailed{
+		Message:          inner.Message + v1.UndoSummary(results),
+		Recorded:         inner.Recorded,
+		recordedFromTask: inner.recordedFromTask,
+		Kind:             inner.Kind,
+		cause:            inner.cause,
+	}
 }
 
 // compensateCancelled takes back what a cancelled run did, and returns the
@@ -1042,6 +1077,9 @@ func compensateCancelled(ctx workflow.Context, exec *executor) error {
 	logger.Info("compensating a cancelled run", "pending", exec.undo.Len())
 
 	results := compensateOnDisconnectedContext(ctx, exec)
+	if sensitive, withholds := exec.failureWithheld(ctx, nil, false, results); withholds {
+		results = withheldUndoResults(results, sensitive)
+	}
 	summary := v1.UndoSummary(results)
 	logger.Info("compensated a cancelled run", "summary", summary)
 
@@ -1051,6 +1089,55 @@ func compensateCancelled(ctx workflow.Context, exec *executor) error {
 	// a `*temporal.CanceledError`, and this is one.
 	return temporal.NewCanceledError(summary)
 }
+
+// failureWithheld is what the failure a run declaring `debug:` records
+// withholds, and whether it withholds anything: the failure is persisted, and
+// a reader printing it knows only the root's declarations.
+//
+// The failure can quote a value a call handed back, and a compensation's
+// failure what it was registered with, neither of which the root declares.
+// So both are withheld against what the position withholds (the root's
+// inputs and what its calls handed back, [executor.returned]), what err
+// carries, and what the positions that registered the compensations withheld
+// ([debugControl.undoWithheld]), which a run cancelled inside a callee has
+// nowhere else; whole after a seam that dropped the values (#2213). The
+// local driver's failure carries the same set for its reader
+// ([v1.UndoRunError], [v1.WithFailureSensitiveValues]), and its text is
+// withheld only where that reader renders it.
+//
+// Asked only for a failure with text to withhold: a run failure, or a
+// compensation that failed.
+func (e *executor) failureWithheld(ctx workflow.Context, err error, failed bool, results []v1.UndoResult) (v1.SensitiveValues, bool) {
+	failed = failed || slices.ContainsFunc(results, func(result v1.UndoResult) bool { return result.Err != "" })
+	if !failed || e.debug == nil || !e.debug.declared {
+		return v1.SensitiveValues{}, false
+	}
+	sensitive := e.debugPositionSensitive().Merge(v1.FailureSensitiveValues(err)).Merge(e.debug.undoWithheld.Values())
+	if sensitive.Empty() || workflow.GetVersion(ctx, failureWithholdChange, workflow.DefaultVersion, 1) == workflow.DefaultVersion {
+		return v1.SensitiveValues{}, false
+	}
+
+	return sensitive, true
+}
+
+// withheldUndoResults is results with each compensation's failure withheld
+// against sensitive. The step ids stay: they are the author's.
+func withheldUndoResults(results []v1.UndoResult, sensitive v1.SensitiveValues) []v1.UndoResult {
+	withheld := slices.Clone(results)
+	for i, result := range withheld {
+		if result.Err != "" {
+			withheld[i].Err = sensitive.RedactText(result.Err, "[withheld]")
+		}
+	}
+
+	return withheld
+}
+
+// failureWithholdChange is the [workflow.GetVersion] changeID guarding
+// [executor.failureWithheld]. An engine before it recorded a run's failure,
+// and a failed compensation's text, as they were, and a history it recorded
+// replays to that failure.
+const failureWithholdChange = "engine.debug.withholdRunFailures"
 
 // compensateOnDisconnectedContext runs every pending undo on a context the
 // cancellation that triggered it does not reach, bounded by [v1.UndoBudget].

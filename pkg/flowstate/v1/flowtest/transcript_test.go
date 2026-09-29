@@ -1646,10 +1646,12 @@ tests:
 }
 
 // TestAReportWithholdsADiagnosticRaisedBeforeEverythingWasWithheld: an
-// unmatched stub at the root, whose position enumerates what it withholds,
-// quotes a value a callee that could not enumerate its set handed back. The
-// case's gathered set withholds everything, and that diagnostic was not
-// shaped under it, so the report withholds it whole (Codex, #2215).
+// unmatched stub at the root quotes a value a callee that could not enumerate
+// its set handed back. Before #2213 the root's position did not know what the
+// callee handed back, so its diagnostic was not shaped and the report
+// withheld it whole (Codex, #2215). The root's position now withholds
+// everything the callee handed back, so the diagnostic is shaped where it is
+// raised, every input withheld, and printed; the value never appears.
 func TestAReportWithholdsADiagnosticRaisedBeforeEverythingWasWithheld(t *testing.T) {
 	t.Parallel()
 
@@ -1702,7 +1704,8 @@ tests:
 	require.Len(t, cases, 1)
 	require.NotEmpty(t, cases[0].GetFailures(), "the case reported no failure, so this proves nothing: %s", cases[0].GetError())
 	message := cases[0].GetFailures()[0].GetMessage()
-	assert.Contains(t, message, "[withheld]", "a diagnostic shaped under less than the report withholds was printed")
+	assert.Contains(t, message, "could not be enumerated", "the root's position did not withhold what the callee handed back")
+	assert.Contains(t, message, "[redacted: url]")
 	assert.NotContains(t, message, "calleesecret0000", "the report showed the callee's sensitive input")
 }
 
@@ -1876,4 +1879,56 @@ tests:
 	assert.Contains(t, message, "[withheld: where:]", "the stub's where: was not withheld")
 	assert.NotContains(t, message, "hunter2", "a fragment of the root input's value printed")
 	assert.NotContains(t, message, "tail'", "a fragment of the root input's value printed")
+}
+
+// TestTranscriptWithholdsACalleesSensitiveOutput: an output a called workflow
+// declares `sensitive:`, computed from nothing it declares sensitive, is
+// withheld where the call hands it back, and wherever the caller reads it
+// after that (#2213).
+func TestTranscriptWithholdsACalleesSensitiveOutput(t *testing.T) {
+	t.Parallel()
+
+	const secret = "hunter2-callee-output-secret"
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "child.yaml"), `
+edition: v2026.3
+name: child
+inputs:
+  seed:
+    type: string
+    required: true
+steps:
+  - id: use
+    value: ${1}
+outputs:
+  token:
+    value: ${inputs.seed}
+    sensitive: true
+`)
+	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
+edition: v2026.3
+name: parent
+steps:
+  - id: nested
+    call: ./child.yaml
+    with:
+      seed: ${"`+secret+`"}
+  - id: copied
+    value: ${"Bearer " + steps.nested.token}
+`)
+	path := filepath.Join(dir, "workflow.test.yaml")
+	writeFile(t, path, `
+tests:
+  - name: the case fails so its transcript prints
+    workflow: ./workflow.yaml
+    expect:
+      failed: true
+`)
+
+	result := flowtest.RunPath(t.Context(), path, flowtest.RunOptions{})
+	require.Len(t, result.Transcripts, 1)
+	text := transcriptText(result.Transcripts[0])
+	require.Contains(t, text, "copied", "the caller's later step is not in the transcript, so this proves nothing")
+	assert.NotContains(t, text, secret, "the transcript showed the callee's sensitive output")
+	assert.Contains(t, text, "[redacted]")
 }
