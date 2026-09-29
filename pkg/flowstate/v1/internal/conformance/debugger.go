@@ -823,6 +823,71 @@ func GuardCases() []GuardCase {
 			Secret: `\150\165\156`,
 		},
 		{
+			// The renderer escapes the quote, so the value's own text is
+			// no longer in the sentence to be matched; a literal that merely
+			// contains it is withheld from its unescaped text (Copilot,
+			// #2227).
+			Name: "a skip inside a callee withholds a literal containing a sensitive value the renderer escapes",
+			Workflow: &v1.Workflow{
+				Name:    "guard-sensitive-escaped",
+				Profile: v1.CurrentProfile,
+				Steps: []*v1.Node{
+					says("first", "one"),
+					{Id: "nested", Kind: &v1.Node_Call{Call: &v1.Call{
+						Workflow: &v1.Workflow{
+							Name:           "child",
+							Profile:        v1.CurrentProfile,
+							DeclaredInputs: []*v1.InputDeclaration{{Name: "api_key", Type: v1.InputDeclaration_TYPE_STRING, Sensitive: true}},
+							Steps:          []*v1.Node{guarded("rotate", `"key: hunter2\"quoted" != "key: " + inputs.api_key`, "never")},
+						},
+						Arguments: map[string]*v1.Value{"api_key": v1.NewLiteral(`hunter2"quoted`)},
+					}}},
+				},
+			},
+			Skipped: []string{"rotate skipped: `if: \"[redacted]\" != \"key: \" + inputs.api_key` was false"},
+			Secret:  "hunter2",
+		},
+		{
+			// A value written as a literal of another type is spelled the
+			// renderer's own way, a string in octal inside a bytes literal and
+			// an int in exponent form as a double, which no match for the
+			// value's text finds, so each is asked about as every type it
+			// could be held as (#2227).
+			Name: "a skip inside a callee withholds sensitive values written as literals of another type",
+			Workflow: &v1.Workflow{
+				Name:    "guard-sensitive-retyped",
+				Profile: v1.CurrentProfile,
+				Steps: []*v1.Node{
+					says("first", "one"),
+					{Id: "nested", Kind: &v1.Node_Call{Call: &v1.Call{
+						Workflow: &v1.Workflow{
+							Name:    "child",
+							Profile: v1.CurrentProfile,
+							DeclaredInputs: []*v1.InputDeclaration{
+								{Name: "api_key", Type: v1.InputDeclaration_TYPE_STRING, Sensitive: true},
+								{Name: "pin", Type: v1.InputDeclaration_TYPE_INT, Sensitive: true},
+							},
+							Steps: []*v1.Node{
+								guarded("bearer", `bytes("Bearer " + inputs.api_key) != b"Bearer hunter2-retyped"`, "never"),
+								guarded("unlock", `double(inputs.pin) != 918273645.0`, "never"),
+							},
+						},
+						Arguments: map[string]*v1.Value{
+							"api_key": v1.NewLiteral("hunter2-retyped"),
+							"pin":     v1.NewLiteral(int64(918273645)),
+						},
+					}}},
+				},
+			},
+			Skipped: []string{
+				"bearer skipped: `if: bytes(\"Bearer \" + inputs.api_key) != \"[redacted]\"` was false",
+				"unlock skipped: `if: double(inputs.pin) != \"[redacted]\"` was false",
+			},
+			// "hun" as the renderer writes it in a bytes literal; the pin's
+			// exponent form is checked by the same substring.
+			Secret: `\150\165\156`,
+		},
+		{
 			Name: "an if: that cannot be evaluated is its step failing",
 			Workflow: &v1.Workflow{
 				Name:    "guard-error",

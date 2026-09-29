@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
+	"slices"
 	"time"
 
 	"github.com/google/cel-go/cel"
@@ -211,7 +213,7 @@ func conditionText(condition *Value, withheld func(any) bool) string {
 // is not a place a constant can hide.
 func withholdConstants(m protoreflect.Message, withheld func(any) bool) {
 	if constant, ok := m.Interface().(*expr.Constant); ok {
-		if value, ok := constantValue(constant); ok && withheld(value) {
+		if slices.ContainsFunc(constantForms(constant), withheld) {
 			constant.ConstantKind = &expr.Constant_StringValue{StringValue: SensitiveMarker}
 		}
 
@@ -240,24 +242,45 @@ func withholdConstants(m protoreflect.Message, withheld func(any) bool) {
 	})
 }
 
-// constantValue is a constant as the native value a sensitive set compares.
-func constantValue(constant *expr.Constant) (any, bool) {
+// constantForms is a constant as every native value a sensitive set may hold
+// it as. A set compares by value and type, and an author can write a value in
+// a literal of another type, which the renderer then spells its own way: a
+// string in a bytes literal (in octal), an int as a double (in exponent
+// form). So bytes are also their text, and a number is also each other
+// numeric type that holds it exactly (#2227).
+func constantForms(constant *expr.Constant) []any {
 	switch kind := constant.GetConstantKind().(type) {
 	case *expr.Constant_StringValue:
-		return kind.StringValue, true
+		return []any{kind.StringValue}
 	case *expr.Constant_BytesValue:
-		return kind.BytesValue, true
+		return []any{kind.BytesValue, string(kind.BytesValue)}
 	case *expr.Constant_Int64Value:
-		return kind.Int64Value, true
+		return numericForms(float64(kind.Int64Value), kind.Int64Value)
 	case *expr.Constant_Uint64Value:
-		return kind.Uint64Value, true
+		return numericForms(float64(kind.Uint64Value), kind.Uint64Value)
 	case *expr.Constant_DoubleValue:
-		return kind.DoubleValue, true
+		return numericForms(kind.DoubleValue, kind.DoubleValue)
 	case *expr.Constant_BoolValue:
-		return kind.BoolValue, true
+		return []any{kind.BoolValue}
 	default:
-		return nil, false
+		return nil
 	}
+}
+
+// numericForms is value, and f as each of int64, uint64 and float64 that
+// represents it exactly. Bounded by 2^63 before converting, since converting a
+// float64 at or past it to an int64 is not defined.
+func numericForms(f float64, value any) []any {
+	forms := []any{value}
+	if f != math.Trunc(f) || math.Abs(f) >= 1<<63 {
+		return append(forms, f)
+	}
+	forms = append(forms, f, int64(f))
+	if f >= 0 {
+		forms = append(forms, uint64(f))
+	}
+
+	return forms
 }
 
 type runObserverKey struct{}

@@ -934,6 +934,14 @@ func (s *Session) StepSkippedBy(id string, condition *v1.Value, withhold v1.Sens
 	// round: a cut first could keep the start of a sensitive value no
 	// whole-value match then finds.
 	account := v1.SkippedText(id, condition, func(value any) bool {
+		// A string's own text, before the renderer escapes it, so a
+		// sensitive value it merely contains is found too (Copilot, #2227).
+		// A bytes literal is asked about as its text as well
+		// ([v1.SkippedText]).
+		if text, ok := value.(string); ok && applyText(redact, text) != text {
+			return true
+		}
+
 		return redactValue != nil && !reflect.DeepEqual(redactValue(value), value)
 	})
 	line := capRunes(applyText(redact, account), maxObservationRunes)

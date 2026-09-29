@@ -2,6 +2,7 @@ package flowstatev1
 
 import (
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -144,4 +145,65 @@ func TestASkipWithholdsAConstantByValue(t *testing.T) {
 	require.Equal(t, 3, strings.Count(text, `"`+SensitiveMarker+`"`), text)
 	require.Contains(t, SkippedText("gate", condition, nil), `b"\150`, "the renderer no longer writes bytes in octal, so this proves nothing")
 	require.Contains(t, SkippedText("gate", condition, nil), `"hunter2"`, "the run's own condition was edited")
+
+	// A value is asked about as every type it could be held as: an int in a
+	// double literal, which renders in exponent form, and a string in a bytes
+	// literal, which renders in octal.
+	pin := func(value any) bool { return value == int64(918273645) }
+	require.Contains(t, SkippedText("gate", NewExpr(`inputs.x != 918273645.0`), nil), "e+08", "the renderer no longer writes this double in exponent form, so this proves nothing")
+	require.Equal(t, "gate skipped: `if: inputs.x != \"[redacted]\"` was false", SkippedText("gate", NewExpr(`inputs.x != 918273645.0`), pin))
+	require.Equal(t, "gate skipped: `if: inputs.x != 9.182736455e+08` was false", SkippedText("gate", NewExpr(`inputs.x != 918273645.5`), pin),
+		"a double that is no int was taken for one")
+	word := func(value any) bool { return value == "hunter2" }
+	require.Equal(t, "gate skipped: `if: inputs.x != \"[redacted]\"` was false", SkippedText("gate", NewExpr(`inputs.x != b"hunter2"`), word))
+}
+
+// guardOnlyObserver is an embedder's observer that implements the guard
+// interface and nothing else that withholds.
+type guardOnlyObserver struct {
+	mu       sync.Mutex
+	withheld []SensitiveValues
+}
+
+func (*guardOnlyObserver) StepFinished(string, *Node_Outputs, error, bool) {}
+func (*guardOnlyObserver) StepSkipped(string)                              {}
+func (*guardOnlyObserver) WaitStarted(string, string, time.Duration, bool) {}
+func (*guardOnlyObserver) GuardFailed(string, error, SensitiveValues)      {}
+func (o *guardOnlyObserver) StepSkippedBy(_ string, _ *Value, withhold SensitiveValues) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.withheld = append(o.withheld, withhold)
+}
+
+// TestAGuardOnlyObserverIsToldWhatToWithhold: an observer that implements
+// only [GuardRunObserver] is still one that renders, so the run gathers the
+// declared-sensitive values for it and a skip inside a callee hands it the
+// callee's (Codex, Copilot, #2227).
+func TestAGuardOnlyObserverIsToldWhatToWithhold(t *testing.T) {
+	t.Parallel()
+
+	const secret = "hunter2-guard-only"
+	workflow := &Workflow{
+		Name:    "guard-only",
+		Profile: CurrentProfile,
+		Steps: []*Node{{Id: "nested", Kind: &Node_Call{Call: &Call{
+			Workflow: &Workflow{
+				Name:           "child",
+				Profile:        CurrentProfile,
+				DeclaredInputs: []*InputDeclaration{{Name: "api_key", Type: InputDeclaration_TYPE_STRING, Sensitive: true}},
+				Steps: []*Node{{
+					Id:        "rotate",
+					Condition: NewExpr(`inputs.api_key != "` + secret + `"`),
+					Kind:      &Node_Task{Task: &Task{Name: "log", Inputs: map[string]*Value{"message": NewLiteral("never")}}},
+				}},
+			},
+			Arguments: map[string]*Value{"api_key": NewLiteral(secret)},
+		}}}},
+	}
+
+	observer := &guardOnlyObserver{}
+	_, err := RunWithInputs(NewContextWithRunObserver(t.Context(), observer), workflow, nil)
+	require.NoError(t, err)
+	require.Len(t, observer.withheld, 1, "the skip was not reported, so this proves nothing")
+	require.True(t, observer.withheld[0].IsSensitive(secret), "a guard-only observer was not told what the callee withholds")
 }
