@@ -100,7 +100,7 @@ nothing here is worth learning twice. `help` lists it.
 | `next`, `n` | run this step whole, including a loop, parallel, switch or call; stop at the next step at this level or above |
 | `finish`, `out` | run until the loop, parallel, switch or call around this step is left, stopping at the next step outside it — not at the next iteration or branch, which `next` reaches |
 | `continue`, `c` | run to the next breakpoint, or to the end |
-| `until <step>`, `u` | run to that step without stopping in between; a run that completes without reaching it says so |
+| `until <step>`, `u` | run to that step without stopping in between; a local run that completes without reaching it says so |
 | `until <step> if <expr>` | run to that step, stopping only where the expression holds |
 | `break <step>`, `b` | stop there whenever it is reached |
 | `break <step> if <expr>` | stop there only when the expression holds |
