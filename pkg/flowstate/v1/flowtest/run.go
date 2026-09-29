@@ -1364,10 +1364,10 @@ func unstubbedTaskFn(name string, seen *unstubbedTasks) v1.TaskFunc {
 	return func(ctx context.Context, inputs map[string]*v1.Value, scope *v1.Scope) (*v1.Node_Outputs, error) {
 		seen.record(ctx, name)
 
-		return nil, v1.NewTaskError(name, v1.ErrorKindInvalidInput, fmt.Errorf(
+		return nil, v1.NewTaskError(name, v1.ErrorKindInvalidInput, &stubDiagnostic{text: fmt.Sprintf(
 			"flow test: task %q was invoked, but this case declares no stub for it; "+
 				"add a `stubs:` entry naming %q — flow test never lets an unstubbed task run for real",
-			name, name))
+			name, name)})
 	}
 }
 
@@ -2003,15 +2003,19 @@ func assertExpectation(want *Expectation, spec *v1.Workflow, outputs *v1.Workflo
 		// would erase the only actionable detail. Otherwise this is the outer
 		// substring backstop for material carried here by a computed var.
 		//
-		// Only for a diagnostic the stub boundary built, and only where the
-		// run itself ran under that posture: an evaluation error (`no such
-		// key: <value>`) was shaped by nothing, and neither was anything under
-		// a set that came to withhold everything once the run was over — a
-		// callee's that could not be enumerated, gathered afterward. Those are
-		// withheld whole rather than printed as they are (#2215).
-		var stubShaped *stubUnmatchedError
+		// Only for a diagnostic the stub boundary built, only where the run
+		// itself ran under that posture, and only where it is the end of the
+		// run's error, so that what precedes it is the positions the engine
+		// wraps around a failure. An evaluation error (`no such key: <value>`)
+		// was shaped by nothing; neither was a compensation's failure the run
+		// appends after it ([v1.UndoRunError]), nor anything under a set that
+		// came to withhold everything once the run was over — a callee's that
+		// could not be enumerated, gathered afterward. Those are withheld
+		// whole rather than printed as they are (#2215).
+		var stubShaped *stubDiagnostic
 		renderedRunErr = runErr.Error()
-		if !sensitive.WithholdAll() || !shaped || !errors.As(runErr, &stubShaped) {
+		if !sensitive.WithholdAll() || !shaped || !errors.As(runErr, &stubShaped) ||
+			!strings.HasSuffix(renderedRunErr, stubShaped.Error()) {
 			renderedRunErr = redactedErrorText(renderedRunErr, sensitive)
 		}
 	}

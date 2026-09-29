@@ -1301,3 +1301,107 @@ tests:
 	assert.Contains(t, message, "[withheld]", "the failure was not withheld whole")
 	assert.NotContains(t, message, "rootsecret0000", "the report showed the root's sensitive input")
 }
+
+// TestAReportPrintsOnlyTheStubsOwnDiagnosticRaw: the raw rendering a
+// withhold-everything posture keeps for a stub's diagnostic covers that
+// diagnostic alone. A compensation's failure the run appends after it was
+// shaped by nothing, and it withholds the whole error rather than riding out
+// beside the diagnostic (exact-head review, #2215).
+func TestAReportPrintsOnlyTheStubsOwnDiagnosticRaw(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
+edition: v2026.3
+name: parent
+inputs:
+  items:
+    type: list
+    required: true
+    sensitive: true
+steps:
+  - id: network
+    log:
+      message: hi
+    undo:
+      log:
+        message: ${"undo " + inputs.items[0]}
+  - id: volume
+    http:
+      url: https://example.invalid/volume
+`)
+	items := make([]string, 0, 1100)
+	for i := range 1100 {
+		items = append(items, fmt.Sprintf("      - rootsecret%04d", i))
+	}
+	path := filepath.Join(dir, "workflow.test.yaml")
+	writeFile(t, path, `
+tests:
+  - name: the failure and its compensation are reported
+    workflow: ./workflow.yaml
+    inputs:
+      items:
+`+strings.Join(items, "\n")+`
+    stubs:
+      - task: log
+        where: inputs.message == "hi"
+        returns: {}
+      - task: log
+        returns:
+          said: ${{"a":1}[inputs.message]}
+    expect:
+      failed: false
+`)
+
+	result := flowtest.RunPath(t.Context(), path, flowtest.RunOptions{})
+	cases := result.Report.GetCases()
+	require.Len(t, cases, 1)
+	require.NotEmpty(t, cases[0].GetFailures(), "the case reported no failure, so this proves nothing: %s", cases[0].GetError())
+	message := cases[0].GetFailures()[0].GetMessage()
+	assert.NotContains(t, message, "rootsecret0000", "the compensation's failure rode out beside the stub's diagnostic")
+	assert.Contains(t, message, "[withheld]", "the error was not withheld whole")
+}
+
+// TestAnUnstubbedTasksDiagnosticIsReadableUnderAnUnenumerablePosture: an
+// unstubbed task's diagnostic names only the task, and the stub boundary
+// built it, so a posture that withholds everything still prints it rather
+// than an unactionable `[withheld]`.
+func TestAnUnstubbedTasksDiagnosticIsReadableUnderAnUnenumerablePosture(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
+edition: v2026.3
+name: parent
+inputs:
+  items:
+    type: list
+    required: true
+    sensitive: true
+steps:
+  - id: volume
+    http:
+      url: https://example.invalid/volume
+`)
+	items := make([]string, 0, 1100)
+	for i := range 1100 {
+		items = append(items, fmt.Sprintf("      - rootsecret%04d", i))
+	}
+	path := filepath.Join(dir, "workflow.test.yaml")
+	writeFile(t, path, `
+tests:
+  - name: the unstubbed task is named
+    workflow: ./workflow.yaml
+    inputs:
+      items:
+`+strings.Join(items, "\n")+`
+    expect:
+      failed: false
+`)
+
+	result := flowtest.RunPath(t.Context(), path, flowtest.RunOptions{})
+	cases := result.Report.GetCases()
+	require.Len(t, cases, 1)
+	require.NotEmpty(t, cases[0].GetFailures(), "the case reported no failure, so this proves nothing: %s", cases[0].GetError())
+	assert.Contains(t, cases[0].GetFailures()[0].GetMessage(), `task "http" was invoked, but this case declares no stub for it`)
+}

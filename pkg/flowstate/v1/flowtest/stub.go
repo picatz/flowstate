@@ -1136,17 +1136,18 @@ func unmatchedStubError(name string, declared int, native map[string]any, secret
 		}
 	}
 
-	return &stubUnmatchedError{text: b.String()}
+	return &stubDiagnostic{text: b.String()}
 }
 
-// stubUnmatchedError is [unmatchedStubError]'s diagnostic: text the stub
-// boundary shaped under the case's posture, withholding what it could not
-// enumerate, which a run's error can carry out to the case's report as it is.
-// Its own type so that the report can tell it from an error nothing shaped
+// stubDiagnostic is a diagnostic the stub boundary built — an unmatched
+// stub's ([unmatchedStubError]) or an unstubbed task's ([unstubbedTaskFn]) —
+// shaped under the case's posture, withholding what it could not enumerate,
+// so a run's error can carry it out to the case's report as it is. Its own
+// type so that the report can tell it from an error nothing shaped
 // ([assertExpectation]).
-type stubUnmatchedError struct{ text string }
+type stubDiagnostic struct{ text string }
 
-func (e *stubUnmatchedError) Error() string { return e.text }
+func (e *stubDiagnostic) Error() string { return e.text }
 
 // unusedStubWarnings reports, after one case's run, every stub the case
 // declared and the run never answered through — the account a green case owes
