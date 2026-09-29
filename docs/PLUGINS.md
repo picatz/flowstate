@@ -412,7 +412,11 @@ Three properties worth knowing, all of them the fail-closed direction:
   attached to the field it describes. Pin the generated code in CI the way this
   repository pins its own, and a stale comment is caught like a stale type.
 - **A name registered twice with different text is not described at all**,
-  rather than described by whichever copy happened to register first.
+  rather than described by whichever copy happened to register first. That is
+  silent by design, so a plugin whose hover prose has gone missing after a
+  dependency change should check `protodocimpl.Conflicts()` in a test: it lists
+  each such name and the files that disagreed, which is usually two generations
+  of one generated package linked into the same binary.
 
 Earlier versions of the SDK took a `buf build --exclude-imports` descriptor set
 through a `Plugin.SchemaProse` field instead. That field is gone: it was a second
