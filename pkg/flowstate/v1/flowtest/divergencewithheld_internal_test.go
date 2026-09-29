@@ -16,6 +16,7 @@ import (
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/durationpb"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/dst"
@@ -309,7 +310,7 @@ func TestTheReportBesideADivergenceWithholdsWhatADivergingRunWithholds(t *testin
 			// So is a warning's and the case's own name, both the file's words.
 			warnings := []*v1.Diagnostic{{Step: quietOnly, Message: "stub for " + quietOnly + " never answered"}}
 
-			return &v1.TestCase{Name: "moves " + quietOnly, Error: text, Failures: failures, Warnings: warnings},
+			return &v1.TestCase{Name: "moves " + quietOnly, Error: text, Failures: failures, Warnings: warnings, Duration: durationpb.New(time.Duration(runs) * time.Second)},
 				nil, transcript, []TranscriptLine{{Text: "pick → " + text}}, shown, nil
 		})
 
@@ -330,6 +331,7 @@ func TestTheReportBesideADivergenceWithholdsWhatADivergingRunWithholds(t *testin
 		assert.NotContains(t, account[0].Text, quietOnly, "the case's account shows what a seeded run withholds")
 		assert.NotContains(t, result.GetFailures()[0].GetStep(), quietOnly, "a diagnostic's step shows what a seeded run withholds")
 		assert.Equal(t, "moves "+sensitiveMarker, result.GetName(), "the case's name shows what a seeded run withholds")
+		assert.Equal(t, time.Second, result.GetDuration().AsDuration(), "the report is timed by the re-run that only withholds more")
 		assert.Equal(t, "moves "+sensitiveMarker, accumulator.result().Divergence.Case, "the divergence names the case with what a seeded run withholds")
 		assert.NotContains(t, result.GetWarnings()[0].GetStep(), quietOnly, "a warning's step shows what a seeded run withholds")
 		assert.NotContains(t, result.GetWarnings()[0].GetMessage(), quietOnly, "a warning shows what a seeded run withholds")

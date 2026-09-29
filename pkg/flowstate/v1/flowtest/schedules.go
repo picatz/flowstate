@@ -292,7 +292,13 @@ func (a *scheduleAccumulator) reshown(ctx context.Context, once caseRun, result 
 			// And through the verdict's own seam under everything: the run
 			// renders values through its posture, and a diagnostic's step
 			// id, which it prints as the file names it, through this.
-			return verdictUnder(again, everything), againAccount
+			// Shown as the re-run renders it, timed as the run it stands
+			// for: Duration is what judges the suite's speed, and the re-run
+			// exists only to withhold more (Codex, #2224).
+			shown := proto.CloneOf(verdictUnder(again, everything))
+			shown.Duration = result.GetDuration()
+
+			return shown, againAccount
 		}
 	}
 
