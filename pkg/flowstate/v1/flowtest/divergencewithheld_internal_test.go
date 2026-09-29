@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -227,7 +228,11 @@ func TestAWithheldTranscriptWithholdsByValueAndKeepsItsShape(t *testing.T) {
 	assert.Equal(t, "7", transcript.GetStepValues()["step"].GetNamedValues()["pin"].GetLiteral().GetStringValue(),
 		"the recorded transcript must be left as it was")
 
-	all := withheldTranscript(transcript, v1.WithheldSensitiveValues()).GetStepValues()["step"].GetNamedValues()
+	// Under a posture that withholds everything the step's id is withheld
+	// too, as the case's account withholds it.
+	everything := withheldTranscript(transcript, v1.WithheldSensitiveValues()).GetStepValues()
+	require.Contains(t, everything, sensitiveMarker, "a step id is shown under a posture that withholds everything")
+	all := everything[sensitiveMarker].GetNamedValues()
 	require.Len(t, all, 4, "a name withheld to one spelling must not overwrite another")
 	for name, value := range all {
 		assert.True(t, strings.HasPrefix(name, sensitiveMarker), "the name %q is shown under a posture that withholds everything", name)
@@ -440,4 +445,40 @@ func TestAReportThatCannotBeShownAgainKeepsItsVerdict(t *testing.T) {
 			assert.NotContains(t, account[0].Text, secret)
 		})
 	}
+}
+
+// TestANameThatSpellsAWithheldValueIsWithheld: a step id, a task, a stub's
+// target and a signal are the file's names, and an author can spell a
+// sensitive value as one. The account withholds each as it withholds an
+// output's name, and so does a divergence's rendering of a step id (Codex,
+// #2224); a name that spells nothing withheld is kept.
+func TestANameThatSpellsAWithheldValueIsWithheld(t *testing.T) {
+	t.Parallel()
+
+	const secret = "hunter2-name"
+	recorder := newRunRecorder(v1.NewVirtualClock(time.Unix(0, 0)))
+	recorder.sensitive = v1.SensitiveValues{}.WithValues(secret)
+	recorder.record(transcriptEvent{kind: eventStubAnswered, step: secret, task: secret, stubStep: secret, stubOrdinal: 1})
+	recorder.record(transcriptEvent{kind: eventStepFinished, step: secret})
+	recorder.record(transcriptEvent{kind: eventStepSkipped, step: secret})
+	recorder.record(transcriptEvent{kind: eventWaitStarted, step: "wait", signal: secret, timeout: time.Minute, bounded: true})
+	recorder.record(transcriptEvent{kind: eventSignalDelivered, signal: secret})
+	recorder.record(transcriptEvent{kind: eventSignalRefused, signal: secret, failure: "no"})
+	recorder.record(transcriptEvent{kind: eventStubAnswered, task: secret, stubOrdinal: 2})
+	recorder.record(transcriptEvent{kind: eventStepFinished, step: "public"})
+
+	lines := recorder.render()
+	require.Len(t, lines, 7)
+	for _, line := range lines {
+		assert.NotContains(t, line.Text, secret)
+	}
+	assert.Contains(t, lines[0].Text, sensitiveMarker, "the step was not named at all, so this proves nothing")
+	assert.Contains(t, lines[len(lines)-1].Text, "public", "a name that spells nothing withheld was withheld")
+
+	steps := withheldTranscript(&v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
+		secret: {}, "public": {},
+	}}, v1.SensitiveValues{}.WithValues(secret)).GetStepValues()
+	assert.Contains(t, steps, sensitiveMarker)
+	assert.Contains(t, steps, "public")
+	assert.NotContains(t, steps, secret)
 }

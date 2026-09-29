@@ -472,8 +472,13 @@ func withheldTranscript(transcript *v1.Workflow_StepOutputs, sensitive sensitive
 	withheld := &v1.Workflow_StepOutputs{
 		StepValues: make(map[string]*v1.Node_Outputs, len(transcript.GetStepValues())),
 	}
-	for id, outputs := range transcript.GetStepValues() {
-		withheld.StepValues[id] = &v1.Node_Outputs{NamedValues: withheldNamedValues(outputs.GetNamedValues(), sensitive)}
+	// A step id is spelled as the case's account spells it ([withheldName]),
+	// and made distinct again as a name is.
+	steps := transcript.GetStepValues()
+	for _, id := range slices.Sorted(maps.Keys(steps)) {
+		withheld.StepValues[distinctName(withheld.StepValues, withheldName(id, sensitive))] = &v1.Node_Outputs{
+			NamedValues: withheldNamedValues(steps[id].GetNamedValues(), sensitive),
+		}
 	}
 	if run := transcript.GetRunOutputs(); run != nil {
 		withheld.RunOutputs = &v1.RunOutputs{Values: withheldNamedValues(run.GetValues(), sensitive)}
@@ -489,26 +494,26 @@ func withheldTranscript(transcript *v1.Workflow_StepOutputs, sensitive sensitive
 //
 // Two names that withhold to one spelling are made distinct again, in the
 // order of the names as recorded, so neither is lost and the rendering does
-// not depend on map order. Step ids are not names a run chose, and are kept.
+// not depend on map order.
 func withheldNamedValues(values map[string]*v1.Value, sensitive sensitiveInputs) map[string]*v1.Value {
 	withheld := make(map[string]*v1.Value, len(values))
 	for _, name := range slices.Sorted(maps.Keys(values)) {
-		spelled := sensitive.RedactSubstrings(redactedKeyText(name, sensitive))
-		distinct := spelled
-		for n := 2; taken(withheld, distinct); n++ {
-			distinct = fmt.Sprintf("%s#%d", spelled, n)
-		}
-		withheld[distinct] = withheldValue(values[name], sensitive)
+		withheld[distinctName(withheld, withheldName(name, sensitive))] = withheldValue(values[name], sensitive)
 	}
 
 	return withheld
 }
 
-// taken reports whether values already holds name, nil or not.
-func taken(values map[string]*v1.Value, name string) bool {
-	_, ok := values[name]
-
-	return ok
+// distinctName is spelled, or spelled with the first `#n` suffix the map does
+// not already hold, so two names that withhold to one spelling both survive.
+func distinctName[V any](taken map[string]V, spelled string) string {
+	distinct := spelled
+	for n := 2; ; n++ {
+		if _, ok := taken[distinct]; !ok {
+			return distinct
+		}
+		distinct = fmt.Sprintf("%s#%d", spelled, n)
+	}
 }
 
 // withheldValue is [withheldTranscript] for one recorded value.
