@@ -1876,7 +1876,8 @@ func unresolvedInput(stepID, inputName, ref string, scope refScope) Diagnostic {
 	return Diagnostic{Step: stepID, Field: inputName, Value: ref, Message: message, Code: v1.DiagnosticCodeUnresolvedReference}
 }
 
-// referencedIdentifiers returns the names an expression references, in six groups:
+// referencedIdentifiers returns the names an expression references, in six groups,
+// and which of the bare ones are type values ([typeValues]):
 // steps reached under the `steps.` root, vars reached under the `vars.` root, inputs
 // reached under the `inputs.` root, fields reached under the `run.` root, fields
 // reached under the `trigger.` root, and whatever is written bare.

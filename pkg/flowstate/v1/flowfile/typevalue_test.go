@@ -68,6 +68,24 @@ outputs:
   typed:
     value: ${type(steps.s.value) == int}
 `,
+		"a trigger mapping": `edition: v2026.3
+name: t
+inputs:
+  typed:
+    type: bool
+    required: true
+triggers:
+  - webhook: payments
+    verify:
+      stripe: ${secret("env:STRIPE_WEBHOOK")}
+    idempotency_key: ${event.headers["stripe-signature"]}
+    with:
+      typed: ${type(event.body) == map}
+steps:
+  - id: s
+    log:
+      message: ${string(inputs.typed)}
+`,
 		"a concurrency key": `edition: v2026.3
 name: t
 inputs:
