@@ -406,7 +406,13 @@ func classifyProviderError(err error) error {
 }
 
 // ErrKeyDenied is a key provider refusing to unwrap: the key is disabled, or
-// this process may not use it.
-var ErrKeyDenied = errors.New("envelope: the key provider refused the key")
+// this process may not use it. It matches [payloadcodec.ErrNotReadableHere]:
+// the refusal is this process's, not the payload's, and another worker whose
+// policy allows the key reads the same payload, so workflow code fails the run
+// on it rather than dropping a signal as corrupt or failing a step that
+// succeeded, either of which would diverge from that worker's replay.
+var ErrKeyDenied error = &classifiedError{
+	msg: "envelope: the key provider refused the key", class: payloadcodec.ErrNotReadableHere,
+}
 
 func clone(b []byte) []byte { return append([]byte(nil), b...) }
