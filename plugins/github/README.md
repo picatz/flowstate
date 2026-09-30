@@ -86,6 +86,36 @@ outputs:
     description: the commit at the tip of the pull request's branch
 ```
 
+Its test selects the stub on the owner, repo and number sent, so CI proves the right pull request is read:
+
+<!-- example: examples/plugins/github/workflow.test.yaml -->
+```yaml
+edition: v2026.3
+
+# Proves the workflow reads the pull request it names, in CI with no network and
+# without the github plugin installed. The stub selects the call by the owner,
+# repo and number the workflow must send, so a workflow that read another pull
+# request would match nothing.
+tests:
+  - name: reads the pull request it names and reports what GitHub said
+    workflow: ./workflow.yaml
+    stubs:
+      - task: github.pull_request_get
+        where: "inputs.owner == 'golang' && inputs.repo == 'go' && inputs.number == 1"
+        returns:
+          title: "Initial import"
+          state: closed
+          head_sha: 0123456789abcdef0123456789abcdef01234567
+      - step: announce
+        returns: {}
+    expect:
+      ran: [pr, announce]
+      outputs:
+        title: Initial import
+        state: closed
+        head_sha: 0123456789abcdef0123456789abcdef01234567
+```
+
 <!-- example: examples/plugins/github/issue-comment.yaml -->
 ```yaml
 edition: v2026.3
@@ -139,6 +169,40 @@ outputs:
   comment_url:
     value: ${steps.comment.html_url}
     description: where to see what this run just posted
+```
+
+Its test selects the stub on all four values sent, so CI proves the comment goes where it is meant to:
+
+<!-- example: examples/plugins/github/issue-comment.test.yaml -->
+```yaml
+edition: v2026.3
+
+# Proves the one non-idempotent write goes to the issue the caller named, carrying
+# the caller's text and a credential, in CI with no network and without the github
+# plugin installed. The stub selects the call on all four values, so a workflow
+# that commented on another issue or dropped the token would match nothing.
+tests:
+  - name: comments on the named issue and returns where to see it
+    workflow: ./issue-comment.yaml
+    inputs:
+      owner: octocat
+      repo: hello-world
+      number: 42
+      body: "Thanks - fixed in the next release."
+    secrets:
+      github:token: not-a-real-token
+    stubs:
+      - task: github.issue_comment
+        where: >-
+          inputs.owner == 'octocat' && inputs.repo == 'hello-world'
+          && inputs.number == 42 && inputs.body == 'Thanks - fixed in the next release.'
+        returns:
+          comment_id: 1001
+          html_url: https://github.com/octocat/hello-world/issues/42#issuecomment-1001
+    expect:
+      ran: [comment]
+      outputs:
+        comment_url: https://github.com/octocat/hello-world/issues/42#issuecomment-1001
 ```
 
 <!-- example: examples/plugins/github/triage.yaml -->
@@ -248,6 +312,93 @@ outputs:
   oldest_open_issue_is_actually_a_pull_request:
     value: ${steps.issue_detail.is_pull_request}
     description: always false here - GitHub serves issues and pull requests from one endpoint, and issue_detail's number is chosen by filtering pull requests out first (see that step's comment); kept as a sanity check on that filter rather than an assumption
+```
+
+Its test puts a pull request first in the issue listing, so CI proves the filter that skips it:
+
+<!-- example: examples/plugins/github/triage.test.yaml -->
+```yaml
+edition: v2026.3
+
+# Proves the triage pass asks about the right pull request and reads the right
+# issue, in CI with no network and without the github plugin installed. The
+# pull-request files are asked for by the number the listing put first, and the
+# issue detail for the first entry that is not a pull request - GitHub serves
+# both from one endpoint, so the workflow filters, and the case below puts a pull
+# request first so that filter is what the stub has to be reached through.
+tests:
+  - name: flags a pull request touching a sensitive path and skips a pull request listed as an issue
+    workflow: ./triage.yaml
+    stubs:
+      - task: github.pull_request_list
+        where: "inputs.state == 'open' && inputs.owner == 'golang' && inputs.repo == 'go'"
+        returns:
+          pull_requests:
+            - {number: 74012, title: crypto/tls handshake, state: open, draft: false}
+            - {number: 73990, title: docs, state: open, draft: false}
+          truncated: false
+      - task: github.pull_request_files
+        where: "inputs.number == 74012"
+        returns:
+          files:
+            - {filename: src/crypto/tls/handshake_client.go, additions: 12, deletions: 3}
+            - {filename: src/net/http/server.go, additions: 1, deletions: 1}
+          truncated: false
+      - task: github.issue_list
+        where: "inputs.state == 'open' && inputs.sort == 'created' && inputs.direction == 'asc'"
+        returns:
+          issues:
+            - {number: 555, title: a pull request served as an issue, state: open, labels: [], is_pull_request: true}
+            - {number: 600, title: the oldest real issue, state: open, labels: [], is_pull_request: false}
+          truncated: false
+      - task: github.issue_get
+        where: "inputs.number == 600"
+        returns:
+          title: the oldest real issue
+          is_pull_request: false
+      - step: announce
+        returns: {}
+    expect:
+      ran: [open_prs, newest_pr, pr_files, open_issues, issue_detail, announce]
+      outputs:
+        most_recent_open_pull_request: 74012
+        touches_a_sensitive_path: true
+        open_issue_count: 1
+        oldest_open_issue_title: the oldest real issue
+        oldest_open_issue_is_actually_a_pull_request: false
+
+  - name: does not flag a pull request that touches nothing sensitive
+    workflow: ./triage.yaml
+    stubs:
+      - task: github.pull_request_list
+        returns:
+          pull_requests:
+            - {number: 73990, title: docs, state: open, draft: false}
+          truncated: false
+      - task: github.pull_request_files
+        where: "inputs.number == 73990"
+        returns:
+          files:
+            - {filename: doc/go1.26.html, additions: 4, deletions: 0}
+          truncated: false
+      - task: github.issue_list
+        returns:
+          issues:
+            - {number: 700, title: an issue, state: open, labels: [], is_pull_request: false}
+          truncated: false
+      - task: github.issue_get
+        returns:
+          title: an issue
+          is_pull_request: false
+      - step: announce
+        returns: {}
+    expect:
+      outputs:
+        most_recent_open_pull_request: 73990
+        touches_a_sensitive_path: false
+        open_issue_count: 1
+        oldest_open_issue_title: an issue
+        oldest_open_issue_is_actually_a_pull_request: false
 ```
 
 ## Why go-github, and not a hand-rolled client
@@ -565,6 +716,49 @@ outputs:
   resumed_from:
     value: ${steps.page_one.next_cursor}
     description: the opaque cursor page_two was resumed from - empty if page_one was not truncated
+```
+
+Its test selects each page on its cursor and ordering, so CI proves page two resumes from page one:
+
+<!-- example: examples/plugins/github/list-resume.test.yaml -->
+```yaml
+edition: v2026.3
+
+# Proves page two resumes from the cursor page one returned, and only under the
+# ordering that cursor is honest about, in CI with no network and without the
+# github plugin installed. Both stubs select their call by what it carries: the
+# fresh walk has no cursor, and the resumed one must carry exactly the cursor
+# page one handed back, with sort: created and direction: asc, which the task
+# requires alongside one. A workflow that dropped the cursor, or resumed under
+# another sort, would match no stub.
+tests:
+  - name: resumes the second page from the first page's cursor
+    workflow: ./list-resume.yaml
+    stubs:
+      - task: github.issue_list
+        where: "!has(inputs.cursor) && inputs.sort == 'created' && inputs.direction == 'asc' && inputs.max_results == 3"
+        returns:
+          issues:
+            - {number: 1, title: first, state: open, labels: [], is_pull_request: false}
+            - {number: 2, title: second, state: open, labels: [], is_pull_request: false}
+            - {number: 3, title: third, state: open, labels: [], is_pull_request: false}
+          truncated: true
+          next_cursor: cur-after-3
+      - task: github.issue_list
+        where: "inputs.cursor == 'cur-after-3' && inputs.sort == 'created' && inputs.direction == 'asc'"
+        returns:
+          issues:
+            - {number: 4, title: fourth, state: open, labels: [], is_pull_request: false}
+          truncated: false
+          next_cursor: ""
+      - step: announce
+        returns: {}
+    expect:
+      ran: [page_one, page_two, announce]
+      outputs:
+        page_one_numbers: [1, 2, 3]
+        page_two_numbers: [4]
+        resumed_from: cur-after-3
 ```
 
 ## Bounds this tier enforces, and the resource each one matches
