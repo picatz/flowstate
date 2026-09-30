@@ -24,6 +24,10 @@ import (
 	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
 )
 
+// issuer is the issuer every identity the kit installs names, so the plugin and
+// the host-side secret policy read the same caller.
+const issuer = "https://plugintest.invalid"
+
 // buildTimeout bounds compiling a plugin. A cold module cache on a slow runner
 // is the case it is sized for.
 const buildTimeout = 4 * time.Minute
@@ -200,7 +204,7 @@ func (s *Session) Call(ctx context.Context, name string, inputs map[string]any) 
 	}
 
 	ctx = flowstatev1.ContextWithTaskRuntime(ctx, s.runtime)
-	identity := &flowstatev1.WorkloadIdentity{Subject: s.subject, Namespace: s.ns}
+	identity := &flowstatev1.WorkloadIdentity{Subject: s.subject, Issuer: issuer, Namespace: s.ns}
 	ctx = plugin.NewContextWithIdentity(ctx, identity)
 	out, err := def.Fn(ctx, flowstatev1.NewNamedValues(inputs), &flowstatev1.Scope{Identity: identity})
 	if err != nil {
@@ -368,7 +372,7 @@ func taskRuntime(t testing.TB, refs map[string]string, subject, namespace string
 		Store:  store,
 		Policy: policy,
 		Identity: auth.WorkloadIdentity{
-			Subject: subject, Issuer: "https://plugintest.invalid", Namespace: namespace,
+			Subject: subject, Issuer: issuer, Namespace: namespace,
 		},
 		Step: auth.StepRef{Workflow: "plugintest", Run: "plugintest", Step: "step"},
 	}

@@ -150,3 +150,27 @@ func anyContains(messages []string, substr string) bool {
 	}
 	return false
 }
+
+// flakyPkg declares a schema that differs on every launch and answers its health
+// poll with a refusal and no reason.
+const flakyPkg = "github.com/picatz/flowstate/pkg/flowstate/v1/plugin/plugintest/testdata/flaky"
+
+// TestAuditFindsAPluginThatCannotBePinnedOrDiagnosed is the negative direction for
+// the two checks about the process rather than the declarations: digests that move
+// between launches, and a health refusal an operator cannot read.
+func TestAuditFindsAPluginThatCannotBePinnedOrDiagnosed(t *testing.T) {
+	skipShort(t)
+	s := plugintest.Launch(t, plugintest.Build(t, flakyPkg, "flaky"))
+
+	got := map[plugintest.Check][]string{}
+	for _, f := range s.Audit(t.Context(), t) {
+		got[f.Check] = append(got[f.Check], f.Message)
+	}
+
+	if !anyContains(got[plugintest.CheckStableDigests], "not deterministic") {
+		t.Errorf("a schema named for the launch time was not reported; stable digests said %q", got[plugintest.CheckStableDigests])
+	}
+	if !anyContains(got[plugintest.CheckHealth], "or not serving with a reason") {
+		t.Errorf("a health refusal with no reason was not reported; health said %q", got[plugintest.CheckHealth])
+	}
+}

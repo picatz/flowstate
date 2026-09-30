@@ -242,9 +242,9 @@ type IssueCommentInputs struct {
 	Number int64 `protobuf:"varint,3,opt,name=number,proto3" json:"number,omitempty"`
 	// Body is the comment's Markdown text.
 	Body string `protobuf:"bytes,4,opt,name=body,proto3" json:"body,omitempty"`
-	// Token authenticates the request. Unset means an unauthenticated request,
-	// which GitHub permits for a public repository at a much lower rate limit.
-	// A literal string here is refused.
+	// Token authenticates the request and is required: GitHub does not accept
+	// an anonymous comment, so the task refuses an unset token before making a
+	// request. A literal string here is refused.
 	Token *v1.Value `protobuf:"bytes,5,opt,name=token,proto3" json:"token,omitempty"`
 	// BaseUrl overrides the API base for GitHub Enterprise Server, e.g.
 	// "https://github.example.com/api/v3". Unset means github.com.

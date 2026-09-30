@@ -103,9 +103,9 @@ func init() {
 		},
 		{
 			Name: "github.v1.IssueCommentInputs.token",
-			Leading: " Token authenticates the request. Unset means an unauthenticated request,\n" +
-				" which GitHub permits for a public repository at a much lower rate limit.\n" +
-				" A literal string here is refused.\n",
+			Leading: " Token authenticates the request and is required: GitHub does not accept\n" +
+				" an anonymous comment, so the task refuses an unset token before making a\n" +
+				" request. A literal string here is refused.\n",
 		},
 		{
 			Name: "github.v1.IssueCommentInputs.base_url",

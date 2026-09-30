@@ -1,9 +1,10 @@
 edition: v2026.3
 
-# Proves the workflow sends the plugin's task what its README describes, in CI
-# with no plugin binary: the token travels as a secret the worker resolves before
-# the call, and the stubbed call is selected on the name and greeting the workflow
-# chose. The plugin itself is exercised for real by the tests beside it.
+# Proves the workflow sends the plugin's task the name and greeting it chose, in CI
+# with no plugin binary: the stubbed call is selected on both, so a workflow that
+# sent others would match nothing. The token is a secret the worker resolves before
+# the call; this case supplies one so the reference resolves, and does not assert on
+# it. The plugin itself is exercised for real by the tests beside it.
 tests:
   - name: greets the named person with the configured greeting
     workflow: ./workflow.yaml

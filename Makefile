@@ -130,7 +130,7 @@ plugin-proto:
 		echo "==> buf generate $$module"; \
 		$(BUF) generate \
 			--config "{\"version\":\"v2\",\"modules\":[{\"path\":\"proto\"},{\"path\":\"plugins/$$name/proto\"}],\"deps\":[\"buf.build/bufbuild/protovalidate\",\"buf.build/googleapis/googleapis\"]}" \
-			--template plugins/buf.gen.yaml --path "plugins/$$name/proto/$$name" -o "plugins/$$name" || exit 1; \
+			--template plugins/buf.gen.yaml --clean --path "plugins/$$name/proto/$$name" -o "plugins/$$name" || exit 1; \
 	done
 
 # `git diff --exit-code` above only sees tracked files, so a new .proto whose

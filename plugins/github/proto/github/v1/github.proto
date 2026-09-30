@@ -84,9 +84,9 @@ message IssueCommentInputs {
   // Body is the comment's Markdown text.
   string body = 4;
 
-  // Token authenticates the request. Unset means an unauthenticated request,
-  // which GitHub permits for a public repository at a much lower rate limit.
-  // A literal string here is refused.
+  // Token authenticates the request and is required: GitHub does not accept
+  // an anonymous comment, so the task refuses an unset token before making a
+  // request. A literal string here is refused.
   flowstate.v1.Value token = 5;
 
   // BaseUrl overrides the API base for GitHub Enterprise Server, e.g.
