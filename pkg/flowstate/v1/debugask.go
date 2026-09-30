@@ -206,10 +206,9 @@ func ParseTypedDebugAsk(payload *Node_Outputs) (*DebugAsk, bool, error) {
 // a called workflow, and inside a `loop:`, a `switch:` arm and a `for_each:`
 // running one iteration at a time — so step-in reaches a callee's steps and a
 // body's, but never a `parallel:` branch or a concurrent `for_each:`, which
-// run as a unit durably. Failure
-// stops and logpoints are local-only: the durable driver has no place to hold
-// a run after a failure is recorded, and a logpoint's expressions would be a
-// second, unaudited inspection channel.
+// run as a unit durably. Failure stops and logpoints are local-only: the
+// durable driver has no place to hold a run after a failure is recorded, and a
+// logpoint's expressions would be a second, unaudited inspection channel.
 func DurableDebugCapabilities() *DebugCapabilities {
 	return &DebugCapabilities{
 		StepIn:                 true,
