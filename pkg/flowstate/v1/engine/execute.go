@@ -569,16 +569,22 @@ func (e *executor) runNodes(nodes []*v1.Node, depth, susp int) (err error) {
 		// The step boundary a durable debug lease holds the run at (#928 stage
 		// 2): the same point the local driver offers [v1.Debugger] — after the
 		// condition decided this step runs, before any of its work, an
-		// `async:` step included — and only at `susp == 0`, the run's own
-		// single representable position. If earlier async work is outstanding,
-		// an ask first joins it in written order: publishing the parent as held
-		// while its child continues making progress would not be a hold at all.
-		// See debuglease.go for the asymmetry with the local driver.
+		// `async:` step included — and only where the run has one position: at
+		// `susp == 0`, the run's own level, and, once the run holds in bodies
+		// ([holdInBodiesChange]), in a `loop:`, a `switch:` arm and a
+		// `for_each:` running one iteration at a time ([executor.holdsInBody]).
+		// A step being resumed into that was offered before the seam is not
+		// offered again ([executor.reoffers]). If earlier async work this
+		// scope started is outstanding, an ask first joins it in written
+		// order: publishing the parent as held while its child continues
+		// making progress would not be a hold at all. See debuglease.go for the
+		// asymmetry with the local driver, which also stops in a `parallel:`
+		// branch.
 		//
 		// A run nobody is debugging pays one empty-channel inspection here,
 		// which issues no command and writes no history. That is the whole cost
 		// of the feature being off, and why the check lives at the boundary.
-		if susp == 0 {
+		if (susp == 0 || e.holdsInBody()) && !e.reoffers(descend, depth) {
 			if e.debugAsksWaiting() {
 				for len(started) > 0 {
 					joined := started[0]
@@ -2099,6 +2105,34 @@ func (e *executor) runLoopIteration(body []string, segments []*v1.DebugSegment, 
 	}
 
 	return v1.AttachIterationBinding(bodyOutputs(loop.GetBody(), iterationOutputs), state, nested.tolerated), false, next, nil
+}
+
+// reoffers reports that the step this scope is resuming into was offered to a
+// debug session by the segment before it, so this one must not offer it again.
+// A continuation taken inside a container — a loop between iterations, a call
+// between its steps — saves a position below the container's own, and resuming
+// enters the container's step afresh on the way down to it. Its boundary was
+// already offered, its asks read and its hold ended; offering it again would
+// stop a session stepping through the run at the same step twice, once per
+// seam. A step resumed into with nothing below it — the next one after a
+// continuation between steps — has not been offered and is.
+//
+// Behind [holdInBodiesChange], as the boundary itself is: a history recorded
+// before it offered the step again, and replaying it into no offer would read
+// the ask channel at a different point.
+func (e *executor) reoffers(descend bool, depth int) bool {
+	return descend && e.debug != nil && e.debug.bodyHolds && len(e.resume) > depth+1
+}
+
+// holdsInBody reports that the step boundary this executor is at, below the
+// run's own level, is one a debug session holds the run at: the run has one
+// position here ([executor.progress] is nil exactly where it has several), and
+// the run holds in bodies ([holdInBodiesChange]). It is the runtime half of
+// [v1.DebugStaticSite.Serial], which arms the breakpoints that can fire here,
+// and the two are kept the same on purpose: a breakpoint armed at a site the
+// run never offers would report a stop that does not come.
+func (e *executor) holdsInBody() bool {
+	return e.progress != nil && e.debug != nil && e.debug.bodyHolds
 }
 
 // debugSegmentsUnder is the segments a step inside node's body runs under:

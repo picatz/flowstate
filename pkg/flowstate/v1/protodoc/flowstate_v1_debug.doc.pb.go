@@ -1071,8 +1071,10 @@ func init() {
 			Leading: " Next is what the next boundary does with the session attached.\n",
 		},
 		{
-			Name:    "flowstate.v1.DebugCarry.step_depth",
-			Leading: " StepDepth is the call depth a step over or out left from.\n",
+			Name: "flowstate.v1.DebugCarry.step_depth",
+			Leading: " StepDepth is the nesting a step over or out left from: the calls, loop\n" +
+				" iterations, branches and arms its stop was in, which is the number of\n" +
+				" segments in its address.\n",
 		},
 		{
 			Name:    "flowstate.v1.DebugCarry.hits",

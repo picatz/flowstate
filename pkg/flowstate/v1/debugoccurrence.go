@@ -368,6 +368,14 @@ type DebugStaticSite struct {
 	// `vars:` are not among them, because both drivers evaluate a condition
 	// before installing them. Nil where nothing is bound.
 	Locals *DebugBindings
+
+	// Serial reports that a run has exactly one position at this site: no
+	// `parallel:` branch and no `for_each:` running more than one iteration at
+	// once encloses it, in its own workflow or in any that called it. The
+	// durable driver holds only at a serial site, since its hold names one
+	// position and a run in several places has none to name; the local driver,
+	// which holds a goroutine, also stops at the others.
+	Serial bool
 }
 
 // DebugBindings is the bare names bound at a site, as a chain: the names one
@@ -448,8 +456,8 @@ func DebugStaticSites(wf *Workflow) ([]DebugStaticSite, bool) {
 		truncated bool
 	)
 
-	var walk func(workflow *Workflow, chain []*DebugSegment, locals *DebugBindings, nodes []*Node, depth int)
-	walk = func(workflow *Workflow, chain []*DebugSegment, locals *DebugBindings, nodes []*Node, depth int) {
+	var walk func(workflow *Workflow, chain []*DebugSegment, locals *DebugBindings, nodes []*Node, depth int, serial bool)
+	walk = func(workflow *Workflow, chain []*DebugSegment, locals *DebugBindings, nodes []*Node, depth int, serial bool) {
 		for _, node := range nodes {
 			if len(sites) >= MaxDebugStaticSites {
 				truncated = true
@@ -458,7 +466,7 @@ func DebugStaticSites(wf *Workflow) ([]DebugStaticSite, bool) {
 			}
 
 			occurrence := NewDebugOccurrence(workflow.GetName(), chain, node.GetId(), NodeKind(node))
-			sites = append(sites, DebugStaticSite{Site: occurrence.GetSite(), Chain: slices.Clone(chain), Locals: locals})
+			sites = append(sites, DebugStaticSite{Site: occurrence.GetSite(), Chain: slices.Clone(chain), Locals: locals, Serial: serial})
 
 			if len(chain) >= MaxDebugSegments {
 				continue
@@ -483,18 +491,18 @@ func DebugStaticSites(wf *Workflow) ([]DebugStaticSite, bool) {
 
 			switch kind := node.GetKind().(type) {
 			case *Node_ForEach:
-				walk(workflow, into(DebugSegmentKind_DEBUG_SEGMENT_KIND_ITERATION), inner, kind.ForEach.GetBody(), depth)
+				walk(workflow, into(DebugSegmentKind_DEBUG_SEGMENT_KIND_ITERATION), inner, kind.ForEach.GetBody(), depth, serial && !ConcurrentForEach(kind.ForEach))
 			case *Node_Loop:
-				walk(workflow, into(DebugSegmentKind_DEBUG_SEGMENT_KIND_ITERATION), inner, kind.Loop.GetBody(), depth)
+				walk(workflow, into(DebugSegmentKind_DEBUG_SEGMENT_KIND_ITERATION), inner, kind.Loop.GetBody(), depth, serial)
 			case *Node_Parallel:
 				for _, branch := range kind.Parallel.GetBranches() {
-					walk(workflow, into(DebugSegmentKind_DEBUG_SEGMENT_KIND_BRANCH), inner, branch.GetSteps(), depth)
+					walk(workflow, into(DebugSegmentKind_DEBUG_SEGMENT_KIND_BRANCH), inner, branch.GetSteps(), depth, false)
 				}
 			case *Node_Switch:
 				for _, arm := range kind.Switch.GetCases() {
-					walk(workflow, into(DebugSegmentKind_DEBUG_SEGMENT_KIND_CASE), inner, arm.GetSteps(), depth)
+					walk(workflow, into(DebugSegmentKind_DEBUG_SEGMENT_KIND_CASE), inner, arm.GetSteps(), depth, serial)
 				}
-				walk(workflow, into(DebugSegmentKind_DEBUG_SEGMENT_KIND_CASE), inner, kind.Switch.GetDefault().GetSteps(), depth)
+				walk(workflow, into(DebugSegmentKind_DEBUG_SEGMENT_KIND_CASE), inner, kind.Switch.GetDefault().GetSteps(), depth, serial)
 			case *Node_Call:
 				if depth >= MaxCallDepth {
 					continue
@@ -504,14 +512,18 @@ func DebugStaticSites(wf *Workflow) ([]DebugStaticSite, bool) {
 				call[len(call)-1].Callee = callee.GetName()
 				// Isolated: a callee sees its own arguments and none of
 				// the caller's bare names ([CallScope]).
-				walk(callee, call, nil, callee.GetSteps(), depth+1)
+				walk(callee, call, nil, callee.GetSteps(), depth+1, serial)
 			}
 		}
 	}
-	walk(wf, nil, nil, wf.GetSteps(), 0)
+	walk(wf, nil, nil, wf.GetSteps(), 0, true)
 
 	return sites, truncated
 }
+
+// ConcurrentForEach reports that loop runs more than one iteration at once,
+// which is the only `for_each:` whose body is not a single position.
+func ConcurrentForEach(loop *ForEach) bool { return loop.GetMaxParallel() > 1 }
 
 // DebugDeclaredSteps yields the id of every step wf declares, and every step a
 // workflow it calls declares: at a top level, or in a loop body, parallel
@@ -587,7 +599,7 @@ func DebugDeclaredSteps(wf *Workflow) iter.Seq[string] {
 // exponentially through [MaxCallDepth] levels. Only indices, which no program declares, are not compared, so it may accept
 // a target [DebugTarget.Resolve] would not, never the reverse. Calls are
 // followed to [MaxCallDepth], as the sites are.
-func (t DebugTarget) DeclaredIn(wf *Workflow) bool { return t.declaredIn(wf, true) }
+func (t DebugTarget) DeclaredIn(wf *Workflow) bool { return t.declaredIn(wf, bodiesAll) }
 
 // DeclaredOutsideBodiesIn is [DebugTarget.DeclaredIn] asking only of the steps
 // declared outside every loop body, parallel branch and switch arm: at wf's
@@ -595,11 +607,48 @@ func (t DebugTarget) DeclaredIn(wf *Workflow) bool { return t.declaredIn(wf, tru
 // only steps a durable run holds at, so a target it rejects is one a durable
 // session can never stop at, however far past a truncated [DebugStaticSites]
 // the step lies.
-func (t DebugTarget) DeclaredOutsideBodiesIn(wf *Workflow) bool { return t.declaredIn(wf, false) }
+func (t DebugTarget) DeclaredOutsideBodiesIn(wf *Workflow) bool { return t.declaredIn(wf, bodiesNone) }
 
-// declaredIn is [DebugTarget.DeclaredIn], descending into loop bodies,
-// parallel branches and switch arms only when bodies is set.
-func (t DebugTarget) declaredIn(wf *Workflow, bodies bool) bool {
+// DeclaredInSerialBodiesIn is [DebugTarget.DeclaredIn] asking only of the
+// steps a run holds at once bodies are held in: those outside every
+// `parallel:` branch and concurrent `for_each:`, which is to say the sites
+// [DebugStaticSite.Serial] marks.
+func (t DebugTarget) DeclaredInSerialBodiesIn(wf *Workflow) bool {
+	return t.declaredIn(wf, bodiesSerial)
+}
+
+// bodyScope is how far into container bodies a walk of the program descends.
+type bodyScope int
+
+const (
+	// bodiesNone descends into calls alone.
+	bodiesNone bodyScope = iota
+	// bodiesSerial also descends into a `loop:`, a `switch:` arm and a
+	// `for_each:` that runs one iteration at a time.
+	bodiesSerial
+	// bodiesAll descends into every body.
+	bodiesAll
+)
+
+// descends reports whether a walk of this scope enters the body of node.
+func (b bodyScope) descends(node *Node) bool {
+	switch kind := node.GetKind().(type) {
+	case *Node_Call:
+		return true
+	case *Node_ForEach:
+		return b == bodiesAll || b == bodiesSerial && !ConcurrentForEach(kind.ForEach)
+	case *Node_Loop, *Node_Switch:
+		return b != bodiesNone
+	case *Node_Parallel:
+		return b == bodiesAll
+	}
+
+	return false
+}
+
+// declaredIn is [DebugTarget.DeclaredIn], descending into the bodies bodies
+// allows.
+func (t DebugTarget) declaredIn(wf *Workflow, bodies bodyScope) bool {
 	if len(t.parts) == 0 {
 		return false
 	}
@@ -659,7 +708,7 @@ func (t DebugTarget) declaredIn(wf *Workflow, bodies bool) bool {
 			into := func(kind DebugSegmentKind, callee string) []*DebugSegment {
 				return append(slices.Clip(chain), &DebugSegment{Kind: kind, StepId: node.GetId(), Callee: callee})
 			}
-			if _, call := node.GetKind().(*Node_Call); !call && !bodies {
+			if !bodies.descends(node) {
 				continue
 			}
 			var found bool

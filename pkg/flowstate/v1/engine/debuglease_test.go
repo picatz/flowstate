@@ -84,7 +84,21 @@ func runHeldFor(
 ) (time.Duration, *v1.Workflow_StepOutputs) {
 	t.Helper()
 
+	return runHeldAs(t, spec, script, false)
+}
+
+// runHeldAs is [runHeldFor] for a run that, when beforeBodyHolds is set,
+// replays a history recorded before the engine held inside bodies
+// ([engine.HoldInBodiesChange]).
+func runHeldAs(
+	t *testing.T, spec *v1.Workflow, script map[time.Duration][]scriptedAsk, beforeBodyHolds bool,
+) (time.Duration, *v1.Workflow_StepOutputs) {
+	t.Helper()
+
 	env := newWaitEnv(t)
+	if beforeBodyHolds {
+		env.OnGetVersion(engine.HoldInBodiesChange, workflow.DefaultVersion, 1).Return(workflow.DefaultVersion)
+	}
 	start := env.Now()
 
 	for at, asks := range script {
@@ -1063,20 +1077,9 @@ func TestAStepTheConditionSkippedIsNeverAPausePoint(t *testing.T) {
 		"and the skipped step stayed skipped")
 }
 
-// TestALeaseDoesNotHoldInsideASwitchArm is the `susp == 0` rule, asserted where
-// it can fail: a lease names one position, and a `switch:` arm is at a deeper
-// suspend level than the step that chose it — the same level a Continue-As-New
-// may not happen at, and the same reason [v1.DebugPosition] carries no `path`.
-//
-// `conformance.DebuggerCase.Held` states this asymmetry against the local
-// driver, which stops inside the arm; this is the durable half of it, and it
-// needs a window. The two sleeps make one: an ask that lands during the arm's
-// own sleep arrives after the last boundary a lease may hold at, so a run that
-// honours the rule finishes on time and one that does not holds for its lease
-// at a step the corpus says is not a pause point.
-func TestALeaseDoesNotHoldInsideASwitchArm(t *testing.T) {
-	t.Parallel()
-
+// switchArmSpec is a run whose only boundaries after t=60s are inside a
+// `switch:` arm: the two sleeps make the window an ask can land in.
+func switchArmSpec() *v1.Workflow {
 	spec := debugSpec("inside-an-arm")
 	spec.Steps = []*v1.Node{
 		sleepStep("settle", settleFor),
@@ -1095,17 +1098,39 @@ func TestALeaseDoesNotHoldInsideASwitchArm(t *testing.T) {
 		},
 	}
 
-	// The last boundary a lease may hold at is before `route`, at t=60s. The ask
-	// lands at t=90s, during the arm's own sleep, so the only boundaries left
-	// are inside the arm.
-	elapsed, outputs := runHeldFor(t, spec, map[time.Duration][]scriptedAsk{
+	return spec
+}
+
+// TestALeaseHoldsInsideASwitchArm: an arm has one position, so a lease holds
+// the run at a boundary in it. The two sleeps make a window: the ask lands
+// during the arm's own sleep, after the last boundary above the arm, so the
+// only boundary it can hold at is `inner`, and the run is held for the lease.
+func TestALeaseHoldsInsideASwitchArm(t *testing.T) {
+	t.Parallel()
+
+	elapsed, outputs := runHeldFor(t, switchArmSpec(), map[time.Duration][]scriptedAsk{
 		90 * time.Second: {pauseAt("sre-1@example.com", 5*time.Minute)},
 	})
 
+	assert.Equal(t, 2*settleFor+5*time.Minute, elapsed,
+		"the run was not held at the boundary inside the `switch:` arm")
+	assert.Contains(t, outputs.GetStepValues(), "inner", "and the arm still ran once the lease ended")
+}
+
+// TestAHistoryBeforeBodiesWereHeldDoesNotHoldInsideASwitchArm is the replay
+// half of [engine.HoldInBodiesChange]: a run recorded before the engine held
+// in bodies read no ask at a boundary in an arm, so replaying it must not
+// either, or the signal is consumed at a different point than history has it.
+func TestAHistoryBeforeBodiesWereHeldDoesNotHoldInsideASwitchArm(t *testing.T) {
+	t.Parallel()
+
+	elapsed, outputs := runHeldAs(t, switchArmSpec(), map[time.Duration][]scriptedAsk{
+		90 * time.Second: {pauseAt("sre-1@example.com", 5*time.Minute)},
+	}, true)
+
 	assert.Equal(t, 2*settleFor, elapsed,
-		"the run was held at a boundary inside a `switch:` arm, where it has no single position to hold at")
-	assert.Contains(t, outputs.GetStepValues(), "inner",
-		"and the arm still ran")
+		"a history recorded before bodies were held in was held at a boundary inside a `switch:` arm")
+	assert.Contains(t, outputs.GetStepValues(), "inner", "and the arm still ran")
 }
 
 // TestOneLeaseHoldsOneBoundary: a released lease does not re-hold at the next

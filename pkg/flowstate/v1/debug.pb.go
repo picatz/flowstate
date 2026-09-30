@@ -4135,7 +4135,9 @@ type DebugCarry struct {
 	Revision uint64               `protobuf:"varint,7,opt,name=revision,proto3" json:"revision,omitempty"`
 	// Next is what the next boundary does with the session attached.
 	Next DebugResumeAction `protobuf:"varint,8,opt,name=next,proto3,enum=flowstate.v1.DebugResumeAction" json:"next,omitempty"`
-	// StepDepth is the call depth a step over or out left from.
+	// StepDepth is the nesting a step over or out left from: the calls, loop
+	// iterations, branches and arms its stop was in, which is the number of
+	// segments in its address.
 	StepDepth   int32              `protobuf:"varint,9,opt,name=step_depth,json=stepDepth,proto3" json:"step_depth,omitempty"`
 	Until       string             `protobuf:"bytes,10,opt,name=until,proto3" json:"until,omitempty"`
 	Breakpoints []*DebugBreakpoint `protobuf:"bytes,11,rep,name=breakpoints,proto3" json:"breakpoints,omitempty"`
