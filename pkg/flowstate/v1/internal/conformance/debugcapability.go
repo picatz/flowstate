@@ -100,11 +100,15 @@ type CapabilityObserved struct {
 	After *v1.DebugSnapshot
 }
 
-// CapabilityOutcome is what became of a capability's commands.
+// CapabilityOutcome is what became of a capability's commands, and it is also
+// what a case expects of each driver: [CapabilityCase.Local] and
+// [CapabilityCase.Durable] are outcomes of this type, and the case's Read
+// returns one from what a driver answered.
 //
-// Expected, Applied says whether the driver does the thing and Says is text an
-// unapplied outcome's own words must contain, so that a refusal is named
-// rather than silent. Observed, Says is those words in full.
+// Applied says whether the driver did the thing. Says is the words of a refusal:
+// in a case's expectation it is text an unapplied outcome's own words must
+// contain, so that a refusal is named rather than silent; in what Read returns
+// it is those words in full.
 type CapabilityOutcome struct {
 	Applied bool
 	Says    string
@@ -161,7 +165,7 @@ func CapabilityCases() []CapabilityCase {
 		},
 	}
 
-	// A step that fails and is tolerated, so the run goes on past a failure a
+	// A step that fails and is tolerated, so the run goes on past the point a
 	// failure stop would hold at.
 	failing := &v1.Workflow{
 		Name:    "capability-failure",

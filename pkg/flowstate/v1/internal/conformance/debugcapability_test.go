@@ -204,10 +204,11 @@ func spliceCapabilityTable(doc, table string) (string, error) {
 // `go test ./pkg/flowstate/v1/internal/conformance -run TestTheDebuggingDocCapabilityTableIsTheCorpus -update`.
 func TestTheDebuggingDocCapabilityTableIsTheCorpus(t *testing.T) {
 	path := filepath.Join("..", "..", "..", "..", "..", "docs", "DEBUGGING.md")
+	// Required, not skipped: the document is part of the repository contract, so
+	// a deleted or renamed file, or a path this test no longer reaches, has to
+	// fail rather than pass without checking the table.
 	raw, err := os.ReadFile(path)
-	if err != nil {
-		t.Skip("not running from a checkout; nothing to compare the capability table against")
-	}
+	require.NoError(t, err, "docs/DEBUGGING.md holds the generated capability table this test checks")
 
 	table := capabilityTable(CapabilityCases())
 	want, err := spliceCapabilityTable(string(raw), table)
