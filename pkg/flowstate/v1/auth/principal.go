@@ -23,11 +23,16 @@ const (
 // Principal is an authenticated caller: the verified assertions a trusted
 // issuer made about whoever is on the other end of a request.
 //
-// A Principal is only ever produced from a token whose signature, lifetime,
-// issuer, and audience have all been checked, or from a client certificate
-// chain crypto/tls has verified ([PeerVerifier]), so every field can be trusted for
+// A Principal is produced from a token whose signature, lifetime, issuer, and
+// audience have all been checked, or from a client certificate chain crypto/tls
+// has verified ([PeerVerifier]), so every field can be trusted for
 // authorization decisions. [Principal.ID] is the stable identity to key those
 // decisions on, such as scoping workflow runs to a tenant.
+//
+// The one exception is [AnonymousPrincipal], which [InsecureAnonymousVerifier]
+// returns for every request with no token, no signature, and no trust policy:
+// nothing about it was verified. [Principal.IsAnonymous] tells it apart, and
+// authorization must refuse it anything privileged.
 //
 // The zero Principal is the unauthenticated caller: [Principal.IsZero] reports
 // true and [Principal.ID] returns the empty string, so code that forgets to
