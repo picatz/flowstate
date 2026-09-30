@@ -1,45 +1,34 @@
-// Package flowdap speaks the Debug Adapter Protocol over a paused
-// [flowdebug.Session], so an editor's step and continue buttons drive a real
-// flowstate run.
+// Package flowdap speaks the Debug Adapter Protocol over a
+// [flowdebug.Target], so an editor's step and continue buttons drive a real
+// flowstate run: a local [flowdebug.Session] the adapter launched, or a durable
+// run reached through [flowdebug.Remote].
 //
-// # Why this can exist now
+// # A translation, nothing else
 //
-// It could not before. A session's whole control surface was a *line of text*
-// and the run parks inside the debugger blocked reading one, so an adapter had
-// nobody to type: it would have had to compose command strings and parse the
-// human-readable output back. [flowdebug.Session.Control] and the value surface
-// beside it are what this maps onto, and every DAP request below is one call
-// into them.
+// Every DAP request is one call into the target's typed contract — its
+// snapshot, its breakpoint set, its movements and its value reads — which is
+// the same contract the terminal debugger, the CLI and the MCP tools drive.
+// This package holds no idea about stepping, no breakpoint semantics and no
+// scope of its own: a second implementation of any of those would be free to
+// disagree with the one people type at, which is this repository's
+// most-paid-for shape.
 //
-// That is the whole design. This package holds no idea about stepping, no
-// breakpoint set, no scope of its own — a second implementation of any of those
-// would be free to disagree with the one people type at, which is this
-// repository's most-paid-for shape. It is a translation and nothing else.
+// # Where source positions come from
 //
-// # What the seam cannot say, and what that costs
+// A step carries an `id` and no position, and so does the compiled program a
+// run executes. Lines come from a [v1.DebugSourceMap] built from the bytes the
+// launch compiled, bound to the program by its IR digest. With one, line
+// breakpoints (`setBreakpoints`) resolve to the step sites on that line, and
+// stack frames name their file and line. Function breakpoints are addressed by
+// step address (`build`, `pages/page`, `pages[2]/page`) and need no map.
 //
-// v1.Debugger is handed a v1.Node, and a node carries an `id` and no source
-// position. Nothing else the session `flow dap` builds is given carries one
-// either: it has no [flowdebug.Options.SourceMap], the one input that relates a
-// step to a line. Two consequences, both visible to a person in an editor, both
-// stated here rather than discovered:
-//
-//   - **Breakpoints are by step id, not by line.** DAP's `setBreakpoints` is
-//     addressed by source line, which this cannot honour without inventing a
-//     mapping it has no basis for. `setFunctionBreakpoints` is addressed by
-//     *name*, and a step id is a name, so that is the request this answers.
-//     In VS Code they appear under the Breakpoints view's function-breakpoint
-//     section rather than as red dots in the gutter.
-//   - **Stack frames carry no source.** A client shows the frame's name and
-//     cannot navigate to it.
-//
-// Both are answerable by parsing the workflow the run is executing and mapping
-// step ids to the positions the parser already records for diagnostics, which
-// is what `flowfile.SourceMap` builds. Handing one to this adapter's session is
-// a separate slice: it needs the file, which only a launch configuration knows,
-// and it is a different kind of work from speaking the protocol. Doing it here
-// would mean guessing at a position when the parse and the run disagree, which
-// is worse than admitting there is none.
+// A durable attach has no map. The IR carries no positions, so a local file
+// whose lines moved since the run was submitted compiles to the same digest and
+// would put frames and breakpoints on the wrong lines; the run records no
+// digest of its source to check a file against. An attached session therefore
+// shows step addresses, answers line breakpoints unverified, and narrows the
+// capabilities it offers (no logpoints, no failure stops) with a capabilities
+// event once it knows the backend.
 //
 // # One thread, deliberately
 //
@@ -110,23 +99,35 @@ type event struct {
 
 // capabilities is the initialize response body.
 type capabilities struct {
-	// Breakpoints by name, because a step id is a name and the seam has no
-	// lines. See the package comment.
-	SupportsFunctionBreakpoints bool `json:"supportsFunctionBreakpoints"`
+	SupportsConfigurationDoneRequest  bool              `json:"supportsConfigurationDoneRequest"`
+	SupportsFunctionBreakpoints       bool              `json:"supportsFunctionBreakpoints"`
+	SupportsConditionalBreakpoints    bool              `json:"supportsConditionalBreakpoints"`
+	SupportsHitConditionalBreakpoints bool              `json:"supportsHitConditionalBreakpoints"`
+	SupportsLogPoints                 bool              `json:"supportsLogPoints"`
+	SupportsEvaluateForHovers         bool              `json:"supportsEvaluateForHovers"`
+	SupportsTerminateRequest          bool              `json:"supportsTerminateRequest"`
+	SupportTerminateDebuggee          bool              `json:"supportTerminateDebuggee"`
+	SupportsDelayedStackTraceLoading  bool              `json:"supportsDelayedStackTraceLoading"`
+	ExceptionBreakpointFilters        []exceptionFilter `json:"exceptionBreakpointFilters"`
+}
 
-	// Told about configurationDone, so breakpoints set before the run starts
-	// are in place when it does. Without it a client launches and the run is
-	// already past the step somebody meant to stop at.
-	SupportsConfigurationDoneRequest bool `json:"supportsConfigurationDoneRequest"`
+// exceptionFilter is one kind of failure stop an editor offers as a checkbox.
+type exceptionFilter struct {
+	Filter      string `json:"filter"`
+	Label       string `json:"label"`
+	Description string `json:"description,omitempty"`
+}
 
-	// `evaluate` answers in the REPL and on hover, which is the debug console
-	// this package exists to make useful.
-	SupportsEvaluateForHovers bool `json:"supportsEvaluateForHovers"`
+// source names a document the way an editor opens it.
+type source struct {
+	Name string `json:"name"`
+	Path string `json:"path"`
 }
 
 type stoppedBody struct {
 	Reason            string `json:"reason"`
 	Description       string `json:"description,omitempty"`
+	Text              string `json:"text,omitempty"`
 	ThreadID          int    `json:"threadId"`
 	AllThreadsStopped bool   `json:"allThreadsStopped"`
 }
@@ -152,6 +153,14 @@ type stackFrame struct {
 	// with more confidence than "nowhere".
 	Line   int `json:"line"`
 	Column int `json:"column"`
+
+	// Source is where the frame's step is written, when a verified source map
+	// says so.
+	Source *source `json:"source,omitempty"`
+
+	// PresentationHint is "subtle" for a container frame: a loop iteration, a
+	// parallel branch, a switch arm or a call the stop is inside.
+	PresentationHint string `json:"presentationHint,omitempty"`
 }
 
 type stackTraceBody struct {
@@ -162,6 +171,7 @@ type stackTraceBody struct {
 type scope struct {
 	Name               string `json:"name"`
 	VariablesReference int    `json:"variablesReference"`
+	NamedVariables     int    `json:"namedVariables,omitempty"`
 	Expensive          bool   `json:"expensive"`
 }
 
@@ -176,6 +186,12 @@ type variable struct {
 	// reference is a promise that `variables` will expand it. Handing out a
 	// reference this adapter would then refuse is worse than a flat value.
 	VariablesReference int `json:"variablesReference"`
+
+	// Type is the value's CEL type.
+	Type string `json:"type,omitempty"`
+
+	// EvaluateName is the expression that reads this value again.
+	EvaluateName string `json:"evaluateName,omitempty"`
 }
 
 type variablesBody struct {
@@ -184,10 +200,14 @@ type variablesBody struct {
 
 type evaluateBody struct {
 	Result             string `json:"result"`
+	Type               string `json:"type,omitempty"`
 	VariablesReference int    `json:"variablesReference"`
 }
 
 type breakpoint struct {
+	// ID is the number an editor knows the breakpoint by across updates.
+	ID int `json:"id,omitempty"`
+
 	// Verified says the session took it.
 	//
 	// It is not a claim that the run will reach it, and cannot be: breakpoints
@@ -206,6 +226,10 @@ type breakpoint struct {
 	// stop that cannot come.
 	Verified bool   `json:"verified"`
 	Message  string `json:"message,omitempty"`
+
+	// Line is the line a source breakpoint was set on.
+	// A pointer so a zero-based client's first line is sent, not omitted.
+	Line *int `json:"line,omitempty"`
 }
 
 type breakpointsBody struct {

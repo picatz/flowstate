@@ -150,9 +150,9 @@ func TestACalleeReportsItsOwnWorkflowWithNoRuntimeAtAll(t *testing.T) {
 	assert.Equal(t, []string{"outer", "outer", "inner"}, seen,
 		"the callee's steps did not report the callee, so a caller's `build` and a "+
 			"callee's are one name to everything downstream")
-	assert.Contains(t, console.String(), "#0 inner.build (task",
+	assert.Contains(t, console.String(), "#1 inner.build (task",
 		"the current frame did not name the callee's step")
-	assert.Contains(t, console.String(), "#1 outer.nested (call",
+	assert.Contains(t, console.String(), "#2 outer.nested (call",
 		"the caller frame was reconstructed from something other than the engine's call chain")
 }
 

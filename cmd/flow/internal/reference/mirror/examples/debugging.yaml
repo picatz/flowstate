@@ -1,0 +1,57 @@
+edition: v2026.3
+name: debugging
+description: A small order batch with a loop, a parallel block and a call, written to be stepped through by the debugger locally, from an editor, and durably.
+inputs:
+  amounts:
+    type: list
+    default:
+      - 120
+      - 900
+      - 40
+    description: the order amounts to charge, in cents
+  threshold:
+    type: int
+    default: 500
+    description: the amount above which an order needs review
+  settle:
+    type: string
+    default: 0s
+    description: how long to wait before charging, which gives a durable debugger time to attach
+debug:
+  allow:
+    - claims:
+        team: sre
+steps:
+  - id: settle
+    sleep: ${duration(inputs.settle)}
+  - id: orders
+    for_each:
+      items: ${inputs.amounts}
+      as: amount
+      steps:
+        - id: charge
+          log:
+            message: ${"charging %d".format([amount])}
+  - id: flagged
+    value: ${inputs.amounts.filter(a, a > inputs.threshold)}
+  - id: checks
+    parallel:
+      - steps:
+          - id: stock
+            log:
+              message: stock reserved
+      - steps:
+          - id: fraud
+            log:
+              message: ${"%d order(s) held for review".format([size(steps.flagged.value)])}
+  - id: receipt
+    call: ./workflows/receipt.yaml
+    with:
+      count: ${size(inputs.amounts)}
+  - id: done
+    log:
+      message: '${"batch done: " + steps.receipt.summary}'
+outputs:
+  flagged:
+    value: ${steps.flagged.value}
+    description: the amounts over the threshold

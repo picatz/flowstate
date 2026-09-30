@@ -3,8 +3,10 @@ package main
 import (
 	"errors"
 	"fmt"
+	"net"
 	"strings"
 
+	"connectrpc.com/connect"
 	"github.com/spf13/cobra"
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 	"google.golang.org/protobuf/proto"
@@ -58,10 +60,10 @@ import (
 // marked, because there is no specification to ask. The same rule covers an older
 // run whose spec predates this field even when one is nominally in hand: a
 // [*v1.Workflow] with no [v1.OutputDeclaration] naming a value at all answers
-// [sensitiveOutputNames] with an empty set, which redacts nothing for that name —
+// [v1.SensitiveOutputNames] with an empty set, which redacts nothing for that name —
 // deliberately not fail-closed in that one case, because a value the file never
 // declared sensitive is not this file's business to guess about; see
-// [sensitiveOutputNames]'s own comment.
+// [v1.SensitiveOutputNames]'s own comment.
 //
 // # The transcript, which is not [v1.RunOutputs]
 //
@@ -147,33 +149,6 @@ func redactedValue(name string) *v1.Value {
 	}
 }
 
-// sensitiveOutputNames is the set of declared output names a workflow specification
-// marked `sensitive: true`, or nil when no specification is available to consult at
-// all.
-//
-// nil and "empty set" are different answers and callers below rely on the
-// difference: an empty, non-nil set from a real specification means "this file
-// declared no sensitive outputs," which redacts nothing; nil means "there is no
-// file to ask," which is the fail-closed case that redacts everything. Collapsing
-// the two would either reveal a declared-sensitive value when the wrong renderer
-// forgot to pass its spec, or redact every unsensitive value the moment any
-// workflow anywhere declares one sensitive output — neither is the answer this
-// function's callers want.
-func sensitiveOutputNames(workflow *v1.Workflow) map[string]bool {
-	if workflow == nil {
-		return nil
-	}
-
-	names := make(map[string]bool)
-	for _, declared := range workflow.GetDeclaredOutputs() {
-		if declared.GetSensitive() {
-			names[declared.GetName()] = true
-		}
-	}
-
-	return names
-}
-
 // executedSpecification is the specification a follow may redact against: the one
 // this process submitted, when the server attested that it is also the one that
 // ran, and nil — the fail-closed case every function above already handles —
@@ -242,7 +217,7 @@ func noteUnattestedSpecification(surface *ui.UI) {
 // fail-closed case CLAUDE.md's "fail closed" section requires: every name is
 // withheld rather than guessed at, because nothing here can determine which ones
 // the workflow actually marked. A non-nil sensitive redacts precisely the names it
-// names and nothing else — see [sensitiveOutputNames].
+// names and nothing else — see [v1.SensitiveOutputNames].
 //
 // reveal is `--reveal-sensitive`, typed on purpose for this one invocation. It is
 // the only thing that defeats either path, and it defeats both the same way: shown
@@ -332,7 +307,7 @@ const (
 //
 // # Why this reads declared inputs as well as declared outputs
 //
-// [sensitiveOutputNames] is the right question for [v1.RunOutputs], which is
+// [v1.SensitiveOutputNames] is the right question for [v1.RunOutputs], which is
 // keyed by declared output name and can therefore be redacted precisely. It is
 // the wrong question here. `vars:` is very often just `${inputs.<name>}`, and a
 // loop's `state:` carries whatever the body computed from it, so a workflow
@@ -622,7 +597,7 @@ func redactGetResponse(response *v1.GetResponse, workflow *v1.Workflow, reveal b
 		return response
 	}
 
-	sensitive := sensitiveOutputNames(workflow)
+	sensitive := v1.SensitiveOutputNames(workflow)
 	carried := decideCarriedValues(workflow, reveal)
 
 	clone, ok := proto.Clone(response).(*v1.GetResponse)
@@ -857,7 +832,7 @@ func redactFailureText(response *v1.GetResponse, sensitive v1.SensitiveValues) *
 // arguments the binder refuses. All four surfaces read the same `inputs:`
 // declarations the same way and refuse the same two calls — [runInputs] (or
 // the tool's own [runLocalToolInputs]) and [checkRunInputs] (or
-// [checkToolRunInputs]) — so one set serves every refusal rather than one per
+// [jsonRunInputs]) — so one set serves every refusal rather than one per
 // caller (#2076).
 //
 // cmd carries [sensitiveInputWords]'s one CLI-specific source, `--input
@@ -1033,4 +1008,22 @@ func runSensitiveValues(workflow *v1.Workflow, submitted map[string]*v1.Value, r
 	}
 
 	return v1.SensitiveInputValues(bound, names)
+}
+
+// noServerAnswered reports whether err is a failure to reach a server rather
+// than a server's own answer: a transport error, or one this process raised
+// before any bytes left it ([clientSideError]). Connect reports both as
+// unavailable, and so can a server that answered, with detail of its own, so
+// the code alone does not say which. Such a failure quotes no argument a run
+// was sent, and a refusal that names the address it dialed is left readable.
+func noServerAnswered(err error) bool {
+	if connect.CodeOf(err) != connect.CodeUnavailable {
+		return false
+	}
+	if _, ok := errors.AsType[*clientSideError](err); ok {
+		return true
+	}
+	_, transport := errors.AsType[net.Error](err)
+
+	return transport
 }

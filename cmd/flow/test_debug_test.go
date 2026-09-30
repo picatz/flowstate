@@ -67,6 +67,20 @@ func TestDebugStepsThroughTheSelectedCase(t *testing.T) {
 	assert.Contains(t, res.Stdout, "PASS", "and the report still prints after the session ends")
 }
 
+// TestDebugRefusesAConditionNothingCanBind is #2194 under `flow test --debug`:
+// the session is given the case's workflow, so a condition naming a name no
+// site of its step binds is refused when it is typed.
+func TestDebugRefusesAConditionNothingCanBind(t *testing.T) {
+	dir := writeDebugFixture(t)
+
+	res := runFlowStdin(t, "break second if nosuch > 1\ncontinue\n", "test", "--debug", "--run", "the debugged case", dir)
+	require.NoError(t, res.Err)
+
+	assert.Contains(t, res.Stdout, "break second: `nosuch` is not bound where this breakpoint fires")
+	assert.NotContains(t, res.Stdout, `break at second (`, "a refused breakpoint held the run")
+	assert.Contains(t, res.Stdout, "PASS")
+}
+
 // TestDebugInspectsTheRunsScope: the reason to stop at all.
 func TestDebugInspectsTheRunsScope(t *testing.T) {
 	dir := writeDebugFixture(t)

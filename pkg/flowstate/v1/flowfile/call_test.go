@@ -668,3 +668,33 @@ func mustValidate(t *testing.T, path string) flowfile.Diagnostics {
 	require.NoError(t, err)
 	return ds
 }
+
+// TestARootCompiledFromAFileRecordsItsSourceDigest: a root compiled from a
+// file records the digest of the bytes it came from, so the program's
+// identity covers where its steps are written, and a file whose lines moved
+// is a different program. Bytes with no file behind them record none, and a
+// callee's digest stays its call's.
+func TestARootCompiledFromAFileRecordsItsSourceDigest(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeFile(t, dir, "callee.yaml", "edition: v2026.3\nname: callee\nsteps:\n  - id: hi\n    log:\n      message: hi\n")
+	root := "edition: v2026.3\nname: root\nsteps:\n  - id: go\n    call: ./callee.yaml\n"
+	path := writeFile(t, dir, "root.yaml", root)
+
+	workflow, _, err := flowfile.ParseFile(path)
+	require.NoError(t, err)
+	require.Equal(t, v1.ContentDigest([]byte(root)), workflow.GetSourceDigest())
+	call := workflow.GetSteps()[0].GetCall()
+	require.NotEmpty(t, call.GetSourceDigest(), "the call records its callee's bytes")
+	require.Empty(t, call.GetWorkflow().GetSourceDigest(), "a callee recorded a root's digest")
+
+	unfiled, err := flowfile.Unmarshal([]byte("edition: v2026.3\nname: root\nsteps:\n  - id: hi\n    log:\n      message: hi\n"))
+	require.NoError(t, err)
+	require.Empty(t, unfiled.GetSourceDigest(), "bytes with no file behind them recorded a digest")
+
+	moved, _, err := flowfile.ParseAt([]byte("# moved\n"+root), path)
+	require.NoError(t, err)
+	require.NotEqual(t, v1.WorkflowIRDigest(workflow), v1.WorkflowIRDigest(moved),
+		"a file whose lines moved named the same program")
+}

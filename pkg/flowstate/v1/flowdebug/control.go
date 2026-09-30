@@ -501,7 +501,8 @@ func (s *Session) setBreakpoints(ids []string, redact func(string) string, check
 		// makes: this set replaces rather than adds, so what it may cost is
 		// decided before anything is touched. Duplicates only make the result
 		// smaller than the number checked.
-		s.breakpoints[id] = breakpoint{source: id, id: id, target: v1.ParseDebugTargetOrStep(id)}
+		s.breakpoints[id] = breakpoint{source: id, id: id, target: v1.ParseDebugTargetOrStep(id),
+			definition: &v1.DebugBreakpoint{Id: id, Step: id}}
 	}
 
 	return nil

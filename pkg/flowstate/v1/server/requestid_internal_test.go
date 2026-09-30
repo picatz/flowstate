@@ -204,3 +204,21 @@ func withField(fields map[string]string, name, value string) map[string]string {
 	out[name] = value
 	return out
 }
+
+// TestSubmissionKeyIgnoresTheRootSourceDigest: the root's source digest
+// records which bytes a client compiled the program from, not what the
+// program does, so a retry from an edited comment, or from the same bytes
+// compiled without a file, is the same submission. The digest does not
+// change what the submitted workflow says.
+func TestSubmissionKeyIgnoresTheRootSourceDigest(t *testing.T) {
+	t.Parallel()
+
+	inputs := map[string]*v1.Value{"a": v1.NewLiteral("1")}
+	one := submissionFor(t, "team-a", "job-1", inputs)
+
+	sourced := &v1.Workflow{Name: "w", SourceDigest: v1.ContentDigest([]byte("name: w\n"))}
+	fromFile, err := newSubmissionKey("team-a", "job-1", sourced, inputs)
+	require.NoError(t, err)
+	require.Equal(t, one.submission, fromFile.submission, "a program compiled from a file is another submission")
+	require.NotEmpty(t, sourced.GetSourceDigest(), "the key changed the workflow it was given")
+}

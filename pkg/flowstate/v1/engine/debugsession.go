@@ -65,8 +65,10 @@ type heldStop struct {
 	// spec is the workflow whose step the run stopped before, the callee's
 	// when the stop is inside one, so its scope is read against its own
 	// declarations.
-	spec       *v1.Workflow
-	scope      *v1.Scope
+	spec  *v1.Workflow
+	scope *v1.Scope
+	// callers is [executor.callerSensitive] where the run stopped.
+	callers    v1.SensitiveValues
 	occurrence *v1.DebugOccurrence
 	reason     v1.DebugStopReason
 	hitIDs     []string
@@ -96,10 +98,20 @@ func restoreDebugCarry(ctx workflow.Context, encoded []byte) *v1.DebugCarry {
 
 // encodeDebugCarry is the carry for the next segment, or nil when nothing is
 // worth carrying.
+//
+// Whether a call has handed back something withheld is decided here, from
+// this segment and the ones before it, rather than read off the carry: an
+// attach or a session's end replaces the carry, and the next segment must
+// withhold what those calls handed back all the same (#2213).
 func (d *debugControl) encodeDebugCarry() []byte {
-	if d == nil || (!d.attached() && len(d.carry.GetReceipts()) == 0) {
+	if d == nil {
 		return nil
 	}
+	returned := d.returnedBefore || d.returnedHere
+	if !d.attached() && len(d.carry.GetReceipts()) == 0 && !returned {
+		return nil
+	}
+	d.carry.ReturnedWithheld = returned
 	encoded, err := proto.MarshalOptions{Deterministic: true}.Marshal(d.carry)
 	if err != nil {
 		return nil
@@ -216,7 +228,7 @@ func (e *executor) applyTypedAsk(ask *v1.DebugAsk, parseErr error, sender *v1.Si
 				Receipts:       d.carry.GetReceipts(),
 			}
 			d.parsed = nil
-			d.pendingPause = ask.Request
+			e.debugPausePending(ask.Request)
 			logger.Info("debug session attached", "session", ask.Session,
 				"holder", v1.QualifiedSubject(sender.GetIdentity().GetIssuer(), sender.GetIdentity().GetSubject()),
 				"lease_expires_at", d.carry.GetLeaseExpiresAt().AsTime(), "session_ends_at", deadline)
@@ -239,7 +251,7 @@ func (e *executor) applyTypedAsk(ask *v1.DebugAsk, parseErr error, sender *v1.Si
 			default:
 				d.carry.PauseRequested = true
 				d.carry.Revision++
-				d.pendingPause = ask.Request
+				e.debugPausePending(ask.Request)
 			}
 		}
 
@@ -259,8 +271,21 @@ func (e *executor) applyTypedAsk(ask *v1.DebugAsk, parseErr error, sender *v1.Si
 			d.receipt(ask.Request, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_REFUSED, "run until names no step")
 		default:
 			if ask.Action == v1.DebugResumeAction_DEBUG_RESUME_ACTION_RUN_UNTIL {
-				if _, err := v1.ParseDebugTarget(ask.Until); err != nil {
+				target, err := v1.ParseDebugTarget(ask.Until)
+				if err != nil {
 					d.receipt(ask.Request, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_REFUSED, err.Error())
+
+					return
+				}
+				// A target the run can never stop at would release it to
+				// the end: refused, and the run stays held. Behind
+				// [untilRefusalChange], asked only where the answer
+				// differs, so a history that applied such a resume replays
+				// applying it.
+				sites, truncated := e.debugStaticSites()
+				_, why := durableSites(target, ask.Until, e.spec, sites, truncated, "run until")
+				if why != "" && workflow.GetVersion(e.ctx, untilRefusalChange, workflow.DefaultVersion, 1) != workflow.DefaultVersion {
+					d.receipt(ask.Request, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_REFUSED, why)
 
 					return
 				}
@@ -269,6 +294,8 @@ func (e *executor) applyTypedAsk(ask *v1.DebugAsk, parseErr error, sender *v1.Si
 			d.carry.Until = ask.Until
 			d.carry.StepDepth = int32(callDepthOf(d.held.occurrence))
 			d.carry.Revision++
+			d.untilSensitive = d.sensitiveAt(d.held.spec, d.held.scope, d.held.callers)
+			d.untilSensitiveKnown = true
 			d.lease = nil
 			d.held = heldStop{}
 			d.receipt(ask.Request, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_APPLIED, "")
@@ -324,6 +351,113 @@ func (e *executor) refuseForeign(ask *v1.DebugAsk) {
 	}
 }
 
+// debugBreakpointDefined is the state of the i-th carried breakpoint before it
+// is compiled: its id, assigned when the client left it empty, and its
+// definition under that id. A durable session redacts no breakpoint text, its
+// ids included; the definition is what the attached client sent.
+func debugBreakpointDefined(bp *v1.DebugBreakpoint, i int) *v1.DebugBreakpointState {
+	state := &v1.DebugBreakpointState{Id: bp.GetId(), Definition: proto.CloneOf(bp)}
+	if state.Id == "" {
+		state.Id = fmt.Sprintf("bp-%d", i+1)
+		state.Definition.Id = state.Id
+	}
+
+	return state
+}
+
+// durablyHeld reports whether the durable driver holds at site: at the top
+// level of the run or of a called workflow, where a run has one position. Every
+// other container runs its body at `susp > 0` (see debuglease.go).
+func durablyHeld(site v1.DebugStaticSite) bool {
+	for _, segment := range site.Chain {
+		if segment.GetKind() != v1.DebugSegmentKind_DEBUG_SEGMENT_KIND_CALL {
+			return false
+		}
+	}
+
+	return true
+}
+
+// untilRefusalChange is the [workflow.GetVersion] changeID guarding the
+// refusal of a durable `until` whose target the run can never stop at. An
+// engine before it applied such a resume and released the run, and a history
+// it recorded has the resume applied and the run moving on; replaying that
+// history into a refusal would park the run where history has it running, a
+// nondeterminism error. A history without the marker keeps applying it.
+const untilRefusalChange = "engine.debug.refuseUnholdableUntil"
+
+// truncatedArmChange is the [workflow.GetVersion] changeID guarding the arming
+// of a breakpoint that matches no enumerated site when the enumeration stopped
+// at [v1.MaxDebugStaticSites]. An engine before it refused such a breakpoint,
+// and a history it recorded has the run passing the step unheld; replaying
+// that history into a hold would be a nondeterminism error.
+const truncatedArmChange = "engine.debug.armPastTruncatedSites"
+
+// conditionScopeChange is the [workflow.GetVersion] changeID guarding the
+// refusal of a breakpoint whose condition reads a bare name none of its sites
+// binds ([v1.CheckDebugConditionScope]). An engine before it armed such a
+// breakpoint and evaluated the condition at each arrival, charging its cost
+// to the segment; a bare step id still resolves there, in the spelling
+// rooting retired, so such a breakpoint could also stop the run. A history it
+// recorded replays arming it.
+const conditionScopeChange = "engine.debug.refuseUnboundConditionNames"
+
+// lateAskChange is the [workflow.GetVersion] changeID guarding the debug asks
+// a completing run applies after its last step ([executor.debugRunCompleted]).
+// An engine before it left them on the channel, and a history it recorded has
+// them unread; applying one on replay can record a version marker that
+// history lacks.
+const lateAskChange = "engine.debug.applyAsksAtCompletion"
+
+// pauseReceiptsChange is the [workflow.GetVersion] changeID guarding the
+// receipt of every pause asked before a hold ([debugControl.pendingPauses]).
+// An engine before it receipted only the last, and a receipt decides whether
+// a retry of the same request is applied again: replaying a history it
+// recorded, in which an earlier request's retry paused the run once more,
+// into one that ignores the retry would be a nondeterminism error.
+const pauseReceiptsChange = "engine.debug.receiptEveryPause"
+
+// durableSites resolves target to the sites the durable driver can hold at,
+// or says why there are none: no site matches it, or every one it matches is
+// inside a loop body, a parallel branch or a switch arm, which is never an
+// arrival here. verb is how the refusal tells the reader to name the
+// enclosing step instead. Breakpoints and `until` both ask this, so a target
+// one refuses the other refuses in the same words.
+//
+// truncated says sites stopped at [v1.MaxDebugStaticSites]. A step past the
+// cut can still be an arrival the target matches, so there the program as
+// written decides: a target it declares where a durable run holds
+// ([v1.DebugTarget.DeclaredOutsideBodiesIn]) is kept, with only the sites
+// enumerated before the cut listed — none, when its only match lies past it —
+// and any other is refused as the complete enumeration would refuse it.
+func durableSites(target v1.DebugTarget, text string, spec *v1.Workflow, sites []v1.DebugStaticSite, truncated bool, verb string) ([]v1.DebugStaticSite, string) {
+	resolved := target.Resolve(sites)
+	held := slices.DeleteFunc(slices.Clone(resolved), func(site v1.DebugStaticSite) bool { return !durablyHeld(site) })
+	switch {
+	case len(held) > 0 || truncated && target.DeclaredOutsideBodiesIn(spec):
+		return held, ""
+	case len(resolved) > 0 || truncated && target.DeclaredIn(spec):
+		return nil, fmt.Sprintf("%q is inside a loop body, a parallel branch or a switch arm, which a durable run "+
+			"executes as a unit and never holds in; %s the enclosing step instead", text, verb)
+	default:
+		return nil, fmt.Sprintf("no step matches %q", text)
+	}
+}
+
+// debugStaticSites is [v1.DebugStaticSites] of the run's specification,
+// enumerated on first use and kept for the segment. It is pure over a
+// specification the run never changes, so taking it once rather than per call
+// changes no answer and records nothing in history.
+func (e *executor) debugStaticSites() ([]v1.DebugStaticSite, bool) {
+	d := e.debug
+	if !d.sitesKnown {
+		d.sites, d.sitesTruncated = v1.DebugStaticSites(e.spec)
+		d.sitesKnown = true
+	}
+
+	return d.sites, d.sitesTruncated
+}
+
 // parseDebugBreakpoints compiles the carried breakpoints once per segment.
 func (e *executor) parseDebugBreakpoints() {
 	d := e.debug
@@ -331,13 +465,13 @@ func (e *executor) parseDebugBreakpoints() {
 		return
 	}
 
-	sites, _ := v1.DebugStaticSites(e.spec)
+	sites, truncated := e.debugStaticSites()
+	// What the whole program binds, taken once for every condition below
+	// rather than once per condition (Codex, #2202).
+	var names *v1.DebugProgramNames
 	d.parsed = make([]parsedBreakpoint, 0, len(d.carry.GetBreakpoints()))
 	for i, bp := range d.carry.GetBreakpoints() {
-		parsed := parsedBreakpoint{state: &v1.DebugBreakpointState{Id: bp.GetId()}}
-		if parsed.state.Id == "" {
-			parsed.state.Id = fmt.Sprintf("bp-%d", i+1)
-		}
+		parsed := parsedBreakpoint{state: debugBreakpointDefined(bp, i)}
 		refuse := func(message string) {
 			parsed.state.Verified = false
 			parsed.state.Message = message
@@ -357,9 +491,24 @@ func (e *executor) parseDebugBreakpoints() {
 
 				break
 			}
-			resolved := target.Resolve(sites)
-			if len(resolved) == 0 {
-				refuse(fmt.Sprintf("no step matches %q", bp.GetStep()))
+			// Only a site the durable driver can hold at arms it: a
+			// breakpoint that reported armed elsewhere would claim a stop
+			// that never comes. Refusing one needs no version marker: it
+			// could never match an arrival, which is only ever at a site
+			// the complete enumeration calls holdable, so a history that
+			// armed it recorded nothing it did.
+			resolved, why := durableSites(target, bp.GetStep(), e.spec, sites, truncated, "break at")
+			// Past a truncated enumeration a target matching no site before
+			// the cut, declared where a durable run holds, is armed. An
+			// engine before [truncatedArmChange] refused it, as matching
+			// nothing, and a history it recorded replays refusing it: asked
+			// only where the answer differs.
+			if why == "" && len(resolved) == 0 && len(target.Resolve(sites)) == 0 &&
+				workflow.GetVersion(e.ctx, truncatedArmChange, workflow.DefaultVersion, 1) == workflow.DefaultVersion {
+				why = fmt.Sprintf("no step matches %q", bp.GetStep())
+			}
+			if why != "" {
+				refuse(why)
 
 				break
 			}
@@ -376,12 +525,30 @@ func (e *executor) parseDebugBreakpoints() {
 
 					break
 				}
+				// The sites it can fire at, as the local driver asks it. Past
+				// a truncated enumeration they are not known, and the
+				// condition is armed with that said. Asked of the version
+				// only where the answer differs, as [truncatedArmChange] is.
+				if !truncated && names == nil {
+					names = v1.NewDebugProgramNames(sites)
+				}
+				if truncated {
+					parsed.state.Message = fmt.Sprintf("the condition's names are not checked: "+
+						"this program's steps were enumerated only to %d", v1.MaxDebugStaticSites)
+				} else if err := v1.CheckDebugConditionScope(compiled, e.spec.GetProfile(), resolved, names); err != nil &&
+					workflow.GetVersion(e.ctx, conditionScopeChange, workflow.DefaultVersion, 1) != workflow.DefaultVersion {
+					refuse("condition: " + e.debugRedactText(err.Error()))
+
+					break
+				}
 				parsed.condition = compiled
 			}
 			parsed.target, parsed.hit = target, hit
 			parsed.state.Verified = true
 			for _, site := range resolved {
-				parsed.state.Sites = append(parsed.state.Sites, site.Site)
+				// Cloned: the sites are the segment's, shared by every
+				// parse, and a state is the breakpoint's own.
+				parsed.state.Sites = append(parsed.state.Sites, proto.CloneOf(site.Site))
 			}
 		}
 		d.parsed = append(d.parsed, parsed)
@@ -420,7 +587,7 @@ func (e *executor) endDebugSession(state v1.DebugRunState, message string) {
 		Message:  message,
 	}
 	d.parsed = nil
-	d.pendingPause = ""
+	d.pendingPauses = nil
 	d.held = heldStop{}
 	if d.lease != nil {
 		d.lease = nil
@@ -455,7 +622,7 @@ func (e *executor) typedArrival(node *v1.Node) {
 	d.carry.PauseRequested = false
 	d.carry.Next = v1.DebugResumeAction_DEBUG_RESUME_ACTION_CONTINUE
 	d.carry.Until = ""
-	d.held = heldStop{spec: e.curSpec, scope: e.scope, occurrence: occurrence, reason: reason, hitIDs: hitIDs}
+	d.held = heldStop{spec: e.curSpec, scope: e.scope, callers: e.positionSensitive(), occurrence: occurrence, reason: reason, hitIDs: hitIDs}
 	d.lease = &v1.DebugSession{
 		SessionId:      d.carry.GetSessionId(),
 		Run:            d.run,
@@ -463,10 +630,10 @@ func (e *executor) typedArrival(node *v1.Node) {
 		AttachedAt:     d.carry.GetAttachedAt(),
 		LeaseExpiresAt: d.carry.GetLeaseExpiresAt(),
 	}
-	if d.pendingPause != "" {
-		d.receipt(d.pendingPause, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_APPLIED, "")
-		d.pendingPause = ""
+	for _, request := range d.pendingPauses {
+		d.receipt(request, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_APPLIED, "")
 	}
+	d.pendingPauses = nil
 	workflow.GetLogger(e.ctx).Info("debug session holding the run", "session", d.carry.GetSessionId(),
 		"at", occurrence.GetAddress(), "reason", reason.String())
 }
@@ -551,10 +718,32 @@ func (e *executor) debugHoldEnded() {
 }
 
 // sensitiveAt is what a debugger must not be shown at a point in the run: the
-// run's own declared-sensitive inputs, and those spec declares of scope's
-// inputs, which differ inside a callee.
-func (d *debugControl) sensitiveAt(spec *v1.Workflow, scope *v1.Scope) v1.SensitiveValues {
-	return d.rootSensitive.Merge(v1.SensitiveInputValues(scope.GetInputs(), v1.SensitiveInputNames(spec)))
+// run's own declared-sensitive inputs, those of every caller between the root
+// and the workflow running there, and those spec declares of scope's inputs,
+// which differ inside a callee. Sensitivity belongs to a value's origin, so a
+// value a middle workflow declared sensitive stays withheld in whatever it
+// calls with it.
+func (d *debugControl) sensitiveAt(spec *v1.Workflow, scope *v1.Scope, callers v1.SensitiveValues) v1.SensitiveValues {
+	if d.returnedBefore {
+		// What an earlier segment's calls handed back is in this scope, and
+		// what it withheld was not carried ([v1.DebugCarry.returned_withheld]).
+		return v1.WithheldSensitiveValues()
+	}
+
+	return d.rootSensitive.Merge(callers).Merge(v1.SensitiveInputValues(scope.GetInputs(), v1.SensitiveInputNames(spec)))
+}
+
+// calleeCallerSensitive is what a callee of this executor inherits as
+// [executor.callerSensitive]: this executor's own, and, inside a callee, the
+// inputs curSpec declares sensitive. The root's are the debug control's
+// already, and a run that declares no `debug:` stanza has no debugger to
+// withhold anything from.
+func (e *executor) calleeCallerSensitive() v1.SensitiveValues {
+	if e.debug == nil || !e.debug.declared || e.curSpec == e.spec {
+		return e.positionSensitive()
+	}
+
+	return e.positionSensitive().Merge(v1.SensitiveInputValues(e.scope.GetInputs(), v1.SensitiveInputNames(e.curSpec)))
 }
 
 // debugRedactText withholds the declared-sensitive inputs from text the run
@@ -563,7 +752,14 @@ func (d *debugControl) sensitiveAt(spec *v1.Workflow, scope *v1.Scope) v1.Sensit
 // other. It is presentation, as inspection's redaction is, and deterministic,
 // since it reads only the recorded scope.
 func (e *executor) debugRedactText(text string) string {
-	sensitive := e.debug.sensitiveAt(e.curSpec, e.scope)
+	return e.debugWithhold(text, v1.SensitiveValues{})
+}
+
+// debugWithhold is [executor.debugRedactText] withholding also what a failure
+// raised inside a callee carries ([v1.FailureSensitiveValues]), which this
+// executor's position does not see (#2210).
+func (e *executor) debugWithhold(text string, carried v1.SensitiveValues) string {
+	sensitive := e.debug.sensitiveAt(e.curSpec, e.scope, e.positionSensitive()).Merge(carried)
 	if sensitive.Empty() {
 		return text
 	}
@@ -571,12 +767,111 @@ func (e *executor) debugRedactText(text string) string {
 	return sensitive.RedactText(text, "[redacted]")
 }
 
+// debugFailureSensitive is what a failure leaving this executor's workflow
+// carries to its caller ([ErrRunFailed.FailureSensitiveValues]): what a
+// debugger is not shown here. A caller's step outcome quotes the failure, and
+// the caller's position knows nothing of this workflow's declarations (#2210).
+// Computed in any run declaring `debug:`, since a session attaching later
+// reads what a failure already carried (#2213).
+func (e *executor) debugFailureSensitive() v1.SensitiveValues {
+	return e.debugPositionSensitive()
+}
+
+// debugPositionSensitive is what a debugger at this executor's position
+// withholds: [debugControl.sensitiveAt] over what its calls handed back. In
+// any run declaring `debug:`, attached or not, because what a call hands back
+// stays in its caller's scope for a session that attaches later (#2213).
+func (e *executor) debugPositionSensitive() v1.SensitiveValues {
+	if e.debug == nil || !e.debug.declared {
+		return v1.SensitiveValues{}
+	}
+
+	return e.debug.sensitiveAt(e.curSpec, e.scope, e.positionSensitive())
+}
+
+// debugOutputsSensitive is what callee's declared-sensitive outputs hand
+// back to this executor's workflow, as the local driver's runCall hands it
+// back (#2213). Nothing in a run declaring no `debug:` stanza.
+func (e *executor) debugOutputsSensitive(callee *v1.Workflow, outputs *v1.Node_Outputs) v1.SensitiveValues {
+	if e.debug == nil || !e.debug.declared {
+		return v1.SensitiveValues{}
+	}
+
+	return v1.SensitiveInputValues(outputs.GetNamedValues(), v1.SensitiveOutputNames(callee))
+}
+
+// positionSensitive is [executor.callerSensitive] widened with what this
+// workflow's calls handed back into its scope ([executor.returned]).
+func (e *executor) positionSensitive() v1.SensitiveValues {
+	if e.returned == nil {
+		return e.callerSensitive
+	}
+
+	return e.callerSensitive.Merge(e.returned.Values())
+}
+
+// returnToWorkflow widens this workflow's position with what one of its steps
+// took back from a callee: a returned call's set, or what a failure raised
+// inside one carries. Every later step and hold of this workflow withholds
+// it, and every call it makes afterward inherits it, as the local driver's
+// position does (#2213). The values stay in this segment's memory; the carry
+// records only that there were some ([v1.DebugCarry.returned_withheld]).
+func (e *executor) returnToWorkflow(sensitive v1.SensitiveValues) {
+	if e.returned == nil || sensitive.Empty() {
+		return
+	}
+	e.returned.Add(sensitive)
+	e.debug.returnedHere = true
+}
+
+// debugUndoRegistered gathers what this executor's position withholds for
+// the compensation it just registered ([debugControl.undoWithheld]). One
+// registered inside a callee also marks the segment, as a call handing a
+// value back does: the callee's declarations are not in the root's scope
+// after a seam, so the next segment withholds everything instead (#2213).
+func (e *executor) debugUndoRegistered() {
+	sensitive := e.debugPositionSensitive()
+	if sensitive.Empty() {
+		return
+	}
+	e.debug.undoWithheld.Add(sensitive)
+	if e.curSpec != e.spec {
+		e.debug.returnedHere = true
+	}
+}
+
+// newReturned is a workflow's [executor.returned], or nil in a run declaring
+// no `debug:` stanza.
+func (d *debugControl) newReturned() *v1.SensitiveAccumulator {
+	if d == nil || !d.declared {
+		return nil
+	}
+
+	return new(v1.SensitiveAccumulator)
+}
+
+// debugArgumentsSensitive is what callee declares sensitive of the arguments
+// a call would bind, for a failure binding them ([executor.debugFailureSensitive]
+// before the callee has a scope). Nothing in a run declaring no `debug:`.
+func (e *executor) debugArgumentsSensitive(callee *v1.Workflow, arguments map[string]*v1.Value) v1.SensitiveValues {
+	if e.debug == nil || !e.debug.declared {
+		return v1.SensitiveValues{}
+	}
+
+	return v1.SensitiveInputValues(arguments, v1.SensitiveInputNames(callee))
+}
+
 // observeForDebug records one step outcome for an attached session's
-// observations: the step and what became of it, never its values.
-func (e *executor) observeForDebug(kind v1.DebugObservationKind, node *v1.Node, detail string) {
+// observations: the step and what became of it, never its values. failure is
+// the step's error, for the kinds that report one.
+func (e *executor) observeForDebug(kind v1.DebugObservationKind, node *v1.Node, failure error) {
 	d := e.debug
 	if !d.attached() {
 		return
+	}
+	detail := ""
+	if failure != nil {
+		detail = v1.StepErrorText(failure)
 	}
 
 	text := node.GetId()
@@ -584,29 +879,214 @@ func (e *executor) observeForDebug(kind v1.DebugObservationKind, node *v1.Node, 
 	case v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_FINISHED:
 		text += " finished"
 	case v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_SKIPPED:
-		text += " skipped (`if:` was false)"
+		// A constant withheld by value before the condition is written, and
+		// the sentence by text below, as the local session does.
+		sensitive := d.sensitiveAt(e.curSpec, e.scope, e.positionSensitive())
+		text = v1.SkippedText(node.GetId(), node.GetCondition(), func(value any) bool {
+			if sensitive.WithholdAll() || sensitive.IsSensitive(value) {
+				return true
+			}
+			// A string's own text, before the renderer escapes it, so a
+			// sensitive value it merely contains is found too (Copilot,
+			// #2227). A bytes literal is asked about as its text as well
+			// ([v1.SkippedText]).
+			text, ok := value.(string)
+
+			return ok && sensitive.RedactText(text, v1.SensitiveMarker) != text
+		})
 	case v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_FAILED:
 		text += " failed: " + detail
 	case v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_TOLERATED:
 		text += " failed, tolerated by continue_on_error: " + detail
 	}
-	text = e.debugRedactText(text)
+	e.recordDebugObservation(kind, node.GetId(), v1.FormatDebugAddress(e.debugSegments, node.GetId()), text, v1.FailureSensitiveValues(failure))
+}
+
+// recordDebugObservation appends one observation, redacted and bounded, to
+// what an attached session reads back. carried is what a failure the text
+// quotes carries beyond this position's own set.
+func (e *executor) recordDebugObservation(kind v1.DebugObservationKind, stepID, address, text string, carried v1.SensitiveValues) {
+	text = e.debugWithhold(text, carried)
 	if runes := []rune(text); len(runes) > maxDebugObservationRunes {
 		text = string(runes[:maxDebugObservationRunes]) + "…"
 	}
+	e.debug.appendDebugObservation(kind, stepID, address, text)
+}
 
+// appendDebugObservation records one observation whose text is already
+// redacted and bounded.
+func (d *debugControl) appendDebugObservation(kind v1.DebugObservationKind, stepID, address, text string) {
 	d.sequence++
 	d.observations = append(d.observations, &v1.DebugObservation{
 		Sequence: d.sequence,
 		Kind:     kind,
-		StepId:   node.GetId(),
+		StepId:   stepID,
 		Text:     text,
-		Address:  v1.FormatDebugAddress(e.debugSegments, node.GetId()),
+		Address:  address,
 	})
 	if over := len(d.observations) - maxDebugObservations; over > 0 {
 		d.observations = slices.Delete(d.observations, 0, over)
 		d.dropped += uint64(over)
 	}
+}
+
+// debugRunCompleted says, when a run completes with a session's `until` still
+// armed, that it never stopped there: an address past the last iteration, a
+// step the run had already passed. The local session says it in the same
+// words ([flowdebug.MissedUntilNotice]).
+//
+// Recorded as an observation, which lives in the executor and nowhere in
+// history: a read of the completed run replays to this point and finds it,
+// so it is in every later snapshot and every output format that carries one,
+// and it changes nothing a replay compares.
+//
+// The pending movement is the whole test: a detach or an expiry replaces the
+// carry, a stop at the target resets it, and a run-until naming no step is
+// refused before it is carried.
+//
+// A pause asked while the last step was under way is the same kind of
+// silence. Asks are applied at step boundaries, and the run reaches none
+// after it, so the pause asks still waiting are applied here first
+// ([executor.debugPausesAtCompletion]): without that, a pause asked then is
+// answered by nothing at all. A pause that was, and
+// has no boundary left to hold at, is answered as over and said, in the
+// local session's words ([flowdebug.MissedPauseNotice]), after the
+// `until`'s, as the local session orders them (#1297).
+func (e *executor) debugRunCompleted() {
+	d := e.debug
+	if d.declared && workflow.GetVersion(e.ctx, lateAskChange, workflow.DefaultVersion, 1) != workflow.DefaultVersion {
+		e.debugPausesAtCompletion()
+	}
+	if d.carry.GetNext() == v1.DebugResumeAction_DEBUG_RESUME_ACTION_RUN_UNTIL {
+		e.debugMissedUntil()
+	}
+	if d.carry.GetPauseRequested() {
+		d.appendDebugObservation(v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_NOTICE, "", "", flowdebug.MissedPauseNotice)
+		for _, request := range d.pendingPauses {
+			d.receipt(request, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_ENDED, flowdebug.MissedPauseNotice)
+		}
+		d.pendingPauses = nil
+		// Answered, so a read of the completed run no longer says it
+		// holds at its next boundary.
+		d.carry.PauseRequested = false
+	}
+}
+
+// debugPausePending takes a pause request to receipt when the run holds or
+// completes. A pause asked while another waits is where [pauseReceiptsChange]
+// differs, so the version is asked only there: a history recorded before it
+// keeps only the latest request, as that engine did.
+func (e *executor) debugPausePending(request string) {
+	d := e.debug
+	if len(d.pendingPauses) > 0 && workflow.GetVersion(e.ctx, pauseReceiptsChange, workflow.DefaultVersion, 1) == workflow.DefaultVersion {
+		d.pendingPauses = []string{request}
+
+		return
+	}
+	d.pausePending(request)
+}
+
+// pausePending takes a pause request to receipt when the run holds or
+// completes ([debugControl.pendingPauses]), or refuses it at once past
+// [v1.MaxDebugAsksPerBoundary] waiting: a run inside a body it cannot hold in
+// applies asks at boundaries it does not hold at, and repeated pauses must
+// not grow it without limit (Codex, #2220). A retry of a request already
+// waiting is the same ask, taken once.
+func (d *debugControl) pausePending(request string) {
+	if slices.Contains(d.pendingPauses, request) {
+		return
+	}
+	if len(d.pendingPauses) >= v1.MaxDebugAsksPerBoundary {
+		d.receipt(request, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_REFUSED,
+			"a pause is already waiting on this run's next step boundary")
+
+		return
+	}
+	d.pendingPauses = append(d.pendingPauses, request)
+}
+
+// debugPausesAtCompletion applies the typed pause asks still waiting when the
+// run completes, so each is answered, and reads past the rest unapplied.
+//
+// Only pauses, because only a pause has something to say once no boundary is
+// left: a breakpoint set or a resume applied here would be receipted and
+// installed at a run that will never reach them, where an editor reports
+// such a set as one the run ended before applying (Codex, #2220).
+//
+// Every waiting ask is read, the ones an earlier segment carried across
+// Continue-As-New first, since they arrived before anything on the channel
+// ([executor.applyDebugAsks]): this is the last chance to answer them
+// (Codex, #2220). Batches are bounded as at a boundary and paced by
+// [v1.DebugBacklogPace], so a peer-sized backlog is not read in one task.
+func (e *executor) debugPausesAtCompletion() {
+	channel := workflow.GetSignalChannel(e.ctx, v1.DebugSignal)
+	for {
+		for range v1.MaxDebugAsksPerBoundary {
+			delivery, ok := e.takeWaitingDebugAsk(channel)
+			if !ok {
+				return
+			}
+			if ask, typed, err := v1.ParseTypedDebugAsk(delivery.GetPayload()); typed && err == nil && ask.Verb == v1.DebugVerbPause {
+				e.applyTypedAsk(ask, nil, delivery.GetSender())
+			}
+		}
+		if !e.hasCarriedDebugAsk() && channel.Len() == 0 {
+			return
+		}
+		if err := workflow.NewTimerWithOptions(e.ctx, v1.DebugBacklogPace, workflow.TimerOptions{
+			Summary: "pacing debug asks at completion",
+		}).Get(e.ctx, nil); err != nil {
+			return
+		}
+	}
+}
+
+// takeWaitingDebugAsk consumes the oldest debug ask still waiting: the first
+// one carried across Continue-As-New, or else the next on the channel.
+func (e *executor) takeWaitingDebugAsk(channel workflow.ReceiveChannel) (*v1.SignalDelivery, bool) {
+	if e.signals != nil {
+		for i, pending := range e.signals.pending {
+			if pending.GetName() != v1.DebugSignal {
+				continue
+			}
+			// A copy, as [executor.takeCarriedDebugAsk] makes: the carry's
+			// backing array is the run state's.
+			e.signals.pending = append(e.signals.pending[:i:i], e.signals.pending[i+1:]...)
+
+			return &v1.SignalDelivery{Payload: pending.GetPayload(), Sender: pending.GetSender()}, true
+		}
+	}
+	var delivery v1.SignalDelivery
+	if !channel.ReceiveAsync(&delivery) {
+		return nil, false
+	}
+
+	return &delivery, true
+}
+
+// debugMissedUntil records [debugRunCompleted]'s missed-`until` notice.
+func (e *executor) debugMissedUntil() {
+	d := e.debug
+	// Withheld against what the hold that applied it withheld as well as what
+	// the run withholds here: that hold may have been inside a callee, whose
+	// own declared-sensitive inputs the root does not see (Codex, #2204). A
+	// segment that inherited the `until` through Continue-As-New from a hold
+	// inside a callee does not know them, and withholds the target whole.
+	redact := func(text string) string {
+		sensitive := e.debug.sensitiveAt(e.curSpec, e.scope, e.positionSensitive()).Merge(d.untilSensitive)
+		if sensitive.Empty() {
+			return text
+		}
+
+		return sensitive.RedactText(text, "[redacted]")
+	}
+	if !d.untilSensitiveKnown && d.carry.GetStepDepth() > 0 {
+		redact = func(string) string { return "[redacted]" }
+	}
+	// Redacted and bounded by the notice itself, which redacts only the
+	// `until`, so it is recorded as it is.
+	d.appendDebugObservation(v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_NOTICE, "", "",
+		flowdebug.MissedUntilNotice(d.carry.GetUntil(), redact))
 }
 
 // debugSnapshot answers [v1.DebugQuery]: the session as the run holds it. A
@@ -648,6 +1128,15 @@ func (d *debugControl) debugSnapshot(now time.Time, request string) *v1.DebugSna
 				state.Hits = d.carry.GetHits()[i]
 			}
 			snapshot.Breakpoints = append(snapshot.Breakpoints, state)
+		}
+		if d.parsed == nil {
+			// Carried but not yet compiled in this segment: reported with
+			// their definitions, so a client resending the set keeps them.
+			for i, bp := range d.carry.GetBreakpoints() {
+				state := debugBreakpointDefined(bp, i)
+				state.Message = "not yet compiled; the run compiles its breakpoints at its next step boundary"
+				snapshot.Breakpoints = append(snapshot.Breakpoints, state)
+			}
 		}
 		switch {
 		case held && d.held.scope != nil:
@@ -716,7 +1205,7 @@ func setDebugQueries(ctx workflow.Context, d *debugControl, spec func() *v1.Work
 		if held == nil {
 			held = spec()
 		}
-		sensitive := d.sensitiveAt(held, scope)
+		sensitive := d.sensitiveAt(held, scope, d.held.callers)
 		var (
 			redactText  func(string) string
 			redactValue func(any) any

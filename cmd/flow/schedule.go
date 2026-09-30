@@ -106,7 +106,14 @@ func runScheduleCreate(cmd *cobra.Command, args []string) error {
 
 	response, err := newWorkflowServiceClient(server).CreateSchedule(cmd.Context(), connect.NewRequest(request))
 	if err != nil {
-		return refusedSchedule("creating", v1.ScheduleNameFor(name, workflow), server, err)
+		refusal := refusedSchedule("creating", v1.ScheduleNameFor(name, workflow), server, err)
+		if noServerAnswered(err) {
+			// No server answered, so nothing quotes an argument.
+			return refusal
+		}
+		// Redacted as `flow run`'s refusal is: the server's can quote an
+		// argument it was sent (#2100).
+		return redactFailureError(refusal, refusedRunSensitiveValues(cmd, workflow, inputs, err, revealSensitiveRequested(cmd)))
 	}
 
 	schedule := response.Msg.GetSchedule()

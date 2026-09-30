@@ -236,11 +236,11 @@ Debug a workflow from an editor, over the Debug Adapter Protocol
 flow dap [flags]
 ```
 
-Speak the Debug Adapter Protocol on stdin and stdout, so an editor's step and continue buttons drive a real local run.
+Speak the Debug Adapter Protocol on stdin and stdout, so an editor's step and continue buttons drive a Flowstate run.
 
-The workflow to run comes from the client's launch configuration, as `program`, so one adapter serves whatever the editor points it at.
+A `launch` request runs the Flowfile named as `program` locally, with its `inputs` object as the run's arguments. Breakpoints can be set on its lines, or as *function* breakpoints named after a step (`build`, `pages/page`, `pages[2]/page`), with conditions, hit counts and log messages.
 
-Breakpoints are step ids rather than source lines. The debugger is handed steps and not files, so there is no line to break on — set them as *function* breakpoints named after a step. A line breakpoint is answered, unverified, saying so.
+An `attach` request with a `workflowId` (and optionally `runId`) debugs a durable run through the server named by --address and this command's credentials, which need `workload.debug` (and `workload.debug_inspect` to inspect values or to set or read conditions). A durable run holds only at step boundaries and has no logpoints or failure stops; the editor is told which. It shows source lines, and takes line breakpoints, when the attach's `program` is the file the run executes, and step addresses otherwise.
 
 Examples:
 
@@ -248,19 +248,25 @@ Examples:
 # What an editor's launch configuration runs, rather than a person:
 flow dap
 
+# An adapter that can also attach to durable runs on a server:
+flow dap --address https://flowstate.example.com
+
 # The terminal debugger, for a person:
 flow run local --debug examples/hello-world/workflow.yaml
 ```
 
 | Flag | Type | Default | Environment | Description |
 |---|---|---|---|---|
+| `--address <string>` | `string` | `localhost:9233` | `FLOWSTATE_ADDRESS` | address of the Flowstate server (overrides FLOWSTATE_ADDRESS); an explicit https:// scheme is honored |
 | `--allow-insecure-plugin-dir` | `bool` | `false` | — | permit a plugin directory other users can write to, which lets them choose what this worker runs |
 | `--as-claim <string,...>` | `stringArray` | — | — | authenticated string claim NAME=VALUE to rehearse policy as (repeatable) |
 | `--as-deployment <string>` | `string` | `local` | — | Flowstate deployment name to rehearse policy as (local runs only) |
 | `--as-issuer <string>` | `string` | `flowstate:local` | — | authenticated issuer to rehearse policy as (local runs only) |
 | `--as-namespace <string>` | `string` | — | — | tenant namespace to rehearse policy as (local runs only) |
 | `--as-subject <string>` | `string` | `local-user` | — | authenticated subject to rehearse policy as (local runs only) |
+| `--audience <string>` | `string` | — | `FLOWSTATE_AUDIENCE` | the relying party a credential should be addressed to (overrides FLOWSTATE_AUDIENCE); required by `--credential-source=github-actions`, which mints a token for it. gitlab and terraform-cloud cannot mint on demand — their platform fixes the audience in the job or workspace configuration before the token exists — so for those it is checked against the token's own audience rather than requested, and a mismatch is refused with the setting to change |
 | `--auth-policy <string>` | `string` | — | `FLOWSTATE_AUTH_POLICY` | path to the auth policy (YAML) whose `secrets:` section decides which secrets a step may read and whose `federation:` section defines the credentials a run may assume |
+| `--credential-source <string>` | `string` | — | `FLOWSTATE_CREDENTIAL_SOURCE` | acquire a credential from a named source instead of `--token-file`/FLOWSTATE_TOKEN (overrides FLOWSTATE_CREDENTIAL_SOURCE); one of github-actions, gitlab, terraform-cloud, file, env. An unknown or unusable source is an error, never anonymous |
 | `--egress-policy <string>` | `string` | — | `FLOWSTATE_EGRESS_POLICY` | path to an egress policy (YAML) governing built-in HTTP and granted to every plugin the worker launches (default $FLOWSTATE_EGRESS_POLICY); the first-party git, github, slack, sql and vcs plugins enforce the grant on their own connections; Codex CLI control-plane traffic always bypasses the grant, while network from commands its agent starts follows Codex sandbox policy, and a third-party plugin can ignore the grant; with no file, plugins are granted the default policy built-in HTTP runs under, which sql refuses to reach a database under; a file replaces that default entirely and FLOWSTATE_ALLOW_LOOPBACK_EGRESS is then ignored, so a file that wants loopback says `allow_loopback: true` |
 | `--identity-key <string,...>` | `stringArray` | — | `FLOWSTATE_IDENTITY_KEY` | PKCS#8 PEM key used to mint short-lived workload assertions for federation targets (repeatable: the first signs, and every later one is published for verification only, so assertions signed before a restart keep verifying) |
 | `--plugin <string,...>` | `stringArray` | — | — | launch only the named plugin, repeatable; a name with no binary is an error |
@@ -293,18 +299,137 @@ flow run local --debug examples/hello-world/workflow.yaml
 | `--secret-vault-path-prefix <string>` | `string` | — | `FLOWSTATE_SECRET_VAULT_PATH_PREFIX` | path prefix inside the mount, above the namespace segment (default $FLOWSTATE_SECRET_VAULT_PATH_PREFIX) |
 | `--secret-vault-token-file <string>` | `string` | — | `FLOWSTATE_SECRET_VAULT_TOKEN_FILE` | file holding a static Vault client token, re-read per login (default $FLOWSTATE_SECRET_VAULT_TOKEN_FILE; falls back to $FLOWSTATE_SECRET_VAULT_TOKEN directly, for a development vault or a test) |
 | `--task-policy <string>` | `string` | — | `FLOWSTATE_TASK_POLICY` | path to a task-shape policy (YAML) governing which identities may dispatch which tasks (default $FLOWSTATE_TASK_POLICY); unset, every identity may dispatch every task |
+| `--tls-ca-file <string>` | `string` | — | `FLOWSTATE_TLS_CA_FILE` | PEM CA bundle to verify the server's certificate against, in place of the system roots (overrides FLOWSTATE_TLS_CA_FILE). Unset trusts the system roots, which is what reaches a server with a certificate from a public CA; set this to reach a server whose certificate chains to a private CA instead |
+| `--tls-client-cert-file <string>` | `string` | — | `FLOWSTATE_TLS_CLIENT_CERT_FILE` | PEM client certificate to present when a server requires one via `--tls-client-auth require` (overrides FLOWSTATE_TLS_CLIENT_CERT_FILE); must be given with `--tls-client-key-file`. Unset presents no certificate, which a server requiring one refuses at the handshake |
+| `--tls-client-key-file <string>` | `string` | — | `FLOWSTATE_TLS_CLIENT_KEY_FILE` | PEM private key matching `--tls-client-cert-file` (overrides FLOWSTATE_TLS_CLIENT_KEY_FILE) |
+| `--token-file <string>` | `string` | — | `FLOWSTATE_TOKEN_FILE` | file holding the bearer token to authenticate with (overrides FLOWSTATE_TOKEN_FILE); re-read per request, so a rotating token keeps working. Without it, FLOWSTATE_TOKEN is used, and neither means anonymous |
 
 ## `flow debug`
 
-Replay a debugging session from a script of its commands
+Debug a durable run, or replay a debugging session from a script
 
 ```
 flow debug [command]
 ```
 
-Work with the step debugger's scripts: the commands a debugging session accepted, one per line.
+Attach the step debugger to a durable run, read its debug state, and drive it one command at a time; or play back a script of the commands a local debugging session accepted, one per line.
 
-The debugger itself is reached as `flow run local --debug` (a real run, at a terminal), as `flow test --debug` (one test case), and as `flow dap` (from an editor). None of those writes a script to disk; the `flowstate_debug` MCP tool's answer carries one, and a script can be written by hand. This is where a script is played back.
+A local run is debugged as `flow run local --debug` (a real run, at a terminal), as `flow test --debug` (one test case), and as `flow dap` (from an editor, which can also attach to a durable run). None of those writes a script to disk; the `flowstate_debug` MCP tool's answer carries one, and a script can be written by hand.
+
+## `flow debug attach`
+
+Attach a debugger to a durable run and drive it
+
+```
+flow debug attach <workflow-id> [flags]
+```
+
+Attach a debugger to a durable run, hold it at its next step boundary, and
+drive it: step in, over and out of calls, run until a step, set conditional
+breakpoints, and evaluate read-only CEL against the held scope.
+
+The run's workflow must declare `debug:` naming you, and your credentials must
+carry workload.debug (and workload.debug_inspect to evaluate). A hold parks
+workflow code at a step boundary only: work already dispatched keeps running,
+and so does time. The session is leased: this command renews it while it runs,
+and a session nobody renews lapses and the run resumes on its own.
+
+Commands are read from the terminal, or from --script. Leaving with `detach`, or
+at the end of input, releases the run; `disconnect` leaves the session attached
+for a later `flow debug attach --session <id>`.
+
+Examples:
+
+```sh
+# Attach, stop at the next step, and drive it interactively:
+flow debug attach order-1234
+
+# The same, as a reproducible script, with each answer as a JSON line:
+flow debug attach order-1234 --script debug.txt -o jsonl
+
+# Rejoin a session another process left attached:
+flow debug attach order-1234 --session 5d3f…
+```
+
+| Flag | Type | Default | Environment | Description |
+|---|---|---|---|---|
+| `--address <string>` | `string` | `localhost:9233` | `FLOWSTATE_ADDRESS` | address of the Flowstate server (overrides FLOWSTATE_ADDRESS); an explicit https:// scheme is honored |
+| `--audience <string>` | `string` | — | `FLOWSTATE_AUDIENCE` | the relying party a credential should be addressed to (overrides FLOWSTATE_AUDIENCE); required by `--credential-source=github-actions`, which mints a token for it. gitlab and terraform-cloud cannot mint on demand — their platform fixes the audience in the job or workspace configuration before the token exists — so for those it is checked against the token's own audience rather than requested, and a mismatch is refused with the setting to change |
+| `--credential-source <string>` | `string` | — | `FLOWSTATE_CREDENTIAL_SOURCE` | acquire a credential from a named source instead of `--token-file`/FLOWSTATE_TOKEN (overrides FLOWSTATE_CREDENTIAL_SOURCE); one of github-actions, gitlab, terraform-cloud, file, env. An unknown or unusable source is an error, never anonymous |
+| `--lease <duration>` | `duration` | `2m0s` | — | how long each renewal holds the session; the engine bounds it |
+| `-o, --output <string>` | `string` | `text` | — | output format: text, json, or jsonl |
+| `--program <string>` | `string` | — | — | the Flowfile the run was started from, for source lines; used only if it compiles to the program the run executes, the deployment's plugin and task pins aside |
+| `--run-id <string>` | `string` | — | — | pin the run, as the first run id of its chain; unset follows the current one |
+| `--script <string>` | `string` | — | — | read commands from this file instead of the terminal |
+| `--session <string>` | `string` | — | — | rejoin this session instead of attaching a new one |
+| `--tls-ca-file <string>` | `string` | — | `FLOWSTATE_TLS_CA_FILE` | PEM CA bundle to verify the server's certificate against, in place of the system roots (overrides FLOWSTATE_TLS_CA_FILE). Unset trusts the system roots, which is what reaches a server with a certificate from a public CA; set this to reach a server whose certificate chains to a private CA instead |
+| `--tls-client-cert-file <string>` | `string` | — | `FLOWSTATE_TLS_CLIENT_CERT_FILE` | PEM client certificate to present when a server requires one via `--tls-client-auth require` (overrides FLOWSTATE_TLS_CLIENT_CERT_FILE); must be given with `--tls-client-key-file`. Unset presents no certificate, which a server requiring one refuses at the handshake |
+| `--tls-client-key-file <string>` | `string` | — | `FLOWSTATE_TLS_CLIENT_KEY_FILE` | PEM private key matching `--tls-client-cert-file` (overrides FLOWSTATE_TLS_CLIENT_KEY_FILE) |
+| `--token-file <string>` | `string` | — | `FLOWSTATE_TOKEN_FILE` | file holding the bearer token to authenticate with (overrides FLOWSTATE_TOKEN_FILE); re-read per request, so a rotating token keeps working. Without it, FLOWSTATE_TOKEN is used, and neither means anonymous |
+| `--wait <duration>` | `duration` | `1m0s` | — | how long a movement waits for the next stop before reporting the run still running |
+
+## `flow debug do`
+
+Run one debugger command against a session
+
+```
+flow debug do <workflow-id> <command...> [flags]
+```
+
+Run one debugger command — next, inspect steps.fetch, break charge if amount > 500 — against a session a previous attach left attached, and print the answer. For scripts and agents that drive a session one step at a time.
+
+Examples:
+
+```sh
+flow debug do order-1234 --session 5d3f… next
+flow debug do order-1234 --session 5d3f… inspect steps.quote.total -o json
+```
+
+| Flag | Type | Default | Environment | Description |
+|---|---|---|---|---|
+| `--address <string>` | `string` | `localhost:9233` | `FLOWSTATE_ADDRESS` | address of the Flowstate server (overrides FLOWSTATE_ADDRESS); an explicit https:// scheme is honored |
+| `--audience <string>` | `string` | — | `FLOWSTATE_AUDIENCE` | the relying party a credential should be addressed to (overrides FLOWSTATE_AUDIENCE); required by `--credential-source=github-actions`, which mints a token for it. gitlab and terraform-cloud cannot mint on demand — their platform fixes the audience in the job or workspace configuration before the token exists — so for those it is checked against the token's own audience rather than requested, and a mismatch is refused with the setting to change |
+| `--credential-source <string>` | `string` | — | `FLOWSTATE_CREDENTIAL_SOURCE` | acquire a credential from a named source instead of `--token-file`/FLOWSTATE_TOKEN (overrides FLOWSTATE_CREDENTIAL_SOURCE); one of github-actions, gitlab, terraform-cloud, file, env. An unknown or unusable source is an error, never anonymous |
+| `-o, --output <string>` | `string` | `text` | — | output format: text, json, or jsonl |
+| `--run-id <string>` | `string` | — | — | pin the run, as the first run id of its chain |
+| `--session <string>` | `string` | — | — | the session to act in (required) |
+| `--tls-ca-file <string>` | `string` | — | `FLOWSTATE_TLS_CA_FILE` | PEM CA bundle to verify the server's certificate against, in place of the system roots (overrides FLOWSTATE_TLS_CA_FILE). Unset trusts the system roots, which is what reaches a server with a certificate from a public CA; set this to reach a server whose certificate chains to a private CA instead |
+| `--tls-client-cert-file <string>` | `string` | — | `FLOWSTATE_TLS_CLIENT_CERT_FILE` | PEM client certificate to present when a server requires one via `--tls-client-auth require` (overrides FLOWSTATE_TLS_CLIENT_CERT_FILE); must be given with `--tls-client-key-file`. Unset presents no certificate, which a server requiring one refuses at the handshake |
+| `--tls-client-key-file <string>` | `string` | — | `FLOWSTATE_TLS_CLIENT_KEY_FILE` | PEM private key matching `--tls-client-cert-file` (overrides FLOWSTATE_TLS_CLIENT_KEY_FILE) |
+| `--token-file <string>` | `string` | — | `FLOWSTATE_TOKEN_FILE` | file holding the bearer token to authenticate with (overrides FLOWSTATE_TOKEN_FILE); re-read per request, so a rotating token keeps working. Without it, FLOWSTATE_TOKEN is used, and neither means anonymous |
+| `--wait <duration>` | `duration` | `30s` | — | how long a movement waits for the next stop |
+
+## `flow debug get`
+
+Show a durable run's debug session
+
+```
+flow debug get <workflow-id> [flags]
+```
+
+Read a durable run's debug state: whether a session is attached, where the run is held and why, its frames, breakpoints and recent observations. It changes nothing.
+
+Examples:
+
+```sh
+# Where a run's debug session stands, and what it last did:
+flow debug get order-1234
+
+# The same snapshot, as the schema's JSON:
+flow debug get order-1234 -o json
+```
+
+| Flag | Type | Default | Environment | Description |
+|---|---|---|---|---|
+| `--address <string>` | `string` | `localhost:9233` | `FLOWSTATE_ADDRESS` | address of the Flowstate server (overrides FLOWSTATE_ADDRESS); an explicit https:// scheme is honored |
+| `--audience <string>` | `string` | — | `FLOWSTATE_AUDIENCE` | the relying party a credential should be addressed to (overrides FLOWSTATE_AUDIENCE); required by `--credential-source=github-actions`, which mints a token for it. gitlab and terraform-cloud cannot mint on demand — their platform fixes the audience in the job or workspace configuration before the token exists — so for those it is checked against the token's own audience rather than requested, and a mismatch is refused with the setting to change |
+| `--credential-source <string>` | `string` | — | `FLOWSTATE_CREDENTIAL_SOURCE` | acquire a credential from a named source instead of `--token-file`/FLOWSTATE_TOKEN (overrides FLOWSTATE_CREDENTIAL_SOURCE); one of github-actions, gitlab, terraform-cloud, file, env. An unknown or unusable source is an error, never anonymous |
+| `-o, --output <string>` | `string` | `text` | — | output format: text, json, or jsonl |
+| `--run-id <string>` | `string` | — | — | pin the run, as the first run id of its chain |
+| `--tls-ca-file <string>` | `string` | — | `FLOWSTATE_TLS_CA_FILE` | PEM CA bundle to verify the server's certificate against, in place of the system roots (overrides FLOWSTATE_TLS_CA_FILE). Unset trusts the system roots, which is what reaches a server with a certificate from a public CA; set this to reach a server whose certificate chains to a private CA instead |
+| `--tls-client-cert-file <string>` | `string` | — | `FLOWSTATE_TLS_CLIENT_CERT_FILE` | PEM client certificate to present when a server requires one via `--tls-client-auth require` (overrides FLOWSTATE_TLS_CLIENT_CERT_FILE); must be given with `--tls-client-key-file`. Unset presents no certificate, which a server requiring one refuses at the handshake |
+| `--tls-client-key-file <string>` | `string` | — | `FLOWSTATE_TLS_CLIENT_KEY_FILE` | PEM private key matching `--tls-client-cert-file` (overrides FLOWSTATE_TLS_CLIENT_KEY_FILE) |
+| `--token-file <string>` | `string` | — | `FLOWSTATE_TOKEN_FILE` | file holding the bearer token to authenticate with (overrides FLOWSTATE_TOKEN_FILE); re-read per request, so a rotating token keeps working. Without it, FLOWSTATE_TOKEN is used, and neither means anonymous |
 
 ## `flow debug replay`
 

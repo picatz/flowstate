@@ -30,7 +30,7 @@ func TestAConditionalUntilStopsAtTheIterationItNames(t *testing.T) {
 	out, ran := loopingRun(t, 20, "until body if n == 7\ncontinue\n")
 
 	assert.Len(t, ran, 20, "every iteration still runs; the condition decides stopping, not running")
-	assert.Equal(t, 1, strings.Count(out, "break at body"),
+	assert.Equal(t, 1, strings.Count(out, "]/body ("),
 		"stopped once, at the iteration the condition named — not on all twenty")
 }
 
@@ -43,7 +43,7 @@ func TestAConditionalUntilThatNeverHoldsRunsToTheEnd(t *testing.T) {
 	out, ran := loopingRun(t, 5, "until body if n == 99\n")
 
 	assert.Len(t, ran, 5)
-	assert.NotContains(t, out, "break at body",
+	assert.NotContains(t, out, "]/body (",
 		"a condition no iteration satisfies is an `until` that never fires")
 }
 
@@ -58,7 +58,7 @@ func TestAConditionalUntilIsOneShot(t *testing.T) {
 	out, ran := loopingRun(t, 6, "until body if n >= 3\ncontinue\n")
 
 	assert.Len(t, ran, 6)
-	assert.Equal(t, 1, strings.Count(out, "break at body"),
+	assert.Equal(t, 1, strings.Count(out, "]/body ("),
 		"an `until` condition is one-shot; a later iteration satisfying it is not a stop nobody asked for")
 }
 
@@ -71,7 +71,7 @@ func TestAnUntilConditionThatErrorsDoesNotHoldTheRun(t *testing.T) {
 	out, ran := loopingRun(t, 3, "until body if n.missing\n")
 
 	assert.Len(t, ran, 3)
-	assert.NotContains(t, out, "break at body",
+	assert.NotContains(t, out, "]/body (",
 		"an unanswerable condition does not hold the run")
 	assert.Contains(t, out, "until body: the condition could not be evaluated here",
 		"and the notice names `until` as the asker, not a breakpoint nobody set")
@@ -90,7 +90,7 @@ func TestAnUntilWithAMalformedConditionIsRefusedWhenItIsTyped(t *testing.T) {
 	assert.Len(t, ran, 3, "the refusal keeps the session parked; the `continue` after it finishes the run")
 	assert.Contains(t, out, "until body: parse condition",
 		"refused in the verb's own name when it was typed")
-	assert.NotContains(t, out, "break at body", "nothing was armed by a refused command")
+	assert.NotContains(t, out, "]/body (", "nothing was armed by a refused command")
 }
 
 // TestAnUntilWithAnEmptyConditionIsRefusedInItsOwnGrammar: `until body if `
@@ -119,7 +119,7 @@ func TestAnUnconditionalUntilAfterAConditionalOneIsUnconditional(t *testing.T) {
 	out, ran := loopingRun(t, 6, "until body if n == 2\nuntil body\ncontinue\n")
 
 	assert.Len(t, ran, 6)
-	assert.Equal(t, 2, strings.Count(out, "break at body"),
+	assert.Equal(t, 2, strings.Count(out, "]/body ("),
 		"the conditional stop at n == 2, then the plain one at the very next arrival — a leaked condition would eat the second")
 }
 

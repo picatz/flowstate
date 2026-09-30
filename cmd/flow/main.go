@@ -1004,7 +1004,16 @@ func runWorkflow(cmd *cobra.Command, args []string) error {
 		connect.NewRequest(&v1.RunRequest{Workflow: workflow, Inputs: inputs, Reason: reason, RequestId: &requestID}))
 	if err != nil {
 		arguments, redacted := runArgumentFlags(cmd, workflow)
-		return refusedStart(args[0], workflow.GetName(), arguments, redacted, server, err)
+		refusal := refusedStart(args[0], workflow.GetName(), arguments, redacted, server, err)
+		if noServerAnswered(err) {
+			// No server answered, so nothing quotes an argument, and the
+			// remedy's own arguments are already redacted.
+			return refusal
+		}
+		// The server's refusal can quote an argument it was sent: a gate's
+		// `subject:` resolved from a sensitive input is refused quoting what
+		// it resolved to (#2100), as `flow run local` refuses it.
+		return redactFailureError(refusal, refusedRunSensitiveValues(cmd, workflow, inputs, err, reveal))
 	}
 
 	workflowID := started.Msg.GetWorkflowId()

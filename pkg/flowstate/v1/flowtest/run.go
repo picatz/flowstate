@@ -249,7 +249,7 @@ func runSuite(ctx context.Context, file *File, opts RunOptions, loaderFor func(*
 		}
 
 		result, spec, transcript, account := schedules.run(caseCtx,
-			func(ctx context.Context) (*v1.TestCase, *v1.Workflow, *v1.Workflow_StepOutputs, []TranscriptLine, error) {
+			func(ctx context.Context) (*v1.TestCase, *v1.Workflow, *v1.Workflow_StepOutputs, []TranscriptLine, caseShown, error) {
 				// The account is recorded only for runs whose account is
 				// kept. Under an exploring budget, [scheduleAccumulator.run]
 				// retains the written-order baseline's and discards every
@@ -616,7 +616,7 @@ func caseContextWithin(base context.Context, wallTime time.Duration) (context.Co
 // here would take the choice away from the only caller with a reason to make it
 // ([RunFileUnderSchedules]). With no scheduler on base the driver takes
 // [v1.WrittenOrder], which is what every `flow test` case has always run under.
-func runCase(base context.Context, test *Test, deliveryPath string, load func() (*v1.Workflow, error), record bool, vars fileVars) (result *v1.TestCase, spec *v1.Workflow, transcript *v1.Workflow_StepOutputs, account []TranscriptLine, runErr error) {
+func runCase(base context.Context, test *Test, deliveryPath string, load func() (*v1.Workflow, error), record bool, vars fileVars) (result *v1.TestCase, spec *v1.Workflow, transcript *v1.Workflow_StepOutputs, account []TranscriptLine, shown caseShown, runErr error) {
 	started := time.Now()
 	result = &v1.TestCase{Name: test.Name}
 	defer func() {
@@ -651,7 +651,10 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	// inline literal plaintext value ([secretHoldingVars] only seeds a var it
 	// matches a `${vars.x}` reference in) never joins [withheldVars] and has no
 	// other way to reach this posture.
-	posture := casePosture(test, vars)
+	//
+	// And what a divergence shown beside this run's report withholds, when
+	// this is the written-order run reported beside one ([withReshownPosture]).
+	posture := widenedBy(casePosture(test, vars), reshownPosture(base))
 
 	// caseError is the one rendering seam for [v1.TestCase.Error] — the sixth
 	// surface in vars.go's containment table, and the one its own row predicted
@@ -761,7 +764,23 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	// absent — a discarded account records nothing, and a session is rare —
 	// and where both are, nothing is installed at all, which is what keeps the
 	// engine cloning nothing for a run nobody is listening to.
-	if observer := observerFor(ctx, recorder); observer != nil {
+	//
+	// A case whose account is discarded — a seeded schedule's run, above all —
+	// still gathers what its steps withhold, where the workflow or a callee
+	// declares anything sensitive, so that it renders its failures exactly as
+	// the recorded written-order run does. A difference there would be a
+	// schedule divergence the schedule never made, and it would carry the
+	// value (Codex, #2215). Nothing to gather, nothing installed.
+	var gatherer withholdingGatherer
+	var first v1.RunObserver
+	switch declares, err := v1.DeclaresSensitiveValues(workflow); {
+	case recorder != nil:
+		gatherer, first = recorder, recorder
+	case declares || err != nil:
+		gathering := &sensitiveGatherer{}
+		gatherer, first = gathering, gathering
+	}
+	if observer := observerFor(ctx, first); observer != nil {
 		ctx = v1.NewContextWithRunObserver(ctx, observer)
 	}
 
@@ -843,13 +862,6 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	var sensitive sensitiveInputs
 	if b, bindErr := v1.BindRunInputs(workflow, inputs); bindErr == nil {
 		bound = b
-		resolved, err := v1.ResolveSignalPolicySubjects(ctx, workflow, bound)
-		if err != nil {
-			caseError("resolving workflow %q's signal policy: %v", test.Workflow, err)
-			return
-		}
-		policies = resolved
-
 		// The redaction set, built from the same bound inputs and the same
 		// `sensitive:` declarations the stub diagnostics read
 		// ([sensitiveNativeValues]) — one set, shared by the transcript's
@@ -858,6 +870,25 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 		// records no step events carrying input-derived values: the run
 		// fails at the same bind before any step runs.
 		sensitive = sensitiveNativeValues(&v1.Scope{Inputs: bound}, v1.SensitiveInputNames(workflow))
+
+		resolved, err := v1.ResolveSignalPolicySubjects(ctx, workflow, bound)
+		if err != nil {
+			// A `subject:` that resolved to something other than
+			// `<issuer>#<subject>` is refused quoting what it resolved to,
+			// which can be a sensitive input's value (#2100): rendered
+			// through the run's own set, as every exit below it is.
+			posture = posture.Merge(sensitive)
+			caseError("resolving workflow %q's signal policy: %v", test.Workflow, err)
+			return
+		}
+		policies = resolved
+	} else {
+		// The run refuses at the same bind, and its refusal can quote the
+		// value it refused (`must satisfy …; got <value>`), which no step
+		// ever holds for the gatherer to hear. What the case submitted is
+		// what it quotes, and `cmd/flow` redacts the same failure against
+		// the submitted arguments too (Codex, #2215).
+		sensitive = sensitiveNativeValues(&v1.Scope{Inputs: inputs}, v1.SensitiveInputNames(workflow))
 	}
 
 	// The posture widens to the run's own set here — by extending, not
@@ -907,43 +938,8 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	// "a redactor is installed" as "this case withholds values" and says so
 	// at the autopsy — a rule that redacts nothing would put that notice on
 	// every failing case.
-	if redact := sensitive; !redact.Empty() {
-		debugger := v1.DebuggerFromContext(ctx)
-
-		if redacting, ok := debugger.(interface {
-			SetRedactor(func(string) string)
-		}); ok {
-			redacting.SetRedactor(func(text string) string {
-				if redact.WithholdAll() {
-					return "[withheld]\n"
-				}
-
-				return redact.RedactSubstrings(text)
-			})
-			defer redacting.SetRedactor(nil)
-		}
-
-		// And the same set at the *value* seam, because the substring half of
-		// it deliberately omits short descendants — replacing every "7" in
-		// every line would make a transcript unreadable — so a sensitive
-		// `credentials: [7]` had nothing in `substrings` to catch it and
-		// `inspect inputs.credentials` printed it in full, while the ordinary
-		// transcript redacted the whole container (Codex, #1109). Values match
-		// by equality rather than by looking like something, which is exactly
-		// what a short descendant needs, and it is the same
-		// [redactSensitiveTree] every witness rendering already applies.
-		if redacting, ok := debugger.(interface {
-			SetValueRedactor(func(any) any)
-		}); ok {
-			redacting.SetValueRedactor(func(value any) any {
-				if redact.WithholdAll() {
-					return "[withheld]"
-				}
-
-				return redact.RedactTree(value)
-			})
-			defer redacting.SetValueRedactor(nil)
-		}
+	if !sensitive.Empty() && setDebuggerRedactors(ctx, sensitive) {
+		defer setDebuggerRedactors(ctx, sensitiveInputs{})
 	}
 
 	if recorder != nil {
@@ -998,6 +994,13 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 		return
 	}
 
+	// Handed the program this case runs before the run starts, so a debugger
+	// built without one judges a breakpoint's target and condition against
+	// where they can fire. Capability-discovered, as RunReturned below is.
+	if programmed, ok := v1.DebuggerFromContext(ctx).(interface{ Program(*v1.Workflow) }); ok {
+		programmed.Program(workflow)
+	}
+
 	// runErr is this function's named result, assigned here rather than
 	// redeclared: it is reported to the caller beside the verdict, because a
 	// case can pass with a failed run and schedule exploration compares the
@@ -1005,6 +1008,27 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	var outputs *v1.Workflow_StepOutputs
 	outputs, runErr = v1.RunWithInputs(ctx, workflow, inputs)
 	close(runFinished)
+
+	// Told the run has returned, with the run's own error rather than the
+	// case's verdict, so a debugger can say what the run never did (an
+	// `until` it never reached) while the verdict stays its driver's to report.
+	// Capability-discovered, as the autopsy below is.
+	if returned, ok := v1.DebuggerFromContext(ctx).(interface{ RunReturned(error) }); ok {
+		returned.RunReturned(runErr)
+	}
+
+	// Widened with what the run withheld as it went: a callee's declared
+	// `sensitive:` inputs, which the case's posture (the root's) never saw
+	// (#2211). The gatherer was told each step's set, a failing call's
+	// carried one included, so what the run's error quotes is in it. Every
+	// rendering from here on — the expectations, the claims, the autopsy,
+	// the transcript itself and what a schedule divergence shows of this run
+	// (#2214) — withholds them; the verdicts read real values. Before the
+	// exits below, which return the run's error and transcript too.
+	if gatherer != nil {
+		sensitive = widenedBy(sensitive, gatherer.withheld())
+	}
+	shown = caseShown{sensitive: sensitive, runErr: runErr}
 
 	// The transcript coverage reads is the same one the verdict does. A failed
 	// run hands back the partial one ([v1.PartialTranscript]): the steps it ran
@@ -1060,6 +1084,13 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 				rendered = append(rendered, failure.GetField()+": "+failure.GetMessage())
 			}
 			scope := postRunScope(ctx, workflow, bound, outputs)
+			// The session's redactors were the case's before the run; the
+			// autopsy inspects the finished run's scope, which can hold what
+			// a callee withheld (Copilot, #2215). Cleared on the way out,
+			// as the first is.
+			if !sensitive.Empty() && setDebuggerRedactors(ctx, sensitive) {
+				defer setDebuggerRedactors(ctx, sensitiveInputs{})
+			}
 			examiner.Autopsy(ctx, scope, autopsyExtras(ctx, scope, vars, runErr, sensitive), rendered)
 		}
 	}
@@ -1349,10 +1380,10 @@ func unstubbedTaskFn(name string, seen *unstubbedTasks) v1.TaskFunc {
 	return func(ctx context.Context, inputs map[string]*v1.Value, scope *v1.Scope) (*v1.Node_Outputs, error) {
 		seen.record(ctx, name)
 
-		return nil, v1.NewTaskError(name, v1.ErrorKindInvalidInput, fmt.Errorf(
+		return nil, v1.NewTaskError(name, v1.ErrorKindInvalidInput, &stubDiagnostic{shaped: true, text: fmt.Sprintf(
 			"flow test: task %q was invoked, but this case declares no stub for it; "+
 				"add a `stubs:` entry naming %q — flow test never lets an unstubbed task run for real",
-			name, name))
+			name, name)})
 	}
 }
 
@@ -1979,15 +2010,7 @@ func assertExpectation(want *Expectation, spec *v1.Workflow, outputs *v1.Workflo
 	var failures []*v1.Diagnostic
 	renderedRunErr := "<nil>"
 	if runErr != nil {
-		// Under WithholdAll the task/stub boundary has already shaped the
-		// diagnostic, preserving author-written expressions while withholding
-		// values it could not enumerate. Replacing that safe message wholesale
-		// would erase the only actionable detail. Otherwise this is the outer
-		// substring backstop for material carried here by a computed var.
-		renderedRunErr = runErr.Error()
-		if !sensitive.WithholdAll() {
-			renderedRunErr = redactedErrorText(renderedRunErr, sensitive)
-		}
+		renderedRunErr = renderedRunError(runErr, sensitive)
 	}
 
 	failed := runErr != nil
@@ -2013,10 +2036,12 @@ func assertExpectation(want *Expectation, spec *v1.Workflow, outputs *v1.Workflo
 	}
 	if want.ErrorContains != "" {
 		if runErr == nil || !strings.Contains(runErr.Error(), want.ErrorContains) {
+			// Compared as written, rendered as the error is: a case can
+			// expect the very value it withholds (Codex, #2215).
 			failures = append(failures, &v1.Diagnostic{
 				Field: "expect.error_contains",
 				Message: fmt.Sprintf("expected the run's error to contain %q, got: %s",
-					want.ErrorContains, renderedRunErr),
+					redactedErrorText(want.ErrorContains, sensitive), renderedRunErr),
 			})
 		}
 	}
@@ -2139,6 +2164,65 @@ func assertExpectation(want *Expectation, spec *v1.Workflow, outputs *v1.Workflo
 	}
 
 	return failures
+}
+
+// renderedRunError is the run's failure as a case's report prints it, under
+// the posture sensitive.
+func renderedRunError(runErr error, sensitive sensitiveInputs) string {
+	// Under WithholdAll the task/stub boundary has already shaped the
+	// diagnostic, preserving author-written expressions while withholding
+	// values it could not enumerate. Replacing that safe message wholesale
+	// would erase the only actionable detail. Otherwise this is the outer
+	// substring backstop for material carried here by a computed var.
+	//
+	// Only for a diagnostic the stub boundary built, only where it was
+	// shaped under that posture where it was raised ([stubDiagnostic]'s
+	// shaped: the root's, or a callee's that could not be enumerated), and
+	// only where every error wrapping it added nothing after it
+	// ([onlyPrefixed]), so that what precedes it is the positions the engine
+	// wraps around a failure. An evaluation error (`no such key: <value>`)
+	// was shaped by nothing; neither was a compensation's failure the run
+	// appends after it ([v1.UndoRunError]), nor a diagnostic raised under a
+	// position that could enumerate what it withholds, and so withheld only
+	// that, before a set gathered elsewhere came to withhold everything.
+	// Those are withheld whole rather than printed as they are (#2215).
+	//
+	// Printed as it is, it holds no text an author wrote beyond names: a
+	// diagnostic shaped under that posture withholds each stub's `where:` as
+	// well, since an author can write a sensitive value into one
+	// ([unmatchedStubError], #2215).
+	var stubShaped *stubDiagnostic
+	if sensitive.WithholdAll() && errors.As(runErr, &stubShaped) && stubShaped.shaped && onlyPrefixed(runErr, stubShaped) {
+		return runErr.Error()
+	}
+
+	return redactedErrorText(runErr.Error(), sensitive)
+}
+
+// caseShown is what a person may be shown of one run of a case: the posture
+// its renderings withhold, widened with what the run withheld as it went, and
+// the run's failure, rendered under a posture by [caseShown.runErrorUnder].
+// Schedule exploration compares the run itself and shows this
+// ([dst.Result.Show]).
+type caseShown struct {
+	sensitive sensitiveInputs
+	runErr    error
+}
+
+// runErrorUnder is the run's failure as a schedule divergence shows it under
+// sensitive, or nil.
+//
+// Withheld whole under a posture that withholds everything, with no exception
+// for a diagnostic the stub boundary shaped: the case's own report keeps that
+// one readable ([renderedRunError]), but it names the step and task as the
+// file wrote them, and a divergence shows it beside a verdict whose names it
+// withholds (Codex, #2224).
+func (c caseShown) runErrorUnder(sensitive sensitiveInputs) error {
+	if c.runErr == nil {
+		return nil
+	}
+
+	return errors.New(redactedErrorText(c.runErr.Error(), sensitive))
 }
 
 // topLevelStepUniverse collects every step id that can appear in a run's
@@ -2446,4 +2530,58 @@ func asFloatOnly(v any) (float64, bool) {
 	default:
 		return 0, false
 	}
+}
+
+// setDebuggerRedactors hands a debugging session that takes them the case's
+// text and value redactors for sensitive, and reports whether it installed
+// any. An empty set installs nothing but clears what was there, which is how
+// a case leaves a session it shared.
+func setDebuggerRedactors(ctx context.Context, sensitive sensitiveInputs) bool {
+	debugger := v1.DebuggerFromContext(ctx)
+	installed := false
+
+	if redacting, ok := debugger.(interface {
+		SetRedactor(func(string) string)
+	}); ok {
+		var redact func(string) string
+		if !sensitive.Empty() {
+			redact = func(text string) string {
+				if sensitive.WithholdAll() {
+					return "[withheld]\n"
+				}
+
+				return sensitive.RedactSubstrings(text)
+			}
+			installed = true
+		}
+		redacting.SetRedactor(redact)
+	}
+
+	// And the same set at the *value* seam, because the substring half of
+	// it deliberately omits short descendants — replacing every "7" in
+	// every line would make a transcript unreadable — so a sensitive
+	// `credentials: [7]` had nothing in `substrings` to catch it and
+	// `inspect inputs.credentials` printed it in full, while the ordinary
+	// transcript redacted the whole container (Codex, #1109). Values match
+	// by equality rather than by looking like something, which is exactly
+	// what a short descendant needs, and it is the same
+	// [redactSensitiveTree] every witness rendering already applies.
+	if redacting, ok := debugger.(interface {
+		SetValueRedactor(func(any) any)
+	}); ok {
+		var redact func(any) any
+		if !sensitive.Empty() {
+			redact = func(value any) any {
+				if sensitive.WithholdAll() {
+					return "[withheld]"
+				}
+
+				return sensitive.RedactTree(value)
+			}
+			installed = true
+		}
+		redacting.SetValueRedactor(redact)
+	}
+
+	return installed
 }

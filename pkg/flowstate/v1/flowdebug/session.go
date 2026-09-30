@@ -2,6 +2,7 @@ package flowdebug
 
 import (
 	"bufio"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,6 +10,7 @@ import (
 	"io"
 	"maps"
 	"math"
+	"reflect"
 	"slices"
 	"sort"
 	"strings"
@@ -255,6 +257,15 @@ type Options struct {
 	// terminal makes, and the same escape — see [Session.Control].
 	Controlled bool
 
+	// RevealSensitive says the caller has authorized showing the values the
+	// program declares sensitive: `--reveal-sensitive` on `flow run --debug`,
+	// `flow debug replay` and `flow dap`, or embed's
+	// DebugOptions.RevealSensitive, each of which refuses to debug a program
+	// declaring such values without it. Without it, a hold withholds the
+	// declared-sensitive inputs of the root and of the workflow held there, a
+	// callee's included, as the durable driver does (#2208).
+	RevealSensitive bool
+
 	// Workflow is the program being debugged. When set, breakpoint and
 	// run-until targets are resolved against its sites, so a target that can
 	// never match is refused rather than armed.
@@ -412,6 +423,21 @@ type Session struct {
 	// same declined-arrival notice. One-shot with the mode that carries it —
 	// every resume clears both.
 	untilCondition *v1.Value
+	// untilConditionText is untilCondition as it was written, for saying what
+	// was asked when the stop never came. Set and cleared with it.
+	untilConditionText string
+	// untilSensitive is what the hold `until` was applied at withheld
+	// ([promptSubject.sensitive]), for saying what was asked when the stop
+	// never came: an `until` applied inside a callee can quote a value only
+	// that callee declares sensitive, as the durable driver's untilSensitive
+	// records. Set and cleared with it.
+	untilSensitive v1.SensitiveValues
+	// returnReported records that [Session.RunReturned] has heard the run's
+	// own return. The first report decides whether a missed `until` is said:
+	// a driver that reports the return and then the case's verdict
+	// ([Session.Finished]) says it at most once, and a run that failed is
+	// never called completed because a case expecting the failure passed.
+	returnReported bool
 	breakpoints    map[string]breakpoint
 
 	// notedUnbound remembers which condition-gated stops — breakpoints and
@@ -524,7 +550,10 @@ type Session struct {
 	// controlled is [Options.Controlled], and control carries the lines
 	// [Session.Control] delivers. See control.go.
 	controlled bool
-	control    chan controlRequest
+
+	// reveal is [Options.RevealSensitive].
+	reveal  bool
+	control chan controlRequest
 
 	// controlSlot admits one [Session.Control] at a time. A run has one
 	// position, so two callers moving it at once is not a thing to arbitrate
@@ -599,6 +628,11 @@ type promptSubject struct {
 	// existed to withhold (Codex, #1120).
 	redactText  func(string) string
 	redactValue func(any) any
+
+	// sensitive is what the workflow held here declares sensitive, with the
+	// root's ([v1.ExecutingSensitiveFromContext]), folded into redactText and
+	// redactValue when the pause is captured.
+	sensitive v1.SensitiveValues
 }
 
 // New returns a session configured by opts.
@@ -648,6 +682,7 @@ func New(opts Options) (*Session, error) {
 		declaredIDs: declaredStepIDSet(opts.Steps),
 
 		controlled:   opts.Controlled,
+		reveal:       opts.RevealSensitive,
 		control:      make(chan controlRequest),
 		controlSlot:  make(chan struct{}, 1),
 		pauseChanged: make(chan struct{}),
@@ -683,7 +718,8 @@ func New(opts Options) (*Session, error) {
 		if notice, unknown := s.unknownStepNotice(id); unknown {
 			return nil, fmt.Errorf("flowdebug: breakpoint: %s", notice)
 		}
-		s.breakpoints[id] = breakpoint{source: id, id: id, target: v1.ParseDebugTargetOrStep(id)}
+		s.breakpoints[id] = breakpoint{source: id, id: id, target: v1.ParseDebugTargetOrStep(id),
+			definition: &v1.DebugBreakpoint{Id: id, Step: id}}
 	}
 
 	// Where the first stop lands, and why it depends on nothing else: an
@@ -819,19 +855,34 @@ func (s *Session) ScriptTruncated() bool {
 // from a failed one — see that sentinel for why the distinction decides a
 // verdict — while the message stays this session's own, naming the command the
 // person actually typed.
-var errQuit = fmt.Errorf("debug session ended by the `quit` command: %w", v1.ErrDebugSessionEnded)
+var errQuit = fmt.Errorf("%w by the `quit` command", v1.ErrDebugSessionEnded)
 
 // StepFinished implements [v1.RunObserver]. The account is what a session
 // prints after `step`: an author who advanced one step wants to see what it
 // produced, and this is the same record `flow test`'s transcript renders, from
 // the same seam, rather than a second bookkeeping of it.
 func (s *Session) StepFinished(id string, outputs *v1.Node_Outputs, err error, tolerated bool) {
-	s.sawStep(id)
+	s.StepFinishedWithholding(id, outputs, err, tolerated, v1.SensitiveValues{})
+}
 
-	text := s.stepOutcomeText(outputs, err, tolerated)
+// StepFinishedWithholding implements [v1.WithholdingRunObserver]: the account
+// of a step inside a callee, or of a call whose callee failed, withholds what
+// those workflows declare sensitive (#2210), as a hold there withholds it
+// ([withholdingAt]) — unless [Options.RevealSensitive] authorized showing it.
+func (s *Session) StepFinishedWithholding(id string, outputs *v1.Node_Outputs, err error, tolerated bool, withhold v1.SensitiveValues) {
+	s.sawStep(id)
+	if s.reveal {
+		withhold = v1.SensitiveValues{}
+	}
 
 	s.mu.Lock()
-	s.lastOutcome = id + " " + text
+	redact, redactValue := withholdingAt(s.redact, s.redactValue, withhold)
+	s.mu.Unlock()
+	text := s.stepOutcomeText(redact, redactValue, outputs, err, tolerated)
+	line := applyText(redact, id+" "+text)
+
+	s.mu.Lock()
+	s.lastOutcome = line
 	s.mu.Unlock()
 
 	// The tone is the outcome's, matching the transcript's reading of the
@@ -847,22 +898,66 @@ func (s *Session) StepFinished(id string, outputs *v1.Node_Outputs, err error, t
 		tone, state = ToneDanger, StepFailed
 	}
 	s.noteStep(id, state)
-	s.printfTone(tone, "  %s %s\n", id, text)
-	s.observe(observationKind(state), id, id+" "+text)
+	s.emitTone(tone, "  "+line+"\n")
+	s.observeRedacted(observationKind(state), id, capRunes(line, maxObservationRunes))
 }
 
-// StepSkipped implements [v1.RunObserver]. A skipped step never reaches
-// [Session.BeforeStep] — there is no work to hold — so this is the only place
-// a session can say the `if:` decided against it.
+// StepSkipped implements [v1.RunObserver]. The engine calls
+// [Session.StepSkippedBy] instead, and this is the account of a skip whose
+// condition nobody quoted.
 func (s *Session) StepSkipped(id string) {
+	s.StepSkippedBy(id, nil, v1.SensitiveValues{})
+}
+
+// StepSkippedBy implements [v1.GuardRunObserver]. A skipped step never reaches
+// [Session.BeforeStep] — there is no work to hold — so this is the only place
+// a session can say the `if:` decided against it, and the account quotes the
+// condition that did ([v1.SkippedText]), in the sentence a durable session
+// gives. The account withholds what the workflow it is in declares sensitive
+// ([withholdingAt]), as a durable session's does, unless
+// [Options.RevealSensitive] authorized showing it.
+func (s *Session) StepSkippedBy(id string, condition *v1.Value, withhold v1.SensitiveValues) {
 	// Remembered as a step this run reaches even though it did not run: a
 	// breakpoint on a step whose `if:` was false this time is exactly what
 	// somebody sets when they are trying to find out why.
 	s.sawStep(id)
 	s.noteStep(id, StepSkipped)
+	if s.reveal {
+		withhold = v1.SensitiveValues{}
+	}
 
-	s.printf("  %s skipped (`if:` was false)\n", id)
-	s.observe(v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_SKIPPED, id, id+" skipped (`if:` was false)")
+	// In the durable driver's marker: the sentence is one both drivers give
+	// ([v1.SkippedText]), and a word the text pass withholds must read the
+	// same in each (Codex, #2227).
+	s.mu.Lock()
+	redact, redactValue := withholdingAtMarked(s.redact, s.redactValue, withhold, v1.SensitiveMarker)
+	s.mu.Unlock()
+	// A constant is withheld by value before the condition is written, then
+	// the sentence by text; withheld, then bounded, never the other way
+	// round: a cut first could keep the start of a sensitive value no
+	// whole-value match then finds.
+	account := v1.SkippedText(id, condition, func(value any) bool {
+		// A string's own text, before the renderer escapes it, so a
+		// sensitive value it merely contains is found too (Copilot, #2227).
+		// A bytes literal is asked about as its text as well
+		// ([v1.SkippedText]).
+		if text, ok := value.(string); ok && applyText(redact, text) != text {
+			return true
+		}
+
+		return redactValue != nil && !reflect.DeepEqual(redactValue(value), value)
+	})
+	line := capRunes(applyText(redact, account), maxObservationRunes)
+	s.emitTone(ToneInfo, "  "+line+"\n")
+	s.observeRedacted(v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_SKIPPED, id, line)
+}
+
+// GuardFailed implements [v1.GuardRunObserver]: a step whose `if:` could not
+// be evaluated is a step that failed, and without this the step list would
+// show it as never reached. Its account is a failed step's, since that is
+// what the run reports.
+func (s *Session) GuardFailed(id string, err error, withhold v1.SensitiveValues) {
+	s.StepFinishedWithholding(id, nil, err, false, withhold)
 }
 
 // WaitStarted implements [v1.RunObserver], reporting a wait as it parks.
@@ -929,6 +1024,14 @@ type breakpoint struct {
 	// site, when set, arms exactly one site by its key rather than a target:
 	// a source-line breakpoint resolved through the source map.
 	site string
+	// definition is the breakpoint as it was set, which a snapshot reports so
+	// a client that did not set it can resend it.
+	definition *v1.DebugBreakpoint
+	// name is what a notice calls a typed breakpoint: the step or line it
+	// was set on, since its id is the client's own key — DAP's is an index
+	// into its request, which names nothing the author wrote. Empty for a
+	// console breakpoint, whose id already is its step.
+	name string
 }
 
 // conditionHolds answers whether an arrival gated by a condition should stop —
@@ -1002,7 +1105,9 @@ func (s *Session) conditionHolds(ctx context.Context, what, id string, condition
 		return false, ctx.Err()
 
 	case err != nil:
-		s.noteDeclined(what, id, err)
+		// An evaluation error can quote what it read, and what it read here
+		// is this arrival's scope.
+		s.noteDeclined(what, id, errors.New(s.redactTextAt(ctx, err.Error())))
 
 		return false, nil
 	}
@@ -1010,8 +1115,10 @@ func (s *Session) conditionHolds(ctx context.Context, what, id string, condition
 	return holds, nil
 }
 
-// announce prints where the run has stopped.
-func (s *Session) announce(node *v1.Node) {
+// announce prints where the run has stopped, by its address: the step id
+// alone cannot say which iteration, branch or call arrival this is, and the
+// address is what `break` and `until` take to name it again.
+func (s *Session) announce(node *v1.Node, occurrence *v1.DebugOccurrence) {
 	at := ""
 	if s.clock != nil {
 		now := s.clock.Now()
@@ -1026,7 +1133,7 @@ func (s *Session) announce(node *v1.Node) {
 		at = fmt.Sprintf("   t=%s", elapsed)
 	}
 
-	s.printfTone(ToneBreak, "break at %s (%s)%s\n", node.GetId(), v1.NodeKind(node), at)
+	s.printfTone(ToneBreak, "break at %s (%s)%s\n", cmp.Or(occurrence.GetAddress(), node.GetId()), v1.NodeKind(node), at)
 }
 
 // Close releases the session's reader.
@@ -1081,6 +1188,10 @@ func (s *Session) Close() error {
 // nobody asked for has taken it out of a stream the process may still own after
 // the session ends.
 func (s *Session) readCommand(ctx context.Context) (line string, ok bool, err error) {
+	// drawn is a prompt already on the stream that no command has answered:
+	// a comment line consumes no prompt, so a script's comments do not stack
+	// an empty `debug> ` apiece in front of the command that follows them.
+	drawn := false
 	for {
 		s.mu.Lock()
 		closed, scanner, console, controlled := s.closed, s.in, s.console, s.controlled
@@ -1142,6 +1253,10 @@ func (s *Session) readCommand(ctx context.Context) (line string, ok bool, err er
 					return "", false, nil
 				}
 
+				if console == nil && IsComment(text) {
+					continue
+				}
+
 				return text, true, nil
 			default:
 			}
@@ -1163,8 +1278,9 @@ func (s *Session) readCommand(ctx context.Context) (line string, ok bool, err er
 				// Drawn with the request rather than with the boundary, for the
 				// same reason: a second `debug> ` for a line already being
 				// waited on is a prompt describing nothing.
-				if console == nil {
+				if console == nil && !drawn {
 					s.printfTone(TonePrompt, Prompt)
+					drawn = true
 				}
 			}
 		}
@@ -1179,6 +1295,9 @@ func (s *Session) readCommand(ctx context.Context) (line string, ok bool, err er
 				}
 
 				return "", false, nil
+			}
+			if console == nil && IsComment(text) {
+				continue
 			}
 
 			return text, true, nil
@@ -1416,7 +1535,7 @@ func (s *Session) prompting(at promptSubject) {
 	// read there is not a stale answer, it is a concurrent map read and write —
 	// which Go answers with a fatal throw no recover reaches (Codex, #1120).
 	if at.scope != nil {
-		at.redactText, at.redactValue = s.redact, s.redactValue
+		at.redactText, at.redactValue = withholdingAt(s.redact, s.redactValue, at.sensitive)
 		at.scope = frozen(at.scope)
 	}
 
@@ -1430,6 +1549,83 @@ func (s *Session) prompting(at promptSubject) {
 	s.pauseGen++
 	close(s.pauseChanged)
 	s.pauseChanged = make(chan struct{})
+}
+
+// withholdingAt is the session's redactors with what the workflow held at a
+// pause declares sensitive added to both (#2208). The session's own come from
+// its caller — `flow test` installs the case's — and know nothing of a
+// callee's declarations, so a hold inside a callee showed a value only the
+// callee declares sensitive, which the durable driver withholds. Added rather
+// than substituted: the session's rule still applies first, and a session
+// with none still withholds what the held workflow declares.
+func withholdingAt(text func(string) string, value func(any) any, sensitive v1.SensitiveValues) (func(string) string, func(any) any) {
+	return withholdingAtMarked(text, value, sensitive, "[withheld]")
+}
+
+// withholdingAtMarked is [withholdingAt] writing marker where the held set
+// withholds text. A rendering both drivers give in one sentence passes the
+// durable driver's marker, [v1.SensitiveMarker], so the sentences agree.
+func withholdingAtMarked(text func(string) string, value func(any) any, sensitive v1.SensitiveValues, marker string) (func(string) string, func(any) any) {
+	if sensitive.Empty() {
+		return text, value
+	}
+
+	return func(rendered string) string {
+			// Each rule matches the text as it was, never the other's output:
+			// applied in turn, one secret overlapping another is cut by the
+			// first and missed by the second (`abc` withheld, then `abcdef`
+			// no longer found, leaving `def`), and no order is safe for
+			// both. So each is asked of the original, and where both would
+			// withhold something the whole rendering is withheld instead
+			// (Copilot, #2209) — structured values reach here a leaf at a
+			// time ([withheldLeaves]), so that costs a leaf, not an answer.
+			own := applyText(text, rendered)
+			held := sensitive.RedactText(rendered, marker)
+			switch {
+			case held == rendered:
+				return own
+			case own == rendered:
+				return held
+			default:
+				return marker
+			}
+		}, func(native any) any {
+			if sensitive.WithholdAll() {
+				return "[withheld]"
+			}
+			if value != nil {
+				native = value(native)
+			}
+
+			return sensitive.RedactTree(native)
+		}
+}
+
+// sensitiveAt is what text rendered from the run's position on ctx withholds
+// beyond the session's own redactors: the declared-sensitive inputs of the
+// root and of the workflow running there ([v1.ExecutingSensitiveFromContext]),
+// or nothing where [Options.RevealSensitive] authorized showing them. Every
+// rendering from an arrival's scope asks it — a hold's pause, a failure stop's
+// text, a logpoint's message, a declined condition's error — because each can
+// quote a value only the callee there declares sensitive.
+func (s *Session) sensitiveAt(ctx context.Context) v1.SensitiveValues {
+	if s.reveal {
+		return v1.SensitiveValues{}
+	}
+
+	return v1.ExecutingSensitiveFromContext(ctx)
+}
+
+// redactTextAt is [Session.redactText] plus what the position on ctx
+// withholds ([Session.sensitiveAt]).
+func (s *Session) redactTextAt(ctx context.Context, text string) string {
+	s.mu.Lock()
+	redact := s.redact
+	s.mu.Unlock()
+
+	withhold, _ := withholdingAt(redact, nil, s.sensitiveAt(ctx))
+
+	return applyText(withhold, text)
 }
 
 // frozen is the scope as it was when a pause began, copied so that nothing the
@@ -1585,9 +1781,11 @@ func (s *Session) noteDeclined(what, id string, err error) {
 	}
 	_, already := s.notedUnbound[key]
 	s.notedUnbound[key] = struct{}{}
+	name := id
 	if at, ok := s.breakpoints[id]; ok && what == declinedBreakpoint {
 		at.lastError = capRunes(s.redactTextLocked(err.Error()), MaxInspectRunes)
 		s.breakpoints[id] = at
+		name = cmp.Or(at.name, id)
 	}
 	s.mu.Unlock()
 
@@ -1595,9 +1793,9 @@ func (s *Session) noteDeclined(what, id string, err error) {
 		return
 	}
 
-	s.printfTone(ToneWarning, "%s %s: the condition could not be evaluated here, so the run was not held: %v\n", what, id, err)
+	s.printfTone(ToneWarning, "%s %s: the condition could not be evaluated here, so the run was not held: %v\n", what, name, err)
 	s.observe(v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_NOTICE, "",
-		fmt.Sprintf("%s %s: the condition could not be evaluated here, so the run was not held: %v", what, id, err))
+		fmt.Sprintf("%s %s: the condition could not be evaluated here, so the run was not held: %v", what, name, err))
 }
 
 // consoleEnded says why the command stream stopped, in words an author can
@@ -1643,8 +1841,11 @@ func (s *Session) record(line string) {
 // installed one, to Out otherwise. Every write in this package goes through
 // here, so a session is colourable without a second output path.
 func (s *Session) printfTone(tone Tone, format string, args ...any) {
-	text := s.redactText(fmt.Sprintf(format, args...))
+	s.emitTone(tone, s.redactText(fmt.Sprintf(format, args...)))
+}
 
+// emitTone prints text that is already redacted, as it is.
+func (s *Session) emitTone(tone Tone, text string) {
 	// Held across the call, not just around a field read: Emit is the
 	// caller's, and the two this repository ships both accumulate — the MCP
 	// adapter appends to a slice and adds up bytes, the CLI writes to a
@@ -1747,22 +1948,6 @@ func (s *Session) SetValueRedactor(redact func(any) any) {
 	s.redactValue = redact
 }
 
-// redactedValue is v through the installed value redactor, then with the text
-// redactor applied to its leaves — both seams, on the tree, before anything
-// renders it. See [withheldLeaves] for why the text half cannot wait for the
-// rendered line: JSON escapes or encodes exactly the leaves it must find.
-func (s *Session) redactedValue(v any) any {
-	s.mu.Lock()
-	redactValue, redactText := s.redactValue, s.redact
-	s.mu.Unlock()
-
-	if redactValue != nil {
-		v = redactValue(v)
-	}
-
-	return withheldLeaves(redactText, v)
-}
-
 func (s *Session) redactText(text string) string {
 	s.mu.Lock()
 	redact := s.redact
@@ -1809,8 +1994,9 @@ func (s *Session) printf(format string, args ...any) {
 	s.printfTone(ToneInfo, format, args...)
 }
 
-// stepOutcomeText renders one step's recorded outcome for the console.
-func (s *Session) stepOutcomeText(outputs *v1.Node_Outputs, err error, tolerated bool) string {
+// stepOutcomeText renders one step's recorded outcome for the console, its
+// values redacted by redactValue and the rendering by redact.
+func (s *Session) stepOutcomeText(redact func(string) string, redactValue func(any) any, outputs *v1.Node_Outputs, err error, tolerated bool) string {
 	if err != nil {
 		if tolerated {
 			return "failed (tolerated by continue_on_error): " + err.Error()
@@ -1832,7 +2018,7 @@ func (s *Session) stepOutcomeText(outputs *v1.Node_Outputs, err error, tolerated
 
 	parts := make([]string, 0, len(names))
 	for _, name := range names {
-		parts = append(parts, name+": "+s.valueText(named[name]))
+		parts = append(parts, name+": "+valueText(named[name], redact, redactValue))
 	}
 
 	// Redacted *before* the cap, not after. capRunes keeps the first
@@ -1840,13 +2026,13 @@ func (s *Session) stepOutcomeText(outputs *v1.Node_Outputs, err error, tolerated
 	// truncation as a prefix no substring match can find — so a cap applied
 	// first would expose the first 4096 runes of exactly the value the
 	// redactor exists to withhold (Codex, #1109). Order is the whole fix.
-	return "-> " + capRunes(s.redactText(strings.Join(parts, ", ")), MaxInspectRunes)
+	return "-> " + capRunes(applyText(redact, strings.Join(parts, ", ")), MaxInspectRunes)
 }
 
 // valueText renders one output value. A value that is not a resolved literal
 // — a secret reference above all — renders as what it is rather than as what
 // it points at.
-func (s *Session) valueText(value *v1.Value) string {
+func valueText(value *v1.Value, redact func(string) string, redactValue func(any) any) string {
 	if ref := value.GetSecretRef(); ref != nil {
 		return fmt.Sprintf("secret(%s://%s)", ref.GetScheme(), ref.GetName())
 	}
@@ -1859,7 +2045,17 @@ func (s *Session) valueText(value *v1.Value) string {
 		return "…"
 	}
 
-	return nativeText(s.redactedValue(native))
+	// Both seams, on the tree, before anything renders it. The value
+	// redactor catches a structured value's short sensitive descendant — `7`
+	// in `codes: [7]` — which no substring match of the rendered line can
+	// (Codex, #2212); see [withheldLeaves] for why the text half cannot wait
+	// for the rendered line either: JSON escapes or encodes exactly the leaves
+	// it must find.
+	if redactValue != nil {
+		native = redactValue(native)
+	}
+
+	return nativeText(withheldLeaves(redact, native))
 }
 
 // nativeText renders a plain Go value the way an author reads data: as JSON,
@@ -1875,26 +2071,40 @@ func nativeText(native any) string {
 	return string(encoded)
 }
 
-// refValText renders an inspection's result through the same conversion a
-// `value:` step's result takes — [cel.RefValueToValue] then [v1.LiteralToGo],
-// exactly as EvalValueNode does — so what an inspection prints and what the
-// same expression would produce in the file are one rendering of one value,
-// rather than two that can drift.
+// refValTextWith renders an inspection's result through the same conversion
+// a `value:` step's result takes — [cel.RefValueToValue] then
+// [v1.LiteralToGo], exactly as EvalValueNode does — so what an inspection
+// prints and what the same expression would produce in the file are one
+// rendering of one value, rather than two that can drift.
 //
-// Redacted as a tree first, through [Session.redactedValue], for the reason
-// [withheldLeaves] gives; the caller's pass over the rendered line is the
-// backstop behind it.
-func (s *Session) refValText(out ref.Val) string {
+// Redacted as a tree first, through value and then [withheldLeaves] with
+// text, for the reason [withheldLeaves] gives; the caller's pass over the
+// rendered line is the backstop behind it.
+func refValTextWith(out ref.Val, text func(string) string, value func(any) any) string {
 	native, ok := redactedNative(out, nil)
 	if !ok {
-		s.mu.Lock()
-		withholding := s.redact != nil || s.redactValue != nil
-		s.mu.Unlock()
-
-		return unrenderedText(out, withholding)
+		return unrenderedText(out, text != nil || value != nil)
+	}
+	if value != nil {
+		native = value(native)
 	}
 
-	return nativeText(s.redactedValue(native))
+	return nativeText(withheldLeaves(text, native))
+}
+
+// pauseRedactors are the redactors an answer at the current pause renders
+// under: the pause's own, captured with its scope ([promptSubject.redactText])
+// and carrying what the workflow held there declares sensitive, or the
+// session's where there is no pause.
+func (s *Session) pauseRedactors() (func(string) string, func(any) any) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.at.scope != nil {
+		return s.at.redactText, s.at.redactValue
+	}
+
+	return s.redact, s.redactValue
 }
 
 // unrenderedText is what prints for a value [redactedNative] cannot convert —
@@ -2100,6 +2310,14 @@ quit, q                     leave the autopsy (so do step/continue — the run i
 `)
 
 		default:
+			// A command the prompt knows is not a typo here: it has nothing
+			// left to act on, and saying "unknown" sends the author looking
+			// for a misspelling that is not there.
+			if c, known := resolve(verb); known {
+				s.printfTone(ToneWarning, "`%s` has nothing to act on at the autopsy: the run is over, and "+
+					"inspect, complete, scope and help are what answer here\n", c.verb)
+				continue
+			}
 			s.printfTone(ToneWarning, "unknown command %q — try `help`\n", verb)
 		}
 	}

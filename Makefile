@@ -1,4 +1,4 @@
-.PHONY: check gate test test-plugins plugin-examples plugin-example-catalog-update test-ordering test-fast fuzz-smoke fmt modernize vacuity wallclock dupbodies dev-temporal docs docs-preview appearance appearance-update coverage coverage-plugins release-artifacts vulncheck-plugins staticcheck-plugins
+.PHONY: check check-untracked-generated gate test test-plugins plugin-examples plugin-example-catalog-update test-ordering test-fast fuzz-smoke fmt modernize vacuity wallclock dupbodies dev-temporal docs docs-preview appearance appearance-update coverage coverage-plugins release-artifacts vulncheck-plugins staticcheck-plugins
 
 # The external tools the build runs — buf, govulncheck, staticcheck, pkgsite —
 # are pinned once, as `tool` directives in tools/external/go.mod, checksummed
@@ -13,6 +13,10 @@ BUF := go tool -modfile=$(TOOLS_MODFILE) buf
 GOVULNCHECK := GOTOOLCHAIN=go1.27.0 go tool -modfile=$(TOOLS_MODFILE) govulncheck
 STATICCHECK := GOTOOLCHAIN=go1.27.0 go tool -modfile=$(TOOLS_MODFILE) staticcheck
 PKGSITE := go tool -modfile=$(TOOLS_MODFILE) pkgsite
+
+# The example plugin is its own buf module: `make check`, ci.yml and tools/gate
+# regenerate its code, schema comments included, from its own buf.gen.yaml.
+EXAMPLE_PLUGIN := pkg/flowstate/v1/plugin/examples/flowstate-plugin-example
 
 # gofmt from the toolchain go.mod pins, rather than whichever build sits on
 # PATH (#1061).
@@ -105,13 +109,28 @@ check:
 	$(BUF) lint
 	$(BUF) breaking --against '.git#branch=origin/main'
 	$(BUF) generate
-	$(BUF) build --exclude-imports -o pkg/flowstate/v1/protodoc/flowstate.descriptorset.binpb
-	$(BUF) build --exclude-imports -o pkg/flowstate/v1/plugin/examples/flowstate-plugin-example/schema.descriptorset.binpb pkg/flowstate/v1/plugin/examples/flowstate-plugin-example/proto
+	$(BUF) generate $(EXAMPLE_PLUGIN)/proto --template $(EXAMPLE_PLUGIN)/buf.gen.yaml -o $(EXAMPLE_PLUGIN) --clean
 	git diff --exit-code
+	$(MAKE) check-untracked-generated
 	$(GOVULNCHECK) ./...
 	$(STATICCHECK) ./...
 	$(MAKE) vulncheck-plugins
 	$(MAKE) staticcheck-plugins
+
+# `git diff --exit-code` above only sees tracked files, so a new .proto whose
+# generated .pb.go, .doc.pb.go or .connect.go was never committed would pass it.
+# CI closes that with `git add --intent-to-add` before its diff, and the gate
+# with `git ls-files --others --exclude-standard`; this is the gate's spelling,
+# because it names the files without touching the index. It is scoped to
+# generated output, so unrelated new files you have not staged yet do not fail
+# the rehearsal, and files .gitignore covers never do (#2169).
+check-untracked-generated:
+	@untracked="$$(git ls-files --others --exclude-standard -- '*.pb.go' '*.connect.go')" || exit 1; \
+	if [ -n "$$untracked" ]; then \
+		echo "regenerating created files that are not in the commit (run git add on them):"; \
+		echo "$$untracked"; \
+		exit 1; \
+	fi
 
 # The bounded fuzz smokes CI's fuzz-smoke job runs — and it runs *this target*
 # rather than its own copy of them, so the local gate cannot pass a commit the

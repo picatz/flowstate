@@ -1,10 +1,12 @@
 package flowdebug
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"maps"
+	"net/url"
 	"slices"
 	"sort"
 	"strconv"
@@ -152,6 +154,16 @@ type contractState struct {
 	// sitesKnown distinguishes "no program was given" from "the program has
 	// no such site".
 	sitesKnown bool
+	// names is what the program's sites bind and which steps they are, taken
+	// once for every condition checked against them; nil unless sitesKnown.
+	names *v1.DebugProgramNames
+	// program and declaredInProgram are the program and every step id it
+	// declares, when its sites were cut short at [v1.MaxDebugStaticSites]:
+	// what a target is then judged by, as the durable driver judges it
+	// ([v1.DebugTarget.DeclaredIn]). The ids answer a bare step at once, and
+	// the program a qualified one. Nil otherwise.
+	program           *v1.Workflow
+	declaredInProgram map[string]struct{}
 
 	sourceMap *v1.DebugSourceMap
 	sources   map[string]*v1.DebugSourceLocation
@@ -160,6 +172,9 @@ type contractState struct {
 	// irDigest is the digest of the program under debug, when it is known:
 	// what a source map is checked against and what a snapshot reports.
 	irDigest string
+	// programGiven says the program came from [Options.Workflow], which
+	// [Session.Program] never replaces.
+	programGiven bool
 }
 
 func newContractState(opts Options) contractState {
@@ -174,15 +189,8 @@ func newContractState(opts Options) contractState {
 		sources:     map[string]*v1.DebugSourceLocation{},
 	}
 	if opts.Workflow != nil {
-		// A truncated enumeration cannot say a step is absent, so targets are
-		// then judged by step id, as they are without a workflow.
-		var truncated bool
-		c.sites, truncated = v1.DebugStaticSites(opts.Workflow)
-		c.sitesKnown = !truncated
-		if profile := opts.Workflow.GetProfile(); profile != "" {
-			c.profile = profile
-		}
-		c.irDigest = v1.WorkflowIRDigest(opts.Workflow)
+		c.setProgram(opts.Workflow)
+		c.programGiven = true
 	}
 	for _, entry := range opts.SourceMap.GetEntries() {
 		key := v1.DebugSiteKey(entry.GetSite())
@@ -192,6 +200,136 @@ func newContractState(opts Options) contractState {
 	}
 
 	return c
+}
+
+// setProgram records the program under debug: its sites, what it declares
+// when those were cut short, its profile and its digest.
+func (c *contractState) setProgram(wf *v1.Workflow) {
+	// A truncated enumeration cannot say a step is absent, so targets are
+	// then judged by step id, as they are without a workflow.
+	var truncated bool
+	c.sites, truncated = v1.DebugStaticSites(wf)
+	c.sitesKnown = !truncated
+	c.names, c.program, c.declaredInProgram = nil, nil, nil
+	c.profile = v1.CurrentProfile
+	if !truncated {
+		c.names = v1.NewDebugProgramNames(c.sites)
+	}
+	if truncated {
+		c.program = wf
+		c.declaredInProgram = map[string]struct{}{}
+		for id := range v1.DebugDeclaredSteps(wf) {
+			c.declaredInProgram[id] = struct{}{}
+		}
+	}
+	if profile := wf.GetProfile(); profile != "" {
+		c.profile = profile
+	}
+	c.irDigest = v1.WorkflowIRDigest(wf)
+}
+
+// Program gives a session built without [Options.Workflow] the program its
+// run executes, so a breakpoint's target and condition are judged against
+// where they can fire. flowtest calls it with each case's compiled program
+// before that case runs, which is how `flow test --debug`, the scripted MCP
+// tool and flowtesting.WithWalk sessions get one (Codex, #2202). A session
+// that was given a program keeps it.
+//
+// Cases may run different programs under one session (`flowtest.RunOptions`
+// holds each case's run), so each call replaces the last (Codex, #2202). A
+// breakpoint set against the program before is judged again against this
+// one, as [Session.ReplaceBreakpoints] would judge it now, and one this
+// program refuses is removed with a notice saying why, rather than left armed
+// for a case it cannot answer in. A line breakpoint is judged by the source
+// map, which a program does not change, and is kept. A pending `until` is
+// judged the same way, and one this program refuses is dropped for
+// `continue`, which it was already: a run to its breakpoints.
+func (s *Session) Program(wf *v1.Workflow) {
+	if wf == nil {
+		return
+	}
+	digest := v1.WorkflowIRDigest(wf)
+	s.mu.Lock()
+	if s.contract.programGiven || (s.contract.irDigest == digest && (s.contract.sitesKnown || s.contract.program != nil)) {
+		s.mu.Unlock()
+
+		return
+	}
+	s.contract.setProgram(wf)
+	profile := s.contract.profile
+	installed := make(map[string]breakpoint, len(s.breakpoints))
+	maps.Copy(installed, s.breakpoints)
+	pending, until, untilCondition, untilText, untilSensitive := s.mode == modeUntil, s.until, s.untilCondition, s.untilConditionText, s.untilSensitive
+	s.mu.Unlock()
+
+	redact := s.snapshotTextRedactor()
+	if pending {
+		// With what the hold it was applied at withheld, as the notice that it
+		// was never reached is (exact-head review, #2209).
+		withheld, _ := withholdingAt(redact, nil, untilSensitive)
+		s.rejudgeUntil(until, untilCondition, untilText, profile, withheld)
+	}
+	var refused []string
+	for _, key := range slices.Sorted(maps.Keys(installed)) {
+		at := installed[key]
+		if at.definition == nil || at.definition.GetLine() != nil {
+			continue
+		}
+		definition := proto.CloneOf(at.definition)
+		definition.Id = at.id
+		if _, state := s.compileBreakpoint(definition, profile, redact); !state.GetVerified() {
+			refused = append(refused, key)
+			text := fmt.Sprintf("breakpoint %s no longer applies to this program: %s", breakpointLabel(at.definition), state.GetMessage())
+			s.printfTone(ToneWarning, "%s\n", text)
+			s.observe(v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_NOTICE, "", text)
+		}
+	}
+	if len(refused) == 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, key := range refused {
+		// Only the breakpoint that was judged: one replaced meanwhile is the
+		// replacement's, and was judged when it was set.
+		if current, ok := s.breakpoints[key]; ok && current.source == installed[key].source {
+			delete(s.breakpoints, key)
+		}
+	}
+	s.bump()
+}
+
+// rejudgeUntil judges a pending `until` against the program [Session.Program]
+// just installed, and drops one it refuses for `continue`, saying why.
+func (s *Session) rejudgeUntil(until v1.DebugTarget, condition *v1.Value, conditionText, profile string, redact func(string) string) {
+	why, refused := s.unknownStepNotice(until.String())
+	if !refused && condition != nil {
+		if _, err := s.conditionInScope(condition, profile, until.Resolve); err != nil {
+			why, refused = "condition: "+err.Error(), true
+		}
+	}
+	if !refused {
+		return
+	}
+
+	asked := until.String()
+	if conditionText != "" {
+		asked += " if " + conditionText
+	}
+	s.mu.Lock()
+	// Only the `until` that was judged: one set meanwhile was judged when it
+	// was set.
+	current := s.mode == modeUntil && s.until.String() == until.String() && s.untilCondition == condition
+	if current {
+		s.mode, s.until, s.untilCondition, s.untilConditionText, s.untilSensitive = modeRun, v1.DebugTarget{}, nil, "", v1.SensitiveValues{}
+	}
+	s.mu.Unlock()
+	if !current {
+		return
+	}
+	text := applyText(redact, fmt.Sprintf("until %s no longer applies to this program: %s; the run continues to its breakpoints", asked, why))
+	s.printfTone(ToneWarning, "%s\n", text)
+	s.observe(v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_NOTICE, "", text)
 }
 
 // bump records a change: a new revision, and a wake for every waiter. Callers
@@ -241,7 +379,7 @@ func (s *Session) BeforeStep(ctx context.Context, node *v1.Node, scope *v1.Scope
 		return nil
 	}
 
-	return s.hold(ctx, node, scope, occurrence, reason, hitIDs, "", func() { s.announce(node) })
+	return s.hold(ctx, node, scope, occurrence, reason, hitIDs, "", func() { s.announce(node, occurrence) })
 }
 
 // StepFailed implements [v1.StepFailureDebugger]: a failure stop, when the
@@ -281,14 +419,16 @@ func (s *Session) StepFailed(ctx context.Context, node *v1.Node, scope *v1.Scope
 	occurrence.Arrival = s.contract.arrivals
 	s.mu.Unlock()
 
-	text := s.redactText(v1.StepErrorText(err))
+	// With what the failing workflow declares sensitive: a callee's error can
+	// quote its own sensitive input (Codex, #2209).
+	text := s.redactTextAt(ctx, v1.StepErrorText(err))
 	how := "failed"
 	if tolerated {
 		how = "failed (tolerated by continue_on_error)"
 	}
 
 	return s.hold(ctx, node, scope, occurrence, v1.DebugStopReason_DEBUG_STOP_REASON_FAILURE, nil, text, func() {
-		s.printfTone(ToneDanger, "stopped: %s %s: %s\n", node.GetId(), how, text)
+		s.printfTone(ToneDanger, "stopped: %s %s: %s\n", cmp.Or(occurrence.GetAddress(), node.GetId()), how, text)
 	})
 }
 
@@ -438,6 +578,7 @@ func (s *Session) hold(
 	s.prompting(promptSubject{
 		scope: scope, step: node.GetId(), kind: kind, workflow: workflow,
 		backtrace: v1.ExecutingBacktraceFromContext(ctx, node.GetId(), kind),
+		sensitive: s.sensitiveAt(ctx),
 	})
 	defer s.prompting(promptSubject{})
 	if !s.enterHeld(occurrence, reason, hitIDs, failure) {
@@ -585,26 +726,127 @@ func (s *Session) acknowledge(applied bool) {
 
 // resume sets what happens at the next boundary.
 func (s *Session) resume(m mode, until v1.DebugTarget) {
-	s.resumeUntil(m, until, nil)
+	s.resumeUntil(m, until, nil, "")
 }
 
 // resumeUntil is resume carrying `until`'s optional condition. Every resume
 // writes the condition — nil from every other verb — because `until` is
 // one-shot: a condition that outlived its resume would turn some later
 // `continue` into a conditional stop nobody asked for.
-func (s *Session) resumeUntil(m mode, until v1.DebugTarget, condition *v1.Value) {
+func (s *Session) resumeUntil(m mode, until v1.DebugTarget, condition *v1.Value, conditionText string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	s.mode = m
 	s.until = until
 	s.untilCondition = condition
+	s.untilConditionText = conditionText
+	s.untilSensitive = s.at.sensitive
 	s.contract.stepDepth = len(s.contract.occurrence.GetSegments())
 }
+
+// RunReturned tells the session the run has returned, with the run's own
+// error, and nothing about the verdict.
+//
+// An `until` still armed when the run completes named a stop the run never
+// made — an address past the last iteration, a condition that never held —
+// and without a word the run would simply end, as if it had. So did a pause
+// asked while the last step was under way, which was answered and then held
+// nowhere (#1297). This says so, once, on the prompt and as a notice
+// observation for the structured fronts.
+// It changes no state, so a driver that learns the verdict later still
+// reports it through [Session.Finished], which calls this too; only the first
+// report is heard, because it is the run's own error and a later one may be a
+// case's verdict, nil for a failure the case expected. Every driver
+// calls one or the other when its run returns; the prompt drivers, which
+// report no verdict to a session, call this, found on the context's debugger
+// the way flowtest finds its autopsy.
+func (s *Session) RunReturned(err error) {
+	s.mu.Lock()
+	first := !s.returnReported
+	s.returnReported = true
+	missed := ""
+	redact, _ := withholdingAt(s.redact, nil, s.untilSensitive)
+	completed := first && err == nil && !terminal(s.contract.state)
+	if completed && s.mode == modeUntil {
+		// As it was asked: a conditional `until` can reach its target with
+		// the condition never holding, and naming the bare target would say
+		// the step was never reached.
+		missed = s.until.String()
+		if s.untilConditionText != "" {
+			missed += " if " + s.untilConditionText
+		}
+	}
+	pauseMissed := completed && s.contract.pauseAsked
+	s.mu.Unlock()
+
+	var notices []string
+	if missed != "" {
+		// Redacted by the notice, which passes only the `until` through the
+		// redactor, and so printed and recorded as it is: redacting the
+		// whole line again would reach the fixed words that identify it
+		// (Codex, #2204). With what the hold it was applied at withheld, as
+		// the durable driver words it (exact-head review, #2209).
+		notices = append(notices, MissedUntilNotice(missed, func(until string) string { return applyText(redact, until) }))
+	}
+	if pauseMissed {
+		// Fixed words, holding nothing the run computed.
+		notices = append(notices, MissedPauseNotice)
+	}
+	for _, text := range notices {
+		s.emitTone(ToneWarning, text+"\n")
+		s.observeRedacted(v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_NOTICE, "", text)
+	}
+}
+
+// MissedUntilNotice is the notice a run that completed with an `until` still
+// armed gets, for the `until` as it was asked: its target, and its condition
+// when it had one. Both drivers say it in these words — a local session from
+// [Session.RunReturned], a durable run in the snapshot it answers once it has
+// completed — so a script or an agent matching one matches the other.
+//
+// redact, when it is not nil, is the driver's transcript redaction, and it is
+// given the `until` alone: the notice's fixed words are the same for every
+// run, so they reveal nothing, and they are how a rendered snapshot picks the
+// notice out ([FormatSnapshotShows]) even when a sensitive value is one of
+// them (Codex, #2204). A driver records the result as it is, without
+// redacting it again.
+//
+// The redacted `until` is then cut to [maxMissedUntilRunes], so the whole
+// notice stays under both drivers' observation caps (512 runes durable, 1024
+// local): a target may be 4 KiB, redaction can lengthen it, and clipping it
+// anywhere else would close neither the quote nor the two drivers' texts on
+// the same rune (Copilot and Codex, #2204).
+func MissedUntilNotice(asked string, redact func(string) string) string {
+	asked = applyText(redact, asked)
+	if runes := []rune(asked); len(runes) > maxMissedUntilRunes {
+		asked = string(runes[:maxMissedUntilRunes]) + "…"
+	}
+
+	return missedUntilPrefix + "`until " + asked + "`"
+}
+
+// maxMissedUntilRunes bounds the `until` a [MissedUntilNotice] quotes: room
+// for any ordinary address, with the prefix, well inside the smaller cap.
+const maxMissedUntilRunes = 256
+
+// MissedPauseNotice is the notice a run that completed with a pause still
+// asked gets: the pause holds at a step boundary, and the run reached none
+// after it was asked, because its last step was already under way. Both
+// drivers say it in these words, as they do [MissedUntilNotice] (#1297).
+const MissedPauseNotice = "the run completed before it reached a step boundary to pause at"
+
+// missedUntilPrefix begins every [MissedUntilNotice], which is how a rendered
+// snapshot picks that notice out of the rest.
+const missedUntilPrefix = "the run completed without stopping at "
 
 // Finished records how the run ended. A driver calls it when the run returns,
 // so a surface can say completed or failed rather than only "over".
 func (s *Session) Finished(err error) {
+	// Before the run reads as over, so a reader of the final snapshot has the
+	// notice.
+	s.RunReturned(err)
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -621,10 +863,26 @@ func (s *Session) Finished(err error) {
 		s.contract.message = "the debug session ended the run"
 	default:
 		s.contract.state = v1.DebugRunState_DEBUG_RUN_STATE_FAILED
-		s.contract.message = capRunes(s.redactTextLocked(err.Error()), maxObservationRunes)
+		s.contract.message = capRunes(s.failureTextLocked(err), maxObservationRunes)
 	}
 	s.contract.reason = v1.DebugStopReason_DEBUG_STOP_REASON_UNSPECIFIED
 	s.bump()
+}
+
+// redactedDefinitionLocked is a breakpoint's definition with its text
+// redacted as its id is. The caller holds s.mu.
+func (s *Session) redactedDefinitionLocked(definition *v1.DebugBreakpoint) *v1.DebugBreakpoint {
+	if definition == nil {
+		return nil
+	}
+	redacted := proto.CloneOf(definition)
+	redacted.Id = s.redactTextLocked(redacted.GetId())
+	redacted.Step = s.redactTextLocked(redacted.GetStep())
+	redacted.Condition = s.redactTextLocked(redacted.GetCondition())
+	redacted.HitCondition = s.redactTextLocked(redacted.GetHitCondition())
+	redacted.LogMessage = s.redactTextLocked(redacted.GetLogMessage())
+
+	return redacted
 }
 
 // redactTextLocked is redactText for a caller holding s.mu.
@@ -632,10 +890,40 @@ func (s *Session) redactTextLocked(text string) string {
 	return applyText(s.redact, text)
 }
 
+// FailureText is err's text as this session shows it: redacted by the
+// session's redactor, and withholding what a failure raised inside a callee
+// carries of that callee's sensitive inputs ([v1.FailureSensitiveValues]),
+// which the session's redactor never knew (#2210). A front printing the run's
+// failure itself renders it here, as [Session.Finished] does.
+func (s *Session) FailureText(err error) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.failureTextLocked(err)
+}
+
+// failureTextLocked is [Session.FailureText]. The caller holds s.mu.
+func (s *Session) failureTextLocked(err error) string {
+	if err == nil {
+		return ""
+	}
+	withhold := v1.SensitiveValues{}
+	if !s.reveal {
+		withhold = v1.FailureSensitiveValues(err)
+	}
+	redact, _ := withholdingAt(s.redact, nil, withhold)
+
+	return applyText(redact, err.Error())
+}
+
 // observe records one observation.
 func (s *Session) observe(kind v1.DebugObservationKind, step, text string) {
-	text = capRunes(s.redactText(strings.TrimRight(text, "\n")), maxObservationRunes)
+	s.observeRedacted(kind, step, capRunes(s.redactText(strings.TrimRight(text, "\n")), maxObservationRunes))
+}
 
+// observeRedacted records one observation whose text is already redacted and
+// bounded.
+func (s *Session) observeRedacted(kind v1.DebugObservationKind, step, text string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -741,10 +1029,11 @@ func (s *Session) snapshotLocked() *v1.DebugSnapshot {
 	for _, key := range slices.Sorted(maps.Keys(s.breakpoints)) {
 		at := s.breakpoints[key]
 		snapshot.Breakpoints = append(snapshot.Breakpoints, &v1.DebugBreakpointState{
-			Id:        s.redactTextLocked(at.id),
-			Verified:  true,
-			Hits:      at.hits,
-			LastError: at.lastError,
+			Id:         s.redactTextLocked(at.id),
+			Verified:   true,
+			Hits:       at.hits,
+			LastError:  at.lastError,
+			Definition: s.redactedDefinitionLocked(at.definition),
 		})
 	}
 	if c.state == v1.DebugRunState_DEBUG_RUN_STATE_HELD {
@@ -1107,6 +1396,15 @@ func (s *Session) Pause(_ context.Context, requestID string) (*v1.DebugReceipt, 
 		s.mu.Unlock()
 
 		return s.answer(requestID, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_APPLIED, "the run is already held"), nil
+	case s.returnReported:
+		// The run has returned, and a driver that reports its verdict
+		// later has not yet said so: no boundary is left to hold at, and
+		// [Session.RunReturned] has already said what it missed (Codex,
+		// #2220).
+		s.mu.Unlock()
+
+		return s.answer(requestID, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_ENDED,
+			"the run has returned; no step boundary is left to pause at"), nil
 	}
 	s.contract.pauseAsked = true
 	if state != v1.DebugRunState_DEBUG_RUN_STATE_PAUSE_REQUESTED {
@@ -1197,6 +1495,28 @@ func (s *Session) ReplaceBreakpoints(_ context.Context, req *v1.DebugSetBreakpoi
 	}, nil
 }
 
+// conditionInScope refuses a condition that reads a bare name none of the
+// sites it can fire at binds ([v1.CheckDebugConditionScope]); resolve picks
+// those sites from the program's. Past a truncated enumeration the names
+// cannot be checked, and the condition is admitted with a note saying so,
+// which the caller shows beside the breakpoint. A session given no program
+// has no sites to ask and admits it without one, as it always has.
+func (s *Session) conditionInScope(condition *v1.Value, profile string, resolve func([]v1.DebugStaticSite) []v1.DebugStaticSite) (string, error) {
+	s.mu.Lock()
+	known, sites, names, truncated := s.contract.sitesKnown, s.contract.sites, s.contract.names, s.contract.program != nil
+	s.mu.Unlock()
+	if !known {
+		if truncated {
+			return fmt.Sprintf("the condition's names are not checked: this program's steps were enumerated only to %d",
+				v1.MaxDebugStaticSites), nil
+		}
+
+		return "", nil
+	}
+
+	return "", v1.CheckDebugConditionScope(condition, profile, resolve(sites), names)
+}
+
 // compileBreakpoint checks one requested breakpoint, returning it armed or a
 // state saying why it is not.
 func (s *Session) compileBreakpoint(want *v1.DebugBreakpoint, profile string, redact func(string) string) (breakpoint, *v1.DebugBreakpointState) {
@@ -1227,6 +1547,7 @@ func (s *Session) compileBreakpoint(want *v1.DebugBreakpoint, profile string, re
 		}
 		at.site = v1.DebugSiteKey(site)
 		at.source = fmt.Sprintf("%s:%d", want.GetLine().GetUri(), want.GetLine().GetLine())
+		at.name = at.source
 		state.Sites = []*v1.DebugSite{redactSite(site, redact)}
 		state.Source = proto.CloneOf(location)
 
@@ -1240,6 +1561,7 @@ func (s *Session) compileBreakpoint(want *v1.DebugBreakpoint, profile string, re
 		}
 		at.target = target
 		at.source = target.String()
+		at.name = at.source
 		s.mu.Lock()
 		resolved := target.Resolve(s.contract.sites)
 		for _, site := range resolved[:min(len(resolved), maxBreakpointSites)] {
@@ -1262,6 +1584,21 @@ func (s *Session) compileBreakpoint(want *v1.DebugBreakpoint, profile string, re
 		if err != nil {
 			return refuse("condition: %v", err)
 		}
+		note, err := s.conditionInScope(compiled, profile, func(sites []v1.DebugStaticSite) []v1.DebugStaticSite {
+			if at.target.Step() != "" {
+				return at.target.Resolve(sites)
+			}
+
+			return slices.DeleteFunc(slices.Clone(sites), func(site v1.DebugStaticSite) bool {
+				return v1.DebugSiteKey(site.Site) != at.site
+			})
+		})
+		if err != nil {
+			return refuse("condition: %v", err)
+		}
+		if note != "" {
+			state.Message = strings.TrimPrefix(state.GetMessage()+"; "+note, "; ")
+		}
 		at.condition = compiled
 		at.source += " if " + condition
 	}
@@ -1282,6 +1619,8 @@ func (s *Session) compileBreakpoint(want *v1.DebugBreakpoint, profile string, re
 	}
 
 	state.Verified = true
+	at.definition = proto.CloneOf(want)
+	at.definition.Id = state.GetId()
 
 	return at, state
 }
@@ -1341,14 +1680,52 @@ func siteAtLine(sourceMap *v1.DebugSourceMap, line *v1.DebugSourceLine) (*v1.Deb
 }
 
 // SameSourceURI reports whether two spellings name one source: equal, or equal
-// once a `file://` scheme is removed from either.
+// once each is read as a path — a `file:` URI decoded to the path it names,
+// so a client that sends `file:///my%20flows/x.yaml` names `/my flows/x.yaml`.
 func SameSourceURI(a, b string) bool {
-	trim := func(uri string) string {
-		return strings.TrimPrefix(uri, "file://")
+	return sourcePath(a) == sourcePath(b)
+}
+
+// sourcePath is the path a source spelling names: a `file:` URI's decoded
+// path, or the spelling itself. A URI that does not parse is compared as
+// written, with only its scheme removed.
+func sourcePath(uri string) string {
+	path := uri
+	if strings.HasPrefix(uri, "file:") {
+		path = strings.TrimPrefix(uri, "file://")
+		if parsed, err := url.Parse(uri); err == nil && parsed.Path != "" {
+			switch host := parsed.Host; {
+			case host == "" || strings.EqualFold(host, "localhost"):
+				// No authority, or localhost, is this machine (RFC 8089 §2).
+				path = parsed.Path
+			case len(host) == 2 && host[1] == ':' && isDriveLetter(host[0]):
+				// file://C:/dir/x.yaml: the drive parsed as an authority.
+				path = host + parsed.Path
+			default:
+				// A share on another machine stays distinct from a local path.
+				path = "//" + host + parsed.Path
+			}
+		}
 	}
 
-	return trim(a) == trim(b)
+	return driveForm(path)
 }
+
+// driveForm spells a Windows drive path one way, whichever way it arrived: a
+// URI's "/c:/dir/x.yaml" and a path's `C:\dir\x.yaml` both become
+// "c:/dir/x.yaml". Any other path is returned as it is.
+func driveForm(path string) string {
+	if len(path) >= 3 && path[0] == '/' && path[2] == ':' && isDriveLetter(path[1]) {
+		path = path[1:]
+	}
+	if len(path) < 2 || path[1] != ':' || !isDriveLetter(path[0]) {
+		return path
+	}
+
+	return strings.ToLower(path[:1]) + strings.ReplaceAll(path[1:], `\`, "/")
+}
+
+func isDriveLetter(c byte) bool { return 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' }
 
 // matches reports whether an arrival is one this breakpoint arms.
 func (b breakpoint) matches(occurrence *v1.DebugOccurrence) bool {
@@ -1425,7 +1802,8 @@ func parseLogTemplate(message string) (*logTemplate, error) {
 // place rather than dropping the message.
 func (s *Session) logpoint(ctx context.Context, at breakpoint, scope *v1.Scope, occurrence *v1.DebugOccurrence) {
 	s.mu.Lock()
-	subject := promptSubject{scope: scope, redactText: s.redact, redactValue: s.redactValue}
+	subject := promptSubject{scope: scope}
+	subject.redactText, subject.redactValue = withholdingAt(s.redact, s.redactValue, s.sensitiveAt(ctx))
 	s.mu.Unlock()
 
 	var b strings.Builder

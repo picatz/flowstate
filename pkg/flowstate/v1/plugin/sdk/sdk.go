@@ -94,6 +94,7 @@ import (
 	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/metricschema"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin/internal/protocol"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/protodoc/protodocimpl"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
 )
 
@@ -136,46 +137,6 @@ type Plugin struct {
 
 	// Tasks are the tasks this plugin provides.
 	Tasks []Task
-
-	// SchemaProse, when set, is a descriptor set of this plugin's own .proto
-	// files built with source info retained, so the comments an author wrote on
-	// their task's fields reach an editor's hover and the engine's
-	// documentation.
-	//
-	// It is opt-in, and a plugin that sets nothing here behaves exactly as every
-	// plugin did before it existed: shape, types, required-ness and protovalidate
-	// bounds all still travel, and only the per-field explanatory paragraph is
-	// absent (#723). The reason it cannot be derived is protoc's: the descriptor
-	// compiled into a .pb.go has SourceCodeInfo stripped, so a comment simply is
-	// not present in this process at run time however well the .proto was
-	// written. `buf build` is what keeps it, and this is where the artifact it
-	// writes is handed over:
-	//
-	//	//go:embed schema.descriptorset.binpb
-	//	var schemaProse []byte
-	//
-	//	sdk.Main(sdk.Plugin{
-	//		// ...
-	//		SchemaProse: schemaProse,
-	//	})
-	//
-	// with the artifact built beside the generated code, from the same .proto:
-	//
-	//	buf build --exclude-imports -o schema.descriptorset.binpb proto
-	//
-	// --exclude-imports for the reason the engine's own artifact uses it: the
-	// comments worth carrying are the ones this plugin wrote, and carrying
-	// protobuf's and protovalidate's as well would multiply the bytes to
-	// document files nobody asks about.
-	//
-	// The prose is attached to the descriptors the manifest already carried
-	// rather than sent beside them, so nothing new crosses the boundary. It is
-	// documentation and never a source of truth about a type: a file whose
-	// declarations have drifted from the ones this binary compiled in has its
-	// comments dropped, because a sentence attached to the wrong field is worse
-	// than no sentence. Bytes that are not a descriptor set at all fail at
-	// startup, where an author sees them.
-	SchemaProse []byte
 
 	// Health reports whether the plugin can serve. Leaving it nil reports
 	// serving always, which is right for a plugin with nothing to be unable to
@@ -843,14 +804,6 @@ func (p Plugin) manifest() (*pluginv1.PluginManifest, error) {
 		manifest.Schemes = slices.Clone(p.Secrets.Schemes)
 	}
 
-	// Read once for the whole manifest rather than once per task: it is one
-	// artifact describing one schema, and parsing it per task would report the
-	// same malformed set as many times as the plugin has tasks.
-	prose, err := flowstatev1.ParseDescriptorProse(p.SchemaProse)
-	if err != nil {
-		return nil, fmt.Errorf("sdk: SchemaProse: %w", err)
-	}
-
 	if len(p.Tasks) > 0 {
 		manifest.Capabilities = append(manifest.Capabilities,
 			pluginv1.Capability_CAPABILITY_TASKS,
@@ -862,7 +815,7 @@ func (p Plugin) manifest() (*pluginv1.PluginManifest, error) {
 			pluginv1.Capability_CAPABILITY_TASK_PROGRESS,
 		)
 		for _, task := range p.Tasks {
-			entry, err := task.manifest(prose)
+			entry, err := task.manifest(protodocimpl.Lookup)
 			if err != nil {
 				return nil, err
 			}
@@ -879,17 +832,21 @@ func (p Plugin) manifest() (*pluginv1.PluginManifest, error) {
 
 // manifest builds the engine's description of one task, including the serialized
 // descriptors that let it validate a workflow using the task.
-func (t Task) manifest(prose *flowstatev1.DescriptorProse) (*pluginv1.TaskManifest, error) {
+//
+// comments supplies the schema's comments for the descriptors: the plugin's own
+// Plugin.manifest passes the ones protoc-gen-flowstate-doc generated into this
+// binary, so a plugin that generated none ships what it always did.
+func (t Task) manifest(comments flowstatev1.CommentLookup) (*pluginv1.TaskManifest, error) {
 	if t.Fn == nil {
 		return nil, fmt.Errorf("sdk: task %q has no Fn", t.Name)
 	}
 
-	inputDescriptor, inputMessage, err := describeMessage(t.Input, prose)
+	inputDescriptor, inputMessage, err := describeMessage(t.Input, comments)
 	if err != nil {
 		return nil, fmt.Errorf("sdk: task %q input: %w", t.Name, err)
 	}
 
-	outputDescriptor, outputMessage, err := describeMessage(t.Output, prose)
+	outputDescriptor, outputMessage, err := describeMessage(t.Output, comments)
 	if err != nil {
 		return nil, fmt.Errorf("sdk: task %q output: %w", t.Name, err)
 	}
@@ -969,20 +926,25 @@ func (t Task) checkInputNames() error {
 // would otherwise carry protobuf's, protovalidate's, and CEL's descriptors along
 // with it — without hardcoding an assumption about the engine that could quietly
 // stop being true.
-// The comments those descriptors carry are the plugin author's own, taken from
-// [Plugin.SchemaProse] and attached here rather than sent beside the bytes: a
-// descriptor set has always been able to carry SourceCodeInfo, and what was
-// missing was any comment to put in it, since the compiled-in descriptor this
-// reads had them stripped by protoc (#723). A nil prose leaves the bytes exactly
-// as they were before that field existed.
-func describeMessage(msg proto.Message, prose *flowstatev1.DescriptorProse) ([]byte, string, error) {
+// The comments those descriptors carry are the plugin author's own, generated
+// by protoc-gen-flowstate-doc and attached here rather than sent beside the
+// bytes: a descriptor has always been able to carry SourceCodeInfo, and what
+// was missing was any comment to put in it, since the compiled-in descriptor
+// this reads had them stripped by protoc (#723). Nil comments leave the bytes
+// exactly as they were before comments existed.
+//
+// The size is bounded where it is spent, by the host that reads it: an operator
+// can raise plugin.Config.MaxDescriptorBytes for a deployment with large
+// schemas, and a limit applied here could only be the default, refusing a
+// plugin that deployment accepts.
+func describeMessage(msg proto.Message, comments flowstatev1.CommentLookup) ([]byte, string, error) {
 	if msg == nil {
 		return nil, "", nil
 	}
 
-	return flowstatev1.MessageDescriptorBytesWithProse(
+	return flowstatev1.MessageDescriptorBytesWithComments(
 		msg.ProtoReflect().Descriptor(),
-		prose,
+		comments,
 		pluginv1.File_flowstate_plugin_v1_plugin_proto,
 	)
 }

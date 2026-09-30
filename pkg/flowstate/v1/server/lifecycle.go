@@ -923,7 +923,7 @@ func (s *FlowstateServer) SignalWithStart(ctx context.Context, req *connect.Requ
 		return nil, err
 	}
 
-	memo, temporal, options, err := s.prepareCreate(ctx, identity, workflow, inputs)
+	memo, temporal, options, err := s.prepareCreate(ctx, identity, workflow, inputs, unknownSensitiveInputs(workflow, submitted, req.Msg.GetInputs(), trusted))
 	if err != nil {
 		return nil, err
 	}

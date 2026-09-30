@@ -180,8 +180,14 @@ type runRecorder struct {
 	// sensitive is the redaction set every rendered value passes through —
 	// the same [sensitiveInputs] the unmatched-stub diagnostic uses, built
 	// from the same declarations, so what `flow test` refuses to print in one
-	// place it refuses to print everywhere.
+	// place it refuses to print everywhere. The case sets it before the run;
+	// the rendering widens it with gathered.
 	sensitive sensitiveInputs
+
+	// gathered is what each step's own workflow and its callees withheld
+	// ([runRecorder.StepFinishedWithholding]), which the case's posture —
+	// the root's declarations — never saw (#2211).
+	gathered v1.SensitiveAccumulator
 
 	// switches records, per step id, that the compiled workflow declares a
 	// `switch:` there and whether it has a `default:` — carried from the spec
@@ -316,6 +322,27 @@ func (r *runRecorder) StepFinished(id string, outputs *v1.Node_Outputs, err erro
 	r.record(event)
 }
 
+// StepFinishedWithholding implements [v1.WithholdingRunObserver]. The event is
+// recorded as it is, because it is the case's record and a claim reads it; the
+// set only widens what this recorder's rendering, and the case's report,
+// withhold ([runRecorder.withheld]).
+func (r *runRecorder) StepFinishedWithholding(id string, outputs *v1.Node_Outputs, err error, tolerated bool, withhold v1.SensitiveValues) {
+	r.StepFinished(id, outputs, err, tolerated)
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.gathered.Add(withhold)
+}
+
+// withheld is everything the run's steps withheld, for what the case renders
+// once the run is over.
+func (r *runRecorder) withheld() sensitiveInputs {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	return r.gathered.Values()
+}
+
 func (r *runRecorder) StepSkipped(id string) {
 	r.record(transcriptEvent{kind: eventStepSkipped, step: id})
 }
@@ -384,7 +411,7 @@ func (r *runRecorder) render() []TranscriptLine {
 	r.mu.Lock()
 	events := r.events
 	eventsFull, bytesFull := r.eventsFull, r.bytesFull
-	sensitive := r.sensitive
+	sensitive := widenedBy(r.sensitive, r.gathered.Values())
 	switches := r.switches
 	r.mu.Unlock()
 
@@ -401,7 +428,7 @@ func (r *runRecorder) render() []TranscriptLine {
 	// id does not push every other line's account off the screen.
 	width := 0
 	for _, e := range events {
-		if label := transcriptLabel(e); len(label) > width && len(label) <= 24 {
+		if label := withheldName(transcriptLabel(e), sensitive); len(label) > width && len(label) <= 24 {
 			width = len(label)
 		}
 	}
@@ -418,8 +445,8 @@ func (r *runRecorder) render() []TranscriptLine {
 		switch e.kind {
 		case eventStubAnswered:
 			if e.step == "" {
-				lines = append(lines, transcriptLine(e.at, width, e.task,
-					fmt.Sprintf("compensation answered by %s", stubIdentity(e)), ToneInfo))
+				lines = append(lines, transcriptLine(e.at, width, withheldName(e.task, sensitive),
+					fmt.Sprintf("compensation answered by %s", stubIdentity(e, sensitive)), ToneInfo))
 				continue
 			}
 			pendingStub[e.step] = e
@@ -431,25 +458,25 @@ func (r *runRecorder) render() []TranscriptLine {
 			text, tone := stepOutcomeText(e, sensitive, switches)
 			if stub, ok := pendingStub[e.step]; ok {
 				delete(pendingStub, e.step)
-				text += "  " + stubIdentity(stub)
+				text += "  " + stubIdentity(stub, sensitive)
 			}
-			lines = append(lines, transcriptLine(e.at, width, e.step, text, tone))
+			lines = append(lines, transcriptLine(e.at, width, withheldName(e.step, sensitive), text, tone))
 
 		case eventStepSkipped:
-			lines = append(lines, transcriptLine(e.at, width, e.step, "skipped by its if:", ToneInfo))
+			lines = append(lines, transcriptLine(e.at, width, withheldName(e.step, sensitive), "skipped by its if:", ToneInfo))
 
 		case eventWaitStarted:
 			text := fmt.Sprintf("sleeping %s", shortDuration(e.timeout))
-			if e.signal != "" {
-				text = fmt.Sprintf("waiting: %s (timeout %s)", e.signal, shortDuration(e.timeout))
+			if signal := withheldName(e.signal, sensitive); signal != "" {
+				text = fmt.Sprintf("waiting: %s (timeout %s)", signal, shortDuration(e.timeout))
 				if !e.bounded {
-					text = fmt.Sprintf("waiting: %s (no timeout)", e.signal)
+					text = fmt.Sprintf("waiting: %s (no timeout)", signal)
 				}
 			}
-			lines = append(lines, transcriptLine(e.at, width, e.step, text, ToneInfo))
+			lines = append(lines, transcriptLine(e.at, width, withheldName(e.step, sensitive), text, ToneInfo))
 
 		case eventSignalDelivered:
-			text := fmt.Sprintf("signal %s %s", e.signal, redactedGoValue(e.payload, sensitive))
+			text := fmt.Sprintf("signal %s %s", withheldName(e.signal, sensitive), redactedGoValue(e.payload, sensitive))
 			if e.sender != "" {
 				// Through the same redaction as every other value: a case may
 				// spell its sender from the same sensitive input the policy
@@ -461,7 +488,7 @@ func (r *runRecorder) render() []TranscriptLine {
 
 		case eventSignalRefused:
 			lines = append(lines, transcriptLine(e.at, width, "",
-				fmt.Sprintf("signal %s refused: %s", e.signal, redactedBareText(e.failure, sensitive)), ToneWarning))
+				fmt.Sprintf("signal %s refused: %s", withheldName(e.signal, sensitive), redactedBareText(e.failure, sensitive)), ToneWarning))
 		}
 	}
 
@@ -483,6 +510,19 @@ func (r *runRecorder) render() []TranscriptLine {
 	}
 
 	return lines
+}
+
+// withheldName is a name the file wrote, a step id, a task or a signal,
+// spelled as the account spells an output's name: whole where it is a value
+// the posture withholds ([redactedKeyText]), then at each substring it carries.
+// An author can spell a sensitive value as a name as readily as anywhere else,
+// and the account must not be the one surface that prints it (Codex, #2224).
+func withheldName(name string, sensitive sensitiveInputs) string {
+	if name == "" {
+		return ""
+	}
+
+	return sensitive.RedactSubstrings(redactedKeyText(name, sensitive))
 }
 
 // transcriptLabel is what an event puts in the step column.
@@ -525,10 +565,10 @@ func escapeControlRunes(s string) string {
 
 // stubIdentity renders which stub answered, in the numbering every other stub
 // diagnostic uses.
-func stubIdentity(e transcriptEvent) string {
-	target := fmt.Sprintf("task %q", e.task)
+func stubIdentity(e transcriptEvent, sensitive sensitiveInputs) string {
+	target := fmt.Sprintf("task %q", withheldName(e.task, sensitive))
 	if e.stubStep != "" {
-		target = fmt.Sprintf("step %q", e.stubStep)
+		target = fmt.Sprintf("step %q", withheldName(e.stubStep, sensitive))
 	}
 	if e.stubInherited {
 		target += ", from defaults"

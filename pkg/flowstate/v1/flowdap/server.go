@@ -2,149 +2,292 @@ package flowdap
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
+	"net/url"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
 
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowdebug"
 )
 
-// The one thread a run has. Named rather than repeated, because it appears in
-// the thread list, in every stopped event, and as the frame's owner, and three
-// literals is three chances to disagree.
+// runThreadID is the one thread a run is. A run is not a set of threads: a
+// parallel branch is a container a stop is inside, and the stack says which,
+// rather than a second thread an editor would expect to pause on its own.
 const runThreadID = 1
 
-// MaxScopeVariables bounds how many names one `variables` answer renders.
-//
-// The names themselves are bounded by nothing — [flowdebug.Session.Scope]
-// deliberately returns every name a run can reach, because a value surface
-// narrower than the run is a worse lie than a long list — and this is the
-// surface that turns each of them into a *rendered value*, which costs an
-// evaluation apiece. A run inside a long loop can name thousands of steps, and
-// an editor asks for a scope's variables every time it repaints a pane.
-//
-// So the bound is here rather than there, on the work rather than on the
-// knowledge, and what is dropped is said out loud in a final entry instead of
-// being silently missing.
+// MaxScopeVariables bounds how many variables one expansion answers with.
 const MaxScopeVariables = 500
 
-// Server answers DAP requests by driving one [flowdebug.Session].
+// MaxVariableHandles bounds the variables references one stop holds. A
+// reference is reused for an expression already issued at the stop, so an
+// editor refreshing the same scopes does not add to it; distinct expressions
+// past the bound come back without a reference, and so cannot be expanded,
+// until the run moves and the table is cleared.
+const MaxVariableHandles = 4096
+
+// MaxVariableHandleBytes bounds the expression text the references one stop
+// holds, which [MaxVariableHandles] alone does not: each expression may be as
+// long as a command.
+const MaxVariableHandleBytes = 4 << 20
+
+// MaxBreakpointBytes bounds the text the adapter keeps for the breakpoints it
+// holds — each source's path and every condition, hit condition and log
+// message — across all sources, which the count bound alone does not.
+const MaxBreakpointBytes = 1 << 20
+
+// Server is one editor's debug session, over the Debug Adapter Protocol.
 //
-// It holds no debugging state of its own beyond what a client needs addresses
-// for: which scope a `variablesReference` names, and the sequence number for
-// its own messages. Everything else is asked of the session, so this adapter
-// and the prompt cannot come to disagree about where a run is.
+// It is a translation and nothing more: every request becomes a call on a
+// [flowdebug.Target] — a local [flowdebug.Session] for a launch, a
+// [flowdebug.Remote] for an attach to a durable run — and every capability it
+// advertises is one the target reports. What the target does not do, the
+// adapter refuses by name rather than answering success for.
 type Server struct {
-	session *flowdebug.Session
-
-	// mu guards everything below, because a DAP client is free to send while
-	// the adapter is emitting an event for something it did earlier — and
-	// `stopped` events are emitted from the goroutine that moved the run.
-	mu sync.Mutex
-
-	seq int
-
-	// reference numbers variables, counted separately from seq. They are both
-	// integers a client sees and they mean unrelated things — one orders the
-	// conversation, the other addresses a scope — so sharing a counter would
-	// couple the number of messages sent to the addresses handed out, and read
-	// as though it meant something.
-	reference int
-
-	// scopes maps a variablesReference back to the group and pause it was
-	// minted for.
-	// Rebuilt at every stop: a reference is only meaningful for the pause it
-	// was handed out during, and answering a stale one with the current scope
-	// would report the run's position as the answer to a question about a
-	// different one.
-	scopes map[int]scopeReference
-
-	// stream is where responses and events go.
 	stream Stream
 
-	// launched reports that the client has finished configuring, so the run may
-	// start. See [Server.Launched].
+	launcher LaunchFunc
+	attacher AttachFunc
+
+	mu  sync.Mutex
+	seq int
+
+	// order keeps a movement's response ahead of the stop it causes: DAP has
+	// the response to `next` precede the `stopped` event, and a run can reach
+	// its next stop before the command that moved it has been answered.
+	order sync.Mutex
+
+	// out serializes outbound messages: their numbering and their writing,
+	// and hungUp, set once the client is gone and nothing more is written.
+	out    sync.Mutex
+	hungUp atomic.Bool
+
+	target       flowdebug.Target
+	sourceMap    *v1.DebugSourceMap
+	capabilities *v1.DebugCapabilities
+	start        func()
+	terminate    func()
+	remote       bool
+
+	program         string
+	revealSensitive bool
+	stopOnEntry     bool
+
+	// linesFrom0 and columnsFrom0 are the client's coordinates when its
+	// initialize said they start at 0 rather than DAP's default of 1. Every
+	// position is 1-based inside the adapter and translated at the edge.
+	linesFrom0, columnsFrom0 bool
+
+	// uriPaths is set when the client's initialize asked for source paths as
+	// URIs rather than file system paths.
+	uriPaths bool
+
+	// lost is closed once a write to the client fails: the conversation is
+	// over, whether or not its input has noticed.
+	lost     chan struct{}
+	loseOnce sync.Once
+
+	// bound is set once a launch or attach has given the session its program;
+	// a second is refused rather than replacing a target nobody would close.
+	bound bool
+
+	// pending are the breakpoints a durable run accepted but has not yet
+	// applied — it installs a replacement at its next step boundary — by id,
+	// with the source line each was set on. Each is reported to the editor
+	// once a snapshot shows it applied.
+	pending map[string]uint32
+	// pendingAfter is the revision the pending replacement was accepted at:
+	// the first hold past it is the run's answer to all of it.
+	pendingAfter uint64
+
 	launched chan struct{}
 	once     sync.Once
 
-	// entered is closed once the run's *first* pause has been reported, or once
-	// it is established there will not be one.
-	//
-	// Movement waits on it, which is what keeps the entry stop first. A client
-	// only sends `next` after a `stopped`, so for a conforming one this is
-	// already true and the wait costs nothing; what it buys is that the two
-	// cannot race to report the same pause when something moves early.
+	// nonce names this adapter in the request IDs it sends. A client's
+	// sequence numbers restart with each connection, and a durable run keeps
+	// the receipts of the commands it applied: an editor reconnecting to the
+	// same session would otherwise send an ID the run already answered, and
+	// have a new movement taken for a retry of an old one.
+	nonce string
+
+	// running counts the launched run the adapter started, so [Server.Wait]
+	// can outlive the client of a run it let go of.
+	running sync.WaitGroup
+
+	// entered is closed once the first stop is announced (or the run ends),
+	// so a movement that arrives before it waits for the stop it moves from.
 	entered   chan struct{}
 	enteredAt sync.Once
 
-	// program is what the client's launch configuration named, read once the
-	// launch request arrives and only meaningful after [Server.Launched].
-	program string
-	// revealSensitive is the editor-facing launch choice paired with program.
-	// Policy remains the command's: this package carries the client's explicit
-	// choice but does not decide what a workflow may disclose.
-	revealSensitive bool
+	// The stop the editor is looking at: its revision, its frames, and the
+	// handles issued for it. A handle from an earlier stop answers nothing.
+	revision uint64
+	held     *v1.DebugSnapshot
+	handles  map[int]handle
+	issued   map[handle]int
+	// issuedBytes is the expression text handles holds.
+	issuedBytes int
+	next        int
+	observed    uint64
 
-	// ended guards the terminated/exited pair, because two things can learn
-	// the run is over — a movement that meets [flowdebug.ErrRunOver], and
-	// whoever owns the run watching it return — and a client told twice puts
-	// its session away twice.
+	lines       map[string][]lineBreakpoint
+	functions   []functionBreakpoint
+	failureMode v1.DebugFailureMode
+	ids         map[string]int
+	idSeq       int
+
 	ended sync.Once
+	exit  int
 
-	// exit is what the `exited` event will report. See [Server.Exited].
-	exit int
+	// pauses are the pause requests the run has taken but not yet held for,
+	// kept as no more than their answer needs and at most [maxPendingPauses].
+	// DAP answers a pause with a success that a `stopped` event follows, so
+	// each is answered at the next stop, just before its event, or refused
+	// when the run ends without one (#1297).
+	pauses []inbound
+
+	// endState is how the run ended, as the adapter last saw it, which words
+	// the refusal of a pause the run ended before holding for.
+	endState v1.DebugRunState
 }
 
-type scopeReference struct {
-	group      string
-	generation uint64
-}
+// maxPendingPauses bounds the pause requests waiting on one stop: each gets
+// the same answer, and a client repeating a request it is still waiting on
+// must not grow the adapter without limit (Codex, #2220).
+const maxPendingPauses = 64
 
-// NewServer returns a server that drives session over stream.
-func NewServer(session *flowdebug.Session, stream Stream) *Server {
-	return &Server{
-		session:  session,
-		stream:   stream,
-		scopes:   map[int]scopeReference{},
-		launched: make(chan struct{}),
-		entered:  make(chan struct{}),
+// pauseRefusal is how a pause the run ended before holding for is refused:
+// in the words both drivers use for a run that completed first
+// ([flowdebug.MissedPauseNotice]), or saying what ended instead.
+func pauseRefusal(state v1.DebugRunState, exit int) string {
+	switch {
+	case state == v1.DebugRunState_DEBUG_RUN_STATE_COMPLETED,
+		state == v1.DebugRunState_DEBUG_RUN_STATE_UNSPECIFIED && exit == 0:
+		return flowdebug.MissedPauseNotice
+	case state == v1.DebugRunState_DEBUG_RUN_STATE_DETACHED, state == v1.DebugRunState_DEBUG_RUN_STATE_EXPIRED:
+		return "the debug session ended before the run reached a step boundary to pause at"
+	default:
+		return "the run ended before it reached a step boundary to pause at"
 	}
 }
 
-// Launched is closed by the client's `configurationDone`, and by nothing else.
-//
-// A caller starts the run when this fires and not before. Breakpoints arrive
-// *after* launch in DAP's own order, so a run started at the launch request is
-// a run already past the step somebody set a breakpoint on, and the person is
-// left watching a session that will never stop.
-//
-// There is no `launch` fallback, and the reason is worth stating because a
-// previous version of this adapter had one and it was wrong in the direction
-// that matters. `supportsConfigurationDoneRequest` is a field of the
-// *adapter's* `Capabilities` response, not of `InitializeRequestArguments` —
-// the client never sends it. So an adapter that reads it out of the initialize
-// *request* finds it absent from every real client, concludes none of them can
-// configure, and releases every one of them at `launch`: precisely the
-// premature start this ordering exists to prevent, arrived at by way of the
-// mechanism meant to prevent it (Codex, #1124, on a fix for an earlier
-// finding by Copilot on this same comment).
-//
-// What the specification actually says is "clients should only call this
-// request if the corresponding capability `supportsConfigurationDoneRequest`
-// is true". This adapter advertises it as true, so a conforming client sends
-// it, so waiting is both correct and complete. A client that advertises
-// nothing and sends nothing would wait forever — and the answer to that is not
-// to guess from a field that means something else, it is to stop advertising
-// the capability, which would be a different adapter.
+// recordEnd notes how the run ended, for [pauseRefusal].
+func (s *Server) recordEnd(state v1.DebugRunState) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.endState = state
+}
+
+type handle struct {
+	revision   uint64
+	expression string
+}
+
+type lineBreakpoint struct {
+	line                             int
+	condition, hitCondition, logText *string
+}
+
+type functionBreakpoint struct {
+	name                    string
+	condition, hitCondition *string
+}
+
+// LaunchArguments are a launch request's arguments.
+type LaunchArguments struct {
+	Program         string `json:"program"`
+	RevealSensitive bool   `json:"revealSensitive"`
+	StopOnEntry     *bool  `json:"stopOnEntry"`
+	// Inputs are the run's arguments, keyed by the name the workflow
+	// declares under `inputs:`, each a JSON value.
+	Inputs map[string]json.RawMessage `json:"inputs"`
+	Raw    json.RawMessage            `json:"-"`
+}
+
+// Launch is what a [LaunchFunc] prepared: the session to drive, the source
+// map it was built with, and how to start and stop the run.
+type Launch struct {
+	Target    flowdebug.Target
+	SourceMap *v1.DebugSourceMap
+
+	// Start runs the program. The adapter calls it once, at
+	// configurationDone, so no step runs before the editor has set its
+	// breakpoints.
+	Start func()
+
+	// Terminate ends the run. Nil means the adapter can only detach.
+	Terminate func()
+}
+
+// LaunchFunc prepares a launch.
+type LaunchFunc func(ctx context.Context, args LaunchArguments) (*Launch, error)
+
+// AttachArguments are an attach request's arguments.
+type AttachArguments struct {
+	WorkflowID string          `json:"workflowId"`
+	RunID      string          `json:"runId"`
+	SessionID  string          `json:"sessionId"`
+	Program    string          `json:"program"`
+	Raw        json.RawMessage `json:"-"`
+}
+
+// Attachment is what an [AttachFunc] attached to.
+type Attachment struct {
+	Target    flowdebug.Target
+	SourceMap *v1.DebugSourceMap
+}
+
+// AttachFunc attaches to a durable run.
+type AttachFunc func(ctx context.Context, args AttachArguments) (*Attachment, error)
+
+// Option configures a [Server].
+type Option func(*Server)
+
+// WithLaunch makes launch prepare its own session and run.
+func WithLaunch(launch LaunchFunc) Option { return func(s *Server) { s.launcher = launch } }
+
+// WithAttach makes attach reach a durable run.
+func WithAttach(attach AttachFunc) Option { return func(s *Server) { s.attacher = attach } }
+
+// NewServer returns an adapter over stream. target, when non-nil, is a local
+// session a caller already built and runs itself once [Server.Launched] is
+// closed; otherwise [WithLaunch] or [WithAttach] supplies one.
+func NewServer(target flowdebug.Target, stream Stream, opts ...Option) *Server {
+	s := &Server{
+		stream:      stream,
+		target:      target,
+		launched:    make(chan struct{}),
+		lost:        make(chan struct{}),
+		entered:     make(chan struct{}),
+		handles:     map[int]handle{},
+		issued:      map[handle]int{},
+		lines:       map[string][]lineBreakpoint{},
+		stopOnEntry: true,
+		nonce:       rand.Text(),
+	}
+	if session, ok := target.(*flowdebug.Session); ok {
+		s.capabilities = session.Capabilities()
+	}
+	for _, opt := range opts {
+		opt(s)
+	}
+
+	return s
+}
+
+// Launched is closed once the client has finished configuring a launch.
 func (s *Server) Launched() <-chan struct{} { return s.launched }
 
-// Program is what the client's launch configuration named, or "" where it
-// named nothing.
-//
-// Read after [Server.Launched] fires: a client sends `launch` before
-// `configurationDone`, so by then it is set or was never coming.
+// Program is the workflow a launch named.
 func (s *Server) Program() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -152,10 +295,8 @@ func (s *Server) Program() string {
 	return s.program
 }
 
-// RevealSensitive reports whether the client's launch configuration explicitly
-// permits values declared sensitive to be shown by the debugger.
-//
-// Read after [Server.Launched] fires, for the same ordering reason as [Server.Program].
+// RevealSensitive reports whether the launch configuration asked to show
+// values the workflow declares sensitive.
 func (s *Server) RevealSensitive() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -163,11 +304,7 @@ func (s *Server) RevealSensitive() bool {
 	return s.revealSensitive
 }
 
-// Output puts text in the client's debug console.
-//
-// It is where the session's own prose goes, because the adapter's standard
-// output is the protocol stream and a debugger that printed onto it would
-// corrupt the conversation with its own account of the run.
+// Output relays text to the editor's debug console.
 func (s *Server) Output(text string) {
 	if text == "" {
 		return
@@ -176,22 +313,7 @@ func (s *Server) Output(text string) {
 	s.emit("output", map[string]string{"category": "stdout", "output": text})
 }
 
-// Exited records the code the run ended with, for the `exited` event.
-//
-// Separate from [Server.Finished] because of who knows what, and when. Only
-// the owner of the run knows whether it succeeded; the adapter cannot see a
-// run end at all. But the owner is not necessarily the one that *reports* the
-// end — a movement outstanding when the session closes learns the same thing
-// through [flowdebug.ErrRunOver] and may get there first.
-//
-// So the owner records the outcome *before* closing the session, and whichever
-// path then reports the end reports the same code. Called after the close, it
-// is a code nobody will read.
-//
-// It matters because a client reads this event to decide what the run did. Left
-// at the zero value, a validation refusal, a failed step and a missing
-// `program` all report as a clean exit — an editor then says the workflow
-// succeeded, having watched it not run (Codex, #1124).
+// Exited records the run's exit code, reported when it finishes.
 func (s *Server) Exited(code int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -199,98 +321,181 @@ func (s *Server) Exited(code int) {
 	s.exit = code
 }
 
-// Finished tells the client the run is over.
-//
-// Called by whoever owns the run when it returns, because the adapter cannot
-// see that for itself: v1.Debugger fires before each step and
-// v1.RunObserver after each one, and neither says "that was the last".
-// Idempotent, since a movement outstanding when the run ends learns the same
-// thing through [flowdebug.ErrRunOver] and a client told twice puts its session
-// away twice.
+// Finished reports the run's end to the editor, once.
 func (s *Server) Finished() {
+	// After any movement's response, for the reason [Server.order] gives: a
+	// run can end before the command that let it go has been answered.
+	s.order.Lock()
+	defer s.order.Unlock()
+
 	s.ended.Do(func() {
 		s.mu.Lock()
-		code := s.exit
+		code, state := s.exit, s.endState
 		s.mu.Unlock()
 
+		for _, request := range s.takePauses() {
+			s.fail(request, pauseRefusal(state, code))
+		}
+		s.enteredAt.Do(func() { close(s.entered) })
 		s.emit("terminated", nil)
 		s.emit("exited", exitedBody{ExitCode: code})
 	})
 }
 
-// Serve reads requests until the stream ends or ctx is cancelled.
+// Wait blocks until a run the adapter launched has returned, and at once when
+// it launched none. A client that disconnects without terminating detaches
+// from a local run rather than ending it, so the process serving the adapter
+// calls Wait after [Server.Serve] to let that run finish with the resources it
+// was started with.
+func (s *Server) Wait() { s.running.Wait() }
+
+// Serve answers requests until the client disconnects or ctx ends.
 func (s *Server) Serve(ctx context.Context) error {
+	// Whatever ends the conversation, nothing more is written to it: a run the
+	// session detached from goes on narrating, and on stdio a write to a
+	// client that has gone is a broken pipe that kills the process under it.
+	defer s.hangUp()
+
+	// Ending ctx closes the stream, for a stream whose Close interrupts what
+	// is blocked on it; the loop below does not depend on that.
+	stop := context.AfterFunc(ctx, func() {
+		s.hangUp()
+		_ = s.stream.Close()
+	})
+	defer stop()
+
+	// Reads happen on a goroutine of their own, so a read blocked on the
+	// client never keeps ctx's end from detaching the session: an editor's
+	// stdin is a blocking pipe, and closing it does not interrupt a read.
+	reads := make(chan received)
+	quit := make(chan struct{})
+	defer close(quit)
+	go func() {
+		for {
+			var got received
+			got.err = s.stream.ReadObject(&got.request)
+			select {
+			case reads <- got:
+			case <-quit:
+				return
+			}
+			if got.err != nil {
+				return
+			}
+		}
+	}()
+
 	for {
-		if err := ctx.Err(); err != nil {
-			return err
+		// A lost output ends the conversation before anything else is read.
+		select {
+		case <-s.lost:
+			return s.leaveLost(ctx)
+		default:
 		}
 
-		var request inbound
-		if err := s.stream.ReadObject(&request); err != nil {
-			// The client hung up, which is an ordinary end rather than a
-			// failure: an editor closing a debug session closes the pipe.
-			return nil
-		}
+		select {
+		case <-s.lost:
+			return s.leaveLost(ctx)
 
-		if request.Type != "request" {
-			// Responses and events flow the other way. A client that sends one
-			// is confused, and answering it would be inventing a conversation.
-			continue
-		}
+		case <-ctx.Done():
+			// Ended from outside: the session detaches as it does when the
+			// client goes, rather than leave a durable target renewing its
+			// lease for a conversation that is over.
+			s.hangUp()
+			s.end(false)
 
-		if done := s.dispatch(ctx, request); done {
-			return nil
+			return ctx.Err()
+
+		case got := <-reads:
+			if got.err != nil {
+				// A client gone without a disconnect is one: the session
+				// detaches, so a run it left paused goes on rather than
+				// waiting for a command nobody can send, and [Server.Wait]
+				// returns. Nobody is left to read what the detach says.
+				s.hangUp()
+				s.end(false)
+
+				return ctx.Err()
+			}
+			if got.request.Type != "request" {
+				continue
+			}
+			if done := s.dispatch(ctx, got.request); done {
+				return nil
+			}
 		}
 	}
 }
 
-// dispatch answers one request, reporting whether the conversation is over.
+// fileURI is the file URI naming path: slashed, and with a drive letter's
+// path rooted as a URI's must be ("C:\\x" is "file:///C:/x").
+func fileURI(path string) string {
+	slashed := filepath.ToSlash(path)
+	if !strings.HasPrefix(slashed, "/") {
+		slashed = "/" + slashed
+	}
+
+	return (&url.URL{Scheme: "file", Path: slashed}).String()
+}
+
+// leaveLost ends a conversation whose output is gone: the session detaches
+// and the stream is closed. It answers ctx's error when ctx has ended too, so
+// a caller sees the same result whichever of the two Serve noticed first.
+func (s *Server) leaveLost(ctx context.Context) error {
+	s.end(false)
+	_ = s.stream.Close()
+
+	return ctx.Err()
+}
+
+// received is one read from the client: a request, or why there was none.
+type received struct {
+	request inbound
+	err     error
+}
+
+func (s *Server) currentTarget() flowdebug.Target {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.target
+}
+
 func (s *Server) dispatch(ctx context.Context, request inbound) (done bool) {
 	switch request.Command {
 	case "initialize":
-		// The `initialized` event is what tells a client it may start sending
-		// breakpoints, and it must follow the response rather than precede it.
-		s.reply(request, capabilities{
-			SupportsFunctionBreakpoints:      true,
-			SupportsConfigurationDoneRequest: true,
-			SupportsEvaluateForHovers:        true,
-		})
-		s.emit("initialized", nil)
-
-	case "launch", "attach":
-		// What to run, as the client's launch configuration names it. Read
-		// here rather than taken from this process's arguments because one
-		// adapter serves whatever the editor points it at, which is the whole
-		// shape of a `launch.json`.
 		var asked struct {
-			Program         string `json:"program"`
-			RevealSensitive bool   `json:"revealSensitive"`
+			LinesStartAt1   *bool  `json:"linesStartAt1"`
+			ColumnsStartAt1 *bool  `json:"columnsStartAt1"`
+			PathFormat      string `json:"pathFormat"`
 		}
 		_ = json.Unmarshal(request.Arguments, &asked)
-
 		s.mu.Lock()
-		s.program = asked.Program
-		s.revealSensitive = asked.RevealSensitive
+		s.linesFrom0 = asked.LinesStartAt1 != nil && !*asked.LinesStartAt1
+		s.columnsFrom0 = asked.ColumnsStartAt1 != nil && !*asked.ColumnsStartAt1
+		s.uriPaths = asked.PathFormat == "uri"
 		s.mu.Unlock()
+		s.reply(request, s.capabilitiesBody())
+		s.emit("initialized", nil)
 
-		// Answered and nothing more. The run starts at `configurationDone`,
-		// which is the whole of the ordering — see [Server.Launched] for why
-		// there is no fallback here.
-		s.reply(request, nil)
+	case "launch":
+		s.launch(ctx, request)
+
+	case "attach":
+		s.attach(ctx, request)
 
 	case "configurationDone":
 		s.reply(request, nil)
 		s.release(ctx)
 
-	case "setFunctionBreakpoints":
-		s.reply(request, s.setBreakpoints(request.Arguments))
-
 	case "setBreakpoints":
-		// Answered, and answered honestly. A client sends this for any source
-		// it has breakpoints in, and refusing the request outright makes the
-		// session look broken; reporting every one unverified with the reason
-		// puts the truth where the person is already looking.
-		s.reply(request, s.refuseLineBreakpoints(request.Arguments))
+		s.setLineBreakpoints(ctx, request)
+
+	case "setFunctionBreakpoints":
+		s.setFunctionBreakpoints(ctx, request)
+
+	case "setExceptionBreakpoints":
+		s.setExceptionBreakpoints(ctx, request)
 
 	case "threads":
 		s.reply(request, threadsBody{Threads: []thread{{ID: runThreadID, Name: "run"}}})
@@ -299,7 +504,7 @@ func (s *Server) dispatch(ctx context.Context, request inbound) (done bool) {
 		s.reply(request, s.stackTrace(request.Arguments))
 
 	case "scopes":
-		s.reply(request, s.scopeList(request.Arguments))
+		s.reply(request, s.scopeList(ctx, request.Arguments))
 
 	case "variables":
 		s.reply(request, s.variables(ctx, request.Arguments))
@@ -308,31 +513,60 @@ func (s *Server) dispatch(ctx context.Context, request inbound) (done bool) {
 		s.evaluate(ctx, request)
 
 	case "pause":
-		// A run under this adapter is either stopped or between steps, and it
-		// stops at every step boundary on its own — so there is nothing to
-		// interrupt and the next stop is already coming. Answered rather than
-		// refused, because a client greys the button out on a failure and a
-		// person then has one fewer thing that works.
-		s.reply(request, nil)
-
-	case "next", "stepIn", "stepOut":
-		// One granularity: a run's steps are its steps, and there is nothing
-		// inside one for a debugger to descend into. Answering stepIn and
-		// stepOut as `next` is what a client's buttons then do, rather than
-		// leaving two of the three greyed out or silently dead.
-		s.reply(request, nil)
-		go s.move(ctx, s.session.Step, "step")
+		s.pause(ctx, request)
 
 	case "continue":
-		s.reply(request, map[string]bool{"allThreadsContinued": true})
-		go s.move(ctx, s.session.Continue, "breakpoint")
+		s.move(ctx, request, v1.DebugResumeAction_DEBUG_RESUME_ACTION_CONTINUE)
 
-	case "disconnect", "terminate":
+	case "next":
+		s.move(ctx, request, v1.DebugResumeAction_DEBUG_RESUME_ACTION_STEP_OVER)
+
+	case "stepIn":
+		s.move(ctx, request, v1.DebugResumeAction_DEBUG_RESUME_ACTION_STEP_IN)
+
+	case "stepOut":
+		s.move(ctx, request, v1.DebugResumeAction_DEBUG_RESUME_ACTION_STEP_OUT)
+
+	case "terminate":
+		s.mu.Lock()
+		owned := s.terminate != nil
+		s.mu.Unlock()
+		if !owned {
+			// Never report ending a run this adapter did not start: it detaches,
+			// and says the run goes on.
+			s.end(false)
+			s.fail(request, "flowdap: this adapter attached to the run rather than starting it, so it cannot end it; the session detached and the run continues")
+
+			return true
+		}
+		// The run this adapter started is cancelled and the conversation
+		// goes on: the run's end arrives as `terminated` and `exited`, which a
+		// client waits for before it sends the `disconnect` that closes it.
+		//
+		// Under order, so the response precedes the events the cancellation
+		// causes, as a movement's does; with the exit code recorded first, so
+		// whichever path reports the end reports a run that did not finish.
+		s.order.Lock()
+		s.Exited(1)
+		s.end(true)
 		s.reply(request, nil)
-		// Closing releases the run to finish rather than leaving it held by a
-		// debugger that has gone: an editor closing its debug session must not
-		// strand a workflow at a breakpoint.
-		_ = s.session.Close()
+		s.order.Unlock()
+		// A run never released has no goroutine to report its end.
+		select {
+		case <-s.launched:
+		default:
+			s.Finished()
+		}
+
+	case "disconnect":
+		// Answered once the session is released, so a client that reads the
+		// response may rely on the run being detached or ended.
+		var asked struct {
+			TerminateDebuggee bool `json:"terminateDebuggee"`
+		}
+		_ = json.Unmarshal(request.Arguments, &asked)
+		s.end(asked.TerminateDebuggee)
+		s.reply(request, nil)
 
 		return true
 
@@ -343,94 +577,618 @@ func (s *Server) dispatch(ctx context.Context, request inbound) (done bool) {
 	return false
 }
 
-// release starts the run and reports where it first stops.
-//
-// The stop is the half that was missing. A DAP client considers the target
-// *running* after launch and waits to be told it stopped before enabling its
-// movement buttons — so an adapter that only emits `stopped` from a movement it
-// was asked for is one no client will ever ask to move. The tests hid it by
-// sending `continue` straight after configuring, which is a thing a client does
-// not do (Codex, #1124).
-//
-// On its own goroutine because the first pause arrives whenever the run reaches
-// it, which is after this request has to be answered.
+// end leaves the session: terminating the run when asked and able, and
+// otherwise detaching, which lets it finish unattended. Disconnecting never
+// silently ends a durable run.
+func (s *Server) end(terminate bool) {
+	s.mu.Lock()
+	target, stop := s.target, s.terminate
+	s.mu.Unlock()
+
+	if terminate && stop != nil {
+		stop()
+	}
+	if target != nil {
+		_ = target.Close()
+	}
+}
+
+func (s *Server) capabilitiesBody() capabilities {
+	s.mu.Lock()
+	caps := s.capabilities
+	// Termination is the run owner's to offer. An adapter that launched the
+	// run owns it, and before either request one that can launch offers it,
+	// a launch being the common case; one that attached to a durable run does
+	// not, whatever else it could have done.
+	terminable := s.terminate != nil || (s.target == nil && !s.remote && s.launcher != nil)
+	s.mu.Unlock()
+	if caps == nil {
+		// Before a launch or attach has said which backend this is, the
+		// local session's set: a launch is the common case, and an attach
+		// narrows it with a capabilities event once it knows.
+		caps = localCapabilities()
+	}
+
+	body := capabilities{
+		SupportsConfigurationDoneRequest:  true,
+		SupportsFunctionBreakpoints:       true,
+		SupportsConditionalBreakpoints:    caps.GetConditionalBreakpoints(),
+		SupportsHitConditionalBreakpoints: caps.GetHitConditions(),
+		SupportsLogPoints:                 caps.GetLogpoints(),
+		SupportsEvaluateForHovers:         caps.GetInspect(),
+		SupportsTerminateRequest:          terminable || caps.GetTerminate(),
+		SupportTerminateDebuggee:          terminable || caps.GetTerminate(),
+		SupportsDelayedStackTraceLoading:  true,
+		ExceptionBreakpointFilters:        []exceptionFilter{},
+	}
+	if caps.GetFailureBreakpoints() {
+		body.ExceptionBreakpointFilters = []exceptionFilter{
+			{Filter: "uncaught", Label: "Failed steps", Description: "Stop where a step fails and its failure will propagate"},
+			{Filter: "all", Label: "All step failures", Description: "Also stop where continue_on_error tolerates a failure"},
+		}
+	}
+
+	return body
+}
+
+// localCapabilities is what a controlled local session does.
+func localCapabilities() *v1.DebugCapabilities {
+	session, err := flowdebug.New(flowdebug.Options{Controlled: true})
+	if err != nil {
+		return &v1.DebugCapabilities{}
+	}
+	defer func() { _ = session.Close() }()
+
+	return session.Capabilities()
+}
+
+func (s *Server) launch(ctx context.Context, request inbound) {
+	var asked LaunchArguments
+	// Refused rather than read in part: a field of the wrong shape — an
+	// `inputs` that is a list, a `stopOnEntry` that is a string — would
+	// otherwise be dropped while the rest launches, running the program with
+	// arguments nobody gave it.
+	if len(request.Arguments) > 0 {
+		if err := json.Unmarshal(request.Arguments, &asked); err != nil {
+			s.fail(request, fmt.Sprintf("flowdap: the launch configuration could not be read: %v", err))
+
+			return
+		}
+	}
+	asked.Raw = request.Arguments
+
+	s.mu.Lock()
+	if s.bound && s.launcher != nil {
+		s.mu.Unlock()
+		// Refused before anything is recorded: a second launch must not
+		// change the first one's options, such as its stop on entry.
+		s.fail(request, errOneProgram.Error())
+
+		return
+	}
+	launcher := s.launcher
+	if launcher == nil {
+		s.adoptLocked(asked)
+		s.mu.Unlock()
+		s.reply(request, nil)
+
+		return
+	}
+	s.mu.Unlock()
+
+	// The options are adopted only once the launch is taken: one the launcher
+	// refused, a missing input say, must not leave its `stopOnEntry` behind
+	// for the retry that corrects it.
+	launched, err := launcher(ctx, asked)
+	if err != nil {
+		s.fail(request, err.Error())
+
+		return
+	}
+
+	s.mu.Lock()
+	s.adoptLocked(asked)
+	s.bound = true
+	s.target = launched.Target
+	s.sourceMap = launched.SourceMap
+	s.start = launched.Start
+	s.terminate = launched.Terminate
+	if session, ok := launched.Target.(*flowdebug.Session); ok {
+		s.capabilities = session.Capabilities()
+	}
+	s.mu.Unlock()
+
+	s.reply(request, nil)
+	s.reapply(ctx)
+}
+
+// adoptLocked records a taken launch's options. Callers hold s.mu.
+func (s *Server) adoptLocked(asked LaunchArguments) {
+	s.program = asked.Program
+	s.revealSensitive = asked.RevealSensitive
+	if asked.StopOnEntry != nil {
+		s.stopOnEntry = *asked.StopOnEntry
+	}
+}
+
+func (s *Server) attach(ctx context.Context, request inbound) {
+	if s.attacher == nil {
+		s.fail(request, "flowdap: this adapter has no server to attach to; start it with `flow dap --address <server>`")
+
+		return
+	}
+
+	var asked AttachArguments
+	if err := json.Unmarshal(request.Arguments, &asked); err != nil || asked.WorkflowID == "" {
+		s.fail(request, "flowdap: attach needs a workflowId")
+
+		return
+	}
+	asked.Raw = request.Arguments
+	s.mu.Lock()
+	bound := s.bound
+	s.mu.Unlock()
+	if bound {
+		s.fail(request, errOneProgram.Error())
+
+		return
+	}
+
+	attached, err := s.attacher(ctx, asked)
+	if err != nil {
+		s.fail(request, err.Error())
+
+		return
+	}
+
+	snapshot, err := attached.Target.Snapshot(ctx)
+	if err != nil {
+		_ = attached.Target.Close()
+		s.fail(request, err.Error())
+
+		return
+	}
+
+	s.mu.Lock()
+	s.bound = true
+	s.target = attached.Target
+	s.sourceMap = attached.SourceMap
+	s.capabilities = snapshot.GetCapabilities()
+	s.remote = true
+	// An exception filter an editor chose before it knew the backend is one
+	// this backend may not offer. Kept, it would refuse every breakpoint set
+	// sent with it; dropped, the rest of the configuration applies, and the
+	// console says the filter did not.
+	droppedFilter := !s.capabilities.GetFailureBreakpoints() && s.failureMode > v1.DebugFailureMode_DEBUG_FAILURE_MODE_NONE
+	if droppedFilter {
+		s.failureMode = v1.DebugFailureMode_DEBUG_FAILURE_MODE_NONE
+	}
+	s.mu.Unlock()
+
+	s.reply(request, nil)
+	if droppedFilter {
+		s.emit("output", map[string]string{"category": "console",
+			"output": "flowdap: this run cannot stop on failures, so the exception filter was dropped\n"})
+	}
+	// The durable driver does less than a local session; say so before the
+	// editor configures anything it would then find ignored.
+	s.emit("capabilities", map[string]any{"capabilities": s.capabilitiesBody()})
+	s.reapply(ctx)
+}
+
+// reapply sends the breakpoints an editor set before there was anything to
+// set them on, now that there is, and tells the editor what became of each.
+func (s *Server) reapply(ctx context.Context) {
+	s.mu.Lock()
+	pending := len(s.lines) > 0 || len(s.functions) > 0 || s.failureMode > v1.DebugFailureMode_DEBUG_FAILURE_MODE_NONE
+	s.mu.Unlock()
+	if !pending {
+		return
+	}
+
+	states, err := s.applyBreakpoints(ctx)
+	if err != nil {
+		s.emit("output", map[string]string{"category": "stderr", "output": "flowdap: applying breakpoints: " + err.Error() + "\n"})
+
+		return
+	}
+	for id, state := range states {
+		answer := answerFor(state)
+		answer.ID = s.breakpointID(id)
+		s.emit("breakpoint", map[string]any{"reason": "changed", "breakpoint": answer})
+	}
+}
+
+// breakpointID is the number an editor knows a breakpoint by, stable for as
+// long as the breakpoint's slot is.
+func (s *Server) breakpointID(id string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.ids == nil {
+		s.ids = map[string]int{}
+	}
+	if n, ok := s.ids[id]; ok {
+		return n
+	}
+	s.idSeq++
+	s.ids[id] = s.idSeq
+
+	return s.idSeq
+}
+
+// forgetLines drops the editor numbers of path's line slots from the first
+// one its set no longer has, so a client moving breakpoints across files
+// does not grow the table with slots that are gone.
+func (s *Server) forgetLines(path string, from int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	prefix := "line:" + path + ":"
+	for id := range s.ids {
+		slot, ok := strings.CutPrefix(id, prefix)
+		if !ok {
+			continue
+		}
+		if i, err := strconv.Atoi(slot); err == nil && i >= from {
+			delete(s.ids, id)
+		}
+	}
+}
+
+// release starts the run once the editor has configured it, and begins
+// reporting its stops.
 func (s *Server) release(ctx context.Context) {
 	s.once.Do(func() {
 		close(s.launched)
 
-		go func() {
-			// Closed however this ends, so that movement is never waiting on a
-			// stop that is not coming: a workflow with no steps, or a run
-			// released and then disconnected, both reach here with no pause.
-			defer s.enteredAt.Do(func() { close(s.entered) })
+		s.mu.Lock()
+		start := s.start
+		s.mu.Unlock()
+		if start != nil {
+			s.running.Go(start)
+		}
 
-			at, err := s.session.WaitForPause(ctx)
-			if err != nil {
-				return
-			}
-
-			s.newStop()
-			s.emit("stopped", stoppedBody{
-				// DAP's own word for the stop a debugger makes on arrival,
-				// rather than one somebody asked for.
-				Reason:            "entry",
-				Description:       at.Kind,
-				ThreadID:          runThreadID,
-				AllThreadsStopped: true,
-			})
-		}()
+		go s.watch(ctx)
 	})
 }
 
-// move runs one movement verb and reports where the run stopped.
-//
-// On its own goroutine, because a DAP request is answered immediately and the
-// stop is an *event* that follows — a client that had to wait for the response
-// would show a frozen UI for as long as the step takes, and one that timed out
-// would give up on a run that was working.
-func (s *Server) move(ctx context.Context, step func(context.Context) (flowdebug.Position, error), reason string) {
-	// After the entry stop, always. Both this and [Server.release] report a
-	// pause, and a client that moves before the first one is announced would
-	// otherwise have them race for the same pause and be told about it twice —
-	// which reads as a run that stopped, moved, and stopped again in the same
-	// place. A conforming client never gets here first, so this costs it
-	// nothing.
+// How long watch keeps trying to read a target whose reads fail: a few
+// attempts, each waiting a little longer, before it gives the run up.
+const maxWatchRetries = 5
+
+// watchRetryBackoff is the first wait between reads; each retry waits one
+// more of it. A variable only so a test can shorten it.
+var watchRetryBackoff = time.Second
+
+// watch reports every stop the target reaches, in order, and the run's end.
+func (s *Server) watch(ctx context.Context) {
+	target := s.currentTarget()
+	if target == nil {
+		return
+	}
+
+	var (
+		after    uint64
+		failures int
+	)
+	for {
+		snapshot, err := target.WaitSnapshot(ctx, after)
+		if err != nil {
+			if ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, flowdebug.ErrRunOver) {
+				s.enteredAt.Do(func() { close(s.entered) })
+
+				return
+			}
+			// A read that failed is not a session that ended: a durable
+			// run's server can be briefly unreachable. Try again a few times,
+			// and if it stays unreachable, let the run go rather than leave
+			// it held behind a lease this adapter keeps renewing while the
+			// editor hears nothing.
+			failures++
+			if failures == 1 {
+				s.emit("output", map[string]string{"category": "stderr", "output": "flowdap: " + err.Error() + "; retrying\n"})
+			}
+			if failures <= maxWatchRetries {
+				select {
+				case <-time.After(time.Duration(failures) * watchRetryBackoff):
+					continue
+				case <-ctx.Done():
+					s.enteredAt.Do(func() { close(s.entered) })
+
+					return
+				}
+			}
+			s.emit("output", map[string]string{"category": "stderr",
+				"output": "flowdap: the run could not be read, so the session detached and the run continues\n"})
+			_ = target.Close()
+			s.enteredAt.Do(func() { close(s.entered) })
+			s.Exited(1)
+			s.Finished()
+
+			return
+		}
+		failures = 0
+		after = snapshot.GetRevision()
+		s.relayObservations(snapshot)
+		s.relayBreakpoints(snapshot)
+
+		switch state := snapshot.GetState(); {
+		case state == v1.DebugRunState_DEBUG_RUN_STATE_HELD:
+			if snapshot.GetReason() == v1.DebugStopReason_DEBUG_STOP_REASON_ENTRY && !s.stopsOnEntry() {
+				_, _ = target.Resume(ctx, &v1.DebugResumeRequest{
+					Action: v1.DebugResumeAction_DEBUG_RESUME_ACTION_CONTINUE, ExpectedRevision: snapshot.GetRevision(),
+				})
+
+				continue
+			}
+			s.stopped(snapshot)
+
+		case terminalState(state):
+			s.recordEnd(state)
+			s.enteredAt.Do(func() { close(s.entered) })
+			if s.isRemote() {
+				code := exitCodeFor(state)
+				if message := snapshot.GetMessage(); message != "" {
+					s.Output(message + "\n")
+				}
+				s.Exited(code)
+				s.Finished()
+			}
+
+			return
+		}
+	}
+}
+
+func (s *Server) stopsOnEntry() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.stopOnEntry
+}
+
+func (s *Server) isRemote() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.remote
+}
+
+// exitCodeFor is the exit code a durable run's terminal state reports: zero
+// for a run that completed or that the debugger let go, one otherwise.
+func exitCodeFor(state v1.DebugRunState) int {
+	switch state {
+	case v1.DebugRunState_DEBUG_RUN_STATE_COMPLETED, v1.DebugRunState_DEBUG_RUN_STATE_DETACHED:
+		return 0
+	default:
+		return 1
+	}
+}
+
+func terminalState(state v1.DebugRunState) bool {
+	switch state {
+	case v1.DebugRunState_DEBUG_RUN_STATE_COMPLETED, v1.DebugRunState_DEBUG_RUN_STATE_FAILED,
+		v1.DebugRunState_DEBUG_RUN_STATE_EXPIRED, v1.DebugRunState_DEBUG_RUN_STATE_DETACHED:
+		return true
+	default:
+		return false
+	}
+}
+
+// relayObservations sends a durable run's observations to the console. A
+// local session prints its own account as it goes, so it is relayed only for
+// a remote one.
+func (s *Server) relayObservations(snapshot *v1.DebugSnapshot) {
+	if !s.isRemote() {
+		return
+	}
+	for _, observation := range snapshot.GetObservations() {
+		s.mu.Lock()
+		fresh := observation.GetSequence() > s.observed
+		if fresh {
+			s.observed = observation.GetSequence()
+		}
+		s.mu.Unlock()
+		if fresh {
+			s.emit("output", map[string]string{"category": "console", "output": "  " + observation.GetText() + "\n"})
+		}
+	}
+}
+
+// stopped records a new stop and tells the editor.
+func (s *Server) stopped(snapshot *v1.DebugSnapshot) {
+	s.order.Lock()
+	defer s.order.Unlock()
+
+	s.mu.Lock()
+	s.revision = snapshot.GetRevision()
+	s.held = snapshot
+	clear(s.handles)
+	clear(s.issued)
+	s.issuedBytes = 0
+	s.mu.Unlock()
+
+	body := stoppedBody{
+		Reason:            stopReason(snapshot.GetReason()),
+		Description:       snapshot.GetOccurrence().GetSite().GetKind(),
+		ThreadID:          runThreadID,
+		AllThreadsStopped: true,
+	}
+	switch snapshot.GetReason() {
+	case v1.DebugStopReason_DEBUG_STOP_REASON_FAILURE:
+		body.Description = "step failed"
+		body.Text = snapshot.GetFailure()
+	case v1.DebugStopReason_DEBUG_STOP_REASON_AUTOPSY:
+		body.Description = "autopsy"
+	}
+	// A pause taken while running is answered by this stop, whatever held
+	// the run first, and its answer goes ahead of the event.
+	for _, request := range s.takePauses() {
+		s.reply(request, nil)
+	}
+	s.emit("stopped", body)
+	s.enteredAt.Do(func() { close(s.entered) })
+}
+
+func stopReason(reason v1.DebugStopReason) string {
+	switch reason {
+	case v1.DebugStopReason_DEBUG_STOP_REASON_ENTRY:
+		return "entry"
+	case v1.DebugStopReason_DEBUG_STOP_REASON_BREAKPOINT:
+		return "breakpoint"
+	case v1.DebugStopReason_DEBUG_STOP_REASON_PAUSE, v1.DebugStopReason_DEBUG_STOP_REASON_AUTOPSY:
+		return "pause"
+	case v1.DebugStopReason_DEBUG_STOP_REASON_FAILURE:
+		return "exception"
+	default:
+		return "step"
+	}
+}
+
+// move resumes the run. The response says the command was applied; the next
+// stop arrives as its own stopped event.
+func (s *Server) move(ctx context.Context, request inbound, action v1.DebugResumeAction) {
 	select {
 	case <-s.entered:
 	case <-ctx.Done():
 		return
 	}
 
-	at, err := step(ctx)
-	if err != nil {
-		if errors.Is(err, flowdebug.ErrRunOver) {
-			// The run is over, which is not an error to report as one: it is
-			// the ordinary end, and `terminated` is how a client learns the
-			// session is finished and puts its buttons away.
-			s.Finished()
-
-			return
-		}
-
-		s.emit("output", map[string]string{
-			"category": "stderr",
-			"output":   s.session.RedactText("flowdap: " + err.Error() + "\n"),
-		})
+	target := s.currentTarget()
+	if target == nil {
+		s.fail(request, "flowdap: nothing is running")
 
 		return
 	}
 
-	s.newStop()
-	s.emit("stopped", stoppedBody{
-		Reason:            reason,
-		Description:       at.Kind,
-		ThreadID:          runThreadID,
-		AllThreadsStopped: true,
+	s.order.Lock()
+	defer s.order.Unlock()
+
+	s.mu.Lock()
+	revision := s.revision
+	s.mu.Unlock()
+
+	receipt, err := target.Resume(ctx, &v1.DebugResumeRequest{
+		RequestId:        s.requestID(request.Seq),
+		Action:           action,
+		ExpectedRevision: revision,
 	})
+	if err != nil {
+		s.fail(request, err.Error())
+
+		return
+	}
+
+	switch receipt.GetStatus() {
+	case v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_APPLIED, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_DUPLICATE,
+		v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_PENDING:
+		s.mu.Lock()
+		clear(s.handles)
+		clear(s.issued)
+		s.issuedBytes = 0
+		s.held = nil
+		s.mu.Unlock()
+		if action == v1.DebugResumeAction_DEBUG_RESUME_ACTION_CONTINUE {
+			s.reply(request, map[string]bool{"allThreadsContinued": true})
+		} else {
+			s.reply(request, nil)
+		}
+	case v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_ENDED:
+		// A durable run's end is reported with the code its final state
+		// gives, not the default, whichever of this and the watcher gets
+		// there first. A local run's code is recorded before its session
+		// reads as ended.
+		if s.isRemote() {
+			if final, err := target.Snapshot(ctx); err == nil && terminalState(final.GetState()) {
+				s.recordEnd(final.GetState())
+				s.Exited(exitCodeFor(final.GetState()))
+			}
+		}
+		s.reply(request, nil)
+		go s.Finished()
+	default:
+		s.fail(request, receiptText(receipt))
+	}
 }
 
-// stackTrace is the run's shared, already-redacted call-chain rendering rather
-// than one reconstructed from adapter state or a live redactor.
+func receiptText(receipt *v1.DebugReceipt) string {
+	status := strings.ToLower(strings.TrimPrefix(receipt.GetStatus().String(), "DEBUG_COMMAND_STATUS_"))
+	if receipt.GetMessage() == "" {
+		return "flowdap: " + status
+	}
+
+	return "flowdap: " + status + ": " + receipt.GetMessage()
+}
+
+// pause asks the run to hold at its next boundary. The stopped event follows
+// when it does; work already under way is not interrupted.
+func (s *Server) pause(ctx context.Context, request inbound) {
+	target := s.currentTarget()
+	if target == nil {
+		s.fail(request, "flowdap: nothing is running")
+
+		return
+	}
+
+	// Under the order lock, as every movement is: the stop a pause causes
+	// can be ready before this handler answers, and its response must still
+	// reach the client first.
+	s.order.Lock()
+	defer s.order.Unlock()
+
+	// Refused before it reaches the run, so a client repeating a pause it is
+	// still waiting on sends the run nothing more (Codex, #2220). Under
+	// order, as every change to the waiting pauses is, so none is answered
+	// between this check and the append.
+	s.mu.Lock()
+	full := len(s.pauses) >= maxPendingPauses
+	s.mu.Unlock()
+	if full {
+		s.fail(request, "flowdap: a pause is already waiting on the run's next step boundary")
+
+		return
+	}
+	receipt, err := target.Pause(ctx, s.requestID(request.Seq))
+	if err != nil {
+		s.fail(request, err.Error())
+
+		return
+	}
+	switch receipt.GetStatus() {
+	case v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_PENDING:
+		// Answered by the stop it causes, or refused by the end of a run
+		// that reached no boundary to hold at: a success no stop follows is
+		// the one answer DAP does not allow.
+		s.mu.Lock()
+		s.pauses = append(s.pauses, inbound{Seq: request.Seq, Command: request.Command})
+		s.mu.Unlock()
+	case v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_APPLIED, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_DUPLICATE:
+		s.reply(request, nil)
+	default:
+		s.fail(request, receiptText(receipt))
+	}
+}
+
+// takePauses is the pause requests still waiting on the run, which the
+// caller answers.
+func (s *Server) takePauses() []inbound {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	pauses := s.pauses
+	s.pauses = nil
+
+	return pauses
+}
+
+func (s *Server) currentStop() (*v1.DebugSnapshot, uint64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.held, s.revision
+}
+
 func (s *Server) stackTrace(arguments json.RawMessage) stackTraceBody {
 	var asked struct {
 		StartFrame int `json:"startFrame"`
@@ -442,34 +1200,58 @@ func (s *Server) stackTrace(arguments json.RawMessage) stackTraceBody {
 		}
 	}
 
-	labels, err := s.session.BacktraceLabels()
-	if err != nil {
-		// An empty stack rather than a refusal: a client asks for this
-		// speculatively, and "the run is not stopped" is exactly what no frames
-		// means.
+	held, _ := s.currentStop()
+	if held == nil {
 		return stackTraceBody{StackFrames: []stackFrame{}}
 	}
-	if len(labels) == 0 {
-		if at, paused := s.session.Paused(); paused && at.Autopsy {
-			// An autopsy has no current step or call chain, but it does retain a
-			// readable scope. Keep the synthetic frame DAP requires as the address
-			// for that scope; it describes adapter presentation, not engine state.
-			frames := []stackFrame{{ID: 1, Name: "after the run"}}
-			return stackTraceBody{StackFrames: frameWindow(frames, asked.StartFrame, asked.Levels), TotalFrames: 1}
+	if held.GetReason() == v1.DebugStopReason_DEBUG_STOP_REASON_AUTOPSY {
+		frames := []stackFrame{{ID: 1, Name: "after the run"}}
+
+		return stackTraceBody{StackFrames: frameWindow(frames, asked.StartFrame, asked.Levels), TotalFrames: 1}
+	}
+
+	lineBase, columnBase := s.clientBases()
+	frames := make([]stackFrame, 0, len(held.GetFrames()))
+	for _, frame := range held.GetFrames() {
+		entry := stackFrame{ID: int(frame.GetId()), Name: frame.GetLabel()}
+		if !frame.GetScoped() {
+			entry.PresentationHint = "subtle"
 		}
-
-		return stackTraceBody{StackFrames: []stackFrame{}}
-	}
-
-	frames := make([]stackFrame, 0, len(labels))
-	for i, label := range labels {
-		frames = append(frames, stackFrame{ID: i + 1, Name: label})
+		if location := frame.GetSource(); location != nil {
+			if source := s.sourceOf(location); source != nil {
+				entry.Source = source
+				entry.Line = toClient(location.GetRange().GetStartLine(), lineBase)
+				entry.Column = toClient(location.GetRange().GetStartColumn(), columnBase)
+			}
+		}
+		frames = append(frames, entry)
 	}
 
 	return stackTraceBody{
 		StackFrames: frameWindow(frames, asked.StartFrame, asked.Levels),
 		TotalFrames: len(frames),
 	}
+}
+
+// sourceOf is a location's document as an editor names it.
+func (s *Server) sourceOf(location *v1.DebugSourceLocation) *source {
+	s.mu.Lock()
+	sourceMap, uriPaths := s.sourceMap, s.uriPaths
+	s.mu.Unlock()
+
+	documents := sourceMap.GetDocuments()
+	index := int(location.GetDocument())
+	if index < 0 || index >= len(documents) || location.GetRange() == nil {
+		return nil
+	}
+	path := strings.TrimPrefix(documents[index].GetUri(), "file://")
+	if uriPaths {
+		// In the form the client asked for, so a frame and a breakpoint it
+		// set name one document.
+		return &source{Name: filepath.Base(path), Path: fileURI(path)}
+	}
+
+	return &source{Name: filepath.Base(path), Path: path}
 }
 
 func frameWindow(frames []stackFrame, start, levels int) []stackFrame {
@@ -484,45 +1266,104 @@ func frameWindow(frames []stackFrame, start, levels int) []stackFrame {
 	return frames[start:end]
 }
 
-// scopeList is what the paused run can name, one DAP scope per group.
-func (s *Server) scopeList(arguments json.RawMessage) scopesBody {
+// toClient translates a 1-based position to the client's base. Zero is an
+// unknown position and stays zero, the value the specification requires in
+// place of an absent one.
+func toClient(position uint32, base int) int {
+	if position == 0 {
+		return 0
+	}
+
+	return int(position) - 1 + base
+}
+
+// requestID is the retry key for the command a client request carries: stable
+// for that request, and distinct from every other adapter's.
+func (s *Server) requestID(seq int) string { return fmt.Sprintf("dap-%s-%d", s.nonce, seq) }
+
+// clientBases is the first line and column number in the client's
+// coordinates: 1 unless its initialize said 0.
+func (s *Server) clientBases() (line, column int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	line, column = 1, 1
+	if s.linesFrom0 {
+		line = 0
+	}
+	if s.columnsFrom0 {
+		column = 0
+	}
+
+	return line, column
+}
+
+// issue hands out a variables reference for an expression at a revision: the
+// one already issued for it at this stop, or a new one while the stop holds
+// fewer than [MaxVariableHandles] and [MaxVariableHandleBytes] allows it, and
+// otherwise none.
+func (s *Server) issue(revision uint64, expression string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	key := handle{revision: revision, expression: expression}
+	if reference, ok := s.issued[key]; ok {
+		return reference
+	}
+	if len(s.handles) >= MaxVariableHandles || s.issuedBytes+len(expression) > MaxVariableHandleBytes {
+		return 0
+	}
+	s.next++
+	s.handles[s.next] = key
+	s.issued[key] = s.next
+	s.issuedBytes += len(expression)
+
+	return s.next
+}
+
+func (s *Server) scopeList(ctx context.Context, arguments json.RawMessage) scopesBody {
 	var asked struct {
 		FrameID int `json:"frameId"`
 	}
-	if err := json.Unmarshal(arguments, &asked); err != nil || asked.FrameID != 1 {
-		// Caller frames identify the chain but are not paused scopes. Returning
-		// the innermost values for those, a missing frame, or malformed input
-		// would put a correct value under the wrong frame, which is worse than
-		// an explicitly empty pane.
+	held, revision := s.currentStop()
+	if err := json.Unmarshal(arguments, &asked); err != nil || held == nil || !scopedFrame(held, asked.FrameID) {
 		return scopesBody{Scopes: []scope{}}
 	}
 
-	groups, generation, err := s.session.ScopeAtPause()
+	target := s.currentTarget()
+	roots, err := target.Inspect(ctx, &v1.DebugInspectRequest{Revision: revision, Limit: MaxScopeVariables})
 	if err != nil {
 		return scopesBody{Scopes: []scope{}}
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	scopes := make([]scope, 0, len(groups))
-	for _, group := range groups {
-		// Never zero, which DAP reserves for "this has no children": a scope
-		// handed out with reference zero is one a client will not ask about.
-		s.reference++
-		reference := s.reference
-		s.scopes[reference] = scopeReference{group: group.Group, generation: generation}
+	scopes := make([]scope, 0, len(roots.GetChildren()))
+	for _, group := range roots.GetChildren() {
 		scopes = append(scopes, scope{
-			Name:               group.Group,
-			VariablesReference: reference,
-			Expensive:          false,
+			Name:               group.GetName(),
+			VariablesReference: s.issue(revision, group.GetValue().GetExpression()),
+			NamedVariables:     int(group.GetValue().GetChildren()),
 		})
 	}
 
 	return scopesBody{Scopes: scopes}
 }
 
-// variables renders one scope's names, each evaluated for its value.
+// scopedFrame reports whether a frame id names the stop's readable frame: the
+// innermost one, whose scope is the run's own. A container's frame names
+// where the stop is, and has no bindings of its own to read.
+func scopedFrame(held *v1.DebugSnapshot, id int) bool {
+	if held.GetReason() == v1.DebugStopReason_DEBUG_STOP_REASON_AUTOPSY {
+		return id == 1
+	}
+	for _, frame := range held.GetFrames() {
+		if int(frame.GetId()) == id {
+			return frame.GetScoped()
+		}
+	}
+
+	return false
+}
+
 func (s *Server) variables(ctx context.Context, arguments json.RawMessage) variablesBody {
 	var asked struct {
 		VariablesReference int `json:"variablesReference"`
@@ -530,39 +1371,45 @@ func (s *Server) variables(ctx context.Context, arguments json.RawMessage) varia
 	_ = json.Unmarshal(arguments, &asked)
 
 	s.mu.Lock()
-	reference, known := s.scopes[asked.VariablesReference]
+	reference, known := s.handles[asked.VariablesReference]
+	current := s.revision
 	s.mu.Unlock()
-
-	if !known {
+	if !known || reference.revision != current {
 		return variablesBody{Variables: []variable{}}
 	}
 
-	wireScope, err := s.session.ScopeGroupProtoAt(ctx, reference.group, MaxScopeVariables, reference.generation)
-	if err != nil {
+	answer, err := s.currentTarget().Inspect(ctx, &v1.DebugInspectRequest{
+		Revision:   reference.revision,
+		Expression: reference.expression,
+		Children:   true,
+		Limit:      MaxScopeVariables,
+	})
+	if err != nil || answer.GetError() != "" {
 		return variablesBody{Variables: []variable{}}
 	}
 
-	if len(wireScope.GetGroups()) == 0 {
-		return variablesBody{Variables: []variable{}}
-	}
-	wireGroup := wireScope.GetGroups()[0]
-
-	variables := make([]variable, 0, len(wireGroup.GetBindings())+1)
-	for _, binding := range wireGroup.GetBindings() {
-		text := binding.GetRendered()
-		if binding.GetError() != "" {
-			text = "(" + binding.GetError() + ")"
+	variables := make([]variable, 0, len(answer.GetChildren())+1)
+	for _, child := range answer.GetChildren() {
+		value := child.GetValue()
+		entry := variable{Name: child.GetName(), Value: value.GetRendered(), Type: value.GetType()}
+		if value.GetType() == "error" {
+			entry.Value = "(" + value.GetRendered() + ")"
 		}
-		variables = append(variables, variable{Name: binding.GetName(), Value: text})
+		if !strings.HasPrefix(value.GetExpression(), "@") {
+			entry.EvaluateName = value.GetExpression()
+		}
+		if value.GetChildren() > 0 && value.GetExpression() != "" {
+			entry.VariablesReference = s.issue(reference.revision, value.GetExpression())
+		}
+		variables = append(variables, entry)
 	}
-	if omitted := int(wireGroup.GetTotal()) - len(wireGroup.GetBindings()); omitted > 0 {
+	if omitted := int(answer.GetTotal()) - len(answer.GetChildren()); omitted > 0 {
 		variables = append(variables, variable{Name: "…", Value: fmt.Sprintf("%d more, not rendered", omitted)})
 	}
 
 	return variablesBody{Variables: variables}
 }
 
-// evaluate answers the debug console and hover.
 func (s *Server) evaluate(ctx context.Context, request inbound) {
 	var asked struct {
 		Expression string `json:"expression"`
@@ -573,172 +1420,586 @@ func (s *Server) evaluate(ctx context.Context, request inbound) {
 
 		return
 	}
-	if asked.FrameID != nil && *asked.FrameID != 1 {
-		// Caller frames carry only call-chain identity. Evaluating against the
-		// innermost scope for one would put a real callee value under a caller,
-		// the same misattribution scopeList refuses.
+
+	held, revision := s.currentStop()
+	if held == nil {
+		s.fail(request, "the run is not stopped, so there is nothing to evaluate against")
+
+		return
+	}
+	if asked.FrameID != nil && !scopedFrame(held, *asked.FrameID) {
 		s.fail(request, "that stack frame has no readable scope")
 
 		return
 	}
 
-	text, _, err := s.session.Evaluate(ctx, asked.Expression)
+	answer, err := s.currentTarget().Inspect(ctx, &v1.DebugInspectRequest{Revision: revision, Expression: asked.Expression})
 	if err != nil {
-		// A failed evaluation is a failed *request* in DAP, which is what puts
-		// the message in the console beside what was typed. It is not a failure
-		// of the session: somebody asking questions will ask some that do not
-		// parse, exactly as at the prompt.
 		s.fail(request, err.Error())
 
 		return
 	}
+	if answer.GetError() != "" {
+		s.fail(request, answer.GetError())
 
-	s.reply(request, evaluateBody{Result: text})
+		return
+	}
+
+	body := evaluateBody{Result: answer.GetValue().GetRendered(), Type: answer.GetValue().GetType()}
+	if answer.GetValue().GetChildren() > 0 {
+		body.VariablesReference = s.issue(revision, asked.Expression)
+	}
+	s.reply(request, body)
 }
 
-// setBreakpoints applies a client's function breakpoints, which for this
-// adapter are step ids.
-func (s *Server) setBreakpoints(arguments json.RawMessage) breakpointsBody {
+// errInvalidBreakpoints is the one text a malformed breakpoint request is
+// refused with, which never quotes what was submitted.
+var errInvalidBreakpoints = errors.New("invalid breakpoint arguments")
+
+// errOneProgram refuses a second launch or attach in one session: the first
+// target would be replaced without being closed, and a run it held would
+// wait on a debugger nobody can reach.
+var errOneProgram = errors.New("flowdap: this session already launched or attached to a program; start another debug session for another")
+
+// errTooManyBreakpoints fails a request that alone names more breakpoints than
+// a session holds. It fails whole, before anything is built from it, rather
+// than answering each entry: a frame can carry far more compact entries than a
+// session will ever hold, and one refusal apiece would make the response many
+// times the request. A set within the bound that only overflows with the other
+// sources installed is still answered entry by entry.
+var errTooManyBreakpoints = fmt.Errorf("a breakpoint request may name at most %d breakpoints", flowdebug.MaxBreakpoints)
+
+func (s *Server) setLineBreakpoints(ctx context.Context, request inbound) {
 	var asked struct {
-		Breakpoints []struct {
-			Name string `json:"name"`
+		Source *struct {
+			Path string `json:"path"`
+		} `json:"source"`
+		Breakpoints []*struct {
+			Line         *int    `json:"line"`
+			Condition    *string `json:"condition"`
+			HitCondition *string `json:"hitCondition"`
+			LogMessage   *string `json:"logMessage"`
+		} `json:"breakpoints"`
+		SourceModified bool `json:"sourceModified"`
+	}
+	// A missing array is malformed, not an empty replacement: only an explicit
+	// empty set clears a source's breakpoints.
+	if err := json.Unmarshal(request.Arguments, &asked); err != nil || asked.Source == nil || asked.Source.Path == "" ||
+		len(asked.Source.Path) > maxSourcePathBytes || asked.Breakpoints == nil {
+		s.fail(request, errInvalidBreakpoints.Error())
+
+		return
+	}
+	if len(asked.Breakpoints) > flowdebug.MaxBreakpoints {
+		s.fail(request, errTooManyBreakpoints.Error())
+
+		return
+	}
+	// Lines in a file edited since the program was compiled are not the lines
+	// the source map knows: set through it, a breakpoint would stop on
+	// another step or never. They are answered unverified, and the set
+	// already installed stands. An empty set names no line, and clears the
+	// source's breakpoints as it would for an unedited file.
+	if asked.SourceModified && len(asked.Breakpoints) > 0 {
+		s.reply(request, breakpointsBody{Breakpoints: refused(len(asked.Breakpoints),
+			"the file changed since the program was compiled, so its lines no longer name the steps that run; restart the debug session to break on the edited file")})
+
+		return
+	}
+
+	lineBase, _ := s.clientBases()
+	wanted := make([]lineBreakpoint, 0, len(asked.Breakpoints))
+	for _, want := range asked.Breakpoints {
+		// Positions are uint32 past this edge: a larger line would wrap onto
+		// a small one rather than name no line.
+		if want == nil || want.Line == nil || *want.Line < lineBase || int64(*want.Line)-int64(lineBase)+1 > math.MaxUint32 {
+			s.fail(request, errInvalidBreakpoints.Error())
+
+			return
+		}
+		wanted = append(wanted, lineBreakpoint{line: *want.Line - lineBase + 1, condition: want.Condition, hitCondition: want.HitCondition, logText: want.LogMessage})
+	}
+	if s.retainedBytes(asked.Source.Path, false)+lineBytes(asked.Source.Path, wanted) > MaxBreakpointBytes {
+		s.fail(request, errBreakpointBytes.Error())
+
+		return
+	}
+	if s.totalBreakpoints(asked.Source.Path, len(wanted), -1) > flowdebug.MaxBreakpoints {
+		s.reply(request, breakpointsBody{Breakpoints: refused(len(wanted),
+			fmt.Sprintf("a session may hold at most %d breakpoints", flowdebug.MaxBreakpoints))})
+
+		return
+	}
+
+	s.mu.Lock()
+	previous, had := s.lines[asked.Source.Path]
+	if len(wanted) == 0 {
+		delete(s.lines, asked.Source.Path)
+	} else {
+		s.lines[asked.Source.Path] = wanted
+	}
+	s.mu.Unlock()
+
+	states, err := s.applyBreakpoints(ctx)
+	if err != nil {
+		s.mu.Lock()
+		if had {
+			s.lines[asked.Source.Path] = previous
+		} else {
+			delete(s.lines, asked.Source.Path)
+		}
+		s.mu.Unlock()
+		s.reply(request, breakpointsBody{Breakpoints: refused(len(wanted), err.Error())})
+
+		return
+	}
+
+	s.forgetLines(asked.Source.Path, len(wanted))
+	answers := make([]breakpoint, 0, len(wanted))
+	for i, want := range wanted {
+		answer := answerFor(states[lineID(asked.Source.Path, i)])
+		answer.ID = s.breakpointID(lineID(asked.Source.Path, i))
+		answer.Line = new(want.line - 1 + lineBase)
+		answers = append(answers, answer)
+	}
+	s.reply(request, breakpointsBody{Breakpoints: answers})
+}
+
+func (s *Server) setFunctionBreakpoints(ctx context.Context, request inbound) {
+	var asked struct {
+		Breakpoints []*struct {
+			Name         *string `json:"name"`
+			Condition    *string `json:"condition"`
+			HitCondition *string `json:"hitCondition"`
 		} `json:"breakpoints"`
 	}
-	_ = json.Unmarshal(arguments, &asked)
+	if err := json.Unmarshal(request.Arguments, &asked); err != nil || asked.Breakpoints == nil {
+		// A malformed replacement must not clear the installed set.
+		s.fail(request, errInvalidBreakpoints.Error())
 
-	// Through [flowdebug.Session.SetBreakpointsWithNotices] and *not* through a
-	// command line, which is the difference between this working and
-	// deadlocking. A command waits for a boundary to deliver it into, and a
-	// client sets breakpoints before the run starts — that is what
-	// `configurationDone` orders — so there is no boundary to wait for and never
-	// will be one until the breakpoints are in place.
-	//
-	// It replaces the set for the same reason the method does: a client sends
-	// everything it has each time one changes.
-	requested := make([]string, 0, len(asked.Breakpoints))
-	for _, want := range asked.Breakpoints {
-		requested = append(requested, strings.TrimSpace(want.Name))
+		return
 	}
-	notices, setErr := s.session.SetBreakpointsWithNotices(requested)
+	if len(asked.Breakpoints) > flowdebug.MaxBreakpoints {
+		s.fail(request, errTooManyBreakpoints.Error())
 
-	answers := make([]breakpoint, 0, len(asked.Breakpoints))
-	for i, name := range requested {
-		if name == "" {
+		return
+	}
+
+	wanted := make([]functionBreakpoint, 0, len(asked.Breakpoints))
+	for _, want := range asked.Breakpoints {
+		if want == nil || want.Name == nil {
+			s.fail(request, errInvalidBreakpoints.Error())
+
+			return
+		}
+		wanted = append(wanted, functionBreakpoint{name: strings.TrimSpace(*want.Name), condition: want.Condition, hitCondition: want.HitCondition})
+	}
+	if s.retainedBytes("", true)+functionBytes(wanted) > MaxBreakpointBytes {
+		s.fail(request, errBreakpointBytes.Error())
+
+		return
+	}
+	if s.totalBreakpoints("", 0, len(wanted)) > flowdebug.MaxBreakpoints {
+		s.reply(request, breakpointsBody{Breakpoints: refused(len(wanted),
+			fmt.Sprintf("a session may hold at most %d breakpoints", flowdebug.MaxBreakpoints))})
+
+		return
+	}
+
+	s.mu.Lock()
+	previous := s.functions
+	s.functions = wanted
+	s.mu.Unlock()
+
+	states, err := s.applyBreakpoints(ctx)
+	if err != nil {
+		s.mu.Lock()
+		s.functions = previous
+		s.mu.Unlock()
+		s.reply(request, breakpointsBody{Breakpoints: refused(len(wanted), err.Error())})
+
+		return
+	}
+
+	answers := make([]breakpoint, 0, len(wanted))
+	for i, want := range wanted {
+		if want.name == "" {
 			answers = append(answers, breakpoint{Message: "a breakpoint here is a step id, and this one is empty"})
 
 			continue
 		}
+		answer := answerFor(states[functionID(i)])
+		answer.ID = s.breakpointID(functionID(i))
+		answers = append(answers, answer)
+	}
+	s.reply(request, breakpointsBody{Breakpoints: answers})
+}
 
-		// Answered per breakpoint rather than by refusing the set, which is the
-		// difference between a client showing one hollow marker and a client
-		// losing every marker it has. DAP has a field for exactly this, and a
-		// breakpoint on a step this run cannot reach is what it is for: it comes
-		// back unverified, carrying the reason the prompt would have printed,
-		// instead of verified and silently never taken (#1367).
-		//
-		// It reports only what the session's inventory knows, and `flow dap`
-		// builds its session before there is one: the workflow arrives in the
-		// client's own launch configuration as `program` (cmd/flow/dap.go), so at
-		// construction there is nothing to check a name against and every name
-		// fails open. That is the documented empty-inventory rule rather than an
-		// oversight here, and it is why this is right where the inventory exists —
-		// an embedder that passes Options.Steps, and the tests below — and latent
-		// where it does not. Closing that gap means giving a session its steps
-		// after construction and re-reporting breakpoints already answered, which
-		// is the editor-front work #1297 owns (Copilot, #1627).
-		if notices[i].Unknown {
-			answers = append(answers, breakpoint{Message: notices[i].Message})
+func (s *Server) setExceptionBreakpoints(ctx context.Context, request inbound) {
+	var asked struct {
+		Filters []string `json:"filters"`
+	}
+	// A missing array is malformed, not a request to clear the filters: only
+	// an explicit empty array turns failure stops off.
+	if err := json.Unmarshal(request.Arguments, &asked); err != nil || asked.Filters == nil {
+		s.fail(request, errInvalidBreakpoints.Error())
 
+		return
+	}
+
+	mode := v1.DebugFailureMode_DEBUG_FAILURE_MODE_NONE
+	for _, filter := range asked.Filters {
+		switch filter {
+		case "all":
+			mode = v1.DebugFailureMode_DEBUG_FAILURE_MODE_ALL
+		case "uncaught":
+			if mode != v1.DebugFailureMode_DEBUG_FAILURE_MODE_ALL {
+				mode = v1.DebugFailureMode_DEBUG_FAILURE_MODE_UNCAUGHT
+			}
+		default:
+			s.fail(request, fmt.Sprintf("flowdap: no exception filter is named %q", filter))
+
+			return
+		}
+	}
+
+	s.mu.Lock()
+	caps := s.capabilities
+	previous := s.failureMode
+	s.failureMode = mode
+	s.mu.Unlock()
+
+	if mode != v1.DebugFailureMode_DEBUG_FAILURE_MODE_NONE && caps != nil && !caps.GetFailureBreakpoints() {
+		s.mu.Lock()
+		s.failureMode = previous
+		s.mu.Unlock()
+		s.fail(request, "flowdap: this backend cannot stop where a step fails")
+
+		return
+	}
+	if _, err := s.applyBreakpoints(ctx); err != nil {
+		s.mu.Lock()
+		s.failureMode = previous
+		s.mu.Unlock()
+		s.fail(request, err.Error())
+
+		return
+	}
+	s.reply(request, nil)
+}
+
+// maxSourcePathBytes is the longest source path a line breakpoint may name:
+// the bound the debug contract puts on a source line's URI, enforced where the
+// adapter first keeps the path rather than where the backend later refuses it.
+const maxSourcePathBytes = 4096
+
+// errBreakpointBytes fails a request whose breakpoints would take the text the
+// adapter keeps past [MaxBreakpointBytes].
+var errBreakpointBytes = fmt.Errorf("flowdap: the breakpoints' paths, conditions and log messages may total at most %d bytes", MaxBreakpointBytes)
+
+// retainedBytes is the breakpoint text held for every source but skipPath,
+// and for the function breakpoints unless skipFunctions.
+func (s *Server) retainedBytes(skipPath string, skipFunctions bool) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	total := 0
+	for path, set := range s.lines {
+		if path != skipPath {
+			total += lineBytes(path, set)
+		}
+	}
+	if !skipFunctions {
+		total += functionBytes(s.functions)
+	}
+
+	return total
+}
+
+// lineBytes is the text a source's line breakpoints hold. The path is
+// charged once for the source and again for each breakpoint, whose identity
+// carries it.
+func lineBytes(path string, set []lineBreakpoint) int {
+	total := len(path)
+	for _, b := range set {
+		total += len(path) + textBytes(b.condition) + textBytes(b.hitCondition) + textBytes(b.logText)
+	}
+
+	return total
+}
+
+// functionBytes is the text a set of function breakpoints holds.
+func functionBytes(set []functionBreakpoint) int {
+	total := 0
+	for _, b := range set {
+		total += len(b.name) + textBytes(b.condition) + textBytes(b.hitCondition)
+	}
+
+	return total
+}
+
+func textBytes(text *string) int {
+	if text == nil {
+		return 0
+	}
+
+	return len(*text)
+}
+
+func (s *Server) totalBreakpoints(path string, lines, functions int) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	total := lines
+	for other, set := range s.lines {
+		if other != path {
+			total += len(set)
+		}
+	}
+	if functions >= 0 {
+		return total + functions
+	}
+
+	return total + len(s.functions)
+}
+
+func lineID(path string, i int) string { return "line:" + path + ":" + strconv.Itoa(i) }
+
+func functionID(i int) string { return "function:" + strconv.Itoa(i) }
+
+// applyBreakpoints sends the whole set — every source's lines, the function
+// breakpoints, and the failure mode — as one replacement, which is what the
+// target's contract is. It returns each breakpoint's state by id.
+func (s *Server) applyBreakpoints(ctx context.Context) (map[string]*v1.DebugBreakpointState, error) {
+	s.mu.Lock()
+	var set []*v1.DebugBreakpoint
+	for path, lines := range s.lines {
+		for i, line := range lines {
+			set = append(set, &v1.DebugBreakpoint{
+				Id:           lineID(path, i),
+				Line:         &v1.DebugSourceLine{Uri: path, Line: uint32(line.line)},
+				Condition:    deref(line.condition),
+				HitCondition: deref(line.hitCondition),
+				LogMessage:   deref(line.logText),
+			})
+		}
+	}
+	for i, function := range s.functions {
+		if function.name == "" {
 			continue
 		}
+		set = append(set, &v1.DebugBreakpoint{
+			Id:           functionID(i),
+			Step:         function.name,
+			Condition:    deref(function.condition),
+			HitCondition: deref(function.hitCondition),
+		})
+	}
+	mode := s.failureMode
+	target := s.target
+	s.mu.Unlock()
 
-		answers = append(answers, breakpoint{Verified: true})
+	states := map[string]*v1.DebugBreakpointState{}
+	if target == nil {
+		for _, want := range set {
+			states[want.GetId()] = &v1.DebugBreakpointState{Id: want.GetId(), Message: "pending until the program is launched or attached"}
+		}
+
+		return states, nil
 	}
 
-	if setErr != nil {
-		// The set was refused whole, so no entry may claim to be verified: the
-		// alternative is a person watching for stops at breakpoints the session
-		// never took.
-		return breakpointsBody{Breakpoints: refused(len(asked.Breakpoints), setErr.Error())}
+	if mode == v1.DebugFailureMode_DEBUG_FAILURE_MODE_UNSPECIFIED {
+		mode = v1.DebugFailureMode_DEBUG_FAILURE_MODE_NONE
+	}
+	response, err := target.ReplaceBreakpoints(ctx, &v1.DebugSetBreakpointsRequest{Breakpoints: set, FailureMode: mode})
+	if err != nil {
+		return nil, err
+	}
+	if status := response.GetReceipt().GetStatus(); status != v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_APPLIED &&
+		status != v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_UNSPECIFIED && status != v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_PENDING {
+		return nil, errors.New(receiptText(response.GetReceipt()))
+	}
+	for i, state := range response.GetBreakpoints() {
+		id := state.GetId()
+		if id == "" && i < len(set) {
+			id = set[i].GetId()
+		}
+		states[id] = state
 	}
 
-	return breakpointsBody{Breakpoints: answers}
+	// A replacement the run accepted but will install only at its next step
+	// boundary: what it has not applied yet is remembered, so the editor
+	// hears when it has rather than showing it unverified for good.
+	//
+	// Every breakpoint of the replacement is pending, not only those the
+	// answer shows unverified: the states the run returned are of the set it
+	// has installed, and a verified one under a reused id is the old
+	// definition, not this one. One the target refused before sending keeps
+	// its reason now, and is settled with the rest.
+	pending := map[string]uint32{}
+	if response.GetReceipt().GetStatus() == v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_PENDING {
+		for _, want := range set {
+			pending[want.GetId()] = want.GetLine().GetLine()
+			if states[want.GetId()].GetVerified() {
+				states[want.GetId()] = &v1.DebugBreakpointState{Id: want.GetId(), Message: "the run applies this breakpoint at its next step boundary"}
+			}
+		}
+	}
+	s.mu.Lock()
+	s.pending = pending
+	s.pendingAfter = response.GetReceipt().GetRevision()
+	s.mu.Unlock()
+
+	return states, nil
 }
 
-// refuseLineBreakpoints answers a source-line request with the reason it cannot
-// be honoured, one entry per breakpoint asked for.
-func (s *Server) refuseLineBreakpoints(arguments json.RawMessage) breakpointsBody {
-	var asked struct {
-		Breakpoints []json.RawMessage `json:"breakpoints"`
-	}
-	_ = json.Unmarshal(arguments, &asked)
+// relayBreakpoints reports a pending replacement once the run has answered it.
+// A durable run installs a replacement whole, at its next step boundary,
+// before it holds there, and a hold moves its revision: so a hold past the
+// acceptance shows exactly the set the run installed. A run that ends shows
+// its final set whatever its revision, which ending need not move. Either
+// way each breakpoint of the replacement is there, with its state, or was not
+// installed — refused, or never reached. A snapshot of a run still moving
+// shows the set it had, and settles nothing.
+func (s *Server) relayBreakpoints(snapshot *v1.DebugSnapshot) {
+	held := snapshot.GetState() == v1.DebugRunState_DEBUG_RUN_STATE_HELD
+	ended := terminalState(snapshot.GetState())
+	s.mu.Lock()
+	if len(s.pending) == 0 || !(ended || held && snapshot.GetRevision() > s.pendingAfter) {
+		s.mu.Unlock()
 
-	return breakpointsBody{Breakpoints: refused(len(asked.Breakpoints),
-		"this adapter breaks on step ids rather than lines, because the debugger seam is "+
-			"handed steps and not files; add a function breakpoint named after the step")}
+		return
+	}
+	// A run that ended at the revision it accepted the replacement at may
+	// have ended before the boundary that would have installed it, and then
+	// still lists its old set under the same slot ids: its states say nothing
+	// of the replacement, which is reported not applied rather than read off
+	// a definition it replaced.
+	installed := map[string]*v1.DebugBreakpointState{}
+	unapplied := "the run did not install this breakpoint"
+	if ended && snapshot.GetRevision() <= s.pendingAfter {
+		unapplied = "the run ended before it applied this breakpoint"
+	} else {
+		for _, state := range snapshot.GetBreakpoints() {
+			installed[state.GetId()] = state
+		}
+	}
+	type applied struct {
+		id    string
+		line  uint32
+		state *v1.DebugBreakpointState
+	}
+	ready := make([]applied, 0, len(s.pending))
+	for id, line := range s.pending {
+		state, ok := installed[id]
+		if !ok {
+			state = &v1.DebugBreakpointState{Id: id, Message: unapplied}
+		}
+		ready = append(ready, applied{id: id, line: line, state: state})
+	}
+	s.pending = nil
+	s.mu.Unlock()
+
+	lineBase, _ := s.clientBases()
+	for _, bp := range ready {
+		answer := answerFor(bp.state)
+		answer.ID = s.breakpointID(bp.id)
+		if bp.line > 0 {
+			answer.Line = new(toClient(bp.line, lineBase))
+		}
+		s.emit("breakpoint", map[string]any{"reason": "changed", "breakpoint": answer})
+	}
 }
 
-// refused is n unverified breakpoints carrying one reason.
-func refused(n int, reason string) []breakpoint {
-	answers := make([]breakpoint, 0, n)
-	for range n {
-		answers = append(answers, breakpoint{Message: reason})
+func deref(text *string) string {
+	if text == nil {
+		return ""
+	}
+
+	return *text
+}
+
+func answerFor(state *v1.DebugBreakpointState) breakpoint {
+	if state == nil {
+		return breakpoint{Message: "the backend did not report this breakpoint"}
+	}
+
+	return breakpoint{Verified: state.GetVerified(), Message: state.GetMessage()}
+}
+
+// refused answers every entry of a request refused whole: none is verified.
+func refused(n int, message string) []breakpoint {
+	answers := make([]breakpoint, n)
+	for i := range answers {
+		answers[i] = breakpoint{Message: message}
 	}
 
 	return answers
 }
 
-// newStop forgets the addresses handed out for the pause that just ended.
-func (s *Server) newStop() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	clear(s.scopes)
-}
-
-// reply sends a successful response.
-func (s *Server) reply(request inbound, body any) {
-	s.send(response{
-		Type:       "response",
-		RequestSeq: request.Seq,
-		Success:    true,
-		Command:    request.Command,
-		Body:       body,
-	})
-}
-
-// fail sends an unsuccessful response carrying why.
-func (s *Server) fail(request inbound, message string) {
-	s.send(response{
-		Type:       "response",
-		RequestSeq: request.Seq,
-		Success:    false,
-		Command:    request.Command,
-		Message:    message,
-	})
-}
-
-// emit sends an event.
-func (s *Server) emit(name string, body any) {
-	s.send(event{Type: "event", Event: name, Body: body})
-}
-
-// send stamps a sequence number and writes.
-//
-// Every outbound message goes through here, so the numbering is one counter
-// rather than one per kind — a client is entitled to treat `seq` as increasing
-// across everything the adapter says.
-func (s *Server) send(message any) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	s.seq++
-	switch stamped := message.(type) {
-	case response:
-		stamped.Seq = s.seq
-		_ = s.stream.WriteObject(stamped)
-	case event:
-		stamped.Seq = s.seq
-		_ = s.stream.WriteObject(stamped)
+// send numbers one outbound message and writes it under one lock, so the
+// sequence the client reads is the order the messages were sent in: a number
+// taken under one lock and written under another could reach the client
+// behind a later one.
+func (s *Server) send(message func(seq int) any) {
+	if s.hungUp.Load() {
+		return
 	}
+	s.out.Lock()
+	defer s.out.Unlock()
+
+	// Again under the lock: a hang-up while this waited for it stands.
+	if s.hungUp.Load() {
+		return
+	}
+	s.seq++
+	if err := s.stream.WriteObject(message(s.seq)); err != nil {
+		// Nobody can hear the session any more: Serve detaches it rather than
+		// go on reading from a client whose output is gone.
+		s.hungUp.Store(true)
+		s.loseOnce.Do(func() { close(s.lost) })
+	}
+}
+
+// hangUp stops every later write to the client.
+//
+// It takes no lock, so ending a conversation never waits behind a write that
+// is blocked on a client that stopped reading.
+func (s *Server) hangUp() { s.hungUp.Store(true) }
+
+func (s *Server) reply(request inbound, body any) {
+	s.send(func(seq int) any {
+		return response{
+			Seq:        seq,
+			Type:       "response",
+			RequestSeq: request.Seq,
+			Success:    true,
+			Command:    request.Command,
+			Body:       body,
+		}
+	})
+}
+
+func (s *Server) fail(request inbound, message string) {
+	s.send(func(seq int) any {
+		return response{
+			Seq:        seq,
+			Type:       "response",
+			RequestSeq: request.Seq,
+			Success:    false,
+			Command:    request.Command,
+			Message:    message,
+		}
+	})
+}
+
+func (s *Server) emit(name string, body any) {
+	s.send(func(seq int) any {
+		return event{
+			Seq:   seq,
+			Type:  "event",
+			Event: name,
+			Body:  body,
+		}
+	})
 }

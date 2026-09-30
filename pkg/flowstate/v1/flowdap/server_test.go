@@ -1,10 +1,14 @@
 package flowdap_test
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -33,6 +37,17 @@ type client struct {
 
 	closeOnce sync.Once
 	closed    chan struct{}
+
+	// late counts writes made after Close: on a real stdio transport each
+	// is a write to a pipe nobody reads, which kills the process.
+	late atomic.Int32
+
+	lateMu     sync.Mutex
+	lateEvents []string
+
+	// failWrites makes every write fail, as a client whose output half has
+	// closed while its input stays open.
+	failWrites atomic.Bool
 }
 
 func newClient(t *testing.T) *client {
@@ -54,6 +69,10 @@ func (c *client) ReadObject(v any) error {
 }
 
 func (c *client) WriteObject(v any) error {
+	if c.failWrites.Load() {
+		return errors.New("broken pipe")
+	}
+
 	encoded, err := json.Marshal(v)
 	if err != nil {
 		return err
@@ -62,6 +81,17 @@ func (c *client) WriteObject(v any) error {
 	var decoded map[string]any
 	if err := json.Unmarshal(encoded, &decoded); err != nil {
 		return err
+	}
+
+	select {
+	case <-c.closed:
+		c.late.Add(1)
+		c.lateMu.Lock()
+		c.lateEvents = append(c.lateEvents, fmt.Sprint(decoded["event"]))
+		c.lateMu.Unlock()
+
+		return nil
+	default:
 	}
 
 	select {
@@ -234,11 +264,11 @@ func TestStackTraceUsesTheCoresCallChain(t *testing.T) {
 	c.await("response", "configurationDone")
 	c.await("event", "stopped")
 
-	// Step over the caller's call boundary and stop at the callee's first
-	// step. The adapter asks the session for the resulting chain; it does not
-	// infer one from the inventory or from ids.
-	c.send(4, "next", map[string]any{"threadId": 1})
-	c.await("response", "next")
+	// Step into the call and stop at the callee's first step. The adapter
+	// asks the session for the resulting chain; it does not infer one from the
+	// inventory or from ids.
+	c.send(4, "stepIn", map[string]any{"threadId": 1})
+	c.await("response", "stepIn")
 	c.await("event", "stopped")
 	c.send(5, "stackTrace", map[string]any{"threadId": 1})
 	trace := c.await("response", "stackTrace")
@@ -283,6 +313,31 @@ func TestStackTraceUsesTheCoresCallChain(t *testing.T) {
 		require.NoError(t, err)
 	case <-time.After(20 * time.Second):
 		t.Fatal("the called run did not finish")
+	}
+}
+
+// TestNextStepsOverACall is the other half of call-aware stepping: over a
+// `call:` step, `next` runs the whole callee and stops at nothing inside it.
+func TestNextStepsOverACall(t *testing.T) {
+	t.Parallel()
+
+	c, finished := called(t)
+	c.send(1, "initialize", map[string]any{"adapterID": "flowstate"})
+	c.await("response", "initialize")
+	c.send(2, "launch", map[string]any{})
+	c.await("response", "launch")
+	c.send(3, "configurationDone", nil)
+	c.await("response", "configurationDone")
+	c.await("event", "stopped")
+
+	c.send(4, "next", map[string]any{"threadId": 1})
+	c.await("response", "next")
+
+	select {
+	case err := <-finished:
+		require.NoError(t, err, "stepping over the only step ran the callee through to the end")
+	case <-time.After(20 * time.Second):
+		t.Fatal("stepping over a call stopped inside the callee")
 	}
 }
 
@@ -915,13 +970,41 @@ func TestARefusedBreakpointSetVerifiesNothing(t *testing.T) {
 	c.await("response", "initialize")
 	c.await("event", "initialized")
 
-	// One past what a session holds, so the set is refused rather than trimmed.
-	asked := make([]map[string]any, 0, flowdebug.MaxBreakpoints+1)
+	// One request past what a session holds fails whole, with one bounded
+	// message rather than a refusal per entry: the entries are the client's to
+	// multiply, and the response must not grow with them.
+	tooMany := make([]map[string]any, 0, flowdebug.MaxBreakpoints+1)
 	for i := range flowdebug.MaxBreakpoints + 1 {
-		asked = append(asked, map[string]any{"name": fmt.Sprintf("step%04d", i)})
+		tooMany = append(tooMany, map[string]any{"name": fmt.Sprintf("step%04d", i)})
 	}
+	c.send(2, "setFunctionBreakpoints", map[string]any{"breakpoints": tooMany})
+	failed := c.await("response", "setFunctionBreakpoints")
+	assert.Equal(t, false, failed["success"])
+	assert.Contains(t, failed["message"], "at most")
+	assert.Nil(t, failed["body"], "a refused oversized set was answered entry by entry")
 
-	c.send(2, "setFunctionBreakpoints", map[string]any{"breakpoints": asked})
+	tooManyLines := make([]map[string]any, 0, flowdebug.MaxBreakpoints+1)
+	for i := range flowdebug.MaxBreakpoints + 1 {
+		tooManyLines = append(tooManyLines, map[string]any{"line": i + 1})
+	}
+	c.send(20, "setBreakpoints", map[string]any{"source": map[string]any{"path": "/w.yaml"}, "breakpoints": tooManyLines})
+	failedLines := c.await("response", "setBreakpoints")
+	assert.Equal(t, false, failedLines["success"])
+	assert.Contains(t, failedLines["message"], "at most")
+	assert.Nil(t, failedLines["body"], "a refused oversized line set was answered entry by entry")
+
+	// A set within the bound that overflows only beside another source's is
+	// refused entry by entry, where a client shows breakpoint state.
+	half := flowdebug.MaxBreakpoints/2 + 1
+	lines := make([]map[string]any, 0, half)
+	for i := range half {
+		lines = append(lines, map[string]any{"line": i + 1})
+	}
+	c.send(21, "setBreakpoints", map[string]any{"source": map[string]any{"path": "/w.yaml"}, "breakpoints": lines})
+	require.Equal(t, true, c.await("response", "setBreakpoints")["success"])
+
+	asked := tooMany[:half]
+	c.send(22, "setFunctionBreakpoints", map[string]any{"breakpoints": asked})
 	answer := c.await("response", "setFunctionBreakpoints")
 	assert.Equal(t, true, answer["success"],
 		"failing the request hides the reason where a client shows breakpoint state")
@@ -934,6 +1017,9 @@ func TestARefusedBreakpointSetVerifiesNothing(t *testing.T) {
 			"breakpoint %d claims to be set from a set the session refused whole", i)
 		require.NotEmpty(t, entry["message"], "breakpoint %d was refused without saying why", i)
 	}
+
+	c.send(23, "setBreakpoints", map[string]any{"source": map[string]any{"path": "/w.yaml"}, "breakpoints": []any{}})
+	require.Equal(t, true, c.await("response", "setBreakpoints")["success"])
 
 	// And nothing was left behind: the refusal happened before the session's
 	// set was touched.
@@ -1128,4 +1214,175 @@ func TestAnUndeclaredBreakpointComesBackUnverified(t *testing.T) {
 		"a breakpoint on an undeclared step claims to be set and will never be taken")
 	assert.Contains(t, missing["message"], `no step named "deploi"`,
 		"the unverified answer must say why, in the words the prompt uses")
+}
+
+// TestBreakpointNumbersGoWithTheirSlots is a client moving one breakpoint
+// across many files: each file's set is bounded, and the numbers of slots a
+// file no longer has are dropped rather than kept for the session's life,
+// while a slot that stays keeps its number.
+func TestBreakpointNumbersGoWithTheirSlots(t *testing.T) {
+	t.Parallel()
+
+	session, err := flowdebug.New(flowdebug.Options{Controlled: true})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+
+	c := newClient(t)
+	t.Cleanup(func() { _ = c.Close() })
+
+	server := flowdap.NewServer(session, c)
+	go func() { _ = server.Serve(t.Context()) }()
+
+	c.send(1, "initialize", map[string]any{"adapterID": "flowstate"})
+	c.await("response", "initialize")
+	c.await("event", "initialized")
+
+	seq := 2
+	set := func(path string, lines ...int) []any {
+		entries := make([]map[string]any, 0, len(lines))
+		for _, line := range lines {
+			entries = append(entries, map[string]any{"line": line})
+		}
+		c.send(seq, "setBreakpoints", map[string]any{"source": map[string]any{"path": path}, "breakpoints": entries})
+		seq++
+		answer := c.await("response", "setBreakpoints")
+		require.Equal(t, true, answer["success"], answer)
+
+		return body(answer)["breakpoints"].([]any)
+	}
+
+	kept := set("/kept.yaml", 3)[0].(map[string]any)["id"]
+	for i := range 2 * flowdebug.MaxBreakpoints {
+		path := fmt.Sprintf("/moving-%d.yaml", i)
+		set(path, 7)
+		set(path)
+	}
+	assert.LessOrEqual(t, flowdap.BreakpointIDs(server), 2,
+		"numbers for slots that are gone were kept for the session's life")
+	assert.Equal(t, kept, set("/kept.yaml", 3)[0].(map[string]any)["id"],
+		"a slot that stayed was renumbered")
+}
+
+// TestARequestIDIsTheAdaptersOwn is an editor reconnecting to a live durable
+// session: its sequence numbers start over, so the adapter's own nonce is what
+// keeps a new movement from reusing an ID the run already answered, while one
+// request keeps a single ID for its retries.
+func TestARequestIDIsTheAdaptersOwn(t *testing.T) {
+	t.Parallel()
+
+	first := flowdap.NewServer(nil, newClient(t))
+	second := flowdap.NewServer(nil, newClient(t))
+
+	assert.Equal(t, flowdap.RequestID(first, 4), flowdap.RequestID(first, 4), "one request's retries must share an ID")
+	assert.NotEqual(t, flowdap.RequestID(first, 4), flowdap.RequestID(second, 4),
+		"two adapters sent the same ID for their fourth request, so a reconnect replays an old receipt")
+	assert.LessOrEqual(t, len(flowdap.RequestID(first, 1<<31)), v1.MaxDebugRequestIDBytes)
+}
+
+// TestEndingServeInterruptsAWriteToAClientThatStoppedReading is a client that
+// keeps its connection but stops reading, so a response blocks while holding
+// the output lock. Ending Serve's context must still end it, rather than wait
+// behind the blocked write to hang up.
+func TestEndingServeInterruptsAWriteToAClientThatStoppedReading(t *testing.T) {
+	t.Parallel()
+
+	synctest.Test(t, func(t *testing.T) {
+		c := newClient(t)
+		server := flowdap.NewServer(nil, c)
+		ctx, cancel := context.WithCancel(t.Context())
+		served := make(chan error, 1)
+		go func() { served <- server.Serve(ctx) }()
+
+		// More requests than the client buffers answers for, none of them
+		// read: once every goroutine is blocked, the adapter is blocked
+		// writing an answer, holding its output lock.
+		for seq := range cap(c.fromAdapter) + 8 {
+			c.send(seq+1, "threads", nil)
+		}
+		synctest.Wait()
+		require.Len(t, c.fromAdapter, cap(c.fromAdapter), "the adapter was not blocked on a write")
+
+		cancel()
+		synctest.Wait()
+		select {
+		case <-served:
+		default:
+			t.Fatal("Serve waited on a blocked write after its context ended")
+		}
+		_ = c.Close()
+	})
+}
+
+// TestAFailedWriteDetachesTheTarget is a client whose output closed while its
+// input stays open: the adapter's next write fails, and the session detaches
+// rather than go on renewing a durable target nobody can hear about.
+func TestAFailedWriteDetachesTheTarget(t *testing.T) {
+	t.Parallel()
+
+	c := newClient(t)
+	t.Cleanup(func() { _ = c.Close() })
+
+	remote := &detachRecorder{closed: make(chan struct{})}
+	server := flowdap.NewServer(nil, c, flowdap.WithAttach(func(context.Context, flowdap.AttachArguments) (*flowdap.Attachment, error) {
+		return &flowdap.Attachment{Target: remote}, nil
+	}))
+	served := make(chan error, 1)
+	go func() { served <- server.Serve(t.Context()) }()
+
+	c.send(1, "initialize", map[string]any{"adapterID": "flowstate"})
+	c.await("response", "initialize")
+	c.send(2, "attach", map[string]any{"workflowId": "wf-1"})
+	c.await("response", "attach")
+
+	c.failWrites.Store(true)
+	c.send(3, "threads", nil)
+
+	select {
+	case <-served:
+	case <-time.After(20 * time.Second):
+		t.Fatal("Serve went on reading after its writes to the client failed")
+	}
+	select {
+	case <-remote.closed:
+	default:
+		t.Fatal("the target was left attached after the client's output was lost")
+	}
+}
+
+// detachRecorder is a durable target that records its detach.
+type detachRecorder struct {
+	closed chan struct{}
+	once   sync.Once
+}
+
+func (d *detachRecorder) Snapshot(context.Context) (*v1.DebugSnapshot, error) {
+	return &v1.DebugSnapshot{Revision: 1, State: v1.DebugRunState_DEBUG_RUN_STATE_RUNNING, Capabilities: v1.DurableDebugCapabilities()}, nil
+}
+
+func (d *detachRecorder) WaitSnapshot(ctx context.Context, _ uint64) (*v1.DebugSnapshot, error) {
+	<-ctx.Done()
+
+	return nil, ctx.Err()
+}
+
+func (d *detachRecorder) Resume(context.Context, *v1.DebugResumeRequest) (*v1.DebugReceipt, error) {
+	return &v1.DebugReceipt{Status: v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_REFUSED}, nil
+}
+
+func (d *detachRecorder) Pause(context.Context, string) (*v1.DebugReceipt, error) {
+	return &v1.DebugReceipt{Status: v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_REFUSED}, nil
+}
+
+func (d *detachRecorder) ReplaceBreakpoints(context.Context, *v1.DebugSetBreakpointsRequest) (*v1.DebugSetBreakpointsResponse, error) {
+	return &v1.DebugSetBreakpointsResponse{Receipt: &v1.DebugReceipt{Status: v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_APPLIED}}, nil
+}
+
+func (d *detachRecorder) Inspect(context.Context, *v1.DebugInspectRequest) (*v1.DebugInspectResponse, error) {
+	return nil, flowdebug.ErrNotPaused
+}
+
+func (d *detachRecorder) Close() error {
+	d.once.Do(func() { close(d.closed) })
+
+	return nil
 }

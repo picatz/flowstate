@@ -370,7 +370,7 @@ func WithTrustedWorkflows(namespace string, workflows ...*v1.Workflow) Option {
 				continue
 			}
 
-			if existing, ok := s.trustedWorkflows[key]; ok && !proto.Equal(existing, workflow) {
+			if existing, ok := s.trustedWorkflows[key]; ok && !sameProgram(existing, workflow) {
 				// Two registrations disagree about one tenant's workflow.
 				// Last-writer-wins here would let a later, weaker copy
 				// replace `manual: denied` or a narrower
@@ -628,7 +628,7 @@ func (s *FlowstateServer) registerTrustedWorkflows(namespace string, workflows [
 			return fmt.Errorf("workflow %q cannot be trusted as a deployment-owned specification "+
 				"because this deployment refuses it: %w", workflow.GetName(), err)
 		}
-		if existing, ok := s.trustedWorkflows[key]; ok && !proto.Equal(existing, workflow) {
+		if existing, ok := s.trustedWorkflows[key]; ok && !sameProgram(existing, workflow) {
 			return fmt.Errorf("workflow %q is already registered for this namespace with a different "+
 				"specification; two deployment-owned copies under one name are two `manual:` policies "+
 				"this server would have to choose between, so serve one of them", workflow.GetName())
@@ -962,6 +962,69 @@ func policyMemoEntries(ctx context.Context, wf *v1.Workflow, inputs map[string]*
 	maps.Copy(entries, debug)
 
 	return entries, nil
+}
+
+// withheldPolicyRefusal is err, a refusal from [policyMemoEntries], with the
+// values of the inputs named in unknown taken out. Resolving a rule's
+// `subject:` refuses a value that is not `<issuer>#<subject>` quoting what it
+// resolved to, which can be a sensitive input's value (#2100).
+//
+// unknown is the sensitive inputs the refusal's reader cannot know are
+// sensitive ([unknownSensitiveInputs]): those a deployment-owned copy declares
+// and the submitter's file does not, or every one for a webhook delivery,
+// whose sender holds no file. The rest the client holds the declarations for,
+// so it redacts them itself, and an operator's `--reveal-sensitive` still
+// shows them, as it does on the local driver.
+func withheldPolicyRefusal(err error, unknown map[string]bool, inputs map[string]*v1.Value) error {
+	if len(unknown) == 0 {
+		return err
+	}
+	sensitive := v1.SensitiveInputValues(inputs, unknown)
+	if sensitive.Empty() {
+		return err
+	}
+	text := sensitive.RedactText(err.Error(),
+		"resolving the declared policy's per-run subjects failed, and the refusal is withheld: "+
+			"a sensitive input could not be enumerated, so no part of it is provably free of one")
+	if text == err.Error() {
+		return err
+	}
+
+	return errors.New(text)
+}
+
+// unknownSensitiveInputs is the sensitive inputs of executed whose values a
+// client that submitted submitted, with the arguments sent, cannot redact in a
+// refusal of a run of executed. Nil when executed is what was submitted.
+//
+// An input is the client's to redact only when its own file declares it
+// sensitive and it holds the value: it sent the value, or its file's default
+// is the one executed binds. A deployment-owned copy's own default for an
+// input the caller left out is a value the caller never held, so it is
+// withheld here even though the caller's file declares the input sensitive.
+func unknownSensitiveInputs(executed, submitted *v1.Workflow, sent map[string]*v1.Value, trusted bool) map[string]bool {
+	if !trusted {
+		return nil
+	}
+	known := v1.SensitiveInputNames(submitted)
+	defaults := map[string]*v1.Value{}
+	for _, declared := range submitted.GetDeclaredInputs() {
+		defaults[declared.GetName()] = declared.GetDefault()
+	}
+	unknown := map[string]bool{}
+	for _, declared := range executed.GetDeclaredInputs() {
+		name := declared.GetName()
+		if !declared.GetSensitive() {
+			continue
+		}
+		_, held := sent[name]
+		if known[name] && (held || proto.Equal(defaults[name], declared.GetDefault())) {
+			continue
+		}
+		unknown[name] = true
+	}
+
+	return unknown
 }
 
 // workflowNameMemoKey is the memo field recording a workflow's own declared
@@ -1445,7 +1508,7 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 		return nil, err
 	}
 
-	memo, temporal, options, err := s.prepareCreate(ctx, identity, workflow, inputs)
+	memo, temporal, options, err := s.prepareCreate(ctx, identity, workflow, inputs, unknownSensitiveInputs(workflow, submitted, req.Msg.GetInputs(), trusted))
 	if err != nil {
 		return nil, err
 	}
@@ -1779,7 +1842,22 @@ func specificationAsSubmitted(submitted, executed *v1.Workflow) bool {
 	}
 	got := proto.Clone(executed).(*v1.Workflow)
 	got.ResolvedTaskCapabilities = nil
-	return proto.Equal(submitted, got)
+	return sameProgram(submitted, got)
+}
+
+// sameProgram reports whether two specifications are one program: equal in
+// everything but the root's [v1.Workflow.SourceDigest], which records which
+// bytes a client compiled the program from rather than anything the program
+// does. A deployment-owned copy compiled from other bytes, or from none, is
+// still the program a client submitted when nothing else differs.
+func sameProgram(a, b *v1.Workflow) bool {
+	if a.GetSourceDigest() == b.GetSourceDigest() {
+		return proto.Equal(a, b)
+	}
+	a, b = proto.CloneOf(a), proto.CloneOf(b)
+	a.SourceDigest, b.SourceDigest = "", ""
+
+	return proto.Equal(a, b)
 }
 
 // validateSubmission is the submission-validation pipeline shared by
@@ -2030,8 +2108,12 @@ func (s *FlowstateServer) pluginCatalogSnapshot() *v1.PluginCatalog {
 //
 // The caller still has to set options.ID: this only fills in everything that
 // does not depend on which workflow id was chosen.
+//
+// unknown names the sensitive inputs a refusal to resolve the declared
+// policies withholds here rather than leaving to the client
+// ([withheldPolicyRefusal]).
 func (s *FlowstateServer) prepareCreate(
-	ctx context.Context, identity *v1.WorkloadIdentity, wf *v1.Workflow, inputs map[string]*v1.Value,
+	ctx context.Context, identity *v1.WorkloadIdentity, wf *v1.Workflow, inputs map[string]*v1.Value, unknown map[string]bool,
 ) (map[string]any, client.Client, client.StartWorkflowOptions, error) {
 	// The declared signal policy, resolved against inputs and frozen into the
 	// memo now, exactly as the tenant is a few lines below — see
@@ -2045,6 +2127,7 @@ func (s *FlowstateServer) prepareCreate(
 	maps.Copy(memo, starterMemoEntry(identity))
 	signalEntry, err := policyMemoEntries(ctx, wf, inputs)
 	if err != nil {
+		err = withheldPolicyRefusal(err, unknown, inputs)
 		// Two different failures share this one call, and they get the same
 		// answer for different reasons. CheckSignalPolicies and v1.Validate
 		// above already accepted the specification's shape, so an encoding

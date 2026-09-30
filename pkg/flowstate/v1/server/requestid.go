@@ -85,6 +85,15 @@ func newSubmissionKey(namespace, requestID string, submitted *v1.Workflow, input
 	// request id itself, the reason, the entity key that decides the address).
 	// Deterministic, because [RunRequest.inputs] is a map and a map's wire order
 	// is otherwise whatever the encoder chose that time.
+	//
+	// The root's source digest is left out too: it records which bytes a
+	// client compiled the program from, not what the program does, so a retry
+	// from an edited comment, or from the same bytes compiled without a file,
+	// is the same submission ([sameProgram]).
+	if submitted.GetSourceDigest() != "" {
+		submitted = proto.CloneOf(submitted)
+		submitted.SourceDigest = ""
+	}
 	encoded, err := proto.MarshalOptions{Deterministic: true}.Marshal(&v1.RunRequest{
 		Workflow: submitted,
 		Inputs:   inputs,

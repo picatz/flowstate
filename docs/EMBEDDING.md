@@ -244,6 +244,91 @@ time moved, which stub answered it, scripted signals with their sender, the
 `switch:` arm taken — through the subtest's own log, so `go test` shows it
 exactly when the CLI would: on a failing case, and under `-v` for every case.
 
+## Debugging an embedded run
+
+`embed.Debug` starts a workflow under the step [debugger](DEBUGGING.md), in
+this process, with the same registry, egress, secret and clock rules
+`RunLocal` applies — no listener, no CLI, and nothing serialized. It returns
+once the run is under way. The `*embed.Debugging` it returns is the same local
+session `flow run local --debug`, `flow dap` and the MCP sessions drive, so a
+snapshot, a breakpoint state or an inspection means here what it means there:
+
+```go
+debugging, err := embed.Debug(ctx, workflow, embed.DebugOptions{
+	RunOptions:  embed.RunOptions{Tasks: tasks},
+	Continue:    true, // run until something stops it; false holds at the first step
+	Breakpoints: []*v1.DebugBreakpoint{{Step: "orders/charge", Condition: "amount > 500"}},
+})
+if err != nil {
+	return err // a breakpoint that does not resolve or compile is refused here
+}
+
+// A revision can move before the hold is recorded, so wait through them.
+held, err := debugging.WaitSnapshot(ctx, 0)
+for err == nil && held.GetState() == v1.DebugRunState_DEBUG_RUN_STATE_RUNNING {
+	held, err = debugging.WaitSnapshot(ctx, held.GetRevision())
+}
+if err != nil {
+	return err
+}
+if held.GetState() != v1.DebugRunState_DEBUG_RUN_STATE_HELD {
+	return errors.New("the run ended without stopping at the breakpoint")
+}
+answer, err := debugging.Inspect(ctx, &v1.DebugInspectRequest{
+	Revision: held.GetRevision(), Expression: "amount * 2",
+})
+if err != nil {
+	return err
+}
+next, err := debugging.Driver().Do(ctx, "next") // or Resume with a typed action
+if err != nil {
+	return err
+}
+
+_ = debugging.Close() // detach: breakpoints stop holding, the run finishes
+outputs, err := debugging.Wait(ctx)
+```
+
+`Debugging` embeds the session, so `Snapshot`, `WaitSnapshot`, `Resume`,
+`Pause`, `ReplaceBreakpoints` and `Inspect` are the typed contract, and
+`Driver()` takes the debugger's command lines — `next`, `break charge if amount
+> 500`, `inspect steps.fetch` — for a program that would rather speak those.
+Each call returns a fresh driver, which adopts the breakpoints already set —
+through `DebugOptions`, `ReplaceBreakpoints` or another driver — before a line
+changes the set, so `break` adds to them rather than replacing them.
+`Wait` returns what `RunLocal` would have; a run held at a stop does not finish
+until something moves it or `Close` detaches. `Cancel`, or cancelling `ctx`,
+ends the run. `DebugOptions.Output` receives the session's narration, and
+`SourceMap` relates steps to lines when a program has one.
+
+A debugger is a reveal: the narration and every inspection show values
+unredacted. So `Debug` refuses a workflow that declares a sensitive input or
+output — itself or in a workflow it calls — unless `DebugOptions.RevealSensitive`
+authorizes it, as `flow run local --debug` and `flow dap` refuse one without
+`--reveal-sensitive`.
+
+A custom task is opaque to a debugger: the run stops before it and after it,
+and nothing in between. `v1.NoteTask` is how its author says what happened in
+between:
+
+```go
+Fn: func(ctx context.Context, inputs map[string]*v1.Value, _ *v1.Scope) (*v1.Node_Outputs, error) {
+	amount := inputs["amount"].GetLiteral().GetInt64Value()
+	v1.NoteTask(ctx, fmt.Sprintf("authorizing %d", amount))
+	// ...
+}
+```
+
+A note reaches the session as an observation (`charge: authorizing 900`) and
+its `Output`, and is a no-op when nobody is debugging. It is presentation, not
+data: it never enters the step's outputs or the run's history, it is cut to 1
+KiB, and it is rendered through the session's redaction — which is a transcript
+control, not a boundary, so a task must not write a secret into one. Notes are
+local-only; a durable run does not carry them.
+
+`Example_debug` in `pkg/flowstate/embed/debug_example_test.go` is the whole
+program, run as a test.
+
 ## What is not curated here
 
 - **`call:` across embedder files.** Compiling from bytes has no directory to

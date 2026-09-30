@@ -1,0 +1,15 @@
+# The case `flow test --debug` steps through in this example's README. It pins
+# what the walkthrough inspects: one amount over the threshold, flagged, and a
+# receipt read back from the called workflow.
+edition: v2026.3
+defaults:
+  stubs:
+    - task: log
+      returns: {}
+tests:
+  - name: one order over the threshold is flagged
+    workflow: ./workflow.yaml
+    expect:
+      ran: [orders, flagged, stock, fraud, receipt, done]
+      outputs:
+        flagged: [900]

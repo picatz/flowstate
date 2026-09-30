@@ -468,8 +468,10 @@ var ErrExpressionTooLarge = errors.New("flowdebug: expression too large")
 // is the answer: a debug adapter renders one pane per group, and a person
 // reading `scope` is looking for which *kind* of name they can reach.
 type Names struct {
-	// Group is the root the names hang from — `steps`, `vars`, the workflow's
-	// declared vars, and the bare bindings an autopsy adds.
+	// Group is the label a reader sees, named for how the names are reached:
+	// `steps`, `inputs`, `vars` (the workflow's declared `vars:`), `run`,
+	// `trigger`, `locals` (a loop's `as:` and a step's own `vars:`, bound
+	// bare), and `bound` (the bare bindings an autopsy adds).
 	Group string
 
 	// Names are the members of that group, sorted as the prompt lists them,
