@@ -71,7 +71,7 @@ func awaitNextStop(t *testing.T, session *flowdebug.Session, after uint64) *v1.D
 		require.NoError(t, err)
 		switch snapshot.GetState() {
 		case v1.DebugRunState_DEBUG_RUN_STATE_HELD, v1.DebugRunState_DEBUG_RUN_STATE_COMPLETED,
-			v1.DebugRunState_DEBUG_RUN_STATE_FAILED:
+			v1.DebugRunState_DEBUG_RUN_STATE_FAILED, v1.DebugRunState_DEBUG_RUN_STATE_DETACHED:
 			return snapshot
 		}
 		after = snapshot.GetRevision()
