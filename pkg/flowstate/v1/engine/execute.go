@@ -906,6 +906,13 @@ func (e *executor) recordOutcome(node *v1.Node, err error) error {
 	return nil
 }
 
+// switchArmResumeChange is the [workflow.GetVersion] changeID guarding a
+// `switch:` arm starting at its first step after a continuation taken inside a
+// callee. An engine before it started the arm at the callee's next-step index,
+// and a history it recorded has the arm's earlier steps unrun; replaying that
+// into an arm that runs them would issue commands the history lacks.
+const switchArmResumeChange = "engine.switchArmStartsAtItsFirstStep"
+
 // runNodeWithVars executes a node with its own `vars:` block bound.
 //
 // The scope is swapped rather than threaded through runNode, because everything below
@@ -1285,6 +1292,24 @@ func (e *executor) runSwitch(node *v1.Node, sw *v1.Switch, depth, susp int) erro
 	outer := e.debugSegments
 	e.debugSegments = e.debugSegmentsUnder(v1.DebugSegmentKind_DEBUG_SEGMENT_KIND_CASE, node, v1.SwitchArmIndex(sw, body))
 	defer func() { e.debugSegments = outer }()
+
+	// An arm runs on this executor, one level down, and this executor may still
+	// hold the position a continuation was taken at inside a callee: frames
+	// [call, {next step of the callee}]. Read as the arm's own, that starts the
+	// arm at the callee's step index and skips the ones before it. An arm is
+	// never resumed into (a run does not continue as new inside one), so it
+	// starts at its first step. Asked only where a saved position lies below
+	// the arm, so a run that never continued as new inside a container records
+	// no marker. That is any container, not only a call: a finished loop's
+	// frame reads as zero and starts the arm correctly, but clearing it too is
+	// the one rule that cannot hand a stale frame to a step entered at the
+	// arm's start. A history recorded before the marker started the arm where
+	// the callee stopped, and replays that way.
+	if depth+1 < len(e.resume) && workflow.GetVersion(e.ctx, switchArmResumeChange, workflow.DefaultVersion, 1) != workflow.DefaultVersion {
+		resume := e.resume
+		e.resume = nil
+		defer func() { e.resume = resume }()
+	}
 
 	if err := e.runNodes(body, depth+1, susp+1); err != nil {
 		// Wrapped so the selection survives the failure: failedAt reads the
