@@ -1,0 +1,63 @@
+edition: v2026.3
+
+# Proves the workflow hands sql.exec the shape its own header promises, in CI,
+# with no database and without the sql plugin installed. The stub's `where:` is
+# the assertion: it selects the call only if the four statements arrive in order,
+# with the amount, both account ids and the idempotency key bound as parameters
+# in the positions the placeholders name. A workflow that moved a parameter, or
+# spliced a value into the SQL text, would match no stub, and flow test refuses an
+# unstubbed task rather than running it.
+#
+# What this cannot prove is that the transaction is idempotent on a retry; that
+# is a property of the database and the statements together, and
+# plugins/sql/exec_test.go runs this exact pattern twice against a real sqlite
+# database to show it.
+tests:
+  - name: sends four statements in one call, every value bound rather than spliced
+    workflow: ./transfer.yaml
+    inputs:
+      from_account_id: 7
+      to_account_id: 9
+      amount_cents: 2500
+      idempotency_key: req-2026-0917-a
+    secrets:
+      env:SQL_DSN: postgres://not-a-real-dsn
+    stubs:
+      - task: sql.exec
+        where: >-
+          inputs.engine == 'ENGINE_POSTGRES'
+          && inputs.statements.size() == 4
+          && inputs.statements[0].params == ['req-2026-0917-a']
+          && inputs.statements[1].params == [2500, 7, 'req-2026-0917-a']
+          && inputs.statements[2].params == [2500, 9, 'req-2026-0917-a']
+          && inputs.statements[3].params == ['req-2026-0917-a']
+          && inputs.statements.all(s, !s.sql.contains('req-2026-0917-a') && !s.sql.contains('2500'))
+        returns:
+          statement_count: 4
+          total_rows_affected: 4
+      - step: announce
+        returns: {}
+    expect:
+      ran: [transfer, announce]
+      outputs:
+        rows_affected: 4
+
+  - name: a converged retry reports only the flag-set as a changed row
+    workflow: ./transfer.yaml
+    inputs:
+      from_account_id: 7
+      to_account_id: 9
+      amount_cents: 2500
+      idempotency_key: req-2026-0917-a
+    secrets:
+      env:SQL_DSN: postgres://not-a-real-dsn
+    stubs:
+      - task: sql.exec
+        returns:
+          statement_count: 4
+          total_rows_affected: 1
+      - step: announce
+        returns: {}
+    expect:
+      outputs:
+        rows_affected: 1

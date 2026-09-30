@@ -1,0 +1,28 @@
+edition: v2026.3
+
+# Proves the one non-idempotent write goes to the issue the caller named, carrying
+# the caller's text and a credential, in CI with no network and without the github
+# plugin installed. The stub selects the call on all four values, so a workflow
+# that commented on another issue or dropped the token would match nothing.
+tests:
+  - name: comments on the named issue and returns where to see it
+    workflow: ./issue-comment.yaml
+    inputs:
+      owner: octocat
+      repo: hello-world
+      number: 42
+      body: "Thanks - fixed in the next release."
+    secrets:
+      github:token: not-a-real-token
+    stubs:
+      - task: github.issue_comment
+        where: >-
+          inputs.owner == 'octocat' && inputs.repo == 'hello-world'
+          && inputs.number == 42 && inputs.body == 'Thanks - fixed in the next release.'
+        returns:
+          comment_id: 1001
+          html_url: https://github.com/octocat/hello-world/issues/42#issuecomment-1001
+    expect:
+      ran: [comment]
+      outputs:
+        comment_url: https://github.com/octocat/hello-world/issues/42#issuecomment-1001

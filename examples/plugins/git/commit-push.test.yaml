@@ -1,0 +1,58 @@
+edition: v2026.3
+
+# Proves the write is shaped the way the plugin's own contract needs, in CI with no
+# network, no credential and without the git plugin installed. The stub selects the
+# call only if the change is computed against the base_ref the caller named, lands
+# on the named branch, and carries exactly one file at the fixed path: one
+# activity, content in and content out, never a workspace handed between steps.
+tests:
+  - name: pushes one file at the fixed path against the named base
+    workflow: ./commit-push.yaml
+    inputs:
+      url: https://github.com/example-org/example-repo.git
+      branch: main
+      base_ref: 0123456789abcdef0123456789abcdef01234567
+      message: update the flowstate example
+      content: "# hello\n"
+    secrets:
+      git:token: not-a-real-token
+    stubs:
+      - task: git.commit_push
+        where: >-
+          inputs.base_ref == '0123456789abcdef0123456789abcdef01234567'
+          && inputs.branch == 'main'
+          && inputs.message == 'update the flowstate example'
+          && inputs.files.size() == 1
+          && inputs.files['FLOWSTATE_EXAMPLE.md'] == '# hello\n'
+        returns:
+          sha: fedcba9876543210fedcba9876543210fedcba98
+          landed_previously: false
+          changed: true
+    expect:
+      ran: [commit]
+      outputs:
+        sha: fedcba9876543210fedcba9876543210fedcba98
+        landed_previously: false
+        changed: true
+
+  - name: a safe retry reports the commit an earlier attempt already made
+    workflow: ./commit-push.yaml
+    inputs:
+      url: https://github.com/example-org/example-repo.git
+      branch: main
+      base_ref: 0123456789abcdef0123456789abcdef01234567
+      message: update the flowstate example
+      content: "# hello\n"
+    secrets:
+      git:token: not-a-real-token
+    stubs:
+      - task: git.commit_push
+        returns:
+          sha: fedcba9876543210fedcba9876543210fedcba98
+          landed_previously: true
+          changed: true
+    expect:
+      outputs:
+        sha: fedcba9876543210fedcba9876543210fedcba98
+        landed_previously: true
+        changed: true

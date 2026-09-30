@@ -1,0 +1,40 @@
+edition: v2026.3
+
+# Proves the workflow reads what vcs.log and vcs.diff return, in CI, with no
+# network and without the vcs plugin installed. Each stub returns the shape the
+# real task produces - a commit is a message, so on the workflow side it is a map
+# keyed by that message's own field names - which keeps the stub from being a test
+# of something production cannot do.
+tests:
+  - name: reports the newest commit and how many files the last commit touched
+    workflow: ./workflow.yaml
+    stubs:
+      - step: history
+        returns:
+          commits:
+            - sha: b1946ac92492d2347c6235b4d2611184
+              message: Merge pull request #6 from Spaceghost/patch-1
+              parent_hashes: [7fd1a60b01f91b314f59955a4e4d4e80]
+              author: {name: The Octocat, email: octocat@github.com, when: "2012-03-06T15:06:50Z"}
+              committer: {name: The Octocat, email: octocat@github.com, when: "2012-03-06T15:06:50Z"}
+            - sha: 7fd1a60b01f91b314f59955a4e4d4e80
+              message: Initial commit
+              parent_hashes: []
+              author: {name: The Octocat, email: octocat@github.com, when: "2011-01-26T19:01:12Z"}
+              committer: {name: The Octocat, email: octocat@github.com, when: "2011-01-26T19:01:12Z"}
+          truncated: false
+      - step: changes
+        returns:
+          files:
+            - path: README
+              status: modified
+            - path: CONTRIBUTING.md
+              status: added
+      # The log step is a built-in; flow test never lets any task run for real.
+      - step: announce
+        returns: {}
+    expect:
+      ran: [history, changes, announce]
+      outputs:
+        latest_commit_message: Merge pull request #6 from Spaceghost/patch-1
+        files_changed: 2

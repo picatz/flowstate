@@ -1,0 +1,32 @@
+edition: v2026.3
+
+# Proves the query is parameterized and its rows are usable by a later step's CEL,
+# in CI, with no database and without the sql plugin installed. The stub selects
+# the call only if the threshold reaches the database as a bound parameter and a
+# row bound is set, so a workflow that spliced the value into the query text, or
+# dropped the required max_rows, would match no stub.
+tests:
+  - name: binds the threshold as a parameter and passes the typed rows through
+    workflow: ./workflow.yaml
+    secrets:
+      env:SQL_DSN: postgres://not-a-real-dsn
+    stubs:
+      - task: sql.query
+        where: >-
+          inputs.params == [0]
+          && inputs.max_rows == 1000
+          && !inputs.query.contains('0 ORDER')
+        returns:
+          row_count: 2
+          rows:
+            - {id: 1, name: operating, balance_cents: 0}
+            - {id: 2, name: payroll, balance_cents: 125000}
+      - step: announce
+        returns: {}
+    expect:
+      ran: [accounts, announce]
+      outputs:
+        row_count: 2
+        accounts:
+          - {id: 1, name: operating, balance_cents: 0}
+          - {id: 2, name: payroll, balance_cents: 125000}
