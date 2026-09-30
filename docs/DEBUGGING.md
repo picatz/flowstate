@@ -200,6 +200,20 @@ operand made it false. An `if:` that raises an error instead of answering fails
 its step, and the step list and observations show that step as failed rather
 than as one the run never reached.
 
+A step that finished says what it produced, in the same words on both drivers
+(up to each one's bound on an observation, which cuts a very long output at a
+different length) and whether or not the run was ever held at it:
+
+```text
+price -> value: 4000
+charge completed
+```
+
+The values are the step's recorded outputs, not a second evaluation. What a
+hold at that step would withhold of `inspect` is withheld here: a workflow's
+`sensitive:` inputs, what a callee declares sensitive, and what a call handed
+back, by value and by text, before the account is bounded.
+
 `catch uncaught` stops at a step whose failure its own step does not tolerate
 with `continue_on_error:`, after the failure is recorded and before it
 propagates; `catch all` stops at tolerated failures too. A container that

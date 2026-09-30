@@ -1,6 +1,7 @@
 package conformance
 
 import (
+	"slices"
 	"strings"
 	"time"
 
@@ -710,6 +711,181 @@ func FailedSensitiveCases() []FailedSensitiveCase {
 		Quoted: "must satisfy",
 		Secret: secret,
 	}}
+}
+
+// OutputCase is a run both drivers debug through while its steps finish. Each
+// driver must give the same account of every step that produced outputs: the
+// values it produced, named and in name order (`flowdebug.FinishedText`),
+// withheld as a hold at that step would withhold them.
+type OutputCase struct {
+	// Name labels the case.
+	Name string
+
+	// Workflow is the program, with no `debug:` policy: the durable caller
+	// adds the one its harness attaches under. Its first step always runs,
+	// so both drivers hold there before the resume.
+	Workflow *v1.Workflow
+
+	// Finished is the account of each step that finished, by step id, which
+	// the case keeps unique across the workflows it calls.
+	Finished map[string]string
+
+	// Secret, when set, is a value a callee declares sensitive, which no
+	// account may show.
+	Secret string
+}
+
+// Problems is how a driver's observations differ from the case's account: a
+// step whose account is not the expected sentence, one missing, one extra, and
+// any account that shows the case's secret. Empty means the driver agrees.
+func (c OutputCase) Problems(observations []*v1.DebugObservation) []string {
+	var problems []string
+	finished := map[string]string{}
+	for _, observation := range observations {
+		if observation.GetKind() == v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_FINISHED {
+			finished[observation.GetStepId()] = observation.GetText()
+		}
+		if c.Secret != "" && strings.Contains(observation.GetText(), c.Secret) {
+			problems = append(problems, observation.GetStepId()+"'s account showed the secret")
+		}
+	}
+	for id, want := range c.Finished {
+		if got, ok := finished[id]; !ok {
+			problems = append(problems, "no account of "+id+", want "+want)
+		} else if got != want {
+			problems = append(problems, "account of "+id+" is "+got+", want "+want)
+		}
+	}
+	for id := range finished {
+		if _, ok := c.Finished[id]; !ok {
+			problems = append(problems, "unexpected account of "+id+": "+finished[id])
+		}
+	}
+	slices.Sort(problems)
+
+	return problems
+}
+
+// OutputCases is the corpus for [OutputCase].
+func OutputCases() []OutputCase {
+	// Longer than any bound an observation is cut to, so a driver that cut
+	// the account before withholding it would keep the value's start.
+	longSecret := "hunter2-output-secret-" + strings.Repeat("x", 1024)
+
+	return []OutputCase{
+		{
+			Name: "a step's account carries the outputs it produced",
+			Workflow: &v1.Workflow{
+				Name:    "output-plain",
+				Profile: v1.CurrentProfile,
+				Steps: []*v1.Node{
+					says("first", "one"),
+					{Id: "price", Kind: &v1.Node_Value{Value: v1.NewExpr("40 + 2")}},
+					{Id: "shape", Kind: &v1.Node_Value{Value: v1.NewExpr(`{"tags": ["a", "b"], "count": 2}`)}},
+					{Id: "background", Async: true, Kind: says("background", "two").GetKind()},
+				},
+			},
+			Finished: map[string]string{
+				"first":      "first completed",
+				"price":      "price -> value: 42",
+				"shape":      `shape -> value: {"count":2,"tags":["a","b"]}`,
+				"background": "background completed",
+			},
+		},
+		{
+			// A failure the run tolerates is reported as one, and as nothing
+			// else: the step did not finish (Copilot, #2233).
+			Name: "a tolerated async failure is not also reported as finished",
+			Workflow: &v1.Workflow{
+				Name:    "output-async-tolerated",
+				Profile: v1.CurrentProfile,
+				Steps: []*v1.Node{
+					says("first", "one"),
+					{
+						Id:     "flaky",
+						Async:  true,
+						Policy: &v1.StepPolicy{ContinueOnError: true},
+						Kind: &v1.Node_Task{Task: &v1.Task{
+							Name:   "log",
+							Inputs: map[string]*v1.Value{"message": v1.NewExpr(`{"a": 1}["missing"]`)},
+						}},
+					},
+					says("last", "two"),
+				},
+			},
+			Finished: map[string]string{
+				"first": "first completed",
+				"last":  "last completed",
+			},
+		},
+		{
+			// #2213's shape: the callee declares the input sensitive, hands it
+			// back as an output it does not, and the caller copies it on. None
+			// of the three accounts may show it, in the callee or after it.
+			Name: "a step inside a callee, its call, and a copy of what it handed back withhold the callee's sensitive input",
+			Workflow: &v1.Workflow{
+				Name:    "output-sensitive",
+				Profile: v1.CurrentProfile,
+				Steps: []*v1.Node{
+					says("first", "one"),
+					{Id: "nested", Kind: &v1.Node_Call{Call: &v1.Call{
+						Workflow: &v1.Workflow{
+							Name:           "child",
+							Profile:        v1.CurrentProfile,
+							DeclaredInputs: []*v1.InputDeclaration{{Name: "api_key", Type: v1.InputDeclaration_TYPE_STRING, Sensitive: true}},
+							Steps: []*v1.Node{
+								{Id: "header", Kind: &v1.Node_Value{Value: v1.NewExpr(`"Bearer " + inputs.api_key`)}},
+							},
+							DeclaredOutputs: []*v1.OutputDeclaration{{Name: "key", Value: v1.NewExpr("inputs.api_key")}},
+						},
+						Arguments: map[string]*v1.Value{"api_key": v1.NewLiteral(longSecret)},
+					}}},
+					{Id: "copied", Kind: &v1.Node_Value{Value: v1.NewExpr(`"Bearer " + steps.nested.key`)}},
+				},
+			},
+			Finished: map[string]string{
+				"first":  "first completed",
+				"header": `header -> value: "Bearer [redacted]"`,
+				"nested": `nested -> key: "[redacted]"`,
+				"copied": `copied -> value: "Bearer [redacted]"`,
+			},
+			// Its first runes, which an account cut before it was withheld
+			// would keep.
+			Secret: longSecret[:24],
+		},
+		{
+			// A short leaf of a sensitive structure is found by value: no
+			// substring of the rendered line finds `7` in `{"pin":7}`.
+			// (`who` is not the structure's, so it shows.)
+			Name: "a step inside a callee withholds a sensitive structure's leaves by value",
+			Workflow: &v1.Workflow{
+				Name:    "output-sensitive-struct",
+				Profile: v1.CurrentProfile,
+				Steps: []*v1.Node{
+					says("first", "one"),
+					{Id: "nested", Kind: &v1.Node_Call{Call: &v1.Call{
+						Workflow: &v1.Workflow{
+							Name:           "child",
+							Profile:        v1.CurrentProfile,
+							DeclaredInputs: []*v1.InputDeclaration{{Name: "creds", Type: v1.InputDeclaration_TYPE_STRUCT, Sensitive: true}},
+							Steps: []*v1.Node{
+								{Id: "echo", Kind: &v1.Node_Value{Value: v1.NewExpr(`{"who": "ops", "pin": inputs.creds.pin}`)}},
+							},
+						},
+						Arguments: map[string]*v1.Value{"creds": v1.NewExpr(`{"pin": 7, "token": "hunter2-struct"}`)},
+					}}},
+				},
+			},
+			Finished: map[string]string{
+				"first": "first completed",
+				// The key too: a sensitive structure's field names are what its
+				// set withholds.
+				"echo":   `echo -> value: {"[redacted]":"[redacted]","who":"ops"}`,
+				"nested": "nested completed",
+			},
+			Secret: "hunter2-struct",
+		},
+	}
 }
 
 // GuardCase is a run both drivers debug through while its steps' `if:`s
