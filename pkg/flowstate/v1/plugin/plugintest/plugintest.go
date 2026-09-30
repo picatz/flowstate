@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
@@ -50,12 +49,7 @@ func Build(t testing.TB, pkg, name string) string {
 	ctx, cancel := context.WithTimeout(context.Background(), buildTimeout)
 	defer cancel()
 
-	args := []string{"build"}
-	if os.Getenv("FLOWSTATE_COVERDIR") != "" {
-		// Counters a separately compiled plugin writes only when it was built to.
-		args = append(args, "-cover")
-	}
-	args = append(args, "-o", output, pkg)
+	args := []string{"build", "-o", output, pkg}
 	if out, err := exec.CommandContext(ctx, "go", args...).CombinedOutput(); err != nil {
 		t.Fatalf("plugintest: building plugin %q: %v\n%s", pkg, err, out)
 	}
@@ -141,9 +135,6 @@ func Launch(t testing.TB, dir string, opts ...Option) *Session {
 	for _, opt := range opts {
 		opt(&o)
 	}
-	if coverDir := os.Getenv("FLOWSTATE_COVERDIR"); coverDir != "" {
-		o.config.Env = append(o.config.Env, "GOCOVERDIR="+coverDir)
-	}
 
 	host, err := plugin.NewHost(o.config)
 	if err != nil {
@@ -209,8 +200,9 @@ func (s *Session) Call(ctx context.Context, name string, inputs map[string]any) 
 	}
 
 	ctx = flowstatev1.ContextWithTaskRuntime(ctx, s.runtime)
-	ctx = plugin.NewContextWithIdentity(ctx, &flowstatev1.WorkloadIdentity{Subject: s.subject, Namespace: s.ns})
-	out, err := def.Fn(ctx, flowstatev1.NewNamedValues(inputs), &flowstatev1.Scope{})
+	identity := &flowstatev1.WorkloadIdentity{Subject: s.subject, Namespace: s.ns}
+	ctx = plugin.NewContextWithIdentity(ctx, identity)
+	out, err := def.Fn(ctx, flowstatev1.NewNamedValues(inputs), &flowstatev1.Scope{Identity: identity})
 	if err != nil {
 		return Outputs{}, err
 	}

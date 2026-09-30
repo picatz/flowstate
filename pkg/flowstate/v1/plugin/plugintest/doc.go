@@ -29,7 +29,7 @@
 //		s.Conform(t)
 //	}
 //
-// # What [Session.Conform] checks
+// # What Conform checks
 //
 // The contract a plugin makes with the engine beyond "it runs": that what it
 // advertises is complete enough to validate, document, complete in an editor,
