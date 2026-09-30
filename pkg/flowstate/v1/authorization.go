@@ -125,6 +125,19 @@ var authorizationActionBindings = []*AuthorizationActionBinding{
 		Parent: AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_DEBUG,
 		Rpcs:   []string{"DebugInspect"},
 	},
+	{
+		// The codec server's two routes, whose suffixes Temporal's remote
+		// codec protocol fixes (go.temporal.io/sdk@v1.48.0 converter/codec.go).
+		// Neither has a parent: reading a run through Get and reading its raw
+		// history through a decoder are different disclosures to different
+		// audiences, and neither implies the other.
+		Action:        AuthorizationAction_AUTHORIZATION_ACTION_PAYLOAD_DECODE,
+		HttpEndpoints: []string{"/decode"},
+	},
+	{
+		Action:        AuthorizationAction_AUTHORIZATION_ACTION_PAYLOAD_ENCODE,
+		HttpEndpoints: []string{"/encode"},
+	},
 }
 
 // authorizationActionScopePrefix is what an enum value name carries in front
@@ -250,4 +263,18 @@ func AuthorizationActionForMCPTool(tool string) (AuthorizationAction, error) {
 
 	return AuthorizationAction_AUTHORIZATION_ACTION_UNSPECIFIED,
 		fmt.Errorf("no authorization action names the mcp tool %q", tool)
+}
+
+// AuthorizationActionForHTTPEndpoint maps an HTTP endpoint outside the RPC
+// service, by its bound path suffix, to the action it requires. Unknown
+// endpoints fail closed.
+func AuthorizationActionForHTTPEndpoint(endpoint string) (AuthorizationAction, error) {
+	for _, binding := range authorizationActionBindings {
+		if slices.Contains(binding.GetHttpEndpoints(), endpoint) {
+			return binding.GetAction(), nil
+		}
+	}
+
+	return AuthorizationAction_AUTHORIZATION_ACTION_UNSPECIFIED,
+		fmt.Errorf("no authorization action names the http endpoint %q", endpoint)
 }

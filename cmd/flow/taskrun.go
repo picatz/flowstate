@@ -85,7 +85,7 @@ func runTaskRun(cmd *cobra.Command, args []string) error {
 	if err := applyTaskPolicy(cmd); err != nil {
 		return err
 	}
-	if _, err := localPayloadCodec(); err != nil {
+	if _, err := localPayloadCodec(cmd.Context()); err != nil {
 		return err
 	}
 

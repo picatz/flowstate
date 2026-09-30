@@ -1284,9 +1284,11 @@ where references are allowed and how a deployment resolves them.
 `sensitive: true` on an input or output withholds it from displays: `flow get`,
 `flow watch`, test output, and the MCP server show `[redacted: <name>]` unless
 the reader passes `--reveal-sensitive`. It is display etiquette, not
-protection: the value is stored in the run's history like any other. The
-validator refuses a `log:` message that prints a sensitive input directly, and a
-wait `prompt:` that includes one at all.
+protection: the value is stored in the run's history like any other, in the
+clear unless the deployment encrypts history with a payload keyring
+([Payload encryption](ENCRYPTION.md)). The validator refuses a `log:` message
+that prints a sensitive input directly, and a wait `prompt:` that includes one
+at all.
 
 ## Plugins
 

@@ -25,10 +25,13 @@
 package strictyaml
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 
 	"github.com/goccy/go-yaml"
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 )
 
 // ErrDecoderStopped is wrapped by the error [Unmarshal] returns for a decoder
@@ -59,4 +62,34 @@ func Unmarshal(data []byte, into any, opts ...yaml.DecodeOption) (err error) {
 // startup rather than silently dropping a restriction.
 func UnmarshalStrict(data []byte, into any) error {
 	return Unmarshal(data, into, yaml.Strict())
+}
+
+// UnmarshalProto decodes a YAML (or JSON) document into a protobuf message:
+// the form every new operator configuration takes, because its shape, rules,
+// and documentation belong in the schema under proto/, once (AGENTS.md,
+// invariant 1). TestNewConfigurationIsDefinedInTheSchema refuses a new decode
+// into a hand-written Go type.
+//
+// The document is decoded with the same containment as [Unmarshal], then read
+// through protojson, which is strict: an unknown field, a value of the wrong
+// type, or a duplicate key is an error. Field names are the schema's, in
+// either the proto or the JSON spelling. It does not run protovalidate, which
+// lives above this package; call v1.Validate on the result.
+func UnmarshalProto(data []byte, into proto.Message) error {
+	var doc any
+	if err := Unmarshal(data, &doc); err != nil {
+		return err
+	}
+	if doc == nil {
+		// An empty document is the zero message, which the caller's
+		// validation then judges; protojson would refuse "null" outright.
+		proto.Reset(into)
+		return nil
+	}
+
+	encoded, err := json.Marshal(doc)
+	if err != nil {
+		return fmt.Errorf("the document does not map onto %s: %w", into.ProtoReflect().Descriptor().FullName(), err)
+	}
+	return protojson.Unmarshal(encoded, into)
 }

@@ -62,6 +62,11 @@ import (
 // process launched, which is what a process-wide catalog did before #777.
 // An embedder running two worker fleets with different plugin sets gets one
 // answer per worker, because the answer travels with the registration.
+//
+// A worker whose client encrypts payloads also passes that client's data
+// converter, added with [engine.TaskRuntimeConfig.WithDataConverter], so the
+// interpreter decodes signals with the same keys; docs/ENCRYPTION.md has the
+// whole setup.
 func RunDurable(w worker.Registry, tasks *Tasks, runtime ...engine.TaskRuntimeConfig) error {
 	if tasks != nil {
 		if missing, ok := tasks.installedExactly(); !ok {

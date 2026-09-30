@@ -90,8 +90,8 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 		{
 			name:    "FLOWSTATE_AUTH_POLICY",
 			value:   "unset",
-			purpose: "Default for `--auth-policy`: on `flow server` and `flow mcp serve` the trust policy naming which issuers and claims to accept; on `flow worker`, `flow run local` and `flow mcp` the same file's secrets rules, authorizing worker-side resolution.",
-			read:    "cmd/flow/main.go, cmd/flow/mcp.go, cmd/flow/mcpserve.go, cmd/flow/serverdev.go, cmd/flow/taskrun.go",
+			purpose: "Default for `--auth-policy`: on `flow server`, `flow mcp serve` and `flow codec serve` the trust policy naming which issuers and claims to accept; on `flow worker`, `flow run local` and `flow mcp` the same file's secrets rules, authorizing worker-side resolution.",
+			read:    "cmd/flow/codecserve.go, cmd/flow/main.go, cmd/flow/mcp.go, cmd/flow/mcpserve.go, cmd/flow/serverdev.go, cmd/flow/taskrun.go",
 		},
 		{
 			name:    "FLOWSTATE_BACKGROUND",
@@ -104,6 +104,12 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 			value:   "unset",
 			purpose: "Default for `flow worker --build-id`: this worker binary's version identifier, unique per build. Required alongside `--temporal-deployment-name`.",
 			read:    "cmd/flow/main.go",
+		},
+		{
+			name:    "FLOWSTATE_CODEC_RESOURCE",
+			value:   "unset",
+			purpose: "Default for `--codec-resource` on `flow codec serve`: the canonical resource URI required in every bearer token's `aud` claim there, so a token minted for another Flowstate surface cannot be spent to decode history. Required whenever `--auth-policy` trusts a `kind: oidc` issuer; distinct from the RPC and MCP resources.",
+			read:    "cmd/flow/codecserve.go",
 		},
 		{
 			name:    "FLOWSTATE_CREDENTIAL_SOURCE",
@@ -620,6 +626,32 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 				"`parentbased_traceidratio`, a remote-sampler endpoint for `jaeger_remote`, ignored by every " +
 				"other sampler. Meaningless without `OTEL_TRACES_SAMPLER` naming a sampler that reads it.",
 			read: "go.opentelemetry.io/otel/sdk/trace (consulted only when WithSampler is absent)",
+		},
+		{
+			name:  "FLOWSTATE_CODEC_ADDRESS",
+			value: "`127.0.0.1:8089`",
+			purpose: "Default for `flow codec serve --listen`: where the remote payload codec listens. Loopback by " +
+				"default, so the unconfigured server is reachable from this machine's browser only; any other " +
+				"address needs TLS (or `--tls-terminated-upstream`) and a trust policy.",
+			read: "cmd/flow/codecserve.go",
+		},
+		{
+			name:  "FLOWSTATE_PAYLOAD_KEYRING",
+			value: "unset",
+			purpose: "Default for `--payload-keyring` on `flow server` and `flow worker`, and read by `flow server dev`, " +
+				"`flow run local` and `flow codec status`: a payload keyring file naming each Temporal namespace's " +
+				"encryption keys. Set, every payload written to history is sealed under its namespace's current key " +
+				"and a namespace the keyring does not cover is refused. Unset, payloads are written unencrypted. " +
+				"See docs/ENCRYPTION.md.",
+			read: "cmd/flow/codec.go",
+		},
+		{
+			name:  "FLOWSTATE_REQUIRE_PAYLOAD_ENCRYPTION",
+			value: "unset",
+			purpose: "Default for `--require-payload-encryption`: refuse to start without a payload keyring, so a " +
+				"deployment that lost its keyring variable cannot come up writing plaintext. A value that does not " +
+				"parse as a boolean requires encryption rather than waiving it.",
+			read: "cmd/flow/codec.go",
 		},
 		{
 			name:  "FLOWSTATE_TASK_QUEUE_PREFIX",

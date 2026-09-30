@@ -9,6 +9,7 @@ import (
 	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
 	"go.opentelemetry.io/otel/trace"
+	"go.temporal.io/sdk/converter"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -26,11 +27,12 @@ import (
 // which the last worker to be constructed won. One thing carrying everything one
 // worker owns cannot disagree with itself about which worker it belongs to.
 type TaskRuntimeConfig struct {
-	store     *secrets.Store
-	policy    *auth.SecretPolicy
-	broker    *auth.Broker
-	catalog   *v1.PluginCatalog
-	taskNames []string
+	store         *secrets.Store
+	policy        *auth.SecretPolicy
+	broker        *auth.Broker
+	catalog       *v1.PluginCatalog
+	dataConverter converter.DataConverter
+	taskNames     []string
 }
 
 // NewTaskRuntimeConfig validates and assembles worker task capabilities.
@@ -62,6 +64,30 @@ func NewTaskRuntimeConfig(store *secrets.Store, policy *auth.SecretPolicy, broke
 // launched and can only be wrong by being somebody else's.
 func (c TaskRuntimeConfig) WithPluginCatalog(catalog *v1.PluginCatalog) TaskRuntimeConfig {
 	c.catalog = catalog
+
+	return c
+}
+
+// WithDataConverter returns a copy carrying the data converter this worker's
+// Temporal client was built with, which the interpreter must decode signals
+// with.
+//
+// It exists for the reason [TaskRuntimeConfig.WithPluginCatalog] does. The
+// interpreter replaces the workflow context's converter to read a signal in
+// either wire shape #194 straddles (see withSignalDeliveryCompat), and the SDK
+// offers no getter for the converter it is replacing, so the interpreter has to
+// be told. It used to be told through a process global, which the last worker
+// constructed won: two embedded workers configured with different payload
+// codecs would each decode the other's signals with the wrong keys, and a
+// signal that fails to decode is not an error but an approval silently lost.
+// Carried here, it is bound into the workflow registration of the one worker
+// it belongs to. See [Register].
+//
+// Pass the converter from the same payloadcodec.Config the worker's client
+// was built with, for the client's own namespace (its ForNamespace).
+// Nil keeps the SDK default, which is what a deployment with no codec writes.
+func (c TaskRuntimeConfig) WithDataConverter(dc converter.DataConverter) TaskRuntimeConfig {
+	c.dataConverter = dc
 
 	return c
 }

@@ -366,6 +366,9 @@ const (
 	// or an input would not bind. The one refusal a key holder is told about
 	// precisely, and recorded under their trigger's identity for that reason.
 	AuditDenyCode_AUDIT_DENY_CODE_BINDING_FAILED AuditDenyCode = 15
+	// The caller exceeded the codec server's per-caller request rate. Refused
+	// before the body is read or a key is touched.
+	AuditDenyCode_AUDIT_DENY_CODE_RATE_LIMITED AuditDenyCode = 16
 )
 
 // Enum value maps for AuditDenyCode.
@@ -387,6 +390,7 @@ var (
 		13: "AUDIT_DENY_CODE_TOO_MANY_SIGNATURES",
 		14: "AUDIT_DENY_CODE_PAYLOAD_TOO_LARGE",
 		15: "AUDIT_DENY_CODE_BINDING_FAILED",
+		16: "AUDIT_DENY_CODE_RATE_LIMITED",
 	}
 	AuditDenyCode_value = map[string]int32{
 		"AUDIT_DENY_CODE_UNSPECIFIED":               0,
@@ -405,6 +409,7 @@ var (
 		"AUDIT_DENY_CODE_TOO_MANY_SIGNATURES":       13,
 		"AUDIT_DENY_CODE_PAYLOAD_TOO_LARGE":         14,
 		"AUDIT_DENY_CODE_BINDING_FAILED":            15,
+		"AUDIT_DENY_CODE_RATE_LIMITED":              16,
 	}
 )
 
@@ -513,6 +518,11 @@ type AuditRecord struct {
 	// untrusted tools/call string before lookup. Arguments, prompts and results
 	// are deliberately absent from this record.
 	McpTool string `protobuf:"bytes,9,opt,name=mcp_tool,json=mcpTool,proto3" json:"mcp_tool,omitempty"`
+	// The HTTP endpoint decided about, for an operation that is neither an RPC
+	// nor an MCP tool: the codec server's "/decode" and "/encode". The route's
+	// fixed suffix, resolved against the authorization bindings, never the
+	// request path a caller sent.
+	HttpEndpoint string `protobuf:"bytes,21,opt,name=http_endpoint,json=httpEndpoint,proto3" json:"http_endpoint,omitempty"`
 	// The worker-side seam that made the decision, for an enforcement record.
 	// UNSPECIFIED on a control-plane record, where action names the operation
 	// instead. See "The worker's half" above.
@@ -737,6 +747,13 @@ func (x *AuditRecord) GetMcpTool() string {
 	return ""
 }
 
+func (x *AuditRecord) GetHttpEndpoint() string {
+	if x != nil {
+		return x.HttpEndpoint
+	}
+	return ""
+}
+
 func (x *AuditRecord) GetEnforcementPoint() AuditEnforcementPoint {
 	if x != nil {
 		return x.EnforcementPoint
@@ -898,7 +915,7 @@ var File_flowstate_v1_audit_proto protoreflect.FileDescriptor
 
 const file_flowstate_v1_audit_proto_rawDesc = "" +
 	"\n" +
-	"\x18flowstate/v1/audit.proto\x12\fflowstate.v1\x1a\x1bbuf/validate/validate.proto\x1a flowstate/v1/authorization.proto\x1a\x1bflowstate/v1/identity.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xe4\x0e\n" +
+	"\x18flowstate/v1/audit.proto\x12\fflowstate.v1\x1a\x1bbuf/validate/validate.proto\x1a flowstate/v1/authorization.proto\x1a\x1bflowstate/v1/identity.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\x86\x11\n" +
 	"\vAuditRecord\x12C\n" +
 	"\x06action\x18\x01 \x01(\x0e2!.flowstate.v1.AuthorizationActionB\b\xbaH\x05\x82\x01\x02\x10\x01R\x06action\x12C\n" +
 	"\bdecision\x18\x02 \x01(\x0e2\x1b.flowstate.v1.AuditDecisionB\n" +
@@ -912,7 +929,9 @@ const file_flowstate_v1_audit_proto_rawDesc = "" +
 	"decided_at\x18\a \x01(\v2\x1a.google.protobuf.TimestampB\x06\xbaH\x03\xc8\x01\x01R\tdecidedAt\x12B\n" +
 	"\tdeny_code\x18\b \x01(\x0e2\x1b.flowstate.v1.AuditDenyCodeB\b\xbaH\x05\x82\x01\x02\x10\x01R\bdenyCode\x12\xbc\x01\n" +
 	"\bmcp_tool\x18\t \x01(\tB\xa0\x01\xbaH\x9c\x01\xba\x01\x98\x01\n" +
-	"\x15audit_record.mcp_tool\x128mcp_tool must be empty or a bounded registered tool name\x1aEthis == '' || (size(this) <= 64 && this.matches('^[a-z][a-z0-9_]*$'))R\amcpTool\x12Z\n" +
+	"\x15audit_record.mcp_tool\x128mcp_tool must be empty or a bounded registered tool name\x1aEthis == '' || (size(this) <= 64 && this.matches('^[a-z][a-z0-9_]*$'))R\amcpTool\x12\xca\x01\n" +
+	"\rhttp_endpoint\x18\x15 \x01(\tB\xa4\x01\xbaH\xa0\x01\xba\x01\x9c\x01\n" +
+	"\x1aaudit_record.http_endpoint\x124http_endpoint must be empty or a bound endpoint path\x1aHthis == '' || (size(this) <= 64 && this.matches('^/[a-z][a-z0-9/_-]*$'))R\fhttpEndpoint\x12Z\n" +
 	"\x11enforcement_point\x18\f \x01(\x0e2#.flowstate.v1.AuditEnforcementPointB\b\xbaH\x05\x82\x01\x02\x10\x01R\x10enforcementPoint\x12\x1c\n" +
 	"\x04rule\x18\r \x01(\tB\b\xbaH\x05r\x03(\x80\x02R\x04rule\x12\x18\n" +
 	"\aattempt\x18\x0e \x01(\rR\aattempt\x12)\n" +
@@ -927,9 +946,9 @@ const file_flowstate_v1_audit_proto_rawDesc = "" +
 	"deliveryId\x12\x16\n" +
 	"\x06joined\x18\x12 \x01(\bR\x06joined\x12\x14\n" +
 	"\x05count\x18\x13 \x01(\rR\x05count\x124\n" +
-	"\x05debug\x18\x14 \x01(\v2\x1e.flowstate.v1.AuditDebugDetailR\x05debug:\xcf\x04\xbaH\xcb\x04\x1a\xd0\x01\n" +
-	"\x16audit_record.operation\x12Uexactly one of rpc, mcp_tool or enforcement_point must identify the audited operation\x1a_[this.rpc != '', this.mcp_tool != '', this.enforcement_point != 0].filter(set, set).size() == 1\x1a\xca\x01\n" +
-	"\x13audit_record.action\x12taction names the authorization vocabulary and is set for an rpc or mcp_tool decision, never for an enforcement point\x1a=(this.action != 0) == (this.rpc != '' || this.mcp_tool != '')\x1a\xa8\x01\n" +
+	"\x05debug\x18\x14 \x01(\v2\x1e.flowstate.v1.AuditDebugDetailR\x05debug:\xa4\x05\xbaH\xa0\x05\x1a\xf9\x01\n" +
+	"\x16audit_record.operation\x12dexactly one of rpc, mcp_tool, http_endpoint or enforcement_point must identify the audited operation\x1ay[this.rpc != '', this.mcp_tool != '', this.http_endpoint != '', this.enforcement_point != 0].filter(set, set).size() == 1\x1a\xf6\x01\n" +
+	"\x13audit_record.action\x12\x83\x01action names the authorization vocabulary and is set for an rpc, mcp_tool or http_endpoint decision, never for an enforcement point\x1aY(this.action != 0) == (this.rpc != '' || this.mcp_tool != '' || this.http_endpoint != '')\x1a\xa8\x01\n" +
 	"\x18audit_record.dispatch_id\x12=dispatch_id is empty or identifies an attempted task dispatch\x1aMthis.dispatch_id == '' || (this.enforcement_point == 1 && this.attempt != 0u)\"\xde\x01\n" +
 	"\x10AuditDebugDetail\x12'\n" +
 	"\n" +
@@ -960,7 +979,7 @@ const file_flowstate_v1_audit_proto_rawDesc = "" +
 	"\x1aAUDIT_RESOURCE_KIND_SECRET\x10\x05\x12 \n" +
 	"\x1cAUDIT_RESOURCE_KIND_ENDPOINT\x10\x06\x12)\n" +
 	"%AUDIT_RESOURCE_KIND_CREDENTIAL_TARGET\x10\a\x12%\n" +
-	"!AUDIT_RESOURCE_KIND_WEBHOOK_ROUTE\x10\b*\xe4\x04\n" +
+	"!AUDIT_RESOURCE_KIND_WEBHOOK_ROUTE\x10\b*\x86\x05\n" +
 	"\rAuditDenyCode\x12\x1f\n" +
 	"\x1bAUDIT_DENY_CODE_UNSPECIFIED\x10\x00\x12(\n" +
 	"$AUDIT_DENY_CODE_NAMESPACE_UNROUTABLE\x10\x01\x12&\n" +
@@ -978,7 +997,8 @@ const file_flowstate_v1_audit_proto_rawDesc = "" +
 	"\x1dAUDIT_DENY_CODE_REPLAY_WINDOW\x10\f\x12'\n" +
 	"#AUDIT_DENY_CODE_TOO_MANY_SIGNATURES\x10\r\x12%\n" +
 	"!AUDIT_DENY_CODE_PAYLOAD_TOO_LARGE\x10\x0e\x12\"\n" +
-	"\x1eAUDIT_DENY_CODE_BINDING_FAILED\x10\x0fB\xa9\x01\n" +
+	"\x1eAUDIT_DENY_CODE_BINDING_FAILED\x10\x0f\x12 \n" +
+	"\x1cAUDIT_DENY_CODE_RATE_LIMITED\x10\x10B\xa9\x01\n" +
 	"\x10com.flowstate.v1B\n" +
 	"AuditProtoP\x01Z8github.com/picatz/flowstate/pkg/flowstate/v1;flowstatev1\xa2\x02\x03FXX\xaa\x02\fFlowstate.V1\xca\x02\fFlowstate\\V1\xe2\x02\x18Flowstate\\V1\\GPBMetadata\xea\x02\rFlowstate::V1b\x06proto3"
 

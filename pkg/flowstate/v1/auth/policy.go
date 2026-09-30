@@ -536,8 +536,10 @@ type TrustedIssuer struct {
 
 	// Actions optionally restricts callers admitted by this entry to exact
 	// actions from Flowstate's canonical scope vocabulary. Omitted preserves the
-	// pre-authorization behavior (all actions); [] grants none. Role remains an
-	// audit label and does not grant authority by itself.
+	// pre-authorization behavior for the RPC actions (all of them); [] grants
+	// none. Disclosure actions such as payload.decode are granted only when
+	// listed, whatever this holds. Role remains an audit label and does not
+	// grant authority by itself.
 	Actions ActionScopes `json:"actions,omitzero" yaml:"actions,omitempty"`
 
 	// Namespace assigns every caller this entry admits to one tenant.

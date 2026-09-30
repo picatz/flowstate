@@ -1,10 +1,12 @@
 package engine
 
 import (
+	"context"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 	"go.temporal.io/sdk/converter"
+	"go.temporal.io/sdk/workflow"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
@@ -182,4 +184,40 @@ func TestSignalCompatConverterFallsThroughForEverythingElse(t *testing.T) {
 	var n int
 	require.NoError(t, compat.FromPayload(intPayload, &n))
 	require.Equal(t, 42, n)
+}
+
+// boundConverter is a [workflow.ContextAware] converter that reports what
+// binding it answered.
+type boundConverter struct {
+	converter.DataConverter
+	bound bool
+}
+
+func (b *boundConverter) WithWorkflowContext(workflow.Context) converter.DataConverter {
+	return &boundConverter{DataConverter: b.DataConverter, bound: true}
+}
+
+func (b *boundConverter) WithContext(context.Context) converter.DataConverter {
+	return &boundConverter{DataConverter: b.DataConverter, bound: true}
+}
+
+// TestSignalCompatConverterForwardsTheWorkflowContext: the SDK binds a
+// context-aware converter to each workflow, and the wrapper must pass that on,
+// or the codec converter's pause of the deadlock detector around a key
+// provider call never learns which workflow to pause.
+func TestSignalCompatConverterForwardsTheWorkflowContext(t *testing.T) {
+	t.Parallel()
+
+	wrapper := &signalDeliveryCompatConverter{DataConverter: &boundConverter{DataConverter: converter.GetDefaultDataConverter()}}
+	var aware workflow.ContextAware = wrapper
+	got, ok := aware.WithWorkflowContext(nil).(*signalDeliveryCompatConverter)
+	require.True(t, ok, "the binding must stay the compat wrapper")
+	require.True(t, got.DataConverter.(*boundConverter).bound, "the wrapped converter was not bound")
+
+	got, ok = aware.WithContext(t.Context()).(*signalDeliveryCompatConverter)
+	require.True(t, ok)
+	require.True(t, got.DataConverter.(*boundConverter).bound)
+
+	plain := newCompatConverter()
+	require.Same(t, plain, plain.WithWorkflowContext(nil), "a converter with nothing to bind is kept as is")
 }

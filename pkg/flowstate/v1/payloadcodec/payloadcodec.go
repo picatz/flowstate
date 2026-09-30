@@ -103,15 +103,33 @@
 package payloadcodec
 
 import (
+	"errors"
 	"fmt"
+	"maps"
+	"slices"
 
 	commonpb "go.temporal.io/api/common/v1"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/converter"
 	"go.temporal.io/sdk/temporal"
+	"go.temporal.io/sdk/workflow"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
+
+// ErrUnavailable is a codec that could not decode or encode for want of
+// something outside the process, such as a key provider that did not answer,
+// rather than because the payload is wrong. A codec's own error for that case
+// matches it with [errors.Is], so a caller can tell a transient refusal from a
+// corrupt payload without knowing which codec is configured.
+var ErrUnavailable = errors.New("payload codec: unavailable")
+
+// ErrNotReadableHere is a codec that could not decode a payload because this
+// process lacks something another may have: a key it does not hold, or an
+// envelope version this build does not know, as during a rotation or an
+// upgrade rolled out one process at a time. Like [ErrUnavailable], it says
+// nothing is wrong with the payload.
+var ErrNotReadableHere = errors.New("payload codec: not readable by this process")
 
 // KeyIDMetadataKey is the payload metadata entry carrying the id of the key a
 // payload was encrypted under. One name, owned here, written by every codec and
@@ -364,7 +382,108 @@ func IsNull(c Codec) bool {
 // converter, which stays the SDK default.
 type Config struct {
 	// Codec encrypts payloads. Nil means [Null].
+	//
+	// When Namespaces is set, Codec is instead what reads across all of them:
+	// the codec a process uses to decode what several namespaces wrote, which
+	// may refuse to encode anything. See [Config.ForNamespace].
 	Codec Codec
+
+	// Namespaces, when non-empty, is a codec per Temporal namespace, so each
+	// namespace's history is sealed under its own keys. A client is built with
+	// the entry for the namespace it is dialed for, which is trusted
+	// configuration rather than anything a caller or a payload says, and a
+	// namespace with no entry is refused rather than left unencrypted.
+	Namespaces map[string]Codec
+}
+
+// ForNamespace is the configuration for a client dialed for one Temporal
+// namespace.
+//
+// Without per-namespace codecs it is c itself. With them it is that
+// namespace's codec, or an error: a process configured to encrypt per
+// namespace that dials one nobody configured must not fall through to
+// plaintext, nor to another namespace's keys.
+func (c Config) ForNamespace(namespace string) (Config, error) {
+	if len(c.Namespaces) == 0 {
+		return c, nil
+	}
+	codec, ok := c.Namespaces[namespace]
+	if !ok || codec == nil {
+		return Config{}, fmt.Errorf(
+			"payload codec: no keys are configured for Temporal namespace %q, and this deployment encrypts per "+
+				"namespace: add the namespace to the keyring, or dial one that is in it", namespace)
+	}
+	return Config{Codec: codec}, nil
+}
+
+// ForWriting is [Config.ForNamespace] for a process that writes history: a
+// client, or a worker's interpreter. It also refuses a namespace whose codec
+// is [DecodeOnly], such as a recovery keyring's, which [Config.Validate]
+// accepts because reading is all a codec server needs of it: a writer built
+// with one would start, then fail its first submission and leave running
+// workflows retrying tasks.
+func (c Config) ForWriting(namespace string) (Config, error) {
+	one, err := c.ForNamespace(namespace)
+	if err != nil {
+		return Config{}, err
+	}
+	if reader, ok := one.Codec.(DecodeOnly); ok && reader.DecodeOnly() {
+		return Config{}, fmt.Errorf("payload codec: Temporal namespace %q is decode-only in the keyring (it names no "+
+			"current key), so nothing can write to it: name a current key, or use this keyring only with "+
+			"`flow codec serve` and `flow codec status`", namespace)
+	}
+	return one, nil
+}
+
+// CanWrite reports whether any process could write history with c: it
+// encrypts nothing, or at least one of its codecs is not [DecodeOnly]. A
+// keyring for which it is false is a recovery keyring, usable only to read.
+func (c Config) CanWrite() bool {
+	if !c.Enabled() {
+		return true
+	}
+	if len(c.Namespaces) == 0 {
+		reader, ok := c.Codec.(DecodeOnly)
+		return !ok || !reader.DecodeOnly()
+	}
+	for _, codec := range c.Namespaces {
+		if reader, ok := codec.(DecodeOnly); !ok || !reader.DecodeOnly() {
+			return true
+		}
+	}
+	return false
+}
+
+// Refusing is the slot for a client dialed for a namespace this deployment
+// holds no keys for but must still construct: every Encode and Decode fails,
+// naming the namespace, so nothing reaches that namespace's history in
+// plaintext and nothing is read from it as though it were protected. It is
+// for a client nothing is expected to use, such as a tenancy pool's fallback
+// when every tenant is mapped elsewhere; a client that is used should be
+// refused at startup by [Config.ForNamespace] instead.
+func Refusing(namespace string) Config {
+	return Config{Codec: refusingCodec{namespace: namespace}}
+}
+
+type refusingCodec struct{ namespace string }
+
+func (refusingCodec) Name() string         { return "refusing" }
+func (refusingCodec) CurrentKeyID() string { return "" }
+func (refusingCodec) MaxEncodedSize(plain int) int {
+	return plain
+}
+
+func (r refusingCodec) Encode([]*commonpb.Payload) ([]*commonpb.Payload, error) {
+	return nil, r.refusal()
+}
+
+func (r refusingCodec) Decode([]*commonpb.Payload) ([]*commonpb.Payload, error) {
+	return nil, r.refusal()
+}
+
+func (r refusingCodec) refusal() error {
+	return fmt.Errorf("payload codec: no keys are configured for Temporal namespace %q, so nothing is written "+
+		"to or read from it; add it to the keyring if it is meant to be used", r.namespace)
 }
 
 // codec answers with the null codec rather than nil, so no caller here has to.
@@ -460,7 +579,14 @@ func (c Config) DataConverter() converter.DataConverter {
 		// deployment hands its codec.
 		return serializer
 	}
-	return converter.NewCodecDataConverter(serializer, c.codec())
+	// Workflow code decodes through this converter too, and a codec may call
+	// a key provider. That call is bounded by the codec's own timeout, which
+	// may exceed the deadlock detector's budget; a provider answering within
+	// its timeout must not be mistaken for workflow code that stopped yielding.
+	// And a payload the codec cannot read here fails the run rather than being
+	// taken for a corrupt one: see [inWorkflowConverter].
+	return codecConverter{DataConverter: workflow.DataConverterWithoutDeadlockDetection(
+		converter.NewCodecDataConverter(serializer, c.codec()))}
 }
 
 // FailureConverter returns the failure converter that must accompany
@@ -506,7 +632,33 @@ func (c Config) Apply(opts *client.Options) {
 // Called where configuration is loaded rather than where a payload is encoded,
 // which is the rule this repo applies to every policy surface: a codec that
 // cannot come up must stop the process, not fail the first run that reaches it.
+//
+// With per-namespace codecs, every namespace's codec is checked as though it
+// were the only one, and the cross-namespace reader must be a real codec: a
+// deployment that encrypts per namespace and reads its own records back in
+// plaintext has encrypted nothing it reads.
 func (c Config) Validate() error {
+	if len(c.Namespaces) > 0 {
+		if !c.Enabled() || c.codec().Name() == "" {
+			return fmt.Errorf("payload codec: per-namespace codecs need a named reader codec beside them, " +
+				"to decode what every namespace wrote")
+		}
+		for _, ns := range slices.Sorted(maps.Keys(c.Namespaces)) {
+			one, err := c.ForNamespace(ns)
+			if err != nil {
+				return err
+			}
+			if !one.Enabled() {
+				return fmt.Errorf("payload codec: namespace %q is configured with the null codec, beside "+
+					"namespaces that encrypt", ns)
+			}
+			if err := one.Validate(); err != nil {
+				return fmt.Errorf("namespace %q: %w", ns, err)
+			}
+		}
+		return nil
+	}
+
 	codec := c.codec()
 	if codec.Name() == "" {
 		return fmt.Errorf("payload codec: a codec must name itself, for diagnostics")
@@ -515,6 +667,18 @@ func (c Config) Validate() error {
 		return err
 	}
 	return checkRunStateFits(codec)
+}
+
+// DecodeOnly is implemented by a codec that holds no key to write with, such
+// as a recovery keyring's: its Encode refuses every payload, so it writes
+// nothing a key id would have to attribute, and [Config.Validate] does not ask
+// it for one.
+//
+// Optional, unlike [Codec]'s methods, because leaving it out fails closed: a
+// codec that does not say it is decode-only is asked for a current key id and
+// refused without one.
+type DecodeOnly interface {
+	DecodeOnly() bool
 }
 
 // checkKeyID refuses a codec whose current key id is missing or unspellable,
@@ -534,6 +698,9 @@ func checkKeyID(c Config) error {
 	id := codec.CurrentKeyID()
 
 	if !c.Enabled() {
+		return nil
+	}
+	if reader, ok := codec.(DecodeOnly); ok && reader.DecodeOnly() {
 		return nil
 	}
 

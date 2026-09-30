@@ -52,7 +52,9 @@ never sent over plain `http://` except to loopback.
 ### `sensitive:` is not a secret
 
 An input or output declared `sensitive: true` is still an ordinary value,
-stored in the run's history in the clear. The flag controls display: the CLI,
+stored in the run's history like any other: in the clear, unless the deployment
+encrypts history with a payload keyring ([Payload encryption](ENCRYPTION.md)),
+and then sealed along with everything else. The flag controls display: the CLI,
 test output, and the MCP server show `[redacted: <name>]` unless the reader
 passes `--reveal-sensitive`. Use a secret reference for anything that must stay
 out of history.

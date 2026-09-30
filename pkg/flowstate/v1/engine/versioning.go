@@ -5,6 +5,7 @@ import (
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"go.temporal.io/sdk/activity"
+	"go.temporal.io/sdk/converter"
 	"go.temporal.io/sdk/worker"
 	"go.temporal.io/sdk/workflow"
 )
@@ -123,14 +124,14 @@ import (
 // that can hold registrations can be passed one — including a test environment
 // wrapping a real worker.
 func Register(w worker.Registry, runtime ...TaskRuntimeConfig) {
-	RegisterWorkflows(w)
-
-	w.RegisterActivity(Task)
-	w.RegisterActivity(TaskInScope)
 	configured := TaskRuntimeConfig{}
 	if len(runtime) > 0 {
 		configured = runtime[0]
 	}
+	RegisterWorkflows(w, configured)
+
+	w.RegisterActivity(Task)
+	w.RegisterActivity(TaskInScope)
 	// Frozen when this worker is registered, after its built-ins and plugin
 	// tasks have been installed. Activities compare against this worker-owned
 	// snapshot rather than reading a mutable process registry during replay.
@@ -167,6 +168,12 @@ func Register(w worker.Registry, runtime ...TaskRuntimeConfig) {
 	w.RegisterActivity(TaskWithPrev)
 }
 
+// RunWorkflowType is the Temporal workflow type every run of this interpreter
+// has: the name [RegisterWorkflows] registers it under, and the name every
+// history in flight records. It is [Run]'s own function name, and stays that
+// even though what is registered is [Run] bound to a worker's converter.
+const RunWorkflowType = "Run"
+
 // WorkflowRegistry is the workflow half of [worker.Registry].
 //
 // It exists because the other thing that has to hold this package's workflow
@@ -199,8 +206,21 @@ type WorkflowRegistry interface {
 // nothing is registered there on purpose. The trade is that every run's
 // WorkflowType is "Run" — see docs/ARCHITECTURE.md, "One interpreter, not a
 // workflow type per workload", for what carries a workload's own name instead.
-func RegisterWorkflows(r WorkflowRegistry) {
-	r.RegisterWorkflowWithOptions(Run, workflow.RegisterOptions{
+//
+// The function registered is [Run] bound to the data converter a runtime
+// carries ([TaskRuntimeConfig.WithDataConverter]), under Run's own name, so
+// history that names "Run" replays against it unchanged. With no runtime, or
+// one carrying no converter, it is [Run] itself.
+func RegisterWorkflows(r WorkflowRegistry, runtime ...TaskRuntimeConfig) {
+	var dc converter.DataConverter
+	if len(runtime) > 0 {
+		dc = runtime[0].dataConverter
+	}
+	r.RegisterWorkflowWithOptions(runWith(dc), workflow.RegisterOptions{
+		// Named explicitly: a closure's derived name is not "Run", and "Run"
+		// is what every history in flight says.
+		Name: RunWorkflowType,
+
 		// Pinned, so an in-flight run is never handed to a different interpreter
 		// than the one that has been executing it. On a worker that has not opted
 		// into versioning this is inert: the SDK records it and the server has no

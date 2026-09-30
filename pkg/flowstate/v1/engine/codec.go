@@ -1,14 +1,11 @@
 package engine
 
 import (
-	"sync/atomic"
-
 	"go.temporal.io/sdk/converter"
-
-	"github.com/picatz/flowstate/pkg/flowstate/v1/payloadcodec"
 )
 
-// The interpreter's copy of the process's data converter, and why it needs one.
+// orDefaultConverter is the converter workflow-side code decodes history with,
+// given the one a worker was registered with.
 //
 // # The hole this closes
 //
@@ -23,16 +20,16 @@ import (
 // [withSignalDeliveryCompat]'s own comment warns. An approval would be silently
 // lost on every encrypted deployment.
 //
-// # Why a process value rather than a parameter
+// # Why it is bound at registration
 //
 // The workflow-side converter is worker configuration, and the Go SDK carries it
 // on the workflow context, but it exposes no public getter, only
-// [workflow.WithDataConverter] to replace it (go.temporal.io/sdk@v1.47.0
-// workflow/workflow_options.go:48). So the wrapper cannot ask the context what
-// it is about to override. Until the SDK offers a getter, or the interpreter is
-// restructured so the converter reaches [runWorkflow] some other way, the honest
-// options are a process value set where the worker is built, or a bypass. This
-// is the first.
+// [workflow.WithDataConverter] to replace it (go.temporal.io/sdk@v1.48.0
+// workflow/workflow_options.go). So the wrapper cannot ask the context what it is
+// about to override. It is told instead, by [Register] binding the worker's
+// converter into the workflow function it registers under the name "Run"
+// ([TaskRuntimeConfig.WithDataConverter]). An earlier version kept it in a
+// process global, which two embedded workers with different codecs overwrote.
 //
 // # Why this is replay-safe
 //
@@ -43,31 +40,9 @@ import (
 // SDK's converter too, and it fails loudly at the decode rather than quietly at a
 // different branch. Invariant 4's rule is about the interpreter's decisions being
 // a pure function of history; a decoder is upstream of that.
-var configuredConverter atomic.Pointer[converter.DataConverter]
-
-// UseDataConverter tells the interpreter which data converter the worker is
-// built with.
-//
-// Called once, at worker construction, before [Register], and from nowhere else.
-// A deployment that never calls it gets [converter.GetDefaultDataConverter],
-// which is what every deployment had before payload codecs existed.
-func UseDataConverter(dc converter.DataConverter) {
-	if dc == nil {
-		configuredConverter.Store(nil)
-		return
-	}
-	configuredConverter.Store(&dc)
-}
-
-// UseCodec is [UseDataConverter] spelled in terms of the codec slot, so a caller
-// wiring a worker never has to build the converter itself and never has a chance
-// to pair the codec converter with a plain failure converter.
-func UseCodec(cfg payloadcodec.Config) { UseDataConverter(cfg.DataConverter()) }
-
-// interpreterDataConverter is what workflow-side code decodes history with.
-func interpreterDataConverter() converter.DataConverter {
-	if dc := configuredConverter.Load(); dc != nil {
-		return *dc
+func orDefaultConverter(dc converter.DataConverter) converter.DataConverter {
+	if dc != nil {
+		return dc
 	}
 	return converter.GetDefaultDataConverter()
 }

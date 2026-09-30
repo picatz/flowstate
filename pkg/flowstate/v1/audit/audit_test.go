@@ -69,12 +69,16 @@ func TestTheRecordHasNoFieldAPayloadCouldGoIn(t *testing.T) {
 	// bounded on the way in; a bool the receiver decided; and an integer the
 	// receiver counted. A sender can make the count large and cannot choose
 	// any of the three.
+	//
+	// http_endpoint is the first kind as well: a route suffix resolved against
+	// the authorization bindings ("/decode", "/encode"), which is what rpc and
+	// mcp_tool are for their surfaces, never the path a caller sent.
 	want := []string{
 		"action", "decision", "rpc", "identity",
 		"resource_kind", "resource_key", "decided_at", "deny_code",
 		"mcp_tool", "issuer_name", "role", "enforcement_point", "rule",
 		"attempt", "dispatch_id", "correlation_id",
-		"delivery_id", "joined", "count",
+		"delivery_id", "joined", "count", "http_endpoint",
 		"debug",
 	}
 
