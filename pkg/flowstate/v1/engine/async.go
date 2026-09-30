@@ -355,6 +355,7 @@ func (e *executor) joinAsync(started *asyncStep) error {
 	}
 
 	e.processed++
+	e.observeForDebug(v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_FINISHED, started.node, nil)
 	e.progress.finished()
 
 	return nil

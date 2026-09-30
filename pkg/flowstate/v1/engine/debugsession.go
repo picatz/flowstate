@@ -862,8 +862,10 @@ func (e *executor) debugArgumentsSensitive(callee *v1.Workflow, arguments map[st
 }
 
 // observeForDebug records one step outcome for an attached session's
-// observations: the step and what became of it, never its values. failure is
-// the step's error, for the kinds that report one.
+// observations: the step and what became of it. A step that finished carries
+// the outputs it produced, withheld as a hold at that position withholds
+// them; the other kinds carry no values. failure is the step's error, for the
+// kinds that report one.
 func (e *executor) observeForDebug(kind v1.DebugObservationKind, node *v1.Node, failure error) {
 	d := e.debug
 	if !d.attached() {
@@ -877,7 +879,25 @@ func (e *executor) observeForDebug(kind v1.DebugObservationKind, node *v1.Node, 
 	text := node.GetId()
 	switch kind {
 	case v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_FINISHED:
-		text += " finished"
+		// The sentence the local session gives ([flowdebug.FinishedText]),
+		// with the outputs the step just recorded, withheld by value and by
+		// text before the account is bounded, as a hold's inspection is.
+		sensitive := d.sensitiveAt(e.curSpec, e.scope, e.positionSensitive())
+		var (
+			redactText  func(string) string
+			redactValue func(any) any
+		)
+		if !sensitive.Empty() {
+			redactText = func(text string) string { return sensitive.RedactText(text, v1.SensitiveMarker) }
+			redactValue = func(native any) any {
+				if sensitive.WithholdAll() {
+					return v1.SensitiveMarker
+				}
+
+				return sensitive.RedactTree(native)
+			}
+		}
+		text += " " + flowdebug.FinishedText(e.scope.GetOutputs().GetStepValues()[node.GetId()], redactText, redactValue)
 	case v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_SKIPPED:
 		// A constant withheld by value before the condition is written, and
 		// the sentence by text below, as the local session does.

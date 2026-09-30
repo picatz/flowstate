@@ -12,7 +12,6 @@ import (
 	"math"
 	"reflect"
 	"slices"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -875,8 +874,10 @@ func (s *Session) StepFinishedWithholding(id string, outputs *v1.Node_Outputs, e
 		withhold = v1.SensitiveValues{}
 	}
 
+	// In the durable driver's marker, as a skip's account is: the outcome is
+	// one both drivers give, and a word withheld must read the same in each.
 	s.mu.Lock()
-	redact, redactValue := withholdingAt(s.redact, s.redactValue, withhold)
+	redact, redactValue := withholdingAtMarked(s.redact, s.redactValue, withhold, v1.SensitiveMarker)
 	s.mu.Unlock()
 	text := s.stepOutcomeText(redact, redactValue, outputs, err, tolerated)
 	line := applyText(redact, id+" "+text)
@@ -1591,7 +1592,7 @@ func withholdingAtMarked(text func(string) string, value func(any) any, sensitiv
 			}
 		}, func(native any) any {
 			if sensitive.WithholdAll() {
-				return "[withheld]"
+				return marker
 			}
 			if value != nil {
 				native = value(native)
@@ -2005,27 +2006,29 @@ func (s *Session) stepOutcomeText(redact func(string) string, redactValue func(a
 		return "FAILED: " + err.Error()
 	}
 
+	return FinishedText(outputs, redact, redactValue)
+}
+
+// FinishedText is the account of a step that produced its outputs: "completed"
+// where it named none, else "-> name: value, …" in name order. Both drivers'
+// sessions give it, so a step reads the same wherever the run executes.
+//
+// redact withholds text and redactValue withholds the values themselves (nil
+// for none). The text is withheld *before* it is cut to [MaxInspectRunes]:
+// the cut keeps a prefix, and a secret longer than the cap would survive it
+// as a prefix no substring match can find (Codex, #1109).
+func FinishedText(outputs *v1.Node_Outputs, redact func(string) string, redactValue func(any) any) string {
 	named := outputs.GetNamedValues()
 	if len(named) == 0 {
 		return "completed"
 	}
 
-	names := make([]string, 0, len(named))
-	for name := range named {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-
+	names := slices.Sorted(maps.Keys(named))
 	parts := make([]string, 0, len(names))
 	for _, name := range names {
 		parts = append(parts, name+": "+valueText(named[name], redact, redactValue))
 	}
 
-	// Redacted *before* the cap, not after. capRunes keeps the first
-	// MaxInspectRunes of the rendering, and a secret longer than that survives
-	// truncation as a prefix no substring match can find — so a cap applied
-	// first would expose the first 4096 runes of exactly the value the
-	// redactor exists to withhold (Codex, #1109). Order is the whole fix.
 	return "-> " + capRunes(applyText(redact, strings.Join(parts, ", ")), MaxInspectRunes)
 }
 

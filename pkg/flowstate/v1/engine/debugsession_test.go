@@ -218,7 +218,7 @@ func TestATypedSessionStepsIntoAndOutOfACall(t *testing.T) {
 	for _, observation := range detached.GetObservations() {
 		observed = append(observed, observation.GetText())
 	}
-	assert.Contains(t, observed, "greet finished")
+	assert.Contains(t, observed, "greet completed")
 }
 
 // TestADurableBreakpointInsideABodyIsNotArmed: a durable run holds only at
