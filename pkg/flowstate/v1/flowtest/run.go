@@ -236,6 +236,16 @@ func runSuite(ctx context.Context, file *File, opts RunOptions, loaderFor func(*
 			// Budgeted before placing, so the omission marker the budget
 			// substitutes is placed in the file by the same call as the
 			// warnings it stands in for.
+			//
+			// Its name is the file's own, and a case that never ran has no run
+			// to have withheld anything, so it is withheld under what is
+			// knowable without one ([casePosture]): the same posture a case
+			// that ran starts from, and joined into the file's like a case's.
+			posture := casePosture(&test, fileVars{values: file.Vars, withheld: file.varsWithheld})
+			if !posture.WithholdAll() {
+				stopped = verdictUnder(stopped, posture)
+			}
+			suite = widenedBy(suite, posture)
 			stopped.Warnings = warningBudget.take(stopped.GetWarnings())
 			anchor.place(stopped.GetFailures())
 			anchor.place(stopped.GetWarnings())

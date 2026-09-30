@@ -1,6 +1,7 @@
 package flowtest
 
 import (
+	"cmp"
 	"fmt"
 	"maps"
 	"slices"
@@ -113,6 +114,34 @@ type Coverage struct {
 	// fail to cover it. Deleting the one case that exercised it left
 	// `--coverage-required` reporting full coverage.
 	Arms []*SwitchArm
+
+	// declared is every step id in the order the workflow declares them, and
+	// staleEntries the entries [Coverage.Stale] describes. Kept so that a
+	// report withheld under a posture ([Coverage.withheldUnder]) numbers the
+	// names it withholds in declaration order, and spells the stale entries it
+	// quotes as it spells the names they are.
+	declared     []string
+	staleEntries []staleEntry
+}
+
+// staleEntry is one `coverage.allow_unreached` entry that describes no
+// residual, and whether some targeted workflow declares what it names.
+type staleEntry struct {
+	name  string
+	known bool
+}
+
+// message is the sentence [Coverage.Stale] carries for it, naming the entry as
+// given.
+func (e staleEntry) message(name string) string {
+	if e.known {
+		return fmt.Sprintf(
+			"coverage.allow_unreached names %q, but a case reached it; remove the entry", name)
+	}
+
+	return fmt.Sprintf(
+		"coverage.allow_unreached names %q, which is not a step or switch arm in this workflow; "+
+			"fix the id or remove the entry", name)
 }
 
 // SwitchArm is one arm of one `switch:` step — one `case:` literal, or the
@@ -384,6 +413,43 @@ func (w *workflowCoverage) leavesArmUnreached(key string) bool {
 	return false
 }
 
+// declaredIDs is every step id the workflow declares, once each, in the order
+// it declares them: by structural path, numerically at each level, so a step
+// declared earlier comes first whatever its name.
+func (w *workflowCoverage) declaredIDs() []string {
+	paths := slices.SortedFunc(maps.Keys(w.steps), comparePaths)
+	ids := make([]string, 0, len(paths))
+	seen := make(map[string]bool, len(paths))
+	for _, path := range paths {
+		if id := w.steps[path]; !seen[id] {
+			seen[id] = true
+			ids = append(ids, id)
+		}
+	}
+
+	return ids
+}
+
+// comparePaths orders two structural paths ([childPath]) as the nodes they name
+// are declared: level by level, numerically where both levels are indexes.
+func comparePaths(a, b string) int {
+	as, bs := strings.Split(a, "/"), strings.Split(b, "/")
+	for i := 0; i < len(as) && i < len(bs); i++ {
+		x, xerr := strconv.Atoi(as[i])
+		y, yerr := strconv.Atoi(bs[i])
+		switch {
+		case xerr == nil && yerr == nil && x != y:
+			return cmp.Compare(x, y)
+		case xerr != nil || yerr != nil:
+			if c := strings.Compare(as[i], bs[i]); c != 0 {
+				return c
+			}
+		}
+	}
+
+	return cmp.Compare(len(as), len(bs))
+}
+
 func newCoverageAccumulator(allowUnreached map[string]string) *coverageAccumulator {
 	return &coverageAccumulator{
 		workflows:      map[string]*workflowCoverage{},
@@ -469,7 +535,7 @@ func (a *coverageAccumulator) result(sensitive sensitiveInputs) []*Coverage {
 	covs := make(map[string]*Coverage, len(identities))
 	for _, id := range identities {
 		wc := a.workflows[id]
-		cov := &Coverage{Workflow: id}
+		cov := &Coverage{Workflow: id, declared: wc.declaredIDs()}
 
 		// Partitioned by name over declarations, fail-closed: an id lands in
 		// Unreached as soon as one declaration answering to it went unrun, even
@@ -546,22 +612,21 @@ func (a *coverageAccumulator) result(sensitive sensitiveInputs) []*Coverage {
 				break
 			}
 		}
-		var msg string
-		if home != "" {
-			msg = fmt.Sprintf(
-				"coverage.allow_unreached names %q, but a case reached it; remove the entry", entry)
-		} else {
+		known := home != ""
+		if !known {
 			home = identities[0]
-			msg = fmt.Sprintf(
-				"coverage.allow_unreached names %q, which is not a step or switch arm in this workflow; "+
-					"fix the id or remove the entry", entry)
 		}
-		covs[home].Stale = append(covs[home].Stale, msg)
+		entryStale := staleEntry{name: entry, known: known}
+		covs[home].staleEntries = append(covs[home].staleEntries, entryStale)
+		covs[home].Stale = append(covs[home].Stale, entryStale.message(entry))
 	}
 
 	out := make([]*Coverage, 0, len(identities))
 	for _, id := range identities {
 		sort.Strings(covs[id].Stale)
+		slices.SortFunc(covs[id].staleEntries, func(a, b staleEntry) int {
+			return strings.Compare(a.message(a.name), b.message(b.name))
+		})
 		covs[id].withheldUnder(sensitive)
 		out = append(out, covs[id])
 	}
@@ -590,8 +655,8 @@ func (c *Coverage) withheldUnder(sensitive sensitiveInputs) {
 	}
 
 	// Every step id this report prints, named once each and spelled in the
-	// order they were written, so the numbering does not depend on which list
-	// a name is met in.
+	// order the workflow declares them, so the numbering says nothing about the
+	// names it withholds and does not depend on which list a name is met in.
 	written := map[string]bool{}
 	for _, id := range slices.Concat(c.Reached, c.Unreached) {
 		written[id] = true
@@ -599,9 +664,15 @@ func (c *Coverage) withheldUnder(sensitive sensitiveInputs) {
 	for _, arm := range c.Arms {
 		written[arm.Step] = true
 	}
+	order := slices.DeleteFunc(slices.Clone(c.declared), func(id string) bool { return !written[id] })
+	for _, id := range slices.Sorted(maps.Keys(written)) {
+		if !slices.Contains(order, id) {
+			order = append(order, id)
+		}
+	}
 	spelled := make(map[string]string, len(written))
 	taken := make(map[string]string, len(written))
-	for _, id := range slices.Sorted(maps.Keys(written)) {
+	for _, id := range order {
 		spelled[id] = distinctName(taken, withheldName(id, sensitive))
 		taken[spelled[id]] = id
 	}
@@ -618,12 +689,14 @@ func (c *Coverage) withheldUnder(sensitive sensitiveInputs) {
 
 		return out
 	}
+	// The file's own words, with a value withheld whole where the text is one
+	// and at each place it is spelled in the rest.
 	prose := func(text string) string {
 		if text == "" {
 			return ""
 		}
 
-		return sensitive.RedactText(text, sensitiveMarker)
+		return redactedErrorText(text, sensitive)
 	}
 
 	c.Reached = spell(c.Reached)
@@ -635,16 +708,18 @@ func (c *Coverage) withheldUnder(sensitive sensitiveInputs) {
 		}
 		c.Accepted = accepted
 	}
-	for i, stale := range c.Stale {
-		c.Stale[i] = prose(stale)
-	}
 
 	// An arm's key is its step's id and a position in the switch, so it is
 	// spelled from the step's spelling rather than searched for a value.
 	armsTaken := make(map[string]bool, len(c.Arms))
+	keys := make(map[string]string, len(c.Arms))
 	for _, arm := range c.Arms {
-		arm.Key = distinctName(armsTaken, spelled[arm.Step]+strings.TrimPrefix(arm.Key, arm.Step))
-		armsTaken[arm.Key] = true
+		key := distinctName(armsTaken, spelled[arm.Step]+strings.TrimPrefix(arm.Key, arm.Step))
+		armsTaken[key] = true
+		if _, ok := keys[arm.Key]; !ok {
+			keys[arm.Key] = key
+		}
+		arm.Key = key
 
 		arm.Step = spelled[arm.Step]
 		arm.Reason = prose(arm.Reason)
@@ -654,6 +729,19 @@ func (c *Coverage) withheldUnder(sensitive sensitiveInputs) {
 		default:
 			arm.Label = prose(arm.Label)
 		}
+	}
+
+	// A stale entry is a name the file wrote, of a step, an arm or neither:
+	// spelled as the name it is, then quoted into the sentence.
+	for i, entry := range c.staleEntries {
+		name, ok := spelled[entry.name]
+		if !ok {
+			name, ok = keys[entry.name]
+		}
+		if !ok {
+			name = withheldName(entry.name, sensitive)
+		}
+		c.Stale[i] = entry.message(name)
 	}
 }
 

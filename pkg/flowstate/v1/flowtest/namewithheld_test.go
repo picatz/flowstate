@@ -1,6 +1,7 @@
 package flowtest_test
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 
@@ -9,6 +10,7 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/dst"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowtest"
 )
 
@@ -212,4 +214,36 @@ func TestCoverageOfAFileWhoseCasesWithholdNothingIsAsWritten(t *testing.T) {
 	require.Len(t, run.Coverage, 1)
 
 	assert.Equal(t, []string{"hunter2_stepid"}, run.Coverage[0].Unreached)
+}
+
+// TestACaseStoppedBeforeItRanWithholdsItsNameToo: a case the caller's context
+// ended before it started has no run to have withheld anything, and its name is
+// still the file's own. It is withheld under what is knowable without a run,
+// the case's `secrets:`, as the name of a case that ran is.
+func TestACaseStoppedBeforeItRanWithholdsItsNameToo(t *testing.T) {
+	t.Parallel()
+
+	suite := nameSuite(t, `
+  - name: case hunter2_stopped
+    workflow: ./workflow.yaml
+    secrets:
+      "env:API_KEY": hunter2_stopped
+    inputs:
+      token: something-else-entirely
+      action: skip
+    expect:
+      failed: false
+`)
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	report, _, _ := flowtest.RunFileUnderSchedules(ctx, suite, dst.Budget{})
+	require.Empty(t, report.GetRefused())
+	require.Len(t, report.GetCases(), 1)
+
+	c := report.GetCases()[0]
+	require.Contains(t, c.GetError(), "not run", "the case ran, so this proves nothing")
+	rendered, err := protojson.Marshal(report)
+	require.NoError(t, err)
+	assert.NotContains(t, string(rendered), "hunter2_stopped")
+	assert.Contains(t, c.GetName(), v1.SensitiveMarker)
 }
