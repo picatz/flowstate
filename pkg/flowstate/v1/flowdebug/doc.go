@@ -66,6 +66,21 @@
 //     What the wire carries of a run's output is [v1.DebugObservation],
 //     classified by what the run did rather than by how a terminal draws it.
 //
+// # Adding a capability
+//
+// A feature is added once as: proto field, then a capability bit, then [Target]
+// behavior on each driver (or an explicit unsupported), then a capability case,
+// then one line in the DAP projection.
+//
+// The bit is what a surface believes, so it is proved rather than trusted:
+// `conformance.CapabilityCases` holds one case per field of
+// [v1.DebugCapabilities], run against a local [Session] and a durable run, and
+// fails a driver whose advertised value differs from what its commands did. A
+// field with no case fails the completeness test, only the two constructors
+// (this package's session and [v1.DurableDebugCapabilities]) may build the
+// message, and the per-driver table in docs/DEBUGGING.md is generated from the
+// cases.
+//
 // # Local sessions and durable runs
 //
 // [v1.Debugger] is a local-driver seam, like [v1.Scheduler] and

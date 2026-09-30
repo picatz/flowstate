@@ -635,7 +635,9 @@ func (s *Server) capabilitiesBody() capabilities {
 func localCapabilities() *v1.DebugCapabilities {
 	session, err := flowdebug.New(flowdebug.Options{Controlled: true})
 	if err != nil {
-		return &v1.DebugCapabilities{}
+		// Nothing is advertised: every getter reads a nil set as false, and
+		// only flowdebug and the durable driver construct one.
+		return nil
 	}
 	defer func() { _ = session.Close() }()
 

@@ -801,16 +801,59 @@ where it was. It crosses Continue-As-New with the run, and each occurrence says
 which segment it ran in. `--run-id` pins the chain by its first run id; unset,
 a session follows the current one.
 
+**What each driver does.** Both drivers sit behind one contract, and a
+snapshot's capabilities say what the one behind it does. The table below is
+generated from the conformance corpus that holds each driver to what it
+advertises: every capability is exercised against a local session and a durable
+run, and a driver that advertises one must apply the command while one that does
+not must refuse it by name. Regenerate it with `go test
+./pkg/flowstate/v1/internal/conformance -run
+TestTheDebuggingDocCapabilityTableIsTheCorpus -update`; the same test fails when
+it drifts.
+
+<!-- capabilities:start -->
+
+| Capability | What proves it | Local | Durable |
+| --- | --- | --- | --- |
+| `step_in` | `step` at a call enters the callee's first step | yes | yes |
+| `step_over` | `next` at a call runs the callee whole and stops after it | yes | yes |
+| `step_out` | `finish` inside a callee runs it to its end and stops after the call | yes | yes |
+| `pause` | `pause` is accepted by a session attached to the run | yes | yes |
+| `run_until` | `until third` runs to that step and stops there | yes | yes |
+| `conditional_breakpoints` | a breakpoint whose condition is false is passed, and the next breakpoint stops the run | yes | yes |
+| `hit_conditions` | a breakpoint with `== 2` stops at the step's second arrival only | yes | yes |
+| `logpoints` | a breakpoint with `log` records its message and does not stop the run | yes | no: says "logpoints are not supported" |
+| `failure_breakpoints` | failure mode `all` holds the run at a step whose failure `continue_on_error:` tolerates | yes | no: says "failure stops are not supported" |
+| `source_breakpoints` | a breakpoint on a source line stops at the step written there | yes | no: says "resolves no source lines" |
+| `inspect` | `inspect 1 + 1` evaluates against the held scope | yes | yes |
+| `value_expansion` | `expand [1, 2, 3]` lists the list's three children | yes | yes |
+| `observations` | a step that ran is reported between stops as finished | yes | yes |
+| `terminate` | `detach` releases the run and never ends it | no: says "the run continues" | no: says "the run continues" |
+| `reverse` | no resume action moves a run backwards | no: says "no resume action" | no: says "no resume action" |
+
+<!-- capabilities:end -->
+
+What the table cannot carry:
+
+- Local is a controlled session, the one every front but the console prompt
+  opens; the console reads `step`, `next`, `finish` and `until` as text, and a
+  local session offers source-line breakpoints only when a source map is known.
+- A durable condition, and every durable inspection, needs
+  `workload.debug_inspect`.
+- A refusal has two shapes. A failure stop is answered `unsupported` in the
+  receipt, and the breakpoint set is unchanged; a logpoint or a source line
+  arrives in a set that is applied, and is reported not armed in its own state.
+- A durable run resolves no source line itself. A client resolves a line to its
+  step, only through a source map that matches the run's program, and names the
+  step; `flow dap`'s attach has none.
+- `terminate` is offered by neither driver, and `reverse` by no backend. Nothing
+  in the contract ends a run, so the case exercises `detach`, which releases it;
+  the surface that started a local run ends it with `quit`.
+
 | | Local | Durable |
 | --- | --- | --- |
 | Where it stops | every step boundary, including parallel branches | every step boundary where the run has one position: top-level steps, called workflows, `loop:` bodies, `switch:` arms and sequential `for_each:` bodies |
-| `step`, `next`, `finish`, `until`, `pause` | yes | yes, at those boundaries |
-| Conditional and hit-count breakpoints | yes | yes; a condition needs `workload.debug_inspect` |
-| Logpoints (`log`) | yes | taken with the set, but reported not armed |
-| Failure stops (`catch`) | yes | refused as unsupported |
 | A breakpoint or `until` inside a `parallel:` branch or a concurrent `for_each:` | yes | the breakpoint is not armed and the `until` is refused |
-| Source-line breakpoints | when a source map is known | resolved by the client to a step, only through a source map that matches the run's program; `flow dap`'s attach has none |
-| `inspect`, `expand`, `scope` | yes | yes, while held, needing `workload.debug_inspect` |
 | Task notes (`NoteTask`) | yes | no |
 | Lease, holder, audit | none: it is your process | yes |
 | Ending the run | `quit` | never: `detach` and `quit` release it |
@@ -868,6 +911,26 @@ process, and hands back a value whose methods are the contract's: `Snapshot`,
 the command lines above. A custom task can report its own progress to whoever is
 watching with `v1.NoteTask`. [Embedding](EMBEDDING.md#debugging-an-embedded-run)
 has the example.
+
+## Adding a capability
+
+A feature is added once, in this order: a proto field, then a capability bit,
+then `Target` behavior on each driver (or an explicit unsupported), then a
+capability case, then one line in the DAP projection. Each step has one home
+and something that fails when it is skipped:
+
+1. The message or field in `proto/flowstate/v1/debug.proto`, which is the one
+   shape every front and both drivers share.
+2. A bit in `DebugCapabilities`, set only by the two constructors: the local
+   session's and `DurableDebugCapabilities`. A guard test refuses a third, so a
+   front reads capabilities from the snapshot it was given.
+3. The behavior behind `flowdebug.Target` on the local session and on the
+   durable run, or a refusal that names the capability.
+4. A case in `conformance.CapabilityCases`, one per capability. A field added to
+   `DebugCapabilities` with no case fails the completeness test, and the table
+   above is regenerated from the cases.
+5. One line in the DAP projection, `capabilitiesBody` in `flowdap`, where a
+   capability becomes a DAP one.
 
 ## Reading a run's past: what is proven, and what is not
 
