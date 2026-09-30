@@ -19,7 +19,8 @@ import (
 )
 
 // tracerName is the instrumentation scope these spans are attributed to, spelled
-// the way [engine.startTaskSpan] spells its own: the package's import path.
+// the way the flowstate package's StartTaskSpan (taskspan.go) spells its own:
+// the package's import path.
 const tracerName = "github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
 
 // tracingRoundTripper opens the CLIENT span covering one outbound request and
@@ -46,11 +47,11 @@ const tracerName = "github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
 //
 // A span is exported to a collector, indexed, and read by people and systems
 // with no relationship to the run that produced it — the same reasoning
-// `engine`'s task span is built on, and stricter than workflow history, because
+// the task span (taskspan.go) is built on, and stricter than workflow history, because
 // a collector is not tenant-scoped at all.
 //
 // So the URL never becomes an attribute in any form: not `url.full`, not
-// `url.query`, not `url.path`. The schema already states why for the query, at
+// `url.query`, not `url.path`. The http task already states why for the query, at
 // [flowstatev1.HTTPTaskDef]'s comment on why `query` is excluded from
 // NestedSecretInputs — "a query string is written to access logs, kept in
 // browser history, and forwarded in a Referer header" — and a span attribute is
@@ -67,7 +68,7 @@ const tracerName = "github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
 //
 // Errors are recorded as a fixed classification, never with
 // [trace.Span.RecordError] and never with the error's own text — the rule
-// `plugin/telemetry.go` and `engine/activities.go` both already state, and it
+// `plugin/telemetry.go` and `taskspan.go` both already state, and it
 // binds harder here: a [DenyError]'s Detail names the target it refused, which
 // is a URL.
 type tracingRoundTripper struct {

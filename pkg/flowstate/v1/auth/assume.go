@@ -145,10 +145,10 @@ type workload struct {
 	Claims map[string]string `cel:"claims"`
 }
 
-// assumeRule is a compiled CEL assumption rule. The program is built once, when
-// the broker is constructed, and is safe to evaluate concurrently.
 // assumeRules holds the allow and deny rules governing credential assumption:
 // a [celrule.Set], deny first, permitting when only deny rules are configured.
+// Each rule's program is built once, when the broker is constructed, and is
+// safe to evaluate concurrently.
 type assumeRules struct {
 	celrule.Set
 }

@@ -356,15 +356,16 @@ func (t credentialMarkingTransport) RoundTrip(req *http.Request) (*http.Response
 //
 // The second half is what makes the mark cover a redirect chain rather than one
 // hop. Go rebuilds each hop from the *initial* request's context
-// (net/http/client.go:683, `ctx: ireq.ctx`), so a value this transport put on a
+// (net/http/client.go:684, `ctx: ireq.ctx`), so a value this transport put on a
 // clone is gone by the next hop; and on a redirect to another host it strips
 // Authorization (`shouldCopyHeaderOnRedirect`), so the header is gone too. A
 // per-hop reading therefore let the second hop of a credentialed exchange
 // through a rule the first hop was refused by — and that second hop is exactly
 // the interesting one, since a request carrying a secret being bounced somewhere
 // else is the shape the rule exists to catch. The built-in http task marks the
-// whole chain from the task's own inputs (eval_task_http_run.go:447), so a
-// per-hop plugin also broke the parity that makes `credentials` mean one thing.
+// whole chain from the task's own inputs (eval_task_http_run.go's
+// taskFuncHTTP), so a per-hop plugin also broke the parity that makes
+// `credentials` mean one thing.
 //
 // The chain's memory is req.Response.Request: Go sets Response on each
 // redirected hop to the previous response (client.go:679), and the transport

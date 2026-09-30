@@ -289,7 +289,7 @@ func (s *Scrubber) Scrub(text string) string {
 // or a freshly built string that shares no storage with text at all.
 // [Scrubber.ScrubBytes] depends on that exact contract to know, from a
 // pointer comparison alone, whether it may hand a caller its own input slice
-// back; see TestScrubWithNeverReturnsASubrangeOfItsInput.
+// back; see Test_Scrubber_ScrubWithNeverReturnsASubrangeOfItsInput.
 func (s *Scrubber) ScrubWith(text, replacement string) string {
 	if text == "" {
 		return text
@@ -431,7 +431,7 @@ func (s *Scrubber) ScrubBytes(text []byte) []byte {
 // because a future ScrubWith that ever did return such a subrange would
 // otherwise make ScrubBytes hand back the *whole*, unredacted text on the
 // strength of a pointer match alone. See
-// TestScrubBytesRefusesToAliasASubrangeThatSharesTextsBackingArray.
+// Test_Scrubber_ScrubBytesRefusesToAliasASubrangeThatSharesTextsBackingArray.
 func scrubbedIsTextUnchanged(text []byte, scrubbed string) bool {
 	return unsafe.StringData(scrubbed) == unsafe.SliceData(text) && len(scrubbed) == len(text)
 }

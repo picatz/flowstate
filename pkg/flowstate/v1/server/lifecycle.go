@@ -49,7 +49,8 @@ var errNoTenantRecorded = errors.New("server: run has no recorded tenant")
 // keyed to an authorization action through it — see audit.go. A verb that has
 // to resolve a run more than once for one request calls
 // [FlowstateServer.authorizeRunDecision] directly and audits once itself.
-// [FlowstateServer.Signal] is the only one, and its comment says why.
+// [FlowstateServer.Signal] is one, and its comment says why; the debug RPCs,
+// through [FlowstateServer.authorizeDebug], walk the same chain the same way.
 func (s *FlowstateServer) authorizeRun(ctx context.Context, rpc, workflowID, runID string) (client.Client, *workflowservice.DescribeWorkflowExecutionResponse, error) {
 	// Before the run is addressed, not at the allow seam below: a caller
 	// holding none of this RPC's action must be refused for that, rather than
@@ -418,10 +419,12 @@ func (s *FlowstateServer) usesCurrentSignalProtocol(memo *common.Memo) (bool, er
 // [v1.CheckSignalPayloadSize], the run is resolved and tenancy-checked by
 // `authorizeRunDecision`, and the decision is written to the audit trail by
 // [FlowstateServer.auditAllow] — all of it above, none of it written twice for
-// debugging. What that record cannot yet say is that the delivery *was* a debug
-// ask: [v1.AuditRecord] carries the RPC and the run, and a signal's name is not
-// one of its fields. `flow debug attach` gets its own
-// [v1.AuthorizationAction] in stage 3, which is where that closes.
+// debugging. What a raw Signal's allow record cannot say is that the delivery
+// *was* a debug ask: [v1.AuditRecord] carries the RPC and the run, and a
+// signal's name is not one of its fields. Stage 3's typed debug RPCs
+// (debug.go) are where that closes: each has its own [v1.AuthorizationAction]
+// and records a [v1.AuditDebugDetail], and a raw Signal onto this channel must
+// hold `workload.debug` as well (authorizeDebugChannel).
 func (s *FlowstateServer) authorizeReservedSignal(
 	resp *workflowservice.DescribeWorkflowExecutionResponse, name string, sender *v1.SignalSender,
 ) error {

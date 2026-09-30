@@ -715,7 +715,7 @@ func (s *Session) showStep(node *v1.Node) {
 	}
 }
 
-// addBreakpoint takes `<step-id>` or `<step-id> if <expr>`.
+// addBreakpoint takes `<step-id> [hit <count>] [if <expr>]`.
 //
 // The condition is compiled here rather than at each arrival, which is the
 // difference between this and `inspect`. `inspect` parses at evaluation time
@@ -897,7 +897,7 @@ func (s *Session) unknownStep(id string, redact func(string) string) (string, bo
 // nosuchstep", listed it, and never fired, while `until nosuchstep` printed
 // nothing at all and ran the workflow to its end — one mistyped character
 // forfeiting the session, with every queued command after it unanswered. The
-// check that catches it already existed one door over, in [checkScript], over
+// check that catches it already existed one door over, in [CheckScript], over
 // the same inventory; this is that check where a person types rather than
 // where a script is read, so the two fronts stop disagreeing about the same
 // word.

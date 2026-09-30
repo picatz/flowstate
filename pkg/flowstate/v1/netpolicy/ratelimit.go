@@ -54,8 +54,8 @@ import (
 // a concurrency limit on everything the worker does, including the steps that
 // were not going anywhere near the limited host. The same argument is already
 // written down one layer up, where a 429's Retry-After is carried on the error
-// "rather than slept off inside the activity, which would hold a worker slot for
-// the duration" (eval_task_http.go).
+// "rather than slept off where the failure happened, because sleeping inside an
+// activity holds a worker slot for the duration" (errors.go, TaskError.RetryAfter).
 //
 // # The map is fixed at construction
 //

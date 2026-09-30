@@ -29,7 +29,8 @@ func NewRegistry() *Registry {
 
 // Register adds a provider under the scheme it reports.
 //
-// Unlike the task registry, this refuses to replace an existing provider. Two
+// This refuses to replace an existing provider, and unlike the task registry
+// there is no Replace to do it deliberately. Two
 // backends claiming one scheme is a configuration mistake with a security
 // consequence — whichever registered last would silently answer every reference
 // for that scheme — so it is reported rather than resolved by ordering.

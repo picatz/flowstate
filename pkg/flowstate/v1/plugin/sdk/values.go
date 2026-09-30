@@ -305,8 +305,8 @@ func number(value *expr.Value) (float64, bool) {
 // EncodeOutputs turns a task's output message into the named values a step
 // produces, one per field.
 //
-// Later steps reference them as ${step_id.field_name}, so the field names in the
-// output message are the names a workflow author writes.
+// Later steps reference them as ${steps.step_id.field_name}, so the field
+// names in the output message are the names a workflow author writes.
 func EncodeOutputs(msg proto.Message) (*flowstatev1.Node_Outputs, error) {
 	if msg == nil {
 		return nil, fmt.Errorf("sdk: EncodeOutputs needs a message")
@@ -582,7 +582,7 @@ func wellKnown(name protoreflect.FullName) bool {
 //	})
 //
 // A workflow then reads it the way it reads anything else —
-// `${query.rows[0].name}` — with no step in between to parse it.
+// `${steps.query.rows[0].name}` — with no step in between to parse it.
 //
 // A type it cannot represent yields an error value rather than a panic, so a
 // plugin that hands it something unexpected produces a diagnosable output instead

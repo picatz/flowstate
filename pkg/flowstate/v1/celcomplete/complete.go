@@ -18,7 +18,7 @@ import (
 //
 // Large enough that no document or run this repository has ever seen reaches it
 // — the whole profile is about sixty functions, and the examples' largest
-// workflow has eleven steps — so the bound is a stop against a pathological
+// workflow has sixteen steps — so the bound is a stop against a pathological
 // input rather than a limit an author meets. [Result.Truncated] reports having
 // reached it, so a short list is never mistaken for a complete one.
 const MaxCandidates = 512

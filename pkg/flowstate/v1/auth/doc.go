@@ -287,11 +287,13 @@
 //	err := broker.Authorize(ctx, req, identity, ref, "aws-prod")
 //
 // Exchanging is an [Exchanger], and supporting a new system is an implementation of
-// that one interface. Four come with this package: [NewTokenExchanger] for RFC 8693
+// that one interface. Five come with this package: [NewTokenExchanger] for RFC 8693
 // OAuth 2.0 Token Exchange, which is the standards-based path to prefer;
 // [NewAWSExchanger] for STS AssumeRoleWithWebIdentity; [NewGCPExchanger] for Google
-// Cloud Workload Identity Federation; and [NewClientCredentialsExchanger] for plain
-// service-to-service calls, authenticated by the assertion rather than a secret.
+// Cloud Workload Identity Federation; [NewClientCredentialsExchanger] for plain
+// service-to-service calls, authenticated by the assertion rather than a secret;
+// and [NewAssertionExchanger], which exchanges nothing and presents the assertion
+// itself to a relying party that verifies OIDC.
 //
 // # Outbound: who may assume what
 //

@@ -239,7 +239,7 @@ const (
 	// Driver is which execution driver recorded the measurement: "local" or
 	// "durable" ([DriverLocal], [DriverDurable]).
 	//
-	// It is on every engine-level instrument on purpose. Invariant 5 says the
+	// It is on every engine-level instrument on purpose. Invariant 3 says the
 	// two drivers must agree about anything observable, and a metric is now
 	// one of those things — with this key an operator can subtract one from
 	// the other, and without it a rehearsal's numbers and production's are
@@ -458,13 +458,11 @@ const (
 	//
 	// Durably this measures the *segment* that ends the run, not the sum of
 	// every segment a long workload was continued through: Temporal gives a
-	// continued execution a fresh WorkflowExecutionStartTime, and RunState
-	// carries no earlier one to subtract from it. For the common case — no
-	// Continue-As-New — this is the whole run's duration, which is why the
-	// simpler answer was taken rather than plumbing a start timestamp through
-	// every segment for a case #917 did not ask about. A future change that
-	// wants the whole chain's duration has to carry that timestamp in
-	// RunState the way Identity and Trigger already are.
+	// continued execution a fresh WorkflowExecutionStartTime, and this does
+	// not read `RunState.workload_started_at`, the first segment's start a
+	// continued segment carries (absent on a run whose first segment predates
+	// the field). For the common case — no Continue-As-New — this is the whole
+	// run's duration.
 	InstrumentRunDuration = "flowstate.run.duration"
 
 	// InstrumentRunExecutions counts run completions, by outcome — the

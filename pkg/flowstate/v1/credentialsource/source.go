@@ -55,9 +55,9 @@ const (
 	SourceEnv            = "env"
 )
 
-// knownSources lists every buildable name, for the error a typo gets. Derived
-// from the constants above rather than written out again, so a source added
-// without being listed here is not a thing that can happen.
+// knownSources lists every buildable name, for the error a typo gets. Spelled
+// with the constants above rather than their strings, so a renamed source
+// cannot drift; a source added to [Resolve] still has to be listed here too.
 var knownSources = []string{
 	SourceGitHubActions,
 	SourceGitLab,
@@ -66,9 +66,8 @@ var knownSources = []string{
 	SourceEnv,
 }
 
-// Config gathers the values a named [Source] may need. Which fields a given
-// name reads is documented on that name's constant; a field a name does not
-// use is ignored.
+// Config gathers the values a named [Source] may need. Which names read a
+// field is documented on that field; a field a name does not use is ignored.
 type Config struct {
 	// Audience is the value the token's "aud" claim must carry.
 	//

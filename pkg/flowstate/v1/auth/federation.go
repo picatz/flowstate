@@ -110,7 +110,7 @@ type FederationPolicy struct {
 	// Egress governs the outbound HTTP every exchange this policy performs
 	// makes, in netpolicy's own file form and with the same meaning
 	// [Policy.Egress] has: absent means [DefaultEgressPolicy], and the section
-	// only ever loosens.
+	// adjusts that default rather than replacing it.
 	//
 	//	federation:
 	//	  egress:

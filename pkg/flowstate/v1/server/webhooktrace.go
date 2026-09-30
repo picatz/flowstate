@@ -69,7 +69,7 @@ import (
 //     deployment fronting this receiver with OTel middleware could have put
 //     inbound baggage in the request context, and Temporal's client interceptor
 //     would inject it, through the global baggage propagator, into the workflow's
-//     headers and thence into history (invariant 8: durable, broadly readable).
+//     headers and thence into history (invariant 7: durable, broadly readable).
 //   - **The `traceparent`/`tracestate` headers themselves** are removed from the
 //     flattened map that becomes `event.headers` ([withoutTraceHeaders]), so a
 //     Flowfile mapping a header into an input cannot serialize raw trace metadata
@@ -156,7 +156,7 @@ func (r *WebhookReceiver) startDeliverySpan(ctx context.Context, route *webhookR
 	// middleware that extracted inbound baggage would leave that peer-controlled
 	// key/value data in `ctx`, and Temporal's client interceptor injects it,
 	// through the global baggage propagator, into the workflow's headers and
-	// thence into history (invariant 8: durable and broadly readable). There is
+	// thence into history (invariant 7: durable and broadly readable). There is
 	// no host-created baggage to forward at this boundary — a run starts fresh
 	// here — so the whole of it goes, which is the same fail-closed reduction
 	// `plugin/telemetry.go` makes for a plugin the worker launched itself.

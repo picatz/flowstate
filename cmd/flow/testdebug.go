@@ -209,7 +209,7 @@ func stepIDs(workflow *v1.Workflow) []string {
 //
 // The workflow is what makes an entry an identity rather than a name. `runCall`
 // moves the run's position across a call precisely because "a callee's step ids
-// belong to the callee, not to its caller" (`eval.go:1804-1812`), so an
+// belong to the callee, not to its caller" (`runCall` in `eval.go`), so an
 // inventory that flattened a caller and a callee into bare ids holds two rows
 // called `build` that nothing downstream can tell apart — and a step list drawn
 // from it points at whichever came first.
@@ -221,7 +221,7 @@ func stepList(workflow *v1.Workflow) []flowdebug.Step {
 	// two declarations under one name, and so are two different embedded
 	// workflows that share a `name:`. The numbering is the engine's own
 	// structure read statically — `runNodes` descends into a callee once per
-	// `call:` node (`eval.go:1734`), so a walk's descents and that call's
+	// `call:` node (`runNodes` in `eval.go`), so a walk's descents and that call's
 	// invocations are one-to-one by construction.
 	declaration := 0
 

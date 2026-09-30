@@ -189,8 +189,8 @@ func Without(claims ...string) TokenOption {
 // The map itself is not modified.
 //
 // The audience is the exception, and has to be named: pass [WithAudience], or
-// [WithoutAudience] to mint a token with none. Minting with neither panics,
-// because a token addressed to nobody in particular is the one mistake that
+// [WithoutAudience] to mint a token with none. Minting with neither, and with
+// no "aud" in claims, panics, because a token addressed to nobody in particular is the one mistake that
 // makes a test pass against a policy that is not checking.
 //
 // It panics if no key is available to sign with, or if the audience was not

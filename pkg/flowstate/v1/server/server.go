@@ -127,7 +127,7 @@ type Option func(*FlowstateServer) error
 //
 // A namespace carried by a *caller's* identity is not covered by this check and
 // does not need to be: it is validated at admission, where it is chosen
-// (`auth.TrustedIssuer.namespaceFrom`, `auth/policy.go`). What was uncovered
+// (`auth.TrustedIssuer.namespaceFor`, `auth/policy.go`). What was uncovered
 // until this option validated was the deployment's own fallback, which nothing
 // upstream of the process sees.
 func WithNamespace(name string) Option {
@@ -382,7 +382,7 @@ func WithTrustedWorkflows(namespace string, workflows ...*v1.Workflow) Option {
 				// deployment's other tenants down with it. So the conflict is
 				// recorded and every request for this key — and only this key
 				// — is refused; see
-				// [FlowstateServer.noteTrustedWorkflowConflict]. The malformed
+				// [FlowstateServer.refuseTrustedWorkflow]. The malformed
 				// specification arm above refuses the same way for the same
 				// reason.
 				s.refuseTrustedWorkflow(key, fmt.Sprintf(
@@ -481,9 +481,9 @@ type FlowstateServer struct {
 
 	// trustedWorkflowsMu guards trustedWorkflows. [WithTrustedWorkflows] writes it
 	// at construction, before the struct exists to race against, but
-	// [registerTrustedWorkflow] writes it again after construction — from
-	// [NewWebhookReceiver], once per workflow the receiver admits — so a read
-	// from a request in flight and a write from a receiver still starting up
+	// registerTrustedWorkflows writes it again after construction — from
+	// NewWebhookReceiver, once per receiver for every workflow it admits — so a
+	// read from a request in flight and a write from a receiver still starting up
 	// must not be allowed to race.
 	trustedWorkflowsMu sync.RWMutex
 	trustedWorkflows   map[trustedWorkflowKey]*v1.Workflow
@@ -541,7 +541,7 @@ type FlowstateServer struct {
 // normalization.
 // It returns an error for a name this deployment registered twice with
 // different specifications, rather than an answer drawn from either of them.
-// See [FlowstateServer.noteTrustedWorkflowConflict].
+// See [FlowstateServer.refuseTrustedWorkflow].
 func (s *FlowstateServer) trustedWorkflow(namespace string, requested *v1.Workflow) (*v1.Workflow, bool, error) {
 	if requested == nil {
 		return nil, false, nil
@@ -576,9 +576,9 @@ func metricWorkflowName(workflow *v1.Workflow, trusted bool) string {
 	return workflow.GetName()
 }
 
-// registerTrustedWorkflow adds one deployment-owned specification to the
+// registerTrustedWorkflows adds deployment-owned specifications to the
 // trusted set after construction, scoped to namespace, which is what lets
-// [NewWebhookReceiver] extend [WithTrustedWorkflows]'s set from the Flowfiles
+// [FlowstateServer.NewWebhookReceiver] extend [WithTrustedWorkflows]'s set from the Flowfiles
 // a `--webhook` deployment loads: those are exactly the specifications whose
 // `manual:`/trigger policy must bind regardless of what a caller submits
 // under the same name, and the receiver is the one place that has already

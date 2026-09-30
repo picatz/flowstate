@@ -83,8 +83,10 @@ type Policy struct {
 	// these are different trust domains: what a workflow may reach is not what
 	// this process may fetch its callers' signing keys from.
 	//
-	// The section only ever loosens. It starts from the same safe default, with
-	// schemes narrowed to https unless the section names schemes itself:
+	// The section adjusts that default rather than replacing it: it starts from
+	// the same safe default, with schemes narrowed to https unless the section
+	// names schemes itself, and its deny and allow settings can narrow as well
+	// as widen. Loosening one thing takes naming that thing:
 	//
 	//	egress:
 	//	  allow_private_networks: true

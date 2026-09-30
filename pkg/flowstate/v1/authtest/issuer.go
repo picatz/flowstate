@@ -170,7 +170,7 @@ func NewIssuer(options ...IssuerOption) *Issuer {
 // Close stops the issuer's listener. It implements [io.Closer] and always
 // returns a nil error, so that a test may defer it directly.
 //
-// Closing twice panics, as closing an [httptest.Server] twice does.
+// Closing twice is harmless, as closing an [httptest.Server] twice is.
 func (i *Issuer) Close() error {
 	i.server.Close()
 	return nil

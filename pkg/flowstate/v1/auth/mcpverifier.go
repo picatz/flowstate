@@ -72,16 +72,16 @@ import (
 //     because reflection cannot reach a captured variable — applies to
 //     anything that lands in this map.
 //
-//     Nothing on the one surface this verifier is wired to reads it yet.
-//     `flow mcp serve` serves Validate, Compile, GetCatalog,
-//     flowstate_test and flowstate_debug (cmd/flow/mcpserve.go's
-//     mcpServeTools), and none of those consults [PrincipalFromContext]: the three RPCs answer from the
-//     request alone (server/validate.go), and only the run-creating RPCs this
-//     surface deliberately does not serve reach FlowstateServer.identityFor.
-//     So the carry is inert today, and deliberately so — cmd/flow's MCP
-//     handlers install it on the handler context (withMCPPrincipal) so that
-//     the *first* reader is a reader rather than a plumbing change, which is
-//     the half of S7b that can land before there is anything to authorize.
+//     On the one surface this verifier is wired to, what reads it is the
+//     authorization around each call. `flow mcp serve` serves Validate,
+//     Compile, GetCatalog, flowstate_test and flowstate_debug
+//     (cmd/flow/mcpserve.go's mcpServeTools); cmd/flow/internal/mcp installs
+//     it on the handler context (withMCPPrincipal), its audit wrapper
+//     (withMCPAudit) records it for every tool call, and the three RPCs'
+//     own action check reads it through [PrincipalFromContext]. No run's
+//     identity is derived from it there: only the run-creating RPCs this
+//     surface deliberately does not serve reach FlowstateServer.identityFor
+//     for that.
 //
 // The error text returned on refusal is written into the 401 body by the
 // middleware, so it is drawn from [PublicReason] and names nothing the caller

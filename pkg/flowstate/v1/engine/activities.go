@@ -395,7 +395,7 @@ func activityError(taskName string, err error, continueOnError bool) error {
 //
 // The span and the instruments both come from [v1.ObserveTaskAttempt], the one
 // call the local driver makes too, so the two drivers cannot end up naming an
-// instrument or an attribute key differently — invariant 5 for a measurement
+// instrument or an attribute key differently — invariant 3 for a measurement
 // rather than for an outcome. What is added here is the attempt attribute and
 // the driver label, both of which only this side can supply.
 //

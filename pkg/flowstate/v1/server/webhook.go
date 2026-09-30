@@ -755,7 +755,7 @@ type AcceptedDelivery struct {
 	RunID string `json:"run_id"`
 
 	// DeliveryID names the delivery, and is what provenance records — a digest of
-	// the idempotency key rather than the key itself. See [webhookDeliveryID].
+	// the idempotency key rather than the key itself. See [v1.WebhookDeliveryID].
 	DeliveryID string `json:"delivery_id"`
 
 	// Joined is true when this delivery was a redelivery: the run already
@@ -889,10 +889,10 @@ func (r *WebhookReceiver) start(ctx context.Context, route *webhookRoute, delive
 
 		// How this run started, for the workflow's own steps to read: which
 		// webhook, admitted as which principal, by which delivery. The delivery id
-		// is the digest [webhookDeliveryID] already computed and never the
+		// is the digest [v1.WebhookDeliveryID] already computed and never the
 		// idempotency key it names — a key is whatever an author's expression
 		// read from a sender-shaped delivery, possibly credential-shaped, and
-		// this value is written to history, which invariant 8 calls durable and
+		// this value is written to history, which invariant 7 calls durable and
 		// broadly readable.
 		Trigger: v1.NewWebhookTriggerContext(
 			route.trigger.GetName(), identity.GetSubject(), deliveryID),

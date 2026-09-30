@@ -764,11 +764,12 @@ const maxProxyTargetAddrs = 15
 
 // evalConnRules evaluates the connection-scoped rules for one resolved address.
 //
-// One function with two callers rather than two activations built side by side:
+// One function with three callers rather than activations built side by side:
 // [Policy.controlDial] reads scheme and host from the attributes the round
-// tripper attached, and [Policy.checkProxiedTarget] takes them from the request
-// URL, but what the rules are handed has to be identical or a rule means two
-// different things depending on whether a proxy is configured. Adding an
+// tripper attached, [Policy.checkProxiedTarget] takes them from the request
+// URL, and [Policy.CheckConnection] from its arguments, but what the rules are
+// handed has to be identical or a rule means different things depending on
+// whether a proxy is configured or the connection is not HTTP. Adding an
 // attribute to connEnv (rules.go) must be a change in one place.
 func (p *Policy) evalConnRules(ctx context.Context, target, scheme, host string, addrPort netip.AddrPort) error {
 	return p.connRules.evaluate(ctx, target, map[string]any{
