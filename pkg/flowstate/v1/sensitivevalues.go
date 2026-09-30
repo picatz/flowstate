@@ -339,6 +339,15 @@ func SensitiveInputValues(inputs map[string]*Value, sensitiveNames map[string]bo
 				if n.root || utf8.RuneCountInString(text) >= minSensitiveSubstringRunes {
 					out.substrings = append(out.substrings, text)
 				}
+			case []byte:
+				// Its text is a string descendant too: a rendering that
+				// merely contains the bytes, `"Bearer " + string(token)`,
+				// holds a string the typed equality never sees, and without
+				// a spelling here the substring backstop never looks for it
+				// (#2231). Queued as the string it converts to, so the
+				// floor, the `%q` spelling and the descendant bound apply
+				// exactly as they do to any string.
+				pending = append(pending, node{value: string(value), root: n.root})
 			case map[string]any:
 				// Keys are descendants too: sensitivity belongs to the whole
 				// declared value, and a map whose *keys* carry the material —
