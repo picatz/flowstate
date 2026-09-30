@@ -1298,10 +1298,13 @@ func (e *executor) runSwitch(node *v1.Node, sw *v1.Switch, depth, susp int) erro
 	// [call, {next step of the callee}]. Read as the arm's own, that starts the
 	// arm at the callee's step index and skips the ones before it. An arm is
 	// never resumed into (a run does not continue as new inside one), so it
-	// starts at its first step. Asked only where a position below the arm
-	// exists, so a run that never continued inside a call records no marker;
-	// a history recorded before it started the arm where the callee stopped,
-	// and replays that way.
+	// starts at its first step. Asked only where a saved position lies below
+	// the arm, so a run that never continued as new inside a container records
+	// no marker. That is any container, not only a call: a finished loop's
+	// frame reads as zero and starts the arm correctly, but clearing it too is
+	// the one rule that cannot hand a stale frame to a step entered at the
+	// arm's start. A history recorded before the marker started the arm where
+	// the callee stopped, and replays that way.
 	if depth+1 < len(e.resume) && workflow.GetVersion(e.ctx, switchArmResumeChange, workflow.DefaultVersion, 1) != workflow.DefaultVersion {
 		resume := e.resume
 		e.resume = nil
