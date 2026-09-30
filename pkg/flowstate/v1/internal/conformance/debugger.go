@@ -1008,6 +1008,34 @@ func GuardCases() []GuardCase {
 			Secret: `\150\165\156`,
 		},
 		{
+			// A string that merely contains a sensitive structure's bytes is
+			// withheld from the bytes' text, which the set holds a spelling
+			// of (#2231).
+			Name: "a skip inside a callee withholds a literal containing a nested sensitive bytes value",
+			Workflow: &v1.Workflow{
+				Name:    "guard-sensitive-bytes-contained",
+				Profile: v1.CurrentProfile,
+				Steps: []*v1.Node{
+					says("first", "one"),
+					{Id: "nested", Kind: &v1.Node_Call{Call: &v1.Call{
+						Workflow: &v1.Workflow{
+							Name:           "child",
+							Profile:        v1.CurrentProfile,
+							DeclaredInputs: []*v1.InputDeclaration{{Name: "creds", Type: v1.InputDeclaration_TYPE_STRUCT, Sensitive: true}},
+							Steps: []*v1.Node{
+								guarded("rotate", `"Bearer hunter2-contained" != "Bearer " + string(inputs.creds.token)`, "never"),
+							},
+						},
+						Arguments: map[string]*v1.Value{"creds": v1.NewExpr(`{"token": b"hunter2-contained"}`)},
+					}}},
+				},
+			},
+			Skipped: []string{
+				"rotate skipped: `if: \"[redacted]\" != \"Bearer \" + string(inputs.creds.`[redacted]`)` was false",
+			},
+			Secret: "hunter2-contained",
+		},
+		{
 			// The renderer escapes the quote, so the value's own text is
 			// no longer in the sentence to be matched; a literal that merely
 			// contains it is withheld from its unescaped text (Copilot,
