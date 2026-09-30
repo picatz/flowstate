@@ -27,10 +27,12 @@ import (
 // for exactly this — "a position that needed one would be a run held in two
 // places, which is not a state this seam can be in" (debug.proto).
 //
-// The cost, stated: the durable driver can hold at strictly fewer boundaries
-// than the local driver offers, and the difference is a `parallel:` branch and
-// a loop body. `conformance.DebuggerCase` carries both lists side by side so
-// the asymmetry is written down rather than discovered.
+// The cost, stated: the durable driver can hold at fewer boundaries than the
+// local driver offers, and the difference is a `parallel:` branch and a
+// `for_each:` running iterations together. A `loop:` body, a `switch:` arm and
+// a `for_each:` running one iteration at a time have one position and are held
+// in ([holdInBodiesChange]). `conformance.DebuggerCase` carries both lists side
+// by side so the asymmetry is written down rather than discovered.
 //
 // # Why this is not [v1.Debugger]
 //
@@ -89,6 +91,12 @@ type debugControl struct {
 	// are in this segment's scope, and what withheld them was not carried, so
 	// [debugControl.sensitiveAt] withholds everything (#2213).
 	returnedBefore bool
+
+	// bodyHolds says this run holds inside the bodies that have one position
+	// ([holdInBodiesChange]): a `loop:`, a `switch:` arm and a `for_each:`
+	// running one iteration at a time. Decided once per segment, before any
+	// boundary, because it decides which boundaries read the ask channel.
+	bodyHolds bool
 
 	// returnedHere says a call in this segment handed back something its
 	// caller withholds. Kept here rather than on the carry, which an attach

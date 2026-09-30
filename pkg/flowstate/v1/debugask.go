@@ -202,9 +202,11 @@ func ParseTypedDebugAsk(payload *Node_Outputs) (*DebugAsk, bool, error) {
 
 // DurableDebugCapabilities is what the durable driver does.
 //
-// It holds only where a run has one representable position — the top level of
-// the run and of a called workflow — so step-in reaches a callee's steps but
-// never a loop body or a parallel branch, which run as a unit durably. Failure
+// It holds only where a run has one position — the top level of the run and of
+// a called workflow, and inside a `loop:`, a `switch:` arm and a `for_each:`
+// running one iteration at a time — so step-in reaches a callee's steps and a
+// body's, but never a `parallel:` branch or a concurrent `for_each:`, which
+// run as a unit durably. Failure
 // stops and logpoints are local-only: the durable driver has no place to hold
 // a run after a failure is recorded, and a logpoint's expressions would be a
 // second, unaudited inspection channel.

@@ -540,6 +540,11 @@ func runWorkflow(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutput
 		debug.irDigest = v1.WorkflowIRDigest(st.GetWorkflow())
 		debug.rootSensitive = v1.SensitiveInputValues(st.GetInputs(), v1.SensitiveInputNames(st.GetWorkflow()))
 		debug.returnedBefore = debug.carry.GetReturnedWithheld()
+		// A boundary in a body reads the ask channel, which consumes signals
+		// a history recorded before this change left unread there: the
+		// version marks the runs that hold in bodies, and the rest keep the
+		// boundaries they were recorded with.
+		debug.bodyHolds = workflow.GetVersion(ctx, holdInBodiesChange, workflow.DefaultVersion, 1) != workflow.DefaultVersion
 	}
 	if err := setDebugQueries(ctx, debug, st.GetWorkflow); err != nil {
 		return nil, fmt.Errorf("register debug queries: %w", err)

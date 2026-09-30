@@ -42,13 +42,14 @@ type DebuggerCase struct {
 	// # Why it is ever shorter
 	//
 	// A lease names one holder and one position, and the durable driver takes
-	// one only where the run *has* a single representable position — the
-	// `susp == 0` boundaries, the same set Continue-As-New may suspend at and
-	// the same set `RunProgress` answers about. A `switch:` arm, a `parallel:`
-	// branch and a loop body are all at several positions at once as far as
-	// suspension is concerned, and [v1.DebugPosition] carries no `path` for
-	// precisely that reason ("a position that needed one would be a run held in
-	// two places, which is not a state this seam can be in", debug.proto).
+	// one only where the run *has* a single position: the top level, a
+	// callee, and a `loop:` body, `switch:` arm or `for_each:` running one
+	// iteration at a time ([SteppedCases] holds both drivers to exactly those).
+	// A `parallel:` branch and a `for_each:` running iterations together are
+	// at several positions at once, and [v1.DebugPosition] carries no `path`
+	// for precisely that reason ("a position that needed one would be a run
+	// held in two places, which is not a state this seam can be in",
+	// debug.proto).
 	//
 	// The local driver has no such constraint: it holds a goroutine, so it can
 	// stop each branch where that branch is. So the asymmetry is a real
@@ -186,26 +187,19 @@ func DebuggerCases() []DebuggerCase {
 			}),
 			Offered: []string{"each", "touch", "touch", "touch"},
 
-			// The loop, and not its body. A `for_each:` body runs at a deeper
-			// suspend level than the step that declares it — the engine will
-			// not Continue-As-New inside one — so it has no representable
-			// position for a lease to name. The local driver stops three times
-			// here and a durable lease stops once, which is the asymmetry
-			// [DebuggerCase.Held] exists to state rather than leave for
-			// somebody to find.
-			Held: []string{"each"},
+			// The loop and each iteration of its body: a `for_each:` running one
+			// iteration at a time has one position, so both drivers stop three
+			// times. Only a `for_each:` running iterations together would be
+			// stopped in by the local driver alone ([DebuggerCase.Held]).
+			Held: []string{"each", "touch", "touch", "touch"},
 		},
 		{
-			// The asymmetry with nothing else going on, so that the difference
-			// between the two lists is the whole of what this case is about.
-			//
 			// A `switch:` is the sequential member of the family — one arm
 			// runs, deterministically, so the offers are a fact rather than a
-			// race — and its body is at a deeper suspend level exactly as a
-			// loop's is. Written with a `parallel:` this case could not state
-			// an order at all; written with a `for_each:` it would repeat the
-			// one above.
-			Name: "a switch is a boundary and the arm it takes is not",
+			// race — and the arm it takes has one position, as a loop's body
+			// does. Written with a `parallel:` this case could not state an
+			// order at all, nor a durable hold to compare it to.
+			Name: "a switch is a boundary and so is the arm it takes",
 			Workflow: &v1.Workflow{
 				Name:    "debug-switch",
 				Profile: v1.CurrentProfile,
@@ -235,7 +229,137 @@ func DebuggerCases() []DebuggerCase {
 				"case":  v1.NewLiteral("go"),
 			}),
 			Offered: []string{"before", "route", "chosen"},
-			Held:    []string{"before", "route"},
+			Held:    []string{"before", "route", "chosen"},
+		},
+	}
+}
+
+// SteppedCase is a run a session steps through, one `step` at a time from the
+// first boundary until the run ends. Both drivers must stop at exactly Stops,
+// in order: the same steps, in the same iterations, arms and calls. A driver
+// that skipped a body its neighbour stopped in, or stopped where the other's
+// run is not, is a debugger that describes a different run.
+//
+// Only programs whose every step has one position at a time are here, which is
+// the whole of what a durable run holds at: a `parallel:` branch or a
+// concurrent `for_each:` is stopped in by the local driver alone (see
+// [DebuggerCase.Held]), so it is left to the durable driver's own tests.
+type SteppedCase struct {
+	// Name labels the case.
+	Name string
+
+	// Workflow is the program, with no `debug:` policy: the durable caller
+	// adds the one its harness attaches under.
+	Workflow *v1.Workflow
+
+	// Stops is the occurrence address of each stop, in order.
+	Stops []string
+}
+
+// SteppedCases is the corpus for [SteppedCase].
+func SteppedCases() []SteppedCase {
+	return []SteppedCase{
+		{
+			Name: "stepping enters every iteration of a for_each body",
+			Workflow: &v1.Workflow{
+				Name:    "stepped-for-each",
+				Profile: v1.CurrentProfile,
+				Steps: []*v1.Node{
+					says("first", "one"),
+					{
+						Id: "each",
+						Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{
+							Items:       v1.NewExpr(`["a", "b"]`),
+							MaxParallel: 1,
+							Body:        []*v1.Node{says("touch", "visited"), says("again", "twice")},
+						}},
+					},
+					says("last", "two"),
+				},
+			},
+			Stops: []string{
+				"first", "each", "each[0]/touch", "each[0]/again", "each[1]/touch", "each[1]/again", "last",
+			},
+		},
+		{
+			Name: "stepping enters every iteration of a loop",
+			Workflow: &v1.Workflow{
+				Name:    "stepped-loop",
+				Profile: v1.CurrentProfile,
+				Steps: []*v1.Node{
+					{
+						Id: "count",
+						Kind: &v1.Node_Loop{Loop: &v1.Loop{
+							State:         "n",
+							Initial:       v1.NewLiteral(int64(2)),
+							Update:        v1.NewExpr("n - 1"),
+							Until:         v1.NewExpr("n <= 1"),
+							MaxIterations: 10,
+							Body:          []*v1.Node{says("tick", "ticked")},
+						}},
+					},
+					says("done", "end"),
+				},
+			},
+			Stops: []string{"count", "count[0]/tick", "count[1]/tick", "done"},
+		},
+		{
+			Name: "stepping enters the arm a switch takes and no other",
+			Workflow: &v1.Workflow{
+				Name:    "stepped-switch",
+				Profile: v1.CurrentProfile,
+				Steps: []*v1.Node{
+					{
+						Id: "route",
+						Kind: &v1.Node_Switch{Switch: &v1.Switch{
+							Value: v1.NewLiteral("go"),
+							Cases: []*v1.Switch_Case{
+								{Values: []*v1.Value{v1.NewLiteral("stop")}, Steps: []*v1.Node{says("halted", "no")}},
+								{Values: []*v1.Value{v1.NewLiteral("go")}, Steps: []*v1.Node{says("chosen", "yes")}},
+							},
+						}},
+					},
+					says("after", "end"),
+				},
+			},
+			Stops: []string{"route", "route?1/chosen", "after"},
+		},
+		{
+			Name: "stepping enters a call made from inside a body, and a body inside a callee",
+			Workflow: &v1.Workflow{
+				Name:    "stepped-nested",
+				Profile: v1.CurrentProfile,
+				Steps: []*v1.Node{
+					{
+						Id: "each",
+						Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{
+							Items:       v1.NewExpr(`["a"]`),
+							MaxParallel: 1,
+							Body: []*v1.Node{{Id: "nested", Kind: &v1.Node_Call{Call: &v1.Call{
+								Workflow: &v1.Workflow{
+									Name:    "child",
+									Profile: v1.CurrentProfile,
+									Steps: []*v1.Node{
+										says("inner", "i"),
+										{
+											Id: "sweep",
+											Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{
+												Items:       v1.NewExpr(`["x"]`),
+												MaxParallel: 1,
+												Body:        []*v1.Node{says("deep", "d")},
+											}},
+										},
+									},
+								},
+							}}}},
+						}},
+					},
+				},
+			},
+			Stops: []string{
+				"each", "each[0]/nested", "each[0]/nested(child)/inner", "each[0]/nested(child)/sweep",
+				"each[0]/nested(child)/sweep[0]/deep",
+			},
 		},
 	}
 }
