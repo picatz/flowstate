@@ -95,7 +95,7 @@ func TestTheCapabilityGuardWalksSomething(t *testing.T) {
 
 // TestCapabilitySiteDetectionReadsTheShapesGoAllows is the discovery check: a
 // text search for `&v1.DebugCapabilities{` misses an import under another alias,
-// a value literal, and new().
+// a value literal, new(), a package-level variable, and a declared zero value.
 func TestCapabilitySiteDetectionReadsTheShapesGoAllows(t *testing.T) {
 	const src = `package p
 
@@ -118,11 +118,24 @@ func Twice() {
 	_ = dbg.DebugCapabilities{}
 }
 
+var Global = &dbg.DebugCapabilities{Pause: true}
+
+var Zero dbg.DebugCapabilities
+
+func Declared() any {
+	var c dbg.DebugCapabilities
+	return c
+}
+
 // Not constructions: reading one, a type that merely starts with the name, an
 // unrelated set of capabilities, and a nil conversion of the type.
 func NearMisses(caps *dbg.DebugCapabilities, other Capabilities) any {
 	return []any{caps.GetPause(), dbg.DebugCapabilitiesX{}, other, (*dbg.DebugCapabilities)(nil)}
 }
+
+var Reference *dbg.DebugCapabilities
+
+var OtherSet dbg.DebugCapabilitiesX
 `
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, "fixture.go", src, 0)
@@ -135,6 +148,7 @@ func NearMisses(caps *dbg.DebugCapabilities, other Capabilities) any {
 	assert.Equal(t, []string{
 		"fixture.go#Pointer", "fixture.go#Value", "fixture.go#Empty", "fixture.go#(*Methods).Built",
 		"fixture.go#Twice", "fixture.go#Twice",
+		"fixture.go#<package-level>", "fixture.go#<package-level>", "fixture.go#Declared",
 	}, got)
 }
 
@@ -199,9 +213,13 @@ func generated(source []byte) bool {
 	return false
 }
 
-// capabilitySitesInFile finds each composite literal and new() of a type named
-// DebugCapabilities, qualified by any import alias or not, keyed by path and
-// enclosing function.
+// capabilitySitesInFile finds each composite literal, new(), and declared
+// variable of a type named DebugCapabilities, qualified by any import alias or
+// not, keyed by path and enclosing function, or by "<package-level>" for a
+// site in a package-level declaration. A `var c v1.DebugCapabilities` builds a
+// set with no literal in sight, and a package-level `var x = &v1.DebugCapabilities{}`
+// is outside every function; a guard that read only function bodies missed
+// both (found by review of the PR that added it).
 func capabilitySitesInFile(fset *token.FileSet, file *ast.File, path string) []capabilitySite {
 	named := func(expr ast.Expr) bool {
 		switch typ := expr.(type) {
@@ -216,18 +234,33 @@ func capabilitySitesInFile(fset *token.FileSet, file *ast.File, path string) []c
 
 	var sites []capabilitySite
 	for _, decl := range file.Decls {
-		fn, ok := decl.(*ast.FuncDecl)
-		if !ok || fn.Body == nil {
+		var name string
+		var root ast.Node
+		switch decl := decl.(type) {
+		case *ast.FuncDecl:
+			if decl.Body == nil {
+				continue
+			}
+			name = decl.Name.Name
+			if decl.Recv != nil && len(decl.Recv.List) == 1 {
+				name = "(" + types(decl.Recv.List[0].Type) + ")." + name
+			}
+			root = decl.Body
+		case *ast.GenDecl:
+			name, root = "<package-level>", decl
+		default:
 			continue
 		}
-		name := fn.Name.Name
-		if fn.Recv != nil && len(fn.Recv.List) == 1 {
-			name = "(" + types(fn.Recv.List[0].Type) + ")." + name
-		}
-		ast.Inspect(fn.Body, func(n ast.Node) bool {
+		ast.Inspect(root, func(n ast.Node) bool {
 			var pos token.Pos
 			switch node := n.(type) {
 			case *ast.CompositeLit:
+				if node.Type != nil && named(node.Type) {
+					pos = node.Pos()
+				}
+			case *ast.ValueSpec:
+				// `var c v1.DebugCapabilities`: the zero value, built without
+				// a literal. A pointer or another type is a reference, not a build.
 				if node.Type != nil && named(node.Type) {
 					pos = node.Pos()
 				}
