@@ -74,6 +74,15 @@ func ExecutingOccurrenceFromContext(ctx context.Context, node *Node) *DebugOccur
 	return NewDebugOccurrence(position.workflow, position.segments, node.GetId(), NodeKind(node))
 }
 
+// ExecutingAddressFromContext is the address of the step id being reached
+// under ctx, as [ExecutingOccurrenceFromContext] would write it, without the
+// occurrence around it.
+func ExecutingAddressFromContext(ctx context.Context, id string) string {
+	position, _ := ctx.Value(executingWorkflowKey{}).(executingPosition)
+
+	return FormatDebugAddress(position.segments, id)
+}
+
 // NewDebugOccurrence builds the occurrence of step, declared by workflow,
 // reached under segments (outermost first). The site's path is the containers
 // after the innermost call, since a callee's steps belong to the callee.
@@ -727,9 +736,9 @@ func (t DebugTarget) matchesStatically(site DebugStaticSite) bool {
 	return relaxed.Matches(&DebugOccurrence{Site: site.Site, Segments: site.Chain})
 }
 
-// switchArmIndex is the index of the arm whose body is body: a case's own
+// SwitchArmIndex is the index of the arm whose body is body: a case's own
 // index, or the number of cases for the default arm.
-func switchArmIndex(sw *Switch, body []*Node) int {
+func SwitchArmIndex(sw *Switch, body []*Node) int {
 	if len(body) == 0 {
 		return 0
 	}

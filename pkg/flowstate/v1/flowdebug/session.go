@@ -869,6 +869,20 @@ func (s *Session) StepFinished(id string, outputs *v1.Node_Outputs, err error, t
 // those workflows declare sensitive (#2210), as a hold there withholds it
 // ([withholdingAt]) — unless [Options.RevealSensitive] authorized showing it.
 func (s *Session) StepFinishedWithholding(id string, outputs *v1.Node_Outputs, err error, tolerated bool, withhold v1.SensitiveValues) {
+	s.finished(id, nil, outputs, err, tolerated, withhold)
+}
+
+// StepFinishedAt implements [v1.PlacedRunObserver]: the outcome of a step the
+// run says the place of, which is how it stays the right iteration's when
+// like-named iterations finish out of the order they arrived in.
+func (s *Session) StepFinishedAt(id, address string, outputs *v1.Node_Outputs, err error, tolerated bool, withhold v1.SensitiveValues) {
+	s.finished(id, &address, outputs, err, tolerated, withhold)
+}
+
+// finished is [Session.StepFinishedWithholding]. placed, when set, is where the
+// step is, as the run says it; otherwise the last boundary the run reached
+// does, when that was the step.
+func (s *Session) finished(id string, placed *string, outputs *v1.Node_Outputs, err error, tolerated bool, withhold v1.SensitiveValues) {
 	s.sawStep(id)
 	if s.reveal {
 		withhold = v1.SensitiveValues{}
@@ -900,14 +914,14 @@ func (s *Session) StepFinishedWithholding(id string, outputs *v1.Node_Outputs, e
 	}
 	s.noteStep(id, state)
 	s.emitTone(tone, "  "+line+"\n")
-	s.observeRedacted(observationKind(state), id, capRunes(line, maxObservationRunes))
+	s.observeRedactedAt(observationKind(state), id, placed, capRunes(line, maxObservationRunes))
 }
 
 // StepSkipped implements [v1.RunObserver]. The engine calls
 // [Session.StepSkippedBy] instead, and this is the account of a skip whose
 // condition nobody quoted.
 func (s *Session) StepSkipped(id string) {
-	s.StepSkippedBy(id, nil, v1.SensitiveValues{})
+	s.skipped(id, nil, nil, v1.SensitiveValues{})
 }
 
 // StepSkippedBy implements [v1.GuardRunObserver]. A skipped step never reaches
@@ -917,7 +931,13 @@ func (s *Session) StepSkipped(id string) {
 // gives. The account withholds what the workflow it is in declares sensitive
 // ([withholdingAt]), as a durable session's does, unless
 // [Options.RevealSensitive] authorized showing it.
-func (s *Session) StepSkippedBy(id string, condition *v1.Value, withhold v1.SensitiveValues) {
+func (s *Session) StepSkippedBy(id, address string, condition *v1.Value, withhold v1.SensitiveValues) {
+	s.skipped(id, &address, condition, withhold)
+}
+
+// skipped is [Session.StepSkippedBy]; placed is nil where nothing told the
+// step's place.
+func (s *Session) skipped(id string, placed *string, condition *v1.Value, withhold v1.SensitiveValues) {
 	// Remembered as a step this run reaches even though it did not run: a
 	// breakpoint on a step whose `if:` was false this time is exactly what
 	// somebody sets when they are trying to find out why.
@@ -950,15 +970,15 @@ func (s *Session) StepSkippedBy(id string, condition *v1.Value, withhold v1.Sens
 	})
 	line := capRunes(applyText(redact, account), maxObservationRunes)
 	s.emitTone(ToneInfo, "  "+line+"\n")
-	s.observeRedacted(v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_SKIPPED, id, line)
+	s.observeRedactedAt(v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_SKIPPED, id, placed, line)
 }
 
 // GuardFailed implements [v1.GuardRunObserver]: a step whose `if:` could not
 // be evaluated is a step that failed, and without this the step list would
 // show it as never reached. Its account is a failed step's, since that is
 // what the run reports.
-func (s *Session) GuardFailed(id string, err error, withhold v1.SensitiveValues) {
-	s.StepFinishedWithholding(id, nil, err, false, withhold)
+func (s *Session) GuardFailed(id, address string, err error, withhold v1.SensitiveValues) {
+	s.finished(id, &address, nil, err, false, withhold)
 }
 
 // WaitStarted implements [v1.RunObserver], reporting a wait as it parks.

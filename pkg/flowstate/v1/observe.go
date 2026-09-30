@@ -111,6 +111,21 @@ type WithholdingRunObserver interface {
 	StepFinishedWithholding(id string, outputs *Node_Outputs, err error, tolerated bool, withhold SensitiveValues)
 }
 
+// A PlacedRunObserver is a [WithholdingRunObserver] that is also told where a
+// step finished: its address in the run, as [FormatDebugAddress] writes it,
+// taken from the context the step ran in. A step id says which step, and a
+// step in a body runs many times, so an observer left to place an outcome by
+// the steps it has seen arrive can pair it with the wrong iteration when
+// iterations run at once.
+//
+// It is called in place of StepFinishedWithholding, with the same arguments
+// after the address.
+type PlacedRunObserver interface {
+	WithholdingRunObserver
+
+	StepFinishedAt(id, address string, outputs *Node_Outputs, err error, tolerated bool, withhold SensitiveValues)
+}
+
 // WithholdingOnlyRunObserver is a [RunObserver] that reads, of each finished
 // step, only what a rendering of it must withhold: the set a
 // [WithholdingRunObserver] is told, without the outputs and the error. A
@@ -137,17 +152,19 @@ type GuardRunObserver interface {
 
 	// StepSkippedBy is called in place of StepSkipped, with the condition
 	// that decided, the observer's own copy, for the account both drivers give
-	// of the skip ([SkippedText]). withhold is what a rendering of it must
-	// withhold, as for [WithholdingRunObserver]: the condition is the
-	// author's text, and an author can write a value there that the workflow
-	// declares sensitive.
-	StepSkippedBy(id string, condition *Value, withhold SensitiveValues)
+	// of the skip ([SkippedText]). address is where the step is in the run,
+	// as [FormatDebugAddress] writes it: a step that is skipped never reaches
+	// the debugger, so nothing else tells an observer which iteration of a body
+	// it was skipped in. withhold is what a rendering of it must withhold, as
+	// for [WithholdingRunObserver]: the condition is the author's text, and an
+	// author can write a value there that the workflow declares sensitive.
+	StepSkippedBy(id, address string, condition *Value, withhold SensitiveValues)
 
-	// GuardFailed reports a step whose `if:` could not be evaluated. The step
-	// did not run, and err, a snapshot of the failure the run propagates, ends
-	// it. withhold is what a rendering must withhold, as for
-	// [WithholdingRunObserver].
-	GuardFailed(id string, err error, withhold SensitiveValues)
+	// GuardFailed reports a step whose `if:` could not be evaluated, at
+	// address (see StepSkippedBy). The step did not run, and err, a snapshot
+	// of the failure the run propagates, ends it. withhold is what a rendering
+	// must withhold, as for [WithholdingRunObserver].
+	GuardFailed(id, address string, err error, withhold SensitiveValues)
 }
 
 // SkippedText is the account of a step whose `if:` evaluated false, in the one
@@ -380,6 +397,12 @@ func observeStepFinished(ctx context.Context, id string, outputs *Node_Outputs, 
 	if withholding, ok := observer.(WithholdingRunObserver); ok {
 		// Taken from the live error, before the snapshot drops its chain.
 		withhold := ExecutingSensitiveFromContext(ctx).Merge(FailureSensitiveValues(err)).Merge(returned)
+		if placed, ok := observer.(PlacedRunObserver); ok {
+			address := ExecutingAddressFromContext(ctx, id)
+			observeSafely(func() { placed.StepFinishedAt(id, address, copied, snapshot, tolerated, withhold) })
+
+			return
+		}
 		observeSafely(func() { withholding.StepFinishedWithholding(id, copied, snapshot, tolerated, withhold) })
 
 		return
@@ -397,7 +420,8 @@ func observeStepSkipped(ctx context.Context, node *Node) {
 		// condition is the run's, and an account must not be able to edit it.
 		condition := proto.CloneOf(node.GetCondition())
 		withhold := ExecutingSensitiveFromContext(ctx)
-		observeSafely(func() { guard.StepSkippedBy(node.GetId(), condition, withhold) })
+		address := ExecutingOccurrenceFromContext(ctx, node).GetAddress()
+		observeSafely(func() { guard.StepSkippedBy(node.GetId(), address, condition, withhold) })
 
 		return
 	}
@@ -407,14 +431,15 @@ func observeStepSkipped(ctx context.Context, node *Node) {
 // observeGuardFailed reports a step whose `if:` raised err
 // ([GuardRunObserver]). An observer that is not told about guards hears
 // nothing, as it always has.
-func observeGuardFailed(ctx context.Context, id string, err error) {
+func observeGuardFailed(ctx context.Context, node *Node, err error) {
 	guard, ok := RunObserverFromContext(ctx).(GuardRunObserver)
 	if !ok {
 		return
 	}
 	withhold := ExecutingSensitiveFromContext(ctx).Merge(FailureSensitiveValues(err))
 	snapshot := errors.New(err.Error())
-	observeSafely(func() { guard.GuardFailed(id, snapshot, withhold) })
+	address := ExecutingOccurrenceFromContext(ctx, node).GetAddress()
+	observeSafely(func() { guard.GuardFailed(node.GetId(), address, snapshot, withhold) })
 }
 
 func observeWaitStarted(ctx context.Context, id, signal string, timeout time.Duration, bounded bool) {

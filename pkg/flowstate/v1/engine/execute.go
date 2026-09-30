@@ -249,10 +249,12 @@ type executor struct {
 	// needed here either.
 	debug *debugControl
 
-	// debugSegments are the calls this executor runs inside, outermost first,
-	// which is how a durable debugger addresses an occurrence: the durable
+	// debugSegments are the calls this executor runs inside, and the
+	// iterations, branches and arms of the bodies it runs in, outermost first,
+	// which is how a durable debugger addresses an occurrence. The durable
 	// driver holds only where a position is representable, the top level of
-	// the run and of a callee, so calls are the only nesting a hold can be in.
+	// the run and of a callee, so a hold is in calls alone; the rest name where
+	// a step in a body ran, for what a session is told of it.
 	debugSegments []*v1.DebugSegment
 
 	// progress is where the run has got to, for the query handler to answer from.
@@ -1274,6 +1276,10 @@ func (e *executor) runSwitch(node *v1.Node, sw *v1.Switch, depth, susp int) erro
 		return nodeFailed(&v1.SwitchBodyError{Err: err, Selection: outputs})
 	}
 
+	outer := e.debugSegments
+	e.debugSegments = e.debugSegmentsUnder(v1.DebugSegmentKind_DEBUG_SEGMENT_KIND_CASE, node, v1.SwitchArmIndex(sw, body))
+	defer func() { e.debugSegments = outer }()
+
 	if err := e.runNodes(body, depth+1, susp+1); err != nil {
 		// Wrapped so the selection survives the failure: failedAt reads the
 		// account off [v1.SwitchBodyError] the way it reads an exhausted loop's,
@@ -1774,7 +1780,7 @@ func (e *executor) runForEach(node *v1.Node, loop *v1.ForEach, depth, susp int, 
 	resultsBytes := v1.LoopResultsSize(results)
 
 	if loop.GetMaxParallel() > 1 {
-		iterations, err := e.runIterationsConcurrently(e.within(node), loop, name, items[startItem:], inner, innerSusp)
+		iterations, err := e.runIterationsConcurrently(node, startItem, loop, name, items[startItem:], inner, innerSusp)
 		if err != nil {
 			return err
 		}
@@ -1804,7 +1810,7 @@ func (e *executor) runForEach(node *v1.Node, loop *v1.ForEach, depth, susp int, 
 	for i := startItem; i < len(items); i++ {
 		e.setLoopFrame(inner, i, results)
 
-		iteration, err := e.runIteration(e.within(node), loop, name, items[i], inner, innerSusp, i == startItem && descend)
+		iteration, err := e.runIteration(e.within(node), e.debugSegmentsUnder(v1.DebugSegmentKind_DEBUG_SEGMENT_KIND_ITERATION, node, i), loop, name, items[i], inner, innerSusp, i == startItem && descend)
 		if err != nil {
 			if errors.Is(err, errContinueAsNew) {
 				return err
@@ -1946,7 +1952,7 @@ func (e *executor) runLoop(node *v1.Node, loop *v1.Loop, depth, susp int, descen
 		// recently committed to resuming from.
 		e.progress.setLoopState(node.GetId(), state)
 
-		iteration, stop, next, err := e.runLoopIteration(e.within(node), loop, name, state, inner, innerSusp, i == startItem && descend)
+		iteration, stop, next, err := e.runLoopIteration(e.within(node), e.debugSegmentsUnder(v1.DebugSegmentKind_DEBUG_SEGMENT_KIND_ITERATION, node, i), loop, name, state, inner, innerSusp, i == startItem && descend)
 		if err != nil {
 			if errors.Is(err, errContinueAsNew) {
 				return err
@@ -1997,7 +2003,7 @@ func (e *executor) runLoop(node *v1.Node, loop *v1.Loop, depth, susp int, descen
 // its state holds next. The until and update evaluations happen in workflow code,
 // which invariant 4 permits for a loop's own control expressions exactly as it does
 // for a `for_each`'s `items:` — the durable driver already evaluates those inline.
-func (e *executor) runLoopIteration(body []string, loop *v1.Loop, stateName string, state *v1.Value, depth, susp int, descend bool) (*v1.Workflow_StepOutputs, bool, *v1.Value, error) {
+func (e *executor) runLoopIteration(body []string, segments []*v1.DebugSegment, loop *v1.Loop, stateName string, state *v1.Value, depth, susp int, descend bool) (*v1.Workflow_StepOutputs, bool, *v1.Value, error) {
 	// Each iteration starts from the outputs visible before the loop, so an iteration
 	// cannot observe a previous one — the only thread between them is the carried
 	// state.
@@ -2044,6 +2050,8 @@ func (e *executor) runLoopIteration(body []string, loop *v1.Loop, stateName stri
 		undoScope: e.undoScope.IntoLoop(),
 
 		callDepth: e.callDepth,
+
+		debugSegments: segments,
 
 		// The iteration's own record of which body steps failed and were
 		// tolerated — what the attach below keys on.
@@ -2093,8 +2101,28 @@ func (e *executor) runLoopIteration(body []string, loop *v1.Loop, stateName stri
 	return v1.AttachIterationBinding(bodyOutputs(loop.GetBody(), iterationOutputs), state, nested.tolerated), false, next, nil
 }
 
+// debugSegmentsUnder is the segments a step inside node's body runs under:
+// this executor's, then one naming the iteration, branch or arm of node it is
+// in, as the local driver's segments name it ([v1.DebugSegment]). The body's
+// steps take their address from these, so an observation of one reads
+// `each[1]/touch` and not `touch`. A run that declares no `debug:` stanza has
+// no one to read them, so nothing is added, which keeps its per-iteration cost
+// what it was.
+func (e *executor) debugSegmentsUnder(kind v1.DebugSegmentKind, node *v1.Node, index int) []*v1.DebugSegment {
+	if !e.debug.enabled() || len(e.debugSegments) >= v1.MaxDebugSegments {
+		return e.debugSegments
+	}
+
+	return append(slices.Clip(e.debugSegments), &v1.DebugSegment{
+		Kind:     kind,
+		StepId:   node.GetId(),
+		Workflow: e.curSpec.GetName(),
+		Index:    int32(index),
+	})
+}
+
 // runIteration executes the loop body once against its own output scope.
-func (e *executor) runIteration(body []string, loop *v1.ForEach, iterator string, item *v1.Value, depth, susp int, descend bool) (*v1.Workflow_StepOutputs, error) {
+func (e *executor) runIteration(body []string, segments []*v1.DebugSegment, loop *v1.ForEach, iterator string, item *v1.Value, depth, susp int, descend bool) (*v1.Workflow_StepOutputs, error) {
 	// Each iteration starts from the outputs visible before the loop, so an
 	// iteration cannot observe a previous one — which keeps its behavior
 	// independent of how many ran before it, and identical whether iterations run
@@ -2136,6 +2164,8 @@ func (e *executor) runIteration(body []string, loop *v1.ForEach, iterator string
 
 		callDepth: e.callDepth,
 
+		debugSegments: segments,
+
 		// The iteration's own record of which body steps failed and were
 		// tolerated — what the attach below keys on.
 		tolerated: map[string]struct{}{},
@@ -2162,7 +2192,8 @@ func (e *executor) runIteration(body []string, loop *v1.ForEach, iterator string
 //
 // Results keep the order of the input list rather than the order iterations
 // finished, so a loop's results do not depend on scheduling.
-func (e *executor) runIterationsConcurrently(body []string, loop *v1.ForEach, iterator string, items []*v1.Value, depth, susp int) ([]*v1.Workflow_StepOutputs, error) {
+func (e *executor) runIterationsConcurrently(node *v1.Node, first int, loop *v1.ForEach, iterator string, items []*v1.Value, depth, susp int) ([]*v1.Workflow_StepOutputs, error) {
+	body := e.within(node)
 	limit := min(int(loop.GetMaxParallel()), len(items))
 
 	results := make([]*v1.Workflow_StepOutputs, len(items))
@@ -2212,6 +2243,7 @@ func (e *executor) runIterationsConcurrently(body []string, loop *v1.ForEach, it
 					undo:                   iterationUndo,
 					undoScope:              v1.UndoScopeConcurrent,
 					callDepth:              e.callDepth,
+					debugSegments:          e.debugSegmentsUnder(v1.DebugSegmentKind_DEBUG_SEGMENT_KIND_ITERATION, node, first+i),
 
 					// Deliberately not carried. Iterations run at once, so a
 					// worker writing its own step in would be reporting a
@@ -2329,6 +2361,7 @@ func (e *executor) runParallel(node *v1.Node, parallel *v1.Parallel, depth, susp
 				undo:                   branchUndo,
 				undoScope:              v1.UndoScopeConcurrent,
 				callDepth:              e.callDepth,
+				debugSegments:          e.debugSegmentsUnder(v1.DebugSegmentKind_DEBUG_SEGMENT_KIND_BRANCH, node, i),
 
 				// Not carried, for the same reason a concurrent iteration does
 				// not carry it: no one branch is the run's position.

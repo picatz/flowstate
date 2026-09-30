@@ -140,6 +140,24 @@ func (t teeObserver) StepFinishedWithholding(id string, outputs *v1.Node_Outputs
 	}
 }
 
+// StepFinishedAt implements [v1.PlacedRunObserver] for whichever listener
+// wants to be told where a step finished, and falls back to the listener's
+// own, less specific, callback for one that does not.
+func (t teeObserver) StepFinishedAt(id, address string, outputs *v1.Node_Outputs, err error, tolerated bool, withhold v1.SensitiveValues) {
+	for _, listener := range []v1.RunObserver{t.first, t.second} {
+		switch listener := listener.(type) {
+		case v1.PlacedRunObserver:
+			listener.StepFinishedAt(id, address, outputs, err, tolerated, withhold)
+		case v1.WithholdingRunObserver:
+			listener.StepFinishedWithholding(id, outputs, err, tolerated, withhold)
+		case v1.WithholdingOnlyRunObserver:
+			listener.StepWithheld(id, withhold)
+		default:
+			listener.StepFinished(id, outputs, err, tolerated)
+		}
+	}
+}
+
 func (t teeObserver) StepSkipped(id string) {
 	t.first.StepSkipped(id)
 	t.second.StepSkipped(id)
@@ -148,10 +166,10 @@ func (t teeObserver) StepSkipped(id string) {
 // StepSkippedBy implements [v1.GuardRunObserver] for whichever listener quotes
 // the condition, so teeing a debugger with the recorder does not cost the
 // debugger its account of why a step was skipped.
-func (t teeObserver) StepSkippedBy(id string, condition *v1.Value, withhold v1.SensitiveValues) {
+func (t teeObserver) StepSkippedBy(id, address string, condition *v1.Value, withhold v1.SensitiveValues) {
 	for _, listener := range []v1.RunObserver{t.first, t.second} {
 		if guard, ok := listener.(v1.GuardRunObserver); ok {
-			guard.StepSkippedBy(id, condition, withhold)
+			guard.StepSkippedBy(id, address, condition, withhold)
 		} else {
 			listener.StepSkipped(id)
 		}
@@ -160,10 +178,10 @@ func (t teeObserver) StepSkippedBy(id string, condition *v1.Value, withhold v1.S
 
 // GuardFailed implements [v1.GuardRunObserver] for whichever listener hears
 // about a condition that could not be evaluated.
-func (t teeObserver) GuardFailed(id string, err error, withhold v1.SensitiveValues) {
+func (t teeObserver) GuardFailed(id, address string, err error, withhold v1.SensitiveValues) {
 	for _, listener := range []v1.RunObserver{t.first, t.second} {
 		if guard, ok := listener.(v1.GuardRunObserver); ok {
-			guard.GuardFailed(id, err, withhold)
+			guard.GuardFailed(id, address, err, withhold)
 		}
 	}
 }

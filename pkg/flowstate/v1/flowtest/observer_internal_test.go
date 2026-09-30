@@ -96,10 +96,10 @@ type guardObserver struct {
 	accounts, failed []string
 }
 
-func (o *guardObserver) StepSkippedBy(id string, condition *v1.Value, _ v1.SensitiveValues) {
+func (o *guardObserver) StepSkippedBy(id, _ string, condition *v1.Value, _ v1.SensitiveValues) {
 	o.accounts = append(o.accounts, v1.SkippedText(id, condition, nil))
 }
-func (o *guardObserver) GuardFailed(id string, _ error, _ v1.SensitiveValues) {
+func (o *guardObserver) GuardFailed(id, _ string, _ error, _ v1.SensitiveValues) {
 	o.failed = append(o.failed, id)
 }
 
@@ -118,8 +118,8 @@ func TestATeeCarriesAGuardsAccountToTheDebugger(t *testing.T) {
 	recorder, debugger := &skipCounter{}, &guardObserver{}
 	tee := teeObserver{first: recorder, second: debugger}
 
-	tee.StepSkippedBy("gate", v1.NewLiteral(false), v1.SensitiveValues{})
-	tee.GuardFailed("bad", nil, v1.SensitiveValues{})
+	tee.StepSkippedBy("gate", "gate", v1.NewLiteral(false), v1.SensitiveValues{})
+	tee.GuardFailed("bad", "bad", nil, v1.SensitiveValues{})
 
 	if len(recorder.skipped) != 1 || recorder.skipped[0] != "gate" {
 		t.Fatalf("recorder skips = %q, want the one skip", recorder.skipped)

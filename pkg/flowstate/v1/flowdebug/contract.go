@@ -921,15 +921,36 @@ func (s *Session) observe(kind v1.DebugObservationKind, step, text string) {
 	s.observeRedacted(kind, step, capRunes(s.redactText(strings.TrimRight(text, "\n")), maxObservationRunes))
 }
 
+// occurrenceStep is the id of the step an occurrence is of.
+func occurrenceStep(occurrence *v1.DebugOccurrence) string {
+	path := occurrence.GetSite().GetPath()
+	if len(path) == 0 {
+		return ""
+	}
+
+	return path[len(path)-1]
+}
+
 // observeRedacted records one observation whose text is already redacted and
 // bounded.
 func (s *Session) observeRedacted(kind v1.DebugObservationKind, step, text string) {
+	s.observeRedactedAt(kind, step, nil, text)
+}
+
+// observeRedactedAt is [Session.observeRedacted] for an observation of a step
+// the run placed itself: one that never reached a boundary, a skipped step or
+// one whose `if:` failed, so no arrival can say where it is. placed is that
+// address, or nil to find the step's own arrival.
+func (s *Session) observeRedactedAt(kind v1.DebugObservationKind, step string, placed *string, text string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	address := ""
-	if occurrence := s.contract.occurrence; occurrence != nil {
-		if path := occurrence.GetSite().GetPath(); len(path) > 0 && path[len(path)-1] == step {
+	switch {
+	case placed != nil:
+		address = s.redactTextLocked(*placed)
+	default:
+		if occurrence := s.contract.occurrence; occurrence != nil && occurrenceStep(occurrence) == step {
 			address = s.redactTextLocked(occurrence.GetAddress())
 		}
 	}
