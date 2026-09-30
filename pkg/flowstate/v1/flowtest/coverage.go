@@ -2,8 +2,11 @@ package flowtest
 
 import (
 	"fmt"
+	"maps"
+	"slices"
 	"sort"
 	"strconv"
+	"strings"
 
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 
@@ -149,6 +152,13 @@ type SwitchArm struct {
 	// Reason is what the file recorded for this arm under
 	// `coverage.allow_unreached`, and is empty when it recorded none.
 	Reason string
+
+	// literal is the arm's string literal, unquoted, or empty for an arm that is
+	// not a string. Kept only so a withheld report can tell that a label spells
+	// a whole withheld value ([Coverage.withheldUnder]): the label quotes it, so
+	// matching the label alone would miss a value too short to match as a
+	// substring.
+	literal string
 
 	// Where is where the arm was written. Invalid when the workflow was not
 	// parsed from a file that recorded positions — a workflow submitted as bytes
@@ -421,7 +431,7 @@ func (a *coverageAccumulator) observe(identity string, spec *v1.Workflow, output
 // every case failed to compile), the signal to report no coverage line at all
 // rather than a misleading "0/0 steps reached". A workflow whose every case
 // failed to compile likewise contributes no entry.
-func (a *coverageAccumulator) result() []*Coverage {
+func (a *coverageAccumulator) result(sensitive sensitiveInputs) []*Coverage {
 	// Only workflows that saw a compiled spec produce coverage; an identity
 	// whose every case failed to compile has an empty universe and is dropped.
 	identities := make([]string, 0, len(a.workflows))
@@ -552,9 +562,99 @@ func (a *coverageAccumulator) result() []*Coverage {
 	out := make([]*Coverage, 0, len(identities))
 	for _, id := range identities {
 		sort.Strings(covs[id].Stale)
+		covs[id].withheldUnder(sensitive)
 		out = append(out, covs[id])
 	}
 	return out
+}
+
+// withheldUnder takes what sensitive holds out of every name c prints: the step
+// ids it lists, the arms it names, and the file's own words about them (#2229).
+//
+// Coverage is one report per file, accumulated across every case, so sensitive
+// is the posture spanning the file — every case's, joined, which withholds
+// everything if any case's does. A step id or a `switch:` arm label is what the
+// author wrote, and an author can spell a withheld value there as readily as
+// anywhere else; a name is withheld as a case's transcript withholds one
+// ([withheldName]), so the two reports spell it alike.
+//
+// Withholding a name never drops it: it is still counted, still listed once,
+// and still a gap if it is one. Two names that withhold to one spelling are
+// made distinct again ([distinctName]), in the order of the names as written,
+// so the lists and [Coverage.Accepted] stay in step with each other, and
+// [Coverage.Gaps] answers as it would have. Positions and the workflow's path
+// are the harness's own and are kept.
+func (c *Coverage) withheldUnder(sensitive sensitiveInputs) {
+	if sensitive.Empty() {
+		return
+	}
+
+	// Every step id this report prints, named once each and spelled in the
+	// order they were written, so the numbering does not depend on which list
+	// a name is met in.
+	written := map[string]bool{}
+	for _, id := range slices.Concat(c.Reached, c.Unreached) {
+		written[id] = true
+	}
+	for _, arm := range c.Arms {
+		written[arm.Step] = true
+	}
+	spelled := make(map[string]string, len(written))
+	taken := make(map[string]string, len(written))
+	for _, id := range slices.Sorted(maps.Keys(written)) {
+		spelled[id] = distinctName(taken, withheldName(id, sensitive))
+		taken[spelled[id]] = id
+	}
+
+	spell := func(ids []string) []string {
+		if ids == nil {
+			return nil
+		}
+		out := make([]string, len(ids))
+		for i, id := range ids {
+			out[i] = spelled[id]
+		}
+		slices.Sort(out)
+
+		return out
+	}
+	prose := func(text string) string {
+		if text == "" {
+			return ""
+		}
+
+		return sensitive.RedactText(text, sensitiveMarker)
+	}
+
+	c.Reached = spell(c.Reached)
+	c.Unreached = spell(c.Unreached)
+	if c.Accepted != nil {
+		accepted := make(map[string]string, len(c.Accepted))
+		for id, reason := range c.Accepted {
+			accepted[spelled[id]] = prose(reason)
+		}
+		c.Accepted = accepted
+	}
+	for i, stale := range c.Stale {
+		c.Stale[i] = prose(stale)
+	}
+
+	// An arm's key is its step's id and a position in the switch, so it is
+	// spelled from the step's spelling rather than searched for a value.
+	armsTaken := make(map[string]bool, len(c.Arms))
+	for _, arm := range c.Arms {
+		arm.Key = distinctName(armsTaken, spelled[arm.Step]+strings.TrimPrefix(arm.Key, arm.Step))
+		armsTaken[arm.Key] = true
+
+		arm.Step = spelled[arm.Step]
+		arm.Reason = prose(arm.Reason)
+		switch {
+		case arm.literal != "" && withheldName(arm.literal, sensitive) != arm.literal:
+			arm.Label = "case " + sensitiveMarker
+		default:
+			arm.Label = prose(arm.Label)
+		}
+	}
 }
 
 // collectStepUniverse walks a workflow's node tree, adding every step
@@ -894,11 +994,12 @@ func switchArms(step, path string, sw *v1.Switch, positions *flowfile.Positions)
 			where, _ := positions.Locate(step, flowfile.SwitchCaseField(i, len(values), j))
 
 			arms = append(arms, &SwitchArm{
-				Key:   key,
-				Step:  step,
-				Label: "case " + flowfile.SwitchLiteralText(literal.Literal),
-				Where: where,
-				decl:  armDecl(path, key),
+				Key:     key,
+				Step:    step,
+				Label:   "case " + flowfile.SwitchLiteralText(literal.Literal),
+				literal: literal.Literal.GetStringValue(),
+				Where:   where,
+				decl:    armDecl(path, key),
 			})
 		}
 	}

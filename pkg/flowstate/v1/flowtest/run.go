@@ -203,6 +203,10 @@ func runSuite(ctx context.Context, file *File, opts RunOptions, loaderFor func(*
 		allowUnreached = file.Coverage.AllowUnreached
 	}
 	coverage := newCoverageAccumulator(allowUnreached)
+	// suite is the posture spanning the file: every case's, joined. Coverage is
+	// one report accumulated across all of them, so a name it prints is
+	// withheld if any case withholds it (#2229).
+	var suite sensitiveInputs
 	schedules := newScheduleAccumulator(opts.Budget)
 
 	// Installed once for the whole suite rather than per case: the debugger
@@ -248,6 +252,11 @@ func runSuite(ctx context.Context, file *File, opts RunOptions, loaderFor func(*
 			caseCtx, cancel = caseContextWithin(ctx, maxCaseWallTime)
 		}
 
+		// posture is what the case's reported run withholds: the written-order
+		// run's, which is the run the verdict and the coverage come from. A
+		// re-run under what a divergence found ([scheduleAccumulator.reshown])
+		// replaces it with a posture that holds at least as much.
+		var posture sensitiveInputs
 		result, spec, transcript, account := schedules.run(caseCtx,
 			func(ctx context.Context) (*v1.TestCase, *v1.Workflow, *v1.Workflow_StepOutputs, []TranscriptLine, caseShown, error) {
 				// The account is recorded only for runs whose account is
@@ -261,12 +270,35 @@ func runSuite(ctx context.Context, file *File, opts RunOptions, loaderFor func(*
 				// a pinned seed installed by hand), so no scheduler check
 				// applies there: suppression is only ever about exploratory
 				// invocations (Codex, #1052, twice).
-				record := !opts.skipTranscript &&
-					(!schedules.explores || v1.SchedulerFromContext(ctx) == v1.WrittenOrder)
-				return runCase(ctx, &test, l.deliveryPath, l.load, record,
+				reported := !schedules.explores || v1.SchedulerFromContext(ctx) == v1.WrittenOrder
+				result, spec, transcript, account, shown, err := runCase(ctx, &test, l.deliveryPath, l.load,
+					!opts.skipTranscript && reported,
 					fileVars{values: file.Vars, withheld: file.varsWithheld})
+				if reported {
+					posture = shown.sensitive
+				}
+
+				return result, spec, transcript, account, shown, err
 			})
 		cancel()
+		// The names a report prints are the file's own words, which an author
+		// can spell a withheld value as readily as a step id (#2229). The
+		// run's renderers take a value out under its posture; a step id in a
+		// failure, a stub's target in a warning and the case's own name are
+		// printed as written, so they go through the verdict's seam under the
+		// same posture the case's transcript withholds them by.
+		//
+		// Not under a posture that withholds everything: the set could not be
+		// enumerated, so the case's report already withholds what it can and
+		// keeps readable the diagnostics the stub boundary shaped, and a name
+		// cannot be told from a value. Blanking every line would leave a
+		// failure nobody can act on, which is the availability trade that
+		// posture already makes ([renderedRunError]); the coverage report
+		// carries no such diagnostic and withholds all of its names.
+		if !posture.WithholdAll() {
+			result = verdictUnder(result, posture)
+		}
+		suite = widenedBy(suite, posture)
 		result.Warnings = warningBudget.take(result.GetWarnings())
 		anchor.place(result.GetFailures())
 		anchor.place(result.GetWarnings())
@@ -277,7 +309,7 @@ func runSuite(ctx context.Context, file *File, opts RunOptions, loaderFor func(*
 
 	out := RunResult{
 		Report:      report,
-		Coverage:    coverage.result(),
+		Coverage:    coverage.result(suite),
 		Schedules:   schedules.result(),
 		Transcripts: transcripts,
 		Filtered:    filtered,
