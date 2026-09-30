@@ -1,0 +1,41 @@
+edition: v2026.3
+tests:
+  - name: a statement read by its layer digest reports its predicate type
+    workflow: ./read-statement.yaml
+    inputs:
+      statement: ghcr.io/acme/api@sha256:4e1f0c2b7a9d8e3f6a5b4c3d2e1f0a9b8c7d6e5f4a3b2c1d0e9f8a7b6c5d4e3f
+    stubs:
+      - step: statement
+        returns:
+          digest: sha256:4e1f0c2b7a9d8e3f6a5b4c3d2e1f0a9b8c7d6e5f4a3b2c1d0e9f8a7b6c5d4e3f
+          size: 96
+          content: '{"_type":"https://in-toto.io/Statement/v1","predicateType":"https://slsa.dev/provenance/v1"}'
+          media_type: application/vnd.in-toto+json
+          json:
+            _type: https://in-toto.io/Statement/v1
+            predicateType: https://slsa.dev/provenance/v1
+    expect:
+      ran: [statement]
+      outputs:
+        digest: sha256:4e1f0c2b7a9d8e3f6a5b4c3d2e1f0a9b8c7d6e5f4a3b2c1d0e9f8a7b6c5d4e3f
+        predicate_type: https://slsa.dev/provenance/v1
+
+  - name: a document that is not a statement reports no predicate type
+    workflow: ./read-statement.yaml
+    inputs:
+      statement: ghcr.io/acme/api@sha256:4e1f0c2b7a9d8e3f6a5b4c3d2e1f0a9b8c7d6e5f4a3b2c1d0e9f8a7b6c5d4e3f
+    stubs:
+      - step: statement
+        returns:
+          digest: sha256:4e1f0c2b7a9d8e3f6a5b4c3d2e1f0a9b8c7d6e5f4a3b2c1d0e9f8a7b6c5d4e3f
+          size: 64
+          content: '{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json"}'
+          media_type: application/vnd.oci.image.manifest.v1+json
+          json:
+            schemaVersion: 2
+            mediaType: application/vnd.oci.image.manifest.v1+json
+    expect:
+      ran: [statement]
+      outputs:
+        digest: sha256:4e1f0c2b7a9d8e3f6a5b4c3d2e1f0a9b8c7d6e5f4a3b2c1d0e9f8a7b6c5d4e3f
+        predicate_type: ""

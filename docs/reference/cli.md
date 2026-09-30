@@ -57,7 +57,7 @@ What it reports is a property of the file and nothing else. No deployment is con
 
 Repetition is counted within one file, over expressions compared structurally: same shape, same names, same literals, whatever the spacing. Two expressions that mean the same thing while spelling a bound name differently are counted apart. Bare literals and bare names are never reported, because a corpus repeating `true` or `item` is a language working rather than a language charging for something; only computations are counted, and a sub-expression that occurs exactly as often as an expression containing it is dropped in favour of the larger one.
 
-A named file is taken as given; a directory is walked for Flowfiles, the same walk `validate` and `test` use. A file that does not compile is counted out rather than measured, and named in the machine format, since `validate` is the verb that has something to say about it.
+A named file is taken as given; a directory is walked for Flowfiles, the same walk `fix` and `lint` use. A file that does not compile as a workflow, a `*.test.yaml` beside one included, is counted out rather than measured, and named in the machine format, since `validate` is the verb that has something to say about it.
 
 Examples:
 
@@ -122,7 +122,7 @@ Compile every Flowfile at the working tree and at a git ref, match each workflow
 
 The comparison is over the compiled protos, not the YAML text, so it is immune to formatting and comment churn. Each finding names the position in the working-tree file, what broke, and what to do instead. Exit is 1 on any finding, 0 on none, the same as `validate`.
 
-A named file is taken as given; a directory is walked for Flowfiles, the same walk `validate` and `test` use. The `--against` ref must be present in the local git history, so fetch the base branch first.
+A named file is taken as given; a directory is walked for Flowfiles, the same walk `fix` and `lint` use. The `--against` ref must be present in the local git history, so fetch the base branch first.
 
 A workflow is its path: two files declaring one `name:` in different directories are two workflows, each compared against the file at its own path at the ref. A file that moved since the ref is matched with `--moved old=new`; without it the old path reads as removed and the new one as brand new.
 
@@ -835,7 +835,7 @@ Every file this reports on is legal, validates, and runs. These are suggestions:
 
 Each finding names the rule it descends from, so `R5/nested-conditional` is a heading to read in the style guide rather than a number to look up in a table. What it reports is a property of the file and nothing else: no deployment is consulted, no policy is read, and nothing resolves over a network.
 
-A named file is taken as given; a directory is walked for Flowfiles, the same walk `validate` and `audit` use. A file that does not compile is skipped rather than linted, since `validate` is the verb with something to say about it.
+A named file is taken as given; a directory is walked for Flowfiles, the same walk `fix` and `audit` use. A file that does not compile is skipped rather than linted, since `validate` is the verb with something to say about it.
 
 Examples:
 
@@ -936,7 +936,7 @@ flow lsp [flags]
 
 Start a language server for Flowfile editing in text editors and IDEs, serving the Language Server Protocol over stdin and stdout. It reports Flowfile problems as diagnostics as you type.
 
-This is not something you run and watch: an editor launches it and talks to it over the same stdin and stdout this process already has, so there is no address or port to configure. In VS Code, point a generic LSP extension (or an extension you write) at the command; in Neovim's built-in client, `cmd = {"flow", "lsp"}` (add `"--plugin-dir", "/opt/flowstate/plugins"` to the table if a plugin's tasks should stop reading as unknown) with `filetypes` set to Flowfile's, typically YAML.
+This is not something you run and watch: an editor launches it and talks to it over the same stdin and stdout this process already has, so there is no address or port to configure. In VS Code, install the client this repository carries in editors/vscode, from source (https://github.com/picatz/flowstate/blob/main/docs/EDITORS.md), or point a generic LSP extension at the command; in Neovim's built-in client, `cmd = {"flow", "lsp"}` (add `"--plugin-dir", "/opt/flowstate/plugins"` to the table if a plugin's tasks should stop reading as unknown) with `filetypes` set to Flowfile's, typically YAML.
 
 Examples:
 
@@ -970,7 +970,7 @@ flow mcp [command] [flags]
 
 Serve every workflow-service RPC as an MCP tool over stdin and stdout, with input schemas derived from the same protobuf schema the API speaks. Validation, compilation and local execution always answer in this process; the run-lifecycle tools call the configured server. The task catalog answers in this process too, unless `--address` (or FLOWSTATE_ADDRESS) explicitly names a deployment, in which case it answers from that deployment instead, and refuses rather than falling back here if it cannot be reached.
 
-flowstate_run_local executes a submitted Flowfile here, the way `flow run local` does. What such a run may reach is decided by the flags this process is started with and by nothing a client sends: with no flags, egress is denied and no secret scheme is registered.
+flowstate_run_local executes a submitted Flowfile here, the way `flow run local` does. What such a run may reach is decided by the flags this process is started with and by nothing a client sends: with no flags, and none of the environment variables their defaults come from, egress is denied and no secret scheme is registered.
 
 Beside the tools, the server publishes read-only resources: the language guide at flowstate://docs/language, the task catalog as JSON at flowstate://catalog/tasks, every example Flowfile under flowstate://docs/examples/, and the record of the language's design decisions at flowstate://docs/dsl, all embedded at build time, so an agent can read the language and working references without a checkout nearby.
 
@@ -1088,8 +1088,8 @@ flow mcp serve --listen :8617 \
 | `--max-session-requests <int>` | `int` | `8` | — | how many requests one MCP session may have in flight in this process at once. A request past the limit is refused with 503: `--max-sessions` bounds how many sessions exist and says nothing about how many connections one of them is replayed over |
 | `--max-sessions <int>` | `int` | `32` | — | how many MCP sessions may be open in this process at once. A request that would open one past the limit is refused with 503; sessions idle for 5m0s are closed and their slots returned |
 | `--protected-resource <string>` | `string` | — | `FLOWSTATE_PROTECTED_RESOURCE` | canonical resource URI (RFC 8707 section 2) this deployment's MCP surface identifies as, with no fragment or trailing slash. With `--authorization-server`, RFC 9728 protected resource metadata is served at /.well-known/oauth-protected-resource followed by the resource's own path (a resource ending in /mcp is served at /.well-known/oauth-protected-resource/mcp), and every 401 challenge names that document. Required on this command: this surface is the protected resource, so without one there is nothing to bind a token's audience to and `flow mcp serve` refuses to start rather than serving an unauthenticated MCP endpoint |
-| `--reveal-sensitive` | `bool` | `false` | — | show values declared `sensitive: true` in the clear, instead of `[redacted: <name>]`. Display etiquette only: the value already sits in the run's history exactly like any other input or output, and this flag does not add or remove that; see ${secret(...)} for keeping a value out of history in the first place. Typed on purpose, every invocation: there is no configuration default. |
-| `--test-timeout <duration>` | `duration` | `2m0s` | — | how long one flowstate_test call may run before it is stopped and reported as timed out. A submitted workflow can park forever on its own — a `wait_for_signal:` with no timeout and no scripted signal never completes — and while one runs, every other tool and resource on this surface waits for it |
+| `--reveal-sensitive` | `bool` | `false` | — | refused on this surface: over HTTP it would show values declared `sensitive: true` in the clear to whoever authenticates, so they are always redacted here. `flow mcp` over stdio takes it |
+| `--test-timeout <duration>` | `duration` | `2m0s` | — | how long one flowstate_test or flowstate_debug call may run before it is stopped and reported as timed out. A submitted workflow can park forever on its own — a `wait_for_signal:` with no timeout and no scripted signal never completes — and while one runs, every other tool and resource on this surface waits for it |
 | `--tls-cert-file <string>` | `string` | — | `FLOWSTATE_TLS_CERT_FILE` | PEM certificate (or chain) for the public listener; unset serves plain HTTP, which is refused on any address but loopback. Must be given with `--tls-key-file` |
 | `--tls-key-file <string>` | `string` | — | `FLOWSTATE_TLS_KEY_FILE` | PEM private key matching `--tls-cert-file` |
 | `--tls-min-version <string>` | `string` | `1.2` | `FLOWSTATE_TLS_MIN_VERSION` | minimum TLS protocol version to accept: "1.2" (the default and the floor) or "1.3" |
@@ -1265,7 +1265,8 @@ flow run local examples/approval-gate/workflow.yaml \
 flow run local examples/computed-outputs/workflow.yaml \
   --input release=2026.9.0 -o json | jq .runOutputs
 
-# Rehearse a workflow that uses a plugin's tasks, launching the plugins here:
+# Rehearse a workflow that uses a plugin's tasks, launching the plugins here;
+# its token is read from FLOWSTATE_SECRET_GREET_TOKEN, so export that first:
 flow run local examples/plugins/greet/workflow.yaml --plugin-dir ./plugins \
   --secret-env GREET_TOKEN --auth-policy examples/plugins/greet/auth.yaml
 
@@ -1681,7 +1682,7 @@ Run the whole stack in one command: Temporal, the server, and a worker
 flow server dev [flags]
 ```
 
-Start everything a durable run needs, in one process: a Temporal dev server, the Flowstate control plane, and a worker polling the run queue. Everything binds loopback and everything is ephemeral unless `--db` names a file, so a session leaves nothing behind. Ctrl-C stops all three, the Temporal child process included.
+Start everything a durable run needs, from one command: a Temporal dev server, the Flowstate control plane, and a worker polling the run queue. Everything binds loopback and everything is ephemeral unless `--db` names a file, so a session leaves nothing behind. Ctrl-C stops all three, the Temporal child process included.
 
 By default it takes two postures on your behalf and states both at start-up: callers are anonymous (what `flow server --insecure-no-auth` does) and the interpreter is unversioned (what `flow worker --allow-unversioned-interpreter` does). Both are acceptable here only because nothing is reachable off this machine, which is why the command refuses to start when that stops being true. `--auth` replaces the anonymous posture with a generated local issuer and the same bearer-token middleware a deployment uses.
 
@@ -1796,7 +1797,7 @@ flow signal deploy-abc123 deploy-approved -o json \
 | `--address <string>` | `string` | `localhost:9233` | `FLOWSTATE_ADDRESS` | address of the Flowstate server (overrides FLOWSTATE_ADDRESS); an explicit https:// scheme is honored |
 | `--audience <string>` | `string` | — | `FLOWSTATE_AUDIENCE` | the relying party a credential should be addressed to (overrides FLOWSTATE_AUDIENCE); required by `--credential-source=github-actions`, which mints a token for it. gitlab and terraform-cloud cannot mint on demand — their platform fixes the audience in the job or workspace configuration before the token exists — so for those it is checked against the token's own audience rather than requested, and a mismatch is refused with the setting to change |
 | `--credential-source <string>` | `string` | — | `FLOWSTATE_CREDENTIAL_SOURCE` | acquire a credential from a named source instead of `--token-file`/FLOWSTATE_TOKEN (overrides FLOWSTATE_CREDENTIAL_SOURCE); one of github-actions, gitlab, terraform-cloud, file, env. An unknown or unusable source is an error, never anonymous |
-| `--data <string>` | `string` | — | — | signal payload as a JSON object, whose keys become the waiting step's outputs, e.g. `--data '{"approved": true}'` |
+| `--data <string>` | `string` | — | — | signal payload as a JSON object, whose keys become the entries of the waiting step's `payload` output, e.g. `--data '{"approved": true}'` |
 | `-o, --output <string>` | `string` | `text` | — | output format: text, json, or jsonl |
 | `--run-id <string>` | `string` | — | — | pin to one run of the workload, by run id; unset means whichever run is current |
 | `--tls-ca-file <string>` | `string` | — | `FLOWSTATE_TLS_CA_FILE` | PEM CA bundle to verify the server's certificate against, in place of the system roots (overrides FLOWSTATE_TLS_CA_FILE). Unset trusts the system roots, which is what reaches a server with a certificate from a public CA; set this to reach a server whose certificate chains to a private CA instead |
@@ -2167,7 +2168,7 @@ flow version [flags]
 
 Print what the toolchain stamped into this binary: version, commit, the commit's date, the Go version it was compiled with, and the platform it was built for. The date is the commit's, because that is what a module-aware build records; nothing stamps the moment of compilation.
 
-Answered entirely from what this binary already carries, no network call, so it works the same offline as everything else here. When nothing was stamped (a plain `go build` with no -ldflags and no module information) it says so honestly: "devel" for the version, "unknown" for the commit and its date, rather than a number invented for the occasion.
+Answered entirely from what this binary already carries, no network call, so it works the same offline as everything else here. The version is what -ldflags stamped, or else the module version the toolchain recorded, which a build inside a git checkout derives from the commit; the commit and its date come from that checkout's VCS stamp. What was not recorded is said honestly rather than invented: "devel" for a version nothing stamped, and "unknown" for the commit and its date when the build had no VCS stamp (outside a git checkout, `go run`, or -buildvcs=false).
 
 Examples:
 
@@ -2178,7 +2179,7 @@ flow version
 # The same answer, addressable by field:
 flow version -o json | jq -r .commit
 
-# Gate a script on this being a real build rather than one compiled by hand:
+# Gate a script on this build having a version stamped into it at all:
 flow version -o json | jq -e '.version != "devel"'
 ```
 

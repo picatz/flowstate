@@ -39,10 +39,24 @@ engine itself.
 $ mkdir -p ./plugins
 $ go -C plugins/vcs build -o ../../plugins/flowstate-plugin-vcs .
 $ flow plugins --plugin-dir ./plugins
-$ flow worker --allow-unversioned-interpreter --plugin-dir ./plugins &
-$ flow server --insecure-no-auth &
+$ flow worker --allow-unversioned-interpreter --plugin-dir ./plugins \
+    --auth-policy examples/plugins/greet/auth.yaml &
+$ flow server --insecure-no-auth --plugin-dir ./plugins &
 $ flow run examples/plugins/vcs/workflow.yaml
 ```
+
+`--auth-policy` is needed although this file reads no secret: the plugin
+registers the `vcs:` secret scheme, and a worker holding any secret provider
+refuses to start without a policy that has a `secrets:` section.
+[`examples/plugins/greet/auth.yaml`](../greet/auth.yaml) is a rehearsal policy
+that allows every reference.
+
+`flow run` refuses this file today (#1548): it checks the file against its own
+build's task registry, takes no `--plugin-dir`, and so reports `vcs.log` as a
+task nothing registered before the server sees it. Until that is fixed,
+`flow run local` with the same `--plugin-dir` and `--auth-policy` rehearses it
+in one process, and an agent host running `flow mcp --plugin-dir ./plugins`
+submits it to this server with `flowstate_compile` then `flowstate_run`.
 
 `--insecure-no-auth` is what makes this a rehearsal rather than a deployment:
 the server authenticates every caller as anonymous, which is only ever right on
@@ -67,8 +81,14 @@ process that has not loaded that plugin:
 $ flow validate examples/plugins/vcs/workflow.yaml
 examples/plugins/vcs/workflow.yaml:20:5: step "history": no plugin task "vcs.log" is
 registered here; if the "vcs" plugin is installed on the worker this will run on, the
-file is fine and this process simply has not loaded it - `flow plugins` shows what a
+file is fine and this process simply has not loaded it; `flow plugins` shows what a
 plugin directory provides
+examples/plugins/vcs/workflow.yaml:24:5: step "changes": no plugin task "vcs.diff" is
+registered here; if the "vcs" plugin is installed on the worker this will run on, the
+file is fine and this process simply has not loaded it; `flow plugins` shows what a
+plugin directory provides
+ERROR
+validation failed
 ```
 
 That is the correct answer from a process that has not been told about this

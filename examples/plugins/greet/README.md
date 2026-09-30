@@ -5,8 +5,9 @@
 ```yaml
   - id: hello
     example.greet:
-      name: ${vars.who}
       greeting: Hello
+      name: ${vars.who}
+      token: ${secret('env:GREET_TOKEN')}
 ```
 
 `example.greet` is the `greet` task of the `example` plugin — the worked plugin in
@@ -67,10 +68,24 @@ it up registers a scheme whether or not the file asks for one, which means
 Then the durable path, which is what production uses:
 
 ```console
-$ flow worker --allow-unversioned-interpreter --plugin-dir ./plugins --auth-policy auth.yaml &
-$ flow server --insecure-no-auth &
+$ FLOWSTATE_SECRET_GREET_TOKEN=anything flow worker \
+    --allow-unversioned-interpreter --plugin-dir ./plugins \
+    --secret-env GREET_TOKEN --auth-policy examples/plugins/greet/auth.yaml &
+$ flow server --insecure-no-auth --plugin-dir ./plugins &
 $ flow run examples/plugins/greet/workflow.yaml
 ```
+
+The server takes `--plugin-dir` too, because this file declares `plugins:`: the
+server resolves that block against the plugins it launched itself, and without
+them it refuses the submission as `required plugin "example" is not installed
+on this deployment`.
+
+`flow run` refuses this file today (#1548), before the server sees it: it
+checks the file against its own build's task registry and takes no
+`--plugin-dir`, so it answers with the diagnostic shown further down. Until that
+is fixed, the rehearsal above runs it in one process, and an agent host running
+`flow mcp --plugin-dir ./plugins` submits it to this server with
+`flowstate_compile` then `flowstate_run`, where it completes.
 
 `--insecure-no-auth` is what makes this a rehearsal rather than a deployment:
 the server authenticates every caller as anonymous, which is only ever right on
@@ -87,7 +102,7 @@ answer for this file is a diagnostic:
 
 ```console
 $ flow validate examples/plugins/greet/workflow.yaml
-examples/plugins/greet/workflow.yaml:25:5: step "hello": no plugin task "example.greet" is
+examples/plugins/greet/workflow.yaml:43:5: step "hello": no plugin task "example.greet" is
 registered here; if the "example" plugin is installed on the worker this will run on, the
 file is fine and this process simply has not loaded it; `flow plugins` shows what a
 plugin directory provides

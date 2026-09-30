@@ -185,7 +185,7 @@ func addMCPServeFlags(cmd *cobra.Command) {
 			"about how many connections one of them is replayed over")
 
 	cmd.Flags().Duration("test-timeout", mcpServeDefaultTestTimeout,
-		"how long one flowstate_test call may run before it is stopped and reported as timed out. "+
+		"how long one flowstate_test or flowstate_debug call may run before it is stopped and reported as timed out. "+
 			"A submitted workflow can park forever on its own — a `wait_for_signal:` with no timeout "+
 			"and no scripted signal never completes — and while one runs, every other tool and "+
 			"resource on this surface waits for it")
@@ -197,8 +197,12 @@ func addMCPServeFlags(cmd *cobra.Command) {
 
 	// Declared so that typing it gets a reason rather than "unknown flag".
 	// See [checkMCPServeFlags] for why this surface refuses it
-	// outright rather than honouring it.
-	addRevealSensitiveFlag(cmd)
+	// outright rather than honouring it. Declared here rather than through
+	// [addRevealSensitiveFlag], whose help describes a flag that works.
+	cmd.Flags().Bool(revealSensitiveFlagName, false,
+		"refused on this surface: over HTTP it would show values declared `sensitive: true` "+
+			"in the clear to whoever authenticates, so they are always redacted here. "+
+			"`flow mcp` over stdio takes it")
 
 	// Same: declared to be refused. `flow server` accepts it for loopback
 	// development; a protected resource that admits everyone is not a

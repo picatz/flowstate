@@ -121,7 +121,7 @@ func newServerDevCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "dev",
 		Short: "Run the whole stack in one command: Temporal, the server, and a worker",
-		Long: "Start everything a durable run needs, in one process: a Temporal dev server, the " +
+		Long: "Start everything a durable run needs, from one command: a Temporal dev server, the " +
 			"Flowstate control plane, and a worker polling the run queue. Everything binds loopback " +
 			"and everything is ephemeral unless `--db` names a file, so a session leaves nothing " +
 			"behind. Ctrl-C stops all three, the Temporal child process included.\n\n" +

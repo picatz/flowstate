@@ -76,10 +76,10 @@ message ExecInputs {
   // working directory (the CLI's own --cd). It must resolve inside the
   // directory an operator configured with FLOWSTATE_CODEX_WORKDIR_ROOT (see
   // binary.go) - explicit, operator-controlled configuration, never a path a
-  // Flowfile can point anywhere on the worker's filesystem. Unset means no
-  // working directory is passed, and codex runs against a CLI-chosen
-  // default with nothing of this run's to write to even in
-  // WORKSPACE_WRITE mode.
+  // Flowfile can point anywhere on the worker's filesystem. Unset is
+  // accepted only for a read-only run (SANDBOX_MODE_READ_ONLY, the default):
+  // no working directory is passed and codex runs against a CLI-chosen
+  // default. A writable sandbox mode without it is refused (see exec.go).
   string working_context = 4;
 
   // ApiKey authenticates this run against OpenAI. It is declared in this

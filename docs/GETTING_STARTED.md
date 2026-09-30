@@ -340,7 +340,7 @@ same session is available to an editor over DAP and to an agent over MCP.
 ## 7. Run it durably
 
 Now run the same file on Temporal. `flow server dev` starts everything a durable
-run needs, in one process, on loopback: a Temporal development server, the
+run needs, from one command, on loopback: a Temporal development server, the
 Flowstate API server, and a worker. `--db` keeps its state in a file, so you
 can stop it and start it again.
 

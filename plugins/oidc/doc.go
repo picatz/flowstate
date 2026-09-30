@@ -28,9 +28,10 @@
 //
 // Every token comes back with the lifetime the authorization server reported,
 // and that lifetime travels to the host as [sdk.SecretResponse.ExpiresIn], so
-// the engine caches it no longer than the issuer considers it valid. Nothing
-// here caches a credential of its own: a second cache would be a second answer
-// about when a token stops being usable.
+// a caching store would keep it no longer than the issuer considers it valid.
+// The stock worker's store caches nothing, so each resolution exchanges again.
+// Nothing here caches a credential of its own: a second cache would be a
+// second answer about when a token stops being usable.
 //
 // # What it deliberately does not do
 //

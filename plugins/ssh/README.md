@@ -30,7 +30,7 @@ never interpolated into SQL text).
 | host-key policy | Grants pin the public keys a host may present. No trust-on-first-use, no `known_hosts`, and the handshake is refused **before the command is sent**. |
 | private-key custody | A key never crosses this plugin's boundary as data. No task input carries one; the grant names a file the worker reads. `ssh.run` declares no `secret_inputs` at all. |
 | arbitrary execution | The operator writes the argv. A workflow fills declared placeholders, each checked against the grant's own pattern and quoted as a single argument. |
-| unknown outcomes | A failure before the exec request is a definite no-run and retryable. A failure after it is `OutcomeUnknown` and is never retried automatically. |
+| unknown outcomes | A failure before the exec request is a definite no-run: retryable when it is the transport (unreachable, handshake failed, session refused), permanent when the host key or identity is refused or the grant's key cannot be read. A failure after it is `OutcomeUnknown` and is never retried automatically. |
 
 ## Building and configuring
 
@@ -47,6 +47,7 @@ named to the worker:
 
 ```console
 $ flow worker --plugin-dir /path/to/plugins \
+    --temporal-deployment-name flowstate --build-id "$(git rev-parse --short HEAD)" \
     --plugin-env ssh=FLOWSTATE_SSH_GRANTS=/etc/flowstate/ssh-grants.yaml \
     --egress-policy /etc/flowstate/egress.yaml
 ```
@@ -59,9 +60,10 @@ anything about destinations, which is not a decision to permit executing
 commands on a machine. The policy must also list the `ssh` scheme, exactly as a
 database policy must list `postgres`.
 
-Without either, `ssh.run` refuses every call and `flow plugins` reports the
-plugin unhealthy with the reason — discovery and validation keep working, so a
-deployment can install the plugin before it configures it.
+Without either, `ssh.run` refuses every call and a running worker logs a
+warning naming the reason at each health check (`flow plugins` does not report
+health) — discovery and validation keep working, so a deployment can install
+the plugin before it configures it.
 
 ## The grants file
 
@@ -75,7 +77,7 @@ hosts:
     user: runbook
     identity_file: /etc/flowstate/ssh/runbook_ed25519
     host_keys: ["ssh-ed25519 AAAA…"]     # pinned; no TOFU
-    commands: [service-status, restart-service]
+    commands: [restart-service]
     namespaces: [platform]               # optional tenant scoping
 commands:
   restart-service:
@@ -91,7 +93,9 @@ a placeholder with no parameter, a parameter that is never used, a pattern that
 does not compile, a host permitting a command nobody granted, a host with no
 pinned key, a timeout or output limit over this plugin's ceiling. An operator
 learns from the worker's logs rather than from a runbook at three in the
-morning.
+morning. Three things are read at each call instead: the pinned keys' format,
+the identity file, and the address's port. A bad one fails that call
+permanently, saying which.
 
 Patterns are anchored to the whole value (`^(?:…)$`), so a pattern that "appears
 somewhere in" a value never constrains one.
@@ -101,8 +105,10 @@ somewhere in" a value never constrains one.
 One session channel, one `exec` request. **No PTY, no agent forwarding, no port
 or X11 forwarding, no subsystem, no shell.** Those are not defaults left alone;
 nothing here requests them and no grant can ask for them. The test suite asserts
-it against a real in-process SSH server, by inspecting the channel requests the
-far side received.
+the PTY, X11, shell, subsystem and `env` half of that against a real in-process
+SSH server, by inspecting the channel requests the far side received; agent and
+port forwarding are absent because no code path asks for them, and no test
+looks for them.
 
 An `exec` request carries a command *line*, which the remote account's shell
 parses — that is the protocol, not a choice. So every argument is single-quoted
@@ -110,6 +116,13 @@ before it is joined, **the operator's own argv included**: quoting only what a
 workflow filled would make the guarantee depend on remembering which half a
 string came from. A parameter is checked against its pattern *and* quoted, on
 the principle that one of the two should be redundant.
+
+## Inputs and outputs
+
+A step writes `host` and `command`, each the name of a grant, and
+`parameters`, a map filling the command's placeholders. It gets back
+`exit_code`, `stdout`, `stderr`, `truncated`, and the `host` and `command`
+grant names that ran.
 
 ## Bounds and ceilings
 
