@@ -206,45 +206,29 @@ func TestSteppingNeverStopsWhereARunIsInSeveralPlaces(t *testing.T) {
 	assert.Equal(t, []string{"fan", "wide", "last"}, stepThroughDurably(t, spec, 3))
 }
 
-// TestSteppingCrossesAContinueAsNewInsideALoop: a run that continues as new
-// between iterations of a loop, with a session stepping through it, is held at
-// the same addresses the run makes in one segment. The seam falls between
-// iterations, never inside a body, so no hold spans it, and the session's
-// stepping mode rides the carry into the next segment.
-func TestSteppingCrossesAContinueAsNewInsideALoop(t *testing.T) {
-	t.Parallel()
-
-	spec := &v1.Workflow{
-		Name:    "stepped-across-a-seam",
-		Profile: v1.CurrentProfile,
-		Steps: []*v1.Node{{
-			Id: "each",
-			Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{
-				Items:       v1.NewExpr(`["a", "b", "c"]`),
-				MaxParallel: 1,
-				Body:        []*v1.Node{logStep("touch", "visited")},
-			}},
-		}},
-	}
-	spec.Debug = debugSpec(spec.GetName()).GetDebug()
-
-	want := []string{"each", "each[0]/touch", "each[1]/touch", "each[2]/touch"}
+// steppedAcrossSeams steps in at every stop of spec, with the run continuing as
+// new whenever budget steps have run, and returns the address of every stop and
+// how many segments the run took. The session is attached in the first
+// segment and rides the carry after.
+func steppedAcrossSeams(t *testing.T, spec *v1.Workflow, budget int32) ([]string, int) {
+	t.Helper()
 
 	var (
 		stops    []string
 		segments int
 	)
-	state := &v1.RunState{Workflow: spec, StepsBudget: 1}
+	state := &v1.RunState{Workflow: spec, StepsBudget: budget}
 	for {
 		segments++
-		require.LessOrEqual(t, segments, 8, "the run kept continuing as new")
+		require.LessOrEqual(t, segments, 64, "the run kept continuing as new")
 
 		tl := newTimeline(t)
 		const sre = "sre-1@example.com"
 		if segments == 1 {
 			tl.ask(0, sre, &v1.DebugAsk{Verb: v1.DebugVerbPause, Session: "s1", Request: "attach", Lease: 5 * time.Minute})
 		}
-		for k := range len(want) {
+		const asks = 16
+		for k := range asks {
 			at := time.Duration(k+1) * 10 * time.Second
 			tl.read(at, fmt.Sprintf("stop-%d", k), "")
 			tl.ask(at+time.Second, sre, &v1.DebugAsk{Verb: v1.DebugVerbResume, Session: "s1",
@@ -253,7 +237,7 @@ func TestSteppingCrossesAContinueAsNewInsideALoop(t *testing.T) {
 		tl.env.ExecuteWorkflow(engine.Run, state)
 		require.True(t, tl.env.IsWorkflowCompleted())
 
-		for k := range len(want) {
+		for k := range asks {
 			if snapshot := tl.reads[fmt.Sprintf("stop-%d", k)]; snapshot != nil && snapshot.GetState() == v1.DebugRunState_DEBUG_RUN_STATE_HELD {
 				stops = append(stops, snapshot.GetOccurrence().GetAddress())
 			}
@@ -263,16 +247,57 @@ func TestSteppingCrossesAContinueAsNewInsideALoop(t *testing.T) {
 		if !errors.As(tl.env.GetWorkflowError(), &continued) {
 			require.NoError(t, tl.env.GetWorkflowError())
 
-			break
+			return stops, segments
 		}
 		next := &v1.RunState{}
 		require.NoError(t, converter.GetDefaultDataConverter().FromPayloads(continued.Input, next))
-		next.StepsBudget = 1
+		next.StepsBudget = budget
 		state = next
 	}
+}
 
-	assert.Greater(t, segments, 1, "the run never continued as new, so this proves nothing about a seam")
-	assert.Equal(t, want, stops)
+// Stepping through a run that continues as new is stepping through the run:
+// the stops with seams in it are the stops without them. The seam falls
+// between steps and between iterations, never inside a body, so no hold spans
+// it, and the session's stepping mode rides the carry. The shapes are where
+// resuming enters a container afresh: a loop, a `loop:`, plain steps before a
+// container, and a called workflow that holds one.
+func TestSteppingAcrossAContinueAsNewIsSteppingThroughTheRun(t *testing.T) {
+	t.Parallel()
+
+	forEach := func(id string) *v1.Node {
+		return &v1.Node{Id: id, Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{
+			Items: v1.NewExpr(`["a", "b", "c"]`), MaxParallel: 1, Body: []*v1.Node{logStep("touch", "visited")},
+		}}}
+	}
+	loop := &v1.Node{Id: "count", Kind: &v1.Node_Loop{Loop: &v1.Loop{
+		State: "n", Initial: v1.NewLiteral(int64(3)), Update: v1.NewExpr("n - 1"), Until: v1.NewExpr("n <= 1"),
+		MaxIterations: 10, Body: []*v1.Node{logStep("tick", "ticked")},
+	}}}
+	shapes := map[string][]*v1.Node{
+		"a for_each":                        {forEach("each")},
+		"a loop:":                           {loop},
+		"plain steps before a for_each":     {logStep("one", "1"), logStep("two", "2"), forEach("each"), logStep("three", "3")},
+		"a called workflow holding a loop":  {{Id: "nested", Kind: &v1.Node_Call{Call: &v1.Call{Workflow: &v1.Workflow{Name: "child", Profile: v1.CurrentProfile, Steps: []*v1.Node{logStep("inner", "i"), forEach("sweep"), logStep("tail", "t")}}}}}},
+		"a for_each inside a for_each body": {{Id: "outer", Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{Items: v1.NewExpr(`["p", "q"]`), MaxParallel: 1, Body: []*v1.Node{forEach("inner")}}}}},
+	}
+
+	for name, steps := range shapes {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			spec := &v1.Workflow{Name: "seams", Profile: v1.CurrentProfile, Steps: steps}
+			spec.Debug = debugSpec(spec.GetName()).GetDebug()
+
+			whole, wholeSegments := steppedAcrossSeams(t, proto.CloneOf(spec), 1000)
+			require.Equal(t, 1, wholeSegments, "the baseline run continued as new")
+			require.Greater(t, len(whole), 2, "the baseline stopped too few times to prove anything")
+
+			seamed, seamedSegments := steppedAcrossSeams(t, proto.CloneOf(spec), 1)
+			assert.Greater(t, seamedSegments, 1, "the run never continued as new, so this proves nothing about a seam")
+			assert.Equal(t, whole, seamed, "a seam changed where a session steps")
+		})
+	}
 }
 
 // A hold inside a body while an `async:` step started above it is still
