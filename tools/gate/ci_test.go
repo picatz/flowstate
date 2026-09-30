@@ -1113,19 +1113,24 @@ func TestTheOrderingLegKeepsTheMakefilesTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	job := regexp.MustCompile(`(?s)\n  test-ordering:\n.*?timeout-minutes: (\d+)\n`).FindSubmatch(workflow)
-	if job == nil {
-		t.Fatal("the test-ordering job's timeout-minutes was not found")
+	var wf ciWorkflow
+	if err := yaml.Unmarshal(workflow, &wf); err != nil {
+		t.Fatalf("parsing the workflow: %v", err)
+	}
+	// Read from the parsed job, never scanned out of the text: a job that lost
+	// its own limit would otherwise borrow the next job's, and pass.
+	job, ok := wf.Jobs["test-ordering"]
+	if !ok {
+		t.Fatal("ci.yml has no test-ordering job")
+	}
+	if job.TimeoutMinutes == 0 {
+		t.Fatal("the test-ordering job sets no timeout-minutes, so a hang would run to GitHub's six-hour default")
 	}
 	seconds, err := strconv.Atoi(strings.TrimSuffix(orderingTimeout, "s"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	minutes, err := strconv.Atoi(string(job[1]))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if minutes*60 < seconds+120 {
-		t.Errorf("the job limit is %d minutes, which leaves under two minutes above the %ds test timeout for the build and the upload", minutes, seconds)
+	if job.TimeoutMinutes*60 < seconds+120 {
+		t.Errorf("the job limit is %d minutes, which leaves under two minutes above the %ds test timeout for the build and the upload", job.TimeoutMinutes, seconds)
 	}
 }
