@@ -69,8 +69,8 @@ func (f Finding) String() string { return fmt.Sprintf("%s: %s: %s", f.Plugin, f.
 //     leaves the validator, the language server, and the docs with nothing to
 //     say. A task that shapes its outputs from an `outputs:` input is exempt.
 //   - documented fields: every input and output field carries a comment, which
-//     is the hover text and the reference page, and the one piece of
-//     documentation a generated schema cannot fall out of sync with.
+//     is the hover text an editor shows, and documentation a generated
+//     schema cannot fall out of sync with.
 //   - health: a launched plugin answers its health poll. Not serving is an
 //     answer, and the right one for a plugin nobody configured, provided it says
 //     why; a plugin that cannot be reached, or declines without a reason, is
@@ -159,8 +159,8 @@ func (s *Session) Audit(ctx context.Context, t testing.TB) []Finding {
 				desc  protoreflect.MessageDescriptor
 			}{{"input", def.Inputs}, {"output", def.Outputs}} {
 				for _, field := range undocumented(side.desc) {
-					add(p.Name(), CheckDocumentedFields, "%s %s field %q has no comment; it is the hover text and "+
-						"the reference page. Comment it in the .proto and regenerate", name, side.label, field)
+					add(p.Name(), CheckDocumentedFields, "%s %s field %q has no comment; it is the hover text an "+
+						"editor shows. Comment it in the .proto and regenerate", name, side.label, field)
 				}
 			}
 		}

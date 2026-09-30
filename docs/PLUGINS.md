@@ -28,6 +28,7 @@ source.
 - [Being configured by an operator](#being-configured-by-an-operator)
 - [Reaching the network](#reaching-the-network)
 - [Classifying failures](#classifying-failures)
+- [Testing your plugin](#testing-your-plugin)
 - [Writing one in another language](#writing-one-in-another-language)
 - [Known limitations](#known-limitations)
 - [See also](#see-also)
@@ -942,6 +943,100 @@ constructors rather than as a bare error (`pkg/flowstate/v1/plugin/sdk/errors.go
 > suppressed while values are retained because either may contain only a secret
 > fragment. Do not rely on this against deliberate transformation or disclosure.
 
+## Testing your plugin
+
+A plugin is a process, so the test that means something runs the process. The
+[`plugintest`](../pkg/flowstate/v1/plugin/plugintest) package is the kit for
+that: it builds your main package under the name discovery looks for, launches
+it through the same host a worker uses, and calls its tasks down the path a
+workflow step takes. Everything the host does to a call is in that path — a
+secret input is resolved before your function runs, what you return is checked
+against the descriptor you declared, a secret that appears in an output or an
+error is scrubbed, and a failure arrives classified — so a test that passes here
+cannot be relying on something a worker would refuse, which is what calling your
+`TaskFunc` directly allows.
+
+```go
+package reachable_test // its own package: see below
+
+import (
+	"testing"
+
+	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin/plugintest"
+)
+
+func TestGreet(t *testing.T) {
+	s := plugintest.Launch(t, plugintest.Build(t, "..", "hello"))
+
+	out := s.Run(t, "hello.greet", map[string]any{"name": "Ada"})
+	if got := out.String(t, "message"); got != "Hello, Ada!" {
+		t.Fatalf("message = %q", got)
+	}
+
+	// The negative direction is the one that finds regressions: what an empty
+	// name is refused as, not merely that it is refused.
+	_, err := s.Call(t.Context(), "hello.greet", nil)
+	if kind := plugintest.ErrorKind(err); kind != flowstatev1.ErrorKindInvalidInput {
+		t.Fatalf("an empty name was %q, want invalid input", kind)
+	}
+
+	s.Conform(t)
+}
+```
+
+What the kit gives you, each in a line:
+
+- `Build(t, pkg, name)` compiles `pkg` (anything `go build` accepts, resolved from
+  the test's directory) as `flowstate-plugin-<name>`.
+- `Launch(t, dir, opts...)` starts it through a real `plugin.Host`, with health
+  polling off and bounded timeouts so a hung plugin fails the test rather than
+  the run. `WithEnv` sets what the plugin reads from its environment, `WithConfig`
+  adjusts the host (pinned digests, permitted schemes), and `WithIdentity` sets
+  the subject and namespace a plugin that scopes by caller sees.
+- `Call` and `Run` execute a task by its qualified name, returning `Outputs` or
+  the classified error; `plugintest.ErrorKind` reads the kind a retry policy or a
+  `flow run` failure message is built from.
+- `WithSecrets` installs the host-side secret store, and `plugintest.SecretRef`
+  builds the `${secret('env:NAME')}` value for an input that declares it accepts
+  one. A reference the store does not hold fails the way it does in production,
+  and so should your test of what leaks: assert that the secret's value is in no
+  output and no error.
+- `Resolve` exercises a plugin that *is* a secret provider, by scheme and
+  namespace, so the tenant boundary is testable rather than assumed.
+
+`Conform` is the part that turns this page's advice into a check. It calls no
+task, so it is as safe to run against a plugin that writes to a network as against
+a pure one, and it reports one subtest per plugin and check:
+
+| Check | What it holds you to |
+| --- | --- |
+| `identity` | A version and a description, which `flow plugins` prints and an operator reads before approving a pin. |
+| `summaries` | A one-line summary on every task: what `flow tasks` and editor completion show beside its name. |
+| `declared outputs` | Every task declares its outputs (or sets `ShapesOutputs`), because `${steps.x.name}` is checked against them. |
+| `documented fields` | A comment on every input and output field: the hover text an editor shows. Needs `protoc-gen-flowstate-doc` in your `buf.gen.yaml`; see [the second plugin above](#chapter-two-the-schema-is-the-contract). |
+| `health` | The plugin answers its health poll: serving, or not serving *with a reason*, which is the right answer for one nobody configured. |
+| `stable digests` | Two launches of one binary yield the same task-schema and claims digests. A plugin whose descriptors depend on map order or a clock cannot be pinned, because its pin would fail on its own next launch. |
+
+`Audit` returns the same findings as data, for a test that asserts a known
+problem is reported or for tooling that is not a test, and `Conform` takes the
+names of checks to skip when one does not apply (a `Check` constant each, never a
+position).
+
+Two things to know before you write the first one.
+
+**Put the test in its own package.** A test beside your `main` imports your
+generated messages, which registers their file descriptors in the test binary's
+process-wide registry. The host rebuilds a task's descriptors from the bytes the
+plugin sent, and a process that already holds the schema cannot tell a working
+reconstruction from a hit on its own registry — the test passes for the wrong
+reason. This repository's own plugins put theirs in a `reachable` package beside
+`main` that imports neither `main` nor `gen/`.
+
+**It builds a binary, so gate it on `-short`.** Every first-party plugin skips its
+`Conform` test under `go test -short` and runs it in CI, the same way the rest of
+this repository treats a test that compiles a program.
+
 ## Writing one in another language
 
 Nothing about the protocol requires Go. The services are
@@ -959,7 +1054,9 @@ variables and that header live in
 can read it in the repository, but it is not importable and it does not appear in
 published documentation, so the prose in `doc.go` is the specification you are
 working from. And there is no conformance harness to run your implementation
-against — see [known limitations](#known-limitations).
+against — [`plugintest`](#testing-your-plugin) drives a Go binary, and nothing
+yet drives one written in another language; see
+[known limitations](#known-limitations).
 
 ## Known limitations
 
