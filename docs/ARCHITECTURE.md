@@ -366,7 +366,7 @@ default and the primary target.
 | **Temporal Cloud** (optional) | API key or mTLS, namespace and endpoint config | OIDC or WIF | internal addresses denied; an allowlist of CEL rules | Vault, or a KMS through `command:` or a plugin |
 
 The local-development row is what `flow server dev` assembles: a `temporal server start-dev`
-child process, the control plane, and a worker, in one process on loopback, stating each of
+child process, the control plane, and a worker, from one command on loopback, stating each of
 those postures at start-up as the flags it takes on the operator's behalf. It refuses to
 start when the row stops describing it (an off-loopback listen address, ambient
 authentication configuration, or a `TEMPORAL_ADDRESS` naming somebody else's cluster), because

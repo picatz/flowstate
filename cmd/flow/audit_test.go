@@ -269,6 +269,20 @@ func TestAuditIsNotALinter(t *testing.T) {
 	require.Error(t, broken.Err, "an unreadable path is a real error and must not exit zero")
 }
 
+// TestAuditCountsANamedUnreadableFile holds the skipped-file line to what
+// happened: a file named on the command line that does not compile is counted
+// out, and the line does not claim a directory walk found it.
+func TestAuditCountsANamedUnreadableFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "broken.yaml")
+	require.NoError(t, os.WriteFile(path, []byte("edition: v2026.3\nname: broken\nsteps: [\n"), 0o600))
+
+	res := runFlow(t, "audit", path)
+	require.NoError(t, res.Err, "a file that does not compile is counted out, not an error")
+	require.Contains(t, res.Stdout, "1 file(s) are not workflows this could read")
+	require.NotContains(t, res.Stdout, "the walk found",
+		"a named file was not found by a walk, and the line must not say it was")
+}
+
 // TestAuditSkipsTrivialRepetition keeps the noise floor where the design put it.
 // A corpus repeating a name or a literal is a language working; only a repeated
 // computation is the friction #411 is about.

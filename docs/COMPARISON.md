@@ -50,7 +50,7 @@ choice with a cost, and the cost is named.
   [deployment guide](DEPLOYMENT.md).
 - **Self-hosted is the baseline.** Everything works against a Temporal you run,
   including the one [`flow server dev`](reference/cli.md#flow-server-dev)
-  starts in one process with a server and a worker; a cloud dependency is an
+  starts from one command with a server and a worker; a cloud dependency is an
   optional integration, never the only path
   ([invariant 10](ARCHITECTURE.md#invariants)).
 
