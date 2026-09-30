@@ -6,7 +6,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -1086,5 +1088,44 @@ func TestPlanOutputNamesAreLegalInWorkflowExpressions(t *testing.T) {
 				t.Errorf("job %q publishes output %q, which is not a legal identifier in a workflow expression", d.Job, name)
 			}
 		}
+	}
+}
+
+// TestTheOrderingLegKeepsTheMakefilesTimeout: the ordering leg's `go test
+// -timeout` is written twice, in the gate and in the Makefile's test-ordering
+// recipe that CI runs, and a figure that drifted between them would make the
+// gate pass a leg CI fails, or the reverse (#2186). The CI job's own limit
+// must also leave room above it.
+func TestTheOrderingLegKeepsTheMakefilesTimeout(t *testing.T) {
+	makefile, err := os.ReadFile("../../Makefile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	recipe := regexp.MustCompile(`(?m)^\tGOMEMLIMIT=1GiB go test [^\n]*-count=20[^\n]*-timeout (\d+)s [^\n]*flowtest/`).FindSubmatch(makefile)
+	if recipe == nil {
+		t.Fatal("the Makefile's test-ordering recipe is not the one this test reads; update the test with the recipe")
+	}
+	if got, want := string(recipe[1])+"s", orderingTimeout; got != want {
+		t.Errorf("the Makefile's test-ordering timeout is %s and the gate's orderingTimeout is %s", got, want)
+	}
+
+	workflow, err := os.ReadFile("../../.github/workflows/ci.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	job := regexp.MustCompile(`(?s)\n  test-ordering:\n.*?timeout-minutes: (\d+)\n`).FindSubmatch(workflow)
+	if job == nil {
+		t.Fatal("the test-ordering job's timeout-minutes was not found")
+	}
+	seconds, err := strconv.Atoi(strings.TrimSuffix(orderingTimeout, "s"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	minutes, err := strconv.Atoi(string(job[1]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if minutes*60 < seconds+120 {
+		t.Errorf("the job limit is %d minutes, which leaves under two minutes above the %ds test timeout for the build and the upload", minutes, seconds)
 	}
 }

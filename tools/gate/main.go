@@ -414,7 +414,7 @@ func run(suppliedBase string) error {
 	// claim is an ordering claim; see CLAUDE.md on -cpu=1) is affected.
 	if needsOrdering(affected) {
 		g.leg("ordering", "flowtest package affected",
-			goTestSummarized([]string{"GOMEMLIMIT=1GiB"}, "-race", "-cpu=1", "-count=20", "-timeout", "300s", "./pkg/flowstate/v1/flowtest/"))
+			goTestSummarized([]string{"GOMEMLIMIT=1GiB"}, "-race", "-cpu=1", "-count=20", "-timeout", orderingTimeout, "./pkg/flowstate/v1/flowtest/"))
 	} else {
 		g.skip("ordering", "flowtest package not affected")
 	}

@@ -49,7 +49,7 @@ func TestTheTestLegsPipeThroughTheSameSummarizerMakeTestUses(t *testing.T) {
 	}{
 		{"module-wide", moduleWideTestCommand()},
 		{"narrow", affectedTestCommand([]string{modulePath + "/tools/gate"})},
-		{"ordering", goTestSummarized([]string{"GOMEMLIMIT=1GiB"}, "-race", "-cpu=1", "-count=20", "-timeout", "300s", "./pkg/flowstate/v1/flowtest/")},
+		{"ordering", goTestSummarized([]string{"GOMEMLIMIT=1GiB"}, "-race", "-cpu=1", "-count=20", "-timeout", orderingTimeout, "./pkg/flowstate/v1/flowtest/")},
 	} {
 		display := tc.spec.display()
 		if !strings.HasPrefix(display, "GOMEMLIMIT=") || !strings.Contains(display, " go test -json ") {

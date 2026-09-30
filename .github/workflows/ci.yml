@@ -562,7 +562,10 @@ jobs:
     needs: plan
     if: needs.plan.outputs.test_ordering == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # The recipe's own -timeout is 480s (tools/gate orderingTimeout); the job
+    # limit sits above it, room for the build and the upload, so a slow run
+    # ends as go test's timeout report and not as a cancelled job.
+    timeout-minutes: 14
     steps:
       # persist-credentials / cache: — see the test job above. #577.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

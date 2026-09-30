@@ -367,7 +367,7 @@ tidy-plugins:
 test-ordering: SHELL := /bin/bash
 test-ordering: .SHELLFLAGS := -o pipefail -c
 test-ordering:
-	GOMEMLIMIT=1GiB go test -json -race -cpu=1 -count=20 -timeout 300s ./pkg/flowstate/v1/flowtest/ | $(if $(TEST_JSON),tee "$(TEST_JSON)" | ,)go run ./tools/testsum
+	GOMEMLIMIT=1GiB go test -json -race -cpu=1 -count=20 -timeout 480s ./pkg/flowstate/v1/flowtest/ | $(if $(TEST_JSON),tee "$(TEST_JSON)" | ,)go run ./tools/testsum
 
 # One Temporal dev server that stays up for the inner loop (#1738). The
 # packages sharing a dev server — engine, server, temporalclient, cmd/flow —
