@@ -477,9 +477,10 @@ func affectedPackages(pkgs []pkgMeta, changed map[string]bool) []string {
 // 300s the leg ran out of time with every test passing (#2186), on a hosted
 // runner as well as a small container, and the panic named whichever test
 // happened to be running. It stays a bound, not an absence of one: a real hang
-// still fails, in eight minutes. The Makefile's test-ordering recipe and the
-// CI job's timeout-minutes carry the same figure, and a test holds the
-// Makefile to this constant.
+// still fails, in eight minutes. The Makefile's test-ordering recipe, which CI
+// runs, carries the same figure, and the CI job's timeout-minutes sits above
+// it, with room for the build and the upload; a test holds both to this
+// constant.
 const orderingTimeout = "480s"
 
 // needsOrdering reports whether the affected set includes the flowtest

@@ -356,7 +356,10 @@ tidy-plugins:
 # should have lapsed reporting that it did not — rather than as a crash a race
 # detector would catch.
 #
-# Sized to be cheap enough to keep: seconds, not minutes. It exists because
+# It was sized to be cheap enough to keep, and it is no longer seconds: twenty
+# repetitions of the whole package under -race take about five minutes on a
+# hosted runner, so the `go test -timeout` below is 480s, held to
+# tools/gate's orderingTimeout by a test (#2186). It exists because
 # `-race -count=3` at the default GOMAXPROCS ran clean against a defect that
 # `-cpu=1` reproduced three times in ten (#278).
 #
