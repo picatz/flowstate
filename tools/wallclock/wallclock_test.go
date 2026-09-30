@@ -187,6 +187,7 @@ var repositoryPolls = map[string]int{
 	"internal/temporaltest/supervisor_linux_test.go":                     3,
 	"pkg/flowstate/v1/clock_test.go":                                     3,
 	"pkg/flowstate/v1/debugger_test.go":                                  1,
+	"pkg/flowstate/v1/engine/historical_test.go":                         3,
 	"pkg/flowstate/v1/engine/main_test.go":                               1,
 	"pkg/flowstate/v1/engine/panicpolicy_test.go":                        1,
 	"pkg/flowstate/v1/engine/replay_record_test.go":                      1,
