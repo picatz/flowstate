@@ -201,7 +201,8 @@ its step, and the step list and observations show that step as failed rather
 than as one the run never reached.
 
 A step that finished says what it produced, in the same words on both drivers
-and whether or not the run was ever held at it:
+(up to each one's bound on an observation, which cuts a very long output at a
+different length) and whether or not the run was ever held at it:
 
 ```text
 price -> value: 4000
