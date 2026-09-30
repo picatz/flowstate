@@ -242,13 +242,13 @@ func runSuite(ctx context.Context, file *File, opts RunOptions, loaderFor func(*
 			// knowable without one ([casePosture]): the same posture a case
 			// that ran starts from, and joined into the file's like a case's.
 			posture := casePosture(&test, fileVars{values: file.Vars, withheld: file.varsWithheld})
-			if !posture.WithholdAll() {
-				stopped = verdictUnder(stopped, posture)
-			}
 			suite = widenedBy(suite, posture)
 			stopped.Warnings = warningBudget.take(stopped.GetWarnings())
 			anchor.place(stopped.GetFailures())
 			anchor.place(stopped.GetWarnings())
+			if !posture.WithholdAll() {
+				stopped = verdictUnder(stopped, posture)
+			}
 			report.Cases = append(report.Cases, stopped)
 			transcripts = append(transcripts, nil)
 
@@ -305,13 +305,17 @@ func runSuite(ctx context.Context, file *File, opts RunOptions, loaderFor func(*
 		// failure nobody can act on, which is the availability trade that
 		// posture already makes ([renderedRunError]); the coverage report
 		// carries no such diagnostic and withholds all of its names.
-		if !posture.WithholdAll() {
-			result = verdictUnder(result, posture)
-		}
+		//
+		// After the diagnostics are placed: a position is found by the name the
+		// file wrote, so a name withheld first would lose the entry's line and
+		// leave the diagnostic on the block that holds it.
 		suite = widenedBy(suite, posture)
 		result.Warnings = warningBudget.take(result.GetWarnings())
 		anchor.place(result.GetFailures())
 		anchor.place(result.GetWarnings())
+		if !posture.WithholdAll() {
+			result = verdictUnder(result, posture)
+		}
 		report.Cases = append(report.Cases, result)
 		transcripts = append(transcripts, transcriptBudget.take(account))
 		coverage.observe(identity, spec, transcript, l.positions())

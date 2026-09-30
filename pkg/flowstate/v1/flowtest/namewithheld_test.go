@@ -247,3 +247,59 @@ func TestACaseStoppedBeforeItRanWithholdsItsNameToo(t *testing.T) {
 	assert.NotContains(t, string(rendered), "hunter2_stopped")
 	assert.Contains(t, c.GetName(), v1.SensitiveMarker)
 }
+
+// TestAWithheldNameKeepsTheEntryItWasFoundAt: a diagnostic is placed at the line
+// of the entry it names, found by the name as the file wrote it, so withholding
+// the name must not lose the position: an editor underlines the entry, and not
+// the block that holds it.
+func TestAWithheldNameKeepsTheEntryItWasFoundAt(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeFile(t, dir+"/workflow.yaml", `edition: v2026.3
+name: outputs
+inputs:
+  token:
+    type: string
+    required: true
+    sensitive: true
+steps:
+  - id: only
+    log:
+      message: hi
+outputs:
+  hunter2_out:
+    value: ${inputs.token}
+`)
+	suite := func(token string) *v1.TestCase {
+		path := dir + "/names-" + token + ".test.yaml"
+		writeFile(t, path, `edition: v2026.3
+tests:
+  - name: wrong output
+    workflow: ./workflow.yaml
+    inputs:
+      token: `+token+`
+    stubs:
+      - task: log
+        returns: {}
+    expect:
+      outputs:
+        hunter2_out: not-the-value
+`)
+		report := flowtest.RunPath(t.Context(), path, flowtest.RunOptions{}).Report
+		require.Len(t, report.GetCases(), 1)
+		require.NotEmpty(t, report.GetCases()[0].GetFailures(), "no failure, so this proves nothing: %v %v", report.GetRefused(), report.GetCases()[0])
+
+		return report.GetCases()[0]
+	}
+
+	plain := suite("something-else").GetFailures()[0]
+	withheld := suite("hunter2_out").GetFailures()[0]
+
+	require.NotZero(t, plain.GetLine())
+	assert.Equal(t, v1.SensitiveMarker, withheld.GetValue(), "the value was not withheld, so this proves nothing")
+	assert.Equal(t, plain.GetLine(), withheld.GetLine())
+	assert.Equal(t, plain.GetColumn(), withheld.GetColumn())
+	assert.Equal(t, plain.GetField(), withheld.GetField())
+	assert.Equal(t, plain.GetCode(), withheld.GetCode())
+}
