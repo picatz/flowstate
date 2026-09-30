@@ -329,6 +329,15 @@ func TestACaseThatFailsBeforeItRunsWithholdsItsNamesToo(t *testing.T) {
     expect:
       ran: [nosuch_hunter2_stepid]
 `,
+		"a stub naming no step, with an input the run cannot bind": `
+    inputs:
+      token: hunter2_stepid
+    stubs:
+      - step: nosuch_hunter2_stepid
+        returns: {}
+    expect:
+      failed: false
+`,
 		"a signal the workflow never waits on": `
     inputs:
       token: hunter2_stepid

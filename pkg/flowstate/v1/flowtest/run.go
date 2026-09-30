@@ -763,9 +763,15 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	// over the bound inputs), so what it withholds is the same set and no more.
 	// A trigger case's inputs are produced later, and its exits take the run's
 	// set.
-	if bound, bindErr := v1.BindRunInputs(workflow, v1.NewNamedValues(test.Inputs)); bindErr == nil {
-		posture = posture.Merge(sensitiveNativeValues(&v1.Scope{Inputs: bound}, v1.SensitiveInputNames(workflow)))
+	//
+	// And when the bind fails, from what the case submitted, as the run's own
+	// set is: the refusal can quote the value it refused, and so can the exits
+	// between here and it.
+	submitted := v1.NewNamedValues(test.Inputs)
+	if bound, bindErr := v1.BindRunInputs(workflow, submitted); bindErr == nil {
+		submitted = bound
 	}
+	posture = posture.Merge(sensitiveNativeValues(&v1.Scope{Inputs: submitted}, v1.SensitiveInputNames(workflow)))
 
 	// Resolved against the compiled workflow, not the file alone: a step-form
 	// stub names a step id, and this is where that id becomes the task it
