@@ -727,8 +727,15 @@ type OutputCase struct {
 	Workflow *v1.Workflow
 
 	// Finished is the account of each step that finished, by step id, which
-	// the case keeps unique across the workflows it calls.
+	// the case keeps unique across the workflows it calls. Nil for a case
+	// about addresses alone.
 	Finished map[string]string
+
+	// Addresses, when set, is the occurrence address of every step that
+	// finished, sorted: where in the run each did, as an author reads it
+	// (`each[1]/touch`, `fan#0/left`, `route?0/chosen`). A step in a body
+	// is named by the iteration, branch or arm it ran in on both drivers.
+	Addresses []string
 
 	// Secret, when set, is a value a callee declares sensitive, which no
 	// account may show.
@@ -741,24 +748,34 @@ type OutputCase struct {
 func (c OutputCase) Problems(observations []*v1.DebugObservation) []string {
 	var problems []string
 	finished := map[string]string{}
+	var addresses []string
 	for _, observation := range observations {
 		if observation.GetKind() == v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_FINISHED {
 			finished[observation.GetStepId()] = observation.GetText()
+			addresses = append(addresses, observation.GetAddress())
 		}
 		if c.Secret != "" && strings.Contains(observation.GetText(), c.Secret) {
 			problems = append(problems, observation.GetStepId()+"'s account showed the secret")
 		}
 	}
-	for id, want := range c.Finished {
-		if got, ok := finished[id]; !ok {
-			problems = append(problems, "no account of "+id+", want "+want)
-		} else if got != want {
-			problems = append(problems, "account of "+id+" is "+got+", want "+want)
+	if c.Finished != nil {
+		for id, want := range c.Finished {
+			if got, ok := finished[id]; !ok {
+				problems = append(problems, "no account of "+id+", want "+want)
+			} else if got != want {
+				problems = append(problems, "account of "+id+" is "+got+", want "+want)
+			}
+		}
+		for id := range finished {
+			if _, ok := c.Finished[id]; !ok {
+				problems = append(problems, "unexpected account of "+id+": "+finished[id])
+			}
 		}
 	}
-	for id := range finished {
-		if _, ok := c.Finished[id]; !ok {
-			problems = append(problems, "unexpected account of "+id+": "+finished[id])
+	if c.Addresses != nil {
+		slices.Sort(addresses)
+		if !slices.Equal(addresses, c.Addresses) {
+			problems = append(problems, "finished at "+strings.Join(addresses, ", ")+", want "+strings.Join(c.Addresses, ", "))
 		}
 	}
 	slices.Sort(problems)
@@ -790,6 +807,88 @@ func OutputCases() []OutputCase {
 				"price":      "price -> value: 42",
 				"shape":      `shape -> value: {"count":2,"tags":["a","b"]}`,
 				"background": "background completed",
+			},
+		},
+		{
+			// Where a step ran is part of what a session says of it. A step
+			// in a body is named by the iteration, branch or arm it ran in,
+			// and a body inside a callee by the call first, as the local
+			// driver names them; the durable driver named none of them.
+			Name: "a step in a body is addressed by the iteration, branch or arm it ran in",
+			Workflow: &v1.Workflow{
+				Name:    "output-addresses",
+				Profile: v1.CurrentProfile,
+				Steps: []*v1.Node{
+					says("first", "one"),
+					{
+						Id: "each",
+						Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{
+							Items:       v1.NewExpr(`["a", "b"]`),
+							MaxParallel: 1,
+							Body:        []*v1.Node{says("touch", "visited")},
+						}},
+					},
+					{
+						Id: "count",
+						Kind: &v1.Node_Loop{Loop: &v1.Loop{
+							State:         "n",
+							Initial:       v1.NewLiteral(int64(2)),
+							Update:        v1.NewExpr("n - 1"),
+							Until:         v1.NewExpr("n <= 1"),
+							MaxIterations: 10,
+							Body:          []*v1.Node{says("tick", "ticked")},
+						}},
+					},
+					{Id: "fan", Kind: &v1.Node_Parallel{Parallel: &v1.Parallel{Branches: []*v1.Parallel_Branch{
+						{Steps: []*v1.Node{says("left", "l")}},
+						{Steps: []*v1.Node{says("right", "r")}},
+					}}}},
+					{
+						Id: "route",
+						Kind: &v1.Node_Switch{Switch: &v1.Switch{
+							Value: v1.NewLiteral("go"),
+							Cases: []*v1.Switch_Case{
+								{Values: []*v1.Value{v1.NewLiteral("stop")}, Steps: []*v1.Node{says("halted", "no")}},
+								{Values: []*v1.Value{v1.NewLiteral("go")}, Steps: []*v1.Node{says("chosen", "yes")}},
+							},
+						}},
+					},
+					{Id: "nested", Kind: &v1.Node_Call{Call: &v1.Call{
+						Workflow: &v1.Workflow{
+							Name:    "child",
+							Profile: v1.CurrentProfile,
+							Steps: []*v1.Node{
+								says("inner", "i"),
+								{
+									Id: "sweep",
+									Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{
+										Items:       v1.NewExpr(`["x"]`),
+										MaxParallel: 1,
+										Body:        []*v1.Node{says("deep", "d")},
+									}},
+								},
+							},
+						},
+					}}},
+				},
+			},
+			Addresses: []string{
+				"count",
+				"count[0]/tick",
+				"count[1]/tick",
+				"each",
+				"each[0]/touch",
+				"each[1]/touch",
+				"fan",
+				"fan#0/left",
+				"fan#1/right",
+				"first",
+				"nested",
+				"nested(child)/inner",
+				"nested(child)/sweep",
+				"nested(child)/sweep[0]/deep",
+				"route",
+				"route?1/chosen",
 			},
 		},
 		{

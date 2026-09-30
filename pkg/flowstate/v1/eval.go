@@ -2219,7 +2219,7 @@ func runSwitch(ctx context.Context, id string, sw *Switch, scope *Scope, undo *U
 	// `susp + 1` — a switch is never a suspension position — so a for_each
 	// written in a switch arm runs atomically there and is weighed here too
 	// ([CheckAtomicBlockActivities]).
-	armCtx := contextWithSegment(enterAtomicBlock(ctx), DebugSegmentKind_DEBUG_SEGMENT_KIND_CASE, id, switchArmIndex(sw, body))
+	armCtx := contextWithSegment(enterAtomicBlock(ctx), DebugSegmentKind_DEBUG_SEGMENT_KIND_CASE, id, SwitchArmIndex(sw, body))
 	if err := runNodes(armCtx, body, scope, undo, placement, depth, tolerated); err != nil {
 		// Wrapped so the selection survives the failure: recordStepOutcome
 		// records this step through failureRecord, which reads the account off
