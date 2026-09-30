@@ -892,10 +892,10 @@ dispatch one.
 
 **Supported points.** The unit is a workflow-task boundary: the history through a
 `WorkflowTaskStarted` event, or a closed run's last event. The answer there is
-the state after every earlier task and before that one. An event between two
-boundaries replays and adds nothing (its state is the next boundary's). An event
-that ends a task before its commands is refused as a divergence, and a prefix too
-short to hold a task is refused as such. Event ids order one run's history and
+the state after every earlier task and before that one. An event that is an input to the
+next task (a result, a signal, a task scheduled) replays and adds nothing: its
+state is the next boundary's. An event inside the commands a task wrote is
+refused as a divergence, and a prefix too short to hold a task is refused as such. Event ids order one run's history and
 say nothing about causality across `parallel:` branches, async work or runs.
 
 | Question at a past point | Answer | How it is known |
@@ -904,11 +904,12 @@ say nothing about causality across `parallel:` branches, async work or runs.
 | A debug session's state, address, revision, lease and observations, for a run that declares `debug:` | Reconstructed, equal to what the live session read at that revision | `TestAHistoricalHoldIsWhatTheLiveSessionSaw`, on a dev server |
 | An inspection at a reconstructed hold | Reconstructed for the values; an expression's result is hypothetical, evaluated now over then's scope | the same test |
 | A finished step's outputs | Recorded, decoded from the history under the recorded codec, so the caller needs both the history and the codec's key | inherited: a run's outputs are what its history holds |
-| Sensitive values | Withheld exactly as the live session withholds them, because the same handler answers | inherited: [Sensitive values](#sensitive-values) |
+| Sensitive values | Withheld as the live session withholds them, because the same handler answers over the scope the replay rebuilds | by shared code: [Sensitive values](#sensitive-values); no reconstruction test yet uses a declared-sensitive input |
+| A cancelled or closed run | Its last event is a supported point; a cancelled run holds no waits there | `TestACancelledRunReconstructsAsHoldingNoWaits` |
 | A run that continued as new | One answer per run in the chain. What an earlier run did is that run's history's to say | `TestAContinuedRunReconstructsWithinItsOwnHistory` |
 | Observations dropped from the bounded record | Unavailable, and counted as dropped, never re-invented | inherited: `observations_dropped` on the snapshot |
 | State inside a task: a response's unreturned headers, a plugin's internals | Unavailable. Nothing outside the recorded result was ever in history | by construction |
-| A history from a newer interpreter than the one replaying | Refused, by the version marker it cannot honour | `TestAHistoryFromANewerInterpreterIsRefused` |
+| A history recording a `GetVersion` marker the replaying interpreter does not know | Refused, by name. A newer change made without a gate is not detected this way: it surfaces as nondeterminism or as a different answer, which is why binding the interpreter version is on the list below | `TestAHistoryFromANewerInterpreterIsRefused` |
 | A cut inside a task | Refused, as nondeterministic | `TestACutInsideAWorkflowTaskIsRefused` |
 | More than a history can hold | Refused before any event is read | `TestAReconstructionOverTheBoundIsRefusedBeforeItReplays` |
 

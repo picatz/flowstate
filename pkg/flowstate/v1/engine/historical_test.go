@@ -2,6 +2,7 @@ package engine_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -88,6 +89,8 @@ type answers struct {
 	debug      *v1.DebugSnapshot
 	inspected  []*v1.DebugInspectResponse
 	inspectErr []error
+	// err is a handler that failed, which is not a run that declares nothing.
+	err error
 }
 
 type captureInbound struct {
@@ -114,7 +117,12 @@ func (i *captureInbound) Init(outbound interceptor.WorkflowOutboundInterceptor) 
 }
 
 func (i *captureInbound) ExecuteWorkflow(ctx workflow.Context, in *interceptor.ExecuteWorkflowInput) (any, error) {
-	workflow.Go(ctx, func(ctx workflow.Context) {
+	// Disconnected from the run's own context: a cancelled run's context is
+	// done, and an Await on it returns at once, so the sentinel would read
+	// once at the cancel request and never again, missing the cleanup the
+	// cancellation runs in the coroutines after it.
+	sentinel, _ := workflow.NewDisconnectedContext(ctx)
+	workflow.Go(sentinel, func(ctx workflow.Context) {
 		_ = workflow.Await(ctx, func() bool {
 			i.capture.ask()
 
@@ -144,10 +152,14 @@ func (c *handlerCapture) ask() {
 
 	var latest answers
 	if handler, ok := c.handlers[engine.ProgressQuery]; ok {
-		latest.progress, _ = callHandler[*v1.RunProgress](handler)
+		var err error
+		latest.progress, err = callHandler[*v1.RunProgress](handler)
+		latest.err = errors.Join(latest.err, err)
 	}
 	if handler, ok := c.handlers[v1.DebugQuery]; ok {
-		latest.debug, _ = callHandler[*v1.DebugSnapshot](handler, "")
+		var err error
+		latest.debug, err = callHandler[*v1.DebugSnapshot](handler, "")
+		latest.err = errors.Join(latest.err, err)
 	}
 	if handler, ok := c.handlers[v1.DebugInspectQuery]; ok {
 		for _, request := range c.inspections {
@@ -240,6 +252,9 @@ func reconstructAt(history *historypb.History, index int, execution workflow.Exe
 
 	capture.mu.Lock()
 	defer capture.mu.Unlock()
+	if capture.answer.err != nil {
+		return nil, fmt.Errorf("asking the run through event %d: %w", events[index].GetEventId(), capture.answer.err)
+	}
 
 	return &reconstruction{
 		eventID:     events[index].GetEventId(),
@@ -401,59 +416,73 @@ func TestAContinuedRunReconstructsWithinItsOwnHistory(t *testing.T) {
 }
 
 // TestACutInsideAWorkflowTaskIsRefused: an arbitrary event is not a supported
-// point, and the ones that are not say so. A prefix ending at a
-// WorkflowTaskCompleted has lost the commands that task issued, and the replay
-// names the divergence; one too short to hold a task is refused as such. The
-// events between are not refused, and add nothing: the state at an event is the
-// state at the next boundary, because a task's commands and their results
-// belong to the task that follows. A reconstruction that took its answer from
-// a refused cut would be reading a run that never existed.
+// point, and the ones that are not say so. A prefix that ends inside the run of
+// events a task wrote (the WorkflowTaskCompleted, or between two of its
+// commands' events) has lost commands the task issued, and the replay names the
+// divergence; one too short to hold a task is refused as such. The events that
+// are inputs to the next task are not refused, and add nothing: the state at one
+// is the state at the next boundary. A reconstruction that took its answer from
+// a refused cut would be reading a run that never existed. Classified over every
+// recorded history, since the shapes differ: a wait writes markers, timers and
+// search attributes, a parallel block writes several activities.
 func TestACutInsideAWorkflowTaskIsRefused(t *testing.T) {
 	t.Parallel()
 
-	history := recordedHistories(t)["2026-08-08/multi-step-tasks"]
-	require.NotNil(t, history)
-
-	at := boundaries(history)
-	supported := map[int]bool{}
-	for _, index := range at {
-		supported[index] = true
-	}
-	next := func(i int) (int, bool) {
-		for _, index := range at {
-			if index >= i {
-				return index, true
-			}
-		}
-
-		return 0, false
+	commands := map[enumspb.EventType]bool{
+		enumspb.EVENT_TYPE_WORKFLOW_TASK_COMPLETED:                  true,
+		enumspb.EVENT_TYPE_ACTIVITY_TASK_SCHEDULED:                  true,
+		enumspb.EVENT_TYPE_TIMER_STARTED:                            true,
+		enumspb.EVENT_TYPE_TIMER_CANCELED:                           true,
+		enumspb.EVENT_TYPE_MARKER_RECORDED:                          true,
+		enumspb.EVENT_TYPE_UPSERT_WORKFLOW_SEARCH_ATTRIBUTES:        true,
+		enumspb.EVENT_TYPE_WORKFLOW_PROPERTIES_MODIFIED:             true,
+		enumspb.EVENT_TYPE_START_CHILD_WORKFLOW_EXECUTION_INITIATED: true,
 	}
 
 	var tooShort, midTask, between int
-	for i, event := range history.GetEvents() {
-		if supported[i] {
-			continue
+	for name, history := range recordedHistories(t) {
+		at := boundaries(history)
+		supported := map[int]bool{}
+		for _, index := range at {
+			supported[index] = true
 		}
-		got, err := reconstructAt(history, i, corpusRun)
-		switch {
-		case err != nil && strings.Contains(err.Error(), "at least 3 events"):
-			tooShort++
-			assert.Less(t, i, 2, "only the start of a history is too short to replay")
-		case err != nil:
-			midTask++
-			assert.Equal(t, enumspb.EVENT_TYPE_WORKFLOW_TASK_COMPLETED, event.GetEventType(),
-				"only a cut between a task and its commands is refused (event %d): %v", event.GetEventId(), err)
-			assert.Contains(t, err.Error(), "nondeterministic")
-		default:
-			// The ordinal of an event orders a history. It does not make a
-			// state of its own.
-			between++
-			boundary, ok := next(i)
-			require.True(t, ok, "event %d follows every boundary", event.GetEventId())
-			after, err := reconstructAt(history, boundary, corpusRun)
-			require.NoError(t, err)
-			assert.Empty(t, cmpDiff(after.progress, got.progress),
-				"event %d is not the state at the next boundary (event %d)", event.GetEventId(), after.eventID)
+		next := func(i int) (int, bool) {
+			for _, index := range at {
+				if index >= i {
+					return index, true
+				}
+			}
+
+			return 0, false
+		}
+
+		for i, event := range history.GetEvents() {
+			if supported[i] {
+				continue
+			}
+			got, err := reconstructAt(history, i, corpusRun)
+			switch {
+			case err != nil && strings.Contains(err.Error(), "at least 3 events"):
+				tooShort++
+				assert.Less(t, i, 2, "%s: only the start of a history is too short to replay", name)
+			case err != nil:
+				midTask++
+				assert.True(t, commands[event.GetEventType()],
+					"%s: a cut at %v (event %d) is refused, so it must be inside a task's commands: %v", name, event.GetEventType(), event.GetEventId(), err)
+				assert.Contains(t, err.Error(), "nondeterministic")
+			default:
+				// The ordinal of an event orders a history. It does not make
+				// a state of its own.
+				between++
+				boundary, ok := next(i)
+				if !ok {
+					continue
+				}
+				after, err := reconstructAt(history, boundary, corpusRun)
+				require.NoError(t, err)
+				assert.Empty(t, cmpDiff(after.progress, got.progress),
+					"%s: event %d (%v) is not the state at the next boundary (event %d)", name, event.GetEventId(), event.GetEventType(), after.eventID)
+			}
 		}
 	}
 	assert.Positive(t, tooShort)
@@ -462,9 +491,11 @@ func TestACutInsideAWorkflowTaskIsRefused(t *testing.T) {
 }
 
 // TestAHistoryFromANewerInterpreterIsRefused: a history whose recorded
-// versions the running interpreter does not know is refused by name, not
-// replayed as if it were understood. The versions the interpreter gates its
-// behaviour on are recorded in the history as markers.
+// `GetVersion` markers name a version the running interpreter does not know is
+// refused by name, not replayed as if it were understood. This is the SDK's
+// refusal of an unknown marker value, forged here; it is not a detector of a
+// newer interpreter in general, which surfaces a change made without a gate as
+// nondeterminism or, worse, as a different answer.
 func TestAHistoryFromANewerInterpreterIsRefused(t *testing.T) {
 	t.Parallel()
 
@@ -761,4 +792,48 @@ func TestReconstructingALongRunBackwardCostsTheSumOfItsPrefixes(t *testing.T) {
 	}
 	t.Logf("%d boundaries over %d events: %d events replayed in %s (%s per boundary)",
 		len(at), len(history.GetEvents()), replayed, total, total/time.Duration(len(at)))
+}
+
+// TestACancelledRunReconstructsAsHoldingNoWaits records a run parked on signal
+// waits in two `parallel:` branches, cancels it, and reconstructs every
+// boundary. At the cancelled run's last event no wait is pending: the waits'
+// cleanup runs in coroutines after the sentinel's, and a sentinel on the run's
+// own context would have exited at the cancel request and never seen it.
+func TestACancelledRunReconstructsAsHoldingNoWaits(t *testing.T) {
+	temporal := newTemporalNamespace(t)
+	startWorker(t, temporal)
+
+	spec := &v1.Workflow{Name: "cancelled", Profile: v1.CurrentProfile, Steps: []*v1.Node{
+		{Id: "fan", Kind: &v1.Node_Parallel{Parallel: &v1.Parallel{Branches: []*v1.Parallel_Branch{
+			{Steps: []*v1.Node{signalStep("left", "go-left", 5*time.Minute)}},
+			{Steps: []*v1.Node{signalStep("right", "go-right", 5*time.Minute)}},
+		}}}},
+	}}
+	run, err := temporal.ExecuteWorkflow(t.Context(),
+		client.StartWorkflowOptions{ID: "historical-cancelled", TaskQueue: engine.RunTaskQueueName},
+		engine.Run, &v1.RunState{Workflow: spec})
+	require.NoError(t, err)
+	require.Eventually(t, func() bool { return timersStarted(t, temporal, run.GetID()) >= 2 },
+		30*time.Second, 50*time.Millisecond, "the run never parked on both waits")
+
+	require.NoError(t, temporal.CancelWorkflow(t.Context(), run.GetID(), run.GetRunID()))
+	require.Error(t, run.Get(t.Context(), nil), "the run was cancelled, so it does not complete")
+
+	history := recordedHistory(t, temporal, run.GetID(), run.GetRunID())
+	execution := workflow.Execution{ID: run.GetID(), RunID: run.GetRunID()}
+
+	var parked, closed *reconstruction
+	for _, at := range boundaries(history) {
+		got, err := reconstructAt(history, at, execution)
+		require.NoError(t, err)
+		if len(got.progress.GetPendingWaits()) == 2 {
+			parked = got
+		}
+		if history.GetEvents()[at].GetEventType() == enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_CANCELED {
+			closed = got
+		}
+	}
+	require.NotNil(t, parked, "no point showed both waits, so this proves nothing")
+	require.NotNil(t, closed, "the history has no cancelled end")
+	assert.Empty(t, closed.progress.GetPendingWaits(), "a cancelled run holds no waits")
 }
