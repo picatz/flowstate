@@ -6,7 +6,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -1086,5 +1088,49 @@ func TestPlanOutputNamesAreLegalInWorkflowExpressions(t *testing.T) {
 				t.Errorf("job %q publishes output %q, which is not a legal identifier in a workflow expression", d.Job, name)
 			}
 		}
+	}
+}
+
+// TestTheOrderingLegKeepsTheMakefilesTimeout: the ordering leg's `go test
+// -timeout` is written twice, in the gate and in the Makefile's test-ordering
+// recipe that CI runs, and a figure that drifted between them would make the
+// gate pass a leg CI fails, or the reverse (#2186). The CI job's own limit
+// must also leave room above it.
+func TestTheOrderingLegKeepsTheMakefilesTimeout(t *testing.T) {
+	makefile, err := os.ReadFile("../../Makefile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	recipe := regexp.MustCompile(`(?m)^\tGOMEMLIMIT=1GiB go test [^\n]*-count=20[^\n]*-timeout (\d+)s [^\n]*flowtest/`).FindSubmatch(makefile)
+	if recipe == nil {
+		t.Fatal("the Makefile's test-ordering recipe is not the one this test reads; update the test with the recipe")
+	}
+	if got, want := string(recipe[1])+"s", orderingTimeout; got != want {
+		t.Errorf("the Makefile's test-ordering timeout is %s and the gate's orderingTimeout is %s", got, want)
+	}
+
+	workflow, err := os.ReadFile("../../.github/workflows/ci.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wf ciWorkflow
+	if err := yaml.Unmarshal(workflow, &wf); err != nil {
+		t.Fatalf("parsing the workflow: %v", err)
+	}
+	// Read from the parsed job, never scanned out of the text: a job that lost
+	// its own limit would otherwise borrow the next job's, and pass.
+	job, ok := wf.Jobs["test-ordering"]
+	if !ok {
+		t.Fatal("ci.yml has no test-ordering job")
+	}
+	if job.TimeoutMinutes == 0 {
+		t.Fatal("the test-ordering job sets no timeout-minutes, so a hang would run to GitHub's six-hour default")
+	}
+	seconds, err := strconv.Atoi(strings.TrimSuffix(orderingTimeout, "s"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job.TimeoutMinutes*60 < seconds+120 {
+		t.Errorf("the job limit is %d minutes, which leaves under two minutes above the %ds test timeout for the build and the upload", job.TimeoutMinutes, seconds)
 	}
 }
