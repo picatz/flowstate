@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/require"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -297,5 +299,108 @@ func TestASensitiveRunWhoseArgumentsCannotBeBoundWithholdsItsFailureText(t *test
 			require.NotContainsf(t, fmt.Sprintf(verb, subject), sensitiveLoopItem,
 				"a redacted failure rendered with %s must not reach the original text", verb)
 		}
+	}
+}
+
+// TestLocalAndServerWithholdTheSameFailureText: a local run's failure set is
+// the one `flow server` builds for the same run, so a callee's sensitive
+// argument, bound from an expression the run's own inputs cannot enumerate,
+// is withheld by both drivers, as is failure text beside a sensitive output.
+func TestLocalAndServerWithholdTheSameFailureText(t *testing.T) {
+	t.Parallel()
+
+	callee := &v1.Workflow{Name: "callee", DeclaredInputs: []*v1.InputDeclaration{
+		{Name: "password", Type: v1.InputDeclaration_TYPE_STRING, Sensitive: true},
+	}}
+	withCallee := &v1.Workflow{Name: "caller", Steps: []*v1.Node{
+		{Id: "sub", Kind: &v1.Node_Call{Call: &v1.Call{Workflow: callee}}},
+	}}
+	withOutput := &v1.Workflow{Name: "out", DeclaredOutputs: []*v1.OutputDeclaration{{Name: "token", Sensitive: true}}}
+	plain := &v1.Workflow{Name: "plain"}
+
+	for name, workflow := range map[string]*v1.Workflow{
+		"a callee's sensitive input": withCallee,
+		"a sensitive output":         withOutput,
+		"nothing sensitive":          plain,
+	} {
+		local := runSensitiveValues(workflow, nil, false)
+		server := v1.RunFailureSensitiveValues(workflow, nil)
+		require.Equal(t, server.WithholdAll(), local.WithholdAll(), name)
+		require.Equal(t, server.Empty(), local.Empty(), name)
+		require.Equal(t, workflow != plain, local.WithholdAll(), name)
+		require.True(t, runSensitiveValues(workflow, nil, true).Empty(), "%s: --reveal-sensitive empties the set", name)
+	}
+}
+
+// TestTheRunLocalToolKeepsALoopItemOutOfTheFailureText is the same claim on
+// flowstate_run_local: an agent's context is a surface like a terminal, and
+// the tool bound the arguments, so the failure it returns is redacted against
+// them exactly as `flow run local` redacts its own (Codex, #2173).
+func TestTheRunLocalToolKeepsALoopItemOutOfTheFailureText(t *testing.T) {
+	// Not t.Parallel(), for the process-wide egress policy reason above.
+	session := connectMCP(t, defaultLocalRunPosture())
+
+	result, answer := callRunLocal(t, session, map[string]any{
+		"source": sensitiveLoopWorkflow,
+		"inputs": map[string]any{"customers": []any{sensitiveLoopItem}},
+	})
+	require.True(t, result.IsError, "the loop body dials a port nothing listens on")
+
+	text := result.Content[0].(*mcp.TextContent).Text
+	require.NotContains(t, text, sensitiveLoopItem,
+		"the bound item of a sensitive input reached the agent in the failure text")
+	require.Equal(t, "STATUS_FAILED", answer.Run.Status)
+	require.Contains(t, text, v1.SensitiveMarker, "the failure was withheld rather than redacted")
+}
+
+// TestAnUnattestedFollowDoesNotTakeTheServersWordForIt: `flow run` submitted a
+// file marking its input sensitive, the server did not attest that file ran
+// (a deployment may have substituted a registered copy), and the server
+// answers NONE_DECLARED about the workflow it did run. That decision does not
+// cover this process's arguments, so the follow withholds as its notice says
+// (Codex, #2173). `flow watch <id>` holds no file and no arguments, and an
+// attested follow holds the executed file, so both render the server's word.
+func TestAnUnattestedFollowDoesNotTakeTheServersWordForIt(t *testing.T) {
+	// Not t.Parallel(): [serveFake] points the client at itself with Setenv.
+	const echoed = "synthetic-token-9c1b"
+	fake := &fakeWorkflowService{getResponse: &v1.GetResponse{
+		Status:              v1.RunResponse_STATUS_COMPLETED,
+		SensitiveDisclosure: v1.SensitiveDisclosure_SENSITIVE_DISCLOSURE_NONE_DECLARED,
+		RunOutputs:          &v1.RunOutputs{Values: map[string]*v1.Value{"echo": v1.NewLiteral(echoed)}},
+		// A prompt is an expression over the same arguments, so it is held to
+		// the same answer as the output it could equally have echoed.
+		Progress: &v1.RunProgress{PendingWaits: []*v1.PendingWait{
+			{StepId: "approve", SignalName: "approve", Prompt: "approve " + echoed + "?"},
+		}},
+	}}
+	address := serveFake(t, fake)
+
+	submitted := &v1.Workflow{
+		DeclaredInputs: []*v1.InputDeclaration{
+			{Name: "token", Type: v1.InputDeclaration_TYPE_STRING, Sensitive: true},
+		},
+		DeclaredOutputs: []*v1.OutputDeclaration{{Name: "echo"}},
+	}
+	sensitive := runSensitiveValues(submitted, map[string]*v1.Value{"token": v1.NewLiteral(echoed)}, false)
+
+	for _, tc := range []struct {
+		name   string
+		poller clientPoller
+		shown  bool
+	}{
+		{"an unattested follow", clientPoller{started: true, sensitive: sensitive}, false},
+		{"an attested follow", clientPoller{started: true, spec: submitted, sensitive: sensitive}, true},
+		{"flow watch <id>", clientPoller{}, true},
+	} {
+		tc.poller.workflowID = "flowstate-workflow-3f7c"
+		tc.poller.server = serverFlags{address: address}
+		got, err := tc.poller.Poll(t.Context())
+		require.NoError(t, err, tc.name)
+
+		value := got.GetRunOutputs().GetValues()["echo"].GetLiteral().GetStringValue()
+		require.Equal(t, tc.shown, value == echoed, "%s: output %q", tc.name, value)
+
+		prompt := got.GetProgress().GetPendingWaits()[0].GetPrompt()
+		require.Equal(t, tc.shown, strings.Contains(prompt, echoed), "%s: prompt %q", tc.name, prompt)
 	}
 }

@@ -643,3 +643,97 @@ func loopbackEgressPolicy(t *testing.T) string {
 
 	return path
 }
+
+// TestATaskRunKeepsASensitiveInputOutOfItsFailure: an input marked sensitive
+// is withheld from the invocation echo, and a failure that quotes it must not
+// print it either, on any stream: the http task names the URL it dialed.
+func TestATaskRunKeepsASensitiveInputOutOfItsFailure(t *testing.T) {
+	// Not parallel: the loopback denial reads the process-wide egress policy.
+	const token = "synthetic-token-4e8f"
+	stdout, stderr, err := taskRun(t, "http",
+		"--input", "method=GET",
+		"--input", "url=http://127.0.0.1:1/"+token,
+		"--sensitive", "url",
+		"-o", "json")
+	require.Error(t, err, "nothing listens on port 1")
+
+	require.NotContains(t, stdout, token, "the failure document quoted the sensitive url")
+	require.NotContains(t, stderr, token, "the failure prose quoted the sensitive url")
+	require.NotContains(t, err.Error(), token, "the returned error quoted the sensitive url")
+	require.Contains(t, stdout, v1.SensitiveMarker,
+		"the failure document is redacted, not dropped")
+	// Which task failed survives around the value. The tail of the sentence is
+	// not asserted, for the process-wide egress policy reason
+	// TestALoopItemFromASensitiveInputStaysOutOfTheFailureText gives.
+	require.Contains(t, stdout, `task \"http\"`, "what went wrong survives around the value")
+}
+
+// TestASecretReferenceKeepsTheFailureReason: a `${secret(...)}` bearer is the
+// documented way to hand the http task a token, and a failed run must still
+// say why. The reference names no material and the resolved value never
+// reaches the redaction set, so the reason is not withheld on its account.
+func TestASecretReferenceKeepsTheFailureReason(t *testing.T) {
+	// Its own egress policy, so the refusal is the reference's whatever an
+	// earlier test left in the process-wide registry, and put back after.
+	restoreDefaultRegistryAfter(t)
+	stdout, stderr, err := taskRun(t, "http",
+		"--input", "method=GET",
+		"--input", "url=http://127.0.0.1:1/x",
+		"--input", `bearer=${secret("env:API_TOKEN")}`,
+		"--egress-policy", loopbackEgressPolicy(t),
+		"-o", "json")
+	require.Error(t, err, "a secret reference with no provider configured is refused")
+
+	for name, text := range map[string]string{"stdout": stdout, "stderr": stderr, "error": err.Error()} {
+		require.NotContains(t, text, v1.FailureWithheldMarker,
+			"%s: the failure's reason was withheld on account of a secret reference", name)
+	}
+	require.Contains(t, err.Error(), "API_TOKEN", "the reason names the reference it could not resolve")
+}
+
+// TestATaskRunRefusalKeepsASensitiveInputOut: a refusal made about the inputs
+// before anything runs quotes what it refused, and `--sensitive` withholds
+// that the same as a failure. Each case reaches a different refusal on that
+// path: the coercion of a word, the parsing of an expression, and the task's
+// own check of an expression.
+func TestATaskRunRefusalKeepsASensitiveInputOut(t *testing.T) {
+	const token, name = "synthetic-token-7d2a", "synthetic_token_7d2a"
+	policy := filepath.Join("..", "..", "examples", "http-secret", "auth-policy.yaml")
+	for _, tc := range []struct {
+		name   string
+		input  string
+		quoted string
+		flags  []string
+	}{
+		{name: "a word that is not the declared type", input: "parse_json=" + token, quoted: token},
+		// One rune, under the floor a redaction by value matches at, so only
+		// the declaration carrying `--sensitive` can keep it out.
+		{name: "a short word that is not the declared type", input: "parse_json=q", quoted: "parse_json=q"},
+		{name: "an expression that does not parse", input: `url=${ "` + token + `" + }`, quoted: token},
+		{name: "an expression the task refuses", input: "url=${ " + name + " }", quoted: name},
+		// The runtime's preflight, after the inputs are checked: an auth policy
+		// makes it look the credential target up, and it names the one it
+		// could not find. `credential` is an authority input, withheld unasked.
+		{name: "a credential target the preflight refuses", input: "credential=" + token, quoted: token,
+			flags: []string{"--input", "url=https://127.0.0.1:1/", "--auth-policy", policy}},
+	} {
+		input, _, _ := strings.Cut(tc.input, "=")
+		_, stderr, err := taskRun(t, append([]string{"http",
+			"--input", "method=GET",
+			"--input", tc.input,
+			"--sensitive", input}, tc.flags...)...)
+		require.Error(t, err, "%s: refused", tc.name)
+		require.NotContains(t, err.Error(), tc.quoted, "%s: the refusal quoted the sensitive input", tc.name)
+		require.NotContains(t, stderr, tc.quoted, "%s: stderr quoted the sensitive input", tc.name)
+
+		// Revealed, the same refusal quotes it, so the case reaches the refusal
+		// it names rather than failing earlier for another reason. Revealed
+		// rather than unmarked, because `credential` is withheld unmarked too.
+		_, _, err = taskRun(t, append([]string{"http",
+			"--input", "method=GET",
+			"--input", tc.input,
+			"--reveal-sensitive"}, tc.flags...)...)
+		require.Error(t, err, "%s: refused revealed", tc.name)
+		require.Contains(t, err.Error(), tc.quoted, "%s: the revealed refusal quotes the input", tc.name)
+	}
+}

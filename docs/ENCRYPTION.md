@@ -19,7 +19,7 @@ Four kinds of data move through a run, and they are handled differently.
 | Kind | Example | What Flowstate does |
 | --- | --- | --- |
 | Credentials | an API token a task sends | Kept out of history entirely. A workflow carries a secret *reference*; only the activity that uses it resolves the value, worker-side. Encryption is a second layer, not the mechanism. See [ARCHITECTURE.md](ARCHITECTURE.md), invariant 7. |
-| Sensitive application data | a customer record a step returned | Legitimately part of the run, so it is in history. With a keyring, it is sealed there. `sensitive: true` on an input or output is display etiquette only: it hides a value from `flow get`, `flow watch` and similar, and does not keep it out of history. |
+| Sensitive application data | a customer record a step returned | Legitimately part of the run, so it is in history. With a keyring, it is sealed there. `sensitive: true` on an input or output controls display, not storage: `flow server` withholds such values from `Get` and `GetTimeline` unless the caller holds `workload.reveal_sensitive` and asks, but it does not keep them out of history. |
 | References and handles | `secret("env:TOKEN")`, a run id | Names, not material. Stored like any other value, so a reference name that is itself revealing is sealed only if a keyring is configured. |
 | Operational metadata | workflow type, task queue, timestamps, search attributes | Never encrypted: Temporal needs it to schedule and index. See [What stays visible](#what-stays-visible). |
 

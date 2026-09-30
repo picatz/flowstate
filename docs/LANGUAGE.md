@@ -899,7 +899,10 @@ the step waits as long as the run lasts.
 
 **`prompt:`** is the question the gate asks, shown by `flow get`, `flow watch`,
 the `Get` RPC, and the MCP approval card. It is evaluated when the wait starts,
-cannot include a sensitive input or a secret, and is cut at 2 KiB.
+cannot include a sensitive input or a secret, and is cut at 2 KiB. In a
+workflow that declares a sensitive output, a reader who is not shown sensitive
+values sees `[prompt withheld: this run declares a sensitive output]` instead,
+because nothing checks that a prompt avoids what such an output reads.
 
 **A signal can arrive early.** One delivered before the run reaches the wait is
 held and consumed when it does, including across Continue-As-New.
@@ -1283,7 +1286,9 @@ where references are allowed and how a deployment resolves them.
 
 `sensitive: true` on an input or output withholds it from displays: `flow get`,
 `flow watch`, test output, and the MCP server show `[redacted: <name>]` unless
-the reader passes `--reveal-sensitive`. It is display etiquette, not
+the reader passes `--reveal-sensitive`. A server withholds these values before
+they leave it, and honours `--reveal-sensitive` only for a caller whose trust
+policy entry lists the `workload.reveal_sensitive` action. It is display etiquette, not
 protection: the value is stored in the run's history like any other, in the
 clear unless the deployment encrypts history with a payload keyring
 ([Payload encryption](ENCRYPTION.md)). The validator refuses a `log:` message

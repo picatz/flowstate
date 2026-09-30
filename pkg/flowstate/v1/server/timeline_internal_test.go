@@ -13,6 +13,7 @@ import (
 	historypb "go.temporal.io/api/history/v1"
 	sdkpb "go.temporal.io/api/sdk/v1"
 	"go.temporal.io/sdk/converter"
+	"google.golang.org/protobuf/proto"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
@@ -485,4 +486,39 @@ func TestACancellationClaimsAnAttemptOnlyWhenOneWasRunning(t *testing.T) {
 		"the cancellation claimed the attempt that had already failed, so the account "+
 			"says a try was cancelled that ended some other way")
 	assert.Empty(t, betweenAttempts, "cancelled work is still being carried")
+}
+
+// TestARedactedTimelineIsHeldToTheSameBound: redaction runs after the answer
+// is assembled and a marker can be longer than the value it replaces, so a
+// failure text of short sensitive values can grow an answer that fit past the
+// bound. What leaves is measured again, and cut where it no longer fits.
+func TestARedactedTimelineIsHeldToTheSameBound(t *testing.T) {
+	t.Parallel()
+
+	// "x.x.x..." with "x" sensitive: each redaction multiplies the text.
+	values := v1.SensitiveInputValues(map[string]*v1.Value{"pin": v1.NewLiteral("x")}, map[string]bool{"pin": true})
+	failure := strings.Repeat("x.", maxTimelineFailureBytes/2)
+
+	var entries []*v1.TimelineEntry
+	for assembled := 0; ; {
+		entry := &v1.TimelineEntry{EventId: int64(len(entries) + 1), Failure: failure}
+		size := proto.Size(entry)
+		if !timelineFits(assembled, size, len(entries)) {
+			break
+		}
+		assembled += size
+		entries = append(entries, entry)
+	}
+	require.Equal(t, len(entries), refitTimeline(entries), "an assembled answer does not fit its own bound")
+
+	for _, entry := range entries {
+		entry.Failure = values.RedactText(entry.GetFailure(), v1.FailureWithheldMarker)
+	}
+	kept := refitTimeline(entries)
+	require.Less(t, kept, len(entries), "redaction did not grow the answer, so this proves nothing")
+	total := 0
+	for _, entry := range entries[:kept] {
+		total += proto.Size(entry)
+	}
+	require.LessOrEqual(t, total, maxTimelineBytes)
 }

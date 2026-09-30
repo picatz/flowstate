@@ -138,6 +138,17 @@ var authorizationActionBindings = []*AuthorizationActionBinding{
 		Action:        AuthorizationAction_AUTHORIZATION_ACTION_PAYLOAD_ENCODE,
 		HttpEndpoints: []string{"/encode"},
 	},
+	{
+		// A modifier on two reads rather than an operation of its own: the
+		// RPCs keep workload.read, and asking for declared-sensitive values in
+		// the clear additionally needs this. Its parent is the read it widens.
+		Action: AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_REVEAL_SENSITIVE,
+		Parent: AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_READ,
+		RequestFields: []string{
+			"flowstate.v1.GetRequest.reveal_sensitive",
+			"flowstate.v1.GetTimelineRequest.reveal_sensitive",
+		},
+	},
 }
 
 // authorizationActionScopePrefix is what an enum value name carries in front
@@ -277,4 +288,18 @@ func AuthorizationActionForHTTPEndpoint(endpoint string) (AuthorizationAction, e
 
 	return AuthorizationAction_AUTHORIZATION_ACTION_UNSPECIFIED,
 		fmt.Errorf("no authorization action names the http endpoint %q", endpoint)
+}
+
+// AuthorizationActionForRequestField maps a request field that widens an RPC,
+// by its full name, to the action it additionally requires. Unknown fields
+// fail closed.
+func AuthorizationActionForRequestField(field string) (AuthorizationAction, error) {
+	for _, binding := range authorizationActionBindings {
+		if slices.Contains(binding.GetRequestFields(), field) {
+			return binding.GetAction(), nil
+		}
+	}
+
+	return AuthorizationAction_AUTHORIZATION_ACTION_UNSPECIFIED,
+		fmt.Errorf("no authorization action names the request field %q", field)
 }

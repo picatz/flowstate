@@ -182,6 +182,22 @@ specifications are size-bounded at submit (`pkg/flowstate/v1/size.go:39`, `:103`
 and `List` is bounded by executions read and by requests made
 (`pkg/flowstate/v1/server/list.go:56`, `:68`).
 
+**Declared-sensitive values.** `Get` and `GetTimeline` withhold values a run's
+workflow declared `sensitive: true` before the response leaves `flow server`,
+decided against the specification the run executed (read from its start input), and
+say so in `sensitive_disclosure` (`pkg/flowstate/v1/server/sensitive.go`). A caller
+receives them only by asking (`reveal_sensitive`) while holding
+`workload.reveal_sensitive`, which an entry with no action list is not granted; every
+such request is audited under that action. Before this, the RPCs returned the values
+raw to any `workload.read` caller and only the CLI's renderer hid them, which is still
+what a client does against such a server: it withholds declared outputs, transcript and
+carried state, and shows failure text and wait prompts as sent, because the server is the
+boundary and has already returned them. A client withholds an answer revealed without
+its asking whole, failure text and prompts included. This is display
+control at the API boundary: the values are in history (sealed only by payload
+encryption), a transformed value is not followed, and debug inspection has its own
+action (`workload.debug_inspect`).
+
 **Limits.** `flow server` serves plain HTTP when it is given no certificate, and it
 refuses to do that on any address but loopback unless `--tls-terminated-upstream`
 asserts that something in front of it either terminates TLS or bounds who can reach
@@ -200,7 +216,7 @@ refuses to send a token over plaintext to anything but this machine
 (`cmd/flow/credentials.go:63`), which protects the client, not the server's own
 posture. `--insecure-no-auth` admits everyone as anonymous and is a
 development posture (read in `authFlagsOf` at `cmd/flow/main.go:224-226`, resolved to
-`auth.InsecureAnonymousVerifier` at `cmd/flow/main.go:1791`;
+`auth.InsecureAnonymousVerifier` at `cmd/flow/main.go:1793`;
 `pkg/flowstate/v1/auth/connect.go:142-160`, [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#the-four-tier-isolation-model)).
 
 **Planned.** OAuth 2.1 alignment for the remote MCP surface and webhook ingress as

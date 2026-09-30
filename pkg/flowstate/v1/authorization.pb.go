@@ -113,6 +113,12 @@ const (
 	// produces ciphertext a worker will accept as its own, so it is granted
 	// explicitly too.
 	AuthorizationAction_AUTHORIZATION_ACTION_PAYLOAD_ENCODE AuthorizationAction = 21
+	// Reading the values a run's workflow declared `sensitive: true` in the
+	// clear, through GetRequest.reveal_sensitive or
+	// GetTimelineRequest.reveal_sensitive. Without it those RPCs withhold the
+	// values. It is never implied: a policy entry that lists no actions is not
+	// granted it, unlike the RPC actions above.
+	AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_REVEAL_SENSITIVE AuthorizationAction = 22
 )
 
 // Enum value maps for AuthorizationAction.
@@ -140,30 +146,32 @@ var (
 		19: "AUTHORIZATION_ACTION_WORKLOAD_DEBUG_INSPECT",
 		20: "AUTHORIZATION_ACTION_PAYLOAD_DECODE",
 		21: "AUTHORIZATION_ACTION_PAYLOAD_ENCODE",
+		22: "AUTHORIZATION_ACTION_WORKLOAD_REVEAL_SENSITIVE",
 	}
 	AuthorizationAction_value = map[string]int32{
-		"AUTHORIZATION_ACTION_UNSPECIFIED":            0,
-		"AUTHORIZATION_ACTION_WORKLOAD_RUN":           1,
-		"AUTHORIZATION_ACTION_WORKLOAD_READ":          2,
-		"AUTHORIZATION_ACTION_WORKLOAD_SIGNAL":        3,
-		"AUTHORIZATION_ACTION_WORKLOAD_CANCEL":        4,
-		"AUTHORIZATION_ACTION_WORKLOAD_TERMINATE":     5,
-		"AUTHORIZATION_ACTION_WORKLOAD_VALIDATE":      6,
-		"AUTHORIZATION_ACTION_WORKLOAD_COMPILE":       7,
-		"AUTHORIZATION_ACTION_CATALOG_READ":           8,
-		"AUTHORIZATION_ACTION_SCHEDULE_CREATE":        9,
-		"AUTHORIZATION_ACTION_SCHEDULE_READ":          10,
-		"AUTHORIZATION_ACTION_SCHEDULE_DELETE":        11,
-		"AUTHORIZATION_ACTION_SCHEDULE_PAUSE":         12,
-		"AUTHORIZATION_ACTION_SCHEDULE_RESUME":        13,
-		"AUTHORIZATION_ACTION_SCHEDULE_TRIGGER":       14,
-		"AUTHORIZATION_ACTION_MCP_RUN_LOCAL":          15,
-		"AUTHORIZATION_ACTION_MCP_TEST":               16,
-		"AUTHORIZATION_ACTION_MCP_DEBUG":              17,
-		"AUTHORIZATION_ACTION_WORKLOAD_DEBUG":         18,
-		"AUTHORIZATION_ACTION_WORKLOAD_DEBUG_INSPECT": 19,
-		"AUTHORIZATION_ACTION_PAYLOAD_DECODE":         20,
-		"AUTHORIZATION_ACTION_PAYLOAD_ENCODE":         21,
+		"AUTHORIZATION_ACTION_UNSPECIFIED":               0,
+		"AUTHORIZATION_ACTION_WORKLOAD_RUN":              1,
+		"AUTHORIZATION_ACTION_WORKLOAD_READ":             2,
+		"AUTHORIZATION_ACTION_WORKLOAD_SIGNAL":           3,
+		"AUTHORIZATION_ACTION_WORKLOAD_CANCEL":           4,
+		"AUTHORIZATION_ACTION_WORKLOAD_TERMINATE":        5,
+		"AUTHORIZATION_ACTION_WORKLOAD_VALIDATE":         6,
+		"AUTHORIZATION_ACTION_WORKLOAD_COMPILE":          7,
+		"AUTHORIZATION_ACTION_CATALOG_READ":              8,
+		"AUTHORIZATION_ACTION_SCHEDULE_CREATE":           9,
+		"AUTHORIZATION_ACTION_SCHEDULE_READ":             10,
+		"AUTHORIZATION_ACTION_SCHEDULE_DELETE":           11,
+		"AUTHORIZATION_ACTION_SCHEDULE_PAUSE":            12,
+		"AUTHORIZATION_ACTION_SCHEDULE_RESUME":           13,
+		"AUTHORIZATION_ACTION_SCHEDULE_TRIGGER":          14,
+		"AUTHORIZATION_ACTION_MCP_RUN_LOCAL":             15,
+		"AUTHORIZATION_ACTION_MCP_TEST":                  16,
+		"AUTHORIZATION_ACTION_MCP_DEBUG":                 17,
+		"AUTHORIZATION_ACTION_WORKLOAD_DEBUG":            18,
+		"AUTHORIZATION_ACTION_WORKLOAD_DEBUG_INSPECT":    19,
+		"AUTHORIZATION_ACTION_PAYLOAD_DECODE":            20,
+		"AUTHORIZATION_ACTION_PAYLOAD_ENCODE":            21,
+		"AUTHORIZATION_ACTION_WORKLOAD_REVEAL_SENSITIVE": 22,
 	}
 )
 
@@ -225,6 +233,10 @@ type AuthorizationActionBinding struct {
 	// names. Held to the tools actually registered by a test in cmd/flow, which
 	// is where registration happens and therefore the only place that can tell.
 	McpTools []string `protobuf:"bytes,4,rep,name=mcp_tools,json=mcpTools,proto3" json:"mcp_tools,omitempty"`
+	// The request fields that, when set, require this action in addition to
+	// the action of the RPC they are sent to, by full field name, such as
+	// "flowstate.v1.GetRequest.reveal_sensitive". Held to the schema by a test.
+	RequestFields []string `protobuf:"bytes,6,rep,name=request_fields,json=requestFields,proto3" json:"request_fields,omitempty"`
 	// The HTTP endpoints outside the RPC service this action covers, by the
 	// path suffix the endpoint's protocol fixes, such as "/decode" for the codec
 	// server. Held to the handler's own routes by a test beside the handler.
@@ -291,6 +303,13 @@ func (x *AuthorizationActionBinding) GetMcpTools() []string {
 	return nil
 }
 
+func (x *AuthorizationActionBinding) GetRequestFields() []string {
+	if x != nil {
+		return x.RequestFields
+	}
+	return nil
+}
+
 func (x *AuthorizationActionBinding) GetHttpEndpoints() []string {
 	if x != nil {
 		return x.HttpEndpoints
@@ -302,14 +321,15 @@ var File_flowstate_v1_authorization_proto protoreflect.FileDescriptor
 
 const file_flowstate_v1_authorization_proto_rawDesc = "" +
 	"\n" +
-	" flowstate/v1/authorization.proto\x12\fflowstate.v1\x1a\x1bbuf/validate/validate.proto\"\xfa\x02\n" +
+	" flowstate/v1/authorization.proto\x12\fflowstate.v1\x1a\x1bbuf/validate/validate.proto\"\xee\x03\n" +
 	"\x1aAuthorizationActionBinding\x12E\n" +
 	"\x06action\x18\x01 \x01(\x0e2!.flowstate.v1.AuthorizationActionB\n" +
 	"\xbaH\a\x82\x01\x04\x10\x01 \x00R\x06action\x12C\n" +
 	"\x06parent\x18\x02 \x01(\x0e2!.flowstate.v1.AuthorizationActionB\b\xbaH\x05\x82\x01\x02\x10\x01R\x06parent\x12;\n" +
 	"\x04rpcs\x18\x03 \x03(\tB'\xbaH$\x92\x01!\x10\b\x18\x01\"\x1br\x19\x10\x01\x18@2\x13^[A-Z][A-Za-z0-9]*$R\x04rpcs\x12B\n" +
-	"\tmcp_tools\x18\x04 \x03(\tB%\xbaH\"\x92\x01\x1f\x10\b\x18\x01\"\x19r\x17\x10\x01\x18@2\x11^[a-z][a-z0-9_]*$R\bmcpTools\x12O\n" +
-	"\x0ehttp_endpoints\x18\x05 \x03(\tB(\xbaH%\x92\x01\"\x10\b\x18\x01\"\x1cr\x1a\x10\x02\x18@2\x14^/[a-z][a-z0-9/_-]*$R\rhttpEndpoints*\x9e\a\n" +
+	"\tmcp_tools\x18\x04 \x03(\tB%\xbaH\"\x92\x01\x1f\x10\b\x18\x01\"\x19r\x17\x10\x01\x18@2\x11^[a-z][a-z0-9_]*$R\bmcpTools\x12r\n" +
+	"\x0erequest_fields\x18\x06 \x03(\tBK\xbaHH\x92\x01E\x10\b\x18\x01\"?r=\x10\x01\x18\x80\x0126^[a-z][a-z0-9_.]*\\.[A-Z][A-Za-z0-9]*\\.[a-z][a-z0-9_]*$R\rrequestFields\x12O\n" +
+	"\x0ehttp_endpoints\x18\x05 \x03(\tB(\xbaH%\x92\x01\"\x10\b\x18\x01\"\x1cr\x1a\x10\x02\x18@2\x14^/[a-z][a-z0-9/_-]*$R\rhttpEndpoints*\xd2\a\n" +
 	"\x13AuthorizationAction\x12$\n" +
 	" AUTHORIZATION_ACTION_UNSPECIFIED\x10\x00\x12%\n" +
 	"!AUTHORIZATION_ACTION_WORKLOAD_RUN\x10\x01\x12&\n" +
@@ -333,7 +353,8 @@ const file_flowstate_v1_authorization_proto_rawDesc = "" +
 	"#AUTHORIZATION_ACTION_WORKLOAD_DEBUG\x10\x12\x12/\n" +
 	"+AUTHORIZATION_ACTION_WORKLOAD_DEBUG_INSPECT\x10\x13\x12'\n" +
 	"#AUTHORIZATION_ACTION_PAYLOAD_DECODE\x10\x14\x12'\n" +
-	"#AUTHORIZATION_ACTION_PAYLOAD_ENCODE\x10\x15B\xb1\x01\n" +
+	"#AUTHORIZATION_ACTION_PAYLOAD_ENCODE\x10\x15\x122\n" +
+	".AUTHORIZATION_ACTION_WORKLOAD_REVEAL_SENSITIVE\x10\x16B\xb1\x01\n" +
 	"\x10com.flowstate.v1B\x12AuthorizationProtoP\x01Z8github.com/picatz/flowstate/pkg/flowstate/v1;flowstatev1\xa2\x02\x03FXX\xaa\x02\fFlowstate.V1\xca\x02\fFlowstate\\V1\xe2\x02\x18Flowstate\\V1\\GPBMetadata\xea\x02\rFlowstate::V1b\x06proto3"
 
 var (

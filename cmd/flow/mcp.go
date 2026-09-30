@@ -269,6 +269,7 @@ func runMCP(cmd *cobra.Command, args []string) error {
 		Redact: func(response *v1.GetResponse) *v1.GetResponse {
 			return redactGetResponse(response, nil, revealSensitiveRequested(cmd))
 		},
+		RevealSensitive: revealSensitiveRequested(cmd),
 
 		RemoteCatalogAddress: remoteCatalogAddressFor(cmd, flags),
 		DecorateRPCError:     mcpRPCErrorDecorator(cmd, flags, addressExplicitlyConfigured(cmd)),
@@ -664,7 +665,9 @@ func runLocalToolHandler(posture *cobra.Command, providers *localSecrets) mcp.To
 		// a value straddling the cut would leave a prefix no redaction
 		// matches. The response is this handler's own, so mutating it here
 		// changes nothing a caller holds.
-		response = redactFailureText(response, runSensitiveValues(workflow, inputs, revealSensitiveRequested(posture)))
+		reveal := revealSensitiveRequested(posture)
+		sensitive := runSensitiveValues(workflow, inputs, reveal)
+		response = redactFailureText(response, sensitive)
 
 		// Bounded before redaction, deliberately: redactGetResponse clones its
 		// input outright, so handing it the raw response re-pays exactly the
@@ -679,7 +682,10 @@ func runLocalToolHandler(posture *cobra.Command, providers *localSecrets) mcp.To
 		// does. workflow was just parsed from the submitted source, so redaction
 		// here is precise against its own declarations rather than the
 		// fail-closed case a spec-less renderer falls back to; see sensitive.go.
-		response = redactGetResponse(response, workflow, revealSensitiveRequested(posture))
+		// Through the one redaction for a run this process started, so this
+		// surface cannot drift from `flow run local`: its failure half finds
+		// nothing left to redact, having run before the cap above.
+		response = redactStartedRun(response, workflow, sensitive, reveal)
 
 		encoded, err := renderRunLocalResult(response, logs.records(), preflightNotes)
 		if err != nil {

@@ -13,10 +13,12 @@ import (
 	"go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/converter"
+	"google.golang.org/protobuf/proto"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/audit"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/engine"
 )
 
 // The behavioural half of the audit claims. auditseam_test.go proves every RPC
@@ -385,6 +387,12 @@ type fakeRunClient struct {
 
 	signals int
 
+	// progress, when set, is what the progress query answers.
+	progress *v1.RunProgress
+
+	// resultRuns records the run id each result read asked for.
+	resultRuns []string
+
 	// describes counts the lookups a request actually spent, which is what
 	// makes "the run was never addressed" assertable rather than inferred from
 	// a status code that has more than one reason to be what it is.
@@ -404,11 +412,50 @@ func (c *fakeRunClient) DescribeWorkflowExecution(_ context.Context, _, runID st
 	return nil, c.describeErr
 }
 
+// GetWorkflowHistory answers with no history, which the server's sensitive
+// value decision treats as unreadable and so fails closed on.
+func (c *fakeRunClient) GetWorkflowHistory(context.Context, string, string, bool, enumspb.HistoryEventFilterType) client.HistoryEventIterator {
+	return nil
+}
+
 // QueryWorkflow refuses: a running run's progress query is beside the point
 // here, and [runProgress] treating an unavailable answer as "no progress" is
 // what a real worker that has not started answering looks like.
-func (c *fakeRunClient) QueryWorkflow(context.Context, string, string, string, ...any) (converter.EncodedValue, error) {
+func (c *fakeRunClient) QueryWorkflow(_ context.Context, _, _, query string, _ ...any) (converter.EncodedValue, error) {
+	if query == engine.ProgressQuery && c.progress != nil {
+		return progressAnswer{c.progress}, nil
+	}
 	return nil, errors.New("no worker is answering queries")
+}
+
+// GetWorkflow records which run a result read addressed and answers with no
+// result: the point is where the read went, not what came back.
+func (c *fakeRunClient) GetWorkflow(_ context.Context, workflowID, runID string) client.WorkflowRun {
+	c.resultRuns = append(c.resultRuns, runID)
+	return noResultRun{workflowID: workflowID, runID: runID}
+}
+
+type noResultRun struct{ workflowID, runID string }
+
+func (r noResultRun) GetID() string    { return r.workflowID }
+func (r noResultRun) GetRunID() string { return r.runID }
+
+func (r noResultRun) GetFirstExecutionRunID() string { return r.runID }
+func (r noResultRun) Get(context.Context, any) error {
+	return errors.New("no result in this fake")
+}
+func (r noResultRun) GetWithOptions(context.Context, any, client.WorkflowRunGetOptions) error {
+	return errors.New("no result in this fake")
+}
+
+// progressAnswer is a progress query's answer, as a worker would give it.
+type progressAnswer struct{ progress *v1.RunProgress }
+
+func (a progressAnswer) HasValue() bool { return true }
+
+func (a progressAnswer) Get(valuePtr any) error {
+	proto.Merge(valuePtr.(*v1.RunProgress), a.progress)
+	return nil
 }
 
 func (c *fakeRunClient) SignalWorkflow(context.Context, string, string, string, any) error {

@@ -273,6 +273,15 @@ func init() {
 				" workflow id wants.\n",
 		},
 		{
+			Name: "flowstate.v1.GetRequest.reveal_sensitive",
+			Leading: " RevealSensitive asks for the values the run's workflow declared\n" +
+				" `sensitive: true` in the clear. The server withholds them by default, and\n" +
+				" honours this only for a caller whose policy entry lists the\n" +
+				" `workload.reveal_sensitive` action explicitly: an entry with no action list\n" +
+				" is not granted it. A caller without it is answered normally, with the\n" +
+				" values withheld and `sensitive_disclosure` saying so, rather than refused.\n",
+		},
+		{
 			Name:    "flowstate.v1.GetResponse",
 			Leading: " GetResponse is the response message for getting a workflow run.\n",
 		},
@@ -384,6 +393,13 @@ func init() {
 				" writes no count, as well as a chain whose first segment predates the\n" +
 				" count. A client must not assume it is at least one; first_run_id against\n" +
 				" run_id says whether a run with no count continued at all.\n",
+		},
+		{
+			Name: "flowstate.v1.GetResponse.sensitive_disclosure",
+			Leading: " SensitiveDisclosure says what this server did with values the run's\n" +
+				" workflow declared `sensitive: true`, so a client can render what it was\n" +
+				" given instead of guessing. UNSPECIFIED is an older server that said\n" +
+				" nothing, which a client must treat as unredacted.\n",
 		},
 		{
 			Name:    "flowstate.v1.GetResponse.kind",
@@ -815,6 +831,11 @@ func init() {
 				" re-reads what it skips; that work is bounded by the server's scan budget.\n",
 		},
 		{
+			Name: "flowstate.v1.GetTimelineRequest.reveal_sensitive",
+			Leading: " RevealSensitive is GetRequest.reveal_sensitive for the timeline's failure\n" +
+				" text, under the same action.\n",
+		},
+		{
 			Name:    "flowstate.v1.GetTimelineResponse",
 			Leading: " GetTimelineResponse is what one run did.\n",
 		},
@@ -868,6 +889,11 @@ func init() {
 				"\n" +
 				" Both this and previous_run_id come off the history's own first event, which\n" +
 				" this read has in hand either way, so neither costs a round trip.\n",
+		},
+		{
+			Name: "flowstate.v1.GetTimelineResponse.sensitive_disclosure",
+			Leading: " SensitiveDisclosure is GetResponse.sensitive_disclosure for the timeline's\n" +
+				" failure text.\n",
 		},
 		{
 			Name:    "flowstate.v1.CompileRequest",
@@ -991,6 +1017,37 @@ func init() {
 				" A string rather than an enum, because this reports how far the calling\n" +
 				" process's own request got rather than a state the server models, and the\n" +
 				" vocabulary may grow.\n",
+		},
+		{
+			Name: "flowstate.v1.SensitiveDisclosure",
+			Leading: " SensitiveDisclosure is what a server did with a run's `sensitive: true`\n" +
+				" values when it answered.\n" +
+				"\n" +
+				" The server decides, because it is the one party that holds both the run's\n" +
+				" executed specification and the caller's authority: a client holding\n" +
+				" neither used to render every declared output as withheld (it could not tell\n" +
+				" which were sensitive), while the same values reached any API caller\n" +
+				" unredacted. Now the answer is decided once, at the boundary.\n",
+		},
+		{
+			Name: "flowstate.v1.SENSITIVE_DISCLOSURE_UNSPECIFIED",
+			Leading: " An older server that made no decision. A client treats the response as\n" +
+				" unredacted and applies its own rendering rules.\n",
+		},
+		{
+			Name:    "flowstate.v1.SENSITIVE_DISCLOSURE_NONE_DECLARED",
+			Leading: " The run's workflow declares nothing sensitive, so nothing was withheld.\n",
+		},
+		{
+			Name: "flowstate.v1.SENSITIVE_DISCLOSURE_WITHHELD",
+			Leading: " The workflow declares sensitive values and they were withheld: declared\n" +
+				" sensitive outputs by name, the step transcript and carried state whole,\n" +
+				" and sensitive input values wherever failure text quotes them.\n",
+		},
+		{
+			Name: "flowstate.v1.SENSITIVE_DISCLOSURE_REVEALED",
+			Leading: " The caller asked for the values and holds workload.reveal_sensitive, so\n" +
+				" they are in the clear.\n",
 		},
 		{
 			Name:    "flowstate.v1.WorkflowService",

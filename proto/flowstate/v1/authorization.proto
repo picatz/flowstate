@@ -144,6 +144,13 @@ enum AuthorizationAction {
   // produces ciphertext a worker will accept as its own, so it is granted
   // explicitly too.
   AUTHORIZATION_ACTION_PAYLOAD_ENCODE = 21;
+
+  // Reading the values a run's workflow declared `sensitive: true` in the
+  // clear, through GetRequest.reveal_sensitive or
+  // GetTimelineRequest.reveal_sensitive. Without it those RPCs withhold the
+  // values. It is never implied: a policy entry that lists no actions is not
+  // granted it, unlike the RPC actions above.
+  AUTHORIZATION_ACTION_WORKLOAD_REVEAL_SENSITIVE = 22;
 }
 
 // AuthorizationActionBinding says which operations one action covers.
@@ -199,6 +206,21 @@ message AuthorizationActionBinding {
         min_len: 1
         max_len: 64
         pattern: "^[a-z][a-z0-9_]*$"
+      }
+    }
+  }];
+
+  // The request fields that, when set, require this action in addition to
+  // the action of the RPC they are sent to, by full field name, such as
+  // "flowstate.v1.GetRequest.reveal_sensitive". Held to the schema by a test.
+  repeated string request_fields = 6 [(buf.validate.field).repeated = {
+    unique: true
+    max_items: 8
+    items: {
+      string: {
+        min_len: 1
+        max_len: 128
+        pattern: "^[a-z][a-z0-9_.]*\\.[A-Z][A-Za-z0-9]*\\.[a-z][a-z0-9_]*$"
       }
     }
   }];

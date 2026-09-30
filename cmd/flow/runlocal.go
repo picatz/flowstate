@@ -344,16 +344,14 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 	if reveal {
 		noteRevealedSensitiveValues(surface)
 	}
-	response = redactGetResponse(response, workflow, reveal)
-
-	// And the failure sentence, which [redactGetResponse] deliberately leaves
-	// alone because most of its callers hold no arguments to redact against.
-	// This one does: it bound them a few lines up. See sensitive.go's "The
-	// failure sentence" section for why this surface is redacted rather than
+	// And the failure sentence, which [redactGetResponse] alone leaves alone
+	// because most of its callers hold no arguments to redact against. This
+	// one does: it bound them a few lines up. See sensitive.go's "The failure
+	// sentence" section for why this surface is redacted rather than
 	// withheld, and #974 for the loop that put a `sensitive:` input's element
 	// into a sentence nothing else here was looking at.
 	sensitive := runSensitiveValues(workflow, inputs, reveal)
-	response = redactFailureText(response, sensitive)
+	response = redactStartedRun(response, workflow, sensitive, reveal)
 
 	if runErr != nil {
 		// A machine caller is owed a document about the failure, which is the half

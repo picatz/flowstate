@@ -50,6 +50,12 @@ func init() {
 				" is where registration happens and therefore the only place that can tell.\n",
 		},
 		{
+			Name: "flowstate.v1.AuthorizationActionBinding.request_fields",
+			Leading: " The request fields that, when set, require this action in addition to\n" +
+				" the action of the RPC they are sent to, by full field name, such as\n" +
+				" \"flowstate.v1.GetRequest.reveal_sensitive\". Held to the schema by a test.\n",
+		},
+		{
 			Name: "flowstate.v1.AuthorizationActionBinding.http_endpoints",
 			Leading: " The HTTP endpoints outside the RPC service this action covers, by the\n" +
 				" path suffix the endpoint's protocol fixes, such as \"/decode\" for the codec\n" +
@@ -171,6 +177,14 @@ func init() {
 				" signal, a start input) is written encrypted. It releases no plaintext, but\n" +
 				" produces ciphertext a worker will accept as its own, so it is granted\n" +
 				" explicitly too.\n",
+		},
+		{
+			Name: "flowstate.v1.AUTHORIZATION_ACTION_WORKLOAD_REVEAL_SENSITIVE",
+			Leading: " Reading the values a run's workflow declared `sensitive: true` in the\n" +
+				" clear, through GetRequest.reveal_sensitive or\n" +
+				" GetTimelineRequest.reveal_sensitive. Without it those RPCs withhold the\n" +
+				" values. It is never implied: a policy entry that lists no actions is not\n" +
+				" granted it, unlike the RPC actions above.\n",
 		},
 	})
 }

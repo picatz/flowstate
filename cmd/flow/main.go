@@ -1110,12 +1110,14 @@ func runWorkflow(cmd *cobra.Command, args []string) error {
 	return watchRun(cmd.Context(), surface, rendering,
 		clientPoller{
 			workflowID: workflowID, server: server, client: client, spec: executed, reveal: reveal,
+			started: true,
 			// Built from the *submitted* workflow rather than the attested
 			// one: `sensitive:` on an argument this process is sending is the
 			// author's own claim about their own value, and a deployment that
 			// substituted a specification cannot make it untrue. See
 			// [runSensitiveValues].
 			sensitive: runSensitiveValues(workflow, inputs, reveal),
+			withheld:  noteWithheldOnce(surface),
 		},
 		clampWatchInterval(interval), plain, workflowID, startedRun(started.Msg), namedRun(subject))
 }

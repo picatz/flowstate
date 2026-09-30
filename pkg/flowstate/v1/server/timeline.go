@@ -164,8 +164,9 @@ const (
 	maxTimelineBytes = 4 << 20
 )
 
-// GetTimeline reports what a run did, event by event.
-func (s *FlowstateServer) GetTimeline(
+// getTimeline reports what a run did, event by event; [FlowstateServer.GetTimeline]
+// decides what of its failure text the caller may read.
+func (s *FlowstateServer) getTimeline(
 	ctx context.Context, req *connect.Request[v1.GetTimelineRequest],
 ) (*connect.Response[v1.GetTimelineResponse], error) {
 	if err := v1.Validate(req.Msg); err != nil {
@@ -573,6 +574,23 @@ func timelineFits(assembled, size, entries int) bool {
 	return entries == 0 || assembled+size <= maxTimelineBytes
 }
 
+// refitTimeline reports how many of entries fit the answer's byte bound, by
+// the rule the assembly applied. Redaction runs after assembly and can
+// lengthen a failure, so what fit then is measured again; the entries past the
+// bound are cut, which the caller reports as a truncation and a resumption
+// reads again.
+func refitTimeline(entries []*v1.TimelineEntry) int {
+	assembled := 0
+	for i, entry := range entries {
+		size := proto.Size(entry)
+		if !timelineFits(assembled, size, i) {
+			return i
+		}
+		assembled += size
+	}
+	return len(entries)
+}
+
 // failureMessage is what a failure says, read through the deployment's own
 // converter and cut to [maxTimelineFailureBytes].
 //
@@ -685,7 +703,7 @@ func boundedFailure(message string) string {
 		return message
 	}
 
-	return textbound.Cut(message, maxTimelineFailureBytes) + "…(truncated)"
+	return textbound.Cut(message, maxTimelineFailureBytes) + v1.TruncatedSuffix
 }
 
 // summaryText reads the label the interpreter wrote onto a command.
