@@ -794,7 +794,8 @@ func init() {
 				" This is a rule about display, and it is enforced — see the list below for\n" +
 				" exactly where. It is not containment: the value is an ordinary part of the\n" +
 				" run's history exactly like any other input, and anyone with access to that\n" +
-				" history reads it in the clear, the same way they read any other input. A\n" +
+				" history reads it in the clear, the same way they read any other input,\n" +
+				" unless the deployment encrypts history (docs/ENCRYPTION.md). A\n" +
 				" secret reference is different: it keeps the value *out* of history\n" +
 				" entirely, resolving it only inside the activity that needs it. That is\n" +
 				" containment, and this is not it. Marking sensitive a value that must never\n" +
@@ -803,7 +804,16 @@ func init() {
 				"\n" +
 				" # What this does on an input\n" +
 				"\n" +
-				" A sensitive-declared value is withheld or redacted on four surfaces:\n" +
+				" A sensitive-declared value is withheld or redacted on five surfaces:\n" +
+				"\n" +
+				"  0. The Get and GetTimeline RPCs, server-side, before a response leaves\n" +
+				"     `flow server`: declared-sensitive outputs by name, the step\n" +
+				"     transcript and carried state whole (as in 2), and the value removed\n" +
+				"     from failure text, decided against the specification the run\n" +
+				"     executed. A caller asking with `reveal_sensitive` receives the values\n" +
+				"     only if their trust policy entry lists workload.reveal_sensitive\n" +
+				"     explicitly; every such request is audited. The response's\n" +
+				"     SensitiveDisclosure says which answer it is.\n" +
 				"\n" +
 				"  1. A schedule's bound arguments, through `flow schedule describe` and\n" +
 				"     `flow schedule list`, redacted server-side before they cross the wire\n" +
@@ -836,11 +846,11 @@ func init() {
 				" value is still an ordinary part of the run's history; anyone with access\n" +
 				" to that history reads it in the clear. Specifically:\n" +
 				"\n" +
-				"   - `flow get <id>` and `flow watch <id>` are later invocations holding\n" +
-				"     neither the file nor the arguments. They redact what they can name and\n" +
-				"     leave a failure sentence alone: withholding it would silence the only\n" +
-				"     field that says why a run failed, on every failed run anybody looks up\n" +
-				"     by id.\n" +
+				"   - `flow get <id>` and `flow watch <id>` render what a current server\n" +
+				"     decided (0). Against an older server, which decides nothing, they hold\n" +
+				"     neither the file nor the arguments: they withhold every declared\n" +
+				"     output and leave a failure sentence alone, since withholding it would\n" +
+				"     silence the only field that says why a run failed.\n" +
 				"   - A `log:` step prints what its author told it to print. An expression\n" +
 				"     that writes the value into a message is a disclosure the file asked\n" +
 				"     for, and a task Flowstate does not own can put a value anywhere it\n" +
@@ -853,9 +863,11 @@ func init() {
 				" all is therefore still a mistake; that value is a secret reference.\n" +
 				"\n" +
 				" `--reveal-sensitive` is the one deliberate escape hatch, on every surface\n" +
-				" above except the schedule RPCs, which have no field to carry the request:\n" +
-				" an operator who needs a schedule's bound argument reads it from wherever\n" +
-				" it was configured, not from a describe.\n",
+				" above except the schedule RPCs, which have no field to carry the request.\n" +
+				" Against a server it is a request (0), honoured only for a caller holding\n" +
+				" workload.reveal_sensitive; locally it is the operator's own choice. An\n" +
+				" operator who needs a schedule's bound argument reads it from wherever it\n" +
+				" was configured, not from a describe.\n",
 		},
 		{
 			Name: "flowstate.v1.InputDeclaration.min_len",

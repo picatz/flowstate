@@ -61,12 +61,11 @@ const (
 	// than always paying for the whole budget.
 	listBatchSize = 100
 
-	// flowstateRunWorkflowType is the Temporal workflow type this engine owns.
-	//
-	// The name is the Go function Temporal registers, `engine.Run`. Listing and
+	// flowstateRunWorkflowType is the Temporal workflow type this engine owns,
+	// the name [engine.Register] registers the interpreter under. Listing and
 	// direct addressing both read this value so neither can expose an execution
 	// the other rejects.
-	flowstateRunWorkflowType = "Run"
+	flowstateRunWorkflowType = engine.RunWorkflowType
 
 	// listQuery scopes a listing to workflows this engine started.
 	listQuery = `WorkflowType = '` + flowstateRunWorkflowType + `'`

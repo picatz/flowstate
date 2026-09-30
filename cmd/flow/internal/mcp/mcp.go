@@ -241,6 +241,13 @@ type Deps struct {
 	// means nothing is ever withheld.
 	Redact func(response *v1.GetResponse) *v1.GetResponse
 
+	// RevealSensitive is the operator's own posture on this surface:
+	// `flow mcp --reveal-sensitive`. Without it, a `reveal_sensitive` field
+	// in any tool call's arguments is cleared before the call is made, so an
+	// agent cannot ask the server for values its operator did not, and no
+	// reveal is audited in the operator's name that the operator never made.
+	RevealSensitive bool
+
 	// RemoteCatalogAddress, when non-empty, routes flowstate_get_catalog to
 	// the deployment named here instead of answering from this binary's own
 	// build. The caller sets it only when the operator named a deployment
@@ -980,6 +987,11 @@ func dispatch(
 			}
 		}
 
+		// The operator's posture decides the switch, whatever the agent
+		// wrote: off, it is cleared; on, it is set, so every call this
+		// process serves asks for what the operator chose to show.
+		setRevealSensitive(in, deps.RevealSensitive)
+
 		out, err := method.Call(ctx, local, remote, in)
 		if err != nil {
 			if deps.DecorateRPCError != nil {
@@ -990,15 +1002,15 @@ func dispatch(
 		}
 
 		// An agent's context is an untrusted-consumer surface exactly like a
-		// terminal, so `flowstate_get` honours `sensitive:` too. This tool
-		// addresses a run by id alone, over a generic RPC dispatch shared by
-		// every method in the service — there is no workflow specification
-		// anywhere in reach here, which is the fail-closed case cmd/flow's
-		// sensitive.go names for `flow get`: workflow is nil, so every
-		// declared output is withheld unless the caller's Deps.Redact says
-		// otherwise.
+		// terminal, so `flowstate_get` honours `sensitive:` too. The server
+		// has already decided what leaves it (GetResponse.sensitive_disclosure),
+		// and Deps.Redact renders that decision the way `flow get` does,
+		// withholding every declared output from a server too old to say.
 		if response, ok := out.(*v1.GetResponse); ok {
 			out = deps.Redact(response)
+		}
+		if response, ok := out.(*v1.GetTimelineResponse); ok {
+			v1.WithholdUnrequestedTimelineFailures(response, deps.RevealSensitive)
 		}
 
 		// An agent reads the catalog for summaries, types and constraints —
@@ -1397,4 +1409,20 @@ func NewMessage(md protoreflect.MessageDescriptor) proto.Message {
 	}
 
 	return mt.New().Interface()
+}
+
+// setRevealSensitive sets a request's `reveal_sensitive` switch to the
+// operator's posture, found by name so any request that grows one is covered
+// without being listed here.
+func setRevealSensitive(in proto.Message, on bool) {
+	m := in.ProtoReflect()
+	fd := m.Descriptor().Fields().ByName("reveal_sensitive")
+	if fd == nil || fd.Kind() != protoreflect.BoolKind {
+		return
+	}
+	if on {
+		m.Set(fd, protoreflect.ValueOfBool(true))
+	} else {
+		m.Clear(fd)
+	}
 }

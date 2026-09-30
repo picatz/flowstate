@@ -1,12 +1,14 @@
 package flowstatev1
 
 import (
+	"encoding/base64"
 	"fmt"
 	"reflect"
 	"sort"
 	"strconv"
 	"strings"
 	"unicode/utf8"
+	"unsafe"
 )
 
 // This file is the one answer to "which values did this run's `sensitive:`
@@ -50,6 +52,12 @@ import (
 // SensitiveMarker is what a redacted value renders as: deliberately not shaped
 // like a value a workload could have produced itself.
 const SensitiveMarker = "[redacted]"
+
+// TruncatedSuffix ends text that was cut to a size bound. Redaction reads it
+// as "this may have been cut through a sensitive value", and removes a
+// trailing prefix of one as well as whole occurrences, because the cut runs
+// before the text reaches a redactor that knows the values.
+const TruncatedSuffix = "…(truncated)"
 
 // minSensitiveSubstringRunes is the shortest *descendant* string
 // [SensitiveValues.RedactSubstrings] will replace textually. A one-rune leaf
@@ -158,6 +166,35 @@ func (s SensitiveValues) held() sensitiveState {
 	}
 
 	return s.state()
+}
+
+// RetainedBytes estimates the memory s holds: the values it compares against,
+// the substrings it replaces, and the matcher built over them. It is for a
+// cache that must bound what it keeps, whatever the values were bound from
+// (a caller's input or a declared default), so it errs high rather than low.
+func (s SensitiveValues) RetainedBytes() int {
+	held := s.held()
+	const perValue = 64 // an interface header and a share of a container's own overhead
+	n := 0
+	for _, v := range held.values {
+		n += perValue
+		switch v := v.(type) {
+		case string:
+			n += len(v)
+		case []byte:
+			n += len(v)
+		}
+	}
+	for _, substring := range held.substrings {
+		n += int(unsafe.Sizeof(substring)) + len(substring)
+	}
+	if m := held.substringMatcher; m != nil {
+		n += len(m.nodes) * int(unsafe.Sizeof(sensitiveSubstringNode{}))
+		for _, node := range m.nodes {
+			n += cap(node.edges) * int(unsafe.Sizeof(sensitiveSubstringEdge{}))
+		}
+	}
+	return n
 }
 
 // sensitiveValuesOf returns a [SensitiveValues] closing over state.
@@ -348,6 +385,13 @@ func SensitiveInputValues(inputs map[string]*Value, sensitiveNames map[string]bo
 				// floor, the `%q` spelling and the descendant bound apply
 				// exactly as they do to any string.
 				pending = append(pending, node{value: string(value), root: n.root})
+				// The other way bytes reach text is base64, the spelling
+				// protobuf JSON and CEL's string() of bytes give, so it joins
+				// the backstop under the same floor.
+				if encoded := base64.StdEncoding.EncodeToString(value); encoded != "" &&
+					(n.root || len(encoded) >= minSensitiveSubstringRunes) {
+					out.substrings = append(out.substrings, encoded)
+				}
 			case map[string]any:
 				// Keys are descendants too: sensitivity belongs to the whole
 				// declared value, and a map whose *keys* carry the material —
@@ -574,6 +618,22 @@ func (s SensitiveValues) RedactText(rendered, withheld string) string {
 	return s.RedactSubstrings(rendered)
 }
 
+// RedactTextWithin is [SensitiveValues.RedactText] for text that must not grow in the act of
+// being redacted: a marker is longer than a short value, so text holding many
+// occurrences of one would come back several times its size. Past the larger
+// of its own length and allowance, the text is withheld whole instead, and
+// the longer version is never built.
+func (s SensitiveValues) RedactTextWithin(rendered, withheld string, allowance int) string {
+	if s.WithholdAll() {
+		return withheld
+	}
+	out, ok := redactSensitiveSubstringsWithin(rendered, s.held().substringMatcher, max(len(rendered), allowance))
+	if !ok {
+		return withheld
+	}
+	return out
+}
+
 // isSensitiveValue reports whether v is one of sensitiveValues.
 func isSensitiveValue(v any, sensitiveValues []any) bool {
 	for _, sv := range sensitiveValues {
@@ -658,16 +718,52 @@ func redactSensitiveSubstrings(rendered string, substrings []string) string {
 }
 
 func redactSensitiveSubstringsWithMatcher(rendered string, matcher *sensitiveSubstringMatcher) string {
+	out, _ := redactSensitiveSubstringsWithin(rendered, matcher, -1)
+	return out
+}
+
+// redactSensitiveSubstringsWithin is [redactSensitiveSubstringsWithMatcher]
+// that measures before it builds: when limit is not negative and the redacted
+// text would be longer than limit bytes, it answers false having allocated
+// nothing for it.
+func redactSensitiveSubstringsWithin(rendered string, matcher *sensitiveSubstringMatcher, limit int) (string, bool) {
 	if matcher == nil {
-		return rendered
+		return rendered, true
 	}
 	if len(rendered) > maxSensitiveSubstringRedactionWork {
-		return SensitiveMarker
+		return SensitiveMarker, true
 	}
 
 	redacted := make([]bool, len(rendered))
-	if !matcher.markMatches(redacted, rendered) {
-		return rendered
+	found := matcher.markMatches(redacted, rendered)
+	if body, cut := strings.CutSuffix(rendered, TruncatedSuffix); cut {
+		// Text that was cut before it reached here may end part-way through
+		// a sensitive value, which no whole-value match finds: the prefix the
+		// cut left is redacted too.
+		if n := matcher.openTail(body); n > 0 {
+			for i := len(body) - n; i < len(body); i++ {
+				redacted[i] = true
+			}
+			found = true
+		}
+	}
+	if !found {
+		return rendered, true
+	}
+
+	if limit >= 0 {
+		size := 0
+		for i := 0; i < len(rendered); i++ {
+			switch {
+			case !redacted[i]:
+				size++
+			case i == 0 || !redacted[i-1]:
+				size += len(SensitiveMarker)
+			}
+		}
+		if size > limit {
+			return "", false
+		}
 	}
 
 	var b strings.Builder
@@ -687,7 +783,7 @@ func redactSensitiveSubstringsWithMatcher(rendered string, matcher *sensitiveSub
 		}
 	}
 
-	return b.String()
+	return b.String(), true
 }
 
 // sensitiveSubstringMatcher is an immutable Aho-Corasick automaton. One is
@@ -702,6 +798,9 @@ type sensitiveSubstringNode struct {
 	edges   []sensitiveSubstringEdge
 	failure int
 	longest int
+	// depth is the length of the prefix this node spells: at the end of a
+	// text, how much of that text's tail begins some sensitive substring.
+	depth int
 }
 
 type sensitiveSubstringEdge struct {
@@ -736,7 +835,7 @@ func newSensitiveSubstringMatcher(substrings []string) (*sensitiveSubstringMatch
 			next, ok := matcher.nextLinear(state, substring[i])
 			if !ok {
 				next = len(matcher.nodes)
-				matcher.nodes = append(matcher.nodes, sensitiveSubstringNode{})
+				matcher.nodes = append(matcher.nodes, sensitiveSubstringNode{depth: i + 1})
 				matcher.nodes[state].edges = append(matcher.nodes[state].edges,
 					sensitiveSubstringEdge{byteValue: substring[i], next: next})
 			}
@@ -799,6 +898,26 @@ func (m *sensitiveSubstringMatcher) next(state int, value byte) (int, bool) {
 		return edges[i].next, true
 	}
 	return 0, false
+}
+
+// openTail reports how many trailing bytes of text begin a sensitive
+// substring without completing it: the depth of the automaton's state after
+// the whole text, which is the longest suffix of text that is a prefix of a
+// pattern. One more pass over text.
+func (m *sensitiveSubstringMatcher) openTail(text string) int {
+	state := 0
+	for i := 0; i < len(text); i++ {
+		for state != 0 {
+			if _, ok := m.next(state, text[i]); ok {
+				break
+			}
+			state = m.nodes[state].failure
+		}
+		if next, ok := m.next(state, text[i]); ok {
+			state = next
+		}
+	}
+	return m.nodes[state].depth
 }
 
 func (m *sensitiveSubstringMatcher) markMatches(redacted []bool, text string) bool {

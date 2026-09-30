@@ -43,6 +43,7 @@ import (
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile/lsp"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowstatev1connect"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/payloadcodec"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/server"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/temporalclient"
 	"github.com/picatz/jose/pkg/jwk"
@@ -110,6 +111,10 @@ type temporalFlags struct {
 	// verbose says whether to describe the connection that was resolved, which is
 	// the one thing that makes a misconfigured TEMPORAL_* variable findable.
 	verbose bool
+
+	// payloadEncryption is the payload keyring and whether encryption is
+	// required. See [payloadCodecConfig].
+	payloadEncryption payloadEncryptionFlags
 }
 
 // temporalFlagsOf reads them off the command being run.
@@ -146,6 +151,7 @@ func temporalFlagsOf(cmd *cobra.Command) temporalFlags {
 		workerDeploymentName: workerDeploymentName,
 		buildID:              buildID,
 		verbose:              verbose,
+		payloadEncryption:    payloadEncryptionFlagsOf(cmd),
 	}
 }
 
@@ -259,13 +265,26 @@ func infraLogger() *slog.Logger {
 // client. The memo was a package variable guarding a second call that cannot
 // happen: the two callers are `flow worker` and `flow server`, and a process runs
 // one command. What it did do was outlive whatever set it.
-func initTemporalClient(ctx context.Context, flags temporalFlags) (client.Client, error) {
+//
+// The codec configuration it returns is the one the client was built with, for
+// the namespace it was dialed for, which is what the interpreter must decode
+// with too (see [engine.TaskRuntimeConfig.WithDataConverter]).
+func initTemporalClient(ctx context.Context, flags temporalFlags) (client.Client, payloadcodec.Config, error) {
 	cfg, err := temporalConfig(ctx, flags)
 	if err != nil {
-		return nil, err
+		return nil, payloadcodec.Config{}, err
 	}
 
-	return temporalclient.Dial(ctx, cfg)
+	c, namespace, err := temporalclient.DialWithNamespace(ctx, cfg)
+	if err != nil {
+		return nil, payloadcodec.Config{}, err
+	}
+	codec, err := cfg.Codec.ForWriting(namespace)
+	if err != nil {
+		c.Close()
+		return nil, payloadcodec.Config{}, err
+	}
+	return c, codec, nil
 }
 
 // temporalConfig resolves the connection configuration a command's flags describe,
@@ -298,10 +317,11 @@ func temporalConfig(ctx context.Context, flags temporalFlags) (temporalclient.Co
 	// this same value, one client per mapped Temporal namespace, and a codec
 	// that covered only the fallback client would leave every mapped tenant's
 	// payloads in plaintext. See [payloadCodecConfig].
-	codec, err := payloadCodecConfig()
+	codec, err := payloadCodecConfig(ctx, flags.payloadEncryption)
 	if err != nil {
 		return temporalclient.Config{}, err
 	}
+	announcePayloadEncryption(codec)
 
 	cfg := temporalclient.Config{
 		Address:        flags.address,
@@ -708,7 +728,7 @@ func runWorker(cmd *cobra.Command, args []string) error {
 	}
 	defer closeSecretProviders()
 
-	c, err := initTemporalClient(cmd.Context(), flags)
+	c, workerCodec, err := initTemporalClient(cmd.Context(), flags)
 	if err != nil {
 		return err
 	}
@@ -737,18 +757,6 @@ func runWorker(cmd *cobra.Command, args []string) error {
 	}
 	v1.SetDefaultEnforcementAuditor(recorder)
 
-	// The interpreter's own copy of the converter this client was built with.
-	// Workflow-side code replaces the context's converter to decode a signal in
-	// either wire shape, and the SDK offers no way to read the one it is
-	// replacing, so without this the wrapper would fall back to the default
-	// converter and quietly fail to decode every signal on a deployment with a
-	// codec. See engine/codec.go.
-	workerCodec, err := payloadCodecConfig()
-	if err != nil {
-		return err
-	}
-	engine.UseCodec(workerCodec)
-
 	// Before the worker starts polling, because a worker that accepted a step for
 	// a plugin task it has not registered yet would answer `unknown task` for a
 	// workflow that is correct — and Open is strict, so a plugin that cannot come
@@ -772,6 +780,14 @@ func runWorker(cmd *cobra.Command, args []string) error {
 	// process-wide, so the answer belongs to this worker and no other worker in
 	// this process can overwrite it. See engine/plugins.go.
 	runtime = runtime.WithPluginCatalog(pluginCatalog)
+
+	// The interpreter's own copy of the converter this client was built with,
+	// for the namespace it was dialed for. Workflow-side code replaces the
+	// context's converter to decode a signal in either wire shape, and the SDK
+	// offers no way to read the one it is replacing, so without this the
+	// wrapper would fall back to the default converter and quietly fail to
+	// decode every signal on a deployment with a codec. See engine/codec.go.
+	runtime = runtime.WithDataConverter(workerCodec.DataConverter())
 
 	interceptors := temporalWorkerInterceptors()
 	if flags.tenantSet {
@@ -1094,12 +1110,14 @@ func runWorkflow(cmd *cobra.Command, args []string) error {
 	return watchRun(cmd.Context(), surface, rendering,
 		clientPoller{
 			workflowID: workflowID, server: server, client: client, spec: executed, reveal: reveal,
+			started: true,
 			// Built from the *submitted* workflow rather than the attested
 			// one: `sensitive:` on an argument this process is sending is the
 			// author's own claim about their own value, and a deployment that
 			// substituted a specification cannot make it untrue. See
 			// [runSensitiveValues].
 			sensitive: runSensitiveValues(workflow, inputs, reveal),
+			withheld:  noteWithheldOnce(surface),
 		},
 		clampWatchInterval(interval), plain, workflowID, startedRun(started.Msg), namedRun(subject))
 }
@@ -1292,6 +1310,24 @@ func runServer(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// Whether this deployment routes tenants onto Temporal namespaces of their
+	// own, decided once and read by both branches below.
+	//
+	// One boolean rather than two conditions that happen to be complements,
+	// because something below depends on their being exhaustive: every server
+	// this function builds must be able to name the Temporal namespace it reads
+	// from, and it gets that from exactly one of the two — WithTemporalNamespace
+	// when there is no pool, the pool itself when there is. Written as two
+	// independent conditions, that completeness is an accident a later edit can
+	// take away without touching either site, and the deployment that fell
+	// between them would build a server that cannot answer. See
+	// [server.FlowstateServer] and TestEveryDeploymentShapeCanNameItsTemporalNamespace.
+	pooled := policy != nil && policy.Tenancy != nil
+
+	// On a pooled deployment this is the pool's fallback client, dialed the
+	// way NewPool dials it: a keyring covering only the mapped namespaces
+	// must not refuse the start over a client no tenant is routed to.
+	//
 	// The namespace comes back from the dial rather than from a second
 	// cfg.Options() further down, and that is a correctness requirement rather
 	// than a tidiness one. Options reads the environment and a TOML file every
@@ -1300,7 +1336,11 @@ func runServer(cmd *cobra.Command, args []string) error {
 	// compiling Flowfiles — can answer differently, and everything below would
 	// then name a namespace this client is not connected to. See
 	// [temporalclient.DialWithNamespace].
-	c, temporalNamespace, err := temporalclient.DialWithNamespace(cmd.Context(), cfg)
+	dialCfg := cfg
+	if pooled {
+		dialCfg = cfg.Fallback(policy.Tenancy)
+	}
+	c, temporalNamespace, err := temporalclient.DialWithNamespace(cmd.Context(), dialCfg)
 	if err != nil {
 		return err
 	}
@@ -1356,20 +1396,6 @@ func runServer(cmd *cobra.Command, args []string) error {
 		}
 		serverOpts = append(serverOpts, server.WithCredentialTargets(targets...))
 	}
-
-	// Whether this deployment routes tenants onto Temporal namespaces of their
-	// own, decided once and read by both branches below.
-	//
-	// One boolean rather than two conditions that happen to be complements,
-	// because something below depends on their being exhaustive: every server
-	// this function builds must be able to name the Temporal namespace it reads
-	// from, and it gets that from exactly one of the two — WithTemporalNamespace
-	// when there is no pool, the pool itself when there is. Written as two
-	// independent conditions, that completeness is an accident a later edit can
-	// take away without touching either site, and the deployment that fell
-	// between them would build a server that cannot answer. See
-	// [server.FlowstateServer] and TestEveryDeploymentShapeCanNameItsTemporalNamespace.
-	pooled := policy != nil && policy.Tenancy != nil
 
 	// Search attributes are registered — idempotently, once, before the server
 	// starts serving — only in the single-namespace configuration. A trust
@@ -2724,6 +2750,7 @@ flow server --insecure-no-auth`,
 	// own old --deployment-name, which the server still declares with another
 	// meaning (picatz/flowstate#2121).
 	for _, c := range []*cobra.Command{workerCmd, serverCmd} {
+		addPayloadEncryptionFlags(c)
 		c.Flags().String("temporal-address", "", "Temporal frontend address to dial (overrides environment configuration)")
 		c.Flags().String("temporal-namespace", "", "Temporal namespace (overrides environment configuration)")
 		c.Flags().String("temporal-profile", "", "Temporal configuration profile to use")
@@ -3260,6 +3287,7 @@ flow plugins -o json \
 	// generated key publishes, and what a token actually claims and verifies
 	// against, without needing a throwaway Go program to find out.
 	keysCmd := newKeysCommand()
+	codecCmd := newCodecCommand()
 	jwtCmd := newJWTCommand()
 	authCmd := newAuthCommand()
 
@@ -3463,6 +3491,7 @@ flow lsp --plugin-dir /opt/flowstate/plugins`,
 	authCmd.GroupID = "infrastructure"
 	lspCmd.GroupID = "development"
 	keysCmd.GroupID = "development"
+	codecCmd.GroupID = "infrastructure"
 	jwtCmd.GroupID = "development"
 	versionCmd.GroupID = "development"
 
@@ -3579,6 +3608,7 @@ flow lsp --plugin-dir /opt/flowstate/plugins`,
 	debugCmd.GroupID = "development"
 	rootCmd.AddCommand(debugCmd)
 	rootCmd.AddCommand(keysCmd)
+	rootCmd.AddCommand(codecCmd)
 	rootCmd.AddCommand(jwtCmd)
 	rootCmd.AddCommand(versionCmd)
 

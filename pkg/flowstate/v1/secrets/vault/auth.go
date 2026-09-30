@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
@@ -225,6 +227,37 @@ func (p *Provider) login(ctx context.Context) (string, time.Duration, error) {
 	return payload.Auth.ClientToken, time.Duration(payload.Auth.LeaseDuration) * time.Second, nil
 }
 
+// maxJWTBytes bounds the service account token read at each login. A
+// projected token is a few kilobytes; this is far more, and a bound on what a
+// misconfigured path costs.
+const maxJWTBytes = 64 << 10
+
+// readBoundedRegular reads at most limit bytes of the regular file at path.
+// It is opened with O_NONBLOCK, so a FIFO named by mistake, or swapped in
+// for the token, returns from the open instead of blocking login past every
+// deadline waiting for a writer, and the opened descriptor is what is checked.
+// O_NONBLOCK has no effect on an ordinary file.
+func readBoundedRegular(path string, limit int64) ([]byte, error) {
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	if info, err := f.Stat(); err != nil {
+		return nil, err
+	} else if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("%q is not a regular file", path)
+	}
+	contents, err := io.ReadAll(io.LimitReader(f, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(contents)) > limit {
+		return nil, fmt.Errorf("%q is larger than %d bytes", path, limit)
+	}
+	return contents, nil
+}
+
 // readJWT reads the pod's projected service account token.
 //
 // It is read on every login rather than kept from construction because the kubelet
@@ -232,7 +265,7 @@ func (p *Provider) login(ctx context.Context) (string, time.Duration, error) {
 // accepted partway through a worker's life. The token's contents never leave this
 // function except in the login request body.
 func (p *Provider) readJWT() (string, error) {
-	contents, err := os.ReadFile(p.jwtPath)
+	contents, err := readBoundedRegular(p.jwtPath, maxJWTBytes)
 	if err != nil {
 		// The error names the path, which is configuration, and cannot include the
 		// file's contents. It is classified as unavailable rather than as a

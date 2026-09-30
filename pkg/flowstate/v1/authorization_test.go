@@ -1,6 +1,9 @@
 package flowstatev1_test
 
 import (
+	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/reflect/protoregistry"
+	"slices"
 	"strings"
 	"testing"
 
@@ -86,7 +89,7 @@ func TestEveryAuthorizationActionIsBoundExactlyOnce(t *testing.T) {
 		require.False(t, bound[binding.GetAction()], "%s is bound twice", binding.GetAction())
 		bound[binding.GetAction()] = true
 
-		require.NotEmpty(t, append(binding.GetRpcs(), binding.GetMcpTools()...),
+		require.NotEmpty(t, slices.Concat(binding.GetRpcs(), binding.GetMcpTools(), binding.GetHttpEndpoints(), binding.GetRequestFields()),
 			"%s names no operation at all, so nothing can ever be authorized as it", binding.GetAction())
 
 		if parent := binding.GetParent(); parent != v1.AuthorizationAction_AUTHORIZATION_ACTION_UNSPECIFIED {
@@ -180,4 +183,35 @@ func TestAuthorizationActionBindingsAreCopied(t *testing.T) {
 	action, err := v1.AuthorizationActionForRPC("Run")
 	require.NoError(t, err)
 	require.Equal(t, v1.AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_RUN, action)
+}
+
+// TestEveryBoundRequestFieldIsASchemaField holds request_fields to the schema:
+// each names a bool field of a WorkflowService request message, and the
+// lookup answers with its binding's action.
+func TestEveryBoundRequestFieldIsASchemaField(t *testing.T) {
+	t.Parallel()
+
+	var seen int
+	for _, binding := range v1.AuthorizationActionBindings() {
+		for _, name := range binding.GetRequestFields() {
+			seen++
+			i := strings.LastIndex(name, ".")
+			require.Positive(t, i, name)
+			desc, err := protoregistry.GlobalFiles.FindDescriptorByName(protoreflect.FullName(name[:i]))
+			require.NoError(t, err, "%s names a message the schema does not have", name)
+			msg, ok := desc.(protoreflect.MessageDescriptor)
+			require.True(t, ok, name)
+			field := msg.Fields().ByName(protoreflect.Name(name[i+1:]))
+			require.NotNil(t, field, "%s names a field the schema does not have", name)
+			require.Equal(t, protoreflect.BoolKind, field.Kind(), "%s is not a switch a caller turns on", name)
+
+			action, err := v1.AuthorizationActionForRequestField(name)
+			require.NoError(t, err)
+			require.Equal(t, binding.GetAction(), action)
+		}
+	}
+	require.Positive(t, seen, "no binding names a request field, so this test proves nothing")
+
+	_, err := v1.AuthorizationActionForRequestField("flowstate.v1.GetRequest.workflow_id")
+	require.Error(t, err)
 }

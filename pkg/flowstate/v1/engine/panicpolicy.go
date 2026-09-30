@@ -41,4 +41,11 @@ import "go.temporal.io/sdk/worker"
 // (`undo:`) does not run for a run failed this way — the workflow goroutine
 // it would run on is the one that panicked — which is the same as before,
 // when the run never ended at all.
+//
+// One panic is deliberate and not deterministic: a payload that workflow code
+// decodes (a signal, an activity or child result) and this worker cannot
+// read, because its key provider did not answer or it lacks the key
+// (payloadcodec's inWorkflowConverter). Returned as an error, the SDK
+// would drop a signal as corrupt and a result would fail a step that
+// succeeded; failing the run keeps the payload in history for a reset.
 const WorkerWorkflowPanicPolicy = worker.FailWorkflow

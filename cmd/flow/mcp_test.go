@@ -1164,6 +1164,7 @@ func TestTheRunLocalToolReportsDiagnostics(t *testing.T) {
 // It goes through applyMCPEgressPolicy rather than constructing a policy,
 // because the posture under test is the one `flow mcp` starts with.
 func TestTheRunLocalToolRefusesEgressByDefault(t *testing.T) {
+	restoreDefaultRegistryAfter(t) // applyMCPEgressPolicy replaces the process-wide http task.
 	posture := defaultLocalRunPosture()
 	require.NoError(t, applyMCPEgressPolicy(posture))
 

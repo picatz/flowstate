@@ -167,6 +167,13 @@ type clientPoller struct {
 	// path above.
 	reveal bool
 
+	// started is whether this process submitted the run: `flow run`, which
+	// redacts through [redactStartedRun] with spec as the attested copy or
+	// nil. A poller holding a spec is one too, since only `flow run` holds
+	// one. `flow watch <id>` did neither, holds no file, and renders the
+	// server's decision as `flow get` does.
+	started bool
+
 	// sensitive is the run's own arguments, for the one surface redaction by
 	// name cannot reach: the failure sentence a task composed around a value
 	// it was given (#974). Set by `flow run`, which submitted those arguments
@@ -180,10 +187,15 @@ type clientPoller struct {
 	// [v1.SensitiveValues] closes over its material rather than holding it in
 	// a field: `%+v` on a clientPoller must not print a run's arguments.
 	sensitive v1.SensitiveValues
+
+	// withheld, when set, is told that a poll asked to reveal and the server
+	// withheld anyway, so the follow can correct the "revealing" notice it
+	// printed before the first poll. The command makes it fire once.
+	withheld func()
 }
 
 func (p clientPoller) Poll(ctx context.Context) (*v1.GetResponse, error) {
-	request := &v1.GetRequest{WorkflowId: p.workflowID}
+	request := &v1.GetRequest{WorkflowId: p.workflowID, RevealSensitive: p.reveal}
 	if p.runID != "" {
 		request.RunId = &p.runID
 	}
@@ -203,8 +215,15 @@ func (p clientPoller) Poll(ctx context.Context) (*v1.GetResponse, error) {
 	if err != nil {
 		return nil, classifyPollError(p.workflowID, p.server, err)
 	}
+	if p.reveal && p.withheld != nil &&
+		response.Msg.GetSensitiveDisclosure() == v1.SensitiveDisclosure_SENSITIVE_DISCLOSURE_WITHHELD {
+		p.withheld()
+	}
 
-	return redactFailureText(redactGetResponse(response.Msg, p.spec, p.reveal), p.sensitive), nil
+	if !p.started && p.spec == nil {
+		return redactGetResponse(response.Msg, nil, p.reveal), nil
+	}
+	return redactStartedRun(response.Msg, p.spec, p.sensitive, p.reveal), nil
 }
 
 // classifyPollError explains a refused poll and records whether it is worth another
@@ -383,7 +402,10 @@ func runWatch(cmd *cobra.Command, args []string) error {
 	// Nothing known yet: `flow watch` is asked about a run it did not start, so the
 	// first poll is the first thing it learns.
 	return watchRun(cmd.Context(), surface, rendering,
-		clientPoller{workflowID: workflowID, runID: runID, server: server, client: client, reveal: reveal},
+		clientPoller{
+			workflowID: workflowID, runID: runID, server: server, client: client, reveal: reveal,
+			withheld: noteWithheldOnce(surface),
+		},
 		clampWatchInterval(interval), plain, workflowID, nil)
 }
 

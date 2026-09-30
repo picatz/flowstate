@@ -32,7 +32,7 @@ import (
 // would otherwise be reported as a transcript that merely disagrees, which reads
 // like the wrong bug.
 func partialTranscriptProbe(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutputs, error) {
-	partial, err := runWorkflow(ctx, st)
+	partial, err := runWorkflow(ctx, nil, st)
 	if err == nil {
 		return nil, fmt.Errorf("expected the run to fail, it succeeded")
 	}
@@ -46,7 +46,7 @@ func partialTranscriptProbe(ctx workflow.Context, st *v1.RunState) (*v1.Workflow
 // TestRunWorkflowLoopResultsAcrossCAN technique), and only a real failure is
 // inverted into a readable result.
 func exhaustionSpanningProbe(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutputs, error) {
-	partial, err := runWorkflow(ctx, st)
+	partial, err := runWorkflow(ctx, nil, st)
 	if err == nil {
 		return nil, fmt.Errorf("expected the run to fail, it succeeded")
 	}

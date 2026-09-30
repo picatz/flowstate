@@ -22,22 +22,7 @@ import (
 func TestEveryFileReadInThisPackageIsBounded(t *testing.T) {
 	t.Parallel()
 
-	var paths []string
-	require.NoError(t, filepath.WalkDir(".", func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.IsDir() {
-			if d.Name() == "testdata" {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if strings.HasSuffix(path, ".go") && !strings.HasSuffix(path, "_test.go") {
-			paths = append(paths, path)
-		}
-		return nil
-	}))
+	paths := nonTestGoFiles(t)
 
 	fset := token.NewFileSet()
 	var seen int
@@ -59,4 +44,29 @@ func TestEveryFileReadInThisPackageIsBounded(t *testing.T) {
 		})
 	}
 	require.Greater(t, seen, 50, "too few source files were walked; the walk is wrong, not the package")
+}
+
+// nonTestGoFiles lists every non-test Go file under cmd/flow, this package and
+// the packages beneath it, build-ignored generators included and testdata
+// excluded: the files a guard over this command's source reads.
+func nonTestGoFiles(t *testing.T) []string {
+	t.Helper()
+
+	var paths []string
+	require.NoError(t, filepath.WalkDir(".", func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			if d.Name() == "testdata" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if strings.HasSuffix(path, ".go") && !strings.HasSuffix(path, "_test.go") {
+			paths = append(paths, path)
+		}
+		return nil
+	}))
+	return paths
 }

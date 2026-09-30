@@ -515,7 +515,14 @@ func (r *recordingRegistry) RegisterWorkflow(w any) {
 }
 
 func (r *recordingRegistry) RegisterWorkflowWithOptions(w any, options workflow.RegisterOptions) {
-	r.workflows = append(r.workflows, functionName(w))
+	// The SDK registers under options.Name when one is given, as the activity
+	// half below already honours: the interpreter is a closure bound to its
+	// worker's converter, registered under the name history records.
+	name := options.Name
+	if name == "" {
+		name = functionName(w)
+	}
+	r.workflows = append(r.workflows, name)
 	r.behavior = options.VersioningBehavior
 }
 

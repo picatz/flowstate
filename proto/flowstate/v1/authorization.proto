@@ -130,6 +130,27 @@ enum AuthorizationAction {
   // WorkloadDebugInspect is evaluating expressions against a held durable run,
   // which can disclose any value in its scope: DebugInspect.
   AUTHORIZATION_ACTION_WORKLOAD_DEBUG_INSPECT = 19;
+
+  // Releasing the plaintext of a Temporal namespace's stored payloads through
+  // the codec server (`flow codec serve`), which Temporal's Web UI and CLI
+  // call to display history. No RPC either. It reveals everything the
+  // namespace's runs wrote, so it is never implied: a principal whose policy
+  // entry lists no actions is not granted it, unlike the RPC actions above.
+  AUTHORIZATION_ACTION_PAYLOAD_DECODE = 20;
+
+  // Sealing payloads under a Temporal namespace's current key through the
+  // codec server, so a payload a person types into Temporal's UI or CLI (a
+  // signal, a start input) is written encrypted. It releases no plaintext, but
+  // produces ciphertext a worker will accept as its own, so it is granted
+  // explicitly too.
+  AUTHORIZATION_ACTION_PAYLOAD_ENCODE = 21;
+
+  // Reading the values a run's workflow declared `sensitive: true` in the
+  // clear, through GetRequest.reveal_sensitive or
+  // GetTimelineRequest.reveal_sensitive. Without it those RPCs withhold the
+  // values. It is never implied: a policy entry that lists no actions is not
+  // granted it, unlike the RPC actions above.
+  AUTHORIZATION_ACTION_WORKLOAD_REVEAL_SENSITIVE = 22;
 }
 
 // AuthorizationActionBinding says which operations one action covers.
@@ -185,6 +206,36 @@ message AuthorizationActionBinding {
         min_len: 1
         max_len: 64
         pattern: "^[a-z][a-z0-9_]*$"
+      }
+    }
+  }];
+
+  // The request fields that, when set, require this action in addition to
+  // the action of the RPC they are sent to, by full field name, such as
+  // "flowstate.v1.GetRequest.reveal_sensitive". Held to the schema by a test.
+  repeated string request_fields = 6 [(buf.validate.field).repeated = {
+    unique: true
+    max_items: 8
+    items: {
+      string: {
+        min_len: 1
+        max_len: 128
+        pattern: "^[a-z][a-z0-9_.]*\\.[A-Z][A-Za-z0-9]*\\.[a-z][a-z0-9_]*$"
+      }
+    }
+  }];
+
+  // The HTTP endpoints outside the RPC service this action covers, by the
+  // path suffix the endpoint's protocol fixes, such as "/decode" for the codec
+  // server. Held to the handler's own routes by a test beside the handler.
+  repeated string http_endpoints = 5 [(buf.validate.field).repeated = {
+    unique: true
+    max_items: 8
+    items: {
+      string: {
+        min_len: 2
+        max_len: 64
+        pattern: "^/[a-z][a-z0-9/_-]*$"
       }
     }
   }];

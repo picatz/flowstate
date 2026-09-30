@@ -511,6 +511,10 @@ type FlowstateServer struct {
 	// details. It is set in [New] and never nil. See [WithDataConverter].
 	dataConverter converter.DataConverter
 
+	// declarations caches what each run's executed specification declares
+	// sensitive, read once from its start input. See sensitive.go.
+	declarations declarationCache
+
 	// listTokenKey authenticates the page tokens List issues, so that a token
 	// coming back is one this process handed out rather than one a caller
 	// built. Derived in [New] from the system's random source and held nowhere
@@ -2353,8 +2357,10 @@ func manualStartPrincipal(ctx context.Context) string {
 	return principal.ID()
 }
 
-// Get retrieves the status of a workflow execution by its ID (and optionally its run ID).
-func (s *FlowstateServer) Get(ctx context.Context, req *connect.Request[v1.GetRequest]) (*connect.Response[v1.GetResponse], error) {
+// get retrieves the status of a workflow execution by its ID (and optionally its
+// run ID), with every value in it; [FlowstateServer.Get] decides which of them
+// the caller may read.
+func (s *FlowstateServer) get(ctx context.Context, req *connect.Request[v1.GetRequest]) (*connect.Response[v1.GetResponse], error) {
 	// Validated here rather than left to the CLI's protovalidate interceptor,
 	// for the reason [FlowstateServer.Run] gives: an embedder that builds a
 	// server without it would otherwise send an unbounded id to Temporal.
@@ -2410,7 +2416,11 @@ func (s *FlowstateServer) Get(ctx context.Context, req *connect.Request[v1.GetRe
 		// Through the client authorization used, so the run whose outputs are
 		// read is the run that was checked. A completed run returns the whole of
 		// its outputs, which is the workload's data and not merely its existence.
-		if err := temporal.GetWorkflow(ctx, req.Msg.GetWorkflowId(), req.Msg.GetRunId()).Get(ctx, &result); err != nil {
+		// Pinned to the run that was described, not the request's run id: an
+		// empty one follows the latest run, which a run started under the same
+		// id since would change, and the outputs of one run would then be
+		// redacted under another's declarations.
+		if err := temporal.GetWorkflow(ctx, req.Msg.GetWorkflowId(), resp.GetWorkflowExecutionInfo().GetExecution().GetRunId()).Get(ctx, &result); err != nil {
 			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("error getting workflow result: %w", err))
 		}
 		start, closed := runTimes(resp.GetWorkflowExecutionInfo())
@@ -2462,7 +2472,7 @@ func (s *FlowstateServer) Get(ctx context.Context, req *connect.Request[v1.GetRe
 				// predates the memo key.
 				Starter: s.reportedStarter(resp),
 				Kind: &v1.GetResponse_Error{
-					Error: failureError(ctx, temporal, req.Msg.GetWorkflowId(), req.Msg.GetRunId(), respStatus),
+					Error: failureError(ctx, temporal, req.Msg.GetWorkflowId(), resp.GetWorkflowExecutionInfo().GetExecution().GetRunId(), respStatus),
 				},
 			},
 		), nil

@@ -1,6 +1,8 @@
 package engine
 
 import (
+	"context"
+
 	commonpb "go.temporal.io/api/common/v1"
 	"go.temporal.io/sdk/converter"
 	"go.temporal.io/sdk/workflow"
@@ -58,14 +60,14 @@ import (
 //
 // # The converter it wraps
 //
-// [interpreterDataConverter], not [converter.GetDefaultDataConverter]. The
-// wrapper replaces the converter the SDK put on the context, so wrapping the
-// default one silently drops whatever the worker was actually configured with,
-// which, on a deployment with a payload codec, means handing ciphertext to a
-// converter that cannot read it and losing every signal. See engine/codec.go.
-func withSignalDeliveryCompat(ctx workflow.Context) workflow.Context {
+// The worker's own, dc, not [converter.GetDefaultDataConverter]. The wrapper
+// replaces the converter the SDK put on the context, so wrapping the default one
+// silently drops whatever the worker was actually configured with, which, on a
+// deployment with a payload codec, means handing ciphertext to a converter that
+// cannot read it and losing every signal. See engine/codec.go.
+func withSignalDeliveryCompat(ctx workflow.Context, dc converter.DataConverter) workflow.Context {
 	return workflow.WithDataConverter(ctx, &signalDeliveryCompatConverter{
-		DataConverter: interpreterDataConverter(),
+		DataConverter: orDefaultConverter(dc),
 	})
 }
 
@@ -74,6 +76,28 @@ func withSignalDeliveryCompat(ctx workflow.Context) workflow.Context {
 // compatibility fallback applies to.
 type signalDeliveryCompatConverter struct {
 	converter.DataConverter
+}
+
+// WithWorkflowContext forwards the SDK's per-context binding to the wrapped
+// converter. Embedding the interface does not promote it, and without it the
+// converter [payloadcodec.Config.DataConverter] returns never learns which
+// workflow it decodes for, so its pause of the deadlock detector during a
+// key provider call is a no-op (go.temporal.io/sdk@v1.48.0
+// internal/internal_workflow.go getDataConverterFromWorkflowContext).
+func (c *signalDeliveryCompatConverter) WithWorkflowContext(ctx workflow.Context) converter.DataConverter {
+	if aware, ok := c.DataConverter.(workflow.ContextAware); ok {
+		return &signalDeliveryCompatConverter{DataConverter: aware.WithWorkflowContext(ctx)}
+	}
+	return c
+}
+
+// WithContext is [signalDeliveryCompatConverter.WithWorkflowContext]'s other
+// half of [workflow.ContextAware], for a binding made outside a workflow.
+func (c *signalDeliveryCompatConverter) WithContext(ctx context.Context) converter.DataConverter {
+	if aware, ok := c.DataConverter.(workflow.ContextAware); ok {
+		return &signalDeliveryCompatConverter{DataConverter: aware.WithContext(ctx)}
+	}
+	return c
 }
 
 // FromPayloads must be overridden explicitly rather than left to embedding:
@@ -107,6 +131,9 @@ func (c *signalDeliveryCompatConverter) FromPayload(payload *commonpb.Payload, v
 	}
 
 	// The current shape, tried first: what every up-to-date server sends.
+	// A payload this process cannot read never gets here: the worker's
+	// converter, bound to this workflow, fails the run on it first
+	// (payloadcodec's inWorkflowConverter), so what remains is a shape error.
 	if err := c.DataConverter.FromPayload(payload, delivery); err == nil {
 		return nil
 	}

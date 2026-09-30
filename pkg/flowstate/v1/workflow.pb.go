@@ -1442,7 +1442,8 @@ type InputDeclaration struct {
 	// This is a rule about display, and it is enforced — see the list below for
 	// exactly where. It is not containment: the value is an ordinary part of the
 	// run's history exactly like any other input, and anyone with access to that
-	// history reads it in the clear, the same way they read any other input. A
+	// history reads it in the clear, the same way they read any other input,
+	// unless the deployment encrypts history (docs/ENCRYPTION.md). A
 	// secret reference is different: it keeps the value *out* of history
 	// entirely, resolving it only inside the activity that needs it. That is
 	// containment, and this is not it. Marking sensitive a value that must never
@@ -1451,7 +1452,16 @@ type InputDeclaration struct {
 	//
 	// # What this does on an input
 	//
-	// A sensitive-declared value is withheld or redacted on four surfaces:
+	// A sensitive-declared value is withheld or redacted on five surfaces:
+	//
+	//  0. The Get and GetTimeline RPCs, server-side, before a response leaves
+	//     `flow server`: declared-sensitive outputs by name, the step
+	//     transcript and carried state whole (as in 2), and the value removed
+	//     from failure text, decided against the specification the run
+	//     executed. A caller asking with `reveal_sensitive` receives the values
+	//     only if their trust policy entry lists workload.reveal_sensitive
+	//     explicitly; every such request is audited. The response's
+	//     SensitiveDisclosure says which answer it is.
 	//
 	//  1. A schedule's bound arguments, through `flow schedule describe` and
 	//     `flow schedule list`, redacted server-side before they cross the wire
@@ -1484,11 +1494,11 @@ type InputDeclaration struct {
 	// value is still an ordinary part of the run's history; anyone with access
 	// to that history reads it in the clear. Specifically:
 	//
-	//   - `flow get <id>` and `flow watch <id>` are later invocations holding
-	//     neither the file nor the arguments. They redact what they can name and
-	//     leave a failure sentence alone: withholding it would silence the only
-	//     field that says why a run failed, on every failed run anybody looks up
-	//     by id.
+	//   - `flow get <id>` and `flow watch <id>` render what a current server
+	//     decided (0). Against an older server, which decides nothing, they hold
+	//     neither the file nor the arguments: they withhold every declared
+	//     output and leave a failure sentence alone, since withholding it would
+	//     silence the only field that says why a run failed.
 	//   - A `log:` step prints what its author told it to print. An expression
 	//     that writes the value into a message is a disclosure the file asked
 	//     for, and a task Flowstate does not own can put a value anywhere it
@@ -1501,9 +1511,11 @@ type InputDeclaration struct {
 	// all is therefore still a mistake; that value is a secret reference.
 	//
 	// `--reveal-sensitive` is the one deliberate escape hatch, on every surface
-	// above except the schedule RPCs, which have no field to carry the request:
-	// an operator who needs a schedule's bound argument reads it from wherever
-	// it was configured, not from a describe.
+	// above except the schedule RPCs, which have no field to carry the request.
+	// Against a server it is a request (0), honoured only for a caller holding
+	// workload.reveal_sensitive; locally it is the operator's own choice. An
+	// operator who needs a schedule's bound argument reads it from wherever it
+	// was configured, not from a describe.
 	Sensitive bool `protobuf:"varint,7,opt,name=sensitive,proto3" json:"sensitive,omitempty"`
 	// MinLen and MaxLen bound a `type: string` value's length, counted in runes.
 	// Either may be given alone. Named after `buf.validate`'s `string.min_len` and

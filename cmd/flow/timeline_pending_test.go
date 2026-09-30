@@ -760,3 +760,39 @@ func TestTheRetryNoteNamesNoRunItCannotAddress(t *testing.T) {
 	assert.NotContains(t, footer, "--run-id",
 		"the note offered a flag with no value after it")
 }
+
+// TestATimelineShowsAnOlderServersFailureAsGetDoes: `flow timeline` renders an
+// older server's UNSPECIFIED answer the way `flow get` does, failure text
+// included, and withholds it only from a reveal this process did not ask for.
+func TestATimelineShowsAnOlderServersFailureAsGetDoes(t *testing.T) {
+	const failure = "GET https://api.example/synthetic-token-5d1a failed"
+	for _, tc := range []struct {
+		disclosure v1.SensitiveDisclosure
+		shown      bool
+	}{
+		{v1.SensitiveDisclosure_SENSITIVE_DISCLOSURE_UNSPECIFIED, true},
+		{v1.SensitiveDisclosure_SENSITIVE_DISCLOSURE_REVEALED, false},
+	} {
+		t.Run(tc.disclosure.String(), func(t *testing.T) {
+			fake := &fakeTimelineService{timeline: &v1.GetTimelineResponse{
+				SensitiveDisclosure: tc.disclosure,
+				Entries: []*v1.TimelineEntry{{
+					Kind:    v1.TimelineEntry_KIND_RUN_ENDED,
+					Failure: failure,
+				}},
+			}}
+			serveTimelineFake(t, fake)
+
+			cmd, out, _ := timelineCommand(t)
+			require.NoError(t, cmd.Flags().Set("output", "json"))
+			require.NoError(t, runTimeline(cmd, []string{"flowstate-workflow-3f7c"}))
+
+			if tc.shown {
+				require.Contains(t, out.String(), "synthetic-token-5d1a")
+				return
+			}
+			require.NotContains(t, out.String(), "synthetic-token-5d1a")
+			require.Contains(t, out.String(), v1.FailureWithheldMarker)
+		})
+	}
+}

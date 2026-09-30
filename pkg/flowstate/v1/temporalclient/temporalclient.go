@@ -113,6 +113,12 @@ type Config struct {
 	// The zero value is the null codec, which is byte-for-byte what a
 	// deployment had before this field existed.
 	Codec payloadcodec.Config
+
+	// refuseUncovered builds a client for a namespace the codec slot holds
+	// no keys for with a codec that refuses every payload, instead of
+	// refusing the client. Set only by [Config.Fallback], for a fallback
+	// client the tenancy mapping routes no tenant to.
+	refuseUncovered bool
 }
 
 // Options resolves c into Temporal client options.
@@ -168,10 +174,24 @@ func (c Config) Options() (client.Options, error) {
 	// nothing above can leave a client half-configured: a data converter with
 	// the codec and a failure converter without it is the fail-open pairing
 	// [payloadcodec.Config.Apply] exists to make unrepresentable.
+	//
+	// The codec is the one for the namespace this client is dialed for, which
+	// is resolved above from configuration and never from a caller: on a
+	// deployment that keys each namespace separately, a client for a namespace
+	// with no keys is refused rather than built in plaintext.
 	if err := c.Codec.Validate(); err != nil {
 		return client.Options{}, err
 	}
-	c.Codec.Apply(&opts)
+	codec, err := c.Codec.ForWriting(opts.Namespace)
+	if err != nil {
+		if !c.refuseUncovered {
+			return client.Options{}, err
+		}
+		// A client nothing is expected to use (see Config.Fallback): built, but
+		// unable to write or read a payload, rather than built in plaintext.
+		codec = payloadcodec.Refusing(opts.Namespace)
+	}
+	codec.Apply(&opts)
 
 	return opts, nil
 }

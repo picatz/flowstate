@@ -219,7 +219,7 @@ argument — and the `RegisterDynamicWorkflow` method on the registry fake in
 was decided.
 
 `engine.RegisterWorkflows` installs exactly one workflow function, `Run`, with
-`VersioningBehavior` pinned (`pkg/flowstate/v1/engine/versioning.go:208`). `Run` takes
+`VersioningBehavior` pinned (`pkg/flowstate/v1/engine/versioning.go:228`). `Run` takes
 a `*v1.RunState` (`pkg/flowstate/v1/engine/workflow.go:313`), so the compiled specification travels as
 data, and the interpreter dispatches on node kind (`pkg/flowstate/v1/engine/execute.go:692-720`). Which
 workload runs is a value; how any workload runs is the function.
@@ -259,7 +259,7 @@ run's memo unconditionally at submit (`pkg/flowstate/v1/server/server.go:789`, `
 is what populates `v1.RunSummary.Name` (`proto/flowstate/v1/service.proto:735`,
 `pkg/flowstate/v1/server/list.go:395`) and what `flow list --filter` compares against on any deployment; a
 deployment that has registered search attributes additionally projects it as
-`FlowstateWorkflowName` (`pkg/flowstate/v1/server/server.go:1111`), index-only, for tools querying the
+`FlowstateWorkflowName` (`pkg/flowstate/v1/server/server.go:1115`), index-only, for tools querying the
 visibility store directly. The grouping exists — it is simply not Temporal's built-in type
 field. The one place the server does read an attribute back is a schedule listing: a
 deployment with registration confirmed tags each schedule with its tenant at create and asks
@@ -904,21 +904,23 @@ those forward — both when scheduling a step and when performing Continue-As-Ne
 Payload discipline matters, but the framing is about defaults rather than hard ceilings.
 Temporal's default per-payload and history limits mean an unbounded blob flowing through
 history will fail a run, and carrying only what is needed keeps ordinary workloads well
-inside them. Payload *encryption* has a seam and no shipped codec yet:
-`pkg/flowstate/v1/payloadcodec` wraps a `converter.PayloadCodec` in
-`converter.NewCodecDataConverter`, sets it on both drivers' clients from one
-configuration, forces the failure converter's `EncodeCommonAttributes` on whenever a codec
-is configured so error strings cannot leak plaintext, and checks worst-case ciphertext
-expansion against Temporal's blob limit at startup. `flow` resolves only the null codec
-today (`cmd/flow/codec.go`), so history confidentiality is currently the Temporal
-cluster's own storage encryption and namespace separation. Flowstate keeps secrets *out*
-of history regardless (invariant 7).
+inside them. Payload *encryption* is a solved problem in this tree: `pkg/flowstate/v1/payloadcodec`
+is the seam, wrapping `converter.PayloadCodec` in `converter.NewCodecDataConverter` and
+setting it on both drivers' `client.Options.DataConverter` from one configuration,
+forcing the failure converter's `EncodeCommonAttributes` on whenever a codec is
+configured so error strings can't leak plaintext the codec was meant to hide, and
+validating worst-case ciphertext expansion against Temporal's blob limit at startup.
+History confidentiality, where a codec is configured, is therefore the codec's — not
+merely the cluster's database and filesystem encryption — and Flowstate still keeps
+secrets *out* of history regardless (invariant 7). The codec that ships is the envelope
+codec (`payloadcodec/envelope`), configured by a per-namespace payload keyring and
+decoded for Temporal's own tools by `flow codec serve`; [ENCRYPTION.md](ENCRYPTION.md)
+is its contract.
 
 Payload *offload* — the claim-check pattern, carrying a reference through history to a
 blob stored externally — is the part not yet solved *in this tree*: the seam a codec
 occupies is general enough to carry one, but no offloading codec ships today, only the
-null codec (`cmd/flow/codec.go` documents this as the deliberate current boundary; #113
-is the design record). Until an offloading codec lands, the honest answer to a payload
+encrypting one (#113 is the design record, #271 the gap). Until an offloading codec lands, the honest answer to a payload
 too large for history is the refusal `CheckRunStateSize` already gives. When one lands,
 this is the seam it occupies, not a new one.
 

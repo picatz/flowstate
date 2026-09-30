@@ -44,6 +44,7 @@ doing. [The repository README](../README.md) is the one-page overview.
 | Document | Read it to |
 | --- | --- |
 | [Deployment](DEPLOYMENT.md) | Run a server and workers for a team: isolation tiers, topologies, health, metrics, audit, capacity, and upgrades. Read the first section before sharing a Temporal namespace. |
+| [Payload encryption](ENCRYPTION.md) | Encrypt run history under keys the deployment holds: what it protects and from whom, what stays visible, the codec server for Temporal's UI and CLI, and key rotation and loss. |
 | [Secrets and credentials](SECRETS.md) | Configure secret providers and access policy, and mint short-lived credentials instead of storing long-lived ones. |
 | [Workload identity federation](WORKLOAD_IDENTITY_FEDERATION.md) | Understand the metadata documents Flowstate publishes as an issuer, and what each cloud's relying party requires. |
 | [MCP over HTTP](MCP_AUTHORIZATION.md) | Authorize agents that reach `flow mcp serve` over HTTP. |

@@ -421,10 +421,21 @@ issuers:
 ```
 
 These disjoint entries let the dashboard inspect and CI submit while neither may
-terminate. `actions` omitted preserves the pre-action-policy behavior and adds no
-restriction; `actions: []` grants no control-plane action. Grants match exactly:
-`workload.run` does not imply cancel or terminate, and token `scope`/`scp` claims
-do not grant authority in this slice.
+terminate. `actions` omitted preserves the pre-action-policy behavior for the RPC
+actions and adds no restriction there; `actions: []` grants no control-plane
+action. Disclosure actions are the exception: `workload.reveal_sensitive`
+([Secrets](SECRETS.md)), `payload.decode`, and `payload.encode`
+([Payload encryption](ENCRYPTION.md)) are granted only to an entry that lists
+them, so an entry written before they existed can neither read declared-sensitive
+values nor decrypt history. A reader that may see sensitive values lists both
+the read and the reveal:
+
+```yaml
+    actions: [workload.read, workload.reveal_sensitive]
+```
+
+Grants match exactly: `workload.run` does not imply cancel or terminate, and
+token `scope`/`scp` claims do not grant authority in this slice.
 
 - ✅ The Flowstate API refuses every cross-tenant verb: one shared addressing
   gate checks Flowstate execution membership and then `ownedBy`, reported as
@@ -615,6 +626,14 @@ $ flow worker --tenant= --task-queue-prefix flowstate-run ...
 `FLOWSTATE_TASK_QUEUE_PREFIX` sets the prefix on both sides, which is the
 convenient way to keep them equal — a worker that spelled it differently would
 poll a queue nothing submits to, do nothing forever, and report nothing.
+
+**History encryption follows the same line.** A payload keyring gives each Temporal
+namespace its own keys, so a Tier 2 tenant's history is sealed under keys no other
+tenant's namespace uses. The server holds every namespace's keys; give each tenant's
+fleet a keyring listing only its own namespace
+(`--payload-keyring /etc/flowstate/team-a/payload-keyring.yaml`), so a compromise of
+that fleet reaches that tenant's history and no other's. A Tier 1 shared namespace
+shares its keys. See [ENCRYPTION.md](ENCRYPTION.md).
 
 ### Identity egress: where the trust policy may fetch keys from
 
@@ -1096,8 +1115,8 @@ two places:
 There is exactly one probe endpoint — `flow server` does not expose a
 separate readiness or startup route. What makes `/healthz` usable as more than
 a bare liveness check is startup ordering: `flow server` dials Temporal with
-the SDK's eager `client.DialContext` (`pkg/flowstate/v1/temporalclient/temporalclient.go:249`,
-reached from `cmd/flow/main.go:268` through `temporalclient.Dial`)
+the SDK's eager `client.DialContext` (`pkg/flowstate/v1/temporalclient/temporalclient.go:269`,
+reached from `cmd/flow/main.go:278` through `temporalclient.DialWithNamespace`)
 and mounts the HTTP mux — the one carrying `/healthz` — only after that dial,
 and every other startup check (TLS configuration, auth policy load, plugin
 catalog build), succeeds. So the first `200` from `/healthz` already implies

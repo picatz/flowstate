@@ -107,6 +107,13 @@ func init() {
 				" are deliberately absent from this record.\n",
 		},
 		{
+			Name: "flowstate.v1.AuditRecord.http_endpoint",
+			Leading: " The HTTP endpoint decided about, for an operation that is neither an RPC\n" +
+				" nor an MCP tool: the codec server's \"/decode\" and \"/encode\". The route's\n" +
+				" fixed suffix, resolved against the authorization bindings, never the\n" +
+				" request path a caller sent.\n",
+		},
+		{
 			Name: "flowstate.v1.AuditRecord.enforcement_point",
 			Leading: " The worker-side seam that made the decision, for an enforcement record.\n" +
 				" UNSPECIFIED on a control-plane record, where action names the operation\n" +
@@ -522,6 +529,11 @@ func init() {
 				" did not decode, a `with:` expression reached a field it does not carry,\n" +
 				" or an input would not bind. The one refusal a key holder is told about\n" +
 				" precisely, and recorded under their trigger's identity for that reason.\n",
+		},
+		{
+			Name: "flowstate.v1.AUDIT_DENY_CODE_RATE_LIMITED",
+			Leading: " The caller exceeded the codec server's per-caller request rate. Refused\n" +
+				" before the body is read or a key is touched.\n",
 		},
 	})
 }

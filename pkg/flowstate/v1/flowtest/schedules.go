@@ -103,7 +103,10 @@ type ScheduleDivergence struct {
 	// WrittenOrder and Seeded are the two runs' renderings for a person to
 	// read in a failure. The comparison was made over the runs themselves;
 	// where either withholds anything, both are shown under what either
-	// withholds ([dst.Withholding]).
+	// withholds ([dst.Withholding]). Where a name is withheld and another
+	// withholds alike, the two are told apart by a number (`[redacted]#2`) that
+	// counts within one rendering, so the runs number independently: the same
+	// number on either side is not the same name.
 	WrittenOrder string
 	Seeded       string
 }

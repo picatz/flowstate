@@ -89,7 +89,7 @@ func (p *Provider) do(ctx context.Context, method, apiPath, token string, body [
 	// got far enough to have one: a body that could not be read from a vault that
 	// had already said it was sealed is that failure, not a new one, and the caller
 	// classifies from the status in preference to this error.
-	contents, err := io.ReadAll(io.LimitReader(response.Body, p.maxBytes+1))
+	contents, err := readAllClearing(io.LimitReader(response.Body, p.maxBytes+1))
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return response.StatusCode, nil, fmt.Errorf("reading the response from %s: %w", p.addr, ctxErr)
@@ -101,6 +101,7 @@ func (p *Provider) do(ctx context.Context, method, apiPath, token string, body [
 	}
 
 	if int64(len(contents)) > p.maxBytes {
+		clear(contents)
 		return response.StatusCode, nil, fmt.Errorf(
 			"%w: %s answered %q with more than %d bytes",
 			secrets.ErrTooLarge, p.addr, apiPath, p.maxBytes,
@@ -108,6 +109,32 @@ func (p *Provider) do(ctx context.Context, method, apiPath, token string, body [
 	}
 
 	return response.StatusCode, contents, nil
+}
+
+// readAllClearing is [io.ReadAll] for a body that may hold key material: each
+// buffer it outgrows is cleared before it is let go, and so is what it read
+// when the read fails, so the only copy left is the one returned, which the
+// caller clears. io.ReadAll abandons every smaller buffer to the collector
+// with the bytes still in it.
+func readAllClearing(r io.Reader) ([]byte, error) {
+	buf := make([]byte, 0, 512)
+	for {
+		if len(buf) == cap(buf) {
+			grown := make([]byte, len(buf), 2*cap(buf))
+			copy(grown, buf)
+			clear(buf)
+			buf = grown
+		}
+		n, err := r.Read(buf[len(buf):cap(buf)])
+		buf = buf[:len(buf)+n]
+		if errors.Is(err, io.EOF) {
+			return buf, nil
+		}
+		if err != nil {
+			clear(buf)
+			return nil, err
+		}
+	}
 }
 
 // endpoint returns the absolute URL for an API path.
@@ -134,12 +161,17 @@ func decodeJSON(body []byte, into any) error {
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.UseNumber()
 
-	err := decoder.Decode(into)
+	return describeJSONError(decoder.Decode(into), body)
+}
+
+// describeJSONError is a decode failure as [decodeJSON] reports it: where,
+// never what, since the decoder's own message quotes the byte it choked on.
+func describeJSONError(err error, body []byte) error {
 	if err == nil {
 		return nil
 	}
 
-	if errors.Is(err, io.EOF) {
+	if errors.Is(err, io.EOF) || len(bytes.TrimSpace(body)) == 0 {
 		return fmt.Errorf("an empty body")
 	}
 

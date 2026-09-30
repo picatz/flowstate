@@ -7,6 +7,7 @@ import (
 	"time"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"go.temporal.io/sdk/converter"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -424,6 +425,19 @@ const defaultMaxStepsPerRun = 200
 // passed to NewContinueAsNewErrorWithOptions, and a workflow's own dispatch
 // table always points at the registered name.
 func Run(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutputs, error) {
+	return run(ctx, nil, st)
+}
+
+// runWith is [Run] bound to the data converter of the worker it is registered
+// on, which is what [Register] installs under the name "Run". See
+// engine/codec.go for why the converter has to be bound rather than read.
+func runWith(dc converter.DataConverter) func(workflow.Context, *v1.RunState) (*v1.Workflow_StepOutputs, error) {
+	return func(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutputs, error) {
+		return run(ctx, dc, st)
+	}
+}
+
+func run(ctx workflow.Context, dc converter.DataConverter, st *v1.RunState) (*v1.Workflow_StepOutputs, error) {
 	workflowName := st.GetMetricWorkflowName()
 
 	// #917's run-lifecycle metrics. Recorded here, around the whole of this
@@ -438,7 +452,7 @@ func Run(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutputs, error
 	recordRunStart(ctx, workflowName)
 	started := workflow.Now(ctx)
 
-	outputs, err := runWorkflow(ctx, st)
+	outputs, err := runWorkflow(ctx, dc, st)
 
 	// Both halves pass through unchanged, including the partial transcript a failed
 	// run carries: Temporal drops the result when the error is non-nil, so this is
@@ -481,7 +495,7 @@ func classifyRunError(err error) error {
 
 // runWorkflow is [Run]'s whole implementation, wrapped by it rather than
 // registered directly — see [Run]'s comment for why.
-func runWorkflow(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutputs, error) {
+func runWorkflow(ctx workflow.Context, dc converter.DataConverter, st *v1.RunState) (*v1.Workflow_StepOutputs, error) {
 	if st == nil || st.Workflow == nil || len(st.Workflow.Steps) == 0 {
 		return nil, fmt.Errorf("workflow cannot be nil or empty")
 	}
@@ -498,7 +512,7 @@ func runWorkflow(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutput
 	// Every signal channel this run ever opens — here and for the rest of the
 	// function, including drainSignals below — must be able to decode a signal
 	// sent in either wire shape #194 straddles. See withSignalDeliveryCompat.
-	ctx = withSignalDeliveryCompat(ctx)
+	ctx = withSignalDeliveryCompat(ctx, dc)
 
 	logger := workflow.GetLogger(ctx)
 

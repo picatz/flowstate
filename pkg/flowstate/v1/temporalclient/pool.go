@@ -104,6 +104,23 @@ type Pool struct {
 	closeOnce sync.Once
 }
 
+// Fallback returns c as it configures the client a tenancy mapping falls back
+// to: the configured namespace, which serves only a tenant the mapping leaves
+// unrouted once the mapping routes tenants to namespaces of their own. A
+// deployment that encrypts per namespace may hold no keys for it, so when
+// mapper maps anything, a client dialed from the result for a namespace the
+// codec slot does not cover is built with [payloadcodec.Refusing] instead of
+// refused: fail-closed for the client nothing is expected to use, rather than a
+// startup refusal over it. With a nil mapper, or one that maps nothing, the
+// fallback is the only client, and it is c unchanged.
+//
+// [NewPool] dials its fallback from it, and so does a caller that dials the
+// same client itself before building the pool.
+func (c Config) Fallback(mapper NamespaceMapper) Config {
+	c.refuseUncovered = mapper != nil && len(mapper.TemporalNamespaces()) > 0
+	return c
+}
+
 // NewPool dials a client for every namespace the mapper can select, plus the one the
 // process was configured with, and verifies each mapped namespace actually exists.
 //
@@ -122,7 +139,7 @@ func NewPool(ctx context.Context, cfg Config, mapper NamespaceMapper, logger *sl
 	// dial rather than Dial: the namespace this client is dialed for is read back
 	// from the options this very call resolved, rather than resolved a second
 	// time from cfg. See [dial].
-	fallback, opts, err := dial(ctx, cfg)
+	fallback, opts, err := dial(ctx, cfg.Fallback(mapper))
 	if err != nil {
 		return nil, err
 	}

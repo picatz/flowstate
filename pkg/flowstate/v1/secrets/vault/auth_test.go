@@ -536,3 +536,31 @@ func Test_Provider_neverDisclosesCredentials(t *testing.T) {
 	require.Equal(t, static, reads[0].token)
 	require.NotContains(t, reads[0].path, static)
 }
+
+// Test_readBoundedRegular: the service account token is read bounded, and a
+// path that is not a regular file is refused before it is opened, so a FIFO
+// named by mistake cannot block a login past every deadline.
+func Test_readBoundedRegular(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	ok := filepath.Join(dir, "token")
+	require.NoError(t, os.WriteFile(ok, []byte("projected-jwt"), 0o600))
+	got, err := readBoundedRegular(ok, maxJWTBytes)
+	require.NoError(t, err)
+	require.Equal(t, "projected-jwt", string(got))
+
+	big := filepath.Join(dir, "big")
+	require.NoError(t, os.WriteFile(big, make([]byte, maxJWTBytes+1), 0o600))
+	_, err = readBoundedRegular(big, maxJWTBytes)
+	require.ErrorContains(t, err, "larger than")
+
+	_, err = readBoundedRegular(dir, maxJWTBytes)
+	require.ErrorContains(t, err, "not a regular file")
+
+	// And it is what a login reads the token through.
+	provider, jwtPath := newKubernetesProvider(t, jsonHandler(http.StatusOK, `{}`))
+	require.NoError(t, os.WriteFile(jwtPath, make([]byte, maxJWTBytes+1), 0o600))
+	_, err = provider.readJWT()
+	require.ErrorContains(t, err, "larger than")
+}

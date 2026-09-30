@@ -73,8 +73,16 @@ func TestTheKeyIDMetadataKeyHasOneSpellingAndOneWriter(t *testing.T) {
 	require.NoError(t, err)
 
 	literals := 0
-	writers := 0
+	writers := map[string]int{}
 	checked := 0
+
+	// Each codec stamps the id in exactly one place, its metadataFor, so that
+	// what its Encode writes and what its MaxEncodedSize measures cannot drift
+	// apart. These are the codecs; a new one joins the list deliberately.
+	permittedWriters := []string{
+		filepath.Join("envelope", "envelope.go"),
+		filepath.Join("toycodec", "toycodec.go"),
+	}
 
 	err = filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
 		if err != nil {
@@ -116,10 +124,10 @@ func TestTheKeyIDMetadataKeyHasOneSpellingAndOneWriter(t *testing.T) {
 			// written onto a payload. Reads spell it inside an index expression
 			// and do not match.
 			if strings.Contains(trimmed, "KeyIDMetadataKey:") || strings.Contains(trimmed, "KeyIDMetadataKey] =") {
-				writers++
-				assert.Equal(t, filepath.Join("toycodec", "toycodec.go"), relative,
-					"%s: %s\n\nthe key id is stamped in one place, toycodec's metadataFor, so that "+
-						"what Encode writes and what MaxEncodedSize measures cannot drift apart. A "+
+				writers[relative]++
+				assert.Contains(t, permittedWriters, relative,
+					"%s: %s\n\nthe key id is stamped in one place per codec, that codec's metadataFor, "+
+						"so that what Encode writes and what MaxEncodedSize measures cannot drift apart. A "+
 						"second writer is a second answer to which key encrypted a payload, and "+
 						"Decode trusts the answer.", relative, trimmed)
 			}
@@ -134,9 +142,11 @@ func TestTheKeyIDMetadataKeyHasOneSpellingAndOneWriter(t *testing.T) {
 	// because the declaration was deleted, or because the toy codec stopped
 	// stamping ids altogether, would prove the opposite of what it says.
 	require.Equal(t, 1, literals, "the metadata name is no longer declared exactly once")
-	require.Equal(t, 1, writers,
-		"nothing in this package tree writes a key id any more, so the contract's executable "+
-			"specification has stopped specifying it")
+	for _, codec := range permittedWriters {
+		require.Equal(t, 1, writers[codec],
+			"%s does not stamp a key id in exactly one place: either the codec stopped stamping ids, "+
+				"so its payloads can never be rotated off or shredded, or it grew a second writer", codec)
+	}
 
 	declaration, err := os.ReadFile("payloadcodec.go")
 	require.NoError(t, err)

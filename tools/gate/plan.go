@@ -471,6 +471,18 @@ func affectedPackages(pkgs []pkgMeta, changed map[string]bool) []string {
 	return out
 }
 
+// orderingTimeout is the budget for the ordering leg: twenty repetitions of
+// the whole flowtest package under the race detector at -cpu=1. It is one
+// `go test -timeout` for all of them, so it has to grow with the package: at
+// 300s the leg ran out of time with every test passing (#2186), on a hosted
+// runner as well as a small container, and the panic named whichever test
+// happened to be running. It stays a bound, not an absence of one: a real hang
+// still fails, in eight minutes. The Makefile's test-ordering recipe, which CI
+// runs, carries the same figure, and the CI job's timeout-minutes sits above
+// it, with room for the build and the upload; a test holds both to this
+// constant.
+const orderingTimeout = "480s"
+
 // needsOrdering reports whether the affected set includes the flowtest
 // package, whose ordering claims get the dedicated `-cpu=1 -count=20` leg.
 func needsOrdering(affected []string) bool {

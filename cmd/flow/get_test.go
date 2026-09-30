@@ -727,3 +727,61 @@ func TestGetPosesTheGatesPrompt(t *testing.T) {
 	require.Contains(t, errOut.String(), "\n  prompt: Approve deploying v1.4.2 to production, requested by anonymous?\n",
 		"the question is not posed on its own line under the gate:\n%s", errOut.String())
 }
+
+// TestGetWithholdsFailuresOnlyFromAnUnrequestedReveal pins both directions of
+// what a client does with the two failure texts and a wait's prompt. An
+// answer REVEALED without this process asking is an anomaly and is withheld
+// whole. An older server's UNSPECIFIED answer is shown as it was sent, since
+// that server has already handed it to every caller allowed to read the run,
+// and the failure is the only field saying why the run stopped.
+func TestGetWithholdsFailuresOnlyFromAnUnrequestedReveal(t *testing.T) {
+	const token = "synthetic-token-7b2e"
+	for _, tc := range []struct {
+		name       string
+		disclosure v1.SensitiveDisclosure
+		reveal     bool
+		shown      bool
+	}{
+		{"revealed unasked", v1.SensitiveDisclosure_SENSITIVE_DISCLOSURE_REVEALED, false, false},
+		{"revealed as asked", v1.SensitiveDisclosure_SENSITIVE_DISCLOSURE_REVEALED, true, true},
+		{"an older server", v1.SensitiveDisclosure_SENSITIVE_DISCLOSURE_UNSPECIFIED, false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := &fakeWorkflowService{
+				getResponse: &v1.GetResponse{
+					WorkflowId:          "flowstate-workflow-3f7c",
+					RunId:               "0198f1e2-0000-7000-8000-000000000000",
+					Status:              v1.RunResponse_STATUS_FAILED,
+					SensitiveDisclosure: tc.disclosure,
+					Kind: &v1.GetResponse_Error{Error: &v1.RunResponse_Error{
+						Message: "GET https://api.example/" + token + " failed",
+					}},
+					PendingActivities: []*v1.PendingActivity{{LastFailure: "dial " + token}},
+					Progress: &v1.RunProgress{PendingWaits: []*v1.PendingWait{
+						{SignalName: "approve", Prompt: "approve " + token + "?"},
+					}},
+				},
+			}
+			serveFake(t, fake)
+			cmd, out, _ := getCommand(t)
+			require.NoError(t, cmd.Flags().Set("output", "json"))
+			if tc.reveal {
+				require.NoError(t, cmd.Flags().Set(revealSensitiveFlagName, "true"))
+			}
+
+			// A failed run is an error from `flow get`, carrying its message.
+			err := runGet(cmd, []string{"flowstate-workflow-3f7c"})
+			require.Error(t, err)
+			seen := out.String() + err.Error()
+
+			for _, part := range []string{"api.example/" + token, "dial " + token, "approve " + token} {
+				require.Equal(t, tc.shown, strings.Contains(seen, part), "%q", part)
+			}
+			if !tc.shown {
+				require.NotContains(t, seen, token, "an unrequested reveal leaked through")
+				require.Contains(t, seen, v1.FailureWithheldMarker)
+				require.Contains(t, seen, v1.PromptWithheldSensitive)
+			}
+		})
+	}
+}
