@@ -793,6 +793,32 @@ func OutputCases() []OutputCase {
 			},
 		},
 		{
+			// A failure the run tolerates is reported as one, and as nothing
+			// else: the step did not finish (Copilot, #2233).
+			Name: "a tolerated async failure is not also reported as finished",
+			Workflow: &v1.Workflow{
+				Name:    "output-async-tolerated",
+				Profile: v1.CurrentProfile,
+				Steps: []*v1.Node{
+					says("first", "one"),
+					{
+						Id:     "flaky",
+						Async:  true,
+						Policy: &v1.StepPolicy{ContinueOnError: true},
+						Kind: &v1.Node_Task{Task: &v1.Task{
+							Name:   "log",
+							Inputs: map[string]*v1.Value{"message": v1.NewExpr(`{"a": 1}["missing"]`)},
+						}},
+					},
+					says("last", "two"),
+				},
+			},
+			Finished: map[string]string{
+				"first": "first completed",
+				"last":  "last completed",
+			},
+		},
+		{
 			// #2213's shape: the callee declares the input sensitive, hands it
 			// back as an output it does not, and the caller copies it on. None
 			// of the three accounts may show it, in the callee or after it.

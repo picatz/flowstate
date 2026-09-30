@@ -355,7 +355,12 @@ func (e *executor) joinAsync(started *asyncStep) error {
 	}
 
 	e.processed++
-	e.observeForDebug(v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_FINISHED, started.node, nil)
+	// Only a step that succeeded finished: a tolerated failure was observed
+	// as one by [executor.recordOutcome], and the local driver says nothing
+	// more of it.
+	if started.err == nil {
+		e.observeForDebug(v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_FINISHED, started.node, nil)
+	}
 	e.progress.finished()
 
 	return nil
