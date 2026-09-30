@@ -55,7 +55,7 @@ func TestASkipIsWithheldAsTheDurableDriverWithholdsIt(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = session.Close() })
 
-	session.StepSkippedBy("gate", v1.NewExpr(`inputs.x != "y"`), v1.WithheldSensitiveValues())
+	session.StepSkippedBy("gate", "gate", v1.NewExpr(`inputs.x != "y"`), v1.WithheldSensitiveValues())
 	snapshot, err := session.Snapshot(t.Context())
 	if err != nil {
 		t.Fatal(err)

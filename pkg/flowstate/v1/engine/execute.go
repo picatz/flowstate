@@ -249,10 +249,12 @@ type executor struct {
 	// needed here either.
 	debug *debugControl
 
-	// debugSegments are the calls this executor runs inside, outermost first,
-	// which is how a durable debugger addresses an occurrence: the durable
+	// debugSegments are the calls this executor runs inside, and the
+	// iterations, branches and arms of the bodies it runs in, outermost first,
+	// which is how a durable debugger addresses an occurrence. The durable
 	// driver holds only where a position is representable, the top level of
-	// the run and of a callee, so calls are the only nesting a hold can be in.
+	// the run and of a callee, so a hold is in calls alone; the rest name where
+	// a step in a body ran, for what a session is told of it.
 	debugSegments []*v1.DebugSegment
 
 	// progress is where the run has got to, for the query handler to answer from.
@@ -2099,13 +2101,13 @@ func (e *executor) runLoopIteration(body []string, segments []*v1.DebugSegment, 
 	return v1.AttachIterationBinding(bodyOutputs(loop.GetBody(), iterationOutputs), state, nested.tolerated), false, next, nil
 }
 
-// runIteration executes the loop body once against its own output scope.
 // debugSegmentsUnder is the segments a step inside node's body runs under:
 // this executor's, then one naming the iteration, branch or arm of node it is
 // in, as the local driver's segments name it ([v1.DebugSegment]). The body's
-// steps take their address from these, so an observation or a hold there reads
-// `each[1]/touch` and not `touch`. Without a debugger to read them nothing is
-// added, which keeps an undebugged run's per-iteration cost what it was.
+// steps take their address from these, so an observation of one reads
+// `each[1]/touch` and not `touch`. A run that declares no `debug:` stanza has
+// no one to read them, so nothing is added, which keeps its per-iteration cost
+// what it was.
 func (e *executor) debugSegmentsUnder(kind v1.DebugSegmentKind, node *v1.Node, index int) []*v1.DebugSegment {
 	if !e.debug.enabled() || len(e.debugSegments) >= v1.MaxDebugSegments {
 		return e.debugSegments
@@ -2119,6 +2121,7 @@ func (e *executor) debugSegmentsUnder(kind v1.DebugSegmentKind, node *v1.Node, i
 	})
 }
 
+// runIteration executes the loop body once against its own output scope.
 func (e *executor) runIteration(body []string, segments []*v1.DebugSegment, loop *v1.ForEach, iterator string, item *v1.Value, depth, susp int, descend bool) (*v1.Workflow_StepOutputs, error) {
 	// Each iteration starts from the outputs visible before the loop, so an
 	// iteration cannot observe a previous one — which keeps its behavior

@@ -939,9 +939,10 @@ const maxOpenOccurrences = 4096
 // settledOccurrenceLocked is where step ran, for an observation of kind about
 // it. An outcome closes the step's arrival: the innermost one still open for
 // the step, which is the one this outcome is for however many like-named steps
-// are running above or beside it. Any other observation, and an outcome of a
-// step that never arrived (one whose `if:` was false), is placed by the last
-// boundary the run reached when that was the step itself.
+// are running above or beside it. Any other observation is placed by the last
+// boundary the run reached, when that was the step itself. A step that never
+// arrived, because its `if:` was false or failed, is told its place by the run
+// instead ([Session.observeRedactedAt]).
 func (s *Session) settledOccurrenceLocked(kind v1.DebugObservationKind, step string) *v1.DebugOccurrence {
 	switch kind {
 	case v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_FINISHED,
@@ -977,12 +978,25 @@ func occurrenceStep(occurrence *v1.DebugOccurrence) string {
 // observeRedacted records one observation whose text is already redacted and
 // bounded.
 func (s *Session) observeRedacted(kind v1.DebugObservationKind, step, text string) {
+	s.observeRedactedAt(kind, step, nil, text)
+}
+
+// observeRedactedAt is [Session.observeRedacted] for an observation of a step
+// the run placed itself: one that never reached a boundary, a skipped step or
+// one whose `if:` failed, so no arrival can say where it is. placed is that
+// address, or nil to find the step's own arrival.
+func (s *Session) observeRedactedAt(kind v1.DebugObservationKind, step string, placed *string, text string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	address := ""
-	if occurrence := s.settledOccurrenceLocked(kind, step); occurrence != nil {
-		address = s.redactTextLocked(occurrence.GetAddress())
+	switch {
+	case placed != nil:
+		address = s.redactTextLocked(*placed)
+	default:
+		if occurrence := s.settledOccurrenceLocked(kind, step); occurrence != nil {
+			address = s.redactTextLocked(occurrence.GetAddress())
+		}
 	}
 
 	s.contract.sequence++

@@ -1626,7 +1626,7 @@ func runNodes(ctx context.Context, nodes []*Node, scope *Scope, undo *UndoLog, p
 			// Recorded nowhere else: the step never ran, so it has no outcome
 			// to report, and a debugger would otherwise show it as never
 			// reached (#2124).
-			observeGuardFailed(ctx, node.GetId(), err)
+			observeGuardFailed(ctx, node, err)
 
 			return fmt.Errorf("step %q: %w", node.GetId(), err)
 		}

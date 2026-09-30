@@ -148,10 +148,10 @@ func (t teeObserver) StepSkipped(id string) {
 // StepSkippedBy implements [v1.GuardRunObserver] for whichever listener quotes
 // the condition, so teeing a debugger with the recorder does not cost the
 // debugger its account of why a step was skipped.
-func (t teeObserver) StepSkippedBy(id string, condition *v1.Value, withhold v1.SensitiveValues) {
+func (t teeObserver) StepSkippedBy(id, address string, condition *v1.Value, withhold v1.SensitiveValues) {
 	for _, listener := range []v1.RunObserver{t.first, t.second} {
 		if guard, ok := listener.(v1.GuardRunObserver); ok {
-			guard.StepSkippedBy(id, condition, withhold)
+			guard.StepSkippedBy(id, address, condition, withhold)
 		} else {
 			listener.StepSkipped(id)
 		}
@@ -160,10 +160,10 @@ func (t teeObserver) StepSkippedBy(id string, condition *v1.Value, withhold v1.S
 
 // GuardFailed implements [v1.GuardRunObserver] for whichever listener hears
 // about a condition that could not be evaluated.
-func (t teeObserver) GuardFailed(id string, err error, withhold v1.SensitiveValues) {
+func (t teeObserver) GuardFailed(id, address string, err error, withhold v1.SensitiveValues) {
 	for _, listener := range []v1.RunObserver{t.first, t.second} {
 		if guard, ok := listener.(v1.GuardRunObserver); ok {
-			guard.GuardFailed(id, err, withhold)
+			guard.GuardFailed(id, address, err, withhold)
 		}
 	}
 }

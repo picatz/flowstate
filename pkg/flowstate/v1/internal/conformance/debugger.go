@@ -732,9 +732,11 @@ type OutputCase struct {
 	Finished map[string]string
 
 	// Addresses, when set, is the occurrence address of every step that
-	// finished, sorted: where in the run each did, as an author reads it
-	// (`each[1]/touch`, `fan#0/left`, `route?0/chosen`). A step in a body
-	// is named by the iteration, branch or arm it ran in on both drivers.
+	// reported an outcome (finished, skipped, failed or tolerated), sorted:
+	// where in the run each did, as an author reads it (`each[1]/touch`,
+	// `fan#0/left`, `route?0/chosen`). A step in a body is named by the
+	// iteration, branch or arm it ran in on both drivers, whether it ran,
+	// was skipped, or failed.
 	Addresses []string
 
 	// Secret, when set, is a value a callee declares sensitive, which no
@@ -750,8 +752,13 @@ func (c OutputCase) Problems(observations []*v1.DebugObservation) []string {
 	finished := map[string]string{}
 	var addresses []string
 	for _, observation := range observations {
-		if observation.GetKind() == v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_FINISHED {
+		switch observation.GetKind() {
+		case v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_FINISHED:
 			finished[observation.GetStepId()] = observation.GetText()
+			addresses = append(addresses, observation.GetAddress())
+		case v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_SKIPPED,
+			v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_FAILED,
+			v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_TOLERATED:
 			addresses = append(addresses, observation.GetAddress())
 		}
 		if c.Secret != "" && strings.Contains(observation.GetText(), c.Secret) {
@@ -889,6 +896,59 @@ func OutputCases() []OutputCase {
 				"nested(child)/sweep[0]/deep",
 				"route",
 				"route?1/chosen",
+			},
+		},
+		{
+			// A step that never ran, or ran and failed, is placed by the run
+			// and not by the last step to arrive: the second iteration's
+			// skipped `maybe` is `each[1]/maybe`, not the first's address
+			// left behind (review of #2236). A concurrent `for_each:` names
+			// its iterations too.
+			Name: "a skipped, tolerated or concurrent step in a body is addressed by where it ran",
+			Workflow: &v1.Workflow{
+				Name:    "output-addresses-outcomes",
+				Profile: v1.CurrentProfile,
+				Steps: []*v1.Node{
+					says("first", "one"),
+					{
+						Id: "each",
+						Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{
+							Items:       v1.NewExpr(`["a", "b"]`),
+							Iterator:    "item",
+							MaxParallel: 1,
+							Body: []*v1.Node{
+								guarded("maybe", `item == "a"`, "visited"),
+								{
+									Id:     "flaky",
+									Policy: &v1.StepPolicy{ContinueOnError: true},
+									Kind: &v1.Node_Task{Task: &v1.Task{
+										Name:   "log",
+										Inputs: map[string]*v1.Value{"message": v1.NewExpr(`{"a": 1}["missing"]`)},
+									}},
+								},
+							},
+						}},
+					},
+					{
+						Id: "wide",
+						Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{
+							Items:       v1.NewExpr(`["x", "y"]`),
+							MaxParallel: 2,
+							Body:        []*v1.Node{says("touch", "visited")},
+						}},
+					},
+				},
+			},
+			Addresses: []string{
+				"each",
+				"each[0]/flaky",
+				"each[0]/maybe",
+				"each[1]/flaky",
+				"each[1]/maybe",
+				"first",
+				"wide",
+				"wide[0]/touch",
+				"wide[1]/touch",
 			},
 		},
 		{

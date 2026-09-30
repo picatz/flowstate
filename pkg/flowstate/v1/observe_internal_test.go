@@ -184,11 +184,11 @@ type guardOnlyObserver struct {
 	withheld []SensitiveValues
 }
 
-func (*guardOnlyObserver) StepFinished(string, *Node_Outputs, error, bool) {}
-func (*guardOnlyObserver) StepSkipped(string)                              {}
-func (*guardOnlyObserver) WaitStarted(string, string, time.Duration, bool) {}
-func (*guardOnlyObserver) GuardFailed(string, error, SensitiveValues)      {}
-func (o *guardOnlyObserver) StepSkippedBy(_ string, _ *Value, withhold SensitiveValues) {
+func (*guardOnlyObserver) StepFinished(string, *Node_Outputs, error, bool)    {}
+func (*guardOnlyObserver) StepSkipped(string)                                 {}
+func (*guardOnlyObserver) WaitStarted(string, string, time.Duration, bool)    {}
+func (*guardOnlyObserver) GuardFailed(string, string, error, SensitiveValues) {}
+func (o *guardOnlyObserver) StepSkippedBy(_, _ string, _ *Value, withhold SensitiveValues) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	o.withheld = append(o.withheld, withhold)
