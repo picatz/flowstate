@@ -197,7 +197,9 @@ type reconstruction struct {
 }
 
 // boundaries lists the supported points of a history: the index of every
-// WorkflowTaskStarted event, and the last event of a closed run.
+// WorkflowTaskStarted event, and the last event of a closed run. Each way a run
+// can end is exercised: completed and continued-as-new by the recorded corpus,
+// cancelled, failed, terminated and timed out by the dev-server tests.
 func boundaries(history *historypb.History) []int {
 	var at []int
 	for i, event := range history.GetEvents() {
@@ -795,8 +797,10 @@ func TestReconstructingALongRunBackwardCostsTheSumOfItsPrefixes(t *testing.T) {
 }
 
 // TestACancelledRunReconstructsAsHoldingNoWaits records a run parked on signal
-// waits in two `parallel:` branches, cancels it, and reconstructs every
-// boundary. At the cancelled run's last event no wait is pending: the waits'
+// waits in two `parallel:` branches, one bounded and one not, cancels it, and
+// reconstructs every boundary. One bounded wait and not two: two concurrent
+// timers cancelled together can diverge on replay by themselves (#2244), and
+// this test is about what the reconstruction sees, not about that. At the cancelled run's last event no wait is pending: the waits'
 // cleanup runs in coroutines after the sentinel's, and a sentinel on the run's
 // own context would have exited at the cancel request and never seen it.
 func TestACancelledRunReconstructsAsHoldingNoWaits(t *testing.T) {
@@ -806,15 +810,15 @@ func TestACancelledRunReconstructsAsHoldingNoWaits(t *testing.T) {
 	spec := &v1.Workflow{Name: "cancelled", Profile: v1.CurrentProfile, Steps: []*v1.Node{
 		{Id: "fan", Kind: &v1.Node_Parallel{Parallel: &v1.Parallel{Branches: []*v1.Parallel_Branch{
 			{Steps: []*v1.Node{signalStep("left", "go-left", 5*time.Minute)}},
-			{Steps: []*v1.Node{signalStep("right", "go-right", 5*time.Minute)}},
+			{Steps: []*v1.Node{signalStep("right", "go-right", 0)}},
 		}}}},
 	}}
 	run, err := temporal.ExecuteWorkflow(t.Context(),
 		client.StartWorkflowOptions{ID: "historical-cancelled", TaskQueue: engine.RunTaskQueueName},
 		engine.Run, &v1.RunState{Workflow: spec})
 	require.NoError(t, err)
-	require.Eventually(t, func() bool { return timersStarted(t, temporal, run.GetID()) >= 2 },
-		30*time.Second, 50*time.Millisecond, "the run never parked on both waits")
+	require.Eventually(t, func() bool { return timersStarted(t, temporal, run.GetID()) >= 1 },
+		30*time.Second, 50*time.Millisecond, "the run never parked on its waits")
 
 	require.NoError(t, temporal.CancelWorkflow(t.Context(), run.GetID(), run.GetRunID()))
 	require.Error(t, run.Get(t.Context(), nil), "the run was cancelled, so it does not complete")
@@ -836,4 +840,80 @@ func TestACancelledRunReconstructsAsHoldingNoWaits(t *testing.T) {
 	require.NotNil(t, parked, "no point showed both waits, so this proves nothing")
 	require.NotNil(t, closed, "the history has no cancelled end")
 	assert.Empty(t, closed.progress.GetPendingWaits(), "a cancelled run holds no waits")
+}
+
+// TestEveryWayARunEndsIsReconstructedAsItWas records a run of each way the
+// server can end one that the workflow does not choose (a step failing, a
+// termination, a run timeout) and reconstructs its last event. A failure ends
+// inside the workflow, so its last event is the state at the step that failed.
+// A termination and a timeout come from outside and run no cleanup, so the last
+// event is the run as it was when it was ended: a wait it was parked on is still
+// pending, unlike a cancelled run's, whose cleanup ran (see
+// TestACancelledRunReconstructsAsHoldingNoWaits). A reader is told which.
+func TestEveryWayARunEndsIsReconstructedAsItWas(t *testing.T) {
+	temporal := newTemporalNamespace(t)
+	startWorker(t, temporal)
+
+	parked := func(id string) *v1.Workflow {
+		return &v1.Workflow{Name: id, Profile: v1.CurrentProfile, Steps: []*v1.Node{
+			logStep("before", "b"), signalStep("gate", "go", 5*time.Minute), logStep("after", "a"),
+		}}
+	}
+	type ending struct {
+		name    string
+		event   enumspb.EventType
+		start   func(t *testing.T) client.WorkflowRun
+		step    string
+		waiting bool
+	}
+	endings := []ending{
+		{"failed", enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_FAILED, func(t *testing.T) client.WorkflowRun {
+			broken := logStep("broken", "x")
+			broken.GetTask().Inputs["message"] = v1.NewExpr("string(1 / 0)")
+			spec := &v1.Workflow{Name: "fails", Profile: v1.CurrentProfile, Steps: []*v1.Node{
+				logStep("before", "b"), broken, logStep("after", "a"),
+			}}
+			run, err := temporal.ExecuteWorkflow(t.Context(),
+				client.StartWorkflowOptions{ID: "ends-failed", TaskQueue: engine.RunTaskQueueName},
+				engine.Run, &v1.RunState{Workflow: spec})
+			require.NoError(t, err)
+			require.Error(t, run.Get(t.Context(), nil))
+
+			return run
+		}, "broken", false},
+		{"terminated", enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_TERMINATED, func(t *testing.T) client.WorkflowRun {
+			run, err := temporal.ExecuteWorkflow(t.Context(),
+				client.StartWorkflowOptions{ID: "ends-terminated", TaskQueue: engine.RunTaskQueueName},
+				engine.Run, &v1.RunState{Workflow: parked("terminated")})
+			require.NoError(t, err)
+			require.Eventually(t, func() bool { return timersStarted(t, temporal, run.GetID()) >= 1 }, 30*time.Second, 50*time.Millisecond)
+			require.NoError(t, temporal.TerminateWorkflow(t.Context(), run.GetID(), run.GetRunID(), "test"))
+			require.Error(t, run.Get(t.Context(), nil))
+
+			return run
+		}, "gate", true},
+		{"timed out", enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_TIMED_OUT, func(t *testing.T) client.WorkflowRun {
+			run, err := temporal.ExecuteWorkflow(t.Context(),
+				client.StartWorkflowOptions{ID: "ends-timed-out", TaskQueue: engine.RunTaskQueueName, WorkflowRunTimeout: 2 * time.Second},
+				engine.Run, &v1.RunState{Workflow: parked("timedout")})
+			require.NoError(t, err)
+			require.Error(t, run.Get(t.Context(), nil))
+
+			return run
+		}, "gate", true},
+	}
+	for _, e := range endings {
+		t.Run(e.name, func(t *testing.T) {
+			run := e.start(t)
+			history := recordedHistory(t, temporal, run.GetID(), run.GetRunID())
+			last := history.GetEvents()[len(history.GetEvents())-1]
+			require.Equal(t, e.event, last.GetEventType())
+
+			got, err := reconstructAt(history, len(history.GetEvents())-1, workflow.Execution{ID: run.GetID(), RunID: run.GetRunID()})
+			require.NoError(t, err)
+			assert.Equal(t, e.step, got.progress.GetStepId())
+			assert.Equal(t, e.waiting, len(got.progress.GetPendingWaits()) > 0,
+				"whether the reconstruction still shows the wait the run was parked on")
+		})
+	}
 }
