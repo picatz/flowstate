@@ -13,11 +13,23 @@ would put a bearer credential into every run's record.
 
 ```console
 $ mkdir -p ./plugins
-$ go build -o ./plugins/flowstate-plugin-oidc ./plugins/oidc
-$ flow worker --plugin-dir ./plugins \
-    --plugin-env oidc=FLOWSTATE_OIDC_PROVIDERS=$PWD/examples/plugins/oidc/providers.yaml
+$ go -C plugins/oidc build -o ../../plugins/flowstate-plugin-oidc .
+$ flow worker --allow-unversioned-interpreter --plugin-dir ./plugins \
+    --plugin-env oidc=FLOWSTATE_OIDC_PROVIDERS=$PWD/examples/plugins/oidc/providers.yaml \
+    --auth-policy examples/plugins/greet/auth.yaml &
+$ flow server --insecure-no-auth --plugin-dir ./plugins &
 $ flow run examples/plugins/oidc/workflow.yaml --input invoice_id=inv_2026_0917
 ```
+
+The plugin registers the `oidc:` secret scheme, and a worker holding a secret
+provider refuses to start without an `--auth-policy` that has a `secrets:`
+section, which is also what decides whether this run may resolve
+`oidc:billing-api`; [`examples/plugins/greet/auth.yaml`](../greet/auth.yaml) is
+a rehearsal policy that allows every reference. The server takes `--plugin-dir`
+too, because the file declares `plugins:` and the server resolves that block
+against the plugins it launched itself. `flow run` accepts this file, where it
+refuses the other plugin examples today (#1548), because no step here names a
+plugin task.
 
 ## `bearer:`, not a concatenated header
 

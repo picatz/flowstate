@@ -53,7 +53,7 @@ against the create request a real daemon would parse:
 | non-root user required | defaults to `65534:65534`; root has to be written as `user: "0:0"` |
 | mounts from operator grant identifiers | `mounts: [name]` resolved through the file's own `mounts:`; read-only unless `writable` |
 | network none by default | `NetworkMode: none`; **host networking is refused at every grant level** |
-| CPU, memory, pids, wall time, output bytes all bounded | required in the grant, each under a plugin ceiling |
+| CPU, memory, pids, wall time, output bytes all bounded | CPU, memory and pids required in the grant; wall time and output bytes defaulted (5m, 256 KiB); each under a plugin ceiling |
 | cancellation stops and removes before returning | a deferred remove with its own deadline, on every path |
 | no runtime credentials in the request or result | there are no registry credentials here at all |
 
@@ -77,13 +77,30 @@ named to the worker:
 
 ```console
 $ flow worker --plugin-dir /path/to/plugins \
+    --temporal-deployment-name flowstate --build-id "$(git rev-parse --short HEAD)" \
     --plugin-env docker=FLOWSTATE_DOCKER_GRANTS=/etc/flowstate/docker-grants.yaml
 ```
 
 With no grants file there is no daemon and no run: every call is refused naming
-the variable, and `flow plugins` reports the plugin unhealthy with the reason.
-Discovery and validation keep working, so a deployment can install the plugin
-before it configures it.
+the variable, and a running worker logs a warning naming the reason at each
+health check (`flow plugins` does not report health). Discovery and validation
+keep working, so a deployment can install the plugin before it configures it.
+
+## Inputs, outputs and grant keys
+
+A step writes two inputs: `run`, the name of a run grant, and `parameters`, a
+map filling that grant's placeholders. It gets back `exit_code`, `stdout`,
+`stderr`, `truncated`, and the `image` and `run` that actually ran.
+
+The grants file has three top-level keys: `daemon` (`socket`, or `address`
+with `tls_ca_file`, `tls_cert_file` and `tls_key_file`; optional
+`api_version`), `mounts` (by name: `source`, `target`, `writable`), and `runs`
+(by name). A run grant takes `image`, `argv`, `parameters` (each a `pattern`
+and optional `max_bytes`), `env`, `working_dir`, `user`, `network`, `mounts`,
+`writable_root_filesystem`, `timeout`, `memory_bytes`, `nano_cpus`,
+`pids_limit`, `max_output_bytes`, `success_exit_codes` and `namespaces`.
+[`examples/plugins/docker/grants.yaml`](../../examples/plugins/docker/grants.yaml)
+is a commented one.
 
 ## Ceilings
 
@@ -95,7 +112,7 @@ A grant narrows within these and can never raise past them:
 | stdout and stderr, each | 960 KiB (default 256 KiB) |
 | memory | 16 GiB (required) |
 | CPU | 8 cores in nanocpus (required) |
-| pids | 4096 |
+| pids | 4096 (required) |
 | mounts per run | 8 |
 | environment variables per run | 32 |
 | parameters per call | 32 |

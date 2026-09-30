@@ -42,6 +42,14 @@ one resolves against `plugins/scim`.
 | `scim.user_list` | reads | yes | always |
 | `scim.user_deactivate` | writes | yes (replacing `active` with false twice leaves one account in one state) | always |
 
+Every task takes `base_url` (the provider's SCIM root, HTTPS) and `token`:
+
+| Task | Other inputs | Outputs |
+| --- | --- | --- |
+| `scim.user_get` | exactly one of `id`, `user_name` | `id`, `user_name`, `display_name`, `active`, `primary_email`, `external_id`, `version`, `groups`, `resource` |
+| `scim.user_list` | `filter`, `count`, `start_index` | `users` (maps of `user_get`'s attributes except `resource`), `total_results`, `next_start_index` (zero on the last page) |
+| `scim.user_deactivate` | `id`, optional `expected_version` | `id`, `active`, `already_inactive`, `version` |
+
 Because the write is idempotent, a lost connection is `Unavailable` — retryable —
 rather than `OutcomeUnknown`. `plugins/slack` has to take the opposite
 posture for `post`, and a task here that *created* a user would too, which is
@@ -84,14 +92,20 @@ interpolated into one is code. This plugin draws the line the way
 
 | What | Limit |
 | --- | --- |
-| one user resource | 1 MiB |
-| a page of users | 4 MiB |
+| one user resource | 884,736 B |
+| a page of users | 1,769,472 B |
 | `count` | 50 by default, 500 maximum |
 | a filter | 1 KiB |
 | a resolved credential | 8 KiB |
 | `base_url` | 512 B |
 | an id or user name | 256 B |
 | groups carried per user | 64, each name 256 B |
+
+The two byte limits are derived from the host's ceiling on one step's outputs,
+`MaxTaskOutputBytes` (2 MiB less a 64 KiB reserve, 2,031,616 B), less a
+256 KiB envelope: a page gets all of what is left, and one user half of it,
+because a user result can carry its resource close to twice. The deployment's
+egress `max_response_bytes` applies as well, and the lower of the two wins.
 
 A `count` over the ceiling is **refused, never lowered**, and a provider that
 ignores `count` and returns more is truncated to what the step asked for - the
@@ -111,9 +125,10 @@ one no-op rather than two writes an auditor has to reconcile.
 **`expected_version` makes the write a compare-and-swap.** Pass the `version`
 (the provider's ETag) from the read the reviewer's evidence came from, and a
 user modified since then fails as [`sdk.Conflict`](../../pkg/flowstate/v1/plugin/sdk) —
-a classification a Flowfile can `dispatch:` on — rather than overwriting a
-change nobody saw. Providers that send no ETag leave only the unconditional
-write available, and the input is optional for that reason.
+never retried; a Flowfile that wants to act on it marks the step
+`continue_on_error: true` and reads `${steps.<id>.error}` — rather than
+overwriting a change nobody saw. Providers that send no ETag leave only the
+unconditional write available, and the input is optional for that reason.
 
 **A missing `active` reads as active.** RFC 7643 makes the attribute optional.
 Reading an omitted one as `false` would tell a review that every account at such

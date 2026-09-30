@@ -14,7 +14,8 @@ Channel names are refused in favor of stable C/D/G conversation IDs. Text is
 valid UTF-8 capped at 4,000 characters, and resolved credentials are capped at
 4 KiB before entering a header. Link and media unfurling are always off, so
 notification text cannot ask Slack to fetch an arbitrary URL. Responses are read
-through a 64 KiB `netpolicy` ceiling supplied by the operator policy.
+under this plugin's own 64 KiB ceiling and under the operator egress policy's
+`max_response_bytes`, whichever is lower.
 
 `message_key` is a canonical UUID sent as Slack's `client_msg_id`. Reuse it only
 for the identical logical message and destination. Slack's official method
@@ -22,8 +23,9 @@ reference names duplicate-related errors for `client_msg_id`, but does not make
 a complete deduplication guarantee. Therefore:
 
 - a clean Slack success returns `channel` and `ts`;
-- HTTP 429, explicit `ratelimited` responses, and an operator rate bucket that
-  refuses the initial hop are definite no-write outcomes and return retryable
+- HTTP 429, Slack errors `ratelimited`, `rate_limited`, `service_unavailable`
+  and `request_timeout`, and an operator rate bucket that refuses the initial
+  hop are treated as definite no-write outcomes and return retryable
   `UnavailableAfter`, with the delay capped at five minutes;
 - authentication, destination, and input refusals are permanent;
 - a timeout, connection loss, malformed acknowledgement, HTTP 5xx, or Slack
@@ -77,10 +79,15 @@ $ go -C plugins/slack build -o ../../bin/flowstate-plugin-slack .
 $ flow plugins --plugin-dir ./bin
 $ flow validate --plugin-dir ./bin examples/plugins/slack/approval.yaml
 $ flow worker --plugin-dir ./bin --plugin slack \
+  --temporal-deployment-name flowstate --build-id "$(git rev-parse --short HEAD)" \
   --egress-policy examples/plugins/slack/egress-policy.yaml \
-  --task-policy /path/to/task-policy.yaml
+  --task-policy /path/to/task-policy.yaml \
+  --secret-env SLACK_BOT_TOKEN --auth-policy /path/to/auth-policy.yaml
 ```
 
-The operator must separately configure the `env:` secret provider to admit
-`SLACK_BOT_TOKEN` and task policy to admit `slack.post`. See
+`--secret-env SLACK_BOT_TOKEN` turns on the `env:` secret provider for the
+example's `${secret('env:SLACK_BOT_TOKEN')}`, read from the worker's own
+`FLOWSTATE_SECRET_SLACK_BOT_TOKEN`, and a worker holding a secret provider
+refuses to start without an `--auth-policy` whose `secrets:` section decides
+which workloads may read it. The task policy must admit `slack.post`. See
 [`examples/plugins/slack`](../../examples/plugins/slack) for the approval flow.

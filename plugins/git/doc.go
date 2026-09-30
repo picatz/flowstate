@@ -301,12 +301,16 @@
 // # Bounds this plugin cannot fully close, said plainly
 //
 // clone.go's egress policy bounds compressed bytes read from the transport,
-// the same way plugins/vcs's does. What it does not bound is decompressed
-// size - a small packfile that inflates to an enormous object graph
-// ("pack bomb") is a real class of attack against any git implementation
-// that reads a peer's pack data, and neither go-git nor this plugin puts a
-// hard ceiling on inflation ratio today. This is the same shape of gap
+// the same way plugins/vcs's does, and the storer a clone writes into
+// ([packBoundedStorer], packbound.go) bounds the total bytes a packfile
+// inflates to at maxInflatedBytes (512 MiB), so a small pack that expands to
+// an enormous object graph ("pack bomb") is refused once it passes that sum.
+// What it does not bound is one oversized object on its own: go-git inflates
+// an object before the storer sees it, so the object that crosses the total
+// is already in memory, bounded only by maxResponseBytes times DEFLATE's own
+// expansion ceiling, not by maxInflatedBytes (packbound.go's "The gap this
+// closes, and the one it does not"). Until that closes, point this plugin
+// only at remotes the deployment trusts. This is the same shape of gap
 // clone.go's vcs counterpart documents for shallow depth versus blob size -
-// named here rather than left for someone to discover, not solved by this
-// version.
+// named here rather than left for someone to discover.
 package main

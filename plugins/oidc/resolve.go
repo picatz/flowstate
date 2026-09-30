@@ -83,10 +83,11 @@ func resolveSecret(ctx context.Context, req sdk.SecretRequest) (sdk.SecretRespon
 			"the authorization server for %q returned no access token", truncate(name, 64))
 	}
 
-	// The lifetime the authorization server reported, so the engine caches this
-	// no longer than the issuer considers it valid. Nothing here caches a
-	// credential of its own: a second cache would be a second answer about when
-	// a token stops being usable.
+	// The lifetime the authorization server reported, so a caching store keeps
+	// this no longer than the issuer considers it valid (the stock worker's
+	// store caches nothing). Nothing here caches a credential of its own: a
+	// second cache would be a second answer about when a token stops being
+	// usable.
 	return sdk.SecretResponse{Value: []byte(token), ExpiresIn: lifetime(credential)}, nil
 }
 

@@ -67,10 +67,10 @@ type provider struct {
 	// deployment's.
 	Scopes []string `json:"scopes,omitempty" yaml:"scopes,omitempty"`
 
-	// MaxLifetime caps what this plugin will accept from the authorization
-	// server. A server reporting a longer lifetime has its answer shortened -
-	// which is a ceiling on caching, never a claim that the token stops working
-	// earlier.
+	// MaxLifetime is the longest lifetime this plugin will accept from the
+	// authorization server. A server reporting a longer expires_in, or none,
+	// is refused rather than shortened: the exchange fails and the resolution
+	// with it (auth's tokenResponse.credential).
 	MaxLifetime Duration `json:"max_lifetime,omitempty" yaml:"max_lifetime,omitempty"`
 
 	// Timeout bounds one exchange.

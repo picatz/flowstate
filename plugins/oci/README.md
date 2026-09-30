@@ -10,9 +10,10 @@ specification](https://github.com/opencontainers/distribution-spec/blob/main/spe
 over `net/http` and the SDK's governed client - no registry client library, no
 subprocess, and no dependency outside what the SDK already brings.
 
-An example that runs all three lives at
-[`examples/plugins/oci`](../../examples/plugins/oci); read that first if you
-want to see it work rather than read about it.
+Examples live at [`examples/plugins/oci`](../../examples/plugins/oci): a deploy
+gate over `oci.resolve` and `oci.referrers`, and an `oci.blob` read of a statement
+by its layer digest. Read that first if you want to see it work rather than read
+about it.
 
 ## Building
 
@@ -31,6 +32,14 @@ one resolves against `plugins/oci`.
 | `oci.resolve` | reads | yes | only for a private repository |
 | `oci.referrers` | reads | yes | only for a private repository |
 | `oci.blob` | reads | yes (the digest fixes the answer) | only for a private repository |
+
+Every task also takes `username` and `password` (see "Authentication"):
+
+| Task | Inputs | Outputs |
+| --- | --- | --- |
+| `oci.resolve` | `reference`, optional `platform` (`os/arch[/variant]`) | `reference` (digest-pinned), `digest`, `media_type`, `size`, `registry`, `repository`, `platform`, `platform_matched` |
+| `oci.referrers` | `reference` (digest-pinned), `artifact_type`, `limit` | `referrers` (maps of `digest`, `media_type`, `artifact_type`, `size`, `annotations`), `count`, `truncated` |
+| `oci.blob` | `reference` (`@` the blob's own digest), `max_bytes`, `parse_json` | `digest`, `size`, `content` (text, empty when not UTF-8), `json`, `media_type` |
 
 Every task is a read, which is why none of them can return
 `OutcomeUnknown`: a GET that failed halfway left nothing behind to reconcile, so
@@ -90,12 +99,19 @@ Every one of these is a limit on bytes another party controls:
 | --- | --- |
 | a reference, before parsing | 1 KiB |
 | a manifest or index | 4 MiB (the specification's own ceiling) |
-| a referrers index | 4 MiB |
+| a referrers index | 1,900,544 B |
 | a token endpoint's response | 64 KiB |
 | a resolved credential | 4 KiB |
 | referrers returned | 50 by default, 200 maximum |
 | annotations per descriptor | 32, each key 256 B and value 1 KiB |
-| a blob | 1 MiB by default, 8 MiB maximum |
+| a blob | 1 MiB by default; `max_bytes` up to 950,272 B |
+
+The referrers and blob limits are derived from the host's ceiling on one
+step's outputs, `MaxTaskOutputBytes` (2 MiB less a 64 KiB reserve,
+2,031,616 B), less a 128 KiB envelope: a referrers index gets all of what is
+left, and a blob half of it, because `parse_json` can carry the payload a
+second time. The 1 MiB default a call gets when it names no `max_bytes` is
+above that ceiling (#2158), so a call with `parse_json` should name one.
 
 A `limit` or `max_bytes` over the ceiling is **refused, never lowered**. A
 silently clamped limit would answer "two hundred attachments" for an image with
@@ -136,6 +152,11 @@ either as "no attestation" would fail open.
 - **Push, tag, copy, delete.** This is the read side, which is the side a
   decision is made from. A write task needs the unknown-outcome posture
   described above and a credential story with more than pull scope.
+- **Reading a manifest's content.** `oci.resolve` returns a manifest's digest,
+  media type, and size, not its layers, and `oci.blob` reads `/blobs/`, which is
+  not where a registry serves manifests. A referrer is a manifest, so a workflow
+  can see that an attestation is attached but cannot follow it to the statement
+  in its layers (#2170).
 - **Signature and attestation *verification*.** See above; it needs trust roots,
   which are operator configuration this plugin deliberately does not yet have.
 - **Pagination beyond the first page of referrers.** The `Link` header is read

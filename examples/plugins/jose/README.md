@@ -16,11 +16,24 @@ the second question by answering the first.
 
 ```console
 $ mkdir -p ./plugins
-$ go build -o ./plugins/flowstate-plugin-jose ./plugins/jose
-$ flow worker --plugin-dir ./plugins \
-    --plugin-env jose=FLOWSTATE_JOSE_TRUST=$PWD/examples/plugins/jose/trust-policy.yaml
+$ go -C plugins/jose build -o ../../plugins/flowstate-plugin-jose .
+$ flow worker --allow-unversioned-interpreter --plugin-dir ./plugins \
+    --plugin-env jose=FLOWSTATE_JOSE_TRUST=$PWD/examples/plugins/jose/trust-policy.yaml &
+$ flow server --insecure-no-auth --plugin-dir ./plugins &
 $ flow run examples/plugins/jose/workflow.yaml --input callback_token="$TOKEN"
 ```
+
+The server takes `--plugin-dir` too, because it checks each task the file names,
+and its `plugins:` block, against the plugins it launched itself.
+`--insecure-no-auth` makes this a rehearsal: every caller is anonymous, which is
+only right on a machine nobody else can reach.
+
+`flow run` refuses this file today (#1548): it checks the file against its own
+build's task registry, takes no `--plugin-dir`, and so reports `jose.verify` as
+a task nothing registered before the server sees it. Until that is fixed,
+`flow run local` with the worker's `--plugin-dir` and `--plugin-env` runs it in
+one process, and an agent host running `flow mcp --plugin-dir ./plugins`
+submits it to this server with `flowstate_compile` then `flowstate_run`.
 
 ## The two test cases
 
