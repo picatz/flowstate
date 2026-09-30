@@ -249,10 +249,12 @@ type executor struct {
 	// needed here either.
 	debug *debugControl
 
-	// debugSegments are the calls this executor runs inside, outermost first,
-	// which is how a durable debugger addresses an occurrence: the durable
+	// debugSegments are the calls this executor runs inside, and the
+	// iterations, branches and arms of the bodies it runs in, outermost first,
+	// which is how a durable debugger addresses an occurrence. The durable
 	// driver holds only where a position is representable, the top level of
-	// the run and of a callee, so calls are the only nesting a hold can be in.
+	// the run and of a callee, so a hold is in calls alone; the rest name where
+	// a step in a body ran, for what a session is told of it.
 	debugSegments []*v1.DebugSegment
 
 	// progress is where the run has got to, for the query handler to answer from.
@@ -519,6 +521,10 @@ func (e *executor) runNodes(nodes []*v1.Node, depth, susp int) (err error) {
 		run, cost, err := v1.EvalConditionInScopeWithCost(evalContext(), node.GetCondition(), e.scope)
 		e.chargeWorkflowCost(cost)
 		if err != nil {
+			// The step never ran, so this is the only account an attached
+			// session gets of why it stopped here (#2124).
+			e.observeForDebug(v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_FAILED, node, err)
+
 			return stepFailed(err, "step %q", node.GetId())
 		}
 		if !run {
@@ -563,16 +569,22 @@ func (e *executor) runNodes(nodes []*v1.Node, depth, susp int) (err error) {
 		// The step boundary a durable debug lease holds the run at (#928 stage
 		// 2): the same point the local driver offers [v1.Debugger] — after the
 		// condition decided this step runs, before any of its work, an
-		// `async:` step included — and only at `susp == 0`, the run's own
-		// single representable position. If earlier async work is outstanding,
-		// an ask first joins it in written order: publishing the parent as held
-		// while its child continues making progress would not be a hold at all.
-		// See debuglease.go for the asymmetry with the local driver.
+		// `async:` step included — and only where the run has one position: at
+		// `susp == 0`, the run's own level, and, once the run holds in bodies
+		// ([holdInBodiesChange]), in a `loop:`, a `switch:` arm and a
+		// `for_each:` running one iteration at a time ([executor.holdsInBody]).
+		// A step being resumed into that was offered before the seam is not
+		// offered again ([executor.reoffers]). If earlier async work this
+		// scope started is outstanding, an ask first joins it in written
+		// order: publishing the parent as held while its child continues
+		// making progress would not be a hold at all. See debuglease.go for the
+		// asymmetry with the local driver, which also stops in a `parallel:`
+		// branch.
 		//
 		// A run nobody is debugging pays one empty-channel inspection here,
 		// which issues no command and writes no history. That is the whole cost
 		// of the feature being off, and why the check lives at the boundary.
-		if susp == 0 {
+		if (susp == 0 || e.holdsInBody()) && !e.reoffers(descend, depth) {
 			if e.debugAsksWaiting() {
 				for len(started) > 0 {
 					joined := started[0]
@@ -893,6 +905,13 @@ func (e *executor) recordOutcome(node *v1.Node, err error) error {
 
 	return nil
 }
+
+// switchArmResumeChange is the [workflow.GetVersion] changeID guarding a
+// `switch:` arm starting at its first step after a continuation taken inside a
+// callee. An engine before it started the arm at the callee's next-step index,
+// and a history it recorded has the arm's earlier steps unrun; replaying that
+// into an arm that runs them would issue commands the history lacks.
+const switchArmResumeChange = "engine.switchArmStartsAtItsFirstStep"
 
 // runNodeWithVars executes a node with its own `vars:` block bound.
 //
@@ -1268,6 +1287,28 @@ func (e *executor) runSwitch(node *v1.Node, sw *v1.Switch, depth, susp int) erro
 	}
 	if err := v1.CheckAtomicBlockBodyActivities(body); err != nil {
 		return nodeFailed(&v1.SwitchBodyError{Err: err, Selection: outputs})
+	}
+
+	outer := e.debugSegments
+	e.debugSegments = e.debugSegmentsUnder(v1.DebugSegmentKind_DEBUG_SEGMENT_KIND_CASE, node, v1.SwitchArmIndex(sw, body))
+	defer func() { e.debugSegments = outer }()
+
+	// An arm runs on this executor, one level down, and this executor may still
+	// hold the position a continuation was taken at inside a callee: frames
+	// [call, {next step of the callee}]. Read as the arm's own, that starts the
+	// arm at the callee's step index and skips the ones before it. An arm is
+	// never resumed into (a run does not continue as new inside one), so it
+	// starts at its first step. Asked only where a saved position lies below
+	// the arm, so a run that never continued as new inside a container records
+	// no marker. That is any container, not only a call: a finished loop's
+	// frame reads as zero and starts the arm correctly, but clearing it too is
+	// the one rule that cannot hand a stale frame to a step entered at the
+	// arm's start. A history recorded before the marker started the arm where
+	// the callee stopped, and replays that way.
+	if depth+1 < len(e.resume) && workflow.GetVersion(e.ctx, switchArmResumeChange, workflow.DefaultVersion, 1) != workflow.DefaultVersion {
+		resume := e.resume
+		e.resume = nil
+		defer func() { e.resume = resume }()
 	}
 
 	if err := e.runNodes(body, depth+1, susp+1); err != nil {
@@ -1770,7 +1811,7 @@ func (e *executor) runForEach(node *v1.Node, loop *v1.ForEach, depth, susp int, 
 	resultsBytes := v1.LoopResultsSize(results)
 
 	if loop.GetMaxParallel() > 1 {
-		iterations, err := e.runIterationsConcurrently(e.within(node), loop, name, items[startItem:], inner, innerSusp)
+		iterations, err := e.runIterationsConcurrently(node, startItem, loop, name, items[startItem:], inner, innerSusp)
 		if err != nil {
 			return err
 		}
@@ -1800,7 +1841,7 @@ func (e *executor) runForEach(node *v1.Node, loop *v1.ForEach, depth, susp int, 
 	for i := startItem; i < len(items); i++ {
 		e.setLoopFrame(inner, i, results)
 
-		iteration, err := e.runIteration(e.within(node), loop, name, items[i], inner, innerSusp, i == startItem && descend)
+		iteration, err := e.runIteration(e.within(node), e.debugSegmentsUnder(v1.DebugSegmentKind_DEBUG_SEGMENT_KIND_ITERATION, node, i), loop, name, items[i], inner, innerSusp, i == startItem && descend)
 		if err != nil {
 			if errors.Is(err, errContinueAsNew) {
 				return err
@@ -1942,7 +1983,7 @@ func (e *executor) runLoop(node *v1.Node, loop *v1.Loop, depth, susp int, descen
 		// recently committed to resuming from.
 		e.progress.setLoopState(node.GetId(), state)
 
-		iteration, stop, next, err := e.runLoopIteration(e.within(node), loop, name, state, inner, innerSusp, i == startItem && descend)
+		iteration, stop, next, err := e.runLoopIteration(e.within(node), e.debugSegmentsUnder(v1.DebugSegmentKind_DEBUG_SEGMENT_KIND_ITERATION, node, i), loop, name, state, inner, innerSusp, i == startItem && descend)
 		if err != nil {
 			if errors.Is(err, errContinueAsNew) {
 				return err
@@ -1993,7 +2034,7 @@ func (e *executor) runLoop(node *v1.Node, loop *v1.Loop, depth, susp int, descen
 // its state holds next. The until and update evaluations happen in workflow code,
 // which invariant 4 permits for a loop's own control expressions exactly as it does
 // for a `for_each`'s `items:` — the durable driver already evaluates those inline.
-func (e *executor) runLoopIteration(body []string, loop *v1.Loop, stateName string, state *v1.Value, depth, susp int, descend bool) (*v1.Workflow_StepOutputs, bool, *v1.Value, error) {
+func (e *executor) runLoopIteration(body []string, segments []*v1.DebugSegment, loop *v1.Loop, stateName string, state *v1.Value, depth, susp int, descend bool) (*v1.Workflow_StepOutputs, bool, *v1.Value, error) {
 	// Each iteration starts from the outputs visible before the loop, so an iteration
 	// cannot observe a previous one — the only thread between them is the carried
 	// state.
@@ -2040,6 +2081,8 @@ func (e *executor) runLoopIteration(body []string, loop *v1.Loop, stateName stri
 		undoScope: e.undoScope.IntoLoop(),
 
 		callDepth: e.callDepth,
+
+		debugSegments: segments,
 
 		// The iteration's own record of which body steps failed and were
 		// tolerated — what the attach below keys on.
@@ -2089,8 +2132,56 @@ func (e *executor) runLoopIteration(body []string, loop *v1.Loop, stateName stri
 	return v1.AttachIterationBinding(bodyOutputs(loop.GetBody(), iterationOutputs), state, nested.tolerated), false, next, nil
 }
 
+// reoffers reports that the step this scope is resuming into was offered to a
+// debug session by the segment before it, so this one must not offer it again.
+// A continuation taken inside a container — a loop between iterations, a call
+// between its steps — saves a position below the container's own, and resuming
+// enters the container's step afresh on the way down to it. Its boundary was
+// already offered, its asks read and its hold ended; offering it again would
+// stop a session stepping through the run at the same step twice, once per
+// seam. A step resumed into with nothing below it — the next one after a
+// continuation between steps — has not been offered and is.
+//
+// Behind [holdInBodiesChange], as the boundary itself is: a history recorded
+// before it offered the step again, and replaying it into no offer would read
+// the ask channel at a different point.
+func (e *executor) reoffers(descend bool, depth int) bool {
+	return descend && e.debug != nil && e.debug.bodyHolds && len(e.resume) > depth+1
+}
+
+// holdsInBody reports that the step boundary this executor is at, below the
+// run's own level, is one a debug session holds the run at: the run has one
+// position here ([executor.progress] is nil exactly where it has several), and
+// the run holds in bodies ([holdInBodiesChange]). It is the runtime half of
+// [v1.DebugStaticSite.Serial], which arms the breakpoints that can fire here,
+// and the two are kept the same on purpose: a breakpoint armed at a site the
+// run never offers would report a stop that does not come.
+func (e *executor) holdsInBody() bool {
+	return e.progress != nil && e.debug != nil && e.debug.bodyHolds
+}
+
+// debugSegmentsUnder is the segments a step inside node's body runs under:
+// this executor's, then one naming the iteration, branch or arm of node it is
+// in, as the local driver's segments name it ([v1.DebugSegment]). The body's
+// steps take their address from these, so an observation of one reads
+// `each[1]/touch` and not `touch`. A run that declares no `debug:` stanza has
+// no one to read them, so nothing is added, which keeps its per-iteration cost
+// what it was.
+func (e *executor) debugSegmentsUnder(kind v1.DebugSegmentKind, node *v1.Node, index int) []*v1.DebugSegment {
+	if !e.debug.enabled() || len(e.debugSegments) >= v1.MaxDebugSegments {
+		return e.debugSegments
+	}
+
+	return append(slices.Clip(e.debugSegments), &v1.DebugSegment{
+		Kind:     kind,
+		StepId:   node.GetId(),
+		Workflow: e.curSpec.GetName(),
+		Index:    int32(index),
+	})
+}
+
 // runIteration executes the loop body once against its own output scope.
-func (e *executor) runIteration(body []string, loop *v1.ForEach, iterator string, item *v1.Value, depth, susp int, descend bool) (*v1.Workflow_StepOutputs, error) {
+func (e *executor) runIteration(body []string, segments []*v1.DebugSegment, loop *v1.ForEach, iterator string, item *v1.Value, depth, susp int, descend bool) (*v1.Workflow_StepOutputs, error) {
 	// Each iteration starts from the outputs visible before the loop, so an
 	// iteration cannot observe a previous one — which keeps its behavior
 	// independent of how many ran before it, and identical whether iterations run
@@ -2132,6 +2223,8 @@ func (e *executor) runIteration(body []string, loop *v1.ForEach, iterator string
 
 		callDepth: e.callDepth,
 
+		debugSegments: segments,
+
 		// The iteration's own record of which body steps failed and were
 		// tolerated — what the attach below keys on.
 		tolerated: map[string]struct{}{},
@@ -2158,7 +2251,8 @@ func (e *executor) runIteration(body []string, loop *v1.ForEach, iterator string
 //
 // Results keep the order of the input list rather than the order iterations
 // finished, so a loop's results do not depend on scheduling.
-func (e *executor) runIterationsConcurrently(body []string, loop *v1.ForEach, iterator string, items []*v1.Value, depth, susp int) ([]*v1.Workflow_StepOutputs, error) {
+func (e *executor) runIterationsConcurrently(node *v1.Node, first int, loop *v1.ForEach, iterator string, items []*v1.Value, depth, susp int) ([]*v1.Workflow_StepOutputs, error) {
+	body := e.within(node)
 	limit := min(int(loop.GetMaxParallel()), len(items))
 
 	results := make([]*v1.Workflow_StepOutputs, len(items))
@@ -2208,6 +2302,7 @@ func (e *executor) runIterationsConcurrently(body []string, loop *v1.ForEach, it
 					undo:                   iterationUndo,
 					undoScope:              v1.UndoScopeConcurrent,
 					callDepth:              e.callDepth,
+					debugSegments:          e.debugSegmentsUnder(v1.DebugSegmentKind_DEBUG_SEGMENT_KIND_ITERATION, node, first+i),
 
 					// Deliberately not carried. Iterations run at once, so a
 					// worker writing its own step in would be reporting a
@@ -2325,6 +2420,7 @@ func (e *executor) runParallel(node *v1.Node, parallel *v1.Parallel, depth, susp
 				undo:                   branchUndo,
 				undoScope:              v1.UndoScopeConcurrent,
 				callDepth:              e.callDepth,
+				debugSegments:          e.debugSegmentsUnder(v1.DebugSegmentKind_DEBUG_SEGMENT_KIND_BRANCH, node, i),
 
 				// Not carried, for the same reason a concurrent iteration does
 				// not carry it: no one branch is the run's position.

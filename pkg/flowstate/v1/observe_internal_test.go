@@ -1,6 +1,9 @@
 package flowstatev1
 
 import (
+	"context"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -47,7 +50,7 @@ func TestAPanickingObserverDoesNotTakeTheRunWithIt(t *testing.T) {
 
 	require.NotPanics(t, func() {
 		observeStepFinished(ctx, "build", nil, nil, false, SensitiveValues{})
-		observeStepSkipped(ctx, "prod_gate")
+		observeStepSkipped(ctx, &Node{Id: "prod_gate"})
 		observeWaitStarted(ctx, "approval", "ship-approved", time.Hour, true)
 	})
 
@@ -99,4 +102,167 @@ func (withholdingCounter) StepFinished(string, *Node_Outputs, error, bool) {}
 func (withholdingCounter) StepSkipped(string)                              {}
 func (withholdingCounter) WaitStarted(string, string, time.Duration, bool) {}
 func (withholdingCounter) StepFinishedWithholding(string, *Node_Outputs, error, bool, SensitiveValues) {
+}
+
+// TestASkipQuotesAWholeConditionOrNone: the account quotes the whole `if:` it
+// can render, leaving the bound to each driver after it withholds, and falls
+// back to naming the skip for a condition it cannot render.
+func TestASkipQuotesAWholeConditionOrNone(t *testing.T) {
+	t.Parallel()
+
+	long := NewExpr(`"` + strings.Repeat("é", 1000) + `" == ""`)
+	text := SkippedText("gate", long, nil)
+	require.True(t, strings.HasPrefix(text, "gate skipped: `if: \""), text)
+	require.Equal(t, 1000, strings.Count(text, "é"), "the quote was cut before a driver could withhold it")
+
+	require.Equal(t, "gate skipped (`if:` was false)", SkippedText("gate", NewLiteral("no"), nil),
+		"a literal that is not a boolean has no condition to quote")
+	require.Equal(t, "gate skipped (`if:` was false)", SkippedText("gate", nil, nil))
+}
+
+// TestASkipWithholdsAConstantByValue: a constant the predicate withholds is
+// written as the marker before the condition is rendered, wherever it is, a
+// macro's body and a map's key included, and whatever the renderer would have
+// spelled it as: a bytes literal is written in octal escapes, which no match
+// for its text finds (Codex, #2227). The run's own condition is left as it was.
+func TestASkipWithholdsAConstantByValue(t *testing.T) {
+	t.Parallel()
+
+	secret := []byte("hunter2")
+	condition := NewExpr(`inputs.token != b"hunter2" && ["a"].exists(x, x == "hunter2") && {"hunter2": 1}.size() == 2`)
+	withheld := func(value any) bool {
+		switch v := value.(type) {
+		case []byte:
+			return string(v) == string(secret)
+		case string:
+			return v == string(secret)
+		}
+		return false
+	}
+
+	text := SkippedText("gate", condition, withheld)
+	require.NotContains(t, text, "hunter2")
+	require.NotContains(t, text, `\150`, "the bytes literal was written in octal, so this proves nothing")
+	require.Equal(t, 3, strings.Count(text, `"`+SensitiveMarker+`"`), text)
+	require.Contains(t, SkippedText("gate", condition, nil), `b"\150`, "the renderer no longer writes bytes in octal, so this proves nothing")
+	require.Contains(t, SkippedText("gate", condition, nil), `"hunter2"`, "the run's own condition was edited")
+
+	// A value is asked about as every type it could be held as: an int in a
+	// double literal, which renders in exponent form, and a string in a bytes
+	// literal, which renders in octal.
+	pin := func(value any) bool { return value == int64(918273645) }
+	require.Contains(t, SkippedText("gate", NewExpr(`inputs.x != 918273645.0`), nil), "e+08", "the renderer no longer writes this double in exponent form, so this proves nothing")
+	require.Equal(t, "gate skipped: `if: inputs.x != \"[redacted]\"` was false", SkippedText("gate", NewExpr(`inputs.x != 918273645.0`), pin))
+	require.Equal(t, "gate skipped: `if: inputs.x != 9.182736455e+08` was false", SkippedText("gate", NewExpr(`inputs.x != 918273645.5`), pin),
+		"a double that is no int was taken for one")
+	word := func(value any) bool { return value == "hunter2" }
+	require.Equal(t, "gate skipped: `if: inputs.x != \"[redacted]\"` was false", SkippedText("gate", NewExpr(`inputs.x != b"hunter2"`), word))
+
+	// An unsigned value past the signed range, written as a double, and a
+	// null leaf, which a sensitive structure's set holds as nil.
+	top := func(value any) bool { return value == uint64(1<<63) }
+	require.Equal(t, "gate skipped: `if: double(inputs.x) != \"[redacted]\"` was false",
+		SkippedText("gate", NewExpr(`double(inputs.x) != 9223372036854775808.0`), top))
+	null := func(value any) bool { return value == nil }
+	require.Equal(t, "gate skipped: `if: inputs.x != \"[redacted]\"` was false", SkippedText("gate", NewExpr(`inputs.x != null`), null))
+	require.Equal(t, "gate skipped: `if: inputs.x != null` was false", SkippedText("gate", NewExpr(`inputs.x != null`), nil),
+		"the renderer no longer writes null, so this proves nothing")
+
+	// A field name is no constant, but a sensitive structure's keys are what
+	// its set withholds, whether selected or written in a message literal.
+	key := func(value any) bool { return value == "string_value" }
+	for _, source := range []string{`inputs.x.string_value != "a"`, `google.protobuf.Value{string_value: "a"} != inputs.x`} {
+		rendered := SkippedText("gate", NewExpr(source), key)
+		require.NotContains(t, rendered, "string_value", source)
+		require.Contains(t, rendered, SensitiveMarker, source)
+	}
+}
+
+// guardOnlyObserver is an embedder's observer that implements the guard
+// interface and nothing else that withholds.
+type guardOnlyObserver struct {
+	mu       sync.Mutex
+	withheld []SensitiveValues
+}
+
+func (*guardOnlyObserver) StepFinished(string, *Node_Outputs, error, bool)    {}
+func (*guardOnlyObserver) StepSkipped(string)                                 {}
+func (*guardOnlyObserver) WaitStarted(string, string, time.Duration, bool)    {}
+func (*guardOnlyObserver) GuardFailed(string, string, error, SensitiveValues) {}
+func (o *guardOnlyObserver) StepSkippedBy(_, _ string, _ *Value, withhold SensitiveValues) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.withheld = append(o.withheld, withhold)
+}
+
+// TestAGuardOnlyObserverIsToldWhatToWithhold: an observer that implements
+// only [GuardRunObserver] is still one that renders, so the run gathers the
+// declared-sensitive values for it and a skip inside a callee hands it the
+// callee's (Codex, Copilot, #2227).
+func TestAGuardOnlyObserverIsToldWhatToWithhold(t *testing.T) {
+	t.Parallel()
+
+	const secret = "hunter2-guard-only"
+	workflow := &Workflow{
+		Name:    "guard-only",
+		Profile: CurrentProfile,
+		Steps: []*Node{{Id: "nested", Kind: &Node_Call{Call: &Call{
+			Workflow: &Workflow{
+				Name:           "child",
+				Profile:        CurrentProfile,
+				DeclaredInputs: []*InputDeclaration{{Name: "api_key", Type: InputDeclaration_TYPE_STRING, Sensitive: true}},
+				Steps: []*Node{{
+					Id:        "rotate",
+					Condition: NewExpr(`inputs.api_key != "` + secret + `"`),
+					Kind:      &Node_Task{Task: &Task{Name: "log", Inputs: map[string]*Value{"message": NewLiteral("never")}}},
+				}},
+			},
+			Arguments: map[string]*Value{"api_key": NewLiteral(secret)},
+		}}}},
+	}
+
+	observer := &guardOnlyObserver{}
+	_, err := RunWithInputs(NewContextWithRunObserver(t.Context(), observer), workflow, nil)
+	require.NoError(t, err)
+	require.Len(t, observer.withheld, 1, "the skip was not reported, so this proves nothing")
+	require.True(t, observer.withheld[0].IsSensitive(secret), "a guard-only observer was not told what the callee withholds")
+}
+
+// placedObserver is a PlacedRunObserver that keeps where each step finished.
+type placedObserver struct {
+	got map[string]string
+}
+
+func (*placedObserver) StepFinished(string, *Node_Outputs, error, bool) {}
+func (*placedObserver) StepSkipped(string)                              {}
+func (*placedObserver) WaitStarted(string, string, time.Duration, bool) {}
+func (o *placedObserver) StepFinishedWithholding(id string, _ *Node_Outputs, _ error, _ bool, _ SensitiveValues) {
+	o.got[id] = "unplaced"
+}
+
+func (o *placedObserver) StepFinishedAt(id, address string, _ *Node_Outputs, _ error, _ bool, _ SensitiveValues) {
+	o.got[id] = address
+}
+
+// stillDebugger is a Debugger that holds nothing; installing one is what makes
+// the run record the segments an address is written from.
+type stillDebugger struct{}
+
+func (stillDebugger) BeforeStep(context.Context, *Node, *Scope) error { return nil }
+
+// A PlacedRunObserver is told the address of the step from the context it ran
+// in, in place of the callback that carries none. It is the run that knows
+// which iteration finished, not an observer counting arrivals.
+func TestAPlacedObserverIsToldWhereAStepFinished(t *testing.T) {
+	t.Parallel()
+
+	observer := &placedObserver{got: map[string]string{}}
+	ctx := NewContextWithDebugger(t.Context(), stillDebugger{})
+	ctx = NewContextWithRunObserver(ctx, observer)
+	ctx = contextWithSegment(ctx, DebugSegmentKind_DEBUG_SEGMENT_KIND_ITERATION, "each", 1)
+
+	observeStepFinished(ctx, "touch", &Node_Outputs{}, nil, false, SensitiveValues{})
+
+	require.Equal(t, map[string]string{"touch": "each[1]/touch"}, observer.got,
+		"the observer was not told the iteration the step finished in, or was called without it")
 }

@@ -266,8 +266,9 @@ func reportUnansweredGates(out io.Writer, workflow *v1.Workflow, flags []string)
 
 // parseSignalFlag reads one --signal name=json flag.
 //
-// The payload becomes the waiting step's outputs, so the JSON keys are what a later
-// step reads as ${approval.approved}. Reporting a malformed one names the flag and
+// The payload becomes the waiting step's `payload` output ([v1.SignalOutputs]), so
+// the JSON keys are what a later step reads as ${steps.approval.payload.approved}.
+// Reporting a malformed one names the flag and
 // what was wrong with it, because a quoting mistake in a shell is the most likely
 // way to get here.
 func parseSignalFlag(flag string) (string, *v1.Node_Outputs, error) {
@@ -290,7 +291,8 @@ func parseSignalFlag(flag string) (string, *v1.Node_Outputs, error) {
 	return name, payload, nil
 }
 
-// parseSignalPayload turns a JSON object into a waiting step's outputs.
+// parseSignalPayload turns a JSON object into the values a waiting step exposes
+// under its `payload` output, which [v1.SignalOutputs] nests them in.
 //
 // Shared by the local flag and by `flow signal`, so that a payload means exactly
 // the same thing whichever driver receives it — a rehearsal that reads its

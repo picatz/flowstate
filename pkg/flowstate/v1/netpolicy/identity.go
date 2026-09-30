@@ -4,12 +4,12 @@ import "context"
 
 // Identity is the workload identity an egress rule reads as `identity.<field>`.
 //
-// It is the same identity the other two operator-authored policy surfaces reason
-// over — secret access (`auth`'s `workload`) and task shape (`v1`'s task-policy
-// `identity`) — so a deployment can gate all three on one notion of who is
-// running. The value comes from the run's single attested WorkloadIdentity; a
-// caller renders it into this shape from that one source rather than deriving it a
-// second way, which is what keeps the three surfaces from disagreeing about who is
+// It is the same identity the other operator-authored policy surfaces reason
+// over — secret access and credential assumption (`auth`'s `identity`) and task
+// shape (`v1`'s task-policy `identity`) — so a deployment can gate all of them on
+// one notion of who is running. The value comes from the run's single attested
+// WorkloadIdentity; a caller renders it into this shape from that one source
+// rather than deriving it a second way, which is what keeps the surfaces from disagreeing about who is
 // calling. netpolicy declares no dependency on the identity's origin, so the
 // rendering — and the single source it reads — stay outside this package.
 //

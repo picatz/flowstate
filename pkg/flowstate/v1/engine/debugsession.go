@@ -128,17 +128,12 @@ func (e *executor) debugOccurrence(node *v1.Node) *v1.DebugOccurrence {
 	return occurrence
 }
 
-// callDepthOf counts the calls an occurrence is nested in, which is the
-// nesting a durable step over or out measures.
-func callDepthOf(occurrence *v1.DebugOccurrence) int {
-	depth := 0
-	for _, segment := range occurrence.GetSegments() {
-		if segment.GetKind() == v1.DebugSegmentKind_DEBUG_SEGMENT_KIND_CALL {
-			depth++
-		}
-	}
-
-	return depth
+// stepDepthOf is how deeply an occurrence is nested: the calls and the loop
+// iterations, branches and arms it sits in, which is the nesting a durable step
+// over or out measures. The local driver measures the same, so `next` from a
+// loop runs the loop whole on both.
+func stepDepthOf(occurrence *v1.DebugOccurrence) int {
+	return len(occurrence.GetSegments())
 }
 
 // receipt records one command's outcome, bounded, and returns it.
@@ -283,7 +278,7 @@ func (e *executor) applyTypedAsk(ask *v1.DebugAsk, parseErr error, sender *v1.Si
 				// differs, so a history that applied such a resume replays
 				// applying it.
 				sites, truncated := e.debugStaticSites()
-				_, why := durableSites(target, ask.Until, e.spec, sites, truncated, "run until")
+				_, why := durableSites(target, ask.Until, e.spec, sites, truncated, d.bodyHolds, "run until")
 				if why != "" && workflow.GetVersion(e.ctx, untilRefusalChange, workflow.DefaultVersion, 1) != workflow.DefaultVersion {
 					d.receipt(ask.Request, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_REFUSED, why)
 
@@ -292,7 +287,7 @@ func (e *executor) applyTypedAsk(ask *v1.DebugAsk, parseErr error, sender *v1.Si
 			}
 			d.carry.Next = ask.Action
 			d.carry.Until = ask.Until
-			d.carry.StepDepth = int32(callDepthOf(d.held.occurrence))
+			d.carry.StepDepth = int32(stepDepthOf(d.held.occurrence))
 			d.carry.Revision++
 			d.untilSensitive = d.sensitiveAt(d.held.spec, d.held.scope, d.held.callers)
 			d.untilSensitiveKnown = true
@@ -365,10 +360,15 @@ func debugBreakpointDefined(bp *v1.DebugBreakpoint, i int) *v1.DebugBreakpointSt
 	return state
 }
 
-// durablyHeld reports whether the durable driver holds at site: at the top
-// level of the run or of a called workflow, where a run has one position. Every
-// other container runs its body at `susp > 0` (see debuglease.go).
-func durablyHeld(site v1.DebugStaticSite) bool {
+// durablyHeld reports whether the durable driver holds at site. Without
+// [holdInBodiesChange] that is the top level of the run and of a called
+// workflow, where a run has one position; every other container ran its body
+// at `susp > 0` (see debuglease.go). With it, any site with one position:
+// [v1.DebugStaticSite.Serial].
+func durablyHeld(site v1.DebugStaticSite, bodies bool) bool {
+	if bodies {
+		return site.Serial
+	}
 	for _, segment := range site.Chain {
 		if segment.GetKind() != v1.DebugSegmentKind_DEBUG_SEGMENT_KIND_CALL {
 			return false
@@ -377,6 +377,14 @@ func durablyHeld(site v1.DebugStaticSite) bool {
 
 	return true
 }
+
+// holdInBodiesChange is the [workflow.GetVersion] changeID guarding holds
+// inside a `loop:`, a `switch:` arm and a `for_each:` that runs one iteration
+// at a time. Each such boundary reads the debug ask channel, and a history
+// recorded without them left those signals unread until the next top-level
+// boundary; replaying it into a read at the body boundary would consume a
+// signal at a different point, which is a nondeterminism error.
+const holdInBodiesChange = "engine.debug.holdInBodies"
 
 // untilRefusalChange is the [workflow.GetVersion] changeID guarding the
 // refusal of a durable `until` whose target the run can never stop at. An
@@ -419,8 +427,9 @@ const pauseReceiptsChange = "engine.debug.receiptEveryPause"
 
 // durableSites resolves target to the sites the durable driver can hold at,
 // or says why there are none: no site matches it, or every one it matches is
-// inside a loop body, a parallel branch or a switch arm, which is never an
-// arrival here. verb is how the refusal tells the reader to name the
+// where the run is in several places at once (a `parallel:` branch or a
+// concurrent `for_each:`; before [holdInBodiesChange], any body), which is
+// never an arrival here. verb is how the refusal tells the reader to name the
 // enclosing step instead. Breakpoints and `until` both ask this, so a target
 // one refuses the other refuses in the same words.
 //
@@ -430,13 +439,22 @@ const pauseReceiptsChange = "engine.debug.receiptEveryPause"
 // ([v1.DebugTarget.DeclaredOutsideBodiesIn]) is kept, with only the sites
 // enumerated before the cut listed — none, when its only match lies past it —
 // and any other is refused as the complete enumeration would refuse it.
-func durableSites(target v1.DebugTarget, text string, spec *v1.Workflow, sites []v1.DebugStaticSite, truncated bool, verb string) ([]v1.DebugStaticSite, string) {
+func durableSites(target v1.DebugTarget, text string, spec *v1.Workflow, sites []v1.DebugStaticSite, truncated, bodies bool, verb string) ([]v1.DebugStaticSite, string) {
 	resolved := target.Resolve(sites)
-	held := slices.DeleteFunc(slices.Clone(resolved), func(site v1.DebugStaticSite) bool { return !durablyHeld(site) })
+	held := slices.DeleteFunc(slices.Clone(resolved), func(site v1.DebugStaticSite) bool { return !durablyHeld(site, bodies) })
+	declaredHeld := target.DeclaredOutsideBodiesIn
+	if bodies {
+		declaredHeld = target.DeclaredInSerialBodiesIn
+	}
 	switch {
-	case len(held) > 0 || truncated && target.DeclaredOutsideBodiesIn(spec):
+	case len(held) > 0 || truncated && declaredHeld(spec):
 		return held, ""
 	case len(resolved) > 0 || truncated && target.DeclaredIn(spec):
+		if bodies {
+			return nil, fmt.Sprintf("%q is inside a parallel branch or a for_each running several iterations at once, "+
+				"where a durable run is in several places and never holds; %s the enclosing step instead", text, verb)
+		}
+
 		return nil, fmt.Sprintf("%q is inside a loop body, a parallel branch or a switch arm, which a durable run "+
 			"executes as a unit and never holds in; %s the enclosing step instead", text, verb)
 	default:
@@ -497,7 +515,7 @@ func (e *executor) parseDebugBreakpoints() {
 			// could never match an arrival, which is only ever at a site
 			// the complete enumeration calls holdable, so a history that
 			// armed it recorded nothing it did.
-			resolved, why := durableSites(target, bp.GetStep(), e.spec, sites, truncated, "break at")
+			resolved, why := durableSites(target, bp.GetStep(), e.spec, sites, truncated, d.bodyHolds, "break at")
 			// Past a truncated enumeration a target matching no site before
 			// the cut, declared where a durable run holds, is armed. An
 			// engine before [truncatedArmChange] refused it, as matching
@@ -679,7 +697,7 @@ func (e *executor) typedStop(occurrence *v1.DebugOccurrence) (v1.DebugStopReason
 		return v1.DebugStopReason_DEBUG_STOP_REASON_PAUSE, nil
 	}
 
-	depth := callDepthOf(occurrence)
+	depth := stepDepthOf(occurrence)
 	switch d.carry.GetNext() {
 	case v1.DebugResumeAction_DEBUG_RESUME_ACTION_STEP_IN:
 		return v1.DebugStopReason_DEBUG_STOP_REASON_STEP, nil
@@ -862,8 +880,10 @@ func (e *executor) debugArgumentsSensitive(callee *v1.Workflow, arguments map[st
 }
 
 // observeForDebug records one step outcome for an attached session's
-// observations: the step and what became of it, never its values. failure is
-// the step's error, for the kinds that report one.
+// observations: the step and what became of it. A step that finished carries
+// the outputs it produced, withheld as a hold at that position withholds
+// them; the other kinds carry no values. failure is the step's error, for the
+// kinds that report one.
 func (e *executor) observeForDebug(kind v1.DebugObservationKind, node *v1.Node, failure error) {
 	d := e.debug
 	if !d.attached() {
@@ -877,9 +897,41 @@ func (e *executor) observeForDebug(kind v1.DebugObservationKind, node *v1.Node, 
 	text := node.GetId()
 	switch kind {
 	case v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_FINISHED:
-		text += " finished"
+		// The sentence the local session gives ([flowdebug.FinishedText]),
+		// with the outputs the step just recorded, withheld by value and by
+		// text before the account is bounded, as a hold's inspection is.
+		sensitive := d.sensitiveAt(e.curSpec, e.scope, e.positionSensitive())
+		var (
+			redactText  func(string) string
+			redactValue func(any) any
+		)
+		if !sensitive.Empty() {
+			redactText = func(text string) string { return sensitive.RedactText(text, v1.SensitiveMarker) }
+			redactValue = func(native any) any {
+				if sensitive.WithholdAll() {
+					return v1.SensitiveMarker
+				}
+
+				return sensitive.RedactTree(native)
+			}
+		}
+		text += " " + flowdebug.FinishedText(e.scope.GetOutputs().GetStepValues()[node.GetId()], redactText, redactValue)
 	case v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_SKIPPED:
-		text += " skipped (`if:` was false)"
+		// A constant withheld by value before the condition is written, and
+		// the sentence by text below, as the local session does.
+		sensitive := d.sensitiveAt(e.curSpec, e.scope, e.positionSensitive())
+		text = v1.SkippedText(node.GetId(), node.GetCondition(), func(value any) bool {
+			if sensitive.WithholdAll() || sensitive.IsSensitive(value) {
+				return true
+			}
+			// A string's own text, before the renderer escapes it, so a
+			// sensitive value it merely contains is found too (Copilot,
+			// #2227). A bytes literal is asked about as its text as well
+			// ([v1.SkippedText]).
+			text, ok := value.(string)
+
+			return ok && sensitive.RedactText(text, v1.SensitiveMarker) != text
+		})
 	case v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_FAILED:
 		text += " failed: " + detail
 	case v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_TOLERATED:
@@ -975,7 +1027,7 @@ func (e *executor) debugPausePending(request string) {
 // pausePending takes a pause request to receipt when the run holds or
 // completes ([debugControl.pendingPauses]), or refuses it at once past
 // [v1.MaxDebugAsksPerBoundary] waiting: a run inside a body it cannot hold in
-// applies asks at boundaries it does not hold at, and repeated pauses must
+// (a parallel branch) applies asks at boundaries it does not hold at, and repeated pauses must
 // not grow it without limit (Codex, #2220). A retry of a request already
 // waiting is the same ask, taken once.
 func (d *debugControl) pausePending(request string) {

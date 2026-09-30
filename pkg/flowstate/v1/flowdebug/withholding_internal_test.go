@@ -40,3 +40,31 @@ func TestOverlappingSecretsAreNotCutByEachOther(t *testing.T) {
 		})
 	}
 }
+
+// TestASkipIsWithheldAsTheDurableDriverWithholdsIt: a skip's account is one
+// sentence both drivers give, and where the set withholds everything the
+// durable driver writes [v1.SensitiveMarker] in its place, so the local
+// session does too, rather than the "[withheld]" its other renderings use
+// (Codex, #2227).
+func TestASkipIsWithheldAsTheDurableDriverWithholdsIt(t *testing.T) {
+	t.Parallel()
+
+	session, err := New(Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = session.Close() })
+
+	session.StepSkippedBy("gate", "gate", v1.NewExpr(`inputs.x != "y"`), v1.WithheldSensitiveValues())
+	snapshot, err := session.Snapshot(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	observations := snapshot.GetObservations()
+	if len(observations) == 0 {
+		t.Fatal("the skip was not observed, so this proves nothing")
+	}
+	want := v1.WithheldSensitiveValues().RedactText("anything", v1.SensitiveMarker)
+	assert.Equal(t, want, observations[len(observations)-1].GetText())
+	assert.Equal(t, v1.SensitiveMarker, want, "the durable driver's withhold-all spelling changed, so this compares the wrong thing")
+}

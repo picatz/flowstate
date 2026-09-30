@@ -1623,13 +1623,18 @@ func runNodes(ctx context.Context, nodes []*Node, scope *Scope, undo *UndoLog, p
 		}
 		run, err := EvalConditionInScope(nodeCtx, node.GetCondition(), scope)
 		if err != nil {
+			// Recorded nowhere else: the step never ran, so it has no outcome
+			// to report, and a debugger would otherwise show it as never
+			// reached (#2124).
+			observeGuardFailed(ctx, node, err)
+
 			return fmt.Errorf("step %q: %w", node.GetId(), err)
 		}
 		if !run {
 			// The one fact the transcript cannot carry — a skipped step
 			// records nothing — reported here for whoever is listening
 			// ([RunObserver]).
-			observeStepSkipped(ctx, node.GetId())
+			observeStepSkipped(ctx, node)
 
 			continue
 		}
@@ -2214,7 +2219,7 @@ func runSwitch(ctx context.Context, id string, sw *Switch, scope *Scope, undo *U
 	// `susp + 1` — a switch is never a suspension position — so a for_each
 	// written in a switch arm runs atomically there and is weighed here too
 	// ([CheckAtomicBlockActivities]).
-	armCtx := contextWithSegment(enterAtomicBlock(ctx), DebugSegmentKind_DEBUG_SEGMENT_KIND_CASE, id, switchArmIndex(sw, body))
+	armCtx := contextWithSegment(enterAtomicBlock(ctx), DebugSegmentKind_DEBUG_SEGMENT_KIND_CASE, id, SwitchArmIndex(sw, body))
 	if err := runNodes(armCtx, body, scope, undo, placement, depth, tolerated); err != nil {
 		// Wrapped so the selection survives the failure: recordStepOutcome
 		// records this step through failureRecord, which reads the account off

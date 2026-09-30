@@ -17,8 +17,8 @@ const MaxNamespaceLen = 63
 // This is the canonical namespace grammar. secrets.ValidateNamespace
 // delegates to it rather than checking separately, because a namespace this
 // package rejected reaching a secret provider, or one secrets.ValidateNamespace
-// rejected reaching a subject, both used to be possible: this package imports
-// nothing (see the package doc), so [WorkloadIdentity.SubjectFor] used to check a namespace
+// rejected reaching a subject, both used to be possible: this package cannot
+// import secrets, which imports it, so [WorkloadIdentity.SubjectFor] used to check a namespace
 // claim only for the two characters that could split a subject into extra
 // components — "/" and ":" — while secrets required the full grammar. A
 // namespace of "Prod Team", "..", a control character, or several kilobytes of

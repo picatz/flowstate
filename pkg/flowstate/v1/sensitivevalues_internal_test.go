@@ -281,6 +281,25 @@ func TestOnlyTheDeclaredValueEscapesTheSubstringFloor(t *testing.T) {
 		"the value `sensitive:` names is replaced textually whatever its length: it is what `\"Bearer \" + inputs.pin` needs")
 }
 
+// A bytes leaf inside a sensitive structure is withheld where text merely
+// contains it, as a string leaf is: `"Bearer " + string(inputs.creds.token)`
+// is a string the typed equality never sees (#2231). It is held to the same
+// floor as a string of the same length.
+func TestASensitiveBytesLeafIsWithheldWhereTextContainsIt(t *testing.T) {
+	t.Parallel()
+
+	set := oneSensitiveInput("creds", NewLiteralMap(map[string]any{
+		"token": []byte("hunter2-bytes"),
+		"tiny":  []byte("a"),
+	}))
+
+	require.Equal(t, "Authorization: Bearer [redacted]", set.RedactSubstrings("Authorization: Bearer hunter2-bytes"),
+		"text containing the bytes' text is withheld")
+	require.NotContains(t, set.held().substrings, "a",
+		"bytes shorter than the floor are held to it, as the string \"a\" is")
+	require.True(t, set.IsSensitive([]byte("hunter2-bytes")), "and it is still compared by value")
+}
+
 // A `sensitive: true` integer converted to text — `${string(inputs.pin)}` —
 // matches neither the typed equality nor a string-only substring set, so its
 // canonical rendering joins the backstop under the same floor and root

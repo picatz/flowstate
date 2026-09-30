@@ -1,4 +1,4 @@
-// Package reachable proves that examples/plugins/oci/workflow.yaml can
+// Package reachable proves that the examples under examples/plugins/oci can
 // actually reach the "oci" plugin - the property AGENTS.md requires of every
 // capability (a feature is incomplete until an author can express it) and
 // which a plugin's README can otherwise only assert in prose.
@@ -51,7 +51,9 @@ const operatorPolicyDenying = "egress:\n  deny:\n    - host == \"" + deniedHost 
 // It never calls a task against a real registry. What it proves is the seam a
 // Flowfile depends on - that a step naming these tasks is refused before the
 // plugin is registered and accepted once it is, against the descriptors the
-// plugin really shipped rather than ones this build knew in advance.
+// plugin really shipped rather than ones this build knew in advance. It covers
+// both example files: workflow.yaml, the deploy gate (oci.resolve and
+// oci.referrers), and read-statement.yaml, the one that names oci.blob.
 func TestAFlowfileCanNameTheOCIPluginsTasks(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds a real plugin binary; skipped under -short, run in CI and by `make check`")
@@ -64,7 +66,10 @@ func TestAFlowfileCanNameTheOCIPluginsTasks(t *testing.T) {
 	binaryPath := filepath.Join(dir, plugin.BinaryPrefix+"oci")
 	pluginreachtest.BuildPlugin(t, ociModule, binaryPath)
 
-	source := pluginreachtest.ReadFile(t, filepath.Join(exampleDir, "workflow.yaml"))
+	sources := map[string][]byte{
+		"workflow.yaml":       pluginreachtest.ReadFile(t, filepath.Join(exampleDir, "workflow.yaml")),
+		"read-statement.yaml": pluginreachtest.ReadFile(t, filepath.Join(exampleDir, "read-statement.yaml")),
+	}
 	tasks := []string{"oci.resolve", "oci.referrers", "oci.blob"}
 
 	// The premise. Before any host registers these tasks, the example is a file
@@ -77,18 +82,21 @@ func TestAFlowfileCanNameTheOCIPluginsTasks(t *testing.T) {
 		}
 	}
 
-	before, err := flowfile.ValidateSource(source)
-	if err != nil {
-		t.Fatalf("ValidateSource: %v", err)
+	var beforeText strings.Builder
+	for file, source := range sources {
+		before, err := flowfile.ValidateSource(source)
+		if err != nil {
+			t.Fatalf("ValidateSource(%s): %v", file, err)
+		}
+		if len(before) == 0 {
+			t.Fatalf("the validator accepted %s, whose steps name tasks no registry holds", file)
+		}
+		beforeText.WriteString(pluginreachtest.DiagnosticText(before))
 	}
-	if len(before) == 0 {
-		t.Fatal("the validator accepted a step naming a task no registry holds")
-	}
-	beforeText := pluginreachtest.DiagnosticText(before)
 	for _, name := range tasks {
-		if !strings.Contains(beforeText, name) {
+		if !strings.Contains(beforeText.String(), name) {
 			t.Errorf("the diagnostics do not name %q, so an author who has not installed this plugin gets "+
-				"nothing to search for; diagnostics:\n%s", name, beforeText)
+				"nothing to search for; diagnostics:\n%s", name, beforeText.String())
 		}
 	}
 
@@ -107,18 +115,20 @@ func TestAFlowfileCanNameTheOCIPluginsTasks(t *testing.T) {
 		t.Fatalf("Register: %v", err)
 	}
 
-	t.Run("the validator accepts the real example file", func(t *testing.T) {
-		after, err := flowfile.ValidateSource(source)
-		if err != nil {
-			t.Fatalf("ValidateSource: %v", err)
-		}
-		if len(after) != 0 {
-			t.Errorf("the example does not validate against the descriptors the plugin shipped:\n%s",
-				pluginreachtest.DiagnosticText(after))
+	t.Run("the validator accepts the real example files", func(t *testing.T) {
+		for file, source := range sources {
+			after, err := flowfile.ValidateSource(source)
+			if err != nil {
+				t.Fatalf("ValidateSource(%s): %v", file, err)
+			}
+			if len(after) != 0 {
+				t.Errorf("%s does not validate against the descriptors the plugin shipped:\n%s",
+					file, pluginreachtest.DiagnosticText(after))
+			}
 		}
 	})
 
-	t.Run("every task the plugin advertises is one the example could name", func(t *testing.T) {
+	t.Run("every task the plugin advertises is one the examples could name", func(t *testing.T) {
 		defs := host.TaskDefs()
 		if len(defs) != len(tasks) {
 			t.Fatalf("the launched plugin offers %d tasks, want %v", len(defs), tasks)

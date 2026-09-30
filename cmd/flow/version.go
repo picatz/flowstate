@@ -71,10 +71,12 @@ func resolveVersionInfo() versionInfo {
 		return info
 	}
 
-	// Main.Version is a pseudo-version for `go install pkg@version` and
-	// "(devel)" for a plain `go build .`; neither is what -ldflags stamps,
-	// so this only fills in the version when the linker flag left the
-	// package-level default behind.
+	// Main.Version is the module version the toolchain recorded: the version
+	// `go install pkg@version` fetched, a pseudo-version derived from the
+	// commit for a `go build` inside a git checkout, and "(devel)" when there
+	// is neither (outside a checkout, or -buildvcs=false). None of those is
+	// what -ldflags stamps, so this only fills in the version when the linker
+	// flag left the package-level default behind.
 	if info.Version == "devel" && buildInfo.Main.Version != "" && buildInfo.Main.Version != "(devel)" {
 		info.Version = buildInfo.Main.Version
 	}
@@ -120,11 +122,14 @@ func newVersionCommand() *cobra.Command {
 			"is what a module-aware build records; nothing stamps the moment of " +
 			"compilation.\n\n" +
 			"Answered entirely from what this binary already carries, no network " +
-			"call, so it works the same offline as everything else here. When " +
-			"nothing was stamped (a plain `go build` with no -ldflags and no module " +
-			"information) it says so honestly: \"devel\" for the version, \"unknown\" " +
-			"for the commit and its date, rather than a number invented for the " +
-			"occasion.",
+			"call, so it works the same offline as everything else here. The version " +
+			"is what -ldflags stamped, or else the module version the toolchain " +
+			"recorded, which a build inside a git checkout derives from the commit; " +
+			"the commit and its date come from that checkout's VCS stamp. What was " +
+			"not recorded is said honestly rather than invented: \"devel\" for a " +
+			"version nothing stamped, and \"unknown\" for the commit and its date " +
+			"when the build had no VCS stamp (outside a git checkout, `go run`, or " +
+			"-buildvcs=false).",
 		Args: cobra.NoArgs,
 		RunE: runVersion,
 		Example: `# What build is this:
@@ -133,7 +138,7 @@ flow version
 # The same answer, addressable by field:
 flow version -o json | jq -r .commit
 
-# Gate a script on this being a real build rather than one compiled by hand:
+# Gate a script on this build having a version stamped into it at all:
 flow version -o json | jq -e '.version != "devel"'`,
 	}
 

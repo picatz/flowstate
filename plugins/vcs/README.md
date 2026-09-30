@@ -62,11 +62,40 @@ VCS_SECRET_0__ACME_ORG=<https-password>
 VCS_SECRET_6_TEAM_A_ACME_ORG=<https-password>
 ```
 
+The plugin reads these from its own environment, which starts empty: name each
+to the worker in a `--plugin-env-file` only the worker's user can read
+(`env: {vcs: {VCS_SECRET_0__ACME_ORG: ...}}`), since one exported in the
+worker's shell never reaches the plugin. `--plugin-env vcs=KEY=VALUE` also
+works, but puts the value in the worker's argv, which any local user can read.
+Either way the value sits in the plugin's environment, readable through
+`/proc/<pid>/environ` by anything running as the worker's user
+(`pkg/flowstate/v1/plugin/env_config.go`); on a shared host, give `token` a
+worker-side reference such as `${secret('file:...')}` instead, which the host
+resolves for each call.
+
+And because this plugin registers the `vcs:` scheme whether a Flowfile uses it
+or not, a worker that loads it needs `--auth-policy` with a
+`secrets:` section: a worker holding a secret provider with no access policy
+refuses to start.
+
 The compatibility provider's value is used as the password half of HTTP Basic auth against the
 repository's remote - the same shape GitHub, GitLab, and Gitea all accept for
 a token over HTTPS. The task may equivalently receive a token from any other
 host-configured secret provider; provider choice does not change transport
 behavior.
+
+## Bounds
+
+| What | Limit |
+| --- | --- |
+| `url` / a revision string | 2 KiB / 512 B, `https://` only |
+| `vcs.log` commits | `max_commits` 20 by default, 200 maximum (refused over it), cloned `max_commits + 1` deep |
+| one commit message | 4 KiB, then truncated |
+| `vcs.diff` clone depth | 50: a `base` or `head` older than that is refused |
+| `vcs.diff` patch / files | 1 MiB / 500 entries, then `truncated` |
+| any one HTTP response | 128 MiB |
+| decompressed pack objects, summed | 512 MiB |
+| one clone or fetch | 2 minutes |
 
 ## Design decisions and the arguments for them
 
@@ -100,13 +129,13 @@ the full list (URL scheme allowlist, revision-string length, commit-count
 ceiling, patch/file-count ceilings) and `clone.go` for the two that matter
 most: clone depth (bounds the *commit graph* asked for) and a response-byte
 cap installed on go-git's own HTTP transport (bounds every response, on
-every status code, which is the layer this codebase's own CLAUDE.md names as
-the only one a library's non-2xx error path cannot bypass). Depth does not
-bound the size of any single blob within it - a shallow clone of a
-repository whose latest commit adds one enormous file is still one enormous
-file - and the response-byte cap, not a true "maximum repository size," is
-the honest backstop for that gap. This is recorded rather than left for
-someone to discover the hard way.
+every status code, which is the layer `AGENT_FIELD_NOTES_LEGACY.md`'s "Bound
+anything that consumes untrusted input" names as the only one a library's
+non-2xx error path cannot bypass). Depth does not bound the size of any
+single blob within it - a shallow clone of a repository whose latest commit
+adds one enormous file is still one enormous file - and the response-byte
+cap, not a true "maximum repository size," is the honest backstop for that
+gap. This is recorded rather than left for someone to discover the hard way.
 
 **Packfile inflation.** The response-byte cap above bounds the *compressed*
 bytes a remote sends; it does not bound what those bytes decompress into.

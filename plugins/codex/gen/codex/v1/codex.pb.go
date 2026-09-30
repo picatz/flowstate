@@ -110,10 +110,10 @@ type ExecInputs struct {
 	// working directory (the CLI's own --cd). It must resolve inside the
 	// directory an operator configured with FLOWSTATE_CODEX_WORKDIR_ROOT (see
 	// binary.go) - explicit, operator-controlled configuration, never a path a
-	// Flowfile can point anywhere on the worker's filesystem. Unset means no
-	// working directory is passed, and codex runs against a CLI-chosen
-	// default with nothing of this run's to write to even in
-	// WORKSPACE_WRITE mode.
+	// Flowfile can point anywhere on the worker's filesystem. Unset is
+	// accepted only for a read-only run (SANDBOX_MODE_READ_ONLY, the default):
+	// no working directory is passed and codex runs against a CLI-chosen
+	// default. A writable sandbox mode without it is refused (see exec.go).
 	WorkingContext string `protobuf:"bytes,4,opt,name=working_context,json=workingContext,proto3" json:"working_context,omitempty"`
 	// ApiKey authenticates this run against OpenAI. It is declared in this
 	// task's secret_inputs (see main.go), so a Flowfile writes

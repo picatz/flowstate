@@ -63,15 +63,14 @@ type Position struct {
 	// tells a caller's `build` from a called workflow's `build`.
 	//
 	// The engine's own answer, read at the boundary through
-	// [v1.TaskWorkflowFromContext] — `runCall` moves the runtime position
-	// across a call precisely so that "a consumer of the runtime position
-	// [cannot confuse] equal step ids in two different workflow files"
-	// (`eval.go:1804-1812`), and a debugger is such a consumer.
+	// [v1.ExecutingWorkflowFromContext] — `runCall` moves the position across
+	// a call precisely so that it "prevents a consumer of the position from
+	// confusing equal step ids in two different workflow files" (`eval.go`,
+	// `runCall`), and a debugger is such a consumer.
 	//
-	// Empty where the run carries no runtime position: an embedder driving
-	// [v1.Run] directly, and most tests. A consumer must treat that as "not
-	// said" rather than as a name — see [Session.StepPosition], which refuses
-	// to guess.
+	// Empty where the engine never ran: a [v1.Debugger] driven directly by an
+	// embedder. A consumer must treat that as "not said" rather than as a
+	// name — see [Session.StepPosition], which refuses to guess.
 	Workflow string
 
 	// Autopsy reports which of the two prompts is holding: a breakpoint before
@@ -127,8 +126,8 @@ func positionOf(subject promptSubject) Position {
 }
 
 // Backtrace returns the paused run's current step and caller chain, innermost
-// first. The schema owns the shape because DAP consumes it now and the durable
-// attach surface will cross a Flowstate wire later.
+// first. The schema owns the shape because DAP consumes it; a durable session
+// describes a stop with [v1.DebugFrame] instead ([Frames]).
 func (s *Session) Backtrace() (*v1.DebugBacktrace, error) {
 	s.mu.Lock()
 	subject := s.at
@@ -209,7 +208,7 @@ func (s *Session) BacktraceLabels() ([]string, error) {
 // here, and wrong in the one direction that matters. `flow test` installs
 // [Session.SetValueRedactor] precisely so that a structured value a debugger
 // hands out does not carry a sensitive input or a resolved secret
-// (`flowtest/run.go:755-790`), and an adapter expanding a variable in a pane
+// (`flowtest/run.go`, `runCase`), and an adapter expanding a variable in a pane
 // reads exactly that value — so returning it raw would open, on a new surface,
 // the hole the seam exists to close (Codex, #1120).
 //
@@ -339,20 +338,20 @@ func evaluate(ctx context.Context, subject promptSubject, expression string) (te
 	// structurally, and a component that allows when it cannot decide will
 	// eventually allow everything — CLAUDE.md's rule, which bites here because
 	// the two redactors are installed independently
-	// (`flowtest/run.go:755-790`). The redacted text still comes back, so what
-	// is withheld is a representation rather than the answer.
+	// (`flowtest/run.go`, `runCase`). The redacted text still comes back, so
+	// what is withheld is a representation rather than the answer.
 	if subject.redactValue == nil && subject.redactText != nil {
 		return text, typeName, withheldNative, false, nil
 	}
 
 	// The second seam, which the structured half was missing. A value redactor
-	// matches by *equality* — `flowtest`'s does (`stub.go:935-963`) — so a
-	// composed string like `"Bearer " + inputs.token` is not the secret and
-	// passes it through whole. The rendered text has never had that problem,
-	// because the text redactor is a substring backstop applied to the whole
-	// rendering; the structured answer got only the equality half, so the same
-	// expression withheld the token in prose and handed it over as a value
-	// (Codex, #1120).
+	// matches by *equality* — `flowtest`'s does
+	// ([v1.SensitiveValues.RedactTree]) — so a composed string like
+	// `"Bearer " + inputs.token` is not the secret and passes it through whole.
+	// The rendered text has never had that problem, because the text redactor
+	// is a substring backstop applied to the whole rendering; the structured
+	// answer got only the equality half, so the same expression withheld the
+	// token in prose and handed it over as a value (Codex, #1120).
 	//
 	// Both seams, then, exactly as [Session.SetValueRedactor] says there are
 	// two questions: is this the value, and does this text contain it.
@@ -421,11 +420,11 @@ func withheldLeaves(redact func(string) string, native any) any {
 // withheld is err with the pause's text redactor applied to its message.
 //
 // A CEL runtime error interpolates the value that caused it — `hours(n)` past
-// the duration ceiling prints n itself (`celenv.go:642-645`) — so an error is a
-// way for a value to leave, and the prompt has always known this: it prints one
-// through `printfTone`, which redacts. This surface returned the error raw, so
-// the same failing expression withheld its value when typed and disclosed it
-// when asked for (Codex, #1120).
+// the duration ceiling prints n itself (`celenv.go`, `durationLibrary`) — so
+// an error is a way for a value to leave, and the prompt has always known this:
+// it prints one through `printfTone`, which redacts. This surface returned the
+// error raw, so the same failing expression withheld its value when typed and
+// disclosed it when asked for (Codex, #1120).
 //
 // Rebuilt rather than wrapped, which is the part worth stating. Wrapping keeps
 // the original reachable through [errors.Unwrap], and the whole message is what
@@ -621,7 +620,7 @@ type Step struct {
 	// sees, and it is *not* on its own an identity.
 	//
 	// A callee's step ids belong to the callee and not to its caller
-	// (`eval.go:1804-1812`), so a caller and a called workflow may both
+	// (`eval.go`, `runCall`), so a caller and a called workflow may both
 	// declare `build` — and an inventory of the two flattened together holds
 	// two rows nothing can tell apart. Empty where the caller listing the
 	// steps did not say, and where the list is the ids this session has merely
@@ -638,10 +637,10 @@ type Step struct {
 	// attribute an outcome it cannot.
 	//
 	// The engine's own structure, read statically: `runNodes` descends into a
-	// callee once per `call:` node (`eval.go:1734`), so a walk's descents and
-	// that call's invocations are one-to-one by construction. Numbered rather
-	// than named because the only question ever asked of it is whether two
-	// rows are the same declaration.
+	// callee once per `call:` node (`eval.go`, `runCall`), so a walk's
+	// descents and that call's invocations are one-to-one by construction.
+	// Numbered rather than named because the only question ever asked of it is
+	// whether two rows are the same declaration.
 	//
 	// Zero is the root workflow and the value a caller that says nothing
 	// leaves. That is why the grouping key is this *and* [Step.Workflow]: an
@@ -676,7 +675,7 @@ type Step struct {
 // workflow may declare thousands of nodes, a pane draws a dozen, and copying
 // every entry at every stop is O(N) allocation per stop and O(N²) across a walk
 // of the run. The shape is offset-and-total deliberately — it is what a pane
-// needs and what slice 2's wire message will need, so a network-attached
+// needs and what the wire's `DebugStepWindow` carries, so a network-attached
 // session answers the same question the same way.
 type StepList struct {
 	// Steps is the window, in the order an author wrote them.
@@ -718,10 +717,11 @@ func (l StepList) RedactText(text string) string { return applyText(l.redactText
 //
 // The workflow is what disambiguates, and it may be empty. An empty one matches
 // by id alone and is the honest answer for a run whose position carries no
-// workflow (v1.TaskWorkflowFromContext reports none) — but where the id it
-// names is declared by more than one workflow, this reports -1 rather than the
-// first match. Pointing at a step the run is not at is the one thing a debugger
-// must never do, and "I cannot tell which" is an answer a renderer can draw.
+// workflow (v1.ExecutingWorkflowFromContext reports none) — but where the id
+// it names is declared by more than one workflow, this reports -1 rather than
+// the first match. Pointing at a step the run is not at is the one thing a
+// debugger must never do, and "I cannot tell which" is an answer a renderer can
+// draw.
 func (s *Session) StepPosition(workflow, id string) (index, total int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -742,8 +742,8 @@ func (s *Session) StepPosition(workflow, id string) (index, total int) {
 //
 // -1 where no row answers, and -1 where more than one does. The second is the
 // load-bearing one: a boundary is told the callee's *name*
-// ([v1.TaskWorkflowFromContext]) and nothing about which invocation of it is
-// running, so two indistinguishable rows are answered with "cannot tell"
+// ([v1.ExecutingWorkflowFromContext]) and nothing about which invocation of it
+// is running, so two indistinguishable rows are answered with "cannot tell"
 // rather than with the first. Pointing at a step the run is not at is the one
 // thing a debugger must never do.
 func positionIn(order []Step, workflow, id string) int {
@@ -857,12 +857,12 @@ func (s *Session) stepWindow(offset, limit int) (StepList, int) {
 	offset = max(0, min(offset, len(order)))
 
 	// The end is measured from what is *left* rather than from offset+limit,
-	// which overflows: this API is shaped for a caller that does not exist yet
-	// (slice 2's wire client), so the limit is untrusted, and `Steps(1,
-	// math.MaxInt)` wraps that sum negative — a negative end slices backwards
-	// and makes a negative capacity, both of which are a panic rather than a
-	// refusal. Saturating here means every limit past the end is the same
-	// answer as a limit exactly at it (Codex, #1186).
+	// which overflows: this API is shaped for a wire caller that does not exist
+	// yet, so the limit is untrusted, and `Steps(1, math.MaxInt)` wraps that
+	// sum negative — a negative end slices backwards and makes a negative
+	// capacity, both of which are a panic rather than a refusal. Saturating
+	// here means every limit past the end is the same answer as a limit exactly
+	// at it (Codex, #1186).
 	end := len(order)
 	if limit >= 0 {
 		end = offset + min(limit, len(order)-offset)

@@ -87,7 +87,7 @@ func TestWhatACallHandedBackIsWithheldAcrossContinueAsNew(t *testing.T) {
 	// No session in the first segment: what a call hands back is kept for
 	// one that attaches later.
 	first := newTimeline(t)
-	first.env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: spec, StepsBudget: 3})
+	first.env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: spec, StepsBudget: 2})
 	require.True(t, first.env.IsWorkflowCompleted())
 	var continueAsNew *workflow.ContinueAsNewError
 	require.ErrorAs(t, first.env.GetWorkflowError(), &continueAsNew)
@@ -128,6 +128,20 @@ func TestWhatACallHandedBackIsWithheldAcrossContinueAsNew(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotContains(t, string(encoded), test.Secret, "the next segment showed what a call handed back before the seam")
 	assert.Equal(t, "[redacted]", inspected.GetValue().GetRendered(), "the next segment did not withhold the answer whole")
+
+	// And what the segment reported of the steps it ran: with what withheld
+	// the values not carried across the seam, an account of a step that
+	// finished is withheld whole, its step and output names included, and none
+	// of it shows what a call handed back.
+	var finished int
+	for _, observation := range held.GetObservations() {
+		assert.NotContains(t, observation.GetText(), test.Secret, "%s's account showed what a call handed back before the seam", observation.GetStepId())
+		if observation.GetKind() == v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_FINISHED {
+			assert.Equal(t, "[redacted]", observation.GetText(), "an account of a step that finished was not withheld whole")
+			finished++
+		}
+	}
+	assert.NotZero(t, finished, "no step finished in the segment, so this proves nothing about its accounts")
 }
 
 // returnedSensitiveCase is the corpus's returned-output case, declaring

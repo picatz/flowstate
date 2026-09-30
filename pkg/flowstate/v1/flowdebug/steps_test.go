@@ -223,7 +223,7 @@ func TestAFailedStepIsDistinguishedFromAToleratedOne(t *testing.T) {
 
 	// And the printed account agrees, which is the property that keeps a pane
 	// and a transcript from being two answers to one question.
-	assert.Contains(t, console.String(), "gated skipped (`if:` was false)")
+	assert.Contains(t, console.String(), "gated skipped (`if: false`)")
 }
 
 // TestAStepTheRunEntersAgainReadsAsRunning is the loop case, and the reason

@@ -186,6 +186,34 @@ log orders[0]/charge: charging 120 of 3
 log orders[1]/charge: charging 900 of 3
 ```
 
+A step whose `if:` is false is never a boundary, so a breakpoint on it does
+not stop. The session says why instead, on every front and on both drivers, by
+quoting the condition that decided:
+
+```text
+discount skipped: `if: steps.price.value > 5000` was false
+```
+
+The quote comes from the evaluation that made the decision, and nothing is
+evaluated again to produce it; `inspect` at the next stop is how you find which
+operand made it false. An `if:` that raises an error instead of answering fails
+its step, and the step list and observations show that step as failed rather
+than as one the run never reached.
+
+A step that finished says what it produced, in the same words on both drivers
+(up to each one's bound on an observation, which cuts a very long output at a
+different length) and whether or not the run was ever held at it:
+
+```text
+price -> value: 4000
+charge completed
+```
+
+The values are the step's recorded outputs, not a second evaluation. What a
+hold at that step would withhold of `inspect` is withheld here: a workflow's
+`sensitive:` inputs, what a callee declares sensitive, and what a call handed
+back, by value and by text, before the account is bounded.
+
 `catch uncaught` stops at a step whose failure its own step does not tolerate
 with `continue_on_error:`, after the failure is recorded and before it
 propagates; `catch all` stops at tolerated failures too. A container that
@@ -325,7 +353,7 @@ verdict, because a debugged run is the run.
 ```text
 [break  ] break at price (value)
 [info   ]   price -> value: 4000
-[info   ]   discount skipped (`if:` was false)
+[info   ]   discount skipped: `if: steps.price.value > 5000` was false
 [break  ] break at charge (task "log")
 [info   ]   charge completed
 [break  ] autopsy: the case failed 1 expectation(s); the run is over, but its scope is still here
@@ -726,22 +754,30 @@ The same five RPCs are on the [API](API.md) and are MCP tools of their own
 
 ### Holding a durable run
 
-**Where it holds.** A durable run holds only at a step boundary where it has
-one position: a step at the run's own top level, or at the top level of a
-workflow a `call:` reached. Inside a `for_each` or `loop:` body, a `parallel:`
-branch, or a `switch:` arm the run can be at several places at once and a hold
-names one, so those bodies run as a unit. `step` from a `call:` step enters the
-callee; `step` from a loop runs the whole loop. A breakpoint on a step inside
-such a body is reported not armed, saying to break at the enclosing step instead,
-and an `until` whose step is inside one, or that names no step at all, is
-refused and the run stays held, rather than released to the end. Past
-`MaxDebugStaticSites` (65,536 step sites) the run cannot list every site, so it
-asks the program as written instead: a breakpoint or `until` on a step the
-program declares where a run holds — at its top level or a callee's — is
-armed or applied, even when that step lies beyond the cut, and one on a step it
-declares only inside such a body, or never declares, is refused as it would be
-below the cap. The local driver runs those bodies one step at a time and stops
-everywhere.
+**Where it holds.** A durable run holds at a step boundary where it has one
+position: a step at the run's own top level, or at the top level of a workflow
+a `call:` reached, and inside a `loop:` body, a `switch:` arm, and a `for_each:`
+that runs one iteration at a time. There a stop is named as on the local driver,
+by the iteration, arm and call it is in (`orders[1]/charge`,
+`route?0/chosen`, `each[0]/nested(child)/inner`). Inside a `parallel:` branch or
+a `for_each:` with `max_parallel:` above one the run is in several places at
+once and a hold names one, so those bodies run as a unit. `step` enters a body
+or a callee; `next` runs a loop or a call whole; `finish` from inside a body
+leaves the loop; `until orders[2]/charge` names one iteration. A breakpoint on a
+step inside a `parallel:` branch or a concurrent `for_each:` is reported not
+armed, saying to break at the enclosing step instead, and an `until` whose step
+is inside one, or that names no step at all, is refused and the run stays held,
+rather than released to the end. Past `MaxDebugStaticSites` (65,536 step sites)
+the run cannot list every site, so it asks the program as written instead: a
+breakpoint or `until` on a step the program declares where a run holds is armed
+or applied, even when that step lies beyond the cut, and one on a step it
+declares only where a run is in several places, or never declares, is refused as
+it would be below the cap. The local driver also stops inside those bodies,
+one branch at a time.
+
+A run continues as new only between steps and between iterations, never inside
+a body, so a hold never spans the seam: a session stepping through a loop that
+continues as new is held once per iteration, in one segment or several.
 
 **What a hold does not stop.** A hold parks workflow code before a step starts.
 Work already dispatched — an activity, an HTTP call, a timer, a called
@@ -767,12 +803,12 @@ a session follows the current one.
 
 | | Local | Durable |
 | --- | --- | --- |
-| Where it stops | every step boundary, including loop bodies, parallel branches and switch arms | top-level steps of the run and of each called workflow |
+| Where it stops | every step boundary, including parallel branches | every step boundary where the run has one position: top-level steps, called workflows, `loop:` bodies, `switch:` arms and sequential `for_each:` bodies |
 | `step`, `next`, `finish`, `until`, `pause` | yes | yes, at those boundaries |
 | Conditional and hit-count breakpoints | yes | yes; a condition needs `workload.debug_inspect` |
 | Logpoints (`log`) | yes | taken with the set, but reported not armed |
 | Failure stops (`catch`) | yes | refused as unsupported |
-| A breakpoint or `until` inside a loop body, branch or arm | yes | the breakpoint is not armed and the `until` is refused |
+| A breakpoint or `until` inside a `parallel:` branch or a concurrent `for_each:` | yes | the breakpoint is not armed and the `until` is refused |
 | Source-line breakpoints | when a source map is known | resolved by the client to a step, only through a source map that matches the run's program; `flow dap`'s attach has none |
 | `inspect`, `expand`, `scope` | yes | yes, while held, needing `workload.debug_inspect` |
 | Task notes (`NoteTask`) | yes | no |

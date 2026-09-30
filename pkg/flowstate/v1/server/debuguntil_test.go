@@ -18,7 +18,8 @@ import (
 // TestADurableUntilIntoABodyIsRefusedThroughTheDriver drives a durable run the
 // way `flow debug attach`, `flow debug do` and a retained MCP session do —
 // the command-line driver over the RPCs — and asks it to run until a step
-// inside a loop body. The run would never stop there, so the engine refuses;
+// inside a `for_each:` running iterations together. The run would never stop
+// there, so the engine refuses;
 // the refusal's reason is what the driver answers with, and the run stays
 // held where it was.
 func TestADurableUntilIntoABodyIsRefusedThroughTheDriver(t *testing.T) {
@@ -27,7 +28,7 @@ func TestADurableUntilIntoABodyIsRefusedThroughTheDriver(t *testing.T) {
 	fixture := newTenantFixture(t)
 	workflow := debuggableWorkflow()
 	workflow.Steps = append(workflow.Steps, &v1.Node{Id: "each", Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{
-		Items: v1.NewLiteralList(v1.NewLiteral("a")), Iterator: "item",
+		Items: v1.NewLiteralList(v1.NewLiteral("a"), v1.NewLiteral("b")), Iterator: "item", MaxParallel: 2,
 		Body: []*v1.Node{{Id: "touch", Kind: &v1.Node_Task{Task: &v1.Task{
 			Name: "log", Inputs: map[string]*v1.Value{"message": v1.NewLiteral("touched")},
 		}}}},
@@ -66,7 +67,7 @@ func TestADurableUntilIntoABodyIsRefusedThroughTheDriver(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_REFUSED, result.Receipt.GetStatus(), result.Text)
 	assert.Contains(t, result.Text, "refused: ")
-	assert.Contains(t, result.Text, "inside a loop body, a parallel branch or a switch arm")
+	assert.Contains(t, result.Text, "inside a parallel branch or a for_each running several iterations at once")
 	assert.Contains(t, result.Text, "run until the enclosing step instead")
 
 	after, err := remote.Snapshot(t.Context())

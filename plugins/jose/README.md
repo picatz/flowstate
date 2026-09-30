@@ -43,8 +43,12 @@ one resolves against `plugins/jose`.
 
 ```console
 $ flow worker --plugin-dir /path/to/plugins \
+    --temporal-deployment-name flowstate --build-id "$(git rev-parse --short HEAD)" \
     --plugin-env jose=FLOWSTATE_JOSE_TRUST=/etc/flowstate/trust-policy.yaml
 ```
+
+A plugin inherits nothing of the worker's environment, so the trust file is
+named with `--plugin-env`.
 
 The file is **the same document `flow server --auth-policy` reads**. A
 deployment that already trusts an issuer for its own API points both at one
@@ -60,16 +64,36 @@ issuers:
         any_of: [acme/api]
 ```
 
-With no file this plugin verifies nothing and says so, and `flow plugins`
-reports it unhealthy with the reason. There is no default trust root, because
-the only available default would be "whatever the token says about itself" —
-the failure verification exists to prevent.
+With no file this plugin verifies nothing and says so: a running worker logs a
+warning naming the reason at each health check (`flow plugins` does not report
+health). There is no default trust root, because the only available default
+would be "whatever the token says about itself" — the failure verification
+exists to prevent.
 
 Fetching an issuer's key set goes through the deployment's egress policy, so a
 JWKS URL is a destination like any other. Where the grant cannot be used, the
 verifier is built with a deny-by-default policy rather than none: a policy whose
 issuers all use `jwks_file` needs no network, and one that needs the network
-fails closed.
+fails closed. A trust file with an `egress:` section of its own is the
+exception: that section is the file's spelling of where identity fetches may
+go, as it is for `flow server`, and it is used in place of the deployment's
+grant rather than beside it.
+
+## Inputs and outputs
+
+| Input | |
+| --- | --- |
+| `token` | the compact JWS; a literal or a secret reference (see below) |
+| `trust` | optional: the policy entry, by `name`, that must admit the token |
+| `audience` | optional: an audience the token's `aud` must also carry |
+
+| Output | |
+| --- | --- |
+| `issuer`, `subject` | the verified `iss` and `sub` |
+| `trust_name` | the policy entry that admitted the token |
+| `audience` | the verified `aud`, always a list |
+| `expires_at`, `issued_at` | the verified `exp` and `iat`, RFC 3339; the verifier requires both, so a token missing either is refused and these are always set |
+| `claims` | the whole verified claim set, as a map |
 
 ## Verification is not authorization
 
@@ -107,9 +131,13 @@ one that came from a secret store should be passed as `${secret(...)}`.
 | What | Limit |
 | --- | --- |
 | a token | 64 KiB (the verifier bounds it again) |
-| claims returned | 128, sorted, keys truncated at 128 B |
+| claims returned | every verified claim, sorted, never trimmed |
 | `trust` / `audience` inputs | 128 B / 512 B |
 | the trust policy file | 1 MiB |
+
+The verifier refuses, as `InvalidInput`, a token carrying more than 64 claims,
+more than 32 KiB of them (each value counted at 16 B at least), or a claim
+nested deeper than 8 levels, rather than returning part of one.
 
 ## Classification
 

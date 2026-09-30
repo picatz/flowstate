@@ -1490,7 +1490,9 @@ message DebugCarry {
   // Next is what the next boundary does with the session attached.
   DebugResumeAction next = 8 [(buf.validate.field).enum.defined_only = true];
 
-  // StepDepth is the call depth a step over or out left from.
+  // StepDepth is the nesting a step over or out left from: the calls, loop
+  // iterations, branches and arms its stop was in, which is the number of
+  // segments in its address.
   int32 step_depth = 9;
 
   string until = 10 [(buf.validate.field).string = {max_len: 4096}];

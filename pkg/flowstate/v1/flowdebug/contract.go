@@ -20,9 +20,8 @@ import (
 
 // # The typed contract
 //
-// Every debugger surface — the editor adapter, the retained MCP sessions, the
-// embedding API, and the durable RPCs — speaks [Target], and a local [Session]
-// is one. Its methods take and return the `debug.proto` messages, so a local
+// A local [Session] is a [Target], and so is [Remote], which speaks the durable
+// RPCs. Its methods take and return the `debug.proto` messages, so a local
 // session and a durable one answer the same questions in the same shapes and a
 // surface written against one works against the other.
 //
@@ -35,7 +34,7 @@ import (
 // prompt loop has acted on the command and the run has left the stop; a pause
 // answers pending until the run reaches a boundary it can stop at.
 
-// Target is one debug session, local or durable, as every surface drives it.
+// Target is one debug session, local or durable, as a surface drives it.
 //
 // Snapshots are immutable: a revision names one view, and a question about a
 // revision the session has left is refused as stale rather than answered
@@ -922,15 +921,36 @@ func (s *Session) observe(kind v1.DebugObservationKind, step, text string) {
 	s.observeRedacted(kind, step, capRunes(s.redactText(strings.TrimRight(text, "\n")), maxObservationRunes))
 }
 
+// occurrenceStep is the id of the step an occurrence is of.
+func occurrenceStep(occurrence *v1.DebugOccurrence) string {
+	path := occurrence.GetSite().GetPath()
+	if len(path) == 0 {
+		return ""
+	}
+
+	return path[len(path)-1]
+}
+
 // observeRedacted records one observation whose text is already redacted and
 // bounded.
 func (s *Session) observeRedacted(kind v1.DebugObservationKind, step, text string) {
+	s.observeRedactedAt(kind, step, nil, text)
+}
+
+// observeRedactedAt is [Session.observeRedacted] for an observation of a step
+// the run placed itself: one that never reached a boundary, a skipped step or
+// one whose `if:` failed, so no arrival can say where it is. placed is that
+// address, or nil to find the step's own arrival.
+func (s *Session) observeRedactedAt(kind v1.DebugObservationKind, step string, placed *string, text string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	address := ""
-	if occurrence := s.contract.occurrence; occurrence != nil {
-		if path := occurrence.GetSite().GetPath(); len(path) > 0 && path[len(path)-1] == step {
+	switch {
+	case placed != nil:
+		address = s.redactTextLocked(*placed)
+	default:
+		if occurrence := s.contract.occurrence; occurrence != nil && occurrenceStep(occurrence) == step {
 			address = s.redactTextLocked(occurrence.GetAddress())
 		}
 	}
@@ -978,8 +998,7 @@ func (s *Session) WaitSnapshot(ctx context.Context, after uint64) (*v1.DebugSnap
 	}
 }
 
-// Capabilities is what a local session does. Every surface advertises from
-// this and nothing else.
+// Capabilities is what a local session does, as its snapshots advertise it.
 func (s *Session) Capabilities() *v1.DebugCapabilities {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1005,7 +1024,7 @@ func (s *Session) capabilitiesLocked() *v1.DebugCapabilities {
 		ValueExpansion:         true,
 		Observations:           true,
 		// A session observes a run someone else started, and has no way to
-		// end it; that someone advertises termination (see flowdap's launch).
+		// end it; that someone advertises termination.
 		Terminate: false,
 	}
 }
@@ -1190,7 +1209,8 @@ func qualified(workflow, step string) string {
 	return workflow + "." + step
 }
 
-// receipt returns the remembered receipt for a request id, marked duplicate.
+// rememberedReceipt returns the remembered receipt for a request id, marked
+// duplicate.
 func (s *Session) rememberedReceipt(requestID string) (*v1.DebugReceipt, bool) {
 	if requestID == "" {
 		return nil, false

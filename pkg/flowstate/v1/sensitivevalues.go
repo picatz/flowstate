@@ -377,14 +377,17 @@ func SensitiveInputValues(inputs map[string]*Value, sensitiveNames map[string]bo
 					out.substrings = append(out.substrings, text)
 				}
 			case []byte:
-				// A bytes value reaches text two ways: raw, where a task
-				// writes it into a URL or a message as a string, and base64,
-				// the spelling protobuf JSON and CEL's string() of bytes give.
-				// Both join the backstop under the floor a string has.
-				raw := string(value)
-				if raw != "" && (n.root || utf8.RuneCountInString(raw) >= minSensitiveSubstringRunes) {
-					out.substrings = append(out.substrings, raw)
-				}
+				// Its text is a string descendant too: a rendering that
+				// merely contains the bytes, `"Bearer " + string(token)`,
+				// holds a string the typed equality never sees, and without
+				// a spelling here the substring backstop never looks for it
+				// (#2231). Queued as the string it converts to, so the
+				// floor, the `%q` spelling and the descendant bound apply
+				// exactly as they do to any string.
+				pending = append(pending, node{value: string(value), root: n.root})
+				// The other way bytes reach text is base64, the spelling
+				// protobuf JSON and CEL's string() of bytes give, so it joins
+				// the backstop under the same floor.
 				if encoded := base64.StdEncoding.EncodeToString(value); encoded != "" &&
 					(n.root || len(encoded) >= minSensitiveSubstringRunes) {
 					out.substrings = append(out.substrings, encoded)

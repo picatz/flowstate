@@ -15,7 +15,7 @@ import (
 // It used to live in `engine`, which meant it existed for durable execution and
 // did not exist at all for local execution: a `flow run local` with an OTLP
 // endpoint configured produced no `flowstate.*` span for a run that would have
-// produced one per task in production (#523's gap 3). That is invariant 5 —
+// produced one per task in production (#523's gap 3). That is invariant 3 —
 // "both execution drivers must agree" — failing in its loudest possible form,
 // since local runs exist to tell an author what production will do and a trace
 // is one of the things they are being told.

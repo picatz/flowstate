@@ -3,7 +3,7 @@
 //
 // It is a separate package, on the model of net/http/httptest and
 // testing/fstest, rather than a file inside secrets itself: every file here
-// imports "testing" and testify, and secrets is imported by every production
+// imports "testing", and secrets is imported by every production
 // binary that resolves a secret, cmd/flow included. Folding this in there would
 // hand the CLI binary a transitive dependency on a testing framework for a
 // function it never calls. Nothing outside a test imports this package.

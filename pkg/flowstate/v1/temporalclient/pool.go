@@ -332,8 +332,9 @@ func (p *Pool) For(namespace string) (client.Client, error) {
 // SDK never has to know it — but Temporal's raw APIs take the namespace as a
 // request field, and a caller reaching for one has nowhere else to get it. Giving
 // `GetTimeline` a request budget independent of the events it scans needs exactly
-// that (see maxTimelineScan in server/timeline.go, which names this as the
-// follow-up it was blocked on). Nothing in this repository calls it yet, and that
+// that (see maxTimelineScan in server/timeline.go, which records that this is no
+// longer what blocks that budget). Its one caller, the server's
+// clientAndTemporalNamespaceFor, is itself waiting for its first caller, and that
 // is deliberate: plumbing a namespace to where it can be read is a change that
 // misroutes a tenant's reads when it is wrong, so it lands and is reviewed on its
 // own rather than inside the change that wants it.

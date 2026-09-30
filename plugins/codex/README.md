@@ -55,6 +55,7 @@ worker that launches this plugin, not exported into the shell that starts it:
 
 ```console
 $ flow worker --plugin-dir /path/to/plugins \
+    --temporal-deployment-name flowstate --build-id "$(git rev-parse --short HEAD)" \
     --plugin-env codex=FLOWSTATE_CODEX_BIN=/usr/local/bin/codex
 ```
 
@@ -72,7 +73,9 @@ deployment that would otherwise repeat the flag; see
   outright for every call - not defaulted to the worker's own working
   directory or filesystem root, which would make an unset root the
   *permissive* case instead of the restrictive one. See `binary.go`'s
-  `resolveWorkingContext`.
+  `resolveWorkingContext`. A `WORKSPACE_WRITE` or `DANGER_FULL_ACCESS` run
+  requires a `working_context`, so without this root every writable run is
+  refused too.
 - `FLOWSTATE_CODEX_BASE_CONFIG` (optional) - an operator-provided base
   `config.toml` (or a fragment naming just `sandbox_mode` and
   `sandbox_workspace_write.network_access`) that raises the ceiling a
@@ -81,17 +84,26 @@ deployment that would otherwise repeat the flag; see
   `SANDBOX_MODE_READ_ONLY`, no network. See `policy.go` and doc.go's "Codex
   configuration" for the full three-layer design - a request over the
   ceiling is refused as `sdk.InvalidInput`, never silently downgraded.
-- `FLOWSTATE_CODEX_GIT_BIN` (optional) - a real `git` binary, used only to
+- `FLOWSTATE_CODEX_GIT_BIN` (optional) - a real `git` binary, used to
   render `patch` (a unified diff) after a `WORKSPACE_WRITE` or
-  `DANGER_FULL_ACCESS` run that reported changed files. Unset means `patch`
-  is always empty; `files_changed` (from codex's own event stream) is
-  reported either way. See `diff.go`.
+  `DANGER_FULL_ACCESS` run that reported changed files, and to carry out
+  `reset_working_context`. Unset means `patch` is always empty and a call
+  setting `reset_working_context` fails; `files_changed` (from codex's own
+  event stream) is reported either way. See `diff.go` and `exec.go`.
 
 Every codex run gets its own ephemeral `CODEX_HOME` - a fresh, empty
 directory this plugin creates per call, holding nothing but
 `FLOWSTATE_CODEX_BASE_CONFIG`'s own bytes if that variable is set, and
 destroyed when the run ends. codex never sees the worker user's own
 `~/.codex/config.toml` or `auth.json` - see `ephemeral.go` and `process.go`.
+
+## Outputs
+
+A call returns `final_message`, `patch`, `files_changed`, `thread_id` (codex's
+own identifier for the run, for correlation), the token counts
+`input_tokens`, `cached_input_tokens` and `output_tokens` (all zero when the
+CLI reported no usage), a bounded `events` summary, and `truncated`, true when
+any of `final_message`, `patch` or `events` was cut to fit this task's bounds.
 
 ## Execution-mode posture
 
@@ -289,7 +301,7 @@ a Flowfile author, a prompt, or the model's own output — controls (see
 | `max_events` (default 200, ceiling 2000) | How many `EventSummary` entries `codex.exec` returns - enforced at collection time, not only when the response is built |
 | `maxFinalMessageBytes`, `maxEventSummaryBytes` | Individual text fields, so one enormous field cannot consume the whole output budget |
 | `maxPatchBytes`, `maxDiffFiles` | The rendered diff and its file list, independently - a rename-heavy run can have many files and a small patch, or the reverse |
-| `maxSubprocessBytes` (32 MiB) | The codex CLI's combined stdout, applied *below* the library's own JSON decoding via a wrapping `io.Reader` - the same "the bound belongs on the transport, not inside a library call whose error paths you don't control" lesson CLAUDE.md draws from connect-go's non-200 unmarshaler gap |
+| `maxSubprocessBytes` (32 MiB) | The codex CLI's combined stdout, applied *below* the library's own JSON decoding via a wrapping `io.Reader` - the same "the bound belongs on the transport, not inside a library call whose error paths you don't control" lesson `AGENT_FIELD_NOTES_LEGACY.md` ("Bound anything that consumes untrusted input") draws from connect-go's non-200 unmarshaler gap |
 | `runTimeout` (10 minutes) | Backstops a hung subprocess, independent of and in addition to the step's own `timeout:` |
 
 A request over any ceiling is refused rather than silently clamped - the

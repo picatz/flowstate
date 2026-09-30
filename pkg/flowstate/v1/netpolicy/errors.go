@@ -50,8 +50,8 @@ const (
 	// network the policy does not permit.
 	ReasonAddress Reason = "address"
 
-	// ReasonRedirect indicates a redirect was refused, either because redirects
-	// are disabled or because the hop limit was exhausted.
+	// ReasonRedirect indicates a redirect was refused: redirects are disabled,
+	// the hop limit was exhausted, or the hop downgrades https to http.
 	ReasonRedirect Reason = "redirect"
 
 	// ReasonDenyRule indicates a CEL deny rule matched the request.
@@ -119,8 +119,9 @@ type DenyError struct {
 	// Target is not always that URL: for an address, a port or a scheme
 	// refusal it is the attribute that was rejected — "203.0.113.9:443" — and
 	// a caller that must name the destination cannot recover it from that. Set
-	// at [Policy.checkRequestHop] and [Policy.controlDial], the two places a
-	// hop enters the policy, so the destination a denial names is the hop that
+	// at [Policy.checkRequestHop], [Policy.checkRedirect] and
+	// [Policy.controlDial], the places a hop enters the policy, so the
+	// destination a denial names is the hop that
 	// was refused rather than the URL the caller originally asked for
 	// (picatz/flowstate#1379).
 	//

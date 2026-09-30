@@ -38,16 +38,16 @@ than only the one that happens to need no credential:
 All four are tasks the `git` plugin provides - see
 [`plugins/git`](../../../plugins/git) for the source, and its `README.md`
 for the security properties this plugin holds by construction, "Which git
-server?" for what provider-agnosticism means concretely (and does not,
-today, for Bitbucket Cloud - a reported gap, not a silent one), and what
+server?" for what provider-agnosticism means concretely (including the one
+provider, Bitbucket Cloud, that needs `username:` set explicitly), and what
 else this plugin deliberately does not do yet.
 
 A commit made this way against a local repository fixture is exactly what
 `plugins/git`'s own tests exercise (see its README, "What was proven to
 bite") - but a runnable *example* against the network cannot safely do the
 same: there is no fixture repository this corpus can push to on every CI run
-without either needing a credential checked into the repository (which
-CLAUDE.md's own secrets story forbids) or leaving commits scattered across a
+without either needing a credential checked into the repository (where
+everyone who can read it could use it) or leaving commits scattered across a
 real public repository each time CI runs. So, same as
 [`examples/plugins/github`](../github) does for its own mutation
 (`github.issue_comment`), the write half is a separate, parameterized file
@@ -59,10 +59,25 @@ that only runs when a human deliberately supplies real inputs.
 $ mkdir -p ./plugins
 $ go -C plugins/git build -o ../../plugins/flowstate-plugin-git .
 $ flow plugins --plugin-dir ./plugins
-$ flow worker --allow-unversioned-interpreter --plugin-dir ./plugins &
-$ flow server --insecure-no-auth &
+$ flow worker --allow-unversioned-interpreter --plugin-dir ./plugins \
+    --auth-policy examples/plugins/greet/auth.yaml &
+$ flow server --insecure-no-auth --plugin-dir ./plugins &
 $ flow run examples/plugins/git/workflow.yaml
 ```
+
+`--auth-policy` is needed although this file reads no secret: the plugin
+registers the `git:` secret scheme, and a worker holding any secret provider
+refuses to start without a policy that has a `secrets:` section.
+[`examples/plugins/greet/auth.yaml`](../greet/auth.yaml) is a rehearsal policy
+that allows every reference.
+
+`flow run` refuses every file here today (#1548): it checks a file against its
+own build's task registry, takes no `--plugin-dir`, and so reports each `git.*`
+task as one nothing registered before the server sees it. Until that is fixed,
+`flow run local` with the same `--plugin-dir` and `--auth-policy` runs one in a
+single process, and an agent host running `flow mcp --plugin-dir ./plugins`
+submits it to this server with `flowstate_compile` then `flowstate_run`. The
+`flow run` lines below are refused the same way.
 
 `--insecure-no-auth` is what makes this a rehearsal rather than a deployment:
 the server authenticates every caller as anonymous, which is only ever right on
@@ -75,13 +90,39 @@ network examples one level up.
 
 ## Running the private-read example
 
-Needs a real credential and a real private repository this token can read:
+Needs a real credential and a real private repository this token can read. Put
+the token in a file only you can read (mode 0600), outside the checkout so it
+is never staged, `~/.config/flowstate/plugin-env.yaml`:
+
+```yaml
+env:
+  git:
+    GIT_SECRET_0__TOKEN: ghp_...
+```
 
 ```console
-$ export GIT_SECRET_0__TOKEN=ghp_...
+$ flow worker --allow-unversioned-interpreter --plugin-dir ./plugins \
+    --auth-policy examples/plugins/greet/auth.yaml \
+    --plugin-env-file ~/.config/flowstate/plugin-env.yaml &
 $ flow run examples/plugins/git/ls-remote-private.yaml \
     --input url=https://github.com/your-org/your-private-repo.git
 ```
+
+`${secret('git:token')}` is resolved by the plugin from its own environment,
+which starts empty, so the variable is named to the worker in
+`--plugin-env-file`; one exported in the shell that starts the worker never
+reaches the plugin. `--plugin-env git=GIT_SECRET_0__TOKEN=...` works too, but
+puts the token in the worker's argv, which any local user can read, and in
+your shell history.
+
+Either way the token then sits in the plugin's environment, which anything
+running as the worker's user can read through `/proc/<pid>/environ` for as long
+as the plugin runs: the file protects it at rest, not there
+(`pkg/flowstate/v1/plugin/env_config.go`). On a host other users or processes
+share, resolve it worker-side instead. `token` is a secret input the host
+resolves for each call, so `token: ${secret('file:git-token')}`, with the worker
+started with `--secret-dir` naming a directory only it can read, hands the
+plugin the value for that call and keeps it out of the plugin's environment.
 
 Compare this file to `workflow.yaml` line by line: the only difference is
 `token: ${secret('git:token')}` on the `git.ls_remote:` step. Nothing about
@@ -94,18 +135,19 @@ private repository - see `plugins/git/README.md`, "Authentication."
 $ mkdir -p ./plugins
 $ go -C plugins/git build -o ../../plugins/flowstate-plugin-git .
 $ flow plugins --plugin-dir ./plugins
-$ flow worker --allow-unversioned-interpreter --plugin-dir ./plugins &
-$ flow server --insecure-no-auth &
+$ flow worker --allow-unversioned-interpreter --plugin-dir ./plugins \
+    --auth-policy examples/plugins/greet/auth.yaml &
+$ flow server --insecure-no-auth --plugin-dir ./plugins &
 $ flow run examples/plugins/git/log-and-read-file.yaml
 ```
 
 Also a real, unauthenticated request - no `token:`, safe to run as written.
 `git.log` walks a bounded, path-filtered slice of history (`max_commits: 5`,
-`path: README`); `git.read_file` reads that same path's current content at
-the same default ref. Both clone only the shallow window each call actually
-needs - see `plugins/git/README.md`, "Operational scale," for why that
-matters against a repository whose full history is too large to ever clone
-completely.
+`path: README`); `git.read_file` reads that same path's content at the sha
+of the newest commit `git.log` found. Both clone only the shallow window each
+call actually needs - see `plugins/git/README.md`, "Operational scale," for
+why that matters against a repository whose full history is too large to
+ever clone completely.
 
 ## Running the cursor-resume example
 
@@ -113,8 +155,9 @@ completely.
 $ mkdir -p ./plugins
 $ go -C plugins/git build -o ../../plugins/flowstate-plugin-git .
 $ flow plugins --plugin-dir ./plugins
-$ flow worker --allow-unversioned-interpreter --plugin-dir ./plugins &
-$ flow server --insecure-no-auth &
+$ flow worker --allow-unversioned-interpreter --plugin-dir ./plugins \
+    --auth-policy examples/plugins/greet/auth.yaml &
+$ flow server --insecure-no-auth --plugin-dir ./plugins &
 $ flow run examples/plugins/git/log-resume.yaml
 ```
 
@@ -130,10 +173,13 @@ exhaustion.
 ## Running the write example
 
 Do not run this against a repository you do not want a real commit pushed
-to. It needs a real credential and a real target:
+to. It needs a real credential, in the same `~/.config/flowstate/plugin-env.yaml` as
+above, and a real target:
 
 ```console
-$ export GIT_SECRET_0__TOKEN=ghp_...
+$ flow worker --allow-unversioned-interpreter --plugin-dir ./plugins \
+    --auth-policy examples/plugins/greet/auth.yaml \
+    --plugin-env-file ~/.config/flowstate/plugin-env.yaml &
 $ flow run examples/plugins/git/commit-push.yaml \
     --input url=https://github.com/your-org/your-repo.git \
     --input branch=main \

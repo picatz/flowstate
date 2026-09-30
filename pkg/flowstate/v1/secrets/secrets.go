@@ -65,14 +65,22 @@
 //		return err
 //	}
 //
-//	store, err := secrets.NewStore(
-//		secrets.NewEnvProvider(),
-//		secrets.NewCache(files),
-//	)
+//	env, err := secrets.NewEnvProvider()
+//	if err != nil {
+//		return err
+//	}
 //
-// Then resolve inside the activity that needs the value, and nowhere else:
+//	store, err := secrets.NewStore(env, secrets.NewCache(files))
 //
-//	secret, err := store.Resolve(ctx, value.GetSecretRef())
+// Then resolve inside the activity that needs the value, and nowhere else,
+// through a [Resolver] scoped to the run's namespace:
+//
+//	resolver, err := store.For(state.GetIdentity())
+//	if err != nil {
+//		return nil, err
+//	}
+//
+//	secret, err := resolver.Resolve(ctx, value.GetSecretRef())
 //	if err != nil {
 //		return nil, err // safe to surface: it names the ref, never the value
 //	}
@@ -113,7 +121,7 @@ const (
 // Ref is an interface, and its methods are the accessors protoc generates, so the
 // schema's own secret reference message satisfies it with no conversion:
 //
-//	secret, err := store.Resolve(ctx, value.GetSecretRef())
+//	secret, err := resolver.Resolve(ctx, value.GetSecretRef())
 //
 // That shape is deliberate. A reference has to survive compilation, submission, and
 // workflow-side evaluation untouched, which makes it part of the schema rather than
@@ -201,7 +209,7 @@ func RefString(r Ref) string {
 }
 
 // ValidateRef reports whether a reference is well formed. It is applied by
-// [ParseRef] and again by Store.Resolve, so a reference decoded from a message is
+// [ParseRef] and again by the [Resolver] [Store.For] returns, so a reference decoded from a message is
 // checked too, whether or not it ever existed as text.
 //
 // The returned error wraps [ErrInvalidRef].

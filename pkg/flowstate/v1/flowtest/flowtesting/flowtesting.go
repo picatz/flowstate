@@ -26,8 +26,9 @@
 // spells a space as an underscore). Because the name is the address, a file
 // whose cases share one is refused before anything runs: two cases answering
 // to one subtest name cannot be told apart by the mechanism this package
-// exists to provide. (`flow test` itself accepts duplicates — it runs by
-// written order and never addresses a case by name.)
+// exists to provide. (`flow test` itself accepts duplicates — it runs in
+// written order, and its `--run` selects every case a pattern matches rather
+// than addressing one.)
 //
 // Running a subset under -run needs no further honesty line here, unlike the
 // CLI's `--run` (issue #929): the subtest structure is the account. `go test`

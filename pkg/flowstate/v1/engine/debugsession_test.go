@@ -218,12 +218,13 @@ func TestATypedSessionStepsIntoAndOutOfACall(t *testing.T) {
 	for _, observation := range detached.GetObservations() {
 		observed = append(observed, observation.GetText())
 	}
-	assert.Contains(t, observed, "greet finished")
+	assert.Contains(t, observed, "greet completed")
 }
 
-// TestADurableBreakpointInsideABodyIsNotArmed: a durable run holds only at
-// the top level of the run and of a callee, so a breakpoint on a step inside
-// a loop body is reported unarmed, with why, rather than armed and silent.
+// TestADurableBreakpointInsideABodyIsNotArmed: a durable run holds only where
+// it has one position, so a breakpoint on a step inside a `for_each:` running
+// several iterations at once is reported unarmed, with why, rather than armed
+// and silent.
 func TestADurableBreakpointInsideABodyIsNotArmed(t *testing.T) {
 	t.Parallel()
 
@@ -245,7 +246,7 @@ func TestADurableBreakpointInsideABodyIsNotArmed(t *testing.T) {
 
 	spec := typedSpec("bodies")
 	spec.Steps = slices.Insert(spec.Steps, 3, &v1.Node{Id: "each", Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{
-		Items: v1.NewLiteralList(v1.NewLiteral("a"), v1.NewLiteral("b")), Iterator: "item",
+		Items: v1.NewLiteralList(v1.NewLiteral("a"), v1.NewLiteral("b")), Iterator: "item", MaxParallel: 2,
 		Body: []*v1.Node{logStep("touch", "touched")},
 	}}})
 	tl.env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: spec})
@@ -259,7 +260,7 @@ func TestADurableBreakpointInsideABodyIsNotArmed(t *testing.T) {
 	require.Len(t, states, 3)
 	for _, id := range []string{"body", "bare"} {
 		assert.False(t, states[id].GetVerified(), "%s is armed where the durable run never holds", id)
-		assert.Contains(t, states[id].GetMessage(), "never holds in")
+		assert.Contains(t, states[id].GetMessage(), "never holds")
 		assert.Empty(t, states[id].GetSites())
 	}
 	assert.True(t, states["top"].GetVerified())
@@ -270,7 +271,7 @@ func TestADurableBreakpointInsideABodyIsNotArmed(t *testing.T) {
 }
 
 // TestADurableUntilInsideABodyIsRefused: `until` a step the durable run never
-// holds at would release the run to its end. It is refused with the
+// holds at (one in a concurrent `for_each:`) would release the run to its end. It is refused with the
 // breakpoint's reasoning, and the run stays held where it was.
 func TestADurableUntilInsideABodyIsRefused(t *testing.T) {
 	t.Parallel()
@@ -290,7 +291,7 @@ func TestADurableUntilInsideABodyIsRefused(t *testing.T) {
 
 	spec := typedSpec("until-bodies")
 	spec.Steps = slices.Insert(spec.Steps, 3, &v1.Node{Id: "each", Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{
-		Items: v1.NewLiteralList(v1.NewLiteral("a"), v1.NewLiteral("b")), Iterator: "item",
+		Items: v1.NewLiteralList(v1.NewLiteral("a"), v1.NewLiteral("b")), Iterator: "item", MaxParallel: 2,
 		Body: []*v1.Node{logStep("touch", "touched")},
 	}}})
 	tl.env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: spec})
@@ -300,7 +301,7 @@ func TestADurableUntilInsideABodyIsRefused(t *testing.T) {
 	held, refused := tl.reads["held"], tl.reads["refused"]
 	require.Equal(t, v1.DebugRunState_DEBUG_RUN_STATE_HELD, held.GetState())
 	assert.Equal(t, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_REFUSED, refused.GetReceipt().GetStatus())
-	assert.Contains(t, refused.GetReceipt().GetMessage(), "inside a loop body, a parallel branch or a switch arm")
+	assert.Contains(t, refused.GetReceipt().GetMessage(), "inside a parallel branch or a for_each running several iterations at once")
 	assert.Contains(t, refused.GetReceipt().GetMessage(), "run until the enclosing step instead")
 	assert.Equal(t, v1.DebugRunState_DEBUG_RUN_STATE_HELD, refused.GetState(), "a refused until moved the run")
 	assert.Equal(t, held.GetRevision(), refused.GetRevision())
@@ -320,6 +321,9 @@ func TestAHistoryBeforeTheUntilRefusalStillReleasesTheRun(t *testing.T) {
 
 	tl := newTimeline(t)
 	tl.env.OnGetVersion(engine.UntilRefusalChange, workflow.DefaultVersion, 1).Return(workflow.DefaultVersion)
+	// And before bodies were held in at all, or `each/touch` is a stop the
+	// run makes and the resume is no release.
+	tl.env.OnGetVersion(engine.HoldInBodiesChange, workflow.DefaultVersion, 1).Return(workflow.DefaultVersion)
 	const sre = "sre-1@example.com"
 	tl.ask(30*time.Second, sre, &v1.DebugAsk{Verb: v1.DebugVerbPause, Session: "s1", Request: "attach", Lease: 5 * time.Minute})
 	tl.ask(70*time.Second, sre, &v1.DebugAsk{Verb: v1.DebugVerbResume, Session: "s1", Request: "into-body",
@@ -509,7 +513,7 @@ func TestATypedSessionIsNotReleasedByAMalformedOrLegacyResume(t *testing.T) {
 // TestATruncatedDurableUntilRefusesAStepTheProgramNeverDeclares: past
 // [v1.MaxDebugStaticSites] the sites cannot say a step is absent, but the
 // program as written still can. An `until` naming a step no workflow declares,
-// or one it declares only inside an arm, where a durable run never holds,
+// or one it declares only inside a parallel branch, where a durable run never holds,
 // would release the held run to its end, so it is refused; one naming a step
 // declared where the run holds is not.
 func TestATruncatedDurableUntilRefusesAStepTheProgramNeverDeclares(t *testing.T) {
@@ -536,7 +540,7 @@ func TestATruncatedDurableUntilRefusesAStepTheProgramNeverDeclares(t *testing.T)
 	tl.ask(90*time.Second, sre, &v1.DebugAsk{Verb: v1.DebugVerbResume, Session: "s1", Request: "bye",
 		Action: v1.DebugResumeAction_DEBUG_RESUME_ACTION_DETACH})
 
-	// Enough sites to pass the cap, in an arm the run never takes.
+	// Enough sites to pass the cap, in a branch the run never takes.
 	wide := &v1.Workflow{Name: "wide", Profile: v1.CurrentProfile}
 	for i := range 512 {
 		wide.Steps = append(wide.Steps, logStep(fmt.Sprintf("s%d", i), "x"))
@@ -546,9 +550,13 @@ func TestATruncatedDurableUntilRefusesAStepTheProgramNeverDeclares(t *testing.T)
 		calls = append(calls, &v1.Node{Id: fmt.Sprintf("call%d", i), Kind: &v1.Node_Call{Call: &v1.Call{Workflow: wide}}})
 	}
 	spec := typedSpec("until-truncated")
+	// Inside a `switch:` arm the run never takes, so the branch is walked as
+	// written and never run (a `parallel:` this wide is refused when it starts).
 	spec.Steps = append(spec.Steps, &v1.Node{Id: "never", Kind: &v1.Node_Switch{Switch: &v1.Switch{
 		Value: v1.NewLiteral("live"),
-		Cases: []*v1.Switch_Case{{Values: []*v1.Value{v1.NewLiteral("never")}, Steps: calls}},
+		Cases: []*v1.Switch_Case{{Values: []*v1.Value{v1.NewLiteral("never")}, Steps: []*v1.Node{
+			{Id: "fan", Kind: &v1.Node_Parallel{Parallel: &v1.Parallel{Branches: []*v1.Parallel_Branch{{Steps: calls}}}}},
+		}}},
 	}}})
 	_, truncated := v1.DebugStaticSites(spec)
 	require.True(t, truncated, "the program did not pass the cap, so this proves nothing")
@@ -564,7 +572,7 @@ func TestATruncatedDurableUntilRefusesAStepTheProgramNeverDeclares(t *testing.T)
 	unholdable := tl.reads["unholdable"]
 	assert.Equal(t, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_REFUSED, unholdable.GetReceipt().GetStatus(),
 		"an until the run can never stop at was applied")
-	assert.Contains(t, unholdable.GetReceipt().GetMessage(), "inside a loop body, a parallel branch or a switch arm")
+	assert.Contains(t, unholdable.GetReceipt().GetMessage(), "inside a parallel branch or a for_each running several iterations at once")
 	assert.Equal(t, held.GetRevision(), unholdable.GetRevision(), "a refused until moved the run")
 	assert.Equal(t, "second", tl.reads["arrived"].GetOccurrence().GetAddress(), "a declared until was refused")
 }

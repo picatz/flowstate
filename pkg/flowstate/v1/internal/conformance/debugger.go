@@ -1,6 +1,8 @@
 package conformance
 
 import (
+	"slices"
+	"strings"
 	"time"
 
 	"google.golang.org/protobuf/types/known/durationpb"
@@ -40,13 +42,14 @@ type DebuggerCase struct {
 	// # Why it is ever shorter
 	//
 	// A lease names one holder and one position, and the durable driver takes
-	// one only where the run *has* a single representable position — the
-	// `susp == 0` boundaries, the same set Continue-As-New may suspend at and
-	// the same set `RunProgress` answers about. A `switch:` arm, a `parallel:`
-	// branch and a loop body are all at several positions at once as far as
-	// suspension is concerned, and [v1.DebugPosition] carries no `path` for
-	// precisely that reason ("a position that needed one would be a run held in
-	// two places, which is not a state this seam can be in", debug.proto).
+	// one only where the run *has* a single position: the top level, a
+	// callee, and a `loop:` body, `switch:` arm or `for_each:` running one
+	// iteration at a time ([SteppedCases] holds both drivers to exactly those).
+	// A `parallel:` branch and a `for_each:` running iterations together are
+	// at several positions at once, and [v1.DebugPosition] carries no `path`
+	// for precisely that reason ("a position that needed one would be a run
+	// held in two places, which is not a state this seam can be in",
+	// debug.proto).
 	//
 	// The local driver has no such constraint: it holds a goroutine, so it can
 	// stop each branch where that branch is. So the asymmetry is a real
@@ -184,26 +187,19 @@ func DebuggerCases() []DebuggerCase {
 			}),
 			Offered: []string{"each", "touch", "touch", "touch"},
 
-			// The loop, and not its body. A `for_each:` body runs at a deeper
-			// suspend level than the step that declares it — the engine will
-			// not Continue-As-New inside one — so it has no representable
-			// position for a lease to name. The local driver stops three times
-			// here and a durable lease stops once, which is the asymmetry
-			// [DebuggerCase.Held] exists to state rather than leave for
-			// somebody to find.
-			Held: []string{"each"},
+			// The loop and each iteration of its body: a `for_each:` running one
+			// iteration at a time has one position, so both drivers stop three
+			// times. Only a `for_each:` running iterations together would be
+			// stopped in by the local driver alone ([DebuggerCase.Held]).
+			Held: []string{"each", "touch", "touch", "touch"},
 		},
 		{
-			// The asymmetry with nothing else going on, so that the difference
-			// between the two lists is the whole of what this case is about.
-			//
 			// A `switch:` is the sequential member of the family — one arm
 			// runs, deterministically, so the offers are a fact rather than a
-			// race — and its body is at a deeper suspend level exactly as a
-			// loop's is. Written with a `parallel:` this case could not state
-			// an order at all; written with a `for_each:` it would repeat the
-			// one above.
-			Name: "a switch is a boundary and the arm it takes is not",
+			// race — and the arm it takes has one position, as a loop's body
+			// does. Written with a `parallel:` this case could not state an
+			// order at all, nor a durable hold to compare it to.
+			Name: "a switch is a boundary and so is the arm it takes",
 			Workflow: &v1.Workflow{
 				Name:    "debug-switch",
 				Profile: v1.CurrentProfile,
@@ -233,7 +229,137 @@ func DebuggerCases() []DebuggerCase {
 				"case":  v1.NewLiteral("go"),
 			}),
 			Offered: []string{"before", "route", "chosen"},
-			Held:    []string{"before", "route"},
+			Held:    []string{"before", "route", "chosen"},
+		},
+	}
+}
+
+// SteppedCase is a run a session steps through, one `step` at a time from the
+// first boundary until the run ends. Both drivers must stop at exactly Stops,
+// in order: the same steps, in the same iterations, arms and calls. A driver
+// that skipped a body its neighbour stopped in, or stopped where the other's
+// run is not, is a debugger that describes a different run.
+//
+// Only programs whose every step has one position at a time are here, which is
+// the whole of what a durable run holds at: a `parallel:` branch or a
+// concurrent `for_each:` is stopped in by the local driver alone (see
+// [DebuggerCase.Held]), so it is left to the durable driver's own tests.
+type SteppedCase struct {
+	// Name labels the case.
+	Name string
+
+	// Workflow is the program, with no `debug:` policy: the durable caller
+	// adds the one its harness attaches under.
+	Workflow *v1.Workflow
+
+	// Stops is the occurrence address of each stop, in order.
+	Stops []string
+}
+
+// SteppedCases is the corpus for [SteppedCase].
+func SteppedCases() []SteppedCase {
+	return []SteppedCase{
+		{
+			Name: "stepping enters every iteration of a for_each body",
+			Workflow: &v1.Workflow{
+				Name:    "stepped-for-each",
+				Profile: v1.CurrentProfile,
+				Steps: []*v1.Node{
+					says("first", "one"),
+					{
+						Id: "each",
+						Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{
+							Items:       v1.NewExpr(`["a", "b"]`),
+							MaxParallel: 1,
+							Body:        []*v1.Node{says("touch", "visited"), says("again", "twice")},
+						}},
+					},
+					says("last", "two"),
+				},
+			},
+			Stops: []string{
+				"first", "each", "each[0]/touch", "each[0]/again", "each[1]/touch", "each[1]/again", "last",
+			},
+		},
+		{
+			Name: "stepping enters every iteration of a loop",
+			Workflow: &v1.Workflow{
+				Name:    "stepped-loop",
+				Profile: v1.CurrentProfile,
+				Steps: []*v1.Node{
+					{
+						Id: "count",
+						Kind: &v1.Node_Loop{Loop: &v1.Loop{
+							State:         "n",
+							Initial:       v1.NewLiteral(int64(2)),
+							Update:        v1.NewExpr("n - 1"),
+							Until:         v1.NewExpr("n <= 1"),
+							MaxIterations: 10,
+							Body:          []*v1.Node{says("tick", "ticked")},
+						}},
+					},
+					says("done", "end"),
+				},
+			},
+			Stops: []string{"count", "count[0]/tick", "count[1]/tick", "done"},
+		},
+		{
+			Name: "stepping enters the arm a switch takes and no other",
+			Workflow: &v1.Workflow{
+				Name:    "stepped-switch",
+				Profile: v1.CurrentProfile,
+				Steps: []*v1.Node{
+					{
+						Id: "route",
+						Kind: &v1.Node_Switch{Switch: &v1.Switch{
+							Value: v1.NewLiteral("go"),
+							Cases: []*v1.Switch_Case{
+								{Values: []*v1.Value{v1.NewLiteral("stop")}, Steps: []*v1.Node{says("halted", "no")}},
+								{Values: []*v1.Value{v1.NewLiteral("go")}, Steps: []*v1.Node{says("chosen", "yes")}},
+							},
+						}},
+					},
+					says("after", "end"),
+				},
+			},
+			Stops: []string{"route", "route?1/chosen", "after"},
+		},
+		{
+			Name: "stepping enters a call made from inside a body, and a body inside a callee",
+			Workflow: &v1.Workflow{
+				Name:    "stepped-nested",
+				Profile: v1.CurrentProfile,
+				Steps: []*v1.Node{
+					{
+						Id: "each",
+						Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{
+							Items:       v1.NewExpr(`["a"]`),
+							MaxParallel: 1,
+							Body: []*v1.Node{{Id: "nested", Kind: &v1.Node_Call{Call: &v1.Call{
+								Workflow: &v1.Workflow{
+									Name:    "child",
+									Profile: v1.CurrentProfile,
+									Steps: []*v1.Node{
+										says("inner", "i"),
+										{
+											Id: "sweep",
+											Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{
+												Items:       v1.NewExpr(`["x"]`),
+												MaxParallel: 1,
+												Body:        []*v1.Node{says("deep", "d")},
+											}},
+										},
+									},
+								},
+							}}}},
+						}},
+					},
+				},
+			},
+			Stops: []string{
+				"each", "each[0]/nested", "each[0]/nested(child)/inner", "each[0]/nested(child)/sweep",
+				"each[0]/nested(child)/sweep[0]/deep",
+			},
 		},
 	}
 }
@@ -602,6 +728,30 @@ func FailedSensitiveCases() []FailedSensitiveCase {
 		Quoted: "no such key",
 		Secret: secret,
 	}, {
+		// The failure is the step's `if:`, which records no outcome of its
+		// own, so the only report of it is the one the guard seam gives
+		// (#2124), and it has to withhold what a failed step's does.
+		Name: "a callee's sensitive input, quoted by an if: that could not be evaluated",
+		Workflow: &v1.Workflow{
+			Name:    "failed-sensitive-guard",
+			Profile: v1.CurrentProfile,
+			Steps: []*v1.Node{
+				says("first", "one"),
+				{Id: "nested", Kind: &v1.Node_Call{Call: &v1.Call{
+					Workflow: &v1.Workflow{
+						Name:           "child",
+						Profile:        v1.CurrentProfile,
+						DeclaredInputs: []*v1.InputDeclaration{{Name: "api_key", Type: v1.InputDeclaration_TYPE_STRING, Sensitive: true}},
+						Steps:          []*v1.Node{guarded("boom", `{"a": 1}[inputs.api_key] == 1`, "never")},
+					},
+					Arguments: map[string]*v1.Value{"api_key": v1.NewLiteral(secret)},
+				}}},
+			},
+		},
+		Failed: []string{"boom", "nested"},
+		Quoted: "no such key",
+		Secret: secret,
+	}, {
 		// Only the leaf declares anything: what its failure carries has to
 		// survive the middle's own report of it to reach the root's.
 		Name: "a leaf's own sensitive input, quoted two calls deep",
@@ -685,4 +835,646 @@ func FailedSensitiveCases() []FailedSensitiveCase {
 		Quoted: "must satisfy",
 		Secret: secret,
 	}}
+}
+
+// OutputCase is a run both drivers debug through while its steps finish. Each
+// driver must give the same account of every step that produced outputs: the
+// values it produced, named and in name order (`flowdebug.FinishedText`),
+// withheld as a hold at that step would withhold them.
+type OutputCase struct {
+	// Name labels the case.
+	Name string
+
+	// Workflow is the program, with no `debug:` policy: the durable caller
+	// adds the one its harness attaches under. Its first step always runs,
+	// so both drivers hold there before the resume.
+	Workflow *v1.Workflow
+
+	// Finished is the account of each step that finished, by step id, which
+	// the case keeps unique across the workflows it calls. Nil for a case
+	// about addresses alone.
+	Finished map[string]string
+
+	// Accounts, when set, is the account of the FINISHED step at each address
+	// it names, which pairs an iteration's address with what that iteration
+	// produced: iterations running at once finish in any order, and an
+	// address attached to the wrong one would still be a right address.
+	Accounts map[string]string
+
+	// Addresses, when set, is the occurrence address of every step that
+	// reported an outcome (finished, skipped, failed or tolerated), sorted:
+	// where in the run each did, as an author reads it (`each[1]/touch`,
+	// `fan#0/left`, `route?0/chosen`). A step in a body is named by the
+	// iteration, branch or arm it ran in on both drivers, whether it ran,
+	// was skipped, or failed.
+	Addresses []string
+
+	// Secret, when set, is a value a callee declares sensitive, which no
+	// account may show.
+	Secret string
+}
+
+// Problems is how a driver's observations differ from the case's account: a
+// step whose account is not the expected sentence, one missing, one extra, and
+// any account that shows the case's secret. Empty means the driver agrees.
+func (c OutputCase) Problems(observations []*v1.DebugObservation) []string {
+	var problems []string
+	finished := map[string]string{}
+	var addresses []string
+	accounts := map[string]string{}
+	for _, observation := range observations {
+		switch observation.GetKind() {
+		case v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_FINISHED:
+			finished[observation.GetStepId()] = observation.GetText()
+			addresses = append(addresses, observation.GetAddress())
+			accounts[observation.GetAddress()] = observation.GetText()
+		case v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_SKIPPED,
+			v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_FAILED,
+			v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_TOLERATED:
+			addresses = append(addresses, observation.GetAddress())
+		}
+		if c.Secret != "" && strings.Contains(observation.GetText(), c.Secret) {
+			problems = append(problems, observation.GetStepId()+"'s account showed the secret")
+		}
+	}
+	if c.Finished != nil {
+		for id, want := range c.Finished {
+			if got, ok := finished[id]; !ok {
+				problems = append(problems, "no account of "+id+", want "+want)
+			} else if got != want {
+				problems = append(problems, "account of "+id+" is "+got+", want "+want)
+			}
+		}
+		for id := range finished {
+			if _, ok := c.Finished[id]; !ok {
+				problems = append(problems, "unexpected account of "+id+": "+finished[id])
+			}
+		}
+	}
+	for address, want := range c.Accounts {
+		if got := accounts[address]; got != want {
+			problems = append(problems, "account at "+address+" is "+got+", want "+want)
+		}
+	}
+	if c.Addresses != nil {
+		slices.Sort(addresses)
+		if !slices.Equal(addresses, c.Addresses) {
+			problems = append(problems, "finished at "+strings.Join(addresses, ", ")+", want "+strings.Join(c.Addresses, ", "))
+		}
+	}
+	slices.Sort(problems)
+
+	return problems
+}
+
+// OutputCases is the corpus for [OutputCase].
+func OutputCases() []OutputCase {
+	// Longer than any bound an observation is cut to, so a driver that cut
+	// the account before withholding it would keep the value's start.
+	longSecret := "hunter2-output-secret-" + strings.Repeat("x", 1024)
+
+	return []OutputCase{
+		{
+			Name: "a step's account carries the outputs it produced",
+			Workflow: &v1.Workflow{
+				Name:    "output-plain",
+				Profile: v1.CurrentProfile,
+				Steps: []*v1.Node{
+					says("first", "one"),
+					{Id: "price", Kind: &v1.Node_Value{Value: v1.NewExpr("40 + 2")}},
+					{Id: "shape", Kind: &v1.Node_Value{Value: v1.NewExpr(`{"tags": ["a", "b"], "count": 2}`)}},
+					{Id: "background", Async: true, Kind: says("background", "two").GetKind()},
+				},
+			},
+			Finished: map[string]string{
+				"first":      "first completed",
+				"price":      "price -> value: 42",
+				"shape":      `shape -> value: {"count":2,"tags":["a","b"]}`,
+				"background": "background completed",
+			},
+		},
+		{
+			// Where a step ran is part of what a session says of it. A step
+			// in a body is named by the iteration, branch or arm it ran in,
+			// and a body inside a callee by the call first, as the local
+			// driver names them; the durable driver named none of them.
+			Name: "a step in a body is addressed by the iteration, branch or arm it ran in",
+			Workflow: &v1.Workflow{
+				Name:    "output-addresses",
+				Profile: v1.CurrentProfile,
+				Steps: []*v1.Node{
+					says("first", "one"),
+					{
+						Id: "each",
+						Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{
+							Items:       v1.NewExpr(`["a", "b"]`),
+							MaxParallel: 1,
+							Body:        []*v1.Node{says("touch", "visited")},
+						}},
+					},
+					{
+						Id: "count",
+						Kind: &v1.Node_Loop{Loop: &v1.Loop{
+							State:         "n",
+							Initial:       v1.NewLiteral(int64(2)),
+							Update:        v1.NewExpr("n - 1"),
+							Until:         v1.NewExpr("n <= 1"),
+							MaxIterations: 10,
+							Body:          []*v1.Node{says("tick", "ticked")},
+						}},
+					},
+					{Id: "fan", Kind: &v1.Node_Parallel{Parallel: &v1.Parallel{Branches: []*v1.Parallel_Branch{
+						{Steps: []*v1.Node{says("left", "l")}},
+						{Steps: []*v1.Node{says("right", "r")}},
+					}}}},
+					{
+						Id: "route",
+						Kind: &v1.Node_Switch{Switch: &v1.Switch{
+							Value: v1.NewLiteral("go"),
+							Cases: []*v1.Switch_Case{
+								{Values: []*v1.Value{v1.NewLiteral("stop")}, Steps: []*v1.Node{says("halted", "no")}},
+								{Values: []*v1.Value{v1.NewLiteral("go")}, Steps: []*v1.Node{says("chosen", "yes")}},
+							},
+						}},
+					},
+					{Id: "nested", Kind: &v1.Node_Call{Call: &v1.Call{
+						Workflow: &v1.Workflow{
+							Name:    "child",
+							Profile: v1.CurrentProfile,
+							Steps: []*v1.Node{
+								says("inner", "i"),
+								{
+									Id: "sweep",
+									Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{
+										Items:       v1.NewExpr(`["x"]`),
+										MaxParallel: 1,
+										Body:        []*v1.Node{says("deep", "d")},
+									}},
+								},
+							},
+						},
+					}}},
+				},
+			},
+			Addresses: []string{
+				"count",
+				"count[0]/tick",
+				"count[1]/tick",
+				"each",
+				"each[0]/touch",
+				"each[1]/touch",
+				"fan",
+				"fan#0/left",
+				"fan#1/right",
+				"first",
+				"nested",
+				"nested(child)/inner",
+				"nested(child)/sweep",
+				"nested(child)/sweep[0]/deep",
+				"route",
+				"route?1/chosen",
+			},
+		},
+		{
+			// A step that never ran, or ran and failed, is placed by the run
+			// and not by the last step to arrive: the second iteration's
+			// skipped `maybe` is `each[1]/maybe`, not the first's address
+			// left behind (review of #2236). A concurrent `for_each:` names
+			// its iterations too.
+			Name: "a skipped, tolerated or concurrent step in a body is addressed by where it ran",
+			Workflow: &v1.Workflow{
+				Name:    "output-addresses-outcomes",
+				Profile: v1.CurrentProfile,
+				Steps: []*v1.Node{
+					says("first", "one"),
+					{
+						Id: "each",
+						Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{
+							Items:       v1.NewExpr(`["a", "b"]`),
+							Iterator:    "item",
+							MaxParallel: 1,
+							Body: []*v1.Node{
+								guarded("maybe", `item == "a"`, "visited"),
+								{
+									Id:     "flaky",
+									Policy: &v1.StepPolicy{ContinueOnError: true},
+									Kind: &v1.Node_Task{Task: &v1.Task{
+										Name:   "log",
+										Inputs: map[string]*v1.Value{"message": v1.NewExpr(`{"a": 1}["missing"]`)},
+									}},
+								},
+							},
+						}},
+					},
+					{
+						Id: "wide",
+						Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{
+							Items:       v1.NewExpr(`["x", "y"]`),
+							Iterator:    "item",
+							MaxParallel: 2,
+							Body:        []*v1.Node{{Id: "echo", Kind: &v1.Node_Value{Value: v1.NewExpr("item")}}},
+						}},
+					},
+				},
+			},
+			Addresses: []string{
+				"each",
+				"each[0]/flaky",
+				"each[0]/maybe",
+				"each[1]/flaky",
+				"each[1]/maybe",
+				"first",
+				"wide",
+				"wide[0]/echo",
+				"wide[1]/echo",
+			},
+			Accounts: map[string]string{
+				"wide[0]/echo": `echo -> value: "x"`,
+				"wide[1]/echo": `echo -> value: "y"`,
+			},
+		},
+		{
+			// A failure the run tolerates is reported as one, and as nothing
+			// else: the step did not finish (Copilot, #2233).
+			Name: "a tolerated async failure is not also reported as finished",
+			Workflow: &v1.Workflow{
+				Name:    "output-async-tolerated",
+				Profile: v1.CurrentProfile,
+				Steps: []*v1.Node{
+					says("first", "one"),
+					{
+						Id:     "flaky",
+						Async:  true,
+						Policy: &v1.StepPolicy{ContinueOnError: true},
+						Kind: &v1.Node_Task{Task: &v1.Task{
+							Name:   "log",
+							Inputs: map[string]*v1.Value{"message": v1.NewExpr(`{"a": 1}["missing"]`)},
+						}},
+					},
+					says("last", "two"),
+				},
+			},
+			Finished: map[string]string{
+				"first": "first completed",
+				"last":  "last completed",
+			},
+		},
+		{
+			// #2213's shape: the callee declares the input sensitive, hands it
+			// back as an output it does not, and the caller copies it on. None
+			// of the three accounts may show it, in the callee or after it.
+			Name: "a step inside a callee, its call, and a copy of what it handed back withhold the callee's sensitive input",
+			Workflow: &v1.Workflow{
+				Name:    "output-sensitive",
+				Profile: v1.CurrentProfile,
+				Steps: []*v1.Node{
+					says("first", "one"),
+					{Id: "nested", Kind: &v1.Node_Call{Call: &v1.Call{
+						Workflow: &v1.Workflow{
+							Name:           "child",
+							Profile:        v1.CurrentProfile,
+							DeclaredInputs: []*v1.InputDeclaration{{Name: "api_key", Type: v1.InputDeclaration_TYPE_STRING, Sensitive: true}},
+							Steps: []*v1.Node{
+								{Id: "header", Kind: &v1.Node_Value{Value: v1.NewExpr(`"Bearer " + inputs.api_key`)}},
+							},
+							DeclaredOutputs: []*v1.OutputDeclaration{{Name: "key", Value: v1.NewExpr("inputs.api_key")}},
+						},
+						Arguments: map[string]*v1.Value{"api_key": v1.NewLiteral(longSecret)},
+					}}},
+					{Id: "copied", Kind: &v1.Node_Value{Value: v1.NewExpr(`"Bearer " + steps.nested.key`)}},
+				},
+			},
+			Finished: map[string]string{
+				"first":  "first completed",
+				"header": `header -> value: "Bearer [redacted]"`,
+				"nested": `nested -> key: "[redacted]"`,
+				"copied": `copied -> value: "Bearer [redacted]"`,
+			},
+			// Its first runes, which an account cut before it was withheld
+			// would keep.
+			Secret: longSecret[:24],
+		},
+		{
+			// A short leaf of a sensitive structure is found by value: no
+			// substring of the rendered line finds `7` in `{"pin":7}`.
+			// (`who` is not the structure's, so it shows.)
+			Name: "a step inside a callee withholds a sensitive structure's leaves by value",
+			Workflow: &v1.Workflow{
+				Name:    "output-sensitive-struct",
+				Profile: v1.CurrentProfile,
+				Steps: []*v1.Node{
+					says("first", "one"),
+					{Id: "nested", Kind: &v1.Node_Call{Call: &v1.Call{
+						Workflow: &v1.Workflow{
+							Name:           "child",
+							Profile:        v1.CurrentProfile,
+							DeclaredInputs: []*v1.InputDeclaration{{Name: "creds", Type: v1.InputDeclaration_TYPE_STRUCT, Sensitive: true}},
+							Steps: []*v1.Node{
+								{Id: "echo", Kind: &v1.Node_Value{Value: v1.NewExpr(`{"who": "ops", "pin": inputs.creds.pin}`)}},
+							},
+						},
+						Arguments: map[string]*v1.Value{"creds": v1.NewExpr(`{"pin": 7, "token": "hunter2-struct"}`)},
+					}}},
+				},
+			},
+			Finished: map[string]string{
+				"first": "first completed",
+				// The key too: a sensitive structure's field names are what its
+				// set withholds.
+				"echo":   `echo -> value: {"[redacted]":"[redacted]","who":"ops"}`,
+				"nested": "nested completed",
+			},
+			Secret: "hunter2-struct",
+		},
+	}
+}
+
+// GuardCase is a run both drivers debug through while its steps' `if:`s
+// decide against them. Each driver must give the same account of every
+// decision, taken from the evaluation that made it (#2124): a skip quotes the
+// condition that decided it, in [v1.SkippedText]'s words, and a condition
+// that could not be evaluated is reported as its step failing, which a
+// session would otherwise show as a step the run never reached.
+type GuardCase struct {
+	// Name labels the case.
+	Name string
+
+	// Workflow is the program, with no `debug:` policy: the durable caller
+	// adds the one its harness attaches under. Its first step always runs,
+	// so both drivers hold there before the resume.
+	Workflow *v1.Workflow
+
+	// Skipped is the account of each skip, in order.
+	Skipped []string
+
+	// Failed is the step whose `if:` could not be evaluated, which ends the
+	// run, or "" for a run that completes. Quoted is what its report must
+	// say of the error.
+	Failed, Quoted string
+
+	// Secret, when set, is a value a callee declares sensitive and its `if:`
+	// quotes, which no account may show.
+	Secret string
+}
+
+// GuardCases is the corpus for [GuardCase].
+func GuardCases() []GuardCase {
+	// Longer than any bound an observation is cut to, so a driver that cut
+	// the sentence before withholding it would keep the value's start
+	// (Codex, #2227).
+	longSecret := "hunter2-guard-secret-" + strings.Repeat("x", 1024)
+
+	return []GuardCase{
+		{
+			Name: "a skip quotes the if: that decided it",
+			Workflow: &v1.Workflow{
+				Name:    "guard-skip",
+				Profile: v1.CurrentProfile,
+				Steps: []*v1.Node{
+					says("first", "one"),
+					guarded("discount", "size(['a']) > 1", "never"),
+					// Written back from the macro call the parse keeps.
+					guarded("macro", "['a'].exists(x, x == 'b')", "never"),
+					// A compiled `if: false` is a literal, not an expression.
+					{Id: "literal", Condition: v1.NewLiteral(false), Kind: says("literal", "never").GetKind()},
+					says("last", "two"),
+				},
+			},
+			Skipped: []string{
+				"discount skipped: `if: size([\"a\"]) > 1` was false",
+				"macro skipped: `if: [\"a\"].exists(x, x == \"b\")` was false",
+				"literal skipped (`if: false`)",
+			},
+		},
+		{
+			// The condition is the author's text, and here quotes the value a
+			// callee declares sensitive, which the root does not. Each driver
+			// withholds it where the skip is, as it would any rendering there.
+			Name: "a skip inside a callee withholds what the callee declares sensitive",
+			Workflow: &v1.Workflow{
+				Name:    "guard-sensitive",
+				Profile: v1.CurrentProfile,
+				Steps: []*v1.Node{
+					says("first", "one"),
+					{Id: "nested", Kind: &v1.Node_Call{Call: &v1.Call{
+						Workflow: &v1.Workflow{
+							Name:           "child",
+							Profile:        v1.CurrentProfile,
+							DeclaredInputs: []*v1.InputDeclaration{{Name: "api_key", Type: v1.InputDeclaration_TYPE_STRING, Sensitive: true}},
+							Steps:          []*v1.Node{guarded("rotate", `inputs.api_key != "`+longSecret+`"`, "never")},
+						},
+						Arguments: map[string]*v1.Value{"api_key": v1.NewLiteral(longSecret)},
+					}}},
+				},
+			},
+			Skipped: []string{"rotate skipped: `if: inputs.api_key != \"[redacted]\"` was false"},
+			// Its first runes, which a sentence cut before it was withheld
+			// would keep.
+			Secret: longSecret[:24],
+		},
+		{
+			// A bytes literal is written in octal escapes, so a sensitive
+			// value in one is withheld by value before the condition is
+			// written, or no match for its text finds it (Codex, #2227).
+			Name: "a skip inside a callee withholds a sensitive bytes value it quotes",
+			Workflow: &v1.Workflow{
+				Name:    "guard-sensitive-bytes",
+				Profile: v1.CurrentProfile,
+				Steps: []*v1.Node{
+					says("first", "one"),
+					{Id: "nested", Kind: &v1.Node_Call{Call: &v1.Call{
+						Workflow: &v1.Workflow{
+							Name:           "child",
+							Profile:        v1.CurrentProfile,
+							DeclaredInputs: []*v1.InputDeclaration{{Name: "creds", Type: v1.InputDeclaration_TYPE_STRUCT, Sensitive: true}},
+							Steps: []*v1.Node{
+								guarded("rotate", `inputs.creds.token != b"hunter2-bytes"`, "never"),
+								// The same bytes written as a string literal.
+								guarded("recheck", `string(inputs.creds.token) != "hunter2-bytes"`, "never"),
+							},
+						},
+						Arguments: map[string]*v1.Value{"creds": v1.NewExpr(`{"token": b"hunter2-bytes"}`)},
+					}}},
+				},
+			},
+			// The field is withheld too: a sensitive structure's keys are
+			// what its set withholds, and the renderer quotes a field name
+			// that is not an identifier.
+			Skipped: []string{
+				"rotate skipped: `if: inputs.creds.`[redacted]` != \"[redacted]\"` was false",
+				"recheck skipped: `if: string(inputs.creds.`[redacted]`) != \"[redacted]\"` was false",
+			},
+			// "hun" as the renderer writes it in a bytes literal; the
+			// string literal is checked by the expected sentences.
+			Secret: `\150\165\156`,
+		},
+		{
+			// A string that merely contains a sensitive structure's bytes is
+			// withheld from the bytes' text, which the set holds a spelling
+			// of (#2231).
+			Name: "a skip inside a callee withholds a literal containing a nested sensitive bytes value",
+			Workflow: &v1.Workflow{
+				Name:    "guard-sensitive-bytes-contained",
+				Profile: v1.CurrentProfile,
+				Steps: []*v1.Node{
+					says("first", "one"),
+					{Id: "nested", Kind: &v1.Node_Call{Call: &v1.Call{
+						Workflow: &v1.Workflow{
+							Name:           "child",
+							Profile:        v1.CurrentProfile,
+							DeclaredInputs: []*v1.InputDeclaration{{Name: "creds", Type: v1.InputDeclaration_TYPE_STRUCT, Sensitive: true}},
+							Steps: []*v1.Node{
+								guarded("rotate", `"Bearer hunter2-contained" != "Bearer " + string(inputs.creds.token)`, "never"),
+							},
+						},
+						Arguments: map[string]*v1.Value{"creds": v1.NewExpr(`{"token": b"hunter2-contained"}`)},
+					}}},
+				},
+			},
+			Skipped: []string{
+				"rotate skipped: `if: \"[redacted]\" != \"Bearer \" + string(inputs.creds.`[redacted]`)` was false",
+			},
+			Secret: "hunter2-contained",
+		},
+		{
+			// The renderer escapes the quote, so the value's own text is
+			// no longer in the sentence to be matched; a literal that merely
+			// contains it is withheld from its unescaped text (Copilot,
+			// #2227).
+			Name: "a skip inside a callee withholds a literal containing a sensitive value the renderer escapes",
+			Workflow: &v1.Workflow{
+				Name:    "guard-sensitive-escaped",
+				Profile: v1.CurrentProfile,
+				Steps: []*v1.Node{
+					says("first", "one"),
+					{Id: "nested", Kind: &v1.Node_Call{Call: &v1.Call{
+						Workflow: &v1.Workflow{
+							Name:           "child",
+							Profile:        v1.CurrentProfile,
+							DeclaredInputs: []*v1.InputDeclaration{{Name: "api_key", Type: v1.InputDeclaration_TYPE_STRING, Sensitive: true}},
+							Steps:          []*v1.Node{guarded("rotate", `"key: hunter2\"quoted" != "key: " + inputs.api_key`, "never")},
+						},
+						Arguments: map[string]*v1.Value{"api_key": v1.NewLiteral(`hunter2"quoted`)},
+					}}},
+				},
+			},
+			Skipped: []string{"rotate skipped: `if: \"[redacted]\" != \"key: \" + inputs.api_key` was false"},
+			Secret:  "hunter2",
+		},
+		{
+			// A value written as a literal of another type is spelled the
+			// renderer's own way, a string in octal inside a bytes literal and
+			// an int in exponent form as a double, which no match for the
+			// value's text finds, so each is asked about as every type it
+			// could be held as (#2227).
+			Name: "a skip inside a callee withholds sensitive values written as literals of another type",
+			Workflow: &v1.Workflow{
+				Name:    "guard-sensitive-retyped",
+				Profile: v1.CurrentProfile,
+				Steps: []*v1.Node{
+					says("first", "one"),
+					{Id: "nested", Kind: &v1.Node_Call{Call: &v1.Call{
+						Workflow: &v1.Workflow{
+							Name:    "child",
+							Profile: v1.CurrentProfile,
+							DeclaredInputs: []*v1.InputDeclaration{
+								{Name: "api_key", Type: v1.InputDeclaration_TYPE_STRING, Sensitive: true},
+								{Name: "pin", Type: v1.InputDeclaration_TYPE_INT, Sensitive: true},
+								{Name: "vault", Type: v1.InputDeclaration_TYPE_STRUCT, Sensitive: true},
+							},
+							Steps: []*v1.Node{
+								guarded("bearer", `bytes("Bearer " + inputs.api_key) != b"Bearer hunter2-retyped"`, "never"),
+								guarded("unlock", `double(inputs.pin) != 918273645.0`, "never"),
+								// Past the signed range, where only the unsigned
+								// form holds it.
+								guarded("vault", `double(inputs.vault.n) != 9223372036854775808.0`, "never"),
+								// A null leaf, which the set holds as nil.
+								guarded("absent", `inputs.vault.gone != null`, "never"),
+							},
+						},
+						Arguments: map[string]*v1.Value{
+							"api_key": v1.NewLiteral("hunter2-retyped"),
+							"pin":     v1.NewLiteral(int64(918273645)),
+							"vault":   v1.NewExpr(`{"n": 9223372036854775808u, "gone": null}`),
+						},
+					}}},
+				},
+			},
+			Skipped: []string{
+				"bearer skipped: `if: bytes(\"Bearer \" + inputs.api_key) != \"[redacted]\"` was false",
+				"unlock skipped: `if: double(inputs.pin) != \"[redacted]\"` was false",
+				"vault skipped: `if: double(inputs.vault.`[redacted]`) != \"[redacted]\"` was false",
+				"absent skipped: `if: inputs.vault.`[redacted]` != \"[redacted]\"` was false",
+			},
+			// "hun" as the renderer writes it in a bytes literal; the pin's
+			// exponent form is checked by the same substring.
+			Secret: `\150\165\156`,
+		},
+		{
+			// A field name is not a constant, and a one-rune key is too short
+			// for any text match to look for, so a sensitive structure's key
+			// is withheld where the condition selects it (Codex, #2227).
+			Name: "a skip inside a callee withholds a one-rune key of a sensitive structure",
+			Workflow: &v1.Workflow{
+				Name:    "guard-sensitive-key",
+				Profile: v1.CurrentProfile,
+				Steps: []*v1.Node{
+					says("first", "one"),
+					{Id: "nested", Kind: &v1.Node_Call{Call: &v1.Call{
+						Workflow: &v1.Workflow{
+							Name:           "child",
+							Profile:        v1.CurrentProfile,
+							DeclaredInputs: []*v1.InputDeclaration{{Name: "creds", Type: v1.InputDeclaration_TYPE_STRUCT, Sensitive: true}},
+							Steps:          []*v1.Node{guarded("rotate", `inputs.creds.k != "hunter2-onerune"`, "never")},
+						},
+						Arguments: map[string]*v1.Value{"creds": v1.NewValue(map[string]any{"k": "hunter2-onerune"})},
+					}}},
+				},
+			},
+			Skipped: []string{"rotate skipped: `if: inputs.creds.`[redacted]` != \"[redacted]\"` was false"},
+			Secret:  "hunter2-onerune",
+		},
+		{
+			// A sensitive structure's bool leaf is asked about by a literal
+			// `if:` too, and the words the text pass withholds read alike on
+			// both drivers (Codex, #2227).
+			Name: "a skip inside a callee withholds a literal condition a sensitive structure holds",
+			Workflow: &v1.Workflow{
+				Name:    "guard-sensitive-literal",
+				Profile: v1.CurrentProfile,
+				Steps: []*v1.Node{
+					says("first", "one"),
+					{Id: "nested", Kind: &v1.Node_Call{Call: &v1.Call{
+						Workflow: &v1.Workflow{
+							Name:           "child",
+							Profile:        v1.CurrentProfile,
+							DeclaredInputs: []*v1.InputDeclaration{{Name: "flags", Type: v1.InputDeclaration_TYPE_STRUCT, Sensitive: true}},
+							Steps: []*v1.Node{{
+								Id:        "rotate",
+								Condition: v1.NewLiteral(false),
+								Kind:      says("rotate", "never").GetKind(),
+							}},
+						},
+						Arguments: map[string]*v1.Value{"flags": v1.NewExpr(`{"enabled": false}`)},
+					}}},
+				},
+			},
+			// "false" is a word the text pass withholds here as well.
+			Skipped: []string{"rotate skipped: `if: \"[redacted]\"` was [redacted]"},
+		},
+		{
+			Name: "an if: that cannot be evaluated is its step failing",
+			Workflow: &v1.Workflow{
+				Name:    "guard-error",
+				Profile: v1.CurrentProfile,
+				Steps: []*v1.Node{
+					says("first", "one"),
+					guarded("bad", "['a'][5] == 'never'", "never"),
+					says("after", "two"),
+				},
+			},
+			Failed: "bad",
+			Quoted: "evaluating condition",
+		},
+	}
 }

@@ -4,6 +4,14 @@ package engine
 // behavior before it.
 const UntilRefusalChange = untilRefusalChange
 
+// HoldInBodiesChange is [holdInBodiesChange], for a test that replays the
+// behavior before it.
+const HoldInBodiesChange = holdInBodiesChange
+
+// SwitchArmResumeChange is [switchArmResumeChange], for a test that replays the
+// behavior before it.
+const SwitchArmResumeChange = switchArmResumeChange
+
 // FailureWithholdChange is [failureWithholdChange], for a test that replays
 // the behavior before it.
 const FailureWithholdChange = failureWithholdChange

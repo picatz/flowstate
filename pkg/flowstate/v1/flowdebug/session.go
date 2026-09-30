@@ -10,8 +10,8 @@ import (
 	"io"
 	"maps"
 	"math"
+	"reflect"
 	"slices"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -235,7 +235,7 @@ type Options struct {
 	//
 	// Each entry names the workflow that declares it as well as its id, because
 	// an id is not an identity across a `call:`: a caller and a callee may both
-	// declare `build` (`eval.go:1804-1812`), and a flattened inventory of the
+	// declare `build` (`eval.go`, `runCall`), and a flattened inventory of the
 	// two holds two rows nothing can tell apart. [Step.State] is ignored here —
 	// nothing has happened to any of them yet.
 	Steps []Step
@@ -621,10 +621,10 @@ type promptSubject struct {
 	// The two have to be taken together or a race opens between them. A caller
 	// evaluating from its own goroutine snapshots the subject, and evaluation
 	// takes time; `flow test` clears both redactors the moment [Session.Autopsy]
-	// returns (`flowtest/run.go:768,790`), so a console that exits the autopsy
-	// while an evaluation is in flight would leave that evaluation reading a
-	// session with no redactors at all — and returning what they existed to
-	// withhold (Codex, #1120).
+	// returns (`flowtest/run.go`, `runCase`), so a console that exits the
+	// autopsy while an evaluation is in flight would leave that evaluation
+	// reading a session with no redactors at all — and returning what they
+	// existed to withhold (Codex, #1120).
 	redactText  func(string) string
 	redactValue func(any) any
 
@@ -777,7 +777,7 @@ func declaredStepIDSet(steps []Step) map[string]struct{} {
 // that declares one `build` inside a `for_each` body and another at the top
 // level has two rows a run reaches separately, and a session can still
 // attribute outcomes to them because both are that workflow's steps — the
-// engine's own scope isolation is per call, not per row (`eval.go:1799`,
+// engine's own scope isolation is per call, not per row (`call.go`,
 // `CallScope`). Two `build`s in two workflows are the pair
 // [v1.RunObserver]'s bare ids cannot tell apart.
 //
@@ -838,8 +838,8 @@ func (s *Session) Script() []string {
 }
 
 // ScriptTruncated reports whether the recording stopped early at
-// [MaxScriptCommands]. A truncated script replays a prefix of the session, not
-// the session.
+// [MaxScriptCommands] or [MaxScriptBytes]. A truncated script replays a prefix
+// of the session, not the session.
 func (s *Session) ScriptTruncated() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -869,13 +869,29 @@ func (s *Session) StepFinished(id string, outputs *v1.Node_Outputs, err error, t
 // those workflows declare sensitive (#2210), as a hold there withholds it
 // ([withholdingAt]) — unless [Options.RevealSensitive] authorized showing it.
 func (s *Session) StepFinishedWithholding(id string, outputs *v1.Node_Outputs, err error, tolerated bool, withhold v1.SensitiveValues) {
+	s.finished(id, nil, outputs, err, tolerated, withhold)
+}
+
+// StepFinishedAt implements [v1.PlacedRunObserver]: the outcome of a step the
+// run says the place of, which is how it stays the right iteration's when
+// like-named iterations finish out of the order they arrived in.
+func (s *Session) StepFinishedAt(id, address string, outputs *v1.Node_Outputs, err error, tolerated bool, withhold v1.SensitiveValues) {
+	s.finished(id, &address, outputs, err, tolerated, withhold)
+}
+
+// finished is [Session.StepFinishedWithholding]. placed, when set, is where the
+// step is, as the run says it; otherwise the last boundary the run reached
+// does, when that was the step.
+func (s *Session) finished(id string, placed *string, outputs *v1.Node_Outputs, err error, tolerated bool, withhold v1.SensitiveValues) {
 	s.sawStep(id)
 	if s.reveal {
 		withhold = v1.SensitiveValues{}
 	}
 
+	// In the durable driver's marker, as a skip's account is: the outcome is
+	// one both drivers give, and a word withheld must read the same in each.
 	s.mu.Lock()
-	redact, redactValue := withholdingAt(s.redact, s.redactValue, withhold)
+	redact, redactValue := withholdingAtMarked(s.redact, s.redactValue, withhold, v1.SensitiveMarker)
 	s.mu.Unlock()
 	text := s.stepOutcomeText(redact, redactValue, outputs, err, tolerated)
 	line := applyText(redact, id+" "+text)
@@ -898,21 +914,71 @@ func (s *Session) StepFinishedWithholding(id string, outputs *v1.Node_Outputs, e
 	}
 	s.noteStep(id, state)
 	s.emitTone(tone, "  "+line+"\n")
-	s.observeRedacted(observationKind(state), id, capRunes(line, maxObservationRunes))
+	s.observeRedactedAt(observationKind(state), id, placed, capRunes(line, maxObservationRunes))
 }
 
-// StepSkipped implements [v1.RunObserver]. A skipped step never reaches
-// [Session.BeforeStep] — there is no work to hold — so this is the only place
-// a session can say the `if:` decided against it.
+// StepSkipped implements [v1.RunObserver]. The engine calls
+// [Session.StepSkippedBy] instead, and this is the account of a skip whose
+// condition nobody quoted.
 func (s *Session) StepSkipped(id string) {
+	s.skipped(id, nil, nil, v1.SensitiveValues{})
+}
+
+// StepSkippedBy implements [v1.GuardRunObserver]. A skipped step never reaches
+// [Session.BeforeStep] — there is no work to hold — so this is the only place
+// a session can say the `if:` decided against it, and the account quotes the
+// condition that did ([v1.SkippedText]), in the sentence a durable session
+// gives. The account withholds what the workflow it is in declares sensitive
+// ([withholdingAt]), as a durable session's does, unless
+// [Options.RevealSensitive] authorized showing it.
+func (s *Session) StepSkippedBy(id, address string, condition *v1.Value, withhold v1.SensitiveValues) {
+	s.skipped(id, &address, condition, withhold)
+}
+
+// skipped is [Session.StepSkippedBy]; placed is nil where nothing told the
+// step's place.
+func (s *Session) skipped(id string, placed *string, condition *v1.Value, withhold v1.SensitiveValues) {
 	// Remembered as a step this run reaches even though it did not run: a
 	// breakpoint on a step whose `if:` was false this time is exactly what
 	// somebody sets when they are trying to find out why.
 	s.sawStep(id)
 	s.noteStep(id, StepSkipped)
+	if s.reveal {
+		withhold = v1.SensitiveValues{}
+	}
 
-	s.printf("  %s skipped (`if:` was false)\n", id)
-	s.observe(v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_SKIPPED, id, id+" skipped (`if:` was false)")
+	// In the durable driver's marker: the sentence is one both drivers give
+	// ([v1.SkippedText]), and a word the text pass withholds must read the
+	// same in each (Codex, #2227).
+	s.mu.Lock()
+	redact, redactValue := withholdingAtMarked(s.redact, s.redactValue, withhold, v1.SensitiveMarker)
+	s.mu.Unlock()
+	// A constant is withheld by value before the condition is written, then
+	// the sentence by text; withheld, then bounded, never the other way
+	// round: a cut first could keep the start of a sensitive value no
+	// whole-value match then finds.
+	account := v1.SkippedText(id, condition, func(value any) bool {
+		// A string's own text, before the renderer escapes it, so a
+		// sensitive value it merely contains is found too (Copilot, #2227).
+		// A bytes literal is asked about as its text as well
+		// ([v1.SkippedText]).
+		if text, ok := value.(string); ok && applyText(redact, text) != text {
+			return true
+		}
+
+		return redactValue != nil && !reflect.DeepEqual(redactValue(value), value)
+	})
+	line := capRunes(applyText(redact, account), maxObservationRunes)
+	s.emitTone(ToneInfo, "  "+line+"\n")
+	s.observeRedactedAt(v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_SKIPPED, id, placed, line)
+}
+
+// GuardFailed implements [v1.GuardRunObserver]: a step whose `if:` could not
+// be evaluated is a step that failed, and without this the step list would
+// show it as never reached. Its account is a failed step's, since that is
+// what the run reports.
+func (s *Session) GuardFailed(id, address string, err error, withhold v1.SensitiveValues) {
+	s.finished(id, &address, nil, err, false, withhold)
 }
 
 // WaitStarted implements [v1.RunObserver], reporting a wait as it parks.
@@ -1485,10 +1551,10 @@ func (s *Session) prompting(at promptSubject) {
 	//
 	// And so is the scope, for the same reason one step further out: the engine
 	// owns `Scope.Outputs.StepValues` and resumes writing to it the moment the
-	// pause ends (`eval.go:1494-1514`), while a caller admitted to this pause
-	// may still be reading it from its own goroutine. A live map read there is
-	// not a stale answer, it is a concurrent map read and write — which Go
-	// answers with a fatal throw no recover reaches (Codex, #1120).
+	// pause ends (`eval.go`, `recordStepOutcome`), while a caller admitted to
+	// this pause may still be reading it from its own goroutine. A live map
+	// read there is not a stale answer, it is a concurrent map read and write —
+	// which Go answers with a fatal throw no recover reaches (Codex, #1120).
 	if at.scope != nil {
 		at.redactText, at.redactValue = withholdingAt(s.redact, s.redactValue, at.sensitive)
 		at.scope = frozen(at.scope)
@@ -1514,6 +1580,13 @@ func (s *Session) prompting(at promptSubject) {
 // than substituted: the session's rule still applies first, and a session
 // with none still withholds what the held workflow declares.
 func withholdingAt(text func(string) string, value func(any) any, sensitive v1.SensitiveValues) (func(string) string, func(any) any) {
+	return withholdingAtMarked(text, value, sensitive, "[withheld]")
+}
+
+// withholdingAtMarked is [withholdingAt] writing marker where the held set
+// withholds text. A rendering both drivers give in one sentence passes the
+// durable driver's marker, [v1.SensitiveMarker], so the sentences agree.
+func withholdingAtMarked(text func(string) string, value func(any) any, sensitive v1.SensitiveValues, marker string) (func(string) string, func(any) any) {
 	if sensitive.Empty() {
 		return text, value
 	}
@@ -1528,18 +1601,18 @@ func withholdingAt(text func(string) string, value func(any) any, sensitive v1.S
 			// (Copilot, #2209) — structured values reach here a leaf at a
 			// time ([withheldLeaves]), so that costs a leaf, not an answer.
 			own := applyText(text, rendered)
-			held := sensitive.RedactText(rendered, "[withheld]")
+			held := sensitive.RedactText(rendered, marker)
 			switch {
 			case held == rendered:
 				return own
 			case own == rendered:
 				return held
 			default:
-				return "[withheld]"
+				return marker
 			}
 		}, func(native any) any {
 			if sensitive.WithholdAll() {
-				return "[withheld]"
+				return marker
 			}
 			if value != nil {
 				native = value(native)
@@ -1680,7 +1753,7 @@ func (s *Session) sawStep(id string) {
 //
 // Only for an id [Session.sawStep] already admitted, which every caller
 // guarantees by calling that first. Past the bound the state is dropped exactly
-// as the id was, and [Session.StepsTruncated] is what says so — a state written
+// as the id was, and [StepList.Truncated] is what says so — a state written
 // for an id the list does not carry would be an answer nothing can be asked
 // about.
 func (s *Session) noteStep(id string, state StepState) {
@@ -1953,27 +2026,29 @@ func (s *Session) stepOutcomeText(redact func(string) string, redactValue func(a
 		return "FAILED: " + err.Error()
 	}
 
+	return FinishedText(outputs, redact, redactValue)
+}
+
+// FinishedText is the account of a step that produced its outputs: "completed"
+// where it named none, else "-> name: value, …" in name order. Both drivers'
+// sessions give it, so a step reads the same wherever the run executes.
+//
+// redact withholds text and redactValue withholds the values themselves (nil
+// for none). The text is withheld *before* it is cut to [MaxInspectRunes]:
+// the cut keeps a prefix, and a secret longer than the cap would survive it
+// as a prefix no substring match can find (Codex, #1109).
+func FinishedText(outputs *v1.Node_Outputs, redact func(string) string, redactValue func(any) any) string {
 	named := outputs.GetNamedValues()
 	if len(named) == 0 {
 		return "completed"
 	}
 
-	names := make([]string, 0, len(named))
-	for name := range named {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-
+	names := slices.Sorted(maps.Keys(named))
 	parts := make([]string, 0, len(names))
 	for _, name := range names {
 		parts = append(parts, name+": "+valueText(named[name], redact, redactValue))
 	}
 
-	// Redacted *before* the cap, not after. capRunes keeps the first
-	// MaxInspectRunes of the rendering, and a secret longer than that survives
-	// truncation as a prefix no substring match can find — so a cap applied
-	// first would expose the first 4096 runes of exactly the value the
-	// redactor exists to withhold (Codex, #1109). Order is the whole fix.
 	return "-> " + capRunes(applyText(redact, strings.Join(parts, ", ")), MaxInspectRunes)
 }
 
@@ -2077,9 +2152,9 @@ func unrenderedText(out ref.Val, withholding bool) string {
 // The one normalization, which is the point. CEL hands back its own backing
 // representation from [ref.Val.Value] — `map[ref.Val]ref.Val` for a map,
 // `[]ref.Val` for a list — and a redactor written against native Go walks
-// neither, so it returns such a container unchanged. `flowtest`'s
-// `redactSensitiveTree` switches on `map[string]any` and `[]any`
-// (`flowtest/stub.go:940-957`).
+// neither, so it returns such a container unchanged. `flowtest`'s value
+// redactor, [v1.SensitiveValues.RedactTree], switches on `map[string]any` and
+// `[]any` (`sensitivevalues.go`, `redactSensitiveTree`).
 //
 // So a second path that reached for `Value()` directly would redact a scalar
 // and hand a map straight through, which is exactly what happened when the
@@ -2133,11 +2208,12 @@ func capRunes(text string, limit int) string {
 //
 // failures are the rendered verdicts, printed as the failures they are. The
 // commands are the session's ordinary ones; the movement verbs (`step`,
-// `continue`, `until`) and `quit` all just leave, because there is no run
-// left to move — and leaving changes nothing: the verdict was reached before
-// this was called, so an autopsy can never turn a red case green or a green
-// one red. Commands accepted here are recorded like any others, so a
-// replayed script re-runs the same questions over the same corpse.
+// `next`, `finish`, `continue`, `until`), `detach` and `quit` all just leave,
+// because there is no run left to move — and leaving changes nothing: the
+// verdict was reached before this was called, so an autopsy can never turn a
+// red case green or a green one red. Commands accepted here are recorded like
+// any others, so a replayed script re-runs the same questions over the same
+// corpse.
 //
 // flowtest calls this only for a failing case under `--debug`, discovering
 // it by capability the way it discovers a session that observes — a

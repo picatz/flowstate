@@ -562,10 +562,12 @@ const (
 // bounds one attempt and has no clock in it, and `retry:`'s durations sit under
 // their own key and are excluded the same way.
 //
-// The set is the validator's (flowfile's validateWait, which takes it from where
-// the engine evaluates waits): all three of a wait's own expressions, plus a
-// signal's `outputs:` shaping, whose scope validateWait builds from the waiting
-// one, so the clock is bound there alongside the wait's result names.
+// The set follows the validator's (flowfile's validateWait, which takes it from
+// where the engine evaluates waits): `wait_until:`, an expression-valued
+// `sleep:`, and a signal's `timeout:`, plus a signal's `outputs:` shaping, whose
+// scope validateWait builds from the waiting one, so the clock is bound there
+// alongside the wait's result names. The validator also binds it in a signal
+// wait's `prompt:`, which this set does not offer yet.
 //
 // It is the line scan's answer to the question [parsedStep.bindsNow] answers from
 // the model, and the two are separate on purpose: completion is asked for while a

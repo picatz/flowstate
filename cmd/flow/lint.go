@@ -76,7 +76,7 @@ func newLintCommand() *cobra.Command {
 			"What it reports is a property of the file and nothing else: no deployment is " +
 			"consulted, no policy is read, and nothing resolves over a network.\n\n" +
 			"A named file is taken as given; a directory is walked for Flowfiles, the same " +
-			"walk `validate` and `audit` use. A file that does not compile is skipped rather " +
+			"walk `fix` and `audit` use. A file that does not compile is skipped rather " +
 			"than linted, since `validate` is the verb with something to say about it.",
 		Args:          cobra.MinimumNArgs(1),
 		SilenceErrors: true,

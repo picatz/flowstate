@@ -435,10 +435,9 @@ func (s *Session) WaitForPause(ctx context.Context) (Position, error) {
 // order, and a command that waited for a boundary would deadlock exactly there:
 // no run, no prompt, no way to configure the run you are about to start.
 //
-// Unconditional, which is the honest limit of a method that can run before
-// anything else does. A `break <id> if <expr>` compiles its condition against
-// the scope the run is paused in, and before the run there is no scope to
-// compile against — so conditions stay with the prompt, where a scope exists.
+// Unconditional. A condition, a hit count or a log message goes through
+// [Session.ReplaceBreakpoints], which compiles a condition against a profile
+// rather than a paused scope and so also works before the run starts.
 //
 // It replaces rather than adds, because that is what a client means: DAP sends
 // the whole set for a source each time one changes, so anything kept from the

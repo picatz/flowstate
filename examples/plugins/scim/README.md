@@ -9,34 +9,69 @@ Run it:
 
 ```console
 $ mkdir -p ./plugins
-$ go build -o ./plugins/flowstate-plugin-scim ./plugins/scim
+$ go -C plugins/scim build -o ../../plugins/flowstate-plugin-scim .
 $ export FLOWSTATE_SECRET_SCIM_TOKEN=...   # the worker's own env: provider
-$ flow worker --plugin-dir ./plugins --egress-policy examples/plugins/scim/egress-policy.yaml
+$ flow worker --allow-unversioned-interpreter --plugin-dir ./plugins \
+    --egress-policy examples/plugins/scim/egress-policy.yaml \
+    --secret-env SCIM_TOKEN --auth-policy /path/to/auth-policy.yaml &
+$ flow server --plugin-dir ./plugins --auth-policy /path/to/auth-policy.yaml \
+    --rpc-resource https://flowstate.example.com/rpc --identity-claim team &
 $ flow run examples/plugins/scim/workflow.yaml \
     --input directory=https://example.okta.com/scim/v2 \
     --input user_id=2819c223-7f76-453a-919d-413861904646 \
-    --input expected_approver=compliance-lead@example.com
+    --input expected_approver=compliance-lead@example.com \
+    --token-file /path/to/starter.token
 ```
+
+`--secret-env SCIM_TOKEN` is what turns on the `env:` provider that reads
+`FLOWSTATE_SECRET_SCIM_TOKEN`, and a worker holding a secret provider refuses to
+start without an `--auth-policy` that has a `secrets:` section allowing
+`env:SCIM_TOKEN`. The server takes `--plugin-dir` too, because it checks each
+task the file names, and its `plugins:` block, against the plugins it launched
+itself, and an `--auth-policy` trusting a real issuer, with the
+`--rpc-resource` its tokens are minted for, rather than `--insecure-no-auth`,
+because the decision below is a signal only an attested reviewer other than the
+starter may send.
+It keeps the `team` claim (`--identity-claim team`), because the signal's rule
+reads it and a server persists only the claims it names. Every client command
+below authenticates with `--token-file` (or `--credential-source`): an
+authenticated server refuses an anonymous caller.
+
+`flow run` refuses this file today (#1548): it checks the file against its own
+build's task registry, takes no `--plugin-dir`, and so reports the `scim.*`
+tasks as ones nothing registered before the server sees it. Until that is
+fixed, `flow run local` with the worker's plugin, secret and policy flags runs
+it in one process, and an agent host running
+`flow mcp --plugin-dir ./plugins --token-file /path/to/starter.token`
+submits it to this server with `flowstate_compile` then `flowstate_run`.
 
 The run stops at `decision` and waits - durably, for up to a week - until a
 compliance reviewer answers:
 
 ```console
-$ flow signal <run> review-decided --payload keep=false
+$ flow signal <run> review-decided --data '{"keep": false}' \
+    --token-file /path/to/approver.token
 ```
+
+The approver's token must be issued by `https://issuer.example.com` to the
+subject `expected_approver` names, with `team: compliance-reviewers`;
+`distinct_from_starter: true` refuses the starter's own.
 
 ## What each step is protecting
 
-- **`in_scope`** is bounded by construction. A directory with fifty thousand
-  accounts pages through `next_start_index`; a `count` over the task's ceiling
-  is refused rather than quietly lowered, so nobody discovers at audit time that
-  a review covered the first five hundred accounts.
+- **`in_scope`** is bounded by construction. It reads one page of fifty
+  (`count: 50`) and reports `total_results`; a directory with fifty thousand
+  accounts is paged by a caller following `next_start_index`, which this file
+  does not do. A `count` over the task's ceiling is refused rather than quietly
+  lowered, so nobody discovers at audit time that a review covered the first
+  five hundred accounts.
 
 - **`under_review`** is read for two things: the evidence a person judges, and
   the `version` - the provider's ETag - that makes the write below conditional.
 
-- **`decision`** is bounded by `signals:`. Only a subject holding a
-  `compliance-reviewer` claim can answer, and `distinct_from_starter: true`
+- **`decision`** is bounded by `signals:`. Only the subject
+  `https://issuer.example.com#<expected_approver>` holding the claim
+  `team: compliance-reviewers` can answer, and `distinct_from_starter: true`
   means whoever *requested* the review cannot approve it. That constraint is
   enforced by the server, not by this file's good intentions.
 

@@ -70,8 +70,10 @@ type WorkloadIdentity struct {
 // pointing one way, while [IdentityFrom] still takes a
 // *flowstatev1.WorkloadIdentity directly at the call site.
 //
-// So the rule is: this package depends on no other Flowstate package. Anything
-// that needs to cross that line crosses it as an interface or a plain Go value.
+// So the rule is: this package never imports the package that defines the
+// generated types, nor anything that imports it (celrule and netpolicy are the
+// Flowstate packages it does import). Anything that needs to cross that line
+// crosses it as an interface or a plain Go value.
 type IdentitySource interface {
 	GetSubject() string
 	GetIssuer() string
@@ -86,7 +88,7 @@ type IdentitySource interface {
 //	identity := auth.IdentityFrom(state.GetIdentity())
 //
 // It takes an [IdentitySource] rather than the generated message so that this
-// package depends on no other Flowstate package; see [IdentitySource] for why
+// package never imports the generated types; see [IdentitySource] for why
 // that matters and why it must stay that way.
 //
 // An absent source yields the zero identity, which [WorkloadIdentity.Validate]

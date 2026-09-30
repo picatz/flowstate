@@ -46,8 +46,9 @@ import (
 // is about to admit, which is the only thing that makes the guarantee hold for
 // every [Verifier] rather than only for the default one.
 //
-// Both [Authenticator.Authenticate] and [MCPTokenVerifier] therefore call this
-// helper on the returned [Principal]'s claims. Three call sites, one spelling:
+// Both [Authenticator.Authenticate] and [MCPTokenVerifier] therefore apply this
+// helper to the returned [Principal]'s claims, through the admission sequence
+// they share (admitBearer, admission.go). Two call sites, one spelling:
 // the thing CLAUDE.md's "prefer deriving to duplicating" is actually about is
 // the *decision* being written down more than once, and it is not — every one
 // of them calls [refuseDelegationClaims]. The verifier-internal check is then

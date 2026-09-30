@@ -2650,7 +2650,8 @@ flow run local examples/approval-gate/workflow.yaml \
 flow run local examples/computed-outputs/workflow.yaml \
   --input release=2026.9.0 -o json | jq .runOutputs
 
-# Rehearse a workflow that uses a plugin's tasks, launching the plugins here:
+# Rehearse a workflow that uses a plugin's tasks, launching the plugins here;
+# its token is read from FLOWSTATE_SECRET_GREET_TOKEN, so export that first:
 flow run local examples/plugins/greet/workflow.yaml --plugin-dir ./plugins \
   --secret-env GREET_TOKEN --auth-policy examples/plugins/greet/auth.yaml
 
@@ -3150,7 +3151,7 @@ flow signal deploy-abc123 deploy-approved -o json \
 	addOutputFlag(signalCmd)
 
 	signalCmd.Flags().String("data", "",
-		"signal payload as a JSON object, whose keys become the waiting step's outputs, e.g. `--data '{\"approved\": true}'`")
+		"signal payload as a JSON object, whose keys become the entries of the waiting step's `payload` output, e.g. `--data '{\"approved\": true}'`")
 
 	// The commands that talk to a Flowstate server can say which one.
 	//
@@ -3308,8 +3309,9 @@ flow plugins -o json \
 			"refuses rather than falling back here if it cannot be reached.\n\n" +
 			"flowstate_run_local executes a submitted Flowfile here, the way `flow run local` " +
 			"does. What such a run may reach is decided by the flags this process is started " +
-			"with and by nothing a client sends: with no flags, egress is denied and no secret " +
-			"scheme is registered.\n\n" +
+			"with and by nothing a client sends: with no flags, and none of the environment " +
+			"variables their defaults come from, egress is denied and no secret scheme is " +
+			"registered.\n\n" +
 			"Beside the tools, the server publishes read-only resources: the language guide " +
 			"at flowstate://docs/language, the task catalog as JSON at " +
 			"flowstate://catalog/tasks, every example Flowfile under " +
@@ -3420,8 +3422,9 @@ flow mcp serve --listen :8617 \
 			"Flowfile problems as diagnostics as you type.\n\n" +
 			"This is not something you run and watch: an editor launches it and talks " +
 			"to it over the same stdin and stdout this process already has, so there is " +
-			"no address or port to configure. In VS Code, point a generic LSP extension " +
-			"(or an extension you write) at the command; in Neovim's built-in client, " +
+			"no address or port to configure. In VS Code, install the client this repository " +
+			"carries in editors/vscode, from source (" + docsURL + "EDITORS.md), or point a " +
+			"generic LSP extension at the command; in Neovim's built-in client, " +
 			"`cmd = {\"flow\", \"lsp\"}` (add `\"--plugin-dir\", \"/opt/flowstate/plugins\"` to the table " +
 			"if a plugin's tasks should stop reading as unknown) with `filetypes` set to " +
 			"Flowfile's, typically YAML.",
