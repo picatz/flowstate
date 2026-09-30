@@ -138,3 +138,21 @@ func TestStepsAreDeclaredInTheOrderTheWorkflowWritesThem(t *testing.T) {
 
 	assert.Equal(t, []string{"first", "second", "third", "inside_third", "late_inside_third", "tenth"}, wc.declaredIDs())
 }
+
+// TestACoverageReportWithholdsAValueInsideAStepId: a step id that carries a
+// withheld value inside a longer name is withheld at that place, not only where
+// the whole id is the value.
+func TestACoverageReportWithholdsAValueInsideAStepId(t *testing.T) {
+	t.Parallel()
+
+	cov := &Coverage{
+		Workflow:  "workflow.yaml",
+		Reached:   []string{"deploy_hunter2_stepid"},
+		Unreached: []string{"plain"},
+		declared:  []string{"deploy_hunter2_stepid", "plain"},
+	}
+	cov.withheldUnder(v1.SensitiveValues{}.WithValues("hunter2_stepid"))
+
+	assert.Equal(t, []string{"deploy_[redacted]"}, cov.Reached)
+	assert.Equal(t, []string{"plain"}, cov.Unreached)
+}

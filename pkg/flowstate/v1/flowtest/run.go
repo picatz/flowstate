@@ -702,6 +702,12 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	// this is the written-order run reported beside one ([withReshownPosture]).
 	posture := widenedBy(casePosture(test, vars), reshownPosture(base))
 
+	// Whatever exit is taken, the caller withholds what the case's report
+	// prints under at least this: an exit before the run's own set is built
+	// still hands back the posture it rendered its error by, or the case's
+	// name and its coverage would print what its error withholds.
+	defer func() { shown.sensitive = widenedBy(posture, shown.sensitive) }()
+
 	// caseError is the one rendering seam for [v1.TestCase.Error] — the sixth
 	// surface in vars.go's containment table, and the one its own row predicted
 	// would be a leak until it met the row.
@@ -748,6 +754,18 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	// Reported to the caller for coverage: the workflow this case compiled is
 	// what its steps are counted against, even when the run below then fails.
 	spec = workflow
+
+	// The workflow is known, so which of the case's `inputs:` it declares
+	// `sensitive:` is too, and the exits between here and the run's own set
+	// (a stub target, an expectation or a signal name the workflow does not
+	// have) name what the file wrote, which can spell one. Joined into the
+	// posture now, built as the run builds its own ([sensitiveNativeValues]
+	// over the bound inputs), so what it withholds is the same set and no more.
+	// A trigger case's inputs are produced later, and its exits take the run's
+	// set.
+	if bound, bindErr := v1.BindRunInputs(workflow, v1.NewNamedValues(test.Inputs)); bindErr == nil {
+		posture = posture.Merge(sensitiveNativeValues(&v1.Scope{Inputs: bound}, v1.SensitiveInputNames(workflow)))
+	}
 
 	// Resolved against the compiled workflow, not the file alone: a step-form
 	// stub names a step id, and this is where that id becomes the task it

@@ -506,13 +506,13 @@ beside it, withholds what any schedule's run withheld, its name and warnings
 included. Claims, and the comparison `--seeds` makes, still read the real
 value.
 
-Every case's report withholds under that case's own inputs, wherever it prints a
+Every case's report withholds under that case's own inputs (and `secrets:`), wherever it prints a
 name that spells such a value: the step in a failure, a stub's target in a
 warning, and the case's own name, in text and in `-o json`. A field path, code
 and position are the harness's own words and are kept. (A case whose inputs
 are too many or too large to enumerate withholds everything it can and keeps
 its failures readable, so it withholds no name it cannot tell from a value; the
-coverage report below has no such text and withholds all of its names.) The coverage report is
+coverage report below has no such text and withholds all of its names. A case the run was stopped before starting never loaded its workflow, so only its `secrets:` and withheld `vars:` are known: a name spelling a `sensitive:` input's value is not withheld there.) The coverage report is
 one for the whole file, so it withholds under every case's inputs together: a
 step id or `switch:` arm label that spells a value any case withholds prints
 `[redacted]`, and is still counted and still listed as a gap. Two names that
