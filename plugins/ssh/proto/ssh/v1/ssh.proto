@@ -37,9 +37,12 @@ message RunOutputs {
   // than a value a workflow has to remember to check.
   int32 exit_code = 1;
 
-  // Stdout and Stderr are the streams, each bounded by the grant and each valid
+  // Stdout is the command's standard output, bounded by the grant and valid
   // UTF-8 or empty.
   string stdout = 2;
+
+  // Stderr is the command's standard error, bounded and valid UTF-8 the same
+  // way as stdout.
   string stderr = 3;
 
   // Truncated reports that the command wrote more than the grant's limit. The
@@ -47,9 +50,12 @@ message RunOutputs {
   // reads a cut-off stream as a complete one.
   bool truncated = 4;
 
-  // Host and Command echo the grants that were spent, so a run's history
-  // records which authority was used without a reader joining it to a
-  // configuration file.
+  // Host echoes the host grant that was spent, so a run's history records
+  // which authority was used without a reader joining it to a configuration
+  // file.
   string host = 5;
+
+  // Command echoes the command grant that was spent, for the same reason as
+  // host.
   string command = 6;
 }

@@ -38,8 +38,10 @@ message VerifyInputs {
 // VerifyOutputs is the verified caller. Every field here is from a signature
 // this plugin checked, under a key the operator's policy trusts.
 message VerifyOutputs {
-  // Issuer and Subject are the verified "iss" and "sub" claims.
+  // Issuer is the verified "iss" claim.
   string issuer = 1;
+
+  // Subject is the verified "sub" claim.
   string subject = 2;
 
   // TrustName is the operator-chosen name of the policy entry that admitted
@@ -51,8 +53,10 @@ message VerifyOutputs {
   // carried one string.
   repeated string audience = 4;
 
-  // ExpiresAt and IssuedAt are the verified time claims, as RFC 3339.
+  // ExpiresAt is the verified "exp" claim, as RFC 3339.
   string expires_at = 5;
+
+  // IssuedAt is the verified "iat" claim, as RFC 3339.
   string issued_at = 6;
 
   // Claims is the whole verified claims set, for the issuer-specific claims a

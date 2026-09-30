@@ -1,0 +1,35 @@
+version: v2
+# The one generation template every first-party plugin's schema shares, run by
+# `make plugin-proto` (which `make check` and CI run, then fail on any diff).
+#
+# Each plugin's proto is generated with the tools this repository's go.mod pins
+# (`go tool` builds exactly those versions), so regenerating needs no network
+# beyond the module cache and never picks up whichever protoc-gen-go happens to
+# be on PATH.
+#
+# The second plugin is what makes the comments written in a plugin's .proto
+# reach an operator: it writes them as Go source beside the .pb.go, and the SDK
+# attaches them to the descriptors the manifest ships, so `flow tasks`, hover,
+# and the generated reference document every field (#723, #2148). Without it a
+# plugin behaves exactly as before, minus its field documentation, which is what
+# plugintest's Conform reports.
+#
+# managed mode's only job is telling buf what the engine's own schema files'
+# go_package is, so a plugin's import of them resolves; nothing here generates
+# code for those files, and a path no plugin imports is ignored.
+managed:
+  enabled: true
+  override:
+    - file_option: go_package
+      path: flowstate/v1/value.proto
+      value: github.com/picatz/flowstate/pkg/flowstate/v1;flowstatev1
+    - file_option: go_package
+      path: flowstate/v1/schema.proto
+      value: github.com/picatz/flowstate/pkg/flowstate/v1;flowstatev1
+plugins:
+  - local: [go, tool, protoc-gen-go]
+    out: gen
+    opt: paths=source_relative
+  - local: [go, tool, protoc-gen-flowstate-doc]
+    out: gen
+    opt: paths=source_relative

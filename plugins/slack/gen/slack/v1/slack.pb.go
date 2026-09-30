@@ -119,9 +119,13 @@ func (x *PostInputs) GetThreadTs() string {
 
 // PostOutputs identifies the message Slack acknowledged.
 type PostOutputs struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Channel       string                 `protobuf:"bytes,1,opt,name=channel,proto3" json:"channel,omitempty"`
-	Ts            string                 `protobuf:"bytes,2,opt,name=ts,proto3" json:"ts,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Channel is the conversation ID Slack reports the message was posted to.
+	Channel string `protobuf:"bytes,1,opt,name=channel,proto3" json:"channel,omitempty"`
+	// Ts is the message timestamp Slack assigned, which identifies the message
+	// within its channel and is the value a later thread_ts names to reply
+	// beneath it.
+	Ts            string `protobuf:"bytes,2,opt,name=ts,proto3" json:"ts,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }

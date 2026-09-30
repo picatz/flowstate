@@ -127,16 +127,19 @@ type ResolveOutputs struct {
 	MediaType string `protobuf:"bytes,3,opt,name=media_type,json=mediaType,proto3" json:"media_type,omitempty"`
 	// Size is the manifest's length in bytes.
 	Size int64 `protobuf:"varint,4,opt,name=size,proto3" json:"size,omitempty"`
-	// Registry and Repository are the reference's parts, so a later step can
-	// build a sibling reference without reparsing a string.
-	Registry   string `protobuf:"bytes,5,opt,name=registry,proto3" json:"registry,omitempty"`
+	// Registry is the reference's registry part, so a later step can build a
+	// sibling reference without reparsing a string.
+	Registry string `protobuf:"bytes,5,opt,name=registry,proto3" json:"registry,omitempty"`
+	// Repository is the reference's repository part, for the same reason as
+	// registry.
 	Repository string `protobuf:"bytes,6,opt,name=repository,proto3" json:"repository,omitempty"`
 	// Platform is the platform this resolution selected, empty when none was
-	// asked for. PlatformMatched distinguishes "the index held this platform"
-	// from "none was requested": a false with a platform asked for is never
-	// returned, because an unmatched platform is a refusal, not an output.
-	Platform        string `protobuf:"bytes,7,opt,name=platform,proto3" json:"platform,omitempty"`
-	PlatformMatched bool   `protobuf:"varint,8,opt,name=platform_matched,json=platformMatched,proto3" json:"platform_matched,omitempty"`
+	// asked for.
+	Platform string `protobuf:"bytes,7,opt,name=platform,proto3" json:"platform,omitempty"`
+	// PlatformMatched distinguishes "the index held this platform" from "none
+	// was requested": a false with a platform asked for is never returned,
+	// because an unmatched platform is a refusal, not an output.
+	PlatformMatched bool `protobuf:"varint,8,opt,name=platform_matched,json=platformMatched,proto3" json:"platform_matched,omitempty"`
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache
 }
@@ -245,8 +248,12 @@ type ReferrersInputs struct {
 	ArtifactType string `protobuf:"bytes,2,opt,name=artifact_type,json=artifactType,proto3" json:"artifact_type,omitempty"`
 	// Limit bounds how many referrers are returned. Zero takes the default; the
 	// task's own ceiling is what a workflow cannot raise past.
-	Limit         int32     `protobuf:"varint,3,opt,name=limit,proto3" json:"limit,omitempty"`
-	Username      string    `protobuf:"bytes,4,opt,name=username,proto3" json:"username,omitempty"`
+	Limit int32 `protobuf:"varint,3,opt,name=limit,proto3" json:"limit,omitempty"`
+	// Username is the registry account the credential belongs to, as in
+	// ResolveInputs.username. It is not a secret.
+	Username string `protobuf:"bytes,4,opt,name=username,proto3" json:"username,omitempty"`
+	// Password is the registry credential, a secret reference as in
+	// ResolveInputs.password. Left unset, the request is anonymous.
 	Password      *v1.Value `protobuf:"bytes,5,opt,name=password,proto3" json:"password,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -324,11 +331,12 @@ type ReferrersOutputs struct {
 	// artifact_type, size and annotations - the descriptor fields the
 	// distribution specification defines, and nothing invented beside them.
 	Referrers []*v1alpha1.Value `protobuf:"bytes,1,rep,name=referrers,proto3" json:"referrers,omitempty"`
-	// Count is how many were returned, and Truncated says the registry had more:
-	// a workflow deciding "no attestation is present" must be able to tell that
-	// from "the first page held none of this artifact type".
-	Count         int64 `protobuf:"varint,2,opt,name=count,proto3" json:"count,omitempty"`
-	Truncated     bool  `protobuf:"varint,3,opt,name=truncated,proto3" json:"truncated,omitempty"`
+	// Count is how many referrers were returned.
+	Count int64 `protobuf:"varint,2,opt,name=count,proto3" json:"count,omitempty"`
+	// Truncated says the registry had more than were returned: a workflow
+	// deciding "no attestation is present" must be able to tell that from "the
+	// first page held none of this artifact type".
+	Truncated     bool `protobuf:"varint,3,opt,name=truncated,proto3" json:"truncated,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -401,8 +409,12 @@ type BlobInputs struct {
 	// ParseJson decodes the blob as JSON into `json`, for the attestation and
 	// SBOM documents this task exists to read. A blob that is not valid JSON is
 	// a refusal rather than an empty parse.
-	ParseJson     bool      `protobuf:"varint,3,opt,name=parse_json,json=parseJson,proto3" json:"parse_json,omitempty"`
-	Username      string    `protobuf:"bytes,4,opt,name=username,proto3" json:"username,omitempty"`
+	ParseJson bool `protobuf:"varint,3,opt,name=parse_json,json=parseJson,proto3" json:"parse_json,omitempty"`
+	// Username is the registry account the credential belongs to, as in
+	// ResolveInputs.username. It is not a secret.
+	Username string `protobuf:"bytes,4,opt,name=username,proto3" json:"username,omitempty"`
+	// Password is the registry credential, a secret reference as in
+	// ResolveInputs.password. Left unset, the request is anonymous.
 	Password      *v1.Value `protobuf:"bytes,5,opt,name=password,proto3" json:"password,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

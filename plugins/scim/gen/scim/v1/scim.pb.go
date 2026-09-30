@@ -107,10 +107,14 @@ func (x *UserGetInputs) GetUserName() string {
 // UserGetOutputs is the user, in the attributes an access review acts on, plus
 // the whole resource for anything else the workflow needs.
 type UserGetOutputs struct {
-	state       protoimpl.MessageState `protogen:"open.v1"`
-	Id          string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
-	UserName    string                 `protobuf:"bytes,2,opt,name=user_name,json=userName,proto3" json:"user_name,omitempty"`
-	DisplayName string                 `protobuf:"bytes,3,opt,name=display_name,json=displayName,proto3" json:"display_name,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Id is the provider's own identifier for the user, the value
+	// scim.user_deactivate takes as its id.
+	Id string `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	// UserName is the user's userName attribute.
+	UserName string `protobuf:"bytes,2,opt,name=user_name,json=userName,proto3" json:"user_name,omitempty"`
+	// DisplayName is the user's displayName attribute, for a reviewer to read.
+	DisplayName string `protobuf:"bytes,3,opt,name=display_name,json=displayName,proto3" json:"display_name,omitempty"`
 	// Active is what a deactivation changes and what a review reads: SCIM models
 	// "has an account" and "may use it" as one boolean.
 	Active bool `protobuf:"varint,4,opt,name=active,proto3" json:"active,omitempty"`
@@ -229,9 +233,13 @@ func (x *UserGetOutputs) GetResource() *v1alpha1.Value {
 
 // UserListInputs reads a bounded page of users.
 type UserListInputs struct {
-	state   protoimpl.MessageState `protogen:"open.v1"`
-	BaseUrl string                 `protobuf:"bytes,1,opt,name=base_url,json=baseUrl,proto3" json:"base_url,omitempty"`
-	Token   *v1.Value              `protobuf:"bytes,2,opt,name=token,proto3" json:"token,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// BaseUrl is the provider's SCIM base, as in UserGetInputs.base_url. HTTPS
+	// is required.
+	BaseUrl string `protobuf:"bytes,1,opt,name=base_url,json=baseUrl,proto3" json:"base_url,omitempty"`
+	// Token is the bearer credential for the SCIM API, a secret reference as in
+	// UserGetInputs.token.
+	Token *v1.Value `protobuf:"bytes,2,opt,name=token,proto3" json:"token,omitempty"`
 	// Filter is a SCIM filter expression (RFC 7644 section 3.4.2.2), such as
 	// active eq false. It is bounded and checked for shape, and it is the
 	// provider that evaluates it: what a filter can reach is what the credential
@@ -316,11 +324,11 @@ type UserListOutputs struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Users are maps carrying the same attributes scim.user_get names.
 	Users []*v1alpha1.Value `protobuf:"bytes,1,rep,name=users,proto3" json:"users,omitempty"`
-	// TotalResults is what the provider says the whole result set holds, and
+	// TotalResults is what the provider says the whole result set holds.
+	TotalResults int64 `protobuf:"varint,2,opt,name=total_results,json=totalResults,proto3" json:"total_results,omitempty"`
 	// NextStartIndex is the cursor for the next page, zero when this page is the
 	// last. A workflow that stops when next_start_index is zero has read
 	// everything the filter matched.
-	TotalResults   int64 `protobuf:"varint,2,opt,name=total_results,json=totalResults,proto3" json:"total_results,omitempty"`
 	NextStartIndex int32 `protobuf:"varint,3,opt,name=next_start_index,json=nextStartIndex,proto3" json:"next_start_index,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
@@ -384,9 +392,13 @@ func (x *UserListOutputs) GetNextStartIndex() int32 {
 // DELETE as irreversible and organizations treat a deactivated account as the
 // auditable record that access was removed on a date.
 type UserDeactivateInputs struct {
-	state   protoimpl.MessageState `protogen:"open.v1"`
-	BaseUrl string                 `protobuf:"bytes,1,opt,name=base_url,json=baseUrl,proto3" json:"base_url,omitempty"`
-	Token   *v1.Value              `protobuf:"bytes,2,opt,name=token,proto3" json:"token,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// BaseUrl is the provider's SCIM base, as in UserGetInputs.base_url. HTTPS
+	// is required.
+	BaseUrl string `protobuf:"bytes,1,opt,name=base_url,json=baseUrl,proto3" json:"base_url,omitempty"`
+	// Token is the bearer credential for the SCIM API, a secret reference as in
+	// UserGetInputs.token.
+	Token *v1.Value `protobuf:"bytes,2,opt,name=token,proto3" json:"token,omitempty"`
 	// Id is the provider's identifier for the user, as returned by
 	// scim.user_get. A user name is not accepted here: a write names the resource
 	// the reviewer looked at, not a search that might resolve to another user.
@@ -460,9 +472,12 @@ func (x *UserDeactivateInputs) GetExpectedVersion() string {
 
 // UserDeactivateOutputs reports what the provider says the user is now.
 type UserDeactivateOutputs struct {
-	state  protoimpl.MessageState `protogen:"open.v1"`
-	Id     string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
-	Active bool                   `protobuf:"varint,2,opt,name=active,proto3" json:"active,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Id is the provider's identifier for the user that was deactivated.
+	Id string `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	// Active is the user's active attribute as the provider reports it after the
+	// write, false once the deactivation took effect.
+	Active bool `protobuf:"varint,2,opt,name=active,proto3" json:"active,omitempty"`
 	// AlreadyInactive distinguishes "this call turned the account off" from "it
 	// was already off", which an audit record should not have to infer.
 	AlreadyInactive bool `protobuf:"varint,3,opt,name=already_inactive,json=alreadyInactive,proto3" json:"already_inactive,omitempty"`

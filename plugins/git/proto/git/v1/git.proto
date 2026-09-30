@@ -57,6 +57,9 @@ message RemoteRef {
 
 // LsRemoteOutputs is the bounded set of refs found.
 message LsRemoteOutputs {
+  // Refs lists the refs the remote advertised that match prefix, each as a
+  // name bound to the sha it pointed at, capped at the bound truncated
+  // reports.
   repeated RemoteRef refs = 1;
 
   // Truncated reports whether the remote advertised more refs than the
@@ -117,10 +120,13 @@ message CommitPushInputs {
   // refused rather than silently deleting whatever is there now.
   string patch = 6;
 
-  // AuthorName and AuthorEmail name the commit's author and committer -
-  // this task does not distinguish them. Both are required together, or
-  // both left empty (in which case a placeholder identity is used).
+  // AuthorName names the commit's author and committer - this task does not
+  // distinguish them. It is required together with author_email, or both are
+  // left empty (in which case a placeholder identity is used).
   string author_name = 7;
+
+  // AuthorEmail is the email address of the commit's author and committer,
+  // required together with author_name or left empty with it.
   string author_email = 8;
 
   // Timestamp, RFC 3339, makes commit construction fully deterministic: the

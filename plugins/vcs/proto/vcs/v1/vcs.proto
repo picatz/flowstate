@@ -116,10 +116,12 @@ message DiffInputs {
   // Url is the repository to read, https:// only.
   string url = 1;
 
-  // Base and Head are the two revisions to compare, in the sense `git diff
-  // base..head` gives: what changed getting from base to head. Both accept
-  // anything go-git's revision parser does.
+  // Base is the revision to compare from, in the sense `git diff base..head`
+  // gives: what changed getting from base to head. It accepts anything
+  // go-git's revision parser does.
   string base = 2;
+
+  // Head is the revision to compare to, accepting the same revisions as base.
   string head = 3;
 
   // Token is a secret reference for HTTPS authentication. See LogInputs.token.
