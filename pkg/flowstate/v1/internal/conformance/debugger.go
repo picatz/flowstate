@@ -731,6 +731,12 @@ type OutputCase struct {
 	// about addresses alone.
 	Finished map[string]string
 
+	// Accounts, when set, is the account of the FINISHED step at each address
+	// it names, which pairs an iteration's address with what that iteration
+	// produced: iterations running at once finish in any order, and an
+	// address attached to the wrong one would still be a right address.
+	Accounts map[string]string
+
 	// Addresses, when set, is the occurrence address of every step that
 	// reported an outcome (finished, skipped, failed or tolerated), sorted:
 	// where in the run each did, as an author reads it (`each[1]/touch`,
@@ -751,11 +757,13 @@ func (c OutputCase) Problems(observations []*v1.DebugObservation) []string {
 	var problems []string
 	finished := map[string]string{}
 	var addresses []string
+	accounts := map[string]string{}
 	for _, observation := range observations {
 		switch observation.GetKind() {
 		case v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_FINISHED:
 			finished[observation.GetStepId()] = observation.GetText()
 			addresses = append(addresses, observation.GetAddress())
+			accounts[observation.GetAddress()] = observation.GetText()
 		case v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_SKIPPED,
 			v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_FAILED,
 			v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_TOLERATED:
@@ -777,6 +785,11 @@ func (c OutputCase) Problems(observations []*v1.DebugObservation) []string {
 			if _, ok := c.Finished[id]; !ok {
 				problems = append(problems, "unexpected account of "+id+": "+finished[id])
 			}
+		}
+	}
+	for address, want := range c.Accounts {
+		if got := accounts[address]; got != want {
+			problems = append(problems, "account at "+address+" is "+got+", want "+want)
 		}
 	}
 	if c.Addresses != nil {
@@ -933,8 +946,9 @@ func OutputCases() []OutputCase {
 						Id: "wide",
 						Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{
 							Items:       v1.NewExpr(`["x", "y"]`),
+							Iterator:    "item",
 							MaxParallel: 2,
-							Body:        []*v1.Node{says("touch", "visited")},
+							Body:        []*v1.Node{{Id: "echo", Kind: &v1.Node_Value{Value: v1.NewExpr("item")}}},
 						}},
 					},
 				},
@@ -947,8 +961,12 @@ func OutputCases() []OutputCase {
 				"each[1]/maybe",
 				"first",
 				"wide",
-				"wide[0]/touch",
-				"wide[1]/touch",
+				"wide[0]/echo",
+				"wide[1]/echo",
+			},
+			Accounts: map[string]string{
+				"wide[0]/echo": `echo -> value: "x"`,
+				"wide[1]/echo": `echo -> value: "y"`,
 			},
 		},
 		{

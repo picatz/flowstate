@@ -119,12 +119,6 @@ type contractState struct {
 	occurrence *v1.DebugOccurrence
 	arrivals   uint64
 
-	// open is the occurrence of every step the run has reached and not yet
-	// heard the outcome of, outermost first. A step that finishes after a body
-	// of its own — a loop, a branch, a call — is reported when
-	// [contract.occurrence] is long past it, so its address is found here.
-	open []*v1.DebugOccurrence
-
 	// entry marks that the next stop is the session's first.
 	entry bool
 
@@ -469,12 +463,6 @@ func (s *Session) arrive(ctx context.Context, node *v1.Node) *v1.DebugOccurrence
 	s.contract.arrivals++
 	occurrence.Arrival = s.contract.arrivals
 	s.contract.occurrence = occurrence
-	// Bounded, for a run that reaches steps it never hears an outcome of; the
-	// oldest are the ones a finished body has long since left behind.
-	if len(s.contract.open) >= maxOpenOccurrences {
-		s.contract.open = slices.Delete(s.contract.open, 0, 1)
-	}
-	s.contract.open = append(s.contract.open, occurrence)
 	// A new position is a new snapshot: two snapshots at one revision always
 	// say the same thing.
 	s.bump()
@@ -933,38 +921,6 @@ func (s *Session) observe(kind v1.DebugObservationKind, step, text string) {
 	s.observeRedacted(kind, step, capRunes(s.redactText(strings.TrimRight(text, "\n")), maxObservationRunes))
 }
 
-// maxOpenOccurrences bounds [contract.open].
-const maxOpenOccurrences = 4096
-
-// settledOccurrenceLocked is where step ran, for an observation of kind about
-// it. An outcome closes the step's arrival: the innermost one still open for
-// the step, which is the one this outcome is for however many like-named steps
-// are running above or beside it. Any other observation is placed by the last
-// boundary the run reached, when that was the step itself. A step that never
-// arrived, because its `if:` was false or failed, is told its place by the run
-// instead ([Session.observeRedactedAt]).
-func (s *Session) settledOccurrenceLocked(kind v1.DebugObservationKind, step string) *v1.DebugOccurrence {
-	switch kind {
-	case v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_FINISHED,
-		v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_FAILED,
-		v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_TOLERATED:
-		for i := len(s.contract.open) - 1; i >= 0; i-- {
-			if occurrenceStep(s.contract.open[i]) == step {
-				occurrence := s.contract.open[i]
-				s.contract.open = slices.Delete(s.contract.open, i, i+1)
-
-				return occurrence
-			}
-		}
-	}
-
-	if occurrence := s.contract.occurrence; occurrence != nil && occurrenceStep(occurrence) == step {
-		return occurrence
-	}
-
-	return nil
-}
-
 // occurrenceStep is the id of the step an occurrence is of.
 func occurrenceStep(occurrence *v1.DebugOccurrence) string {
 	path := occurrence.GetSite().GetPath()
@@ -994,7 +950,7 @@ func (s *Session) observeRedactedAt(kind v1.DebugObservationKind, step string, p
 	case placed != nil:
 		address = s.redactTextLocked(*placed)
 	default:
-		if occurrence := s.settledOccurrenceLocked(kind, step); occurrence != nil {
+		if occurrence := s.contract.occurrence; occurrence != nil && occurrenceStep(occurrence) == step {
 			address = s.redactTextLocked(occurrence.GetAddress())
 		}
 	}

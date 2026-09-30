@@ -140,6 +140,24 @@ func (t teeObserver) StepFinishedWithholding(id string, outputs *v1.Node_Outputs
 	}
 }
 
+// StepFinishedAt implements [v1.PlacedRunObserver] for whichever listener
+// wants to be told where a step finished, and falls back to the listener's
+// own, less specific, callback for one that does not.
+func (t teeObserver) StepFinishedAt(id, address string, outputs *v1.Node_Outputs, err error, tolerated bool, withhold v1.SensitiveValues) {
+	for _, listener := range []v1.RunObserver{t.first, t.second} {
+		switch listener := listener.(type) {
+		case v1.PlacedRunObserver:
+			listener.StepFinishedAt(id, address, outputs, err, tolerated, withhold)
+		case v1.WithholdingRunObserver:
+			listener.StepFinishedWithholding(id, outputs, err, tolerated, withhold)
+		case v1.WithholdingOnlyRunObserver:
+			listener.StepWithheld(id, withhold)
+		default:
+			listener.StepFinished(id, outputs, err, tolerated)
+		}
+	}
+}
+
 func (t teeObserver) StepSkipped(id string) {
 	t.first.StepSkipped(id)
 	t.second.StepSkipped(id)

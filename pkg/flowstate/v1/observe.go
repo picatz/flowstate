@@ -111,6 +111,21 @@ type WithholdingRunObserver interface {
 	StepFinishedWithholding(id string, outputs *Node_Outputs, err error, tolerated bool, withhold SensitiveValues)
 }
 
+// A PlacedRunObserver is a [WithholdingRunObserver] that is also told where a
+// step finished: its address in the run, as [FormatDebugAddress] writes it,
+// taken from the context the step ran in. A step id says which step, and a
+// step in a body runs many times, so an observer left to place an outcome by
+// the steps it has seen arrive can pair it with the wrong iteration when
+// iterations run at once.
+//
+// It is called in place of StepFinishedWithholding, with the same arguments
+// after the address.
+type PlacedRunObserver interface {
+	WithholdingRunObserver
+
+	StepFinishedAt(id, address string, outputs *Node_Outputs, err error, tolerated bool, withhold SensitiveValues)
+}
+
 // WithholdingOnlyRunObserver is a [RunObserver] that reads, of each finished
 // step, only what a rendering of it must withhold: the set a
 // [WithholdingRunObserver] is told, without the outputs and the error. A
@@ -382,6 +397,12 @@ func observeStepFinished(ctx context.Context, id string, outputs *Node_Outputs, 
 	if withholding, ok := observer.(WithholdingRunObserver); ok {
 		// Taken from the live error, before the snapshot drops its chain.
 		withhold := ExecutingSensitiveFromContext(ctx).Merge(FailureSensitiveValues(err)).Merge(returned)
+		if placed, ok := observer.(PlacedRunObserver); ok {
+			address := ExecutingAddressFromContext(ctx, id)
+			observeSafely(func() { placed.StepFinishedAt(id, address, copied, snapshot, tolerated, withhold) })
+
+			return
+		}
 		observeSafely(func() { withholding.StepFinishedWithholding(id, copied, snapshot, tolerated, withhold) })
 
 		return

@@ -1,6 +1,7 @@
 package flowstatev1
 
 import (
+	"context"
 	"strings"
 	"sync"
 	"testing"
@@ -225,4 +226,43 @@ func TestAGuardOnlyObserverIsToldWhatToWithhold(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, observer.withheld, 1, "the skip was not reported, so this proves nothing")
 	require.True(t, observer.withheld[0].IsSensitive(secret), "a guard-only observer was not told what the callee withholds")
+}
+
+// placedObserver is a PlacedRunObserver that keeps where each step finished.
+type placedObserver struct {
+	got map[string]string
+}
+
+func (*placedObserver) StepFinished(string, *Node_Outputs, error, bool) {}
+func (*placedObserver) StepSkipped(string)                              {}
+func (*placedObserver) WaitStarted(string, string, time.Duration, bool) {}
+func (o *placedObserver) StepFinishedWithholding(id string, _ *Node_Outputs, _ error, _ bool, _ SensitiveValues) {
+	o.got[id] = "unplaced"
+}
+
+func (o *placedObserver) StepFinishedAt(id, address string, _ *Node_Outputs, _ error, _ bool, _ SensitiveValues) {
+	o.got[id] = address
+}
+
+// stillDebugger is a Debugger that holds nothing; installing one is what makes
+// the run record the segments an address is written from.
+type stillDebugger struct{}
+
+func (stillDebugger) BeforeStep(context.Context, *Node, *Scope) error { return nil }
+
+// A PlacedRunObserver is told the address of the step from the context it ran
+// in, in place of the callback that carries none. It is the run that knows
+// which iteration finished, not an observer counting arrivals.
+func TestAPlacedObserverIsToldWhereAStepFinished(t *testing.T) {
+	t.Parallel()
+
+	observer := &placedObserver{got: map[string]string{}}
+	ctx := NewContextWithDebugger(t.Context(), stillDebugger{})
+	ctx = NewContextWithRunObserver(ctx, observer)
+	ctx = contextWithSegment(ctx, DebugSegmentKind_DEBUG_SEGMENT_KIND_ITERATION, "each", 1)
+
+	observeStepFinished(ctx, "touch", &Node_Outputs{}, nil, false, SensitiveValues{})
+
+	require.Equal(t, map[string]string{"touch": "each[1]/touch"}, observer.got,
+		"the observer was not told the iteration the step finished in, or was called without it")
 }

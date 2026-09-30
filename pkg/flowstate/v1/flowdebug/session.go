@@ -872,9 +872,16 @@ func (s *Session) StepFinishedWithholding(id string, outputs *v1.Node_Outputs, e
 	s.finished(id, nil, outputs, err, tolerated, withhold)
 }
 
+// StepFinishedAt implements [v1.PlacedRunObserver]: the outcome of a step the
+// run says the place of, which is how it stays the right iteration's when
+// like-named iterations finish out of the order they arrived in.
+func (s *Session) StepFinishedAt(id, address string, outputs *v1.Node_Outputs, err error, tolerated bool, withhold v1.SensitiveValues) {
+	s.finished(id, &address, outputs, err, tolerated, withhold)
+}
+
 // finished is [Session.StepFinishedWithholding]. placed, when set, is where the
-// step is, told by the run for a step that never reached a boundary; otherwise
-// the step's own arrival says.
+// step is, as the run says it; otherwise the last boundary the run reached
+// does, when that was the step.
 func (s *Session) finished(id string, placed *string, outputs *v1.Node_Outputs, err error, tolerated bool, withhold v1.SensitiveValues) {
 	s.sawStep(id)
 	if s.reveal {
@@ -914,7 +921,7 @@ func (s *Session) finished(id string, placed *string, outputs *v1.Node_Outputs, 
 // [Session.StepSkippedBy] instead, and this is the account of a skip whose
 // condition nobody quoted.
 func (s *Session) StepSkipped(id string) {
-	s.StepSkippedBy(id, "", nil, v1.SensitiveValues{})
+	s.skipped(id, nil, nil, v1.SensitiveValues{})
 }
 
 // StepSkippedBy implements [v1.GuardRunObserver]. A skipped step never reaches
@@ -925,6 +932,12 @@ func (s *Session) StepSkipped(id string) {
 // ([withholdingAt]), as a durable session's does, unless
 // [Options.RevealSensitive] authorized showing it.
 func (s *Session) StepSkippedBy(id, address string, condition *v1.Value, withhold v1.SensitiveValues) {
+	s.skipped(id, &address, condition, withhold)
+}
+
+// skipped is [Session.StepSkippedBy]; placed is nil where nothing told the
+// step's place.
+func (s *Session) skipped(id string, placed *string, condition *v1.Value, withhold v1.SensitiveValues) {
 	// Remembered as a step this run reaches even though it did not run: a
 	// breakpoint on a step whose `if:` was false this time is exactly what
 	// somebody sets when they are trying to find out why.
@@ -957,7 +970,7 @@ func (s *Session) StepSkippedBy(id, address string, condition *v1.Value, withhol
 	})
 	line := capRunes(applyText(redact, account), maxObservationRunes)
 	s.emitTone(ToneInfo, "  "+line+"\n")
-	s.observeRedactedAt(v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_SKIPPED, id, &address, line)
+	s.observeRedactedAt(v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_SKIPPED, id, placed, line)
 }
 
 // GuardFailed implements [v1.GuardRunObserver]: a step whose `if:` could not
