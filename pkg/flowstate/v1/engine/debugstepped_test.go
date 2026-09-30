@@ -275,10 +275,17 @@ func TestSteppingAcrossAContinueAsNewIsSteppingThroughTheRun(t *testing.T) {
 		MaxIterations: 10, Body: []*v1.Node{logStep("tick", "ticked")},
 	}}}
 	shapes := map[string][]*v1.Node{
-		"a for_each":                        {forEach("each")},
-		"a loop:":                           {loop},
-		"plain steps before a for_each":     {logStep("one", "1"), logStep("two", "2"), forEach("each"), logStep("three", "3")},
-		"a called workflow holding a loop":  {{Id: "nested", Kind: &v1.Node_Call{Call: &v1.Call{Workflow: &v1.Workflow{Name: "child", Profile: v1.CurrentProfile, Steps: []*v1.Node{logStep("inner", "i"), forEach("sweep"), logStep("tail", "t")}}}}}},
+		"a for_each":                       {forEach("each")},
+		"a loop:":                          {loop},
+		"plain steps before a for_each":    {logStep("one", "1"), logStep("two", "2"), forEach("each"), logStep("three", "3")},
+		"a called workflow holding a loop": {{Id: "nested", Kind: &v1.Node_Call{Call: &v1.Call{Workflow: &v1.Workflow{Name: "child", Profile: v1.CurrentProfile, Steps: []*v1.Node{logStep("inner", "i"), forEach("sweep"), logStep("tail", "t")}}}}}},
+		"a switch arm after a called workflow that continues as new": {
+			{Id: "nested", Kind: &v1.Node_Call{Call: &v1.Call{Workflow: &v1.Workflow{Name: "child", Profile: v1.CurrentProfile, Steps: []*v1.Node{logStep("x", "x"), logStep("y", "y"), logStep("z", "z")}}}}},
+			{Id: "route", Kind: &v1.Node_Switch{Switch: &v1.Switch{
+				Value: v1.NewLiteral("go"),
+				Cases: []*v1.Switch_Case{{Values: []*v1.Value{v1.NewLiteral("go")}, Steps: []*v1.Node{logStep("a1", "1"), logStep("a2", "2"), logStep("a3", "3")}}},
+			}}},
+		},
 		"a for_each inside a for_each body": {{Id: "outer", Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{Items: v1.NewExpr(`["p", "q"]`), MaxParallel: 1, Body: []*v1.Node{forEach("inner")}}}}},
 	}
 
