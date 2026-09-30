@@ -371,9 +371,10 @@ type DebugStaticSite struct {
 
 	// Serial reports that a run has exactly one position at this site: no
 	// `parallel:` branch and no `for_each:` running more than one iteration at
-	// once encloses it, in its own workflow or in any that called it. Only a
-	// serial site can be held at, since a hold names one position and a run in
-	// several places has none to name.
+	// once encloses it, in its own workflow or in any that called it. The
+	// durable driver holds only at a serial site, since its hold names one
+	// position and a run in several places has none to name; the local driver,
+	// which holds a goroutine, also stops at the others.
 	Serial bool
 }
 

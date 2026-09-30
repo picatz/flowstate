@@ -569,11 +569,17 @@ func (e *executor) runNodes(nodes []*v1.Node, depth, susp int) (err error) {
 		// The step boundary a durable debug lease holds the run at (#928 stage
 		// 2): the same point the local driver offers [v1.Debugger] — after the
 		// condition decided this step runs, before any of its work, an
-		// `async:` step included — and only at `susp == 0`, the run's own
-		// single representable position. If earlier async work is outstanding,
-		// an ask first joins it in written order: publishing the parent as held
-		// while its child continues making progress would not be a hold at all.
-		// See debuglease.go for the asymmetry with the local driver.
+		// `async:` step included — and only where the run has one position: at
+		// `susp == 0`, the run's own level, and, once the run holds in bodies
+		// ([holdInBodiesChange]), in a `loop:`, a `switch:` arm and a
+		// `for_each:` running one iteration at a time ([executor.holdsInBody]).
+		// A step being resumed into that was offered before the seam is not
+		// offered again ([executor.reoffers]). If earlier async work this
+		// scope started is outstanding, an ask first joins it in written
+		// order: publishing the parent as held while its child continues
+		// making progress would not be a hold at all. See debuglease.go for the
+		// asymmetry with the local driver, which also stops in a `parallel:`
+		// branch.
 		//
 		// A run nobody is debugging pays one empty-channel inspection here,
 		// which issues no command and writes no history. That is the whole cost
