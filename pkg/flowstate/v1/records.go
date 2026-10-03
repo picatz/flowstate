@@ -82,7 +82,10 @@ func (table TypeTable) checkRecord(r valueRendering, name string, literal *expr.
 		present[key.StringValue] = entry.GetValue()
 	}
 
-	for key := range present {
+	// In the order the value was written, so the key a refusal names is the same
+	// one every time and on both drivers.
+	for _, entry := range m.MapValue.GetEntries() {
+		key := entry.GetKey().GetStringValue()
 		if !slices.ContainsFunc(fields, func(f *InputDeclaration) bool { return f.GetName() == key }) {
 			// The key is the sender's text, so it is bounded, and withheld for a
 			// sensitive declaration like any other value the run computed.
@@ -117,7 +120,14 @@ func (table TypeTable) checkRecord(r valueRendering, name string, literal *expr.
 // so a mistake three records down reads `a string at .lines[0].quantity`.
 func (table TypeTable) checkField(r valueRendering, field *InputDeclaration, value *expr.Value, path string, depth int) error {
 	declared := field.GetType()
-	if depth > MaxStructureDepth || declared == InputDeclaration_TYPE_UNSPECIFIED {
+	if depth > MaxStructureDepth {
+		// Declarations are bounded to this depth by [CheckRecordDeclarations], so
+		// only a specification that skipped it arrives here; refuse rather than
+		// stop judging, because a closed record that is judged only to a depth is
+		// not closed.
+		return fmt.Errorf("a record nested deeper than %d levels%s", MaxStructureDepth, atPath(path))
+	}
+	if declared == InputDeclaration_TYPE_UNSPECIFIED {
 		return nil
 	}
 
@@ -232,7 +242,11 @@ func CheckRecordDeclarations(wf *Workflow) error {
 		}
 	}
 
-	return checkRecordCycles(wf.GetDeclaredTypes(), table)
+	if err := checkRecordCycles(wf.GetDeclaredTypes(), table); err != nil {
+		return err
+	}
+
+	return checkRecordDepth(wf.GetDeclaredTypes(), table)
 }
 
 func checkRecordField(record string, field *InputDeclaration, table TypeTable) error {
@@ -347,4 +361,54 @@ func checkRecordCycles(declared []*TypeDeclaration, table TypeTable) error {
 	}
 
 	return nil
+}
+
+// checkRecordDepth refuses a chain of records deeper than a value walk will
+// follow. [checkRecordCycles] has already established the graph is acyclic, so
+// the height of each record is finite; it is memoized, so the work is the number
+// of references. One record level costs one level of the walk plus every list or
+// map around the next record, which is what a value nested that deep would cost.
+func checkRecordDepth(declared []*TypeDeclaration, table TypeTable) error {
+	heights := make(map[string]int, len(declared))
+
+	var height func(name string) int
+	height = func(name string) int {
+		if h, ok := heights[name]; ok {
+			return h
+		}
+
+		h := 0
+		for _, field := range table[name].GetFields() {
+			h = max(h, 1+typeHeight(field.GetValueType(), height, 0))
+		}
+		heights[name] = h
+
+		return h
+	}
+
+	for _, d := range declared {
+		if h := height(d.GetName()); h > MaxStructureDepth {
+			return fmt.Errorf("type %q nests records %d levels deep; the most a value may nest is %d",
+				d.GetName(), h, MaxStructureDepth)
+		}
+	}
+
+	return nil
+}
+
+func typeHeight(t *Type, record func(string) int, depth int) int {
+	if depth > MaxStructureDepth {
+		return depth
+	}
+
+	switch kind := t.GetKind().(type) {
+	case *Type_Message:
+		return record(kind.Message)
+	case *Type_List:
+		return 1 + typeHeight(kind.List, record, depth+1)
+	case *Type_Map_:
+		return 1 + typeHeight(kind.Map.GetValue(), record, depth+1)
+	}
+
+	return 0
 }

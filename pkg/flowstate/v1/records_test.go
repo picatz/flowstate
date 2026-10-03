@@ -1,6 +1,7 @@
 package flowstatev1_test
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -236,4 +237,52 @@ func TestASensitiveOutputWithholdsAMapKeyInThePath(t *testing.T) {
 	err := v1.CheckOutputValueIn(nil, output, &v1.Value{Kind: &v1.Value_Literal{Literal: literal}})
 	require.Error(t, err)
 	assert.NotContains(t, err.Error(), "hunter2")
+}
+
+// A chain of records longer than a value walk follows is refused where it is
+// declared, and a walk that reaches the limit anyway refuses instead of
+// accepting what it stopped judging.
+func TestADeepRecordChainIsRefused(t *testing.T) {
+	t.Parallel()
+
+	chain := func(n int) *v1.Workflow {
+		wf := &v1.Workflow{}
+		for i := range n {
+			d := &v1.TypeDeclaration{Name: fmt.Sprintf("T%d", i)}
+			if i+1 < n {
+				d.Fields = []*v1.InputDeclaration{recordField("x", v1.InputDeclaration_TYPE_STRUCT, recordTypeOf(fmt.Sprintf("T%d", i+1)), false)}
+			} else {
+				d.Fields = []*v1.InputDeclaration{recordStringField("leaf", false)}
+			}
+			wf.DeclaredTypes = append(wf.DeclaredTypes, d)
+		}
+		return wf
+	}
+
+	require.NoError(t, v1.CheckRecordDeclarations(chain(10)))
+
+	err := v1.CheckRecordDeclarations(chain(40))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "levels deep")
+
+	// A hand-built value walk past the limit is an error, not an acceptance.
+	literal := mapLit(recordStr("leaf"), recordStr("ok"))
+	for range 40 {
+		literal = mapLit(recordStr("x"), literal)
+	}
+	deep := chain(40)
+	err = v1.CheckInputValueIn(v1.TypesOf(deep), "t",
+		recordField("t", v1.InputDeclaration_TYPE_STRUCT, recordTypeOf("T0"), true),
+		&v1.Value{Kind: &v1.Value_Literal{Literal: literal}})
+	require.Error(t, err)
+}
+
+func TestTheUnknownKeyAReportNamesIsTheFirstWritten(t *testing.T) {
+	t.Parallel()
+
+	for range 20 {
+		err := bindOrder(t, mapLit(recordStr("id"), recordStr("o"), recordStr("zz"), recordStr("x"), recordStr("aa"), recordStr("x")))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), `"zz"`)
+	}
 }
