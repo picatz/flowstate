@@ -262,13 +262,19 @@ func formatType(t *v1.Type, depth int) (string, error) {
 // The legacy words are tried first and stay exactly as they were; only text that
 // is not one is parsed as a type expression, so a file that compiled before
 // compiles to the same message. A type expression must also project into the
-// legacy enum, because an older worker ignores `value_type` and the schema
-// requires the two to agree: a typed `list(string)` carries TYPE_LIST, and
-// `map(string, T)` TYPE_STRUCT, which is what an older reader enforces of it. A
-// type with no legacy word (`bytes`, `timestamp`, `duration`, `null_type`,
-// `dyn`) is refused until the edition boundary makes a structural-only
-// declaration safe; saying so beats storing something an older worker would
-// read as untyped.
+// legacy enum, because the schema requires the two to agree: a typed
+// `list(string)` carries TYPE_LIST, and `map(string, T)` TYPE_STRUCT. A type with
+// no legacy word (`bytes`, `timestamp`, `duration`, `null_type`, `dyn`) is
+// refused until the edition boundary makes a structural-only declaration safe,
+// since the schema requires a legacy type beside every `value_type`.
+//
+// A worker built before the agreement rule was relaxed refuses a typed
+// container when the run starts, because that rule demanded `dyn` elements: it
+// fails closed rather than running the declaration untyped, and it means every
+// worker must be upgraded before a typed declaration is submitted.
+//
+// A type nested past [v1.MaxStructureDepth] is refused here, where the author
+// can see it, rather than when the run starts.
 func declareType(text string) (legacy v1.InputDeclaration_Type, structural *v1.Type, err error) {
 	if declared, known := v1.ParseDeclaredType(text); known {
 		return declared, nil, nil
@@ -276,6 +282,10 @@ func declareType(text string) (legacy v1.InputDeclaration_Type, structural *v1.T
 
 	structural, err = ParseType(text)
 	if err != nil {
+		return v1.InputDeclaration_TYPE_UNSPECIFIED, nil, err
+	}
+
+	if _, err := FormatType(structural); err != nil {
 		return v1.InputDeclaration_TYPE_UNSPECIFIED, nil, err
 	}
 

@@ -121,3 +121,14 @@ func TestATypedDeclarationSurvivesMarshal(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, proto.Equal(wf, again))
 }
+
+func TestADeclaredTypeNestedTooDeepIsRefusedAtCompile(t *testing.T) {
+	t.Parallel()
+
+	deep := "string"
+	for range v1.MaxStructureDepth + 2 {
+		deep = "list(" + deep + ")"
+	}
+	_, _, err := flowfile.Parse([]byte(typedInputFile(deep, "", `${"ok"}`)))
+	require.Error(t, err)
+}

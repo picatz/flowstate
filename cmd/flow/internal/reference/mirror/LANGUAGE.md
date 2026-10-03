@@ -179,7 +179,9 @@ Read an input as `${inputs.<name>}`. A few things to know:
   a refusal when the file is validated, and a `default:` or a submitted value
   whose elements are not strings is refused naming the element
   (`declared list(string) but was given an integer at [1]`). A map's keys are
-  always `string`. Inside a YAML flow mapping, quote the value
+  always `string`. A worker built before typed containers existed refuses
+  a run whose workflow declares one, so upgrade every worker before submitting
+  it. Inside a YAML flow mapping, quote the value
   (`{ type: "map(string, int)" }`), because the comma ends it otherwise.
 - **There is no int-to-float widening.** A `float` input's `default: 1` is
   refused; write `1.0`. On the command line, `--input ratio=2` is converted for
