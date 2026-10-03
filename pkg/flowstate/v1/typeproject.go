@@ -137,7 +137,7 @@ func celScalar(s Type_Scalar) *cel.Type {
 //
 // Total, and loose where [Type] cannot say more: a type the vocabulary has no
 // word for (`uint`, an opaque or object type, a type parameter, an error) is
-// `dyn`, and so is a map whose keys are not strings, because [Type.Map] fixes
+// `dyn`, and so is a map whose keys are not strings, because [Type_Map] fixes
 // string keys (a caller that must tell the two apart reads the CEL type it
 // started from). `uint` is deliberately not `int`: the checker treats them as
 // different types, and answering `int` would make `1u + 1` look checkable.
