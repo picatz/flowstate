@@ -79,7 +79,7 @@ func validateCallAtDepth(id string, call *v1.Call, scope refScope, index int, wf
 		// `vars.x` type as `dyn`), it is exactly as unchecked here as it
 		// always was, and [v1.BindRunInputs] still refuses a wrong type once
 		// the expression has a value to check at run time.
-		if diag := checkCallArgumentType(id, name, call.GetArguments()[name], declaration, callee, calleeProfile); diag != nil {
+		if diag := checkCallArgumentType(scope.types, id, name, call.GetArguments()[name], declaration, callee, calleeProfile); diag != nil {
 			ds = append(ds, *diag)
 		}
 	}
@@ -122,7 +122,7 @@ func validateCallAtDepth(id string, call *v1.Call, scope refScope, index int, wf
 // declaration is exactly as much a mistake as a literal's would be, and an
 // author benefits from being told now rather than only when that expression
 // is finally evaluated.
-func checkCallArgumentType(stepID, name string, value *v1.Value, declaration *v1.InputDeclaration, callee *v1.Workflow, profile string) *Diagnostic {
+func checkCallArgumentType(table *typeTable, stepID, name string, value *v1.Value, declaration *v1.InputDeclaration, callee *v1.Workflow, profile string) *Diagnostic {
 	switch value.GetKind().(type) {
 	case *v1.Value_Literal:
 		if err := v1.CheckInputValue(name, declaration, value); err != nil {
@@ -145,7 +145,7 @@ func checkCallArgumentType(stepID, name string, value *v1.Value, declaration *v1
 			return nil
 		}
 
-		env, err := envDeclaring(referencedNames(parsed.GetExpr()))
+		env, err := envDeclaring(referencedNames(parsed.GetExpr()), table.leavesFor(parsed, table.before(v1.ValueSite{Step: stepID})))
 		if err != nil {
 			// A defect in this build rather than in the file; see typeErrors,
 			// which makes the identical call for the identical reason.

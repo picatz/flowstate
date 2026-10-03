@@ -244,10 +244,12 @@ func TestTypedOutputReportsAKnowableMismatch(t *testing.T) {
 // make the check unusable if it were wrong: an expression whose type is not a
 // fact about the document must not be guessed at.
 //
-// Both arms are correct workflows. `steps.a.value` is a value the run computes,
-// and `inputs.anything` is declared but read through a further selection — the
-// checker declares every referenced name `dyn` (celcheck.go), and `dyn` is the
-// honest answer rather than a mismatch.
+// Both arms are correct workflows. `steps.a.value` is a value read *through* a
+// struct input, whose keys the declaration does not describe, and
+// `inputs.config.host` is the same selection written in place: the checker's
+// answer for each is `dyn` (celcheck.go, celtypes.go), which is the honest
+// answer rather than a mismatch. What a `value:` step is known to hold is judged
+// by TestValueStepTypesReachLaterExpressions.
 func TestTypedOutputStaysSilentWhereNothingIsKnowable(t *testing.T) {
 	t.Parallel()
 
@@ -260,7 +262,7 @@ inputs:
       host: a
 steps:
   - id: a
-    value: ${inputs.config}
+    value: ${inputs.config.host}
 outputs:
   from_step:
     value: ${steps.a.value}

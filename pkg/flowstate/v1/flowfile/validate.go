@@ -329,7 +329,8 @@ func validateAtDepth(wf *v1.Workflow, profile string, depth int, placement v1.Un
 	// beside it. Separate from the reference checks below and deliberately unaware
 	// of scope; see celcheck.go for why that is what keeps it from reporting the
 	// same mistake twice in two voices.
-	ds = append(ds, checkExpressionTypes(wf)...)
+	types := newTypeTable(wf)
+	ds = append(ds, checkExpressionTypes(wf, types)...)
 
 	// Two sibling steps whose `if:` conditions look like they were meant to be
 	// exact negations of each other, but have drifted apart — see negation.go.
@@ -351,6 +352,7 @@ func validateAtDepth(wf *v1.Workflow, profile string, depth int, placement v1.Un
 
 	// Tasks and expression references.
 	scope := newRefScope(wf)
+	scope.types = types
 	for i, node := range wf.GetSteps() {
 		id := node.GetId()
 		task := node.GetTask()
@@ -879,6 +881,12 @@ type refScope struct {
 	// ambient name and a step output, and it is why the two roots need different
 	// diagnostics even though they share a resolution rule.
 	vars map[string]bool
+
+	// types is what the file states about the type of a name, shared by every scope
+	// derived from this one because it is a fact about the whole workflow and not
+	// about a position in it. Nil where nothing built one, which reads as "nothing
+	// stated": every name is `dyn`.
+	types *typeTable
 }
 
 // newRefScope returns a scope holding the workflow's declared vars and nothing else.
@@ -912,6 +920,7 @@ func (s refScope) clone() refScope {
 		// is true of the declared inputs, more so — nothing in the file can add one.
 		vars:   s.vars,
 		inputs: s.inputs,
+		types:  s.types,
 	}
 	maps.Copy(out.steps, s.steps)
 	maps.Copy(out.locals, s.locals)
