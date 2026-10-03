@@ -3,6 +3,7 @@ package flowdebug
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"slices"
@@ -355,6 +356,9 @@ func (r *Reversible) Pause(ctx context.Context, requestID string) (*v1.DebugRece
 	r.command.Lock()
 	defer r.command.Unlock()
 
+	if receipt, ok := r.duplicate(requestID); ok {
+		return receipt, nil
+	}
 	run, offset, _ := r.current()
 	receipt, err := run.Session.Pause(ctx, requestID)
 	if err != nil {
@@ -365,8 +369,10 @@ func (r *Reversible) Pause(ctx context.Context, requestID string) (*v1.DebugRece
 	if receipt.GetStatus() == v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_PENDING {
 		r.paused = true
 	}
+	shown := r.presentReceipt(receipt, offset)
+	r.remember(shown)
 
-	return r.presentReceipt(receipt, offset), nil
+	return shown, nil
 }
 
 // ReplaceBreakpoints implements [Target], and records the replacement: a
@@ -376,6 +382,14 @@ func (r *Reversible) ReplaceBreakpoints(ctx context.Context, req *v1.DebugSetBre
 	r.command.Lock()
 	defer r.command.Unlock()
 
+	if receipt, ok := r.duplicate(req.GetRequestId()); ok {
+		snapshot, err := r.Snapshot(ctx)
+		if err != nil {
+			return nil, err
+		}
+
+		return &v1.DebugSetBreakpointsResponse{Receipt: receipt, Breakpoints: snapshot.GetBreakpoints(), Snapshot: snapshot}, nil
+	}
 	run, offset, _ := r.current()
 	response, err := run.Session.ReplaceBreakpoints(ctx, req)
 	if err != nil {
@@ -384,6 +398,10 @@ func (r *Reversible) ReplaceBreakpoints(ctx context.Context, req *v1.DebugSetBre
 	shown := proto.CloneOf(response)
 	if shown.GetReceipt() != nil {
 		shown.Receipt = r.presentReceipt(response.GetReceipt(), offset)
+		r.remember(shown.Receipt)
+	}
+	if shown.GetSnapshot() != nil {
+		shown.Snapshot = r.present(response.GetSnapshot(), offset)
 	}
 	if response.GetReceipt().GetStatus() == v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_APPLIED {
 		if len(r.log) >= maxReversibleLog {
@@ -438,12 +456,17 @@ type stop struct {
 }
 
 // fingerprint identifies a stop by what a person was shown at it: where, why,
-// and the observations that led there. It reads the snapshot after the
+// the frames, the observations that led there, and scope, the digest of what
+// the held run can name. It reads the snapshot and the scope after the
 // session's redaction, so it holds no secret and keeps none.
-func fingerprint(snapshot *v1.DebugSnapshot) stop {
+func fingerprint(snapshot *v1.DebugSnapshot, scope string) stop {
 	var text strings.Builder
 	fmt.Fprintf(&text, "%s\n%s\n%s\n", snapshot.GetState(), snapshot.GetReason(), snapshot.GetOccurrence().GetAddress())
-	fmt.Fprintf(&text, "%s\n", snapshot.GetFailure())
+	fmt.Fprintf(&text, "%s\n%s\n", snapshot.GetFailure(), snapshot.GetIrDigest())
+	for _, frame := range snapshot.GetFrames() {
+		fmt.Fprintf(&text, "frame %s %s\n", frame.GetLabel(), frame.GetOccurrence().GetAddress())
+	}
+	fmt.Fprintf(&text, "scope %s\n", scope)
 	for _, id := range snapshot.GetBreakpointIds() {
 		fmt.Fprintf(&text, "bp %s\n", id)
 	}
@@ -495,9 +518,57 @@ func (r *Reversible) noteStop(ctx context.Context, run *Run) error {
 	if len(r.stops) > movements(r.log) {
 		return nil
 	}
-	r.stops = append(r.stops, fingerprint(snapshot))
+	at, err := stopOf(ctx, run.Session, snapshot)
+	if err != nil {
+		return err
+	}
+	r.stops = append(r.stops, at)
 
 	return nil
+}
+
+// stopOf fingerprints the snapshot together with the scope the session shows at it.
+func stopOf(ctx context.Context, target Target, snapshot *v1.DebugSnapshot) (stop, error) {
+	scope, err := scopeDigest(ctx, target)
+	if err != nil {
+		return stop{}, err
+	}
+
+	return fingerprint(snapshot, scope), nil
+}
+
+// maxScopeGroups bounds how many scope groups a stop's digest walks; the rest
+// are not compared.
+const maxScopeGroups = 32
+
+// scopeDigest is a hash of every name, type and rendered value a held run can
+// reach, read through the session's own redacted inspection, one page per
+// group of [MaxInspectLimit] names at most. A run that is not held has no
+// scope to name and digests as empty.
+func scopeDigest(ctx context.Context, target Target) (string, error) {
+	top, err := target.Inspect(ctx, &v1.DebugInspectRequest{Children: true, Limit: MaxInspectLimit})
+	if errors.Is(err, ErrNotPaused) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+
+	h := sha256.New()
+	for _, group := range top.GetChildren()[:min(len(top.GetChildren()), maxScopeGroups)] {
+		fmt.Fprintf(h, "group %s %s\n", group.GetName(), group.GetValue().GetRendered())
+		names, err := target.Inspect(ctx, &v1.DebugInspectRequest{
+			Expression: group.GetValue().GetExpression(), Children: true, Limit: MaxInspectLimit,
+		})
+		if err != nil {
+			return "", err
+		}
+		for _, variable := range names.GetChildren() {
+			fmt.Fprintf(h, "%s %s %s\n", variable.GetName(), variable.GetValue().GetType(), variable.GetValue().GetRendered())
+		}
+	}
+
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // Back moves to the previous stop.
@@ -647,7 +718,11 @@ func (r *Reversible) replay(ctx context.Context, commands []recorded, stops []st
 	if err != nil {
 		return abandon(interrupted(ctx, "did not reach its first stop", "unavailable", err))
 	}
-	if got := fingerprint(held); got != stops[0] {
+	got, err := stopOf(ctx, fresh.Session, held)
+	if err != nil {
+		return abandon(interrupted(ctx, "could not be read at its first stop", "unavailable", err))
+	}
+	if got != stops[0] {
 		return abandon(diverged(0, stops[0], got))
 	}
 
@@ -683,7 +758,11 @@ func (r *Reversible) replay(ctx context.Context, commands []recorded, stops []st
 		if moved >= len(stops) {
 			return abandon(fmt.Errorf("diverged: the replay made more movements than the stops shown"))
 		}
-		if got := fingerprint(held); got != stops[moved] {
+		got, err := stopOf(ctx, fresh.Session, held)
+		if err != nil {
+			return abandon(interrupted(ctx, fmt.Sprintf("could not be read at stop %d", moved), "unavailable", err))
+		}
+		if got != stops[moved] {
 			return abandon(diverged(moved, stops[moved], got))
 		}
 	}

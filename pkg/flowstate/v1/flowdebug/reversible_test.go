@@ -629,3 +629,86 @@ func TestReadsDuringARewindNeverSeeTheReplacedRun(t *testing.T) {
 		t.Error(problem)
 	}
 }
+
+// TestBackRefusesARunWhoseScopeDiffersAtAnIdenticalStop: two launches can reach
+// the same address with the same observations while holding different values;
+// presenting the second as the first stop would show a person state they never
+// saw.
+func TestBackRefusesARunWhoseScopeDiffersAtAnIdenticalStop(t *testing.T) {
+	t.Parallel()
+
+	// Only a variable's value differs: the addresses, frames and logs match.
+	withLimit := func(limit string) *v1.Workflow {
+		dir := t.TempDir()
+		text := strings.Replace(journeyFlowfile, "  items: ${[1, 2, 3]}", "  items: ${[1, 2, 3]}\n  limit: "+limit, 1)
+		require.NotEqual(t, journeyFlowfile, text)
+		for name, body := range map[string]string{"main.yaml": text, "child.yaml": childFlowfile} {
+			require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600))
+		}
+		parsed, _, err := flowfile.ParseFile(filepath.Join(dir, "main.yaml"))
+		require.NoError(t, err)
+
+		return parsed
+	}
+	workflow, other := withLimit("7"), withLimit("8")
+
+	run := newReversing(t, func(n int) *v1.Workflow {
+		if n == 0 {
+			return workflow
+		}
+
+		return other
+	}, nil)
+
+	one := run.first()
+	two := run.move(one, v1.DebugResumeAction_DEBUG_RESUME_ACTION_STEP_IN)
+
+	receipt, snapshot := run.back(0)
+	assert.Equal(t, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_REFUSED, receipt.GetStatus())
+	assert.True(t, strings.HasPrefix(receipt.GetMessage(), "diverged:"), receipt.GetMessage())
+	assert.Equal(t, shownAt(two), shownAt(snapshot), "a refused rewind moved the session")
+}
+
+// TestBreakpointReplacementsAreDeduplicatedAndShiftedLikeEveryCommand: a delayed
+// retry of an older replacement must not reinstate it, and the snapshot a
+// response embeds speaks in the revisions the wrapper shows.
+func TestBreakpointReplacementsAreDeduplicatedAndShiftedLikeEveryCommand(t *testing.T) {
+	t.Parallel()
+
+	workflow := parseJourney(t)
+	run := newReversing(t, func(int) *v1.Workflow { return workflow }, nil)
+	one := run.first()
+
+	older := &v1.DebugSetBreakpointsRequest{
+		RequestId:   run.id("bp"),
+		Breakpoints: []*v1.DebugBreakpoint{{Id: "each/touch", Step: "each/touch"}},
+	}
+	set, err := run.target.ReplaceBreakpoints(t.Context(), older)
+	require.NoError(t, err)
+	require.Equal(t, appliedStatus, set.GetReceipt().GetStatus())
+
+	newer, err := run.target.ReplaceBreakpoints(t.Context(), &v1.DebugSetBreakpointsRequest{RequestId: run.id("bp")})
+	require.NoError(t, err)
+	require.Equal(t, appliedStatus, newer.GetReceipt().GetStatus())
+	require.Empty(t, newer.GetBreakpoints())
+
+	retry, err := run.target.ReplaceBreakpoints(t.Context(), older)
+	require.NoError(t, err)
+	assert.Equal(t, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_DUPLICATE, retry.GetReceipt().GetStatus())
+	current, err := run.target.Snapshot(t.Context())
+	require.NoError(t, err)
+	assert.Empty(t, current.GetBreakpoints(), "a stale retry reinstated the older breakpoints")
+
+	// After a rewind the embedded snapshot still agrees with the wrapper's.
+	two := run.move(one, v1.DebugResumeAction_DEBUG_RESUME_ACTION_STEP_IN)
+	_ = run.move(two, v1.DebugResumeAction_DEBUG_RESUME_ACTION_STEP_IN)
+	receipt, _ := run.back(0)
+	require.Equal(t, appliedStatus, receipt.GetStatus(), receipt.GetMessage())
+	after, err := run.target.ReplaceBreakpoints(t.Context(), &v1.DebugSetBreakpointsRequest{RequestId: run.id("bp")})
+	require.NoError(t, err)
+	snapshot, err := run.target.Snapshot(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, snapshot.GetRevision(), after.GetSnapshot().GetRevision())
+	assert.True(t, after.GetSnapshot().GetCapabilities().GetReverse())
+	assert.GreaterOrEqual(t, after.GetReceipt().GetRevision(), two.GetRevision())
+}
