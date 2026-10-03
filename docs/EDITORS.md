@@ -749,7 +749,10 @@ with the arguments in the `flowstate.dap.args` setting, for example
 `["--plugin-dir", "/usr/local/lib/flowstate/plugins"]` or, for an attach,
 `["--address", "localhost:7233", "--token-file", "/path/to/token"]`. Both
 settings are `machine`-scoped, so a cloned repository's `.vscode` can name a
-program to debug and never what runs. With no `launch.json`, F5 on a workflow
+program to debug and never what runs. The adapter starts in the extension's
+own storage directory rather than the workspace, so a relative path in those
+arguments cannot name a file the repository supplies; give them as absolute
+paths. With no `launch.json`, F5 on a workflow
 launches that file; a test suite is refused, because `flow test --debug` is how
 a case is stepped.
 

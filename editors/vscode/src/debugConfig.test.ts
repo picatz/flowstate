@@ -79,3 +79,23 @@ test("an unknown request is refused by name", () => {
   assert.ok(!resolved.ok);
   assert.match(resolved.message, /"restart"/);
 });
+
+test("a relative program is resolved against the debugged folder, never left for the adapter's directory", () => {
+  const resolved = resolveDebugConfig({ request: "launch", program: "flows/workflow.yaml" }, undefined, "/repo");
+  assert.ok(resolved.ok);
+  assert.equal(resolved.config.program, "/repo/flows/workflow.yaml");
+
+  const attach = resolveDebugConfig(
+    { request: "attach", workflowId: "wf-1", program: "workflow.yaml" },
+    undefined,
+    "/repo",
+  );
+  assert.ok(attach.ok);
+  assert.equal(attach.config.program, "/repo/workflow.yaml");
+});
+
+test("an absolute program is left exactly as written", () => {
+  const resolved = resolveDebugConfig({ request: "launch", program: "/elsewhere/workflow.yaml" }, undefined, "/repo");
+  assert.ok(resolved.ok);
+  assert.equal(resolved.config.program, "/elsewhere/workflow.yaml");
+});

@@ -117,10 +117,10 @@ async function startLanguageClient(context: vscode.ExtensionContext): Promise<vo
 function registerDebugType(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     vscode.debug.registerDebugConfigurationProvider("flowstate", {
-      resolveDebugConfiguration(_folder, config): vscode.ProviderResult<vscode.DebugConfiguration> {
+      resolveDebugConfiguration(folder, config): vscode.ProviderResult<vscode.DebugConfiguration> {
         const editor = vscode.window.activeTextEditor;
         const active = editor?.document.languageId === "flowfile" ? editor.document.uri.fsPath : undefined;
-        const resolved = resolveDebugConfig(config as DebugConfig, active);
+        const resolved = resolveDebugConfig(config as DebugConfig, active, folder?.uri.fsPath);
         if (!resolved.ok) {
           void vscode.window.showErrorMessage(resolved.message);
           // Undefined abandons the launch; null would open launch.json
@@ -131,7 +131,7 @@ function registerDebugType(context: vscode.ExtensionContext): void {
       },
     }),
     vscode.debug.registerDebugAdapterDescriptorFactory("flowstate", {
-      async createDebugAdapterDescriptor(session): Promise<vscode.DebugAdapterDescriptor> {
+      async createDebugAdapterDescriptor(): Promise<vscode.DebugAdapterDescriptor> {
         const bin = configuredBinary();
         const check = await checkBinaryAvailable(bin);
         if (!check.ok) {
@@ -140,9 +140,16 @@ function registerDebugType(context: vscode.ExtensionContext): void {
           // would read as an adapter that crashed.
           throw new Error(`Flowstate: could not run "${bin}". ${check.detail}`);
         }
-        return new vscode.DebugAdapterExecutable(bin, adapterArgs(config().get<string[]>("dap.args", [])), {
-          cwd: session.workspaceFolder?.uri.fsPath,
-        });
+        // Never started in the workspace: the settings are machine-scoped so a
+        // repository cannot choose what runs, and a relative path in them
+        // (`--task-policy tasks.yaml`) would resolve inside the repository
+        // being debugged and let it supply the policy that governs its own
+        // run. The extension's own storage directory holds nothing a
+        // repository wrote; the configuration's relative `program` is
+        // resolved against the workspace above instead.
+        const cwd = context.globalStorageUri.fsPath;
+        await vscode.workspace.fs.createDirectory(context.globalStorageUri);
+        return new vscode.DebugAdapterExecutable(bin, adapterArgs(config().get<string[]>("dap.args", [])), { cwd });
       },
     }),
   );

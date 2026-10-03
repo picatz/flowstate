@@ -63,7 +63,7 @@
             "type": "string"
           },
           "default": [],
-          "description": "Extra arguments for `flow dap`, e.g. [\"--plugin-dir\", \"/path/to/plugins\"] or [\"--address\", \"localhost:7233\", \"--token-file\", \"/path/to/token\"] for an attach. A plugin directory must be an absolute path. A launch runs the workflow, so pass the same --egress-policy and --task-policy the worker uses. Ignored when set in workspace (.vscode) settings, for the same reason as flowstate.path.",
+          "description": "Extra arguments for `flow dap`, e.g. [\"--plugin-dir\", \"/path/to/plugins\"] or [\"--address\", \"localhost:7233\", \"--token-file\", \"/path/to/token\"] for an attach. A plugin directory must be an absolute path, and the adapter does not start in your workspace, so give every path here as an absolute one. A launch runs the workflow, so pass the same --egress-policy and --task-policy the worker uses. Ignored when set in workspace (.vscode) settings, for the same reason as flowstate.path.",
           "scope": "machine"
         }
       }
