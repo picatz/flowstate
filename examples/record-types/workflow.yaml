@@ -16,7 +16,7 @@
 #
 #   flow run local examples/record-types/workflow.yaml \
 #       --input-file examples/record-types/inputs.json
-edition: v2026.3
+edition: v2026.4
 name: record-types
 types:
   Line:

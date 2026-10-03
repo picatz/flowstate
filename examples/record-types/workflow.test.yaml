@@ -1,6 +1,6 @@
 # A record is checked once, at submit, with the path of whatever is wrong — so
 # the refusals are the part worth showing.
-edition: v2026.3
+edition: v2026.4
 defaults:
   workflow: ./workflow.yaml
   stubs:

@@ -18,7 +18,7 @@ import (
 // typesSource wraps a `types:` block and one input of the given type in the
 // smallest workflow that holds them.
 func typesSource(types, inputType string) string {
-	return `edition: v2026.3
+	return `edition: v2026.4
 name: t
 ` + types + `inputs:
   order:
@@ -250,7 +250,7 @@ func TestACallArgumentIsCheckedAgainstTheCalleesRecord(t *testing.T) {
 	writeFile(t, dir, "callee.yaml", typesSource(orderTypes, "Order"))
 
 	caller := func(order string) string {
-		return `edition: v2026.3
+		return `edition: v2026.4
 name: caller
 steps:
   - id: place
@@ -274,7 +274,7 @@ func TestARecordDefaultIsCheckedWhereItIsWritten(t *testing.T) {
 	t.Parallel()
 
 	source := func(def string) string {
-		return `edition: v2026.3
+		return `edition: v2026.4
 name: t
 ` + orderTypes + `inputs:
   order:
