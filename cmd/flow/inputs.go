@@ -262,7 +262,7 @@ func inputCoercionError(name, raw string, declaration *v1.InputDeclaration, want
 	// would report a type nobody declared and this function never decided.
 	return &v1.InputError{
 		Input:    name,
-		Declared: v1.DeclaredTypeName(declaration.GetType()),
+		Declared: declaration.TypeText(),
 		Err: fmt.Errorf("--input %s=%s: %q is declared %s, which is written as %s%s",
 			name, shown, name, declaration.TypeText(), wants, describedAs(declaration)),
 	}

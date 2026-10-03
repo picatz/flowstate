@@ -198,7 +198,7 @@ func TestTypedOutputReportsAKnowableMismatch(t *testing.T) {
     value: '${{1: "value"}}'
     type: map(string, dyn)
 `,
-			contains: `output "release" is declared struct, but this expression is typed as a map with int keys; a struct is a map with string keys`,
+			contains: `output "release" is declared map(string, dyn), but this expression is typed as a map with int keys; a struct is a map with string keys`,
 		},
 		{
 			// The same promise one level down, which is the direction a check on
@@ -210,7 +210,7 @@ func TestTypedOutputReportsAKnowableMismatch(t *testing.T) {
     value: '${{"a": {true: "b"}}}'
     type: map(string, dyn)
 `,
-			contains: `output "release" is declared struct, but this expression is typed as a map with bool keys; a struct is a map with string keys`,
+			contains: `output "release" is declared map(string, dyn), but this expression is typed as a map with bool keys; a struct is a map with string keys`,
 		},
 		{
 			// The other declared container, on the identical rule: the
@@ -222,7 +222,7 @@ func TestTypedOutputReportsAKnowableMismatch(t *testing.T) {
     value: '${[{1: "value"}]}'
     type: list(dyn)
 `,
-			contains: `output "release" is declared list, but this expression is typed as a list holding a map with int keys; a list reads back as a plain array, whose maps have string keys`,
+			contains: `output "release" is declared list(dyn), but this expression is typed as a list holding a map with int keys; a list reads back as a plain array, whose maps have string keys`,
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -328,4 +328,23 @@ func TestTypedOutputAcceptsAContainerWhoseKeysCouldBeStrings(t *testing.T) {
 				"a key type the document does not decide must not be reported as a mismatch")
 		})
 	}
+}
+
+// TestTypedOutputMismatchNamesTheDeclaredContainerType is the output half of
+// #1640's printers: an output declared `list(string)` is reported as that, not
+// as the legacy word `list`.
+func TestTypedOutputMismatchNamesTheDeclaredContainerType(t *testing.T) {
+	t.Parallel()
+
+	got := diagnose(t, `edition: v2026.4
+name: o
+steps:
+  - id: s
+    value: ${1}
+outputs:
+  hosts:
+    value: ${1 + 2}
+    type: list(string)
+`)
+	require.Contains(t, got, `output "hosts" is declared list(string), but this expression always produces int`)
 }

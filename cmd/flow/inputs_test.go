@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 )
 
 func TestSuggestedRunArgumentsRedactSensitiveInputs(t *testing.T) {
@@ -494,4 +495,21 @@ func runOutputsOf(tb testing.TB, stdout string) map[string]any {
 		"the run reported no declared outputs: %s", stdout)
 
 	return document.RunOutputs
+}
+
+// TestAShellWordForATypedListNamesItsDeclaredType pins that the structured
+// refusal carries the same spelling as its message: a `list(string)` input given
+// a bare word is declared `list(string)` in both, not `list` in one of them.
+func TestAShellWordForATypedListNamesItsDeclaredType(t *testing.T) {
+	declaration, err := flowfile.ParseType("list(string)")
+	require.NoError(t, err)
+
+	_, err = coerceInput("hosts", "alpha", &v1.InputDeclaration{
+		Name: "hosts", Type: v1.InputDeclaration_TYPE_LIST, ValueType: declaration,
+	}, true)
+
+	var inputErr *v1.InputError
+	require.ErrorAs(t, err, &inputErr)
+	assert.Equal(t, "list(string)", inputErr.Declared)
+	assert.Contains(t, inputErr.Error(), "declared list(string)")
 }

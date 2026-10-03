@@ -439,7 +439,7 @@ func checkOutputValueType(wf *v1.Workflow, table *typeTable, declaration *v1.Out
 					Code: v1.DiagnosticCodeTypeMismatch,
 					Message: fmt.Sprintf(
 						"output %q is declared %s, but this expression is typed as %s with %s keys; %s",
-						declaration.GetName(), v1.DeclaredTypeName(declared),
+						declaration.GetName(), declaration.TypeText(),
 						containerHolds(declared), v1.DeclaredTypeName(keyType),
 						containerKeyRule(declared)),
 				}
@@ -461,7 +461,7 @@ func checkOutputValueType(wf *v1.Workflow, table *typeTable, declaration *v1.Out
 			Code: v1.DiagnosticCodeTypeMismatch,
 			Message: fmt.Sprintf(
 				"output %q is declared %s, but this expression always produces %s",
-				declaration.GetName(), v1.DeclaredTypeName(declared), v1.DeclaredTypeName(known)),
+				declaration.GetName(), declaration.TypeText(), v1.DeclaredTypeName(known)),
 		}
 
 	default:
