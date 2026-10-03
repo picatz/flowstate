@@ -421,7 +421,7 @@ func decodeInputJSON(raw string) (any, error) {
 // read as written: whole numbers are ints and the rest are floats. That is the same
 // rule the YAML parser applies to a literal in a file.
 func valueFromJSON(name string, decoded any, declaration *v1.InputDeclaration) (*v1.Value, error) {
-	declaredType := v1.DeclaredTypeName(declaration.GetType())
+	declaredType := declaration.TypeText()
 
 	if number, ok := decoded.(json.Number); ok && declaration.GetType() == v1.InputDeclaration_TYPE_FLOAT {
 		asFloat, err := number.Float64()

@@ -326,6 +326,12 @@ func RetryAfter(err error) time.Duration {
 // refusal that is not about a type at all (a missing required input, an
 // undeclared name). A consumer reads them as "when present, this is a type
 // mismatch and these are the two types"; Err is always the whole sentence.
+//
+// Declared is spelled the way the author wrote it (`list(string)`,
+// `map(string, int)`, see [InputDeclaration.TypeText]), because a declaration
+// can say what a container holds. Got is the kind of value that arrived
+// (`list`, `struct`), because a value that arrived has no declared spelling to
+// repeat.
 type InputError struct {
 	// Input is the name the refusal concerns: the declaration's name, or the
 	// name a caller submitted when nothing declares it.
@@ -335,8 +341,8 @@ type InputError struct {
 	// about a type. Empty otherwise.
 	Declared string
 
-	// Got is what arrived instead, in the same vocabulary as Declared. Empty
-	// otherwise.
+	// Got is the kind of value that arrived instead, named by the legacy kind
+	// words (`list`, `struct`, `float`). Empty otherwise.
 	Got string
 
 	// Err is the refusal, worded once by whoever refused. It is the whole
