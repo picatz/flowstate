@@ -923,7 +923,7 @@ message InputDeclaration {
   option (buf.validate.message).cel = {
     id: "input_declaration.type_agrees"
     message: "value_type and the legacy type must describe the same input type when both are set"
-    expression: "!has(this.value_type) || this.type == 0 || (this.type == 1 && this.value_type.scalar == 1) || (this.type == 2 && this.value_type.scalar == 2) || (this.type == 3 && this.value_type.scalar == 3) || (this.type == 4 && this.value_type.scalar == 4) || (this.type == 5 && (has(this.value_type.map) || has(this.value_type.message))) || (this.type == 6 && has(this.value_type.list)) || (this.type == 9 && this.value_type.enum)"
+    expression: "!has(this.value_type) || this.type == 0 || (this.type == 1 && this.value_type.scalar == 1) || (this.type == 2 && this.value_type.scalar == 2) || (this.type == 3 && this.value_type.scalar == 3) || (this.type == 4 && this.value_type.scalar == 4) || (this.type == 5 && (has(this.value_type.map) || has(this.value_type.message))) || (this.type == 6 && has(this.value_type.list)) || (this.type == 9 && this.value_type.enum) || (this.type == 10 && this.value_type.scalar == 6) || (this.type == 11 && this.value_type.scalar == 7) || (this.type == 12 && this.value_type.scalar == 5)"
   };
 
   // Type is the legacy declaration vocabulary. Edition-aware specifications use
@@ -948,6 +948,21 @@ message InputDeclaration {
     // counterpart here (see above).
     reserved 7, 8;
     TYPE_ENUM = 9;
+    // TIMESTAMP, DURATION and BYTES are data kinds CEL treats as primitives
+    // (#1436). Each travels on the wire as a string: RFC 3339 for a timestamp, a
+    // Go-form duration (`5400s`, `1h30m`) for a duration, and standard padded
+    // base64 for bytes. A binder normalizes the string into the matching CEL
+    // value before the run starts, so an expression reads `inputs.at` as a
+    // timestamp rather than as the text it arrived as. They are valid on an
+    // input; an output cannot yet declare them, because the run document has no
+    // plain-JSON projection for them.
+    //
+    // Added at the end, so a reader that does not know them reports an unknown
+    // enum value and refuses the declaration at run start instead of treating it
+    // as one of the older seven.
+    TYPE_TIMESTAMP = 10;
+    TYPE_DURATION = 11;
+    TYPE_BYTES = 12;
   }
 
   // Name is what the input is called, and how an expression reaches it:
@@ -1261,7 +1276,7 @@ message OutputDeclaration {
   option (buf.validate.message).cel = {
     id: "output_declaration.type_agrees"
     message: "value_type and the legacy type must describe the same output type when both are set"
-    expression: "!has(this.value_type) || this.type == 0 || (this.type == 1 && this.value_type.scalar == 1) || (this.type == 2 && this.value_type.scalar == 2) || (this.type == 3 && this.value_type.scalar == 3) || (this.type == 4 && this.value_type.scalar == 4) || (this.type == 5 && (has(this.value_type.map) || has(this.value_type.message))) || (this.type == 6 && has(this.value_type.list)) || (this.type == 9 && this.value_type.enum)"
+    expression: "!has(this.value_type) || this.type == 0 || (this.type == 1 && this.value_type.scalar == 1) || (this.type == 2 && this.value_type.scalar == 2) || (this.type == 3 && this.value_type.scalar == 3) || (this.type == 4 && this.value_type.scalar == 4) || (this.type == 5 && (has(this.value_type.map) || has(this.value_type.message))) || (this.type == 6 && has(this.value_type.list)) || (this.type == 9 && this.value_type.enum) || (this.type == 10 && this.value_type.scalar == 6) || (this.type == 11 && this.value_type.scalar == 7) || (this.type == 12 && this.value_type.scalar == 5)"
   };
 
   // Name is what the value is called in the run's result.

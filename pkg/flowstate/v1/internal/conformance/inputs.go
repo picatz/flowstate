@@ -127,6 +127,27 @@ func InputOutputCases(httpBaseURL string) []Case {
 			ExpectedOutputs: held("show"),
 		},
 		{
+			// #1436: a timestamp, duration and bytes input arrive as text and are
+			// bound as the value an expression reads, once, at the submit boundary,
+			// so both drivers see a timestamp and not the string. The arithmetic is
+			// the proof: adding a duration to text would be a type error.
+			Name: "a timestamp, duration and bytes input are read as those types",
+			Workflow: declares("inputs-data-kinds",
+				[]*v1.InputDeclaration{
+					input("at", v1.InputDeclaration_TYPE_TIMESTAMP, true, nil),
+					input("grace", v1.InputDeclaration_TYPE_DURATION, false, v1.NewLiteral("90m")),
+					input("token", v1.InputDeclaration_TYPE_BYTES, true, nil),
+				},
+				nil,
+				pins("show", `inputs.at + inputs.grace == timestamp("2026-01-01T01:30:00Z") && size(inputs.token) == 2 && string(inputs.token) == "hi"`)...,
+			),
+			Inputs: map[string]*v1.Value{
+				"at":    v1.NewLiteral("2026-01-01T00:00:00Z"),
+				"token": v1.NewLiteral("aGk="),
+			},
+			ExpectedOutputs: held("show"),
+		},
+		{
 			// The default, applied where the caller sent nothing — and applied at the
 			// submit boundary rather than where the value is read, so both drivers see
 			// a value that was already decided.

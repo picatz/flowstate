@@ -3,6 +3,7 @@ package flowfile
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 
@@ -295,9 +296,11 @@ func formatType(t *v1.Type, depth int) (string, error) {
 // compiles to the same message. A type expression must also project into the
 // legacy enum, because the schema requires the two to agree: a typed
 // `list(string)` carries TYPE_LIST, and `map(string, T)` TYPE_STRUCT. A type with
-// no legacy word (`bytes`, `timestamp`, `duration`, `null_type`, `dyn`) is
-// refused until the edition boundary makes a structural-only declaration safe,
-// since the schema requires a legacy type beside every `value_type`.
+// no legacy word (`null_type`, `dyn`) is refused until the edition boundary makes
+// a structural-only declaration safe, since the schema requires a legacy type
+// beside every `value_type`. `timestamp`, `duration` and `bytes` have a legacy
+// word now (see [v1.IsDataKind]), so they are read as one above and carry no
+// separate structural type.
 //
 // A worker built before the agreement rule was relaxed refuses a typed
 // container when the run starts, because that rule demanded `dyn` elements: it
@@ -375,6 +378,16 @@ var retiredTypeSpellings = map[v1.InputDeclaration_Type]string{
 	v1.InputDeclaration_TYPE_LIST:   "list(dyn)",
 	v1.InputDeclaration_TYPE_STRUCT: "map(string, dyn)",
 	v1.InputDeclaration_TYPE_FLOAT:  "double",
+}
+
+// outputTypeNames is [declarableTypeNames] without the data kinds an output
+// cannot hold yet.
+func outputTypeNames() []string {
+	return slices.DeleteFunc(declarableTypeNames(), func(name string) bool {
+		declared, ok := v1.ParseDeclaredType(name)
+
+		return ok && v1.IsDataKind(declared)
+	})
 }
 
 // declarableTypeNames are the bare words a `type:` accepts, for a diagnostic

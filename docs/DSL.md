@@ -1274,9 +1274,20 @@ inputs:
   durable history, so a typed container also writes the legacy value an older
   worker reads (`list(T)` as `TYPE_LIST`, `map(string, T)` as `TYPE_STRUCT`), and
   such a worker refuses the run when it starts rather than running it untyped.
-  `bytes`, `timestamp`, `duration`, `null_type`, and `dyn` have no legacy value,
-  so a declaration cannot carry them until a structural-only declaration is safe
-  across rolling upgrades.
+  `null_type` and `dyn` have no legacy value, so a declaration cannot carry them
+  until a structural-only declaration is safe across rolling upgrades.
+- **`timestamp`, `duration` and `bytes` are declared as legacy words (#1436).**
+  They took the add-only enum values `TYPE_TIMESTAMP`, `TYPE_DURATION` and
+  `TYPE_BYTES`, so an input can declare them without a structural-only
+  declaration. Each travels as text (RFC 3339, a Go-form duration, standard
+  padded base64) and [`BindRunInputs`] binds it as the CEL value: a timestamp
+  and a duration as their `google.protobuf` well-known type, bytes as the bytes
+  value, so both drivers and every `must:` read the same type. Binding what is
+  already bound changes nothing, which is what a call boundary and a Temporal
+  worker hand it. A bytes input is bounded at 1 MiB decoded. They are inputs
+  only until the run document has a plain-JSON form for them, and a worker
+  built before the enum values existed reports an unknown declared type and
+  refuses the run when it starts.
 
 ### `vars:`, and the shadowing rule that ships with it *(landed)*
 

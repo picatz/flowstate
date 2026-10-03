@@ -232,6 +232,11 @@ func TestStringShapedCoversEveryDeclaredType(t *testing.T) {
 		v1.InputDeclaration_TYPE_BOOL:   false,
 		v1.InputDeclaration_TYPE_LIST:   false,
 		v1.InputDeclaration_TYPE_STRUCT: false,
+		// The data kinds travel as text but are bound to a CEL type, so they
+		// are not string-shaped: a string constraint on one is refused.
+		v1.InputDeclaration_TYPE_TIMESTAMP: false,
+		v1.InputDeclaration_TYPE_DURATION:  false,
+		v1.InputDeclaration_TYPE_BYTES:     false,
 	}
 
 	values := v1.InputDeclaration_Type(0).Descriptor().Values()

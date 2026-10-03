@@ -238,7 +238,7 @@ func bindRunInputs(wf *Workflow, profile string, submitted map[string]*Value) (m
 			// pair of equal names would claim the opposite of the sentence.
 			got, isLiteral := inputTypeOf(value.GetLiteral())
 			declared := declaration.GetType()
-			if isLiteral && got != declared && !(StringShaped(declared) && got == InputDeclaration_TYPE_STRING) {
+			if isLiteral && got != declared && !IsDataKind(declared) && !(StringShaped(declared) && got == InputDeclaration_TYPE_STRING) {
 				return nil, invalidInputType(name,
 					declaration.TypeText(), DeclaredTypeName(got), err)
 			}
@@ -260,6 +260,18 @@ func bindRunInputs(wf *Workflow, profile string, submitted map[string]*Value) (m
 		// limit is what it is.
 		if err := CheckInputConstraints(profile, name, declaration, value); err != nil {
 			return nil, invalidInput(name, err)
+		}
+
+		// A timestamp, duration or bytes input is bound as the value CEL reads,
+		// not as the text it arrived as; see [NormalizeDataKind]. After the
+		// type check above has proved the text parses, and before the
+		// constraints, which evaluate `must:` against what an expression sees.
+		if IsDataKind(declaration.GetType()) {
+			normalized, err := NormalizeDataKind(declaration.GetType(), value.GetLiteral())
+			if err != nil {
+				return nil, invalidInput(name, fmt.Errorf("input %q is declared %s but was given a value that %w", name, declaration.TypeText(), err))
+			}
+			value = &Value{Kind: &Value_Literal{Literal: normalized}}
 		}
 
 		bound[name] = value
@@ -480,6 +492,18 @@ func CheckInputValueIn(table TypeTable, name string, declaration *InputDeclarati
 // judgement is what does not.
 func checkDeclaredLiteralType(table TypeTable, r valueRendering, kind, verb, name string, declared InputDeclaration_Type, structural *Type, literal *expr.Value) error {
 	declaredAs := declaredTypeText(structural, declared)
+
+	// A timestamp, duration or bytes declaration is judged by whether the literal
+	// parses as one, before the kind check below: the wire shape is a string, but
+	// "a string" is not the answer to "is this a timestamp".
+	if IsDataKind(declared) {
+		if _, err := NormalizeDataKind(declared, literal); err != nil {
+			return fmt.Errorf("%s %q is declared %s but %s a value that %w", kind, name, declaredAs, verb, err)
+		}
+
+		return nil
+	}
+
 	got, ok := inputTypeOf(literal)
 	if !ok {
 		return fmt.Errorf("%s %q is %s, which is not a kind of value an %s can hold; "+

@@ -1001,6 +1001,21 @@ func init() {
 				" both to different meanings.\n",
 		},
 		{
+			Name: "flowstate.v1.InputDeclaration.TYPE_TIMESTAMP",
+			Leading: " TIMESTAMP, DURATION and BYTES are data kinds CEL treats as primitives\n" +
+				" (#1436). Each travels on the wire as a string: RFC 3339 for a timestamp, a\n" +
+				" Go-form duration (`5400s`, `1h30m`) for a duration, and standard padded\n" +
+				" base64 for bytes. A binder normalizes the string into the matching CEL\n" +
+				" value before the run starts, so an expression reads `inputs.at` as a\n" +
+				" timestamp rather than as the text it arrived as. They are valid on an\n" +
+				" input; an output cannot yet declare them, because the run document has no\n" +
+				" plain-JSON projection for them.\n" +
+				"\n" +
+				" Added at the end, so a reader that does not know them reports an unknown\n" +
+				" enum value and refuses the declaration at run start instead of treating it\n" +
+				" as one of the older seven.\n",
+		},
+		{
 			Name: "flowstate.v1.OutputDeclaration",
 			Leading: " OutputDeclaration is one value a finished run reports: a name, and the\n" +
 				" expression that produces it.\n" +

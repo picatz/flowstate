@@ -172,6 +172,12 @@ func checkCallArgumentType(table *typeTable, stepID, name string, value *v1.Valu
 		if declaredType == declaration.GetType() {
 			return nil
 		}
+		if declaredType == v1.InputDeclaration_TYPE_STRING && v1.IsDataKind(declaration.GetType()) {
+			// A timestamp, duration or bytes input accepts the text it is written
+			// as, which the binder parses; whether this string parses is a
+			// value-level question for [v1.BindRunInputs].
+			return nil
+		}
 		if declaredType == v1.InputDeclaration_TYPE_STRING && v1.StringShaped(declaration.GetType()) {
 			// The callee declares an enum, and enum values travel as strings
 			// (see [v1.StringShaped]) — a statically string-typed expression
@@ -202,8 +208,7 @@ func checkCallArgumentType(table *typeTable, stepID, name string, value *v1.Valu
 // the declared-type vocabulary an input is written in, when the two have an
 // analogue at all.
 //
-// Unspecified for anything without one — `dyn`, a duration, a timestamp, an
-// error type — which is read as "not statically knowable" by the caller
+// Unspecified for anything without one — `dyn`, an error type — which is read as "not statically knowable" by the caller
 // rather than as a type this schema happens not to have a word for; either
 // way the honest answer is silence rather than a guess.
 func declaredTypeOfCEL(t *cel.Type) (v1.InputDeclaration_Type, bool) {
@@ -224,6 +229,12 @@ func declaredTypeOfCEL(t *cel.Type) (v1.InputDeclaration_Type, bool) {
 		return v1.InputDeclaration_TYPE_STRUCT, true
 	case types.ListKind:
 		return v1.InputDeclaration_TYPE_LIST, true
+	case types.TimestampKind:
+		return v1.InputDeclaration_TYPE_TIMESTAMP, true
+	case types.DurationKind:
+		return v1.InputDeclaration_TYPE_DURATION, true
+	case types.BytesKind:
+		return v1.InputDeclaration_TYPE_BYTES, true
 	default:
 		return v1.InputDeclaration_TYPE_UNSPECIFIED, false
 	}

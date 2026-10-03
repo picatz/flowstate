@@ -1,0 +1,52 @@
+# The three kinds are bound as the values an expression reads, so the first case
+# is time arithmetic over declared defaults, and the others are what each kind
+# refuses: text that is not one, and a value its own `must:` rejects.
+edition: v2026.4
+defaults:
+  workflow: ./workflow.yaml
+  stubs:
+    - task: log
+      returns: {}
+tests:
+  - name: the defaults add a duration to a timestamp
+    expect:
+      ran: [closing, announce]
+      outputs:
+        closes: "2026-03-01T11:00:00Z"
+
+  - name: supplied text is bound as a timestamp and a duration
+    inputs:
+      opens: "2026-06-30T23:00:00+02:00"
+      window: 36h
+    expect:
+      ran: [closing, announce]
+      outputs:
+        closes: "2026-07-02T09:00:00Z"
+
+  - name: text that is not a timestamp is refused
+    inputs:
+      opens: next tuesday
+    expect:
+      failed: true
+      error_contains: 'input "opens" is declared timestamp but was given a value that is not an RFC 3339 timestamp'
+
+  - name: a duration with no unit is refused
+    inputs:
+      window: "90"
+    expect:
+      failed: true
+      error_contains: "is not a duration such as 90m or 5400s"
+
+  - name: bytes that are not base64 are refused
+    inputs:
+      seal: "not base64!"
+    expect:
+      failed: true
+      error_contains: "is not standard base64 text"
+
+  - name: a timestamp the must rejects is refused with its own spelling
+    inputs:
+      opens: "2025-01-01T00:00:00Z"
+    expect:
+      failed: true
+      error_contains: "got 2025-01-01T00:00:00Z"

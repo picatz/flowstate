@@ -36,6 +36,12 @@ func legacyStructuralType(legacy v1.InputDeclaration_Type) *v1.Type {
 		return &v1.Type{Kind: &v1.Type_List{List: dynType()}}
 	case v1.InputDeclaration_TYPE_ENUM:
 		return &v1.Type{Kind: &v1.Type_Enum{Enum: true}}
+	case v1.InputDeclaration_TYPE_TIMESTAMP:
+		return scalarType(v1.Type_SCALAR_TIMESTAMP)
+	case v1.InputDeclaration_TYPE_DURATION:
+		return scalarType(v1.Type_SCALAR_DURATION)
+	case v1.InputDeclaration_TYPE_BYTES:
+		return scalarType(v1.Type_SCALAR_BYTES)
 	default:
 		return nil
 	}
