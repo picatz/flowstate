@@ -662,6 +662,26 @@ own spelling, and never as `{"literal": {"doubleValue": …}}`. An expression th
 divide its way to a non-number says what it means instead, which is what
 `examples/computed-outputs/`'s `coverage:` guard is for.
 
+*Since written, once more (#1634):* **the checker reads what the file states.** It
+used to declare every name an expression mentions as `dyn`, so a type the file spelled
+out stopped one step short of the check that would have used it: `${inputs.port.startsWith("8")}`
+on an `int` input, `for_each: {items: ${inputs.count}}`, and `${steps.s.value + 1}` after
+`value: ${"abc"}` all said `ok` and failed at run time, on a durable run hours in. Now
+the same checker, in the same environment, knows two things the file says. A declared
+input has its declared type (an `enum` is a string; `list` and `struct` are lists and
+maps of anything, until a declaration can say more). A `value:` step's `value` has the
+type its expression checked to, kept to the container (`list`, `map`) and not to what
+one literal happened to hold, because `{"volume": 7}` says nothing about a key it
+never had. Three positions take one type and are held to it: `items:` is a list, and
+`if:` and `until:` are booleans. Everything else the file does not state stays `dyn`
+and stays quiet — a step id used in two loops, a response's `json`, a plugin's output,
+an `optional` — and a name the file does not declare at all is the reference walk's to
+report, in its own sentence. A `value:` step is typed only for a position written
+after it, which is the order a run evaluates in. One consequence worth knowing:
+`inputs.x == null` on a declared input is refused, because a declared input is never
+null (`has(inputs.x)` asks whether it was given). What a task's outputs, a loop's `as:` and a `call:`'s
+results carry is the rest of #1634.
+
 ### `state:` gets a byte bound now, not an open question
 
 The proposal flags a bound on entity `state:` as an open question. It is not one.

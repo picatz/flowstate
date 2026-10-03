@@ -1,0 +1,24 @@
+edition: v2026.3
+
+# Proves the example asks Codex for a read-only turn and surfaces its answer, in
+# CI with no network, no API key and without the codex plugin installed. The stub
+# selects the call only when the sandbox is read-only, which is the property the
+# example exists to show: a workflow that widened it would match nothing.
+tests:
+  - name: asks in a read-only sandbox and returns the agent's answer and spend
+    workflow: ./workflow.yaml
+    secrets:
+      env:OPENAI_API_KEY: not-a-real-key
+    stubs:
+      - task: codex.exec
+        where: "inputs.sandbox_mode == 'SANDBOX_MODE_READ_ONLY' && inputs.prompt.contains('idempotent')"
+        returns:
+          final_message: Repeating the request has the same effect as sending it once.
+          output_tokens: 11
+      - step: announce
+        returns: {}
+    expect:
+      ran: [ask, announce]
+      outputs:
+        final_message: Repeating the request has the same effect as sending it once.
+        output_tokens: 11

@@ -55,30 +55,13 @@ import (
 // constraintCELType returns the CEL type a declared input's own type checks
 // `this` against inside a `must:` expression.
 func constraintCELType(t InputDeclaration_Type) *cel.Type {
-	switch t {
-	case InputDeclaration_TYPE_STRING:
-		return cel.StringType
-	case InputDeclaration_TYPE_INT:
-		return cel.IntType
-	case InputDeclaration_TYPE_FLOAT:
-		return cel.DoubleType
-	case InputDeclaration_TYPE_BOOL:
-		return cel.BoolType
-	case InputDeclaration_TYPE_LIST:
-		return cel.ListType(cel.DynType)
-	case InputDeclaration_TYPE_STRUCT:
-		return cel.MapType(cel.StringType, cel.DynType)
-	case InputDeclaration_TYPE_ENUM:
-		// An enum value's wire shape is a string, the same shape TYPE_STRING
-		// sends (see [InputDeclaration_values]'s own doc and [CheckInputValue]),
-		// so `must:` binds `this` as a string exactly as it would for a
-		// declared string input. Membership itself is checked separately, by
-		// [checkEnumConstraint]; `must:` stays legal alongside `values:`,
-		// redundant-but-legal, ANDed after the typed check.
-		return cel.StringType
-	default:
-		return cel.DynType
-	}
+	// An enum value's wire shape is a string, so `must:` binds `this` as a string
+	// exactly as it would for a declared string input; membership is checked
+	// separately, by [checkEnumConstraint], and `must:` stays legal alongside
+	// `values:`, redundant-but-legal, ANDed after the typed check. [CELType] says
+	// so for the enum arm; an unspecified type has no structural form and binds
+	// `this` as `dyn`.
+	return CELType(TypeOfLegacy(t))
 }
 
 // mustEnvs caches the CEL environment built for each profile and declared

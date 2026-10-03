@@ -203,6 +203,29 @@ edition: v2026.3
 			}},
 		},
 		{
+			name: "a declared input type reaches the checker",
+			src: `name: typed-scope
+inputs:
+  count:
+    type: int
+    default: 3
+steps:
+  - id: a
+    if: ${inputs.count}
+    log:
+      message: hi
+edition: v2026.3
+`,
+			// The same refusal `flow validate` prints, at the expression: an editor
+			// learns an int is not a condition while the file is still open (#1634).
+			want: []want{{
+				code:       codeTypeMismatch,
+				severity:   lsp.Error,
+				contains:   "must be a bool, but it is typed int",
+				underlines: "${inputs.count}",
+			}},
+		},
+		{
 			name: "step that does nothing",
 			src: `name: notask
 steps:

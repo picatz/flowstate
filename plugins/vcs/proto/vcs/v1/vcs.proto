@@ -36,10 +36,13 @@ message Commit {
   // not a compatible extension of this one.
   string sha = 1;
 
-  // AuthorName and AuthorEmail are read from the commit's author line, exactly
-  // as the repository recorded them - unverified, since anyone with push
-  // access controls what a commit author line says.
+  // AuthorName is read from the commit's author line, exactly as the
+  // repository recorded it - unverified, since anyone with push access
+  // controls what a commit author line says.
   string author_name = 2;
+
+  // AuthorEmail is read from the same author line and is as unverified as
+  // the name.
   string author_email = 3;
 
   // Message is the commit's message, bounded (see maxCommitMessageBytes) so a
@@ -105,9 +108,11 @@ message FileChange {
   // ChangeType is one of "added", "modified", "deleted", "renamed".
   string change_type = 3;
 
-  // Additions and Deletions are line counts, from the unified diff's own
+  // Additions is the count of lines added, from the unified diff's own
   // accounting.
   int64 additions = 4;
+
+  // Deletions is the count of lines removed, counted the same way.
   int64 deletions = 5;
 }
 
@@ -116,10 +121,12 @@ message DiffInputs {
   // Url is the repository to read, https:// only.
   string url = 1;
 
-  // Base and Head are the two revisions to compare, in the sense `git diff
-  // base..head` gives: what changed getting from base to head. Both accept
-  // anything go-git's revision parser does.
+  // Base is the revision to compare from, in the sense `git diff base..head`
+  // gives: what changed getting from base to head. It accepts anything
+  // go-git's revision parser does.
   string base = 2;
+
+  // Head is the revision to compare to, accepting the same revisions as base.
   string head = 3;
 
   // Token is a secret reference for HTTPS authentication. See LogInputs.token.

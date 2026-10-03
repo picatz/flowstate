@@ -198,13 +198,19 @@ message ExecOutputs {
   // task, not several").
   string thread_id = 4;
 
-  // InputTokens, CachedInputTokens, and OutputTokens report token usage as
-  // the CLI's own turn.completed event carried it. All zero when the CLI
-  // never emitted a usage report (a run that failed before completing a
-  // turn, for instance) - that is a fact about the run, not this task
-  // failing to read something.
+  // InputTokens reports input token usage as the CLI's own turn.completed
+  // event carried it. All three token counts are zero when the CLI never
+  // emitted a usage report (a run that failed before completing a turn, for
+  // instance) - that is a fact about the run, not this task failing to read
+  // something.
   int64 input_tokens = 5;
+
+  // CachedInputTokens is the part of the input tokens the CLI's
+  // turn.completed event reported as served from the model's prompt cache.
   int64 cached_input_tokens = 6;
+
+  // OutputTokens is the count of tokens the model generated, as the CLI's
+  // turn.completed event reported it.
   int64 output_tokens = 7;
 
   // Events is a bounded summary of what happened during the run, capped at

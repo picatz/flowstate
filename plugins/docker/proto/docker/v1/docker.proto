@@ -37,9 +37,12 @@ message RunOutputs {
   // than a value a workflow has to remember to check.
   int32 exit_code = 1;
 
-  // Stdout and Stderr are the streams, demultiplexed from the daemon's own
-  // framing, each bounded by the grant and each valid UTF-8 or empty.
+  // Stdout is the container's standard output, demultiplexed from the
+  // daemon's own framing, bounded by the grant and valid UTF-8 or empty.
   string stdout = 2;
+
+  // Stderr is the container's standard error, demultiplexed and bounded the
+  // same way as stdout.
   string stderr = 3;
 
   // Truncated reports that the container wrote more than the grant's limit, so

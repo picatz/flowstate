@@ -1,0 +1,24 @@
+edition: v2026.3
+
+# Proves the workflow reads the pull request it names, in CI with no network and
+# without the github plugin installed. The stub selects the call by the owner,
+# repo and number the workflow must send, so a workflow that read another pull
+# request would match nothing.
+tests:
+  - name: reads the pull request it names and reports what GitHub said
+    workflow: ./workflow.yaml
+    stubs:
+      - task: github.pull_request_get
+        where: "inputs.owner == 'golang' && inputs.repo == 'go' && inputs.number == 1"
+        returns:
+          title: "Initial import"
+          state: closed
+          head_sha: 0123456789abcdef0123456789abcdef01234567
+      - step: announce
+        returns: {}
+    expect:
+      ran: [pr, announce]
+      outputs:
+        title: Initial import
+        state: closed
+        head_sha: 0123456789abcdef0123456789abcdef01234567

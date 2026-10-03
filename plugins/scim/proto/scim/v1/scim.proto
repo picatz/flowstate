@@ -42,8 +42,14 @@ message UserGetInputs {
 // UserGetOutputs is the user, in the attributes an access review acts on, plus
 // the whole resource for anything else the workflow needs.
 message UserGetOutputs {
+  // Id is the provider's own identifier for the user, the value
+  // scim.user_deactivate takes as its id.
   string id = 1;
+
+  // UserName is the user's userName attribute.
   string user_name = 2;
+
+  // DisplayName is the user's displayName attribute, for a reviewer to read.
   string display_name = 3;
 
   // Active is what a deactivation changes and what a review reads: SCIM models
@@ -74,7 +80,12 @@ message UserGetOutputs {
 
 // UserListInputs reads a bounded page of users.
 message UserListInputs {
+  // BaseUrl is the provider's SCIM base, as in UserGetInputs.base_url. HTTPS
+  // is required.
   string base_url = 1;
+
+  // Token is the bearer credential for the SCIM API, a secret reference as in
+  // UserGetInputs.token.
   flowstate.v1.Value token = 2;
 
   // Filter is a SCIM filter expression (RFC 7644 section 3.4.2.2), such as
@@ -96,11 +107,12 @@ message UserListOutputs {
   // Users are maps carrying the same attributes scim.user_get names.
   repeated google.api.expr.v1alpha1.Value users = 1;
 
-  // TotalResults is what the provider says the whole result set holds, and
+  // TotalResults is what the provider says the whole result set holds.
+  int64 total_results = 2;
+
   // NextStartIndex is the cursor for the next page, zero when this page is the
   // last. A workflow that stops when next_start_index is zero has read
   // everything the filter matched.
-  int64 total_results = 2;
   int32 next_start_index = 3;
 }
 
@@ -111,7 +123,12 @@ message UserListOutputs {
 // DELETE as irreversible and organizations treat a deactivated account as the
 // auditable record that access was removed on a date.
 message UserDeactivateInputs {
+  // BaseUrl is the provider's SCIM base, as in UserGetInputs.base_url. HTTPS
+  // is required.
   string base_url = 1;
+
+  // Token is the bearer credential for the SCIM API, a secret reference as in
+  // UserGetInputs.token.
   flowstate.v1.Value token = 2;
 
   // Id is the provider's identifier for the user, as returned by
@@ -128,7 +145,11 @@ message UserDeactivateInputs {
 
 // UserDeactivateOutputs reports what the provider says the user is now.
 message UserDeactivateOutputs {
+  // Id is the provider's identifier for the user that was deactivated.
   string id = 1;
+
+  // Active is the user's active attribute as the provider reports it after the
+  // write, false once the deactivation took effect.
   bool active = 2;
 
   // AlreadyInactive distinguishes "this call turned the account off" from "it

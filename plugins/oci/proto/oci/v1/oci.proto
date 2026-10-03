@@ -56,16 +56,21 @@ message ResolveOutputs {
   // Size is the manifest's length in bytes.
   int64 size = 4;
 
-  // Registry and Repository are the reference's parts, so a later step can
-  // build a sibling reference without reparsing a string.
+  // Registry is the reference's registry part, so a later step can build a
+  // sibling reference without reparsing a string.
   string registry = 5;
+
+  // Repository is the reference's repository part, for the same reason as
+  // registry.
   string repository = 6;
 
   // Platform is the platform this resolution selected, empty when none was
-  // asked for. PlatformMatched distinguishes "the index held this platform"
-  // from "none was requested": a false with a platform asked for is never
-  // returned, because an unmatched platform is a refusal, not an output.
+  // asked for.
   string platform = 7;
+
+  // PlatformMatched distinguishes "the index held this platform" from "none
+  // was requested": a false with a platform asked for is never returned,
+  // because an unmatched platform is a refusal, not an output.
   bool platform_matched = 8;
 }
 
@@ -90,7 +95,12 @@ message ReferrersInputs {
   // task's own ceiling is what a workflow cannot raise past.
   int32 limit = 3;
 
+  // Username is the registry account the credential belongs to, as in
+  // ResolveInputs.username. It is not a secret.
   string username = 4;
+
+  // Password is the registry credential, a secret reference as in
+  // ResolveInputs.password. Left unset, the request is anonymous.
   flowstate.v1.Value password = 5;
 }
 
@@ -101,10 +111,12 @@ message ReferrersOutputs {
   // distribution specification defines, and nothing invented beside them.
   repeated google.api.expr.v1alpha1.Value referrers = 1;
 
-  // Count is how many were returned, and Truncated says the registry had more:
-  // a workflow deciding "no attestation is present" must be able to tell that
-  // from "the first page held none of this artifact type".
+  // Count is how many referrers were returned.
   int64 count = 2;
+
+  // Truncated says the registry had more than were returned: a workflow
+  // deciding "no attestation is present" must be able to tell that from "the
+  // first page held none of this artifact type".
   bool truncated = 3;
 }
 
@@ -128,7 +140,12 @@ message BlobInputs {
   // a refusal rather than an empty parse.
   bool parse_json = 3;
 
+  // Username is the registry account the credential belongs to, as in
+  // ResolveInputs.username. It is not a secret.
   string username = 4;
+
+  // Password is the registry credential, a secret reference as in
+  // ResolveInputs.password. Left unset, the request is anonymous.
   flowstate.v1.Value password = 5;
 }
 

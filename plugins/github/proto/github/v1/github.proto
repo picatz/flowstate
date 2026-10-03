@@ -16,8 +16,11 @@ import "google/api/expr/v1alpha1/value.proto";
 
 // PullRequestGetInputs asks for one pull request's current state.
 message PullRequestGetInputs {
-  // Owner and Repo name the repository, e.g. "octocat" and "hello-world".
+  // Owner is the login of the user or organization that owns the repository,
+  // e.g. "octocat".
   string owner = 1;
+
+  // Repo is the repository's name without the owner, e.g. "hello-world".
   string repo = 2;
 
   // Number is the pull request number.
@@ -35,14 +38,32 @@ message PullRequestGetInputs {
 
 // PullRequestGetOutputs is what GitHub answered.
 message PullRequestGetOutputs {
+  // Title is the pull request's title.
   string title = 1;
+
+  // Body is the pull request's Markdown description.
   string body = 2;
-  string state = 3; // "open", "closed"
+
+  // State is the pull request's state: "open" or "closed".
+  string state = 3;
+
+  // Merged reports whether the pull request has been merged.
   bool merged = 4;
-  string mergeable_state = 5; // GitHub's own enum, passed through as text: "clean", "dirty", "blocked", "unknown", ...
+
+  // MergeableState is GitHub's own merge-readiness enum, passed through as
+  // text: "clean", "dirty", "blocked", "unknown", ...
+  string mergeable_state = 5;
+
+  // HeadRef is the name of the branch the pull request comes from.
   string head_ref = 6;
+
+  // HeadSha is the commit the head branch pointed at when this task ran.
   string head_sha = 7;
+
+  // BaseRef is the name of the branch the pull request targets.
   string base_ref = 8;
+
+  // HtmlUrl is the pull request's web page.
   string html_url = 9;
 }
 
@@ -50,7 +71,11 @@ message PullRequestGetOutputs {
 // endpoint on GitHub's API, since a pull request is an issue with extra
 // fields there.
 message IssueCommentInputs {
+  // Owner is the login of the user or organization that owns the repository,
+  // e.g. "octocat".
   string owner = 1;
+
+  // Repo is the repository's name without the owner, e.g. "hello-world".
   string repo = 2;
 
   // Number is the issue or pull request number.
@@ -59,15 +84,26 @@ message IssueCommentInputs {
   // Body is the comment's Markdown text.
   string body = 4;
 
+  // Token authenticates the request and is required: GitHub does not accept
+  // an anonymous comment, so the task refuses an unset token before making a
+  // request. A literal string here is refused.
   flowstate.v1.Value token = 5;
+
+  // BaseUrl overrides the API base for GitHub Enterprise Server, e.g.
+  // "https://github.example.com/api/v3". Unset means github.com.
   string base_url = 6;
 }
 
 // IssueCommentOutputs is the comment GitHub created.
 message IssueCommentOutputs {
+  // CommentId is GitHub's numeric identifier for the created comment.
   int64 comment_id = 1;
+
+  // HtmlUrl is the comment's web page.
   string html_url = 2;
-  string created_at = 3; // RFC 3339
+
+  // CreatedAt is when GitHub created the comment, RFC 3339.
+  string created_at = 3;
 }
 
 // The read/audit tier below - pull_request_list, pull_request_files,
@@ -83,7 +119,11 @@ message IssueCommentOutputs {
 // flight" read/audit primitive github.pull_request_get's single-record read
 // has no way to answer on its own.
 message PullRequestListInputs {
+  // Owner is the login of the user or organization that owns the repository,
+  // e.g. "octocat".
   string owner = 1;
+
+  // Repo is the repository's name without the owner, e.g. "hello-world".
   string repo = 2;
 
   // State filters by state: "open" (the default when unset), "closed", or
@@ -212,6 +252,9 @@ message PullRequestSummary {
 
 // PullRequestListOutputs is a bounded page of matching pull requests.
 message PullRequestListOutputs {
+  // PullRequests are the matching pull requests, each a map with the fields
+  // of PullRequestSummary: number, title, state, draft, head_ref, head_sha,
+  // base_ref, html_url, created_at and updated_at.
   repeated google.api.expr.v1alpha1.Value pull_requests = 1;
 
   // Truncated reports whether more pull requests matched than this call
@@ -238,7 +281,11 @@ message PullRequestListOutputs {
 // reading any diff content. See pull_request_files.go's own doc comment for
 // why file content is out of scope here.
 message PullRequestFilesInputs {
+  // Owner is the login of the user or organization that owns the repository,
+  // e.g. "octocat".
   string owner = 1;
+
+  // Repo is the repository's name without the owner, e.g. "hello-world".
   string repo = 2;
 
   // Number is the pull request number.
@@ -249,7 +296,13 @@ message PullRequestFilesInputs {
   // and ceiling apply here.
   int32 max_results = 4;
 
+  // Token authenticates the request. Unset means an unauthenticated request,
+  // which GitHub permits for a public repository at a much lower rate limit.
+  // A literal string here is refused.
   flowstate.v1.Value token = 5;
+
+  // BaseUrl overrides the API base for GitHub Enterprise Server, e.g.
+  // "https://github.example.com/api/v3". Unset means github.com.
   string base_url = 6;
 
   // Cursor resumes a prior, truncated call - fed back exactly as
@@ -291,6 +344,9 @@ message PullRequestFile {
 // PullRequestFilesOutputs is a bounded page of the files a pull request
 // touches.
 message PullRequestFilesOutputs {
+  // Files are the files the pull request touches, each a map with the fields
+  // of PullRequestFile: filename, status, additions, deletions, changes and
+  // previous_filename.
   repeated google.api.expr.v1alpha1.Value files = 1;
 
   // Truncated reports whether the pull request touched more files than
@@ -314,28 +370,56 @@ message PullRequestFilesOutputs {
 // a previous github.issue_list call) and needs the full record, body
 // included, unlike a listing.
 message IssueGetInputs {
+  // Owner is the login of the user or organization that owns the repository,
+  // e.g. "octocat".
   string owner = 1;
+
+  // Repo is the repository's name without the owner, e.g. "hello-world".
   string repo = 2;
 
   // Number is the issue (or pull request - see IssueGetOutputs.is_pull_request)
   // number.
   int64 number = 3;
 
+  // Token authenticates the request. Unset means an unauthenticated request,
+  // which GitHub permits for a public repository at a much lower rate limit.
+  // A literal string here is refused.
   flowstate.v1.Value token = 4;
+
+  // BaseUrl overrides the API base for GitHub Enterprise Server, e.g.
+  // "https://github.example.com/api/v3". Unset means github.com.
   string base_url = 5;
 }
 
 // IssueGetOutputs is what GitHub answered.
 message IssueGetOutputs {
+  // Title is the issue's title.
   string title = 1;
+
+  // Body is the issue's Markdown text.
   string body = 2;
-  string state = 3; // "open", "closed"
-  string state_reason = 4; // "completed", "not_planned", "reopened", or empty
+
+  // State is the issue's state: "open" or "closed".
+  string state = 3;
+
+  // StateReason is why the issue reached its state: "completed",
+  // "not_planned", "reopened", or empty.
+  string state_reason = 4;
+
+  // Labels are the names of the labels on the issue.
   repeated string labels = 5;
+
+  // Comments is the number of comments on the issue, not their text.
   int32 comments = 6;
+
+  // HtmlUrl is the issue's web page.
   string html_url = 7;
-  string created_at = 8; // RFC 3339
-  string updated_at = 9; // RFC 3339
+
+  // CreatedAt is when the issue was created, RFC 3339.
+  string created_at = 8;
+
+  // UpdatedAt is when the issue was last updated, RFC 3339.
+  string updated_at = 9;
 
   // ClosedAt is RFC 3339, empty while the issue is still open.
   string closed_at = 10;
@@ -353,7 +437,11 @@ message IssueGetOutputs {
 // audit/triage primitive: what needs attention, filtered by state and
 // label.
 message IssueListInputs {
+  // Owner is the login of the user or organization that owns the repository,
+  // e.g. "octocat".
   string owner = 1;
+
+  // Repo is the repository's name without the owner, e.g. "hello-world".
   string repo = 2;
 
   // State filters by state: "open" (the default when unset), "closed", or
@@ -374,7 +462,13 @@ message IssueListInputs {
   // and ceiling apply here.
   int32 max_results = 6;
 
+  // Token authenticates the request. Unset means an unauthenticated request,
+  // which GitHub permits for a public repository at a much lower rate limit.
+  // A literal string here is refused.
   flowstate.v1.Value token = 7;
+
+  // BaseUrl overrides the API base for GitHub Enterprise Server, e.g.
+  // "https://github.example.com/api/v3". Unset means github.com.
   string base_url = 8;
 
   // Sort orders the result: "created" (the default when unset), "updated",
@@ -453,6 +547,9 @@ message IssueSummary {
 
 // IssueListOutputs is a bounded page of matching issues.
 message IssueListOutputs {
+  // Issues are the matching issues, each a map with the fields of
+  // IssueSummary: number, title, state, labels, html_url, created_at,
+  // updated_at and is_pull_request.
   repeated google.api.expr.v1alpha1.Value issues = 1;
 
   // NextCursor is the resume position for the next page, populated exactly

@@ -1,4 +1,4 @@
-.PHONY: check check-untracked-generated gate test test-plugins plugin-examples plugin-example-catalog-update test-ordering test-fast fuzz-smoke fmt modernize vacuity wallclock dupbodies dev-temporal docs docs-preview appearance appearance-update coverage coverage-plugins release-artifacts vulncheck-plugins staticcheck-plugins
+.PHONY: check check-untracked-generated gate test test-plugins plugin-examples plugin-proto plugin-example-catalog-update test-ordering test-fast fuzz-smoke fmt modernize vacuity wallclock dupbodies dev-temporal docs docs-preview appearance appearance-update coverage coverage-plugins release-artifacts vulncheck-plugins staticcheck-plugins
 
 # The external tools the build runs — buf, govulncheck, staticcheck, pkgsite —
 # are pinned once, as `tool` directives in tools/external/go.mod, checksummed
@@ -110,12 +110,28 @@ check:
 	$(BUF) breaking --against '.git#branch=origin/main'
 	$(BUF) generate
 	$(BUF) generate $(EXAMPLE_PLUGIN)/proto --template $(EXAMPLE_PLUGIN)/buf.gen.yaml -o $(EXAMPLE_PLUGIN) --clean
+	$(MAKE) plugin-proto
 	git diff --exit-code
 	$(MAKE) check-untracked-generated
 	$(GOVULNCHECK) ./...
 	$(STATICCHECK) ./...
 	$(MAKE) vulncheck-plugins
 	$(MAKE) staticcheck-plugins
+
+# Regenerates every first-party plugin's schema, field comments included, from
+# plugins/buf.gen.yaml. A plugin's proto imports the engine's own schema beside
+# its own, and buf refuses a workspace that reaches outside its context
+# directory, so both modules are declared for the one command with --config.
+# `plugin-proto` is run from the repository root.
+plugin-proto:
+	@for module in plugins/*/; do \
+		name="$$(basename "$$module")"; \
+		[ -d "$$module/proto/$$name" ] || continue; \
+		echo "==> buf generate $$module"; \
+		$(BUF) generate \
+			--config "{\"version\":\"v2\",\"modules\":[{\"path\":\"proto\"},{\"path\":\"plugins/$$name/proto\"}],\"deps\":[\"buf.build/bufbuild/protovalidate\",\"buf.build/googleapis/googleapis\"]}" \
+			--template plugins/buf.gen.yaml --clean --path "plugins/$$name/proto/$$name" -o "plugins/$$name" || exit 1; \
+	done
 
 # `git diff --exit-code` above only sees tracked files, so a new .proto whose
 # generated .pb.go, .doc.pb.go or .connect.go was never committed would pass it.
