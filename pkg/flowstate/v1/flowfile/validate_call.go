@@ -145,7 +145,7 @@ func checkCallArgumentType(table *typeTable, stepID, name string, value *v1.Valu
 			return nil
 		}
 
-		env, err := envDeclaring(referencedNames(parsed.GetExpr()), table.leavesFor(parsed))
+		env, err := envDeclaring(referencedNames(parsed.GetExpr()), table.leavesFor(parsed, table.before(v1.ValueSite{Step: stepID})))
 		if err != nil {
 			// A defect in this build rather than in the file; see typeErrors,
 			// which makes the identical call for the identical reason.

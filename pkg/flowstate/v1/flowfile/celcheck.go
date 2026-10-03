@@ -172,7 +172,7 @@ func typeErrors(table *typeTable, site v1.ValueSite) Diagnostics {
 		return nil
 	}
 
-	env, err := envDeclaring(referencedNames(parsed.GetExpr()), table.leavesFor(parsed))
+	env, err := envDeclaring(referencedNames(parsed.GetExpr()), table.leavesFor(parsed, table.before(site)))
 	if err != nil {
 		// Building the environment failed, which is a defect in this build rather
 		// than something the file did. Reporting it against the author's line would

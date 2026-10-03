@@ -6,6 +6,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	exprpb "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
+
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 )
@@ -373,4 +375,75 @@ steps:
 	require.NotEmpty(t, ds)
 	assert.Contains(t, ds.Error(), "declared int by workflow")
 	assert.Contains(t, ds.Error(), "always produces string")
+}
+
+// TestValueStepTypesFollowWrittenOrder: a value step's type is declared only for a
+// position written after it. A forward reference, a self reference and a read of
+// a loop-body step from outside it are the reference walk's to report once, in its
+// own sentence, and must not also be refused as a type mismatch.
+func TestValueStepTypesFollowWrittenOrder(t *testing.T) {
+	t.Parallel()
+
+	for name, source := range map[string]string{
+		"a forward reference": `edition: v2026.3
+name: t
+steps:
+  - id: early
+    value: ${steps.late.value + 1}
+  - id: late
+    value: ${"abc"}
+`,
+		"a self reference": `edition: v2026.3
+name: t
+steps:
+  - id: s
+    value: ${steps.s.value.size()}
+`,
+		"a loop-body step read from outside": `edition: v2026.3
+name: t
+steps:
+  - id: loop
+    for_each:
+      items: ${[1]}
+      steps:
+        - id: inner
+          value: ${"abc"}
+  - id: after
+    value: ${steps.inner.value + 1}
+`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			ds := validateSource(t, source)
+			require.NotEmpty(t, ds, "the reference walk must still report it")
+			for _, d := range ds {
+				assert.Equal(t, v1.DiagnosticCodeUnresolvedReference, d.Code, "reported twice: %v", d)
+			}
+		})
+	}
+}
+
+// TestCyclicDeclarationTypeIsBounded: a hand-built input whose structural type
+// points back at itself reaches the checker before the declaration bounds do.
+func TestCyclicDeclarationTypeIsBounded(t *testing.T) {
+	t.Parallel()
+
+	cyclic := &v1.Type{}
+	cyclic.Kind = &v1.Type_List{List: cyclic}
+
+	wf := &v1.Workflow{
+		Name: "t",
+		DeclaredInputs: []*v1.InputDeclaration{{
+			Name: "xs", Type: v1.InputDeclaration_TYPE_LIST, ValueType: cyclic,
+		}},
+		Steps: []*v1.Node{{
+			Id: "a",
+			Kind: &v1.Node_Value{Value: &v1.Value{Kind: &v1.Value_Literal{
+				Literal: &exprpb.Value{Kind: &exprpb.Value_Int64Value{Int64Value: 1}},
+			}}},
+		}},
+	}
+
+	assert.NotPanics(t, func() { _ = flowfile.Validate(wf) })
 }

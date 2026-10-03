@@ -497,7 +497,7 @@ func staticExpressionType(wf *v1.Workflow, table *typeTable, parsed *expr.Parsed
 		return t, nil, true
 	}
 
-	env, err := envDeclaring(referencedNames(parsed.GetExpr()), table.leavesFor(parsed))
+	env, err := envDeclaring(referencedNames(parsed.GetExpr()), table.leavesFor(parsed, table.before(v1.ValueSite{Slot: v1.SlotDeclaredOutput})))
 	if err != nil {
 		// A defect in this build rather than in the file; the same answer
 		// [checkCallArgumentType] gives for the identical call.

@@ -31,16 +31,35 @@ func exampleTypes() map[protoreflect.Name]*v1.Type {
 func TestTypeProjectionsAreTotal(t *testing.T) {
 	t.Parallel()
 
+	// What each arm projects to, stated rather than inferred: a projection with no
+	// arm for a kind answers dyn, and dyn is the right answer for exactly two of
+	// these (`message`, which waits for a descriptor registry, and `dyn`), so a
+	// bare "is non-nil" would pass with none of the switches written.
+	expected := map[protoreflect.Name]struct {
+		cel    *cel.Type
+		text   string
+		backTo string
+	}{
+		"scalar":  {cel.StringType, "string", "string"},
+		"list":    {cel.ListType(cel.IntType), "list(int)", "list(int)"},
+		"map":     {cel.MapType(cel.StringType, cel.BoolType), "map(string, bool)", "map(string, bool)"},
+		"enum":    {cel.StringType, "enum", "string"},
+		"message": {cel.DynType, "example.v1.Customer", "dyn"},
+		"dyn":     {cel.DynType, "dyn", "dyn"},
+	}
+
 	examples := exampleTypes()
 	arms := (&v1.Type{}).ProtoReflect().Descriptor().Oneofs().ByName("kind").Fields()
 	for i := range arms.Len() {
 		name := arms.Get(i).Name()
 		ty, ok := examples[name]
 		require.True(t, ok, "Type has a %q arm with no example in this test: add it, and a projection arm for it", name)
+		want, ok := expected[name]
+		require.True(t, ok, "Type has a %q arm with no expected projection in this test", name)
 
-		assert.NotEmpty(t, v1.TypeString(ty), "TypeString is empty for the %q arm", name)
-		assert.NotNil(t, v1.CELType(ty), "CELType is nil for the %q arm", name)
-		assert.NotNil(t, v1.TypeOfCEL(v1.CELType(ty)), "TypeOfCEL is nil for the %q arm", name)
+		assert.True(t, v1.CELType(ty).IsExactType(want.cel), "CELType for the %q arm is %s, want %s", name, v1.CELType(ty), want.cel)
+		assert.Equal(t, want.text, v1.TypeString(ty), "TypeString for the %q arm", name)
+		assert.Equal(t, want.backTo, v1.TypeString(v1.TypeOfCEL(v1.CELType(ty))), "TypeOfCEL for the %q arm", name)
 	}
 
 	// The two arms whose CEL type is deliberately looser than their own: an enum
@@ -148,4 +167,20 @@ func TestDeclaredTypePrefersTheStructuralType(t *testing.T) {
 	assert.Nil(t, (&v1.InputDeclaration{}).DeclaredType())
 	assert.Nil(t, (&v1.OutputDeclaration{}).DeclaredType())
 	assert.Equal(t, "int", v1.TypeString((&v1.OutputDeclaration{Type: v1.InputDeclaration_TYPE_INT}).DeclaredType()))
+}
+
+// TestProjectionsAreBounded: a hand-built Type may nest without limit or point
+// back at itself, and the checker projects declarations before their bounds are
+// checked, so each projection must end.
+func TestProjectionsAreBounded(t *testing.T) {
+	t.Parallel()
+
+	cyclic := &v1.Type{}
+	cyclic.Kind = &v1.Type_List{List: cyclic}
+
+	assert.NotNil(t, v1.CELType(cyclic))
+	assert.Contains(t, v1.TypeString(cyclic), "dyn")
+
+	decl := &v1.InputDeclaration{ValueType: cyclic}
+	assert.NotNil(t, v1.CELType(decl.DeclaredType()))
 }

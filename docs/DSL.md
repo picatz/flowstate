@@ -676,7 +676,10 @@ never had. Three positions take one type and are held to it: `items:` is a list,
 `if:` and `until:` are booleans. Everything else the file does not state stays `dyn`
 and stays quiet — a step id used in two loops, a response's `json`, a plugin's output,
 an `optional` — and a name the file does not declare at all is the reference walk's to
-report, in its own sentence. What a task's outputs, a loop's `as:` and a `call:`'s
+report, in its own sentence. A `value:` step is typed only for a position written
+after it, which is the order a run evaluates in. One consequence worth knowing:
+`inputs.x == null` on a declared input is refused, because a declared input is never
+null (`has(inputs.x)` asks whether it was given). What a task's outputs, a loop's `as:` and a `call:`'s
 results carry is the rest of #1634.
 
 ### `state:` gets a byte bound now, not an open question

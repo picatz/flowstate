@@ -48,6 +48,10 @@ import (
 //     a body step called `page`), and this check carries no scope, so it cannot
 //     tell which one a reference means. Staying silent is the one answer that
 //     cannot be wrong.
+//   - Only a top-level `value:` step is typed, and only for a position written
+//     after it. A reference to a later step, or to one inside a loop body, is the
+//     reference walk's to report, and typing it would add a second, spurious
+//     complaint about the same reference.
 //   - Only a `value:` step's `value` is typed, because it is the one output whose
 //     type is the checker's own answer. A task's outputs come from descriptors
 //     and an author-shaped `outputs:` from their expressions, both later slices.
@@ -62,21 +66,34 @@ type typeTable struct {
 	// is absent rather than `dyn`: it promised nothing.
 	inputs map[string]*cel.Type
 
-	// values are the `value:` steps whose id is unique in the workflow, by id.
+	// values are the top-level `value:` steps whose id is unique in the workflow,
+	// by id.
 	values map[string]*valueStep
+
+	// owner is the index, among the workflow's top-level steps, of the top-level
+	// step that holds each step id (itself, for a top-level one). It is how a
+	// position is placed in written order: it may read a value step only when
+	// that step comes before the one it sits in.
+	owner map[string]int
+
+	// steps is how many top-level steps there are, which is the position of an
+	// output: evaluated after every step, it sees them all.
+	steps int
 }
 
 // A valueStep is one `value:` step and what is known of its type.
 type valueStep struct {
 	value *v1.Value
 
-	// typed is set once resolved is true; resolving is true while the type is being
-	// computed, which is how a reference cycle (a step whose value reads itself, or
-	// two that read each other) ends as `dyn` rather than as unbounded recursion.
-	// A cycle is the reference walk's to report as the forward reference it is.
-	typed     *cel.Type
-	resolved  bool
-	resolving bool
+	// index is the step's place among the top-level steps.
+	index int
+
+	// typed is set once resolved is true. Computing it reads only steps before this
+	// one (see [typeTable.leavesFor]), so it cannot meet itself: a step that reads
+	// itself or a later one is a forward reference, which the reference walk reports
+	// in its own sentence and this does not type.
+	typed    *cel.Type
+	resolved bool
 }
 
 // newTypeTable reads a workflow's declarations and `value:` steps.
@@ -84,6 +101,7 @@ func newTypeTable(wf *v1.Workflow) *typeTable {
 	table := &typeTable{
 		inputs: map[string]*cel.Type{},
 		values: map[string]*valueStep{},
+		owner:  map[string]int{},
 	}
 
 	for _, declaration := range wf.GetDeclaredInputs() {
@@ -92,13 +110,18 @@ func newTypeTable(wf *v1.Workflow) *typeTable {
 		}
 	}
 
+	table.steps = len(wf.GetSteps())
+
 	seen := map[string]int{}
-	v1.WalkNodes(wf.GetSteps(), v1.Walk{Node: func(node *v1.Node) {
-		seen[node.GetId()]++
-		if value, ok := node.GetKind().(*v1.Node_Value); ok {
-			table.values[node.GetId()] = &valueStep{value: value.Value}
+	for index, top := range wf.GetSteps() {
+		v1.WalkNodes([]*v1.Node{top}, v1.Walk{Node: func(node *v1.Node) {
+			seen[node.GetId()]++
+			table.owner[node.GetId()] = index
+		}})
+		if value, ok := top.GetKind().(*v1.Node_Value); ok {
+			table.values[top.GetId()] = &valueStep{value: value.Value, index: index}
 		}
-	}})
+	}
 	for id, count := range seen {
 		if count > 1 {
 			delete(table.values, id)
@@ -112,9 +135,15 @@ func newTypeTable(wf *v1.Workflow) *typeTable {
 // `inputs.<name>` and `steps.<id>.value` it selects that the file states a type
 // for, the qualified name and the type.
 //
+// before is how many top-level steps are visible from where the expression is
+// written: a `value:` step is typed only when its index is below it, which is the
+// written order a run evaluates in. A position the table cannot place, and every
+// step nested in a body, sees none, so a forward or out-of-scope reference stays
+// `dyn` and is reported once, by the reference walk, rather than twice.
+//
 // Nil-safe, and nil when there is nothing to declare, so a caller without a table
 // (a subtree checked on its own) gets the `dyn` environment it always had.
-func (t *typeTable) leavesFor(parsed *expr.ParsedExpr) map[string]*cel.Type {
+func (t *typeTable) leavesFor(parsed *expr.ParsedExpr, before int) map[string]*cel.Type {
 	if t == nil || parsed == nil {
 		return nil
 	}
@@ -138,7 +167,7 @@ func (t *typeTable) leavesFor(parsed *expr.ParsedExpr) map[string]*cel.Type {
 		if ref.Output != "value" {
 			continue
 		}
-		if typed := t.valueType(ref.ID); typed != nil {
+		if typed := t.valueType(ref.ID, before); typed != nil {
 			add(v1.StepsRoot+"."+ref.ID+".value", typed)
 		}
 	}
@@ -147,34 +176,50 @@ func (t *typeTable) leavesFor(parsed *expr.ParsedExpr) map[string]*cel.Type {
 }
 
 // valueType is the type of `steps.<id>.value`, or nil where it is not known: not a
-// `value:` step, not a unique id, or an answer of `dyn`.
-func (t *typeTable) valueType(id string) *cel.Type {
+// top-level `value:` step, not a unique id, not before the position asking, or an
+// answer of `dyn`.
+func (t *typeTable) valueType(id string, before int) *cel.Type {
 	step, ok := t.values[id]
-	if !ok {
+	if !ok || step.index >= before {
 		return nil
 	}
-	if step.resolved {
-		return step.typed
+	if !step.resolved {
+		step.typed = t.inferValue(step.value, step.index)
+		step.resolved = true
 	}
-	if step.resolving {
-		return nil
-	}
-
-	step.resolving = true
-	step.typed = t.inferValue(step.value)
-	step.resolving, step.resolved = false, true
 
 	return step.typed
 }
 
+// before is the number of top-level steps visible to a site: those ahead of the
+// top-level step it belongs to, all of them for a declared output, none for a
+// position outside the steps (a `vars:`, a trigger, a default).
+func (t *typeTable) before(site v1.ValueSite) int {
+	if t == nil {
+		return 0
+	}
+	if site.Step == "" {
+		if site.Slot == v1.SlotDeclaredOutput {
+			return t.steps
+		}
+
+		return 0
+	}
+	if index, ok := t.owner[site.Step]; ok {
+		return index
+	}
+
+	return 0
+}
+
 // inferValue is the type a `value:` holds, nil when it is `dyn`.
-func (t *typeTable) inferValue(value *v1.Value) *cel.Type {
+func (t *typeTable) inferValue(value *v1.Value, before int) *cel.Type {
 	switch kind := value.GetKind().(type) {
 	case *v1.Value_Literal:
 		return knownType(literalCELType(kind.Literal))
 
 	case *v1.Value_Expr:
-		checked, ok := checkedType(t, kind.Expr)
+		checked, ok := checkedType(t, kind.Expr, before)
 		if !ok {
 			return nil
 		}
@@ -201,8 +246,8 @@ func (t *typeTable) inferValue(value *v1.Value) *cel.Type {
 //
 // False when the expression does not check, which [checkExpressionTypes] reports
 // in its own sentence.
-func checkedType(t *typeTable, parsed *expr.ParsedExpr) (*cel.Type, bool) {
-	env, err := envDeclaring(referencedNames(parsed.GetExpr()), t.leavesFor(parsed))
+func checkedType(t *typeTable, parsed *expr.ParsedExpr, before int) (*cel.Type, bool) {
+	env, err := envDeclaring(referencedNames(parsed.GetExpr()), t.leavesFor(parsed, before))
 	if err != nil {
 		return nil, false
 	}

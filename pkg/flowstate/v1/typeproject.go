@@ -78,14 +78,27 @@ func (x *OutputDeclaration) DeclaredType() *Type {
 // (see [StringShaped]). A message is `dyn` until a descriptor registry reaches
 // the checker, since cel-go refuses an object type it was never told about, and
 // refusing every expression that touches one would be a false diagnostic.
+//
+// Bounded: a type nested past [MaxStructureDepth] is `dyn` from there down. A
+// hand-built message can nest without limit, or point back at itself, and
+// `flowfile.Validate` accepts one before the declaration bounds are checked, so
+// a projection that recursed without a bound would spend a stack on it.
 func CELType(t *Type) *cel.Type {
+	return celTypeAt(t, 0)
+}
+
+func celTypeAt(t *Type, depth int) *cel.Type {
+	if depth > MaxStructureDepth {
+		return cel.DynType
+	}
+
 	switch kind := t.GetKind().(type) {
 	case *Type_Scalar_:
 		return celScalar(kind.Scalar)
 	case *Type_List:
-		return cel.ListType(CELType(kind.List))
+		return cel.ListType(celTypeAt(kind.List, depth+1))
 	case *Type_Map_:
-		return cel.MapType(cel.StringType, CELType(kind.Map.GetValue()))
+		return cel.MapType(cel.StringType, celTypeAt(kind.Map.GetValue(), depth+1))
 	case *Type_Enum:
 		return cel.StringType
 	case *Type_Message:
@@ -168,14 +181,24 @@ func TypeOfCEL(t *cel.Type) *Type {
 //
 // An enum is `enum` and a message is its full name. A nil type is `dyn`, which
 // is how every projection here reads one.
+//
+// Bounded like [CELType]: past [MaxStructureDepth] it prints `dyn`.
 func TypeString(t *Type) string {
+	return typeStringAt(t, 0)
+}
+
+func typeStringAt(t *Type, depth int) string {
+	if depth > MaxStructureDepth {
+		return "dyn"
+	}
+
 	switch kind := t.GetKind().(type) {
 	case *Type_Scalar_:
 		return scalarName(kind.Scalar)
 	case *Type_List:
-		return "list(" + TypeString(kind.List) + ")"
+		return "list(" + typeStringAt(kind.List, depth+1) + ")"
 	case *Type_Map_:
-		return "map(string, " + TypeString(kind.Map.GetValue()) + ")"
+		return "map(string, " + typeStringAt(kind.Map.GetValue(), depth+1) + ")"
 	case *Type_Enum:
 		return "enum"
 	case *Type_Message:
