@@ -110,6 +110,7 @@ func TestFormatTypeRefusesWhatHasNoSpelling(t *testing.T) {
 	for _, bad := range []*v1.Type{
 		{Kind: &v1.Type_Enum{Enum: true}},
 		{Kind: &v1.Type_Message{Message: "a.B"}},
+		{Kind: &v1.Type_Dyn{Dyn: false}},
 		{},
 	} {
 		_, err := flowfile.FormatType(bad)
@@ -147,5 +148,35 @@ func TestSpellingMatchesCELsOwnPrinter(t *testing.T) {
 			celPrinted = house
 		}
 		require.Equal(t, celPrinted, printed, fmt.Sprint(src))
+	}
+}
+
+func TestFormatTypeBoundsItsRecursion(t *testing.T) {
+	t.Parallel()
+
+	cyclic := &v1.Type{}
+	cyclic.Kind = &v1.Type_List{List: cyclic}
+	_, err := flowfile.FormatType(cyclic)
+	require.ErrorContains(t, err, "deeper")
+
+	deep := &v1.Type{Kind: &v1.Type_Dyn{Dyn: true}}
+	for range v1.MaxStructureDepth + 2 {
+		deep = &v1.Type{Kind: &v1.Type_List{List: deep}}
+	}
+	_, err = flowfile.FormatType(deep)
+	require.ErrorContains(t, err, "deeper")
+}
+
+func TestParseTypeNamesTheMapKeyColumn(t *testing.T) {
+	t.Parallel()
+
+	for src, want := range map[string]string{
+		"map(int, string)":                "1:5",
+		"list(map(bool, int))":            "1:10",
+		"map(string, map(bytes, string))": "1:17",
+	} {
+		_, err := flowfile.ParseType(src)
+		require.Error(t, err, src)
+		require.Contains(t, err.Error(), want, src)
 	}
 }

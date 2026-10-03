@@ -119,20 +119,33 @@ func ParseType(src string) (*v1.Type, error) {
 // message names what `flow fix` rewrites them to.
 func refuseBareContainers(checked *cel.Ast) error {
 	var err error
+	// A map's key is validated here, where the key's own column is known; the
+	// evaluated type has already lost it. Only the identifier `string` can
+	// evaluate to the string type, so anything else in the key slot is refused.
+	for _, e := range celast.MatchDescendants(celast.NavigateAST(checked.NativeRep()), celast.KindMatcher(celast.CallKind)) {
+		call := e.AsCall()
+		if call.FunctionName() != "map" || len(call.Args()) != 2 {
+			continue
+		}
+		if key := call.Args()[0]; key.Kind() != celast.IdentKind || key.AsIdent() != "string" {
+			err = errors.Join(err, fmt.Errorf("%s: a map's keys are strings; write map(string, ...)", position(checked, key)))
+		}
+	}
 	for _, e := range celast.MatchDescendants(celast.NavigateAST(checked.NativeRep()), celast.KindMatcher(celast.IdentKind)) {
 		switch name := e.AsIdent(); name {
 		case "list":
-			err = errors.Join(err, fmt.Errorf("%d: `list` needs its element type; write list(dyn) for a list of anything", column(checked, e)))
+			err = errors.Join(err, fmt.Errorf("%s: `list` needs its element type; write list(dyn) for a list of anything", position(checked, e)))
 		case "map":
-			err = errors.Join(err, fmt.Errorf("%d: `map` needs its types; write map(string, dyn) for a map of anything", column(checked, e)))
+			err = errors.Join(err, fmt.Errorf("%s: `map` needs its types; write map(string, dyn) for a map of anything", position(checked, e)))
 		}
 	}
 	return err
 }
 
-func column(checked *cel.Ast, e celast.Expr) int {
+// position is e's line:column in the form cel-go's own diagnostics use.
+func position(checked *cel.Ast, e celast.Expr) string {
 	loc := checked.NativeRep().SourceInfo().GetStartLocation(e.ID())
-	return loc.Column() + 1
+	return fmt.Sprintf("%d:%d", loc.Line(), loc.Column()+1)
 }
 
 func typeFromCEL(t *types.Type) (*v1.Type, error) {
@@ -185,6 +198,16 @@ func typeFromCEL(t *types.Type) (*v1.Type, error) {
 // enum marker, whose members belong to `values:`, and a message reserved for
 // descriptor-backed types — is reported rather than printed as something else.
 func FormatType(t *v1.Type) (string, error) {
+	return formatType(t, v1.MaxStructureDepth)
+}
+
+// formatType prints t with depth levels of nesting left, so a type built past
+// [v1.MaxStructureDepth], or one that points back at itself, is an error rather
+// than a stack overflow.
+func formatType(t *v1.Type, depth int) (string, error) {
+	if depth < 0 {
+		return "", fmt.Errorf("type nests deeper than %d levels", v1.MaxStructureDepth)
+	}
 	switch k := t.GetKind().(type) {
 	case *v1.Type_Scalar_:
 		switch k.Scalar {
@@ -207,15 +230,18 @@ func FormatType(t *v1.Type) (string, error) {
 		}
 		return "", fmt.Errorf("scalar %s has no spelling", k.Scalar)
 	case *v1.Type_Dyn:
+		if !k.Dyn {
+			return "", errors.New("dyn marker is false; the marker must be true")
+		}
 		return "dyn", nil
 	case *v1.Type_List:
-		elem, err := FormatType(k.List)
+		elem, err := formatType(k.List, depth-1)
 		if err != nil {
 			return "", err
 		}
 		return "list(" + elem + ")", nil
 	case *v1.Type_Map_:
-		value, err := FormatType(k.Map.GetValue())
+		value, err := formatType(k.Map.GetValue(), depth-1)
 		if err != nil {
 			return "", err
 		}
