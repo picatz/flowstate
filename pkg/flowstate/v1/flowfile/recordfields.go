@@ -141,53 +141,106 @@ func quoteAll(names []string) string {
 }
 
 // walkExpr calls visit with the root identifier and the field chain of every
-// maximal select chain in e (`inputs.order.id` is root `inputs`, fields `order`,
-// `id`), including a `has()` test's final select, and descends into everything
-// else. A chain is visited once, whole: its prefixes are the visitor's to take.
+// maximal chain of field reads in e (`inputs.order.id` is root `inputs`, fields
+// `order`, `id`), and descends into everything else. A `has()` test's final select
+// is a chain, and so are an optional selection (`inputs.order.?id`) and an index
+// by a literal string (`inputs.order["id"]`): they read the same field, and are
+// how an author who follows docs/STYLE.md spells an optional one. A chain is
+// visited once, whole: its prefixes are the visitor's to take.
+//
+// A root a comprehension binds (`xs.exists(inputs, inputs.a)`) is the loop's own
+// value and is not visited; the range and the accumulator's start are evaluated
+// outside the loop's scope, as [collectReferences] has them.
 func walkExpr(e *expr.Expr, visit func(root string, fields []string)) {
+	walkExprBound(e, nil, visit)
+}
+
+func walkExprBound(e *expr.Expr, bound map[string]struct{}, visit func(root string, fields []string)) {
 	if e == nil {
 		return
 	}
 
-	if sel := e.GetSelectExpr(); sel != nil {
-		var fields []string
-		operand := e
-		for operand.GetSelectExpr() != nil {
-			fields = append(fields, operand.GetSelectExpr().GetField())
-			operand = operand.GetSelectExpr().GetOperand()
+	if root, fields, ok := fieldChain(e); ok {
+		if _, shadowed := bound[root]; !shadowed {
+			visit(root, fields)
 		}
-		if ident := operand.GetIdentExpr(); ident != nil {
-			slices.Reverse(fields)
-			visit(ident.GetName(), fields)
-
-			return
-		}
-		walkExpr(operand, visit)
 
 		return
 	}
 
 	switch kind := e.GetExprKind().(type) {
+	case *expr.Expr_SelectExpr:
+		walkExprBound(kind.SelectExpr.GetOperand(), bound, visit)
 	case *expr.Expr_CallExpr:
-		walkExpr(kind.CallExpr.GetTarget(), visit)
+		walkExprBound(kind.CallExpr.GetTarget(), bound, visit)
 		for _, arg := range kind.CallExpr.GetArgs() {
-			walkExpr(arg, visit)
+			walkExprBound(arg, bound, visit)
 		}
 	case *expr.Expr_ListExpr:
 		for _, el := range kind.ListExpr.GetElements() {
-			walkExpr(el, visit)
+			walkExprBound(el, bound, visit)
 		}
 	case *expr.Expr_StructExpr:
 		for _, entry := range kind.StructExpr.GetEntries() {
-			walkExpr(entry.GetMapKey(), visit)
-			walkExpr(entry.GetValue(), visit)
+			walkExprBound(entry.GetMapKey(), bound, visit)
+			walkExprBound(entry.GetValue(), bound, visit)
 		}
 	case *expr.Expr_ComprehensionExpr:
 		c := kind.ComprehensionExpr
-		walkExpr(c.GetIterRange(), visit)
-		walkExpr(c.GetAccuInit(), visit)
-		walkExpr(c.GetLoopCondition(), visit)
-		walkExpr(c.GetLoopStep(), visit)
-		walkExpr(c.GetResult(), visit)
+		walkExprBound(c.GetIterRange(), bound, visit)
+		walkExprBound(c.GetAccuInit(), bound, visit)
+
+		inner := make(map[string]struct{}, len(bound)+3)
+		for name := range bound {
+			inner[name] = struct{}{}
+		}
+		for _, name := range []string{c.GetIterVar(), c.GetIterVar2(), c.GetAccuVar()} {
+			if name != "" {
+				inner[name] = struct{}{}
+			}
+		}
+		walkExprBound(c.GetLoopCondition(), inner, visit)
+		walkExprBound(c.GetLoopStep(), inner, visit)
+		walkExprBound(c.GetResult(), inner, visit)
+	}
+}
+
+// fieldChain reads e as a chain of field reads that bottoms out in an identifier.
+// The three spellings of a read are a select, an optional select (`_?._`) and an
+// index (`_[_]`, `_[?_]`) whose key is a string literal; a key that is computed is
+// not a field the file names, so it ends the chain, and what is inside it is the
+// walk's.
+func fieldChain(e *expr.Expr) (root string, fields []string, ok bool) {
+	for {
+		switch kind := e.GetExprKind().(type) {
+		case *expr.Expr_IdentExpr:
+			slices.Reverse(fields)
+
+			return kind.IdentExpr.GetName(), fields, len(fields) > 0
+
+		case *expr.Expr_SelectExpr:
+			fields = append(fields, kind.SelectExpr.GetField())
+			e = kind.SelectExpr.GetOperand()
+
+		case *expr.Expr_CallExpr:
+			call := kind.CallExpr
+			switch call.GetFunction() {
+			case "_?._", "_[_]", "_[?_]":
+			default:
+				return "", nil, false
+			}
+			if call.GetTarget() != nil || len(call.GetArgs()) != 2 {
+				return "", nil, false
+			}
+			key, isString := call.GetArgs()[1].GetConstExpr().GetConstantKind().(*expr.Constant_StringValue)
+			if !isString {
+				return "", nil, false
+			}
+			fields = append(fields, key.StringValue)
+			e = call.GetArgs()[0]
+
+		default:
+			return "", nil, false
+		}
 	}
 }

@@ -735,7 +735,9 @@ into a nested record is typed at its leaf (`inputs.order.total.cents` is an `int
 closed record does not declare is refused with the ones it does and, for a near miss, the one
 meant (`the record Order has no field "idd"; it declares "id", "status". Did you mean "id"?`).
 Hovering `inputs.order` or any field after it shows the field's type, whether it is required,
-its description and, for a record, the fields it holds. A path that leaves the record into a
+its description and, for a record, the fields it holds. An optional read (`inputs.order.?id`) and an index by a literal key
+(`inputs.order["id"]`) name the same field and are checked for existing, though only a plain
+select is typed at its leaf. A path that leaves the record into a
 list or a map ends there: the element of a `list(Line)` is not typed yet.
 
 ### `state:` gets a byte bound now, not an open question
