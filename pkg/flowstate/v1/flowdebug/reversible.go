@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	"google.golang.org/protobuf/proto"
 
@@ -49,6 +50,24 @@ const MaxReversibleMoves = 256
 // movements and breakpoint replacements together.
 const maxReversibleLog = 4 * MaxReversibleMoves
 
+// DefaultReplayTimeout bounds how long one rewind may take, from the
+// restart to the last replayed stop. A replay that cannot finish in that time
+// is refused as unavailable, and the run being debugged is untouched.
+const DefaultReplayTimeout = time.Minute
+
+// ReversibleOption configures [NewReversible].
+type ReversibleOption func(*Reversible)
+
+// WithReplayTimeout bounds one rewind. Zero or negative keeps
+// [DefaultReplayTimeout].
+func WithReplayTimeout(d time.Duration) ReversibleOption {
+	return func(r *Reversible) {
+		if d > 0 {
+			r.timeout = d
+		}
+	}
+}
+
 // Run is one execution of a program under its own controlled [Session].
 type Run struct {
 	// Session is the run's session, created [Options.Controlled], with the
@@ -64,6 +83,11 @@ type Run struct {
 }
 
 // Launcher starts the program again, from the beginning, under a new session.
+//
+// The run's lifetime must not be bound to ctx: a rewind launches under the
+// context of the request that asked for it, which ends when the request does,
+// and the rewound run has to outlive that. A launcher derives the run's own
+// context and ends it in [Run.Stop].
 //
 // It must be deterministic: the same options, inputs, stubs and virtual
 // clock every time, because a rewind is only as good as its reproduction. A
@@ -83,7 +107,8 @@ type recorded struct {
 // Reversible is a [Target] over a run it can start again, so that [Reversible.Back]
 // can move to the previous stop. Use [NewReversible].
 type Reversible struct {
-	launch Launcher
+	launch  Launcher
+	timeout time.Duration
 
 	// command serializes everything that changes the run: movements,
 	// breakpoint replacements, pauses and rewinds. A rewind holds it for the
@@ -103,13 +128,15 @@ type Reversible struct {
 	offset     uint64
 	highwater  uint64
 	generation uint64
+	closed     bool
+	abort      context.CancelFunc
 }
 
 var _ Target = (*Reversible)(nil)
 
 // NewReversible launches the program once and wraps it. The first run is the
 // host's to have configured through launch exactly as every later one will be.
-func NewReversible(ctx context.Context, launch Launcher) (*Reversible, error) {
+func NewReversible(ctx context.Context, launch Launcher, opts ...ReversibleOption) (*Reversible, error) {
 	if launch == nil {
 		return nil, errNoLauncher
 	}
@@ -118,14 +145,31 @@ func NewReversible(ctx context.Context, launch Launcher) (*Reversible, error) {
 		return nil, fmt.Errorf("flowdebug: launching the run: %w", err)
 	}
 
-	return &Reversible{launch: launch, run: run, applied: map[string]*v1.DebugReceipt{}}, nil
+	r := &Reversible{launch: launch, run: run, timeout: DefaultReplayTimeout, applied: map[string]*v1.DebugReceipt{}}
+	for _, opt := range opts {
+		opt(r)
+	}
+
+	return r, nil
 }
 
-// Stop ends the current run and everything it holds.
+// Stop ends the current run and everything it holds. It is safe to call more
+// than once and while a rewind is replaying: the replay is cancelled and the
+// rewind discards the run it was building instead of installing it.
 func (r *Reversible) Stop() {
-	r.mu.RLock()
-	run := r.run
-	r.mu.RUnlock()
+	r.mu.Lock()
+	if r.closed {
+		r.mu.Unlock()
+
+		return
+	}
+	r.closed = true
+	run, abort := r.run, r.abort
+	r.mu.Unlock()
+
+	if abort != nil {
+		abort()
+	}
 	run.Stop()
 }
 
@@ -183,15 +227,23 @@ func (r *Reversible) presentReceipt(receipt *v1.DebugReceipt, offset uint64) *v1
 	return shown
 }
 
-// Snapshot implements [Target].
+// Snapshot implements [Target]. A rewind that lands while it reads is retried
+// against the rewound run: the replaced one is being stopped, and what it would
+// report then is the end of a session that is, as far as the caller is
+// concerned, still alive.
 func (r *Reversible) Snapshot(ctx context.Context) (*v1.DebugSnapshot, error) {
-	run, offset, _ := r.current()
-	snapshot, err := run.Session.Snapshot(ctx)
-	if err != nil {
-		return nil, err
-	}
+	for {
+		run, offset, generation := r.current()
+		snapshot, err := run.Session.Snapshot(ctx)
+		if _, _, now := r.current(); now != generation {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
 
-	return r.present(snapshot, offset), nil
+		return r.present(snapshot, offset), nil
+	}
 }
 
 // WaitSnapshot implements [Target]. A rewind that happens while it waits moves
@@ -205,27 +257,26 @@ func (r *Reversible) WaitSnapshot(ctx context.Context, after uint64) (*v1.DebugS
 			inner = 0
 		}
 		snapshot, err := run.Session.WaitSnapshot(ctx, inner)
-		if err != nil {
-			return nil, err
-		}
 		if _, _, now := r.current(); now != generation {
 			continue
+		}
+		if err != nil {
+			return nil, err
 		}
 
 		return r.present(snapshot, offset), nil
 	}
 }
 
-// answer is a receipt this wrapper issues itself.
+// answer is a receipt this wrapper issues itself, at the revision the session
+// is at.
 func (r *Reversible) answer(requestID string, status v1.DebugCommandStatus, message string) *v1.DebugReceipt {
-	run, offset, _ := r.current()
-	snapshot, err := run.Session.Snapshot(context.Background())
-	revision := offset
-	if err == nil {
-		revision += snapshot.GetRevision()
+	revision := uint64(0)
+	if snapshot, err := r.Snapshot(context.Background()); err == nil {
+		revision = snapshot.GetRevision()
 	}
 
-	return &v1.DebugReceipt{RequestId: requestID, Status: status, Revision: r.shown(revision), Message: message}
+	return &v1.DebugReceipt{RequestId: requestID, Status: status, Revision: revision, Message: message}
 }
 
 // remember keeps an applied receipt so a retry of the same request id is a
@@ -345,24 +396,30 @@ func (r *Reversible) ReplaceBreakpoints(ctx context.Context, req *v1.DebugSetBre
 	return shown, nil
 }
 
-// Inspect implements [Target].
+// Inspect implements [Target]. Like [Reversible.Snapshot], it is retried
+// against the rewound run if a rewind lands while it reads.
 func (r *Reversible) Inspect(ctx context.Context, req *v1.DebugInspectRequest) (*v1.DebugInspectResponse, error) {
-	run, offset, _ := r.current()
-	forwarded := proto.CloneOf(req)
-	inner, ok := toInner(req.GetRevision(), offset)
-	if !ok {
-		return nil, ErrStaleRevision
-	}
-	forwarded.Revision = inner
+	for {
+		run, offset, generation := r.current()
+		forwarded := proto.CloneOf(req)
+		inner, ok := toInner(req.GetRevision(), offset)
+		if !ok {
+			return nil, ErrStaleRevision
+		}
+		forwarded.Revision = inner
 
-	response, err := run.Session.Inspect(ctx, forwarded)
-	if err != nil {
-		return nil, err
-	}
-	shown := proto.CloneOf(response)
-	shown.Revision = r.shown(response.GetRevision() + offset)
+		response, err := run.Session.Inspect(ctx, forwarded)
+		if _, _, now := r.current(); now != generation {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		shown := proto.CloneOf(response)
+		shown.Revision = r.shown(response.GetRevision() + offset)
 
-	return shown, nil
+		return shown, nil
+	}
 }
 
 // Close implements [Target]: it detaches the debugger from the current run,
@@ -522,12 +579,30 @@ func (r *Reversible) Back(ctx context.Context, requestID string, expectedRevisio
 	replay := slices.Concat(r.log[:last], r.log[last+1:])
 
 	r.rewinds++
-	fresh, held, err := r.replay(ctx, replay, r.stops[:moves], r.rewinds)
+	replayCtx, cancel := context.WithTimeout(ctx, r.timeout)
+	defer cancel()
+	r.mu.Lock()
+	if r.closed {
+		r.mu.Unlock()
+
+		return refuse(v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_ENDED, "the session was stopped")
+	}
+	r.abort = cancel
+	r.mu.Unlock()
+	fresh, held, err := r.replay(replayCtx, replay, r.stops[:moves], r.rewinds)
 	if err != nil {
 		return refuse(v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_REFUSED, err.Error())
 	}
 
 	r.mu.Lock()
+	if r.closed {
+		// Stopped while the replay ran: nothing owns the rewound run, so it
+		// goes with the rest.
+		r.mu.Unlock()
+		fresh.Stop()
+
+		return refuse(v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_ENDED, "the session was stopped while it was going back")
+	}
 	old := r.run
 	// The rewound session counts from one; shift it above everything shown.
 	r.offset = 0
@@ -570,7 +645,7 @@ func (r *Reversible) replay(ctx context.Context, commands []recorded, stops []st
 
 	held, err := waitStop(ctx, fresh.Session, 0)
 	if err != nil {
-		return abandon(fmt.Errorf("unavailable: the replay did not reach its first stop: %w", err))
+		return abandon(interrupted(ctx, "did not reach its first stop", "unavailable", err))
 	}
 	if got := fingerprint(held); got != stops[0] {
 		return abandon(diverged(0, stops[0], got))
@@ -602,7 +677,7 @@ func (r *Reversible) replay(ctx context.Context, commands []recorded, stops []st
 		}
 		held, err = waitStop(ctx, fresh.Session, held.GetRevision())
 		if err != nil {
-			return abandon(fmt.Errorf("diverged: the replay did not reach stop %d: %w", moved+1, err))
+			return abandon(interrupted(ctx, fmt.Sprintf("did not reach stop %d", moved+1), "diverged", err))
 		}
 		moved++
 		if moved >= len(stops) {
@@ -617,6 +692,18 @@ func (r *Reversible) replay(ctx context.Context, commands []recorded, stops []st
 	}
 
 	return fresh, held, nil
+}
+
+// interrupted is the refusal for a replay that stopped waiting. When its own
+// deadline, the caller's cancellation or a [Reversible.Stop] ended it, nothing is known
+// about the run, so it is unavailable; otherwise the session ended where it
+// should have stopped, which is a difference from the first visit.
+func interrupted(ctx context.Context, what, kind string, err error) error {
+	if ctx.Err() != nil {
+		return fmt.Errorf("unavailable: the replay %s (%w)", what, ctx.Err())
+	}
+
+	return fmt.Errorf("%s: the replay %s: %w", kind, what, err)
 }
 
 // diverged is the refusal for a replay that did not reproduce a stop.

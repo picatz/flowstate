@@ -27,6 +27,27 @@ type launches struct {
 	mu     sync.Mutex
 	done   []chan struct{}
 	finals map[int]v1.DebugRunState
+	steps  map[int]*atomic.Int64
+}
+
+// counting counts the steps a run finishes, so a test can tell whether a run it
+// stopped went on executing.
+type counting struct {
+	v1.RunObserver
+	finished *atomic.Int64
+}
+
+func (c counting) StepFinished(id string, outputs *v1.Node_Outputs, err error, tolerated bool) {
+	c.finished.Add(1)
+	c.RunObserver.StepFinished(id, outputs, err, tolerated)
+}
+
+// stepsOf is how many steps the nth launched run has finished.
+func (l *launches) stepsOf(n int) int64 {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	return l.steps[n].Load()
 }
 
 // launcher starts workflow under a fresh controlled session each time, the way
@@ -46,13 +67,18 @@ func (l *launches) launcher(workflow func(n int) *v1.Workflow, configure func(*f
 		}
 		runCtx, cancel := context.WithCancel(context.Background())
 		done := make(chan struct{})
+		finished := &atomic.Int64{}
 		l.mu.Lock()
 		l.done = append(l.done, done)
+		if l.steps == nil {
+			l.steps = map[int]*atomic.Int64{}
+		}
+		l.steps[n] = finished
 		l.mu.Unlock()
 		go func() {
 			defer close(done)
 			runCtx = v1.NewContextWithDebugger(runCtx, session)
-			runCtx = v1.NewContextWithRunObserver(runCtx, session)
+			runCtx = v1.NewContextWithRunObserver(runCtx, counting{RunObserver: session, finished: finished})
 			_, err := v1.RunWithInputs(runCtx, program, nil)
 			session.Finished(err)
 		}()
@@ -443,7 +469,9 @@ func TestRepeatedBackAndForthLeaksNothing(t *testing.T) {
 
 // TestARewoundRunDoesNotCarryOn: the run a rewind replaces is cancelled where it
 // stands. Released the other way round it would finish its remaining steps,
-// repeating every effect they have, after the person asked to go back.
+// repeating every effect they have, after the person asked to go back. The
+// count of steps the replaced run finished is the evidence: it must not move
+// once the rewind returns.
 func TestARewoundRunDoesNotCarryOn(t *testing.T) {
 	t.Parallel()
 
@@ -454,12 +482,150 @@ func TestARewoundRunDoesNotCarryOn(t *testing.T) {
 	for range 3 {
 		at = run.move(at, v1.DebugResumeAction_DEBUG_RESUME_ACTION_STEP_IN)
 	}
+	before := run.launches.stepsOf(0)
+	require.Positive(t, before)
+
 	receipt, _ := run.back(0)
 	require.Equal(t, appliedStatus, receipt.GetStatus(), receipt.GetMessage())
 
-	run.launches.mu.Lock()
-	defer run.launches.mu.Unlock()
-	final, ok := run.launches.finals[0]
-	require.True(t, ok, "the replaced run was not stopped")
-	assert.NotEqual(t, v1.DebugRunState_DEBUG_RUN_STATE_COMPLETED, final, "the replaced run was let finish")
+	assert.Equal(t, before, run.launches.stepsOf(0), "the replaced run went on executing steps")
+}
+
+// stallingReplay wraps a launcher so its first launch is the real one and every later
+// launch, the replay a rewind starts, waits until it is told to give up. attempts
+// counts the launches asked for.
+func stallingReplay(inner flowdebug.Launcher, attempts *atomic.Int64) flowdebug.Launcher {
+	return func(ctx context.Context) (*flowdebug.Run, error) {
+		if attempts.Add(1) > 1 {
+			<-ctx.Done()
+
+			return nil, ctx.Err()
+		}
+
+		return inner(ctx)
+	}
+}
+
+// TestAReplayThatStallsIsBoundedAndHarmless: a rewind whose replay never gets
+// going gives up at the replay limit and says it is unavailable, the run being
+// debugged is where it was and still moves, and nothing is left behind.
+func TestAReplayThatStallsIsBoundedAndHarmless(t *testing.T) {
+	t.Parallel()
+
+	workflow := parseJourney(t)
+	l := &launches{}
+	var attempts atomic.Int64
+	target, err := flowdebug.NewReversible(t.Context(),
+		stallingReplay(l.launcher(func(int) *v1.Workflow { return workflow }, nil), &attempts),
+		flowdebug.WithReplayTimeout(300*time.Millisecond))
+	require.NoError(t, err)
+	t.Cleanup(target.Stop)
+	run := &reversing{t: t, target: target, launches: l}
+
+	one := run.first()
+	two := run.move(one, v1.DebugResumeAction_DEBUG_RESUME_ACTION_STEP_IN)
+	three := run.move(two, v1.DebugResumeAction_DEBUG_RESUME_ACTION_STEP_IN)
+
+	receipt, snapshot := run.back(0)
+	assert.Equal(t, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_REFUSED, receipt.GetStatus())
+	assert.Contains(t, receipt.GetMessage(), "unavailable")
+	assert.Equal(t, int64(2), attempts.Load())
+	assert.Equal(t, three.GetRevision(), snapshot.GetRevision())
+
+	// The command lock was released: the run still moves.
+	four := run.move(three, v1.DebugResumeAction_DEBUG_RESUME_ACTION_STEP_IN)
+	assert.NotEqual(t, shownAt(three).address, shownAt(four).address)
+}
+
+// TestStopIsSafeTwiceAndDuringARewind: stopping ends the current run once however
+// often it is called, and a rewind that is replaying when it is stopped gives
+// up at once rather than at its limit.
+func TestStopIsSafeTwiceAndDuringARewind(t *testing.T) {
+	t.Parallel()
+
+	workflow := parseJourney(t)
+	l := &launches{}
+	var attempts atomic.Int64
+	target, err := flowdebug.NewReversible(t.Context(),
+		stallingReplay(l.launcher(func(int) *v1.Workflow { return workflow }, nil), &attempts))
+	require.NoError(t, err)
+	run := &reversing{t: t, target: target, launches: l}
+
+	one := run.first()
+	two := run.move(one, v1.DebugResumeAction_DEBUG_RESUME_ACTION_STEP_IN)
+	run.move(two, v1.DebugResumeAction_DEBUG_RESUME_ACTION_STEP_IN)
+
+	answered := make(chan *v1.DebugReceipt, 1)
+	go func() {
+		receipt, err := target.Back(context.Background(), run.id("back"), 0)
+		if err != nil {
+			receipt = &v1.DebugReceipt{Message: err.Error()}
+		}
+		answered <- receipt
+	}()
+	require.Eventually(t, func() bool { return attempts.Load() == 2 }, 10*time.Second, 5*time.Millisecond,
+		"the rewind never started its replay")
+	target.Stop()
+	target.Stop()
+
+	select {
+	case receipt := <-answered:
+		assert.NotEqual(t, appliedStatus, receipt.GetStatus(), "a stopped session reported a rewind")
+	case <-time.After(10 * time.Second):
+		t.Fatal("a rewind interrupted by Stop never returned")
+	}
+	assert.Equal(t, int64(1), l.stopped.Load(), "the run was stopped other than exactly once")
+}
+
+// TestReadsDuringARewindNeverSeeTheReplacedRun: a reader racing a rewind gets
+// the rewound run or the one it replaced, never the replaced run's detached
+// end, and revisions it sees never go down.
+func TestReadsDuringARewindNeverSeeTheReplacedRun(t *testing.T) {
+	t.Parallel()
+
+	workflow := parseJourney(t)
+	run := newReversing(t, func(int) *v1.Workflow { return workflow }, nil)
+
+	var stop atomic.Bool
+	var wg sync.WaitGroup
+	problems := make(chan string, 16)
+	for range 4 {
+		wg.Go(func() {
+			var last uint64
+			for !stop.Load() {
+				snapshot, err := run.target.Snapshot(context.Background())
+				if err != nil {
+					problems <- err.Error()
+
+					return
+				}
+				if snapshot.GetState() == v1.DebugRunState_DEBUG_RUN_STATE_DETACHED {
+					problems <- "a detached snapshot was shown for a live session"
+
+					return
+				}
+				if snapshot.GetRevision() < last {
+					problems <- fmt.Sprintf("revision went from %d to %d", last, snapshot.GetRevision())
+
+					return
+				}
+				last = snapshot.GetRevision()
+			}
+		})
+	}
+
+	at := run.first()
+	for range 15 {
+		forward := run.move(at, v1.DebugResumeAction_DEBUG_RESUME_ACTION_STEP_IN)
+		_, back := run.back(0)
+		assert.Equal(t, shownAt(at), shownAt(back))
+		at = back
+		_ = forward
+	}
+	stop.Store(true)
+	wg.Wait()
+	close(problems)
+	for problem := range problems {
+		t.Error(problem)
+	}
 }
