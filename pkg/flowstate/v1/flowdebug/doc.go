@@ -81,6 +81,15 @@
 // message, and the per-driver table in docs/DEBUGGING.md is generated from the
 // cases.
 //
+// # Stepping back
+//
+// Replaying commands is also what makes a stop in a deterministic, stubbed run
+// reachable again: [Reversible] wraps a [Launcher] and answers [Reversible.Back]
+// by starting the run afresh, replaying the recorded commands to the previous
+// stop, and refusing, as diverged, any replay that does not show what the
+// first visit showed. No backend advertises `reverse` on its own; a host that
+// has stubbed every effect opts in by constructing one.
+//
 // # Local sessions and durable runs
 //
 // [v1.Debugger] is a local-driver seam, like [v1.Scheduler] and
