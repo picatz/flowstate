@@ -540,6 +540,73 @@ message Workflow {
     (google.api.field_behavior) = OPTIONAL,
     (buf.validate.field).string = {max_len: 128}
   ];
+
+  // DeclaredTypes are the record types this workflow names, so a declaration
+  // can say `type: Order` and every consumer of the specification reads one
+  // definition.
+  //
+  // A type is declared once and referred to by name, from an input, an output,
+  // another type's field, or inside `list(...)` and `map(string, ...)`, which is
+  // [Type.message]. The definition travels in the specification like a called
+  // workflow does, so a run that started with one meaning of `Order` ends with
+  // that meaning on its last Continue-As-New segment however the file changes.
+  //
+  // The list is bounded here and its expansion is bounded again by the compiler,
+  // because a name referenced from many places is a breadth multiplier: the
+  // bound that matters is total nodes, not the number of names. See
+  // [TypeDeclaration].
+  repeated TypeDeclaration declared_types = 20 [
+    (google.api.field_behavior) = OPTIONAL,
+    (buf.validate.field).repeated = {max_items: 64}
+  ];
+}
+
+// TypeDeclaration is a named record type: a closed set of named fields, each
+// declared exactly as an input is.
+//
+// A field is an [InputDeclaration] on purpose. An author who can declare an
+// input can declare a field, a field is checked by the same functions that check
+// an input (its type, its `values`, its `must`, its length and item bounds), and
+// a rule added to inputs reaches fields without a second implementation. The
+// record is closed: a value carrying a name the type does not declare is
+// refused, because an open record is what `map(string, dyn)` already is.
+//
+// A value of a record type is a map at run time, keyed by field name, so a
+// reader that does not know the type (an older worker, a CEL expression the
+// checker could not narrow) reads exactly what it reads for a `struct`.
+//
+// A type may refer to itself only through other declarations' absence: a cycle,
+// directly or through other types, is refused, because a value has no bound until
+// a recursive type has one.
+message TypeDeclaration {
+  // Name is what the type is called: `type: <name>`, and the [Type.message] of
+  // every declaration that uses it. Capitalised and an identifier, so it cannot be
+  // spelled like a scalar (`string`), a legacy word (`struct`) or a field.
+  string name = 1 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field).string = {
+      min_len: 1
+      max_len: 128
+      pattern: "^[A-Z][A-Za-z0-9_]*$"
+    }
+  ];
+
+  // Description is prose for whoever reads the type: an editor's hover, a
+  // generated reference, an agent choosing arguments.
+  optional string description = 2 [(buf.validate.field).string = {max_len: 256}];
+
+  // Fields are the record's members in the order they were written, which is the
+  // order every report of them uses. Each name is unique within the type.
+  //
+  // `default`, `example` and `sensitive` are not carried by a field yet: a
+  // default would have to be applied inside a value, an example checked, and a
+  // sensitive field withheld wherever the record travels, and each of those is a
+  // decision that has not been made. A field that sets one is refused rather
+  // than silently not enforced.
+  repeated InputDeclaration fields = 3 [
+    (buf.validate.field).repeated = {max_items: 64}
+  ];
 }
 
 // Concurrency is "at most one run of this workflow per key", answered at submit.
@@ -851,7 +918,7 @@ message InputDeclaration {
   option (buf.validate.message).cel = {
     id: "input_declaration.type_agrees"
     message: "value_type and the legacy type must describe the same input type when both are set"
-    expression: "!has(this.value_type) || this.type == 0 || (this.type == 1 && this.value_type.scalar == 1) || (this.type == 2 && this.value_type.scalar == 2) || (this.type == 3 && this.value_type.scalar == 3) || (this.type == 4 && this.value_type.scalar == 4) || (this.type == 5 && has(this.value_type.map)) || (this.type == 6 && has(this.value_type.list)) || (this.type == 9 && this.value_type.enum)"
+    expression: "!has(this.value_type) || this.type == 0 || (this.type == 1 && this.value_type.scalar == 1) || (this.type == 2 && this.value_type.scalar == 2) || (this.type == 3 && this.value_type.scalar == 3) || (this.type == 4 && this.value_type.scalar == 4) || (this.type == 5 && (has(this.value_type.map) || has(this.value_type.message))) || (this.type == 6 && has(this.value_type.list)) || (this.type == 9 && this.value_type.enum)"
   };
 
   // Type is the legacy declaration vocabulary. Edition-aware specifications use
@@ -1189,7 +1256,7 @@ message OutputDeclaration {
   option (buf.validate.message).cel = {
     id: "output_declaration.type_agrees"
     message: "value_type and the legacy type must describe the same output type when both are set"
-    expression: "!has(this.value_type) || this.type == 0 || (this.type == 1 && this.value_type.scalar == 1) || (this.type == 2 && this.value_type.scalar == 2) || (this.type == 3 && this.value_type.scalar == 3) || (this.type == 4 && this.value_type.scalar == 4) || (this.type == 5 && has(this.value_type.map)) || (this.type == 6 && has(this.value_type.list)) || (this.type == 9 && this.value_type.enum)"
+    expression: "!has(this.value_type) || this.type == 0 || (this.type == 1 && this.value_type.scalar == 1) || (this.type == 2 && this.value_type.scalar == 2) || (this.type == 3 && this.value_type.scalar == 3) || (this.type == 4 && this.value_type.scalar == 4) || (this.type == 5 && (has(this.value_type.map) || has(this.value_type.message))) || (this.type == 6 && has(this.value_type.list)) || (this.type == 9 && this.value_type.enum)"
   };
 
   // Name is what the value is called in the run's result.

@@ -644,7 +644,9 @@ func readsSteps(slot v1.ValueSlot) bool {
 		v1.SlotWebhookSignalCorrelate,
 		v1.SlotWebhookSignalArgument,
 		v1.SlotInputDefault,
-		v1.SlotInputExample:
+		v1.SlotInputExample,
+		v1.SlotTypeFieldDefault,
+		v1.SlotTypeFieldExample:
 		return false
 	default:
 		return true

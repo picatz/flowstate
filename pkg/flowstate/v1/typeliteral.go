@@ -13,18 +13,19 @@ import (
 //
 // It is the container half of [checkDeclaredLiteralType], which judges only the
 // outermost kind through the legacy enum. A nil t, `dyn`, an enum (whose members
-// are the constraints' business, see [StringShaped]) and a message (no literal
-// spelling yet) accept anything, because the type promises nothing a literal can
+// are the constraints' business, see [StringShaped]) accept anything, as does a
+// message when table is nil; with one, a message is a record and is judged by
+// [TypeTable.checkRecord], because the type promises nothing a literal can
 // break.
 //
 // Bounded by [MaxStructureDepth] in the type, so a hand-built type that points
 // back at itself ends the walk instead of the stack. Work is bounded by the
 // literal, which the caller has already sized.
-func checkLiteralShape(t *Type, literal *expr.Value) error {
-	return checkLiteralShapeAt(t, literal, "", 0)
+func checkLiteralShape(table TypeTable, t *Type, literal *expr.Value) error {
+	return checkLiteralShapeAt(table, t, literal, "", 0)
 }
 
-func checkLiteralShapeAt(t *Type, literal *expr.Value, path string, depth int) error {
+func checkLiteralShapeAt(table TypeTable, t *Type, literal *expr.Value, path string, depth int) error {
 	if depth > MaxStructureDepth {
 		return nil
 	}
@@ -44,7 +45,7 @@ func checkLiteralShapeAt(t *Type, literal *expr.Value, path string, depth int) e
 			return mismatch()
 		}
 		for i, element := range list.ListValue.GetValues() {
-			if err := checkLiteralShapeAt(kind.List, element, fmt.Sprintf("%s[%d]", path, i), depth+1); err != nil {
+			if err := checkLiteralShapeAt(table, kind.List, element, fmt.Sprintf("%s[%d]", path, i), depth+1); err != nil {
 				return err
 			}
 		}
@@ -58,10 +59,12 @@ func checkLiteralShapeAt(t *Type, literal *expr.Value, path string, depth int) e
 			if !isString {
 				return fmt.Errorf("a map with %s key%s", literalKindName(entry.GetKey()), atPath(path))
 			}
-			if err := checkLiteralShapeAt(kind.Map.GetValue(), entry.GetValue(), path+"."+key.StringValue, depth+1); err != nil {
+			if err := checkLiteralShapeAt(table, kind.Map.GetValue(), entry.GetValue(), path+"."+key.StringValue, depth+1); err != nil {
 				return err
 			}
 		}
+	case *Type_Message:
+		return table.checkRecord(kind.Message, literal, path, depth)
 	}
 
 	return nil

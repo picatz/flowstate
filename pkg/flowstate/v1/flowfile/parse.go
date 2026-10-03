@@ -84,7 +84,7 @@ const stepsKey = "steps"
 // misspelled `timout:` that is silently ignored does nothing at run time and gives
 // the author no reason to doubt it, which is the worst of both outcomes.
 var (
-	workflowKeys = []string{"edition", "name", "labels", "description", "inputs", "outputs", "vars", "steps", "triggers", "signals", "debug", "concurrency", "plugins"}
+	workflowKeys = []string{"edition", "name", "labels", "description", "types", "inputs", "outputs", "vars", "steps", "triggers", "signals", "debug", "concurrency", "plugins"}
 
 	// The keys of one input declaration and of one output declaration. Both are
 	// mappings keyed by the name being declared, so these are the keys *under* a
@@ -663,6 +663,10 @@ type compiler struct {
 	// so far in this file's whole call tree, shared by pointer with every
 	// nested compile — see [maxCallExpansionNodes].
 	callBudget *int
+
+	// typeNames are the record types this file declares, known before any
+	// declaration that might name one is read. See [compiler.declaredTypes].
+	typeNames map[string]bool
 }
 
 // enter accounts for descending into one more value, and reports whether the
@@ -879,11 +883,18 @@ func (c *compiler) compile(file *ast.File) *v1.Workflow {
 		}
 	}
 
+	// The record types the file names, read before anything that can use one: an
+	// input or an output says `type: Order`, and the name has to be known to
+	// read it. See flowfile/types.go.
+	if f, found := fields.get("types"); found {
+		workflow.DeclaredTypes = c.declaredTypes(f.value, "types", ref{path: "types", label: "types"})
+	}
+
 	// What the run takes, read first because it is what a reader meets first: a
 	// declaration is in scope for everything below it, and nothing below it can
 	// change what it says.
 	if f, found := fields.get("inputs"); found {
-		workflow.DeclaredInputs = c.declaredInputs(f.value, "inputs", ref{path: "inputs", label: "inputs"})
+		workflow.DeclaredInputs = c.declaredInputs(f.value, "inputs", ref{path: "inputs", label: "inputs"}, "input")
 	}
 
 	// How the workflow starts on its own, read after what it takes and before what
@@ -985,7 +996,7 @@ func (c *compiler) pluginRequirements(n ast.Node, path string, r ref) []*v1.Plug
 // carrying one — belongs to [Validate], which sees the compiled workflow and can
 // answer for all of them at once. What is decided here is only what one declaration
 // says.
-func (c *compiler) declaredInputs(n ast.Node, path string, r ref) []*v1.InputDeclaration {
+func (c *compiler) declaredInputs(n ast.Node, path string, r ref, noun string) []*v1.InputDeclaration {
 	c.pos.record(path, spanOfNode(c.resolveQuiet(n)))
 
 	entries, ok := c.entries(n, path, r)
@@ -995,7 +1006,7 @@ func (c *compiler) declaredInputs(n ast.Node, path string, r ref) []*v1.InputDec
 
 	declarations := make([]*v1.InputDeclaration, 0, len(entries))
 	for _, e := range entries {
-		if declaration := c.declaredInput(e, path); declaration != nil {
+		if declaration := c.declaredInput(e, path, noun); declaration != nil {
 			declarations = append(declarations, declaration)
 		}
 	}
@@ -1011,9 +1022,9 @@ func (c *compiler) declaredInputs(n ast.Node, path string, r ref) []*v1.InputDec
 }
 
 // declaredInput compiles one input declaration.
-func (c *compiler) declaredInput(e entry, parent string) *v1.InputDeclaration {
+func (c *compiler) declaredInput(e entry, parent, noun string) *v1.InputDeclaration {
 	path := fieldPath(parent, e.name)
-	r := ref{path: path, label: "input " + e.name}
+	r := ref{path: path, label: noun + " " + e.name}
 
 	c.pos.record(path, spanOfNode(c.resolveQuiet(e.value)))
 
@@ -1058,9 +1069,9 @@ func (c *compiler) declaredInput(e entry, parent string) *v1.InputDeclaration {
 
 	if f, found := fields.get("type"); found {
 		typePath := fieldPath(path, "type")
-		typeRef := ref{path: typePath, label: "input " + e.name + " type"}
+		typeRef := ref{path: typePath, label: noun + " " + e.name + " type"}
 		if text, ok := c.text(f.value, typePath, typeRef); ok {
-			declared, structural, err := declareType(text)
+			declared, structural, err := declareType(c.typeNames, text)
 			if err != nil {
 				c.report(spanOfNode(f.value), typeRef,
 					"is %q, which is not a type an input can have: %s; the types are %s, or a type expression such as list(string) or map(string, int)",
@@ -1082,13 +1093,13 @@ func (c *compiler) declaredInput(e entry, parent string) *v1.InputDeclaration {
 	if f, found := fields.get("values"); found {
 		valuesPath := fieldPath(path, "values")
 		declaration.Values = c.enumValues(f.value, valuesPath,
-			ref{path: valuesPath, label: "input " + e.name + " values"}, "input may hold")
+			ref{path: valuesPath, label: noun + " " + e.name + " values"}, "input may hold")
 	}
 
 	if f, found := fields.get("required"); found {
 		requiredPath := fieldPath(path, "required")
 		if required, ok := c.boolean(f.value, requiredPath,
-			ref{path: requiredPath, label: "input " + e.name + " required"}); ok {
+			ref{path: requiredPath, label: noun + " " + e.name + " required"}); ok {
 			declaration.Required = required
 		}
 	}
@@ -1101,13 +1112,13 @@ func (c *compiler) declaredInput(e entry, parent string) *v1.InputDeclaration {
 		// things a declaration says, so [Validate] reports it, where the sentence can
 		// explain why.
 		declaration.Default = c.inputValue(f.value, defaultPath,
-			ref{path: defaultPath, label: "input " + e.name + " default"})
+			ref{path: defaultPath, label: noun + " " + e.name + " default"})
 	}
 
 	if f, found := fields.get("description"); found {
 		descriptionPath := fieldPath(path, "description")
 		if description, ok := c.text(f.value, descriptionPath,
-			ref{path: descriptionPath, label: "input " + e.name + " description"}); ok {
+			ref{path: descriptionPath, label: noun + " " + e.name + " description"}); ok {
 			declaration.Description = proto.String(description)
 		}
 	}
@@ -1119,44 +1130,44 @@ func (c *compiler) declaredInput(e entry, parent string) *v1.InputDeclaration {
 		// declaration's own type and constraints — see [Validate] — so it stays a
 		// value rather than an expression for the identical reason a default does.
 		declaration.Example = c.inputValue(f.value, examplePath,
-			ref{path: examplePath, label: "input " + e.name + " example"})
+			ref{path: examplePath, label: noun + " " + e.name + " example"})
 	}
 
 	if f, found := fields.get("sensitive"); found {
 		sensitivePath := fieldPath(path, "sensitive")
 		if sensitive, ok := c.boolean(f.value, sensitivePath,
-			ref{path: sensitivePath, label: "input " + e.name + " sensitive"}); ok {
+			ref{path: sensitivePath, label: noun + " " + e.name + " sensitive"}); ok {
 			declaration.Sensitive = sensitive
 		}
 	}
 
 	if f, found := fields.get("min_len"); found {
 		p := fieldPath(path, "min_len")
-		if v, ok := c.unsignedWhole(f.value, p, ref{path: p, label: "input " + e.name + " min_len"}); ok {
+		if v, ok := c.unsignedWhole(f.value, p, ref{path: p, label: noun + " " + e.name + " min_len"}); ok {
 			declaration.MinLen = proto.Uint64(v)
 		}
 	}
 	if f, found := fields.get("max_len"); found {
 		p := fieldPath(path, "max_len")
-		if v, ok := c.unsignedWhole(f.value, p, ref{path: p, label: "input " + e.name + " max_len"}); ok {
+		if v, ok := c.unsignedWhole(f.value, p, ref{path: p, label: noun + " " + e.name + " max_len"}); ok {
 			declaration.MaxLen = proto.Uint64(v)
 		}
 	}
 	if f, found := fields.get("min_items"); found {
 		p := fieldPath(path, "min_items")
-		if v, ok := c.unsignedWhole(f.value, p, ref{path: p, label: "input " + e.name + " min_items"}); ok {
+		if v, ok := c.unsignedWhole(f.value, p, ref{path: p, label: noun + " " + e.name + " min_items"}); ok {
 			declaration.MinItems = proto.Uint64(v)
 		}
 	}
 	if f, found := fields.get("max_items"); found {
 		p := fieldPath(path, "max_items")
-		if v, ok := c.unsignedWhole(f.value, p, ref{path: p, label: "input " + e.name + " max_items"}); ok {
+		if v, ok := c.unsignedWhole(f.value, p, ref{path: p, label: noun + " " + e.name + " max_items"}); ok {
 			declaration.MaxItems = proto.Uint64(v)
 		}
 	}
 	if f, found := fields.get("must"); found {
 		p := fieldPath(path, "must")
-		if v, ok := c.text(f.value, p, ref{path: p, label: "input " + e.name + " must"}); ok {
+		if v, ok := c.text(f.value, p, ref{path: p, label: noun + " " + e.name + " must"}); ok {
 			declaration.Must = proto.String(v)
 		}
 	}
@@ -1287,7 +1298,7 @@ func (c *compiler) declaredOutput(e entry, parent string) *v1.OutputDeclaration 
 		typePath := fieldPath(path, "type")
 		typeRef := ref{path: typePath, label: "output " + e.name + " type"}
 		if text, ok := c.text(f.value, typePath, typeRef); ok {
-			declared, structural, err := declareType(text)
+			declared, structural, err := declareType(c.typeNames, text)
 			if err != nil {
 				c.report(spanOfNode(f.value), typeRef,
 					"is %q, which is not a type an output can have: %s; the types are %s, or a type expression such as list(string) or map(string, int)",

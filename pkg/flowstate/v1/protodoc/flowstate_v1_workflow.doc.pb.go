@@ -409,6 +409,23 @@ func init() {
 				" compiled from names a different program, and its lines are not used.\n",
 		},
 		{
+			Name: "flowstate.v1.Workflow.declared_types",
+			Leading: " DeclaredTypes are the record types this workflow names, so a declaration\n" +
+				" can say `type: Order` and every consumer of the specification reads one\n" +
+				" definition.\n" +
+				"\n" +
+				" A type is declared once and referred to by name, from an input, an output,\n" +
+				" another type's field, or inside `list(...)` and `map(string, ...)`, which is\n" +
+				" [Type.message]. The definition travels in the specification like a called\n" +
+				" workflow does, so a run that started with one meaning of `Order` ends with\n" +
+				" that meaning on its last Continue-As-New segment however the file changes.\n" +
+				"\n" +
+				" The list is bounded here and its expansion is bounded again by the compiler,\n" +
+				" because a name referenced from many places is a breadth multiplier: the\n" +
+				" bound that matters is total nodes, not the number of names. See\n" +
+				" [TypeDeclaration].\n",
+		},
+		{
 			Name: "flowstate.v1.Workflow.StepOutputs",
 			Leading: " StepOutputs is a map of step IDs to their outputs. Each step's outputs are\n" +
 				" represented as a map of named values, allowing for structured outputs that\n" +
@@ -451,6 +468,48 @@ func init() {
 				" scope's visible outputs, one loop iteration's results, the outputs carried\n" +
 				" across a Continue-As-New), where it is simply never set. The run's own end is\n" +
 				" the only place anything writes it.\n",
+		},
+		{
+			Name: "flowstate.v1.TypeDeclaration",
+			Leading: " TypeDeclaration is a named record type: a closed set of named fields, each\n" +
+				" declared exactly as an input is.\n" +
+				"\n" +
+				" A field is an [InputDeclaration] on purpose. An author who can declare an\n" +
+				" input can declare a field, a field is checked by the same functions that check\n" +
+				" an input (its type, its `values`, its `must`, its length and item bounds), and\n" +
+				" a rule added to inputs reaches fields without a second implementation. The\n" +
+				" record is closed: a value carrying a name the type does not declare is\n" +
+				" refused, because an open record is what `map(string, dyn)` already is.\n" +
+				"\n" +
+				" A value of a record type is a map at run time, keyed by field name, so a\n" +
+				" reader that does not know the type (an older worker, a CEL expression the\n" +
+				" checker could not narrow) reads exactly what it reads for a `struct`.\n" +
+				"\n" +
+				" A type may refer to itself only through other declarations' absence: a cycle,\n" +
+				" directly or through other types, is refused, because a value has no bound until\n" +
+				" a recursive type has one.\n",
+		},
+		{
+			Name: "flowstate.v1.TypeDeclaration.name",
+			Leading: " Name is what the type is called: `type: <name>`, and the [Type.message] of\n" +
+				" every declaration that uses it. Capitalised and an identifier, so it cannot be\n" +
+				" spelled like a scalar (`string`), a legacy word (`struct`) or a field.\n",
+		},
+		{
+			Name: "flowstate.v1.TypeDeclaration.description",
+			Leading: " Description is prose for whoever reads the type: an editor's hover, a\n" +
+				" generated reference, an agent choosing arguments.\n",
+		},
+		{
+			Name: "flowstate.v1.TypeDeclaration.fields",
+			Leading: " Fields are the record's members in the order they were written, which is the\n" +
+				" order every report of them uses. Each name is unique within the type.\n" +
+				"\n" +
+				" `default`, `example` and `sensitive` are not carried by a field yet: a\n" +
+				" default would have to be applied inside a value, an example checked, and a\n" +
+				" sensitive field withheld wherever the record travels, and each of those is a\n" +
+				" decision that has not been made. A field that sets one is refused rather\n" +
+				" than silently not enforced.\n",
 		},
 		{
 			Name: "flowstate.v1.Concurrency",

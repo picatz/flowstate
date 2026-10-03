@@ -106,7 +106,7 @@ func checkExpressionTypes(wf *v1.Workflow, table *typeTable) Diagnostics {
 	v1.WalkWorkflow(wf, v1.Walk{
 		Value: func(site v1.ValueSite) {
 			switch site.Slot {
-			case v1.SlotInputDefault, v1.SlotInputExample:
+			case v1.SlotInputDefault, v1.SlotInputExample, v1.SlotTypeFieldDefault, v1.SlotTypeFieldExample:
 				// A declaration's own value is judged against the type the
 				// declaration states, by [v1.CheckInputValue] and
 				// [v1.CheckInputConstraints], which is a sharper answer than

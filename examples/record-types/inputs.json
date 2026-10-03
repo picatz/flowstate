@@ -1,0 +1,7 @@
+{
+  "order": {
+    "id": "o-1001",
+    "status": "paid",
+    "lines": [{"sku": "kb-01", "quantity": 2}]
+  }
+}

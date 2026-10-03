@@ -73,6 +73,16 @@ func Marshal(wf *v1.Workflow) ([]byte, error) {
 		doc = append(doc, yaml.MapItem{Key: "plugins", Value: plugins})
 	}
 
+	// The record types, above everything that can name one: the order the parser
+	// reads them in.
+	if len(wf.GetDeclaredTypes()) > 0 {
+		written, err := declaredTypesToYAML(wf.GetDeclaredTypes())
+		if err != nil {
+			return nil, err
+		}
+		doc = append(doc, yaml.MapItem{Key: "types", Value: written})
+	}
+
 	// What the run takes, above everything that reads it — the order the parser
 	// reads these in, and the order a reader meets them in.
 	if len(wf.GetDeclaredInputs()) > 0 {

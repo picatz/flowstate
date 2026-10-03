@@ -315,7 +315,7 @@ edition: v2026.3
 			name: "top level document keys",
 			src:  `|`,
 			exact: []string{
-				"edition", "name", "labels", "description", "inputs", "outputs", "vars",
+				"edition", "name", "labels", "description", "types", "inputs", "outputs", "vars",
 				"steps", "triggers", "signals", "debug", "concurrency", "plugins",
 			},
 		},
