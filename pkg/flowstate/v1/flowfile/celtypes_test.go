@@ -519,10 +519,10 @@ steps:
 name: callee
 steps:
   - id: a
-    value: ${3}
+    value: ${"abc"}
 outputs:
   count:
-    type: int
+    type: string
     value: ${steps.a.value}
 `)
 		caller := writeFile(t, dir, "caller.yaml", `edition: v2026.3
@@ -531,13 +531,13 @@ steps:
   - id: c
     call: ./callee.yaml
   - id: n
-    value: ${steps.c.count.startsWith("x")}
+    value: ${steps.c.count + 1}
 `)
 
 		ds, err := flowfile.ValidateSourceFile(caller)
 		require.NoError(t, err)
 		require.NotEmpty(t, ds)
-		assert.Contains(t, ds.Error(), "startsWith")
+		assert.Contains(t, ds.Error(), "no matching overload")
 	})
 }
 
@@ -655,10 +655,10 @@ func TestAnOutputNamedValueIsTypedByItsStep(t *testing.T) {
 name: callee
 steps:
   - id: a
-    value: ${3}
+    value: ${"abc"}
 outputs:
   value:
-    type: int
+    type: string
     value: ${steps.a.value}
 `)
 	caller := writeFile(t, dir, "caller.yaml", `edition: v2026.3
@@ -667,11 +667,43 @@ steps:
   - id: c
     call: ./callee.yaml
   - id: n
-    value: ${steps.c.value.startsWith("x")}
+    value: ${steps.c.value + 1}
 `)
 
 	ds, err := flowfile.ValidateSourceFile(caller)
 	require.NoError(t, err)
 	require.NotEmpty(t, ds)
-	assert.Contains(t, ds.Error(), "startsWith")
+	assert.Contains(t, ds.Error(), "no matching overload")
+}
+
+// A callee that declares `int` may store a `uint`, which the declaration check
+// accepts as an int, so the caller's checker must not hold the output to `int`.
+func TestAnIntCallOutputIsNotHeldToIntArithmetic(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeFile(t, dir, "callee.yaml", `edition: v2026.3
+name: callee
+steps:
+  - id: n
+    value: ${uint(7)}
+outputs:
+  u:
+    type: int
+    value: ${steps.n.value}
+`)
+	caller := writeFile(t, dir, "caller.yaml", `edition: v2026.3
+name: caller
+steps:
+  - id: c
+    call: ./callee.yaml
+  - id: m
+    value: ${steps.c.u + 1u}
+`)
+
+	ds, err := flowfile.ValidateSourceFile(caller)
+	require.NoError(t, err)
+	for _, d := range ds {
+		assert.NotEqual(t, v1.DiagnosticCodeTypeMismatch, d.Code, "%v", d)
+	}
 }

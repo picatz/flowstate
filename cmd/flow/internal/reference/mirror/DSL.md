@@ -685,7 +685,7 @@ null (`has(inputs.x)` asks whether it was given).
 states.** `steps.get.status_code` on an `http` step is an `int`, `headers` a `map(string,
 string)` and `body` a `string`, so `steps.get.status_code == "200"` and
 `steps.get.headers["X-Count"] + 1` are refused where they are written rather than at the
-step that reads them. A `call:` step's declared outputs have their declared `type:`,
+step that reads them. A `call:` step's declared outputs have their declared `type:` (except `int`, which a callee may fill with a `uint`),
 which both drivers already enforce on the callee's answer, and a wait's `timed_out` is a
 bool and its batch `count` an int. Each is the type the run stores, not the type the
 schema spells (the same projection `flow tasks` describes), and anything the definition

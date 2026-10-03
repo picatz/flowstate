@@ -130,7 +130,15 @@ func OutputNames(node *Node, tasks *Registry) (names []NamedOutput, ok bool) {
 			if p := d.GetDescription(); p != "" {
 				desc = p
 			}
-			out = append(out, NamedOutput{Name: d.GetName(), Description: desc, Type: TypeOfLegacy(d.GetType())})
+			named := NamedOutput{Name: d.GetName(), Description: desc, Type: TypeOfLegacy(d.GetType())}
+			if d.GetType() == InputDeclaration_TYPE_INT {
+				// [CheckOutputValue] reads a `uint` as satisfying `int`, so a callee
+				// that declares `int` may store one, and `int` would refuse the
+				// `uint` arithmetic that runs. Until the numeric model decides, it
+				// is not known.
+				named.Type = nil
+			}
+			out = append(out, named)
 		}
 		return out, true
 
