@@ -52,9 +52,13 @@ import (
 //     after it. A reference to a later step, or to one inside a loop body, is the
 //     reference walk's to report, and typing it would add a second, spurious
 //     complaint about the same reference.
-//   - Only a `value:` step's `value` is typed, because it is the one output whose
-//     type is the checker's own answer. A task's outputs come from descriptors
-//     and an author-shaped `outputs:` from their expressions, both later slices.
+//   - A name is typed only where its own definition states one
+//     ([v1.NamedOutput.Type]): a `value:` step's `value`, which is the checker's
+//     own answer; a task's declared field, which is what the run stores for it; a
+//     called workflow's declared output, which both drivers enforce; a wait's
+//     `timed_out` and `count`. A shaped `outputs:` computes its names from
+//     expressions, and a loop's, a switch's and a response body's say nothing
+//     further, so they stay `dyn`.
 //
 // The checker's answer for a `value:` step is exact. A value round-trips through
 // the run document as the CEL type it had (a timestamp, a duration, bytes and a
@@ -69,6 +73,10 @@ type typeTable struct {
 	// values are the top-level `value:` steps whose id is unique in the workflow,
 	// by id.
 	values map[string]*valueStep
+
+	// outputs are the top-level task, call and wait steps whose id is unique in the
+	// workflow, by id, with the type each of their named outputs holds.
+	outputs map[string]*stepOutputs
 
 	// owner is the index, among the workflow's top-level steps, of the top-level
 	// step that holds each step id (itself, for a top-level one). It is how a
@@ -96,12 +104,22 @@ type valueStep struct {
 	resolved bool
 }
 
+// stepOutputs are the typed outputs of one task, call or wait step.
+type stepOutputs struct {
+	// types are the CEL type of each output name the step's definition types.
+	types map[string]*cel.Type
+
+	// index is the step's place among the top-level steps.
+	index int
+}
+
 // newTypeTable reads a workflow's declarations and `value:` steps.
 func newTypeTable(wf *v1.Workflow) *typeTable {
 	table := &typeTable{
-		inputs: map[string]*cel.Type{},
-		values: map[string]*valueStep{},
-		owner:  map[string]int{},
+		inputs:  map[string]*cel.Type{},
+		values:  map[string]*valueStep{},
+		outputs: map[string]*stepOutputs{},
+		owner:   map[string]int{},
 	}
 
 	for _, declaration := range wf.GetDeclaredInputs() {
@@ -120,19 +138,54 @@ func newTypeTable(wf *v1.Workflow) *typeTable {
 		}})
 		if value, ok := top.GetKind().(*v1.Node_Value); ok {
 			table.values[top.GetId()] = &valueStep{value: value.Value, index: index}
+		} else if typed := typedOutputs(top); len(typed) > 0 {
+			table.outputs[top.GetId()] = &stepOutputs{types: typed, index: index}
 		}
 	}
 	for id, count := range seen {
 		if count > 1 {
 			delete(table.values, id)
+			delete(table.outputs, id)
 		}
 	}
 
 	return table
 }
 
+// typedOutputs are the output names of a task, call or wait step that its own
+// definition gives a type, by [v1.OutputNames]: the one answer to what a step
+// exposes, so this reads no descriptor or declaration of its own. Nil for any
+// other kind, and for a step whose names the file cannot know.
+func typedOutputs(node *v1.Node) map[string]*cel.Type {
+	switch node.GetKind().(type) {
+	case *v1.Node_Task, *v1.Node_Call, *v1.Node_Wait:
+	default:
+		return nil
+	}
+
+	names, ok := v1.OutputNames(node, nil)
+	if !ok {
+		return nil
+	}
+
+	var typed map[string]*cel.Type
+	for _, named := range names {
+		if named.Name == "" || v1.IsDyn(named.Type) {
+			continue
+		}
+		if known := knownType(v1.CELType(named.Type)); known != nil {
+			if typed == nil {
+				typed = map[string]*cel.Type{}
+			}
+			typed[named.Name] = known
+		}
+	}
+
+	return typed
+}
+
 // leavesFor returns the typed declarations an expression can use: for each
-// `inputs.<name>` and `steps.<id>.value` it selects that the file states a type
+// `inputs.<name>` and `steps.<id>.<name>` it selects that the file states a type
 // for, the qualified name and the type.
 //
 // before is how many top-level steps are visible from where the expression is
@@ -164,15 +217,24 @@ func (t *typeTable) leavesFor(parsed *expr.ParsedExpr, before int) map[string]*c
 		}
 	}
 	for _, ref := range rooted {
-		if ref.Output != "value" {
-			continue
-		}
-		if typed := t.valueType(ref.ID, before); typed != nil {
-			add(v1.StepsRoot+"."+ref.ID+".value", typed)
+		if typed := t.outputType(ref.ID, ref.Output, before); typed != nil {
+			add(v1.StepsRoot+"."+ref.ID+"."+ref.Output, typed)
 		}
 	}
 
 	return leaves
+}
+
+// outputType is the type of `steps.<id>.<output>`, or nil where it is not known.
+func (t *typeTable) outputType(id, output string, before int) *cel.Type {
+	if output == v1.ValueOutput {
+		return t.valueType(id, before)
+	}
+	if step, ok := t.outputs[id]; ok && step.index < before {
+		return step.types[output]
+	}
+
+	return nil
 }
 
 // valueType is the type of `steps.<id>.value`, or nil where it is not known: not a

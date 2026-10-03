@@ -86,9 +86,10 @@ steps:
   - id: a
     http:
       url: https://example.com
+      parse_json: true
   - id: b
     log:
-      message: ${steps.a.body.something.deeper}
+      message: ${steps.a.json.something.deeper}
 `,
 		},
 		{

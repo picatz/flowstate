@@ -679,8 +679,20 @@ an `optional` — and a name the file does not declare at all is the reference w
 report, in its own sentence. A `value:` step is typed only for a position written
 after it, which is the order a run evaluates in. One consequence worth knowing:
 `inputs.x == null` on a declared input is refused, because a declared input is never
-null (`has(inputs.x)` asks whether it was given). What a task's outputs, a loop's `as:` and a `call:`'s
-results carry is the rest of #1634.
+null (`has(inputs.x)` asks whether it was given).
+
+*And a third time (#1643, #1383):* **a step's outputs carry the type its definition
+states.** `steps.get.status_code` on an `http` step is an `int`, `headers` a `map(string,
+string)` and `body` a `string`, so `steps.get.status_code == "200"` and
+`steps.get.headers["X-Count"] + 1` are refused where they are written rather than at the
+step that reads them. A `call:` step's declared outputs have their declared `type:`,
+which both drivers already enforce on the callee's answer, and a wait's `timed_out` is a
+bool and its batch `count` an int. Each is the type the run stores, not the type the
+schema spells (the same projection `flow tasks` describes), and anything the definition
+leaves open stays `dyn`: a response's `json`, an `outputs:` the step shapes itself, an
+output with no declared `type:`, a loop's `results`. Like a `value:` step, a task, call or
+wait is typed only for positions written after it, and only when its id is unique. What a
+loop's `as:` carries is the rest of #1634.
 
 ### `state:` gets a byte bound now, not an open question
 

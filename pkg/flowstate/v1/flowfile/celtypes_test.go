@@ -447,3 +447,200 @@ func TestCyclicDeclarationTypeIsBounded(t *testing.T) {
 
 	assert.NotPanics(t, func() { _ = flowfile.Validate(wf) })
 }
+
+// TestTaskAndCallOutputsAreTyped: a task's declared fields and a called workflow's
+// declared outputs reach later expressions with their types (#1383, #1643). Each
+// file is refused by the checker, where it used to run until the step read it.
+func TestTaskAndCallOutputsAreTyped(t *testing.T) {
+	t.Parallel()
+
+	const http = `edition: v2026.3
+name: t
+steps:
+  - id: get
+    http:
+      method: GET
+      url: https://example.com
+`
+
+	for _, test := range []struct {
+		name     string
+		source   string
+		contains string
+	}{
+		{
+			name: "an http status compared with a string",
+			source: http + `  - id: n
+    value: ${steps.get.status_code == "200"}
+`,
+			contains: "no matching overload",
+		},
+		{
+			name: "an http status used as a condition",
+			source: http + `  - id: a
+    if: ${steps.get.status_code}
+    log:
+      message: hi
+`,
+			contains: "must be a bool, but it is typed int",
+		},
+		{
+			name: "an http body treated as a map",
+			source: http + `  - id: n
+    value: ${steps.get.body.size() + steps.get.status_code.size()}
+`,
+			contains: "size",
+		},
+		{
+			name: "an http header read as a number",
+			source: http + `  - id: n
+    value: ${steps.get.headers["X-Count"] + 1}
+`,
+			contains: "no matching overload",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			ds := validateSource(t, test.source)
+			require.NotEmpty(t, ds, "validate said ok to a file that cannot run")
+			assert.Contains(t, ds.Error(), test.contains)
+			for _, d := range ds {
+				assert.Equal(t, v1.DiagnosticCodeTypeMismatch, d.Code, "%v", d)
+			}
+		})
+	}
+
+	t.Run("a called workflow's declared output", func(t *testing.T) {
+		t.Parallel()
+
+		dir := t.TempDir()
+		writeFile(t, dir, "callee.yaml", `edition: v2026.3
+name: callee
+steps:
+  - id: a
+    value: ${3}
+outputs:
+  count:
+    type: int
+    value: ${steps.a.value}
+`)
+		caller := writeFile(t, dir, "caller.yaml", `edition: v2026.3
+name: caller
+steps:
+  - id: c
+    call: ./callee.yaml
+  - id: n
+    value: ${steps.c.count.startsWith("x")}
+`)
+
+		ds, err := flowfile.ValidateSourceFile(caller)
+		require.NoError(t, err)
+		require.NotEmpty(t, ds)
+		assert.Contains(t, ds.Error(), "startsWith")
+	})
+}
+
+// TestTaskAndCallOutputsStaySilentWhereNothingIsKnown is the direction that would
+// refuse a file that runs. Each of these reads an output the definition says
+// nothing about, or one the step does not have in scope.
+func TestTaskAndCallOutputsStaySilentWhereNothingIsKnown(t *testing.T) {
+	t.Parallel()
+
+	for name, source := range map[string]string{
+		"a response json is dyn": `edition: v2026.3
+name: t
+steps:
+  - id: get
+    http:
+      method: GET
+      url: https://example.com
+      parse_json: true
+  - id: n
+    value: ${steps.get.json.items[0].id + 1}
+`,
+		"a shaped output is the author's expression": `edition: v2026.3
+name: t
+steps:
+  - id: get
+    http:
+      method: GET
+      url: https://example.com
+      outputs:
+        code: ${response.status_code}
+  - id: n
+    value: ${steps.get.code.startsWith("2")}
+`,
+		"a status compared with an int": `edition: v2026.3
+name: t
+steps:
+  - id: get
+    http:
+      method: GET
+      url: https://example.com
+  - id: n
+    value: ${steps.get.status_code == 200 && steps.get.body.startsWith("{")}
+`,
+		"a header read as a string": `edition: v2026.3
+name: t
+steps:
+  - id: get
+    http:
+      method: GET
+      url: https://example.com
+  - id: n
+    value: ${steps.get.headers["Content-Type"].startsWith("text")}
+`,
+		"a forward read of a task output": `edition: v2026.3
+name: t
+steps:
+  - id: early
+    value: ${steps.get.status_code.size()}
+  - id: get
+    http:
+      method: GET
+      url: https://example.com
+`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			ds := validateSource(t, source)
+			for _, d := range ds {
+				assert.NotEqual(t, v1.DiagnosticCodeTypeMismatch, d.Code,
+					"a file that runs was refused: %v", d)
+			}
+		})
+	}
+}
+
+// A declared output with no `type:` promised nothing, so a caller's read of it is
+// as free as it always was.
+func TestUntypedCallOutputStaysDyn(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeFile(t, dir, "callee.yaml", `edition: v2026.3
+name: callee
+steps:
+  - id: a
+    value: ${3}
+outputs:
+  count:
+    value: ${steps.a.value}
+`)
+	caller := writeFile(t, dir, "caller.yaml", `edition: v2026.3
+name: caller
+steps:
+  - id: c
+    call: ./callee.yaml
+  - id: n
+    value: ${steps.c.count.startsWith("x")}
+`)
+
+	ds, err := flowfile.ValidateSourceFile(caller)
+	require.NoError(t, err)
+	for _, d := range ds {
+		assert.NotEqual(t, v1.DiagnosticCodeTypeMismatch, d.Code, "%v", d)
+	}
+}
