@@ -15,6 +15,7 @@ import * as vscode from "vscode";
 import { LanguageClient, LanguageClientOptions, ServerOptions, TransportKind } from "vscode-languageclient/node";
 import { checkBinaryAvailable, resolveBinaryPath } from "./binary";
 import { commandTitle, flowCommandArgs, FlowCommandKind } from "./commandLine";
+import { adapterArgs, DebugConfig, resolveDebugConfig, withAbsoluteProgram } from "./debugConfig";
 
 let client: LanguageClient | undefined;
 let outputChannel: vscode.LogOutputChannel | undefined;
@@ -66,6 +67,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     );
   }
 
+  registerDebugType(context);
+
   // A change to either setting only takes effect for new runs — the LSP
   // connection is not torn down and rebuilt on every keystroke in Settings,
   // only when the user asks (restart command) or reloads the window, which
@@ -104,6 +107,57 @@ async function startLanguageClient(context: vscode.ExtensionContext): Promise<vo
     const detail = err instanceof Error ? err.message : String(err);
     await warnBinaryMissing(bin, `The language server failed to start: ${detail}`);
   }
+}
+
+// registerDebugType contributes the `flowstate` debug type: it starts
+// `flow dap`, which owns every debugger decision, and fills in the one thing a
+// launch configuration may leave out, the active file. The binary and the
+// adapter arguments come from machine-scoped settings, never from launch.json,
+// so a cloned repository can name a program to debug but not what executes.
+function registerDebugType(context: vscode.ExtensionContext): void {
+  context.subscriptions.push(
+    vscode.debug.registerDebugConfigurationProvider("flowstate", {
+      resolveDebugConfiguration(_folder, config): vscode.ProviderResult<vscode.DebugConfiguration> {
+        const editor = vscode.window.activeTextEditor;
+        const active = editor?.document.languageId === "flowfile" ? editor.document.uri.fsPath : undefined;
+        const resolved = resolveDebugConfig(config as DebugConfig, active);
+        if (!resolved.ok) {
+          void vscode.window.showErrorMessage(resolved.message);
+          // Undefined abandons the launch; null would open launch.json
+          // instead, which cannot help when the file is the problem.
+          return undefined;
+        }
+        return resolved.config as vscode.DebugConfiguration;
+      },
+      // After VS Code has substituted ${file} and ${workspaceFolder}, so a
+      // path that is still relative is the user's own and means the folder.
+      resolveDebugConfigurationWithSubstitutedVariables(folder, config): vscode.ProviderResult<vscode.DebugConfiguration> {
+        return withAbsoluteProgram(config as DebugConfig, folder?.uri.fsPath) as vscode.DebugConfiguration;
+      },
+    }),
+    vscode.debug.registerDebugAdapterDescriptorFactory("flowstate", {
+      async createDebugAdapterDescriptor(): Promise<vscode.DebugAdapterDescriptor> {
+        const bin = configuredBinary();
+        const check = await checkBinaryAvailable(bin);
+        if (!check.ok) {
+          // Thrown rather than warned about: VS Code shows the message as the
+          // reason the session did not start, where a returned undefined
+          // would read as an adapter that crashed.
+          throw new Error(`Flowstate: could not run "${bin}". ${check.detail}`);
+        }
+        // Never started in the workspace: the settings are machine-scoped so a
+        // repository cannot choose what runs, and a relative path in them
+        // (`--task-policy tasks.yaml`) would resolve inside the repository
+        // being debugged and let it supply the policy that governs its own
+        // run. The extension's own storage directory holds nothing a
+        // repository wrote; the configuration's relative `program` is
+        // resolved against the workspace above instead.
+        const cwd = context.globalStorageUri.fsPath;
+        await vscode.workspace.fs.createDirectory(context.globalStorageUri);
+        return new vscode.DebugAdapterExecutable(bin, adapterArgs(config().get<string[]>("dap.args", [])), { cwd });
+      },
+    }),
+  );
 }
 
 // runFlowCommand is the entire body of every palette command: resolve the
