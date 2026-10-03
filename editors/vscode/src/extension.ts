@@ -15,7 +15,7 @@ import * as vscode from "vscode";
 import { LanguageClient, LanguageClientOptions, ServerOptions, TransportKind } from "vscode-languageclient/node";
 import { checkBinaryAvailable, resolveBinaryPath } from "./binary";
 import { commandTitle, flowCommandArgs, FlowCommandKind } from "./commandLine";
-import { adapterArgs, DebugConfig, resolveDebugConfig } from "./debugConfig";
+import { adapterArgs, DebugConfig, resolveDebugConfig, withAbsoluteProgram } from "./debugConfig";
 
 let client: LanguageClient | undefined;
 let outputChannel: vscode.LogOutputChannel | undefined;
@@ -117,10 +117,10 @@ async function startLanguageClient(context: vscode.ExtensionContext): Promise<vo
 function registerDebugType(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     vscode.debug.registerDebugConfigurationProvider("flowstate", {
-      resolveDebugConfiguration(folder, config): vscode.ProviderResult<vscode.DebugConfiguration> {
+      resolveDebugConfiguration(_folder, config): vscode.ProviderResult<vscode.DebugConfiguration> {
         const editor = vscode.window.activeTextEditor;
         const active = editor?.document.languageId === "flowfile" ? editor.document.uri.fsPath : undefined;
-        const resolved = resolveDebugConfig(config as DebugConfig, active, folder?.uri.fsPath);
+        const resolved = resolveDebugConfig(config as DebugConfig, active);
         if (!resolved.ok) {
           void vscode.window.showErrorMessage(resolved.message);
           // Undefined abandons the launch; null would open launch.json
@@ -128,6 +128,11 @@ function registerDebugType(context: vscode.ExtensionContext): void {
           return undefined;
         }
         return resolved.config as vscode.DebugConfiguration;
+      },
+      // After VS Code has substituted ${file} and ${workspaceFolder}, so a
+      // path that is still relative is the user's own and means the folder.
+      resolveDebugConfigurationWithSubstitutedVariables(folder, config): vscode.ProviderResult<vscode.DebugConfiguration> {
+        return withAbsoluteProgram(config as DebugConfig, folder?.uri.fsPath) as vscode.DebugConfiguration;
       },
     }),
     vscode.debug.registerDebugAdapterDescriptorFactory("flowstate", {

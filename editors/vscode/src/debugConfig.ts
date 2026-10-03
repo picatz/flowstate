@@ -29,14 +29,20 @@ export interface DebugConfig {
   [key: string]: unknown;
 }
 
-// absolutize resolves a path the launch configuration names against the folder
+// withAbsoluteProgram makes a relative `program` absolute against the folder
 // being debugged. The adapter does not run there (see extension.ts), so a
 // relative path would otherwise mean the adapter's own directory.
-function absolutize(file: string | undefined, folder: string | undefined): string | undefined {
-  if (file === undefined || file === "" || folder === undefined) {
-    return file;
+//
+// It runs on a configuration whose variables VS Code has already substituted:
+// the first resolve hook sees the literal `${file}` and `${workspaceFolder}/x`,
+// which look relative, and joining the folder onto them corrupts the path once
+// they are substituted.
+export function withAbsoluteProgram(config: DebugConfig, folder: string | undefined): DebugConfig {
+  const file = config.program;
+  if (typeof file !== "string" || file === "" || folder === undefined) {
+    return config;
   }
-  return isAbsolute(file) || win32.isAbsolute(file) ? file : resolve(folder, file);
+  return isAbsolute(file) || win32.isAbsolute(file) ? config : { ...config, program: resolve(folder, file) };
 }
 
 export type Resolved =
@@ -58,20 +64,12 @@ function isRunnable(file: string): boolean {
 // is not a Flowfile. An explicit `program` is never replaced: a configuration
 // that names one means that one, and a wrong path is the adapter's to refuse
 // with the compiler's own words.
-export function resolveDebugConfig(
-  config: DebugConfig,
-  activeFile: string | undefined,
-  folder?: string,
-): Resolved {
+export function resolveDebugConfig(config: DebugConfig, activeFile: string | undefined): Resolved {
   const request = config.request ?? "launch";
   if (request === "attach") {
     // Attach names a durable run, never a file; the optional `program` only
-    // maps lines; it is made absolute against the debugged folder and nothing more.
-    const attach: DebugConfig = { ...config, type: "flowstate", request, name: config.name ?? "Attach to a durable run" };
-    if (config.program !== undefined) {
-      attach.program = absolutize(config.program, folder);
-    }
-    return { ok: true, config: attach };
+    // maps lines and is left exactly as written.
+    return { ok: true, config: { ...config, type: "flowstate", request, name: config.name ?? "Attach to a durable run" } };
   }
   if (request !== "launch") {
     return { ok: false, message: `Flowstate: "${request}" is not a debug request; use "launch" or "attach".` };
@@ -96,7 +94,7 @@ export function resolveDebugConfig(
       type: "flowstate",
       request,
       name: config.name ?? "Debug this Flowfile",
-      program: absolutize(program, folder),
+      program,
     },
   };
 }

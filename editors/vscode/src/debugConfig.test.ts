@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { adapterArgs, resolveDebugConfig } from "./debugConfig";
+import { adapterArgs, resolveDebugConfig, withAbsoluteProgram } from "./debugConfig";
 
 test("the adapter command is `flow dap` followed by the machine-scoped arguments, in order", () => {
   assert.deepEqual(adapterArgs([]), ["dap"]);
@@ -81,21 +81,25 @@ test("an unknown request is refused by name", () => {
 });
 
 test("a relative program is resolved against the debugged folder, never left for the adapter's directory", () => {
-  const resolved = resolveDebugConfig({ request: "launch", program: "flows/workflow.yaml" }, undefined, "/repo");
-  assert.ok(resolved.ok);
-  assert.equal(resolved.config.program, "/repo/flows/workflow.yaml");
-
-  const attach = resolveDebugConfig(
-    { request: "attach", workflowId: "wf-1", program: "workflow.yaml" },
-    undefined,
-    "/repo",
+  assert.equal(withAbsoluteProgram({ program: "flows/workflow.yaml" }, "/repo").program, "/repo/flows/workflow.yaml");
+  // An attach's optional program is made absolute the same way.
+  assert.equal(
+    withAbsoluteProgram({ request: "attach", workflowId: "wf-1", program: "workflow.yaml" }, "/repo").program,
+    "/repo/workflow.yaml",
   );
-  assert.ok(attach.ok);
-  assert.equal(attach.config.program, "/repo/workflow.yaml");
 });
 
-test("an absolute program is left exactly as written", () => {
-  const resolved = resolveDebugConfig({ request: "launch", program: "/elsewhere/workflow.yaml" }, undefined, "/repo");
+test("an absolute program, or none, is left exactly as written", () => {
+  assert.equal(withAbsoluteProgram({ program: "/elsewhere/workflow.yaml" }, "/repo").program, "/elsewhere/workflow.yaml");
+  assert.equal(withAbsoluteProgram({ program: "C:\\flows\\workflow.yaml" }, "/repo").program, "C:\\flows\\workflow.yaml");
+  assert.equal("program" in withAbsoluteProgram({ workflowId: "wf-1" }, "/repo"), false);
+  assert.equal(withAbsoluteProgram({ program: "workflow.yaml" }, undefined).program, "workflow.yaml");
+});
+
+test("resolving before variable substitution never joins the folder onto a variable", () => {
+  // VS Code's first resolve hook sees `${file}` unsubstituted; that is why
+  // absolutizing happens in the hook that runs after substitution.
+  const resolved = resolveDebugConfig({ request: "launch", program: "${file}" }, undefined);
   assert.ok(resolved.ok);
-  assert.equal(resolved.config.program, "/elsewhere/workflow.yaml");
+  assert.equal(resolved.config.program, "${file}");
 });
