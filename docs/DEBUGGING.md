@@ -801,16 +801,59 @@ where it was. It crosses Continue-As-New with the run, and each occurrence says
 which segment it ran in. `--run-id` pins the chain by its first run id; unset,
 a session follows the current one.
 
+**What each driver does.** Both drivers sit behind one contract, and a
+snapshot's capabilities say what the one behind it does. The table below is
+generated from the conformance corpus that holds each driver to what it
+advertises: every capability is exercised against a local session and a durable
+run, and a driver that advertises one must apply the command while one that does
+not must refuse it by name. Regenerate it with `go test
+./pkg/flowstate/v1/internal/conformance -run
+TestTheDebuggingDocCapabilityTableIsTheCorpus -update`; the same test fails when
+it drifts.
+
+<!-- capabilities:start -->
+
+| Capability | What proves it | Local | Durable |
+| --- | --- | --- | --- |
+| `step_in` | `step` at a call enters the callee's first step | yes | yes |
+| `step_over` | `next` at a call runs the callee whole and stops after it | yes | yes |
+| `step_out` | `finish` inside a callee runs it to its end and stops after the call | yes | yes |
+| `pause` | `pause` is accepted by a session attached to the run | yes | yes |
+| `run_until` | `until third` runs to that step and stops there | yes | yes |
+| `conditional_breakpoints` | a breakpoint whose condition is false is passed, and the next breakpoint stops the run | yes | yes |
+| `hit_conditions` | a breakpoint with `== 2` stops at the step's second arrival only | yes | yes |
+| `logpoints` | a breakpoint with `log` records its message and does not stop the run | yes | no: says "logpoints are not supported" |
+| `failure_breakpoints` | failure mode `all` holds the run at a step whose failure `continue_on_error:` tolerates | yes | no: says "failure stops are not supported" |
+| `source_breakpoints` | a breakpoint on a source line stops at the step written there | yes | no: says "resolves no source lines" |
+| `inspect` | `inspect 1 + 1` evaluates against the held scope | yes | yes |
+| `value_expansion` | `expand [1, 2, 3]` lists the list's three children | yes | yes |
+| `observations` | a step that ran is reported between stops as finished | yes | yes |
+| `terminate` | `detach` releases the run and never ends it | no: says "the run continues" | no: says "the run continues" |
+| `reverse` | no resume action moves a run backwards | no: says "no resume action" | no: says "no resume action" |
+
+<!-- capabilities:end -->
+
+What the table cannot carry:
+
+- Local is a controlled session, the one every front but the console prompt
+  opens; the console reads `step`, `next`, `finish` and `until` as text, and a
+  local session offers source-line breakpoints only when a source map is known.
+- A durable condition, and every durable inspection, needs
+  `workload.debug_inspect`.
+- A refusal has two shapes. A failure stop is answered `unsupported` in the
+  receipt, and the breakpoint set is unchanged; a logpoint or a source line
+  arrives in a set that is applied, and is reported not armed in its own state.
+- A durable run resolves no source line itself. A client resolves a line to its
+  step, only through a source map that matches the run's program, and names the
+  step; `flow dap`'s attach has none.
+- `terminate` is offered by neither driver, and `reverse` by no backend. Nothing
+  in the contract ends a run, so the case exercises `detach`, which releases it;
+  the surface that started a local run ends it with `quit`.
+
 | | Local | Durable |
 | --- | --- | --- |
 | Where it stops | every step boundary, including parallel branches | every step boundary where the run has one position: top-level steps, called workflows, `loop:` bodies, `switch:` arms and sequential `for_each:` bodies |
-| `step`, `next`, `finish`, `until`, `pause` | yes | yes, at those boundaries |
-| Conditional and hit-count breakpoints | yes | yes; a condition needs `workload.debug_inspect` |
-| Logpoints (`log`) | yes | taken with the set, but reported not armed |
-| Failure stops (`catch`) | yes | refused as unsupported |
 | A breakpoint or `until` inside a `parallel:` branch or a concurrent `for_each:` | yes | the breakpoint is not armed and the `until` is refused |
-| Source-line breakpoints | when a source map is known | resolved by the client to a step, only through a source map that matches the run's program; `flow dap`'s attach has none |
-| `inspect`, `expand`, `scope` | yes | yes, while held, needing `workload.debug_inspect` |
 | Task notes (`NoteTask`) | yes | no |
 | Lease, holder, audit | none: it is your process | yes |
 | Ending the run | `quit` | never: `detach` and `quit` release it |
@@ -869,10 +912,109 @@ the command lines above. A custom task can report its own progress to whoever is
 watching with `v1.NoteTask`. [Embedding](EMBEDDING.md#debugging-an-embedded-run)
 has the example.
 
+## Adding a capability
+
+A feature is added once, in this order: a proto field, then a capability bit,
+then `Target` behavior on each driver (or an explicit unsupported), then a
+capability case, then one line in the DAP projection. Each step has one home
+and something that fails when it is skipped:
+
+1. The message or field in `proto/flowstate/v1/debug.proto`, which is the one
+   shape every front and both drivers share.
+2. A bit in `DebugCapabilities`, set only by the two constructors: the local
+   session's and `DurableDebugCapabilities`. A guard test refuses a third, so a
+   front reads capabilities from the snapshot it was given.
+3. The behavior behind `flowdebug.Target` on the local session and on the
+   durable run, or a refusal that names the capability.
+4. A case in `conformance.CapabilityCases`, one per capability. A field added to
+   `DebugCapabilities` with no case fails the completeness test, and the table
+   above is regenerated from the cases.
+5. One line in the DAP projection, `capabilitiesBody` in `flowdap`, where a
+   capability becomes a DAP one.
+
+## Reading a run's past: what is proven, and what is not
+
+Reverse stepping is not offered, and this is why it waits. A durable run's
+debugging state lives in the interpreter's memory, and the interpreter rebuilds
+that memory by replaying the run's history: a worker restart already brings back
+a hold, its session, its revision and its observations that way. The open
+question was whether the same replay, stopped earlier, gives back the run *as it
+was*, and what it cannot. `pkg/flowstate/v1/engine/historical_test.go` is the
+prototype and the evidence; nothing in it is a product surface yet, and no RPC,
+command or editor request reads it.
+
+**The seam.** A history prefix is replayed through a `worker.WorkflowReplayer`
+with an SDK interceptor that notes the query handlers the interpreter installs
+(`flowstate.progress`, `flowstate.debug`, `flowstate.debug.inspect`); after the
+prefix has replayed, the handlers are called as the SDK calls them for a live
+query. The engine gained no code path and no command, and the replay checks the
+commands it would issue against the recording at every step, so answering
+changed none. The replayer registers workflows and nothing else: an activity a
+history schedules is answered from its recorded result, and there is no way to
+dispatch one.
+
+**Supported points.** The unit is a workflow-task boundary: the history through a
+`WorkflowTaskStarted` event, or a closed run's last event. The answer there is
+the state after every earlier task and before that one. An event that is an input to the
+next task (a result, a signal, a task scheduled) replays and adds nothing: its
+state is the next boundary's. An event inside the commands a task wrote is
+refused as a divergence, and a prefix too short to hold a task is refused as such. Event ids order one run's history and
+say nothing about causality across `parallel:` branches, async work or runs.
+
+| Question at a past point | Answer | How it is known |
+| --- | --- | --- |
+| Which step the run was at, how many it had completed, which waits were pending and their deadlines | Reconstructed. The deadline is the recorded timer's: replay's clock is the history's. | Every recorded run, every boundary: `TestEveryRecordedRunReconstructsAtEveryBoundary`, `TestAReconstructedWaitCarriesItsRecordedDeadline` |
+| A debug session's state, address, revision, lease and observations, for a run that declares `debug:` | Reconstructed, equal to what the live session read at that revision | `TestAHistoricalHoldIsWhatTheLiveSessionSaw`, on a dev server |
+| An inspection at a reconstructed hold | Reconstructed for the values; an expression's result is hypothetical, evaluated now over then's scope | the same test |
+| A finished task step's outputs | Recorded: decoded from the activity's result in the history, under the recorded codec, so the caller needs both the history and the codec's key | inherited: a task's result is what its history holds |
+| A finished step the workflow computes itself (a value, a switch's chosen arm) | Reconstructed: re-evaluated over recorded inputs on replay, and in history only as far as a later payload carries it | by construction: `runValue` writes the in-memory scope only |
+| Sensitive values | Withheld as the live session withholds them, because the same handler answers over the scope the replay rebuilds | by shared code: [Sensitive values](#sensitive-values); no reconstruction test yet uses a declared-sensitive input |
+| A run that failed | Its last event replays: the state at the step that failed | `TestEveryWayARunEndsIsReconstructedAsItWas` |
+| A run that was terminated or timed out | Its last event replays as the run was when it was ended. No cleanup runs for an ending from outside, so a wait it was parked on is still shown pending | the same test |
+| A cancelled run | Its last event replays with the cleanup the cancellation ran: no waits pending. With more than one concurrent bounded wait the replay itself can diverge (#2244), so only the single-timer shape is claimed | `TestACancelledRunReconstructsAsHoldingNoWaits` |
+| A run that continued as new | One answer per run in the chain. What an earlier run did is that run's history's to say | `TestAContinuedRunReconstructsWithinItsOwnHistory` |
+| Observations dropped from the bounded record | Unavailable, and counted as dropped, never re-invented | inherited: `observations_dropped` on the snapshot |
+| State inside a task: a response's unreturned headers, a plugin's internals | Unavailable. Nothing outside the recorded result was ever in history | by construction |
+| A history recording a `GetVersion` marker the replaying interpreter does not know | Refused, by name. A newer change made without a gate is not detected this way: it surfaces as nondeterminism or as a different answer, which is why binding the interpreter version is on the list below | `TestAHistoryFromANewerInterpreterIsRefused` |
+| A cut inside a task | Refused, as nondeterministic | `TestACutInsideAWorkflowTaskIsRefused` |
+| More than a history can hold | Refused before any event is read | `TestAReconstructionOverTheBoundIsRefusedBeforeItReplays` |
+
+Two findings a caller must act on. The replayer runs a workflow under an identity
+of its own unless it is told the run's: the SDK's `OriginalExecution` option
+carries the caller's, so a reconstructed snapshot names the run that was asked
+about, and the test compares it to the live one with nothing rewritten. And the
+handlers are asked from inside the replay, never after it returns: the SDK
+dismantles a replayed workflow's coroutines on a goroutine of its own as the
+replay ends, the engine's cleanup edits what the handlers read (a wait leaves
+its registry as its coroutine exits), and a read taken then is a race and can
+miss a pending wait. The prototype asks from a coroutine of the replay's own,
+which runs on the pass where nothing else moves.
+
+**Cost.** A look replays its whole prefix, so the cost is linear in how far into
+the history the target is, and a walk backward over N boundaries pays N
+prefixes. `TestReconstructingALongRunBackwardCostsTheSumOfItsPrefixes` walks a
+hundred-step run's boundaries from the last to the first and logs the cost;
+`go test -bench BenchmarkReconstructionToTarget ./pkg/flowstate/v1/engine`
+prices the recorded corpus. On the authoring machine a 100-step run (over six
+hundred events) cost about 6 ms a boundary on average, 650 ms for the whole
+walk, and the corpus's small runs about a millisecond or less. Those are single-machine figures, not a promise;
+they say a checkpoint cache is not needed for runs of this size, and the
+history ceiling of 51,200 events is the bound on any one look.
+
+**What remains before reverse navigation is offered**, in the order it must be
+built: an authorized, bounded read path (history authority, a payload codec
+that can decrypt, a replay pool isolated from the workers that run effects,
+cancellation); the caller-supplied run identity; the run chain bound to the
+compiled artifact and interpreter version; a fidelity label on every value
+(reconstructed, recorded, unavailable, hypothetical); and then a `reverse`
+capability that moves among the supported points and never undoes an effect.
+
 ## What it does not do yet
 
 - Go backwards. Historical or reverse debugging is not implemented: every front
-  reports `reverse` as unsupported, and a rerun is not history.
+  reports `reverse` as unsupported, and a rerun is not history. [What is proven
+  about reading a run's past](#reading-a-runs-past-what-is-proven-and-what-is-not)
+  says what a reconstruction can and cannot recover.
 - Stop a durable run where a step fails, or record a logpoint durably. A
   failure stop is refused as unsupported: the durable driver has no place to
   hold after a failure is recorded. A logpoint is taken with the breakpoint set
