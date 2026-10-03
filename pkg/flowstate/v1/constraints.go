@@ -658,7 +658,7 @@ func CheckOutputValueIn(table TypeTable, decl *OutputDeclaration, value *Value) 
 		lit = flattened
 	}
 
-	if err := checkDeclaredLiteralType(table, "output", "computed", decl.GetName(), t, decl.GetValueType(), lit); err != nil {
+	if err := checkDeclaredLiteralType(table, outputValueRendering(decl), "output", "computed", decl.GetName(), t, decl.GetValueType(), lit); err != nil {
 		return err
 	}
 

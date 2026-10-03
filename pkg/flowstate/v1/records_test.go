@@ -201,3 +201,25 @@ func TestTheRecordTypeCountIsBounded(t *testing.T) {
 	err := v1.CheckRecordDeclarations(wf)
 	require.Error(t, err)
 }
+
+// A sensitive output's refusal is the run's failure text, so what the sender put
+// in a key or an enum value must not be echoed back in it.
+func TestASensitiveRecordOutputWithholdsWhatItWasGiven(t *testing.T) {
+	t.Parallel()
+
+	wf := recordOrderWorkflow()
+	output := &v1.OutputDeclaration{
+		Name: "receipt", Type: v1.InputDeclaration_TYPE_STRUCT,
+		ValueType: recordTypeOf("Order"), Sensitive: true,
+	}
+	table := v1.TypesOf(wf)
+
+	for name, literal := range map[string]*expr.Value{
+		"an undeclared key": mapLit(recordStr("id"), recordStr("o"), recordStr("hunter2"), recordStr("x")),
+		"an enum value":     mapLit(recordStr("id"), recordStr("o"), recordStr("status"), recordStr("hunter2")),
+	} {
+		err := v1.CheckOutputValueIn(table, output, &v1.Value{Kind: &v1.Value_Literal{Literal: literal}})
+		require.Error(t, err, name)
+		assert.NotContains(t, err.Error(), "hunter2", name)
+	}
+}

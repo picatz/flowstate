@@ -460,7 +460,7 @@ func CheckInputValueIn(table TypeTable, name string, declaration *InputDeclarati
 		return fmt.Errorf("input %q cannot be used as a value: %v", name, kind)
 	}
 
-	return checkDeclaredLiteralType(table, "input", "was given", name, declaration.GetType(), declaration.GetValueType(), value.GetLiteral())
+	return checkDeclaredLiteralType(table, valueRendering{bounded: true}, "input", "was given", name, declaration.GetType(), declaration.GetValueType(), value.GetLiteral())
 }
 
 // checkDeclaredLiteralType is the "does this literal have the declared type"
@@ -473,7 +473,7 @@ func CheckInputValueIn(table TypeTable, name string, declaration *InputDeclarati
 // how the sentence says the value arrived — a caller *gave* an input, a run
 // *computed* an output — since those are the two halves that differ and the
 // judgement is what does not.
-func checkDeclaredLiteralType(table TypeTable, kind, verb, name string, declared InputDeclaration_Type, structural *Type, literal *expr.Value) error {
+func checkDeclaredLiteralType(table TypeTable, r valueRendering, kind, verb, name string, declared InputDeclaration_Type, structural *Type, literal *expr.Value) error {
 	got, ok := inputTypeOf(literal)
 	if !ok {
 		return fmt.Errorf("%s %q is %s, which is not a kind of value an %s can hold; "+
@@ -521,7 +521,7 @@ func checkDeclaredLiteralType(table TypeTable, kind, verb, name string, declared
 	// The legacy enum judged the outermost kind; a structural type also judges
 	// what a list holds and what a map's values are.
 	if structural != nil {
-		if err := checkLiteralShape(table, structural, literal); err != nil {
+		if err := checkLiteralShape(table, r, structural, literal); err != nil {
 			return fmt.Errorf("%s %q is declared %s but %s %w", kind, name, TypeString(structural), verb, err)
 		}
 	}

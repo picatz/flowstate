@@ -3,6 +3,7 @@ package flowstatev1
 import (
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
@@ -56,7 +57,7 @@ func TypesOf(wf *Workflow) TypeTable {
 // when the table exists, because a specification that points at a type it does not
 // carry cannot be judged and fails closed; with no table at all it accepts, for
 // the reason the package comment gives.
-func (table TypeTable) checkRecord(name string, literal *expr.Value, path string, depth int) error {
+func (table TypeTable) checkRecord(r valueRendering, name string, literal *expr.Value, path string, depth int) error {
 	if table == nil {
 		return nil
 	}
@@ -83,8 +84,11 @@ func (table TypeTable) checkRecord(name string, literal *expr.Value, path string
 
 	for key := range present {
 		if !slices.ContainsFunc(fields, func(f *InputDeclaration) bool { return f.GetName() == key }) {
-			return fmt.Errorf("a field %q that %s does not declare%s; it declares %s",
-				key, name, atPath(path), recordFieldNames(fields))
+			// The key is the sender's text, so it is bounded, and withheld for a
+			// sensitive declaration like any other value the run computed.
+			shown := redactedIfSensitive(r.sensitive, func() string { return strconv.Quote(r.show(key)) })
+			return fmt.Errorf("a field %s that %s does not declare%s; it declares %s",
+				shown, name, atPath(path), recordFieldNames(fields))
 		}
 	}
 
@@ -98,7 +102,7 @@ func (table TypeTable) checkRecord(name string, literal *expr.Value, path string
 			continue
 		}
 
-		if err := table.checkField(field, value, fieldPath, depth+1); err != nil {
+		if err := table.checkField(r, field, value, fieldPath, depth+1); err != nil {
 			return err
 		}
 	}
@@ -111,7 +115,7 @@ func (table TypeTable) checkRecord(name string, literal *expr.Value, path string
 // container holds, and an enum's members. It reports the leaf with the whole path
 // from the record's root rather than wrapping one sentence in another per level,
 // so a mistake three records down reads `a string at .lines[0].quantity`.
-func (table TypeTable) checkField(field *InputDeclaration, value *expr.Value, path string, depth int) error {
+func (table TypeTable) checkField(r valueRendering, field *InputDeclaration, value *expr.Value, path string, depth int) error {
 	declared := field.GetType()
 	if depth > MaxStructureDepth || declared == InputDeclaration_TYPE_UNSPECIFIED {
 		return nil
@@ -137,13 +141,13 @@ func (table TypeTable) checkField(field *InputDeclaration, value *expr.Value, pa
 	}
 
 	if structural := field.GetValueType(); structural != nil {
-		if err := checkLiteralShapeAt(table, structural, value, path, depth); err != nil {
+		if err := checkLiteralShapeAt(table, r, structural, value, path, depth); err != nil {
 			return err
 		}
 	}
 
 	return checkEnumMembership("field", strings.TrimPrefix(path, "."), declared, field.GetValues(),
-		valueRendering{bounded: true}, value)
+		r, value)
 }
 
 func fieldTypeName(field *InputDeclaration) string {
