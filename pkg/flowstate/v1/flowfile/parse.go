@@ -1060,13 +1060,14 @@ func (c *compiler) declaredInput(e entry, parent string) *v1.InputDeclaration {
 		typePath := fieldPath(path, "type")
 		typeRef := ref{path: typePath, label: "input " + e.name + " type"}
 		if text, ok := c.text(f.value, typePath, typeRef); ok {
-			declared, known := v1.ParseDeclaredType(text)
-			if !known {
+			declared, structural, err := declareType(text)
+			if err != nil {
 				c.report(spanOfNode(f.value), typeRef,
-					"is %q, which is not a type an input can have; the types are %s",
-					text, strings.Join(v1.DeclaredTypeNames(), ", "))
+					"is %q, which is not a type an input can have: %s; the types are %s, or a type expression such as list(string) or map(string, int)",
+					text, err, strings.Join(v1.DeclaredTypeNames(), ", "))
 			}
 			declaration.Type = declared
+			declaration.ValueType = structural
 		}
 	} else {
 		// Required rather than inferred from the default, deliberately: a type
@@ -1286,13 +1287,14 @@ func (c *compiler) declaredOutput(e entry, parent string) *v1.OutputDeclaration 
 		typePath := fieldPath(path, "type")
 		typeRef := ref{path: typePath, label: "output " + e.name + " type"}
 		if text, ok := c.text(f.value, typePath, typeRef); ok {
-			declared, known := v1.ParseDeclaredType(text)
-			if !known {
+			declared, structural, err := declareType(text)
+			if err != nil {
 				c.report(spanOfNode(f.value), typeRef,
-					"is %q, which is not a type an output can have; the types are %s",
-					text, strings.Join(v1.DeclaredTypeNames(), ", "))
+					"is %q, which is not a type an output can have: %s; the types are %s, or a type expression such as list(string) or map(string, int)",
+					text, err, strings.Join(v1.DeclaredTypeNames(), ", "))
 			}
 			declaration.Type = declared
+			declaration.ValueType = structural
 		}
 	}
 
