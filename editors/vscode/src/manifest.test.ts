@@ -49,7 +49,7 @@ test("every configuration setting declares a scope", () => {
 });
 
 test("the settings that choose what runs are machine-scoped", () => {
-  for (const name of ["flowstate.path", "flowstate.lsp.args"]) {
+  for (const name of ["flowstate.path", "flowstate.lsp.args", "flowstate.dap.args"]) {
     assert.ok(properties[name], `${name} is missing from the manifest`);
     assert.equal(
       properties[name].scope,
@@ -171,5 +171,41 @@ test("both suite extensions are associated", () => {
       filenamePatterns.includes(pattern),
       `filenamePatterns is missing ${pattern}; the CLI and the server both recognize it`,
     );
+  }
+});
+
+// The debug type is what makes a Flowfile's gutter accept a breakpoint and F5
+// start `flow dap`. Both halves are manifest entries nothing else checks: a
+// missing `breakpoints` contribution leaves line breakpoints unsettable with no
+// error anywhere, and a debug type that does not name the language is never
+// offered on a Flowfile.
+const contributes = (
+  JSON.parse(readFileSync(resolve(__dirname, "..", "package.json"), "utf8")) as {
+    contributes: {
+      breakpoints?: { language: string }[];
+      debuggers?: {
+        type: string;
+        languages?: string[];
+        configurationAttributes: Record<string, { required?: string[]; properties: Record<string, unknown> }>;
+        initialConfigurations?: { type: string; request: string }[];
+      }[];
+    };
+  }
+).contributes;
+
+test("a Flowfile accepts line breakpoints", () => {
+  assert.ok(contributes.breakpoints?.some((b) => b.language === "flowfile"));
+});
+
+test("the flowstate debug type is offered on Flowfiles and takes launch and attach", () => {
+  const debuggers = contributes.debuggers ?? [];
+  assert.equal(debuggers.length, 1);
+  const [flowstate] = debuggers;
+  assert.equal(flowstate.type, "flowstate");
+  assert.deepEqual(flowstate.languages, ["flowfile"]);
+  assert.deepEqual(flowstate.configurationAttributes.launch.required, ["program"]);
+  assert.deepEqual(flowstate.configurationAttributes.attach.required, ["workflowId"]);
+  for (const initial of flowstate.initialConfigurations ?? []) {
+    assert.equal(initial.type, "flowstate");
   }
 });

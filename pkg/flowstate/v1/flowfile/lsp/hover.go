@@ -986,6 +986,9 @@ func hoverConstructOutput(target *parsedStep, kind *v1.Node, ref reference, rng 
 	for _, n := range names {
 		if n.Name == ref.output {
 			fmt.Fprintf(&b, "\n\n%s", n.Description)
+			if !v1.IsDyn(n.Type) {
+				fmt.Fprintf(&b, "\n\nType: `%s`", v1.TypeString(n.Type))
+			}
 			return markdownHover(b.String(), rng)
 		}
 	}

@@ -1,10 +1,18 @@
 package flowstatev1
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protodesc"
+	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/reflect/protoregistry"
+	"google.golang.org/protobuf/types/descriptorpb"
+	"google.golang.org/protobuf/types/dynamicpb"
 	durationpb "google.golang.org/protobuf/types/known/durationpb"
 )
 
@@ -344,4 +352,133 @@ func TestOutputNamesForASwitchIsValueAndCase(t *testing.T) {
 		got = append(got, n.Name)
 	}
 	assert.ElementsMatch(t, []string{SwitchValueOutput, SwitchCaseOutput}, got)
+}
+
+// TestTypeOfFieldIsWhatTheRunStores holds [TypeOfField] to the one function that
+// turns a task's output message into the values a workflow reads. A field the run
+// stores as an int must be typed an int, and one it would refuse or store as
+// something else must say `dyn`; the type a checker acts on is only as good as
+// that agreement.
+func TestTypeOfFieldIsWhatTheRunStores(t *testing.T) {
+	t.Parallel()
+
+	type field struct {
+		name     string
+		kind     descriptorpb.FieldDescriptorProto_Type
+		label    descriptorpb.FieldDescriptorProto_Label
+		typeName string
+		want     string
+	}
+	optional := descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL
+	repeated := descriptorpb.FieldDescriptorProto_LABEL_REPEATED
+	fields := []field{
+		{name: "s", kind: descriptorpb.FieldDescriptorProto_TYPE_STRING, label: optional, want: "string"},
+		{name: "b", kind: descriptorpb.FieldDescriptorProto_TYPE_BOOL, label: optional, want: "bool"},
+		{name: "i32", kind: descriptorpb.FieldDescriptorProto_TYPE_INT32, label: optional, want: "int"},
+		{name: "i64", kind: descriptorpb.FieldDescriptorProto_TYPE_INT64, label: optional, want: "int"},
+		{name: "d", kind: descriptorpb.FieldDescriptorProto_TYPE_DOUBLE, label: optional, want: "double"},
+		{name: "f", kind: descriptorpb.FieldDescriptorProto_TYPE_FLOAT, label: optional, want: "double"},
+		{name: "y", kind: descriptorpb.FieldDescriptorProto_TYPE_BYTES, label: optional, want: "bytes"},
+		{name: "ls", kind: descriptorpb.FieldDescriptorProto_TYPE_STRING, label: repeated, want: "list(string)"},
+		{name: "li", kind: descriptorpb.FieldDescriptorProto_TYPE_INT64, label: repeated, want: "list(int)"},
+		{name: "lb", kind: descriptorpb.FieldDescriptorProto_TYPE_BOOL, label: repeated, want: "list(bool)"},
+		{name: "lv", kind: descriptorpb.FieldDescriptorProto_TYPE_MESSAGE, label: repeated, typeName: ".flowstate.v1.Value", want: "list(dyn)"},
+		{name: "v", kind: descriptorpb.FieldDescriptorProto_TYPE_MESSAGE, label: optional, typeName: ".flowstate.v1.Value", want: "dyn"},
+	}
+
+	msg := &descriptorpb.DescriptorProto{Name: proto.String("Out")}
+	for i, f := range fields {
+		msg.Field = append(msg.Field, &descriptorpb.FieldDescriptorProto{
+			Name:     proto.String(f.name),
+			JsonName: proto.String(f.name),
+			Number:   proto.Int32(int32(i + 1)),
+			Label:    f.label.Enum(),
+			Type:     f.kind.Enum(),
+			TypeName: proto.String(f.typeName),
+		})
+	}
+	file, err := protodesc.NewFile(&descriptorpb.FileDescriptorProto{
+		Name:        proto.String("out.proto"),
+		Package:     proto.String("test"),
+		Syntax:      proto.String("proto3"),
+		Dependency:  []string{"flowstate/v1/value.proto"},
+		MessageType: []*descriptorpb.DescriptorProto{msg},
+	}, protoregistry.GlobalFiles)
+	require.NoError(t, err)
+
+	md := file.Messages().ByName("Out")
+	for _, f := range fields {
+		fd := md.Fields().ByName(protoreflect.Name(f.name))
+		assert.Equal(t, f.want, TypeString(TypeOfField(fd)), f.name)
+	}
+
+	// What the run stores for a populated message of the same shape.
+	populated := dynamicpb.NewMessage(md)
+	set := func(name string, v protoreflect.Value) {
+		populated.Set(md.Fields().ByName(protoreflect.Name(name)), v)
+	}
+	set("s", protoreflect.ValueOfString("x"))
+	set("b", protoreflect.ValueOfBool(true))
+	set("i32", protoreflect.ValueOfInt32(3))
+	set("i64", protoreflect.ValueOfInt64(3))
+	set("d", protoreflect.ValueOfFloat64(1.5))
+	set("f", protoreflect.ValueOfFloat32(1.5))
+	set("y", protoreflect.ValueOfBytes([]byte("y")))
+	for _, name := range []string{"ls", "li", "lb"} {
+		list := populated.Mutable(md.Fields().ByName(protoreflect.Name(name))).List()
+		switch name {
+		case "ls":
+			list.Append(protoreflect.ValueOfString("x"))
+		case "li":
+			list.Append(protoreflect.ValueOfInt64(1))
+		case "lb":
+			list.Append(protoreflect.ValueOfBool(true))
+		}
+	}
+
+	stored, err := nodeOutputsFromProtoMessage(populated)
+	require.NoError(t, err)
+
+	storedKind := map[string]string{}
+	for name, value := range stored.GetNamedValues() {
+		switch value.GetLiteral().GetKind().(type) {
+		case *expr.Value_StringValue:
+			storedKind[name] = "string"
+		case *expr.Value_BoolValue:
+			storedKind[name] = "bool"
+		case *expr.Value_Int64Value:
+			storedKind[name] = "int"
+		case *expr.Value_DoubleValue:
+			storedKind[name] = "double"
+		case *expr.Value_BytesValue:
+			storedKind[name] = "bytes"
+		case *expr.Value_ListValue:
+			storedKind[name] = "list"
+		}
+	}
+	for _, name := range []string{"s", "b", "i32", "i64", "d", "f", "y", "ls", "li", "lb"} {
+		want := TypeString(TypeOfField(md.Fields().ByName(protoreflect.Name(name))))
+		assert.Equal(t, storedKind[name], strings.SplitN(want, "(", 2)[0],
+			"the run stores %s as %s, so it must be typed that", name, storedKind[name])
+	}
+}
+
+// TestTaskOutputsCarryTheirTypes: the http task's declared fields reach
+// [OutputNames] with the types a run stores for them.
+func TestTaskOutputsCarryTheirTypes(t *testing.T) {
+	t.Parallel()
+
+	names, ok := OutputNames(&Node{Kind: &Node_Task{Task: &Task{Name: "http"}}}, nil)
+	require.True(t, ok)
+
+	got := map[string]string{}
+	for _, n := range names {
+		got[n.Name] = TypeString(n.Type)
+	}
+	assert.Equal(t, map[string]string{
+		"status_code": "int",
+		"headers":     "map(string, string)",
+		"body":        "string",
+		"json":        "dyn",
+	}, got)
 }

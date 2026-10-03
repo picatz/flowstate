@@ -6,9 +6,15 @@ import (
 	"github.com/google/cel-go/cel"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protodesc"
 	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/types/descriptorpb"
+	"google.golang.org/protobuf/types/dynamicpb"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin/sdk"
 )
 
 // exampleTypes holds one value of every kind [v1.Type] has, keyed by the oneof
@@ -183,4 +189,58 @@ func TestProjectionsAreBounded(t *testing.T) {
 
 	decl := &v1.InputDeclaration{ValueType: cyclic}
 	assert.NotNil(t, v1.CELType(decl.DeclaredType()))
+}
+
+// TestTypeOfFieldLeavesNullableOutputsDyn: a plugin stores a oneof arm that was
+// not chosen and a nested message that was never set as `null`, so a type for
+// either that excluded `null` would refuse the guard `steps.p.err != null`, which
+// runs. The type is checked against what the plugin SDK stores.
+func TestTypeOfFieldLeavesNullableOutputsDyn(t *testing.T) {
+	t.Parallel()
+
+	label := descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL
+	field := func(name string, number int32, kind descriptorpb.FieldDescriptorProto_Type, typeName string, oneof *int32) *descriptorpb.FieldDescriptorProto {
+		f := &descriptorpb.FieldDescriptorProto{
+			Name: proto.String(name), JsonName: proto.String(name), Number: proto.Int32(number),
+			Label: label.Enum(), Type: kind.Enum(), OneofIndex: oneof,
+		}
+		if typeName != "" {
+			f.TypeName = proto.String(typeName)
+		}
+
+		return f
+	}
+	file, err := protodesc.NewFile(&descriptorpb.FileDescriptorProto{
+		Name:    proto.String("nullable.proto"),
+		Package: proto.String("test"),
+		Syntax:  proto.String("proto3"),
+		MessageType: []*descriptorpb.DescriptorProto{
+			{Name: proto.String("Inner"), Field: []*descriptorpb.FieldDescriptorProto{
+				field("x", 1, descriptorpb.FieldDescriptorProto_TYPE_STRING, "", nil),
+			}},
+			{
+				Name:      proto.String("Out"),
+				OneofDecl: []*descriptorpb.OneofDescriptorProto{{Name: proto.String("result")}},
+				Field: []*descriptorpb.FieldDescriptorProto{
+					field("ok", 1, descriptorpb.FieldDescriptorProto_TYPE_STRING, "", nil),
+					field("err", 2, descriptorpb.FieldDescriptorProto_TYPE_STRING, "", proto.Int32(0)),
+					field("code", 3, descriptorpb.FieldDescriptorProto_TYPE_INT64, "", proto.Int32(0)),
+					field("nested", 4, descriptorpb.FieldDescriptorProto_TYPE_MESSAGE, ".test.Inner", nil),
+				},
+			},
+		},
+	}, nil)
+	require.NoError(t, err)
+
+	md := file.Messages().ByName("Out")
+	stored, err := sdk.EncodeOutputs(dynamicpb.NewMessage(md))
+	require.NoError(t, err)
+
+	for _, name := range []string{"err", "code", "nested"} {
+		_, isNull := stored.GetNamedValues()[name].GetLiteral().GetKind().(*expr.Value_NullValue)
+		assert.True(t, isNull, "the plugin SDK stores an unset %s as null", name)
+		assert.Equal(t, "dyn", v1.TypeString(v1.TypeOfField(md.Fields().ByName(protoreflect.Name(name)))),
+			"%s can be null, so it cannot be typed as what it holds", name)
+	}
+	assert.Equal(t, "string", v1.TypeString(v1.TypeOfField(md.Fields().ByName("ok"))), "a plain field is still typed")
 }

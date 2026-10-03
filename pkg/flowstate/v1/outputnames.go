@@ -5,6 +5,8 @@ import (
 	"maps"
 	"slices"
 	"strings"
+
+	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
 // "What names does `steps.<id>.` expose?" used to be answered independently in
@@ -41,6 +43,13 @@ type NamedOutput struct {
 	// to bound a `switch:`'s discriminant — is the one consumer this field
 	// exists for; everything else can ignore it.
 	Source *Value
+
+	// Type is what the output holds, when the node's own definition says: a task
+	// field's stored type (see [TypeOfField]), a called workflow's declared output
+	// type, the `timed_out` and `count` a wait records. nil for every output
+	// whose type is not stated anywhere but the expression that computes it, and
+	// for a name the file cannot know; a reader treats nil as `dyn`.
+	Type *Type
 }
 
 // OutputNames answers, for one node, every name `steps.<id>.` may expose and
@@ -114,12 +123,22 @@ func OutputNames(node *Node, tasks *Registry) (names []NamedOutput, ok bool) {
 			}}, true
 		}
 		out := make([]NamedOutput, 0, len(decls))
+		// The legacy `type` and not DeclaredType: [CheckOutputValue] enforces the
+		// legacy type on the callee's answer, so it is the one that is stored.
 		for _, d := range decls {
 			desc := fmt.Sprintf("Declared output %q of the called workflow.", d.GetName())
 			if p := d.GetDescription(); p != "" {
 				desc = p
 			}
-			out = append(out, NamedOutput{Name: d.GetName(), Description: desc})
+			named := NamedOutput{Name: d.GetName(), Description: desc, Type: TypeOfLegacy(d.GetType())}
+			if d.GetType() == InputDeclaration_TYPE_INT {
+				// [CheckOutputValue] reads a `uint` as satisfying `int`, so a callee
+				// that declares `int` may store one, and `int` would refuse the
+				// `uint` arithmetic that runs. Until the numeric model decides, it
+				// is not known.
+				named.Type = nil
+			}
+			out = append(out, named)
 		}
 		return out, true
 
@@ -144,12 +163,14 @@ func waitOutputNames(wait *Wait) []NamedOutput {
 		return []NamedOutput{{
 			Name:        TimedOutOutput,
 			Description: "Whether the wait ended before the first delivery arrived. A lapsed gate is an ordinary outcome, not a failure.",
+			Type:        scalarType(Type_SCALAR_BOOL),
 		}, {
 			Name:        DeliveriesOutput,
 			Description: "The buffered signal deliveries in arrival order, each containing its payload and server-attested sender. Empty on a gate that timed out.",
 		}, {
 			Name:        CountOutput,
 			Description: "How many buffered signal deliveries the batch contains. Zero on a gate that timed out.",
+			Type:        scalarType(Type_SCALAR_INT),
 		}}
 	}
 
@@ -160,6 +181,7 @@ func waitOutputNames(wait *Wait) []NamedOutput {
 		return []NamedOutput{{
 			Name:        TimedOutOutput,
 			Description: "Always false: a sleep or wait_until has no timeout to lapse, and reaching its duration or moment is how it ends. Recorded so every wait answers the same name.",
+			Type:        scalarType(Type_SCALAR_BOOL),
 		}}
 	}
 
@@ -174,6 +196,7 @@ func waitOutputNames(wait *Wait) []NamedOutput {
 	return []NamedOutput{{
 		Name:        TimedOutOutput,
 		Description: "Whether the wait ended because nobody answered in time. A lapsed gate is an ordinary outcome, not a failure.",
+		Type:        scalarType(Type_SCALAR_BOOL),
 	}, {
 		Name:        PayloadOutput,
 		Description: "What the sender's signal carried, under this root so a sender can never write outside it. Empty on a gate that timed out.",
@@ -238,6 +261,7 @@ func taskOutputNames(task *Task, tasks *Registry) []NamedOutput {
 		out = append(out, NamedOutput{
 			Name:        f.Name,
 			Description: fmt.Sprintf("%s output of the %s task, of type %s.", f.Name, def.Name, f.Type),
+			Type:        TypeOfField(def.Outputs.Fields().ByName(protoreflect.Name(f.Name))),
 		})
 	}
 	return out
