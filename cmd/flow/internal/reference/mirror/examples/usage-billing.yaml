@@ -1,4 +1,4 @@
-edition: v2026.3
+edition: v2026.4
 name: usage-billing
 description: Bills API overage in whole 1,000-call blocks — `math.greatest` instead of a negative overage, and an explicit `double()` before dividing, because CEL divides two ints as an int and truncates rather than rounding.
 # CEL is not automatically-widening like some scripting languages: `7 / 2` is

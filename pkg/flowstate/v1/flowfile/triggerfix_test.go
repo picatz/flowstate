@@ -20,7 +20,7 @@ import (
 
 // currentWebhookTrigger is already on the current edition with every reference
 // rooted: nothing here is fix's to change.
-const currentWebhookTrigger = `edition: v2026.3
+const currentWebhookTrigger = `edition: v2026.4
 name: order-webhook
 inputs:
   order_id: { type: string, required: true }

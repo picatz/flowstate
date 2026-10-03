@@ -18,7 +18,7 @@ import (
 // --debug` and `flow dap` refuse it without --reveal-sensitive.
 func TestDebugRefusesASensitiveWorkflowUnlessRevealed(t *testing.T) {
 	workflow, diags, err := Compile([]byte(`
-edition: v2026.3
+edition: v2026.4
 name: sensitive
 inputs:
   token:

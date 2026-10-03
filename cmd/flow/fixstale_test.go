@@ -23,7 +23,7 @@ import (
 
 // pinnedCaller is a current-edition file calling ./callee.yaml and pinning it.
 func pinnedCaller(pin string) string {
-	return `edition: v2026.3
+	return `edition: v2026.4
 name: caller
 steps:
   - id: run

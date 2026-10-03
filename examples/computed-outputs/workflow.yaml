@@ -20,7 +20,7 @@
 # says something different when given some:
 #
 #   flow run local examples/computed-outputs/workflow.yaml --input release=2026.9.0
-edition: v2026.3
+edition: v2026.4
 name: computed-outputs
 inputs:
   release:
@@ -32,7 +32,7 @@ inputs:
   # — because a list is not a thing a shell word can be. A `struct` input works the
   # same way, which is what `--input-file` is for once the arguments stop being flat.
   targets:
-    type: list
+    type: list(dyn)
     default:
       - alpha
       - beta
@@ -94,7 +94,7 @@ outputs:
   # result can still say which hosts were asked for.
   targets:
     value: ${inputs.targets}
-    type: list
+    type: list(dyn)
     description: the hosts this run was asked to reach
 
   # A question a caller would otherwise answer by comparing two of the outputs
@@ -109,8 +109,8 @@ outputs:
   # partial rollout would report 0.
   #
   # The zero case is guarded rather than left to the arithmetic. `targets: []` is a
-  # legal `type: list` argument, and 0.0/0.0 is NaN — which a declared `float`
-  # refuses, because a float is a finite number and a NaN in a run document is a
+  # legal `list(dyn)` argument, and 0.0/0.0 is NaN — which a declared `double`
+  # refuses, because a double is a finite number and a NaN in a run document is a
   # value no JSON reader can read back: the run would fail at completion with
   # `output "coverage" is declared float but computed NaN, which is not a finite
   # number`. A declared type bounds the shape of an answer, not its arithmetic,
@@ -120,7 +120,7 @@ outputs:
   # describing one rollout must not contradict each other.
   coverage:
     value: "${(steps.requested.value == 0) ? 1.0 : (double(steps.placed.value) / double(steps.requested.value))}"
-    type: float
+    type: double
     description: the fraction of requested hosts the run reached
 
   # An enum output is the one type that also closes a set. `values:` is what a
@@ -138,12 +138,12 @@ outputs:
 
   # A structured answer, for a caller that would rather read one value than five.
   # A mapping under `value:` is one expression that builds a map, which is what
-  # `type: struct` names — the same word an input declares for the same shape.
+  # `map(string, dyn)` names — the type an input declares for the same shape.
   detail:
     value:
       release: ${inputs.release}
       hosts_placed: ${steps.placed.value}
-    type: struct
+    type: map(string, dyn)
     description: the release and the host count in one value
 
   # Steps and inputs in one expression, which is the shape most results have: what

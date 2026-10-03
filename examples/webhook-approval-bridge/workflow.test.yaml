@@ -22,7 +22,7 @@ vars:
   bridge: flowstate://webhook
   trigger: webhook-approval-bridge/slack-approval
 
-edition: v2026.3
+edition: v2026.4
 defaults:
   stubs:
     - task: log

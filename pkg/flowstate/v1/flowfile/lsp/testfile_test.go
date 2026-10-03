@@ -220,7 +220,7 @@ func TestASuiteRefusedForADirectoryVarShowsWhyInItsOwnBuffer(t *testing.T) {
 		const secret = "sk-live-editor-2080"
 		dir := t.TempDir()
 		require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.yaml"),
-			[]byte("edition: v2026.3\nname: fine\nsteps:\n  - id: s\n    log:\n      message: hello\n"), 0o600))
+			[]byte("edition: v2026.4\nname: fine\nsteps:\n  - id: s\n    log:\n      message: hello\n"), 0o600))
 		require.NoError(t, os.WriteFile(filepath.Join(dir, "testdefaults.yaml"),
 			[]byte("vars:\n  token: "+secret+"\n"), 0o600))
 
@@ -707,7 +707,7 @@ func TestASuitesOwnErrorIsNotMistakenForTheDefaultsFile(t *testing.T) {
 	// is a misfiling by construction.
 	dir := t.TempDir()
 
-	params := c.open("file://"+dir+"/suite.test.yaml", `edition: v2026.3
+	params := c.open("file://"+dir+"/suite.test.yaml", `edition: v2026.4
 tests:
   - name: testdefaults.yaml
     expect:
@@ -734,7 +734,7 @@ func TestADirectoryNamedAfterTheDefaultsFileIsStillOrdinary(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "testdefaults.yaml.d")
 	require.NoError(t, os.MkdirAll(dir, 0o750))
 
-	params := c.open("file://"+dir+"/suite.test.yaml", `edition: v2026.3
+	params := c.open("file://"+dir+"/suite.test.yaml", `edition: v2026.4
 tests:
   - name: it runs
     expect:

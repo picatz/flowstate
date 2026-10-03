@@ -1,6 +1,6 @@
 # Three cases, one per outcome, and each asserts both what ran and what did
 # not — a list of what ran can never see a branch not taken.
-edition: v2026.3
+edition: v2026.4
 tests:
   - name: an approving signal takes the approved branch
     workflow: ./workflow.yaml

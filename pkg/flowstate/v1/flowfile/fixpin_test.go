@@ -35,7 +35,7 @@ func TestFixLeavesADigestPinByteForByte(t *testing.T) {
       tenant: acme
 `
 
-	src := `edition: v2026.3
+	src := `edition: v2026.4
 name: caller
 steps:
 ` + pinnedLines + `  - id: announce

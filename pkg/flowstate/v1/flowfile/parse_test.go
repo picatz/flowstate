@@ -32,7 +32,7 @@ func TestParseReportsPositions(t *testing.T) {
 	}{
 		{
 			name: "malformed duration",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: t
 steps:
   - id: a
@@ -44,7 +44,7 @@ steps:
 		},
 		{
 			name: "duration written as a number",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: t
 steps:
   - id: a
@@ -56,7 +56,7 @@ steps:
 		},
 		{
 			name: "misspelled step key",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: t
 steps:
   - id: a
@@ -68,7 +68,7 @@ steps:
 		},
 		{
 			name: "unknown key with no near match",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: t
 steps:
   - id: a
@@ -89,7 +89,7 @@ steps:
 			// obvious implementation reports the mistake a second time in words that
 			// do not name the fix.
 			name: "the retired task block says what to write instead",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: t
 steps:
   - id: a
@@ -107,7 +107,7 @@ steps:
 			// that has to keep being reported: a misspelling that does nothing is
 			// worse than a refusal, because the author has no reason to doubt it.
 			name: "unknown workflow key",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: t
 lables:
   env: dev
@@ -120,7 +120,7 @@ steps:
 		},
 		{
 			name: "two kinds of work in one step",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: t
 steps:
   - id: a
@@ -136,7 +136,7 @@ steps:
 		},
 		{
 			name: "no kind of work at all",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: t
 steps:
   - id: a
@@ -147,7 +147,7 @@ steps:
 		},
 		{
 			name: "a step key that is not a string",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: t
 steps:
   - id: a
@@ -162,7 +162,7 @@ steps:
 			// run time is not something the grammar can express — which is the
 			// point, since a workload whose *shape* depends on its data cannot be
 			// checked before it runs. It is reported as the unknown key it is.
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: t
 steps:
   - id: a
@@ -180,7 +180,7 @@ steps:
 			// out which `${...}` the parser meant, which is the whole reason
 			// #413's house gate names this.
 			name: "a broken fence among others is positioned inside its own fence",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: t
 steps:
   - id: a
@@ -192,7 +192,7 @@ steps:
 		},
 		{
 			name: "expression syntax error points inside the expression",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: t
 steps:
   - id: a
@@ -207,7 +207,7 @@ steps:
 		},
 		{
 			name: "input with no value",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: t
 steps:
   - id: a
@@ -220,7 +220,7 @@ steps:
 		},
 		{
 			name: "retry field out of place",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: t
 steps:
   - id: a
@@ -233,7 +233,7 @@ steps:
 		},
 		{
 			name: "for_each without items",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: t
 steps:
   - id: a
@@ -248,7 +248,7 @@ steps:
 		},
 		{
 			name: "parallel that is not a list",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: t
 steps:
   - id: a
@@ -262,7 +262,7 @@ steps:
 		},
 		{
 			name: "problem inside a loop body names the body step",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: t
 steps:
   - id: outer
@@ -278,7 +278,7 @@ steps:
 		},
 		{
 			name: "problem inside a parallel branch names the branch step",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: t
 steps:
   - id: outer
@@ -293,7 +293,7 @@ steps:
 		},
 		{
 			name: "nested input value inside a map",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: t
 steps:
   - id: a
@@ -314,7 +314,7 @@ steps:
 		},
 		{
 			name: "more than one document",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: a
 steps:
   - id: a
@@ -330,7 +330,7 @@ steps:
 		},
 		{
 			name: "steps is not a list",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: t
 steps:
   a: 1
@@ -343,7 +343,7 @@ steps:
 			// before any question of whether it names a known anchor: the strict
 			// subset rejects the spelling itself. See #653.
 			name: "alias is refused",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: t
 steps:
   - id: a
@@ -385,7 +385,7 @@ steps:
 // TestParsePositionPaths covers the positional model directly: a caller with a
 // workflow in hand has to be able to ask where any part of it was written.
 func TestParsePositionPaths(t *testing.T) {
-	src := `edition: v2026.3
+	src := `edition: v2026.4
 name: positions
 steps:
   - id: first
@@ -532,7 +532,7 @@ func TestParseExpressionContexts(t *testing.T) {
 		},
 		{
 			name: "a bare items is an expression",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: t
 steps:
   - id: a
@@ -549,7 +549,7 @@ steps:
 		},
 		{
 			name: "a list items is a literal list",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: t
 steps:
   - id: a
@@ -569,7 +569,7 @@ steps:
 		},
 		{
 			name: "a structure with a nested expression becomes one expression",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: t
 steps:
   - id: a
@@ -585,7 +585,7 @@ steps:
 		},
 		{
 			name: "a structure of literals stays a literal",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: t
 steps:
   - id: a
@@ -630,7 +630,7 @@ steps:
 // engine relies on them: an empty message is a message, and a step that spells out
 // the default must compile to the same workflow as one that leaves it unsaid.
 func TestParseZeroValues(t *testing.T) {
-	src := `edition: v2026.3
+	src := `edition: v2026.4
 name: zero
 steps:
   - id: a
@@ -686,7 +686,7 @@ steps:
 // subset of YAML, so each construct is named and the file is rejected. See #653
 // and strict_test.go for the positive direction (the value spelled out compiles).
 func TestParseAnchorsAndMerge(t *testing.T) {
-	src := `edition: v2026.3
+	src := `edition: v2026.4
 name: anchors
 steps:
   - id: a
@@ -724,7 +724,7 @@ steps:
 // TestParseRejectsSelfReferentialAlias pins that a cyclic alias is reported rather
 // than followed forever.
 func TestParseRejectsSelfReferentialAlias(t *testing.T) {
-	src := `edition: v2026.3
+	src := `edition: v2026.4
 name: t
 steps: &loop
   - id: a
@@ -758,19 +758,19 @@ func TestParseYAMLSyntaxErrorsUseTheDiagnosticGrammar(t *testing.T) {
 			// editor that indents with a tab rather than converting to spaces.
 			// YAML's grammar refuses a tab in indentation outright.
 			name: "tab indentation",
-			src:  "edition: v2026.3\nname: t\nsteps:\n\t- id: a\n",
+			src:  "edition: v2026.4\nname: t\nsteps:\n\t- id: a\n",
 			line: 4, col: 1,
 			want: "cannot start any token",
 		},
 		{
 			name: "duplicate mapping key",
-			src:  "edition: v2026.3\nname: t\nname: t\nsteps:\n  - id: a\n    log:\n",
+			src:  "edition: v2026.4\nname: t\nname: t\nsteps:\n  - id: a\n    log:\n",
 			line: 3, col: 1,
 			want: "already defined",
 		},
 		{
 			name: "unterminated flow sequence",
-			src:  "edition: v2026.3\nname: t\nsteps: [a, b\n",
+			src:  "edition: v2026.4\nname: t\nsteps: [a, b\n",
 			line: 3, col: 8,
 			want: "sequence end token",
 		},
@@ -900,7 +900,7 @@ func TestRoundTripNestedControlFlow(t *testing.T) {
 	}{
 		{
 			name: "loop with a body",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: loop
 steps:
   - id: outer
@@ -918,7 +918,7 @@ steps:
 		},
 		{
 			name: "parallel branches",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: parallel
 steps:
   - id: fan
@@ -936,7 +936,7 @@ steps:
 		},
 		{
 			name: "a loop inside a branch",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: nested
 steps:
   - id: fan
@@ -953,7 +953,7 @@ steps:
 		},
 		{
 			name: "policy in full",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: policy
 steps:
   - id: a
@@ -971,7 +971,7 @@ steps:
 		},
 		{
 			name: "retry asking only for the defaults",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: defaults
 steps:
   - id: a
@@ -982,7 +982,7 @@ steps:
 		},
 		{
 			name: "structures with nested expressions",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: shapes
 steps:
   - id: a
@@ -1003,7 +1003,7 @@ steps:
 		},
 		{
 			name: "literal structures and zero values",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: literals
 steps:
   - id: a
@@ -1019,7 +1019,7 @@ steps:
 		},
 		{
 			name: "description present but empty",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: described
 description: ""
 steps:
@@ -1030,7 +1030,7 @@ steps:
 		},
 		{
 			name: "input constraints, example and sensitive",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: constrained
 inputs:
   email:
@@ -1046,7 +1046,7 @@ inputs:
     default: 1
     must: this >= 1 && this <= 50
   regions:
-    type: list
+    type: list(dyn)
     required: true
     example: [us-east-1]
     min_items: 1
@@ -1085,7 +1085,7 @@ steps:
 // test passes either way — once that lands, the expression round-trips instead.
 func TestMarshalReportsWhatItCannotWrite(t *testing.T) {
 	t.Run("comprehension", func(t *testing.T) {
-		workflow, err := flowfile.Unmarshal([]byte(`edition: v2026.3
+		workflow, err := flowfile.Unmarshal([]byte(`edition: v2026.4
 name: t
 steps:
   - id: a
@@ -1247,7 +1247,7 @@ func requireExpr(t *testing.T, value *v1.Value, want string) {
 
 // stepWith returns a workflow whose single step carries the given property line.
 func stepWith(property string) string {
-	return "edition: v2026.3\nname: t\nsteps:\n  - id: a\n    " + property + `
+	return "edition: v2026.4\nname: t\nsteps:\n  - id: a\n    " + property + `
     log:
       message: hi
 `
@@ -1255,7 +1255,7 @@ func stepWith(property string) string {
 
 // taskInput returns a workflow whose single step has the given task input line.
 func taskInput(input string) string {
-	return `edition: v2026.3
+	return `edition: v2026.4
 name: t
 steps:
   - id: a
@@ -1300,7 +1300,7 @@ func TestParseRejects(t *testing.T) {
 		},
 		{
 			name: "for_each with no body",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: t
 steps:
   - id: a
@@ -1311,7 +1311,7 @@ steps:
 		},
 		{
 			name: "backoff that is not a number",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: t
 steps:
   - id: a
@@ -1323,7 +1323,7 @@ steps:
 		},
 		{
 			name: "continue_on_error that is not a bool",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: t
 steps:
   - id: a
@@ -1334,7 +1334,7 @@ steps:
 		},
 		{
 			name: "timeout of zero",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: t
 steps:
   - id: a
@@ -1345,7 +1345,7 @@ steps:
 		},
 		{
 			name: "parallel branch with no steps",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: t
 steps:
   - id: a
@@ -1356,7 +1356,7 @@ steps:
 		},
 		{
 			name: "parallel with no branches",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: t
 steps:
   - id: a
@@ -1366,7 +1366,7 @@ steps:
 		},
 		{
 			name: "unknown key in a parallel branch",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: t
 steps:
   - id: a
@@ -1378,7 +1378,7 @@ steps:
 		},
 		{
 			name: "a task whose inputs are not a mapping",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: t
 steps:
   - id: a
@@ -1411,7 +1411,7 @@ steps:
 		},
 		{
 			name: "expression in a workflow name",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: ${chosen}
 steps:
   - id: a
@@ -1470,7 +1470,7 @@ steps:
 // expression. The two paths build values separately, so a type handled by one and
 // not the other is exactly the kind of gap that survives review.
 func TestParseValueKinds(t *testing.T) {
-	literals := `edition: v2026.3
+	literals := `edition: v2026.4
 name: t
 steps:
   - id: a
@@ -1516,7 +1516,7 @@ steps:
 	requireRoundTrip(t, workflow)
 
 	// The same values, in a structure that one expression makes an expression.
-	computed := `edition: v2026.3
+	computed := `edition: v2026.4
 name: t
 steps:
   - id: a
@@ -1566,7 +1566,7 @@ func literalText(literal *expr.Value) string {
 // forEachWith returns a workflow whose single step is a loop with the given body of
 // for_each keys.
 func forEachWith(keys string) string {
-	return `edition: v2026.3
+	return `edition: v2026.4
 name: t
 steps:
   - id: a
@@ -1596,7 +1596,7 @@ steps:
 func TestVarsUnderATaskThatHasNoVarsIsReportedWhereItWasWritten(t *testing.T) {
 	t.Parallel()
 
-	const src = `edition: v2026.3
+	const src = `edition: v2026.4
 name: misplaced-vars
 steps:
   - id: a

@@ -41,7 +41,7 @@ const dapSensitiveValue = "s3cr3t-value-nothing-may-print"
 func TestFlowDAPRefusesSensitiveWorkflowWithoutReveal(t *testing.T) {
 	dir := t.TempDir()
 	workflow := filepath.Join(dir, "workflow.yaml")
-	require.NoError(t, os.WriteFile(workflow, []byte(`edition: v2026.3
+	require.NoError(t, os.WriteFile(workflow, []byte(`edition: v2026.4
 name: `+dapSensitiveValue+`
 inputs:
   token:
@@ -62,7 +62,7 @@ outputs: {}
 func TestFlowDAPRefusesSensitiveEmbeddedWorkflowWithoutReveal(t *testing.T) {
 	dir := t.TempDir()
 	callee := filepath.Join(dir, "callee.yaml")
-	require.NoError(t, os.WriteFile(callee, []byte(`edition: v2026.3
+	require.NoError(t, os.WriteFile(callee, []byte(`edition: v2026.4
 name: sensitive-callee
 inputs:
   token:
@@ -75,7 +75,7 @@ steps:
 outputs: {}
 `), 0o600))
 	workflow := filepath.Join(dir, "workflow.yaml")
-	require.NoError(t, os.WriteFile(workflow, []byte(`edition: v2026.3
+	require.NoError(t, os.WriteFile(workflow, []byte(`edition: v2026.4
 name: ordinary-caller
 steps:
   - id: called
@@ -91,7 +91,7 @@ outputs: {}
 func TestFlowDAPWithholdsDiagnosticsForAnInvalidWorkflow(t *testing.T) {
 	dir := t.TempDir()
 	workflow := filepath.Join(dir, "workflow.yaml")
-	require.NoError(t, os.WriteFile(workflow, []byte(`edition: v2026.3
+	require.NoError(t, os.WriteFile(workflow, []byte(`edition: v2026.4
 name: invalid-sensitive-probe
 steps:
   - id: first
@@ -118,7 +118,7 @@ func TestFlowDAPReportsMissingWorkflowWithoutReveal(t *testing.T) {
 func TestFlowDAPRevealsSensitiveWorkflowOnlyWhenExplicitlyRequested(t *testing.T) {
 	dir := t.TempDir()
 	workflow := filepath.Join(dir, "workflow.yaml")
-	require.NoError(t, os.WriteFile(workflow, []byte(`edition: v2026.3
+	require.NoError(t, os.WriteFile(workflow, []byte(`edition: v2026.4
 name: sensitive-probe
 inputs:
   token:
@@ -298,7 +298,7 @@ func TestFlowDAPStepsARealWorkflowForAnEditor(t *testing.T) {
 	dir := t.TempDir()
 	workflow := filepath.Join(dir, "workflow.yaml")
 	require.NoError(t, os.WriteFile(workflow, []byte(`
-edition: v2026.3
+edition: v2026.4
 name: staged
 steps:
   - id: build
@@ -422,7 +422,7 @@ func TestFlowDAPAcceptsAPluginTask(t *testing.T) {
 secrets:
   allow: ['true']
 `), 0o600))
-	require.NoError(t, os.WriteFile(workflow, []byte(`edition: v2026.3
+	require.NoError(t, os.WriteFile(workflow, []byte(`edition: v2026.4
 name: plugin-debug
 steps:
   - id: hello
@@ -491,7 +491,7 @@ func TestFlowDAPValidatesBeforeItRunsAnything(t *testing.T) {
 	dir := t.TempDir()
 	workflow := filepath.Join(dir, "workflow.yaml")
 	require.NoError(t, os.WriteFile(workflow, []byte(`
-edition: v2026.3
+edition: v2026.4
 name: partial
 steps:
   - id: first
@@ -613,7 +613,7 @@ func TestFlowDAPLaunchCarriesTheRunsInputs(t *testing.T) {
 	dir := t.TempDir()
 	workflow := filepath.Join(dir, "workflow.yaml")
 	require.NoError(t, os.WriteFile(workflow, []byte(`
-edition: v2026.3
+edition: v2026.4
 name: released
 inputs:
   release:

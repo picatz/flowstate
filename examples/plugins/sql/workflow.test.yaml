@@ -1,4 +1,4 @@
-edition: v2026.3
+edition: v2026.4
 
 # Proves the query is parameterized and its rows are usable by a later step's CEL,
 # in CI, with no database and without the sql plugin installed. The stub selects

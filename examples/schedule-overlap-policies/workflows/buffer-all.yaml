@@ -7,7 +7,7 @@
 # loss with fewer words. Neither is acceptable when correctness is measured in
 # line items: every interval must eventually be reported exactly once, however
 # far behind the queue falls while it catches up.
-edition: v2026.3
+edition: v2026.4
 name: schedule-overlap-buffer-all
 inputs:
   meter:

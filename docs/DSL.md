@@ -38,6 +38,7 @@ headings below, not this list.*
   - [`printf:` is retired — the replacement already exists *(landed)*](#printf-is-retired--the-replacement-already-exists-landed)
   - [`edition:` is required, and v-prefixed *(landed)*](#edition-is-required-and-v-prefixed-landed)
   - [Edition v2026.3: optional traversal, and the guarded-read rewrite *(landed)*](#edition-v20263-optional-traversal-and-the-guarded-read-rewrite-landed)
+  - [Edition v2026.4: a type is a CEL type expression *(landed)*](#edition-v20264-a-type-is-a-cel-type-expression-landed)
   - [`vars:`, and the shadowing rule that ships with it *(landed)*](#vars-and-the-shadowing-rule-that-ships-with-it-landed)
   - [`for_each` reads `as:` *(landed)*](#for_each-reads-as-landed)
   - [`http:` stays; its response scope gets a root *(landed)*](#http-stays-its-response-scope-gets-a-root-landed)
@@ -1237,6 +1238,45 @@ own append-only promise for any file that already used it, and #476 is where
 that surface gets its documented landing. Traversal is metered by the CEL cost
 accounting like an ordinary select, and `TestOptionalTraversalCostMetered`
 holds that claim rather than assuming it.
+
+### Edition v2026.4: a type is a CEL type expression *(landed)*
+
+An input or output `type:` can say what a container holds, in the way CEL
+already spells its own types (issue #1640, decision D1 in
+`docs/plans/2026-09-whole-system-review.md`):
+
+```yaml
+inputs:
+  ids:
+    type: list(string)
+  limits:
+    type: map(string, int)
+```
+
+- **One parser, a type environment of its own.** The expression is read by the
+  one CEL parser, where `list` and `map` are functions from types to types and
+  `timestamp`, `duration`, and `dyn` are declared identifiers. A type value never
+  enters a run environment, because CEL erases parameters at run time:
+  `type(xs) == list(string)` would be false and read as a bug, so it is a
+  validate refusal instead. A map's keys are always `string`, since run values
+  cross JSON boundaries.
+- **Three spellings are gone, not deprecated.** Bare `list`, `struct`, and
+  `float` are second spellings of `list(dyn)`, `map(string, dyn)`, and `double`,
+  and one spelling per meaning is the rule. `flow fix` rewrites them in the same
+  run that stamps the edition, quoting the replacement inside a YAML flow mapping
+  where the comma would otherwise end the value. Nothing is lost: a bare `list`
+  already held anything, and `struct` was an open map with no fields.
+- **The checker and the boundaries read it.** An input's element type reaches
+  `flow validate` and the editor through the same checker environment, a default,
+  example, submitted value, or computed output is held to what the container
+  holds, and `flow breaking` reports a narrowed input or weakened output.
+- **The legacy enum is carried, not reserved.** `InputDeclaration.type` is in
+  durable history, so a typed container also writes the legacy value an older
+  worker reads (`list(T)` as `TYPE_LIST`, `map(string, T)` as `TYPE_STRUCT`), and
+  such a worker refuses the run when it starts rather than running it untyped.
+  `bytes`, `timestamp`, `duration`, `null_type`, and `dyn` have no legacy value,
+  so a declaration cannot carry them until a structural-only declaration is safe
+  across rolling upgrades.
 
 ### `vars:`, and the shadowing rule that ships with it *(landed)*
 
@@ -2614,7 +2654,7 @@ target for the retirement edition — which it now meets: `flow validate` accept
 exactly as written below.
 
 ```yaml
-edition: v2026.3
+edition: v2026.4
 name: deploy
 description: Ship a build, gate production behind a human, then page in order.
 vars:
@@ -2749,7 +2789,7 @@ moment:
 The coherence rules, and what each refuses:
 
 **Versions are explicit, and spelled the Go way.** Every version in a Flowfile is
-written, never inferred, and every one carries the `v` prefix: `edition: v2026.3`,
+written, never inferred, and every one carries the `v` prefix: `edition: v2026.4`,
 `slack: v2.1.0`. This reverses the earlier decision that an absent `edition:` means
 the current one. That decision optimized a line of ceremony away and bought a
 latent ambiguity with it: a file without an edition means whatever the build
@@ -5428,7 +5468,7 @@ name. This round is that vocabulary.
 ### The spelling
 
 ```yaml
-edition: v2026.3
+edition: v2026.4
 name: nightly-etl
 labels:
   cost-center: cc-1234
@@ -5628,7 +5668,7 @@ missing primitive. It was a missing *key source*: a Flowfile could not name one.
 ### The spelling
 
 ```yaml
-edition: v2026.3
+edition: v2026.4
 name: cluster-drain
 inputs:
   cluster:
@@ -5759,7 +5799,7 @@ verb.
 ### The spelling
 
 ```yaml
-edition: v2026.3
+edition: v2026.4
 name: deploy-gate
 debug:
   allow:

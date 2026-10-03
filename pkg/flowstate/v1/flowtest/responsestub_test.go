@@ -12,7 +12,7 @@ import (
 // expressions a `returns:` stub bypasses entirely, and the reason `response:`
 // exists (#925).
 const shapingWorkflow = `
-edition: v2026.3
+edition: v2026.4
 name: shaper
 steps:
   - id: build
@@ -66,7 +66,7 @@ func TestResponseStubCatchesAMappingTypo(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, dir+"/workflow.yaml", `
-edition: v2026.3
+edition: v2026.4
 name: shaper
 steps:
   - id: build
@@ -281,7 +281,7 @@ func TestResponseHeadersAndStringBodyReachTheShaping(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, dir+"/workflow.yaml", `
-edition: v2026.3
+edition: v2026.4
 name: echo
 steps:
   - id: fetch

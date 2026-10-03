@@ -169,7 +169,7 @@ func (c *traceCollector) taskAttemptAttributes(t *testing.T, taskName string) ma
 
 // tracedLocalWorkflow is a workload with two task steps, so a trace that
 // arrives with one span is distinguishable from one that arrives whole.
-const tracedLocalWorkflow = `edition: v2026.3
+const tracedLocalWorkflow = `edition: v2026.4
 name: traced-locally
 steps:
   - id: first

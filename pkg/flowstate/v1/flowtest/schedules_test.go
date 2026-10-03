@@ -16,7 +16,7 @@ import (
 // one that gives it nothing — the two shapes the honesty requirement of issue
 // #800 is about.
 const (
-	junctionWorkflow = `edition: v2026.3
+	junctionWorkflow = `edition: v2026.4
 name: junction
 steps:
   - id: checks
@@ -31,7 +31,7 @@ steps:
               message: quota ok
 `
 
-	straightLineWorkflow = `edition: v2026.3
+	straightLineWorkflow = `edition: v2026.4
 name: straight-line
 steps:
   - id: only
@@ -39,7 +39,7 @@ steps:
       message: hello
 `
 
-	scheduleTestFile = `edition: v2026.3
+	scheduleTestFile = `edition: v2026.4
 tests:
   - name: a case
     workflow: ./workflow.yaml

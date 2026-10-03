@@ -56,7 +56,7 @@
 #
 # runs the file now, with nobody to answer the gate, and reports what a rollout
 # nobody approved reports.
-edition: v2026.3
+edition: v2026.4
 name: webhook-approval-bridge
 description: A verified Slack delivery answers this run's `wait_for_signal:` gate, authorized by `signals:` and deduped by the run so one click cannot approve two stages.
 inputs:

@@ -24,7 +24,7 @@ import (
 func TestATotalTimeoutCompilesToThePolicyField(t *testing.T) {
 	t.Parallel()
 
-	wf, _, err := flowfile.Parse([]byte(`edition: v2026.3
+	wf, _, err := flowfile.Parse([]byte(`edition: v2026.4
 name: w
 steps:
   - id: poll
@@ -51,7 +51,7 @@ steps:
 func TestATotalTimeoutSurvivesTheRewriter(t *testing.T) {
 	t.Parallel()
 
-	src := []byte(`edition: v2026.3
+	src := []byte(`edition: v2026.4
 name: w
 steps:
   - id: poll
@@ -81,7 +81,7 @@ steps:
 func TestATotalTimeoutShorterThanOneAttemptIsRefused(t *testing.T) {
 	t.Parallel()
 
-	_, _, err := flowfile.Parse([]byte(`edition: v2026.3
+	_, _, err := flowfile.Parse([]byte(`edition: v2026.4
 name: w
 steps:
   - id: poll
@@ -105,7 +105,7 @@ steps:
 func TestAMisspelledTotalTimeoutIsSuggested(t *testing.T) {
 	t.Parallel()
 
-	_, _, err := flowfile.Parse([]byte(`edition: v2026.3
+	_, _, err := flowfile.Parse([]byte(`edition: v2026.4
 name: w
 steps:
   - id: poll

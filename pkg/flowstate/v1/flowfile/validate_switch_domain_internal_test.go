@@ -268,7 +268,7 @@ func TestAShapingExpressionOutsideTheReadableFormOpensTheDomain(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			src := `edition: v2026.3
+			src := `edition: v2026.4
 name: t
 steps:
   - id: approval
@@ -329,7 +329,7 @@ func TestAValueStepOutsideTheReadableFormOpensTheDomain(t *testing.T) {
 			// A `value:` step whose expression is a bare reference, not
 			// conditionals over string literals at all.
 			name: "a value step reading an input directly",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: t
 inputs:
   x:
@@ -353,7 +353,7 @@ steps:
 			// inventing a singleton domain would fire the exhaustiveness
 			// checks on a file whose real mistake is the dispatch itself.
 			name: "a value step holding a literal",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: t
 steps:
   - id: outcome
@@ -371,7 +371,7 @@ steps:
 			// The discriminant names the right step but the wrong output —
 			// a `value:` step produces only `value`, never `other`.
 			name: "a discriminant naming a value step's non-value output",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: t
 steps:
   - id: outcome
@@ -389,7 +389,7 @@ steps:
 			// The discriminant names a step that is neither a wait nor a
 			// value step at all.
 			name: "a discriminant naming a log step",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: t
 steps:
   - id: outcome
@@ -450,7 +450,7 @@ steps:
 // optMapOrValueWait is a wait fixture whose shaped output is exactly the
 // `optMap`+`orValue` chain the issue specifies, dispatched by a switch with all
 // three of the chain's strings as cases.
-const optMapOrValueWait = `edition: v2026.3
+const optMapOrValueWait = `edition: v2026.4
 name: t
 steps:
   - id: approval
@@ -539,7 +539,7 @@ func TestOptMapOrValueRefusesACaseItCannotProduce(t *testing.T) {
 func TestOptFlatMapDomainIsInferable(t *testing.T) {
 	t.Parallel()
 
-	src := `edition: v2026.3
+	src := `edition: v2026.4
 name: t
 steps:
   - id: probe
@@ -585,7 +585,7 @@ steps:
 func TestUndischargedOptMapOpensTheDomain(t *testing.T) {
 	t.Parallel()
 
-	src := `edition: v2026.3
+	src := `edition: v2026.4
 name: t
 steps:
   - id: approval
@@ -629,7 +629,7 @@ steps:
 func TestOptMapReadingItsOwnVariableOpensTheDomain(t *testing.T) {
 	t.Parallel()
 
-	src := `edition: v2026.3
+	src := `edition: v2026.4
 name: t
 steps:
   - id: approval
@@ -672,7 +672,7 @@ steps:
 func TestValueDotValueOpensTheDomain(t *testing.T) {
 	t.Parallel()
 
-	src := `edition: v2026.3
+	src := `edition: v2026.4
 name: t
 steps:
   - id: approval
@@ -716,7 +716,7 @@ steps:
 func TestOrValueOfANonLiteralOpensTheDomain(t *testing.T) {
 	t.Parallel()
 
-	src := `edition: v2026.3
+	src := `edition: v2026.4
 name: t
 steps:
   - id: approval
@@ -760,7 +760,7 @@ steps:
 func TestHasValueInLeafPositionOpensTheDomain(t *testing.T) {
 	t.Parallel()
 
-	src := `edition: v2026.3
+	src := `edition: v2026.4
 name: t
 steps:
   - id: approval
@@ -804,7 +804,7 @@ steps:
 func TestValueStepOptMapChainDomainIsKnown(t *testing.T) {
 	t.Parallel()
 
-	src := `edition: v2026.3
+	src := `edition: v2026.4
 name: t
 inputs:
   approved:
@@ -912,7 +912,7 @@ func TestExpenseApprovalRefusesACaseItCannotProduce(t *testing.T) {
 // arbitrary number, which is what the depth-bound tests below need.
 func chainedValueSteps(n int) (src string, lastID string) {
 	var b strings.Builder
-	b.WriteString("edition: v2026.3\nname: t\nsteps:\n")
+	b.WriteString("edition: v2026.4\nname: t\nsteps:\n")
 	b.WriteString("  - id: v0\n    value: >-\n      ${true ? \"a\" : \"b\"}\n")
 	for i := 1; i < n; i++ {
 		b.WriteString("  - id: v" + strconv.Itoa(i) + "\n    value: ${steps.v" + strconv.Itoa(i-1) + ".value}\n")
@@ -931,7 +931,7 @@ func TestDecomposedDiscriminantExpansionIsWorkBounded(t *testing.T) {
 	t.Parallel()
 
 	var b strings.Builder
-	b.WriteString("edition: v2026.3\nname: t\nsteps:\n")
+	b.WriteString("edition: v2026.4\nname: t\nsteps:\n")
 	b.WriteString("  - id: v0\n    value: >-\n      ${true ? \"a\" : \"b\"}\n")
 	for level := 1; level <= 6; level++ {
 		ref := "steps.v" + strconv.Itoa(level-1) + ".value"

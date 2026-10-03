@@ -21,7 +21,7 @@ func TestRunSourceCarriesCoverage(t *testing.T) {
 	t.Parallel()
 
 	report := flowtest.RunSource("<submitted>", []byte(`
-edition: v2026.3
+edition: v2026.4
 name: two
 steps:
   - id: yes_branch

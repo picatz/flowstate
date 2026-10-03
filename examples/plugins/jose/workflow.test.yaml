@@ -1,4 +1,4 @@
-edition: v2026.3
+edition: v2026.4
 tests:
   - name: a verified token for the expected ref is acted on
     workflow: ./workflow.yaml

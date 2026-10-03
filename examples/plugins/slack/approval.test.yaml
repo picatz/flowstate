@@ -1,4 +1,4 @@
-edition: v2026.3
+edition: v2026.4
 tests:
   - name: an authorized approver is recorded in the notification thread
     workflow: ./approval.yaml

@@ -112,7 +112,7 @@ func TestTheCanonicalClaimFailsOnANonCanonicalSnippet(t *testing.T) {
 	// Non-canonical, not wrong: the keys under `log:` are in the order an author
 	// typed them rather than the order Marshal writes them, and there is a blank
 	// line the formatter does not keep. It compiles, and `flow fmt` rewrites it.
-	differs := shownWorkflow{id: "hand-written#differs", source: []byte(`edition: v2026.3
+	differs := shownWorkflow{id: "hand-written#differs", source: []byte(`edition: v2026.4
 name: differs
 
 steps:
@@ -128,7 +128,7 @@ steps:
 	// expression and so fails [unfoldedStructure]'s verification. The keys are
 	// therefore not in the document Marshal writes, and the comment anchored to
 	// one of them has nowhere to go.
-	refused := shownWorkflow{id: "hand-written#refused", source: []byte(`edition: v2026.3
+	refused := shownWorkflow{id: "hand-written#refused", source: []byte(`edition: v2026.4
 name: refused
 steps:
   - id: notify

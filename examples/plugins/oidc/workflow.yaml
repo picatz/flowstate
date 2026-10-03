@@ -1,4 +1,4 @@
-edition: v2026.3
+edition: v2026.4
 name: oidc-minted-credential
 description: Calls a partner API with an access token minted for this call and never written down - the credential is a reference in the file and in history, and a value only inside the step that presents it.
 # The point of this example is what is *not* here.

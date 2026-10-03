@@ -37,7 +37,7 @@ import (
 // the finding measured.
 func manyAnchorsOneLineFlowfile(n int) string {
 	var b strings.Builder
-	b.WriteString("edition: v2026.3\nname: t\nvars:\n  x: [")
+	b.WriteString("edition: v2026.4\nname: t\nvars:\n  x: [")
 	for i := range n {
 		if i > 0 {
 			b.WriteString(", ")

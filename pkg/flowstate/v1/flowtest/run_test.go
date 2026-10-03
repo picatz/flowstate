@@ -115,7 +115,7 @@ func TestRunFileReportsAFailedExpectation(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, dir+"/workflow.yaml", `
-edition: v2026.3
+edition: v2026.4
 name: wrong-output
 steps:
   - id: fetch
@@ -208,7 +208,7 @@ func TestExpectRanIsJudgedAgainstAFailedRunsPartialTranscript(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, dir+"/workflow.yaml", `
-edition: v2026.3
+edition: v2026.4
 name: fails-partway
 steps:
   - id: first

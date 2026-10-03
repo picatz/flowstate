@@ -20,7 +20,7 @@
 #
 #   flow run local examples/matrix-fan-out/workflow.yaml
 #   flow run local examples/matrix-fan-out/workflow.yaml -o json | jq .runOutputs
-edition: v2026.3
+edition: v2026.4
 name: matrix-fan-out
 vars:
   arch: ${["amd64", "arm64"]}

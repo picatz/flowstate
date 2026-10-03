@@ -224,7 +224,7 @@ func TestACatalogLoadedValidatorRefusesWhatTheLaunchingOneRefuses(t *testing.T) 
 		{
 			name: "a literal where the task requires an expression",
 			source: func(task string) string {
-				return `edition: v2026.3
+				return `edition: v2026.4
 name: t
 steps:
   - id: make
@@ -702,7 +702,7 @@ func TestTaskDefsFromCatalogBoundsTheWholeDocument(t *testing.T) {
 // declare. `nam` is a misspelling of `name`, which is what #710's second
 // acceptance clause is about.
 func widgetSource(task string) string {
-	return `edition: v2026.3
+	return `edition: v2026.4
 name: t
 steps:
   - id: make

@@ -39,7 +39,7 @@
 #
 #     flow run local examples/utilization-guard/workflow.yaml \
 #       --input reserved=120
-edition: v2026.3
+edition: v2026.4
 name: utilization-guard
 inputs:
   capacity:

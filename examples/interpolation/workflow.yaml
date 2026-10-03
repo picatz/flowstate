@@ -16,7 +16,7 @@
 # and no filter in text; a fence holds an expression and nothing else. That is
 # the line Helm and Jinja crossed, and staying on this side of it is what keeps
 # a value readable as data at a glance.
-edition: v2026.3
+edition: v2026.4
 name: interpolation
 inputs:
   version:

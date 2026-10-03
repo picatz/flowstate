@@ -29,7 +29,7 @@ func Example_debug() {
 	defer uninstall()
 
 	workflow, _, err := embed.Compile([]byte(`
-edition: v2026.3
+edition: v2026.4
 name: billing
 steps:
   - id: orders

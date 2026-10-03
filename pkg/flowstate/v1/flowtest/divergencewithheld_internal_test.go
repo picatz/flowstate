@@ -40,7 +40,7 @@ func TestADivergenceShowsNoValueTheCaseWithholds(t *testing.T) {
 	dir := t.TempDir()
 	for name, source := range map[string]string{
 		"child.yaml": `
-edition: v2026.3
+edition: v2026.4
 name: child
 inputs:
   api_key:
@@ -52,7 +52,7 @@ steps:
     value: ${{"a":1}[inputs.api_key]}
 `,
 		"workflow.yaml": `
-edition: v2026.3
+edition: v2026.4
 name: parent
 steps:
   - id: nested
@@ -348,7 +348,7 @@ func TestACaseRunUnderAReshownPostureWithholdsItByValue(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.yaml"), []byte(`edition: v2026.3
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.yaml"), []byte(`edition: v2026.4
 name: one-rune
 steps:
   - id: pick

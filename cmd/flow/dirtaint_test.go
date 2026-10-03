@@ -38,7 +38,7 @@ func TestASuiteNamingASecretFromADirectoryVarIsRefused(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow-a.yaml"), []byte(cleanWorkflow), 0o600))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow-b.yaml"), []byte(gatedWorkflow), 0o600))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "testdefaults.yaml"), []byte(
-		"edition: v2026.3\n"+
+		"edition: v2026.4\n"+
 			"vars:\n"+
 			"  token: "+secret+"\n"), 0o600))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "a.test.yaml"), []byte(

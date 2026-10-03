@@ -67,7 +67,7 @@ func requireNoFindings(t *testing.T, found []StyleFinding) {
 
 // TestLintReportsANestedConditional is R5's first threshold, positive.
 func TestLintReportsANestedConditional(t *testing.T) {
-	found := lintOf(t, `edition: v2026.3
+	found := lintOf(t, `edition: v2026.4
 name: nested
 inputs:
   amount:
@@ -95,7 +95,7 @@ steps:
 // TestLintReportsANestedConditionalOnceForAChain keeps a chain of conditionals
 // one thing to rewrite rather than one finding per level.
 func TestLintReportsANestedConditionalOnceForAChain(t *testing.T) {
-	found := lintOf(t, `edition: v2026.3
+	found := lintOf(t, `edition: v2026.4
 name: chain
 inputs:
   amount:
@@ -115,7 +115,7 @@ steps:
 // "name it in a `value:` step" is advice that does not compile. See
 // [nestedConditionalAdvice].
 func TestLintAdvisesShapingWhereANameIsBoundWhereItIsWritten(t *testing.T) {
-	found := lintOf(t, `edition: v2026.3
+	found := lintOf(t, `edition: v2026.4
 name: shaped
 steps:
   - id: review
@@ -149,7 +149,7 @@ steps:
 // Asserting the column is the point rather than decoration: the line is right
 // either way here, and the column is what tells the two lookups apart.
 func TestLintPositionsADeclaredOutputAtItsExpression(t *testing.T) {
-	found := lintOf(t, `edition: v2026.3
+	found := lintOf(t, `edition: v2026.4
 name: outputs
 inputs:
   amount:
@@ -182,7 +182,7 @@ outputs:
 // that produces a file the validator rejects is worse than none (#865 review,
 // Codex r3835040605).
 func TestLintIsSilentWhereNoStepCanServeTheSuggestion(t *testing.T) {
-	found := lintOf(t, `edition: v2026.3
+	found := lintOf(t, `edition: v2026.4
 name: prestep
 inputs:
   amount:
@@ -205,11 +205,11 @@ steps:
 // workflow `vars:` entry among them makes the whole rewrite one that does not
 // compile — even though the other two sites could read it perfectly well.
 func TestLintIsSilentOnARepeatOneSiteCannotRead(t *testing.T) {
-	found := lintOf(t, `edition: v2026.3
+	found := lintOf(t, `edition: v2026.4
 name: mixed-phase
 inputs:
   names:
-    type: list
+    type: list(dyn)
 vars:
   count: ${string(size(inputs.names))}
 steps:
@@ -232,11 +232,11 @@ steps:
 // A checker counting `?` characters in the source — the approximation Part III
 // used to measure the corpus — reports both of these.
 func TestLintIsSilentOnAnOptionalTraversalAndASingleConditional(t *testing.T) {
-	found := lintOf(t, `edition: v2026.3
+	found := lintOf(t, `edition: v2026.4
 name: fine
 inputs:
   order:
-    type: struct
+    type: map(string, dyn)
 steps:
   - id: label
     value: ${inputs.order.?label.orValue("none")}
@@ -249,7 +249,7 @@ steps:
 
 // TestLintReportsAnExpressionStatedThreeTimes is R5's third threshold, positive.
 func TestLintReportsAnExpressionStatedThreeTimes(t *testing.T) {
-	found := lintOf(t, `edition: v2026.3
+	found := lintOf(t, `edition: v2026.4
 name: repeated
 vars:
   names:
@@ -278,7 +278,7 @@ steps:
 // TestLintIsSilentOnAPairOfRepeats holds the suggestion to R5's threshold, which
 // is deliberately above `flow audit`'s.
 func TestLintIsSilentOnAPairOfRepeats(t *testing.T) {
-	const src = `edition: v2026.3
+	const src = `edition: v2026.4
 name: twice
 vars:
   names:
@@ -307,11 +307,11 @@ steps:
 // make is one an author cannot take — which makes reporting it worse than
 // silence.
 func TestLintIsSilentOnARepeatReadingALoopBinding(t *testing.T) {
-	found := lintOf(t, `edition: v2026.3
+	found := lintOf(t, `edition: v2026.4
 name: loop-bound
 inputs:
   orders:
-    type: list
+    type: list(dyn)
 steps:
   - id: each
     for_each:
@@ -334,11 +334,11 @@ steps:
 // TestLintIsSilentOnARepeatReadingANamedLoopBinding is the same negative for the
 // name an author writes rather than the default one.
 func TestLintIsSilentOnARepeatReadingANamedLoopBinding(t *testing.T) {
-	found := lintOf(t, `edition: v2026.3
+	found := lintOf(t, `edition: v2026.4
 name: loop-named
 inputs:
   orders:
-    type: list
+    type: list(dyn)
 steps:
   - id: each
     for_each:
@@ -362,7 +362,7 @@ steps:
 // TestLintIsSilentOnARepeatReadingAStepVar is the same negative for a step's own
 // `vars:` keys, which are bound bare for the rest of that step and nowhere else.
 func TestLintIsSilentOnARepeatReadingAStepVar(t *testing.T) {
-	found := lintOf(t, `edition: v2026.3
+	found := lintOf(t, `edition: v2026.4
 name: step-vars
 steps:
   - id: one
@@ -391,7 +391,7 @@ steps:
 // TestLintIsSilentOnARepeatReadingNowInAWait is the same negative for `now`,
 // which is bound inside a wait's expressions and nowhere else.
 func TestLintIsSilentOnARepeatReadingNowInAWait(t *testing.T) {
-	found := lintOf(t, `edition: v2026.3
+	found := lintOf(t, `edition: v2026.4
 name: waits
 steps:
   - id: first
@@ -407,7 +407,7 @@ steps:
 
 // TestLintReportsEqualityDispatch is R5's fourth threshold, positive.
 func TestLintReportsEqualityDispatch(t *testing.T) {
-	found := lintOf(t, `edition: v2026.3
+	found := lintOf(t, `edition: v2026.4
 name: dispatch
 steps:
   - id: outcome
@@ -439,7 +439,7 @@ steps:
 // TestLintIsSilentOnTwoArms holds the dispatch suggestion to the three outcomes
 // the decided-spellings table names.
 func TestLintIsSilentOnTwoArms(t *testing.T) {
-	found := lintOf(t, `edition: v2026.3
+	found := lintOf(t, `edition: v2026.4
 name: two
 steps:
   - id: outcome
@@ -460,7 +460,7 @@ steps:
 // TestLintIsSilentOnUnrelatedSiblingConditions is the first negative the charter
 // names by name: siblings whose conditions have nothing to do with each other.
 func TestLintIsSilentOnUnrelatedSiblingConditions(t *testing.T) {
-	found := lintOf(t, `edition: v2026.3
+	found := lintOf(t, `edition: v2026.4
 name: unrelated
 inputs:
   amount:
@@ -491,7 +491,7 @@ steps:
 // names: a condition and the named cases its complement is split into. A `!` is
 // not an equality call, so the group never reaches the threshold.
 func TestLintIsSilentOnAPartitionedComplement(t *testing.T) {
-	found := lintOf(t, `edition: v2026.3
+	found := lintOf(t, `edition: v2026.4
 name: complement
 inputs:
   decision:
@@ -518,13 +518,13 @@ steps:
 // sibling group rather than the file: steps that never both exist at once are
 // not arms of one dispatch.
 func TestLintIsSilentOnEqualityChainsInDifferentSiblingGroups(t *testing.T) {
-	found := lintOf(t, `edition: v2026.3
+	found := lintOf(t, `edition: v2026.4
 name: groups
 inputs:
   decision:
     type: string
   orders:
-    type: list
+    type: list(dyn)
 steps:
   - id: pay
     if: ${inputs.decision == "approved"}
@@ -551,7 +551,7 @@ steps:
 // steps that run on one value are two things that both happen, and a `switch:`
 // cannot express that at all.
 func TestLintIsSilentOnRepeatedLiteralsInADispatch(t *testing.T) {
-	found := lintOf(t, `edition: v2026.3
+	found := lintOf(t, `edition: v2026.4
 name: repeated-literal
 steps:
   - id: outcome
@@ -577,11 +577,11 @@ steps:
 // rewrite does not exist: a guard conjoined onto the equality has nowhere to go
 // in a `switch:`.
 func TestLintIsSilentOnAGuardedEqualityChain(t *testing.T) {
-	found := lintOf(t, `edition: v2026.3
+	found := lintOf(t, `edition: v2026.4
 name: guarded
 inputs:
   order:
-    type: struct
+    type: map(string, dyn)
 steps:
   - id: pay
     if: ${has(inputs.order.decision) && inputs.order.decision == "approved"}
@@ -608,7 +608,7 @@ steps:
 // the answer, and a lint disagreeing with the document it cites would be worse
 // than either one alone.
 func TestLintIsSilentOnTheCharterPositiveExample(t *testing.T) {
-	found := lintOf(t, `edition: v2026.3
+	found := lintOf(t, `edition: v2026.4
 name: refund-dispatch
 description: Settle a refund on the outcome a reviewer sent.
 inputs:
@@ -709,7 +709,7 @@ func TestLintDoesNotReportAnUnresolvedComprehensionsTernaries(t *testing.T) {
 // bound is "not found", which is the missed suggestion the bound is willing to
 // cost, and never a walk that keeps going.
 func TestLintStopsAtItsNodeBudget(t *testing.T) {
-	wf, _, err := Parse([]byte(`edition: v2026.3
+	wf, _, err := Parse([]byte(`edition: v2026.4
 name: nested
 inputs:
   amount:
@@ -739,7 +739,7 @@ steps:
 // is nothing to point at, which is what a caller holding only a compiled
 // workflow has.
 func TestLintWithoutPositionsStillReports(t *testing.T) {
-	wf, _, err := Parse([]byte(`edition: v2026.3
+	wf, _, err := Parse([]byte(`edition: v2026.4
 name: nested
 inputs:
   amount:
@@ -765,7 +765,7 @@ steps:
 // down, where a missing-overload diagnostic named `string` at an author who had
 // written no such thing.
 func TestLintIsSilentOnAValueSplicedIntoThreeSentences(t *testing.T) {
-	found := lintOf(t, `edition: v2026.3
+	found := lintOf(t, `edition: v2026.4
 name: sentences
 inputs:
   amount:
@@ -793,11 +793,11 @@ steps:
 // both because that is what an author would hoist and because naming the
 // wrapper is what made the advice loop.
 func TestLintReportsTheComputationUnderAFencesConversion(t *testing.T) {
-	found := lintOf(t, `edition: v2026.3
+	found := lintOf(t, `edition: v2026.4
 name: counted
 inputs:
   names:
-    type: list
+    type: list(dyn)
 steps:
   - id: one
     log:
@@ -830,11 +830,11 @@ steps:
 // why the fixture below is the shape that rewrite produces rather than a
 // synthetic one.
 func TestTheRepeatRemedyConverges(t *testing.T) {
-	found := lintOf(t, `edition: v2026.3
+	found := lintOf(t, `edition: v2026.4
 name: hoisted
 inputs:
   names:
-    type: list
+    type: list(dyn)
 steps:
   - id: probed
     value: ${size(inputs.names)}
@@ -858,11 +858,11 @@ steps:
 // generated it — here the author wrote every character of the conversion, and
 // the repetition under it is reported exactly as it is under a fence.
 func TestLintStillReportsAConversionAnAuthorWrote(t *testing.T) {
-	found := lintOf(t, `edition: v2026.3
+	found := lintOf(t, `edition: v2026.4
 name: explicit
 inputs:
   names:
-    type: list
+    type: list(dyn)
 steps:
   - id: one
     log:
@@ -892,11 +892,11 @@ steps:
 //
 // One finding, four sites, is what the file actually says.
 func TestLintMergesAFencedRepeatWithItsBareOne(t *testing.T) {
-	found := lintOf(t, `edition: v2026.3
+	found := lintOf(t, `edition: v2026.4
 name: mixed
 inputs:
   items:
-    type: list
+    type: list(dyn)
 steps:
   - id: one
     log:
@@ -934,11 +934,11 @@ steps:
 // and TestLintMergesAFencedRepeatWithItsBareOne; removing the merge entirely
 // fails only that one, because here the wider bucket already reports alone.
 func TestLintKeepsTheWiderBucketWhenMerging(t *testing.T) {
-	found := lintOf(t, `edition: v2026.3
+	found := lintOf(t, `edition: v2026.4
 name: barely
 inputs:
   items:
-    type: list
+    type: list(dyn)
 steps:
   - id: one
     log:
@@ -960,7 +960,7 @@ steps:
 // webhookKeyedOn is a Flowfile whose one webhook is deduped by the given key
 // expression, which is the whole of what R10 reads.
 func webhookKeyedOn(key string) string {
-	return `edition: v2026.3
+	return `edition: v2026.4
 name: keyed
 inputs:
   order_id:
@@ -1073,7 +1073,7 @@ func TestLintStaysSilentOnAKeyTheSenderRepeats(t *testing.T) {
 
 	// A signature header read into an argument is the mapping's business, not
 	// the key's; the rule is about what names the event.
-	found := lintOf(t, `edition: v2026.3
+	found := lintOf(t, `edition: v2026.4
 name: argued
 inputs:
   signed_as:

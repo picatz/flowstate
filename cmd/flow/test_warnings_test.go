@@ -12,7 +12,7 @@ import (
 
 // A minimal workflow plus a case declaring one stub the run answers through
 // and one it never consults — the shape the warning tier (#926) reports.
-const warningWorkflow = `edition: v2026.3
+const warningWorkflow = `edition: v2026.4
 name: greeter
 steps:
   - id: greet

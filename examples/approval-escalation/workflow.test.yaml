@@ -29,7 +29,7 @@
 # `FlowstateServer.Signal` calls, so the two approvers below are admitted
 # because the file's own policy admits them, and the third party in the last
 # case is refused here for the reason production would refuse them.
-edition: v2026.3
+edition: v2026.4
 defaults:
   inputs:
     change: deploy v1.4.2 to production

@@ -21,7 +21,7 @@ import (
 func writeTranscriptFixture(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.yaml"), []byte(`edition: v2026.3
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.yaml"), []byte(`edition: v2026.4
 name: pair
 steps:
   - id: first
@@ -32,7 +32,7 @@ steps:
       message: two
 outputs: {}
 `), 0o600))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.test.yaml"), []byte(`edition: v2026.3
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.test.yaml"), []byte(`edition: v2026.4
 tests:
   - name: passes quietly
     workflow: ./workflow.yaml

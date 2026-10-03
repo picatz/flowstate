@@ -30,7 +30,7 @@ Sleep 1s
 
 Type "cat > workflow.yaml <<'EOF'"
 Enter
-Type "edition: v2026.3"
+Type "edition: v2026.4"
 Enter
 Type "name: release"
 Enter

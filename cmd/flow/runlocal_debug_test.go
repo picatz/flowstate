@@ -23,7 +23,7 @@ func writeRunLocalDebugFixture(t *testing.T) string {
 
 	dir := t.TempDir()
 	path := filepath.Join(dir, "workflow.yaml")
-	require.NoError(t, os.WriteFile(path, []byte(`edition: v2026.3
+	require.NoError(t, os.WriteFile(path, []byte(`edition: v2026.4
 name: debugged
 steps:
   - id: first
@@ -105,7 +105,7 @@ func TestRunLocalDebugQuitEndsTheRun(t *testing.T) {
 func TestRunLocalDebugRefusesASensitiveWorkflowWithoutReveal(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "workflow.yaml")
-	require.NoError(t, os.WriteFile(path, []byte(`edition: v2026.3
+	require.NoError(t, os.WriteFile(path, []byte(`edition: v2026.4
 name: secretive
 steps:
   - id: mint

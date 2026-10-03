@@ -1,9 +1,9 @@
-edition: v2026.3
+edition: v2026.4
 name: debugging
 description: A small order batch with a loop, a parallel block and a call, written to be stepped through by the debugger locally, from an editor, and durably.
 inputs:
   amounts:
-    type: list
+    type: list(dyn)
     default:
       - 120
       - 900

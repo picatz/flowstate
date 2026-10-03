@@ -37,7 +37,7 @@ import (
 func blockValue(t *testing.T, scalar string) *v1.Value {
 	t.Helper()
 
-	wf, err := flowfile.Unmarshal([]byte(`edition: v2026.3
+	wf, err := flowfile.Unmarshal([]byte(`edition: v2026.4
 name: t
 steps:
   - id: a
@@ -103,7 +103,7 @@ func TestABlockScalarHoldingOneFenceIsTheExpression(t *testing.T) {
 func TestABlockScalarEvaluatesToTheFencesOwnType(t *testing.T) {
 	t.Parallel()
 
-	wf, err := flowfile.Unmarshal([]byte(`edition: v2026.3
+	wf, err := flowfile.Unmarshal([]byte(`edition: v2026.4
 name: t
 steps:
   - id: number

@@ -329,7 +329,7 @@ func TestRPCToolsAdvertiseTheirResponseSchemas(t *testing.T) {
 func TestACompiledStructuredWorkflowIsAcceptedByRun(t *testing.T) {
 	t.Parallel()
 
-	const source = `edition: v2026.3
+	const source = `edition: v2026.4
 name: schema-chain
 steps:
   - id: hello
@@ -559,7 +559,7 @@ func TestTheValidateToolAnswersOverTheProtocol(t *testing.T) {
 			"files": []map[string]any{{
 				"name": "broken.yaml",
 				// base64 of an invalid Flowfile; SourceFile.source is bytes.
-				"source": []byte("edition: v2026.3\nname: x\nsteps:\n  - id: a\n    nope:\n      x: y\n"),
+				"source": []byte("edition: v2026.4\nname: x\nsteps:\n  - id: a\n    nope:\n      x: y\n"),
 			}},
 		},
 	})
@@ -663,7 +663,7 @@ func TestTheRunLocalToolExecutesAWorkflow(t *testing.T) {
 	session := connectMCP(t, defaultLocalRunPosture())
 
 	result, answer := callRunLocal(t, session, map[string]any{
-		"source": `edition: v2026.3
+		"source": `edition: v2026.4
 name: offline
 vars:
   who: world
@@ -703,7 +703,7 @@ func TestTheRunLocalToolAnswersAGate(t *testing.T) {
 	session := connectMCP(t, defaultLocalRunPosture())
 
 	result, answer := callRunLocal(t, session, map[string]any{
-		"source": `edition: v2026.3
+		"source": `edition: v2026.4
 name: gated
 steps:
   - id: approval
@@ -750,7 +750,7 @@ func TestTheRunLocalToolTakesInputs(t *testing.T) {
 	session := connectMCP(t, defaultLocalRunPosture())
 
 	result, answer := callRunLocal(t, session, map[string]any{
-		"source": `edition: v2026.3
+		"source": `edition: v2026.4
 name: parameterized
 inputs:
   service:
@@ -805,7 +805,7 @@ func TestTheRunLocalToolRedactsSensitiveOutputs(t *testing.T) {
 	const secret = "sk-live-0123456789abcdef"
 
 	result, answer := callRunLocal(t, session, map[string]any{
-		"source": fmt.Sprintf(`edition: v2026.3
+		"source": fmt.Sprintf(`edition: v2026.4
 name: has-a-secret
 outputs:
   token:
@@ -845,7 +845,7 @@ func TestTheRunLocalToolBoundsBeforeItRedacts(t *testing.T) {
 	const secret = "sk-live-0123456789abcdef"
 
 	var source strings.Builder
-	fmt.Fprintf(&source, "edition: v2026.3\nname: big-and-secret\noutputs:\n  token:\n    value: ${\"%s\"}\n    sensitive: true\nsteps:\n", secret)
+	fmt.Fprintf(&source, "edition: v2026.4\nname: big-and-secret\noutputs:\n  token:\n    value: ${\"%s\"}\n    sensitive: true\nsteps:\n", secret)
 	for i := range 40 {
 		fmt.Fprintf(&source, "  - id: s%d\n    value: ${\"%s\"}\n", i, strings.Repeat("x", 4<<10))
 	}
@@ -875,7 +875,7 @@ func TestTheRunLocalToolRevealSensitiveShowsValues(t *testing.T) {
 	const secret = "sk-live-0123456789abcdef"
 
 	_, answer := callRunLocal(t, session, map[string]any{
-		"source": fmt.Sprintf(`edition: v2026.3
+		"source": fmt.Sprintf(`edition: v2026.4
 name: has-a-secret
 outputs:
   token:
@@ -908,7 +908,7 @@ func TestTheRunLocalToolRedactsAStepComputedSensitiveOutput(t *testing.T) {
 	const secret = "sk-live-0123456789abcdef"
 
 	result, answer := callRunLocal(t, session, map[string]any{
-		"source": `edition: v2026.3
+		"source": `edition: v2026.4
 name: secret-from-a-step
 outputs:
   token:
@@ -952,7 +952,7 @@ func TestTheRunLocalToolRefusesArgumentsTheSourceDoesNotDeclare(t *testing.T) {
 
 	session := connectMCP(t, defaultLocalRunPosture())
 
-	const source = `edition: v2026.3
+	const source = `edition: v2026.4
 name: parameterized
 inputs:
   service:
@@ -1142,7 +1142,7 @@ func TestTheRunLocalToolReportsDiagnostics(t *testing.T) {
 	session := connectMCP(t, defaultLocalRunPosture())
 
 	result, _ := callRunLocal(t, session, map[string]any{
-		"source": "edition: v2026.3\nname: x\nsteps:\n  - id: a\n    nope:\n      x: y\n",
+		"source": "edition: v2026.4\nname: x\nsteps:\n  - id: a\n    nope:\n      x: y\n",
 	})
 	require.True(t, result.IsError, "an invalid Flowfile executed without complaint")
 
@@ -1171,7 +1171,7 @@ func TestTheRunLocalToolRefusesEgressByDefault(t *testing.T) {
 	session := connectMCP(t, posture)
 
 	result, answer := callRunLocal(t, session, map[string]any{
-		"source": `edition: v2026.3
+		"source": `edition: v2026.4
 name: exfiltrate
 steps:
   - id: fetch
@@ -1459,7 +1459,7 @@ func TestTheRunLocalToolRefusesUnknownArguments(t *testing.T) {
 	result, err := session.CallTool(t.Context(), &mcp.CallToolParams{
 		Name: flowmcp.RunLocalToolName,
 		Arguments: map[string]any{
-			"source":        "edition: v2026.3\nname: x\nsteps:\n- id: a\n  log:\n    message: hi\n",
+			"source":        "edition: v2026.4\nname: x\nsteps:\n- id: a\n  log:\n    message: hi\n",
 			"egress_policy": "/tmp/anything.yaml",
 		},
 	})

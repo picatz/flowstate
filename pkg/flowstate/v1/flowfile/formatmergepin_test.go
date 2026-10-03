@@ -39,7 +39,7 @@ func TestFormatBoundsPinCollectionByTotalNodes(t *testing.T) {
 	const keys, steps = 800, 800
 
 	var b strings.Builder
-	b.WriteString("edition: v2026.3\nname: bomb\nsteps:\n")
+	b.WriteString("edition: v2026.4\nname: bomb\nsteps:\n")
 	for d := range steps {
 		b.WriteString("  - id: s" + strconv.Itoa(d) + "\n")
 		b.WriteString("    <<: *base\n")
@@ -53,7 +53,7 @@ func TestFormatBoundsPinCollectionByTotalNodes(t *testing.T) {
 
 	// Any workflow will do: the refusal happens while reading the source's
 	// pins, before anything is placed into what Marshal rendered.
-	workflow, err := flowfile.Unmarshal([]byte(`edition: v2026.3
+	workflow, err := flowfile.Unmarshal([]byte(`edition: v2026.4
 name: bomb
 steps:
   - id: s
@@ -79,7 +79,7 @@ steps:
 // decoy and fails the first assertion here.
 func TestCallPinsReadsOnlyCallSteps(t *testing.T) {
 	pin := digestOf(t, simpleCalleeSource)
-	decoy := `edition: v2026.3
+	decoy := `edition: v2026.4
 name: decoy
 vars:
   call: ./callee.yaml
@@ -97,7 +97,7 @@ steps:
 	// The other direction, in the same test because the guard is only correct if
 	// it keeps both answers: a real call step nested inside a loop body is still
 	// a step, and its pin is still found.
-	nested := `edition: v2026.3
+	nested := `edition: v2026.4
 name: nested
 vars:
   call: ./callee.yaml
@@ -132,7 +132,7 @@ func TestFormatKeepsAPinBesideADecoyItMustNotInvent(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "callee.yaml", simpleCalleeSource)
 	pin := digestOf(t, simpleCalleeSource)
-	src := `edition: v2026.3
+	src := `edition: v2026.4
 name: caller
 vars:
   call: not a call
@@ -152,7 +152,7 @@ steps:
 	got, err := flowfile.Format([]byte(src), workflow)
 	require.NoError(t, err)
 
-	want := `edition: v2026.3
+	want := `edition: v2026.4
 name: caller
 vars:
   call: not a call

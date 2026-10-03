@@ -308,6 +308,12 @@ func formatType(t *v1.Type, depth int) (string, error) {
 // can see it, rather than when the run starts.
 func declareType(env *cel.Env, text string) (legacy v1.InputDeclaration_Type, structural *v1.Type, err error) {
 	if declared, known := v1.ParseDeclaredType(text); known {
+		if now, retired := retiredTypeSpellings[declared]; retired {
+			return v1.InputDeclaration_TYPE_UNSPECIFIED, nil, fmt.Errorf(
+				"`%s` is retired in edition %s; write %s (`flow fix` rewrites it)",
+				text, CurrentEdition, yamlSafe(now))
+		}
+
 		return declared, nil, nil
 	}
 
@@ -355,5 +361,46 @@ func declaredTypeText(legacy v1.InputDeclaration_Type, structural *v1.Type) stri
 		}
 	}
 
+	if now, retired := retiredTypeSpellings[legacy]; retired {
+		return now
+	}
+
 	return v1.DeclaredTypeName(legacy)
+}
+
+// retiredTypeSpellings are the legacy words edition v2026.4 refuses, and the
+// type expression each one meant. `enum`, `string`, `int` and `bool` stay: they
+// have no second spelling.
+var retiredTypeSpellings = map[v1.InputDeclaration_Type]string{
+	v1.InputDeclaration_TYPE_LIST:   "list(dyn)",
+	v1.InputDeclaration_TYPE_STRUCT: "map(string, dyn)",
+	v1.InputDeclaration_TYPE_FLOAT:  "double",
+}
+
+// declarableTypeNames are the bare words a `type:` accepts, for a diagnostic
+// offering the alternatives: the legacy words that survive the edition, then the
+// expression forms, in the order an author reaches for them.
+func declarableTypeNames() []string {
+	var names []string
+	for _, name := range v1.DeclaredTypeNames() {
+		if declared, ok := v1.ParseDeclaredType(name); ok {
+			if _, retired := retiredTypeSpellings[declared]; retired {
+				continue
+			}
+		}
+		names = append(names, name)
+	}
+
+	return append(names, "double", "list(T)", "map(string, T)")
+}
+
+// yamlSafe quotes a type expression whose comma would end a plain scalar inside
+// a YAML flow mapping, so the spelling a diagnostic offers is valid wherever
+// the author copies it (#1466).
+func yamlSafe(expr string) string {
+	if strings.Contains(expr, ",") {
+		return `"` + expr + `"`
+	}
+
+	return expr
 }

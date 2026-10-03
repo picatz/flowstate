@@ -14,7 +14,7 @@
 # than of a transcript, so it is proved where the scheduler is — the durable
 # driver's TestRunWorkflowAsyncOverlapsLaterWork, whose stubbed peer refuses to
 # answer the async step until the step written after it has arrived.
-edition: v2026.3
+edition: v2026.4
 tests:
   - name: crossing dependencies produce exactly what the same file would produce in written order
     workflow: ./workflow.yaml

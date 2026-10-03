@@ -13,7 +13,7 @@
 # formed. The exchange itself, and which target a workload may assume, are the
 # deployment's; the auth package's own `TestFlowstateToFlowstateFederation`
 # stands up both deployments and proves the peer admits what this step sends.
-edition: v2026.3
+edition: v2026.4
 tests:
   - name: the step names the assertion target and carries no credential material of its own
     workflow: ./workflow.yaml

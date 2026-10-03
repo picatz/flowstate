@@ -25,7 +25,7 @@ import (
 // positionWorkflow is a workflow with enough shape for every claim below to be
 // about something real: a step that runs, a step that is skipped, and two
 // outputs so a case can name one and miss the other.
-const positionWorkflow = `edition: v2026.3
+const positionWorkflow = `edition: v2026.4
 name: positions
 steps:
   - id: first
@@ -56,7 +56,7 @@ func TestRunTimeFailuresArePlacedInTheTestFile(t *testing.T) {
 			// The value the case named, underlined where it is written rather
 			// than at the block that holds it.
 			name: "an output whose value differs",
-			suite: `edition: v2026.3
+			suite: `edition: v2026.4
 tests:
   - name: c
     workflow: ./workflow.yaml
@@ -73,7 +73,7 @@ tests:
 			// The case does not name this output, so there is no entry to
 			// underline and the key it should be added to is the honest answer.
 			name: "an output the case does not name",
-			suite: `edition: v2026.3
+			suite: `edition: v2026.4
 tests:
   - name: c
     workflow: ./workflow.yaml
@@ -87,7 +87,7 @@ tests:
 		},
 		{
 			name: "a step claimed to have run that did not",
-			suite: `edition: v2026.3
+			suite: `edition: v2026.4
 tests:
   - name: c
     workflow: ./workflow.yaml
@@ -103,7 +103,7 @@ tests:
 		},
 		{
 			name: "an outcome the run did not reach",
-			suite: `edition: v2026.3
+			suite: `edition: v2026.4
 tests:
   - name: c
     workflow: ./workflow.yaml
@@ -119,7 +119,7 @@ tests:
 		},
 		{
 			name: "a check that came back false",
-			suite: `edition: v2026.3
+			suite: `edition: v2026.4
 tests:
   - name: c
     workflow: ./workflow.yaml
@@ -171,14 +171,14 @@ func TestAFailureAboutAKeyNobodyWroteCarriesNoPosition(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
-	writeFile(t, filepath.Join(dir, "workflow.yaml"), `edition: v2026.3
+	writeFile(t, filepath.Join(dir, "workflow.yaml"), `edition: v2026.4
 name: fails
 steps:
   - id: boom
     value: ${1 / 0}
 `)
 	path := filepath.Join(dir, "workflow.test.yaml")
-	writeFile(t, path, `edition: v2026.3
+	writeFile(t, path, `edition: v2026.4
 tests:
   - name: c
     workflow: ./workflow.yaml
@@ -240,7 +240,7 @@ func TestATableRowIsPlacedAtTheRowThatWroteIt(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "workflow.yaml"), positionWorkflow)
 	path := filepath.Join(dir, "workflow.test.yaml")
-	writeFile(t, path, `edition: v2026.3
+	writeFile(t, path, `edition: v2026.4
 tests:
   - name: table
     workflow: ./workflow.yaml
@@ -281,7 +281,7 @@ func TestAnInheritedClaimIsNotPlacedOnTheCase(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "workflow.yaml"), positionWorkflow)
 	path := filepath.Join(dir, "workflow.test.yaml")
-	writeFile(t, path, `edition: v2026.3
+	writeFile(t, path, `edition: v2026.4
 defaults:
   check:
     - that: ${1 == 2}
@@ -316,7 +316,7 @@ func TestAWarningIsPlacedAndCodedToo(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
-	writeFile(t, filepath.Join(dir, "workflow.yaml"), `edition: v2026.3
+	writeFile(t, filepath.Join(dir, "workflow.yaml"), `edition: v2026.4
 name: reaches
 steps:
   - id: fetch
@@ -327,7 +327,7 @@ outputs:
     value: ${steps.fetch.status_code}
 `)
 	path := filepath.Join(dir, "workflow.test.yaml")
-	writeFile(t, path, `edition: v2026.3
+	writeFile(t, path, `edition: v2026.4
 tests:
   - name: c
     workflow: ./workflow.yaml

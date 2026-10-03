@@ -1,4 +1,4 @@
-edition: v2026.3
+edition: v2026.4
 name: enterprise-fund-transfer
 description: Moves money between two ledger accounts, requiring a role-authorized human approval above a threshold, and reversing what already happened if a later step in the settlement fails.
 # Three primitives composed for one reason: money that moves has to move

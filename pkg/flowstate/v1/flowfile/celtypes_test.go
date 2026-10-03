@@ -19,7 +19,7 @@ import (
 func TestTypedScopeRefusesWhatCannotRun(t *testing.T) {
 	t.Parallel()
 
-	const header = `edition: v2026.3
+	const header = `edition: v2026.4
 name: t
 inputs:
   count:
@@ -29,7 +29,7 @@ inputs:
     type: int
     default: 80
   names:
-    type: list
+    type: list(dyn)
     default: [a, b]
   label:
     type: string
@@ -184,11 +184,11 @@ func TestTypedScopeIsSilentWhereTheFileDecidesNothing(t *testing.T) {
 	}{
 		{
 			name: "a list input iterated, a bool value step as a condition",
-			source: `edition: v2026.3
+			source: `edition: v2026.4
 name: t
 inputs:
   names:
-    type: list
+    type: list(dyn)
     default: [a, b]
 steps:
   - id: ok
@@ -205,7 +205,7 @@ steps:
 		},
 		{
 			name: "a presence test and an optional read of a typed input",
-			source: `edition: v2026.3
+			source: `edition: v2026.4
 name: t
 inputs:
   tag:
@@ -217,11 +217,11 @@ steps:
 		},
 		{
 			name: "a struct input read through a selection",
-			source: `edition: v2026.3
+			source: `edition: v2026.4
 name: t
 inputs:
   config:
-    type: struct
+    type: map(string, dyn)
     default:
       host: a
 steps:
@@ -231,7 +231,7 @@ steps:
 		},
 		{
 			name: "a map value read for a key its literal never had",
-			source: `edition: v2026.3
+			source: `edition: v2026.4
 name: t
 steps:
   - id: prefs
@@ -242,7 +242,7 @@ steps:
 		},
 		{
 			name: "an id used twice in different loops is not typed from either",
-			source: `edition: v2026.3
+			source: `edition: v2026.4
 name: t
 steps:
   - id: one
@@ -263,7 +263,7 @@ steps:
 		},
 		{
 			name: "a value read from a response stays dyn",
-			source: `edition: v2026.3
+			source: `edition: v2026.4
 name: t
 steps:
   - id: s
@@ -274,7 +274,7 @@ steps:
 		},
 		{
 			name: "an optional is not a type to refuse as a list",
-			source: `edition: v2026.3
+			source: `edition: v2026.4
 name: t
 steps:
   - id: prefs
@@ -290,7 +290,7 @@ steps:
 		},
 		{
 			name: "a value step that reads itself is left to the reference walk",
-			source: `edition: v2026.3
+			source: `edition: v2026.4
 name: t
 steps:
   - id: s
@@ -315,7 +315,7 @@ steps:
 func TestValueStepTypesReachLaterExpressions(t *testing.T) {
 	t.Parallel()
 
-	source := `edition: v2026.3
+	source := `edition: v2026.4
 name: t
 steps:
   - id: s
@@ -331,7 +331,7 @@ outputs:
 	assert.Equal(t, v1.DiagnosticCodeTypeMismatch, d.Code)
 	assert.Contains(t, d.Message, `output "n" is declared int, but this expression always produces string`)
 
-	assert.Empty(t, validateSource(t, `edition: v2026.3
+	assert.Empty(t, validateSource(t, `edition: v2026.4
 name: t
 steps:
   - id: s
@@ -350,7 +350,7 @@ func TestCallArgumentsAreCheckedAgainstTypedScope(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
-	writeFile(t, dir, "callee.yaml", `edition: v2026.3
+	writeFile(t, dir, "callee.yaml", `edition: v2026.4
 name: callee
 inputs:
   n:
@@ -359,7 +359,7 @@ steps:
   - id: a
     value: ${inputs.n}
 `)
-	caller := writeFile(t, dir, "caller.yaml", `edition: v2026.3
+	caller := writeFile(t, dir, "caller.yaml", `edition: v2026.4
 name: caller
 steps:
   - id: s
@@ -385,7 +385,7 @@ func TestValueStepTypesFollowWrittenOrder(t *testing.T) {
 	t.Parallel()
 
 	for name, source := range map[string]string{
-		"a forward reference": `edition: v2026.3
+		"a forward reference": `edition: v2026.4
 name: t
 steps:
   - id: early
@@ -393,13 +393,13 @@ steps:
   - id: late
     value: ${"abc"}
 `,
-		"a self reference": `edition: v2026.3
+		"a self reference": `edition: v2026.4
 name: t
 steps:
   - id: s
     value: ${steps.s.value.size()}
 `,
-		"a loop-body step read from outside": `edition: v2026.3
+		"a loop-body step read from outside": `edition: v2026.4
 name: t
 steps:
   - id: loop
@@ -454,7 +454,7 @@ func TestCyclicDeclarationTypeIsBounded(t *testing.T) {
 func TestTaskAndCallOutputsAreTyped(t *testing.T) {
 	t.Parallel()
 
-	const http = `edition: v2026.3
+	const http = `edition: v2026.4
 name: t
 steps:
   - id: get
@@ -515,7 +515,7 @@ steps:
 		t.Parallel()
 
 		dir := t.TempDir()
-		writeFile(t, dir, "callee.yaml", `edition: v2026.3
+		writeFile(t, dir, "callee.yaml", `edition: v2026.4
 name: callee
 steps:
   - id: a
@@ -525,7 +525,7 @@ outputs:
     type: string
     value: ${steps.a.value}
 `)
-		caller := writeFile(t, dir, "caller.yaml", `edition: v2026.3
+		caller := writeFile(t, dir, "caller.yaml", `edition: v2026.4
 name: caller
 steps:
   - id: c
@@ -548,7 +548,7 @@ func TestTaskAndCallOutputsStaySilentWhereNothingIsKnown(t *testing.T) {
 	t.Parallel()
 
 	for name, source := range map[string]string{
-		"a response json is dyn": `edition: v2026.3
+		"a response json is dyn": `edition: v2026.4
 name: t
 steps:
   - id: get
@@ -559,7 +559,7 @@ steps:
   - id: n
     value: ${steps.get.json.items[0].id + 1}
 `,
-		"a shaped output is the author's expression": `edition: v2026.3
+		"a shaped output is the author's expression": `edition: v2026.4
 name: t
 steps:
   - id: get
@@ -571,7 +571,7 @@ steps:
   - id: n
     value: ${steps.get.code.startsWith("2")}
 `,
-		"a status compared with an int": `edition: v2026.3
+		"a status compared with an int": `edition: v2026.4
 name: t
 steps:
   - id: get
@@ -581,7 +581,7 @@ steps:
   - id: n
     value: ${steps.get.status_code == 200 && steps.get.body.startsWith("{")}
 `,
-		"a header read as a string": `edition: v2026.3
+		"a header read as a string": `edition: v2026.4
 name: t
 steps:
   - id: get
@@ -591,7 +591,7 @@ steps:
   - id: n
     value: ${steps.get.headers["Content-Type"].startsWith("text")}
 `,
-		"a forward read of a task output": `edition: v2026.3
+		"a forward read of a task output": `edition: v2026.4
 name: t
 steps:
   - id: early
@@ -620,7 +620,7 @@ func TestUntypedCallOutputStaysDyn(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
-	writeFile(t, dir, "callee.yaml", `edition: v2026.3
+	writeFile(t, dir, "callee.yaml", `edition: v2026.4
 name: callee
 steps:
   - id: a
@@ -629,7 +629,7 @@ outputs:
   count:
     value: ${steps.a.value}
 `)
-	caller := writeFile(t, dir, "caller.yaml", `edition: v2026.3
+	caller := writeFile(t, dir, "caller.yaml", `edition: v2026.4
 name: caller
 steps:
   - id: c
@@ -651,7 +651,7 @@ func TestAnOutputNamedValueIsTypedByItsStep(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
-	writeFile(t, dir, "callee.yaml", `edition: v2026.3
+	writeFile(t, dir, "callee.yaml", `edition: v2026.4
 name: callee
 steps:
   - id: a
@@ -661,7 +661,7 @@ outputs:
     type: string
     value: ${steps.a.value}
 `)
-	caller := writeFile(t, dir, "caller.yaml", `edition: v2026.3
+	caller := writeFile(t, dir, "caller.yaml", `edition: v2026.4
 name: caller
 steps:
   - id: c
@@ -682,7 +682,7 @@ func TestAnIntCallOutputIsNotHeldToIntArithmetic(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
-	writeFile(t, dir, "callee.yaml", `edition: v2026.3
+	writeFile(t, dir, "callee.yaml", `edition: v2026.4
 name: callee
 steps:
   - id: n
@@ -692,7 +692,7 @@ outputs:
     type: int
     value: ${steps.n.value}
 `)
-	caller := writeFile(t, dir, "caller.yaml", `edition: v2026.3
+	caller := writeFile(t, dir, "caller.yaml", `edition: v2026.4
 name: caller
 steps:
   - id: c

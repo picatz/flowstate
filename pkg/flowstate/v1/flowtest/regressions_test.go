@@ -29,7 +29,7 @@ func TestP1RunErrorWithoutExpectFailedFailsTheCase(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, dir+"/workflow.yaml", `
-edition: v2026.3
+edition: v2026.4
 name: crashes
 steps:
   - id: fetch
@@ -70,7 +70,7 @@ func TestP1ExpectedFailureStillPasses(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, dir+"/workflow.yaml", `
-edition: v2026.3
+edition: v2026.4
 name: fails-on-purpose
 steps:
   - id: fetch
@@ -135,7 +135,7 @@ func TestP2UnstubbedTaskFailsClosedWithoutDialing(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, dir+"/workflow.yaml", fmt.Sprintf(`
-edition: v2026.3
+edition: v2026.4
 name: unstubbed
 steps:
   - id: fetch
@@ -183,7 +183,7 @@ func TestP1ScriptedSignalAfterTimeoutStillLapses(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, dir+"/workflow.yaml", `
-edition: v2026.3
+edition: v2026.4
 name: gate
 steps:
   - id: approval
@@ -253,7 +253,7 @@ func TestP1ScriptedSignalsDeliverInTimestampOrder(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, dir+"/workflow.yaml", `
-edition: v2026.3
+edition: v2026.4
 name: two-gates
 steps:
   - id: first
@@ -363,7 +363,7 @@ func TestP2PluginTaskStubCompilesAndRuns(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, dir+"/workflow.yaml", `
-edition: v2026.3
+edition: v2026.4
 name: plugin-wf
 steps:
   - id: a
@@ -406,7 +406,7 @@ func TestPluginTaskStubByStepIdCompilesAndRuns(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, dir+"/workflow.yaml", `
-edition: v2026.3
+edition: v2026.4
 name: plugin-wf
 steps:
   - id: a
@@ -442,7 +442,7 @@ func TestP2LargeInt64PrecisionIsNotLost(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, dir+"/workflow.yaml", `
-edition: v2026.3
+edition: v2026.4
 name: big-number
 steps:
   - id: a
@@ -495,7 +495,7 @@ func TestIsolationHoldsUnderConcurrentRunFile(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, dir+"/workflow.yaml", `
-edition: v2026.3
+edition: v2026.4
 name: unstubbed
 steps:
   - id: fetch

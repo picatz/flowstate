@@ -64,7 +64,7 @@ what that value contains:
 
 <!-- example: examples/plugins/sql/workflow.yaml -->
 ```yaml
-edition: v2026.3
+edition: v2026.4
 name: sql-query
 description: Reads bounded, typed rows from PostgreSQL using the "sql" plugin's sql.query task - a parameterized WHERE clause, a required row bound, and a result a later step can filter with CEL.
 
@@ -124,7 +124,7 @@ Its test stubs the call and selects it on the bound parameter and the row bound,
 
 <!-- example: examples/plugins/sql/workflow.test.yaml -->
 ```yaml
-edition: v2026.3
+edition: v2026.4
 
 # Proves the query is parameterized and its rows are usable by a later step's CEL,
 # in CI, with no database and without the sql plugin installed. The stub selects
@@ -244,7 +244,7 @@ commit-acknowledgement-lost case - the INSERT that may have committed.
 
 <!-- example: examples/plugins/sql/transfer.yaml -->
 ```yaml
-edition: v2026.3
+edition: v2026.4
 name: sql-transfer
 description: Moves money between two accounts using the "sql" plugin's sql.exec task - four statements, one transaction, committed or rolled back together inside this single step, provably idempotent on retry.
 
@@ -355,7 +355,7 @@ Its test selects the stub on the four statements and their bound parameters, so 
 
 <!-- example: examples/plugins/sql/transfer.test.yaml -->
 ```yaml
-edition: v2026.3
+edition: v2026.4
 
 # Proves the workflow hands sql.exec the shape its own header promises, in CI,
 # with no database and without the sql plugin installed. The stub's `where:` is

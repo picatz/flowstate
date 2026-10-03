@@ -1,4 +1,4 @@
-edition: v2026.3
+edition: v2026.4
 name: enterprise-access-review
 description: Fans out over a list of access grants, pulls last-used evidence for each, and closes the review only once a compliance-role signal attests to it - producing an audit record with the grantee PII flagged for display, not hidden from it.
 # Access reviews are the recurring compliance workload every audited company
@@ -52,7 +52,7 @@ description: Fans out over a list of access grants, pulls last-used evidence for
 # process - see docs/USE_CASES.md for the honest note on why.
 inputs:
   access_grants:
-    type: list
+    type: list(dyn)
     required: true
     description: the grants in scope for this review - each an object with grantee, resource, and role
     example:

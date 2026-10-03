@@ -1,4 +1,4 @@
-edition: v2026.3
+edition: v2026.4
 name: workflow-vars
 
 # `vars:` names values once, at the top, and every step reads them as `vars.<name>`.

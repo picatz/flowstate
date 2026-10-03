@@ -207,7 +207,7 @@ func TestValidateReportsMisspelledSignalNameInTestFile(t *testing.T) {
 
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.yaml"), []byte(`
-edition: v2026.3
+edition: v2026.4
 name: gated
 steps:
   - id: gate
@@ -236,7 +236,7 @@ tests:
 
 // gatedWorkflow waits on one signal, so a scripted signal naming anything else
 // is refused by the check `flow validate` runs over a test file (#1443).
-const gatedWorkflow = `edition: v2026.3
+const gatedWorkflow = `edition: v2026.4
 name: gated
 steps:
   - id: gate
@@ -450,7 +450,7 @@ func TestValidateRedactsASignalNameFromASensitiveInput(t *testing.T) {
 	const secret = "sk-live-bound-3e77"
 
 	dir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.yaml"), []byte(`edition: v2026.3
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.yaml"), []byte(`edition: v2026.4
 name: gated
 inputs:
   token:

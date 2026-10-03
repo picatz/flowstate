@@ -11,7 +11,7 @@ import (
 
 // refusalWorkflow declares one of each thing a command line can get wrong: a
 // required input, a typed one, and a constrained one.
-const refusalWorkflow = `edition: v2026.3
+const refusalWorkflow = `edition: v2026.4
 name: onboard
 inputs:
   tenant:
@@ -136,7 +136,7 @@ func TestATextFormattedRefusalWritesNoDocument(t *testing.T) {
 // author's own text, in the author's own file, with no run in sight, which is
 // the case pkg/flowstate/v1/constraints.go's inputValueRendering names when it
 // says a submitted value prints whole.
-const sensitiveRefusalWorkflow = `edition: v2026.3
+const sensitiveRefusalWorkflow = `edition: v2026.4
 name: onboard
 inputs:
   pin:

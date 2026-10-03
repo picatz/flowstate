@@ -12,7 +12,7 @@ import (
 )
 
 func typedInputFile(typeText, defaultLine, valueExpr string) string {
-	return fmt.Sprintf(`edition: v2026.3
+	return fmt.Sprintf(`edition: v2026.4
 name: elems
 inputs:
   ids:
@@ -74,10 +74,26 @@ func TestTypedDeclarationsCompileToBothRepresentations(t *testing.T) {
 		require.NoError(t, v1.Validate(in), typeText)
 	}
 
-	// The legacy words compile exactly as before: no structural type.
-	wf, _, err := flowfile.Parse([]byte(typedInputFile("list", "", `${"ok"}`)))
+	// The legacy words that survive the edition compile with no structural type.
+	wf, _, err := flowfile.Parse([]byte(typedInputFile("string", "", `${"ok"}`)))
 	require.NoError(t, err)
 	require.Nil(t, wf.GetDeclaredInputs()[0].GetValueType())
+}
+
+// TestTheRetiredTypeWordsAreRefusedWithTheirReplacement holds the edition
+// boundary: `list`, `struct` and `float` are second spellings of type
+// expressions, so each is refused naming what it meant.
+func TestTheRetiredTypeWordsAreRefusedWithTheirReplacement(t *testing.T) {
+	t.Parallel()
+
+	for word, replacement := range map[string]string{
+		"list":   "list(dyn)",
+		"struct": `"map(string, dyn)"`,
+		"float":  "double",
+	} {
+		_, _, err := flowfile.Parse([]byte(typedInputFile(word, "", `${"ok"}`)))
+		require.ErrorContains(t, err, "write "+replacement, word)
+	}
 }
 
 func TestADeclarationRefusesATypeWithNoLegacyProjection(t *testing.T) {
@@ -92,7 +108,7 @@ func TestADeclarationRefusesATypeWithNoLegacyProjection(t *testing.T) {
 func TestATypedOutputCompiles(t *testing.T) {
 	t.Parallel()
 
-	wf, _, err := flowfile.Parse([]byte(`edition: v2026.3
+	wf, _, err := flowfile.Parse([]byte(`edition: v2026.4
 name: o
 steps:
   - id: s

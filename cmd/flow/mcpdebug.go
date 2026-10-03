@@ -302,7 +302,7 @@ func checkDebugArguments(args *debugToolArguments) error {
 func checkDebugSource(args *debugToolArguments) error {
 	if strings.TrimSpace(args.Workflow) == "" {
 		return errors.New("workflow is required: pass the Flowfile YAML to debug, e.g. " +
-			"\"edition: v2026.3\\nname: demo\\nsteps:\\n- id: hi\\n  log:\\n    message: hello\"")
+			"\"edition: v2026.4\\nname: demo\\nsteps:\\n- id: hi\\n  log:\\n    message: hello\"")
 	}
 	if strings.TrimSpace(args.Tests) == "" {
 		return errors.New("tests is required: a debug session runs a case, so pass a *.test.yaml " +

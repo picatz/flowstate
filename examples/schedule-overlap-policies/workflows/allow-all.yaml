@@ -9,7 +9,7 @@
 # time. Choosing any of the other five policies here would serialize work
 # that has no reason to be serialized, buying nothing back for the added
 # latency.
-edition: v2026.3
+edition: v2026.4
 name: schedule-overlap-allow-all
 inputs:
   window:

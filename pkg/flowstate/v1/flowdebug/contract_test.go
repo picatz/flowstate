@@ -23,7 +23,7 @@ import (
 // [flowdebug.Target], against the real local driver.
 
 // journeyFlowfile exercises every kind of nesting a stop can be inside.
-const journeyFlowfile = `edition: v2026.3
+const journeyFlowfile = `edition: v2026.4
 name: journey
 vars:
   items: ${[1, 2, 3]}
@@ -60,7 +60,7 @@ steps:
       message: done
 `
 
-const childFlowfile = `edition: v2026.3
+const childFlowfile = `edition: v2026.4
 name: child
 inputs:
   who:
@@ -330,7 +330,7 @@ func TestBreakpointReplacementIsAtomic(t *testing.T) {
 func TestFailureStopsOnceWhereTheFailureWasRaised(t *testing.T) {
 	t.Parallel()
 
-	const failing = `edition: v2026.3
+	const failing = `edition: v2026.4
 name: failing
 steps:
   - id: outer

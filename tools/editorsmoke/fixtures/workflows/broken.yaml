@@ -1,7 +1,7 @@
 # A Flowfile with one deliberate mistake, so the smoke test has something to see.
 # The step below names a task that does not exist. The server must underline the
 # name and say so, rather than complain about the file as a whole.
-edition: v2026.3
+edition: v2026.4
 name: editorsmoke-broken
 steps:
   - id: greet

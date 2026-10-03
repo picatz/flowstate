@@ -54,7 +54,7 @@ Perform an HTTP request and return the response.
 **A step that uses it:**
 
 ```yaml
-edition: v2026.3
+edition: v2026.4
 name: example
 steps:
   - id: http
@@ -81,7 +81,7 @@ None.
 **A step that uses it:**
 
 ```yaml
-edition: v2026.3
+edition: v2026.4
 name: example
 steps:
   - id: log

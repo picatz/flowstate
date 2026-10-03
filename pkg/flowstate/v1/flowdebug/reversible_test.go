@@ -414,7 +414,7 @@ func TestBackIsBounded(t *testing.T) {
 	for i := range items {
 		items[i] = fmt.Sprint(i)
 	}
-	text := "edition: v2026.3\nname: long\nvars:\n  items: ${[" + strings.Join(items, ", ") + "]}\n" +
+	text := "edition: v2026.4\nname: long\nvars:\n  items: ${[" + strings.Join(items, ", ") + "]}\n" +
 		"steps:\n  - id: each\n    for_each:\n      items: ${vars.items}\n      as: item\n      steps:\n" +
 		"        - id: touch\n          log:\n            message: ${string(item)}\n"
 	path := filepath.Join(t.TempDir(), "long.yaml")

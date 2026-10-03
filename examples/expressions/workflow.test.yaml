@@ -22,7 +22,7 @@
 #
 # Every `log` stub carries a `where:`, so an expression that produced something
 # else reaches no stub and fails the case.
-edition: v2026.3
+edition: v2026.4
 tests:
   - name: each of the three expressions produces the value it claims to
     workflow: ./workflow.yaml

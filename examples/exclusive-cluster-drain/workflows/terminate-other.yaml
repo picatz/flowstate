@@ -13,7 +13,7 @@
 # half-finished run leaves nothing that needs taking back — true of a deploy the
 # next deploy overwrites entirely, and false of the cluster drain next door, which
 # would leave cordoned nodes nobody uncordons.
-edition: v2026.3
+edition: v2026.4
 name: exclusive-service-deploy
 inputs:
   service:

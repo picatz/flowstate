@@ -1,4 +1,4 @@
-edition: v2026.3
+edition: v2026.4
 name: simple-http-multi-step
 steps:
   # `httpbin.org/status/<code>` answers with that status and an empty body, which

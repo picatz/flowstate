@@ -3,7 +3,7 @@
 # `flow run local` reads any of it, the same rule `scheduled-report`'s own
 # test documents. What is worth asserting is the workflow underneath, which
 # runs identically whichever cadence eventually calls it.
-edition: v2026.3
+edition: v2026.4
 defaults:
   workflow: ./workflow.yaml
   stubs:

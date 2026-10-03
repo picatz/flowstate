@@ -15,7 +15,7 @@ import (
 // durable run at a step boundary under a lease. It shares `signals:`'s
 // grammar entirely — see flowfile/signals.go, and [v1.Workflow.Debug] for why
 // its zero case denies where its neighbour's allows.
-const debuggableSource = `edition: v2026.3
+const debuggableSource = `edition: v2026.4
 name: deploy-gate
 steps:
   - id: approval
@@ -120,7 +120,7 @@ func TestMarshalIsTheInverseForDebug(t *testing.T) {
 func TestADebugRuleWithNothingSetIsRefused(t *testing.T) {
 	t.Parallel()
 
-	diagnostics, err := flowfile.ValidateSource([]byte(`edition: v2026.3
+	diagnostics, err := flowfile.ValidateSource([]byte(`edition: v2026.4
 name: wide-open
 steps:
   - id: work
@@ -145,7 +145,7 @@ debug:
 func TestADebugStanzaWithNoAllowNamesTheClosedDefault(t *testing.T) {
 	t.Parallel()
 
-	_, err := flowfile.ValidateSource([]byte(`edition: v2026.3
+	_, err := flowfile.ValidateSource([]byte(`edition: v2026.4
 name: no-allow
 steps:
   - id: work
@@ -162,7 +162,7 @@ debug:
 		"an absent `debug:` denies every pause ask, so removing it opens nothing")
 
 	// The neighbouring stanza keeps its own remedy, which is true there.
-	_, err = flowfile.ValidateSource([]byte(`edition: v2026.3
+	_, err = flowfile.ValidateSource([]byte(`edition: v2026.4
 name: no-allow
 steps:
   - id: approval
@@ -183,7 +183,7 @@ signals:
 func TestADebugSubjectMustBeIssuerQualified(t *testing.T) {
 	t.Parallel()
 
-	_, err := flowfile.ValidateSource([]byte(`edition: v2026.3
+	_, err := flowfile.ValidateSource([]byte(`edition: v2026.4
 name: bare-subject
 steps:
   - id: work
@@ -209,7 +209,7 @@ debug:
 func TestTheNarrowingCheckAppliesToDebugToo(t *testing.T) {
 	t.Parallel()
 
-	unnarrowed := `edition: v2026.3
+	unnarrowed := `edition: v2026.4
 name: self-debug
 inputs:
   debugger:
@@ -247,7 +247,7 @@ debug:
 func TestAWaitOnAReservedNameIsRefused(t *testing.T) {
 	t.Parallel()
 
-	diagnostics, err := flowfile.ValidateSource([]byte(`edition: v2026.3
+	diagnostics, err := flowfile.ValidateSource([]byte(`edition: v2026.4
 name: collides
 steps:
   - id: gate
@@ -272,7 +272,7 @@ steps:
 	// The batch spelling declares the same channel and gets the same refusal
 	// under its own key — a name reported for one spelling and not the other
 	// would be a gate that is refused or not depending on how it was written.
-	batch, err := flowfile.ValidateSource([]byte(`edition: v2026.3
+	batch, err := flowfile.ValidateSource([]byte(`edition: v2026.4
 name: collides-in-a-batch
 steps:
   - id: gate
@@ -288,7 +288,7 @@ steps:
 
 	// The positive direction: an ordinary name on the same shape is fine, so
 	// the refusal is about the reservation rather than about waits.
-	diagnostics, err = flowfile.ValidateSource([]byte(`edition: v2026.3
+	diagnostics, err = flowfile.ValidateSource([]byte(`edition: v2026.4
 name: ordinary
 steps:
   - id: gate
@@ -306,7 +306,7 @@ steps:
 func TestASignalPolicyOnAReservedNameIsRefused(t *testing.T) {
 	t.Parallel()
 
-	diagnostics, err := flowfile.ValidateSource([]byte(`edition: v2026.3
+	diagnostics, err := flowfile.ValidateSource([]byte(`edition: v2026.4
 name: smuggled
 steps:
   - id: work
@@ -337,7 +337,7 @@ signals:
 func TestAnAbsentDebugStanzaRoundTripsAsAbsent(t *testing.T) {
 	t.Parallel()
 
-	workflow, err := flowfile.Unmarshal([]byte(`edition: v2026.3
+	workflow, err := flowfile.Unmarshal([]byte(`edition: v2026.4
 name: plain
 steps:
   - id: work

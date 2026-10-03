@@ -18,7 +18,7 @@ import (
 // gateHeader is the closed-domain fixture the domain checks run against: the
 // approval gate's shape, whose ternary yields exactly deployed | rejected |
 // undecided — the inferable tier the design names.
-const gateHeader = `edition: v2026.3
+const gateHeader = `edition: v2026.4
 name: t
 steps:
   - id: approval
@@ -87,7 +87,7 @@ func TestSwitchImpossibleCaseGetsNearestSpelling(t *testing.T) {
 func TestSwitchDuplicateCaseAfterFlattening(t *testing.T) {
 	t.Parallel()
 
-	ds := validateSwitchSrc(t, `edition: v2026.3
+	ds := validateSwitchSrc(t, `edition: v2026.4
 name: t
 inputs:
   env:
@@ -112,7 +112,7 @@ steps:
 func TestSwitchCaseCountsAreBoundedBeforeValidation(t *testing.T) {
 	t.Parallel()
 
-	const header = `edition: v2026.3
+	const header = `edition: v2026.4
 name: t
 inputs:
   key:
@@ -234,7 +234,7 @@ func TestSwitchTypeMismatchIsRefused(t *testing.T) {
 func TestSwitchComputedAndRangeCasesAreRefused(t *testing.T) {
 	t.Parallel()
 
-	ds := validateSwitchSrc(t, `edition: v2026.3
+	ds := validateSwitchSrc(t, `edition: v2026.4
 name: t
 inputs:
   status:
@@ -267,7 +267,7 @@ steps:
 func TestSwitchOpenDomainStaysSilent(t *testing.T) {
 	t.Parallel()
 
-	ds := validateSwitchSrc(t, `edition: v2026.3
+	ds := validateSwitchSrc(t, `edition: v2026.4
 name: t
 inputs:
   action:
@@ -297,7 +297,7 @@ steps:
 func TestSwitchStepIDReuseAcrossCaseBodiesIsRefused(t *testing.T) {
 	t.Parallel()
 
-	ds := validateSwitchSrc(t, `edition: v2026.3
+	ds := validateSwitchSrc(t, `edition: v2026.4
 name: t
 inputs:
   env:
@@ -330,7 +330,7 @@ steps:
 func TestSwitchBodyOutputsAreReferenceableAfterTheBlock(t *testing.T) {
 	t.Parallel()
 
-	ds := validateSwitchSrc(t, `edition: v2026.3
+	ds := validateSwitchSrc(t, `edition: v2026.4
 name: t
 inputs:
   env:
@@ -363,7 +363,7 @@ steps:
 func TestSwitchIntegerCasesAboveDoublePrecisionAreNotDuplicates(t *testing.T) {
 	t.Parallel()
 
-	ds := validateSwitchSrc(t, `edition: v2026.3
+	ds := validateSwitchSrc(t, `edition: v2026.4
 name: t
 steps:
   - id: route
@@ -377,7 +377,7 @@ steps:
 `)
 	assert.Empty(t, ds, "distinct int64 cases one float64 apart from nothing must both be legal: %v", ds)
 
-	ds = validateSwitchSrc(t, `edition: v2026.3
+	ds = validateSwitchSrc(t, `edition: v2026.4
 name: t
 steps:
   - id: route
@@ -401,7 +401,7 @@ steps:
 func TestSwitchNestedInForEachMergesCaseBodySteps(t *testing.T) {
 	t.Parallel()
 
-	ds := validateSwitchSrc(t, `edition: v2026.3
+	ds := validateSwitchSrc(t, `edition: v2026.4
 name: t
 steps:
   - id: process
@@ -430,7 +430,7 @@ steps:
 func TestSwitchBodyStepReusingTheSwitchIDIsRefused(t *testing.T) {
 	t.Parallel()
 
-	ds := validateSwitchSrc(t, `edition: v2026.3
+	ds := validateSwitchSrc(t, `edition: v2026.4
 name: t
 inputs:
   env:
@@ -463,7 +463,7 @@ steps:
 func TestSwitchWithOnlyADefaultIsRefused(t *testing.T) {
 	t.Parallel()
 
-	_, err := flowfile.Unmarshal([]byte(`edition: v2026.3
+	_, err := flowfile.Unmarshal([]byte(`edition: v2026.4
 name: t
 inputs:
   env:
@@ -487,7 +487,7 @@ steps:
 func TestSwitchInsideAForEachReadsTheLoopBinding(t *testing.T) {
 	t.Parallel()
 
-	ds := validateSwitchSrc(t, `edition: v2026.3
+	ds := validateSwitchSrc(t, `edition: v2026.4
 name: t
 steps:
   - id: process
@@ -516,7 +516,7 @@ steps:
 func TestSwitchUnknownKeysAreReportedPerLevel(t *testing.T) {
 	t.Parallel()
 
-	_, err := flowfile.Unmarshal([]byte(`edition: v2026.3
+	_, err := flowfile.Unmarshal([]byte(`edition: v2026.4
 name: t
 steps:
   - id: route
@@ -540,7 +540,7 @@ steps:
 func TestSwitchNullCaseIsRefused(t *testing.T) {
 	t.Parallel()
 
-	ds := validateSwitchSrc(t, `edition: v2026.3
+	ds := validateSwitchSrc(t, `edition: v2026.4
 name: t
 inputs:
   env:
@@ -570,7 +570,7 @@ steps:
 func TestSwitchDuplicateAcrossCelNumericRounding(t *testing.T) {
 	t.Parallel()
 
-	ds := validateSwitchSrc(t, `edition: v2026.3
+	ds := validateSwitchSrc(t, `edition: v2026.4
 name: t
 inputs:
   n:
@@ -593,7 +593,7 @@ steps:
 }
 
 // enumInputHeader is a closed-domain fixture from an enum-typed input.
-const enumInputHeader = `edition: v2026.3
+const enumInputHeader = `edition: v2026.4
 name: t
 inputs:
   env:
@@ -676,7 +676,7 @@ func TestSwitchEnumInputUnreachableDefault(t *testing.T) {
 func TestSwitchStringInputWithMustStaysSilent(t *testing.T) {
 	t.Parallel()
 
-	ds := validateSwitchSrc(t, `edition: v2026.3
+	ds := validateSwitchSrc(t, `edition: v2026.4
 name: t
 inputs:
   env:

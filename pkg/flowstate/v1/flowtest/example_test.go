@@ -16,7 +16,7 @@ import (
 // back.
 func Example_runSource() {
 	workflow := []byte(`
-edition: v2026.3
+edition: v2026.4
 name: health-check
 steps:
   - id: probe
@@ -25,7 +25,7 @@ steps:
 `)
 
 	tests := []byte(`
-edition: v2026.3
+edition: v2026.4
 tests:
   - name: the probe reports healthy
     stubs:

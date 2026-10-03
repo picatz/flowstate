@@ -45,7 +45,7 @@ func TestRunWithNoDirAcceptsAnAbsoluteWorkflowPath(t *testing.T) {
 	dir := t.TempDir()
 	workflow := filepath.Join(dir, "workflow.yaml")
 	writeFile(t, workflow, `
-edition: v2026.3
+edition: v2026.4
 name: greet
 steps:
   - id: hello

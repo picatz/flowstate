@@ -66,7 +66,7 @@ func writeSuite(t *testing.T, workflow, tests string) string {
 }
 
 const internalGreetWorkflow = `
-edition: v2026.3
+edition: v2026.4
 name: greet
 steps:
   - id: hello
@@ -198,7 +198,7 @@ func TestReportCoverageFailsTheBarOnEachKindOfHole(t *testing.T) {
 	t.Run("a step gap", func(t *testing.T) {
 		t.Parallel()
 		path := writeSuite(t, `
-edition: v2026.3
+edition: v2026.4
 name: gappy
 steps:
   - id: always
@@ -234,7 +234,7 @@ tests:
 	t.Run("an arm gap", func(t *testing.T) {
 		t.Parallel()
 		path := writeSuite(t, `
-edition: v2026.3
+edition: v2026.4
 name: router
 inputs:
   kind:
@@ -348,7 +348,7 @@ func TestCoveragePassFailsOnAnUncoveredSuite(t *testing.T) {
 	t.Parallel()
 
 	path := writeSuite(t, `
-edition: v2026.3
+edition: v2026.4
 name: gappy
 steps:
   - id: always
@@ -605,7 +605,7 @@ func TestACaseThatNeverStopsFailsRatherThanHangs(t *testing.T) {
 	// A `value:` that is not a valid expression, so the workflow does not load
 	// and no step ever runs.
 	path := writeSuite(t, `
-edition: v2026.3
+edition: v2026.4
 name: broken
 steps:
   - id: build

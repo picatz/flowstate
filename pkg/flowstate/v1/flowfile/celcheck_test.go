@@ -55,7 +55,7 @@ func diagnosticStrings(ds flowfile.Diagnostics) []string {
 // sayingInStep wraps an expression in a file that does nothing else.
 func sayingInStep(expression string) string {
 	return strings.Join([]string{
-		"edition: v2026.3",
+		"edition: v2026.4",
 		"name: check",
 		"steps:",
 		"  - id: say",
@@ -73,7 +73,7 @@ func sayingInStep(expression string) string {
 // a real diagnostic about a real mistake, which is the reference walk working.
 func afterAFetch(expression string) string {
 	return strings.Join([]string{
-		"edition: v2026.3",
+		"edition: v2026.4",
 		"name: check",
 		"steps:",
 		"  - id: web",
@@ -182,7 +182,7 @@ func TestInvalidCELLiteralsAreReported(t *testing.T) {
 func TestInvalidCELLiteralsHavePositionedTypeDiagnostics(t *testing.T) {
 	t.Parallel()
 
-	diagnostics, err := flowfile.ValidateSource([]byte(`edition: v2026.3
+	diagnostics, err := flowfile.ValidateSource([]byte(`edition: v2026.4
 name: invalid-literals
 steps:
   - id: bad_regex
@@ -204,7 +204,7 @@ steps:
 func TestInvalidRegexMustIsReportedWithoutAValue(t *testing.T) {
 	t.Parallel()
 
-	reported := diagnosticsFor(t, `edition: v2026.3
+	reported := diagnosticsFor(t, `edition: v2026.4
 name: invalid-must
 inputs:
   subject:
@@ -289,7 +289,7 @@ func TestNothingIsReportedAboutAnExpressionThatIsFine(t *testing.T) {
 			// the name everywhere refused a step that had simply declared one.
 			name: "a var named after a function namespace",
 			src: strings.Join([]string{
-				"edition: v2026.3",
+				"edition: v2026.4",
 				"name: check",
 				"steps:",
 				"  - id: shout",
@@ -305,7 +305,7 @@ func TestNothingIsReportedAboutAnExpressionThatIsFine(t *testing.T) {
 			// loops exist.
 			name: "a loop's iterator",
 			src: strings.Join([]string{
-				"edition: v2026.3",
+				"edition: v2026.4",
 				"name: check",
 				"steps:",
 				"  - id: each",
@@ -325,7 +325,7 @@ func TestNothingIsReportedAboutAnExpressionThatIsFine(t *testing.T) {
 			// this one can, because `response` is declared like any other name.
 			name: "a deferred input naming the response",
 			src: strings.Join([]string{
-				"edition: v2026.3",
+				"edition: v2026.4",
 				"name: check",
 				"steps:",
 				"  - id: web",
@@ -339,7 +339,7 @@ func TestNothingIsReportedAboutAnExpressionThatIsFine(t *testing.T) {
 		{
 			name: "the moment inside a wait",
 			src: strings.Join([]string{
-				"edition: v2026.3",
+				"edition: v2026.4",
 				"name: check",
 				"steps:",
 				"  - id: pause",
@@ -376,17 +376,17 @@ func TestEveryExpressionPositionIsChecked(t *testing.T) {
 	}{
 		{
 			name: "a workflow's vars",
-			src: "edition: v2026.3\nname: check\nvars:\n  bad: ${" + broken + "}\n" +
+			src: "edition: v2026.4\nname: check\nvars:\n  bad: ${" + broken + "}\n" +
 				"steps:\n  - id: say\n    log:\n      message: hi\n",
 		},
 		{
 			name: "a step's condition",
-			src: "edition: v2026.3\nname: check\nsteps:\n  - id: say\n" +
+			src: "edition: v2026.4\nname: check\nsteps:\n  - id: say\n" +
 				"    if: ${" + broken + "}\n    log:\n      message: hi\n",
 		},
 		{
 			name: "a step's own vars",
-			src: "edition: v2026.3\nname: check\nsteps:\n  - id: say\n" +
+			src: "edition: v2026.4\nname: check\nsteps:\n  - id: say\n" +
 				"    vars:\n      bad: ${" + broken + "}\n    log:\n      message: hi\n",
 		},
 		{
@@ -395,41 +395,41 @@ func TestEveryExpressionPositionIsChecked(t *testing.T) {
 		},
 		{
 			name: "an input the task evaluates itself",
-			src: "edition: v2026.3\nname: check\nsteps:\n  - id: web\n    http:\n" +
+			src: "edition: v2026.4\nname: check\nsteps:\n  - id: web\n    http:\n" +
 				"      method: GET\n      url: https://example.com\n      expect: ${" + broken + "}\n",
 		},
 		{
 			name: "a loop's items",
-			src: "edition: v2026.3\nname: check\nsteps:\n  - id: each\n    for_each:\n" +
+			src: "edition: v2026.4\nname: check\nsteps:\n  - id: each\n    for_each:\n" +
 				"      items: ${" + broken + "}\n      as: item\n      steps:\n" +
 				"        - id: inner\n          log:\n            message: ${item}\n",
 		},
 		{
 			name: "a step inside a loop body",
-			src: "edition: v2026.3\nname: check\nsteps:\n  - id: each\n    for_each:\n" +
+			src: "edition: v2026.4\nname: check\nsteps:\n  - id: each\n    for_each:\n" +
 				"      items: ${['a']}\n      as: item\n      steps:\n" +
 				"        - id: inner\n          log:\n            message: ${" + broken + "}\n",
 		},
 		{
 			name: "a step inside a parallel branch",
-			src: "edition: v2026.3\nname: check\nsteps:\n  - id: both\n    parallel:\n" +
+			src: "edition: v2026.4\nname: check\nsteps:\n  - id: both\n    parallel:\n" +
 				"      - steps:\n          - id: inner\n            log:\n" +
 				"                message: ${" + broken + "}\n",
 		},
 		{
 			name: "the moment a wait waits for",
-			src: "edition: v2026.3\nname: check\nsteps:\n  - id: pause\n" +
+			src: "edition: v2026.4\nname: check\nsteps:\n  - id: pause\n" +
 				"    wait_until: ${" + broken + "}\n",
 		},
 		{
 			name: "a signal rule's computed subject",
-			src: "edition: v2026.3\nname: check\ninputs:\n  approver:\n    type: string\nsteps:\n" +
+			src: "edition: v2026.4\nname: check\ninputs:\n  approver:\n    type: string\nsteps:\n" +
 				"  - id: gate\n    wait_for_signal:\n      name: go\n      timeout: 1h\n" +
 				"signals:\n  go:\n    allow:\n      - subject: \"${" + broken + "}\"\n        namespace: ns\n",
 		},
 		{
 			name: "a debug rule's computed subject",
-			src: "edition: v2026.3\nname: check\nsteps:\n  - id: say\n    log:\n      message: hi\n" +
+			src: "edition: v2026.4\nname: check\nsteps:\n  - id: say\n    log:\n      message: hi\n" +
 				"debug:\n  allow:\n    - subject: \"${" + broken + "}\"\n      namespace: ns\n",
 		},
 	} {
@@ -455,13 +455,13 @@ func TestInvalidFormatLiteralInSignalSubjectIsReported(t *testing.T) {
 	}{
 		{
 			name: "signal subject with invalid regex",
-			src: "edition: v2026.3\nname: check\ninputs:\n  approver:\n    type: string\nsteps:\n" +
+			src: "edition: v2026.4\nname: check\ninputs:\n  approver:\n    type: string\nsteps:\n" +
 				"  - id: gate\n    wait_for_signal:\n      name: go\n      timeout: 1h\n" +
 				"signals:\n  go:\n    allow:\n      - subject: \"${inputs.approver.matches('[')}\"\n        namespace: ns\n",
 		},
 		{
 			name: "debug subject with invalid regex",
-			src: "edition: v2026.3\nname: check\nsteps:\n  - id: say\n    log:\n      message: hi\n" +
+			src: "edition: v2026.4\nname: check\nsteps:\n  - id: say\n    log:\n      message: hi\n" +
 				"debug:\n  allow:\n    - subject: \"${inputs.approver.matches('[')}\"\n      namespace: ns\n",
 		},
 	} {

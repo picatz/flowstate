@@ -5,7 +5,7 @@
 # lets it through because the display it is sized for shows characters, not
 # encoded bytes. The third is that same title with one more rune appended,
 # refused before `page` ever runs.
-edition: v2026.3
+edition: v2026.4
 defaults:
   workflow: ./workflow.yaml
   stubs:

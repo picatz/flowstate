@@ -39,7 +39,7 @@ func TestAScriptedSignalIsHeldToTheDepthBound(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
-edition: v2026.3
+edition: v2026.4
 name: depth-gate
 steps:
   - id: gate

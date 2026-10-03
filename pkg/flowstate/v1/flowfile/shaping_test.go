@@ -30,7 +30,7 @@ import (
 //   - `flow fix` promotes the old spelling into the new one without changing what
 //     the file computes, which is asserted by comparing bytes.
 
-const shapedPrelude = `edition: v2026.3
+const shapedPrelude = `edition: v2026.4
 name: t
 steps:
   - id: fetch
@@ -227,7 +227,7 @@ func TestFixPromotesAMapLiteralToTheMappingForm(t *testing.T) {
 func TestFixPromotesALoopsCarriedState(t *testing.T) {
 	t.Parallel()
 
-	src := `edition: v2026.3
+	src := `edition: v2026.4
 name: t
 steps:
   - id: count
@@ -242,7 +242,7 @@ steps:
           log:
             message: ${string(acc.n)}
 `
-	want := `edition: v2026.3
+	want := `edition: v2026.4
 name: t
 steps:
   - id: count
@@ -281,7 +281,7 @@ steps:
 func TestFixDoesNotRootANameTheGrammarBindsWhilePromoting(t *testing.T) {
 	t.Parallel()
 
-	src := `edition: v2026.3
+	src := `edition: v2026.4
 name: t
 steps:
   - id: acc
@@ -298,7 +298,7 @@ steps:
           log:
             message: ${string(acc.n)}
 `
-	want := `edition: v2026.3
+	want := `edition: v2026.4
 name: t
 steps:
   - id: acc

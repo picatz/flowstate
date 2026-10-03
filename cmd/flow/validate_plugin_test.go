@@ -105,7 +105,7 @@ func TestAPinnedPluginWithNowhereToLookIsRefused(t *testing.T) {
 	// rather than fail for a second reason and look like it had refused.
 	dir := t.TempDir()
 	path := filepath.Join(dir, "workflow.yaml")
-	require.NoError(t, os.WriteFile(path, []byte(`edition: v2026.3
+	require.NoError(t, os.WriteFile(path, []byte(`edition: v2026.4
 name: fine
 steps:
   - id: hi
@@ -187,7 +187,7 @@ func TestValidateChecksAPluginTasksInputsAgainstItsDescriptors(t *testing.T) {
 	dir := buildExamplePluginDir(t)
 
 	path := filepath.Join(t.TempDir(), "typo.yaml")
-	require.NoError(t, os.WriteFile(path, []byte(`edition: v2026.3
+	require.NoError(t, os.WriteFile(path, []byte(`edition: v2026.4
 name: greet-with-a-typo
 steps:
   - id: hi
@@ -222,7 +222,7 @@ func TestValidateChecksPluginRequirementsAgainstTheCatalog(t *testing.T) {
 	dir := buildExamplePluginDir(t)
 
 	path := filepath.Join(t.TempDir(), "too-new.yaml")
-	require.NoError(t, os.WriteFile(path, []byte(`edition: v2026.3
+	require.NoError(t, os.WriteFile(path, []byte(`edition: v2026.4
 name: needs-a-newer-plugin
 plugins:
   example: v99.0.0

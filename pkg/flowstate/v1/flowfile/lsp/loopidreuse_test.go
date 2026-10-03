@@ -33,7 +33,7 @@ import (
 // visibly different words.
 
 // loopIDReuseFile reuses the body-step id `page` across two sequential loops.
-const loopIDReuseFile = `edition: v2026.3
+const loopIDReuseFile = `edition: v2026.4
 name: loop-id-reuse
 steps:
   - id: crawl

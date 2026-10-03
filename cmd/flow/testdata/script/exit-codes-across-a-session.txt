@@ -4,7 +4,7 @@
 # being got wrong (#393) — a file that is wrong is a finding, a flag that is
 # wrong is an invocation error.
 -- write clean.yaml --
-edition: v2026.3
+edition: v2026.4
 name: clean
 steps:
   - id: hello
@@ -16,7 +16,7 @@ $ flow validate clean.yaml
 
 # A file that is wrong is a finding: it ran, and the answer is a refusal.
 -- write broken.yaml --
-edition: v2026.3
+edition: v2026.4
 name: broken
 stepz:
   - id: hello

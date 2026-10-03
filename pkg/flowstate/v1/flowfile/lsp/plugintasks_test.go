@@ -71,7 +71,7 @@ steps:
   - id: greet
     example.greet:
       message: hello
-edition: v2026.3
+edition: v2026.4
 `
 
 // TestAPluginTaskIsUnknownToAServerWithNoRegistry is the direction that must not
@@ -232,7 +232,7 @@ steps:
   - id: out
     log:
       message: ${steps.fetch.|}
-edition: v2026.3
+edition: v2026.4
 `)
 	const uri = "file:///shaping-plugin-task.yaml"
 	c.open(uri, src)
@@ -282,7 +282,7 @@ steps:
   - id: greet
     `+pluginTaskName+`:
       greeting: hi
-edition: v2026.3
+edition: v2026.4
 `)
 
 	// Line 4, the `greeting:` key.

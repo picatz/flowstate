@@ -13,7 +13,7 @@ import (
 // against the workflow's declared inputs, as the server checks a submission.
 func ExampleRunWithInputs() {
 	workflow, _, err := flowfile.Parse([]byte(`
-edition: v2026.3
+edition: v2026.4
 name: greeter
 inputs:
   name:
@@ -72,7 +72,7 @@ func ExampleNewContextWithRegistry() {
 	}
 
 	workflow, _, err := flowfile.Parse([]byte(`
-edition: v2026.3
+edition: v2026.4
 name: announce
 steps:
   - id: announce

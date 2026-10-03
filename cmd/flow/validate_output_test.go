@@ -44,7 +44,7 @@ func writeWorkflow(t *testing.T, name, body string) string {
 	return path
 }
 
-const cleanWorkflow = `edition: v2026.3
+const cleanWorkflow = `edition: v2026.4
 name: fine
 steps:
   - id: s
@@ -54,7 +54,7 @@ steps:
 
 // A method the schema's own pattern refuses, so there is a diagnostic with a position,
 // a step and a field — every part of the message worth carrying.
-const brokenWorkflow = `edition: v2026.3
+const brokenWorkflow = `edition: v2026.4
 name: broken
 steps:
   - id: web
@@ -179,7 +179,7 @@ func TestValidateExitStatusIsTheSameInEveryFormat(t *testing.T) {
 // belongs in the report — with no position, which is honest, rather than pinned to line
 // 1, which would send a reader somewhere arbitrary.
 func TestValidateJSONReportsAFileThatDoesNotParse(t *testing.T) {
-	path := writeWorkflow(t, "notyaml.yaml", "edition: v2026.3\nname: t\nsteps:\n  - id: a\n   bad indent\n")
+	path := writeWorkflow(t, "notyaml.yaml", "edition: v2026.4\nname: t\nsteps:\n  - id: a\n   bad indent\n")
 
 	out, err := validateOutput(t, path, "-o", "json")
 	require.Error(t, err, "a file that does not parse was reported as valid")

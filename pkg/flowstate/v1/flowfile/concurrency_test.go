@@ -14,7 +14,7 @@ import (
 // #913's grammar: `concurrency:` declares what at most one run of this workflow
 // may hold at a time. See [v1.Concurrency] for the mechanism this describes and
 // `server/server.go`'s `Run` for where it is enforced.
-const exclusiveSource = `edition: v2026.3
+const exclusiveSource = `edition: v2026.4
 name: cluster-drain
 inputs:
   cluster:
@@ -226,7 +226,7 @@ func TestConcurrencyDiagnostics(t *testing.T) {
 func TestConcurrencyAlongsideAWebhookTriggerIsRefused(t *testing.T) {
 	t.Parallel()
 
-	source := `edition: v2026.3
+	source := `edition: v2026.4
 name: paid
 inputs:
   order:
@@ -255,7 +255,7 @@ steps:
 func TestConcurrencyAlongsideAScheduleTriggerIsRefused(t *testing.T) {
 	t.Parallel()
 
-	source := `edition: v2026.3
+	source := `edition: v2026.4
 name: nightly-sweep
 concurrency:
   key: sweep
@@ -292,7 +292,7 @@ func TestASecretCannotBeAConcurrencyKey(t *testing.T) {
 func TestALiteralConcurrencyKeyIsAllowed(t *testing.T) {
 	t.Parallel()
 
-	source := `edition: v2026.3
+	source := `edition: v2026.4
 name: global-migration
 concurrency:
   key: schema-migration

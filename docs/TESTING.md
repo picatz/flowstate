@@ -50,7 +50,7 @@ as production's.
 
 <!-- mirrors: examples/release-approval/workflow.test.yaml -->
 ```yaml
-edition: v2026.3
+edition: v2026.4
 defaults:
   inputs:
     version: 1.4.0

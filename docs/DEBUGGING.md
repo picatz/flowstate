@@ -339,7 +339,7 @@ a session replayable.
 
 ```json
 {
-  "workflow": "edition: v2026.3\nname: checkout\n...",
+  "workflow": "edition: v2026.4\nname: checkout\n...",
   "tests": "tests:\n  - name: a big cart gets the discount\n    ...",
   "commands": ["step", "step", "inspect steps.price.value", "inspect steps.price.value > 5000", "continue"]
 }

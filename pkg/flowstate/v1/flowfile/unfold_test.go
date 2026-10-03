@@ -36,7 +36,7 @@ func TestMarshalUnfoldsAStructureItCanVerify(t *testing.T) {
 	}{
 		{
 			name: "a mapping of expressions is written as a mapping",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: w
 steps:
   - id: submit
@@ -52,7 +52,7 @@ steps:
 		},
 		{
 			name: "a comment inside one survives, because the key it names is written back",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: w
 steps:
   - id: submit
@@ -69,7 +69,7 @@ steps:
 		},
 		{
 			name: "a sequence of mappings, which is the shape examples/plugins/sql writes",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: w
 inputs:
   key:
@@ -88,7 +88,7 @@ steps:
 		},
 		{
 			name: "literal entries beside an expression stay literals",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: w
 steps:
   - id: call
@@ -105,7 +105,7 @@ steps:
 		},
 		{
 			name: "entry order is the author's, because a map literal written in another order is another value",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: w
 steps:
   - id: call
@@ -172,7 +172,7 @@ func TestMarshalKeepsAStructureItCannotVerifyFenced(t *testing.T) {
 	}{
 		{
 			name: "a computed key has no YAML spelling",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: w
 steps:
   - id: call
@@ -184,7 +184,7 @@ steps:
 		},
 		{
 			name: "a macro cannot be written back as source at all",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: w
 steps:
   - id: call
@@ -196,7 +196,7 @@ steps:
 		},
 		{
 			name: "an all-constant mapping would compile back to a literal, not to this expression",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: w
 steps:
   - id: call
@@ -241,7 +241,7 @@ steps:
 func TestMarshalKeepsAShapingOutputsFenced(t *testing.T) {
 	t.Parallel()
 
-	src := `edition: v2026.3
+	src := `edition: v2026.4
 name: w
 steps:
   - id: a

@@ -26,7 +26,7 @@ import (
 
 // manualAndTriggerFile is on the current edition with nothing left to migrate: a
 // narrowing, a refusal's alternative, and the root read in three positions.
-const manualAndTriggerFile = `edition: v2026.3
+const manualAndTriggerFile = `edition: v2026.4
 name: trigger-aware
 inputs:
   order_id: { type: string, required: true }
@@ -77,7 +77,7 @@ func TestFixLeavesAManualBlockAndTriggerReferencesByteForByte(t *testing.T) {
 func TestFixDoesNotRootTriggerAlongsideAStepOfEveryOtherName(t *testing.T) {
 	t.Parallel()
 
-	const source = `edition: v2026.3
+	const source = `edition: v2026.4
 name: nearly-shadowed
 steps:
   - id: kind
@@ -121,7 +121,7 @@ func TestFmtRoundTripsAManualBlockInBothSpellings(t *testing.T) {
 	}{
 		{
 			name: "a narrowing in the mapping spelling",
-			source: `edition: v2026.3
+			source: `edition: v2026.4
 name: break-glass
 triggers:
   manual:
@@ -137,7 +137,7 @@ steps:
 		},
 		{
 			name: "a refusal beside the source that does start it",
-			source: `edition: v2026.3
+			source: `edition: v2026.4
 name: payments-only
 inputs:
   order_id: { type: string, required: true }
@@ -157,7 +157,7 @@ steps:
 		},
 		{
 			name: "a single principal written bare",
-			source: `edition: v2026.3
+			source: `edition: v2026.4
 name: one-principal
 triggers:
   manual:

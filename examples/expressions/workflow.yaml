@@ -3,7 +3,7 @@
 # There is no step that "runs CEL". An expression is written wherever a value
 # belongs — a `vars:` binding, a task input, an `if:` — and the same dialect
 # reaches all of them.
-edition: v2026.3
+edition: v2026.4
 name: expressions
 vars:
   greeting: hello

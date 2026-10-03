@@ -32,7 +32,7 @@
 # first delivery was, which is what makes the served receiver join it to the run
 # that delivery started rather than capture the order twice. A key over the
 # signature header would pass the first case and fail this one.
-edition: v2026.3
+edition: v2026.4
 defaults:
   stubs:
     - task: log

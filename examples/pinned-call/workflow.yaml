@@ -35,7 +35,7 @@
 # parsed form, which is a byte change like any other, and needs the pin updated
 # the same way. `digest:` is optional for exactly this reason: pin the callees
 # whose change should stop the world, and leave the rest unpinned.
-edition: v2026.3
+edition: v2026.4
 name: pinned-call
 steps:
   # The pin sits beside `call:`, the way `with:` does, because it is a property
@@ -45,7 +45,7 @@ steps:
   # that passed.
   - id: grant
     call: ./workflows/grant-access.yaml
-    digest: sha256:b20b2b8dca1a6135b0633510c0d3accd31526a5141f111aefdf1606af38ef3c3
+    digest: sha256:1b02cf2b49843b86d2c66be47a79e3bd1d59f41027b5fcfa8839d5ac9ca7e451
     with:
       role: reviewer
       user: ada

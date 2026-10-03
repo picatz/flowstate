@@ -55,7 +55,7 @@
 # `flow test` (`workflow.test.yaml`) is what actually asserts both rules,
 # including the two ways a sender fails one — an unattested rehearsal on the
 # command line is not authentication either, exactly as `approval-gate` says.
-edition: v2026.3
+edition: v2026.4
 name: signal-rule-identity
 inputs:
   environment:

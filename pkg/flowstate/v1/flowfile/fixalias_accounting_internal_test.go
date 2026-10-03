@@ -76,7 +76,7 @@ func oracleFlowfile(lines, lineLen, nestDepth, commentLen, blankEvery, chainLeve
 	chainLevels = nonNegative(chainLevels) % 6
 
 	var b strings.Builder
-	b.WriteString("edition: v2026.3\nname: t\nvars:\n")
+	b.WriteString("edition: v2026.4\nname: t\nvars:\n")
 
 	// nestDepth extra mapping levels between `vars:` and the leaf anchor,
 	// each one wider than the last — this is what makes spliceBlock's
@@ -217,7 +217,7 @@ func TestAliasInlinerChargeDominatesWhatItBuilds(t *testing.T) {
 // before maxNodes would.
 func aliasChainBomb(depth int) string {
 	var b strings.Builder
-	b.WriteString("edition: v2026.3\nname: t\nvars:\n  level0: &level0\n    leaf: " +
+	b.WriteString("edition: v2026.4\nname: t\nvars:\n  level0: &level0\n    leaf: " +
 		strings.Repeat("x", 64) + "\n")
 	for level := 1; level <= depth; level++ {
 		fmt.Fprintf(&b, "  level%d: &level%d\n    a: *level%d\n    b: *level%d\n",
@@ -326,7 +326,7 @@ func TestEveryDepthOfTheAliasBombCostsTheSame(t *testing.T) {
 // prices *content* but not *lines* would still miss.
 func aliasChainBlankBomb(depth, blanks int) string {
 	var b strings.Builder
-	b.WriteString("edition: v2026.3\nname: t\nvars:\n  level0: &level0\n    head: 1\n")
+	b.WriteString("edition: v2026.4\nname: t\nvars:\n  level0: &level0\n    head: 1\n")
 	b.WriteString(strings.Repeat("\n", blanks))
 	b.WriteString("    tail: 1\n")
 	for level := 1; level <= depth; level++ {
@@ -494,7 +494,7 @@ func TestEveryDepthOfTheBlankLineBombCostsTheSame(t *testing.T) {
 // `u0: *a`, `u1: *a`, and so on.
 func scalarPaddingFlowfile(sites, padding int) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "edition: v2026.3\nname: t\nvars:\n  a: &a%s1\n", strings.Repeat(" ", padding))
+	fmt.Fprintf(&b, "edition: v2026.4\nname: t\nvars:\n  a: &a%s1\n", strings.Repeat(" ", padding))
 	for i := range sites {
 		fmt.Fprintf(&b, "  u%d: *a\n", i)
 	}
@@ -509,7 +509,7 @@ func scalarPaddingFlowfile(sites, padding int) string {
 // sites outer sites as `u0: *a`, `u1: *a`, and so on.
 func keyFormPaddingFlowfile(sites, padding int) string {
 	var b strings.Builder
-	b.WriteString("edition: v2026.3\nname: t\nvars:\n  b: &b\n    leaf: 1\n")
+	b.WriteString("edition: v2026.4\nname: t\nvars:\n  b: &b\n    leaf: 1\n")
 	fmt.Fprintf(&b, "  a: &a\n    k:%s*b\n", strings.Repeat(" ", padding))
 	for i := range sites {
 		fmt.Fprintf(&b, "  u%d: *a\n", i)
@@ -526,7 +526,7 @@ func keyFormPaddingFlowfile(sites, padding int) string {
 // reads instead of its mapping form (`strings.TrimRight(prefix, " ")`).
 func sequenceFormPaddingFlowfile(sites, padding int) string {
 	var b strings.Builder
-	b.WriteString("edition: v2026.3\nname: t\nvars:\n  b: &b\n    leaf: 1\n")
+	b.WriteString("edition: v2026.4\nname: t\nvars:\n  b: &b\n    leaf: 1\n")
 	fmt.Fprintf(&b, "  a: &a\n    - *b%s\n", strings.Repeat(" ", padding))
 	for i := range sites {
 		fmt.Fprintf(&b, "  u%d: *a\n", i)
@@ -542,7 +542,7 @@ func sequenceFormPaddingFlowfile(sites, padding int) string {
 // further content under it, aliased by sites outer sites.
 func blockTailFlowfile(sites, blankTail int) string {
 	var b strings.Builder
-	b.WriteString("edition: v2026.3\nname: t\nvars:\n  l: &l\n    leaf: 1\n")
+	b.WriteString("edition: v2026.4\nname: t\nvars:\n  l: &l\n    leaf: 1\n")
 	b.WriteString(strings.Repeat("\n", blankTail))
 	for i := range sites {
 		fmt.Fprintf(&b, "  u%d: *l\n", i)
@@ -607,7 +607,7 @@ func blockTailFlowfile(sites, blankTail int) string {
 // legitimate side of the class this issue's fix has to stay usable for.
 func largeBlockOneAliasFlowfile(lines int) string {
 	var b strings.Builder
-	b.WriteString("edition: v2026.3\nname: t\nvars:\n  a: &a\n")
+	b.WriteString("edition: v2026.4\nname: t\nvars:\n  a: &a\n")
 	for i := range lines {
 		fmt.Fprintf(&b, "    k%d: %s\n", i, strings.Repeat("x", 40))
 	}
@@ -619,7 +619,7 @@ func largeBlockOneAliasFlowfile(lines int) string {
 
 func largeBlockTwoAliasFlowfile(lines int) string {
 	var b strings.Builder
-	b.WriteString("edition: v2026.3\nname: t\nvars:\n  a: &a\n")
+	b.WriteString("edition: v2026.4\nname: t\nvars:\n  a: &a\n")
 	for i := range lines {
 		fmt.Fprintf(&b, "    k%d: %s\n", i, strings.Repeat("x", 40))
 	}
@@ -863,7 +863,7 @@ func TestAliasInlinerScalarPaddingProbeIsRefusedOrCheap(t *testing.T) {
 func TestChargeScanRefusesPastMaxScanned(t *testing.T) {
 	t.Parallel()
 
-	src := "edition: v2026.3\nname: t\nvars:\n  a: &a 1\n  u: *a\nsteps:\n  - id: a\n    log:\n      message: hi\n"
+	src := "edition: v2026.4\nname: t\nvars:\n  a: &a 1\n  u: *a\nsteps:\n  - id: a\n    log:\n      message: hi\n"
 	data := []byte(src)
 	file, err := parser.ParseBytes(data, parser.ParseComments)
 	require.NoError(t, err)

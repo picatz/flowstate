@@ -27,7 +27,7 @@ func TestDiagnosticShapeExampleIsReal(t *testing.T) {
 	yamlFence := regexp.MustCompile("(?s)```yaml\n(.*?)\n```")
 	fixture := yamlFence.FindStringSubmatch(diagnosticShapeSection)
 	require.Len(t, fixture, 2, "diagnosticShapeSection must contain one ```yaml fenced fixture")
-	source := "edition: v2026.3\nname: shape-example\n" + fixture[1] + "\n"
+	source := "edition: v2026.4\nname: shape-example\n" + fixture[1] + "\n"
 
 	// The compiler reports an unknown step property as a compile failure, not as
 	// a passable Diagnostics slice — see [flowfile.ValidateSource]'s own doc

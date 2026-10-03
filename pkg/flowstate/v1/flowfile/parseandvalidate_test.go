@@ -33,9 +33,9 @@ func TestParseAndValidateFileAgreesWithItsTwoHalves(t *testing.T) {
 	}
 	paths = append(paths,
 		// Compiles, and validation objects: a reference to a step that does not exist.
-		write("dangling.yaml", "edition: v2026.3\nname: dangling\nsteps:\n  - id: a\n    value: ${steps.ghost.value}\n"),
+		write("dangling.yaml", "edition: v2026.4\nname: dangling\nsteps:\n  - id: a\n    value: ${steps.ghost.value}\n"),
 		// Does not compile, with a step id the validator has something to add about.
-		write("broken.yaml", "edition: v2026.3\nname: broken\nsteps:\n  - id: in\n    value: ${steps.in.value +}\n"),
+		write("broken.yaml", "edition: v2026.4\nname: broken\nsteps:\n  - id: in\n    value: ${steps.in.value +}\n"),
 		// An edition this build rewrites, with a mistake below the gate that only
 		// the rewrite path reports.
 		write("old.yaml", "edition: v2026.1\nname: old\nsteps:\n  - id: a\n    value: ${vars.a +}\n"),

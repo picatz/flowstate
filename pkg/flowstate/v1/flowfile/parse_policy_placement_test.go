@@ -25,7 +25,7 @@ var policyPlacementInject = map[string]string{
 
 // minimalCalleeForPolicyPlacement is a callee with no declared inputs, so the
 // caller fixture below needs no `with:` to stay clean.
-const minimalCalleeForPolicyPlacement = `edition: v2026.3
+const minimalCalleeForPolicyPlacement = `edition: v2026.4
 name: callee
 steps:
   - id: a
@@ -57,7 +57,7 @@ var policyPlacementFixtures = map[string]policyPlacementFixture{
 		subject: "a waiting step",
 		parse: func(t *testing.T, extra string) error {
 			t.Helper()
-			src := fmt.Sprintf(`edition: v2026.3
+			src := fmt.Sprintf(`edition: v2026.4
 name: w
 steps:
   - id: s
@@ -71,7 +71,7 @@ steps:
 		subject: "a `value:` step",
 		parse: func(t *testing.T, extra string) error {
 			t.Helper()
-			src := fmt.Sprintf(`edition: v2026.3
+			src := fmt.Sprintf(`edition: v2026.4
 name: w
 steps:
   - id: s
@@ -85,7 +85,7 @@ steps:
 		subject: "a `for_each:` step",
 		parse: func(t *testing.T, extra string) error {
 			t.Helper()
-			src := fmt.Sprintf(`edition: v2026.3
+			src := fmt.Sprintf(`edition: v2026.4
 name: w
 steps:
   - id: s
@@ -103,7 +103,7 @@ steps:
 		subject: "a `parallel:` step",
 		parse: func(t *testing.T, extra string) error {
 			t.Helper()
-			src := fmt.Sprintf(`edition: v2026.3
+			src := fmt.Sprintf(`edition: v2026.4
 name: w
 steps:
   - id: s
@@ -122,7 +122,7 @@ steps:
 			t.Helper()
 			dir := t.TempDir()
 			writeFile(t, dir, "callee.yaml", minimalCalleeForPolicyPlacement)
-			caller := writeFile(t, dir, "caller.yaml", fmt.Sprintf(`edition: v2026.3
+			caller := writeFile(t, dir, "caller.yaml", fmt.Sprintf(`edition: v2026.4
 name: caller
 steps:
   - id: s
@@ -136,7 +136,7 @@ steps:
 		subject: "a `loop:` step",
 		parse: func(t *testing.T, extra string) error {
 			t.Helper()
-			src := fmt.Sprintf(`edition: v2026.3
+			src := fmt.Sprintf(`edition: v2026.4
 name: w
 steps:
   - id: s
@@ -157,7 +157,7 @@ steps:
 		subject: "a `switch:` step",
 		parse: func(t *testing.T, extra string) error {
 			t.Helper()
-			src := fmt.Sprintf(`edition: v2026.3
+			src := fmt.Sprintf(`edition: v2026.4
 name: w
 vars:
   mode: a
@@ -252,7 +252,7 @@ func TestPolicyPlacementLeavesTaskStepsAlone(t *testing.T) {
 	}{
 		{
 			name: "task nested inside for_each",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: w
 steps:
   - id: fan
@@ -269,7 +269,7 @@ steps:
 		},
 		{
 			name: "task nested inside a parallel branch",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: w
 steps:
   - id: par
@@ -285,7 +285,7 @@ steps:
 		},
 		{
 			name: "task nested inside loop steps",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: w
 steps:
   - id: accumulate
@@ -305,7 +305,7 @@ steps:
 		},
 		{
 			name: "task nested inside a switch case",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: w
 vars:
   mode: a
@@ -347,7 +347,7 @@ steps:
 		t.Parallel()
 
 		dir := t.TempDir()
-		writeFile(t, dir, "callee.yaml", `edition: v2026.3
+		writeFile(t, dir, "callee.yaml", `edition: v2026.4
 name: callee
 steps:
   - id: a
@@ -357,7 +357,7 @@ steps:
       attempts: 3
     timeout: 5m
 `)
-		caller := writeFile(t, dir, "caller.yaml", `edition: v2026.3
+		caller := writeFile(t, dir, "caller.yaml", `edition: v2026.4
 name: caller
 steps:
   - id: s

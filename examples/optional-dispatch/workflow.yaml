@@ -1,4 +1,4 @@
-edition: v2026.3
+edition: v2026.4
 name: optional-dispatch
 description: A signal answers true, answers false, or never arrives — three outcomes an optional keeps apart, where a defaulted read would collapse two of them into one.
 # `payload.?approved.orValue(false)` looks like a safe read and is a bug the

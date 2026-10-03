@@ -161,7 +161,7 @@ func TestSecretReferenceRejected(t *testing.T) {
 		},
 		{
 			name: "in a loop's items",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: t
 steps:
   - id: a
@@ -224,7 +224,7 @@ steps:
 			// here used to compile into a held [v1.SecretRef] with no
 			// diagnostic at all.
 			name: "a wait's shaped output",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: t
 steps:
   - id: gate
@@ -242,7 +242,7 @@ steps:
 			// merely as "not the whole value", since the latter would read as
 			// an invitation to make it the whole value instead.
 			name: "a wait's shaped output combined with text",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: t
 steps:
   - id: gate
@@ -255,7 +255,7 @@ steps:
 		},
 		{
 			name: "a loop's init",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: t
 steps:
   - id: a
@@ -272,7 +272,7 @@ steps:
 		},
 		{
 			name: "a loop's update",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: t
 steps:
   - id: a
@@ -324,7 +324,7 @@ steps:
 // nested is a property of the task, so a case about a header needs a task that has
 // headers.
 func httpInput(input string) string {
-	return `edition: v2026.3
+	return `edition: v2026.4
 name: t
 steps:
   - id: a
@@ -433,7 +433,7 @@ func TestSecretReferenceNestsWhereTheTaskAppliesIt(t *testing.T) {
 // expression is reported at the call rather than at the start of the value, since
 // the whole point of catching this at compile time is being able to point at it.
 func TestSecretReferenceReportsPosition(t *testing.T) {
-	src := `edition: v2026.3
+	src := `edition: v2026.4
 name: t
 steps:
   - id: a
@@ -468,7 +468,7 @@ steps:
 // TestSecretMarkerIsOnlyACall pins that the marker is a call and nothing else, so a
 // step or an output named `secret` keeps working.
 func TestSecretMarkerIsOnlyACall(t *testing.T) {
-	src := `edition: v2026.3
+	src := `edition: v2026.4
 name: t
 steps:
   - id: secret
@@ -499,7 +499,7 @@ steps:
 // TestSecretReferenceValidates covers the whole authoring path, which is what the
 // bug was really about: `flow validate` reported "ok" and the run failed.
 func TestSecretReferenceValidates(t *testing.T) {
-	good := []byte(`edition: v2026.3
+	good := []byte(`edition: v2026.4
 name: uses-a-secret
 steps:
   - id: notify
@@ -516,7 +516,7 @@ steps:
 		t.Fatalf("expected no diagnostics, got:\n%s", ds.Error())
 	}
 
-	bad := []byte(`edition: v2026.3
+	bad := []byte(`edition: v2026.4
 name: broken-secret
 steps:
   - id: notify

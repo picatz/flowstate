@@ -1041,7 +1041,7 @@ func (c *compiler) declaredInput(e entry, parent, noun string) *v1.InputDeclarat
 		c.report(spanOfNode(e.value), r,
 			"is declared as a mapping saying what a value for it must be: `type:` (one of %s), "+
 				"and optionally `required:`, `default:` and `description:`",
-			strings.Join(v1.DeclaredTypeNames(), ", "))
+			strings.Join(declarableTypeNames(), ", "))
 
 		return nil
 	}
@@ -1079,8 +1079,8 @@ func (c *compiler) declaredInput(e entry, parent, noun string) *v1.InputDeclarat
 			declared, structural, err := declareType(c.typeEnv, text)
 			if err != nil {
 				c.report(spanOfNode(f.value), typeRef,
-					"is %q, which is not a type an input can have: %s; the types are %s, or a type expression such as list(string) or map(string, int)",
-					text, err, strings.Join(v1.DeclaredTypeNames(), ", "))
+					"is %q, which is not a type an input can have: %s; the types are %s",
+					text, err, strings.Join(declarableTypeNames(), ", "))
 			}
 			declaration.Type = declared
 			declaration.ValueType = structural
@@ -1092,7 +1092,7 @@ func (c *compiler) declaredInput(e entry, parent, noun string) *v1.InputDeclarat
 		// before the run starts.
 		c.report(spanOfNode(e.value), r,
 			"has no `type:`; an input is checked against its type when a run is submitted, so say which of %s it is",
-			strings.Join(v1.DeclaredTypeNames(), ", "))
+			strings.Join(declarableTypeNames(), ", "))
 	}
 
 	if f, found := fields.get("values"); found {
@@ -1276,7 +1276,7 @@ func (c *compiler) declaredOutput(e entry, parent string) *v1.OutputDeclaration 
 		c.report(spanOfNode(e.value), r,
 			"is declared as a mapping with `value:`, the expression that produces it, "+
 				"and optionally `type:` (one of %s), `description:`, `must:` and `sensitive:`",
-			strings.Join(v1.DeclaredTypeNames(), ", "))
+			strings.Join(declarableTypeNames(), ", "))
 
 		return nil
 	}
@@ -1306,8 +1306,8 @@ func (c *compiler) declaredOutput(e entry, parent string) *v1.OutputDeclaration 
 			declared, structural, err := declareType(c.typeEnv, text)
 			if err != nil {
 				c.report(spanOfNode(f.value), typeRef,
-					"is %q, which is not a type an output can have: %s; the types are %s, or a type expression such as list(string) or map(string, int)",
-					text, err, strings.Join(v1.DeclaredTypeNames(), ", "))
+					"is %q, which is not a type an output can have: %s; the types are %s",
+					text, err, strings.Join(declarableTypeNames(), ", "))
 			}
 			declaration.Type = declared
 			declaration.ValueType = structural

@@ -67,7 +67,7 @@ func TestHoverOnALoopsStateDescribesItRatherThanAnUnregisteredTask(t *testing.T)
 // loopWholeStepFile is loopKeysFile with a bare, output-less step reference
 // added (`${steps.paginate}`), so hover can be asked about the whole step
 // rather than one of its outputs.
-const loopWholeStepFile = `edition: v2026.3
+const loopWholeStepFile = `edition: v2026.4
 name: loop-keys-whole
 steps:
   - id: paginate
@@ -118,7 +118,7 @@ func TestHoverOnALoopsWholeStepListsResultsAndState(t *testing.T) {
 
 // waitGateFile is a `wait_for_signal:` in its mapping form, unshaped, so its
 // outputs are the wait's own three reserved names.
-const waitGateFile = `edition: v2026.3
+const waitGateFile = `edition: v2026.4
 name: wait-gate
 steps:
   - id: gate
@@ -138,7 +138,7 @@ func TestTheWaitGateFileIsLegal(t *testing.T) {
 	assert.Empty(t, diags)
 }
 
-const waitBatchFile = `edition: v2026.3
+const waitBatchFile = `edition: v2026.4
 name: wait-batch
 steps:
   - id: orders
@@ -186,7 +186,7 @@ func TestHoverOnASignalBatchOutputDescribesTheWait(t *testing.T) {
 // ever populate parsedStep.waitForSignalsEntry; this pins the fallback branch
 // in constructOutputNode (`target.hasKey("wait_for_signals")`) that the scalar
 // spelling has to fall through to instead.
-const waitScalarBatchFile = `edition: v2026.3
+const waitScalarBatchFile = `edition: v2026.4
 name: wait-scalar-batch
 steps:
   - id: orders
@@ -245,7 +245,7 @@ func TestHoverOnAScalarSignalBatchOutputDescribesTheWait(t *testing.T) {
 // shaped branch of waitOutputNames' Wait_SignalBatch case
 // (`len(target.waitShapingEntries) > 0`) was reachable only through
 // waitBatchFile, which never sets `outputs:`.
-const waitShapedBatchFile = `edition: v2026.3
+const waitShapedBatchFile = `edition: v2026.4
 name: wait-shaped-batch
 steps:
   - id: orders
@@ -349,7 +349,7 @@ func TestHoverOnAnUnshapedGatesTimedOutDescribesIt(t *testing.T) {
 
 // waitShapedGateFile is the shaping spelling: `outputs:` replaces the gate's
 // default three names with `approved` alone.
-const waitShapedGateFile = `edition: v2026.3
+const waitShapedGateFile = `edition: v2026.4
 name: wait-shaped-gate
 steps:
   - id: gate

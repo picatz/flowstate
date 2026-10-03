@@ -19,7 +19,7 @@ import (
 // *passing* test asserting something nobody wrote.
 
 // theTriggerAwareWorkflow branches on the kind and reports every field.
-const theTriggerAwareWorkflow = `edition: v2026.3
+const theTriggerAwareWorkflow = `edition: v2026.4
 name: trigger-aware
 steps:
   - id: notify
@@ -42,7 +42,7 @@ outputs:
 func TestAStatedTriggerExercisesBothSidesOfABranch(t *testing.T) {
 	t.Parallel()
 
-	report := flowtest.RunSource("trigger-context", []byte(theTriggerAwareWorkflow), []byte(`edition: v2026.3
+	report := flowtest.RunSource("trigger-context", []byte(theTriggerAwareWorkflow), []byte(`edition: v2026.4
 defaults:
   stubs:
     - task: log
@@ -150,7 +150,7 @@ func TestAStatedTriggerIsRefusedWhereItCannotMeanWhatItSays(t *testing.T) {
 			t.Parallel()
 
 			report := flowtest.RunSource("trigger-context",
-				[]byte(theTriggerAwareWorkflow), []byte("edition: v2026.3\ntests:\n"+test.tests))
+				[]byte(theTriggerAwareWorkflow), []byte("edition: v2026.4\ntests:\n"+test.tests))
 
 			require.NotEmpty(t, report.GetRefused(),
 				"the file was accepted, so a case that cannot mean what it says would have passed")

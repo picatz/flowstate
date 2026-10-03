@@ -39,7 +39,7 @@ func TestFormatKeepsADigestPinBesideCall(t *testing.T) {
 	// pin, not a hard-coded hash, the same way digestOf's own doc explains: a
 	// one-character edit to simpleCalleeSource must not leave this test
 	// asserting a stale hash.
-	want := `edition: v2026.3
+	want := `edition: v2026.4
 name: caller
 description: pins what it calls
 steps:
@@ -94,7 +94,7 @@ func TestFormatPinIsIdempotent(t *testing.T) {
 func TestFormatWithoutAPinInsertsNone(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "callee.yaml", simpleCalleeSource)
-	src := `edition: v2026.3
+	src := `edition: v2026.4
 name: caller
 steps:
   - id: provision
@@ -125,7 +125,7 @@ func TestFormatKeepsACommentOnAPin(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "callee.yaml", simpleCalleeSource)
 	pin := digestOf(t, simpleCalleeSource)
-	src := `edition: v2026.3
+	src := `edition: v2026.4
 name: caller
 steps:
   - id: provision
@@ -143,7 +143,7 @@ steps:
 	got, err := flowfile.Format([]byte(src), workflow)
 	require.NoError(t, err)
 
-	want := `edition: v2026.3
+	want := `edition: v2026.4
 name: caller
 steps:
   - id: provision
@@ -173,7 +173,7 @@ func TestFormatRefusesAPinItCannotPlace(t *testing.T) {
 	// A workflow with the same shape (one step named "provision") but no
 	// call at all, so the mapping [Format] renders for it never carries a
 	// `call:` key for the pin to sit beside.
-	mismatched, err := flowfile.Unmarshal([]byte(`edition: v2026.3
+	mismatched, err := flowfile.Unmarshal([]byte(`edition: v2026.4
 name: caller
 description: pins what it calls
 steps:
@@ -204,7 +204,7 @@ func TestFormatKeepsAPinInsideAForEach(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "callee.yaml", simpleCalleeSource)
 	pin := digestOf(t, simpleCalleeSource)
-	src := `edition: v2026.3
+	src := `edition: v2026.4
 name: caller
 steps:
   - id: fan

@@ -144,7 +144,7 @@ func writeCheckWorkflow(t *testing.T, dir string) {
 	t.Helper()
 
 	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
-edition: v2026.3
+edition: v2026.4
 name: computed
 inputs:
   region:
@@ -229,7 +229,7 @@ func TestACheckOverTheRunError(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
-edition: v2026.3
+edition: v2026.4
 name: bounded
 inputs:
   replicas:
@@ -414,7 +414,7 @@ func TestACheckWitnessIsRedacted(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
-edition: v2026.3
+edition: v2026.4
 name: guarded
 inputs:
   token:
@@ -473,7 +473,7 @@ func TestASensitiveInputHoldingATabSurvivesEscapedInARunTimeCheckWitness(t *test
 
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
-edition: v2026.3
+edition: v2026.4
 name: guarded
 inputs:
   token:
@@ -526,11 +526,11 @@ func TestASensitiveInputsStructuredDescendantSurvivesEscapedInARunTimeCheckWitne
 
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
-edition: v2026.3
+edition: v2026.4
 name: guarded
 inputs:
   creds:
-    type: struct
+    type: map(string, dyn)
     sensitive: true
 steps:
   - id: echo
@@ -584,11 +584,11 @@ func TestASensitiveInputsOneRuneDescendantAddsNoEscapedSpelling(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
-edition: v2026.3
+edition: v2026.4
 name: guarded
 inputs:
   creds:
-    type: struct
+    type: map(string, dyn)
     sensitive: true
   other:
     type: string

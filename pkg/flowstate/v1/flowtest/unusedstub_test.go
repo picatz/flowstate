@@ -147,7 +147,7 @@ func TestStubTypoNearACallStepGetsASuggestion(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, dir+"/callee.yaml", `
-edition: v2026.3
+edition: v2026.4
 name: callee
 steps:
   - id: inner
@@ -156,7 +156,7 @@ steps:
 outputs: {}
 `)
 	writeFile(t, dir+"/workflow.yaml", `
-edition: v2026.3
+edition: v2026.4
 name: caller
 steps:
   - id: sub

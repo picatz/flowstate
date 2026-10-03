@@ -4,7 +4,7 @@
 # below are exercised the same way production enforces them: the named
 # subject is the only sender `rollback-confirmed` admits, and `hold-lifted`
 # admits any `on-call` claim, but only from the run's own namespace.
-edition: v2026.3
+edition: v2026.4
 defaults:
   workflow: ./workflow.yaml
   stubs:

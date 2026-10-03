@@ -17,7 +17,7 @@ import (
 // armCoverageWorkflow is the documented shape the step universe cannot measure:
 // two literals sharing one body, an arm whose body is deliberately empty, and a
 // default.
-const armCoverageWorkflow = `edition: v2026.3
+const armCoverageWorkflow = `edition: v2026.4
 name: routing
 inputs:
   action:
@@ -50,7 +50,7 @@ func writeArmCoverageFixture(t *testing.T, actions []string, extra string) strin
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.yaml"), []byte(armCoverageWorkflow), 0o600))
 
-	suite := "edition: v2026.3\ntests:"
+	suite := "edition: v2026.4\ntests:"
 	for _, action := range actions {
 		suite += `
   - name: ` + action + `

@@ -58,7 +58,7 @@ func TestStubByStepIdDoesNotMatchACallee(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, dir+"/callee.yaml", `
-edition: v2026.3
+edition: v2026.4
 name: callee
 steps:
   - id: notify
@@ -66,7 +66,7 @@ steps:
       message: from callee
 `)
 	writeFile(t, dir+"/workflow.yaml", `
-edition: v2026.3
+edition: v2026.4
 name: caller
 steps:
   - id: notify
@@ -130,7 +130,7 @@ func TestStubByStepIdRejectsNonTaskStep(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, dir+"/workflow.yaml", `
-edition: v2026.3
+edition: v2026.4
 name: wait-fixture
 steps:
   - id: gate
@@ -255,7 +255,7 @@ func TestStubByStepIdNamesAParallelContainerByItsKind(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, dir+"/workflow.yaml", `
-edition: v2026.3
+edition: v2026.4
 name: parallel-fixture
 steps:
   - id: checks
@@ -307,7 +307,7 @@ func TestStubByStepIdNamesTheCalleeAStepLivesIn(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, dir+"/callee.yaml", `
-edition: v2026.3
+edition: v2026.4
 name: callee
 steps:
   - id: fetch
@@ -315,7 +315,7 @@ steps:
       message: fetching
 `)
 	writeFile(t, dir+"/workflow.yaml", `
-edition: v2026.3
+edition: v2026.4
 name: caller
 steps:
   - id: fetcher

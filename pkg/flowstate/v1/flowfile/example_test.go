@@ -13,7 +13,7 @@ import (
 // belongs to [flowfile.Validate], not to Parse.
 func ExampleParse() {
 	workflow, _, err := flowfile.Parse([]byte(`
-edition: v2026.3
+edition: v2026.4
 name: pipeline
 steps:
   - id: fetch
@@ -47,7 +47,7 @@ steps:
 // the diagnostic names the step, the field, and what is wrong.
 func ExampleValidate() {
 	workflow, _, err := flowfile.Parse([]byte(`
-edition: v2026.3
+edition: v2026.4
 name: report
 steps:
   - id: notify

@@ -20,14 +20,14 @@ func TestATypeValueIsNotAnUnknownName(t *testing.T) {
 		// spelled like a type.
 		`[{"a":1}].exists(m, m.a == 1) && [{"a":1}].exists(int, int.a == 1)`
 	for name, src := range map[string]string{
-		"a task input": `edition: v2026.3
+		"a task input": `edition: v2026.4
 name: t
 steps:
   - id: s
     log:
       message: ${string(` + types + `)}
 `,
-		"a workflow var": `edition: v2026.3
+		"a workflow var": `edition: v2026.4
 name: t
 vars:
   typed: ${` + types + `}
@@ -36,7 +36,7 @@ steps:
     log:
       message: ${string(vars.typed)}
 `,
-		"a step's own var": `edition: v2026.3
+		"a step's own var": `edition: v2026.4
 name: t
 steps:
   - id: s
@@ -45,7 +45,7 @@ steps:
     log:
       message: ${string(typed)}
 `,
-		"a condition": `edition: v2026.3
+		"a condition": `edition: v2026.4
 name: t
 steps:
   - id: s
@@ -53,13 +53,13 @@ steps:
     log:
       message: hi
 `,
-		"a value step": `edition: v2026.3
+		"a value step": `edition: v2026.4
 name: t
 steps:
   - id: s
     value: ${` + types + `}
 `,
-		"an output": `edition: v2026.3
+		"an output": `edition: v2026.4
 name: t
 steps:
   - id: s
@@ -68,7 +68,7 @@ outputs:
   typed:
     value: ${type(steps.s.value) == int}
 `,
-		"a trigger mapping": `edition: v2026.3
+		"a trigger mapping": `edition: v2026.4
 name: t
 inputs:
   typed:
@@ -86,7 +86,7 @@ steps:
     log:
       message: ${string(inputs.typed)}
 `,
-		"a concurrency key": `edition: v2026.3
+		"a concurrency key": `edition: v2026.4
 name: t
 inputs:
   cluster:
@@ -117,7 +117,7 @@ func TestAnUnknownNameBesideATypeIsStillUnknown(t *testing.T) {
 	t.Parallel()
 
 	using := func(expr string) string {
-		return "edition: v2026.3\nname: t\nsteps:\n  - id: s\n    if: ${" + expr + "}\n    log:\n      message: hi\n"
+		return "edition: v2026.4\nname: t\nsteps:\n  - id: s\n    if: ${" + expr + "}\n    log:\n      message: hi\n"
 	}
 
 	require.Contains(t, diagnose(t, using("type(1) == nosuch")), `references unknown name "nosuch"`)
@@ -135,7 +135,7 @@ func TestAnUnknownNameBesideATypeIsStillUnknown(t *testing.T) {
 func TestAStepSpelledLikeATypeIsStillAStep(t *testing.T) {
 	t.Parallel()
 
-	src := `edition: v2026.3
+	src := `edition: v2026.4
 name: t
 steps:
   - id: map
@@ -148,7 +148,7 @@ steps:
 	require.Contains(t, diagnose(t, src), "`map` is a step, and a step is named `steps.map` now",
 		"a bare name that is a step was taken for the type it is spelled like")
 
-	has := "edition: v2026.3\nname: t\nsteps:\n  - id: s\n    if: ${has(google.protobuf.Timestamp)}\n    log:\n      message: hi\n"
+	has := "edition: v2026.4\nname: t\nsteps:\n  - id: s\n    if: ${has(google.protobuf.Timestamp)}\n    log:\n      message: hi\n"
 	require.Contains(t, diagnose(t, has), `references unknown name "google"`,
 		"a has() of a qualified type was admitted as the type")
 }

@@ -51,7 +51,7 @@ func runLocalUnder(t *testing.T, ctx context.Context, body string, extra ...stri
 
 // A workload that logs, so the narration and the result are both present and can be
 // told apart.
-const narratingWorkflow = `edition: v2026.3
+const narratingWorkflow = `edition: v2026.4
 name: narrates
 steps:
   - id: hello
@@ -118,7 +118,7 @@ func TestALocalRunSaysHowItWentOnStderr(t *testing.T) {
 func TestALocalRunThatFailsWritesNothingToStdout(t *testing.T) {
 	t.Parallel()
 
-	stdout, _, err := runLocal(t, `edition: v2026.3
+	stdout, _, err := runLocal(t, `edition: v2026.4
 name: refuses
 steps:
   - id: web

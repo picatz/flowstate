@@ -22,7 +22,7 @@ func TestParseRecordsExactRanges(t *testing.T) {
 	// `outputs:` is written as a scalar on purpose. The `${steps.first.result}`
 	// below is read for its span and never resolved — `log:` declares no outputs,
 	// so it names nothing, which is exactly why it is safe to measure against.
-	const src = `edition: v2026.3
+	const src = `edition: v2026.4
 name: model
 steps:
   - id: first
@@ -130,7 +130,7 @@ steps:
     log:
       message: |
         1 + 1
-edition: v2026.3
+edition: v2026.4
 `,
 			check: func(t *testing.T, doc *document) {
 				require.Len(t, doc.parsed.steps, 1)
@@ -162,7 +162,7 @@ steps:
   - id: a
     log:
       message: only
-edition: v2026.3
+edition: v2026.4
 `,
 			check: func(t *testing.T, doc *document) {
 				require.Len(t, doc.parsed.steps, 1)
@@ -176,7 +176,7 @@ edition: v2026.3
 steps:
   - id: a
     log:
-edition: v2026.3
+edition: v2026.4
 `,
 			// `log:` on a line by itself names the task and gives it no inputs,
 			// which is a complete step as far as the grammar is concerned — whether
@@ -207,7 +207,7 @@ base: &b
 steps:
   - id: a
     log: *b
-edition: v2026.3
+edition: v2026.4
 `,
 			check: func(t *testing.T, doc *document) {
 				require.Len(t, doc.parsed.steps, 1)
@@ -276,7 +276,7 @@ steps:
   - id: a
     http:
       url: https://example.com
-edition: v2026.3
+edition: v2026.4
 `, nil)
 	require.NoError(t, doc.parseErr)
 	step := doc.parsed.step("a")
@@ -300,7 +300,7 @@ steps:
   - id: first
     log:
       mes
-edition: v2026.3
+edition: v2026.4
 `,
 			want: []outlineStep{{id: "first", taskName: "log"}},
 		},
@@ -314,7 +314,7 @@ steps:
       headers:
         X-One: a
         X-Two: b
-edition: v2026.3
+edition: v2026.4
 `,
 			want: []outlineStep{{
 				id:        "a",
@@ -343,7 +343,7 @@ steps:
     # which task to run
     log:
       message: hi
-edition: v2026.3
+edition: v2026.4
 `,
 			want: []outlineStep{{id: "a", taskName: "log", inputKeys: []string{"message"}}},
 		},
@@ -381,7 +381,7 @@ steps:
         X: y
     retry:
       attempts: 3
-edition: v2026.3
+edition: v2026.4
 `
 	ix := newLineIndex(src)
 	// The path a task's inputs sit under is the task's own name now, because that
@@ -511,7 +511,7 @@ func TestAValueTheParserRewroteHasNoInnerPositions(t *testing.T) {
 
 			var docs documentStore
 			doc := docs.open("untitled:rewritten.yaml", 1,
-				"edition: v2026.3\nname: r\nsteps:\n- id: a\n  log:\n    message: "+tc.text+"\n", nil)
+				"edition: v2026.4\nname: r\nsteps:\n- id: a\n  log:\n    message: "+tc.text+"\n", nil)
 			require.NotNil(t, doc.parsed)
 			require.Len(t, doc.parsed.steps, 1)
 			message := doc.parsed.steps[0].input("message")
@@ -547,7 +547,7 @@ func TestAnEscapeFreeQuotedScalarKeepsItsInnerPositions(t *testing.T) {
 
 	var docs documentStore
 	doc := docs.open("untitled:quoted.yaml", 1,
-		"edition: v2026.3\nname: q\nsteps:\n- id: a\n  log:\n    message: \"é ${1 @ 2}\"\n", nil)
+		"edition: v2026.4\nname: q\nsteps:\n- id: a\n  log:\n    message: \"é ${1 @ 2}\"\n", nil)
 	require.NotNil(t, doc.parsed)
 	message := doc.parsed.steps[0].input("message")
 	require.NotNil(t, message)

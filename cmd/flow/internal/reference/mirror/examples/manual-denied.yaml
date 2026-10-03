@@ -29,7 +29,7 @@
 # against a caller it authenticated, for a real deployment; nothing here or
 # in `flow test` reaches it, which is why this file runs in CI like any
 # other.
-edition: v2026.3
+edition: v2026.4
 name: manual-denied
 inputs:
   dispute_id:

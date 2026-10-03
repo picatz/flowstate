@@ -123,7 +123,7 @@ func TestNegationDrift(t *testing.T) {
 			// each pairing.
 			name: "three-way partition of a complement",
 			src: `
-edition: v2026.3
+edition: v2026.4
 name: partition
 steps:
   - id: gate
@@ -156,7 +156,7 @@ steps:
 		{
 			name: "lone if, no sibling condition to compare",
 			src: `
-edition: v2026.3
+edition: v2026.4
 name: lone
 steps:
   - id: gate
@@ -195,7 +195,7 @@ steps:
 			// them at all.
 			name: "drift inside a for_each body",
 			src: `
-edition: v2026.3
+edition: v2026.4
 name: nested
 steps:
   - id: gate
@@ -248,7 +248,7 @@ steps:
 // conditions may reference.
 func gateSteps(ifA, ifB string) string {
 	return strings.Join([]string{
-		"edition: v2026.3",
+		"edition: v2026.4",
 		"name: gated",
 		"steps:",
 		"  - id: gate",
@@ -291,7 +291,7 @@ func negationDiagnostics(t *testing.T, src string) []string {
 // step's own line, so an editor can place a squiggle under either clause
 // without having to infer the other step's location from the message text.
 func TestNegationDriftReportsBothPositions(t *testing.T) {
-	src := `edition: v2026.3
+	src := `edition: v2026.4
 name: positions
 steps:
   - id: gate

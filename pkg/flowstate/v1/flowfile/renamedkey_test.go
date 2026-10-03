@@ -28,7 +28,7 @@ func TestARetiredKeySaysWhatReplacedIt(t *testing.T) {
 	t.Parallel()
 
 	src := `
-edition: v2026.3
+edition: v2026.4
 name: t
 steps:
   - id: each
@@ -59,7 +59,7 @@ func TestARetiredKeyIsGuardedByItsPosition(t *testing.T) {
 	t.Parallel()
 
 	src := `
-edition: v2026.3
+edition: v2026.4
 name: t
 steps:
   - id: a
@@ -84,7 +84,7 @@ steps:
 func TestFixRenamesTheKeyAndNothingElse(t *testing.T) {
 	t.Parallel()
 
-	src := `edition: v2026.3
+	src := `edition: v2026.4
 name: t
 steps:
   - id: each
@@ -133,7 +133,7 @@ steps:
 func TestAsRoundTripsThroughMarshal(t *testing.T) {
 	t.Parallel()
 
-	src := `edition: v2026.3
+	src := `edition: v2026.4
 name: t
 steps:
   - id: each
@@ -216,8 +216,8 @@ func TestFixRootsTheResponse(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 
-			src := "edition: v2026.3\nname: t\nsteps:\n  - id: fetch\n    http:\n      url: https://example.com\n" + test.src
-			want := "edition: v2026.3\nname: t\nsteps:\n  - id: fetch\n    http:\n      url: https://example.com\n" + test.want
+			src := "edition: v2026.4\nname: t\nsteps:\n  - id: fetch\n    http:\n      url: https://example.com\n" + test.src
+			want := "edition: v2026.4\nname: t\nsteps:\n  - id: fetch\n    http:\n      url: https://example.com\n" + test.want
 
 			result, err := flowfile.Fix([]byte(src))
 			require.NoError(t, err)
@@ -239,7 +239,7 @@ func TestFixRootsTheResponse(t *testing.T) {
 func TestFixLeavesResponseNamesAloneOutsideTheResponseScope(t *testing.T) {
 	t.Parallel()
 
-	src := `edition: v2026.3
+	src := `edition: v2026.4
 name: t
 steps:
   - id: each
@@ -274,7 +274,7 @@ steps:
 func TestARootedResponseIsWhatTheEngineBinds(t *testing.T) {
 	t.Parallel()
 
-	src := `edition: v2026.3
+	src := `edition: v2026.4
 name: t
 steps:
   - id: fetch

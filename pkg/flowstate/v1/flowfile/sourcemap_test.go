@@ -20,7 +20,7 @@ func TestSourceMapBindsSitesToTheirLines(t *testing.T) {
 	dir := t.TempDir()
 	root := filepath.Join(dir, "main.yaml")
 	child := filepath.Join(dir, "child.yaml")
-	rootText := `edition: v2026.3
+	rootText := `edition: v2026.4
 name: main
 steps:
   - id: pages
@@ -42,7 +42,7 @@ steps:
   - id: nested
     call: ./child.yaml
 `
-	childText := `edition: v2026.3
+	childText := `edition: v2026.4
 name: child
 steps:
   - id: greet
@@ -75,15 +75,15 @@ func TestSourceMapLeavesOutAChangedCallee(t *testing.T) {
 	dir := t.TempDir()
 	root := filepath.Join(dir, "main.yaml")
 	child := filepath.Join(dir, "child.yaml")
-	rootText := "edition: v2026.3\nname: main\nsteps:\n  - id: nested\n    call: ./child.yaml\n"
+	rootText := "edition: v2026.4\nname: main\nsteps:\n  - id: nested\n    call: ./child.yaml\n"
 	require.NoError(t, os.WriteFile(root, []byte(rootText), 0o600))
-	require.NoError(t, os.WriteFile(child, []byte("edition: v2026.3\nname: child\nsteps:\n  - id: greet\n    log:\n      message: hi\n"), 0o600))
+	require.NoError(t, os.WriteFile(child, []byte("edition: v2026.4\nname: child\nsteps:\n  - id: greet\n    log:\n      message: hi\n"), 0o600))
 
 	workflow, positions, err := flowfile.ParseFile(root)
 	require.NoError(t, err)
 
 	// Edited after compiling: the recorded digest no longer holds.
-	require.NoError(t, os.WriteFile(child, []byte("edition: v2026.3\nname: child\n\n\nsteps:\n  - id: greet\n    log:\n      message: hi\n"), 0o600))
+	require.NoError(t, os.WriteFile(child, []byte("edition: v2026.4\nname: child\n\n\nsteps:\n  - id: greet\n    log:\n      message: hi\n"), 0o600))
 
 	sourceMap := flowfile.SourceMap(root, []byte(rootText), workflow, positions)
 	require.Len(t, sourceMap.GetDocuments(), 1, "a callee whose bytes changed is not mapped to lines it no longer holds")
@@ -98,11 +98,11 @@ func TestSourceMapStopsAtTheSchemasDocumentBound(t *testing.T) {
 
 	dir := t.TempDir()
 	var root strings.Builder
-	root.WriteString("edition: v2026.3\nname: main\nsteps:\n")
+	root.WriteString("edition: v2026.4\nname: main\nsteps:\n")
 	for i := range flowfile.MaxSourceMapDocuments + 4 {
 		name := fmt.Sprintf("c%d", i)
 		require.NoError(t, os.WriteFile(filepath.Join(dir, name+".yaml"), []byte(
-			"edition: v2026.3\nname: "+name+"\nsteps:\n  - id: s\n    log:\n      message: hi\n"), 0o600))
+			"edition: v2026.4\nname: "+name+"\nsteps:\n  - id: s\n    log:\n      message: hi\n"), 0o600))
 		fmt.Fprintf(&root, "  - id: %s\n    call: ./%s.yaml\n", name, name)
 	}
 	path := filepath.Join(dir, "main.yaml")

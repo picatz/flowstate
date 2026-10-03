@@ -1,4 +1,4 @@
-edition: v2026.3
+edition: v2026.4
 name: scim-access-review
 description: Reads a page of directory accounts in scope for a quarterly access review, puts the evidence in front of a compliance reviewer, and deactivates the account only after an attested, authorized human says to - or times out having changed nothing.
 # The access review is the recurring compliance workload every audited

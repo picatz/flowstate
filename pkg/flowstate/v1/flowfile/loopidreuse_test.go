@@ -30,7 +30,7 @@ import (
 // loopIDReuseSource reuses the body-step id `page` across two sequential loops
 // whose bodies produce different output sets: one runs a task, one is a
 // `value:`. Identical bodies would pass under a first-match lookup by accident.
-const loopIDReuseSource = `edition: v2026.3
+const loopIDReuseSource = `edition: v2026.4
 name: loop-id-reuse
 steps:
   - id: crawl

@@ -28,7 +28,7 @@ func callingFixture(t *testing.T) string {
 	dir := t.TempDir()
 
 	callee := filepath.Join(dir, "callee.yaml")
-	require.NoError(t, os.WriteFile(callee, []byte(`edition: v2026.3
+	require.NoError(t, os.WriteFile(callee, []byte(`edition: v2026.4
 name: callee
 steps:
   - id: inside_the_callee
@@ -45,7 +45,7 @@ steps:
 `), 0o600))
 
 	caller := filepath.Join(dir, "caller.yaml")
-	require.NoError(t, os.WriteFile(caller, []byte(`edition: v2026.3
+	require.NoError(t, os.WriteFile(caller, []byte(`edition: v2026.4
 name: caller
 steps:
   - id: before

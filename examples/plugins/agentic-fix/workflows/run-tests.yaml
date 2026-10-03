@@ -1,4 +1,4 @@
-edition: v2026.3
+edition: v2026.4
 name: agentic-fix-run-tests
 description: Asks CI to run the suite at one exact commit and reports whether it passed, with the output a failing run produced.
 # The verification half of `agentic-fix`, as a separate file for one reason

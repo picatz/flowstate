@@ -1,4 +1,4 @@
-edition: v2026.3
+edition: v2026.4
 name: callback-address
 description: Hands an external reviewer the address of this very run, then waits for the signal that address will carry back.
 # `approval-gate` and `expense-approval` wait for a person who already knows

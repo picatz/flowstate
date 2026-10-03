@@ -18,7 +18,7 @@ import (
 // bridgeWorkflow declares a webhook that answers a gate rather than starting a
 // run, which is the shape `trigger:` cannot replay.
 const bridgeWorkflow = `
-edition: v2026.3
+edition: v2026.4
 name: bridged
 signals:
   stage-approved:

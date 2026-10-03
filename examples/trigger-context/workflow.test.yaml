@@ -22,7 +22,7 @@
 # why the workflow's `manual:` block is where "who may start this" is written, and
 # why a step gating a destructive action on `${trigger.principal}` would be a
 # control this file could switch off in one line.
-edition: v2026.3
+edition: v2026.4
 defaults:
   stubs:
     - task: log

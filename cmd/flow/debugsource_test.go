@@ -16,7 +16,7 @@ func TestADebugSourceMapIsOfTheBytesThatWereCompiled(t *testing.T) {
 	t.Parallel()
 
 	path := filepath.Join(t.TempDir(), "workflow.yaml")
-	const text = "edition: v2026.3\nname: lines\nsteps:\n  - id: first\n    log:\n      message: one\noutputs: {}\n"
+	const text = "edition: v2026.4\nname: lines\nsteps:\n  - id: first\n    log:\n      message: one\noutputs: {}\n"
 	if err := os.WriteFile(path, []byte(text), 0o600); err != nil {
 		t.Fatal(err)
 	}

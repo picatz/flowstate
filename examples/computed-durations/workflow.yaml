@@ -1,4 +1,4 @@
-edition: v2026.3
+edition: v2026.4
 name: computed-durations
 description: Sizes a grace period and an approval deadline from its inputs, so one definition serves a trial signup and an enterprise contract unedited.
 # `wait-until-a-moment` computes *when* a wait ends. This one computes *how

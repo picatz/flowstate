@@ -15,7 +15,7 @@ import (
 // A workflow with somewhere to walk to, and something to look at when you get
 // there.
 const stagedWorkflow = `
-edition: v2026.3
+edition: v2026.4
 name: staged
 steps:
   - id: build

@@ -12,7 +12,7 @@ import (
 // step with a known gate name — the minimal shape that has a signal surface.
 
 const signalWorkflow = `
-edition: v2026.3
+edition: v2026.4
 name: gated
 steps:
   - id: gate
@@ -115,7 +115,7 @@ func TestSignalNamingACalleeGateIsAccepted(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir+"/callee.yaml", signalWorkflow)
 	writeFile(t, dir+"/workflow.yaml", `
-edition: v2026.3
+edition: v2026.4
 name: caller
 steps:
   - id: sub

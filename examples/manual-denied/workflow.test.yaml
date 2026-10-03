@@ -5,7 +5,7 @@
 # assert about the refusal here: what this case proves is that the block
 # compiles, and that the workflow underneath it runs exactly like any other
 # one once its webhook actually starts it.
-edition: v2026.3
+edition: v2026.4
 defaults:
   workflow: ./workflow.yaml
   stubs:

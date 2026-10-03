@@ -34,7 +34,7 @@ func (c *gatedClock) After(time.Duration) <-chan time.Time {
 }
 
 // sleepingFlowfile sleeps, then has one more step to hold at.
-const sleepingFlowfile = `edition: v2026.3
+const sleepingFlowfile = `edition: v2026.4
 name: sleeping
 steps:
   - id: nap
@@ -108,7 +108,7 @@ func TestPauseDuringTheLastStepIsRefusedWhenTheRunEnds(t *testing.T) {
 	t.Parallel()
 
 	clock := newGatedClock()
-	c, program, _ := launchedWith(t, "last.yaml", `edition: v2026.3
+	c, program, _ := launchedWith(t, "last.yaml", `edition: v2026.4
 name: last
 steps:
   - id: nap

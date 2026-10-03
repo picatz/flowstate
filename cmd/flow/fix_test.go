@@ -69,7 +69,7 @@ steps:
 // and the first version of this got them in an order where the block replacement
 // stepped over the substitution and produced a file the validator refused.
 const currentGreeter = `# A greeter written before the task was flattened onto the step.
-edition: v2026.3
+edition: v2026.4
 name: greeter
 steps:
   # Fetch the line to greet whoever is listening with.
@@ -91,7 +91,7 @@ const (
 
 // oldStyleSingle is the smallest pre-flattening file, for tests about which
 // files are picked up rather than about what the rewrite produces.
-const oldStyleSingle = `edition: v2026.3
+const oldStyleSingle = `edition: v2026.4
 name: single
 steps:
   - id: greet
@@ -108,7 +108,7 @@ steps:
 // The last step reads a step bare, inside a block the rewrite replaces whole, so
 // the two kinds of edit have to compose here at every depth rather than only at
 // the top of a file.
-const oldStyleNested = `edition: v2026.3
+const oldStyleNested = `edition: v2026.4
 name: nested-example
 vars:
   targets: [alpha, beta]
@@ -154,7 +154,7 @@ steps:
 // oldStyleMixed has one step the rewriter can act on and one it must refuse, so
 // the two halves of an unfinished run can be told apart: what it could have done
 // is reported, none of it is written, and the run fails.
-const oldStyleMixed = `edition: v2026.3
+const oldStyleMixed = `edition: v2026.4
 name: mixed
 steps:
   - id: greet
@@ -172,7 +172,7 @@ steps:
 // The second half of issue #382's test shape: after the hand edit, the file
 // converts. A migration that refuses is only tolerable if doing what it says
 // makes it stop refusing.
-const repairedMixed = `edition: v2026.3
+const repairedMixed = `edition: v2026.4
 name: mixed
 steps:
   - id: greet
@@ -189,7 +189,7 @@ steps:
 
 // fixedMixed is repairedMixed after a run: both steps rewritten, nothing else
 // touched.
-const fixedMixed = `edition: v2026.3
+const fixedMixed = `edition: v2026.4
 name: mixed
 steps:
   - id: greet
@@ -375,7 +375,7 @@ func TestFixLeavesOddWhitespaceAlone(t *testing.T) {
 	// thing a run could touch. A step spelled in a retirement's old key would have
 	// this asserting that a refusal writes nothing, which is a different property
 	// and one already covered.
-	const odd = "edition: v2026.3\nname: odd\n\nsteps:\n  \n  - id: greet\n    log:\n      message:   'hello'"
+	const odd = "edition: v2026.4\nname: odd\n\nsteps:\n  \n  - id: greet\n    log:\n      message:   'hello'"
 
 	dir := t.TempDir()
 	path := writeFixture(t, dir, "odd.yaml", odd)
@@ -434,7 +434,7 @@ func TestFixRewritesTheStepAndKeepsEverythingElse(t *testing.T) {
 // their work, and it is the kind of loss nobody notices until the explanation is
 // already gone.
 func TestFixKeepsCommentsWrittenInsideTheTaskBlock(t *testing.T) {
-	const commented = `edition: v2026.3
+	const commented = `edition: v2026.4
 name: commented
 steps:
   - id: greet
@@ -450,7 +450,7 @@ steps:
 	// Derived from the transformation: the comment about the task moves up to the
 	// key replacing `name:`, and the two among the inputs keep their place within
 	// the block as it dedents by the two columns `inputs:` used to add.
-	const want = `edition: v2026.3
+	const want = `edition: v2026.4
 name: commented
 steps:
   - id: greet
@@ -542,7 +542,7 @@ func TestFixExitsNonZeroWhenAnythingWasRefused(t *testing.T) {
 		{
 			// A shape the rewriter will not guess at.
 			name: "a task written in flow style",
-			contents: `edition: v2026.3
+			contents: `edition: v2026.4
 name: flow-style
 steps:
   - id: greet
@@ -552,7 +552,7 @@ steps:
 		{
 			// Not YAML at all, which is certainly not the current edition either.
 			name:     "a file that does not parse",
-			contents: "edition: v2026.3\nname: x\n  steps: [\n",
+			contents: "edition: v2026.4\nname: x\n  steps: [\n",
 		},
 		{
 			// The one easiest to get wrong: something *was* rewritten, so a status
@@ -1095,7 +1095,7 @@ func TestFixWritesSomethingThatCompiles(t *testing.T) {
 // position is reported, the run fails, and the file is exactly as it was — a file
 // that looks fixed and is not is worse than one that was never touched.
 func TestFixRefusesFlowStyleWithoutMangling(t *testing.T) {
-	const inFlowStyle = `edition: v2026.3
+	const inFlowStyle = `edition: v2026.4
 name: flow-style
 steps:
   - id: greet
@@ -1141,7 +1141,7 @@ steps:
 // steps came out flattened and the other did not is a legal document that runs
 // something else, which is the failure shape this command has produced twice.
 func TestFixInlinesATaskBehindAnAlias(t *testing.T) {
-	const shared = `edition: v2026.3
+	const shared = `edition: v2026.4
 name: shared-task
 steps:
   - id: first
@@ -1152,7 +1152,7 @@ steps:
   - id: second
     task: *b
 `
-	const want = `edition: v2026.3
+	const want = `edition: v2026.4
 name: shared-task
 steps:
   - id: first

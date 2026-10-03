@@ -40,7 +40,7 @@ func TestEveryOfferedNameCompiles(t *testing.T) {
 	c := newClient(t)
 	c.initialize()
 
-	const src = `edition: v2026.3
+	const src = `edition: v2026.4
 name: offered
 steps:
   - id: only
@@ -131,7 +131,7 @@ func TestNoMacroIsOfferedInASpellingItCannotBeWrittenIn(t *testing.T) {
 	c := newClient(t)
 	c.initialize()
 
-	const src = `edition: v2026.3
+	const src = `edition: v2026.4
 name: no-bare-macros
 steps:
   - id: only
@@ -181,7 +181,7 @@ func assertWritable(t *testing.T, spelling string) {
 		call = fn.Example
 	}
 
-	src := fmt.Sprintf(`edition: v2026.3
+	src := fmt.Sprintf(`edition: v2026.4
 name: writable
 steps:
   - id: only
@@ -223,7 +223,7 @@ func catalogEntry(spelling string) (v1.LibraryFunction, bool) {
 func namespacesOffered(t *testing.T, c *client) []string {
 	t.Helper()
 
-	const src = `edition: v2026.3
+	const src = `edition: v2026.4
 name: namespaces
 steps:
   - id: only

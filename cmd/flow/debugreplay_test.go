@@ -115,7 +115,7 @@ func TestDebugReplayRefusesABreakOnAStepTheWorkflowDoesNotHave(t *testing.T) {
 // not refused as a step id nothing declares.
 func TestDebugReplayAcceptsAStepAddressThePromptAccepts(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "orders.yaml")
-	require.NoError(t, os.WriteFile(path, []byte(`edition: v2026.3
+	require.NoError(t, os.WriteFile(path, []byte(`edition: v2026.4
 name: orders
 steps:
   - id: orders
@@ -232,7 +232,7 @@ func writeSensitiveDebugFixture(t *testing.T) string {
 	t.Helper()
 
 	path := filepath.Join(t.TempDir(), "workflow.yaml")
-	require.NoError(t, os.WriteFile(path, []byte(`edition: v2026.3
+	require.NoError(t, os.WriteFile(path, []byte(`edition: v2026.4
 name: secretive
 steps:
   - id: mint
@@ -300,7 +300,7 @@ func TestDebugReplaySaysWhenTheRunEndedWithCommandsUnread(t *testing.T) {
 // nothing to say about a failure, the other a script that went silently unused.
 func TestDebugReplaySaysWhenTheRunOfferedNoBoundaryAtAll(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "workflow.yaml")
-	require.NoError(t, os.WriteFile(path, []byte("edition: v2026.3\nname: all-skipped\nsteps:\n"+
+	require.NoError(t, os.WriteFile(path, []byte("edition: v2026.4\nname: all-skipped\nsteps:\n"+
 		"  - id: never\n    if: ${false}\n    log:\n      message: unreachable\n"), 0o600))
 
 	script := writeDebugScript(t, "step\ninspect 'ans' + 'wered'\ncontinue\n")
@@ -326,7 +326,7 @@ func TestDebugReplaySaysWhenTheRunOfferedNoBoundaryAtAll(t *testing.T) {
 // diagnostic beside it is worse than a missing one.
 func TestDebugReplaySaysNothingWhenTheRunFailedBeforeAnyBoundary(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "workflow.yaml")
-	require.NoError(t, os.WriteFile(path, []byte("edition: v2026.3\nname: fails-first\ninputs:\n"+
+	require.NoError(t, os.WriteFile(path, []byte("edition: v2026.4\nname: fails-first\ninputs:\n"+
 		"  required_thing:\n    type: string\n    required: true\nsteps:\n"+
 		"  - id: never\n    log:\n      message: unreachable\n"), 0o600))
 
@@ -362,7 +362,7 @@ func TestDebugReplaySaysNothingAboutTrailingComments(t *testing.T) {
 // true and useless.
 func TestDebugReplaySaysNothingAboutAScriptNothingRead(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "workflow.yaml")
-	require.NoError(t, os.WriteFile(path, []byte(`edition: v2026.3
+	require.NoError(t, os.WriteFile(path, []byte(`edition: v2026.4
 name: broken
 steps:
   - id: nope
@@ -508,7 +508,7 @@ func TestDebugReplayIsFoundWhereSomebodyWouldLookForIt(t *testing.T) {
 // is said rather than the run ending as if it had stopped there.
 func TestAnUntilTheRunNeverReachesIsSaidAtThePrompt(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "orders.yaml")
-	require.NoError(t, os.WriteFile(path, []byte(`edition: v2026.3
+	require.NoError(t, os.WriteFile(path, []byte(`edition: v2026.4
 name: orders
 steps:
   - id: orders

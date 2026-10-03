@@ -30,7 +30,7 @@ func lintFixture(t *testing.T) string {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "workflow.yaml")
 
-	require.NoError(t, os.WriteFile(path, []byte(`edition: v2026.3
+	require.NoError(t, os.WriteFile(path, []byte(`edition: v2026.4
 name: nested
 inputs:
   amount:
@@ -70,7 +70,7 @@ func TestLintStrictExitsZeroOnACleanFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "workflow.yaml")
 
-	require.NoError(t, os.WriteFile(path, []byte(`edition: v2026.3
+	require.NoError(t, os.WriteFile(path, []byte(`edition: v2026.4
 name: clean
 steps:
   - id: greet
@@ -92,7 +92,7 @@ func TestLintNamesAFileItCouldNotCheck(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "workflow.yaml")
 
-	require.NoError(t, os.WriteFile(path, []byte(`edition: v2026.3
+	require.NoError(t, os.WriteFile(path, []byte(`edition: v2026.4
 name: broken
 steps:
   - id: nope
@@ -121,7 +121,7 @@ func TestLintStrictFailsOnANamedFileItCouldNotCheck(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "workflow.yaml")
 
-	require.NoError(t, os.WriteFile(path, []byte(`edition: v2026.3
+	require.NoError(t, os.WriteFile(path, []byte(`edition: v2026.4
 name: broken
 steps:
   - id: nope
@@ -145,14 +145,14 @@ steps:
 func TestLintStrictToleratesAWalkedFileItCouldNotCheck(t *testing.T) {
 	dir := t.TempDir()
 
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.yaml"), []byte(`edition: v2026.3
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.yaml"), []byte(`edition: v2026.4
 name: clean
 steps:
   - id: greet
     log:
       message: hello
 `), 0o600))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "broken.yaml"), []byte(`edition: v2026.3
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "broken.yaml"), []byte(`edition: v2026.4
 name: broken
 steps:
   - id: nope
@@ -183,7 +183,7 @@ func TestLintPositionsAreClickable(t *testing.T) {
 // and that a file it could not compile is named rather than silently dropped.
 func TestLintJSONIsReadable(t *testing.T) {
 	dir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.yaml"), []byte(`edition: v2026.3
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.yaml"), []byte(`edition: v2026.4
 name: nested
 inputs:
   amount:
@@ -192,7 +192,7 @@ steps:
   - id: band
     value: '${inputs.amount > 100 ? "high" : (inputs.amount > 10 ? "medium" : "low")}'
 `), 0o600))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "broken.yaml"), []byte(`edition: v2026.3
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "broken.yaml"), []byte(`edition: v2026.4
 name: broken
 steps:
   - id: nope

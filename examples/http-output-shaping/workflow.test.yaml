@@ -15,7 +15,7 @@
 # `source`, which comes from `vars.source` rather than from the response at
 # all. `title` and `source` are deliberately not the values the real endpoint
 # or the real var carry, so a `report` that read anything else reaches no stub.
-edition: v2026.3
+edition: v2026.4
 tests:
   - name: a later step reads only the shaped names the step reported
     workflow: ./workflow.yaml

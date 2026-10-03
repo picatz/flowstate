@@ -1,4 +1,4 @@
-edition: v2026.3
+edition: v2026.4
 
 # Proves the example asks Codex for a read-only turn and surfaces its answer, in
 # CI with no network, no API key and without the codex plugin installed. The stub

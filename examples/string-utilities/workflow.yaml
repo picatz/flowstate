@@ -1,4 +1,4 @@
-edition: v2026.3
+edition: v2026.4
 name: string-utilities
 description: Strips a reply prefix off a ticket subject and derives a routing key from what is left, using the profile's strings functions instead of a task built to do one string operation.
 # Three string operations, each named on the step that computes it rather than

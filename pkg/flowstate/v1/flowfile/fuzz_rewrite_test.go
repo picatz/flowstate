@@ -65,7 +65,7 @@ import (
 var rewriteSeeds = []string{
 	// Nothing to do: the smallest file this language admits, already current. The
 	// property that matters for this one is that both rewriters leave it alone.
-	`edition: v2026.3
+	`edition: v2026.4
 name: hello
 steps:
 - id: hello
@@ -182,7 +182,7 @@ steps:
 	// Comments in every position Format has to carry one from: above a key,
 	// beside a value, at the top of the document, and inside a nested block.
 	`# a workflow
-edition: v2026.3
+edition: v2026.4
 name: commented # beside the name
 steps:
 # above the step
@@ -197,7 +197,7 @@ steps: [{id: a, log: {message: hi}}]
 `,
 	// Control flow, so the fuzzer can reach a loop body and a parallel branch —
 	// the positions a round trip is most easily lost in.
-	`edition: v2026.3
+	`edition: v2026.4
 name: control
 steps:
 - id: loop
@@ -222,7 +222,7 @@ steps:
 `,
 	// Policy, conditions in both spellings, and a wait — the keys that carry
 	// durations and expressions Marshal has to render back.
-	`edition: v2026.3
+	`edition: v2026.4
 name: policy
 steps:
 - id: a
@@ -250,7 +250,7 @@ steps:
 	// candidate, which expanded the merge keys: 7.4 GiB for this file's
 	// twenty-four-level cousin (#889). Seeded so the fuzzer starts from the shape
 	// rather than having to find it, and so a mutation of it is cheap to reach.
-	`edition: v2026.3
+	`edition: v2026.4
 name: bomb
 steps:
 - id: a

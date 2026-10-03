@@ -51,7 +51,7 @@
 #
 # (needs `flow server` and `flow worker` running; see the main README's
 # Quickstart)
-edition: v2026.3
+edition: v2026.4
 name: renewal-reminder
 description: Nudges a customer every billing period until they renew or cancel — the periodic work is what a lapsed wait does, and the signal is what stops it.
 vars:

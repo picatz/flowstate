@@ -48,7 +48,7 @@ func ExampleMarshal() {
 
 	fmt.Println(string(b))
 	// Output:
-	// edition: v2026.3
+	// edition: v2026.4
 	// name: hello
 	// steps:
 	//   - id: a
@@ -61,7 +61,7 @@ func ExampleMarshal() {
 
 func ExampleUnmarshal() {
 	inputYAML := `
-edition: v2026.3
+edition: v2026.4
 name: hello
 steps:
   - id: a
@@ -84,7 +84,7 @@ steps:
 
 func TestFlowFileRoundTrip(t *testing.T) {
 	inputYAML := `
-edition: v2026.3
+edition: v2026.4
 name: hello
 steps:
   - id: a
@@ -114,7 +114,7 @@ steps:
 
 func TestFlowfile_MapWithExprValues(t *testing.T) {
 	data := []byte(`
-edition: v2026.3
+edition: v2026.4
 name: http-with-headers
 steps:
   - id: web
@@ -135,7 +135,7 @@ steps:
 
 func TestFlowfile_ListWithExprValues(t *testing.T) {
 	data := []byte(`
-edition: v2026.3
+edition: v2026.4
 name: list-exprs
 steps:
   - id: s
@@ -154,7 +154,7 @@ steps:
 
 	// all-literal list remains literal
 	data2 := []byte(`
-edition: v2026.3
+edition: v2026.4
 name: list-literals
 steps:
   - id: s
@@ -191,9 +191,9 @@ func FuzzRoundTrip(f *testing.F) {
 	}
 
 	for _, seed := range []string{
-		"edition: v2026.3\nname: deep\nvars:\n  d: " + atBound + "\nsteps:\n- id: a\n  log:\n    message: hi\n",
+		"edition: v2026.4\nname: deep\nvars:\n  d: " + atBound + "\nsteps:\n- id: a\n  log:\n    message: hi\n",
 		// A basic case to start with.
-		`edition: v2026.3
+		`edition: v2026.4
 name: hello
 steps:
 - id: a
@@ -204,7 +204,7 @@ steps:
     message: ${steps.a.body}
 `,
 		// Conditions and policy, in both the fenced and bare spellings.
-		`edition: v2026.3
+		`edition: v2026.4
 name: policy
 description: ""
 steps:
@@ -226,7 +226,7 @@ steps:
     message: ""
 `,
 		// Nested control flow, including a loop inside a branch.
-		`edition: v2026.3
+		`edition: v2026.4
 name: control
 steps:
 - id: loop
@@ -255,7 +255,7 @@ steps:
 `,
 		// Structures, expressions inside them, and the zero values the engine
 		// relies on surviving.
-		`edition: v2026.3
+		`edition: v2026.4
 name: shapes
 steps:
 - id: a
@@ -284,7 +284,7 @@ steps:
 		// that stay legal beside it. The kind writes its expression through the
 		// same writer `if:` uses, so a seed here covers the position where the
 		// two could come apart.
-		`edition: v2026.3
+		`edition: v2026.4
 name: values
 steps:
 - id: over
@@ -307,7 +307,7 @@ steps:
 		// where the rewriter has bitten before. The empty `steps: []` is a
 		// seed on purpose: it is the one body shape Marshal must write back
 		// rather than drop.
-		`edition: v2026.3
+		`edition: v2026.4
 name: dispatch
 steps:
 - id: route
@@ -361,7 +361,7 @@ steps:
 		// `description` is here because a compile-time text field is written
 		// verbatim, and the escaped lookalike beside a real fence is here because
 		// that is the arrangement a substring search resolves backwards.
-		`edition: v2026.3
+		`edition: v2026.4
 name: escapes
 description: write $${TOKEN} to interpolate it
 inputs:
@@ -398,7 +398,7 @@ steps:
 		// step — which is nesting breadth-first rather than depth-first and so
 		// is a different shape from the plain `strings.Repeat` depth seed
 		// above.
-		`edition: v2026.3
+		`edition: v2026.4
 name: shared
 steps:
   - &policy
@@ -412,7 +412,7 @@ steps:
     log:
       message: two
 `,
-		`edition: v2026.3
+		`edition: v2026.4
 name: aliasvalue
 vars:
   base: &b https://example.com
@@ -424,7 +424,7 @@ steps:
   http:
     url: *b
 `,
-		`edition: v2026.3
+		`edition: v2026.4
 name: bombsmall
 steps:
   - &base
@@ -446,7 +446,7 @@ steps:
     log:
       message: hi
 `,
-		`edition: v2026.3
+		`edition: v2026.4
 name: enumalias
 inputs:
   first:
@@ -460,7 +460,7 @@ steps:
   log:
     message: done
 `,
-		`edition: v2026.3
+		`edition: v2026.4
 name: nested-alias
 steps:
   - &inner

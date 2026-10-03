@@ -55,7 +55,7 @@ import (
 // counts the iterations whose wait actually lapsed, so it *is* the period the
 // signal landed in, minus one.
 const periodsWorkflow = `
-edition: v2026.3
+edition: v2026.4
 name: periods
 steps:
   - id: periods
@@ -201,7 +201,7 @@ func TestAnsweredGateDoesNotDragTheClockToItsUnusedDeadline(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, dir+"/workflow.yaml", `
-edition: v2026.3
+edition: v2026.4
 name: two-gates
 steps:
   - id: first
@@ -262,7 +262,7 @@ func TestSignalDeliveredWhileTheRunIsElsewhereDoesNotStopTheClock(t *testing.T) 
 
 	dir := t.TempDir()
 	writeFile(t, dir+"/workflow.yaml", `
-edition: v2026.3
+edition: v2026.4
 name: asleep-when-it-lands
 steps:
   - id: nap
@@ -327,7 +327,7 @@ func TestTwoSignalsScriptedForTheSameMomentDeliverInDeclarationOrder(t *testing.
 
 	dir := t.TempDir()
 	writeFile(t, dir+"/workflow.yaml", `
-edition: v2026.3
+edition: v2026.4
 name: tied-signals
 steps:
   - id: rollout
@@ -389,7 +389,7 @@ func TestANegativeAtTiesWithTheSharedEmptyDefault(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, dir+"/workflow.yaml", `
-edition: v2026.3
+edition: v2026.4
 name: tied-signals-negative
 steps:
   - id: rollout
@@ -454,7 +454,7 @@ func TestAGateAnsweredBeforeItBlocksDoesNotSpendItsTimeout(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, dir+"/workflow.yaml", `
-edition: v2026.3
+edition: v2026.4
 name: answered-early
 steps:
   - id: first

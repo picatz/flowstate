@@ -90,7 +90,7 @@ func TestAPluginThatDeclaresShapingIsTreatedAsShaping(t *testing.T) {
 // shapingSource is one file, used by both directions, so the difference between
 // them is the declaration and nothing else.
 func shapingSource(task string) string {
-	return `edition: v2026.3
+	return `edition: v2026.4
 name: t
 steps:
   - id: fetch

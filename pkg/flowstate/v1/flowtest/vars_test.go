@@ -23,11 +23,11 @@ func TestAVarReachesEveryFixturePosition(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
-edition: v2026.3
+edition: v2026.4
 name: echo
 inputs:
   order:
-    type: struct
+    type: map(string, dyn)
 steps:
   - id: keep
     value: ${inputs.order.region}
@@ -67,11 +67,11 @@ func TestAVarMayHoldAStructure(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
-edition: v2026.3
+edition: v2026.4
 name: shaped
 inputs:
   order:
-    type: struct
+    type: map(string, dyn)
 steps:
   - id: read
     value: ${inputs.order.id}
@@ -114,7 +114,7 @@ func TestAStubsVarsAreTheWorkflowsNotTheFiles(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
-edition: v2026.3
+edition: v2026.4
 name: spoken
 vars:
   greeting: hello
@@ -159,7 +159,7 @@ func TestVarsReachRowsAndDefaults(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
-edition: v2026.3
+edition: v2026.4
 name: chained
 inputs:
   who:

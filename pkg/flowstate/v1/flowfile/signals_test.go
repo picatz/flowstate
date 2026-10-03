@@ -15,7 +15,7 @@ import (
 // deliver it. See [pkg/flowstate/v1/signalpolicy.go] for the enforcement
 // this describes and [pkg/flowstate/v1/server/lifecycle.go] for where it is
 // checked.
-const signaledSource = `edition: v2026.3
+const signaledSource = `edition: v2026.4
 name: deploy-gate
 steps:
   - id: approval
@@ -102,7 +102,7 @@ func TestMarshalIsTheInverseForSignals(t *testing.T) {
 func TestMarshalWritesSignalsInSortedOrder(t *testing.T) {
 	t.Parallel()
 
-	src := `edition: v2026.3
+	src := `edition: v2026.4
 name: multi-gate
 steps:
   - id: a
@@ -158,7 +158,7 @@ func TestSignalPolicyForAnUndeclaredNameIsMisspelled(t *testing.T) {
 func TestSignalPolicyRuleWithNothingSetIsRefused(t *testing.T) {
 	t.Parallel()
 
-	source := `edition: v2026.3
+	source := `edition: v2026.4
 name: deploy-gate
 steps:
   - id: approval
@@ -198,7 +198,7 @@ func TestSignalPolicySubjectMustBeIssuerQualified(t *testing.T) {
 func TestAnEmptySignalsBlockDoesNotRoundTrip(t *testing.T) {
 	t.Parallel()
 
-	source := `edition: v2026.3
+	source := `edition: v2026.4
 name: deploy-gate
 steps:
   - id: approval
@@ -222,7 +222,7 @@ signals: {}
 // — one of the two shapes the narrowing check accepts. The `namespace:` beside
 // it is ordinary and permitted; it is simply not what makes this rule narrow
 // enough (see [TestNarrowingCheckRefusesAnInterpolatedSubjectNarrowedOnlyByNamespace]).
-const perRunSignaledSource = `edition: v2026.3
+const perRunSignaledSource = `edition: v2026.4
 name: deploy-gate
 inputs:
   expected_approver:
@@ -291,7 +291,7 @@ func TestASubjectFromRuleValidatesWhenNarrowed(t *testing.T) {
 func TestNarrowingCheckRefusesAnInterpolationOnlyRule(t *testing.T) {
 	t.Parallel()
 
-	source := `edition: v2026.3
+	source := `edition: v2026.4
 name: deploy-gate
 inputs:
   expected_approver:
@@ -333,7 +333,7 @@ signals:
 func TestNarrowingCheckRefusesAnInterpolatedSubjectNarrowedOnlyByNamespace(t *testing.T) {
 	t.Parallel()
 
-	source := `edition: v2026.3
+	source := `edition: v2026.4
 name: deploy-gate
 inputs:
   expected_approver:
@@ -364,7 +364,7 @@ signals:
 func TestNarrowingCheckAllowsAnInterpolatedSubjectWithClaims(t *testing.T) {
 	t.Parallel()
 
-	source := `edition: v2026.3
+	source := `edition: v2026.4
 name: deploy-gate
 inputs:
   expected_approver:

@@ -32,7 +32,7 @@ import (
 
 // codecTestWorkflow is the smallest run there is: what these tests are about is
 // the configuration a run is refused under, not the run.
-const codecTestWorkflow = `edition: v2026.3
+const codecTestWorkflow = `edition: v2026.4
 name: codec-configuration
 steps:
   - id: hello

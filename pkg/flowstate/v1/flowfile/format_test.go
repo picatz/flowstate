@@ -50,7 +50,7 @@ func TestFormatKeepsCommentsInEveryPositionTheGrammarAllows(t *testing.T) {
 			name: "top of file, above a key, trailing a value, and under the last key",
 			src: `# The file starts by saying what grammar it is in.
 # Two lines of it.
-edition: v2026.3
+edition: v2026.4
 name: greeter # what the run is called
 description: greets
 
@@ -78,7 +78,7 @@ steps:
 `,
 			want: `# The file starts by saying what grammar it is in.
 # Two lines of it.
-edition: v2026.3
+edition: v2026.4
 name: greeter # what the run is called
 description: greets
 
@@ -105,7 +105,7 @@ steps:
 		},
 		{
 			name: "inside nested control flow, and beside a folded scalar the formatter unfolds",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: shapes
 description: >-
   A folded description the formatter unfolds, with a comment above the key it
@@ -134,7 +134,7 @@ steps:
   - id: hold
     sleep: 30s # a wait
 `,
-			want: `edition: v2026.3
+			want: `edition: v2026.4
 name: shapes
 description: A folded description the formatter unfolds, with a comment above the key it belongs to.
 steps:
@@ -164,7 +164,7 @@ steps:
 		},
 		{
 			name: "above a block scalar",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: blocks
 steps:
   - id: greet
@@ -174,7 +174,7 @@ steps:
         first line
         second line
 `,
-			want: `edition: v2026.3
+			want: `edition: v2026.4
 name: blocks
 steps:
   - id: greet
@@ -206,7 +206,7 @@ steps:
 func TestFormatMovesACommentWithTheKeyItSitsAbove(t *testing.T) {
 	t.Parallel()
 
-	const src = `edition: v2026.3
+	const src = `edition: v2026.4
 name: sorted
 steps:
   - id: fetch
@@ -217,7 +217,7 @@ steps:
       method: GET
 `
 
-	const want = `edition: v2026.3
+	const want = `edition: v2026.4
 name: sorted
 steps:
   - id: fetch
@@ -239,14 +239,14 @@ func TestFormatWithoutCommentsWritesExactlyMarshalsBytes(t *testing.T) {
 	t.Parallel()
 
 	for _, src := range []string{
-		`edition: v2026.3
+		`edition: v2026.4
 name: greeter
 steps:
   - id: greet
     log:
       message: hello world
 `,
-		`edition: v2026.3
+		`edition: v2026.4
 name: shapes
 description: >-
   Folded, and unfolded on the way back out.
@@ -293,7 +293,7 @@ func TestFormatIsIdempotent(t *testing.T) {
 	t.Parallel()
 
 	const src = `# a header
-edition: v2026.3
+edition: v2026.4
 name: greeter # trailing
 inputs:
   name:
@@ -338,7 +338,7 @@ func TestFormatRefusesACommentItCannotKeep(t *testing.T) {
 		// the comment-refusal behaviour under test without it.
 		{
 			name: "inside a block written back as one expression",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: report
 steps:
   - id: report
@@ -381,7 +381,7 @@ steps:
 func TestFormatKeepsACommentWhoseKeyContainsAPathSeparator(t *testing.T) {
 	t.Parallel()
 
-	const src = `edition: v2026.3
+	const src = `edition: v2026.4
 name: dotted
 steps:
   - id: send
@@ -396,7 +396,7 @@ steps:
           b: two
 `
 
-	const want = `edition: v2026.3
+	const want = `edition: v2026.4
 name: dotted
 steps:
   - id: send
@@ -420,7 +420,7 @@ steps:
 func TestFormatRefusesSourceItCannotRead(t *testing.T) {
 	t.Parallel()
 
-	const src = `edition: v2026.3
+	const src = `edition: v2026.4
 name: greeter
 steps:
   - id: greet
@@ -441,7 +441,7 @@ steps:
 // through a chain of single-key mappings: `blob: {k: {k: {k: ... leaf: 1}}}`.
 func deepVarsSource(levels int) string {
 	var b strings.Builder
-	b.WriteString("edition: v2026.3\nname: deep\nvars:\n  blob:\n")
+	b.WriteString("edition: v2026.4\nname: deep\nvars:\n  blob:\n")
 	indent := "    "
 	for range levels {
 		b.WriteString(indent + "k:\n")
@@ -536,12 +536,12 @@ func TestFormatWritesAKeyLineCommentAfterTheValueWhereTheKeyHasNoRoom(t *testing
 			// The fuzzer's own input, byte for byte — the corpus entry
 			// `comment_folded_into_key`, which formats now rather than refusing.
 			name: "the value continues on the next line",
-			src:  "edition: v2026.3\nname: #\nA0\n",
-			want: "edition: v2026.3\nname: A0 #\n",
+			src:  "edition: v2026.4\nname: #\nA0\n",
+			want: "edition: v2026.4\nname: A0 #\n",
 		},
 		{
 			name: "a scalar rendered beside the key it was written under",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: # why
   greeter
 steps:
@@ -549,7 +549,7 @@ steps:
   log:
     message: hi
 `,
-			want: `edition: v2026.3
+			want: `edition: v2026.4
 name: greeter # why
 steps:
   - id: a
@@ -559,7 +559,7 @@ steps:
 		},
 		{
 			name: "a nested key whose value is a scalar",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: greeter
 steps:
 - id: a
@@ -567,7 +567,7 @@ steps:
     message: # why
       hi
 `,
-			want: `edition: v2026.3
+			want: `edition: v2026.4
 name: greeter
 steps:
   - id: a
@@ -579,7 +579,7 @@ steps:
 			// The header is what shares the key's line, so this is a shape that
 			// comes back exactly where it was written.
 			name: "a block scalar, whose header shares the key's line",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: greeter
 steps:
 - id: a
@@ -589,7 +589,7 @@ steps:
       one
       two
 `,
-			want: `edition: v2026.3
+			want: `edition: v2026.4
 name: greeter
 steps:
   - id: a
@@ -604,14 +604,14 @@ steps:
 			// this is the flow-mapping position reached the way a Flowfile
 			// reaches it rather than by building the node in Go.
 			name: "a flow mapping, which is how a task with no inputs renders",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: greeter
 steps:
 - id: a
   log: # why
     {}
 `,
-			want: `edition: v2026.3
+			want: `edition: v2026.4
 name: greeter
 steps:
   - id: a
@@ -621,7 +621,7 @@ steps:
 		{
 			// And `steps: []` is what it writes for a branch with no steps.
 			name: "a flow sequence, which is how an empty branch renders",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: greeter
 inputs:
   action:
@@ -641,7 +641,7 @@ steps:
         log:
           message: hi
 `,
-			want: `edition: v2026.3
+			want: `edition: v2026.4
 name: greeter
 inputs:
   action:
@@ -686,7 +686,7 @@ steps:
 func TestFormatKeepsACommentBesideAnEmptySequence(t *testing.T) {
 	t.Parallel()
 
-	const src = `edition: v2026.3
+	const src = `edition: v2026.4
 name: greeter
 inputs:
   action:
@@ -726,7 +726,7 @@ steps:
 func TestFormatRefusesTwoCommentsThatWouldShareOneSlot(t *testing.T) {
 	t.Parallel()
 
-	const src = `edition: v2026.3
+	const src = `edition: v2026.4
 name: # why
   greeter # and also
 steps:
@@ -765,7 +765,7 @@ steps:
 func TestFormatKeepsTheCommentPositionsAroundTheFoldingOne(t *testing.T) {
 	t.Parallel()
 
-	const src = `edition: v2026.3
+	const src = `edition: v2026.4
 name: greeter
 steps: # after a key whose value is a block sequence
 - # after the dash
@@ -776,7 +776,7 @@ steps: # after a key whose value is a block sequence
       two
 `
 
-	const want = `edition: v2026.3
+	const want = `edition: v2026.4
 name: greeter
 steps: # after a key whose value is a block sequence
   # after the dash

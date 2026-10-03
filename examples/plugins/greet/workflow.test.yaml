@@ -1,4 +1,4 @@
-edition: v2026.3
+edition: v2026.4
 
 # Proves the workflow sends the plugin's task the name and greeting it chose, in CI
 # with no plugin binary: the stubbed call is selected on both, so a workflow that

@@ -25,7 +25,7 @@ const revealToken = "synthetic-token-5d0c"
 // revealFlowfile declares a sensitive input, uses it where it reaches a
 // declared-sensitive output, the step transcript, and a failure message, and
 // declares one ordinary output beside it.
-const revealFlowfile = `edition: v2026.3
+const revealFlowfile = `edition: v2026.4
 name: reveal
 inputs:
   token:
@@ -219,7 +219,7 @@ func TestAContinuedRunIsDecidedByTheSegmentReported(t *testing.T) {
 	startWorker(t, temporal)
 	s := mustNew(t, temporal)
 
-	wf := revealWorkflow(t, `edition: v2026.3
+	wf := revealWorkflow(t, `edition: v2026.4
 name: segmented
 inputs:
   token:

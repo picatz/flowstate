@@ -22,7 +22,7 @@ import (
 // three-line header — so the step at index i begins on line 4+3i.
 func chainSource(n int) string {
 	var b strings.Builder
-	b.WriteString("edition: v2026.3\nname: chain\nsteps:\n")
+	b.WriteString("edition: v2026.4\nname: chain\nsteps:\n")
 	for i := range n {
 		fmt.Fprintf(&b, "  - id: s%d\n    log:\n      message: hi\n", i)
 	}
@@ -82,7 +82,7 @@ func TestATooLongStepIDIsRefusedWhereItIsWritten(t *testing.T) {
 	t.Parallel()
 
 	long := strings.Repeat("a", 129)
-	src := "edition: v2026.3\nname: long-id\nsteps:\n  - id: " + long + "\n    log:\n      message: hi\n"
+	src := "edition: v2026.4\nname: long-id\nsteps:\n  - id: " + long + "\n    log:\n      message: hi\n"
 
 	wf, _, err := flowfile.Parse([]byte(src))
 	require.NoError(t, err)
@@ -102,7 +102,7 @@ func TestATooLongLoopBodyIsRefusedInsideTheLoop(t *testing.T) {
 	t.Parallel()
 
 	var b strings.Builder
-	b.WriteString("edition: v2026.3\nname: body\nsteps:\n  - id: again\n    loop:\n      until: ${true}\n      max_iterations: 1\n      steps:\n")
+	b.WriteString("edition: v2026.4\nname: body\nsteps:\n  - id: again\n    loop:\n      until: ${true}\n      max_iterations: 1\n      steps:\n")
 	for i := range 101 {
 		fmt.Fprintf(&b, "        - id: b%d\n          log:\n            message: hi\n", i)
 	}
@@ -128,7 +128,7 @@ func TestATooLongLoopBodyIsRefusedInsideTheLoop(t *testing.T) {
 func TestASchemaRuleTheCompilerAlreadyReportsIsSaidOnce(t *testing.T) {
 	t.Parallel()
 
-	src := "edition: v2026.3\nname: my workflow\nsteps:\n  - id: a\n    log:\n      message: hi\n"
+	src := "edition: v2026.4\nname: my workflow\nsteps:\n  - id: a\n    log:\n      message: hi\n"
 
 	ds, err := flowfile.ValidateSource([]byte(src))
 	require.NoError(t, err)
@@ -147,8 +147,8 @@ func TestADefaultTheCompilerWritesIsNotRefusedAtSubmit(t *testing.T) {
 	t.Parallel()
 
 	for name, src := range map[string]string{
-		"for_each without iterator": "edition: v2026.3\nname: a\nsteps:\n  - id: each\n    for_each:\n      items: \"${['a']}\"\n      steps:\n        - id: act\n          log:\n            message: ${item}\n",
-		"retry without backoff":     "edition: v2026.3\nname: a\nsteps:\n  - id: fetch\n    retry:\n      attempts: 3\n    log:\n      message: hi\n",
+		"for_each without iterator": "edition: v2026.4\nname: a\nsteps:\n  - id: each\n    for_each:\n      items: \"${['a']}\"\n      steps:\n        - id: act\n          log:\n            message: ${item}\n",
+		"retry without backoff":     "edition: v2026.4\nname: a\nsteps:\n  - id: fetch\n    retry:\n      attempts: 3\n    log:\n      message: hi\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
@@ -167,7 +167,7 @@ func TestADefaultTheCompilerWritesIsNotRefusedAtSubmit(t *testing.T) {
 
 	// And a written value is still held to the rule: the floor exists so a
 	// shrinking delay cannot be asked for.
-	src := "edition: v2026.3\nname: a\nsteps:\n  - id: fetch\n    retry:\n      attempts: 3\n      backoff: 0.5\n    log:\n      message: hi\n"
+	src := "edition: v2026.4\nname: a\nsteps:\n  - id: fetch\n    retry:\n      attempts: 3\n      backoff: 0.5\n    log:\n      message: hi\n"
 	ds, err := flowfile.ValidateSource([]byte(src))
 	require.NoError(t, err)
 	require.Len(t, ds, 1, "a backoff below one was not refused, or was refused twice:\n%s", ds.Error())
@@ -201,7 +201,7 @@ func TestAScalarMapViolationIsPositionedRatherThanPanicking(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			src := "edition: v2026.3\nname: labelled\nlabels:\n" + label +
+			src := "edition: v2026.4\nname: labelled\nlabels:\n" + label +
 				"steps:\n  - id: hello\n    log:\n      message: hi\n"
 
 			// The claim is that this returns rather than panicking; the
@@ -218,7 +218,7 @@ func TestAScalarMapViolationIsPositionedRatherThanPanicking(t *testing.T) {
 	// The bound reached rather than merely exceeded: a label at exactly its
 	// limit is legal, so the refusals above are the rule and not the checker
 	// refusing every `labels:` it sees.
-	src := "edition: v2026.3\nname: labelled\nlabels:\n  team: " + strings.Repeat("v", 256) +
+	src := "edition: v2026.4\nname: labelled\nlabels:\n  team: " + strings.Repeat("v", 256) +
 		"\nsteps:\n  - id: hello\n    log:\n      message: hi\n"
 	ds, err := flowfile.ValidateSource([]byte(src))
 	require.NoError(t, err)

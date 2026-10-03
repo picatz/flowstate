@@ -31,7 +31,7 @@ func TestRunSourceContextStopsStartingCasesOnceCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
-	const workflow = "edition: v2026.3\nname: demo\nsteps:\n- id: hi\n  log:\n    message: hello\n"
+	const workflow = "edition: v2026.4\nname: demo\nsteps:\n- id: hi\n  log:\n    message: hello\n"
 
 	var tests strings.Builder
 	tests.WriteString("tests:\n")
@@ -58,7 +58,7 @@ func TestRunSourceContextStopsStartingCasesOnceCancelled(t *testing.T) {
 func TestRunSourceRunsEveryCaseWithoutADeadline(t *testing.T) {
 	t.Parallel()
 
-	const workflow = "edition: v2026.3\nname: demo\nsteps:\n- id: hi\n  log:\n    message: hello\n"
+	const workflow = "edition: v2026.4\nname: demo\nsteps:\n- id: hi\n  log:\n    message: hello\n"
 	const tests = "tests:\n  - name: it runs\n    stubs:\n      - task: log\n        returns: {}\n" +
 		"    expect:\n      failed: false\n"
 

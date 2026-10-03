@@ -1,4 +1,4 @@
-edition: v2026.3
+edition: v2026.4
 tests:
   - name: a passing suite reaches the approver and is released
     workflow: ./workflow.yaml

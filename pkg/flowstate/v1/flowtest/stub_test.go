@@ -20,7 +20,7 @@ import (
 // probes carry the identical url on purpose. The loop's own binding is the only
 // thing that separates them, which is what these tests are about (#269).
 const loopWorkflow = `
-edition: v2026.3
+edition: v2026.4
 name: loop-binding
 steps:
   - id: checks
@@ -172,7 +172,7 @@ tests:
 // what an unmatched-stub failure prints about the invocation it could not
 // answer (#386).
 const unmatchedStubWorkflow = `
-edition: v2026.3
+edition: v2026.4
 name: greet
 inputs:
   name:
@@ -245,7 +245,7 @@ func TestUnmatchedStubRedactsASensitiveInput(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, dir+"/workflow.yaml", `
-edition: v2026.3
+edition: v2026.4
 name: greet
 inputs:
   token:
@@ -302,7 +302,7 @@ func TestUnmatchedStubRedactsASensitiveValueNestedInAStructuredInput(t *testing.
 
 	dir := t.TempDir()
 	writeFile(t, dir+"/workflow.yaml", `
-edition: v2026.3
+edition: v2026.4
 name: headers-probe
 inputs:
   token:
@@ -367,11 +367,11 @@ func TestUnmatchedStubRedactsALeafSelectedFromASensitiveDeclaration(t *testing.T
 
 	dir := t.TempDir()
 	writeFile(t, dir+"/workflow.yaml", `
-edition: v2026.3
+edition: v2026.4
 name: structured-credentials
 inputs:
   creds:
-    type: struct
+    type: map(string, dyn)
     sensitive: true
     required: true
 steps:
@@ -432,11 +432,11 @@ func TestUnmatchedStubWithholdsEverythingWhenASensitiveInputIsTooLargeToEnumerat
 
 	dir := t.TempDir()
 	writeFile(t, dir+"/workflow.yaml", `
-edition: v2026.3
+edition: v2026.4
 name: bulk-credentials
 inputs:
   bulk:
-    type: list
+    type: list(dyn)
     sensitive: true
     required: true
 steps:
@@ -489,7 +489,7 @@ func TestUnmatchedStubRedactsASensitiveValueInsideAList(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, dir+"/workflow.yaml", `
-edition: v2026.3
+edition: v2026.4
 name: list-probe
 inputs:
   token:
@@ -546,7 +546,7 @@ func TestUnmatchedStubRedactsASensitiveValueConcatenatedIntoAString(t *testing.T
 
 	dir := t.TempDir()
 	writeFile(t, dir+"/workflow.yaml", `
-edition: v2026.3
+edition: v2026.4
 name: concat-probe
 inputs:
   token:
@@ -608,7 +608,7 @@ func TestUnmatchedStubSurvivesAWhereEvaluationError(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, dir+"/workflow.yaml", `
-edition: v2026.3
+edition: v2026.4
 name: greet
 steps:
   - id: greet
@@ -668,7 +668,7 @@ func TestUnmatchedStubRedactsAWhereEvaluationErrorThatQuotesASensitiveValue(t *t
 
 	dir := t.TempDir()
 	writeFile(t, dir+"/workflow.yaml", `
-edition: v2026.3
+edition: v2026.4
 name: where-error-probe
 inputs:
   token:
@@ -742,11 +742,11 @@ func TestUnmatchedStubWithholdsAWhereEvaluationErrorWhenSensitiveInputsCannotBeE
 
 	dir := t.TempDir()
 	writeFile(t, dir+"/workflow.yaml", `
-edition: v2026.3
+edition: v2026.4
 name: bulk-where-error
 inputs:
   bulk:
-    type: list
+    type: list(dyn)
     sensitive: true
     required: true
 steps:
@@ -809,7 +809,7 @@ func TestUnmatchedStubValueTruncatesOnARuneBoundary(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, dir+"/workflow.yaml", `
-edition: v2026.3
+edition: v2026.4
 name: greet
 inputs:
   text:
@@ -869,11 +869,11 @@ func TestUnmatchedStubRedactsACalleesShortSensitiveValue(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, dir+"/child.yaml", `
-edition: v2026.3
+edition: v2026.4
 name: child
 inputs:
   pins:
-    type: list
+    type: list(dyn)
     sensitive: true
     required: true
 steps:
@@ -883,7 +883,7 @@ steps:
       json: '${ {"pin": inputs.pins[0]} }'
 `)
 	writeFile(t, dir+"/workflow.yaml", `
-edition: v2026.3
+edition: v2026.4
 name: parent
 steps:
   - id: nested

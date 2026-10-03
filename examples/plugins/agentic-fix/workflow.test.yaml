@@ -26,7 +26,7 @@
 # narrower thing than it used to, but the thing it proves is the one that
 # matters: `verify` asks about the sha `apply` actually returned, not about a
 # branch name.
-edition: v2026.3
+edition: v2026.4
 
 defaults:
   inputs:

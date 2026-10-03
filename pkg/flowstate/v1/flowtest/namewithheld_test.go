@@ -22,7 +22,7 @@ import (
 // nameSecret is the sensitive input's value, and every name below spells it.
 const nameSecret = "hunter2_stepid"
 
-const nameWorkflow = `edition: v2026.3
+const nameWorkflow = `edition: v2026.4
 name: names
 inputs:
   token:
@@ -58,7 +58,7 @@ func nameSuite(t *testing.T, cases string) string {
 	dir := t.TempDir()
 	writeFile(t, dir+"/workflow.yaml", nameWorkflow)
 	path := dir + "/names.test.yaml"
-	writeFile(t, path, "edition: v2026.3\ntests:"+cases)
+	writeFile(t, path, "edition: v2026.4\ntests:"+cases)
 
 	return path
 }
@@ -256,7 +256,7 @@ func TestAWithheldNameKeepsTheEntryItWasFoundAt(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
-	writeFile(t, dir+"/workflow.yaml", `edition: v2026.3
+	writeFile(t, dir+"/workflow.yaml", `edition: v2026.4
 name: outputs
 inputs:
   token:
@@ -273,7 +273,7 @@ outputs:
 `)
 	suite := func(token string) *v1.TestCase {
 		path := dir + "/names-" + token + ".test.yaml"
-		writeFile(t, path, `edition: v2026.3
+		writeFile(t, path, `edition: v2026.4
 tests:
   - name: wrong output
     workflow: ./workflow.yaml

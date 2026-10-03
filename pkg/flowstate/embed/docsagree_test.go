@@ -20,7 +20,7 @@ import (
 // rather than "required task capabilities are unavailable" on its own.
 func TestRunLocal_UnknownTaskNamesWhatToRegister(t *testing.T) {
 	workflow, diags, err := Compile([]byte(`
-edition: v2026.3
+edition: v2026.4
 name: typo
 steps:
   - id: step1
@@ -43,7 +43,7 @@ steps:
 // workflow is where the ghost reference is named.
 func TestCompile_DoesNotCheckReferences(t *testing.T) {
 	workflow, diags, err := Compile([]byte(`
-edition: v2026.3
+edition: v2026.4
 name: ghost
 steps:
   - id: step1
@@ -69,7 +69,7 @@ steps:
 // withholds a step's values rather than redacting by value, as the CLI does.
 func TestRunLocal_OutputsAreNotRedacted(t *testing.T) {
 	workflow, diags, err := Compile([]byte(`
-edition: v2026.3
+edition: v2026.4
 name: sensitive
 inputs:
   token:

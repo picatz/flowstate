@@ -41,7 +41,7 @@ func TestFormattingReturnsWhatTheCommandWrites(t *testing.T) {
 	// (#850) — so there is something to reformat and the comment has to survive
 	// the rewrite rather than the document being handed back untouched.
 	const src = `# a comment formatting carries through
-edition: v2026.3
+edition: v2026.4
 name: greeter
 steps:
 - id: greet
@@ -74,7 +74,7 @@ steps:
 func TestFormattingOfAnAlreadyFormattedDocumentReturnsNoEdits(t *testing.T) {
 	t.Parallel()
 
-	const src = `edition: v2026.3
+	const src = `edition: v2026.4
 name: greeter
 steps:
 - id: greet
@@ -114,7 +114,7 @@ func TestFormattingOfABrokenDocumentReturnsNoEdits(t *testing.T) {
 		t.Parallel()
 		// Compiles as YAML but is missing what the grammar requires: a step
 		// naming no task at all.
-		const src = `edition: v2026.3
+		const src = `edition: v2026.4
 name: x
 steps:
 - id: greet

@@ -22,7 +22,7 @@ func writeDebugFixture(t *testing.T) string {
 	t.Helper()
 
 	dir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.yaml"), []byte(`edition: v2026.3
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.yaml"), []byte(`edition: v2026.4
 name: debugged
 steps:
   - id: first
@@ -33,7 +33,7 @@ steps:
       message: two
 outputs: {}
 `), 0o600))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.test.yaml"), []byte(`edition: v2026.3
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.test.yaml"), []byte(`edition: v2026.4
 defaults:
   workflow: ./workflow.yaml
   stubs:
@@ -177,7 +177,7 @@ func unwrapped(text string) string {
 // the verdict.
 func TestDebugAutopsyOnAFailingCase(t *testing.T) {
 	dir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.yaml"), []byte(`edition: v2026.3
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.yaml"), []byte(`edition: v2026.4
 name: debugged
 steps:
   - id: first
@@ -185,7 +185,7 @@ steps:
       message: one
 outputs: {}
 `), 0o600))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.test.yaml"), []byte(`edition: v2026.3
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.test.yaml"), []byte(`edition: v2026.4
 vars:
   flavor: carrot-cake
 defaults:
@@ -224,7 +224,7 @@ tests:
 // shared set (Codex, #1109).
 func TestDebugAutopsyWithholdsSecretBackedVars(t *testing.T) {
 	dir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.yaml"), []byte(`edition: v2026.3
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.yaml"), []byte(`edition: v2026.4
 name: debugged
 steps:
   - id: first
@@ -232,7 +232,7 @@ steps:
       message: one
 outputs: {}
 `), 0o600))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.test.yaml"), []byte(`edition: v2026.3
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.test.yaml"), []byte(`edition: v2026.4
 vars:
   token: hunter2-swordfish
   # The secret embedded in a nested string of a structured var — the shape the
@@ -285,7 +285,7 @@ tests:
 // an `inputs` comparison that answered true.
 func TestDebugAutopsyNoteSaysWhichBindingsAreWithheld(t *testing.T) {
 	dir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.yaml"), []byte(`edition: v2026.3
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.yaml"), []byte(`edition: v2026.4
 name: secretive
 inputs:
   token:
@@ -298,7 +298,7 @@ steps:
       message: one
 outputs: {}
 `), 0o600))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.test.yaml"), []byte(`edition: v2026.3
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.test.yaml"), []byte(`edition: v2026.4
 vars:
   token: hunter2-swordfish
 defaults:
@@ -346,7 +346,7 @@ tests:
 // beside it withholds the same value.
 func TestDebugWithholdsASensitiveInput(t *testing.T) {
 	dir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.yaml"), []byte(`edition: v2026.3
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.yaml"), []byte(`edition: v2026.4
 name: secretive
 inputs:
   token:
@@ -358,7 +358,7 @@ steps:
     value: ${inputs.token}
 outputs: {}
 `), 0o600))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.test.yaml"), []byte(`edition: v2026.3
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.test.yaml"), []byte(`edition: v2026.4
 defaults:
   workflow: ./workflow.yaml
 tests:
@@ -391,11 +391,11 @@ tests:
 // exactly what a short descendant needs.
 func TestDebugWithholdsAShortDescendantOfASensitiveInput(t *testing.T) {
 	dir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.yaml"), []byte(`edition: v2026.3
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.yaml"), []byte(`edition: v2026.4
 name: secretive
 inputs:
   credentials:
-    type: list
+    type: list(dyn)
     required: true
     sensitive: true
 steps:
@@ -404,7 +404,7 @@ steps:
       message: one
 outputs: {}
 `), 0o600))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.test.yaml"), []byte(`edition: v2026.3
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.test.yaml"), []byte(`edition: v2026.4
 defaults:
   workflow: ./workflow.yaml
   stubs:
