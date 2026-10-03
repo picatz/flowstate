@@ -546,11 +546,17 @@ const maxScopeGroups = 32
 // group of [MaxInspectLimit] names at most. A run that is not held has no
 // scope to name and digests as empty.
 func scopeDigest(ctx context.Context, target Target) (string, error) {
+	// An inspection whose context ended reports the values it could not read as
+	// text, so the context is checked after every read: a digest of "context
+	// canceled" would be a fingerprint no later visit could match.
 	top, err := target.Inspect(ctx, &v1.DebugInspectRequest{Children: true, Limit: MaxInspectLimit})
 	if errors.Is(err, ErrNotPaused) {
 		return "", nil
 	}
 	if err != nil {
+		return "", err
+	}
+	if err := ctx.Err(); err != nil {
 		return "", err
 	}
 
@@ -561,6 +567,9 @@ func scopeDigest(ctx context.Context, target Target) (string, error) {
 			Expression: group.GetValue().GetExpression(), Children: true, Limit: MaxInspectLimit,
 		})
 		if err != nil {
+			return "", err
+		}
+		if err := ctx.Err(); err != nil {
 			return "", err
 		}
 		for _, variable := range names.GetChildren() {

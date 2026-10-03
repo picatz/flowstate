@@ -722,3 +722,28 @@ func TestBreakpointReplacementsAreDeduplicatedAndShiftedLikeEveryCommand(t *test
 	assert.True(t, after.GetSnapshot().GetCapabilities().GetReverse())
 	assert.GreaterOrEqual(t, after.GetReceipt().GetRevision(), two.GetRevision())
 }
+
+// TestAMovementRefusedForItsContextLeavesTheHistoryReplayable: a movement whose
+// context has already ended fails, and the history it leaves still rewinds. A
+// context ending in the middle of a scope read is not reproducible from here;
+// scopeDigest checks the context after every read for that case.
+func TestAMovementRefusedForItsContextLeavesTheHistoryReplayable(t *testing.T) {
+	t.Parallel()
+
+	workflow := parseJourney(t)
+	run := newReversing(t, func(int) *v1.Workflow { return workflow }, nil)
+	one := run.first()
+
+	ended, cancel := context.WithCancel(t.Context())
+	cancel()
+	_, err := run.target.Resume(ended, &v1.DebugResumeRequest{
+		RequestId: run.id("move"), Action: v1.DebugResumeAction_DEBUG_RESUME_ACTION_STEP_IN,
+	})
+	require.Error(t, err)
+
+	two := run.move(one, v1.DebugResumeAction_DEBUG_RESUME_ACTION_STEP_IN)
+	_ = run.move(two, v1.DebugResumeAction_DEBUG_RESUME_ACTION_STEP_IN)
+	receipt, snapshot := run.back(0)
+	require.Equal(t, appliedStatus, receipt.GetStatus(), receipt.GetMessage())
+	assert.Equal(t, shownAt(two).address, shownAt(snapshot).address)
+}
