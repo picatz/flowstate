@@ -5,6 +5,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 )
 
@@ -165,4 +166,30 @@ func TestRetiredWordDiagnosticOffersValidYAML(t *testing.T) {
 
 	ds := diagnose(t, "edition: v2026.4\nname: d\ninputs: {x: {type: struct}}\nsteps:\n  - id: s\n    value: ${1}\n")
 	require.Contains(t, ds, `write "map(string, dyn)"`)
+}
+
+// TestMarshalWritesRetiredLegacyTypesInTheirCurrentSpelling pins Marshal's round
+// trip for a hand-built declaration that only carries the legacy enum, which is
+// still a supported protobuf shape.
+func TestMarshalWritesRetiredLegacyTypesInTheirCurrentSpelling(t *testing.T) {
+	t.Parallel()
+
+	wf := &v1.Workflow{
+		Name: "legacy",
+		DeclaredInputs: []*v1.InputDeclaration{
+			{Name: "a", Type: v1.InputDeclaration_TYPE_LIST},
+			{Name: "b", Type: v1.InputDeclaration_TYPE_STRUCT},
+			{Name: "c", Type: v1.InputDeclaration_TYPE_FLOAT},
+		},
+		Steps: []*v1.Node{{Id: "s", Kind: &v1.Node_Task{Task: &v1.Task{
+			Name: "log", Inputs: map[string]*v1.Value{"message": v1.NewLiteral("x")},
+		}}}},
+	}
+
+	out, err := flowfile.Marshal(wf)
+	require.NoError(t, err)
+
+	back, err := flowfile.Unmarshal(out)
+	require.NoError(t, err, "Marshal wrote a document its own parser refuses:\n%s", out)
+	require.Len(t, back.GetDeclaredInputs(), 3)
 }
