@@ -404,10 +404,11 @@ type fixer struct {
 	// alone except where it had to act.
 	terminator string
 
-	edits    map[int]lineEdit
-	changes  []FixChange
-	refusals []Diagnostic
-	notes    []Diagnostic
+	edits     map[int]lineEdit
+	typeSpans map[int][]typeSpan
+	changes   []FixChange
+	refusals  []Diagnostic
+	notes     []Diagnostic
 
 	// substituted records that a line was rewritten in place, which the edit map
 	// does not capture and which still means the document changed.

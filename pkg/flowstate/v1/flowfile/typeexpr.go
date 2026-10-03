@@ -280,7 +280,7 @@ func declareType(text string) (legacy v1.InputDeclaration_Type, structural *v1.T
 		if now, retired := retiredTypeSpellings[declared]; retired {
 			return v1.InputDeclaration_TYPE_UNSPECIFIED, nil, fmt.Errorf(
 				"`%s` is retired in edition %s; write %s (`flow fix` rewrites it)",
-				text, CurrentEdition, now)
+				text, CurrentEdition, yamlSafe(now))
 		}
 
 		return declared, nil, nil
@@ -328,6 +328,10 @@ func declaredTypeText(legacy v1.InputDeclaration_Type, structural *v1.Type) stri
 		}
 	}
 
+	if now, retired := retiredTypeSpellings[legacy]; retired {
+		return now
+	}
+
 	return v1.DeclaredTypeName(legacy)
 }
 
@@ -355,4 +359,15 @@ func declarableTypeNames() []string {
 	}
 
 	return append(names, "double", "list(T)", "map(string, T)")
+}
+
+// yamlSafe quotes a type expression whose comma would end a plain scalar inside
+// a YAML flow mapping, so the spelling a diagnostic offers is valid wherever
+// the author copies it (#1466).
+func yamlSafe(expr string) string {
+	if strings.Contains(expr, ",") {
+		return `"` + expr + `"`
+	}
+
+	return expr
 }

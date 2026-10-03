@@ -1,6 +1,8 @@
 package flowfile
 
 import (
+	"cmp"
+	"slices"
 	"strings"
 
 	"github.com/goccy/go-yaml/ast"
@@ -67,18 +69,16 @@ func (f *fixer) retiredTypeWord(value ast.Node, flow bool) {
 
 	span := spanOfNode(value)
 	if !span.IsValid() || span.Start.Line > len(f.lines) || span.Start.Line != span.End.Line {
-		f.refuse(value, "`%s` is retired in edition %s and means %s, but this line is not shaped so it can be rewritten safely; change it by hand",
-			text, CurrentEdition, now)
+		f.refuseRetired(value, text, now)
 
 		return
 	}
 
 	line := f.lines[span.Start.Line-1]
-	at := span.Start.Column - 1
-	if at < 0 || at+len(text) > len(line) || line[at:at+len(text)] != text {
-		// Quoted, or not where the parser said: refusing beats an off-by-one edit.
-		f.refuse(value, "`%s` is retired in edition %s and means %s, but this line is not shaped so it can be rewritten safely; change it by hand",
-			text, CurrentEdition, now)
+	start, end, ok := scalarBounds(line, span.Start.Column-1, text)
+	if !ok {
+		// Not where the parser said: refusing beats an off-by-one edit.
+		f.refuseRetired(value, text, now)
 
 		return
 	}
@@ -88,8 +88,68 @@ func (f *fixer) retiredTypeWord(value ast.Node, flow bool) {
 		written = `"` + now + `"`
 	}
 
-	f.record(span.Start.Line, span.Start.Line,
-		[]string{line[:at] + written + line[at+len(text):]},
+	f.replaceOnLine(span.Start.Line, typeSpan{start: start, end: end, text: written},
 		"`type: "+text+"` is now `type: "+now+"`",
 		"`type: "+text+"` would become `type: "+now+"`")
+}
+
+func (f *fixer) refuseRetired(value ast.Node, text, now string) {
+	f.refuse(value, "`%s` is retired in edition %s and means %s, but this line is not shaped so it can be rewritten safely; change it by hand",
+		text, CurrentEdition, now)
+}
+
+// scalarBounds finds the whole scalar `text` on a line, quotes included, given
+// the column the parser reported (which may or may not point at the quote).
+func scalarBounds(line string, at int, text string) (start, end int, ok bool) {
+	for _, from := range []int{at, at - 1} {
+		if from < 0 || from >= len(line) {
+			continue
+		}
+
+		for _, quote := range []string{"", `"`, `'`} {
+			token := quote + text + quote
+			if strings.HasPrefix(line[from:], token) {
+				return from, from + len(token), true
+			}
+		}
+	}
+
+	return 0, 0, false
+}
+
+// typeSpan is one replacement within a source line, as byte offsets.
+type typeSpan struct {
+	start, end int
+	text       string
+}
+
+// replaceOnLine records a replacement and rebuilds the line's one edit from
+// every replacement recorded for it so far. A flow-style mapping holds many
+// declarations on one line, and the edit map keeps one edit per line, so
+// recording each separately would spend a fix round per declaration.
+func (f *fixer) replaceOnLine(line int, span typeSpan, message, pending string) {
+	if f.typeSpans == nil {
+		f.typeSpans = make(map[int][]typeSpan)
+	}
+
+	if _, ours := f.typeSpans[line]; !ours {
+		if _, taken := f.edits[line]; taken {
+			return
+		}
+	}
+
+	spans := append(f.typeSpans[line], span)
+	f.typeSpans[line] = spans
+
+	sorted := slices.SortedFunc(slices.Values(spans), func(a, b typeSpan) int { return cmp.Compare(b.start, a.start) })
+	rebuilt := f.lines[line-1]
+	for _, s := range sorted {
+		rebuilt = rebuilt[:s.start] + s.text + rebuilt[s.end:]
+	}
+
+	if f.edits == nil {
+		f.edits = make(map[int]lineEdit)
+	}
+	f.edits[line] = lineEdit{through: line, replacement: []string{rebuilt}}
+	f.changes = append(f.changes, FixChange{Line: line, Message: message, Pending: pending})
 }

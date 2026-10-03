@@ -112,3 +112,57 @@ steps:
 `
 	require.Equal(t, in, fixed(t, in))
 }
+
+// TestFixMigratesQuotedAndCrowdedTypeWords covers the shapes a hand-written file
+// takes: quoted retired words, and a flow mapping with many declarations on one
+// line, which must migrate in one round rather than one per declaration.
+func TestFixMigratesQuotedAndCrowdedTypeWords(t *testing.T) {
+	t.Parallel()
+
+	in := `edition: v2026.3
+name: shapes
+inputs:
+  a:
+    type: "list"
+  b:
+    type: 'struct'
+  c: {type: float}
+  d: {type: struct}
+  e: {type: list}
+steps:
+  - id: s
+    value: ${1}
+`
+	want := `edition: v2026.4
+name: shapes
+inputs:
+  a:
+    type: list(dyn)
+  b:
+    type: map(string, dyn)
+  c: {type: double}
+  d: {type: "map(string, dyn)"}
+  e: {type: list(dyn)}
+steps:
+  - id: s
+    value: ${1}
+`
+	require.Equal(t, want, fixed(t, in))
+
+	crowded := "edition: v2026.3\nname: crowded\ninputs: {" +
+		"a: {type: struct}, b: {type: struct}, c: {type: struct}, d: {type: struct}, " +
+		"e: {type: struct}, f: {type: struct}, g: {type: struct}, h: {type: struct}}\n" +
+		"steps:\n  - id: s\n    value: ${1}\n"
+	out := fixed(t, crowded)
+	require.NotContains(t, out, "type: struct")
+	require.Contains(t, out, `h: {type: "map(string, dyn)"}`)
+}
+
+// TestRetiredWordDiagnosticOffersValidYAML pins that the spelling offered for
+// `struct` survives being pasted into a flow mapping.
+func TestRetiredWordDiagnosticOffersValidYAML(t *testing.T) {
+	t.Parallel()
+
+	ds := diagnose(t, "edition: v2026.4\nname: d\ninputs: {x: {type: struct}}\nsteps:\n  - id: s\n    value: ${1}\n")
+	require.Contains(t, ds, `write "map(string, dyn)"`)
+}

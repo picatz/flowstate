@@ -88,7 +88,7 @@ func TestTheRetiredTypeWordsAreRefusedWithTheirReplacement(t *testing.T) {
 
 	for word, replacement := range map[string]string{
 		"list":   "list(dyn)",
-		"struct": "map(string, dyn)",
+		"struct": `"map(string, dyn)"`,
 		"float":  "double",
 	} {
 		_, _, err := flowfile.Parse([]byte(typedInputFile(word, "", `${"ok"}`)))
