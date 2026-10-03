@@ -51,7 +51,11 @@ message LsRemoteInputs {
 // pointed at when this task ran, not merely repeating a movable name a later
 // force-push or branch reset could quietly change out from under it.
 message RemoteRef {
+  // Name is the ref's full name, such as "refs/heads/main" or "refs/tags/v1.2.3".
   string name = 1;
+
+  // Sha is the full hex object id the ref pointed at when the remote
+  // advertised it.
   string sha = 2;
 }
 
@@ -151,7 +155,10 @@ message CommitPushInputs {
 
 // Signature is a commit's author or committer line: who, and when.
 message Signature {
+  // Name is the person's name exactly as the commit recorded it, unverified.
   string name = 1;
+
+  // Email is the address exactly as the commit recorded it, unverified.
   string email = 2;
 
   // When is RFC 3339, in the zone the commit recorded.

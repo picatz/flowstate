@@ -31,7 +31,7 @@ func main() {
 				Name:    "claims",
 				Summary: "Declares everything but comments.",
 				Input:   message("ClaimsInput"),
-				Output:  message("ClaimsOutput"),
+				Output:  nested("ClaimsOutput"),
 				Fn:      echo,
 			},
 		},
@@ -56,6 +56,41 @@ func message(name string) proto.Message {
 				JsonName: proto.String("value"),
 			}},
 		}},
+	}, nil)
+	if err != nil {
+		panic(err)
+	}
+	return dynamicpb.NewMessage(file.Messages().ByName(protoreflect.Name(name)))
+}
+
+// nested is message plus a field holding a second, equally uncommented message,
+// which is where a check that only reads the top-level fields stops looking.
+func nested(name string) proto.Message {
+	str := func(n string, num int32) *descriptorpb.FieldDescriptorProto {
+		return &descriptorpb.FieldDescriptorProto{
+			Name:     proto.String(n),
+			Number:   proto.Int32(num),
+			Label:    descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(),
+			Type:     descriptorpb.FieldDescriptorProto_TYPE_STRING.Enum(),
+			JsonName: proto.String(n),
+		}
+	}
+	detail := &descriptorpb.FieldDescriptorProto{
+		Name:     proto.String("detail"),
+		Number:   proto.Int32(2),
+		Label:    descriptorpb.FieldDescriptorProto_LABEL_REPEATED.Enum(),
+		Type:     descriptorpb.FieldDescriptorProto_TYPE_MESSAGE.Enum(),
+		TypeName: proto.String(".sloppy.Detail"),
+		JsonName: proto.String("detail"),
+	}
+	file, err := protodesc.NewFile(&descriptorpb.FileDescriptorProto{
+		Name:    proto.String("sloppy/" + name + ".proto"),
+		Package: proto.String("sloppy"),
+		Syntax:  proto.String("proto3"),
+		MessageType: []*descriptorpb.DescriptorProto{
+			{Name: proto.String("Detail"), Field: []*descriptorpb.FieldDescriptorProto{str("inner", 1)}},
+			{Name: proto.String(name), Field: []*descriptorpb.FieldDescriptorProto{str("value", 1), detail}},
+		},
 	}, nil)
 	if err != nil {
 		panic(err)

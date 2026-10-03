@@ -82,7 +82,7 @@ func (f Finding) String() string { return fmt.Sprintf("%s: %s: %s", f.Plugin, f.
 func (s *Session) Conform(t *testing.T, ignore ...Check) {
 	t.Helper()
 
-	findings := s.Audit(t.Context(), t)
+	findings := s.Audit(t.Context(), t, ignore...)
 	for _, p := range s.host.Plugins() {
 		t.Run(p.Name(), func(t *testing.T) {
 			for _, check := range Checks() {
@@ -106,10 +106,17 @@ func (s *Session) Conform(t *testing.T, ignore ...Check) {
 // findings as data — to assert that a known problem is reported, or to print
 // them from something that is not a test.
 //
+// Checks named in ignore are not run at all: ignoring [CheckStableDigests]
+// launches nothing a second time, and ignoring [CheckHealth] sends no poll,
+// which is what a plugin that cannot run twice at once or must not be polled
+// needs.
+//
 // The stable-digests check launches the plugins a second time and needs a
 // testing.TB to own that launch's cleanup.
-func (s *Session) Audit(ctx context.Context, t testing.TB) []Finding {
+func (s *Session) Audit(ctx context.Context, t testing.TB, ignore ...Check) []Finding {
 	t.Helper()
+
+	run := func(c Check) bool { return !slices.Contains(ignore, c) }
 
 	catalog := s.host.Catalog()
 	described := map[string]*flowstatev1.TaskDescription{}
@@ -125,7 +132,9 @@ func (s *Session) Audit(ctx context.Context, t testing.TB) []Finding {
 
 	var findings []Finding
 	add := func(plugin string, check Check, format string, args ...any) {
-		findings = append(findings, Finding{Plugin: plugin, Check: check, Message: fmt.Sprintf(format, args...)})
+		if run(check) {
+			findings = append(findings, Finding{Plugin: plugin, Check: check, Message: fmt.Sprintf(format, args...)})
+		}
 	}
 
 	for _, p := range s.host.Plugins() {
@@ -158,13 +167,16 @@ func (s *Session) Audit(ctx context.Context, t testing.TB) []Finding {
 				label string
 				desc  protoreflect.MessageDescriptor
 			}{{"input", def.Inputs}, {"output", def.Outputs}} {
-				for _, field := range undocumented(side.desc) {
+				for _, field := range undocumented(side.desc, nil) {
 					add(p.Name(), CheckDocumentedFields, "%s %s field %q has no comment; it is the hover text an "+
 						"editor shows. Comment it in the .proto and regenerate", name, side.label, field)
 				}
 			}
 		}
 
+		if !run(CheckHealth) {
+			continue
+		}
 		switch h := p.CheckHealth(ctx); {
 		case h.Status == plugin.HealthServing:
 		case h.Status == plugin.HealthNotServing && strings.TrimSpace(h.Message) != "":
@@ -176,6 +188,9 @@ func (s *Session) Audit(ctx context.Context, t testing.TB) []Finding {
 		}
 	}
 
+	if !run(CheckStableDigests) {
+		return findings
+	}
 	again := Launch(t, s.dir, s.opts...)
 	got := digests(again.host.Catalog())
 	for name, want := range digests(catalog) {
@@ -201,12 +216,21 @@ func digests(c *flowstatev1.PluginCatalog) map[string]digestPair {
 	return out
 }
 
-// undocumented names the fields of a message that have no leading comment in
-// the descriptor the host reconstructed from what the plugin sent.
-func undocumented(msg protoreflect.MessageDescriptor) []string {
-	if msg == nil {
+// undocumented names the fields of a message, and of every message a plugin
+// declares beneath it, that have no leading comment in the descriptor the host
+// reconstructed from what the plugin sent. A nested field is named by its path
+// (commits.author_email). Messages from the engine's own schema and from
+// google/protobuf are not the plugin's to document and are not descended into;
+// seen guards a message that contains itself.
+func undocumented(msg protoreflect.MessageDescriptor, seen map[protoreflect.FullName]bool) []string {
+	if msg == nil || seen[msg.FullName()] {
 		return nil
 	}
+	if seen == nil {
+		seen = map[protoreflect.FullName]bool{}
+	}
+	seen[msg.FullName()] = true
+
 	var missing []string
 	fields := msg.Fields()
 	for i := range fields.Len() {
@@ -214,6 +238,24 @@ func undocumented(msg protoreflect.MessageDescriptor) []string {
 		if strings.TrimSpace(msg.ParentFile().SourceLocations().ByDescriptor(field).LeadingComments) == "" {
 			missing = append(missing, string(field.Name()))
 		}
+
+		child := field.Message()
+		if field.IsMap() {
+			child = field.MapValue().Message()
+		}
+		if child == nil || foreign(child) {
+			continue
+		}
+		for _, nested := range undocumented(child, seen) {
+			missing = append(missing, string(field.Name())+"."+nested)
+		}
 	}
 	return missing
+}
+
+// foreign reports whether a message belongs to the engine or to protobuf's
+// well-known types rather than to the plugin being audited.
+func foreign(msg protoreflect.MessageDescriptor) bool {
+	path := msg.ParentFile().Path()
+	return strings.HasPrefix(path, "google/") || strings.HasPrefix(path, "flowstate/")
 }

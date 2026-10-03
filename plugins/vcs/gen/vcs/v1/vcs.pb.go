@@ -32,10 +32,12 @@ type Commit struct {
 	// would need a field this schema does not have — adding one is future work,
 	// not a compatible extension of this one.
 	Sha string `protobuf:"bytes,1,opt,name=sha,proto3" json:"sha,omitempty"`
-	// AuthorName and AuthorEmail are read from the commit's author line, exactly
-	// as the repository recorded them - unverified, since anyone with push
-	// access controls what a commit author line says.
-	AuthorName  string `protobuf:"bytes,2,opt,name=author_name,json=authorName,proto3" json:"author_name,omitempty"`
+	// AuthorName is read from the commit's author line, exactly as the
+	// repository recorded it - unverified, since anyone with push access
+	// controls what a commit author line says.
+	AuthorName string `protobuf:"bytes,2,opt,name=author_name,json=authorName,proto3" json:"author_name,omitempty"`
+	// AuthorEmail is read from the same author line and is as unverified as
+	// the name.
 	AuthorEmail string `protobuf:"bytes,3,opt,name=author_email,json=authorEmail,proto3" json:"author_email,omitempty"`
 	// Message is the commit's message, bounded (see maxCommitMessageBytes) so a
 	// pathological commit cannot inflate a run's history with its own text.
@@ -274,9 +276,10 @@ type FileChange struct {
 	OldPath string `protobuf:"bytes,2,opt,name=old_path,json=oldPath,proto3" json:"old_path,omitempty"`
 	// ChangeType is one of "added", "modified", "deleted", "renamed".
 	ChangeType string `protobuf:"bytes,3,opt,name=change_type,json=changeType,proto3" json:"change_type,omitempty"`
-	// Additions and Deletions are line counts, from the unified diff's own
+	// Additions is the count of lines added, from the unified diff's own
 	// accounting.
-	Additions     int64 `protobuf:"varint,4,opt,name=additions,proto3" json:"additions,omitempty"`
+	Additions int64 `protobuf:"varint,4,opt,name=additions,proto3" json:"additions,omitempty"`
+	// Deletions is the count of lines removed, counted the same way.
 	Deletions     int64 `protobuf:"varint,5,opt,name=deletions,proto3" json:"deletions,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

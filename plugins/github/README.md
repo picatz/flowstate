@@ -171,7 +171,7 @@ outputs:
     description: where to see what this run just posted
 ```
 
-Its test selects the stub on all four values sent, so CI proves the comment goes where it is meant to:
+Its test selects the stub on all four values sent and on the token being present, so CI proves the comment goes where it is meant to:
 
 <!-- example: examples/plugins/github/issue-comment.test.yaml -->
 ```yaml
@@ -179,8 +179,9 @@ edition: v2026.3
 
 # Proves the one non-idempotent write goes to the issue the caller named, carrying
 # the caller's text and a credential, in CI with no network and without the github
-# plugin installed. The stub selects the call on all four values, so a workflow
-# that commented on another issue or dropped the token would match nothing.
+# plugin installed. The stub selects the call on all four values and on the token
+# being present, so a workflow that commented on another issue or dropped the
+# token would match nothing.
 tests:
   - name: comments on the named issue and returns where to see it
     workflow: ./issue-comment.yaml
@@ -196,6 +197,7 @@ tests:
         where: >-
           inputs.owner == 'octocat' && inputs.repo == 'hello-world'
           && inputs.number == 42 && inputs.body == 'Thanks - fixed in the next release.'
+          && has(inputs.token)
         returns:
           comment_id: 1001
           html_url: https://github.com/octocat/hello-world/issues/42#issuecomment-1001

@@ -171,16 +171,15 @@ resolves any configured provider under the established namespace and sends
 only the value. The `vcs:` SecretService remains solely as a
 migration-compatible provider behind that same host path.
 
-**Regenerating this plugin's own `.proto` needs the repository root's
-workspace, temporarily.** `buf` refuses a workspace directory that reaches
-outside the directory it was invoked against, and this plugin's schema
-imports `flowstate/v1/value.proto` from the repository root - the only
-way to satisfy both is to run `buf generate` from the root with `--config`
-declaring this plugin's proto directory as a second module beside the root's.
-See `buf.gen.yaml`'s own comment for the exact recipe. This works, but it is
-friction a plugin author outside this repository would not have (they would
-vendor or fetch the schema some other way); it is recorded here rather than
-smoothed over.
+**Regenerating this plugin's own `.proto` is `make plugin-proto`.** The
+plugin's schema imports `flowstate/v1/value.proto` from the repository
+root, and `buf` refuses a workspace directory that reaches outside the
+directory it was invoked against, so the target runs `buf generate` from the
+root with `--config` declaring this plugin's proto directory as a second
+module beside the root's, and the one template every first-party plugin shares,
+`plugins/buf.gen.yaml`. That is friction a plugin author outside this
+repository would not have (they would vendor or fetch the schema some other
+way); it is recorded here rather than smoothed over.
 
 ## What was left undone, and why
 

@@ -240,6 +240,9 @@ func (s *Session) Resolve(ctx context.Context, ref, namespace string) (string, e
 	if err != nil {
 		return "", fmt.Errorf("plugintest: %w", err)
 	}
+	// The host derives the request's identity from the context, so the session's
+	// is installed there; it still drops one whose namespace is not the request's.
+	ctx = plugin.NewContextWithIdentity(ctx, &flowstatev1.WorkloadIdentity{Subject: s.subject, Issuer: issuer, Namespace: s.ns})
 	for _, provider := range s.host.SecretProviders() {
 		if provider.Scheme() != parsed.GetScheme() {
 			continue

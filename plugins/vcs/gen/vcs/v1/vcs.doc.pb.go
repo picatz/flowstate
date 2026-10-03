@@ -24,9 +24,14 @@ func init() {
 		},
 		{
 			Name: "vcs.v1.Commit.author_name",
-			Leading: " AuthorName and AuthorEmail are read from the commit's author line, exactly\n" +
-				" as the repository recorded them - unverified, since anyone with push\n" +
-				" access controls what a commit author line says.\n",
+			Leading: " AuthorName is read from the commit's author line, exactly as the\n" +
+				" repository recorded it - unverified, since anyone with push access\n" +
+				" controls what a commit author line says.\n",
+		},
+		{
+			Name: "vcs.v1.Commit.author_email",
+			Leading: " AuthorEmail is read from the same author line and is as unverified as\n" +
+				" the name.\n",
 		},
 		{
 			Name: "vcs.v1.Commit.message",
@@ -108,8 +113,12 @@ func init() {
 		},
 		{
 			Name: "vcs.v1.FileChange.additions",
-			Leading: " Additions and Deletions are line counts, from the unified diff's own\n" +
+			Leading: " Additions is the count of lines added, from the unified diff's own\n" +
 				" accounting.\n",
+		},
+		{
+			Name:    "vcs.v1.FileChange.deletions",
+			Leading: " Deletions is the count of lines removed, counted the same way.\n",
 		},
 		{
 			Name:    "vcs.v1.DiffInputs",

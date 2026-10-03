@@ -114,9 +114,12 @@ func (x *LsRemoteInputs) GetUsername() string {
 // pointed at when this task ran, not merely repeating a movable name a later
 // force-push or branch reset could quietly change out from under it.
 type RemoteRef struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
-	Sha           string                 `protobuf:"bytes,2,opt,name=sha,proto3" json:"sha,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Name is the ref's full name, such as "refs/heads/main" or "refs/tags/v1.2.3".
+	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	// Sha is the full hex object id the ref pointed at when the remote
+	// advertised it.
+	Sha           string `protobuf:"bytes,2,opt,name=sha,proto3" json:"sha,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -408,8 +411,10 @@ func (x *CommitPushInputs) GetUsername() string {
 // Signature is a commit's author or committer line: who, and when.
 type Signature struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	Name  string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
-	Email string                 `protobuf:"bytes,2,opt,name=email,proto3" json:"email,omitempty"`
+	// Name is the person's name exactly as the commit recorded it, unverified.
+	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	// Email is the address exactly as the commit recorded it, unverified.
+	Email string `protobuf:"bytes,2,opt,name=email,proto3" json:"email,omitempty"`
 	// When is RFC 3339, in the zone the commit recorded.
 	When          string `protobuf:"bytes,3,opt,name=when,proto3" json:"when,omitempty"`
 	unknownFields protoimpl.UnknownFields

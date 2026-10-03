@@ -51,6 +51,15 @@ func init() {
 				" force-push or branch reset could quietly change out from under it.\n",
 		},
 		{
+			Name:    "git.v1.RemoteRef.name",
+			Leading: " Name is the ref's full name, such as \"refs/heads/main\" or \"refs/tags/v1.2.3\".\n",
+		},
+		{
+			Name: "git.v1.RemoteRef.sha",
+			Leading: " Sha is the full hex object id the ref pointed at when the remote\n" +
+				" advertised it.\n",
+		},
+		{
 			Name:    "git.v1.LsRemoteOutputs",
 			Leading: " LsRemoteOutputs is the bounded set of refs found.\n",
 		},
@@ -162,6 +171,14 @@ func init() {
 		{
 			Name:    "git.v1.Signature",
 			Leading: " Signature is a commit's author or committer line: who, and when.\n",
+		},
+		{
+			Name:    "git.v1.Signature.name",
+			Leading: " Name is the person's name exactly as the commit recorded it, unverified.\n",
+		},
+		{
+			Name:    "git.v1.Signature.email",
+			Leading: " Email is the address exactly as the commit recorded it, unverified.\n",
 		},
 		{
 			Name:    "git.v1.Signature.when",

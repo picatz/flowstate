@@ -1014,7 +1014,7 @@ a pure one, and it reports one subtest per plugin and check:
 | `identity` | A version and a description, which `flow plugins` prints and an operator reads before approving a pin. |
 | `summaries` | A one-line summary on every task: what `flow tasks` and editor completion show beside its name. |
 | `declared outputs` | Every task declares its outputs (or sets `ShapesOutputs`), because `${steps.x.name}` is checked against them. |
-| `documented fields` | A comment on every input and output field: the hover text an editor shows. Needs `protoc-gen-flowstate-doc` in your `buf.gen.yaml`; see [the second plugin above](#chapter-two-the-schema-is-the-contract). |
+| `documented fields` | A comment on every input and output field, including those of the messages nested inside them (reported by path, such as `commits.author_email`): the hover text an editor shows. Needs `protoc-gen-flowstate-doc` in your `buf.gen.yaml`; see [the second plugin above](#chapter-two-the-schema-is-the-contract). |
 | `health` | The plugin answers its health poll: serving, or not serving *with a reason*, which is the right answer for one nobody configured. |
 | `stable digests` | Two launches of one binary yield the same task-schema and claims digests. A plugin whose descriptors depend on map order or a clock cannot be pinned, because its pin would fail on its own next launch. |
 

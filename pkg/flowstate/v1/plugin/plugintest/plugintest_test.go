@@ -136,9 +136,32 @@ func TestAuditFindsWhatASloppyPluginLeavesOut(t *testing.T) {
 		}
 	}
 
+	// A field inside a nested message is held to the same standard as one at the
+	// top, and is named by its path.
+	if !anyContains(got[plugintest.CheckDocumentedFields], `output field "detail.inner"`) {
+		t.Errorf("a nested undocumented field was not reported: %q", got[plugintest.CheckDocumentedFields])
+	}
+
 	// A task that does declare outputs is not accused of declaring none.
 	if anyContains(got[plugintest.CheckDeclaredOutputs], "sloppy.claims") {
 		t.Errorf("sloppy.claims declares an output but was reported: %q", got[plugintest.CheckDeclaredOutputs])
+	}
+}
+
+// TestAuditRunsOnlyTheChecksNotIgnored shows that an ignored check does not run
+// rather than running and being hidden: the flaky plugin violates both of the
+// process checks, and ignoring them yields no finding from either.
+func TestAuditRunsOnlyTheChecksNotIgnored(t *testing.T) {
+	skipShort(t)
+	s := plugintest.Launch(t, plugintest.Build(t, flakyPkg, "flaky"))
+
+	if len(s.Audit(t.Context(), t)) == 0 {
+		t.Fatal("the flaky plugin was not reported at all, so ignoring checks proves nothing")
+	}
+	for _, f := range s.Audit(t.Context(), t, plugintest.CheckHealth, plugintest.CheckStableDigests) {
+		if f.Check == plugintest.CheckHealth || f.Check == plugintest.CheckStableDigests {
+			t.Errorf("ignored check reported: %v", f)
+		}
 	}
 }
 
