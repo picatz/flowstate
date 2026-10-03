@@ -316,6 +316,7 @@ func validateAtDepth(wf *v1.Workflow, profile string, depth int, placement v1.Un
 	// anything that depends on resolving a reference.
 	ds = append(ds, validateStepIDs(wf.GetSteps())...)
 
+	ds = append(ds, validateDeclaredTypes(wf)...)
 	ds = append(ds, validateDeclaredInputs(wf, profile)...)
 	ds = append(ds, validateTriggers(wf)...)
 	ds = append(ds, validateSignals(wf)...)

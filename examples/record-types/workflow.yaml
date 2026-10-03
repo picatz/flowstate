@@ -1,0 +1,61 @@
+# `types:` — a name for the shape of a value, declared once and used wherever a
+# type is written.
+#
+# An input that is `type: struct` accepts any mapping, so a misspelled key or a
+# missing one reaches the first step that reads it. A record is the closed
+# version: the fields are named, a field marked `required:` must be there, a
+# field the type does not declare is refused, and each field's value is checked
+# against the type the field declares, all before the first step runs.
+#
+# A field is written exactly like an input (`type:`, `required:`, `values:`,
+# `description:`), so there is nothing new to learn, and a record may name
+# another record, or a list of one: `list(Line)`.
+#
+# This slice checks the shape. A field does not yet carry `default:`, `must:`
+# or `sensitive:`; `flow validate` says so rather than ignoring them.
+#
+#   flow run local examples/record-types/workflow.yaml \
+#       --input-file examples/record-types/inputs.json
+edition: v2026.3
+name: record-types
+types:
+  Line:
+    description: One thing on an order.
+    fields:
+      sku:
+        type: string
+        required: true
+      quantity:
+        type: int
+        required: true
+  Order:
+    description: What a customer bought.
+    fields:
+      id:
+        type: string
+        required: true
+      status:
+        type: enum
+        values:
+          - open
+          - paid
+        required: true
+      lines:
+        type: list(Line)
+        required: true
+      note:
+        type: string
+inputs:
+  order:
+    type: Order
+    required: true
+    description: the order to fulfil
+steps:
+  - id: announce
+    log:
+      message: ${"fulfilling " + inputs.order.id}
+outputs:
+  receipt:
+    value: ${inputs.order}
+    type: Order
+    description: the order as it was fulfilled

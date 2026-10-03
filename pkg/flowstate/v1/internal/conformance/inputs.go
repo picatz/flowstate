@@ -57,6 +57,29 @@ func output(name, expression string) *v1.OutputDeclaration {
 	return &v1.OutputDeclaration{Name: name, Value: v1.NewExpr(expression)}
 }
 
+// recordOutputWorkflow declares the record `Order{id: string}` and one output of
+// that type computed by expression.
+func recordOutputWorkflow(name, expression string) *v1.Workflow {
+	wf := declares(name,
+		nil,
+		[]*v1.OutputDeclaration{{
+			Name:      "receipt",
+			Value:     v1.NewExpr(expression),
+			Type:      v1.InputDeclaration_TYPE_STRUCT,
+			ValueType: &v1.Type{Kind: &v1.Type_Message{Message: "Order"}},
+		}},
+		says("a", "hello"),
+	)
+	wf.DeclaredTypes = []*v1.TypeDeclaration{{
+		Name: "Order",
+		Fields: []*v1.InputDeclaration{
+			{Name: "id", Type: v1.InputDeclaration_TYPE_STRING, Required: true},
+		},
+	}}
+
+	return wf
+}
+
 // typedOutput declares one output that also says what its value is.
 //
 // values is the closed set for a `type: enum` declaration and is left empty for
@@ -411,6 +434,26 @@ func InputOutputCases(httpBaseURL string) []Case {
 			),
 			ExpectedErrorContains: "output \"token\" must satisfy `this == \"expected\"`; got " + v1.SensitiveMarker,
 			ExpectedErrorOmits:    sensitiveAnswer,
+		},
+		{
+			// A record type, the positive direction: the declaration travels in the
+			// specification and both drivers judge a computed output by it.
+			Name: "a record output that matches its type is reported",
+			Workflow: recordOutputWorkflow("outputs-record-ok",
+				`{"id": "o-1"}`),
+			ExpectedOutputs: answers(
+				held("a"),
+				map[string]*v1.Value{"receipt": v1.NewLiteralMap(map[string]any{"id": "o-1"})},
+			),
+		},
+		{
+			// And the refusal: a closed record rejects a name it does not declare, at
+			// completion on both drivers, with the same sentence.
+			Name:          "a record output carrying an undeclared field fails the run",
+			ExpectFailure: true,
+			Workflow: recordOutputWorkflow("outputs-record-open",
+				`{"id": "o-1", "coupon": "x"}`),
+			ExpectedErrorContains: `a field "coupon" that Order does not declare`,
 		},
 		{
 			// #1404, the positive direction first: a `type: struct` output is

@@ -103,6 +103,7 @@ var dslKeys = map[string][]dslKey{
 		{name: "name", detail: "string", docs: "What this workflow is called."},
 		{name: "labels", detail: "map", docs: "Metadata labels attached to the workflow, as string keys and string values. Labels describe and select a workflow; expressions cannot read them."},
 		{name: "description", detail: "string", docs: "Optional prose about the workflow."},
+		{name: "types", detail: "map", docs: "Declares named record types: a closed set of named fields, each written like an input. A type is used by name wherever a type is written, such as `type: Order` or `type: list(Order)`."},
 		{name: "inputs", detail: "map", docs: "Declares the values a caller must or may bind when starting this workflow. Each name has a type and may add a default, constraints, an example, and sensitivity."},
 		{name: "outputs", detail: "map", docs: "Declares the named values this workflow returns after its steps finish. Each entry has a required `value:` expression and may declare its type, constraints, description, and sensitivity."},
 		{name: "vars", detail: "map", docs: "Names values once, for the whole file. Every step reads them as `${" + v1.VarsRoot + ".<name>}`.\n\n" +

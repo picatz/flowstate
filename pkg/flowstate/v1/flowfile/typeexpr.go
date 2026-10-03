@@ -42,10 +42,22 @@ var typeEnvIdents = map[string]*types.Type{
 	"dyn":       types.DynType,
 }
 
-var typeEnv = sync.OnceValues(func() (*cel.Env, error) {
+var typeEnv = sync.OnceValues(func() (*cel.Env, error) { return newTypeEnv(nil) })
+
+// newTypeEnv builds the type environment, with each of records declared as one
+// more type: the name of a record type is a type value there, the way `string`
+// is, so `list(Order)` parses with the one parser and nothing else. The names
+// are the file's own; the shared environment declares none.
+func newTypeEnv(records map[string]bool) (*cel.Env, error) {
 	opts := []cel.EnvOption{cel.ClearMacros()}
 	for name, t := range typeEnvIdents {
 		opts = append(opts, cel.Constant(name, cel.TypeType, t))
+	}
+	for name := range records {
+		if _, builtin := typeEnvIdents[name]; builtin {
+			continue
+		}
+		opts = append(opts, cel.Constant(name, cel.TypeType, types.NewObjectType(name)))
 	}
 	opts = append(opts,
 		cel.Function("list",
@@ -69,7 +81,7 @@ var typeEnv = sync.OnceValues(func() (*cel.Env, error) {
 				}))),
 	)
 	return cel.NewCustomEnv(opts...)
-})
+}
 
 // ParseType reads a type expression and returns the [v1.Type] it spells.
 //
@@ -79,12 +91,21 @@ var typeEnv = sync.OnceValues(func() (*cel.Env, error) {
 // cross JSON boundaries), and any other key is refused here rather than
 // dropped. The error names the offending column, one-based, of src.
 func ParseType(src string) (*v1.Type, error) {
+	return parseType(nil, src)
+}
+
+// parseType is [ParseType] in the type environment env, which a file that declares
+// record types builds once ([newTypeEnv]) and reuses for every declaration; nil is
+// the shared environment with no records.
+func parseType(env *cel.Env, src string) (*v1.Type, error) {
 	if strings.TrimSpace(src) == "" {
 		return nil, errors.New("is empty; write a type such as `string` or `list(string)`")
 	}
-	env, err := typeEnv()
-	if err != nil {
-		return nil, fmt.Errorf("type environment: %w", err)
+	if env == nil {
+		var err error
+		if env, err = typeEnv(); err != nil {
+			return nil, fmt.Errorf("type environment: %w", err)
+		}
 	}
 	ast, iss := env.Parse(src)
 	if iss.Err() != nil {
@@ -188,6 +209,10 @@ func typeFromCEL(t *types.Type) (*v1.Type, error) {
 			return nil, err
 		}
 		return &v1.Type{Kind: &v1.Type_Map_{Map: &v1.Type_Map{Value: value}}}, nil
+	case types.StructKind:
+		// Only a declared record name reaches here: it is the one object type the
+		// type environment declares.
+		return &v1.Type{Kind: &v1.Type_Message{Message: t.TypeName()}}, nil
 	default:
 		return nil, fmt.Errorf("%s is not a type a declaration can have", t)
 	}
@@ -249,7 +274,13 @@ func formatType(t *v1.Type, depth int) (string, error) {
 	case *v1.Type_Enum:
 		return "", errors.New("enum is spelled `enum` with its members in `values:`, not as a type expression")
 	case *v1.Type_Message:
-		return "", errors.New("a message type has no Flowfile spelling yet")
+		// A record the file declares is spelled by its name. A descriptor-backed
+		// message, whose name is qualified, has no spelling until `.proto` import
+		// gives it one.
+		if strings.Contains(k.Message, ".") {
+			return "", errors.New("a descriptor-backed message type has no Flowfile spelling yet")
+		}
+		return k.Message, nil
 	}
 	return "", errors.New("type has no kind")
 }
@@ -275,7 +306,7 @@ func formatType(t *v1.Type, depth int) (string, error) {
 //
 // A type nested past [v1.MaxStructureDepth] is refused here, where the author
 // can see it, rather than when the run starts.
-func declareType(text string) (legacy v1.InputDeclaration_Type, structural *v1.Type, err error) {
+func declareType(env *cel.Env, text string) (legacy v1.InputDeclaration_Type, structural *v1.Type, err error) {
 	if declared, known := v1.ParseDeclaredType(text); known {
 		if now, retired := retiredTypeSpellings[declared]; retired {
 			return v1.InputDeclaration_TYPE_UNSPECIFIED, nil, fmt.Errorf(
@@ -286,7 +317,7 @@ func declareType(text string) (legacy v1.InputDeclaration_Type, structural *v1.T
 		return declared, nil, nil
 	}
 
-	structural, err = ParseType(text)
+	structural, err = parseType(env, text)
 	if err != nil {
 		return v1.InputDeclaration_TYPE_UNSPECIFIED, nil, err
 	}
@@ -298,7 +329,9 @@ func declareType(text string) (legacy v1.InputDeclaration_Type, structural *v1.T
 	switch k := structural.GetKind().(type) {
 	case *v1.Type_List:
 		return v1.InputDeclaration_TYPE_LIST, structural, nil
-	case *v1.Type_Map_:
+	case *v1.Type_Map_, *v1.Type_Message:
+		// A record is a map at run time, so it carries what an older reader
+		// enforces of any `struct`.
 		return v1.InputDeclaration_TYPE_STRUCT, structural, nil
 	case *v1.Type_Scalar_:
 		switch k.Scalar {

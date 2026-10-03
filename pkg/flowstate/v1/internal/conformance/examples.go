@@ -133,10 +133,42 @@ func ExampleInputs(workflowPath string) (map[string]*v1.Value, error) {
 
 			continue
 		}
-		inputs[name] = v1.NewValue(value)
+		inputs[name] = v1.NewValue(nestedNumbersRead(value))
 	}
 
 	return inputs, nil
+}
+
+// nestedNumbersRead reads the numbers inside a decoded list or mapping the way
+// [ExampleInputs] reads a top-level one: whole as int64, fractional as float64.
+// The decoder keeps every number as a [json.Number], which [v1.NewValue] has no
+// arm for, so a record or a list of numbers would otherwise reach the binding as
+// nothing at all.
+func nestedNumbersRead(value any) any {
+	switch v := value.(type) {
+	case json.Number:
+		if whole, err := v.Int64(); err == nil {
+			return whole
+		}
+		if f, err := v.Float64(); err == nil {
+			return f
+		}
+		return v.String()
+	case []any:
+		out := make([]any, len(v))
+		for i, element := range v {
+			out[i] = nestedNumbersRead(element)
+		}
+		return out
+	case map[string]any:
+		out := make(map[string]any, len(v))
+		for key, element := range v {
+			out[key] = nestedNumbersRead(element)
+		}
+		return out
+	}
+
+	return value
 }
 
 // BindExampleInputs answers an example's declared `inputs:` from its inputs.json and

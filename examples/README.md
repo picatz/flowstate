@@ -159,6 +159,7 @@ says otherwise.
 | [edition-and-descriptions](edition-and-descriptions) | `description:` as a property of the step, and the required `edition:` naming the grammar the file is written in | no |
 | [parameterized-deploy](parameterized-deploy) | `inputs:` — typed arguments with defaults and a required one, read from an `if:`, a step's `vars:`, and a task input | yes |
 | [enum-input](enum-input) | `type: enum` — an input whose `values:` declare the closed set of strings it will accept, refused by name (not a hand-built `must:`) the moment a caller sends anything else | no |
+| [record-types](record-types) | `types:` — a named, closed record (`Order`, with a `Line` inside it) declared once and used as an input's and an output's `type:`; a missing required field, an undeclared field and a wrong nested value are each refused at submit with the path to the mistake | no |
 | [alert-title-bound](alert-title-bound) | `max_len:` on a `type: string` input, refusing a title too long for the pager display it is headed for — counted in runes, not bytes, so a multi-byte title at the bound is let through and one rune past it is refused | no |
 | [saga-provisioning](saga-provisioning) | `undo:` — saga compensation: three steps, a failure on the third, and the first two taken back in reverse order. The one example that ends in a failed run, on purpose | yes |
 | [order-fulfillment](order-fulfillment) | The same compensation over a business transaction — reserve stock, charge a card, undo both when the carrier step is asked to fail | yes |

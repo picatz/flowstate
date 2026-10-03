@@ -50,6 +50,7 @@ func EvalRunOutputsWithCost(ctx context.Context, wf *Workflow, scope *Scope) (*R
 	}
 
 	var spent uint64
+	table := TypesOf(wf)
 	ev := DefaultEvaluator()
 	values := make(map[string]*Value, len(declared))
 
@@ -84,7 +85,7 @@ func EvalRunOutputsWithCost(ctx context.Context, wf *Workflow, scope *Scope) (*R
 				value = &Value{Kind: &Value_Literal{Literal: literal}}
 			}
 
-			if err := CheckOutputValue(declaration, value); err != nil {
+			if err := CheckOutputValueIn(table, declaration, value); err != nil {
 				return nil, spent, err
 			}
 			if err := CheckOutputConstraint(scope.GetProfile(), declaration, value); err != nil {
@@ -107,7 +108,7 @@ func EvalRunOutputsWithCost(ctx context.Context, wf *Workflow, scope *Scope) (*R
 		}
 		computed := &Value{Kind: &Value_Literal{Literal: literal}}
 
-		if err := CheckOutputValue(declaration, computed); err != nil {
+		if err := CheckOutputValueIn(table, declaration, computed); err != nil {
 			// Before the `must:` below rather than after, so a workflow that
 			// declared `type: int` and computed a string is told which promise
 			// it broke rather than being told a predicate over `this` did not

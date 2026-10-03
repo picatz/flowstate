@@ -695,6 +695,40 @@ output with no declared `type:`, a loop's `results`. Like a `value:` step, a tas
 wait is typed only for positions written after it, and only when its id is unique. What a
 loop's `as:` carries is the rest of #1634.
 
+*Since written, a type of your own (slice 1):* **`types:` names a record.** A shape
+that more than one declaration repeats is declared once, under `types:`, and used by name
+wherever a type is written:
+
+```yaml
+types:
+  Line:
+    fields:
+      sku: {type: string, required: true}
+      quantity: {type: int, required: true}
+  Order:
+    fields:
+      id: {type: string, required: true}
+      status: {type: enum, values: [open, paid]}
+      lines: {type: "list(Line)"}
+inputs:
+  order: {type: Order, required: true}
+```
+
+A field is written exactly like an input, so an author who can declare one can declare the
+other, and a record may name another record, alone or inside `list(...)` and
+`map(string, ...)`. A record is closed: a value carrying a name the type does not declare is
+refused, a `required:` field that is absent is refused, and each field is held to its own type
+and, for an `enum`, its `values:`. The refusal names the path to what is wrong
+(`a string at .lines[1].quantity`) at `flow validate` for a literal written in the file, and at
+submit and on completion for a value that arrives, on both drivers through one function. A
+type that refers to itself, directly or through others, is refused, because a value of a
+recursive record has no bound until the type has one; so is a name nobody declared. At run
+time a record is a map keyed by field name, so an older reader sees what it sees for a
+`struct`. This slice checks the shape and nothing more: a field that sets `default:`,
+`example:`, `sensitive:`, `must:` or a length or item bound, and a `must:` on the type itself,
+is refused with that reason rather than parsed and silently not enforced, and an expression
+reading `inputs.order.id` is still `dyn` until field-level checking lands.
+
 ### `state:` gets a byte bound now, not an open question
 
 The proposal flags a bound on entity `state:` as an open question. It is not one.

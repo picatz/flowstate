@@ -1,0 +1,57 @@
+# A record is checked once, at submit, with the path of whatever is wrong — so
+# the refusals are the part worth showing.
+edition: v2026.3
+defaults:
+  workflow: ./workflow.yaml
+  stubs:
+    - task: log
+      returns: {}
+tests:
+  - name: a well-formed order runs
+    inputs:
+      order:
+        id: o-1
+        status: paid
+        lines: [{sku: kb-01, quantity: 2}]
+    expect:
+      ran: [announce]
+
+  - name: an optional field may be left out and may be given
+    inputs:
+      order:
+        id: o-1
+        status: open
+        lines: []
+        note: gift wrap
+    expect:
+      ran: [announce]
+
+  - name: a field the type does not declare is refused
+    inputs:
+      order:
+        id: o-1
+        status: open
+        lines: []
+        coupon: SAVE10
+    expect:
+      failed: true
+      error_contains: 'a field "coupon" that Order does not declare'
+
+  - name: a missing required field is refused
+    inputs:
+      order:
+        id: o-1
+        lines: []
+    expect:
+      failed: true
+      error_contains: 'no required field "status" of Order'
+
+  - name: a nested record is checked, and the path says where
+    inputs:
+      order:
+        id: o-1
+        status: open
+        lines: [{sku: kb-01, quantity: "two"}]
+    expect:
+      failed: true
+      error_contains: "a string at .lines[0].quantity"
