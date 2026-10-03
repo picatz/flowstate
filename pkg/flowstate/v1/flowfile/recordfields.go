@@ -40,7 +40,8 @@ type recordPath struct {
 	fields []*v1.InputDeclaration
 
 	// missing is the first field name the record does not declare, and in is the
-	// record that does not; empty when nothing is missing.
+	// record that does not; in is nil when nothing is missing, since a
+	// field's name may itself be empty (`inputs.order[""]`).
 	missing string
 	in      *v1.TypeDeclaration
 }
@@ -121,7 +122,7 @@ func (t *typeTable) fieldErrors(site v1.ValueSite) Diagnostics {
 
 	var ds Diagnostics
 	for _, path := range t.fieldPaths(parsed) {
-		if path.missing == "" {
+		if path.in == nil {
 			continue
 		}
 		if len(ds) == maxFieldErrors {

@@ -360,6 +360,7 @@ func TestARecordFieldIsTypedWhereItIsRead(t *testing.T) {
 		{"an optional read of a declared field", `inputs.order.?id.orValue("") == "x"`, ""},
 		{"an optional read of an undeclared field", `inputs.order.?idd.hasValue()`, `the record Order has no field "idd"`},
 		{"an index by a declared field", `inputs.order["id"] == "x"`, ""},
+		{"an index by an empty key", `inputs.order[""] == "x"`, `has no field ""`},
 		{"an index by an undeclared field", `inputs.order["idd"] == "x"`, `the record Order has no field "idd"`},
 		{"a comprehension variable named like the root", `[inputs].exists(inputs, has(inputs.order.coupon))`, ""},
 		{"a range read outside the shadowing comprehension", `inputs.order.zzz.exists(inputs, inputs.a)`, `has no field "zzz"`},
