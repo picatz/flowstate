@@ -297,3 +297,27 @@ name: t
 	require.NotEmpty(t, ds)
 	assert.Contains(t, ds.Error(), `a field "coupon" that Order does not declare`)
 }
+
+// The file is the sender's, so the number of names and fields is bounded before
+// anything is built from them, not after the schema sees the result.
+func TestTypesAreBoundedBeforeAnythingIsBuilt(t *testing.T) {
+	t.Parallel()
+
+	var types strings.Builder
+	types.WriteString("types:\n")
+	for i := range v1.MaxRecordTypes + 1 {
+		types.WriteString("  T" + strings.Repeat("a", i%5) + string(rune('A'+i%26)) + string(rune('a'+i/26)) + ":\n    fields:\n      x:\n        type: \"list(string)\"\n")
+	}
+	_, _, err := flowfile.Parse([]byte(typesSource(types.String(), "string")))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "the most a workflow declares is 64")
+
+	var fields strings.Builder
+	fields.WriteString("types:\n  Big:\n    fields:\n")
+	for i := range v1.MaxRecordFields + 1 {
+		fields.WriteString("      f" + strings.Repeat("a", i/26) + string(rune('a'+i%26)) + ":\n        type: string\n")
+	}
+	_, _, err = flowfile.Parse([]byte(typesSource(fields.String(), "string")))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "the most a record holds is 64")
+}

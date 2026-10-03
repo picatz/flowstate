@@ -44,10 +44,26 @@ func (c *compiler) declaredTypes(n ast.Node, path string, r ref) []*v1.TypeDecla
 		return nil
 	}
 
+	// Bounded before anything is built from the names: the environment holds one
+	// constant per name, and the file is the sender's.
+	if len(entries) > v1.MaxRecordTypes {
+		c.report(spanOfNode(c.resolveQuiet(n)), r,
+			"declares %d types; the most a workflow declares is %d", len(entries), v1.MaxRecordTypes)
+
+		return nil
+	}
+
 	c.typeNames = make(map[string]bool, len(entries))
 	for _, e := range entries {
 		c.typeNames[e.name] = true
 	}
+	env, err := newTypeEnv(c.typeNames)
+	if err != nil {
+		c.report(spanOfNode(c.resolveQuiet(n)), r, "type environment: %s", err)
+
+		return nil
+	}
+	c.typeEnv = env
 
 	declarations := make([]*v1.TypeDeclaration, 0, len(entries))
 	for _, e := range entries {
@@ -99,6 +115,12 @@ func (c *compiler) declaredType(e entry, parent string) *v1.TypeDeclaration {
 
 	if f, found := fields.get("fields"); found {
 		fieldsPath := fieldPath(path, "fields")
+		if n, ok := c.resolveQuiet(f.value).(*ast.MappingNode); ok && len(n.Values) > v1.MaxRecordFields {
+			c.report(spanOfNode(n), ref{path: fieldsPath, label: "type " + e.name + " fields"},
+				"declares %d fields; the most a record holds is %d", len(n.Values), v1.MaxRecordFields)
+
+			return declaration
+		}
 		declaration.Fields = c.declaredInputs(f.value, fieldsPath,
 			ref{path: fieldsPath, label: "type " + e.name + " fields"}, "field")
 	}

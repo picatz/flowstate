@@ -12,6 +12,7 @@ import (
 	"github.com/goccy/go-yaml/ast"
 	"github.com/goccy/go-yaml/parser"
 	"github.com/goccy/go-yaml/token"
+	"github.com/google/cel-go/cel"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/nearest"
@@ -667,6 +668,10 @@ type compiler struct {
 	// typeNames are the record types this file declares, known before any
 	// declaration that might name one is read. See [compiler.declaredTypes].
 	typeNames map[string]bool
+
+	// typeEnv is the type environment holding typeNames, built once so that a
+	// file's declarations cost one environment rather than one each.
+	typeEnv *cel.Env
 }
 
 // enter accounts for descending into one more value, and reports whether the
@@ -1071,7 +1076,7 @@ func (c *compiler) declaredInput(e entry, parent, noun string) *v1.InputDeclarat
 		typePath := fieldPath(path, "type")
 		typeRef := ref{path: typePath, label: noun + " " + e.name + " type"}
 		if text, ok := c.text(f.value, typePath, typeRef); ok {
-			declared, structural, err := declareType(c.typeNames, text)
+			declared, structural, err := declareType(c.typeEnv, text)
 			if err != nil {
 				c.report(spanOfNode(f.value), typeRef,
 					"is %q, which is not a type an input can have: %s; the types are %s, or a type expression such as list(string) or map(string, int)",
@@ -1298,7 +1303,7 @@ func (c *compiler) declaredOutput(e entry, parent string) *v1.OutputDeclaration 
 		typePath := fieldPath(path, "type")
 		typeRef := ref{path: typePath, label: "output " + e.name + " type"}
 		if text, ok := c.text(f.value, typePath, typeRef); ok {
-			declared, structural, err := declareType(c.typeNames, text)
+			declared, structural, err := declareType(c.typeEnv, text)
 			if err != nil {
 				c.report(spanOfNode(f.value), typeRef,
 					"is %q, which is not a type an output can have: %s; the types are %s, or a type expression such as list(string) or map(string, int)",

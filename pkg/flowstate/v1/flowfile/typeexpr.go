@@ -94,17 +94,18 @@ func ParseType(src string) (*v1.Type, error) {
 	return parseType(nil, src)
 }
 
-// parseType is [ParseType] in a file that declares the record types in records.
-func parseType(records map[string]bool, src string) (*v1.Type, error) {
+// parseType is [ParseType] in the type environment env, which a file that declares
+// record types builds once ([newTypeEnv]) and reuses for every declaration; nil is
+// the shared environment with no records.
+func parseType(env *cel.Env, src string) (*v1.Type, error) {
 	if strings.TrimSpace(src) == "" {
 		return nil, errors.New("is empty; write a type such as `string` or `list(string)`")
 	}
-	env, err := typeEnv()
-	if len(records) > 0 {
-		env, err = newTypeEnv(records)
-	}
-	if err != nil {
-		return nil, fmt.Errorf("type environment: %w", err)
+	if env == nil {
+		var err error
+		if env, err = typeEnv(); err != nil {
+			return nil, fmt.Errorf("type environment: %w", err)
+		}
 	}
 	ast, iss := env.Parse(src)
 	if iss.Err() != nil {
@@ -305,12 +306,12 @@ func formatType(t *v1.Type, depth int) (string, error) {
 //
 // A type nested past [v1.MaxStructureDepth] is refused here, where the author
 // can see it, rather than when the run starts.
-func declareType(records map[string]bool, text string) (legacy v1.InputDeclaration_Type, structural *v1.Type, err error) {
+func declareType(env *cel.Env, text string) (legacy v1.InputDeclaration_Type, structural *v1.Type, err error) {
 	if declared, known := v1.ParseDeclaredType(text); known {
 		return declared, nil, nil
 	}
 
-	structural, err = parseType(records, text)
+	structural, err = parseType(env, text)
 	if err != nil {
 		return v1.InputDeclaration_TYPE_UNSPECIFIED, nil, err
 	}
