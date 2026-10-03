@@ -81,3 +81,16 @@ func TestACyclicTypeEndsTheLiteralWalk(t *testing.T) {
 			&v1.Value{Kind: &v1.Value_Literal{Literal: deep}})
 	})
 }
+
+// TestAWrongKindNamesTheDeclaredContainerType keeps a refusal's spelling aligned
+// with the declaration: a `list(string)` input given a scalar is reported as
+// `list(string)`, the text the author wrote, not as the legacy word `list`.
+func TestAWrongKindNamesTheDeclaredContainerType(t *testing.T) {
+	t.Parallel()
+
+	str := &v1.Type{Kind: &v1.Type_Scalar_{Scalar: v1.Type_SCALAR_STRING}}
+
+	err := v1.CheckInputValue("xs", typedDeclaration(v1.InputDeclaration_TYPE_LIST, listOf(str)),
+		&v1.Value{Kind: &v1.Value_Literal{Literal: intLit(3)}})
+	require.ErrorContains(t, err, "declared list(string)")
+}

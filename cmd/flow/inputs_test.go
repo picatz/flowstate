@@ -198,7 +198,7 @@ func TestRunLocalReportsTheBindersOwnRefusal(t *testing.T) {
 		{
 			name:  "a list that is not JSON",
 			flags: []string{"--input", "service=x", "--input", "targets=alpha,beta"},
-			says:  []string{"targets", "declared list", "JSON"},
+			says:  []string{"targets", "declared list(dyn)", "JSON"},
 		},
 		{
 			name:  "a flag with no value at all",

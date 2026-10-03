@@ -186,7 +186,7 @@ func checkCallArgumentType(table *typeTable, stepID, name string, value *v1.Valu
 			Step: stepID, Field: "with." + name,
 			Message: fmt.Sprintf(
 				"with.%s is declared %s by workflow %q, but this expression always produces %s",
-				name, v1.DeclaredTypeName(declaration.GetType()), callee.GetName(), v1.DeclaredTypeName(declaredType)),
+				name, declaration.TypeText(), callee.GetName(), v1.DeclaredTypeName(declaredType)),
 		}
 
 	default:

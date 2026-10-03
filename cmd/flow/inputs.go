@@ -264,7 +264,7 @@ func inputCoercionError(name, raw string, declaration *v1.InputDeclaration, want
 		Input:    name,
 		Declared: v1.DeclaredTypeName(declaration.GetType()),
 		Err: fmt.Errorf("--input %s=%s: %q is declared %s, which is written as %s%s",
-			name, shown, name, v1.DeclaredTypeName(declaration.GetType()), wants, describedAs(declaration)),
+			name, shown, name, declaration.TypeText(), wants, describedAs(declaration)),
 	}
 }
 
