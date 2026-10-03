@@ -425,6 +425,18 @@ func breakingDiagnostics(old, neu *v1.Workflow, pos *flowfile.Positions) flowfil
 			continue
 		}
 
+		// What a container holds narrowed: `list(dyn)` to `list(string)` keeps the
+		// legacy type and still refuses a list the old contract accepted.
+		if oldT, newT := oi.DeclaredType(), ni.DeclaredType(); !v1.TypeAssignable(oldT, newT) {
+			ds = append(ds, diagAt(pos, "inputs."+name+".type", flowfile.Diagnostic{
+				Field: "inputs." + name, Value: name,
+				Message: fmt.Sprintf(
+					"input %q narrowed its type from %s to %s, so callers passing what the old type allowed break; keep the type, or add a new input",
+					name, v1.TypeString(oldT), v1.TypeString(newT)),
+			}))
+			continue
+		}
+
 		// Constraint narrowed: a value the old contract accepted is now refused.
 		if why := constraintNarrowed(oi, ni); why != "" {
 			ds = append(ds, diagAt(pos, "inputs."+name, flowfile.Diagnostic{
@@ -482,6 +494,19 @@ func breakingDiagnostics(old, neu *v1.Workflow, pos *flowfile.Positions) flowfil
 				Message: fmt.Sprintf(
 					"output %q changed type from %s to %s, so callers reading the old type break; keep the type, or add a new output",
 					name, typeName(oldType), typeName(no.GetType())),
+			}))
+			continue
+		}
+
+		// What a container promises weakened: `list(string)` to `list(dyn)` keeps the
+		// legacy type and stops promising what the old contract did. Narrowing the
+		// promise the other way, or adding one, is silent.
+		if oldT := oo.DeclaredType(); oldT != nil && !v1.TypeAssignable(no.DeclaredType(), oldT) {
+			ds = append(ds, diagAt(pos, "outputs."+name+".type", flowfile.Diagnostic{
+				Field: "outputs." + name, Value: name,
+				Message: fmt.Sprintf(
+					"output %q weakened its type from %s to %s, so callers reading the old type break; keep the type, or add a new output",
+					name, v1.TypeString(oldT), v1.TypeString(no.DeclaredType())),
 			}))
 			continue
 		}

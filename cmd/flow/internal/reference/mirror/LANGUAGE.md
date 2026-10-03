@@ -158,7 +158,7 @@ inputs:
 
 | Key | Meaning |
 | --- | --- |
-| `type` | Required: `string`, `int`, `float`, `bool`, `list`, `struct` (a map), or `enum` (a string from a fixed set). |
+| `type` | Required: `string`, `int`, `float`, `bool`, `list`, `struct` (a map), or `enum` (a string from a fixed set). A container can also say what it holds with a type expression: `list(string)`, `map(string, int)`, `list(list(int))`. |
 | `required` | `true` if the caller must supply it. Default `false`. |
 | `default` | The value used when the caller leaves it out. A literal, never an expression. Cannot be combined with `required: true`. |
 | `values` | For `enum` only: the allowed strings, up to 64. |
@@ -174,6 +174,15 @@ Read an input as `${inputs.<name>}`. A few things to know:
 - **An optional input with no default is absent, not null.** `${inputs.region}`
   fails with `no such key: region` when the caller did not send one. Read it
   with `${inputs.?region.orValue("eu-west-1")}`, or give it a default.
+- **A type expression says what a container holds.** `type: list(string)` makes
+  `${inputs.ids.map(i, i.lowerAscii())}` valid and `${inputs.ids.map(i, i + 1)}`
+  a refusal when the file is validated, and a `default:` or a submitted value
+  whose elements are not strings is refused naming the element
+  (`declared list(string) but was given an integer at [1]`). A map's keys are
+  always `string`. A worker built before typed containers existed refuses
+  a run whose workflow declares one, so upgrade every worker before submitting
+  it. Inside a YAML flow mapping, quote the value
+  (`{ type: "map(string, int)" }`), because the comma ends it otherwise.
 - **There is no int-to-float widening.** A `float` input's `default: 1` is
   refused; write `1.0`. On the command line, `--input ratio=2` is converted for
   you.

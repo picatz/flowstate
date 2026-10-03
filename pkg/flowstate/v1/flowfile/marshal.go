@@ -1385,7 +1385,7 @@ func waitToYAML(wait *v1.Wait) (string, any, error) {
 func declaredInputsToYAML(declarations []*v1.InputDeclaration) (yaml.MapSlice, error) {
 	out := make(yaml.MapSlice, 0, len(declarations))
 	for _, declaration := range declarations {
-		entry := yaml.MapSlice{{Key: "type", Value: v1.DeclaredTypeName(declaration.GetType())}}
+		entry := yaml.MapSlice{{Key: "type", Value: declaredTypeText(declaration.GetType(), declaration.GetValueType())}}
 
 		// Written right after `type:`, the position [declaredInput] reads it
 		// from and the position an author reaches for: the closed set a
@@ -1466,7 +1466,7 @@ func declaredOutputsToYAML(declarations []*v1.OutputDeclaration) (yaml.MapSlice,
 		// declaration written before the field existed is one — so the absent
 		// case is silence rather than a spelling for "unspecified".
 		if declaration.GetType() != v1.InputDeclaration_TYPE_UNSPECIFIED {
-			entry = append(entry, yaml.MapItem{Key: "type", Value: v1.DeclaredTypeName(declaration.GetType())})
+			entry = append(entry, yaml.MapItem{Key: "type", Value: declaredTypeText(declaration.GetType(), declaration.GetValueType())})
 		}
 		if len(declaration.GetValues()) > 0 {
 			values := make([]any, 0, len(declaration.GetValues()))

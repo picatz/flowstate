@@ -3932,7 +3932,7 @@ const file_flowstate_v1_workflow_proto_rawDesc = "" +
 	"\x13PureHelperParameter\x127\n" +
 	"\x04name\x18\x01 \x01(\tB#\xbaH r\x1e\x10\x01\x18@2\x18^[A-Za-z_][A-Za-z0-9_]*$R\x04name\x12C\n" +
 	"\x04type\x18\x02 \x01(\x0e2#.flowstate.v1.InputDeclaration.TypeB\n" +
-	"\xbaH\a\x82\x01\x04\x10\x01 \x00R\x04type\"\xc1\f\n" +
+	"\xbaH\a\x82\x01\x04\x10\x01 \x00R\x04type\"\x84\f\n" +
 	"\x10InputDeclaration\x12?\n" +
 	"\x04name\x18\x01 \x01(\tB+\xe2A\x01\x02\xbaH$\xc8\x01\x01r\x1f\x10\x01\x18\x80\x012\x18^[A-Za-z_][A-Za-z0-9_]*$R\x04name\x12A\n" +
 	"\x04type\x18\x02 \x01(\x0e2#.flowstate.v1.InputDeclaration.TypeB\b\xbaH\x05\x82\x01\x02\x10\x01R\x04type\x12\x1a\n" +
@@ -3959,9 +3959,9 @@ const file_flowstate_v1_workflow_proto_rawDesc = "" +
 	"\tTYPE_BOOL\x10\x04\x12\x0f\n" +
 	"\vTYPE_STRUCT\x10\x05\x12\r\n" +
 	"\tTYPE_LIST\x10\x06\x12\r\n" +
-	"\tTYPE_ENUM\x10\t\"\x04\b\a\x10\a\"\x04\b\b\x10\b:\xce\x05\xbaH\xca\x05\x1a\x91\x01\n" +
-	"\x1einput_declaration.type_present\x12_the legacy type is required until structural-only declarations are safe across rolling upgrades\x1a\x0ethis.type != 0\x1a\xb3\x04\n" +
-	"\x1dinput_declaration.type_agrees\x12Rvalue_type and the legacy type must describe the same input type when both are set\x1a\xbd\x03!has(this.value_type) || this.type == 0 || (this.type == 1 && this.value_type.scalar == 1) || (this.type == 2 && this.value_type.scalar == 2) || (this.type == 3 && this.value_type.scalar == 3) || (this.type == 4 && this.value_type.scalar == 4) || (this.type == 5 && has(this.value_type.map) && this.value_type.map.value.dyn) || (this.type == 6 && has(this.value_type.list) && this.value_type.list.dyn) || (this.type == 9 && this.value_type.enum)B\x0e\n" +
+	"\tTYPE_ENUM\x10\t\"\x04\b\a\x10\a\"\x04\b\b\x10\b:\x91\x05\xbaH\x8d\x05\x1a\x91\x01\n" +
+	"\x1einput_declaration.type_present\x12_the legacy type is required until structural-only declarations are safe across rolling upgrades\x1a\x0ethis.type != 0\x1a\xf6\x03\n" +
+	"\x1dinput_declaration.type_agrees\x12Rvalue_type and the legacy type must describe the same input type when both are set\x1a\x80\x03!has(this.value_type) || this.type == 0 || (this.type == 1 && this.value_type.scalar == 1) || (this.type == 2 && this.value_type.scalar == 2) || (this.type == 3 && this.value_type.scalar == 3) || (this.type == 4 && this.value_type.scalar == 4) || (this.type == 5 && has(this.value_type.map)) || (this.type == 6 && has(this.value_type.list)) || (this.type == 9 && this.value_type.enum)B\x0e\n" +
 	"\f_descriptionB\n" +
 	"\n" +
 	"\b_min_lenB\n" +
@@ -3971,7 +3971,7 @@ const file_flowstate_v1_workflow_proto_rawDesc = "" +
 	"_min_itemsB\f\n" +
 	"\n" +
 	"_max_itemsB\a\n" +
-	"\x05_mustJ\x04\b\b\x10\tJ\x04\b\v\x10\fJ\x04\b\f\x10\rJ\x04\b\x0f\x10\x10R\apatternR\x03minR\x03maxR\x06unique\"\xc4\t\n" +
+	"\x05_mustJ\x04\b\b\x10\tJ\x04\b\v\x10\fJ\x04\b\f\x10\rJ\x04\b\x0f\x10\x10R\apatternR\x03minR\x03maxR\x06unique\"\x87\t\n" +
 	"\x11OutputDeclaration\x12?\n" +
 	"\x04name\x18\x01 \x01(\tB+\xe2A\x01\x02\xbaH$\xc8\x01\x01r\x1f\x10\x01\x18\x80\x012\x18^[A-Za-z_][A-Za-z0-9_]*$R\x04name\x125\n" +
 	"\x05value\x18\x02 \x01(\v2\x13.flowstate.v1.ValueB\n" +
@@ -3982,9 +3982,9 @@ const file_flowstate_v1_workflow_proto_rawDesc = "" +
 	"\x04type\x18\x06 \x01(\x0e2#.flowstate.v1.InputDeclaration.TypeB\b\xbaH\x05\x82\x01\x02\x10\x01R\x04type\x12+\n" +
 	"\x06values\x18\a \x03(\tB\x13\xbaH\x10\x92\x01\r\x10@\x18\x01\"\ar\x05\x10\x01\x18\x80\x01R\x06values\x121\n" +
 	"\n" +
-	"value_type\x18\b \x01(\v2\x12.flowstate.v1.TypeR\tvalueType:\x92\x06\xbaH\x8e\x06\x1a\xd3\x01\n" +
-	"6output_declaration.legacy_type_present_with_value_type\x12pvalue_type requires a legacy type projection until structural-only declarations are safe across rolling upgrades\x1a'!has(this.value_type) || this.type != 0\x1a\xb5\x04\n" +
-	"\x1eoutput_declaration.type_agrees\x12Svalue_type and the legacy type must describe the same output type when both are set\x1a\xbd\x03!has(this.value_type) || this.type == 0 || (this.type == 1 && this.value_type.scalar == 1) || (this.type == 2 && this.value_type.scalar == 2) || (this.type == 3 && this.value_type.scalar == 3) || (this.type == 4 && this.value_type.scalar == 4) || (this.type == 5 && has(this.value_type.map) && this.value_type.map.value.dyn) || (this.type == 6 && has(this.value_type.list) && this.value_type.list.dyn) || (this.type == 9 && this.value_type.enum)B\x0e\n" +
+	"value_type\x18\b \x01(\v2\x12.flowstate.v1.TypeR\tvalueType:\xd5\x05\xbaH\xd1\x05\x1a\xd3\x01\n" +
+	"6output_declaration.legacy_type_present_with_value_type\x12pvalue_type requires a legacy type projection until structural-only declarations are safe across rolling upgrades\x1a'!has(this.value_type) || this.type != 0\x1a\xf8\x03\n" +
+	"\x1eoutput_declaration.type_agrees\x12Svalue_type and the legacy type must describe the same output type when both are set\x1a\x80\x03!has(this.value_type) || this.type == 0 || (this.type == 1 && this.value_type.scalar == 1) || (this.type == 2 && this.value_type.scalar == 2) || (this.type == 3 && this.value_type.scalar == 3) || (this.type == 4 && this.value_type.scalar == 4) || (this.type == 5 && has(this.value_type.map)) || (this.type == 6 && has(this.value_type.list)) || (this.type == 9 && this.value_type.enum)B\x0e\n" +
 	"\f_descriptionB\a\n" +
 	"\x05_must\"\xae\x01\n" +
 	"\n" +

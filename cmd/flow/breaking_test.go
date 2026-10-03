@@ -561,3 +561,41 @@ func TestBreakingCommandMissingRef(t *testing.T) {
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "not in the local history")
 }
+
+// TestBreakingContainerElementTypeNarrowed is #1640's breaking-change case: a
+// container keeps its legacy type when it says what it holds, so only the
+// structural type can tell that `list(dyn)` to `list(string)` now refuses a list
+// a caller used to send.
+func TestBreakingContainerElementTypeNarrowed(t *testing.T) {
+	list := func(typeText string) string {
+		return fixtureHeader() + "inputs:\n  ids:\n    type: " + typeText + "\n" + fixtureStep
+	}
+
+	ds := diffFixtures(t, list("list"), list("list(string)"))
+	require.Len(t, ds, 1)
+	require.Contains(t, ds[0].Message, `input "ids" narrowed its type from list(dyn) to list(string)`)
+	require.Positive(t, ds[0].Line, "the break should be positioned at the type")
+
+	ds = diffFixtures(t, list("map(string, list(dyn))"), list("map(string, list(int))"))
+	require.Len(t, ds, 1)
+	require.Contains(t, ds[0].Message, "narrowed its type")
+
+	// Widening what an input accepts, and leaving it unchanged, are silent.
+	require.Empty(t, diffFixtures(t, list("list(string)"), list("list")))
+	require.Empty(t, diffFixtures(t, list("list(string)"), list("list(string)")))
+}
+
+// TestBreakingContainerOutputWeakened is the output direction: `list(string)` to
+// `list(dyn)` stops promising what callers relied on, and the reverse only
+// promises more.
+func TestBreakingContainerOutputWeakened(t *testing.T) {
+	out := func(typeText string) string {
+		return fixtureHeader() + fixtureStep + "outputs:\n  names:\n    type: " + typeText + "\n    value: ${[\"a\"]}\n"
+	}
+
+	ds := diffFixtures(t, out("list(string)"), out("list"))
+	require.Len(t, ds, 1)
+	require.Contains(t, ds[0].Message, `output "names" weakened its type from list(string) to list(dyn)`)
+
+	require.Empty(t, diffFixtures(t, out("list"), out("list(string)")))
+}

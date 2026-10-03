@@ -652,7 +652,7 @@ func CheckOutputValue(decl *OutputDeclaration, value *Value) error {
 		lit = flattened
 	}
 
-	if err := checkDeclaredLiteralType("output", "computed", decl.GetName(), t, lit); err != nil {
+	if err := checkDeclaredLiteralType("output", "computed", decl.GetName(), t, decl.GetValueType(), lit); err != nil {
 		return err
 	}
 
