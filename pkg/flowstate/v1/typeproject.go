@@ -63,7 +63,8 @@ func TypeOfLegacy(t InputDeclaration_Type) *Type {
 // are as loose as that is: `map(string, dyn)` and `dyn`.
 //
 // Anything that function would refuse or store as something else (an unsigned or
-// enum field, a repeated message) is `dyn`: the descriptor promised a type the
+// enum field, a repeated message, a nested message or a oneof arm, which a plugin
+// may store as `null`) is `dyn`: the descriptor promised a type the
 // run never stores, and answering `dyn` keeps the checker from judging a read of
 // it. `TestTypeOfFieldIsWhatTheRunStores` holds the two to each other.
 func TypeOfField(fd protoreflect.FieldDescriptor) *Type {
@@ -76,6 +77,15 @@ func TypeOfField(fd protoreflect.FieldDescriptor) *Type {
 		return &Type{Kind: &Type_Map_{Map: &Type_Map{Value: storedScalar(fd.MapValue())}}}
 	case fd.IsList():
 		return &Type{Kind: &Type_List{List: storedScalar(fd)}}
+	case fd.ContainingOneof() != nil && !fd.ContainingOneof().IsSynthetic(),
+		fd.Kind() == protoreflect.MessageKind && !slices.Contains(dynamicValueMessages, fd.Message().FullName()):
+		// Two encoders store a task's output (`nodeOutputsFromProtoMessage` for a
+		// built-in and the plugin SDK's `EncodeOutputs`), and they agree on every
+		// kind above but not on these: a oneof arm that was not chosen and a nested
+		// message that was never set are `null` from a plugin and a value from a
+		// built-in. A type that excluded `null` would refuse `steps.p.err != null`,
+		// a guard that runs, so these are `dyn`.
+		return dynType()
 	default:
 		return storedField(fd)
 	}
@@ -105,12 +115,6 @@ func storedField(fd protoreflect.FieldDescriptor) *Type {
 		return scalarType(Type_SCALAR_DOUBLE)
 	case protoreflect.BytesKind:
 		return scalarType(Type_SCALAR_BYTES)
-	case protoreflect.MessageKind:
-		if slices.Contains(dynamicValueMessages, fd.Message().FullName()) {
-			return dynType()
-		}
-
-		return &Type{Kind: &Type_Map_{Map: &Type_Map{Value: dynType()}}}
 	default:
 		return dynType()
 	}

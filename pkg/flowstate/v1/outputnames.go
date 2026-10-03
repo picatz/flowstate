@@ -123,12 +123,14 @@ func OutputNames(node *Node, tasks *Registry) (names []NamedOutput, ok bool) {
 			}}, true
 		}
 		out := make([]NamedOutput, 0, len(decls))
+		// The legacy `type` and not DeclaredType: [CheckOutputValue] enforces the
+		// legacy type on the callee's answer, so it is the one that is stored.
 		for _, d := range decls {
 			desc := fmt.Sprintf("Declared output %q of the called workflow.", d.GetName())
 			if p := d.GetDescription(); p != "" {
 				desc = p
 			}
-			out = append(out, NamedOutput{Name: d.GetName(), Description: desc, Type: d.DeclaredType()})
+			out = append(out, NamedOutput{Name: d.GetName(), Description: desc, Type: TypeOfLegacy(d.GetType())})
 		}
 		return out, true
 
