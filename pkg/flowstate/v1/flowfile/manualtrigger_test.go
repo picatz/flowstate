@@ -34,7 +34,7 @@ import (
 func TestAWebhookDoesNotSilentlyRefuseManualStarts(t *testing.T) {
 	t.Parallel()
 
-	workflow := mustCompile(t, `edition: v2026.3
+	workflow := mustCompile(t, `edition: v2026.4
 name: order-webhook
 inputs:
   order_id: { type: string, required: true }
@@ -64,7 +64,7 @@ steps:
 func TestManualDeniedRefusesAStartAndSaysWhatDoesStartIt(t *testing.T) {
 	t.Parallel()
 
-	workflow := mustCompile(t, `edition: v2026.3
+	workflow := mustCompile(t, `edition: v2026.4
 name: payments-only
 inputs:
   order_id: { type: string, required: true }
@@ -100,7 +100,7 @@ steps:
 func TestManualNarrowingRequiresAReasonAndAPrincipal(t *testing.T) {
 	t.Parallel()
 
-	workflow := mustCompile(t, `edition: v2026.3
+	workflow := mustCompile(t, `edition: v2026.4
 name: break-glass
 triggers:
   manual:
@@ -231,7 +231,7 @@ func TestManualContradictionsAreRefusedWithAPosition(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 
-			source := "edition: v2026.3\nname: narrowed\n" + test.source + `steps:
+			source := "edition: v2026.4\nname: narrowed\n" + test.source + `steps:
   - id: work
     log:
       message: working
@@ -299,7 +299,7 @@ func TestAContradictoryManualBlockIsRefusedAtSubmit(t *testing.T) {
 func TestTriggerContextIsReadableInABodyAndClosedToPayloadData(t *testing.T) {
 	t.Parallel()
 
-	mustCompile(t, `edition: v2026.3
+	mustCompile(t, `edition: v2026.4
 name: trigger-aware
 triggers:
   - manual:
@@ -314,7 +314,7 @@ steps:
       message: ${trigger.delivery_id + trigger.principal}
 `)
 
-	diagnostics := validateTriggerSource(t, `edition: v2026.3
+	diagnostics := validateTriggerSource(t, `edition: v2026.4
 name: trigger-as-data
 steps:
   - id: leak
@@ -345,7 +345,7 @@ steps:
 func TestTriggerKindTypoLiteralIsCaught(t *testing.T) {
 	t.Parallel()
 
-	diagnostics := validateTriggerSource(t, `edition: v2026.3
+	diagnostics := validateTriggerSource(t, `edition: v2026.4
 name: trigger-kind-typo
 steps:
   - id: notify
@@ -373,7 +373,7 @@ steps:
 func TestTriggerKindLiteralInequalityIsCaught(t *testing.T) {
 	t.Parallel()
 
-	diagnostics := validateTriggerSource(t, `edition: v2026.3
+	diagnostics := validateTriggerSource(t, `edition: v2026.4
 name: trigger-kind-typo-ne
 steps:
   - id: notify
@@ -400,7 +400,7 @@ steps:
 func TestTriggerKindComparedToNonLiteralStaysSilent(t *testing.T) {
 	t.Parallel()
 
-	mustCompile(t, `edition: v2026.3
+	mustCompile(t, `edition: v2026.4
 name: trigger-kind-dynamic
 inputs:
   expected_kind: { type: string, required: true }
@@ -430,7 +430,7 @@ steps:
 func TestTriggerKindOutsideComparisonStaysSilent(t *testing.T) {
 	t.Parallel()
 
-	mustCompile(t, `edition: v2026.3
+	mustCompile(t, `edition: v2026.4
 name: trigger-kind-outside-comparison
 steps:
   - id: interpolated
@@ -452,7 +452,7 @@ steps:
 func TestNonTriggerKindComparisonsAreUnaffected(t *testing.T) {
 	t.Parallel()
 
-	mustCompile(t, `edition: v2026.3
+	mustCompile(t, `edition: v2026.4
 name: trigger-kind-scope
 vars:
   status: ${"schedual"}
@@ -477,7 +477,7 @@ steps:
 func TestATriggerCannotReadItsOwnContext(t *testing.T) {
 	t.Parallel()
 
-	diagnostics := validateTriggerSource(t, `edition: v2026.3
+	diagnostics := validateTriggerSource(t, `edition: v2026.4
 name: self-referential-trigger
 inputs:
   origin: { type: string, required: true }
@@ -552,7 +552,7 @@ func TestTriggerIsRefusedAsANameAFileBinds(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 
-			diagnostics := validateTriggerSource(t, "edition: v2026.3\nname: shadowing\n"+test.source)
+			diagnostics := validateTriggerSource(t, "edition: v2026.4\nname: shadowing\n"+test.source)
 			require.NotEmpty(t, diagnostics,
 				"a name hiding the `trigger` root was accepted, so every reference after it silently "+
 					"means something else")

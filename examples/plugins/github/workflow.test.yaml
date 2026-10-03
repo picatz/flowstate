@@ -1,4 +1,4 @@
-edition: v2026.3
+edition: v2026.4
 
 # Proves the workflow reads the pull request it names, in CI with no network and
 # without the github plugin installed. The stub selects the call by the owner,

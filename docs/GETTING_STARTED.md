@@ -53,7 +53,7 @@ Make a directory called `release-approval` and save this as
 
 <!-- mirrors: examples/release-approval/workflow.yaml -->
 ```yaml
-edition: v2026.3
+edition: v2026.4
 name: release-approval
 description: Asks a person to approve a release, then rolls it out to each service.
 inputs:
@@ -62,7 +62,7 @@ inputs:
     required: true
     description: the version being released
   services:
-    type: list
+    type: list(string)
     default:
       - api
       - worker
@@ -212,7 +212,7 @@ Save this as `release-approval/workflow.test.yaml`:
 
 <!-- mirrors: examples/release-approval/workflow.test.yaml -->
 ```yaml
-edition: v2026.3
+edition: v2026.4
 defaults:
   inputs:
     version: 1.4.0

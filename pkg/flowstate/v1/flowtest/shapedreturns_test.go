@@ -17,7 +17,7 @@ import (
 // shapedUndoWorkflow is the issue's own shape: a step that shapes its outputs
 // and registers a compensation reading one of them.
 const shapedUndoWorkflow = `
-edition: v2026.3
+edition: v2026.4
 name: reserve
 vars:
   api: https://api.internal
@@ -114,7 +114,7 @@ func TestAnAnswerNothingReadsIsNotRefused(t *testing.T) {
 
 			dir := t.TempDir()
 			writeFile(t, dir+"/workflow.yaml", `
-edition: v2026.3
+edition: v2026.4
 name: unread
 steps:
   - id: reserve
@@ -155,7 +155,7 @@ func TestARawResponseIsRefusedWhenItLandsOnAShapedStep(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, dir+"/workflow.yaml", `
-edition: v2026.3
+edition: v2026.4
 name: mixed
 steps:
   - id: ping

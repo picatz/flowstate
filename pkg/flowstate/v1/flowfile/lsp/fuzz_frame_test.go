@@ -204,7 +204,7 @@ var lspFrameSeeds = [][]byte{
 	// The handshake, then a document, then a request about it: the shortest
 	// byte sequence that is a plausible editor session.
 	[]byte(frame(`{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"rootUri":"untitled:/","capabilities":{}}}`) +
-		frame(`{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"untitled:a.yaml","languageId":"yaml","version":1,"text":"edition: v2026.3\nname: n\nsteps:\n- id: a\n  log:\n    message: hi\n"}}}`) +
+		frame(`{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"untitled:a.yaml","languageId":"yaml","version":1,"text":"edition: v2026.4\nname: n\nsteps:\n- id: a\n  log:\n    message: hi\n"}}}`) +
 		frame(`{"jsonrpc":"2.0","id":1,"method":"textDocument/hover","params":{"textDocument":{"uri":"untitled:a.yaml"},"position":{"line":5,"character":6}}}`)),
 	// An incremental edit, which is the notification #403 names and the one
 	// announceInbound registers a build for.
@@ -213,7 +213,7 @@ var lspFrameSeeds = [][]byte{
 	// joins the per-URI queue the same way didOpen and didChange do, but
 	// registers no build.
 	[]byte(frame(`{"jsonrpc":"2.0","method":"textDocument/didClose","params":{"textDocument":{"uri":"untitled:a.yaml"}}}`) +
-		frame(`{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"untitled:a.yaml","languageId":"yaml","version":1,"text":"edition: v2026.3\n"}}}`)),
+		frame(`{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"untitled:a.yaml","languageId":"yaml","version":1,"text":"edition: v2026.4\n"}}}`)),
 	// A didChange whose params are structurally fine and semantically empty,
 	// and one whose uri is missing: the two shapes announceInbound is
 	// documented as registering nothing for.

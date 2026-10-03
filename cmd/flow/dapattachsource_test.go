@@ -20,7 +20,7 @@ import (
 )
 
 // attachSourceWorkflow is the program a durable run was submitted from.
-const attachSourceWorkflow = `edition: v2026.3
+const attachSourceWorkflow = `edition: v2026.4
 name: attach-lines
 steps:
   - id: first
@@ -33,7 +33,7 @@ steps:
 
 // attachSourceMoved is the same program with its lines moved: it compiles to
 // the same steps, and only its bytes say it is not the file the run came from.
-const attachSourceMoved = `edition: v2026.3
+const attachSourceMoved = `edition: v2026.4
 name: attach-lines
 # a comment that moves every step down a line
 steps:
@@ -162,7 +162,7 @@ func TestADAPAttachProgramThatCannotBeUsedSaysWhy(t *testing.T) {
 	assert.Contains(t, err.Error(), "reading the attach configuration's `program`", "an unreadable file was reported as something else")
 	assert.NotContains(t, err.Error(), "does not compile")
 
-	invalid := writeWorkflowFile(t, "edition: v2026.3\nname: broken\nsteps:\n  - id: hi\n    log:\n      message: hi\n    unknown-key-quoting-hunter2: 1\n")
+	invalid := writeWorkflowFile(t, "edition: v2026.4\nname: broken\nsteps:\n  - id: hi\n    log:\n      message: hi\n    unknown-key-quoting-hunter2: 1\n")
 	_, err = attachDebuggedRun(t.Context(), cmd, flowdap.AttachArguments{WorkflowID: "w", Program: invalid})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "does not compile")
@@ -177,7 +177,7 @@ func TestADAPAttachProgramThatCannotBeUsedSaysWhy(t *testing.T) {
 func TestADAPAttachMapsAProgramWhosePluginsRunElsewhere(t *testing.T) {
 	t.Parallel()
 
-	const plugged = `edition: v2026.3
+	const plugged = `edition: v2026.4
 name: attach-plugin
 plugins:
   example: v1.0.0
@@ -214,7 +214,7 @@ steps:
 func TestDebugAttachMapsAProgramWhosePluginsRunElsewhere(t *testing.T) {
 	t.Parallel()
 
-	const plugged = `edition: v2026.3
+	const plugged = `edition: v2026.4
 name: attach-plugin
 plugins:
   example: v1.0.0

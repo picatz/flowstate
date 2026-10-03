@@ -1,4 +1,4 @@
-edition: v2026.3
+edition: v2026.4
 name: ssh-service-restart
 description: Restarts one service on one host after an authorized human approves, then reads the unit's status back - spending an operator's grants rather than composing a command line.
 # What a workflow can say here, and what it cannot.

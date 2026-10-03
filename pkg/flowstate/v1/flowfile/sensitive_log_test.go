@@ -25,7 +25,7 @@ import (
 // punctuation the scanner trips over.
 func sensitiveLogSource(message string) string {
 	return strings.Join([]string{
-		"edition: v2026.3",
+		"edition: v2026.4",
 		"name: leaky",
 		"inputs:",
 		"  token:",
@@ -163,7 +163,7 @@ func TestSensitiveLogPositionAndCode(t *testing.T) {
 func TestSensitiveLogInsideBlocks(t *testing.T) {
 	t.Parallel()
 
-	src := `edition: v2026.3
+	src := `edition: v2026.4
 name: nested
 inputs:
   token:
@@ -201,7 +201,7 @@ steps:
 func TestSensitiveLogInCompensation(t *testing.T) {
 	t.Parallel()
 
-	src := `edition: v2026.3
+	src := `edition: v2026.4
 name: compensated
 inputs:
   token:
@@ -253,7 +253,7 @@ steps:
 func TestSensitiveLogInCompensationExactLineWithCollidingPrimaryInput(t *testing.T) {
 	t.Parallel()
 
-	src := `edition: v2026.3
+	src := `edition: v2026.4
 name: compensated
 inputs:
   token:
@@ -292,7 +292,7 @@ steps:
 func TestOrdinaryCompensationLogIsQuiet(t *testing.T) {
 	t.Parallel()
 
-	src := `edition: v2026.3
+	src := `edition: v2026.4
 name: compensated
 inputs:
   token:

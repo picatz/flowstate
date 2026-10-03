@@ -57,7 +57,7 @@ func TestValidateDiagnosticsAllShareOnePositionSpelling(t *testing.T) {
 	// Two problems in one file, so the second diagnostic is the one that used to
 	// arrive with no filename in front of it. Both are refused by the compiler,
 	// which is what makes them a parse error rather than a validation report.
-	const twoParseProblems = `edition: v2026.3
+	const twoParseProblems = `edition: v2026.4
 name: broken
 steps:
   - id: greet
@@ -106,7 +106,7 @@ func TestValidateDiagnosticsFromValidationShareTheSameSpelling(t *testing.T) {
 // `flow run local` and `flow test` share. It printed the path, a colon, a
 // newline, and then bare positions, so no line of it was linkable at all.
 func TestLoadWorkflowDiagnosticsNameTheirFile(t *testing.T) {
-	const twoParseProblems = `edition: v2026.3
+	const twoParseProblems = `edition: v2026.4
 name: broken
 steps:
   - id: greet
@@ -142,7 +142,7 @@ steps:
 // exactly the gap a corpus swept over one command cannot see.
 func TestFmtDiagnosticsShareTheSameSpelling(t *testing.T) {
 	dir := t.TempDir()
-	path := writeFixture(t, dir, "two-problems.yaml", `edition: v2026.3
+	path := writeFixture(t, dir, "two-problems.yaml", `edition: v2026.4
 name: broken
 steps:
   - id: greet
@@ -176,7 +176,7 @@ steps:
 // formatter.
 func TestFixDiagnosticsShareTheSameSpelling(t *testing.T) {
 	dir := t.TempDir()
-	oversized := "edition: v2026.3\nname: big\nsteps:\n  - id: greet\n    log:\n      message: |\n        " +
+	oversized := "edition: v2026.4\nname: big\nsteps:\n  - id: greet\n    log:\n      message: |\n        " +
 		strings.Repeat("x", 1<<20) + "\n"
 	path := writeFixture(t, dir, "big.yaml", oversized)
 
@@ -222,14 +222,14 @@ steps:
     log:
       message: hi
 `,
-	"unknown-task.yaml": `edition: v2026.3
+	"unknown-task.yaml": `edition: v2026.4
 name: broken
 steps:
   - id: fetch
     htttp:
       url: https://example.com
 `,
-	"retired-key.yaml": `edition: v2026.3
+	"retired-key.yaml": `edition: v2026.4
 name: broken
 steps:
   - id: greet
@@ -237,7 +237,7 @@ steps:
     log:
       message: hi
 `,
-	"unknown-step-key.yaml": `edition: v2026.3
+	"unknown-step-key.yaml": `edition: v2026.4
 name: broken
 steps:
   - id: greet
@@ -245,14 +245,14 @@ steps:
       message: hi
     withh: nope
 `,
-	"cel-syntax-error.yaml": `edition: v2026.3
+	"cel-syntax-error.yaml": `edition: v2026.4
 name: broken
 steps:
   - id: greet
     log:
       message: ${vars.a +}
 `,
-	"duplicate-step-id.yaml": `edition: v2026.3
+	"duplicate-step-id.yaml": `edition: v2026.4
 name: broken
 steps:
   - id: dup
@@ -262,14 +262,14 @@ steps:
     log:
       message: two
 `,
-	"unresolved-reference.yaml": `edition: v2026.3
+	"unresolved-reference.yaml": `edition: v2026.4
 name: broken
 steps:
   - id: greet
     log:
       message: ${steps.nope.result}
 `,
-	"bad-retry.yaml": `edition: v2026.3
+	"bad-retry.yaml": `edition: v2026.4
 name: broken
 steps:
   - id: greet
@@ -278,7 +278,7 @@ steps:
     retry:
       attempts: -1
 `,
-	"bad-switch-case.yaml": `edition: v2026.3
+	"bad-switch-case.yaml": `edition: v2026.4
 name: broken
 steps:
   - id: pick
@@ -291,7 +291,7 @@ steps:
               log:
                 message: hi
 `,
-	"bad-wait-timeout.yaml": `edition: v2026.3
+	"bad-wait-timeout.yaml": `edition: v2026.4
 name: broken
 steps:
   - id: hold
@@ -299,7 +299,7 @@ steps:
       name: approved
       timeout: ${vars.a +}
 `,
-	"bad-for-each-items.yaml": `edition: v2026.3
+	"bad-for-each-items.yaml": `edition: v2026.4
 name: broken
 steps:
   - id: loop
@@ -319,9 +319,9 @@ steps:
 	// be an author's actual first error, since it is what a plain-text editor
 	// writes for Tab unless told otherwise, and YAML's grammar refuses it
 	// outright.
-	"malformed-yaml.yaml": "edition: v2026.3\nname: broken\nsteps:\n\t- id: greet\n\t  log:\n\t    message: hi\n",
+	"malformed-yaml.yaml": "edition: v2026.4\nname: broken\nsteps:\n\t- id: greet\n\t  log:\n\t    message: hi\n",
 
-	"wait-outputs-secret.yaml": `edition: v2026.3
+	"wait-outputs-secret.yaml": `edition: v2026.4
 name: broken
 steps:
   - id: gate
@@ -330,7 +330,7 @@ steps:
       outputs:
         token: ${secret('env:API_TOKEN')}
 `,
-	"loop-init-secret.yaml": `edition: v2026.3
+	"loop-init-secret.yaml": `edition: v2026.4
 name: broken
 steps:
   - id: accumulate
@@ -349,7 +349,7 @@ steps:
 	// fan-out rather than one activity, so neither driver ever reads it. Same
 	// diagnostic class the wait arms already had; this is the interim refusal
 	// for the five kinds the charter's R6 found still accepting and ignoring it.
-	"retry-on-for-each.yaml": `edition: v2026.3
+	"retry-on-for-each.yaml": `edition: v2026.4
 name: broken
 steps:
   - id: fan

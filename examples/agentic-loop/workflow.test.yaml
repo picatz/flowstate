@@ -14,7 +14,7 @@
 # Note what the second and third differ by: one scripted signal. Same inputs,
 # same stubbed turn, same everything else — so the case pair is evidence about
 # the gate rather than about two unrelated runs.
-edition: v2026.3
+edition: v2026.4
 tests:
   - name: a turn inside its budget lands with nobody asked
     workflow: ./workflow.yaml

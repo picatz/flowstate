@@ -18,7 +18,7 @@
 # the send and the selection, and the service proves the echo. The echoed values
 # are deliberately not the sent ones for that reason — a selection that quietly
 # read the request back would produce `Flowstate`, and fail here.
-edition: v2026.3
+edition: v2026.4
 tests:
   - name: both headers reach the task, and the parsed response indexes twice
     workflow: ./workflow.yaml

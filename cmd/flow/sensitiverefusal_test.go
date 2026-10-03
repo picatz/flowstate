@@ -24,7 +24,7 @@ import (
 // refusal, but sized for a file's: no `must:`, because the numeric-overflow
 // refusal under test happens during conversion, before a bind — and before
 // there is a *v1.Value for a `must:` to be checked against at all.
-const overflowInputFileWorkflow = `edition: v2026.3
+const overflowInputFileWorkflow = `edition: v2026.4
 name: onboard-file
 inputs:
   pin:
@@ -115,11 +115,11 @@ func TestInputFileNumericOverflowLeavesAnOrdinaryFieldInTheClear(t *testing.T) {
 func TestInputFileNumericOverflowNestedInAStructIsAlsoRedacted(t *testing.T) {
 	t.Parallel()
 
-	nested := `edition: v2026.3
+	nested := `edition: v2026.4
 name: onboard-nested
 inputs:
   creds:
-    type: struct
+    type: map(string, dyn)
     sensitive: true
 steps:
   - id: greet
@@ -150,11 +150,11 @@ steps:
 func TestStructuredInputFlagNumericOverflowRedactsASensitiveField(t *testing.T) {
 	t.Parallel()
 
-	structured := `edition: v2026.3
+	structured := `edition: v2026.4
 name: onboard-struct-flag
 inputs:
   creds:
-    type: struct
+    type: map(string, dyn)
     sensitive: true
 steps:
   - id: greet
@@ -176,11 +176,11 @@ steps:
 func TestStructuredInputFlagNumericOverflowLeavesAnOrdinaryFieldInTheClear(t *testing.T) {
 	t.Parallel()
 
-	structured := `edition: v2026.3
+	structured := `edition: v2026.4
 name: onboard-struct-flag-ordinary
 inputs:
   meta:
-    type: struct
+    type: map(string, dyn)
 steps:
   - id: greet
     log:
@@ -198,7 +198,7 @@ steps:
 // the command line for not having before it ever reaches the arguments —
 // [sensitiveRefusalWorkflow] itself declares none, so a copy is needed here
 // rather than a shared fixture the local-only test would also have to carry.
-const sensitiveScheduleWorkflow = `edition: v2026.3
+const sensitiveScheduleWorkflow = `edition: v2026.4
 name: onboard-schedule
 triggers:
   schedule:
@@ -326,7 +326,7 @@ func TestAScheduleCreateRefusalDoesNotPrintASensitiveArgument(t *testing.T) {
 // only that the sentence naming it was not withheld whole; the binder's
 // refusal for an undeclared name never quotes a value at all, so it cannot
 // stand in for the case redaction could still widen into a withholding.
-const sensitiveWithOrdinaryMustWorkflow = `edition: v2026.3
+const sensitiveWithOrdinaryMustWorkflow = `edition: v2026.4
 name: onboard-ordinary-must
 inputs:
   pin:
@@ -344,7 +344,7 @@ steps:
 
 // sensitiveScheduleWithOrdinaryMustWorkflow is sensitiveWithOrdinaryMustWorkflow
 // with the `triggers: schedule:` block `flow schedule create` requires.
-const sensitiveScheduleWithOrdinaryMustWorkflow = `edition: v2026.3
+const sensitiveScheduleWithOrdinaryMustWorkflow = `edition: v2026.4
 name: onboard-ordinary-must-schedule
 triggers:
   schedule:

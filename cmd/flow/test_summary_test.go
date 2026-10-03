@@ -40,7 +40,7 @@ func TestSummaryLineEndsATextRun(t *testing.T) {
 func TestSummaryLeadsWithWhatFailed(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.yaml"), []byte(scheduleStraightWorkflow), 0o600))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.test.yaml"), []byte(`edition: v2026.3
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.test.yaml"), []byte(`edition: v2026.4
 tests:
   - name: a passing case
     workflow: ./workflow.yaml
@@ -119,7 +119,7 @@ func TestSummaryCountsCoverageGapsOnlyWhenOptedIn(t *testing.T) {
 func TestSummaryCountsPromotedWarningsOnlyUnderTheFlag(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.yaml"), []byte(scheduleStraightWorkflow), 0o600))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.test.yaml"), []byte(`edition: v2026.3
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.test.yaml"), []byte(`edition: v2026.4
 tests:
   - name: carries an idle stub
     workflow: ./workflow.yaml

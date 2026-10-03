@@ -15,7 +15,7 @@ import (
 // ordinary step failure on the wire, so a step written to tolerate a
 // dependency's failure tolerates this one too.
 const toleratedWorkflow = `
-edition: v2026.3
+edition: v2026.4
 name: tolerated
 steps:
   - id: ping
@@ -146,7 +146,7 @@ tests:
 // stubbed, so the dispatcher answers the first step and refuses the second as
 // unmatched, and that refusal is swallowed exactly like an undeclared one.
 const twoStepsOneTaskWorkflow = `
-edition: v2026.3
+edition: v2026.4
 name: two-steps
 steps:
   - id: first

@@ -14,7 +14,7 @@ import (
 // and the diagnostic listed three things a bare name can be and never the
 // fourth — the string the author meant — nor the spelling that writes it.
 
-const bareWordSource = `edition: v2026.3
+const bareWordSource = `edition: v2026.4
 name: bare-word
 inputs:
   priority:
@@ -63,7 +63,7 @@ func TestABareWordIsOfferedItsStringSpelling(t *testing.T) {
 func TestAQuotedBareWordIsOfferedItsStringSpelling(t *testing.T) {
 	t.Parallel()
 
-	src := "edition: v2026.3\nname: quoted\nsteps:\n  - id: carrier\n    value: \"dhl\"\n"
+	src := "edition: v2026.4\nname: quoted\nsteps:\n  - id: carrier\n    value: \"dhl\"\n"
 
 	ds, err := flowfile.ValidateSource([]byte(src))
 	require.NoError(t, err)
@@ -86,7 +86,7 @@ func TestAQuotedBareWordIsOfferedItsStringSpelling(t *testing.T) {
 func TestAFencedNameIsNotOfferedTheStringReading(t *testing.T) {
 	t.Parallel()
 
-	src := "edition: v2026.3\nname: fenced\nsteps:\n  - id: carrier\n    value: ${dhl}\n"
+	src := "edition: v2026.4\nname: fenced\nsteps:\n  - id: carrier\n    value: ${dhl}\n"
 
 	ds, err := flowfile.ValidateSource([]byte(src))
 	require.NoError(t, err)
@@ -102,7 +102,7 @@ func TestAFencedNameIsNotOfferedTheStringReading(t *testing.T) {
 func TestABareWordInScopeIsNotAName(t *testing.T) {
 	t.Parallel()
 
-	src := "edition: v2026.3\nname: in-scope\nvars:\n  carriers: [\"dhl\", \"ups\"]\nsteps:\n  - id: each\n    for_each:\n      items: ${vars.carriers}\n      as: item\n      steps:\n        - id: pick\n          value: item\n"
+	src := "edition: v2026.4\nname: in-scope\nvars:\n  carriers: [\"dhl\", \"ups\"]\nsteps:\n  - id: each\n    for_each:\n      items: ${vars.carriers}\n      as: item\n      steps:\n        - id: pick\n          value: item\n"
 
 	ds, err := flowfile.ValidateSource([]byte(src))
 	require.NoError(t, err)

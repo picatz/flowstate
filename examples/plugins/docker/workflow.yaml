@@ -1,4 +1,4 @@
-edition: v2026.3
+edition: v2026.4
 name: docker-smoke-test-gate
 description: Runs a digest-pinned test container, reports what it found, and gates a release on a human reading the result - spending an operator's run grant rather than naming an image.
 # What a workflow can say here, and what it cannot.

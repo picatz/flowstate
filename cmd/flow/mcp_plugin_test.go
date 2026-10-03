@@ -193,7 +193,7 @@ func mcpValidateDiagnostics(t *testing.T, posture *cobra.Command, source string)
 func TestPluginDirWiresPluginTasksIntoTheMCPSurface(t *testing.T) {
 	dir := buildExamplePluginDir(t)
 
-	workflow := `edition: v2026.3
+	workflow := `edition: v2026.4
 name: greet
 steps:
   - id: hi
@@ -252,7 +252,7 @@ func TestMCPRunLocalRoutesAPluginProvidedSecretThroughTheLaunchRegistry(t *testi
 	session := connectMCPWithProviders(t, posture, providers)
 	result, err := session.CallTool(t.Context(), &mcp.CallToolParams{
 		Name: flowmcp.RunLocalToolName,
-		Arguments: map[string]any{"source": `edition: v2026.3
+		Arguments: map[string]any{"source": `edition: v2026.4
 name: greet
 steps:
   - id: hi

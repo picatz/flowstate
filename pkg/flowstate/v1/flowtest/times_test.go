@@ -11,7 +11,7 @@ import (
 // A step whose retry: gives it a second chance — the shape `times:` exists
 // for. The interval is real time the virtual clock resolves instantly.
 const retryWorkflow = `
-edition: v2026.3
+edition: v2026.4
 name: flaky
 steps:
   - id: fetch
@@ -95,7 +95,7 @@ func TestADrainedStubExplainsTheInvocationThatFellPastIt(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, dir+"/workflow.yaml", `
-edition: v2026.3
+edition: v2026.4
 name: twice
 steps:
   - id: first

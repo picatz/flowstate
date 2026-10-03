@@ -14,7 +14,7 @@ import (
 // sensitiveFailureWorkflow fails deterministically with a sentence quoting
 // its `sensitive:` input: a `sleep:` computed from a value that is not a
 // duration says what it produced.
-const sensitiveFailureWorkflow = `edition: v2026.3
+const sensitiveFailureWorkflow = `edition: v2026.4
 name: sensitive-failure
 inputs:
   token:

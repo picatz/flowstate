@@ -35,14 +35,14 @@ var positions = []struct {
 	source func(literal string) string
 }{
 	{"an input's default", func(literal string) string {
-		return "edition: v2026.3\nname: t\ninputs:\n  doc:\n    type: struct\n    default: " + literal +
+		return "edition: v2026.4\nname: t\ninputs:\n  doc:\n    type: map(string, dyn)\n    default: " + literal +
 			"\nsteps:\n  - id: a\n    log:\n      message: hi\n"
 	}},
 	{"a vars entry", func(literal string) string {
-		return "edition: v2026.3\nname: t\nvars:\n  d: " + literal + "\nsteps:\n  - id: a\n    log:\n      message: hi\n"
+		return "edition: v2026.4\nname: t\nvars:\n  d: " + literal + "\nsteps:\n  - id: a\n    log:\n      message: hi\n"
 	}},
 	{"a step value", func(literal string) string {
-		return "edition: v2026.3\nname: t\nsteps:\n  - id: a\n    value: " + literal + "\n"
+		return "edition: v2026.4\nname: t\nsteps:\n  - id: a\n    value: " + literal + "\n"
 	}},
 }
 
@@ -133,7 +133,7 @@ func literalDepth(v *expr.Value, depth int) int {
 func TestTheParsersOwnDepthNoLongerSpeaksForTheFlowfile(t *testing.T) {
 	t.Parallel()
 
-	_, _, err := flowfile.Parse([]byte("edition: v2026.3\nname: t\nvars:\n  d: " + nestedMapping(70) +
+	_, _, err := flowfile.Parse([]byte("edition: v2026.4\nname: t\nvars:\n  d: " + nestedMapping(70) +
 		"\nsteps:\n  - id: a\n    log:\n      message: hi\n"))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "levels of YAML deep")

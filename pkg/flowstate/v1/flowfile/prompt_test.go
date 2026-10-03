@@ -24,7 +24,7 @@ import (
 // prompt line the case supplies.
 func promptSource(promptLine string) string {
 	return strings.Join([]string{
-		"edition: v2026.3",
+		"edition: v2026.4",
 		"name: asking",
 		"inputs:",
 		"  version:",
@@ -153,7 +153,7 @@ func TestAPromptReachingASensitiveInputIsRefusedAtItsOwnLine(t *testing.T) {
 	t.Parallel()
 
 	src := strings.Join([]string{
-		"edition: v2026.3",
+		"edition: v2026.4",
 		"name: asking",
 		"inputs:",
 		"  salary:",
@@ -188,7 +188,7 @@ func TestAPromptReachingASensitiveInputThroughAStepVarIsRefused(t *testing.T) {
 	t.Parallel()
 
 	src := strings.Join([]string{
-		"edition: v2026.3",
+		"edition: v2026.4",
 		"name: asking",
 		"inputs:",
 		"  token:",
@@ -228,11 +228,11 @@ func TestAPromptReachingASensitiveInputThroughALoopBindingIsRefused(t *testing.T
 	t.Parallel()
 
 	src := strings.Join([]string{
-		"edition: v2026.3",
+		"edition: v2026.4",
 		"name: asking",
 		"inputs:",
 		"  customers:",
-		"    type: list",
+		"    type: list(dyn)",
 		"    sensitive: true",
 		"steps:",
 		"  - id: review",
@@ -272,11 +272,11 @@ func TestAPromptReadingALoopBindingOverAnOrdinaryInputIsAccepted(t *testing.T) {
 	t.Parallel()
 
 	src := strings.Join([]string{
-		"edition: v2026.3",
+		"edition: v2026.4",
 		"name: asking",
 		"inputs:",
 		"  hosts:",
-		"    type: list",
+		"    type: list(dyn)",
 		"  token:",
 		"    type: string",
 		"    sensitive: true",

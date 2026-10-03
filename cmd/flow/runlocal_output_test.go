@@ -33,7 +33,7 @@ import (
 // validator refuses never starts, and a run that never started has no outcome to
 // report. This one compiles, starts, and is stopped by the egress policy — which
 // makes it hermetic as well, since nothing is dialled.
-const deniedWorkflow = `edition: v2026.3
+const deniedWorkflow = `edition: v2026.4
 name: denied
 steps:
   - id: fetch
@@ -125,7 +125,7 @@ func TestALocalRunAnswersAMachineCallerWithTheWholeRun(t *testing.T) {
 func TestAStructuredLiteralOutputRendersAsPlainJSON(t *testing.T) {
 	t.Parallel()
 
-	stdout, _, err := runLocal(t, `edition: v2026.3
+	stdout, _, err := runLocal(t, `edition: v2026.4
 name: structured-literal-output
 steps:
   - id: a
@@ -369,7 +369,7 @@ func TestAFailureIsClassifiedByWhoStoppedTheRun(t *testing.T) {
 }
 
 // nappingWorkflow runs long enough to be interrupted and does nothing else.
-const nappingWorkflow = `edition: v2026.3
+const nappingWorkflow = `edition: v2026.4
 name: naps
 steps:
   - id: nap

@@ -36,11 +36,11 @@ import (
 // descendant of the list `sensitive:` names, and [v1.SensitiveValues] holds
 // every descendant. See TestALoopItemIsSensitiveBecauseTheListItCameFromIs in
 // pkg/flowstate/v1 for that half.
-const sensitiveLoopWorkflow = `edition: v2026.3
+const sensitiveLoopWorkflow = `edition: v2026.4
 name: sensitive-loop
 inputs:
   customers:
-    type: list
+    type: list(dyn)
     required: true
     sensitive: true
     description: who to enrich
@@ -137,11 +137,11 @@ func TestRevealSensitiveShowsTheLoopItemInTheFailureText(t *testing.T) {
 // — would pass the test above and destroy every other run's diagnostics.
 func TestAFailureTextIsUntouchedWhenNothingIsDeclaredSensitive(t *testing.T) {
 	// Not t.Parallel(): see above.
-	ordinary := `edition: v2026.3
+	ordinary := `edition: v2026.4
 name: ordinary-loop
 inputs:
   customers:
-    type: list
+    type: list(dyn)
     required: true
 steps:
   - id: enrich

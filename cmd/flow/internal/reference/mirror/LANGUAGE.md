@@ -3,7 +3,7 @@
 A Flowfile is a YAML document that describes one workflow: the arguments it
 takes, the steps it runs, and the result it returns. Expressions inside it are
 written in [CEL](https://cel.dev/), the Common Expression Language. This page
-teaches every construct in the current edition, `v2026.3`, with its defaults,
+teaches every construct in the current edition, `v2026.4`, with its defaults,
 limits, and the mistakes worth knowing about.
 
 New to Flowstate? [Get started](GETTING_STARTED.md) first, then come back here
@@ -34,12 +34,12 @@ call. The reasons behind the language's design are recorded in
 ## A Flowfile at a glance
 
 ```yaml
-edition: v2026.3
+edition: v2026.4
 name: restock
 description: Decides how to restock each low item, and says what it ordered.
 inputs:
   items:
-    type: list
+    type: list(dyn)
     required: true
     description: inventory records, each with a sku, a count, and a reorder point
   priority:
@@ -152,13 +152,13 @@ inputs:
     default: 3
     must: this >= 1 && this <= 50
   hosts:
-    type: list
+    type: list(string)
     max_items: 20
 ```
 
 | Key | Meaning |
 | --- | --- |
-| `type` | Required: `string`, `int`, `float`, `bool`, `list`, `struct` (a map), or `enum` (a string from a fixed set). A container can also say what it holds with a type expression: `list(string)`, `map(string, int)`, `list(list(int))`. |
+| `type` | Required: `string`, `int`, `double`, `bool`, `enum` (a string from a fixed set), or a container written as a type expression: `list(string)`, `map(string, int)`, `list(list(int))`. `list(dyn)` and `map(string, dyn)` hold anything. The bare words `list`, `struct`, and `float` were retired in `v2026.4`; `flow fix` rewrites them. |
 | `required` | `true` if the caller must supply it. Default `false`. |
 | `default` | The value used when the caller leaves it out. A literal, never an expression. Cannot be combined with `required: true`. |
 | `values` | For `enum` only: the allowed strings, up to 64. |
@@ -183,7 +183,7 @@ Read an input as `${inputs.<name>}`. A few things to know:
   a run whose workflow declares one, so upgrade every worker before submitting
   it. Inside a YAML flow mapping, quote the value
   (`{ type: "map(string, int)" }`), because the comma ends it otherwise.
-- **There is no int-to-float widening.** A `float` input's `default: 1` is
+- **There is no int-to-float widening.** A `double` input's `default: 1` is
   refused; write `1.0`. On the command line, `--input ratio=2` is converted for
   you.
 - **The retired `pattern:`, `min:`, `max:`, and `unique:` keys** are refused
@@ -192,7 +192,7 @@ Read an input as `${inputs.<name>}`. A few things to know:
 Supplying inputs:
 
 - `flow run` and `flow run local` take `--input name=value`, converted by the
-  declared type (`int`, `float`, `bool`; JSON for `list` and `struct`; text
+  declared type (`int`, `double`, `bool`; JSON for lists and maps; text
   otherwise), and `--input-file args.json`, a JSON object keyed by input name.
   `--input` wins over the file for the same name.
 - The API's `Run` takes literal values; an expression or secret reference from a
@@ -1336,7 +1336,7 @@ tasks and bounds.
 ## Editions and migration
 
 `edition:` names the grammar a file is written in, and is required. This build
-compiles `v2026.3` only. A file from an older edition is refused with an
+compiles `v2026.4` only. A file from an older edition is refused with an
 instruction to run `flow fix`, which rewrites it in place to the current edition,
 preserving comments, and changes nothing if any part of the rewrite is
 ambiguous. `flow fix --check` reports without writing.

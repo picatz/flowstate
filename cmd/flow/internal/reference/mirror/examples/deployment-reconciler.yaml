@@ -1,4 +1,4 @@
-edition: v2026.3
+edition: v2026.4
 name: deployment-reconciler
 description: Converges a workload toward a desired replica count, one level-triggered pass at a time, woken either by a spec change or by the resync interval lapsing — and asleep, durably, in between.
 inputs:

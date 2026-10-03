@@ -12,7 +12,7 @@ import (
 
 func TestValidateSourceRefusesOversizedParallelAtomicBlock(t *testing.T) {
 	var source strings.Builder
-	source.WriteString("edition: v2026.3\nname: oversized-parallel\nsteps:\n  - id: block\n    parallel:\n")
+	source.WriteString("edition: v2026.4\nname: oversized-parallel\nsteps:\n  - id: block\n    parallel:\n")
 	for branch := range 51 {
 		source.WriteString("      - steps:\n")
 		for step := range 100 {

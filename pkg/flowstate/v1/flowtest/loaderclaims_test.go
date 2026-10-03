@@ -124,7 +124,7 @@ func TestAMismatchNamesEachSidesType(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
-	writeFile(t, filepath.Join(dir, "workflow.yaml"), `edition: v2026.3
+	writeFile(t, filepath.Join(dir, "workflow.yaml"), `edition: v2026.4
 name: counted
 steps:
   - id: count
@@ -159,7 +159,7 @@ func TestAMissingWorkflowNamesTheNearestSibling(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
-	writeFile(t, filepath.Join(dir, "workflow.yaml"), `edition: v2026.3
+	writeFile(t, filepath.Join(dir, "workflow.yaml"), `edition: v2026.4
 name: present
 steps:
   - id: a

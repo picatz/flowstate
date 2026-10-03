@@ -2,7 +2,7 @@
 # it at all — proving `.?` defaults an absent key rather than only being
 # exercised on a present-but-false one, which a single case could not tell
 # apart from a bug that always returns the default.
-edition: v2026.3
+edition: v2026.4
 tests:
   - name: a caller's flags are summarized, and beta_search reads what it sent
     workflow: ./workflow.yaml

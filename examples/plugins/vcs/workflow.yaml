@@ -1,4 +1,4 @@
-edition: v2026.3
+edition: v2026.4
 name: vcs-log-and-diff
 description: Reads a public repository's recent history and diffs its last commit (HEAD~1 against HEAD), using the "vcs" plugin (go-git).
 

@@ -1,4 +1,4 @@
-edition: v2026.3
+edition: v2026.4
 name: ops-healthcheck
 description: Probes a list of services with bounded fan-out, tolerates the ones that are down, and answers with exactly what a pager or a status dashboard needs to read.
 # A cron job that curls three endpoints and exits non-zero on the first

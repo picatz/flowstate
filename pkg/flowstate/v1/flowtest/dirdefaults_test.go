@@ -20,7 +20,7 @@ func writeDirWorkflow(t *testing.T, dir string) {
 	t.Helper()
 
 	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
-edition: v2026.3
+edition: v2026.4
 name: shared
 inputs:
   who:
@@ -87,7 +87,7 @@ func TestAFileBeatsItsDirectory(t *testing.T) {
 	dir := t.TempDir()
 	writeDirWorkflow(t, dir)
 	writeFile(t, filepath.Join(dir, "other.yaml"), `
-edition: v2026.3
+edition: v2026.4
 name: own
 steps:
   - id: own_step

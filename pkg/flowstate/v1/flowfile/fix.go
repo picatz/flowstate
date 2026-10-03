@@ -765,7 +765,7 @@ func asMapping(n ast.Node) *ast.MappingNode {
 // grammar itself allows at the top level.
 //
 // The second half exists for a real edge case, not a hypothetical one: a
-// Flowfile that declares no steps at all — `edition: v2026.3\nname: t\n` and
+// Flowfile that declares no steps at all — `edition: v2026.4\nname: t\n` and
 // nothing else — is a legal, if useless, workflow ([compiler] reads `steps:`
 // with `fields.get`, so its absence is not an error), and
 // TestFixLeavesACurrentFileByteForByte already fixed one before this allowlist
@@ -880,6 +880,8 @@ func (f *fixer) workflow(n ast.Node) {
 			// bare name anywhere, it is `vars.<name>`, and the rewriter's refusal for
 			// reading one is separate.
 			f.steps(v.Value, stepScope{})
+		case "inputs", "outputs":
+			f.declarationTypes(v.Value)
 		case "edition":
 			declared = true
 			f.edition(v)

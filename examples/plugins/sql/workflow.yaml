@@ -1,4 +1,4 @@
-edition: v2026.3
+edition: v2026.4
 name: sql-query
 description: Reads bounded, typed rows from PostgreSQL using the "sql" plugin's sql.query task - a parameterized WHERE clause, a required row bound, and a result a later step can filter with CEL.
 

@@ -5,7 +5,7 @@
 # cannot do on its own is finish: `provisioning.internal.example.com` resolves
 # nowhere, so the run reaches `provision_database` and stops there. The
 # directory's `.test.yaml` is where the whole composition is exercised.
-edition: v2026.3
+edition: v2026.4
 name: provision-database
 inputs:
   tenant:

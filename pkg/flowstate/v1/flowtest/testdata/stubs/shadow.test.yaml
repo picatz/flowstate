@@ -1,7 +1,7 @@
 # A filtered default and a case stub with a different filter for the same
 # task: the case stub does not replace the default, and the case is warned
 # (#1668). The catch-all second default keeps the run green.
-edition: v2026.3
+edition: v2026.4
 defaults:
   stubs:
     - task: log

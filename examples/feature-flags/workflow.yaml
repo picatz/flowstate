@@ -1,4 +1,4 @@
-edition: v2026.3
+edition: v2026.4
 name: feature-flags
 description: Reads a map of feature flags safely — a key that might not be there defaulted where it is read, and the whole map summarized by iterating its keys — rather than a task built to answer one question about one map.
 # A map comprehension's iteration variable ranges over the map's *keys* — the
@@ -16,7 +16,7 @@ description: Reads a map of feature flags safely — a key that might not be the
 #     --input 'flags={"beta_search": true, "dark_mode": false}'
 inputs:
   flags:
-    type: struct
+    type: map(string, dyn)
     required: true
     description: a mapping of flag name to whether it is on, an open set a caller owns
     example:

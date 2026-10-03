@@ -12,7 +12,7 @@ import (
 // bridgeSource is a compiling bridge, with with: substituted in where a case
 // wants the contradiction.
 func bridgeSource(with string) string {
-	return `edition: v2026.3
+	return `edition: v2026.4
 name: deploy-gate
 signals:
   stage-approved:

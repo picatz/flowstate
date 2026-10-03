@@ -7,7 +7,7 @@
 # Reading them off the response is the only way a file can show that `headers:`
 # arrived. Written the other way round — a step logging the header map it is
 # about to send — the file would be agreeing with itself.
-edition: v2026.3
+edition: v2026.4
 name: headers-and-nested
 steps:
   - id: web

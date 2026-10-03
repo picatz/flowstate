@@ -54,7 +54,7 @@ allow:
 
 // A workflow with no condition of its own, so the policy is the only thing that
 // can decide whether the step runs.
-const rehearsalIdentityWorkflow = `edition: v2026.3
+const rehearsalIdentityWorkflow = `edition: v2026.4
 name: rehearsal-identity
 steps:
   - id: report
@@ -106,7 +106,7 @@ func TestRunLocalRefusesTaskPolicyWhenNoTenantIsNamed(t *testing.T) {
 // as one. Nothing on the command line can turn `local` off; the local driver
 // sets it itself.
 func TestRunLocalReportsTheRehearsalIdentityAndStaysLocal(t *testing.T) {
-	const workflow = `edition: v2026.3
+	const workflow = `edition: v2026.4
 name: rehearsal-identity-outputs
 
 outputs:

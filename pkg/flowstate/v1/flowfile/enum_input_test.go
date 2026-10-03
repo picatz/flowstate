@@ -16,7 +16,7 @@ import (
 // in docs/DSL.md's design note — written once so every test here exercises
 // the identical shape a compiled contract, not whatever a test happens to
 // accept.
-const enumSpellingSource = `edition: v2026.3
+const enumSpellingSource = `edition: v2026.4
 name: t
 inputs:
   environment:
@@ -66,7 +66,7 @@ func findDiagnostic(ds flowfile.Diagnostics, field string) (flowfile.Diagnostic,
 func TestEnumValuesBesideNonEnumType(t *testing.T) {
 	t.Parallel()
 
-	src := `edition: v2026.3
+	src := `edition: v2026.4
 name: t
 inputs:
   environment:
@@ -106,7 +106,7 @@ steps:
 func TestEnumWithNoValues(t *testing.T) {
 	t.Parallel()
 
-	src := `edition: v2026.3
+	src := `edition: v2026.4
 name: t
 inputs:
   environment:
@@ -141,7 +141,7 @@ steps:
 func TestEnumValuesWrittenAsScalar(t *testing.T) {
 	t.Parallel()
 
-	src := `edition: v2026.3
+	src := `edition: v2026.4
 name: t
 inputs:
   environment:
@@ -175,7 +175,7 @@ steps:
 func TestEnumDefaultNotAMember(t *testing.T) {
 	t.Parallel()
 
-	src := `edition: v2026.3
+	src := `edition: v2026.4
 name: t
 inputs:
   environment:
@@ -213,7 +213,7 @@ steps:
 func TestEnumExampleNotAMember(t *testing.T) {
 	t.Parallel()
 
-	src := `edition: v2026.3
+	src := `edition: v2026.4
 name: t
 inputs:
   environment:
@@ -250,7 +250,7 @@ steps:
 func TestEnumMustStaysLegalBesideValues(t *testing.T) {
 	t.Parallel()
 
-	src := `edition: v2026.3
+	src := `edition: v2026.4
 name: t
 inputs:
   environment:
@@ -273,7 +273,7 @@ steps:
 func TestOneMemberEnumIsLegal(t *testing.T) {
 	t.Parallel()
 
-	src := `edition: v2026.3
+	src := `edition: v2026.4
 name: t
 inputs:
   environment:
@@ -298,7 +298,7 @@ steps:
 func TestEnumInputRoundTripsByteExact(t *testing.T) {
 	t.Parallel()
 
-	src := `edition: v2026.3
+	src := `edition: v2026.4
 name: t
 inputs:
   environment:
@@ -357,7 +357,7 @@ steps:
 func TestEnumValuesDuplicateMember(t *testing.T) {
 	t.Parallel()
 
-	src := `edition: v2026.3
+	src := `edition: v2026.4
 name: t
 inputs:
   environment:
@@ -395,7 +395,7 @@ steps:
 func TestEnumValuesEmptyMember(t *testing.T) {
 	t.Parallel()
 
-	src := `edition: v2026.3
+	src := `edition: v2026.4
 name: t
 inputs:
   environment:
@@ -433,7 +433,7 @@ func TestEnumValuesOverlongMember(t *testing.T) {
 	t.Parallel()
 
 	long := strings.Repeat("a", 129)
-	src := fmt.Sprintf(`edition: v2026.3
+	src := fmt.Sprintf(`edition: v2026.4
 name: t
 inputs:
   environment:
@@ -473,7 +473,7 @@ func TestEnumValuesOver64Members(t *testing.T) {
 	for i := range members {
 		members[i] = fmt.Sprintf("v%d", i)
 	}
-	src := fmt.Sprintf(`edition: v2026.3
+	src := fmt.Sprintf(`edition: v2026.4
 name: t
 inputs:
   environment:
@@ -520,7 +520,7 @@ func TestEnumValuesReachedBoundary(t *testing.T) {
 		// so this boundary case cannot also trip the distinctness rule.
 		members[i] = fmt.Sprintf("v%0127d", i)
 	}
-	src := fmt.Sprintf(`edition: v2026.3
+	src := fmt.Sprintf(`edition: v2026.4
 name: t
 inputs:
   environment:

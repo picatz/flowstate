@@ -1,4 +1,4 @@
-edition: v2026.3
+edition: v2026.4
 name: wait-timeout
 description: Lets an approval lapse, and carries on down the other branch.
 

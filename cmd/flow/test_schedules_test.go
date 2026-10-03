@@ -23,7 +23,7 @@ import (
 // A workflow with a `parallel:` block, which is a junction a scheduler decides,
 // and one straight line, which is not.
 const (
-	scheduleJunctionWorkflow = `edition: v2026.3
+	scheduleJunctionWorkflow = `edition: v2026.4
 name: junction
 steps:
   - id: checks
@@ -38,7 +38,7 @@ steps:
               message: quota ok
 `
 
-	scheduleStraightWorkflow = `edition: v2026.3
+	scheduleStraightWorkflow = `edition: v2026.4
 name: straight-line
 steps:
   - id: only
@@ -46,7 +46,7 @@ steps:
       message: hello
 `
 
-	scheduleSuite = `edition: v2026.3
+	scheduleSuite = `edition: v2026.4
 tests:
   - name: a case
     workflow: ./workflow.yaml

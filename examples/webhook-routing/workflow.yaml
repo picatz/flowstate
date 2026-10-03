@@ -1,4 +1,4 @@
-edition: v2026.3
+edition: v2026.4
 name: webhook-routing
 description: "A webhook's event type is dispatched through one switch, with a default that means something: a value nobody enumerated is handled, recorded, and visible."
 # The shape this example exists to show: one value, several handlers, written as

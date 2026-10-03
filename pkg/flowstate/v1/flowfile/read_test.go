@@ -155,7 +155,7 @@ func TestCallRefusesACalleeThatIsNotARegularFileWithoutReadingIt(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.Mkdir(filepath.Join(dir, "callee.yaml"), 0o755))
 
-	caller := writeFile(t, dir, "caller.yaml", `edition: v2026.3
+	caller := writeFile(t, dir, "caller.yaml", `edition: v2026.4
 name: caller
 steps:
   - id: a
@@ -175,7 +175,7 @@ func TestCallRefusesAnOversizedCallee(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "callee.yaml"),
 		[]byte("# "+strings.Repeat("a", maxFlowfileBytes)), 0o644))
 
-	caller := writeFile(t, dir, "caller.yaml", `edition: v2026.3
+	caller := writeFile(t, dir, "caller.yaml", `edition: v2026.4
 name: caller
 steps:
   - id: a

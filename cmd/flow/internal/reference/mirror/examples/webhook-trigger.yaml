@@ -29,7 +29,7 @@
 #     flow run local examples/webhook-trigger/workflow.yaml
 #
 # runs it once, now, with the defaults below.
-edition: v2026.3
+edition: v2026.4
 name: webhook-trigger
 
 # The signature. Both have defaults, so the file runs as written with no arguments

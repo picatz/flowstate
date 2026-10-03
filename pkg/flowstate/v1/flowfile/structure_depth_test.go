@@ -35,7 +35,7 @@ func nestedListSecretHeader(depth int) string {
 	for range depth {
 		val = "[" + val + "]"
 	}
-	return `edition: v2026.3
+	return `edition: v2026.4
 name: t
 steps:
   - id: a

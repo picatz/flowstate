@@ -15,7 +15,7 @@ import (
 // no filter variable. These are the tests that keep it reachable from a file
 // somebody writes, which is the only sense in which it is a capability at all.
 
-const labelled = `edition: v2026.3
+const labelled = `edition: v2026.4
 name: nightly-etl
 labels:
   team: payments
@@ -47,7 +47,7 @@ func TestLabelsCompileFromTheFile(t *testing.T) {
 func TestAWorkflowWithNoLabelsCarriesNone(t *testing.T) {
 	t.Parallel()
 
-	workflow, err := flowfile.Unmarshal([]byte(`edition: v2026.3
+	workflow, err := flowfile.Unmarshal([]byte(`edition: v2026.4
 name: unlabelled
 steps:
   - id: gather
@@ -78,7 +78,7 @@ func TestLabelsSurviveTheRoundTrip(t *testing.T) {
 	// and with the keys sorted rather than in the order the file happened to
 	// write them — a Go map has no order, so sorting is what makes this
 	// reproducible at all.
-	require.Equal(t, `edition: v2026.3
+	require.Equal(t, `edition: v2026.4
 name: nightly-etl
 labels:
   cost-center: cc-1234
@@ -117,7 +117,7 @@ func TestLabelsAreBounded(t *testing.T) {
 	t.Parallel()
 
 	var source strings.Builder
-	source.WriteString("edition: v2026.3\nname: too-many\nlabels:\n")
+	source.WriteString("edition: v2026.4\nname: too-many\nlabels:\n")
 	for i := range 200 {
 		source.WriteString("  key-")
 		source.WriteString(strings.Repeat("0", 1))

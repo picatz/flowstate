@@ -1,4 +1,4 @@
-edition: v2026.3
+edition: v2026.4
 name: slack-approval-notification
 description: Posts an approval request to Slack, waits durably for the separately verified Flowstate signal, then keeps the recorded outcome in the same Slack thread.
 plugins:

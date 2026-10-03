@@ -33,7 +33,7 @@ func TestStrictYAMLRefusesAnchor(t *testing.T) {
 
 	// The anchor sits on the first step. `&shared` is at column 5, under the
 	// two-space list indent and the `- ` marker.
-	src := `edition: v2026.3
+	src := `edition: v2026.4
 name: t
 steps:
   - &shared
@@ -53,7 +53,7 @@ func TestStrictYAMLRefusesAlias(t *testing.T) {
 	t.Parallel()
 
 	// `*base` is the value of `message:`, at column 16.
-	src := `edition: v2026.3
+	src := `edition: v2026.4
 name: t
 vars:
   base: hi
@@ -74,7 +74,7 @@ func TestStrictYAMLRefusesMergeKey(t *testing.T) {
 	t.Parallel()
 
 	// The `<<:` is on the second step, at column 5.
-	src := `edition: v2026.3
+	src := `edition: v2026.4
 name: t
 steps:
   - &policy
@@ -117,7 +117,7 @@ steps:
 func TestStrictYAMLAcceptsTheSpelledOutEquivalent(t *testing.T) {
 	t.Parallel()
 
-	src := `edition: v2026.3
+	src := `edition: v2026.4
 name: shared
 steps:
   - id: a
@@ -155,7 +155,7 @@ func TestStrictYAMLRefusesBillionLaughsWithoutExpanding(t *testing.T) {
 	// Nine levels, nine references each: were this expanded it would be 9^9 ≈ 387
 	// million leaf nodes. It is a few hundred bytes on disk.
 	var b strings.Builder
-	b.WriteString("edition: v2026.3\nname: boom\n")
+	b.WriteString("edition: v2026.4\nname: boom\n")
 	b.WriteString("l0: &l0 \"lol\"\n")
 	for i := 1; i <= 9; i++ {
 		b.WriteString("l" + strconv.Itoa(i) + ": &l" + strconv.Itoa(i) + " [")
@@ -192,7 +192,7 @@ func TestStrictYAMLRefusesBillionLaughsWithoutExpanding(t *testing.T) {
 func TestFixRefusesStrictYAML(t *testing.T) {
 	t.Parallel()
 
-	src := `edition: v2026.3
+	src := `edition: v2026.4
 name: t
 defaults: &shared
   timeout: 30s
@@ -230,7 +230,7 @@ func TestFixRefusesEachStrictConstructWhereItIsWritten(t *testing.T) {
 		message      string
 	}{
 		"an alias": {
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: t
 vars:
   base: hi
@@ -243,7 +243,7 @@ steps:
 			message: "this alias names an anchor (`&base`) this document does not declare",
 		},
 		"a merge key": {
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: t
 defaults: &policy
   timeout: 30s

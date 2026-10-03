@@ -57,7 +57,17 @@ import (
 // v2026.3 file with the unknown-edition diagnostic below, which is the whole
 // point of the marker: refusal rather than reinterpretation, on the one dialect
 // axis the language has.
-const CurrentEdition = "v2026.3"
+//
+// # v2026.4: a type says what it holds, and three spellings of it are gone
+//
+// An input or output `type:` is a CEL type expression (`list(string)`,
+// `map(string, int)`, #1640). That makes `list`, `struct` and `float` second
+// spellings of `list(dyn)`, `map(string, dyn)` and `double`, and one spelling per
+// meaning is the rule, so this edition refuses all three and `flow fix` rewrites
+// them. Nothing is lost: a bare `list` already held anything, and `struct` was an
+// open map with no fields. Every other v2026.3 file is a valid v2026.4 file with
+// the same meaning.
+const CurrentEdition = "v2026.4"
 
 // firstEdition is the unprefixed spelling, kept so a file written in it can be read far
 // enough to be rewritten.
@@ -73,8 +83,13 @@ const firstEdition = "2026.1"
 // there is one grammar in a build (see the package comment above).
 const editionV2026_2 = "v2026.2"
 
+// editionV2026_3 is the edition before a type was a CEL type expression and
+// `list`, `struct` and `float` were retired. Known so `flow fix` can bring a file
+// forward; not compiled, because there is one grammar in a build.
+const editionV2026_3 = "v2026.3"
+
 // knownEditions are every edition this build recognises, oldest first.
-var knownEditions = []string{firstEdition, editionV2026_2, CurrentEdition}
+var knownEditions = []string{firstEdition, editionV2026_2, editionV2026_3, CurrentEdition}
 
 // KnownEditions returns the editions this build recognises, oldest first.
 func KnownEditions() []string {

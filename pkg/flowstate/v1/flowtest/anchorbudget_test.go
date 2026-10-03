@@ -32,7 +32,7 @@ import (
 func TestManyMissingOutputsAnchorWithinOneBudget(t *testing.T) {
 	t.Parallel()
 
-	const workflow = "edition: v2026.3\nname: demo\nsteps:\n- id: hi\n  log:\n    message: hello\n"
+	const workflow = "edition: v2026.4\nname: demo\nsteps:\n- id: hi\n  log:\n    message: hello\n"
 
 	// Enough entries that the shared budget is spent partway through, and far
 	// too few for any single scan to approach it on its own.

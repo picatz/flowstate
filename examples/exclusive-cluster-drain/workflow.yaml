@@ -52,7 +52,7 @@
 # it is read by the server composing the id at submit, and by nothing inside the
 # run on either driver. A local rehearsal is therefore not a rehearsal of
 # contention, and does not pretend to be one — what it rehearses is the workload.
-edition: v2026.3
+edition: v2026.4
 name: exclusive-cluster-drain
 description: cordon and drain one cluster, never two drains of the same cluster at once
 inputs:

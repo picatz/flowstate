@@ -23,11 +23,11 @@ import (
 // echoWorkflow is a workflow that reports what it was given, which is what
 // every fixture-position claim below actually needs.
 const echoWorkflow = `
-edition: v2026.3
+edition: v2026.4
 name: echo
 inputs:
   order:
-    type: struct
+    type: map(string, dyn)
 steps:
   - id: keep
     value: ${inputs.order.id}
@@ -563,11 +563,11 @@ func TestAVarComputedFromASecretIsWithheldWhereverItPrints(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
-edition: v2026.3
+edition: v2026.4
 name: bearer-request
 inputs:
   headers:
-    type: struct
+    type: map(string, dyn)
 steps:
   - id: call
     http:
@@ -649,7 +649,7 @@ func TestAWithheldVarsMaterialIsWithheldWhereverItTravelled(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
-edition: v2026.3
+edition: v2026.4
 name: forwarder
 inputs:
   header:
@@ -708,7 +708,7 @@ func TestATableRowsEntrySecretSurvivesTheRuntimePostureWidening(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
-edition: v2026.3
+edition: v2026.4
 name: forwarder
 inputs:
   tag:
@@ -772,7 +772,7 @@ func TestATableRowsEntrySecretSurvivesEscapedInThePostBindPosture(t *testing.T) 
 
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
-edition: v2026.3
+edition: v2026.4
 name: forwarder
 inputs:
   tag:
@@ -832,7 +832,7 @@ func TestACrossCaseLiteralSeedSurvivesEscapedAfterInputBinding(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
-edition: v2026.3
+edition: v2026.4
 name: forwarder
 inputs:
   tag:
@@ -893,7 +893,7 @@ func TestACasesOwnSecretSurvivesEscapedInThePostBindPosture(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
-edition: v2026.3
+edition: v2026.4
 name: bearer-request
 steps:
   - id: call
@@ -938,7 +938,7 @@ func TestATaintedStructuredLeafIsWithheldFromStubDiagnostics(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
-edition: v2026.3
+edition: v2026.4
 name: log-header
 inputs:
   message:
@@ -994,7 +994,7 @@ func TestASourceOfASecretIsWithheldToo(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
-edition: v2026.3
+edition: v2026.4
 name: bearer-request
 steps:
   - id: call
@@ -1485,7 +1485,7 @@ func TestACheckErrorQuotingAWithheldValueIsWithheld(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
-edition: v2026.3
+edition: v2026.4
 name: bearer-request
 steps:
   - id: call
@@ -1771,7 +1771,7 @@ func TestACheckReadingAWithheldVarInEitherSpellingIsWithheld(t *testing.T) {
 
 			dir := t.TempDir()
 			writeFile(t, filepath.Join(dir, "workflow.yaml"), `
-edition: v2026.3
+edition: v2026.4
 name: bearer-request
 steps:
   - id: call
@@ -1829,7 +1829,7 @@ func TestACheckIndexingVarsDynamicallyIsWithheld(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
-edition: v2026.3
+edition: v2026.4
 name: bearer-request
 steps:
   - id: call
@@ -1887,7 +1887,7 @@ func TestASetupFailureWithholdsATaintedFixture(t *testing.T) {
 	// reaches the exit that reads the payload rather than stopping at "this
 	// workflow declares no webhook triggers".
 	const deliverable = `
-edition: v2026.3
+edition: v2026.4
 name: orders
 inputs:
   id:
@@ -2195,7 +2195,7 @@ func TestAComputedVarMayShareAWorkflowVarsName(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
-edition: v2026.3
+edition: v2026.4
 name: spoken
 vars:
   greeting: hello

@@ -54,7 +54,7 @@ func TestTheAgentAndTheAuthorReadTheSameRunDocument(t *testing.T) {
 	t.Parallel()
 
 	sources := map[string]string{
-		"scalars a tagged encoding spells differently": `edition: v2026.3
+		"scalars a tagged encoding spells differently": `edition: v2026.4
 name: scalars
 steps:
   - id: count
@@ -75,7 +75,7 @@ outputs:
   label:
     value: ${steps.label.value}
 `,
-		"collections whose entries are values too": `edition: v2026.3
+		"collections whose entries are values too": `edition: v2026.4
 name: collections
 steps:
   - id: regions
@@ -88,7 +88,7 @@ outputs:
   counts:
     value: ${steps.counts.value}
 `,
-		"a literal written as YAML rather than computed": `edition: v2026.3
+		"a literal written as YAML rather than computed": `edition: v2026.4
 name: structured
 steps:
   - id: noop

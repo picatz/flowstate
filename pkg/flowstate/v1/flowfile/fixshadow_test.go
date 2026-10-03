@@ -40,7 +40,7 @@ func TestFixLeavesANameTheGrammarBindsAlone(t *testing.T) {
 			// it became a reference to a step whose outputs are empty, so
 			// `size(host)` went from 5 and 2 to 0 and 0.
 			name: "a loop's binding shares a step's id",
-			source: `edition: v2026.3
+			source: `edition: v2026.4
 name: shadow
 steps:
   - id: host
@@ -60,7 +60,7 @@ steps:
 			// A step's own vars are bare within that step — deliberately, and
 			// unlike the workflow's, which are rooted under `vars.`.
 			name: "a step var shares a step's id",
-			source: `edition: v2026.3
+			source: `edition: v2026.4
 name: shadow-vars
 steps:
   - id: subject
@@ -78,7 +78,7 @@ steps:
 			// Reading only the explicit spelling left the default corrupted, which
 			// is the same defect with the binding written by omission.
 			name: "a loop's implicit `item` shares a step's id",
-			source: `edition: v2026.3
+			source: `edition: v2026.4
 name: implicit
 steps:
   - id: item
@@ -109,7 +109,7 @@ steps:
 			// `until:`+`steps:` rather than `items:`+`steps:`, so this is the path
 			// [fixer.boundBareNames] and [sees] grew for the loop.
 			name: "a loop's carried state shares a step's id",
-			source: `edition: v2026.3
+			source: `edition: v2026.4
 name: shadow-loop-state
 steps:
   - id: cursor
@@ -132,7 +132,7 @@ steps:
 			// a `wait_until: ${now + seconds(1)}` in the same workflow that still
 			// reads the clock rather than the step".
 			name: "a step is called now, beside a wait that reads the clock",
-			source: `edition: v2026.3
+			source: `edition: v2026.4
 name: shadow-now
 steps:
   - id: now
@@ -151,7 +151,7 @@ steps:
 			// the same node shape the case above covers, so it is the cheap half of
 			// the extent; the mapping below is the other one.
 			name: "a step is called now, beside a computed sleep that reads the clock",
-			source: `edition: v2026.3
+			source: `edition: v2026.4
 name: shadow-now-sleep
 steps:
   - id: now
@@ -175,7 +175,7 @@ steps:
 			// step's activity timeout, an ordinary duration evaluated where there is
 			// no clock at all.
 			name: "a step is called now, beside a signal timeout computed from the clock",
-			source: `edition: v2026.3
+			source: `edition: v2026.4
 name: shadow-now-timeout
 steps:
   - id: now
@@ -200,7 +200,7 @@ steps:
 			// them would corrupt exactly the file it did not know about, which is
 			// the failure `bindsNow` was widened to fix a release ago.
 			name: "steps share the names a gate's outputs shaping binds",
-			source: `edition: v2026.3
+			source: `edition: v2026.4
 name: shadow-shaping
 steps:
   - id: payload
@@ -229,7 +229,7 @@ steps:
 			// further level into `outputs:`, where a second subtraction has
 			// already narrowed the same map.
 			name: "a step is called now, beside a gate's outputs shaping that reads the clock",
-			source: `edition: v2026.3
+			source: `edition: v2026.4
 name: shadow-now-shaping
 steps:
   - id: now
@@ -252,7 +252,7 @@ steps:
 			// outright, see declarations.go — so this is the case that must never be
 			// touched at all: nothing here is a step reference to root.
 			name: "a bare reference to the run root, beside ordinary steps",
-			source: `edition: v2026.3
+			source: `edition: v2026.4
 name: shadow-run-root
 steps:
   - id: approval
@@ -490,7 +490,7 @@ steps:
 			// `timeout:` below bare, in a file stamped with the new edition, which
 			// the validator then rejects — the "too wide" half of this failure.
 			name: "a gate's outputs see the wait's result, and its timeout sees the step called payload",
-			source: `edition: v2026.3
+			source: `edition: v2026.4
 name: payloadscope
 steps:
   - id: payload
@@ -755,7 +755,7 @@ steps:
 func TestFixRootsAStepSharingTheWorkflowsVarName(t *testing.T) {
 	t.Parallel()
 
-	const want = `edition: v2026.3
+	const want = `edition: v2026.4
 name: topvars
 vars:
   greet: "${'hi'}"

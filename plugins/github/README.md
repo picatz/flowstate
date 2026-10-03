@@ -42,7 +42,7 @@ the fence.
 
 <!-- example: examples/plugins/github/workflow.yaml -->
 ```yaml
-edition: v2026.3
+edition: v2026.4
 name: github-pull-request-get
 description: Reads a public pull request's state using the "github" plugin - the one read task this example runs by default.
 
@@ -90,7 +90,7 @@ Its test selects the stub on the owner, repo and number sent, so CI proves the r
 
 <!-- example: examples/plugins/github/workflow.test.yaml -->
 ```yaml
-edition: v2026.3
+edition: v2026.4
 
 # Proves the workflow reads the pull request it names, in CI with no network and
 # without the github plugin installed. The stub selects the call by the owner,
@@ -118,7 +118,7 @@ tests:
 
 <!-- example: examples/plugins/github/issue-comment.yaml -->
 ```yaml
-edition: v2026.3
+edition: v2026.4
 name: github-issue-comment
 description: Posts a real comment on a real issue or pull request using the "github" plugin's one non-idempotent task. Requires inputs; never runs by accident.
 
@@ -175,7 +175,7 @@ Its test selects the stub on all four values sent and on the token being present
 
 <!-- example: examples/plugins/github/issue-comment.test.yaml -->
 ```yaml
-edition: v2026.3
+edition: v2026.4
 
 # Proves the one non-idempotent write goes to the issue the caller named, carrying
 # the caller's text and a credential, in CI with no network and without the github
@@ -209,7 +209,7 @@ tests:
 
 <!-- example: examples/plugins/github/triage.yaml -->
 ```yaml
-edition: v2026.3
+edition: v2026.4
 name: github-review-and-issue-triage
 description: A review-triage pass over a public repository using the "github" plugin's read/audit tier - what is open, which files a candidate change touches, and the full record of whichever issue needs the next look. Runs with no arguments.
 
@@ -320,7 +320,7 @@ Its test puts a pull request first in the issue listing, so CI proves the filter
 
 <!-- example: examples/plugins/github/triage.test.yaml -->
 ```yaml
-edition: v2026.3
+edition: v2026.4
 
 # Proves the triage pass asks about the right pull request and reads the right
 # issue, in CI with no network and without the github plugin installed. The
@@ -597,7 +597,7 @@ both directions:
 
 <!-- example: examples/plugins/github/list-resume.yaml -->
 ```yaml
-edition: v2026.3
+edition: v2026.4
 name: github-list-resume
 description: Reads a repository's open issues in two bounded pages using github.issue_list's cursor input - the resume shape issue #216 asks every bounded list task to grow, closed for this plugin's read/audit-tier listings. Runs with no arguments.
 
@@ -724,7 +724,7 @@ Its test selects each page on its cursor and ordering, so CI proves page two res
 
 <!-- example: examples/plugins/github/list-resume.test.yaml -->
 ```yaml
-edition: v2026.3
+edition: v2026.4
 
 # Proves page two resumes from the cursor page one returned, and only under the
 # ordering that cursor is honest about, in CI with no network and without the

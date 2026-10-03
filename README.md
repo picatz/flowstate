@@ -47,11 +47,11 @@ expression, deploys each target, and reports what it did. On a durable run,
 them one at a time so a rehearsal is repeatable.
 
 ```yaml
-edition: v2026.3
+edition: v2026.4
 name: rollout
 inputs:
   targets:
-    type: list
+    type: list(string)
     default:
       - api
       - worker
@@ -92,7 +92,7 @@ suite.
 <summary><strong>Start smaller: one step</strong></summary>
 
 ```yaml
-edition: v2026.3
+edition: v2026.4
 name: hello-world
 steps:
   - id: hello

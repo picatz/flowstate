@@ -1,7 +1,7 @@
 # The case `flow test --debug` steps through in this example's README. It pins
 # what the walkthrough inspects: one amount over the threshold, flagged, and a
 # receipt read back from the called workflow.
-edition: v2026.3
+edition: v2026.4
 defaults:
   stubs:
     - task: log

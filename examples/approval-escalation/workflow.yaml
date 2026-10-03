@@ -1,4 +1,4 @@
-edition: v2026.3
+edition: v2026.4
 name: approval-escalation
 description: Asks an approver on a cadence, escalates to a backup when the primary stops answering, and auto-rejects when the budget of asks runs out — over the same attested `signals:` gate `approval-gate` shows once.
 # `approval-gate` is one ask. This is the chase that a real approval is: ask,

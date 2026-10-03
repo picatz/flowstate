@@ -19,7 +19,7 @@ const calleeSecret = "hunter2-callee-only-secret"
 // calleeSensitiveFiles is a root that passes a literal to a callee declaring
 // it sensitive, and itself declares nothing sensitive.
 func calleeSensitiveFiles() map[string]string {
-	child := `edition: v2026.3
+	child := `edition: v2026.4
 name: child
 inputs:
   api_key:
@@ -31,7 +31,7 @@ steps:
     log:
       message: ${"using " + inputs.api_key}
 `
-	root := `edition: v2026.3
+	root := `edition: v2026.4
 name: parent
 steps:
   - id: first
@@ -111,7 +111,7 @@ func TestAHoldInsideACalleeWithholdsTheRootsSensitiveInputs(t *testing.T) {
 	t.Parallel()
 
 	const secret = "root-only-sensitive-value"
-	root := `edition: v2026.3
+	root := `edition: v2026.4
 name: parent
 inputs:
   token:
@@ -149,11 +149,11 @@ steps:
 func TestAHoldInsideACalleeWithholdsAShortSensitiveValue(t *testing.T) {
 	t.Parallel()
 
-	child := `edition: v2026.3
+	child := `edition: v2026.4
 name: child
 inputs:
   codes:
-    type: list
+    type: list(dyn)
     required: true
     sensitive: true
 steps:
@@ -161,7 +161,7 @@ steps:
     log:
       message: hi
 `
-	root := `edition: v2026.3
+	root := `edition: v2026.4
 name: parent
 steps:
   - id: first
@@ -191,7 +191,7 @@ steps:
 func TestAnArrivalInsideACalleeWithholdsItsSensitiveInputs(t *testing.T) {
 	t.Parallel()
 
-	child := `edition: v2026.3
+	child := `edition: v2026.4
 name: child
 inputs:
   api_key:
@@ -205,7 +205,7 @@ steps:
   - id: boom
     value: ${{"a":1}[inputs.api_key]}
 `
-	root := `edition: v2026.3
+	root := `edition: v2026.4
 name: parent
 steps:
   - id: first
@@ -338,7 +338,7 @@ func TestAMissedUntilAppliedInsideACalleeWithholdsItsSensitiveInputs(t *testing.
 func TestAStepsAccountWithholdsWhatItsCalleeDeclaresSensitive(t *testing.T) {
 	t.Parallel()
 
-	child := `edition: v2026.3
+	child := `edition: v2026.4
 name: child
 inputs:
   api_key:
@@ -351,7 +351,7 @@ steps:
   - id: boom
     value: ${{"a":1}[inputs.api_key]}
 `
-	root := `edition: v2026.3
+	root := `edition: v2026.4
 name: parent
 steps:
   - id: first
@@ -417,7 +417,7 @@ func TestALongSensitiveValueInACalleesAccountIsWithheldBeforeTheCap(t *testing.T
 	t.Parallel()
 
 	secret := strings.Repeat("s3cr3t-", flowdebug.MaxInspectRunes/7+100)
-	child := `edition: v2026.3
+	child := `edition: v2026.4
 name: child
 inputs:
   api_key:
@@ -428,7 +428,7 @@ steps:
   - id: echo
     value: ${inputs.api_key}
 `
-	root := `edition: v2026.3
+	root := `edition: v2026.4
 name: parent
 steps:
   - id: first
@@ -463,7 +463,7 @@ steps:
 func TestACallsAccountWithholdsWhatItsCalleeHandsBack(t *testing.T) {
 	t.Parallel()
 
-	child := `edition: v2026.3
+	child := `edition: v2026.4
 name: child
 inputs:
   api_key:
@@ -471,7 +471,7 @@ inputs:
     required: true
     sensitive: true
   codes:
-    type: list
+    type: list(dyn)
     required: true
     sensitive: true
 steps:
@@ -481,7 +481,7 @@ outputs:
   key:
     value: ${inputs.api_key}
 `
-	root := `edition: v2026.3
+	root := `edition: v2026.4
 name: parent
 steps:
   - id: first
@@ -531,7 +531,7 @@ func TestALaterStepsAccountWithholdsWhatACallHandedBack(t *testing.T) {
 	t.Parallel()
 
 	const failingSecret = "hunter2-failing-callee-secret"
-	child := `edition: v2026.3
+	child := `edition: v2026.4
 name: child
 inputs:
   api_key:
@@ -545,7 +545,7 @@ outputs:
   key:
     value: ${inputs.api_key}
 `
-	failing := `edition: v2026.3
+	failing := `edition: v2026.4
 name: failing
 inputs:
   api_key:
@@ -556,7 +556,7 @@ steps:
   - id: boom
     value: ${{"a":1}[inputs.api_key]}
 `
-	leaf := `edition: v2026.3
+	leaf := `edition: v2026.4
 name: leaf
 inputs:
   who:
@@ -566,7 +566,7 @@ steps:
   - id: greet
     value: ${inputs.who}
 `
-	root := `edition: v2026.3
+	root := `edition: v2026.4
 name: parent
 steps:
   - id: nested
@@ -626,7 +626,7 @@ steps:
 func TestARunsFailureWithholdsWhatACallHandedBack(t *testing.T) {
 	t.Parallel()
 
-	child := `edition: v2026.3
+	child := `edition: v2026.4
 name: child
 inputs:
   api_key:
@@ -640,7 +640,7 @@ outputs:
   key:
     value: ${inputs.api_key}
 `
-	nested := `edition: v2026.3
+	nested := `edition: v2026.4
 name: parent
 steps:
   - id: nested

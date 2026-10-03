@@ -16,7 +16,7 @@ import (
 
 // The spelling a webhook trigger ships under, written once so a change to it
 // fails a test rather than quietly becoming a second grammar.
-const webhookSource = `edition: v2026.3
+const webhookSource = `edition: v2026.4
 name: order-webhook
 inputs:
   order_id: { type: string, required: true }

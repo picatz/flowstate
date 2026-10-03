@@ -23,7 +23,7 @@ func writeTableWorkflow(t *testing.T, dir string) {
 	t.Helper()
 
 	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
-edition: v2026.3
+edition: v2026.4
 name: router
 inputs:
   risk:
@@ -94,7 +94,7 @@ func TestARowInheritsTheEntrysFixtureAndOverridesIt(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
-edition: v2026.3
+edition: v2026.4
 name: greet
 inputs:
   who:
@@ -188,7 +188,7 @@ func TestARowInheritsAnEntrysExpectationFieldByField(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
-edition: v2026.3
+edition: v2026.4
 name: bounded
 inputs:
   service:
@@ -280,7 +280,7 @@ func TestTheDefaultsChainReachesARow(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
-edition: v2026.3
+edition: v2026.4
 name: chained
 inputs:
   fromDefaults:

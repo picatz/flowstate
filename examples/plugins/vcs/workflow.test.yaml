@@ -1,4 +1,4 @@
-edition: v2026.3
+edition: v2026.4
 
 # Proves the workflow reads what vcs.log and vcs.diff return, in CI, with no
 # network and without the vcs plugin installed. Each stub returns the shape the

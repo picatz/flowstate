@@ -26,7 +26,7 @@
 # The waits are 30s each and the whole file runs in milliseconds: `flow test`
 # runs on a virtual clock, so the resync intervals cost nothing and the signals
 # below arrive at real offsets within them.
-edition: v2026.3
+edition: v2026.4
 
 # `log` answers with nothing, for every case: the opening line is for a person
 # reading the run and no assertion here is about it.

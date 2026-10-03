@@ -71,7 +71,7 @@
 # later step, exactly as `scheduled-report` describes:
 #
 #     flow schedule create examples/schedule-overlap-policies/workflow.yaml
-edition: v2026.3
+edition: v2026.4
 name: schedule-overlap-policies
 inputs:
   store:

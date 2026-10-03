@@ -1,4 +1,4 @@
-edition: v2026.3
+edition: v2026.4
 name: oci-read-statement
 description: Reads one in-toto statement from a registry by the layer digest the caller already holds, refuses it unless the bytes hash to that digest, and reports its predicate type.
 # oci.blob reads a blob the caller can already name by digest - an attestation

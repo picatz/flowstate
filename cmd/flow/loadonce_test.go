@@ -21,7 +21,7 @@ import (
 // because they are deterministic under `-race` and on a loaded runner.
 func TestLoadingAWorkflowCompilesItOnce(t *testing.T) {
 	var b strings.Builder
-	b.WriteString("edition: v2026.3\nname: chain\nsteps:\n  - id: s0\n    value: 0\n")
+	b.WriteString("edition: v2026.4\nname: chain\nsteps:\n  - id: s0\n    value: 0\n")
 	// One hundred steps: the schema's bound on a step list, which validation
 	// now enforces (#1757), and as many as a file may hold.
 	for i := 1; i < 100; i++ {

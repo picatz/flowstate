@@ -1,4 +1,4 @@
-edition: v2026.3
+edition: v2026.4
 name: oci-verify-before-deploy
 description: Pins a tag to the digest a registry serves today, asks whether an in-toto attestation is attached to those exact bytes, and gates the deploy on a human approving the digest rather than the tag.
 # The supply-chain shape this plugin exists for, and the reason each step is a

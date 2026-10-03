@@ -1,7 +1,7 @@
 # Two cases: a subject carrying a reply prefix and padding, and one carrying
 # neither — proving the strip is conditional rather than always cutting the
 # first three characters off whatever it is given.
-edition: v2026.3
+edition: v2026.4
 tests:
   - name: a padded, prefixed subject is trimmed, stripped, and routed by its first word
     workflow: ./workflow.yaml

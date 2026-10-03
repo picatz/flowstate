@@ -60,11 +60,11 @@ func TestParseTypeRefusesWithAColumn(t *testing.T) {
 func TestATypeValueNeverEntersARunEnvironment(t *testing.T) {
 	t.Parallel()
 
-	const src = `edition: v2026.3
+	const src = `edition: v2026.4
 name: t
 inputs:
   tags:
-    type: list
+    type: list(dyn)
 steps:
   - id: s
     value: ${type(inputs.tags) == list(string)}

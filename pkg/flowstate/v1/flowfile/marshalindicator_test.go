@@ -69,7 +69,7 @@ func TestMarshalledLiteralsWithYAMLIndicatorsParseBack(t *testing.T) {
 		t.Run(fmt.Sprintf("%q", scalar), func(t *testing.T) {
 			t.Parallel()
 
-			source := "edition: v2026.3\nname: indicators\nsteps:\n" +
+			source := "edition: v2026.4\nname: indicators\nsteps:\n" +
 				"  - id: shown\n    log:\n      message: " + quoteForYAML(scalar) + "\n"
 
 			workflow, _, err := flowfile.Parse([]byte(source))

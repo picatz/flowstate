@@ -1,4 +1,4 @@
-edition: v2026.3
+edition: v2026.4
 name: enterprise-customer-onboarding
 description: Checks quota, provisions a tenant's database, billing, and access grant as reusable sub-workflows, confirms go-live after a grace period, and undoes what it provisioned if activation fails.
 # Onboarding a customer is rarely one system's job - it is several teams'

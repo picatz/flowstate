@@ -218,13 +218,13 @@ func TestCodeActionOnARefusalOffersNothing(t *testing.T) {
 	t.Parallel()
 
 	cases := map[string]string{
-		"a task written in flow style": `edition: v2026.3
+		"a task written in flow style": `edition: v2026.4
 name: x
 steps:
   - id: greet
     task: {name: echo, inputs: {message: hi}}
 `,
-		"a binding through an unresolvable alias": `edition: v2026.3
+		"a binding through an unresolvable alias": `edition: v2026.4
 name: x
 steps:
   - id: loop
@@ -424,7 +424,7 @@ func TestCodeActionQuotesAnUnquotedTernaryInADocumentThatDoesNotParse(t *testing
 func TestCodeActionDropsSeveralAnchorMarkersOnOneLine(t *testing.T) {
 	t.Parallel()
 
-	const src = `edition: v2026.3
+	const src = `edition: v2026.4
 name: t
 x: [&aa 1, &b "&b"]
 steps:
@@ -432,7 +432,7 @@ steps:
     log:
       message: hi
 `
-	const want = `edition: v2026.3
+	const want = `edition: v2026.4
 name: t
 x: [1, "&b"]
 steps:
@@ -468,7 +468,7 @@ steps:
 func TestCodeActionMigratesAWholeValueAliasToAFlowStyleAnchor(t *testing.T) {
 	t.Parallel()
 
-	const src = `edition: v2026.3
+	const src = `edition: v2026.4
 name: t
 vars:
   a: &a {x: 1}

@@ -31,7 +31,7 @@ func TestCoverageReportsTheBranchNoCaseReaches(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, dir+"/workflow.yaml", `
-edition: v2026.3
+edition: v2026.4
 name: branchy
 inputs:
   mode:
@@ -114,11 +114,11 @@ func TestCoverageReachesForEachAndLoopBodies(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, dir+"/workflow.yaml", `
-edition: v2026.3
+edition: v2026.4
 name: bodies
 inputs:
   regions:
-    type: list
+    type: list(dyn)
     required: true
 steps:
   - id: fan
@@ -171,7 +171,7 @@ func TestCoverageAcceptsARecordedResidualAndRefusesAStaleOne(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, dir+"/workflow.yaml", `
-edition: v2026.3
+edition: v2026.4
 name: recorded
 inputs:
   mode:
@@ -284,7 +284,7 @@ func TestCoverageDoesNotBleedAcrossWorkflows(t *testing.T) {
 
 	// Workflow A reaches `shared`: it runs unconditionally.
 	writeFile(t, dir+"/a.yaml", `
-edition: v2026.3
+edition: v2026.4
 name: a
 steps:
   - id: shared
@@ -294,7 +294,7 @@ steps:
 	// Workflow B also has a `shared` step, but gated behind an `if:` no case
 	// satisfies, so B never reaches it. `anchor` gives B a step that does run.
 	writeFile(t, dir+"/b.yaml", `
-edition: v2026.3
+edition: v2026.4
 name: b
 inputs:
   mode:
@@ -371,7 +371,7 @@ func TestCoverageAllowUnreachedRequiresAReason(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, dir+"/workflow.yaml", `
-edition: v2026.3
+edition: v2026.4
 name: reasonless
 steps:
   - id: only
@@ -423,7 +423,7 @@ func TestCoverageCreditsWhatRanBeforeAnExpectedFailure(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, dir+"/workflow.yaml", `
-edition: v2026.3
+edition: v2026.4
 name: fails-partway
 steps:
   - id: first
@@ -487,7 +487,7 @@ tests:
 // *inside*, and says nothing about two bodies beside each other, so `notify` may
 // name a step in both. Both loops run one item; the second body's `notify` is
 // gated on an item the loop never carries, so it is a step no case has ever run.
-const sharedStepIDWorkflow = `edition: v2026.3
+const sharedStepIDWorkflow = `edition: v2026.4
 name: shared-step-ids
 steps:
   - id: first
@@ -608,7 +608,7 @@ coverage:
 
 	t.Run("an entry naming an id every declaration of which ran is stale", func(t *testing.T) {
 		dir := t.TempDir()
-		writeFile(t, dir+"/workflow.yaml", `edition: v2026.3
+		writeFile(t, dir+"/workflow.yaml", `edition: v2026.4
 name: both-bodies-run
 steps:
   - id: first

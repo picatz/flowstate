@@ -180,7 +180,7 @@ func TestFmtOrdersPinnedCalleesBeforeCallersRegardlessOfDirectorySort(t *testing
 	// survives parsing but not writing back out — so reformatting this file
 	// really does change its bytes, and so its digest, which is the premise
 	// the whole test rests on.
-	calleeSource := `edition: v2026.3
+	calleeSource := `edition: v2026.4
 name: callee
 steps:
   - id: greet
@@ -194,7 +194,7 @@ steps:
 
 		dir := t.TempDir()
 		calleePath := writeFixture(t, dir, filepath.Join(calleeDir, "callee.yaml"), calleeSource)
-		callerSource := fmt.Sprintf(`edition: v2026.3
+		callerSource := fmt.Sprintf(`edition: v2026.4
 name: caller
 steps:
   - id: run
@@ -322,7 +322,7 @@ func walkCallNodes(nodes []*v1.Node, dir string, into map[string]bool) {
 // function it wraps, so a bug in the command's plumbing cannot hide behind a
 // bug in Format, or the reverse.
 func TestFmtProducesFormatsOutput(t *testing.T) {
-	const src = `edition: v2026.3
+	const src = `edition: v2026.4
 name: greeter
 steps:
   # a comment flow fmt carries through
@@ -362,7 +362,7 @@ steps:
 func TestFmtCheckReportsWithoutWriting(t *testing.T) {
 	// Flush against `steps:`, which is not the shape Marshal writes (#850), so
 	// there is work for --check to find and report.
-	const src = `edition: v2026.3
+	const src = `edition: v2026.4
 name: greeter
 steps:
 - id: greet
@@ -407,7 +407,7 @@ steps:
 // not finish, and that report has to survive to the top level.
 func TestFmtCheckStaysLoudForAFileItCannotRead(t *testing.T) {
 	dir := t.TempDir()
-	path := writeFixture(t, dir, "workflow.yaml", "edition: v2026.3\nname: [\n")
+	path := writeFixture(t, dir, "workflow.yaml", "edition: v2026.4\nname: [\n")
 
 	_, _, err := runFmtCommand(t, "--check", path)
 	if !errors.Is(err, errFmtIncomplete) {
@@ -421,7 +421,7 @@ func TestFmtCheckStaysLoudForAFileItCannotRead(t *testing.T) {
 // TestFmtCheckOnFormattedFilesExitsZero is the other direction: a --check that
 // always failed would satisfy the test above perfectly.
 func TestFmtCheckOnFormattedFilesExitsZero(t *testing.T) {
-	const src = `edition: v2026.3
+	const src = `edition: v2026.4
 name: greeter
 steps:
   - id: greet
@@ -453,7 +453,7 @@ steps:
 // trustworthy: a file `flow fmt` cannot read into a workflow is left exactly as
 // it was, byte for byte, rather than guessed at.
 func TestFmtLeavesAParseFailureUntouched(t *testing.T) {
-	const broken = "edition: v2026.3\nname: x\n  steps: [\n"
+	const broken = "edition: v2026.4\nname: x\n  steps: [\n"
 
 	dir := t.TempDir()
 	path := writeFixture(t, dir, "workflow.yaml", broken)
@@ -473,7 +473,7 @@ func TestFmtLeavesAParseFailureUntouched(t *testing.T) {
 // TestFmtStdoutWritesTheResultAndLeavesTheFile covers piping the result
 // somewhere else, which is only useful if the original stays put.
 func TestFmtStdoutWritesTheResultAndLeavesTheFile(t *testing.T) {
-	const src = `edition: v2026.3
+	const src = `edition: v2026.4
 name: greeter
 steps:
   - id: greet
@@ -508,7 +508,7 @@ steps:
 // --stdout writes nothing to stdout, so a pipeline never receives a diagnostic
 // where it expects a document.
 func TestFmtStdoutKeepsReportsOffTheDocument(t *testing.T) {
-	const broken = "edition: v2026.3\nname: x\n  steps: [\n"
+	const broken = "edition: v2026.4\nname: x\n  steps: [\n"
 
 	dir := t.TempDir()
 	path := writeFixture(t, dir, "workflow.yaml", broken)
@@ -560,7 +560,7 @@ func TestFmtStdoutAndCheckAreRefused(t *testing.T) {
 // needing formatting is not a command someone typed wrong.
 func TestFmtDoesNotPrintUsageWhenAFileNeedsWork(t *testing.T) {
 	// Flush against `steps:`, so the file genuinely needs formatting (#850).
-	const src = `edition: v2026.3
+	const src = `edition: v2026.4
 name: greeter
 steps:
 - id: greet
@@ -585,7 +585,7 @@ steps:
 // list written flush against the key that holds it, so a directory walk over it
 // has something to reformat — Marshal indents a block sequence under its key
 // (#850) — and something to carry through.
-const currentStyleSingle = `edition: v2026.3
+const currentStyleSingle = `edition: v2026.4
 name: single
 steps:
 # a comment flow fmt carries through
@@ -721,7 +721,7 @@ func TestFmtOnTheScaffoldIsANoOp(t *testing.T) {
 // as it was rather than rewritten without the comment: a formatter choosing
 // between wrong output and no output chooses no output.
 func TestFmtRefusesAFileWhoseCommentItCannotKeep(t *testing.T) {
-	const src = `edition: v2026.3
+	const src = `edition: v2026.4
 name: report
 steps:
   - id: report

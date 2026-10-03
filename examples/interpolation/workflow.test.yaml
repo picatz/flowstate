@@ -6,7 +6,7 @@
 # fence, so it stays the integer seven — and a build that rendered a whole-value
 # fence as text would still produce `budget 7 attempts` in the message below, so
 # the integer is asserted in `outputs:`, where its type is what is compared.
-edition: v2026.3
+edition: v2026.4
 tests:
   - name: text and expressions in one value render as one sentence
     workflow: ./workflow.yaml

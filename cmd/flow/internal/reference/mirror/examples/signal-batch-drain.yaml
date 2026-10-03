@@ -1,4 +1,4 @@
-edition: v2026.3
+edition: v2026.4
 name: signal-batch-drain
 description: An event accumulator that drains a burst of signals in one step, rather than paying a loop iteration for each — and that leaves what it could not take for the next drain.
 

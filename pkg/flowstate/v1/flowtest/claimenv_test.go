@@ -25,7 +25,7 @@ import (
 
 // claimWorkflow gives each claim below something real to read: a map for
 // presence, a list for the comprehension and binding macros.
-const claimWorkflow = `edition: v2026.3
+const claimWorkflow = `edition: v2026.4
 name: claims
 steps:
   - id: m
@@ -117,7 +117,7 @@ func claimSuite(t *testing.T, claim string) string {
 	writeFile(t, filepath.Join(dir, "workflow.yaml"), claimWorkflow)
 
 	path := filepath.Join(dir, "workflow.test.yaml")
-	writeFile(t, path, `edition: v2026.3
+	writeFile(t, path, `edition: v2026.4
 tests:
   - name: c
     workflow: ./workflow.yaml

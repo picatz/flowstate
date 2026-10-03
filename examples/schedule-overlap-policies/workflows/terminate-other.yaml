@@ -12,7 +12,7 @@
 # The old run must stop *before* it takes any more action on its own way out,
 # which is what `cancel_other`'s graceful stop does not guarantee and
 # `terminate_other` does.
-edition: v2026.3
+edition: v2026.4
 name: schedule-overlap-terminate-other
 inputs:
   plan:

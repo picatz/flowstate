@@ -13,7 +13,7 @@
 # somebody else's arguments, and `specification_as_submitted` is false on that
 # answer for exactly that reason. `join` is right when the work is the same
 # whoever asked for it, and wrong the moment the arguments change what happens.
-edition: v2026.3
+edition: v2026.4
 name: exclusive-ledger-reconcile
 inputs:
   tenant:

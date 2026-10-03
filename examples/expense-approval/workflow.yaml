@@ -1,4 +1,4 @@
-edition: v2026.3
+edition: v2026.4
 name: expense-approval
 description: An expense report waits for a manager's sign-off, and escalates to finance ops instead of sitting forever if the manager never answers.
 # `approval-gate` shows one gate, answered or not. A real approval chain is
@@ -61,7 +61,7 @@ inputs:
     sensitive: true
     must: this.matches(r'^[^@]+@[^@]+$')
   amount:
-    type: float
+    type: double
     required: true
     description: the amount being claimed, in USD
     example: 482.5

@@ -1,4 +1,4 @@
-edition: v2026.3
+edition: v2026.4
 name: http-secret
 steps:
   # `bearer:` is the input built to take a reference whole. The worker resolves it

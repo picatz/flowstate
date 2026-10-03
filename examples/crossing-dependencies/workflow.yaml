@@ -40,7 +40,7 @@
 # asserts the transcript is the one written order would produce, and the engine's
 # TestRunWorkflowAsyncOverlapsLaterWork asserts the overlap, which no transcript
 # can show. workflow.test.yaml says why that split is the honest one.
-edition: v2026.3
+edition: v2026.4
 name: crossing-dependencies
 steps:
   # Two independent pieces of work, both started here rather than waited for.

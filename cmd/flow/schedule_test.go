@@ -42,7 +42,7 @@ func TestScheduleCreateChecksPluginTasksAgainstACatalog(t *testing.T) {
 
 	dir := t.TempDir()
 	workflow := filepath.Join(dir, "workflow.yaml")
-	require.NoError(t, os.WriteFile(workflow, []byte(`edition: v2026.3
+	require.NoError(t, os.WriteFile(workflow, []byte(`edition: v2026.4
 name: plugin-schedule
 triggers:
   schedule:

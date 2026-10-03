@@ -21,7 +21,7 @@
 # whole shape being demonstrated: a drain takes what has arrived, so something
 # has to decide how long "arrived" means, and here that something is an
 # ordinary `sleep:`.
-edition: v2026.3
+edition: v2026.4
 defaults:
   stubs:
     - task: log

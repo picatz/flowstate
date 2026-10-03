@@ -174,7 +174,7 @@ func TestCompletionAtANegativePositionIsApplicable(t *testing.T) {
 
 	var docs documentStore
 	doc := docs.open("untitled:negative.yaml", 1,
-		"edition: v2026.3\nname: n\nsteps:\n- id: a\n  log:\n    message: hi\n", nil)
+		"edition: v2026.4\nname: n\nsteps:\n- id: a\n  log:\n    message: hi\n", nil)
 
 	for _, pos := range []lsp.Position{
 		{Line: -1, Character: -1},
@@ -216,35 +216,35 @@ type lspFuzzSeed struct {
 var lspFuzzSeeds = []lspFuzzSeed{
 	// No edit at all, at the very start: the identity case, whose only job is to
 	// exercise every analyzer over a document that is entirely well-formed.
-	{"edition: v2026.3\nname: hello\nsteps:\n- id: a\n  log:\n    message: hi\n", "", 0, 0, 0, 0},
+	{"edition: v2026.4\nname: hello\nsteps:\n- id: a\n  log:\n    message: hi\n", "", 0, 0, 0, 0},
 	// Typing inside a fence, which is where an expression is half-written on
 	// every keystroke an author makes and where completion does most of its
 	// work.
-	{"edition: v2026.3\nname: e\nsteps:\n- id: a\n  log:\n    message: ${steps.}\n", "a", 5, 21, 5, 21},
+	{"edition: v2026.4\nname: e\nsteps:\n- id: a\n  log:\n    message: ${steps.}\n", "a", 5, 21, 5, 21},
 	// Deleting a whole line, which is how a document stops parsing.
-	{"edition: v2026.3\nname: d\nsteps:\n- id: a\n  log:\n    message: hi\n", "", 3, 0, 4, 0},
+	{"edition: v2026.4\nname: d\nsteps:\n- id: a\n  log:\n    message: hi\n", "", 3, 0, 4, 0},
 	// An edit whose range runs backwards, which documentStore.change is
 	// documented as swapping rather than refusing.
-	{"edition: v2026.3\nname: b\nsteps:\n- id: a\n  log:\n    message: hi\n", "x", 5, 10, 2, 0},
+	{"edition: v2026.4\nname: b\nsteps:\n- id: a\n  log:\n    message: hi\n", "x", 5, 10, 2, 0},
 	// An edit past the end of the document in both coordinates, which is what
 	// the clamps in position.go exist for.
-	{"edition: v2026.3\nname: p\nsteps:\n- id: a\n  log:\n    message: hi\n", "y", 99, 99, 999, 999},
+	{"edition: v2026.4\nname: p\nsteps:\n- id: a\n  log:\n    message: hi\n", "y", 99, 99, 999, 999},
 	// Negative coordinates, which are not legal LSP and which an
 	// implementation still has to survive being sent.
-	{"edition: v2026.3\nname: n\nsteps:\n- id: a\n  log:\n    message: hi\n", "z", -1, -1, -5, -5},
+	{"edition: v2026.4\nname: n\nsteps:\n- id: a\n  log:\n    message: hi\n", "z", -1, -1, -5, -5},
 	// Non-ASCII on the line being edited, so that the UTF-16, code point and
 	// byte columns genuinely disagree — the confusion position.go's own header
 	// says goes unnoticed precisely because ASCII hides it. An emoji is two
 	// UTF-16 code units and four bytes; a combining accent is one of each but
 	// two code points.
-	{"edition: v2026.3\nname: u\nsteps:\n- id: a\n  log:\n    message: 🙂🙂 café\n", "!", 5, 14, 5, 16},
+	{"edition: v2026.4\nname: u\nsteps:\n- id: a\n  log:\n    message: 🙂🙂 café\n", "!", 5, 14, 5, 16},
 	// A document with an older edition, so the migration code actions have
 	// something to offer and the code-action path is not always the empty one.
 	{"edition: 2026.1\nname: old\nsteps:\n- id: a\n  echo:\n    message: hi\n- id: b\n  log:\n    message: ${a.result}\n", "x", 8, 0, 8, 0},
 	// Control flow, which is where the outline's scope tracking and the loop
 	// bindings live — the four names CLAUDE.md records the grammar binding
 	// bare, which completion and hover both have to resolve.
-	{"edition: v2026.3\nname: c\nsteps:\n- id: loop\n  for_each:\n    items: [1, 2]\n    as: n\n    steps:\n    - id: body\n      log:\n        message: ${n}\n", "n", 10, 20, 10, 21},
+	{"edition: v2026.4\nname: c\nsteps:\n- id: loop\n  for_each:\n    items: [1, 2]\n    as: n\n    steps:\n    - id: body\n      log:\n        message: ${n}\n", "n", 10, 20, 10, 21},
 	// A byte that is not UTF-8 ahead of a fence, on the line the fence is on.
 	// The parser replaces it with U+FFFD, three bytes for one, so the decoded
 	// text is longer than the source it came from and every position mapped
@@ -252,8 +252,8 @@ var lspFuzzSeeds = []lspFuzzSeed{
 	// where the backwards range this target found in CI came from. Left in the
 	// corpus as well as written out as a test in parse_test.go, so the fuzzer
 	// keeps starting from the shape and not only from the one instance.
-	{"edition: v2026.3\nname: r\nsteps:\n- id: a\n  log:\n    message: \\Lé\xff${😀}\\n \n", "", 0, 0, 0, 0},
+	{"edition: v2026.4\nname: r\nsteps:\n- id: a\n  log:\n    message: \\Lé\xff${😀}\\n \n", "", 0, 0, 0, 0},
 	// A `call:` step, which is the one shape whose resolution wants a path this
 	// document does not have — so what it exercises is the refusal, on purpose.
-	{"edition: v2026.3\nname: k\nsteps:\n- id: a\n  call: ./other.yaml\n  with:\n    x: 1\n", "y", 6, 7, 6, 8},
+	{"edition: v2026.4\nname: k\nsteps:\n- id: a\n  call: ./other.yaml\n  with:\n    x: 1\n", "y", 6, 7, 6, 8},
 }

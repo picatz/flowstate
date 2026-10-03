@@ -131,7 +131,7 @@ the fence.
 
 <!-- example: examples/plugins/codex/workflow.yaml -->
 ```yaml
-edition: v2026.3
+edition: v2026.4
 name: codex-exec
 description: Runs one bounded OpenAI Codex agentic turn with the "codex" plugin - a read-only question, no filesystem or network access granted to the agent.
 
@@ -172,7 +172,7 @@ Its test stubs the call, so CI proves the read-only sandbox without an API key:
 
 <!-- example: examples/plugins/codex/workflow.test.yaml -->
 ```yaml
-edition: v2026.3
+edition: v2026.4
 
 # Proves the example asks Codex for a read-only turn and surfaces its answer, in
 # CI with no network, no API key and without the codex plugin installed. The stub

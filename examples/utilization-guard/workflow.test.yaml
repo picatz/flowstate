@@ -5,7 +5,7 @@
 # computation failed" from "the computation succeeded, was narrated, and the
 # output contract refused to report the answer anyway" — the distinction this
 # file exists to make.
-edition: v2026.3
+edition: v2026.4
 defaults:
   workflow: ./workflow.yaml
   stubs:

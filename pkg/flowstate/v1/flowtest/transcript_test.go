@@ -36,7 +36,7 @@ func TestTranscriptAccountsForTheRun(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
-edition: v2026.3
+edition: v2026.4
 name: release
 inputs:
   risk:
@@ -133,7 +133,7 @@ func TestTranscriptRedactsTestDeclaredSecrets(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
-edition: v2026.3
+edition: v2026.4
 name: bearer-request
 steps:
   - id: call
@@ -176,7 +176,7 @@ func TestTranscriptRedactsSensitiveValues(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
-edition: v2026.3
+edition: v2026.4
 name: secretive
 inputs:
   token:
@@ -228,7 +228,7 @@ func TestTranscriptSuppressesAWaitTheRunNeverParkedOn(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
-edition: v2026.3
+edition: v2026.4
 name: early
 steps:
   - id: nap
@@ -272,7 +272,7 @@ func TestTranscriptRecordsARefusedDeliveryAsRefused(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
-edition: v2026.3
+edition: v2026.4
 name: policed
 signals:
   approve:
@@ -323,7 +323,7 @@ func TestTranscriptRedactsAScriptedSendersSubject(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
-edition: v2026.3
+edition: v2026.4
 name: approver-secret
 inputs:
   approver:
@@ -377,7 +377,7 @@ func TestTranscriptRedactsAPayloadKey(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
-edition: v2026.3
+edition: v2026.4
 name: keyed
 inputs:
   token:
@@ -427,7 +427,7 @@ func TestTranscriptDoesNotMistakeAnOutputNamedCaseForASwitch(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
-edition: v2026.3
+edition: v2026.4
 name: task-named-case
 steps:
   - id: lookup
@@ -467,7 +467,7 @@ func TestTranscriptDoesNotInventADefaultArm(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
-edition: v2026.3
+edition: v2026.4
 name: no-default
 inputs:
   kind:
@@ -511,7 +511,7 @@ func TestTranscriptKeepsTheArmOnAFailedSwitchBody(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
-edition: v2026.3
+edition: v2026.4
 name: fragile-route
 inputs:
   kind:
@@ -562,7 +562,7 @@ func TestTranscriptNamesACalleeSwitchsArm(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "callee.yaml"), `
-edition: v2026.3
+edition: v2026.4
 name: callee
 inputs:
   kind:
@@ -578,7 +578,7 @@ steps:
 outputs: {}
 `)
 	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
-edition: v2026.3
+edition: v2026.4
 name: caller
 steps:
   - id: delegate
@@ -615,7 +615,7 @@ func TestTranscriptTreatsAMixedKindIdCollisionAsAmbiguous(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
-edition: v2026.3
+edition: v2026.4
 name: colliding
 steps:
   - id: loop_a
@@ -674,11 +674,11 @@ func TestTranscriptRedactsASensitiveStructsKeys(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
-edition: v2026.3
+edition: v2026.4
 name: keyed-secret
 inputs:
   creds:
-    type: struct
+    type: map(string, dyn)
     required: true
     sensitive: true
 steps:
@@ -723,7 +723,7 @@ func TestTranscriptClearsAStaleStubAttribution(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
-edition: v2026.3
+edition: v2026.4
 name: retried
 steps:
   - id: flaky
@@ -776,7 +776,7 @@ func TestTranscriptSurvivesSeededExploration(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
-edition: v2026.3
+edition: v2026.4
 name: greet
 steps:
   - id: hello
@@ -816,7 +816,7 @@ func TestTranscriptSurvivesACallerInstalledScheduler(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
-edition: v2026.3
+edition: v2026.4
 name: greet
 steps:
   - id: hello
@@ -854,7 +854,7 @@ func TestTranscriptOfAFailingRunEndsOnTheFailure(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
-edition: v2026.3
+edition: v2026.4
 name: fragile
 steps:
   - id: first
@@ -920,7 +920,7 @@ func TestAnOutputMismatchRedactsAndBoundsWhatItPrints(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
-edition: v2026.3
+edition: v2026.4
 name: secretive-output
 inputs:
   token:
@@ -982,7 +982,7 @@ func TestTranscriptWithholdsACalleesSensitiveInput(t *testing.T) {
 	const secret = "hunter2-callee-only-secret"
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "child.yaml"), `
-edition: v2026.3
+edition: v2026.4
 name: child
 inputs:
   api_key:
@@ -994,7 +994,7 @@ steps:
     value: ${{"a":1}[inputs.api_key]}
 `)
 	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
-edition: v2026.3
+edition: v2026.4
 name: parent
 steps:
   - id: nested
@@ -1049,7 +1049,7 @@ func TestASeededRunWithholdsACalleesSensitiveInputAsTheRecordedOneDoes(t *testin
 	const secret = "hunter2-callee-only-secret"
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "child.yaml"), `
-edition: v2026.3
+edition: v2026.4
 name: child
 inputs:
   api_key:
@@ -1061,7 +1061,7 @@ steps:
     value: ${{"a":1}[inputs.api_key]}
 `)
 	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
-edition: v2026.3
+edition: v2026.4
 name: parent
 steps:
   - id: nested
@@ -1100,7 +1100,7 @@ func TestTranscriptWithholdsACalleesSensitiveInputReadBackByTheCaller(t *testing
 	const secret = "hunter2-callee-only-secret"
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "child.yaml"), `
-edition: v2026.3
+edition: v2026.4
 name: child
 inputs:
   api_key:
@@ -1115,7 +1115,7 @@ outputs:
     value: ${inputs.api_key}
 `)
 	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
-edition: v2026.3
+edition: v2026.4
 name: parent
 steps:
   - id: nested
@@ -1156,7 +1156,7 @@ func TestAReportUnderARootsLargeSensitiveInputStaysRedacted(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "child.yaml"), `
-edition: v2026.3
+edition: v2026.4
 name: child
 inputs:
   k:
@@ -1167,11 +1167,11 @@ steps:
     value: ${{"a":1}[inputs.k]}
 `)
 	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
-edition: v2026.3
+edition: v2026.4
 name: parent
 inputs:
   items:
-    type: list
+    type: list(dyn)
     required: true
     sensitive: true
 steps:
@@ -1215,11 +1215,11 @@ func TestAReportWithholdsWhatACalleesUnenumerableSetQuotes(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "child.yaml"), `
-edition: v2026.3
+edition: v2026.4
 name: child
 inputs:
   items:
-    type: list
+    type: list(dyn)
     required: true
     sensitive: true
 steps:
@@ -1231,7 +1231,7 @@ steps:
 		items = append(items, fmt.Sprintf("%q", fmt.Sprintf("calleesecret%04d", i)))
 	}
 	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
-edition: v2026.3
+edition: v2026.4
 name: parent
 steps:
   - id: nested
@@ -1266,11 +1266,11 @@ func TestAReportUnderAnUnenumerablePostureWithholdsAnUnshapedError(t *testing.T)
 
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
-edition: v2026.3
+edition: v2026.4
 name: parent
 inputs:
   items:
-    type: list
+    type: list(dyn)
     required: true
     sensitive: true
 steps:
@@ -1312,11 +1312,11 @@ func TestAReportPrintsOnlyTheStubsOwnDiagnosticRaw(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
-edition: v2026.3
+edition: v2026.4
 name: parent
 inputs:
   items:
-    type: list
+    type: list(dyn)
     required: true
     sensitive: true
 steps:
@@ -1371,11 +1371,11 @@ func TestAnUnstubbedTasksDiagnosticIsReadableUnderAnUnenumerablePosture(t *testi
 
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
-edition: v2026.3
+edition: v2026.4
 name: parent
 inputs:
   items:
-    type: list
+    type: list(dyn)
     required: true
     sensitive: true
 steps:
@@ -1416,7 +1416,7 @@ func TestAnUnmetErrorContainsWithholdsItsOwnExpectation(t *testing.T) {
 	const secret = "hunter2-callee-only-secret"
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "child.yaml"), `
-edition: v2026.3
+edition: v2026.4
 name: child
 inputs:
   api_key:
@@ -1428,7 +1428,7 @@ steps:
     value: ${{"a":1}[inputs.api_key]}
 `)
 	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
-edition: v2026.3
+edition: v2026.4
 name: parent
 steps:
   - id: nested
@@ -1471,11 +1471,11 @@ func TestAReportIsNotFooledByADiagnosticRepeatedAtTheEnd(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
-edition: v2026.3
+edition: v2026.4
 name: parent
 inputs:
   items:
-    type: list
+    type: list(dyn)
     required: true
     sensitive: true
 steps:
@@ -1539,11 +1539,11 @@ func TestAReportKeepsADiagnosticShapedInsideAnUnenumerableCallee(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "child.yaml"), `
-edition: v2026.3
+edition: v2026.4
 name: child
 inputs:
   items:
-    type: list
+    type: list(dyn)
     required: true
     sensitive: true
 steps:
@@ -1556,7 +1556,7 @@ steps:
 		items = append(items, fmt.Sprintf("%q", fmt.Sprintf("calleesecret%04d", i)))
 	}
 	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
-edition: v2026.3
+edition: v2026.4
 name: parent
 inputs:
   token:
@@ -1609,7 +1609,7 @@ func TestAReportWithholdsASensitiveRootInputTheBindRefused(t *testing.T) {
 	const secret = "hunter2-refused-root-secret"
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
-edition: v2026.3
+edition: v2026.4
 name: refused
 inputs:
   token:
@@ -1657,11 +1657,11 @@ func TestAReportWithholdsADiagnosticRaisedBeforeEverythingWasWithheld(t *testing
 
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "child.yaml"), `
-edition: v2026.3
+edition: v2026.4
 name: child
 inputs:
   items:
-    type: list
+    type: list(dyn)
     required: true
     sensitive: true
 steps:
@@ -1676,7 +1676,7 @@ outputs:
 		items = append(items, fmt.Sprintf("%q", fmt.Sprintf("calleesecret%04d", i)))
 	}
 	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
-edition: v2026.3
+edition: v2026.4
 name: parent
 steps:
   - id: nested
@@ -1723,11 +1723,11 @@ func TestAReportUnderAnUnenumerableRootWithholdsWhatItCanStillEnumerate(t *testi
 	}
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
-edition: v2026.3
+edition: v2026.4
 name: bulk
 inputs:
   bulk:
-    type: list
+    type: list(dyn)
     sensitive: true
     required: true
   token:
@@ -1783,15 +1783,15 @@ func TestAReportWithholdsInputsThatPassTheBoundOnlyTogether(t *testing.T) {
 	}
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
-edition: v2026.3
+edition: v2026.4
 name: two-lists
 inputs:
   alpha:
-    type: list
+    type: list(dyn)
     sensitive: true
     required: true
   beta:
-    type: list
+    type: list(dyn)
     sensitive: true
     required: true
 steps:
@@ -1838,11 +1838,11 @@ func TestAReportWithholdsOverlappingValuesWhole(t *testing.T) {
 	}
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
-edition: v2026.3
+edition: v2026.4
 name: overlap
 inputs:
   bulk:
-    type: list
+    type: list(dyn)
     sensitive: true
     required: true
   token:
@@ -1891,7 +1891,7 @@ func TestTranscriptWithholdsACalleesSensitiveOutput(t *testing.T) {
 	const secret = "hunter2-callee-output-secret"
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "child.yaml"), `
-edition: v2026.3
+edition: v2026.4
 name: child
 inputs:
   seed:
@@ -1906,7 +1906,7 @@ outputs:
     sensitive: true
 `)
 	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
-edition: v2026.3
+edition: v2026.4
 name: parent
 steps:
   - id: nested
@@ -1943,7 +1943,7 @@ func TestACaseErrorWithholdsASensitiveSubject(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
-edition: v2026.3
+edition: v2026.4
 name: sensitive-subject
 inputs:
   approver:

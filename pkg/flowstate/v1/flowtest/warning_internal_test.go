@@ -74,7 +74,7 @@ func TestSuiteWarningBudgetLeavesEveryWarnedCaseWarned(t *testing.T) {
 
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(dir+"/workflow.yaml", []byte(`
-edition: v2026.3
+edition: v2026.4
 name: ghost
 steps:
   - id: greet

@@ -52,7 +52,7 @@ vars:
   requester: "${'release-requester@' + vars.domain}"
   outsider: "${'someone-else@' + vars.domain}"
 
-edition: v2026.3
+edition: v2026.4
 defaults:
   # Every case ships the same build to the same environment and expects the
   # same approver; only two failure cases override a single field. Stated once

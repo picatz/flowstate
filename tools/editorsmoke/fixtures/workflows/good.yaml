@@ -1,6 +1,6 @@
 # A Flowfile with nothing wrong with it, so the smoke test can tell a real
 # diagnostic from a server that complains about everything.
-edition: v2026.3
+edition: v2026.4
 name: editorsmoke-good
 vars:
   greeting: hello world

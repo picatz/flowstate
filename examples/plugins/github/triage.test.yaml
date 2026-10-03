@@ -1,4 +1,4 @@
-edition: v2026.3
+edition: v2026.4
 
 # Proves the triage pass asks about the right pull request and reads the right
 # issue, in CI with no network and without the github plugin installed. The

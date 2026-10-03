@@ -23,7 +23,7 @@ import (
 // typedOutputSource builds a workflow whose single output declares outputs
 // verbatim, so each test differs by exactly the declaration under test.
 func typedOutputSource(declaration string) string {
-	return fmt.Sprintf(`edition: v2026.3
+	return fmt.Sprintf(`edition: v2026.4
 name: t
 inputs:
   release:
@@ -196,7 +196,7 @@ func TestTypedOutputReportsAKnowableMismatch(t *testing.T) {
 			name: "a map whose keys are not strings where a struct was declared",
 			declaration: `  release:
     value: '${{1: "value"}}'
-    type: struct
+    type: map(string, dyn)
 `,
 			contains: `output "release" is declared struct, but this expression is typed as a map with int keys; a struct is a map with string keys`,
 		},
@@ -208,7 +208,7 @@ func TestTypedOutputReportsAKnowableMismatch(t *testing.T) {
 			name: "a nested map whose keys are not strings where a struct was declared",
 			declaration: `  release:
     value: '${{"a": {true: "b"}}}'
-    type: struct
+    type: map(string, dyn)
 `,
 			contains: `output "release" is declared struct, but this expression is typed as a map with bool keys; a struct is a map with string keys`,
 		},
@@ -220,7 +220,7 @@ func TestTypedOutputReportsAKnowableMismatch(t *testing.T) {
 			name: "a list of maps whose keys are not strings where a list was declared",
 			declaration: `  release:
     value: '${[{1: "value"}]}'
-    type: list
+    type: list(dyn)
 `,
 			contains: `output "release" is declared list, but this expression is typed as a list holding a map with int keys; a list reads back as a plain array, whose maps have string keys`,
 		},
@@ -253,11 +253,11 @@ func TestTypedOutputReportsAKnowableMismatch(t *testing.T) {
 func TestTypedOutputStaysSilentWhereNothingIsKnowable(t *testing.T) {
 	t.Parallel()
 
-	source := `edition: v2026.3
+	source := `edition: v2026.4
 name: t
 inputs:
   config:
-    type: struct
+    type: map(string, dyn)
     default:
       host: a
 steps:
@@ -296,27 +296,27 @@ func TestTypedOutputAcceptsAContainerWhoseKeysCouldBeStrings(t *testing.T) {
 	for _, declaration := range []string{
 		`  release:
     value: '${{"host": "a"}}'
-    type: struct
+    type: map(string, dyn)
 `,
 		`  release:
     value: '${{"": "a"}}'
-    type: struct
+    type: map(string, dyn)
 `,
 		`  release:
     value: '${{}}'
-    type: struct
+    type: map(string, dyn)
 `,
 		`  release:
     value: '${{1: "a", "b": "c"}}'
-    type: struct
+    type: map(string, dyn)
 `,
 		`  release:
     value: '${[{"host": "a"}]}'
-    type: list
+    type: list(dyn)
 `,
 		`  release:
     value: '${[]}'
-    type: list
+    type: list(dyn)
 `,
 	} {
 		t.Run(declaration, func(t *testing.T) {

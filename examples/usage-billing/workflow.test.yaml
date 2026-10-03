@@ -2,7 +2,7 @@
 # overage is an exact multiple of the block size, and one whose overage is a
 # partial block — the case that proves `math.ceil` rounds up rather than
 # truncating the way plain int division would.
-edition: v2026.3
+edition: v2026.4
 tests:
   - name: a caller under quota owes nothing
     workflow: ./workflow.yaml

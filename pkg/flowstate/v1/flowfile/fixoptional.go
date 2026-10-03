@@ -75,7 +75,7 @@ import (
 // writes it has written a valid file, and `flow fix` does not edit valid current
 // files to taste. The rewrite runs when the document is on its way into the
 // current edition (an older known edition, or no marker at all), which is the
-// same run that stamps `edition: v2026.3`. That is the decision recorded on
+// same run that stamps `edition: v2026.4`. That is the decision recorded on
 // issue #412: the edition carries the extension, and the migrator carries the
 // rewrite.
 

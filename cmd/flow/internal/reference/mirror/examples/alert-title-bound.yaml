@@ -34,7 +34,7 @@
 #
 #     flow run local examples/alert-title-bound/workflow.yaml \
 #       --input page_title="this on-call title is deliberately far too long for any pager's one-line display to show it"
-edition: v2026.3
+edition: v2026.4
 name: alert-title-bound
 inputs:
   page_title:

@@ -15,7 +15,7 @@ import (
 //
 // It is the file from docs/DSL.md's design note, which is what makes this a test of
 // the contract rather than of whatever the parser happens to accept.
-const declaringSource = `edition: v2026.3
+const declaringSource = `edition: v2026.4
 name: deploy
 inputs:
   region:
@@ -276,7 +276,7 @@ inputs:
 			src: `
 inputs:
   records:
-    type: list
+    type: list(dyn)
     min_items: 10001
 `,
 			want: "min_items (10001) is greater than 10000",
@@ -287,7 +287,7 @@ inputs:
 			src: `
 inputs:
   records:
-    type: list
+    type: list(dyn)
     default: [` + strings.Repeat("0, ", 10_000) + `0]
 `,
 			name: "a literal default over the server-wide element cap is reported",

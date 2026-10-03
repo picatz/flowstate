@@ -1,4 +1,4 @@
-edition: v2026.3
+edition: v2026.4
 name: approval-gate
 description: Waits for a human to approve a deploy, then acts on what an attested sender actually sent — authorization lives in `signals:`, not in this file's own `if:`.
 inputs:

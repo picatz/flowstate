@@ -818,7 +818,7 @@ func TestMCPServeLeaksNoTokenMaterial(t *testing.T) {
 
 	result, err := session.CallTool(t.Context(), &mcp.CallToolParams{
 		Name:      flowmcp.ToolName("Validate"),
-		Arguments: map[string]any{"source": "edition: v2026.3\nname: demo\nsteps:\n- id: hi\n  log:\n    message: hello\n"},
+		Arguments: map[string]any{"source": "edition: v2026.4\nname: demo\nsteps:\n- id: hi\n  log:\n    message: hello\n"},
 	})
 	require.NoError(t, err)
 
@@ -1152,7 +1152,7 @@ func TestMCPServeTestToolLeavesNoTaskInTheGlobalRegistry(t *testing.T) {
 	_, err := session.CallTool(t.Context(), &mcp.CallToolParams{
 		Name: flowmcp.TestToolName,
 		Arguments: map[string]any{
-			"workflow": "edition: v2026.3\nname: demo\nsteps:\n- id: reach\n  " + invented + ":\n    anything: 1\n",
+			"workflow": "edition: v2026.4\nname: demo\nsteps:\n- id: reach\n  " + invented + ":\n    anything: 1\n",
 			"tests":    "tests:\n  - name: it runs\n    stubs:\n      - task: " + invented + "\n        returns: {}\n    expect:\n      failed: false\n",
 		},
 	})
@@ -1259,7 +1259,7 @@ func TestMCPServeBoundsAHangingTestCall(t *testing.T) {
 		_, _ = session.CallTool(t.Context(), &mcp.CallToolParams{
 			Name: flowmcp.TestToolName,
 			Arguments: map[string]any{
-				"workflow": "edition: v2026.3\nname: demo\nsteps:\n- id: gate\n  wait_for_signal:\n    name: approve\n",
+				"workflow": "edition: v2026.4\nname: demo\nsteps:\n- id: gate\n  wait_for_signal:\n    name: approve\n",
 				"tests":    "tests:\n  - name: waits forever\n    expect:\n      failed: false\n",
 			},
 		})
@@ -1372,7 +1372,7 @@ func TestMCPServeTimedOutTestCallIsNotAPassingVerdict(t *testing.T) {
 	result, err := session.CallTool(t.Context(), &mcp.CallToolParams{
 		Name: flowmcp.TestToolName,
 		Arguments: map[string]any{
-			"workflow": "edition: v2026.3\nname: demo\nsteps:\n- id: gate\n  wait_for_signal:\n    name: approve\n",
+			"workflow": "edition: v2026.4\nname: demo\nsteps:\n- id: gate\n  wait_for_signal:\n    name: approve\n",
 			// The case that would otherwise be satisfied by the deadline.
 			"tests": "tests:\n  - name: expects a failure\n    expect:\n      failed: true\n",
 		},
@@ -1521,7 +1521,7 @@ func TestMCPServeDebugToolTakesTheExclusiveRegistryLock(t *testing.T) {
 		_, _ = session.CallTool(t.Context(), &mcp.CallToolParams{
 			Name: flowmcp.DebugToolName,
 			Arguments: map[string]any{
-				"workflow": "edition: v2026.3\nname: demo\nsteps:\n- id: hi\n  log:\n    message: hello\n",
+				"workflow": "edition: v2026.4\nname: demo\nsteps:\n- id: hi\n  log:\n    message: hello\n",
 				"tests":    "tests:\n  - name: it runs\n    stubs:\n      - task: log\n        returns: {}\n    expect:\n      ran: [hi]\n",
 				"commands": []any{"continue"},
 			},

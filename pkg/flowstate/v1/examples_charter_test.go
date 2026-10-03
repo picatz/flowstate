@@ -707,7 +707,7 @@ func TestWalkConstructsSeesNestedConstructs(t *testing.T) {
 	t.Parallel()
 
 	wf, _, err := flowfile.Parse([]byte(`
-edition: v2026.3
+edition: v2026.4
 name: nested
 steps:
   - id: outer

@@ -58,7 +58,7 @@ func (a debugAnswer) tonesOf(substr string) []string {
 	return tones
 }
 
-const debugWorkflow = `edition: v2026.3
+const debugWorkflow = `edition: v2026.4
 name: debugged
 inputs:
   release:
@@ -573,7 +573,7 @@ func TestTheDebugToolWithholdsASensitiveInput(t *testing.T) {
 	session := connectMCP(t, defaultLocalRunPosture())
 
 	_, answer := callDebug(t, session, map[string]any{
-		"workflow": `edition: v2026.3
+		"workflow": `edition: v2026.4
 name: secretive
 inputs:
   token:
@@ -628,7 +628,7 @@ func TestTheDebugToolHonoursRequestCancellation(t *testing.T) {
 		result, err := debugToolHandler(0)(ctx, &mcp.CallToolRequest{
 			Params: &mcp.CallToolParamsRaw{
 				Arguments: json.RawMessage(`{
-					"workflow": "edition: v2026.3\nname: parked\nsteps:\n- id: gate\n  wait_for_signal:\n    name: approve\n",
+					"workflow": "edition: v2026.4\nname: parked\nsteps:\n- id: gate\n  wait_for_signal:\n    name: approve\n",
 					"tests": "tests:\n  - name: it waits\n    expect:\n      failed: false\n",
 					"commands": ["continue"]
 				}`),
@@ -719,7 +719,7 @@ func TestQuitCannotSatisfyAnExpectedFailure(t *testing.T) {
 	session := connectMCP(t, defaultLocalRunPosture())
 
 	result, answer := callDebug(t, session, map[string]any{
-		"workflow": `edition: v2026.3
+		"workflow": `edition: v2026.4
 name: eventually-fails
 steps:
   - id: first
@@ -939,7 +939,7 @@ func TestTheDebugToolDrivesABranchingWorkflow(t *testing.T) {
 	session := connectMCP(t, defaultLocalRunPosture())
 
 	result, answer := callDebug(t, session, map[string]any{
-		"workflow": `edition: v2026.3
+		"workflow": `edition: v2026.4
 name: branching
 steps:
   - id: fan
@@ -987,7 +987,7 @@ func TestTheDebugToolRefusesAConditionNothingCanBind(t *testing.T) {
 	session := connectMCP(t, defaultLocalRunPosture())
 
 	result, answer := callDebug(t, session, map[string]any{
-		"workflow": `edition: v2026.3
+		"workflow": `edition: v2026.4
 name: orders
 steps:
   - id: orders

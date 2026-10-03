@@ -25,7 +25,7 @@ func TestADebuggedCaseReportsItsRunsReturn(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = session.Close() })
 
-	workflow := `edition: v2026.3
+	workflow := `edition: v2026.4
 name: orders
 steps:
   - id: orders
@@ -66,7 +66,7 @@ func TestTheAutopsyWithholdsACalleesSensitiveInput(t *testing.T) {
 	write := func(name, body string) {
 		require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600))
 	}
-	write("child.yaml", `edition: v2026.3
+	write("child.yaml", `edition: v2026.4
 name: child
 inputs:
   api_key:
@@ -80,7 +80,7 @@ outputs:
   key:
     value: ${inputs.api_key}
 `)
-	write("workflow.yaml", `edition: v2026.3
+	write("workflow.yaml", `edition: v2026.4
 name: parent
 steps:
   - id: nested

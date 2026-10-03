@@ -1,4 +1,4 @@
-edition: v2026.3
+edition: v2026.4
 name: list-comprehensions
 description: Classifies a batch of health checks as healthy, degraded, or down by asking the list itself — `all`, `exists`, `filter`, `map` — instead of a `for_each` that counts failures by hand.
 # `all` and `exists` answer "is every element like this" and "is any element
@@ -12,7 +12,7 @@ description: Classifies a batch of health checks as healthy, degraded, or down b
 #     --input 'checks=[{"host":"web-1","healthy":true},{"host":"web-2","healthy":false}]'
 inputs:
   checks:
-    type: list
+    type: list(dyn)
     required: true
     description: one entry per host, each a mapping with `host` and `healthy`
     example:

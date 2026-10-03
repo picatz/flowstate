@@ -42,7 +42,7 @@ func writeVerifyWorkflow(t *testing.T) string {
 
 	dir := t.TempDir()
 	writeFile(t, dir+"/workflow.yaml", `
-edition: v2026.3
+edition: v2026.4
 name: verified
 inputs:
   order_id:
@@ -209,7 +209,7 @@ func TestAPartialKeyBindingIsRefused(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, dir+"/workflow.yaml", `
-edition: v2026.3
+edition: v2026.4
 name: doubly-verified
 inputs:
   order_id:
@@ -268,7 +268,7 @@ func TestAStripeFixturePinsItsTimestampToTheEpoch(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, dir+"/workflow.yaml", `
-edition: v2026.3
+edition: v2026.4
 name: stripe-verified
 inputs:
   order_id:

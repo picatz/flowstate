@@ -38,7 +38,7 @@
 # reports a manual start, because that is what it is: a person ran it. `flow run
 # local` is never gated by the `manual:` block — the author's machine is not a
 # deployment — which is what keeps a narrowed workflow developable at all.
-edition: v2026.3
+edition: v2026.4
 name: trigger-context
 inputs:
   order_id:

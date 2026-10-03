@@ -16,7 +16,7 @@ import (
 // fix is to quote the whole scalar.
 
 // ternaryFile is the issue's own file: a plain-scalar ternary in a `value:`.
-const ternaryFile = `edition: v2026.3
+const ternaryFile = `edition: v2026.4
 name: tern
 inputs:
   priority:
@@ -84,7 +84,7 @@ func TestAnUnquotedTernaryIsNamedAndQuoted(t *testing.T) {
 func TestTheQuotingEditKeepsACommentOutsideAndDoublesAQuoteInside(t *testing.T) {
 	t.Parallel()
 
-	src := "edition: v2026.3\nname: t\nsteps:\n  - id: a\n    value: ${true ? 'yes' : 'no'} # decided\n"
+	src := "edition: v2026.4\nname: t\nsteps:\n  - id: a\n    value: ${true ? 'yes' : 'no'} # decided\n"
 	_, _, err := flowfile.Parse([]byte(src))
 	require.Error(t, err)
 	var ds flowfile.Diagnostics
@@ -101,7 +101,7 @@ func TestTheQuotingEditKeepsACommentOutsideAndDoublesAQuoteInside(t *testing.T) 
 	// the fence, which is not the shape the quoting repairs: goccy's own
 	// sentence stands and no edit is offered, rather than an edit that would
 	// have moved `#tail` outside the quotes.
-	src = "edition: v2026.3\nname: t\nsteps:\n  - id: a\n    value: ${true ? 'a' : 'b'}#tail\n"
+	src = "edition: v2026.4\nname: t\nsteps:\n  - id: a\n    value: ${true ? 'a' : 'b'}#tail\n"
 	_, _, err = flowfile.Parse([]byte(src))
 	require.Error(t, err)
 	require.True(t, asDiagnostics(err, &ds))
@@ -118,9 +118,9 @@ func TestOtherMappingValueErrorsKeepTheParsersSentence(t *testing.T) {
 	t.Parallel()
 
 	for name, src := range map[string]string{
-		"a plain second key":    "edition: v2026.3\nname: t\nsteps:\n  - id: a\n    value: b: c\n",
-		"a fence before a key":  "edition: v2026.3\nname: t\nsteps:\n  - id: a\n    value: ${x} b: c\n",
-		"a fence with no colon": "edition: v2026.3\nname: t\nsteps:\n  - id: a\n    value: ${x} y: c\n",
+		"a plain second key":    "edition: v2026.4\nname: t\nsteps:\n  - id: a\n    value: b: c\n",
+		"a fence before a key":  "edition: v2026.4\nname: t\nsteps:\n  - id: a\n    value: ${x} b: c\n",
+		"a fence with no colon": "edition: v2026.4\nname: t\nsteps:\n  - id: a\n    value: ${x} y: c\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, _, err := flowfile.Parse([]byte(src))
@@ -140,7 +140,7 @@ func TestAQuotedTernaryIsOrdinary(t *testing.T) {
 	t.Parallel()
 
 	for _, quoted := range []string{`'${true ? "a" : "b"}'`, `"${true ? 'a' : 'b'}"`} {
-		src := "edition: v2026.3\nname: t\nsteps:\n  - id: a\n    value: " + quoted + "\n"
+		src := "edition: v2026.4\nname: t\nsteps:\n  - id: a\n    value: " + quoted + "\n"
 		_, _, err := flowfile.Parse([]byte(src))
 		require.NoError(t, err, quoted)
 	}

@@ -1,4 +1,4 @@
-edition: v2026.3
+edition: v2026.4
 name: jose-verified-callback
 description: Turns a token a run received into claims it can act on - verifying it against the issuers an operator trusts, then deciding with CEL rather than with the token's own say-so.
 # The shape this task is for: a run holds a token somebody sent it - a callback

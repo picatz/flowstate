@@ -84,7 +84,7 @@ func TestSuggestedRunArgumentsRedactSpacedInputNames(t *testing.T) {
 
 // takesInputs is a workflow declaring one of every shape an argument has: required,
 // defaulted, and each type the coercion has to tell apart.
-const takesInputs = `edition: v2026.3
+const takesInputs = `edition: v2026.4
 name: takes-inputs
 
 inputs:
@@ -99,13 +99,13 @@ inputs:
     type: int
     default: 2
   ratio:
-    type: float
+    type: double
     default: 0.5
   dry_run:
     type: bool
     default: false
   targets:
-    type: list
+    type: list(dyn)
     default: [alpha]
 
 outputs:
@@ -365,7 +365,7 @@ func TestDeclaredOutputsAreReportedToAPerson(t *testing.T) {
 // TestAWorkflowWithNoDeclaredOutputsSaysNothing: an "outputs" heading over nothing
 // would read as a run that failed to produce what it promised.
 func TestAWorkflowWithNoDeclaredOutputsSaysNothing(t *testing.T) {
-	_, stderr, err := runLocal(t, `edition: v2026.3
+	_, stderr, err := runLocal(t, `edition: v2026.4
 name: plain
 steps:
   - id: greet

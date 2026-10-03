@@ -58,7 +58,7 @@ func startRetryRun(t *testing.T) (*Session, func(after uint64) *v1.DebugSnapshot
 
 	dir := t.TempDir()
 	path := filepath.Join(dir, "main.yaml")
-	require.NoError(t, os.WriteFile(path, []byte(`edition: v2026.3
+	require.NoError(t, os.WriteFile(path, []byte(`edition: v2026.4
 name: retry
 steps:
   - id: one

@@ -1,7 +1,7 @@
 # Three cases, one per classification, so `all`/`exists` are proven to answer
 # each of the three ways the checks can come back rather than just the two
 # ends of the range.
-edition: v2026.3
+edition: v2026.4
 tests:
   - name: every check passes and the report says so with no failing hosts
     workflow: ./workflow.yaml

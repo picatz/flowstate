@@ -153,7 +153,7 @@ func TestACatalogChecksAPluginTasksInputsAgainstItsDescriptors(t *testing.T) {
 	catalog := pluginCatalogFor(t, bin)
 
 	path := filepath.Join(t.TempDir(), "typo.yaml")
-	require.NoError(t, os.WriteFile(path, []byte(`edition: v2026.3
+	require.NoError(t, os.WriteFile(path, []byte(`edition: v2026.4
 name: greet-with-a-typo
 steps:
   - id: hi
@@ -186,7 +186,7 @@ func TestACatalogAnswersAPluginsRequirementBlock(t *testing.T) {
 	dir := t.TempDir()
 
 	ok := filepath.Join(dir, "fine.yaml")
-	require.NoError(t, os.WriteFile(ok, []byte(`edition: v2026.3
+	require.NoError(t, os.WriteFile(ok, []byte(`edition: v2026.4
 name: needs-the-plugin-it-has
 plugins:
   example: v0.1.0
@@ -201,7 +201,7 @@ steps:
 	require.NoError(t, err, "a requirement the catalog satisfies was refused:\n%s", output)
 
 	tooNew := filepath.Join(dir, "too-new.yaml")
-	require.NoError(t, os.WriteFile(tooNew, []byte(`edition: v2026.3
+	require.NoError(t, os.WriteFile(tooNew, []byte(`edition: v2026.4
 name: needs-a-newer-plugin
 plugins:
   example: v99.0.0
@@ -269,7 +269,7 @@ func TestACatalogAndAPluginDirAreRefusedTogether(t *testing.T) {
 	dir := t.TempDir()
 
 	path := filepath.Join(dir, "workflow.yaml")
-	require.NoError(t, os.WriteFile(path, []byte(`edition: v2026.3
+	require.NoError(t, os.WriteFile(path, []byte(`edition: v2026.4
 name: fine
 steps:
   - id: hi
@@ -468,7 +468,7 @@ func TestACatalogLosesToNothingItWasNotPointedAt(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "plugins.lock.json"), saved, 0o600))
 
 	path := filepath.Join(dir, "workflow.yaml")
-	require.NoError(t, os.WriteFile(path, []byte(`edition: v2026.3
+	require.NoError(t, os.WriteFile(path, []byte(`edition: v2026.4
 name: greet
 steps:
   - id: hi

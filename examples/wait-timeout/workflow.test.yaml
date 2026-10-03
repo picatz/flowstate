@@ -6,7 +6,7 @@
 # `outcome` is the assertion that makes it data rather than a log line: `lapsed`
 # against `answered`, computed from `timed_out`, which the engine always
 # observes and which is therefore always there to branch on.
-edition: v2026.3
+edition: v2026.4
 tests:
   - name: nobody answers, the gate lapses, and the run carries on down the other branch
     workflow: ./workflow.yaml

@@ -64,7 +64,7 @@
 # interesting claim is what happens when a value crosses between them.
 # `workflow.test.yaml` beside this file proves every path of it in CI with no
 # plugin, no model, no forge and no network, by stubbing at the task boundary.
-edition: v2026.3
+edition: v2026.4
 name: agentic-fix
 description: Gives an agent one bounded, durable attempt at making a failing test suite pass — a real commit, verified at the sha it produced — and hands the work to a person when that attempt does not fix it.
 # The floor each plugin has to meet, resolved against what the deployment

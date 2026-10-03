@@ -236,7 +236,7 @@ A check owing a mechanical replacement and having none owes silence instead.
 The positive shape, compiled by this document's own test:
 
 ```yaml
-edition: v2026.3
+edition: v2026.4
 name: refund-dispatch
 description: Settle a refund on the outcome a reviewer sent.
 inputs:

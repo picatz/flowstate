@@ -30,7 +30,7 @@ func diffFixtures(t *testing.T, oldSrc, newSrc string) flowfile.Diagnostics {
 // which is the point: a break is a shrunk contract, not a broken file.
 const fixtureStep = "steps:\n  - id: noop\n    log:\n      message: done\n"
 
-func fixtureHeader() string { return "edition: v2026.3\nname: demo\n" }
+func fixtureHeader() string { return "edition: v2026.4\nname: demo\n" }
 
 // TestBreakingRequiredInputAdded is the first break class: an input a caller must
 // now supply. The negative direction is asserted beside it: an added *optional*
@@ -436,8 +436,8 @@ func gitInitRepoFiles(t *testing.T, files map[string]string) string {
 // differ per directory, so this exercises only the path scoping, not the
 // same-name refusal.
 func TestBreakingFromSubdirectory(t *testing.T) {
-	here := "edition: v2026.3\nname: here\n" + fixtureStep
-	elsewhere := "edition: v2026.3\nname: elsewhere\n" + fixtureStep
+	here := "edition: v2026.4\nname: here\n" + fixtureStep
+	elsewhere := "edition: v2026.4\nname: elsewhere\n" + fixtureStep
 	dir := gitInitRepoFiles(t, map[string]string{
 		"svc/a/workflow.yaml": here,
 		"svc/b/workflow.yaml": elsewhere,
@@ -457,7 +457,7 @@ func TestBreakingFromSubdirectory(t *testing.T) {
 // own path at the ref. Unchanged, neither reports; with an input renamed in one
 // of them, the break is reported at that file and at that file only.
 func TestBreakingSameNameInTwoDirectoriesIsTwoWorkflows(t *testing.T) {
-	same := "edition: v2026.3\nname: notify\ninputs:\n  text:\n    type: string\n" + fixtureStep
+	same := "edition: v2026.4\nname: notify\ninputs:\n  text:\n    type: string\n" + fixtureStep
 	dir := gitInitRepoFiles(t, map[string]string{
 		"teams/payments/shared/notify.yaml":           same,
 		"teams/payments/workflows/shared/notify.yaml": same,
@@ -466,7 +466,7 @@ func TestBreakingSameNameInTwoDirectoriesIsTwoWorkflows(t *testing.T) {
 	out, err := runBreakingCLI(t, dir, "--against", "HEAD", ".")
 	require.NoError(t, err, "two unchanged workflows sharing a name must report no break, got:\n%s", out)
 
-	renamed := "edition: v2026.3\nname: notify\ninputs:\n  message:\n    type: string\n" + fixtureStep
+	renamed := "edition: v2026.4\nname: notify\ninputs:\n  message:\n    type: string\n" + fixtureStep
 	require.NoError(t, os.WriteFile(
 		filepath.Join(dir, "teams", "payments", "workflows", "shared", "notify.yaml"), []byte(renamed), 0o644))
 	out, err = runBreakingCLI(t, dir, "--against", "HEAD", ".")
@@ -571,7 +571,7 @@ func TestBreakingContainerElementTypeNarrowed(t *testing.T) {
 		return fixtureHeader() + "inputs:\n  ids:\n    type: " + typeText + "\n" + fixtureStep
 	}
 
-	ds := diffFixtures(t, list("list"), list("list(string)"))
+	ds := diffFixtures(t, list("list(dyn)"), list("list(string)"))
 	require.Len(t, ds, 1)
 	require.Contains(t, ds[0].Message, `input "ids" narrowed its type from list(dyn) to list(string)`)
 	require.Positive(t, ds[0].Line, "the break should be positioned at the type")
@@ -581,7 +581,7 @@ func TestBreakingContainerElementTypeNarrowed(t *testing.T) {
 	require.Contains(t, ds[0].Message, "narrowed its type")
 
 	// Widening what an input accepts, and leaving it unchanged, are silent.
-	require.Empty(t, diffFixtures(t, list("list(string)"), list("list")))
+	require.Empty(t, diffFixtures(t, list("list(string)"), list("list(dyn)")))
 	require.Empty(t, diffFixtures(t, list("list(string)"), list("list(string)")))
 }
 
@@ -593,9 +593,9 @@ func TestBreakingContainerOutputWeakened(t *testing.T) {
 		return fixtureHeader() + fixtureStep + "outputs:\n  names:\n    type: " + typeText + "\n    value: ${[\"a\"]}\n"
 	}
 
-	ds := diffFixtures(t, out("list(string)"), out("list"))
+	ds := diffFixtures(t, out("list(string)"), out("list(dyn)"))
 	require.Len(t, ds, 1)
 	require.Contains(t, ds[0].Message, `output "names" weakened its type from list(string) to list(dyn)`)
 
-	require.Empty(t, diffFixtures(t, out("list"), out("list(string)")))
+	require.Empty(t, diffFixtures(t, out("list(dyn)"), out("list(string)")))
 }

@@ -25,7 +25,7 @@ import (
 // sensitiveSubjectWorkflow gates a signal on a subject read from a
 // `sensitive:` input, so an argument that is not `<issuer>#<subject>` is
 // refused before the run starts, in a sentence quoting what it resolved to.
-const sensitiveSubjectWorkflow = `edition: v2026.3
+const sensitiveSubjectWorkflow = `edition: v2026.4
 name: sensitive-subject
 inputs:
   approver:
@@ -204,7 +204,7 @@ func TestAnUnreachableServerIsNamedWhateverASensitiveInputHolds(t *testing.T) {
 	address := dead.URL
 	dead.Close()
 
-	const shortSensitive = `edition: v2026.3
+	const shortSensitive = `edition: v2026.4
 name: short-sensitive
 inputs:
   pin:

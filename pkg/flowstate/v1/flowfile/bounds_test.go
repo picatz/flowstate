@@ -60,7 +60,7 @@ func TestCallPinsRefusesABillionLaughsAtTheNodeBudget(t *testing.T) {
 	t.Parallel()
 
 	var b strings.Builder
-	b.WriteString("edition: v2026.3\nname: boom\n")
+	b.WriteString("edition: v2026.4\nname: boom\n")
 	b.WriteString("l0: &l0 \"lol\"\n")
 	for i := 1; i <= 9; i++ {
 		level := strconv.Itoa(i)
@@ -104,7 +104,7 @@ func TestCallPinsStopsFollowingAnAliasChainAtTheDepthBound(t *testing.T) {
 	// the spelling a hostile document would have to use too.
 	chain := func(links int) []byte {
 		var b strings.Builder
-		b.WriteString("edition: v2026.3\nname: chain\na0: &a0 sha256:abc\n")
+		b.WriteString("edition: v2026.4\nname: chain\na0: &a0 sha256:abc\n")
 		for i := 1; i <= links; i++ {
 			b.WriteString("a" + strconv.Itoa(i) + ": &a" + strconv.Itoa(i) + "\n  *a" + strconv.Itoa(i-1) + "\n")
 		}
@@ -142,7 +142,7 @@ func TestCallPinsStopsFollowingAnAliasChainAtTheDepthBound(t *testing.T) {
 // refuses it on sight, which is a different bound answering a different question.
 func valueBudgetDocument(n int) []byte {
 	var b strings.Builder
-	b.WriteString("edition: v2026.3\nname: budget\nsteps:\n  - id: a\n    value: [")
+	b.WriteString("edition: v2026.4\nname: budget\nsteps:\n  - id: a\n    value: [")
 	for i := range n {
 		if i > 0 {
 			b.WriteByte(',')
@@ -218,14 +218,14 @@ func TestNothingMayBeCalledSteps(t *testing.T) {
 	t.Parallel()
 
 	tests := map[string]string{
-		"a top-level step": `edition: v2026.3
+		"a top-level step": `edition: v2026.4
 name: t
 steps:
   - id: steps
     log:
       message: hi
 `,
-		"a step inside a loop body": `edition: v2026.3
+		"a step inside a loop body": `edition: v2026.4
 name: t
 steps:
   - id: a
@@ -236,7 +236,7 @@ steps:
           log:
             message: hi
 `,
-		"a step inside a parallel branch": `edition: v2026.3
+		"a step inside a parallel branch": `edition: v2026.4
 name: t
 steps:
   - id: a
@@ -249,7 +249,7 @@ steps:
 		// The other route into a body's scope. A bound name wins over the scope it
 		// is bound into, so this hides every step from exactly the place rooted
 		// references are written.
-		"a loop iterator": `edition: v2026.3
+		"a loop iterator": `edition: v2026.4
 name: t
 steps:
   - id: a
@@ -285,7 +285,7 @@ steps:
 func TestAStepCalledStepsWouldHaveFailedAtRunTime(t *testing.T) {
 	t.Parallel()
 
-	src := `edition: v2026.3
+	src := `edition: v2026.4
 name: shadowed-root
 steps:
   - id: steps

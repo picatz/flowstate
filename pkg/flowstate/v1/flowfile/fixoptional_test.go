@@ -40,7 +40,7 @@ outputs:
     value: '${has(steps.review.payload.days) ? steps.review.payload.days : -1}'
 `
 
-	want := `edition: v2026.3
+	want := `edition: v2026.4
 name: guarded
 steps:
   - id: gate

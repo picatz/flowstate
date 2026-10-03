@@ -17,7 +17,7 @@ func TestRunLocalRefusesWhatTheServerRefusesAtSubmit(t *testing.T) {
 	t.Parallel()
 
 	var b strings.Builder
-	b.WriteString("edition: v2026.3\nname: chain\nsteps:\n")
+	b.WriteString("edition: v2026.4\nname: chain\nsteps:\n")
 	for i := range 101 {
 		fmt.Fprintf(&b, "  - id: s%d\n    log:\n      message: hi\n", i)
 	}

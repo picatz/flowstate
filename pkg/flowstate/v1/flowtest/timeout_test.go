@@ -32,7 +32,7 @@ import (
 // or an idle one alike.
 func TestRunCaseBoundsAnUnscriptedSignalWait(t *testing.T) {
 	const source = `
-edition: v2026.3
+edition: v2026.4
 name: missing-signal
 steps:
   - id: before
@@ -69,7 +69,7 @@ steps:
 
 func TestRunCaseDoesNotMisreportAnotherDeadlineAsItsWallLimit(t *testing.T) {
 	const source = `
-edition: v2026.3
+edition: v2026.4
 name: caller-deadline
 steps:
   - id: approval

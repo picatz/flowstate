@@ -1,6 +1,6 @@
 # `values:` is enforced once, at submit, the same moment `type:` is — so most
 # of what is worth demonstrating is the refusal, not the run.
-edition: v2026.3
+edition: v2026.4
 defaults:
   workflow: ./workflow.yaml
   stubs:

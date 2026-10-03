@@ -24,7 +24,7 @@ func writeFile(t *testing.T, dir, name, content string) string {
 	return path
 }
 
-const simpleCalleeSource = `edition: v2026.3
+const simpleCalleeSource = `edition: v2026.4
 name: callee
 inputs:
   tenant:
@@ -77,7 +77,7 @@ func TestValidateUsesTheInheritedProfileForCalleeConstraints(t *testing.T) {
 func TestCallCompiles(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "callee.yaml", simpleCalleeSource)
-	caller := writeFile(t, dir, "caller.yaml", `edition: v2026.3
+	caller := writeFile(t, dir, "caller.yaml", `edition: v2026.4
 name: caller
 steps:
   - id: provision
@@ -104,7 +104,7 @@ steps:
 func TestCallMissingRequiredInput(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "callee.yaml", simpleCalleeSource)
-	caller := writeFile(t, dir, "caller.yaml", `edition: v2026.3
+	caller := writeFile(t, dir, "caller.yaml", `edition: v2026.4
 name: caller
 steps:
   - id: provision
@@ -121,7 +121,7 @@ steps:
 func TestCallUndeclaredArgument(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "callee.yaml", simpleCalleeSource)
-	caller := writeFile(t, dir, "caller.yaml", `edition: v2026.3
+	caller := writeFile(t, dir, "caller.yaml", `edition: v2026.4
 name: caller
 steps:
   - id: provision
@@ -142,7 +142,7 @@ steps:
 // consuming a path an author wrote.
 func TestCallRefusesAbsolutePath(t *testing.T) {
 	dir := t.TempDir()
-	caller := writeFile(t, dir, "caller.yaml", `edition: v2026.3
+	caller := writeFile(t, dir, "caller.yaml", `edition: v2026.4
 name: caller
 steps:
   - id: provision
@@ -159,7 +159,7 @@ func TestCallRefusesEscapingUpward(t *testing.T) {
 	sub := filepath.Join(dir, "sub")
 	require.NoError(t, os.MkdirAll(sub, 0o755))
 	writeFile(t, dir, "outside.yaml", simpleCalleeSource)
-	caller := writeFile(t, dir, "sub/caller.yaml", `edition: v2026.3
+	caller := writeFile(t, dir, "sub/caller.yaml", `edition: v2026.4
 name: caller
 steps:
   - id: provision
@@ -213,7 +213,7 @@ func TestCallArgumentTypeChecked(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			caller := writeFile(t, dir, "caller-"+tt.name+".yaml", `edition: v2026.3
+			caller := writeFile(t, dir, "caller-"+tt.name+".yaml", `edition: v2026.4
 name: caller
 steps:
   - id: provision
@@ -242,7 +242,7 @@ steps:
 // that was too narrow rather than the whole check.
 func TestCallEnumArgumentType(t *testing.T) {
 	dir := t.TempDir()
-	writeFile(t, dir, "callee.yaml", `edition: v2026.3
+	writeFile(t, dir, "callee.yaml", `edition: v2026.4
 name: callee
 inputs:
   environment:
@@ -284,7 +284,7 @@ steps:
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			caller := writeFile(t, dir, "caller-"+tt.name+".yaml", `edition: v2026.3
+			caller := writeFile(t, dir, "caller-"+tt.name+".yaml", `edition: v2026.4
 name: caller
 steps:
   - id: provision
@@ -315,11 +315,11 @@ steps:
 // identical bound at the call boundary catches it at compile time instead.
 func TestCallArgumentOverTheElementBoundRefused(t *testing.T) {
 	dir := t.TempDir()
-	writeFile(t, dir, "callee.yaml", `edition: v2026.3
+	writeFile(t, dir, "callee.yaml", `edition: v2026.4
 name: callee
 inputs:
   records:
-    type: list
+    type: list(dyn)
 steps:
   - id: a
     log:
@@ -327,7 +327,7 @@ steps:
 `)
 
 	oversizedList := "[" + strings.Repeat("0, ", 10_000) + "0]"
-	caller := writeFile(t, dir, "caller.yaml", `edition: v2026.3
+	caller := writeFile(t, dir, "caller.yaml", `edition: v2026.4
 name: caller
 steps:
   - id: provision
@@ -344,7 +344,7 @@ steps:
 
 func TestCallArgumentWithAnInvalidLiteralIsRefused(t *testing.T) {
 	dir := t.TempDir()
-	writeFile(t, dir, "callee.yaml", `edition: v2026.3
+	writeFile(t, dir, "callee.yaml", `edition: v2026.4
 name: callee
 inputs:
   subject:
@@ -353,7 +353,7 @@ steps:
   - id: done
     value: ok
 `)
-	caller := writeFile(t, dir, "caller.yaml", `edition: v2026.3
+	caller := writeFile(t, dir, "caller.yaml", `edition: v2026.4
 name: caller
 steps:
   - id: invoke
@@ -370,11 +370,11 @@ steps:
 // element bound's worth of items is satisfiable, so it must not be refused.
 func TestCallArgumentAtTheElementBoundAccepted(t *testing.T) {
 	dir := t.TempDir()
-	writeFile(t, dir, "callee.yaml", `edition: v2026.3
+	writeFile(t, dir, "callee.yaml", `edition: v2026.4
 name: callee
 inputs:
   records:
-    type: list
+    type: list(dyn)
 steps:
   - id: a
     log:
@@ -382,7 +382,7 @@ steps:
 `)
 
 	exactList := "[" + strings.Repeat("0, ", 9_999) + "0]" // 9,999 + 1 = 10,000
-	caller := writeFile(t, dir, "caller.yaml", `edition: v2026.3
+	caller := writeFile(t, dir, "caller.yaml", `edition: v2026.4
 name: caller
 steps:
   - id: provision
@@ -415,7 +415,7 @@ func TestCallRefusesEscapingThroughASymlink(t *testing.T) {
 		t.Skipf("cannot create a symlink on this platform: %v", err)
 	}
 
-	caller := writeFile(t, dir, "caller.yaml", `edition: v2026.3
+	caller := writeFile(t, dir, "caller.yaml", `edition: v2026.4
 name: caller
 steps:
   - id: provision
@@ -441,7 +441,7 @@ func TestCallAllowsASymlinkThatStaysWithinTheDirectory(t *testing.T) {
 		t.Skipf("cannot create a symlink on this platform: %v", err)
 	}
 
-	caller := writeFile(t, dir, "caller.yaml", `edition: v2026.3
+	caller := writeFile(t, dir, "caller.yaml", `edition: v2026.4
 name: caller
 steps:
   - id: provision
@@ -458,7 +458,7 @@ steps:
 // (bytes, no location) is refused rather than silently attempted against the
 // working directory.
 func TestCallRefusesWithNoPath(t *testing.T) {
-	_, _, err := flowfile.Parse([]byte(`edition: v2026.3
+	_, _, err := flowfile.Parse([]byte(`edition: v2026.4
 name: caller
 steps:
   - id: provision
@@ -472,13 +472,13 @@ steps:
 // check: a calls b calls a, caught before the parser recurses forever.
 func TestCallDetectsCycleAcrossFiles(t *testing.T) {
 	dir := t.TempDir()
-	writeFile(t, dir, "a.yaml", `edition: v2026.3
+	writeFile(t, dir, "a.yaml", `edition: v2026.4
 name: a
 steps:
   - id: next
     call: ./b.yaml
 `)
-	writeFile(t, dir, "b.yaml", `edition: v2026.3
+	writeFile(t, dir, "b.yaml", `edition: v2026.4
 name: b
 steps:
   - id: next
@@ -513,7 +513,7 @@ func TestCallArgumentSecretRefused(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			caller := writeFile(t, dir, "caller-"+tt.name+".yaml", `edition: v2026.3
+			caller := writeFile(t, dir, "caller-"+tt.name+".yaml", `edition: v2026.4
 name: caller
 steps:
   - id: provision
@@ -535,14 +535,14 @@ steps:
 // drivers.
 func TestCallIsolationFlowfile(t *testing.T) {
 	dir := t.TempDir()
-	writeFile(t, dir, "callee.yaml", `edition: v2026.3
+	writeFile(t, dir, "callee.yaml", `edition: v2026.4
 name: callee
 steps:
   - id: peek
     log:
       message: ${string(has(steps.caller_step))}
 `)
-	caller := writeFile(t, dir, "caller.yaml", `edition: v2026.3
+	caller := writeFile(t, dir, "caller.yaml", `edition: v2026.4
 name: caller
 steps:
   - id: caller_step
@@ -581,7 +581,7 @@ func buildCallDiamond(t *testing.T, dir string, depth, leafSteps int) string {
 	var root string
 	for i := range depth {
 		var b strings.Builder
-		fmt.Fprintf(&b, "edition: v2026.3\nname: l%d\nsteps:\n", i)
+		fmt.Fprintf(&b, "edition: v2026.4\nname: l%d\nsteps:\n", i)
 		// Two calls to the next file: the fan-out of two per level is what makes
 		// the embedded copies multiply rather than add.
 		fmt.Fprintf(&b, "  - id: c1\n    call: ./l%d.yaml\n", i+1)
@@ -593,7 +593,7 @@ func buildCallDiamond(t *testing.T, dir string, depth, leafSteps int) string {
 	}
 
 	var leaf strings.Builder
-	fmt.Fprintf(&leaf, "edition: v2026.3\nname: l%d\nsteps:\n", depth)
+	fmt.Fprintf(&leaf, "edition: v2026.4\nname: l%d\nsteps:\n", depth)
 	for s := range leafSteps {
 		fmt.Fprintf(&leaf, "  - id: s%d\n    log:\n      message: hi\n", s)
 	}
@@ -678,8 +678,8 @@ func TestARootCompiledFromAFileRecordsItsSourceDigest(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
-	writeFile(t, dir, "callee.yaml", "edition: v2026.3\nname: callee\nsteps:\n  - id: hi\n    log:\n      message: hi\n")
-	root := "edition: v2026.3\nname: root\nsteps:\n  - id: go\n    call: ./callee.yaml\n"
+	writeFile(t, dir, "callee.yaml", "edition: v2026.4\nname: callee\nsteps:\n  - id: hi\n    log:\n      message: hi\n")
+	root := "edition: v2026.4\nname: root\nsteps:\n  - id: go\n    call: ./callee.yaml\n"
 	path := writeFile(t, dir, "root.yaml", root)
 
 	workflow, _, err := flowfile.ParseFile(path)
@@ -689,7 +689,7 @@ func TestARootCompiledFromAFileRecordsItsSourceDigest(t *testing.T) {
 	require.NotEmpty(t, call.GetSourceDigest(), "the call records its callee's bytes")
 	require.Empty(t, call.GetWorkflow().GetSourceDigest(), "a callee recorded a root's digest")
 
-	unfiled, err := flowfile.Unmarshal([]byte("edition: v2026.3\nname: root\nsteps:\n  - id: hi\n    log:\n      message: hi\n"))
+	unfiled, err := flowfile.Unmarshal([]byte("edition: v2026.4\nname: root\nsteps:\n  - id: hi\n    log:\n      message: hi\n"))
 	require.NoError(t, err)
 	require.Empty(t, unfiled.GetSourceDigest(), "bytes with no file behind them recorded a digest")
 

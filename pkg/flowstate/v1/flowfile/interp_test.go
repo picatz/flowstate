@@ -17,7 +17,7 @@ import (
 func interpolated(t *testing.T, message string) string {
 	t.Helper()
 
-	wf, err := flowfile.Unmarshal([]byte(`edition: v2026.3
+	wf, err := flowfile.Unmarshal([]byte(`edition: v2026.4
 name: t
 steps:
   - id: a
@@ -134,7 +134,7 @@ func TestInterpolationDesugarsToTheSharedDriverCase(t *testing.T) {
 func interpolatedInputs(t *testing.T, message string) string {
 	t.Helper()
 
-	wf, err := flowfile.Unmarshal([]byte(`edition: v2026.3
+	wf, err := flowfile.Unmarshal([]byte(`edition: v2026.4
 name: t
 inputs:
   s:
@@ -163,7 +163,7 @@ steps:
 func TestWholeValueFenceKeepsItsType(t *testing.T) {
 	t.Parallel()
 
-	whole, err := flowfile.Unmarshal([]byte(`edition: v2026.3
+	whole, err := flowfile.Unmarshal([]byte(`edition: v2026.4
 name: t
 vars:
   n: ${0}
@@ -200,7 +200,7 @@ steps:
 func TestEscapedFenceIsLiteralText(t *testing.T) {
 	t.Parallel()
 
-	wf, err := flowfile.Unmarshal([]byte(`edition: v2026.3
+	wf, err := flowfile.Unmarshal([]byte(`edition: v2026.4
 name: t
 steps:
   - id: a
@@ -244,7 +244,7 @@ func TestSecretInMixedPositionIsRefused(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 
-			_, err := flowfile.Unmarshal([]byte(`edition: v2026.3
+			_, err := flowfile.Unmarshal([]byte(`edition: v2026.4
 name: t
 steps:
   - id: a
@@ -306,7 +306,7 @@ func TestSensitiveInputInMixedPositionIsReported(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 
-			ds, err := flowfile.ValidateSource([]byte(`edition: v2026.3
+			ds, err := flowfile.ValidateSource([]byte(`edition: v2026.4
 name: t
 inputs:
   who:
@@ -363,17 +363,17 @@ func TestFixRootsEveryFenceInAnInterpolatedValue(t *testing.T) {
 		{
 			name: "one fence beside text",
 			src:  "name: t\nsteps:\n  - id: who\n    log:\n      message: hi\n  - id: b\n    log:\n      message: hello ${who.result}\n",
-			want: "edition: v2026.3\nname: t\nsteps:\n  - id: who\n    log:\n      message: hi\n  - id: b\n    log:\n      message: hello ${steps.who.result}\n",
+			want: "edition: v2026.4\nname: t\nsteps:\n  - id: who\n    log:\n      message: hi\n  - id: b\n    log:\n      message: hello ${steps.who.result}\n",
 		},
 		{
 			name: "two different fences",
 			src:  "name: t\nsteps:\n  - id: who\n    log:\n      message: hi\n  - id: what\n    log:\n      message: hi\n  - id: b\n    log:\n      message: ${who.result} did ${what.result}\n",
-			want: "edition: v2026.3\nname: t\nsteps:\n  - id: who\n    log:\n      message: hi\n  - id: what\n    log:\n      message: hi\n  - id: b\n    log:\n      message: ${steps.who.result} did ${steps.what.result}\n",
+			want: "edition: v2026.4\nname: t\nsteps:\n  - id: who\n    log:\n      message: hi\n  - id: what\n    log:\n      message: hi\n  - id: b\n    log:\n      message: ${steps.who.result} did ${steps.what.result}\n",
 		},
 		{
 			name: "the same fence written twice",
 			src:  "name: t\nsteps:\n  - id: who\n    log:\n      message: hi\n  - id: b\n    log:\n      message: ${who.result} and ${who.result}\n",
-			want: "edition: v2026.3\nname: t\nsteps:\n  - id: who\n    log:\n      message: hi\n  - id: b\n    log:\n      message: ${steps.who.result} and ${steps.who.result}\n",
+			want: "edition: v2026.4\nname: t\nsteps:\n  - id: who\n    log:\n      message: hi\n  - id: b\n    log:\n      message: ${steps.who.result} and ${steps.who.result}\n",
 		},
 		{
 			// The escape holds the bytes of a fence and is not one, which is the
@@ -387,21 +387,21 @@ func TestFixRootsEveryFenceInAnInterpolatedValue(t *testing.T) {
 			// validates — it always did.
 			name: "an escaped lookalike before the fence it duplicates",
 			src:  "name: t\nsteps:\n  - id: who\n    log:\n      message: hi\n  - id: b\n    log:\n      message: \"$${who.result} and ${who.result}\"\n",
-			want: "edition: v2026.3\nname: t\nsteps:\n  - id: who\n    log:\n      message: hi\n  - id: b\n    log:\n      message: \"$${who.result} and ${steps.who.result}\"\n",
+			want: "edition: v2026.4\nname: t\nsteps:\n  - id: who\n    log:\n      message: hi\n  - id: b\n    log:\n      message: \"$${who.result} and ${steps.who.result}\"\n",
 		},
 		{
 			// The mirror image, so the fix cannot be "skip the first match": here
 			// the real fence comes first and the escape second.
 			name: "an escaped lookalike after the fence it duplicates",
 			src:  "name: t\nsteps:\n  - id: who\n    log:\n      message: hi\n  - id: b\n    log:\n      message: \"${who.result} and $${who.result}\"\n",
-			want: "edition: v2026.3\nname: t\nsteps:\n  - id: who\n    log:\n      message: hi\n  - id: b\n    log:\n      message: \"${steps.who.result} and $${who.result}\"\n",
+			want: "edition: v2026.4\nname: t\nsteps:\n  - id: who\n    log:\n      message: hi\n  - id: b\n    log:\n      message: \"${steps.who.result} and $${who.result}\"\n",
 		},
 		{
 			// A value that is nothing but escapes has no fence at all, so the
 			// rewriter has nothing to do and must leave every byte alone.
 			name: "escapes only",
 			src:  "name: t\nsteps:\n  - id: who\n    log:\n      message: hi\n  - id: b\n    log:\n      message: \"$${who.result}$${who.result}\"\n",
-			want: "edition: v2026.3\nname: t\nsteps:\n  - id: who\n    log:\n      message: hi\n  - id: b\n    log:\n      message: \"$${who.result}$${who.result}\"\n",
+			want: "edition: v2026.4\nname: t\nsteps:\n  - id: who\n    log:\n      message: hi\n  - id: b\n    log:\n      message: \"$${who.result}$${who.result}\"\n",
 		},
 		{
 			// The names the grammar binds are not step references, wherever they
@@ -411,7 +411,7 @@ func TestFixRootsEveryFenceInAnInterpolatedValue(t *testing.T) {
 			// CLAUDE.md records twice.
 			name: "a loop binding among text is not a step reference",
 			src:  "name: t\nsteps:\n  - id: item\n    log:\n      message: a step sharing the binding's name\n  - id: loop\n    for_each:\n      items: ${['a', 'b']}\n      steps:\n        - id: use\n          log:\n            message: saw ${item} here\n",
-			want: "edition: v2026.3\nname: t\nsteps:\n  - id: item\n    log:\n      message: a step sharing the binding's name\n  - id: loop\n    for_each:\n      items: ${['a', 'b']}\n      steps:\n        - id: use\n          log:\n            message: saw ${item} here\n",
+			want: "edition: v2026.4\nname: t\nsteps:\n  - id: item\n    log:\n      message: a step sharing the binding's name\n  - id: loop\n    for_each:\n      items: ${['a', 'b']}\n      steps:\n        - id: use\n          log:\n            message: saw ${item} here\n",
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -453,7 +453,7 @@ func TestFenceDiagnosticSkipsAnEscapedLookalike(t *testing.T) {
 
 	// `    value: "$${ ] } then ${ ] }"` — the escaped `]` is at column 17 and
 	// the real fence's at 29. Both are broken CEL; only the second is CEL at all.
-	const src = `edition: v2026.3
+	const src = `edition: v2026.4
 name: t
 steps:
   - id: say
@@ -492,7 +492,7 @@ steps:
 func TestFormattingNeverInvalidatesAnEscapedTextField(t *testing.T) {
 	t.Parallel()
 
-	const src = `edition: v2026.3
+	const src = `edition: v2026.4
 name: t
 description: show $${TOKEN} to interpolate
 steps:

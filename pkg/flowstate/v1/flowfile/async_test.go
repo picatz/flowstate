@@ -28,7 +28,7 @@ import (
 func TestAsyncCompiles(t *testing.T) {
 	t.Parallel()
 
-	src := `edition: v2026.3
+	src := `edition: v2026.4
 name: t
 steps:
   - id: build
@@ -64,7 +64,7 @@ steps:
 func TestAsyncFalseIsTheSameFileAsNoAsync(t *testing.T) {
 	t.Parallel()
 
-	spelled, err := flowfile.Unmarshal([]byte(`edition: v2026.3
+	spelled, err := flowfile.Unmarshal([]byte(`edition: v2026.4
 name: t
 steps:
   - id: a
@@ -85,7 +85,7 @@ steps:
 func TestAsyncNGraphValidates(t *testing.T) {
 	t.Parallel()
 
-	wf, err := flowfile.Unmarshal([]byte(`edition: v2026.3
+	wf, err := flowfile.Unmarshal([]byte(`edition: v2026.4
 name: t
 steps:
   - id: build
@@ -122,7 +122,7 @@ func TestAsyncRefusalsArePositioned(t *testing.T) {
 	}{
 		{
 			name: "a wait",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: t
 steps:
   - id: approve
@@ -134,7 +134,7 @@ steps:
 		},
 		{
 			name: "a value",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: t
 steps:
   - id: total
@@ -145,7 +145,7 @@ steps:
 		},
 		{
 			name: "a block",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: t
 steps:
   - id: both
@@ -160,7 +160,7 @@ steps:
 		},
 		{
 			name: "inside a parallel branch",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: t
 steps:
   - id: both
@@ -175,7 +175,7 @@ steps:
 		},
 		{
 			name: "inside a for_each body",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: t
 steps:
   - id: each
@@ -228,7 +228,7 @@ steps:
 func TestAsyncOnAWorkingFileIsNotReported(t *testing.T) {
 	t.Parallel()
 
-	wf, err := flowfile.Unmarshal([]byte(`edition: v2026.3
+	wf, err := flowfile.Unmarshal([]byte(`edition: v2026.4
 name: t
 steps:
   - id: a
@@ -253,7 +253,7 @@ steps:
 func TestAsyncMustBeABoolean(t *testing.T) {
 	t.Parallel()
 
-	_, err := flowfile.Unmarshal([]byte(`edition: v2026.3
+	_, err := flowfile.Unmarshal([]byte(`edition: v2026.4
 name: t
 steps:
   - id: a

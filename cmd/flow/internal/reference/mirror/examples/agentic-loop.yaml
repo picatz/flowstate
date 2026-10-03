@@ -25,7 +25,7 @@
 #
 #   flow run local examples/agentic-loop/workflow.yaml \
 #     --signal turn-approved='{"approved": true}'
-edition: v2026.3
+edition: v2026.4
 name: agentic-loop
 description: One bounded agentic turn, gated on what it spent and on a human when it spent too much, then landed — the workflow an agent authors while walking validate → test → run_local over `flow mcp`.
 vars:

@@ -30,7 +30,7 @@ func TestAnUnknownStepOutputIsReported(t *testing.T) {
 		{
 			name: "a name the task does not produce",
 			src: `
-edition: v2026.3
+edition: v2026.4
 name: t
 steps:
   - id: a
@@ -45,7 +45,7 @@ steps:
 		{
 			name: "a near miss gets a suggestion rather than a list",
 			src: `
-edition: v2026.3
+edition: v2026.4
 name: t
 steps:
   - id: a
@@ -63,7 +63,7 @@ steps:
 			// listing an empty set — "it produces: " teaches nothing.
 			name: "a task that produces nothing says why",
 			src: `
-edition: v2026.3
+edition: v2026.4
 name: t
 steps:
   - id: say
@@ -80,7 +80,7 @@ steps:
 			// which this cannot and should not check.
 			name: "selecting into a real output is fine",
 			src: `
-edition: v2026.3
+edition: v2026.4
 name: t
 steps:
   - id: a
@@ -97,7 +97,7 @@ steps:
 			// nothing in it.
 			name: "the mapping itself is fine",
 			src: `
-edition: v2026.3
+edition: v2026.4
 name: t
 steps:
   - id: say
@@ -138,7 +138,7 @@ func TestAStepNamingItsOwnOutputsIsNotSecondGuessed(t *testing.T) {
 	t.Parallel()
 
 	src := `
-edition: v2026.3
+edition: v2026.4
 name: t
 steps:
   - id: fetch
@@ -170,7 +170,7 @@ func TestABlockStepsOutputsAreNotSecondGuessed(t *testing.T) {
 	t.Parallel()
 
 	src := `
-edition: v2026.3
+edition: v2026.4
 name: t
 steps:
   - id: each
@@ -211,7 +211,7 @@ func TestACertainKindOutputIsReported(t *testing.T) {
 		{
 			name: "a switch's outputs are exactly value and case",
 			src: `
-edition: v2026.3
+edition: v2026.4
 name: t
 steps:
   - id: sw
@@ -232,7 +232,7 @@ steps:
 		{
 			name: "a for_each's only output is results",
 			src: `
-edition: v2026.3
+edition: v2026.4
 name: t
 steps:
   - id: each
@@ -252,7 +252,7 @@ steps:
 		{
 			name: "a parallel's own id exposes nothing at all",
 			src: `
-edition: v2026.3
+edition: v2026.4
 name: t
 steps:
   - id: both
@@ -274,7 +274,7 @@ steps:
 		{
 			name: "a loop's as: name read from outside still gets its own message",
 			src: `
-edition: v2026.3
+edition: v2026.4
 name: t
 steps:
   - id: countup
@@ -298,7 +298,7 @@ steps:
 		{
 			name: "a loop's general set is checked too, beyond the as: collision",
 			src: `
-edition: v2026.3
+edition: v2026.4
 name: t
 steps:
   - id: countup
@@ -342,7 +342,7 @@ func TestACertainKindOutputIsNotSecondGuessed(t *testing.T) {
 		{
 			name: "a switch's value and case",
 			src: `
-edition: v2026.3
+edition: v2026.4
 name: t
 steps:
   - id: sw
@@ -362,7 +362,7 @@ steps:
 		{
 			name: "a for_each's results",
 			src: `
-edition: v2026.3
+edition: v2026.4
 name: t
 steps:
   - id: each
@@ -381,7 +381,7 @@ steps:
 		{
 			name: "a parallel's whole mapping, which is legal even though nothing is named",
 			src: `
-edition: v2026.3
+edition: v2026.4
 name: t
 steps:
   - id: both
@@ -402,7 +402,7 @@ steps:
 		{
 			name: "a loop's results and its state, both",
 			src: `
-edition: v2026.3
+edition: v2026.4
 name: t
 steps:
   - id: countup
@@ -425,7 +425,7 @@ steps:
 		{
 			name: "a loop with no state: has only results, and results is fine",
 			src: `
-edition: v2026.3
+edition: v2026.4
 name: t
 steps:
   - id: retry
@@ -465,7 +465,7 @@ func TestACallStepOutputIsChecked(t *testing.T) {
 
 		dir := t.TempDir()
 		writeFile(t, dir, "callee.yaml", simpleCalleeSource)
-		caller := writeFile(t, dir, "caller.yaml", `edition: v2026.3
+		caller := writeFile(t, dir, "caller.yaml", `edition: v2026.4
 name: caller
 steps:
   - id: provision
@@ -487,7 +487,7 @@ steps:
 
 		dir := t.TempDir()
 		writeFile(t, dir, "callee.yaml", simpleCalleeSource)
-		caller := writeFile(t, dir, "caller.yaml", `edition: v2026.3
+		caller := writeFile(t, dir, "caller.yaml", `edition: v2026.4
 name: caller
 steps:
   - id: provision
@@ -507,7 +507,7 @@ steps:
 		t.Parallel()
 
 		dir := t.TempDir()
-		writeFile(t, dir, "callee.yaml", `edition: v2026.3
+		writeFile(t, dir, "callee.yaml", `edition: v2026.4
 name: callee
 inputs:
   tenant:
@@ -518,7 +518,7 @@ steps:
     log:
       message: ${'hi ' + inputs.tenant}
 `)
-		caller := writeFile(t, dir, "caller.yaml", `edition: v2026.3
+		caller := writeFile(t, dir, "caller.yaml", `edition: v2026.4
 name: caller
 steps:
   - id: provision
@@ -648,7 +648,7 @@ func TestAToleratedStepsErrorOutputIsAllowed(t *testing.T) {
 	t.Parallel()
 
 	tolerated := `
-edition: v2026.3
+edition: v2026.4
 name: t
 steps:
   - id: risky
@@ -666,7 +666,7 @@ steps:
 	// And without the policy it is still an unknown output, because then nothing
 	// produces it. The exemption is the policy's, not the name's.
 	untolerated := `
-edition: v2026.3
+edition: v2026.4
 name: t
 steps:
   - id: risky
@@ -694,7 +694,7 @@ func TestToleratedCompoundStepsErrorOutputIsAllowed(t *testing.T) {
 	}
 	for name, kind := range kinds {
 		t.Run(name, func(t *testing.T) {
-			src := "edition: v2026.3\nname: t\nsteps:\n  - id: risky\n    continue_on_error: true\n    " + kind + "\n  - id: report\n    log:\n      message: ${steps.risky.error}\n"
+			src := "edition: v2026.4\nname: t\nsteps:\n  - id: risky\n    continue_on_error: true\n    " + kind + "\n  - id: report\n    log:\n      message: ${steps.risky.error}\n"
 			require.Empty(t, diagnose(t, src))
 		})
 	}
@@ -708,7 +708,7 @@ func TestToleratedCompoundStepsErrorOutputIsAllowed(t *testing.T) {
 func TestToleratedLoopWithStateNamedErrorStillExposesTheToleratedOutput(t *testing.T) {
 	t.Parallel()
 
-	src := "edition: v2026.3\nname: t\nsteps:\n" +
+	src := "edition: v2026.4\nname: t\nsteps:\n" +
 		"  - id: risky\n" +
 		"    continue_on_error: true\n" +
 		"    loop:\n" +
@@ -735,7 +735,7 @@ func TestAToleratedStepListsTheErrorOutput(t *testing.T) {
 	t.Parallel()
 
 	src := `
-edition: v2026.3
+edition: v2026.4
 name: t
 steps:
   - id: risky

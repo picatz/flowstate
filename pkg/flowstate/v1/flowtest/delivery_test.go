@@ -24,7 +24,7 @@ import (
 
 // triggerWorkflow is the file every case below replays against.
 const triggerWorkflow = `
-edition: v2026.3
+edition: v2026.4
 name: delivery
 inputs:
   order_id:
@@ -251,7 +251,7 @@ func TestARetrySignedAfreshReplaysAsTheSameEvent(t *testing.T) {
 
 			dir := t.TempDir()
 			writeFile(t, dir+"/workflow.yaml", `
-edition: v2026.3
+edition: v2026.4
 name: `+test.Workflow.GetName()+`
 inputs:
   order_id:

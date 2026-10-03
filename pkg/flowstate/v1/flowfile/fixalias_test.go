@@ -46,7 +46,7 @@ func aliasCases() []aliasCase {
 	return []aliasCase{
 		{
 			name: "a whole-value alias to a scalar",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: t
 steps:
   - id: a
@@ -56,7 +56,7 @@ steps:
     log:
       message: *greeting
 `,
-			want: `edition: v2026.3
+			want: `edition: v2026.4
 name: t
 steps:
   - id: a
@@ -66,7 +66,7 @@ steps:
     log:
       message: hello
 `,
-			equivalent: `edition: v2026.3
+			equivalent: `edition: v2026.4
 name: t
 steps:
   - id: a
@@ -83,7 +83,7 @@ steps:
 			// written among those lines travels with them, which is the property a
 			// span-derived copy loses.
 			name: "an anchor whose value is a mapping, copied with its comments",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: t
 steps:
   - id: a
@@ -94,7 +94,7 @@ steps:
   - id: b
     http: *request
 `,
-			want: `edition: v2026.3
+			want: `edition: v2026.4
 name: t
 steps:
   - id: a
@@ -108,7 +108,7 @@ steps:
       # the one the upstream team asked for
       method: GET
 `,
-			equivalent: `edition: v2026.3
+			equivalent: `edition: v2026.4
 name: t
 steps:
   - id: a
@@ -123,7 +123,7 @@ steps:
 		},
 		{
 			name: "an anchor whose value is a sequence",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: t
 vars:
   primary: &hosts
@@ -135,7 +135,7 @@ steps:
     log:
       message: hi
 `,
-			want: `edition: v2026.3
+			want: `edition: v2026.4
 name: t
 vars:
   primary:
@@ -149,7 +149,7 @@ steps:
     log:
       message: hi
 `,
-			equivalent: `edition: v2026.3
+			equivalent: `edition: v2026.4
 name: t
 vars:
   primary:
@@ -169,7 +169,7 @@ steps:
 			// them nested inside another mapping. The copy is re-indented to where
 			// it lands and nowhere else.
 			name: "several aliases to one anchor, nested at different depths",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: t
 vars:
   defaults: &defaults
@@ -184,7 +184,7 @@ steps:
       message: hi
       fields: *defaults
 `,
-			want: `edition: v2026.3
+			want: `edition: v2026.4
 name: t
 vars:
   defaults:
@@ -205,7 +205,7 @@ steps:
         region: us-east-1
         tier: gold
 `,
-			equivalent: `edition: v2026.3
+			equivalent: `edition: v2026.4
 name: t
 vars:
   defaults:
@@ -232,7 +232,7 @@ steps:
 			// chain, because the copy of the outer value is taken *after* the inner
 			// alias in it has been written out.
 			name: "an alias chain",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: t
 vars:
   base: &base
@@ -246,7 +246,7 @@ steps:
     log:
       message: hi
 `,
-			want: `edition: v2026.3
+			want: `edition: v2026.4
 name: t
 vars:
   base:
@@ -264,7 +264,7 @@ steps:
     log:
       message: hi
 `,
-			equivalent: `edition: v2026.3
+			equivalent: `edition: v2026.4
 name: t
 vars:
   base:
@@ -288,7 +288,7 @@ steps:
 			// key. The two shapes are the whole of what this rewrite splices into,
 			// and they indent differently.
 			name: "an alias as a whole list item",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: t
 vars:
   primary: &host
@@ -303,7 +303,7 @@ steps:
     log:
       message: hi
 `,
-			want: `edition: v2026.3
+			want: `edition: v2026.4
 name: t
 vars:
   primary:
@@ -319,7 +319,7 @@ steps:
     log:
       message: hi
 `,
-			equivalent: `edition: v2026.3
+			equivalent: `edition: v2026.4
 name: t
 vars:
   primary:
@@ -343,7 +343,7 @@ steps:
 			// of it, the quoting because the value's own source bytes are copied
 			// rather than re-rendered.
 			name: "a comment and a hand-chosen quoting both survive",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: t
 steps:
   - id: a
@@ -353,7 +353,7 @@ steps:
     log:
       message: *greeting # said twice on purpose
 `,
-			want: `edition: v2026.3
+			want: `edition: v2026.4
 name: t
 steps:
   - id: a
@@ -363,7 +363,7 @@ steps:
     log:
       message: "hello" # said twice on purpose
 `,
-			equivalent: `edition: v2026.3
+			equivalent: `edition: v2026.4
 name: t
 steps:
   - id: a
@@ -379,21 +379,21 @@ steps:
 			// part of the grammar, so a file that kept one would be a file `flow
 			// validate` refuses after `flow fix` reported success.
 			name: "an anchor with no alias to it",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: t
 steps:
   - id: a
     log:
       message: &unused hello
 `,
-			want: `edition: v2026.3
+			want: `edition: v2026.4
 name: t
 steps:
   - id: a
     log:
       message: hello
 `,
-			equivalent: `edition: v2026.3
+			equivalent: `edition: v2026.4
 name: t
 steps:
   - id: a
@@ -407,7 +407,7 @@ steps:
 			// visits a MappingNode's own tokens at all — so that span ran from the
 			// first entry to the last, missing both `{` and `}`.
 			name: "a whole-value alias to a flow-style mapping",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: t
 vars:
   a: &a {x: 1}
@@ -417,7 +417,7 @@ steps:
     log:
       message: hi
 `,
-			want: `edition: v2026.3
+			want: `edition: v2026.4
 name: t
 vars:
   a: {x: 1}
@@ -427,7 +427,7 @@ steps:
     log:
       message: hi
 `,
-			equivalent: `edition: v2026.3
+			equivalent: `edition: v2026.4
 name: t
 vars:
   a: {x: 1}
@@ -443,7 +443,7 @@ steps:
 			// SequenceNode's opening token but never a matching closing one, so the
 			// computed span kept the `[` and dropped the `]`.
 			name: "a whole-value alias to a flow-style sequence",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: t
 vars:
   a: &a [1, 2]
@@ -453,7 +453,7 @@ steps:
     log:
       message: hi
 `,
-			want: `edition: v2026.3
+			want: `edition: v2026.4
 name: t
 vars:
   a: [1, 2]
@@ -463,7 +463,7 @@ steps:
     log:
       message: hi
 `,
-			equivalent: `edition: v2026.3
+			equivalent: `edition: v2026.4
 name: t
 vars:
   a: [1, 2]
@@ -481,7 +481,7 @@ steps:
 			// mapping's `{`/`}` come along for free as bytes already inside that
 			// range, with no second walk needed to find them.
 			name: "a whole-value alias to a nested flow-style mapping",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: t
 vars:
   a: &a {x: {y: 1}}
@@ -491,7 +491,7 @@ steps:
     log:
       message: hi
 `,
-			want: `edition: v2026.3
+			want: `edition: v2026.4
 name: t
 vars:
   a: {x: {y: 1}}
@@ -501,7 +501,7 @@ steps:
     log:
       message: hi
 `,
-			equivalent: `edition: v2026.3
+			equivalent: `edition: v2026.4
 name: t
 vars:
   a: {x: {y: 1}}
@@ -514,7 +514,7 @@ steps:
 		},
 		{
 			name: "a whole-value alias to a nested flow-style sequence",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: t
 vars:
   a: &a [[1, 2], 3]
@@ -524,7 +524,7 @@ steps:
     log:
       message: hi
 `,
-			want: `edition: v2026.3
+			want: `edition: v2026.4
 name: t
 vars:
   a: [[1, 2], 3]
@@ -534,7 +534,7 @@ steps:
     log:
       message: hi
 `,
-			equivalent: `edition: v2026.3
+			equivalent: `edition: v2026.4
 name: t
 vars:
   a: [[1, 2], 3]
@@ -555,7 +555,7 @@ steps:
 			// refused right alongside the case it is meant to be kept
 			// distinct from.
 			name: "a flow-style anchor declared under a block key keeps inlining",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: t
 vars:
   o:
@@ -566,7 +566,7 @@ steps:
     log:
       message: hi
 `,
-			want: `edition: v2026.3
+			want: `edition: v2026.4
 name: t
 vars:
   o:
@@ -577,7 +577,7 @@ steps:
     log:
       message: hi
 `,
-			equivalent: `edition: v2026.3
+			equivalent: `edition: v2026.4
 name: t
 vars:
   o:
@@ -598,7 +598,7 @@ steps:
 			// this with "not written on one line", a diagnostic naming the
 			// wrong reason for a value that is very much on one line.
 			name: "a whole-value alias to an empty flow-style mapping",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: t
 vars:
   a: &a {}
@@ -608,7 +608,7 @@ steps:
     log:
       message: hi
 `,
-			want: `edition: v2026.3
+			want: `edition: v2026.4
 name: t
 vars:
   a: {}
@@ -618,7 +618,7 @@ steps:
     log:
       message: hi
 `,
-			equivalent: `edition: v2026.3
+			equivalent: `edition: v2026.4
 name: t
 vars:
   a: {}
@@ -635,15 +635,15 @@ steps:
 			// the parser's column where the value is written, so the copy is
 			// the value itself and nothing is refused.
 			name: "anchored scalars whose lines end in whitespace the parser positions correctly",
-			src: "edition: v2026.3\nname: t\nvars:\n" +
+			src: "edition: v2026.4\nname: t\nvars:\n" +
 				"  a: &a us-east-1\t\n  b: &b 12\t\n  c: &c \"x y\"\t\n  d: &d 'x y' \n" +
 				"  e: *a\n  f: *b\n  g: *c\n  h: *d\n" +
 				"steps:\n  - id: a\n    log:\n      message: hi\n",
-			want: "edition: v2026.3\nname: t\nvars:\n" +
+			want: "edition: v2026.4\nname: t\nvars:\n" +
 				"  a: us-east-1\t\n  b: 12\t\n  c: \"x y\"\t\n  d: 'x y' \n" +
 				"  e: us-east-1\n  f: 12\n  g: \"x y\"\n  h: 'x y'\n" +
 				"steps:\n  - id: a\n    log:\n      message: hi\n",
-			equivalent: `edition: v2026.3
+			equivalent: `edition: v2026.4
 name: t
 vars:
   a: us-east-1
@@ -797,7 +797,7 @@ func TestFixRefusesWhatItCannotInlineByteForByte(t *testing.T) {
 			// which spelling of a key the author meant — judgment, which `flow fix`
 			// does not exercise. Refused in the compiler's own words.
 			name: "a merge key",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: t
 vars:
   base: &base
@@ -816,7 +816,7 @@ steps:
 		},
 		{
 			name: "an anchor that reaches itself",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: t
 vars:
   cycle: &cycle
@@ -832,7 +832,7 @@ steps:
 		},
 		{
 			name: "an alias inside flow style",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: t
 vars:
   base: &base 1
@@ -848,7 +848,7 @@ steps:
 		},
 		{
 			name: "an alias naming an anchor the document does not declare",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: t
 steps:
   - id: a
@@ -861,7 +861,7 @@ steps:
 		},
 		{
 			name: "the same anchor name declared twice",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: t
 vars:
   first: &shared 1
@@ -878,7 +878,7 @@ steps:
 		},
 		{
 			name: "an anchored value that declares an anchor of its own",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: t
 vars:
   outer: &outer
@@ -904,7 +904,7 @@ steps:
 			// guess. On origin/main this same input already fails to
 			// compile with a parse error rather than accepting anything.
 			name: "a flow-style anchor declared inside an outer flow mapping",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: t
 vars:
   o: {ports: &p [8080:80]}
@@ -924,7 +924,7 @@ steps:
 			// entry refuses rather than reading as "no outer flow" and
 			// moving `[8080:80]` somewhere it means one string.
 			name: "a flow-style anchor inside an outer flow mapping beneath a tag",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: t
 vars:
   o: !!map
@@ -941,7 +941,7 @@ steps:
 		},
 		{
 			name: "a flow-style anchor's own sequence entries read differently outside a flow mapping",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: t
 vars:
   o: {k: &p [a:b, c]}
@@ -965,7 +965,7 @@ steps:
 			// bytes actually start and end with the delimiter tokens they
 			// should is what catches it.
 			name: "a tag before a flow sequence's own element",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: t
 vars:
   o: &p [!!str 1]
@@ -983,7 +983,7 @@ steps:
 			// The copied value ends in the inner `]`, so a suffix-only check
 			// mistakes it for the outer `]` that goccy's column omitted.
 			name: "a tag in a nested flow sequence with a clipped outer delimiter",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: t
 vars:
   o: &p [[!!str 1]]
@@ -999,7 +999,7 @@ steps:
 		},
 		{
 			name: "a tag before a flow mapping's own value",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: t
 vars:
   o: &p {c: !!str 1}
@@ -1015,7 +1015,7 @@ steps:
 		},
 		{
 			name: "a tag inside a flow sequence nested in a flow mapping",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: t
 vars:
   o: &p {a: [!!str 1]}
@@ -1031,7 +1031,7 @@ steps:
 		},
 		{
 			name: "a local tag before a flow sequence's own element",
-			src: `edition: v2026.3
+			src: `edition: v2026.4
 name: t
 vars:
   o: &p [!foo x]
@@ -1047,14 +1047,14 @@ steps:
 		},
 		{
 			name:    "a literal tab as a flow sequence's own leading whitespace",
-			src:     "edition: v2026.3\nname: t\nvars:\n  o: &p [\ta]\n  u: *p\nsteps:\n  - id: a\n    log:\n      message: hi\n",
+			src:     "edition: v2026.4\nname: t\nvars:\n  o: &p [\ta]\n  u: *p\nsteps:\n  - id: a\n    log:\n      message: hi\n",
 			line:    5,
 			column:  6,
 			message: "not written where it was read",
 		},
 		{
 			name:    "a literal tab between a flow sequence's own elements",
-			src:     "edition: v2026.3\nname: t\nvars:\n  o: &p [a,\tb]\n  u: *p\nsteps:\n  - id: a\n    log:\n      message: hi\n",
+			src:     "edition: v2026.4\nname: t\nvars:\n  o: &p [a,\tb]\n  u: *p\nsteps:\n  - id: a\n    log:\n      message: hi\n",
 			line:    5,
 			column:  6,
 			message: "not written where it was read",
@@ -1063,7 +1063,7 @@ steps:
 			// goccy reports a plain scalar's column one to the right for each
 			// space trailing it (#2119), which copied `s-east-1 ` here.
 			name:    "a trailing space after an anchored plain scalar",
-			src:     "edition: v2026.3\nname: t\nvars:\n  region: &r us-east-1 \n  other: *r\nsteps:\n  - id: a\n    log:\n      message: hi\n",
+			src:     "edition: v2026.4\nname: t\nvars:\n  region: &r us-east-1 \n  other: *r\nsteps:\n  - id: a\n    log:\n      message: hi\n",
 			line:    5,
 			column:  10,
 			message: "not written where it was read",
@@ -1071,21 +1071,21 @@ steps:
 		{
 			// Copied as `rue `: a boolean silently turned into a string.
 			name:    "a trailing space after an anchored boolean",
-			src:     "edition: v2026.3\nname: t\nvars:\n  k: &a true \n  u: *a\nsteps:\n  - id: a\n    log:\n      message: hi\n",
+			src:     "edition: v2026.4\nname: t\nvars:\n  k: &a true \n  u: *a\nsteps:\n  - id: a\n    log:\n      message: hi\n",
 			line:    5,
 			column:  6,
 			message: "not written where it was read",
 		},
 		{
 			name:    "trailing spaces after an anchored integer",
-			src:     "edition: v2026.3\nname: t\nvars:\n  k: &a 0x1f  \n  u: *a\nsteps:\n  - id: a\n    log:\n      message: hi\n",
+			src:     "edition: v2026.4\nname: t\nvars:\n  k: &a 0x1f  \n  u: *a\nsteps:\n  - id: a\n    log:\n      message: hi\n",
 			line:    5,
 			column:  6,
 			message: "not written where it was read",
 		},
 		{
 			name:    "a space and a tab trailing an anchored plain scalar",
-			src:     "edition: v2026.3\nname: t\nvars:\n  k: &a abc \t\n  u: *a\nsteps:\n  - id: a\n    log:\n      message: hi\n",
+			src:     "edition: v2026.4\nname: t\nvars:\n  k: &a abc \t\n  u: *a\nsteps:\n  - id: a\n    log:\n      message: hi\n",
 			line:    5,
 			column:  6,
 			message: "not written where it was read",
@@ -1146,7 +1146,7 @@ func TestFixRefusesAnAliasExpansionPastTheNodeOrByteBudget(t *testing.T) {
 		// The shape is the point — its alias *depth* is one per level, which
 		// is why a depth bound cannot see it and these budgets can.
 		var b strings.Builder
-		b.WriteString("edition: v2026.3\nname: t\nvars:\n  level0: &level0\n    x: 1\n    y: 2\n")
+		b.WriteString("edition: v2026.4\nname: t\nvars:\n  level0: &level0\n    x: 1\n    y: 2\n")
 		for level := 1; level <= 11; level++ {
 			fmt.Fprintf(&b, "  level%d: &level%d\n", level, level)
 			for use := range 8 {
@@ -1186,7 +1186,7 @@ func TestFixRefusesAnAliasExpansionPastTheNodeOrByteBudget(t *testing.T) {
 		// the expansion.
 		const entries = 20_000
 		var b strings.Builder
-		b.WriteString("edition: v2026.3\nname: t\nvars:\n  big: &big\n")
+		b.WriteString("edition: v2026.4\nname: t\nvars:\n  big: &big\n")
 		for i := range entries {
 			fmt.Fprintf(&b, "    a%d: 1\n", i)
 		}
@@ -1219,7 +1219,7 @@ func TestFixRefusesAnAliasExpansionPastTheNodeOrByteBudget(t *testing.T) {
 func TestFixLeavesAnAsteriskInsideAScalarAlone(t *testing.T) {
 	t.Parallel()
 
-	src := `edition: v2026.3
+	src := `edition: v2026.4
 name: t
 steps:
   - id: a
@@ -1232,7 +1232,7 @@ steps:
     log:
       message: "hi *who"
 `
-	want := `edition: v2026.3
+	want := `edition: v2026.4
 name: t
 steps:
   - id: a
@@ -1282,7 +1282,7 @@ func TestFixDropsSeveralAnchorMarkersOnOneLine(t *testing.T) {
 	t.Run("two bare anchors sharing a line", func(t *testing.T) {
 		t.Parallel()
 
-		src := `edition: v2026.3
+		src := `edition: v2026.4
 name: t
 x: [&a 1, &b 2]
 steps:
@@ -1290,7 +1290,7 @@ steps:
     log:
       message: hi
 `
-		want := `edition: v2026.3
+		want := `edition: v2026.4
 name: t
 x: [1, 2]
 steps:
@@ -1313,7 +1313,7 @@ steps:
 		// marker first shifts &b's stale column onto that quoted text rather
 		// than off the end of the line, which is what let the old left-to-right
 		// removal mistake the quoted bytes for the marker instead of refusing.
-		src := `edition: v2026.3
+		src := `edition: v2026.4
 name: t
 x: [&aa 1, &b "&b"]
 steps:
@@ -1321,7 +1321,7 @@ steps:
     log:
       message: hi
 `
-		want := `edition: v2026.3
+		want := `edition: v2026.4
 name: t
 x: [1, "&b"]
 steps:
@@ -1342,8 +1342,8 @@ steps:
 func TestFixPreservesTabAfterTerminalAnchorMarker(t *testing.T) {
 	t.Parallel()
 
-	src := "edition: v2026.3\nname: t\nvars:\n  x: &request\t\n    url: https://example.com\nsteps:\n  - id: a\n    log:\n      message: hi\n"
-	want := "edition: v2026.3\nname: t\nvars:\n  x: \t\n    url: https://example.com\nsteps:\n  - id: a\n    log:\n      message: hi\n"
+	src := "edition: v2026.4\nname: t\nvars:\n  x: &request\t\n    url: https://example.com\nsteps:\n  - id: a\n    log:\n      message: hi\n"
+	want := "edition: v2026.4\nname: t\nvars:\n  x: \t\n    url: https://example.com\nsteps:\n  - id: a\n    log:\n      message: hi\n"
 
 	result, err := flowfile.Fix([]byte(src))
 	require.NoError(t, err)

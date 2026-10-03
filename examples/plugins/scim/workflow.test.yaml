@@ -1,4 +1,4 @@
-edition: v2026.3
+edition: v2026.4
 tests:
   - name: a reviewer who refuses access deactivates the account at the version they reviewed
     workflow: ./workflow.yaml

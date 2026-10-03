@@ -21,7 +21,7 @@
 #   flow run local examples/enum-input/workflow.yaml --input tier=staging
 #   flow run local examples/enum-input/workflow.yaml \
 #       --input-file examples/enum-input/inputs.json
-edition: v2026.3
+edition: v2026.4
 name: enum-input
 inputs:
   # No default: which tier a rollout targets is exactly the kind of thing

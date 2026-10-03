@@ -98,7 +98,7 @@ func TestValidateChecksTheConditionOfEveryNodeKind(t *testing.T) {
 		t.Run(kind, func(t *testing.T) {
 			t.Parallel()
 
-			ds, err := flowfile.ValidateSource([]byte(`edition: v2026.3
+			ds, err := flowfile.ValidateSource([]byte(`edition: v2026.4
 name: w
 vars:
   token_budget: 5
@@ -125,7 +125,7 @@ steps:
 func TestValidateReportsAConditionAtItsOwnPosition(t *testing.T) {
 	t.Parallel()
 
-	ds, err := flowfile.ValidateSourceAt([]byte(`edition: v2026.3
+	ds, err := flowfile.ValidateSourceAt([]byte(`edition: v2026.4
 name: mini3
 vars:
   token_budget: 5
@@ -149,7 +149,7 @@ steps:
 func TestValidateChecksAConditionInsideABlock(t *testing.T) {
 	t.Parallel()
 
-	ds, err := flowfile.ValidateSource([]byte(`edition: v2026.3
+	ds, err := flowfile.ValidateSource([]byte(`edition: v2026.4
 name: w
 vars:
   token_budget: 5
@@ -175,7 +175,7 @@ func TestValidateChecksTheConditionOfACall(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, dir, "callee.yaml", simpleCalleeSource)
-	caller := writeFile(t, dir, "caller.yaml", `edition: v2026.3
+	caller := writeFile(t, dir, "caller.yaml", `edition: v2026.4
 name: caller
 vars:
   token_budget: 5
@@ -205,7 +205,7 @@ func TestValidateAcceptsWhatTheGrammarBindsInACondition(t *testing.T) {
 	t.Parallel()
 
 	for name, source := range map[string]string{
-		"loop as": `edition: v2026.3
+		"loop as": `edition: v2026.4
 name: w
 steps:
   - id: each
@@ -217,7 +217,7 @@ steps:
           if: ${n > 1}
           sleep: 1s
 `,
-		"default item": `edition: v2026.3
+		"default item": `edition: v2026.4
 name: w
 steps:
   - id: each
@@ -228,7 +228,7 @@ steps:
           if: ${item > 1}
           sleep: 1s
 `,
-		"carried loop state": `edition: v2026.3
+		"carried loop state": `edition: v2026.4
 name: w
 steps:
   - id: fold
@@ -268,7 +268,7 @@ steps:
 func TestValidateRefusesNowInAWaitsCondition(t *testing.T) {
 	t.Parallel()
 
-	ds, err := flowfile.ValidateSource([]byte(`edition: v2026.3
+	ds, err := flowfile.ValidateSource([]byte(`edition: v2026.4
 name: w
 steps:
   - id: review
@@ -294,7 +294,7 @@ steps:
 func TestValidateAcceptsNowInsideTheWaitItself(t *testing.T) {
 	t.Parallel()
 
-	ds, err := flowfile.ValidateSource([]byte(`edition: v2026.3
+	ds, err := flowfile.ValidateSource([]byte(`edition: v2026.4
 name: w
 steps:
   - id: parked
@@ -318,7 +318,7 @@ steps:
 func TestFixAndValidateAgreeAboutAWaitsCondition(t *testing.T) {
 	t.Parallel()
 
-	source := `edition: v2026.3
+	source := `edition: v2026.4
 name: agree
 steps:
   - id: host
@@ -362,7 +362,7 @@ func TestValidateRefusesAStepsOwnVarInItsCondition(t *testing.T) {
 		t.Run(kind, func(t *testing.T) {
 			t.Parallel()
 
-			ds, err := flowfile.ValidateSource([]byte(`edition: v2026.3
+			ds, err := flowfile.ValidateSource([]byte(`edition: v2026.4
 name: w
 steps:
   - id: gate

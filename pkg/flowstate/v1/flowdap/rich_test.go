@@ -25,7 +25,7 @@ import (
 // An editor's session over a real local run launched by the adapter itself,
 // with the program's source map: what a person actually gets from `flow dap`.
 
-const richFlowfile = `edition: v2026.3
+const richFlowfile = `edition: v2026.4
 name: rich
 steps:
   - id: start

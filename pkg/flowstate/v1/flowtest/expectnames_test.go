@@ -13,7 +13,7 @@ import (
 // loop body, a switch body, and a call.
 
 const ghostWorkflow = `
-edition: v2026.3
+edition: v2026.4
 name: ghost
 steps:
   - id: greet
@@ -23,7 +23,7 @@ outputs: {}
 `
 
 const loopBodyWorkflow = `
-edition: v2026.3
+edition: v2026.4
 name: fan
 steps:
   - id: fan
@@ -134,7 +134,7 @@ func TestCompensatedAbstainsUnderACallStep(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, dir+"/callee.yaml", `
-edition: v2026.3
+edition: v2026.4
 name: callee
 steps:
   - id: inner
@@ -143,7 +143,7 @@ steps:
 outputs: {}
 `)
 	writeFile(t, dir+"/workflow.yaml", `
-edition: v2026.3
+edition: v2026.4
 name: caller
 steps:
   - id: sub
@@ -182,7 +182,7 @@ func TestSwitchBodyStepsJoinTheClosedClaimUniverse(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, dir+"/workflow.yaml", `
-edition: v2026.3
+edition: v2026.4
 name: route
 inputs:
   risk:
@@ -231,7 +231,7 @@ tests:
 // step an author can see in the transcript, which records nothing under its own
 // id because its branches are the work.
 const parallelWorkflow = `
-edition: v2026.3
+edition: v2026.4
 name: gate
 steps:
   - id: checks
@@ -333,7 +333,7 @@ func TestRanNamingACalleeStepSaysWhereItLives(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, dir+"/callee.yaml", `
-edition: v2026.3
+edition: v2026.4
 name: shift-traffic
 steps:
   - id: shift
@@ -342,7 +342,7 @@ steps:
 outputs: {}
 `)
 	writeFile(t, dir+"/workflow.yaml", `
-edition: v2026.3
+edition: v2026.4
 name: rollout
 steps:
   - id: shifter

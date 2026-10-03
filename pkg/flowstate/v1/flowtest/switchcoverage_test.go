@@ -33,7 +33,7 @@ import (
 //     spelling of written-down ignoring — so it contributes no step at all;
 //   - `default:` runs `unhandled`, which is a step, but only the record says the
 //     default is what ran rather than some other path to the same id.
-const armWorkflow = `edition: v2026.3
+const armWorkflow = `edition: v2026.4
 name: arms
 inputs:
   action:
@@ -81,7 +81,7 @@ func writeArmFixture(t *testing.T, cases string, extra string) string {
 	dir := t.TempDir()
 	writeFile(t, dir+"/workflow.yaml", armWorkflow)
 	path := dir + "/arms.test.yaml"
-	writeFile(t, path, "edition: v2026.3\ntests:"+cases+extra)
+	writeFile(t, path, "edition: v2026.4\ntests:"+cases+extra)
 
 	return path
 }
@@ -319,7 +319,7 @@ func TestASwitchInALoopBodyIsMeasuredToo(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
-	writeFile(t, dir+"/workflow.yaml", `edition: v2026.3
+	writeFile(t, dir+"/workflow.yaml", `edition: v2026.4
 name: looped-arms
 steps:
   - id: each
@@ -345,7 +345,7 @@ steps:
                     message: other
 `)
 	path := dir + "/looped.test.yaml"
-	writeFile(t, path, `edition: v2026.3
+	writeFile(t, path, `edition: v2026.4
 tests:
   - name: both items are routed
     workflow: ./workflow.yaml
@@ -401,7 +401,7 @@ func TestTwoSwitchesSharingAStepIDAreMeasuredApart(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
-	writeFile(t, dir+"/workflow.yaml", `edition: v2026.3
+	writeFile(t, dir+"/workflow.yaml", `edition: v2026.4
 name: shared-ids
 steps:
   - id: first
@@ -432,7 +432,7 @@ steps:
                 steps: []
 `)
 	path := dir + "/shared.test.yaml"
-	writeFile(t, path, `edition: v2026.3
+	writeFile(t, path, `edition: v2026.4
 tests:
   - name: both loops run one item each
     workflow: ./workflow.yaml
@@ -492,7 +492,7 @@ func TestAnErrorArmIsCreditedWhenTheCaseExpectsTheFailure(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
-	writeFile(t, dir+"/workflow.yaml", `edition: v2026.3
+	writeFile(t, dir+"/workflow.yaml", `edition: v2026.4
 name: error-arm
 inputs:
   action:
@@ -510,7 +510,7 @@ steps:
                 url: https://example.com/boom
 `)
 	path := dir + "/errorarm.test.yaml"
-	writeFile(t, path, `edition: v2026.3
+	writeFile(t, path, `edition: v2026.4
 tests:
   - name: the error arm fails, which is the point of the case
     workflow: ./workflow.yaml

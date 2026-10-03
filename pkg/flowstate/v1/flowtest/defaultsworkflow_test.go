@@ -19,7 +19,7 @@ func TestDefaultsWorkflowIsInheritedByCasesThatNameNone(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
-edition: v2026.3
+edition: v2026.4
 name: greet
 steps:
   - id: hello
@@ -62,7 +62,7 @@ func TestACasesOwnWorkflowBeatsTheDefault(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
-edition: v2026.3
+edition: v2026.4
 name: default-target
 steps:
   - id: default_step
@@ -71,7 +71,7 @@ steps:
 outputs: {}
 `)
 	writeFile(t, filepath.Join(dir, "other.yaml"), `
-edition: v2026.3
+edition: v2026.4
 name: own-target
 steps:
   - id: own_step

@@ -1,4 +1,4 @@
-edition: v2026.3
+edition: v2026.4
 name: keychain-secret
 steps:
   # A keychain: reference names an account within the configured service. The

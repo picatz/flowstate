@@ -1,4 +1,4 @@
-edition: v2026.3
+edition: v2026.4
 
 # Proves page two resumes from the cursor page one returned, and only under the
 # ordering that cursor is honest about, in CI with no network and without the

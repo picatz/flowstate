@@ -3,7 +3,7 @@
 # first, so the file is declared here in full rather than probed for a
 # substring — anything the formatter drops shows up as a diff.
 -- write untidy.yaml --
-edition: v2026.3
+edition: v2026.4
 name:    untidy
 # a comment above the steps
 steps:
@@ -17,7 +17,7 @@ $ flow fmt untidy.yaml
 -- stdout --
 untidy.yaml: reformatted
 -- file untidy.yaml --
-edition: v2026.3
+edition: v2026.4
 name: untidy
 # a comment above the steps
 steps:

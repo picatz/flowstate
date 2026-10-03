@@ -33,7 +33,7 @@ as a `POST` to `/<package>.<Service>/<Method>` with a JSON body.
 
 ```console
 $ cat > hello.yaml <<'EOF'
-edition: v2026.3
+edition: v2026.4
 name: hello
 inputs:
   who:

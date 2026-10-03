@@ -1,4 +1,4 @@
-edition: v2026.3
+edition: v2026.4
 name: plugin-greeting
 description: Calls a task a plugin provides, as though it were built in.
 

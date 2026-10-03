@@ -7,7 +7,7 @@
 # The half this cannot reach is covered where it lives: the server's own tests
 # start a real second run against a real Temporal and check all three
 # `on_conflict:` answers, including that tenant A's key does not block tenant B's.
-edition: v2026.3
+edition: v2026.4
 defaults:
   workflow: ./workflow.yaml
   stubs:

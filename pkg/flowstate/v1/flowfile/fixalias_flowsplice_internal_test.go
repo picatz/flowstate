@@ -39,16 +39,16 @@ func TestAliasInlinerSplicesFlowStyleValuesWithTheirDelimiters(t *testing.T) {
 	}{
 		{
 			name: "a flow-style mapping",
-			src: "edition: v2026.3\nname: t\nvars:\n  a: &a {x: 1}\n  u: *a\n" +
+			src: "edition: v2026.4\nname: t\nvars:\n  a: &a {x: 1}\n  u: *a\n" +
 				"steps:\n  - id: a\n    log:\n      message: hi\n",
-			wantSource: "edition: v2026.3\nname: t\nvars:\n  a: {x: 1}\n  u: {x: 1}\n" +
+			wantSource: "edition: v2026.4\nname: t\nvars:\n  a: {x: 1}\n  u: {x: 1}\n" +
 				"steps:\n  - id: a\n    log:\n      message: hi\n",
 		},
 		{
 			name: "a flow-style sequence",
-			src: "edition: v2026.3\nname: t\nvars:\n  a: &a [1, 2]\n  u: *a\n" +
+			src: "edition: v2026.4\nname: t\nvars:\n  a: &a [1, 2]\n  u: *a\n" +
 				"steps:\n  - id: a\n    log:\n      message: hi\n",
-			wantSource: "edition: v2026.3\nname: t\nvars:\n  a: [1, 2]\n  u: [1, 2]\n" +
+			wantSource: "edition: v2026.4\nname: t\nvars:\n  a: [1, 2]\n  u: [1, 2]\n" +
 				"steps:\n  - id: a\n    log:\n      message: hi\n",
 		},
 		{
@@ -56,16 +56,16 @@ func TestAliasInlinerSplicesFlowStyleValuesWithTheirDelimiters(t *testing.T) {
 			// eachToken is structural rather than shape-specific, so a value that
 			// nests a flow structure inside another has to come out whole too.
 			name: "a nested flow-style mapping",
-			src: "edition: v2026.3\nname: t\nvars:\n  a: &a {x: {y: 1}}\n  u: *a\n" +
+			src: "edition: v2026.4\nname: t\nvars:\n  a: &a {x: {y: 1}}\n  u: *a\n" +
 				"steps:\n  - id: a\n    log:\n      message: hi\n",
-			wantSource: "edition: v2026.3\nname: t\nvars:\n  a: {x: {y: 1}}\n  u: {x: {y: 1}}\n" +
+			wantSource: "edition: v2026.4\nname: t\nvars:\n  a: {x: {y: 1}}\n  u: {x: {y: 1}}\n" +
 				"steps:\n  - id: a\n    log:\n      message: hi\n",
 		},
 		{
 			name: "a nested flow-style sequence",
-			src: "edition: v2026.3\nname: t\nvars:\n  a: &a [[1, 2], 3]\n  u: *a\n" +
+			src: "edition: v2026.4\nname: t\nvars:\n  a: &a [[1, 2], 3]\n  u: *a\n" +
 				"steps:\n  - id: a\n    log:\n      message: hi\n",
-			wantSource: "edition: v2026.3\nname: t\nvars:\n  a: [[1, 2], 3]\n  u: [[1, 2], 3]\n" +
+			wantSource: "edition: v2026.4\nname: t\nvars:\n  a: [[1, 2], 3]\n  u: [[1, 2], 3]\n" +
 				"steps:\n  - id: a\n    log:\n      message: hi\n",
 		},
 	}
@@ -113,16 +113,16 @@ func TestFixSucceedsOnAFlowStyleAnchorAliasWithoutASecondRound(t *testing.T) {
 	}{
 		{
 			name: "a flow-style mapping",
-			src: "edition: v2026.3\nname: t\nvars:\n  a: &a {x: 1}\n  u: *a\n" +
+			src: "edition: v2026.4\nname: t\nvars:\n  a: &a {x: 1}\n  u: *a\n" +
 				"steps:\n  - id: a\n    log:\n      message: hi\n",
-			want: "edition: v2026.3\nname: t\nvars:\n  a: {x: 1}\n  u: {x: 1}\n" +
+			want: "edition: v2026.4\nname: t\nvars:\n  a: {x: 1}\n  u: {x: 1}\n" +
 				"steps:\n  - id: a\n    log:\n      message: hi\n",
 		},
 		{
 			name: "a flow-style sequence",
-			src: "edition: v2026.3\nname: t\nvars:\n  a: &a [1, 2]\n  u: *a\n" +
+			src: "edition: v2026.4\nname: t\nvars:\n  a: &a [1, 2]\n  u: *a\n" +
 				"steps:\n  - id: a\n    log:\n      message: hi\n",
-			want: "edition: v2026.3\nname: t\nvars:\n  a: [1, 2]\n  u: [1, 2]\n" +
+			want: "edition: v2026.4\nname: t\nvars:\n  a: [1, 2]\n  u: [1, 2]\n" +
 				"steps:\n  - id: a\n    log:\n      message: hi\n",
 		},
 	} {
