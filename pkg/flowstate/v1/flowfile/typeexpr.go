@@ -253,3 +253,64 @@ func formatType(t *v1.Type, depth int) (string, error) {
 	}
 	return "", errors.New("type has no kind")
 }
+
+// declareType reads the text of a declaration's `type:` into the two
+// representations a declaration carries: the legacy enum and, when the text is
+// a type expression rather than one of the legacy words, the structural
+// `value_type`.
+//
+// The legacy words are tried first and stay exactly as they were; only text that
+// is not one is parsed as a type expression, so a file that compiled before
+// compiles to the same message. A type expression must also project into the
+// legacy enum, because an older worker ignores `value_type` and the schema
+// requires the two to agree: a typed `list(string)` carries TYPE_LIST, and
+// `map(string, T)` TYPE_STRUCT, which is what an older reader enforces of it. A
+// type with no legacy word (`bytes`, `timestamp`, `duration`, `null_type`,
+// `dyn`) is refused until the edition boundary makes a structural-only
+// declaration safe; saying so beats storing something an older worker would
+// read as untyped.
+func declareType(text string) (legacy v1.InputDeclaration_Type, structural *v1.Type, err error) {
+	if declared, known := v1.ParseDeclaredType(text); known {
+		return declared, nil, nil
+	}
+
+	structural, err = ParseType(text)
+	if err != nil {
+		return v1.InputDeclaration_TYPE_UNSPECIFIED, nil, err
+	}
+
+	switch k := structural.GetKind().(type) {
+	case *v1.Type_List:
+		return v1.InputDeclaration_TYPE_LIST, structural, nil
+	case *v1.Type_Map_:
+		return v1.InputDeclaration_TYPE_STRUCT, structural, nil
+	case *v1.Type_Scalar_:
+		switch k.Scalar {
+		case v1.Type_SCALAR_STRING:
+			return v1.InputDeclaration_TYPE_STRING, structural, nil
+		case v1.Type_SCALAR_INT:
+			return v1.InputDeclaration_TYPE_INT, structural, nil
+		case v1.Type_SCALAR_DOUBLE:
+			return v1.InputDeclaration_TYPE_FLOAT, structural, nil
+		case v1.Type_SCALAR_BOOL:
+			return v1.InputDeclaration_TYPE_BOOL, structural, nil
+		}
+	}
+
+	return v1.InputDeclaration_TYPE_UNSPECIFIED, nil, fmt.Errorf(
+		"%s cannot be declared yet: a declaration also carries the legacy type older workers read, and this one has none", text)
+}
+
+// declaredTypeText is how a declaration's type is written back into a Flowfile:
+// the type expression when the declaration carries a structural type, so a
+// `list(string)` survives a compile-and-marshal round trip, and the legacy word
+// otherwise.
+func declaredTypeText(legacy v1.InputDeclaration_Type, structural *v1.Type) string {
+	if structural != nil {
+		if text, err := FormatType(structural); err == nil {
+			return text
+		}
+	}
+
+	return v1.DeclaredTypeName(legacy)
+}

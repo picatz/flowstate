@@ -851,7 +851,7 @@ message InputDeclaration {
   option (buf.validate.message).cel = {
     id: "input_declaration.type_agrees"
     message: "value_type and the legacy type must describe the same input type when both are set"
-    expression: "!has(this.value_type) || this.type == 0 || (this.type == 1 && this.value_type.scalar == 1) || (this.type == 2 && this.value_type.scalar == 2) || (this.type == 3 && this.value_type.scalar == 3) || (this.type == 4 && this.value_type.scalar == 4) || (this.type == 5 && has(this.value_type.map) && this.value_type.map.value.dyn) || (this.type == 6 && has(this.value_type.list) && this.value_type.list.dyn) || (this.type == 9 && this.value_type.enum)"
+    expression: "!has(this.value_type) || this.type == 0 || (this.type == 1 && this.value_type.scalar == 1) || (this.type == 2 && this.value_type.scalar == 2) || (this.type == 3 && this.value_type.scalar == 3) || (this.type == 4 && this.value_type.scalar == 4) || (this.type == 5 && has(this.value_type.map)) || (this.type == 6 && has(this.value_type.list)) || (this.type == 9 && this.value_type.enum)"
   };
 
   // Type is the legacy declaration vocabulary. Edition-aware specifications use
@@ -1189,7 +1189,7 @@ message OutputDeclaration {
   option (buf.validate.message).cel = {
     id: "output_declaration.type_agrees"
     message: "value_type and the legacy type must describe the same output type when both are set"
-    expression: "!has(this.value_type) || this.type == 0 || (this.type == 1 && this.value_type.scalar == 1) || (this.type == 2 && this.value_type.scalar == 2) || (this.type == 3 && this.value_type.scalar == 3) || (this.type == 4 && this.value_type.scalar == 4) || (this.type == 5 && has(this.value_type.map) && this.value_type.map.value.dyn) || (this.type == 6 && has(this.value_type.list) && this.value_type.list.dyn) || (this.type == 9 && this.value_type.enum)"
+    expression: "!has(this.value_type) || this.type == 0 || (this.type == 1 && this.value_type.scalar == 1) || (this.type == 2 && this.value_type.scalar == 2) || (this.type == 3 && this.value_type.scalar == 3) || (this.type == 4 && this.value_type.scalar == 4) || (this.type == 5 && has(this.value_type.map)) || (this.type == 6 && has(this.value_type.list)) || (this.type == 9 && this.value_type.enum)"
   };
 
   // Name is what the value is called in the run's result.

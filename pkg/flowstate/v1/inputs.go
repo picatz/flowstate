@@ -436,7 +436,7 @@ func CheckInputValue(name string, declaration *InputDeclaration, value *Value) e
 		return fmt.Errorf("input %q cannot be used as a value: %v", name, kind)
 	}
 
-	return checkDeclaredLiteralType("input", "was given", name, declaration.GetType(), value.GetLiteral())
+	return checkDeclaredLiteralType("input", "was given", name, declaration.GetType(), declaration.GetValueType(), value.GetLiteral())
 }
 
 // checkDeclaredLiteralType is the "does this literal have the declared type"
@@ -449,7 +449,7 @@ func CheckInputValue(name string, declaration *InputDeclaration, value *Value) e
 // how the sentence says the value arrived — a caller *gave* an input, a run
 // *computed* an output — since those are the two halves that differ and the
 // judgement is what does not.
-func checkDeclaredLiteralType(kind, verb, name string, declared InputDeclaration_Type, literal *expr.Value) error {
+func checkDeclaredLiteralType(kind, verb, name string, declared InputDeclaration_Type, structural *Type, literal *expr.Value) error {
 	got, ok := inputTypeOf(literal)
 	if !ok {
 		return fmt.Errorf("%s %q is %s, which is not a kind of value an %s can hold; "+
@@ -491,6 +491,14 @@ func checkDeclaredLiteralType(kind, verb, name string, declared InputDeclaration
 		if spelling, nonFinite := nonFiniteSpelling(literal.GetDoubleValue()); nonFinite {
 			return fmt.Errorf("%s %q is declared float but %s %s, which is not a finite number",
 				kind, name, verb, spelling)
+		}
+	}
+
+	// The legacy enum judged the outermost kind; a structural type also judges
+	// what a list holds and what a map's values are.
+	if structural != nil {
+		if err := checkLiteralShape(structural, literal); err != nil {
+			return fmt.Errorf("%s %q is declared %s but %s %w", kind, name, TypeString(structural), verb, err)
 		}
 	}
 
