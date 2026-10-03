@@ -223,3 +223,17 @@ func TestASensitiveRecordOutputWithholdsWhatItWasGiven(t *testing.T) {
 		assert.NotContains(t, err.Error(), "hunter2", name)
 	}
 }
+
+func TestASensitiveOutputWithholdsAMapKeyInThePath(t *testing.T) {
+	t.Parallel()
+
+	output := &v1.OutputDeclaration{
+		Name: "m", Type: v1.InputDeclaration_TYPE_STRUCT, Sensitive: true,
+		ValueType: &v1.Type{Kind: &v1.Type_Map_{Map: &v1.Type_Map{Value: &v1.Type{Kind: &v1.Type_Scalar_{Scalar: v1.Type_SCALAR_INT}}}}},
+	}
+	literal := mapLit(recordStr("hunter2"), recordStr("not an int"))
+
+	err := v1.CheckOutputValueIn(nil, output, &v1.Value{Kind: &v1.Value_Literal{Literal: literal}})
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), "hunter2")
+}

@@ -59,7 +59,7 @@ func checkLiteralShapeAt(table TypeTable, r valueRendering, t *Type, literal *ex
 			if !isString {
 				return fmt.Errorf("a map with %s key%s", literalKindName(entry.GetKey()), atPath(path))
 			}
-			if err := checkLiteralShapeAt(table, r, kind.Map.GetValue(), entry.GetValue(), path+"."+key.StringValue, depth+1); err != nil {
+			if err := checkLiteralShapeAt(table, r, kind.Map.GetValue(), entry.GetValue(), path+"."+redactedIfSensitive(r.sensitive, func() string { return r.show(key.StringValue) }), depth+1); err != nil {
 				return err
 			}
 		}

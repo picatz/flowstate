@@ -460,7 +460,7 @@ func CheckInputValueIn(table TypeTable, name string, declaration *InputDeclarati
 		return fmt.Errorf("input %q cannot be used as a value: %v", name, kind)
 	}
 
-	return checkDeclaredLiteralType(table, valueRendering{bounded: true}, "input", "was given", name, declaration.GetType(), declaration.GetValueType(), value.GetLiteral())
+	return checkDeclaredLiteralType(table, inputValueRendering, "input", "was given", name, declaration.GetType(), declaration.GetValueType(), value.GetLiteral())
 }
 
 // checkDeclaredLiteralType is the "does this literal have the declared type"
