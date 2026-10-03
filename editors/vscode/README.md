@@ -42,13 +42,17 @@ change that would have the extension judge a Flowfile belongs in
    `Flowstate: Test` needs a `*.test.yaml` to be the active file: it is also
    offered on a workflow file, where `flow test` refuses it.
 
+4. **A debug type.** `flowstate` launches or attaches `flow dap`, so the
+   step, continue and pause buttons and gutter breakpoints drive a run of the
+   active Flowfile; F5 with no `launch.json` launches the file in the editor.
+   The adapter owns every debugger decision; see
+   [Stepping a run](../../docs/EDITORS.md#stepping-a-run-flow-dap) for what a
+   launch and an attach read.
+
 ## What it does not do yet
 
 - **A workflow tree view or a step-graph webview.** Both are planned; the graph
   has to render `flow compile`'s output rather than re-parse YAML.
-- **A debug type.** `flow dap` works with editors that can launch an adapter
-  directly (see [Editor setup](../../docs/EDITORS.md#stepping-a-run-flow-dap)),
-  but this extension does not register one.
 - **Run progress, deployment management, or an AI assistant.** Out of scope.
 - **Bundling `flow`.** The binary must be on `PATH`, or pointed to with
   `flowstate.path`.
@@ -59,8 +63,9 @@ change that would have the extension judge a Flowfile belongs in
 | --- | --- | --- |
 | `flowstate.path` | `flow` | machine |
 | `flowstate.lsp.args` | `[]` | machine |
+| `flowstate.dap.args` | `[]` | machine |
 
-Both are `machine`: VS Code ignores them when set in a
+All three are `machine`: VS Code ignores them when set in a
 workspace's `.vscode/settings.json`, so a repository you cloned to read
 cannot choose what your editor executes. This is the same argument
 `docs/EDITORS.md` makes about Neovim's `--plugin-dir`.
@@ -119,14 +124,16 @@ Verified in this repository, without a display:
 - `npm ci` installs from the committed lockfile.
 - `npm run compile` (`tsc -p .`, `strict: true`) type-checks clean.
 - `npm test` runs the unit tests under Node's built-in test runner
-  (`node --test`) against the pure logic in `src/commandLine.ts` and
-  `src/binary.ts` — argv construction for each command, and binary-resolution
+  (`node --test`) against the pure logic in `src/commandLine.ts`,
+  `src/debugConfig.ts` and `src/binary.ts` — argv construction for each command
+  and for the debug adapter, launch-configuration resolution, and binary-resolution
   and binary-availability-probe behavior including the not-found path.
 
 **Not verified, because this environment has no display and cannot run VS
 Code:** that the extension activates correctly inside a real VS Code window,
 that the language client actually attaches to `flow lsp` and diagnostics
-appear as you type, that the commands' tasks render correctly in the
+appear as you type, that F5 starts `flow dap` and stops at a gutter breakpoint, that the
+commands' tasks render correctly in the
 terminal panel, or that the settings UI behaves as described. A human with
 an editor needs to open this folder with
 `code --extensionDevelopmentPath=$PWD .` (after `npm ci && npm run compile`)

@@ -56,6 +56,15 @@
           "default": [],
           "description": "Extra arguments for `flow lsp`, e.g. [\"--plugin-dir\", \"/path/to/plugins\"]. A plugin directory must be an absolute path: the language server starts in the opened workspace, so a relative one would name a directory inside whatever repository you have open. Ignored when set in workspace (.vscode) settings, for the same reason as flowstate.path.",
           "scope": "machine"
+        },
+        "flowstate.dap.args": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Extra arguments for `flow dap`, e.g. [\"--plugin-dir\", \"/path/to/plugins\"] or [\"--address\", \"localhost:7233\", \"--token-file\", \"/path/to/token\"] for an attach. A plugin directory must be an absolute path. A launch runs the workflow, so pass the same --egress-policy and --task-policy the worker uses. Ignored when set in workspace (.vscode) settings, for the same reason as flowstate.path.",
+          "scope": "machine"
         }
       }
     },
@@ -127,7 +136,105 @@
           "group": "flowstate@4"
         }
       ]
-    }
+    },
+    "breakpoints": [
+      {
+        "language": "flowfile"
+      }
+    ],
+    "debuggers": [
+      {
+        "type": "flowstate",
+        "label": "Flowstate",
+        "languages": [
+          "flowfile"
+        ],
+        "configurationAttributes": {
+          "launch": {
+            "required": [
+              "program"
+            ],
+            "properties": {
+              "program": {
+                "type": "string",
+                "description": "The workflow to run locally.",
+                "default": "${file}"
+              },
+              "inputs": {
+                "type": "object",
+                "description": "The run's inputs, keyed by the names the workflow declares under `inputs:`.",
+                "default": {}
+              },
+              "stopOnEntry": {
+                "type": "boolean",
+                "description": "Hold the run at its first step. Set false to run to the first breakpoint, failure stop or pause.",
+                "default": true
+              },
+              "revealSensitive": {
+                "type": "boolean",
+                "description": "Show the values of sensitive inputs and outputs while debugging.",
+                "default": false
+              }
+            }
+          },
+          "attach": {
+            "required": [
+              "workflowId"
+            ],
+            "properties": {
+              "workflowId": {
+                "type": "string",
+                "description": "Workflow id of the durable run to attach to."
+              },
+              "runId": {
+                "type": "string",
+                "description": "First run id of the chain to pin; unset follows the current run."
+              },
+              "sessionId": {
+                "type": "string",
+                "description": "Rejoin a debug session another client left attached."
+              },
+              "program": {
+                "type": "string",
+                "description": "The Flowfile the run executes, used only to map lines; shown as step addresses when it is not byte for byte that file."
+              }
+            }
+          }
+        },
+        "initialConfigurations": [
+          {
+            "type": "flowstate",
+            "request": "launch",
+            "name": "Debug this Flowfile",
+            "program": "${file}",
+            "stopOnEntry": true
+          }
+        ],
+        "configurationSnippets": [
+          {
+            "label": "Flowstate: Debug a Flowfile",
+            "description": "Run a workflow locally under the debugger.",
+            "body": {
+              "type": "flowstate",
+              "request": "launch",
+              "name": "Debug ${1:this Flowfile}",
+              "program": "^\"\\${file}\"",
+              "stopOnEntry": true
+            }
+          },
+          {
+            "label": "Flowstate: Attach to a durable run",
+            "description": "Debug a run on a server.",
+            "body": {
+              "type": "flowstate",
+              "request": "attach",
+              "name": "Attach to ${1:a durable run}",
+              "workflowId": "${2:workflow-id}"
+            }
+          }
+        ]
+      }
+    ]
   },
   "dependencies": {
     "vscode-languageclient": "10.1.1"

@@ -743,9 +743,15 @@ own copy, where one replaced the submitted workflow), and otherwise the attach
 shows step addresses and answers line breakpoints unverified. A `program` that
 does not compile fails the attach without its diagnostics. The attach reaches
 whichever server the adapter was started against, so the debug type's adapter
-command carries `--address` and `--token-file` beside `dap`. Registering the
-`flowstate` debug type, and with it that command, needs an extension
-contribution; `editors/vscode/` does not ship one yet.
+command carries `--address` and `--token-file` beside `dap`. The extension in `editors/vscode/` registers the
+`flowstate` debug type and starts `flow dap` from the `flowstate.path` setting,
+with the arguments in the `flowstate.dap.args` setting, for example
+`["--plugin-dir", "/usr/local/lib/flowstate/plugins"]` or, for an attach,
+`["--address", "localhost:7233", "--token-file", "/path/to/token"]`. Both
+settings are `machine`-scoped, so a cloned repository's `.vscode` can name a
+program to debug and never what runs. With no `launch.json`, F5 on a workflow
+launches that file; a test suite is refused, because `flow test --debug` is how
+a case is stepped.
 
 Line breakpoints are gutter dots as usual. Function breakpoints go in the
 Breakpoints view's own section — the **+** beside *Function Breakpoints* —
