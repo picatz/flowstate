@@ -1,6 +1,7 @@
 package flowfile_test
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -420,4 +421,32 @@ steps:
 	wf, _, err = flowfile.Parse([]byte(source(`inputs.order.total.cent > 0`)))
 	require.NoError(t, err)
 	assert.Contains(t, flowfile.Validate(wf).Error(), `the record Money has no field "cent"`)
+}
+
+// What a file controls about a refusal is bounded: how many chains are reported,
+// how long a name is echoed, and that a name that long is not matched against the
+// record's fields.
+func TestUnknownFieldDiagnosticsAreBounded(t *testing.T) {
+	t.Parallel()
+
+	var reads []string
+	for i := range 40 {
+		reads = append(reads, fmt.Sprintf("has(inputs.order.missing%d)", i))
+	}
+	long := strings.Repeat("x", 5000)
+	wf, _, err := flowfile.Parse([]byte(recordExpressionSource(strings.Join(reads, " || ") + " || has(inputs.order." + long + ")")))
+	require.NoError(t, err)
+
+	ds := flowfile.Validate(wf)
+	require.NotEmpty(t, ds)
+	assert.LessOrEqual(t, len(ds), 8, "one expression reports a bounded number of unknown fields")
+	assert.Less(t, len(ds.Error()), 8*1024, "and a bounded amount of text")
+
+	wf, _, err = flowfile.Parse([]byte(recordExpressionSource("has(inputs.order." + long + ")")))
+	require.NoError(t, err)
+	ds = flowfile.Validate(wf)
+	require.NotEmpty(t, ds)
+	assert.NotContains(t, ds.Error(), long, "a name the file controls is cut before it is echoed")
+	assert.Contains(t, ds.Error(), "…")
+	assert.NotContains(t, ds.Error(), "Did you mean", "a name that long is not matched against the record")
 }

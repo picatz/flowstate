@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"unicode/utf8"
 
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 
@@ -100,8 +101,21 @@ func (t *typeTable) resolveFieldPath(names []string) (recordPath, bool) {
 	return path, true
 }
 
+// The most a diagnostic about one record field echoes back, and the most it
+// reports. A file controls the expression, so it controls how long a missing name
+// is, how many there are, and how many fields a record lists; the refusal is worth
+// the same to its reader at a fraction of that, and the work of a suggestion grows
+// with the product of the lengths. A name past the echo limit is cut and is not
+// matched against the record's fields: no declared field is that long to be meant.
+const (
+	maxEchoedName      = 64
+	maxFieldErrors     = 8
+	maxEchoedFieldList = 16
+)
+
 // fieldErrors reports each chain in the expression that names a field a record
-// does not declare.
+// does not declare, up to [maxFieldErrors] of them: the first is the one to fix and
+// the rest follow it.
 func (t *typeTable) fieldErrors(site v1.ValueSite) Diagnostics {
 	parsed := site.Value.GetExpr()
 
@@ -110,16 +124,35 @@ func (t *typeTable) fieldErrors(site v1.ValueSite) Diagnostics {
 		if path.missing == "" {
 			continue
 		}
+		if len(ds) == maxFieldErrors {
+			break
+		}
 
-		known := make([]string, 0, len(path.in.GetFields()))
-		for _, f := range path.in.GetFields() {
+		fields := path.in.GetFields()
+		known := make([]string, 0, min(len(fields), maxEchoedFieldList))
+		for _, f := range fields[:min(len(fields), maxEchoedFieldList)] {
 			known = append(known, f.GetName())
+		}
+		declares := quoteAll(known)
+		if len(fields) > len(known) {
+			declares += fmt.Sprintf(", and %d more", len(fields)-len(known))
+		}
+
+		chain := make([]string, 0, len(path.fields)+2)
+		for _, name := range path.names[:len(path.fields)+2] {
+			chain = append(chain, echo(name))
 		}
 
 		message := fmt.Sprintf("%s.%s: the record %s has no field %q; it declares %s",
-			v1.InputsRoot, strings.Join(path.names[:len(path.fields)+2], "."), path.in.GetName(), path.missing, quoteAll(known))
-		if suggestion, ok := nearest.Name(path.missing, known); ok {
-			message += fmt.Sprintf(". Did you mean %q?", suggestion)
+			v1.InputsRoot, strings.Join(chain, "."), path.in.GetName(), echo(path.missing), declares)
+		if len(path.missing) <= maxEchoedName {
+			all := make([]string, 0, len(fields))
+			for _, f := range fields {
+				all = append(all, f.GetName())
+			}
+			if suggestion, ok := nearest.Name(path.missing, all); ok {
+				message += fmt.Sprintf(". Did you mean %q?", suggestion)
+			}
 		}
 
 		ds = append(ds, Diagnostic{
@@ -129,6 +162,20 @@ func (t *typeTable) fieldErrors(site v1.ValueSite) Diagnostics {
 	}
 
 	return ds
+}
+
+// echo cuts a name a file controls to [maxEchoedName] bytes, on a rune boundary.
+func echo(name string) string {
+	if len(name) <= maxEchoedName {
+		return name
+	}
+
+	cut := maxEchoedName
+	for cut > 0 && !utf8.RuneStart(name[cut]) {
+		cut--
+	}
+
+	return name[:cut] + "…"
 }
 
 func quoteAll(names []string) string {
