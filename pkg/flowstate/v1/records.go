@@ -20,11 +20,11 @@ import (
 // before there was a table to read.
 
 // MaxRecordTypes bounds the record types one workflow declares, matching the
-// schema's bound on [Workflow.declared_types].
+// schema's bound on [Workflow].
 const MaxRecordTypes = 64
 
 // MaxRecordFields bounds the fields of one record type. It matches the bound the
-// schema puts on [TypeDeclaration.fields], restated here because a hand-built
+// schema puts on [TypeDeclaration], restated here because a hand-built
 // declaration does not pass through the schema.
 const MaxRecordFields = 64
 
@@ -194,7 +194,7 @@ func recordFieldNames(fields []*InputDeclaration) string {
 // until the type has one, and the checks that walk a value would be the only
 // thing standing between an author and an unbounded literal. A field that sets
 // `default`, `example`, `sensitive`, `must` or a length or item bound is refused with the reason
-// [TypeDeclaration.fields] gives, rather than carrying a promise nothing keeps.
+// [TypeDeclaration] gives, rather than carrying a promise nothing keeps.
 //
 // The compiler runs it with a position to point at through the same
 // function, and [CheckDeclarationTypes] runs it again for a specification that
