@@ -1,0 +1,56 @@
+edition: v2026.3
+
+# Proves the workflow reads what vcs.log and vcs.diff return, in CI, with no
+# network and without the vcs plugin installed. Each stub returns the shape the
+# real task produces - a commit is a message, so on the workflow side it is a map
+# keyed by that message's own field names (author_name, change_type) - which
+# keeps the stub from being a test of something production cannot do.
+tests:
+  - name: reports the newest commit and how many files the last commit touched
+    workflow: ./workflow.yaml
+    stubs:
+      # Each stub selects its call on what the workflow resolved into the task's
+      # inputs, so reading another repository, asking for another depth, or
+      # diffing other revisions matches nothing and fails the test.
+      - step: history
+        where: >-
+          inputs.url == 'https://github.com/octocat/Hello-World.git'
+          && inputs.max_commits == 5
+        returns:
+          commits:
+            - sha: b1946ac92492d2347c6235b4d2611184
+              author_name: The Octocat
+              author_email: octocat@github.com
+              message: Merge pull request #6 from Spaceghost/patch-1
+              authored_at: "2012-03-06T15:06:50Z"
+            - sha: 7fd1a60b01f91b314f59955a4e4d4e80
+              author_name: The Octocat
+              author_email: octocat@github.com
+              message: Initial commit
+              authored_at: "2011-01-26T19:01:12Z"
+          resolved_ref: b1946ac92492d2347c6235b4d2611184
+          truncated: false
+      - step: changes
+        where: >-
+          inputs.url == 'https://github.com/octocat/Hello-World.git'
+          && inputs.base == 'HEAD~1' && inputs.head == 'HEAD'
+        returns:
+          patch: ""
+          files:
+            - path: README
+              change_type: modified
+              additions: 1
+              deletions: 1
+            - path: CONTRIBUTING.md
+              change_type: added
+              additions: 3
+              deletions: 0
+          truncated: false
+      # The log step is a built-in; flow test never lets any task run for real.
+      - step: announce
+        returns: {}
+    expect:
+      ran: [history, changes, announce]
+      outputs:
+        latest_commit_message: Merge pull request #6 from Spaceghost/patch-1
+        files_changed: 2

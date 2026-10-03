@@ -100,9 +100,11 @@ type RunOutputs struct {
 	// as successful fails the step, so this is the record of what happened rather
 	// than a value a workflow has to remember to check.
 	ExitCode int32 `protobuf:"varint,1,opt,name=exit_code,json=exitCode,proto3" json:"exit_code,omitempty"`
-	// Stdout and Stderr are the streams, demultiplexed from the daemon's own
-	// framing, each bounded by the grant and each valid UTF-8 or empty.
+	// Stdout is the container's standard output, demultiplexed from the
+	// daemon's own framing, bounded by the grant and valid UTF-8 or empty.
 	Stdout string `protobuf:"bytes,2,opt,name=stdout,proto3" json:"stdout,omitempty"`
+	// Stderr is the container's standard error, demultiplexed and bounded the
+	// same way as stdout.
 	Stderr string `protobuf:"bytes,3,opt,name=stderr,proto3" json:"stderr,omitempty"`
 	// Truncated reports that the container wrote more than the grant's limit, so
 	// a cut-off stream is never readable as a complete one.

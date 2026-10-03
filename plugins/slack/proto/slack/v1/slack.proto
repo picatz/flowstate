@@ -39,6 +39,11 @@ message PostInputs {
 
 // PostOutputs identifies the message Slack acknowledged.
 message PostOutputs {
+  // Channel is the conversation ID Slack reports the message was posted to.
   string channel = 1;
+
+  // Ts is the message timestamp Slack assigned, which identifies the message
+  // within its channel and is the value a later thread_ts names to reply
+  // beneath it.
   string ts = 2;
 }

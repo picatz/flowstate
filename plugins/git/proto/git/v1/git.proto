@@ -51,12 +51,19 @@ message LsRemoteInputs {
 // pointed at when this task ran, not merely repeating a movable name a later
 // force-push or branch reset could quietly change out from under it.
 message RemoteRef {
+  // Name is the ref's full name, such as "refs/heads/main" or "refs/tags/v1.2.3".
   string name = 1;
+
+  // Sha is the full hex object id the ref pointed at when the remote
+  // advertised it.
   string sha = 2;
 }
 
 // LsRemoteOutputs is the bounded set of refs found.
 message LsRemoteOutputs {
+  // Refs lists the refs the remote advertised that match prefix, each as a
+  // name bound to the sha it pointed at, capped at the bound truncated
+  // reports.
   repeated RemoteRef refs = 1;
 
   // Truncated reports whether the remote advertised more refs than the
@@ -117,10 +124,13 @@ message CommitPushInputs {
   // refused rather than silently deleting whatever is there now.
   string patch = 6;
 
-  // AuthorName and AuthorEmail name the commit's author and committer -
-  // this task does not distinguish them. Both are required together, or
-  // both left empty (in which case a placeholder identity is used).
+  // AuthorName names the commit's author and committer - this task does not
+  // distinguish them. It is required together with author_email, or both are
+  // left empty (in which case a placeholder identity is used).
   string author_name = 7;
+
+  // AuthorEmail is the email address of the commit's author and committer,
+  // required together with author_name or left empty with it.
   string author_email = 8;
 
   // Timestamp, RFC 3339, makes commit construction fully deterministic: the
@@ -145,7 +155,10 @@ message CommitPushInputs {
 
 // Signature is a commit's author or committer line: who, and when.
 message Signature {
+  // Name is the person's name exactly as the commit recorded it, unverified.
   string name = 1;
+
+  // Email is the address exactly as the commit recorded it, unverified.
   string email = 2;
 
   // When is RFC 3339, in the zone the commit recorded.

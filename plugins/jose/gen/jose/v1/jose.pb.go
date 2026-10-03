@@ -107,8 +107,9 @@ func (x *VerifyInputs) GetAudience() string {
 // this plugin checked, under a key the operator's policy trusts.
 type VerifyOutputs struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Issuer and Subject are the verified "iss" and "sub" claims.
-	Issuer  string `protobuf:"bytes,1,opt,name=issuer,proto3" json:"issuer,omitempty"`
+	// Issuer is the verified "iss" claim.
+	Issuer string `protobuf:"bytes,1,opt,name=issuer,proto3" json:"issuer,omitempty"`
+	// Subject is the verified "sub" claim.
 	Subject string `protobuf:"bytes,2,opt,name=subject,proto3" json:"subject,omitempty"`
 	// TrustName is the operator-chosen name of the policy entry that admitted
 	// this token, so a run's history records which rule accepted it rather than
@@ -117,9 +118,10 @@ type VerifyOutputs struct {
 	// Audience is the verified "aud" claim, always a list even when the token
 	// carried one string.
 	Audience []string `protobuf:"bytes,4,rep,name=audience,proto3" json:"audience,omitempty"`
-	// ExpiresAt and IssuedAt are the verified time claims, as RFC 3339.
+	// ExpiresAt is the verified "exp" claim, as RFC 3339.
 	ExpiresAt string `protobuf:"bytes,5,opt,name=expires_at,json=expiresAt,proto3" json:"expires_at,omitempty"`
-	IssuedAt  string `protobuf:"bytes,6,opt,name=issued_at,json=issuedAt,proto3" json:"issued_at,omitempty"`
+	// IssuedAt is the verified "iat" claim, as RFC 3339.
+	IssuedAt string `protobuf:"bytes,6,opt,name=issued_at,json=issuedAt,proto3" json:"issued_at,omitempty"`
 	// Claims is the whole verified claims set, for the issuer-specific claims a
 	// policy decision needs - a repository, an email, a group list.
 	Claims        *v1alpha1.Value `protobuf:"bytes,7,opt,name=claims,proto3" json:"claims,omitempty"`

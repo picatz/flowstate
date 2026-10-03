@@ -106,18 +106,22 @@ type RunOutputs struct {
 	// successful fails the step, so this is the record of what happened rather
 	// than a value a workflow has to remember to check.
 	ExitCode int32 `protobuf:"varint,1,opt,name=exit_code,json=exitCode,proto3" json:"exit_code,omitempty"`
-	// Stdout and Stderr are the streams, each bounded by the grant and each valid
+	// Stdout is the command's standard output, bounded by the grant and valid
 	// UTF-8 or empty.
 	Stdout string `protobuf:"bytes,2,opt,name=stdout,proto3" json:"stdout,omitempty"`
+	// Stderr is the command's standard error, bounded and valid UTF-8 the same
+	// way as stdout.
 	Stderr string `protobuf:"bytes,3,opt,name=stderr,proto3" json:"stderr,omitempty"`
 	// Truncated reports that the command wrote more than the grant's limit. The
 	// output above is what fit; this says there was more, so a workflow never
 	// reads a cut-off stream as a complete one.
 	Truncated bool `protobuf:"varint,4,opt,name=truncated,proto3" json:"truncated,omitempty"`
-	// Host and Command echo the grants that were spent, so a run's history
-	// records which authority was used without a reader joining it to a
-	// configuration file.
-	Host          string `protobuf:"bytes,5,opt,name=host,proto3" json:"host,omitempty"`
+	// Host echoes the host grant that was spent, so a run's history records
+	// which authority was used without a reader joining it to a configuration
+	// file.
+	Host string `protobuf:"bytes,5,opt,name=host,proto3" json:"host,omitempty"`
+	// Command echoes the command grant that was spent, for the same reason as
+	// host.
 	Command       string `protobuf:"bytes,6,opt,name=command,proto3" json:"command,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

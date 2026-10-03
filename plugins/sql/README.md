@@ -120,6 +120,44 @@ outputs:
     description: how many rows came back - never more than max_rows, and never a truncated prefix of more that did
 ```
 
+Its test stubs the call and selects it on the bound parameter and the row bound, so CI proves the query is parameterized without a database:
+
+<!-- example: examples/plugins/sql/workflow.test.yaml -->
+```yaml
+edition: v2026.3
+
+# Proves the query is parameterized and its rows are usable by a later step's CEL,
+# in CI, with no database and without the sql plugin installed. The stub selects
+# the call only if the threshold reaches the database as a bound parameter and a
+# row bound is set, so a workflow that spliced the value into the query text, or
+# dropped the required max_rows, would match no stub.
+tests:
+  - name: binds the threshold as a parameter and passes the typed rows through
+    workflow: ./workflow.yaml
+    secrets:
+      env:SQL_DSN: postgres://not-a-real-dsn
+    stubs:
+      - task: sql.query
+        where: >-
+          inputs.params == [0]
+          && inputs.max_rows == 1000
+          && !inputs.query.contains('0 ORDER')
+        returns:
+          row_count: 2
+          rows:
+            - {id: 1, name: operating, balance_cents: 0}
+            - {id: 2, name: payroll, balance_cents: 125000}
+      - step: announce
+        returns: {}
+    expect:
+      ran: [accounts, announce]
+      outputs:
+        row_count: 2
+        accounts:
+          - {id: 1, name: operating, balance_cents: 0}
+          - {id: 2, name: payroll, balance_cents: 125000}
+```
+
 `params_test.go`'s `TestParamsToArgsNeverInterpolatesIntoSQLText` proves
 this directly: a value shaped like `alice'; DROP TABLE accounts; --`, run
 through `sql.query` as an ordinary bound parameter against a real database,
@@ -311,6 +349,75 @@ outputs:
   rows_affected:
     value: ${steps.transfer.total_rows_affected}
     description: 4 on a fresh transfer (insert, debit, credit, flag), 1 on a converged retry (only the harmless flag-set touches a row)
+```
+
+Its test selects the stub on the four statements and their bound parameters, so CI proves nothing is spliced into the SQL text:
+
+<!-- example: examples/plugins/sql/transfer.test.yaml -->
+```yaml
+edition: v2026.3
+
+# Proves the workflow hands sql.exec the shape its own header promises, in CI,
+# with no database and without the sql plugin installed. The stub's `where:` is
+# the assertion: it selects the call only if the four statements arrive in order,
+# with the amount, both account ids and the idempotency key bound as parameters
+# in the positions the placeholders name. A workflow that moved a parameter, or
+# spliced a value into the SQL text, would match no stub, and flow test refuses an
+# unstubbed task rather than running it.
+#
+# What this cannot prove is that the transaction is idempotent on a retry; that
+# is a property of the database and the statements together, and
+# plugins/sql/exec_test.go runs this exact pattern twice against a real sqlite
+# database to show it.
+tests:
+  - name: sends four statements in one call, every value bound rather than spliced
+    workflow: ./transfer.yaml
+    inputs:
+      from_account_id: 7
+      to_account_id: 9
+      amount_cents: 2500
+      idempotency_key: req-2026-0917-a
+    secrets:
+      env:SQL_DSN: postgres://not-a-real-dsn
+    stubs:
+      - task: sql.exec
+        where: >-
+          inputs.engine == 'ENGINE_POSTGRES'
+          && inputs.statements.size() == 4
+          && inputs.statements[0].params == ['req-2026-0917-a']
+          && inputs.statements[1].params == [2500, 7, 'req-2026-0917-a']
+          && inputs.statements[2].params == [2500, 9, 'req-2026-0917-a']
+          && inputs.statements[3].params == ['req-2026-0917-a']
+          && inputs.statements.all(s, !s.sql.contains('req-2026-0917-a') && !s.sql.contains('2500'))
+        returns:
+          statement_count: 4
+          total_rows_affected: 4
+      - step: announce
+        returns: {}
+    expect:
+      ran: [transfer, announce]
+      outputs:
+        rows_affected: 4
+
+  - name: a converged retry reports only the flag-set as a changed row
+    workflow: ./transfer.yaml
+    inputs:
+      from_account_id: 7
+      to_account_id: 9
+      amount_cents: 2500
+      idempotency_key: req-2026-0917-a
+    secrets:
+      env:SQL_DSN: postgres://not-a-real-dsn
+    stubs:
+      - task: sql.exec
+        returns:
+          statement_count: 4
+          total_rows_affected: 1
+      - step: announce
+        returns: {}
+    expect:
+      outputs:
+        rows_affected: 1
 ```
 
 PostgreSQL statements use `$1`, `$2`, ... placeholders. Values remain separate

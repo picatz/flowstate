@@ -1,0 +1,37 @@
+edition: v2026.3
+
+# Proves page two resumes from the cursor page one returned, and only under the
+# ordering that cursor is honest about, in CI with no network and without the
+# github plugin installed. Both stubs select their call by what it carries: the
+# fresh walk has no cursor, and the resumed one must carry exactly the cursor
+# page one handed back, with sort: created and direction: asc, which the task
+# requires alongside one. A workflow that dropped the cursor, or resumed under
+# another sort, would match no stub.
+tests:
+  - name: resumes the second page from the first page's cursor
+    workflow: ./list-resume.yaml
+    stubs:
+      - task: github.issue_list
+        where: "!has(inputs.cursor) && inputs.sort == 'created' && inputs.direction == 'asc' && inputs.max_results == 3"
+        returns:
+          issues:
+            - {number: 1, title: first, state: open, labels: [], is_pull_request: false}
+            - {number: 2, title: second, state: open, labels: [], is_pull_request: false}
+            - {number: 3, title: third, state: open, labels: [], is_pull_request: false}
+          truncated: true
+          next_cursor: cur-after-3
+      - task: github.issue_list
+        where: "inputs.cursor == 'cur-after-3' && inputs.sort == 'created' && inputs.direction == 'asc'"
+        returns:
+          issues:
+            - {number: 4, title: fourth, state: open, labels: [], is_pull_request: false}
+          truncated: false
+          next_cursor: ""
+      - step: announce
+        returns: {}
+    expect:
+      ran: [page_one, page_two, announce]
+      outputs:
+        page_one_numbers: [1, 2, 3]
+        page_two_numbers: [4]
+        resumed_from: cur-after-3
