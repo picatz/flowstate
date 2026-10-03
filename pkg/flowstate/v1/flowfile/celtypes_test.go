@@ -644,3 +644,34 @@ steps:
 		assert.NotEqual(t, v1.DiagnosticCodeTypeMismatch, d.Code, "%v", d)
 	}
 }
+
+// An output may be named `value`, which only a `value:` step's own output means
+// to the checker; a call's declared `value` output is typed by its declaration.
+func TestAnOutputNamedValueIsTypedByItsStep(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeFile(t, dir, "callee.yaml", `edition: v2026.3
+name: callee
+steps:
+  - id: a
+    value: ${3}
+outputs:
+  value:
+    type: int
+    value: ${steps.a.value}
+`)
+	caller := writeFile(t, dir, "caller.yaml", `edition: v2026.3
+name: caller
+steps:
+  - id: c
+    call: ./callee.yaml
+  - id: n
+    value: ${steps.c.value.startsWith("x")}
+`)
+
+	ds, err := flowfile.ValidateSourceFile(caller)
+	require.NoError(t, err)
+	require.NotEmpty(t, ds)
+	assert.Contains(t, ds.Error(), "startsWith")
+}

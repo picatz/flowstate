@@ -227,7 +227,14 @@ func (t *typeTable) leavesFor(parsed *expr.ParsedExpr, before int) map[string]*c
 
 // outputType is the type of `steps.<id>.<output>`, or nil where it is not known.
 func (t *typeTable) outputType(id, output string, before int) *cel.Type {
-	if output == v1.ValueOutput {
+	if _, isValue := t.values[id]; isValue {
+		// Only a `value:` step's own `value` is the checker's answer; a task or call
+		// may declare an output of any name, `value` included, so it is the step's
+		// kind and not the name that picks the table.
+		if output != v1.ValueOutput {
+			return nil
+		}
+
 		return t.valueType(id, before)
 	}
 	if step, ok := t.outputs[id]; ok && step.index < before {
