@@ -493,10 +493,16 @@ func TestARewoundRunDoesNotCarryOn(t *testing.T) {
 
 // stallingReplay wraps a launcher so its first launch is the real one and every later
 // launch, the replay a rewind starts, waits until it is told to give up. attempts
-// counts the launches asked for.
-func stallingReplay(inner flowdebug.Launcher, attempts *atomic.Int64) flowdebug.Launcher {
+// counts the launches asked for, and replaying, when not nil, is closed once the
+// replay has begun.
+func stallingReplay(inner flowdebug.Launcher, attempts *atomic.Int64, replaying chan struct{}) flowdebug.Launcher {
+	var once sync.Once
+
 	return func(ctx context.Context) (*flowdebug.Run, error) {
 		if attempts.Add(1) > 1 {
+			if replaying != nil {
+				once.Do(func() { close(replaying) })
+			}
 			<-ctx.Done()
 
 			return nil, ctx.Err()
@@ -516,7 +522,7 @@ func TestAReplayThatStallsIsBoundedAndHarmless(t *testing.T) {
 	l := &launches{}
 	var attempts atomic.Int64
 	target, err := flowdebug.NewReversible(t.Context(),
-		stallingReplay(l.launcher(func(int) *v1.Workflow { return workflow }, nil), &attempts),
+		stallingReplay(l.launcher(func(int) *v1.Workflow { return workflow }, nil), &attempts, nil),
 		flowdebug.WithReplayTimeout(300*time.Millisecond))
 	require.NoError(t, err)
 	t.Cleanup(target.Stop)
@@ -546,8 +552,9 @@ func TestStopIsSafeTwiceAndDuringARewind(t *testing.T) {
 	workflow := parseJourney(t)
 	l := &launches{}
 	var attempts atomic.Int64
+	replaying := make(chan struct{})
 	target, err := flowdebug.NewReversible(t.Context(),
-		stallingReplay(l.launcher(func(int) *v1.Workflow { return workflow }, nil), &attempts))
+		stallingReplay(l.launcher(func(int) *v1.Workflow { return workflow }, nil), &attempts, replaying))
 	require.NoError(t, err)
 	run := &reversing{t: t, target: target, launches: l}
 
@@ -563,8 +570,11 @@ func TestStopIsSafeTwiceAndDuringARewind(t *testing.T) {
 		}
 		answered <- receipt
 	}()
-	require.Eventually(t, func() bool { return attempts.Load() == 2 }, 10*time.Second, 5*time.Millisecond,
-		"the rewind never started its replay")
+	select {
+	case <-replaying:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the rewind never started its replay")
+	}
 	target.Stop()
 	target.Stop()
 
