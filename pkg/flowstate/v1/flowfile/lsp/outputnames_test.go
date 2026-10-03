@@ -177,6 +177,7 @@ func TestHoverOnASignalBatchOutputDescribesTheWait(t *testing.T) {
 	text := hoverText(h)
 	assert.Contains(t, text, "steps.orders.count")
 	assert.NotContains(t, text, "is not registered")
+	assert.Contains(t, text, "Type: `int`", "the checker's type for the output is the one hover states")
 }
 
 // waitScalarBatchFile is `wait_for_signals:` in its scalar form — the signal's
