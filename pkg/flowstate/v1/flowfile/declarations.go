@@ -335,7 +335,7 @@ func validateDeclaredOutputs(wf *v1.Workflow, profile string, scope refScope, in
 			ds = append(ds, Diagnostic{Field: outputConstraintShapeField(declaration, field, err), Message: err.Error()})
 		}
 
-		if d := checkOutputValueType(wf, declaration, field); d != nil {
+		if d := checkOutputValueType(wf, scope.types, declaration, field); d != nil {
 			ds = append(ds, *d)
 		}
 	}
@@ -374,22 +374,29 @@ func outputConstraintShapeField(declaration *v1.OutputDeclaration, field string,
 //     itself. Judged by [v1.CheckOutputValue] — the same function the run
 //     reaches through [v1.EvalRunOutputs], so a file `flow validate` passed
 //     cannot fail this check at completion instead.
+//
 //   - A bare `${inputs.<name>}` naming an input this workflow declares, whose
 //     type is that declaration's. This is the shape most typed outputs have —
 //     an argument handed back to a caller who no longer holds it — and it is
 //     the one reference the file answers for on its own.
+//
 //   - A closed expression the profile's own checker can pin down without
 //     knowing anything the file does not hold: `${1 + 2}`, `${"a" + "b"}`.
 //     The identical machinery [checkCallArgumentType] uses on a `with:`
 //     argument, reached the same way.
 //
-// Everything else — an expression over a step's outputs, a var, a loop's
+//   - An expression over names the file states a type for: a declared input
+//     (`${inputs.n + 1}`), or a `value:` step's `value` (`${steps.s.value}`),
+//     whose type is the checker's own answer for the expression that made it
+//     (see [typeTable]).
+//
+// Everything else — an expression over a task's outputs, a var, a loop's
 // results — types as `dyn`, which is read as "not knowable" rather than as a
-// mismatch. That is not a shortfall this slice could close by trying harder:
-// `checkExpressionTypes` declares every referenced name `dyn` on purpose (see
-// celcheck.go), and a checker guessing at a step's output type would report
-// mismatches against workflows that are correct.
-func checkOutputValueType(wf *v1.Workflow, declaration *v1.OutputDeclaration, field string) *Diagnostic {
+// mismatch. That is not a shortfall to close by guessing:
+// `checkExpressionTypes` declares a name `dyn` unless the document decides its
+// type (see celcheck.go), and a checker guessing at a task's output type would
+// report mismatches against workflows that are correct.
+func checkOutputValueType(wf *v1.Workflow, table *typeTable, declaration *v1.OutputDeclaration, field string) *Diagnostic {
 	declared := declaration.GetType()
 	if declared == v1.InputDeclaration_TYPE_UNSPECIFIED {
 		return nil
@@ -398,7 +405,7 @@ func checkOutputValueType(wf *v1.Workflow, declaration *v1.OutputDeclaration, fi
 	value := declaration.GetValue()
 	switch value.GetKind().(type) {
 	case *v1.Value_Expr:
-		known, inferred, ok := staticExpressionType(wf, value.GetExpr())
+		known, inferred, ok := staticExpressionType(wf, table, value.GetExpr())
 		if !ok {
 			return nil
 		}
@@ -476,14 +483,12 @@ func checkOutputValueType(wf *v1.Workflow, declaration *v1.OutputDeclaration, fi
 // `struct` — so a caller asking a question the coarse name cannot answer, such
 // as whether a struct's keys are strings, needs the type the answer came from.
 //
-// The input-reference arm comes first because the checker cannot reach it: an
-// environment that declares every referenced name `dyn` types `inputs.release`
-// as `dyn` however precisely the file declared `release`. Widening that
-// environment is #177's road rather than this one's, so the one reference whose
-// type the file already states is answered here directly — and it is the arm
-// with no CEL type to carry, because the answer came from the declaration
-// rather than from the checker.
-func staticExpressionType(wf *v1.Workflow, parsed *expr.ParsedExpr) (v1.InputDeclaration_Type, *cel.Type, bool) {
+// The input-reference arm comes first because it answers in the declared-type
+// vocabulary directly, with no CEL type to carry: the answer came from the
+// declaration rather than from the checker. The checker now knows an input's type
+// as well (see [typeTable]), so an expression *over* an input is typed too; this
+// arm keeps the one whose result is the declaration itself exact, enum and all.
+func staticExpressionType(wf *v1.Workflow, table *typeTable, parsed *expr.ParsedExpr) (v1.InputDeclaration_Type, *cel.Type, bool) {
 	if parsed == nil {
 		return v1.InputDeclaration_TYPE_UNSPECIFIED, nil, false
 	}
@@ -492,7 +497,7 @@ func staticExpressionType(wf *v1.Workflow, parsed *expr.ParsedExpr) (v1.InputDec
 		return t, nil, true
 	}
 
-	env, err := envDeclaring(referencedNames(parsed.GetExpr()))
+	env, err := envDeclaring(referencedNames(parsed.GetExpr()), table.leavesFor(parsed))
 	if err != nil {
 		// A defect in this build rather than in the file; the same answer
 		// [checkCallArgumentType] gives for the identical call.

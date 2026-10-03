@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/google/cel-go/cel"
+	"github.com/google/cel-go/common/types"
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -38,7 +39,10 @@ import (
 // here, in cel-go's words, and once there, in a sentence written for the author.
 //
 // So it does the opposite. Every identifier the expression *mentions* is declared,
-// as `dyn`, before the check runs. Scope stops mattering: a reference the file
+// as `dyn`, before the check runs. (What the file itself states about a name — a
+// declared input's type, a `value:` step's checked type — is declared beside them
+// by [typeTable], which keeps this property: it types only what the document
+// decides, and says `dyn` for the rest.) Scope stops mattering: a reference the file
 // should not be allowed to make is still declared here, and still reported by
 // [validateInputRefs], which is where that question belongs and where the better
 // message lives. What survives is only what remains wrong once every name is
@@ -96,7 +100,7 @@ import (
 // each with its reason. They are what makes the omissions readable: before this, a
 // position missing from the walk and a position deliberately left to another
 // validator looked exactly alike, because both were simply absent.
-func checkExpressionTypes(wf *v1.Workflow) Diagnostics {
+func checkExpressionTypes(wf *v1.Workflow, table *typeTable) Diagnostics {
 	var ds Diagnostics
 
 	v1.WalkWorkflow(wf, v1.Walk{
@@ -119,7 +123,7 @@ func checkExpressionTypes(wf *v1.Workflow) Diagnostics {
 				// two voices.
 
 			default:
-				ds = append(ds, typeErrors(site.Step, site.Field(), site.Value)...)
+				ds = append(ds, typeErrors(table, site)...)
 			}
 		},
 	})
@@ -148,7 +152,7 @@ func checkNodeExpressions(nodes []*v1.Node) Diagnostics {
 				// `undo:` input arrives under the `undo:` key rather than the
 				// input's name, for the reason [validateUndoInputs] gives: an input
 				// name here would be looked up among the *step's* inputs.
-				ds = append(ds, typeErrors(site.Step, site.Field(), site.Value)...)
+				ds = append(ds, typeErrors(nil, site)...)
 			}
 		},
 	})
@@ -157,14 +161,18 @@ func checkNodeExpressions(nodes []*v1.Node) Diagnostics {
 }
 
 // typeErrors reports what remains wrong with one expression once every name it
-// mentions is assumed to exist.
-func typeErrors(stepID, field string, val *v1.Value) Diagnostics {
-	parsed := val.GetExpr()
+// mentions is assumed to exist, and — where the position accepts one type only —
+// whether the type the expression checked to is that type.
+//
+// table says what the file states about the names the expression selects (see
+// [typeTable]); nil is the all-`dyn` environment this check began with.
+func typeErrors(table *typeTable, site v1.ValueSite) Diagnostics {
+	parsed := site.Value.GetExpr()
 	if parsed == nil {
 		return nil
 	}
 
-	env, err := envDeclaring(referencedNames(parsed.GetExpr()))
+	env, err := envDeclaring(referencedNames(parsed.GetExpr()), table.leavesFor(parsed))
 	if err != nil {
 		// Building the environment failed, which is a defect in this build rather
 		// than something the file did. Reporting it against the author's line would
@@ -173,31 +181,86 @@ func typeErrors(stepID, field string, val *v1.Value) Diagnostics {
 		return nil
 	}
 
-	_, issues := env.Check(cel.ParsedExprToAst(parsed))
-	if issues == nil || issues.Err() == nil {
-		return nil
+	checked, issues := env.Check(cel.ParsedExprToAst(parsed))
+	if issues != nil && issues.Err() != nil {
+		var ds Diagnostics
+		for _, message := range celCheckMessages(issues.Err().Error()) {
+			ds = append(ds, Diagnostic{
+				Step:    site.Step,
+				Field:   site.Field(),
+				Message: message,
+				// What survives cel-go's checker once every name is assumed to exist is,
+				// by this file's own account, a missing overload, a wrong arity, or a
+				// function nobody declared — a type mismatch in every case, never a
+				// missing name (that is [validateInputRefs]'s question, not this one's).
+				Code: v1.DiagnosticCodeTypeMismatch,
+			})
+		}
+
+		return ds
 	}
 
-	var ds Diagnostics
-	for _, message := range celCheckMessages(issues.Err().Error()) {
-		ds = append(ds, Diagnostic{
-			Step:    stepID,
-			Field:   field,
-			Message: message,
-			// What survives cel-go's checker once every name is assumed to exist is,
-			// by this file's own account, a missing overload, a wrong arity, or a
-			// function nobody declared — a type mismatch in every case, never a
-			// missing name (that is [validateInputRefs]'s question, not this one's).
-			Code: v1.DiagnosticCodeTypeMismatch,
-		})
+	if d, ok := slotMismatch(site, normalizeType(checked.OutputType())); ok {
+		return Diagnostics{d}
 	}
 
-	return ds
+	return nil
+}
+
+// slotRequirements are the positions that accept exactly one type, which the run
+// refuses with a sentence of its own when it meets another: `items:` is read as a
+// list (`ResolveItems`), and `if:` and `until:` as a boolean. What each says is
+// the position, in the words the author wrote it in, and the type it asks for.
+var slotRequirements = map[v1.ValueSlot]struct {
+	read     string
+	required types.Kind
+	name     string
+}{
+	v1.SlotCondition:    {read: "`if:` is a condition", required: types.BoolKind, name: "bool"},
+	v1.SlotLoopUntil:    {read: "`until:` is a condition", required: types.BoolKind, name: "bool"},
+	v1.SlotForEachItems: {read: "`items:` is the list to iterate", required: types.ListKind, name: "list"},
+}
+
+// slotMismatch reports an expression whose checked type is known and is not the
+// one its position accepts.
+//
+// Silent for `dyn` and for every type this cannot rule out: an `optional(...)` is
+// an opaque type that `.orValue()` may yet turn into the right one, and refusing
+// it would be a false diagnostic. Only a type that can never be the required one
+// is reported — an int where a bool is read, a string where a list is.
+func slotMismatch(site v1.ValueSite, found *cel.Type) (Diagnostic, bool) {
+	requirement, ok := slotRequirements[site.Slot]
+	if !ok || !neverAssignable(found, requirement.required) {
+		return Diagnostic{}, false
+	}
+
+	return Diagnostic{
+		Step:  site.Step,
+		Field: site.Field(),
+		Code:  v1.DiagnosticCodeTypeMismatch,
+		Message: requirement.read + ", so this expression must be a " + requirement.name +
+			", but it is typed " + v1.TypeString(v1.TypeOfCEL(found)),
+	}, true
+}
+
+// neverAssignable reports whether a value of type found can never be of kind
+// required: both are concrete, and different. `dyn`, a type parameter, an
+// opaque type such as `optional`, and anything else this does not name are
+// "perhaps".
+func neverAssignable(found *cel.Type, required types.Kind) bool {
+	switch found.Kind() {
+	case types.BoolKind, types.IntKind, types.UintKind, types.DoubleKind, types.StringKind,
+		types.BytesKind, types.ListKind, types.MapKind, types.NullTypeKind,
+		types.TimestampKind, types.DurationKind:
+		return found.Kind() != required
+	default:
+		return false
+	}
 }
 
 // envDeclaring returns the profile's environment with each given name declared as
-// `dyn`.
-func envDeclaring(names []string) (*cel.Env, error) {
+// `dyn`, and each typed leaf declared as the type the file states for it.
+func envDeclaring(names []string, leaves map[string]*cel.Type) (*cel.Env, error) {
 	libs, err := v1.ProfileLibraries(v1.CurrentProfile)
 	if err != nil {
 		return nil, err
@@ -208,14 +271,17 @@ func envDeclaring(names []string) (*cel.Env, error) {
 		return nil, err
 	}
 
-	key := strings.Join(names, "\x00")
+	key := cacheKeyFor(names, leaves)
 	if env, ok := cachedEnv(key); ok {
 		return env, nil
 	}
 
-	opts := make([]cel.EnvOption, 0, len(names))
+	opts := make([]cel.EnvOption, 0, len(names)+len(leaves))
 	for _, name := range names {
 		opts = append(opts, cel.Variable(name, cel.DynType))
+	}
+	for _, name := range slices.Sorted(maps.Keys(leaves)) {
+		opts = append(opts, cel.Variable(name, leaves[name]))
 	}
 
 	env, err := base.Extend(opts...)
