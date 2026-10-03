@@ -73,6 +73,8 @@ func rootHolds(root string) string {
 func validateDeclaredInputs(wf *v1.Workflow, profile string) Diagnostics {
 	var ds Diagnostics
 
+	table := v1.TypesOf(wf)
+
 	seen := make(map[string]int, len(wf.GetDeclaredInputs()))
 	for i, declaration := range wf.GetDeclaredInputs() {
 		name := declaration.GetName()
@@ -119,9 +121,9 @@ func validateDeclaredInputs(wf *v1.Workflow, profile string) Diagnostics {
 			seen[name] = i
 		}
 
-		ds = append(ds, validateInputDefault(profile, declaration, field)...)
+		ds = append(ds, validateInputDefault(table, profile, declaration, field)...)
 		ds = append(ds, validateInputConstraintShape(profile, declaration, field)...)
-		ds = append(ds, validateInputExample(profile, declaration, field)...)
+		ds = append(ds, validateInputExample(table, profile, declaration, field)...)
 	}
 
 	return ds
@@ -198,18 +200,18 @@ func inputConstraintShapeField(declaration *v1.InputDeclaration, field string) s
 // the declaration's own constraints. The same check [v1.CheckInputExample]
 // runs, so an example that rots after a `must:` is tightened is caught here
 // rather than discovered by a reader who trusted it.
-func validateInputExample(profile string, declaration *v1.InputDeclaration, field string) Diagnostics {
+func validateInputExample(table v1.TypeTable, profile string, declaration *v1.InputDeclaration, field string) Diagnostics {
 	if declaration.GetExample() == nil {
 		return nil
 	}
-	if err := v1.CheckInputExample(profile, declaration); err != nil {
+	if err := v1.CheckInputExampleIn(table, profile, declaration); err != nil {
 		return Diagnostics{{Field: field + ".example", Message: err.Error()}}
 	}
 	return nil
 }
 
 // validateInputDefault reports what is wrong with one declaration's default.
-func validateInputDefault(profile string, declaration *v1.InputDeclaration, field string) Diagnostics {
+func validateInputDefault(table v1.TypeTable, profile string, declaration *v1.InputDeclaration, field string) Diagnostics {
 	value := declaration.GetDefault()
 	if value == nil {
 		return nil
@@ -255,7 +257,7 @@ func validateInputDefault(profile string, declaration *v1.InputDeclaration, fiel
 	// A default is part of the specification, so a mistyped one is a property of the
 	// file — reported here, where there is a line to point at, rather than at submit
 	// where it would name a field path in a protobuf message.
-	if err := v1.CheckInputDefault(profile, declaration); err != nil {
+	if err := v1.CheckInputDefaultIn(table, profile, declaration); err != nil {
 		ds = append(ds, Diagnostic{Field: defaultField, Message: err.Error()})
 	}
 
@@ -464,7 +466,7 @@ func checkOutputValueType(wf *v1.Workflow, table *typeTable, declaration *v1.Out
 
 	default:
 		// A literal or a structure, exact either way.
-		if err := v1.CheckOutputValue(declaration, value); err != nil {
+		if err := v1.CheckOutputValueIn(v1.TypesOf(wf), declaration, value); err != nil {
 			return &Diagnostic{
 				Field: field, Value: declaration.GetName(),
 				Code: v1.DiagnosticCodeTypeMismatch, Message: err.Error(),

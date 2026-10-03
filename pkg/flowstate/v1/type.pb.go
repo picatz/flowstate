@@ -99,9 +99,12 @@ func (Type_Scalar) EnumDescriptor() ([]byte, []int) {
 //
 // It is structural rather than a rendered string so only the Flowfile compiler
 // parses type expressions. Consumers of the compiled specification read this
-// message directly and cannot acquire a second type grammar. The message arm is
-// reserved for descriptor-backed user types; the compiler does not produce it
-// until that language surface exists.
+// message directly and cannot acquire a second type grammar. The message arm names
+// a record type. Today that is a record the workflow declares under `types:`
+// ([TypeDeclaration]), written as a bare name such as `Order` and resolved
+// against the workflow's own declarations; a descriptor-backed Protobuf type,
+// which carries a qualified name, has no Flowfile spelling until that language
+// surface exists.
 type Type struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Types that are valid to be assigned to Kind:
@@ -234,7 +237,9 @@ type Type_Enum struct {
 }
 
 type Type_Message struct {
-	// Message is the fully qualified Protobuf name of a descriptor-backed type.
+	// Message names a record type: the bare name of a [TypeDeclaration] in the
+	// workflow that holds this type, or the fully qualified Protobuf name of a
+	// descriptor-backed type.
 	Message string `protobuf:"bytes,5,opt,name=message,proto3,oneof"`
 }
 

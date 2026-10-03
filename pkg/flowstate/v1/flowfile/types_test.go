@@ -1,0 +1,323 @@
+package flowfile_test
+
+import (
+	"strings"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
+)
+
+// The `types:` block, from the file's side: what it compiles to, that it writes
+// back exactly, and what a document can be wrong about on its own. Whether a
+// value is a record is [v1.CheckInputValueIn]'s claim, tested in package v1.
+
+// typesSource wraps a `types:` block and one input of the given type in the
+// smallest workflow that holds them.
+func typesSource(types, inputType string) string {
+	return `edition: v2026.3
+name: t
+` + types + `inputs:
+  order:
+    type: ` + inputType + `
+steps:
+  - id: a
+    log:
+      message: hi
+`
+}
+
+const orderTypes = `types:
+  Line:
+    description: One thing on an order.
+    fields:
+      sku:
+        type: string
+        required: true
+      quantity:
+        type: int
+  Order:
+    fields:
+      id:
+        type: string
+        required: true
+      status:
+        type: enum
+        values:
+          - open
+          - paid
+      lines:
+        type: list(Line)
+      by_sku:
+        type: map(string, Line)
+`
+
+func TestTypesCompileToDeclarationsAndWriteBack(t *testing.T) {
+	t.Parallel()
+
+	source := typesSource(orderTypes, "Order")
+
+	wf, _, err := flowfile.Parse([]byte(source))
+	require.NoError(t, err)
+	require.Empty(t, flowfile.Validate(wf))
+
+	require.Len(t, wf.GetDeclaredTypes(), 2)
+	line, order := wf.GetDeclaredTypes()[0], wf.GetDeclaredTypes()[1]
+	assert.Equal(t, "Line", line.GetName())
+	assert.Equal(t, "One thing on an order.", line.GetDescription())
+	assert.Equal(t, "Order", order.GetName())
+	require.Len(t, order.GetFields(), 4)
+
+	// A field naming a record carries the structural type and, for a reader that
+	// predates records, the legacy projection older workers enforce.
+	lines := order.GetFields()[2]
+	assert.Equal(t, v1.InputDeclaration_TYPE_LIST, lines.GetType())
+	assert.Equal(t, "Line", lines.GetValueType().GetList().GetMessage())
+	assert.Equal(t, "Line", order.GetFields()[3].GetValueType().GetMap().GetValue().GetMessage())
+
+	input := wf.GetDeclaredInputs()[0]
+	assert.Equal(t, v1.InputDeclaration_TYPE_STRUCT, input.GetType())
+	assert.Equal(t, "Order", input.GetValueType().GetMessage())
+
+	// The compiled message has to satisfy the schema, or a server refuses what the
+	// compiler accepted.
+	require.NoError(t, v1.Validate(wf))
+
+	written, err := flowfile.Marshal(wf)
+	require.NoError(t, err)
+	assert.Equal(t, source, string(written))
+}
+
+func TestATypeMayBeNamedBeforeItIsDeclared(t *testing.T) {
+	t.Parallel()
+
+	wf, _, err := flowfile.Parse([]byte(typesSource(`types:
+  Order:
+    fields:
+      line:
+        type: Line
+  Line:
+    fields:
+      sku:
+        type: string
+`, "Order")))
+	require.NoError(t, err)
+	require.Empty(t, flowfile.Validate(wf))
+}
+
+func TestTypesRefuseWhatCannotRun(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name      string
+		types     string
+		inputType string
+		want      string
+	}{
+		{
+			name:      "an undeclared type",
+			types:     "",
+			inputType: "Order",
+			want:      "Order",
+		},
+		{
+			name: "a type referring to itself",
+			types: `types:
+  Node:
+    fields:
+      next:
+        type: Node
+`,
+			inputType: "Node",
+			want:      "Node refers to itself: Node -> Node",
+		},
+		{
+			name: "a cycle through another type",
+			types: `types:
+  A:
+    fields:
+      b:
+        type: list(B)
+  B:
+    fields:
+      a:
+        type: map(string, A)
+`,
+			inputType: "A",
+			want:      "A -> B -> A",
+		},
+		{
+			name: "a type with no fields",
+			types: `types:
+  Empty:
+    description: nothing
+`,
+			inputType: "string",
+			want:      `type "Empty" declares no fields`,
+		},
+		{
+			name: "a field naming a type nobody declared",
+			types: `types:
+  Order:
+    fields:
+      line:
+        type: Line
+`,
+			inputType: "string",
+			want:      "Line",
+		},
+		{
+			name: "a rule over the whole record",
+			types: `types:
+  Order:
+    must: this.id != ""
+    fields:
+      id:
+        type: string
+`,
+			inputType: "string",
+			want:      "a rule over the whole record is not carried yet",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			wf, _, err := flowfile.Parse([]byte(typesSource(test.types, test.inputType)))
+			var message string
+			if err != nil {
+				message = err.Error()
+			} else {
+				message = flowfile.Validate(wf).Error()
+			}
+			assert.Contains(t, message, test.want)
+		})
+	}
+}
+
+// What a field does not carry yet is refused with the reason, not parsed and
+// ignored: a `must:` that nothing enforces reads as a promise.
+func TestAFieldRefusesWhatItDoesNotCarryYet(t *testing.T) {
+	t.Parallel()
+
+	for _, key := range []string{
+		"default: x", "example: x", "sensitive: true", "must: this != ''", "min_len: 1", "max_len: 9",
+	} {
+		t.Run(strings.SplitN(key, ":", 2)[0], func(t *testing.T) {
+			t.Parallel()
+
+			wf, _, err := flowfile.Parse([]byte(typesSource(`types:
+  Order:
+    fields:
+      id:
+        type: string
+        `+key+`
+`, "Order")))
+			require.NoError(t, err)
+
+			ds := flowfile.Validate(wf)
+			require.NotEmpty(t, ds)
+			assert.Contains(t, ds.Error(), "does not carry yet")
+			assert.Contains(t, ds.Error(), "`"+strings.SplitN(key, ":", 2)[0]+"`")
+		})
+	}
+}
+
+func TestADuplicateTypeFieldIsReported(t *testing.T) {
+	t.Parallel()
+
+	wf, _, err := flowfile.Parse([]byte(typesSource(`types:
+  Order:
+    fields:
+      id:
+        type: string
+`, "Order")))
+	require.NoError(t, err)
+
+	// A repeated key cannot be written in a mapping, so the duplicate is built
+	// into the compiled message, as a specification that never was a Flowfile can.
+	order := wf.GetDeclaredTypes()[0]
+	order.Fields = append(order.Fields, order.GetFields()[0])
+	assert.Contains(t, flowfile.Validate(wf).Error(), `declares field "id" twice`)
+}
+
+func TestACallArgumentIsCheckedAgainstTheCalleesRecord(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeFile(t, dir, "callee.yaml", typesSource(orderTypes, "Order"))
+
+	caller := func(order string) string {
+		return `edition: v2026.3
+name: caller
+steps:
+  - id: place
+    call: ./callee.yaml
+    with:
+      order:
+` + order
+	}
+
+	good, err := flowfile.ValidateSourceAt([]byte(caller("        id: o-1\n        lines:\n          - sku: kb\n            quantity: 1\n")), dir+"/caller.yaml")
+	require.NoError(t, err)
+	assert.Empty(t, good)
+
+	bad, err := flowfile.ValidateSourceAt([]byte(caller("        id: o-1\n        coupon: x\n")), dir+"/caller.yaml")
+	require.NoError(t, err)
+	require.NotEmpty(t, bad)
+	assert.Contains(t, bad.Error(), `a field "coupon" that Order does not declare`)
+}
+
+func TestARecordDefaultIsCheckedWhereItIsWritten(t *testing.T) {
+	t.Parallel()
+
+	source := func(def string) string {
+		return `edition: v2026.3
+name: t
+` + orderTypes + `inputs:
+  order:
+    type: Order
+    default:
+` + def + `steps:
+  - id: a
+    log:
+      message: hi
+`
+	}
+
+	wf, _, err := flowfile.Parse([]byte(source("      id: o-1\n      status: open\n")))
+	require.NoError(t, err)
+	assert.Empty(t, flowfile.Validate(wf))
+
+	wf, _, err = flowfile.Parse([]byte(source("      id: o-1\n      coupon: x\n")))
+	require.NoError(t, err)
+	ds := flowfile.Validate(wf)
+	require.NotEmpty(t, ds)
+	assert.Contains(t, ds.Error(), `a field "coupon" that Order does not declare`)
+}
+
+// The file is the sender's, so the number of names and fields is bounded before
+// anything is built from them, not after the schema sees the result.
+func TestTypesAreBoundedBeforeAnythingIsBuilt(t *testing.T) {
+	t.Parallel()
+
+	var types strings.Builder
+	types.WriteString("types:\n")
+	for i := range v1.MaxRecordTypes + 1 {
+		types.WriteString("  T" + strings.Repeat("a", i%5) + string(rune('A'+i%26)) + string(rune('a'+i/26)) + ":\n    fields:\n      x:\n        type: \"list(string)\"\n")
+	}
+	_, _, err := flowfile.Parse([]byte(typesSource(types.String(), "string")))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "the most a workflow declares is 64")
+
+	var fields strings.Builder
+	fields.WriteString("types:\n  Big:\n    fields:\n")
+	for i := range v1.MaxRecordFields + 1 {
+		fields.WriteString("      f" + strings.Repeat("a", i/26) + string(rune('a'+i%26)) + ":\n        type: string\n")
+	}
+	_, _, err = flowfile.Parse([]byte(typesSource(fields.String(), "string")))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "the most a record holds is 64")
+}

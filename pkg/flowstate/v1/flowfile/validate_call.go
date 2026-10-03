@@ -125,7 +125,7 @@ func validateCallAtDepth(id string, call *v1.Call, scope refScope, index int, wf
 func checkCallArgumentType(table *typeTable, stepID, name string, value *v1.Value, declaration *v1.InputDeclaration, callee *v1.Workflow, profile string) *Diagnostic {
 	switch value.GetKind().(type) {
 	case *v1.Value_Literal:
-		if err := v1.CheckInputValue(name, declaration, value); err != nil {
+		if err := v1.CheckInputValueIn(v1.TypesOf(callee), name, declaration, value); err != nil {
 			return &Diagnostic{Step: stepID, Field: "with." + name, Message: err.Error()}
 		}
 		// A callee's constraints, not only its type, bind a call's own

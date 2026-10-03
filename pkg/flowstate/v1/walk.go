@@ -166,6 +166,16 @@ const (
 	// — exactly the blindness `TestEveryValuePositionInTheSchemaIsWalked`
 	// exists to prevent. The two stanzas share a *message*, not a position.
 	SlotDebugSubject
+
+	// SlotTypeFieldDefault is a record type field's `default:`. A field does not
+	// carry one yet, and [CheckRecordDeclarations] refuses a field that sets it;
+	// the slot exists so a walk over a hand-built specification still meets the
+	// position, rather than the position being a place a Value can hide from every
+	// walk.
+	SlotTypeFieldDefault
+	// SlotTypeFieldExample is a record type field's `example:`, with the same
+	// standing as [SlotTypeFieldDefault].
+	SlotTypeFieldExample
 )
 
 // ValueSlotSchemaPath maps each slot to the schema field it names.
@@ -178,6 +188,8 @@ func ValueSlotSchemaPath() map[ValueSlot]string {
 	return map[ValueSlot]string{
 		SlotInputDefault:          "Workflow.declared_inputs[].default",
 		SlotInputExample:          "Workflow.declared_inputs[].example",
+		SlotTypeFieldDefault:      "Workflow.declared_types[].fields[].default",
+		SlotTypeFieldExample:      "Workflow.declared_types[].fields[].example",
 		SlotWorkflowVar:           "Workflow.vars{}",
 		SlotDeclaredOutput:        "Workflow.declared_outputs[].value",
 		SlotSignalSubject:         "Workflow.signals{}.allow[].subject_from",
@@ -294,6 +306,10 @@ func (s ValueSite) Field() string {
 		return "inputs." + s.Name + ".default"
 	case SlotInputExample:
 		return "inputs." + s.Name + ".example"
+	case SlotTypeFieldDefault:
+		return "types." + s.Name + ".default"
+	case SlotTypeFieldExample:
+		return "types." + s.Name + ".example"
 	case SlotWorkflowVar, SlotStepVar:
 		return VarsRoot + "." + s.Name
 	case SlotDeclaredOutput:
@@ -420,6 +436,14 @@ func walkWorkflowValuesBeforeSteps(wf *Workflow, w Walk) {
 		name := declaration.GetName()
 		w.value(ValueSite{Slot: SlotInputDefault, Name: name, Value: declaration.GetDefault()})
 		w.value(ValueSite{Slot: SlotInputExample, Name: name, Value: declaration.GetExample()})
+	}
+
+	for _, record := range wf.GetDeclaredTypes() {
+		for _, field := range record.GetFields() {
+			name := record.GetName() + ".fields." + field.GetName()
+			w.value(ValueSite{Slot: SlotTypeFieldDefault, Name: name, Value: field.GetDefault()})
+			w.value(ValueSite{Slot: SlotTypeFieldExample, Name: name, Value: field.GetExample()})
+		}
 	}
 
 	for _, name := range slices.Sorted(maps.Keys(wf.GetVars())) {

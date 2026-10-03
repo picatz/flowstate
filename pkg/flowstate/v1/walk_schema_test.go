@@ -241,6 +241,14 @@ func workflowUsingEveryValuePosition() *Workflow {
 			Default: NewLiteral("nobody"),
 			Example: NewLiteral("somebody"),
 		}},
+		DeclaredTypes: []*TypeDeclaration{{
+			Name: "Person",
+			Fields: []*InputDeclaration{{
+				Name:    "name",
+				Default: NewLiteral("nobody"),
+				Example: NewLiteral("somebody"),
+			}},
+		}},
 		Vars: map[string]*Value{"greeting": NewExpr("'hello'")},
 		Steps: []*Node{
 			{

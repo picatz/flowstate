@@ -628,6 +628,12 @@ func CheckOutputConstraintShape(profile string, decl *OutputDeclaration) error {
 // without running anything — the same static-half/run-half split
 // [CheckInputValue] has between a `with:` argument and a submitted one.
 func CheckOutputValue(decl *OutputDeclaration, value *Value) error {
+	return CheckOutputValueIn(nil, decl, value)
+}
+
+// CheckOutputValueIn is [CheckOutputValue] for an output whose type may name a
+// record; see [CheckInputValueIn].
+func CheckOutputValueIn(table TypeTable, decl *OutputDeclaration, value *Value) error {
 	t := decl.GetType()
 	if t == InputDeclaration_TYPE_UNSPECIFIED {
 		return nil
@@ -652,7 +658,7 @@ func CheckOutputValue(decl *OutputDeclaration, value *Value) error {
 		lit = flattened
 	}
 
-	if err := checkDeclaredLiteralType("output", "computed", decl.GetName(), t, decl.GetValueType(), lit); err != nil {
+	if err := checkDeclaredLiteralType(table, outputValueRendering(decl), "output", "computed", decl.GetName(), t, decl.GetValueType(), lit); err != nil {
 		return err
 	}
 

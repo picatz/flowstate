@@ -81,6 +81,8 @@ func bindRunInputs(wf *Workflow, profile string, submitted map[string]*Value) (m
 		return nil, err
 	}
 
+	table := TypesOf(wf)
+
 	for _, declaration := range wf.GetDeclaredOutputs() {
 		if err := CheckOutputConstraintShape(profile, declaration); err != nil {
 			return nil, err
@@ -91,7 +93,7 @@ func bindRunInputs(wf *Workflow, profile string, submitted map[string]*Value) (m
 		// sentence, the `sensitive:` withholding and the length bound are the
 		// ones the completion-time refusal uses rather than a second rendering
 		// that could drift from it.
-		if err := CheckOutputValue(declaration, declaration.GetValue()); err != nil {
+		if err := CheckOutputValueIn(table, declaration, declaration.GetValue()); err != nil {
 			return nil, err
 		}
 	}
@@ -223,15 +225,20 @@ func bindRunInputs(wf *Workflow, profile string, submitted map[string]*Value) (m
 		// default is part of the specification and a specification can be built by
 		// hand: `flow validate` refuses a mistyped default in a Flowfile, and this is
 		// what refuses one in a message that never was a Flowfile.
-		if err := CheckInputValue(name, declaration, value); err != nil {
+		if err := CheckInputValueIn(table, name, declaration, value); err != nil {
 			// The two type names, when this refusal is a type mismatch. Read off
 			// the same declaration and the same literal the refusal itself read,
 			// through the same two functions, so the fields cannot come to
 			// disagree with the sentence beside them. Left unset for every other
 			// refusal CheckInputValue makes — an expression, a secret reference,
 			// a missing value — because those compared no types.
+			//
+			// Only when the two outermost kinds differ: a mismatch found inside a
+			// container or a record has `struct` or `list` on both sides, and a
+			// pair of equal names would claim the opposite of the sentence.
 			got, isLiteral := inputTypeOf(value.GetLiteral())
-			if isLiteral {
+			declared := declaration.GetType()
+			if isLiteral && got != declared && !(StringShaped(declared) && got == InputDeclaration_TYPE_STRING) {
 				return nil, invalidInputType(name,
 					DeclaredTypeName(declaration.GetType()), DeclaredTypeName(got), err)
 			}
@@ -275,6 +282,9 @@ func bindRunInputs(wf *Workflow, profile string, submitted map[string]*Value) (m
 // requests before discovering that the callee's contract cannot be enforced.
 func CheckDeclarationTypes(wf *Workflow) error {
 	return walkEmbeddedWorkflows(wf, 0, func(current *Workflow) error {
+		if err := CheckRecordDeclarations(current); err != nil {
+			return err
+		}
 		for _, declaration := range current.GetDeclaredInputs() {
 			if vt := declaration.GetValueType(); vt != nil {
 				if err := checkTypeDepth(vt, MaxStructureDepth); err != nil {
@@ -363,11 +373,17 @@ func checkTypeDepth(t *Type, maxDepth int) error {
 // be built by something that never was a Flowfile — an author gets the diagnostic,
 // and a caller gets the refusal.
 func CheckInputDefault(profile string, declaration *InputDeclaration) error {
+	return CheckInputDefaultIn(nil, profile, declaration)
+}
+
+// CheckInputDefaultIn is [CheckInputDefault] for a declaration whose type may
+// name a record; see [CheckInputValueIn].
+func CheckInputDefaultIn(table TypeTable, profile string, declaration *InputDeclaration) error {
 	if declaration.GetDefault() == nil {
 		return nil
 	}
 
-	if err := CheckInputValue(declaration.GetName(), declaration, declaration.GetDefault()); err != nil {
+	if err := CheckInputValueIn(table, declaration.GetName(), declaration, declaration.GetDefault()); err != nil {
 		return err
 	}
 
@@ -384,11 +400,17 @@ func CheckInputDefault(profile string, declaration *InputDeclaration) error {
 // noticing it lied. Never bound to a run: [BindRunInputs] never reads this
 // field, which is the whole difference between an example and a default.
 func CheckInputExample(profile string, declaration *InputDeclaration) error {
+	return CheckInputExampleIn(nil, profile, declaration)
+}
+
+// CheckInputExampleIn is [CheckInputExample] for a declaration whose type may
+// name a record; see [CheckInputValueIn].
+func CheckInputExampleIn(table TypeTable, profile string, declaration *InputDeclaration) error {
 	if declaration.GetExample() == nil {
 		return nil
 	}
 
-	if err := CheckInputValue(declaration.GetName(), declaration, declaration.GetExample()); err != nil {
+	if err := CheckInputValueIn(table, declaration.GetName(), declaration, declaration.GetExample()); err != nil {
 		return fmt.Errorf("example: %w", err)
 	}
 
@@ -410,6 +432,13 @@ func CheckInputExample(profile string, declaration *InputDeclaration) error {
 // expression is left to [BindRunInputs] to refuse at the moment it is
 // resolved to one, since its type is not known until then.
 func CheckInputValue(name string, declaration *InputDeclaration, value *Value) error {
+	return CheckInputValueIn(nil, name, declaration, value)
+}
+
+// CheckInputValueIn is [CheckInputValue] for a declaration whose type may name a
+// record: table resolves the names, and is what [TypesOf] returns for the
+// workflow the declaration belongs to.
+func CheckInputValueIn(table TypeTable, name string, declaration *InputDeclaration, value *Value) error {
 	switch kind := value.GetKind().(type) {
 	case *Value_Literal:
 		// Below.
@@ -436,7 +465,7 @@ func CheckInputValue(name string, declaration *InputDeclaration, value *Value) e
 		return fmt.Errorf("input %q cannot be used as a value: %v", name, kind)
 	}
 
-	return checkDeclaredLiteralType("input", "was given", name, declaration.GetType(), declaration.GetValueType(), value.GetLiteral())
+	return checkDeclaredLiteralType(table, inputValueRendering, "input", "was given", name, declaration.GetType(), declaration.GetValueType(), value.GetLiteral())
 }
 
 // checkDeclaredLiteralType is the "does this literal have the declared type"
@@ -449,7 +478,7 @@ func CheckInputValue(name string, declaration *InputDeclaration, value *Value) e
 // how the sentence says the value arrived — a caller *gave* an input, a run
 // *computed* an output — since those are the two halves that differ and the
 // judgement is what does not.
-func checkDeclaredLiteralType(kind, verb, name string, declared InputDeclaration_Type, structural *Type, literal *expr.Value) error {
+func checkDeclaredLiteralType(table TypeTable, r valueRendering, kind, verb, name string, declared InputDeclaration_Type, structural *Type, literal *expr.Value) error {
 	got, ok := inputTypeOf(literal)
 	if !ok {
 		return fmt.Errorf("%s %q is %s, which is not a kind of value an %s can hold; "+
@@ -497,7 +526,7 @@ func checkDeclaredLiteralType(kind, verb, name string, declared InputDeclaration
 	// The legacy enum judged the outermost kind; a structural type also judges
 	// what a list holds and what a map's values are.
 	if structural != nil {
-		if err := checkLiteralShape(structural, literal); err != nil {
+		if err := checkLiteralShape(table, r, structural, literal); err != nil {
 			return fmt.Errorf("%s %q is declared %s but %s %w", kind, name, TypeString(structural), verb, err)
 		}
 	}
