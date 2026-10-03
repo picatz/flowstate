@@ -70,6 +70,12 @@ type typeTable struct {
 	// is absent rather than `dyn`: it promised nothing.
 	inputs map[string]*cel.Type
 
+	// inputTypes are the same inputs' types as declared, which a record's fields
+	// are read from, and records resolves the names those types carry. See
+	// [typeTable.fieldPaths].
+	inputTypes map[string]*v1.Type
+	records    v1.TypeTable
+
 	// values are the top-level `value:` steps whose id is unique in the workflow,
 	// by id.
 	values map[string]*valueStep
@@ -116,15 +122,18 @@ type stepOutputs struct {
 // newTypeTable reads a workflow's declarations and `value:` steps.
 func newTypeTable(wf *v1.Workflow) *typeTable {
 	table := &typeTable{
-		inputs:  map[string]*cel.Type{},
-		values:  map[string]*valueStep{},
-		outputs: map[string]*stepOutputs{},
-		owner:   map[string]int{},
+		inputs:     map[string]*cel.Type{},
+		inputTypes: map[string]*v1.Type{},
+		records:    v1.TypesOf(wf),
+		values:     map[string]*valueStep{},
+		outputs:    map[string]*stepOutputs{},
+		owner:      map[string]int{},
 	}
 
 	for _, declaration := range wf.GetDeclaredInputs() {
 		if declared := declaration.DeclaredType(); declared != nil {
 			table.inputs[declaration.GetName()] = v1.CELType(declared)
+			table.inputTypes[declaration.GetName()] = declared
 		}
 	}
 
@@ -214,6 +223,14 @@ func (t *typeTable) leavesFor(parsed *expr.ParsedExpr, before int) map[string]*c
 	for _, name := range inputs {
 		if typed, ok := t.inputs[name]; ok {
 			add(v1.InputsRoot+"."+name, typed)
+		}
+	}
+	for _, path := range t.fieldPaths(parsed) {
+		for i, field := range path.fields {
+			if field == nil {
+				break
+			}
+			add(v1.InputsRoot+"."+strings.Join(path.names[:i+2], "."), v1.CELType(field.DeclaredType()))
 		}
 	}
 	for _, ref := range rooted {

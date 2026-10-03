@@ -321,3 +321,97 @@ func TestTypesAreBoundedBeforeAnythingIsBuilt(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "the most a record holds is 64")
 }
+
+// The checker reads the fields a record declares: a path the file writes is typed
+// by its field, and one the closed record does not declare is refused with the
+// fields it does, before a run.
+func recordExpressionSource(expression string) string {
+	return `edition: ` + flowfile.CurrentEdition + `
+name: t
+` + orderTypes + `inputs:
+  order:
+    type: Order
+    required: true
+steps:
+  - id: a
+    if: ${` + expression + `}
+    log:
+      message: hi
+`
+}
+
+func TestARecordFieldIsTypedWhereItIsRead(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name       string
+		expression string
+		want       string // empty accepts
+	}{
+		{"a string field used as one", `inputs.order.id.startsWith("o-")`, ""},
+		{"a nested path through a list's element is cel's", `inputs.order.lines.size() > 0`, ""},
+		{"a presence test of a declared field", `has(inputs.order.id)`, ""},
+		{"a string field used as a bool", `inputs.order.id`, "`if:` is a condition"},
+		{"an int method on a string field", `inputs.order.id + 1 > 0`, "no matching overload"},
+		{"a misspelled field", `inputs.order.idd == "x"`, `the record Order has no field "idd"`},
+		{"a suggestion", `inputs.order.statu == "open"`, `Did you mean "status"?`},
+		{"a presence test of an undeclared field", `has(inputs.order.coupon)`, `has no field "coupon"`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			wf, _, err := flowfile.Parse([]byte(recordExpressionSource(test.expression)))
+			require.NoError(t, err)
+
+			ds := flowfile.Validate(wf)
+			if test.want == "" {
+				assert.Empty(t, ds)
+				return
+			}
+			require.NotEmpty(t, ds)
+			assert.Contains(t, ds.Error(), test.want)
+		})
+	}
+}
+
+// A path two records deep is typed at its leaf, and an undeclared field in the
+// middle names the record that does not declare it.
+func TestANestedRecordPathIsTypedAtTheLeaf(t *testing.T) {
+	t.Parallel()
+
+	source := func(expression string) string {
+		return `edition: ` + flowfile.CurrentEdition + `
+name: t
+types:
+  Money:
+    fields:
+      cents:
+        type: int
+  Order:
+    fields:
+      total:
+        type: Money
+inputs:
+  order:
+    type: Order
+    required: true
+steps:
+  - id: a
+    if: ${` + expression + `}
+    log:
+      message: hi
+`
+	}
+
+	wf, _, err := flowfile.Parse([]byte(source(`inputs.order.total.cents > 0`)))
+	require.NoError(t, err)
+	assert.Empty(t, flowfile.Validate(wf))
+
+	wf, _, err = flowfile.Parse([]byte(source(`inputs.order.total.cents.startsWith("x")`)))
+	require.NoError(t, err)
+	assert.NotEmpty(t, flowfile.Validate(wf), "an int field has no startsWith")
+
+	wf, _, err = flowfile.Parse([]byte(source(`inputs.order.total.cent > 0`)))
+	require.NoError(t, err)
+	assert.Contains(t, flowfile.Validate(wf).Error(), `the record Money has no field "cent"`)
+}

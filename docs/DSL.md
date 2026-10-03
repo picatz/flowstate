@@ -726,8 +726,17 @@ recursive record has no bound until the type has one; so is a name nobody declar
 time a record is a map keyed by field name, so an older reader sees what it sees for a
 `struct`. This slice checks the shape and nothing more: a field that sets `default:`,
 `example:`, `sensitive:`, `must:` or a length or item bound, and a `must:` on the type itself,
-is refused with that reason rather than parsed and silently not enforced, and an expression
-reading `inputs.order.id` is still `dyn` until field-level checking lands.
+is refused with that reason rather than parsed and silently not enforced.
+
+*Slice 2:* an expression reading a field is checked against the record. `inputs.order.id` is a
+`string` wherever an expression is checked, so `inputs.order.id + 1` and an `if:` that reads a
+string field are refused at `flow validate` rather than failing hours into a run, and a path
+into a nested record is typed at its leaf (`inputs.order.total.cents` is an `int`). A field the
+closed record does not declare is refused with the ones it does and, for a near miss, the one
+meant (`the record Order has no field "idd"; it declares "id", "status". Did you mean "id"?`).
+Hovering `inputs.order` or any field after it shows the field's type, whether it is required,
+its description and, for a record, the fields it holds. A path that leaves the record into a
+list or a map ends there: the element of a `list(Line)` is not typed yet.
 
 ### `state:` gets a byte bound now, not an open question
 
