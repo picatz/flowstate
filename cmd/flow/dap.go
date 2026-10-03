@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"syscall"
 
 	"github.com/spf13/cobra"
@@ -248,63 +249,205 @@ func launchDebuggedRun(
 	}
 
 	sourceMap := source.sourceMap(workflow)
-	session, err := flowdebug.New(flowdebug.Options{
+	build := debuggedRunBuilder{
+		cmd: cmd, workflow: workflow, inputs: inputs, sourceMap: sourceMap, reveal: reveal,
+		providers: providers, console: console, server: server,
+	}
+	if args.Reverse {
+		return build.reversible(args)
+	}
+
+	return build.once(args)
+}
+
+// debuggedRunBuilder is what a local debugged run is made of, whether it runs
+// once or can run again to step back.
+type debuggedRunBuilder struct {
+	cmd       *cobra.Command
+	workflow  *v1.Workflow
+	inputs    map[string]*v1.Value
+	sourceMap *v1.DebugSourceMap
+	reveal    bool
+	providers *localSecrets
+	console   *dapConsole
+	server    *flowdap.Server
+}
+
+// session is a controlled session for one run of the program.
+func (b debuggedRunBuilder) session(emit func(string, flowdebug.Tone), continueAtEntry bool) (*flowdebug.Session, error) {
+	return flowdebug.New(flowdebug.Options{
 		Controlled: true,
 		Out:        io.Discard,
-		Emit:       func(text string, _ flowdebug.Tone) { console.write(text) },
-		Workflow:   workflow,
-		SourceMap:  sourceMap,
+		Emit:       emit,
+		Workflow:   b.workflow,
+		SourceMap:  b.sourceMap,
 		// Authorized above, or the program declares nothing to withhold.
-		RevealSensitive: reveal,
+		RevealSensitive: b.reveal,
 		// Held at the first step only when the editor asked to be: the
 		// breakpoints are set before the run starts, so a run that is not
 		// to stop on entry need not hold there only to be released at once,
 		// narrating a stop the editor never shows.
-		Continue: args.StopOnEntry != nil && !*args.StopOnEntry,
+		Continue: continueAtEntry,
+	})
+}
+
+// execute runs the program under session and reports its end through report,
+// which is told the exit code. The code is recorded before the session reads
+// as ended: a movement answered ENDED reports the run's end at once, and must
+// report this code rather than the default. reports says whether this run's
+// outcome is the session's: a run that a rewind replaced is not.
+func (b debuggedRunBuilder) execute(
+	runCtx context.Context, session *flowdebug.Session, reports func() bool, finish func(),
+) {
+	exit := 0
+	defer func() {
+		if reports() {
+			b.server.Exited(exit)
+		}
+		_ = session.Close()
+		if reports() {
+			finish()
+		}
+	}()
+
+	ctx := v1.NewContextWithDebugger(runCtx, session)
+	ctx = v1.NewContextWithRunObserver(ctx, session)
+	ctx, err := withLocalTaskRuntimeUsing(b.cmd, ctx, b.workflow, b.providers)
+	if err != nil {
+		exit = 1
+		if reports() {
+			b.server.Exited(exit)
+		}
+		session.Finished(err)
+		if reports() {
+			b.server.Output(fmt.Sprintf("flowdap: configuring the local task runtime: %v\n", err))
+		}
+
+		return
+	}
+
+	_, runErr := v1.RunWithInputs(ctx, b.workflow, b.inputs)
+	if runErr != nil {
+		exit = 1
+		if reports() {
+			b.server.Exited(exit)
+		}
+	}
+	session.Finished(runErr)
+	if runErr != nil && reports() {
+		b.server.Output("run failed: " + session.FailureText(runErr) + "\n")
+	}
+}
+
+// once is a launch that runs the program one time.
+func (b debuggedRunBuilder) once(args flowdap.LaunchArguments) (*flowdap.Launch, error) {
+	session, err := b.session(func(text string, _ flowdebug.Tone) { b.console.write(text) },
+		args.StopOnEntry != nil && !*args.StopOnEntry)
+	if err != nil {
+		return nil, err
+	}
+
+	runCtx, cancel := context.WithCancel(b.cmd.Context())
+
+	return &flowdap.Launch{
+		Target:    session,
+		SourceMap: b.sourceMap,
+		Terminate: cancel,
+		Start: func() {
+			defer cancel()
+			b.execute(runCtx, session, func() bool { return true }, b.server.Finished)
+		},
+	}, nil
+}
+
+// debuggedRun is one run a reversible launch has started.
+type debuggedRun struct {
+	cancel  context.CancelFunc
+	done    chan struct{}
+	live    atomic.Bool
+	stopped atomic.Bool
+}
+
+// reports is whether this run's end is the session's: it was not ended by a
+// rewind. The editor's terminate cancels without stopping, so it reports.
+func (r *debuggedRun) reports() bool { return !r.stopped.Load() }
+
+// reversible is a launch that can step back. Going back runs the program
+// again from its start, so it is a choice the launch configuration makes with
+// `reverse: true`, and a replay that does not reproduce what the editor was
+// shown is refused rather than shown as if it had.
+func (b debuggedRunBuilder) reversible(args flowdap.LaunchArguments) (*flowdap.Launch, error) {
+	var (
+		mu      sync.Mutex
+		current *debuggedRun
+	)
+	shown := func() *debuggedRun {
+		mu.Lock()
+		defer mu.Unlock()
+
+		return current
+	}
+
+	target, err := flowdebug.NewReversible(b.cmd.Context(), func(context.Context) (*flowdebug.Run, error) {
+		run := &debuggedRun{done: make(chan struct{})}
+		// A replay is silent: the editor was shown that account the first time.
+		session, err := b.session(func(text string, _ flowdebug.Tone) {
+			if run.live.Load() {
+				b.console.write(text)
+			}
+		}, false)
+		if err != nil {
+			return nil, err
+		}
+		var runCtx context.Context
+		runCtx, run.cancel = context.WithCancel(b.cmd.Context())
+		go func() {
+			defer close(run.done)
+			b.execute(runCtx, session, run.reports, b.server.Finished)
+		}()
+
+		return &flowdebug.Run{
+			Session: session,
+			Live: func() {
+				run.live.Store(true)
+				mu.Lock()
+				current = run
+				mu.Unlock()
+			},
+			Stop: func() {
+				// Cancelled before the session is released, which would
+				// otherwise let the run carry on through its remaining steps.
+				run.stopped.Store(true)
+				run.cancel()
+				_ = session.Close()
+				<-run.done
+			},
+		}, nil
 	})
 	if err != nil {
 		return nil, err
 	}
 
-	runCtx, cancel := context.WithCancel(cmd.Context())
-
 	return &flowdap.Launch{
-		Target:    session,
-		SourceMap: sourceMap,
-		Terminate: cancel,
+		Target:    target,
+		SourceMap: b.sourceMap,
+		// The run is already started and held at its entry, so there is nothing
+		// to release; the editor's own continue, or its absence, is what
+		// follows. Wait lets the run in front finish if the editor detaches.
 		Start: func() {
-			defer cancel()
-
-			exit := 0
-			defer func() {
-				server.Exited(exit)
-				_ = session.Close()
-				server.Finished()
-			}()
-
-			ctx := v1.NewContextWithDebugger(runCtx, session)
-			ctx = v1.NewContextWithRunObserver(ctx, session)
-			ctx, err := withLocalTaskRuntimeUsing(cmd, ctx, workflow, providers)
-			// The exit code is recorded before the session reads as ended: a
-			// movement answered ENDED reports the run's end at once, and must
-			// report this code rather than the default.
-			if err != nil {
-				exit = 1
-				server.Exited(exit)
-				session.Finished(err)
-				server.Output(fmt.Sprintf("flowdap: configuring the local task runtime: %v\n", err))
-
-				return
+			for {
+				run := shown()
+				<-run.done
+				if shown() == run {
+					return
+				}
 			}
-
-			_, runErr := v1.RunWithInputs(ctx, workflow, inputs)
-			if runErr != nil {
-				exit = 1
-				server.Exited(exit)
-			}
-			session.Finished(runErr)
-			if runErr != nil {
-				server.Output("run failed: " + session.FailureText(runErr) + "\n")
+		},
+		// Ends the run without waiting for it: the caller holds the adapter's
+		// ordering lock, which the run's own report of its end needs.
+		Terminate: func() {
+			if run := shown(); run != nil {
+				run.cancel()
 			}
 		},
 	}, nil

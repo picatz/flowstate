@@ -747,3 +747,107 @@ func TestAMovementRefusedForItsContextLeavesTheHistoryReplayable(t *testing.T) {
 	require.Equal(t, appliedStatus, receipt.GetStatus(), receipt.GetMessage())
 	assert.Equal(t, shownAt(two).address, shownAt(snapshot).address)
 }
+
+// TestBackToBreakpointIsTheReverseOfContinue: from a stop, it lands on the
+// nearest earlier stop a breakpoint decided in one replay, then on the first
+// stop once none is left, and a run still moves forward afterwards.
+func TestBackToBreakpointIsTheReverseOfContinue(t *testing.T) {
+	t.Parallel()
+
+	workflow := parseJourney(t)
+	run := newReversing(t, func(int) *v1.Workflow { return workflow }, nil)
+
+	one := run.first()
+	set, err := run.target.ReplaceBreakpoints(t.Context(), &v1.DebugSetBreakpointsRequest{
+		RequestId:   run.id("bp"),
+		Breakpoints: []*v1.DebugBreakpoint{{Id: "each/touch", Step: "each/touch"}},
+	})
+	require.NoError(t, err)
+	require.Equal(t, appliedStatus, set.GetReceipt().GetStatus())
+
+	two := run.move(one, v1.DebugResumeAction_DEBUG_RESUME_ACTION_CONTINUE)
+	three := run.move(two, v1.DebugResumeAction_DEBUG_RESUME_ACTION_CONTINUE)
+	four := run.move(three, v1.DebugResumeAction_DEBUG_RESUME_ACTION_STEP_OVER)
+	require.Equal(t, "each[1]/touch", shownAt(three).address)
+	started := run.launches.started.Load()
+
+	// Past a step that no breakpoint decided, back to the breakpoint before it.
+	receipt, err := run.target.BackToBreakpoint(t.Context(), run.id("back"), four.GetRevision())
+	require.NoError(t, err)
+	require.Equal(t, appliedStatus, receipt.GetStatus(), receipt.GetMessage())
+	at, err := run.target.Snapshot(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, shownAt(three), shownAt(at))
+	assert.Equal(t, started+1, run.launches.started.Load(), "going back to a breakpoint replays once")
+
+	// Breakpoint to breakpoint, then to the start.
+	receipt, err = run.target.BackToBreakpoint(t.Context(), run.id("back"), 0)
+	require.NoError(t, err)
+	require.Equal(t, appliedStatus, receipt.GetStatus(), receipt.GetMessage())
+	at, err = run.target.Snapshot(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, shownAt(two), shownAt(at))
+
+	receipt, err = run.target.BackToBreakpoint(t.Context(), run.id("back"), 0)
+	require.NoError(t, err)
+	require.Equal(t, appliedStatus, receipt.GetStatus(), receipt.GetMessage())
+	at, err = run.target.Snapshot(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, shownAt(one).address, shownAt(at).address)
+
+	// At the first stop there is nowhere left, and forward still works.
+	receipt, err = run.target.BackToBreakpoint(t.Context(), run.id("back"), 0)
+	require.NoError(t, err)
+	assert.Equal(t, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_REFUSED, receipt.GetStatus())
+	again := run.move(at, v1.DebugResumeAction_DEBUG_RESUME_ACTION_CONTINUE)
+	assert.Equal(t, "each[0]/touch", shownAt(again).address)
+}
+
+// TestARunIsLiveOnlyOnceItIsTheOneShown: a host that narrates what it runs hears
+// of the first run at once and of a rewound run when it replaces the old one,
+// and never of a replay that is abandoned.
+func TestARunIsLiveOnlyOnceItIsTheOneShown(t *testing.T) {
+	t.Parallel()
+
+	workflow := parseJourney(t)
+	other := changedJourney(t)
+	l := &launches{}
+	var live atomic.Int64
+	var diverging atomic.Bool
+	inner := l.launcher(func(n int) *v1.Workflow {
+		if n == 0 || !diverging.Load() {
+			return workflow
+		}
+
+		return other
+	}, nil)
+	target, err := flowdebug.NewReversible(t.Context(), func(ctx context.Context) (*flowdebug.Run, error) {
+		run, err := inner(ctx)
+		if run != nil {
+			run.Live = func() { live.Add(1) }
+		}
+
+		return run, err
+	})
+	require.NoError(t, err)
+	t.Cleanup(target.Stop)
+	run := &reversing{t: t, target: target, launches: l}
+	assert.Equal(t, int64(1), live.Load(), "the first run is live at once")
+
+	one := run.first()
+	two := run.move(one, v1.DebugResumeAction_DEBUG_RESUME_ACTION_STEP_IN)
+	run.move(two, v1.DebugResumeAction_DEBUG_RESUME_ACTION_STEP_IN)
+
+	receipt, _ := run.back(0)
+	require.Equal(t, appliedStatus, receipt.GetStatus(), receipt.GetMessage())
+	assert.Equal(t, int64(2), live.Load(), "a rewound run is live when it replaces the old one")
+
+	// A replay that diverges is never shown.
+	diverging.Store(true)
+	at, err := target.Snapshot(t.Context())
+	require.NoError(t, err)
+	run.move(at, v1.DebugResumeAction_DEBUG_RESUME_ACTION_STEP_IN)
+	receipt, _ = run.back(0)
+	assert.Equal(t, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_REFUSED, receipt.GetStatus())
+	assert.Equal(t, int64(2), live.Load(), "a replay that diverged was announced as live")
+}

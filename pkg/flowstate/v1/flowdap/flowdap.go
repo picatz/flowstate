@@ -108,6 +108,7 @@ type capabilities struct {
 	SupportsTerminateRequest          bool              `json:"supportsTerminateRequest"`
 	SupportTerminateDebuggee          bool              `json:"supportTerminateDebuggee"`
 	SupportsDelayedStackTraceLoading  bool              `json:"supportsDelayedStackTraceLoading"`
+	SupportsStepBack                  bool              `json:"supportsStepBack"`
 	ExceptionBreakpointFilters        []exceptionFilter `json:"exceptionBreakpointFilters"`
 }
 

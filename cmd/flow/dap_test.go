@@ -675,3 +675,133 @@ outputs: {}
 	assert.NotContains(t, conn.seen.String(), "break at tagged",
 		"the console narrated an entry stop the editor was never sent")
 }
+
+// TestFlowDAPStepsBackThroughARealWorkflow: a launch that asks for `reverse`
+// offers stepBack and reverseContinue over the real binary, each lands on a
+// stop the editor was shown before, the run still finishes from there, and a
+// launch that does not ask never offers them.
+func TestFlowDAPStepsBackThroughARealWorkflow(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	workflow := filepath.Join(dir, "workflow.yaml")
+	require.NoError(t, os.WriteFile(workflow, []byte(`
+edition: v2026.4
+name: staged
+steps:
+  - id: build
+    value: "'web.tar.gz'"
+  - id: test
+    value: "'3 passed'"
+  - id: deploy
+    value: "'shipped'"
+outputs: {}
+`), 0o600))
+
+	start := func(t *testing.T) *dapConn {
+		t.Helper()
+
+		cmd := flowBinaryCommand(buildFlowBinary(t), "dap")
+		stdin, err := cmd.StdinPipe()
+		require.NoError(t, err)
+		stdout, err := cmd.StdoutPipe()
+		require.NoError(t, err)
+		require.NoError(t, cmd.Start())
+		t.Cleanup(func() {
+			_ = stdin.Close()
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+		})
+		conn := &dapConn{t: t, in: stdin, out: bufio.NewReader(stdout)}
+		conn.send("initialize", map[string]any{"adapterID": "flowstate"})
+		initialize := conn.await("response", "initialize")
+		assert.Equal(t, false, initialize["body"].(map[string]any)["supportsStepBack"],
+			"stepping back is offered only once a launch has asked for it")
+		conn.await("event", "initialized")
+
+		return conn
+	}
+	frame := func(conn *dapConn) string {
+		conn.send("stackTrace", map[string]any{"threadId": 1})
+		frames := conn.await("response", "stackTrace")["body"].(map[string]any)["stackFrames"].([]any)
+		require.NotEmpty(t, frames)
+
+		return frames[0].(map[string]any)["name"].(string)
+	}
+
+	t.Run("reverse", func(t *testing.T) {
+		t.Parallel()
+
+		conn := start(t)
+		conn.send("launch", map[string]any{"program": workflow, "reverse": true})
+		conn.await("response", "launch")
+		offered := conn.await("event", "capabilities")
+		assert.Equal(t, true, offered["body"].(map[string]any)["capabilities"].(map[string]any)["supportsStepBack"])
+		conn.send("configurationDone", nil)
+		conn.await("response", "configurationDone")
+		conn.await("event", "stopped")
+		assert.Contains(t, frame(conn), "build")
+
+		conn.send("stepIn", map[string]any{"threadId": 1})
+		conn.await("response", "stepIn")
+		conn.await("event", "stopped")
+		conn.send("stepIn", map[string]any{"threadId": 1})
+		conn.await("response", "stepIn")
+		conn.await("event", "stopped")
+		assert.Contains(t, frame(conn), "deploy")
+
+		conn.send("stepBack", map[string]any{"threadId": 1})
+		back := conn.await("response", "stepBack")
+		require.Equal(t, true, back["success"], "%v", back["message"])
+		conn.await("event", "stopped")
+		assert.Contains(t, frame(conn), "test")
+
+		conn.send("reverseContinue", map[string]any{"threadId": 1})
+		reversed := conn.await("response", "reverseContinue")
+		require.Equal(t, true, reversed["success"], "%v", reversed["message"])
+		conn.await("event", "stopped")
+		assert.Contains(t, frame(conn), "build")
+
+		// The rewound run is the run: it carries on to its end.
+		conn.send("continue", map[string]any{"threadId": 1})
+		conn.await("response", "continue")
+		conn.await("event", "terminated")
+	})
+
+	t.Run("not asked for", func(t *testing.T) {
+		t.Parallel()
+
+		conn := start(t)
+		conn.send("launch", map[string]any{"program": workflow})
+		conn.await("response", "launch")
+		conn.send("configurationDone", nil)
+		conn.await("response", "configurationDone")
+		conn.await("event", "stopped")
+		conn.send("stepBack", map[string]any{"threadId": 1})
+		refused := conn.await("response", "stepBack")
+		assert.Equal(t, false, refused["success"])
+		assert.Contains(t, refused["message"], `"reverse": true`)
+	})
+
+	t.Run("terminate", func(t *testing.T) {
+		t.Parallel()
+
+		conn := start(t)
+		conn.send("launch", map[string]any{"program": workflow, "reverse": true})
+		conn.await("response", "launch")
+		conn.send("configurationDone", nil)
+		conn.await("response", "configurationDone")
+		conn.await("event", "stopped")
+		conn.send("stepIn", map[string]any{"threadId": 1})
+		conn.await("response", "stepIn")
+		conn.await("event", "stopped")
+		conn.send("stepBack", map[string]any{"threadId": 1})
+		conn.await("response", "stepBack")
+		conn.await("event", "stopped")
+
+		// Ending a rewound run is reported like ending any other.
+		conn.send("terminate", map[string]any{})
+		conn.await("response", "terminate")
+		conn.await("event", "terminated")
+	})
+}

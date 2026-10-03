@@ -607,7 +607,23 @@ MCP `flowstate_run_local` tool's `inputs`; `revealSensitive`, the deliberate
 reveal [Debugging](DEBUGGING.md#sensitive-values) describes; and
 `stopOnEntry`, true unless set false, which holds the run at its first step;
 false runs it to the first breakpoint, failure stop or `pause` instead, and
-narrates no stop at the first step.
+narrates no stop at the first step; and `reverse`, false unless set, which makes
+the run one that can step back.
+
+**Stepping back.** With `"reverse": true` the editor's step-back and
+reverse-continue buttons work, and without it the adapter does not offer them.
+Going back runs the workflow again from its start under a fresh session and
+replays every command you gave it, up to the stop before the one you are at;
+the stop it lands on must show what that stop showed the first time, address,
+reason, frames, observations and the values in scope, or the step is refused as
+diverged and the run stays where it was. Reverse-continue lands on the nearest
+earlier stop a breakpoint decided, or the first stop. Because the program runs
+again, every effect its steps have happens again: set it for a workflow whose
+tasks are stubbed or harmless, never one that sends mail or charges a card.
+A run that has finished cannot be stepped back from, and a pause that landed
+wherever the run happened to be cannot be replayed, so a session that used one
+refuses to go back and says why. Going back is not offered for an attach to a
+durable run.
 
 The inputs are bound before anything runs, so a launch missing a required
 input, or giving one the wrong type, is a failed launch that says which input

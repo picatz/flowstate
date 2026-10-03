@@ -170,6 +170,11 @@
                 "description": "Hold the run at its first step. Set false to run to the first breakpoint, failure stop or pause.",
                 "default": true
               },
+              "reverse": {
+                "type": "boolean",
+                "description": "Run in a way that can step back. Going back runs the workflow again from the start and replays every command, so every step's effects happen again: use it only where they are stubbed or harmless. A run that does not repeat itself exactly is refused as diverged.",
+                "default": false
+              },
               "revealSensitive": {
                 "type": "boolean",
                 "description": "Show the values of sensitive inputs and outputs while debugging.",
