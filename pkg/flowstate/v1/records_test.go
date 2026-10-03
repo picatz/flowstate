@@ -1,6 +1,7 @@
 package flowstatev1_test
 
 import (
+	"errors"
 	"fmt"
 	"testing"
 
@@ -285,4 +286,31 @@ func TestTheUnknownKeyAReportNamesIsTheFirstWritten(t *testing.T) {
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), `"zz"`)
 	}
+}
+
+func TestTheDeclaredTypeCountIsBounded(t *testing.T) {
+	t.Parallel()
+
+	wf := &v1.Workflow{}
+	for i := range v1.MaxRecordTypes + 1 {
+		wf.DeclaredTypes = append(wf.DeclaredTypes, &v1.TypeDeclaration{
+			Name: fmt.Sprintf("T%d", i), Fields: []*v1.InputDeclaration{recordStringField("x", false)},
+		})
+	}
+
+	err := v1.CheckRecordDeclarations(wf)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "most a workflow declares")
+}
+
+func TestANestedRecordMismatchClaimsNoOutermostTypes(t *testing.T) {
+	t.Parallel()
+
+	err := bindOrder(t, mapLit(recordStr("id"), intLit(1)))
+	require.Error(t, err)
+
+	var invalid *v1.InputError
+	require.True(t, errors.As(err, &invalid))
+	assert.Empty(t, invalid.Declared, "a mismatch inside a record compared no outermost types")
+	assert.Empty(t, invalid.Got)
 }

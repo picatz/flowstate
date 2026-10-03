@@ -19,6 +19,10 @@ import (
 // unresolvable and so accepts what it cannot judge, exactly as a message type did
 // before there was a table to read.
 
+// MaxRecordTypes bounds the record types one workflow declares, matching the
+// schema's bound on [Workflow.declared_types].
+const MaxRecordTypes = 64
+
 // MaxRecordFields bounds the fields of one record type. It matches the bound the
 // schema puts on [TypeDeclaration.fields], restated here because a hand-built
 // declaration does not pass through the schema.
@@ -192,10 +196,16 @@ func recordFieldNames(fields []*InputDeclaration) string {
 // `default`, `example`, `sensitive`, `must` or a length or item bound is refused with the reason
 // [TypeDeclaration.fields] gives, rather than carrying a promise nothing keeps.
 //
-// The compiler runs it against positions' worth of context through the same
+// The compiler runs it with a position to point at through the same
 // function, and [CheckDeclarationTypes] runs it again for a specification that
 // never was a Flowfile.
 func CheckRecordDeclarations(wf *Workflow) error {
+	// The schema's bound, restated for a specification that skipped the schema:
+	// everything below walks the declarations, so the count comes first.
+	if n := len(wf.GetDeclaredTypes()); n > MaxRecordTypes {
+		return fmt.Errorf("%d types are declared; the most a workflow declares is %d", n, MaxRecordTypes)
+	}
+
 	table := TypesOf(wf)
 
 	seen := make(map[string]bool, len(wf.GetDeclaredTypes()))

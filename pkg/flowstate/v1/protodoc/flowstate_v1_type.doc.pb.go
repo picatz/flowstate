@@ -16,9 +16,12 @@ func init() {
 				"\n" +
 				" It is structural rather than a rendered string so only the Flowfile compiler\n" +
 				" parses type expressions. Consumers of the compiled specification read this\n" +
-				" message directly and cannot acquire a second type grammar. The message arm is\n" +
-				" reserved for descriptor-backed user types; the compiler does not produce it\n" +
-				" until that language surface exists.\n",
+				" message directly and cannot acquire a second type grammar. The message arm names\n" +
+				" a record type. Today that is a record the workflow declares under `types:`\n" +
+				" ([TypeDeclaration]), written as a bare name such as `Order` and resolved\n" +
+				" against the workflow's own declarations; a descriptor-backed Protobuf type,\n" +
+				" which carries a qualified name, has no Flowfile spelling until that language\n" +
+				" surface exists.\n",
 		},
 		{
 			Name:    "flowstate.v1.Type.scalar",
@@ -38,8 +41,10 @@ func init() {
 				" sibling `values` field, where their per-value documentation belongs.\n",
 		},
 		{
-			Name:    "flowstate.v1.Type.message",
-			Leading: " Message is the fully qualified Protobuf name of a descriptor-backed type.\n",
+			Name: "flowstate.v1.Type.message",
+			Leading: " Message names a record type: the bare name of a [TypeDeclaration] in the\n" +
+				" workflow that holds this type, or the fully qualified Protobuf name of a\n" +
+				" descriptor-backed type.\n",
 		},
 		{
 			Name:    "flowstate.v1.Type.dyn",

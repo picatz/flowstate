@@ -566,10 +566,15 @@ message Workflow {
 //
 // A field is an [InputDeclaration] on purpose. An author who can declare an
 // input can declare a field, a field is checked by the same functions that check
-// an input (its type, its `values`, its `must`, its length and item bounds), and
-// a rule added to inputs reaches fields without a second implementation. The
-// record is closed: a value carrying a name the type does not declare is
-// refused, because an open record is what `map(string, dyn)` already is.
+// an input's type and `values`, and a rule added to inputs can reach fields
+// without a second implementation. The record is closed: a value carrying a name
+// the type does not declare is refused, because an open record is what
+// `map(string, dyn)` already is.
+//
+// Only `name`, `type`, `value_type`, `required`, `description` and an enum's
+// `values` are carried by a field today. `default`, `example`, `sensitive`,
+// `must` and the length and item bounds are refused by the compiler and at
+// submit, not ignored.
 //
 // A value of a record type is a map at run time, keyed by field name, so a
 // reader that does not know the type (an older worker, a CEL expression the

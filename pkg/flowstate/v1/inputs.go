@@ -232,8 +232,13 @@ func bindRunInputs(wf *Workflow, profile string, submitted map[string]*Value) (m
 			// disagree with the sentence beside them. Left unset for every other
 			// refusal CheckInputValue makes — an expression, a secret reference,
 			// a missing value — because those compared no types.
+			//
+			// Only when the two outermost kinds differ: a mismatch found inside a
+			// container or a record has `struct` or `list` on both sides, and a
+			// pair of equal names would claim the opposite of the sentence.
 			got, isLiteral := inputTypeOf(value.GetLiteral())
-			if isLiteral {
+			declared := declaration.GetType()
+			if isLiteral && got != declared && !(StringShaped(declared) && got == InputDeclaration_TYPE_STRING) {
 				return nil, invalidInputType(name,
 					DeclaredTypeName(declaration.GetType()), DeclaredTypeName(got), err)
 			}

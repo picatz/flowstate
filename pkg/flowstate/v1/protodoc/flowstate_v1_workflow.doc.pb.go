@@ -476,10 +476,15 @@ func init() {
 				"\n" +
 				" A field is an [InputDeclaration] on purpose. An author who can declare an\n" +
 				" input can declare a field, a field is checked by the same functions that check\n" +
-				" an input (its type, its `values`, its `must`, its length and item bounds), and\n" +
-				" a rule added to inputs reaches fields without a second implementation. The\n" +
-				" record is closed: a value carrying a name the type does not declare is\n" +
-				" refused, because an open record is what `map(string, dyn)` already is.\n" +
+				" an input's type and `values`, and a rule added to inputs can reach fields\n" +
+				" without a second implementation. The record is closed: a value carrying a name\n" +
+				" the type does not declare is refused, because an open record is what\n" +
+				" `map(string, dyn)` already is.\n" +
+				"\n" +
+				" Only `name`, `type`, `value_type`, `required`, `description` and an enum's\n" +
+				" `values` are carried by a field today. `default`, `example`, `sensitive`,\n" +
+				" `must` and the length and item bounds are refused by the compiler and at\n" +
+				" submit, not ignored.\n" +
 				"\n" +
 				" A value of a record type is a map at run time, keyed by field name, so a\n" +
 				" reader that does not know the type (an older worker, a CEL expression the\n" +
