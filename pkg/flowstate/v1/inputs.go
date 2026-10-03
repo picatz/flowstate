@@ -240,7 +240,7 @@ func bindRunInputs(wf *Workflow, profile string, submitted map[string]*Value) (m
 			declared := declaration.GetType()
 			if isLiteral && got != declared && !(StringShaped(declared) && got == InputDeclaration_TYPE_STRING) {
 				return nil, invalidInputType(name,
-					DeclaredTypeName(declaration.GetType()), DeclaredTypeName(got), err)
+					declaration.TypeText(), DeclaredTypeName(got), err)
 			}
 
 			return nil, invalidInput(name, err)
@@ -479,10 +479,11 @@ func CheckInputValueIn(table TypeTable, name string, declaration *InputDeclarati
 // *computed* an output — since those are the two halves that differ and the
 // judgement is what does not.
 func checkDeclaredLiteralType(table TypeTable, r valueRendering, kind, verb, name string, declared InputDeclaration_Type, structural *Type, literal *expr.Value) error {
+	declaredAs := declaredTypeText(structural, declared)
 	got, ok := inputTypeOf(literal)
 	if !ok {
 		return fmt.Errorf("%s %q is %s, which is not a kind of value an %s can hold; "+
-			"it is declared %s", kind, name, literalKindName(literal), kind, DeclaredTypeName(declared))
+			"it is declared %s", kind, name, literalKindName(literal), kind, declaredAs)
 	}
 
 	// TYPE_ENUM has no counterpart in [inputTypeOf]'s switch, deliberately:
@@ -496,14 +497,14 @@ func checkDeclaredLiteralType(table TypeTable, r valueRendering, kind, verb, nam
 	if StringShaped(declared) {
 		if got != InputDeclaration_TYPE_STRING {
 			return fmt.Errorf("%s %q is declared %s but %s %s",
-				kind, name, DeclaredTypeName(declared), verb, DeclaredTypeName(got))
+				kind, name, declaredAs, verb, DeclaredTypeName(got))
 		}
 		return nil
 	}
 
 	if got != declared {
 		return fmt.Errorf("%s %q is declared %s but %s %s",
-			kind, name, DeclaredTypeName(declared), verb, DeclaredTypeName(got))
+			kind, name, declaredAs, verb, DeclaredTypeName(got))
 	}
 
 	// A float is a finite number. NaN and the infinities are values a double

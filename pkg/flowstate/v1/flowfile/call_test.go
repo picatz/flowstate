@@ -698,3 +698,31 @@ func TestARootCompiledFromAFileRecordsItsSourceDigest(t *testing.T) {
 	require.NotEqual(t, v1.WorkflowIRDigest(workflow), v1.WorkflowIRDigest(moved),
 		"a file whose lines moved named the same program")
 }
+
+// TestCallMismatchNamesTheCalleesDeclaredContainerType keeps the diagnostic's
+// spelling honest for #1640: a callee that declares `list(string)` is reported
+// as that, which is what the author can paste back, not as the legacy word.
+func TestCallMismatchNamesTheCalleesDeclaredContainerType(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "callee.yaml", `edition: v2026.4
+name: callee
+inputs:
+  hosts:
+    type: list(string)
+    required: true
+steps:
+  - id: noop
+    log:
+      message: hi
+`)
+	caller := writeFile(t, dir, "caller.yaml", `edition: v2026.4
+name: caller
+steps:
+  - id: place
+    call: ./callee.yaml
+    with:
+      hosts: ${1 + 2}
+`)
+
+	require.Contains(t, mustValidate(t, caller).Error(), `with.hosts is declared list(string) by workflow "callee", but this expression always produces int`)
+}

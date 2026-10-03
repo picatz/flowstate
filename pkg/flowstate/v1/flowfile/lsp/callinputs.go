@@ -215,7 +215,7 @@ func mustBeBound(declaration *v1.InputDeclaration) bool {
 // callInputDetail renders the one-line summary beside a candidate: what the
 // argument must be, and whether the call needs it.
 func callInputDetail(declaration *v1.InputDeclaration) string {
-	detail := v1.DeclaredTypeName(declaration.GetType())
+	detail := declaration.TypeText()
 	switch {
 	case mustBeBound(declaration):
 		detail += " (required)"
@@ -242,7 +242,7 @@ func callInputDetail(declaration *v1.InputDeclaration) string {
 // came from is what makes the answer checkable.
 func callInputDoc(declaration *v1.InputDeclaration, called calledWorkflow) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "**`%s`** · `%s`", declaration.GetName(), v1.DeclaredTypeName(declaration.GetType()))
+	fmt.Fprintf(&b, "**`%s`** · `%s`", declaration.GetName(), declaration.TypeText())
 	if declaration.GetRequired() {
 		b.WriteString(" · required")
 	} else {

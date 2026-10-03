@@ -262,9 +262,9 @@ func inputCoercionError(name, raw string, declaration *v1.InputDeclaration, want
 	// would report a type nobody declared and this function never decided.
 	return &v1.InputError{
 		Input:    name,
-		Declared: v1.DeclaredTypeName(declaration.GetType()),
+		Declared: declaration.TypeText(),
 		Err: fmt.Errorf("--input %s=%s: %q is declared %s, which is written as %s%s",
-			name, shown, name, v1.DeclaredTypeName(declaration.GetType()), wants, describedAs(declaration)),
+			name, shown, name, declaration.TypeText(), wants, describedAs(declaration)),
 	}
 }
 
@@ -421,7 +421,7 @@ func decodeInputJSON(raw string) (any, error) {
 // read as written: whole numbers are ints and the rest are floats. That is the same
 // rule the YAML parser applies to a literal in a file.
 func valueFromJSON(name string, decoded any, declaration *v1.InputDeclaration) (*v1.Value, error) {
-	declaredType := v1.DeclaredTypeName(declaration.GetType())
+	declaredType := declaration.TypeText()
 
 	if number, ok := decoded.(json.Number); ok && declaration.GetType() == v1.InputDeclaration_TYPE_FLOAT {
 		asFloat, err := number.Float64()

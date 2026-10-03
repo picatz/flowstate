@@ -865,3 +865,47 @@ func TestFmtStdoutPassesATestFileThroughByteForByte(t *testing.T) {
 		t.Fatalf("flow fmt --stdout did not pass the test file through byte for byte:\n--- want\n%s\n--- got\n%s", want, out)
 	}
 }
+
+// TestFmtWritesTypedDeclarationsInCanonicalSpelling is #1640's formatter case: a
+// container type written loosely comes back as the one spelling the language
+// teaches, in a flow mapping and a block mapping alike, and a second pass
+// changes nothing.
+func TestFmtWritesTypedDeclarationsInCanonicalSpelling(t *testing.T) {
+	const src = `edition: v2026.4
+name: typed
+inputs:
+  hosts: {type: list(string), required: true}
+  limits:
+    type: map(string,   int)
+steps:
+  - id: count
+    value: ${size(inputs.hosts)}
+outputs:
+  total:
+    value: ${steps.count.value}
+    type: list( int )
+`
+
+	dir := t.TempDir()
+	path := writeFixture(t, dir, "workflow.yaml", src)
+
+	if out, _, err := runFmtCommand(t, path); err != nil {
+		t.Fatalf("fmt: %v\n%s", err, out)
+	}
+
+	got := string(readFixture(t, path))
+	for _, want := range []string{"type: list(string)", "type: map(string, int)", "type: list(int)"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the formatted file lacks %q:\n%s", want, got)
+		}
+	}
+	for _, loose := range []string{"map(string,   int)", "list( int )"} {
+		if strings.Contains(got, loose) {
+			t.Errorf("the formatted file kept the loose spelling %q:\n%s", loose, got)
+		}
+	}
+
+	if out, _, err := runFmtCommand(t, "--check", path); err != nil {
+		t.Errorf("a second pass would change the file: %v\n%s", err, out)
+	}
+}
