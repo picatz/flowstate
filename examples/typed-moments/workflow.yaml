@@ -68,9 +68,13 @@ steps:
       message: ${"opens %s, closes %s, sealed with %d byte(s)".format([string(inputs.opens), string(steps.closing.value), size(inputs.seal)])}
 outputs:
   closes:
+    value: ${string(steps.closing.value)}
+    type: string
+    description: when the window closes, as an RFC 3339 timestamp
+  closes_at:
     value: ${steps.closing.value}
     type: timestamp
-    description: when the window closes
+    description: when the window closes, as the timestamp it is
   booked_for:
     value: ${inputs.booking.ends - inputs.booking.starts}
     type: duration

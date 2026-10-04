@@ -13,6 +13,7 @@ tests:
       ran: [closing, announce]
       outputs:
         closes: "2026-03-01T11:00:00Z"
+        closes_at: "2026-03-01T11:00:00Z"
         booked_for: 30m0s
         first_reminder: "2026-03-01T08:00:00Z"
 
@@ -24,6 +25,7 @@ tests:
       ran: [closing, announce]
       outputs:
         closes: "2026-07-02T09:00:00Z"
+        closes_at: "2026-07-02T09:00:00Z"
         booked_for: 30m0s
         first_reminder: "2026-03-01T08:00:00Z"
 
@@ -64,6 +66,7 @@ tests:
       ran: [closing, announce]
       outputs:
         closes: "2026-03-01T11:00:00Z"
+        closes_at: "2026-03-01T11:00:00Z"
         booked_for: 1h30m0s
         first_reminder: "2026-03-01T08:00:00Z"
 
