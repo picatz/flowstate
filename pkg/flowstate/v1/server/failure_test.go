@@ -375,18 +375,7 @@ func TestAFailedRunReportsTheKindItDeclared(t *testing.T) {
 	}))
 	require.NoError(t, err)
 
-	var got *v1.GetResponse
-	require.Eventually(t, func() bool {
-		resp, gerr := fixture.teamA.Get(t.Context(), connect.NewRequest(&v1.GetRequest{
-			WorkflowId: started.Msg.GetWorkflowId(),
-		}))
-		if gerr != nil {
-			return false
-		}
-		got = resp.Msg
-
-		return got.GetStatus() != v1.RunResponse_STATUS_RUNNING
-	}, 60*time.Second, 200*time.Millisecond, "the run never reached a terminal state")
+	got := awaitTerminal(t, fixture.teamA, started.Msg.GetWorkflowId())
 
 	require.Equal(t, v1.RunResponse_STATUS_FAILED, got.GetStatus())
 	require.Equal(t, "InsufficientFunds", got.GetError().GetKind())
@@ -417,12 +406,23 @@ func TestADeclaredNameDoesNotClaimAnUnrelatedFailure(t *testing.T) {
 	}))
 	require.NoError(t, err)
 
+	got := awaitTerminal(t, fixture.teamA, started.Msg.GetWorkflowId())
+
+	require.Equal(t, v1.RunResponse_STATUS_FAILED, got.GetStatus())
+	require.NotEqual(t, "InvalidWorkflowVars", got.GetError().GetKind(),
+		"a pre-step failure was reported as the workflow's declared kind of the same name")
+}
+
+// awaitTerminal polls Get until the run is no longer running and returns that
+// answer. The run is on a real Temporal server, outside the test, so there is
+// nothing to wait on but the answer itself.
+func awaitTerminal(t *testing.T, client *server.FlowstateServer, workflowID string) *v1.GetResponse {
+	t.Helper()
+
 	var got *v1.GetResponse
 	require.Eventually(t, func() bool {
-		resp, gerr := fixture.teamA.Get(t.Context(), connect.NewRequest(&v1.GetRequest{
-			WorkflowId: started.Msg.GetWorkflowId(),
-		}))
-		if gerr != nil {
+		resp, err := client.Get(t.Context(), connect.NewRequest(&v1.GetRequest{WorkflowId: workflowID}))
+		if err != nil {
 			return false
 		}
 		got = resp.Msg
@@ -430,7 +430,5 @@ func TestADeclaredNameDoesNotClaimAnUnrelatedFailure(t *testing.T) {
 		return got.GetStatus() != v1.RunResponse_STATUS_RUNNING
 	}, 60*time.Second, 200*time.Millisecond, "the run never reached a terminal state")
 
-	require.Equal(t, v1.RunResponse_STATUS_FAILED, got.GetStatus())
-	require.NotEqual(t, "InvalidWorkflowVars", got.GetError().GetKind(),
-		"a pre-step failure was reported as the workflow's declared kind of the same name")
+	return got
 }
