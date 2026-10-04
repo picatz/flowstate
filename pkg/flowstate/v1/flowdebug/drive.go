@@ -117,6 +117,8 @@ inspect, p <expr>            evaluate a read-only CEL expression at this stop
 expand <expr>                list a map's or list's children
 scope                        list what this stop can name
 backtrace, bt                the step and every container around it
+back                         return to the previous stop (a session that can step back)
+reverse-continue, rc         return to the nearest earlier breakpoint stop, or the first
 detach                       clear breakpoints and let the run go on unattended
 help                         this list`
 
@@ -179,6 +181,10 @@ func (d *Driver) DoWith(ctx context.Context, line string, opts DoOptions) (*Driv
 		}
 
 		return d.move(ctx, v1.DebugResumeAction_DEBUG_RESUME_ACTION_RUN_UNTIL, rest)
+	case "back":
+		return d.back(ctx, false)
+	case "reverse-continue", "rc":
+		return d.back(ctx, true)
 	case "detach":
 		return d.move(ctx, v1.DebugResumeAction_DEBUG_RESUME_ACTION_DETACH, "")
 
@@ -315,7 +321,8 @@ func changesSession(verb string) bool {
 // revision to the target rather than having the driver check it.
 func movement(verb string) bool {
 	switch verb {
-	case "step", "s", "next", "n", "finish", "fin", "out", "continue", "c", "until", "u", "detach":
+	case "step", "s", "next", "n", "finish", "fin", "out", "continue", "c", "until", "u", "detach",
+		"back", "reverse-continue", "rc":
 		return true
 	default:
 		return false
@@ -411,6 +418,41 @@ func (d *Driver) move(ctx context.Context, action v1.DebugResumeAction, until st
 	}
 
 	result.Snapshot, err = d.waitForStop(ctx, receipt.GetRevision())
+	if err != nil {
+		return nil, err
+	}
+	result.Text = FormatSnapshot(result.Snapshot)
+
+	return result, nil
+}
+
+// back returns to an earlier stop through a target that can step back. It is
+// a movement like any other: the expected revision reaches the target, which
+// answers a stale one, and the rewound run is already held when the receipt is
+// applied, so the stop is read rather than waited for.
+func (d *Driver) back(ctx context.Context, toBreakpoint bool) (*DriveResult, error) {
+	reverser, ok := d.target.(Reverser)
+	if !ok {
+		return nil, errors.New("this session cannot step back: only a run replayed from its start can")
+	}
+	d.sending()
+	request := cmp.Or(d.request, newRequestID())
+	back := reverser.Back
+	if toBreakpoint {
+		back = reverser.BackToBreakpoint
+	}
+	receipt, err := back(ctx, request, d.expected)
+	if err != nil {
+		return nil, err
+	}
+
+	result := &DriveResult{Receipt: receipt}
+	if !Accepted(receipt) {
+		result.Text = FormatReceipt(receipt)
+
+		return result, nil
+	}
+	result.Snapshot, err = d.target.Snapshot(ctx)
 	if err != nil {
 		return nil, err
 	}

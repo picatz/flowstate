@@ -849,3 +849,82 @@ func TestARunIsLiveOnlyOnceItIsTheOneShown(t *testing.T) {
 	assert.Equal(t, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_DIVERGED, receipt.GetStatus())
 	assert.Equal(t, int64(2), live.Load(), "a replay that diverged was announced as live")
 }
+
+// TestTheDriverSpellsBackAndReverseContinue: a command line reaches a target
+// that can step back through the same calls an editor's request does, returns
+// the stop it left the session at, and is refused, saying why, where the
+// target cannot.
+func TestTheDriverSpellsBackAndReverseContinue(t *testing.T) {
+	t.Parallel()
+
+	workflow := parseJourney(t)
+	run := newReversing(t, func(int) *v1.Workflow { return workflow }, nil)
+	driver := flowdebug.NewDriver(run.target)
+	driver.Wait = 30 * time.Second
+	do := func(line string) *flowdebug.DriveResult {
+		t.Helper()
+		result, err := driver.Do(t.Context(), line)
+		require.NoError(t, err, line)
+
+		return result
+	}
+
+	one := run.first()
+	do("break each/touch")
+	two := do("continue").Snapshot
+	three := do("continue").Snapshot
+	require.Equal(t, "each[1]/touch", shownAt(three).address)
+	four := do("step").Snapshot
+	require.Equal(t, "each[2]/touch", shownAt(four).address)
+	five := do("step").Snapshot
+	require.NotEqual(t, "each[2]/touch", shownAt(five).address)
+	do("step")
+
+	// `back` is one stop, and answers with the stop it reached: past a stop no
+	// breakpoint decided, that is the one before it.
+	result := do("back")
+	require.Equal(t, appliedStatus, result.Receipt.GetStatus(), result.Receipt.GetMessage())
+	assert.Equal(t, shownAt(five), shownAt(result.Snapshot))
+	assert.Contains(t, result.Text, shownAt(five).address)
+	result = do("back")
+	require.Equal(t, appliedStatus, result.Receipt.GetStatus(), result.Receipt.GetMessage())
+	assert.Equal(t, shownAt(four), shownAt(result.Snapshot))
+
+	// `reverse-continue` skips to the breakpoint before it, which is not the
+	// stop before it; `rc` is the same.
+	do("step")
+	do("step")
+	past := do("step").Snapshot
+	require.NotEqual(t, "each[2]/touch", shownAt(past).address)
+	result = do("rc")
+	require.Equal(t, appliedStatus, result.Receipt.GetStatus(), result.Receipt.GetMessage())
+	assert.Equal(t, shownAt(four), shownAt(result.Snapshot))
+	result = do("rc")
+	require.Equal(t, appliedStatus, result.Receipt.GetStatus(), result.Receipt.GetMessage())
+	assert.Equal(t, shownAt(three), shownAt(result.Snapshot))
+	result = do("reverse-continue")
+	require.Equal(t, appliedStatus, result.Receipt.GetStatus(), result.Receipt.GetMessage())
+	assert.Equal(t, shownAt(two), shownAt(result.Snapshot))
+	result = do("rc")
+	require.Equal(t, appliedStatus, result.Receipt.GetStatus(), result.Receipt.GetMessage())
+	assert.Equal(t, shownAt(one).address, shownAt(result.Snapshot).address)
+
+	// Nowhere left to go is a refusal with its reason, not an error.
+	result = do("back")
+	assert.Equal(t, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_REFUSED, result.Receipt.GetStatus())
+	assert.Contains(t, result.Text, "first stop")
+
+	// A line pinned to a revision the session has left is stale, not applied.
+	stale, err := driver.DoWith(t.Context(), "back", flowdebug.DoOptions{ExpectedRevision: 1})
+	require.NoError(t, err)
+	assert.Equal(t, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_STALE, stale.Receipt.GetStatus(), stale.Text)
+
+	// A session that cannot step back says so, and moves nothing.
+	plain, err := flowdebug.New(flowdebug.Options{Controlled: true})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = plain.Close() })
+	for _, line := range []string{"back", "rc", "reverse-continue"} {
+		_, err := flowdebug.NewDriver(plain).Do(t.Context(), line)
+		require.ErrorContains(t, err, "cannot step back", line)
+	}
+}

@@ -111,6 +111,14 @@ type recorded struct {
 	breakpoints *v1.DebugSetBreakpointsRequest
 }
 
+// Reverser is a [Target] that can return to an earlier stop, as [Reversible]
+// does. A front offers stepping back only for a target that is one and says so
+// in its capabilities. Each method answers as [Reversible.Back] does.
+type Reverser interface {
+	Back(ctx context.Context, requestID string, expectedRevision uint64) (*v1.DebugReceipt, error)
+	BackToBreakpoint(ctx context.Context, requestID string, expectedRevision uint64) (*v1.DebugReceipt, error)
+}
+
 // Reversible is a [Target] over a run it can start again, so that [Reversible.Back]
 // can move to the previous stop. Use [NewReversible].
 type Reversible struct {

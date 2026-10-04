@@ -119,10 +119,13 @@ nothing here is worth learning twice. `help` lists it.
 
 A `<step>` is a bare id or an address. The structured fronts — `flow debug
 attach` and `do`, the MCP session tools, and `embed`'s `Driver` — read the same
-lines, less the prompt's own `complete` and `quit`, plus four: `status` prints
+lines, less the prompt's own `complete` and `quit`, plus six: `status` prints
 the current snapshot, `pause` holds a running run at its next boundary (a run
 that completes before reaching one says so), `expand <expr>` pages a map's or
-list's children, and `clear` removes every breakpoint, whoever set it. One
+list's children, `clear` removes every breakpoint, whoever set it, and `back`
+and `reverse-continue` (`rc`) return to the previous stop and to the nearest
+earlier breakpoint stop, for a target that can step back; any other says
+so and does not move. One
 prompt form they do not take is `until <step> if <expr>`: a typed resume
 names a step and nothing more, so the condition is refused rather than dropped.
 `break <step> if <expr>` and `continue` say the same thing there.
