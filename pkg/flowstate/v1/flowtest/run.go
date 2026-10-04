@@ -1260,7 +1260,7 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	if gatherer != nil {
 		sensitive = widenedBy(sensitive, gatherer.withheld())
 	}
-	shown = caseShown{sensitive: sensitive, runErr: runErr, faultCase: len(test.Faults) > 0, faulted: faulting && faults != nil}
+	shown = caseShown{sensitive: sensitive, runErr: runErr, faulted: faulting && faults != nil && faults.firedAny()}
 
 	// The transcript coverage reads is the same one the verdict does. A failed
 	// run hands back the partial one ([v1.PartialTranscript]): the steps it ran
@@ -2461,10 +2461,9 @@ type caseShown struct {
 	sensitive sensitiveInputs
 	runErr    error
 
-	// faultCase is that the case declares `faults:`, and faulted that this run
-	// injected them. A faulted case is compared across schedules by its
-	// invariants alone ([scheduleAccumulator.run]).
-	faultCase, faulted bool
+	// faulted is that this run had a fault fire. Such a run is compared across
+	// schedules by its invariants alone ([scheduleAccumulator.run]).
+	faulted bool
 }
 
 // runErrorUnder is the run's failure as a schedule divergence shows it under

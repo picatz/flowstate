@@ -227,3 +227,17 @@ func TestAFaultStreamIsSeededAndLeavesTheScheduleAlone(t *testing.T) {
 	require.True(t, v1.InjectFault(ctx, "x", 1), "a rate of one always fires")
 	require.False(t, v1.InjectFault(context.Background(), "x", 1), "written order never injects")
 }
+
+// TestFaultDrawsDoNotSpendTheScheduleBudget: a run that draws faults to
+// exhaustion still gets every permutation its seed would have made.
+func TestFaultDrawsDoNotSpendTheScheduleBudget(t *testing.T) {
+	scheduler := v1.NewSeededScheduler(3)
+	for range v1.MaxScheduleDecisions + 10 {
+		scheduler.Fault("x", 0.5)
+	}
+	require.True(t, scheduler.Truncated(), "the fault budget is bounded and says so")
+	require.Zero(t, scheduler.Decisions())
+
+	fresh := v1.NewSeededScheduler(3)
+	require.Equal(t, fresh.Order(v1.SchedulePointParallelBranches, 6), scheduler.Order(v1.SchedulePointParallelBranches, 6))
+}

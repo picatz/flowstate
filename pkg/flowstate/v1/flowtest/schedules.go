@@ -210,9 +210,12 @@ func (a *scheduleAccumulator) run(ctx context.Context, once caseRun) (*v1.TestCa
 		// everything is what every explored run withheld, for showing the
 		// written-order run's report beside a divergence.
 		everything sensitiveInputs
-		// faultCase is that the case declares faults, so a divergence is an
-		// invariant violation.
-		faultCase bool
+		// faultedSeeds are the seeds whose run injected a fault, so a
+		// divergence under one is an invariant violation.
+		faultedSeeds = map[uint64]bool{}
+		// baselineObserved is the written-order run's own observation, which a
+		// faulted run that broke nothing is compared as.
+		baselineObserved *dst.Result
 	)
 
 	report := dst.Explore(ctx, a.budget, func(ctx context.Context) dst.Result {
@@ -227,7 +230,9 @@ func (a *scheduleAccumulator) run(ctx context.Context, once caseRun) (*v1.TestCa
 			result, spec, transcript, account = caseResult, caseSpec, caseTranscript, caseAccount
 		}
 		everything = widenedBy(everything, shown.sensitive)
-		faultCase = faultCase || shown.faultCase
+		if seeded, ok := v1.SchedulerFromContext(ctx).(*v1.SeededScheduler); ok && shown.faulted {
+			faultedSeeds[seeded.Seed()] = true
+		}
 
 		// Compared as it is, shown as the case's own report would show it: a
 		// divergence is printed and emitted with `-o json`, and it must not be
@@ -241,17 +246,26 @@ func (a *scheduleAccumulator) run(ctx context.Context, once caseRun) (*v1.TestCa
 				return shownCase(caseResult, caseTranscript, shown, withheld)
 			},
 		}
-		if shown.faultCase {
-			// A case with faults is compared by what must hold under them, not
-			// by what a run happened to observe: a faulted run's transcript
-			// differs from the written-order run's by construction, and the
-			// verdict on `expect:` belongs to the written-order run alone.
-			// So every run is reduced to its invariant violations, and the
-			// written-order run to none; a violation is the divergence.
-			observed.Transcript = nil
-			observed.Err = faultObservables(caseResult, shown)
-			observed.Show = func(withheld dst.Withholding) dst.Result {
-				return dst.Result{Err: faultObservables(verdictUnder(caseResult, sensitiveOf(withheld)), shown)}
+		if v1.SchedulerFromContext(ctx) == v1.WrittenOrder {
+			baseline := observed
+			baselineObserved = &baseline
+		}
+		if shown.faulted {
+			// A run with faults injected is compared by what must hold under
+			// them: its transcript differs from the written-order run's by
+			// construction, and `expect:` belongs to the written-order run
+			// alone. Its violations are the divergence; a run that held every
+			// invariant observed what the written-order run did, as far as
+			// this comparison is concerned. A seeded run no fault fired in is
+			// an ordinary schedule and was compared as one, above.
+			if violations := faultObservables(caseResult, shown); violations != nil {
+				observed.Transcript = nil
+				observed.Err = violations
+				observed.Show = func(withheld dst.Withholding) dst.Result {
+					return dst.Result{Err: faultObservables(verdictUnder(caseResult, sensitiveOf(withheld)), shown)}
+				}
+			} else if baselineObserved != nil {
+				observed = *baselineObserved
 			}
 		}
 		if !shown.sensitive.Empty() {
@@ -294,7 +308,7 @@ func (a *scheduleAccumulator) run(ctx context.Context, once caseRun) (*v1.TestCa
 			Truncated:    report.Divergence.Diverged.Truncated,
 			WrittenOrder: report.Divergence.Baseline.Rendering,
 			Seeded:       report.Divergence.Diverged.Rendering,
-			Invariant:    faultCase,
+			Invariant:    faultedSeeds[report.Divergence.Diverged.Seed],
 		}
 	}
 

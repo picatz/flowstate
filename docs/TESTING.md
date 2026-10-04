@@ -348,8 +348,8 @@ into `check:` unchanged.
 ```
 
 A plain `flow test` injects nothing, so a case with faults gives the same
-verdict as the same case without them; it only refuses a fault whose target the
-case never invokes, because a fault no run can reach reports resilience to
+verdict as the same case without them; it only refuses a `step:` fault whose step
+the case never invokes, because a fault no run can reach reports resilience to
 something that never happened. Under `--seeds N` each seed draws, per matching
 invocation, whether the fault fires, and the run is judged by the case's
 `invariants:` alone (the claims of `check:`, over the same run) plus one oracle
@@ -359,7 +359,7 @@ produced it, and `flow test --seed S` replays exactly those faults.
 
 A fault answers before the stubs and spends none of their `times:`. `fails.kind`
 is any error kind a task reports except `Internal` and `Expression`, which are
-defects, not faults. Rows of a table inherit the entry's `faults:` and
+defects, and `RunTimeout`, which only a whole run can have. Rows of a table inherit the entry's `faults:` and
 `invariants:` when they state none. Not yet covered: delay faults, signal jitter,
 and shrinking a violating seed to its minimal fault set.
 

@@ -162,6 +162,8 @@ func TestMalformedFaultsAreRefusedAtLoad(t *testing.T) {
 		"zero rate":      {"- {step: fetch, rate: 0}", "outside (0, 1]"},
 		"rate above one": {"- {step: fetch, rate: 1.5}", "outside (0, 1]"},
 		"at_most":        {"- {step: fetch, at_most: 1000}", "outside 1..100"},
+		"at_most zero":   {"- {step: fetch, at_most: 0}", "outside 1..100"},
+		"run timeout":    {"- {step: fetch, fails: {kind: RunTimeout}}", "no task can report it"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
@@ -212,4 +214,42 @@ tests:
 	require.NotNil(t, schedules)
 	require.NotNil(t, schedules.Divergence, "the inherited fault must fire and the inherited invariant must catch it")
 	assert.True(t, schedules.Divergence.Invariant)
+}
+
+// A task fault is not judged unreached by the fault-free run: the task may be
+// a compensation only another fault activates.
+func TestATaskFaultIsNotJudgedUnreachedByTheBaseline(t *testing.T) {
+	t.Parallel()
+
+	path := writeFaultFixture(t, bareWorkflow, `edition: v2026.4
+tests:
+  - name: c
+    workflow: ./workflow.yaml
+    expect: {failed: false}
+    stubs: [{task: http, returns: {status_code: 200, body: ''}}]
+    faults: [{task: http, rate: 0.000001}]
+`)
+	report, _ := flowtest.RunFileWithCoverage(path)
+	require.Len(t, report.GetCases(), 1)
+	assert.True(t, report.GetCases()[0].GetPassed(), "%v", report.GetCases()[0])
+}
+
+// A seed that fires no fault is an ordinary schedule: a case with faults and a
+// vanishing rate must still report no divergence, and must not be silently
+// excused from the comparison a plain seeded run makes.
+func TestASeedThatFiresNothingIsComparedAsAnOrdinarySchedule(t *testing.T) {
+	t.Parallel()
+
+	path := writeFaultFixture(t, bareWorkflow, `edition: v2026.4
+tests:
+  - name: c
+    workflow: ./workflow.yaml
+    expect: {failed: false}
+    stubs: [{task: http, returns: {status_code: 200, body: ''}}]
+    faults: [{step: fetch, rate: 0.000001}]
+    invariants: [{that: "run.failed == false"}]
+`)
+	_, _, schedules := flowtest.RunFileUnderSchedules(t.Context(), path, dst.Budget{Schedules: 4, Seed0: 1})
+	require.NotNil(t, schedules)
+	assert.Nil(t, schedules.Divergence)
 }

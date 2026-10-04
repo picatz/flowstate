@@ -64,8 +64,9 @@ type Fault struct {
 
 	// AtMost caps how many times this fault fires in one run. Absent means
 	// once, the shape a retry is built to survive; a fault that may fail every
-	// attempt is stated as `at_most: N`.
-	AtMost int `yaml:"at_most"`
+	// attempt is stated as `at_most: N`. A pointer so an explicit `at_most: 0`
+	// is refused rather than read as the default.
+	AtMost *int `yaml:"at_most"`
 }
 
 func (f *Fault) rate() float64 {
@@ -77,11 +78,11 @@ func (f *Fault) rate() float64 {
 }
 
 func (f *Fault) limit() int {
-	if f.AtMost == 0 {
+	if f.AtMost == nil {
 		return 1
 	}
 
-	return f.AtMost
+	return *f.AtMost
 }
 
 // kind is the failure's error kind, defaulted the way a stub's `fails:` is.
@@ -109,14 +110,17 @@ func checkFaultShape(i int, f *Fault) error {
 		case kind == v1.ErrorKindInternal || kind == v1.ErrorKindExpression:
 			return fmt.Errorf("%s: fails.kind %q is a defect in the engine or the workflow, not a fault in the "+
 				"world, so injecting it would hide the very finding it stands for; use a kind a task reports", where, kind)
+		case kind == v1.ErrorKindRunTimeout:
+			return fmt.Errorf("%s: fails.kind %q is synthesized for a whole-run timeout and no task can report it; "+
+				"use Timeout for an attempt that ran out of time", where, kind)
 		}
 	}
 	if f.Rate != nil && (!(*f.Rate > 0) || *f.Rate > 1) {
 		return fmt.Errorf("%s: rate %v is outside (0, 1]; a fault that never fires tests nothing, "+
 			"and one that always fires is a `stubs:` entry with `fails:`", where, *f.Rate)
 	}
-	if f.AtMost < 0 || f.AtMost > maxFaultAtMost {
-		return fmt.Errorf("%s: at_most %d is outside 1..%d", where, f.AtMost, maxFaultAtMost)
+	if f.AtMost != nil && (*f.AtMost < 1 || *f.AtMost > maxFaultAtMost) {
+		return fmt.Errorf("%s: at_most %d is outside 1..%d", where, *f.AtMost, maxFaultAtMost)
 	}
 
 	return nil
@@ -125,7 +129,7 @@ func checkFaultShape(i int, f *Fault) error {
 func kindList() string {
 	var kinds []string
 	for _, k := range v1.ErrorKinds() {
-		if k != v1.ErrorKindInternal && k != v1.ErrorKindExpression {
+		if k != v1.ErrorKindInternal && k != v1.ErrorKindExpression && k != v1.ErrorKindRunTimeout {
 			kinds = append(kinds, string(k))
 		}
 	}
@@ -251,24 +255,24 @@ func (p *faultPlan) attempt(ctx context.Context, task string) error {
 	return nil
 }
 
-// unreached lists the faults no invocation was ever eligible for, as
-// diagnostics. Judged on the run that injects nothing: if the written-order
-// run never reached a fault's target, no seed can, and the fault would be
-// reported resilient to a failure it never saw.
+// unreached lists the step faults no invocation was ever eligible for, as
+// diagnostics. Judged on the run that injects nothing: a step the written-order
+// run never reached is almost always a step the case cannot reach, and a fault
+// there would report resilience to a failure it never saw. Task faults are not
+// judged here: a task may be a compensation that only a fault elsewhere
+// activates, and a task no run can invoke is refused by name before the run
+// ([checkFaultNames]).
 func (p *faultPlan) unreached() []*v1.Diagnostic {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
 	var out []*v1.Diagnostic
 	for i := range p.faults {
-		if p.seen[i] > 0 {
+		f := &p.faults[i]
+		if p.seen[i] > 0 || f.Step == "" {
 			continue
 		}
-		f := &p.faults[i]
-		target := "task " + f.Task
-		if f.Step != "" {
-			target = "step " + f.Step
-		}
+		target := "step " + f.Step
 		out = append(out, &v1.Diagnostic{
 			Step:  f.Step,
 			Field: fmt.Sprintf("faults[%d]", i),
@@ -336,4 +340,13 @@ func assertInvariants(ctx context.Context, claims []CheckClaim, spec *v1.Workflo
 	}
 
 	return failures
+}
+
+// firedAny reports whether any fault has fired in this run. A seeded run no
+// fault fired in is an ordinary schedule and is judged and compared as one.
+func (p *faultPlan) firedAny() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	return slices.ContainsFunc(p.fired, func(n int) bool { return n > 0 })
 }

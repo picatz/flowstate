@@ -291,14 +291,16 @@ func init() {
 		{
 			Name: "flowstate.v1.ScheduleExploration.divergence",
 			Leading: " Divergence is the first case whose observables were not the same under a\n" +
-				" seeded schedule as under written order, unset when every case agreed with\n" +
-				" itself under every schedule explored.\n",
+				" seeded schedule as under written order, or whose invariants broke under a\n" +
+				" seeded run's injected faults (see ScheduleDivergenceReport.invariant),\n" +
+				" unset when every case agreed with itself under every schedule explored.\n",
 		},
 		{
 			Name: "flowstate.v1.ScheduleDivergenceReport",
 			Leading: " ScheduleDivergenceReport is one case that observed a difference the schedule\n" +
-				" made: the finding `--seeds` exists to surface, carried with the seed because\n" +
-				" a divergence nobody can replay is a random number.\n",
+				" made, or broke an invariant under the faults a seed injected: the findings\n" +
+				" `--seeds` exists to surface, carried with the seed because a divergence\n" +
+				" nobody can replay is a random number.\n",
 		},
 		{
 			Name:    "flowstate.v1.ScheduleDivergenceReport.case",

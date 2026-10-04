@@ -693,8 +693,9 @@ type ScheduleExploration struct {
 	// explored stopped partway.
 	Truncated bool `protobuf:"varint,4,opt,name=truncated,proto3" json:"truncated,omitempty"`
 	// Divergence is the first case whose observables were not the same under a
-	// seeded schedule as under written order, unset when every case agreed with
-	// itself under every schedule explored.
+	// seeded schedule as under written order, or whose invariants broke under a
+	// seeded run's injected faults (see ScheduleDivergenceReport.invariant),
+	// unset when every case agreed with itself under every schedule explored.
 	Divergence    *ScheduleDivergenceReport `protobuf:"bytes,5,opt,name=divergence,proto3" json:"divergence,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -766,8 +767,9 @@ func (x *ScheduleExploration) GetDivergence() *ScheduleDivergenceReport {
 }
 
 // ScheduleDivergenceReport is one case that observed a difference the schedule
-// made: the finding `--seeds` exists to surface, carried with the seed because
-// a divergence nobody can replay is a random number.
+// made, or broke an invariant under the faults a seed injected: the findings
+// `--seeds` exists to surface, carried with the seed because a divergence
+// nobody can replay is a random number.
 type ScheduleDivergenceReport struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Case is the name of the test case, as the file spells it.

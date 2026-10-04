@@ -256,9 +256,12 @@ type SeededScheduler struct {
 	// faultRNG is a stream of its own, so drawing a fault never moves the
 	// `parallel:`/`async:` schedule a seed made before faults existed: the
 	// same seed explores the same interleaving with or without `faults:`.
-	faultRNG  *rand.Rand
-	decisions int
-	truncated bool
+	faultRNG *rand.Rand
+	// faultDraws is counted apart from decisions, against the same bound, so
+	// a fault-heavy case can never exhaust the budget the schedule draws from.
+	faultDraws int
+	decisions  int
+	truncated  bool
 }
 
 // NewSeededScheduler returns a [SeededScheduler] whose every choice follows from
@@ -348,16 +351,20 @@ func (s *SeededScheduler) Interleave(SchedulePoint, string) bool {
 	return s.rng.Uint64()&1 == 1
 }
 
-// Fault implements [FaultChooser] from the scheduler's fault stream. A draw
-// counts against [MaxScheduleDecisions] like any other decision, so a
-// truncated run answers no fault and says so through [SeededScheduler.Truncated].
+// Fault implements [FaultChooser] from the scheduler's fault stream. Draws are
+// bounded by [MaxScheduleDecisions] on a counter of their own, so a run that
+// spends them answers no more faults and says so through
+// [SeededScheduler.Truncated] without touching the schedule's budget.
 func (s *SeededScheduler) Fault(_ string, rate float64) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if !s.spendLocked() {
+	if s.faultDraws >= MaxScheduleDecisions {
+		s.truncated = true
+
 		return false
 	}
+	s.faultDraws++
 
 	return s.faultRNG.Float64() < rate
 }
