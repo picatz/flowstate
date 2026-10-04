@@ -14,3 +14,6 @@ func linkCount(fi fs.FileInfo) uint64 {
 	}
 	return 1
 }
+
+// openNonblock keeps opening a path that was swapped for a FIFO from blocking.
+const openNonblock = syscall.O_NONBLOCK

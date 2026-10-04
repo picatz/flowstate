@@ -96,9 +96,16 @@ func (w *localWriter) Commit(digest string) error {
 	}
 	dst := filepath.Join(dir, digest)
 	if _, err := os.Lstat(dst); err == nil {
-		// Present: keep the existing file and refresh its age.
-		now := time.Now()
-		return os.Chtimes(dst, now, now)
+		// Present: keep it and refresh its age only if its content still
+		// hashes to its name; a corrupt file is replaced by the staged bytes
+		// when those are good, and is otherwise an error, never refreshed.
+		if hashFile(dst) == digest {
+			now := time.Now()
+			return os.Chtimes(dst, now, now)
+		}
+		if hashFile(w.f.Name()) != digest {
+			return fmt.Errorf("%w: stored blob %s is corrupt", ErrDigestMismatch, digest)
+		}
 	}
 	// Rename is atomic and replaces; two writers of the same digest write
 	// identical bytes, so whichever lands last is equally correct.
@@ -258,4 +265,49 @@ func (b *LocalBackend) PinnedDigests(ctx context.Context, ns string) (map[string
 		}
 	}
 	return out, nil
+}
+
+// SweepTemp implements [TempSweeper]: it removes staging files older than
+// cutoff, which only a crashed or stalled writer leaves behind.
+func (b *LocalBackend) SweepTemp(ctx context.Context, ns string, cutoff time.Time) (int, error) {
+	dir := filepath.Join(b.nsDir(ns), "tmp")
+	ents, err := os.ReadDir(dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	removed := 0
+	for _, e := range ents {
+		if err := ctx.Err(); err != nil {
+			return removed, err
+		}
+		fi, err := e.Info()
+		if err != nil || !fi.Mode().IsRegular() || !fi.ModTime().Before(cutoff) {
+			continue
+		}
+		if err := os.Remove(filepath.Join(dir, e.Name())); err == nil {
+			removed++
+		}
+	}
+	return removed, nil
+}
+
+// hashFile returns the hex SHA-256 of a regular file, or "" if it cannot be
+// read as one.
+func hashFile(path string) string {
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	if fi, err := f.Stat(); err != nil || !fi.Mode().IsRegular() {
+		return ""
+	}
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return ""
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }

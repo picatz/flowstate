@@ -34,6 +34,15 @@
 // ceiling, and exceeding one is a [*LimitExceededError], never truncation:
 // work stops and nothing partial is reported as success.
 //
+// # Process model
+//
+// Per-namespace byte accounting, in-flight reservations, and the locks that
+// serialize a sweep with a put are held in memory by one [Store]. A store is
+// correct for any number of goroutines but assumes it is the only process
+// writing its backend: two processes over one local root can each admit bytes
+// the other has not counted and so drift past a namespace bound until one
+// sweeps. Run one store per root, or put a lock around the root.
+//
 // # Scope
 //
 // This package is a library. Nothing in the engine, the Flowfile, or the
@@ -182,6 +191,8 @@ type nsState struct {
 	mu   sync.Mutex
 	init bool
 	used int64
+	// reserved is the bytes in-flight puts have staged but not committed.
+	reserved int64
 }
 
 // Option configures a [Store].
@@ -233,8 +244,8 @@ func (s *Store) For(namespace string) (Namespaced, error) {
 	return Namespaced{store: s, ns: namespace, st: st}, nil
 }
 
-// validateName accepts a non-empty, bounded, valid-UTF-8 name free of control
-// bytes. Namespaces and run ids reach filesystem paths (hashed) and logs.
+// validateName accepts a non-empty, bounded name free of control bytes (it
+// does not check UTF-8; both uses hash the name or treat it as opaque). Namespaces and run ids reach filesystem paths (hashed) and logs.
 func validateName(v string, max int) error {
 	switch {
 	case v == "":
@@ -325,10 +336,25 @@ func (n Namespaced) put(ctx context.Context, r io.Reader, limit int64, want stri
 	if err != nil {
 		return "", 0, err
 	}
-	committed := false
+	// staging is true while bytes are being written to the backend. Every
+	// staged byte is first reserved against the namespace bound, so concurrent
+	// puts (and a writer that crashes) cannot put more than the bound on
+	// disk. A put that no longer fits stops staging and only hashes: if the
+	// content turns out to exist already it is a refresh and costs nothing,
+	// otherwise it fails closed.
+	staging, reserved, committed := true, int64(0), false
+	release := func() {
+		n.st.mu.Lock()
+		n.st.reserved -= reserved
+		reserved = 0
+		n.st.mu.Unlock()
+	}
 	defer func() {
-		if !committed {
+		if staging && !committed {
 			w.Abort()
+		}
+		if reserved != 0 {
+			release()
 		}
 	}()
 
@@ -348,8 +374,25 @@ func (n Namespaced) put(ctx context.Context, r io.Reader, limit int64, want stri
 				return "", 0, limitErr("entry bytes", limit)
 			}
 			h.Write(buf[:m])
-			if _, werr := w.Write(buf[:m]); werr != nil {
-				return "", 0, werr
+			if staging {
+				n.st.mu.Lock()
+				err := n.initUsage(ctx)
+				fits := err == nil && n.st.used+n.st.reserved+int64(m) <= n.store.limits.MaxNamespaceBytes
+				if fits {
+					n.st.reserved += int64(m)
+					reserved += int64(m)
+				}
+				n.st.mu.Unlock()
+				if err != nil {
+					return "", 0, err
+				}
+				if !fits {
+					staging = false
+					w.Abort()
+					release()
+				} else if _, werr := w.Write(buf[:m]); werr != nil {
+					return "", 0, werr
+				}
 			}
 		}
 		if rerr == io.EOF {
@@ -369,13 +412,25 @@ func (n Namespaced) put(ctx context.Context, r io.Reader, limit int64, want stri
 	if err := n.initUsage(ctx); err != nil {
 		return "", 0, err
 	}
+	// Our own reservation turns into used (or nothing) below.
+	n.st.reserved -= reserved
+	reserved = 0
 	_, statErr := n.store.backend.Stat(ctx, n.ns, digest)
 	exists := statErr == nil
 	if statErr != nil && !errors.Is(statErr, ErrNotFound) {
 		return "", 0, statErr
 	}
-	if !exists && n.st.used+size > n.store.limits.MaxNamespaceBytes {
+	if !exists && (!staging || n.st.used+n.st.reserved+size > n.store.limits.MaxNamespaceBytes) {
 		return "", 0, limitErr("namespace bytes", n.store.limits.MaxNamespaceBytes)
+	}
+	if !staging {
+		// Existing content that arrived while the namespace was full: a
+		// fresh empty writer committed over an existing digest only refreshes
+		// the blob's age.
+		if w, err = n.store.backend.Begin(ctx, n.ns); err != nil {
+			return "", 0, err
+		}
+		staging = true
 	}
 	// Commit even when present: it refreshes the blob's age, so a concurrent
 	// sweep cannot collect a blob this put just promised.
@@ -434,9 +489,13 @@ type verifyReader struct {
 	want string
 	left int64 // bytes the backend promised; more or fewer is corruption
 	done bool
+	err  error // sticky: once content is known bad, it stays bad
 }
 
 func (v *verifyReader) Read(p []byte) (int, error) {
+	if v.err != nil {
+		return 0, v.err
+	}
 	if v.done {
 		return 0, io.EOF
 	}
@@ -446,7 +505,8 @@ func (v *verifyReader) Read(p []byte) (int, error) {
 	if err == io.EOF {
 		v.done = true
 		if v.left != 0 || hex.EncodeToString(v.h.Sum(nil)) != v.want {
-			return m, ErrDigestMismatch
+			v.err = ErrDigestMismatch
+			return m, v.err
 		}
 	}
 	return m, err
@@ -535,6 +595,9 @@ func (n Namespaced) pinAll(ctx context.Context, runID string, digests []string) 
 type SweepResult struct {
 	// Removed is the number of blobs deleted.
 	Removed int
+	// TempRemoved is the number of stale staging files reclaimed, such as a
+	// crashed writer's. Their bytes are not counted in FreedBytes.
+	TempRemoved int
 	// FreedBytes is the total size of the deleted blobs.
 	FreedBytes int64
 }
@@ -579,5 +642,12 @@ func (n Namespaced) Sweep(ctx context.Context, grace time.Duration) (SweepResult
 		res.FreedBytes += b.Size
 	}
 	n.st.used, n.st.init = kept, true
+	if ts, ok := n.store.backend.(TempSweeper); ok {
+		removed, err := ts.SweepTemp(ctx, n.ns, cutoff)
+		res.TempRemoved = removed
+		if err != nil {
+			return res, err
+		}
+	}
 	return res, nil
 }

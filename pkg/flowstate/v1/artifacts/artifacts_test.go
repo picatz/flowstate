@@ -262,31 +262,31 @@ func TestLimitsEachBound(t *testing.T) {
 	t.Run("entry bytes in snapshot", func(t *testing.T) {
 		l := base
 		l.MaxEntryBytes = 4
-		_, err := newNS(t, l).Snapshot(ctx, mkTree(t, map[string]string{"a": "12345"}))
+		_, err := newNS(t, l).Snapshot(ctx, "r", mkTree(t, map[string]string{"a": "12345"}))
 		expect(t, "entry bytes", err)
 	})
 	t.Run("artifact bytes", func(t *testing.T) {
 		l := base
 		l.MaxArtifactBytes = 8
-		_, err := newNS(t, l).Snapshot(ctx, mkTree(t, map[string]string{"a": "12345", "b": "12345"}))
+		_, err := newNS(t, l).Snapshot(ctx, "r", mkTree(t, map[string]string{"a": "12345", "b": "12345"}))
 		expect(t, "artifact bytes", err)
 	})
 	t.Run("entry count", func(t *testing.T) {
 		l := base
 		l.MaxEntries = 2
-		_, err := newNS(t, l).Snapshot(ctx, mkTree(t, map[string]string{"a": "1", "b": "2", "c": "3"}))
+		_, err := newNS(t, l).Snapshot(ctx, "r", mkTree(t, map[string]string{"a": "1", "b": "2", "c": "3"}))
 		expect(t, "entry count", err)
 	})
 	t.Run("path bytes", func(t *testing.T) {
 		l := base
 		l.MaxPathBytes = 5
-		_, err := newNS(t, l).Snapshot(ctx, mkTree(t, map[string]string{"longname": "1"}))
+		_, err := newNS(t, l).Snapshot(ctx, "r", mkTree(t, map[string]string{"longname": "1"}))
 		expect(t, "path bytes", err)
 	})
 	t.Run("path depth", func(t *testing.T) {
 		l := base
 		l.MaxPathDepth = 2
-		_, err := newNS(t, l).Snapshot(ctx, mkTree(t, map[string]string{"a/b/c": "1"}))
+		_, err := newNS(t, l).Snapshot(ctx, "r", mkTree(t, map[string]string{"a/b/c": "1"}))
 		expect(t, "path depth", err)
 	})
 	t.Run("namespace bytes", func(t *testing.T) {
@@ -455,19 +455,31 @@ func TestConcurrentPutSameBlob(t *testing.T) {
 		if got, err := io.ReadAll(rc); err != nil || !bytes.Equal(got, data) {
 			t.Errorf("read after race: %v", err)
 		}
-		// The byte budget counted the blob once.
+		// Under an exact budget, racing identical puts either store the blob
+		// once or fail closed; they never exceed it, and one always lands.
 		small := l
 		small.MaxNamespaceBytes = int64(len(data))
 		ns2 := must(mk(small).For("racy"))(t)
 		var wg2 sync.WaitGroup
+		var okMu sync.Mutex
+		okCount := 0
 		for range 8 {
 			wg2.Go(func() {
-				if _, _, err := ns2.PutBlob(ctx, bytes.NewReader(data), 1<<20); err != nil {
-					t.Errorf("concurrent put under exact budget: %v", err)
+				_, _, err := ns2.PutBlob(ctx, bytes.NewReader(data), 1<<20)
+				switch {
+				case err == nil:
+					okMu.Lock()
+					okCount++
+					okMu.Unlock()
+				case !errors.Is(err, artifacts.ErrLimitExceeded):
+					t.Errorf("unexpected: %v", err)
 				}
 			})
 		}
 		wg2.Wait()
+		if okCount == 0 {
+			t.Error("no racing put succeeded")
+		}
 	})
 }
 
@@ -630,7 +642,7 @@ func TestSnapshotMaterializeRoundTrip(t *testing.T) {
 		s := mk(artifacts.DefaultLimits())
 		ns := must(s.For("t"))(t)
 		src := tree(t)
-		ref, err := ns.Snapshot(ctx, src)
+		ref, err := ns.Snapshot(ctx, "r", src)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -646,7 +658,7 @@ func TestSnapshotMaterializeRoundTrip(t *testing.T) {
 		if err := os.Chmod(filepath.Join(src2, "bin/run.sh"), 0o755); err != nil {
 			t.Fatal(err)
 		}
-		ref2, err := ns.Snapshot(ctx, src2)
+		ref2, err := ns.Snapshot(ctx, "r", src2)
 		if err != nil || ref2.Digest != ref.Digest {
 			t.Errorf("digest differs for an equal tree: %v %v", ref2, err)
 		}
@@ -654,7 +666,7 @@ func TestSnapshotMaterializeRoundTrip(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(src2, "README"), []byte("hellp"), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		if ref3, _ := ns.Snapshot(ctx, src2); ref3.Digest == ref.Digest {
+		if ref3, _ := ns.Snapshot(ctx, "r", src2); ref3.Digest == ref.Digest {
 			t.Error("digest ignores content")
 		}
 		// Another tenant cannot materialize it.
@@ -689,7 +701,7 @@ func TestSnapshotMaterializeRoundTrip(t *testing.T) {
 			t.Errorf("empty dir not materialized: %v", err)
 		}
 		// Re-snapshotting the materialized tree reproduces the digest.
-		if again, err := ns.Snapshot(ctx, dst); err != nil || again.Digest != ref.Digest {
+		if again, err := ns.Snapshot(ctx, "r", dst); err != nil || again.Digest != ref.Digest {
 			t.Errorf("materialize then snapshot = %v %v", again, err)
 		}
 		// Not into a non-empty directory.
@@ -708,7 +720,7 @@ func TestSnapshotRefusesNonRegular(t *testing.T) {
 		if err := os.Symlink("/etc/passwd", filepath.Join(dir, "bin", "link")); err != nil {
 			t.Fatal(err)
 		}
-		_, err := ns.Snapshot(ctx, dir)
+		_, err := ns.Snapshot(ctx, "r", dir)
 		if !errors.Is(err, artifacts.ErrSymlink) || !strings.Contains(err.Error(), "bin/link") {
 			t.Errorf("err = %v, want ErrSymlink naming bin/link", err)
 		}
@@ -718,7 +730,7 @@ func TestSnapshotRefusesNonRegular(t *testing.T) {
 		if err := os.Symlink("nowhere", filepath.Join(dir, "d")); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := ns.Snapshot(ctx, dir); !errors.Is(err, artifacts.ErrSymlink) {
+		if _, err := ns.Snapshot(ctx, "r", dir); !errors.Is(err, artifacts.ErrSymlink) {
 			t.Errorf("err = %v", err)
 		}
 	})
@@ -728,7 +740,7 @@ func TestSnapshotRefusesNonRegular(t *testing.T) {
 		if err := os.Symlink(dir, link); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := ns.Snapshot(ctx, link); !errors.Is(err, artifacts.ErrSymlink) {
+		if _, err := ns.Snapshot(ctx, "r", link); !errors.Is(err, artifacts.ErrSymlink) {
 			t.Errorf("err = %v", err)
 		}
 	})
@@ -737,7 +749,7 @@ func TestSnapshotRefusesNonRegular(t *testing.T) {
 		if err := os.Link(filepath.Join(dir, "README"), filepath.Join(dir, "README2")); err != nil {
 			t.Skipf("no hard links: %v", err)
 		}
-		if _, err := ns.Snapshot(ctx, dir); !errors.Is(err, artifacts.ErrHardlink) {
+		if _, err := ns.Snapshot(ctx, "r", dir); !errors.Is(err, artifacts.ErrHardlink) {
 			t.Errorf("err = %v", err)
 		}
 	})
@@ -746,14 +758,14 @@ func TestSnapshotRefusesNonRegular(t *testing.T) {
 		if err := mkfifo(filepath.Join(dir, "pipe")); err != nil {
 			t.Skipf("no fifo: %v", err)
 		}
-		if _, err := ns.Snapshot(ctx, dir); !errors.Is(err, artifacts.ErrSpecialFile) {
+		if _, err := ns.Snapshot(ctx, "r", dir); !errors.Is(err, artifacts.ErrSpecialFile) {
 			t.Errorf("err = %v", err)
 		}
 	})
 	t.Run("not a directory", func(t *testing.T) {
 		f := filepath.Join(t.TempDir(), "f")
 		_ = os.WriteFile(f, nil, 0o644)
-		if _, err := ns.Snapshot(ctx, f); err == nil {
+		if _, err := ns.Snapshot(ctx, "r", f); err == nil {
 			t.Error("file accepted as a tree root")
 		}
 	})
@@ -833,7 +845,7 @@ func TestMaterializeDetectsCorruptBlob(t *testing.T) {
 	ns := must(s.For("t"))(t)
 	src := t.TempDir()
 	_ = os.WriteFile(filepath.Join(src, "f"), []byte("original!"), 0o644)
-	ref, err := ns.Snapshot(ctx, src)
+	ref, err := ns.Snapshot(ctx, "r", src)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -857,7 +869,7 @@ func TestPinArtifactKeepsWholeTree(t *testing.T) {
 	be := artifacts.NewMemoryBackend(func() time.Time { return now })
 	s := must(artifacts.NewStore(be, artifacts.DefaultLimits(), artifacts.WithClock(func() time.Time { return clock })))(t)
 	ns := must(s.For("t"))(t)
-	ref, err := ns.Snapshot(ctx, tree(t))
+	ref, err := ns.Snapshot(ctx, "r", tree(t))
 	if err != nil {
 		t.Fatal(err)
 	}

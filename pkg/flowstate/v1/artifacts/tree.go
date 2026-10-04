@@ -11,7 +11,45 @@ import (
 	"strings"
 )
 
-// Snapshot stores the tree under dir and returns its artifact reference.
+// testHookAfterLstat runs between the Lstat of a tree root and the OpenRoot
+// that follows it, so a test can swap the directory in that window.
+var testHookAfterLstat func()
+
+// openTreeRoot opens dir as an [os.Root], refusing a symlink and refusing a
+// directory that was swapped between the check and the open: the path is
+// Lstat'ed, opened, and the opened handle must be the very same file.
+func openTreeRoot(dir string) (*os.Root, error) {
+	fi, err := os.Lstat(dir)
+	if err != nil {
+		return nil, err
+	}
+	if fi.Mode()&fs.ModeSymlink != 0 {
+		return nil, fmt.Errorf("%w: tree root", ErrSymlink)
+	}
+	if !fi.IsDir() {
+		return nil, fmt.Errorf("artifacts: %s is not a directory", dir)
+	}
+	if testHookAfterLstat != nil {
+		testHookAfterLstat()
+	}
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return nil, err
+	}
+	rfi, err := root.Stat(".")
+	if err != nil {
+		root.Close()
+		return nil, err
+	}
+	if !os.SameFile(fi, rfi) {
+		root.Close()
+		return nil, fmt.Errorf("%w: tree root changed while being opened", ErrSymlink)
+	}
+	return root, nil
+}
+
+// Snapshot stores the tree under dir, pins it for runID, and returns its
+// artifact reference.
 //
 // Only regular files and directories are admitted. A symlink, a file with
 // more than one hard link, or a device, socket, or FIFO is refused by name
@@ -22,24 +60,26 @@ import (
 // enforced while walking, so a hostile tree costs at most the bound, not its
 // size.
 //
+// The returned reference is already pinned under runID (see
+// [Namespaced.PinArtifact]), and every blob it names was verified to exist at
+// that moment, so a concurrent [Namespaced.Sweep] cannot hand back a
+// reference to collected blobs: if a blob was collected mid-snapshot the call
+// fails with [ErrNotFound] and the caller retries.
+//
 // Blobs written before a failure stay in the store unpinned and are collected
 // by [Namespaced.Sweep].
-func (n Namespaced) Snapshot(ctx context.Context, dir string) (Ref, error) {
+func (n Namespaced) Snapshot(ctx context.Context, runID, dir string) (Ref, error) {
 	if err := n.ok(); err != nil {
 		return Ref{}, err
 	}
-	root, err := os.OpenRoot(dir)
+	if err := validateName(runID, 256); err != nil {
+		return Ref{}, fmt.Errorf("%w: %v", ErrInvalidRun, err)
+	}
+	root, err := openTreeRoot(dir)
 	if err != nil {
 		return Ref{}, err
 	}
 	defer root.Close()
-	if fi, err := os.Lstat(dir); err != nil {
-		return Ref{}, err
-	} else if fi.Mode()&fs.ModeSymlink != 0 {
-		return Ref{}, fmt.Errorf("%w: tree root", ErrSymlink)
-	} else if !fi.IsDir() {
-		return Ref{}, fmt.Errorf("artifacts: %s is not a directory", dir)
-	}
 
 	w := &walker{ctx: ctx, n: n, root: root, l: n.store.limits}
 	if err := w.dir(""); err != nil {
@@ -47,7 +87,14 @@ func (n Namespaced) Snapshot(ctx context.Context, dir string) (Ref, error) {
 	}
 	slices.SortFunc(w.entries, func(a, b Entry) int { return strings.Compare(a.Path, b.Path) })
 	m := &Manifest{Entries: w.entries}
-	return n.PutManifest(ctx, m)
+	ref, err := n.PutManifest(ctx, m)
+	if err != nil {
+		return Ref{}, err
+	}
+	if err := n.PinArtifact(ctx, runID, ref.Digest); err != nil {
+		return Ref{}, err
+	}
+	return ref, nil
 }
 
 type walker struct {
@@ -71,11 +118,16 @@ func (w *walker) add(e Entry) error {
 // so a directory with millions of names is stopped by the entry bound rather
 // than loaded whole.
 func (w *walker) dir(rel string) error {
-	f, err := w.root.Open(dirName(rel))
+	f, err := w.root.OpenFile(dirName(rel), os.O_RDONLY|openNonblock, 0)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
+	if fi, err := f.Stat(); err != nil {
+		return err
+	} else if !fi.IsDir() {
+		return fmt.Errorf("%w: %s changed while being read", ErrSpecialFile, dirName(rel))
+	}
 	for {
 		if err := w.ctx.Err(); err != nil {
 			return err
@@ -136,7 +188,9 @@ func (w *walker) file(p string, lfi fs.FileInfo) error {
 	if len(w.entries) >= w.l.MaxEntries {
 		return limitErr("entry count", int64(w.l.MaxEntries))
 	}
-	f, err := w.root.Open(p)
+	// O_NONBLOCK: a path swapped for a FIFO after the Lstat must not block the
+	// open forever; the handle is checked before a byte is read.
+	f, err := w.root.OpenFile(p, os.O_RDONLY|openNonblock, 0)
 	if err != nil {
 		return err
 	}
@@ -155,7 +209,7 @@ func (w *walker) file(p string, lfi fs.FileInfo) error {
 	digest, size, err := w.n.PutBlob(w.ctx, f, remaining)
 	if err != nil {
 		var le *LimitExceededError
-		if errors.As(err, &le) && remaining < w.l.MaxEntryBytes {
+		if errors.As(err, &le) && le.Limit == "entry bytes" && remaining < w.l.MaxEntryBytes {
 			return limitErr("artifact bytes", w.l.MaxArtifactBytes)
 		}
 		return fmt.Errorf("%s: %w", p, err)
@@ -183,14 +237,7 @@ func (n Namespaced) Materialize(ctx context.Context, digest, dir string) error {
 	if err != nil {
 		return err
 	}
-	fi, err := os.Lstat(dir)
-	if err != nil {
-		return err
-	}
-	if !fi.IsDir() {
-		return fmt.Errorf("artifacts: %s is not a directory (symlinks are refused)", dir)
-	}
-	root, err := os.OpenRoot(dir)
+	root, err := openTreeRoot(dir)
 	if err != nil {
 		return err
 	}

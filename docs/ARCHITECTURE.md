@@ -995,6 +995,10 @@ removes unpinned blobs older than a grace window. Backends are a local
 directory (`<root>/<sha256(namespace)>/blobs/sha256/<hex>`) and an in-memory
 one.
 
+A store assumes it is the only process writing its backend: namespace byte
+counters, in-flight reservations, and the sweep lock live in memory, so two
+processes over one local root can drift past a bound until one sweeps.
+
 This is the storage foundation only. Nothing in the engine or the Flowfile
 reaches it yet: `ArtifactRef` as a value kind, the `workspace:` and `produce:`
 step keys, and `exec` working in a materialized workspace are the next slice

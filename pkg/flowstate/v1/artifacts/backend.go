@@ -58,6 +58,15 @@ type Backend interface {
 	PinnedDigests(ctx context.Context, namespace string) (map[string]struct{}, error)
 }
 
+// TempSweeper is implemented by a [Backend] that stages writes in a place a
+// crashed writer can leave debris. [Namespaced.Sweep] calls it with the same
+// cutoff it applies to blobs.
+type TempSweeper interface {
+	// SweepTemp removes staging files in namespace last modified before
+	// cutoff and reports how many it removed.
+	SweepTemp(ctx context.Context, namespace string, cutoff time.Time) (int, error)
+}
+
 // MemoryBackend is an in-process [Backend] for tests and for runs that need no
 // persistence. It is safe for concurrent use.
 type MemoryBackend struct {
