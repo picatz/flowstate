@@ -52,7 +52,10 @@ type tenantFixture struct {
 
 // newTenantFixture starts everything needed to run and address real workloads,
 // inside a Temporal namespace belonging to this test alone.
-func newTenantFixture(t *testing.T) *tenantFixture {
+//
+// teamAOptions configure team A's server alone, for a test that has to observe
+// or vary what only one tenant's server does.
+func newTenantFixture(t *testing.T, teamAOptions ...server.Option) *tenantFixture {
 	t.Helper()
 
 	temporal, _ := newTemporalNamespace(t)
@@ -64,7 +67,7 @@ func newTenantFixture(t *testing.T) *tenantFixture {
 	// as far as the authorization logic is concerned, and that is the logic under
 	// test.
 	return &tenantFixture{
-		teamA:    mustNew(t, temporal, server.WithNamespace(teamANamespace)),
+		teamA:    mustNew(t, temporal, append([]server.Option{server.WithNamespace(teamANamespace)}, teamAOptions...)...),
 		teamB:    mustNew(t, temporal, server.WithNamespace(teamBNamespace)),
 		temporal: temporal,
 	}

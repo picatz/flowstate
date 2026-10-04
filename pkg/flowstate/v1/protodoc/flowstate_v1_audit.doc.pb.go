@@ -269,11 +269,18 @@ func init() {
 		{
 			Name: "flowstate.v1.AuditDebugDetail.operation",
 			Leading: " Operation names the command: `attach`, `get`, `resume/step_over`,\n" +
-				" `breakpoints`, `inspect`, `signal`, `history`.\n",
+				" `breakpoints`, `inspect`, `signal`, `history` (the point asked for) and\n" +
+				" `history/resolved` (the point read).\n",
 		},
 		{
 			Name:    "flowstate.v1.AuditDebugDetail.expression_digest",
 			Leading: " ExpressionDigest is the content digest of an inspected expression.\n",
+		},
+		{
+			Name: "flowstate.v1.AuditDebugDetail.run_id",
+			Leading: " RunId is the exact execution a history read named. Event ids restart in\n" +
+				" every run of a Continue-As-New chain, so a revision is only a point of one\n" +
+				" run, and this is which.\n",
 		},
 		{
 			Name:    "flowstate.v1.AuditDecision",

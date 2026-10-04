@@ -10,6 +10,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/audit"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/server"
 )
 
 // DebugHistory against a real Temporal server and worker: who may read a run's
@@ -67,6 +69,46 @@ func TestDebugHistoryReadsAClosedRunAtEachOfItsPoints(t *testing.T) {
 	}))
 	require.NoError(t, err)
 	assert.Less(t, first.Msg.GetProgress().GetCompletedSteps(), last.Msg.GetProgress().GetCompletedSteps())
+}
+
+// historyDetails picks the debug-history records out of what a server emitted.
+func historyDetails(sink *auditSink) []*v1.AuditDebugDetail {
+	var out []*v1.AuditDebugDetail
+	for _, record := range sink.records {
+		if op := record.GetDebug().GetOperation(); op == "history" || op == "history/resolved" {
+			out = append(out, record.GetDebug())
+		}
+	}
+
+	return out
+}
+
+// TestDebugHistoryAuditsTheRunAndThePointRead: a read of the last point (event
+// 0) is recorded with the exact run and with the event it resolved to, because
+// event ids restart in every run of a chain and 0 means a different point each
+// time it is asked.
+func TestDebugHistoryAuditsTheRunAndThePointRead(t *testing.T) {
+	t.Parallel()
+
+	sink := &auditSink{}
+	recorder, err := audit.NewRecorder(audit.WithoutStderr(), audit.WithEmitter(sink))
+	require.NoError(t, err)
+	fixture := newTenantFixture(t, server.WithAudit(recorder))
+	workflowID, runID := finishedDebuggableRun(t, fixture)
+
+	got, err := fixture.teamA.DebugHistory(as(t.Context(), "sre-1@example.com"),
+		connect.NewRequest(&v1.DebugHistoryRequest{WorkflowId: workflowID, RunId: runID}))
+	require.NoError(t, err)
+
+	details := historyDetails(sink)
+	require.Len(t, details, 2, "one record for the ask, one for the point read")
+	assert.Equal(t, "history", details[0].GetOperation())
+	assert.Equal(t, uint64(0), details[0].GetRevision(), "the ask was for the last point")
+	assert.Equal(t, "history/resolved", details[1].GetOperation())
+	assert.Equal(t, uint64(got.Msg.GetEventId()), details[1].GetRevision(), "the point actually read")
+	for _, detail := range details {
+		assert.Equal(t, runID, detail.GetRunId(), "the exact execution, not just the workflow")
+	}
 }
 
 func TestDebugHistoryRefusesWhatItCannotRead(t *testing.T) {

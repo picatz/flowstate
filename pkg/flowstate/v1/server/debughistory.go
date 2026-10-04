@@ -59,7 +59,7 @@ func (s *FlowstateServer) DebugHistory(ctx context.Context, req *connect.Request
 	// is read: following the chain to its current execution, as a live session
 	// does, would apply that execution's `debug:` policy to another's past.
 	run, err := s.authorizeDebugRun(ctx, "DebugHistory", workflowID, runID, false,
-		&v1.AuditDebugDetail{Operation: "history", Revision: uint64(req.Msg.GetEventId())})
+		&v1.AuditDebugDetail{Operation: "history", RunId: runID, Revision: uint64(req.Msg.GetEventId())})
 	if err != nil {
 		return nil, err
 	}
@@ -106,6 +106,14 @@ func (s *FlowstateServer) DebugHistory(ctx context.Context, req *connect.Request
 				fmt.Errorf("event %d is not a point this run can be read at; ask for one of the boundaries a previous answer lists, or 0 for the last", want))
 		}
 		index = points[at]
+	}
+
+	// The first record names the point asked for, and 0 asks for the last one;
+	// this names the point actually read, so the trail answers which point of
+	// which run was accessed.
+	if err := s.auditDebugAllow(ctx, "DebugHistory", workflowID,
+		&v1.AuditDebugDetail{Operation: "history/resolved", RunId: runID, Revision: uint64(events[index].GetEventId())}); err != nil {
+		return nil, err
 	}
 
 	handedOver = true

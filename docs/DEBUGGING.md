@@ -975,10 +975,10 @@ the reconstructed snapshot and progress, the point's `fidelity`, and every
 boundary the run can be read at. Zero names the last. It reads the history only
 up to the bound, runs four reconstructions at once and refuses the next as
 unavailable, ends at thirty seconds or when the caller goes, and refuses a
-point that is not a boundary, an execution outside the authorized chain, and a
+point that is not a boundary, a run id that is not the execution named, and a
 history the running build cannot replay. A point before the run installed its
-debug session has progress and no snapshot. Each read is audited as `history`
-with the event id.
+debug session has progress and no snapshot. Each read is audited twice, with
+the exact run id: as `history` with the point asked for (0 is the last one) and as `history/resolved` with the point read.
 
 | Question at a past point | Answer | How it is known |
 | --- | --- | --- |
