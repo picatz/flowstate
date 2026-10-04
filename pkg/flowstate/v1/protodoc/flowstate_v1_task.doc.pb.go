@@ -525,5 +525,16 @@ func init() {
 				" failures, and name themselves as `outcome=<value>` in the failure's text\n" +
 				" so a log and a run record say the same word.\n",
 		},
+		{
+			Name: "flowstate.v1.Task.Exec.Outputs.capture_incomplete",
+			Leading: " CaptureIncomplete is true when the worker stopped reading the program's\n" +
+				" output before the streams ended: the program finished, but a descendant\n" +
+				" that had left its process group still held an output pipe open, so\n" +
+				" stdout and stderr may be missing bytes the program wrote. It is distinct\n" +
+				" from [stdout_truncated], which means the policy's byte bound cut output\n" +
+				" the worker read. The outcome stays \"ran\" and the step is not retried,\n" +
+				" since the program did run; a workflow that must have all of the output\n" +
+				" checks this flag.\n",
+		},
 	})
 }

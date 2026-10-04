@@ -2,7 +2,12 @@
 
 package execpolicy
 
-import "os"
+import (
+	"io/fs"
+	"os"
+)
 
-// fdExecPath is unavailable off Linux: the resolved path is executed.
-func fdExecPath(*os.File) (string, *os.File, bool) { return "", nil, false }
+// pinToDescriptor is unavailable off Linux: the resolved path is executed.
+func pinToDescriptor(*os.File, fs.FileInfo, []*os.File) (string, func(), bool) {
+	return "", nil, false
+}

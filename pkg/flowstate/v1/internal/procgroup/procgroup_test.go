@@ -3,6 +3,7 @@
 package procgroup_test
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"strconv"
@@ -38,11 +39,13 @@ func TestTerminateReachesWhatTheChildStarted(t *testing.T) {
 	_ = cmd.Wait()
 
 	require.Eventually(t, func() bool {
-		if err := syscall.Kill(grandchild, 0); err != nil {
+		if err := syscall.Kill(grandchild, 0); errors.Is(err, syscall.ESRCH) {
 			return true
 		}
+		// Only a zombie actually observed counts as dead; a failed /proc read
+		// proves nothing, so keep polling until the process is gone.
 		stat, err := os.ReadFile("/proc/" + strconv.Itoa(grandchild) + "/stat")
-		return err != nil || strings.Contains(string(stat), ") Z")
+		return err == nil && strings.Contains(string(stat), ") Z")
 	}, 10*time.Second, 20*time.Millisecond, "the grandchild outlived its group")
 
 	t.Run("a group that is already gone is not an error", func(t *testing.T) {

@@ -213,8 +213,11 @@ func assertGone(t *testing.T, pidFile string) {
 		if err := syscall.Kill(pid, 0); errors.Is(err, syscall.ESRCH) {
 			return true
 		}
+		// Only a zombie actually observed counts as dead. A failed /proc read
+		// proves nothing about the process (no /proc, a race with its
+		// reaping), so keep polling until it is gone.
 		stat, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
-		return err != nil || strings.Contains(string(stat), ") Z")
+		return err == nil && strings.Contains(string(stat), ") Z")
 	}, 10*time.Second, 50*time.Millisecond, "the descendant outlived the step")
 }
 
@@ -435,4 +438,226 @@ func TestADirectoryComponentRepointedAfterCheckIsRefusedAtRunTime(t *testing.T) 
 	var runErr *execpolicy.RunError
 	require.ErrorAs(t, err, &runErr)
 	assert.Equal(t, execpolicy.OutcomeDidNotStart, runErr.Outcome)
+}
+
+// A table entry replaced by a FIFO must be refused, not waited on: a plain
+// open of a FIFO blocks for a writer that never comes, before any check of
+// what the file is and outside every timeout.
+func TestAFifoReplacingTheExecutableIsRefusedNotWaitedOn(t *testing.T) {
+	t.Parallel()
+
+	for name, pinned := range map[string]bool{"unpinned": false, "pinned": true} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			cfg, root := base(t)
+			path := filepath.Join(t.TempDir(), "echo")
+			copyFile(t, tool(t, "echo"), path)
+			cfg.Executables["echo"] = path
+			if pinned {
+				raw, err := os.ReadFile(path)
+				require.NoError(t, err)
+				cfg.ExecutableSHA256 = map[string]string{"echo": sumHex(raw)}
+			}
+			cmd, err := mustPolicy(t, cfg).Check(context.Background(), execpolicy.Request{Argv: []string{"echo", "x"}, Dir: root})
+			require.NoError(t, err)
+
+			require.NoError(t, os.Remove(path))
+			require.NoError(t, syscall.Mkfifo(path, 0o755))
+
+			done := make(chan error, 1)
+			go func() {
+				_, err := cmd.Run(context.Background())
+				done <- err
+			}()
+			select {
+			case err := <-done:
+				denied(t, err, execpolicy.ReasonIntegrity)
+			case <-time.After(10 * time.Second):
+				t.Fatal("Run blocked opening a FIFO that replaced the executable")
+			}
+		})
+	}
+}
+
+// The directory Check authorized is the one the rules judged. A component
+// repointed at a sibling still under the roots resolves somewhere the rules
+// never saw, and must not be accepted just because it is also under a root.
+func TestADirectoryRepointedToAnotherAllowedDirectoryIsRefused(t *testing.T) {
+	t.Parallel()
+	cfg, root := base(t)
+	teamA := filepath.Join(root, "team-a")
+	teamB := filepath.Join(root, "team-b")
+	require.NoError(t, os.Mkdir(teamA, 0o700))
+	require.NoError(t, os.Mkdir(teamB, 0o700))
+	cfg.Allow = []string{`dir == "` + teamA + `"`}
+
+	cmd, err := mustPolicy(t, cfg).Check(context.Background(),
+		execpolicy.Request{Argv: []string{"sh", "-c", "touch ran"}, Dir: teamA})
+	require.NoError(t, err)
+
+	require.NoError(t, os.Remove(teamA))
+	require.NoError(t, os.Symlink(teamB, teamA))
+
+	_, err = cmd.Run(context.Background())
+	denied(t, err, execpolicy.ReasonDir)
+	assert.NoFileExists(t, filepath.Join(teamB, "ran"), "the program ran in a directory the rules never judged")
+}
+
+// An image no kernel loader would claim natively (here a foreign-architecture
+// ELF, which a binfmt_misc registration would hand to an interpreter) is not
+// executed through a descriptor: the interpreter would be handed a path it
+// cannot reopen. The old `#!`-only check pinned it.
+func TestAnImageTheKernelDoesNotExecuteDirectlyRunsByPath(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("descriptor execution is Linux-only")
+	}
+	t.Parallel()
+	if _, err := os.Stat("/proc/self/fd"); err != nil {
+		t.Skip("no /proc")
+	}
+
+	foreign := make([]byte, 64)
+	copy(foreign, "\x7fELF")
+	foreign[4], foreign[5], foreign[6] = 2, 2, 1 // 64-bit, big-endian, current version
+	foreign[17] = 2                              // e_type ET_EXEC, big-endian
+	foreign[19] = 0x16                           // e_machine EM_S390, big-endian
+
+	for name, content := range map[string][]byte{
+		"script":               []byte("#!/bin/sh\necho hi\n"),
+		"foreign-architecture": foreign,
+		"not-a-known-format":   []byte("plain bytes, no magic at all"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			cfg, root := base(t)
+			path := filepath.Join(t.TempDir(), "prog")
+			require.NoError(t, os.WriteFile(path, content, 0o755))
+			cfg.Executables["prog"] = path
+			cmd, err := mustPolicy(t, cfg).Check(context.Background(), execpolicy.Request{Argv: []string{"prog"}, Dir: root})
+			require.NoError(t, err)
+
+			got, release := execpolicy.OpenForTest(t, cmd)
+			defer release()
+			assert.Equal(t, path, got, "an image the kernel hands to an interpreter was pinned to a descriptor")
+		})
+	}
+}
+
+// The executable's descriptor must sit above everything os/exec renumbers in
+// the child: with the standard streams on high descriptors a fixed floor is not
+// enough, the child-side scratch descriptor can land on the executable's number,
+// and /proc/self/fd/N then names a pipe (EACCES). The floor is derived from the
+// streams the child is given, by the mechanism the plugin host shares.
+func TestTheExecutableDescriptorClearsTheStreamsTheChildIsGiven(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("descriptor execution is Linux-only")
+	}
+	if _, err := os.Stat("/proc/self/fd"); err != nil {
+		t.Skip("no /proc")
+	}
+	cfg, root := base(t)
+	path := filepath.Join(t.TempDir(), "echo")
+	copyFile(t, tool(t, "echo"), path)
+	cfg.Executables["echo"] = path
+	cmd, err := mustPolicy(t, cfg).Check(context.Background(), execpolicy.Request{Argv: []string{"echo", "x"}, Dir: root})
+	require.NoError(t, err)
+
+	// Fill the table so the three streams sit on high descriptors.
+	var held []*os.File
+	defer func() {
+		for _, f := range held {
+			f.Close()
+		}
+	}()
+	for len(held) < 3 || held[len(held)-1].Fd() < 40 {
+		f, err := os.Open(os.DevNull)
+		require.NoError(t, err)
+		held = append(held, f)
+	}
+	streams := held[len(held)-3:]
+	highest := int(streams[2].Fd())
+
+	fdPath, release := execpolicy.OpenForTest(t, cmd, streams)
+	defer release()
+	require.True(t, strings.HasPrefix(fdPath, "/proc/self/fd/"), fdPath)
+	n, err := strconv.Atoi(strings.TrimPrefix(fdPath, "/proc/self/fd/"))
+	require.NoError(t, err)
+	assert.Greater(t, n, highest+len(streams),
+		"the executable sits where the child-side shuffle can overwrite it")
+}
+
+// A context that ends before the program starts is the step's deadline or
+// cancellation, not a program that could not start: did_not_start is retryable
+// and this is not.
+func TestAContextThatEndedBeforeTheStartIsTimeoutOrCancellation(t *testing.T) {
+	t.Parallel()
+	cfg, root := base(t)
+	p := mustPolicy(t, cfg)
+	cmd, err := p.Check(context.Background(), execpolicy.Request{Argv: []string{"sh", "-c", "true"}, Dir: root})
+	require.NoError(t, err)
+
+	expired, cancelExpired := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancelExpired()
+	_, err = cmd.Run(expired)
+	var runErr *execpolicy.RunError
+	require.ErrorAs(t, err, &runErr)
+	assert.Equal(t, execpolicy.OutcomeTimedOut, runErr.Outcome)
+	assert.False(t, runErr.PolicyTimeout, "the caller's deadline, not the policy's bound")
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = cmd.Run(cancelled)
+	require.ErrorAs(t, err, &runErr)
+	assert.Equal(t, execpolicy.OutcomeCancelled, runErr.Outcome)
+	require.ErrorIs(t, err, context.Canceled)
+}
+
+// A descendant that left the program's process group and kept an output pipe
+// open must not hold the step, and the result must say capture ended early.
+func TestADescendantHoldingTheOutputPipeIsReportedAsIncompleteCapture(t *testing.T) {
+	t.Parallel()
+	if _, err := exec.LookPath("setsid"); err != nil {
+		t.Skip("setsid is not installed")
+	}
+	cfg, root := base(t)
+
+	began := time.Now()
+	res, err := start(t, context.Background(), cfg, root, "sh", "-c",
+		// The descendant announces itself only once setsid has moved it out of
+		// the group, so the group kill cannot catch it mid-fork.
+		`setsid sh -c 'echo $$ > pid; : > ready; exec sleep 30' & until [ -e ready ]; do :; done; printf done`)
+	require.NoError(t, err, "the program ran; a held pipe is not a failure")
+	t.Cleanup(func() { killRecordedPid(filepath.Join(root, "pid")) })
+
+	assert.Equal(t, execpolicy.OutcomeRan, res.Outcome)
+	assert.Equal(t, "done", res.Stdout)
+	assert.True(t, res.CaptureIncomplete)
+	assert.Less(t, time.Since(began), 15*time.Second, "the step waited on the descendant")
+
+	ordinary, err := start(t, context.Background(), cfg, root, "sh", "-c", `printf ok`)
+	require.NoError(t, err)
+	assert.False(t, ordinary.CaptureIncomplete, "a normal run reported incomplete capture")
+}
+
+func killRecordedPid(pidFile string) {
+	raw, err := os.ReadFile(pidFile)
+	if err != nil {
+		return
+	}
+	if pid, err := strconv.Atoi(strings.TrimSpace(string(raw))); err == nil {
+		_ = syscall.Kill(pid, syscall.SIGKILL)
+	}
+}
+
+// Where a program cannot be stopped together with its descendants the task
+// refuses to start one, naming the platform, rather than run weakened.
+func TestExecIsRefusedWhereDescendantsCannotBeStopped(t *testing.T) {
+	cfg, root := base(t)
+	p := mustPolicy(t, cfg)
+	execpolicy.PretendProcessGroupsAreUnenforced(t)
+
+	_, err := p.Check(context.Background(), execpolicy.Request{Argv: []string{"sh", "-c", "true"}, Dir: root})
+	d := denied(t, err, execpolicy.ReasonPlatform)
+	assert.Contains(t, d.Error(), runtime.GOOS)
 }

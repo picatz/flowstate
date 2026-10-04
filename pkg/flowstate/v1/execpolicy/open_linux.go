@@ -3,37 +3,45 @@
 package execpolicy
 
 import (
-	"fmt"
+	"io/fs"
 	"os"
 
-	"golang.org/x/sys/unix"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/internal/execimage"
 )
 
-// fdExecPath returns the path through which the open file can be executed, and
-// whether that is possible: it needs /proc, and a descriptor number that the
-// child's own standard-stream setup cannot overwrite.
+// pinToDescriptor returns the /proc path that executes exactly the open file,
+// whether that is possible, and how to release it. It is the mechanism the
+// plugin host uses for its images ([execimage]), not a second copy of it:
 //
-// The descriptor is close-on-exec, which is what we want: the path is resolved
-// by the kernel before the exec closes it. The second return value is a
-// replacement file that must stay open until the child has started, or nil.
-func fdExecPath(f *os.File) (string, *os.File, bool) {
-	fd := int(f.Fd())
-	var dup *os.File
-	if fd < 3 {
-		n, err := unix.FcntlInt(uintptr(fd), unix.F_DUPFD_CLOEXEC, 3)
-		if err != nil {
-			return "", nil, false
-		}
-		dup = os.NewFile(uintptr(n), f.Name())
-		fd = n
+//   - the format gate: only an image the kernel certainly executes itself is
+//     pinned. A script, a foreign-architecture image, or anything a
+//     binfmt_misc registration without the open-binary flag would claim is
+//     handed to an interpreter that must reopen a path after the close-on-exec
+//     descriptor is gone, so those run by path;
+//   - the descriptor number: moved above everything os/exec renumbers in the
+//     child (files are the streams it will be given), because a collision makes
+//     /proc/self/fd/N name a pipe at exec time;
+//   - the lookup: verified to resolve to the inode that was judged.
+//
+// The descriptor is close-on-exec: the kernel resolves the path before the exec
+// closes it. When ok is false f is untouched and still open.
+func pinToDescriptor(f *os.File, info fs.FileInfo, files []*os.File) (string, func(), bool) {
+	if err := execimage.RefuseUnlessExecutedDirectly(f, info); err != nil {
+		return "", nil, false
 	}
-	path := fmt.Sprintf("/proc/self/fd/%d", fd)
-	if _, err := os.Stat(path); err != nil {
-		if dup != nil {
-			dup.Close()
+
+	held, err := execimage.RaiseAbove(f, max(execimage.FDFloor, execimage.ShuffleFloor(files)))
+	if err != nil {
+		return "", nil, false
+	}
+
+	path, err := execimage.Path(held, info)
+	if err != nil {
+		if held != f {
+			held.Close()
 		}
 		return "", nil, false
 	}
 
-	return path, dup, true
+	return path, func() { held.Close() }, true
 }

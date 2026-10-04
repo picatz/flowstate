@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"slices"
 	"strings"
 	"time"
@@ -20,6 +21,7 @@ import (
 	"github.com/google/cel-go/ext"
 
 	"github.com/picatz/flowstate/pkg/flowstate/v1/celrule"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/internal/procgroup"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
 )
 
@@ -266,7 +268,7 @@ func loadExecutable(name, path, pin string) (executable, error) {
 
 	exe := executable{name: name, path: resolved, sha256: pin}
 	if pin != "" {
-		f, err := os.Open(resolved)
+		f, err := openRegular(resolved)
 		if err != nil {
 			return executable{}, fmt.Errorf("executables: %s: %s: %w", name, resolved, unwrapPathError(err))
 		}
@@ -457,6 +459,11 @@ func (c *Command) Dir() string { return c.dir }
 // EnvKeys is the sorted names of the final environment. Never its values.
 func (c *Command) EnvKeys() []string { return slices.Clone(c.keys) }
 
+// processGroupsEnforced is whether this platform can stop a program together
+// with its descendants. A variable only so a test can stand in for a platform
+// that cannot.
+var processGroupsEnforced = procgroup.Supported
+
 // Check applies the policy to one invocation and returns the command to run
 // or a [*DeniedError]. A nil policy denies everything with [ReasonNoPolicy].
 //
@@ -466,6 +473,17 @@ func (c *Command) EnvKeys() []string { return slices.Clone(c.keys) }
 func (p *Policy) Check(ctx context.Context, req Request) (*Command, error) {
 	if p == nil {
 		return nil, &DeniedError{Reason: ReasonNoPolicy, Detail: "no exec policy is configured"}
+	}
+	// Fail closed where the process-group guarantee cannot be enforced: a step
+	// that ends must not leave descendants running, and on such a platform a
+	// descendant could outlive it. Refusing is the only honest answer; a
+	// weaker run under the same policy would be a silent downgrade.
+	if !processGroupsEnforced {
+		return nil, &DeniedError{
+			Reason: ReasonPlatform,
+			Detail: "the exec task is not available on " + runtime.GOOS + ": this platform cannot stop a program " +
+				"together with the processes it starts, so a step could leave descendants running after it ended",
+		}
 	}
 
 	exe, err := p.checkArgv(req.Argv)

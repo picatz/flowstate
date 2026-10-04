@@ -981,9 +981,18 @@ type Task_Exec_Outputs struct {
 	// A step produces outputs only in the "ran" case; the other three are
 	// failures, and name themselves as `outcome=<value>` in the failure's text
 	// so a log and a run record say the same word.
-	Outcome       string `protobuf:"bytes,8,opt,name=outcome,proto3" json:"outcome,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Outcome string `protobuf:"bytes,8,opt,name=outcome,proto3" json:"outcome,omitempty"`
+	// CaptureIncomplete is true when the worker stopped reading the program's
+	// output before the streams ended: the program finished, but a descendant
+	// that had left its process group still held an output pipe open, so
+	// stdout and stderr may be missing bytes the program wrote. It is distinct
+	// from [stdout_truncated], which means the policy's byte bound cut output
+	// the worker read. The outcome stays "ran" and the step is not retried,
+	// since the program did run; a workflow that must have all of the output
+	// checks this flag.
+	CaptureIncomplete bool `protobuf:"varint,9,opt,name=capture_incomplete,json=captureIncomplete,proto3" json:"capture_incomplete,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *Task_Exec_Outputs) Reset() {
@@ -1072,11 +1081,18 @@ func (x *Task_Exec_Outputs) GetOutcome() string {
 	return ""
 }
 
+func (x *Task_Exec_Outputs) GetCaptureIncomplete() bool {
+	if x != nil {
+		return x.CaptureIncomplete
+	}
+	return false
+}
+
 var File_flowstate_v1_task_proto protoreflect.FileDescriptor
 
 const file_flowstate_v1_task_proto_rawDesc = "" +
 	"\n" +
-	"\x17flowstate/v1/task.proto\x12\fflowstate.v1\x1a\x1bbuf/validate/validate.proto\x1a\x18flowstate/v1/value.proto\x1a$google/api/expr/v1alpha1/value.proto\x1a\x1fgoogle/api/field_behavior.proto\"\xcd\x13\n" +
+	"\x17flowstate/v1/task.proto\x12\fflowstate.v1\x1a\x1bbuf/validate/validate.proto\x1a\x18flowstate/v1/value.proto\x1a$google/api/expr/v1alpha1/value.proto\x1a\x1fgoogle/api/field_behavior.proto\"\xfc\x13\n" +
 	"\x04Task\x12J\n" +
 	"\x04name\x18\x01 \x01(\tB6\xe2A\x01\x02\xbaH/\xc8\x01\x01r*\x10\x01\x18\x80\x012#^[A-Za-z0-9-_]+(\\.[A-Za-z0-9-_]+)?$R\x04name\x12K\n" +
 	"\x06inputs\x18\x03 \x03(\v2\x1e.flowstate.v1.Task.InputsEntryB\x13\xe2A\x01\x01\xbaH\f\xc8\x01\x01\x9a\x01\x06\"\x04r\x02\x10\x01R\x06inputs\x1a\xe7\x02\n" +
@@ -1144,7 +1160,7 @@ const file_flowstate_v1_task_proto_rawDesc = "" +
 	"\x04json\x18\x04 \x01(\v2\x1f.google.api.expr.v1alpha1.ValueR\x04json\x1a:\n" +
 	"\fHeadersEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1a\x8e\x04\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1a\xbd\x04\n" +
 	"\x04Exec\x1a\x83\x02\n" +
 	"\x06Inputs\x12-\n" +
 	"\x04argv\x18\x01 \x03(\tB\x19\xe2A\x01\x02\xbaH\x12\xc8\x01\x01\x92\x01\f\b\x01\x10\x80\x02\"\x05r\x03\x18\x80@R\x04argv\x12#\n" +
@@ -1153,7 +1169,7 @@ const file_flowstate_v1_task_proto_rawDesc = "" +
 	"\x03env\x18\x03 \x03(\v2'.flowstate.v1.Task.Exec.Inputs.EnvEntryB2\xbaH/\x9a\x01,\x10@\"!r\x1f\x10\x01\x18\x80\x012\x18^[A-Za-z_][A-Za-z0-9_]*$*\x05r\x03\x18\x80@R\x03env\x1a6\n" +
 	"\bEnvEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1a\xff\x01\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1a\xae\x02\n" +
 	"\aOutputs\x12\x1b\n" +
 	"\texit_code\x18\x01 \x01(\x05R\bexitCode\x12\x16\n" +
 	"\x06stdout\x18\x02 \x01(\tR\x06stdout\x12\x16\n" +
@@ -1163,7 +1179,8 @@ const file_flowstate_v1_task_proto_rawDesc = "" +
 	"\x06signal\x18\x06 \x01(\tR\x06signal\x12\x1f\n" +
 	"\vduration_ms\x18\a \x01(\x03R\n" +
 	"durationMs\x12\x18\n" +
-	"\aoutcome\x18\b \x01(\tR\aoutcome\x1aN\n" +
+	"\aoutcome\x18\b \x01(\tR\aoutcome\x12-\n" +
+	"\x12capture_incomplete\x18\t \x01(\bR\x11captureIncomplete\x1aN\n" +
 	"\vInputsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12)\n" +
 	"\x05value\x18\x02 \x01(\v2\x13.flowstate.v1.ValueR\x05value:\x028\x01J\x04\b\x02\x10\x03R\vdescriptionB\xa8\x01\n" +

@@ -47,6 +47,11 @@ const (
 	// closed, so that denies.
 	ReasonRuleError Reason = "rule error"
 
+	// ReasonPlatform means this platform cannot enforce a guarantee the task
+	// depends on (stopping a program together with its descendants), so no
+	// program is started rather than started with the guarantee weakened.
+	ReasonPlatform Reason = "platform"
+
 	// ReasonIntegrity means the executable on disk is not the file the policy
 	// was loaded against: it is no longer a regular executable file, or it no
 	// longer matches its pinned SHA-256.

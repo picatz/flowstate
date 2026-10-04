@@ -3,25 +3,12 @@
 package plugin
 
 import (
-	"fmt"
 	"io/fs"
 	"os"
 	"strconv"
-	"syscall"
-)
 
-// execFDFloor is the lowest descriptor number a pinned image is allowed to sit
-// on.
-//
-// os/exec builds the child's low descriptors with dup2 — stdin, stdout, stderr,
-// then each ExtraFiles entry, counting from 0 — and it does that in the forked
-// child, before execve. A descriptor of ours sitting inside that range would be
-// overwritten there, and /proc/self/fd/N would name one of those pipes at the
-// moment exec resolves it: a launch failure, or worse, a launch of something
-// else. Nothing reserves numbers for us, so the image is moved above the range
-// with room to spare rather than depending on how many extra files a launch
-// happens to pass today.
-const execFDFloor = 16
+	"github.com/picatz/flowstate/pkg/flowstate/v1/internal/execimage"
+)
 
 // pinToDescriptor returns a path that executes exactly the open file f.
 //
@@ -44,29 +31,20 @@ const execFDFloor = 16
 func pinToDescriptor(f *os.File, info fs.FileInfo) (*os.File, string, error) {
 	// The format gate comes first, because naming a descriptor only works for an
 	// image the kernel executes *directly*. See [refuseUnlessExecutedDirectly].
-	if err := refuseUnlessExecutedDirectly(f, info, binfmtMiscRegistry); err != nil {
+	if err := execimage.RefuseUnlessExecutedDirectly(f, info); err != nil {
 		// f is untouched and still usable by the caller.
 		return f, "", err
 	}
 
-	held, err := raiseAboveExecShuffle(f, execFDFloor)
+	held, err := execimage.RaiseAbove(f, execimage.FDFloor)
 	if err != nil {
 		// f is untouched and still usable by the caller.
 		return f, "", err
 	}
 
-	execPath := "/proc/self/fd/" + strconv.Itoa(int(held.Fd()))
-
-	// os.Stat follows the magic link, so this is a stat of the inode the
-	// descriptor holds rather than of the link. Compared against the inode this
-	// descriptor was opened as, it answers the only question that matters:
-	// whether executing that name executes this file.
-	linked, err := os.Stat(execPath)
+	execPath, err := execimage.Path(held, info)
 	if err != nil {
-		return held, "", fmt.Errorf("%s cannot be resolved, so this host cannot execute a descriptor: %w", execPath, err)
-	}
-	if !os.SameFile(linked, info) {
-		return held, "", fmt.Errorf("%s does not resolve to the opened file", execPath)
+		return held, "", err
 	}
 
 	return held, execPath, nil
@@ -87,15 +65,7 @@ func pinToDescriptor(f *os.File, info fs.FileInfo) (*os.File, string, error) {
 // bound covers the complete file table os/exec will shuffle. The image remains
 // close-on-exec and is still the same open file description that was hashed.
 func (im *execImage) prepareForExec(files []*os.File) error {
-	floor := len(files)
-	for _, file := range files {
-		if file != nil && int(file.Fd()) > floor {
-			floor = int(file.Fd())
-		}
-	}
-	floor += len(files) + 2
-
-	held, err := raiseAboveExecShuffle(im.file, floor)
+	held, err := execimage.RaiseAbove(im.file, execimage.ShuffleFloor(files))
 	if err != nil {
 		return err
 	}
@@ -103,26 +73,4 @@ func (im *execImage) prepareForExec(files []*os.File) error {
 	im.file = held
 	im.execPath = "/proc/self/fd/" + strconv.Itoa(int(held.Fd()))
 	return nil
-}
-
-// raiseAboveExecShuffle moves f to a descriptor at or above floor, closing the
-// original, and returns f unchanged when it is already clear.
-//
-// The duplicate keeps close-on-exec, which is what stops the plugin process from
-// inheriting a readable handle on its own image: exec resolves the name first
-// and closes the descriptor after, so nothing is lost by keeping the flag.
-func raiseAboveExecShuffle(f *os.File, floor int) (*os.File, error) {
-	if f.Fd() >= uintptr(floor) {
-		return f, nil
-	}
-
-	fd, _, errno := syscall.Syscall(syscall.SYS_FCNTL, f.Fd(), syscall.F_DUPFD_CLOEXEC, uintptr(floor))
-	if errno != 0 {
-		return nil, fmt.Errorf("moving the plugin image off descriptor %d: %w", f.Fd(), errno)
-	}
-
-	raised := os.NewFile(fd, f.Name())
-	f.Close()
-
-	return raised, nil
 }

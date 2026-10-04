@@ -19,6 +19,11 @@ import (
 	"syscall"
 )
 
+// Supported reports that this platform can stop a child together with
+// everything it started, which callers that must not leave descendants behind
+// require before they start one.
+const Supported = true
+
 // Isolate puts the child in a process group of its own. Call it before Start.
 func Isolate(cmd *exec.Cmd) {
 	if cmd.SysProcAttr == nil {

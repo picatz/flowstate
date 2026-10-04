@@ -9,6 +9,11 @@ import (
 	"os/exec"
 )
 
+// Supported is false: nothing here can stop a child together with its
+// descendants, so a caller that must not leave descendants running refuses to
+// start one rather than weaken the guarantee quietly.
+const Supported = false
+
 // Isolate does nothing here. Grouping a process with its children is a POSIX
 // notion; a platform that needs the same guarantee needs its own mechanism — a
 // job object on Windows — and pretending process-group code is portable would

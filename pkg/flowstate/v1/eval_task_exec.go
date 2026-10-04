@@ -100,14 +100,15 @@ func taskFuncExec(policy *execpolicy.Policy) TaskFunc {
 			slog.Int64("duration_ms", result.Duration.Milliseconds()))
 
 		return nodeOutputsFromProtoMessage(&Task_Exec_Outputs{
-			ExitCode:        int32(result.ExitCode),
-			Stdout:          result.Stdout,
-			Stderr:          result.Stderr,
-			StdoutTruncated: result.StdoutTruncated,
-			StderrTruncated: result.StderrTruncated,
-			Signal:          result.Signal,
-			DurationMs:      result.Duration.Milliseconds(),
-			Outcome:         string(result.Outcome),
+			ExitCode:          int32(result.ExitCode),
+			Stdout:            result.Stdout,
+			Stderr:            result.Stderr,
+			StdoutTruncated:   result.StdoutTruncated,
+			StderrTruncated:   result.StderrTruncated,
+			CaptureIncomplete: result.CaptureIncomplete,
+			Signal:            result.Signal,
+			DurationMs:        result.Duration.Milliseconds(),
+			Outcome:           string(result.Outcome),
 		})
 	}
 }
@@ -138,6 +139,18 @@ func execFailure(err error) error {
 	return err
 }
 
+// isAbsoluteLiteral reports whether a literal working directory is absolute.
+//
+// The literal is checked wherever the Flowfile is authored, and the directory
+// it names is on the worker, which is usually a different operating system. A
+// leading slash is a POSIX absolute path whatever the author's OS says
+// (filepath.IsAbs is false for "/srv/work" on Windows), so it is accepted
+// here; the host's own notion (native) is accepted too. The worker's exec
+// policy applies the worker's native rules to the resolved value.
+func isAbsoluteLiteral(dir string, native func(string) bool) bool {
+	return strings.HasPrefix(dir, "/") || native(dir)
+}
+
 // checkExecLiteral is what the exec task can say about a literal input before
 // anything runs, in every deployment alike: a program is a name and never a
 // path, and a working directory is an absolute path. Which names exist and which
@@ -157,7 +170,7 @@ func checkExecLiteral(input string, value *Value) error {
 		}
 	case "dir":
 		dir := value.GetLiteral().GetStringValue()
-		if dir != "" && !filepath.IsAbs(dir) {
+		if dir != "" && !isAbsoluteLiteral(dir, filepath.IsAbs) {
 			return fmt.Errorf("dir %q is not an absolute path; the exec task never uses the worker's own working "+
 				"directory, so name one under a root the deployment's exec policy allows", dir)
 		}

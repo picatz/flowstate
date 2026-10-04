@@ -216,7 +216,7 @@ refuses to send a token over plaintext to anything but this machine
 (`cmd/flow/credentials.go:63`), which protects the client, not the server's own
 posture. `--insecure-no-auth` admits everyone as anonymous and is a
 development posture (read in `authFlagsOf` at `cmd/flow/main.go:224-226`, resolved to
-`auth.InsecureAnonymousVerifier` at `cmd/flow/main.go:1793`;
+`auth.InsecureAnonymousVerifier` at `cmd/flow/main.go:1799`;
 `pkg/flowstate/v1/auth/connect.go:142-160`, [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#the-four-tier-isolation-model)).
 
 **Planned.** OAuth 2.1 alignment for the remote MCP surface and webhook ingress as
@@ -464,7 +464,10 @@ resolve, through symlinks, under a configured root. The environment is assembled
 nothing: operator literals, an operator passthrough list (loader variables refused),
 and step literals only for operator-listed keys. Timeout and per-stream output bytes
 are required and have compile-time ceilings (1h, 16MiB); on expiry the whole process
-group is terminated, then killed; stdin is `/dev/null`. CEL allow/deny rules see the
+group is terminated, then killed (a descendant that leaves the group with `setsid`
+is not reached; output capture is then cut off and reported as
+`capture_incomplete`); platforms without process groups refuse the task; stdin is
+`/dev/null`. CEL allow/deny rules see the
 resolved executable, directory, environment key names and the run identity; deny wins
 and an erroring rule denies. Secrets are not injected into the child's environment in
 this slice.

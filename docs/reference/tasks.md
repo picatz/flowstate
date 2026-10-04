@@ -44,6 +44,7 @@ Run one program from the deployment's allowlist and return its exit code and out
 | `signal` | `string` | none |
 | `duration_ms` | `int` | none |
 | `outcome` | `string` | none |
+| `capture_incomplete` | `bool` | none |
 
 **A step that uses it:**
 

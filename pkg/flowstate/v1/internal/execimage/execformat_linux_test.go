@@ -1,6 +1,6 @@
 //go:build linux
 
-package plugin
+package execimage
 
 import (
 	"debug/elf"
@@ -56,7 +56,7 @@ func otherData(t *testing.T) elf.Data {
 func writeImage(t *testing.T, name string, content []byte) string {
 	t.Helper()
 
-	path := filepath.Join(t.TempDir(), BinaryPrefix+name)
+	path := filepath.Join(t.TempDir(), "flowstate-plugin-"+name)
 	if err := os.WriteFile(path, content, 0o755); err != nil {
 		t.Fatalf("writing %s: %v", path, err)
 	}

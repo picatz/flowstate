@@ -525,6 +525,16 @@ message Task {
       // failures, and name themselves as `outcome=<value>` in the failure's text
       // so a log and a run record say the same word.
       string outcome = 8;
+
+      // CaptureIncomplete is true when the worker stopped reading the program's
+      // output before the streams ended: the program finished, but a descendant
+      // that had left its process group still held an output pipe open, so
+      // stdout and stderr may be missing bytes the program wrote. It is distinct
+      // from [stdout_truncated], which means the policy's byte bound cut output
+      // the worker read. The outcome stays "ran" and the step is not retried,
+      // since the program did run; a workflow that must have all of the output
+      // checks this flag.
+      bool capture_incomplete = 9;
     }
   }
 

@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -25,6 +26,13 @@ const (
 	// cancellation, or on a descendant that holds an output pipe open after the
 	// child exited. It sits past [terminateGrace] so the group kill comes first.
 	waitDelay = terminateGrace + 2*time.Second
+
+	// captureGrace is how long output capture may continue after the program
+	// has been reaped and its group killed. Everything the program wrote is
+	// already in the pipes by then, so this only ever waits on a descendant that
+	// left the group and kept a pipe open; past it the read ends are closed and
+	// the result says capture was incomplete.
+	captureGrace = time.Second
 )
 
 // Result is what an admitted program did.
@@ -41,6 +49,13 @@ type Result struct {
 	// read and discarded.
 	StdoutTruncated bool
 	StderrTruncated bool
+
+	// CaptureIncomplete reports that reading the output stopped before the
+	// streams ended: the program finished, but a descendant outside its process
+	// group still held an output pipe, so Stdout and Stderr may lack bytes it
+	// wrote. Distinct from the truncation flags, which mean the byte bound cut
+	// output that was read.
+	CaptureIncomplete bool
 
 	// Signal names the signal that ended the program; empty when it exited.
 	Signal string
@@ -70,18 +85,59 @@ type Result struct {
 //
 // # What is executed
 //
-// On Linux the verified file is opened once and executed through that
-// descriptor (/proc/self/fd), so replacing the path between the check and the
-// exec cannot change what runs. A pinned SHA-256 is verified against that same
-// descriptor. Two cases fall back to executing the resolved path, leaving a
-// small window in which a file replaced by someone with write access to its
-// directory would run: a script (its interpreter cannot reopen a descriptor
-// that closes on exec) and a system without /proc. Other platforms always
-// execute the path. The pin is still verified immediately before in every case.
+// On Linux the verified file is opened once, without blocking (a FIFO swapped
+// in for it is refused, not waited on), and executed through that descriptor
+// (/proc/self/fd), so replacing the path between the check and the exec cannot
+// change what runs. A pinned SHA-256 is verified against that same descriptor.
+// Only an image the kernel certainly executes itself is run that way: a script,
+// a foreign-architecture image, or anything a binfmt_misc registration would
+// claim is handed to an interpreter that must reopen a path after the
+// descriptor is gone, so those, and a system without /proc, fall back to
+// executing the resolved path, leaving a small window in which a file replaced
+// by someone with write access to its directory would run. Other platforms
+// always execute the path. The pin is still verified immediately before in
+// every case.
+//
+// # Output
+//
+// Output is read by this function, to the policy's byte bound per stream. If
+// the program has finished but a descendant that left its process group still
+// holds an output pipe, reading is cut off after a short grace and the result
+// has CaptureIncomplete set; the outcome is still [OutcomeRan].
+//
+// # Platforms
+//
+// Where the platform cannot stop a program together with its descendants
+// (anywhere but Unix) [Policy.Check] denies with [ReasonPlatform] rather than
+// run with the guarantee silently weakened.
 //
 // Standard input is /dev/null.
 func (c *Command) Run(ctx context.Context) (Result, error) {
-	execPath, release, err := c.openExecutable()
+	// The standard streams are made here, not by os/exec, so their descriptors
+	// are known before the executable's is placed (see [Command.openExecutable])
+	// and so output is read by this function, which can tell when capture ended
+	// early.
+	devnull, err := os.Open(os.DevNull)
+	if err != nil {
+		return Result{}, &RunError{Outcome: OutcomeDidNotStart, Err: startFailure(c.argv[0], err)}
+	}
+	defer devnull.Close()
+
+	stdoutR, stdoutW, err := os.Pipe()
+	if err != nil {
+		return Result{}, &RunError{Outcome: OutcomeDidNotStart, Err: startFailure(c.argv[0], err)}
+	}
+	defer stdoutR.Close()
+	defer stdoutW.Close()
+
+	stderrR, stderrW, err := os.Pipe()
+	if err != nil {
+		return Result{}, &RunError{Outcome: OutcomeDidNotStart, Err: startFailure(c.argv[0], err)}
+	}
+	defer stderrR.Close()
+	defer stderrW.Close()
+
+	execPath, release, err := c.openExecutable([]*os.File{devnull, stdoutW, stderrW})
 	if err != nil {
 		return Result{}, err
 	}
@@ -96,19 +152,28 @@ func (c *Command) Run(ctx context.Context) (Result, error) {
 	cmd := exec.CommandContext(runCtx, execPath, c.argv[1:]...)
 	cmd.Path = execPath
 	cmd.Args = slicesClone(c.argv)
-	// Re-resolve and re-check immediately before the start: this narrows the
-	// window in which a symlink swapped after Check could point the child
-	// outside the roots. It does not close it; only a handle held from the
-	// check to the exec would, which workspaces and runners will provide.
+	// The directory is the one Check authorized, which is the one the rules
+	// saw. Re-resolve it immediately before the start and refuse any other
+	// answer: a component swapped for a symlink since Check could otherwise
+	// move the child to a different directory the rules never judged, even one
+	// still under a root. This narrows the window rather than closing it; only
+	// a handle held from the check to the exec would, which workspaces and
+	// runners will provide.
 	dir, err := c.policy.checkDir(c.dir)
 	if err != nil {
 		return Result{}, &RunError{Outcome: OutcomeDidNotStart, Err: err}
 	}
+	if dir != c.dir {
+		return Result{}, &DeniedError{
+			Reason: ReasonDir,
+			Detail: fmt.Sprintf("the working directory now resolves to %q, not the %q the policy authorized", dir, c.dir),
+		}
+	}
 	cmd.Dir = dir
 	cmd.Env = append([]string{}, c.env...)
-	cmd.Stdin = nil
-	cmd.Stdout = stdout
-	cmd.Stderr = stderr
+	cmd.Stdin = devnull
+	cmd.Stdout = stdoutW
+	cmd.Stderr = stderrW
 	cmd.WaitDelay = waitDelay
 	procgroup.Isolate(cmd)
 
@@ -126,10 +191,33 @@ func (c *Command) Run(ctx context.Context) (Result, error) {
 		return err
 	}
 
+	var readers sync.WaitGroup
+	for _, stream := range []struct {
+		from *os.File
+		into *boundedBuffer
+	}{{stdoutR, stdout}, {stderrR, stderr}} {
+		readers.Go(func() { _, _ = io.Copy(stream.into, stream.from) })
+	}
+
 	started := time.Now()
 	if err := cmd.Start(); err != nil {
+		stdoutW.Close()
+		stderrW.Close()
+		readers.Wait()
+		// os/exec reports an expired or cancelled context as the context's
+		// own error. That is the step's deadline or cancellation, not a
+		// program that could not start, and must be classified as such: a
+		// did-not-start failure is retryable and this one is not.
+		if ctxErr := runCtx.Err(); ctxErr != nil && errors.Is(err, ctxErr) {
+			return c.endedEarly(ctx, runCtx, Result{})
+		}
 		return Result{}, &RunError{Outcome: OutcomeDidNotStart, Err: startFailure(c.argv[0], err)}
 	}
+	// The child holds its own copies; ours would keep the pipes from ever
+	// reaching end of file.
+	stdoutW.Close()
+	stderrW.Close()
+
 	waitErr := cmd.Wait()
 	elapsed := time.Since(started)
 
@@ -143,7 +231,23 @@ func (c *Command) Run(ctx context.Context) (Result, error) {
 	// leftovers; with no survivors it finds no group.
 	_ = procgroup.Terminate(cmd.Process, true)
 
-	result := Result{Duration: elapsed}
+	// Drain what is in the pipes. With the group dead the streams end on their
+	// own; a descendant that left the group may still hold them, and waiting on
+	// it would hold this step too, so capture is cut off after a grace and said
+	// to be incomplete.
+	drained := make(chan struct{})
+	go func() { readers.Wait(); close(drained) }()
+	incomplete := false
+	select {
+	case <-drained:
+	case <-time.After(captureGrace):
+		incomplete = true
+		stdoutR.Close()
+		stderrR.Close()
+		<-drained
+	}
+
+	result := Result{Duration: elapsed, CaptureIncomplete: incomplete}
 	result.Stdout, result.StdoutTruncated = stdout.text()
 	result.Stderr, result.StderrTruncated = stderr.text()
 
@@ -159,9 +263,9 @@ func (c *Command) Run(ctx context.Context) (Result, error) {
 		result.ExitCode = exitErr.ExitCode()
 		result.Signal = signalName(exitErr)
 	case cmd.ProcessState != nil:
-		// The program ran and was reaped; the error is the plumbing around it
-		// (a pipe copy), so what it did is still its result and is not retried
-		// as though it never started.
+		// The program ran and was reaped; the error is the plumbing around it,
+		// so what it did is still its result and is not retried as though it
+		// never started.
 		result.ExitCode = cmd.ProcessState.ExitCode()
 	default:
 		return result, &RunError{Outcome: OutcomeDidNotStart, Err: waitErr, Result: result}

@@ -2602,12 +2602,16 @@ variables such as `LD_PRELOAD` and `DYLD_*` are refused), a required `timeout`
 values) and `identity`. Deny wins, and a rule that cannot be evaluated denies.
 
 **Outputs.** `exit_code`, `stdout`, `stderr`, `stdout_truncated`, `stderr_truncated`,
-`signal`, `duration_ms` and `outcome` (`ran`, `did_not_start`, `timed_out`,
-`cancelled`). A nonzero exit is *output*, the way an HTTP status is: the step
+`signal`, `duration_ms`, `capture_incomplete` and `outcome` (`ran`, `did_not_start`,
+`timed_out`, `cancelled`). A nonzero exit is *output*, the way an HTTP status is: the step
 succeeds and the workflow decides what 128 means. A step fails only when the policy
 refuses it, the program cannot start, the policy's time bound passes (the process group
 is killed), or the run is cancelled. Output past the bound is dropped and flagged;
-non-UTF-8 bytes are replaced. Standard input is `/dev/null`.
+non-UTF-8 bytes are replaced. Standard input is `/dev/null`. `capture_incomplete` is true when the program finished
+but a descendant outside its process group still held an output pipe, so reading was
+cut off and output may be missing; the outcome stays `ran`. The task is refused on
+platforms that cannot stop a program together with its descendants (anywhere but
+Unix), rather than run with that guarantee weakened.
 
 **What it is not.** Not a sandbox. The program runs as the worker's user with no
 namespace, cgroup, seccomp, filesystem or network confinement, and the egress policy
