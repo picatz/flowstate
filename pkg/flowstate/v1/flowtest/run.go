@@ -41,6 +41,10 @@ var epoch = time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
 // cannot make progress, such as an untimed signal wait with no matching script.
 const maxCaseWallTime = 30 * time.Second
 
+// maxCaseTimeout bounds [RunOptions.CaseTimeout]: a longer wait is a case that
+// is stuck, not one that is slow.
+const maxCaseTimeout = 10 * time.Minute
+
 var errCaseWallTime = errors.New("case wall-clock limit exceeded")
 
 // RunOptions is what a caller may vary about a suite run. The zero value is
@@ -62,6 +66,20 @@ type RunOptions struct {
 	// because a green over a subset must never read as the file's green
 	// (issue #929).
 	Select func(name string) bool
+
+	// CaseTimeout is the real-time backstop for one case; zero takes
+	// [maxCaseWallTime]. Longer than [maxCaseTimeout] is refused by the CLI,
+	// and clamped here so a Go caller cannot unbound it either.
+	CaseTimeout time.Duration
+
+	// FailFast stops at the first case that fails: the rest are reported in
+	// [RunResult.Skipped] with the reason, never silently dropped.
+	FailFast bool
+
+	// ListOnly selects and resolves cases without running any: the names
+	// that would run are returned in [RunResult.Listed], skipped ones in
+	// [RunResult.Skipped].
+	ListOnly bool
 
 	// Debugger, when set, holds each case's run at every step boundary so a
 	// session can drive it (#928 slice 1). Installed on the run's context, so
@@ -106,6 +124,20 @@ type RunResult struct {
 
 	// Filtered is how many cases [RunOptions.Select] excluded from this run.
 	Filtered int
+
+	// Skipped is every selected case that did not run, with why: a `skip:`
+	// reason, or the first failure that [RunOptions.FailFast] stopped at.
+	Skipped []SkippedCase
+
+	// Listed is the selected, unskipped case names of a [RunOptions.ListOnly]
+	// run, in file order.
+	Listed []string
+}
+
+// SkippedCase is a selected case that was not run, and the reason it carries.
+type SkippedCase struct {
+	Name   string
+	Reason string
 }
 
 // RunFile runs every test in a `*.test.yaml`, returning one [v1.TestReport].
@@ -217,6 +249,13 @@ func runSuite(ctx context.Context, file *File, opts RunOptions, loaderFor func(*
 	}
 
 	filtered := 0
+	var skipped []SkippedCase
+	var listed []string
+	failedFast := ""
+	caseTimeout := maxCaseWallTime
+	if opts.CaseTimeout > 0 {
+		caseTimeout = min(opts.CaseTimeout, maxCaseTimeout)
+	}
 	var transcripts [][]TranscriptLine
 	transcriptBudget := newSuiteTranscriptBudget()
 	warningBudget := newSuiteWarningBudget()
@@ -229,6 +268,19 @@ func runSuite(ctx context.Context, file *File, opts RunOptions, loaderFor func(*
 
 		if opts.Select != nil && !opts.Select(test.Name) {
 			filtered++
+			continue
+		}
+
+		if test.Skip != "" {
+			skipped = append(skipped, SkippedCase{Name: test.Name, Reason: test.Skip})
+			continue
+		}
+		if failedFast != "" {
+			skipped = append(skipped, SkippedCase{Name: test.Name, Reason: "not run after the first failure (" + failedFast + ")"})
+			continue
+		}
+		if opts.ListOnly {
+			listed = append(listed, test.Name)
 			continue
 		}
 
@@ -259,7 +311,7 @@ func runSuite(ctx context.Context, file *File, opts RunOptions, loaderFor func(*
 		caseCtx := ctx
 		cancel := func() {}
 		if opts.Debugger == nil {
-			caseCtx, cancel = caseContextWithin(ctx, maxCaseWallTime)
+			caseCtx, cancel = caseContextWithin(ctx, caseTimeout)
 		}
 
 		// posture is what the case's reported run withholds: the written-order
@@ -319,6 +371,9 @@ func runSuite(ctx context.Context, file *File, opts RunOptions, loaderFor func(*
 		report.Cases = append(report.Cases, result)
 		transcripts = append(transcripts, transcriptBudget.take(account))
 		coverage.observe(identity, spec, transcript, l.positions())
+		if opts.FailFast && !result.GetPassed() {
+			failedFast = test.Name
+		}
 	}
 
 	out := RunResult{
@@ -327,6 +382,8 @@ func runSuite(ctx context.Context, file *File, opts RunOptions, loaderFor func(*
 		Schedules:   schedules.result(),
 		Transcripts: transcripts,
 		Filtered:    filtered,
+		Skipped:     skipped,
+		Listed:      listed,
 	}
 	// Attached here, for every door, so the whole document renders through
 	// protojson wherever it ends up — the CLI's machine modes and the MCP

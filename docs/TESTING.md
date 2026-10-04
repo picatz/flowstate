@@ -113,6 +113,7 @@ cases and 1 MiB.
 | Key | Meaning |
 | --- | --- |
 | `name` | Required. Shown in results and matched by `--run`. |
+| `skip` | A reason this case is not run. It is reported with the reason (`SKIP` in text, `<skipped>` in JUnit), counts in the summary, reaches no coverage, and never fails the run. On a table entry it skips every row. |
 | `workflow` | The workflow file, relative to the test file. Usually stated once in `defaults:`. |
 | `inputs` | The run's arguments, bound and checked exactly as a real run's are. |
 | `stubs` | How each task invocation is answered. |
@@ -535,6 +536,9 @@ as given. Finding no test files is an error, and so is naming a workflow file.
 | Flag | Effect |
 | --- | --- |
 | `--run <regex>` | Run only cases whose full name matches. |
+| `--list` | Print the names of the cases that would run, one per line under their file, without running any. Honours `--run`, and names the cases a `skip:` leaves out. |
+| `--fail-fast` | Stop at the first failing case. The cases not run are reported as skipped with the reason. Refused with `--coverage-required`, whose bar a stopped suite cannot meet. |
+| `--timeout <duration>` | The real-time limit for one case, default 30s and at most 10m. The virtual clock still decides what a workflow waits for, so this bounds a case that is stuck, not one that waits long. |
 | `--coverage-required` | Fail when a step or `switch:` arm is reached by no case and not listed under `coverage.allow_unreached`. |
 | `--fail-on-warning` | Treat warnings as failures. |
 | `--seeds N` | Also run each case under N seeded orderings of `parallel:` branches and `async:` steps, and fail if any ordering changes what the case observes. `--seed` replays one reported seed. |
