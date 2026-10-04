@@ -128,12 +128,7 @@ func (k failureKindsAt) known(kind string) bool {
 // the built-in ones, for a did-you-mean: the workflow's own and, on a `call:`
 // step, its callee's.
 func FailureKindNamesAt(wf *Workflow, node *Node) []string {
-	names := DeclaredErrorNames(wf)
-	for _, name := range slices.Sorted(maps.Keys(calleeDeclaredKinds(node))) {
-		names = append(names, name)
-	}
-
-	return names
+	return append(DeclaredErrorNames(wf), slices.Sorted(maps.Keys(calleeDeclaredKinds(node)))...)
 }
 
 // KnownFailureKindAt is [KnownFailureKind] for the step the kind is written on:
