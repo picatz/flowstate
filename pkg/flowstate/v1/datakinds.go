@@ -76,6 +76,10 @@ func NormalizeDataKind(t InputDeclaration_Type, literal *expr.Value) (*expr.Valu
 
 	case *expr.Value_ObjectValue:
 		if matchesDataKind(t, kind.ObjectValue) {
+			if err := checkNormalized(t, kind.ObjectValue); err != nil {
+				return nil, err
+			}
+
 			return literal, nil
 		}
 	}
@@ -92,6 +96,30 @@ func matchesDataKind(t InputDeclaration_Type, object *anypb.Any) bool {
 	default:
 		return false
 	}
+}
+
+// checkNormalized holds an already-packed timestamp or duration to what the
+// text path holds one to: the payload must decode, and be in range. The type
+// URL alone says nothing about the bytes behind it, and a submitted value is
+// not trusted to be one this package packed.
+func checkNormalized(t InputDeclaration_Type, object *anypb.Any) error {
+	switch t {
+	case InputDeclaration_TYPE_TIMESTAMP:
+		var stamp timestamppb.Timestamp
+		if object.UnmarshalTo(&stamp) != nil {
+			return errors.New("is not " + WireHint(t))
+		}
+		if stamp.CheckValid() != nil {
+			return errors.New("is outside the years 0001 to 9999 a timestamp can hold")
+		}
+	case InputDeclaration_TYPE_DURATION:
+		var span durationpb.Duration
+		if object.UnmarshalTo(&span) != nil || span.CheckValid() != nil {
+			return errors.New("is not " + WireHint(t))
+		}
+	}
+
+	return nil
 }
 
 func parseDataKind(t InputDeclaration_Type, text string) (*expr.Value, error) {

@@ -3,11 +3,14 @@ package flowstatev1_test
 import (
 	"encoding/base64"
 	"google.golang.org/protobuf/proto"
+	"math"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
+	"google.golang.org/protobuf/types/known/anypb"
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
@@ -171,5 +174,32 @@ func TestAHandBuiltWorkflowCannotDeclareADataKindOutput(t *testing.T) {
 		}
 		_, err := v1.BindRunInputs(wf, nil)
 		require.ErrorContains(t, err, "an output cannot be yet", typ.String())
+	}
+}
+
+// TestASubmittedPackedValueIsHeldToTheSameRangeAsText pins that a value that
+// arrives already packed is validated, not trusted for its type URL.
+func TestASubmittedPackedValueIsHeldToTheSameRangeAsText(t *testing.T) {
+	t.Parallel()
+
+	bad := func(url string, payload []byte) *expr.Value {
+		return &expr.Value{Kind: &expr.Value_ObjectValue{ObjectValue: &anypb.Any{TypeUrl: url, Value: payload}}}
+	}
+	huge, err := proto.Marshal(&timestamppb.Timestamp{Seconds: math.MaxInt64})
+	require.NoError(t, err)
+	hugeSpan, err := proto.Marshal(&durationpb.Duration{Seconds: math.MaxInt64})
+	require.NoError(t, err)
+
+	for name, tc := range map[string]struct {
+		typ v1.InputDeclaration_Type
+		val *expr.Value
+	}{
+		"garbage timestamp":     {v1.InputDeclaration_TYPE_TIMESTAMP, bad("type.googleapis.com/google.protobuf.Timestamp", []byte{0xff, 0xff, 0xff})},
+		"out of range stamp":    {v1.InputDeclaration_TYPE_TIMESTAMP, bad("type.googleapis.com/google.protobuf.Timestamp", huge)},
+		"garbage duration":      {v1.InputDeclaration_TYPE_DURATION, bad("type.googleapis.com/google.protobuf.Duration", []byte{0xff, 0xff, 0xff})},
+		"out of range duration": {v1.InputDeclaration_TYPE_DURATION, bad("type.googleapis.com/google.protobuf.Duration", hugeSpan)},
+	} {
+		_, err := v1.NormalizeDataKind(tc.typ, tc.val)
+		require.Error(t, err, name)
 	}
 }
