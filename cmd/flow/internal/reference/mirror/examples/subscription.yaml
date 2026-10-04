@@ -64,7 +64,7 @@ steps:
               failures: ${sub.failures + 1}
             change_plan:
               status: ${sub.status}
-              plan: '${(steps.event.plan in vars.plans) ? steps.event.plan : sub.plan}'
+              plan: "${(steps.event.plan in vars.plans) ? steps.event.plan : sub.plan}"
               failures: ${sub.failures}
             cancel: ${steps.ended.value}
             # A quiet month ends a trial or an overdue account, not an active one.

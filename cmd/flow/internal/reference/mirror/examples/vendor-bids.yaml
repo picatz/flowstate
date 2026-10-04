@@ -53,16 +53,11 @@ steps:
         # A payload is whatever the sender wrote, so each field is checked for its
         # type as well as its presence. Anything wrong reads as -1 and is dropped
         # below, rather than failing the whole award on one vendor's typo.
-        bids: |-
-          ${deliveries.map(d, {
-            "who": d.sender.identity.issuer + " " + d.sender.identity.subject,
-            "vendor": d.sender.identity.subject,
-            "price": (type(d.payload.?price_cents.orValue(null)) == int) ? d.payload.price_cents : -1,
-            "lead_days": (type(d.payload.?lead_days.orValue(null)) == int) ? d.payload.lead_days : -1,
-            "on_time": (string(d.sender.accepted_at) == "") ? true : d.sender.accepted_at <= steps.cutoff.value
-          })}
+        bids: '${deliveries.map(d, {"who": d.sender.identity.issuer + " " + d.sender.identity.subject, "vendor": d.sender.identity.subject, "price": (type(d.payload.?price_cents.orValue(null)) == int) ? d.payload.price_cents : -1, "lead_days": (type(d.payload.?lead_days.orValue(null)) == int) ? d.payload.lead_days : -1, "on_time": (string(d.sender.accepted_at) == "") ? true : (d.sender.accepted_at <= steps.cutoff.value)})}'
   - id: valid
-    value: ${steps.collect.bids.filter(b, b.on_time && b.price > 0 && b.price <= inputs.budget_cents && b.lead_days >= 0)}
+    value: |-
+      ${steps.collect.bids.filter(b, b.on_time && b.price > 0 && b.price <= inputs.budget_cents &&
+      b.lead_days >= 0)}
   # Fairness is about vendors, not deliveries: one vendor bidding twice is still one
   # vendor. Its cheapest bid is the one that can win.
   - id: vendor_count
