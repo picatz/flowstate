@@ -14,6 +14,8 @@ func NodeKind(node *Node) string {
 		return fmt.Sprintf("task %q", kind.Task.GetName())
 	case *Node_Value:
 		return "value"
+	case *Node_Fail:
+		return fmt.Sprintf("fail %q", kind.Fail.GetError())
 	case *Node_Wait:
 		if signal := kind.Wait.GetSignal(); signal != nil {
 			return fmt.Sprintf("wait_for_signal %q", signal.GetName())

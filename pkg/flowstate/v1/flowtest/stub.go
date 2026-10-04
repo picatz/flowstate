@@ -501,6 +501,10 @@ func stepTaskNodes(spec *v1.Workflow) (taskOfStep map[string]string, kindOfStep 
 				kindOfStep[node.GetId()] = "wait"
 			case *v1.Node_Call:
 				kindOfStep[node.GetId()] = "call"
+			case *v1.Node_Fail:
+				// Like a value:, nothing is invoked: the step raises its
+				// declared error itself, so there is nothing to stub.
+				kindOfStep[node.GetId()] = "fail"
 			case *v1.Node_Value:
 				// A step that exists and runs no task, so it belongs in the map
 				// that tells those apart from a typo. Without this arm a stub

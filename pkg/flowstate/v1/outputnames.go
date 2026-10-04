@@ -83,6 +83,11 @@ func OutputNames(node *Node, tasks *Registry) (names []NamedOutput, ok bool) {
 			Source:      kind.Value,
 		}}, true
 
+	case *Node_Fail:
+		// A `fail:` step never succeeds, so it produces nothing; a tolerated one
+		// still records `error` and `failure`, which belong to the policy.
+		return nil, true
+
 	case *Node_Switch:
 		return []NamedOutput{{
 			Name:        SwitchValueOutput,

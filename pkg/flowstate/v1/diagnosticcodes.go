@@ -96,6 +96,12 @@ const (
 	// or not.
 	DiagnosticCodeSensitiveInPrompt DiagnosticCode = "sensitive-in-prompt"
 
+	// DiagnosticCodeSensitiveInFailMessage marks a `fail:` step's `message:`
+	// that reaches an input declared `sensitive:`, or holds a secret reference.
+	// The message is recorded in the run's history and shown to every reader of
+	// its failure, so reaching the value at all is refused, derived or not.
+	DiagnosticCodeSensitiveInFailMessage DiagnosticCode = "sensitive-in-fail-message"
+
 	// DiagnosticCodeExpectationUnmet marks a claim a test file made that the run
 	// contradicted — a step the case said would run and did not, a `check:` that
 	// came back false, an outcome `expect.failed` named and the run did not
@@ -213,6 +219,12 @@ func DiagnosticCodes() []DiagnosticCodeInfo {
 			Description: "A `wait_for_signal:`'s `prompt:` reaches an input declared `sensitive:`, or " +
 				"holds a secret reference; a prompt is rendered to whoever is being asked to " +
 				"approve, so ask the question without that value in it.",
+		},
+		{
+			Code: DiagnosticCodeSensitiveInFailMessage,
+			Description: "A `fail:` step's `message:` reaches an input declared `sensitive:`, or " +
+				"holds a secret reference; the message is recorded in the run's history, so " +
+				"write it without that value in it.",
 		},
 	}
 }

@@ -85,7 +85,7 @@ const stepsKey = "steps"
 // misspelled `timout:` that is silently ignored does nothing at run time and gives
 // the author no reason to doubt it, which is the worst of both outcomes.
 var (
-	workflowKeys = []string{"edition", "name", "labels", "description", "types", "functions", "inputs", "outputs", "vars", "steps", "triggers", "signals", "debug", "concurrency", "plugins"}
+	workflowKeys = []string{"edition", "name", "labels", "description", "types", "errors", "functions", "inputs", "outputs", "vars", "steps", "triggers", "signals", "debug", "concurrency", "plugins"}
 
 	// The keys of one input declaration and of one output declaration. Both are
 	// mappings keyed by the name being declared, so these are the keys *under* a
@@ -126,7 +126,7 @@ var (
 
 	// nodeKindKeys are the kinds of work that are not a task, and so name a node
 	// kind in the schema rather than anything in the registry.
-	nodeKindKeys = []string{"for_each", "loop", "parallel", "sleep", "wait_until", "wait_for_signal", "wait_for_signals", "call", "value", "switch"}
+	nodeKindKeys = []string{"for_each", "loop", "parallel", "sleep", "wait_until", "wait_for_signal", "wait_for_signals", "call", "value", "switch", "fail"}
 
 	retryKeys   = []string{"attempts", "interval", "backoff", "max_interval"}
 	forEachKeys = []string{"items", "as", "max_parallel", "steps"}
@@ -904,6 +904,13 @@ func (c *compiler) compile(file *ast.File) *v1.Workflow {
 	// read it. See flowfile/types.go.
 	if f, found := fields.get("types"); found {
 		workflow.DeclaredTypes = c.declaredTypes(f.value, "types", ref{path: "types", label: "types"})
+	}
+
+	// The failures the file may raise, by name. Read after the types so a later
+	// slice can hold a record, and before the steps so a `fail:` can be checked
+	// against the set. See flowfile/errors.go.
+	if f, found := fields.get("errors"); found {
+		workflow.DeclaredErrors = c.declaredErrors(f.value, "errors", ref{path: "errors", label: "errors"})
 	}
 
 	// The functions the file names, read before anything that can call one: each
@@ -1711,6 +1718,10 @@ func (c *compiler) step(n ast.Node, path string) *v1.Node {
 		case "switch":
 			if sw := c.switchNode(kind.value, kindPath, r); sw != nil {
 				step.Kind = &v1.Node_Switch{Switch: sw}
+			}
+		case "fail":
+			if fail := c.fail(kind.value, kindPath, r); fail != nil {
+				step.Kind = &v1.Node_Fail{Fail: fail}
 			}
 		case "value":
 			// The same fence-optional reading the workflow's own `outputs:` gives
