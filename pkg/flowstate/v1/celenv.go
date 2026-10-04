@@ -422,16 +422,10 @@ func (e *Evaluator) EvalWithCost(ctx context.Context, env *cel.Env, ast *cel.Ast
 	return evalProgramWithCost(ctx, prg, activation)
 }
 
-// evalProgram runs a compiled program and classifies its failure, which is the
-// half of evaluation [Evaluator.Eval] and [Evaluator.EvalParsed] must share so
-// a cached expression cannot fail with different words than an uncached one.
-func evalProgram(ctx context.Context, prg cel.Program, activation any) (ref.Val, error) {
-	out, _, err := evalProgramWithCost(ctx, prg, activation)
-	return out, err
-}
-
-// evalProgramWithCost runs a compiled program and returns the actual cost CEL
-// tracked under [Limits.Cost]. A missing cost is zero, which is possible only
+// evalProgramWithCost runs a compiled program and classifies its failure, which is
+// the half of evaluation [Evaluator.EvalWithCost] and [Evaluator.EvalParsed] must
+// share so a cached expression cannot fail with different words than an uncached
+// one. It returns the actual cost CEL tracked under [Limits.Cost]. A missing cost is zero, which is possible only
 // for evaluators whose tests deliberately disable cost tracking.
 func evalProgramWithCost(ctx context.Context, prg cel.Program, activation any) (ref.Val, uint64, error) {
 	out, details, err := prg.ContextEval(ctx, activation)
