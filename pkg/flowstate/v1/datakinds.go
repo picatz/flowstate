@@ -25,7 +25,7 @@ import (
 // [BindRunInputs].
 //
 // Normalizing is idempotent. A call boundary hands a callee a value an
-// expression already produced, and a Temporal worker binds a specification the
+// expression already produced, and a Temporal run carries inputs the
 // server already bound, so the normalized shape is accepted as is.
 
 // IsDataKind reports whether t is one of the declared types whose wire shape is

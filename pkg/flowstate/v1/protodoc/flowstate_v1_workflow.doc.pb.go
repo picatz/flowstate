@@ -1012,8 +1012,10 @@ func init() {
 				" plain-JSON projection for them.\n" +
 				"\n" +
 				" Added at the end, so a reader that does not know them reports an unknown\n" +
-				" enum value and refuses the declaration at run start instead of treating it\n" +
-				" as one of the older seven.\n",
+				" enum value instead of treating it as one of the older seven. The refusal\n" +
+				" is the server's, at submit, where the specification is validated; a worker\n" +
+				" receives inputs the server already bound and does not validate again, so\n" +
+				" deploy the server and workers together before declaring one.\n",
 		},
 		{
 			Name: "flowstate.v1.OutputDeclaration",

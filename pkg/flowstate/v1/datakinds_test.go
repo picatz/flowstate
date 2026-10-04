@@ -152,3 +152,24 @@ func TestASensitiveDataKindIsNotQuotedInAMustRefusal(t *testing.T) {
 	require.Error(t, err)
 	require.NotContains(t, err.Error(), "aGk=")
 }
+
+// TestAHandBuiltWorkflowCannotDeclareADataKindOutput pins that the refusal
+// is the binder's, not only the parser's: a workflow built in code reaches
+// the same admission as one parsed from a Flowfile.
+func TestAHandBuiltWorkflowCannotDeclareADataKindOutput(t *testing.T) {
+	t.Parallel()
+
+	for _, typ := range []v1.InputDeclaration_Type{
+		v1.InputDeclaration_TYPE_TIMESTAMP,
+		v1.InputDeclaration_TYPE_DURATION,
+		v1.InputDeclaration_TYPE_BYTES,
+	} {
+		wf := &v1.Workflow{
+			Name:            "out",
+			Profile:         v1.CurrentProfile,
+			DeclaredOutputs: []*v1.OutputDeclaration{{Name: "at", Type: typ}},
+		}
+		_, err := v1.BindRunInputs(wf, nil)
+		require.ErrorContains(t, err, "an output cannot be yet", typ.String())
+	}
+}

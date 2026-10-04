@@ -153,8 +153,10 @@ const (
 	// plain-JSON projection for them.
 	//
 	// Added at the end, so a reader that does not know them reports an unknown
-	// enum value and refuses the declaration at run start instead of treating it
-	// as one of the older seven.
+	// enum value instead of treating it as one of the older seven. The refusal
+	// is the server's, at submit, where the specification is validated; a worker
+	// receives inputs the server already bound and does not validate again, so
+	// deploy the server and workers together before declaring one.
 	InputDeclaration_TYPE_TIMESTAMP InputDeclaration_Type = 10
 	InputDeclaration_TYPE_DURATION  InputDeclaration_Type = 11
 	InputDeclaration_TYPE_BYTES     InputDeclaration_Type = 12

@@ -582,6 +582,11 @@ func CheckOutputConstraintShape(profile string, decl *OutputDeclaration) error {
 	name := decl.GetName()
 	t := decl.GetType()
 
+	if IsDataKind(t) {
+		return fmt.Errorf(
+			"output %q is declared %s, which an output cannot be yet: the run document has "+
+				"no plain-JSON form for it (#1436)", name, DeclaredTypeName(t))
+	}
 	if len(decl.Values) > 0 && t != InputDeclaration_TYPE_ENUM {
 		return fmt.Errorf(
 			"output %q declares values but is declared %s; values apply only to an enum output",

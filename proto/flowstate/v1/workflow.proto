@@ -958,8 +958,10 @@ message InputDeclaration {
     // plain-JSON projection for them.
     //
     // Added at the end, so a reader that does not know them reports an unknown
-    // enum value and refuses the declaration at run start instead of treating it
-    // as one of the older seven.
+    // enum value instead of treating it as one of the older seven. The refusal
+    // is the server's, at submit, where the specification is validated; a worker
+    // receives inputs the server already bound and does not validate again, so
+    // deploy the server and workers together before declaring one.
     TYPE_TIMESTAMP = 10;
     TYPE_DURATION = 11;
     TYPE_BYTES = 12;
