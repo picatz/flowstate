@@ -41,10 +41,10 @@ steps:
       message: provisioning
   - id: test
     log:
-      message: ${"testing " + steps.build.message}
+      message: ${"testing " + string(size(steps.build))}
   - id: deploy
     log:
-      message: ${"deploying " + steps.provision.message}
+      message: ${"deploying " + string(size(steps.provision))}
 `,
 	"a sleep between steps": `edition: v2026.4
 name: sleeping
@@ -80,6 +80,8 @@ func TestBackReproducesEveryShapeInTheCorpus(t *testing.T) {
 				visited = append(visited, shownAt(at))
 			}
 			require.GreaterOrEqual(t, len(visited), 4, "the program was meant to have several stops")
+			require.Equal(t, v1.DebugRunState_DEBUG_RUN_STATE_COMPLETED, at.GetState(),
+				"the program was meant to complete, not fail at some stop on the way: %s", at.GetFailure())
 
 			for i := len(visited) - 2; i >= 0; i-- {
 				receipt, snapshot := run.back(0)
