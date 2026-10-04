@@ -760,6 +760,13 @@ func (s *stubbedTask) fn(name string, sensitiveInputNames map[string]bool, unstu
 		// branches invoking this task concurrently must not both read a
 		// matcher's state between one another's updates. See [stubbedTask.mu].
 		noteInvocation(ctx, name)
+		// Before the matchers and outside the lock: an injected fault answers
+		// instead of the stubs and spends none of their `times:` budgets.
+		if plan, _ := ctx.Value(faultPlanKey{}).(*faultPlan); plan != nil {
+			if err := plan.attempt(ctx, name); err != nil {
+				return nil, err
+			}
+		}
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		s.invoked = true

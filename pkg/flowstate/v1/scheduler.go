@@ -63,6 +63,29 @@ const (
 	SchedulePointAsyncLaunch SchedulePoint = "async.launch"
 )
 
+// SchedulePointStubFault is one task invocation deciding whether a declared
+// fault (`faults:` in a test file) fires on it. Only a scheduler that is also a
+// [FaultChooser] answers yes; written order never does.
+const SchedulePointStubFault SchedulePoint = "stub.fault"
+
+// FaultChooser is the optional half of a [Scheduler] that decides injected
+// faults. It is a separate interface so the three in-tree [Scheduler]
+// implementations are unchanged, and so a scheduler that does not implement it
+// injects nothing: the answer written order gives.
+type FaultChooser interface {
+	// Fault reports whether the invocation named id fails with probability
+	// rate (0 < rate <= 1). The same seed answers the same sequence.
+	Fault(id string, rate float64) bool
+}
+
+// InjectFault asks the scheduler on ctx whether the invocation named id is to
+// fail with probability rate; false when the scheduler is not a [FaultChooser].
+func InjectFault(ctx context.Context, id string, rate float64) bool {
+	chooser, ok := SchedulerFromContext(ctx).(FaultChooser)
+
+	return ok && chooser.Fault(id, rate)
+}
+
 // Scheduler decides, among things the execution model leaves free, which happens
 // when.
 //
@@ -228,10 +251,17 @@ const MaxScheduleDecisions = 100_000
 type SeededScheduler struct {
 	seed uint64
 
-	mu        sync.Mutex
-	rng       *rand.Rand
-	decisions int
-	truncated bool
+	mu  sync.Mutex
+	rng *rand.Rand
+	// faultRNG is a stream of its own, so drawing a fault never moves the
+	// `parallel:`/`async:` schedule a seed made before faults existed: the
+	// same seed explores the same interleaving with or without `faults:`.
+	faultRNG *rand.Rand
+	// faultDraws is counted apart from decisions, against the same bound, so
+	// a fault-heavy case can never exhaust the budget the schedule draws from.
+	faultDraws int
+	decisions  int
+	truncated  bool
 }
 
 // NewSeededScheduler returns a [SeededScheduler] whose every choice follows from
@@ -242,7 +272,8 @@ func NewSeededScheduler(seed uint64) *SeededScheduler {
 		// Two words from one seed, split rather than reused, so that seeds one
 		// apart do not produce PCG streams that are trivially related — a search
 		// that walks seed, seed+1, seed+2 is the ordinary way this is driven.
-		rng: rand.New(rand.NewPCG(seed, seed^0x9e3779b97f4a7c15)),
+		rng:      rand.New(rand.NewPCG(seed, seed^0x9e3779b97f4a7c15)),
+		faultRNG: rand.New(rand.NewPCG(seed^0xc2b2ae3d27d4eb4f, seed+0x165667b19e3779f9)),
 	}
 }
 
@@ -318,4 +349,22 @@ func (s *SeededScheduler) Interleave(SchedulePoint, string) bool {
 	}
 
 	return s.rng.Uint64()&1 == 1
+}
+
+// Fault implements [FaultChooser] from the scheduler's fault stream. Draws are
+// bounded by [MaxScheduleDecisions] on a counter of their own, so a run that
+// spends them answers no more faults and says so through
+// [SeededScheduler.Truncated] without touching the schedule's budget.
+func (s *SeededScheduler) Fault(_ string, rate float64) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.faultDraws >= MaxScheduleDecisions {
+		s.truncated = true
+
+		return false
+	}
+	s.faultDraws++
+
+	return s.faultRNG.Float64() < rate
 }

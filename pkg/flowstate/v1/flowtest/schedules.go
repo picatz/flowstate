@@ -109,6 +109,10 @@ type ScheduleDivergence struct {
 	// number on either side is not the same name.
 	WrittenOrder string
 	Seeded       string
+
+	// Invariant reports that this is a faulted run breaking an `invariants:`
+	// claim, not a schedule changing what the case observed.
+	Invariant bool
 }
 
 // Report renders this exploration as the schema message the machine report
@@ -132,6 +136,7 @@ func (s *ScheduleReport) Report() *v1.ScheduleExploration {
 			Truncated:    d.Truncated,
 			WrittenOrder: d.WrittenOrder,
 			Seeded:       d.Seeded,
+			Invariant:    d.Invariant,
 		}
 	}
 
@@ -205,6 +210,12 @@ func (a *scheduleAccumulator) run(ctx context.Context, once caseRun) (*v1.TestCa
 		// everything is what every explored run withheld, for showing the
 		// written-order run's report beside a divergence.
 		everything sensitiveInputs
+		// faultedSeeds are the seeds whose run injected a fault, so a
+		// divergence under one is an invariant violation.
+		faultedSeeds = map[uint64]bool{}
+		// baselineObserved is the written-order run's own observation, which a
+		// faulted run that broke nothing is compared as.
+		baselineObserved *dst.Result
 	)
 
 	report := dst.Explore(ctx, a.budget, func(ctx context.Context) dst.Result {
@@ -219,6 +230,9 @@ func (a *scheduleAccumulator) run(ctx context.Context, once caseRun) (*v1.TestCa
 			result, spec, transcript, account = caseResult, caseSpec, caseTranscript, caseAccount
 		}
 		everything = widenedBy(everything, shown.sensitive)
+		if seeded, ok := v1.SchedulerFromContext(ctx).(*v1.SeededScheduler); ok && shown.faulted {
+			faultedSeeds[seeded.Seed()] = true
+		}
 
 		// Compared as it is, shown as the case's own report would show it: a
 		// divergence is printed and emitted with `-o json`, and it must not be
@@ -231,6 +245,28 @@ func (a *scheduleAccumulator) run(ctx context.Context, once caseRun) (*v1.TestCa
 			Show: func(withheld dst.Withholding) dst.Result {
 				return shownCase(caseResult, caseTranscript, shown, withheld)
 			},
+		}
+		if v1.SchedulerFromContext(ctx) == v1.WrittenOrder {
+			baseline := observed
+			baselineObserved = &baseline
+		}
+		if shown.faulted {
+			// A run with faults injected is compared by what must hold under
+			// them: its transcript differs from the written-order run's by
+			// construction, and `expect:` belongs to the written-order run
+			// alone. Its violations are the divergence; a run that held every
+			// invariant observed what the written-order run did, as far as
+			// this comparison is concerned. A seeded run no fault fired in is
+			// an ordinary schedule and was compared as one, above.
+			if violations := faultObservables(caseResult, shown); violations != nil {
+				observed.Transcript = nil
+				observed.Err = violations
+				observed.Show = func(withheld dst.Withholding) dst.Result {
+					return dst.Result{Err: faultObservables(verdictUnder(caseResult, sensitiveOf(withheld)), shown)}
+				}
+			} else if baselineObserved != nil {
+				observed = *baselineObserved
+			}
 		}
 		if !shown.sensitive.Empty() {
 			observed.Withheld = shownPosture{sensitive: shown.sensitive}
@@ -272,6 +308,7 @@ func (a *scheduleAccumulator) run(ctx context.Context, once caseRun) (*v1.TestCa
 			Truncated:    report.Divergence.Diverged.Truncated,
 			WrittenOrder: report.Divergence.Baseline.Rendering,
 			Seeded:       report.Divergence.Diverged.Rendering,
+			Invariant:    faultedSeeds[report.Divergence.Diverged.Seed],
 		}
 	}
 
@@ -377,6 +414,26 @@ func caseObservables(result *v1.TestCase, runErr error) error {
 	return errors.New(strings.Join(lines, "\n"))
 }
 
+// faultObservables is what a case with `faults:` is compared by across
+// schedules: the violations a faulted run found, none for any other run.
+func faultObservables(result *v1.TestCase, shown caseShown) error {
+	if !shown.faulted {
+		return nil
+	}
+
+	return caseObservables(result, nil)
+}
+
+// sensitiveOf is the posture a [dst.Withholding] describes, everything where
+// nothing says what it holds.
+func sensitiveOf(withheld dst.Withholding) sensitiveInputs {
+	if posture, ok := withheld.(shownPosture); ok {
+		return posture.sensitive
+	}
+
+	return v1.WithheldSensitiveValues()
+}
+
 // shownPosture is a case run's posture as [dst.Withholding], so a divergence
 // shows each of its two runs under what either withholds.
 type shownPosture struct {
@@ -401,10 +458,7 @@ func (p shownPosture) Join(other dst.Withholding) dst.Withholding {
 // The verdict is withheld again under withheld ([verdictUnder]), which holds at
 // least as much as the run's own posture did.
 func shownCase(result *v1.TestCase, transcript *v1.Workflow_StepOutputs, shown caseShown, withheld dst.Withholding) dst.Result {
-	sensitive := v1.WithheldSensitiveValues()
-	if posture, ok := withheld.(shownPosture); ok {
-		sensitive = posture.sensitive
-	}
+	sensitive := sensitiveOf(withheld)
 
 	return dst.Result{
 		Transcript: withheldTranscript(transcript, sensitive),

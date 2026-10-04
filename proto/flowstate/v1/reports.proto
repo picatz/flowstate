@@ -247,14 +247,16 @@ message ScheduleExploration {
   bool truncated = 4;
 
   // Divergence is the first case whose observables were not the same under a
-  // seeded schedule as under written order, unset when every case agreed with
-  // itself under every schedule explored.
+  // seeded schedule as under written order, or whose invariants broke under a
+  // seeded run's injected faults (see ScheduleDivergenceReport.invariant),
+  // unset when every case agreed with itself under every schedule explored.
   ScheduleDivergenceReport divergence = 5;
 }
 
 // ScheduleDivergenceReport is one case that observed a difference the schedule
-// made: the finding `--seeds` exists to surface, carried with the seed because
-// a divergence nobody can replay is a random number.
+// made, or broke an invariant under the faults a seed injected: the findings
+// `--seeds` exists to surface, carried with the seed because a divergence
+// nobody can replay is a random number.
 message ScheduleDivergenceReport {
   // Case is the name of the test case, as the file spells it.
   string case = 1;
@@ -285,6 +287,13 @@ message ScheduleDivergenceReport {
   // [seed], with the same values withheld. It may contain task output and must
   // be handled with the same trust as test output.
   string seeded = 6;
+
+  // Invariant reports that the case declares `faults:` and this is a run with
+  // them injected that broke one of its `invariants:`, not a schedule that
+  // changed what the case observed. [written_order] is then empty and
+  // [seeded] lists the violations. The seed replays the same faults the same
+  // way: `flow test --seed <seed>` on the same file.
+  bool invariant = 7;
 }
 
 // CoverageReport is `flow test`'s branch-coverage account for one workflow:
