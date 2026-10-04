@@ -36,7 +36,8 @@ fails only on a policy denial, a program that cannot start, a timeout, or cancel
 It is **not a sandbox**. The program runs as the worker's user with no namespace,
 cgroup, seccomp or filesystem confinement, and the egress policy does not apply to what
 it connects to. `roots` confines `dir` only: path words in `argv` are not confined, which
-is why the policy allows exact argv shapes and denies `--output`, `-c`, `--no-index`,
+is why the policy allows exact argv shapes (`rev-parse --git-dir`, not `status`, `diff` or
+`log`, which read repo-local config that can name a program to run) and denies `--output`, `-c`, `--no-index`,
 absolute paths and `..` rather than allowing any arguments after a subcommand.
 
 Deferred: secret-valued environment, resource limits, an absolute-path opt-in,
