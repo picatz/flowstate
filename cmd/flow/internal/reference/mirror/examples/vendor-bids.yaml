@@ -1,0 +1,76 @@
+edition: v2026.4
+name: vendor-bids
+description: Ask vendors to quote a price, take the bids that arrive before the deadline, and award the cheapest valid one if enough vendors answered.
+inputs:
+  item:
+    type: string
+    required: true
+    description: what is being bought
+  budget_cents:
+    type: int
+    required: true
+    description: no bid above this is considered
+    must: this > 0
+  min_bids:
+    type: int
+    default: 2
+    description: how many valid bids make a fair comparison
+    must: this >= 1
+  deadline:
+    type: duration
+    default: 48h
+    description: how long vendors have to answer
+    must: this > duration("0s")
+# Anyone may be asked, but only a vendor may answer. The vendor on a bid is the
+# identity the server attests, not a name the payload claims.
+signals:
+  bid:
+    allow:
+      - claims:
+          role: vendor
+steps:
+  # Bids are signals, and signals wait on the channel while this timer runs.
+  # `wait_for_signals:` returns on the first delivery, so draining straight away
+  # would take only the earliest bidders; sleeping out the window first and then
+  # draining takes everyone who answered in time.
+  - id: bidding_window
+    sleep: ${inputs.deadline}
+  - id: collect
+    wait_for_signals:
+      name: bid
+      max_batch: 10
+      prompt: ${"Quote a price for " + inputs.item + " within " + string(inputs.deadline)}
+      # Nothing buffered means nobody bid: an empty batch, not an error.
+      timeout: 1s
+      outputs:
+        # A payload is whatever the sender wrote, so each field is read as
+        # optional; a bid missing its price reads as 0 and is dropped below.
+        bids: '${deliveries.map(d, {"vendor": d.sender.identity.subject, "price": d.payload.?price_cents.orValue(0), "lead_days": d.payload.?lead_days.orValue(0)})}'
+  - id: valid
+    value: ${steps.collect.bids.filter(b, b.price > 0 && b.price <= inputs.budget_cents)}
+  - id: valid_count
+    value: ${size(steps.valid.value)}
+  - id: quorum
+    value: ${steps.valid_count.value >= inputs.min_bids}
+  # Cheapest first, ties broken by the shorter lead time.
+  - id: winner
+    if: ${steps.quorum.value}
+    value: ${steps.valid.value.sortBy(b, b.price * 1000 + b.lead_days)[0]}
+  - id: award
+    if: ${steps.quorum.value}
+    log:
+      message: ${"awarding %s to %s at %d cents, %d days".format([inputs.item, steps.winner.value.vendor, steps.winner.value.price, steps.winner.value.lead_days])}
+  - id: no_award
+    if: ${!steps.quorum.value}
+    log:
+      message: '${"not awarding %s: %d valid bids, %d needed".format([inputs.item, steps.valid_count.value, inputs.min_bids])}'
+outputs:
+  awarded_to:
+    value: '${steps.quorum.value ? steps.winner.value.vendor : ""}'
+    description: the winning vendor, empty when too few valid bids arrived
+  bids_received:
+    value: ${size(steps.collect.bids)}
+    type: int
+  bids_valid:
+    value: ${steps.valid_count.value}
+    type: int

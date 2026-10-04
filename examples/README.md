@@ -63,6 +63,8 @@ inventory below remains the source of truth for every directory.
 | Retries, timeouts, cancellation, and undo | [conditional-and-retry](conditional-and-retry), [wait-timeout](wait-timeout), [order-fulfillment](order-fulfillment) | focused feature demonstration → production-shaped composition |
 | Signals and human decisions | [approval-gate](approval-gate), then [approval-escalation](approval-escalation), then [signal-quorum](signal-quorum) | policy/governance → production-shaped composition |
 | A business process with a person in it | [refund-request](refund-request) | production-shaped composition |
+| Many parties answering one request | [vendor-bids](vendor-bids), then [signal-batch-drain](signal-batch-drain) | production-shaped composition |
+| [vendor-bids](vendor-bids) | Fan-in from many attested senders: sleep out a bidding window, drain every `bid` with `wait_for_signals:`, drop invalid ones, and award the cheapest only if a quorum answered | no |
 | Long-lived entities many callers address | [entity-order](entity-order), [renewal-reminder](renewal-reminder), [signal-batch-drain](signal-batch-drain) | focused feature demonstration |
 | Schedules and trigger context | [scheduled-report](scheduled-report), [schedule-overlap-policies](schedule-overlap-policies), [webhook-trigger](webhook-trigger), [webhook-approval-bridge](webhook-approval-bridge), [trigger-context](trigger-context) | focused feature demonstration |
 | Local rehearsal and durable execution | [deployment-reconciler](deployment-reconciler), [approval-gate](approval-gate) | local-vs-Temporal parity |
