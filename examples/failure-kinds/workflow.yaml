@@ -1,0 +1,56 @@
+# `continue_on_error:` and `retry:` can name failure kinds, so a step tolerates
+# and retries the failures it expects and nothing else.
+#
+#   continue_on_error: [Kind, ...]   tolerate only these kinds; any other failure
+#                                    ends the run. `true` still tolerates all.
+#   retry: {only: [...]}             retry only these kinds
+#   retry: {except: [...]}           never retry these, though they would be
+#
+# A kind is a built-in kind (`Upstream`, `Timeout`, `RateLimited`,
+# `PolicyDenied`, ...) or one the workflow declares under `errors:`. Both lists
+# only narrow: a kind that is never retried (`PolicyDenied`, `InvalidInput`, any
+# declared error) cannot be made retryable by naming it, and `flow validate`
+# refuses the list that tries, because it would promise a retry that never
+# happens. A misspelled kind is refused with the nearest real one.
+edition: v2026.4
+name: failure-kinds
+steps:
+  # Retry what is transient, but never hammer a rate limit: `RateLimited` is
+  # retried by default, and `except:` takes it out. Nothing listens on this
+  # port, so the call fails with `Upstream` after its attempts, and the step
+  # tolerates that by name.
+  - id: notify
+    retry:
+      attempts: 3
+      interval: 100ms
+      except:
+        - RateLimited
+    continue_on_error:
+      - Upstream
+      - RateLimited
+    http:
+      method: POST
+      url: http://localhost:1/hook
+
+  # The other spelling: retry only what is named. `only:` and `except:` say the
+  # same thing from opposite ends, so a step writes at most one of them.
+  - id: sync
+    retry:
+      attempts: 3
+      interval: 100ms
+      only:
+        - Upstream
+        - Timeout
+    continue_on_error:
+      - Upstream
+    http:
+      method: POST
+      url: http://localhost:1/sync
+
+  # Reached only because the failures above were tolerated kinds. Any other kind
+  # of failure from either step would have ended the run instead.
+  - id: carry_on
+    log:
+      fields:
+        kind: ${steps.notify.failure.kind}
+      message: notifications refused, continuing

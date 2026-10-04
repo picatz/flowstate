@@ -207,3 +207,39 @@ func validateFail(id string, fail *v1.Fail, scope refScope, index int, wf *v1.Wo
 
 	return ds
 }
+
+// validatePolicyKinds reports the kind lists on a step's policy that name a kind
+// this workflow cannot fail with, or ask for a retry that never happens, each at
+// the key the author wrote. The rule is [v1.PolicyKindProblems], the same one
+// submit applies; this attaches a position and, for a misspelled kind, the
+// nearest one.
+func validatePolicyKinds(id string, node *v1.Node, wf *v1.Workflow) Diagnostics {
+	var ds Diagnostics
+
+	for _, problem := range v1.PolicyKindProblems(wf, node) {
+		message := strings.TrimPrefix(problem.Message, fmt.Sprintf("step %q: ", id))
+		if !v1.KnownFailureKind(wf, problem.Kind) && problem.Kind != "" {
+			known := append(errorKindNames(), v1.DeclaredErrorNames(wf)...)
+			if suggestion, ok := nearest.Name(problem.Kind, known); ok {
+				message += fmt.Sprintf("; did you mean %q?", suggestion)
+			}
+		}
+
+		ds = append(ds, Diagnostic{
+			Step: id, Field: problem.Field, Value: problem.Kind, Message: message,
+			Code: v1.DiagnosticCodeConstraintViolation,
+		})
+	}
+
+	return ds
+}
+
+func errorKindNames() []string {
+	kinds := v1.ErrorKinds()
+	names := make([]string, 0, len(kinds))
+	for _, kind := range kinds {
+		names = append(names, kind.String())
+	}
+
+	return names
+}

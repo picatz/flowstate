@@ -378,6 +378,7 @@ func validateAtDepth(wf *v1.Workflow, profile string, depth int, placement v1.Un
 		// [validateAtDepth]'s doc.
 		ds = append(ds, validateUndo(id, node, inner, i, wf, placement)...)
 		ds = append(ds, validateAsync(id, node, placement)...)
+		ds = append(ds, validatePolicyKinds(id, node, wf)...)
 
 		// Against `scope` and not `inner`, and before the kind is known — see
 		// [validateCondition] for both.
@@ -1366,6 +1367,7 @@ func validateNested(nodes []*v1.Node, enclosing refScope, index int, wf *v1.Work
 		// which placements are allowed.
 		ds = append(ds, validateUndo(id, node, inner, index, wf, placement)...)
 		ds = append(ds, validateAsync(id, node, placement)...)
+		ds = append(ds, validatePolicyKinds(id, node, wf)...)
 
 		// The same check the top-level walk makes, in the same place and against
 		// the same scope: a nested step's `if:` is one expression evaluated by one

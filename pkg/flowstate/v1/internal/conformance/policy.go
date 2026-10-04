@@ -508,6 +508,30 @@ func ToleratedStepFailureCases() []Case {
 
 	return []Case{
 		{
+			// A tolerated kind that matches the failure is tolerated exactly as
+			// a bare `continue_on_error: true` is, and the record carries the
+			// kind the list matched on.
+			Name: "a failure whose kind continue_on_error lists is tolerated",
+			Workflow: &v1.Workflow{
+				Name: "tolerated-by-kind",
+				Steps: []*v1.Node{
+					func() *v1.Node {
+						node := withVars(says("gate", "unreachable"), map[string]*v1.Value{
+							"bad": v1.NewExpr(oops),
+						})
+						node.Policy = &v1.StepPolicy{ContinueOnError: true, ToleratedKinds: []string{"Upstream", "Expression"}}
+
+						return node
+					}(),
+					says("after", "still here"),
+				},
+			},
+			ExpectedOutputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
+				"gate":  v1.FailedStepOutputs(v1.StepFailure{Kind: v1.ErrorKindExpression, Text: `var "bad": ` + evaluated}),
+				"after": {},
+			}},
+		},
+		{
 			// A raised, declared failure that is tolerated is recorded under its
 			// declared name with the message the author evaluated, identically on
 			// both drivers: `failure.kind` carries the declared kind, the

@@ -307,6 +307,9 @@ func CheckDeclarationTypes(wf *Workflow) error {
 		if err := CheckErrorDeclarations(current); err != nil {
 			return err
 		}
+		if err := CheckPolicyKinds(current); err != nil {
+			return err
+		}
 		for _, declaration := range current.GetDeclaredInputs() {
 			if vt := declaration.GetValueType(); vt != nil {
 				if err := checkTypeDepth(vt, MaxStructureDepth); err != nil {

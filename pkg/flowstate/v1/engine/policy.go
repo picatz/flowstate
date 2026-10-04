@@ -1,6 +1,8 @@
 package engine
 
 import (
+	"slices"
+
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
@@ -150,6 +152,13 @@ func activityOptionsFor(policy *v1.StepPolicy, summary string) workflow.Activity
 	}
 	if v := retry.GetMaxInterval().AsDuration(); v > 0 {
 		rp.MaximumInterval = v
+	}
+	// A step's `retry.on:` and `retry.stop_on:` only ever add kinds to the types
+	// Temporal will not retry, and a copy again: the default list is shared.
+	for _, kind := range v1.RetryExcludedKinds(retry) {
+		if !slices.Contains(rp.NonRetryableErrorTypes, kind) {
+			rp.NonRetryableErrorTypes = append(slices.Clone(rp.NonRetryableErrorTypes), kind)
+		}
 	}
 	opts.RetryPolicy = &rp
 

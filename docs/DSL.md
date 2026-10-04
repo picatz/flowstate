@@ -74,6 +74,7 @@ headings below, not this list.*
 - [The fifth round: taking it back](#the-fifth-round-taking-it-back)
   - [A tolerated failure is a typed value](#a-tolerated-failure-is-a-typed-value)
   - [`errors:` and `fail:`: a workflow names its own refusals](#errors-and-fail-a-workflow-names-its-own-refusals)
+  - [Tolerating and retrying by kind](#tolerating-and-retrying-by-kind)
   - [It is `undo:`, not `on_failure:`](#it-is-undo-not-on_failure)
   - [Per-step, not a workflow-level handler list](#per-step-not-a-workflow-level-handler-list)
   - [Registered on success, and only on success](#registered-on-success-and-only-on-success)
@@ -3432,6 +3433,40 @@ misspelled is refused with the nearest declared spelling.
   explicit step.
 - A `call:` step's `failure.kind` is not judged against the caller's
   declarations: the callee may raise a kind only it declares.
+
+### Tolerating and retrying by kind
+
+`continue_on_error:` and `retry:` can name the kinds they mean, so a step
+tolerates and retries the failures it expects and nothing else:
+
+```yaml
+- id: notify
+  retry:
+    attempts: 3
+    interval: 1s
+    except: [RateLimited]     # retried by default; never hammer a rate limit
+  continue_on_error: [Upstream, RateLimited]
+  http: {method: POST, url: https://hooks.example.com/notify}
+```
+
+| Spelling | Meaning |
+|---|---|
+| `continue_on_error: true` | tolerate every failure, as before |
+| `continue_on_error: [Kind, ...]` | tolerate only these kinds; any other failure ends the run |
+| `retry: {only: [Kind, ...]}` | retry only these kinds |
+| `retry: {except: [Kind, ...]}` | never retry these kinds |
+
+A kind is a built-in kind or one declared under `errors:`. Both retry lists only
+narrow what the engine would already retry (`Upstream`, `Timeout`, `Internal`,
+`RateLimited`): naming a kind that is never retried, such as `PolicyDenied` or a
+declared error, cannot make it retryable, so `flow validate` refuses the list that
+tries rather than promise a retry that never happens. `only:` and `except:` say the
+same thing from opposite ends, so a step writes at most one, and `except:` may not
+name a kind that `only:` already leaves out. A misspelled kind is refused with the
+nearest real one. Both drivers apply the same rule, pinned by shared conformance
+cases; on the durable driver the narrowing compiles to Temporal's
+non-retryable error types and can only add to them. See
+`examples/failure-kinds/`.
 
 ### It is `undo:`, not `on_failure:`
 
