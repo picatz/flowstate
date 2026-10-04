@@ -1087,6 +1087,11 @@ enum DebugCommandStatus {
   DEBUG_COMMAND_STATUS_INCOMPATIBLE = 8;
   // Ended means the session or the run is over.
   DEBUG_COMMAND_STATUS_ENDED = 9;
+  // Diverged means the command asked to reproduce a past stop, the
+  // reproduction did not match what was shown, and the session did not move.
+  // It is a refusal with a cause a client can act on: the run is not
+  // deterministic, so going back would show a different run as the earlier one.
+  DEBUG_COMMAND_STATUS_DIVERGED = 10;
 }
 
 // DebugReceipt is the outcome of one command.

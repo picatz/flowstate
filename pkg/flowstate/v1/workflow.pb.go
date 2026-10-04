@@ -776,10 +776,10 @@ func (x *Workflow) GetDeclaredTypes() []*TypeDeclaration {
 // the type does not declare is refused, because an open record is what
 // `map(string, dyn)` already is.
 //
-// Only `name`, `type`, `value_type`, `required`, `description` and an enum's
-// `values` are carried by a field today. `default`, `example`, `sensitive`,
-// `must` and the length and item bounds are refused by the compiler and at
-// submit, not ignored.
+// Only `name`, `type`, `value_type`, `required`, `description`, an enum's
+// `values` and the length and item bounds (`min_len`, `max_len`, `min_items`,
+// `max_items`) are carried by a field today. `default`, `example`, `sensitive`
+// and `must` are refused by the compiler and at submit, not ignored.
 //
 // A value of a record type is a map at run time, keyed by field name, so a
 // reader that does not know the type (an older worker, a CEL expression the

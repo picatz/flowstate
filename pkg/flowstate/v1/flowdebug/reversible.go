@@ -81,6 +81,12 @@ type Run struct {
 	// session first detaches it, and a detached run carries on to the end,
 	// repeating the effects of every step it had not yet reached.
 	Stop func()
+
+	// Live, when set, is called once the run is the one the session shows: at
+	// once for the first run, and for a rewound run when it replaces the one
+	// before it. A run's replay is not live, so a host that narrates what it
+	// runs keeps quiet until then.
+	Live func()
 }
 
 // Launcher starts the program again, from the beginning, under a new session.
@@ -103,6 +109,14 @@ var errNoLauncher = errors.New("flowdebug: a Reversible needs a Launcher")
 type recorded struct {
 	resume      *v1.DebugResumeRequest
 	breakpoints *v1.DebugSetBreakpointsRequest
+}
+
+// Reverser is a [Target] that can return to an earlier stop, as [Reversible]
+// does. A front offers stepping back only for a target that is one and says so
+// in its capabilities. Each method answers as [Reversible.Back] does.
+type Reverser interface {
+	Back(ctx context.Context, requestID string, expectedRevision uint64) (*v1.DebugReceipt, error)
+	BackToBreakpoint(ctx context.Context, requestID string, expectedRevision uint64) (*v1.DebugReceipt, error)
 }
 
 // Reversible is a [Target] over a run it can start again, so that [Reversible.Back]
@@ -149,6 +163,9 @@ func NewReversible(ctx context.Context, launch Launcher, opts ...ReversibleOptio
 	r := &Reversible{launch: launch, run: run, timeout: DefaultReplayTimeout, applied: map[string]*v1.DebugReceipt{}}
 	for _, opt := range opts {
 		opt(r)
+	}
+	if run.Live != nil {
+		run.Live()
 	}
 
 	return r, nil
@@ -440,6 +457,16 @@ func (r *Reversible) Inspect(ctx context.Context, req *v1.DebugInspectRequest) (
 	}
 }
 
+// Capabilities is what the current run's session can do, with stepping back
+// said, since this wrapper is what supplies it.
+func (r *Reversible) Capabilities() *v1.DebugCapabilities {
+	run, _, _ := r.current()
+	caps := proto.CloneOf(run.Session.Capabilities())
+	caps.Reverse = true
+
+	return caps
+}
+
 // Close implements [Target]: it detaches the debugger from the current run,
 // which then finishes unattended. [Reversible.Stop] ends it instead.
 func (r *Reversible) Close() error {
@@ -453,6 +480,8 @@ func (r *Reversible) Close() error {
 type stop struct {
 	sum     [sha256.Size]byte
 	address string
+	// hit is whether a breakpoint decided the stop, which is part of sum too.
+	hit bool
 }
 
 // fingerprint identifies a stop by what a person was shown at it: where, why,
@@ -474,7 +503,11 @@ func fingerprint(snapshot *v1.DebugSnapshot, scope string) stop {
 		fmt.Fprintf(&text, "%d %s %s %s\n", observation.GetSequence(), observation.GetKind(), observation.GetAddress(), observation.GetText())
 	}
 
-	return stop{sum: sha256.Sum256([]byte(text.String())), address: snapshot.GetOccurrence().GetAddress()}
+	return stop{
+		sum:     sha256.Sum256([]byte(text.String())),
+		address: snapshot.GetOccurrence().GetAddress(),
+		hit:     snapshot.GetReason() == v1.DebugStopReason_DEBUG_STOP_REASON_BREAKPOINT,
+	}
 }
 
 // stopped reports whether the snapshot is a place the run can be held at or
@@ -592,10 +625,33 @@ func scopeDigest(ctx context.Context, target Target) (string, error) {
 // session is still at it, like [v1.DebugResumeRequest.ExpectedRevision]. The
 // receipt's status is applied when the rewound run is held at the previous
 // stop, and refused otherwise, with the reason: a run with nowhere to go back
-// to, a history in which a pause was still to land, a history past [MaxReversibleMoves], a
-// replay that failed, or one that diverged from what was shown ("diverged:" is
-// the message's first word).
+// to, a history in which a pause was still to land, a history past
+// [MaxReversibleMoves], or a replay that failed. A replay that did not show
+// what the first visit showed is answered as diverged, and the session stays
+// where it was.
 func (r *Reversible) Back(ctx context.Context, requestID string, expectedRevision uint64) (*v1.DebugReceipt, error) {
+	return r.back(ctx, requestID, expectedRevision, func([]stop) int { return 1 })
+}
+
+// BackToBreakpoint moves to the nearest earlier stop a breakpoint decided, or
+// to the first stop when no breakpoint did, in one replay: the reverse of
+// continuing. It answers as [Reversible.Back] does.
+func (r *Reversible) BackToBreakpoint(ctx context.Context, requestID string, expectedRevision uint64) (*v1.DebugReceipt, error) {
+	return r.back(ctx, requestID, expectedRevision, func(stops []stop) int {
+		// stops[len-1] is where the run is; look strictly before it.
+		for i := len(stops) - 2; i > 0; i-- {
+			if stops[i].hit {
+				return len(stops) - 1 - i
+			}
+		}
+
+		return len(stops) - 1
+	})
+}
+
+// back rewinds by the number of movements count answers for the stops shown so
+// far, which is at least one and at most all of them.
+func (r *Reversible) back(ctx context.Context, requestID string, expectedRevision uint64, count func([]stop) int) (*v1.DebugReceipt, error) {
 	r.command.Lock()
 	defer r.command.Unlock()
 
@@ -646,17 +702,20 @@ func (r *Reversible) Back(ctx context.Context, requestID string, expectedRevisio
 		return refuse(v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_REFUSED, "unavailable: the stops this session showed were not all recorded")
 	}
 
-	// The last movement is the one being undone; the breakpoint replacements
-	// before and after it stay, so the rewound run holds the same set.
-	last := -1
+	// The last count movements are the ones being undone; every breakpoint
+	// replacement stays, so the rewound run holds the same set.
+	undo := min(max(count(r.stops), 1), moves)
+	replay := make([]recorded, 0, len(r.log))
 	for i := len(r.log) - 1; i >= 0; i-- {
-		if r.log[i].resume != nil {
-			last = i
+		if r.log[i].resume != nil && undo > 0 {
+			undo--
 
-			break
+			continue
 		}
+		replay = append(replay, r.log[i])
 	}
-	replay := slices.Concat(r.log[:last], r.log[last+1:])
+	slices.Reverse(replay)
+	keep := moves - min(max(count(r.stops), 1), moves) + 1
 
 	r.rewinds++
 	replayCtx, cancel := context.WithTimeout(ctx, r.timeout)
@@ -669,8 +728,12 @@ func (r *Reversible) Back(ctx context.Context, requestID string, expectedRevisio
 	}
 	r.abort = cancel
 	r.mu.Unlock()
-	fresh, held, err := r.replay(replayCtx, replay, r.stops[:moves], r.rewinds)
+	fresh, held, err := r.replay(replayCtx, replay, r.stops[:keep], r.rewinds)
 	if err != nil {
+		if _, ok := errors.AsType[*divergence](err); ok {
+			return refuse(v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_DIVERGED, err.Error())
+		}
+
 		return refuse(v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_REFUSED, err.Error())
 	}
 
@@ -692,10 +755,13 @@ func (r *Reversible) Back(ctx context.Context, requestID string, expectedRevisio
 	r.run = fresh
 	r.generation++
 	r.mu.Unlock()
+	if fresh.Live != nil {
+		fresh.Live()
+	}
 	old.Stop()
 
 	r.log = replay
-	r.stops = r.stops[:moves]
+	r.stops = r.stops[:keep]
 	r.paused = false
 
 	receipt := &v1.DebugReceipt{
@@ -743,7 +809,7 @@ func (r *Reversible) replay(ctx context.Context, commands []recorded, stops []st
 				return abandon(fmt.Errorf("unavailable: the replay could not restore the breakpoints: %w", err))
 			}
 			if status := response.GetReceipt().GetStatus(); status != v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_APPLIED {
-				return abandon(fmt.Errorf("diverged: the replay could not restore the breakpoints (%s)", status))
+				return abandon(divergedf("the replay could not restore the breakpoints (%s)", status))
 			}
 
 			continue
@@ -757,7 +823,7 @@ func (r *Reversible) replay(ctx context.Context, commands []recorded, stops []st
 			return abandon(fmt.Errorf("unavailable: the replay could not move: %w", err))
 		}
 		if receipt.GetStatus() != v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_APPLIED {
-			return abandon(fmt.Errorf("diverged: the replay's movement %d was %s: %s", moved+1, receipt.GetStatus(), receipt.GetMessage()))
+			return abandon(divergedf("the replay's movement %d was %s: %s", moved+1, receipt.GetStatus(), receipt.GetMessage()))
 		}
 		held, err = waitStop(ctx, fresh.Session, held.GetRevision())
 		if err != nil {
@@ -765,7 +831,7 @@ func (r *Reversible) replay(ctx context.Context, commands []recorded, stops []st
 		}
 		moved++
 		if moved >= len(stops) {
-			return abandon(fmt.Errorf("diverged: the replay made more movements than the stops shown"))
+			return abandon(divergedf("the replay made more movements than the stops shown"))
 		}
 		got, err := stopOf(ctx, fresh.Session, held)
 		if err != nil {
@@ -776,7 +842,7 @@ func (r *Reversible) replay(ctx context.Context, commands []recorded, stops []st
 		}
 	}
 	if moved != len(stops)-1 {
-		return abandon(fmt.Errorf("diverged: the replay made %d movements, and the stops shown call for %d", moved, len(stops)-1))
+		return abandon(divergedf("the replay made %d movements, and the stops shown call for %d", moved, len(stops)-1))
 	}
 
 	return fresh, held, nil
@@ -791,7 +857,25 @@ func interrupted(ctx context.Context, what, kind string, err error) error {
 		return fmt.Errorf("unavailable: the replay %s (%w)", what, ctx.Err())
 	}
 
+	if kind == "diverged" {
+		return divergedf("the replay %s: %w", what, err)
+	}
+
 	return fmt.Errorf("%s: the replay %s: %w", kind, what, err)
+}
+
+// divergence is a replay's refusal to show a different run as the earlier one.
+// [Reversible.Back] answers it as [v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_DIVERGED]
+// rather than a refusal without a cause.
+type divergence struct{ err error }
+
+func (d *divergence) Error() string { return d.err.Error() }
+
+func (d *divergence) Unwrap() error { return d.err }
+
+// divergedf formats a [divergence].
+func divergedf(format string, args ...any) error {
+	return &divergence{err: fmt.Errorf(format, args...)}
 }
 
 // diverged is the refusal for a replay that did not reproduce a stop.
@@ -801,7 +885,7 @@ func diverged(index int, want, got stop) error {
 		where = fmt.Sprintf("was at %s both times, but the account of how the run got there differs", want.address)
 	}
 
-	return fmt.Errorf("diverged: stop %d %s; the run is not deterministic, "+
+	return divergedf("stop %d %s; the run is not deterministic, "+
 		"so going back would show a different run as the earlier one", index, where)
 }
 

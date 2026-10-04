@@ -228,11 +228,36 @@ signals:
 | `skipped` | Steps that must not have run. |
 | `others: skipped` | Closes `ran:`: every step not listed there must have been skipped, so a step added later fails the case until the case mentions it. |
 | `compensated` | The steps whose `undo:` ran. |
+| `invocations` | How often tasks ran, and in what order. See below. |
 | `check` | CEL claims over the finished run. See below. |
 | `inputs`, `refused`, `idempotency_key` | For a case with a webhook `trigger:`: what the delivery bound, whether it was refused, and the key it produced. |
 
 An `expect:` with nothing in it is refused, because a case that asserts nothing
 passes whatever the run did.
+
+### Invocations: how often, and in what order
+
+`ran:` says a step ran; `invocations:` says how many times its task did, and in
+what order, without a ladder of `where:` clauses on a stub.
+
+```yaml
+expect:
+  invocations:
+    - {task: slack.post, count: 2}          # exactly twice
+    - {task: http, at_least: 1, at_most: 3} # a range
+    - {step: notify_finance, never: true}   # never invoked
+    - order: [charge, ship, notify]         # first invocations in this order
+```
+
+A `task:` entry counts every invocation of that task, callees and `undo:`
+compensations included. A `step:` entry counts the attempts made for that step
+of the workflow under test (a `retry:` that ran three times counts three), and
+neither a callee's identically named step nor a compensation. An entry takes
+exactly one of `count:`, `never:`, or `at_least:`/`at_most:`; `order:` stands
+alone. Names are checked before the run, with a did-you-mean, and `order:` is
+refused for a step inside a `parallel:` block, where the order is not
+observable. A run past 100,000 invocations fails every entry rather than judge
+a truncated log.
 
 `ran:` and `skipped:` name top-level steps. A step inside a loop body reports
 through its loop's `results`, so assert on those through `outputs:` or `check:`.
@@ -487,6 +512,7 @@ as given. Finding no test files is an error, and so is naming a workflow file.
 | `--seeds N` | Also run each case under N seeded orderings of `parallel:` branches and `async:` steps, and fail if any ordering changes what the case observes. `--seed` replays one reported seed. |
 | `--debug` | Step through one case. See [Debugging](DEBUGGING.md). |
 | `-o json` | A machine-readable report: cases, failures, warnings, coverage. |
+| `--junit <file>` | Also write the results as JUnit XML for CI systems. A failed expectation is a `<failure>`; a case or file that could not be judged is an `<error>`. Written even when the run fails. A promoted warning, a required-coverage gap, or a schedule divergence appears as a `(run verdict)` failure, so the report never shows green over a non-zero exit. It carries only what the report already shows. |
 | `-v` | Print every case's transcript, not only failing ones. |
 
 **Coverage** is always reported, as `N/M steps reached` per file. A step counts

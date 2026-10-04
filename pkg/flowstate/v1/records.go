@@ -160,8 +160,19 @@ func (table TypeTable) checkField(r valueRendering, field *InputDeclaration, val
 		}
 	}
 
-	return checkEnumMembership("field", strings.TrimPrefix(path, "."), declared, field.GetValues(),
-		r, value)
+	if err := checkEnumMembership("field", strings.TrimPrefix(path, "."), declared, field.GetValues(),
+		r, value); err != nil {
+		return err
+	}
+
+	// The bounds an input carries, by the same functions, so a length is counted
+	// one way wherever it is declared.
+	subject := "the field" + atPath(path)
+	if err := checkStringConstraints(subject, field, value); err != nil {
+		return err
+	}
+
+	return checkListConstraints(subject, field, value)
 }
 
 func fieldTypeName(field *InputDeclaration) string {
@@ -193,7 +204,7 @@ func recordFieldNames(fields []*InputDeclaration) string {
 // cycle. A cycle is refused because a value of a recursive record has no bound
 // until the type has one, and the checks that walk a value would be the only
 // thing standing between an author and an unbounded literal. A field that sets
-// `default`, `example`, `sensitive`, `must` or a length or item bound is refused with the reason
+// `default`, `example`, `sensitive` or `must` is refused with the reason
 // [TypeDeclaration] gives, rather than carrying a promise nothing keeps.
 //
 // The compiler runs it with a position to point at through the same
@@ -270,6 +281,10 @@ func checkRecordField(record string, field *InputDeclaration, table TypeTable) e
 		return fmt.Errorf("type %q field %q is invalid: %w", record, name, err)
 	}
 
+	if err := checkBoundsShape(fmt.Sprintf("type %q field %q", record, name), "field", field); err != nil {
+		return err
+	}
+
 	for _, unsupported := range []struct {
 		word string
 		set  bool
@@ -278,10 +293,6 @@ func checkRecordField(record string, field *InputDeclaration, table TypeTable) e
 		{"example", field.GetExample() != nil},
 		{"sensitive", field.GetSensitive()},
 		{"must", field.Must != nil},
-		{"min_len", field.MinLen != nil},
-		{"max_len", field.MaxLen != nil},
-		{"min_items", field.MinItems != nil},
-		{"max_items", field.MaxItems != nil},
 	} {
 		if unsupported.set {
 			return fmt.Errorf("type %q field %q sets `%s`, which a record field does not carry yet; "+

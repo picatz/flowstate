@@ -172,6 +172,12 @@ func typeErrors(table *typeTable, site v1.ValueSite) Diagnostics {
 		return nil
 	}
 
+	if ds := table.fieldErrors(site); len(ds) > 0 {
+		// A field the record does not declare is the more useful sentence, and what
+		// the checker would add after it is about the same name.
+		return ds
+	}
+
 	env, err := envDeclaring(referencedNames(parsed.GetExpr()), table.leavesFor(parsed, table.before(site)))
 	if err != nil {
 		// Building the environment failed, which is a defect in this build rather

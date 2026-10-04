@@ -477,6 +477,20 @@ func InputOutputCases(httpBaseURL string) []Case {
 			ExpectedErrorContains: `a field "coupon" that Order does not declare`,
 		},
 		{
+			// A record's field carries the bounds an input does, judged by the same
+			// functions: a value under `min_len` fails at completion on both
+			// drivers with the path of the field.
+			Name:          "a record output field under its min_len fails the run",
+			ExpectFailure: true,
+			Workflow: func() *v1.Workflow {
+				wf := recordOutputWorkflow("outputs-record-bound", `{"id": "o"}`)
+				wf.DeclaredTypes[0].Fields[0].MinLen = new(uint64(3))
+
+				return wf
+			}(),
+			ExpectedErrorContains: "the field at .id must be at least 3 character(s) long; got 1",
+		},
+		{
 			// #1404, the positive direction first: a `type: struct` output is
 			// the map a caller reads as a plain object, and both an ordinary one
 			// and an empty one are that. Here because the refusal below is only

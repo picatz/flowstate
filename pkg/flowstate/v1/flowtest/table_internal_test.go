@@ -48,7 +48,7 @@ func TestEveryExpectationFieldIsMerged(t *testing.T) {
 	}
 	assert.Equal(t, expectationProvenance{
 		outputs: true, inputs: true, refused: true, idempotencyKey: true, failed: true,
-		errorContains: true, compensated: true, ran: true, skipped: true, others: true,
+		errorContains: true, compensated: true, ran: true, skipped: true, others: true, invocations: true,
 	}, merged.fromEntry, "every inherited value field must retain the entry as its writer")
 	for i := range merged.Check {
 		assert.True(t, merged.Check[i].fromEntry, "an accumulated entry claim lost its writer")
@@ -75,6 +75,7 @@ func TestAStatedFieldBeatsAnInheritedOne(t *testing.T) {
 		Ran:            []string{"row"},
 		Skipped:        []string{"row"},
 		Others:         "ran",
+		Invocations:    []InvocationClaim{{Task: "row", Count: new(1)}},
 		Check:          []CheckClaim{{That: "1 == 1"}},
 	}
 
@@ -195,6 +196,7 @@ func nonZeroExpectation() Expectation {
 		Ran:            []string{"entry"},
 		Skipped:        []string{"entry"},
 		Others:         "skipped",
+		Invocations:    []InvocationClaim{{Task: "entry", Never: true}},
 		Check:          []CheckClaim{{That: "true"}},
 	}
 }

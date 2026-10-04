@@ -481,10 +481,10 @@ func init() {
 				" the type does not declare is refused, because an open record is what\n" +
 				" `map(string, dyn)` already is.\n" +
 				"\n" +
-				" Only `name`, `type`, `value_type`, `required`, `description` and an enum's\n" +
-				" `values` are carried by a field today. `default`, `example`, `sensitive`,\n" +
-				" `must` and the length and item bounds are refused by the compiler and at\n" +
-				" submit, not ignored.\n" +
+				" Only `name`, `type`, `value_type`, `required`, `description`, an enum's\n" +
+				" `values` and the length and item bounds (`min_len`, `max_len`, `min_items`,\n" +
+				" `max_items`) are carried by a field today. `default`, `example`, `sensitive`\n" +
+				" and `must` are refused by the compiler and at submit, not ignored.\n" +
 				"\n" +
 				" A value of a record type is a map at run time, keyed by field name, so a\n" +
 				" reader that does not know the type (an older worker, a CEL expression the\n" +
