@@ -87,8 +87,10 @@
 // reachable again: [Reversible] wraps a [Launcher] and answers [Reversible.Back]
 // by starting the run afresh, replaying the recorded commands to the previous
 // stop, and refusing, as diverged, any replay that does not show what the
-// first visit showed. No backend advertises `reverse` on its own; a host that
-// has stubbed every effect opts in by constructing one.
+// first visit showed, scope included. [Reversible.BackToBreakpoint] is the
+// reverse of continuing, in one replay. No backend advertises `reverse` on its
+// own; a host that has stubbed every effect, or one whose user chose to repeat
+// them (`flow dap` with `"reverse": true`), opts in by constructing one.
 //
 // # Local sessions and durable runs
 //

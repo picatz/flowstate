@@ -36,7 +36,7 @@ func TestEveryRunThisProcessStartsIsRedactedAsOne(t *testing.T) {
 	// startsRunsRedactedElsewhere names a function that starts a run and
 	// renders its failure through a redaction of its own, with that reason.
 	startsRunsRedactedElsewhere := map[string]string{
-		"launchDebuggedRun": "flowdap prints the failure through session.RedactText, against the debug session's own sensitive set",
+		"execute": "the debug adapter run (debuggedRunBuilder.execute) prints the failure through session.RedactText, against the debug session's own sensitive set",
 	}
 
 	// redactsFailureEarly names a function that must redact the failure

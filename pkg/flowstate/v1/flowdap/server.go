@@ -207,10 +207,28 @@ type LaunchArguments struct {
 	Program         string `json:"program"`
 	RevealSensitive bool   `json:"revealSensitive"`
 	StopOnEntry     *bool  `json:"stopOnEntry"`
+	// Reverse asks for a run that can step back. The program runs again each
+	// time it does, so it repeats every effect its steps have: the host
+	// decides what to offer, and a launch that does not ask never does.
+	Reverse bool `json:"reverse"`
 	// Inputs are the run's arguments, keyed by the name the workflow
 	// declares under `inputs:`, each a JSON value.
 	Inputs map[string]json.RawMessage `json:"inputs"`
 	Raw    json.RawMessage            `json:"-"`
+}
+
+// Reverser is a [flowdebug.Target] that can step back, as
+// [flowdebug.Reversible] does. A server offers stepBack and reverseContinue
+// only for a target that is one and says so in its capabilities.
+type Reverser interface {
+	Back(ctx context.Context, requestID string, expectedRevision uint64) (*v1.DebugReceipt, error)
+	BackToBreakpoint(ctx context.Context, requestID string, expectedRevision uint64) (*v1.DebugReceipt, error)
+}
+
+// capable is a target that reports its own capabilities before it has a
+// snapshot, as a [flowdebug.Session] and a [flowdebug.Reversible] do.
+type capable interface {
+	Capabilities() *v1.DebugCapabilities
 }
 
 // Launch is what a [LaunchFunc] prepared: the session to drive, the source
@@ -274,7 +292,7 @@ func NewServer(target flowdebug.Target, stream Stream, opts ...Option) *Server {
 		stopOnEntry: true,
 		nonce:       rand.Text(),
 	}
-	if session, ok := target.(*flowdebug.Session); ok {
+	if session, ok := target.(capable); ok {
 		s.capabilities = session.Capabilities()
 	}
 	for _, opt := range opts {
@@ -527,6 +545,12 @@ func (s *Server) dispatch(ctx context.Context, request inbound) (done bool) {
 	case "stepOut":
 		s.move(ctx, request, v1.DebugResumeAction_DEBUG_RESUME_ACTION_STEP_OUT)
 
+	case "stepBack":
+		s.back(ctx, request, false)
+
+	case "reverseContinue":
+		s.back(ctx, request, true)
+
 	case "terminate":
 		s.mu.Lock()
 		owned := s.terminate != nil
@@ -619,6 +643,7 @@ func (s *Server) capabilitiesBody() capabilities {
 		SupportsTerminateRequest:          terminable || caps.GetTerminate(),
 		SupportTerminateDebuggee:          terminable || caps.GetTerminate(),
 		SupportsDelayedStackTraceLoading:  true,
+		SupportsStepBack:                  caps.GetReverse() && s.canStepBack(),
 		ExceptionBreakpointFilters:        []exceptionFilter{},
 	}
 	if caps.GetFailureBreakpoints() {
@@ -695,12 +720,17 @@ func (s *Server) launch(ctx context.Context, request inbound) {
 	s.sourceMap = launched.SourceMap
 	s.start = launched.Start
 	s.terminate = launched.Terminate
-	if session, ok := launched.Target.(*flowdebug.Session); ok {
+	if session, ok := launched.Target.(capable); ok {
 		s.capabilities = session.Capabilities()
 	}
+	reverse := s.capabilities.GetReverse()
 	s.mu.Unlock()
 
 	s.reply(request, nil)
+	if reverse {
+		// initialize answered before this launch said it could step back.
+		s.emit("capabilities", map[string]any{"capabilities": s.capabilitiesBody()})
+	}
 	s.reapply(ctx)
 }
 
@@ -1109,6 +1139,71 @@ func (s *Server) move(ctx context.Context, request inbound, action v1.DebugResum
 		}
 		s.reply(request, nil)
 		go s.Finished()
+	default:
+		s.fail(request, receiptText(receipt))
+	}
+}
+
+// canStepBack is whether the bound target can be asked to go back.
+func (s *Server) canStepBack() bool {
+	_, ok := s.currentTarget().(Reverser)
+
+	return ok
+}
+
+// back answers stepBack and, with toBreakpoint, reverseContinue: the target
+// goes to the previous stop, or the nearest earlier one a breakpoint decided.
+// The stop it lands on reaches the editor through the same watch as any other,
+// so the response is ordered ahead of it the way a movement's is.
+func (s *Server) back(ctx context.Context, request inbound, toBreakpoint bool) {
+	select {
+	case <-s.entered:
+	case <-ctx.Done():
+		return
+	}
+
+	reverser, ok := s.currentTarget().(Reverser)
+	if !ok || !s.capabilitiesBody().SupportsStepBack {
+		s.fail(request, "flowdap: this session cannot step back; launch with \"reverse\": true to run one that can")
+
+		return
+	}
+
+	s.order.Lock()
+	defer s.order.Unlock()
+
+	// A run that has ended has no stop to go back to: the editor's session
+	// ends with it, and a rewind would start a run nobody is attached to.
+	if snapshot, err := s.currentTarget().Snapshot(ctx); err == nil && terminalState(snapshot.GetState()) {
+		s.fail(request, "flowdap: the run has ended, so there is no stop to go back to")
+
+		return
+	}
+
+	s.mu.Lock()
+	revision := s.revision
+	s.mu.Unlock()
+
+	rewind := reverser.Back
+	if toBreakpoint {
+		rewind = reverser.BackToBreakpoint
+	}
+	receipt, err := rewind(ctx, s.requestID(request.Seq), revision)
+	if err != nil {
+		s.fail(request, err.Error())
+
+		return
+	}
+
+	switch receipt.GetStatus() {
+	case v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_APPLIED, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_DUPLICATE:
+		s.mu.Lock()
+		clear(s.handles)
+		clear(s.issued)
+		s.issuedBytes = 0
+		s.held = nil
+		s.mu.Unlock()
+		s.reply(request, nil)
 	default:
 		s.fail(request, receiptText(receipt))
 	}
