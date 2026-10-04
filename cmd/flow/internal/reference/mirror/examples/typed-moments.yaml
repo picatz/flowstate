@@ -1,0 +1,49 @@
+# `timestamp`, `duration` and `bytes` — the kinds CEL treats as primitives,
+# declared as an input's `type:` like any other.
+#
+# Without them a deadline is a `string` and every expression that reads it wraps
+# it in `timestamp(...)`, and a `must:` cannot say "after 2026" about text. A
+# declared `timestamp` is bound once, at submit, as the timestamp an expression
+# reads, so `inputs.opens + inputs.window` is time arithmetic and `must:` binds
+# `this` to the same type.
+#
+# They travel as text, because that is what a command line, a JSON file and an
+# MCP argument can carry: an RFC 3339 timestamp (`2026-03-01T09:00:00Z`), a
+# duration written the way Go writes one (`90m`, `5400s`, `1h30m`), and standard
+# padded base64 for bytes. Text that is not one is refused where the input is
+# bound, without repeating what was sent.
+#
+# Not yet an output's `type:`: the run document has no plain-JSON form for them
+# (#1436), so a computed moment is reported as a string with `string(...)`.
+#
+#   flow run local examples/typed-moments/workflow.yaml \
+#       --input opens=2026-03-01T09:00:00Z --input window=36h
+edition: v2026.4
+name: typed-moments
+inputs:
+  opens:
+    type: timestamp
+    default: 2026-03-01T09:00:00Z
+    description: when the window opens
+    must: this.getFullYear() >= 2026
+  window:
+    type: duration
+    default: 2h
+    description: how long it stays open
+    must: this > duration("0s")
+  seal:
+    type: bytes
+    default: aGk=
+    description: a token that travels with the window, as base64
+    must: size(this) > 0
+steps:
+  - id: closing
+    value: ${inputs.opens + inputs.window}
+  - id: announce
+    log:
+      message: ${"opens %s, closes %s, sealed with %d byte(s)".format([string(inputs.opens), string(steps.closing.value), size(inputs.seal)])}
+outputs:
+  closes:
+    value: ${string(steps.closing.value)}
+    type: string
+    description: when the window closes, as an RFC 3339 timestamp

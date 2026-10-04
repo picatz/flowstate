@@ -600,6 +600,11 @@ func CheckOutputConstraintShape(profile string, decl *OutputDeclaration) error {
 	name := decl.GetName()
 	t := decl.GetType()
 
+	if IsDataKind(t) {
+		return fmt.Errorf(
+			"output %q is declared %s, which an output cannot be yet: the run document has "+
+				"no plain-JSON form for it (#1436)", name, DeclaredTypeName(t))
+	}
 	if len(decl.Values) > 0 && t != InputDeclaration_TYPE_ENUM {
 		return fmt.Errorf(
 			"output %q declares values but is declared %s; values apply only to an enum output",
@@ -796,6 +801,18 @@ func CheckInputConstraints(profile, name string, decl *InputDeclaration, value *
 		return nil
 	}
 
+	// A timestamp, duration or bytes literal may still be the text it was written
+	// as (a `default:`, a `with:` argument, a submitted value), and `must:` reads
+	// `this` as the CEL type, so it is normalized here the same way the binder
+	// normalizes it. Idempotent for a value that already is one.
+	if IsDataKind(decl.GetType()) {
+		normalized, err := NormalizeDataKind(decl.GetType(), lit)
+		if err != nil {
+			return fmt.Errorf("input %q is declared %s but was given a value that %w", name, decl.TypeText(), err)
+		}
+		lit = normalized
+	}
+
 	if err := checkStringConstraints(fmt.Sprintf("input %q", name), decl, lit); err != nil {
 		return err
 	}
@@ -840,6 +857,12 @@ func CheckInputConstraints(profile, name string, decl *InputDeclaration, value *
 		return fmt.Errorf("input %q: evaluating `must: %s`: %w", name, decl.GetMust(), err)
 	}
 	if !satisfied {
+		if text, ok := dataKindText(lit); ok {
+			// The normalized spelling can differ from the text the run was
+			// given, so the sensitive-value set would not catch it.
+			return fmt.Errorf("input %q must satisfy `%s`; got %s", name, decl.GetMust(),
+				redactedIfSensitive(decl.GetSensitive(), func() string { return text }))
+		}
 		got, _ := literalToNative(lit)
 		return fmt.Errorf("input %q must satisfy `%s`; got %v", name, decl.GetMust(), got)
 	}

@@ -210,6 +210,17 @@ func coerceInput(name, raw string, declaration *v1.InputDeclaration, reveal bool
 
 		return valueFromJSON(name, decoded, declaration)
 
+	case v1.InputDeclaration_TYPE_TIMESTAMP, v1.InputDeclaration_TYPE_DURATION, v1.InputDeclaration_TYPE_BYTES:
+		// Travels as the characters given, which the binder normalizes into the
+		// value an expression reads. Checked here as well so the refusal says
+		// what to write, in the same words as every other flag refusal, rather
+		// than where the binder would first notice it.
+		if _, err := v1.NormalizeDataKind(declaration.GetType(), v1.NewLiteral(raw).GetLiteral()); err != nil {
+			return nil, inputCoercionError(name, raw, declaration, v1.WireHint(declaration.GetType()), reveal)
+		}
+
+		return v1.NewLiteral(raw), nil
+
 	default:
 		// A string, and an undeclared name: the characters as given.
 		return v1.NewLiteral(raw), nil

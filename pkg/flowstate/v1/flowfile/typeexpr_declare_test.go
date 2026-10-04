@@ -99,7 +99,7 @@ func TestTheRetiredTypeWordsAreRefusedWithTheirReplacement(t *testing.T) {
 func TestADeclarationRefusesATypeWithNoLegacyProjection(t *testing.T) {
 	t.Parallel()
 
-	for _, typeText := range []string{"timestamp", "bytes", "duration", "dyn", "foo", "map(int, string)", "list(1)"} {
+	for _, typeText := range []string{"dyn", "foo", "map(int, string)", "list(1)"} {
 		_, _, err := flowfile.Parse([]byte(typedInputFile(typeText, "", `${"ok"}`)))
 		require.Error(t, err, typeText)
 	}
@@ -147,4 +147,32 @@ func TestADeclaredTypeNestedTooDeepIsRefusedAtCompile(t *testing.T) {
 	}
 	_, _, err := flowfile.Parse([]byte(typedInputFile(deep, "", `${"ok"}`)))
 	require.Error(t, err)
+}
+
+// TestTheDataKindsAreDeclarableOnAnInputButNotAnOutput holds the #1436 slice:
+// an input may be a timestamp, duration or bytes, and an output may not yet.
+func TestTheDataKindsAreDeclarableOnAnInputButNotAnOutput(t *testing.T) {
+	t.Parallel()
+
+	for word, legacy := range map[string]v1.InputDeclaration_Type{
+		"timestamp": v1.InputDeclaration_TYPE_TIMESTAMP,
+		"duration":  v1.InputDeclaration_TYPE_DURATION,
+		"bytes":     v1.InputDeclaration_TYPE_BYTES,
+	} {
+		wf, _, err := flowfile.Parse([]byte(typedInputFile(word, "", `${"ok"}`)))
+		require.NoError(t, err, word)
+		require.Equal(t, legacy, wf.GetDeclaredInputs()[0].GetType(), word)
+
+		_, _, err = flowfile.Parse([]byte(fmt.Sprintf(`edition: v2026.4
+name: out
+steps:
+  - id: up
+    value: ${"ok"}
+outputs:
+  at:
+    value: ${steps.up.value}
+    type: %s
+`, word)))
+		require.ErrorContains(t, err, "cannot be declared on an output yet", word)
+	}
 }

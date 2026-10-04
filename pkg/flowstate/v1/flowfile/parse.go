@@ -1304,10 +1304,13 @@ func (c *compiler) declaredOutput(e entry, parent string) *v1.OutputDeclaration 
 		typeRef := ref{path: typePath, label: "output " + e.name + " type"}
 		if text, ok := c.text(f.value, typePath, typeRef); ok {
 			declared, structural, err := declareType(c.typeEnv, text)
+			if err == nil && v1.IsDataKind(declared) {
+				err = fmt.Errorf("%s cannot be declared on an output yet: the run document has no plain-JSON form for it (#1436)", text)
+			}
 			if err != nil {
 				c.report(spanOfNode(f.value), typeRef,
 					"is %q, which is not a type an output can have: %s; the types are %s",
-					text, err, strings.Join(declarableTypeNames(), ", "))
+					text, err, strings.Join(outputTypeNames(), ", "))
 			}
 			declaration.Type = declared
 			declaration.ValueType = structural

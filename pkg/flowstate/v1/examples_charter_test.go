@@ -77,7 +77,11 @@ var exampleCorpusGlobs = []string{
 // closed and this map is empty. It stays declared, empty, for the same reason
 // [examplesWithoutTestFile] does: a future gap in this derivation is a decision
 // written down here, not a silently reappearing map.
-var constructsWithoutAnExample = map[string]string{}
+var constructsWithoutAnExample = map[string]string{
+	"output.type.TYPE_TIMESTAMP": "an output cannot declare a data kind yet: the run document has no plain-JSON form for it (#1436)",
+	"output.type.TYPE_DURATION":  "an output cannot declare a data kind yet: the run document has no plain-JSON form for it (#1436)",
+	"output.type.TYPE_BYTES":     "an output cannot declare a data kind yet: the run document has no plain-JSON form for it (#1436)",
+}
 
 // The required set is derived from the schema three ways: the two `kind` oneofs
 // (a node kind, a wait kind), the task registry, and — the part #901's review

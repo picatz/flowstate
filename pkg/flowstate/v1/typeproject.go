@@ -45,6 +45,12 @@ func TypeOfLegacy(t InputDeclaration_Type) *Type {
 		return &Type{Kind: &Type_List{List: dynType()}}
 	case InputDeclaration_TYPE_ENUM:
 		return &Type{Kind: &Type_Enum{Enum: true}}
+	case InputDeclaration_TYPE_TIMESTAMP:
+		return scalarType(Type_SCALAR_TIMESTAMP)
+	case InputDeclaration_TYPE_DURATION:
+		return scalarType(Type_SCALAR_DURATION)
+	case InputDeclaration_TYPE_BYTES:
+		return scalarType(Type_SCALAR_BYTES)
 	default:
 		return nil
 	}

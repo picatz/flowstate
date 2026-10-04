@@ -158,7 +158,7 @@ inputs:
 
 | Key | Meaning |
 | --- | --- |
-| `type` | Required: `string`, `int`, `double`, `bool`, `enum` (a string from a fixed set), or a container written as a type expression: `list(string)`, `map(string, int)`, `list(list(int))`. `list(dyn)` and `map(string, dyn)` hold anything. The bare words `list`, `struct`, and `float` were retired in `v2026.4`; `flow fix` rewrites them. |
+| `type` | Required: `string`, `int`, `double`, `bool`, `timestamp`, `duration`, `bytes`, `enum` (a string from a fixed set), or a container written as a type expression: `list(string)`, `map(string, int)`, `list(list(int))`. `list(dyn)` and `map(string, dyn)` hold anything. The bare words `list`, `struct`, and `float` were retired in `v2026.4`; `flow fix` rewrites them. |
 | `required` | `true` if the caller must supply it. Default `false`. |
 | `default` | The value used when the caller leaves it out. A literal, never an expression. Cannot be combined with `required: true`. |
 | `values` | For `enum` only: the allowed strings, up to 64. |
@@ -183,6 +183,14 @@ Read an input as `${inputs.<name>}`. A few things to know:
   a run whose workflow declares one, so upgrade every worker before submitting
   it. Inside a YAML flow mapping, quote the value
   (`{ type: "map(string, int)" }`), because the comma ends it otherwise.
+- **`timestamp`, `duration` and `bytes` are bound as the type CEL reads.** They
+  travel as text (an RFC 3339 timestamp, a Go-form duration such as `90m`, and
+  padded base64) and are bound once at submit, so `${inputs.opens + inputs.window}`
+  is time arithmetic and `must: this > timestamp("2026-01-01T00:00:00Z")` reads
+  `this` as a timestamp. Text that is not one is refused without repeating it.
+  They are inputs only: an output cannot declare them yet, so report a computed
+  moment with `string(...)`. See `examples/typed-moments`. A worker built before
+  they existed refuses the declaration when the run starts.
 - **There is no int-to-float widening.** A `double` input's `default: 1` is
   refused; write `1.0`. On the command line, `--input ratio=2` is converted for
   you.
@@ -192,8 +200,8 @@ Read an input as `${inputs.<name>}`. A few things to know:
 Supplying inputs:
 
 - `flow run` and `flow run local` take `--input name=value`, converted by the
-  declared type (`int`, `double`, `bool`; JSON for lists and maps; text
-  otherwise), and `--input-file args.json`, a JSON object keyed by input name.
+  declared type (`int`, `double`, `bool`; JSON for lists and maps; the text itself
+  for a string, timestamp, duration or bytes), and `--input-file args.json`, a JSON object keyed by input name.
   `--input` wins over the file for the same name.
 - The API's `Run` takes literal values; an expression or secret reference from a
   caller is refused.

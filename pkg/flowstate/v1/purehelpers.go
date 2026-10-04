@@ -183,6 +183,12 @@ func pureHelperCELType(t InputDeclaration_Type) *cel.Type {
 		return cel.MapType(cel.StringType, cel.DynType)
 	case InputDeclaration_TYPE_LIST:
 		return cel.ListType(cel.DynType)
+	case InputDeclaration_TYPE_TIMESTAMP:
+		return cel.TimestampType
+	case InputDeclaration_TYPE_DURATION:
+		return cel.DurationType
+	case InputDeclaration_TYPE_BYTES:
+		return cel.BytesType
 	default:
 		return cel.DynType
 	}

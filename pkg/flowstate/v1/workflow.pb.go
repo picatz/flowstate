@@ -143,19 +143,39 @@ const (
 	InputDeclaration_TYPE_STRUCT      InputDeclaration_Type = 5
 	InputDeclaration_TYPE_LIST        InputDeclaration_Type = 6
 	InputDeclaration_TYPE_ENUM        InputDeclaration_Type = 9
+	// TIMESTAMP, DURATION and BYTES are data kinds CEL treats as primitives
+	// (#1436). Each travels on the wire as a string: RFC 3339 for a timestamp, a
+	// Go-form duration (`5400s`, `1h30m`) for a duration, and standard padded
+	// base64 for bytes. A binder normalizes the string into the matching CEL
+	// value before the run starts, so an expression reads `inputs.at` as a
+	// timestamp rather than as the text it arrived as. They are valid on an
+	// input; an output cannot yet declare them, because the run document has no
+	// plain-JSON projection for them.
+	//
+	// Added at the end, so a reader that does not know them reports an unknown
+	// enum value instead of treating it as one of the older seven. The refusal
+	// is the server's, at submit, where the specification is validated; a worker
+	// receives inputs the server already bound and does not validate again, so
+	// deploy the server and workers together before declaring one.
+	InputDeclaration_TYPE_TIMESTAMP InputDeclaration_Type = 10
+	InputDeclaration_TYPE_DURATION  InputDeclaration_Type = 11
+	InputDeclaration_TYPE_BYTES     InputDeclaration_Type = 12
 )
 
 // Enum value maps for InputDeclaration_Type.
 var (
 	InputDeclaration_Type_name = map[int32]string{
-		0: "TYPE_UNSPECIFIED",
-		1: "TYPE_STRING",
-		2: "TYPE_INT",
-		3: "TYPE_FLOAT",
-		4: "TYPE_BOOL",
-		5: "TYPE_STRUCT",
-		6: "TYPE_LIST",
-		9: "TYPE_ENUM",
+		0:  "TYPE_UNSPECIFIED",
+		1:  "TYPE_STRING",
+		2:  "TYPE_INT",
+		3:  "TYPE_FLOAT",
+		4:  "TYPE_BOOL",
+		5:  "TYPE_STRUCT",
+		6:  "TYPE_LIST",
+		9:  "TYPE_ENUM",
+		10: "TYPE_TIMESTAMP",
+		11: "TYPE_DURATION",
+		12: "TYPE_BYTES",
 	}
 	InputDeclaration_Type_value = map[string]int32{
 		"TYPE_UNSPECIFIED": 0,
@@ -166,6 +186,9 @@ var (
 		"TYPE_STRUCT":      5,
 		"TYPE_LIST":        6,
 		"TYPE_ENUM":        9,
+		"TYPE_TIMESTAMP":   10,
+		"TYPE_DURATION":    11,
+		"TYPE_BYTES":       12,
 	}
 )
 
@@ -4072,7 +4095,7 @@ const file_flowstate_v1_workflow_proto_rawDesc = "" +
 	"\x13PureHelperParameter\x127\n" +
 	"\x04name\x18\x01 \x01(\tB#\xbaH r\x1e\x10\x01\x18@2\x18^[A-Za-z_][A-Za-z0-9_]*$R\x04name\x12C\n" +
 	"\x04type\x18\x02 \x01(\x0e2#.flowstate.v1.InputDeclaration.TypeB\n" +
-	"\xbaH\a\x82\x01\x04\x10\x01 \x00R\x04type\"\xa6\f\n" +
+	"\xbaH\a\x82\x01\x04\x10\x01 \x00R\x04type\"\xf9\r\n" +
 	"\x10InputDeclaration\x12?\n" +
 	"\x04name\x18\x01 \x01(\tB+\xe2A\x01\x02\xbaH$\xc8\x01\x01r\x1f\x10\x01\x18\x80\x012\x18^[A-Za-z_][A-Za-z0-9_]*$R\x04name\x12A\n" +
 	"\x04type\x18\x02 \x01(\x0e2#.flowstate.v1.InputDeclaration.TypeB\b\xbaH\x05\x82\x01\x02\x10\x01R\x04type\x12\x1a\n" +
@@ -4089,7 +4112,7 @@ const file_flowstate_v1_workflow_proto_rawDesc = "" +
 	"\x04must\x18\x10 \x01(\tH\x05R\x04must\x88\x01\x01\x12+\n" +
 	"\x06values\x18\x11 \x03(\tB\x13\xbaH\x10\x92\x01\r\x10@\x18\x01\"\ar\x05\x10\x01\x18\x80\x01R\x06values\x121\n" +
 	"\n" +
-	"value_type\x18\x12 \x01(\v2\x12.flowstate.v1.TypeR\tvalueType\"\x95\x01\n" +
+	"value_type\x18\x12 \x01(\v2\x12.flowstate.v1.TypeR\tvalueType\"\xcc\x01\n" +
 	"\x04Type\x12\x14\n" +
 	"\x10TYPE_UNSPECIFIED\x10\x00\x12\x0f\n" +
 	"\vTYPE_STRING\x10\x01\x12\f\n" +
@@ -4099,9 +4122,14 @@ const file_flowstate_v1_workflow_proto_rawDesc = "" +
 	"\tTYPE_BOOL\x10\x04\x12\x0f\n" +
 	"\vTYPE_STRUCT\x10\x05\x12\r\n" +
 	"\tTYPE_LIST\x10\x06\x12\r\n" +
-	"\tTYPE_ENUM\x10\t\"\x04\b\a\x10\a\"\x04\b\b\x10\b:\xb3\x05\xbaH\xaf\x05\x1a\x91\x01\n" +
-	"\x1einput_declaration.type_present\x12_the legacy type is required until structural-only declarations are safe across rolling upgrades\x1a\x0ethis.type != 0\x1a\x98\x04\n" +
-	"\x1dinput_declaration.type_agrees\x12Rvalue_type and the legacy type must describe the same input type when both are set\x1a\xa2\x03!has(this.value_type) || this.type == 0 || (this.type == 1 && this.value_type.scalar == 1) || (this.type == 2 && this.value_type.scalar == 2) || (this.type == 3 && this.value_type.scalar == 3) || (this.type == 4 && this.value_type.scalar == 4) || (this.type == 5 && (has(this.value_type.map) || has(this.value_type.message))) || (this.type == 6 && has(this.value_type.list)) || (this.type == 9 && this.value_type.enum)B\x0e\n" +
+	"\tTYPE_ENUM\x10\t\x12\x12\n" +
+	"\x0eTYPE_TIMESTAMP\x10\n" +
+	"\x12\x11\n" +
+	"\rTYPE_DURATION\x10\v\x12\x0e\n" +
+	"\n" +
+	"TYPE_BYTES\x10\f\"\x04\b\a\x10\a\"\x04\b\b\x10\b:\xcf\x06\xbaH\xcb\x06\x1a\x91\x01\n" +
+	"\x1einput_declaration.type_present\x12_the legacy type is required until structural-only declarations are safe across rolling upgrades\x1a\x0ethis.type != 0\x1a\xb4\x05\n" +
+	"\x1dinput_declaration.type_agrees\x12Rvalue_type and the legacy type must describe the same input type when both are set\x1a\xbe\x04!has(this.value_type) || this.type == 0 || (this.type == 1 && this.value_type.scalar == 1) || (this.type == 2 && this.value_type.scalar == 2) || (this.type == 3 && this.value_type.scalar == 3) || (this.type == 4 && this.value_type.scalar == 4) || (this.type == 5 && (has(this.value_type.map) || has(this.value_type.message))) || (this.type == 6 && has(this.value_type.list)) || (this.type == 9 && this.value_type.enum) || (this.type == 10 && this.value_type.scalar == 6) || (this.type == 11 && this.value_type.scalar == 7) || (this.type == 12 && this.value_type.scalar == 5)B\x0e\n" +
 	"\f_descriptionB\n" +
 	"\n" +
 	"\b_min_lenB\n" +
@@ -4111,7 +4139,8 @@ const file_flowstate_v1_workflow_proto_rawDesc = "" +
 	"_min_itemsB\f\n" +
 	"\n" +
 	"_max_itemsB\a\n" +
-	"\x05_mustJ\x04\b\b\x10\tJ\x04\b\v\x10\fJ\x04\b\f\x10\rJ\x04\b\x0f\x10\x10R\apatternR\x03minR\x03maxR\x06unique\"\xa9\t\n" +
+	"\x05_mustJ\x04\b\b\x10\tJ\x04\b\v\x10\fJ\x04\b\f\x10\rJ\x04\b\x0f\x10\x10R\apatternR\x03minR\x03maxR\x06unique\"\xc5\n" +
+	"\n" +
 	"\x11OutputDeclaration\x12?\n" +
 	"\x04name\x18\x01 \x01(\tB+\xe2A\x01\x02\xbaH$\xc8\x01\x01r\x1f\x10\x01\x18\x80\x012\x18^[A-Za-z_][A-Za-z0-9_]*$R\x04name\x125\n" +
 	"\x05value\x18\x02 \x01(\v2\x13.flowstate.v1.ValueB\n" +
@@ -4122,9 +4151,9 @@ const file_flowstate_v1_workflow_proto_rawDesc = "" +
 	"\x04type\x18\x06 \x01(\x0e2#.flowstate.v1.InputDeclaration.TypeB\b\xbaH\x05\x82\x01\x02\x10\x01R\x04type\x12+\n" +
 	"\x06values\x18\a \x03(\tB\x13\xbaH\x10\x92\x01\r\x10@\x18\x01\"\ar\x05\x10\x01\x18\x80\x01R\x06values\x121\n" +
 	"\n" +
-	"value_type\x18\b \x01(\v2\x12.flowstate.v1.TypeR\tvalueType:\xf7\x05\xbaH\xf3\x05\x1a\xd3\x01\n" +
-	"6output_declaration.legacy_type_present_with_value_type\x12pvalue_type requires a legacy type projection until structural-only declarations are safe across rolling upgrades\x1a'!has(this.value_type) || this.type != 0\x1a\x9a\x04\n" +
-	"\x1eoutput_declaration.type_agrees\x12Svalue_type and the legacy type must describe the same output type when both are set\x1a\xa2\x03!has(this.value_type) || this.type == 0 || (this.type == 1 && this.value_type.scalar == 1) || (this.type == 2 && this.value_type.scalar == 2) || (this.type == 3 && this.value_type.scalar == 3) || (this.type == 4 && this.value_type.scalar == 4) || (this.type == 5 && (has(this.value_type.map) || has(this.value_type.message))) || (this.type == 6 && has(this.value_type.list)) || (this.type == 9 && this.value_type.enum)B\x0e\n" +
+	"value_type\x18\b \x01(\v2\x12.flowstate.v1.TypeR\tvalueType:\x93\a\xbaH\x8f\a\x1a\xd3\x01\n" +
+	"6output_declaration.legacy_type_present_with_value_type\x12pvalue_type requires a legacy type projection until structural-only declarations are safe across rolling upgrades\x1a'!has(this.value_type) || this.type != 0\x1a\xb6\x05\n" +
+	"\x1eoutput_declaration.type_agrees\x12Svalue_type and the legacy type must describe the same output type when both are set\x1a\xbe\x04!has(this.value_type) || this.type == 0 || (this.type == 1 && this.value_type.scalar == 1) || (this.type == 2 && this.value_type.scalar == 2) || (this.type == 3 && this.value_type.scalar == 3) || (this.type == 4 && this.value_type.scalar == 4) || (this.type == 5 && (has(this.value_type.map) || has(this.value_type.message))) || (this.type == 6 && has(this.value_type.list)) || (this.type == 9 && this.value_type.enum) || (this.type == 10 && this.value_type.scalar == 6) || (this.type == 11 && this.value_type.scalar == 7) || (this.type == 12 && this.value_type.scalar == 5)B\x0e\n" +
 	"\f_descriptionB\a\n" +
 	"\x05_must\"\xae\x01\n" +
 	"\n" +
