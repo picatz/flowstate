@@ -751,6 +751,15 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 		caseError("%s", err)
 		return
 	}
+	// A `step:` stub may name a `call:` step to answer at the callee's
+	// boundary (#1599); the workflow the rest of the case runs and judges is
+	// the one with those calls replaced. See [stubCallBoundaries].
+	workflow, callTasks, err := stubCallBoundaries(workflow, compiled)
+	if err != nil {
+		caseError("%s", err)
+		return
+	}
+	defer swapRegistry(callTasks)()
 	// Reported to the caller for coverage: the workflow this case compiled is
 	// what its steps are counted against, even when the run below then fails.
 	spec = workflow
