@@ -81,3 +81,7 @@ tests:
       # `delete:` stub is absent from this case, so an `undo:` that fired here
       # would reach no stub and fail rather than pass quietly.
       compensated: []
+      # The same claim from the other side: three `http` steps, three
+      # invocations. A compensation that ran would be a fourth.
+      invocations:
+        - {task: http, count: 3}

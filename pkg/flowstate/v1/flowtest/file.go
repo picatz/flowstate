@@ -1099,6 +1099,12 @@ type Expectation struct {
 	// have been skipped.
 	Others string `yaml:"others"`
 
+	// Invocations holds claims about how often tasks ran and in what order
+	// (#1667): an exact `count:`, `at_least:`/`at_most:` bounds, `never:`, or
+	// an `order:` of steps. See [InvocationClaim]. Merges by override like
+	// the other lists: a row that states any replaces its entry's.
+	Invocations []InvocationClaim `yaml:"invocations"`
+
 	// Check holds CEL claims over the finished run (#1072) — for everything
 	// the named fields above cannot say. Each entry is a bare CEL predicate,
 	// or `{that:, because:}` to add the sentence a failure prints. Evaluated
@@ -1122,7 +1128,7 @@ type Expectation struct {
 func (e *Expectation) claimsNothing() bool {
 	return e.Outputs == nil && e.Inputs == nil && e.Refused == nil && e.IdempotencyKey == "" &&
 		e.Failed == nil && e.ErrorContains == "" && e.Compensated == nil && e.Ran == nil &&
-		e.Skipped == nil && e.Others == "" && len(e.Check) == 0
+		e.Skipped == nil && e.Others == "" && e.Invocations == nil && len(e.Check) == 0
 }
 
 // expectationProvenance is the writer of each field in an effective table
@@ -1140,6 +1146,7 @@ type expectationProvenance struct {
 	ran            bool
 	skipped        bool
 	others         bool
+	invocations    bool
 }
 
 // OthersSkipped is the one accepted value of [Expectation.Others]: the whole
@@ -1542,6 +1549,7 @@ func parseSourceWith(data []byte, dd *dirDefaults, requireWorkflow bool) (*File,
 			twins.note(p, r.in(where), label, stub)
 		}
 		checkOthers(p, r, test)
+		checkInvocations(p, r, test)
 		checkClaims(p, r, test)
 		checkTrigger(p, r, test, requireWorkflow)
 	}
@@ -1787,6 +1795,19 @@ func checkOthers(p *problems, r site, test *Test) {
 			"test %q expect.others: %q is not a value it accepts; the only value is %q, "+
 				"which asserts every step not named in `ran:` was skipped",
 			test.Name, test.Expect.Others, OthersSkipped)
+	}
+}
+
+// checkInvocations refuses a malformed `expect.invocations:` entry at the key
+// the author wrote it, judged once at a table entry and not again per row.
+func checkInvocations(p *problems, r site, test *Test) {
+	if test.Expect.fromEntry.invocations {
+		return
+	}
+	for i := range test.Expect.Invocations {
+		if err := checkInvocationShape(i, &test.Expect.Invocations[i]); err != nil {
+			p.report(r.in(r.at.field("expect").field("invocations").item(i)), "test %q %s", test.Name, err)
+		}
 	}
 }
 

@@ -819,6 +819,13 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	// scripted-signal goroutines are handed it directly. Not built at all
 	// where the account would be discarded ([RunOptions].skipTranscript) —
 	// no observer on the context means the engine clones nothing either.
+	// The invocation log is independent of the transcript: a claim needs a
+	// complete one even where the account is discarded.
+	var invocations *invocationLog
+	if len(test.Expect.Invocations) > 0 {
+		invocations = &invocationLog{}
+		ctx = contextWithInvocationLog(ctx, invocations)
+	}
 	if record {
 		recorder = newRunRecorder(clock)
 		ctx = contextWithRunRecorder(ctx, recorder)
@@ -1132,6 +1139,9 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	}
 
 	result.Failures = assertExpectation(&test.Expect, workflow, outputs, runErr, sensitive)
+	if invocations != nil {
+		result.Failures = append(result.Failures, assertInvocations(test.Expect.Invocations, workflow.GetName(), invocations)...)
+	}
 	// The CEL claims (#1072), after the named fields so a report reads
 	// structure first, values second — the order the file states them in.
 	result.Failures = append(result.Failures, assertChecks(ctx, test.Expect.Check, workflow, bound, vars, outputs, runErr, sensitive)...)
@@ -1448,6 +1458,7 @@ func (u *unstubbedTasks) warnings() []*v1.Diagnostic {
 // step swallowed still reaches the report. See [unstubbedTasks].
 func unstubbedTaskFn(name string, seen *unstubbedTasks) v1.TaskFunc {
 	return func(ctx context.Context, inputs map[string]*v1.Value, scope *v1.Scope) (*v1.Node_Outputs, error) {
+		noteInvocation(ctx, name)
 		seen.record(ctx, name)
 
 		return nil, v1.NewTaskError(name, v1.ErrorKindInvalidInput, &stubDiagnostic{shaped: true, text: fmt.Sprintf(
@@ -1826,7 +1837,7 @@ func checkExpectationNames(want *Expectation, spec *v1.Workflow) error {
 		}
 	}
 
-	return nil
+	return checkInvocationNames(want.Invocations, spec)
 }
 
 // containsCallStep reports whether any step at any depth is a `call:` — the

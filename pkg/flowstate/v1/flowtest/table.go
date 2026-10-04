@@ -315,6 +315,10 @@ func mergeExpectation(entry, row Expectation) Expectation {
 		merged.Others = entry.Others
 		merged.fromEntry.others = entry.Others != ""
 	}
+	if merged.Invocations == nil {
+		merged.Invocations = entry.Invocations
+		merged.fromEntry.invocations = entry.Invocations != nil
+	}
 	// Check is the one accumulating field: the entry's claims and the row's
 	// all hold, entry first (see the field's own doc for why predicates
 	// union where values override). A fresh slice, so rows sharing an entry
