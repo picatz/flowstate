@@ -171,3 +171,24 @@ func TestCallStepMayToleratePolicyKindsItsCalleeDeclares(t *testing.T) {
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "never retried")
 }
+
+// TestCalleeKindSearchIsBounded: the search for a callee's declared kinds runs
+// at admission, so a chain of calls nested past [v1.MaxCallDepth] must neither
+// recurse without limit nor find a kind declared beyond the depth the engine
+// would follow.
+func TestCalleeKindSearchIsBounded(t *testing.T) {
+	t.Parallel()
+
+	deep := &v1.Workflow{Name: "leaf", DeclaredErrors: []*v1.ErrorDeclaration{{Name: "TooDeep"}}}
+	for range v1.MaxCallDepth + 20 {
+		deep = &v1.Workflow{Name: "link", Steps: []*v1.Node{{
+			Id: "next", Kind: &v1.Node_Call{Call: &v1.Call{Workflow: deep}},
+		}}}
+	}
+	caller := &v1.Workflow{Name: "caller", Steps: []*v1.Node{{
+		Id:     "start",
+		Kind:   &v1.Node_Call{Call: &v1.Call{Workflow: deep}},
+		Policy: &v1.StepPolicy{ContinueOnError: true, ToleratedKinds: []string{"TooDeep"}},
+	}}}
+	require.Error(t, v1.CheckPolicyKinds(caller), "a kind declared past the call depth limit is not found")
+}

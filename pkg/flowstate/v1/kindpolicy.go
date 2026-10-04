@@ -2,6 +2,7 @@ package flowstatev1
 
 import (
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 )
@@ -64,34 +65,82 @@ func RetryExcludedKinds(retry *RetryPolicy) []string {
 
 // calleeDeclaredKinds returns the kinds a `call:` step's callee, and whatever it
 // calls in turn, declares under `errors:`: failures the caller's own file never
-// names and can still see arrive at the call step. Nil for any other step.
-func calleeDeclaredKinds(node *Node) []string {
-	call := node.GetCall()
-	if call == nil {
-		return nil
+// names and can still see arrive at the call step. Empty for any other step.
+//
+// Bounded where it is spent, because this runs at admission, before the call
+// depth guard has looked at the specification: an explicit stack rather than
+// recursion, callees followed only to [MaxCallDepth], and at most
+// [maxStructureWalkNodes] nodes visited across all of them. Running out stops the
+// search, so a kind it did not reach is refused, which fails closed.
+func calleeDeclaredKinds(node *Node) map[string]struct{} {
+	kinds := map[string]struct{}{}
+	if node.GetCall() == nil {
+		return kinds
 	}
-	callee := call.GetWorkflow()
 
-	kinds := slices.Clone(DeclaredErrorNames(callee))
-	WalkNodes(callee.GetSteps(), Walk{Node: func(inner *Node) {
-		kinds = append(kinds, calleeDeclaredKinds(inner)...)
-	}})
+	type frame struct {
+		workflow *Workflow
+		depth    int
+	}
+	stack := []frame{{node.GetCall().GetWorkflow(), 1}}
+	nodesLeft := maxStructureWalkNodes
+	for len(stack) > 0 && nodesLeft > 0 {
+		top := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+
+		for _, name := range DeclaredErrorNames(top.workflow) {
+			kinds[name] = struct{}{}
+		}
+		if top.depth >= MaxCallDepth {
+			continue
+		}
+		WalkNodes(top.workflow.GetSteps(), Walk{Node: func(inner *Node) {
+			nodesLeft--
+			if call := inner.GetCall(); call != nil && nodesLeft > 0 {
+				stack = append(stack, frame{call.GetWorkflow(), top.depth + 1})
+			}
+		}})
+	}
 
 	return kinds
 }
 
-// KnownFailureKindAt is [KnownFailureKind] for the step the kind is written on:
-// a `call:` step can also fail with what its callee declares, which the caller
-// need not repeat to tolerate it.
-func KnownFailureKindAt(wf *Workflow, node *Node, kind string) bool {
-	return KnownFailureKind(wf, kind) || slices.Contains(calleeDeclaredKinds(node), kind)
+// failureKindsAt answers, for one step, which kinds beyond the built-in ones its
+// kind lists may name: the workflow's own and, on a `call:` step, its callee's.
+// Computed once per step so that checking many kinds does not walk the callees
+// many times.
+type failureKindsAt struct {
+	wf     *Workflow
+	callee map[string]struct{}
+}
+
+func newFailureKindsAt(wf *Workflow, node *Node) failureKindsAt {
+	return failureKindsAt{wf: wf, callee: calleeDeclaredKinds(node)}
+}
+
+func (k failureKindsAt) known(kind string) bool {
+	_, declared := k.callee[kind]
+
+	return declared || KnownFailureKind(k.wf, kind)
 }
 
 // FailureKindNamesAt lists the declared kinds a step's kind lists may name beside
 // the built-in ones, for a did-you-mean: the workflow's own and, on a `call:`
 // step, its callee's.
 func FailureKindNamesAt(wf *Workflow, node *Node) []string {
-	return append(DeclaredErrorNames(wf), calleeDeclaredKinds(node)...)
+	names := DeclaredErrorNames(wf)
+	for _, name := range slices.Sorted(maps.Keys(calleeDeclaredKinds(node))) {
+		names = append(names, name)
+	}
+
+	return names
+}
+
+// KnownFailureKindAt is [KnownFailureKind] for the step the kind is written on:
+// a `call:` step can also fail with what its callee declares, which the caller
+// need not repeat to tolerate it.
+func KnownFailureKindAt(wf *Workflow, node *Node, kind string) bool {
+	return newFailureKindsAt(wf, node).known(kind)
 }
 
 // PolicyKindProblem is one refusal of a step policy's kind lists.
@@ -124,6 +173,7 @@ func PolicyKindProblems(wf *Workflow, node *Node) []PolicyKindProblem {
 		return nil
 	}
 
+	known := newFailureKindsAt(wf, node).known
 	var problems []PolicyKindProblem
 	add := func(field, kind, format string, args ...any) {
 		problems = append(problems, PolicyKindProblem{
@@ -137,7 +187,7 @@ func PolicyKindProblems(wf *Workflow, node *Node) []PolicyKindProblem {
 		add("continue_on_error", "", "names tolerated kinds but does not continue on error")
 	}
 	for _, kind := range policy.GetToleratedKinds() {
-		if !KnownFailureKindAt(wf, node, kind) {
+		if !known(kind) {
 			add("continue_on_error", kind, "`continue_on_error:` names %q, which is neither a built-in kind (%s) nor declared under `errors:`",
 				kind, strings.Join(errorKindNames(), ", "))
 		}
@@ -150,7 +200,7 @@ func PolicyKindProblems(wf *Workflow, node *Node) []PolicyKindProblem {
 	}{{"retry.only", retry.GetOnly()}, {"retry.except", retry.GetExcept()}} {
 		for _, kind := range field.kinds {
 			switch {
-			case !KnownFailureKindAt(wf, node, kind):
+			case !known(kind):
 				add(field.name, kind, "`%s:` names %q, which is neither a built-in kind (%s) nor declared under `errors:`",
 					strings.TrimPrefix(field.name, "retry."), kind, strings.Join(errorKindNames(), ", "))
 			case !ErrorKind(kind).Retryable():
@@ -164,7 +214,7 @@ func PolicyKindProblems(wf *Workflow, node *Node) []PolicyKindProblem {
 		for _, kind := range retry.GetExcept() {
 			if slices.Contains(on, kind) {
 				add("retry.except", kind, "%q is in both `only:` and `except:`", kind)
-			} else if KnownFailureKindAt(wf, node, kind) && ErrorKind(kind).Retryable() {
+			} else if known(kind) && ErrorKind(kind).Retryable() {
 				add("retry.except", kind, "`except:` names %q, which `only:` already leaves out; write one list or the other", kind)
 			}
 		}
