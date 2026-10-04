@@ -188,9 +188,13 @@ Read an input as `${inputs.<name>}`. A few things to know:
   padded base64) and are bound once at submit, so `${inputs.opens + inputs.window}`
   is time arithmetic and `must: this > timestamp("2026-01-01T00:00:00Z")` reads
   `this` as a timestamp. Text that is not one is refused without repeating it.
-  They are inputs only: an output cannot declare them yet, so report a computed
-  moment with `string(...)`. See `examples/typed-moments`. A worker built before
-  they existed refuses the declaration when the run starts.
+  They work wherever a type is written: a field of a record, the elements of
+  `list(timestamp)` and values of `map(string, duration)`, and an output's
+  `type:`. A rule across a record's fields compares times, not text, and an
+  output is reported in the run document as the text a caller would submit (an
+  RFC 3339 timestamp, a Go-form duration such as `1h30m0s`, base64). See
+  `examples/typed-moments`. A worker built before they existed refuses the
+  declaration when the run starts.
 - **There is no int-to-float widening.** A `double` input's `default: 1` is
   refused; write `1.0`. On the command line, `--input ratio=2` is converted for
   you.

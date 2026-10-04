@@ -3,35 +3,23 @@ name: git-log-resume
 description: Reads a repository's commit history in two bounded pages using git.log's cursor input - the resume shape issue #216 asks every bounded list task to grow. Runs with no arguments.
 
 # git.log truncates rather than serializing an unbounded response (see
-# plugins/git/README.md, "Operational scale"), and reports that honestly as
-# `truncated: true`. Before `next_cursor` existed, that boolean was a dead
-# end: a caller who received page one of a longer history had no way to ask
-# for page two. This file demonstrates the fix - `next_cursor` in, `cursor`
-# out - for exactly one resume:
+# plugins/git/README.md, "Operational scale"), and reports that as
+# `truncated: true`. `next_cursor` out and `cursor` in is how a caller asks for
+# the next page, shown here for exactly one resume:
 #
-#   page one:  git.log(max_commits: 3)                  -> truncated: true, next_cursor: <opaque>
-#   page two:  git.log(max_commits: 3, cursor: <opaque>) -> continues exactly where page one stopped
+#   page one:  git.log(max_commits: 2)                    -> truncated: true, next_cursor: <opaque>
+#   page two:  git.log(max_commits: 2, cursor: <opaque>)  -> continues where page one stopped
 #
-# `next_cursor` is opaque to a workflow - never a bare sha to reason about
-# directly (it packs a walk's own pending frontier and everything already
-# returned, so a resume stays correct even across a merge; see
-# plugins/git/proto/git/v1/git.proto, LogInputs.cursor, and
-# plugins/git/cursor.go for the full contract and why a single sha was not
-# enough). Fed back exactly as returned, it resumes the identical walk with
-# nothing dropped and nothing repeated: page one's last commit and page
-# two's first commit are always distinct.
+# `next_cursor` is opaque: never a bare sha to reason about (it packs the walk's
+# pending frontier and everything already returned, so a resume stays correct
+# across a merge; see plugins/git/cursor.go). Fed back exactly as returned, it
+# resumes the identical walk with nothing dropped and nothing repeated.
 #
-# What this file deliberately does NOT show: walking to exhaustion. That is
-# `log-paginate.yaml`, beside this file — a `loop:` carrying the cursor
-# until a page reports `truncated: false`. (When this file was written the
-# language had no loop primitive and said so here; `loop:` landed, and the
-# exhaustive walk moved from a Go-only test into the DSL itself.) Two fixed
-# steps stay valuable for what they make legible: the resume shape in
-# isolation, one chained hand-off you can read without loop machinery
-# around it. The Go test proving cursor semantics across arbitrarily many
-# pages — every commit reached, exactly once — remains at
-# TestGitLogCursorPagesReachEveryCommitExactlyOnce
-# (plugins/git/log_test.go).
+# Walking to exhaustion is `log-paginate.yaml`, beside this file: a `loop:`
+# carrying the cursor until a page reports `truncated: false`. This file keeps
+# the resume shape alone, one chained hand-off with no loop around it. The Go
+# test proving the cursor reaches every commit exactly once is
+# TestGitLogCursorPagesReachEveryCommitExactlyOnce (plugins/git/log_test.go).
 vars:
   repo: https://github.com/octocat/Hello-World.git
 steps:

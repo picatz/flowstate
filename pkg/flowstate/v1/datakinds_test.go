@@ -6,6 +6,7 @@ import (
 	"math"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -156,10 +157,10 @@ func TestASensitiveDataKindIsNotQuotedInAMustRefusal(t *testing.T) {
 	require.NotContains(t, err.Error(), "aGk=")
 }
 
-// TestAHandBuiltWorkflowCannotDeclareADataKindOutput pins that the refusal
-// is the binder's, not only the parser's: a workflow built in code reaches
-// the same admission as one parsed from a Flowfile.
-func TestAHandBuiltWorkflowCannotDeclareADataKindOutput(t *testing.T) {
+// TestAnOutputMayDeclareADataKind pins that a workflow built in code is admitted
+// with a timestamp, duration or bytes output: the run document has a plain-JSON
+// form for each (see [v1.LiteralToGo]), which is what kept them off an output.
+func TestAnOutputMayDeclareADataKind(t *testing.T) {
 	t.Parallel()
 
 	for _, typ := range []v1.InputDeclaration_Type{
@@ -173,7 +174,7 @@ func TestAHandBuiltWorkflowCannotDeclareADataKindOutput(t *testing.T) {
 			DeclaredOutputs: []*v1.OutputDeclaration{{Name: "at", Type: typ}},
 		}
 		_, err := v1.BindRunInputs(wf, nil)
-		require.ErrorContains(t, err, "an output cannot be yet", typ.String())
+		require.NoError(t, err, typ.String())
 	}
 }
 
@@ -202,4 +203,168 @@ func TestASubmittedPackedValueIsHeldToTheSameRangeAsText(t *testing.T) {
 		_, err := v1.NormalizeDataKind(tc.typ, tc.val)
 		require.Error(t, err, name)
 	}
+}
+
+func timestampsOf(t *testing.T, lit *expr.Value) []string {
+	t.Helper()
+
+	var out []string
+	for _, element := range lit.GetListValue().GetValues() {
+		text, err := v1.LiteralToGo(element)
+		require.NoError(t, err)
+		out = append(out, text.(string))
+	}
+
+	return out
+}
+
+// TestDataKindsInsideAListAndAMapAreBoundAsTheValueCELReads holds the walk below the
+// top of a value: a list(timestamp) and a map(string, duration) hold the CEL kinds,
+// not the text they arrived as, and a bad element is refused with its path and
+// without its text.
+func TestDataKindsInsideAListAndAMapAreBoundAsTheValueCELReads(t *testing.T) {
+	t.Parallel()
+
+	stamps := &v1.Type{Kind: &v1.Type_List{List: &v1.Type{Kind: &v1.Type_Scalar_{Scalar: v1.Type_SCALAR_TIMESTAMP}}}}
+	spans := &v1.Type{Kind: &v1.Type_Map_{Map: &v1.Type_Map{Value: &v1.Type{Kind: &v1.Type_Scalar_{Scalar: v1.Type_SCALAR_DURATION}}}}}
+
+	list := v1.NewLiteralList("2026-01-01T00:00:00Z", "2026-06-01T12:00:00+02:00").GetLiteral()
+	got := v1.NormalizeWireValue(nil, stamps, list)
+	require.NotSame(t, list, got, "text must be replaced")
+	assert.Equal(t, []string{"2026-01-01T00:00:00Z", "2026-06-01T10:00:00Z"}, timestampsOf(t, got))
+
+	// Idempotent, and the identity when there is nothing to turn.
+	assert.Same(t, got, v1.NormalizeWireValue(nil, stamps, got))
+	plain := v1.NewLiteralList("a", "b").GetLiteral()
+	assert.Same(t, plain, v1.NormalizeWireValue(nil, &v1.Type{Kind: &v1.Type_List{List: &v1.Type{Kind: &v1.Type_Scalar_{Scalar: v1.Type_SCALAR_STRING}}}}, plain))
+
+	m := v1.NewLiteralMap(map[string]any{"short": "30s", "long": "90m"}).GetLiteral()
+	normalized := v1.NormalizeWireValue(nil, spans, m)
+	texts := map[string]string{}
+	for _, entry := range normalized.GetMapValue().GetEntries() {
+		text, err := v1.LiteralToGo(entry.GetValue())
+		require.NoError(t, err)
+		texts[entry.GetKey().GetStringValue()] = text.(string)
+	}
+	assert.Equal(t, map[string]string{"short": "30s", "long": "1h30m0s"}, texts)
+
+	declaration := &v1.InputDeclaration{Name: "at", Type: v1.InputDeclaration_TYPE_LIST, ValueType: stamps}
+	err := v1.CheckInputValue("at", declaration, v1.NewLiteralList("2026-01-01T00:00:00Z", "tomorrow"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "is not an RFC 3339 timestamp")
+	assert.Contains(t, err.Error(), "[1]")
+	assert.NotContains(t, err.Error(), "tomorrow")
+}
+
+// TestATimestampAndADurationAreAPlainValueAtTheEdge is the run-document half of
+// #1436: LiteralToGo answers the strings a caller would submit, so `-o json`, an
+// embedder and an http body carry them and not a tagged Any.
+func TestATimestampAndADurationAreAPlainValueAtTheEdge(t *testing.T) {
+	t.Parallel()
+
+	stamp, err := v1.NormalizeDataKind(v1.InputDeclaration_TYPE_TIMESTAMP, v1.NewLiteral("2026-01-01T00:00:00Z").GetLiteral())
+	require.NoError(t, err)
+	got, err := v1.LiteralToGo(stamp)
+	require.NoError(t, err)
+	assert.Equal(t, "2026-01-01T00:00:00Z", got)
+
+	span, err := v1.NormalizeDataKind(v1.InputDeclaration_TYPE_DURATION, v1.NewLiteral("5400s").GetLiteral())
+	require.NoError(t, err)
+	got, err = v1.LiteralToGo(span)
+	require.NoError(t, err)
+	assert.Equal(t, "1h30m0s", got)
+
+	// Any other packed message still has no plain form.
+	other, err := anypb.New(durationpb.New(0))
+	require.NoError(t, err)
+	other.TypeUrl = "type.googleapis.com/example.Other"
+	_, err = v1.LiteralToGo(&expr.Value{Kind: &expr.Value_ObjectValue{ObjectValue: other}})
+	require.Error(t, err)
+}
+
+// TestAnEmbedderBuildsATimestampAndADurationFromGoValues is the Go half of #1436:
+// NewValue answers a time.Time and a time.Duration with the values a run holds, so
+// a plugin's output or an embedder's input is the CEL kind and not an error value.
+func TestAnEmbedderBuildsATimestampAndADurationFromGoValues(t *testing.T) {
+	t.Parallel()
+
+	at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	got, err := v1.LiteralToGo(v1.NewValue(at).GetLiteral())
+	require.NoError(t, err)
+	assert.Equal(t, "2026-01-01T00:00:00Z", got)
+
+	got, err = v1.LiteralToGo(v1.NewValue(90 * time.Minute).GetLiteral())
+	require.NoError(t, err)
+	assert.Equal(t, "1h30m0s", got)
+
+	// And they are the kinds a declaration accepts, so a built input binds.
+	_, err = v1.NormalizeDataKind(v1.InputDeclaration_TYPE_TIMESTAMP, v1.NewValue(at).GetLiteral())
+	require.NoError(t, err)
+	_, err = v1.NormalizeDataKind(v1.InputDeclaration_TYPE_DURATION, v1.NewValue(at).GetLiteral())
+	require.Error(t, err, "a timestamp is not a duration")
+}
+
+// TestANonLiteralOutputIsNotReplacedByNormalizing pins that normalizing a literal
+// output leaves a value that is not a literal as it was: a hand-built output can
+// hold an error value, and turning it into an empty literal would change the answer
+// without saying so.
+func TestANonLiteralOutputIsNotReplacedByNormalizing(t *testing.T) {
+	t.Parallel()
+
+	held := &v1.Value{Kind: &v1.Value_Error_{Error: &v1.Value_Error{Message: "kept", Code: v1.Value_Error_CODE_INTERNAL}}}
+	wf := &v1.Workflow{
+		Name:    "out",
+		Profile: v1.CurrentProfile,
+		DeclaredOutputs: []*v1.OutputDeclaration{{
+			Name: "at", Type: v1.InputDeclaration_TYPE_TIMESTAMP, Value: held,
+		}},
+	}
+
+	out, err := v1.EvalRunOutputs(t.Context(), wf, &v1.Scope{})
+	require.NoError(t, err)
+	assert.NotNil(t, out.GetValues()["at"].GetError(), "the error value must not become an empty literal")
+}
+
+// TestAnOutOfRangePackedValueHasNoPlainForm pins that the edge conversion holds a
+// packed timestamp or duration to the range a text one is held to, so a value that
+// was never in range is refused rather than printed as a wrapped time.
+func TestAnOutOfRangePackedValueHasNoPlainForm(t *testing.T) {
+	t.Parallel()
+
+	huge, err := proto.Marshal(&timestamppb.Timestamp{Seconds: math.MaxInt64})
+	require.NoError(t, err)
+	hugeSpan, err := proto.Marshal(&durationpb.Duration{Seconds: math.MaxInt64})
+	require.NoError(t, err)
+
+	for name, any := range map[string]*anypb.Any{
+		"timestamp": {TypeUrl: "type.googleapis.com/google.protobuf.Timestamp", Value: huge},
+		"duration":  {TypeUrl: "type.googleapis.com/google.protobuf.Duration", Value: hugeSpan},
+	} {
+		_, err := v1.LiteralToGo(&expr.Value{Kind: &expr.Value_ObjectValue{ObjectValue: any}})
+		require.Error(t, err, name)
+	}
+}
+
+// TestAComputedOutputIsHeldAsTheKindItDeclares pins that text computed for a
+// timestamp output is stored as the timestamp, so a reader sees the declared type.
+func TestAComputedOutputIsHeldAsTheKindItDeclares(t *testing.T) {
+	t.Parallel()
+
+	wf := &v1.Workflow{
+		Name:    "out",
+		Profile: v1.CurrentProfile,
+		DeclaredOutputs: []*v1.OutputDeclaration{{
+			Name: "at", Type: v1.InputDeclaration_TYPE_TIMESTAMP,
+			Value: v1.NewExpr(`"2026-01-01T00:00:00Z"`),
+		}},
+	}
+
+	out, err := v1.EvalRunOutputs(t.Context(), wf, &v1.Scope{})
+	require.NoError(t, err)
+
+	literal := out.GetValues()["at"].GetLiteral()
+	require.NotNil(t, literal.GetObjectValue(), "the output must be the packed timestamp, not text")
+	got, err := v1.LiteralToGo(literal)
+	require.NoError(t, err)
+	assert.Equal(t, "2026-01-01T00:00:00Z", got)
 }

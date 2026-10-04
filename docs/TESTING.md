@@ -29,7 +29,8 @@ expression runs for real. Only two things are replaced:
 - **Tasks.** Each task invocation is answered by a *stub* you declare. A task
   with no matching stub fails the step; `flow test` never lets a task run for
   real. A stub can replace a task inside a called workflow too, while the
-  `call:` itself still runs.
+  `call:` itself still runs; to replace the call itself, stub its step (see
+  [Stubbing a call](#stubbing-a-call)).
 - **Time.** Each case gets a virtual clock that starts at
   `2020-01-01T00:00:00Z` and jumps to the next deadline whenever nothing else
   can run. A one-day approval timeout lapses instantly; a `retry:` interval
@@ -112,6 +113,7 @@ cases and 1 MiB.
 | Key | Meaning |
 | --- | --- |
 | `name` | Required. Shown in results and matched by `--run`. |
+| `skip` | A reason this case is not run. It is reported with the reason (`SKIP` in text, `<skipped>` in JUnit), counts in the summary, reaches no coverage, never fails the run, and is listed under `skipped` in the `-o json` report. On a table entry it skips every row. |
 | `workflow` | The workflow file, relative to the test file. Usually stated once in `defaults:`. |
 | `inputs` | The run's arguments, bound and checked exactly as a real run's are. |
 | `stubs` | How each task invocation is answered. |
@@ -183,6 +185,33 @@ Inputs a task evaluates for itself, like `http`'s `expect:` and `outputs:`, are
 not in `inputs`, and a `returns:` stub replaces them: the stub *is* the step's
 answer, so it supplies the shaped output names later steps read. To exercise the
 shaping itself, stub with `response:` instead.
+
+### Stubbing a call
+
+A `step:` stub may name a `call:` step. The callee's body does not run: the
+stub's `returns:` stand for the outputs the callee declares, and the caller
+reads them back as it would the real ones.
+
+```yaml
+stubs:
+  - step: provision                 # a `call: ./workflows/provision-tenant.yaml` step
+    where: inputs.tenant == "acme"  # inputs are the call's `with:` arguments
+    returns: {url: https://acme.test, region_count: 2}
+```
+
+`returns:` is held to the callee: a name the callee does not declare under
+`outputs:` is refused with a did-you-mean, and so is a declared output the stub
+leaves out. Each value an answer carries is held to its output's declared type
+and `must:` when the stub answers, so a string for an `int` fails the step as
+the real call would. A callee that declares a `sensitive:` input or output
+cannot be stubbed at its boundary (the stub would erase what keeps the value
+out of the transcript), and `expect.compensated` is refused in a case that
+stubs a call; run the callee inline for either. `where:`, `times:`, `fails:` and `invocations:` work as for a task
+stub; a call is counted as the task `call.<callee name>` with hyphens written
+as underscores. A call step no stub names still runs inline, so one file can
+hold a case that stubs the boundary beside one that runs the callee. A
+stubbed boundary runs none of the callee's steps, so test the callee's own
+workflow to cover them.
 
 **Warnings.** `flow test` warns about a stub that never answered, and about an
 invocation with no stub or no matching stub (which also fails the step).
@@ -507,6 +536,9 @@ as given. Finding no test files is an error, and so is naming a workflow file.
 | Flag | Effect |
 | --- | --- |
 | `--run <regex>` | Run only cases whose full name matches. |
+| `--list` | Print the names of the cases that would run, one per line under their file, without running any. Honours `--run`, and names the cases a `skip:` leaves out. A file that cannot be run is reported `REFUSED` and fails the command. Refused with `-o json`, `--junit`, `--debug`, `--watch`, `--fail-fast`, `--seeds` and `--coverage-required`, which all read a run's result. |
+| `--fail-fast` | Stop at the first failing case, or the first schedule divergence under `--seeds`. The cases not run are reported as skipped with the reason. Refused with `--coverage-required`, whose bar a stopped suite cannot meet. |
+| `--timeout <duration>` | The real-time limit for one case, default 30s and at most 10m. The virtual clock still decides what a workflow waits for, so this bounds a case that is stuck, not one that waits long. |
 | `--coverage-required` | Fail when a step or `switch:` arm is reached by no case and not listed under `coverage.allow_unreached`. |
 | `--fail-on-warning` | Treat warnings as failures. |
 | `--seeds N` | Also run each case under N seeded orderings of `parallel:` branches and `async:` steps, and fail if any ordering changes what the case observes. `--seed` replays one reported seed. |

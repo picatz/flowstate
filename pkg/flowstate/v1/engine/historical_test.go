@@ -796,13 +796,12 @@ func TestReconstructingALongRunBackwardCostsTheSumOfItsPrefixes(t *testing.T) {
 		len(at), len(history.GetEvents()), replayed, total, total/time.Duration(len(at)))
 }
 
-// TestACancelledRunReconstructsAsHoldingNoWaits records a run parked on signal
-// waits in two `parallel:` branches, one bounded and one not, cancels it, and
-// reconstructs every boundary. One bounded wait and not two: two concurrent
-// timers cancelled together can diverge on replay by themselves (#2244), and
-// this test is about what the reconstruction sees, not about that. At the cancelled run's last event no wait is pending: the waits'
-// cleanup runs in coroutines after the sentinel's, and a sentinel on the run's
-// own context would have exited at the cancel request and never seen it.
+// TestACancelledRunReconstructsAsHoldingNoWaits records a run parked on two
+// bounded signal waits in two `parallel:` branches, cancels it, and
+// reconstructs every boundary. At the cancelled run's last event no wait is
+// pending: the waits' cleanup runs in coroutines after the sentinel's, and a
+// sentinel on the run's own context would have exited at the cancel request and
+// never seen it.
 func TestACancelledRunReconstructsAsHoldingNoWaits(t *testing.T) {
 	temporal := newTemporalNamespace(t)
 	startWorker(t, temporal)
@@ -810,14 +809,14 @@ func TestACancelledRunReconstructsAsHoldingNoWaits(t *testing.T) {
 	spec := &v1.Workflow{Name: "cancelled", Profile: v1.CurrentProfile, Steps: []*v1.Node{
 		{Id: "fan", Kind: &v1.Node_Parallel{Parallel: &v1.Parallel{Branches: []*v1.Parallel_Branch{
 			{Steps: []*v1.Node{signalStep("left", "go-left", 5*time.Minute)}},
-			{Steps: []*v1.Node{signalStep("right", "go-right", 0)}},
+			{Steps: []*v1.Node{signalStep("right", "go-right", 5*time.Minute)}},
 		}}}},
 	}}
 	run, err := temporal.ExecuteWorkflow(t.Context(),
 		client.StartWorkflowOptions{ID: "historical-cancelled", TaskQueue: engine.RunTaskQueueName},
 		engine.Run, &v1.RunState{Workflow: spec})
 	require.NoError(t, err)
-	require.Eventually(t, func() bool { return timersStarted(t, temporal, run.GetID()) >= 1 },
+	require.Eventually(t, func() bool { return timersStarted(t, temporal, run.GetID()) >= 2 },
 		30*time.Second, 50*time.Millisecond, "the run never parked on its waits")
 
 	require.NoError(t, temporal.CancelWorkflow(t.Context(), run.GetID(), run.GetRunID()))

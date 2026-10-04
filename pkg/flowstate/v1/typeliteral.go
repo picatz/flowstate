@@ -36,6 +36,9 @@ func checkLiteralShapeAt(table TypeTable, r valueRendering, t *Type, literal *ex
 
 	switch kind := t.GetKind().(type) {
 	case *Type_Scalar_:
+		if data, ok := dataKindOf(t); ok {
+			return checkDataKindAt(data, literal, path)
+		}
 		if !literalIsScalar(kind.Scalar, literal) {
 			return mismatch()
 		}

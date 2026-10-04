@@ -135,6 +135,12 @@ func (table TypeTable) checkField(r valueRendering, field *InputDeclaration, val
 		return nil
 	}
 
+	// A timestamp, a duration and bytes are judged by whether the text reads as one,
+	// not by the kind of literal; see [NormalizeDataKind].
+	if IsDataKind(declared) {
+		return checkDataKindAt(declared, value, path)
+	}
+
 	got, ok := inputTypeOf(value)
 	if !ok {
 		return fmt.Errorf("%s%s, which is not a kind of value a field can hold; it is declared %s",

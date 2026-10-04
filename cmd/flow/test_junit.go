@@ -16,16 +16,18 @@ type junitSuites struct {
 	Tests   int          `xml:"tests,attr"`
 	Failed  int          `xml:"failures,attr"`
 	Errors  int          `xml:"errors,attr"`
+	Skipped int          `xml:"skipped,attr"`
 	Suites  []junitSuite `xml:"testsuite"`
 }
 
 type junitSuite struct {
-	Name   string      `xml:"name,attr"`
-	Tests  int         `xml:"tests,attr"`
-	Failed int         `xml:"failures,attr"`
-	Errors int         `xml:"errors,attr"`
-	Time   string      `xml:"time,attr"`
-	Cases  []junitCase `xml:"testcase"`
+	Name    string      `xml:"name,attr"`
+	Tests   int         `xml:"tests,attr"`
+	Failed  int         `xml:"failures,attr"`
+	Errors  int         `xml:"errors,attr"`
+	Skipped int         `xml:"skipped,attr"`
+	Time    string      `xml:"time,attr"`
+	Cases   []junitCase `xml:"testcase"`
 }
 
 type junitCase struct {
@@ -34,6 +36,11 @@ type junitCase struct {
 	Time    string        `xml:"time,attr"`
 	Failure *junitProblem `xml:"failure,omitempty"`
 	Error   *junitProblem `xml:"error,omitempty"`
+	Skipped *junitSkip    `xml:"skipped,omitempty"`
+}
+
+type junitSkip struct {
+	Message string `xml:"message,attr"`
 }
 
 type junitProblem struct {
@@ -75,6 +82,12 @@ func junitFromResults(results []testFileResult, coverageRequired, failOnWarning 
 			}
 			suite.Cases = append(suite.Cases, tc)
 		}
+		for _, sk := range r.skipped {
+			suite.Cases = append(suite.Cases, junitCase{
+				Class: suite.Name, Name: sk.Name, Time: "0",
+				Skipped: &junitSkip{Message: sk.Reason},
+			})
+		}
 		// What fails the command without failing any case — a promoted warning,
 		// a required-coverage gap, a schedule divergence — is a synthetic case,
 		// so a CI view never shows green over a non-zero exit.
@@ -93,11 +106,15 @@ func junitFromResults(results []testFileResult, coverageRequired, failOnWarning 
 			if c.Error != nil {
 				suite.Errors++
 			}
+			if c.Skipped != nil {
+				suite.Skipped++
+			}
 		}
 		suite.Time = fmt.Sprintf("%.3f", total)
 		doc.Tests += suite.Tests
 		doc.Failed += suite.Failed
 		doc.Errors += suite.Errors
+		doc.Skipped += suite.Skipped
 		doc.Suites = append(doc.Suites, suite)
 	}
 

@@ -149,9 +149,9 @@ func TestADeclaredTypeNestedTooDeepIsRefusedAtCompile(t *testing.T) {
 	require.Error(t, err)
 }
 
-// TestTheDataKindsAreDeclarableOnAnInputButNotAnOutput holds the #1436 slice:
-// an input may be a timestamp, duration or bytes, and an output may not yet.
-func TestTheDataKindsAreDeclarableOnAnInputButNotAnOutput(t *testing.T) {
+// TestTheDataKindsAreDeclarableOnAnInputAndAnOutput holds the #1436 slices: an
+// input and an output may each be a timestamp, duration or bytes.
+func TestTheDataKindsAreDeclarableOnAnInputAndAnOutput(t *testing.T) {
 	t.Parallel()
 
 	for word, legacy := range map[string]v1.InputDeclaration_Type{
@@ -163,7 +163,7 @@ func TestTheDataKindsAreDeclarableOnAnInputButNotAnOutput(t *testing.T) {
 		require.NoError(t, err, word)
 		require.Equal(t, legacy, wf.GetDeclaredInputs()[0].GetType(), word)
 
-		_, _, err = flowfile.Parse([]byte(fmt.Sprintf(`edition: v2026.4
+		out, _, err := flowfile.Parse([]byte(fmt.Sprintf(`edition: v2026.4
 name: out
 steps:
   - id: up
@@ -173,6 +173,7 @@ outputs:
     value: ${steps.up.value}
     type: %s
 `, word)))
-		require.ErrorContains(t, err, "cannot be declared on an output yet", word)
+		require.NoError(t, err, word)
+		require.Equal(t, legacy, out.GetDeclaredOutputs()[0].GetType(), word)
 	}
 }

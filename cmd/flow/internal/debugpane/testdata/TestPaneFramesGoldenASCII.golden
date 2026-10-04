@@ -73,7 +73,7 @@
 [1;38;2;133;131;146mscope[m [2;38;2;133;131;146m-------------------------------------------------------------------------[m
   [1;38;2;241;239;239msteps.build[m      {"artifact":"build.tar.gz"}
   [1;38;2;241;239;239msteps.checkout[m   {"artifact":"checkout.tar.gz"}
-  [1;38;2;241;239;239msteps.flaky[m      {"error":"deliberate failure"}
+  [1;38;2;241;239;239msteps.flaky[m      {"error":"deliberate failure","failure":{"kind":"Internal","m
   [1;38;2;241;239;239mvars.region[m      "eu-west-1"
   [1;38;2;241;239;239minputs.version[m   "2026.9.0"
   [1;38;2;241;239;239mrun.identity[m     {"claims":{},"issuer":"","namespace":"","subject":""}

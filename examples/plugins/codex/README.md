@@ -69,27 +69,11 @@ tokens - it will fail without a configured `codex` binary, without
 `FLOWSTATE_CODEX_BIN` pointing at one, and without a valid API key behind
 `FLOWSTATE_SECRET_OPENAI_API_KEY`.
 
-## Why this is not `examples/codex/workflow.yaml`
+## How this is checked
 
-The same reason [`examples/plugins/vcs`](../vcs) and
-[`examples/plugins/github`](../github) give, and
-[`examples/README.md`](../../README.md) gives in full: the corpus
-enumerated as `examples/*/workflow.yaml` is checked with the built-in task
-registry alone, and a file naming a plugin's task is meant to be refused by
-a process that has not loaded that plugin, with a diagnostic that says so
-rather than a silent pass.
-
-## What proves this file is reachable
-
-`TestAFlowfileCanNameTheCodexPluginsTasks`, in
-[`plugins/codex/reachable`](../../../plugins/codex/reachable), is this
-plugin's equivalent of `TestAFlowfileCanNameAPluginTask` for
-`examples/plugins/greet` in `pkg/flowstate/v1/plugin`: it builds this
-plugin as a real, separately compiled binary, opens a
-[`plugin.Host`](../../../pkg/flowstate/v1/plugin) over it, and validates
-this exact file from disk before and after registration - refused with a
-diagnostic naming `codex.exec` beforehand, accepted afterward, its inputs
-checked against the descriptors the plugin actually shipped. It does not
-run `codex.exec` for real - that reaches the real OpenAI API through a real
-`codex` binary and costs real tokens, neither of which this test has any
-business doing.
+The file sits under `examples/plugins/` so the built-in-only corpus checks skip
+it; [`examples/README.md`](../../README.md#plugin-examples) says why and how it is
+validated against the plugin's real schema. `plugins/codex/reachable` builds the
+binary and proves the files are refused before the plugin is registered and
+accepted after. It never runs `codex.exec`, which reaches the OpenAI API and costs
+tokens.

@@ -7,7 +7,11 @@ import (
 	"time"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/anypb"
 	"google.golang.org/protobuf/types/known/durationpb"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // Cases for `inputs:` and `outputs:`, run by both execution drivers.
@@ -145,6 +149,29 @@ func InputOutputCases(httpBaseURL string) []Case {
 				"at":    v1.NewLiteral("2026-01-01T00:00:00Z"),
 				"token": v1.NewLiteral("aGk="),
 			},
+			ExpectedOutputs: held("show"),
+		},
+		{
+			// #1436: the same kinds inside a record. A field arrives as text, and
+			// by the time the type's own rule and an expression read it, it is a
+			// timestamp and a duration, on both drivers.
+			Name: "a record with timestamp and duration fields is read as those types",
+			Workflow: windowWorkflow("inputs-window",
+				`inputs.w.starts + inputs.w.every == timestamp("2026-01-01T01:30:00Z")`),
+			Inputs: map[string]*v1.Value{"w": v1.NewLiteralMap(map[string]any{
+				"starts": "2026-01-01T00:00:00Z", "ends": "2026-01-01T02:00:00Z", "every": "90m",
+			})},
+			ExpectedOutputs: held("show"),
+		},
+		{
+			// The rule across the fields compares times, not text: as strings the
+			// end sorts before the start here, as times it is an hour after.
+			Name: "a record rule across timestamp fields compares times",
+			Workflow: windowWorkflow("inputs-window-order",
+				`inputs.w.ends - inputs.w.starts == duration("1h30m")`),
+			Inputs: map[string]*v1.Value{"w": v1.NewLiteralMap(map[string]any{
+				"starts": "2026-01-01T10:00:00+02:00", "ends": "2026-01-01T09:30:00Z",
+			})},
 			ExpectedOutputs: held("show"),
 		},
 		{
@@ -457,6 +484,38 @@ func InputOutputCases(httpBaseURL string) []Case {
 			ExpectedErrorOmits:    sensitiveAnswer,
 		},
 		{
+			// #1436, the output half: a timestamp, duration and bytes output hold the
+			// value CEL computed, and both drivers report them as such.
+			Name: "a timestamp, duration and bytes output are reported as those values",
+			Workflow: declares("outputs-data-kinds",
+				nil,
+				[]*v1.OutputDeclaration{
+					typedOutput("at", `timestamp("2026-01-01T00:00:00Z") + duration("90m")`, v1.InputDeclaration_TYPE_TIMESTAMP),
+					typedOutput("every", `duration("90m")`, v1.InputDeclaration_TYPE_DURATION),
+					typedOutput("token", `b"hi"`, v1.InputDeclaration_TYPE_BYTES),
+				},
+				says("a", "hello"),
+			),
+			ExpectedOutputs: answers(held("a"), map[string]*v1.Value{
+				"at":    packed(timestamppb.New(time.Date(2026, 1, 1, 1, 30, 0, 0, time.UTC))),
+				"every": packed(durationpb.New(90 * time.Minute)),
+				"token": {Kind: &v1.Value_Literal{Literal: &expr.Value{Kind: &expr.Value_BytesValue{BytesValue: []byte("hi")}}}},
+			}),
+		},
+		{
+			// The refusal: text that is not a timestamp is not one, however it got
+			// there, and the run fails at completion with the value left out.
+			Name:          "a timestamp output that is text and not a timestamp fails the run",
+			ExpectFailure: true,
+			Workflow: declares("outputs-data-kind-bad",
+				nil,
+				[]*v1.OutputDeclaration{typedOutput("at", `"soon"`, v1.InputDeclaration_TYPE_TIMESTAMP)},
+				says("a", "hello"),
+			),
+			ExpectedErrorContains: `output "at" is declared timestamp but computed a value that is not an RFC 3339 timestamp`,
+			ExpectedErrorOmits:    "soon",
+		},
+		{
 			// A record type, the positive direction: the declaration travels in the
 			// specification and both drivers judge a computed output by it.
 			Name: "a record output that matches its type is reported",
@@ -755,6 +814,26 @@ func InputRefusalCases() []Refusal {
 
 	return []Refusal{
 		{
+			// #1436: as strings the end sorts after the start here, as times it is
+			// an hour before, so a rule across the two fields refuses it only if it
+			// compares times.
+			Name:     "a record rule across timestamp fields refuses an end before the start",
+			Workflow: windowWorkflow("inputs-window-reversed", `true`),
+			Inputs: map[string]*v1.Value{"w": v1.NewLiteralMap(map[string]any{
+				"starts": "2026-01-01T09:00:00Z", "ends": "2026-01-01T10:00:00+02:00",
+			})},
+			Contains: "the record Window must satisfy `this.ends > this.starts`",
+		},
+		{
+			Name:     "a record field that is not a timestamp is refused with its path",
+			Workflow: windowWorkflow("inputs-window-bad", `true`),
+			Inputs: map[string]*v1.Value{"w": v1.NewLiteralMap(map[string]any{
+				"starts": "yesterday", "ends": "2026-01-01T09:00:00Z",
+			})},
+			Contains: "is not an RFC 3339 timestamp such as 2026-01-01T00:00:00Z at .starts",
+			Omits:    "yesterday",
+		},
+		{
 			// #1465: `must:` is part of the workflow's CEL dialect. Before it
 			// resolved the build's CurrentProfile, this hand-built spec passed
 			// submission even though the worker does not know the profile the
@@ -931,4 +1010,40 @@ func manyInts(n int) []any {
 		items[i] = i
 	}
 	return items
+}
+
+// windowWorkflow declares the record `Window{starts, ends: timestamp; every:
+// duration}`, whose type rule is `this.ends > this.starts`, one input of that type,
+// and a pinned claim about it.
+func windowWorkflow(name, claim string) *v1.Workflow {
+	wf := declares(name,
+		[]*v1.InputDeclaration{{
+			Name: "w", Type: v1.InputDeclaration_TYPE_STRUCT, Required: true,
+			ValueType: &v1.Type{Kind: &v1.Type_Message{Message: "Window"}},
+		}},
+		nil,
+		pins("show", claim)...,
+	)
+	wf.DeclaredTypes = []*v1.TypeDeclaration{{
+		Name: "Window",
+		Must: new("this.ends > this.starts"),
+		Fields: []*v1.InputDeclaration{
+			{Name: "starts", Type: v1.InputDeclaration_TYPE_TIMESTAMP, Required: true},
+			{Name: "ends", Type: v1.InputDeclaration_TYPE_TIMESTAMP, Required: true},
+			{Name: "every", Type: v1.InputDeclaration_TYPE_DURATION},
+		},
+	}}
+
+	return wf
+}
+
+// packed is the literal a run holds for a timestamp or a duration: the well-known
+// message in an Any, which is what CEL produces and what an output reports.
+func packed(m proto.Message) *v1.Value {
+	object, err := anypb.New(m)
+	if err != nil {
+		panic(err)
+	}
+
+	return &v1.Value{Kind: &v1.Value_Literal{Literal: &expr.Value{Kind: &expr.Value_ObjectValue{ObjectValue: object}}}}
 }

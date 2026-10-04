@@ -1,6 +1,7 @@
 package flowtest
 
 import (
+	"cmp"
 	"fmt"
 	"maps"
 	"slices"
@@ -218,6 +219,7 @@ func mergeRow(entry, row Test) Test {
 	// `signals:` writes all of them — because each is a list or a record
 	// whose halves are not independently meaningful. `expect:` is the
 	// exception and is merged field by field; see [mergeExpectation].
+	merged.Skip = cmp.Or(row.Skip, entry.Skip)
 	if merged.Trigger == nil {
 		merged.Trigger = entry.Trigger
 	}

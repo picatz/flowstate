@@ -85,7 +85,7 @@ const stepsKey = "steps"
 // misspelled `timout:` that is silently ignored does nothing at run time and gives
 // the author no reason to doubt it, which is the worst of both outcomes.
 var (
-	workflowKeys = []string{"edition", "name", "labels", "description", "types", "inputs", "outputs", "vars", "steps", "triggers", "signals", "debug", "concurrency", "plugins"}
+	workflowKeys = []string{"edition", "name", "labels", "description", "types", "functions", "inputs", "outputs", "vars", "steps", "triggers", "signals", "debug", "concurrency", "plugins"}
 
 	// The keys of one input declaration and of one output declaration. Both are
 	// mappings keyed by the name being declared, so these are the keys *under* a
@@ -672,6 +672,17 @@ type compiler struct {
 	// typeEnv is the type environment holding typeNames, built once so that a
 	// file's declarations cost one environment rather than one each.
 	typeEnv *cel.Env
+
+	// functions are the file's declared functions that checked, which every
+	// expression compiled after the `functions:` block is expanded through. Nil for
+	// a file that declares none. See [compiler.declaredFunctions].
+	functions *v1.FunctionSet
+
+	// expandedNodes is what the expansions so far add up to, held against
+	// [v1.MaxFunctionExpansionNodes]; expansionOverflowed records that the limit was
+	// already reported, since every later use would report it again.
+	expandedNodes       int
+	expansionOverflowed bool
 }
 
 // enter accounts for descending into one more value, and reports whether the
@@ -893,6 +904,13 @@ func (c *compiler) compile(file *ast.File) *v1.Workflow {
 	// read it. See flowfile/types.go.
 	if f, found := fields.get("types"); found {
 		workflow.DeclaredTypes = c.declaredTypes(f.value, "types", ref{path: "types", label: "types"})
+	}
+
+	// The functions the file names, read before anything that can call one: each
+	// expression is expanded as it is compiled, so the names have to be known first.
+	// See flowfile/functions.go.
+	if f, found := fields.get("functions"); found {
+		workflow.DeclaredFunctions = c.declaredFunctions(f.value, "functions", ref{path: "functions", label: "functions"})
 	}
 
 	// What the run takes, read first because it is what a reader meets first: a
@@ -1304,13 +1322,10 @@ func (c *compiler) declaredOutput(e entry, parent string) *v1.OutputDeclaration 
 		typeRef := ref{path: typePath, label: "output " + e.name + " type"}
 		if text, ok := c.text(f.value, typePath, typeRef); ok {
 			declared, structural, err := declareType(c.typeEnv, text)
-			if err == nil && v1.IsDataKind(declared) {
-				err = fmt.Errorf("%s cannot be declared on an output yet: the run document has no plain-JSON form for it (#1436)", text)
-			}
 			if err != nil {
 				c.report(spanOfNode(f.value), typeRef,
 					"is %q, which is not a type an output can have: %s; the types are %s",
-					text, err, strings.Join(outputTypeNames(), ", "))
+					text, err, strings.Join(declarableTypeNames(), ", "))
 			}
 			declaration.Type = declared
 			declaration.ValueType = structural

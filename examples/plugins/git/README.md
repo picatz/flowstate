@@ -194,24 +194,11 @@ does with a plain `git ls-remote`, or with `git.ls_remote` itself (see
 a second, concurrent write to the same branch based on the same base_ref is
 refused, not forced - see `plugins/git/README.md`, "Design decisions."
 
-## Why this is not `examples/git/workflow.yaml`
+## How this is checked
 
-The same reason [`examples/plugins/vcs`](../vcs) and
-[`examples/plugins/github`](../github) give: `examples/*/workflow.yaml` is
-checked with the built-in task registry alone, and a file naming a plugin's
-task is meant to be refused by a process that has not loaded that plugin.
-See [`examples/README.md`](../../README.md) for the fuller argument.
-
-## What proves these files are reachable
-
-`TestAFlowfileCanNameTheGitPluginsTasks`, in
-[`plugins/git/reachable`](../../../plugins/git/reachable), builds this
-plugin as a real, separately compiled binary, opens a
-[`plugin.Host`](../../../pkg/flowstate/v1/plugin) over it, and validates every
-workflow file here from disk before and after registration - each refused with
-a diagnostic naming its task(s) beforehand, accepted afterward, inputs
-checked against the descriptors the plugin actually shipped. It does not run
-`git.ls_remote`, `git.log`, `git.read_file`, or `git.commit_push` for real -
-all four reach the real network, and reading a private repository or pushing
-a commit needs a credential and a target this test has no business holding
-or choosing on a human's behalf.
+The files sit under `examples/plugins/` so the built-in-only corpus checks skip them;
+[`examples/README.md`](../../README.md#plugin-examples) says why and how they are
+validated against the plugin's real schema. `plugins/git/reachable` builds the
+binary and proves each file is refused before the plugin is registered and accepted
+after. It never runs the four tasks, which reach the real network and, for a private
+read or a push, need a credential and a target the test must not choose.

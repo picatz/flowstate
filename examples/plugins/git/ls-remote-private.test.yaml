@@ -1,0 +1,24 @@
+edition: v2026.4
+
+# Proves the private read is the same git.ls_remote call with a token set, with
+# no network and without the git plugin installed. The token is a secret
+# reference the case binds to a placeholder, and the stub answers only a call
+# that carries it, so a workflow that stopped passing its credential would fail.
+tests:
+  - name: counts the branch refs a private repository advertises
+    workflow: ./ls-remote-private.yaml
+    inputs:
+      url: https://github.com/example-org/private-repo.git
+    secrets:
+      git:token: not-a-real-token
+    stubs:
+      - task: git.ls_remote
+        where: "inputs.url == 'https://github.com/example-org/private-repo.git' && inputs.prefix == 'refs/heads/' && inputs.token == 'not-a-real-token'"
+        returns:
+          refs:
+            - {name: refs/heads/main, sha: aaa1}
+            - {name: refs/heads/release, sha: aaa0}
+    expect:
+      ran: [refs]
+      outputs:
+        branch_count: 2

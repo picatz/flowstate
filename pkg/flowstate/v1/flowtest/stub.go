@@ -111,6 +111,12 @@ type stubExpr struct {
 // they were written — the shape a `switch` already has, and named that way in
 // [Stub.Where]'s doc.
 type stubbedTask struct {
+	// callee is the workflow whose boundary this task stands in for, set by
+	// [runCase] after binding when the task is a [stubCallBoundaries] rewrite.
+	// Every answer is held to its declared outputs before the caller sees it,
+	// as the real call would hold the callee's own (see [checkCallAnswer]).
+	callee *v1.Workflow
+
 	// mu serializes the matcher scan and the per-matcher bookkeeping against
 	// concurrent invocations of one task: two `parallel:` branches invoking
 	// the same task race otherwise, and the bookkeeping ([compiledStub.answered],
@@ -856,6 +862,13 @@ func (s *stubbedTask) fn(name string, sensitiveInputNames map[string]bool, unstu
 				if mismatch := shapedOutputsMismatch(serving, slices.Sorted(maps.Keys(shaping)), s.rawOutputs, slices.Sorted(maps.Keys(returns))); mismatch != "" {
 					return nil, v1.NewTaskError(name, v1.ErrorKindInvalidInput,
 						fmt.Errorf("stub %d for %s: %s", m.ordinal, describeStubTarget(m), mismatch))
+				}
+			}
+
+			if s.callee != nil {
+				if err := checkCallAnswer(scope.GetProfile(), s.callee, returns); err != nil {
+					return nil, v1.NewTaskError(name, v1.ErrorKindInvalidInput,
+						fmt.Errorf("stub %d for %s: %w", m.ordinal, describeStubTarget(m), err))
 				}
 			}
 

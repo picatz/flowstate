@@ -32,6 +32,8 @@ func TestDocumentKeysCoverWorkflowSchema(t *testing.T) {
 			schema = append(schema, "outputs")
 		case "declared_types":
 			schema = append(schema, "types")
+		case "declared_functions":
+			schema = append(schema, "functions")
 		case "plugin_requirements":
 			schema = append(schema, "plugins")
 		default:

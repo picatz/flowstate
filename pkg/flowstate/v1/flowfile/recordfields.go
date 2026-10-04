@@ -44,6 +44,10 @@ type recordPath struct {
 	// field's name may itself be empty (`inputs.order[""]`).
 	missing string
 	in      *v1.TypeDeclaration
+
+	// prefix is what precedes names in a sentence about the chain: `inputs.` for a
+	// record input, nothing for a function's parameter, which is its own root.
+	prefix string
 }
 
 // fieldPaths resolves every chain of an expression that starts at a record input.
@@ -66,6 +70,38 @@ func (t *typeTable) fieldPaths(parsed *expr.ParsedExpr) []recordPath {
 		seen[key] = true
 
 		if path, ok := t.resolveFieldPath(fields); ok {
+			path.prefix = v1.InputsRoot + "."
+			paths = append(paths, path)
+		}
+	})
+
+	return paths
+}
+
+// parameterPaths resolves every chain of an expression that starts at one of the
+// parameters inputTypes names, the way [typeTable.fieldPaths] does for a record
+// input. A function body reads its record parameter as `user.id`: the parameter is
+// the root, so there is no `inputs` to strip.
+func (t *typeTable) parameterPaths(parsed *expr.Expr) []recordPath {
+	if t == nil || len(t.records) == 0 || parsed == nil {
+		return nil
+	}
+
+	var paths []recordPath
+	seen := map[string]bool{}
+
+	walkExpr(parsed, func(root string, fields []string) {
+		if _, ok := t.inputTypes[root]; !ok {
+			return
+		}
+		names := append([]string{root}, fields...)
+		key := strings.Join(names, ".")
+		if seen[key] {
+			return
+		}
+		seen[key] = true
+
+		if path, ok := t.resolveFieldPath(names); ok {
 			paths = append(paths, path)
 		}
 	})
@@ -118,10 +154,14 @@ const (
 // does not declare, up to [maxFieldErrors] of them: the first is the one to fix and
 // the rest follow it.
 func (t *typeTable) fieldErrors(site v1.ValueSite) Diagnostics {
-	parsed := site.Value.GetExpr()
+	return pathErrors(t.fieldPaths(site.Value.GetExpr()), site.Step, site.Field())
+}
 
+// pathErrors reports each of paths that names a field its record does not declare,
+// up to [maxFieldErrors], against step and field.
+func pathErrors(paths []recordPath, step, field string) Diagnostics {
 	var ds Diagnostics
-	for _, path := range t.fieldPaths(parsed) {
+	for _, path := range paths {
 		if path.in == nil {
 			continue
 		}
@@ -144,8 +184,8 @@ func (t *typeTable) fieldErrors(site v1.ValueSite) Diagnostics {
 			chain = append(chain, echo(name))
 		}
 
-		message := fmt.Sprintf("%s.%s: the record %s has no field %q; it declares %s",
-			v1.InputsRoot, strings.Join(chain, "."), path.in.GetName(), echo(path.missing), declares)
+		message := fmt.Sprintf("%s%s: the record %s has no field %q; it declares %s",
+			path.prefix, strings.Join(chain, "."), path.in.GetName(), echo(path.missing), declares)
 		if len(path.missing) <= maxEchoedName {
 			all := make([]string, 0, len(fields))
 			for _, f := range fields {
@@ -157,7 +197,7 @@ func (t *typeTable) fieldErrors(site v1.ValueSite) Diagnostics {
 		}
 
 		ds = append(ds, Diagnostic{
-			Step: site.Step, Field: site.Field(), Message: message,
+			Step: step, Field: field, Message: message,
 			Code: v1.DiagnosticCodeUnresolvedReference,
 		})
 	}

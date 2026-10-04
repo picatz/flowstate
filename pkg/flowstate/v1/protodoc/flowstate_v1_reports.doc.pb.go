@@ -234,6 +234,27 @@ func init() {
 				" own passed/failed.\n",
 		},
 		{
+			Name: "flowstate.v1.TestReport.skipped",
+			Leading: " Skipped is every selected case that was not run, with why: a `skip:`\n" +
+				" reason the file wrote, or the first failure `--fail-fast` stopped at. A\n" +
+				" skipped case is not in Cases and reaches no coverage, so a report whose\n" +
+				" Cases is empty because everything was skipped is told apart here from one\n" +
+				" that ran nothing.\n",
+		},
+		{
+			Name:    "flowstate.v1.SkippedTestCase",
+			Leading: " SkippedTestCase is one case a `flow test` run selected and did not run.\n",
+		},
+		{
+			Name:    "flowstate.v1.SkippedTestCase.name",
+			Leading: " Name is the case's full name, as TestCase.name spells it.\n",
+		},
+		{
+			Name: "flowstate.v1.SkippedTestCase.reason",
+			Leading: " Reason is the file's `skip:` text, or the sentence naming the failure a\n" +
+				" `--fail-fast` run stopped at.\n",
+		},
+		{
 			Name: "flowstate.v1.ScheduleExploration",
 			Leading: " ScheduleExploration is what running one `*.test.yaml`'s cases under seeded\n" +
 				" schedules found, beyond the written-order run the rest of the report\n" +

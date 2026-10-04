@@ -3,7 +3,6 @@ package flowfile
 import (
 	"errors"
 	"fmt"
-	"slices"
 	"strings"
 	"sync"
 
@@ -378,16 +377,6 @@ var retiredTypeSpellings = map[v1.InputDeclaration_Type]string{
 	v1.InputDeclaration_TYPE_LIST:   "list(dyn)",
 	v1.InputDeclaration_TYPE_STRUCT: "map(string, dyn)",
 	v1.InputDeclaration_TYPE_FLOAT:  "double",
-}
-
-// outputTypeNames is [declarableTypeNames] without the data kinds an output
-// cannot hold yet.
-func outputTypeNames() []string {
-	return slices.DeleteFunc(declarableTypeNames(), func(name string) bool {
-		declared, ok := v1.ParseDeclaredType(name)
-
-		return ok && v1.IsDataKind(declared)
-	})
 }
 
 // declarableTypeNames are the bare words a `type:` accepts, for a diagnostic

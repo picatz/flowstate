@@ -28,3 +28,22 @@ tests:
         # {}` here would assert nothing about the one value this example exists
         # to demonstrate reading.
         tenant_url: https://acme.internal.example.com
+
+  # The other posture: stub the call at its boundary (#1599). The callee's body
+  # never runs, so `returns:` must name exactly the outputs it declares, and
+  # `where:` reads the call's own `with:` arguments as `inputs`.
+  - name: a stubbed boundary answers without running the callee
+    workflow: ./workflow.yaml
+    stubs:
+      - step: provision
+        where: inputs.tenant == "acme"
+        returns:
+          url: https://stub.example.com
+          region_count: 1
+    expect:
+      ran: [provision, announce]
+      outputs:
+        tenant_url: https://stub.example.com
+      invocations:
+        - task: log
+          count: 1

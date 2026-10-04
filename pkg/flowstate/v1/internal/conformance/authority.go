@@ -314,9 +314,9 @@ func AuthorityDenialCases() []AuthorityCase {
 				Steps: []*v1.Node{bearerSecretStep("read", unreachable, "fixture-secret", "API_TOKEN")},
 			},
 			ExpectedOutputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
-				"read": v1.FailedStepOutputs(`task "http" failed (PolicyDenied): ` +
+				"read": v1.FailedStepOutputs(v1.StepFailure{Kind: v1.ErrorKindPolicyDenied, Text: `task "http" failed (PolicyDenied): ` +
 					`resolving bearer reference fixture-secret:API_TOKEN: ` +
-					`secret access is not configured on this worker`),
+					`secret access is not configured on this worker`}),
 			}},
 			Authority: Authority{NoRuntime: true},
 		},
@@ -327,9 +327,9 @@ func AuthorityDenialCases() []AuthorityCase {
 				Steps: []*v1.Node{credentialStep("read", unreachable, "partner-api")},
 			},
 			ExpectedOutputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
-				"read": v1.FailedStepOutputs(`task "http" failed (PolicyDenied): ` +
+				"read": v1.FailedStepOutputs(v1.StepFailure{Kind: v1.ErrorKindPolicyDenied, Text: `task "http" failed (PolicyDenied): ` +
 					`authorizing federation target "partner-api": ` +
-					`workload identity federation is not configured on this worker`),
+					`workload identity federation is not configured on this worker`}),
 			}},
 			Authority: Authority{NoRuntime: true},
 		},
@@ -340,9 +340,9 @@ func AuthorityDenialCases() []AuthorityCase {
 				Steps: []*v1.Node{credentialStep("read", unreachable, "partner-api")},
 			},
 			ExpectedOutputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
-				"read": v1.FailedStepOutputs(`task "http" failed (PolicyDenied): ` +
+				"read": v1.FailedStepOutputs(v1.StepFailure{Kind: v1.ErrorKindPolicyDenied, Text: `task "http" failed (PolicyDenied): ` +
 					`authorizing federation target "partner-api": ` +
-					`workload identity federation is not configured on this worker`),
+					`workload identity federation is not configured on this worker`}),
 			}},
 			Authority: Authority{
 				Scheme: "fixture-secret", FixtureValue: "unused", Allow: []string{"true"}, Identity: identity,
@@ -355,11 +355,11 @@ func AuthorityDenialCases() []AuthorityCase {
 				Steps: []*v1.Node{bearerSecretStep("read", unreachable, "fixture-secret", "API_TOKEN")},
 			},
 			ExpectedOutputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
-				"read": v1.FailedStepOutputs(`task "http" failed (PolicyDenied): ` +
+				"read": v1.FailedStepOutputs(v1.StepFailure{Kind: v1.ErrorKindPolicyDenied, Text: `task "http" failed (PolicyDenied): ` +
 					`resolving bearer reference fixture-secret:API_TOKEN: ` +
 					`auth: denied by secret access policy: no rule permits workload ` +
 					`"flowstate:acme-tenant/_default/authority-denied-bearer/read" ` +
-					`in namespace "acme-tenant" to read fixture-secret:API_TOKEN (deny rule: true)`),
+					`in namespace "acme-tenant" to read fixture-secret:API_TOKEN (deny rule: true)`}),
 			}},
 			Authority: Authority{
 				Scheme: "fixture-secret", FixtureValue: "must-not-resolve",
@@ -378,9 +378,9 @@ func AuthorityDenialCases() []AuthorityCase {
 				Steps: []*v1.Node{headerSecretStep("read", unreachable, "fixture-secret", "API_TOKEN")},
 			},
 			ExpectedOutputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
-				"read": v1.FailedStepOutputs(`task "http" failed (PolicyDenied): ` +
+				"read": v1.FailedStepOutputs(v1.StepFailure{Kind: v1.ErrorKindPolicyDenied, Text: `task "http" failed (PolicyDenied): ` +
 					`header "Authorization": resolving reference fixture-secret:API_TOKEN: ` +
-					`secret access is not configured on this worker`),
+					`secret access is not configured on this worker`}),
 			}},
 			Authority: Authority{NoRuntime: true},
 		},
@@ -391,11 +391,11 @@ func AuthorityDenialCases() []AuthorityCase {
 				Steps: []*v1.Node{headerSecretStep("read", unreachable, "fixture-secret", "API_TOKEN")},
 			},
 			ExpectedOutputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
-				"read": v1.FailedStepOutputs(`task "http" failed (PolicyDenied): ` +
+				"read": v1.FailedStepOutputs(v1.StepFailure{Kind: v1.ErrorKindPolicyDenied, Text: `task "http" failed (PolicyDenied): ` +
 					`header "Authorization": resolving reference fixture-secret:API_TOKEN: ` +
 					`auth: denied by secret access policy: no rule permits workload ` +
 					`"flowstate:acme-tenant/_default/authority-denied-header/read" ` +
-					`in namespace "acme-tenant" to read fixture-secret:API_TOKEN (deny rule: true)`),
+					`in namespace "acme-tenant" to read fixture-secret:API_TOKEN (deny rule: true)`}),
 			}},
 			Authority: Authority{
 				Scheme: "fixture-secret", FixtureValue: "must-not-resolve",
@@ -414,11 +414,11 @@ func AuthorityDenialCases() []AuthorityCase {
 				Steps: []*v1.Node{bearerSecretStep("read", unreachable, "fixture-secret", "API_TOKEN")},
 			},
 			ExpectedOutputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
-				"read": v1.FailedStepOutputs(`task "http" failed (PolicyDenied): ` +
+				"read": v1.FailedStepOutputs(v1.StepFailure{Kind: v1.ErrorKindPolicyDenied, Text: `task "http" failed (PolicyDenied): ` +
 					`resolving bearer reference fixture-secret:API_TOKEN: ` +
 					`auth: denied by secret access policy: no rule permits workload ` +
 					`"flowstate:acme-tenant/_default/authority-denied-ordering/read" ` +
-					`in namespace "acme-tenant" to read fixture-secret:API_TOKEN (deny rule: true)`),
+					`in namespace "acme-tenant" to read fixture-secret:API_TOKEN (deny rule: true)`}),
 			}},
 			Authority: Authority{
 				Scheme: "fixture-secret", FixtureValue: "must-not-resolve",

@@ -41,6 +41,20 @@ var epoch = time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
 // cannot make progress, such as an untimed signal wait with no matching script.
 const maxCaseWallTime = 30 * time.Second
 
+// caseTimeoutFor is the real-time limit a case gets for a requested one: the
+// default for zero, and never more than [maxCaseTimeout].
+func caseTimeoutFor(requested time.Duration) time.Duration {
+	if requested <= 0 {
+		return maxCaseWallTime
+	}
+
+	return min(requested, maxCaseTimeout)
+}
+
+// maxCaseTimeout bounds [RunOptions.CaseTimeout]: a longer wait is a case that
+// is stuck, not one that is slow.
+const maxCaseTimeout = 10 * time.Minute
+
 var errCaseWallTime = errors.New("case wall-clock limit exceeded")
 
 // RunOptions is what a caller may vary about a suite run. The zero value is
@@ -62,6 +76,25 @@ type RunOptions struct {
 	// because a green over a subset must never read as the file's green
 	// (issue #929).
 	Select func(name string) bool
+
+	// CaseTimeout is the real-time backstop for one case; zero takes
+	// [maxCaseWallTime]. Longer than [maxCaseTimeout] is refused by the CLI,
+	// and clamped here so a Go caller cannot unbound it either.
+	CaseTimeout time.Duration
+
+	// HaltedBy names the failure an earlier file's run stopped at: every
+	// selected case here is then reported as skipped, so `--fail-fast` holds
+	// across the files of one invocation.
+	HaltedBy string
+
+	// FailFast stops at the first case that fails: the rest are reported in
+	// [RunResult.Skipped] with the reason, never silently dropped.
+	FailFast bool
+
+	// ListOnly selects and resolves cases without running any: the names
+	// that would run are returned in [RunResult.Listed], skipped ones in
+	// [RunResult.Skipped].
+	ListOnly bool
 
 	// Debugger, when set, holds each case's run at every step boundary so a
 	// session can drive it (#928 slice 1). Installed on the run's context, so
@@ -106,6 +139,25 @@ type RunResult struct {
 
 	// Filtered is how many cases [RunOptions.Select] excluded from this run.
 	Filtered int
+
+	// HaltedAt names the case a [RunOptions.FailFast] run stopped at, empty
+	// when it did not stop in this file. A caller running several files passes
+	// it, qualified by the file, as the next run's [RunOptions.HaltedBy].
+	HaltedAt string
+
+	// Skipped is every selected case that did not run, with why: a `skip:`
+	// reason, or the first failure that [RunOptions.FailFast] stopped at.
+	Skipped []SkippedCase
+
+	// Listed is the selected, unskipped case names of a [RunOptions.ListOnly]
+	// run, in file order.
+	Listed []string
+}
+
+// SkippedCase is a selected case that was not run, and the reason it carries.
+type SkippedCase struct {
+	Name   string
+	Reason string
 }
 
 // RunFile runs every test in a `*.test.yaml`, returning one [v1.TestReport].
@@ -217,6 +269,38 @@ func runSuite(ctx context.Context, file *File, opts RunOptions, loaderFor func(*
 	}
 
 	filtered := 0
+	var skipped []SkippedCase
+	var listed []string
+	failedFast := opts.HaltedBy
+	haltedAt := ""
+	caseTimeout := caseTimeoutFor(opts.CaseTimeout)
+	// A case that is not run still belongs to the suite's coverage: its
+	// workflow's steps are registered as unreached, so `--coverage-required`
+	// cannot pass over a workflow whose every case was skipped. A workflow
+	// that cannot be loaded here is left out, as one that fails to compile
+	// in a case that ran is.
+	observeUnrun := func(test *Test) {
+		l, identity := loaderFor(test)
+		unlock := v1.LockDefaultRegistry()
+		workflow, err := l.load()
+		unlock()
+		if err == nil {
+			coverage.observe(identity, workflow, nil, l.positions())
+		}
+	}
+	// A skipped case's name and reason are the file's own words, which can
+	// spell a withheld value as readily as a step id can (#2229); they go out
+	// under the posture a case that never ran has, the one [casePosture]
+	// knows without a run, joined into the file's like any case's.
+	skip := func(test *Test, reason string) {
+		posture := casePosture(test, fileVars{values: file.Vars, withheld: file.varsWithheld})
+		suite = widenedBy(suite, posture)
+		skipped = append(skipped, SkippedCase{
+			Name:   redactedErrorText(test.Name, posture),
+			Reason: redactedErrorText(reason, posture),
+		})
+		observeUnrun(test)
+	}
 	var transcripts [][]TranscriptLine
 	transcriptBudget := newSuiteTranscriptBudget()
 	warningBudget := newSuiteWarningBudget()
@@ -229,6 +313,19 @@ func runSuite(ctx context.Context, file *File, opts RunOptions, loaderFor func(*
 
 		if opts.Select != nil && !opts.Select(test.Name) {
 			filtered++
+			continue
+		}
+
+		if test.Skip != "" {
+			skip(&test, test.Skip)
+			continue
+		}
+		if failedFast != "" {
+			skip(&test, "not run after the first failure ("+failedFast+")")
+			continue
+		}
+		if opts.ListOnly {
+			listed = append(listed, test.Name)
 			continue
 		}
 
@@ -259,7 +356,7 @@ func runSuite(ctx context.Context, file *File, opts RunOptions, loaderFor func(*
 		caseCtx := ctx
 		cancel := func() {}
 		if opts.Debugger == nil {
-			caseCtx, cancel = caseContextWithin(ctx, maxCaseWallTime)
+			caseCtx, cancel = caseContextWithin(ctx, caseTimeout)
 		}
 
 		// posture is what the case's reported run withholds: the written-order
@@ -319,6 +416,12 @@ func runSuite(ctx context.Context, file *File, opts RunOptions, loaderFor func(*
 		report.Cases = append(report.Cases, result)
 		transcripts = append(transcripts, transcriptBudget.take(account))
 		coverage.observe(identity, spec, transcript, l.positions())
+		if opts.FailFast && (!result.GetPassed() || schedules.divergence != nil) {
+			// The verdict's own name, redacted under the case's posture, so the
+			// reason later cases carry cannot spell a value this one withholds.
+			failedFast = result.GetName()
+			haltedAt = result.GetName()
+		}
 	}
 
 	out := RunResult{
@@ -327,6 +430,12 @@ func runSuite(ctx context.Context, file *File, opts RunOptions, loaderFor func(*
 		Schedules:   schedules.result(),
 		Transcripts: transcripts,
 		Filtered:    filtered,
+		Skipped:     skipped,
+		Listed:      listed,
+		HaltedAt:    haltedAt,
+	}
+	for _, sk := range skipped {
+		report.Skipped = append(report.Skipped, &v1.SkippedTestCase{Name: sk.Name, Reason: sk.Reason})
 	}
 	// Attached here, for every door, so the whole document renders through
 	// protojson wherever it ends up — the CLI's machine modes and the MCP
@@ -727,13 +836,12 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 		return
 	}
 
-	// Serializes every case that swaps the process-wide default task registry
+	// Serializes the setup of every case that swaps the process-wide default task registry
 	// ([swapRegistry]) against every other such compound sequence in the
 	// process — this package's own, run one at a time by [RunFile], and any
 	// other package's, such as pkg/flowstate/embed's Tasks.Install. See
 	// [v1.LockDefaultRegistry].
 	unlockRegistry := v1.LockDefaultRegistry()
-	defer unlockRegistry()
 
 	// Swapped in before the workflow is even parsed, not just before it runs:
 	// a stub may name a task this build does not otherwise register — a
@@ -744,11 +852,38 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	// advertised. Only task-form stubs can name a missing task; a step-form
 	// stub names a step whose task the compiler already knows.
 	restore := swapRegistry(stubTaskNames(compiled))
-	defer restore()
+	// Released once the case has its own registry, and on any exit before: the
+	// process-wide one is held for compilation and for building [caseRegistry]
+	// and for nothing the run does, so a second case, such as the replay of a
+	// debugging session that is still held at a stop, is not made to wait for
+	// the first to end. Restored before unlocking, as the defers were.
+	releaseRegistry := sync.OnceFunc(func() {
+		restore()
+		unlockRegistry()
+	})
+	defer releaseRegistry()
 
 	workflow, err := load()
 	if err != nil {
 		caseError("%s", err)
+		return
+	}
+	// A `step:` stub may name a `call:` step to answer at the callee's
+	// boundary (#1599); the workflow the rest of the case runs and judges is
+	// the one with those calls replaced. See [stubCallBoundaries].
+	workflow, boundaries, err := stubCallBoundaries(workflow, compiled)
+	if err != nil {
+		caseError("%s", err)
+		return
+	}
+	defer swapRegistry(slices.Sorted(maps.Keys(boundaries)))()
+	if len(boundaries) > 0 && len(test.Expect.Compensated) > 0 {
+		// A callee's compensations run under its own step ids, which a
+		// stubbed callee never registers: the claim can neither be checked
+		// nor honestly pass, so it is refused rather than left to fail
+		// as an unexplained miss.
+		caseError("expect.compensated cannot be asserted in a case that stubs a call (callee stubbed); " +
+			"run the callee inline to assert its compensations")
 		return
 	}
 	// Reported to the caller for coverage: the workflow this case compiled is
@@ -782,6 +917,11 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	if err != nil {
 		caseError("%s", err)
 		return
+	}
+	for name, callee := range boundaries {
+		if stub, ok := stubs[name]; ok {
+			stub.callee = callee
+		}
 	}
 
 	// Refused before the run for the same reason a bad stub target is: an
@@ -872,6 +1012,7 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 		return
 	}
 	ctx = v1.NewContextWithRegistry(ctx, registry)
+	releaseRegistry()
 
 	inputs := v1.NewNamedValues(test.Inputs)
 
@@ -1198,10 +1339,11 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	return
 }
 
-// swapRegistry replaces every task in [v1.DefaultRegistry] for the duration
-// of one case — stubbed tasks with their stub, and every other registered
-// task with a function that fails closed — and returns a func restoring what
-// was there before.
+// swapRegistry replaces every task in [v1.DefaultRegistry] for the setup of
+// one case — stubbed tasks with their stub, and every other registered task
+// with a function that fails closed — and returns a func restoring what was
+// there before. The run itself dispatches through the case's own registry
+// ([caseRegistry]), so the swap lasts only until that is built.
 //
 // Every task, not just the stubbed ones. `flow test`'s whole promise is no
 // network and no Temporal (#155): a task this case never bothered to stub
@@ -1216,10 +1358,10 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 // reason (`allowLoopback` in pkg/flowstate/v1/internal/conformance/conformance.go): the local
 // driver looks tasks up through the process-wide default registry
 // ([v1.LookupTask]), so replacing a task for the duration of one case means
-// mutating that registry and putting it back. Test cases within one `flow
-// test` invocation therefore cannot run concurrently with each other — they
-// do not; [RunFile] runs them in sequence — and not concurrently with
-// anything else touching the same registry in the same process.
+// mutating that registry and putting it back. The setup of test cases within
+// one `flow test` invocation therefore cannot overlap — it does not: the
+// caller holds [v1.LockDefaultRegistry] across it — nor overlap anything else
+// touching the same registry in the same process.
 func swapRegistry(taskNames []string) func() {
 	registry := v1.DefaultRegistry()
 

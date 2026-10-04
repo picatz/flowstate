@@ -163,8 +163,9 @@ says otherwise.
 | [enum-input](enum-input) | `type: enum` — an input whose `values:` declare the closed set of strings it will accept, refused by name (not a hand-built `must:`) the moment a caller sends anything else | no |
 | [record-types](record-types) | `types:` — a named, closed record (`Order`, with a `Line` inside it) declared once and used as an input's and an output's `type:`; a missing required field, an undeclared field and a wrong nested value are each refused at submit with the path to the mistake | no |
 | [typed-moments](typed-moments) | `type: timestamp`, `duration` and `bytes` — inputs bound as the values CEL reads, so `inputs.opens + inputs.window` is time arithmetic and `must:` binds `this` to the same type; text that is not one is refused where the input is bound | no |
+| [functions](functions) | `functions:` — a computation (`slug`, `postPath`, `isLong`) declared once with typed parameters and a result, called from a step, an `if:` and an output; each call is replaced by the body when the file compiles, so both drivers run plain CEL, and `flow fmt` writes the calls back as written | no |
 | [alert-title-bound](alert-title-bound) | `max_len:` on a `type: string` input, refusing a title too long for the pager display it is headed for — counted in runes, not bytes, so a multi-byte title at the bound is let through and one rune past it is refused | no |
-| [saga-provisioning](saga-provisioning) | `undo:` — saga compensation: three steps, a failure on the third, and the first two taken back in reverse order. The one example that ends in a failed run, on purpose | yes |
+| [saga-provisioning](saga-provisioning) | `undo:` — saga compensation: three steps, a failure on the third, and the first two taken back in reverse order. The smallest example that ends in a failed run, on purpose | yes |
 | [order-fulfillment](order-fulfillment) | The same compensation over a business transaction — reserve stock, charge a card, undo both when the carrier step is asked to fail | yes |
 | [progressive-rollout](progressive-rollout) | `loop:` + `call:` + `undo:` together — traffic shifted 5% → 25% → 50% by a loop carrying the percentage, each stage a reusable called workflow with its own compensation, and every stage unwound newest-first when the canary is asked to fail | yes |
 | [computed-outputs](computed-outputs) | `outputs:` — what the run answers with, computed from its steps and its arguments | no |
@@ -228,10 +229,29 @@ repeating them would be one more thing to leave stale. Which is also why
 called by the first, and its own comments are exactly as much documentation as any
 other example's.
 
+### Plugin examples
+
 Everything under `plugins/` sits a directory deeper than the rest, which is
-deliberate: everything matching `examples/*/workflow.yaml` is checked with the
-built-in task registry, and a file naming a plugin's task is meant to be refused
-by a process that has not loaded that plugin. Their READMEs say more.
+deliberate. Everything matching `examples/*/workflow.yaml` is checked with the
+built-in task registry alone, and a file naming a plugin's task is refused by a
+process that has not loaded that plugin, with a diagnostic that says so rather
+than a silent pass. Whether a plugin is installed is a deployment's decision, so
+the checker says what it does not know instead of growing an exception.
+
+You tell it what is installed, and the file is then checked against the plugin's
+real input schema:
+
+```console
+$ flow validate --plugin-dir ./plugins examples/plugins/greet/workflow.yaml   # launches the plugins
+$ flow validate --plugin-catalog plugins.lock.json examples/plugins/greet/workflow.yaml   # starts nothing
+```
+
+[greet](plugins/greet) walks through both. CI checks the whole tree against the
+reviewed catalog in `plugins.lock.json` (`make plugin-examples`, which
+`make plugin-example-catalog-update` regenerates), and each plugin's `reachable`
+test builds the real binary and proves its example files are refused before the
+plugin is registered and accepted after. None of those tests run a task that
+reaches the network.
 `embedding/flowfile/workflow.yaml` follows the same convention for the same reason: it
 names `greet`, a task only `examples/embedding`'s own program registers, so it sits at
 `embedding/flowfile/workflow.yaml` rather than `embedding/workflow.yaml` to stay out of

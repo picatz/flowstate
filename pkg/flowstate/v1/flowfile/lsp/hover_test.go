@@ -1218,3 +1218,31 @@ steps:
 	require.NotNil(t, got, "the refusal about reading a step from `vars:` is gone")
 	assert.Contains(t, hoverText(got), "not readable here")
 }
+
+// TestHoverOnATolerantHTTPFailure is the Copilot finding on #2288: the typed
+// `failure` a tolerated task step records is not in the task's descriptor, and
+// hover must not call it undeclared.
+func TestHoverOnATolerantHTTPFailure(t *testing.T) {
+	t.Parallel()
+
+	c := newClient(t)
+	c.initialize()
+
+	const src = `name: tolerated-failure
+steps:
+  - id: web
+    continue_on_error: true
+    http:
+      url: https://example.com
+  - id: out
+    log:
+      message: ${steps.web.failure.kind}
+edition: v2026.4
+`
+	c.open("file:///tolerated-failure.yaml", src)
+	pos := positionOf(t, src, "${steps.web.failure.kind}", len("${steps.web.fail"))
+	got := c.hover("file:///tolerated-failure.yaml", pos.Line, pos.Character)
+	require.NotNil(t, got)
+	assert.NotContains(t, hoverText(got), "does not declare")
+	assert.Contains(t, hoverText(got), "classification")
+}

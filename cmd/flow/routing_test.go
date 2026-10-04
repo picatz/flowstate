@@ -684,3 +684,54 @@ func publishedScopes(t *testing.T, document map[string]any) []string {
 
 	return scopes
 }
+
+// TestTheGatePageIsMountedOnlyWhereAskedFor is the fail-closed half of --gates-ui
+// (#1748): a deployment that did not ask for the page has no such route, and one
+// that did serves it as a client of its own authenticated API, so a visitor with no
+// credential is refused by the API's verdict and one the API accepts reaches the
+// gate lookup.
+func TestTheGatePageIsMountedOnlyWhereAskedFor(t *testing.T) {
+	t.Parallel()
+
+	rpc := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNotFound) })
+
+	absent := httptest.NewTestServer(t, serverHandler(discardLogger(), refusingVerifier{}, nil, nil, "", rpc, nil, nil))
+	resp, err := absent.Client().Get(absent.URL + "/gates/some-run/deploy-approved")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusUnauthorized, resp.StatusCode,
+		"a deployment that did not pass --gates-ui served the gate page anyway: the path fell through to the authenticated API")
+
+	served := httptest.NewTestServer(t, serverHandler(discardLogger(), refusingVerifier{}, nil, nil, "", rpc, nil, nil,
+		withGatesUI()))
+	page, err := served.Client().Get(served.URL + "/gates/some-run/deploy-approved")
+	require.NoError(t, err)
+	defer page.Body.Close()
+
+	// refusingVerifier refuses every credential, so the page's own call to the API
+	// is refused on the API's word, and the page reports it as a sign-in, not as a
+	// gate and not as an error.
+	require.Equal(t, http.StatusUnauthorized, page.StatusCode)
+	require.Equal(t, "Bearer", page.Header.Get("WWW-Authenticate"))
+	require.Contains(t, page.Header.Get("Content-Type"), "text/html")
+	require.Contains(t, page.Header.Get("Content-Security-Policy"), "default-src 'none'")
+}
+
+// TestServerTakesTheGatesUIFlag is the wiring check: the flag exists on
+// `flow server`, is off by default, and turns the option on.
+func TestServerTakesTheGatesUIFlag(t *testing.T) {
+	t.Parallel()
+
+	var server *cobra.Command
+	for _, c := range newRootCommand().Commands() {
+		if c.Name() == "server" {
+			server = c
+		}
+	}
+	require.NotNil(t, server)
+
+	require.Empty(t, gatesUIOptions(server), "the gate page is on without being asked for")
+
+	require.NoError(t, server.Flags().Set("gates-ui", "true"))
+	require.Len(t, gatesUIOptions(server), 1)
+}

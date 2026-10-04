@@ -302,6 +302,12 @@ func SensitiveInputValues(inputs map[string]*Value, sensitiveNames map[string]bo
 			return WithheldSensitiveValues()
 		}
 
+		// A timestamp or duration reads back as one spelling, but CEL's own
+		// `string(...)` writes another, and a log line or a check witness can carry
+		// either. Both join the substring backstop, since the redaction set cannot
+		// know which an expression chose.
+		out.substrings = append(out.substrings, dataKindSpellings(lit)...)
+
 		// Sensitivity belongs to the declared input's origin, so it follows
 		// every descendant when a loop binds one element or a task selects one
 		// field out of a structured value. The container is kept as well: a
