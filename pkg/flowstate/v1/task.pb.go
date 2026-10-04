@@ -268,6 +268,79 @@ func (*Task_HTTP) Descriptor() ([]byte, []int) {
 	return file_flowstate_v1_task_proto_rawDescGZIP(), []int{0, 1}
 }
 
+// Exec is a task that runs one local program to completion and returns what it
+// did: its exit code, the bytes it printed, and whether those were cut short.
+//
+// It is built in and denied by default. A worker with no `--exec-policy`
+// refuses every `exec:` step as a policy denial that names the flag, because
+// process execution is the one capability whose blast radius is the worker
+// itself, and a deployment has to say yes before a workflow can ask. The
+// policy file (see [ExecPolicy]) decides which programs exist, which
+// directories they may run in, which environment they see, and how long and
+// how loud they may be; the step supplies only a name, arguments, a
+// directory, and whatever environment the operator let it set.
+//
+// # It is not a sandbox
+//
+// The child runs as the worker's user with the worker's privileges.
+// Nothing here applies a namespace, a cgroup, a seccomp filter, a filesystem
+// confinement, or a network restriction, and the deployment's egress policy
+// does not govern what the child connects to. The policy decides what may be
+// *started*; it does not decide what the started program does. A deployment
+// that needs the second guarantee runs the worker (or a dedicated worker
+// queue) inside the isolation boundary it trusts.
+//
+// # Argv, never a shell string
+//
+// The command is a list. There is no field that is parsed into words, so a
+// value spliced into an argument stays one argument. A workflow that wants
+// shell semantics names a shell as the program and owns that choice
+// visibly, and the operator's policy decides whether a shell is a program
+// this deployment has.
+//
+// # A nonzero exit is output, not failure
+//
+// The way an HTTP status code is output: the program ran, and what it
+// concluded is data the workflow branches on. A step fails only when the
+// policy denies it, the program could not be started, it exceeded the
+// policy's time bound, or the run was cancelled. A workflow that wants a
+// nonzero exit to stop the run says so with an `if:` on the next step.
+type Task_Exec struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Task_Exec) Reset() {
+	*x = Task_Exec{}
+	mi := &file_flowstate_v1_task_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Task_Exec) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Task_Exec) ProtoMessage() {}
+
+func (x *Task_Exec) ProtoReflect() protoreflect.Message {
+	mi := &file_flowstate_v1_task_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Task_Exec.ProtoReflect.Descriptor instead.
+func (*Task_Exec) Descriptor() ([]byte, []int) {
+	return file_flowstate_v1_task_proto_rawDescGZIP(), []int{0, 2}
+}
+
 // Inputs describes one message written to the run's durable log. Omitting
 // level records the message at info level, and fields may be absent when the
 // message has no structured attributes.
@@ -300,7 +373,7 @@ type Task_Log_Inputs struct {
 
 func (x *Task_Log_Inputs) Reset() {
 	*x = Task_Log_Inputs{}
-	mi := &file_flowstate_v1_task_proto_msgTypes[4]
+	mi := &file_flowstate_v1_task_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -312,7 +385,7 @@ func (x *Task_Log_Inputs) String() string {
 func (*Task_Log_Inputs) ProtoMessage() {}
 
 func (x *Task_Log_Inputs) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_task_proto_msgTypes[4]
+	mi := &file_flowstate_v1_task_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -363,7 +436,7 @@ type Task_Log_Outputs struct {
 
 func (x *Task_Log_Outputs) Reset() {
 	*x = Task_Log_Outputs{}
-	mi := &file_flowstate_v1_task_proto_msgTypes[5]
+	mi := &file_flowstate_v1_task_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -375,7 +448,7 @@ func (x *Task_Log_Outputs) String() string {
 func (*Task_Log_Outputs) ProtoMessage() {}
 
 func (x *Task_Log_Outputs) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_task_proto_msgTypes[5]
+	mi := &file_flowstate_v1_task_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -543,7 +616,7 @@ type Task_HTTP_Inputs struct {
 
 func (x *Task_HTTP_Inputs) Reset() {
 	*x = Task_HTTP_Inputs{}
-	mi := &file_flowstate_v1_task_proto_msgTypes[7]
+	mi := &file_flowstate_v1_task_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -555,7 +628,7 @@ func (x *Task_HTTP_Inputs) String() string {
 func (*Task_HTTP_Inputs) ProtoMessage() {}
 
 func (x *Task_HTTP_Inputs) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_task_proto_msgTypes[7]
+	mi := &file_flowstate_v1_task_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -717,7 +790,7 @@ type Task_HTTP_Outputs struct {
 
 func (x *Task_HTTP_Outputs) Reset() {
 	*x = Task_HTTP_Outputs{}
-	mi := &file_flowstate_v1_task_proto_msgTypes[8]
+	mi := &file_flowstate_v1_task_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -729,7 +802,7 @@ func (x *Task_HTTP_Outputs) String() string {
 func (*Task_HTTP_Outputs) ProtoMessage() {}
 
 func (x *Task_HTTP_Outputs) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_task_proto_msgTypes[8]
+	mi := &file_flowstate_v1_task_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -773,11 +846,253 @@ func (x *Task_HTTP_Outputs) GetJson() *v1alpha1.Value {
 	return nil
 }
 
+// Inputs describes one program invocation. The program is named, not
+// located: argv[0] is a name the operator's policy maps to an absolute
+// path, and a path written by a workflow is refused.
+type Task_Exec_Inputs struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Argv is the command as a list of words, program name first.
+	//
+	// The first word is a bare name looked up in the policy's `executables`
+	// table; it is never searched for on PATH, and a path (anything with a
+	// slash) is refused. The rest are passed to the program verbatim. No word
+	// is split, expanded, globbed or unquoted, which is the property that makes
+	// a value inside an argument safe to splice.
+	//
+	// Bounded because the workflow chooses both the count and the length, and
+	// the product is what the kernel's argument limit refuses. A word may not
+	// contain a NUL byte, which no operating system can pass.
+	Argv []string `protobuf:"bytes,1,rep,name=argv,proto3" json:"argv,omitempty"`
+	// Dir is the working directory, written as an absolute path.
+	//
+	// Required, because the worker's own working directory is never used: it
+	// is wherever the operator started the process, which is not something a
+	// workflow can reason about. The policy admits only directories under
+	// one of its configured roots, after symbolic links are resolved, so a
+	// path that lexically begins under a root but leaves it through a link is
+	// refused. A policy that configures no roots admits no directory, which
+	// makes the task unusable rather than unconfined.
+	Dir string `protobuf:"bytes,2,opt,name=dir,proto3" json:"dir,omitempty"`
+	// Env sets environment variables for the child, and is a request, not a
+	// grant.
+	//
+	// The child's environment is built from nothing: first the operator's own
+	// literal values, then the worker variables the operator listed for
+	// passthrough, and only then the entries here, each of which is accepted
+	// only if the policy lists its name as one a step may set. A key the
+	// policy does not list is a policy denial, and a key the operator already
+	// set cannot be overridden from here. Values are literal text: a secret
+	// reference is not accepted, so no credential reaches a child through this
+	// input.
+	Env           map[string]string `protobuf:"bytes,3,rep,name=env,proto3" json:"env,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Task_Exec_Inputs) Reset() {
+	*x = Task_Exec_Inputs{}
+	mi := &file_flowstate_v1_task_proto_msgTypes[15]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Task_Exec_Inputs) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Task_Exec_Inputs) ProtoMessage() {}
+
+func (x *Task_Exec_Inputs) ProtoReflect() protoreflect.Message {
+	mi := &file_flowstate_v1_task_proto_msgTypes[15]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Task_Exec_Inputs.ProtoReflect.Descriptor instead.
+func (*Task_Exec_Inputs) Descriptor() ([]byte, []int) {
+	return file_flowstate_v1_task_proto_rawDescGZIP(), []int{0, 2, 0}
+}
+
+func (x *Task_Exec_Inputs) GetArgv() []string {
+	if x != nil {
+		return x.Argv
+	}
+	return nil
+}
+
+func (x *Task_Exec_Inputs) GetDir() string {
+	if x != nil {
+		return x.Dir
+	}
+	return ""
+}
+
+func (x *Task_Exec_Inputs) GetEnv() map[string]string {
+	if x != nil {
+		return x.Env
+	}
+	return nil
+}
+
+// Outputs is what the invocation did. It is present for every program that
+// started and finished under its own power, whatever the exit code was.
+type Task_Exec_Outputs struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// ExitCode is the status the program exited with, or -1 when it was
+	// ended by a signal and so never exited (see [signal]).
+	//
+	// Data, not a verdict: a workflow reads it the way it reads an HTTP status
+	// code. Zero is success by convention only, and some programs use nonzero
+	// codes for outcomes that are not failures (`diff`, `grep`).
+	ExitCode int32 `protobuf:"varint,1,opt,name=exit_code,json=exitCode,proto3" json:"exit_code,omitempty"`
+	// Stdout is the program's standard output: at most the policy's byte bound,
+	// keeping the first bytes written, with invalid UTF-8 replaced by U+FFFD
+	// because a string output must be text.
+	Stdout string `protobuf:"bytes,2,opt,name=stdout,proto3" json:"stdout,omitempty"`
+	// Stderr is the program's standard error, bounded and sanitized exactly as
+	// [stdout] is. Standard output and error are captured separately and are not
+	// interleaved.
+	Stderr string `protobuf:"bytes,3,opt,name=stderr,proto3" json:"stderr,omitempty"`
+	// StdoutTruncated is true when the program wrote more to standard output
+	// than the policy's bound and the excess was discarded. The program was not
+	// stopped for it: bytes past the bound are read and dropped so a chatty
+	// program is not blocked on a full pipe.
+	StdoutTruncated bool `protobuf:"varint,4,opt,name=stdout_truncated,json=stdoutTruncated,proto3" json:"stdout_truncated,omitempty"`
+	// StderrTruncated is true when standard error exceeded the bound; see
+	// [stdout_truncated].
+	StderrTruncated bool `protobuf:"varint,5,opt,name=stderr_truncated,json=stderrTruncated,proto3" json:"stderr_truncated,omitempty"`
+	// Signal names the signal that ended the program (such as "killed" or
+	// "segmentation fault"), and is empty when it exited by itself.
+	Signal string `protobuf:"bytes,6,opt,name=signal,proto3" json:"signal,omitempty"`
+	// DurationMs is how long the program ran, in whole milliseconds, measured
+	// by the worker from start to reap.
+	DurationMs int64 `protobuf:"varint,7,opt,name=duration_ms,json=durationMs,proto3" json:"duration_ms,omitempty"`
+	// Outcome says how the invocation ended: "ran" when the program started
+	// and finished (whatever its exit code), "did_not_start" when the worker
+	// could not start it, "timed_out" when the policy's time bound ended it,
+	// and "cancelled" when the run was cancelled around it.
+	//
+	// A step produces outputs only in the "ran" case; the other three are
+	// failures, and name themselves as `outcome=<value>` in the failure's text
+	// so a log and a run record say the same word.
+	Outcome string `protobuf:"bytes,8,opt,name=outcome,proto3" json:"outcome,omitempty"`
+	// CaptureIncomplete is true when the worker stopped reading the program's
+	// output before the streams ended: the program finished, but a descendant
+	// that had left its process group still held an output pipe open, so
+	// stdout and stderr may be missing bytes the program wrote. It is distinct
+	// from [stdout_truncated], which means the policy's byte bound cut output
+	// the worker read. The outcome stays "ran" and the step is not retried,
+	// since the program did run; a workflow that must have all of the output
+	// checks this flag.
+	CaptureIncomplete bool `protobuf:"varint,9,opt,name=capture_incomplete,json=captureIncomplete,proto3" json:"capture_incomplete,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *Task_Exec_Outputs) Reset() {
+	*x = Task_Exec_Outputs{}
+	mi := &file_flowstate_v1_task_proto_msgTypes[16]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Task_Exec_Outputs) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Task_Exec_Outputs) ProtoMessage() {}
+
+func (x *Task_Exec_Outputs) ProtoReflect() protoreflect.Message {
+	mi := &file_flowstate_v1_task_proto_msgTypes[16]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Task_Exec_Outputs.ProtoReflect.Descriptor instead.
+func (*Task_Exec_Outputs) Descriptor() ([]byte, []int) {
+	return file_flowstate_v1_task_proto_rawDescGZIP(), []int{0, 2, 1}
+}
+
+func (x *Task_Exec_Outputs) GetExitCode() int32 {
+	if x != nil {
+		return x.ExitCode
+	}
+	return 0
+}
+
+func (x *Task_Exec_Outputs) GetStdout() string {
+	if x != nil {
+		return x.Stdout
+	}
+	return ""
+}
+
+func (x *Task_Exec_Outputs) GetStderr() string {
+	if x != nil {
+		return x.Stderr
+	}
+	return ""
+}
+
+func (x *Task_Exec_Outputs) GetStdoutTruncated() bool {
+	if x != nil {
+		return x.StdoutTruncated
+	}
+	return false
+}
+
+func (x *Task_Exec_Outputs) GetStderrTruncated() bool {
+	if x != nil {
+		return x.StderrTruncated
+	}
+	return false
+}
+
+func (x *Task_Exec_Outputs) GetSignal() string {
+	if x != nil {
+		return x.Signal
+	}
+	return ""
+}
+
+func (x *Task_Exec_Outputs) GetDurationMs() int64 {
+	if x != nil {
+		return x.DurationMs
+	}
+	return 0
+}
+
+func (x *Task_Exec_Outputs) GetOutcome() string {
+	if x != nil {
+		return x.Outcome
+	}
+	return ""
+}
+
+func (x *Task_Exec_Outputs) GetCaptureIncomplete() bool {
+	if x != nil {
+		return x.CaptureIncomplete
+	}
+	return false
+}
+
 var File_flowstate_v1_task_proto protoreflect.FileDescriptor
 
 const file_flowstate_v1_task_proto_rawDesc = "" +
 	"\n" +
-	"\x17flowstate/v1/task.proto\x12\fflowstate.v1\x1a\x1bbuf/validate/validate.proto\x1a\x18flowstate/v1/value.proto\x1a$google/api/expr/v1alpha1/value.proto\x1a\x1fgoogle/api/field_behavior.proto\"\xbc\x0f\n" +
+	"\x17flowstate/v1/task.proto\x12\fflowstate.v1\x1a\x1bbuf/validate/validate.proto\x1a\x18flowstate/v1/value.proto\x1a$google/api/expr/v1alpha1/value.proto\x1a\x1fgoogle/api/field_behavior.proto\"\xfc\x13\n" +
 	"\x04Task\x12J\n" +
 	"\x04name\x18\x01 \x01(\tB6\xe2A\x01\x02\xbaH/\xc8\x01\x01r*\x10\x01\x18\x80\x012#^[A-Za-z0-9-_]+(\\.[A-Za-z0-9-_]+)?$R\x04name\x12K\n" +
 	"\x06inputs\x18\x03 \x03(\v2\x1e.flowstate.v1.Task.InputsEntryB\x13\xe2A\x01\x01\xbaH\f\xc8\x01\x01\x9a\x01\x06\"\x04r\x02\x10\x01R\x06inputs\x1a\xe7\x02\n" +
@@ -845,7 +1160,27 @@ const file_flowstate_v1_task_proto_rawDesc = "" +
 	"\x04json\x18\x04 \x01(\v2\x1f.google.api.expr.v1alpha1.ValueR\x04json\x1a:\n" +
 	"\fHeadersEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1aN\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1a\xbd\x04\n" +
+	"\x04Exec\x1a\x83\x02\n" +
+	"\x06Inputs\x12-\n" +
+	"\x04argv\x18\x01 \x03(\tB\x19\xe2A\x01\x02\xbaH\x12\xc8\x01\x01\x92\x01\f\b\x01\x10\x80\x02\"\x05r\x03\x18\x80@R\x04argv\x12#\n" +
+	"\x03dir\x18\x02 \x01(\tB\x11\xe2A\x01\x02\xbaH\n" +
+	"\xc8\x01\x01r\x05\x10\x01\x18\x80 R\x03dir\x12m\n" +
+	"\x03env\x18\x03 \x03(\v2'.flowstate.v1.Task.Exec.Inputs.EnvEntryB2\xbaH/\x9a\x01,\x10@\"!r\x1f\x10\x01\x18\x80\x012\x18^[A-Za-z_][A-Za-z0-9_]*$*\x05r\x03\x18\x80@R\x03env\x1a6\n" +
+	"\bEnvEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1a\xae\x02\n" +
+	"\aOutputs\x12\x1b\n" +
+	"\texit_code\x18\x01 \x01(\x05R\bexitCode\x12\x16\n" +
+	"\x06stdout\x18\x02 \x01(\tR\x06stdout\x12\x16\n" +
+	"\x06stderr\x18\x03 \x01(\tR\x06stderr\x12)\n" +
+	"\x10stdout_truncated\x18\x04 \x01(\bR\x0fstdoutTruncated\x12)\n" +
+	"\x10stderr_truncated\x18\x05 \x01(\bR\x0fstderrTruncated\x12\x16\n" +
+	"\x06signal\x18\x06 \x01(\tR\x06signal\x12\x1f\n" +
+	"\vduration_ms\x18\a \x01(\x03R\n" +
+	"durationMs\x12\x18\n" +
+	"\aoutcome\x18\b \x01(\tR\aoutcome\x12-\n" +
+	"\x12capture_incomplete\x18\t \x01(\bR\x11captureIncomplete\x1aN\n" +
 	"\vInputsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12)\n" +
 	"\x05value\x18\x02 \x01(\v2\x13.flowstate.v1.ValueR\x05value:\x028\x01J\x04\b\x02\x10\x03R\vdescriptionB\xa8\x01\n" +
@@ -864,48 +1199,53 @@ func file_flowstate_v1_task_proto_rawDescGZIP() []byte {
 }
 
 var file_flowstate_v1_task_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_flowstate_v1_task_proto_msgTypes = make([]protoimpl.MessageInfo, 14)
+var file_flowstate_v1_task_proto_msgTypes = make([]protoimpl.MessageInfo, 18)
 var file_flowstate_v1_task_proto_goTypes = []any{
 	(Task_Log_Level)(0),       // 0: flowstate.v1.Task.Log.Level
 	(*Task)(nil),              // 1: flowstate.v1.Task
 	(*Task_Log)(nil),          // 2: flowstate.v1.Task.Log
 	(*Task_HTTP)(nil),         // 3: flowstate.v1.Task.HTTP
-	nil,                       // 4: flowstate.v1.Task.InputsEntry
-	(*Task_Log_Inputs)(nil),   // 5: flowstate.v1.Task.Log.Inputs
-	(*Task_Log_Outputs)(nil),  // 6: flowstate.v1.Task.Log.Outputs
-	nil,                       // 7: flowstate.v1.Task.Log.Inputs.FieldsEntry
-	(*Task_HTTP_Inputs)(nil),  // 8: flowstate.v1.Task.HTTP.Inputs
-	(*Task_HTTP_Outputs)(nil), // 9: flowstate.v1.Task.HTTP.Outputs
-	nil,                       // 10: flowstate.v1.Task.HTTP.Inputs.HeadersEntry
-	nil,                       // 11: flowstate.v1.Task.HTTP.Inputs.OutputsEntry
-	nil,                       // 12: flowstate.v1.Task.HTTP.Inputs.QueryEntry
-	nil,                       // 13: flowstate.v1.Task.HTTP.Inputs.FormEntry
-	nil,                       // 14: flowstate.v1.Task.HTTP.Outputs.HeadersEntry
-	(*Value)(nil),             // 15: flowstate.v1.Value
-	(*v1alpha1.Value)(nil),    // 16: google.api.expr.v1alpha1.Value
+	(*Task_Exec)(nil),         // 4: flowstate.v1.Task.Exec
+	nil,                       // 5: flowstate.v1.Task.InputsEntry
+	(*Task_Log_Inputs)(nil),   // 6: flowstate.v1.Task.Log.Inputs
+	(*Task_Log_Outputs)(nil),  // 7: flowstate.v1.Task.Log.Outputs
+	nil,                       // 8: flowstate.v1.Task.Log.Inputs.FieldsEntry
+	(*Task_HTTP_Inputs)(nil),  // 9: flowstate.v1.Task.HTTP.Inputs
+	(*Task_HTTP_Outputs)(nil), // 10: flowstate.v1.Task.HTTP.Outputs
+	nil,                       // 11: flowstate.v1.Task.HTTP.Inputs.HeadersEntry
+	nil,                       // 12: flowstate.v1.Task.HTTP.Inputs.OutputsEntry
+	nil,                       // 13: flowstate.v1.Task.HTTP.Inputs.QueryEntry
+	nil,                       // 14: flowstate.v1.Task.HTTP.Inputs.FormEntry
+	nil,                       // 15: flowstate.v1.Task.HTTP.Outputs.HeadersEntry
+	(*Task_Exec_Inputs)(nil),  // 16: flowstate.v1.Task.Exec.Inputs
+	(*Task_Exec_Outputs)(nil), // 17: flowstate.v1.Task.Exec.Outputs
+	nil,                       // 18: flowstate.v1.Task.Exec.Inputs.EnvEntry
+	(*Value)(nil),             // 19: flowstate.v1.Value
+	(*v1alpha1.Value)(nil),    // 20: google.api.expr.v1alpha1.Value
 }
 var file_flowstate_v1_task_proto_depIdxs = []int32{
-	4,  // 0: flowstate.v1.Task.inputs:type_name -> flowstate.v1.Task.InputsEntry
-	15, // 1: flowstate.v1.Task.InputsEntry.value:type_name -> flowstate.v1.Value
+	5,  // 0: flowstate.v1.Task.inputs:type_name -> flowstate.v1.Task.InputsEntry
+	19, // 1: flowstate.v1.Task.InputsEntry.value:type_name -> flowstate.v1.Value
 	0,  // 2: flowstate.v1.Task.Log.Inputs.level:type_name -> flowstate.v1.Task.Log.Level
-	7,  // 3: flowstate.v1.Task.Log.Inputs.fields:type_name -> flowstate.v1.Task.Log.Inputs.FieldsEntry
-	10, // 4: flowstate.v1.Task.HTTP.Inputs.headers:type_name -> flowstate.v1.Task.HTTP.Inputs.HeadersEntry
-	15, // 5: flowstate.v1.Task.HTTP.Inputs.bearer:type_name -> flowstate.v1.Value
-	11, // 6: flowstate.v1.Task.HTTP.Inputs.outputs:type_name -> flowstate.v1.Task.HTTP.Inputs.OutputsEntry
-	12, // 7: flowstate.v1.Task.HTTP.Inputs.query:type_name -> flowstate.v1.Task.HTTP.Inputs.QueryEntry
-	15, // 8: flowstate.v1.Task.HTTP.Inputs.json:type_name -> flowstate.v1.Value
-	13, // 9: flowstate.v1.Task.HTTP.Inputs.form:type_name -> flowstate.v1.Task.HTTP.Inputs.FormEntry
-	15, // 10: flowstate.v1.Task.HTTP.Inputs.expect:type_name -> flowstate.v1.Value
-	14, // 11: flowstate.v1.Task.HTTP.Outputs.headers:type_name -> flowstate.v1.Task.HTTP.Outputs.HeadersEntry
-	16, // 12: flowstate.v1.Task.HTTP.Outputs.json:type_name -> google.api.expr.v1alpha1.Value
-	15, // 13: flowstate.v1.Task.HTTP.Inputs.OutputsEntry.value:type_name -> flowstate.v1.Value
-	15, // 14: flowstate.v1.Task.HTTP.Inputs.QueryEntry.value:type_name -> flowstate.v1.Value
-	15, // 15: flowstate.v1.Task.HTTP.Inputs.FormEntry.value:type_name -> flowstate.v1.Value
-	16, // [16:16] is the sub-list for method output_type
-	16, // [16:16] is the sub-list for method input_type
-	16, // [16:16] is the sub-list for extension type_name
-	16, // [16:16] is the sub-list for extension extendee
-	0,  // [0:16] is the sub-list for field type_name
+	8,  // 3: flowstate.v1.Task.Log.Inputs.fields:type_name -> flowstate.v1.Task.Log.Inputs.FieldsEntry
+	11, // 4: flowstate.v1.Task.HTTP.Inputs.headers:type_name -> flowstate.v1.Task.HTTP.Inputs.HeadersEntry
+	19, // 5: flowstate.v1.Task.HTTP.Inputs.bearer:type_name -> flowstate.v1.Value
+	12, // 6: flowstate.v1.Task.HTTP.Inputs.outputs:type_name -> flowstate.v1.Task.HTTP.Inputs.OutputsEntry
+	13, // 7: flowstate.v1.Task.HTTP.Inputs.query:type_name -> flowstate.v1.Task.HTTP.Inputs.QueryEntry
+	19, // 8: flowstate.v1.Task.HTTP.Inputs.json:type_name -> flowstate.v1.Value
+	14, // 9: flowstate.v1.Task.HTTP.Inputs.form:type_name -> flowstate.v1.Task.HTTP.Inputs.FormEntry
+	19, // 10: flowstate.v1.Task.HTTP.Inputs.expect:type_name -> flowstate.v1.Value
+	15, // 11: flowstate.v1.Task.HTTP.Outputs.headers:type_name -> flowstate.v1.Task.HTTP.Outputs.HeadersEntry
+	20, // 12: flowstate.v1.Task.HTTP.Outputs.json:type_name -> google.api.expr.v1alpha1.Value
+	19, // 13: flowstate.v1.Task.HTTP.Inputs.OutputsEntry.value:type_name -> flowstate.v1.Value
+	19, // 14: flowstate.v1.Task.HTTP.Inputs.QueryEntry.value:type_name -> flowstate.v1.Value
+	19, // 15: flowstate.v1.Task.HTTP.Inputs.FormEntry.value:type_name -> flowstate.v1.Value
+	18, // 16: flowstate.v1.Task.Exec.Inputs.env:type_name -> flowstate.v1.Task.Exec.Inputs.EnvEntry
+	17, // [17:17] is the sub-list for method output_type
+	17, // [17:17] is the sub-list for method input_type
+	17, // [17:17] is the sub-list for extension type_name
+	17, // [17:17] is the sub-list for extension extendee
+	0,  // [0:17] is the sub-list for field type_name
 }
 
 func init() { file_flowstate_v1_task_proto_init() }
@@ -914,14 +1254,14 @@ func file_flowstate_v1_task_proto_init() {
 		return
 	}
 	file_flowstate_v1_value_proto_init()
-	file_flowstate_v1_task_proto_msgTypes[7].OneofWrappers = []any{}
+	file_flowstate_v1_task_proto_msgTypes[8].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_flowstate_v1_task_proto_rawDesc), len(file_flowstate_v1_task_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   14,
+			NumMessages:   18,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

@@ -42,5 +42,9 @@ func builtinTasks() []TaskDef {
 		// headers), which exists only after the request completes, so the http
 		// task evaluates them itself rather than the workflow resolving them.
 		HTTPTaskDef(defaultEgressPolicy()),
+		// Denied until a deployment loads an exec policy (`--exec-policy`): a nil
+		// policy refuses every invocation, so shipping the task in the registry
+		// grants a workflow nothing. See [ExecTaskDef].
+		ExecTaskDef(nil),
 	}
 }

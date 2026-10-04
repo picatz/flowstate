@@ -194,13 +194,16 @@ func TestExecImagePointsAtTheDescriptorRatherThanThePath(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, BinaryPrefix+"pinned")
 
-	// A header this host's own ELF loader would claim, because only a natively
-	// executable image is pinned (see [nativeELFRefusal]) and a script or
-	// a foreign-architecture image here would be asserting the opposite of
-	// what this file is about. Nothing executes these bytes — the pin is the
-	// whole subject — so the header is all that has to be real.
-	if err := os.WriteFile(path, append(nativeELFHeader(t), "the rest does not matter here\n"...), 0o755); err != nil {
-		t.Fatalf("writing the binary: %v", err)
+	// A native binary, because only a natively executable image is pinned (see
+	// execimage.RefuseUnlessExecutedDirectly) and a script or a foreign-architecture
+	// image here would assert the opposite of what this test is about. The test
+	// binary is one, reached through a plugin-shaped name.
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatalf("finding the test binary: %v", err)
+	}
+	if err := os.Symlink(self, path); err != nil {
+		t.Fatalf("linking the binary: %v", err)
 	}
 
 	image, err := openExecImage(path, testLogger(t))

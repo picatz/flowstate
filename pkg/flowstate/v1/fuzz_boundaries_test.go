@@ -62,6 +62,8 @@ func FuzzRootParsers(f *testing.F) {
 	f.Add([]byte("allow:\n  - 'identity.subject == \"ci\"'\ndeny:\n  - \"true\"\n"))
 	f.Add([]byte("denny:\n  - \"true\"\n"))
 	f.Add([]byte("# A task\n\nSays hello.\n"))
+	f.Add([]byte("exec:\n  executables: {sh: /bin/sh}\n  roots: [/tmp]\n  timeout: 1m\n  max_output_bytes: 1KiB\n"))
+	f.Add([]byte("exec:\n  executables: {\"a/b\": relative}\n  timeout: 99h\n"))
 	f.Add([]byte("10m"))
 	f.Add([]byte("string"))
 	f.Add([]byte("reject"))
@@ -75,6 +77,10 @@ func FuzzRootParsers(f *testing.F) {
 	f.Fuzz(func(t *testing.T, data []byte) {
 		if cfg, err := v1.ParseTaskPolicyConfig(data); err != nil && !reflect.DeepEqual(cfg, v1.TaskPolicyConfig{}) {
 			t.Fatalf("ParseTaskPolicyConfig returned both an error and a config: %v", err)
+		}
+
+		if policy, err := v1.ParseExecPolicy(data); err != nil && policy != nil {
+			t.Fatalf("ParseExecPolicy returned both an error and a policy: %v", err)
 		}
 
 		word := string(data)

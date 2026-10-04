@@ -160,6 +160,12 @@ func exampleValue(def v1.TaskDef, field v1.InputField) (string, bool) {
 	var candidate string
 
 	switch {
+	case def.Name == "exec" && field.Name == "argv":
+		// A non-empty list of words, and the program a bare name rather than a path.
+		return "[git, --version]", true
+	case def.Name == "exec" && field.Name == "dir":
+		// Absolute, as the task requires; the operator's roots decide whether it runs.
+		return "/var/lib/flowstate/workspaces/demo", true
 	case slices.Contains(def.ExpressionInputs, field.Name):
 		// An input that has to be written as an expression, per the definition's
 		// own list. A literal here is a run that fails on its first attempt.

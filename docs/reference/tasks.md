@@ -20,6 +20,44 @@ task evaluates it after the response arrives, and the engine resolves every
 other input before the step is even scheduled. **Bounds** is the rest of what
 the schema and the task already know about what may be written here.
 
+### `exec`
+
+Run one program from the deployment's allowlist and return its exit code and output.
+
+**Inputs**
+
+| Name | Type | Required | Deferred | Bounds |
+|---|---|---|---|---|
+| `argv` | `list[string]` | yes | no | 1 to 256 items |
+| `dir` | `string` | yes | no | 1 to 4096 characters |
+| `env` | `map[string, string]` | no | no | at most 64 entries; keys 1 to 128 characters; keys matching ^[A-Za-z_][A-Za-z0-9_]*$; values at most 8192 characters |
+
+**Outputs**
+
+| Name | Type | Bounds |
+|---|---|---|
+| `exit_code` | `int` | none |
+| `stdout` | `string` | none |
+| `stderr` | `string` | none |
+| `stdout_truncated` | `bool` | none |
+| `stderr_truncated` | `bool` | none |
+| `signal` | `string` | none |
+| `duration_ms` | `int` | none |
+| `outcome` | `string` | none |
+| `capture_incomplete` | `bool` | none |
+
+**A step that uses it:**
+
+```yaml
+edition: v2026.4
+name: example
+steps:
+  - id: exec
+    exec:
+      argv: [git, --version]
+      dir: /var/lib/flowstate/workspaces/demo
+```
+
 ### `http`
 
 Perform an HTTP request and return the response.

@@ -575,7 +575,7 @@ read the step's own `vars:` or `now`.
 ## Tasks
 
 A task step names the task as its key and writes the task's inputs beneath it.
-This build has two built-in tasks, `log` and `http`; plugins add more, named
+This build has three built-in tasks, `log`, `http` and `exec` (denied until an operator loads `--exec-policy`); plugins add more, named
 `<plugin>.<task>`. Before writing one, check what a deployment can run:
 `flow tasks` locally, or `GetCatalog` against a server.
 

@@ -82,6 +82,7 @@ func newDebugCommand() *cobra.Command {
 	addRevealSensitiveFlag(replayCmd)
 	addEgressPolicyFlag(replayCmd)
 	addTaskPolicyFlag(replayCmd)
+	addExecPolicyFlag(replayCmd)
 	addSecretFlags(replayCmd)
 	addPluginFlags(replayCmd)
 	addLocalRehearsalFlags(replayCmd)

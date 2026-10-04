@@ -21,7 +21,7 @@ import (
 func TestEveryEgressPolicyATestAppliesIsPutBack(t *testing.T) {
 	t.Parallel()
 
-	appliers := map[string]bool{"applyEgressPolicy": true, "applyMCPEgressPolicy": true}
+	appliers := map[string]bool{"applyEgressPolicy": true, "applyMCPEgressPolicy": true, "applyExecPolicy": true}
 
 	files, err := filepath.Glob("*_test.go")
 	require.NoError(t, err)

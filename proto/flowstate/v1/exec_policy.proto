@@ -1,0 +1,205 @@
+syntax = "proto3";
+
+package flowstate.v1;
+
+import "buf/validate/validate.proto";
+
+option go_package = "flowstatev1";
+
+// ExecPolicy is the deployment's answer to "which programs may a workflow
+// start here", written as YAML (or JSON) and passed as `--exec-policy` or
+// `FLOWSTATE_EXEC_POLICY`.
+//
+// # Why the file is a message
+//
+// The policy is read by the process that will run programs and is never sent
+// anywhere, so it is not a wire shape in the usual sense. It is defined here
+// anyway because it is a shape an operator authors and several tools read (the
+// worker, `flow run local`, `flow task run`, the MCP and debug servers), and
+// this schema is the one place where a shape gets one definition, its rules,
+// and its documentation together.
+//
+// # What it is, and what it is not
+//
+// It is an allowlist of *what may be started*: which names map to which
+// executables, which directories they may run in, which environment they see,
+// and how long and how loud they may be. It is not a sandbox. The child runs
+// with the worker's privileges, and nothing in this file restricts what it
+// does afterwards (see Task.Exec).
+//
+// Without this file the built-in `exec` task is denied. There is no default
+// policy and no way to enable the task from a workflow.
+message ExecPolicy {
+  // Exec is the one section of the file today. It sits under a key of its own
+  // so that a later section (a second execution tier, for instance) is an
+  // addition and not a reshaping of every deployed file.
+  message Exec {
+    // Executables maps the program names a workflow may write as `argv[0]` to
+    // the absolute path of the file that runs.
+    //
+    // A workflow names programs; only the operator locates them. The table is
+    // the whole lookup: there is no search of PATH, and a name that is not a
+    // key is refused. Every path is checked when the policy loads: absolute,
+    // present, a regular file, executable, not writable by everyone, and
+    // resolved through symbolic links to the file that will actually run.
+    // Names are bare (no slash, no leading dash) so they cannot be mistaken for
+    // paths or options.
+    map<string, string> executables = 1 [(buf.validate.field).map = {
+      keys: {
+        string: {
+          min_len: 1
+          max_len: 128
+          pattern: "^[A-Za-z0-9][A-Za-z0-9._+-]*$"
+        }
+      }
+      values: {
+        string: {
+          min_len: 1
+          max_len: 4096
+        }
+      }
+    }];
+
+    // ExecutableSha256 optionally pins an entry of [executables] to the SHA-256
+    // of the file it resolves to, as 64 lowercase hex digits, keyed by the same
+    // name.
+    //
+    // Checked at load against the resolved file, and again against the very
+    // file descriptor that is executed where the platform allows it, so a file
+    // swapped after the check does not run. A name with no pin is trusted by
+    // path alone, which is the operator's decision to make per program. A pin
+    // for a name that is not in [executables] is an error, not an ignored line.
+    map<string, string> executable_sha256 = 2 [(buf.validate.field).map = {
+      keys: {
+        string: {
+          min_len: 1
+          max_len: 128
+        }
+      }
+      values: {
+        string: {pattern: "^[0-9a-f]{64}$"}
+      }
+    }];
+
+    // Roots are the absolute directories under which a step's `dir` must fall.
+    //
+    // Compared component by component after symbolic links are resolved on both
+    // sides, so `/srv/work-evil` is not under `/srv/work` and a link inside a
+    // root that points outside it does not admit the target. A policy with no
+    // roots admits no directory, so the task cannot run: the worker's own
+    // working directory is never a fallback.
+    repeated string roots = 3 [(buf.validate.field).repeated = {
+      max_items: 64
+      items: {
+        string: {
+          min_len: 1
+          max_len: 4096
+        }
+      }
+    }];
+
+    // EnvPassthrough lists worker environment variables copied into the child
+    // when they are set in the worker, and skipped when they are not.
+    //
+    // The child never inherits the worker's environment wholesale, because the
+    // worker's environment is where its credentials live. Loader-injection
+    // variables (`LD_PRELOAD`, `LD_LIBRARY_PATH`, `LD_AUDIT`, and anything
+    // starting `DYLD_`) are refused at load even if listed.
+    repeated string env_passthrough = 4 [(buf.validate.field).repeated = {
+      max_items: 64
+      unique: true
+      items: {
+        string: {
+          min_len: 1
+          max_len: 128
+          pattern: "^[A-Za-z_][A-Za-z0-9_]*$"
+        }
+      }
+    }];
+
+    // Env holds literal variables the operator sets for every child. A step
+    // cannot override them. Values are text in the policy file, so they are
+    // not the place for a credential: secret-valued environment is deliberately
+    // not offered yet.
+    map<string, string> env = 5 [(buf.validate.field).map = {
+      max_pairs: 64
+      keys: {
+        string: {
+          min_len: 1
+          max_len: 128
+          pattern: "^[A-Za-z_][A-Za-z0-9_]*$"
+        }
+      }
+      values: {
+        string: {max_len: 8192}
+      }
+    }];
+
+    // EnvAuthored lists the variable names a *step* may set through its `env`
+    // input. Empty means none: a workflow adds nothing to the environment unless
+    // the operator named the key.
+    repeated string env_authored = 6 [(buf.validate.field).repeated = {
+      max_items: 64
+      unique: true
+      items: {
+        string: {
+          min_len: 1
+          max_len: 128
+          pattern: "^[A-Za-z_][A-Za-z0-9_]*$"
+        }
+      }
+    }];
+
+    // Timeout bounds how long one program may run, written as a duration such
+    // as "10m". Required, positive, and at most one hour: there is no policy
+    // spelling for "unbounded", and a file that asks for more than the ceiling
+    // is refused at load rather than clamped, so the file says what is enforced.
+    string timeout = 7 [(buf.validate.field).string = {
+      min_len: 1
+      max_len: 32
+    }];
+
+    // MaxOutputBytes bounds what is kept of each output stream (standard output
+    // and standard error separately), written the way sizes are said: "1MiB",
+    // "10MB", or a bare count of bytes. Required, positive, and at most 16 MiB.
+    // Bytes past the bound are read and discarded and the step reports the
+    // stream as truncated.
+    string max_output_bytes = 8 [(buf.validate.field).string = {
+      min_len: 1
+      max_len: 32
+    }];
+
+    // Allow holds CEL allow rules. Configuring any turns the policy into an
+    // allowlist: an invocation must match at least one. Rules read `argv`
+    // (list of string), `executable` (the resolved absolute path), `name`
+    // (argv[0] as written), `dir` (the cleaned absolute directory), `env_keys`
+    // (the sorted names of the final environment, never its values) and
+    // `identity` (subject, issuer, namespace, claims of the run's attested
+    // workload). A policy with no allow rules permits what its other checks
+    // admit.
+    repeated string allow = 9 [(buf.validate.field).repeated = {
+      max_items: 256
+      items: {
+        string: {
+          min_len: 1
+          max_len: 4096
+        }
+      }
+    }];
+
+    // Deny holds CEL deny rules, which run first and win. A rule that fails to
+    // evaluate denies the invocation. Same variables as [allow].
+    repeated string deny = 10 [(buf.validate.field).repeated = {
+      max_items: 256
+      items: {
+        string: {
+          min_len: 1
+          max_len: 4096
+        }
+      }
+    }];
+  }
+
+  // Exec configures the built-in `exec` task. See [Exec].
+  Exec exec = 1;
+}

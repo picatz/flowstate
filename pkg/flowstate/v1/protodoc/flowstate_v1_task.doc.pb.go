@@ -380,5 +380,161 @@ func init() {
 				" `${call.json.id == 7}` and CEL will compare numerically, but do not expect\n" +
 				" `string(call.json.id)` to read as \"7\".\n",
 		},
+		{
+			Name: "flowstate.v1.Task.Exec",
+			Leading: " Exec is a task that runs one local program to completion and returns what it\n" +
+				" did: its exit code, the bytes it printed, and whether those were cut short.\n" +
+				"\n" +
+				" It is built in and denied by default. A worker with no `--exec-policy`\n" +
+				" refuses every `exec:` step as a policy denial that names the flag, because\n" +
+				" process execution is the one capability whose blast radius is the worker\n" +
+				" itself, and a deployment has to say yes before a workflow can ask. The\n" +
+				" policy file (see [ExecPolicy]) decides which programs exist, which\n" +
+				" directories they may run in, which environment they see, and how long and\n" +
+				" how loud they may be; the step supplies only a name, arguments, a\n" +
+				" directory, and whatever environment the operator let it set.\n" +
+				"\n" +
+				" # It is not a sandbox\n" +
+				"\n" +
+				" The child runs as the worker's user with the worker's privileges.\n" +
+				" Nothing here applies a namespace, a cgroup, a seccomp filter, a filesystem\n" +
+				" confinement, or a network restriction, and the deployment's egress policy\n" +
+				" does not govern what the child connects to. The policy decides what may be\n" +
+				" *started*; it does not decide what the started program does. A deployment\n" +
+				" that needs the second guarantee runs the worker (or a dedicated worker\n" +
+				" queue) inside the isolation boundary it trusts.\n" +
+				"\n" +
+				" # Argv, never a shell string\n" +
+				"\n" +
+				" The command is a list. There is no field that is parsed into words, so a\n" +
+				" value spliced into an argument stays one argument. A workflow that wants\n" +
+				" shell semantics names a shell as the program and owns that choice\n" +
+				" visibly, and the operator's policy decides whether a shell is a program\n" +
+				" this deployment has.\n" +
+				"\n" +
+				" # A nonzero exit is output, not failure\n" +
+				"\n" +
+				" The way an HTTP status code is output: the program ran, and what it\n" +
+				" concluded is data the workflow branches on. A step fails only when the\n" +
+				" policy denies it, the program could not be started, it exceeded the\n" +
+				" policy's time bound, or the run was cancelled. A workflow that wants a\n" +
+				" nonzero exit to stop the run says so with an `if:` on the next step.\n",
+		},
+		{
+			Name: "flowstate.v1.Task.Exec.Inputs",
+			Leading: " Inputs describes one program invocation. The program is named, not\n" +
+				" located: argv[0] is a name the operator's policy maps to an absolute\n" +
+				" path, and a path written by a workflow is refused.\n",
+		},
+		{
+			Name: "flowstate.v1.Task.Exec.Inputs.argv",
+			Leading: " Argv is the command as a list of words, program name first.\n" +
+				"\n" +
+				" The first word is a bare name looked up in the policy's `executables`\n" +
+				" table; it is never searched for on PATH, and a path (anything with a\n" +
+				" slash) is refused. The rest are passed to the program verbatim. No word\n" +
+				" is split, expanded, globbed or unquoted, which is the property that makes\n" +
+				" a value inside an argument safe to splice.\n" +
+				"\n" +
+				" Bounded because the workflow chooses both the count and the length, and\n" +
+				" the product is what the kernel's argument limit refuses. A word may not\n" +
+				" contain a NUL byte, which no operating system can pass.\n",
+		},
+		{
+			Name: "flowstate.v1.Task.Exec.Inputs.dir",
+			Leading: " Dir is the working directory, written as an absolute path.\n" +
+				"\n" +
+				" Required, because the worker's own working directory is never used: it\n" +
+				" is wherever the operator started the process, which is not something a\n" +
+				" workflow can reason about. The policy admits only directories under\n" +
+				" one of its configured roots, after symbolic links are resolved, so a\n" +
+				" path that lexically begins under a root but leaves it through a link is\n" +
+				" refused. A policy that configures no roots admits no directory, which\n" +
+				" makes the task unusable rather than unconfined.\n",
+		},
+		{
+			Name: "flowstate.v1.Task.Exec.Inputs.env",
+			Leading: " Env sets environment variables for the child, and is a request, not a\n" +
+				" grant.\n" +
+				"\n" +
+				" The child's environment is built from nothing: first the operator's own\n" +
+				" literal values, then the worker variables the operator listed for\n" +
+				" passthrough, and only then the entries here, each of which is accepted\n" +
+				" only if the policy lists its name as one a step may set. A key the\n" +
+				" policy does not list is a policy denial, and a key the operator already\n" +
+				" set cannot be overridden from here. Values are literal text: a secret\n" +
+				" reference is not accepted, so no credential reaches a child through this\n" +
+				" input.\n",
+		},
+		{
+			Name: "flowstate.v1.Task.Exec.Outputs",
+			Leading: " Outputs is what the invocation did. It is present for every program that\n" +
+				" started and finished under its own power, whatever the exit code was.\n",
+		},
+		{
+			Name: "flowstate.v1.Task.Exec.Outputs.exit_code",
+			Leading: " ExitCode is the status the program exited with, or -1 when it was\n" +
+				" ended by a signal and so never exited (see [signal]).\n" +
+				"\n" +
+				" Data, not a verdict: a workflow reads it the way it reads an HTTP status\n" +
+				" code. Zero is success by convention only, and some programs use nonzero\n" +
+				" codes for outcomes that are not failures (`diff`, `grep`).\n",
+		},
+		{
+			Name: "flowstate.v1.Task.Exec.Outputs.stdout",
+			Leading: " Stdout is the program's standard output: at most the policy's byte bound,\n" +
+				" keeping the first bytes written, with invalid UTF-8 replaced by U+FFFD\n" +
+				" because a string output must be text.\n",
+		},
+		{
+			Name: "flowstate.v1.Task.Exec.Outputs.stderr",
+			Leading: " Stderr is the program's standard error, bounded and sanitized exactly as\n" +
+				" [stdout] is. Standard output and error are captured separately and are not\n" +
+				" interleaved.\n",
+		},
+		{
+			Name: "flowstate.v1.Task.Exec.Outputs.stdout_truncated",
+			Leading: " StdoutTruncated is true when the program wrote more to standard output\n" +
+				" than the policy's bound and the excess was discarded. The program was not\n" +
+				" stopped for it: bytes past the bound are read and dropped so a chatty\n" +
+				" program is not blocked on a full pipe.\n",
+		},
+		{
+			Name: "flowstate.v1.Task.Exec.Outputs.stderr_truncated",
+			Leading: " StderrTruncated is true when standard error exceeded the bound; see\n" +
+				" [stdout_truncated].\n",
+		},
+		{
+			Name: "flowstate.v1.Task.Exec.Outputs.signal",
+			Leading: " Signal names the signal that ended the program (such as \"killed\" or\n" +
+				" \"segmentation fault\"), and is empty when it exited by itself.\n",
+		},
+		{
+			Name: "flowstate.v1.Task.Exec.Outputs.duration_ms",
+			Leading: " DurationMs is how long the program ran, in whole milliseconds, measured\n" +
+				" by the worker from start to reap.\n",
+		},
+		{
+			Name: "flowstate.v1.Task.Exec.Outputs.outcome",
+			Leading: " Outcome says how the invocation ended: \"ran\" when the program started\n" +
+				" and finished (whatever its exit code), \"did_not_start\" when the worker\n" +
+				" could not start it, \"timed_out\" when the policy's time bound ended it,\n" +
+				" and \"cancelled\" when the run was cancelled around it.\n" +
+				"\n" +
+				" A step produces outputs only in the \"ran\" case; the other three are\n" +
+				" failures, and name themselves as `outcome=<value>` in the failure's text\n" +
+				" so a log and a run record say the same word.\n",
+		},
+		{
+			Name: "flowstate.v1.Task.Exec.Outputs.capture_incomplete",
+			Leading: " CaptureIncomplete is true when the worker stopped reading the program's\n" +
+				" output before the streams ended: the program finished, but a descendant\n" +
+				" that had left its process group still held an output pipe open, so\n" +
+				" stdout and stderr may be missing bytes the program wrote. It is distinct\n" +
+				" from [stdout_truncated], which means the policy's byte bound cut output\n" +
+				" the worker read. The outcome stays \"ran\" and the step is not retried,\n" +
+				" since the program did run; a workflow that must have all of the output\n" +
+				" checks this flag.\n",
+		},
 	})
 }

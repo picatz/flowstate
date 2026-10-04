@@ -1,5 +1,7 @@
 $ flow tasks
 TASKS
+  exec  Run one program from the deployment's allowlist and return its exit code
+        and output.
   http  Perform an HTTP request and return the response. [takes secrets, defers
         inputs]
   log   Emit a message for a person to read. [no outputs]

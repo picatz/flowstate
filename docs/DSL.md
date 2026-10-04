@@ -52,7 +52,7 @@ headings below, not this list.*
   - [`switch:` landed — the word buys the checks, not the branch (#357)](#switch-landed--the-word-buys-the-checks-not-the-branch-357)
   - [`async:` landed — the departure from written order is one word (#418)](#async-landed--the-departure-from-written-order-is-one-word-418)
   - [Plugins appear in the syntax, deliberately distinguishable](#plugins-appear-in-the-syntax-deliberately-distinguishable)
-  - [`exec:` will be built-in, denied by default](#exec-will-be-built-in-denied-by-default)
+  - [`exec:` is built-in, denied by default](#exec-is-built-in-denied-by-default)
   - [The disposition table](#the-disposition-table)
   - [One edition, one sweep, and what the rewriter may not guess](#one-edition-one-sweep-and-what-the-rewriter-may-not-guess)
   - [The corpus is the acceptance list](#the-corpus-is-the-acceptance-list)
@@ -2659,19 +2659,23 @@ uninstalled plugin is diagnosed as an installation question rather than a spelli
 one. The `plugins:` version header, the submit-time catalog check, and the language
 server's two-level completion tree have since landed.
 
-### `exec:` will be built-in, denied by default
+### `exec:` is built-in, denied by default
 
 Competitiveness with CI systems needs process execution; the admission test's second
-condition says it cannot ship before its policy exists, because today the engine has
-no exec analog to `netpolicy`. Both facts are honoured: `exec` is built-in, **denied
-by default**, enabled per deployment — the loopback-egress posture, applied to a
-sharper knife. And it takes **`argv` as a list, never a shell string**:
+condition says it cannot ship before its policy exists. Both facts are honoured:
+`exec` is built-in, **denied by default**, enabled per deployment by an operator's
+policy file (`--exec-policy` / `FLOWSTATE_EXEC_POLICY`, on the commands that run
+tasks: `worker`, `run local`, `server dev`, `mcp`, `dap`, `task run`) — the
+loopback-egress posture, applied to a sharper knife. Without the policy every `exec:`
+step fails with a policy denial that names the flag. And it takes **`argv` as a list,
+never a shell string**:
 
 ```yaml
 - id: test
   exec:
     argv: [go, test, -count=1, ./...]
-    dir: ${steps.checkout.dir}
+    dir: ${inputs.workspace}
+    env: {GOFLAGS: -mod=readonly}   # only keys the policy's env_authored lists
 ```
 
 A shell-string form with expressions producing pieces of it is command injection by
@@ -2679,12 +2683,46 @@ construction. Note what separates it from the interpolation #413 landed: there, 
 result is a *value* the workflow holds, and the fences are parsed as CEL before
 anything is joined; here, the result would be handed to a shell that parses it
 again, so a value could become syntax. Splicing into a language that will re-parse
-the result is the thing refused, not splicing. An author who wants shell semantics writes `argv: [bash, -c, "..."]` and
-owns it visibly. There is no `shell:` task. Outputs are `exit_code` and
-byte-bounded `stdout`/`stderr` (principle 9: the process, not the worker, decides
-what it prints, so the worker bounds what it keeps). The full input surface —
-environment, working directory, what a nonzero exit means — is settled when the
-policy is, in its own reviewed change.
+the result is the thing refused, not splicing. An author who wants shell semantics
+writes `argv: [bash, -c, "..."]` and owns it visibly, and the operator's policy has to
+have listed a shell. There is no `shell:` task.
+
+**What the author controls.** `argv`, `dir`, and `env` literals. `argv[0]` is a bare
+name looked up only in the policy's `executables` table (name to absolute path,
+optional `sha256` pin); there is no `PATH` search and an absolute path in a workflow
+is refused. `dir` is required, absolute, resolved through symlinks, and must lie
+component-wise under one of the policy's `roots`.
+
+**What the operator controls.** The policy fixes the executables, roots, the
+environment (assembled from nothing: operator `env`, then `env_passthrough` copied
+from the worker only if present, then step `env:` for keys in `env_authored`; loader
+variables such as `LD_PRELOAD` and `DYLD_*` are refused), a required `timeout`
+(ceiling 1h) and `max_output_bytes` per stream (ceiling 16MiB), and CEL `allow` /
+`deny` rules over `argv`, `executable`, `name`, `dir`, `env_keys` (names, never
+values) and `identity`. Deny wins, and a rule that cannot be evaluated denies.
+
+**Outputs.** `exit_code`, `stdout`, `stderr`, `stdout_truncated`, `stderr_truncated`,
+`signal`, `duration_ms`, `capture_incomplete` and `outcome` (`ran`, `did_not_start`,
+`timed_out`, `cancelled`). A nonzero exit is *output*, the way an HTTP status is: the step
+succeeds and the workflow decides what 128 means. A step fails only when the policy
+refuses it, the program cannot start, the policy's time bound passes (the process group
+is killed), or the run is cancelled. Output past the bound is dropped and flagged;
+non-UTF-8 bytes are replaced. Standard input is `/dev/null`. `capture_incomplete` is true when the program finished
+but a descendant outside its process group still held an output pipe, so reading was
+cut off and output may be missing; the outcome stays `ran`. The task is refused on
+platforms that cannot stop a program together with its descendants (anywhere but
+Unix), rather than run with that guarantee weakened.
+
+**What it is not.** Not a sandbox. The program runs as the worker's user with no
+namespace, cgroup, seccomp, filesystem or network confinement, and the egress policy
+does not apply to the child. `roots` confines `dir` only: path words in `argv` are
+not confined, so write `allow` rules as exact argv shapes
+(`examples/exec-checks/exec-policy.yaml`). Under `flow test` the task is stubbed like
+every other, and an unstubbed `exec` step never starts a process.
+
+**Deferred**, deliberately: secret-valued environment, resource limits (rlimits),
+an opt-in for absolute paths, runners and isolation tiers (remote or sandboxed
+execution), and stdin.
 
 ### The disposition table
 
@@ -2697,14 +2735,14 @@ policy is, in its own reviewed change.
 | bare `status_code`/`body`/`headers`/`json` | **rerooted (landed)** | `response.*` |
 | `http:` | kept | — (auth landed as `bearer:`/`credential:`; idempotency key, egress declarations held) |
 | `log:` | **new (landed)** | — |
-| `exec:` | new, gated on its policy | — |
+| `exec:` | **new (landed)**, denied until `--exec-policy` | — |
 | `value:` | **landed (#411)**, node kind, read as `${steps.<id>.value}` | nothing; the corpus proved otherwise, since `vars:` cannot read a step or an input |
 | `assert:` | held | `if:` + failure, pending Phase 2 `check:` |
 | `!expr` | refused | whole-value `${...}`, fence-optional where the schema knows |
 | plugin tasks | dotted keys, `plugins:` header (**landed**) | — |
 
-Registry today: **`log`, `http`**. End state, once `exec` has its policy: **`log`,
-`http`, `exec`** — small enough to memorize, which is the property worth copying from
+Registry today: **`log`, `http`, `exec`** (`exec` refuses every step until a deployment
+loads its policy) — small enough to memorize, which is the property worth copying from
 the standard library this vocabulary keeps being compared to.
 
 ### One edition, one sweep, and what the rewriter may not guess
@@ -2843,7 +2881,8 @@ And the CI-pipeline corpus entry, which is the same language plus the landed
 plugin surface and a policied `exec` — the file that makes "could be used for CI"
 a demonstration rather than a claim. **It does not compile today, deliberately:**
 the `plugins:` header and plugin task resolution have landed, but the acceptance
-target still requires `exec`, and this build answers it with `unknown task "exec"`.
+target still requires the plugin surface this corpus entry names; `exec` itself now
+exists (denied until a policy enables it).
 That is the corpus rule working as intended — a design that has not landed, kept
 visible — rather than a file that has gone stale.
 
@@ -3019,7 +3058,7 @@ contract, which has since shipped as `declared_outputs`
 (`examples/computed-outputs/`), is the only route by which a run can report a
 computed result at the run level.
 
-The `plugins:` header and dotted-key resolution have landed. `exec` lands only
+The `plugins:` header and dotted-key resolution have landed. `exec` landed only
 with its policy, gated the way workflow-side evaluation is gated on Worker
 Versioning: a capability that assumes a posture verifies it or stays off.
 

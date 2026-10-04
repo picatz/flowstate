@@ -78,6 +78,7 @@ flow run local --debug examples/hello-world/workflow.yaml`,
 	// worker had no way to set them here (#1119).
 	addEgressPolicyFlag(cmd)
 	addTaskPolicyFlag(cmd)
+	addExecPolicyFlag(cmd)
 
 	addSecretFlags(cmd)
 	addLocalRehearsalFlags(cmd)
@@ -99,6 +100,12 @@ func runDAP(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	if err := applyTaskPolicy(cmd); err != nil {
+		return err
+	}
+	// And the exec task's policy, for the same reason: a file that does not load
+	// must refuse the command, not leave the task denied while its operator
+	// believes it was enabled. Without a file the task stays denied.
+	if err := applyExecPolicy(cmd); err != nil {
 		return err
 	}
 

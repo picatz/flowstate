@@ -130,7 +130,7 @@ of these is a bug, even if it passes tests.
 
    This is about *how* expressions are compiled and bounded, not about every policy surface
    sharing one set of variables. CEL is used for several distinct decisions — data flow
-   between steps, network egress, credential assumption, secret access — and each declares
+   between steps, network egress, process execution (`execpolicy`), credential assumption, secret access — and each declares
    the attributes its own decision is about. Forcing one attribute set across all of them
    would mean declaring a resolved IP address in a policy about assuming a role. What must
    not vary is the machinery: environments are cached and cost-limited, evaluation is

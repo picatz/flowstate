@@ -1260,10 +1260,10 @@ const RunLocalToolDescription = "Execute a Flowfile immediately, in this process
 	"conditions, retries, timeouts, loops, waits and step outputs behave here the way they behave in " +
 	"production, and the answer is the same document flowstate_get returns for a durable run.\n\n" +
 	"Fail-closed by default: network egress is denied — from `http:` steps and from plugin tasks " +
-	"alike, since this server grants its plugins the same denying policy it enforces on itself — and " +
-	"no secret scheme is registered unless the operator started this server with the flags that " +
-	"permit them " +
-	"(--egress-policy, --secret-env, --secret-dir, --auth-policy). Nothing in this tool's arguments " +
+	"alike, since this server grants its plugins the same denying policy it enforces on itself — the " +
+	"`exec` task refuses every program, and no secret scheme is registered unless the operator started " +
+	"this server with the flags that permit them " +
+	"(--egress-policy, --exec-policy, --secret-env, --secret-dir, --auth-policy). Nothing in this tool's arguments " +
 	"can widen that, so a denied request means the server was not configured for it, not that the " +
 	"workflow is wrong.\n\n" +
 	"What it does not prove: durability. A local run has no run id, nothing can watch it, it does not " +
