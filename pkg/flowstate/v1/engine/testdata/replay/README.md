@@ -47,6 +47,12 @@ signal. These three cover the three ways a wait ends.
 | `wait-for-signal.json` | A `wait_for_signal:` with `timeout: 1h`, parked and then answered. The signal wins the selector, so history holds the timeout timer being started and then *cancelled* — the #770 path, issued only behind a `workflow.GetVersion` marker this history records. |
 | `wait-for-signal-timeout.json` | The same gate with `timeout: 2s` and nobody answering. The timer wins instead, and the run walks on with `timed_out` rather than failing. |
 
+### `2026-10-04`
+
+| File | What it covers |
+| --- | --- |
+| `cancelled-two-bounded-waits.json` | A run cancelled while two bounded `wait_for_signal:` steps are open in two `parallel:` branches, so history holds both timers being cancelled together. The Temporal SDK cancels the children of one context in map order, so before #2244 this history replayed differently from one run to the next; it is recorded from an interpreter that arms each timer on a context of its own, behind the `engine.timers.disconnectedFromRunCancellation` marker it carries. |
+
 ## Adding one
 
 1. Add a scenario to `replayScenarios` in `../../replay_record_test.go`. Prefer a

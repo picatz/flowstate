@@ -295,26 +295,7 @@ func signalWhenParked(stepID, name string, payload *v1.Node_Outputs) func(contex
 	return func(ctx context.Context, tb testing.TB, c client.Client, workflowID string) {
 		tb.Helper()
 
-		require.Eventually(tb, func() bool {
-			encoded, err := c.QueryWorkflow(ctx, workflowID, "", engine.ProgressQuery)
-			if err != nil {
-				return false
-			}
-
-			var progress v1.RunProgress
-			if err := encoded.Get(&progress); err != nil {
-				return false
-			}
-
-			for _, wait := range progress.GetPendingWaits() {
-				if wait.GetStepId() == stepID {
-					return true
-				}
-			}
-
-			return false
-		}, 30*time.Second, 50*time.Millisecond,
-			"run %s never parked on the gate %q", workflowID, stepID)
+		parkedOn(ctx, tb, c, workflowID, stepID)
 
 		// A [v1.SignalDelivery] rather than the bare payload, because that is
 		// what `FlowstateServer.Signal` puts on this channel: a recorder
@@ -331,6 +312,50 @@ func signalWhenParked(stepID, name string, payload *v1.Node_Outputs) func(contex
 				},
 			},
 		}), "signalling %s with %q", workflowID, name)
+	}
+}
+
+// parkedOn waits until the run is held at every one of the named gates, read
+// through [engine.ProgressQuery] for the reason [signalWhenParked] gives.
+func parkedOn(ctx context.Context, tb testing.TB, c client.Client, workflowID string, stepIDs ...string) {
+	tb.Helper()
+
+	require.Eventually(tb, func() bool {
+		encoded, err := c.QueryWorkflow(ctx, workflowID, "", engine.ProgressQuery)
+		if err != nil {
+			return false
+		}
+
+		var progress v1.RunProgress
+		if err := encoded.Get(&progress); err != nil {
+			return false
+		}
+
+		pending := map[string]bool{}
+		for _, wait := range progress.GetPendingWaits() {
+			pending[wait.GetStepId()] = true
+		}
+
+		for _, id := range stepIDs {
+			if !pending[id] {
+				return false
+			}
+		}
+
+		return true
+	}, 30*time.Second, 50*time.Millisecond,
+		"run %s never parked on the gates %q", workflowID, stepIDs)
+}
+
+// cancelWhenParked cancels a run once it is held at every named gate, so the
+// history records a run cancelled while those waits were open, and their
+// timers' cancellation, rather than one cancelled before it reached them.
+func cancelWhenParked(stepIDs ...string) func(context.Context, testing.TB, client.Client, string) {
+	return func(ctx context.Context, tb testing.TB, c client.Client, workflowID string) {
+		tb.Helper()
+
+		parkedOn(ctx, tb, c, workflowID, stepIDs...)
+		require.NoError(tb, c.CancelWorkflow(ctx, workflowID, ""), "cancelling %s", workflowID)
 	}
 }
 
@@ -542,6 +567,34 @@ func replayScenarios(tb testing.TB) []replayScenario {
 					says("give-up", "nobody answered"),
 				},
 			}},
+		},
+		{
+			// A run cancelled while two bounded waits are open in two
+			// `parallel:` branches, so history records their two timers
+			// being cancelled together. The order those commands come out in
+			// is the interpreter's to decide, and used to be the SDK's map's
+			// (#2244): an engine that lets the SDK choose replays this history
+			// differently from one run to the next. Recorded from an engine
+			// that does not, so a change that hands the choice back fails here
+			// on the next `go test`, without a dev server.
+			name: "cancelled-two-bounded-waits",
+			state: &v1.RunState{Workflow: &v1.Workflow{
+				Name: "cancelled-two-bounded-waits",
+				Steps: []*v1.Node{
+					{Id: "fan", Kind: &v1.Node_Parallel{Parallel: &v1.Parallel{Branches: []*v1.Parallel_Branch{
+						{Steps: []*v1.Node{{Id: "left", Kind: &v1.Node_Wait{Wait: &v1.Wait{
+							Kind:    &v1.Wait_Signal{Signal: &v1.Signal{Name: "go-left"}},
+							Timeout: durationpb.New(time.Hour),
+						}}}}},
+						{Steps: []*v1.Node{{Id: "right", Kind: &v1.Node_Wait{Wait: &v1.Wait{
+							Kind:    &v1.Wait_Signal{Signal: &v1.Signal{Name: "go-right"}},
+							Timeout: durationpb.New(time.Hour),
+						}}}}},
+					}}}},
+				},
+			}},
+			expectRunFailure: true,
+			release:          cancelWhenParked("left", "right"),
 		},
 		{
 			// The one no other suite can reach. A budget of one step

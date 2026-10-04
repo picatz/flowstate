@@ -30,6 +30,41 @@ import (
 // comment where it is used, in [executor.waitForSignal].
 const cancelSignalWaitTimerChange = "engine.wait.cancelSignalTimeoutTimer"
 
+// disconnectedTimerChange is the [workflow.GetVersion] changeID guarding #2244's
+// fix: arming a timer on a context that the run's cancellation does not fan out
+// to. See [executor.timerContext].
+const disconnectedTimerChange = "engine.timers.disconnectedFromRunCancellation"
+
+// timerContext returns the context a cancellable timer is armed on, and the
+// function that frees it.
+//
+// A timer built on [workflow.WithCancel] of the run's context is one of that
+// context's children, and the Temporal Go SDK cancels the children of one
+// context in the order of a Go map unless an SDK flag, off by default, is in
+// the history. A run cancelled while parked on two such timers therefore
+// issued its two `CancelTimer` commands in either order, and a worker replaying
+// the recorded run after a cache eviction or a restart could report it
+// nondeterministic (#2244). Not a retry's problem to absorb: a divergence is a
+// defect.
+//
+// The context here has no parent to be cancelled through. Every park that arms
+// a timer already selects on the run's own `Done` and calls the returned
+// function when its select resolves, however it resolved, so what the run's
+// cancellation does to each timer is the cancel its own coroutine issues, and
+// the SDK runs coroutines in the order they were created.
+//
+// Gated behind [workflow.GetVersion] because the command order differs for a
+// history that already recorded the SDK's propagation: that run issued its
+// `CancelTimer` before any coroutine woke, this one issues it when its
+// coroutine does. A run with no marker keeps [workflow.WithCancel].
+func (e *executor) timerContext() (workflow.Context, workflow.CancelFunc) {
+	if workflow.GetVersion(e.ctx, disconnectedTimerChange, workflow.DefaultVersion, 1) != workflow.DefaultVersion {
+		return workflow.NewDisconnectedContext(e.ctx)
+	}
+
+	return workflow.WithCancel(e.ctx)
+}
+
 // runWait blocks until what the node waits for happens, then records the
 // outcome as the step's outputs.
 func (e *executor) runWait(node *v1.Node, wait *v1.Wait) error {
@@ -291,7 +326,7 @@ func (e *executor) waitForSignal(node *v1.Node, signal *v1.Signal, timeout time.
 	if bounded {
 		timerCtx := e.ctx
 		if workflow.GetVersion(e.ctx, cancelSignalWaitTimerChange, workflow.DefaultVersion, 1) != workflow.DefaultVersion {
-			timerCtx, cancelTimer = workflow.WithCancel(e.ctx)
+			timerCtx, cancelTimer = e.timerContext()
 		}
 		timer = workflow.NewTimerWithOptions(timerCtx, timeout,
 			workflow.TimerOptions{Summary: waitTimeoutSummary(e.path, node.GetId())})
@@ -332,12 +367,14 @@ func (e *executor) waitForSignal(node *v1.Node, signal *v1.Signal, timeout time.
 	// RequestCancelTimer when the timer's future is not already ready (see
 	// NewTimerWithOptions in the SDK), so cancelling an already-fired timer
 	// adds no command and changes nothing about the "timer wins" path — the
-	// one case #770 says was already correct. It is also a no-op when the run
-	// itself was cancelled: e.ctx.Done() closing already cancelled this timer
-	// context too, as any context derived from e.ctx via [workflow.WithCancel]
-	// does. What is left, and the only case this line changes, is a signal
-	// that answered the gate before the timer did — where it is what stops
-	// the abandoned timer from later firing into a run that no longer cares.
+	// one case #770 says was already correct. A run recorded before
+	// [disconnectedTimerChange] had the run's own cancellation cancel this
+	// timer context too, as any [workflow.WithCancel] child of e.ctx is, so for
+	// it the line is a no-op there; for any other run this line is what frees
+	// the timer when the run is cancelled (#2244). The case it changes either
+	// way is a signal that answered the gate before the timer did — where it is
+	// what stops the abandoned timer from later firing into a run that no
+	// longer cares.
 	if cancelTimer != nil {
 		cancelTimer()
 	}
@@ -475,7 +512,7 @@ func (e *executor) waitForSignals(node *v1.Node, batch *v1.SignalBatch, timeout 
 	if bounded {
 		timerCtx := e.ctx
 		if workflow.GetVersion(e.ctx, cancelSignalWaitTimerChange, workflow.DefaultVersion, 1) != workflow.DefaultVersion {
-			timerCtx, cancelTimer = workflow.WithCancel(e.ctx)
+			timerCtx, cancelTimer = e.timerContext()
 		}
 		timer = workflow.NewTimerWithOptions(timerCtx, timeout,
 			workflow.TimerOptions{Summary: waitTimeoutSummary(e.path, node.GetId())})
