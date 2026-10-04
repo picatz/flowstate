@@ -727,6 +727,9 @@ func TestSnapshotMaterializeRoundTrip(t *testing.T) {
 			t.Errorf("digest differs for an equal tree: %v %v", ref2, err)
 		}
 		// A one-byte change changes the digest.
+		if err := os.Chmod(filepath.Join(src2, "README"), 0o644); err != nil {
+			t.Fatal(err)
+		}
 		if err := os.WriteFile(filepath.Join(src2, "README"), []byte("hellp"), 0o644); err != nil {
 			t.Fatal(err)
 		}
