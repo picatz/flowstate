@@ -36,15 +36,15 @@ types:
 inputs:
   booking:
     type: Booking
-    description: a reservation inside the window
     default:
       starts: 2026-03-01T09:30:00Z
       ends: 2026-03-01T10:00:00Z
+    description: a reservation inside the window
   reminders:
     type: list(timestamp)
-    description: moments to remind at
     default:
       - 2026-03-01T08:00:00Z
+    description: moments to remind at
   opens:
     type: timestamp
     default: 2026-03-01T09:00:00Z
