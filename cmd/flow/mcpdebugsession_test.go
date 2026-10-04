@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -921,4 +923,65 @@ func TestAStubbedSessionStepsBack(t *testing.T) {
 	result, next := callSession(t, client, debugSessionStartTool, map[string]any{"workflow": debugWorkflow, "tests": sessionTests})
 	require.False(t, result.IsError, "the registry was not freed by ending a rewound session: %s", next.raw)
 	callSession(t, client, debugSessionEndTool, map[string]any{"session_id": next.SessionID})
+}
+
+// TestASessionStillLaunchingIsNotActedOn: a stubbed session is registered
+// before its case is launched, and the id reaches other callers in the refusal
+// a concurrent call gets. Looking it up, or ending it, waits for the start that
+// registered it, rather than finding a session with no target: the race
+// detector checks the target's publication, and a panic on a nil one is the
+// failure.
+func TestASessionStillLaunchingIsNotActedOn(t *testing.T) {
+	t.Parallel()
+
+	r := newDebugSessions(nil)
+	// A reader in flight keeps the start waiting for the registry's claim,
+	// which is after the session is registered and before it has a target.
+	require.NoError(t, r.registry.Acquire(t.Context(), 1))
+
+	started := make(chan struct{})
+	go func() {
+		defer close(started)
+		result, err := r.start(t.Context(), toolRequest(t, map[string]any{"workflow": debugWorkflow, "tests": sessionTests}))
+		require.NoError(t, err)
+		require.False(t, result.IsError, "%v", result.Content)
+	}()
+
+	var id string
+	for id == "" {
+		r.mu.Lock()
+		for key := range r.sessions {
+			id = key
+		}
+		r.mu.Unlock()
+		runtime.Gosched()
+	}
+
+	acted := make(chan error, 2)
+	go func() {
+		entry, err := r.lookup(id)
+		if err == nil && entry.target == nil {
+			err = errors.New("a session was found before its start had given it a target")
+		}
+		acted <- err
+	}()
+	go func() {
+		r.mu.Lock()
+		entry := r.sessions[id]
+		r.mu.Unlock()
+		_, _ = entry.end(false)
+		acted <- nil
+	}()
+
+	select {
+	case err := <-acted:
+		t.Fatalf("a call acted on a session whose case was not launched yet (%v)", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	r.registry.Release(1)
+	<-started
+	for range 2 {
+		require.NoError(t, <-acted)
+	}
 }

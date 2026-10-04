@@ -538,6 +538,16 @@ func (r *debugSessions) lookup(id string) (*debugSessionEntry, error) {
 		return nil, errNoDebugSession(id)
 	}
 
+	// A stubbed session is registered before its case is launched, and is
+	// given its target once it is: until the start that registered it answers,
+	// nothing may act on it, whoever learned its id.
+	if entry.ready != nil {
+		<-entry.ready
+		if entry.startErr != nil {
+			return nil, errNoDebugSession(id)
+		}
+	}
+
 	entry.mu.Lock()
 	entry.expires = time.Now().Add(debugSessionIdle)
 	entry.mu.Unlock()
@@ -558,6 +568,12 @@ func errNoDebugSession(id string) error {
 // waiting on the process-wide registry lock — is left to finish on its own
 // rather than hang the caller.
 func (e *debugSessionEntry) end(keep bool) (bool, error) {
+	// A session ended, by the sweeper or by another call that found its id,
+	// before the start that registered it has launched its case has no target
+	// yet: it is ended once it has.
+	if e.ready != nil {
+		<-e.ready
+	}
 	// After any command in flight, and before any that found this entry:
 	// those see retired once they hold calls.
 	e.calls.Lock()
@@ -990,7 +1006,7 @@ func (r *debugSessions) start(ctx context.Context, req *mcp.CallToolRequest) (*m
 	// second stubbed session — is answered by register rather than left
 	// waiting here on a registry this session will hold for its whole life.
 	// Nothing touches the registry before the case launches below, and a
-	// reader never waiting for the claim, so the wait is bounded by theirs.
+	// reader never waits for the claim, so the wait is bounded by theirs.
 	if err := r.claimRegistry(ctx); err != nil {
 		entry.startErr = err
 		cancel()
