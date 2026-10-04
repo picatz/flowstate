@@ -34,10 +34,20 @@ func ToleratesEveryKind(policy *StepPolicy) bool {
 // RetryAllowsKind reports whether a retry policy's `only:` and `except:` allow
 // another attempt after a failure of kind.
 //
+// A [ErrorKindTimeout] is never narrowed. The durable driver cannot stop
+// Temporal retrying an attempt that ran out its own deadline (that failure is
+// not an application error, so the non-retryable types never match it), and the
+// drivers must agree: how many times a slow step is tried is `attempts:` and
+// `timeout:`, which both honor. The validator refuses `except: [Timeout]` for the
+// same reason, and an `only:` that omits it still retries timeouts.
+//
 // It only ever narrows. A caller must still ask whether the failure is
 // retryable at all ([RetryPermitted]): naming a permanent kind in `only:` does not
 // make it retried, and the validator refuses the list that tries.
 func RetryAllowsKind(retry *RetryPolicy, kind ErrorKind) bool {
+	if kind == ErrorKindTimeout {
+		return true
+	}
 	if slices.Contains(retry.GetExcept(), kind.String()) {
 		return false
 	}
@@ -117,6 +127,8 @@ func PolicyKindProblems(wf *Workflow, node *Node) []PolicyKindProblem {
 	}{{"retry.only", retry.GetOnly()}, {"retry.except", retry.GetExcept()}} {
 		for _, kind := range field.kinds {
 			switch {
+			case field.name == "retry.except" && ErrorKind(kind) == ErrorKindTimeout:
+				add(field.name, kind, "`except:` names %q, which cannot be narrowed: how often a slow step is retried is `attempts:` and `timeout:`, so set `attempts: 1` to try it once", kind)
 			case !KnownFailureKind(wf, kind):
 				add(field.name, kind, "`%s:` names %q, which is neither a built-in kind (%s) nor declared under `errors:`",
 					strings.TrimPrefix(field.name, "retry."), kind, strings.Join(errorKindNames(), ", "))
@@ -131,7 +143,7 @@ func PolicyKindProblems(wf *Workflow, node *Node) []PolicyKindProblem {
 		for _, kind := range retry.GetExcept() {
 			if slices.Contains(on, kind) {
 				add("retry.except", kind, "%q is in both `only:` and `except:`", kind)
-			} else if KnownFailureKind(wf, kind) && ErrorKind(kind).Retryable() {
+			} else if KnownFailureKind(wf, kind) && ErrorKind(kind).Retryable() && ErrorKind(kind) != ErrorKindTimeout {
 				add("retry.except", kind, "`except:` names %q, which `only:` already leaves out; write one list or the other", kind)
 			}
 		}

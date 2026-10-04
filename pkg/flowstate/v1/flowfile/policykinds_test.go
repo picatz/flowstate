@@ -88,6 +88,9 @@ func TestPolicyKindDiagnostics(t *testing.T) {
 		"a kind in both lists is a contradiction": {
 			from: "only: [Upstream, Timeout]", to: "only: [Upstream, Timeout]\n      except: [Upstream]", want: "in both",
 		},
+		"a timeout cannot be excepted, attempts bounds it": {
+			from: "except: [RateLimited]", to: "except: [Timeout]", want: "attempts: 1",
+		},
 		"an empty tolerated list is refused": {
 			from: "[PolicyDenied, Refused]", to: "[]", want: "at least one failure kind",
 		},
