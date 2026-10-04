@@ -820,10 +820,8 @@ func TestTheStubbedToolsWaitForAnEndingStubbedSession(t *testing.T) {
 
 	synctest.Test(t, func(t *testing.T) {
 		r := newDebugSessions(nil)
-		session, err := flowdebug.New(flowdebug.Options{Controlled: true})
-		require.NoError(t, err)
 		lapsed := addStepSession(t, r, newStepTarget(true))
-		lapsed.local = session
+		lapsed.stubbed = true
 		lapsed.done = make(chan struct{})
 		lapsed.cancel = func() {}
 		lapsed.mu.Lock()
@@ -878,4 +876,49 @@ func TestARejoinNamingAnotherRunIsRefused(t *testing.T) {
 	existing, err := r.register(&debugSessionEntry{id: held.id, workflowID: "orders-1"}, "")
 	require.NoError(t, err)
 	assert.Same(t, held, existing)
+}
+
+// TestAStubbedSessionStepsBack: a retained stubbed session is a
+// [flowdebug.Reversible], so `back` returns to the stop before, a command
+// fenced to a revision it has left is refused, and the replay that got there
+// says nothing the caller already heard. Ending after a rewind still returns
+// the case's verdict and frees the registry for the next session.
+func TestAStubbedSessionStepsBack(t *testing.T) {
+	t.Parallel()
+
+	client := connectMCP(t, defaultLocalRunPosture())
+
+	result, started := callSession(t, client, debugSessionStartTool, map[string]any{"workflow": debugWorkflow, "tests": sessionTests})
+	require.False(t, result.IsError, started.raw)
+	require.Equal(t, "build", started.Snapshot.Occurrence.Address)
+
+	command := func(args map[string]any) sessionReply {
+		t.Helper()
+		args["session_id"] = started.SessionID
+		_, reply := callSession(t, client, debugSessionCommandTool, args)
+
+		return reply
+	}
+
+	moved := command(map[string]any{"command": "next"})
+	require.Equal(t, "ship", moved.Snapshot.Occurrence.Address, moved.raw)
+
+	back := command(map[string]any{"command": "back"})
+	assert.Equal(t, "DEBUG_COMMAND_STATUS_APPLIED", back.Receipt.Status, back.raw)
+	assert.Equal(t, "build", back.Snapshot.Occurrence.Address, "back returns to the stop before")
+	assert.NotContains(t, back.raw, "building 2026.9.0", "the replay narrated what the caller had already heard")
+
+	stale := command(map[string]any{"command": "back", "expected_revision": 1})
+	assert.Equal(t, "DEBUG_COMMAND_STATUS_STALE", stale.Receipt.Status, "a back fenced to a revision the session left is refused")
+
+	again := command(map[string]any{"command": "next"})
+	assert.Equal(t, "ship", again.Snapshot.Occurrence.Address, "the rewound run moves forward again")
+
+	result, ended := callSession(t, client, debugSessionEndTool, map[string]any{"session_id": started.SessionID})
+	require.False(t, result.IsError, ended.raw)
+	assert.Contains(t, string(ended.Report), "it ships")
+
+	result, next := callSession(t, client, debugSessionStartTool, map[string]any{"workflow": debugWorkflow, "tests": sessionTests})
+	require.False(t, result.IsError, "the registry was not freed by ending a rewound session: %s", next.raw)
+	callSession(t, client, debugSessionEndTool, map[string]any{"session_id": next.SessionID})
 }

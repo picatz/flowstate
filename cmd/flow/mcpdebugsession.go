@@ -84,10 +84,15 @@ type debugSessions struct {
 }
 
 type debugSessionEntry struct {
-	id      string
-	target  flowdebug.Target
-	driver  *flowdebug.Driver
-	local   *flowdebug.Session
+	id     string
+	target flowdebug.Target
+	driver *flowdebug.Driver
+	// stubbed is set for a stubbed case, which runs in this process under a
+	// [flowdebug.Reversible]; empty of a durable run.
+	stubbed bool
+	// stop ends a stubbed case's runs, the replays a rewind left behind
+	// included. Nil for a durable session.
+	stop    func()
 	started time.Time
 
 	// calls serializes commands on one session, so two never race to move
@@ -308,7 +313,7 @@ func (r *debugSessions) settle(ctx context.Context, match func(*debugSessionEntr
 	return nil
 }
 
-func stubbedEntry(entry *debugSessionEntry) bool { return entry.local != nil }
+func stubbedEntry(entry *debugSessionEntry) bool { return entry.stubbed }
 
 // forgetLocked drops a session and the start request ids that name it. The
 // caller holds r.mu.
@@ -342,11 +347,11 @@ func (r *debugSessions) register(entry *debugSessionEntry, request string) (*deb
 		if existing, ok := r.sessions[r.starts[request]]; ok {
 			// An attach racing another under its key: answered with the
 			// first only when both asked for the same run.
-			if entry.local == nil && !existing.onRun(entry.workflowID, entry.runID) {
+			if !entry.stubbed && !existing.onRun(entry.workflowID, entry.runID) {
 				return nil, errReusedAttachKey
 			}
 			// And a start only when both submitted the same case.
-			if entry.local != nil && existing.inputs != entry.inputs {
+			if entry.stubbed && existing.inputs != entry.inputs {
 				return nil, errReusedStartKey
 			}
 
@@ -374,15 +379,15 @@ func (r *debugSessions) register(entry *debugSessionEntry, request string) (*deb
 	// runs, so a second one would wait, uncancellably, for the first to end.
 	// Refused here instead, before anything is launched; durable sessions
 	// hold no registry and are not counted.
-	if entry.local != nil {
+	if entry.stubbed {
 		for _, open := range r.sessions {
-			if open.local != nil {
+			if open.stubbed {
 				return nil, fmt.Errorf("this server runs one stubbed debug session at a time, and %s is open; "+
 					"end it with %s before starting another", open.id, debugSessionEndTool)
 			}
 		}
 		for _, ending := range r.ending {
-			if ending.local != nil {
+			if ending.stubbed {
 				return nil, fmt.Errorf("stubbed debug session %s is still ending; try again shortly", ending.id)
 			}
 		}
@@ -401,7 +406,7 @@ func (r *debugSessions) stubbed() (string, bool) {
 	defer r.mu.Unlock()
 
 	for _, open := range r.sessions {
-		if open.local != nil {
+		if open.stubbed {
 			return open.id, true
 		}
 	}
@@ -557,6 +562,11 @@ func (e *debugSessionEntry) end(keep bool) (bool, error) {
 	// those see retired once they hold calls.
 	e.calls.Lock()
 	defer e.calls.Unlock()
+	if e.stop != nil {
+		// After the case has had its chance to finish, and off this call:
+		// it ends the replays a rewind left and waits for them.
+		defer func() { go e.stop() }()
+	}
 
 	var detach error
 	if remote, ok := e.target.(*flowdebug.Remote); ok && keep {
@@ -657,7 +667,8 @@ func (r *debugSessions) tools() []flowmcp.ToolRegistration {
 			Description: "Run one debugger command in a retained session and answer with its typed result. Commands: " +
 				"step, next, finish, continue, until <step>, pause, break <step> [hit <n>] [if <expr>], log <step> <msg>, " +
 				"catch none|uncaught|all, delete <step>, clear, breakpoints, inspect <expr>, expand <expr>, scope, backtrace, " +
-				"detach, status. Movements answer with the next stop. Set expected_revision to the snapshot you acted on, " +
+				"detach, status. A stubbed session can also step back: back, and reverse-continue (rc) to the previous " +
+				"breakpoint. Movements answer with the next stop. Set expected_revision to the snapshot you acted on, " +
 				"so a command meant for a stop the run has left is refused as stale: a movement or an inspection is " +
 				"judged by the run in the same step as the command; any other command is checked just before it is sent.",
 			InputSchema: object(map[string]any{
@@ -947,23 +958,19 @@ func (r *debugSessions) start(ctx context.Context, req *mcp.CallToolRequest) (*m
 		program, steps = workflow, stepList(workflow)
 	}
 	transcript := &lockedTranscript{}
-	session, err := flowdebug.New(flowdebug.Options{Controlled: true, Emit: transcript.add, Workflow: program, Steps: steps})
-	if err != nil {
-		return flowmcp.ToolError(err), nil
-	}
 
+	// The case's runs live as long as the session, not as long as the call
+	// that started it or the one that rewinds it.
 	runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	entry := &debugSessionEntry{
-		id: uuid.NewString(), target: session, driver: flowdebug.NewDriver(session), local: session,
+		id: uuid.NewString(), stubbed: true,
 		started: time.Now(), expires: time.Now().Add(debugSessionIdle), receipts: map[string]json.RawMessage{},
 		transcript: transcript, cancel: cancel, done: make(chan struct{}), ready: make(chan struct{}), inputs: inputs,
 	}
-	entry.driver.Wait = maxDebugSessionWait
 	existing, err := r.register(entry, key)
 	if err != nil || existing != nil {
 		// Nothing was launched: this session never ran.
 		cancel()
-		_ = session.Close()
 		if err != nil {
 			return flowmcp.ToolError(err), nil
 		}
@@ -983,11 +990,10 @@ func (r *debugSessions) start(ctx context.Context, req *mcp.CallToolRequest) (*m
 	// second stubbed session — is answered by register rather than left
 	// waiting here on a registry this session will hold for its whole life.
 	// Nothing touches the registry before the case launches below, and a
-	// reader never waits for the claim, so the wait is bounded by theirs.
+	// reader never waiting for the claim, so the wait is bounded by theirs.
 	if err := r.claimRegistry(ctx); err != nil {
 		entry.startErr = err
 		cancel()
-		_ = session.Close()
 		close(entry.done)
 		if r.remove(entry.id) {
 			r.release(entry)
@@ -996,30 +1002,79 @@ func (r *debugSessions) start(ctx context.Context, req *mcp.CallToolRequest) (*m
 		return flowmcp.ToolError(err), nil
 	}
 
-	go func() {
-		defer close(entry.done)
-		// Released before done closes, so a call settling on this session's
-		// end finds the registry free.
-		defer r.registry.Release(registryReaders)
-		defer cancel()
-
-		result := flowtest.RunSourceWith(runCtx, "<submitted>", []byte(args.Workflow), []byte(args.Tests),
-			flowtest.RunOptions{Select: selected, Debugger: session})
-		// Published by closing done, which is what a reader waits on.
-		entry.report = result.Report
-		if testReportFailed(result.Report) {
-			session.Finished(caseFailure(result.Report))
-		} else {
-			session.Finished(nil)
+	// Released with the case's first end, whichever run reaches it, so a call
+	// settling on this session's end finds the registry free.
+	var finishOnce sync.Once
+	finish := func(report *v1.TestReport) {
+		finishOnce.Do(func() {
+			entry.report = report
+			r.registry.Release(registryReaders)
+			close(entry.done)
+		})
+	}
+	var launched atomic.Bool
+	reversible, err := flowdebug.NewReversible(runCtx, func(context.Context) (*flowdebug.Run, error) {
+		run := &stubbedRun{done: make(chan struct{}), initial: !launched.Swap(true), finish: finish}
+		// A replay is silent: the caller was shown that account the first time.
+		session, err := flowdebug.New(flowdebug.Options{
+			Controlled: true, Workflow: program, Steps: steps,
+			Emit: func(text string, tone flowdebug.Tone) {
+				if run.speaks() {
+					transcript.add(text, tone)
+				}
+			},
+		})
+		if err != nil {
+			return nil, err
 		}
-		_ = session.Close()
-	}()
+		caseCtx, cancelCase := context.WithCancel(runCtx)
+		go func() {
+			defer close(run.done)
+			defer cancelCase()
+
+			result := flowtest.RunSourceWith(caseCtx, "<submitted>", []byte(args.Workflow), []byte(args.Tests),
+				flowtest.RunOptions{Select: selected, Debugger: session})
+			if testReportFailed(result.Report) {
+				session.Finished(caseFailure(result.Report))
+			} else {
+				session.Finished(nil)
+			}
+			_ = session.Close()
+			run.ended(result.Report)
+		}()
+
+		return &flowdebug.Run{
+			Session: session,
+			Live:    run.shown,
+			Stop: func() {
+				// Cancelled before the session is released, which would
+				// otherwise let the run carry on through its remaining steps.
+				run.stopped.Store(true)
+				cancelCase()
+				_ = session.Close()
+				<-run.done
+			},
+		}, nil
+	})
+	if err != nil {
+		entry.startErr = err
+		cancel()
+		close(entry.done)
+		r.registry.Release(registryReaders)
+		if r.remove(entry.id) {
+			r.release(entry)
+		}
+
+		return flowmcp.ToolError(err), nil
+	}
+	entry.target, entry.driver, entry.stop = reversible, flowdebug.NewDriver(reversible), reversible.Stop
+	entry.driver.Wait = maxDebugSessionWait
 
 	// The first stop, or the end of a case with no steps to hold at.
 	waitCtx, stop := context.WithTimeout(ctx, maxDebugSessionWait)
 	defer stop()
 	for after := uint64(0); ; {
-		snapshot, err := session.WaitSnapshot(waitCtx, after)
+		snapshot, err := reversible.WaitSnapshot(waitCtx, after)
 		if err != nil || snapshot.GetState() != v1.DebugRunState_DEBUG_RUN_STATE_RUNNING {
 			break
 		}
@@ -1027,6 +1082,55 @@ func (r *debugSessions) start(ctx context.Context, req *mcp.CallToolRequest) (*m
 	}
 
 	return entry.answerAfter(ctx).result(), nil
+}
+
+// stubbedRun is one run of a stubbed case under a [flowdebug.Reversible]: the
+// first, or a replay that a rewind has made, or is making, the one shown.
+type stubbedRun struct {
+	done    chan struct{}
+	initial bool
+	stopped atomic.Bool
+	finish  func(*v1.TestReport)
+
+	mu       sync.Mutex
+	live     bool
+	finished bool
+	report   *v1.TestReport
+}
+
+// speaks is whether this run's account is the caller's: the first run's
+// from its first word, a replay's only once it has replaced the run before it.
+func (r *stubbedRun) speaks() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	return (r.live || r.initial) && !r.stopped.Load()
+}
+
+// shown is [flowdebug.Run.Live]. A run that had already ended when it became
+// the one shown ends the case now.
+func (r *stubbedRun) shown() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.live = true
+	if r.finished && !r.stopped.Load() {
+		r.finish(r.report)
+	}
+}
+
+// ended records the run's verdict, which is the case's only if the run is the
+// one shown and no rewind has stopped it: a replay that ends before it is shown
+// was never the caller's, and a run a rewind cancelled ends in the
+// cancellation, not in a verdict.
+func (r *stubbedRun) ended(report *v1.TestReport) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.finished, r.report = true, report
+	if r.live && !r.stopped.Load() {
+		r.finish(report)
+	}
 }
 
 // caseFailure is why a case did not pass, for the session's snapshot: a case
@@ -1351,7 +1455,7 @@ func retryKey(tool, request string) string {
 // runID name, a run id either side leaves empty matching any, as a rejoin
 // judges it.
 func (e *debugSessionEntry) onRun(workflowID, runID string) bool {
-	return e.local == nil && e.workflowID == workflowID && (e.runID == "" || runID == "" || e.runID == runID)
+	return !e.stubbed && e.workflowID == workflowID && (e.runID == "" || runID == "" || e.runID == runID)
 }
 
 // startInputs identifies what a start submitted — the workflow, the tests,
