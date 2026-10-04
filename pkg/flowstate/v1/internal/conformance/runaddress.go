@@ -2,6 +2,7 @@ package conformance
 
 import (
 	"testing"
+	"time"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
@@ -59,6 +60,14 @@ func RunAddressWorkflow() *v1.Workflow {
 		DeclaredOutputs: []*v1.OutputDeclaration{
 			{Name: "workflow_id", Value: v1.NewExpr("run.workflow_id")},
 			{Name: "run_id", Value: v1.NewExpr("run.run_id")},
+
+			// The instants a run is given, as text so both drivers' outputs are
+			// comparable, and read through `.getFullYear()` and an offset to prove
+			// they are typed timestamps rather than strings that print like them.
+			{Name: "started_at", Value: v1.NewExpr("string(run.started_at)")},
+			{Name: "started_year", Value: v1.NewExpr("run.started_at.getFullYear()")},
+			{Name: "scheduled_at", Value: v1.NewExpr("string(trigger.scheduled_at)")},
+			{Name: "day_before", Value: v1.NewExpr(`string(run.started_at - duration("24h"))`)},
 		},
 	}
 }
@@ -102,5 +111,31 @@ func AssertRunAddressShape(t testing.TB, outputs *v1.Workflow_StepOutputs, wantW
 		if got != want {
 			t.Fatalf("run.%s = %q, want %q", field, got, want)
 		}
+	}
+}
+
+// AssertRunInstants checks the two instants a run is given, as the shared workflow
+// reports them: `run.started_at` is want, a day before it is a day before it, and
+// `trigger.scheduled_at` is wantScheduled, the Unix epoch where the run has none.
+//
+// Compared as text because that is what [RunAddressWorkflow] reports, and as the
+// instant the driver was told to start at because the two drivers do not share a
+// clock: what they must share is that a given start renders the same.
+func AssertRunInstants(t testing.TB, outputs *v1.Workflow_StepOutputs, want, wantScheduled time.Time) {
+	t.Helper()
+
+	values := outputs.GetRunOutputs().GetValues()
+	for field, expected := range map[string]string{
+		"started_at":   want.UTC().Format(time.RFC3339Nano),
+		"scheduled_at": wantScheduled.UTC().Format(time.RFC3339Nano),
+		"day_before":   want.UTC().Add(-24 * time.Hour).Format(time.RFC3339Nano),
+	} {
+		got := values[field].GetLiteral().GetStringValue()
+		if got != expected {
+			t.Fatalf("%s = %q, want %q", field, got, expected)
+		}
+	}
+	if got := int(values["started_year"].GetLiteral().GetInt64Value()); got != want.UTC().Year() {
+		t.Fatalf("started_year = %d, want %d", got, want.UTC().Year())
 	}
 }

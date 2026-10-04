@@ -824,12 +824,15 @@ clock exists in every case keeps that version from being expressible at all.
 That placement is also what decides the shape of `run.*`, which is otherwise a root
 additions are free in. A run reads its own address there — `run.workflow_id` and
 `run.run_id`, the pair that lets a workload tell an external system where to send a
-callback — and it reads no start time, because a start time is this clock under a name
-nobody would recognise as one: putting it on the run root would make a clock readable from
-every expression in the language, through a field that does not look like a clock. An
-attempt count is refused for the neighbouring reason — it is the substrate's scheduling
-rather than the workload's own logic, and it changes underneath a run. See
-`v1.RunAddress`, which records both absences where the next person to "complete" the
+callback — and when it began, `run.started_at`. That last is not a clock under another
+name, and the distinction is the whole argument: `now` is a different answer each time it
+is asked, so it is bound only where a replay-safe clock exists, while a start is fixed when
+the run begins, read off the first segment's history and carried across every
+Continue-As-New, so it is the same value on every replay. `trigger.scheduled_at` is the
+same kind of fact, the slot a schedule meant the run for, read once from the execution's
+start. An attempt count stays refused for the neighbouring reason — it is the substrate's
+scheduling rather than the workload's own logic, and it changes underneath a run. See
+`v1.RunAddress`, which records both halves where the next person to "complete" the
 message will find them.
 
 `now` is written bare because it is bound where the expression is, which is what a step

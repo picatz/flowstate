@@ -117,7 +117,7 @@ func KnownTriggerKind(kind string) bool { return slices.Contains(triggerKinds, k
 // second input path reachable under this root would be one the validator is blind
 // to, which is the whole reason the set is stated once, here, and read by
 // [TriggerContextValue] and by the compiler's own unknown-field diagnostic.
-var triggerContextFields = []string{"kind", "name", "principal", "delivery_id"}
+var triggerContextFields = []string{"kind", "name", "principal", "delivery_id", "scheduled_at"}
 
 // TriggerContextFields returns the fields an expression may select on `trigger`.
 func TriggerContextFields() []string { return slices.Clone(triggerContextFields) }
@@ -153,7 +153,9 @@ func NewWebhookTriggerContext(name, principal, deliveryID string) *TriggerContex
 }
 
 // NewScheduleTriggerContext is the context a scheduled firing records: which
-// schedule, and whose.
+// schedule, and whose. The slot the firing was meant for is not known when a
+// schedule is created, so it is not here; the first segment of each firing reads
+// it off the execution and records it ([TriggerContext.ScheduledAt]).
 func NewScheduleTriggerContext(name, principal string) *TriggerContext {
 	return &TriggerContext{Kind: TriggerKindSchedule, Name: name, Principal: principal}
 }
@@ -162,7 +164,7 @@ func NewScheduleTriggerContext(name, principal string) *TriggerContext {
 // [TriggerRoot].
 //
 // Every field is rendered, including the empty ones, and a nil context renders
-// with all four empty. That is the rule [runRootValue] follows and it buys the
+// with every field empty. That is the rule [runRootValue] follows and it buys the
 // same thing: a reference to a field that is simply blank on this run resolves to
 // an empty string rather than failing as an unresolved reference, so an author
 // reading `${trigger.name}` on a manual start sees "" instead of being sent to
@@ -177,6 +179,12 @@ func TriggerContextValue(trigger *TriggerContext) ref.Val {
 		"name":        trigger.GetName(),
 		"principal":   trigger.GetPrincipal(),
 		"delivery_id": trigger.GetDeliveryId(),
+
+		// A timestamp, so `trigger.scheduled_at - duration("24h")` checks and
+		// runs; the Unix epoch where there is no schedule, which an expression
+		// guards against with `trigger.kind == "schedule"` rather than a type that
+		// can be absent.
+		"scheduled_at": trigger.GetScheduledAt().AsTime(),
 	})
 }
 

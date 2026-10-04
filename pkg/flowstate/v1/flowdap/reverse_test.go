@@ -35,6 +35,9 @@ func rewindable(t *testing.T) *flowdebug.Reversible {
 			return nil, err
 		}
 		runCtx, cancel := context.WithCancel(context.Background())
+		// One start for every launch, replays included: `run.started_at` is part of
+		// what a stop shows.
+		runCtx = v1.NewContextWithRunStart(runCtx, time.Unix(1_700_000_000, 0).UTC())
 		done := make(chan struct{})
 		go func() {
 			defer close(done)

@@ -94,6 +94,9 @@ func launchedWith(t *testing.T, name, source string, wrap func(context.Context) 
 			return nil, err
 		}
 		runCtx, cancel := context.WithCancel(context.Background())
+		// One start for every launch, replays included: `run.started_at` is part of
+		// what a stop shows.
+		runCtx = v1.NewContextWithRunStart(runCtx, time.Unix(1_700_000_000, 0).UTC())
 		t.Cleanup(cancel)
 
 		return &flowdap.Launch{

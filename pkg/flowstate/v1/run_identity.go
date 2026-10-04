@@ -3,8 +3,10 @@ package flowstatev1
 import (
 	"maps"
 	"slices"
+	"time"
 
 	"github.com/google/cel-go/common/types/ref"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // LocalRunAddress is what a run started by the local driver answers for both
@@ -25,7 +27,9 @@ import (
 // `flow test` can assert on it.
 const LocalRunAddress = "local"
 
-// NewLocalRunAddress returns the address every local run reports.
+// NewLocalRunAddress returns the address every local run reports, with no start
+// recorded, which `run.started_at` renders as the Unix epoch. A caller that knows
+// when its run began uses [NewLocalRunAddressAt].
 //
 // A constructor rather than each caller writing the pair, so "what a local run
 // answers" has one definition to compare against the durable driver's — the same
@@ -34,10 +38,22 @@ func NewLocalRunAddress() *RunAddress {
 	return &RunAddress{WorkflowId: LocalRunAddress, RunId: LocalRunAddress}
 }
 
+// NewLocalRunAddressAt returns the local run address started at the given
+// instant: the run's clock at the moment it began ([ClockFromContext]), which is
+// the wall clock for `flow run local` and the case's own virtual start for `flow
+// test`, so a window computed from `run.started_at` is exercisable with a fixed
+// one.
+func NewLocalRunAddressAt(started time.Time) *RunAddress {
+	address := NewLocalRunAddress()
+	address.StartedAt = timestamppb.New(started)
+
+	return address
+}
+
 // runRootValue renders a run's own address and starter identity as the map an
 // expression reads under [RunRoot]: `run.workflow_id`, `run.run_id`,
 // `run.identity.subject`, `run.identity.issuer`, `run.identity.namespace`,
-// `run.identity.claims`, and `run.local`.
+// `run.identity.claims`, `run.local`, and `run.started_at`.
 //
 // The identity half is deliberately narrower than [WorkloadIdentity] itself —
 // see [Scope.identity]'s doc for why `deployment` is left off — and deliberately
@@ -54,17 +70,20 @@ func NewLocalRunAddress() *RunAddress {
 // nothing enforces it structurally.
 //
 // address nil renders both id fields empty, which is correct only for a run that
-// predates the field: every driver fills it now, and [NewLocalRunAddress] is why
+// predates the field: every driver fills it now, and [NewLocalRunAddressAt] is why
 // the local one has something honest to fill it with. It is rendered rather than
 // omitted so that a reference to it resolves — the same rule [InputsRoot] follows
 // for an empty root, and for the same reason: a missing key describes the
 // author's mistake, an unresolved reference sends them looking for a root that is
 // always there.
 //
-// The two fields under `run` that a reader may expect and will not find are a
-// start time and an attempt count. [RunAddress] records why neither is here;
-// the short version is that a start time is a clock read by another name, and
-// `now` is bound only inside a wait precisely so a task cannot read a clock.
+// `started_at` is a timestamp, and renders as the Unix epoch where the run
+// recorded none (a run that predates the field): a typed value that is plainly
+// not a start, rather than a missing key that would fail an expression the
+// checker had accepted. It is when the workload began, fixed for its life and
+// identical on every replay, and so not a clock read; `now` stays bound only
+// inside a wait. The one field a reader may expect and will not find is an
+// attempt count, and [RunAddress] records why.
 func runRootValue(identity *WorkloadIdentity, local bool, address *RunAddress) ref.Val {
 	claims := make(map[string]any, len(identity.GetClaims()))
 	for _, k := range slices.Sorted(maps.Keys(identity.GetClaims())) {
@@ -81,5 +100,6 @@ func runRootValue(identity *WorkloadIdentity, local bool, address *RunAddress) r
 		"local":       local,
 		"workflow_id": address.GetWorkflowId(),
 		"run_id":      address.GetRunId(),
+		"started_at":  address.GetStartedAt().AsTime(),
 	})
 }

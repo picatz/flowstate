@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/goccy/go-yaml"
 
@@ -388,8 +389,8 @@ func checkInvariants(p *problems, r site, test *Test, at loc) {
 // assertInvariants evaluates the case's invariants against a finished run, as
 // the claims they are: the same evaluation as `expect.check:`, reported under
 // the key the author wrote.
-func assertInvariants(ctx context.Context, claims []CheckClaim, spec *v1.Workflow, bound map[string]*v1.Value, vars fileVars, outputs *v1.Workflow_StepOutputs, runErr error, sensitive sensitiveInputs) []*v1.Diagnostic {
-	failures := assertChecks(ctx, claims, spec, bound, vars, outputs, runErr, sensitive)
+func assertInvariants(ctx context.Context, started time.Time, claims []CheckClaim, spec *v1.Workflow, bound map[string]*v1.Value, vars fileVars, outputs *v1.Workflow_StepOutputs, runErr error, sensitive sensitiveInputs) []*v1.Diagnostic {
+	failures := assertChecks(ctx, started, claims, spec, bound, vars, outputs, runErr, sensitive)
 	for _, d := range failures {
 		d.Field = "invariants" + strings.TrimPrefix(d.Field, "expect.check")
 	}

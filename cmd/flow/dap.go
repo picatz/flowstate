@@ -11,6 +11,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"syscall"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -423,6 +424,10 @@ func (b debuggedRunBuilder) reversible(args flowdap.LaunchArguments) (*flowdap.L
 		// Every later run is a replay, and starts at once.
 		started = make(chan struct{})
 		first   atomic.Bool
+		// begun is the instant `run.started_at` reports in every run of the
+		// session, replays included: a stop reached again must show what it
+		// showed the first time.
+		begun = time.Now()
 	)
 	shown := func() *debuggedRun {
 		mu.Lock()
@@ -444,6 +449,7 @@ func (b debuggedRunBuilder) reversible(args flowdap.LaunchArguments) (*flowdap.L
 		}
 		var runCtx context.Context
 		runCtx, run.cancel = context.WithCancel(b.cmd.Context())
+		runCtx = v1.NewContextWithRunStart(runCtx, begun)
 		initial := !first.Swap(true)
 		go func() {
 			defer close(run.reported)

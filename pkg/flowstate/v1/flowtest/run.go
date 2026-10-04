@@ -952,7 +952,7 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 		return
 	}
 
-	clock := v1.NewVirtualClock(epoch)
+	clock := v1.NewVirtualClock(test.StartTime())
 	// base rather than context.Background(): whatever bound the caller put on
 	// this run is the only thing that can end a case the virtual clock cannot
 	// advance past. See [RunSourceContext].
@@ -1302,7 +1302,7 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 		// ([faultedErrorClass]). `expect:` describes the run where nothing
 		// went wrong, which this one is not.
 		result.Failures = faultedErrorClass(runErr)
-		result.Failures = append(result.Failures, assertInvariants(ctx, test.Invariants, workflow, bound, vars, outputs, runErr, sensitive)...)
+		result.Failures = append(result.Failures, assertInvariants(ctx, test.StartTime(), test.Invariants, workflow, bound, vars, outputs, runErr, sensitive)...)
 		result.Passed = len(result.Failures) == 0
 
 		return
@@ -1314,8 +1314,8 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	}
 	// The CEL claims (#1072), after the named fields so a report reads
 	// structure first, values second — the order the file states them in.
-	result.Failures = append(result.Failures, assertChecks(ctx, test.Expect.Check, workflow, bound, vars, outputs, runErr, sensitive)...)
-	result.Failures = append(result.Failures, assertInvariants(ctx, test.Invariants, workflow, bound, vars, outputs, runErr, sensitive)...)
+	result.Failures = append(result.Failures, assertChecks(ctx, test.StartTime(), test.Expect.Check, workflow, bound, vars, outputs, runErr, sensitive)...)
+	result.Failures = append(result.Failures, assertInvariants(ctx, test.StartTime(), test.Invariants, workflow, bound, vars, outputs, runErr, sensitive)...)
 	if faults != nil {
 		result.Failures = append(result.Failures, faults.unreached()...)
 	}
@@ -1337,7 +1337,7 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 			for _, failure := range result.Failures {
 				rendered = append(rendered, failure.GetField()+": "+failure.GetMessage())
 			}
-			scope := postRunScope(ctx, workflow, bound, outputs)
+			scope := postRunScope(ctx, test.StartTime(), workflow, bound, outputs)
 			// The session's redactors were the case's before the run; the
 			// autopsy inspects the finished run's scope, which can hold what
 			// a callee withheld (Copilot, #2215). Cleared on the way out,

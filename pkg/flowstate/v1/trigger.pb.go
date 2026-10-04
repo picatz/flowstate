@@ -410,7 +410,28 @@ type TriggerContext struct {
 	// key is a value read out of the delivery, and this is written to a memo and
 	// to history, both durable and broadly readable. Empty for every kind that
 	// has no delivery.
-	DeliveryId    string `protobuf:"bytes,4,opt,name=delivery_id,json=deliveryId,proto3" json:"delivery_id,omitempty"`
+	DeliveryId string `protobuf:"bytes,4,opt,name=delivery_id,json=deliveryId,proto3" json:"delivery_id,omitempty"`
+	// ScheduledAt is the moment a schedule meant this run to start, read as
+	// `trigger.scheduled_at`: the slot, which differs from when the run actually
+	// started under a backfill, a paused-then-resumed schedule, or a catch-up
+	// window. A report about "the hour that just closed" is about this, not about
+	// the wall clock it happened to run at.
+	//
+	// Read once, from the `TemporalScheduledStartTime` search attribute Temporal
+	// attaches to an execution a schedule started, by the first segment, and
+	// carried here in [RunState] like [delivery_id], so it is the same value on
+	// every replay and across every Continue-As-New. Nothing reads a clock to
+	// produce it.
+	//
+	// A manual `flow schedule trigger` runs the schedule's action immediately, and
+	// Temporal names the moment it was asked for as its slot, so a manual fire
+	// reads that moment: indistinguishable, to the run, from an on-time firing,
+	// and a usable window where the epoch would not be.
+	//
+	// Unset for every kind that has no schedule, and for a run started before this
+	// field existed; `trigger.scheduled_at` then renders as the Unix epoch, so a
+	// file that reads it guards on `trigger.kind == "schedule"` first.
+	ScheduledAt   *timestamppb.Timestamp `protobuf:"bytes,5,opt,name=scheduled_at,json=scheduledAt,proto3" json:"scheduled_at,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -471,6 +492,13 @@ func (x *TriggerContext) GetDeliveryId() string {
 		return x.DeliveryId
 	}
 	return ""
+}
+
+func (x *TriggerContext) GetScheduledAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.ScheduledAt
+	}
+	return nil
 }
 
 // WebhookTrigger is one source that may start this workload by delivering to it.
@@ -1227,13 +1255,14 @@ const file_flowstate_v1_trigger_proto_rawDesc = "" +
 	"\rManualTrigger\x12\x1c\n" +
 	"\x06denied\x18\x01 \x01(\bB\x04\xe2A\x01\x01R\x06denied\x12+\n" +
 	"\x0erequire_reason\x18\x02 \x01(\bB\x04\xe2A\x01\x01R\rrequireReason\x12U\n" +
-	"\x12allowed_principals\x18\x03 \x03(\tB&\xe2A\x01\x01\xbaH\x1f\x92\x01\x1c\x10@\x18\x01\"\x16r\x14\x10\x01\x18\xc0\x022\r^[^#]+#[^#]+$R\x11allowedPrincipals\"\x9d\x01\n" +
+	"\x12allowed_principals\x18\x03 \x03(\tB&\xe2A\x01\x01\xbaH\x1f\x92\x01\x1c\x10@\x18\x01\"\x16r\x14\x10\x01\x18\xc0\x022\r^[^#]+#[^#]+$R\x11allowedPrincipals\"\xdc\x01\n" +
 	"\x0eTriggerContext\x12\x1b\n" +
 	"\x04kind\x18\x01 \x01(\tB\a\xbaH\x04r\x02\x18 R\x04kind\x12\x1b\n" +
 	"\x04name\x18\x02 \x01(\tB\a\xbaH\x04r\x02\x18@R\x04name\x12&\n" +
 	"\tprincipal\x18\x03 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x02R\tprincipal\x12)\n" +
 	"\vdelivery_id\x18\x04 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x01R\n" +
-	"deliveryId\"\xfb\x06\n" +
+	"deliveryId\x12=\n" +
+	"\fscheduled_at\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\vscheduledAt\"\xfb\x06\n" +
 	"\x0eWebhookTrigger\x12;\n" +
 	"\x04name\x18\x01 \x01(\tB'\xe2A\x01\x02\xbaH r\x1e\x10\x01\x18@2\x18^[A-Za-z][A-Za-z0-9_-]*$R\x04name\x12X\n" +
 	"\x06verify\x18\x02 \x03(\v2(.flowstate.v1.WebhookTrigger.VerifyEntryB\x16\xe2A\x01\x02\xbaH\x0f\x9a\x01\f\b\x01\x10\b\"\x06r\x04\x10\x01\x18@R\x06verify\x12B\n" +
@@ -1324,45 +1353,46 @@ var file_flowstate_v1_trigger_proto_goTypes = []any{
 	nil,                                    // 10: flowstate.v1.WebhookTrigger.Signal.ArgumentsEntry
 	(*ScheduleTrigger_Calendar)(nil),       // 11: flowstate.v1.ScheduleTrigger.Calendar
 	(*ScheduleTrigger_Calendar_Range)(nil), // 12: flowstate.v1.ScheduleTrigger.Calendar.Range
-	(*Value)(nil),                          // 13: flowstate.v1.Value
-	(*durationpb.Duration)(nil),            // 14: google.protobuf.Duration
-	(*timestamppb.Timestamp)(nil),          // 15: google.protobuf.Timestamp
+	(*timestamppb.Timestamp)(nil),          // 13: google.protobuf.Timestamp
+	(*Value)(nil),                          // 14: flowstate.v1.Value
+	(*durationpb.Duration)(nil),            // 15: google.protobuf.Duration
 }
 var file_flowstate_v1_trigger_proto_depIdxs = []int32{
 	5,  // 0: flowstate.v1.Triggers.schedule:type_name -> flowstate.v1.ScheduleTrigger
 	4,  // 1: flowstate.v1.Triggers.webhooks:type_name -> flowstate.v1.WebhookTrigger
 	2,  // 2: flowstate.v1.Triggers.manual:type_name -> flowstate.v1.ManualTrigger
-	7,  // 3: flowstate.v1.WebhookTrigger.verify:type_name -> flowstate.v1.WebhookTrigger.VerifyEntry
-	13, // 4: flowstate.v1.WebhookTrigger.idempotency_key:type_name -> flowstate.v1.Value
-	8,  // 5: flowstate.v1.WebhookTrigger.arguments:type_name -> flowstate.v1.WebhookTrigger.ArgumentsEntry
-	9,  // 6: flowstate.v1.WebhookTrigger.signal:type_name -> flowstate.v1.WebhookTrigger.Signal
-	14, // 7: flowstate.v1.ScheduleTrigger.every:type_name -> google.protobuf.Duration
-	14, // 8: flowstate.v1.ScheduleTrigger.jitter:type_name -> google.protobuf.Duration
-	0,  // 9: flowstate.v1.ScheduleTrigger.overlap:type_name -> flowstate.v1.ScheduleTrigger.Overlap
-	11, // 10: flowstate.v1.ScheduleTrigger.calendars:type_name -> flowstate.v1.ScheduleTrigger.Calendar
-	15, // 11: flowstate.v1.ScheduleTrigger.start_at:type_name -> google.protobuf.Timestamp
-	15, // 12: flowstate.v1.ScheduleTrigger.end_at:type_name -> google.protobuf.Timestamp
-	14, // 13: flowstate.v1.ScheduleTrigger.catchup_window:type_name -> google.protobuf.Duration
-	15, // 14: flowstate.v1.ScheduleBackfill.start_at:type_name -> google.protobuf.Timestamp
-	15, // 15: flowstate.v1.ScheduleBackfill.end_at:type_name -> google.protobuf.Timestamp
-	0,  // 16: flowstate.v1.ScheduleBackfill.overlap:type_name -> flowstate.v1.ScheduleTrigger.Overlap
-	13, // 17: flowstate.v1.WebhookTrigger.VerifyEntry.value:type_name -> flowstate.v1.Value
-	13, // 18: flowstate.v1.WebhookTrigger.ArgumentsEntry.value:type_name -> flowstate.v1.Value
-	13, // 19: flowstate.v1.WebhookTrigger.Signal.correlate:type_name -> flowstate.v1.Value
-	10, // 20: flowstate.v1.WebhookTrigger.Signal.arguments:type_name -> flowstate.v1.WebhookTrigger.Signal.ArgumentsEntry
-	13, // 21: flowstate.v1.WebhookTrigger.Signal.ArgumentsEntry.value:type_name -> flowstate.v1.Value
-	12, // 22: flowstate.v1.ScheduleTrigger.Calendar.second:type_name -> flowstate.v1.ScheduleTrigger.Calendar.Range
-	12, // 23: flowstate.v1.ScheduleTrigger.Calendar.minute:type_name -> flowstate.v1.ScheduleTrigger.Calendar.Range
-	12, // 24: flowstate.v1.ScheduleTrigger.Calendar.hour:type_name -> flowstate.v1.ScheduleTrigger.Calendar.Range
-	12, // 25: flowstate.v1.ScheduleTrigger.Calendar.day_of_month:type_name -> flowstate.v1.ScheduleTrigger.Calendar.Range
-	12, // 26: flowstate.v1.ScheduleTrigger.Calendar.month:type_name -> flowstate.v1.ScheduleTrigger.Calendar.Range
-	12, // 27: flowstate.v1.ScheduleTrigger.Calendar.year:type_name -> flowstate.v1.ScheduleTrigger.Calendar.Range
-	12, // 28: flowstate.v1.ScheduleTrigger.Calendar.day_of_week:type_name -> flowstate.v1.ScheduleTrigger.Calendar.Range
-	29, // [29:29] is the sub-list for method output_type
-	29, // [29:29] is the sub-list for method input_type
-	29, // [29:29] is the sub-list for extension type_name
-	29, // [29:29] is the sub-list for extension extendee
-	0,  // [0:29] is the sub-list for field type_name
+	13, // 3: flowstate.v1.TriggerContext.scheduled_at:type_name -> google.protobuf.Timestamp
+	7,  // 4: flowstate.v1.WebhookTrigger.verify:type_name -> flowstate.v1.WebhookTrigger.VerifyEntry
+	14, // 5: flowstate.v1.WebhookTrigger.idempotency_key:type_name -> flowstate.v1.Value
+	8,  // 6: flowstate.v1.WebhookTrigger.arguments:type_name -> flowstate.v1.WebhookTrigger.ArgumentsEntry
+	9,  // 7: flowstate.v1.WebhookTrigger.signal:type_name -> flowstate.v1.WebhookTrigger.Signal
+	15, // 8: flowstate.v1.ScheduleTrigger.every:type_name -> google.protobuf.Duration
+	15, // 9: flowstate.v1.ScheduleTrigger.jitter:type_name -> google.protobuf.Duration
+	0,  // 10: flowstate.v1.ScheduleTrigger.overlap:type_name -> flowstate.v1.ScheduleTrigger.Overlap
+	11, // 11: flowstate.v1.ScheduleTrigger.calendars:type_name -> flowstate.v1.ScheduleTrigger.Calendar
+	13, // 12: flowstate.v1.ScheduleTrigger.start_at:type_name -> google.protobuf.Timestamp
+	13, // 13: flowstate.v1.ScheduleTrigger.end_at:type_name -> google.protobuf.Timestamp
+	15, // 14: flowstate.v1.ScheduleTrigger.catchup_window:type_name -> google.protobuf.Duration
+	13, // 15: flowstate.v1.ScheduleBackfill.start_at:type_name -> google.protobuf.Timestamp
+	13, // 16: flowstate.v1.ScheduleBackfill.end_at:type_name -> google.protobuf.Timestamp
+	0,  // 17: flowstate.v1.ScheduleBackfill.overlap:type_name -> flowstate.v1.ScheduleTrigger.Overlap
+	14, // 18: flowstate.v1.WebhookTrigger.VerifyEntry.value:type_name -> flowstate.v1.Value
+	14, // 19: flowstate.v1.WebhookTrigger.ArgumentsEntry.value:type_name -> flowstate.v1.Value
+	14, // 20: flowstate.v1.WebhookTrigger.Signal.correlate:type_name -> flowstate.v1.Value
+	10, // 21: flowstate.v1.WebhookTrigger.Signal.arguments:type_name -> flowstate.v1.WebhookTrigger.Signal.ArgumentsEntry
+	14, // 22: flowstate.v1.WebhookTrigger.Signal.ArgumentsEntry.value:type_name -> flowstate.v1.Value
+	12, // 23: flowstate.v1.ScheduleTrigger.Calendar.second:type_name -> flowstate.v1.ScheduleTrigger.Calendar.Range
+	12, // 24: flowstate.v1.ScheduleTrigger.Calendar.minute:type_name -> flowstate.v1.ScheduleTrigger.Calendar.Range
+	12, // 25: flowstate.v1.ScheduleTrigger.Calendar.hour:type_name -> flowstate.v1.ScheduleTrigger.Calendar.Range
+	12, // 26: flowstate.v1.ScheduleTrigger.Calendar.day_of_month:type_name -> flowstate.v1.ScheduleTrigger.Calendar.Range
+	12, // 27: flowstate.v1.ScheduleTrigger.Calendar.month:type_name -> flowstate.v1.ScheduleTrigger.Calendar.Range
+	12, // 28: flowstate.v1.ScheduleTrigger.Calendar.year:type_name -> flowstate.v1.ScheduleTrigger.Calendar.Range
+	12, // 29: flowstate.v1.ScheduleTrigger.Calendar.day_of_week:type_name -> flowstate.v1.ScheduleTrigger.Calendar.Range
+	30, // [30:30] is the sub-list for method output_type
+	30, // [30:30] is the sub-list for method input_type
+	30, // [30:30] is the sub-list for extension type_name
+	30, // [30:30] is the sub-list for extension extendee
+	0,  // [0:30] is the sub-list for field type_name
 }
 
 func init() { file_flowstate_v1_trigger_proto_init() }

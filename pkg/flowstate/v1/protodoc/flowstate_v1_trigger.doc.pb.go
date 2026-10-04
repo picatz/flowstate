@@ -221,6 +221,29 @@ func init() {
 				" has no delivery.\n",
 		},
 		{
+			Name: "flowstate.v1.TriggerContext.scheduled_at",
+			Leading: " ScheduledAt is the moment a schedule meant this run to start, read as\n" +
+				" `trigger.scheduled_at`: the slot, which differs from when the run actually\n" +
+				" started under a backfill, a paused-then-resumed schedule, or a catch-up\n" +
+				" window. A report about \"the hour that just closed\" is about this, not about\n" +
+				" the wall clock it happened to run at.\n" +
+				"\n" +
+				" Read once, from the `TemporalScheduledStartTime` search attribute Temporal\n" +
+				" attaches to an execution a schedule started, by the first segment, and\n" +
+				" carried here in [RunState] like [delivery_id], so it is the same value on\n" +
+				" every replay and across every Continue-As-New. Nothing reads a clock to\n" +
+				" produce it.\n" +
+				"\n" +
+				" A manual `flow schedule trigger` runs the schedule's action immediately, and\n" +
+				" Temporal names the moment it was asked for as its slot, so a manual fire\n" +
+				" reads that moment: indistinguishable, to the run, from an on-time firing,\n" +
+				" and a usable window where the epoch would not be.\n" +
+				"\n" +
+				" Unset for every kind that has no schedule, and for a run started before this\n" +
+				" field existed; `trigger.scheduled_at` then renders as the Unix epoch, so a\n" +
+				" file that reads it guards on `trigger.kind == \"schedule\"` first.\n",
+		},
+		{
 			Name: "flowstate.v1.WebhookTrigger",
 			Leading: " WebhookTrigger is one source that may start this workload by delivering to it.\n" +
 				"\n" +

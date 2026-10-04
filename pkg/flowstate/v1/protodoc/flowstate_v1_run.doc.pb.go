@@ -420,32 +420,33 @@ func init() {
 		},
 		{
 			Name: "flowstate.v1.RunAddress",
-			Leading: " RunAddress is a run's own address: the pair that identifies it to anything\n" +
-				" outside it, including this engine's own control plane.\n" +
+			Leading: " RunAddress is a run's own address, the pair that identifies it to anything\n" +
+				" outside it including this engine's own control plane, and the instant it began.\n" +
 				"\n" +
 				" This exists because a workload that has to be *called back* (hand an external\n" +
 				" system a token, wait for that system to answer) cannot say where the answer\n" +
 				" should be sent without it. That is Temporal's `expense` sample, and it is also\n" +
 				" every shape where one run tells a peer how to reach it.\n" +
 				"\n" +
-				" # Why exactly these two fields\n" +
+				" # The address\n" +
 				"\n" +
 				" [workflow_id] is the address: it is what `flow signal <workflow-id> <name>`\n" +
 				" takes, what `flow get` takes, and what the Signal RPC resolves. [run_id]\n" +
 				" disambiguates which execution of that id: the same workflow id may be\n" +
 				" reused once an earlier run has finished.\n" +
 				"\n" +
-				" What is deliberately absent is a start time and an attempt count, and the\n" +
-				" absence is load-bearing rather than an oversight. A start time is a clock read\n" +
-				" by another name: `now` is bound *only* inside a wait, and docs/ARCHITECTURE.md\n" +
-				" argues that placement at length: a name resolvable only where a replay-safe\n" +
-				" clock exists in every case. Putting a timestamp on the run root would make a\n" +
-				" clock readable from every expression in the language, through a field nobody\n" +
-				" would think of as a clock. An attempt count is the same mistake one layer\n" +
-				" down: it is a fact about the substrate's scheduling, it changes underneath a\n" +
-				" run, and a workflow branching on it is a workflow whose meaning depends on\n" +
-				" how many times a worker happened to crash. Neither belongs here; adding one\n" +
-				" to \"complete\" the message would quietly undo the reasoning behind `now`.\n",
+				" # Why a start time is here, and an attempt count is not\n" +
+				"\n" +
+				" [started_at] is the workload's start, which is fixed when the run begins and\n" +
+				" identical on every replay. It is not a clock read, which is what `now` is\n" +
+				" refused outside a wait for: `now` answers \"what time is it\", a different\n" +
+				" answer every time it is asked, and this answers \"when did this begin\", the\n" +
+				" same answer for the life of the run. A report that has to name its window\n" +
+				" needs the second and must not be given the first.\n" +
+				"\n" +
+				" What stays absent is an attempt count. It is a fact about the substrate's\n" +
+				" scheduling, it changes underneath a run, and a workflow branching on it is a\n" +
+				" workflow whose meaning depends on how many times a worker happened to crash.\n",
 		},
 		{
 			Name: "flowstate.v1.RunAddress.workflow_id",
@@ -467,6 +468,18 @@ func init() {
 				" what `RunState.vars` exists to prevent for `vars:`. `FirstRunID` is\n" +
 				" preserved along the whole chain of continued executions, so it names the\n" +
 				" run an author thinks they wrote.\n",
+		},
+		{
+			Name: "flowstate.v1.RunAddress.started_at",
+			Leading: " StartedAt is when the workload began, read as `run.started_at`: the first\n" +
+				" segment's start, carried unchanged across every Continue-As-New, so a run\n" +
+				" that suspended once reports the same instant before and after.\n" +
+				"\n" +
+				" Projected from [RunState.workload_started_at] on the durable driver, with\n" +
+				" the first segment's own start read off its history; the local driver fills\n" +
+				" it with the moment the run started, or the instant a `flow test` case names.\n" +
+				" Unset for a run that predates the field and for one whose chain began before\n" +
+				" [RunState.workload_started_at] existed, which renders as the Unix epoch.\n",
 		},
 		{
 			Name: "flowstate.v1.EntityState",

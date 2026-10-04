@@ -10,6 +10,7 @@ import (
 	"go.temporal.io/sdk/converter"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -508,6 +509,10 @@ func runWorkflow(ctx workflow.Context, dc converter.DataConverter, st *v1.RunSta
 		return nil, fmt.Errorf("workflow cannot be nil or empty")
 	}
 
+	// The slot a scheduled firing was meant for, read off the execution once and
+	// from here on part of the carried trigger. See [withScheduledSlot].
+	st = withScheduledSlot(ctx, st)
+
 	// Captured before any of the reassignments below, for [executor.detailsCtx]'s
 	// reason: this is the SDK's own root context, the one whose WorkflowOptions
 	// pointer the built-in `__temporal_workflow_metadata` query reads — and
@@ -546,7 +551,7 @@ func runWorkflow(ctx workflow.Context, dc converter.DataConverter, st *v1.RunSta
 	// first moments too; the session carried from the last segment, if any,
 	// is read back first. See debuglease.go and debugsession.go.
 	debug := &debugControl{
-		run: runAddress(ctx),
+		run: runAddress(ctx, st),
 
 		// Enabled only when the workflow declares `debug:`, which is also
 		// what the server gates every ask on — so a run whose workflow
@@ -700,7 +705,7 @@ func runWorkflow(ctx workflow.Context, dc converter.DataConverter, st *v1.RunSta
 		// the next task, and that worker must evaluate against the vocabulary the
 		// spec was compiled with rather than its own current one — otherwise a
 		// deployment mid-rollout runs one workload against two dialects.
-		scope:                  varsScope(st.GetWorkflow().GetProfile(), stepOutputs, vars, st.GetInputs(), st.GetIdentity(), runAddress(ctx), st.GetTrigger()),
+		scope:                  varsScope(st.GetWorkflow().GetProfile(), stepOutputs, vars, st.GetInputs(), st.GetIdentity(), runAddress(ctx, st), st.GetTrigger()),
 		budget:                 stepsBudget,
 		resume:                 resumeFrames(st),
 		sliceCost:              sliceCost,
@@ -1472,10 +1477,55 @@ func varsScope(profile string, outputs *v1.Workflow_StepOutputs, vars, inputs ma
 // values come back on every replay of the same execution, so an expression that
 // embeds the address in a callback URL computes the same URL after a worker
 // crash as before it.
-func runAddress(ctx workflow.Context) *v1.RunAddress {
+//
+// And `run.started_at`, which is the workload's start rather than this
+// segment's: what the chain carried, or this execution's own start on the first
+// segment ([workloadStartedAt]). A fact fixed when the run began and identical on
+// every replay, which is what separates it from a clock; nothing here reads one.
+func runAddress(ctx workflow.Context, st *v1.RunState) *v1.RunAddress {
 	info := workflow.GetInfo(ctx)
 
-	return RunAddressFrom(info.WorkflowExecution.ID, info.FirstRunID, info.WorkflowExecution.RunID)
+	address := RunAddressFrom(info.WorkflowExecution.ID, info.FirstRunID, info.WorkflowExecution.RunID)
+	address.StartedAt = workloadStartedAt(ctx, st)
+
+	return address
+}
+
+// scheduledStartAttribute is the search attribute Temporal attaches to an
+// execution a schedule started, holding the time that firing was meant for.
+const scheduledStartAttribute = "TemporalScheduledStartTime"
+
+// withScheduledSlot records, on a scheduled run's first segment, the slot the
+// schedule meant it for, so `trigger.scheduled_at` can be read.
+//
+// The slot differs from the run's start under a backfill, a paused-then-resumed
+// schedule, or a catch-up window, and is the one fact a report about a window of
+// time needs. It is read once, at the first segment, from the start event's
+// search attributes — deterministic, since an execution's start does not change —
+// and then carried in [v1.RunState.trigger] like every other trigger field, so
+// it is the same value on every replay and across every Continue-As-New. Every
+// later segment finds it already there and reads nothing.
+//
+// A run that is not a scheduled firing, one whose execution carries no such
+// attribute (a manual `flow schedule trigger` may not), and a segment that is
+// not the first all leave the state as it was, which renders as the Unix epoch.
+// The state is cloned rather than edited: it is the caller's.
+func withScheduledSlot(ctx workflow.Context, st *v1.RunState) *v1.RunState {
+	trigger := st.GetTrigger()
+	if trigger.GetKind() != v1.TriggerKindSchedule || trigger.GetScheduledAt() != nil ||
+		workflow.GetInfo(ctx).ContinuedExecutionRunID != "" {
+		return st
+	}
+
+	slot, ok := workflow.GetTypedSearchAttributes(ctx).GetTime(temporal.NewSearchAttributeKeyTime(scheduledStartAttribute))
+	if !ok || slot.IsZero() {
+		return st
+	}
+
+	next := proto.Clone(st).(*v1.RunState)
+	next.Trigger.ScheduledAt = timestamppb.New(slot)
+
+	return next
 }
 
 // RunAddressFrom builds a run's address from the three things Temporal knows

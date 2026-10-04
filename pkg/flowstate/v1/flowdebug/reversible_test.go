@@ -66,6 +66,9 @@ func (l *launches) launcher(workflow func(n int) *v1.Workflow, configure func(*f
 			configure(session)
 		}
 		runCtx, cancel := context.WithCancel(context.Background())
+		// One start for every launch, replays included: `run.started_at` is part of
+		// what a stop shows.
+		runCtx = v1.NewContextWithRunStart(runCtx, time.Unix(1_700_000_000, 0).UTC())
 		done := make(chan struct{})
 		finished := &atomic.Int64{}
 		l.mu.Lock()

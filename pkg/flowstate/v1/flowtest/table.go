@@ -222,6 +222,7 @@ func mergeRow(entry, row Test) Test {
 	// whose halves are not independently meaningful. `expect:` is the
 	// exception and is merged field by field; see [mergeExpectation].
 	merged.Skip = cmp.Or(row.Skip, entry.Skip)
+	merged.StartedAt = cmp.Or(row.StartedAt, entry.StartedAt)
 	if len(merged.Faults) == 0 && len(entry.Faults) > 0 {
 		merged.Faults, merged.faultsFromEntry = entry.Faults, true
 	}

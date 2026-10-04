@@ -3,6 +3,7 @@ package flowstatev1_test
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -30,7 +31,7 @@ func TestRunAddressShapeLocal(t *testing.T) {
 func TestLocalRunAddressIsNotBlank(t *testing.T) {
 	require.NotEmpty(t, v1.LocalRunAddress)
 
-	address := v1.NewLocalRunAddress()
+	address := v1.NewLocalRunAddressAt(time.Unix(0, 0))
 	require.NotEmpty(t, address.GetWorkflowId())
 	require.NotEmpty(t, address.GetRunId())
 }

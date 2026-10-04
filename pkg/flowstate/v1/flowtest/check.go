@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/google/cel-go/cel"
 	celast "github.com/google/cel-go/common/ast"
@@ -200,14 +201,14 @@ func checkClaimList(p *problems, r site, label string, claims []CheckClaim, own 
 // they are facts about the run, not values the caller's scope resolved, and
 // a check asserting on `trigger.kind` or `run.*` must see the same values
 // the run's own expressions did. (#1444)
-func postRunScope(ctx context.Context, spec *v1.Workflow, bound map[string]*v1.Value, outputs *v1.Workflow_StepOutputs) *v1.Scope {
+func postRunScope(ctx context.Context, started time.Time, spec *v1.Workflow, bound map[string]*v1.Value, outputs *v1.Workflow_StepOutputs) *v1.Scope {
 	return &v1.Scope{
 		Profile: spec.GetProfile(),
 		Outputs: outputs,
 		Inputs:  bound,
 		Local:   true,
 		Trigger: v1.TriggerFromContext(ctx),
-		Address: v1.NewLocalRunAddress(),
+		Address: v1.NewLocalRunAddressAt(started),
 	}
 }
 
@@ -376,12 +377,12 @@ func redactSubstringsTree(v any, sensitive sensitiveInputs) any {
 // Checks run whether or not the run failed — an error claim (`run.error`)
 // exists precisely for failed runs — against whatever the partial transcript
 // holds; a claim reaching a step the failure preceded errors, honestly.
-func assertChecks(ctx context.Context, claims []CheckClaim, spec *v1.Workflow, bound map[string]*v1.Value, vars fileVars, outputs *v1.Workflow_StepOutputs, runErr error, sensitive sensitiveInputs) []*v1.Diagnostic {
+func assertChecks(ctx context.Context, started time.Time, claims []CheckClaim, spec *v1.Workflow, bound map[string]*v1.Value, vars fileVars, outputs *v1.Workflow_StepOutputs, runErr error, sensitive sensitiveInputs) []*v1.Diagnostic {
 	if len(claims) == 0 {
 		return nil
 	}
 
-	scope := postRunScope(ctx, spec, bound, outputs)
+	scope := postRunScope(ctx, started, spec, bound, outputs)
 
 	// The `run` root, bound as a bare local. [v1.Scope.ActivationWith]'s
 	// extras shadow the activation's own rooted namespaces, so this map

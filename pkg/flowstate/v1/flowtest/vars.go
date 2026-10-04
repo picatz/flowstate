@@ -2023,6 +2023,7 @@ func (f *File) resolveVars(p *problems) {
 // because this runs before [expandTableEntries] and a row is a case.
 func resolveVarsInTest(p *problems, where string, spot loc, test *Test, vars map[string]any) {
 	resolveVarsInString(p, where+".workflow", spot.field("workflow"), &test.Workflow, vars)
+	resolveVarsInString(p, where+".started_at", spot.field("started_at"), &test.StartedAt, vars)
 	resolveVarsInMap(p, where+".inputs", spot.field("inputs"), test.Inputs, vars)
 	for _, name := range slices.Sorted(maps.Keys(test.Secrets)) {
 		value := test.Secrets[name]
@@ -2038,6 +2039,7 @@ func resolveVarsInTest(p *problems, where string, spot loc, test *Test, vars map
 			{"webhook", &trigger.Webhook}, {"payload", &trigger.Payload},
 			{"kind", &trigger.Kind}, {"name", &trigger.Name},
 			{"principal", &trigger.Principal}, {"delivery_id", &trigger.DeliveryID},
+			{"scheduled_at", &trigger.ScheduledAt},
 		} {
 			resolveVarsInString(p, where+".trigger."+field.name,
 				spot.field("trigger").field(field.name), field.target, vars)
