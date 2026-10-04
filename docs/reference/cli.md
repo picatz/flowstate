@@ -540,6 +540,44 @@ flow debug get order-1234 -o json
 | `--tls-client-key-file <string>` | `string` | — | `FLOWSTATE_TLS_CLIENT_KEY_FILE` | PEM private key matching `--tls-client-cert-file` (overrides FLOWSTATE_TLS_CLIENT_KEY_FILE) |
 | `--token-file <string>` | `string` | — | `FLOWSTATE_TOKEN_FILE` | file holding the bearer token to authenticate with (overrides FLOWSTATE_TOKEN_FILE); re-read per request, so a rotating token keeps working. Without it, FLOWSTATE_TOKEN is used, and neither means anonymous |
 
+## `flow debug history`
+
+Show a durable run as it was at a past point
+
+```
+flow debug history <workflow-id> --run-id <run-id> [flags]
+```
+
+Read a durable run, open or closed, as it was at one workflow-task boundary of its recorded history: where it was held, its frames, its progress. It replays the interpreter over the history with no worker attached, so it dispatches nothing and changes nothing. Every value is reconstructed; a point the history cannot be replayed to is refused. --points lists the points a run can be read at.
+
+Examples:
+
+```sh
+# The last point of a run:
+flow debug history order-1234 --run-id 5d3f…
+
+# The points it can be read at, then one of them:
+flow debug history order-1234 --run-id 5d3f… --points
+flow debug history order-1234 --run-id 5d3f… --at 17
+
+# The answer as the schema's JSON:
+flow debug history order-1234 --run-id 5d3f… -o json
+```
+
+| Flag | Type | Default | Environment | Description |
+|---|---|---|---|---|
+| `--address <string>` | `string` | `localhost:9233` | `FLOWSTATE_ADDRESS` | address of the Flowstate server (overrides FLOWSTATE_ADDRESS); an explicit https:// scheme is honored |
+| `--at <int64>` | `int64` | `0` | — | the event id of the point to read; 0 is the last |
+| `--audience <string>` | `string` | — | `FLOWSTATE_AUDIENCE` | the relying party a credential should be addressed to (overrides FLOWSTATE_AUDIENCE); required by `--credential-source=github-actions`, which mints a token for it. gitlab and terraform-cloud cannot mint on demand — their platform fixes the audience in the job or workspace configuration before the token exists — so for those it is checked against the token's own audience rather than requested, and a mismatch is refused with the setting to change |
+| `--credential-source <string>` | `string` | — | `FLOWSTATE_CREDENTIAL_SOURCE` | acquire a credential from a named source instead of `--token-file`/FLOWSTATE_TOKEN (overrides FLOWSTATE_CREDENTIAL_SOURCE); one of github-actions, gitlab, terraform-cloud, file, env. An unknown or unusable source is an error, never anonymous |
+| `-o, --output <string>` | `string` | `text` | — | output format: text, json, or jsonl |
+| `--points` | `bool` | `false` | — | list the points the run can be read at instead of reading one |
+| `--run-id <string>` | `string` | — | — | the execution to read; `flow get` prints a run's id (required) |
+| `--tls-ca-file <string>` | `string` | — | `FLOWSTATE_TLS_CA_FILE` | PEM CA bundle to verify the server's certificate against, in place of the system roots (overrides FLOWSTATE_TLS_CA_FILE). Unset trusts the system roots, which is what reaches a server with a certificate from a public CA; set this to reach a server whose certificate chains to a private CA instead |
+| `--tls-client-cert-file <string>` | `string` | — | `FLOWSTATE_TLS_CLIENT_CERT_FILE` | PEM client certificate to present when a server requires one via `--tls-client-auth require` (overrides FLOWSTATE_TLS_CLIENT_CERT_FILE); must be given with `--tls-client-key-file`. Unset presents no certificate, which a server requiring one refuses at the handshake |
+| `--tls-client-key-file <string>` | `string` | — | `FLOWSTATE_TLS_CLIENT_KEY_FILE` | PEM private key matching `--tls-client-cert-file` (overrides FLOWSTATE_TLS_CLIENT_KEY_FILE) |
+| `--token-file <string>` | `string` | — | `FLOWSTATE_TOKEN_FILE` | file holding the bearer token to authenticate with (overrides FLOWSTATE_TOKEN_FILE); re-read per request, so a rotating token keeps working. Without it, FLOWSTATE_TOKEN is used, and neither means anonymous |
+
 ## `flow debug replay`
 
 Replay a recorded debugging session against a workflow

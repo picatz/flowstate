@@ -38,6 +38,7 @@ contracts and do not advertise a schema-owned result message.
 | `flowstate_terminate` | via a server | `flowstate.v1.TerminateRequest` | `flowstate.v1.TerminateResponse` |
 | `flowstate_debug_attach` | via a server | `flowstate.v1.DebugAttachRequest` | `flowstate.v1.DebugAttachResponse` |
 | `flowstate_debug_get` | via a server | `flowstate.v1.DebugGetRequest` | `flowstate.v1.DebugGetResponse` |
+| `flowstate_debug_history` | via a server | `flowstate.v1.DebugHistoryRequest` | `flowstate.v1.DebugHistoryResponse` |
 | `flowstate_debug_resume` | via a server | `flowstate.v1.DebugResumeRequest` | `flowstate.v1.DebugResumeResponse` |
 | `flowstate_debug_set_breakpoints` | via a server | `flowstate.v1.DebugSetBreakpointsRequest` | `flowstate.v1.DebugSetBreakpointsResponse` |
 | `flowstate_debug_inspect` | via a server | `flowstate.v1.DebugInspectRequest` | `flowstate.v1.DebugInspectResponse` |
@@ -164,6 +165,12 @@ The run must declare `debug:` naming the caller. The answer's receipt says wheth
 DebugGet reads a durable run's debug session: state, stop reason, position, frames, capabilities, and recent observations. It changes nothing.
 
 Set `after_revision` and `wait` to wait for the next change instead of polling in a tight loop.
+
+## `flowstate_debug_history`
+
+DebugHistory reads a durable run as it was at one point of its recorded history, open or closed, and lists the points it can be read at.
+
+It is read-only: the interpreter is replayed over the history with no worker attached, so no task, plugin or other effect can be dispatched, and nothing is written to the run. The same `debug:` policy as the live debugger decides who may read it. Every value is labelled by how it is known; a point the history cannot be replayed to, a history from another build, and one over the bound are refused rather than guessed.
 
 ## `flowstate_debug_resume`
 

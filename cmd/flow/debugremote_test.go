@@ -223,3 +223,60 @@ func TestAScriptedAttachFailsOnABreakpointTheRunWillNotArm(t *testing.T) {
 	res = runFlow(t, "debug", "attach", "w", "--script", script, "--address", serve(t, pending))
 	require.NoError(t, res.Err, "a pending set was judged unarmed before the run answered it")
 }
+
+// historyRun answers DebugHistory with a fixed point and records what it was
+// asked.
+type historyRun struct {
+	heldRun
+
+	asked *v1.DebugHistoryRequest
+}
+
+func (h *historyRun) DebugHistory(_ context.Context, req *connect.Request[v1.DebugHistoryRequest]) (*connect.Response[v1.DebugHistoryResponse], error) {
+	h.asked = req.Msg
+
+	return connect.NewResponse(&v1.DebugHistoryResponse{
+		Snapshot:   &v1.DebugSnapshot{State: v1.DebugRunState_DEBUG_RUN_STATE_HELD, Occurrence: &v1.DebugOccurrence{Address: "build"}},
+		EventId:    17,
+		Fidelity:   v1.DebugFidelity_DEBUG_FIDELITY_RECONSTRUCTED,
+		Boundaries: []int64{3, 10, 17},
+	}), nil
+}
+
+// TestDebugHistoryReadsAPointAndListsThePoints: `flow debug history` names its
+// run and point in the request, labels what it prints with how it is known,
+// lists the points on request, and writes the whole answer as JSON.
+func TestDebugHistoryReadsAPointAndListsThePoints(t *testing.T) {
+	handler := &historyRun{}
+	mux := http.NewServeMux()
+	mux.Handle(flowstatev1connect.NewWorkflowServiceHandler(handler))
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	const runID = "5d3f2b1a-0000-4000-8000-000000000000"
+	res := runFlow(t, "debug", "history", "order-1", "--run-id", runID, "--at", "17", "--address", srv.URL)
+	require.NoError(t, res.Err)
+	assert.Equal(t, "order-1", handler.asked.GetWorkflowId())
+	assert.Equal(t, runID, handler.asked.GetRunId())
+	assert.EqualValues(t, 17, handler.asked.GetEventId())
+	assert.Contains(t, res.Stdout, "at event 17 of 3 points · reconstructed")
+	assert.Contains(t, res.Stdout, "build")
+
+	res = runFlow(t, "debug", "history", "order-1", "--run-id", runID, "--points", "--address", srv.URL)
+	require.NoError(t, res.Err)
+	assert.Equal(t, "3\n10\n17\n", res.Stdout)
+
+	res = runFlow(t, "debug", "history", "order-1", "--run-id", runID, "--address", srv.URL, "-o", "json")
+	require.NoError(t, res.Err)
+	var answer struct {
+		EventID    string   `json:"eventId"`
+		Fidelity   string   `json:"fidelity"`
+		Boundaries []string `json:"boundaries"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(res.Stdout), &answer), res.Stdout)
+	assert.Equal(t, "DEBUG_FIDELITY_RECONSTRUCTED", answer.Fidelity)
+	assert.Equal(t, []string{"3", "10", "17"}, answer.Boundaries)
+
+	res = runFlow(t, "debug", "history", "order-1", "--address", srv.URL)
+	require.Error(t, res.Err, "a read without the run it is for was sent")
+}

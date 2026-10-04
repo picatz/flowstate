@@ -105,7 +105,34 @@ flow debug do order-1234 --session 5d3f… inspect steps.quote.total -o json`,
 	_ = doCmd.MarkFlagRequired("session")
 	doCmd.Flags().Duration("wait", 30*time.Second, "how long a movement waits for the next stop")
 
-	debugCmd.AddCommand(attachCmd, getCmd, doCmd)
+	historyCmd := &cobra.Command{
+		Use:   "history <workflow-id> --run-id <run-id>",
+		Short: "Show a durable run as it was at a past point",
+		Long: "Read a durable run, open or closed, as it was at one workflow-task boundary of its " +
+			"recorded history: where it was held, its frames, its progress. It replays the " +
+			"interpreter over the history with no worker attached, so it dispatches nothing and " +
+			"changes nothing. Every value is reconstructed; a point the history cannot be replayed " +
+			"to is refused. --points lists the points a run can be read at.",
+		Args: cobra.ExactArgs(1),
+		RunE: runDebugHistory,
+		Example: `# The last point of a run:
+flow debug history order-1234 --run-id 5d3f…
+
+# The points it can be read at, then one of them:
+flow debug history order-1234 --run-id 5d3f… --points
+flow debug history order-1234 --run-id 5d3f… --at 17
+
+# The answer as the schema's JSON:
+flow debug history order-1234 --run-id 5d3f… -o json`,
+	}
+	addServerFlags(historyCmd)
+	addOutputFlag(historyCmd)
+	historyCmd.Flags().String("run-id", "", "the execution to read; `flow get` prints a run's id (required)")
+	_ = historyCmd.MarkFlagRequired("run-id")
+	historyCmd.Flags().Int64("at", 0, "the event id of the point to read; 0 is the last")
+	historyCmd.Flags().Bool("points", false, "list the points the run can be read at instead of reading one")
+
+	debugCmd.AddCommand(attachCmd, getCmd, doCmd, historyCmd)
 }
 
 func runDebugAttach(cmd *cobra.Command, args []string) (err error) {
@@ -335,6 +362,54 @@ func formatDebugGet(snapshot *v1.DebugSnapshot) string {
 		}
 		fmt.Fprintf(&b, "  · %s\n", observation.GetText())
 	}
+
+	return b.String()
+}
+
+func runDebugHistory(cmd *cobra.Command, args []string) error {
+	format, err := resolveOutputFormat(cmd)
+	if err != nil {
+		return err
+	}
+	runID, _ := cmd.Flags().GetString("run-id")
+	at, _ := cmd.Flags().GetInt64("at")
+	points, _ := cmd.Flags().GetBool("points")
+
+	response, err := newWorkflowServiceClient(serverFlagsOf(cmd)).DebugHistory(cmd.Context(),
+		connect.NewRequest(&v1.DebugHistoryRequest{WorkflowId: args[0], RunId: runID, EventId: at}))
+	if err != nil {
+		return err
+	}
+
+	surface := newSurface(cmd)
+	if format.Machine() {
+		return writeJSON(surface, format, response.Msg)
+	}
+	fmt.Fprint(surface.Out, formatDebugHistory(response.Msg, points))
+
+	return nil
+}
+
+// formatDebugHistory renders `flow debug history`'s text: the point and how it
+// is known, then the snapshot, or with points the list of points instead.
+func formatDebugHistory(response *v1.DebugHistoryResponse, points bool) string {
+	var b strings.Builder
+	if points {
+		for _, id := range response.GetBoundaries() {
+			fmt.Fprintf(&b, "%d\n", id)
+		}
+
+		return b.String()
+	}
+
+	fidelity := strings.ToLower(strings.TrimPrefix(response.GetFidelity().String(), "DEBUG_FIDELITY_"))
+	fmt.Fprintf(&b, "at event %d of %d points · %s\n", response.GetEventId(), len(response.GetBoundaries()), fidelity)
+	if response.GetSnapshot() == nil {
+		fmt.Fprintf(&b, "the run had not installed its debug session yet; %d steps completed\n", response.GetProgress().GetCompletedSteps())
+
+		return b.String()
+	}
+	b.WriteString(formatDebugGet(response.GetSnapshot()))
 
 	return b.String()
 }

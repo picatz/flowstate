@@ -772,6 +772,19 @@ func WorkflowServiceMethods() []ServiceMethod {
 			},
 		},
 		{
+			Name:   "DebugHistory",
+			Input:  (&v1.DebugHistoryRequest{}).ProtoReflect().Descriptor(),
+			Output: (&v1.DebugHistoryResponse{}).ProtoReflect().Descriptor(),
+			Call: func(ctx context.Context, _ *server.FlowstateServer, remote func() flowstatev1connect.WorkflowServiceClient, in proto.Message) (proto.Message, error) {
+				resp, err := remote().DebugHistory(ctx, connect.NewRequest(in.(*v1.DebugHistoryRequest)))
+				if err != nil {
+					return nil, err
+				}
+
+				return resp.Msg, nil
+			},
+		},
+		{
 			Name:   "DebugResume",
 			Input:  (&v1.DebugResumeRequest{}).ProtoReflect().Descriptor(),
 			Output: (&v1.DebugResumeResponse{}).ProtoReflect().Descriptor(),
