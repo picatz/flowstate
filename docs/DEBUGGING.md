@@ -947,9 +947,9 @@ debugging state lives in the interpreter's memory, and the interpreter rebuilds
 that memory by replaying the run's history: a worker restart already brings back
 a hold, its session, its revision and its observations that way. The open
 question was whether the same replay, stopped earlier, gives back the run *as it
-was*, and what it cannot. `pkg/flowstate/v1/engine/historical_test.go` is the
-prototype and the evidence; nothing in it is a product surface yet, and no RPC,
-command or editor request reads it.
+was*, and what it cannot. `engine.Reconstruct` is the engine's read of it and
+`pkg/flowstate/v1/engine/historical_test.go` is the evidence; it is a library
+call and no RPC, command or editor request reads it yet.
 
 **The seam.** A history prefix is replayed through a `worker.WorkflowReplayer`
 with an SDK interceptor that notes the query handlers the interpreter installs
@@ -985,7 +985,7 @@ say nothing about causality across `parallel:` branches, async work or runs.
 | State inside a task: a response's unreturned headers, a plugin's internals | Unavailable. Nothing outside the recorded result was ever in history | by construction |
 | A history recording a `GetVersion` marker the replaying interpreter does not know | Refused, by name. A newer change made without a gate is not detected this way: it surfaces as nondeterminism or as a different answer, which is why binding the interpreter version is on the list below | `TestAHistoryFromANewerInterpreterIsRefused` |
 | A cut inside a task | Refused, as nondeterministic | `TestACutInsideAWorkflowTaskIsRefused` |
-| More than a history can hold | Refused before any event is read | `TestAReconstructionOverTheBoundIsRefusedBeforeItReplays` |
+| More than a history can hold, or more inspections than a replay answers | Refused before any event is read | `TestAReconstructionOverTheBoundIsRefusedBeforeItReplays`, `TestAnInspectionBatchOverTheBoundIsRefused` |
 
 Two findings a caller must act on. The replayer runs a workflow under an identity
 of its own unless it is told the run's: the SDK's `OriginalExecution` option
@@ -995,7 +995,7 @@ handlers are asked from inside the replay, never after it returns: the SDK
 dismantles a replayed workflow's coroutines on a goroutine of its own as the
 replay ends, the engine's cleanup edits what the handlers read (a wait leaves
 its registry as its coroutine exits), and a read taken then is a race and can
-miss a pending wait. The prototype asks from a coroutine of the replay's own,
+miss a pending wait. `Reconstruct` asks from a coroutine of the replay's own,
 which runs on the pass where nothing else moves.
 
 **Cost.** A look replays its whole prefix, so the cost is linear in how far into
