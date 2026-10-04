@@ -773,9 +773,12 @@ func (e *executor) holdForDebugLease(node *v1.Node, backlogged bool) {
 		// branch wins can free it — #770's lesson, applied at a second park:
 		// an answered hold that left its timer running would append a
 		// TimerFired and a whole workflow task to a run that no longer cares.
-		// No [workflow.GetVersion] gate is needed here where the wait does have
-		// one, because no history predating this code can reach this line: a
-		// run only gets here after receiving a pause ask.
+		// No [workflow.GetVersion] gate for #770's cancel is needed here where
+		// the wait does have one, because no history predating this code can
+		// reach this line: a run only gets here after receiving a pause ask.
+		// The context's own kind is gated, by [executor.timerContext], because
+		// a lease's timer and a wait's can be open together when the run is
+		// cancelled, and those histories were recorded before it.
 		//
 		// Re-armed on every wake rather than kept across iterations, which is
 		// the same construction `executor.waitForSignal` uses and a cost worth
@@ -788,7 +791,7 @@ func (e *executor) holdForDebugLease(node *v1.Node, backlogged bool) {
 		// than a ratio the peer controls. Keeping one timer across renewals
 		// would trade that for a mutable future in workflow code, which is
 		// where determinism bugs live; the trade is recorded rather than taken.
-		timerCtx, cancelTimer := workflow.WithCancel(e.ctx)
+		timerCtx, cancelTimer := e.timerContext()
 
 		// One receive for the one channel every ask arrives on. The callback
 		// takes nothing off it — a delivery is applied below, through the
