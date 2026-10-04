@@ -720,9 +720,8 @@ tests:
 // [runtime.Goexit]: deferred work runs and the statements after the call never
 // do. With the join written as a plain statement, a driver that failed an
 // assertion exited its goroutine while `flowtest.Run` carried on in the other
-// one — holding [v1.LockDefaultRegistry], which the next case needs — so a
-// later case would block on, or overlap with, a run whose subtest had already
-// reported (Codex, #1123).
+// one — still driving the case — so a later case would overlap with a run
+// whose subtest had already reported (Codex, #1123).
 //
 // Driven through [walked] directly because that is where the ordering lives,
 // and because a run this test supplies itself is the only way to observe
