@@ -2048,6 +2048,14 @@ func runNode(ctx context.Context, node *Node, scope *Scope, undo *UndoLog, place
 		// waiting to differ.
 		return EvalValueNode(ctx, n.Value, scope)
 
+	case *Node_Fail:
+		// Through the shared [EvalFailNode], which the durable driver calls from
+		// its own runNode: what a step raises is its whole behaviour, so the two
+		// drivers share the function that decides it.
+		_, err := EvalFailNode(ctx, n.Fail, scope)
+
+		return nil, err
+
 	case *Node_Switch:
 		// Sequential, exactly-one-body work, so a wait inside the taken body
 		// reports this step as its nearest enclosing one, the way a sequential

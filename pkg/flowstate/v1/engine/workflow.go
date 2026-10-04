@@ -391,7 +391,7 @@ func recordedStepKind(err error) v1.ErrorKind {
 	}
 
 	if app, ok := errors.AsType[*temporal.ApplicationError](err); ok {
-		if kind, ok := v1.ParseErrorKind(app.Type()); ok {
+		if kind, ok := v1.ParseReportedKind(app.Type()); ok {
 			return kind
 		}
 	}

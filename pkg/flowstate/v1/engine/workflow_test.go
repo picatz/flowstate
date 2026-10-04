@@ -262,7 +262,7 @@ func TestRunWorkflowErrorKind(t *testing.T) {
 			require.True(t, errors.As(err, &app),
 				"a terminal run failure must reach the client as an ApplicationError, got: %v", err)
 
-			kind, ok := v1.ParseErrorKind(app.Type())
+			kind, ok := v1.ParseReportedKind(app.Type())
 			require.True(t, ok, "the application error's Type %q must be a recognized ErrorKind", app.Type())
 			require.Equal(t, tc.ExpectedKind, kind)
 			if tc.Attempts != nil {

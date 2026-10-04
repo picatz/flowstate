@@ -104,6 +104,7 @@ var dslKeys = map[string][]dslKey{
 		{name: "labels", detail: "map", docs: "Metadata labels attached to the workflow, as string keys and string values. Labels describe and select a workflow; expressions cannot read them."},
 		{name: "description", detail: "string", docs: "Optional prose about the workflow."},
 		{name: "types", detail: "map", docs: "Declares named record types: a closed set of named fields, each written like an input. A type is used by name wherever a type is written, such as `type: Order` or `type: list(Order)`."},
+		{name: "errors", detail: "map", docs: "Declares the errors this workflow can raise, each by a name that starts with a capital letter (`InsufficientFunds`) and may carry a `description:`. A `fail:` step raises one, and the run fails with that name as its kind. A name may not spell a built-in kind such as `Timeout`."},
 		{name: "functions", detail: "map", docs: "Names a computation once. Each function declares `params:` (a name and a type each), `returns:` and a `body:` expression over its parameters, and is called like `${slug(inputs.title)}`. A call is replaced by the body when the file compiles, so the run executes plain CEL."},
 		{name: "inputs", detail: "map", docs: "Declares the values a caller must or may bind when starting this workflow. Each name has a type and may add a default, constraints, an example, and sensitivity."},
 		{name: "outputs", detail: "map", docs: "Declares the named values this workflow returns after its steps finish. Each entry has a required `value:` expression and may declare its type, constraints, description, and sensitivity."},
@@ -158,6 +159,10 @@ var dslKeys = map[string][]dslKey{
 			"It is not a task and schedules nothing, so `retry:`, `timeout:` and `undo:` are refused on it: a pure expression has nothing to attempt again, nothing to bound beyond the cost limit every expression shares, and no effect to take back. " +
 			"An `if:` composes as it does anywhere; a value that is skipped produces no outputs, and a later reference to it does not resolve.\n\n" +
 			"A `${secret(...)}` reference may not be written here, for the reason it may not go in `vars:`: the workflow evaluates this, and what the workflow evaluates is written to durable history."},
+		{name: "fail", detail: "map", docs: "Raise an error the workflow declared under `errors:`. " + oneStepKind + "\n\n" +
+			"```yaml\n- id: refuse\n  if: ${inputs.amount > inputs.balance}\n  fail:\n    error: InsufficientFunds\n    message: ${\"cannot cover \" + string(inputs.amount)}\n```\n\n" +
+			"`error:` names a declared error and `message:` is an expression evaluated in the workflow, so it may read inputs, vars and earlier steps' outputs but not a secret or a sensitive input: the message is written to the run's history. " +
+			"The run fails with the declared name as its kind. `retry:`, `timeout:` and `undo:` are refused on it, and a declared error is never retried."},
 		{name: "switch", detail: "map", docs: "Dispatch on one value: literal cases tried in written order, first match wins, no fallthrough. " + oneStepKind + "\n\n" +
 			"```yaml\n- id: route\n  switch:\n    value: ${" + v1.StepsRoot + ".approval.outcome}\n    cases:\n      - case: deployed\n        steps: [...]\n      - case: [rejected, withdrawn]\n        steps: [...]\n    default:\n      steps: [...]\n```\n\n" +
 			"Cases are literals; a computed comparison is what `if:` is for. `default:` runs when no case matches and means \"a value arrived I didn't enumerate\", never \"the value couldn't be computed\" — an unresolvable `value:` fails the step. " +

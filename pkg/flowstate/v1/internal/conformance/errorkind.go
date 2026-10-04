@@ -200,6 +200,25 @@ func ErrorKindCases(httpBaseURL string) []ErrorKindCase {
 			},
 			ExpectedKind: v1.ErrorKindTimeout,
 		},
+		{
+			// A failure the author raised with `fail:` is classified as the
+			// kind the workflow declared, not Internal and not Expression: the
+			// drivers carry the declared name unchanged, and the message the
+			// author wrote is evaluated workflow-side on both.
+			Name: "a declared failure is its declared kind",
+			Workflow: &v1.Workflow{
+				Name:           "error-kind-declared",
+				DeclaredErrors: []*v1.ErrorDeclaration{{Name: "QuotaExceeded"}},
+				Steps: []*v1.Node{{
+					Id: "refuse",
+					Kind: &v1.Node_Fail{Fail: &v1.Fail{
+						Error:   "QuotaExceeded",
+						Message: v1.NewExpr("'tenant ' + 'acme' + ' is over quota'"),
+					}},
+				}},
+			},
+			ExpectedKind: "QuotaExceeded",
+		},
 	}
 }
 

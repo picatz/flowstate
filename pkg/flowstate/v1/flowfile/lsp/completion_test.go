@@ -315,7 +315,7 @@ edition: v2026.4
 			name: "top level document keys",
 			src:  `|`,
 			exact: []string{
-				"edition", "name", "labels", "description", "types", "functions", "inputs", "outputs", "vars",
+				"edition", "name", "labels", "description", "types", "errors", "functions", "inputs", "outputs", "vars",
 				"steps", "triggers", "signals", "debug", "concurrency", "plugins",
 			},
 		},
@@ -352,7 +352,7 @@ edition: v2026.4
 				[]string{
 					"if", "vars", "timeout", "total_timeout", "retry", "continue_on_error",
 					"undo", "async", "with", "digest", "for_each", "loop", "parallel",
-					"sleep", "wait_until", "wait_for_signal", "wait_for_signals", "call", "value", "switch",
+					"sleep", "wait_until", "wait_for_signal", "wait_for_signals", "call", "value", "switch", "fail",
 				},
 			),
 		},

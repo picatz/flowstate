@@ -87,6 +87,12 @@ var grammarStepKeys = []string{
 	// plugin had been able to claim it in the meantime.
 	"value",
 
+	// A failure the author raises, naming an error the workflow declares under
+	// `errors:`. Workflow-side and pure like `value:`, so a node kind rather than
+	// a task, and reserved so no plugin registers `fail` and makes the step mean
+	// either.
+	"fail",
+
 	// The arguments a `call:` binds the callee's declared inputs with. Only
 	// meaningful beside `call:`, exactly as `steps:` is only meaningful beside
 	// `for_each:` — but a step property nonetheless, in the same sense `undo:`

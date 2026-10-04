@@ -488,6 +488,10 @@ func (w *promptWalk) nodes(nodes []*Node, sensitive map[string]bool, bindings ma
 			w.check(batch.GetPrompt(), unbind(inner, NowIdentifier), node.GetId(), sensitive)
 		}
 
+		if fail := node.GetFail(); fail != nil {
+			w.checkSink(fail.GetMessage(), inner, node.GetId(), sensitive, promptSinkFail)
+		}
+
 		if loop := node.GetForEach(); loop != nil {
 			body := inner
 			if binding {
@@ -575,7 +579,28 @@ func (w *promptWalk) bindLoopState(loop *Loop, bindings map[string]promptReach) 
 
 // check records what is wrong with one gate's prompt, by step id.
 func (w *promptWalk) check(value *Value, bindings map[string]promptReach, stepID string, sensitive map[string]bool) {
+	w.checkSink(value, bindings, stepID, sensitive, promptSinkWait)
+}
+
+// promptSink says which kind of text is being checked, because the reach rule is
+// the same and the sentence that explains a refusal is not: a `fail:` message
+// lands in `error`, in `failure.message` and in the run's recorded failure, which
+// every reader of the run sees, rather than in an approver's client.
+type promptSink int
+
+const (
+	promptSinkWait promptSink = iota
+	promptSinkFail
+)
+
+func (w *promptWalk) checkSink(value *Value, bindings map[string]promptReach, stepID string, sensitive map[string]bool, sink promptSink) {
 	if value == nil {
+		return
+	}
+
+	if sink == promptSinkFail {
+		w.checkFailMessage(value, bindings, stepID, sensitive)
+
 		return
 	}
 
@@ -624,6 +649,48 @@ func (w *promptWalk) check(value *Value, bindings map[string]promptReach, stepID
 				"cannot resolve, and this workflow declares an input `sensitive:`, so whether the prompt reaches it "+
 				"cannot be decided here. A prompt is rendered to whoever is being asked, so an undecidable reach is "+
 				"refused rather than allowed: index `%s` with a literal name",
+				stepID, InputsRoot, InputsRoot)})
+	}
+}
+
+// checkFailMessage is [promptWalk.checkSink] for a `fail:` step's `message:`:
+// the same secret and sensitive-input reach, worded for where the text goes.
+func (w *promptWalk) checkFailMessage(value *Value, bindings map[string]promptReach, stepID string, sensitive map[string]bool) {
+	if holdsSecretRef(value, 0) {
+		w.problems = append(w.problems, WaitPromptProblem{StepID: stepID,
+			Err: fmt.Errorf("step %q raises a failure with a `message:` that is a secret reference, "+
+				"which a failure may not hold: the message is recorded in the run's history and shown to every "+
+				"reader of its failure, so write it without the secret in it", stepID)})
+
+		return
+	}
+
+	if len(sensitive) == 0 {
+		return
+	}
+
+	reach := resolveReach(value, bindings)
+
+	for _, name := range slices.Sorted(maps.Keys(reach.named)) {
+		if !sensitive[name] {
+			continue
+		}
+
+		w.problems = append(w.problems, WaitPromptProblem{StepID: stepID,
+			Err: fmt.Errorf("step %q raises a failure with a `message:` that reads input %q, "+
+				"which is declared `sensitive:`: the message is recorded in the run's history and shown to every "+
+				"reader of its failure, so it may not reach the value even to derive from it. "+
+				"Write the message without it, or drop the `sensitive:` declaration if the value was never private",
+				stepID, name)})
+
+		return
+	}
+
+	if reach.opaque {
+		w.problems = append(w.problems, WaitPromptProblem{StepID: stepID,
+			Err: fmt.Errorf("step %q raises a failure with a `message:` that reads `%s` by a name this check "+
+				"cannot resolve, and this workflow declares an input `sensitive:`, so whether the message reaches it "+
+				"cannot be decided here and is refused rather than allowed: index `%s` with a literal name",
 				stepID, InputsRoot, InputsRoot)})
 	}
 }

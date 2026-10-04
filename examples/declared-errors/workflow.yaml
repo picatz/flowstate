@@ -1,0 +1,42 @@
+# A workflow can name the ways it refuses to continue.
+#
+# `errors:` declares each failure once, by a name that reads like a type. A
+# `fail:` step raises one, and the run fails with that name as its kind, so an
+# operator or an agent reads "InsufficientFunds" rather than a sentence it has
+# to parse. A name that is not declared is refused when the file is validated,
+# with the nearest declared spelling.
+#
+# The message is an expression, evaluated in the workflow, so it can say which
+# tenant and which amount. It may read inputs, vars and earlier steps' outputs;
+# it may not read a secret or an input marked sensitive, because the message is
+# written to the run's history.
+#
+# Declared errors are never retried: raising one is a decision, and a second
+# attempt reaches the same one.
+edition: v2026.4
+name: declared-errors
+errors:
+  InsufficientFunds:
+    description: the account cannot cover the amount requested
+  AmountNotPositive: {}
+inputs:
+  amount_cents:
+    type: int
+    default: 1000
+  balance_cents:
+    type: int
+    default: 5000
+steps:
+  - id: reject_empty
+    if: ${inputs.amount_cents <= 0}
+    fail:
+      error: AmountNotPositive
+      message: ${"amount must be positive, got " + string(inputs.amount_cents)}
+  - id: reject_overdraft
+    if: ${inputs.amount_cents > inputs.balance_cents}
+    fail:
+      error: InsufficientFunds
+      message: ${"balance " + string(inputs.balance_cents) + " cannot cover " + string(inputs.amount_cents)}
+  - id: transfer
+    log:
+      message: ${"moving " + string(inputs.amount_cents)}

@@ -80,6 +80,7 @@ func checkSensitivePrompt(wf *v1.Workflow) Diagnostics {
 	var ds Diagnostics
 
 	batches := batchPromptSteps(wf)
+	fails := failSteps(wf)
 
 	for _, problem := range v1.WaitPromptProblems(wf, v1.SkipCalls) {
 		// The key the author actually wrote, so the squiggle lands on their line
@@ -92,6 +93,9 @@ func checkSensitivePrompt(wf *v1.Workflow) Diagnostics {
 		if batches[problem.StepID] {
 			field = "wait_for_signals.prompt"
 		}
+		if fails[problem.StepID] {
+			field = "fail.message"
+		}
 
 		ds = append(ds, Diagnostic{
 			Step:    problem.StepID,
@@ -102,6 +106,20 @@ func checkSensitivePrompt(wf *v1.Workflow) Diagnostics {
 	}
 
 	return ds
+}
+
+// failSteps names the `fail:` steps, whose `message:` the same walk checks, so
+// the diagnostic lands on the key the author wrote.
+func failSteps(wf *v1.Workflow) map[string]bool {
+	steps := map[string]bool{}
+
+	v1.WalkNodes(wf.GetSteps(), v1.Walk{Node: func(node *v1.Node) {
+		if node.GetFail() != nil {
+			steps[node.GetId()] = true
+		}
+	}})
+
+	return steps
 }
 
 // batchPromptSteps names the steps whose prompt was written under

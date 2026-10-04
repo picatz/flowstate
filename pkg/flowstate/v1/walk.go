@@ -140,6 +140,8 @@ const (
 	SlotWaitSignalOutput
 	// SlotStepValue is a `value:` step's whole content.
 	SlotStepValue
+	// SlotFailMessage is a `fail:` step's `message:`.
+	SlotFailMessage
 	// SlotCallArgument is one entry of a `call:`'s `with:`.
 	SlotCallArgument
 	// SlotWaitBatchPrompt is a `wait_for_signals:`'s `prompt:`.
@@ -219,6 +221,7 @@ func ValueSlotSchemaPath() map[ValueSlot]string {
 		SlotWaitBatchOutput:  "Workflow.steps[].wait.signal_batch.outputs{}",
 		SlotStepValue:        "Workflow.steps[].value",
 		SlotCallArgument:     "Workflow.steps[].call.arguments{}",
+		SlotFailMessage:      "Workflow.steps[].fail.message",
 
 		SlotConcurrencyKey: "Workflow.concurrency.key",
 		SlotDebugSubject:   "Workflow.debug.allow[].subject_from",
@@ -350,6 +353,8 @@ func (s ValueSite) Field() string {
 		return "update"
 	case SlotSwitchValue, SlotStepValue:
 		return "value"
+	case SlotFailMessage:
+		return "message"
 	case SlotSwitchCaseValue:
 		return "cases[" + strconv.Itoa(s.Parent) + "].values[" + strconv.Itoa(s.Index) + "]"
 	case SlotWaitUntil:
@@ -717,6 +722,9 @@ func walkNodeValues(node *Node, w Walk) {
 
 	case *Node_Value:
 		w.value(ValueSite{Slot: SlotStepValue, Step: id, Value: kind.Value})
+
+	case *Node_Fail:
+		w.value(ValueSite{Slot: SlotFailMessage, Step: id, Value: kind.Fail.GetMessage()})
 
 	case *Node_Call:
 		for _, name := range slices.Sorted(maps.Keys(kind.Call.GetArguments())) {

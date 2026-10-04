@@ -1331,6 +1331,8 @@ func TestHoverDocumentsEveryDSLKey(t *testing.T) {
 labels: {}
 description: everything
 types: {}
+errors:
+  Refused: {}
 functions: {}
 inputs: {}
 outputs: {}
@@ -1429,6 +1431,11 @@ steps:
                 message: hi
       default:
         steps: []
+  - id: refuse
+    if: ${false}
+    fail:
+      error: Refused
+      message: no
 `
 	c := newClient(t)
 	c.initialize()
