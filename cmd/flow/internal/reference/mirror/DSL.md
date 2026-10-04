@@ -1301,10 +1301,20 @@ inputs:
   and a duration as their `google.protobuf` well-known type, bytes as the bytes
   value, so both drivers and every `must:` read the same type. Binding what is
   already bound changes nothing, which is what a call boundary and a Temporal
-  worker hand it. A bytes input is bounded at 1 MiB decoded. They are inputs
-  only until the run document has a plain-JSON form for them, and a worker
-  built before the enum values existed reports an unknown declared type and
-  refuses the run when it starts.
+  worker hand it. A bytes input is bounded at 1 MiB decoded. A worker built
+  before the enum values existed reports an unknown declared type and refuses
+  the run when it starts.
+- **They are bound wherever the type puts them, and an output may be one.** The
+  binder walks the declared structure, so a record field, a `list(timestamp)`
+  element and a `map(string, duration)` value are bound as the CEL kind, before a
+  `must:` or a record rule reads them: `must: this.ends > this.starts` over two
+  timestamp fields compares times, not text, and the refusal names the path
+  (`is not an RFC 3339 timestamp … at .starts`) without repeating the value. An
+  output may declare them too. The run document carries a timestamp as RFC 3339
+  text, a duration as Go text (`1h30m0s`) and bytes as base64, through
+  [`LiteralToGo`], which is also what an embedder, `flow test` and an http body
+  read; `NewValue` answers a `time.Time` and a `time.Duration` with the same
+  values, so a Go caller and a file agree.
 
 ### `functions:`: a computation named once *(landed)*
 

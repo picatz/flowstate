@@ -135,7 +135,7 @@ func (w *ruleWalk) record(name string, lit *expr.Value, path string, depth int) 
 		fieldPath := path + "." + field.GetName()
 
 		if field.Must != nil {
-			if err := w.rule(field.GetMust(), field.GetType(), value, "the field", fieldPath); err != nil {
+			if err := w.rule(field.GetMust(), field.GetType(), NormalizeWireValue(w.table, field.DeclaredType(), value), "the field", fieldPath); err != nil {
 				return err
 			}
 		}
@@ -145,7 +145,7 @@ func (w *ruleWalk) record(name string, lit *expr.Value, path string, depth int) 
 	}
 
 	if declared.Must != nil {
-		return w.rule(declared.GetMust(), InputDeclaration_TYPE_STRUCT, lit, "the record "+name, path)
+		return w.rule(declared.GetMust(), InputDeclaration_TYPE_STRUCT, NormalizeWireValue(w.table, &Type{Kind: &Type_Message{Message: name}}, lit), "the record "+name, path)
 	}
 
 	return nil
@@ -201,6 +201,10 @@ func (w *ruleWalk) key(k string) string {
 func (w *ruleWalk) got(value *expr.Value) string {
 	if w.sensitive {
 		return ""
+	}
+
+	if spelled, ok := dataKindText(value); ok {
+		return fmt.Sprintf("; got %s", echoName(spelled))
 	}
 
 	switch value.GetKind().(type) {

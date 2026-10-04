@@ -13,6 +13,9 @@ tests:
       ran: [closing, announce]
       outputs:
         closes: "2026-03-01T11:00:00Z"
+        closes_at: "2026-03-01T11:00:00Z"
+        booked_for: 30m0s
+        first_reminder: "2026-03-01T08:00:00Z"
 
   - name: supplied text is bound as a timestamp and a duration
     inputs:
@@ -22,6 +25,9 @@ tests:
       ran: [closing, announce]
       outputs:
         closes: "2026-07-02T09:00:00Z"
+        closes_at: "2026-07-02T09:00:00Z"
+        booked_for: 30m0s
+        first_reminder: "2026-03-01T08:00:00Z"
 
   - name: text that is not a timestamp is refused
     inputs:
@@ -50,3 +56,41 @@ tests:
     expect:
       failed: true
       error_contains: "got 2025-01-01T00:00:00Z"
+
+  - name: a record field is bound as a timestamp, so the rule compares times
+    inputs:
+      booking:
+        starts: "2026-03-01T10:00:00+02:00"
+        ends: "2026-03-01T09:30:00Z"
+    expect:
+      ran: [closing, announce]
+      outputs:
+        closes: "2026-03-01T11:00:00Z"
+        closes_at: "2026-03-01T11:00:00Z"
+        booked_for: 1h30m0s
+        first_reminder: "2026-03-01T08:00:00Z"
+
+  - name: a reservation that ends before it starts is refused by the type's rule
+    inputs:
+      booking:
+        starts: "2026-03-01T10:00:00Z"
+        ends: "2026-03-01T09:00:00Z"
+    expect:
+      failed: true
+      error_contains: "the record Booking must satisfy `this.ends > this.starts`"
+
+  - name: a record field that is not a timestamp is refused with its path
+    inputs:
+      booking:
+        starts: soon
+        ends: "2026-03-01T09:00:00Z"
+    expect:
+      failed: true
+      error_contains: "is not an RFC 3339 timestamp such as 2026-01-01T00:00:00Z at .starts"
+
+  - name: a list element that is not a timestamp is refused with its index
+    inputs:
+      reminders: ["2026-03-01T08:00:00Z", later]
+    expect:
+      failed: true
+      error_contains: "at [1]"

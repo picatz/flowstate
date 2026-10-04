@@ -88,6 +88,9 @@ func EvalRunOutputsWithCost(ctx context.Context, wf *Workflow, scope *Scope) (*R
 			if err := CheckOutputValueIn(table, declaration, value); err != nil {
 				return nil, spent, err
 			}
+			if lit := value.GetLiteral(); lit != nil {
+				value = &Value{Kind: &Value_Literal{Literal: NormalizeWireValue(table, declaration.DeclaredType(), lit)}}
+			}
 			if err := CheckOutputConstraint(scope.GetProfile(), declaration, value); err != nil {
 				return nil, spent, err
 			}
@@ -119,6 +122,11 @@ func EvalRunOutputsWithCost(ctx context.Context, wf *Workflow, scope *Scope) (*R
 			// first, then the rule over a value of that shape.
 			return nil, spent, err
 		}
+
+		// A value written as text where the declaration says timestamp, duration or
+		// bytes is that value from here on, so the rule below and whoever reads the
+		// output see the declared type; see [NormalizeWireValue].
+		computed = &Value{Kind: &Value_Literal{Literal: NormalizeWireValue(table, declaration.DeclaredType(), literal)}}
 
 		if err := CheckOutputConstraint(scope.GetProfile(), declaration, computed); err != nil {
 			// A workflow claiming a `must:` on its own answer has that answer
