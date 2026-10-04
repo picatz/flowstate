@@ -12,6 +12,7 @@ import (
 
 	"connectrpc.com/connect"
 
+	"github.com/picatz/flowstate/internal/textbound"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowstatev1connect"
 )
@@ -183,10 +184,19 @@ func (h *Handler) lookup(ctx context.Context, r *http.Request, workflowID, signa
 		return g, nil
 	}
 
+	// Get reports at most v1.MaxPendingWaits gates, so a run that says it left
+	// some out has not shown that this one is closed.
+	if run.GetProgress().GetPendingWaitsTruncated() {
+		return nil, errLookupIncomplete
+	}
+
 	return nil, errGateNotOpen
 }
 
-var errGateNotOpen = errors.New("gates: no open gate")
+var (
+	errGateNotOpen      = errors.New("gates: no open gate")
+	errLookupIncomplete = errors.New("gates: the run holds more gates than one answer lists")
+)
 
 func (h *Handler) show(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := h.call(r)
@@ -263,8 +273,11 @@ func (h *Handler) answer(w http.ResponseWriter, r *http.Request) {
 
 	req := connect.NewRequest(&v1.SignalRequest{
 		WorkflowId: workflowID,
-		Name:       signal,
-		Payload:    &v1.Node_Outputs{NamedValues: named},
+		// The run the gate was read on, so a workflow id that has moved on to
+		// another run between the read and the answer is refused, not answered.
+		RunId:   g.RunID,
+		Name:    signal,
+		Payload: &v1.Node_Outputs{NamedValues: named},
 	})
 	h.authorize(r, req.Header())
 
@@ -292,6 +305,14 @@ func (h *Handler) notFound(w http.ResponseWriter, r *http.Request) {
 // shows a visitor only what they are entitled to read: the API's own words for a
 // refusal addressed to them, and nothing for a failure that is the operator's.
 func (h *Handler) refuse(w http.ResponseWriter, r *http.Request, err error) {
+	if errors.Is(err, errLookupIncomplete) {
+		render(w, http.StatusServiceUnavailable, noticePage, notice{
+			Title:  "This gate could not be looked up",
+			Detail: "The run is waiting on more gates than this page can list. Answer it with the CLI (flow signal) or the API.",
+		})
+		return
+	}
+
 	if errors.Is(err, errGateNotOpen) {
 		render(w, http.StatusNotFound, noticePage, notice{
 			Title:  "This gate is not open",
@@ -337,12 +358,7 @@ func detail(err error) string {
 		return ""
 	}
 
-	msg := connectErr.Message()
-	if len(msg) > maxDetailBytes {
-		msg = strings.ToValidUTF8(msg[:maxDetailBytes], "") + "..."
-	}
-
-	return msg
+	return textbound.Truncate(connectErr.Message(), maxDetailBytes)
 }
 
 // oneLine keeps an API error to one log line: the API can echo a value a

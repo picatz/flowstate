@@ -5384,8 +5384,10 @@ old to send it), and refused when it says nothing, so another site cannot answer
 approver's behalf through a proxy's ambient credential. The page re-reads the gate at
 the moment of answering: a gate that is already closed says so, and the late
 answer is not sent, because a signal to a name nobody waits on is held for the next gate
-that does. Two answers submitted in the same instant can both pass that read; the
-signal is not yet pinned to the observed gate.
+that does. The answer is pinned to the run the gate was read on, so a stale page
+cannot answer another run. Two answers to the same gate submitted in the same instant can
+still both pass that read. A run holding more gates than one `Get` lists is reported as
+not looked up, never as closed.
 
 ### Rehearsing the gate, and who a rehearsal stands in for
 

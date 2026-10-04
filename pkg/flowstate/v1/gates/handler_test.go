@@ -236,6 +236,7 @@ func TestApproveAndDenyDeliverTheSignal(t *testing.T) {
 			require.Len(t, sent, 1)
 			require.Equal(t, testWorkflow, sent[0].GetWorkflowId())
 			require.Equal(t, testSignal, sent[0].GetName())
+			require.Equal(t, "run-1", sent[0].GetRunId(), "the answer is pinned to the run the gate was read on")
 
 			named := sent[0].GetPayload().GetNamedValues()
 			require.Equal(t, tc.approved, named["approved"].GetLiteral().GetBoolValue())
@@ -515,4 +516,28 @@ func TestAnUnexpectedFailureIsLoggedOnOneLine(t *testing.T) {
 
 	require.Equal(t, http.StatusBadGateway, rec.Code)
 	require.Equal(t, 1, strings.Count(strings.TrimRight(logged.String(), "\n"), "\n")+1, logged.String())
+}
+
+func TestAGateMissingFromATruncatedListIsNotReportedClosed(t *testing.T) {
+	t.Parallel()
+
+	api := &fakeAPI{get: func(*connect.Request[v1.GetRequest]) (*connect.Response[v1.GetResponse], error) {
+		return connect.NewResponse(&v1.GetResponse{
+			WorkflowId: testWorkflow,
+			Status:     v1.RunResponse_STATUS_RUNNING,
+			Progress: &v1.RunProgress{
+				PendingWaits:          []*v1.PendingWait{{StepId: "other", SignalName: "another"}},
+				PendingWaitsTruncated: true,
+			},
+		}), nil
+	}}
+	h := newHandler(api)
+
+	shown := do(h, gateGet())
+	require.Equal(t, http.StatusServiceUnavailable, shown.Code)
+	require.NotContains(t, shown.Body.String(), "not open")
+
+	answered := do(h, gatePost(url.Values{"decision": {"approve"}}))
+	require.Equal(t, http.StatusServiceUnavailable, answered.Code)
+	require.Empty(t, api.sent(), "an answer must not be sent to a gate the page could not see")
 }
