@@ -985,3 +985,31 @@ func TestASessionStillLaunchingIsNotActedOn(t *testing.T) {
 		require.NoError(t, <-acted)
 	}
 }
+
+// TestTheRegistryIsHeldUntilTheSessionIsTornDown: a case that has run to its
+// end is not the end of the session. A rewind can still launch a replay, which
+// swaps the process registry as it is set up, so the registry's guard is
+// returned when the session ends — not when the shown run does — and an end
+// returns it whether or not the case had reported.
+func TestTheRegistryIsHeldUntilTheSessionIsTornDown(t *testing.T) {
+	t.Parallel()
+
+	r := newDebugSessions(nil)
+	result, err := r.start(t.Context(), toolRequest(t, map[string]any{"workflow": debugWorkflow, "tests": sessionTests}))
+	require.NoError(t, err)
+	started := replyOf(t, result)
+	require.NotEmpty(t, started.SessionID, started.raw)
+
+	result, err = r.command(t.Context(), toolRequest(t, map[string]any{"session_id": started.SessionID, "command": "continue"}))
+	require.NoError(t, err)
+	require.False(t, result.IsError, "%v", result.Content)
+	assert.False(t, r.registry.TryAcquire(registryReaders), "the registry was returned when the shown run ended, with the session still open")
+
+	result, err = r.end(t.Context(), toolRequest(t, map[string]any{"session_id": started.SessionID}))
+	require.NoError(t, err)
+	require.False(t, result.IsError, "%v", result.Content)
+
+	// Returned by the teardown, which runs after the end's answer.
+	require.NoError(t, r.registry.Acquire(t.Context(), registryReaders))
+	r.registry.Release(registryReaders)
+}

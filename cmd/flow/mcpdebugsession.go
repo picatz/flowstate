@@ -92,7 +92,11 @@ type debugSessionEntry struct {
 	stubbed bool
 	// stop ends a stubbed case's runs, the replays a rewind left behind
 	// included. Nil for a durable session.
-	stop    func()
+	stop func()
+	// torn is closed once a stubbed session's runs have all stopped and its
+	// share of the registry is returned, which [debugSessions.release] waits
+	// for after done. Nil for a durable session.
+	torn    chan struct{}
 	started time.Time
 
 	// calls serializes commands on one session, so two never race to move
@@ -272,6 +276,9 @@ func (r *debugSessions) retireLocked(id string) *debugSessionEntry {
 func (r *debugSessions) release(entry *debugSessionEntry) {
 	if entry.done != nil {
 		<-entry.done
+	}
+	if entry.torn != nil {
+		<-entry.torn
 	}
 
 	r.mu.Lock()
@@ -982,6 +989,7 @@ func (r *debugSessions) start(ctx context.Context, req *mcp.CallToolRequest) (*m
 		id: uuid.NewString(), stubbed: true,
 		started: time.Now(), expires: time.Now().Add(debugSessionIdle), receipts: map[string]json.RawMessage{},
 		transcript: transcript, cancel: cancel, done: make(chan struct{}), ready: make(chan struct{}), inputs: inputs,
+		torn: make(chan struct{}),
 	}
 	existing, err := r.register(entry, key)
 	if err != nil || existing != nil {
@@ -1011,6 +1019,7 @@ func (r *debugSessions) start(ctx context.Context, req *mcp.CallToolRequest) (*m
 		entry.startErr = err
 		cancel()
 		close(entry.done)
+		close(entry.torn)
 		if r.remove(entry.id) {
 			r.release(entry)
 		}
@@ -1018,13 +1027,14 @@ func (r *debugSessions) start(ctx context.Context, req *mcp.CallToolRequest) (*m
 		return flowmcp.ToolError(err), nil
 	}
 
-	// Released with the case's first end, whichever run reaches it, so a call
-	// settling on this session's end finds the registry free.
+	// The case's first end, whichever run is shown when it comes, is its
+	// verdict. The registry is not released with it: a rewind can still launch
+	// a replay, which swaps the process registry while it is set up, so the
+	// share is returned when the session is torn down, once no run is left.
 	var finishOnce sync.Once
 	finish := func(report *v1.TestReport) {
 		finishOnce.Do(func() {
 			entry.report = report
-			r.registry.Release(registryReaders)
 			close(entry.done)
 		})
 	}
@@ -1077,13 +1087,26 @@ func (r *debugSessions) start(ctx context.Context, req *mcp.CallToolRequest) (*m
 		cancel()
 		close(entry.done)
 		r.registry.Release(registryReaders)
+		close(entry.torn)
 		if r.remove(entry.id) {
 			r.release(entry)
 		}
 
 		return flowmcp.ToolError(err), nil
 	}
-	entry.target, entry.driver, entry.stop = reversible, flowdebug.NewDriver(reversible), reversible.Stop
+	entry.target, entry.driver = reversible, flowdebug.NewDriver(reversible)
+	var tearOnce sync.Once
+	entry.stop = func() {
+		tearOnce.Do(func() {
+			// Every run has stopped when Stop returns, so what the case never
+			// reported — a live run stopped before it ended — is settled now,
+			// and the registry has no user left.
+			reversible.Stop()
+			finish(nil)
+			r.registry.Release(registryReaders)
+			close(entry.torn)
+		})
+	}
 	entry.driver.Wait = maxDebugSessionWait
 
 	// The first stop, or the end of a case with no steps to hold at.
