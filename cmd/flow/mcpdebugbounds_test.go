@@ -375,7 +375,7 @@ func TestAStubbedSessionFencesTheRegistryReaders(t *testing.T) {
 	t.Cleanup(func() { _ = session.Close() })
 	entry := addStepSession(t, r, session)
 	r.mu.Lock()
-	entry.local = session
+	entry.stubbed = true
 	r.mu.Unlock()
 	// As a started stubbed session holds it, for as long as its case runs.
 	require.NoError(t, r.registry.Acquire(t.Context(), registryReaders))
@@ -1006,7 +1006,7 @@ func TestARacingStartIsAnsweredOnlyForItsOwnCase(t *testing.T) {
 		require.NoError(t, err)
 		t.Cleanup(func() { _ = session.Close() })
 
-		return &debugSessionEntry{id: uuid.NewString(), local: session, inputs: inputs, receipts: map[string]json.RawMessage{}}
+		return &debugSessionEntry{id: uuid.NewString(), stubbed: true, inputs: inputs, receipts: map[string]json.RawMessage{}}
 	}
 	first := entry("a")
 	existing, err := r.register(first, key)
