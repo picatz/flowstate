@@ -531,3 +531,23 @@ func TestRecordRuleRefusalKeepsASensitiveValueAndKeyOut(t *testing.T) {
 		}
 	}
 }
+
+func TestRecordRuleEvaluationErrorKeepsASensitiveValueOut(t *testing.T) {
+	t.Parallel()
+
+	wf := recordOrderWorkflow()
+	order := wf.DeclaredTypes[1]
+	order.Must = new("timestamp(this.id) > timestamp('2020-01-01T00:00:00Z')")
+	require.NoError(t, v1.CheckRecordDeclarations(wf))
+
+	value := &v1.Value{Kind: &v1.Value_Literal{Literal: mapLit(recordStr("id"), recordStr("hunter2"), recordStr("status"), recordStr("open"),
+		recordStr("lines"), &expr.Value{Kind: &expr.Value_ListValue{ListValue: &expr.ListValue{}}})}}
+
+	for _, sensitive := range []bool{false, true} {
+		err := v1.CheckRecordRules(v1.TypesOf(wf), "", "output", "o", sensitive, recordTypeOf("Order"), value)
+		require.Error(t, err)
+		if sensitive {
+			assert.NotContains(t, err.Error(), "hunter2")
+		}
+	}
+}

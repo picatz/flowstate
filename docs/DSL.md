@@ -723,7 +723,7 @@ and, for an `enum`, its `values:`, `min_len:` and `max_len:` for a string, and `
 field's value, and a `must:` on the type is one over the record, which is where a rule across
 fields is written (`must: this.start < this.end`); both are compiled when the file loads, run by
 the function an input's `must:` is, and a value is held to the rules of every record it holds, in
-a list too, at most 4096 evaluations per value. The refusal names the path to what is wrong
+a list too, at most 4096 evaluations per value. A field's own rule is not run for an optional field a value leaves out; a type's rule always is. The refusal names the path to what is wrong
 (`a string at .lines[1].quantity`) at `flow validate` for a literal written in the file, and at
 submit and on completion for a value that arrives, on both drivers through one function. A
 type that refers to itself, directly or through others, is refused, because a value of a
