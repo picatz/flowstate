@@ -144,6 +144,21 @@ func (s *FlowstateServer) DebugHistory(ctx context.Context, req *connect.Request
 			textbound.Cut(err.Error(), maxDebugHistoryFailureBytes)))
 	}
 
+	// A live inspection is the holder's alone. The past of a run still going
+	// keeps that: it is read by the person its session was held for, since
+	// another caller admitted by the policy could not have read the scope
+	// while it was held. A closed run has no holder to protect, and is read by
+	// anyone the policy and the inspect action admit.
+	if len(req.Msg.GetInspections()) > 0 && !closedAt(events) {
+		holder, caller := rec.Debug.GetSession().GetAttachedBy(), run.sender.GetIdentity()
+		// A point where the run held no session has no scope to read: each
+		// inspection is refused there, and there is no holder to protect.
+		if holder != nil && v1.QualifiedSubject(holder.GetIssuer(), holder.GetSubject()) != v1.QualifiedSubject(caller.GetIssuer(), caller.GetSubject()) {
+			return nil, connect.NewError(connect.CodePermissionDenied,
+				errors.New("only the session's holder may inspect the past of a run that is still going"))
+		}
+	}
+
 	ids := make([]int64, len(points))
 	for i, at := range points {
 		ids[i] = events[at].GetEventId()
@@ -240,6 +255,11 @@ func readHistory(ctx context.Context, run *debugRun, runID string) (*historypb.H
 	}
 
 	return history, nil
+}
+
+// closedAt reports whether the history ends with the execution's closing event.
+func closedAt(events []*historypb.HistoryEvent) bool {
+	return len(events) > 0 && outcomeOf(events[len(events)-1]) != v1.DebugRunState_DEBUG_RUN_STATE_UNSPECIFIED
 }
 
 // outcomeOf is how the execution ended at event, or unspecified for a point

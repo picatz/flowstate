@@ -992,9 +992,11 @@ where it held none answers each with that refusal. Asking any also needs
 test a sensitive value the printed answer withholds, and both audit records then
 carry a digest of the expressions. The `inspected` answers come back in order,
 labelled `hypothetical` for an expression and `reconstructed` for the scope's
-roots. The caller need not be the session's original holder: the replay holds no
-lease, and anyone the run's `debug:` policy admits may attach live and read the
-same scope.
+roots. A live inspection is the session holder's alone, and the past of a run that is
+still going keeps that: where the run held a session, only the person it was held
+for may inspect there, and another caller is refused. A closed run has no holder
+to protect, so anyone its `debug:` policy and the inspect action admit may
+inspect its points.
 
 | Question at a past point | Answer | How it is known |
 | --- | --- | --- |

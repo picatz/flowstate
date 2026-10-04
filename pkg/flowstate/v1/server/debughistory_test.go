@@ -201,6 +201,72 @@ func TestDebugHistoryWithholdsADeclaredSensitiveInputAtEveryPoint(t *testing.T) 
 	assert.True(t, sawCarry, "no point reported the step that carried the value, so the scan could not have caught a leak")
 }
 
+func TestAnOpenRunsPastIsInspectedOnlyByTheHolderOfItsSession(t *testing.T) {
+	t.Parallel()
+
+	workflow := debuggableWorkflow()
+	workflow.Debug.Allow = append(workflow.Debug.Allow, &v1.SignalPolicyRule{Subject: v1.QualifiedSubject(debugIssuer, "sre-2@example.com")})
+	fixture := newTenantFixture(t)
+	started, err := fixture.teamA.Run(t.Context(), connect.NewRequest(&v1.RunRequest{Workflow: workflow}))
+	require.NoError(t, err)
+	workflowID := started.Msg.GetWorkflowId()
+	waitUntilParkedAtTheGate(t, fixture.temporal, workflowID)
+
+	holder, other := as(t.Context(), "sre-1@example.com"), as(t.Context(), "sre-2@example.com")
+	_, err = fixture.teamA.DebugAttach(holder, connect.NewRequest(&v1.DebugAttachRequest{
+		WorkflowId: workflowID, RequestId: "attach-open", Lease: durationpb.New(5 * time.Minute), Wait: durationpb.New(time.Second),
+	}))
+	require.NoError(t, err)
+	_, err = fixture.teamA.Signal(t.Context(), connect.NewRequest(&v1.SignalRequest{
+		WorkflowId: workflowID, Name: "deploy-approved",
+		Payload: &v1.Node_Outputs{NamedValues: map[string]*v1.Value{"approved": v1.NewLiteral(true)}},
+	}))
+	require.NoError(t, err)
+	held := waitForDebugState(t, fixture.teamA, holder, workflowID, v1.DebugRunState_DEBUG_RUN_STATE_HELD)
+	// One step on, so a workflow task ends with the session held: the point the
+	// past is read at below.
+	_, err = fixture.teamA.DebugResume(holder, connect.NewRequest(&v1.DebugResumeRequest{
+		WorkflowId: workflowID, SessionId: held.GetSession().GetSessionId(), RequestId: "step-open", ExpectedRevision: held.GetRevision(),
+		Action: v1.DebugResumeAction_DEBUG_RESUME_ACTION_STEP_OVER,
+	}))
+	require.NoError(t, err)
+	waitForDebugState(t, fixture.teamA, holder, workflowID, v1.DebugRunState_DEBUG_RUN_STATE_HELD)
+	runID := fixture.temporal.GetWorkflow(t.Context(), workflowID, "").GetRunID()
+
+	asked := []*v1.DebugHistoryInspection{{Expression: "1 + 2"}}
+	var point int64
+	read := func(ctx context.Context, inspections []*v1.DebugHistoryInspection) (*v1.DebugHistoryResponse, error) {
+		got, err := fixture.teamA.DebugHistory(ctx, connect.NewRequest(&v1.DebugHistoryRequest{WorkflowId: workflowID, RunId: runID, EventId: point, Inspections: inspections}))
+		if err != nil {
+			return nil, err
+		}
+
+		return got.Msg, nil
+	}
+
+	// The latest point at which the run was held under the session.
+	last, err := read(holder, nil)
+	require.NoError(t, err)
+	for _, boundary := range slices.Backward(last.GetBoundaries()) {
+		point = boundary
+		at, err := read(holder, nil)
+		require.NoError(t, err)
+		if at.GetSnapshot().GetSession().GetAttachedBy() != nil && at.GetSnapshot().GetState() == v1.DebugRunState_DEBUG_RUN_STATE_HELD {
+			break
+		}
+		point = 0
+	}
+	require.NotZero(t, point, "no point held the session")
+
+	_, err = read(other, asked)
+	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err), "another admitted caller read the scope of a session someone else holds")
+	_, err = read(other, nil)
+	assert.NoError(t, err, "the point itself is still readable")
+	got, err := read(holder, asked)
+	require.NoError(t, err)
+	assert.Equal(t, "3", got.GetInspected()[0].GetResult().GetValue().GetRendered())
+}
+
 func TestDebugHistoryRefusesWhatItCannotRead(t *testing.T) {
 	t.Parallel()
 
