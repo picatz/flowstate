@@ -102,38 +102,15 @@ oversight: see `plugins/github/doc.go`, "Naming," for why a portable
 particularly, and why this plugin cannot expose it under two prefixes with
 the schema as it exists today.
 
-## Why this is not `examples/github/workflow.yaml`
+## How this is checked
 
-The same reason [`examples/plugins/vcs`](../vcs) gives, and the same reason
-[`examples/plugins/greet`](../greet) gives: `examples/*/workflow.yaml` is
-checked with the built-in task registry alone, and a file naming a plugin's
-task is meant to be refused by a process that has not loaded that plugin,
-with a diagnostic that says so rather than a silent pass. See
-[`examples/README.md`](../../README.md) for the fuller version of this
-argument.
+The files sit under `examples/plugins/` so the built-in-only corpus checks skip them;
+[`examples/README.md`](../../README.md#plugin-examples) says why and how they are
+validated against the plugin's real schema. `plugins/github/reachable` builds the
+binary and proves each file is refused before the plugin is registered and accepted
+after. It never runs `github.pull_request_get` or `github.issue_comment`: both reach the
+GitHub API, and posting a comment needs a credential the test must not hold.
 
-## What proves these files are reachable
-
-`TestAFlowfileCanNameTheGitHubPluginsTasks`, in
-[`plugins/github/reachable`](../../../plugins/github/reachable), is this
-plugin's equivalent of `TestAFlowfileCanNameAPluginTask` for
-`examples/plugins/greet` in `pkg/flowstate/v1/plugin`: it builds this plugin
-as a real, separately compiled binary, opens a
-[`plugin.Host`](../../../pkg/flowstate/v1/plugin) over it, and validates all four
-files here from disk before and after registration - each refused with a
-diagnostic naming its task beforehand, accepted afterward, inputs checked
-against the descriptors the plugin actually shipped. It lives in its own
-package under `plugins/github` rather than beside `main.go`, and rather than
-in `pkg/flowstate/v1/plugin`: not in the root module, because that module
-must never depend on go-github, and not beside `main.go`, because that file
-imports this plugin's own generated types, which would register its schema
-in the test binary's own global proto registry before the test ever ran -
-see the package doc on `plugins/github/reachable` for what that would have
-hidden. It does not run `github.pull_request_get` or `github.issue_comment`
-for real - both reach the real GitHub API, and posting a comment needs a
-credential this test has no business holding.
-
-Posting a real, unattended comment as part of a CI run is also its own
-decision an operator should make deliberately - which repository, which
-credential, how often - rather than one this example should make for them
-by existing in an automated corpus at all.
+Posting a real, unattended comment from a CI run is a decision an operator makes
+deliberately (which repository, which credential, how often), so no example makes
+it by existing in an automated corpus.

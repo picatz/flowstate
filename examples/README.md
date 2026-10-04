@@ -226,10 +226,29 @@ repeating them would be one more thing to leave stale. Which is also why
 called by the first, and its own comments are exactly as much documentation as any
 other example's.
 
+### Plugin examples
+
 Everything under `plugins/` sits a directory deeper than the rest, which is
-deliberate: everything matching `examples/*/workflow.yaml` is checked with the
-built-in task registry, and a file naming a plugin's task is meant to be refused
-by a process that has not loaded that plugin. Their READMEs say more.
+deliberate. Everything matching `examples/*/workflow.yaml` is checked with the
+built-in task registry alone, and a file naming a plugin's task is refused by a
+process that has not loaded that plugin, with a diagnostic that says so rather
+than a silent pass. Whether a plugin is installed is a deployment's decision, so
+the checker says what it does not know instead of growing an exception.
+
+You tell it what is installed, and the file is then checked against the plugin's
+real input schema:
+
+```console
+$ flow validate --plugin-dir ./plugins examples/plugins/greet/workflow.yaml   # launches the plugins
+$ flow validate --plugin-catalog plugins.lock.json examples/plugins/greet/workflow.yaml   # starts nothing
+```
+
+[greet](plugins/greet) walks through both. CI checks the whole tree against the
+reviewed catalog in `plugins.lock.json` (`make plugin-examples`, which
+`make plugin-example-catalog-update` regenerates), and each plugin's `reachable`
+test builds the real binary and proves its example files are refused before the
+plugin is registered and accepted after. None of those tests run a task that
+reaches the network.
 `embedding/flowfile/workflow.yaml` follows the same convention for the same reason: it
 names `greet`, a task only `examples/embedding`'s own program registers, so it sits at
 `embedding/flowfile/workflow.yaml` rather than `embedding/workflow.yaml` to stay out of
