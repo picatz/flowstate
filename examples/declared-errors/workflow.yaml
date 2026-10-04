@@ -27,6 +27,8 @@ inputs:
     type: int
     default: 5000
 steps:
+  - id: remaining
+    value: ${inputs.balance_cents - inputs.amount_cents}
   - id: reject_empty
     if: ${inputs.amount_cents <= 0}
     fail:
@@ -39,4 +41,4 @@ steps:
       message: ${"balance " + string(inputs.balance_cents) + " cannot cover " + string(inputs.amount_cents)}
   - id: transfer
     log:
-      message: ${"moving " + string(inputs.amount_cents)}
+      message: ${"moving " + string(inputs.amount_cents) + ", leaving " + string(steps.remaining.value)}

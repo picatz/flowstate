@@ -10,7 +10,7 @@ tests:
       - task: log
         returns: {}
     expect:
-      ran: [transfer]
+      ran: [remaining, transfer]
       skipped: [reject_empty, reject_overdraft]
 
   - name: an overdraft raises InsufficientFunds

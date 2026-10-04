@@ -308,6 +308,21 @@ edition: v2026.4
 			exact: []string{"web"},
 		},
 		{
+			// A `fail:` step's own keys are offered inside its mapping, as a
+			// `switch:`'s are inside its.
+			name: "keys inside a fail step",
+			src: `name: c
+errors:
+  Refused: {}
+steps:
+  - id: refuse
+    fail:
+      |
+edition: v2026.4
+`,
+			exact: []string{"error", "message"},
+		},
+		{
 			// In the order a file is written: the grammar it is written in, then
 			// what the workflow is, then its full schema-owned surface. This is
 			// positioned at the empty document root, the case #1315 reproduced

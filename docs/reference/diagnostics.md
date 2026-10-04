@@ -22,6 +22,7 @@ everything else is `general`, and that is documented rather than pretended away.
 | `output-mismatch` | A run's outputs disagree with a case's `expect.outputs` — a value that differs, one the case named that the run did not produce, or one the run produced that the case does not name. |
 | `stub-unmatched` | A case invoked a task no stub it declared answered — a hole in the case's own scaffolding rather than a disagreement about the run. |
 | `sensitive-in-prompt` | A `wait_for_signal:`'s `prompt:` reaches an input declared `sensitive:`, or holds a secret reference; a prompt is rendered to whoever is being asked to approve, so ask the question without that value in it. |
+| `sensitive-in-fail-message` | A `fail:` step's `message:` reaches an input declared `sensitive:`, or holds a secret reference; the message is recorded in the run's history, so write it without that value in it. |
 
 ## Shape
 

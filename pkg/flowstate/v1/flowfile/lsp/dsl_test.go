@@ -52,7 +52,8 @@ func TestNestedDSLKeysMatchMarshaledShapes(t *testing.T) {
 		// Both positions of `vars:`, because they are separate keys in separate
 		// tables and the table for one landed without the other. A fixture missing
 		// a key is how this test stayed green through the drift it exists to catch.
-		Vars: map[string]*v1.Value{"region": v1.NewValue("eu-west-1")},
+		Vars:           map[string]*v1.Value{"region": v1.NewValue("eu-west-1")},
+		DeclaredErrors: []*v1.ErrorDeclaration{{Name: "Refused"}},
 		Steps: []*v1.Node{
 			{
 				Id:        "only",
@@ -132,6 +133,11 @@ func TestNestedDSLKeysMatchMarshaledShapes(t *testing.T) {
 					}},
 					Default: &v1.Switch_Default{},
 				}},
+			},
+			{
+				Id:        "refuse",
+				Condition: v1.NewExpr("false"),
+				Kind:      &v1.Node_Fail{Fail: &v1.Fail{Error: "Refused", Message: v1.NewExpr("'no'")}},
 			},
 			{
 				Id: "branches",
@@ -308,6 +314,10 @@ func TestNestedDSLKeysMatchMarshaledShapes(t *testing.T) {
 	authored := map[string]bool{}
 	for name := range workflow.GetVars() {
 		authored[name] = true
+	}
+	// A declared error's name is the author's, the same way a var's is.
+	for _, declared := range workflow.GetDeclaredErrors() {
+		authored[declared.GetName()] = true
 	}
 	for _, node := range workflow.GetSteps() {
 		for name := range node.GetVars() {

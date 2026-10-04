@@ -68,19 +68,11 @@ func TestEvalFailNodeRaisesTheDeclaredKind(t *testing.T) {
 	require.False(t, errors.As(err, &taskErr) && taskErr.Kind == "Refused")
 }
 
-func TestParseReportedKind(t *testing.T) {
+func TestAClosedParserStillRefusesADeclaredName(t *testing.T) {
 	t.Parallel()
 
-	for _, ok := range []string{"Timeout", "Upstream", "QuotaExceeded", "A_1"} {
-		_, got := ParseReportedKind(ok)
-		require.True(t, got, ok)
-	}
-	for _, bad := range []string{"", "timeout", "1Quota", "Quota Exceeded", "Quota-Exceeded", "É"} {
-		_, got := ParseReportedKind(bad)
-		require.False(t, got, bad)
-	}
-	// The closed parser still refuses a declared name: tolerance and retry
-	// decide on the workflow's own declarations, never on a spelling.
+	// Tolerance and retry decide on the workflow's own declarations, never on a
+	// spelling, so the closed built-in parser must not learn a declared name.
 	_, closed := ParseErrorKind("QuotaExceeded")
 	require.False(t, closed)
 }
@@ -99,16 +91,18 @@ func TestFailMessageMayNotReachASecret(t *testing.T) {
 	t.Parallel()
 
 	secret := &Value{Kind: &Value_SecretRef{SecretRef: &SecretRef{Scheme: "env", Name: "TOKEN"}}}
-	problems := WaitPromptProblems(failWorkflow([]string{"Refused"}, &Fail{Error: "Refused", Message: secret}), DescendCalls)
+	problems := FailMessageProblems(failWorkflow([]string{"Refused"}, &Fail{Error: "Refused", Message: secret}), DescendCalls)
 	require.NotEmpty(t, problems)
 	require.Equal(t, "refuse", problems[0].StepID)
+	require.Empty(t, WaitPromptProblems(failWorkflow([]string{"Refused"}, &Fail{Error: "Refused", Message: secret}), DescendCalls),
+		"a fail message is not a gate prompt")
 
 	wf := failWorkflow([]string{"Refused"}, &Fail{Error: "Refused", Message: NewExpr(`"hello " + inputs.token`)})
 	wf.DeclaredInputs = []*InputDeclaration{{Name: "token", Type: InputDeclaration_TYPE_STRING, Sensitive: true}}
-	problems = WaitPromptProblems(wf, DescendCalls)
+	problems = FailMessageProblems(wf, DescendCalls)
 	require.NotEmpty(t, problems)
 	require.Contains(t, problems[0].Err.Error(), `"token"`)
 
 	wf.DeclaredInputs[0].Sensitive = false
-	require.Empty(t, WaitPromptProblems(wf, DescendCalls))
+	require.Empty(t, FailMessageProblems(wf, DescendCalls))
 }

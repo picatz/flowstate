@@ -205,6 +205,11 @@ type WaitPromptProblem struct {
 	// editor and the sentence a submitted specification is refused with are the
 	// same sentence.
 	Err error
+
+	// sink is which text this refusal is about; the zero value is a gate prompt.
+	// Unexported so the prompt API and the fail-message API can each report only
+	// their own problems from one shared walk.
+	sink promptSink
 }
 
 // CallDescent says whether a walk follows an inlined `call:`.
@@ -236,10 +241,42 @@ const (
 // and a step in isolation is exactly what cannot see the bindings written around
 // it - which is the hole this walk closes (#976).
 func WaitPromptProblems(wf *Workflow, calls CallDescent) []WaitPromptProblem {
+	return promptProblems(wf, calls, promptSinkWait)
+}
+
+// FailMessageProblems reports every `fail:` message this rule refuses: one that
+// holds a secret reference or reaches an input declared `sensitive:`. A failure's
+// message is recorded in the run's history and shown to every reader of its
+// failure, so the reach rule a gate prompt follows applies, with its own
+// sentence and its own [DiagnosticCodeSensitiveInFailMessage].
+func FailMessageProblems(wf *Workflow, calls CallDescent) []WaitPromptProblem {
+	return promptProblems(wf, calls, promptSinkFail)
+}
+
+// CheckFailMessagesAreRecordable refuses a workflow whose `fail:` messages could
+// put something private into a run's history. The submit boundary's half of
+// [FailMessageProblems], called from [BindRunInputs] beside
+// [CheckWaitPromptsAreAskable].
+func CheckFailMessagesAreRecordable(wf *Workflow) error {
+	if problems := FailMessageProblems(wf, DescendCalls); len(problems) > 0 {
+		return problems[0].Err
+	}
+
+	return nil
+}
+
+func promptProblems(wf *Workflow, calls CallDescent, sink promptSink) []WaitPromptProblem {
 	walk := &promptWalk{calls: calls}
 	walk.nodes(wf.GetSteps(), sensitiveInputNames(wf), nil, 0, "")
 
-	return walk.problems
+	var problems []WaitPromptProblem
+	for _, problem := range walk.problems {
+		if problem.sink == sink {
+			problems = append(problems, problem)
+		}
+	}
+
+	return problems
 }
 
 // SensitiveInputNames is the set of a workflow's inputs declared `sensitive:`.
@@ -599,7 +636,11 @@ func (w *promptWalk) checkSink(value *Value, bindings map[string]promptReach, st
 	}
 
 	if sink == promptSinkFail {
+		before := len(w.problems)
 		w.checkFailMessage(value, bindings, stepID, sensitive)
+		for i := before; i < len(w.problems); i++ {
+			w.problems[i].sink = promptSinkFail
+		}
 
 		return
 	}

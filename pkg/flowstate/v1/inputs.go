@@ -133,6 +133,12 @@ func bindRunInputs(wf *Workflow, profile string, submitted map[string]*Value) (m
 		return nil, err
 	}
 
+	// And a `fail:` message, which is recorded in history and shown to every
+	// reader of the failure, by the same reach rule.
+	if err := CheckFailMessagesAreRecordable(wf); err != nil {
+		return nil, err
+	}
+
 	// And beside those two, for the third time the same reason applies. A
 	// `verify:` key written as a literal rather than as a secret reference
 	// satisfies the schema's map shape perfectly — protovalidate has nothing to

@@ -328,6 +328,10 @@ type parsedStep struct {
 	// outline names the kind and hover documents its keys.
 	switchEntry *entry
 
+	// failEntry is a `fail:` step, held so the outline names the kind and hover
+	// documents its keys.
+	failEntry *entry
+
 	// switchValueEntry is a switch's `value:` — the discriminant, the one
 	// expression the construct holds. Held for the reason waitUntilEntry is: an
 	// expression this model does not hold is one no editor surface can see, and
@@ -619,6 +623,8 @@ func (s *parsedStep) kind() string {
 		return "value"
 	case s.switchEntry != nil:
 		return "switch"
+	case s.failEntry != nil:
+		return "fail"
 	default:
 		return ""
 	}
@@ -1230,6 +1236,10 @@ func fillParsedStep(s *parsedStep, entries []*entry) {
 						s.loopUpdateEntry = le
 					}
 				}
+			}
+		case "fail":
+			if s.failEntry == nil && e.value != nil && e.value.kind == kindMapping {
+				s.failEntry = e
 			}
 		case "switch":
 			if s.switchEntry != nil || e.value == nil || e.value.kind != kindMapping {

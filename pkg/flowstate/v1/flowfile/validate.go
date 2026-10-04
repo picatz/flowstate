@@ -352,6 +352,7 @@ func validateAtDepth(wf *v1.Workflow, profile string, depth int, placement v1.Un
 	// why the rule there is wider than the one above it. Recurses on its own,
 	// the same way the two checks above do.
 	ds = append(ds, checkSensitivePrompt(wf)...)
+	ds = append(ds, checkSensitiveFailMessage(wf)...)
 
 	// Tasks and expression references.
 	scope := newRefScope(wf)

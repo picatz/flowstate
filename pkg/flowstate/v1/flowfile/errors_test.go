@@ -143,3 +143,22 @@ func TestFailRunsAsItsDeclaredKind(t *testing.T) {
 	require.Equal(t, v1.ErrorKind("QuotaExceeded"), v1.ClassifyError(err))
 	require.Contains(t, err.Error(), "tenant acme is over quota")
 }
+
+// TestFailMessageReachingASensitiveInputIsRefused: the message is recorded in
+// history, so the reach rule a gate prompt follows applies, under its own code.
+func TestFailMessageReachingASensitiveInputIsRefused(t *testing.T) {
+	t.Parallel()
+
+	src := strings.Replace(raisingSource, "    required: true\n", "    required: true\n    sensitive: true\n", 1)
+
+	var found bool
+	for _, d := range validateTriggerSource(t, src) {
+		if d.Code == v1.DiagnosticCodeSensitiveInFailMessage {
+			found = true
+			assert.Equal(t, "refuse", d.Step)
+			assert.Equal(t, "fail.message", d.Field)
+		}
+		assert.NotEqual(t, v1.DiagnosticCodeSensitiveInPrompt, d.Code, "a fail message is not a gate prompt")
+	}
+	require.True(t, found)
+}

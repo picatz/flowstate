@@ -267,6 +267,10 @@ var dslKeys = map[string][]dslKey{
 	"parallel": {
 		{name: "steps", detail: "list", docs: "One branch's steps. Each `- steps:` entry is a branch that runs concurrently with the others."},
 	},
+	"fail": {
+		{name: "error", detail: "string", docs: "The error to raise: a name declared under the workflow's `errors:`. A name that is not declared is refused when the file is validated, with the nearest declared spelling."},
+		{name: "message", detail: "expression", docs: "The sentence the failure carries, evaluated in the workflow, so it may read inputs, vars and earlier steps' outputs. It may not read a `secret(...)` or an input marked `sensitive`, because it is written to the run's history. Without it the failure's message is the error's name."},
+	},
 	"switch": {
 		{name: "value", detail: "expression", docs: "The discriminant: evaluated exactly once, then matched against the cases in written order. " +
 			"A value that cannot be evaluated — a skipped step's output, say — fails the step rather than flowing into `default:`."},
@@ -380,6 +384,8 @@ func completeAt(doc *document, pos lsp.Position) *lsp.CompletionList {
 		return list(dslCandidates("default", word, replace))
 	case endsWith(path, "switch"):
 		return list(dslCandidates("switch", word, replace))
+	case endsWith(path, "fail"):
+		return list(dslCandidates("fail", word, replace))
 	case endsWith(path, "wait_for_signal"):
 		return list(dslCandidates("wait_for_signal", word, replace))
 	case endsWith(path, "wait_for_signals"):

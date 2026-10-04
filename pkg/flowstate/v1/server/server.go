@@ -2541,7 +2541,7 @@ func failureError(
 	var app *temporal.ApplicationError
 	if errors.As(err, &app) && app.Message() != "" {
 		result := &v1.RunResponse_Error{Message: app.Message()}
-		if kind, ok := v1.ParseReportedKind(app.Type()); ok {
+		if kind, ok := v1.ParseErrorKind(app.Type()); ok {
 			result.Kind = kind.String()
 		}
 

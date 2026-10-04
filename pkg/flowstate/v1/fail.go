@@ -122,35 +122,6 @@ func KnownFailureKind(wf *Workflow, kind string) bool {
 	return slices.Contains(DeclaredErrorNames(wf), kind)
 }
 
-// ParseReportedKind recognizes a string that crossed a driver boundary as the
-// kind of a run or step failure: a built-in [ErrorKind], or the name of an error
-// a workflow declared.
-//
-// The boundary (Temporal's ApplicationError.Type) carries no workflow, so a
-// declared name is recognized by its spelling, the `^[A-Z][A-Za-z0-9_]*$` rule a
-// declaration must satisfy, and not by membership. That is looser than
-// [ParseErrorKind] on purpose and only here: a run's reported kind is a label for
-// operators and agents, never an input to retry or tolerance, which decide on
-// the workflow's own declarations and so stay closed. The durable driver's own
-// recording of a step failure keeps using [ParseErrorKind]: a Temporal error type
-// that is merely capitalised is not a declared kind there.
-func ParseReportedKind(s string) (ErrorKind, bool) {
-	if kind, ok := ParseErrorKind(s); ok {
-		return kind, true
-	}
-	if s == "" || s[0] < 'A' || s[0] > 'Z' {
-		return "", false
-	}
-	for i := 1; i < len(s); i++ {
-		c := s[i]
-		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_') {
-			return "", false
-		}
-	}
-
-	return ErrorKind(s), true
-}
-
 // EvalFailNode raises what a `fail:` step names: the [TaskError] a driver treats
 // like any other step failure, classified as the declared kind.
 //
