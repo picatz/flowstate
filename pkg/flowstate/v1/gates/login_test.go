@@ -53,6 +53,8 @@ func newIssuer(t *testing.T) *issuer {
 			"issuer":                 cmpOr(is.discoveryIssuer, is.URL),
 			"authorization_endpoint": is.URL + "/authorize",
 			"token_endpoint":         is.URL + "/token",
+
+			"code_challenge_methods_supported": []string{"S256"},
 		}
 		for k, v := range is.discoveryExtra {
 			doc[k] = v
@@ -369,10 +371,13 @@ func TestAnIssuerThatMisnamesItselfCannotSteerTheFlow(t *testing.T) {
 	require.Nil(t, setCookies(rec)[loginCookieName])
 
 	is = newIssuer(t)
-	is.discoveryExtra = map[string]any{"code_challenge_methods_supported": []string{"plain"}}
-	h = newHandler(signedInAPI(), WithLogin(is.login(t)))
-	require.Equal(t, http.StatusBadGateway, do(h, httptest.NewRequest(http.MethodGet, LoginPath, nil)).Code,
-		"an issuer without S256 cannot take part")
+	for name, methods := range map[string]any{"plain only": []string{"plain"}, "empty": []string{}, "omitted": nil} {
+		is = newIssuer(t)
+		is.discoveryExtra = map[string]any{"code_challenge_methods_supported": methods}
+		h = newHandler(signedInAPI(), WithLogin(is.login(t)))
+		require.Equal(t, http.StatusBadGateway, do(h, httptest.NewRequest(http.MethodGet, LoginPath, nil)).Code,
+			"an issuer that does not advertise S256 cannot take part: "+name)
+	}
 }
 
 func TestSignInReturnsOnlyToThisPagesOwnPaths(t *testing.T) {
@@ -412,6 +417,14 @@ func TestARejectedSessionDoesNotLoop(t *testing.T) {
 	// An expired or foreign cookie is likewise a page, not a loop.
 	rec = do(h, withCookie(gateGet(), &http.Cookie{Name: sessionCookieName, Value: "garbage"}))
 	require.Equal(t, http.StatusUnauthorized, rec.Code)
+
+	// A header the API refuses wins over a cookie that rides along: it is answered
+	// as a bearer client, with no sign-in page and the cookie left alone.
+	rec = do(h, withCookie(gateGet("Authorization", "Bearer nope"), &http.Cookie{Name: sessionCookieName, Value: sealed}))
+	require.Equal(t, http.StatusUnauthorized, rec.Code)
+	require.Equal(t, "Bearer", rec.Header().Get("WWW-Authenticate"))
+	require.Empty(t, rec.Result().Cookies())
+	require.NotContains(t, rec.Body.String(), LoginPath)
 }
 
 func TestAnAuthorizationHeaderWinsOverTheSession(t *testing.T) {
@@ -507,6 +520,10 @@ func TestNewLoginRefusesWhatCannotWork(t *testing.T) {
 		"no client id":             func(c *LoginConfig) { c.ClientID = " " },
 		"redirect off the path":    func(c *LoginConfig) { c.RedirectURL = "https://flow.example.com/other" },
 		"redirect with a query":    func(c *LoginConfig) { c.RedirectURL = testRedirect + "?a=b" },
+		"redirect with empty ?":    func(c *LoginConfig) { c.RedirectURL = testRedirect + "?" },
+		"redirect with empty #":    func(c *LoginConfig) { c.RedirectURL = testRedirect + "#" },
+		"resource with fragment":   func(c *LoginConfig) { c.Resource = "https://api.example.com/#x" },
+		"resource with empty #":    func(c *LoginConfig) { c.Resource = "https://api.example.com/#" },
 		"plain http redirect":      func(c *LoginConfig) { c.RedirectURL = "http://flow.example.com" + CallbackPath },
 		"bad resource":             func(c *LoginConfig) { c.Resource = "not a url" },
 		"short key":                func(c *LoginConfig) { c.SessionKey = key[:16] },

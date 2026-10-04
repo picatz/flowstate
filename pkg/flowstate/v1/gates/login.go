@@ -174,13 +174,20 @@ func NewLogin(cfg LoginConfig) (*Login, error) {
 	if err != nil {
 		return nil, err
 	}
-	if redirect.Path != CallbackPath || redirect.RawQuery != "" || redirect.Fragment != "" {
+	// The delimiters themselves, not what follows them: net/url reports an empty
+	// query or fragment as none, and an issuer matches the redirect URI exactly.
+	if redirect.Path != CallbackPath || strings.ContainsAny(cfg.RedirectURL, "?#") {
 		return nil, fmt.Errorf("gates: the sign-in redirect URL %q must end in %s with no query or fragment: "+
 			"the issuer redirects the browser to exactly that address", cfg.RedirectURL, CallbackPath)
 	}
 	if cfg.Resource != "" {
 		if _, err := auth.ValidateHTTPSURL(cfg.Resource, "gates sign-in resource"); err != nil {
 			return nil, err
+		}
+		// RFC 8707 section 2: an absolute URI with no fragment component, an
+		// empty one included.
+		if strings.Contains(cfg.Resource, "#") {
+			return nil, fmt.Errorf("gates: the sign-in resource %q must not carry a fragment (RFC 8707 section 2)", cfg.Resource)
 		}
 	}
 	if len(cfg.SessionKey) != 32 {
@@ -333,10 +340,12 @@ func (l *Login) discover(ctx context.Context) (*discovery, error) {
 			return nil, err
 		}
 	}
-	// PKCE is not optional in this profile. An issuer that publishes its
-	// supported methods without S256 cannot take part (RFC 8414 section 2).
-	if len(doc.CodeChallengeMethods) > 0 && !containsString(doc.CodeChallengeMethods, "S256") {
-		return nil, errors.New("gates: the issuer does not support PKCE with S256")
+	// PKCE is not optional in this profile, and silence is not support: RFC 8414
+	// section 2 reads an omitted code_challenge_methods_supported as no PKCE, and
+	// a server that ignores code_challenge leaves a public client's code
+	// interceptable.
+	if !containsString(doc.CodeChallengeMethods, "S256") {
+		return nil, errors.New("gates: the issuer does not advertise PKCE with S256 in code_challenge_methods_supported")
 	}
 
 	l.discovery, l.fetchedAt = &doc, l.now()

@@ -5519,8 +5519,10 @@ registered exactly with the issuer) turn on the OAuth 2.1 authorization code flo
 with PKCE (`S256`): a visitor with no credential who opens a gate's link is sent to the
 issuer, comes back, and lands on the gate. The access token the issuer mints is
 presented to the API like any bearer token, so the issuer must be one the trust policy
-accepts, the token must carry the API's audience (the page asks for it with an RFC 8707
-`resource`, which `--gates-ui-resource` can override), and what the person may do is
+accepts for that audience (the server refuses to start otherwise, rather than sending approvers to
+a sign-in whose token the API would refuse), the page asks for the audience with an RFC 8707
+`resource` (which `--gates-ui-resource` can override), the issuer must advertise PKCE `S256` in its
+discovery document, and what the person may do is
 still the API's decision. The page never reads the token, trusts no ID token, and
 sends the issuer nothing but the flow's own requests, through the trust policy's
 `egress:` boundary.

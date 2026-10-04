@@ -115,6 +115,16 @@ func gatesUIOptions(cmd *cobra.Command, policy *auth.Policy, rpcResource string,
 		return nil, err
 	}
 
+	// The token this sign-in obtains is verified by the trust policy on every
+	// request, so an issuer or audience the policy would refuse is a sign-in that
+	// can never work, and one the API never asks for (an anonymous or mTLS-only
+	// deployment) is one no visitor is sent to. Refuse both at start.
+	if !policy.AcceptsBearerFrom(issuer, resource) {
+		return nil, fmt.Errorf("--gates-ui-issuer %q is not an OIDC issuer in the trust policy that accepts "+
+			"audience %q: the API would refuse every token the sign-in obtained; add the issuer with that "+
+			"audience to the policy, or set --gates-ui-resource to an audience it accepts", issuer, resource)
+	}
+
 	egress := auth.DefaultEgressPolicy()
 	if policy != nil {
 		if egress, err = policy.EgressPolicy(); err != nil {

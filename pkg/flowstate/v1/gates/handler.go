@@ -393,6 +393,12 @@ func (h *Handler) signIn(w http.ResponseWriter, r *http.Request) bool {
 		target = LoginPath
 	}
 
+	// A request that carries its own Authorization header is answered on that
+	// header's merits, whatever cookies ride along.
+	if r.Header.Get("Authorization") != "" {
+		return false
+	}
+
 	if _, err := r.Cookie(sessionCookieName); err == nil {
 		http.SetCookie(w, clearing(sessionCookieName))
 		render(w, http.StatusUnauthorized, noticePage, notice{
@@ -403,10 +409,6 @@ func (h *Handler) signIn(w http.ResponseWriter, r *http.Request) bool {
 
 		return true
 	}
-	if r.Header.Get("Authorization") != "" {
-		return false
-	}
-
 	http.Redirect(w, r, target, http.StatusSeeOther)
 
 	return true

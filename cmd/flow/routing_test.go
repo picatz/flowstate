@@ -780,9 +780,26 @@ func TestGatesUISignInFlagsAreValidatedAtStart(t *testing.T) {
 		"gates-ui-redirect-url", "https://flow.example.com/gates/callback", "gates-ui-session-key-file", goodKey,
 	}
 
-	opts, err := gatesUIOptions(set(t, signIn...), nil, "https://api.example.com", discardLogger())
+	trust := &auth.Policy{Issuers: []auth.TrustedIssuer{
+		{Name: "mesh", Kind: auth.IssuerKindMTLS, Issuer: "https://issuer.example.com"},
+		{Issuer: "https://issuer.example.com", Audiences: []string{"https://api.example.com"}},
+	}}
+
+	opts, err := gatesUIOptions(set(t, signIn...), trust, "https://api.example.com", discardLogger())
 	require.NoError(t, err)
 	require.Len(t, opts, 1)
+
+	// The sign-in's token is verified by the trust policy, so a policy that would
+	// refuse it refuses the server at start.
+	for name, policy := range map[string]*auth.Policy{
+		"no trust policy":    nil,
+		"another issuer":     {Issuers: []auth.TrustedIssuer{{Issuer: "https://other.example.com", Audiences: []string{"https://api.example.com"}}}},
+		"another audience":   {Issuers: []auth.TrustedIssuer{{Issuer: "https://issuer.example.com", Audiences: []string{"https://elsewhere.example.com"}}}},
+		"only an mTLS entry": {Issuers: []auth.TrustedIssuer{{Name: "mesh", Kind: auth.IssuerKindMTLS, Issuer: "https://issuer.example.com"}}},
+	} {
+		_, err := gatesUIOptions(set(t, signIn...), policy, "https://api.example.com", discardLogger())
+		require.ErrorContains(t, err, "trust policy", name)
+	}
 
 	for name, tc := range map[string]struct {
 		flags []string
@@ -798,7 +815,7 @@ func TestGatesUISignInFlagsAreValidatedAtStart(t *testing.T) {
 		"key file missing":                {append(append([]string{}, signIn...), "gates-ui-session-key-file", filepath.Join(dir, "absent")), "gates-ui-session-key-file"},
 		"empty secret file":               {append(append([]string{}, signIn...), "gates-ui-client-secret-file", write("empty", "\n")), "empty"},
 	} {
-		_, err := gatesUIOptions(set(t, tc.flags...), nil, "https://api.example.com", discardLogger())
+		_, err := gatesUIOptions(set(t, tc.flags...), trust, "https://api.example.com", discardLogger())
 		require.ErrorContains(t, err, tc.want, name)
 	}
 }
