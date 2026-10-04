@@ -332,9 +332,9 @@ func walked(t testing.TB, cfg config, run func(v1.Debugger) flowtest.RunResult) 
 	//
 	// Joining is what keeps a failed subtest from leaving a run behind. Without
 	// it, a driver that fails an assertion exits this goroutine while
-	// `flowtest.Run` carries on in the other one — holding
-	// [v1.LockDefaultRegistry], which the *next* case needs — so a later case
-	// blocks or overlaps with a run whose subtest has already reported
+	// `flowtest.Run` carries on in the other one — still driving the case, with
+	// the registry swapped for its setup held only until the case has its own
+	// — so a later case overlaps with a run whose subtest has already reported
 	// (Codex, #1123). Close first, then join: the close is what lets the run
 	// reach its end.
 	var result flowtest.RunResult

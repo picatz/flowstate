@@ -727,7 +727,7 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 		return
 	}
 
-	// Serializes every case that swaps the process-wide default task registry
+	// Serializes the setup of every case that swaps the process-wide default task registry
 	// ([swapRegistry]) against every other such compound sequence in the
 	// process — this package's own, run one at a time by [RunFile], and any
 	// other package's, such as pkg/flowstate/embed's Tasks.Install. See
@@ -1207,10 +1207,11 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	return
 }
 
-// swapRegistry replaces every task in [v1.DefaultRegistry] for the duration
-// of one case — stubbed tasks with their stub, and every other registered
-// task with a function that fails closed — and returns a func restoring what
-// was there before.
+// swapRegistry replaces every task in [v1.DefaultRegistry] for the setup of
+// one case — stubbed tasks with their stub, and every other registered task
+// with a function that fails closed — and returns a func restoring what was
+// there before. The run itself dispatches through the case's own registry
+// ([caseRegistry]), so the swap lasts only until that is built.
 //
 // Every task, not just the stubbed ones. `flow test`'s whole promise is no
 // network and no Temporal (#155): a task this case never bothered to stub
@@ -1225,10 +1226,10 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 // reason (`allowLoopback` in pkg/flowstate/v1/internal/conformance/conformance.go): the local
 // driver looks tasks up through the process-wide default registry
 // ([v1.LookupTask]), so replacing a task for the duration of one case means
-// mutating that registry and putting it back. Test cases within one `flow
-// test` invocation therefore cannot run concurrently with each other — they
-// do not; [RunFile] runs them in sequence — and not concurrently with
-// anything else touching the same registry in the same process.
+// mutating that registry and putting it back. The setup of test cases within
+// one `flow test` invocation therefore cannot overlap — it does not: the
+// caller holds [v1.LockDefaultRegistry] across it — nor overlap anything else
+// touching the same registry in the same process.
 func swapRegistry(taskNames []string) func() {
 	registry := v1.DefaultRegistry()
 
