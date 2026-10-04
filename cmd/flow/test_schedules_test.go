@@ -324,3 +324,30 @@ func TestShellArgQuotesHostilePaths(t *testing.T) {
 		}
 	}
 }
+
+// An invariant violation prints the regression case its faults pin to, and a
+// violation whose seed also reordered the schedule says why it cannot.
+func TestAnInvariantViolationRendersItsPinnedScript(t *testing.T) {
+	render := func(d *flowtest.ScheduleDivergence) string {
+		var out strings.Builder
+		printSchedules(&out, ui.Plain(&out, &out).Theme, &v1.TestReport{File: "deploy.test.yaml"},
+			&flowtest.ScheduleReport{Schedules: 4, Cases: 1, Divergence: d})
+
+		return out.String()
+	}
+
+	pinned := render(&flowtest.ScheduleDivergence{
+		Case: "a case", Seed: 7, Invariant: true, Seeded: "failure invariants[0]",
+		Script: "faults:\n- step: fetch\n  \"on\": [1]\n",
+	})
+	assert.Contains(t, pinned, "an invariant broke under injected faults (seed 7)")
+	assert.Contains(t, pinned, "flow test --seed 7 -- deploy.test.yaml")
+	assert.Contains(t, pinned, "PIN THEM AS A REGRESSION CASE")
+	assert.Contains(t, pinned, `"on": [1]`)
+
+	reordered := render(&flowtest.ScheduleDivergence{
+		Case: "a case", Seed: 7, Decisions: 3, Invariant: true, Seeded: "failure invariants[0]",
+	})
+	assert.NotContains(t, reordered, "PIN THEM")
+	assert.Contains(t, reordered, "cannot be pinned by invocation number")
+}

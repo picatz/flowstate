@@ -361,7 +361,9 @@ A violation also prints the faults the seed fired as a `faults:` list pinned wit
 `on:` (the invocation numbers, from 1, that failed). Paste it over the case's
 `faults:` and a plain `flow test` fires exactly those failures in every run,
 the written-order one included, so the violation becomes a regression case
-that fails until the workflow is fixed, with no seed and no `--seeds`. A pinned
+that fails until the workflow is fixed, with no seed and no `--seeds`. Invocation numbers name a call only when nothing was
+reordered, so a seed that also permuted a `parallel:` block prints no pins and
+keeps its seed for replay. A pinned
 fault takes no `rate:` or `at_most:`, and a script whose invocation the run no
 longer makes fails as drifted rather than passing for a fault that never
 happened.

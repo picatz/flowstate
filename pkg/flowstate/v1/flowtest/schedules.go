@@ -236,7 +236,15 @@ func (a *scheduleAccumulator) run(ctx context.Context, once caseRun) (*v1.TestCa
 		}
 		everything = widenedBy(everything, shown.sensitive)
 		if seeded, ok := v1.SchedulerFromContext(ctx).(*v1.SeededScheduler); ok && shown.faulted {
-			faultedSeeds[seeded.Seed()] = shown.pinned
+			// An invocation number is only a stable name for a call when the
+			// seed did not reorder anything: a permuted `parallel:` can make
+			// the first call of a task a different logical call than it is in
+			// written order, so such a run keeps its seed and prints no pins.
+			script := shown.pinned
+			if seeded.Decisions() > 0 {
+				script = ""
+			}
+			faultedSeeds[seeded.Seed()] = script
 		}
 
 		// Compared as it is, shown as the case's own report would show it: a

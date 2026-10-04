@@ -356,5 +356,35 @@ steps:
 	require.NotNil(t, schedules)
 	require.NotNil(t, schedules.Divergence)
 	assert.Contains(t, schedules.Divergence.Script, "step: first")
+	assert.Contains(t, schedules.Divergence.Script, `"on": [1]`)
 	assert.Contains(t, schedules.Divergence.Script, "step: second")
+}
+
+// A violating seed that also permuted a `parallel:` block prints no pins:
+// invocation numbers are only stable when nothing was reordered.
+func TestAReorderedSeedPrintsNoPins(t *testing.T) {
+	t.Parallel()
+
+	const workflow = `edition: v2026.4
+name: racing
+steps:
+  - id: both
+    parallel:
+      - steps:
+          - id: left
+            retry: {attempts: 1}
+            http: {method: GET, url: "https://example.com/a"}
+      - steps:
+          - id: right
+            retry: {attempts: 1}
+            http: {method: GET, url: "https://example.com/b"}
+`
+	path := writeFaultFixture(t, workflow, pinnedHeader+
+		"    faults: [{task: http, rate: 1}]\n    invariants: [{that: \"run.failed == false\"}]\n    expect: {failed: false}\n")
+	_, _, schedules := flowtest.RunFileUnderSchedules(t.Context(), path, dst.Budget{Schedules: 4, Seed0: 1})
+	require.NotNil(t, schedules)
+	require.NotNil(t, schedules.Divergence)
+	assert.True(t, schedules.Divergence.Invariant)
+	assert.Positive(t, schedules.Divergence.Decisions)
+	assert.Empty(t, schedules.Divergence.Script)
 }
