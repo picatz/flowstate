@@ -551,3 +551,28 @@ func TestRecordRuleEvaluationErrorKeepsASensitiveValueOut(t *testing.T) {
 		}
 	}
 }
+
+func TestALiteralOutputThatBreaksATypeRuleIsRefusedAtSubmit(t *testing.T) {
+	t.Parallel()
+
+	wf := recordOrderWorkflow()
+	wf.DeclaredTypes[1].Must = new("this.id != 'banned'")
+	wf.DeclaredInputs = nil
+	wf.DeclaredOutputs = []*v1.OutputDeclaration{{
+		Name: "answer", Type: v1.InputDeclaration_TYPE_STRUCT, ValueType: recordTypeOf("Order"),
+		Value: &v1.Value{Kind: &v1.Value_Literal{Literal: mapLit(
+			recordStr("id"), recordStr("banned"), recordStr("status"), recordStr("open"),
+		)}},
+	}}
+	require.NoError(t, v1.CheckRecordDeclarations(wf))
+
+	_, err := v1.BindRunInputs(wf, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "the record Order must satisfy")
+
+	wf.DeclaredOutputs[0].Value = &v1.Value{Kind: &v1.Value_Literal{Literal: mapLit(
+		recordStr("id"), recordStr("fine"), recordStr("status"), recordStr("open"),
+	)}}
+	_, err = v1.BindRunInputs(wf, nil)
+	require.NoError(t, err)
+}

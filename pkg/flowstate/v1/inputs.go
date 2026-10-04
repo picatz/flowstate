@@ -96,6 +96,9 @@ func bindRunInputs(wf *Workflow, profile string, submitted map[string]*Value) (m
 		if err := CheckOutputValueIn(table, declaration, declaration.GetValue()); err != nil {
 			return nil, err
 		}
+		if err := CheckLiteralOutputRules(table, profile, declaration, declaration.GetValue()); err != nil {
+			return nil, err
+		}
 	}
 
 	// Before a single input is bound, for the same reason the output-shape check

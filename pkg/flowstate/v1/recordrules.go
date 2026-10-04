@@ -41,6 +41,13 @@ func CheckRecordRules(table TypeTable, profile, kind, name string, sensitive boo
 		return nil
 	}
 
+	// The element bound a rule's comprehension is costed against, applied here
+	// because an output without a `must:` of its own never reaches the check that
+	// applies it.
+	if err := checkConstraintValueBound(kind, name, lit); err != nil {
+		return err
+	}
+
 	w := &ruleWalk{table: table, profile: profile, sensitive: sensitive, asts: map[ruleKey]*cel.Ast{}}
 	if err := w.value(t, lit, "", 0); err != nil {
 		return fmt.Errorf("%s %q: %w", kind, name, err)
@@ -216,4 +223,22 @@ func echoName(s string) string {
 	}
 
 	return s[:cut] + "…"
+}
+
+// CheckLiteralOutputRules holds an output written as a literal or a structure to the
+// `must:` rules of the records its type holds, before anything runs: the
+// admission-time half of what [EvalRunOutputs] does at completion, so a constant
+// answer that breaks its type's rule is refused with the specification rather than
+// after the steps have had their effects. Nil for an expression, which is only
+// knowable once evaluated.
+func CheckLiteralOutputRules(table TypeTable, profile string, declaration *OutputDeclaration, value *Value) error {
+	if _, isStructure := value.GetKind().(*Value_Structure_); isStructure {
+		literal, err := structureLiteral(value)
+		if err != nil {
+			return nil // CheckOutputValueIn names the shape error
+		}
+		value = &Value{Kind: &Value_Literal{Literal: literal}}
+	}
+
+	return CheckRecordRules(table, profile, "output", declaration.GetName(), declaration.GetSensitive(), declaration.DeclaredType(), value)
 }
