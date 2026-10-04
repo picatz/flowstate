@@ -30,8 +30,9 @@
 // The read needs only the signal action, not the read action: an approver who
 // may answer a gate need not be able to read the whole run. GetGate also says
 // whether the workflow's `signals:` policy would admit this visitor, and a
-// visitor it refuses sees the question read-only, with no buttons and no
-// answer sent. The Signal call is still the authority.
+// visitor it refuses sees the gate read-only, with no buttons and no answer
+// sent, and without the question or who asked it unless they also hold the
+// read action. The Signal call is still the authority.
 //
 // # What the page defends against
 //

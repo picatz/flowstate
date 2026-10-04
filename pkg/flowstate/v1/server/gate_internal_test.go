@@ -203,3 +203,36 @@ func TestGetGateShowsARefusedCallerNothingTheyWereNotGranted(t *testing.T) {
 		})
 	}
 }
+
+// TestGetGateAdvisesNoWhereSignalWillRefuseTheDebugChannel: a run begun before
+// the debug channel's name was reserved may wait on it, and Signal asks for
+// `workload.debug` there as well, so the advice must not say a signal-only
+// caller may answer a delivery that is certain to be refused. A caller holding
+// the action, and a legacy caller with no action list, may.
+func TestGetGateAdvisesNoWhereSignalWillRefuseTheDebugChannel(t *testing.T) {
+	t.Parallel()
+
+	for name, tc := range map[string]struct {
+		actions []string
+		may     bool
+	}{
+		"signal only":      {actions: []string{"workload.signal"}},
+		"signal and debug": {actions: []string{"workload.signal", "workload.debug"}, may: true},
+		"legacy, no list":  {actions: nil, may: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			fake := runningFake(t)
+			fake.progress = &v1.RunProgress{PendingWaits: []*v1.PendingWait{
+				{StepId: "approve", SignalName: v1.DebugSignal},
+			}}
+			s := mustNew(t, fake)
+
+			req := connect.NewRequest(&v1.GetGateRequest{WorkflowId: "orders-1", SignalName: v1.DebugSignal})
+			resp, err := s.GetGate(revealer(t.Context(), tc.actions...), req)
+			require.NoError(t, err)
+			require.Equal(t, tc.may, resp.Msg.GetMayAnswer())
+		})
+	}
+}

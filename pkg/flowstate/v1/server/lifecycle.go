@@ -838,6 +838,16 @@ func (s *FlowstateServer) GetGate(ctx context.Context, req *connect.Request[v1.G
 			MayAnswer:  s.authorizeSignal(resp, name, sender) == nil,
 		}
 
+		// Signal asks for `workload.debug` as well on the reserved debug channel,
+		// which a run begun before that name was reserved may still be waiting on,
+		// so advice that says yes where the delivery is certain to be refused is
+		// wrong. Asked without writing a record: the denial that counts is the one
+		// Signal makes.
+		if out.MayAnswer && v1.IsDebugSignalName(name) &&
+			!holdsAction(ctx, v1.AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_DEBUG) {
+			out.MayAnswer = false
+		}
+
 		// What the question says and who asked it are for the people the policy
 		// admits, and for a caller who could read the run anyway. A caller that
 		// holds `workload.signal` and is refused by the `signals:` rule is told
@@ -869,13 +879,18 @@ func (s *FlowstateServer) GetGate(ctx context.Context, req *connect.Request[v1.G
 	return nil, notFound(workflowID)
 }
 
-// holdsAction reports whether the authenticated caller was granted action
-// itself, which is how [FlowstateServer.revealAuthorized] asks the same
-// question for its own action.
+// holdsAction reports whether the caller holds action, the way
+// [FlowstateServer.authorizeAction] decides it: a caller with no principal or
+// no action list keeps the legacy posture and holds every action, and one with a
+// list holds what the list names. Asked, unlike authorizeAction, without
+// refusing or recording anything, for a decision about what to show.
 func holdsAction(ctx context.Context, action v1.AuthorizationAction) bool {
 	principal, ok := auth.PrincipalFromContext(ctx)
+	if !ok || principal.Actions == nil {
+		return true
+	}
 
-	return ok && slices.Contains(principal.Actions, v1.AuthorizationActionScope(action))
+	return slices.Contains(principal.Actions, v1.AuthorizationActionScope(action))
 }
 
 // SignalWithStart delivers a signal to an entity, creating it first if none is
