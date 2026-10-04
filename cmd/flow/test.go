@@ -409,11 +409,18 @@ func runTestWatch(cmd *cobra.Command, paths []string) error {
 		return err
 	}
 	surface := newSurface(cmd)
+	format, err := resolveOutputFormat(cmd)
+	if err != nil {
+		return err
+	}
+	// Only a text answer on a terminal is cleared: the machine formats are a
+	// stream a consumer parses, whatever the terminal is.
+	clear := watchClears(surface.Caps.TTY, format)
 
 	return watchLoop(cmd.Context(), w,
 		func(bool) error { return runTest(cmd, paths) },
 		func() {
-			if surface.Caps.TTY {
+			if clear {
 				fmt.Fprint(surface.Out, "\x1b[2J\x1b[H")
 			}
 		},

@@ -121,3 +121,53 @@ func TestWatchRefusedWithDebug(t *testing.T) {
 	require.Error(t, res.Err)
 	assert.Contains(t, res.Err.Error(), "--watch cannot be combined with --debug")
 }
+
+// TestPollWatcherFollowsASymlinkToItsTarget: editing the file a watched YAML
+// symlink points at, without replacing the link, is a change.
+func TestPollWatcherFollowsASymlinkToItsTarget(t *testing.T) {
+	dir, elsewhere := t.TempDir(), t.TempDir()
+	target := filepath.Join(elsewhere, "real.txt")
+	require.NoError(t, os.WriteFile(target, []byte("a"), 0o600))
+	require.NoError(t, os.Symlink(target, filepath.Join(dir, "linked.yaml")))
+	w, err := newPollWatcher([]string{dir}, 5*time.Millisecond)
+	require.NoError(t, err)
+
+	require.NoError(t, os.WriteFile(target, []byte("a longer edit"), 0o600))
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	require.NoError(t, w.Wait(ctx))
+}
+
+// TestPollWatcherDoesNotDescendBesideANamedFile: naming one file watches the
+// files beside it, not its siblings' subtrees (nor .git or node_modules in a
+// walked directory).
+func TestPollWatcherDoesNotDescendBesideANamedFile(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "a.test.yaml")
+	require.NoError(t, os.WriteFile(file, []byte("a: 1\n"), 0o600))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "sub"), 0o750))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".git"), 0o750))
+
+	w, err := newPollWatcher([]string{file}, 5*time.Millisecond)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "sub", "deep.yaml"), []byte("x: 1\n"), 0o600))
+	ctx, cancel := context.WithTimeout(t.Context(), 60*time.Millisecond)
+	defer cancel()
+	require.ErrorIs(t, w.Wait(ctx), context.DeadlineExceeded, "a sibling subtree is not watched")
+
+	whole, err := newPollWatcher([]string{dir}, 5*time.Millisecond)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".git", "config.yaml"), []byte("x: 1\n"), 0o600))
+	ctx2, cancel2 := context.WithTimeout(t.Context(), 60*time.Millisecond)
+	defer cancel2()
+	require.ErrorIs(t, whole.Wait(ctx2), context.DeadlineExceeded, ".git is skipped")
+}
+
+// TestWatchClearsOnlyTextOnATerminal: a machine format is a stream, so the
+// between-runs clear never reaches it, terminal or not.
+func TestWatchClearsOnlyTextOnATerminal(t *testing.T) {
+	assert.True(t, watchClears(true, FormatText))
+	assert.False(t, watchClears(false, FormatText))
+	assert.False(t, watchClears(true, FormatJSON), "json on a terminal must stay parseable")
+	assert.False(t, watchClears(true, FormatJSONL))
+}

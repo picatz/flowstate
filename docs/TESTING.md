@@ -512,7 +512,7 @@ as given. Finding no test files is an error, and so is naming a workflow file.
 | `--seeds N` | Also run each case under N seeded orderings of `parallel:` branches and `async:` steps, and fail if any ordering changes what the case observes. `--seed` replays one reported seed. |
 | `--debug` | Step through one case. See [Debugging](DEBUGGING.md). |
 | `-o json` | A machine-readable report: cases, failures, warnings, coverage. |
-| `--watch` | Run once, then again after every change to a YAML file under the paths given (a named file watches its directory), until Ctrl-C. A terminal is cleared between runs; a pipe gets one document per run. A failing run does not end the loop. Refused with `--debug`. |
+| `--watch` | Run once, then again after every change to a YAML file under the paths given (a named file watches the YAML beside it; `.git` and `node_modules` are skipped; symlinks are followed to their targets), until Ctrl-C. A terminal showing text is cleared between runs; `-o json` and `-o jsonl` get one document per run and are never cleared. The walk is bounded at 50,000 directory entries. A failing run does not end the loop. Refused with `--debug`. |
 | `--junit <file>` | Also write the results as JUnit XML for CI systems. A failed expectation is a `<failure>`; a case or file that could not be judged is an `<error>`. Written even when the run fails. A promoted warning, a required-coverage gap, or a schedule divergence appears as a `(run verdict)` failure, so the report never shows green over a non-zero exit. It carries only what the report already shows. |
 | `-v` | Print every case's transcript, not only failing ones. |
 

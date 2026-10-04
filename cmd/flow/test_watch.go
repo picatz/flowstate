@@ -27,6 +27,11 @@ const (
 	// shares an argument with: a watch over a huge tree is refused, not slow.
 	maxWatchedFiles = 10_000
 
+	// maxWatchedEntries bounds every directory entry a poll visits, YAML or
+	// not: the file bound alone leaves a tree of a million other files
+	// scanned on every tick.
+	maxWatchedEntries = 50_000
+
 	watchPollInterval = 250 * time.Millisecond
 )
 
@@ -39,21 +44,27 @@ type fileStamp struct {
 // pollWatcher is the stdlib-only changeWatcher: it stats every YAML file
 // under the roots on an interval. No event framework, and nothing to leak.
 type pollWatcher struct {
-	roots    []string
+	roots    []watchRoot
 	interval time.Duration
 	last     map[string]fileStamp
 }
 
-// watchRoots turns the paths given to `flow test` into what is watched: a
-// directory is walked, and a named file contributes its own directory, since
-// its workflow and `testdefaults.yaml` live beside it.
-func watchRoots(paths []string) []string {
-	var roots []string
+// watchRoot is one place to watch. A directory argument is walked; a named
+// file contributes only the files beside it (its workflow and
+// `testdefaults.yaml`), never its siblings' subtrees.
+type watchRoot struct {
+	path      string
+	recursive bool
+}
+
+func watchRoots(paths []string) []watchRoot {
+	var roots []watchRoot
 	for _, p := range paths {
+		recursive := true
 		if info, err := os.Stat(p); err == nil && !info.IsDir() {
-			p = filepath.Dir(p)
+			p, recursive = filepath.Dir(p), false
 		}
-		roots = append(roots, p)
+		roots = append(roots, watchRoot{path: p, recursive: recursive})
 	}
 
 	return roots
@@ -61,7 +72,7 @@ func watchRoots(paths []string) []string {
 
 func newPollWatcher(paths []string, interval time.Duration) (*pollWatcher, error) {
 	w := &pollWatcher{roots: watchRoots(paths), interval: interval}
-	snap, err := w.snapshot()
+	snap, err := w.snapshot(context.Background())
 	if err != nil {
 		return nil, err
 	}
@@ -70,10 +81,15 @@ func newPollWatcher(paths []string, interval time.Duration) (*pollWatcher, error
 	return w, nil
 }
 
-func (w *pollWatcher) snapshot() (map[string]fileStamp, error) {
+func (w *pollWatcher) snapshot(ctx context.Context) (map[string]fileStamp, error) {
 	snap := map[string]fileStamp{}
+	visited := 0
 	for _, root := range w.roots {
-		err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		err := filepath.WalkDir(root.path, func(p string, d fs.DirEntry, err error) error {
+			// Ctrl-C is honored mid-walk, not only between polls.
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			if err != nil {
 				// A file that vanishes between the walk and the stat is a
 				// change the next poll reports, not a failure of the watch.
@@ -83,15 +99,29 @@ func (w *pollWatcher) snapshot() (map[string]fileStamp, error) {
 
 				return err
 			}
-			if d.IsDir() || !(strings.HasSuffix(p, ".yaml") || strings.HasSuffix(p, ".yml")) {
+			if visited++; visited > maxWatchedEntries {
+				return fmt.Errorf("--watch: more than %d directory entries under the paths given; narrow them", maxWatchedEntries)
+			}
+			if d.IsDir() {
+				// Version-control and dependency trees hold nothing a test
+				// reads and a great deal a poll would pay for.
+				if p != root.path && (!root.recursive || d.Name() == ".git" || d.Name() == "node_modules") {
+					return fs.SkipDir
+				}
+
 				return nil
 			}
-			info, err := d.Info()
-			if err != nil {
-				return nil //nolint:nilerr // vanished mid-walk; see above
+			if !(strings.HasSuffix(p, ".yaml") || strings.HasSuffix(p, ".yml")) {
+				return nil
+			}
+			// Stat, not DirEntry.Info: a symlink's target is what the loader
+			// reads, so the target's edits are the changes that matter.
+			info, err := os.Stat(p)
+			if err != nil || info.IsDir() {
+				return nil //nolint:nilerr // vanished or dangling; the next poll reports it
 			}
 			if len(snap) >= maxWatchedFiles {
-				return fmt.Errorf("--watch: more than %d YAML files under %s; narrow the paths", maxWatchedFiles, root)
+				return fmt.Errorf("--watch: more than %d YAML files under %s; narrow the paths", maxWatchedFiles, root.path)
 			}
 			snap[p] = fileStamp{modTime: info.ModTime(), size: info.Size()}
 
@@ -118,7 +148,7 @@ func (w *pollWatcher) Wait(ctx context.Context) error {
 			return ctx.Err()
 		case <-ticker.C:
 		}
-		snap, err := w.snapshot()
+		snap, err := w.snapshot(ctx)
 		if err != nil {
 			return err
 		}
@@ -156,4 +186,11 @@ func watchLoop(ctx context.Context, w changeWatcher, run func(first bool) error,
 		}
 		between()
 	}
+}
+
+// watchClears says whether the screen is cleared between runs: only a text
+// answer on a terminal. The machine formats are a stream a consumer parses,
+// whatever the terminal is (output.go: format is independent of detection).
+func watchClears(tty bool, format OutputFormat) bool {
+	return tty && !format.Machine()
 }
