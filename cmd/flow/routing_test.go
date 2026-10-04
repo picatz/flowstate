@@ -4,10 +4,13 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"encoding/base64"
 	"encoding/json"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -717,21 +720,102 @@ func TestTheGatePageIsMountedOnlyWhereAskedFor(t *testing.T) {
 	require.Contains(t, page.Header.Get("Content-Security-Policy"), "default-src 'none'")
 }
 
+// gatesServerCommand is a fresh `flow server` command to set flags on.
+func gatesServerCommand(t *testing.T) *cobra.Command {
+	t.Helper()
+
+	for _, c := range newRootCommand().Commands() {
+		if c.Name() == "server" {
+			return c
+		}
+	}
+	t.Fatal("no server command")
+
+	return nil
+}
+
 // TestServerTakesTheGatesUIFlag is the wiring check: the flag exists on
 // `flow server`, is off by default, and turns the option on.
 func TestServerTakesTheGatesUIFlag(t *testing.T) {
 	t.Parallel()
 
-	var server *cobra.Command
-	for _, c := range newRootCommand().Commands() {
-		if c.Name() == "server" {
-			server = c
-		}
-	}
-	require.NotNil(t, server)
+	server := gatesServerCommand(t)
 
-	require.Empty(t, gatesUIOptions(server), "the gate page is on without being asked for")
+	opts, err := gatesUIOptions(server, nil, "", discardLogger())
+	require.NoError(t, err)
+	require.Empty(t, opts, "the gate page is on without being asked for")
 
 	require.NoError(t, server.Flags().Set("gates-ui", "true"))
-	require.Len(t, gatesUIOptions(server), 1)
+	opts, err = gatesUIOptions(server, nil, "", discardLogger())
+	require.NoError(t, err)
+	require.Len(t, opts, 1)
+}
+
+// TestGatesUISignInFlagsAreValidatedAtStart is the start-up half of the browser
+// sign-in: a flag that cannot work, or that configures a page that is off, refuses
+// the server rather than leaving approvers to meet the failure.
+func TestGatesUISignInFlagsAreValidatedAtStart(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	write := func(name, content string) string {
+		path := filepath.Join(dir, name)
+		require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
+
+		return path
+	}
+	goodKey := write("key", base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{7}, 32))+"\n")
+
+	set := func(t *testing.T, kv ...string) *cobra.Command {
+		t.Helper()
+		server := gatesServerCommand(t)
+		for i := 0; i+1 < len(kv); i += 2 {
+			require.NoError(t, server.Flags().Set(kv[i], kv[i+1]))
+		}
+
+		return server
+	}
+	signIn := []string{
+		"gates-ui", "true", "gates-ui-issuer", "https://issuer.example.com", "gates-ui-client-id", "gates",
+		"gates-ui-redirect-url", "https://flow.example.com/gates/callback", "gates-ui-session-key-file", goodKey,
+	}
+
+	trust := &auth.Policy{Issuers: []auth.TrustedIssuer{
+		{Name: "mesh", Kind: auth.IssuerKindMTLS, Issuer: "https://issuer.example.com"},
+		{Issuer: "https://issuer.example.com", Audiences: []string{"https://api.example.com"}},
+	}}
+
+	opts, err := gatesUIOptions(set(t, signIn...), trust, "https://api.example.com", discardLogger())
+	require.NoError(t, err)
+	require.Len(t, opts, 1)
+
+	// The sign-in's token is verified by the trust policy, so a policy that would
+	// refuse it refuses the server at start.
+	for name, policy := range map[string]*auth.Policy{
+		"no trust policy":    nil,
+		"another issuer":     {Issuers: []auth.TrustedIssuer{{Issuer: "https://other.example.com", Audiences: []string{"https://api.example.com"}}}},
+		"another audience":   {Issuers: []auth.TrustedIssuer{{Issuer: "https://issuer.example.com", Audiences: []string{"https://elsewhere.example.com"}}}},
+		"only an mTLS entry": {Issuers: []auth.TrustedIssuer{{Name: "mesh", Kind: auth.IssuerKindMTLS, Issuer: "https://issuer.example.com"}}},
+	} {
+		_, err := gatesUIOptions(set(t, signIn...), policy, "https://api.example.com", discardLogger())
+		require.ErrorContains(t, err, "trust policy", name)
+	}
+
+	for name, tc := range map[string]struct {
+		flags []string
+		want  string
+	}{
+		"sign-in flags without the page":  {[]string{"gates-ui-issuer", "https://issuer.example.com"}, "--gates-ui"},
+		"sign-in flags without an issuer": {[]string{"gates-ui", "true", "gates-ui-client-id", "gates"}, "--gates-ui-issuer"},
+		"no client id":                    {append(append([]string{}, signIn...), "gates-ui-client-id", ""), "client id"},
+		"redirect off the callback":       {append(append([]string{}, signIn...), "gates-ui-redirect-url", "https://flow.example.com/x"), "/gates/callback"},
+		"plain http issuer":               {append(append([]string{}, signIn...), "gates-ui-issuer", "http://issuer.example.com"), "issuer"},
+		"key not base64":                  {append(append([]string{}, signIn...), "gates-ui-session-key-file", write("bad", "!!")), "base64"},
+		"key too short":                   {append(append([]string{}, signIn...), "gates-ui-session-key-file", write("short", base64.StdEncoding.EncodeToString([]byte("short")))), "32 bytes"},
+		"key file missing":                {append(append([]string{}, signIn...), "gates-ui-session-key-file", filepath.Join(dir, "absent")), "gates-ui-session-key-file"},
+		"empty secret file":               {append(append([]string{}, signIn...), "gates-ui-client-secret-file", write("empty", "\n")), "empty"},
+	} {
+		_, err := gatesUIOptions(set(t, tc.flags...), trust, "https://api.example.com", discardLogger())
+		require.ErrorContains(t, err, tc.want, name)
+	}
 }

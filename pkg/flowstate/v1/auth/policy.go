@@ -2157,3 +2157,16 @@ func claimStrings(value any) []string {
 		return nil
 	}
 }
+
+// AcceptsBearerFrom reports whether policy has a bearer-token entry for issuer
+// that accepts audience, or any audience when audience is empty.
+//
+// For a caller that obtains tokens on a person's behalf (the gate page's browser
+// sign-in) and should refuse at start-up to ask an issuer for a token this
+// policy would then refuse on every request. A nil policy trusts nobody, so it
+// accepts from nobody.
+func (p *Policy) AcceptsBearerFrom(issuer, audience string) bool {
+	return slices.ContainsFunc(bearerIssuers(p), func(entry TrustedIssuer) bool {
+		return entry.Issuer == issuer && (audience == "" || slices.Contains(entry.Audiences, audience))
+	})
+}

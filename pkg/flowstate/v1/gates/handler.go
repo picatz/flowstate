@@ -51,6 +51,7 @@ type Handler struct {
 	client      flowstatev1connect.WorkflowServiceClient
 	credentials func(*http.Request) string
 	logger      *slog.Logger
+	login       *Login
 	mux         *http.ServeMux
 }
 
@@ -73,6 +74,16 @@ func WithCredentials(credentials func(*http.Request) string) Option {
 // lands.
 func WithLogger(logger *slog.Logger) Option {
 	return func(h *Handler) { h.logger = logger }
+}
+
+// WithLogin lets a visitor without a credential sign in with the identity
+// provider l is configured for. The page then serves [LoginPath],
+// [CallbackPath] and [LogoutPath], a GET that the API refuses as
+// unauthenticated sends the visitor to sign in, and the session the sign-in
+// sets supplies the credential when the request carries no Authorization header
+// of its own.
+func WithLogin(l *Login) Option {
+	return func(h *Handler) { h.login = l }
 }
 
 // New returns the gate page for the API that api serves.
@@ -99,6 +110,20 @@ func newHandler(client flowstatev1connect.WorkflowServiceClient, opts ...Option)
 	}
 	for _, opt := range opts {
 		opt(h)
+	}
+
+	if h.login != nil {
+		base := h.credentials
+		h.credentials = func(r *http.Request) string {
+			if credential := base(r); credential != "" {
+				return credential
+			}
+
+			return h.login.credential(r)
+		}
+		h.mux.HandleFunc("GET "+LoginPath, h.begin)
+		h.mux.HandleFunc("GET "+CallbackPath, h.callback)
+		h.mux.HandleFunc("POST "+LogoutPath, h.logout)
 	}
 
 	h.mux.HandleFunc("GET "+PathPrefix+"{workflow}/{signal}", h.show)
@@ -323,6 +348,9 @@ func (h *Handler) refuse(w http.ResponseWriter, r *http.Request, err error) {
 
 	switch connect.CodeOf(err) {
 	case connect.CodeUnauthenticated:
+		if h.login != nil && h.signIn(w, r) {
+			return
+		}
 		w.Header().Set("WWW-Authenticate", "Bearer")
 		render(w, http.StatusUnauthorized, noticePage, notice{
 			Title:  "Sign in to answer this gate",
@@ -348,6 +376,42 @@ func (h *Handler) refuse(w http.ResponseWriter, r *http.Request, err error) {
 			Detail: "Nothing was changed. Try again, and tell an operator if it keeps happening.",
 		})
 	}
+}
+
+// signIn answers an unauthenticated request when sign-in is configured, and
+// reports whether it did. A GET that presented nothing is sent to sign in and
+// back. One that presented a session the API rejected is not: sending it again
+// would loop, so it gets a page that says so, the dead session cleared, and a
+// link to start over.
+func (h *Handler) signIn(w http.ResponseWriter, r *http.Request) bool {
+	if r.Method != http.MethodGet {
+		return false
+	}
+
+	target := LoginPath + "?next=" + url.QueryEscape(r.URL.Path)
+	if !safeNext(r.URL.Path) {
+		target = LoginPath
+	}
+
+	// A request that carries its own Authorization header is answered on that
+	// header's merits, whatever cookies ride along.
+	if r.Header.Get("Authorization") != "" {
+		return false
+	}
+
+	if _, err := r.Cookie(sessionCookieName); err == nil {
+		http.SetCookie(w, clearing(sessionCookieName))
+		render(w, http.StatusUnauthorized, noticePage, notice{
+			Title:  "Your sign-in is no longer valid",
+			Detail: "It expired or the server did not accept it.",
+			SignIn: target,
+		})
+
+		return true
+	}
+	http.Redirect(w, r, target, http.StatusSeeOther)
+
+	return true
 }
 
 // detail is the API's own explanation of a refusal, without the code prefix and

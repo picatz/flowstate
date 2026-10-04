@@ -119,7 +119,7 @@ func serverHandler(
 	// audit record every other caller meets, and a page that holds no credential
 	// answers 401 on the API's own word (see the gates package).
 	if config.gatesUI {
-		mux.Handle(gates.PathPrefix, gates.New(authenticatedRPC, gates.WithLogger(logger)))
+		mux.Handle(gates.PathPrefix, gates.New(authenticatedRPC, append([]gates.Option{gates.WithLogger(logger)}, config.gatesOptions...)...))
 	}
 
 	// Liveness, deliberately unauthenticated and deliberately empty-handed. A
@@ -162,7 +162,8 @@ func serverHandler(
 
 // handlerConfig is what [handlerOption]s set on [serverHandler].
 type handlerConfig struct {
-	gatesUI bool
+	gatesUI      bool
+	gatesOptions []gates.Option
 }
 
 // handlerOption configures [serverHandler] beyond its positional arguments, which
@@ -171,8 +172,11 @@ type handlerConfig struct {
 type handlerOption func(*handlerConfig)
 
 // withGatesUI mounts the browser page for pending approval gates (--gates-ui).
-func withGatesUI() handlerOption {
-	return func(c *handlerConfig) { c.gatesUI = true }
+func withGatesUI(opts ...gates.Option) handlerOption {
+	return func(c *handlerConfig) {
+		c.gatesUI = true
+		c.gatesOptions = opts
+	}
 }
 
 // healthzHandler answers a liveness probe with a status code and nothing

@@ -11,6 +11,9 @@ type notice struct {
 	Title  string
 	Detail string
 	Gate   *gate
+
+	// SignIn, when set, is the link that starts a sign-in.
+	SignIn string
 }
 
 // stylesheet is the page's only style, inline so the page needs no second
@@ -77,6 +80,7 @@ var pages = template.Must(template.New("pages").Parse(`
 <h1>{{.Title}}</h1>
 {{if .Detail}}<p class="detail">{{.Detail}}</p>{{end}}
 {{if .Gate}}<dl><dt>Run</dt><dd>{{.Gate.WorkflowID}}</dd><dt>Step</dt><dd>{{.Gate.Step}}</dd></dl>{{end}}
+{{if .SignIn}}<p><a href="{{.SignIn}}">Sign in</a></p>{{end}}
 {{template "foot"}}{{end}}
 `))
 

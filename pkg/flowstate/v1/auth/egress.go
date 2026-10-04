@@ -132,3 +132,23 @@ func egressPolicyFromConfig(cfg *netpolicy.EgressConfig) (*netpolicy.Policy, err
 
 	return policy, nil
 }
+
+// EgressPolicy returns the egress policy this trust policy's deployment makes
+// identity HTTP through: the one its `egress:` section describes, or
+// [DefaultEgressPolicy] when it has none.
+//
+// For a caller outside this package that also talks to the deployment's issuers
+// (the browser sign-in for the gate page fetches the same discovery document
+// and posts to the same token endpoint) and so must leave the process by the
+// same boundary rather than through a client of its own.
+func (p Policy) EgressPolicy() (*netpolicy.Policy, error) {
+	policy, err := egressPolicyFromConfig(p.Egress)
+	if err != nil {
+		return nil, err
+	}
+	if policy == nil {
+		return DefaultEgressPolicy(), nil
+	}
+
+	return policy, nil
+}
