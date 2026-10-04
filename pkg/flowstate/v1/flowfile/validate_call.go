@@ -134,6 +134,7 @@ func checkCallArgumentType(table *typeTable, stepID, name string, value *v1.Valu
 		// standard-rule keys, `min_len:` and the rest) is a mistake at the
 		// call site, caught here rather than only at the run's own
 		// submit-equivalent inside BindRunInputs.
+		value = v1.NormalizeInputValue(v1.TypesOf(callee), declaration, value)
 		if err := v1.CheckInputConstraints(profile, name, declaration, value); err != nil {
 			return &Diagnostic{Step: stepID, Field: "with." + name, Message: err.Error()}
 		}

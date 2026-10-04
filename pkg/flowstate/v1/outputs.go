@@ -88,6 +88,7 @@ func EvalRunOutputsWithCost(ctx context.Context, wf *Workflow, scope *Scope) (*R
 			if err := CheckOutputValueIn(table, declaration, value); err != nil {
 				return nil, spent, err
 			}
+			value = &Value{Kind: &Value_Literal{Literal: NormalizeWireValue(table, declaration.DeclaredType(), value.GetLiteral())}}
 			if err := CheckOutputConstraint(scope.GetProfile(), declaration, value); err != nil {
 				return nil, spent, err
 			}

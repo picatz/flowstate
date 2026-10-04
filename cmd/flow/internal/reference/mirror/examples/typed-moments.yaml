@@ -13,14 +13,38 @@
 # padded base64 for bytes. Text that is not one is refused where the input is
 # bound, without repeating what was sent.
 #
-# Not yet an output's `type:`: the run document has no plain-JSON form for them
-# (#1436), so a computed moment is reported as a string with `string(...)`.
+# The kinds also work wherever a type is written: a field of a record
+# (`types:`), the elements of a `list(timestamp)`, and an output's `type:`. A rule
+# across a record's fields compares times, not text, and a typed output is
+# reported in the run document as the same text a caller would submit.
 #
 #   flow run local examples/typed-moments/workflow.yaml \
 #       --input opens=2026-03-01T09:00:00Z --input window=36h
 edition: v2026.4
 name: typed-moments
+types:
+  Booking:
+    description: A reserved span of time.
+    must: this.ends > this.starts
+    fields:
+      starts:
+        type: timestamp
+        required: true
+      ends:
+        type: timestamp
+        required: true
 inputs:
+  booking:
+    type: Booking
+    description: a reservation inside the window
+    default:
+      starts: 2026-03-01T09:30:00Z
+      ends: 2026-03-01T10:00:00Z
+  reminders:
+    type: list(timestamp)
+    description: moments to remind at
+    default:
+      - 2026-03-01T08:00:00Z
   opens:
     type: timestamp
     default: 2026-03-01T09:00:00Z
@@ -44,6 +68,14 @@ steps:
       message: ${"opens %s, closes %s, sealed with %d byte(s)".format([string(inputs.opens), string(steps.closing.value), size(inputs.seal)])}
 outputs:
   closes:
-    value: ${string(steps.closing.value)}
-    type: string
-    description: when the window closes, as an RFC 3339 timestamp
+    value: ${steps.closing.value}
+    type: timestamp
+    description: when the window closes
+  booked_for:
+    value: ${inputs.booking.ends - inputs.booking.starts}
+    type: duration
+    description: how long the reservation lasts
+  first_reminder:
+    value: ${inputs.reminders[0]}
+    type: timestamp
+    description: the earliest reminder, as the timestamp it is

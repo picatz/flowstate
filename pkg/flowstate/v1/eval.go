@@ -1085,6 +1085,11 @@ func literalToGo(v *expr.Value, depth int) (any, error) {
 		return kind.BoolValue, nil
 	case *expr.Value_BytesValue:
 		return kind.BytesValue, nil
+	case *expr.Value_ObjectValue:
+		if text, ok := dataKindString(v); ok {
+			return text, nil
+		}
+		return nil, &LiteralKindError{Kind: fmt.Sprintf("%T", kind)}
 	case *expr.Value_ListValue:
 		list := make([]any, 0, len(kind.ListValue.GetValues()))
 		for i, element := range kind.ListValue.GetValues() {
@@ -1154,6 +1159,8 @@ func NewValue(v any) *Value {
 				},
 			},
 		}
+	case time.Time, time.Duration:
+		return dataKindValue(val)
 	case []any:
 		return NewLiteralList(val...)
 	case error:

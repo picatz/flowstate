@@ -179,6 +179,38 @@ func objectValue(message proto.Message) (*expr.Value, error) {
 	return &expr.Value{Kind: &expr.Value_ObjectValue{ObjectValue: packed}}, nil
 }
 
+// dataKindValue is the literal a run holds for a Go time.Time or time.Duration, the
+// well-known message in an Any, which is what CEL produces for one. A value that
+// cannot be packed answers as an error value, like any other type [NewValue] cannot
+// hold.
+func dataKindValue(v any) *Value {
+	var message proto.Message
+	switch val := v.(type) {
+	case time.Time:
+		message = timestamppb.New(val)
+	case time.Duration:
+		message = durationpb.New(val)
+	}
+
+	literal, err := objectValue(message)
+	if err != nil {
+		return &Value{Kind: &Value_Error_{Error: &Value_Error{Message: err.Error(), Code: Value_Error_CODE_INTERNAL}}}
+	}
+
+	return &Value{Kind: &Value_Literal{Literal: literal}}
+}
+
+// dataKindString is a normalized timestamp or duration as the plain string a run
+// document, an embedder or an http body carries (RFC 3339, a Go duration). Bytes
+// are not here: they are already a byte slice, which JSON writes as base64.
+func dataKindString(literal *expr.Value) (string, bool) {
+	if _, isBytes := literal.GetKind().(*expr.Value_BytesValue); isBytes {
+		return "", false
+	}
+
+	return dataKindText(literal)
+}
+
 // dataKindText spells a normalized timestamp, duration or bytes literal back as
 // the text a caller would write, for a refusal that quotes the value it judged.
 func dataKindText(literal *expr.Value) (string, bool) {

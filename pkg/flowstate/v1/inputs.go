@@ -249,6 +249,13 @@ func bindRunInputs(wf *Workflow, profile string, submitted map[string]*Value) (m
 			return nil, invalidInput(name, err)
 		}
 
+		// A timestamp, duration or bytes the value holds, at its top or in a record, a
+		// list or a map, is bound as the value CEL reads and not as the text it
+		// arrived as (see [NormalizeWireValue]): after the check above has proved the
+		// text parses, and before the constraints, which evaluate `must:` against
+		// what an expression sees.
+		value = NormalizeInputValue(table, declaration, value)
+
 		// #204 found the element bound was gated on a declaration carrying
 		// `must:`/`unique:`, so a list-typed (or struct-typed, carrying a
 		// nested list) input with *no* constraint declared reached `if:`,
@@ -266,18 +273,6 @@ func bindRunInputs(wf *Workflow, profile string, submitted map[string]*Value) (m
 		}
 		if err := CheckRecordRules(table, profile, "input", name, declaration.GetSensitive(), declaration.DeclaredType(), value); err != nil {
 			return nil, invalidInput(name, err)
-		}
-
-		// A timestamp, duration or bytes input is bound as the value CEL reads,
-		// not as the text it arrived as; see [NormalizeDataKind]. After the
-		// type check above has proved the text parses, and before the
-		// constraints, which evaluate `must:` against what an expression sees.
-		if IsDataKind(declaration.GetType()) {
-			normalized, err := NormalizeDataKind(declaration.GetType(), value.GetLiteral())
-			if err != nil {
-				return nil, invalidInput(name, fmt.Errorf("input %q is declared %s but was given a value that %w", name, declaration.TypeText(), err))
-			}
-			value = &Value{Kind: &Value_Literal{Literal: normalized}}
 		}
 
 		bound[name] = value
@@ -405,11 +400,12 @@ func CheckInputDefaultIn(table TypeTable, profile string, declaration *InputDecl
 		return err
 	}
 
-	if err := CheckInputConstraints(profile, declaration.GetName(), declaration, declaration.GetDefault()); err != nil {
+	value := NormalizeInputValue(table, declaration, declaration.GetDefault())
+	if err := CheckInputConstraints(profile, declaration.GetName(), declaration, value); err != nil {
 		return err
 	}
 
-	return CheckRecordRules(table, profile, "input", declaration.GetName(), declaration.GetSensitive(), declaration.DeclaredType(), declaration.GetDefault())
+	return CheckRecordRules(table, profile, "input", declaration.GetName(), declaration.GetSensitive(), declaration.DeclaredType(), value)
 }
 
 // CheckInputExample reports whether a declaration's example is a literal of
@@ -436,10 +432,11 @@ func CheckInputExampleIn(table TypeTable, profile string, declaration *InputDecl
 		return fmt.Errorf("example: %w", err)
 	}
 
-	if err := CheckInputConstraints(profile, declaration.GetName(), declaration, declaration.GetExample()); err != nil {
+	value := NormalizeInputValue(table, declaration, declaration.GetExample())
+	if err := CheckInputConstraints(profile, declaration.GetName(), declaration, value); err != nil {
 		return fmt.Errorf("example: %w", err)
 	}
-	if err := CheckRecordRules(table, profile, "input", declaration.GetName(), declaration.GetSensitive(), declaration.DeclaredType(), declaration.GetExample()); err != nil {
+	if err := CheckRecordRules(table, profile, "input", declaration.GetName(), declaration.GetSensitive(), declaration.DeclaredType(), value); err != nil {
 		return fmt.Errorf("example: %w", err)
 	}
 
