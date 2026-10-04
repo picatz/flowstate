@@ -1527,8 +1527,9 @@ func runServer(cmd *cobra.Command, args []string) error {
 		// The same value [refusePlaintextListener] already checked above, so a
 		// deployment cannot have this listener bind an address this function
 		// already refused.
-		Addr:    publicAddr,
-		Handler: serverHandler(logger, verifier, peerVerifier, broker, rpcResource, rpcMux, receiver, protectedResource),
+		Addr: publicAddr,
+		Handler: serverHandler(logger, verifier, peerVerifier, broker, rpcResource, rpcMux, receiver, protectedResource,
+			gatesUIOptions(cmd)...),
 
 		// nil when no certificate was configured, which is only reachable here
 		// when publicAddr is loopback — anything else already returned above.
@@ -2879,6 +2880,7 @@ flow server --insecure-no-auth`,
 	addPluginFlags(serverCmd)
 	addSecretFlags(serverCmd)
 	addWebhookFlags(serverCmd)
+	addGatesUIFlags(serverCmd)
 
 	// And the local rehearsal, which for a long time was the one execution verb
 	// without them: a Flowfile using a plugin task could be validated, run
