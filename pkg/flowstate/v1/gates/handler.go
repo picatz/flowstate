@@ -321,7 +321,7 @@ func (h *Handler) refuse(w http.ResponseWriter, r *http.Request, err error) {
 		render(w, http.StatusTooManyRequests, noticePage, notice{Title: "Too many requests; try again shortly"})
 	default:
 		h.logger.ErrorContext(r.Context(), "gate page: API call failed",
-			"path", r.URL.Path, "code", connect.CodeOf(err).String(), "error", err)
+			"code", connect.CodeOf(err).String(), "error", oneLine(err.Error()))
 		render(w, http.StatusBadGateway, noticePage, notice{
 			Title:  "The server could not complete that",
 			Detail: "Nothing was changed. Try again, and tell an operator if it keeps happening.",
@@ -343,4 +343,11 @@ func detail(err error) string {
 	}
 
 	return msg
+}
+
+// oneLine keeps an API error to one log line: the API can echo a value a
+// visitor chose (an id that failed validation), and a line break in it would
+// let that visitor write records of their own.
+func oneLine(text string) string {
+	return strings.NewReplacer("\r", " ", "\n", " ").Replace(text)
 }

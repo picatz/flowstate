@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"crypto/tls"
 	"encoding/base64"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -499,4 +500,19 @@ func TestWithCredentialsReplacesTheDefault(t *testing.T) {
 	do(h, req)
 
 	require.Equal(t, []string{"Bearer from-cookie"}, api.credentials())
+}
+
+func TestAnUnexpectedFailureIsLoggedOnOneLine(t *testing.T) {
+	t.Parallel()
+
+	var logged strings.Builder
+	api := &fakeAPI{get: func(*connect.Request[v1.GetRequest]) (*connect.Response[v1.GetResponse], error) {
+		return nil, connect.NewError(connect.CodeInternal, errString("bad id\nlevel=ERROR msg=forged"))
+	}}
+	h := newHandler(api, WithLogger(slog.New(slog.NewTextHandler(&logged, nil))))
+
+	rec := do(h, gateGet())
+
+	require.Equal(t, http.StatusBadGateway, rec.Code)
+	require.Equal(t, 1, strings.Count(strings.TrimRight(logged.String(), "\n"), "\n")+1, logged.String())
 }
