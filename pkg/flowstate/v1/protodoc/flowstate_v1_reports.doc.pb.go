@@ -347,6 +347,13 @@ func init() {
 				" way: `flow test --seed <seed>` on the same file.\n",
 		},
 		{
+			Name: "flowstate.v1.ScheduleDivergenceReport.fault_script",
+			Leading: " FaultScript is, for an invariant violation, the `faults:` list that\n" +
+				" replays the faults the seed fired with no seed: each pinned to the\n" +
+				" invocations it fired on with `on:`. Pasted into the case, a plain\n" +
+				" `flow test` reproduces the violation. Empty otherwise.\n",
+		},
+		{
 			Name: "flowstate.v1.CoverageReport",
 			Leading: " CoverageReport is `flow test`'s branch-coverage account for one workflow:\n" +
 				" which of that workflow's steps at least one case ran, and which no case ever\n" +

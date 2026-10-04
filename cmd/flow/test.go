@@ -755,6 +755,10 @@ func printSchedules(out io.Writer, theme ui.Theme, report *v1.TestReport, schedu
 			divergence.Seed, shellArg(report.GetFile()))
 		fmt.Fprintf(out, "       seed %d (%d scheduling decisions):\n%s",
 			divergence.Seed, divergence.Decisions, indentRendering(divergence.Seeded))
+		if divergence.Script != "" {
+			fmt.Fprintf(out, "\n       OR PIN THEM AS A REGRESSION CASE (replace the case's `faults:`; `flow test` then runs them with no seed):\n\n%s",
+				indentRendering(divergence.Script))
+		}
 
 		return
 	}

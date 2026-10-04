@@ -1261,6 +1261,9 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 		sensitive = widenedBy(sensitive, gatherer.withheld())
 	}
 	shown = caseShown{sensitive: sensitive, runErr: runErr, faulted: faulting && faults != nil && faults.firedAny()}
+	if shown.faulted {
+		shown.pinned = faults.pinned()
+	}
 
 	// The transcript coverage reads is the same one the verdict does. A failed
 	// run hands back the partial one ([v1.PartialTranscript]): the steps it ran
@@ -2464,6 +2467,9 @@ type caseShown struct {
 	// faulted is that this run had a fault fire. Such a run is compared across
 	// schedules by its invariants alone ([scheduleAccumulator.run]).
 	faulted bool
+
+	// pinned is the `faults:` list that replays the faults this run fired.
+	pinned string
 }
 
 // runErrorUnder is the run's failure as a schedule divergence shows it under

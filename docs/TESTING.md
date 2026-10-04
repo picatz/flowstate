@@ -357,6 +357,15 @@ it owes without being told: a failure the world causes must not surface as an
 `Internal` error. A violation is reported as a finding with the seed that
 produced it, and `flow test --seed S` replays exactly those faults.
 
+A violation also prints the faults the seed fired as a `faults:` list pinned with
+`on:` (the invocation numbers, from 1, that failed). Paste it over the case's
+`faults:` and a plain `flow test` fires exactly those failures in every run,
+the written-order one included, so the violation becomes a regression case
+that fails until the workflow is fixed, with no seed and no `--seeds`. A pinned
+fault takes no `rate:` or `at_most:`, and a script whose invocation the run no
+longer makes fails as drifted rather than passing for a fault that never
+happened.
+
 A fault answers before the stubs and spends none of their `times:`. `fails.kind`
 is any error kind a task reports except `Internal` and `Expression`, which are
 defects, and `RunTimeout`, which only a whole run can have. Rows of a table inherit the entry's `faults:` and
