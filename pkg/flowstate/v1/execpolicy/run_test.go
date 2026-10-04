@@ -412,3 +412,27 @@ func sumHex(b []byte) string {
 	s := sha256.Sum256(b)
 	return hex.EncodeToString(s[:])
 }
+
+// TestADirectoryComponentRepointedAfterCheckIsRefusedAtRunTime: a path
+// component swapped for a symlink to somewhere outside the roots between Check
+// and Run must not carry the child out.
+func TestADirectoryComponentRepointedAfterCheckIsRefusedAtRunTime(t *testing.T) {
+	t.Parallel()
+	cfg, root := base(t)
+	parent := filepath.Join(root, "a")
+	require.NoError(t, os.MkdirAll(filepath.Join(parent, "b"), 0o700))
+
+	outside := t.TempDir()
+	require.NoError(t, os.Mkdir(filepath.Join(outside, "b"), 0o700))
+
+	cmd, err := mustPolicy(t, cfg).Check(context.Background(), execpolicy.Request{Argv: []string{"sh", "-c", "pwd -P"}, Dir: filepath.Join(parent, "b")})
+	require.NoError(t, err)
+
+	require.NoError(t, os.RemoveAll(parent))
+	require.NoError(t, os.Symlink(outside, parent))
+
+	_, err = cmd.Run(context.Background())
+	var runErr *execpolicy.RunError
+	require.ErrorAs(t, err, &runErr)
+	assert.Equal(t, execpolicy.OutcomeDidNotStart, runErr.Outcome)
+}

@@ -96,7 +96,15 @@ func (c *Command) Run(ctx context.Context) (Result, error) {
 	cmd := exec.CommandContext(runCtx, execPath, c.argv[1:]...)
 	cmd.Path = execPath
 	cmd.Args = slicesClone(c.argv)
-	cmd.Dir = c.dir
+	// Re-resolve and re-check immediately before the start: this narrows the
+	// window in which a symlink swapped after Check could point the child
+	// outside the roots. It does not close it; only a handle held from the
+	// check to the exec would, which workspaces and runners will provide.
+	dir, err := c.policy.checkDir(c.dir)
+	if err != nil {
+		return Result{}, &RunError{Outcome: OutcomeDidNotStart, Err: err}
+	}
+	cmd.Dir = dir
 	cmd.Env = append([]string{}, c.env...)
 	cmd.Stdin = nil
 	cmd.Stdout = stdout
@@ -130,7 +138,9 @@ func (c *Command) Run(ctx context.Context) (Result, error) {
 		killTimer.Stop()
 	}
 	timerMu.Unlock()
-	// Whatever the program left in its group dies with the step.
+	// Whatever the program left in its group dies with the step. The group id
+	// stays allocated while any member lives, so this reaches only this step's
+	// leftovers; with no survivors it finds no group.
 	_ = procgroup.Terminate(cmd.Process, true)
 
 	result := Result{Duration: elapsed}
