@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/goccy/go-yaml"
+
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/nearest"
 )
@@ -43,30 +45,40 @@ const defaultFaultRate = 0.5
 type Fault struct {
 	// Task is the task name whose invocations may fail, anywhere in the run,
 	// callees and compensations included. Exactly one of Task and Step.
-	Task string `yaml:"task"`
+	Task string `yaml:"task,omitempty"`
 
 	// Step is the step id, in the workflow under test, whose invocations may
 	// fail, one draw per attempt.
-	Step string `yaml:"step"`
+	Step string `yaml:"step,omitempty"`
 
 	// Fails is the injected failure. Its kind defaults to Upstream, the
 	// ordinary transient one, and must be a kind a task can honestly report:
 	// Internal and Expression describe a bug in the engine or the workflow, not
 	// a fault in the world, and an injected one would make the invariant that
 	// watches for them unfalsifiable.
-	Fails StubFailure `yaml:"fails"`
+	Fails StubFailure `yaml:"fails,omitempty"`
 
 	// Rate is the chance, in (0, 1], that a matching invocation fails.
 	// Absent means [defaultFaultRate]; a pointer because zero is not a rate a
 	// fault can usefully have, and silently reading it as the default would
 	// say something the author did not write.
-	Rate *float64 `yaml:"rate"`
+	Rate *float64 `yaml:"rate,omitempty"`
 
 	// AtMost caps how many times this fault fires in one run. Absent means
 	// once, the shape a retry is built to survive; a fault that may fail every
 	// attempt is stated as `at_most: N`. A pointer so an explicit `at_most: 0`
 	// is refused rather than read as the default.
-	AtMost *int `yaml:"at_most"`
+	AtMost *int `yaml:"at_most,omitempty"`
+
+	// On pins the fault: it fires on exactly these invocations of its target,
+	// numbered from 1 in the order the run makes them, and no seed is
+	// consulted. A pinned fault fires in every run, the plain written-order
+	// one included, which is what turns a violating seed into a regression
+	// case `flow test` replays with no `--seeds` at all: a violation prints
+	// the faults it fired in this form. Exclusive with Rate and AtMost, which
+	// describe a draw. A run that makes fewer invocations than the largest
+	// number named has drifted from the script and fails.
+	On []int `yaml:"on,flow,omitempty"`
 }
 
 func (f *Fault) rate() float64 {
@@ -113,6 +125,24 @@ func checkFaultShape(i int, f *Fault) error {
 		case kind == v1.ErrorKindRunTimeout:
 			return fmt.Errorf("%s: fails.kind %q is synthesized for a whole-run timeout and no task can report it; "+
 				"use Timeout for an attempt that ran out of time", where, kind)
+		}
+	}
+	if len(f.On) > 0 {
+		if f.Rate != nil || f.AtMost != nil {
+			return fmt.Errorf("%s: `on:` pins the invocations that fail, so it takes no `rate:` or `at_most:`", where)
+		}
+		if len(f.On) > maxFaultAtMost {
+			return fmt.Errorf("%s: on names %d invocations, more than the limit of %d", where, len(f.On), maxFaultAtMost)
+		}
+		seen := map[int]bool{}
+		for _, n := range f.On {
+			if n < 1 {
+				return fmt.Errorf("%s: on: %d is not an invocation number; they count from 1", where, n)
+			}
+			if seen[n] {
+				return fmt.Errorf("%s: on names invocation %d twice", where, n)
+			}
+			seen[n] = true
 		}
 	}
 	if f.Rate != nil && (!(*f.Rate > 0) || *f.Rate > 1) {
@@ -201,6 +231,12 @@ type faultPlan struct {
 	mu    sync.Mutex
 	seen  []int
 	fired []int
+	// drawn counts the fires a seed decided, which a pinned fault's fires are
+	// not: only a drawn fire makes a seeded run a faulted one.
+	drawn []int
+	// script is the invocation numbers each drawn fault fired on, in order,
+	// from which [faultPlan.pinned] writes the regression case.
+	script [][]int
 }
 
 type faultPlanKey struct{}
@@ -211,6 +247,8 @@ func newFaultPlan(root string, faults []Fault) *faultPlan {
 		faults: faults,
 		seen:   make([]int, len(faults)),
 		fired:  make([]int, len(faults)),
+		drawn:  make([]int, len(faults)),
+		script: make([][]int, len(faults)),
 	}
 }
 
@@ -225,7 +263,7 @@ func contextWithFaultPlan(ctx context.Context, p *faultPlan) context.Context {
 // "no" ([faultPlan.unreached]).
 //
 // Under a scheduler that is not a [v1.FaultChooser], which is the written-order
-// run, nothing fires.
+// run, nothing is drawn; a pinned fault ([Fault.On]) fires regardless.
 func (p *faultPlan) attempt(ctx context.Context, task string) error {
 	ref, _ := v1.TaskStepRefFromContext(ctx)
 
@@ -237,11 +275,18 @@ func (p *faultPlan) attempt(ctx context.Context, task string) error {
 			continue
 		}
 		p.seen[i]++
-		if p.fired[i] >= f.limit() {
+		switch {
+		case len(f.On) > 0:
+			if !slices.Contains(f.On, p.seen[i]) {
+				continue
+			}
+		case p.fired[i] >= f.limit():
 			continue
-		}
-		if !v1.InjectFault(ctx, fmt.Sprintf("faults[%d]", i), f.rate()) {
+		case !v1.InjectFault(ctx, fmt.Sprintf("faults[%d]", i), f.rate()):
 			continue
+		default:
+			p.drawn[i]++
+			p.script[i] = append(p.script[i], p.seen[i])
 		}
 		p.fired[i]++
 		message := f.Fails.Message
@@ -269,6 +314,16 @@ func (p *faultPlan) unreached() []*v1.Diagnostic {
 	var out []*v1.Diagnostic
 	for i := range p.faults {
 		f := &p.faults[i]
+		if last := slices.Max(append([]int{0}, f.On...)); last > p.seen[i] {
+			out = append(out, &v1.Diagnostic{
+				Step:  f.Step,
+				Field: fmt.Sprintf("faults[%d].on", i),
+				Message: fmt.Sprintf("is pinned to invocation %d of its target, but the run made only %d; "+
+					"the script has drifted from the workflow, so re-derive it from a fresh `--seeds` finding", last, p.seen[i]),
+			})
+
+			continue
+		}
 		if p.seen[i] > 0 || f.Step == "" {
 			continue
 		}
@@ -342,11 +397,45 @@ func assertInvariants(ctx context.Context, claims []CheckClaim, spec *v1.Workflo
 	return failures
 }
 
-// firedAny reports whether any fault has fired in this run. A seeded run no
-// fault fired in is an ordinary schedule and is judged and compared as one.
+// firedAny reports whether a seed made any fault fire in this run. A seeded
+// run no draw fired in is an ordinary schedule and is judged and compared as
+// one; pinned faults are part of the case and do not count.
 func (p *faultPlan) firedAny() bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	return slices.ContainsFunc(p.fired, func(n int) bool { return n > 0 })
+	return slices.ContainsFunc(p.drawn, func(n int) bool { return n > 0 })
+}
+
+// pinned writes the faults that fired as the `faults:` list that replays
+// them without a seed: each fault that fired, pinned to the invocation numbers
+// it fired on, and everything else about it as declared. Empty when no draw
+// fired.
+func (p *faultPlan) pinned() string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	var pins []Fault
+	for i, on := range p.script {
+		pin := p.faults[i]
+		switch {
+		case len(pin.On) > 0 && p.fired[i] > 0:
+			// Already a script; kept as declared so replacing `faults:` with
+			// this list loses none of the case's own pins.
+		case len(on) > 0:
+			pin.Rate, pin.AtMost, pin.On = nil, nil, slices.Clone(on)
+		default:
+			continue
+		}
+		pins = append(pins, pin)
+	}
+	if len(pins) == 0 {
+		return ""
+	}
+	out, err := yaml.Marshal(map[string][]Fault{"faults": pins})
+	if err != nil {
+		return ""
+	}
+
+	return string(out)
 }

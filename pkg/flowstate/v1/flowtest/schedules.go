@@ -113,6 +113,10 @@ type ScheduleDivergence struct {
 	// Invariant reports that this is a faulted run breaking an `invariants:`
 	// claim, not a schedule changing what the case observed.
 	Invariant bool
+
+	// Script is the `faults:` list that replays the diverging run's faults
+	// with no seed, for an invariant violation; empty otherwise.
+	Script string
 }
 
 // Report renders this exploration as the schema message the machine report
@@ -137,6 +141,7 @@ func (s *ScheduleReport) Report() *v1.ScheduleExploration {
 			WrittenOrder: d.WrittenOrder,
 			Seeded:       d.Seeded,
 			Invariant:    d.Invariant,
+			FaultScript:  d.Script,
 		}
 	}
 
@@ -212,7 +217,7 @@ func (a *scheduleAccumulator) run(ctx context.Context, once caseRun) (*v1.TestCa
 		everything sensitiveInputs
 		// faultedSeeds are the seeds whose run injected a fault, so a
 		// divergence under one is an invariant violation.
-		faultedSeeds = map[uint64]bool{}
+		faultedSeeds = map[uint64]string{}
 		// baselineObserved is the written-order run's own observation, which a
 		// faulted run that broke nothing is compared as.
 		baselineObserved *dst.Result
@@ -231,7 +236,15 @@ func (a *scheduleAccumulator) run(ctx context.Context, once caseRun) (*v1.TestCa
 		}
 		everything = widenedBy(everything, shown.sensitive)
 		if seeded, ok := v1.SchedulerFromContext(ctx).(*v1.SeededScheduler); ok && shown.faulted {
-			faultedSeeds[seeded.Seed()] = true
+			// An invocation number is only a stable name for a call when the
+			// seed did not reorder anything: a permuted `parallel:` can make
+			// the first call of a task a different logical call than it is in
+			// written order, so such a run keeps its seed and prints no pins.
+			script := shown.pinned
+			if seeded.Decisions() > 0 {
+				script = ""
+			}
+			faultedSeeds[seeded.Seed()] = script
 		}
 
 		// Compared as it is, shown as the case's own report would show it: a
@@ -300,6 +313,10 @@ func (a *scheduleAccumulator) run(ctx context.Context, once caseRun) (*v1.TestCa
 		result, account = a.reshown(ctx, once, result, account, everything)
 	}
 
+	script, faulted := "", false
+	if report.Divergence != nil {
+		script, faulted = faultedSeeds[report.Divergence.Diverged.Seed]
+	}
 	if report.Divergence != nil && a.divergence == nil {
 		a.divergence = &ScheduleDivergence{
 			Case:         result.GetName(),
@@ -308,7 +325,8 @@ func (a *scheduleAccumulator) run(ctx context.Context, once caseRun) (*v1.TestCa
 			Truncated:    report.Divergence.Diverged.Truncated,
 			WrittenOrder: report.Divergence.Baseline.Rendering,
 			Seeded:       report.Divergence.Diverged.Rendering,
-			Invariant:    faultedSeeds[report.Divergence.Diverged.Seed],
+			Invariant:    faulted,
+			Script:       script,
 		}
 	}
 

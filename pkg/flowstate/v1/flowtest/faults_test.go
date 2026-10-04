@@ -2,6 +2,7 @@ package flowtest_test
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -252,4 +253,138 @@ tests:
 	_, _, schedules := flowtest.RunFileUnderSchedules(t.Context(), path, dst.Budget{Schedules: 4, Seed0: 1})
 	require.NotNil(t, schedules)
 	assert.Nil(t, schedules.Divergence)
+}
+
+const pinnedHeader = `edition: v2026.4
+tests:
+  - name: pinned
+    workflow: ./workflow.yaml
+    stubs: [{task: http, returns: {status_code: 200, body: ''}}]
+`
+
+// A violating seed prints the faults it fired as a list that, pasted into the
+// case, reproduces the violation in a plain run with no seed.
+func TestAViolationPrintsAScriptThatReplaysWithoutSeeds(t *testing.T) {
+	t.Parallel()
+
+	path := writeFaultFixture(t, bareWorkflow, faultedCase)
+	_, _, schedules := flowtest.RunFileUnderSchedules(t.Context(), path, dst.Budget{Schedules: 4, Seed0: 1})
+	require.NotNil(t, schedules)
+	require.NotNil(t, schedules.Divergence)
+
+	script := schedules.Divergence.Script
+	require.Contains(t, script, "faults:")
+	require.Contains(t, script, `"on": [1]`)
+	require.NotContains(t, script, "rate", "a pinned fault is not a draw")
+
+	indented := ""
+	for _, line := range strings.Split(strings.TrimRight(script, "\n"), "\n") {
+		indented += "    " + line + "\n"
+	}
+	pinned := writeFaultFixture(t, bareWorkflow, pinnedHeader+indented+"    invariants: [{that: \"run.failed == false\"}]\n    expect: {failed: true}\n")
+	report, _ := flowtest.RunFileWithCoverage(pinned)
+	require.Len(t, report.GetCases(), 1)
+	c := report.GetCases()[0]
+	assert.False(t, c.GetPassed(), "the pinned fault must reproduce the violation without a seed")
+	require.NotEmpty(t, c.GetFailures())
+	assert.Equal(t, "invariants[0]", c.GetFailures()[0].GetField())
+
+	// And once the workflow is fixed to absorb it, the same script is the
+	// regression test: the retried workflow passes it.
+	fixed := writeFaultFixture(t, retriedWorkflow, pinnedHeader+indented+"    invariants: [{that: \"run.failed == false\"}]\n    expect: {failed: false}\n")
+	report, _ = flowtest.RunFileWithCoverage(fixed)
+	require.Len(t, report.GetCases(), 1)
+	assert.True(t, report.GetCases()[0].GetPassed(), "%v", report.GetCases()[0])
+}
+
+// A script pinned to an invocation the run no longer makes has drifted, and
+// fails rather than passing for a fault that never happened.
+func TestAPinnedFaultThePastTheRunEndsIsADrift(t *testing.T) {
+	t.Parallel()
+
+	path := writeFaultFixture(t, bareWorkflow, pinnedHeader+"    faults: [{step: fetch, on: [3]}]\n    expect: {failed: true}\n")
+	report, _ := flowtest.RunFileWithCoverage(path)
+	require.Len(t, report.GetCases(), 1)
+	c := report.GetCases()[0]
+	assert.False(t, c.GetPassed())
+	var fields []string
+	for _, f := range c.GetFailures() {
+		fields = append(fields, f.GetField())
+	}
+	assert.Contains(t, fields, "faults[0].on")
+}
+
+func TestMalformedPinsAreRefusedAtLoad(t *testing.T) {
+	t.Parallel()
+
+	for name, tc := range map[string]struct{ fault, want string }{
+		"with rate": {"{step: fetch, on: [1], rate: 0.5}", "takes no `rate:` or `at_most:`"},
+		"zero":      {"{step: fetch, on: [0]}", "count from 1"},
+		"twice":     {"{step: fetch, on: [1, 1]}", "twice"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			path := writeFaultFixture(t, bareWorkflow, pinnedHeader+"    expect: {failed: true}\n    faults: ["+tc.fault+"]\n")
+			_, err := flowtest.Load(path)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.want)
+		})
+	}
+}
+
+// A case that mixes a hand-written pin with a drawn fault keeps both in the
+// printed script, or replacing `faults:` with it would lose the pin.
+func TestThePrintedScriptKeepsTheCasesOwnPins(t *testing.T) {
+	t.Parallel()
+
+	const workflow = `edition: v2026.4
+name: two
+steps:
+  - id: first
+    continue_on_error: true
+    retry: {attempts: 1}
+    http: {method: GET, url: "https://example.com/a"}
+  - id: second
+    retry: {attempts: 1}
+    http: {method: GET, url: "https://example.com/b"}
+`
+	path := writeFaultFixture(t, workflow, pinnedHeader+
+		"    faults: [{step: first, on: [1], fails: {message: pinned}}, {step: second, rate: 1}]\n"+
+		"    invariants: [{that: \"run.failed == false\"}]\n    expect: {failed: true}\n")
+	_, _, schedules := flowtest.RunFileUnderSchedules(t.Context(), path, dst.Budget{Schedules: 2, Seed0: 1})
+	require.NotNil(t, schedules)
+	require.NotNil(t, schedules.Divergence)
+	assert.Contains(t, schedules.Divergence.Script, "step: first")
+	assert.Contains(t, schedules.Divergence.Script, `"on": [1]`)
+	assert.Contains(t, schedules.Divergence.Script, "step: second")
+}
+
+// A violating seed that also permuted a `parallel:` block prints no pins:
+// invocation numbers are only stable when nothing was reordered.
+func TestAReorderedSeedPrintsNoPins(t *testing.T) {
+	t.Parallel()
+
+	const workflow = `edition: v2026.4
+name: racing
+steps:
+  - id: both
+    parallel:
+      - steps:
+          - id: left
+            retry: {attempts: 1}
+            http: {method: GET, url: "https://example.com/a"}
+      - steps:
+          - id: right
+            retry: {attempts: 1}
+            http: {method: GET, url: "https://example.com/b"}
+`
+	path := writeFaultFixture(t, workflow, pinnedHeader+
+		"    faults: [{task: http, rate: 1}]\n    invariants: [{that: \"run.failed == false\"}]\n    expect: {failed: false}\n")
+	_, _, schedules := flowtest.RunFileUnderSchedules(t.Context(), path, dst.Budget{Schedules: 4, Seed0: 1})
+	require.NotNil(t, schedules)
+	require.NotNil(t, schedules.Divergence)
+	assert.True(t, schedules.Divergence.Invariant)
+	assert.Positive(t, schedules.Divergence.Decisions)
+	assert.Empty(t, schedules.Divergence.Script)
 }

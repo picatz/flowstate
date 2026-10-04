@@ -801,7 +801,12 @@ type ScheduleDivergenceReport struct {
 	// changed what the case observed. [written_order] is then empty and
 	// [seeded] lists the violations. The seed replays the same faults the same
 	// way: `flow test --seed <seed>` on the same file.
-	Invariant     bool `protobuf:"varint,7,opt,name=invariant,proto3" json:"invariant,omitempty"`
+	Invariant bool `protobuf:"varint,7,opt,name=invariant,proto3" json:"invariant,omitempty"`
+	// FaultScript is, for an invariant violation, the `faults:` list that
+	// replays the faults the seed fired with no seed: each pinned to the
+	// invocations it fired on with `on:`. Pasted into the case, a plain
+	// `flow test` reproduces the violation. Empty otherwise.
+	FaultScript   string `protobuf:"bytes,8,opt,name=fault_script,json=faultScript,proto3" json:"fault_script,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -883,6 +888,13 @@ func (x *ScheduleDivergenceReport) GetInvariant() bool {
 		return x.Invariant
 	}
 	return false
+}
+
+func (x *ScheduleDivergenceReport) GetFaultScript() string {
+	if x != nil {
+		return x.FaultScript
+	}
+	return ""
 }
 
 // CoverageReport is `flow test`'s branch-coverage account for one workflow:
@@ -1255,7 +1267,7 @@ const file_flowstate_v1_reports_proto_rawDesc = "" +
 	"\ttruncated\x18\x04 \x01(\bR\ttruncated\x12F\n" +
 	"\n" +
 	"divergence\x18\x05 \x01(\v2&.flowstate.v1.ScheduleDivergenceReportR\n" +
-	"divergence\"\xd9\x01\n" +
+	"divergence\"\xfc\x01\n" +
 	"\x18ScheduleDivergenceReport\x12\x12\n" +
 	"\x04case\x18\x01 \x01(\tR\x04case\x12\x12\n" +
 	"\x04seed\x18\x02 \x01(\x04R\x04seed\x12\x1c\n" +
@@ -1263,7 +1275,8 @@ const file_flowstate_v1_reports_proto_rawDesc = "" +
 	"\ttruncated\x18\x04 \x01(\bR\ttruncated\x12#\n" +
 	"\rwritten_order\x18\x05 \x01(\tR\fwrittenOrder\x12\x16\n" +
 	"\x06seeded\x18\x06 \x01(\tR\x06seeded\x12\x1c\n" +
-	"\tinvariant\x18\a \x01(\bR\tinvariant\"\x8e\x03\n" +
+	"\tinvariant\x18\a \x01(\bR\tinvariant\x12!\n" +
+	"\ffault_script\x18\b \x01(\tR\vfaultScript\"\x8e\x03\n" +
 	"\x0eCoverageReport\x12\x1a\n" +
 	"\bworkflow\x18\x01 \x01(\tR\bworkflow\x12\x1f\n" +
 	"\vsteps_total\x18\x02 \x01(\x05R\n" +
