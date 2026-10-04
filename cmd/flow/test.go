@@ -110,6 +110,12 @@ flow test -o jsonl examples/`,
 
 	addOutputFlag(cmd)
 
+	// A JUnit XML report beside whichever output format is chosen (#1471):
+	// a file because CI reads one, and stdout stays the human or JSON account.
+	cmd.Flags().String("junit", "",
+		"also write the results to this file as JUnit XML, for CI systems that annotate failures; "+
+			"failed expectations are <failure>, a case or file that could not be judged is <error>")
+
 	// Opt-in, fail-closed once opted in: coverage is a result every run
 	// reports, and this is the flag that promotes an unreached branch from a
 	// line worth reading to a reason the command exits non-zero. A file exempts
@@ -367,6 +373,13 @@ func runTest(cmd *cobra.Command, paths []string) error {
 		}
 	} else {
 		printSummary(surface.Out, surface.Theme, results, coverageRequired, failOnWarning, runPattern != "", time.Since(started))
+	}
+
+	// Written before the verdict returns so a red run still leaves its report.
+	if junitPath, _ := cmd.Flags().GetString("junit"); junitPath != "" {
+		if err := writeJUnit(junitPath, results); err != nil {
+			return err
+		}
 	}
 
 	if anyFailed {

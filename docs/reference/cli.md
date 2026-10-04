@@ -2161,6 +2161,7 @@ flow test -o jsonl examples/
 | `--coverage-required` | `bool` | `false` | — | fail when a workflow has a step, or a `switch:` arm, no test case reached and no coverage.allow_unreached entry records why |
 | `--debug` | `bool` | `false` | — | stop before each step of one case and read commands from the terminal — step, continue, until, break, inspect, scope, quit; requires exactly one test file and exactly one selected case (narrow with `--run` when the file has more), and is refused with `--output json` and with seeded exploration |
 | `--fail-on-warning` | `bool` | `false` | — | fail when a case reports a warning — a stub declared and never answered through, a task invoked with no stub declared, or an invocation that no declared stub answered — instead of only printing it |
+| `--junit <string>` | `string` | — | — | also write the results to this file as JUnit XML, for CI systems that annotate failures; failed expectations are <failure>, a case or file that could not be judged is <error> |
 | `-o, --output <string>` | `string` | `text` | — | output format: text, json, or jsonl |
 | `--run <string>` | `string` | — | — | run only the cases whose name matches this regular expression; the output says how many cases were filtered out, and `--coverage-required` is refused alongside it, because a subset's coverage gaps are not the suite's |
 | `--seed <uint64>` | `uint64` | `0` | — | replay exactly one schedule, the seed a reported divergence names, instead of searching |
