@@ -644,21 +644,27 @@ const (
 	DebugCommandStatus_DEBUG_COMMAND_STATUS_INCOMPATIBLE DebugCommandStatus = 8
 	// Ended means the session or the run is over.
 	DebugCommandStatus_DEBUG_COMMAND_STATUS_ENDED DebugCommandStatus = 9
+	// Diverged means the command asked to reproduce a past stop, the
+	// reproduction did not match what was shown, and the session did not move.
+	// It is a refusal with a cause a client can act on: the run is not
+	// deterministic, so going back would show a different run as the earlier one.
+	DebugCommandStatus_DEBUG_COMMAND_STATUS_DIVERGED DebugCommandStatus = 10
 )
 
 // Enum value maps for DebugCommandStatus.
 var (
 	DebugCommandStatus_name = map[int32]string{
-		0: "DEBUG_COMMAND_STATUS_UNSPECIFIED",
-		1: "DEBUG_COMMAND_STATUS_APPLIED",
-		2: "DEBUG_COMMAND_STATUS_PENDING",
-		3: "DEBUG_COMMAND_STATUS_DUPLICATE",
-		4: "DEBUG_COMMAND_STATUS_STALE",
-		5: "DEBUG_COMMAND_STATUS_CONFLICT",
-		6: "DEBUG_COMMAND_STATUS_REFUSED",
-		7: "DEBUG_COMMAND_STATUS_UNSUPPORTED",
-		8: "DEBUG_COMMAND_STATUS_INCOMPATIBLE",
-		9: "DEBUG_COMMAND_STATUS_ENDED",
+		0:  "DEBUG_COMMAND_STATUS_UNSPECIFIED",
+		1:  "DEBUG_COMMAND_STATUS_APPLIED",
+		2:  "DEBUG_COMMAND_STATUS_PENDING",
+		3:  "DEBUG_COMMAND_STATUS_DUPLICATE",
+		4:  "DEBUG_COMMAND_STATUS_STALE",
+		5:  "DEBUG_COMMAND_STATUS_CONFLICT",
+		6:  "DEBUG_COMMAND_STATUS_REFUSED",
+		7:  "DEBUG_COMMAND_STATUS_UNSUPPORTED",
+		8:  "DEBUG_COMMAND_STATUS_INCOMPATIBLE",
+		9:  "DEBUG_COMMAND_STATUS_ENDED",
+		10: "DEBUG_COMMAND_STATUS_DIVERGED",
 	}
 	DebugCommandStatus_value = map[string]int32{
 		"DEBUG_COMMAND_STATUS_UNSPECIFIED":  0,
@@ -671,6 +677,7 @@ var (
 		"DEBUG_COMMAND_STATUS_UNSUPPORTED":  7,
 		"DEBUG_COMMAND_STATUS_INCOMPATIBLE": 8,
 		"DEBUG_COMMAND_STATUS_ENDED":        9,
+		"DEBUG_COMMAND_STATUS_DIVERGED":     10,
 	}
 )
 
@@ -4673,7 +4680,7 @@ const file_flowstate_v1_debug_proto_rawDesc = "" +
 	"\x1dDEBUG_RESUME_ACTION_STEP_OVER\x10\x03\x12 \n" +
 	"\x1cDEBUG_RESUME_ACTION_STEP_OUT\x10\x04\x12!\n" +
 	"\x1dDEBUG_RESUME_ACTION_RUN_UNTIL\x10\x05\x12\x1e\n" +
-	"\x1aDEBUG_RESUME_ACTION_DETACH\x10\x06*\xf4\x02\n" +
+	"\x1aDEBUG_RESUME_ACTION_DETACH\x10\x06*\x97\x03\n" +
 	"\x12DebugCommandStatus\x12$\n" +
 	" DEBUG_COMMAND_STATUS_UNSPECIFIED\x10\x00\x12 \n" +
 	"\x1cDEBUG_COMMAND_STATUS_APPLIED\x10\x01\x12 \n" +
@@ -4684,7 +4691,9 @@ const file_flowstate_v1_debug_proto_rawDesc = "" +
 	"\x1cDEBUG_COMMAND_STATUS_REFUSED\x10\x06\x12$\n" +
 	" DEBUG_COMMAND_STATUS_UNSUPPORTED\x10\a\x12%\n" +
 	"!DEBUG_COMMAND_STATUS_INCOMPATIBLE\x10\b\x12\x1e\n" +
-	"\x1aDEBUG_COMMAND_STATUS_ENDED\x10\t*\x90\x01\n" +
+	"\x1aDEBUG_COMMAND_STATUS_ENDED\x10\t\x12!\n" +
+	"\x1dDEBUG_COMMAND_STATUS_DIVERGED\x10\n" +
+	"*\x90\x01\n" +
 	"\x10DebugFailureMode\x12\"\n" +
 	"\x1eDEBUG_FAILURE_MODE_UNSPECIFIED\x10\x00\x12\x1b\n" +
 	"\x17DEBUG_FAILURE_MODE_NONE\x10\x01\x12\x1f\n" +

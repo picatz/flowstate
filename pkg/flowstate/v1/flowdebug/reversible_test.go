@@ -323,8 +323,7 @@ func TestBackRefusesWhenTheRunIsNotTheSameRun(t *testing.T) {
 	three := run.move(two, v1.DebugResumeAction_DEBUG_RESUME_ACTION_STEP_IN)
 
 	receipt, snapshot := run.back(0)
-	assert.Equal(t, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_REFUSED, receipt.GetStatus())
-	assert.True(t, strings.HasPrefix(receipt.GetMessage(), "diverged:"), receipt.GetMessage())
+	assert.Equal(t, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_DIVERGED, receipt.GetStatus(), receipt.GetMessage())
 	assert.Equal(t, three.GetRevision(), snapshot.GetRevision(), "a refused rewind moved the session")
 	assert.Equal(t, shownAt(three), shownAt(snapshot))
 
@@ -674,8 +673,7 @@ func TestBackRefusesARunWhoseScopeDiffersAtAnIdenticalStop(t *testing.T) {
 	two := run.move(one, v1.DebugResumeAction_DEBUG_RESUME_ACTION_STEP_IN)
 
 	receipt, snapshot := run.back(0)
-	assert.Equal(t, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_REFUSED, receipt.GetStatus())
-	assert.True(t, strings.HasPrefix(receipt.GetMessage(), "diverged:"), receipt.GetMessage())
+	assert.Equal(t, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_DIVERGED, receipt.GetStatus(), receipt.GetMessage())
 	assert.Equal(t, shownAt(two), shownAt(snapshot), "a refused rewind moved the session")
 }
 
@@ -848,6 +846,6 @@ func TestARunIsLiveOnlyOnceItIsTheOneShown(t *testing.T) {
 	require.NoError(t, err)
 	run.move(at, v1.DebugResumeAction_DEBUG_RESUME_ACTION_STEP_IN)
 	receipt, _ = run.back(0)
-	assert.Equal(t, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_REFUSED, receipt.GetStatus())
+	assert.Equal(t, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_DIVERGED, receipt.GetStatus())
 	assert.Equal(t, int64(2), live.Load(), "a replay that diverged was announced as live")
 }
