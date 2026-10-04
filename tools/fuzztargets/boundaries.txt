@@ -28,6 +28,7 @@ pkg/flowstate/v1/plugin                    ParseEnvConfig               FuzzPars
 pkg/flowstate/v1                           BindRunInputs                FuzzBindRunInputs
 pkg/flowstate/v1                           ParseTaskPolicyConfig        FuzzRootParsers
 pkg/flowstate/v1                           ParseDebugTarget             FuzzRootParsers
+pkg/flowstate/v1                           ParseExecPolicy              FuzzRootParsers
 pkg/flowstate/v1                           ParseDebugTargetOrStep       FuzzRootParsers
 pkg/flowstate/v1                           ParseDebugHitCondition       FuzzRootParsers
 pkg/flowstate/v1                           ParseTypedDebugAsk           FuzzRootParsers

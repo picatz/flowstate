@@ -98,6 +98,15 @@ var allowedSelfImports = map[string][]string{
 	"celrule": {
 		"taskpolicy.go",
 	},
+	// execpolicy is the built-in exec task's policy and runner, the same kind of
+	// edge as netpolicy's below: a task implementation that uses the platform.
+	// It sits below this package (it imports no schema type; ParseExecPolicy
+	// here maps the ExecPolicy message onto its plain Config), so the edge adds
+	// the process runner and nothing that reaches the network.
+	"execpolicy": {
+		"eval_task_exec.go",
+		"eval_task_exec_policy.go",
+	},
 	"metricschema": {
 		"eval.go",
 		"runmetrics.go",
@@ -110,6 +119,8 @@ var allowedSelfImports = map[string][]string{
 		"debugbreakpoint.go",
 	},
 	"netpolicy": {
+		"eval_task_exec.go",
+		"eval_task_exec_policy.go",
 		"eval_task_http_def.go",
 		"eval_task_http_run.go",
 	},

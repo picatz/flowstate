@@ -346,6 +346,18 @@ func CapabilityCases() []CapabilityCase {
 			Local:    CapabilityOutcome{Says: "no resume action"},
 			Durable:  CapabilityOutcome{Says: "no resume action"},
 		},
+		{
+			// Neither driver executes a recorded point: `flowdebug.Historical`
+			// is the third target and the only one that advertises this, and
+			// its own tests hold it to that. What these two drivers owe is not
+			// claiming it.
+			Field:    "history",
+			Exercise: "no resume action reads a recorded point of the run",
+			Workflow: straight("capability-history"),
+			Read:     readsRecordedPoint,
+			Local:    CapabilityOutcome{Says: "no resume action"},
+			Durable:  CapabilityOutcome{Says: "no resume action"},
+		},
 	}
 }
 
@@ -535,6 +547,20 @@ func movesBackwards(CapabilityObserved) CapabilityOutcome {
 	}
 
 	return CapabilityOutcome{Says: "no resume action is a backwards move"}
+}
+
+// readsRecordedPoint reads whether any resume action the contract has moves to
+// a recorded point rather than running the program.
+func readsRecordedPoint(CapabilityObserved) CapabilityOutcome {
+	actions := v1.DebugResumeAction(0).Descriptor().Values()
+	for i := range actions.Len() {
+		name := string(actions.Get(i).Name())
+		if strings.Contains(name, "HISTORY") || strings.Contains(name, "RECORDED") || strings.Contains(name, "POINT") {
+			return CapabilityOutcome{Applied: true}
+		}
+	}
+
+	return CapabilityOutcome{Says: "no resume action reads a recorded point"}
 }
 
 // capabilityField returns the field of [v1.DebugCapabilities] a case names, or

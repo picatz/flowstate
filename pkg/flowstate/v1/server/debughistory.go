@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
-	"go.temporal.io/api/enums/v1"
+	enumspb "go.temporal.io/api/enums/v1"
 	historypb "go.temporal.io/api/history/v1"
 	"go.temporal.io/sdk/workflow"
 
@@ -148,13 +148,14 @@ func (s *FlowstateServer) DebugHistory(ctx context.Context, req *connect.Request
 		EventId:    rec.EventID,
 		Fidelity:   v1.DebugFidelity_DEBUG_FIDELITY_RECONSTRUCTED,
 		Boundaries: ids,
+		Outcome:    outcomeOf(events[index]),
 	}), nil
 }
 
 // readHistory reads a run's history, refusing one over the bound as soon as it
 // is seen to be: the read stops at the first event past it rather than finishing.
 func readHistory(ctx context.Context, run *debugRun, runID string) (*historypb.History, error) {
-	iter := run.temporal.GetWorkflowHistory(ctx, run.workflowID, runID, false, enums.HISTORY_EVENT_FILTER_TYPE_ALL_EVENT)
+	iter := run.temporal.GetWorkflowHistory(ctx, run.workflowID, runID, false, enumspb.HISTORY_EVENT_FILTER_TYPE_ALL_EVENT)
 	history := &historypb.History{}
 	for iter.HasNext() {
 		if len(history.Events) >= engine.MaxReconstructionEvents {
@@ -173,4 +174,22 @@ func readHistory(ctx context.Context, run *debugRun, runID string) (*historypb.H
 	}
 
 	return history, nil
+}
+
+// outcomeOf is how the execution ended at event, or unspecified for a point
+// that is not its closing event. A live read of a closed run says COMPLETED or
+// FAILED, and this says the same of its past.
+func outcomeOf(event *historypb.HistoryEvent) v1.DebugRunState {
+	switch event.GetEventType() {
+	case enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_COMPLETED:
+		return v1.DebugRunState_DEBUG_RUN_STATE_COMPLETED
+	case enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_FAILED,
+		enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_CONTINUED_AS_NEW,
+		enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_TERMINATED,
+		enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_TIMED_OUT,
+		enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_CANCELED:
+		return v1.DebugRunState_DEBUG_RUN_STATE_FAILED
+	default:
+		return v1.DebugRunState_DEBUG_RUN_STATE_UNSPECIFIED
+	}
 }

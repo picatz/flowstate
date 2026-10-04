@@ -620,6 +620,18 @@ func ReachesTheNetwork(nodes []*v1.Node) bool {
 	})
 }
 
+// UsesExec reports whether any step, at any depth, runs a program.
+//
+// The example corpora skip these: an `exec` step is denied until an operator's
+// policy names the programs and directories it may use, and that policy is
+// machine-specific by design (absolute paths). Their behavior is proved by
+// [ExecCases] on both drivers and by `flow test` over the example's own stubs.
+func UsesExec(nodes []*v1.Node) bool {
+	return AnyStep(nodes, func(node *v1.Node) bool {
+		return node.GetTask().GetName() == "exec" || node.GetUndo().GetTask().GetName() == "exec"
+	})
+}
+
 // WaitsForASignal reports whether any step, at any depth, waits to be told
 // something from outside the workload.
 func WaitsForASignal(nodes []*v1.Node) bool {

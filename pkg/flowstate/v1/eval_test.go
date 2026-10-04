@@ -307,6 +307,39 @@ func TestRunWorkflowTaskPolicy(t *testing.T) {
 	}
 }
 
+// TestRunWorkflowExec runs the shared [conformance.ExecCases] against the local
+// driver: real programs under a real policy, so the claims about exit codes,
+// arguments, environment, bounds and denials are made of processes and not of
+// stubs. The durable driver runs the same cases in the engine package, which is
+// what keeps a local rehearsal an honest prediction of what a worker will do.
+//
+// Serial: each case installs its policy into the process-wide registry.
+func TestRunWorkflowExec(t *testing.T) {
+	root := conformance.ExecRoot(t)
+	for _, tc := range conformance.ExecCases(root) {
+		t.Run(tc.Name, func(t *testing.T) {
+			conformance.InstallExecPolicy(t, root, tc)
+
+			// The local driver's route for the case's identity, the same seam
+			// `flow run local --as-*` uses.
+			ctx := v1.NewContextWithRehearsalIdentity(t.Context(), tc.Identity)
+
+			out, err := v1.Run(ctx, tc.Workflow)
+
+			if tc.ExpectedKind != "" {
+				require.Error(t, err, "the run must fail outright")
+				require.Equal(t, tc.ExpectedKind, v1.ClassifyError(err))
+				missing, ok := conformance.ExecFailureMentions(err.Error(), tc.ExpectedError)
+				require.True(t, ok, "the failure must mention %q, got: %v", missing, err)
+				return
+			}
+
+			require.NoError(t, err)
+			tc.Check(t, out)
+		})
+	}
+}
+
 // TestRunWorkflowWait covers durable waiting in the local driver.
 //
 // The same cases run against the durable driver in the engine package. Waiting is

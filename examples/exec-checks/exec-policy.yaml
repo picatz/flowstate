@@ -1,0 +1,62 @@
+# The operator's side of `exec:`. Pass it with --exec-policy (or FLOWSTATE_EXEC_POLICY);
+# without it every `exec:` step is denied.
+#
+# This is an allowlist of what may be STARTED. It is not a sandbox: `git` runs as the
+# worker's user with the worker's privileges, and neither this file nor the egress
+# policy confines what it then does or where it connects. List programs the way a
+# sudoers file lists them, narrowly. Do not list an interpreter (a shell, python, env,
+# xargs) unless handing out arbitrary code execution is the intent.
+exec:
+  # name -> absolute path. The only place a program is located; PATH is never searched.
+  # Verified when the policy loads: it must exist, be a regular executable file, and not
+  # be writable by everyone; symbolic links are resolved to the file that will run.
+  executables:
+    git: /usr/bin/git
+
+  # A pin makes "which git" a statement about bytes rather than a path. Optional, per
+  # name, and verified again at run time against the file that is executed.
+  #   sha256sum /usr/bin/git
+  # executable_sha256:
+  #   git: 0000000000000000000000000000000000000000000000000000000000000000
+
+  # A step's `dir` must resolve, through symbolic links, to somewhere under one of these.
+  # No roots means no directory is permitted.
+  roots: [/var/lib/flowstate/workspaces]
+
+  # The child's environment is built from nothing. `env` are the operator's literals;
+  # `env_passthrough` names worker variables copied in when they are set; `env_authored`
+  # (just one here) names keys a step may set itself. A step can never override these, and a
+  # loader variable (LD_*, DYLD_*) is refused anywhere it could come from a workflow.
+  env:
+    LC_ALL: C
+    GIT_TERMINAL_PROMPT: "0"
+  env_authored: [GIT_AUTHOR_NAME]
+
+  # Both required, both bounded by ceilings the file cannot raise (1h, 16MiB).
+  timeout: 5m
+  max_output_bytes: 64KiB
+
+  # CEL, deny first; a rule that cannot be evaluated denies. They read `argv`, `name`,
+  # `executable` (the resolved path), `dir` (resolved), `env_keys` (names only, never
+  # values) and `identity` (the run's attested workload).
+  #
+  # `roots` confines `dir` and nothing else. Path-like words in `argv` are NOT confined:
+  # `git diff --output=/etc/cron.d/x` or `git log /home/other` is as free to name a path
+  # as the worker's user is. So the rules below allow exact argv shapes, not "anything
+  # after the subcommand": every word after `git rev-parse|status|diff|log` must be a
+  # listed flag or a word that does not begin with `-`, and the deny rule refuses
+  # options that run programs or write files, absolute paths, and `..`.
+  allow:
+    - name == "git" && argv == ["git", "--version"]
+    - >-
+      name == "git" && argv.size() >= 2 && argv[1] in ["rev-parse", "status", "diff", "log"] &&
+      argv.all(a, a in ["--git-dir", "--short", "--stat", "--oneline", "--porcelain", "--"] || !a.startsWith("-"))
+  deny:
+    # git runs whatever a config option, a transport, a diff driver or a textconv names,
+    # and `--output` / `--no-index` write or read outside the repository.
+    - >-
+      argv.exists(a, a == "-c" || a.startsWith("--upload-pack") || a.startsWith("--exec-path") ||
+      a.startsWith("--output") || a == "--no-index" || a.startsWith("--ext-diff") ||
+      a.startsWith("--textconv"))
+    # Paths in argv are not confined by `roots`: refuse absolute and parent-relative ones.
+    - argv.exists(a, a.startsWith("/") || a.contains(".."))

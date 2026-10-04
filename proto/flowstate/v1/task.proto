@@ -368,6 +368,176 @@ message Task {
     }
   }
 
+  // Exec is a task that runs one local program to completion and returns what it
+  // did: its exit code, the bytes it printed, and whether those were cut short.
+  //
+  // It is built in and denied by default. A worker with no `--exec-policy`
+  // refuses every `exec:` step as a policy denial that names the flag, because
+  // process execution is the one capability whose blast radius is the worker
+  // itself, and a deployment has to say yes before a workflow can ask. The
+  // policy file (see [ExecPolicy]) decides which programs exist, which
+  // directories they may run in, which environment they see, and how long and
+  // how loud they may be; the step supplies only a name, arguments, a
+  // directory, and whatever environment the operator let it set.
+  //
+  // # It is not a sandbox
+  //
+  // The child runs as the worker's user with the worker's privileges.
+  // Nothing here applies a namespace, a cgroup, a seccomp filter, a filesystem
+  // confinement, or a network restriction, and the deployment's egress policy
+  // does not govern what the child connects to. The policy decides what may be
+  // *started*; it does not decide what the started program does. A deployment
+  // that needs the second guarantee runs the worker (or a dedicated worker
+  // queue) inside the isolation boundary it trusts.
+  //
+  // # Argv, never a shell string
+  //
+  // The command is a list. There is no field that is parsed into words, so a
+  // value spliced into an argument stays one argument. A workflow that wants
+  // shell semantics names a shell as the program and owns that choice
+  // visibly, and the operator's policy decides whether a shell is a program
+  // this deployment has.
+  //
+  // # A nonzero exit is output, not failure
+  //
+  // The way an HTTP status code is output: the program ran, and what it
+  // concluded is data the workflow branches on. A step fails only when the
+  // policy denies it, the program could not be started, it exceeded the
+  // policy's time bound, or the run was cancelled. A workflow that wants a
+  // nonzero exit to stop the run says so with an `if:` on the next step.
+  message Exec {
+    // Inputs describes one program invocation. The program is named, not
+    // located: argv[0] is a name the operator's policy maps to an absolute
+    // path, and a path written by a workflow is refused.
+    message Inputs {
+      // Argv is the command as a list of words, program name first.
+      //
+      // The first word is a bare name looked up in the policy's `executables`
+      // table; it is never searched for on PATH, and a path (anything with a
+      // slash) is refused. The rest are passed to the program verbatim. No word
+      // is split, expanded, globbed or unquoted, which is the property that makes
+      // a value inside an argument safe to splice.
+      //
+      // Bounded because the workflow chooses both the count and the length, and
+      // the product is what the kernel's argument limit refuses. A word may not
+      // contain a NUL byte, which no operating system can pass.
+      repeated string argv = 1 [
+        (buf.validate.field).required = true,
+        (google.api.field_behavior) = REQUIRED,
+        (buf.validate.field).repeated = {
+          min_items: 1
+          max_items: 256
+          items: {
+            string: {max_len: 8192}
+          }
+        }
+      ];
+
+      // Dir is the working directory, written as an absolute path.
+      //
+      // Required, because the worker's own working directory is never used: it
+      // is wherever the operator started the process, which is not something a
+      // workflow can reason about. The policy admits only directories under
+      // one of its configured roots, after symbolic links are resolved, so a
+      // path that lexically begins under a root but leaves it through a link is
+      // refused. A policy that configures no roots admits no directory, which
+      // makes the task unusable rather than unconfined.
+      string dir = 2 [
+        (buf.validate.field).required = true,
+        (google.api.field_behavior) = REQUIRED,
+        (buf.validate.field).string = {
+          min_len: 1
+          max_len: 4096
+        }
+      ];
+
+      // Env sets environment variables for the child, and is a request, not a
+      // grant.
+      //
+      // The child's environment is built from nothing: first the operator's own
+      // literal values, then the worker variables the operator listed for
+      // passthrough, and only then the entries here, each of which is accepted
+      // only if the policy lists its name as one a step may set. A key the
+      // policy does not list is a policy denial, and a key the operator already
+      // set cannot be overridden from here. Values are literal text: a secret
+      // reference is not accepted, so no credential reaches a child through this
+      // input.
+      map<string, string> env = 3 [(buf.validate.field).map = {
+        max_pairs: 64
+        keys: {
+          string: {
+            min_len: 1
+            max_len: 128
+            pattern: "^[A-Za-z_][A-Za-z0-9_]*$"
+          }
+        }
+        values: {
+          string: {max_len: 8192}
+        }
+      }];
+    }
+
+    // Outputs is what the invocation did. It is present for every program that
+    // started and finished under its own power, whatever the exit code was.
+    message Outputs {
+      // ExitCode is the status the program exited with, or -1 when it was
+      // ended by a signal and so never exited (see [signal]).
+      //
+      // Data, not a verdict: a workflow reads it the way it reads an HTTP status
+      // code. Zero is success by convention only, and some programs use nonzero
+      // codes for outcomes that are not failures (`diff`, `grep`).
+      int32 exit_code = 1;
+
+      // Stdout is the program's standard output: at most the policy's byte bound,
+      // keeping the first bytes written, with invalid UTF-8 replaced by U+FFFD
+      // because a string output must be text.
+      string stdout = 2;
+
+      // Stderr is the program's standard error, bounded and sanitized exactly as
+      // [stdout] is. Standard output and error are captured separately and are not
+      // interleaved.
+      string stderr = 3;
+
+      // StdoutTruncated is true when the program wrote more to standard output
+      // than the policy's bound and the excess was discarded. The program was not
+      // stopped for it: bytes past the bound are read and dropped so a chatty
+      // program is not blocked on a full pipe.
+      bool stdout_truncated = 4;
+
+      // StderrTruncated is true when standard error exceeded the bound; see
+      // [stdout_truncated].
+      bool stderr_truncated = 5;
+
+      // Signal names the signal that ended the program (such as "killed" or
+      // "segmentation fault"), and is empty when it exited by itself.
+      string signal = 6;
+
+      // DurationMs is how long the program ran, in whole milliseconds, measured
+      // by the worker from start to reap.
+      int64 duration_ms = 7;
+
+      // Outcome says how the invocation ended: "ran" when the program started
+      // and finished (whatever its exit code), "did_not_start" when the worker
+      // could not start it, "timed_out" when the policy's time bound ended it,
+      // and "cancelled" when the run was cancelled around it.
+      //
+      // A step produces outputs only in the "ran" case; the other three are
+      // failures, and name themselves as `outcome=<value>` in the failure's text
+      // so a log and a run record say the same word.
+      string outcome = 8;
+
+      // CaptureIncomplete is true when the worker stopped reading the program's
+      // output before the streams ended: the program finished, but a descendant
+      // that had left its process group still held an output pipe open, so
+      // stdout and stderr may be missing bytes the program wrote. It is distinct
+      // from [stdout_truncated], which means the policy's byte bound cut output
+      // the worker read. The outcome stays "ran" and the step is not retried,
+      // since the program did run; a workflow that must have all of the output
+      // checks this flag.
+      bool capture_incomplete = 9;
+    }
+  }
+
   // Tasks have specific names that identify the type of task being performed,
   // such as "log" or "http". The name is used to determine which task
   // implementation to execute when the workflow is run.

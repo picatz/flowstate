@@ -59,7 +59,7 @@ flowchart LR
   submit, and starts, signals, lists, and stops runs through Temporal.
 - **Workers** (`flow worker`) poll Temporal and execute runs. Tasks run here,
   and so do secret resolution and outbound policy.
-- **Tasks** are where work happens: the built-in `log` and `http`, and tasks
+- **Tasks** are where work happens: the built-in `log`, `http` and `exec` (denied until an operator policy enables it), and tasks
   that plugins add.
 - **Policy** decides who may start a run, who may answer its waits, which
   network destinations a task may reach, and which secrets it may resolve.

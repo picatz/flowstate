@@ -52,7 +52,11 @@ func newDAPCommand() *cobra.Command {
 			"`workload.debug` (and `workload.debug_inspect` to inspect values or to set or read conditions). " +
 			"A durable run holds only at step boundaries and has no logpoints or failure stops; the " +
 			"editor is told which. It shows source lines, and takes line breakpoints, when the attach's " +
-			"`program` is the file the run executes, and step addresses otherwise.",
+			"`program` is the file the run executes, and step addresses otherwise.\n\n" +
+			"An `attach` with `\"history\": true` and a `runId` walks the run's recorded history instead: step " +
+			"forward and **step back** between its workflow-task boundaries, in a run that is going or one that " +
+			"finished or failed. Each stop is reconstructed from the history and nothing executes, so it needs " +
+			"`workload.debug` and the run's own `debug:` policy, and has no breakpoints, pause or values yet.",
 		Args: cobra.NoArgs,
 		RunE: runDAP,
 		Example: `# What an editor's launch configuration runs, rather than a person:
@@ -75,6 +79,7 @@ flow run local --debug examples/hello-world/workflow.yaml`,
 	// worker had no way to set them here (#1119).
 	addEgressPolicyFlag(cmd)
 	addTaskPolicyFlag(cmd)
+	addExecPolicyFlag(cmd)
 
 	addSecretFlags(cmd)
 	addLocalRehearsalFlags(cmd)
@@ -96,6 +101,12 @@ func runDAP(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	if err := applyTaskPolicy(cmd); err != nil {
+		return err
+	}
+	// And the exec task's policy, for the same reason: a file that does not load
+	// must refuse the command, not leave the task denied while its operator
+	// believes it was enabled. Without a file the task stays denied.
+	if err := applyExecPolicy(cmd); err != nil {
 		return err
 	}
 
@@ -530,6 +541,24 @@ func attachDebuggedRun(ctx context.Context, cmd *cobra.Command, args flowdap.Att
 				"run `flow validate` on it, or leave `program` out to attach without lines", args.Program)
 		}
 		sourceMap = source.sourceMap(workflow)
+	}
+
+	if args.History {
+		if args.RunID == "" {
+			return nil, errors.New("flowdap: an attach with \"history\": true needs a runId: a point of a recorded run is a point of one execution")
+		}
+		historical, err := flowdebug.OpenHistorical(ctx,
+			flowdebug.RemoteHistory(newWorkflowServiceClient(serverFlagsOf(cmd)), args.WorkflowID, args.RunID),
+			flowdebug.WithSourceMap(sourceMap))
+		if err != nil {
+			return nil, fmt.Errorf("flowdap: reading the history of %s: %w", args.WorkflowID, err)
+		}
+		attachment := &flowdap.Attachment{Target: historical}
+		if historical.SourceMapVerified() {
+			attachment.SourceMap = sourceMap
+		}
+
+		return attachment, nil
 	}
 
 	remote, _, err := flowdebug.AttachRemote(ctx, newWorkflowServiceClient(serverFlagsOf(cmd)),

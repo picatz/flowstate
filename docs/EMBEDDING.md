@@ -172,7 +172,7 @@ A zero `RunOptions` is the safest possible run, matching an unconfigured
 | Field | Zero value means |
 | --- | --- |
 | `Inputs` | The workflow's own `inputs:` defaults apply; no undeclared input is accepted. |
-| `Tasks` | Only this build's own tasks (`log`, `http`) run. |
+| `Tasks` | Only this build's own tasks (`log`, `http`, `exec`) run; `exec` is denied unless the host installs an exec policy. |
 | `Clock` | Real wall-clock time (`v1.RealClock`). |
 | `Signals` | A `wait_for_signal:` step fails immediately (`v1.ErrNoSignalWaiter`) rather than blocking forever. |
 | `EgressPolicy` | The same deny-by-default policy `flow run local` enforces with no flags: internal address ranges denied, loopback denied unless `FLOWSTATE_ALLOW_LOOPBACK_EGRESS=true` is set in the process environment, every redirect hop re-checked, the response body bounded. |

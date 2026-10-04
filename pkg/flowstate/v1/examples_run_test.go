@@ -132,6 +132,13 @@ func TestEveryOfflineExampleRuns(t *testing.T) {
 		inputs, err := conformance.BindExampleInputs(t, wf, path)
 		require.NoError(t, err, "%s cannot be started", name)
 
+		// An example that runs programs is denied without an operator's policy, so
+		// it runs under its own, loaded the way `--exec-policy` loads it, with the
+		// roots and program paths this machine has.
+		if conformance.UsesExec(wf.GetSteps()) {
+			inputs = conformance.WithWorkspace(inputs, conformance.ExecExampleWorkspace(t, path))
+		}
+
 		ran++
 		if gateLapses {
 			lapsed++
