@@ -486,6 +486,94 @@ message SignalRequest {
 // what the run did with it, read the run back with the Get RPC.
 message SignalResponse {}
 
+// GetGateRequest addresses one open gate: the pair `flow signal` takes.
+message GetGateRequest {
+  // WorkflowId identifies the workload the gate belongs to, as Run's
+  // `workflow_id` reports it. 1 to 256 bytes.
+  //
+  // A caller may address only runs in its own tenant. The namespace always
+  // comes from the caller's authenticated identity, never from the request.
+  string workflow_id = 1 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field).string = {
+      min_len: 1
+      max_bytes: 256
+    }
+  ];
+
+  // SignalName is the gate's signal name: the `name:` the waiting
+  // `wait_for_signal:` step declared, which Get reports as each open gate's
+  // signal name. Letters, digits, `-` and `_`, starting with a letter or
+  // digit, at most 128 characters.
+  string signal_name = 2 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field).string = {
+      min_len: 1
+      max_len: 128
+      pattern: "^[A-Za-z0-9][A-Za-z0-9-_]*$"
+    }
+  ];
+}
+
+// GetGateResponse is one open gate, and whether the caller may answer it.
+//
+// It carries nothing of the run beyond the gate itself: no step output, no
+// input, no carried state. A caller who holds `workload.signal` and not
+// `workload.read` is entitled to the question and to nothing else.
+message GetGateResponse {
+  // WorkflowId is the workload the gate belongs to, as the request gave it.
+  string workflow_id = 1;
+
+  // RunId is the run the gate was read on. A client answering the gate pins its
+  // [SignalRequest.run_id] to it, so an answer cannot land on a later run that
+  // reuses the workflow id.
+  string run_id = 2;
+
+  // StepId is the waiting step's own id, as [PendingWait.step_id] reports it.
+  string step_id = 3;
+
+  // SignalName is the gate's signal name, as the request gave it.
+  string signal_name = 4;
+
+  // Prompt is what the gate asks, exactly as [PendingWait.prompt] carries it
+  // and withheld on the same terms Get withholds it: when the run declares a
+  // sensitive output, or when its specification could not be read, the prompt
+  // is a refusal marker rather than the text. Empty where the author wrote
+  // none.
+  //
+  // Empty when may_answer is false and the caller does not also hold
+  // `workload.read`: the question is for the people the policy admits, and this
+  // RPC does not widen what a caller refused by `signals:` could read.
+  string prompt = 5;
+
+  // PromptTruncated is true when Prompt is shorter than what the author's
+  // expression produced, as [PendingWait.prompt_truncated] says.
+  bool prompt_truncated = 6;
+
+  // Deadline is when the gate lapses of its own accord. Unset means it blocks
+  // until somebody acts.
+  optional google.protobuf.Timestamp deadline = 7;
+
+  // Starter is who submitted the run, `issuer#subject`, as [GetResponse.starter]
+  // reports it; empty when the run recorded none. It is what a
+  // `distinct_from_starter` policy compares the answerer against. Withheld
+  // on the same terms as prompt.
+  string starter = 8;
+
+  // MayAnswer is true when the workflow's `signals:` policy for this gate would
+  // admit this caller's [Signal] now: the same decision Signal makes, from the
+  // same attestation of who the caller is, reached without delivering anything.
+  //
+  // False means the policy refuses this caller. The gate is still returned, so
+  // a surface can say it exists and show it read-only rather than offering an
+  // answer that would be refused, but without its prompt or starter unless the
+  // caller also holds `workload.read`. It is advice for rendering, never authority: Signal decides again
+  // at the moment of delivery, and the run may have changed since.
+  bool may_answer = 9;
+}
+
 // SignalWithStartRequest delivers a signal to an entity, creating it first if it
 // does not yet exist.
 //
@@ -865,6 +953,21 @@ service WorkflowService {
   // [SignalResponse] is empty: it says the signal was accepted, not what the run
   // did with it. Call [Get] afterward to see whether a waiting step consumed it.
   rpc Signal(SignalRequest) returns (SignalResponse) {}
+
+  // GetGate reads one open approval gate for the caller who would answer it.
+  //
+  // [Get] reads a whole run and is bound to `workload.read`, which an approver
+  // need not hold: a person granted only `workload.signal` can answer a gate with
+  // [Signal] but could not see the question it asks. GetGate is the read scoped
+  // to answering. It is bound to `workload.signal`, returns only the gate (no
+  // step outputs, inputs or carried state), and says whether this caller's own
+  // `signals:` policy would admit a [Signal] now, without delivering one.
+  //
+  // A run that is not running, or holds no open gate by that name, answers
+  // NOT_FOUND, the same answer a run in another tenant gets. A run holding more
+  // gates than one answer lists, whose list does not include the named gate,
+  // answers FAILED_PRECONDITION: the gate may be open, and this read cannot say.
+  rpc GetGate(GetGateRequest) returns (GetGateResponse) {}
 
   // SignalWithStart delivers a signal to the entity holding a business key, an
   // order id or a subscription id, creating that entity if this is the first

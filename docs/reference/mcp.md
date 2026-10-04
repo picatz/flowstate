@@ -32,6 +32,7 @@ contracts and do not advertise a schema-owned result message.
 | `flowstate_get` | via a server | `flowstate.v1.GetRequest` | `flowstate.v1.GetResponse` |
 | `flowstate_get_timeline` | via a server | `flowstate.v1.GetTimelineRequest` | `flowstate.v1.GetTimelineResponse` |
 | `flowstate_signal` | via a server | `flowstate.v1.SignalRequest` | `flowstate.v1.SignalResponse` |
+| `flowstate_get_gate` | via a server | `flowstate.v1.GetGateRequest` | `flowstate.v1.GetGateResponse` |
 | `flowstate_signal_with_start` | via a server | `flowstate.v1.SignalWithStartRequest` | `flowstate.v1.SignalWithStartResponse` |
 | `flowstate_list` | via a server | `flowstate.v1.ListRequest` | `flowstate.v1.ListResponse` |
 | `flowstate_cancel` | via a server | `flowstate.v1.CancelRequest` | `flowstate.v1.CancelResponse` |
@@ -119,6 +120,14 @@ Signal delivers a signal to a run waiting for one, which is how a human approval
 This addresses a durable run. `flow run local` answers its gates from flags instead, with the same signal names and payload shape.
 
 `SignalResponse` is empty: it says the signal was accepted, not what the run did with it. Call `Get` afterward to see whether a waiting step consumed it.
+
+## `flowstate_get_gate`
+
+GetGate reads one open approval gate for the caller who would answer it.
+
+`Get` reads a whole run and is bound to `workload.read`, which an approver need not hold: a person granted only `workload.signal` can answer a gate with `Signal` but could not see the question it asks. GetGate is the read scoped to answering. It is bound to `workload.signal`, returns only the gate (no step outputs, inputs or carried state), and says whether this caller's own `signals:` policy would admit a `Signal` now, without delivering one.
+
+A run that is not running, or holds no open gate by that name, answers NOT_FOUND, the same answer a run in another tenant gets. A run holding more gates than one answer lists, whose list does not include the named gate, answers FAILED_PRECONDITION: the gate may be open, and this read cannot say.
 
 ## `flowstate_signal_with_start`
 
