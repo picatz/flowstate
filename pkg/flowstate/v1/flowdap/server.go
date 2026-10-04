@@ -220,10 +220,7 @@ type LaunchArguments struct {
 // Reverser is a [flowdebug.Target] that can step back, as
 // [flowdebug.Reversible] does. A server offers stepBack and reverseContinue
 // only for a target that is one and says so in its capabilities.
-type Reverser interface {
-	Back(ctx context.Context, requestID string, expectedRevision uint64) (*v1.DebugReceipt, error)
-	BackToBreakpoint(ctx context.Context, requestID string, expectedRevision uint64) (*v1.DebugReceipt, error)
-}
+type Reverser = flowdebug.Reverser
 
 // capable is a target that reports its own capabilities before it has a
 // snapshot, as a [flowdebug.Session] and a [flowdebug.Reversible] do.
