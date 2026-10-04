@@ -6,11 +6,12 @@
 **Write a workflow once, rehearse and test it on your machine, then run the same
 workflow durably on [Temporal], governed by identity, policy, and secrets.**
 
-Flowstate is a durable, policy-governed workload engine: for work that has to
-finish correctly despite crashes, network failures, and waits of hours or days.
-Releases that need an approval and roll out in stages; provisioning that must be
-undone when a later step fails; incident runbooks; data pipelines; integrations
-that coordinate several systems and wait on people. You describe the workload in
+Flowstate is a typed, durable, debuggable workflow language and engine, for work
+that has to finish correctly despite crashes, network failures, and waits of
+hours or days. Business processes with people in the loop; long-lived entities
+that many callers address; agents that act under policy; provisioning that must
+be undone when a later step fails; data pipelines; incident runbooks; releases
+that roll out in stages. You describe the workload in
 a `Flowfile`, [YAML] for structure and [CEL] expressions for data and
 conditions. Flowstate validates it, compiles it into a typed [Protobuf]
 specification, and runs that specification either in-process for rehearsal or
@@ -23,11 +24,8 @@ authenticated callers and approvers, policy over what workflows may reach and
 read, worker-side secret resolution, tenant isolation, and an audit trail.
 
 Flowstate works alongside CI, services, and your existing Temporal usage rather
-than replacing them. CI still builds and tests; a CI job can hand off to a
-Flowstate run that waits for an approval, rolls a release out, and undoes it if
-a stage fails, long after the job has finished. [Why Flowstate, and when
-not](docs/COMPARISON.md) compares it with the alternatives, including the
-workloads it does not fit.
+than replacing them. [Why Flowstate, and when not](docs/COMPARISON.md) compares
+it with the alternatives, including the workloads it does not fit.
 
 > [!WARNING]
 > Flowstate is early software. The capabilities described here are shipped and

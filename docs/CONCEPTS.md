@@ -1,10 +1,10 @@
 # How Flowstate works
 
 Flowstate runs workloads that have to finish correctly even when processes
-crash, networks fail, and steps wait for hours or days: releases that need an
-approval, provisioning that must be undone if a later step fails, operational
-runbooks, data pipelines, and integrations that coordinate several systems. You
-describe the workload in a Flowfile. Flowstate checks it, compiles it into a
+crash, networks fail, and steps wait for hours or days: business processes with
+people in the loop, long-lived entities, provisioning that must be undone if a
+later step fails, data pipelines, and operational runbooks. You describe the
+workload in a Flowfile. Flowstate checks it, compiles it into a
 typed specification, and runs that specification either on your machine or
 durably on [Temporal](https://temporal.io/), under policy about who may start
 it, who may answer it, what it may reach, and which secrets it may use.
@@ -289,14 +289,6 @@ explains when tenants need separate namespaces.
 [Architecture](ARCHITECTURE.md#leaning-into-temporal) maps each Temporal
 primitive to its Flowstate surface.
 
-## Where Flowstate is going
-
-Flowstate is early software: the capabilities on this page are shipped, but the
-interfaces are not yet stable. [Vision](VISION.md) records directions the
-project intends to take, such as fetchable plugins, consuming MCP servers as
-capabilities, and chat-based approvals. Those are intentions, not commitments,
-and nothing there is available until it appears in the pages above.
-
 ## Next steps
 
 - [Get started](GETTING_STARTED.md): write, test, and run a workflow.
@@ -304,3 +296,5 @@ and nothing there is available until it appears in the pages above.
 - [Examples](../examples/README.md): tested workflows for each feature.
 - [Architecture](ARCHITECTURE.md): the invariants and design decisions behind
   all of the above.
+- [Vision](VISION.md): directions the project intends to take. Flowstate is
+  early software; nothing there is available until the pages above describe it.
