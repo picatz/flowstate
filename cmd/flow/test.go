@@ -93,6 +93,10 @@ func newTestCommand() *cobra.Command {
 		SilenceErrors: true,
 		SilenceUsage:  true,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if watch, _ := cmd.Flags().GetBool("watch"); watch {
+				return runTestWatch(cmd, args)
+			}
+
 			return runTest(cmd, args)
 		},
 		Example: `# Run every test beside the workflows in a directory:
@@ -109,6 +113,11 @@ flow test -o jsonl examples/`,
 	}
 
 	addOutputFlag(cmd)
+
+	cmd.Flags().Bool("watch", false,
+		"run once, then again after every change to a YAML file under the paths given, until "+
+			"interrupted; clears a terminal between runs and writes one document per run to a pipe; "+
+			"refused with --debug")
 
 	// A JUnit XML report beside whichever output format is chosen (#1471):
 	// a file because CI reads one, and stdout stays the human or JSON account.
@@ -386,6 +395,36 @@ func runTest(cmd *cobra.Command, paths []string) error {
 		return errTestsFailed
 	}
 	return nil
+}
+
+// runTestWatch is the edit-run-read loop (#1472): `flow test` again after each
+// change, on a terminal with the screen cleared first so the newest result is
+// the only one, and as one document per run on a pipe.
+func runTestWatch(cmd *cobra.Command, paths []string) error {
+	if debugging, _ := cmd.Flags().GetBool("debug"); debugging {
+		return errors.New("--watch cannot be combined with --debug: a debugger session is one interactive run")
+	}
+	w, err := newPollWatcher(paths, watchPollInterval)
+	if err != nil {
+		return err
+	}
+	surface := newSurface(cmd)
+	format, err := resolveOutputFormat(cmd)
+	if err != nil {
+		return err
+	}
+	// Only a text answer on a terminal is cleared: the machine formats are a
+	// stream a consumer parses, whatever the terminal is.
+	clear := watchClears(surface.Caps.TTY, format)
+
+	return watchLoop(cmd.Context(), w,
+		func(bool) error { return runTest(cmd, paths) },
+		func() {
+			if clear {
+				fmt.Fprint(surface.Out, "\x1b[2J\x1b[H")
+			}
+		},
+		surface.Err)
 }
 
 // printSummary ends a text-mode run with the whole-run account (#936): how

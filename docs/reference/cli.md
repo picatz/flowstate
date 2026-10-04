@@ -2167,6 +2167,7 @@ flow test -o jsonl examples/
 | `--seed <uint64>` | `uint64` | `0` | — | replay exactly one schedule, the seed a reported divergence names, instead of searching |
 | `--seed0 <uint64>` | `uint64` | `1` | — | the first seed `--seeds` walks upward from, to move the search to a different part of the seed space |
 | `--seeds <int>` | `int` | `0` | — | also run every case under N seeded schedules of the local driver's own choices (`parallel:` branch order, where an `async:` step's work happens), and fail when a case's observables depend on which one ran; 0, the default, runs written order only |
+| `--watch` | `bool` | `false` | — | run once, then again after every change to a YAML file under the paths given, until interrupted; clears a terminal between runs and writes one document per run to a pipe; refused with --debug |
 
 ## `flow timeline`
 
