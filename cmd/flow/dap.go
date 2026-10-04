@@ -291,51 +291,62 @@ func (b debuggedRunBuilder) session(emit func(string, flowdebug.Tone), continueA
 	})
 }
 
-// execute runs the program under session and reports its end through report,
-// which is told the exit code. The code is recorded before the session reads
-// as ended: a movement answered ENDED reports the run's end at once, and must
-// report this code rather than the default. reports says whether this run's
-// outcome is the session's: a run that a rewind replaced is not.
+// execute runs the program under session and says how it ended. reports says
+// whether this run's outcome is the session's, and is asked each time
+// something would be said about it: a run a rewind replaced, or that is still
+// being replayed, says nothing.
+//
+// The editor is told the run ended by the returned func, not here, so a caller
+// that must wait for the run itself (a rewind stopping the one it replaced,
+// while the adapter's ordering lock is held) never waits on the adapter's own
+// report of an end, which needs that lock.
+//
+// The exit code is recorded before the session reads as ended: a movement
+// answered ENDED reports the run's end at once, and must report this code
+// rather than the default.
 func (b debuggedRunBuilder) execute(
-	runCtx context.Context, session *flowdebug.Session, reports func() bool, finish func(),
-) {
+	runCtx context.Context, session *flowdebug.Session, reports func() bool,
+) (finish func()) {
 	exit := 0
-	defer func() {
-		if reports() {
-			b.server.Exited(exit)
+	func() {
+		ctx := v1.NewContextWithDebugger(runCtx, session)
+		ctx = v1.NewContextWithRunObserver(ctx, session)
+		ctx, err := withLocalTaskRuntimeUsing(b.cmd, ctx, b.workflow, b.providers)
+		if err != nil {
+			exit = 1
+			if reports() {
+				b.server.Exited(exit)
+			}
+			session.Finished(err)
+			if reports() {
+				b.server.Output(fmt.Sprintf("flowdap: configuring the local task runtime: %v\n", err))
+			}
+
+			return
 		}
-		_ = session.Close()
-		if reports() {
-			finish()
+
+		_, runErr := v1.RunWithInputs(ctx, b.workflow, b.inputs)
+		if runErr != nil {
+			exit = 1
+			if reports() {
+				b.server.Exited(exit)
+			}
+		}
+		session.Finished(runErr)
+		if runErr != nil && reports() {
+			b.server.Output("run failed: " + session.FailureText(runErr) + "\n")
 		}
 	}()
 
-	ctx := v1.NewContextWithDebugger(runCtx, session)
-	ctx = v1.NewContextWithRunObserver(ctx, session)
-	ctx, err := withLocalTaskRuntimeUsing(b.cmd, ctx, b.workflow, b.providers)
-	if err != nil {
-		exit = 1
-		if reports() {
-			b.server.Exited(exit)
-		}
-		session.Finished(err)
-		if reports() {
-			b.server.Output(fmt.Sprintf("flowdap: configuring the local task runtime: %v\n", err))
-		}
-
-		return
+	if reports() {
+		b.server.Exited(exit)
 	}
+	_ = session.Close()
 
-	_, runErr := v1.RunWithInputs(ctx, b.workflow, b.inputs)
-	if runErr != nil {
-		exit = 1
+	return func() {
 		if reports() {
-			b.server.Exited(exit)
+			b.server.Finished()
 		}
-	}
-	session.Finished(runErr)
-	if runErr != nil && reports() {
-		b.server.Output("run failed: " + session.FailureText(runErr) + "\n")
 	}
 }
 
@@ -355,22 +366,28 @@ func (b debuggedRunBuilder) once(args flowdap.LaunchArguments) (*flowdap.Launch,
 		Terminate: cancel,
 		Start: func() {
 			defer cancel()
-			b.execute(runCtx, session, func() bool { return true }, b.server.Finished)
+			b.execute(runCtx, session, func() bool { return true })()
 		},
 	}, nil
 }
 
 // debuggedRun is one run a reversible launch has started.
 type debuggedRun struct {
-	cancel  context.CancelFunc
-	done    chan struct{}
-	live    atomic.Bool
-	stopped atomic.Bool
+	cancel context.CancelFunc
+	// done closes when the run has ended and its session is released, before
+	// the editor is told: stopping a run waits on this and nothing the adapter
+	// holds a lock for. reported closes after the editor has been told.
+	done     chan struct{}
+	reported chan struct{}
+	live     atomic.Bool
+	stopped  atomic.Bool
 }
 
-// reports is whether this run's end is the session's: it was not ended by a
-// rewind. The editor's terminate cancels without stopping, so it reports.
-func (r *debuggedRun) reports() bool { return !r.stopped.Load() }
+// reports is whether this run's end is the session's: it is the one shown, and
+// no rewind has stopped it. The editor's terminate cancels without stopping, so
+// it reports. A replay that ends early, or that diverges, was never shown and
+// says nothing.
+func (r *debuggedRun) reports() bool { return r.live.Load() && !r.stopped.Load() }
 
 // reversible is a launch that can step back. Going back runs the program
 // again from its start, so it is a choice the launch configuration makes with
@@ -389,7 +406,7 @@ func (b debuggedRunBuilder) reversible(args flowdap.LaunchArguments) (*flowdap.L
 	}
 
 	target, err := flowdebug.NewReversible(b.cmd.Context(), func(context.Context) (*flowdebug.Run, error) {
-		run := &debuggedRun{done: make(chan struct{})}
+		run := &debuggedRun{done: make(chan struct{}), reported: make(chan struct{})}
 		// A replay is silent: the editor was shown that account the first time.
 		session, err := b.session(func(text string, _ flowdebug.Tone) {
 			if run.live.Load() {
@@ -402,8 +419,10 @@ func (b debuggedRunBuilder) reversible(args flowdap.LaunchArguments) (*flowdap.L
 		var runCtx context.Context
 		runCtx, run.cancel = context.WithCancel(b.cmd.Context())
 		go func() {
-			defer close(run.done)
-			b.execute(runCtx, session, run.reports, b.server.Finished)
+			defer close(run.reported)
+			finish := b.execute(runCtx, session, run.reports)
+			close(run.done)
+			finish()
 		}()
 
 		return &flowdebug.Run{
@@ -437,7 +456,7 @@ func (b debuggedRunBuilder) reversible(args flowdap.LaunchArguments) (*flowdap.L
 		Start: func() {
 			for {
 				run := shown()
-				<-run.done
+				<-run.reported
 				if shown() == run {
 					return
 				}

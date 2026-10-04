@@ -1172,6 +1172,14 @@ func (s *Server) back(ctx context.Context, request inbound, toBreakpoint bool) {
 	s.order.Lock()
 	defer s.order.Unlock()
 
+	// A run that has ended has no stop to go back to: the editor's session
+	// ends with it, and a rewind would start a run nobody is attached to.
+	if snapshot, err := s.currentTarget().Snapshot(ctx); err == nil && terminalState(snapshot.GetState()) {
+		s.fail(request, "flowdap: the run has ended, so there is no stop to go back to")
+
+		return
+	}
+
 	s.mu.Lock()
 	revision := s.revision
 	s.mu.Unlock()

@@ -3,6 +3,7 @@ package flowdap_test
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -142,4 +143,41 @@ func TestASessionThatCannotStepBackSaysSoAndOffersNothing(t *testing.T) {
 		assert.Equal(t, false, refused["success"], command)
 		assert.Contains(t, refused["message"], `"reverse": true`, command)
 	}
+}
+
+func TestAFinishedRunHasNoStopToGoBackTo(t *testing.T) {
+	t.Parallel()
+
+	target := rewindable(t)
+	c := newClient(t)
+	t.Cleanup(func() { _ = c.Close() })
+	server := flowdap.NewServer(target, c)
+	go func() { _ = server.Serve(t.Context()) }()
+
+	c.send(1, "initialize", map[string]any{"adapterID": "flowstate"})
+	c.await("response", "initialize")
+	c.send(2, "launch", map[string]any{})
+	c.await("response", "launch")
+	c.send(3, "configurationDone", nil)
+	c.await("response", "configurationDone")
+	c.await("event", "stopped")
+
+	c.send(4, "continue", map[string]any{"threadId": 1})
+	c.await("response", "continue")
+	// Until the run has ended, by the target's own account of it.
+	ended, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	for after := uint64(0); ; {
+		snapshot, err := target.WaitSnapshot(ended, after)
+		require.NoError(t, err)
+		if snapshot.GetState() == v1.DebugRunState_DEBUG_RUN_STATE_COMPLETED {
+			break
+		}
+		after = snapshot.GetRevision()
+	}
+
+	c.send(5, "stepBack", map[string]any{"threadId": 1})
+	refused := c.await("response", "stepBack")
+	assert.Equal(t, false, refused["success"])
+	assert.Contains(t, refused["message"], "has ended")
 }

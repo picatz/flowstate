@@ -6,15 +6,19 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 )
 
@@ -698,10 +702,11 @@ steps:
 outputs: {}
 `), 0o600))
 
-	start := func(t *testing.T) *dapConn {
+	start := func(t *testing.T, env ...string) *dapConn {
 		t.Helper()
 
 		cmd := flowBinaryCommand(buildFlowBinary(t), "dap")
+		cmd.Env = append(cmd.Environ(), env...)
 		stdin, err := cmd.StdinPipe()
 		require.NoError(t, err)
 		stdout, err := cmd.StdoutPipe()
@@ -781,6 +786,64 @@ outputs: {}
 		refused := conn.await("response", "stepBack")
 		assert.Equal(t, false, refused["success"])
 		assert.Contains(t, refused["message"], `"reverse": true`)
+	})
+
+	// A program that does not repeat itself: its second request is refused. The
+	// replay ends early, the adapter says so, and nothing it did is reported as
+	// the session's own.
+	t.Run("a replay that ends early", func(t *testing.T) {
+		t.Parallel()
+
+		var requests atomic.Int64
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if requests.Add(1) > 1 {
+				w.WriteHeader(http.StatusBadRequest)
+			}
+		}))
+		t.Cleanup(server.Close)
+		flaky := filepath.Join(dir, "flaky.yaml")
+		require.NoError(t, os.WriteFile(flaky, []byte(`
+edition: v2026.4
+name: flaky
+steps:
+  - id: ask
+    http:
+      url: `+server.URL+`
+      expect: ${response.status_code == 200}
+  - id: after
+    value: "'done'"
+  - id: last
+    value: "'done'"
+outputs: {}
+`), 0o600))
+
+		conn := start(t, v1.AllowLoopbackEgressEnv+"="+v1.AllowLoopbackEgressValue)
+		conn.send("launch", map[string]any{"program": flaky, "reverse": true})
+		conn.await("response", "launch")
+		conn.send("configurationDone", nil)
+		conn.await("response", "configurationDone")
+		conn.await("event", "stopped")
+		for range 2 {
+			conn.send("stepIn", map[string]any{"threadId": 1})
+			conn.await("response", "stepIn")
+			conn.await("event", "stopped")
+		}
+		require.Contains(t, frame(conn), "last", "the first run did not get past its request")
+
+		// Going back to "after" repeats the request, which is now refused.
+		conn.send("stepBack", map[string]any{"threadId": 1})
+		refused := conn.await("response", "stepBack")
+		require.Equal(t, false, refused["success"], "%v", refused)
+		assert.Contains(t, refused["message"], "diverged")
+
+		// The session is where it was, and still moves.
+		assert.Contains(t, frame(conn), "last")
+		conn.send("continue", map[string]any{"threadId": 1})
+		conn.await("response", "continue")
+		conn.await("event", "terminated")
+		exited := conn.await("event", "exited")
+		assert.Equal(t, float64(0), exited["body"].(map[string]any)["exitCode"],
+			"a replay's failure was reported as the run's")
 	})
 
 	t.Run("terminate", func(t *testing.T) {
