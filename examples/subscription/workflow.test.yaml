@@ -1,0 +1,85 @@
+# Events are staggered with `at:` because signals scripted for the same moment have
+# no defined order between them, and an entity is exactly the shape where order is
+# the point.
+edition: v2026.4
+defaults:
+  workflow: ./workflow.yaml
+  stubs:
+    - task: log
+      returns: {}
+tests:
+  - name: a trial becomes active on its first payment and ends when the customer cancels
+    signals:
+      - {name: event, at: 24h, payload: {kind: payment_succeeded}}
+      - {name: event, at: 48h, payload: {kind: cancel}}
+    expect:
+      outputs:
+        status: cancelled
+        plan: basic
+        events: 2
+
+  - name: failed payments in a row cancel the subscription after the third
+    signals:
+      - {name: event, at: 24h, payload: {kind: payment_succeeded}}
+      - {name: event, at: 48h, payload: {kind: payment_failed}}
+      - {name: event, at: 72h, payload: {kind: payment_failed}}
+      - {name: event, at: 96h, payload: {kind: payment_failed}}
+    expect:
+      ran: [lifecycle]
+      outputs:
+        status: cancelled
+        plan: basic
+        events: 4
+
+  - name: a payment between failures resets the count
+    signals:
+      - {name: event, at: 24h, payload: {kind: payment_failed}}
+      - {name: event, at: 48h, payload: {kind: payment_failed}}
+      - {name: event, at: 72h, payload: {kind: payment_succeeded}}
+      - {name: event, at: 96h, payload: {kind: payment_failed}}
+      - {name: event, at: 120h, payload: {kind: payment_failed}}
+      - {name: event, at: 144h, payload: {kind: cancel}}
+    expect:
+      outputs:
+        status: cancelled
+        plan: basic
+        events: 6
+
+  - name: a plan change is carried, and an unknown event changes nothing
+    inputs:
+      max_failures: 2
+    signals:
+      - {name: event, at: 24h, payload: {kind: payment_succeeded}}
+      - {name: event, at: 48h, payload: {kind: change_plan, plan: pro}}
+      - {name: event, at: 72h, payload: {kind: shrug}}
+      - {name: event, at: 96h, payload: {kind: payment_failed}}
+      - {name: event, at: 120h, payload: {kind: payment_failed}}
+    expect:
+      outputs:
+        status: cancelled
+        plan: pro
+        events: 5
+
+  - name: a trial that hears nothing for a month lapses
+    expect:
+      outputs:
+        status: cancelled
+        plan: basic
+        events: 1
+
+  - name: an active subscription is not ended by a quiet month
+    signals:
+      - {name: event, at: 24h, payload: {kind: payment_succeeded}}
+      - {name: event, at: 800h, payload: {kind: cancel}}
+    expect:
+      outputs:
+        status: cancelled
+        plan: basic
+        events: 3
+
+  - name: a plan the enum does not name is refused
+    inputs:
+      plan: platinum
+    expect:
+      failed: true
+      error_contains: platinum
