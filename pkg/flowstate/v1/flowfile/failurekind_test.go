@@ -80,3 +80,17 @@ func TestFailureOutputRequiresTolerance(t *testing.T) {
 	diagnostics := validateTriggerSource(t, source)
 	require.NotEmpty(t, diagnostics)
 }
+
+// TestFailureKindOnAnUntoleratedStepIsNotJudged: only a tolerated step's
+// `failure` is the engine's, so a call output that is merely named `failure`
+// is left alone.
+func TestFailureKindOnAnUntoleratedStepIsNotJudged(t *testing.T) {
+	t.Parallel()
+
+	source := strings.Replace(strings.Replace(failureKindWorkflow, "    continue_on_error: true\n", "", 1),
+		"%s", `${steps.fetch.failure.kind == "network"}`, 1)
+
+	for _, d := range validateTriggerSource(t, source) {
+		require.NotContains(t, d.Message, `"network"`, "%v", d)
+	}
+}

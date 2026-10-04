@@ -1648,7 +1648,9 @@ func validateInputRefs(stepID, inputName string, val *v1.Value, scope refScope, 
 	// `steps.<id>.failure.kind` is closed the same way: the kinds are
 	// [v1.ErrorKind]'s, so a misspelled literal is refused here rather than
 	// silently taking the other branch on both drivers.
-	for _, literal := range unknownFailureKindLiterals(parsed.GetExpr(), map[string]struct{}{}) {
+	for _, literal := range unknownFailureKindLiterals(parsed.GetExpr(), map[string]struct{}{}, func(id string) bool {
+		return scope.steps[id].GetPolicy().GetContinueOnError()
+	}) {
 		ds = append(ds, unknownFailureKindLiteral(stepID, inputName, literal))
 	}
 
@@ -2889,8 +2891,16 @@ func unknownTriggerKindLiterals(e *expr.Expr, bound map[string]struct{}) []strin
 
 // unknownFailureKindLiterals is the same walk for `steps.<id>.failure.kind`
 // compared with a string literal that names no [v1.ErrorKind] (#1905).
-func unknownFailureKindLiterals(e *expr.Expr, bound map[string]struct{}) []string {
-	return unknownKindLiterals(e, bound, checkFailureKindComparand, func(literal string) bool {
+//
+// tolerated says whether a step id names a step carrying `continue_on_error:`;
+// only that step's `failure` is the engine's, so a `call:` output that happens
+// to be named `failure` is never judged.
+func unknownFailureKindLiterals(e *expr.Expr, bound map[string]struct{}, tolerated func(id string) bool) []string {
+	check := func(field, other *expr.Expr, bound map[string]struct{}, report func(string)) {
+		checkFailureKindComparand(field, other, bound, tolerated, report)
+	}
+
+	return unknownKindLiterals(e, bound, check, func(literal string) bool {
 		_, ok := v1.ParseErrorKind(literal)
 		return ok
 	})
@@ -2993,7 +3003,7 @@ func checkTriggerKindComparand(field, other *expr.Expr, bound map[string]struct{
 // checkFailureKindComparand reports the string literal compared with
 // `steps.<id>.failure.kind`, the same one-sided caution as
 // [checkTriggerKindComparand]: only a literal is judged.
-func checkFailureKindComparand(field, other *expr.Expr, bound map[string]struct{}, report func(string)) {
+func checkFailureKindComparand(field, other *expr.Expr, bound map[string]struct{}, tolerated func(string) bool, report func(string)) {
 	kind := field.GetSelectExpr()
 	if kind == nil || kind.GetField() != v1.FailureKindField {
 		return
@@ -3007,7 +3017,7 @@ func checkFailureKindComparand(field, other *expr.Expr, bound map[string]struct{
 		return
 	}
 	root := step.GetOperand().GetIdentExpr().GetName()
-	if _, shadowed := bound[root]; root != v1.StepsRoot || shadowed {
+	if _, shadowed := bound[root]; root != v1.StepsRoot || shadowed || !tolerated(step.GetField()) {
 		return
 	}
 	sv, ok := other.GetConstExpr().GetConstantKind().(*expr.Constant_StringValue)
