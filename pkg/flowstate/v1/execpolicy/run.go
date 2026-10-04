@@ -158,6 +158,11 @@ func (c *Command) Run(ctx context.Context) (Result, error) {
 	case exited:
 		result.ExitCode = exitErr.ExitCode()
 		result.Signal = signalName(exitErr)
+	case cmd.ProcessState != nil:
+		// The program ran and was reaped; the error is the plumbing around it
+		// (a pipe copy), so what it did is still its result and is not retried
+		// as though it never started.
+		result.ExitCode = cmd.ProcessState.ExitCode()
 	default:
 		return result, &RunError{Outcome: OutcomeDidNotStart, Err: waitErr, Result: result}
 	}

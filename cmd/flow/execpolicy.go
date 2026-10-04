@@ -24,8 +24,8 @@ import (
 // every task with a stub, so no program is ever started there.
 //
 // With no file the task stays denied, and the denial names this flag. That is
-// the default and the safe direction: there is no environment variable that
-// enables it, no loopback-style shortcut, and nothing a workflow can write.
+// the default and the safe direction: only an operator-supplied file enables it
+// (by the flag or its environment variable), there is no loopback-style shortcut, and nothing a workflow can write.
 
 // execPolicyEnv names the policy file the same way the flag does, for a
 // container image that bakes configuration into the environment.
