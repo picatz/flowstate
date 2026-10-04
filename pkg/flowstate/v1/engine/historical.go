@@ -33,9 +33,9 @@ import (
 // interceptor sees the query handlers the interpreter installs
 // ([ProgressQuery], [v1.DebugQuery], [v1.DebugInspectQuery]) as it installs
 // them, and after the prefix has replayed, this calls them exactly as the SDK
-// would for a live query. Nothing in the engine knows it is being read: no code
-// path was added, no command was added, and the recorded command sequence is
-// what the replay checks itself against.
+// would for a live query. The replayed interpreter does not know it is being
+// read: it gained no code path and no command, and the recorded command
+// sequence is what the replay checks itself against.
 //
 // # Supported points
 //
@@ -163,6 +163,12 @@ func (c *handlerCapture) ask() {
 // on a history (51,200 events) — a longer one cannot exist.
 const MaxReconstructionEvents = 51200
 
+// MaxReconstructionInspections bounds the inspections one reconstruction
+// answers. The replay answers the whole batch on every workflow scheduler pass
+// and retains a response for each, so the batch is work spent per event, not a
+// reporting detail.
+const MaxReconstructionInspections = 16
+
 // Reconstruction is what the interpreter answers at one boundary of a
 // recorded run.
 type Reconstruction struct {
@@ -213,11 +219,15 @@ func Boundaries(history *historypb.History) []int {
 // or any other effect cannot be reached from here. A cancelled ctx ends the
 // call at once with its error; the replay already under way cannot be
 // interrupted, runs on a goroutine of its own to the end of the prefix (bounded
-// by [MaxReconstructionEvents]) and its answer is dropped.
+// by [MaxReconstructionEvents]) and its answer is dropped. At most
+// [MaxReconstructionInspections] inspections are answered.
 func Reconstruct(ctx context.Context, history *historypb.History, index int, execution workflow.Execution, inspections ...*v1.DebugInspectRequest) (*Reconstruction, error) {
 	events := history.GetEvents()
 	if len(events) > MaxReconstructionEvents {
 		return nil, fmt.Errorf("history has %d events, over the %d a reconstruction replays", len(events), MaxReconstructionEvents)
+	}
+	if len(inspections) > MaxReconstructionInspections {
+		return nil, fmt.Errorf("%d inspections asked, over the %d a reconstruction answers", len(inspections), MaxReconstructionInspections)
 	}
 	if index < 0 || index >= len(events) {
 		return nil, fmt.Errorf("event index %d is outside a history of %d events", index, len(events))

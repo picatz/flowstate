@@ -293,6 +293,21 @@ func TestAReconstructionOverTheBoundIsRefusedBeforeItReplays(t *testing.T) {
 	assert.Contains(t, err.Error(), "over the")
 }
 
+// TestAnInspectionBatchOverTheBoundIsRefused: the inspections a replay answers
+// are bounded like its events, and the refusal comes before any replay.
+func TestAnInspectionBatchOverTheBoundIsRefused(t *testing.T) {
+	t.Parallel()
+
+	batch := make([]*v1.DebugInspectRequest, engine.MaxReconstructionInspections+1)
+	for i := range batch {
+		batch[i] = &v1.DebugInspectRequest{}
+	}
+	history := &historypb.History{Events: []*historypb.HistoryEvent{{EventId: 1}}}
+	_, err := engine.Reconstruct(t.Context(), history, 0, corpusRun, batch...)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "inspections")
+}
+
 // TestACancelledReadIsRefusedBeforeItReplays: a caller that has gone away is
 // not owed a replay. The context's own error comes back, and no reconstruction
 // with it, for the first and the last boundary alike.
