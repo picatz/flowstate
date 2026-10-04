@@ -68,6 +68,11 @@ type handlerCapture struct {
 	// names no session is asked of the session held at the point.
 	inspections []*v1.DebugInspectRequest
 
+	// allow decides whether the inspections may be evaluated at the point.
+	allow func(*v1.DebugSnapshot) error
+	// denied is the refusal allow gave.
+	denied error
+
 	// evalAt is the start time of the last workflow task of the prefix.
 	evalAt time.Time
 
@@ -160,13 +165,21 @@ func (c *handlerCapture) ask(now time.Time) {
 		latest.debug, err = callHandler[*v1.DebugSnapshot](handler, "")
 		latest.err = errors.Join(latest.err, err)
 	}
-	if handler, ok := c.handlers[v1.DebugInspectQuery]; ok && len(c.inspections) > 0 && c.evalAt.Equal(now) {
+	if handler, ok := c.handlers[v1.DebugInspectQuery]; ok && len(c.inspections) > 0 && !now.Before(c.evalAt) {
 		// A pass that moved nothing asks the same questions of the same
 		// state: keep the last answers rather than evaluate every
 		// expression again on each scheduler pass.
-		if c.answered && proto.Equal(c.answer.progress, latest.progress) && proto.Equal(c.answer.debug, latest.debug) {
+		// Decided on each pass of the point's task, from that pass's own
+		// snapshot, and nothing is evaluated for a caller who may not read it.
+		c.denied = nil
+		if c.allow != nil {
+			c.denied = c.allow(latest.debug)
+		}
+		switch {
+		case c.denied != nil:
+		case c.answered && proto.Equal(c.answer.progress, latest.progress) && proto.Equal(c.answer.debug, latest.debug):
 			latest.inspected, latest.inspectErr = c.answer.inspected, c.answer.inspectErr
-		} else {
+		default:
 			session := latest.debug.GetSession().GetSessionId()
 			for _, request := range c.inspections {
 				request = proto.CloneOf(request)
@@ -180,7 +193,7 @@ func (c *handlerCapture) ask(now time.Time) {
 		}
 	}
 	c.answer = latest
-	c.answered = true
+	c.answered = len(latest.inspected) > 0
 }
 
 // MaxReconstructionEvents bounds the history a reconstruction replays. A
@@ -212,6 +225,9 @@ type Reconstruction struct {
 	// refused there, as it is live.
 	Inspected   []*v1.DebugInspectResponse
 	InspectErrs []error
+	// InspectDenied is why [ReconstructOptions.AllowInspection] refused the
+	// inspections, nil when it allowed them or none were asked.
+	InspectDenied error
 }
 
 // Boundaries lists the supported points of a history: the index of every
@@ -243,6 +259,14 @@ type ReconstructOptions struct {
 	// was written with, so a run whose payloads are encrypted can be replayed
 	// by a caller that holds the key. Nil is the SDK's default converter.
 	DataConverter converter.DataConverter
+
+	// AllowInspection, if set, is asked with the debug snapshot of the point
+	// before any inspection is evaluated, and a non-nil answer refuses the
+	// whole batch: none is evaluated, and the answer is returned as
+	// [Reconstruction.InspectDenied]. It is where a caller's right to read the
+	// scope held at the point is decided, since who held it is known only once
+	// the point has been replayed.
+	AllowInspection func(*v1.DebugSnapshot) error
 
 	// Done, if set, is called once the replay has finished, or at once when
 	// none is started. A call that returns early because its context ended
@@ -312,19 +336,8 @@ func ReconstructWith(ctx context.Context, opts ReconstructOptions, history *hist
 }
 
 func reconstructAt(opts ReconstructOptions, events []*historypb.HistoryEvent, index int, execution workflow.Execution, inspections []*v1.DebugInspectRequest) (*Reconstruction, error) {
-	capture := &handlerCapture{inspections: inspections}
-	// A prefix that ends at a task's start never runs that task, so the point
-	// is the state the one before it left.
-	for i := index; i >= 0; i-- {
-		if i == index && events[i].GetEventType() == enumspb.EVENT_TYPE_WORKFLOW_TASK_STARTED {
-			continue
-		}
-		if events[i].GetEventType() == enumspb.EVENT_TYPE_WORKFLOW_TASK_STARTED {
-			capture.evalAt = events[i].GetEventTime().AsTime()
-
-			break
-		}
-	}
+	capture := &handlerCapture{inspections: inspections, allow: opts.AllowInspection}
+	capture.evalAt = lastTaskStart(events[:index+1])
 	replayer, err := worker.NewWorkflowReplayerWithOptions(worker.WorkflowReplayerOptions{
 		DataConverter: opts.DataConverter,
 		Interceptors:  []interceptor.WorkerInterceptor{capture},
@@ -349,12 +362,37 @@ func reconstructAt(opts ReconstructOptions, events []*historypb.HistoryEvent, in
 	}
 
 	return &Reconstruction{
-		EventID:     events[index].GetEventId(),
-		Progress:    capture.answer.progress,
-		Debug:       capture.answer.debug,
-		Inspected:   capture.answer.inspected,
-		InspectErrs: capture.answer.inspectErr,
+		EventID:       events[index].GetEventId(),
+		Progress:      capture.answer.progress,
+		Debug:         capture.answer.debug,
+		Inspected:     capture.answer.inspected,
+		InspectErrs:   capture.answer.inspectErr,
+		InspectDenied: capture.denied,
 	}, nil
+}
+
+// lastTaskStart is the start time of the last workflow task the replay of the
+// prefix runs, which is the clock the run reads in the point's own task. It is
+// found through the last task that completed: a task that was started and then
+// failed or timed out is not replayed, and the SDK does not move its clock to
+// its start, nor does one the prefix ends at, which is never run. The clock
+// never moves back, so a pass with the clock at or after it is a pass of that
+// task.
+func lastTaskStart(prefix []*historypb.HistoryEvent) time.Time {
+	for i := len(prefix) - 1; i >= 0; i-- {
+		completed := prefix[i].GetWorkflowTaskCompletedEventAttributes()
+		if completed == nil {
+			continue
+		}
+		started := completed.GetStartedEventId()
+		for j := i - 1; j >= 0; j-- {
+			if prefix[j].GetEventId() == started {
+				return prefix[j].GetEventTime().AsTime()
+			}
+		}
+	}
+
+	return time.Time{}
 }
 
 // callHandler calls a query handler the way the SDK does: a function of its

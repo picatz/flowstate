@@ -118,6 +118,48 @@ func TestDebugHistoryAuditsTheRunAndThePointRead(t *testing.T) {
 	}
 }
 
+// TestAnInspectionIsAuditedUnderTheInspectActionAndItsDigestSeparatesBatches:
+// asking for inspections is a decision under workload.debug_inspect, allowed or
+// denied, and two different batches never share a digest.
+func TestAnInspectionIsAuditedUnderTheInspectActionAndItsDigestSeparatesBatches(t *testing.T) {
+	t.Parallel()
+
+	sink := &auditSink{}
+	recorder, err := audit.NewRecorder(audit.WithoutStderr(), audit.WithEmitter(sink))
+	require.NoError(t, err)
+	fixture := newTenantFixture(t, server.WithAudit(recorder))
+	workflowID, runID := finishedDebuggableRun(t, fixture)
+	ask := func(ctx context.Context, expressions ...string) error {
+		var asked []*v1.DebugHistoryInspection
+		for _, expression := range expressions {
+			asked = append(asked, &v1.DebugHistoryInspection{Expression: expression})
+		}
+		_, err := fixture.teamA.DebugHistory(ctx, connect.NewRequest(&v1.DebugHistoryRequest{WorkflowId: workflowID, RunId: runID, Inspections: asked}))
+
+		return err
+	}
+	inspectRecords := func(decision v1.AuditDecision) []*v1.AuditRecord {
+		var out []*v1.AuditRecord
+		for _, record := range sink.records {
+			if record.GetAction() == v1.AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_DEBUG_INSPECT && record.GetDecision() == decision {
+				out = append(out, record)
+			}
+		}
+
+		return out
+	}
+
+	require.Error(t, ask(as(t.Context(), "sre-1@example.com", "workload.debug"), "1"))
+	assert.Len(t, inspectRecords(v1.AuditDecision_AUDIT_DECISION_DENY), 1, "the refusal is recorded for the action the caller lacked")
+
+	require.NoError(t, ask(as(t.Context(), "sre-1@example.com", "workload.debug", "workload.debug_inspect"), "a", "b"))
+	require.NoError(t, ask(as(t.Context(), "sre-1@example.com", "workload.debug", "workload.debug_inspect"), "a\x00b"))
+	allowed := inspectRecords(v1.AuditDecision_AUDIT_DECISION_ALLOW)
+	require.Len(t, allowed, 2, "each permitted ask is recorded for the inspect action")
+	assert.NotEqual(t, allowed[0].GetDebug().GetExpressionDigest(), allowed[1].GetDebug().GetExpressionDigest(),
+		"[a, b] and [a NUL b] are different batches")
+}
+
 // TestDebugHistoryWithholdsADeclaredSensitiveInputAtEveryPoint: a run whose
 // input is declared sensitive and flows into a step's output is read at every
 // boundary, and no answer, snapshot or progress, holds the value. The same
@@ -206,7 +248,10 @@ func TestAnOpenRunsPastIsInspectedOnlyByTheHolderOfItsSession(t *testing.T) {
 
 	workflow := debuggableWorkflow()
 	workflow.Debug.Allow = append(workflow.Debug.Allow, &v1.SignalPolicyRule{Subject: v1.QualifiedSubject(debugIssuer, "sre-2@example.com")})
-	fixture := newTenantFixture(t)
+	sink := &auditSink{}
+	recorder, err := audit.NewRecorder(audit.WithoutStderr(), audit.WithEmitter(sink))
+	require.NoError(t, err)
+	fixture := newTenantFixture(t, server.WithAudit(recorder))
 	started, err := fixture.teamA.Run(t.Context(), connect.NewRequest(&v1.RunRequest{Workflow: workflow}))
 	require.NoError(t, err)
 	workflowID := started.Msg.GetWorkflowId()
@@ -260,6 +305,14 @@ func TestAnOpenRunsPastIsInspectedOnlyByTheHolderOfItsSession(t *testing.T) {
 
 	_, err = read(other, asked)
 	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err), "another admitted caller read the scope of a session someone else holds")
+	var denied []*v1.AuditDebugDetail
+	for _, record := range sink.records {
+		if record.GetDecision() == v1.AuditDecision_AUDIT_DECISION_DENY && record.GetDebug().GetOperation() == "history/inspect" {
+			denied = append(denied, record.GetDebug())
+		}
+	}
+	require.Len(t, denied, 1, "the refusal is audited as a denial, not only as the allows before it")
+	assert.Equal(t, runID, denied[0].GetRunId())
 	_, err = read(other, nil)
 	assert.NoError(t, err, "the point itself is still readable")
 	got, err := read(holder, asked)

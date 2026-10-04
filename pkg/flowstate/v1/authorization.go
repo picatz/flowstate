@@ -127,6 +127,9 @@ var authorizationActionBindings = []*AuthorizationActionBinding{
 		Action: AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_DEBUG_INSPECT,
 		Parent: AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_DEBUG,
 		Rpcs:   []string{"DebugInspect"},
+		// DebugHistory keeps workload.debug; asking it to evaluate expressions
+		// at a recorded point additionally needs this.
+		RequestFields: []string{"flowstate.v1.DebugHistoryRequest.inspections"},
 	},
 	{
 		// The codec server's two routes, whose suffixes Temporal's remote

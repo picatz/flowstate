@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"slices"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/picatz/flowstate/internal/textbound"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/engine"
 )
 
@@ -61,8 +63,7 @@ func (s *FlowstateServer) DebugHistory(ctx context.Context, req *connect.Request
 	detail := &v1.AuditDebugDetail{Operation: "history", RunId: runID, Revision: uint64(req.Msg.GetEventId())}
 	if asked := req.Msg.GetInspections(); len(asked) > 0 {
 		detail.ExpressionDigest = historyInspectionsDigest(asked)
-		if err := s.requireDebugAction(ctx, "DebugHistory", workflowID,
-			v1.AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_DEBUG_INSPECT, detail); err != nil {
+		if err := s.historyInspectAuthorized(ctx, workflowID, detail); err != nil {
 			return nil, err
 		}
 	}
@@ -131,7 +132,10 @@ func (s *FlowstateServer) DebugHistory(ctx context.Context, req *connect.Request
 	}
 
 	handedOver = true
-	rec, err := engine.ReconstructWith(ctx, engine.ReconstructOptions{DataConverter: s.dataConverter, Done: release}, history, index,
+	rec, err := engine.ReconstructWith(ctx, engine.ReconstructOptions{
+		DataConverter: s.dataConverter, Done: release,
+		AllowInspection: s.holderMayInspect(run, events),
+	}, history, index,
 		workflow.Execution{ID: workflowID, RunID: runID}, inspectionRequests(req.Msg.GetInspections())...)
 	switch {
 	case errors.Is(err, context.Canceled):
@@ -144,19 +148,14 @@ func (s *FlowstateServer) DebugHistory(ctx context.Context, req *connect.Request
 			textbound.Cut(err.Error(), maxDebugHistoryFailureBytes)))
 	}
 
-	// A live inspection is the holder's alone. The past of a run still going
-	// keeps that: it is read by the person its session was held for, since
-	// another caller admitted by the policy could not have read the scope
-	// while it was held. A closed run has no holder to protect, and is read by
-	// anyone the policy and the inspect action admit.
-	if len(req.Msg.GetInspections()) > 0 && !closedAt(events) {
-		holder, caller := rec.Debug.GetSession().GetAttachedBy(), run.sender.GetIdentity()
-		// A point where the run held no session has no scope to read: each
-		// inspection is refused there, and there is no holder to protect.
-		if holder != nil && v1.QualifiedSubject(holder.GetIssuer(), holder.GetSubject()) != v1.QualifiedSubject(caller.GetIssuer(), caller.GetSubject()) {
-			return nil, connect.NewError(connect.CodePermissionDenied,
-				errors.New("only the session's holder may inspect the past of a run that is still going"))
-		}
+	if rec.InspectDenied != nil {
+		return nil, s.auditDebugDeny(ctx, "DebugHistory", workflowID,
+			&v1.AuditDebugDetail{
+				Operation: "history/inspect", RunId: runID, Revision: uint64(events[index].GetEventId()),
+				ExpressionDigest: detail.GetExpressionDigest(),
+			},
+			v1.AuditDenyCode_AUDIT_DENY_CODE_POLICY_DENIED,
+			connect.NewError(connect.CodePermissionDenied, rec.InspectDenied))
 	}
 
 	ids := make([]int64, len(points))
@@ -182,13 +181,75 @@ func (s *FlowstateServer) DebugHistory(ctx context.Context, req *connect.Request
 	}), nil
 }
 
+// historyInspectionsField is the request field the inspect action widens
+// DebugHistory by.
+const historyInspectionsField = "flowstate.v1.DebugHistoryRequest.inspections"
+
+// historyInspectAuthorized requires workload.debug_inspect of a caller that
+// asks for inspections, and records the decision under that action either way,
+// as a reveal is. An expression can test a sensitive value the printed answer
+// withholds, so it is a disclosure of its own beside reading the point.
+func (s *FlowstateServer) historyInspectAuthorized(ctx context.Context, workflowID string, detail *v1.AuditDebugDetail) error {
+	action, err := v1.AuthorizationActionForRequestField(historyInspectionsField)
+	if err != nil {
+		return connect.NewError(connect.CodeInternal, err)
+	}
+	scope := v1.AuthorizationActionScope(action)
+
+	// A caller with no action list keeps the posture [FlowstateServer.requireDebugAction] documents.
+	principal, ok := auth.PrincipalFromContext(ctx)
+	subject := s.debugAuditSubject(ctx, "DebugHistory", workflowID, detail)
+	subject.RequestField = historyInspectionsField
+	if !ok || principal.Actions == nil || slices.Contains(principal.Actions, scope) {
+		return s.audit.Allow(ctx, subject)
+	}
+
+	refusal := connect.NewError(connect.CodePermissionDenied,
+		fmt.Errorf("the caller is not authorized for required action %q", scope))
+	refusal.Meta().Set("WWW-Authenticate", fmt.Sprintf(`Bearer error="insufficient_scope", scope=%q`, scope))
+	if err := s.audit.Deny(ctx, subject, v1.AuditDenyCode_AUDIT_DENY_CODE_POLICY_DENIED); err != nil {
+		return err
+	}
+
+	return refusal
+}
+
+// holderMayInspect decides, once the point's session is known, whether the
+// caller may read its scope. A live inspection is the holder's alone, and the
+// past of a run still going keeps that: another caller the policy admits could
+// not have read the scope while it was held. A closed run has no holder to
+// protect. A point where the run held no session has no scope to read, so there
+// is nothing to refuse.
+func (s *FlowstateServer) holderMayInspect(run *debugRun, events []*historypb.HistoryEvent) func(*v1.DebugSnapshot) error {
+	if closedAt(events) {
+		return nil
+	}
+	caller := run.sender.GetIdentity()
+
+	return func(snapshot *v1.DebugSnapshot) error {
+		holder := snapshot.GetSession().GetAttachedBy()
+		if holder != nil && v1.QualifiedSubject(holder.GetIssuer(), holder.GetSubject()) != v1.QualifiedSubject(caller.GetIssuer(), caller.GetSubject()) {
+			return errors.New("only the session's holder may inspect the past of a run that is still going")
+		}
+
+		return nil
+	}
+}
+
 // historyInspectionsDigest is the content digest of what was asked, in order,
-// so one audit record names the whole batch.
+// so one audit record names the whole batch, with how each was paged.
 func historyInspectionsDigest(asked []*v1.DebugHistoryInspection) string {
+	// Length-prefixed, so that two different batches never share bytes.
 	var all []byte
 	for _, one := range asked {
+		all = binary.BigEndian.AppendUint64(all, uint64(len(one.GetExpression())))
 		all = append(all, one.GetExpression()...)
-		all = append(all, 0)
+		all = binary.BigEndian.AppendUint64(all, uint64(one.GetOffset())<<32|uint64(uint32(one.GetLimit())))
+		if one.GetChildren() {
+			all = append(all, 1)
+		} else {
+			all = append(all, 0)
+		}
 	}
 
 	return v1.ContentDigest(all)

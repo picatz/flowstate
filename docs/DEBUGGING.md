@@ -990,11 +990,11 @@ replay, over the scope the run held there, against the session it held; a point
 where it held none answers each with that refusal. Asking any also needs
 `workload.debug_inspect`, as a live inspection does, because an expression can
 test a sensitive value the printed answer withholds, and both audit records then
-carry a digest of the expressions. The `inspected` answers come back in order,
+carry a digest of the expressions, and the decision is recorded under `workload.debug_inspect` whether it allows or denies. The `inspected` answers come back in order,
 labelled `hypothetical` for an expression and `reconstructed` for the scope's
 roots. A live inspection is the session holder's alone, and the past of a run that is
 still going keeps that: where the run held a session, only the person it was held
-for may inspect there, and another caller is refused. A closed run has no holder
+for may inspect there. The refusal is decided before any expression is evaluated and is audited as a denial. A closed run has no holder
 to protect, so anyone its `debug:` policy and the inspect action admit may
 inspect its points.
 
