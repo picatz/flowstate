@@ -8,7 +8,9 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/goccy/go-yaml"
+	"google.golang.org/protobuf/encoding/protojson"
+
+	"github.com/picatz/flowstate/internal/strictyaml"
 	"github.com/stretchr/testify/require"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -82,17 +84,16 @@ func installExecExample(tb testing.TB, policyPath string) (string, func()) {
 	raw, err := os.ReadFile(policyPath)
 	require.NoError(tb, err, "an example that uses exec ships the operator policy it runs under")
 
-	var doc map[string]any
-	require.NoError(tb, yaml.Unmarshal(raw, &doc))
-	section, ok := doc["exec"].(map[string]any)
-	require.True(tb, ok, "%s has no exec: section", policyPath)
+	var doc v1.ExecPolicy
+	require.NoError(tb, strictyaml.UnmarshalProto(raw, &doc))
+	section := doc.GetExec()
+	require.NotNil(tb, section, "%s has no exec: section", policyPath)
 
-	programs, _ := section["executables"].(map[string]any)
-	for name := range programs {
+	for name := range section.GetExecutables() {
 		found, err := exec.LookPath(name)
 		require.NoErrorf(tb, err, "%s lists %q, which this machine does not have; the example "+
 			"cannot run without it", policyPath, name)
-		programs[name] = found
+		section.Executables[name] = found
 	}
 
 	root, err := os.MkdirTemp("", "flowstate-exec-example-")
@@ -101,9 +102,11 @@ func installExecExample(tb testing.TB, policyPath string) (string, func()) {
 	require.NoError(tb, err)
 	workspace := filepath.Join(root, "demo")
 	require.NoError(tb, os.Mkdir(workspace, 0o755))
-	section["roots"] = []string{root}
+	section.Roots = []string{root}
 
-	rewritten, err := yaml.Marshal(doc)
+	// JSON is YAML, so the loader reads the rewritten message as it reads the
+	// operator's file.
+	rewritten, err := protojson.Marshal(&doc)
 	require.NoError(tb, err)
 
 	policy, err := v1.ParseExecPolicy(rewritten)
