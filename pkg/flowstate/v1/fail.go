@@ -131,7 +131,9 @@ func KnownFailureKind(wf *Workflow, kind string) bool {
 // declaration must satisfy, and not by membership. That is looser than
 // [ParseErrorKind] on purpose and only here: a run's reported kind is a label for
 // operators and agents, never an input to retry or tolerance, which decide on
-// the workflow's own declarations and so stay closed.
+// the workflow's own declarations and so stay closed. The durable driver's own
+// recording of a step failure keeps using [ParseErrorKind]: a Temporal error type
+// that is merely capitalised is not a declared kind there.
 func ParseReportedKind(s string) (ErrorKind, bool) {
 	if kind, ok := ParseErrorKind(s); ok {
 		return kind, true
