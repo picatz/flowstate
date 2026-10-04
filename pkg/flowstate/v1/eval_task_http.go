@@ -438,6 +438,11 @@ func literalToNative(v *expr.Value) (any, error) {
 	case *expr.Value_BytesValue:
 		return kind.BytesValue, nil
 
+	case *expr.Value_ObjectValue:
+		if text, ok := dataKindString(v); ok {
+			return text, nil
+		}
+		return nil, fmt.Errorf("a %s cannot be represented as a plain value", kind.ObjectValue.GetTypeUrl())
 	case *expr.Value_ListValue:
 		list := make([]any, 0, len(kind.ListValue.GetValues()))
 		for i, element := range kind.ListValue.GetValues() {

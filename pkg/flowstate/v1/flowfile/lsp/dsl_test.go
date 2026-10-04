@@ -1331,6 +1331,7 @@ func TestHoverDocumentsEveryDSLKey(t *testing.T) {
 labels: {}
 description: everything
 types: {}
+functions: {}
 inputs: {}
 outputs: {}
 triggers:

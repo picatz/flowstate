@@ -766,6 +766,8 @@ func hoverStepOutput(doc *document, from *parsedStep, ref reference, rng lsp.Ran
 		case v1.ValueOutput:
 			fmt.Fprintf(&b, "\n\nWhat step `%s` on line %d computed. A `value:` step is an expression evaluated where it is written, and `%s` is the one output it produces.",
 				target.id, target.rng.Start.Line+1, v1.ValueOutput)
+		case v1.StepFailureOutput:
+			fmt.Fprint(&b, failureHoverText(target.id))
 		case v1.StepErrorOutput:
 			// Present only on a tolerated step, exactly as it is for a task: a
 			// value can fail at run time even though retrying it is pointless.
@@ -797,6 +799,8 @@ func hoverStepOutput(doc *document, from *parsedStep, ref reference, rng lsp.Ran
 		case v1.SwitchCaseOutput:
 			fmt.Fprintf(&b, "\n\nWhich case took the value step `%s` observed: the matching case literal, or `null` when none matched — whether the `default:` body ran or nothing did. `${%s != null}` is how a later step branches on it.",
 				target.id, rootedRef(target.id, v1.SwitchCaseOutput))
+		case v1.StepFailureOutput:
+			fmt.Fprint(&b, failureHoverText(target.id))
 		case v1.StepErrorOutput:
 			fmt.Fprintf(&b, "\n\nWhy step `%s` failed, recorded because the step carries `continue_on_error:`.",
 				target.id)
@@ -871,6 +875,12 @@ func hoverStepOutput(doc *document, from *parsedStep, ref reference, rng lsp.Ran
 		return markdownHover(b.String(), rng)
 	}
 	fd := findField(def.Outputs, ref.output)
+	if fd == nil && ref.output == v1.StepFailureOutput {
+		// The step policy's own output, present on a tolerated step; a task
+		// that authors an output of the same name is handled below.
+		fmt.Fprint(&b, failureHoverText(target.id))
+		return markdownHover(b.String(), rng)
+	}
 	if fd == nil {
 		fmt.Fprintf(&b, "\n\nThe `%s` task does not declare an output named `%s`", def.Name, ref.output)
 		if names := fieldNames(def.Outputs); len(names) > 0 {
@@ -1004,6 +1014,10 @@ func hoverConstructOutput(target *parsedStep, kind *v1.Node, ref reference, rng 
 	}
 	if ref.output == v1.StepErrorOutput {
 		fmt.Fprintf(&b, "\n\nWhy step `%s` failed, recorded because the step carries `continue_on_error:`.", target.id)
+		return markdownHover(b.String(), rng)
+	}
+	if ref.output == v1.StepFailureOutput {
+		fmt.Fprint(&b, failureHoverText(target.id))
 		return markdownHover(b.String(), rng)
 	}
 
@@ -1258,4 +1272,11 @@ func joinNames(names []string) string {
 	default:
 		return strings.Join(quoted[:len(quoted)-1], ", ") + ", and " + quoted[len(quoted)-1]
 	}
+}
+
+// failureHoverText explains the typed `failure` a tolerated step records beside
+// `error`.
+func failureHoverText(stepID string) string {
+	return fmt.Sprintf("\n\nHow step `%s` failed, recorded because the step carries `continue_on_error:`: `%s` (the classification, such as `Upstream` or `Timeout`), `%s` (the same sentence as `error`) and `%s` (whether that kind is worth retrying).",
+		stepID, v1.FailureKindField, v1.FailureMessageField, v1.FailureRetryableField)
 }

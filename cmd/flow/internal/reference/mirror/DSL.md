@@ -39,6 +39,7 @@ headings below, not this list.*
   - [`edition:` is required, and v-prefixed *(landed)*](#edition-is-required-and-v-prefixed-landed)
   - [Edition v2026.3: optional traversal, and the guarded-read rewrite *(landed)*](#edition-v20263-optional-traversal-and-the-guarded-read-rewrite-landed)
   - [Edition v2026.4: a type is a CEL type expression *(landed)*](#edition-v20264-a-type-is-a-cel-type-expression-landed)
+  - [`functions:`: a computation named once *(landed)*](#functions-a-computation-named-once-landed)
   - [`vars:`, and the shadowing rule that ships with it *(landed)*](#vars-and-the-shadowing-rule-that-ships-with-it-landed)
   - [`for_each` reads `as:` *(landed)*](#for_each-reads-as-landed)
   - [`http:` stays; its response scope gets a root *(landed)*](#http-stays-its-response-scope-gets-a-root-landed)
@@ -71,6 +72,7 @@ headings below, not this list.*
   - [The transcripts are the acceptance bar](#the-transcripts-are-the-acceptance-bar)
   - [What this round adds](#what-this-round-adds-1)
 - [The fifth round: taking it back](#the-fifth-round-taking-it-back)
+  - [A tolerated failure is a typed value](#a-tolerated-failure-is-a-typed-value)
   - [It is `undo:`, not `on_failure:`](#it-is-undo-not-on_failure)
   - [Per-step, not a workflow-level handler list](#per-step-not-a-workflow-level-handler-list)
   - [Registered on success, and only on success](#registered-on-success-and-only-on-success)
@@ -1300,10 +1302,106 @@ inputs:
   and a duration as their `google.protobuf` well-known type, bytes as the bytes
   value, so both drivers and every `must:` read the same type. Binding what is
   already bound changes nothing, which is what a call boundary and a Temporal
-  worker hand it. A bytes input is bounded at 1 MiB decoded. They are inputs
-  only until the run document has a plain-JSON form for them, and a worker
-  built before the enum values existed reports an unknown declared type and
-  refuses the run when it starts.
+  worker hand it. A bytes input is bounded at 1 MiB decoded. A worker built
+  before the enum values existed reports an unknown declared type and refuses
+  the run when it starts.
+- **They are bound wherever the type puts them, and an output may be one.** The
+  binder walks the declared structure, so a record field, a `list(timestamp)`
+  element and a `map(string, duration)` value are bound as the CEL kind, before a
+  `must:` or a record rule reads them: `must: this.ends > this.starts` over two
+  timestamp fields compares times, not text, and the refusal names the path
+  (`is not an RFC 3339 timestamp … at .starts`) without repeating the value. An
+  output may declare them too. The run document carries a timestamp as RFC 3339
+  text, a duration as Go text (`1h30m0s`) and bytes as base64, through
+  [`LiteralToGo`], which is also what an embedder, `flow test` and an http body
+  read; `NewValue` answers a `time.Time` and a `time.Duration` with the same
+  values, so a Go caller and a file agree.
+
+### `functions:`: a computation named once *(landed)*
+
+Issue #1871. The dialect had no way to name a reusable computation: `vars:` are values
+and may read nothing, `cel.bind` names a value inside one expression, and `call:` is a
+whole durable run with a spec and a contract, the right tool for a process and a heavy
+one for `${normalizeEmail(x)}`. The same `${x.trim().lowerAscii().replace(" ", "-")}`
+chain appeared step after step, and a predicate was copied between a `switch:` and an
+`if:`. A `functions:` block declares one once:
+
+```yaml
+functions:
+  slug:
+    description: A title as it appears in a URL.
+    params:
+      title: string
+    returns: string
+    body: ${title.trim().lowerAscii().replace(" ", "-")}
+steps:
+  - id: publish
+    log:
+      message: ${"publishing /posts/" + slug(inputs.title)}
+```
+
+- **A definition, inlined; the runtime never sees a name.** The compiler replaces each
+  call with the body, the arguments bound once through `cel.bind`, so a compiled
+  specification holds plain CEL of the pinned profile and no call to a declared name.
+  Both drivers execute it unchanged, and a spec compiled with functions runs on a worker
+  that predates the feature. This is the invariant the decision implies: **the runtime
+  has no user-defined function**, so one spec cannot mean different things on different
+  workers, which invariant 3 forbids and Worker Versioning cannot see. It is the one
+  expander an imported helper library goes through (`ExpandPureHelpers`), reached from a
+  different declaration.
+- **The definition is in the spec, and the use is as written.** `Workflow.declared_functions`
+  carries each definition (a message, so `buf breaking` guards it) beside the expanded
+  expressions. Nothing evaluates it. It is what lets `flow fmt` write the file back
+  with the definitions and every call as the author wrote it, `slug(inputs.title)` and
+  not its expansion, by recording each expansion as the macro call it came from, the
+  way `cel.bind(...)` and `xs.map(x, ...)` already write back.
+- **Parameters only.** A body sees its parameters and the profile's vocabulary and
+  nothing else: not `inputs`, `vars`, `steps` or `run`. A function that needs a value
+  takes it as an argument, so a call shows every value the computation depends on and
+  one definition means one thing wherever it is called. The refusal says so. Closures
+  over the workflow's roots are what `vars:` already is, and are not offered.
+- **Typed at the definition, once.** A parameter is typed with the same type expressions
+  an input is (`string`, `list(int)`, `timestamp`, a record, `dyn`, which is allowed
+  and discouraged), `returns:` is required, and the body is checked against both when
+  the definition is compiled, so a wrong body is reported once, at the definition, with
+  the checker's sentence. A call is checked against the declared signature before it
+  is inlined: an argument of a type the parameter cannot take, or the wrong count, is
+  refused where the call is written. An argument the file cannot type is taken to fit,
+  as everywhere else in the checker, and one it can type (an `inputs.count` declared `int`)
+  is held to the parameter by `flow validate`, which checks the call as written and takes
+  its result to be the declared one. A field of a record parameter is checked against the
+  record in the body, as it is at an input.
+- **Composition yes, recursion no.** A function may call another declared in the file,
+  in either order. One that calls itself, directly or through another, is refused at its
+  definition by name (`ping calls pong calls ping`): an inlined call has no end to
+  expand to, which is the bound. A caller of a refused function is reported once, as
+  calling one that is not valid.
+- **Names are lowerCamel and may not shadow the profile.** `slug`, `isBusinessDay`;
+  never `size`, `has`, `string`, `sum`, a macro, or anything else the profile already
+  names, so a definition can never change what an existing expression means. A name is
+  also never a member (`x.slug()` is not a call).
+- **Bounded where it is spent.** At most 64 functions per file and 16 parameters each;
+  a body of at most 4096 nodes; at most 1024 calls in one expression; and an expansion
+  of at most 100000 nodes, checked from the arithmetic before the tree is built, so a
+  chain of functions that each call the next twice is refused while it is declared
+  instead of after it has allocated, and at most 100000 nodes in a file altogether, across the
+  definitions that call other functions and across every use, since each expansion within
+  its bound can still be wrapped sixty-four times or copied into hundreds of uses.
+- **Plugins stay CEL-free, and an operator cannot define one.** A function the
+  specification does not carry would make the same spec mean different things on
+  different workers. A function declared in a profile extension or registered by a
+  plugin is refused for that reason, and plugins evaluate no CEL (the first round's
+  "Plugins do not get CEL functions"). Definitions do not cross a `call:` boundary: a
+  library workflow exporting functions is the module design's (#106) to answer.
+
+Two evaluation details worth stating, since a call looks like a function call and
+behaves like one. Arguments are evaluated once and before the body, so an erroring
+argument fails the call whether or not the body reads it, and CEL's short-circuiting
+inside the body is untouched (`d == 0 || n / d > 1` still never divides by zero). And
+an argument is never captured: a later argument spelled like an earlier parameter (a
+loop variable named `denominator`) still reads the caller's own name, because such a
+call binds each argument to a name no expression can write before it binds the
+parameters.
 
 ### `vars:`, and the shadowing rule that ships with it *(landed)*
 
@@ -3268,6 +3366,32 @@ section](#the-corpus-is-the-acceptance-list) was written ("saga/compensation"), 
 that it could arrive without breaking anyone who had registered a task by the name.
 This is that word being spent. `examples/saga-provisioning/` is the corpus entry
 graduating into CI, which is what the acceptance rule means by landed.
+
+### A tolerated failure is a typed value
+
+A step tolerated by `continue_on_error:` records two outputs, and they answer
+different questions. `${steps.<id>.error}` is the sentence, for *whether* it
+failed: `has(steps.x.error)` and `!= ''` keep the meaning they always had. And
+`${steps.<id>.failure}` is the classification, for *which* failure it was:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `kind` | string | the `ErrorKind` the engine classified it as: `InvalidInput`, `Upstream`, `Timeout`, `RateLimited`, `PolicyDenied`, ... |
+| `message` | string | the same sentence `error` holds, built from one value rather than rendered twice |
+| `retryable` | bool | whether that kind is worth retrying by default |
+
+```yaml
+- id: react
+  if: ${has(steps.fetch.failure) && steps.fetch.failure.kind == "RateLimited"}
+```
+
+Compare `kind` to a literal, never to a substring of `error`: the kind is a
+closed set, so `flow validate` refuses `failure.kind == "Timeuot"` with a
+did-you-mean, where a misspelled substring silently takes the other branch.
+`retryable` states what the classification permits, not whether a given attempt
+was retried; an attempt-level narrowing (an unknown outcome) belongs to the
+attempt. Both drivers record the same fields, pinned by the shared `ErrorText`
+conformance cases.
 
 ### It is `undo:`, not `on_failure:`
 

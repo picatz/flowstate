@@ -57,10 +57,13 @@ steps:
       url: http://localhost:1/hook
 
   # Reached only because the failure above was tolerated. The error text is a value
-  # like any other, so it can be carried into whatever comes next.
+  # like any other, so it can be carried into whatever comes next, and
+  # `steps.notify.failure.kind` says which kind of failure it was ("PolicyDenied"
+  # here) without matching the sentence.
   - id: carry_on
     log:
       fields:
         why: ${steps.notify.error}
+        kind: ${steps.notify.failure.kind}
       level: warn
       message: notification failed, continuing anyway

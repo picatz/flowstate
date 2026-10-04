@@ -34,6 +34,17 @@ import (
 // rather than rendered by [v1.LoopIterationLimitError] — a test that builds its
 // expectation with the function under test agrees with any change to it,
 // including a wrong one. Keep this in step with loop.go's constructor.
+// failureOf is the `failure` map a tolerated step records beside `error`, spelled
+// from the same field names the drivers write so a case cannot claim a shape no
+// driver produces.
+func failureOf(kind v1.ErrorKind, text string) map[string]any {
+	return map[string]any{
+		v1.FailureKindField:      kind.String(),
+		v1.FailureMessageField:   text,
+		v1.FailureRetryableField: kind.Retryable(),
+	}
+}
+
 func exhaustedRecordedError(max int) string {
 	return fmt.Sprintf(
 		"loop ran its full budget of %d iterations without the `until:` condition becoming true; "+
@@ -110,11 +121,12 @@ func LoopExhaustionTranscriptCases() []PartialTranscriptCase {
 			Expected: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
 				"before": {},
 				"grind": {NamedValues: map[string]*v1.Value{
-					"error": v1.NewLiteral(exhaustedRecordedError(3)),
+					"error":   v1.NewLiteral(exhaustedRecordedError(3)),
+					"failure": v1.NewLiteralMap(failureOf(v1.ErrorKindInternal, exhaustedRecordedError(3))),
 					"results": v1.NewLiteralList(
 						map[string]any{"work": map[string]any{}},
-						map[string]any{"work": map[string]any{"error": outOfBounds, "item": "ax"}},
-						map[string]any{"work": map[string]any{"error": outOfBounds, "item": "axx"}},
+						map[string]any{"work": map[string]any{"error": outOfBounds, "failure": failureOf(v1.ErrorKindExpression, outOfBounds), "item": "ax"}},
+						map[string]any{"work": map[string]any{"error": outOfBounds, "failure": failureOf(v1.ErrorKindExpression, outOfBounds), "item": "axx"}},
 					),
 				}},
 			}},
@@ -142,7 +154,8 @@ func LoopExhaustionTranscriptCases() []PartialTranscriptCase {
 			},
 			Expected: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
 				"solo": {NamedValues: map[string]*v1.Value{
-					"error": v1.NewLiteral(exhaustedRecordedError(2)),
+					"error":   v1.NewLiteral(exhaustedRecordedError(2)),
+					"failure": v1.NewLiteralMap(failureOf(v1.ErrorKindInternal, exhaustedRecordedError(2))),
 					"results": v1.NewLiteralList(
 						map[string]any{"tick": map[string]any{}},
 						map[string]any{"tick": map[string]any{}},
@@ -193,7 +206,7 @@ func ToleratedIterationIdentityCases(httpBaseURL string) []Case {
 	fanOutputs := &v1.Node_Outputs{NamedValues: map[string]*v1.Value{
 		"results": v1.NewLiteralList(
 			map[string]any{"work": map[string]any{}},
-			map[string]any{"work": map[string]any{"error": outOfBounds, "item": "b"}},
+			map[string]any{"work": map[string]any{"error": outOfBounds, "failure": failureOf(v1.ErrorKindExpression, outOfBounds), "item": "b"}},
 			map[string]any{"work": map[string]any{}},
 		),
 	}}
@@ -253,7 +266,7 @@ func ToleratedIterationIdentityCases(httpBaseURL string) []Case {
 			ExpectedOutputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
 				"poll": {NamedValues: map[string]*v1.Value{
 					"results": v1.NewLiteralList(
-						map[string]any{"work": map[string]any{"error": outOfBounds, "item": "a"}},
+						map[string]any{"work": map[string]any{"error": outOfBounds, "failure": failureOf(v1.ErrorKindExpression, outOfBounds), "item": "a"}},
 						map[string]any{"work": map[string]any{}},
 					),
 					"state": v1.NewLiteral("ax"),
@@ -310,7 +323,7 @@ func ToleratedIterationIdentityCases(httpBaseURL string) []Case {
 						},
 						map[string]any{
 							"shape": map[string]any{"error": "all good", "item": "decoy"},
-							"work":  map[string]any{"error": outOfBounds, "item": "b"},
+							"work":  map[string]any{"error": outOfBounds, "failure": failureOf(v1.ErrorKindExpression, outOfBounds), "item": "b"},
 						},
 					),
 				}},
@@ -340,7 +353,8 @@ func ToleratedIterationIdentityCases(httpBaseURL string) []Case {
 			},
 			ExpectedOutputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
 				"spin": {NamedValues: map[string]*v1.Value{
-					"error": v1.NewLiteral(exhaustedRecordedError(2)),
+					"error":   v1.NewLiteral(exhaustedRecordedError(2)),
+					"failure": v1.NewLiteralMap(failureOf(v1.ErrorKindInternal, exhaustedRecordedError(2))),
 					"results": v1.NewLiteralList(
 						map[string]any{"tick": map[string]any{}},
 						map[string]any{"tick": map[string]any{}},

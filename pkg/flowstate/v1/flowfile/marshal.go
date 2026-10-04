@@ -83,6 +83,16 @@ func Marshal(wf *v1.Workflow) ([]byte, error) {
 		doc = append(doc, yaml.MapItem{Key: "types", Value: written})
 	}
 
+	// The functions, above everything that can call one: the order the parser reads
+	// them in.
+	if len(wf.GetDeclaredFunctions()) > 0 {
+		written, err := declaredFunctionsToYAML(wf.GetDeclaredFunctions())
+		if err != nil {
+			return nil, err
+		}
+		doc = append(doc, yaml.MapItem{Key: "functions", Value: written})
+	}
+
 	// What the run takes, above everything that reads it — the order the parser
 	// reads these in, and the order a reader meets them in.
 	if len(wf.GetDeclaredInputs()) > 0 {

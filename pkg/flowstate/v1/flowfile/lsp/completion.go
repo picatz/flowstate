@@ -104,6 +104,7 @@ var dslKeys = map[string][]dslKey{
 		{name: "labels", detail: "map", docs: "Metadata labels attached to the workflow, as string keys and string values. Labels describe and select a workflow; expressions cannot read them."},
 		{name: "description", detail: "string", docs: "Optional prose about the workflow."},
 		{name: "types", detail: "map", docs: "Declares named record types: a closed set of named fields, each written like an input. A type is used by name wherever a type is written, such as `type: Order` or `type: list(Order)`."},
+		{name: "functions", detail: "map", docs: "Names a computation once. Each function declares `params:` (a name and a type each), `returns:` and a `body:` expression over its parameters, and is called like `${slug(inputs.title)}`. A call is replaced by the body when the file compiles, so the run executes plain CEL."},
 		{name: "inputs", detail: "map", docs: "Declares the values a caller must or may bind when starting this workflow. Each name has a type and may add a default, constraints, an example, and sensitivity."},
 		{name: "outputs", detail: "map", docs: "Declares the named values this workflow returns after its steps finish. Each entry has a required `value:` expression and may declare its type, constraints, description, and sensitivity."},
 		{name: "vars", detail: "map", docs: "Names values once, for the whole file. Every step reads them as `${" + v1.VarsRoot + ".<name>}`.\n\n" +
@@ -516,6 +517,8 @@ func referenceScope(doc *document, pos lsp.Position, clock bool, current *outlin
 	if doc.parsed != nil {
 		scope.vars = varsCandidates(doc.parsed.varsEntry, "a variable declared by the workflow")
 	}
+
+	scope.locals = append(scope.locals, declaredFunctionCandidates(doc)...)
 
 	if clock {
 		// Bound by the engine for a wait's expressions and nowhere else, which is

@@ -87,7 +87,7 @@ func PartialTranscriptCases() []PartialTranscriptCase {
 			Expected: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
 				"first":  {},
 				"second": {},
-				"boom":   v1.FailedStepOutputs(recorded),
+				"boom":   v1.FailedStepOutputs(v1.StepFailure{Kind: v1.ErrorKindExpression, Text: recorded}),
 			}},
 		},
 		{
@@ -102,7 +102,7 @@ func PartialTranscriptCases() []PartialTranscriptCase {
 			},
 			Expected: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
 				"taken": {},
-				"boom":  v1.FailedStepOutputs(recorded),
+				"boom":  v1.FailedStepOutputs(v1.StepFailure{Kind: v1.ErrorKindExpression, Text: recorded}),
 			}},
 		},
 		{
@@ -130,7 +130,7 @@ func PartialTranscriptCases() []PartialTranscriptCase {
 				"before": {},
 				// The position the failure passed out through, prefixed by the loop
 				// level exactly as a tolerated `for_each` body failure is.
-				"each": v1.FailedStepOutputs(`iteration 0: step "inside_boom": ` + recorded),
+				"each": v1.FailedStepOutputs(v1.StepFailure{Kind: v1.ErrorKindExpression, Text: `iteration 0: step "inside_boom": ` + recorded}),
 			}},
 		},
 		{
@@ -175,10 +175,10 @@ func PartialTranscriptCases() []PartialTranscriptCase {
 				// A switch body merges into the enclosing scope, so the body step
 				// that failed is on the record under its own id, exactly as a
 				// `parallel` branch step would be.
-				"inside_boom": v1.FailedStepOutputs(recorded),
+				"inside_boom": v1.FailedStepOutputs(v1.StepFailure{Kind: v1.ErrorKindExpression, Text: recorded}),
 				// And the switch's own entry: the position the failure passed out
 				// through, *plus* the arm it had already selected.
-				"route": switchFailure(`step "inside_boom": `+recorded, "boom", "boom"),
+				"route": switchFailure(v1.ErrorKindExpression, `step "inside_boom": `+recorded, "boom", "boom"),
 			}},
 		},
 		{
@@ -189,7 +189,7 @@ func PartialTranscriptCases() []PartialTranscriptCase {
 			Name:     "an oversized switch body keeps the arm selected before its refusal",
 			Workflow: siblingParallelForEachBlocks(),
 			Expected: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
-				"choose": switchFailure(v1.AtomicBlockBodyActivitiesError(v1.MaxAtomicBlockActivities).Error(), "selected", "selected"),
+				"choose": switchFailure(v1.ErrorKindInternal, v1.AtomicBlockBodyActivitiesError(v1.MaxAtomicBlockActivities).Error(), "selected", "selected"),
 			}},
 		},
 	}
@@ -201,8 +201,8 @@ func PartialTranscriptCases() []PartialTranscriptCase {
 // Spelled through [v1.FailedStepOutputs] and the same output names the drivers
 // write, rather than as a literal map, so a case here cannot claim a shape no
 // driver produces.
-func switchFailure(text, observed, took string) *v1.Node_Outputs {
-	out := v1.FailedStepOutputs(text)
+func switchFailure(kind v1.ErrorKind, text, observed, took string) *v1.Node_Outputs {
+	out := v1.FailedStepOutputs(v1.StepFailure{Kind: kind, Text: text})
 	out.NamedValues[v1.SwitchValueOutput] = v1.NewLiteral(observed)
 	out.NamedValues[v1.SwitchCaseOutput] = v1.NewLiteral(took)
 

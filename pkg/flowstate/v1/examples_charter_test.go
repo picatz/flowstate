@@ -78,9 +78,7 @@ var exampleCorpusGlobs = []string{
 // [examplesWithoutTestFile] does: a future gap in this derivation is a decision
 // written down here, not a silently reappearing map.
 var constructsWithoutAnExample = map[string]string{
-	"output.type.TYPE_TIMESTAMP": "an output cannot declare a data kind yet: the run document has no plain-JSON form for it (#1436)",
-	"output.type.TYPE_DURATION":  "an output cannot declare a data kind yet: the run document has no plain-JSON form for it (#1436)",
-	"output.type.TYPE_BYTES":     "an output cannot declare a data kind yet: the run document has no plain-JSON form for it (#1436)",
+	"output.type.TYPE_BYTES": "an output cannot declare a data kind yet: the run document has no plain-JSON form for it (#1436)",
 }
 
 // The required set is derived from the schema three ways: the two `kind` oneofs
@@ -148,6 +146,13 @@ var typeFieldExclusions = map[string]string{
 	"name": "the key a type is declared under; an identifier is not a capability",
 }
 
+// functionFieldExclusions are the [v1.FunctionDeclaration] and
+// [v1.FunctionParameter] fields that are not capabilities an example
+// demonstrates.
+var functionFieldExclusions = map[string]string{
+	"name": "the key a function or a parameter is declared under; an identifier is not a capability",
+}
+
 // blockFieldExclusions are the fields of the block-node messages that are
 // structural rather than capabilities an example demonstrates. A block's own
 // `steps:` is the block, not a construct inside it, and the node-kind construct
@@ -201,6 +206,8 @@ func writableSpecs() map[protoreflect.FullName]messageWritableSpec {
 		{&v1.InputDeclaration{}, "input", declarationFieldExclusions},
 		{&v1.OutputDeclaration{}, "output", declarationFieldExclusions},
 		{&v1.TypeDeclaration{}, "type", typeFieldExclusions},
+		{&v1.FunctionDeclaration{}, "function", functionFieldExclusions},
+		{&v1.FunctionParameter{}, "function_parameter", functionFieldExclusions},
 		{&v1.Triggers{}, "triggers", nil},
 		{&v1.WebhookTrigger{}, "webhook", nil},
 		{&v1.WebhookTrigger_Signal{}, "webhook_signal", nil},

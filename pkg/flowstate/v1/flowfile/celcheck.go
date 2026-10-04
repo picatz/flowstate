@@ -206,11 +206,60 @@ func typeErrors(table *typeTable, site v1.ValueSite) Diagnostics {
 		return ds
 	}
 
-	if d, ok := slotMismatch(site, normalizeType(checked.OutputType())); ok {
+	found := checked.OutputType()
+	if table != nil && table.functions.Retains(parsed) {
+		// The expansion erased the calls' types, so the written form is checked too:
+		// it holds each call against its declared signature with the types the file
+		// states for the names the arguments read, and says the declared result type
+		// where the expansion could only say what its body happened to produce.
+		ds, typed := callContractErrors(env, table.functions, site, parsed)
+		if len(ds) > 0 {
+			return ds
+		}
+		if typed != nil {
+			found = typed
+		}
+	}
+
+	if d, ok := slotMismatch(site, normalizeType(found)); ok {
 		return Diagnostics{d}
 	}
 
 	return nil
+}
+
+// callContractErrors checks an expression that calls declared functions as its
+// author wrote it: unparsed, which writes each expansion back as the call it came
+// from, and checked in env with the functions' signatures declared. It returns the
+// type that check found, nil where it could not run.
+//
+// Silent where it cannot run, for the reason [typeErrors] is silent when the
+// environment cannot be built: the expression already checked once, and a defect in
+// this build is not the author's to be told about.
+func callContractErrors(env *cel.Env, set *v1.FunctionSet, site v1.ValueSite, parsed *expr.ParsedExpr) (Diagnostics, *cel.Type) {
+	written, err := cel.AstToString(cel.ParsedExprToAst(parsed))
+	if err != nil {
+		return nil, nil
+	}
+	typed, err := env.Extend(set.Declarations()...)
+	if err != nil {
+		return nil, nil
+	}
+
+	ast, issues := typed.Compile(written)
+	if issues != nil && issues.Err() != nil {
+		var ds Diagnostics
+		for _, message := range celCheckMessages(issues.Err().Error()) {
+			ds = append(ds, Diagnostic{
+				Step: site.Step, Field: site.Field(), Message: message,
+				Code: v1.DiagnosticCodeTypeMismatch,
+			})
+		}
+
+		return ds, nil
+	}
+
+	return nil, ast.OutputType()
 }
 
 // slotRequirements are the positions that accept exactly one type, which the run
