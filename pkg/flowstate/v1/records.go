@@ -281,7 +281,7 @@ func checkRecordField(record string, field *InputDeclaration, table TypeTable) e
 		return fmt.Errorf("type %q field %q is invalid: %w", record, name, err)
 	}
 
-	if err := checkBoundsShape(fmt.Sprintf("type %q field %q", record, name), field); err != nil {
+	if err := checkBoundsShape(fmt.Sprintf("type %q field %q", record, name), "field", field); err != nil {
 		return err
 	}
 

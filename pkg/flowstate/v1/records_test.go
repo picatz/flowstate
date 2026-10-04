@@ -187,6 +187,7 @@ func TestARecordFieldCarriesLengthAndItemBounds(t *testing.T) {
 		err := v1.CheckRecordDeclarations(declare(func(_, lines *v1.InputDeclaration) { lines.MinLen = new(uint64(1)) }))
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), `type "Order" field "lines" declares a string constraint`)
+		assert.Contains(t, err.Error(), "those apply only to a string field")
 	})
 
 	t.Run("a bound no value could satisfy is refused", func(t *testing.T) {
@@ -197,6 +198,15 @@ func TestARecordFieldCarriesLengthAndItemBounds(t *testing.T) {
 		}))
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), `type "Order" field "id" min_len (5) is greater than max_len (2)`)
+	})
+
+	t.Run("a bound past what an input binds is not unsatisfiable on a field", func(t *testing.T) {
+		t.Parallel()
+
+		// An output carries no element ceiling, so only an input's own check refuses it.
+		require.NoError(t, v1.CheckRecordDeclarations(declare(func(_, lines *v1.InputDeclaration) {
+			lines.MinItems = new(uint64(20000))
+		})))
 	})
 
 	wf := declare(func(id, lines *v1.InputDeclaration) {

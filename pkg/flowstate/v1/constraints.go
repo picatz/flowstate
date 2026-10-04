@@ -329,15 +329,16 @@ func collectFreeIdentifiers(e *expr.Expr, bound map[string]struct{}, free map[st
 // checkBoundsShape reports a length or item bound that no value could satisfy or
 // that sits on a type it does not apply to. subject names the declaration the way
 // the caller's sentence does, `input "tags"` for an input and `type "Order" field
-// "tags"` for a record's field, so one rule reads right in both.
-func checkBoundsShape(subject string, decl *InputDeclaration) error {
+// "tags"` for a record's field, and noun is `input` or `field`, so one rule reads
+// right in both.
+func checkBoundsShape(subject, noun string, decl *InputDeclaration) error {
 	t := decl.GetType()
 
 	if decl.MinLen != nil || decl.MaxLen != nil {
 		if t != InputDeclaration_TYPE_STRING {
 			return fmt.Errorf(
 				"%s declares a string constraint (min_len or max_len) but is declared %s; "+
-					"those apply only to a string input", subject, DeclaredTypeName(t))
+					"those apply only to a string %s", subject, DeclaredTypeName(t), noun)
 		}
 	}
 	if decl.MinLen != nil && decl.MaxLen != nil && decl.GetMinLen() > decl.GetMaxLen() {
@@ -349,20 +350,13 @@ func checkBoundsShape(subject string, decl *InputDeclaration) error {
 		if t != InputDeclaration_TYPE_LIST {
 			return fmt.Errorf(
 				"%s declares min_items or max_items but is declared %s; those apply only "+
-					"to a list input", subject, DeclaredTypeName(t))
+					"to a list %s", subject, DeclaredTypeName(t), noun)
 		}
 	}
 	if decl.MinItems != nil && decl.MaxItems != nil && decl.GetMinItems() > decl.GetMaxItems() {
 		return fmt.Errorf("%s min_items (%d) is greater than max_items (%d), so no list can satisfy both",
 			subject, decl.GetMinItems(), decl.GetMaxItems())
 	}
-	if decl.MinItems != nil && decl.GetMinItems() > maxListElements {
-		return fmt.Errorf("%s min_items (%d) is greater than %d, the most list elements this server "+
-			"binds a run input to; no list can ever satisfy both, since every list over %d elements is "+
-			"refused before this constraint runs",
-			subject, decl.GetMinItems(), maxListElements, maxListElements)
-	}
-
 	return nil
 }
 
@@ -380,8 +374,18 @@ func CheckInputConstraintShape(profile string, decl *InputDeclaration) error {
 	name := decl.GetName()
 	t := decl.GetType()
 
-	if err := checkBoundsShape(fmt.Sprintf("input %q", name), decl); err != nil {
+	if err := checkBoundsShape(fmt.Sprintf("input %q", name), "input", decl); err != nil {
 		return err
+	}
+
+	// A ceiling on what an input binds. It is not part of the shape every
+	// declaration shares: a record field can be reached by an output, which carries
+	// no such ceiling, so a larger bound is not unsatisfiable there.
+	if decl.MinItems != nil && decl.GetMinItems() > maxListElements {
+		return fmt.Errorf("input %q min_items (%d) is greater than %d, the most list elements this server "+
+			"binds a run input to; no list can ever satisfy both, since every list over %d elements is "+
+			"refused before this constraint runs",
+			name, decl.GetMinItems(), maxListElements, maxListElements)
 	}
 
 	if len(decl.Values) > 0 && t != InputDeclaration_TYPE_ENUM {
