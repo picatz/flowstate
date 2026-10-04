@@ -94,6 +94,7 @@ headings below, not this list.*
   - [Reading a loop's result: `results` and `state`, not the `as:` name](#reading-a-loops-result-results-and-state-not-the-as-name)
   - [`results` is bounded, and retained across Continue-As-New only when read](#results-is-bounded-and-retained-across-continue-as-new-only-when-read)
   - [The burst case has its own spelling: `wait_for_signals:`](#the-burst-case-has-its-own-spelling-wait_for_signals)
+  - [Two of three must agree: `quorum:` on `wait_for_signals:`](#two-of-three-must-agree-quorum-on-wait_for_signals)
   - [Bounded, because the author does not control the trip count](#bounded-because-the-author-does-not-control-the-trip-count)
   - [A `for_each` is bounded on its trip count too](#a-for_each-is-bounded-on-its-trip-count-too)
   - [Both drivers, and determinism](#both-drivers-and-determinism)
@@ -4214,6 +4215,94 @@ something to keep true.
 arrived for 30s" is a second durable timer per iteration and a distinct feature. A
 *fixed* batching window is expressible today, as an ordinary `sleep:` before the
 drain — which is what `settle` is above.
+
+### Two of three must agree: `quorum:` on `wait_for_signals:`
+
+"Two reviewers must approve" used to be a `loop:` around `wait_for_signal:` that
+tallied by hand: who has approved, is this a repeat, did anyone object. A
+`quorum:` block on `wait_for_signals:` does that tally once, in the engine, the same
+way locally and on Temporal:
+
+```yaml
+- id: gate
+  wait_for_signals:
+    name: release-approved
+    timeout: 24h
+    quorum:
+      approve: 2
+      exclude:
+        - ${run.identity.subject}
+    outputs:
+      decision: ${decision}
+      approvers: ${approvals.map(a, a.sender.identity.subject)}
+
+- id: roll_out
+  if: ${steps.gate.decision == "approved"}
+  log:
+    message: released with ${steps.gate.approvers}
+```
+
+`examples/signal-quorum` writes it out with a `signals:` policy and six `flow test`
+cases.
+
+**It replaces the drain.** Without `quorum:` a `wait_for_signals:` takes the first
+delivery and then whatever is already buffered. With it, deliveries are taken one at
+a time, oldest first, until the wait is decided or `timeout:` lapses. A delivery
+that decided the wait is the last one taken; what is queued behind it stays queued
+for a later wait. The bound is one: the `timeout:` is fixed when the wait first
+parks, so a stream of deliveries that decide nothing cannot hold a bounded gate open
+past it.
+
+**What counts, in the order it is checked.**
+
+1. `veto:` ends the wait at once as `vetoed`, whatever the count. It is a CEL
+   expression over `payload` and `sender`; omitted, it is a payload whose `approved`
+   is boolean `false`.
+2. A delivery whose payload `approved` is `true` is an approval. Anything else (no
+   `approved`, a string, a number) is neither an approval nor a veto, and is ignored.
+3. `distinct:` (default `true`) counts each *verified* identity once, keyed on the
+   issuer-qualified subject, so the same subject from a second issuer is another
+   sender and one reviewer approving twice is one approval. A delivery with no
+   identity (local or unattested) never counts. `distinct: false` counts every
+   approval, which is what a single-sender counter wants.
+4. `exclude:` (at most 16 expressions) names subjects whose approvals do not count:
+   each is a string, or a list of strings, compared to the sender's qualified subject
+   or its bare subject. `${run.identity.subject}` is four-eyes, the run starter's own
+   approval. An excluded sender may still veto.
+
+**Outputs.** The wait's `outputs:` binds `deliveries`, `count` and `timed_out` as
+before, plus `decision` (`approved`, `vetoed` or `timed_out`), `approvals` (the
+deliveries that counted, shaped as `deliveries` entries) and `vetoed_by` (the
+vetoing sender, bound only when the decision is `vetoed`: write
+`decision == "vetoed" ? vetoed_by.identity.subject : ""`, never `has(vetoed_by)`).
+A later step reads the same names under `steps.<id>`. On a timeout the approvals
+counted so far are reported, so `decision` is the one thing to branch on.
+
+**Admission is what keeps a stranger from vetoing.** A veto counts whoever's
+delivery reaches the wait, and what a stranger cannot do is reach it: the `signals:`
+policy refuses the delivery at the `Signal` RPC, before any channel, so a quorum
+adds no check of its own. A gate that matters declares a `signals:` policy.
+
+**Reported while it parks.** A parked quorum wait reports `approvals` and
+`approvals_needed` on its `PendingWait`, filled from the same tally the wait decides
+with, so an operator sees "1 of 2" about the count the run will act on.
+
+**Refused before the run starts.** `approve:` must be at least 1 and at most the
+batch bound (`max_batch:`, or `MaxPendingSignals` when omitted). Against a closed
+`signals:` policy, `flow validate` refuses an `approve:` larger than the number of
+distinct subjects the policy names, because no run could ever meet it; a policy that
+admits by claim or by a computed subject cannot be counted, so it is not asked. A
+quorum with `distinct: false` is not asked either.
+
+**Bounded where the work is.** One wait examines at most `MaxQuorumDeliveries`
+(twice the batch bound) deliveries, counted or not. Deliveries that are repeated,
+ignored or excluded decide nothing, so a sender repeating one cannot keep the wait
+reading; reaching the bound fails the step rather than inventing a decision.
+
+**No tally crosses Continue-As-New.** A wait is one step and a run continues as new
+only between steps, so a tally never spans one; the deliveries a wait has not taken
+stay on the channel or in the carried pending signals, and a replay rebuilds the
+tally by taking the same deliveries in the same order.
 
 ### Bounded, because the author does not control the trip count
 

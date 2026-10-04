@@ -220,6 +220,7 @@ func writableSpecs() map[protoreflect.FullName]messageWritableSpec {
 		{&v1.SignalPolicyRule{}, "signal_policy_rule", nil},
 		{&v1.Signal{}, "signal", nil},
 		{&v1.SignalBatch{}, "signal_batch", nil},
+		{&v1.SignalQuorum{}, "signal_quorum", nil},
 		{&v1.Switch_Case{}, "switch_case", blockFieldExclusions},
 		{&v1.Switch_Default{}, "switch_default", blockFieldExclusions},
 	} {
