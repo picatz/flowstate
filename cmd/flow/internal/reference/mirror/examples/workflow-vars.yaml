@@ -25,7 +25,7 @@ vars:
   # else is the value as written.
   region: eu-west-1
 
-  # A list, which is worth showing because static data used to need a step to hold it.
+  # A list, which is worth showing: static data needs no step to hold it.
   targets:
     - alpha
     - beta
