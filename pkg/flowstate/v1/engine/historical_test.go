@@ -535,6 +535,17 @@ func TestAHistoricalHoldIsWhatTheLiveSessionSaw(t *testing.T) {
 	}
 	assert.Equal(t, map[string]bool{"one": true, "two": true}, found, "a hold the live session read was not found in the history")
 
+	// An inspection that names no session is asked of the one the run held at
+	// the point, which is how a caller that only knows the point asks, and it
+	// reads the same scope the named one did.
+	for address, at := range heldAtBoundary {
+		got, err := engine.Reconstruct(t.Context(), history, at, execution, &v1.DebugInspectRequest{})
+		require.NoError(t, err)
+		require.NoError(t, got.InspectErrs[0], "the hold at %s", address)
+		assert.Empty(t, cmpDiff(lives[address].roots, got.Inspected[0]),
+			"an inspection naming no session read another scope than the live session's at %s", address)
+	}
+
 	// Historical, and not the run as it is now: the run has finished, and the
 	// reconstructions of its holds are of points well before its end.
 	end := engine.Boundaries(history)
