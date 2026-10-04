@@ -204,7 +204,7 @@ func TestAFieldRefusesWhatItDoesNotCarryYet(t *testing.T) {
 	t.Parallel()
 
 	for _, key := range []string{
-		"default: x", "example: x", "sensitive: true", "must: this != ''", "min_len: 1", "max_len: 9",
+		"default: x", "example: x", "sensitive: true", "must: this != ''",
 	} {
 		t.Run(strings.SplitN(key, ":", 2)[0], func(t *testing.T) {
 			t.Parallel()
@@ -450,4 +450,97 @@ func TestUnknownFieldDiagnosticsAreBounded(t *testing.T) {
 	assert.NotContains(t, ds.Error(), long, "a name the file controls is cut before it is echoed")
 	assert.Contains(t, ds.Error(), "…")
 	assert.NotContains(t, ds.Error(), "Did you mean", "a name that long is not matched against the record")
+}
+
+// A field carries the bounds an input does. The declaration is refused where a
+// bound cannot apply, and a literal in the file that breaks one is refused with the
+// path of the field, before a run.
+func TestAFieldCarriesLengthAndItemBounds(t *testing.T) {
+	t.Parallel()
+
+	const bounded = `types:
+  Order:
+    fields:
+      id:
+        type: string
+        min_len: 3
+      tags:
+        type: list(string)
+        max_items: 2
+`
+
+	check := func(t *testing.T, source string) string {
+		t.Helper()
+
+		wf, _, err := flowfile.Parse([]byte(source))
+		if err != nil {
+			return err.Error()
+		}
+
+		return flowfile.Validate(wf).Error()
+	}
+
+	t.Run("a bound on a type it does not apply to", func(t *testing.T) {
+		t.Parallel()
+
+		got := check(t, typesSource(`types:
+  Order:
+    fields:
+      id:
+        type: int
+        min_len: 3
+`, "Order"))
+		assert.Contains(t, got, `type "Order" field "id" declares a string constraint`)
+	})
+
+	t.Run("an example that breaks a bound", func(t *testing.T) {
+		t.Parallel()
+
+		got := check(t, `edition: `+flowfile.CurrentEdition+`
+name: t
+`+bounded+`inputs:
+  order:
+    type: Order
+    example: {id: ab}
+steps:
+  - id: a
+    log:
+      message: hi
+`)
+		assert.Contains(t, got, "the field at .id must be at least 3 character(s) long; got 2")
+	})
+
+	t.Run("an example within the bounds", func(t *testing.T) {
+		t.Parallel()
+
+		got := check(t, `edition: `+flowfile.CurrentEdition+`
+name: t
+`+bounded+`inputs:
+  order:
+    type: Order
+    example: {id: abc, tags: [a, b]}
+steps:
+  - id: a
+    log:
+      message: hi
+`)
+		assert.Empty(t, got)
+	})
+
+	t.Run("a list over its bound", func(t *testing.T) {
+		t.Parallel()
+
+		got := check(t, `edition: `+flowfile.CurrentEdition+`
+name: t
+`+bounded+`inputs:
+  order:
+    type: Order
+    example: {id: abc, tags: [a, b, c]}
+steps:
+  - id: a
+    log:
+      message: hi
+`)
+		assert.Contains(t, got, "the field at .tags must have at most 2 item(s); got 3")
+	})
 }

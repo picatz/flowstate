@@ -11,8 +11,10 @@
 # `description:`), so there is nothing new to learn, and a record may name
 # another record, or a list of one: `list(Line)`.
 #
-# This slice checks the shape. A field does not yet carry `default:`, `must:`
-# or `sensitive:`; `flow validate` says so rather than ignoring them.
+# A field also carries the length and item bounds an input does (`min_len:`,
+# `max_len:`, `min_items:`, `max_items:`), checked by the same functions. A field does
+# not yet carry `default:`, `must:` or `sensitive:`; `flow validate` says so rather
+# than ignoring them.
 #
 #   flow run local examples/record-types/workflow.yaml \
 #       --input-file examples/record-types/inputs.json
@@ -25,6 +27,7 @@ types:
       sku:
         type: string
         required: true
+        min_len: 2
       quantity:
         type: int
         required: true
@@ -43,6 +46,7 @@ types:
       lines:
         type: list(Line)
         required: true
+        max_items: 20
       note:
         type: string
 inputs:

@@ -326,6 +326,40 @@ func collectFreeIdentifiers(e *expr.Expr, bound map[string]struct{}, free map[st
 	}
 }
 
+// checkBoundsShape reports a length or item bound that no value could satisfy or
+// that sits on a type it does not apply to. subject names the declaration the way
+// the caller's sentence does, `input "tags"` for an input and `type "Order" field
+// "tags"` for a record's field, and noun is `input` or `field`, so one rule reads
+// right in both.
+func checkBoundsShape(subject, noun string, decl *InputDeclaration) error {
+	t := decl.GetType()
+
+	if decl.MinLen != nil || decl.MaxLen != nil {
+		if t != InputDeclaration_TYPE_STRING {
+			return fmt.Errorf(
+				"%s declares a string constraint (min_len or max_len) but is declared %s; "+
+					"those apply only to a string %s", subject, DeclaredTypeName(t), noun)
+		}
+	}
+	if decl.MinLen != nil && decl.MaxLen != nil && decl.GetMinLen() > decl.GetMaxLen() {
+		return fmt.Errorf("%s min_len (%d) is greater than max_len (%d), so no string can satisfy both",
+			subject, decl.GetMinLen(), decl.GetMaxLen())
+	}
+
+	if decl.MinItems != nil || decl.MaxItems != nil {
+		if t != InputDeclaration_TYPE_LIST {
+			return fmt.Errorf(
+				"%s declares min_items or max_items but is declared %s; those apply only "+
+					"to a list %s", subject, DeclaredTypeName(t), noun)
+		}
+	}
+	if decl.MinItems != nil && decl.MaxItems != nil && decl.GetMinItems() > decl.GetMaxItems() {
+		return fmt.Errorf("%s min_items (%d) is greater than max_items (%d), so no list can satisfy both",
+			subject, decl.GetMinItems(), decl.GetMaxItems())
+	}
+	return nil
+}
+
 // CheckInputConstraintShape reports what is wrong with a declaration's
 // constraints as written, independent of any value: a key that does not apply
 // to the declared type, a min above its max, or a `must:` that will not
@@ -340,29 +374,13 @@ func CheckInputConstraintShape(profile string, decl *InputDeclaration) error {
 	name := decl.GetName()
 	t := decl.GetType()
 
-	if decl.MinLen != nil || decl.MaxLen != nil {
-		if t != InputDeclaration_TYPE_STRING {
-			return fmt.Errorf(
-				"input %q declares a string constraint (min_len or max_len) but is declared %s; "+
-					"those apply only to a string input", name, DeclaredTypeName(t))
-		}
-	}
-	if decl.MinLen != nil && decl.MaxLen != nil && decl.GetMinLen() > decl.GetMaxLen() {
-		return fmt.Errorf("input %q min_len (%d) is greater than max_len (%d), so no string can satisfy both",
-			name, decl.GetMinLen(), decl.GetMaxLen())
+	if err := checkBoundsShape(fmt.Sprintf("input %q", name), "input", decl); err != nil {
+		return err
 	}
 
-	if decl.MinItems != nil || decl.MaxItems != nil {
-		if t != InputDeclaration_TYPE_LIST {
-			return fmt.Errorf(
-				"input %q declares min_items or max_items but is declared %s; those apply only "+
-					"to a list input", name, DeclaredTypeName(t))
-		}
-	}
-	if decl.MinItems != nil && decl.MaxItems != nil && decl.GetMinItems() > decl.GetMaxItems() {
-		return fmt.Errorf("input %q min_items (%d) is greater than max_items (%d), so no list can satisfy both",
-			name, decl.GetMinItems(), decl.GetMaxItems())
-	}
+	// A ceiling on what an input binds. It is not part of the shape every
+	// declaration shares: a record field can be reached by an output, which carries
+	// no such ceiling, so a larger bound is not unsatisfiable there.
 	if decl.MinItems != nil && decl.GetMinItems() > maxListElements {
 		return fmt.Errorf("input %q min_items (%d) is greater than %d, the most list elements this server "+
 			"binds a run input to; no list can ever satisfy both, since every list over %d elements is "+
@@ -778,10 +796,10 @@ func CheckInputConstraints(profile, name string, decl *InputDeclaration, value *
 		return nil
 	}
 
-	if err := checkStringConstraints(name, decl, lit); err != nil {
+	if err := checkStringConstraints(fmt.Sprintf("input %q", name), decl, lit); err != nil {
 		return err
 	}
-	if err := checkListConstraints(name, decl, lit); err != nil {
+	if err := checkListConstraints(fmt.Sprintf("input %q", name), decl, lit); err != nil {
 		return err
 	}
 	if err := checkEnumConstraint(name, decl, lit); err != nil {
@@ -927,7 +945,7 @@ func evalMust(ctx context.Context, profile string, t InputDeclaration_Type, ast 
 // [CheckInputValue] already refused the mismatch, and this is not the place
 // to report it a second time, per this repository's rule about one mistake
 // getting one diagnostic.
-func checkStringConstraints(name string, decl *InputDeclaration, lit *expr.Value) error {
+func checkStringConstraints(subject string, decl *InputDeclaration, lit *expr.Value) error {
 	if decl.MinLen == nil && decl.MaxLen == nil {
 		return nil
 	}
@@ -939,10 +957,10 @@ func checkStringConstraints(name string, decl *InputDeclaration, lit *expr.Value
 
 	length := uint64(utf8.RuneCountInString(value))
 	if decl.MinLen != nil && length < decl.GetMinLen() {
-		return fmt.Errorf("input %q must be at least %d character(s) long; got %d", name, decl.GetMinLen(), length)
+		return fmt.Errorf("%s must be at least %d character(s) long; got %d", subject, decl.GetMinLen(), length)
 	}
 	if decl.MaxLen != nil && length > decl.GetMaxLen() {
-		return fmt.Errorf("input %q must be at most %d character(s) long; got %d", name, decl.GetMaxLen(), length)
+		return fmt.Errorf("%s must be at most %d character(s) long; got %d", subject, decl.GetMaxLen(), length)
 	}
 
 	return nil
@@ -1588,7 +1606,7 @@ func quotedStrings(values []string) string {
 }
 
 // checkListConstraints applies min_items and max_items to a list literal.
-func checkListConstraints(name string, decl *InputDeclaration, lit *expr.Value) error {
+func checkListConstraints(subject string, decl *InputDeclaration, lit *expr.Value) error {
 	if decl.MinItems == nil && decl.MaxItems == nil {
 		return nil
 	}
@@ -1599,10 +1617,10 @@ func checkListConstraints(name string, decl *InputDeclaration, lit *expr.Value) 
 	length := uint64(len(list.ListValue.GetValues()))
 
 	if decl.MinItems != nil && length < decl.GetMinItems() {
-		return fmt.Errorf("input %q must have at least %d item(s); got %d", name, decl.GetMinItems(), length)
+		return fmt.Errorf("%s must have at least %d item(s); got %d", subject, decl.GetMinItems(), length)
 	}
 	if decl.MaxItems != nil && length > decl.GetMaxItems() {
-		return fmt.Errorf("input %q must have at most %d item(s); got %d", name, decl.GetMaxItems(), length)
+		return fmt.Errorf("%s must have at most %d item(s); got %d", subject, decl.GetMaxItems(), length)
 	}
 
 	return nil

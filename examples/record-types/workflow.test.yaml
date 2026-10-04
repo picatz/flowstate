@@ -55,3 +55,13 @@ tests:
     expect:
       failed: true
       error_contains: "a string at .lines[0].quantity"
+
+  - name: a field under its length bound is refused
+    inputs:
+      order:
+        id: o-1
+        status: open
+        lines: [{sku: k, quantity: 1}]
+    expect:
+      failed: true
+      error_contains: "the field at .lines[0].sku must be at least 2 character(s) long; got 1"
