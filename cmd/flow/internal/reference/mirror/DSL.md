@@ -73,6 +73,7 @@ headings below, not this list.*
   - [What this round adds](#what-this-round-adds-1)
 - [The fifth round: taking it back](#the-fifth-round-taking-it-back)
   - [A tolerated failure is a typed value](#a-tolerated-failure-is-a-typed-value)
+  - [`errors:` and `fail:`: a workflow names its own refusals](#errors-and-fail-a-workflow-names-its-own-refusals)
   - [It is `undo:`, not `on_failure:`](#it-is-undo-not-on_failure)
   - [Per-step, not a workflow-level handler list](#per-step-not-a-workflow-level-handler-list)
   - [Registered on success, and only on success](#registered-on-success-and-only-on-success)
@@ -3392,6 +3393,45 @@ did-you-mean, where a misspelled substring silently takes the other branch.
 was retried; an attempt-level narrowing (an unknown outcome) belongs to the
 attempt. Both drivers record the same fields, pinned by the shared `ErrorText`
 conformance cases.
+
+### `errors:` and `fail:`: a workflow names its own refusals
+
+A failure the author means has a name. `errors:` declares them once, and a
+`fail:` step raises one:
+
+```yaml
+errors:
+  InsufficientFunds:
+    description: the account cannot cover the amount requested
+steps:
+  - id: reject_overdraft
+    if: ${inputs.amount_cents > inputs.balance_cents}
+    fail:
+      error: InsufficientFunds
+      message: ${"balance " + string(inputs.balance_cents) + " cannot cover " + string(inputs.amount_cents)}
+```
+
+The run fails with `InsufficientFunds` as its kind, on both drivers, and the
+sentence reads `task "fail" failed (InsufficientFunds): <message>`. A step that
+tolerates the failure reads the same name as `failure.kind`, and the validator
+knows the workflow's declared names beside the built-in kinds, so
+`failure.kind == "InsufficientFunds"` is checked and `"InsufficientFunds"`
+misspelled is refused with the nearest declared spelling.
+
+- A name starts with a capital letter and may not spell a built-in kind: a
+  declaration that redefined `Timeout` would make one string mean two things.
+- `fail:` is a node kind, not a task, for the reason `value:` is: raising is
+  evaluated in workflow code, deterministically, and schedules nothing. It
+  refuses `retry:`, `timeout:`, `total_timeout:` and `undo:`, and cannot be
+  `async:`.
+- The message is an expression, bounded at 4096 bytes. It may not read a
+  `secret(...)` or an input marked `sensitive`: it is written to history, so the
+  same reach rule that governs a wait's `prompt:` applies.
+- A declared error is never retried. Raising one is a decision, and a second
+  attempt would reach the same one; opting a kind into retry is a later,
+  explicit step.
+- A `call:` step's `failure.kind` is not judged against the caller's
+  declarations: the callee may raise a kind only it declares.
 
 ### It is `undo:`, not `on_failure:`
 

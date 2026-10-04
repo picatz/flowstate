@@ -268,6 +268,10 @@ func workflowUsingEveryValuePosition() *Workflow {
 				}},
 			},
 			{
+				Id:   "refuse",
+				Kind: &Node_Fail{Fail: &Fail{Error: "Refused", Message: NewExpr("'no'")}},
+			},
+			{
 				Id: "loop",
 				Kind: &Node_Loop{Loop: &Loop{
 					Until:         NewExpr("true"),

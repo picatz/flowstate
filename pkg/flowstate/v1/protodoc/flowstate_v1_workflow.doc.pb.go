@@ -444,6 +444,17 @@ func init() {
 				" name used inside a loop body is a size multiplier.\n",
 		},
 		{
+			Name: "flowstate.v1.Workflow.declared_errors",
+			Leading: " DeclaredErrors are the failures this workflow may raise, by name, so a\n" +
+				" `fail:` step and a `failure.kind` comparison are checked against a set the\n" +
+				" file states rather than against prose. Like [declared_types], the definitions\n" +
+				" travel in the specification, so a run that began with one meaning of an error\n" +
+				" ends with that meaning however the file changes.\n" +
+				"\n" +
+				" A declared name shares the namespace of the built-in [ErrorKind]s and may not\n" +
+				" spell one of them. See [ErrorDeclaration].\n",
+		},
+		{
 			Name: "flowstate.v1.Workflow.StepOutputs",
 			Leading: " StepOutputs is a map of step IDs to their outputs. Each step's outputs are\n" +
 				" represented as a map of named values, allowing for structured outputs that\n" +
@@ -486,6 +497,57 @@ func init() {
 				" scope's visible outputs, one loop iteration's results, the outputs carried\n" +
 				" across a Continue-As-New), where it is simply never set. The run's own end is\n" +
 				" the only place anything writes it.\n",
+		},
+		{
+			Name: "flowstate.v1.ErrorDeclaration",
+			Leading: " ErrorDeclaration names one failure a workflow may raise with a `fail:` step.\n" +
+				"\n" +
+				"     errors:\n" +
+				"       PaymentDeclined:\n" +
+				"         description: The card issuer refused the charge.\n" +
+				"\n" +
+				" The name is the failure's kind: it is what `${steps.<id>.failure.kind}` reads,\n" +
+				" what a failed run reports, and what `flow test` asserts on. It is checked\n" +
+				" wherever a kind is spelled, so `failure.kind == \"PaymentDeclind\"` is refused\n" +
+				" with a did-you-mean the way a misspelled built-in kind is.\n" +
+				"\n" +
+				" A declared error is never retried. An unknown kind is permanent by the same\n" +
+				" fail-closed rule that keeps a new built-in kind from repeating a non-idempotent\n" +
+				" operation; letting a declaration widen that is a decision of its own, and is not\n" +
+				" made here.\n",
+		},
+		{
+			Name: "flowstate.v1.ErrorDeclaration.name",
+			Leading: " Name is the kind. Capitalised and an identifier, like a record type's name,\n" +
+				" and not one of the built-in kinds (`Timeout`, `Upstream`, ...), which a\n" +
+				" declaration could otherwise redefine.\n",
+		},
+		{
+			Name: "flowstate.v1.ErrorDeclaration.description",
+			Leading: " Description is prose for whoever reads the error: an editor's hover, a\n" +
+				" generated reference, an agent deciding how to react.\n",
+		},
+		{
+			Name: "flowstate.v1.Fail",
+			Leading: " Fail raises a declared error, as `fail: {error: PaymentDeclined, message: ...}`.\n" +
+				"\n" +
+				" A node kind rather than a task, for the reason `value:` is: raising is not an\n" +
+				" effect. It is evaluated in workflow code, in written order, schedules nothing,\n" +
+				" touches nothing outside the run, and replays to the same failure. The step\n" +
+				" therefore takes no `retry:`, `timeout:` or `undo:`; it can be tolerated by\n" +
+				" `continue_on_error:` like any other step, and then records `error` and `failure`\n" +
+				" exactly as a failed task does.\n",
+		},
+		{
+			Name:    "flowstate.v1.Fail.error",
+			Leading: " Error is the kind raised: a name from the workflow's [Workflow.declared_errors].\n",
+		},
+		{
+			Name: "flowstate.v1.Fail.message",
+			Leading: " Message is the sentence the failure carries, evaluated when the step runs and\n" +
+				" bounded like every other expression result. It is the author's words: the\n" +
+				" failure's `message` and `${steps.<id>.error}` are built from it. Optional; an\n" +
+				" absent message reads as the error's name.\n",
 		},
 		{
 			Name: "flowstate.v1.FunctionDeclaration",
@@ -1288,6 +1350,11 @@ func init() {
 				" See [Switch] for the semantics; the reason it is a node kind rather than\n" +
 				" sugar over `if:`-guarded steps is that sugar is invisible to Marshal, so\n" +
 				" `flow fmt` would rewrite an author's `switch:` into its expansion.\n",
+		},
+		{
+			Name: "flowstate.v1.Node.fail",
+			Leading: " Fail raises a declared error, as `fail: {error: Name, message: ...}`. See\n" +
+				" [Fail]. Field 16, because 15 is [async] on this message.\n",
 		},
 		{
 			Name: "flowstate.v1.Node.condition",

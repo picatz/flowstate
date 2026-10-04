@@ -84,6 +84,13 @@ func CheckAsyncPlacement(node *Node, placement UndoScope) error {
 				node.GetId())
 		}
 
+		if _, isFail := node.GetKind().(*Node_Fail); isFail {
+			return fmt.Errorf(
+				"`async:` is only supported on a step that runs a task, and step %q is a `fail:`; "+
+					"a failure is raised in place, so there is nothing to overlap — remove the `async:`",
+				node.GetId())
+		}
+
 		if _, isValue := node.GetKind().(*Node_Value); isValue {
 			return fmt.Errorf(
 				"`async:` is only supported on a step that runs a task, and step %q is a `value:`; "+

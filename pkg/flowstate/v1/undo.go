@@ -644,6 +644,14 @@ func CheckUndoPlacement(node *Node, placement UndoScope) error {
 				node.GetId())
 		}
 
+		if _, isFail := node.GetKind().(*Node_Fail); isFail {
+			return fmt.Errorf(
+				"`undo:` is only supported on a step that runs a task, and step %q is a `fail:`; "+
+					"raising a failure changes nothing outside the run, so there is nothing to take "+
+					"back; write the compensation on the steps whose effects the failure should undo",
+				node.GetId())
+		}
+
 		if _, isValue := node.GetKind().(*Node_Value); isValue {
 			return fmt.Errorf(
 				"`undo:` is only supported on a step that runs a task, and step %q is a `value:`; "+

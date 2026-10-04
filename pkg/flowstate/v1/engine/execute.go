@@ -1234,6 +1234,9 @@ func (e *executor) runNode(node *v1.Node, depth, susp int, descend bool) error {
 	case *v1.Node_Switch:
 		return e.runSwitch(node, kind.Switch, depth, susp)
 
+	case *v1.Node_Fail:
+		return e.runFail(kind.Fail)
+
 	default:
 		return &ErrRunFailed{Message: fmt.Sprintf("unsupported node kind: %T", node.Kind)}
 	}
@@ -1259,6 +1262,17 @@ func (e *executor) runValue(node *v1.Node, value *v1.Value) error {
 	e.scope.Outputs.StepValues[node.GetId()] = outputs
 
 	return nil
+}
+
+// runFail raises what a `fail:` step names, in workflow code like a `value:`:
+// nothing is scheduled and the failure replays identically. [v1.EvalFailNode] is
+// the local driver's function unchanged, so the two cannot disagree about the
+// kind or the sentence.
+func (e *executor) runFail(fail *v1.Fail) error {
+	cost, err := v1.EvalFailNode(evalContext(), fail, e.scope)
+	e.chargeValueCost(cost)
+
+	return nodeFailed(err)
 }
 
 // runSwitch dispatches on one value and runs the body [v1.SelectSwitchCase]
