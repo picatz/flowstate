@@ -364,6 +364,10 @@ func stepDoc(step *parsedStep, def v1.TaskDef, taskKnown bool) string {
 // ls names which of a loop's own scopes the expression is evaluated in, and
 // loopScopeNone everywhere else — see [parsedStep.loopScopeOf].
 func hoverReference(doc *document, from *parsedStep, v *value, f fence, cursor int, clock, shaping bool, ls loopScope) *lsp.Hover {
+	if h := hoverInputPath(doc, v, f, cursor); h != nil {
+		return h
+	}
+
 	ref := referenceAt(f.source, cursor)
 	if ref.empty() {
 		// No reference here, which does not mean nothing is here. `referenceAt`
@@ -437,6 +441,12 @@ func hoverDocumentExpression(doc *document, pos lsp.Position) *lsp.Hover {
 			if name, span, err := secretRefAt(f.source, cursor); err == nil {
 				rng := v.fenceSpanOrWhole(doc.index, f, span[0], span[1])
 				found = markdownHover(secretDoc(name), rng)
+
+				return
+			}
+
+			if h := hoverInputPath(doc, v, f, cursor); h != nil {
+				found = h
 
 				return
 			}
