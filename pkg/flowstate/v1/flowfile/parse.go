@@ -122,7 +122,7 @@ var (
 	// `total_timeout` sits beside `timeout` rather than inside `retry:` because
 	// the bound it names binds a step that declares no `retry:` at all — see
 	// [v1.StepTimeoutsFor].
-	stepPropertyKeys = []string{"id", "description", "if", "vars", "timeout", "total_timeout", "retry", "continue_on_error", "undo", "async", "with", "digest"}
+	stepPropertyKeys = []string{"id", "description", "if", "vars", "timeout", "total_timeout", "retry", "continue_on_error", "undo", "workspace", "produce", "async", "with", "digest"}
 
 	// nodeKindKeys are the kinds of work that are not a task, and so name a node
 	// kind in the schema rather than anything in the registry.
@@ -1818,6 +1818,11 @@ func (c *compiler) step(n ast.Node, path string) *v1.Node {
 			step.Async = async
 		}
 	}
+
+	// Read after the work, because they qualify it: the files it starts with and
+	// the files it leaves. Both belong to the task, so both are refused on any
+	// other kind of step.
+	c.workspaceAndProduce(fields, step.GetTask(), path, r)
 
 	step.Policy = c.policy(fields, path, r)
 	c.checkPolicyPlacement(step, fields, path, r)

@@ -237,7 +237,8 @@ func (x *SecretRef) GetName() string {
 //
 // Exactly one kind is set. A `literal` is a concrete CEL value; an `expr` is a
 // parsed CEL expression evaluated when the value is needed; a `secret_ref`
-// names a secret resolved only by the worker that uses it; a `structure` is a
+// names a secret resolved only by the worker that uses it; an `artifact_ref`
+// names a tree of files in the worker's artifact store; a `structure` is a
 // list or map of Values, the only shape that can hold a secret reference below
 // the top level; and an `error` records a value that could not be produced.
 // Values a caller submits, such as `RunRequest.inputs`, must be literals.
@@ -250,6 +251,7 @@ type Value struct {
 	//	*Value_Error_
 	//	*Value_SecretRef
 	//	*Value_Structure_
+	//	*Value_ArtifactRef
 	Kind          isValue_Kind `protobuf_oneof:"kind"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -337,6 +339,15 @@ func (x *Value) GetStructure() *Value_Structure {
 	return nil
 }
 
+func (x *Value) GetArtifactRef() *ArtifactRef {
+	if x != nil {
+		if x, ok := x.Kind.(*Value_ArtifactRef); ok {
+			return x.ArtifactRef
+		}
+	}
+	return nil
+}
+
 type isValue_Kind interface {
 	isValue_Kind()
 }
@@ -377,6 +388,23 @@ type Value_Structure_ struct {
 	Structure *Value_Structure `protobuf:"bytes,5,opt,name=structure,proto3,oneof"`
 }
 
+type Value_ArtifactRef struct {
+	// A reference to an immutable tree of files in the worker's artifact store,
+	// as a digest and two summary numbers.
+	//
+	// Inert like [SecretRef], for the opposite reason: a secret reference is
+	// inert because resolving it would put a credential in history, while this
+	// one is inert because there is nothing to resolve in workflow code. It
+	// carries no bytes, no namespace and no authority, so it is safe in durable
+	// history; only the worker that materializes it, bound to the run's tenant,
+	// can turn it into files. Workflow-side evaluation reads it as the map
+	// `{digest, size_bytes, entry_count}` and never dereferences it.
+	//
+	// It appears in the resolved `workspace` of a task (see [Task.workspace]),
+	// where a Flowfile's `${steps.build.artifacts.src}` lands once evaluated.
+	ArtifactRef *ArtifactRef `protobuf:"bytes,6,opt,name=artifact_ref,json=artifactRef,proto3,oneof"`
+}
+
 func (*Value_Expr) isValue_Kind() {}
 
 func (*Value_Literal) isValue_Kind() {}
@@ -386,6 +414,8 @@ func (*Value_Error_) isValue_Kind() {}
 func (*Value_SecretRef) isValue_Kind() {}
 
 func (*Value_Structure_) isValue_Kind() {}
+
+func (*Value_ArtifactRef) isValue_Kind() {}
 
 // Error is why a value could not be produced.
 type Value_Error struct {
@@ -640,18 +670,19 @@ var File_flowstate_v1_value_proto protoreflect.FileDescriptor
 
 const file_flowstate_v1_value_proto_rawDesc = "" +
 	"\n" +
-	"\x18flowstate/v1/value.proto\x12\fflowstate.v1\x1a\x1bbuf/validate/validate.proto\x1a%google/api/expr/v1alpha1/syntax.proto\x1a$google/api/expr/v1alpha1/value.proto\x1a\x1fgoogle/api/field_behavior.proto\"j\n" +
+	"\x18flowstate/v1/value.proto\x12\fflowstate.v1\x1a\x1bbuf/validate/validate.proto\x1a\x1bflowstate/v1/artifact.proto\x1a%google/api/expr/v1alpha1/syntax.proto\x1a$google/api/expr/v1alpha1/value.proto\x1a\x1fgoogle/api/field_behavior.proto\"j\n" +
 	"\tSecretRef\x126\n" +
 	"\x06scheme\x18\x01 \x01(\tB\x1e\xe2A\x01\x02\xbaH\x17\xc8\x01\x01r\x12\x10\x01\x18 2\f^[a-z0-9-]+$R\x06scheme\x12%\n" +
 	"\x04name\x18\x02 \x01(\tB\x11\xe2A\x01\x02\xbaH\n" +
-	"\xc8\x01\x01r\x05\x10\x01\x18\x80\bR\x04name\"\xe1\b\n" +
+	"\xc8\x01\x01r\x05\x10\x01\x18\x80\bR\x04name\"\xa1\t\n" +
 	"\x05Value\x12:\n" +
 	"\x04expr\x18\x01 \x01(\v2$.google.api.expr.v1alpha1.ParsedExprH\x00R\x04expr\x12;\n" +
 	"\aliteral\x18\x02 \x01(\v2\x1f.google.api.expr.v1alpha1.ValueH\x00R\aliteral\x121\n" +
 	"\x05error\x18\x03 \x01(\v2\x19.flowstate.v1.Value.ErrorH\x00R\x05error\x128\n" +
 	"\n" +
 	"secret_ref\x18\x04 \x01(\v2\x17.flowstate.v1.SecretRefH\x00R\tsecretRef\x12=\n" +
-	"\tstructure\x18\x05 \x01(\v2\x1d.flowstate.v1.Value.StructureH\x00R\tstructure\x1a\xa1\x02\n" +
+	"\tstructure\x18\x05 \x01(\v2\x1d.flowstate.v1.Value.StructureH\x00R\tstructure\x12>\n" +
+	"\fartifact_ref\x18\x06 \x01(\v2\x19.flowstate.v1.ArtifactRefH\x00R\vartifactRef\x1a\xa1\x02\n" +
 	"\x05Error\x12$\n" +
 	"\amessage\x18\x01 \x01(\tB\n" +
 	"\xe2A\x01\x02\xbaH\x03\xc8\x01\x01R\amessage\x12E\n" +
@@ -718,6 +749,7 @@ var file_flowstate_v1_value_proto_goTypes = []any{
 	nil,                          // 8: flowstate.v1.Value.Structure.Map.EntriesEntry
 	(*v1alpha1.ParsedExpr)(nil),  // 9: google.api.expr.v1alpha1.ParsedExpr
 	(*v1alpha1.Value)(nil),       // 10: google.api.expr.v1alpha1.Value
+	(*ArtifactRef)(nil),          // 11: flowstate.v1.ArtifactRef
 }
 var file_flowstate_v1_value_proto_depIdxs = []int32{
 	9,  // 0: flowstate.v1.Value.expr:type_name -> google.api.expr.v1alpha1.ParsedExpr
@@ -725,17 +757,18 @@ var file_flowstate_v1_value_proto_depIdxs = []int32{
 	4,  // 2: flowstate.v1.Value.error:type_name -> flowstate.v1.Value.Error
 	2,  // 3: flowstate.v1.Value.secret_ref:type_name -> flowstate.v1.SecretRef
 	5,  // 4: flowstate.v1.Value.structure:type_name -> flowstate.v1.Value.Structure
-	1,  // 5: flowstate.v1.Value.Error.code:type_name -> flowstate.v1.Value.Error.Code
-	6,  // 6: flowstate.v1.Value.Structure.list:type_name -> flowstate.v1.Value.Structure.List
-	7,  // 7: flowstate.v1.Value.Structure.map:type_name -> flowstate.v1.Value.Structure.Map
-	3,  // 8: flowstate.v1.Value.Structure.List.values:type_name -> flowstate.v1.Value
-	8,  // 9: flowstate.v1.Value.Structure.Map.entries:type_name -> flowstate.v1.Value.Structure.Map.EntriesEntry
-	3,  // 10: flowstate.v1.Value.Structure.Map.EntriesEntry.value:type_name -> flowstate.v1.Value
-	11, // [11:11] is the sub-list for method output_type
-	11, // [11:11] is the sub-list for method input_type
-	11, // [11:11] is the sub-list for extension type_name
-	11, // [11:11] is the sub-list for extension extendee
-	0,  // [0:11] is the sub-list for field type_name
+	11, // 5: flowstate.v1.Value.artifact_ref:type_name -> flowstate.v1.ArtifactRef
+	1,  // 6: flowstate.v1.Value.Error.code:type_name -> flowstate.v1.Value.Error.Code
+	6,  // 7: flowstate.v1.Value.Structure.list:type_name -> flowstate.v1.Value.Structure.List
+	7,  // 8: flowstate.v1.Value.Structure.map:type_name -> flowstate.v1.Value.Structure.Map
+	3,  // 9: flowstate.v1.Value.Structure.List.values:type_name -> flowstate.v1.Value
+	8,  // 10: flowstate.v1.Value.Structure.Map.entries:type_name -> flowstate.v1.Value.Structure.Map.EntriesEntry
+	3,  // 11: flowstate.v1.Value.Structure.Map.EntriesEntry.value:type_name -> flowstate.v1.Value
+	12, // [12:12] is the sub-list for method output_type
+	12, // [12:12] is the sub-list for method input_type
+	12, // [12:12] is the sub-list for extension type_name
+	12, // [12:12] is the sub-list for extension extendee
+	0,  // [0:12] is the sub-list for field type_name
 }
 
 func init() { file_flowstate_v1_value_proto_init() }
@@ -743,12 +776,14 @@ func file_flowstate_v1_value_proto_init() {
 	if File_flowstate_v1_value_proto != nil {
 		return
 	}
+	file_flowstate_v1_artifact_proto_init()
 	file_flowstate_v1_value_proto_msgTypes[1].OneofWrappers = []any{
 		(*Value_Expr)(nil),
 		(*Value_Literal)(nil),
 		(*Value_Error_)(nil),
 		(*Value_SecretRef)(nil),
 		(*Value_Structure_)(nil),
+		(*Value_ArtifactRef)(nil),
 	}
 	file_flowstate_v1_value_proto_msgTypes[3].OneofWrappers = []any{
 		(*Value_Structure_List_)(nil),

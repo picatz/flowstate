@@ -353,6 +353,14 @@ func TaskNeedsAuthority(task *Task) bool {
 		return false
 	}
 
+	// A step that declares a workspace or produces artifacts runs on the
+	// activity that carries the worker's artifact capability and the run's
+	// address. Not a secret, but the same reasoning: the capability is the
+	// worker's, supplied beside the task and never inside the specification.
+	if TaskUsesArtifacts(task) {
+		return true
+	}
+
 	// Any input *holding* a reference, wherever in it the reference sits, and
 	// whatever any registry does or does not know about the name.
 	//

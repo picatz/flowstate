@@ -1373,6 +1373,10 @@ steps:
       interval: 1s
       backoff: 2
       max_interval: 1m
+    workspace:
+      src: ${vars.region}
+    produce:
+      out: out
     log:
       message: hi
     undo:

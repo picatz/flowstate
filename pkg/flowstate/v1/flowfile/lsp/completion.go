@@ -196,6 +196,12 @@ var dslKeys = map[string][]dslKey{
 			"Its inputs are resolved the moment the step succeeds, in that step's scope with its own outputs added, so `${" + v1.StepsRoot + ".<this step>.<output>}` is the reference to use, and it is the one place a step may name itself. " +
 			"A run that failed and compensated still reports FAILED; what it undid is in the failure.\n\n" +
 			"Top-level task steps only in this version. Inside a `for_each` body or a `parallel:` branch it is refused, because the order work registers in there is not the same under `flow run local` as it is durably."},
+		{name: "workspace", detail: "map", docs: "Artifacts to materialize as a fresh directory tree before this task runs, each at a mount path under the step's workspace. " +
+			"Written as `<mount>: ${steps.<id>.artifacts.<name>}`; a mount of `.` is the workspace itself and must be the only one.\n\n" +
+			"The workspace is created per attempt and removed after the task and its `produce:` snapshot, so a retry never sees a previous attempt's files. An `exec` step's `dir` defaults to it; the operator's exec policy roots must still contain it."},
+		{name: "produce", detail: "map", docs: "Directories, relative to the step's workspace, to snapshot into artifacts after this task succeeds. " +
+			"Written as `<name>: <path>`; read back as `${steps.<id>.artifacts.<name>}` and hand to a later step's `workspace:`.\n\n" +
+			"A symlink, hard link, device or oversized tree fails the step by name; nothing is silently skipped."},
 		{name: "async", detail: "bool", docs: "Allows this task step to start without waiting for it at the next written step. A reference to its outputs joins it, and the end of the enclosing step list joins every async step still outstanding. Only supported on task steps at a sequential placement."},
 		{name: "with", detail: "map", docs: "Arguments binding the callee's declared `inputs:`, resolved in *this* file's scope, the same scope a task's inputs are resolved in. " +
 			"Only meaningful beside `call:`. Checked against what the callee declares when this file is compiled: a missing required input or an argument it does not declare is refused here, not at run time.\n\n" +

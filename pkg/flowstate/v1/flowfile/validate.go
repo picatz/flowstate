@@ -756,7 +756,46 @@ func validateTaskStep(id string, node *v1.Node, task *v1.Task, scope, inner refS
 		ds = append(ds, validateInputRefs(id, name, checkable[name], inner, index, wf)...)
 	}
 
+	// The workspace is evaluated by the workflow, in the step's own scope, at the
+	// position inputs are, so its references resolve against the same names. A
+	// `${steps.build.artifacts.src}` naming a step that has not run yet, or one
+	// that does not produce `src`, is a mistake in the file and is reported here.
+	for _, mount := range slices.Sorted(maps.Keys(task.GetWorkspace())) {
+		ds = append(ds, validateInputRefs(id, "workspace."+mount, task.GetWorkspace()[mount], inner, index, wf)...)
+	}
+
+	ds = append(ds, validateProduce(id, task)...)
+
 	return ds
+}
+
+// validateProduce reports a `produce:` the task cannot honour: the snapshots are
+// exposed under the output name `artifacts`, so a task that already has an
+// output of that name would have two things to put there.
+func validateProduce(id string, task *v1.Task) Diagnostics {
+	if len(task.GetProduce()) == 0 {
+		return nil
+	}
+	def, known := v1.LookupTask(task.GetName())
+	if !known {
+		return nil
+	}
+	if def.Outputs != nil && def.Outputs.Fields().ByName(protoreflect.Name(v1.ArtifactsOutput)) != nil {
+		return Diagnostics{{
+			Step: id, Kind: "produce",
+			Message: fmt.Sprintf("the %s task already has an output named %q, and produce: exposes its snapshots under that name; "+
+				"a task with its own %q output cannot also produce artifacts", task.GetName(), v1.ArtifactsOutput, v1.ArtifactsOutput),
+		}}
+	}
+	if shaping, replaced := shapedTaskOutputs(task); replaced && shaping != nil {
+		return Diagnostics{{
+			Step: id, Kind: "produce",
+			Message: fmt.Sprintf("the %s task replaces its outputs with the names its `%s:` computes, and produce: adds one, %q, "+
+				"that the shaping would have to leave alone; read the produced files in a later step instead",
+				task.GetName(), v1.ShapingInput, v1.ArtifactsOutput),
+		}}
+	}
+	return nil
 }
 
 // validateCondition reports references in one step's `if:` that cannot resolve,
@@ -3376,7 +3415,15 @@ func unknownStepOutput(stepID, inputName string, ref stepRef, node *v1.Node) (Di
 		return Diagnostic{}, false
 	}
 
+	// What `produce:` adds beside the task's own outputs.
+	if ref.Output == v1.ArtifactsOutput && len(task.GetProduce()) > 0 {
+		return Diagnostic{}, false
+	}
+
 	produced := fieldNames(def.Outputs)
+	if len(task.GetProduce()) > 0 {
+		produced = append(produced, v1.ArtifactsOutput)
+	}
 	if node.GetPolicy().GetContinueOnError() {
 		// Listed because it is available here, and a list that omits a name the very
 		// next edit might need sends the author to the docs for something the tool

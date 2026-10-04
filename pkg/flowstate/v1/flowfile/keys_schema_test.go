@@ -61,7 +61,9 @@ func TestStepGrammarKeysCoverNodeSchema(t *testing.T) {
 		name := string(node.Fields().Get(i).Name())
 		switch name {
 		case "task":
-			// A dynamic key supplied by the active task registry.
+			// A dynamic key supplied by the active task registry, plus the two
+			// companion keys any task step may carry.
+			schema = append(schema, "workspace", "produce")
 		case "condition":
 			schema = append(schema, "if")
 		case "policy":

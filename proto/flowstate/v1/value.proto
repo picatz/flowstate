@@ -3,6 +3,7 @@ syntax = "proto3";
 package flowstate.v1;
 
 import "buf/validate/validate.proto";
+import "flowstate/v1/artifact.proto";
 import "google/api/expr/v1alpha1/syntax.proto";
 import "google/api/expr/v1alpha1/value.proto";
 import "google/api/field_behavior.proto";
@@ -62,7 +63,8 @@ message SecretRef {
 //
 // Exactly one kind is set. A `literal` is a concrete CEL value; an `expr` is a
 // parsed CEL expression evaluated when the value is needed; a `secret_ref`
-// names a secret resolved only by the worker that uses it; a `structure` is a
+// names a secret resolved only by the worker that uses it; an `artifact_ref`
+// names a tree of files in the worker's artifact store; a `structure` is a
 // list or map of Values, the only shape that can hold a secret reference below
 // the top level; and an `error` records a value that could not be produced.
 // Values a caller submits, such as `RunRequest.inputs`, must be literals.
@@ -176,6 +178,21 @@ message Value {
     // A list or a mapping whose entries are values, which is the only shape
     // that can hold a [SecretRef] somewhere other than at the top.
     Structure structure = 5;
+
+    // A reference to an immutable tree of files in the worker's artifact store,
+    // as a digest and two summary numbers.
+    //
+    // Inert like [SecretRef], for the opposite reason: a secret reference is
+    // inert because resolving it would put a credential in history, while this
+    // one is inert because there is nothing to resolve in workflow code. It
+    // carries no bytes, no namespace and no authority, so it is safe in durable
+    // history; only the worker that materializes it, bound to the run's tenant,
+    // can turn it into files. Workflow-side evaluation reads it as the map
+    // `{digest, size_bytes, entry_count}` and never dereferences it.
+    //
+    // It appears in the resolved `workspace` of a task (see [Task.workspace]),
+    // where a Flowfile's `${steps.build.artifacts.src}` lands once evaluated.
+    ArtifactRef artifact_ref = 6;
     // TODO(kent): we're using "value" to represent a "literal" value, which isn't quite the same.
     // So, this is probably worth revisiting. The "value" allows for more complex types, like a
     // struct or list, while the "literal" is more of a primitive value like a string, int, or bool.

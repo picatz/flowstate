@@ -435,21 +435,22 @@ message Task {
 
       // Dir is the working directory, written as an absolute path.
       //
-      // Required, because the worker's own working directory is never used: it
-      // is wherever the operator started the process, which is not something a
-      // workflow can reason about. The policy admits only directories under
-      // one of its configured roots, after symbolic links are resolved, so a
-      // path that lexically begins under a root but leaves it through a link is
-      // refused. A policy that configures no roots admits no directory, which
-      // makes the task unusable rather than unconfined.
-      string dir = 2 [
-        (buf.validate.field).required = true,
-        (google.api.field_behavior) = REQUIRED,
-        (buf.validate.field).string = {
-          min_len: 1
-          max_len: 4096
-        }
-      ];
+      // The worker's own working directory is never used: it is wherever the
+      // operator started the process, which is not something a workflow can
+      // reason about. So a step must say where the program runs: either this
+      // input, or a `workspace:` on the step, whose fresh per-attempt
+      // directory is the default. A step with neither is refused.
+      //
+      // The policy admits only directories under one of its configured roots,
+      // after symbolic links are resolved, so a path that lexically begins
+      // under a root but leaves it through a link is refused. That holds for
+      // a workspace too: the directory the worker creates must sit under a
+      // root the operator listed, or the step is denied. A policy that
+      // configures no roots admits no directory, which makes the task unusable
+      // rather than unconfined.
+      string dir = 2 [(buf.validate.field).string = {
+        max_len: 4096
+      }];
 
       // Env sets environment variables for the child, and is a request, not a
       // grant.
@@ -589,4 +590,60 @@ message Task {
       keys: {string: {min_len: 1}}
     }
   ];
+
+  // Workspace names the trees of files materialized before the task runs, as a
+  // map from a directory (relative to the workspace root, or "." for the root
+  // itself) to the artifact that fills it. Written as the step's `workspace:`.
+  //
+  // A workspace is a per-attempt materialization of artifacts: a fresh
+  // directory the worker creates for every attempt, fills from its tenant's
+  // artifact store, hands the task, and removes after the task's `produce`
+  // paths are snapshotted. Nothing is carried from one attempt to the next, so
+  // a retry never starts from half of what its predecessor wrote.
+  //
+  // Each value is an expression that evaluates to an artifact (typically
+  // `${steps.build.artifacts.src}`) or an [ArtifactRef] directly. The
+  // engine resolves expressions workflow-side, the same way it resolves
+  // inputs, and what reaches the worker is always an [ArtifactRef]: a digest
+  // and two numbers, never the bytes.
+  //
+  // Directories may not nest inside one another, and the root "." admits no
+  // sibling. An unreachable or foreign digest fails the step permanently.
+  map<string, Value> workspace = 4 [(buf.validate.field).map = {
+    keys: {
+      string: {
+        min_len: 1
+        max_len: 256
+      }
+    }
+    max_pairs: 16
+  }];
+
+  // Produce names the paths inside the workspace to snapshot as artifacts
+  // after the task returns, as a map from an artifact name to a directory
+  // path relative to the workspace root. Written as the step's `produce:`.
+  //
+  // Each one becomes `${steps.<id>.artifacts.<name>}`, a map of `digest`,
+  // `size_bytes` and `entry_count`. A snapshot is taken only when the task
+  // returned outputs; a failed attempt produces nothing. A path that is
+  // missing, not a directory, or holds anything but regular files and
+  // directories (a symlink, a device, a hard link) fails the step: a snapshot
+  // that silently omitted an entry would name a different tree than the one
+  // the task built.
+  map<string, string> produce = 5 [(buf.validate.field).map = {
+    keys: {
+      string: {
+        min_len: 1
+        max_len: 64
+        pattern: "^[A-Za-z][A-Za-z0-9_]*$"
+      }
+    }
+    values: {
+      string: {
+        min_len: 1
+        max_len: 1024
+      }
+    }
+    max_pairs: 16
+  }];
 }

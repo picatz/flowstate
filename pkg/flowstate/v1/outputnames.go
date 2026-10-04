@@ -256,12 +256,12 @@ func taskOutputNames(task *Task, tasks *Registry) []NamedOutput {
 	}
 
 	fields := Outputs(def)
-	if len(fields) == 0 {
+	if len(fields) == 0 && len(task.GetProduce()) == 0 {
 		return []NamedOutput{{
 			Description: fmt.Sprintf("the %s task declares no outputs", def.Name),
 		}}
 	}
-	out := make([]NamedOutput, 0, len(fields))
+	out := make([]NamedOutput, 0, len(fields)+1)
 	for _, f := range fields {
 		out = append(out, NamedOutput{
 			Name:        f.Name,
@@ -269,7 +269,23 @@ func taskOutputNames(task *Task, tasks *Registry) []NamedOutput {
 			Type:        TypeOfField(def.Outputs.Fields().ByName(protoreflect.Name(f.Name))),
 		})
 	}
-	return out
+	return append(out, producedOutputNames(task)...)
+}
+
+// producedOutputNames is what a step's `produce:` adds to the names it exposes:
+// one output, `artifacts`, a map from each produced name to the artifact
+// `{digest, size_bytes, entry_count}` the snapshot became.
+func producedOutputNames(task *Task) []NamedOutput {
+	if len(task.GetProduce()) == 0 {
+		return nil
+	}
+
+	return []NamedOutput{{
+		Name: ArtifactsOutput,
+		Description: fmt.Sprintf("The artifacts this step's `produce:` snapshotted (%s), each a map of `digest`, `size_bytes` and `entry_count`. "+
+			"Read one as `steps.<id>.%s.<name>`, and hand it to a later step's `workspace:`.",
+			strings.Join(slices.Sorted(maps.Keys(task.GetProduce())), ", "), ArtifactsOutput),
+	}}
 }
 
 // lookupTaskDef resolves a task name against tasks, or [DefaultRegistry] when

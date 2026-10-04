@@ -366,7 +366,7 @@ edition: v2026.4
 				v1.TaskNames(),
 				[]string{
 					"if", "vars", "timeout", "total_timeout", "retry", "continue_on_error",
-					"undo", "async", "with", "digest", "for_each", "loop", "parallel",
+					"undo", "workspace", "produce", "async", "with", "digest", "for_each", "loop", "parallel",
 					"sleep", "wait_until", "wait_for_signal", "wait_for_signals", "call", "value", "switch", "fail",
 				},
 			),

@@ -124,7 +124,38 @@ type Task struct {
 	// the registry enforces the sharper per-segment rules at registration.
 	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
 	// Inputs are the parameters that the task requires to perform its operation.
-	Inputs        map[string]*Value `protobuf:"bytes,3,rep,name=inputs,proto3" json:"inputs,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	Inputs map[string]*Value `protobuf:"bytes,3,rep,name=inputs,proto3" json:"inputs,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	// Workspace names the trees of files materialized before the task runs, as a
+	// map from a directory (relative to the workspace root, or "." for the root
+	// itself) to the artifact that fills it. Written as the step's `workspace:`.
+	//
+	// A workspace is a per-attempt materialization of artifacts: a fresh
+	// directory the worker creates for every attempt, fills from its tenant's
+	// artifact store, hands the task, and removes after the task's `produce`
+	// paths are snapshotted. Nothing is carried from one attempt to the next, so
+	// a retry never starts from half of what its predecessor wrote.
+	//
+	// Each value is an expression that evaluates to an artifact (typically
+	// `${steps.build.artifacts.src}`) or an [ArtifactRef] directly. The
+	// engine resolves expressions workflow-side, the same way it resolves
+	// inputs, and what reaches the worker is always an [ArtifactRef]: a digest
+	// and two numbers, never the bytes.
+	//
+	// Directories may not nest inside one another, and the root "." admits no
+	// sibling. An unreachable or foreign digest fails the step permanently.
+	Workspace map[string]*Value `protobuf:"bytes,4,rep,name=workspace,proto3" json:"workspace,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	// Produce names the paths inside the workspace to snapshot as artifacts
+	// after the task returns, as a map from an artifact name to a directory
+	// path relative to the workspace root. Written as the step's `produce:`.
+	//
+	// Each one becomes `${steps.<id>.artifacts.<name>}`, a map of `digest`,
+	// `size_bytes` and `entry_count`. A snapshot is taken only when the task
+	// returned outputs; a failed attempt produces nothing. A path that is
+	// missing, not a directory, or holds anything but regular files and
+	// directories (a symlink, a device, a hard link) fails the step: a snapshot
+	// that silently omitted an entry would name a different tree than the one
+	// the task built.
+	Produce       map[string]string `protobuf:"bytes,5,rep,name=produce,proto3" json:"produce,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -169,6 +200,20 @@ func (x *Task) GetName() string {
 func (x *Task) GetInputs() map[string]*Value {
 	if x != nil {
 		return x.Inputs
+	}
+	return nil
+}
+
+func (x *Task) GetWorkspace() map[string]*Value {
+	if x != nil {
+		return x.Workspace
+	}
+	return nil
+}
+
+func (x *Task) GetProduce() map[string]string {
+	if x != nil {
+		return x.Produce
 	}
 	return nil
 }
@@ -373,7 +418,7 @@ type Task_Log_Inputs struct {
 
 func (x *Task_Log_Inputs) Reset() {
 	*x = Task_Log_Inputs{}
-	mi := &file_flowstate_v1_task_proto_msgTypes[5]
+	mi := &file_flowstate_v1_task_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -385,7 +430,7 @@ func (x *Task_Log_Inputs) String() string {
 func (*Task_Log_Inputs) ProtoMessage() {}
 
 func (x *Task_Log_Inputs) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_task_proto_msgTypes[5]
+	mi := &file_flowstate_v1_task_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -436,7 +481,7 @@ type Task_Log_Outputs struct {
 
 func (x *Task_Log_Outputs) Reset() {
 	*x = Task_Log_Outputs{}
-	mi := &file_flowstate_v1_task_proto_msgTypes[6]
+	mi := &file_flowstate_v1_task_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -448,7 +493,7 @@ func (x *Task_Log_Outputs) String() string {
 func (*Task_Log_Outputs) ProtoMessage() {}
 
 func (x *Task_Log_Outputs) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_task_proto_msgTypes[6]
+	mi := &file_flowstate_v1_task_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -616,7 +661,7 @@ type Task_HTTP_Inputs struct {
 
 func (x *Task_HTTP_Inputs) Reset() {
 	*x = Task_HTTP_Inputs{}
-	mi := &file_flowstate_v1_task_proto_msgTypes[8]
+	mi := &file_flowstate_v1_task_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -628,7 +673,7 @@ func (x *Task_HTTP_Inputs) String() string {
 func (*Task_HTTP_Inputs) ProtoMessage() {}
 
 func (x *Task_HTTP_Inputs) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_task_proto_msgTypes[8]
+	mi := &file_flowstate_v1_task_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -790,7 +835,7 @@ type Task_HTTP_Outputs struct {
 
 func (x *Task_HTTP_Outputs) Reset() {
 	*x = Task_HTTP_Outputs{}
-	mi := &file_flowstate_v1_task_proto_msgTypes[9]
+	mi := &file_flowstate_v1_task_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -802,7 +847,7 @@ func (x *Task_HTTP_Outputs) String() string {
 func (*Task_HTTP_Outputs) ProtoMessage() {}
 
 func (x *Task_HTTP_Outputs) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_task_proto_msgTypes[9]
+	mi := &file_flowstate_v1_task_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -865,13 +910,19 @@ type Task_Exec_Inputs struct {
 	Argv []string `protobuf:"bytes,1,rep,name=argv,proto3" json:"argv,omitempty"`
 	// Dir is the working directory, written as an absolute path.
 	//
-	// Required, because the worker's own working directory is never used: it
-	// is wherever the operator started the process, which is not something a
-	// workflow can reason about. The policy admits only directories under
-	// one of its configured roots, after symbolic links are resolved, so a
-	// path that lexically begins under a root but leaves it through a link is
-	// refused. A policy that configures no roots admits no directory, which
-	// makes the task unusable rather than unconfined.
+	// The worker's own working directory is never used: it is wherever the
+	// operator started the process, which is not something a workflow can
+	// reason about. So a step must say where the program runs: either this
+	// input, or a `workspace:` on the step, whose fresh per-attempt
+	// directory is the default. A step with neither is refused.
+	//
+	// The policy admits only directories under one of its configured roots,
+	// after symbolic links are resolved, so a path that lexically begins
+	// under a root but leaves it through a link is refused. That holds for
+	// a workspace too: the directory the worker creates must sit under a
+	// root the operator listed, or the step is denied. A policy that
+	// configures no roots admits no directory, which makes the task unusable
+	// rather than unconfined.
 	Dir string `protobuf:"bytes,2,opt,name=dir,proto3" json:"dir,omitempty"`
 	// Env sets environment variables for the child, and is a request, not a
 	// grant.
@@ -891,7 +942,7 @@ type Task_Exec_Inputs struct {
 
 func (x *Task_Exec_Inputs) Reset() {
 	*x = Task_Exec_Inputs{}
-	mi := &file_flowstate_v1_task_proto_msgTypes[15]
+	mi := &file_flowstate_v1_task_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -903,7 +954,7 @@ func (x *Task_Exec_Inputs) String() string {
 func (*Task_Exec_Inputs) ProtoMessage() {}
 
 func (x *Task_Exec_Inputs) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_task_proto_msgTypes[15]
+	mi := &file_flowstate_v1_task_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -997,7 +1048,7 @@ type Task_Exec_Outputs struct {
 
 func (x *Task_Exec_Outputs) Reset() {
 	*x = Task_Exec_Outputs{}
-	mi := &file_flowstate_v1_task_proto_msgTypes[16]
+	mi := &file_flowstate_v1_task_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1009,7 +1060,7 @@ func (x *Task_Exec_Outputs) String() string {
 func (*Task_Exec_Outputs) ProtoMessage() {}
 
 func (x *Task_Exec_Outputs) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_task_proto_msgTypes[16]
+	mi := &file_flowstate_v1_task_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1092,10 +1143,12 @@ var File_flowstate_v1_task_proto protoreflect.FileDescriptor
 
 const file_flowstate_v1_task_proto_rawDesc = "" +
 	"\n" +
-	"\x17flowstate/v1/task.proto\x12\fflowstate.v1\x1a\x1bbuf/validate/validate.proto\x1a\x18flowstate/v1/value.proto\x1a$google/api/expr/v1alpha1/value.proto\x1a\x1fgoogle/api/field_behavior.proto\"\xfc\x13\n" +
+	"\x17flowstate/v1/task.proto\x12\fflowstate.v1\x1a\x1bbuf/validate/validate.proto\x1a\x18flowstate/v1/value.proto\x1a$google/api/expr/v1alpha1/value.proto\x1a\x1fgoogle/api/field_behavior.proto\"\xc5\x16\n" +
 	"\x04Task\x12J\n" +
 	"\x04name\x18\x01 \x01(\tB6\xe2A\x01\x02\xbaH/\xc8\x01\x01r*\x10\x01\x18\x80\x012#^[A-Za-z0-9-_]+(\\.[A-Za-z0-9-_]+)?$R\x04name\x12K\n" +
-	"\x06inputs\x18\x03 \x03(\v2\x1e.flowstate.v1.Task.InputsEntryB\x13\xe2A\x01\x01\xbaH\f\xc8\x01\x01\x9a\x01\x06\"\x04r\x02\x10\x01R\x06inputs\x1a\xe7\x02\n" +
+	"\x06inputs\x18\x03 \x03(\v2\x1e.flowstate.v1.Task.InputsEntryB\x13\xe2A\x01\x01\xbaH\f\xc8\x01\x01\x9a\x01\x06\"\x04r\x02\x10\x01R\x06inputs\x12R\n" +
+	"\tworkspace\x18\x04 \x03(\v2!.flowstate.v1.Task.WorkspaceEntryB\x11\xbaH\x0e\x9a\x01\v\x10\x10\"\ar\x05\x10\x01\x18\x80\x02R\tworkspace\x12m\n" +
+	"\aproduce\x18\x05 \x03(\v2\x1f.flowstate.v1.Task.ProduceEntryB2\xbaH/\x9a\x01,\x10\x10\"\x1fr\x1d\x10\x01\x18@2\x17^[A-Za-z][A-Za-z0-9_]*$*\ar\x05\x10\x01\x18\x80\bR\aproduce\x1a\xe7\x02\n" +
 	"\x03Log\x1a\x83\x02\n" +
 	"\x06Inputs\x12$\n" +
 	"\amessage\x18\x01 \x01(\tB\n" +
@@ -1160,12 +1213,11 @@ const file_flowstate_v1_task_proto_rawDesc = "" +
 	"\x04json\x18\x04 \x01(\v2\x1f.google.api.expr.v1alpha1.ValueR\x04json\x1a:\n" +
 	"\fHeadersEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1a\xbd\x04\n" +
-	"\x04Exec\x1a\x83\x02\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1a\xb4\x04\n" +
+	"\x04Exec\x1a\xfa\x01\n" +
 	"\x06Inputs\x12-\n" +
-	"\x04argv\x18\x01 \x03(\tB\x19\xe2A\x01\x02\xbaH\x12\xc8\x01\x01\x92\x01\f\b\x01\x10\x80\x02\"\x05r\x03\x18\x80@R\x04argv\x12#\n" +
-	"\x03dir\x18\x02 \x01(\tB\x11\xe2A\x01\x02\xbaH\n" +
-	"\xc8\x01\x01r\x05\x10\x01\x18\x80 R\x03dir\x12m\n" +
+	"\x04argv\x18\x01 \x03(\tB\x19\xe2A\x01\x02\xbaH\x12\xc8\x01\x01\x92\x01\f\b\x01\x10\x80\x02\"\x05r\x03\x18\x80@R\x04argv\x12\x1a\n" +
+	"\x03dir\x18\x02 \x01(\tB\b\xbaH\x05r\x03\x18\x80 R\x03dir\x12m\n" +
 	"\x03env\x18\x03 \x03(\v2'.flowstate.v1.Task.Exec.Inputs.EnvEntryB2\xbaH/\x9a\x01,\x10@\"!r\x1f\x10\x01\x18\x80\x012\x18^[A-Za-z_][A-Za-z0-9_]*$*\x05r\x03\x18\x80@R\x03env\x1a6\n" +
 	"\bEnvEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
@@ -1183,7 +1235,13 @@ const file_flowstate_v1_task_proto_rawDesc = "" +
 	"\x12capture_incomplete\x18\t \x01(\bR\x11captureIncomplete\x1aN\n" +
 	"\vInputsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12)\n" +
-	"\x05value\x18\x02 \x01(\v2\x13.flowstate.v1.ValueR\x05value:\x028\x01J\x04\b\x02\x10\x03R\vdescriptionB\xa8\x01\n" +
+	"\x05value\x18\x02 \x01(\v2\x13.flowstate.v1.ValueR\x05value:\x028\x01\x1aQ\n" +
+	"\x0eWorkspaceEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12)\n" +
+	"\x05value\x18\x02 \x01(\v2\x13.flowstate.v1.ValueR\x05value:\x028\x01\x1a:\n" +
+	"\fProduceEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01J\x04\b\x02\x10\x03R\vdescriptionB\xa8\x01\n" +
 	"\x10com.flowstate.v1B\tTaskProtoP\x01Z8github.com/picatz/flowstate/pkg/flowstate/v1;flowstatev1\xa2\x02\x03FXX\xaa\x02\fFlowstate.V1\xca\x02\fFlowstate\\V1\xe2\x02\x18Flowstate\\V1\\GPBMetadata\xea\x02\rFlowstate::V1b\x06proto3"
 
 var (
@@ -1199,7 +1257,7 @@ func file_flowstate_v1_task_proto_rawDescGZIP() []byte {
 }
 
 var file_flowstate_v1_task_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_flowstate_v1_task_proto_msgTypes = make([]protoimpl.MessageInfo, 18)
+var file_flowstate_v1_task_proto_msgTypes = make([]protoimpl.MessageInfo, 20)
 var file_flowstate_v1_task_proto_goTypes = []any{
 	(Task_Log_Level)(0),       // 0: flowstate.v1.Task.Log.Level
 	(*Task)(nil),              // 1: flowstate.v1.Task
@@ -1207,45 +1265,50 @@ var file_flowstate_v1_task_proto_goTypes = []any{
 	(*Task_HTTP)(nil),         // 3: flowstate.v1.Task.HTTP
 	(*Task_Exec)(nil),         // 4: flowstate.v1.Task.Exec
 	nil,                       // 5: flowstate.v1.Task.InputsEntry
-	(*Task_Log_Inputs)(nil),   // 6: flowstate.v1.Task.Log.Inputs
-	(*Task_Log_Outputs)(nil),  // 7: flowstate.v1.Task.Log.Outputs
-	nil,                       // 8: flowstate.v1.Task.Log.Inputs.FieldsEntry
-	(*Task_HTTP_Inputs)(nil),  // 9: flowstate.v1.Task.HTTP.Inputs
-	(*Task_HTTP_Outputs)(nil), // 10: flowstate.v1.Task.HTTP.Outputs
-	nil,                       // 11: flowstate.v1.Task.HTTP.Inputs.HeadersEntry
-	nil,                       // 12: flowstate.v1.Task.HTTP.Inputs.OutputsEntry
-	nil,                       // 13: flowstate.v1.Task.HTTP.Inputs.QueryEntry
-	nil,                       // 14: flowstate.v1.Task.HTTP.Inputs.FormEntry
-	nil,                       // 15: flowstate.v1.Task.HTTP.Outputs.HeadersEntry
-	(*Task_Exec_Inputs)(nil),  // 16: flowstate.v1.Task.Exec.Inputs
-	(*Task_Exec_Outputs)(nil), // 17: flowstate.v1.Task.Exec.Outputs
-	nil,                       // 18: flowstate.v1.Task.Exec.Inputs.EnvEntry
-	(*Value)(nil),             // 19: flowstate.v1.Value
-	(*v1alpha1.Value)(nil),    // 20: google.api.expr.v1alpha1.Value
+	nil,                       // 6: flowstate.v1.Task.WorkspaceEntry
+	nil,                       // 7: flowstate.v1.Task.ProduceEntry
+	(*Task_Log_Inputs)(nil),   // 8: flowstate.v1.Task.Log.Inputs
+	(*Task_Log_Outputs)(nil),  // 9: flowstate.v1.Task.Log.Outputs
+	nil,                       // 10: flowstate.v1.Task.Log.Inputs.FieldsEntry
+	(*Task_HTTP_Inputs)(nil),  // 11: flowstate.v1.Task.HTTP.Inputs
+	(*Task_HTTP_Outputs)(nil), // 12: flowstate.v1.Task.HTTP.Outputs
+	nil,                       // 13: flowstate.v1.Task.HTTP.Inputs.HeadersEntry
+	nil,                       // 14: flowstate.v1.Task.HTTP.Inputs.OutputsEntry
+	nil,                       // 15: flowstate.v1.Task.HTTP.Inputs.QueryEntry
+	nil,                       // 16: flowstate.v1.Task.HTTP.Inputs.FormEntry
+	nil,                       // 17: flowstate.v1.Task.HTTP.Outputs.HeadersEntry
+	(*Task_Exec_Inputs)(nil),  // 18: flowstate.v1.Task.Exec.Inputs
+	(*Task_Exec_Outputs)(nil), // 19: flowstate.v1.Task.Exec.Outputs
+	nil,                       // 20: flowstate.v1.Task.Exec.Inputs.EnvEntry
+	(*Value)(nil),             // 21: flowstate.v1.Value
+	(*v1alpha1.Value)(nil),    // 22: google.api.expr.v1alpha1.Value
 }
 var file_flowstate_v1_task_proto_depIdxs = []int32{
 	5,  // 0: flowstate.v1.Task.inputs:type_name -> flowstate.v1.Task.InputsEntry
-	19, // 1: flowstate.v1.Task.InputsEntry.value:type_name -> flowstate.v1.Value
-	0,  // 2: flowstate.v1.Task.Log.Inputs.level:type_name -> flowstate.v1.Task.Log.Level
-	8,  // 3: flowstate.v1.Task.Log.Inputs.fields:type_name -> flowstate.v1.Task.Log.Inputs.FieldsEntry
-	11, // 4: flowstate.v1.Task.HTTP.Inputs.headers:type_name -> flowstate.v1.Task.HTTP.Inputs.HeadersEntry
-	19, // 5: flowstate.v1.Task.HTTP.Inputs.bearer:type_name -> flowstate.v1.Value
-	12, // 6: flowstate.v1.Task.HTTP.Inputs.outputs:type_name -> flowstate.v1.Task.HTTP.Inputs.OutputsEntry
-	13, // 7: flowstate.v1.Task.HTTP.Inputs.query:type_name -> flowstate.v1.Task.HTTP.Inputs.QueryEntry
-	19, // 8: flowstate.v1.Task.HTTP.Inputs.json:type_name -> flowstate.v1.Value
-	14, // 9: flowstate.v1.Task.HTTP.Inputs.form:type_name -> flowstate.v1.Task.HTTP.Inputs.FormEntry
-	19, // 10: flowstate.v1.Task.HTTP.Inputs.expect:type_name -> flowstate.v1.Value
-	15, // 11: flowstate.v1.Task.HTTP.Outputs.headers:type_name -> flowstate.v1.Task.HTTP.Outputs.HeadersEntry
-	20, // 12: flowstate.v1.Task.HTTP.Outputs.json:type_name -> google.api.expr.v1alpha1.Value
-	19, // 13: flowstate.v1.Task.HTTP.Inputs.OutputsEntry.value:type_name -> flowstate.v1.Value
-	19, // 14: flowstate.v1.Task.HTTP.Inputs.QueryEntry.value:type_name -> flowstate.v1.Value
-	19, // 15: flowstate.v1.Task.HTTP.Inputs.FormEntry.value:type_name -> flowstate.v1.Value
-	18, // 16: flowstate.v1.Task.Exec.Inputs.env:type_name -> flowstate.v1.Task.Exec.Inputs.EnvEntry
-	17, // [17:17] is the sub-list for method output_type
-	17, // [17:17] is the sub-list for method input_type
-	17, // [17:17] is the sub-list for extension type_name
-	17, // [17:17] is the sub-list for extension extendee
-	0,  // [0:17] is the sub-list for field type_name
+	6,  // 1: flowstate.v1.Task.workspace:type_name -> flowstate.v1.Task.WorkspaceEntry
+	7,  // 2: flowstate.v1.Task.produce:type_name -> flowstate.v1.Task.ProduceEntry
+	21, // 3: flowstate.v1.Task.InputsEntry.value:type_name -> flowstate.v1.Value
+	21, // 4: flowstate.v1.Task.WorkspaceEntry.value:type_name -> flowstate.v1.Value
+	0,  // 5: flowstate.v1.Task.Log.Inputs.level:type_name -> flowstate.v1.Task.Log.Level
+	10, // 6: flowstate.v1.Task.Log.Inputs.fields:type_name -> flowstate.v1.Task.Log.Inputs.FieldsEntry
+	13, // 7: flowstate.v1.Task.HTTP.Inputs.headers:type_name -> flowstate.v1.Task.HTTP.Inputs.HeadersEntry
+	21, // 8: flowstate.v1.Task.HTTP.Inputs.bearer:type_name -> flowstate.v1.Value
+	14, // 9: flowstate.v1.Task.HTTP.Inputs.outputs:type_name -> flowstate.v1.Task.HTTP.Inputs.OutputsEntry
+	15, // 10: flowstate.v1.Task.HTTP.Inputs.query:type_name -> flowstate.v1.Task.HTTP.Inputs.QueryEntry
+	21, // 11: flowstate.v1.Task.HTTP.Inputs.json:type_name -> flowstate.v1.Value
+	16, // 12: flowstate.v1.Task.HTTP.Inputs.form:type_name -> flowstate.v1.Task.HTTP.Inputs.FormEntry
+	21, // 13: flowstate.v1.Task.HTTP.Inputs.expect:type_name -> flowstate.v1.Value
+	17, // 14: flowstate.v1.Task.HTTP.Outputs.headers:type_name -> flowstate.v1.Task.HTTP.Outputs.HeadersEntry
+	22, // 15: flowstate.v1.Task.HTTP.Outputs.json:type_name -> google.api.expr.v1alpha1.Value
+	21, // 16: flowstate.v1.Task.HTTP.Inputs.OutputsEntry.value:type_name -> flowstate.v1.Value
+	21, // 17: flowstate.v1.Task.HTTP.Inputs.QueryEntry.value:type_name -> flowstate.v1.Value
+	21, // 18: flowstate.v1.Task.HTTP.Inputs.FormEntry.value:type_name -> flowstate.v1.Value
+	20, // 19: flowstate.v1.Task.Exec.Inputs.env:type_name -> flowstate.v1.Task.Exec.Inputs.EnvEntry
+	20, // [20:20] is the sub-list for method output_type
+	20, // [20:20] is the sub-list for method input_type
+	20, // [20:20] is the sub-list for extension type_name
+	20, // [20:20] is the sub-list for extension extendee
+	0,  // [0:20] is the sub-list for field type_name
 }
 
 func init() { file_flowstate_v1_task_proto_init() }
@@ -1254,14 +1317,14 @@ func file_flowstate_v1_task_proto_init() {
 		return
 	}
 	file_flowstate_v1_value_proto_init()
-	file_flowstate_v1_task_proto_msgTypes[8].OneofWrappers = []any{}
+	file_flowstate_v1_task_proto_msgTypes[10].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_flowstate_v1_task_proto_rawDesc), len(file_flowstate_v1_task_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   18,
+			NumMessages:   20,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

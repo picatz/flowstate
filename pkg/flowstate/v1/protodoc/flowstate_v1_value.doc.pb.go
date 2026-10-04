@@ -52,7 +52,8 @@ func init() {
 				"\n" +
 				" Exactly one kind is set. A `literal` is a concrete CEL value; an `expr` is a\n" +
 				" parsed CEL expression evaluated when the value is needed; a `secret_ref`\n" +
-				" names a secret resolved only by the worker that uses it; a `structure` is a\n" +
+				" names a secret resolved only by the worker that uses it; an `artifact_ref`\n" +
+				" names a tree of files in the worker's artifact store; a `structure` is a\n" +
 				" list or map of Values, the only shape that can hold a secret reference below\n" +
 				" the top level; and an `error` records a value that could not be produced.\n" +
 				" Values a caller submits, such as `RunRequest.inputs`, must be literals.\n",
@@ -87,6 +88,22 @@ func init() {
 			Name: "flowstate.v1.Value.structure",
 			Leading: " A list or a mapping whose entries are values, which is the only shape\n" +
 				" that can hold a [SecretRef] somewhere other than at the top.\n",
+		},
+		{
+			Name: "flowstate.v1.Value.artifact_ref",
+			Leading: " A reference to an immutable tree of files in the worker's artifact store,\n" +
+				" as a digest and two summary numbers.\n" +
+				"\n" +
+				" Inert like [SecretRef], for the opposite reason: a secret reference is\n" +
+				" inert because resolving it would put a credential in history, while this\n" +
+				" one is inert because there is nothing to resolve in workflow code. It\n" +
+				" carries no bytes, no namespace and no authority, so it is safe in durable\n" +
+				" history; only the worker that materializes it, bound to the run's tenant,\n" +
+				" can turn it into files. Workflow-side evaluation reads it as the map\n" +
+				" `{digest, size_bytes, entry_count}` and never dereferences it.\n" +
+				"\n" +
+				" It appears in the resolved `workspace` of a task (see [Task.workspace]),\n" +
+				" where a Flowfile's `${steps.build.artifacts.src}` lands once evaluated.\n",
 		},
 		{
 			Name:    "flowstate.v1.Value.Error",

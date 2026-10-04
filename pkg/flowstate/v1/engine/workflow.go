@@ -454,6 +454,11 @@ func run(ctx workflow.Context, dc converter.DataConverter, st *v1.RunState) (*v1
 
 	outputs, err := runWorkflow(ctx, dc, st)
 
+	// A run that used artifacts lets go of its pins when it ends. Before the
+	// metrics and classification below, which change what err looks like, so the
+	// Continue-As-New check sees the error as the interpreter returned it.
+	releaseRunArtifacts(ctx, st, err)
+
 	// Both halves pass through unchanged, including the partial transcript a failed
 	// run carries: Temporal drops the result when the error is non-nil, so this is
 	// the honest shape rather than a value worth suppressing here.

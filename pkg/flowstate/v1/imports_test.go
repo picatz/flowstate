@@ -90,6 +90,14 @@ const selfPrefix = "github.com/picatz/flowstate/pkg/flowstate/v1/"
 // resolves secrets and derives per-step authority through it, so the auth and
 // secrets edges do not leave until the interpreter does.
 var allowedSelfImports = map[string][]string{
+	// artifacts is the content-addressed store behind a step's `workspace:` and
+	// `produce:`. Task.EvalInScope is the one place both drivers call a task, so
+	// the materialize-before and snapshot-after wrapper lives beside it. The
+	// store imports no schema type and nothing that reaches the network; the
+	// edge adds its manifest and blob code and the standard library.
+	"artifacts": {
+		"workspace.go",
+	},
 	"auth": {
 		"entity.go",
 		"eval_task_http_run.go",
@@ -128,6 +136,7 @@ var allowedSelfImports = map[string][]string{
 		"eval_task_http_run.go",
 		"taskruntime.go",
 		"webhookverify.go",
+		"workspace.go",
 	},
 }
 

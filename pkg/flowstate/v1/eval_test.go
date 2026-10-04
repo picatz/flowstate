@@ -340,6 +340,39 @@ func TestRunWorkflowExec(t *testing.T) {
 	}
 }
 
+// TestRunWorkflowArtifacts runs the shared [conformance.ArtifactCases] against
+// the local driver: `workspace:` and `produce:` around real programs, under a
+// real exec policy and an in-memory artifact store. The durable driver runs the
+// same cases in the engine package.
+//
+// Serial: each case installs its policy into the process-wide registry.
+func TestRunWorkflowArtifacts(t *testing.T) {
+	root := conformance.ExecRoot(t)
+	for _, tc := range conformance.ArtifactCases(root) {
+		t.Run(tc.Name, func(t *testing.T) {
+			conformance.InstallExecPolicy(t, root, tc)
+
+			ctx := v1.NewContextWithRehearsalIdentity(t.Context(), tc.Identity)
+			if runtime := conformance.NewArtifactRuntime(t, root, tc); runtime != nil {
+				ctx = v1.ContextWithArtifacts(ctx, runtime)
+			}
+
+			out, err := v1.Run(ctx, tc.Workflow)
+
+			if tc.ExpectedKind != "" {
+				require.Error(t, err, "the run must fail outright")
+				require.Equal(t, tc.ExpectedKind, v1.ClassifyError(err))
+				missing, ok := conformance.ExecFailureMentions(err.Error(), tc.ExpectedError)
+				require.True(t, ok, "the failure must mention %q, got: %v", missing, err)
+				return
+			}
+
+			require.NoError(t, err)
+			tc.Check(t, out)
+		})
+	}
+}
+
 // TestRunWorkflowWait covers durable waiting in the local driver.
 //
 // The same cases run against the durable driver in the engine package. Waiting is

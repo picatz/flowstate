@@ -116,6 +116,13 @@ const (
 	SlotTaskInput
 	// SlotUndoInput is one input of a step's `undo:` compensation.
 	SlotUndoInput
+	// SlotTaskWorkspace is one entry of the step's `workspace:`: the artifact a
+	// directory of the step's workspace is filled from.
+	SlotTaskWorkspace
+	// SlotUndoWorkspace is one entry of a compensation's `workspace:`. The
+	// grammar writes none, but a specification may carry one, and a position a
+	// value can hide in is a position every walk is blind to.
+	SlotUndoWorkspace
 	// SlotForEachItems is a `for_each:`'s item list.
 	SlotForEachItems
 	// SlotLoopUntil is a `loop:`'s `until:`.
@@ -206,6 +213,8 @@ func ValueSlotSchemaPath() map[ValueSlot]string {
 		SlotStepVar:          "Workflow.steps[].vars{}",
 		SlotTaskInput:        "Workflow.steps[].task.inputs{}",
 		SlotUndoInput:        "Workflow.steps[].undo.task.inputs{}",
+		SlotTaskWorkspace:    "Workflow.steps[].task.workspace{}",
+		SlotUndoWorkspace:    "Workflow.steps[].undo.task.workspace{}",
 		SlotForEachItems:     "Workflow.steps[].for_each.items",
 		SlotLoopUntil:        "Workflow.steps[].loop.until",
 		SlotLoopInitial:      "Workflow.steps[].loop.initial",
@@ -338,7 +347,9 @@ func (s ValueSite) Field() string {
 		return "if"
 	case SlotTaskInput:
 		return s.Name
-	case SlotUndoInput:
+	case SlotTaskWorkspace:
+		return "workspace." + s.Name
+	case SlotUndoInput, SlotUndoWorkspace:
 		// The `undo:` key rather than the input's name, for the reason
 		// validateUndoInputs gives: an input name here would be looked up among the
 		// *step's* inputs, and a plugin task may declare one of any name.
@@ -665,12 +676,19 @@ func walkNodeValues(node *Node, w Walk) {
 		for _, name := range slices.Sorted(maps.Keys(task.GetInputs())) {
 			w.value(ValueSite{Slot: SlotTaskInput, Step: id, Name: name, Value: task.GetInputs()[name]})
 		}
+		for _, name := range slices.Sorted(maps.Keys(task.GetWorkspace())) {
+			w.value(ValueSite{Slot: SlotTaskWorkspace, Step: id, Name: name, Value: task.GetWorkspace()[name]})
+		}
 	}
 
 	if undo := node.GetUndo(); undo != nil {
 		inputs := undo.GetTask().GetInputs()
 		for _, name := range slices.Sorted(maps.Keys(inputs)) {
 			w.value(ValueSite{Slot: SlotUndoInput, Step: id, Name: name, Value: inputs[name]})
+		}
+		workspace := undo.GetTask().GetWorkspace()
+		for _, name := range slices.Sorted(maps.Keys(workspace)) {
+			w.value(ValueSite{Slot: SlotUndoWorkspace, Step: id, Name: name, Value: workspace[name]})
 		}
 	}
 

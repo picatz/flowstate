@@ -63,6 +63,13 @@ var grammarStepKeys = []string{
 	// been able to claim the word in the meantime.
 	"undo",
 
+	// The files a task step starts with and the files it leaves behind:
+	// `workspace:` materializes named artifacts into a fresh directory before the
+	// task runs, and `produce:` snapshots named paths of it afterwards. Properties
+	// of a step doing some other kind of work, as `undo:` is.
+	"workspace",
+	"produce",
+
 	// Kinds of work that are not tasks. These name a node kind in the schema
 	// rather than anything in the registry, so a task could never provide one.
 	"for_each",

@@ -53,6 +53,41 @@ func init() {
 			Leading: " Inputs are the parameters that the task requires to perform its operation.\n",
 		},
 		{
+			Name: "flowstate.v1.Task.workspace",
+			Leading: " Workspace names the trees of files materialized before the task runs, as a\n" +
+				" map from a directory (relative to the workspace root, or \".\" for the root\n" +
+				" itself) to the artifact that fills it. Written as the step's `workspace:`.\n" +
+				"\n" +
+				" A workspace is a per-attempt materialization of artifacts: a fresh\n" +
+				" directory the worker creates for every attempt, fills from its tenant's\n" +
+				" artifact store, hands the task, and removes after the task's `produce`\n" +
+				" paths are snapshotted. Nothing is carried from one attempt to the next, so\n" +
+				" a retry never starts from half of what its predecessor wrote.\n" +
+				"\n" +
+				" Each value is an expression that evaluates to an artifact (typically\n" +
+				" `${steps.build.artifacts.src}`) or an [ArtifactRef] directly. The\n" +
+				" engine resolves expressions workflow-side, the same way it resolves\n" +
+				" inputs, and what reaches the worker is always an [ArtifactRef]: a digest\n" +
+				" and two numbers, never the bytes.\n" +
+				"\n" +
+				" Directories may not nest inside one another, and the root \".\" admits no\n" +
+				" sibling. An unreachable or foreign digest fails the step permanently.\n",
+		},
+		{
+			Name: "flowstate.v1.Task.produce",
+			Leading: " Produce names the paths inside the workspace to snapshot as artifacts\n" +
+				" after the task returns, as a map from an artifact name to a directory\n" +
+				" path relative to the workspace root. Written as the step's `produce:`.\n" +
+				"\n" +
+				" Each one becomes `${steps.<id>.artifacts.<name>}`, a map of `digest`,\n" +
+				" `size_bytes` and `entry_count`. A snapshot is taken only when the task\n" +
+				" returned outputs; a failed attempt produces nothing. A path that is\n" +
+				" missing, not a directory, or holds anything but regular files and\n" +
+				" directories (a symlink, a device, a hard link) fails the step: a snapshot\n" +
+				" that silently omitted an entry would name a different tree than the one\n" +
+				" the task built.\n",
+		},
+		{
 			Name: "flowstate.v1.Task.Log",
 			Leading: " Log is a task that emits a message for a person to read.\n" +
 				"\n" +
@@ -444,13 +479,19 @@ func init() {
 			Name: "flowstate.v1.Task.Exec.Inputs.dir",
 			Leading: " Dir is the working directory, written as an absolute path.\n" +
 				"\n" +
-				" Required, because the worker's own working directory is never used: it\n" +
-				" is wherever the operator started the process, which is not something a\n" +
-				" workflow can reason about. The policy admits only directories under\n" +
-				" one of its configured roots, after symbolic links are resolved, so a\n" +
-				" path that lexically begins under a root but leaves it through a link is\n" +
-				" refused. A policy that configures no roots admits no directory, which\n" +
-				" makes the task unusable rather than unconfined.\n",
+				" The worker's own working directory is never used: it is wherever the\n" +
+				" operator started the process, which is not something a workflow can\n" +
+				" reason about. So a step must say where the program runs: either this\n" +
+				" input, or a `workspace:` on the step, whose fresh per-attempt\n" +
+				" directory is the default. A step with neither is refused.\n" +
+				"\n" +
+				" The policy admits only directories under one of its configured roots,\n" +
+				" after symbolic links are resolved, so a path that lexically begins\n" +
+				" under a root but leaves it through a link is refused. That holds for\n" +
+				" a workspace too: the directory the worker creates must sit under a\n" +
+				" root the operator listed, or the step is denied. A policy that\n" +
+				" configures no roots admits no directory, which makes the task unusable\n" +
+				" rather than unconfined.\n",
 		},
 		{
 			Name: "flowstate.v1.Task.Exec.Inputs.env",

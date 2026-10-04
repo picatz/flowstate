@@ -58,6 +58,12 @@ func TestEveryTaskActivityHeartbeats(t *testing.T) {
 	require.Contains(t, registered, "CheckTaskCapabilities")
 	delete(registered, "CheckTaskCapabilities")
 
+	// ReleaseArtifacts deletes a handful of pin files in one tenant's store: a
+	// bounded local filesystem operation under a one-minute StartToClose, with
+	// nothing it waits on. Named rather than filtered, as above.
+	require.Contains(t, registered, "ReleaseArtifacts")
+	delete(registered, "ReleaseArtifacts")
+
 	require.NotEmpty(t, registered,
 		"no activities were found in versioning.go, so this asserted nothing")
 

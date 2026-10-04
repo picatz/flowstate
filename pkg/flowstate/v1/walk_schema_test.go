@@ -255,9 +255,17 @@ func workflowUsingEveryValuePosition() *Workflow {
 				Id:        "task",
 				Condition: NewExpr("true"),
 				Vars:      map[string]*Value{"local": NewExpr("1")},
-				Kind:      &Node_Task{Task: &Task{Name: "log", Inputs: map[string]*Value{"message": NewExpr("'hi'")}}},
+				Kind: &Node_Task{Task: &Task{
+					Name:      "log",
+					Inputs:    map[string]*Value{"message": NewExpr("'hi'")},
+					Workspace: map[string]*Value{"src": NewExpr("steps.build.artifacts.src")},
+				}},
 				Undo: &Compensation{
-					Task: &Task{Name: "log", Inputs: map[string]*Value{"message": NewExpr("'sorry'")}},
+					Task: &Task{
+						Name:      "log",
+						Inputs:    map[string]*Value{"message": NewExpr("'sorry'")},
+						Workspace: map[string]*Value{"src": NewExpr("steps.build.artifacts.src")},
+					},
 				},
 			},
 			{

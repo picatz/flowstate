@@ -249,6 +249,7 @@ var messagesOutsideTheCharter = map[protoreflect.FullName]string{
 
 	"flowstate.v1.Value":                     "the universal value wrapper: every expression and literal in the language is one, so its own fields are the encoding rather than a construct an example demonstrates",
 	"flowstate.v1.Task":                      "a task's identity is its name, and the charter requires an example per registered task through the registry pass; its `inputs` map is the task's own schema rather than a language construct",
+	"flowstate.v1.ArtifactRef":               "an inert handle (digest, size, entry count) that a step's `workspace:` resolves to; authors never write one, they pass `steps.<id>.artifacts.<name>`, which the workspace example demonstrates through the Task fields",
 	"flowstate.v1.Compensation":              "a container holding one task; `node.undo` is the construct and the task inside it is required through the registry pass",
 	"flowstate.v1.ResolvedPlugin":            "written by the control plane at submit, never by an author",
 	"flowstate.v1.ResolvedTaskCapabilities":  "written by the control plane at admission, never by an author",

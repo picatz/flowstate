@@ -648,6 +648,12 @@ func (e *StepsOutputActivation) resolveValue(v *Value) (ref.Val, error) {
 	case *Value_Literal:
 		return cel.ValueToRefValue(TypeAdapter, v.GetLiteral())
 
+	case *Value_ArtifactRef:
+		// Inert, not forbidden: a reference holds a digest and two numbers and
+		// nothing an expression could use to reach the files, so reading it as
+		// the map a step exposes it as is safe in workflow code.
+		return cel.ValueToRefValue(TypeAdapter, NewLiteralMap(ArtifactRefLiteral(v.GetArtifactRef())).GetLiteral())
+
 	case *Value_SecretRef:
 		// A secret reference is deliberately unresolvable here. Resolving it
 		// would produce a value in workflow code, and anything a workflow
@@ -1298,6 +1304,11 @@ func eval(ctx context.Context, w *Workflow, inputs map[string]*Value) (*Workflow
 	// because it is a fact about the run and not about how the run was
 	// configured — see [ExecutingWorkflowFromContext].
 	ctx = contextWithExecutingWorkflow(ctx, w.GetName(), debugSensitiveInputs(ctx, w, inputs))
+
+	// A local run's claim on the artifact store, released when the run ends
+	// however it ends. Nothing when no store is configured.
+	ctx, releaseArtifacts := beginArtifactRun(ctx)
+	defer releaseArtifacts()
 
 	// Registered for the whole run, not per wait: a [VirtualClock] must not see
 	// this goroutine as "gone" between two waits, or a second, unrelated
@@ -3108,7 +3119,7 @@ func (t *Task) EvalInScope(ctx context.Context, scope *Scope) (*Node_Outputs, er
 	if t == nil {
 		return nil, fmt.Errorf("task cannot be nil")
 	}
-	if scope.BindsNames() {
+	if scope.BindsNames() || !workspaceResolved(t) {
 		resolved, err := ResolveTaskInputs(ctx, t, scope)
 		if err != nil {
 			return nil, err
@@ -3128,7 +3139,7 @@ func (t *Task) EvalInScope(ctx context.Context, scope *Scope) (*Node_Outputs, er
 		return nil, NewTaskError(t.Name, ErrorKindUnknownTask, fmt.Errorf(
 			"unknown task %q (available: %s)", t.Name, strings.Join(TaskNamesIn(ctx), ", ")))
 	}
-	out, err := def.Fn(ctx, t.Inputs, scope)
+	out, err := t.callWithWorkspace(ctx, def, scope)
 	if err != nil || out == nil {
 		return out, err
 	}

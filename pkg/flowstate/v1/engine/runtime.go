@@ -33,6 +33,7 @@ type TaskRuntimeConfig struct {
 	catalog       *v1.PluginCatalog
 	dataConverter converter.DataConverter
 	taskNames     []string
+	artifacts     *v1.ArtifactRuntime
 }
 
 // NewTaskRuntimeConfig validates and assembles worker task capabilities.
@@ -92,9 +93,26 @@ func (c TaskRuntimeConfig) WithDataConverter(dc converter.DataConverter) TaskRun
 	return c
 }
 
+// WithArtifacts returns a copy carrying the artifact capability this worker's
+// tasks run with: the store a step's `workspace:` materializes from and its
+// `produce:` snapshots into, and the directory per-attempt workspaces are made
+// under.
+//
+// Absent, every step that declares either is denied with a message naming the
+// flag that turns them on. Per worker, like the secret store beside it, so two
+// workers in one process cannot overwrite each other's store.
+func (c TaskRuntimeConfig) WithArtifacts(runtime *v1.ArtifactRuntime) TaskRuntimeConfig {
+	c.artifacts = runtime
+
+	return c
+}
+
 type taskActivities struct{ configured TaskRuntimeConfig }
 
 func (a taskActivities) context(ctx context.Context, identity *v1.WorkloadIdentity, workflowName, runID, stepID string) context.Context {
+	if a.configured.artifacts != nil {
+		ctx = v1.ContextWithArtifacts(ctx, a.configured.artifacts)
+	}
 	ctx = v1.ContextWithTaskRuntime(ctx, v1.TaskRuntime{
 		Store: a.configured.store, Policy: a.configured.policy, Broker: a.configured.broker,
 		Identity: auth.IdentityFrom(identity),

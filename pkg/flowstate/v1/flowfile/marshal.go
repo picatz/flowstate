@@ -2,6 +2,7 @@ package flowfile
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/picatz/flowstate/internal/strictyaml"
 	"maps"
@@ -295,6 +296,17 @@ func stepToYAML(node *v1.Node) (yaml.MapSlice, error) {
 		step = append(step, yaml.MapItem{Key: "vars", Value: value})
 	}
 
+	// Above the work it qualifies, after the names it may read: the files the
+	// task starts with are read before the task that uses them. Only on a task
+	// step, since the parser refuses the key anywhere else.
+	if task := node.GetTask(); len(task.GetWorkspace()) > 0 {
+		value, err := varsToYAML(task.GetWorkspace())
+		if err != nil {
+			return nil, fmt.Errorf("step %q workspace: %w", node.GetId(), err)
+		}
+		step = append(step, yaml.MapItem{Key: "workspace", Value: value})
+	}
+
 	// Above the policy and the work, the position the parser reads it in: how a
 	// step relates to the ones around it is read before how long it may take.
 	// Only when true, so an absent marker and an explicit `async: false` stay one
@@ -434,6 +446,16 @@ func stepToYAML(node *v1.Node) (yaml.MapSlice, error) {
 
 	default:
 		return nil, fmt.Errorf("step %q: has no %s", node.GetId(), stepKindList())
+	}
+
+	// Under the work, because what a step leaves behind is read after what it
+	// does. Names sorted for the reason inputs are.
+	if task := node.GetTask(); len(task.GetProduce()) > 0 {
+		produce := yaml.MapSlice{}
+		for _, name := range slices.Sorted(maps.Keys(task.GetProduce())) {
+			produce = append(produce, yaml.MapItem{Key: name, Value: textToYAML(task.GetProduce()[name])})
+		}
+		step = append(step, yaml.MapItem{Key: "produce", Value: produce})
 	}
 
 	// Last, under the work it undoes, because that is where a reader wants it: the
@@ -815,6 +837,11 @@ func writtenInputValue(value *v1.Value, unfold bool) (any, error) {
 		return secretRefToDSL(kind.SecretRef)
 	case *v1.Value_Structure_:
 		return structureToYAML(kind.Structure)
+	case *v1.Value_ArtifactRef:
+		// A resolved value, not something an author writes: it appears in a task
+		// the engine has already evaluated, and a Flowfile names an artifact by
+		// the expression that produces it.
+		return nil, errors.New("an artifact reference is a resolved value and has no spelling in a Flowfile; write the expression that produces it, such as ${steps.build.artifacts.src}")
 	default:
 		return nil, fmt.Errorf("cannot be written as YAML: %w", value.Error())
 	}

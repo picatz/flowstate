@@ -63,6 +63,14 @@ type ExecCase struct {
 	ExpectedKind  v1.ErrorKind
 	ExpectedError []string
 
+	// NoArtifactStore runs the case on a worker that was never given an
+	// artifact store, which is how a worker starts.
+	NoArtifactStore bool
+
+	// WorkspaceOutsideRoots puts the artifact workspace root somewhere the exec
+	// policy's roots do not reach.
+	WorkspaceOutsideRoots bool
+
 	// Check asserts on the outputs of a run that must succeed. It is a function
 	// rather than a literal because a process's duration is not a constant.
 	Check func(tb testing.TB, out *v1.Workflow_StepOutputs)

@@ -141,6 +141,10 @@ func Register(w worker.Registry, runtime ...TaskRuntimeConfig) {
 	w.RegisterActivityWithOptions(authorized.TaskInScopeAuthorized, activity.RegisterOptions{Name: "TaskInScopeAuthorized"})
 	w.RegisterActivity(WorkflowVars)
 
+	// Named explicitly for the reason the two authorized activities are: a method
+	// value would register as `ReleaseArtifacts-fm`, and the run schedules the name.
+	w.RegisterActivityWithOptions(authorized.ReleaseArtifacts, activity.RegisterOptions{Name: releaseArtifactsActivity})
+
 	// The worker's admission check. Registered here and not conditionally on a
 	// worker having plugins, because the run that needs refusing is precisely the
 	// one arriving at a worker that has none: an unregistered activity fails with

@@ -534,7 +534,15 @@ func ResolveTaskInputs(ctx context.Context, task *Task, scope *Scope) (*Task, er
 	if task == nil {
 		return nil, fmt.Errorf("task cannot be nil")
 	}
-	if len(task.GetInputs()) == 0 {
+	// The workspace is resolved with the inputs, at the same position and by the
+	// same evaluator: a `${steps.build.artifacts.src}` is an expression like any
+	// other, and what leaves here is the inert reference it names.
+	workspace, err := resolveWorkspace(ctx, task, scope)
+	if err != nil {
+		return nil, NewTaskError(task.GetName(), ErrorKindInvalidInput, err)
+	}
+
+	if len(task.GetInputs()) == 0 && len(workspace) == 0 {
 		return task, nil
 	}
 
@@ -566,8 +574,10 @@ func ResolveTaskInputs(ctx context.Context, task *Task, scope *Scope) (*Task, er
 	}
 
 	return &Task{
-		Name:   task.GetName(),
-		Inputs: inputs,
+		Name:      task.GetName(),
+		Inputs:    inputs,
+		Workspace: workspace,
+		Produce:   task.GetProduce(),
 	}, nil
 }
 

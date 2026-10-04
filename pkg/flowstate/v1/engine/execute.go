@@ -1364,7 +1364,12 @@ func (e *executor) runTask(node *v1.Node, task *v1.Task) error {
 	var out v1.Node_Outputs
 	var evalErr error
 	needsAuthority := v1.TaskNeedsAuthority(resolved)
-	if v1.TaskNeedsPrevOutputs(resolved.GetName()) {
+	if v1.TaskNeedsPrevOutputs(resolved.GetName()) || v1.TaskUsesArtifacts(resolved) {
+		// A step with a workspace or produced artifacts takes this arm whatever
+		// its task is, because the scope is how the activity learns the run's
+		// tenant and address; its outputs are compacted to nothing a task that
+		// evaluates no expressions of its own could need.
+		//
 		// Compacted in the outputs and *whole* in every namespace. Only step outputs
 		// are pruned, because only they are large and only they are addressable by a
 		// name the task cannot have guessed; a name in scope is in scope.

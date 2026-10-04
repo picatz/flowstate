@@ -64,9 +64,23 @@ func taskFuncExec(policy *execpolicy.Policy) TaskFunc {
 			return nil, NewTaskError("exec", ErrorKindInvalidInput, err)
 		}
 
+		// The working directory is the step's, or the workspace the worker made
+		// for this attempt. Never the worker's own: without either there is no
+		// directory to run in, and that is an error in the step, not a default.
+		dir := taskInputs.GetDir()
+		fromWorkspace := false
+		if dir == "" {
+			if dir = WorkspaceDirFromContext(ctx); dir == "" {
+				return nil, NewTaskError("exec", ErrorKindInvalidInput, errors.New(
+					"exec needs a working directory: set dir: to an absolute path, or declare workspace: on the "+
+						"step to run in a fresh directory the worker creates for each attempt"))
+			}
+			fromWorkspace = true
+		}
+
 		request := execpolicy.Request{
 			Argv: taskInputs.GetArgv(),
-			Dir:  taskInputs.GetDir(),
+			Dir:  dir,
 			Env:  taskInputs.GetEnv(),
 		}
 		// The run's attested identity, rendered from the one WorkloadIdentity the
@@ -84,6 +98,16 @@ func taskFuncExec(policy *execpolicy.Policy) TaskFunc {
 
 		command, err := policy.Check(ctx, request)
 		if err != nil {
+			if denied, ok := errors.AsType[*execpolicy.DeniedError](err); ok && fromWorkspace && denied.Reason == execpolicy.ReasonDir {
+				// The workspace directory is the worker's, so the operator's roots are
+				// the remedy and the workflow's author cannot change them: say so,
+				// without naming the directory (a path on the worker's disk).
+				return nil, NewTaskError("exec", ErrorKindPolicyDenied, &execpolicy.DeniedError{
+					Reason: execpolicy.ReasonDir,
+					Detail: "this step runs in its workspace, and the workspace directory is not under a root in the exec " +
+						"policy; an operator lists the artifact workspace root among the policy's roots to allow it",
+				})
+			}
 			return nil, execFailure(err)
 		}
 
