@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
@@ -231,4 +232,34 @@ func dataKindText(literal *expr.Value) (string, bool) {
 	}
 
 	return "", false
+}
+
+// dataKindSpellings is every text a normalized timestamp or duration is likely to
+// be rendered as: the form [dataKindText] writes, and the form CEL's `string(...)`
+// writes (RFC 3339 without trailing zero fractions, a duration as seconds). It is
+// what redaction needs, so a sensitive value is withheld however an expression
+// chose to spell it. Bytes and every other literal have none: bytes are already a
+// plain byte slice to the redaction set.
+func dataKindSpellings(literal *expr.Value) []string {
+	object, ok := literal.GetKind().(*expr.Value_ObjectValue)
+	if !ok {
+		return nil
+	}
+
+	var stamp timestamppb.Timestamp
+	if object.ObjectValue.UnmarshalTo(&stamp) == nil && object.ObjectValue.MessageIs(&stamp) && stamp.CheckValid() == nil {
+		at := stamp.AsTime().UTC()
+
+		return []string{at.Format(time.RFC3339Nano), at.Format(time.RFC3339)}
+	}
+
+	var span durationpb.Duration
+	if object.ObjectValue.UnmarshalTo(&span) == nil && object.ObjectValue.MessageIs(&span) && span.CheckValid() == nil {
+		return []string{
+			span.AsDuration().String(),
+			strconv.FormatFloat(span.AsDuration().Seconds(), 'f', -1, 64) + "s",
+		}
+	}
+
+	return nil
 }

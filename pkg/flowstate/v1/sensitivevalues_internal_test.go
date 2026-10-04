@@ -853,3 +853,24 @@ func TestAnAccumulatorTellsANilByteStringFromAnEmptyOne(t *testing.T) {
 	require.False(t, gathered.Values().WithholdAll(), "variants unequal under the redaction's equality filled one bucket")
 	assert.Len(t, gathered.Values().held().values, 16)
 }
+
+// A sensitive duration or timestamp is redacted however an expression spelled it:
+// the form the run document writes, and the form CEL's `string(...)` writes.
+func TestASensitiveDurationAndTimestampAreRedactedInEverySpelling(t *testing.T) {
+	t.Parallel()
+
+	span, err := NormalizeDataKind(InputDeclaration_TYPE_DURATION, &expr.Value{Kind: &expr.Value_StringValue{StringValue: "1h"}})
+	require.NoError(t, err)
+	stamp, err := NormalizeDataKind(InputDeclaration_TYPE_TIMESTAMP, &expr.Value{Kind: &expr.Value_StringValue{StringValue: "2026-03-01T09:30:00Z"}})
+	require.NoError(t, err)
+
+	duration := oneSensitiveInput("d", &Value{Kind: &Value_Literal{Literal: span}})
+	for _, line := range []string{"waited 1h0m0s", "waited 3600s"} {
+		redacted := duration.RedactSubstrings(line)
+		assert.NotContains(t, redacted, "1h0m0s", line)
+		assert.NotContains(t, redacted, "3600s", line)
+	}
+
+	moment := oneSensitiveInput("t", &Value{Kind: &Value_Literal{Literal: stamp}})
+	assert.NotContains(t, moment.RedactSubstrings("at 2026-03-01T09:30:00Z"), "2026-03-01")
+}
