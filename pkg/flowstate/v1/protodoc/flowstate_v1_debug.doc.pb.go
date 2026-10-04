@@ -1016,6 +1016,14 @@ func init() {
 				" history's own bound allows.\n",
 		},
 		{
+			Name: "flowstate.v1.DebugHistoryResponse.outcome",
+			Leading: " Outcome is how the execution ended, set only at the point that is its\n" +
+				" closing event: COMPLETED for a run that completed, FAILED for any other\n" +
+				" end (failed, cancelled, terminated, timed out), as a live read of a closed\n" +
+				" run says it. The snapshot's own state is the debug session's and never\n" +
+				" says the run ended: a session that detached or expired left the run going.\n",
+		},
+		{
 			Name:    "flowstate.v1.DebugResumeRequest",
 			Leading: " DebugResumeRequest releases a hold: continue, step, run until, or detach.\n",
 		},

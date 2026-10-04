@@ -28,8 +28,9 @@ func recordedAt(event int64) *v1.DebugHistoryResponse {
 	case 3:
 		answer.Progress = &v1.RunProgress{}
 	case 21:
+		answer.Outcome = v1.DebugRunState_DEBUG_RUN_STATE_COMPLETED
 		answer.Snapshot = &v1.DebugSnapshot{
-			Revision: 40, State: v1.DebugRunState_DEBUG_RUN_STATE_COMPLETED,
+			Revision: 40, State: v1.DebugRunState_DEBUG_RUN_STATE_HELD,
 			Frames: []*v1.DebugFrame{{Id: 1, Label: "last"}}, Receipt: &v1.DebugReceipt{Revision: 40},
 		}
 	case 9, 15:
@@ -341,4 +342,33 @@ func TestAClosedSessionIsNotMovedByAReadStillInFlight(t *testing.T) {
 
 	assert.ErrorIs(t, <-moved, flowdebug.ErrRunOver)
 	assert.Equal(t, 3, h.Position(), "a closed session stays where it was")
+}
+
+// TestOnlyTheExecutionsOutcomeSaysTheRunEnded: a session that detached or
+// expired left the run going, so its state must not be reported as the end of
+// the run, and a run that ended says so from its own outcome.
+func TestOnlyTheExecutionsOutcomeSaysTheRunEnded(t *testing.T) {
+	t.Parallel()
+
+	for _, state := range []v1.DebugRunState{
+		v1.DebugRunState_DEBUG_RUN_STATE_DETACHED, v1.DebugRunState_DEBUG_RUN_STATE_EXPIRED,
+		v1.DebugRunState_DEBUG_RUN_STATE_COMPLETED, v1.DebugRunState_DEBUG_RUN_STATE_FAILED,
+	} {
+		h, err := flowdebug.OpenHistorical(t.Context(), func(_ context.Context, _ int64) (*v1.DebugHistoryResponse, error) {
+			answer := recordedAt(15)
+			answer.Snapshot.State = state
+
+			return answer, nil
+		})
+		require.NoError(t, err)
+		snapshot, err := h.Snapshot(t.Context())
+		require.NoError(t, err)
+		assert.NotContains(t, snapshot.GetMessage(), "The run ended", "session state %s is not the run's outcome", state)
+		assert.Equal(t, v1.DebugRunState_DEBUG_RUN_STATE_HELD, snapshot.GetState())
+	}
+
+	h, _ := openHistorical(t)
+	snapshot, err := h.Snapshot(t.Context())
+	require.NoError(t, err)
+	assert.Contains(t, snapshot.GetMessage(), "The run ended completed here.")
 }

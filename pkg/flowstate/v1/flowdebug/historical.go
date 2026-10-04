@@ -189,11 +189,14 @@ func (h *Historical) present() *v1.DebugSnapshot {
 		if h.verified(recorded) {
 			decorateFrames(h.sourceMap, shown)
 		}
-		if terminal(shown.GetState()) {
-			ended = " The run ended " + strings.ToLower(strings.TrimPrefix(shown.GetState().String(), "DEBUG_RUN_STATE_")) + " here."
-		}
 	} else {
 		shown = &v1.DebugSnapshot{Frames: []*v1.DebugFrame{{Id: 1, Label: progressLabel(h.here.GetProgress())}}}
+	}
+	// Whether the run ended is the execution's to say, in the answer's outcome:
+	// the snapshot's state is the debug session's, and a session that detached
+	// or expired left the run going.
+	if outcome := h.here.GetOutcome(); terminal(outcome) {
+		ended = " The run ended " + strings.ToLower(strings.TrimPrefix(outcome.String(), "DEBUG_RUN_STATE_")) + " here."
 	}
 	shown.Revision = h.revision
 	shown.State = v1.DebugRunState_DEBUG_RUN_STATE_HELD

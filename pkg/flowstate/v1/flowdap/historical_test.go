@@ -22,12 +22,13 @@ func recordedRun(_ context.Context, event int64) (*v1.DebugHistoryResponse, erro
 	}
 	frame := map[int64]string{4: "wf.a", 10: "wf.b", 16: "wf.c"}[event]
 	state := v1.DebugRunState_DEBUG_RUN_STATE_HELD
+	outcome := v1.DebugRunState_DEBUG_RUN_STATE_UNSPECIFIED
 	if event == 16 {
-		state = v1.DebugRunState_DEBUG_RUN_STATE_FAILED
+		outcome = v1.DebugRunState_DEBUG_RUN_STATE_FAILED
 	}
 
 	return &v1.DebugHistoryResponse{
-		EventId: event, Boundaries: points, Fidelity: v1.DebugFidelity_DEBUG_FIDELITY_RECONSTRUCTED,
+		EventId: event, Boundaries: points, Outcome: outcome, Fidelity: v1.DebugFidelity_DEBUG_FIDELITY_RECONSTRUCTED,
 		Snapshot: &v1.DebugSnapshot{Revision: uint64(event), State: state, Frames: []*v1.DebugFrame{{Id: 1, Label: frame}}},
 	}, nil
 }
