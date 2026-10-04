@@ -12,9 +12,10 @@
 # another record, or a list of one: `list(Line)`.
 #
 # A field also carries the length and item bounds an input does (`min_len:`,
-# `max_len:`, `min_items:`, `max_items:`), checked by the same functions. A field does
-# not yet carry `default:`, `must:` or `sensitive:`; `flow validate` says so rather
-# than ignoring them.
+# `max_len:`, `min_items:`, `max_items:`) and a `must:` over `this`, the field's value,
+# checked by the same functions. A `must:` on the type is the rule across fields, with
+# `this` the whole record. A field does not yet carry `default:` or `sensitive:`;
+# `flow validate` says so rather than ignoring them.
 #
 #   flow run local examples/record-types/workflow.yaml \
 #       --input-file examples/record-types/inputs.json
@@ -31,8 +32,10 @@ types:
       quantity:
         type: int
         required: true
+        must: this > 0
   Order:
     description: What a customer bought.
+    must: this.status != "paid" || size(this.lines) > 0
     fields:
       id:
         type: string

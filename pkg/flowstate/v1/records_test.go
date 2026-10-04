@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -149,7 +150,6 @@ func TestRecordDeclarationsRefuseWhatAFieldDoesNotCarry(t *testing.T) {
 		"default":   func(f *v1.InputDeclaration) { f.Default = v1.NewLiteral("x") },
 		"example":   func(f *v1.InputDeclaration) { f.Example = v1.NewLiteral("x") },
 		"sensitive": func(f *v1.InputDeclaration) { f.Sensitive = true },
-		"must":      func(f *v1.InputDeclaration) { f.Must = new("this != ''") },
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
@@ -405,4 +405,200 @@ func TestANestedRecordMismatchClaimsNoOutermostTypes(t *testing.T) {
 	require.True(t, errors.As(err, &invalid))
 	assert.Empty(t, invalid.Declared, "a mismatch inside a record compared no outermost types")
 	assert.Empty(t, invalid.Got)
+}
+
+// A rule on a field binds `this` to the field; a rule on the type binds it to the
+// record. A value is held to every rule of every record it holds, nested in a list
+// too, and the first one that does not hold names its path.
+func TestRecordRulesAreEvaluatedOverAValue(t *testing.T) {
+	t.Parallel()
+
+	wf := recordOrderWorkflow()
+	line := wf.DeclaredTypes[0]
+	order := wf.DeclaredTypes[1]
+	named := func(fields []*v1.InputDeclaration, name string) *v1.InputDeclaration {
+		return fields[slices.IndexFunc(fields, func(f *v1.InputDeclaration) bool { return f.GetName() == name })]
+	}
+	named(line.Fields, "quantity").Must = new("this > 0")
+	order.Must = new("this.id != 'banned'")
+	require.NoError(t, v1.CheckRecordDeclarations(wf))
+	table := v1.TypesOf(wf)
+	orderType := recordTypeOf("Order")
+
+	build := func(id string, quantity int64) *v1.Value {
+		return &v1.Value{Kind: &v1.Value_Literal{Literal: mapLit(
+			recordStr("id"), recordStr(id), recordStr("status"), recordStr("open"),
+			recordStr("lines"), &expr.Value{Kind: &expr.Value_ListValue{ListValue: &expr.ListValue{
+				Values: []*expr.Value{recordLine("k", 1), recordLine("k", quantity)},
+			}}},
+		)}}
+	}
+
+	run := func(value *v1.Value) error {
+		return v1.CheckRecordRules(table, "", "input", "order", false, orderType, value)
+	}
+
+	require.NoError(t, run(build("o-1", 3)))
+
+	err := run(build("o-1", 0))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "input \"order\": the field at .lines[1].quantity must satisfy `this > 0`; got 0")
+
+	err = run(build("banned", 3))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "the record Order must satisfy `this.id != 'banned'`")
+
+	t.Run("the same refusal reaches submit", func(t *testing.T) {
+		t.Parallel()
+
+		_, err := v1.BindRunInputs(wf, map[string]*v1.Value{"order": build("o-1", 0)})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "must satisfy `this > 0`")
+	})
+
+	t.Run("a sensitive declaration keeps the value out of the refusal", func(t *testing.T) {
+		t.Parallel()
+
+		err := v1.CheckRecordRules(table, "", "input", "order", true, orderType, build("o-1", 0))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "must satisfy `this > 0`")
+		assert.NotContains(t, err.Error(), "got")
+	})
+
+	t.Run("a table with no rule, and no table, hold a value to nothing", func(t *testing.T) {
+		t.Parallel()
+
+		require.NoError(t, v1.CheckRecordRules(nil, "", "input", "order", false, orderType, build("banned", 0)))
+		require.NoError(t, v1.CheckRecordRules(table, "", "input", "order", false, &v1.Type{}, build("banned", 0)))
+	})
+
+	t.Run("a value that would take more evaluations than the bound is refused", func(t *testing.T) {
+		t.Parallel()
+
+		lines := make([]*expr.Value, v1.MaxRuleEvaluations+1)
+		for i := range lines {
+			lines[i] = recordLine("k", 1)
+		}
+		value := &v1.Value{Kind: &v1.Value_Literal{Literal: mapLit(
+			recordStr("id"), recordStr("o"), recordStr("status"), recordStr("open"),
+			recordStr("lines"), &expr.Value{Kind: &expr.Value_ListValue{ListValue: &expr.ListValue{Values: lines}}},
+		)}}
+
+		err := run(value)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "`must:` rules apply to this value")
+	})
+}
+
+// A rule that does not compile, or reads the clock, is a defect in the declaration.
+func TestARecordRuleThatDoesNotCompileIsRefused(t *testing.T) {
+	t.Parallel()
+
+	for name, must := range map[string]string{
+		"a syntax error":  "this >",
+		"the clock":       "this != string(now)",
+		"an unknown name": "other > 1",
+		"not a predicate": "this + 1",
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			wf := recordOrderWorkflow()
+			wf.DeclaredTypes[0].Fields[1].Must = new(must)
+			require.Error(t, v1.CheckRecordDeclarations(wf))
+		})
+	}
+}
+
+func TestRecordRuleRefusalKeepsASensitiveValueAndKeyOut(t *testing.T) {
+	t.Parallel()
+
+	wf := recordOrderWorkflow()
+	line := wf.DeclaredTypes[0]
+	line.Fields[slices.IndexFunc(line.Fields, func(f *v1.InputDeclaration) bool { return f.GetName() == "quantity" })].Must = new("this > 0")
+	require.NoError(t, v1.CheckRecordDeclarations(wf))
+
+	byKey := &v1.Type{Kind: &v1.Type_Map_{Map: &v1.Type_Map{Value: recordTypeOf("Line")}}}
+	value := &v1.Value{Kind: &v1.Value_Literal{Literal: mapLit(recordStr("secret-key"), recordLine("k", 0))}}
+
+	for _, sensitive := range []bool{false, true} {
+		err := v1.CheckRecordRules(v1.TypesOf(wf), "", "input", "lines", sensitive, byKey, value)
+		require.Error(t, err)
+		if sensitive {
+			assert.NotContains(t, err.Error(), "secret-key")
+			assert.Contains(t, err.Error(), "[*].quantity")
+		} else {
+			assert.Contains(t, err.Error(), ".secret-key.quantity")
+		}
+	}
+}
+
+func TestRecordRuleEvaluationErrorKeepsASensitiveValueOut(t *testing.T) {
+	t.Parallel()
+
+	wf := recordOrderWorkflow()
+	order := wf.DeclaredTypes[1]
+	order.Must = new("timestamp(this.id) > timestamp('2020-01-01T00:00:00Z')")
+	require.NoError(t, v1.CheckRecordDeclarations(wf))
+
+	value := &v1.Value{Kind: &v1.Value_Literal{Literal: mapLit(recordStr("id"), recordStr("hunter2"), recordStr("status"), recordStr("open"),
+		recordStr("lines"), &expr.Value{Kind: &expr.Value_ListValue{ListValue: &expr.ListValue{}}})}}
+
+	for _, sensitive := range []bool{false, true} {
+		err := v1.CheckRecordRules(v1.TypesOf(wf), "", "output", "o", sensitive, recordTypeOf("Order"), value)
+		require.Error(t, err)
+		if sensitive {
+			assert.NotContains(t, err.Error(), "hunter2")
+		}
+	}
+}
+
+func TestALiteralOutputThatBreaksATypeRuleIsRefusedAtSubmit(t *testing.T) {
+	t.Parallel()
+
+	wf := recordOrderWorkflow()
+	wf.DeclaredTypes[1].Must = new("this.id != 'banned'")
+	wf.DeclaredInputs = nil
+	wf.DeclaredOutputs = []*v1.OutputDeclaration{{
+		Name: "answer", Type: v1.InputDeclaration_TYPE_STRUCT, ValueType: recordTypeOf("Order"),
+		Value: &v1.Value{Kind: &v1.Value_Literal{Literal: mapLit(
+			recordStr("id"), recordStr("banned"), recordStr("status"), recordStr("open"),
+		)}},
+	}}
+	require.NoError(t, v1.CheckRecordDeclarations(wf))
+
+	_, err := v1.BindRunInputs(wf, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "the record Order must satisfy")
+
+	wf.DeclaredOutputs[0].Value = &v1.Value{Kind: &v1.Value_Literal{Literal: mapLit(
+		recordStr("id"), recordStr("fine"), recordStr("status"), recordStr("open"),
+	)}}
+	_, err = v1.BindRunInputs(wf, nil)
+	require.NoError(t, err)
+}
+
+func TestRecordRulesShareOneCostBudget(t *testing.T) {
+	t.Parallel()
+
+	wf := recordOrderWorkflow()
+	line := wf.DeclaredTypes[0]
+	line.Fields[slices.IndexFunc(line.Fields, func(f *v1.InputDeclaration) bool { return f.GetName() == "sku" })].Must = new("this.matches('^[a-z]*$')")
+	require.NoError(t, v1.CheckRecordDeclarations(wf))
+
+	listOf := func(n int) *v1.Value {
+		lines := make([]*expr.Value, n)
+		for i := range lines {
+			lines[i] = recordLine(strings.Repeat("a", 2000), 1)
+		}
+
+		return &v1.Value{Kind: &v1.Value_Literal{Literal: &expr.Value{Kind: &expr.Value_ListValue{ListValue: &expr.ListValue{Values: lines}}}}}
+	}
+	lines := &v1.Type{Kind: &v1.Type_List{List: recordTypeOf("Line")}}
+
+	require.NoError(t, v1.CheckRecordRules(v1.TypesOf(wf), "", "input", "lines", false, lines, listOf(2)))
+
+	err := v1.CheckRecordRules(v1.TypesOf(wf), "", "input", "lines", false, lines, listOf(3000))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "cost units together")
 }

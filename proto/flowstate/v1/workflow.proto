@@ -572,9 +572,9 @@ message Workflow {
 // `map(string, dyn)` already is.
 //
 // Only `name`, `type`, `value_type`, `required`, `description`, an enum's
-// `values` and the length and item bounds (`min_len`, `max_len`, `min_items`,
-// `max_items`) are carried by a field today. `default`, `example`, `sensitive`
-// and `must` are refused by the compiler and at submit, not ignored.
+// `values`, the length and item bounds (`min_len`, `max_len`, `min_items`,
+// `max_items`) and `must` are carried by a field today. `default`, `example` and
+// `sensitive` are refused by the compiler and at submit, not ignored.
 //
 // A value of a record type is a map at run time, keyed by field name, so a
 // reader that does not know the type (an older worker, a CEL expression the
@@ -612,6 +612,15 @@ message TypeDeclaration {
   repeated InputDeclaration fields = 3 [
     (buf.validate.field).repeated = {max_items: 64}
   ];
+
+  // Must is a CEL predicate over `this`, the record, for a rule across fields that
+  // no field can state alone (`this.start < this.end`). A field's own `must` binds
+  // `this` to that field's value. Both are compiled and type-checked when the
+  // specification loads, evaluated by the one function an input's
+  // `InputDeclaration.must` is under the same cost bound, and refused if they read
+  // `now` or call anything nondeterministic. A value is held to the rules of every
+  // record it holds, at most 4096 evaluations per value.
+  optional string must = 4;
 }
 
 // Concurrency is "at most one run of this workflow per key", answered at submit.

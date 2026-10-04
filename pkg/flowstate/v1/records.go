@@ -204,7 +204,7 @@ func recordFieldNames(fields []*InputDeclaration) string {
 // cycle. A cycle is refused because a value of a recursive record has no bound
 // until the type has one, and the checks that walk a value would be the only
 // thing standing between an author and an unbounded literal. A field that sets
-// `default`, `example`, `sensitive` or `must` is refused with the reason
+// `default`, `example` or `sensitive` is refused with the reason
 // [TypeDeclaration] gives, rather than carrying a promise nothing keeps.
 //
 // The compiler runs it with a position to point at through the same
@@ -239,6 +239,12 @@ func CheckRecordDeclarations(wf *Workflow) error {
 			return fmt.Errorf("type %q declares no fields; a record holds at least one", name)
 		}
 
+		if declaration.Must != nil {
+			if _, err := CompileMustExpression(wf.GetProfile(), declaration.GetMust(), InputDeclaration_TYPE_STRUCT); err != nil {
+				return fmt.Errorf("type %q %w", name, err)
+			}
+		}
+
 		fields := make(map[string]bool, len(declaration.GetFields()))
 		for _, field := range declaration.GetFields() {
 			if fields[field.GetName()] {
@@ -246,7 +252,7 @@ func CheckRecordDeclarations(wf *Workflow) error {
 			}
 			fields[field.GetName()] = true
 
-			if err := checkRecordField(name, field, table); err != nil {
+			if err := checkRecordField(name, field, table, wf.GetProfile()); err != nil {
 				return err
 			}
 		}
@@ -270,7 +276,7 @@ func CheckRecordDeclarations(wf *Workflow) error {
 	return checkRecordDepth(wf.GetDeclaredTypes(), table)
 }
 
-func checkRecordField(record string, field *InputDeclaration, table TypeTable) error {
+func checkRecordField(record string, field *InputDeclaration, table TypeTable, profile string) error {
 	name := field.GetName()
 	if vt := field.GetValueType(); vt != nil {
 		if err := checkTypeDepth(vt, MaxStructureDepth); err != nil {
@@ -292,11 +298,16 @@ func checkRecordField(record string, field *InputDeclaration, table TypeTable) e
 		{"default", field.GetDefault() != nil},
 		{"example", field.GetExample() != nil},
 		{"sensitive", field.GetSensitive()},
-		{"must", field.Must != nil},
 	} {
 		if unsupported.set {
 			return fmt.Errorf("type %q field %q sets `%s`, which a record field does not carry yet; "+
 				"put it on the input or output that uses the type", record, name, unsupported.word)
+		}
+	}
+
+	if field.Must != nil {
+		if _, err := CompileMustExpression(profile, field.GetMust(), field.GetType()); err != nil {
+			return fmt.Errorf("type %q field %q %w", record, name, err)
 		}
 	}
 

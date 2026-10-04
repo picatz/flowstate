@@ -472,6 +472,12 @@ func checkOutputValueType(wf *v1.Workflow, table *typeTable, declaration *v1.Out
 				Code: v1.DiagnosticCodeTypeMismatch, Message: err.Error(),
 			}
 		}
+		if err := v1.CheckLiteralOutputRules(v1.TypesOf(wf), wf.GetProfile(), declaration, value); err != nil {
+			return &Diagnostic{
+				Field: field, Value: declaration.GetName(),
+				Code: v1.DiagnosticCodeTypeMismatch, Message: err.Error(),
+			}
+		}
 
 		return nil
 	}

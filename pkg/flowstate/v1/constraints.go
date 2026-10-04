@@ -913,23 +913,30 @@ func CheckOutputConstraint(profile string, decl *OutputDeclaration, value *Value
 // [Evaluator.Eval] so the cost bound and cancellation this file's own doc
 // comment promises actually apply.
 func evalMust(ctx context.Context, profile string, t InputDeclaration_Type, ast *cel.Ast, lit *expr.Value) (bool, error) {
+	ok, _, err := evalMustWithCost(ctx, profile, t, ast, lit)
+	return ok, err
+}
+
+// evalMustWithCost is [evalMust] plus the cost the evaluation spent, which
+// [CheckRecordRules] adds up to hold a whole value to one budget.
+func evalMustWithCost(ctx context.Context, profile string, t InputDeclaration_Type, ast *cel.Ast, lit *expr.Value) (bool, uint64, error) {
 	env, err := mustEnvFor(profile, t)
 	if err != nil {
-		return false, err
+		return false, 0, err
 	}
 
 	thisVal, err := cel.ValueToRefValue(TypeAdapter, lit)
 	if err != nil {
-		return false, err
+		return false, 0, err
 	}
 
-	out, err := DefaultEvaluator().Eval(ctx, env, ast, map[string]any{"this": thisVal})
+	out, cost, err := DefaultEvaluator().EvalWithCost(ctx, env, ast, map[string]any{"this": thisVal})
 	if err != nil {
-		return false, err
+		return false, cost, err
 	}
 
 	b, ok := out.Value().(bool)
-	return ok && b, nil
+	return ok && b, cost, nil
 }
 
 // checkStringConstraints applies min_len and max_len to a string literal.

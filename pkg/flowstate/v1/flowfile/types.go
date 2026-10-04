@@ -26,7 +26,7 @@ import (
 // input in what it accepts. What a record field does not carry yet is refused by
 // [v1.CheckRecordDeclarations] with the reason, not parsed and ignored.
 
-var typeKeys = []string{"description", "fields"}
+var typeKeys = []string{"description", "fields", "must"}
 
 // declaredTypes compiles the top-level `types:` block, one entry per record, in
 // the order written.
@@ -92,16 +92,7 @@ func (c *compiler) declaredType(e entry, parent string) *v1.TypeDeclaration {
 		return nil
 	}
 
-	checkable := make([]entry, 0, len(entries))
-	for _, en := range entries {
-		if en.name == "must" {
-			c.report(spanOfNode(en.key), r,
-				"a rule over the whole record is not carried yet; put `must:` on a field, or on the input or output that uses the type")
-			continue
-		}
-		checkable = append(checkable, en)
-	}
-	fields := c.check(checkable, r, typeKeys)
+	fields := c.check(entries, r, typeKeys)
 
 	declaration := &v1.TypeDeclaration{Name: e.name}
 
@@ -110,6 +101,13 @@ func (c *compiler) declaredType(e entry, parent string) *v1.TypeDeclaration {
 		if description, ok := c.text(f.value, descriptionPath,
 			ref{path: descriptionPath, label: "type " + e.name + " description"}); ok {
 			declaration.Description = proto.String(description)
+		}
+	}
+
+	if f, found := fields.get("must"); found {
+		mustPath := fieldPath(path, "must")
+		if must, ok := c.text(f.value, mustPath, ref{path: mustPath, label: "type " + e.name + " must"}); ok {
+			declaration.Must = proto.String(must)
 		}
 	}
 
@@ -137,6 +135,9 @@ func declaredTypesToYAML(declared []*v1.TypeDeclaration) (yaml.MapSlice, error) 
 		var entry yaml.MapSlice
 		if d.Description != nil {
 			entry = append(entry, yaml.MapItem{Key: "description", Value: textToYAML(d.GetDescription())})
+		}
+		if d.Must != nil {
+			entry = append(entry, yaml.MapItem{Key: "must", Value: textToYAML(d.GetMust())})
 		}
 		if len(d.GetFields()) > 0 {
 			fields, err := declaredInputsToYAML(d.GetFields())

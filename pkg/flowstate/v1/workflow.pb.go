@@ -754,9 +754,9 @@ func (x *Workflow) GetDeclaredTypes() []*TypeDeclaration {
 // `map(string, dyn)` already is.
 //
 // Only `name`, `type`, `value_type`, `required`, `description`, an enum's
-// `values` and the length and item bounds (`min_len`, `max_len`, `min_items`,
-// `max_items`) are carried by a field today. `default`, `example`, `sensitive`
-// and `must` are refused by the compiler and at submit, not ignored.
+// `values`, the length and item bounds (`min_len`, `max_len`, `min_items`,
+// `max_items`) and `must` are carried by a field today. `default`, `example` and
+// `sensitive` are refused by the compiler and at submit, not ignored.
 //
 // A value of a record type is a map at run time, keyed by field name, so a
 // reader that does not know the type (an older worker, a CEL expression the
@@ -782,7 +782,15 @@ type TypeDeclaration struct {
 	// sensitive field withheld wherever the record travels, and each of those is a
 	// decision that has not been made. A field that sets one is refused rather
 	// than silently not enforced.
-	Fields        []*InputDeclaration `protobuf:"bytes,3,rep,name=fields,proto3" json:"fields,omitempty"`
+	Fields []*InputDeclaration `protobuf:"bytes,3,rep,name=fields,proto3" json:"fields,omitempty"`
+	// Must is a CEL predicate over `this`, the record, for a rule across fields that
+	// no field can state alone (`this.start < this.end`). A field's own `must` binds
+	// `this` to that field's value. Both are compiled and type-checked when the
+	// specification loads, evaluated by the one function an input's
+	// `InputDeclaration.must` is under the same cost bound, and refused if they read
+	// `now` or call anything nondeterministic. A value is held to the rules of every
+	// record it holds, at most 4096 evaluations per value.
+	Must          *string `protobuf:"bytes,4,opt,name=must,proto3,oneof" json:"must,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -836,6 +844,13 @@ func (x *TypeDeclaration) GetFields() []*InputDeclaration {
 		return x.Fields
 	}
 	return nil
+}
+
+func (x *TypeDeclaration) GetMust() string {
+	if x != nil && x.Must != nil {
+		return *x.Must
+	}
+	return ""
 }
 
 // Concurrency is "at most one run of this workflow per key", answered at submit.
@@ -3997,12 +4012,14 @@ const file_flowstate_v1_workflow_proto_rawDesc = "" +
 	"\fSignalsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x120\n" +
 	"\x05value\x18\x02 \x01(\v2\x1a.flowstate.v1.SignalPolicyR\x05value:\x028\x01B\x0e\n" +
-	"\f_descriptionJ\x04\b\x04\x10\x05R\x06inputs\"\xd1\x01\n" +
+	"\f_descriptionJ\x04\b\x04\x10\x05R\x06inputs\"\xf3\x01\n" +
 	"\x0fTypeDeclaration\x12;\n" +
 	"\x04name\x18\x01 \x01(\tB'\xe2A\x01\x02\xbaH \xc8\x01\x01r\x1b\x10\x01\x18\x80\x012\x14^[A-Z][A-Za-z0-9_]*$R\x04name\x12/\n" +
 	"\vdescription\x18\x02 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x02H\x00R\vdescription\x88\x01\x01\x12@\n" +
-	"\x06fields\x18\x03 \x03(\v2\x1e.flowstate.v1.InputDeclarationB\b\xbaH\x05\x92\x01\x02\x10@R\x06fieldsB\x0e\n" +
-	"\f_description\"\x8f\x02\n" +
+	"\x06fields\x18\x03 \x03(\v2\x1e.flowstate.v1.InputDeclarationB\b\xbaH\x05\x92\x01\x02\x10@R\x06fields\x12\x17\n" +
+	"\x04must\x18\x04 \x01(\tH\x01R\x04must\x88\x01\x01B\x0e\n" +
+	"\f_descriptionB\a\n" +
+	"\x05_must\"\x8f\x02\n" +
 	"\vConcurrency\x121\n" +
 	"\x03key\x18\x01 \x01(\v2\x13.flowstate.v1.ValueB\n" +
 	"\xe2A\x01\x02\xbaH\x03\xc8\x01\x01R\x03key\x12S\n" +

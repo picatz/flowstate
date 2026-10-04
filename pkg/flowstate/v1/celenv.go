@@ -400,31 +400,32 @@ func checkLibraries(libs []string) error {
 // The activation may be a map[string]any or a cel.Activation, matching the CEL
 // runtime's own contract.
 func (e *Evaluator) Eval(ctx context.Context, env *cel.Env, ast *cel.Ast, activation any) (ref.Val, error) {
-	ordered, err := orderMapComprehensionsAST(ast)
-	if err != nil {
-		return nil, &ExpressionError{Err: fmt.Errorf("prepare expression: %w", err)}
-	}
-	programEnv, err := e.extendedEnvFor(env)
-	if err != nil {
-		return nil, err
-	}
-	prg, err := programEnv.Program(ordered, e.limits.programOptions()...)
-	if err != nil {
-		return nil, &ExpressionError{Err: fmt.Errorf("compile expression: %w", err)}
-	}
-	return evalProgram(ctx, prg, activation)
-}
-
-// evalProgram runs a compiled program and classifies its failure, which is the
-// half of evaluation [Evaluator.Eval] and [Evaluator.EvalParsed] must share so
-// a cached expression cannot fail with different words than an uncached one.
-func evalProgram(ctx context.Context, prg cel.Program, activation any) (ref.Val, error) {
-	out, _, err := evalProgramWithCost(ctx, prg, activation)
+	out, _, err := e.EvalWithCost(ctx, env, ast, activation)
 	return out, err
 }
 
-// evalProgramWithCost runs a compiled program and returns the actual cost CEL
-// tracked under [Limits.Cost]. A missing cost is zero, which is possible only
+// EvalWithCost is [Evaluator.Eval] plus the deterministic actual cost CEL reports
+// for this evaluation, for a caller that holds many evaluations to one budget.
+func (e *Evaluator) EvalWithCost(ctx context.Context, env *cel.Env, ast *cel.Ast, activation any) (ref.Val, uint64, error) {
+	ordered, err := orderMapComprehensionsAST(ast)
+	if err != nil {
+		return nil, 0, &ExpressionError{Err: fmt.Errorf("prepare expression: %w", err)}
+	}
+	programEnv, err := e.extendedEnvFor(env)
+	if err != nil {
+		return nil, 0, err
+	}
+	prg, err := programEnv.Program(ordered, e.limits.programOptions()...)
+	if err != nil {
+		return nil, 0, &ExpressionError{Err: fmt.Errorf("compile expression: %w", err)}
+	}
+	return evalProgramWithCost(ctx, prg, activation)
+}
+
+// evalProgramWithCost runs a compiled program and classifies its failure, which is
+// the half of evaluation [Evaluator.EvalWithCost] and [Evaluator.EvalParsed] must
+// share so a cached expression cannot fail with different words than an uncached
+// one. It returns the actual cost CEL tracked under [Limits.Cost]. A missing cost is zero, which is possible only
 // for evaluators whose tests deliberately disable cost tracking.
 func evalProgramWithCost(ctx context.Context, prg cel.Program, activation any) (ref.Val, uint64, error) {
 	out, details, err := prg.ContextEval(ctx, activation)

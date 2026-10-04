@@ -456,6 +456,31 @@ func InputOutputCases(httpBaseURL string) []Case {
 			ExpectedErrorContains: `a field "coupon" that Order does not declare`,
 		},
 		{
+			// A rule across a record's fields, on the type: a computed output the
+			// rule rejects fails the run on both drivers, with the same sentence.
+			Name:          "a record output that breaks its type's must fails the run",
+			ExpectFailure: true,
+			Workflow: func() *v1.Workflow {
+				wf := recordOutputWorkflow("outputs-record-must", `{"id": "banned"}`)
+				wf.DeclaredTypes[0].Must = new("this.id != 'banned'")
+
+				return wf
+			}(),
+			ExpectedErrorContains: "the record Order must satisfy `this.id != 'banned'`",
+		},
+		{
+			// And the field's own rule, with `this` bound to the field.
+			Name:          "a record output field that breaks its must fails the run",
+			ExpectFailure: true,
+			Workflow: func() *v1.Workflow {
+				wf := recordOutputWorkflow("outputs-record-field-must", `{"id": "o"}`)
+				wf.DeclaredTypes[0].Fields[0].Must = new("size(this) > 2")
+
+				return wf
+			}(),
+			ExpectedErrorContains: "the field at .id must satisfy `size(this) > 2`; got o",
+		},
+		{
 			// A record's field carries the bounds an input does, judged by the same
 			// functions: a value under `min_len` fails at completion on both
 			// drivers with the path of the field.
