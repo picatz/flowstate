@@ -3452,8 +3452,10 @@ steps:
       message: ${"balance " + string(inputs.balance_cents) + " cannot cover " + string(inputs.amount_cents)}
 ```
 
-The run fails with `InsufficientFunds` as its kind, on both drivers, and the
-sentence reads `task "fail" failed (InsufficientFunds): <message>`. A step that
+The run fails with `InsufficientFunds` as its kind, on both drivers, and a client
+reading the run (`flow get`, the RPC, MCP) is handed the same name as `error.kind`
+when the run's own workflow, or one it calls, declares it, so a program branches
+on it instead of parsing the sentence. The sentence reads `task "fail" failed (InsufficientFunds): <message>`. A step that
 tolerates the failure reads the same name as `failure.kind`, and the validator
 knows the workflow's declared names beside the built-in kinds, so
 `failure.kind == "InsufficientFunds"` is checked and `"InsufficientFunds"`

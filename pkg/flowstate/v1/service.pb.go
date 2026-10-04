@@ -2730,8 +2730,13 @@ type RunResponse_Error struct {
 	//   - `Internal`: a defect in Flowstate, or a failure it could not
 	//     otherwise classify.
 	//
+	//   - A name the workflow declares under `errors:`, such as
+	//     `InsufficientFunds`, when a `fail:` step raised it (in this workflow
+	//     or in one it calls). A declared kind is permanent.
+	//
 	// `Upstream`, `Timeout`, `RateLimited` and `Internal` are the retryable
-	// kinds; the rest are permanent. Always set alongside `message`.
+	// kinds; the rest are permanent. Always set alongside `message`. A consumer
+	// that does not recognize a kind should treat it as permanent.
 	Kind          string `protobuf:"bytes,2,opt,name=kind,proto3" json:"kind,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

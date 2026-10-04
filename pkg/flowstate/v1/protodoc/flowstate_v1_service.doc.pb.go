@@ -220,8 +220,13 @@ func init() {
 				"   - `Internal`: a defect in Flowstate, or a failure it could not\n" +
 				"     otherwise classify.\n" +
 				"\n" +
+				"   - A name the workflow declares under `errors:`, such as\n" +
+				"     `InsufficientFunds`, when a `fail:` step raised it (in this workflow\n" +
+				"     or in one it calls). A declared kind is permanent.\n" +
+				"\n" +
 				" `Upstream`, `Timeout`, `RateLimited` and `Internal` are the retryable\n" +
-				" kinds; the rest are permanent. Always set alongside `message`.\n",
+				" kinds; the rest are permanent. Always set alongside `message`. A consumer\n" +
+				" that does not recognize a kind should treat it as permanent.\n",
 		},
 		{
 			Name:    "flowstate.v1.RunResponse.Status",

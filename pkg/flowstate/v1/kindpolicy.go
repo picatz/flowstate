@@ -66,23 +66,30 @@ func RetryExcludedKinds(retry *RetryPolicy) []string {
 // calleeDeclaredKinds returns the kinds a `call:` step's callee, and whatever it
 // calls in turn, declares under `errors:`: failures the caller's own file never
 // names and can still see arrive at the call step. Empty for any other step.
+func calleeDeclaredKinds(node *Node) map[string]struct{} {
+	if node.GetCall() == nil {
+		return map[string]struct{}{}
+	}
+
+	return declaredKindsFrom(node.GetCall().GetWorkflow(), 1)
+}
+
+// declaredKindsFrom returns what root declares under `errors:` and what every
+// workflow it calls declares, root being at the given call depth.
 //
 // Bounded where it is spent, because this runs at admission, before the call
 // depth guard has looked at the specification: an explicit stack rather than
 // recursion, callees followed only to [MaxCallDepth], and at most
 // [maxStructureWalkNodes] nodes visited across all of them. Running out stops the
 // search, so a kind it did not reach is refused, which fails closed.
-func calleeDeclaredKinds(node *Node) map[string]struct{} {
+func declaredKindsFrom(root *Workflow, depth int) map[string]struct{} {
 	kinds := map[string]struct{}{}
-	if node.GetCall() == nil {
-		return kinds
-	}
 
 	type frame struct {
 		workflow *Workflow
 		depth    int
 	}
-	stack := []frame{{node.GetCall().GetWorkflow(), 1}}
+	stack := []frame{{root, depth}}
 	nodesLeft := maxStructureWalkNodes
 	for len(stack) > 0 && nodesLeft > 0 {
 		top := stack[len(stack)-1]
@@ -103,6 +110,19 @@ func calleeDeclaredKinds(node *Node) map[string]struct{} {
 	}
 
 	return kinds
+}
+
+// ReportableFailureKind reports whether a run of wf can end with a failure of
+// this kind: a built-in kind, or one wf or any workflow it calls declares. It is
+// what lets a server report a declared kind as a run's `kind` without trusting
+// an arbitrary string a failure happens to carry.
+func ReportableFailureKind(wf *Workflow, kind string) bool {
+	if _, builtin := ParseErrorKind(kind); builtin {
+		return true
+	}
+	_, declared := declaredKindsFrom(wf, 0)[kind]
+
+	return declared
 }
 
 // failureKindsAt answers, for one step, which kinds beyond the built-in ones its

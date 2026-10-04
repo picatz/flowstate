@@ -348,3 +348,87 @@ func TestARunThatOutlivedItsBudgetIsClassifiedPermanent(t *testing.T) {
 	require.NotEqual(t, got.GetStatus().String(), got.GetError().GetMessage(),
 		"the reason is the status restated, which is what this branch exists to stop")
 }
+
+// TestAFailedRunReportsTheKindItDeclared: a run that ends on a `fail:` step
+// reports the declared name as `kind`, so a client branches on `InsufficientFunds`
+// instead of finding it only in the sentence. The same failure type is left
+// unclassified when the run's own specification does not declare it, which is
+// what keeps an arbitrary string a failure carried from becoming a kind.
+func TestAFailedRunReportsTheKindItDeclared(t *testing.T) {
+	t.Parallel()
+
+	fixture := newTenantFixture(t)
+	startWorker(t, fixture.temporal)
+
+	started, err := fixture.teamA.Run(t.Context(), connect.NewRequest(&v1.RunRequest{
+		Workflow: &v1.Workflow{
+			Name:           "refuses",
+			DeclaredErrors: []*v1.ErrorDeclaration{{Name: "InsufficientFunds"}},
+			Steps: []*v1.Node{{
+				Id: "refuse",
+				Kind: &v1.Node_Fail{Fail: &v1.Fail{
+					Error:   "InsufficientFunds",
+					Message: v1.NewExpr(`"balance 5 cannot cover 9"`),
+				}},
+			}},
+		},
+	}))
+	require.NoError(t, err)
+
+	got := awaitTerminal(t, fixture.teamA, started.Msg.GetWorkflowId())
+
+	require.Equal(t, v1.RunResponse_STATUS_FAILED, got.GetStatus())
+	require.Equal(t, "InsufficientFunds", got.GetError().GetKind())
+	require.Contains(t, got.GetError().GetMessage(), "balance 5 cannot cover 9")
+}
+
+// TestADeclaredNameDoesNotClaimAnUnrelatedFailure: a failure before the first
+// step keeps the type its activity chose, and `InvalidWorkflowVars` is a valid
+// declared name. A workflow declaring it must not have its vars failure reported
+// as the declared business kind, which only a failure the engine classified as the
+// run's own carries.
+func TestADeclaredNameDoesNotClaimAnUnrelatedFailure(t *testing.T) {
+	t.Parallel()
+
+	fixture := newTenantFixture(t)
+	startWorker(t, fixture.temporal)
+
+	started, err := fixture.teamA.Run(t.Context(), connect.NewRequest(&v1.RunRequest{
+		Workflow: &v1.Workflow{
+			Name:           "collides",
+			DeclaredErrors: []*v1.ErrorDeclaration{{Name: "InvalidWorkflowVars"}},
+			Vars:           map[string]*v1.Value{"bad": v1.NewExpr("string(1 / 0)")},
+			Steps: []*v1.Node{{
+				Id:   "after",
+				Kind: &v1.Node_Task{Task: &v1.Task{Name: "log", Inputs: map[string]*v1.Value{"message": v1.NewLiteral("hi")}}},
+			}},
+		},
+	}))
+	require.NoError(t, err)
+
+	got := awaitTerminal(t, fixture.teamA, started.Msg.GetWorkflowId())
+
+	require.Equal(t, v1.RunResponse_STATUS_FAILED, got.GetStatus())
+	require.NotEqual(t, "InvalidWorkflowVars", got.GetError().GetKind(),
+		"a pre-step failure was reported as the workflow's declared kind of the same name")
+}
+
+// awaitTerminal polls Get until the run is no longer running and returns that
+// answer. The run is on a real Temporal server, outside the test, so there is
+// nothing to wait on but the answer itself.
+func awaitTerminal(t *testing.T, client *server.FlowstateServer, workflowID string) *v1.GetResponse {
+	t.Helper()
+
+	var got *v1.GetResponse
+	require.Eventually(t, func() bool {
+		resp, err := client.Get(t.Context(), connect.NewRequest(&v1.GetRequest{WorkflowId: workflowID}))
+		if err != nil {
+			return false
+		}
+		got = resp.Msg
+
+		return got.GetStatus() != v1.RunResponse_STATUS_RUNNING
+	}, 60*time.Second, 200*time.Millisecond, "the run never reached a terminal state")
+
+	return got
+}
