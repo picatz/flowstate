@@ -55,11 +55,22 @@ func (s *FlowstateServer) DebugHistory(ctx context.Context, req *connect.Request
 	}
 	workflowID, runID := req.Msg.GetWorkflowId(), req.Msg.GetRunId()
 
+	// An expression can test a sensitive value the printed answer withholds, so
+	// asking any is the inspect action's, as a live inspection is, and the
+	// audit trail carries a digest of what was asked.
+	detail := &v1.AuditDebugDetail{Operation: "history", RunId: runID, Revision: uint64(req.Msg.GetEventId())}
+	if asked := req.Msg.GetInspections(); len(asked) > 0 {
+		detail.ExpressionDigest = historyInspectionsDigest(asked)
+		if err := s.requireDebugAction(ctx, "DebugHistory", workflowID,
+			v1.AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_DEBUG_INSPECT, detail); err != nil {
+			return nil, err
+		}
+	}
+
 	// Resolved exactly, and judged by the memo of the execution whose history
 	// is read: following the chain to its current execution, as a live session
 	// does, would apply that execution's `debug:` policy to another's past.
-	run, err := s.authorizeDebugRun(ctx, "DebugHistory", workflowID, runID, false,
-		&v1.AuditDebugDetail{Operation: "history", RunId: runID, Revision: uint64(req.Msg.GetEventId())})
+	run, err := s.authorizeDebugRun(ctx, "DebugHistory", workflowID, runID, false, detail)
 	if err != nil {
 		return nil, err
 	}
@@ -112,13 +123,16 @@ func (s *FlowstateServer) DebugHistory(ctx context.Context, req *connect.Request
 	// this names the point actually read, so the trail answers which point of
 	// which run was accessed.
 	if err := s.auditDebugAllow(ctx, "DebugHistory", workflowID,
-		&v1.AuditDebugDetail{Operation: "history/resolved", RunId: runID, Revision: uint64(events[index].GetEventId())}); err != nil {
+		&v1.AuditDebugDetail{
+			Operation: "history/resolved", RunId: runID, Revision: uint64(events[index].GetEventId()),
+			ExpressionDigest: detail.GetExpressionDigest(),
+		}); err != nil {
 		return nil, err
 	}
 
 	handedOver = true
 	rec, err := engine.ReconstructWith(ctx, engine.ReconstructOptions{DataConverter: s.dataConverter, Done: release}, history, index,
-		workflow.Execution{ID: workflowID, RunID: runID})
+		workflow.Execution{ID: workflowID, RunID: runID}, inspectionRequests(req.Msg.GetInspections())...)
 	switch {
 	case errors.Is(err, context.Canceled):
 		return nil, connect.NewError(connect.CodeCanceled, err)
@@ -149,7 +163,59 @@ func (s *FlowstateServer) DebugHistory(ctx context.Context, req *connect.Request
 		Fidelity:   v1.DebugFidelity_DEBUG_FIDELITY_RECONSTRUCTED,
 		Boundaries: ids,
 		Outcome:    outcomeOf(events[index]),
+		Inspected:  inspectedAnswers(req.Msg.GetInspections(), rec),
 	}), nil
+}
+
+// historyInspectionsDigest is the content digest of what was asked, in order,
+// so one audit record names the whole batch.
+func historyInspectionsDigest(asked []*v1.DebugHistoryInspection) string {
+	var all []byte
+	for _, one := range asked {
+		all = append(all, one.GetExpression()...)
+		all = append(all, 0)
+	}
+
+	return v1.ContentDigest(all)
+}
+
+// inspectionRequests are the inspections as the interpreter answers them. The
+// run, session and revision are the point's own, which the interpreter binds,
+// so a caller cannot name another.
+func inspectionRequests(asked []*v1.DebugHistoryInspection) []*v1.DebugInspectRequest {
+	requests := make([]*v1.DebugInspectRequest, len(asked))
+	for i, one := range asked {
+		requests[i] = &v1.DebugInspectRequest{
+			Expression: one.GetExpression(), Children: one.GetChildren(), Offset: one.GetOffset(), Limit: one.GetLimit(),
+		}
+	}
+
+	return requests
+}
+
+// inspectedAnswers pairs each inspection with the reconstruction's answer. A
+// refusal is the result's error, bounded like the replay's own account of a
+// failure, which can quote the run.
+func inspectedAnswers(asked []*v1.DebugHistoryInspection, rec *engine.Reconstruction) []*v1.DebugHistoryInspected {
+	var answers []*v1.DebugHistoryInspected
+	for i, one := range asked {
+		result := &v1.DebugInspectResponse{}
+		if i < len(rec.Inspected) && rec.Inspected[i] != nil {
+			result = rec.Inspected[i]
+		}
+		if i < len(rec.InspectErrs) && rec.InspectErrs[i] != nil {
+			result = &v1.DebugInspectResponse{Error: textbound.Cut(rec.InspectErrs[i].Error(), maxDebugHistoryFailureBytes)}
+		} else if i >= len(rec.Inspected) {
+			result = &v1.DebugInspectResponse{Error: "the run held no session at this point, so there is nothing to inspect"}
+		}
+		fidelity := v1.DebugFidelity_DEBUG_FIDELITY_HYPOTHETICAL
+		if one.GetExpression() == "" {
+			fidelity = v1.DebugFidelity_DEBUG_FIDELITY_RECONSTRUCTED
+		}
+		answers = append(answers, &v1.DebugHistoryInspected{Result: result, Fidelity: fidelity})
+	}
+
+	return answers
 }
 
 // readHistory reads a run's history, refusing one over the bound as soon as it

@@ -16,16 +16,17 @@ import (
 )
 
 // HistoryReader reads a recorded run at one point: an event id its history
-// lists as a boundary, or 0 for the last one. [RemoteHistory] is the reader
-// over a server's DebugHistory RPC.
-type HistoryReader func(ctx context.Context, eventID int64) (*v1.DebugHistoryResponse, error)
+// lists as a boundary, or 0 for the last one, and answers any inspections at
+// that same point. [RemoteHistory] is the reader over a server's DebugHistory
+// RPC.
+type HistoryReader func(ctx context.Context, eventID int64, inspections ...*v1.DebugHistoryInspection) (*v1.DebugHistoryResponse, error)
 
 // RemoteHistory reads the run workflowID/runID through the server's DebugHistory
 // RPC, so the caller is held to the run's own `debug:` policy.
 func RemoteHistory(client flowstatev1connect.WorkflowServiceClient, workflowID, runID string) HistoryReader {
-	return func(ctx context.Context, eventID int64) (*v1.DebugHistoryResponse, error) {
+	return func(ctx context.Context, eventID int64, inspections ...*v1.DebugHistoryInspection) (*v1.DebugHistoryResponse, error) {
 		response, err := client.DebugHistory(ctx, connect.NewRequest(&v1.DebugHistoryRequest{
-			WorkflowId: workflowID, RunId: runID, EventId: eventID,
+			WorkflowId: workflowID, RunId: runID, EventId: eventID, Inspections: inspections,
 		}))
 		if err != nil {
 			return nil, err
@@ -73,6 +74,25 @@ type Historical struct {
 	closed   bool
 	applied  map[string]*v1.DebugReceipt
 	order    []string
+
+	// values caches what a point said about a value. A recorded run never
+	// changes, so an answer is good for as long as the session lives; it is
+	// bounded all the same, first in first out, because a person can ask
+	// without end.
+	values     map[valueKey]*v1.DebugInspectResponse
+	valueOrder []valueKey
+}
+
+// maxCachedValues bounds [Historical]'s cache of value answers.
+const maxCachedValues = 128
+
+// valueKey is one question asked of one point.
+type valueKey struct {
+	event      int64
+	expression string
+	children   bool
+	offset     int32
+	limit      int32
 }
 
 var (
@@ -130,6 +150,7 @@ func OpenHistorical(ctx context.Context, read HistoryReader, opts ...HistoricalO
 		revision:  1,
 		moved:     make(chan struct{}),
 		applied:   map[string]*v1.DebugReceipt{},
+		values:    map[valueKey]*v1.DebugInspectResponse{},
 	}, nil
 }
 
@@ -158,8 +179,8 @@ func (h *Historical) Capabilities() *v1.DebugCapabilities {
 	caps.RunUntil = false
 	caps.ConditionalBreakpoints = false
 	caps.HitConditions = false
-	caps.Inspect = false
-	caps.ValueExpansion = false
+	caps.Inspect = true
+	caps.ValueExpansion = true
 	caps.Observations = false
 	caps.History = true
 
@@ -408,17 +429,69 @@ func (h *Historical) ReplaceBreakpoints(_ context.Context, req *v1.DebugSetBreak
 		"a recorded run cannot stop at a breakpoint: step to the next point, or back to an earlier one")}, nil
 }
 
-// Inspect implements [Target]. Reading a value at a past point is not offered
-// yet, and the answer says so rather than reading the scope of a run that is
-// somewhere else.
-func (h *Historical) Inspect(context.Context, *v1.DebugInspectRequest) (*v1.DebugInspectResponse, error) {
+// Inspect implements [Target]: a value as the run held it at the point shown.
+// The run's scope is rebuilt by the replay that reconstructs the point, and an
+// expression is evaluated over that scope now, so its answer is a question
+// about the past and never an event of it. A point where the run held no debug
+// session has no scope to read, and says so. Sensitive values are withheld as
+// they are from a live session. The revision, when set, must be the one shown:
+// an answer is only ever for the point the person is looking at.
+func (h *Historical) Inspect(ctx context.Context, req *v1.DebugInspectRequest) (*v1.DebugInspectResponse, error) {
+	h.mu.Lock()
+	if h.closed {
+		h.mu.Unlock()
+
+		return nil, ErrRunOver
+	}
+	revision, event := h.revision, h.here.GetEventId()
+	if want := req.GetRevision(); want != 0 && want != revision {
+		h.mu.Unlock()
+
+		return &v1.DebugInspectResponse{Revision: revision, Error: fmt.Sprintf(
+			"that snapshot is stale: it was revision %d, and the session is at %d", want, revision)}, nil
+	}
+	key := valueKey{event, req.GetExpression(), req.GetChildren(), req.GetOffset(), req.GetLimit()}
+	cached, ok := h.values[key]
+	h.mu.Unlock()
+	if ok {
+		answer := proto.CloneOf(cached)
+		answer.Revision = revision
+
+		return answer, nil
+	}
+
+	answer, err := h.read(ctx, event, &v1.DebugHistoryInspection{
+		Expression: key.expression, Children: key.children, Offset: key.offset, Limit: key.limit,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if answer.GetEventId() != event || len(answer.GetInspected()) != 1 {
+		return nil, fmt.Errorf("flowdebug: asked event %d for one value and the server answered for event %d with %d", event, answer.GetEventId(), len(answer.GetInspected()))
+	}
+	result := proto.CloneOf(answer.GetInspected()[0].GetResult())
+
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if h.closed {
+		return nil, ErrRunOver
+	}
+	if h.revision != revision {
+		// Moved while the read was in flight: this answer is for a point the
+		// person has left.
+		return &v1.DebugInspectResponse{Revision: h.revision, Error: "the session moved to another point while the value was read"}, nil
+	}
+	if _, ok := h.values[key]; !ok {
+		h.values[key] = proto.CloneOf(result)
+		h.valueOrder = append(h.valueOrder, key)
+		for len(h.valueOrder) > maxCachedValues {
+			delete(h.values, h.valueOrder[0])
+			h.valueOrder = h.valueOrder[1:]
+		}
+	}
+	result.Revision = revision
 
-	return &v1.DebugInspectResponse{
-		Revision: h.revision,
-		Error:    "values of a recorded run are not readable at a past point yet",
-	}, nil
+	return result, nil
 }
 
 // Close implements [Target]. It ends this session and nothing else: the run is

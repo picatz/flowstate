@@ -3,6 +3,7 @@ package flowdap_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -15,7 +16,7 @@ import (
 
 // recordedRun is three points of a run that failed at the last: what a server's
 // DebugHistory answers, as the adapter's attach reads it.
-func recordedRun(_ context.Context, event int64) (*v1.DebugHistoryResponse, error) {
+func recordedRun(_ context.Context, event int64, inspections ...*v1.DebugHistoryInspection) (*v1.DebugHistoryResponse, error) {
 	points := []int64{4, 10, 16}
 	if event == 0 {
 		event = points[len(points)-1]
@@ -27,10 +28,18 @@ func recordedRun(_ context.Context, event int64) (*v1.DebugHistoryResponse, erro
 		outcome = v1.DebugRunState_DEBUG_RUN_STATE_FAILED
 	}
 
-	return &v1.DebugHistoryResponse{
+	answer := &v1.DebugHistoryResponse{
 		EventId: event, Boundaries: points, Outcome: outcome, Fidelity: v1.DebugFidelity_DEBUG_FIDELITY_RECONSTRUCTED,
-		Snapshot: &v1.DebugSnapshot{Revision: uint64(event), State: state, Frames: []*v1.DebugFrame{{Id: 1, Label: frame}}},
-	}, nil
+		Snapshot: &v1.DebugSnapshot{Revision: uint64(event), State: state, Frames: []*v1.DebugFrame{{Id: 1, Label: frame, Scoped: true}}},
+	}
+	for _, asked := range inspections {
+		// A value that says which point it is the value at.
+		answer.Inspected = append(answer.Inspected, &v1.DebugHistoryInspected{
+			Result: &v1.DebugInspectResponse{Value: &v1.DebugValue{Type: "string", Rendered: fmt.Sprintf("%s@%d", asked.GetExpression(), event)}},
+		})
+	}
+
+	return answer, nil
 }
 
 func TestAnAttachToARecordedRunStepsBackAndForwardWithoutExecutingAnything(t *testing.T) {
@@ -92,4 +101,14 @@ func TestAnAttachToARecordedRunStepsBackAndForwardWithoutExecutingAnything(t *te
 	require.Equal(t, true, c.await("response", "next")["success"])
 	c.await("event", "stopped")
 	assert.Equal(t, "wf.b", frameName(t, c, 11))
+
+	// A watch expression is read at the point the editor is looking at, and
+	// follows it back and forward.
+	c.send(12, "evaluate", map[string]any{"expression": "total", "frameId": 1, "context": "watch"})
+	assert.Equal(t, "total@10", body(c.await("response", "evaluate"))["result"])
+	c.send(13, "stepBack", map[string]any{"threadId": 1})
+	c.await("response", "stepBack")
+	c.await("event", "stopped")
+	c.send(14, "evaluate", map[string]any{"expression": "total", "frameId": 1, "context": "watch"})
+	assert.Equal(t, "total@4", body(c.await("response", "evaluate"))["result"])
 }

@@ -13,6 +13,7 @@ import (
 	"go.temporal.io/sdk/interceptor"
 	"go.temporal.io/sdk/worker"
 	"go.temporal.io/sdk/workflow"
+	"google.golang.org/protobuf/proto"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
@@ -62,12 +63,14 @@ import (
 type handlerCapture struct {
 	interceptor.WorkerInterceptorBase
 
-	// inspections are the inspect requests to answer, in order.
+	// inspections are the inspect requests to answer, in order. One that
+	// names no session is asked of the session held at the point.
 	inspections []*v1.DebugInspectRequest
 
 	mu       sync.Mutex
 	handlers map[string]any
 	answer   answers
+	answered bool
 }
 
 // answers is what the handlers said on the latest pass.
@@ -148,14 +151,27 @@ func (c *handlerCapture) ask() {
 		latest.debug, err = callHandler[*v1.DebugSnapshot](handler, "")
 		latest.err = errors.Join(latest.err, err)
 	}
-	if handler, ok := c.handlers[v1.DebugInspectQuery]; ok {
-		for _, request := range c.inspections {
-			response, err := callHandler[*v1.DebugInspectResponse](handler, request)
-			latest.inspected = append(latest.inspected, response)
-			latest.inspectErr = append(latest.inspectErr, err)
+	if handler, ok := c.handlers[v1.DebugInspectQuery]; ok && len(c.inspections) > 0 {
+		// A pass that moved nothing asks the same questions of the same
+		// state: keep the last answers rather than evaluate every
+		// expression again on each scheduler pass.
+		if c.answered && proto.Equal(c.answer.progress, latest.progress) && proto.Equal(c.answer.debug, latest.debug) {
+			latest.inspected, latest.inspectErr = c.answer.inspected, c.answer.inspectErr
+		} else {
+			session := latest.debug.GetSession().GetSessionId()
+			for _, request := range c.inspections {
+				request = proto.CloneOf(request)
+				if request.GetSessionId() == "" {
+					request.SessionId = session
+				}
+				response, err := callHandler[*v1.DebugInspectResponse](handler, request)
+				latest.inspected = append(latest.inspected, response)
+				latest.inspectErr = append(latest.inspectErr, err)
+			}
 		}
 	}
 	c.answer = latest
+	c.answered = true
 }
 
 // MaxReconstructionEvents bounds the history a reconstruction replays. A

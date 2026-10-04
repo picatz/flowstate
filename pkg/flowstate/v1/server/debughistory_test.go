@@ -2,12 +2,17 @@ package server_test
 
 import (
 	"context"
+	"slices"
+	"strings"
 	"testing"
+	"time"
 
 	"connectrpc.com/connect"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/types/known/durationpb"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/audit"
@@ -113,6 +118,89 @@ func TestDebugHistoryAuditsTheRunAndThePointRead(t *testing.T) {
 	}
 }
 
+// TestDebugHistoryWithholdsADeclaredSensitiveInputAtEveryPoint: a run whose
+// input is declared sensitive and flows into a step's output is read at every
+// boundary, and no answer, snapshot or progress, holds the value. The same
+// engine handler that withholds it from the live session answers over the
+// scope the replay rebuilds, and this is the proof of that rather than the
+// claim.
+func TestDebugHistoryWithholdsADeclaredSensitiveInputAtEveryPoint(t *testing.T) {
+	t.Parallel()
+
+	const secret = "hunter2-sensitive-token-value"
+	workflow := debuggableWorkflow()
+	workflow.DeclaredInputs = []*v1.InputDeclaration{{Name: "token", Type: v1.InputDeclaration_TYPE_STRING, Required: true, Sensitive: true}}
+	// The step that carries the value runs while a session is attached, so its
+	// output is reported as an observation, the place a value could leak from.
+	carry := &v1.Node{Id: "carry", Kind: &v1.Node_Value{Value: v1.NewExpr("inputs.token")}}
+	workflow.Steps = slices.Insert(workflow.Steps, 2, carry)
+
+	fixture := newTenantFixture(t)
+	started, err := fixture.teamA.Run(t.Context(), connect.NewRequest(&v1.RunRequest{
+		Workflow: workflow, Inputs: map[string]*v1.Value{"token": v1.NewLiteral(secret)},
+	}))
+	require.NoError(t, err)
+	workflowID := started.Msg.GetWorkflowId()
+	waitUntilParkedAtTheGate(t, fixture.temporal, workflowID)
+
+	sre := as(t.Context(), "sre-1@example.com")
+	attached, err := fixture.teamA.DebugAttach(sre, connect.NewRequest(&v1.DebugAttachRequest{
+		WorkflowId: workflowID, RequestId: "attach-sensitive", Lease: durationpb.New(5 * time.Minute), Wait: durationpb.New(time.Second),
+	}))
+	require.NoError(t, err)
+	session := attached.Msg.GetSessionId()
+	_, err = fixture.teamA.Signal(t.Context(), connect.NewRequest(&v1.SignalRequest{
+		WorkflowId: workflowID, Name: "deploy-approved",
+		Payload: &v1.Node_Outputs{NamedValues: map[string]*v1.Value{"approved": v1.NewLiteral(true)}},
+	}))
+	require.NoError(t, err)
+	held := waitForDebugState(t, fixture.teamA, sre, workflowID, v1.DebugRunState_DEBUG_RUN_STATE_HELD)
+	require.Equal(t, "carry", held.GetOccurrence().GetAddress())
+	_, err = fixture.teamA.DebugResume(sre, connect.NewRequest(&v1.DebugResumeRequest{
+		WorkflowId: workflowID, SessionId: session, RequestId: "over-carry", ExpectedRevision: held.GetRevision(),
+		Action: v1.DebugResumeAction_DEBUG_RESUME_ACTION_STEP_OVER,
+	}))
+	require.NoError(t, err)
+	held = waitForDebugState(t, fixture.teamA, sre, workflowID, v1.DebugRunState_DEBUG_RUN_STATE_HELD)
+	require.Equal(t, "deploy", held.GetOccurrence().GetAddress())
+	_, err = fixture.teamA.DebugResume(sre, connect.NewRequest(&v1.DebugResumeRequest{
+		WorkflowId: workflowID, SessionId: session, RequestId: "bye-sensitive", ExpectedRevision: held.GetRevision(),
+		Action: v1.DebugResumeAction_DEBUG_RESUME_ACTION_DETACH,
+	}))
+	require.NoError(t, err)
+	run := fixture.temporal.GetWorkflow(t.Context(), workflowID, "")
+	require.NoError(t, run.Get(t.Context(), nil))
+
+	last, err := fixture.teamA.DebugHistory(sre, connect.NewRequest(&v1.DebugHistoryRequest{WorkflowId: workflowID, RunId: run.GetRunID()}))
+	require.NoError(t, err)
+
+	// Asked at every point: the secret itself, the roots, and a sum.
+	asked := []*v1.DebugHistoryInspection{{Expression: "inputs.token"}, {}, {Expression: "1 + 2"}}
+	var sawSession, sawCarry, sawSum bool
+	for _, point := range last.Msg.GetBoundaries() {
+		got, err := fixture.teamA.DebugHistory(sre, connect.NewRequest(&v1.DebugHistoryRequest{
+			WorkflowId: workflowID, RunId: run.GetRunID(), EventId: point, Inspections: asked,
+		}))
+		require.NoError(t, err, "event %d", point)
+		require.Len(t, got.Msg.GetInspected(), len(asked), "event %d", point)
+		if sum := got.Msg.GetInspected()[2].GetResult(); sum.GetError() == "" {
+			sawSum = true
+			assert.Equal(t, "3", sum.GetValue().GetRendered(), "event %d", point)
+			assert.Equal(t, v1.DebugFidelity_DEBUG_FIDELITY_HYPOTHETICAL, got.Msg.GetInspected()[2].GetFidelity())
+		}
+		sawSession = sawSession || got.Msg.GetSnapshot() != nil
+		for _, observation := range got.Msg.GetSnapshot().GetObservations() {
+			sawCarry = sawCarry || strings.Contains(observation.GetStepId(), "carry")
+		}
+		rendered, err := protojson.Marshal(got.Msg)
+		require.NoError(t, err)
+		assert.NotContains(t, string(rendered), secret, "event %d carries a declared-sensitive input", point)
+	}
+	assert.True(t, sawSession, "no point held a debug session, so the scan covered progress only")
+	assert.True(t, sawSum, "no point answered an inspection, so the scan could not have caught a leak through one")
+	assert.True(t, sawCarry, "no point reported the step that carried the value, so the scan could not have caught a leak")
+}
+
 func TestDebugHistoryRefusesWhatItCannotRead(t *testing.T) {
 	t.Parallel()
 
@@ -128,6 +216,17 @@ func TestDebugHistoryRefusesWhatItCannotRead(t *testing.T) {
 	t.Run("a caller the run's debug policy does not name", func(t *testing.T) {
 		err := read(as(t.Context(), "intruder@example.com"), &v1.DebugHistoryRequest{WorkflowId: workflowID, RunId: runID})
 		assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
+	})
+	t.Run("an inspection without the inspect action", func(t *testing.T) {
+		asked := []*v1.DebugHistoryInspection{{Expression: "1 + 1"}}
+		err := read(as(t.Context(), "sre-1@example.com", "workload.debug"), &v1.DebugHistoryRequest{WorkflowId: workflowID, RunId: runID, Inspections: asked})
+		assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
+		// The same caller may read the point itself.
+		require.NoError(t, read(as(t.Context(), "sre-1@example.com", "workload.debug"), &v1.DebugHistoryRequest{WorkflowId: workflowID, RunId: runID}))
+	})
+	t.Run("too many inspections", func(t *testing.T) {
+		err := read(sre, &v1.DebugHistoryRequest{WorkflowId: workflowID, RunId: runID, Inspections: make([]*v1.DebugHistoryInspection, 17)})
+		assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 	})
 	t.Run("a caller without the debug action", func(t *testing.T) {
 		err := read(as(t.Context(), "sre-1@example.com", "workload.signal"), &v1.DebugHistoryRequest{WorkflowId: workflowID, RunId: runID})

@@ -985,6 +985,17 @@ history the running build cannot replay. A point before the run installed its
 debug session has progress and no snapshot. Each read is audited twice, with
 the exact run id: as `history` with the point asked for (0 is the last one) and as `history/resolved` with the point read.
 
+`inspections` (at most sixteen) evaluate expressions at the point in the same
+replay, over the scope the run held there, against the session it held; a point
+where it held none answers each with that refusal. Asking any also needs
+`workload.debug_inspect`, as a live inspection does, because an expression can
+test a sensitive value the printed answer withholds, and both audit records then
+carry a digest of the expressions. The `inspected` answers come back in order,
+labelled `hypothetical` for an expression and `reconstructed` for the scope's
+roots. The caller need not be the session's original holder: the replay holds no
+lease, and anyone the run's `debug:` policy admits may attach live and read the
+same scope.
+
 | Question at a past point | Answer | How it is known |
 | --- | --- | --- |
 | Which step the run was at, how many it had completed, which waits were pending and their deadlines | Reconstructed. The deadline is the recorded timer's: replay's clock is the history's. | Every recorded run, every boundary: `TestEveryRecordedRunReconstructsAtEveryBoundary`, `TestAReconstructedWaitCarriesItsRecordedDeadline` |
@@ -1047,15 +1058,22 @@ session; the recorded outcome is in the stop's message. The first and last
 points refuse a move past them, and an answer for a point that was not asked for
 is a server fault, not a position.
 
-It does not offer breakpoints, pause, run-until, terminate or values: each says
+Values are read at the point shown: `evaluate` (a watch, a hover, a REPL line)
+and the variables view ask `DebugHistory` for that point, so a watch follows the
+walk back and forward, and an answer carries the revision of the point it is for
+and is refused as stale once the session has moved. Recorded answers never
+change, so the walk keeps the last 128 and asks a point the same question once.
+An expression is hypothetical: it is evaluated now over the scope the replay
+rebuilt, and never happened in the run. Declared-sensitive values are withheld as
+a live session withholds them. A point where the run held no debug session has no
+scope, and says so.
+
+It does not offer breakpoints, pause, run-until or terminate: each says
 so rather than being ignored. `history` is a capability of its own and not
 `reverse`, because `reverse` is a rerun that reproduces earlier stops and says
 nothing about what the run recorded.
 
-**What remains**, in the order it is built: reading a value at a past point
-(an expression is hypothetical, evaluated now over then's scope, and the scope
-is reconstructed), a bounded cache of the answers a walk has already paid for,
-the run chain bound to the compiled artifact and interpreter version, and
+**What remains**, in the order it is built: the run chain bound to the compiled artifact and interpreter version, and
 entry from a failing simulation or fuzz seed straight into the walk.
 
 ## What it does not do yet

@@ -111,8 +111,11 @@ flow debug do order-1234 --session 5d3f… inspect steps.quote.total -o json`,
 		Long: "Read a durable run, open or closed, as it was at one workflow-task boundary of its " +
 			"recorded history: where it was held, its frames, its progress. It replays the " +
 			"interpreter over the history with no worker attached, so it dispatches nothing and " +
-			"changes nothing. Every value is reconstructed; a point the history cannot be replayed " +
-			"to is refused. --points lists the points a run can be read at.",
+			"changes nothing. What the session held is reconstructed; a point the history cannot be replayed " +
+			"to is refused. --inspect evaluates an expression over the scope the run held at the point, " +
+			"which needs the debug_inspect action; the answer is labelled hypothetical, since the " +
+			"expression is evaluated now and never happened in the run. --points lists the points a " +
+			"run can be read at.",
 		Args: cobra.ExactArgs(1),
 		RunE: runDebugHistory,
 		Example: `# The last point of a run:
@@ -122,6 +125,10 @@ flow debug history order-1234 --run-id 5d3f…
 flow debug history order-1234 --run-id 5d3f… --points
 flow debug history order-1234 --run-id 5d3f… --at 17
 
+# A value at a point, and the same expression at an earlier one:
+flow debug history order-1234 --run-id 5d3f… --inspect steps.quote.total
+flow debug history order-1234 --run-id 5d3f… --at 17 --inspect steps.quote.total
+
 # The answer as the schema's JSON:
 flow debug history order-1234 --run-id 5d3f… -o json`,
 	}
@@ -130,6 +137,7 @@ flow debug history order-1234 --run-id 5d3f… -o json`,
 	historyCmd.Flags().String("run-id", "", "the execution to read; `flow get` prints a run's id (required)")
 	_ = historyCmd.MarkFlagRequired("run-id")
 	historyCmd.Flags().Int64("at", 0, "the event id of the point to read; 0 is the last")
+	historyCmd.Flags().StringArray("inspect", nil, "evaluate an expression at the point; repeatable, at most 16")
 	historyCmd.Flags().Bool("points", false, "list the points the run can be read at instead of reading one")
 
 	debugCmd.AddCommand(attachCmd, getCmd, doCmd, historyCmd)
@@ -374,9 +382,14 @@ func runDebugHistory(cmd *cobra.Command, args []string) error {
 	runID, _ := cmd.Flags().GetString("run-id")
 	at, _ := cmd.Flags().GetInt64("at")
 	points, _ := cmd.Flags().GetBool("points")
+	expressions, _ := cmd.Flags().GetStringArray("inspect")
+	inspections := make([]*v1.DebugHistoryInspection, len(expressions))
+	for i, expression := range expressions {
+		inspections[i] = &v1.DebugHistoryInspection{Expression: expression}
+	}
 
 	response, err := newWorkflowServiceClient(serverFlagsOf(cmd)).DebugHistory(cmd.Context(),
-		connect.NewRequest(&v1.DebugHistoryRequest{WorkflowId: args[0], RunId: runID, EventId: at}))
+		connect.NewRequest(&v1.DebugHistoryRequest{WorkflowId: args[0], RunId: runID, EventId: at, Inspections: inspections}))
 	if err != nil {
 		return err
 	}
@@ -385,14 +398,15 @@ func runDebugHistory(cmd *cobra.Command, args []string) error {
 	if format.Machine() {
 		return writeJSON(surface, format, response.Msg)
 	}
-	fmt.Fprint(surface.Out, formatDebugHistory(response.Msg, points))
+	fmt.Fprint(surface.Out, formatDebugHistory(response.Msg, points, expressions...))
 
 	return nil
 }
 
 // formatDebugHistory renders `flow debug history`'s text: the point and how it
-// is known, then the snapshot, or with points the list of points instead.
-func formatDebugHistory(response *v1.DebugHistoryResponse, points bool) string {
+// is known, then the snapshot, or with points the list of points instead, then
+// each expression asked at the point with its answer.
+func formatDebugHistory(response *v1.DebugHistoryResponse, points bool, expressions ...string) string {
 	var b strings.Builder
 	if points {
 		for _, id := range response.GetBoundaries() {
@@ -406,10 +420,27 @@ func formatDebugHistory(response *v1.DebugHistoryResponse, points bool) string {
 	fmt.Fprintf(&b, "at event %d of %d points · %s\n", response.GetEventId(), len(response.GetBoundaries()), fidelity)
 	if response.GetSnapshot() == nil {
 		fmt.Fprintf(&b, "the run had not installed its debug session yet; %d steps completed\n", response.GetProgress().GetCompletedSteps())
-
-		return b.String()
+	} else {
+		b.WriteString(formatDebugGet(response.GetSnapshot()))
 	}
-	b.WriteString(formatDebugGet(response.GetSnapshot()))
+	for i, answered := range response.GetInspected() {
+		expression := "(scope)"
+		if i < len(expressions) && expressions[i] != "" {
+			expression = expressions[i]
+		}
+		kind := strings.ToLower(strings.TrimPrefix(answered.GetFidelity().String(), "DEBUG_FIDELITY_"))
+		switch result := answered.GetResult(); {
+		case result.GetError() != "":
+			fmt.Fprintf(&b, "%s: %s\n", expression, result.GetError())
+		case result.GetValue() != nil:
+			fmt.Fprintf(&b, "%s = %s (%s) · %s\n", expression, result.GetValue().GetRendered(), result.GetValue().GetType(), kind)
+		default:
+			fmt.Fprintf(&b, "%s: %d names · %s\n", expression, result.GetTotal(), kind)
+			for _, child := range result.GetChildren() {
+				fmt.Fprintf(&b, "  %s = %s\n", child.GetName(), child.GetValue().GetRendered())
+			}
+		}
+	}
 
 	return b.String()
 }
