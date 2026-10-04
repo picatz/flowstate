@@ -1649,7 +1649,7 @@ func validateInputRefs(stepID, inputName string, val *v1.Value, scope refScope, 
 	// [v1.ErrorKind]'s, so a misspelled literal is refused here rather than
 	// silently taking the other branch on both drivers.
 	for _, literal := range unknownFailureKindLiterals(parsed.GetExpr(), map[string]struct{}{}, func(id string) bool {
-		return scope.steps[id].GetPolicy().GetContinueOnError()
+		return engineOwnsFailure(scope.steps[id])
 	}) {
 		ds = append(ds, unknownFailureKindLiteral(stepID, inputName, literal))
 	}
@@ -3027,6 +3027,30 @@ func checkFailureKindComparand(field, other *expr.Expr, bound map[string]struct{
 	report(sv.StringValue)
 }
 
+// engineOwnsFailure reports whether a step's `failure` is certainly the one the
+// engine records: the step is tolerated and nothing it can produce on success
+// is named `failure`. A successful tolerated `http` step may shape `failure`
+// itself and a tolerated call may declare it, and an unknown shape is left
+// unchecked rather than guessed at.
+func engineOwnsFailure(node *v1.Node) bool {
+	if !node.GetPolicy().GetContinueOnError() {
+		return false
+	}
+	if shaped, replaced := shapedTaskOutputs(node.GetTask()); replaced {
+		names, known := v1.ShapedOutputNames(shaped)
+
+		return known && !slices.Contains(names, v1.StepFailureOutput)
+	}
+	entries, _ := v1.OutputNames(node, nil)
+	for _, e := range entries {
+		if e.Name == "" || e.Name == v1.StepFailureOutput {
+			return false
+		}
+	}
+
+	return true
+}
+
 // unknownFailureKindLiteral reports a `failure.kind` comparison against a
 // string literal that names no error kind, which evaluates false on both
 // drivers forever and silently takes the other branch.
@@ -3252,6 +3276,12 @@ func unknownStepOutput(stepID, inputName string, ref stepRef, node *v1.Node) (Di
 	// [PayloadOutput]'s rooting?), so this stays exactly as narrow as it was before
 	// this file started reading [v1.OutputNames] — silence here is inherited, not
 	// re-decided.
+	// The outputs the step policy grants exist beside whatever shaping names, so
+	// a shaping wait that is tolerated must not refuse them either.
+	if slices.Contains(toleratedOutputs, ref.Output) && node.GetPolicy().GetContinueOnError() {
+		return Diagnostic{}, false
+	}
+
 	shapedWait := node.GetWait().GetSignal().GetOutputs()
 	if len(shapedWait) == 0 {
 		// The batch spelling shapes under exactly the same rule — replace, not

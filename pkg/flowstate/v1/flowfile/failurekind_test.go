@@ -94,3 +94,66 @@ func TestFailureKindOnAnUntoleratedStepIsNotJudged(t *testing.T) {
 		require.NotContains(t, d.Message, `"network"`, "%v", d)
 	}
 }
+
+// TestFailureOutputOnShapedAndWaitSteps pins the #2288 review findings: the
+// policy's `failure` resolves on a tolerated shaping wait, a successful
+// tolerated step that shapes or declares its own `failure` is not judged by the
+// closed kind set, and a shaping that omits `failure` still is.
+func TestFailureOutputOnShapedAndWaitSteps(t *testing.T) {
+	t.Parallel()
+
+	const waits = `edition: v2026.4
+name: tolerated-wait
+steps:
+  - id: gate
+    continue_on_error: true
+    wait_for_signal:
+      name: go
+      timeout: 1h
+      outputs:
+        who: someone
+  - id: react
+    if: ${has(steps.gate.failure)}
+    log:
+      message: hi
+`
+	require.Empty(t, validateTriggerSource(t, waits))
+
+	const shapes = `edition: v2026.4
+name: shaped
+steps:
+  - id: fetch
+    continue_on_error: true
+    http:
+      url: https://example.com/
+      outputs:
+        failure: ${{"kind": "network"}}
+  - id: react
+    if: ${steps.fetch.failure.kind == "network"}
+    log:
+      message: hi
+`
+	for _, d := range validateTriggerSource(t, shapes) {
+		require.NotContains(t, d.Message, `"network"`, "%v", d)
+	}
+
+	const dropped = `edition: v2026.4
+name: shaped-without
+steps:
+  - id: fetch
+    continue_on_error: true
+    http:
+      url: https://example.com/
+      outputs:
+        code: ${status_code}
+  - id: react
+    if: ${steps.fetch.failure.kind == "Timeuot"}
+    log:
+      message: hi
+`
+	var found bool
+	for _, d := range validateTriggerSource(t, dropped) {
+		found = found || strings.Contains(d.Message, `"Timeuot"`)
+	}
+	require.True(t, found)
+}

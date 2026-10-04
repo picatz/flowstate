@@ -875,6 +875,12 @@ func hoverStepOutput(doc *document, from *parsedStep, ref reference, rng lsp.Ran
 		return markdownHover(b.String(), rng)
 	}
 	fd := findField(def.Outputs, ref.output)
+	if fd == nil && ref.output == v1.StepFailureOutput {
+		// The step policy's own output, present on a tolerated step; a task
+		// that authors an output of the same name is handled below.
+		fmt.Fprint(&b, failureHoverText(target.id))
+		return markdownHover(b.String(), rng)
+	}
 	if fd == nil {
 		fmt.Fprintf(&b, "\n\nThe `%s` task does not declare an output named `%s`", def.Name, ref.output)
 		if names := fieldNames(def.Outputs); len(names) > 0 {
