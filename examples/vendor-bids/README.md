@@ -19,7 +19,9 @@ each attested separately, none of them the person who started it.
 - **Late is judged by when the server accepted a bid**, `sender.accepted_at`, against a
   cutoff fixed when the run began, not by when the run got round to reading it. A
   rehearsal leaves `accepted_at` unset on purpose, so `flow test` cannot show a late
-  bid; the durable driver can.
+  bid; `TestVendorBidsCutoffJudgesAcceptanceTime` does, with attested senders. The
+  time arrives in whole seconds, so a bid accepted in the cutoff's last second still
+  counts as on time.
 - **A quorum counts vendors, not bids.** One vendor bidding twice is still one vendor
   (an identity is issuer plus subject), and its cheapest bid is the one that can win.
 - **Cheapest first, lead time only to break a tie**, written as two small steps rather
@@ -27,7 +29,10 @@ each attested separately, none of them the person who started it.
 - **Too few vendors is an outcome.** Below `min_bids` the run logs why and awards
   nothing; silence reads the same way.
 - **At most 50 bids are read**, the first 50 accepted, which is why `min_bids` stops
-  at 50. A larger tender would drain again in a `loop:`.
+  at 50. A larger tender would drain again in a `loop:`. The cap
+  is also a limit on one vendor's reach: a single vendor-role sender could send 50 junk
+  bids and crowd the others out of the batch, and nothing in the language limits bids
+  per sender, so a real deployment would add that at its gateway.
 
 ## Try it
 
