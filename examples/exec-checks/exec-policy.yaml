@@ -41,16 +41,21 @@ exec:
   # values) and `identity` (the run's attested workload).
   #
   # `roots` confines `dir` and nothing else. Path-like words in `argv` are NOT confined:
-  # `git diff --output=/etc/cron.d/x` or `git log /home/other` is as free to name a path
-  # as the worker's user is. So the rules below allow exact argv shapes, not "anything
-  # after the subcommand": every word after `git rev-parse|status|diff|log` must be a
-  # listed flag or a word that does not begin with `-`, and the deny rule refuses
-  # options that run programs or write files, absolute paths, and `..`.
+  # `git rev-parse --git-dir /home/other` is as free to name a path as the worker's user
+  # is. So the rules below allow exact argv shapes, not "anything after the subcommand".
+  #
+  # Only `--version` and `rev-parse --git-dir` are listed, on purpose. `git status`,
+  # `diff` and `log` read the repository's own config, and that file lives in a directory
+  # the workflow's earlier steps (or a checkout of untrusted code) may have written:
+  # `core.fsmonitor` (status, diff), `diff.external` and a `textconv` diff driver
+  # (diff, log -p) each name a program that git then runs, and `-c` being denied below
+  # does not stop a config file from saying the same thing. Listing those subcommands
+  # is only reasonable for a tree the operator controls, or after neutralizing the
+  # config (GIT_CONFIG_COUNT/GIT_CONFIG_KEY_n/GIT_CONFIG_VALUE_n in `env`) and
+  # requiring `--no-ext-diff --no-textconv`; `rev-parse --git-dir` runs none of it.
   allow:
     - name == "git" && argv == ["git", "--version"]
-    - >-
-      name == "git" && argv.size() >= 2 && argv[1] in ["rev-parse", "status", "diff", "log"] &&
-      argv.all(a, a in ["--git-dir", "--short", "--stat", "--oneline", "--porcelain", "--"] || !a.startsWith("-"))
+    - name == "git" && argv == ["git", "rev-parse", "--git-dir"]
   deny:
     # git runs whatever a config option, a transport, a diff driver or a textconv names,
     # and `--output` / `--no-index` write or read outside the repository.
