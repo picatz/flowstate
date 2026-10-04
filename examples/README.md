@@ -59,6 +59,7 @@ inventory below remains the source of truth for every directory.
 | Loops and bounded fan-out | [loop-accumulate](loop-accumulate), [fan-out-and-parallel](fan-out-and-parallel), [matrix-fan-out](matrix-fan-out) | focused feature demonstration |
 | Reusable workflow composition | [call-a-workflow](call-a-workflow), then [enterprise-customer-onboarding](enterprise-customer-onboarding) | production-shaped composition |
 | Declaring and raising your own errors | [declared-errors](declared-errors) | focused feature demonstration |
+| Tolerating and retrying only some failure kinds | [failure-kinds](failure-kinds) | focused feature demonstration |
 | Retries, timeouts, cancellation, and undo | [conditional-and-retry](conditional-and-retry), [wait-timeout](wait-timeout), [order-fulfillment](order-fulfillment) | focused feature demonstration → production-shaped composition |
 | Signals and human decisions | [approval-gate](approval-gate), then [approval-escalation](approval-escalation) | policy/governance → production-shaped composition |
 | Long-lived entities many callers address | [entity-order](entity-order), [renewal-reminder](renewal-reminder), [signal-batch-drain](signal-batch-drain) | focused feature demonstration |
@@ -112,6 +113,7 @@ says otherwise.
 | [string-formatting](string-formatting) | `format()` from the profile, building a message from a var | no |
 | [conditional-and-retry](conditional-and-retry) | `if:`, `timeout:`, `retry:` and `continue_on_error:` per step, tolerating a step that really does fail | no |
 | [declared-errors](declared-errors) | `errors:` and `fail:` — a workflow names the ways it refuses (`InsufficientFunds`), raises one with a message built from its inputs, and the run fails with that name as its kind; the tests assert the refusal | no |
+| [failure-kinds](failure-kinds) | `continue_on_error:` and `retry:` naming failure kinds (`only:`, `except:`) — a step tolerates and retries the failures it expects and nothing else; the tests assert both directions | no |
 | [webhook-routing](webhook-routing) | `switch:` dispatching a webhook's action field — literal cases, a shared list case, written-down ignoring with `steps: []`, and a `default:` whose run is recorded | no |
 | [fan-out-and-parallel](fan-out-and-parallel) | `for_each` fan-out over a computed list, and concurrent `parallel:` branches | no |
 | [crossing-dependencies](crossing-dependencies) | `async:` — the N-graph, where each later step waits only for what it names, with the two-barrier version it replaces written in the file's own comment | yes |

@@ -1,6 +1,8 @@
 package engine
 
 import (
+	"slices"
+
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
@@ -151,9 +153,37 @@ func activityOptionsFor(policy *v1.StepPolicy, summary string) workflow.Activity
 	if v := retry.GetMaxInterval().AsDuration(); v > 0 {
 		rp.MaximumInterval = v
 	}
+	// A step's `retry.only:` and `retry.except:` only ever add kinds to the types
+	// Temporal will not retry, and a copy again: the default list is shared.
+	for _, kind := range v1.RetryExcludedKinds(retry) {
+		for _, errType := range nonRetryableTypesFor(kind) {
+			if !slices.Contains(rp.NonRetryableErrorTypes, errType) {
+				rp.NonRetryableErrorTypes = append(slices.Clone(rp.NonRetryableErrorTypes), errType)
+			}
+		}
+	}
 	opts.RetryPolicy = &rp
 
 	return opts
+}
+
+// nonRetryableTypesFor returns the Temporal error types that stop a retry of kind.
+//
+// A kind is the application-error type the activity boundary attaches, and that
+// is all there is for most of them. A Timeout is also what Temporal itself
+// raises when an attempt runs out its own deadline, and that failure is not an
+// application error: the server matches it against its own spelling of the
+// timeout type, the one the SDK's session activities use for the same purpose.
+// Excluding only "Timeout" would stop a task that reports one and still retry
+// the attempt Temporal cut off, which the local driver, classifying both as
+// Timeout, would have stopped. Only the two timeouts that end an attempt are
+// named; schedule-to-close and schedule-to-start are not retried at all.
+func nonRetryableTypesFor(kind string) []string {
+	if kind == v1.ErrorKindTimeout.String() {
+		return []string{kind, "TemporalTimeout:StartToClose", "TemporalTimeout:Heartbeat"}
+	}
+
+	return []string{kind}
 }
 
 // How many attempts a policy allows is [v1.RetryAttemptsFor], which is what

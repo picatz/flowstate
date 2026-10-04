@@ -874,7 +874,7 @@ func (e *executor) recordOutcome(node *v1.Node, err error) error {
 	if temporal.IsCanceledError(err) {
 		return err
 	}
-	if !node.GetPolicy().GetContinueOnError() {
+	if !v1.StepTolerates(node.GetPolicy(), recordedStepKind(err)) {
 		// Recorded on the way out, under the same key and in the same shape a
 		// tolerated failure is recorded in, so the [v1.PartialTranscript] this
 		// run hands back names the step it stopped on. Nothing else can observe
@@ -1418,9 +1418,9 @@ func (e *executor) runTask(node *v1.Node, task *v1.Task) error {
 			// being resolved locally at each end.
 			Profile: e.scope.GetProfile(),
 		}
-		evalErr = e.dispatch(stepCtx, resolved, compact, needsAuthority, node.GetId(), node.GetPolicy().GetContinueOnError(), &out)
+		evalErr = e.dispatch(stepCtx, resolved, compact, needsAuthority, node.GetId(), v1.ToleratesEveryKind(node.GetPolicy()), &out)
 	} else {
-		evalErr = e.dispatch(stepCtx, resolved, nil, needsAuthority, node.GetId(), node.GetPolicy().GetContinueOnError(), &out)
+		evalErr = e.dispatch(stepCtx, resolved, nil, needsAuthority, node.GetId(), v1.ToleratesEveryKind(node.GetPolicy()), &out)
 	}
 	if evalErr != nil {
 		return nodeFailed(durableStepTimeoutMessage(evalErr, node.GetPolicy()))

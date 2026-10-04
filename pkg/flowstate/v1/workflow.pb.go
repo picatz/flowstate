@@ -3847,9 +3847,15 @@ type StepPolicy struct {
 	// overall budget when a declared Timeout multiplied by the attempts allowed
 	// would not fit inside it; a value written here suppresses that widening,
 	// because a budget the engine silently extends is not a budget.
-	TotalTimeout  *durationpb.Duration `protobuf:"bytes,4,opt,name=total_timeout,json=totalTimeout,proto3" json:"total_timeout,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	TotalTimeout *durationpb.Duration `protobuf:"bytes,4,opt,name=total_timeout,json=totalTimeout,proto3" json:"total_timeout,omitempty"`
+	// ToleratedKinds narrows ContinueOnError to the failure kinds it names: a step
+	// that fails with a kind outside the list ends the run as if it were not
+	// tolerated. Empty means every kind, which is what ContinueOnError alone has
+	// always meant. A kind is a built-in kind or one the workflow declares under
+	// `errors:`, and the list is only meaningful with ContinueOnError set.
+	ToleratedKinds []string `protobuf:"bytes,5,rep,name=tolerated_kinds,json=toleratedKinds,proto3" json:"tolerated_kinds,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *StepPolicy) Reset() {
@@ -3910,6 +3916,13 @@ func (x *StepPolicy) GetTotalTimeout() *durationpb.Duration {
 	return nil
 }
 
+func (x *StepPolicy) GetToleratedKinds() []string {
+	if x != nil {
+		return x.ToleratedKinds
+	}
+	return nil
+}
+
 // RetryPolicy describes how a failed step attempt is retried.
 type RetryPolicy struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -3929,7 +3942,15 @@ type RetryPolicy struct {
 	BackoffCoefficient float64 `protobuf:"fixed64,3,opt,name=backoff_coefficient,json=backoffCoefficient,proto3" json:"backoff_coefficient,omitempty"`
 	// MaxInterval caps the delay between attempts, so exponential growth does not
 	// produce an unbounded wait.
-	MaxInterval   *durationpb.Duration `protobuf:"bytes,4,opt,name=max_interval,json=maxInterval,proto3" json:"max_interval,omitempty"`
+	MaxInterval *durationpb.Duration `protobuf:"bytes,4,opt,name=max_interval,json=maxInterval,proto3" json:"max_interval,omitempty"`
+	// Only narrows retrying to the failure kinds it names: a failure of any other
+	// kind is not retried. Empty means every kind that is retryable by default.
+	// A list never widens: a kind that is permanent by classification is not
+	// retried because it is named here, and naming one is refused.
+	Only []string `protobuf:"bytes,5,rep,name=only,proto3" json:"only,omitempty"`
+	// Except removes the kinds it names from those retried, so a retryable kind a
+	// step should fail fast on (a rate limit it must not hammer) is written down.
+	Except        []string `protobuf:"bytes,6,rep,name=except,proto3" json:"except,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3988,6 +4009,20 @@ func (x *RetryPolicy) GetBackoffCoefficient() float64 {
 func (x *RetryPolicy) GetMaxInterval() *durationpb.Duration {
 	if x != nil {
 		return x.MaxInterval
+	}
+	return nil
+}
+
+func (x *RetryPolicy) GetOnly() []string {
+	if x != nil {
+		return x.Only
+	}
+	return nil
+}
+
+func (x *RetryPolicy) GetExcept() []string {
+	if x != nil {
+		return x.Except
 	}
 	return nil
 }
@@ -4637,18 +4672,21 @@ const file_flowstate_v1_workflow_proto_rawDesc = "" +
 	"\x05value\x18\x02 \x01(\v2\x13.flowstate.v1.ValueR\x05value:\x028\x01\x1aF\n" +
 	"\x18CapabilityArgumentsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xf2\x01\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xc6\x02\n" +
 	"\n" +
 	"StepPolicy\x12=\n" +
 	"\atimeout\x18\x01 \x01(\v2\x19.google.protobuf.DurationB\b\xbaH\x05\xaa\x01\x02*\x00R\atimeout\x12/\n" +
 	"\x05retry\x18\x02 \x01(\v2\x19.flowstate.v1.RetryPolicyR\x05retry\x12*\n" +
 	"\x11continue_on_error\x18\x03 \x01(\bR\x0fcontinueOnError\x12H\n" +
-	"\rtotal_timeout\x18\x04 \x01(\v2\x19.google.protobuf.DurationB\b\xbaH\x05\xaa\x01\x02*\x00R\ftotalTimeout\"\x95\x02\n" +
+	"\rtotal_timeout\x18\x04 \x01(\v2\x19.google.protobuf.DurationB\b\xbaH\x05\xaa\x01\x02*\x00R\ftotalTimeout\x12R\n" +
+	"\x0ftolerated_kinds\x18\x05 \x03(\tB)\xbaH&\x92\x01#\x10@\x18\x01\"\x1dr\x1b\x10\x01\x18\x80\x012\x14^[A-Z][A-Za-z0-9_]*$R\x0etoleratedKinds\"\x97\x03\n" +
 	"\vRetryPolicy\x12*\n" +
 	"\fmax_attempts\x18\x01 \x01(\x05B\a\xbaH\x04\x1a\x02(\x00R\vmaxAttempts\x12N\n" +
 	"\x10initial_interval\x18\x02 \x01(\v2\x19.google.protobuf.DurationB\b\xbaH\x05\xaa\x01\x02*\x00R\x0finitialInterval\x12B\n" +
 	"\x13backoff_coefficient\x18\x03 \x01(\x01B\x11\xbaH\x0e\xd8\x01\x01\x12\t)\x00\x00\x00\x00\x00\x00\xf0?R\x12backoffCoefficient\x12F\n" +
-	"\fmax_interval\x18\x04 \x01(\v2\x19.google.protobuf.DurationB\b\xbaH\x05\xaa\x01\x02*\x00R\vmaxInterval\"\xa5\x01\n" +
+	"\fmax_interval\x18\x04 \x01(\v2\x19.google.protobuf.DurationB\b\xbaH\x05\xaa\x01\x02*\x00R\vmaxInterval\x12=\n" +
+	"\x04only\x18\x05 \x03(\tB)\xbaH&\x92\x01#\x10@\x18\x01\"\x1dr\x1b\x10\x01\x18\x80\x012\x14^[A-Z][A-Za-z0-9_]*$R\x04only\x12A\n" +
+	"\x06except\x18\x06 \x03(\tB)\xbaH&\x92\x01#\x10@\x18\x01\"\x1dr\x1b\x10\x01\x18\x80\x012\x14^[A-Z][A-Za-z0-9_]*$R\x06except\"\xa5\x01\n" +
 	"\x18ResolvedTaskCapabilities\x12.\n" +
 	"\x0eschema_version\x18\x01 \x01(\rB\a\xbaH\x04*\x02 \x00R\rschemaVersion\x12Y\n" +
 	"\n" +

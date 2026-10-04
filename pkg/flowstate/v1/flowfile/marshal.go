@@ -341,7 +341,11 @@ func stepToYAML(node *v1.Node) (yaml.MapSlice, error) {
 			step = append(step, yaml.MapItem{Key: "retry", Value: retryToYAML(retry)})
 		}
 		if policy.GetContinueOnError() {
-			step = append(step, yaml.MapItem{Key: "continue_on_error", Value: true})
+			var tolerated any = true
+			if kinds := policy.GetToleratedKinds(); len(kinds) > 0 {
+				tolerated = kinds
+			}
+			step = append(step, yaml.MapItem{Key: "continue_on_error", Value: tolerated})
 		}
 	}
 
@@ -721,6 +725,12 @@ func retryToYAML(retry *v1.RetryPolicy) yaml.MapSlice {
 	}
 	if maxInterval := retry.GetMaxInterval(); maxInterval != nil {
 		out = append(out, yaml.MapItem{Key: "max_interval", Value: durationToYAML(maxInterval)})
+	}
+	if only := retry.GetOnly(); len(only) > 0 {
+		out = append(out, yaml.MapItem{Key: "only", Value: only})
+	}
+	if except := retry.GetExcept(); len(except) > 0 {
+		out = append(out, yaml.MapItem{Key: "except", Value: except})
 	}
 	return out
 }

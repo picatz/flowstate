@@ -187,7 +187,7 @@ var dslKeys = map[string][]dslKey{
 			"Only a task step schedules the one activity this re-runs. `for_each:`, `parallel:`, `call:`, `loop:`, `switch:`, `sleep:`, " +
 			"`wait_until:`, `wait_for_signal:` and `value:` are refused for the same reason `timeout:` is: put `retry:` on the steps inside " +
 			"the body that need it instead."},
-		{name: "continue_on_error", detail: "bool", docs: "Let the run proceed when this step fails. A cancellation is not a failure, so this does not tolerate one."},
+		{name: "continue_on_error", detail: "bool or list of kinds", docs: "Let the run proceed when this step fails: `true` tolerates every failure, a list of kinds tolerates only those. A cancellation is not a failure, so this does not tolerate one."},
 		{name: "undo", detail: "map", docs: "How this step is taken back when a *later* step fails and the run cannot continue: the saga compensation for what it did.\n\n" +
 			"Written as the task that undoes it, with its inputs beneath: the same shape as the step's own work, because it is the same kind of thing. " +
 			"A compensation is one task: it cannot loop, branch, wait, or carry an `undo:` of its own.\n\n" +
@@ -291,6 +291,8 @@ var dslKeys = map[string][]dslKey{
 		{name: "interval", detail: "duration", docs: "The delay before the second attempt."},
 		{name: "backoff", detail: "double", docs: "Multiplies the delay after each attempt."},
 		{name: "max_interval", detail: "duration", docs: "Caps the delay between attempts."},
+		{name: "only", detail: "list of kinds", docs: "Retry only these failure kinds. It narrows what would be retried by default; a kind that is never retried cannot be named here. At most one of `only:` and `except:`."},
+		{name: "except", detail: "list of kinds", docs: "Never retry these failure kinds, though they would be by default (such as `RateLimited`). At most one of `only:` and `except:`."},
 	},
 }
 
