@@ -5389,6 +5389,32 @@ cannot answer another run. Two answers to the same gate submitted in the same in
 still both pass that read. A run holding more gates than one `Get` lists is reported as
 not looked up, never as closed.
 
+With no proxy in front, the page can sign approvers in itself. `--gates-ui-issuer`,
+`--gates-ui-client-id` and `--gates-ui-redirect-url` (the address of `/gates/callback`,
+registered exactly with the issuer) turn on the OAuth 2.1 authorization code flow
+with PKCE (`S256`): a visitor with no credential who opens a gate's link is sent to the
+issuer, comes back, and lands on the gate. The access token the issuer mints is
+presented to the API like any bearer token, so the issuer must be one the trust policy
+accepts, the token must carry the API's audience (the page asks for it with an RFC 8707
+`resource`, which `--gates-ui-resource` can override), and what the person may do is
+still the API's decision. The page never reads the token, trusts no ID token, and
+sends the issuer nothing but the flow's own requests, through the trust policy's
+`egress:` boundary.
+
+The flow's state lives in the browser, sealed with AES-256-GCM in `__Host-` cookies
+(`Secure`, `HttpOnly`, `SameSite=Lax`), so no server-side store exists and any replica
+can finish a sign-in another began. The sign-in cookie is single use and ten minutes
+old at most; the callback refuses a response whose `state` is not the one this browser
+started with, whose `iss` (RFC 9207) names another issuer, or which does not return a
+bearer token, and `next` can only be one of the page's own paths. A session lasts as
+long as the token, to a limit of eight hours; the API's refusal of it clears it and
+shows a page instead of redirecting again, so a revoked token cannot loop. Signing out
+is a POST checked like an answer. `--gates-ui-session-key-file` (base64 of 32 bytes)
+lets replicas honour each other's sessions; without it each process makes a key, says
+so at start, and a restart signs everyone out. A confidential client's secret comes from
+`--gates-ui-client-secret-file`. A request that carries its own `Authorization` header
+is answered on that header's merits and never sent to sign in.
+
 ### Rehearsing the gate, and who a rehearsal stands in for
 
 A `signals:` policy made a gate real and made it unrehearsable in the same stroke.
