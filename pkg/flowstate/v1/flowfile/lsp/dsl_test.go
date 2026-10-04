@@ -194,6 +194,12 @@ func TestNestedDSLKeysMatchMarshaledShapes(t *testing.T) {
 						Name:     "order-placed",
 						MaxBatch: 10,
 						Prompt:   v1.NewExpr(`"send order events"`),
+						Quorum: &v1.SignalQuorum{
+							Approve:  2,
+							Distinct: new(true),
+							Exclude:  []*v1.Value{v1.NewExpr("run.identity.subject")},
+							Veto:     v1.NewExpr("payload.approved == false"),
+						},
 						Outputs: map[string]*v1.Value{
 							"ids": v1.NewExpr("deliveries.map(d, d.payload.id)"),
 						},
@@ -1423,6 +1429,12 @@ steps:
       max_batch: 10
       prompt: send order events
       timeout: 30s
+      quorum:
+        approve: 2
+        distinct: true
+        exclude:
+          - ${run.identity.subject}
+        veto: ${payload.approved == false}
       outputs:
         ids: ${deliveries.map(d, d.payload.id)}
   - id: provision

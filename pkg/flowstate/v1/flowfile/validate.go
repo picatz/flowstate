@@ -321,6 +321,7 @@ func validateAtDepth(wf *v1.Workflow, profile string, depth int, placement v1.Un
 	ds = append(ds, validateDeclaredInputs(wf, profile)...)
 	ds = append(ds, validateTriggers(wf)...)
 	ds = append(ds, validateSignals(wf)...)
+	ds = append(ds, validateQuorums(wf)...)
 	ds = append(ds, validateDebug(wf)...)
 	ds = append(ds, validateReservedSignalNames(wf)...)
 	ds = append(ds, validateConcurrency(wf)...)
@@ -2600,6 +2601,22 @@ func validateWait(id string, wait *v1.Wait, scope refScope, index int, wf *v1.Wo
 	if prompt := wait.GetSignalBatch().GetPrompt(); prompt != nil {
 		ds = append(ds, validateInputRefs(id, "wait_for_signals.prompt", prompt, waiting, index, wf)...)
 	}
+
+	// A quorum's `exclude:` and `veto:` are evaluated once per delivery, with the
+	// delivery bound bare as `payload` and `sender` ([v1.QuorumTally.Take]) and
+	// the wait's own clock. Added as locals for these two positions only, for the
+	// reason the shaping scopes below are: a step called `payload` must keep
+	// meaning that step everywhere else.
+	if quorum := wait.GetSignalBatch().GetQuorum(); quorum != nil {
+		perDelivery := waiting.withLocal(v1.PayloadOutput).withLocal(v1.SenderOutput)
+
+		for i, excluded := range quorum.GetExclude() {
+			ds = append(ds, validateInputRefs(id, fmt.Sprintf("wait_for_signals.quorum.exclude[%d]", i), excluded, perDelivery, index, wf)...)
+		}
+		if veto := quorum.GetVeto(); veto != nil {
+			ds = append(ds, validateInputRefs(id, "wait_for_signals.quorum.veto", veto, perDelivery, index, wf)...)
+		}
+	}
 	if prompt := wait.GetSignal().GetPrompt(); prompt != nil {
 		// Named with its full path for the reason `timeout:` is: a step may carry
 		// other keys called `prompt` in future, and a bare field name makes Locate
@@ -2647,6 +2664,16 @@ func validateWait(id string, wait *v1.Wait, scope refScope, index int, wf *v1.Wo
 			withLocal(v1.DeliveriesOutput).
 			withLocal(v1.CountOutput).
 			withLocal(v1.TimedOutOutput)
+
+		// A quorum's result adds three names ([v1.QuorumTally.Outputs]), and only
+		// a quorum's: offering them on a plain batch would validate a file that
+		// fails at run time, as the paragraph above explains.
+		if wait.GetSignalBatch().GetQuorum() != nil {
+			shaping = shaping.
+				withLocal(v1.DecisionOutput).
+				withLocal(v1.ApprovalsOutput).
+				withLocal(v1.VetoedByOutput)
+		}
 
 		for _, name := range slices.Sorted(maps.Keys(shaped)) {
 			ds = append(ds, validateInputRefs(id, "outputs."+name, shaped[name], shaping, index, wf)...)
@@ -3758,7 +3785,11 @@ func waitOwnOutput(node *v1.Node, name string) bool {
 	if node.GetWait().GetSignal() != nil {
 		return name == v1.PayloadOutput || name == v1.SenderOutput
 	}
-	if node.GetWait().GetSignalBatch() != nil {
+	if batch := node.GetWait().GetSignalBatch(); batch != nil {
+		if batch.GetQuorum() != nil && slices.Contains([]string{v1.DecisionOutput, v1.ApprovalsOutput, v1.VetoedByOutput}, name) {
+			return true
+		}
+
 		return name == v1.DeliveriesOutput || name == v1.CountOutput
 	}
 

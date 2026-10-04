@@ -165,6 +165,15 @@ const (
 		"If you meant to read something the signal carried, use payload or sender instead — " +
 		"${payload.token}, say; a secret belongs on a task input that a later step consumes it from"
 
+	// notInQuorumHelp is the refusal for a `quorum:`'s `exclude:` and `veto:`,
+	// on [notInWaitOutputsHelp]'s reasoning: both are evaluated by the workflow
+	// against each delivery, with no activity on the path to resolve a reference
+	// in, and what they decide is recorded on the run.
+	notInQuorumHelp = "a secret reference cannot be part of a quorum's `exclude:` or `veto:`; " +
+		"both are evaluated by the workflow over each delivery and there is no activity on this " +
+		"path to resolve a reference in. Name the subjects to exclude, or read what the delivery " +
+		"carried with payload or sender"
+
 	// notInLoopStateHelp is [notInVarHelp]'s reasoning applied to a loop's
 	// carried state: `init:` and `update:` are evaluated by the workflow
 	// ([v1.EvalLoopValue]), and the result is bound bare for the body to read
