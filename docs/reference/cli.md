@@ -564,7 +564,8 @@ flow debug history order-1234 --run-id 5d3f… --at 17
 
 # A value at a point, and the same expression at an earlier one:
 flow debug history order-1234 --run-id 5d3f… --inspect steps.quote.total
-flow debug history order-1234 --run-id 5d3f… --at 17 --inspect steps.quote.total
+flow debug history order-1234 --run-id 5d3f… --at 17 \\
+  --inspect steps.quote.total
 
 # The answer as the schema's JSON:
 flow debug history order-1234 --run-id 5d3f… -o json
