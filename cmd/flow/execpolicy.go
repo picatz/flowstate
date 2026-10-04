@@ -29,7 +29,7 @@ import (
 
 // execPolicyEnv names the policy file the same way the flag does, for a
 // container image that bakes configuration into the environment.
-const execPolicyEnv = v1.ExecPolicyEnv
+const execPolicyEnv = "FLOWSTATE_EXEC_POLICY"
 
 // addExecPolicyFlag declares --exec-policy on a command.
 func addExecPolicyFlag(cmd *cobra.Command) {

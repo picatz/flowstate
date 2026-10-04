@@ -474,14 +474,6 @@ func TestEveryExampleRunsDurably(t *testing.T) {
 			continue
 		}
 
-		// Denied without an operator's policy naming machine-specific paths; the
-		// exec task's durable behavior is proved by conformance.ExecCases.
-		if conformance.UsesExec(wf.GetSteps()) {
-			skipped = append(skipped, name+": exec needs an operator policy")
-
-			continue
-		}
-
 		if reason, ok := exampleDurableSkips[name]; ok {
 			skipped = append(skipped, name+": "+reason)
 
@@ -506,6 +498,13 @@ func TestEveryExampleRunsDurably(t *testing.T) {
 			t.Errorf("%s cannot be started, so it is an example nobody can run: %v", name, err)
 
 			continue
+		}
+
+		// An example that runs programs is denied without an operator's policy, so
+		// it runs under its own, loaded the way `--exec-policy` loads it, with the
+		// roots and program paths this machine has.
+		if conformance.UsesExec(wf.GetSteps()) {
+			inputs = conformance.WithWorkspace(inputs, conformance.ExecExampleWorkspace(t, path))
 		}
 
 		signals := exampleSignals[name]
@@ -991,6 +990,11 @@ func stableOutputs(outputs *v1.Workflow_StepOutputs) *v1.Workflow_StepOutputs {
 
 	for _, step := range clone.GetStepValues() {
 		delete(step.GetNamedValues(), "headers")
+
+		// An `exec` step's wall-clock duration: measured, so two runs of the same
+		// program differ by milliseconds on one driver as much as between them.
+		// Everything else it reports (exit code, streams, outcome) is compared.
+		delete(step.GetNamedValues(), "duration_ms")
 
 		// The one field the two drivers are supposed to disagree about. A local
 		// run genuinely has no authenticated caller — runExampleLocally delivers

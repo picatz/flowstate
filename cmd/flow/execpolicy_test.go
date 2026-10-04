@@ -134,3 +134,13 @@ func TestTheExecFlagIsOnExactlyTheCommandsThatRunTasks(t *testing.T) {
 		assert.False(t, has(path...), "%v must not take --exec-policy", path)
 	}
 }
+
+// The environment variable is spelled as a literal in this package, so the
+// documentation test can see it is read; this keeps it the library's constant.
+func TestTheExecPolicyEnvironmentVariableIsTheLibrarysName(t *testing.T) {
+	t.Parallel()
+
+	if execPolicyEnv != v1.ExecPolicyEnv {
+		t.Fatalf("cmd/flow reads %q but the library documents %q", execPolicyEnv, v1.ExecPolicyEnv)
+	}
+}

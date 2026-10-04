@@ -529,8 +529,8 @@ func TestTaskProtocolProseIsPresent(t *testing.T) {
 		}
 	}
 
-	if checked != 34 {
-		t.Errorf("task protocol walk checked %d declarations; want 34", checked)
+	if checked != 49 {
+		t.Errorf("task protocol walk checked %d declarations; want 49", checked)
 	}
 	if len(missing) > 0 {
 		sort.Strings(missing)

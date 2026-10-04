@@ -107,11 +107,6 @@ func TestEveryOfflineExampleRuns(t *testing.T) {
 		wf, _, err := flowfile.ParseFile(path)
 		require.NoError(t, err, "%s does not compile", name)
 
-		// Denied without an operator's policy, which names machine-specific paths.
-		if conformance.UsesExec(wf.GetSteps()) {
-			continue
-		}
-
 		if conformance.ReachesTheNetwork(wf.GetSteps()) {
 			continue
 		}
@@ -136,6 +131,13 @@ func TestEveryOfflineExampleRuns(t *testing.T) {
 		// naming that file rather than being skipped.
 		inputs, err := conformance.BindExampleInputs(t, wf, path)
 		require.NoError(t, err, "%s cannot be started", name)
+
+		// An example that runs programs is denied without an operator's policy, so
+		// it runs under its own, loaded the way `--exec-policy` loads it, with the
+		// roots and program paths this machine has.
+		if conformance.UsesExec(wf.GetSteps()) {
+			inputs = conformance.WithWorkspace(inputs, conformance.ExecExampleWorkspace(t, path))
+		}
 
 		ran++
 		if gateLapses {
@@ -250,7 +252,7 @@ func TestEveryNetworkedExampleRuns(t *testing.T) {
 		wf, _, err := flowfile.ParseFile(path)
 		require.NoError(t, err, "%s does not compile", name)
 
-		if !conformance.ReachesTheNetwork(wf.GetSteps()) || conformance.UsesExec(wf.GetSteps()) {
+		if !conformance.ReachesTheNetwork(wf.GetSteps()) {
 			continue
 		}
 		if conformance.WaitsForASignal(wf.GetSteps()) {

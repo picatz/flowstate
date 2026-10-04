@@ -79,7 +79,7 @@ const (
 
 	// execWorkerSecretEnv is a variable [InstallExecPolicy] sets in the worker's
 	// own environment, standing in for the credentials a worker holds there.
-	execWorkerSecretEnv = "FLOWSTATE_EXEC_CONFORMANCE_WORKER_SECRET"
+	execWorkerSecretEnv = "CONFORMANCE_EXEC_WORKER_SECRET"
 )
 
 // ExecRoot creates the directory the cases run in and returns it with symbolic
