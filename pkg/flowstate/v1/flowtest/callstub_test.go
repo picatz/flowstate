@@ -309,3 +309,58 @@ tests:
 	require.False(t, c.GetPassed())
 	require.Contains(t, c.GetError(), "callee stubbed")
 }
+
+// TestCallBoundaryStubAnswerIsHeldToRecordRules covers the part of the callee
+// contract that lives on a record type: a rule across fields that the real
+// call's output check enforces.
+func TestCallBoundaryStubAnswerIsHeldToRecordRules(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeFile(t, dir+"/callee.yaml", `
+edition: v2026.4
+name: windowed
+types:
+  Window:
+    must: this.start < this.end
+    fields:
+      start: {type: int, required: true}
+      end: {type: int, required: true}
+steps:
+  - id: inside
+    log:
+      message: inside
+outputs:
+  window:
+    type: Window
+    value: '${{"start": 1, "end": 2}}'
+`)
+	writeFile(t, dir+"/workflow.yaml", `
+edition: v2026.4
+name: caller
+steps:
+  - id: one
+    call: ./callee.yaml
+`)
+	report := flowtest.RunFile(writeInline(t, dir, `
+tests:
+  - name: a window that ends before it starts
+    workflow: ./workflow.yaml
+    stubs:
+      - step: one
+        returns: {window: {start: 5, end: 2}}
+    expect: {failed: true, error_contains: "does not satisfy callee"}
+
+  - name: a well-formed window
+    workflow: ./workflow.yaml
+    stubs:
+      - step: one
+        returns: {window: {start: 1, end: 2}}
+    expect: {ran: [one]}
+`))
+	require.Empty(t, report.GetRefused())
+	require.Len(t, report.GetCases(), 2)
+	for _, c := range report.GetCases() {
+		require.True(t, c.GetPassed(), "%s: %s %v", c.GetName(), c.GetError(), c.GetFailures())
+	}
+}

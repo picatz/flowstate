@@ -196,6 +196,9 @@ func checkCallAnswer(profile string, callee *v1.Workflow, returns map[string]any
 		if err := v1.CheckOutputConstraint(profile, decl, value); err != nil {
 			return fmt.Errorf("returns does not satisfy callee %q: %w", callee.GetName(), err)
 		}
+		if err := v1.CheckRecordRules(table, profile, "output", decl.GetName(), decl.GetSensitive(), decl.DeclaredType(), value); err != nil {
+			return fmt.Errorf("returns does not satisfy callee %q: %w", callee.GetName(), err)
+		}
 	}
 
 	return nil
