@@ -294,6 +294,12 @@ message ScheduleDivergenceReport {
   // [seeded] lists the violations. The seed replays the same faults the same
   // way: `flow test --seed <seed>` on the same file.
   bool invariant = 7;
+
+  // FaultScript is, for an invariant violation, the `faults:` list that
+  // replays the faults the seed fired with no seed: each pinned to the
+  // invocations it fired on with `on:`. Pasted into the case, a plain
+  // `flow test` reproduces the violation. Empty otherwise.
+  string fault_script = 8;
 }
 
 // CoverageReport is `flow test`'s branch-coverage account for one workflow:
