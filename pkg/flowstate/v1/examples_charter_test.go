@@ -206,6 +206,8 @@ func writableSpecs() map[protoreflect.FullName]messageWritableSpec {
 		{&v1.InputDeclaration{}, "input", declarationFieldExclusions},
 		{&v1.OutputDeclaration{}, "output", declarationFieldExclusions},
 		{&v1.TypeDeclaration{}, "type", typeFieldExclusions},
+		{&v1.ErrorDeclaration{}, "error", nil},
+		{&v1.Fail{}, "fail", nil},
 		{&v1.FunctionDeclaration{}, "function", functionFieldExclusions},
 		{&v1.FunctionParameter{}, "function_parameter", functionFieldExclusions},
 		{&v1.Triggers{}, "triggers", nil},

@@ -157,6 +157,25 @@ func diagnosticCodeCases() []diagnosticCodeCase {
 			},
 		},
 		{
+			name: "sensitive in fail message",
+			code: v1.DiagnosticCodeSensitiveInFailMessage,
+			step: "refuse",
+			workflow: &v1.Workflow{
+				Name:           "sensitive-in-fail-message",
+				DeclaredErrors: []*v1.ErrorDeclaration{{Name: "Refused"}},
+				DeclaredInputs: []*v1.InputDeclaration{
+					{Name: "salary", Sensitive: true},
+				},
+				Steps: []*v1.Node{{
+					Id: "refuse",
+					Kind: &v1.Node_Fail{Fail: &v1.Fail{
+						Error:   "Refused",
+						Message: v1.NewExpr(`"cannot pay " + string(inputs.salary)`),
+					}},
+				}},
+			},
+		},
+		{
 			name: "retired key",
 			code: v1.DiagnosticCodeRetiredKey,
 			step: "b",

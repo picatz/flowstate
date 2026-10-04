@@ -104,6 +104,25 @@ func checkSensitivePrompt(wf *v1.Workflow) Diagnostics {
 	return ds
 }
 
+// checkSensitiveFailMessage is [checkSensitivePrompt]'s sibling for a `fail:`
+// step's `message:`, which is recorded in the run's history and shown to every
+// reader of the failure. It asks [v1.FailMessageProblems] and positions the
+// answer, for the reason the prompt check does.
+func checkSensitiveFailMessage(wf *v1.Workflow) Diagnostics {
+	var ds Diagnostics
+
+	for _, problem := range v1.FailMessageProblems(wf, v1.SkipCalls) {
+		ds = append(ds, Diagnostic{
+			Step:    problem.StepID,
+			Field:   "fail.message",
+			Code:    v1.DiagnosticCodeSensitiveInFailMessage,
+			Message: fmt.Sprintf("%v", problem.Err),
+		})
+	}
+
+	return ds
+}
+
 // batchPromptSteps names the steps whose prompt was written under
 // `wait_for_signals:`, so [checkSensitivePrompt] can point at the key the author
 // wrote.

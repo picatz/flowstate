@@ -142,7 +142,7 @@ func TestLocalCompensationOverridesAnOrdinaryIdentityMode(t *testing.T) {
 		require.NoError(t, registry.Register(def))
 	}
 	require.NoError(t, registry.Register(flowstatev1.TaskDef{
-		Name: "fail",
+		Name: "force_failure",
 		Fn: func(context.Context, map[string]*flowstatev1.Value, *flowstatev1.Scope) (*flowstatev1.Node_Outputs, error) {
 			return nil, errors.New("force compensation")
 		},
@@ -168,7 +168,7 @@ func TestLocalCompensationOverridesAnOrdinaryIdentityMode(t *testing.T) {
 			{
 				Id: "fail",
 				Kind: &flowstatev1.Node_Task{Task: &flowstatev1.Task{
-					Name: "fail",
+					Name: "force_failure",
 				}},
 			},
 		},

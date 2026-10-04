@@ -366,6 +366,8 @@ func validSignalName(name string) bool {
 // change, because it is deterministic and an expression that failed will fail
 // identically however many times it is asked.
 //
+// A `fail:` is the same: it raises in workflow code on purpose.
+//
 // Five more schedule zero or more *of something else* rather than one activity of
 // their own: `for_each:`, `parallel:`, `call:`, `loop:`, and `switch:` are
 // composites over steps that do the scheduling. Retrying or bounding the
@@ -394,6 +396,12 @@ func (c *compiler) checkPolicyPlacement(step *v1.Node, fields *fieldSet, path st
 			"and it is already bounded by the evaluation cost limit every expression in the file shares"
 		advice["retry"] = "a value is deterministic, so a second attempt computes exactly what the first one did; " +
 			"if the expression is wrong, it is wrong every time"
+
+	case *v1.Node_Fail:
+		subject = "a `fail:` step"
+		advice["timeout"] = "a fail step raises its error as soon as its message is evaluated, so there is no work to bound"
+		advice["retry"] = "a fail step raises the error its author declared on purpose; " +
+			"retry belongs on the step whose failure it reacts to"
 
 	case *v1.Node_ForEach:
 		subject = "a `for_each:` step"

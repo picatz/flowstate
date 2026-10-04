@@ -81,6 +81,23 @@ steps:
 			return err
 		},
 	},
+	"fail": {
+		subject: "a `fail:` step",
+		parse: func(t *testing.T, extra string) error {
+			t.Helper()
+			src := fmt.Sprintf(`edition: v2026.4
+name: w
+errors:
+  Refused: {}
+steps:
+  - id: s
+    fail:
+      error: Refused
+%s`, extra)
+			_, _, err := flowfile.Parse([]byte(src))
+			return err
+		},
+	},
 	"for_each": {
 		subject: "a `for_each:` step",
 		parse: func(t *testing.T, extra string) error {

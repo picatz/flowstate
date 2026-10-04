@@ -238,7 +238,7 @@ edition: v2026.4
 			want: []want{{
 				code:       codeGeneral,
 				severity:   lsp.Error,
-				contains:   "must have one of for_each, loop, parallel, sleep, wait_until, wait_for_signal, wait_for_signals, call, value, switch, http, or log",
+				contains:   "must have one of for_each, loop, parallel, sleep, wait_until, wait_for_signal, wait_for_signals, call, value, switch, fail, http, or log",
 				underlines: "a",
 			}},
 		},

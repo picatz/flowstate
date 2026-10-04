@@ -308,6 +308,21 @@ edition: v2026.4
 			exact: []string{"web"},
 		},
 		{
+			// A `fail:` step's own keys are offered inside its mapping, as a
+			// `switch:`'s are inside its.
+			name: "keys inside a fail step",
+			src: `name: c
+errors:
+  Refused: {}
+steps:
+  - id: refuse
+    fail:
+      |
+edition: v2026.4
+`,
+			exact: []string{"error", "message"},
+		},
+		{
 			// In the order a file is written: the grammar it is written in, then
 			// what the workflow is, then its full schema-owned surface. This is
 			// positioned at the empty document root, the case #1315 reproduced
@@ -315,7 +330,7 @@ edition: v2026.4
 			name: "top level document keys",
 			src:  `|`,
 			exact: []string{
-				"edition", "name", "labels", "description", "types", "functions", "inputs", "outputs", "vars",
+				"edition", "name", "labels", "description", "types", "errors", "functions", "inputs", "outputs", "vars",
 				"steps", "triggers", "signals", "debug", "concurrency", "plugins",
 			},
 		},
@@ -352,7 +367,7 @@ edition: v2026.4
 				[]string{
 					"if", "vars", "timeout", "total_timeout", "retry", "continue_on_error",
 					"undo", "async", "with", "digest", "for_each", "loop", "parallel",
-					"sleep", "wait_until", "wait_for_signal", "wait_for_signals", "call", "value", "switch",
+					"sleep", "wait_until", "wait_for_signal", "wait_for_signals", "call", "value", "switch", "fail",
 				},
 			),
 		},

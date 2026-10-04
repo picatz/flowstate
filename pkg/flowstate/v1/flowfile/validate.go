@@ -317,6 +317,7 @@ func validateAtDepth(wf *v1.Workflow, profile string, depth int, placement v1.Un
 	ds = append(ds, validateStepIDs(wf.GetSteps())...)
 
 	ds = append(ds, validateDeclaredTypes(wf)...)
+	ds = append(ds, validateDeclaredErrors(wf)...)
 	ds = append(ds, validateDeclaredInputs(wf, profile)...)
 	ds = append(ds, validateTriggers(wf)...)
 	ds = append(ds, validateSignals(wf)...)
@@ -351,6 +352,7 @@ func validateAtDepth(wf *v1.Workflow, profile string, depth int, placement v1.Un
 	// why the rule there is wider than the one above it. Recurses on its own,
 	// the same way the two checks above do.
 	ds = append(ds, checkSensitivePrompt(wf)...)
+	ds = append(ds, checkSensitiveFailMessage(wf)...)
 
 	// Tasks and expression references.
 	scope := newRefScope(wf)
@@ -411,6 +413,9 @@ func validateAtDepth(wf *v1.Workflow, profile string, depth int, placement v1.Un
 
 			case *v1.Node_Value:
 				ds = append(ds, validateValue(id, kind.Value, inner, i, wf)...)
+
+			case *v1.Node_Fail:
+				ds = append(ds, validateFail(id, kind.Fail, inner, i, wf)...)
 
 			case *v1.Node_Switch:
 				ds = append(ds, validateSwitch(id, kind.Switch, inner, i, wf, profile, depth, placement)...)
@@ -1382,6 +1387,8 @@ func validateNested(nodes []*v1.Node, enclosing refScope, index int, wf *v1.Work
 				ds = append(ds, validateCallAtDepth(id, kind.Call, inner, index, wf, profile, depth+1, placement)...)
 			case *v1.Node_Value:
 				ds = append(ds, validateValue(id, kind.Value, inner, index, wf)...)
+			case *v1.Node_Fail:
+				ds = append(ds, validateFail(id, kind.Fail, inner, index, wf)...)
 			case *v1.Node_Switch:
 				ds = append(ds, validateSwitch(id, kind.Switch, inner, index, wf, profile, depth, placement)...)
 			default:
@@ -1651,8 +1658,10 @@ func validateInputRefs(stepID, inputName string, val *v1.Value, scope refScope, 
 	// silently taking the other branch on both drivers.
 	for _, literal := range unknownFailureKindLiterals(parsed.GetExpr(), map[string]struct{}{}, func(id string) bool {
 		return engineOwnsFailure(scope.steps[id])
+	}, func(literal string) bool {
+		return v1.KnownFailureKind(wf, literal)
 	}) {
-		ds = append(ds, unknownFailureKindLiteral(stepID, inputName, literal))
+		ds = append(ds, unknownFailureKindLiteral(stepID, inputName, literal, wf))
 	}
 
 	// An input can only fail one way — nothing declared it — for the reason a var
@@ -2891,20 +2900,18 @@ func unknownTriggerKindLiterals(e *expr.Expr, bound map[string]struct{}) []strin
 }
 
 // unknownFailureKindLiterals is the same walk for `steps.<id>.failure.kind`
-// compared with a string literal that names no [v1.ErrorKind] (#1905).
+// compared with a string literal that names no built-in [v1.ErrorKind] and no
+// error the workflow declares (#1905).
 //
 // tolerated says whether a step id names a step carrying `continue_on_error:`;
 // only that step's `failure` is the engine's, so a `call:` output that happens
 // to be named `failure` is never judged.
-func unknownFailureKindLiterals(e *expr.Expr, bound map[string]struct{}, tolerated func(id string) bool) []string {
+func unknownFailureKindLiterals(e *expr.Expr, bound map[string]struct{}, tolerated func(id string) bool, known func(string) bool) []string {
 	check := func(field, other *expr.Expr, bound map[string]struct{}, report func(string)) {
 		checkFailureKindComparand(field, other, bound, tolerated, report)
 	}
 
-	return unknownKindLiterals(e, bound, check, func(literal string) bool {
-		_, ok := v1.ParseErrorKind(literal)
-		return ok
-	})
+	return unknownKindLiterals(e, bound, check, known)
 }
 
 // unknownKindLiterals walks e for comparisons of a field against a string
@@ -3037,6 +3044,11 @@ func engineOwnsFailure(node *v1.Node) bool {
 	if !node.GetPolicy().GetContinueOnError() {
 		return false
 	}
+	// A callee may raise a kind only it declares, which the caller's own
+	// declarations cannot judge until `raises:` names them.
+	if _, isCall := node.GetKind().(*v1.Node_Call); isCall {
+		return false
+	}
 	if shaped, replaced := shapedTaskOutputs(node.GetTask()); replaced {
 		names, known := v1.ShapedOutputNames(shaped)
 
@@ -3055,11 +3067,12 @@ func engineOwnsFailure(node *v1.Node) bool {
 // unknownFailureKindLiteral reports a `failure.kind` comparison against a
 // string literal that names no error kind, which evaluates false on both
 // drivers forever and silently takes the other branch.
-func unknownFailureKindLiteral(stepID, inputName, literal string) Diagnostic {
+func unknownFailureKindLiteral(stepID, inputName, literal string, wf *v1.Workflow) Diagnostic {
 	kinds := make([]string, 0, len(v1.ErrorKinds()))
 	for _, kind := range v1.ErrorKinds() {
 		kinds = append(kinds, kind.String())
 	}
+	kinds = append(kinds, v1.DeclaredErrorNames(wf)...)
 
 	message := fmt.Sprintf("compares a step's `%s.%s` to %q, which is not an error kind",
 		v1.StepFailureOutput, v1.FailureKindField, literal)
