@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
+	"google.golang.org/protobuf/types/known/durationpb"
 )
 
 // The set-building tests moved here with the walk they cover (from
@@ -873,4 +874,25 @@ func TestASensitiveDurationAndTimestampAreRedactedInEverySpelling(t *testing.T) 
 
 	moment := oneSensitiveInput("t", &Value{Kind: &Value_Literal{Literal: stamp}})
 	assert.NotContains(t, moment.RedactSubstrings("at 2026-03-01T09:30:00Z"), "2026-03-01")
+}
+
+// A sensitive list of timestamps and a fractional duration are redacted in the
+// spelling CEL writes, not only the one the run document does.
+func TestASensitiveNestedAndFractionalDataKindIsRedactedInCELSpelling(t *testing.T) {
+	t.Parallel()
+
+	span, err := NormalizeDataKind(InputDeclaration_TYPE_DURATION, &expr.Value{Kind: &expr.Value_StringValue{StringValue: "1500ms"}})
+	require.NoError(t, err)
+	fractional := oneSensitiveInput("d", &Value{Kind: &Value_Literal{Literal: span}})
+	assert.NotContains(t, fractional.RedactSubstrings("waited 1.5s"), "1.5s")
+
+	stamp, err := NormalizeDataKind(InputDeclaration_TYPE_TIMESTAMP, &expr.Value{Kind: &expr.Value_StringValue{StringValue: "2026-03-01T09:30:00.5+02:00"}})
+	require.NoError(t, err)
+	list := &Value{Kind: &Value_Literal{Literal: &expr.Value{Kind: &expr.Value_ListValue{ListValue: &expr.ListValue{Values: []*expr.Value{stamp}}}}}}
+	nested := oneSensitiveInput("ts", list)
+	assert.NotContains(t, nested.RedactSubstrings("at 2026-03-01T07:30:00.5Z"), "2026-03-01")
+	assert.NotContains(t, nested.RedactSubstrings("at 2026-03-01T07:30:00Z"), "2026-03-01")
+
+	assert.Equal(t, "-0.000000001s", exactSeconds(&durationpb.Duration{Nanos: -1}))
+	assert.Equal(t, "3600s", exactSeconds(&durationpb.Duration{Seconds: 3600}))
 }

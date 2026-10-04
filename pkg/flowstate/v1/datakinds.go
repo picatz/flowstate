@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
@@ -234,32 +235,68 @@ func dataKindText(literal *expr.Value) (string, bool) {
 	return "", false
 }
 
-// dataKindSpellings is every text a normalized timestamp or duration is likely to
-// be rendered as: the form [dataKindText] writes, and the form CEL's `string(...)`
-// writes (RFC 3339 without trailing zero fractions, a duration as seconds). It is
-// what redaction needs, so a sensitive value is withheld however an expression
-// chose to spell it. Bytes and every other literal have none: bytes are already a
-// plain byte slice to the redaction set.
+// dataKindSpellings is every text a normalized timestamp or duration, at the top of
+// the literal or nested in a list or a map, is likely to be rendered as: the form
+// [dataKindText] writes, and the form CEL's `string(...)` writes (RFC 3339 without
+// trailing zero fractions, a duration as seconds). It is what redaction needs, so a
+// sensitive value is withheld however an expression chose to spell it. Bytes and
+// every other literal have none: bytes are already a plain byte slice to the
+// redaction set.
 func dataKindSpellings(literal *expr.Value) []string {
-	object, ok := literal.GetKind().(*expr.Value_ObjectValue)
-	if !ok {
-		return nil
+	return appendDataKindSpellings(nil, literal, 0)
+}
+
+func appendDataKindSpellings(dst []string, literal *expr.Value, depth int) []string {
+	if depth > MaxStructureDepth {
+		return dst
 	}
 
-	var stamp timestamppb.Timestamp
-	if object.ObjectValue.UnmarshalTo(&stamp) == nil && object.ObjectValue.MessageIs(&stamp) && stamp.CheckValid() == nil {
-		at := stamp.AsTime().UTC()
+	switch kind := literal.GetKind().(type) {
+	case *expr.Value_ObjectValue:
+		var stamp timestamppb.Timestamp
+		if kind.ObjectValue.UnmarshalTo(&stamp) == nil && kind.ObjectValue.MessageIs(&stamp) && stamp.CheckValid() == nil {
+			at := stamp.AsTime().UTC()
 
-		return []string{at.Format(time.RFC3339Nano), at.Format(time.RFC3339)}
-	}
+			return append(dst, at.Format(time.RFC3339Nano), at.Format(time.RFC3339))
+		}
 
-	var span durationpb.Duration
-	if object.ObjectValue.UnmarshalTo(&span) == nil && object.ObjectValue.MessageIs(&span) && span.CheckValid() == nil {
-		return []string{
-			span.AsDuration().String(),
-			strconv.FormatFloat(span.AsDuration().Seconds(), 'f', -1, 64) + "s",
+		var span durationpb.Duration
+		if kind.ObjectValue.UnmarshalTo(&span) == nil && kind.ObjectValue.MessageIs(&span) && span.CheckValid() == nil {
+			// CEL's own string() goes through a float64, which agrees with the exact
+			// spelling until the value outgrows one; both are kept.
+			return append(dst, span.AsDuration().String(), exactSeconds(&span),
+				strconv.FormatFloat(span.AsDuration().Seconds(), 'f', -1, 64)+"s")
+		}
+
+	case *expr.Value_ListValue:
+		for _, element := range kind.ListValue.GetValues() {
+			dst = appendDataKindSpellings(dst, element, depth+1)
+		}
+
+	case *expr.Value_MapValue:
+		for _, entry := range kind.MapValue.GetEntries() {
+			dst = appendDataKindSpellings(dst, entry.GetValue(), depth+1)
 		}
 	}
 
-	return nil
+	return dst
+}
+
+// exactSeconds writes a duration the way CEL's string() does, from the integer
+// seconds and nanos rather than a float: "3600s", "1.5s", "-0.000000001s".
+func exactSeconds(span *durationpb.Duration) string {
+	seconds, nanos := span.GetSeconds(), span.GetNanos()
+
+	sign := ""
+	if seconds < 0 || nanos < 0 {
+		sign = "-"
+		seconds, nanos = -seconds, -nanos
+	}
+
+	text := sign + strconv.FormatInt(seconds, 10)
+	if nanos != 0 {
+		text += "." + strings.TrimRight(fmt.Sprintf("%09d", nanos), "0")
+	}
+
+	return text + "s"
 }
