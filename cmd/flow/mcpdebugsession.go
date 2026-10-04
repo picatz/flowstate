@@ -551,7 +551,7 @@ func (r *debugSessions) lookup(id string) (*debugSessionEntry, error) {
 	if entry.ready != nil {
 		<-entry.ready
 		if entry.startErr != nil {
-			return nil, errNoDebugSession(id)
+			return nil, fmt.Errorf("%w: the start that opened it failed: %w", errNoDebugSession(id), entry.startErr)
 		}
 	}
 
