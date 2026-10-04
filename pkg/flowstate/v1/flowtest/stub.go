@@ -753,6 +753,7 @@ func (s *stubbedTask) fn(name string, sensitiveInputNames map[string]bool, unstu
 		// The scan and its bookkeeping are one atomic decision: two parallel
 		// branches invoking this task concurrently must not both read a
 		// matcher's state between one another's updates. See [stubbedTask.mu].
+		noteInvocation(ctx, name)
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		s.invoked = true
