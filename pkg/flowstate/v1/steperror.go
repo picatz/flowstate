@@ -137,8 +137,51 @@ func StepErrorText(err error) string {
 	return fmt.Sprintf("task %q failed (%s): %v%s", taskErr.Task, taskErr.Kind, taskErr.Err, cause)
 }
 
+// StepFailureOutput is the name a tolerated step's typed failure is recorded
+// under, beside [StepErrorOutput]: `${steps.<id>.failure}` is a map with
+// [FailureKindField], [FailureMessageField] and [FailureRetryableField].
+//
+// `error` stays the one sentence it always was, so every `has(...error)` and
+// `!= ”` an author wrote keeps its meaning; `failure` is what an author reads
+// when the question is *which* failure rather than *whether* (#1905). Its
+// `message` is the same text by construction: both are built from one
+// [StepFailure].
+const StepFailureOutput = "failure"
+
+// The fields of the map recorded under [StepFailureOutput].
+const (
+	// FailureKindField is the [ErrorKind] the failure was classified as.
+	FailureKindField = "kind"
+	// FailureMessageField is the same sentence [StepErrorOutput] holds.
+	FailureMessageField = "message"
+	// FailureRetryableField is the kind's retry default, [ErrorKind.Retryable].
+	// It states what the classification permits, not whether a particular
+	// attempt was retried: an attempt-level narrowing (an unknown outcome) is a
+	// property of the attempt, not of the recorded failure.
+	FailureRetryableField = "retryable"
+)
+
+// A StepFailure is what a driver knows of a tolerated failure at the moment it
+// records it: the rendered sentence and the classification. Each driver builds
+// one from the shape its failure is in (a raw error locally, Temporal's
+// application error durably), and [FailedStepOutputs] is the one place it
+// becomes outputs, so the two cannot spell the recorded shape differently.
+type StepFailure struct {
+	// Text is the [StepErrorText] sentence, recorded as `error` and `failure.message`.
+	Text string
+
+	// Kind is the failure's classification, recorded as `failure.kind`.
+	Kind ErrorKind
+}
+
+// NewStepFailure builds the [StepFailure] for an error a driver holds in its
+// own bare shape.
+func NewStepFailure(err error) StepFailure {
+	return StepFailure{Text: StepErrorText(err), Kind: ClassifyError(err)}
+}
+
 // FailedStepOutputs records a tolerated failure as a step's outputs, under
-// [StepErrorOutput].
+// [StepErrorOutput] and [StepFailureOutput].
 //
 // It takes the already-rendered text rather than the error, because the two
 // drivers hold the failure in different shapes at the moment of recording: the
@@ -146,10 +189,15 @@ func StepErrorText(err error) string {
 // [StepErrorText], while the durable driver has Temporal's envelope around it
 // and extracts the same text from the application error inside. One builder for
 // the recorded shape keeps the output's name from being spelled per driver.
-func FailedStepOutputs(text string) *Node_Outputs {
+func FailedStepOutputs(f StepFailure) *Node_Outputs {
 	return &Node_Outputs{
 		NamedValues: map[string]*Value{
-			StepErrorOutput: NewLiteral(text),
+			StepErrorOutput: NewLiteral(f.Text),
+			StepFailureOutput: NewLiteralMap(map[string]any{
+				FailureKindField:      f.Kind.String(),
+				FailureMessageField:   f.Text,
+				FailureRetryableField: f.Kind.Retryable(),
+			}),
 		},
 	}
 }

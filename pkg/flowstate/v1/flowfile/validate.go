@@ -1646,6 +1646,15 @@ func validateInputRefs(stepID, inputName string, val *v1.Value, scope refScope, 
 		ds = append(ds, unknownTriggerKindLiteral(stepID, inputName, literal))
 	}
 
+	// `steps.<id>.failure.kind` is closed the same way: the kinds are
+	// [v1.ErrorKind]'s, so a misspelled literal is refused here rather than
+	// silently taking the other branch on both drivers.
+	for _, literal := range unknownFailureKindLiterals(parsed.GetExpr(), map[string]struct{}{}, func(id string) bool {
+		return engineOwnsFailure(scope.steps[id])
+	}) {
+		ds = append(ds, unknownFailureKindLiteral(stepID, inputName, literal))
+	}
+
 	// An input can only fail one way — nothing declared it — for the reason a var
 	// can: every declaration exists before the run starts, so there is no forward
 	// reference to distinguish and no scope to explain.
@@ -2739,6 +2748,14 @@ func unresolvedStep(stepID, inputName, ref string, index int, wf *v1.Workflow) D
 // output that comes from the *policy* rather than from the task.
 const toleratedErrorOutput = v1.StepErrorOutput
 
+// toleratedFailureOutput is the typed companion a tolerated step publishes beside
+// [toleratedErrorOutput]: `kind`, `message` and `retryable` (#1905).
+const toleratedFailureOutput = v1.StepFailureOutput
+
+// toleratedOutputs is every output the policy grants, in the order a diagnostic
+// lists them.
+var toleratedOutputs = []string{toleratedErrorOutput, toleratedFailureOutput}
+
 // runIdentityFields are the fields [runRootValue] renders under `run.identity`.
 //
 // Kept here rather than derived from [WorkloadIdentity]'s own field list, because
@@ -2870,11 +2887,34 @@ func unknownTriggerField(stepID, inputName, field string) (Diagnostic, bool) {
 // allows it — does not misread the macro's own iteration variable as the
 // root.
 func unknownTriggerKindLiterals(e *expr.Expr, bound map[string]struct{}) []string {
+	return unknownKindLiterals(e, bound, checkTriggerKindComparand, v1.KnownTriggerKind)
+}
+
+// unknownFailureKindLiterals is the same walk for `steps.<id>.failure.kind`
+// compared with a string literal that names no [v1.ErrorKind] (#1905).
+//
+// tolerated says whether a step id names a step carrying `continue_on_error:`;
+// only that step's `failure` is the engine's, so a `call:` output that happens
+// to be named `failure` is never judged.
+func unknownFailureKindLiterals(e *expr.Expr, bound map[string]struct{}, tolerated func(id string) bool) []string {
+	check := func(field, other *expr.Expr, bound map[string]struct{}, report func(string)) {
+		checkFailureKindComparand(field, other, bound, tolerated, report)
+	}
+
+	return unknownKindLiterals(e, bound, check, func(literal string) bool {
+		_, ok := v1.ParseErrorKind(literal)
+		return ok
+	})
+}
+
+// unknownKindLiterals walks e for comparisons of a field against a string
+// literal that check recognises, and returns the literals known rejects.
+func unknownKindLiterals(e *expr.Expr, bound map[string]struct{}, check func(field, other *expr.Expr, bound map[string]struct{}, report func(string)), known func(string) bool) []string {
 	seen := map[string]struct{}{}
 	var literals []string
 
 	report := func(literal string) {
-		if v1.KnownTriggerKind(literal) {
+		if known(literal) {
 			return
 		}
 		if _, dup := seen[literal]; dup {
@@ -2897,8 +2937,8 @@ func unknownTriggerKindLiterals(e *expr.Expr, bound map[string]struct{}) []strin
 			if args := call.GetArgs(); len(args) == 2 {
 				switch call.GetFunction() {
 				case operators.Equals, operators.NotEquals:
-					checkTriggerKindComparand(args[0], args[1], bound, report)
-					checkTriggerKindComparand(args[1], args[0], bound, report)
+					check(args[0], args[1], bound, report)
+					check(args[1], args[0], bound, report)
 				}
 			}
 			walk(call.GetTarget(), bound)
@@ -2959,6 +2999,80 @@ func checkTriggerKindComparand(field, other *expr.Expr, bound map[string]struct{
 		return
 	}
 	report(sv.StringValue)
+}
+
+// checkFailureKindComparand reports the string literal compared with
+// `steps.<id>.failure.kind`, the same one-sided caution as
+// [checkTriggerKindComparand]: only a literal is judged.
+func checkFailureKindComparand(field, other *expr.Expr, bound map[string]struct{}, tolerated func(string) bool, report func(string)) {
+	kind := field.GetSelectExpr()
+	if kind == nil || kind.GetField() != v1.FailureKindField {
+		return
+	}
+	failure := kind.GetOperand().GetSelectExpr()
+	if failure == nil || failure.GetField() != v1.StepFailureOutput {
+		return
+	}
+	step := failure.GetOperand().GetSelectExpr()
+	if step == nil {
+		return
+	}
+	root := step.GetOperand().GetIdentExpr().GetName()
+	if _, shadowed := bound[root]; root != v1.StepsRoot || shadowed || !tolerated(step.GetField()) {
+		return
+	}
+	sv, ok := other.GetConstExpr().GetConstantKind().(*expr.Constant_StringValue)
+	if !ok {
+		return
+	}
+	report(sv.StringValue)
+}
+
+// engineOwnsFailure reports whether a step's `failure` is certainly the one the
+// engine records: the step is tolerated and nothing it can produce on success
+// is named `failure`. A successful tolerated `http` step may shape `failure`
+// itself and a tolerated call may declare it, and an unknown shape is left
+// unchecked rather than guessed at.
+func engineOwnsFailure(node *v1.Node) bool {
+	if !node.GetPolicy().GetContinueOnError() {
+		return false
+	}
+	if shaped, replaced := shapedTaskOutputs(node.GetTask()); replaced {
+		names, known := v1.ShapedOutputNames(shaped)
+
+		return known && !slices.Contains(names, v1.StepFailureOutput)
+	}
+	entries, _ := v1.OutputNames(node, nil)
+	for _, e := range entries {
+		if e.Name == "" || e.Name == v1.StepFailureOutput {
+			return false
+		}
+	}
+
+	return true
+}
+
+// unknownFailureKindLiteral reports a `failure.kind` comparison against a
+// string literal that names no error kind, which evaluates false on both
+// drivers forever and silently takes the other branch.
+func unknownFailureKindLiteral(stepID, inputName, literal string) Diagnostic {
+	kinds := make([]string, 0, len(v1.ErrorKinds()))
+	for _, kind := range v1.ErrorKinds() {
+		kinds = append(kinds, kind.String())
+	}
+
+	message := fmt.Sprintf("compares a step's `%s.%s` to %q, which is not an error kind",
+		v1.StepFailureOutput, v1.FailureKindField, literal)
+	if suggestion, ok := nearest.Name(literal, kinds); ok {
+		message += fmt.Sprintf("; did you mean %q?", suggestion)
+	} else {
+		message += fmt.Sprintf("; the kinds are %s", strings.Join(kinds, ", "))
+	}
+
+	return Diagnostic{
+		Step: stepID, Field: inputName, Value: v1.StepFailureOutput + "." + v1.FailureKindField, Message: message,
+		Code: v1.DiagnosticCodeUnresolvedReference,
+	}
 }
 
 // unknownTriggerKindLiteral reports a `trigger.kind` comparison against a
@@ -3057,7 +3171,7 @@ func unknownStepOutput(stepID, inputName string, ref stepRef, node *v1.Node) (Di
 		// grants — so that reading has to win before the state-name message
 		// below claims the whole name for itself.
 		if state := loop.GetState(); state != "" && ref.Output == state &&
-			!(ref.Output == toleratedErrorOutput && node.GetPolicy().GetContinueOnError()) {
+			!(slices.Contains(toleratedOutputs, ref.Output) && node.GetPolicy().GetContinueOnError()) {
 			return Diagnostic{
 				Step: stepID, Field: inputName, Value: ref.Output,
 				Message: fmt.Sprintf(
@@ -3123,7 +3237,7 @@ func unknownStepOutput(stepID, inputName string, ref stepRef, node *v1.Node) (Di
 		// exactly as any other tolerated step does. Listing it is what keeps this
 		// from reporting the documented pattern as a mistake.
 		if node.GetPolicy().GetContinueOnError() {
-			produced = append(produced, toleratedErrorOutput)
+			produced = append(produced, toleratedOutputs...)
 		}
 		if slices.Contains(produced, ref.Output) {
 			return Diagnostic{}, false
@@ -3132,8 +3246,8 @@ func unknownStepOutput(stepID, inputName string, ref stepRef, node *v1.Node) (Di
 		message := fmt.Sprintf(
 			"step %q has no output %q; a `value:` step produces exactly one output, `%s`, so the whole of it is read as `%s.%s.%s`",
 			ref.ID, ref.Output, v1.ValueOutput, v1.StepsRoot, ref.ID, v1.ValueOutput)
-		if !node.GetPolicy().GetContinueOnError() && ref.Output == toleratedErrorOutput {
-			message += "; `" + toleratedErrorOutput + "` exists only on a step that carries `continue_on_error:`, which this one does not"
+		if !node.GetPolicy().GetContinueOnError() && slices.Contains(toleratedOutputs, ref.Output) {
+			message += "; `" + ref.Output + "` exists only on a step that carries `continue_on_error:`, which this one does not"
 		}
 
 		return Diagnostic{
@@ -3163,6 +3277,12 @@ func unknownStepOutput(stepID, inputName string, ref stepRef, node *v1.Node) (Di
 	// [PayloadOutput]'s rooting?), so this stays exactly as narrow as it was before
 	// this file started reading [v1.OutputNames] — silence here is inherited, not
 	// re-decided.
+	// The outputs the step policy grants exist beside whatever shaping names, so
+	// a shaping wait that is tolerated must not refuse them either.
+	if slices.Contains(toleratedOutputs, ref.Output) && node.GetPolicy().GetContinueOnError() {
+		return Diagnostic{}, false
+	}
+
 	shapedWait := node.GetWait().GetSignal().GetOutputs()
 	if len(shapedWait) == 0 {
 		// The batch spelling shapes under exactly the same rule — replace, not
@@ -3208,7 +3328,7 @@ func unknownStepOutput(stepID, inputName string, ref stepRef, node *v1.Node) (Di
 	// *plus* that one, and checking the descriptor alone reports a documented pattern
 	// as a mistake. Precisely the failure this check's own comment warns about, and it
 	// shipped that way for one review cycle.
-	if ref.Output == toleratedErrorOutput && node.GetPolicy().GetContinueOnError() {
+	if slices.Contains(toleratedOutputs, ref.Output) && node.GetPolicy().GetContinueOnError() {
 		return Diagnostic{}, false
 	}
 
@@ -3248,7 +3368,7 @@ func unknownStepOutput(stepID, inputName string, ref stepRef, node *v1.Node) (Di
 		// Listed because it is available here, and a list that omits a name the very
 		// next edit might need sends the author to the docs for something the tool
 		// already knew.
-		produced = append(produced, toleratedErrorOutput)
+		produced = append(produced, toleratedOutputs...)
 	}
 
 	message := fmt.Sprintf("step %q has no output %q", ref.ID, ref.Output)
@@ -3263,7 +3383,7 @@ func unknownStepOutput(stepID, inputName string, ref stepRef, node *v1.Node) (Di
 		// so the sentence above would be false where the policy is set, and this is
 		// the one case where "produces nothing" needs a qualifier.
 		if node.GetPolicy().GetContinueOnError() {
-			message += fmt.Sprintf(" (it does produce %q, since it may be tolerated)", toleratedErrorOutput)
+			message += fmt.Sprintf(" (it does produce %s, since it may be tolerated)", quotedNameList(toleratedOutputs))
 		}
 	default:
 		if suggestion, ok := nearest.Name(ref.Output, produced); ok {
@@ -3304,7 +3424,7 @@ func certainNames(node *v1.Node) []string {
 	// every fixed set so the early compound-step checks agree with the generic
 	// task path below.
 	if node.GetPolicy().GetContinueOnError() {
-		names = append(names, toleratedErrorOutput)
+		names = append(names, toleratedOutputs...)
 	}
 	return names
 }

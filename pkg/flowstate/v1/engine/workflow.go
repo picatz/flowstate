@@ -288,7 +288,7 @@ func failedAt(err error, position string) error {
 	if account, ok := err.(v1.StepFailureRecord); ok {
 		// The envelope-free text this driver already extracted, never the
 		// error's own words: see [v1.StepFailureRecord].
-		recordedOwn = account.Record(recorded)
+		recordedOwn = account.Record(v1.StepFailure{Text: recorded, Kind: recordedStepKind(err)})
 	}
 
 	var cause error
@@ -1303,7 +1303,7 @@ func failedStepOutputs(err error) *v1.Node_Outputs {
 
 	recorded, _ := recordedStepError(err)
 
-	return v1.FailedStepOutputs(recorded)
+	return v1.FailedStepOutputs(v1.StepFailure{Text: recorded, Kind: recordedStepKind(err)})
 }
 
 // collectNodeRefs, collectValueRefs and neededOutputs moved to

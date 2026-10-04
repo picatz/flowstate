@@ -90,5 +90,5 @@ type StepFailureRecord interface {
 
 	// Record is the outputs to store under the failing step's own id, given the
 	// failure text its driver rendered.
-	Record(text string) *Node_Outputs
+	Record(failure StepFailure) *Node_Outputs
 }

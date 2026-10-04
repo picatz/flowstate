@@ -425,7 +425,7 @@ func TestAHeldStepsRecordSurvivesTheSeamsCompaction(t *testing.T) {
 		},
 	}
 	outputs := &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
-		"failing":  v1.FailedStepOutputs("task \"http\" failed (Upstream): 503"),
+		"failing":  v1.FailedStepOutputs(v1.StepFailure{Text: "task \"http\" failed (Upstream): 503", Kind: v1.ErrorKindUpstream}),
 		"unneeded": {},
 	}}
 
