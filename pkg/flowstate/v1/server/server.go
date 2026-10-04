@@ -2492,6 +2492,19 @@ func (s *FlowstateServer) get(ctx context.Context, req *connect.Request[v1.GetRe
 // failure's type is looked up among a run's declarations.
 var declaredKindName = regexp.MustCompile(`^[A-Z][A-Za-z0-9_]{0,127}$`)
 
+// carriesRunFailureMarker reports whether an application error is the one the
+// engine made of the run's own failure ([engine.RunFailureMarker]), as opposed to
+// an error that reached the client unchanged, such as a pre-step activity failure
+// whose type may collide with a declared name.
+func carriesRunFailureMarker(app *temporal.ApplicationError) bool {
+	if !app.HasDetails() {
+		return false
+	}
+	var marker string
+
+	return app.Details(&marker) == nil && marker == engine.RunFailureMarker
+}
+
 // declaredFailureKind returns the check [failureError] makes before it reports a
 // failure type that is not a built-in kind: whether the run's own specification,
 // or a workflow it calls, declares it. The specification is read lazily, once, and
@@ -2578,7 +2591,7 @@ func failureError(
 		result := &v1.RunResponse_Error{Message: app.Message()}
 		if kind, ok := v1.ParseErrorKind(app.Type()); ok {
 			result.Kind = kind.String()
-		} else if declaredKindName.MatchString(app.Type()) && declared(app.Type()) {
+		} else if carriesRunFailureMarker(app) && declaredKindName.MatchString(app.Type()) && declared(app.Type()) {
 			// A kind the workflow declared under `errors:`. The type is only a
 			// string the run's failure carried, so it is reported when the run's
 			// own specification (or a workflow it calls) declares it, and

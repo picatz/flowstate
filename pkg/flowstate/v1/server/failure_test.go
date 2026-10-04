@@ -392,3 +392,45 @@ func TestAFailedRunReportsTheKindItDeclared(t *testing.T) {
 	require.Equal(t, "InsufficientFunds", got.GetError().GetKind())
 	require.Contains(t, got.GetError().GetMessage(), "balance 5 cannot cover 9")
 }
+
+// TestADeclaredNameDoesNotClaimAnUnrelatedFailure: a failure before the first
+// step keeps the type its activity chose, and `InvalidWorkflowVars` is a valid
+// declared name. A workflow declaring it must not have its vars failure reported
+// as the declared business kind, which only a failure the engine classified as the
+// run's own carries.
+func TestADeclaredNameDoesNotClaimAnUnrelatedFailure(t *testing.T) {
+	t.Parallel()
+
+	fixture := newTenantFixture(t)
+	startWorker(t, fixture.temporal)
+
+	started, err := fixture.teamA.Run(t.Context(), connect.NewRequest(&v1.RunRequest{
+		Workflow: &v1.Workflow{
+			Name:           "collides",
+			DeclaredErrors: []*v1.ErrorDeclaration{{Name: "InvalidWorkflowVars"}},
+			Vars:           map[string]*v1.Value{"bad": v1.NewExpr("string(1 / 0)")},
+			Steps: []*v1.Node{{
+				Id:   "after",
+				Kind: &v1.Node_Task{Task: &v1.Task{Name: "log", Inputs: map[string]*v1.Value{"message": v1.NewLiteral("hi")}}},
+			}},
+		},
+	}))
+	require.NoError(t, err)
+
+	var got *v1.GetResponse
+	require.Eventually(t, func() bool {
+		resp, gerr := fixture.teamA.Get(t.Context(), connect.NewRequest(&v1.GetRequest{
+			WorkflowId: started.Msg.GetWorkflowId(),
+		}))
+		if gerr != nil {
+			return false
+		}
+		got = resp.Msg
+
+		return got.GetStatus() != v1.RunResponse_STATUS_RUNNING
+	}, 60*time.Second, 200*time.Millisecond, "the run never reached a terminal state")
+
+	require.Equal(t, v1.RunResponse_STATUS_FAILED, got.GetStatus())
+	require.NotEqual(t, "InvalidWorkflowVars", got.GetError().GetKind(),
+		"a pre-step failure was reported as the workflow's declared kind of the same name")
+}

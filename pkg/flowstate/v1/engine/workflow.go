@@ -490,8 +490,16 @@ func classifyRunError(err error) error {
 	}
 
 	return temporal.NewApplicationErrorWithOptions(run.Error(), run.errorKind().String(),
-		temporal.ApplicationErrorOptions{Cause: err})
+		temporal.ApplicationErrorOptions{Cause: err, Details: []any{RunFailureMarker}})
 }
+
+// RunFailureMarker is the detail [classifyRunError] puts on the application
+// error it makes of a run's failure, so a reader of the failed run can tell that
+// error's type is the run's own classification and not a string some other
+// application error happens to carry. A pre-step failure keeps the type its
+// activity chose, which is a valid declared-looking name
+// (`InvalidWorkflowVars`), and a workflow may declare that name.
+const RunFailureMarker = "flowstate.run-failure/v1"
 
 // runWorkflow is [Run]'s whole implementation, wrapped by it rather than
 // registered directly — see [Run]'s comment for why.
