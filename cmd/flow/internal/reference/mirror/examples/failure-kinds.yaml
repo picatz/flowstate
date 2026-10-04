@@ -17,8 +17,9 @@ name: failure-kinds
 steps:
   # Retry what is transient, but never hammer a rate limit: `RateLimited` is
   # retried by default, and `except:` takes it out. Nothing listens on this
-  # port, so the call fails with `Upstream` after its attempts, and the step
-  # tolerates that by name.
+  # port, so the call is refused: `PolicyDenied` under the default egress policy,
+  # which denies loopback, or `Upstream` once an operator allows it. The step
+  # tolerates both by name, and nothing else.
   - id: notify
     retry:
       attempts: 3
@@ -26,6 +27,7 @@ steps:
       except:
         - RateLimited
     continue_on_error:
+      - PolicyDenied
       - Upstream
       - RateLimited
     http:
@@ -42,6 +44,7 @@ steps:
         - Upstream
         - Timeout
     continue_on_error:
+      - PolicyDenied
       - Upstream
     http:
       method: POST

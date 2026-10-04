@@ -88,9 +88,6 @@ func TestPolicyKindDiagnostics(t *testing.T) {
 		"a kind in both lists is a contradiction": {
 			from: "only: [Upstream, Timeout]", to: "only: [Upstream, Timeout]\n      except: [Upstream]", want: "in both",
 		},
-		"a timeout cannot be excepted, attempts bounds it": {
-			from: "except: [RateLimited]", to: "except: [Timeout]", want: "attempts: 1",
-		},
 		"an empty tolerated list is refused": {
 			from: "[PolicyDenied, Refused]", to: "[]", want: "at least one failure kind",
 		},
@@ -142,4 +139,35 @@ func TestPolicyKindRulesApplyAtSubmit(t *testing.T) {
 	require.Error(t, v1.CheckPolicyKinds(policy(&v1.StepPolicy{ContinueOnError: true, ToleratedKinds: []string{"Nope"}})))
 	require.Error(t, v1.CheckPolicyKinds(policy(&v1.StepPolicy{Retry: &v1.RetryPolicy{Only: []string{"InvalidInput"}}})))
 	require.NoError(t, v1.CheckPolicyKinds(policy(&v1.StepPolicy{Retry: &v1.RetryPolicy{Except: []string{"RateLimited"}}})))
+}
+
+// TestCallStepMayToleratePolicyKindsItsCalleeDeclares: a `call:` step can fail
+// with what its callee declares, so the caller tolerates that kind by name
+// without copying the declaration, while a step that calls nothing may not.
+func TestCallStepMayToleratePolicyKindsItsCalleeDeclares(t *testing.T) {
+	t.Parallel()
+
+	callee := &v1.Workflow{Name: "callee", DeclaredErrors: []*v1.ErrorDeclaration{{Name: "QuotaExceeded"}}}
+	call := &v1.Workflow{Name: "caller", Steps: []*v1.Node{{
+		Id:     "provision",
+		Kind:   &v1.Node_Call{Call: &v1.Call{Workflow: callee}},
+		Policy: &v1.StepPolicy{ContinueOnError: true, ToleratedKinds: []string{"QuotaExceeded"}},
+	}}}
+	require.NoError(t, v1.CheckPolicyKinds(call))
+
+	call.GetSteps()[0].Policy.ToleratedKinds = []string{"QuotaExceded"}
+	require.Error(t, v1.CheckPolicyKinds(call), "a misspelling of the callee's kind is still refused")
+
+	task := &v1.Workflow{Name: "w", Steps: []*v1.Node{{
+		Id:     "s",
+		Kind:   &v1.Node_Task{Task: &v1.Task{Name: "log"}},
+		Policy: &v1.StepPolicy{ContinueOnError: true, ToleratedKinds: []string{"QuotaExceeded"}},
+	}}}
+	require.Error(t, v1.CheckPolicyKinds(task), "a step with no callee cannot fail with another workflow's kind")
+
+	// Retrying one is refused for the reason any declared error is: never retried.
+	call.GetSteps()[0].Policy = &v1.StepPolicy{Retry: &v1.RetryPolicy{Only: []string{"QuotaExceeded"}}}
+	err := v1.CheckPolicyKinds(call)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "never retried")
 }

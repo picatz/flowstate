@@ -561,6 +561,38 @@ func ToleratedStepFailureCases() []Case {
 			}},
 		},
 		{
+			// The caller declares nothing: the kind is the callee's, and a `call:`
+			// step names it to tolerate it. Both drivers must treat the callee's
+			// declared kind as the failure's kind, or the list would tolerate
+			// nothing here and the run would end instead of continuing.
+			Name: "a call step tolerates a kind only its callee declares",
+			Workflow: &v1.Workflow{
+				Name: "tolerated-callee-kind",
+				Steps: []*v1.Node{
+					{
+						Id: "provision",
+						Kind: &v1.Node_Call{Call: &v1.Call{Workflow: &v1.Workflow{
+							Name:           "callee-refuses",
+							DeclaredErrors: []*v1.ErrorDeclaration{{Name: "QuotaExceeded"}},
+							Steps: []*v1.Node{{
+								Id:   "refuse",
+								Kind: &v1.Node_Fail{Fail: &v1.Fail{Error: "QuotaExceeded", Message: v1.NewExpr(`"over quota"`)}},
+							}},
+						}}},
+						Policy: &v1.StepPolicy{ContinueOnError: true, ToleratedKinds: []string{"QuotaExceeded"}},
+					},
+					says("after", "still here"),
+				},
+			},
+			ExpectedOutputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
+				"provision": v1.FailedStepOutputs(v1.StepFailure{
+					Kind: "QuotaExceeded",
+					Text: `task "fail" failed (QuotaExceeded): over quota`,
+				}),
+				"after": {},
+			}},
+		},
+		{
 			// Bug Z2.6: locally this aborted the run instead of being tolerated.
 			Name: "a tolerated step vars failure records what went wrong and continues",
 			Workflow: &v1.Workflow{

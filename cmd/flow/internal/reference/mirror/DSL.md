@@ -3456,17 +3456,15 @@ tolerates and retries the failures it expects and nothing else:
 | `retry: {only: [Kind, ...]}` | retry only these kinds |
 | `retry: {except: [Kind, ...]}` | never retry these kinds |
 
-A kind is a built-in kind or one declared under `errors:`. Both retry lists only
+A kind is a built-in kind or one declared under `errors:`; a `call:` step may
+also name a kind its callee declares, without repeating the declaration. Both retry lists only
 narrow what the engine would already retry (`Upstream`, `Timeout`, `Internal`,
 `RateLimited`): naming a kind that is never retried, such as `PolicyDenied` or a
 declared error, cannot make it retryable, so `flow validate` refuses the list that
 tries rather than promise a retry that never happens. `only:` and `except:` say the
 same thing from opposite ends, so a step writes at most one, and `except:` may not
-name a kind that `only:` already leaves out. `Timeout` is the exception:
-Temporal retries an attempt that ran out its own deadline whatever a list says,
-so `except: [Timeout]` is refused and an `only:` that omits `Timeout` still
-retries timeouts; how often a slow step is tried is `attempts:` and `timeout:`.
-A misspelled kind is refused with the nearest real one. Both drivers apply the same rule, pinned by shared conformance
+name a kind that `only:` already leaves out. A misspelled kind is refused with the
+nearest real one. Both drivers apply the same rule, pinned by shared conformance
 cases; on the durable driver the narrowing compiles to Temporal's
 non-retryable error types and can only add to them. See
 `examples/failure-kinds/`.

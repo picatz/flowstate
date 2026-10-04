@@ -25,8 +25,8 @@ tests:
         fails:
           kind: Upstream
           message: connection refused
-      # `sync` tolerates only Upstream, so a rate limit from it is not
-      # tolerated even though the same kind was fine one step earlier.
+      # `sync` does not tolerate a rate limit, though `notify` does, so it is not
+      # tolerated here even though the same kind was fine one step earlier.
       - step: sync
         fails:
           kind: RateLimited

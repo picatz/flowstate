@@ -34,20 +34,10 @@ func ToleratesEveryKind(policy *StepPolicy) bool {
 // RetryAllowsKind reports whether a retry policy's `only:` and `except:` allow
 // another attempt after a failure of kind.
 //
-// A [ErrorKindTimeout] is never narrowed. The durable driver cannot stop
-// Temporal retrying an attempt that ran out its own deadline (that failure is
-// not an application error, so the non-retryable types never match it), and the
-// drivers must agree: how many times a slow step is tried is `attempts:` and
-// `timeout:`, which both honor. The validator refuses `except: [Timeout]` for the
-// same reason, and an `only:` that omits it still retries timeouts.
-//
 // It only ever narrows. A caller must still ask whether the failure is
 // retryable at all ([RetryPermitted]): naming a permanent kind in `only:` does not
 // make it retried, and the validator refuses the list that tries.
 func RetryAllowsKind(retry *RetryPolicy, kind ErrorKind) bool {
-	if kind == ErrorKindTimeout {
-		return true
-	}
 	if slices.Contains(retry.GetExcept(), kind.String()) {
 		return false
 	}
@@ -72,6 +62,38 @@ func RetryExcludedKinds(retry *RetryPolicy) []string {
 	return excluded
 }
 
+// calleeDeclaredKinds returns the kinds a `call:` step's callee, and whatever it
+// calls in turn, declares under `errors:`: failures the caller's own file never
+// names and can still see arrive at the call step. Nil for any other step.
+func calleeDeclaredKinds(node *Node) []string {
+	call := node.GetCall()
+	if call == nil {
+		return nil
+	}
+	callee := call.GetWorkflow()
+
+	kinds := slices.Clone(DeclaredErrorNames(callee))
+	WalkNodes(callee.GetSteps(), Walk{Node: func(inner *Node) {
+		kinds = append(kinds, calleeDeclaredKinds(inner)...)
+	}})
+
+	return kinds
+}
+
+// KnownFailureKindAt is [KnownFailureKind] for the step the kind is written on:
+// a `call:` step can also fail with what its callee declares, which the caller
+// need not repeat to tolerate it.
+func KnownFailureKindAt(wf *Workflow, node *Node, kind string) bool {
+	return KnownFailureKind(wf, kind) || slices.Contains(calleeDeclaredKinds(node), kind)
+}
+
+// FailureKindNamesAt lists the declared kinds a step's kind lists may name beside
+// the built-in ones, for a did-you-mean: the workflow's own and, on a `call:`
+// step, its callee's.
+func FailureKindNamesAt(wf *Workflow, node *Node) []string {
+	return append(DeclaredErrorNames(wf), calleeDeclaredKinds(node)...)
+}
+
 // PolicyKindProblem is one refusal of a step policy's kind lists.
 type PolicyKindProblem struct {
 	// Field is the key the problem is about: `continue_on_error`, `retry.only` or
@@ -89,7 +111,8 @@ type PolicyKindProblem struct {
 // policy, against the errors wf declares. Nothing is wrong with a policy that
 // names no kinds.
 //
-// A named kind must be one a step of wf can fail with ([KnownFailureKind]). In
+// A named kind must be one the step can fail with ([KnownFailureKindAt]): built in,
+// declared by wf, or, on a `call:` step, declared by its callee. In
 // `retry.only:` it must also be retryable: a permanent kind is not retried because
 // a list names it, and a declared error is never retried, so naming either would
 // promise a retry that never happens. In `retry.except:` it must be retryable
@@ -114,7 +137,7 @@ func PolicyKindProblems(wf *Workflow, node *Node) []PolicyKindProblem {
 		add("continue_on_error", "", "names tolerated kinds but does not continue on error")
 	}
 	for _, kind := range policy.GetToleratedKinds() {
-		if !KnownFailureKind(wf, kind) {
+		if !KnownFailureKindAt(wf, node, kind) {
 			add("continue_on_error", kind, "`continue_on_error:` names %q, which is neither a built-in kind (%s) nor declared under `errors:`",
 				kind, strings.Join(errorKindNames(), ", "))
 		}
@@ -127,9 +150,7 @@ func PolicyKindProblems(wf *Workflow, node *Node) []PolicyKindProblem {
 	}{{"retry.only", retry.GetOnly()}, {"retry.except", retry.GetExcept()}} {
 		for _, kind := range field.kinds {
 			switch {
-			case field.name == "retry.except" && ErrorKind(kind) == ErrorKindTimeout:
-				add(field.name, kind, "`except:` names %q, which cannot be narrowed: how often a slow step is retried is `attempts:` and `timeout:`, so set `attempts: 1` to try it once", kind)
-			case !KnownFailureKind(wf, kind):
+			case !KnownFailureKindAt(wf, node, kind):
 				add(field.name, kind, "`%s:` names %q, which is neither a built-in kind (%s) nor declared under `errors:`",
 					strings.TrimPrefix(field.name, "retry."), kind, strings.Join(errorKindNames(), ", "))
 			case !ErrorKind(kind).Retryable():
@@ -143,7 +164,7 @@ func PolicyKindProblems(wf *Workflow, node *Node) []PolicyKindProblem {
 		for _, kind := range retry.GetExcept() {
 			if slices.Contains(on, kind) {
 				add("retry.except", kind, "%q is in both `only:` and `except:`", kind)
-			} else if KnownFailureKind(wf, kind) && ErrorKind(kind).Retryable() && ErrorKind(kind) != ErrorKindTimeout {
+			} else if KnownFailureKindAt(wf, node, kind) && ErrorKind(kind).Retryable() {
 				add("retry.except", kind, "`except:` names %q, which `only:` already leaves out; write one list or the other", kind)
 			}
 		}

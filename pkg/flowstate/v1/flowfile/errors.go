@@ -218,8 +218,8 @@ func validatePolicyKinds(id string, node *v1.Node, wf *v1.Workflow) Diagnostics 
 
 	for _, problem := range v1.PolicyKindProblems(wf, node) {
 		message := strings.TrimPrefix(problem.Message, fmt.Sprintf("step %q: ", id))
-		if !v1.KnownFailureKind(wf, problem.Kind) && problem.Kind != "" {
-			known := append(errorKindNames(), v1.DeclaredErrorNames(wf)...)
+		if !v1.KnownFailureKindAt(wf, node, problem.Kind) && problem.Kind != "" {
+			known := append(errorKindNames(), v1.FailureKindNamesAt(wf, node)...)
 			if suggestion, ok := nearest.Name(problem.Kind, known); ok {
 				message += fmt.Sprintf("; did you mean %q?", suggestion)
 			}
