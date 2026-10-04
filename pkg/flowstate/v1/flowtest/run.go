@@ -754,12 +754,21 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	// A `step:` stub may name a `call:` step to answer at the callee's
 	// boundary (#1599); the workflow the rest of the case runs and judges is
 	// the one with those calls replaced. See [stubCallBoundaries].
-	workflow, callTasks, err := stubCallBoundaries(workflow, compiled)
+	workflow, boundaries, err := stubCallBoundaries(workflow, compiled)
 	if err != nil {
 		caseError("%s", err)
 		return
 	}
-	defer swapRegistry(callTasks)()
+	defer swapRegistry(slices.Sorted(maps.Keys(boundaries)))()
+	if len(boundaries) > 0 && len(test.Expect.Compensated) > 0 {
+		// A callee's compensations run under its own step ids, which a
+		// stubbed callee never registers: the claim can neither be checked
+		// nor honestly pass, so it is refused rather than left to fail
+		// as an unexplained miss.
+		caseError("expect.compensated cannot be asserted in a case that stubs a call (callee stubbed); " +
+			"run the callee inline to assert its compensations")
+		return
+	}
 	// Reported to the caller for coverage: the workflow this case compiled is
 	// what its steps are counted against, even when the run below then fails.
 	spec = workflow
@@ -791,6 +800,11 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	if err != nil {
 		caseError("%s", err)
 		return
+	}
+	for name, callee := range boundaries {
+		if stub, ok := stubs[name]; ok {
+			stub.callee = callee
+		}
 	}
 
 	// Refused before the run for the same reason a bad stub target is: an

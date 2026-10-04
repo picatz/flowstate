@@ -200,7 +200,12 @@ stubs:
 
 `returns:` is held to the callee: a name the callee does not declare under
 `outputs:` is refused with a did-you-mean, and so is a declared output the stub
-leaves out. `where:`, `times:`, `fails:` and `invocations:` work as for a task
+leaves out. Each value an answer carries is held to its output's declared type
+and `must:` when the stub answers, so a string for an `int` fails the step as
+the real call would. A callee that declares a `sensitive:` input or output
+cannot be stubbed at its boundary (the stub would erase what keeps the value
+out of the transcript), and `expect.compensated` is refused in a case that
+stubs a call; run the callee inline for either. `where:`, `times:`, `fails:` and `invocations:` work as for a task
 stub; a call is counted as the task `call.<callee name>` with hyphens written
 as underscores. A call step no stub names still runs inline, so one file can
 hold a case that stubs the boundary beside one that runs the callee. A

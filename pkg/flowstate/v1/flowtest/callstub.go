@@ -32,10 +32,11 @@ const callStubTaskPrefix = "call."
 //
 // A call step no stub names is left alone and runs inline, so one caller can
 // have a case that stubs the boundary and another that runs the callee. The
-// returned workflow is spec itself when nothing is rewritten. The returned
-// names are the synthetic tasks it introduced, which the caller registers the
-// way [swapRegistry] registers a stubbed plugin task's name.
-func stubCallBoundaries(spec *v1.Workflow, compiled []compiledStub) (*v1.Workflow, []string, error) {
+// returned workflow is spec itself when nothing is rewritten. The returned map
+// names each synthetic task it introduced and the callee it stands for: the
+// caller registers the names the way [swapRegistry] registers a stubbed plugin
+// task's name, and holds each answer to its callee ([checkCallAnswer]).
+func stubCallBoundaries(spec *v1.Workflow, compiled []compiledStub) (*v1.Workflow, map[string]*v1.Workflow, error) {
 	wanted := map[string]bool{}
 	for i := range compiled {
 		if compiled[i].step != "" {
@@ -52,6 +53,29 @@ func stubCallBoundaries(spec *v1.Workflow, compiled []compiledStub) (*v1.Workflo
 		return spec, nil, nil
 	}
 
+	// A boundary stub erases the callee, and with it the `sensitive:`
+	// declarations the run withholds by (a callee's input or output is masked
+	// from the transcript and from diagnostics only while the callee is part
+	// of the run). Fail closed: a stub that could print the fixture it stands
+	// for is refused, and the callee runs inline instead.
+	boundaries := map[string]*v1.Workflow{}
+	for _, id := range slices.Sorted(maps.Keys(calls)) {
+		callee := calls[id].GetWorkflow()
+		if sensitive, err := v1.DeclaresSensitiveValues(callee); err != nil {
+			return nil, nil, fmt.Errorf("step %q: reading callee %q: %w", id, callee.GetName(), err)
+		} else if sensitive {
+			return nil, nil, fmt.Errorf("stub names step %q, whose callee %q declares a `sensitive:` input or output, "+
+				"which a boundary stub cannot keep withheld; run the callee inline and stub its tasks with `task:`",
+				id, callee.GetName())
+		}
+		name := callStubTaskPrefix + callStubName(callee)
+		if other, ok := boundaries[name]; ok && other != callee && !proto.Equal(other, callee) {
+			return nil, nil, fmt.Errorf("stub names step %q, whose callee %q shares the stub task name %q with another stubbed callee; "+
+				"rename one of the callees", id, callee.GetName(), name)
+		}
+		boundaries[name] = callee
+	}
+
 	for i := range compiled {
 		m := &compiled[i]
 		call, ok := calls[m.step]
@@ -63,7 +87,6 @@ func stubCallBoundaries(spec *v1.Workflow, compiled []compiledStub) (*v1.Workflo
 		}
 	}
 
-	var tasks []string
 	clone := proto.Clone(spec).(*v1.Workflow)
 	walkOwnNodes(clone.GetSteps(), func(node *v1.Node) {
 		call := node.GetCall()
@@ -72,12 +95,9 @@ func stubCallBoundaries(spec *v1.Workflow, compiled []compiledStub) (*v1.Workflo
 		}
 		name := callStubTaskPrefix + callStubName(call.GetWorkflow())
 		node.Kind = &v1.Node_Task{Task: &v1.Task{Name: name, Inputs: call.GetArguments()}}
-		if !slices.Contains(tasks, name) {
-			tasks = append(tasks, name)
-		}
 	})
 
-	return clone, tasks, nil
+	return clone, boundaries, nil
 }
 
 // callStubName is the callee's name made to fit the part of a plugin task name
@@ -155,4 +175,28 @@ func walkOwnNodes(nodes []*v1.Node, visit func(*v1.Node)) {
 			walkOwnNodes(kind.Loop.GetBody(), visit)
 		}
 	}
+}
+
+// checkCallAnswer holds one invocation's resolved `returns:` to the callee's
+// declared outputs the way the real call would: each value must have its
+// output's declared type and satisfy its `must:`. [checkCallReturns] has
+// already settled which names are present, so this is the half that needs the
+// values, which an expression-valued `returns:` only has at the invocation.
+func checkCallAnswer(profile string, callee *v1.Workflow, returns map[string]any) error {
+	table := v1.TypesOf(callee)
+	values := v1.NewNamedValues(returns)
+	for _, decl := range callee.GetDeclaredOutputs() {
+		value, ok := values[decl.GetName()]
+		if !ok {
+			continue
+		}
+		if err := v1.CheckOutputValueIn(table, decl, value); err != nil {
+			return fmt.Errorf("returns does not satisfy callee %q: %w", callee.GetName(), err)
+		}
+		if err := v1.CheckOutputConstraint(profile, decl, value); err != nil {
+			return fmt.Errorf("returns does not satisfy callee %q: %w", callee.GetName(), err)
+		}
+	}
+
+	return nil
 }
