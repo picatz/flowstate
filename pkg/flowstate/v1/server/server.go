@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"maps"
 	"os"
+	"regexp"
 	"strconv"
 	"sync"
 	"time"
@@ -2477,12 +2478,40 @@ func (s *FlowstateServer) get(ctx context.Context, req *connect.Request[v1.GetRe
 				// predates the memo key.
 				Starter: s.reportedStarter(resp),
 				Kind: &v1.GetResponse_Error{
-					Error: failureError(ctx, temporal, req.Msg.GetWorkflowId(), resp.GetWorkflowExecutionInfo().GetExecution().GetRunId(), respStatus),
+					Error: failureError(ctx, temporal, req.Msg.GetWorkflowId(), resp.GetWorkflowExecutionInfo().GetExecution().GetRunId(), respStatus,
+						s.declaredFailureKind(ctx, req.Msg.GetWorkflowId(), resp.GetWorkflowExecutionInfo().GetExecution().GetRunId())),
 				},
 			},
 		), nil
 	default:
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("unknown workflow status: %d", respStatus))
+	}
+}
+
+// declaredKindName is the shape of a name `errors:` may declare, checked before a
+// failure's type is looked up among a run's declarations.
+var declaredKindName = regexp.MustCompile(`^[A-Z][A-Za-z0-9_]{0,127}$`)
+
+// declaredFailureKind returns the check [failureError] makes before it reports a
+// failure type that is not a built-in kind: whether the run's own specification,
+// or a workflow it calls, declares it. The specification is read lazily, once, and
+// only for a failure whose type is shaped like a declared name; one that cannot be
+// read declares nothing, so the kind is left unset rather than guessed.
+func (s *FlowstateServer) declaredFailureKind(ctx context.Context, workflowID, runID string) func(string) bool {
+	var (
+		read     bool
+		workflow *v1.Workflow
+	)
+
+	return func(kind string) bool {
+		if !read {
+			read = true
+			if state, err := s.startedRunState(ctx, s.identityFor(ctx).GetNamespace(), workflowID, runID); err == nil {
+				workflow = state.GetWorkflow()
+			}
+		}
+
+		return workflow != nil && v1.ReportableFailureKind(workflow, kind)
 	}
 }
 
@@ -2537,6 +2566,7 @@ func failureError(
 	temporalClient client.Client,
 	workflowID, runID string,
 	status v1.RunResponse_Status,
+	declared func(kind string) bool,
 ) *v1.RunResponse_Error {
 	err := temporalClient.GetWorkflow(ctx, workflowID, runID).Get(ctx, nil)
 	if err == nil {
@@ -2548,6 +2578,13 @@ func failureError(
 		result := &v1.RunResponse_Error{Message: app.Message()}
 		if kind, ok := v1.ParseErrorKind(app.Type()); ok {
 			result.Kind = kind.String()
+		} else if declaredKindName.MatchString(app.Type()) && declared(app.Type()) {
+			// A kind the workflow declared under `errors:`. The type is only a
+			// string the run's failure carried, so it is reported when the run's
+			// own specification (or a workflow it calls) declares it, and
+			// otherwise left unclassified like any string this build never
+			// produced.
+			result.Kind = app.Type()
 		}
 
 		return result

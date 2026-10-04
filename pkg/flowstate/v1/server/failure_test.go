@@ -348,3 +348,47 @@ func TestARunThatOutlivedItsBudgetIsClassifiedPermanent(t *testing.T) {
 	require.NotEqual(t, got.GetStatus().String(), got.GetError().GetMessage(),
 		"the reason is the status restated, which is what this branch exists to stop")
 }
+
+// TestAFailedRunReportsTheKindItDeclared: a run that ends on a `fail:` step
+// reports the declared name as `kind`, so a client branches on `InsufficientFunds`
+// instead of finding it only in the sentence. The same failure type is left
+// unclassified when the run's own specification does not declare it, which is
+// what keeps an arbitrary string a failure carried from becoming a kind.
+func TestAFailedRunReportsTheKindItDeclared(t *testing.T) {
+	t.Parallel()
+
+	fixture := newTenantFixture(t)
+	startWorker(t, fixture.temporal)
+
+	started, err := fixture.teamA.Run(t.Context(), connect.NewRequest(&v1.RunRequest{
+		Workflow: &v1.Workflow{
+			Name:           "refuses",
+			DeclaredErrors: []*v1.ErrorDeclaration{{Name: "InsufficientFunds"}},
+			Steps: []*v1.Node{{
+				Id: "refuse",
+				Kind: &v1.Node_Fail{Fail: &v1.Fail{
+					Error:   "InsufficientFunds",
+					Message: v1.NewExpr(`"balance 5 cannot cover 9"`),
+				}},
+			}},
+		},
+	}))
+	require.NoError(t, err)
+
+	var got *v1.GetResponse
+	require.Eventually(t, func() bool {
+		resp, gerr := fixture.teamA.Get(t.Context(), connect.NewRequest(&v1.GetRequest{
+			WorkflowId: started.Msg.GetWorkflowId(),
+		}))
+		if gerr != nil {
+			return false
+		}
+		got = resp.Msg
+
+		return got.GetStatus() != v1.RunResponse_STATUS_RUNNING
+	}, 60*time.Second, 200*time.Millisecond, "the run never reached a terminal state")
+
+	require.Equal(t, v1.RunResponse_STATUS_FAILED, got.GetStatus())
+	require.Equal(t, "InsufficientFunds", got.GetError().GetKind())
+	require.Contains(t, got.GetError().GetMessage(), "balance 5 cannot cover 9")
+}
