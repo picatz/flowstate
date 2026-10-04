@@ -1098,7 +1098,7 @@ substitute boundary the way a container's published-port binding is.
 `flow server` answers `GET`/`HEAD /healthz` with `200` and an empty body —
 nothing else, deliberately: an unauthenticated endpoint that describes the
 deployment (version, config, dependency state) is reconnaissance served on
-request (`healthzHandler`, `cmd/flow/routing.go:148-156`). It is mounted in
+request (`healthzHandler`, `cmd/flow/routing.go:183-191`). It is mounted in
 two places:
 
 - On the **public** listener, unauthenticated, always — `serverHandler`,
@@ -1263,7 +1263,7 @@ are equally plaintext `httpGet` checks against the TLS-terminated port and
 fail the same way if left as they are. `exec` runs the command inside the
 container's own network namespace, which loopback is reachable from, and the
 internal listener never carries TLS or client-cert requirements of its own
-(`internalHandler`, `cmd/flow/routing.go:187`) regardless of what the public
+(`internalHandler`, `cmd/flow/routing.go:222`) regardless of what the public
 listener demands:
 
 ```yaml
