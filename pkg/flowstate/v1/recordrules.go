@@ -90,7 +90,7 @@ func (w *ruleWalk) value(t *Type, lit *expr.Value, path string, depth int) error
 			if !isString {
 				continue
 			}
-			if err := w.value(kind.Map.GetValue(), entry.GetValue(), path+"."+echoName(key.StringValue), depth+1); err != nil {
+			if err := w.value(kind.Map.GetValue(), entry.GetValue(), path+w.key(key.StringValue), depth+1); err != nil {
 				return err
 			}
 		}
@@ -157,6 +157,9 @@ func (w *ruleWalk) rule(must string, t InputDeclaration_Type, value *expr.Value,
 
 	satisfied, err := evalMust(context.Background(), w.profile, t, ast, value)
 	if err != nil {
+		if w.sensitive {
+			return fmt.Errorf("%s%s: evaluating `must: %s` failed", subject, atPath(path), echoName(must))
+		}
 		return fmt.Errorf("%s%s: evaluating `must: %s`: %w", subject, atPath(path), echoName(must), err)
 	}
 	if !satisfied {
@@ -164,6 +167,16 @@ func (w *ruleWalk) rule(must string, t InputDeclaration_Type, value *expr.Value,
 	}
 
 	return nil
+}
+
+// key renders a map key as a path segment, which for a declaration marked sensitive
+// is a placeholder: a key is data the file supplies, and the word says none is repeated.
+func (w *ruleWalk) key(k string) string {
+	if w.sensitive {
+		return "[*]"
+	}
+
+	return "." + echoName(k)
 }
 
 // got renders "; got v" for a value short enough to read and not a container,

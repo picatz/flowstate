@@ -508,3 +508,26 @@ func TestARecordRuleThatDoesNotCompileIsRefused(t *testing.T) {
 		})
 	}
 }
+
+func TestRecordRuleRefusalKeepsASensitiveValueAndKeyOut(t *testing.T) {
+	t.Parallel()
+
+	wf := recordOrderWorkflow()
+	line := wf.DeclaredTypes[0]
+	line.Fields[slices.IndexFunc(line.Fields, func(f *v1.InputDeclaration) bool { return f.GetName() == "quantity" })].Must = new("this > 0")
+	require.NoError(t, v1.CheckRecordDeclarations(wf))
+
+	byKey := &v1.Type{Kind: &v1.Type_Map_{Map: &v1.Type_Map{Value: recordTypeOf("Line")}}}
+	value := &v1.Value{Kind: &v1.Value_Literal{Literal: mapLit(recordStr("secret-key"), recordLine("k", 0))}}
+
+	for _, sensitive := range []bool{false, true} {
+		err := v1.CheckRecordRules(v1.TypesOf(wf), "", "input", "lines", sensitive, byKey, value)
+		require.Error(t, err)
+		if sensitive {
+			assert.NotContains(t, err.Error(), "secret-key")
+			assert.Contains(t, err.Error(), "[*].quantity")
+		} else {
+			assert.Contains(t, err.Error(), ".secret-key.quantity")
+		}
+	}
+}
