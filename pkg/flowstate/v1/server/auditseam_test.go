@@ -44,6 +44,12 @@ import (
 var auditSeamFunctions = map[string]bool{
 	"auditAllow": true,
 	"auditDeny":  true,
+	// The debug RPCs record with their debug detail, which auditAllow and
+	// auditDeny cannot carry, so they have emitters of their own. Without
+	// these two named, a debug handler reached the seam only by sharing a
+	// method name with something that does.
+	"auditDebugAllow": true,
+	"auditDebugDeny":  true,
 }
 
 // TestEveryRPCReachesTheAuditSeam walks flowstate.v1.WorkflowService's
@@ -90,12 +96,12 @@ func TestTheAuditSeamIsNotBypassed(t *testing.T) {
 
 	allowed := map[string]map[string]string{
 		"authorizeRunDecision": {
-			"authorizeRun":     "the audited wrapper: this is where the record is written",
-			"Signal":           "walks a Continue-As-New chain from its first run id to the current one, which is one decision reached in two lookups; it audits once itself",
-			"SignalWithStart":  "audits when the request is admitted, before anything is created; the already-running branch re-resolves that same decision",
-			"answer":           "the webhook-to-signal bridge: it reaches one decision — is there a run here, and will its `signals:` take an answer from this trigger — and audits that decision itself, denial and acceptance both, as a WEBHOOK_DELIVERY enforcement record (webhookaudit.go)",
-			"authorizeDebug":   "the debugger's RPCs: it walks a Continue-As-New chain as Signal does, and audits the one decision itself, allow and deny, with the debug detail the record carries",
-			"reusedSubmission": "Run's already-started arm under a request_id: the admission was audited before the start was attempted, and a retry recognized here is audited by Run itself as a second decision naming the run it was answered with",
+			"authorizeRun":      "the audited wrapper: this is where the record is written",
+			"Signal":            "walks a Continue-As-New chain from its first run id to the current one, which is one decision reached in two lookups; it audits once itself",
+			"SignalWithStart":   "audits when the request is admitted, before anything is created; the already-running branch re-resolves that same decision",
+			"answer":            "the webhook-to-signal bridge: it reaches one decision — is there a run here, and will its `signals:` take an answer from this trigger — and audits that decision itself, denial and acceptance both, as a WEBHOOK_DELIVERY enforcement record (webhookaudit.go)",
+			"authorizeDebugRun": "the debugger's RPCs: it walks a Continue-As-New chain as Signal does (a history read does not), and audits the one decision itself, allow and deny, with the debug detail the record carries",
+			"reusedSubmission":  "Run's already-started arm under a request_id: the admission was audited before the start was attempted, and a retry recognized here is audited by Run itself as a second decision naming the run it was answered with",
 		},
 		"authorizeScheduleDecision": {
 			"authorizeSchedule": "the audited wrapper: this is where the record is written",

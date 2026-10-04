@@ -631,7 +631,7 @@ message AuditDebugDetail {
   string request_id = 2 [(buf.validate.field).string = {max_len: 128}];
   uint64 revision = 3;
   // Operation names the command: `attach`, `get`, `resume/step_over`,
-  // `breakpoints`, `inspect`, `signal`.
+  // `breakpoints`, `inspect`, `signal`, `history`.
   string operation = 4 [(buf.validate.field).string = {max_len: 64}];
   // ExpressionDigest is the content digest of an inspected expression.
   string expression_digest = 5 [(buf.validate.field).string = {max_len: 128}];

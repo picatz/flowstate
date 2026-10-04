@@ -954,6 +954,17 @@ service WorkflowService {
   // polling in a tight loop.
   rpc DebugGet(DebugGetRequest) returns (DebugGetResponse) {}
 
+  // DebugHistory reads a durable run as it was at one point of its recorded
+  // history, open or closed, and lists the points it can be read at.
+  //
+  // It is read-only: the interpreter is replayed over the history with no
+  // worker attached, so no task, plugin or other effect can be dispatched, and
+  // nothing is written to the run. The same `debug:` policy as the live
+  // debugger decides who may read it. Every value is labelled by how it is
+  // known; a point the history cannot be replayed to, a history from another
+  // build, and one over the bound are refused rather than guessed.
+  rpc DebugHistory(DebugHistoryRequest) returns (DebugHistoryResponse) {}
+
   // DebugResume releases a held durable run: continue, step in, step over,
   // step out, run until a step, or detach.
   //

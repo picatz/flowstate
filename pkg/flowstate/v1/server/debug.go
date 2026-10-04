@@ -113,6 +113,15 @@ func (r *debugRun) open() bool {
 // the reserved-channel protocol, and the run's own `debug:` policy. It audits
 // the decision with detail.
 func (s *FlowstateServer) authorizeDebug(ctx context.Context, rpc, workflowID, runID string, detail *v1.AuditDebugDetail) (*debugRun, error) {
+	return s.authorizeDebugRun(ctx, rpc, workflowID, runID, true, detail)
+}
+
+// authorizeDebugRun is [FlowstateServer.authorizeDebug], with follow saying
+// whether a run id that names a chain's first run is followed to the chain's
+// current execution, as a live session does. A read of one execution's recorded
+// past does not follow: the `debug:` policy it is judged by must be the one
+// carried by the execution whose history is read, so it is resolved exactly.
+func (s *FlowstateServer) authorizeDebugRun(ctx context.Context, rpc, workflowID, runID string, follow bool, detail *v1.AuditDebugDetail) (*debugRun, error) {
 	// The action gate, before the run is resolved, audited with the debug
 	// detail like every other decision this RPC makes.
 	action, err := v1.AuthorizationActionForRPC(rpc)
@@ -124,7 +133,7 @@ func (s *FlowstateServer) authorizeDebug(ctx context.Context, rpc, workflowID, r
 	}
 
 	temporal, resp, code, err := s.authorizeRunDecision(ctx, workflowID, runID)
-	if runID != "" && (err != nil || resp.GetWorkflowExecutionInfo().GetFirstRunId() == runID) {
+	if follow && runID != "" && (err != nil || resp.GetWorkflowExecutionInfo().GetFirstRunId() == runID) {
 		// The same chain resolution [FlowstateServer.Signal] uses: a run id
 		// names the chain, and a session follows the chain across
 		// Continue-As-New, so the current execution of that same chain is the
@@ -160,7 +169,7 @@ func (s *FlowstateServer) authorizeDebug(ctx context.Context, rpc, workflowID, r
 		return nil, s.auditDebugDeny(ctx, rpc, workflowID, detail, v1.AuditDenyCode_AUDIT_DENY_CODE_POLICY_DENIED, err)
 	}
 
-	if err := s.audit.Allow(ctx, s.debugAuditSubject(ctx, rpc, workflowID, detail)); err != nil {
+	if err := s.auditDebugAllow(ctx, rpc, workflowID, detail); err != nil {
 		return nil, err
 	}
 
@@ -178,6 +187,13 @@ func (s *FlowstateServer) debugAuditSubject(ctx context.Context, rpc, workflowID
 	subject.Debug = detail
 
 	return subject
+}
+
+// auditDebugAllow records an allowed debug RPC with its detail. It and
+// [FlowstateServer.auditDebugDeny] are the debug RPCs' emitters, which is what
+// the audit-seam test is told so that it follows a debug handler to them.
+func (s *FlowstateServer) auditDebugAllow(ctx context.Context, rpc, workflowID string, detail *v1.AuditDebugDetail) error {
+	return s.audit.Allow(ctx, s.debugAuditSubject(ctx, rpc, workflowID, detail))
 }
 
 func (s *FlowstateServer) auditDebugDeny(ctx context.Context, rpc, workflowID string, detail *v1.AuditDebugDetail, code v1.AuditDenyCode, refusal error) error {

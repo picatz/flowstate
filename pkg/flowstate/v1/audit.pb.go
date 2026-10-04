@@ -838,7 +838,7 @@ type AuditDebugDetail struct {
 	RequestId string                 `protobuf:"bytes,2,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
 	Revision  uint64                 `protobuf:"varint,3,opt,name=revision,proto3" json:"revision,omitempty"`
 	// Operation names the command: `attach`, `get`, `resume/step_over`,
-	// `breakpoints`, `inspect`, `signal`.
+	// `breakpoints`, `inspect`, `signal`, `history`.
 	Operation string `protobuf:"bytes,4,opt,name=operation,proto3" json:"operation,omitempty"`
 	// ExpressionDigest is the content digest of an inspected expression.
 	ExpressionDigest string `protobuf:"bytes,5,opt,name=expression_digest,json=expressionDigest,proto3" json:"expression_digest,omitempty"`

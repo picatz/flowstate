@@ -59,6 +59,7 @@ func New(temporalClient client.Client, opts ...Option) (*FlowstateServer, error)
 		// that option for why a second GetDefaultDataConverter call anywhere
 		// else in this package is a bug rather than a shortcut.
 		dataConverter: converter.GetDefaultDataConverter(),
+		historySlots:  make(chan struct{}, maxDebugHistoryReplays),
 	}
 	for _, opt := range opts {
 		if err := opt(s); err != nil {
@@ -527,6 +528,10 @@ type FlowstateServer struct {
 	// process that serves rather than for the library. See [WithAudit] and
 	// pkg/flowstate/v1/audit.
 	audit *audit.Recorder
+
+	// historySlots bounds how many [FlowstateServer.DebugHistory]
+	// reconstructions run at once. Set in [New].
+	historySlots chan struct{}
 }
 
 // trustedWorkflow returns the deployment-owned specification registered for

@@ -9,6 +9,7 @@ import (
 
 	enumspb "go.temporal.io/api/enums/v1"
 	historypb "go.temporal.io/api/history/v1"
+	"go.temporal.io/sdk/converter"
 	"go.temporal.io/sdk/interceptor"
 	"go.temporal.io/sdk/worker"
 	"go.temporal.io/sdk/workflow"
@@ -211,7 +212,26 @@ func Boundaries(history *historypb.History) []int {
 	return at
 }
 
-// Reconstruct replays history through the event at index, as the run
+// ReconstructOptions configures [ReconstructWith].
+type ReconstructOptions struct {
+	// DataConverter reads the payloads the history recorded: the one the run
+	// was written with, so a run whose payloads are encrypted can be replayed
+	// by a caller that holds the key. Nil is the SDK's default converter.
+	DataConverter converter.DataConverter
+
+	// Done, if set, is called once the replay has finished, or at once when
+	// none is started. A call that returns early because its context ended
+	// leaves its replay running, so this is what a caller that bounds how many
+	// replays run at once releases its slot with.
+	Done func()
+}
+
+// Reconstruct is [ReconstructWith] with the default options.
+func Reconstruct(ctx context.Context, history *historypb.History, index int, execution workflow.Execution, inspections ...*v1.DebugInspectRequest) (*Reconstruction, error) {
+	return ReconstructWith(ctx, ReconstructOptions{}, history, index, execution, inspections...)
+}
+
+// ReconstructWith replays history through the event at index, as the run
 // execution names, and asks the handlers the interpreter installed, or refuses.
 // inspections are answered at the same point, in the same replay.
 //
@@ -220,8 +240,17 @@ func Boundaries(history *historypb.History) []int {
 // call at once with its error; the replay already under way cannot be
 // interrupted, runs on a goroutine of its own to the end of the prefix (bounded
 // by [MaxReconstructionEvents]) and its answer is dropped. At most
-// [MaxReconstructionInspections] inspections are answered.
-func Reconstruct(ctx context.Context, history *historypb.History, index int, execution workflow.Execution, inspections ...*v1.DebugInspectRequest) (*Reconstruction, error) {
+// [MaxReconstructionInspections] inspections are answered. The history must not
+// be modified after the call returns early, for the same reason; a caller that
+// issues many reads bounds how many replays are in flight at once.
+func ReconstructWith(ctx context.Context, opts ReconstructOptions, history *historypb.History, index int, execution workflow.Execution, inspections ...*v1.DebugInspectRequest) (*Reconstruction, error) {
+	started := false
+	defer func() {
+		if !started && opts.Done != nil {
+			opts.Done()
+		}
+	}()
+
 	events := history.GetEvents()
 	if len(events) > MaxReconstructionEvents {
 		return nil, fmt.Errorf("history has %d events, over the %d a reconstruction replays", len(events), MaxReconstructionEvents)
@@ -241,8 +270,12 @@ func Reconstruct(ctx context.Context, history *historypb.History, index int, exe
 		err            error
 	}
 	done := make(chan outcome, 1)
+	started = true
 	go func() {
-		reconstruction, err := reconstructAt(events, index, execution, inspections)
+		if opts.Done != nil {
+			defer opts.Done()
+		}
+		reconstruction, err := reconstructAt(opts, events, index, execution, inspections)
 		done <- outcome{reconstruction, err}
 	}()
 	select {
@@ -253,10 +286,11 @@ func Reconstruct(ctx context.Context, history *historypb.History, index int, exe
 	}
 }
 
-func reconstructAt(events []*historypb.HistoryEvent, index int, execution workflow.Execution, inspections []*v1.DebugInspectRequest) (*Reconstruction, error) {
+func reconstructAt(opts ReconstructOptions, events []*historypb.HistoryEvent, index int, execution workflow.Execution, inspections []*v1.DebugInspectRequest) (*Reconstruction, error) {
 	capture := &handlerCapture{inspections: inspections}
 	replayer, err := worker.NewWorkflowReplayerWithOptions(worker.WorkflowReplayerOptions{
-		Interceptors: []interceptor.WorkerInterceptor{capture},
+		DataConverter: opts.DataConverter,
+		Interceptors:  []interceptor.WorkerInterceptor{capture},
 	})
 	if err != nil {
 		return nil, err

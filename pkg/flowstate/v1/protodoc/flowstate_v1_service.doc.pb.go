@@ -1196,6 +1196,18 @@ func init() {
 				" polling in a tight loop.\n",
 		},
 		{
+			Name: "flowstate.v1.WorkflowService.DebugHistory",
+			Leading: " DebugHistory reads a durable run as it was at one point of its recorded\n" +
+				" history, open or closed, and lists the points it can be read at.\n" +
+				"\n" +
+				" It is read-only: the interpreter is replayed over the history with no\n" +
+				" worker attached, so no task, plugin or other effect can be dispatched, and\n" +
+				" nothing is written to the run. The same `debug:` policy as the live\n" +
+				" debugger decides who may read it. Every value is labelled by how it is\n" +
+				" known; a point the history cannot be replayed to, a history from another\n" +
+				" build, and one over the bound are refused rather than guessed.\n",
+		},
+		{
 			Name: "flowstate.v1.WorkflowService.DebugResume",
 			Leading: " DebugResume releases a held durable run: continue, step in, step over,\n" +
 				" step out, run until a step, or detach.\n" +

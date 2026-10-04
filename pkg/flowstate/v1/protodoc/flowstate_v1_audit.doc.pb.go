@@ -269,7 +269,7 @@ func init() {
 		{
 			Name: "flowstate.v1.AuditDebugDetail.operation",
 			Leading: " Operation names the command: `attach`, `get`, `resume/step_over`,\n" +
-				" `breakpoints`, `inspect`, `signal`.\n",
+				" `breakpoints`, `inspect`, `signal`, `history`.\n",
 		},
 		{
 			Name:    "flowstate.v1.AuditDebugDetail.expression_digest",

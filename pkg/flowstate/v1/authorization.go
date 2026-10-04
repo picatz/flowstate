@@ -118,7 +118,7 @@ var authorizationActionBindings = []*AuthorizationActionBinding{
 	{
 		Action: AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_DEBUG,
 		Parent: AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_SIGNAL,
-		Rpcs:   []string{"DebugAttach", "DebugGet", "DebugResume", "DebugSetBreakpoints"},
+		Rpcs:   []string{"DebugAttach", "DebugGet", "DebugHistory", "DebugResume", "DebugSetBreakpoints"},
 	},
 	{
 		Action: AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_DEBUG_INSPECT,
