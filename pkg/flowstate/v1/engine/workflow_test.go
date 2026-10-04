@@ -262,9 +262,15 @@ func TestRunWorkflowErrorKind(t *testing.T) {
 			require.True(t, errors.As(err, &app),
 				"a terminal run failure must reach the client as an ApplicationError, got: %v", err)
 
-			kind, ok := v1.ParseErrorKind(app.Type())
-			require.True(t, ok, "the application error's Type %q must be a recognized ErrorKind", app.Type())
-			require.Equal(t, tc.ExpectedKind, kind)
+			// A kind the workflow declared is not one the closed built-in parser
+			// knows, so the run's error type is compared as the label it is.
+			if _, builtin := v1.ParseErrorKind(string(tc.ExpectedKind)); !builtin {
+				require.Equal(t, string(tc.ExpectedKind), app.Type())
+			} else {
+				kind, ok := v1.ParseErrorKind(app.Type())
+				require.True(t, ok, "the application error's Type %q must be a recognized ErrorKind", app.Type())
+				require.Equal(t, tc.ExpectedKind, kind)
+			}
 			if tc.Attempts != nil {
 				require.Equal(t, tc.ExpectedAttempts, tc.Attempts(),
 					"the driver's retry behavior disagrees with this error kind's permanence")

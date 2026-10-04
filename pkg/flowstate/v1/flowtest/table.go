@@ -143,6 +143,8 @@ func expandTableEntries(p *problems, tests []Test) ([]Test, []caseSource) {
 		entry.Expect.Check = slices.Clone(entry.Expect.Check)
 		entrySite := site{test: entry.Name, at: where}
 		checkOthers(p, entrySite, &entry)
+		checkFaults(p, entrySite, &entry, where.field("faults"))
+		checkInvariants(p, entrySite, &entry, where.field("invariants"))
 		checkCheckClaims(p, entrySite.in(where.field("expect").field("check")),
 			fmt.Sprintf("test %q expect", entry.Name), entry.Expect.Check, len(entry.Expect.Check), "")
 
@@ -220,6 +222,12 @@ func mergeRow(entry, row Test) Test {
 	// whose halves are not independently meaningful. `expect:` is the
 	// exception and is merged field by field; see [mergeExpectation].
 	merged.Skip = cmp.Or(row.Skip, entry.Skip)
+	if len(merged.Faults) == 0 && len(entry.Faults) > 0 {
+		merged.Faults, merged.faultsFromEntry = entry.Faults, true
+	}
+	if len(merged.Invariants) == 0 && len(entry.Invariants) > 0 {
+		merged.Invariants, merged.invariantsFromEntry = entry.Invariants, true
+	}
 	if merged.Trigger == nil {
 		merged.Trigger = entry.Trigger
 	}

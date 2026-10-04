@@ -32,12 +32,14 @@ contracts and do not advertise a schema-owned result message.
 | `flowstate_get` | via a server | `flowstate.v1.GetRequest` | `flowstate.v1.GetResponse` |
 | `flowstate_get_timeline` | via a server | `flowstate.v1.GetTimelineRequest` | `flowstate.v1.GetTimelineResponse` |
 | `flowstate_signal` | via a server | `flowstate.v1.SignalRequest` | `flowstate.v1.SignalResponse` |
+| `flowstate_get_gate` | via a server | `flowstate.v1.GetGateRequest` | `flowstate.v1.GetGateResponse` |
 | `flowstate_signal_with_start` | via a server | `flowstate.v1.SignalWithStartRequest` | `flowstate.v1.SignalWithStartResponse` |
 | `flowstate_list` | via a server | `flowstate.v1.ListRequest` | `flowstate.v1.ListResponse` |
 | `flowstate_cancel` | via a server | `flowstate.v1.CancelRequest` | `flowstate.v1.CancelResponse` |
 | `flowstate_terminate` | via a server | `flowstate.v1.TerminateRequest` | `flowstate.v1.TerminateResponse` |
 | `flowstate_debug_attach` | via a server | `flowstate.v1.DebugAttachRequest` | `flowstate.v1.DebugAttachResponse` |
 | `flowstate_debug_get` | via a server | `flowstate.v1.DebugGetRequest` | `flowstate.v1.DebugGetResponse` |
+| `flowstate_debug_history` | via a server | `flowstate.v1.DebugHistoryRequest` | `flowstate.v1.DebugHistoryResponse` |
 | `flowstate_debug_resume` | via a server | `flowstate.v1.DebugResumeRequest` | `flowstate.v1.DebugResumeResponse` |
 | `flowstate_debug_set_breakpoints` | via a server | `flowstate.v1.DebugSetBreakpointsRequest` | `flowstate.v1.DebugSetBreakpointsResponse` |
 | `flowstate_debug_inspect` | via a server | `flowstate.v1.DebugInspectRequest` | `flowstate.v1.DebugInspectResponse` |
@@ -119,6 +121,14 @@ This addresses a durable run. `flow run local` answers its gates from flags inst
 
 `SignalResponse` is empty: it says the signal was accepted, not what the run did with it. Call `Get` afterward to see whether a waiting step consumed it.
 
+## `flowstate_get_gate`
+
+GetGate reads one open approval gate for the caller who would answer it.
+
+`Get` reads a whole run and is bound to `workload.read`, which an approver need not hold: a person granted only `workload.signal` can answer a gate with `Signal` but could not see the question it asks. GetGate is the read scoped to answering. It is bound to `workload.signal`, returns only the gate (no step outputs, inputs or carried state), and says whether this caller's own `signals:` policy would admit a `Signal` now, without delivering one.
+
+A run that is not running, or holds no open gate by that name, answers NOT_FOUND, the same answer a run in another tenant gets. A run holding more gates than one answer lists, whose list does not include the named gate, answers FAILED_PRECONDITION: the gate may be open, and this read cannot say.
+
 ## `flowstate_signal_with_start`
 
 SignalWithStart delivers a signal to the entity holding a business key, an order id or a subscription id, creating that entity if this is the first event for the key.
@@ -164,6 +174,12 @@ The run must declare `debug:` naming the caller. The answer's receipt says wheth
 DebugGet reads a durable run's debug session: state, stop reason, position, frames, capabilities, and recent observations. It changes nothing.
 
 Set `after_revision` and `wait` to wait for the next change instead of polling in a tight loop.
+
+## `flowstate_debug_history`
+
+DebugHistory reads a durable run as it was at one point of its recorded history, open or closed, and lists the points it can be read at.
+
+It is read-only: the interpreter is replayed over the history with no worker attached, so no task, plugin or other effect can be dispatched, and nothing is written to the run. The same `debug:` policy as the live debugger decides who may read it. Every value is labelled by how it is known; a point the history cannot be replayed to, a history from another build, and one over the bound are refused rather than guessed.
 
 ## `flowstate_debug_resume`
 

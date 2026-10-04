@@ -28,13 +28,13 @@ type fakeAPI struct {
 	flowstatev1connect.WorkflowServiceClient
 
 	mu         sync.Mutex
-	get        func(*connect.Request[v1.GetRequest]) (*connect.Response[v1.GetResponse], error)
+	get        getFunc
 	signal     func(*connect.Request[v1.SignalRequest]) (*connect.Response[v1.SignalResponse], error)
 	signals    []*v1.SignalRequest
 	authorized []string
 }
 
-func (f *fakeAPI) Get(_ context.Context, req *connect.Request[v1.GetRequest]) (*connect.Response[v1.GetResponse], error) {
+func (f *fakeAPI) GetGate(_ context.Context, req *connect.Request[v1.GetGateRequest]) (*connect.Response[v1.GetGateResponse], error) {
 	f.mu.Lock()
 	f.authorized = append(f.authorized, req.Header().Get("Authorization"))
 	get := f.get
@@ -75,25 +75,32 @@ const (
 	testSignal   = "deploy-approved"
 )
 
-type getFunc = func(*connect.Request[v1.GetRequest]) (*connect.Response[v1.GetResponse], error)
+type getFunc = func(*connect.Request[v1.GetGateRequest]) (*connect.Response[v1.GetGateResponse], error)
 
-// waiting is a run parked on the gate the tests address.
+// waiting is a gate the caller may answer.
 func waiting(prompt string) getFunc {
-	return func(*connect.Request[v1.GetRequest]) (*connect.Response[v1.GetResponse], error) {
-		return connect.NewResponse(&v1.GetResponse{
+	return gateFor(prompt, true)
+}
+
+// gateFor is the open gate the tests address, answerable or not.
+func gateFor(prompt string, mayAnswer bool) getFunc {
+	return func(*connect.Request[v1.GetGateRequest]) (*connect.Response[v1.GetGateResponse], error) {
+		return connect.NewResponse(&v1.GetGateResponse{
 			WorkflowId: testWorkflow,
 			RunId:      "run-1",
-			Status:     v1.RunResponse_STATUS_RUNNING,
+			StepId:     "approval",
+			SignalName: testSignal,
+			Prompt:     prompt,
 			Starter:    "https://issuer.example.com#requester@example.com",
-			Progress: &v1.RunProgress{PendingWaits: []*v1.PendingWait{{
-				StepId:     "approval",
-				SignalName: testSignal,
-				Prompt:     prompt,
-				Deadline:   timestamppb.New(time.Date(2026, 10, 5, 12, 30, 0, 0, time.UTC)),
-				Policed:    true,
-			}}},
+			Deadline:   timestamppb.New(time.Date(2026, 10, 5, 12, 30, 0, 0, time.UTC)),
+			MayAnswer:  mayAnswer,
 		}), nil
 	}
+}
+
+// notOpen is the one answer for a gate that is gone, closed, or not the caller's.
+func notOpen(*connect.Request[v1.GetGateRequest]) (*connect.Response[v1.GetGateResponse], error) {
+	return nil, connect.NewError(connect.CodeNotFound, nil)
 }
 
 func do(h http.Handler, req *http.Request) *httptest.ResponseRecorder {
@@ -181,33 +188,32 @@ func TestAPromptIsTextNeverMarkup(t *testing.T) {
 func TestAGateThatIsNotOpenIsOneAnswer(t *testing.T) {
 	t.Parallel()
 
+	// The API answers every one of these the same way, which is the point: the
+	// page has nothing to tell them apart with, and shows none of it.
 	runs := map[string]getFunc{
-		"finished run": func(*connect.Request[v1.GetRequest]) (*connect.Response[v1.GetResponse], error) {
-			return connect.NewResponse(&v1.GetResponse{WorkflowId: testWorkflow, Status: v1.RunResponse_STATUS_COMPLETED}), nil
+		"finished run, other signal, or no such run or tenant": notOpen,
+		"an answer for another gate": func(*connect.Request[v1.GetGateRequest]) (*connect.Response[v1.GetGateResponse], error) {
+			return connect.NewResponse(&v1.GetGateResponse{WorkflowId: testWorkflow, RunId: "run-1", SignalName: "another", MayAnswer: true}), nil
 		},
-		"waiting on another signal": func(*connect.Request[v1.GetRequest]) (*connect.Response[v1.GetResponse], error) {
-			return connect.NewResponse(&v1.GetResponse{
-				WorkflowId: testWorkflow,
-				Status:     v1.RunResponse_STATUS_RUNNING,
-				Progress:   &v1.RunProgress{PendingWaits: []*v1.PendingWait{{StepId: "other", SignalName: "another"}}},
-			}), nil
-		},
-		"no such run or tenant": func(*connect.Request[v1.GetRequest]) (*connect.Response[v1.GetResponse], error) {
-			return nil, connect.NewError(connect.CodeNotFound, nil)
+		"an answer naming no run": func(*connect.Request[v1.GetGateRequest]) (*connect.Response[v1.GetGateResponse], error) {
+			return connect.NewResponse(&v1.GetGateResponse{WorkflowId: testWorkflow, SignalName: testSignal, MayAnswer: true}), nil
 		},
 	}
 
 	var first string
 	for name, get := range runs {
-		rec := do(newHandler(&fakeAPI{get: get}), gateGet())
+		api := &fakeAPI{get: get}
+		rec := do(newHandler(api), gateGet())
 		require.Equal(t, http.StatusNotFound, rec.Code, name)
 
-		// Telling them apart would tell a caller which runs exist in a tenant
-		// it cannot read.
 		if first == "" {
 			first = rec.Body.String()
 		}
 		require.Equal(t, first, rec.Body.String(), name)
+
+		rec = do(newHandler(api), gatePost(url.Values{"decision": {"approve"}}))
+		require.Equal(t, http.StatusNotFound, rec.Code, name)
+		require.Empty(t, api.sent(), name)
 	}
 }
 
@@ -302,9 +308,7 @@ func TestAnAnswerNeedsTheBrowsersWordThatItCameFromThisPage(t *testing.T) {
 func TestAnAnswerToAGateSomeoneElseAnsweredIsNotBuffered(t *testing.T) {
 	t.Parallel()
 
-	api := &fakeAPI{get: func(*connect.Request[v1.GetRequest]) (*connect.Response[v1.GetResponse], error) {
-		return connect.NewResponse(&v1.GetResponse{WorkflowId: testWorkflow, Status: v1.RunResponse_STATUS_COMPLETED}), nil
-	}}
+	api := &fakeAPI{get: notOpen}
 	rec := do(newHandler(api), gatePost(url.Values{"decision": {"approve"}}))
 
 	require.Equal(t, http.StatusNotFound, rec.Code)
@@ -392,7 +396,7 @@ func TestPathRoundTrips(t *testing.T) {
 
 	for _, workflow := range []string{"plain-id", "with space", "a/b", "100%", "ünï"} {
 		var got string
-		api := &fakeAPI{get: func(req *connect.Request[v1.GetRequest]) (*connect.Response[v1.GetResponse], error) {
+		api := &fakeAPI{get: func(req *connect.Request[v1.GetGateRequest]) (*connect.Response[v1.GetGateResponse], error) {
 			got = req.Msg.GetWorkflowId()
 
 			return nil, connect.NewError(connect.CodeNotFound, nil)
@@ -415,12 +419,12 @@ func TestUnknownPathsAndMethods(t *testing.T) {
 	require.Empty(t, api.credentials(), "none of them reached the API")
 }
 
-// getter is the API behind the loopback: it serves Get with an open gate.
+// getter is the API behind the loopback: it serves GetGate with an open gate.
 type getter struct {
 	flowstatev1connect.UnimplementedWorkflowServiceHandler
 }
 
-func (getter) Get(_ context.Context, req *connect.Request[v1.GetRequest]) (*connect.Response[v1.GetResponse], error) {
+func (getter) GetGate(_ context.Context, req *connect.Request[v1.GetGateRequest]) (*connect.Response[v1.GetGateResponse], error) {
 	return waiting("loopback prompt")(req)
 }
 
@@ -507,7 +511,7 @@ func TestAnUnexpectedFailureIsLoggedOnOneLine(t *testing.T) {
 	t.Parallel()
 
 	var logged strings.Builder
-	api := &fakeAPI{get: func(*connect.Request[v1.GetRequest]) (*connect.Response[v1.GetResponse], error) {
+	api := &fakeAPI{get: func(*connect.Request[v1.GetGateRequest]) (*connect.Response[v1.GetGateResponse], error) {
 		return nil, connect.NewError(connect.CodeInternal, errString("bad id\nlevel=ERROR msg=forged"))
 	}}
 	h := newHandler(api, WithLogger(slog.New(slog.NewTextHandler(&logged, nil))))
@@ -521,15 +525,11 @@ func TestAnUnexpectedFailureIsLoggedOnOneLine(t *testing.T) {
 func TestAGateMissingFromATruncatedListIsNotReportedClosed(t *testing.T) {
 	t.Parallel()
 
-	api := &fakeAPI{get: func(*connect.Request[v1.GetRequest]) (*connect.Response[v1.GetResponse], error) {
-		return connect.NewResponse(&v1.GetResponse{
-			WorkflowId: testWorkflow,
-			Status:     v1.RunResponse_STATUS_RUNNING,
-			Progress: &v1.RunProgress{
-				PendingWaits:          []*v1.PendingWait{{StepId: "other", SignalName: "another"}},
-				PendingWaitsTruncated: true,
-			},
-		}), nil
+	// The API says the run holds more gates than one answer lists and this one
+	// is not among them: FAILED_PRECONDITION, which the page tells from "not
+	// open".
+	api := &fakeAPI{get: func(*connect.Request[v1.GetGateRequest]) (*connect.Response[v1.GetGateResponse], error) {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, errString("the run holds more than 64 open gates"))
 	}}
 	h := newHandler(api)
 
@@ -540,4 +540,57 @@ func TestAGateMissingFromATruncatedListIsNotReportedClosed(t *testing.T) {
 	answered := do(h, gatePost(url.Values{"decision": {"approve"}}))
 	require.Equal(t, http.StatusServiceUnavailable, answered.Code)
 	require.Empty(t, api.sent(), "an answer must not be sent to a gate the page could not see")
+}
+
+func TestTheGateIsReadWithGetGateAndNeverWithGet(t *testing.T) {
+	t.Parallel()
+
+	// fakeAPI embeds a nil client: a call to Get (or anything but GetGate and
+	// Signal) panics, so a regression to the read-scoped RPC cannot pass.
+	var asked *v1.GetGateRequest
+	api := &fakeAPI{get: func(req *connect.Request[v1.GetGateRequest]) (*connect.Response[v1.GetGateResponse], error) {
+		asked = req.Msg
+
+		return waiting("go?")(req)
+	}}
+	rec := do(newHandler(api), gateGet("Authorization", "Bearer signal-only"))
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, testWorkflow, asked.GetWorkflowId())
+	require.Equal(t, testSignal, asked.GetSignalName())
+	require.Equal(t, []string{"Bearer signal-only"}, api.credentials())
+}
+
+func TestASignalOnlyApproverOpensAndAnswersTheGate(t *testing.T) {
+	t.Parallel()
+
+	api := &fakeAPI{get: waiting("go?")}
+	h := newHandler(api)
+
+	require.Equal(t, http.StatusOK, do(h, gateGet("Authorization", "Bearer signal-only")).Code)
+
+	rec := do(h, gatePost(url.Values{"decision": {"approve"}}, "Authorization", "Bearer signal-only"))
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	require.Len(t, api.sent(), 1)
+}
+
+func TestAVisitorThePolicyRefusesSeesTheGateReadOnlyAndSendsNothing(t *testing.T) {
+	t.Parallel()
+
+	api := &fakeAPI{get: gateFor("Approve deploying v1.4.2?", false)}
+	h := newHandler(api)
+
+	shown := do(h, gateGet("Authorization", "Bearer carol"))
+	require.Equal(t, http.StatusOK, shown.Code)
+	body := shown.Body.String()
+	require.Contains(t, body, "Approve deploying v1.4.2?", "the question is shown")
+	require.Contains(t, body, "signal policy does not admit you")
+	require.NotContains(t, body, "<form")
+	require.NotContains(t, body, `value="approve"`)
+	require.NotContains(t, body, `value="deny"`)
+
+	answered := do(h, gatePost(url.Values{"decision": {"approve"}}, "Authorization", "Bearer carol"))
+	require.Equal(t, http.StatusForbidden, answered.Code)
+	require.Contains(t, answered.Body.String(), "signal policy does not admit you")
+	require.Empty(t, api.sent(), "the answer must not be sent when the read said the policy refuses")
 }

@@ -83,6 +83,11 @@ func Marshal(wf *v1.Workflow) ([]byte, error) {
 		doc = append(doc, yaml.MapItem{Key: "types", Value: written})
 	}
 
+	// The errors a file may raise, in the order the parser reads them.
+	if len(wf.GetDeclaredErrors()) > 0 {
+		doc = append(doc, yaml.MapItem{Key: "errors", Value: declaredErrorsToYAML(wf.GetDeclaredErrors())})
+	}
+
 	// The functions, above everything that can call one: the order the parser reads
 	// them in.
 	if len(wf.GetDeclaredFunctions()) > 0 {
@@ -243,6 +248,8 @@ func unrepresentablePolicySubject(node *v1.Node) (string, bool) {
 		return "a `wait:` step", true
 	case *v1.Node_Value:
 		return "a `value:` step", true
+	case *v1.Node_Fail:
+		return "a `fail:` step", true
 	case *v1.Node_ForEach:
 		return "a `for_each:` step", true
 	case *v1.Node_Parallel:
@@ -406,6 +413,13 @@ func stepToYAML(node *v1.Node) (yaml.MapSlice, error) {
 			return nil, fmt.Errorf("step %q switch: %w", node.GetId(), err)
 		}
 		step = append(step, yaml.MapItem{Key: "switch", Value: value})
+
+	case *v1.Node_Fail:
+		value, err := failToYAML(kind.Fail)
+		if err != nil {
+			return nil, fmt.Errorf("step %q fail: %w", node.GetId(), err)
+		}
+		step = append(step, yaml.MapItem{Key: "fail", Value: value})
 
 	case *v1.Node_Value:
 		// Through [exprValueToYAML], the same writer the condition above uses,

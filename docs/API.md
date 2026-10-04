@@ -16,7 +16,7 @@ build on today.
 | Authoring (execute nothing) | `Validate`, `Compile`, `GetCatalog` |
 | Runs | `Run`, `Get`, `GetTimeline`, `List`, `Signal`, `SignalWithStart`, `Cancel`, `Terminate` |
 | Schedules | `CreateSchedule`, `ListSchedules`, `DescribeSchedule`, `DeleteSchedule`, `PauseSchedule`, `ResumeSchedule`, `TriggerSchedule` |
-| Debugging a durable run | `DebugAttach`, `DebugGet`, `DebugResume`, `DebugSetBreakpoints`, `DebugInspect` — see [Debugging](DEBUGGING.md#debugging-a-durable-run) |
+| Debugging a durable run | `DebugAttach`, `DebugGet`, `DebugResume`, `DebugSetBreakpoints`, `DebugInspect`, and `DebugHistory` to read a run at a past point — see [Debugging](DEBUGGING.md#debugging-a-durable-run) |
 
 Each RPC's documentation lives on it in the `.proto` file, including limits,
 defaults, and error cases. The [MCP tool reference](reference/mcp.md) renders

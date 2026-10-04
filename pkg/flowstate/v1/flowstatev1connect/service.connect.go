@@ -39,6 +39,8 @@ const (
 	WorkflowServiceGetProcedure = "/flowstate.v1.WorkflowService/Get"
 	// WorkflowServiceSignalProcedure is the fully-qualified name of the WorkflowService's Signal RPC.
 	WorkflowServiceSignalProcedure = "/flowstate.v1.WorkflowService/Signal"
+	// WorkflowServiceGetGateProcedure is the fully-qualified name of the WorkflowService's GetGate RPC.
+	WorkflowServiceGetGateProcedure = "/flowstate.v1.WorkflowService/GetGate"
 	// WorkflowServiceSignalWithStartProcedure is the fully-qualified name of the WorkflowService's
 	// SignalWithStart RPC.
 	WorkflowServiceSignalWithStartProcedure = "/flowstate.v1.WorkflowService/SignalWithStart"
@@ -58,6 +60,9 @@ const (
 	// WorkflowServiceDebugGetProcedure is the fully-qualified name of the WorkflowService's DebugGet
 	// RPC.
 	WorkflowServiceDebugGetProcedure = "/flowstate.v1.WorkflowService/DebugGet"
+	// WorkflowServiceDebugHistoryProcedure is the fully-qualified name of the WorkflowService's
+	// DebugHistory RPC.
+	WorkflowServiceDebugHistoryProcedure = "/flowstate.v1.WorkflowService/DebugHistory"
 	// WorkflowServiceDebugResumeProcedure is the fully-qualified name of the WorkflowService's
 	// DebugResume RPC.
 	WorkflowServiceDebugResumeProcedure = "/flowstate.v1.WorkflowService/DebugResume"
@@ -141,6 +146,20 @@ type WorkflowServiceClient interface {
 	// [SignalResponse] is empty: it says the signal was accepted, not what the run
 	// did with it. Call [Get] afterward to see whether a waiting step consumed it.
 	Signal(context.Context, *connect.Request[v1.SignalRequest]) (*connect.Response[v1.SignalResponse], error)
+	// GetGate reads one open approval gate for the caller who would answer it.
+	//
+	// [Get] reads a whole run and is bound to `workload.read`, which an approver
+	// need not hold: a person granted only `workload.signal` can answer a gate with
+	// [Signal] but could not see the question it asks. GetGate is the read scoped
+	// to answering. It is bound to `workload.signal`, returns only the gate (no
+	// step outputs, inputs or carried state), and says whether this caller's own
+	// `signals:` policy would admit a [Signal] now, without delivering one.
+	//
+	// A run that is not running, or holds no open gate by that name, answers
+	// NOT_FOUND, the same answer a run in another tenant gets. A run holding more
+	// gates than one answer lists, whose list does not include the named gate,
+	// answers FAILED_PRECONDITION: the gate may be open, and this read cannot say.
+	GetGate(context.Context, *connect.Request[v1.GetGateRequest]) (*connect.Response[v1.GetGateResponse], error)
 	// SignalWithStart delivers a signal to the entity holding a business key, an
 	// order id or a subscription id, creating that entity if this is the first
 	// event for the key.
@@ -222,6 +241,16 @@ type WorkflowServiceClient interface {
 	// Set `after_revision` and `wait` to wait for the next change instead of
 	// polling in a tight loop.
 	DebugGet(context.Context, *connect.Request[v1.DebugGetRequest]) (*connect.Response[v1.DebugGetResponse], error)
+	// DebugHistory reads a durable run as it was at one point of its recorded
+	// history, open or closed, and lists the points it can be read at.
+	//
+	// It is read-only: the interpreter is replayed over the history with no
+	// worker attached, so no task, plugin or other effect can be dispatched, and
+	// nothing is written to the run. The same `debug:` policy as the live
+	// debugger decides who may read it. Every value is labelled by how it is
+	// known; a point the history cannot be replayed to, a history from another
+	// build, and one over the bound are refused rather than guessed.
+	DebugHistory(context.Context, *connect.Request[v1.DebugHistoryRequest]) (*connect.Response[v1.DebugHistoryResponse], error)
 	// DebugResume releases a held durable run: continue, step in, step over,
 	// step out, run until a step, or detach.
 	//
@@ -347,6 +376,12 @@ func NewWorkflowServiceClient(httpClient connect.HTTPClient, baseURL string, opt
 			connect.WithSchema(workflowServiceMethods.ByName("Signal")),
 			connect.WithClientOptions(opts...),
 		),
+		getGate: connect.NewClient[v1.GetGateRequest, v1.GetGateResponse](
+			httpClient,
+			baseURL+WorkflowServiceGetGateProcedure,
+			connect.WithSchema(workflowServiceMethods.ByName("GetGate")),
+			connect.WithClientOptions(opts...),
+		),
 		signalWithStart: connect.NewClient[v1.SignalWithStartRequest, v1.SignalWithStartResponse](
 			httpClient,
 			baseURL+WorkflowServiceSignalWithStartProcedure,
@@ -387,6 +422,12 @@ func NewWorkflowServiceClient(httpClient connect.HTTPClient, baseURL string, opt
 			httpClient,
 			baseURL+WorkflowServiceDebugGetProcedure,
 			connect.WithSchema(workflowServiceMethods.ByName("DebugGet")),
+			connect.WithClientOptions(opts...),
+		),
+		debugHistory: connect.NewClient[v1.DebugHistoryRequest, v1.DebugHistoryResponse](
+			httpClient,
+			baseURL+WorkflowServiceDebugHistoryProcedure,
+			connect.WithSchema(workflowServiceMethods.ByName("DebugHistory")),
 			connect.WithClientOptions(opts...),
 		),
 		debugResume: connect.NewClient[v1.DebugResumeRequest, v1.DebugResumeResponse](
@@ -475,6 +516,7 @@ type workflowServiceClient struct {
 	run                 *connect.Client[v1.RunRequest, v1.RunResponse]
 	get                 *connect.Client[v1.GetRequest, v1.GetResponse]
 	signal              *connect.Client[v1.SignalRequest, v1.SignalResponse]
+	getGate             *connect.Client[v1.GetGateRequest, v1.GetGateResponse]
 	signalWithStart     *connect.Client[v1.SignalWithStartRequest, v1.SignalWithStartResponse]
 	list                *connect.Client[v1.ListRequest, v1.ListResponse]
 	getTimeline         *connect.Client[v1.GetTimelineRequest, v1.GetTimelineResponse]
@@ -482,6 +524,7 @@ type workflowServiceClient struct {
 	terminate           *connect.Client[v1.TerminateRequest, v1.TerminateResponse]
 	debugAttach         *connect.Client[v1.DebugAttachRequest, v1.DebugAttachResponse]
 	debugGet            *connect.Client[v1.DebugGetRequest, v1.DebugGetResponse]
+	debugHistory        *connect.Client[v1.DebugHistoryRequest, v1.DebugHistoryResponse]
 	debugResume         *connect.Client[v1.DebugResumeRequest, v1.DebugResumeResponse]
 	debugSetBreakpoints *connect.Client[v1.DebugSetBreakpointsRequest, v1.DebugSetBreakpointsResponse]
 	debugInspect        *connect.Client[v1.DebugInspectRequest, v1.DebugInspectResponse]
@@ -510,6 +553,11 @@ func (c *workflowServiceClient) Get(ctx context.Context, req *connect.Request[v1
 // Signal calls flowstate.v1.WorkflowService.Signal.
 func (c *workflowServiceClient) Signal(ctx context.Context, req *connect.Request[v1.SignalRequest]) (*connect.Response[v1.SignalResponse], error) {
 	return c.signal.CallUnary(ctx, req)
+}
+
+// GetGate calls flowstate.v1.WorkflowService.GetGate.
+func (c *workflowServiceClient) GetGate(ctx context.Context, req *connect.Request[v1.GetGateRequest]) (*connect.Response[v1.GetGateResponse], error) {
+	return c.getGate.CallUnary(ctx, req)
 }
 
 // SignalWithStart calls flowstate.v1.WorkflowService.SignalWithStart.
@@ -545,6 +593,11 @@ func (c *workflowServiceClient) DebugAttach(ctx context.Context, req *connect.Re
 // DebugGet calls flowstate.v1.WorkflowService.DebugGet.
 func (c *workflowServiceClient) DebugGet(ctx context.Context, req *connect.Request[v1.DebugGetRequest]) (*connect.Response[v1.DebugGetResponse], error) {
 	return c.debugGet.CallUnary(ctx, req)
+}
+
+// DebugHistory calls flowstate.v1.WorkflowService.DebugHistory.
+func (c *workflowServiceClient) DebugHistory(ctx context.Context, req *connect.Request[v1.DebugHistoryRequest]) (*connect.Response[v1.DebugHistoryResponse], error) {
+	return c.debugHistory.CallUnary(ctx, req)
 }
 
 // DebugResume calls flowstate.v1.WorkflowService.DebugResume.
@@ -655,6 +708,20 @@ type WorkflowServiceHandler interface {
 	// [SignalResponse] is empty: it says the signal was accepted, not what the run
 	// did with it. Call [Get] afterward to see whether a waiting step consumed it.
 	Signal(context.Context, *connect.Request[v1.SignalRequest]) (*connect.Response[v1.SignalResponse], error)
+	// GetGate reads one open approval gate for the caller who would answer it.
+	//
+	// [Get] reads a whole run and is bound to `workload.read`, which an approver
+	// need not hold: a person granted only `workload.signal` can answer a gate with
+	// [Signal] but could not see the question it asks. GetGate is the read scoped
+	// to answering. It is bound to `workload.signal`, returns only the gate (no
+	// step outputs, inputs or carried state), and says whether this caller's own
+	// `signals:` policy would admit a [Signal] now, without delivering one.
+	//
+	// A run that is not running, or holds no open gate by that name, answers
+	// NOT_FOUND, the same answer a run in another tenant gets. A run holding more
+	// gates than one answer lists, whose list does not include the named gate,
+	// answers FAILED_PRECONDITION: the gate may be open, and this read cannot say.
+	GetGate(context.Context, *connect.Request[v1.GetGateRequest]) (*connect.Response[v1.GetGateResponse], error)
 	// SignalWithStart delivers a signal to the entity holding a business key, an
 	// order id or a subscription id, creating that entity if this is the first
 	// event for the key.
@@ -736,6 +803,16 @@ type WorkflowServiceHandler interface {
 	// Set `after_revision` and `wait` to wait for the next change instead of
 	// polling in a tight loop.
 	DebugGet(context.Context, *connect.Request[v1.DebugGetRequest]) (*connect.Response[v1.DebugGetResponse], error)
+	// DebugHistory reads a durable run as it was at one point of its recorded
+	// history, open or closed, and lists the points it can be read at.
+	//
+	// It is read-only: the interpreter is replayed over the history with no
+	// worker attached, so no task, plugin or other effect can be dispatched, and
+	// nothing is written to the run. The same `debug:` policy as the live
+	// debugger decides who may read it. Every value is labelled by how it is
+	// known; a point the history cannot be replayed to, a history from another
+	// build, and one over the bound are refused rather than guessed.
+	DebugHistory(context.Context, *connect.Request[v1.DebugHistoryRequest]) (*connect.Response[v1.DebugHistoryResponse], error)
 	// DebugResume releases a held durable run: continue, step in, step over,
 	// step out, run until a step, or detach.
 	//
@@ -857,6 +934,12 @@ func NewWorkflowServiceHandler(svc WorkflowServiceHandler, opts ...connect.Handl
 		connect.WithSchema(workflowServiceMethods.ByName("Signal")),
 		connect.WithHandlerOptions(opts...),
 	)
+	workflowServiceGetGateHandler := connect.NewUnaryHandler(
+		WorkflowServiceGetGateProcedure,
+		svc.GetGate,
+		connect.WithSchema(workflowServiceMethods.ByName("GetGate")),
+		connect.WithHandlerOptions(opts...),
+	)
 	workflowServiceSignalWithStartHandler := connect.NewUnaryHandler(
 		WorkflowServiceSignalWithStartProcedure,
 		svc.SignalWithStart,
@@ -897,6 +980,12 @@ func NewWorkflowServiceHandler(svc WorkflowServiceHandler, opts ...connect.Handl
 		WorkflowServiceDebugGetProcedure,
 		svc.DebugGet,
 		connect.WithSchema(workflowServiceMethods.ByName("DebugGet")),
+		connect.WithHandlerOptions(opts...),
+	)
+	workflowServiceDebugHistoryHandler := connect.NewUnaryHandler(
+		WorkflowServiceDebugHistoryProcedure,
+		svc.DebugHistory,
+		connect.WithSchema(workflowServiceMethods.ByName("DebugHistory")),
 		connect.WithHandlerOptions(opts...),
 	)
 	workflowServiceDebugResumeHandler := connect.NewUnaryHandler(
@@ -985,6 +1074,8 @@ func NewWorkflowServiceHandler(svc WorkflowServiceHandler, opts ...connect.Handl
 			workflowServiceGetHandler.ServeHTTP(w, r)
 		case WorkflowServiceSignalProcedure:
 			workflowServiceSignalHandler.ServeHTTP(w, r)
+		case WorkflowServiceGetGateProcedure:
+			workflowServiceGetGateHandler.ServeHTTP(w, r)
 		case WorkflowServiceSignalWithStartProcedure:
 			workflowServiceSignalWithStartHandler.ServeHTTP(w, r)
 		case WorkflowServiceListProcedure:
@@ -999,6 +1090,8 @@ func NewWorkflowServiceHandler(svc WorkflowServiceHandler, opts ...connect.Handl
 			workflowServiceDebugAttachHandler.ServeHTTP(w, r)
 		case WorkflowServiceDebugGetProcedure:
 			workflowServiceDebugGetHandler.ServeHTTP(w, r)
+		case WorkflowServiceDebugHistoryProcedure:
+			workflowServiceDebugHistoryHandler.ServeHTTP(w, r)
 		case WorkflowServiceDebugResumeProcedure:
 			workflowServiceDebugResumeHandler.ServeHTTP(w, r)
 		case WorkflowServiceDebugSetBreakpointsProcedure:
@@ -1046,6 +1139,10 @@ func (UnimplementedWorkflowServiceHandler) Signal(context.Context, *connect.Requ
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("flowstate.v1.WorkflowService.Signal is not implemented"))
 }
 
+func (UnimplementedWorkflowServiceHandler) GetGate(context.Context, *connect.Request[v1.GetGateRequest]) (*connect.Response[v1.GetGateResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("flowstate.v1.WorkflowService.GetGate is not implemented"))
+}
+
 func (UnimplementedWorkflowServiceHandler) SignalWithStart(context.Context, *connect.Request[v1.SignalWithStartRequest]) (*connect.Response[v1.SignalWithStartResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("flowstate.v1.WorkflowService.SignalWithStart is not implemented"))
 }
@@ -1072,6 +1169,10 @@ func (UnimplementedWorkflowServiceHandler) DebugAttach(context.Context, *connect
 
 func (UnimplementedWorkflowServiceHandler) DebugGet(context.Context, *connect.Request[v1.DebugGetRequest]) (*connect.Response[v1.DebugGetResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("flowstate.v1.WorkflowService.DebugGet is not implemented"))
+}
+
+func (UnimplementedWorkflowServiceHandler) DebugHistory(context.Context, *connect.Request[v1.DebugHistoryRequest]) (*connect.Response[v1.DebugHistoryResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("flowstate.v1.WorkflowService.DebugHistory is not implemented"))
 }
 
 func (UnimplementedWorkflowServiceHandler) DebugResume(context.Context, *connect.Request[v1.DebugResumeRequest]) (*connect.Response[v1.DebugResumeResponse], error) {

@@ -65,6 +65,8 @@ func CheckPolicyPlacement(wf *Workflow) error {
 					subject = "a `wait:` step"
 				case *Node_Value:
 					subject = "a `value:` step"
+				case *Node_Fail:
+					subject = "a `fail:` step"
 				case *Node_ForEach:
 					subject = "a `for_each:` step"
 				case *Node_Parallel:

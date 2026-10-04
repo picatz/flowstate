@@ -693,8 +693,9 @@ type ScheduleExploration struct {
 	// explored stopped partway.
 	Truncated bool `protobuf:"varint,4,opt,name=truncated,proto3" json:"truncated,omitempty"`
 	// Divergence is the first case whose observables were not the same under a
-	// seeded schedule as under written order, unset when every case agreed with
-	// itself under every schedule explored.
+	// seeded schedule as under written order, or whose invariants broke under a
+	// seeded run's injected faults (see ScheduleDivergenceReport.invariant),
+	// unset when every case agreed with itself under every schedule explored.
 	Divergence    *ScheduleDivergenceReport `protobuf:"bytes,5,opt,name=divergence,proto3" json:"divergence,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -766,8 +767,9 @@ func (x *ScheduleExploration) GetDivergence() *ScheduleDivergenceReport {
 }
 
 // ScheduleDivergenceReport is one case that observed a difference the schedule
-// made: the finding `--seeds` exists to surface, carried with the seed because
-// a divergence nobody can replay is a random number.
+// made, or broke an invariant under the faults a seed injected: the findings
+// `--seeds` exists to surface, carried with the seed because a divergence
+// nobody can replay is a random number.
 type ScheduleDivergenceReport struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Case is the name of the test case, as the file spells it.
@@ -793,7 +795,13 @@ type ScheduleDivergenceReport struct {
 	// Seeded is the corresponding display rendering of the run produced by
 	// [seed], with the same values withheld. It may contain task output and must
 	// be handled with the same trust as test output.
-	Seeded        string `protobuf:"bytes,6,opt,name=seeded,proto3" json:"seeded,omitempty"`
+	Seeded string `protobuf:"bytes,6,opt,name=seeded,proto3" json:"seeded,omitempty"`
+	// Invariant reports that the case declares `faults:` and this is a run with
+	// them injected that broke one of its `invariants:`, not a schedule that
+	// changed what the case observed. [written_order] is then empty and
+	// [seeded] lists the violations. The seed replays the same faults the same
+	// way: `flow test --seed <seed>` on the same file.
+	Invariant     bool `protobuf:"varint,7,opt,name=invariant,proto3" json:"invariant,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -868,6 +876,13 @@ func (x *ScheduleDivergenceReport) GetSeeded() string {
 		return x.Seeded
 	}
 	return ""
+}
+
+func (x *ScheduleDivergenceReport) GetInvariant() bool {
+	if x != nil {
+		return x.Invariant
+	}
+	return false
 }
 
 // CoverageReport is `flow test`'s branch-coverage account for one workflow:
@@ -1240,14 +1255,15 @@ const file_flowstate_v1_reports_proto_rawDesc = "" +
 	"\ttruncated\x18\x04 \x01(\bR\ttruncated\x12F\n" +
 	"\n" +
 	"divergence\x18\x05 \x01(\v2&.flowstate.v1.ScheduleDivergenceReportR\n" +
-	"divergence\"\xbb\x01\n" +
+	"divergence\"\xd9\x01\n" +
 	"\x18ScheduleDivergenceReport\x12\x12\n" +
 	"\x04case\x18\x01 \x01(\tR\x04case\x12\x12\n" +
 	"\x04seed\x18\x02 \x01(\x04R\x04seed\x12\x1c\n" +
 	"\tdecisions\x18\x03 \x01(\x05R\tdecisions\x12\x1c\n" +
 	"\ttruncated\x18\x04 \x01(\bR\ttruncated\x12#\n" +
 	"\rwritten_order\x18\x05 \x01(\tR\fwrittenOrder\x12\x16\n" +
-	"\x06seeded\x18\x06 \x01(\tR\x06seeded\"\x8e\x03\n" +
+	"\x06seeded\x18\x06 \x01(\tR\x06seeded\x12\x1c\n" +
+	"\tinvariant\x18\a \x01(\bR\tinvariant\"\x8e\x03\n" +
 	"\x0eCoverageReport\x12\x1a\n" +
 	"\bworkflow\x18\x01 \x01(\tR\bworkflow\x12\x1f\n" +
 	"\vsteps_total\x18\x02 \x01(\x05R\n" +

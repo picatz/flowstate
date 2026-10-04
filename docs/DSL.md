@@ -73,6 +73,7 @@ headings below, not this list.*
   - [What this round adds](#what-this-round-adds-1)
 - [The fifth round: taking it back](#the-fifth-round-taking-it-back)
   - [A tolerated failure is a typed value](#a-tolerated-failure-is-a-typed-value)
+  - [`errors:` and `fail:`: a workflow names its own refusals](#errors-and-fail-a-workflow-names-its-own-refusals)
   - [It is `undo:`, not `on_failure:`](#it-is-undo-not-on_failure)
   - [Per-step, not a workflow-level handler list](#per-step-not-a-workflow-level-handler-list)
   - [Registered on success, and only on success](#registered-on-success-and-only-on-success)
@@ -3432,6 +3433,45 @@ was retried; an attempt-level narrowing (an unknown outcome) belongs to the
 attempt. Both drivers record the same fields, pinned by the shared `ErrorText`
 conformance cases.
 
+### `errors:` and `fail:`: a workflow names its own refusals
+
+A failure the author means has a name. `errors:` declares them once, and a
+`fail:` step raises one:
+
+```yaml
+errors:
+  InsufficientFunds:
+    description: the account cannot cover the amount requested
+steps:
+  - id: reject_overdraft
+    if: ${inputs.amount_cents > inputs.balance_cents}
+    fail:
+      error: InsufficientFunds
+      message: ${"balance " + string(inputs.balance_cents) + " cannot cover " + string(inputs.amount_cents)}
+```
+
+The run fails with `InsufficientFunds` as its kind, on both drivers, and the
+sentence reads `task "fail" failed (InsufficientFunds): <message>`. A step that
+tolerates the failure reads the same name as `failure.kind`, and the validator
+knows the workflow's declared names beside the built-in kinds, so
+`failure.kind == "InsufficientFunds"` is checked and `"InsufficientFunds"`
+misspelled is refused with the nearest declared spelling.
+
+- A name starts with a capital letter and may not spell a built-in kind: a
+  declaration that redefined `Timeout` would make one string mean two things.
+- `fail:` is a node kind, not a task, for the reason `value:` is: raising is
+  evaluated in workflow code, deterministically, and schedules nothing. It
+  refuses `retry:`, `timeout:`, `total_timeout:` and `undo:`, and cannot be
+  `async:`.
+- The message is an expression, bounded at 4096 bytes. It may not read a
+  `secret(...)` or an input marked `sensitive`: it is written to history, so the
+  same reach rule that governs a wait's `prompt:` applies.
+- A declared error is never retried. Raising one is a decision, and a second
+  attempt would reach the same one; opting a kind into retry is a later,
+  explicit step.
+- A `call:` step's `failure.kind` is not judged against the caller's
+  declarations: the callee may raise a kind only it declares.
+
 ### It is `undo:`, not `on_failure:`
 
 [ARCHITECTURE.md](ARCHITECTURE.md)'s primitives table said `on_failure:` and issue
@@ -5528,13 +5568,27 @@ Approve and Deny buttons. The page is plain server-rendered HTML with no script,
 works from a phone, an email client's browser and a locked-down desktop. The prompt is
 text on it, never markup, which is where the previous section's rule lands.
 
-The page is a client of the API, not a second door beside it. It reads the run with
-`Get` and answers with `Signal`, calling the deployment's own authenticated handler in
+The page is a client of the API, not a second door beside it. It reads the gate with
+`GetGate` and answers with `Signal`, calling the deployment's own authenticated handler in
 process with the visitor's `Authorization` header, so the tenancy check, the `signals:`
 decision, the sender attestation and the audit record are the ones `flow signal`
 produces, and a person the policy refuses is refused by the server and told so. It
 holds no credential and no session of its own; reach it through an identity-aware proxy
 that sets the header. Without the flag the routes do not exist.
+
+`GetGate` is bound to `workload.signal`, not `workload.read`: an approver granted only
+the right to answer can open the page and see the question, and is not handed the run's
+outputs, inputs or carried state, which `Get` returns and the page never needs. It
+reports the one gate (step, prompt, deadline, who started the run) and `may_answer`,
+whether the workflow's `signals:` policy would admit this visitor's `Signal` now,
+decided by the same check `Signal` makes and delivering nothing. A visitor the policy
+refuses is told the gate exists and that the policy does not admit them, read-only with no
+buttons, and the page sends nothing for them; the prompt and the starter are withheld from
+them unless they also hold `workload.read`, because the author wrote the question for the
+people the policy admits. `may_answer` is advice for
+drawing the page: `Signal` decides again at delivery, and that decision is the audited
+one. The prompt is withheld as `Get` withholds it, when the run declares a sensitive
+output or its specification cannot be read.
 
 A gate declares a name, a prompt and a timeout, and no input schema, so the page sends
 the one payload the language's examples read: `approved` (a boolean) and, when the
@@ -5549,8 +5603,36 @@ the moment of answering: a gate that is already closed says so, and the late
 answer is not sent, because a signal to a name nobody waits on is held for the next gate
 that does. The answer is pinned to the run the gate was read on, so a stale page
 cannot answer another run. Two answers to the same gate submitted in the same instant can
-still both pass that read. A run holding more gates than one `Get` lists is reported as
-not looked up, never as closed.
+still both pass that read. A run holding more gates than one answer lists, where the
+named gate is not among those listed, is reported as not looked up, never as closed.
+
+With no proxy in front, the page can sign approvers in itself. `--gates-ui-issuer`,
+`--gates-ui-client-id` and `--gates-ui-redirect-url` (the address of `/gates/callback`,
+registered exactly with the issuer) turn on the OAuth 2.1 authorization code flow
+with PKCE (`S256`): a visitor with no credential who opens a gate's link is sent to the
+issuer, comes back, and lands on the gate. The access token the issuer mints is
+presented to the API like any bearer token, so the issuer must be one the trust policy
+accepts for that audience (the server refuses to start otherwise, rather than sending approvers to
+a sign-in whose token the API would refuse), the page asks for the audience with an RFC 8707
+`resource` (which `--gates-ui-resource` can override), the issuer must advertise PKCE `S256` in its
+discovery document, and what the person may do is
+still the API's decision. The page never reads the token, trusts no ID token, and
+sends the issuer nothing but the flow's own requests, through the trust policy's
+`egress:` boundary.
+
+The flow's state lives in the browser, sealed with AES-256-GCM in `__Host-` cookies
+(`Secure`, `HttpOnly`, `SameSite=Lax`), so no server-side store exists and any replica
+can finish a sign-in another began. The sign-in cookie is single use and ten minutes
+old at most; the callback refuses a response whose `state` is not the one this browser
+started with, whose `iss` (RFC 9207) names another issuer, or which does not return a
+bearer token, and `next` can only be one of the page's own paths. A session lasts as
+long as the token, to a limit of eight hours; the API's refusal of it clears it and
+shows a page instead of redirecting again, so a revoked token cannot loop. Signing out
+is a POST checked like an answer. `--gates-ui-session-key-file` (base64 of 32 bytes)
+lets replicas honour each other's sessions; without it each process makes a key, says
+so at start, and a restart signs everyone out. A confidential client's secret comes from
+`--gates-ui-client-secret-file`. A request that carries its own `Authorization` header
+is answered on that header's merits and never sent to sign in.
 
 ### Rehearsing the gate, and who a rehearsal stands in for
 

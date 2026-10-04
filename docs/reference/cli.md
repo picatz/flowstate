@@ -541,6 +541,44 @@ flow debug get order-1234 -o json
 | `--tls-client-key-file <string>` | `string` | — | `FLOWSTATE_TLS_CLIENT_KEY_FILE` | PEM private key matching `--tls-client-cert-file` (overrides FLOWSTATE_TLS_CLIENT_KEY_FILE) |
 | `--token-file <string>` | `string` | — | `FLOWSTATE_TOKEN_FILE` | file holding the bearer token to authenticate with (overrides FLOWSTATE_TOKEN_FILE); re-read per request, so a rotating token keeps working. Without it, FLOWSTATE_TOKEN is used, and neither means anonymous |
 
+## `flow debug history`
+
+Show a durable run as it was at a past point
+
+```
+flow debug history <workflow-id> --run-id <run-id> [flags]
+```
+
+Read a durable run, open or closed, as it was at one workflow-task boundary of its recorded history: where it was held, its frames, its progress. It replays the interpreter over the history with no worker attached, so it dispatches nothing and changes nothing. Every value is reconstructed; a point the history cannot be replayed to is refused. --points lists the points a run can be read at.
+
+Examples:
+
+```sh
+# The last point of a run:
+flow debug history order-1234 --run-id 5d3f…
+
+# The points it can be read at, then one of them:
+flow debug history order-1234 --run-id 5d3f… --points
+flow debug history order-1234 --run-id 5d3f… --at 17
+
+# The answer as the schema's JSON:
+flow debug history order-1234 --run-id 5d3f… -o json
+```
+
+| Flag | Type | Default | Environment | Description |
+|---|---|---|---|---|
+| `--address <string>` | `string` | `localhost:9233` | `FLOWSTATE_ADDRESS` | address of the Flowstate server (overrides FLOWSTATE_ADDRESS); an explicit https:// scheme is honored |
+| `--at <int64>` | `int64` | `0` | — | the event id of the point to read; 0 is the last |
+| `--audience <string>` | `string` | — | `FLOWSTATE_AUDIENCE` | the relying party a credential should be addressed to (overrides FLOWSTATE_AUDIENCE); required by `--credential-source=github-actions`, which mints a token for it. gitlab and terraform-cloud cannot mint on demand — their platform fixes the audience in the job or workspace configuration before the token exists — so for those it is checked against the token's own audience rather than requested, and a mismatch is refused with the setting to change |
+| `--credential-source <string>` | `string` | — | `FLOWSTATE_CREDENTIAL_SOURCE` | acquire a credential from a named source instead of `--token-file`/FLOWSTATE_TOKEN (overrides FLOWSTATE_CREDENTIAL_SOURCE); one of github-actions, gitlab, terraform-cloud, file, env. An unknown or unusable source is an error, never anonymous |
+| `-o, --output <string>` | `string` | `text` | — | output format: text, json, or jsonl |
+| `--points` | `bool` | `false` | — | list the points the run can be read at instead of reading one |
+| `--run-id <string>` | `string` | — | — | the execution to read; `flow get` prints a run's id (required) |
+| `--tls-ca-file <string>` | `string` | — | `FLOWSTATE_TLS_CA_FILE` | PEM CA bundle to verify the server's certificate against, in place of the system roots (overrides FLOWSTATE_TLS_CA_FILE). Unset trusts the system roots, which is what reaches a server with a certificate from a public CA; set this to reach a server whose certificate chains to a private CA instead |
+| `--tls-client-cert-file <string>` | `string` | — | `FLOWSTATE_TLS_CLIENT_CERT_FILE` | PEM client certificate to present when a server requires one via `--tls-client-auth require` (overrides FLOWSTATE_TLS_CLIENT_CERT_FILE); must be given with `--tls-client-key-file`. Unset presents no certificate, which a server requiring one refuses at the handshake |
+| `--tls-client-key-file <string>` | `string` | — | `FLOWSTATE_TLS_CLIENT_KEY_FILE` | PEM private key matching `--tls-client-cert-file` (overrides FLOWSTATE_TLS_CLIENT_KEY_FILE) |
+| `--token-file <string>` | `string` | — | `FLOWSTATE_TOKEN_FILE` | file holding the bearer token to authenticate with (overrides FLOWSTATE_TOKEN_FILE); re-read per request, so a rotating token keeps working. Without it, FLOWSTATE_TOKEN is used, and neither means anonymous |
+
 ## `flow debug replay`
 
 Replay a recorded debugging session against a workflow
@@ -1735,6 +1773,13 @@ flow server --insecure-no-auth
 | `--authorization-server <string,...>` | `stringArray` | — | — | an authorization server this deployment advertises as able to mint tokens for `--protected-resource` (repeatable; at least one is required with it). Each must already be a `kind: oidc` issuer in the `--auth-policy`, or start-up is refused |
 | `--deployment-name <string>` | `string` | — | `FLOWSTATE_DEPLOYMENT_NAME` | name of this Flowstate installation (not a Temporal Worker Deployment), recorded in each run's workload identity and in every assertion subject it mints |
 | `--gates-ui` | `bool` | `false` | — | serve a page at /gates/<workflow-id>/<signal> for each pending `wait_for_signal:` gate, showing the question it asks and Approve and Deny buttons that deliver the signal. The page holds no credential: it forwards the visitor's Authorization header to this server's own API, so who may see or answer a gate is decided by the same authenticator, tenancy check and `signals:` policy `flow signal` meets, and every answer is audited the same way. Reach it through an identity-aware proxy that sets the header. Without this flag the routes do not exist |
+| `--gates-ui-client-id <string>` | `string` | — | — | client id registered with --gates-ui-issuer for the gate page |
+| `--gates-ui-client-secret-file <string>` | `string` | — | — | file holding the client secret, when the registration is a confidential client; omit it for a public client, which PKCE already protects |
+| `--gates-ui-issuer <string>` | `string` | — | — | OpenID Connect issuer a visitor with no credential signs in with, so the gate page works without an identity-aware proxy. It is the OAuth 2.1 authorization code flow with PKCE; the access token it returns is presented to this server's own API like any bearer token, so the issuer must be one the trust policy accepts. Requires --gates-ui-client-id and --gates-ui-redirect-url |
+| `--gates-ui-redirect-url <string>` | `string` | — | — | absolute URL of /gates/callback on this deployment as a browser reaches it, registered exactly with the issuer (for example https://flow.example.com/gates/callback) |
+| `--gates-ui-resource <string>` | `string` | — | — | resource indicator (RFC 8707) the sign-in asks the issuer to mint a token for; defaults to this server's own API resource |
+| `--gates-ui-scope <string,...>` | `stringSlice` | — | — | scope to request at sign-in; repeatable. None is required by the page |
+| `--gates-ui-session-key-file <string>` | `string` | — | — | file holding the base64 of a 32-byte key that seals the sign-in cookies. Replicas that should accept each other's sessions share one; without it a random key is made at start and a restart signs everyone out. Generate one with `head -c32 /dev/urandom \| base64` |
 | `--identity-claim <string,...>` | `stringArray` | — | — | caller token claim to carry into each run and signal sender identity (repeatable), such as team or email; only named claims are persisted, and they are what signals: and workload.claims[...] policy rules read |
 | `--identity-key <string,...>` | `stringArray` | — | `FLOWSTATE_IDENTITY_KEY` | path to a PKCS#8 PEM private key Flowstate signs its own assertions with, required when the auth policy configures federation; the file's base name becomes the published key id, so 2026-07.pem publishes as "2026-07". Repeatable: the first occurrence signs and every later one is published for verification only, so a restart that rotates keys does not reject assertions the previous process signed |
 | `--insecure-no-auth` | `bool` | `false` | — | allow unauthenticated access, for local development only; cannot be combined with `--auth-policy` (or an inherited FLOWSTATE_AUTH_POLICY) |

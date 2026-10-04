@@ -127,6 +127,12 @@ func (c *CheckClaim) UnmarshalYAML(unmarshal func(any) error) error {
 // Mutates the slice in place: a whole-value fence is stripped here, once, so
 // everything downstream evaluates bare CEL.
 func checkCheckClaims(p *problems, r site, where string, claims []CheckClaim, own int, inheritedFrom string) {
+	checkClaimList(p, r, where+".check", claims, own, inheritedFrom)
+}
+
+// checkClaimList is [checkCheckClaims] for a list that is not called `check:`;
+// label names the list in a diagnostic, as `test "x" expect.check` does.
+func checkClaimList(p *problems, r site, label string, claims []CheckClaim, own int, inheritedFrom string) {
 	if len(claims) == 0 {
 		return
 	}
@@ -135,7 +141,7 @@ func checkCheckClaims(p *problems, r site, where string, claims []CheckClaim, ow
 	if err != nil {
 		// Nothing can be parsed without an environment, so this is the whole
 		// report for this list rather than one entry's worth of it.
-		p.report(r, "%s: building the expression environment: %s", where, err)
+		p.report(r, "%s: building the expression environment: %s", label, err)
 
 		return
 	}
@@ -172,12 +178,12 @@ func checkCheckClaims(p *problems, r site, where string, claims []CheckClaim, ow
 			claims[i].That = inner
 		}
 		if strings.TrimSpace(claims[i].That) == "" {
-			p.report(spot, "%s.check[%d] holds an empty claim; write the CEL predicate, or drop the entry", where, i)
+			p.report(spot, "%s[%d] holds an empty claim; write the CEL predicate, or drop the entry", label, i)
 
 			continue
 		}
 		if _, issues := env.Parse(claims[i].That); issues != nil && issues.Err() != nil {
-			p.report(spot, "%s.check[%d]: %s", where, i, issues.Err())
+			p.report(spot, "%s[%d]: %s", label, i, issues.Err())
 		}
 	}
 }

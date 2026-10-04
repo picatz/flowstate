@@ -964,6 +964,50 @@ func init() {
 			Leading: " DebugGetResponse is the session as it stands.\n",
 		},
 		{
+			Name: "flowstate.v1.DebugHistoryRequest",
+			Leading: " DebugHistoryRequest asks for a durable run as it was at one point of its\n" +
+				" recorded history, read-only. Reading a point dispatches nothing and writes\n" +
+				" nothing to the run, and the run need not be open.\n",
+		},
+		{
+			Name: "flowstate.v1.DebugHistoryRequest.run_id",
+			Leading: " RunId names the execution whose history is read. Required: a point\n" +
+				" belongs to one execution, and a chain that continued as new has several.\n",
+		},
+		{
+			Name: "flowstate.v1.DebugHistoryRequest.event_id",
+			Leading: " EventId is the point, one of the run's boundaries as a previous answer\n" +
+				" listed them. Zero names the last one.\n",
+		},
+		{
+			Name:    "flowstate.v1.DebugHistoryResponse",
+			Leading: " DebugHistoryResponse is the run at the point asked for.\n",
+		},
+		{
+			Name: "flowstate.v1.DebugHistoryResponse.snapshot",
+			Leading: " Snapshot is the debug session as the run held it at the point. Unset at\n" +
+				" a point before the run had installed its session, which the first\n" +
+				" workflow task has not yet.\n",
+		},
+		{
+			Name:    "flowstate.v1.DebugHistoryResponse.progress",
+			Leading: " Progress is the run's progress at the point.\n",
+		},
+		{
+			Name:    "flowstate.v1.DebugHistoryResponse.event_id",
+			Leading: " EventId is the point the answer is for.\n",
+		},
+		{
+			Name:    "flowstate.v1.DebugHistoryResponse.fidelity",
+			Leading: " Fidelity is how the snapshot is known.\n",
+		},
+		{
+			Name: "flowstate.v1.DebugHistoryResponse.boundaries",
+			Leading: " Boundaries are the points the run can be read at, as event ids in\n" +
+				" history order. At most one per workflow task, so no more than the\n" +
+				" history's own bound allows.\n",
+		},
+		{
 			Name:    "flowstate.v1.DebugResumeRequest",
 			Leading: " DebugResumeRequest releases a hold: continue, step, run until, or detach.\n",
 		},
@@ -1498,6 +1542,32 @@ func init() {
 			Name: "flowstate.v1.DEBUG_FAILURE_MODE_ALL",
 			Leading: " All stops on every failure, including those `continue_on_error:`\n" +
 				" tolerates.\n",
+		},
+		{
+			Name:    "flowstate.v1.DebugFidelity",
+			Leading: " DebugFidelity says how a value shown at a past point of a run is known.\n",
+		},
+		{
+			Name: "flowstate.v1.DEBUG_FIDELITY_RECONSTRUCTED",
+			Leading: " Reconstructed values were computed by running the interpreter over the\n" +
+				" run's recorded history up to the point, as a worker restart does. They\n" +
+				" are what the run held there.\n",
+		},
+		{
+			Name: "flowstate.v1.DEBUG_FIDELITY_RECORDED",
+			Leading: " Recorded values were read from the history as written: a task's result,\n" +
+				" a signal's payload.\n",
+		},
+		{
+			Name: "flowstate.v1.DEBUG_FIDELITY_UNAVAILABLE",
+			Leading: " Unavailable values cannot be known at the point: the history does not\n" +
+				" hold them, or a bound was reached before they could be read.\n",
+		},
+		{
+			Name: "flowstate.v1.DEBUG_FIDELITY_HYPOTHETICAL",
+			Leading: " Hypothetical values were computed now, against reconstructed state, and\n" +
+				" were never held by the run: the result of an expression the run did not\n" +
+				" evaluate.\n",
 		},
 	})
 }

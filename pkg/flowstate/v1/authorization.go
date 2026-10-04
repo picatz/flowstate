@@ -41,7 +41,10 @@ var authorizationActionBindings = []*AuthorizationActionBinding{
 	{
 		Action: AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_SIGNAL,
 		Parent: AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_RUN,
-		Rpcs:   []string{"Signal"},
+		// GetGate is the read an approver needs to answer: bound here rather than
+		// to `workload.read` so a caller who may signal a gate can see the
+		// question it asks, and no more of the run than that.
+		Rpcs: []string{"Signal", "GetGate"},
 	},
 	{
 		Action: AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_CANCEL,
@@ -118,7 +121,7 @@ var authorizationActionBindings = []*AuthorizationActionBinding{
 	{
 		Action: AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_DEBUG,
 		Parent: AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_SIGNAL,
-		Rpcs:   []string{"DebugAttach", "DebugGet", "DebugResume", "DebugSetBreakpoints"},
+		Rpcs:   []string{"DebugAttach", "DebugGet", "DebugHistory", "DebugResume", "DebugSetBreakpoints"},
 	},
 	{
 		Action: AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_DEBUG_INSPECT,

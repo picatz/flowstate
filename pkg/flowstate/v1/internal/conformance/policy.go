@@ -508,6 +508,35 @@ func ToleratedStepFailureCases() []Case {
 
 	return []Case{
 		{
+			// A raised, declared failure that is tolerated is recorded under its
+			// declared name with the message the author evaluated, identically on
+			// both drivers: `failure.kind` carries the declared kind, the
+			// sentence is the one `error` holds, and a declared kind is never
+			// retryable.
+			Name: "a tolerated fail step records its declared kind and message",
+			Workflow: &v1.Workflow{
+				Name:           "tolerated-fail",
+				DeclaredErrors: []*v1.ErrorDeclaration{{Name: "QuotaExceeded"}},
+				Steps: []*v1.Node{
+					tolerated(&v1.Node{
+						Id: "refuse",
+						Kind: &v1.Node_Fail{Fail: &v1.Fail{
+							Error:   "QuotaExceeded",
+							Message: v1.NewExpr(`"tenant " + "acme" + " is over quota"`),
+						}},
+					}),
+					says("after", "still here"),
+				},
+			},
+			ExpectedOutputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
+				"refuse": v1.FailedStepOutputs(v1.StepFailure{
+					Kind: "QuotaExceeded",
+					Text: `task "fail" failed (QuotaExceeded): tenant acme is over quota`,
+				}),
+				"after": {},
+			}},
+		},
+		{
 			// Bug Z2.6: locally this aborted the run instead of being tolerated.
 			Name: "a tolerated step vars failure records what went wrong and continues",
 			Workflow: &v1.Workflow{

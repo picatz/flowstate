@@ -838,12 +838,17 @@ type AuditDebugDetail struct {
 	RequestId string                 `protobuf:"bytes,2,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
 	Revision  uint64                 `protobuf:"varint,3,opt,name=revision,proto3" json:"revision,omitempty"`
 	// Operation names the command: `attach`, `get`, `resume/step_over`,
-	// `breakpoints`, `inspect`, `signal`.
+	// `breakpoints`, `inspect`, `signal`, `history` (the point asked for) and
+	// `history/resolved` (the point read).
 	Operation string `protobuf:"bytes,4,opt,name=operation,proto3" json:"operation,omitempty"`
 	// ExpressionDigest is the content digest of an inspected expression.
 	ExpressionDigest string `protobuf:"bytes,5,opt,name=expression_digest,json=expressionDigest,proto3" json:"expression_digest,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// RunId is the exact execution a history read named. Event ids restart in
+	// every run of a Continue-As-New chain, so a revision is only a point of one
+	// run, and this is which.
+	RunId         string `protobuf:"bytes,6,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *AuditDebugDetail) Reset() {
@@ -911,6 +916,13 @@ func (x *AuditDebugDetail) GetExpressionDigest() string {
 	return ""
 }
 
+func (x *AuditDebugDetail) GetRunId() string {
+	if x != nil {
+		return x.RunId
+	}
+	return ""
+}
+
 var File_flowstate_v1_audit_proto protoreflect.FileDescriptor
 
 const file_flowstate_v1_audit_proto_rawDesc = "" +
@@ -949,7 +961,7 @@ const file_flowstate_v1_audit_proto_rawDesc = "" +
 	"\x05debug\x18\x14 \x01(\v2\x1e.flowstate.v1.AuditDebugDetailR\x05debug:\xa4\x05\xbaH\xa0\x05\x1a\xf9\x01\n" +
 	"\x16audit_record.operation\x12dexactly one of rpc, mcp_tool, http_endpoint or enforcement_point must identify the audited operation\x1ay[this.rpc != '', this.mcp_tool != '', this.http_endpoint != '', this.enforcement_point != 0].filter(set, set).size() == 1\x1a\xf6\x01\n" +
 	"\x13audit_record.action\x12\x83\x01action names the authorization vocabulary and is set for an rpc, mcp_tool or http_endpoint decision, never for an enforcement point\x1aY(this.action != 0) == (this.rpc != '' || this.mcp_tool != '' || this.http_endpoint != '')\x1a\xa8\x01\n" +
-	"\x18audit_record.dispatch_id\x12=dispatch_id is empty or identifies an attempted task dispatch\x1aMthis.dispatch_id == '' || (this.enforcement_point == 1 && this.attempt != 0u)\"\xde\x01\n" +
+	"\x18audit_record.dispatch_id\x12=dispatch_id is empty or identifies an attempted task dispatch\x1aMthis.dispatch_id == '' || (this.enforcement_point == 1 && this.attempt != 0u)\"\xff\x01\n" +
 	"\x10AuditDebugDetail\x12'\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x02R\tsessionId\x12'\n" +
@@ -957,7 +969,8 @@ const file_flowstate_v1_audit_proto_rawDesc = "" +
 	"request_id\x18\x02 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x01R\trequestId\x12\x1a\n" +
 	"\brevision\x18\x03 \x01(\x04R\brevision\x12%\n" +
 	"\toperation\x18\x04 \x01(\tB\a\xbaH\x04r\x02\x18@R\toperation\x125\n" +
-	"\x11expression_digest\x18\x05 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x01R\x10expressionDigest*\x85\x01\n" +
+	"\x11expression_digest\x18\x05 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x01R\x10expressionDigest\x12\x1f\n" +
+	"\x06run_id\x18\x06 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x01R\x05runId*\x85\x01\n" +
 	"\rAuditDecision\x12\x1e\n" +
 	"\x1aAUDIT_DECISION_UNSPECIFIED\x10\x00\x12\x18\n" +
 	"\x14AUDIT_DECISION_ALLOW\x10\x01\x12\x17\n" +

@@ -768,6 +768,72 @@ func (DebugFailureMode) EnumDescriptor() ([]byte, []int) {
 	return file_flowstate_v1_debug_proto_rawDescGZIP(), []int{8}
 }
 
+// DebugFidelity says how a value shown at a past point of a run is known.
+type DebugFidelity int32
+
+const (
+	DebugFidelity_DEBUG_FIDELITY_UNSPECIFIED DebugFidelity = 0
+	// Reconstructed values were computed by running the interpreter over the
+	// run's recorded history up to the point, as a worker restart does. They
+	// are what the run held there.
+	DebugFidelity_DEBUG_FIDELITY_RECONSTRUCTED DebugFidelity = 1
+	// Recorded values were read from the history as written: a task's result,
+	// a signal's payload.
+	DebugFidelity_DEBUG_FIDELITY_RECORDED DebugFidelity = 2
+	// Unavailable values cannot be known at the point: the history does not
+	// hold them, or a bound was reached before they could be read.
+	DebugFidelity_DEBUG_FIDELITY_UNAVAILABLE DebugFidelity = 3
+	// Hypothetical values were computed now, against reconstructed state, and
+	// were never held by the run: the result of an expression the run did not
+	// evaluate.
+	DebugFidelity_DEBUG_FIDELITY_HYPOTHETICAL DebugFidelity = 4
+)
+
+// Enum value maps for DebugFidelity.
+var (
+	DebugFidelity_name = map[int32]string{
+		0: "DEBUG_FIDELITY_UNSPECIFIED",
+		1: "DEBUG_FIDELITY_RECONSTRUCTED",
+		2: "DEBUG_FIDELITY_RECORDED",
+		3: "DEBUG_FIDELITY_UNAVAILABLE",
+		4: "DEBUG_FIDELITY_HYPOTHETICAL",
+	}
+	DebugFidelity_value = map[string]int32{
+		"DEBUG_FIDELITY_UNSPECIFIED":   0,
+		"DEBUG_FIDELITY_RECONSTRUCTED": 1,
+		"DEBUG_FIDELITY_RECORDED":      2,
+		"DEBUG_FIDELITY_UNAVAILABLE":   3,
+		"DEBUG_FIDELITY_HYPOTHETICAL":  4,
+	}
+)
+
+func (x DebugFidelity) Enum() *DebugFidelity {
+	p := new(DebugFidelity)
+	*p = x
+	return p
+}
+
+func (x DebugFidelity) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (DebugFidelity) Descriptor() protoreflect.EnumDescriptor {
+	return file_flowstate_v1_debug_proto_enumTypes[9].Descriptor()
+}
+
+func (DebugFidelity) Type() protoreflect.EnumType {
+	return &file_flowstate_v1_debug_proto_enumTypes[9]
+}
+
+func (x DebugFidelity) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use DebugFidelity.Descriptor instead.
+func (DebugFidelity) EnumDescriptor() ([]byte, []int) {
+	return file_flowstate_v1_debug_proto_rawDescGZIP(), []int{9}
+}
+
 // DebugPosition is where a paused debug session is holding a run.
 //
 // # Its relationship to RunProgress
@@ -3617,6 +3683,159 @@ func (x *DebugGetResponse) GetSnapshot() *DebugSnapshot {
 	return nil
 }
 
+// DebugHistoryRequest asks for a durable run as it was at one point of its
+// recorded history, read-only. Reading a point dispatches nothing and writes
+// nothing to the run, and the run need not be open.
+type DebugHistoryRequest struct {
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	WorkflowId string                 `protobuf:"bytes,1,opt,name=workflow_id,json=workflowId,proto3" json:"workflow_id,omitempty"`
+	// RunId names the execution whose history is read. Required: a point
+	// belongs to one execution, and a chain that continued as new has several.
+	RunId string `protobuf:"bytes,2,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
+	// EventId is the point, one of the run's boundaries as a previous answer
+	// listed them. Zero names the last one.
+	EventId       int64 `protobuf:"varint,3,opt,name=event_id,json=eventId,proto3" json:"event_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DebugHistoryRequest) Reset() {
+	*x = DebugHistoryRequest{}
+	mi := &file_flowstate_v1_debug_proto_msgTypes[31]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DebugHistoryRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DebugHistoryRequest) ProtoMessage() {}
+
+func (x *DebugHistoryRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_flowstate_v1_debug_proto_msgTypes[31]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DebugHistoryRequest.ProtoReflect.Descriptor instead.
+func (*DebugHistoryRequest) Descriptor() ([]byte, []int) {
+	return file_flowstate_v1_debug_proto_rawDescGZIP(), []int{31}
+}
+
+func (x *DebugHistoryRequest) GetWorkflowId() string {
+	if x != nil {
+		return x.WorkflowId
+	}
+	return ""
+}
+
+func (x *DebugHistoryRequest) GetRunId() string {
+	if x != nil {
+		return x.RunId
+	}
+	return ""
+}
+
+func (x *DebugHistoryRequest) GetEventId() int64 {
+	if x != nil {
+		return x.EventId
+	}
+	return 0
+}
+
+// DebugHistoryResponse is the run at the point asked for.
+type DebugHistoryResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Snapshot is the debug session as the run held it at the point. Unset at
+	// a point before the run had installed its session, which the first
+	// workflow task has not yet.
+	Snapshot *DebugSnapshot `protobuf:"bytes,1,opt,name=snapshot,proto3" json:"snapshot,omitempty"`
+	// Progress is the run's progress at the point.
+	Progress *RunProgress `protobuf:"bytes,2,opt,name=progress,proto3" json:"progress,omitempty"`
+	// EventId is the point the answer is for.
+	EventId int64 `protobuf:"varint,3,opt,name=event_id,json=eventId,proto3" json:"event_id,omitempty"`
+	// Fidelity is how the snapshot is known.
+	Fidelity DebugFidelity `protobuf:"varint,4,opt,name=fidelity,proto3,enum=flowstate.v1.DebugFidelity" json:"fidelity,omitempty"`
+	// Boundaries are the points the run can be read at, as event ids in
+	// history order. At most one per workflow task, so no more than the
+	// history's own bound allows.
+	Boundaries    []int64 `protobuf:"varint,5,rep,packed,name=boundaries,proto3" json:"boundaries,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DebugHistoryResponse) Reset() {
+	*x = DebugHistoryResponse{}
+	mi := &file_flowstate_v1_debug_proto_msgTypes[32]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DebugHistoryResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DebugHistoryResponse) ProtoMessage() {}
+
+func (x *DebugHistoryResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_flowstate_v1_debug_proto_msgTypes[32]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DebugHistoryResponse.ProtoReflect.Descriptor instead.
+func (*DebugHistoryResponse) Descriptor() ([]byte, []int) {
+	return file_flowstate_v1_debug_proto_rawDescGZIP(), []int{32}
+}
+
+func (x *DebugHistoryResponse) GetSnapshot() *DebugSnapshot {
+	if x != nil {
+		return x.Snapshot
+	}
+	return nil
+}
+
+func (x *DebugHistoryResponse) GetProgress() *RunProgress {
+	if x != nil {
+		return x.Progress
+	}
+	return nil
+}
+
+func (x *DebugHistoryResponse) GetEventId() int64 {
+	if x != nil {
+		return x.EventId
+	}
+	return 0
+}
+
+func (x *DebugHistoryResponse) GetFidelity() DebugFidelity {
+	if x != nil {
+		return x.Fidelity
+	}
+	return DebugFidelity_DEBUG_FIDELITY_UNSPECIFIED
+}
+
+func (x *DebugHistoryResponse) GetBoundaries() []int64 {
+	if x != nil {
+		return x.Boundaries
+	}
+	return nil
+}
+
 // DebugResumeRequest releases a hold: continue, step, run until, or detach.
 type DebugResumeRequest struct {
 	state      protoimpl.MessageState `protogen:"open.v1"`
@@ -3638,7 +3857,7 @@ type DebugResumeRequest struct {
 
 func (x *DebugResumeRequest) Reset() {
 	*x = DebugResumeRequest{}
-	mi := &file_flowstate_v1_debug_proto_msgTypes[31]
+	mi := &file_flowstate_v1_debug_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3650,7 +3869,7 @@ func (x *DebugResumeRequest) String() string {
 func (*DebugResumeRequest) ProtoMessage() {}
 
 func (x *DebugResumeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_debug_proto_msgTypes[31]
+	mi := &file_flowstate_v1_debug_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3663,7 +3882,7 @@ func (x *DebugResumeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DebugResumeRequest.ProtoReflect.Descriptor instead.
 func (*DebugResumeRequest) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_debug_proto_rawDescGZIP(), []int{31}
+	return file_flowstate_v1_debug_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *DebugResumeRequest) GetWorkflowId() string {
@@ -3733,7 +3952,7 @@ type DebugResumeResponse struct {
 
 func (x *DebugResumeResponse) Reset() {
 	*x = DebugResumeResponse{}
-	mi := &file_flowstate_v1_debug_proto_msgTypes[32]
+	mi := &file_flowstate_v1_debug_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3745,7 +3964,7 @@ func (x *DebugResumeResponse) String() string {
 func (*DebugResumeResponse) ProtoMessage() {}
 
 func (x *DebugResumeResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_debug_proto_msgTypes[32]
+	mi := &file_flowstate_v1_debug_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3758,7 +3977,7 @@ func (x *DebugResumeResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DebugResumeResponse.ProtoReflect.Descriptor instead.
 func (*DebugResumeResponse) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_debug_proto_rawDescGZIP(), []int{32}
+	return file_flowstate_v1_debug_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *DebugResumeResponse) GetReceipt() *DebugReceipt {
@@ -3794,7 +4013,7 @@ type DebugSetBreakpointsRequest struct {
 
 func (x *DebugSetBreakpointsRequest) Reset() {
 	*x = DebugSetBreakpointsRequest{}
-	mi := &file_flowstate_v1_debug_proto_msgTypes[33]
+	mi := &file_flowstate_v1_debug_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3806,7 +4025,7 @@ func (x *DebugSetBreakpointsRequest) String() string {
 func (*DebugSetBreakpointsRequest) ProtoMessage() {}
 
 func (x *DebugSetBreakpointsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_debug_proto_msgTypes[33]
+	mi := &file_flowstate_v1_debug_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3819,7 +4038,7 @@ func (x *DebugSetBreakpointsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DebugSetBreakpointsRequest.ProtoReflect.Descriptor instead.
 func (*DebugSetBreakpointsRequest) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_debug_proto_rawDescGZIP(), []int{33}
+	return file_flowstate_v1_debug_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *DebugSetBreakpointsRequest) GetWorkflowId() string {
@@ -3884,7 +4103,7 @@ type DebugSetBreakpointsResponse struct {
 
 func (x *DebugSetBreakpointsResponse) Reset() {
 	*x = DebugSetBreakpointsResponse{}
-	mi := &file_flowstate_v1_debug_proto_msgTypes[34]
+	mi := &file_flowstate_v1_debug_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3896,7 +4115,7 @@ func (x *DebugSetBreakpointsResponse) String() string {
 func (*DebugSetBreakpointsResponse) ProtoMessage() {}
 
 func (x *DebugSetBreakpointsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_debug_proto_msgTypes[34]
+	mi := &file_flowstate_v1_debug_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3909,7 +4128,7 @@ func (x *DebugSetBreakpointsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DebugSetBreakpointsResponse.ProtoReflect.Descriptor instead.
 func (*DebugSetBreakpointsResponse) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_debug_proto_rawDescGZIP(), []int{34}
+	return file_flowstate_v1_debug_proto_rawDescGZIP(), []int{36}
 }
 
 func (x *DebugSetBreakpointsResponse) GetReceipt() *DebugReceipt {
@@ -3956,7 +4175,7 @@ type DebugInspectRequest struct {
 
 func (x *DebugInspectRequest) Reset() {
 	*x = DebugInspectRequest{}
-	mi := &file_flowstate_v1_debug_proto_msgTypes[35]
+	mi := &file_flowstate_v1_debug_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3968,7 +4187,7 @@ func (x *DebugInspectRequest) String() string {
 func (*DebugInspectRequest) ProtoMessage() {}
 
 func (x *DebugInspectRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_debug_proto_msgTypes[35]
+	mi := &file_flowstate_v1_debug_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3981,7 +4200,7 @@ func (x *DebugInspectRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DebugInspectRequest.ProtoReflect.Descriptor instead.
 func (*DebugInspectRequest) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_debug_proto_rawDescGZIP(), []int{35}
+	return file_flowstate_v1_debug_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *DebugInspectRequest) GetWorkflowId() string {
@@ -4058,7 +4277,7 @@ type DebugInspectResponse struct {
 
 func (x *DebugInspectResponse) Reset() {
 	*x = DebugInspectResponse{}
-	mi := &file_flowstate_v1_debug_proto_msgTypes[36]
+	mi := &file_flowstate_v1_debug_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4070,7 +4289,7 @@ func (x *DebugInspectResponse) String() string {
 func (*DebugInspectResponse) ProtoMessage() {}
 
 func (x *DebugInspectResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_debug_proto_msgTypes[36]
+	mi := &file_flowstate_v1_debug_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4083,7 +4302,7 @@ func (x *DebugInspectResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DebugInspectResponse.ProtoReflect.Descriptor instead.
 func (*DebugInspectResponse) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_debug_proto_rawDescGZIP(), []int{36}
+	return file_flowstate_v1_debug_proto_rawDescGZIP(), []int{38}
 }
 
 func (x *DebugInspectResponse) GetRevision() uint64 {
@@ -4169,7 +4388,7 @@ type DebugCarry struct {
 
 func (x *DebugCarry) Reset() {
 	*x = DebugCarry{}
-	mi := &file_flowstate_v1_debug_proto_msgTypes[37]
+	mi := &file_flowstate_v1_debug_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4181,7 +4400,7 @@ func (x *DebugCarry) String() string {
 func (*DebugCarry) ProtoMessage() {}
 
 func (x *DebugCarry) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_debug_proto_msgTypes[37]
+	mi := &file_flowstate_v1_debug_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4194,7 +4413,7 @@ func (x *DebugCarry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DebugCarry.ProtoReflect.Descriptor instead.
 func (*DebugCarry) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_debug_proto_rawDescGZIP(), []int{37}
+	return file_flowstate_v1_debug_proto_rawDescGZIP(), []int{39}
 }
 
 func (x *DebugCarry) GetSessionId() string {
@@ -4532,7 +4751,21 @@ const file_flowstate_v1_debug_proto_rawDesc = "" +
 	"\x0eafter_revision\x18\x03 \x01(\x04R\rafterRevision\x12-\n" +
 	"\x04wait\x18\x04 \x01(\v2\x19.google.protobuf.DurationR\x04wait\"K\n" +
 	"\x10DebugGetResponse\x127\n" +
-	"\bsnapshot\x18\x01 \x01(\v2\x1b.flowstate.v1.DebugSnapshotR\bsnapshot\"\xad\x03\n" +
+	"\bsnapshot\x18\x01 \x01(\v2\x1b.flowstate.v1.DebugSnapshotR\bsnapshot\"\x8d\x01\n" +
+	"\x13DebugHistoryRequest\x12.\n" +
+	"\vworkflow_id\x18\x01 \x01(\tB\r\xbaH\n" +
+	"\xc8\x01\x01r\x05\x10\x01(\x80\x02R\n" +
+	"workflowId\x12\"\n" +
+	"\x06run_id\x18\x02 \x01(\tB\v\xbaH\b\xc8\x01\x01r\x03\xb0\x01\x01R\x05runId\x12\"\n" +
+	"\bevent_id\x18\x03 \x01(\x03B\a\xbaH\x04\"\x02(\x00R\aeventId\"\xfa\x01\n" +
+	"\x14DebugHistoryResponse\x127\n" +
+	"\bsnapshot\x18\x01 \x01(\v2\x1b.flowstate.v1.DebugSnapshotR\bsnapshot\x125\n" +
+	"\bprogress\x18\x02 \x01(\v2\x19.flowstate.v1.RunProgressR\bprogress\x12\x19\n" +
+	"\bevent_id\x18\x03 \x01(\x03R\aeventId\x127\n" +
+	"\bfidelity\x18\x04 \x01(\x0e2\x1b.flowstate.v1.DebugFidelityR\bfidelity\x12\x1e\n" +
+	"\n" +
+	"boundaries\x18\x05 \x03(\x03R\n" +
+	"boundaries\"\xad\x03\n" +
 	"\x12DebugResumeRequest\x12.\n" +
 	"\vworkflow_id\x18\x01 \x01(\tB\r\xbaH\n" +
 	"\xc8\x01\x01r\x05\x10\x01(\x80\x02R\n" +
@@ -4698,7 +4931,13 @@ const file_flowstate_v1_debug_proto_rawDesc = "" +
 	"\x1eDEBUG_FAILURE_MODE_UNSPECIFIED\x10\x00\x12\x1b\n" +
 	"\x17DEBUG_FAILURE_MODE_NONE\x10\x01\x12\x1f\n" +
 	"\x1bDEBUG_FAILURE_MODE_UNCAUGHT\x10\x02\x12\x1a\n" +
-	"\x16DEBUG_FAILURE_MODE_ALL\x10\x03B\xa9\x01\n" +
+	"\x16DEBUG_FAILURE_MODE_ALL\x10\x03*\xaf\x01\n" +
+	"\rDebugFidelity\x12\x1e\n" +
+	"\x1aDEBUG_FIDELITY_UNSPECIFIED\x10\x00\x12 \n" +
+	"\x1cDEBUG_FIDELITY_RECONSTRUCTED\x10\x01\x12\x1b\n" +
+	"\x17DEBUG_FIDELITY_RECORDED\x10\x02\x12\x1e\n" +
+	"\x1aDEBUG_FIDELITY_UNAVAILABLE\x10\x03\x12\x1f\n" +
+	"\x1bDEBUG_FIDELITY_HYPOTHETICAL\x10\x04B\xa9\x01\n" +
 	"\x10com.flowstate.v1B\n" +
 	"DebugProtoP\x01Z8github.com/picatz/flowstate/pkg/flowstate/v1;flowstatev1\xa2\x02\x03FXX\xaa\x02\fFlowstate.V1\xca\x02\fFlowstate\\V1\xe2\x02\x18Flowstate\\V1\\GPBMetadata\xea\x02\rFlowstate::V1b\x06proto3"
 
@@ -4714,8 +4953,8 @@ func file_flowstate_v1_debug_proto_rawDescGZIP() []byte {
 	return file_flowstate_v1_debug_proto_rawDescData
 }
 
-var file_flowstate_v1_debug_proto_enumTypes = make([]protoimpl.EnumInfo, 9)
-var file_flowstate_v1_debug_proto_msgTypes = make([]protoimpl.MessageInfo, 38)
+var file_flowstate_v1_debug_proto_enumTypes = make([]protoimpl.EnumInfo, 10)
+var file_flowstate_v1_debug_proto_msgTypes = make([]protoimpl.MessageInfo, 40)
 var file_flowstate_v1_debug_proto_goTypes = []any{
 	(DebugStepState)(0),                 // 0: flowstate.v1.DebugStepState
 	(DebugCommandVerb)(0),               // 1: flowstate.v1.DebugCommandVerb
@@ -4726,119 +4965,126 @@ var file_flowstate_v1_debug_proto_goTypes = []any{
 	(DebugResumeAction)(0),              // 6: flowstate.v1.DebugResumeAction
 	(DebugCommandStatus)(0),             // 7: flowstate.v1.DebugCommandStatus
 	(DebugFailureMode)(0),               // 8: flowstate.v1.DebugFailureMode
-	(*DebugPosition)(nil),               // 9: flowstate.v1.DebugPosition
-	(*DebugStackFrame)(nil),             // 10: flowstate.v1.DebugStackFrame
-	(*DebugBacktrace)(nil),              // 11: flowstate.v1.DebugBacktrace
-	(*DebugStep)(nil),                   // 12: flowstate.v1.DebugStep
-	(*DebugStepWindow)(nil),             // 13: flowstate.v1.DebugStepWindow
-	(*DebugBinding)(nil),                // 14: flowstate.v1.DebugBinding
-	(*DebugScopeGroup)(nil),             // 15: flowstate.v1.DebugScopeGroup
-	(*DebugScope)(nil),                  // 16: flowstate.v1.DebugScope
-	(*DebugCommand)(nil),                // 17: flowstate.v1.DebugCommand
-	(*DebugSession)(nil),                // 18: flowstate.v1.DebugSession
-	(*DebugSite)(nil),                   // 19: flowstate.v1.DebugSite
-	(*DebugSegment)(nil),                // 20: flowstate.v1.DebugSegment
-	(*DebugOccurrence)(nil),             // 21: flowstate.v1.DebugOccurrence
-	(*DebugSourceDocument)(nil),         // 22: flowstate.v1.DebugSourceDocument
-	(*DebugSourceLocation)(nil),         // 23: flowstate.v1.DebugSourceLocation
-	(*DebugSourceEntry)(nil),            // 24: flowstate.v1.DebugSourceEntry
-	(*DebugSourceMap)(nil),              // 25: flowstate.v1.DebugSourceMap
-	(*DebugFrame)(nil),                  // 26: flowstate.v1.DebugFrame
-	(*DebugCapabilities)(nil),           // 27: flowstate.v1.DebugCapabilities
-	(*DebugObservation)(nil),            // 28: flowstate.v1.DebugObservation
-	(*DebugSnapshot)(nil),               // 29: flowstate.v1.DebugSnapshot
-	(*DebugReceipt)(nil),                // 30: flowstate.v1.DebugReceipt
-	(*DebugBreakpoint)(nil),             // 31: flowstate.v1.DebugBreakpoint
-	(*DebugSourceLine)(nil),             // 32: flowstate.v1.DebugSourceLine
-	(*DebugBreakpointState)(nil),        // 33: flowstate.v1.DebugBreakpointState
-	(*DebugValue)(nil),                  // 34: flowstate.v1.DebugValue
-	(*DebugVariable)(nil),               // 35: flowstate.v1.DebugVariable
-	(*DebugAttachRequest)(nil),          // 36: flowstate.v1.DebugAttachRequest
-	(*DebugAttachResponse)(nil),         // 37: flowstate.v1.DebugAttachResponse
-	(*DebugGetRequest)(nil),             // 38: flowstate.v1.DebugGetRequest
-	(*DebugGetResponse)(nil),            // 39: flowstate.v1.DebugGetResponse
-	(*DebugResumeRequest)(nil),          // 40: flowstate.v1.DebugResumeRequest
-	(*DebugResumeResponse)(nil),         // 41: flowstate.v1.DebugResumeResponse
-	(*DebugSetBreakpointsRequest)(nil),  // 42: flowstate.v1.DebugSetBreakpointsRequest
-	(*DebugSetBreakpointsResponse)(nil), // 43: flowstate.v1.DebugSetBreakpointsResponse
-	(*DebugInspectRequest)(nil),         // 44: flowstate.v1.DebugInspectRequest
-	(*DebugInspectResponse)(nil),        // 45: flowstate.v1.DebugInspectResponse
-	(*DebugCarry)(nil),                  // 46: flowstate.v1.DebugCarry
-	(*RunAddress)(nil),                  // 47: flowstate.v1.RunAddress
-	(*WorkloadIdentity)(nil),            // 48: flowstate.v1.WorkloadIdentity
-	(*timestamppb.Timestamp)(nil),       // 49: google.protobuf.Timestamp
-	(*SourceRange)(nil),                 // 50: flowstate.v1.SourceRange
-	(*durationpb.Duration)(nil),         // 51: google.protobuf.Duration
+	(DebugFidelity)(0),                  // 9: flowstate.v1.DebugFidelity
+	(*DebugPosition)(nil),               // 10: flowstate.v1.DebugPosition
+	(*DebugStackFrame)(nil),             // 11: flowstate.v1.DebugStackFrame
+	(*DebugBacktrace)(nil),              // 12: flowstate.v1.DebugBacktrace
+	(*DebugStep)(nil),                   // 13: flowstate.v1.DebugStep
+	(*DebugStepWindow)(nil),             // 14: flowstate.v1.DebugStepWindow
+	(*DebugBinding)(nil),                // 15: flowstate.v1.DebugBinding
+	(*DebugScopeGroup)(nil),             // 16: flowstate.v1.DebugScopeGroup
+	(*DebugScope)(nil),                  // 17: flowstate.v1.DebugScope
+	(*DebugCommand)(nil),                // 18: flowstate.v1.DebugCommand
+	(*DebugSession)(nil),                // 19: flowstate.v1.DebugSession
+	(*DebugSite)(nil),                   // 20: flowstate.v1.DebugSite
+	(*DebugSegment)(nil),                // 21: flowstate.v1.DebugSegment
+	(*DebugOccurrence)(nil),             // 22: flowstate.v1.DebugOccurrence
+	(*DebugSourceDocument)(nil),         // 23: flowstate.v1.DebugSourceDocument
+	(*DebugSourceLocation)(nil),         // 24: flowstate.v1.DebugSourceLocation
+	(*DebugSourceEntry)(nil),            // 25: flowstate.v1.DebugSourceEntry
+	(*DebugSourceMap)(nil),              // 26: flowstate.v1.DebugSourceMap
+	(*DebugFrame)(nil),                  // 27: flowstate.v1.DebugFrame
+	(*DebugCapabilities)(nil),           // 28: flowstate.v1.DebugCapabilities
+	(*DebugObservation)(nil),            // 29: flowstate.v1.DebugObservation
+	(*DebugSnapshot)(nil),               // 30: flowstate.v1.DebugSnapshot
+	(*DebugReceipt)(nil),                // 31: flowstate.v1.DebugReceipt
+	(*DebugBreakpoint)(nil),             // 32: flowstate.v1.DebugBreakpoint
+	(*DebugSourceLine)(nil),             // 33: flowstate.v1.DebugSourceLine
+	(*DebugBreakpointState)(nil),        // 34: flowstate.v1.DebugBreakpointState
+	(*DebugValue)(nil),                  // 35: flowstate.v1.DebugValue
+	(*DebugVariable)(nil),               // 36: flowstate.v1.DebugVariable
+	(*DebugAttachRequest)(nil),          // 37: flowstate.v1.DebugAttachRequest
+	(*DebugAttachResponse)(nil),         // 38: flowstate.v1.DebugAttachResponse
+	(*DebugGetRequest)(nil),             // 39: flowstate.v1.DebugGetRequest
+	(*DebugGetResponse)(nil),            // 40: flowstate.v1.DebugGetResponse
+	(*DebugHistoryRequest)(nil),         // 41: flowstate.v1.DebugHistoryRequest
+	(*DebugHistoryResponse)(nil),        // 42: flowstate.v1.DebugHistoryResponse
+	(*DebugResumeRequest)(nil),          // 43: flowstate.v1.DebugResumeRequest
+	(*DebugResumeResponse)(nil),         // 44: flowstate.v1.DebugResumeResponse
+	(*DebugSetBreakpointsRequest)(nil),  // 45: flowstate.v1.DebugSetBreakpointsRequest
+	(*DebugSetBreakpointsResponse)(nil), // 46: flowstate.v1.DebugSetBreakpointsResponse
+	(*DebugInspectRequest)(nil),         // 47: flowstate.v1.DebugInspectRequest
+	(*DebugInspectResponse)(nil),        // 48: flowstate.v1.DebugInspectResponse
+	(*DebugCarry)(nil),                  // 49: flowstate.v1.DebugCarry
+	(*RunAddress)(nil),                  // 50: flowstate.v1.RunAddress
+	(*WorkloadIdentity)(nil),            // 51: flowstate.v1.WorkloadIdentity
+	(*timestamppb.Timestamp)(nil),       // 52: google.protobuf.Timestamp
+	(*SourceRange)(nil),                 // 53: flowstate.v1.SourceRange
+	(*durationpb.Duration)(nil),         // 54: google.protobuf.Duration
+	(*RunProgress)(nil),                 // 55: flowstate.v1.RunProgress
 }
 var file_flowstate_v1_debug_proto_depIdxs = []int32{
-	10, // 0: flowstate.v1.DebugBacktrace.frames:type_name -> flowstate.v1.DebugStackFrame
+	11, // 0: flowstate.v1.DebugBacktrace.frames:type_name -> flowstate.v1.DebugStackFrame
 	0,  // 1: flowstate.v1.DebugStep.state:type_name -> flowstate.v1.DebugStepState
-	12, // 2: flowstate.v1.DebugStepWindow.steps:type_name -> flowstate.v1.DebugStep
-	14, // 3: flowstate.v1.DebugScopeGroup.bindings:type_name -> flowstate.v1.DebugBinding
-	15, // 4: flowstate.v1.DebugScope.groups:type_name -> flowstate.v1.DebugScopeGroup
+	13, // 2: flowstate.v1.DebugStepWindow.steps:type_name -> flowstate.v1.DebugStep
+	15, // 3: flowstate.v1.DebugScopeGroup.bindings:type_name -> flowstate.v1.DebugBinding
+	16, // 4: flowstate.v1.DebugScope.groups:type_name -> flowstate.v1.DebugScopeGroup
 	1,  // 5: flowstate.v1.DebugCommand.verb:type_name -> flowstate.v1.DebugCommandVerb
-	47, // 6: flowstate.v1.DebugSession.run:type_name -> flowstate.v1.RunAddress
-	48, // 7: flowstate.v1.DebugSession.attached_by:type_name -> flowstate.v1.WorkloadIdentity
-	49, // 8: flowstate.v1.DebugSession.attached_at:type_name -> google.protobuf.Timestamp
-	49, // 9: flowstate.v1.DebugSession.lease_expires_at:type_name -> google.protobuf.Timestamp
+	50, // 6: flowstate.v1.DebugSession.run:type_name -> flowstate.v1.RunAddress
+	51, // 7: flowstate.v1.DebugSession.attached_by:type_name -> flowstate.v1.WorkloadIdentity
+	52, // 8: flowstate.v1.DebugSession.attached_at:type_name -> google.protobuf.Timestamp
+	52, // 9: flowstate.v1.DebugSession.lease_expires_at:type_name -> google.protobuf.Timestamp
 	2,  // 10: flowstate.v1.DebugSegment.kind:type_name -> flowstate.v1.DebugSegmentKind
-	19, // 11: flowstate.v1.DebugOccurrence.site:type_name -> flowstate.v1.DebugSite
-	20, // 12: flowstate.v1.DebugOccurrence.segments:type_name -> flowstate.v1.DebugSegment
-	50, // 13: flowstate.v1.DebugSourceLocation.range:type_name -> flowstate.v1.SourceRange
-	19, // 14: flowstate.v1.DebugSourceEntry.site:type_name -> flowstate.v1.DebugSite
-	23, // 15: flowstate.v1.DebugSourceEntry.location:type_name -> flowstate.v1.DebugSourceLocation
-	22, // 16: flowstate.v1.DebugSourceMap.documents:type_name -> flowstate.v1.DebugSourceDocument
-	24, // 17: flowstate.v1.DebugSourceMap.entries:type_name -> flowstate.v1.DebugSourceEntry
-	21, // 18: flowstate.v1.DebugFrame.occurrence:type_name -> flowstate.v1.DebugOccurrence
-	23, // 19: flowstate.v1.DebugFrame.source:type_name -> flowstate.v1.DebugSourceLocation
+	20, // 11: flowstate.v1.DebugOccurrence.site:type_name -> flowstate.v1.DebugSite
+	21, // 12: flowstate.v1.DebugOccurrence.segments:type_name -> flowstate.v1.DebugSegment
+	53, // 13: flowstate.v1.DebugSourceLocation.range:type_name -> flowstate.v1.SourceRange
+	20, // 14: flowstate.v1.DebugSourceEntry.site:type_name -> flowstate.v1.DebugSite
+	24, // 15: flowstate.v1.DebugSourceEntry.location:type_name -> flowstate.v1.DebugSourceLocation
+	23, // 16: flowstate.v1.DebugSourceMap.documents:type_name -> flowstate.v1.DebugSourceDocument
+	25, // 17: flowstate.v1.DebugSourceMap.entries:type_name -> flowstate.v1.DebugSourceEntry
+	22, // 18: flowstate.v1.DebugFrame.occurrence:type_name -> flowstate.v1.DebugOccurrence
+	24, // 19: flowstate.v1.DebugFrame.source:type_name -> flowstate.v1.DebugSourceLocation
 	5,  // 20: flowstate.v1.DebugObservation.kind:type_name -> flowstate.v1.DebugObservationKind
-	18, // 21: flowstate.v1.DebugSnapshot.session:type_name -> flowstate.v1.DebugSession
+	19, // 21: flowstate.v1.DebugSnapshot.session:type_name -> flowstate.v1.DebugSession
 	3,  // 22: flowstate.v1.DebugSnapshot.state:type_name -> flowstate.v1.DebugRunState
 	4,  // 23: flowstate.v1.DebugSnapshot.reason:type_name -> flowstate.v1.DebugStopReason
-	21, // 24: flowstate.v1.DebugSnapshot.occurrence:type_name -> flowstate.v1.DebugOccurrence
-	26, // 25: flowstate.v1.DebugSnapshot.frames:type_name -> flowstate.v1.DebugFrame
-	27, // 26: flowstate.v1.DebugSnapshot.capabilities:type_name -> flowstate.v1.DebugCapabilities
-	28, // 27: flowstate.v1.DebugSnapshot.observations:type_name -> flowstate.v1.DebugObservation
-	33, // 28: flowstate.v1.DebugSnapshot.breakpoints:type_name -> flowstate.v1.DebugBreakpointState
-	30, // 29: flowstate.v1.DebugSnapshot.receipt:type_name -> flowstate.v1.DebugReceipt
+	22, // 24: flowstate.v1.DebugSnapshot.occurrence:type_name -> flowstate.v1.DebugOccurrence
+	27, // 25: flowstate.v1.DebugSnapshot.frames:type_name -> flowstate.v1.DebugFrame
+	28, // 26: flowstate.v1.DebugSnapshot.capabilities:type_name -> flowstate.v1.DebugCapabilities
+	29, // 27: flowstate.v1.DebugSnapshot.observations:type_name -> flowstate.v1.DebugObservation
+	34, // 28: flowstate.v1.DebugSnapshot.breakpoints:type_name -> flowstate.v1.DebugBreakpointState
+	31, // 29: flowstate.v1.DebugSnapshot.receipt:type_name -> flowstate.v1.DebugReceipt
 	7,  // 30: flowstate.v1.DebugReceipt.status:type_name -> flowstate.v1.DebugCommandStatus
-	32, // 31: flowstate.v1.DebugBreakpoint.line:type_name -> flowstate.v1.DebugSourceLine
-	19, // 32: flowstate.v1.DebugBreakpointState.sites:type_name -> flowstate.v1.DebugSite
-	23, // 33: flowstate.v1.DebugBreakpointState.source:type_name -> flowstate.v1.DebugSourceLocation
-	31, // 34: flowstate.v1.DebugBreakpointState.definition:type_name -> flowstate.v1.DebugBreakpoint
-	34, // 35: flowstate.v1.DebugVariable.value:type_name -> flowstate.v1.DebugValue
-	51, // 36: flowstate.v1.DebugAttachRequest.lease:type_name -> google.protobuf.Duration
-	51, // 37: flowstate.v1.DebugAttachRequest.wait:type_name -> google.protobuf.Duration
-	30, // 38: flowstate.v1.DebugAttachResponse.receipt:type_name -> flowstate.v1.DebugReceipt
-	29, // 39: flowstate.v1.DebugAttachResponse.snapshot:type_name -> flowstate.v1.DebugSnapshot
-	51, // 40: flowstate.v1.DebugGetRequest.wait:type_name -> google.protobuf.Duration
-	29, // 41: flowstate.v1.DebugGetResponse.snapshot:type_name -> flowstate.v1.DebugSnapshot
-	6,  // 42: flowstate.v1.DebugResumeRequest.action:type_name -> flowstate.v1.DebugResumeAction
-	51, // 43: flowstate.v1.DebugResumeRequest.wait:type_name -> google.protobuf.Duration
-	30, // 44: flowstate.v1.DebugResumeResponse.receipt:type_name -> flowstate.v1.DebugReceipt
-	29, // 45: flowstate.v1.DebugResumeResponse.snapshot:type_name -> flowstate.v1.DebugSnapshot
-	31, // 46: flowstate.v1.DebugSetBreakpointsRequest.breakpoints:type_name -> flowstate.v1.DebugBreakpoint
-	8,  // 47: flowstate.v1.DebugSetBreakpointsRequest.failure_mode:type_name -> flowstate.v1.DebugFailureMode
-	51, // 48: flowstate.v1.DebugSetBreakpointsRequest.wait:type_name -> google.protobuf.Duration
-	30, // 49: flowstate.v1.DebugSetBreakpointsResponse.receipt:type_name -> flowstate.v1.DebugReceipt
-	33, // 50: flowstate.v1.DebugSetBreakpointsResponse.breakpoints:type_name -> flowstate.v1.DebugBreakpointState
-	29, // 51: flowstate.v1.DebugSetBreakpointsResponse.snapshot:type_name -> flowstate.v1.DebugSnapshot
-	34, // 52: flowstate.v1.DebugInspectResponse.value:type_name -> flowstate.v1.DebugValue
-	35, // 53: flowstate.v1.DebugInspectResponse.children:type_name -> flowstate.v1.DebugVariable
-	48, // 54: flowstate.v1.DebugCarry.holder:type_name -> flowstate.v1.WorkloadIdentity
-	49, // 55: flowstate.v1.DebugCarry.attached_at:type_name -> google.protobuf.Timestamp
-	49, // 56: flowstate.v1.DebugCarry.deadline:type_name -> google.protobuf.Timestamp
-	49, // 57: flowstate.v1.DebugCarry.lease_expires_at:type_name -> google.protobuf.Timestamp
-	51, // 58: flowstate.v1.DebugCarry.lease:type_name -> google.protobuf.Duration
-	6,  // 59: flowstate.v1.DebugCarry.next:type_name -> flowstate.v1.DebugResumeAction
-	31, // 60: flowstate.v1.DebugCarry.breakpoints:type_name -> flowstate.v1.DebugBreakpoint
-	30, // 61: flowstate.v1.DebugCarry.receipts:type_name -> flowstate.v1.DebugReceipt
-	3,  // 62: flowstate.v1.DebugCarry.ended:type_name -> flowstate.v1.DebugRunState
-	63, // [63:63] is the sub-list for method output_type
-	63, // [63:63] is the sub-list for method input_type
-	63, // [63:63] is the sub-list for extension type_name
-	63, // [63:63] is the sub-list for extension extendee
-	0,  // [0:63] is the sub-list for field type_name
+	33, // 31: flowstate.v1.DebugBreakpoint.line:type_name -> flowstate.v1.DebugSourceLine
+	20, // 32: flowstate.v1.DebugBreakpointState.sites:type_name -> flowstate.v1.DebugSite
+	24, // 33: flowstate.v1.DebugBreakpointState.source:type_name -> flowstate.v1.DebugSourceLocation
+	32, // 34: flowstate.v1.DebugBreakpointState.definition:type_name -> flowstate.v1.DebugBreakpoint
+	35, // 35: flowstate.v1.DebugVariable.value:type_name -> flowstate.v1.DebugValue
+	54, // 36: flowstate.v1.DebugAttachRequest.lease:type_name -> google.protobuf.Duration
+	54, // 37: flowstate.v1.DebugAttachRequest.wait:type_name -> google.protobuf.Duration
+	31, // 38: flowstate.v1.DebugAttachResponse.receipt:type_name -> flowstate.v1.DebugReceipt
+	30, // 39: flowstate.v1.DebugAttachResponse.snapshot:type_name -> flowstate.v1.DebugSnapshot
+	54, // 40: flowstate.v1.DebugGetRequest.wait:type_name -> google.protobuf.Duration
+	30, // 41: flowstate.v1.DebugGetResponse.snapshot:type_name -> flowstate.v1.DebugSnapshot
+	30, // 42: flowstate.v1.DebugHistoryResponse.snapshot:type_name -> flowstate.v1.DebugSnapshot
+	55, // 43: flowstate.v1.DebugHistoryResponse.progress:type_name -> flowstate.v1.RunProgress
+	9,  // 44: flowstate.v1.DebugHistoryResponse.fidelity:type_name -> flowstate.v1.DebugFidelity
+	6,  // 45: flowstate.v1.DebugResumeRequest.action:type_name -> flowstate.v1.DebugResumeAction
+	54, // 46: flowstate.v1.DebugResumeRequest.wait:type_name -> google.protobuf.Duration
+	31, // 47: flowstate.v1.DebugResumeResponse.receipt:type_name -> flowstate.v1.DebugReceipt
+	30, // 48: flowstate.v1.DebugResumeResponse.snapshot:type_name -> flowstate.v1.DebugSnapshot
+	32, // 49: flowstate.v1.DebugSetBreakpointsRequest.breakpoints:type_name -> flowstate.v1.DebugBreakpoint
+	8,  // 50: flowstate.v1.DebugSetBreakpointsRequest.failure_mode:type_name -> flowstate.v1.DebugFailureMode
+	54, // 51: flowstate.v1.DebugSetBreakpointsRequest.wait:type_name -> google.protobuf.Duration
+	31, // 52: flowstate.v1.DebugSetBreakpointsResponse.receipt:type_name -> flowstate.v1.DebugReceipt
+	34, // 53: flowstate.v1.DebugSetBreakpointsResponse.breakpoints:type_name -> flowstate.v1.DebugBreakpointState
+	30, // 54: flowstate.v1.DebugSetBreakpointsResponse.snapshot:type_name -> flowstate.v1.DebugSnapshot
+	35, // 55: flowstate.v1.DebugInspectResponse.value:type_name -> flowstate.v1.DebugValue
+	36, // 56: flowstate.v1.DebugInspectResponse.children:type_name -> flowstate.v1.DebugVariable
+	51, // 57: flowstate.v1.DebugCarry.holder:type_name -> flowstate.v1.WorkloadIdentity
+	52, // 58: flowstate.v1.DebugCarry.attached_at:type_name -> google.protobuf.Timestamp
+	52, // 59: flowstate.v1.DebugCarry.deadline:type_name -> google.protobuf.Timestamp
+	52, // 60: flowstate.v1.DebugCarry.lease_expires_at:type_name -> google.protobuf.Timestamp
+	54, // 61: flowstate.v1.DebugCarry.lease:type_name -> google.protobuf.Duration
+	6,  // 62: flowstate.v1.DebugCarry.next:type_name -> flowstate.v1.DebugResumeAction
+	32, // 63: flowstate.v1.DebugCarry.breakpoints:type_name -> flowstate.v1.DebugBreakpoint
+	31, // 64: flowstate.v1.DebugCarry.receipts:type_name -> flowstate.v1.DebugReceipt
+	3,  // 65: flowstate.v1.DebugCarry.ended:type_name -> flowstate.v1.DebugRunState
+	66, // [66:66] is the sub-list for method output_type
+	66, // [66:66] is the sub-list for method input_type
+	66, // [66:66] is the sub-list for extension type_name
+	66, // [66:66] is the sub-list for extension extendee
+	0,  // [0:66] is the sub-list for field type_name
 }
 
 func init() { file_flowstate_v1_debug_proto_init() }
@@ -4861,8 +5107,8 @@ func file_flowstate_v1_debug_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_flowstate_v1_debug_proto_rawDesc), len(file_flowstate_v1_debug_proto_rawDesc)),
-			NumEnums:      9,
-			NumMessages:   38,
+			NumEnums:      10,
+			NumMessages:   40,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

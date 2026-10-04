@@ -455,8 +455,29 @@ type Test struct {
 	// nobody wrote down and whose report identity has no obvious spelling.
 	Cases []Test `yaml:"cases"`
 
+	// Faults are failures `flow test --seeds` may inject into this case's task
+	// invocations; see [Fault]. They change nothing about a plain run, which
+	// only checks that each one names an invocation the case reaches. A row
+	// that states none inherits its table entry's.
+	Faults []Fault `yaml:"faults"`
+
+	// Invariants are CEL claims, in the form of [Expectation.Check], that must
+	// hold of every run: the written-order one and each seeded run with its
+	// faults injected. `expect:` states what the run does when nothing goes
+	// wrong; a faulted run is judged by these alone, because "the order is
+	// charged" is no longer true once the charge was made to fail. A row that
+	// states none inherits its table entry's.
+	Invariants []CheckClaim `yaml:"invariants"`
+
 	// Expect is what the run must have done to pass.
 	Expect Expectation `yaml:"expect"`
+
+	// faultsFromEntry and invariantsFromEntry record that [mergeRow] copied the
+	// list from the table entry, which is judged once where the author wrote
+	// it, so the expanded rows do not repeat the diagnostic at keys that do
+	// not exist.
+	faultsFromEntry     bool
+	invariantsFromEntry bool
 
 	// entrySecretMaterial is a table row's entry's `secrets:` plaintext,
 	// carried past [mergeRow]'s whole-replace rule for redaction only —
@@ -1557,6 +1578,12 @@ func parseSourceWith(data []byte, dd *dirDefaults, requireWorkflow bool) (*File,
 		}
 		checkOthers(p, r, test)
 		checkInvocations(p, r, test)
+		if !test.faultsFromEntry {
+			checkFaults(p, r, test, source.path.field("faults"))
+		}
+		if !test.invariantsFromEntry {
+			checkInvariants(p, r, test, source.path.field("invariants"))
+		}
 		checkClaims(p, r, test)
 		checkTrigger(p, r, test, requireWorkflow)
 	}

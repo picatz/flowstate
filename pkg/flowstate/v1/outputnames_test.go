@@ -47,6 +47,7 @@ func nodeKindBuilders() map[string]*Node {
 			Until: NewLiteral(true),
 		}}},
 		"value": {Kind: &Node_Value{Value: NewLiteral(1)}},
+		"fail":  {Kind: &Node_Fail{Fail: &Fail{Error: "Refused"}}},
 		"switch": {Kind: &Node_Switch{Switch: &Switch{
 			Value: NewLiteral("x"),
 		}}},
@@ -106,6 +107,12 @@ func TestEveryNodeKindIsCovered(t *testing.T) {
 			if kindName == "parallel" {
 				assert.False(t, ok, "a parallel block exposes nothing under its own step id")
 				assert.Empty(t, names)
+				return
+			}
+
+			if kindName == "fail" {
+				assert.True(t, ok, "a fail step's outputs are exactly known: there are none")
+				assert.Empty(t, names, "a fail step never succeeds, so it exposes nothing")
 				return
 			}
 

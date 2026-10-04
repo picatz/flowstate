@@ -501,6 +501,10 @@ func stepTaskNodes(spec *v1.Workflow) (taskOfStep map[string]string, kindOfStep 
 				kindOfStep[node.GetId()] = "wait"
 			case *v1.Node_Call:
 				kindOfStep[node.GetId()] = "call"
+			case *v1.Node_Fail:
+				// Like a value:, nothing is invoked: the step raises its
+				// declared error itself, so there is nothing to stub.
+				kindOfStep[node.GetId()] = "fail"
 			case *v1.Node_Value:
 				// A step that exists and runs no task, so it belongs in the map
 				// that tells those apart from a typo. Without this arm a stub
@@ -760,6 +764,13 @@ func (s *stubbedTask) fn(name string, sensitiveInputNames map[string]bool, unstu
 		// branches invoking this task concurrently must not both read a
 		// matcher's state between one another's updates. See [stubbedTask.mu].
 		noteInvocation(ctx, name)
+		// Before the matchers and outside the lock: an injected fault answers
+		// instead of the stubs and spends none of their `times:` budgets.
+		if plan, _ := ctx.Value(faultPlanKey{}).(*faultPlan); plan != nil {
+			if err := plan.attempt(ctx, name); err != nil {
+				return nil, err
+			}
+		}
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		s.invoked = true

@@ -580,6 +580,76 @@ message Workflow {
     (google.api.field_behavior) = OPTIONAL,
     (buf.validate.field).repeated = {max_items: 64}
   ];
+
+  // DeclaredErrors are the failures this workflow may raise, by name, so a
+  // `fail:` step and a `failure.kind` comparison are checked against a set the
+  // file states rather than against prose. Like [declared_types], the definitions
+  // travel in the specification, so a run that began with one meaning of an error
+  // ends with that meaning however the file changes.
+  //
+  // A declared name shares the namespace of the built-in [ErrorKind]s and may not
+  // spell one of them. See [ErrorDeclaration].
+  repeated ErrorDeclaration declared_errors = 22 [
+    (google.api.field_behavior) = OPTIONAL,
+    (buf.validate.field).repeated = {max_items: 64}
+  ];
+}
+
+// ErrorDeclaration names one failure a workflow may raise with a `fail:` step.
+//
+//     errors:
+//       PaymentDeclined:
+//         description: The card issuer refused the charge.
+//
+// The name is the failure's kind: it is what `${steps.<id>.failure.kind}` reads,
+// what a failed run reports, and what `flow test` asserts on. It is checked
+// wherever a kind is spelled, so `failure.kind == "PaymentDeclind"` is refused
+// with a did-you-mean the way a misspelled built-in kind is.
+//
+// A declared error is never retried. An unknown kind is permanent by the same
+// fail-closed rule that keeps a new built-in kind from repeating a non-idempotent
+// operation; letting a declaration widen that is a decision of its own, and is not
+// made here.
+message ErrorDeclaration {
+  // Name is the kind. Capitalised and an identifier, like a record type's name,
+  // and not one of the built-in kinds (`Timeout`, `Upstream`, ...), which a
+  // declaration could otherwise redefine.
+  string name = 1 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field).string = {
+      min_len: 1
+      max_len: 128
+      pattern: "^[A-Z][A-Za-z0-9_]*$"
+    }
+  ];
+
+  // Description is prose for whoever reads the error: an editor's hover, a
+  // generated reference, an agent deciding how to react.
+  optional string description = 2 [(buf.validate.field).string = {max_len: 256}];
+}
+
+// Fail raises a declared error, as `fail: {error: PaymentDeclined, message: ...}`.
+//
+// A node kind rather than a task, for the reason `value:` is: raising is not an
+// effect. It is evaluated in workflow code, in written order, schedules nothing,
+// touches nothing outside the run, and replays to the same failure. The step
+// therefore takes no `retry:`, `timeout:` or `undo:`; it can be tolerated by
+// `continue_on_error:` like any other step, and then records `error` and `failure`
+// exactly as a failed task does.
+message Fail {
+  // Error is the kind raised: a name from the workflow's [Workflow.declared_errors].
+  string error = 1 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field).string = {min_len: 1, max_len: 128}
+  ];
+
+  // Message is the sentence the failure carries, evaluated when the step runs and
+  // bounded like every other expression result. It is the author's words: the
+  // failure's `message` and `${steps.<id>.error}` are built from it. Optional; an
+  // absent message reads as the error's name.
+  Value message = 2;
 }
 
 // FunctionDeclaration is a named, typed CEL computation that a workflow's
@@ -1596,6 +1666,10 @@ message Node {
     // sugar over `if:`-guarded steps is that sugar is invisible to Marshal, so
     // `flow fmt` would rewrite an author's `switch:` into its expansion.
     Switch switch = 14;
+
+    // Fail raises a declared error, as `fail: {error: Name, message: ...}`. See
+    // [Fail]. Field 16, because 15 is [async] on this message.
+    Fail fail = 16;
   }
 
   // Condition determines whether the step runs.

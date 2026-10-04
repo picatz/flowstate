@@ -448,6 +448,92 @@ func init() {
 				" what the run did with it, read the run back with the Get RPC.\n",
 		},
 		{
+			Name:    "flowstate.v1.GetGateRequest",
+			Leading: " GetGateRequest addresses one open gate: the pair `flow signal` takes.\n",
+		},
+		{
+			Name: "flowstate.v1.GetGateRequest.workflow_id",
+			Leading: " WorkflowId identifies the workload the gate belongs to, as Run's\n" +
+				" `workflow_id` reports it. 1 to 256 bytes.\n" +
+				"\n" +
+				" A caller may address only runs in its own tenant. The namespace always\n" +
+				" comes from the caller's authenticated identity, never from the request.\n",
+		},
+		{
+			Name: "flowstate.v1.GetGateRequest.signal_name",
+			Leading: " SignalName is the gate's signal name: the `name:` the waiting\n" +
+				" `wait_for_signal:` step declared, which Get reports as each open gate's\n" +
+				" signal name. Letters, digits, `-` and `_`, starting with a letter or\n" +
+				" digit, at most 128 characters.\n",
+		},
+		{
+			Name: "flowstate.v1.GetGateResponse",
+			Leading: " GetGateResponse is one open gate, and whether the caller may answer it.\n" +
+				"\n" +
+				" It carries nothing of the run beyond the gate itself: no step output, no\n" +
+				" input, no carried state. A caller who holds `workload.signal` and not\n" +
+				" `workload.read` is entitled to the question and to nothing else.\n",
+		},
+		{
+			Name:    "flowstate.v1.GetGateResponse.workflow_id",
+			Leading: " WorkflowId is the workload the gate belongs to, as the request gave it.\n",
+		},
+		{
+			Name: "flowstate.v1.GetGateResponse.run_id",
+			Leading: " RunId is the run the gate was read on. A client answering the gate pins its\n" +
+				" [SignalRequest.run_id] to it, so an answer cannot land on a later run that\n" +
+				" reuses the workflow id.\n",
+		},
+		{
+			Name:    "flowstate.v1.GetGateResponse.step_id",
+			Leading: " StepId is the waiting step's own id, as [PendingWait.step_id] reports it.\n",
+		},
+		{
+			Name:    "flowstate.v1.GetGateResponse.signal_name",
+			Leading: " SignalName is the gate's signal name, as the request gave it.\n",
+		},
+		{
+			Name: "flowstate.v1.GetGateResponse.prompt",
+			Leading: " Prompt is what the gate asks, exactly as [PendingWait.prompt] carries it\n" +
+				" and withheld on the same terms Get withholds it: when the run declares a\n" +
+				" sensitive output, or when its specification could not be read, the prompt\n" +
+				" is a refusal marker rather than the text. Empty where the author wrote\n" +
+				" none.\n" +
+				"\n" +
+				" Empty when may_answer is false and the caller does not also hold\n" +
+				" `workload.read`: the question is for the people the policy admits, and this\n" +
+				" RPC does not widen what a caller refused by `signals:` could read.\n",
+		},
+		{
+			Name: "flowstate.v1.GetGateResponse.prompt_truncated",
+			Leading: " PromptTruncated is true when Prompt is shorter than what the author's\n" +
+				" expression produced, as [PendingWait.prompt_truncated] says.\n",
+		},
+		{
+			Name: "flowstate.v1.GetGateResponse.deadline",
+			Leading: " Deadline is when the gate lapses of its own accord. Unset means it blocks\n" +
+				" until somebody acts.\n",
+		},
+		{
+			Name: "flowstate.v1.GetGateResponse.starter",
+			Leading: " Starter is who submitted the run, `issuer#subject`, as [GetResponse.starter]\n" +
+				" reports it; empty when the run recorded none. It is what a\n" +
+				" `distinct_from_starter` policy compares the answerer against. Withheld\n" +
+				" on the same terms as prompt.\n",
+		},
+		{
+			Name: "flowstate.v1.GetGateResponse.may_answer",
+			Leading: " MayAnswer is true when the workflow's `signals:` policy for this gate would\n" +
+				" admit this caller's [Signal] now: the same decision Signal makes, from the\n" +
+				" same attestation of who the caller is, reached without delivering anything.\n" +
+				"\n" +
+				" False means the policy refuses this caller. The gate is still returned, so\n" +
+				" a surface can say it exists and show it read-only rather than offering an\n" +
+				" answer that would be refused, but without its prompt or starter unless the\n" +
+				" caller also holds `workload.read`. It is advice for rendering, never authority: Signal decides again\n" +
+				" at the moment of delivery, and the run may have changed since.\n",
+		},
+		{
 			Name: "flowstate.v1.SignalWithStartRequest",
 			Leading: " SignalWithStartRequest delivers a signal to an entity, creating it first if it\n" +
 				" does not yet exist.\n" +
@@ -1101,6 +1187,22 @@ func init() {
 				" did with it. Call [Get] afterward to see whether a waiting step consumed it.\n",
 		},
 		{
+			Name: "flowstate.v1.WorkflowService.GetGate",
+			Leading: " GetGate reads one open approval gate for the caller who would answer it.\n" +
+				"\n" +
+				" [Get] reads a whole run and is bound to `workload.read`, which an approver\n" +
+				" need not hold: a person granted only `workload.signal` can answer a gate with\n" +
+				" [Signal] but could not see the question it asks. GetGate is the read scoped\n" +
+				" to answering. It is bound to `workload.signal`, returns only the gate (no\n" +
+				" step outputs, inputs or carried state), and says whether this caller's own\n" +
+				" `signals:` policy would admit a [Signal] now, without delivering one.\n" +
+				"\n" +
+				" A run that is not running, or holds no open gate by that name, answers\n" +
+				" NOT_FOUND, the same answer a run in another tenant gets. A run holding more\n" +
+				" gates than one answer lists, whose list does not include the named gate,\n" +
+				" answers FAILED_PRECONDITION: the gate may be open, and this read cannot say.\n",
+		},
+		{
 			Name: "flowstate.v1.WorkflowService.SignalWithStart",
 			Leading: " SignalWithStart delivers a signal to the entity holding a business key, an\n" +
 				" order id or a subscription id, creating that entity if this is the first\n" +
@@ -1194,6 +1296,18 @@ func init() {
 				"\n" +
 				" Set `after_revision` and `wait` to wait for the next change instead of\n" +
 				" polling in a tight loop.\n",
+		},
+		{
+			Name: "flowstate.v1.WorkflowService.DebugHistory",
+			Leading: " DebugHistory reads a durable run as it was at one point of its recorded\n" +
+				" history, open or closed, and lists the points it can be read at.\n" +
+				"\n" +
+				" It is read-only: the interpreter is replayed over the history with no\n" +
+				" worker attached, so no task, plugin or other effect can be dispatched, and\n" +
+				" nothing is written to the run. The same `debug:` policy as the live\n" +
+				" debugger decides who may read it. Every value is labelled by how it is\n" +
+				" known; a point the history cannot be replayed to, a history from another\n" +
+				" build, and one over the bound are refused rather than guessed.\n",
 		},
 		{
 			Name: "flowstate.v1.WorkflowService.DebugResume",

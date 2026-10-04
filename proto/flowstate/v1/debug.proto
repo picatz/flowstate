@@ -1300,6 +1300,71 @@ message DebugGetResponse {
   DebugSnapshot snapshot = 1;
 }
 
+// DebugFidelity says how a value shown at a past point of a run is known.
+enum DebugFidelity {
+  DEBUG_FIDELITY_UNSPECIFIED = 0;
+  // Reconstructed values were computed by running the interpreter over the
+  // run's recorded history up to the point, as a worker restart does. They
+  // are what the run held there.
+  DEBUG_FIDELITY_RECONSTRUCTED = 1;
+  // Recorded values were read from the history as written: a task's result,
+  // a signal's payload.
+  DEBUG_FIDELITY_RECORDED = 2;
+  // Unavailable values cannot be known at the point: the history does not
+  // hold them, or a bound was reached before they could be read.
+  DEBUG_FIDELITY_UNAVAILABLE = 3;
+  // Hypothetical values were computed now, against reconstructed state, and
+  // were never held by the run: the result of an expression the run did not
+  // evaluate.
+  DEBUG_FIDELITY_HYPOTHETICAL = 4;
+}
+
+// DebugHistoryRequest asks for a durable run as it was at one point of its
+// recorded history, read-only. Reading a point dispatches nothing and writes
+// nothing to the run, and the run need not be open.
+message DebugHistoryRequest {
+  string workflow_id = 1 [
+    (buf.validate.field).required = true,
+    (buf.validate.field).string = {
+      min_len: 1
+      max_bytes: 256
+    }
+  ];
+
+  // RunId names the execution whose history is read. Required: a point
+  // belongs to one execution, and a chain that continued as new has several.
+  string run_id = 2 [
+    (buf.validate.field).required = true,
+    (buf.validate.field).string.uuid = true
+  ];
+
+  // EventId is the point, one of the run's boundaries as a previous answer
+  // listed them. Zero names the last one.
+  int64 event_id = 3 [(buf.validate.field).int64 = {gte: 0}];
+}
+
+// DebugHistoryResponse is the run at the point asked for.
+message DebugHistoryResponse {
+  // Snapshot is the debug session as the run held it at the point. Unset at
+  // a point before the run had installed its session, which the first
+  // workflow task has not yet.
+  DebugSnapshot snapshot = 1;
+
+  // Progress is the run's progress at the point.
+  RunProgress progress = 2;
+
+  // EventId is the point the answer is for.
+  int64 event_id = 3;
+
+  // Fidelity is how the snapshot is known.
+  DebugFidelity fidelity = 4;
+
+  // Boundaries are the points the run can be read at, as event ids in
+  // history order. At most one per workflow task, so no more than the
+  // history's own bound allows.
+  repeated int64 boundaries = 5;
+}
+
 // DebugResumeRequest releases a hold: continue, step, run until, or detach.
 message DebugResumeRequest {
   string workflow_id = 1 [

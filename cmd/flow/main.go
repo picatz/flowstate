@@ -1209,6 +1209,11 @@ func runServer(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	gatesOpts, err := gatesUIOptions(cmd, policy, rpcResource, logger)
+	if err != nil {
+		return err
+	}
+
 	broker, err := identityBroker(authCfg, policy)
 	if err != nil {
 		return err
@@ -1535,7 +1540,7 @@ func runServer(cmd *cobra.Command, args []string) error {
 		// already refused.
 		Addr: publicAddr,
 		Handler: serverHandler(logger, verifier, peerVerifier, broker, rpcResource, rpcMux, receiver, protectedResource,
-			gatesUIOptions(cmd)...),
+			gatesOpts...),
 
 		// nil when no certificate was configured, which is only reachable here
 		// when publicAddr is loopback — anything else already returned above.
