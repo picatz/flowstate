@@ -534,6 +534,20 @@ func init() {
 				" at the moment of delivery, and the run may have changed since.\n",
 		},
 		{
+			Name: "flowstate.v1.GetGateResponse.approvals",
+			Leading: " Approvals is how many approvals the gate has counted so far, set only when\n" +
+				" the gate is a `wait_for_signals:` with a `quorum:`; read it with\n" +
+				" [approvals_needed] as \"1 of 2\". It is [PendingWait.approvals], and is\n" +
+				" withheld from a caller the `signals:` policy refuses unless they hold\n" +
+				" `workload.read`, as prompt is. Unlike prompt it is not redacted when the\n" +
+				" run declares sensitive outputs: the counts carry no values.\n",
+		},
+		{
+			Name: "flowstate.v1.GetGateResponse.approvals_needed",
+			Leading: " ApprovalsNeeded is the quorum's `approve:`, and zero on a gate that is not\n" +
+				" a quorum.\n",
+		},
+		{
 			Name: "flowstate.v1.SignalWithStartRequest",
 			Leading: " SignalWithStartRequest delivers a signal to an entity, creating it first if it\n" +
 				" does not yet exist.\n" +

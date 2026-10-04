@@ -1075,9 +1075,19 @@ type GetGateResponse struct {
 	// answer that would be refused, but without its prompt or starter unless the
 	// caller also holds `workload.read`. It is advice for rendering, never authority: Signal decides again
 	// at the moment of delivery, and the run may have changed since.
-	MayAnswer     bool `protobuf:"varint,9,opt,name=may_answer,json=mayAnswer,proto3" json:"may_answer,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	MayAnswer bool `protobuf:"varint,9,opt,name=may_answer,json=mayAnswer,proto3" json:"may_answer,omitempty"`
+	// Approvals is how many approvals the gate has counted so far, set only when
+	// the gate is a `wait_for_signals:` with a `quorum:`; read it with
+	// [approvals_needed] as "1 of 2". It is [PendingWait.approvals], and is
+	// withheld from a caller the `signals:` policy refuses unless they hold
+	// `workload.read`, as prompt is. Unlike prompt it is not redacted when the
+	// run declares sensitive outputs: the counts carry no values.
+	Approvals uint32 `protobuf:"varint,10,opt,name=approvals,proto3" json:"approvals,omitempty"`
+	// ApprovalsNeeded is the quorum's `approve:`, and zero on a gate that is not
+	// a quorum.
+	ApprovalsNeeded uint32 `protobuf:"varint,11,opt,name=approvals_needed,json=approvalsNeeded,proto3" json:"approvals_needed,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *GetGateResponse) Reset() {
@@ -1171,6 +1181,20 @@ func (x *GetGateResponse) GetMayAnswer() bool {
 		return x.MayAnswer
 	}
 	return false
+}
+
+func (x *GetGateResponse) GetApprovals() uint32 {
+	if x != nil {
+		return x.Approvals
+	}
+	return 0
+}
+
+func (x *GetGateResponse) GetApprovalsNeeded() uint32 {
+	if x != nil {
+		return x.ApprovalsNeeded
+	}
+	return 0
 }
 
 // SignalWithStartRequest delivers a signal to an entity, creating it first if it
@@ -2848,7 +2872,7 @@ const file_flowstate_v1_service_proto_rawDesc = "" +
 	"\xc8\x01\x01r\x05\x10\x01(\x80\x02R\n" +
 	"workflowId\x12O\n" +
 	"\vsignal_name\x18\x02 \x01(\tB.\xe2A\x01\x02\xbaH'\xc8\x01\x01r\"\x10\x01\x18\x80\x012\x1b^[A-Za-z0-9][A-Za-z0-9-_]*$R\n" +
-	"signalName\"\xc9\x02\n" +
+	"signalName\"\x92\x03\n" +
 	"\x0fGetGateResponse\x12\x1f\n" +
 	"\vworkflow_id\x18\x01 \x01(\tR\n" +
 	"workflowId\x12\x15\n" +
@@ -2861,7 +2885,10 @@ const file_flowstate_v1_service_proto_rawDesc = "" +
 	"\bdeadline\x18\a \x01(\v2\x1a.google.protobuf.TimestampH\x00R\bdeadline\x88\x01\x01\x12\x18\n" +
 	"\astarter\x18\b \x01(\tR\astarter\x12\x1d\n" +
 	"\n" +
-	"may_answer\x18\t \x01(\bR\tmayAnswerB\v\n" +
+	"may_answer\x18\t \x01(\bR\tmayAnswer\x12\x1c\n" +
+	"\tapprovals\x18\n" +
+	" \x01(\rR\tapprovals\x12)\n" +
+	"\x10approvals_needed\x18\v \x01(\rR\x0fapprovalsNeededB\v\n" +
 	"\t_deadline\"\xc8\x03\n" +
 	"\x16SignalWithStartRequest\x12F\n" +
 	"\n" +

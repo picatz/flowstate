@@ -65,6 +65,7 @@ var pages = template.Must(template.New("pages").Parse(`
 <dt>Step</dt><dd>{{.Step}}</dd>
 <dt>Signal</dt><dd>{{.Signal}}</dd>
 {{if .Starter}}<dt>Requested by</dt><dd>{{.Starter}}</dd>{{end}}
+{{if .ApprovalsNeeded}}<dt>Approvals</dt><dd>{{.Approvals}} of {{.ApprovalsNeeded}}</dd>{{end}}
 {{if not .Deadline.IsZero}}<dt>Closes</dt><dd><time datetime="{{.Deadline.Format "2006-01-02T15:04:05Z07:00"}}">{{.Deadline.Format "2006-01-02 15:04 UTC"}}</time></dd>{{end}}
 </dl>
 {{if .MayAnswer}}<form method="post" action="{{.Action}}">

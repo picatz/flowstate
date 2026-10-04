@@ -149,6 +149,30 @@ func TestShowRendersTheGate(t *testing.T) {
 	require.Empty(t, api.sent(), "viewing a gate answers nothing")
 }
 
+func TestAQuorumGateShowsItsTallyAndAnswersWithoutClaimingTheRunMoved(t *testing.T) {
+	t.Parallel()
+
+	quorum := func(*connect.Request[v1.GetGateRequest]) (*connect.Response[v1.GetGateResponse], error) {
+		return connect.NewResponse(&v1.GetGateResponse{
+			WorkflowId: testWorkflow, RunId: "run-1", SignalName: testSignal,
+			MayAnswer: true, Approvals: 1, ApprovalsNeeded: 2,
+		}), nil
+	}
+	api := &fakeAPI{get: quorum}
+
+	rec := do(newHandler(api), gateGet())
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Contains(t, rec.Body.String(), "1 of 2")
+
+	rec = do(newHandler(api), gatePost(url.Values{"decision": {"approve"}}))
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	require.Contains(t, rec.Body.String(), "needs 2 approvals")
+	require.NotContains(t, rec.Body.String(), "The run continues from here")
+
+	rec = do(newHandler(&fakeAPI{get: waiting("go?")}), gateGet())
+	require.NotContains(t, rec.Body.String(), "Approvals", "a gate with no quorum shows no tally")
+}
+
 func TestPagesAreHardened(t *testing.T) {
 	t.Parallel()
 

@@ -858,6 +858,8 @@ func (s *FlowstateServer) GetGate(ctx context.Context, req *connect.Request[v1.G
 			out.Prompt = wait.GetPrompt()
 			out.PromptTruncated = wait.GetPromptTruncated()
 			out.Starter = s.reportedStarter(resp)
+			out.Approvals = wait.GetApprovals()
+			out.ApprovalsNeeded = wait.GetApprovalsNeeded()
 		}
 
 		return connect.NewResponse(out), nil

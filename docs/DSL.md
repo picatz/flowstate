@@ -5719,6 +5719,13 @@ drawing the page: `Signal` decides again at delivery, and that decision is the a
 one. The prompt is withheld as `Get` withholds it, when the run declares a sensitive
 output or its specification cannot be read.
 
+A quorum gate (`quorum:` on `wait_for_signals`) also reports `approvals` and
+`approvals_needed` to the same callers as the prompt (a policy-refused visitor without
+`workload.read` gets neither), though sensitive-output redaction hides only the prompt,
+since the counts carry no values, and the page shows "1 of 2". An
+answer to it says the run may still be waiting on others, since one answer rarely
+completes the quorum.
+
 A gate declares a name, a prompt and a timeout, and no input schema, so the page sends
 the one payload the language's examples read: `approved` (a boolean) and, when the
 person typed one, `comment`. A workflow that wants a different answer shape uses the

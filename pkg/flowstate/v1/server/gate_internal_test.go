@@ -186,7 +186,7 @@ func TestGetGateShowsARefusedCallerNothingTheyWereNotGranted(t *testing.T) {
 			require.NoError(t, err)
 			fake.describe.WorkflowExecutionInfo.Memo.Fields[starterMemoKey] = starter
 			fake.progress = &v1.RunProgress{PendingWaits: []*v1.PendingWait{
-				{StepId: "approve", SignalName: "go", Prompt: "approve the production deploy?"},
+				{StepId: "approve", SignalName: "go", Prompt: "approve the production deploy?", Approvals: 1, ApprovalsNeeded: 2},
 			}}
 			s := mustNew(t, fake)
 
@@ -200,6 +200,11 @@ func TestGetGateShowsARefusedCallerNothingTheyWereNotGranted(t *testing.T) {
 			require.Equal(t, tc.may, resp.Msg.GetMayAnswer())
 			require.Equal(t, tc.shown, resp.Msg.GetPrompt() != "", "prompt shown: %q", resp.Msg.GetPrompt())
 			require.Equal(t, tc.shown, resp.Msg.GetStarter() != "", "starter shown: %q", resp.Msg.GetStarter())
+			require.Equal(t, tc.shown, resp.Msg.GetApprovalsNeeded() != 0, "tally shown")
+			if tc.shown {
+				require.EqualValues(t, 1, resp.Msg.GetApprovals())
+				require.EqualValues(t, 2, resp.Msg.GetApprovalsNeeded())
+			}
 		})
 	}
 }

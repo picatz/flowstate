@@ -3,6 +3,7 @@ package gates
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -154,6 +155,11 @@ type gate struct {
 	// would admit this visitor now. False renders the gate read-only; the
 	// Signal call remains the authority either way.
 	MayAnswer bool
+
+	// Approvals and ApprovalsNeeded are a quorum gate's tally so far; the second
+	// is zero on a gate that is not a quorum.
+	Approvals       uint32
+	ApprovalsNeeded uint32
 }
 
 // call returns the context a request to the API runs in: the browser's request
@@ -213,6 +219,9 @@ func (h *Handler) lookup(ctx context.Context, r *http.Request, workflowID, signa
 		Starter:   g.GetStarter(),
 		Action:    Path(workflowID, signal),
 		MayAnswer: g.GetMayAnswer(),
+
+		Approvals:       g.GetApprovals(),
+		ApprovalsNeeded: g.GetApprovalsNeeded(),
 	}
 	if g.Deadline != nil {
 		out.Deadline = g.GetDeadline().AsTime().UTC()
@@ -327,9 +336,15 @@ func (h *Handler) answer(w http.ResponseWriter, r *http.Request) {
 	if approved {
 		verdict = "Approved"
 	}
+	detail := "The run continues from here. You can close this page."
+	if g.ApprovalsNeeded > 0 {
+		// A quorum gate is released by the count, not by one answer, so saying
+		// the run continues would be a claim this page cannot back.
+		detail = fmt.Sprintf("This gate needs %d approvals, so the run may still be waiting on others. You can close this page.", g.ApprovalsNeeded)
+	}
 	render(w, http.StatusOK, noticePage, notice{
 		Title:  verdict + ": your answer was delivered",
-		Detail: "The run continues from here. You can close this page.",
+		Detail: detail,
 		Gate:   g,
 	})
 }
