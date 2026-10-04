@@ -377,7 +377,7 @@ func runTest(cmd *cobra.Command, paths []string) error {
 
 	// Written before the verdict returns so a red run still leaves its report.
 	if junitPath, _ := cmd.Flags().GetString("junit"); junitPath != "" {
-		if err := writeJUnit(junitPath, results); err != nil {
+		if err := writeJUnit(junitPath, results, coverageRequired, failOnWarning); err != nil {
 			return err
 		}
 	}

@@ -512,7 +512,7 @@ as given. Finding no test files is an error, and so is naming a workflow file.
 | `--seeds N` | Also run each case under N seeded orderings of `parallel:` branches and `async:` steps, and fail if any ordering changes what the case observes. `--seed` replays one reported seed. |
 | `--debug` | Step through one case. See [Debugging](DEBUGGING.md). |
 | `-o json` | A machine-readable report: cases, failures, warnings, coverage. |
-| `--junit <file>` | Also write the results as JUnit XML for CI systems. A failed expectation is a `<failure>`; a case or file that could not be judged is an `<error>`. Written even when the run fails, and carries only what the report already shows. |
+| `--junit <file>` | Also write the results as JUnit XML for CI systems. A failed expectation is a `<failure>`; a case or file that could not be judged is an `<error>`. Written even when the run fails. A promoted warning, a required-coverage gap, or a schedule divergence appears as a `(run verdict)` failure, so the report never shows green over a non-zero exit. It carries only what the report already shows. |
 | `-v` | Print every case's transcript, not only failing ones. |
 
 **Coverage** is always reported, as `N/M steps reached` per file. A step counts

@@ -47,7 +47,7 @@ type junitProblem struct {
 // distinction JUnit consumers use to separate a wrong workflow from a broken
 // test. The messages are the report's own, so whatever the report withholds
 // (a `sensitive:` input's value) is withheld here too.
-func junitFromResults(results []testFileResult) junitSuites {
+func junitFromResults(results []testFileResult, coverageRequired, failOnWarning bool) junitSuites {
 	var doc junitSuites
 	for _, r := range results {
 		suite := junitSuite{Name: r.report.GetFile()}
@@ -75,6 +75,16 @@ func junitFromResults(results []testFileResult) junitSuites {
 			}
 			suite.Cases = append(suite.Cases, tc)
 		}
+		// What fails the command without failing any case — a promoted warning,
+		// a required-coverage gap, a schedule divergence — is a synthetic case,
+		// so a CI view never shows green over a non-zero exit.
+		if reasons := nonCaseVerdicts(r, coverageRequired, failOnWarning); len(reasons) > 0 {
+			text := strings.Join(reasons, "\n")
+			suite.Cases = append(suite.Cases, junitCase{
+				Class: suite.Name, Name: "(run verdict)", Time: "0",
+				Failure: &junitProblem{Message: firstLine(text), Text: text},
+			})
+		}
 		for _, c := range suite.Cases {
 			suite.Tests++
 			if c.Failure != nil {
@@ -94,6 +104,39 @@ func junitFromResults(results []testFileResult) junitSuites {
 	return doc
 }
 
+// nonCaseVerdicts names the reasons [testFileResult.failed] answers true that
+// no case's own result carries. It mirrors that method's conditions, one
+// sentence each.
+func nonCaseVerdicts(r testFileResult, coverageRequired, failOnWarning bool) []string {
+	var reasons []string
+	if failOnWarning {
+		warned := 0
+		for _, c := range r.report.GetCases() {
+			if len(c.GetWarnings()) > 0 {
+				warned++
+			}
+		}
+		if warned > 0 {
+			reasons = append(reasons, fmt.Sprintf("--fail-on-warning: %d case(s) reported warnings", warned))
+		}
+	}
+	if coverageRequired {
+		gaps, stale := 0, 0
+		for _, c := range r.coverage {
+			gaps += len(c.Gaps()) + len(c.ArmGaps())
+			stale += len(c.Stale)
+		}
+		if gaps > 0 || stale > 0 {
+			reasons = append(reasons, fmt.Sprintf("--coverage-required: %d unreached step or arm(s), %d stale record(s)", gaps, stale))
+		}
+	}
+	if r.schedules != nil && r.schedules.Divergence != nil {
+		reasons = append(reasons, "--seeds: a case's observable behavior depends on the schedule")
+	}
+
+	return reasons
+}
+
 func firstLine(s string) string {
 	line, _, _ := strings.Cut(s, "\n")
 
@@ -101,7 +144,7 @@ func firstLine(s string) string {
 }
 
 // writeJUnit writes the document to path, truncating a file already there.
-func writeJUnit(path string, results []testFileResult) (err error) {
+func writeJUnit(path string, results []testFileResult, coverageRequired, failOnWarning bool) (err error) {
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
 	if err != nil {
 		return fmt.Errorf("--junit: %w", err)
@@ -112,7 +155,7 @@ func writeJUnit(path string, results []testFileResult) (err error) {
 		}
 	}()
 
-	return encodeJUnit(f, junitFromResults(results))
+	return encodeJUnit(f, junitFromResults(results, coverageRequired, failOnWarning))
 }
 
 func encodeJUnit(w io.Writer, doc junitSuites) error {

@@ -82,3 +82,34 @@ func TestJUnitRefusedFileIsAnError(t *testing.T) {
 	assert.Equal(t, 1, doc.Errors)
 	assert.Equal(t, 0, doc.Failed)
 }
+
+// TestJUnitCarriesVerdictsNoCaseOwns: every case passes, but an unrecorded
+// coverage gap under --coverage-required fails the command, so the report must
+// not show green.
+func TestJUnitCarriesVerdictsNoCaseOwns(t *testing.T) {
+	dir := writeCoverageFixture(t, "")
+	report := filepath.Join(t.TempDir(), "junit.xml")
+
+	_, err := runFlowTest(t, "--coverage-required", "--junit", report, dir)
+	require.Error(t, err)
+
+	data, err := os.ReadFile(report)
+	require.NoError(t, err)
+	var doc junitSuites
+	require.NoError(t, xml.Unmarshal(data, &doc))
+	assert.Equal(t, 1, doc.Failed, "the report must agree with the exit status")
+	last := doc.Suites[0].Cases[len(doc.Suites[0].Cases)-1]
+	assert.Equal(t, "(run verdict)", last.Name)
+	require.NotNil(t, last.Failure)
+	assert.Contains(t, last.Failure.Text, "--coverage-required")
+
+	// And without the opt-in the same suite is green in both places.
+	green := filepath.Join(t.TempDir(), "green.xml")
+	_, err = runFlowTest(t, "--junit", green, dir)
+	require.NoError(t, err)
+	data, err = os.ReadFile(green)
+	require.NoError(t, err)
+	doc = junitSuites{}
+	require.NoError(t, xml.Unmarshal(data, &doc))
+	assert.Zero(t, doc.Failed)
+}
