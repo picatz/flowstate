@@ -2160,14 +2160,18 @@ func init() {
 		{
 			Name: "flowstate.v1.RetryPolicy.only",
 			Leading: " Only narrows retrying to the failure kinds it names: a failure of any other\n" +
-				" kind is not retried. Empty means every kind that is retryable by default.\n" +
+				" kind is not retried, except Timeout, which is never narrowed (see Except).\n" +
+				" Empty means every kind that is retryable by default.\n" +
 				" A list never widens: a kind that is permanent by classification is not\n" +
 				" retried because it is named here, and naming one is refused.\n",
 		},
 		{
 			Name: "flowstate.v1.RetryPolicy.except",
 			Leading: " Except removes the kinds it names from those retried, so a retryable kind a\n" +
-				" step should fail fast on (a rate limit it must not hammer) is written down.\n",
+				" step should fail fast on (a rate limit it must not hammer) is written down.\n" +
+				" Timeout cannot be named: the durable driver cannot stop Temporal retrying an\n" +
+				" attempt that ran out its own deadline, so how often a slow step is tried is\n" +
+				" `attempts` and `timeout`, and the compiler refuses the entry.\n",
 		},
 		{
 			Name: "flowstate.v1.ResolvedTaskCapabilities",

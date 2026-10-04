@@ -3944,12 +3944,16 @@ type RetryPolicy struct {
 	// produce an unbounded wait.
 	MaxInterval *durationpb.Duration `protobuf:"bytes,4,opt,name=max_interval,json=maxInterval,proto3" json:"max_interval,omitempty"`
 	// Only narrows retrying to the failure kinds it names: a failure of any other
-	// kind is not retried. Empty means every kind that is retryable by default.
+	// kind is not retried, except Timeout, which is never narrowed (see Except).
+	// Empty means every kind that is retryable by default.
 	// A list never widens: a kind that is permanent by classification is not
 	// retried because it is named here, and naming one is refused.
 	Only []string `protobuf:"bytes,5,rep,name=only,proto3" json:"only,omitempty"`
 	// Except removes the kinds it names from those retried, so a retryable kind a
 	// step should fail fast on (a rate limit it must not hammer) is written down.
+	// Timeout cannot be named: the durable driver cannot stop Temporal retrying an
+	// attempt that ran out its own deadline, so how often a slow step is tried is
+	// `attempts` and `timeout`, and the compiler refuses the entry.
 	Except        []string `protobuf:"bytes,6,rep,name=except,proto3" json:"except,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
