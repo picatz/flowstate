@@ -426,6 +426,24 @@ func init() {
 				" [TypeDeclaration].\n",
 		},
 		{
+			Name: "flowstate.v1.Workflow.declared_functions",
+			Leading: " DeclaredFunctions are the reusable computations this workflow names, so an\n" +
+				" expression can say `${slug(inputs.title)}` once and every consumer of the\n" +
+				" specification reads one definition.\n" +
+				"\n" +
+				" A function is a definition, not something a worker runs. The compiler inlines\n" +
+				" every use, so each expression in this specification already holds the body\n" +
+				" (with its arguments bound once through `cel.bind`) and no expression calls a\n" +
+				" declared name. A worker that predates this field evaluates the same\n" +
+				" specification to the same result, which is why the definitions are carried at\n" +
+				" all: they are the source form of what was inlined, kept so the specification\n" +
+				" can be written back as the file it came from, attested, and read by tooling.\n" +
+				" Nothing evaluates them. See [FunctionDeclaration].\n" +
+				"\n" +
+				" Bounded here, and the expansion is bounded again by the compiler, because a\n" +
+				" name used inside a loop body is a size multiplier.\n",
+		},
+		{
 			Name: "flowstate.v1.Workflow.StepOutputs",
 			Leading: " StepOutputs is a map of step IDs to their outputs. Each step's outputs are\n" +
 				" represented as a map of named values, allowing for structured outputs that\n" +
@@ -468,6 +486,74 @@ func init() {
 				" scope's visible outputs, one loop iteration's results, the outputs carried\n" +
 				" across a Continue-As-New), where it is simply never set. The run's own end is\n" +
 				" the only place anything writes it.\n",
+		},
+		{
+			Name: "flowstate.v1.FunctionDeclaration",
+			Leading: " FunctionDeclaration is a named, typed CEL computation that a workflow's\n" +
+				" expressions may call, written once.\n" +
+				"\n" +
+				"     functions:\n" +
+				"       slug:\n" +
+				"         params: {title: string}\n" +
+				"         returns: string\n" +
+				"         body: ${title.trim().lowerAscii().replace(' ', '-')}\n" +
+				"\n" +
+				" # What a function is\n" +
+				"\n" +
+				" A pure expression over its parameters. The body sees its parameters and the\n" +
+				" profile's own vocabulary and nothing else: not `inputs`, `vars`, `steps` or `run`.\n" +
+				" A function that needs a value takes it as an argument, so the call site shows\n" +
+				" every value the computation depends on and the same definition means the same\n" +
+				" thing wherever it is used. A function may call functions declared before it is\n" +
+				" needed, and never itself, directly or through another: the inliner has no way to\n" +
+				" say a recursive expansion, and that is the bound.\n" +
+				"\n" +
+				" # Why inlining\n" +
+				"\n" +
+				" The runtime never sees a declared name. Each use is replaced at compile time by\n" +
+				" the body with its arguments bound once, so both drivers execute plain CEL of the\n" +
+				" pinned profile and a spec compiled with functions runs on a worker that has never\n" +
+				" heard of them. A function the specification did not carry would let one spec\n" +
+				" mean different things on different workers, which a user-registered runtime\n" +
+				" function would do and this cannot.\n",
+		},
+		{
+			Name: "flowstate.v1.FunctionDeclaration.name",
+			Leading: " Name is what an expression calls: lowerCamel, and never a name the profile\n" +
+				" already has (`size`, `has`, `sum`), so a definition can never change what an\n" +
+				" existing expression means.\n",
+		},
+		{
+			Name: "flowstate.v1.FunctionDeclaration.parameters",
+			Leading: " Parameters are the arguments in the order a call passes them. Each name is\n" +
+				" unique within the function.\n",
+		},
+		{
+			Name:    "flowstate.v1.FunctionDeclaration.result",
+			Leading: " Result is the type the body must produce. `dyn` is allowed and discouraged.\n",
+		},
+		{
+			Name: "flowstate.v1.FunctionDeclaration.body",
+			Leading: " Body is the expression, exactly as parsed. It is type-checked once, against\n" +
+				" the declared parameters and result, when the definition is compiled.\n",
+		},
+		{
+			Name: "flowstate.v1.FunctionDeclaration.description",
+			Leading: " Description is prose for whoever calls the function: an editor's hover, a\n" +
+				" generated reference, an agent writing an expression.\n",
+		},
+		{
+			Name:    "flowstate.v1.FunctionParameter",
+			Leading: " FunctionParameter is one typed argument of a [FunctionDeclaration].\n",
+		},
+		{
+			Name:    "flowstate.v1.FunctionParameter.name",
+			Leading: " Name is the identifier the body reads the argument by.\n",
+		},
+		{
+			Name: "flowstate.v1.FunctionParameter.type",
+			Leading: " Type is what a call must pass. A call whose argument is known to have another\n" +
+				" type is refused where the call is written.\n",
 		},
 		{
 			Name: "flowstate.v1.TypeDeclaration",

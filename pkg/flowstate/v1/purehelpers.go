@@ -18,9 +18,33 @@ const (
 	maxExpandedHelperAST = 100_000
 )
 
+// helperDefinition is the one form every declaration of a reusable pure
+// computation is checked into, so the expander has a single way to read one
+// whether it arrived as an imported [PureHelper] or as a file's own
+// [FunctionDeclaration].
+type helperDefinition struct {
+	name string
+	// label is how a diagnostic names the definition, source position included.
+	label  string
+	params []helperParameter
+	result *cel.Type
+	// resultName is the declared result as its author wrote it, for the message
+	// that says the body produced something else.
+	resultName string
+	body       *exprpb.ParsedExpr
+}
+
+type helperParameter struct {
+	name string
+	typ  *cel.Type
+}
+
 type checkedPureHelper struct {
-	definition *PureHelper
+	definition helperDefinition
 	body       *cel.Ast
+	// size is the node count of body once any helper it calls has been inlined,
+	// which is what a call to this helper costs the expression it lands in.
+	size int
 }
 
 // ExpandPureHelpers normalizes imported, typed pure helpers into ordinary CEL
@@ -81,7 +105,7 @@ func expandPureHelpersInTree(wf *Workflow, callerProfile string, helpers []*Pure
 		return fmt.Errorf("workflow %q has values nested past the inspection bound", wf.GetName())
 	}
 	for _, site := range sites {
-		if err := expandHelpersInValue(profile, site.Value, checked, declarations); err != nil {
+		if err := expandHelpersInValue(profile, site.Value, checked, declarations, false); err != nil {
 			where := site.Field()
 			if site.Step != "" {
 				where = fmt.Sprintf("step %q %s", site.Step, where)
@@ -98,65 +122,156 @@ func expandPureHelpersInTree(wf *Workflow, callerProfile string, helpers []*Pure
 }
 
 func checkPureHelpers(profile string, helpers []*PureHelper) (map[string]checkedPureHelper, []cel.EnvOption, error) {
-	libs, err := ProfileLibraries(profile)
+	checker, err := newHelperChecker(profile, false)
 	if err != nil {
 		return nil, nil, err
 	}
-	base, err := DefaultEvaluator().Env(libs...)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	checked := make(map[string]checkedPureHelper, len(helpers))
-	declarations := make([]cel.EnvOption, 0, len(helpers))
 	for _, helper := range helpers {
 		if helper == nil {
 			return nil, nil, fmt.Errorf("helper library contains an empty declaration")
 		}
+		label := fmt.Sprintf("pure helper %q%s", helper.GetName(), helperSource(helper))
 		if err := Validate(helper); err != nil {
-			return nil, nil, fmt.Errorf("pure helper %q%s is invalid: %w", helper.GetName(), helperSource(helper), err)
+			return nil, nil, fmt.Errorf("%s is invalid: %w", label, err)
 		}
-		if _, exists := checked[helper.GetName()]; exists {
-			return nil, nil, fmt.Errorf("pure helper %q is declared more than once", helper.GetName())
+		if helper.GetBody().GetExpr() == nil {
+			return nil, nil, fmt.Errorf("%s must have an expression body", label)
 		}
-		body := helper.GetBody().GetExpr()
-		if body == nil {
-			return nil, nil, fmt.Errorf("pure helper %q%s must have an expression body", helper.GetName(), helperSource(helper))
+		definition := helperDefinition{
+			name:       helper.GetName(),
+			label:      label,
+			result:     pureHelperCELType(helper.GetResultType()),
+			resultName: DeclaredTypeName(helper.GetResultType()),
+			body:       helper.GetBody().GetExpr(),
 		}
-
-		parameterNames := make(map[string]bool, len(helper.GetParameters()))
-		envOpts := make([]cel.EnvOption, 0, len(helper.GetParameters()))
-		argTypes := make([]*cel.Type, 0, len(helper.GetParameters()))
 		for _, parameter := range helper.GetParameters() {
-			if parameterNames[parameter.GetName()] {
-				return nil, nil, fmt.Errorf("pure helper %q%s declares parameter %q more than once", helper.GetName(), helperSource(helper), parameter.GetName())
-			}
-			parameterNames[parameter.GetName()] = true
-			t := pureHelperCELType(parameter.GetType())
-			envOpts = append(envOpts, cel.Variable(parameter.GetName(), t))
-			argTypes = append(argTypes, t)
+			definition.params = append(definition.params, helperParameter{name: parameter.GetName(), typ: pureHelperCELType(parameter.GetType())})
 		}
-		env, err := base.Extend(envOpts...)
-		if err != nil {
-			return nil, nil, fmt.Errorf("pure helper %q%s: build its type environment: %w", helper.GetName(), helperSource(helper), err)
+		if err := checker.add(definition); err != nil {
+			return nil, nil, err
 		}
-		bodyAST := cel.ParsedExprToAst(body)
-		bodyChecked, issues := env.Check(bodyAST)
-		if issues != nil && issues.Err() != nil {
-			return nil, nil, fmt.Errorf("pure helper %q%s body does not type-check: %w", helper.GetName(), helperSource(helper), issues.Err())
-		}
-		if got, want := bodyChecked.OutputType(), pureHelperCELType(helper.GetResultType()); !want.IsAssignableType(got) {
-			return nil, nil, fmt.Errorf("pure helper %q%s declares result %s but its body produces %s", helper.GetName(), helperSource(helper), DeclaredTypeName(helper.GetResultType()), got)
-		}
-		if n := expressionASTSize(bodyChecked); n > maxPureHelperBodyAST {
-			return nil, nil, fmt.Errorf("pure helper %q%s body expands to %d CEL nodes; at most %d are allowed", helper.GetName(), helperSource(helper), n, maxPureHelperBodyAST)
-		}
-
-		checked[helper.GetName()] = checkedPureHelper{definition: helper, body: bodyChecked}
-		overload := strings.NewReplacer(".", "_", "-", "_").Replace(helper.GetName()) + "_pure_helper"
-		declarations = append(declarations, cel.Function(helper.GetName(), cel.Overload(overload, argTypes, pureHelperCELType(helper.GetResultType()))))
 	}
-	return checked, declarations, nil
+	return checker.checked, checker.declarations, nil
+}
+
+// helperChecker type-checks definitions one at a time, in the order given, and
+// keeps what the expander needs: each checked body and the typed signature an
+// expression is checked against.
+type helperChecker struct {
+	base *cel.Env
+	// compose lets a body call a definition added before it. An imported
+	// [PureHelper] may not: its body is its parameters and the profile's
+	// vocabulary, which is what its contract says.
+	compose      bool
+	checked      map[string]checkedPureHelper
+	declarations []cel.EnvOption
+}
+
+func newHelperChecker(profile string, compose bool) (*helperChecker, error) {
+	libs, err := ProfileLibraries(profile)
+	if err != nil {
+		return nil, err
+	}
+	base, err := DefaultEvaluator().Env(libs...)
+	if err != nil {
+		return nil, err
+	}
+	return &helperChecker{base: base, compose: compose, checked: map[string]checkedPureHelper{}}, nil
+}
+
+// add checks one definition and, when it may call earlier ones, inlines them into
+// its body so the body a use copies is already plain CEL.
+func (hc *helperChecker) add(def helperDefinition) error {
+	if _, exists := hc.checked[def.name]; exists {
+		return fmt.Errorf("%s is declared more than once", strings.TrimSuffix(def.label, labelSourceSuffix(def.label)))
+	}
+
+	seen := make(map[string]bool, len(def.params))
+	envOpts := make([]cel.EnvOption, 0, len(hc.declarations)+len(def.params))
+	if hc.compose {
+		envOpts = append(envOpts, hc.declarations...)
+	}
+	argTypes := make([]*cel.Type, 0, len(def.params))
+	for _, parameter := range def.params {
+		if seen[parameter.name] {
+			return fmt.Errorf("%s declares parameter %q more than once", def.label, parameter.name)
+		}
+		seen[parameter.name] = true
+		envOpts = append(envOpts, cel.Variable(parameter.name, parameter.typ))
+		argTypes = append(argTypes, parameter.typ)
+	}
+	env, err := hc.base.Extend(envOpts...)
+	if err != nil {
+		return fmt.Errorf("%s: build its type environment: %w", def.label, err)
+	}
+	body, issues := env.Check(cel.ParsedExprToAst(def.body))
+	if issues != nil && issues.Err() != nil {
+		return fmt.Errorf("%s body does not type-check: %w", def.label, issues.Err())
+	}
+	if got := body.OutputType(); !def.result.IsAssignableType(got) {
+		return fmt.Errorf("%s declares result %s but its body produces %s", def.label, def.resultName, got)
+	}
+	if n := expressionASTSize(body); n > maxPureHelperBodyAST {
+		return fmt.Errorf("%s body expands to %d CEL nodes; at most %d are allowed", def.label, n, maxPureHelperBodyAST)
+	}
+
+	if hc.compose {
+		if body, err = expandWithin(env, body, hc.checked, def.label, true); err != nil {
+			return err
+		}
+	}
+
+	hc.checked[def.name] = checkedPureHelper{definition: def, body: body, size: expressionASTSize(body)}
+	overload := strings.NewReplacer(".", "_", "-", "_").Replace(def.name) + "_pure_helper"
+	hc.declarations = append(hc.declarations, cel.Function(def.name, cel.Overload(overload, argTypes, def.result)))
+	return nil
+}
+
+// labelSourceSuffix returns the " at file:line" tail of a label, so a message that
+// names only the definition can drop it.
+func labelSourceSuffix(label string) string {
+	if i := strings.LastIndex(label, " at "); i >= 0 {
+		return label[i:]
+	}
+	return ""
+}
+
+// projectedHelperSize is what an expression holding the calls in a would grow to if
+// they were inlined, computed before any inlining happens: an expansion is built in
+// memory in full before it can be measured, so the bound has to be applied to the
+// arithmetic rather than to the result. Each parameter costs a few nodes for the
+// `cel.bind` that carries it.
+func projectedHelperSize(a *cel.Ast, helpers map[string]checkedPureHelper) int {
+	total := expressionASTSize(a)
+	for _, match := range helperCallMatches(commonast.NavigateAST(a.NativeRep()), helpers) {
+		helper := helpers[match.AsCall().FunctionName()]
+		total += helper.size + 6*len(helper.definition.params)
+	}
+	return total
+}
+
+// expandWithin inlines every call in checked to a definition in helpers and
+// returns the re-checked result, refusing before it builds one that would pass the
+// bound.
+func expandWithin(env *cel.Env, checked *cel.Ast, helpers map[string]checkedPureHelper, label string, keepCalls bool) (*cel.Ast, error) {
+	if len(helperCallMatches(commonast.NavigateAST(checked.NativeRep()), helpers)) == 0 {
+		return checked, nil
+	}
+	if n := projectedHelperSize(checked, helpers); n > maxExpandedHelperAST {
+		return nil, fmt.Errorf("%s expands to at least %d CEL nodes once the functions it calls are inlined; at most %d are allowed", label, n, maxExpandedHelperAST)
+	}
+	optimizer, err := cel.NewStaticOptimizer(&pureHelperOptimizer{helpers: helpers, keepCalls: keepCalls})
+	if err != nil {
+		return nil, err
+	}
+	expanded, issues := optimizer.Optimize(env, checked)
+	if issues != nil && issues.Err() != nil {
+		return nil, fmt.Errorf("%s: %w", label, issues.Err())
+	}
+	if n := expressionASTSize(expanded); n > maxExpandedHelperAST {
+		return nil, fmt.Errorf("%s expands to %d CEL nodes once the functions it calls are inlined; at most %d are allowed", label, n, maxExpandedHelperAST)
+	}
+	return expanded, nil
 }
 
 func helperSource(helper *PureHelper) string {
@@ -194,7 +309,7 @@ func pureHelperCELType(t InputDeclaration_Type) *cel.Type {
 	}
 }
 
-func expandHelpersInValue(profile string, value *Value, helpers map[string]checkedPureHelper, declarations []cel.EnvOption) error {
+func expandHelpersInValue(profile string, value *Value, helpers map[string]checkedPureHelper, declarations []cel.EnvOption, keepCalls bool) error {
 	parsed := value.GetExpr()
 	libs, err := ProfileLibraries(profile)
 	if err != nil {
@@ -219,16 +334,9 @@ func expandHelpersInValue(profile string, value *Value, helpers map[string]check
 		return issues.Err()
 	}
 
-	optimizer, err := cel.NewStaticOptimizer(&pureHelperOptimizer{helpers: helpers})
+	expanded, err := expandWithin(env, checked, helpers, "pure-helper expansion", keepCalls)
 	if err != nil {
 		return err
-	}
-	expanded, issues := optimizer.Optimize(env, checked)
-	if issues != nil && issues.Err() != nil {
-		return issues.Err()
-	}
-	if n := expressionASTSize(expanded); n > maxExpandedHelperAST {
-		return fmt.Errorf("pure-helper expansion produces %d CEL nodes; at most %d are allowed", n, maxExpandedHelperAST)
 	}
 	out, err := cel.AstToParsedExpr(expanded)
 	if err != nil {
@@ -241,18 +349,31 @@ func expandHelpersInValue(profile string, value *Value, helpers map[string]check
 type pureHelperOptimizer struct {
 	helpers map[string]checkedPureHelper
 	calls   int
+	// keepCalls records each call as the macro call its expansion came from, so the
+	// expression writes back as the author wrote it (`slug(inputs.title)`) while the
+	// tree that runs holds the body. cel-go's unparser prints a node that has a
+	// macro call as that call, which is how `cel.bind(...)` and `xs.map(x, ...)`
+	// round trip already. Off for an imported [PureHelper], whose expansion is
+	// written as the `cel.bind` it is.
+	keepCalls bool
+}
+
+// helperCallMatches returns every global call in root to a helper in helpers.
+// A member call is never one: a helper is declared as a global function, so
+// `x.name()` is not a use of it.
+func helperCallMatches(root commonast.NavigableExpr, helpers map[string]checkedPureHelper) []commonast.NavigableExpr {
+	return commonast.MatchDescendants(root, func(expr commonast.NavigableExpr) bool {
+		if expr.Kind() != commonast.CallKind || expr.AsCall().IsMemberFunction() {
+			return false
+		}
+		_, ok := helpers[expr.AsCall().FunctionName()]
+		return ok
+	})
 }
 
 func (o *pureHelperOptimizer) Optimize(ctx *cel.OptimizerContext, tree *commonast.AST) *commonast.AST {
 	root := commonast.NavigateAST(tree)
-	matches := commonast.MatchDescendants(root, func(expr commonast.NavigableExpr) bool {
-		if expr.Kind() != commonast.CallKind || expr.AsCall().IsMemberFunction() {
-			return false
-		}
-		_, ok := o.helpers[expr.AsCall().FunctionName()]
-		return ok
-	})
-	for _, match := range matches {
+	for _, match := range helperCallMatches(root, o.helpers) {
 		o.calls++
 		if o.calls > maxPureHelperCalls {
 			ctx.ReportErrorAtID(match.ID(), "expression calls imported pure helpers more than %d times", maxPureHelperCalls)
@@ -260,25 +381,86 @@ func (o *pureHelperOptimizer) Optimize(ctx *cel.OptimizerContext, tree *commonas
 		}
 		call := match.AsCall()
 		helper := o.helpers[call.FunctionName()]
-		if len(call.Args()) != len(helper.definition.GetParameters()) {
+		params := helper.definition.params
+		if len(call.Args()) != len(params) {
 			// The checker normally reports this first. Keep the optimizer total for
 			// a hand-built checked AST that omitted overload metadata.
-			ctx.ReportErrorAtID(match.ID(), "pure helper %s expects %d arguments, got %d", call.FunctionName(), len(helper.definition.GetParameters()), len(call.Args()))
+			ctx.ReportErrorAtID(match.ID(), "pure helper %s expects %d arguments, got %d", call.FunctionName(), len(params), len(call.Args()))
 			return tree
 		}
 		replacement := ctx.CopyASTAndMetadata(helper.body.NativeRep())
-		for i := len(call.Args()) - 1; i >= 0; i-- {
-			bindID := match.ID()
-			if i != 0 {
-				bindID = ctx.NewIdent("unused").ID()
+		names := make([]string, len(params))
+		for i, parameter := range params {
+			names[i] = parameter.name
+		}
+		if argumentsMentionEarlierParameters(call.Args(), names) {
+			// Binding the arguments straight to the parameter names would evaluate a
+			// later argument inside the binding of an earlier parameter, so an
+			// argument that happens to be spelled like one (a loop variable named
+			// `denominator`, say) would read that parameter instead of the caller's
+			// own. Bind each argument to a name an author has no reason to write first, and
+			// the parameters to those.
+			aliases := make([]string, len(params))
+			refs := make([]commonast.Expr, len(params))
+			for i, parameter := range params {
+				aliases[i] = fmt.Sprintf("__%s_%d_%s", strings.NewReplacer(".", "_").Replace(call.FunctionName()), o.calls, parameter.name)
+				refs[i] = ctx.NewIdent(aliases[i])
 			}
-			var macro commonast.Expr
-			replacement, macro = ctx.NewBindMacro(bindID, helper.definition.GetParameters()[i].GetName(), call.Args()[i], replacement)
-			ctx.SetMacroCall(bindID, macro)
+			replacement = bindInOrder(ctx, -1, names, refs, replacement, !o.keepCalls)
+			replacement = bindInOrder(ctx, match.ID(), aliases, call.Args(), replacement, !o.keepCalls)
+		} else {
+			replacement = bindInOrder(ctx, match.ID(), names, call.Args(), replacement, !o.keepCalls)
+		}
+		if o.keepCalls {
+			ctx.SetMacroCall(match.ID(), ctx.NewCall(call.FunctionName(), call.Args()...))
 		}
 		ctx.UpdateExpr(match, replacement)
 	}
 	return tree
+}
+
+// bindInOrder wraps body in one cel.bind per name, outermost first, so inits[0] is
+// evaluated with nothing bound and inits[i] with names[:i] bound. The outermost
+// bind takes the id outerID, which is the id of the call it replaces; a negative
+// outerID gives it a fresh one, for a chain that is itself wrapped by another.
+// record says whether each bind is registered as a macro call, which is what
+// makes it write back as `cel.bind(...)`.
+func bindInOrder(ctx *cel.OptimizerContext, outerID int64, names []string, inits []commonast.Expr, body commonast.Expr, record bool) commonast.Expr {
+	for i := len(names) - 1; i >= 0; i-- {
+		bindID := outerID
+		if i != 0 || outerID < 0 {
+			bindID = ctx.NewIdent("unused").ID()
+		}
+		var macro commonast.Expr
+		body, macro = ctx.NewBindMacro(bindID, names[i], inits[i], body)
+		if record {
+			ctx.SetMacroCall(bindID, macro)
+		}
+	}
+	return body
+}
+
+// argumentsMentionEarlierParameters reports whether any argument after the first
+// mentions an identifier spelled like a parameter bound before it. Conservative by
+// design: an identifier a comprehension inside the argument binds itself is
+// reported too, and the cost of that is one extra bind, not a wrong answer.
+func argumentsMentionEarlierParameters(args []commonast.Expr, names []string) bool {
+	for i := 1; i < len(args); i++ {
+		mentioned := commonast.MatchDescendants(commonast.NavigateExpr(nil, args[i]), func(e commonast.NavigableExpr) bool {
+			switch e.Kind() {
+			case commonast.IdentKind:
+				return slices.Contains(names[:i], e.AsIdent())
+			case commonast.ComprehensionKind:
+				comp := e.AsComprehension()
+				return slices.Contains(names[:i], comp.IterVar()) || slices.Contains(names[:i], comp.IterVar2())
+			}
+			return false
+		})
+		if len(mentioned) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func expressionASTSize(a *cel.Ast) int {

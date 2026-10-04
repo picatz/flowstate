@@ -412,7 +412,7 @@ func (c *compiler) interpolation(n ast.Node, text string, segs []segment, path s
 		c.report(spanOfNode(n), r, "is not a valid expression: %s", msg)
 		return nil
 	}
-	return normalizeExpr(val)
+	return c.expandFunctions(normalizeExpr(val), spanOfNode(n), r)
 }
 
 // expression compiles expression source written at n into a Value, recording the
@@ -442,7 +442,7 @@ func (c *compiler) expression(n ast.Node, src, path string, r ref, placement sec
 	if reference, isSecret := c.secret(val.GetExpr(), src, span, r, placement); isSecret {
 		return reference
 	}
-	return normalizeExpr(val)
+	return c.expandFunctions(normalizeExpr(val), span, r)
 }
 
 // maxNormalizePasses bounds [normalizeExpr]'s walk to the fixed point.

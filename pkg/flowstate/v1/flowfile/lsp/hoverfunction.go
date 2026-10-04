@@ -2,12 +2,14 @@ package lsp
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 
 	lsp "github.com/sourcegraph/go-lsp"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/celcomplete"
 )
 
 // Completion offers the profile's functions and hover said nothing about one.
@@ -44,6 +46,10 @@ var functionIndex = sync.OnceValue(func() (out struct {
 // the reference lookups have declined, and never for a `steps.`-rooted reference at
 // all — nothing inside one is a call.
 func hoverFunction(doc *document, v *value, f fence, cursor int) *lsp.Hover {
+	if h := hoverDeclaredFunction(doc, v, f, cursor); h != nil {
+		return h
+	}
+
 	fn, span, ok := functionAt(f.source, cursor)
 	if !ok {
 		return nil
@@ -260,4 +266,85 @@ func insideStringLiteral(src string, cursor int) bool {
 	}
 
 	return quote != 0
+}
+
+// hoverDeclaredFunction describes a call to one of the file's own `functions:`
+// under the cursor: its signature as the definition declares it, and its
+// description.
+//
+// Before the profile's functions, which is safe rather than a precedence call: a
+// declared name may not be one the profile already has, so the two can never be
+// the same word. What the author needs at a call is what the definition asks of
+// them (which arguments, of which types, and what comes back), and that is
+// otherwise one scroll away in a block they have stopped looking at.
+func hoverDeclaredFunction(doc *document, v *value, f fence, cursor int) *lsp.Hover {
+	if insideStringLiteral(f.source, cursor) {
+		return nil
+	}
+	segments, at, ok := segmentAt(f.source, cursor)
+	if !ok || len(segments) != 1 {
+		return nil
+	}
+	segment := segments[at]
+	if !strings.HasPrefix(f.source[segment.end:], "(") {
+		return nil
+	}
+
+	wf := compiledWorkflow(doc)
+	i := slices.IndexFunc(wf.GetDeclaredFunctions(), func(d *v1.FunctionDeclaration) bool { return d.GetName() == segment.text })
+	if i < 0 {
+		return nil
+	}
+
+	return markdownHover(declaredFunctionDoc(wf.GetDeclaredFunctions()[i]),
+		v.fenceSpanOrWhole(doc.index, f, segment.start, segment.end))
+}
+
+// declaredFunctionDoc is the hover text for a declared function.
+func declaredFunctionDoc(d *v1.FunctionDeclaration) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "**`%s`** — a function declared in this file.", declaredFunctionSignature(d))
+	if d.Description != nil {
+		fmt.Fprintf(&b, "\n\n%s", d.GetDescription())
+	}
+	b.WriteString("\n\nA call is replaced by the body when the file compiles, so a run executes plain CEL.")
+
+	return b.String()
+}
+
+// declaredFunctionCandidates offers the file's own `functions:` wherever an
+// expression is written, with the signature as the detail and the description as
+// the prose, which is what hover says about the same name.
+//
+// Skipped without compiling when the file has no `functions:` key at the top
+// level, which is nearly every file: completion runs on every keystroke, and
+// compiling a document to learn there is nothing to offer is the cost this check
+// exists to avoid.
+func declaredFunctionCandidates(doc *document) []celcomplete.Candidate {
+	if !strings.HasPrefix(doc.text, "functions:") && !strings.Contains(doc.text, "\nfunctions:") {
+		return nil
+	}
+
+	wf := compiledWorkflow(doc)
+	out := make([]celcomplete.Candidate, 0, len(wf.GetDeclaredFunctions()))
+	for _, d := range wf.GetDeclaredFunctions() {
+		out = append(out, celcomplete.Candidate{
+			Name:   d.GetName(),
+			Kind:   celcomplete.KindFunction,
+			Detail: declaredFunctionSignature(d),
+			Docs:   declaredFunctionDoc(d),
+		})
+	}
+
+	return out
+}
+
+// declaredFunctionSignature is `name(param: type, ...) -> type`.
+func declaredFunctionSignature(d *v1.FunctionDeclaration) string {
+	params := make([]string, 0, len(d.GetParameters()))
+	for _, p := range d.GetParameters() {
+		params = append(params, p.GetName()+": "+v1.TypeString(p.GetType()))
+	}
+
+	return fmt.Sprintf("%s(%s) -> %s", d.GetName(), strings.Join(params, ", "), v1.TypeString(d.GetResult()))
 }

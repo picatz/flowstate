@@ -8,6 +8,7 @@ import "flowstate/v1/task.proto";
 import "flowstate/v1/trigger.proto";
 import "flowstate/v1/type.proto";
 import "flowstate/v1/value.proto";
+import "google/api/expr/v1alpha1/syntax.proto";
 import "google/api/field_behavior.proto";
 import "google/protobuf/duration.proto";
 
@@ -558,6 +559,112 @@ message Workflow {
   repeated TypeDeclaration declared_types = 20 [
     (google.api.field_behavior) = OPTIONAL,
     (buf.validate.field).repeated = {max_items: 64}
+  ];
+
+  // DeclaredFunctions are the reusable computations this workflow names, so an
+  // expression can say `${slug(inputs.title)}` once and every consumer of the
+  // specification reads one definition.
+  //
+  // A function is a definition, not something a worker runs. The compiler inlines
+  // every use, so each expression in this specification already holds the body
+  // (with its arguments bound once through `cel.bind`) and no expression calls a
+  // declared name. A worker that predates this field evaluates the same
+  // specification to the same result, which is why the definitions are carried at
+  // all: they are the source form of what was inlined, kept so the specification
+  // can be written back as the file it came from, attested, and read by tooling.
+  // Nothing evaluates them. See [FunctionDeclaration].
+  //
+  // Bounded here, and the expansion is bounded again by the compiler, because a
+  // name used inside a loop body is a size multiplier.
+  repeated FunctionDeclaration declared_functions = 21 [
+    (google.api.field_behavior) = OPTIONAL,
+    (buf.validate.field).repeated = {max_items: 64}
+  ];
+}
+
+// FunctionDeclaration is a named, typed CEL computation that a workflow's
+// expressions may call, written once.
+//
+//     functions:
+//       slug:
+//         params: {title: string}
+//         returns: string
+//         body: ${title.trim().lowerAscii().replace(' ', '-')}
+//
+// # What a function is
+//
+// A pure expression over its parameters. The body sees its parameters and the
+// profile's own vocabulary and nothing else: not `inputs`, `vars`, `steps` or `run`.
+// A function that needs a value takes it as an argument, so the call site shows
+// every value the computation depends on and the same definition means the same
+// thing wherever it is used. A function may call functions declared before it is
+// needed, and never itself, directly or through another: the inliner has no way to
+// say a recursive expansion, and that is the bound.
+//
+// # Why inlining
+//
+// The runtime never sees a declared name. Each use is replaced at compile time by
+// the body with its arguments bound once, so both drivers execute plain CEL of the
+// pinned profile and a spec compiled with functions runs on a worker that has never
+// heard of them. A function the specification did not carry would let one spec
+// mean different things on different workers, which a user-registered runtime
+// function would do and this cannot.
+message FunctionDeclaration {
+  // Name is what an expression calls: lowerCamel, and never a name the profile
+  // already has (`size`, `has`, `sum`), so a definition can never change what an
+  // existing expression means.
+  string name = 1 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field).string = {
+      min_len: 1
+      max_len: 64
+      pattern: "^[a-z][A-Za-z0-9]*$"
+    }
+  ];
+
+  // Parameters are the arguments in the order a call passes them. Each name is
+  // unique within the function.
+  repeated FunctionParameter parameters = 2 [
+    (buf.validate.field).repeated = {max_items: 16}
+  ];
+
+  // Result is the type the body must produce. `dyn` is allowed and discouraged.
+  Type result = 3 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED
+  ];
+
+  // Body is the expression, exactly as parsed. It is type-checked once, against
+  // the declared parameters and result, when the definition is compiled.
+  google.api.expr.v1alpha1.ParsedExpr body = 4 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED
+  ];
+
+  // Description is prose for whoever calls the function: an editor's hover, a
+  // generated reference, an agent writing an expression.
+  optional string description = 5 [(buf.validate.field).string = {max_len: 256}];
+}
+
+// FunctionParameter is one typed argument of a [FunctionDeclaration].
+message FunctionParameter {
+  // Name is the identifier the body reads the argument by.
+  string name = 1 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field).string = {
+      min_len: 1
+      max_len: 64
+      pattern: "^[A-Za-z_][A-Za-z0-9_]*$"
+    }
+  ];
+
+  // Type is what a call must pass. A call whose argument is known to have another
+  // type is refused where the call is written.
+  Type type = 2 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED
   ];
 }
 
