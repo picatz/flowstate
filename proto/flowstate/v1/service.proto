@@ -572,6 +572,18 @@ message GetGateResponse {
   // caller also holds `workload.read`. It is advice for rendering, never authority: Signal decides again
   // at the moment of delivery, and the run may have changed since.
   bool may_answer = 9;
+
+  // Approvals is how many approvals the gate has counted so far, set only when
+  // the gate is a `wait_for_signals:` with a `quorum:`; read it with
+  // [approvals_needed] as "1 of 2". It is [PendingWait.approvals], and is
+  // withheld from a caller the `signals:` policy refuses unless they hold
+  // `workload.read`, as prompt is. Unlike prompt it is not redacted when the
+  // run declares sensitive outputs: the counts carry no values.
+  uint32 approvals = 10;
+
+  // ApprovalsNeeded is the quorum's `approve:`, and zero on a gate that is not
+  // a quorum.
+  uint32 approvals_needed = 11;
 }
 
 // SignalWithStartRequest delivers a signal to an entity, creating it first if it
