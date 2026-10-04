@@ -197,6 +197,7 @@ var testDocKeys = map[testDocLevel][]dslKey{
 		{name: "ran", detail: "list", docs: "Names steps that must have executed — present in the run's step outputs, whether they succeeded, were tolerated, or ended the run."},
 		{name: "skipped", detail: "list", docs: "Names steps that must not have executed — absent because their `if:` did not hold or the run never reached them."},
 		{name: "others", detail: "string", docs: "The only accepted value is `skipped`, closing the `ran:` claim: every step the workflow has that `ran:` does not name must have been skipped (issue #416)."},
+		{name: "invocations", detail: "list", docs: "How often tasks ran and in what order (#1667): `task:` or `step:` with `count:`, `never:`, or `at_least:`/`at_most:`, or an `order:` of steps."},
 		{name: "check", detail: "list", docs: "CEL claims over the finished run (#1072), for everything the named fields above cannot say."},
 	},
 	testLevelCheck: checkClaimKeys,
