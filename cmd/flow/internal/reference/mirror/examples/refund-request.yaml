@@ -34,10 +34,11 @@ inputs:
   refund:
     type: Refund
     required: true
-  auto_limit_cents:
-    type: int
-    default: 5000
-    description: refunds at or under this are paid without a person deciding
+# The limit belongs to the workflow, not to whoever starts it: a caller who could
+# raise it could pay any refund without a decision, and `distinct_from_starter`
+# cannot check a gate that never runs.
+vars:
+  auto_limit_cents: 5000
 # Who may decide is the file's policy, not an input: a requester who chose their
 # own approver would be choosing who checks them.
 signals:
@@ -50,7 +51,7 @@ steps:
   - id: total
     value: ${inputs.refund.lines.map(l, l.cents).sum()}
   - id: review
-    if: ${steps.total.value > inputs.auto_limit_cents}
+    if: ${steps.total.value > vars.auto_limit_cents}
     wait_for_signal:
       name: refund-decision
       prompt: ${"Refund %d cents on order %s (%s)?".format([steps.total.value, inputs.refund.order_id, inputs.refund.reason])}
@@ -62,7 +63,7 @@ steps:
   # Named once so the payout and the report read one fact. Under the limit the
   # review never ran, so the left side has to answer.
   - id: cleared
-    value: ${steps.total.value <= inputs.auto_limit_cents || steps.review.outcome == "approved"}
+    value: ${steps.total.value <= vars.auto_limit_cents || steps.review.outcome == "approved"}
   - id: payout
     if: ${steps.cleared.value}
     http:

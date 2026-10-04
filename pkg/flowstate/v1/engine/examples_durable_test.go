@@ -274,6 +274,28 @@ var exampleSignals = map[string]map[string]*v1.Node_Outputs{
 		}},
 	},
 
+	// refund-request's `review` gate is reached only above `auto_limit_cents`, and
+	// this example's own `inputs.json` names a refund below it, so the payload is
+	// never consumed here. It exists for the reason enterprise-fund-transfer's does:
+	// the gate is structural and every waiting example must answer in one of the
+	// two tables. The decider's identity and `distinct_from_starter` are what
+	// `flow test` asserts with senders the file's author controls.
+	"refund-request": {
+		"refund-decision": {NamedValues: map[string]*v1.Value{
+			"approved": v1.NewLiteral(true),
+		}},
+	},
+
+	// subscription is a loop around one `event` signal; a `cancel` closes it on
+	// its first iteration, which is the shape this table can exercise. The
+	// transitions between statuses are what `workflow.test.yaml` shows through the
+	// local driver's signal queue.
+	"subscription": {
+		"event": {NamedValues: map[string]*v1.Value{
+			"kind": v1.NewLiteral("cancel"),
+		}},
+	},
+
 	// Answered rather than lapsing, and it has to be: this gate's bound is
 	// `${timestamp(inputs.sign_off_by) > now ? ... : duration('0s')}`, so
 	// [conformance.LapsesWithin] cannot promise it lapses inside the unattended budget
@@ -363,6 +385,8 @@ var exampleSignals = map[string]map[string]*v1.Node_Outputs{
 var exampleLapsingGates = map[string]string{
 	"wait-timeout":     "the lapse is the subject: answering the gate would run the other branch",
 	"expense-approval": "both gates lapse by default (denied_no_response), the fail-closed branch the example exists to show; answering either would run the other paths",
+
+	"vendor-bids": "the `bid` signal requires a vendor role this harness's fixed sender cannot present, and the example's subject is many senders; its own flow test cases send real bids, and an unanswered window ends in no award",
 
 	// signal-rule-identity's two rules gate on an identity this harness's fixed
 	// "examples"/"flowstate:test" sender can never satisfy — one names an exact

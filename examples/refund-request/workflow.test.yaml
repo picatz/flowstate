@@ -144,3 +144,16 @@ tests:
       failed: true
       error_contains: mail service unavailable
       compensated: [payout]
+
+  # The limit is not an input, so a caller cannot raise it to skip the review.
+  - name: a caller cannot raise the auto-pay limit
+    workflow: ./workflow.yaml
+    inputs:
+      auto_limit_cents: 100000
+      refund:
+        order_id: o-1002
+        reason: other
+        lines: [{sku: kb-01, cents: 7000}]
+    expect:
+      failed: true
+      error_contains: auto_limit_cents

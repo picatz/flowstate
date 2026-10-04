@@ -60,6 +60,20 @@ tests:
         plan: pro
         events: 5
 
+  # A signal is whatever its sender wrote, so the plan it names is checked against
+  # the same set the input is: an unknown plan leaves the current one in place.
+  - name: a plan change to a plan that does not exist changes nothing
+    inputs:
+      max_failures: 1
+    signals:
+      - {name: event, at: 24h, payload: {kind: change_plan, plan: platinum}}
+      - {name: event, at: 48h, payload: {kind: cancel}}
+    expect:
+      outputs:
+        status: cancelled
+        plan: basic
+        events: 2
+
   - name: a trial that hears nothing for a month lapses
     expect:
       outputs:

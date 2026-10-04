@@ -13,6 +13,11 @@ inputs:
     default: 3
     description: failed payments in a row before the subscription is cancelled
     must: this >= 1
+# The plans a signal may move a subscription to, the same two the input names.
+vars:
+  plans:
+    - basic
+    - pro
 # Billing and the customer speak to the same run by signal. Who may send which
 # is a deployment's policy to write; a rehearsal needs none.
 steps:
@@ -59,7 +64,7 @@ steps:
               failures: ${sub.failures + 1}
             change_plan:
               status: ${sub.status}
-              plan: ${steps.event.plan}
+              plan: '${(steps.event.plan in vars.plans) ? steps.event.plan : sub.plan}'
               failures: ${sub.failures}
             cancel: ${steps.ended.value}
             # A quiet month ends a trial or an overdue account, not an active one.
