@@ -324,3 +324,47 @@ func TestANonLiteralOutputIsNotReplacedByNormalizing(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotNil(t, out.GetValues()["at"].GetError(), "the error value must not become an empty literal")
 }
+
+// TestAnOutOfRangePackedValueHasNoPlainForm pins that the edge conversion holds a
+// packed timestamp or duration to the range a text one is held to, so a value that
+// was never in range is refused rather than printed as a wrapped time.
+func TestAnOutOfRangePackedValueHasNoPlainForm(t *testing.T) {
+	t.Parallel()
+
+	huge, err := proto.Marshal(&timestamppb.Timestamp{Seconds: math.MaxInt64})
+	require.NoError(t, err)
+	hugeSpan, err := proto.Marshal(&durationpb.Duration{Seconds: math.MaxInt64})
+	require.NoError(t, err)
+
+	for name, any := range map[string]*anypb.Any{
+		"timestamp": {TypeUrl: "type.googleapis.com/google.protobuf.Timestamp", Value: huge},
+		"duration":  {TypeUrl: "type.googleapis.com/google.protobuf.Duration", Value: hugeSpan},
+	} {
+		_, err := v1.LiteralToGo(&expr.Value{Kind: &expr.Value_ObjectValue{ObjectValue: any}})
+		require.Error(t, err, name)
+	}
+}
+
+// TestAComputedOutputIsHeldAsTheKindItDeclares pins that text computed for a
+// timestamp output is stored as the timestamp, so a reader sees the declared type.
+func TestAComputedOutputIsHeldAsTheKindItDeclares(t *testing.T) {
+	t.Parallel()
+
+	wf := &v1.Workflow{
+		Name:    "out",
+		Profile: v1.CurrentProfile,
+		DeclaredOutputs: []*v1.OutputDeclaration{{
+			Name: "at", Type: v1.InputDeclaration_TYPE_TIMESTAMP,
+			Value: v1.NewExpr(`"2026-01-01T00:00:00Z"`),
+		}},
+	}
+
+	out, err := v1.EvalRunOutputs(t.Context(), wf, &v1.Scope{})
+	require.NoError(t, err)
+
+	literal := out.GetValues()["at"].GetLiteral()
+	require.NotNil(t, literal.GetObjectValue(), "the output must be the packed timestamp, not text")
+	got, err := v1.LiteralToGo(literal)
+	require.NoError(t, err)
+	assert.Equal(t, "2026-01-01T00:00:00Z", got)
+}

@@ -123,6 +123,11 @@ func EvalRunOutputsWithCost(ctx context.Context, wf *Workflow, scope *Scope) (*R
 			return nil, spent, err
 		}
 
+		// A value written as text where the declaration says timestamp, duration or
+		// bytes is that value from here on, so the rule below and whoever reads the
+		// output see the declared type; see [NormalizeWireValue].
+		computed = &Value{Kind: &Value_Literal{Literal: NormalizeWireValue(table, declaration.DeclaredType(), literal)}}
+
 		if err := CheckOutputConstraint(scope.GetProfile(), declaration, computed); err != nil {
 			// A workflow claiming a `must:` on its own answer has that answer
 			// checked before it is reported — the same rule a submitted input

@@ -220,12 +220,12 @@ func dataKindText(literal *expr.Value) (string, bool) {
 
 	case *expr.Value_ObjectValue:
 		var stamp timestamppb.Timestamp
-		if kind.ObjectValue.UnmarshalTo(&stamp) == nil && kind.ObjectValue.MessageIs(&stamp) {
+		if kind.ObjectValue.UnmarshalTo(&stamp) == nil && kind.ObjectValue.MessageIs(&stamp) && stamp.CheckValid() == nil {
 			return stamp.AsTime().Format(time.RFC3339Nano), true
 		}
 
 		var span durationpb.Duration
-		if kind.ObjectValue.UnmarshalTo(&span) == nil && kind.ObjectValue.MessageIs(&span) {
+		if kind.ObjectValue.UnmarshalTo(&span) == nil && kind.ObjectValue.MessageIs(&span) && span.CheckValid() == nil {
 			return span.AsDuration().String(), true
 		}
 	}
