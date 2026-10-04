@@ -288,6 +288,19 @@ func runSuite(ctx context.Context, file *File, opts RunOptions, loaderFor func(*
 			coverage.observe(identity, workflow, nil, l.positions())
 		}
 	}
+	// A skipped case's name and reason are the file's own words, which can
+	// spell a withheld value as readily as a step id can (#2229); they go out
+	// under the posture a case that never ran has, the one [casePosture]
+	// knows without a run, joined into the file's like any case's.
+	skip := func(test *Test, reason string) {
+		posture := casePosture(test, fileVars{values: file.Vars, withheld: file.varsWithheld})
+		suite = widenedBy(suite, posture)
+		skipped = append(skipped, SkippedCase{
+			Name:   redactedErrorText(test.Name, posture),
+			Reason: redactedErrorText(reason, posture),
+		})
+		observeUnrun(test)
+	}
 	var transcripts [][]TranscriptLine
 	transcriptBudget := newSuiteTranscriptBudget()
 	warningBudget := newSuiteWarningBudget()
@@ -304,13 +317,11 @@ func runSuite(ctx context.Context, file *File, opts RunOptions, loaderFor func(*
 		}
 
 		if test.Skip != "" {
-			skipped = append(skipped, SkippedCase{Name: test.Name, Reason: test.Skip})
-			observeUnrun(&test)
+			skip(&test, test.Skip)
 			continue
 		}
 		if failedFast != "" {
-			skipped = append(skipped, SkippedCase{Name: test.Name, Reason: "not run after the first failure (" + failedFast + ")"})
-			observeUnrun(&test)
+			skip(&test, "not run after the first failure ("+failedFast+")")
 			continue
 		}
 		if opts.ListOnly {
@@ -406,8 +417,10 @@ func runSuite(ctx context.Context, file *File, opts RunOptions, loaderFor func(*
 		transcripts = append(transcripts, transcriptBudget.take(account))
 		coverage.observe(identity, spec, transcript, l.positions())
 		if opts.FailFast && (!result.GetPassed() || schedules.divergence != nil) {
-			failedFast = test.Name
-			haltedAt = test.Name
+			// The verdict's own name, redacted under the case's posture, so the
+			// reason later cases carry cannot spell a value this one withholds.
+			failedFast = result.GetName()
+			haltedAt = result.GetName()
 		}
 	}
 

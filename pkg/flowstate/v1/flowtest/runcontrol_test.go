@@ -223,3 +223,28 @@ func TestHaltedByReportsEveryCaseAsSkipped(t *testing.T) {
 	require.Len(t, run.Skipped, 4)
 	require.Contains(t, run.Skipped[0].Reason, "other.test.yaml: boom")
 }
+
+// TestSkippedCaseNameAndReasonAreRedacted keeps a skip from being a way around
+// the withholding every other line of a report goes through: the file's own
+// words are redacted under the case's posture.
+func TestSkippedCaseNameAndReasonAreRedacted(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeDefaultsWorkflow(t, dir)
+	run := flowtest.RunPath(context.Background(), writeInline(t, dir, `
+tests:
+  - name: rotates hunter2-token
+    skip: blocked until hunter2-token is rotated
+    workflow: ./workflow.yaml
+    secrets:
+      "env:DB": hunter2-token
+    inputs: {amount: 1}
+    expect: {failed: false}
+`), flowtest.RunOptions{})
+	require.Empty(t, run.Report.GetRefused())
+	require.Len(t, run.Skipped, 1)
+	require.NotContains(t, run.Skipped[0].Name, "hunter2-token")
+	require.NotContains(t, run.Skipped[0].Reason, "hunter2-token")
+	require.NotContains(t, run.Report.GetSkipped()[0].GetReason(), "hunter2-token")
+}
