@@ -364,6 +364,59 @@ func TestRunWorkflowTaskPolicy(t *testing.T) {
 	}
 }
 
+// TestRunWorkflowExec runs the shared [conformance.ExecCases] against the
+// durable driver: the same real programs under the same real policy as
+// [flowstatev1_test.TestRunWorkflowExec], reached through an activity and
+// Temporal's failure conversion instead of a bare Go error chain.
+//
+// Failures are asserted by classification and text, as
+// [TestRunWorkflowTaskPolicy] does, because a typed error does not survive the
+// wire. Serial: each case installs its policy into the process-wide registry,
+// which the activity executing the step reads.
+func TestRunWorkflowExec(t *testing.T) {
+	root := conformance.ExecRoot(t)
+	for _, tc := range conformance.ExecCases(root) {
+		t.Run(tc.Name, func(t *testing.T) {
+			conformance.InstallExecPolicy(t, root, tc)
+
+			testSuite := &testsuite.WorkflowTestSuite{}
+			env := testSuite.NewTestWorkflowEnvironment()
+			env.RegisterWorkflow(engine.Run)
+			env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(engine.Task)
+			env.OnActivity(engine.TaskWithPrev, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskWithPrev)
+			env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
+			env.OnActivity(engine.WorkflowVars, mock.Anything, mock.Anything).Return(engine.WorkflowVars)
+
+			// The durable route for the case's identity: it rides on the run's
+			// own state, which the workflow copies into the scope every task is
+			// dispatched in.
+			env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: tc.Workflow, Identity: tc.Identity})
+			require.True(t, env.IsWorkflowCompleted())
+
+			if tc.ExpectedKind != "" {
+				workflowErr := env.GetWorkflowError()
+				require.Error(t, workflowErr, "the run must fail outright")
+
+				var app *temporal.ApplicationError
+				require.ErrorAs(t, workflowErr, &app)
+				kind, ok := v1.ParseErrorKind(app.Type())
+				require.True(t, ok, "the application error's Type %q must be a recognized ErrorKind", app.Type())
+				require.Equal(t, tc.ExpectedKind, kind)
+
+				missing, ok := conformance.ExecFailureMentions(workflowErr.Error(), tc.ExpectedError)
+				require.True(t, ok, "the failure must mention %q, got: %v", missing, workflowErr)
+				return
+			}
+
+			require.NoError(t, env.GetWorkflowError())
+
+			var out v1.Workflow_StepOutputs
+			require.NoError(t, env.GetWorkflowResult(&out))
+			tc.Check(t, &out)
+		})
+	}
+}
+
 // TestRunWorkflowHasGuardOnToleratedSuccess runs
 // [conformance.ToleratedSuccessHasGuardCases] against the durable driver — the value
 // both drivers must agree `has(steps.<id>.error)` reads once a `continue_on_error`

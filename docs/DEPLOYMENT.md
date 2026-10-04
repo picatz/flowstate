@@ -89,7 +89,7 @@ Everything else in this document is detail underneath that one sentence.
 ## The worker is the tenancy boundary
 
 Every tenant whose runs a worker processes shares that worker's process. A
-plugin binary the worker launches, or `exec:` when that lands, runs *inside*
+plugin binary the worker launches, or a program `exec:` starts, runs *inside*
 that boundary — with the same process authority the worker itself has,
 including the ability to read anything the worker's own memory holds. This
 follows from how plugins are isolated at all: separate processes protect
@@ -449,10 +449,13 @@ token `scope`/`scp` claims do not grant authority in this slice.
 - ✅ Metadata endpoints (cloud instance-metadata IPs) are denied even inside an
   otherwise-allowed network — netpolicy's default posture, not a rule someone
   has to remember to add.
-- ✅ Nothing to sandbox yet: the built-in task set is `log` and `http`. There
-  is no `exec:`, no filesystem task — the audit that produced this document
-  explicitly declines to recommend sandboxing those two, because there is
-  nothing there to escape.
+- ⚠️ The built-in task set is `log`, `http` and `exec`. `log` and `http` have
+  nothing to escape. `exec` is denied until `--exec-policy` /
+  `FLOWSTATE_EXEC_POLICY` names the programs, directories, environment, time and
+  output bounds, and it is **not a sandbox**: the child runs as the worker's user
+  with no namespace, cgroup, seccomp or filesystem confinement, and the egress
+  policy does not apply to it. Enable it only on workers whose tenancy you accept
+  that for (see THREAT_MODEL.md).
 - ❌ **Cannot claim history privacy.** See the top of this document — this is
   the tier where it bites hardest, because there is exactly one Temporal
   namespace and it holds everyone's history.

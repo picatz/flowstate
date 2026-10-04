@@ -5,25 +5,15 @@ package plugin
 import (
 	"os"
 	"os/exec"
+
+	"github.com/picatz/flowstate/pkg/flowstate/v1/internal/procgroup"
 )
 
-// isolateProcessGroup does nothing here. Grouping a process with its children is
-// a POSIX notion; a platform that needs the same guarantee needs its own
-// mechanism — a job object on Windows — and pretending process-group code is
-// portable would leave orphans on the platform it was not written for.
-func isolateProcessGroup(*exec.Cmd) {}
+// isolateProcessGroup and terminateProcess delegate to the shared mechanism,
+// which documents what this platform cannot do (see [procgroup.Isolate]).
+func isolateProcessGroup(cmd *exec.Cmd) { procgroup.Isolate(cmd) }
 
-// terminateProcess stops the plugin process itself. Children it started are not
-// reached; see [isolateProcessGroup].
-func terminateProcess(proc *os.Process, kill bool) error {
-	if proc == nil {
-		return os.ErrProcessDone
-	}
-	if kill {
-		return proc.Kill()
-	}
-	return proc.Signal(os.Interrupt)
-}
+func terminateProcess(proc *os.Process, kill bool) error { return procgroup.Terminate(proc, kill) }
 
 // processAlive reports whether a pid still exists.
 func processAlive(pid int) bool {

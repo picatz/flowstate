@@ -73,6 +73,7 @@ func corpusSizes() map[string]int {
 		"SteppedCases":                    len(SteppedCases()),
 		"ErrorKindCases":                  len(ErrorKindCases(standIn)),
 		"ErrorTextCases":                  len(ErrorTextCases(standIn)),
+		"ExecCases":                       len(ExecCases("/")),
 		"ExpectedTaskSpans":               len(ExpectedTaskSpans()),
 		"ForEachAtomicBlockCases":         len(ForEachAtomicBlockCases()),
 		"ForEachResultsBoundCases":        len(ForEachResultsBoundCases(standIn)),

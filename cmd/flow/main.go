@@ -692,6 +692,12 @@ func runWorker(cmd *cobra.Command, args []string) error {
 	if err := applyTaskPolicy(cmd); err != nil {
 		return err
 	}
+	// And the exec task's policy, for the same reason: a file that does not load
+	// must refuse the command, not leave the task denied while its operator
+	// believes it was enabled. Without a file the task stays denied.
+	if err := applyExecPolicy(cmd); err != nil {
+		return err
+	}
 
 	// Same reasoning again: an unparsable --worker-stop-timeout is a mistake in
 	// the command line, not something that should wait until Temporal is dialed,
@@ -2895,6 +2901,8 @@ flow server --insecure-no-auth`,
 	addEgressPolicyFlag(runLocalCmd)
 	addTaskPolicyFlag(workerCmd)
 	addTaskPolicyFlag(runLocalCmd)
+	addExecPolicyFlag(workerCmd)
+	addExecPolicyFlag(runLocalCmd)
 	addSecretFlags(workerCmd)
 	addSecretFlags(runLocalCmd)
 	addLocalRehearsalFlags(runLocalCmd)

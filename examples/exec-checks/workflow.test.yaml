@@ -1,0 +1,59 @@
+# `flow test` replaces every task, `exec` included, so nothing here starts a program:
+# an `exec:` step with no stub is a failed case, not a process. What the stubs
+# supply is what the program would have printed, which is exactly what the
+# workflow's own expressions read.
+#
+# Two cases, one per outcome the `probe` step's exit code can mean. Neither is a
+# failure of the step: a nonzero exit is output.
+edition: v2026.4
+tests:
+  - name: inside a repository, the probe exits zero and prints the git directory
+    workflow: ./workflow.yaml
+    stubs:
+      - task: exec
+        where: "inputs.argv == ['git', '--version']"
+        returns: {exit_code: 0, stdout: "git version 2.43.0\n", stderr: ""}
+      - task: exec
+        where: inputs.argv == ['git', 'rev-parse', '--git-dir']
+        returns: {exit_code: 0, stdout: ".git\n", stderr: "", stdout_truncated: false, stderr_truncated: false}
+      - task: log
+        where: >-
+          inputs.message == 'inside a repository: .git' &&
+          inputs.fields.git == 'git version 2.43.0'
+        returns: {}
+    expect:
+      ran: [version, probe, verdict]
+      outputs:
+        is_repository: true
+        git: git version 2.43.0
+
+  - name: outside a repository, git exits 128 and the step still succeeds
+    workflow: ./workflow.yaml
+    inputs:
+      workspace: /var/lib/flowstate/workspaces/scratch
+    stubs:
+      - task: exec
+        where: "inputs.argv == ['git', '--version']"
+        returns: {exit_code: 0, stdout: "git version 2.43.0\n", stderr: ""}
+      # The directory is an input, and the stub can see it: asserting it here is
+      # what shows the workflow ran the probe where it was told to.
+      - task: exec
+        where: >-
+          inputs.argv == ['git', 'rev-parse', '--git-dir'] &&
+          inputs.dir == '/var/lib/flowstate/workspaces/scratch'
+        returns:
+          exit_code: 128
+          stdout: ""
+          stdout_truncated: false
+          stderr_truncated: false
+          stderr: "fatal: not a git repository (or any of the parent directories): .git\n"
+      - task: log
+        where: >-
+          inputs.message == 'not a repository (exit 128): fatal: not a git repository (or any of the parent directories): .git'
+          && inputs.level == 'warn'
+        returns: {}
+    expect:
+      ran: [version, probe, verdict]
+      outputs:
+        is_repository: false
+        git: git version 2.43.0

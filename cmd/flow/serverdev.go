@@ -193,6 +193,7 @@ flow server dev -o json`,
 	addPluginFlags(cmd)
 	addEgressPolicyFlag(cmd)
 	addTaskPolicyFlag(cmd)
+	addExecPolicyFlag(cmd)
 	addSecretFlags(cmd)
 	cmd.Flags().String("auth-policy", os.Getenv("FLOWSTATE_AUTH_POLICY"),
 		runtimeAuthPolicyUsage+". Its `issuers:` are not read: callers are anonymous, or "+
@@ -427,12 +428,13 @@ type devStack struct {
 	// which is an opt-in this command does not take on anybody's behalf.
 	loopbackEgress bool
 
-	// egressPolicy and taskPolicy name files the operator supplied, empty for
+	// egressPolicy, taskPolicy and execPolicy name files the operator supplied, empty for
 	// the built-in defaults, and authPolicy the access policy whose secrets
 	// rules this stack's worker resolves under, whose issuers it does not use
 	// under either authentication posture, which the banner says out loud.
 	egressPolicy string
 	taskPolicy   string
+	execPolicy   string
 	authPolicy   string
 	auth         devAuthentication
 }
@@ -459,6 +461,12 @@ func runServerDev(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	if err := applyTaskPolicy(cmd); err != nil {
+		return err
+	}
+	// And the exec task's policy, for the same reason: a file that does not load
+	// must refuse the command, not leave the task denied while its operator
+	// believes it was enabled. Without a file the task stays denied.
+	if err := applyExecPolicy(cmd); err != nil {
 		return err
 	}
 
@@ -693,6 +701,7 @@ func runServerDev(cmd *cobra.Command, args []string) error {
 	}
 	stack.egressPolicy, _ = cmd.Flags().GetString("egress-policy")
 	stack.taskPolicy, _ = cmd.Flags().GetString("task-policy")
+	stack.execPolicy, _ = cmd.Flags().GetString("exec-policy")
 	stack.authPolicy = flags.authPolicy
 
 	serveErr := make(chan error, 1)
@@ -1010,6 +1019,10 @@ func writeDevBanner(surface *ui.UI, stack devStack) {
 	if stack.taskPolicy != "" {
 		posture("--task-policy "+stack.taskPolicy,
 			"this file governs which task shapes may be dispatched", muted)
+	}
+	if stack.execPolicy != "" {
+		posture("--exec-policy "+stack.execPolicy,
+			"workflows on this stack may start the programs this file lists, with this process's privileges", warn)
 	}
 	if stack.authPolicy != "" {
 		// Said as a warning rather than a note, because the half that is *not*

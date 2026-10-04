@@ -148,6 +148,12 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 			read:    "cmd/flow/egress.go",
 		},
 		{
+			name:    "FLOWSTATE_EXEC_POLICY",
+			value:   "unset",
+			purpose: "Default for `--exec-policy`: a YAML policy naming the programs, working-directory roots, environment, timeout and output bounds, and CEL allow/deny rules the built-in `exec` task may use. With none configured every `exec` step is denied with a message naming the flag. It is an allowlist of what may be started, not a sandbox: the child runs as the worker's user and the egress policy does not apply to it.",
+			read:    "cmd/flow/execpolicy.go",
+		},
+		{
 			name:    "FLOWSTATE_EGRESS_POLICY_B64",
 			value:   "unset",
 			purpose: "Internal grant from the plugin host to every plugin it launches: an immutable base64 encoding of the exact `--egress-policy` bytes the host already parsed, at most 64 KiB before encoding. It is a per-launch snapshot, so a policy file edited afterwards reaches the plugins the worker starts next rather than the ones already running. Operators configure the flag or `FLOWSTATE_EGRESS_POLICY`, not this variable directly; a plugin that asks the SDK for the policy or an HTTP client is refused when the grant is absent, rather than getting an ungoverned one. With no operator file the worker still grants its own default policy, written as a document marked `deployment_default: true`, so an unset variable means only that a Flowstate worker did not launch this process. Set-but-empty is a grant whose policy document is empty, which is what an empty `--egress-policy` file configures. Receiving the grant is not enforcing it: the five first-party destination clients (`git`, `github`, `slack`, `sql` and `vcs`) read it, and `sql` additionally refuses to reach a database when the grant is the deployment default rather than an operator's policy. The Codex CLI child receives no grant, so its own control-plane traffic always bypasses it; its sandbox policy governs only agent-started commands. A third-party plugin can likewise bypass the SDK and requires confinement.",

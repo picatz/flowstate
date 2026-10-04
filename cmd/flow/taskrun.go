@@ -86,6 +86,12 @@ func runTaskRun(cmd *cobra.Command, args []string) (err error) {
 	if err := applyTaskPolicy(cmd); err != nil {
 		return err
 	}
+	// And the exec task's policy, for the same reason: a file that does not load
+	// must refuse the command, not leave the task denied while its operator
+	// believes it was enabled. Without a file the task stays denied.
+	if err := applyExecPolicy(cmd); err != nil {
+		return err
+	}
 	if _, err := localPayloadCodec(cmd.Context()); err != nil {
 		return err
 	}
@@ -286,6 +292,7 @@ func newTaskCommand() *cobra.Command {
 	addRevealSensitiveFlag(taskRunCmd)
 	addEgressPolicyFlag(taskRunCmd)
 	addTaskPolicyFlag(taskRunCmd)
+	addExecPolicyFlag(taskRunCmd)
 	addSecretFlags(taskRunCmd)
 	addPluginFlags(taskRunCmd)
 	addLocalRehearsalFlags(taskRunCmd)

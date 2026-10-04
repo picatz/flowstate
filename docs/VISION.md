@@ -48,7 +48,7 @@ each landing with a worked example verified in CI:
 - **1password** — exists in-tree as a provider; needs local verification against
   the real agent before it is claimed.
 - **a sandbox-provider plugin** (Modal or similar) — a place to run untrusted
-  work that is not the worker's own host; pairs with `exec:`'s policy. The
+  work that is not the worker's own host; pairs with `exec:`'s policy (`exec:` landed denied-by-default; this entry is its isolation tier). The
   `docker` half of this entry shipped and deliberately does not claim to be the
   sandbox: it runs an operator-granted container and says plainly that a daemon
   socket is ambient authority, so the confine column (#721) is still the

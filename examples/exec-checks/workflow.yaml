@@ -1,0 +1,68 @@
+# `exec:` runs one program from the deployment's allowlist and hands back what it did.
+#
+# It is built in and denied by default: a worker with no `--exec-policy` refuses every
+# step below with a message naming the flag, however the file is written. The policy
+# beside this file (`exec-policy.yaml`) is what turns it on, and it is the operator's
+# to write, not the author's. This file can ask for `git`; it cannot choose which `git`,
+# where it may run, what environment it sees, or how long it may take.
+#
+#   flow run local examples/exec-checks/workflow.yaml \
+#       --exec-policy examples/exec-checks/exec-policy.yaml
+#
+# (Both paths in that policy are the operator's: `git` at /usr/bin/git, and a workspaces
+# root at /var/lib/flowstate/workspaces. Edit them for your machine, create the root, and
+# the `demo` directory `workspace` defaults to; the README walks through it.)
+#
+# The command is a list, `argv`, and never a string. There is nothing that splits it
+# into words, so a value spliced into one word stays that word: a branch name that
+# looks like `main; rm -rf /` is a (bad) branch name, and nothing else. A workflow
+# that wants shell semantics has to name a shell, and then the operator's policy has to
+# have listed one.
+edition: v2026.4
+name: exec-checks
+inputs:
+  # Absolute, and under a root the policy configures. The worker's own working directory
+  # is never used: it is wherever the operator happened to start the process.
+  workspace:
+    type: string
+    default: /var/lib/flowstate/workspaces/demo
+    description: the directory the checks run in
+steps:
+  # The program is a name the policy maps to an absolute path. Not `/usr/bin/git`:
+  # a path written in a workflow is refused, and so is anything not in the table.
+  - id: version
+    exec:
+      argv: [git, --version]
+      dir: ${inputs.workspace}
+
+  # A nonzero exit is output, not failure — the way an HTTP status code is. `git`
+  # exits 128 outside a repository; the step succeeds, `exit_code` says 128, and the
+  # workflow decides what that means. A step fails only when the policy refuses it,
+  # the program cannot start, it outlives the policy's time bound, or the run is
+  # cancelled.
+  - id: probe
+    exec:
+      argv: [git, rev-parse, --git-dir]
+      dir: ${inputs.workspace}
+      # Literals only, and only for keys the policy's `env_authored` lists; any other
+      # key is refused, and none can replace a key the operator set.
+      env:
+        GIT_AUTHOR_NAME: flowstate
+
+  - id: verdict
+    log:
+      level: warn
+      message: >-
+        ${steps.probe.exit_code == 0
+          ? "inside a repository: " + steps.probe.stdout.trim()
+          : "not a repository (exit " + string(steps.probe.exit_code) + "): " + steps.probe.stderr.trim()}
+      fields:
+        # What the program printed is bounded by the policy, per stream, and says so
+        # when it was cut short.
+        git: ${steps.version.stdout.trim()}
+        truncated: ${string(steps.probe.stdout_truncated || steps.probe.stderr_truncated)}
+outputs:
+  is_repository:
+    value: ${steps.probe.exit_code == 0}
+  git:
+    value: ${steps.version.stdout.trim()}

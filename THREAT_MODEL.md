@@ -451,6 +451,33 @@ is why proxies are off unless named.
 namespace plus enforcing proxy, with a tier that cannot enforce refusing to
 dispatch, #341 E, not landed.
 
+### Task to host process (`exec`)
+
+**Today.** The built-in `exec` task is denied unless the operator loads an exec
+policy (`--exec-policy` / `FLOWSTATE_EXEC_POLICY`); with none, a step fails with a
+policy denial naming the flag (fail closed). The author supplies `argv` as a list,
+never a shell string, and cannot choose the program: `argv[0]` is a bare name looked
+up only in the policy's table of absolute paths, verified at load (regular,
+executable, not world-writable, symlinks resolved, optional sha256 pin re-checked at
+run time; on Linux the verified file is executed through its descriptor). `dir` must
+resolve, through symlinks, under a configured root. The environment is assembled from
+nothing: operator literals, an operator passthrough list (loader variables refused),
+and step literals only for operator-listed keys. Timeout and per-stream output bytes
+are required and have compile-time ceilings (1h, 16MiB); on expiry the whole process
+group is terminated, then killed; stdin is `/dev/null`. CEL allow/deny rules see the
+resolved executable, directory, environment key names and the run identity; deny wins
+and an erroring rule denies. Secrets are not injected into the child's environment in
+this slice.
+
+**Gaps.** `exec` is **not a sandbox**: the child runs as the worker's user with no
+namespace, cgroup, seccomp or filesystem confinement, and the egress policy does not
+bound its network use. `roots` confine `dir` only; path words in `argv` are not
+confined, so allow rules must be exact argv shapes. An allowed program can do
+anything its own flags allow (interpreters, `git -c`, `--output`), and any tenant
+sharing the worker shares that exposure ("Tenant to tenant"). No rlimits. Deferred:
+secret-valued environment, rlimits, absolute-path opt-in, isolation tiers or remote
+runners, stdin.
+
 ### Tenant to tenant
 
 **Today.** Namespace comes from the authenticated caller and is unforgeable by the

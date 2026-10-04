@@ -474,6 +474,14 @@ func TestEveryExampleRunsDurably(t *testing.T) {
 			continue
 		}
 
+		// Denied without an operator's policy naming machine-specific paths; the
+		// exec task's durable behavior is proved by conformance.ExecCases.
+		if conformance.UsesExec(wf.GetSteps()) {
+			skipped = append(skipped, name+": exec needs an operator policy")
+
+			continue
+		}
+
 		if reason, ok := exampleDurableSkips[name]; ok {
 			skipped = append(skipped, name+": "+reason)
 

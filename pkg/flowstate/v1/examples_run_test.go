@@ -107,6 +107,11 @@ func TestEveryOfflineExampleRuns(t *testing.T) {
 		wf, _, err := flowfile.ParseFile(path)
 		require.NoError(t, err, "%s does not compile", name)
 
+		// Denied without an operator's policy, which names machine-specific paths.
+		if conformance.UsesExec(wf.GetSteps()) {
+			continue
+		}
+
 		if conformance.ReachesTheNetwork(wf.GetSteps()) {
 			continue
 		}
@@ -245,7 +250,7 @@ func TestEveryNetworkedExampleRuns(t *testing.T) {
 		wf, _, err := flowfile.ParseFile(path)
 		require.NoError(t, err, "%s does not compile", name)
 
-		if !conformance.ReachesTheNetwork(wf.GetSteps()) {
+		if !conformance.ReachesTheNetwork(wf.GetSteps()) || conformance.UsesExec(wf.GetSteps()) {
 			continue
 		}
 		if conformance.WaitsForASignal(wf.GetSteps()) {
