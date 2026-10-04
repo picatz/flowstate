@@ -27,17 +27,27 @@ import (
 // `flow test` can assert on it.
 const LocalRunAddress = "local"
 
-// NewLocalRunAddress returns the address every local run reports, started at
-// the given instant.
+// NewLocalRunAddress returns the address every local run reports, with no start
+// recorded, which `run.started_at` renders as the Unix epoch. A caller that knows
+// when its run began uses [NewLocalRunAddressAt].
 //
 // A constructor rather than each caller writing the pair, so "what a local run
 // answers" has one definition to compare against the durable driver's — the same
-// reason engine.varsScope exists. The instant is the run's clock at the moment it
-// began ([ClockFromContext]), which is the wall clock for `flow run local` and
-// the case's own virtual start for `flow test`, so a window computed from
-// `run.started_at` is exercisable with a fixed one.
-func NewLocalRunAddress(started time.Time) *RunAddress {
-	return &RunAddress{WorkflowId: LocalRunAddress, RunId: LocalRunAddress, StartedAt: timestamppb.New(started)}
+// reason engine.varsScope exists.
+func NewLocalRunAddress() *RunAddress {
+	return &RunAddress{WorkflowId: LocalRunAddress, RunId: LocalRunAddress}
+}
+
+// NewLocalRunAddressAt returns the local run address started at the given
+// instant: the run's clock at the moment it began ([ClockFromContext]), which is
+// the wall clock for `flow run local` and the case's own virtual start for `flow
+// test`, so a window computed from `run.started_at` is exercisable with a fixed
+// one.
+func NewLocalRunAddressAt(started time.Time) *RunAddress {
+	address := NewLocalRunAddress()
+	address.StartedAt = timestamppb.New(started)
+
+	return address
 }
 
 // runRootValue renders a run's own address and starter identity as the map an
@@ -60,7 +70,7 @@ func NewLocalRunAddress(started time.Time) *RunAddress {
 // nothing enforces it structurally.
 //
 // address nil renders both id fields empty, which is correct only for a run that
-// predates the field: every driver fills it now, and [NewLocalRunAddress] is why
+// predates the field: every driver fills it now, and [NewLocalRunAddressAt] is why
 // the local one has something honest to fill it with. It is rendered rather than
 // omitted so that a reference to it resolves — the same rule [InputsRoot] follows
 // for an empty root, and for the same reason: a missing key describes the

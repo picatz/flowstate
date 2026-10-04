@@ -208,7 +208,7 @@ func postRunScope(ctx context.Context, started time.Time, spec *v1.Workflow, bou
 		Inputs:  bound,
 		Local:   true,
 		Trigger: v1.TriggerFromContext(ctx),
-		Address: v1.NewLocalRunAddress(started),
+		Address: v1.NewLocalRunAddressAt(started),
 	}
 }
 

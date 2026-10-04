@@ -1365,7 +1365,7 @@ func eval(ctx context.Context, w *Workflow, inputs map[string]*Value) (*Workflow
 	// here (or the instant a host pinned with [NewContextWithRunStart]): the wall
 	// clock for `flow run local`, a case's fixed start for `flow test`, and either way the one instant `run.started_at` reports for the whole
 	// run — never re-read, which is what keeps it from being a clock.
-	scope.Address = NewLocalRunAddress(runStartFromContext(ctx))
+	scope.Address = NewLocalRunAddressAt(runStartFromContext(ctx))
 
 	// And how this run started, which is a manual start unless a caller said
 	// otherwise: `flow run local` is a person at a keyboard, and `flow test` sets

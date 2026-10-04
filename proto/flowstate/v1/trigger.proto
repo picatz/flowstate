@@ -235,6 +235,11 @@ message TriggerContext {
   // every replay and across every Continue-As-New. Nothing reads a clock to
   // produce it.
   //
+  // A manual `flow schedule trigger` runs the schedule's action immediately, and
+  // Temporal names the moment it was asked for as its slot, so a manual fire
+  // reads that moment: indistinguishable, to the run, from an on-time firing,
+  // and a usable window where the epoch would not be.
+  //
   // Unset for every kind that has no schedule, and for a run started before this
   // field existed; `trigger.scheduled_at` then renders as the Unix epoch, so a
   // file that reads it guards on `trigger.kind == "schedule"` first.

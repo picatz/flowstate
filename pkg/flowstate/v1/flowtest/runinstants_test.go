@@ -108,3 +108,42 @@ func TestAnInstantIsRefusedWhereItCannotMeanWhatItSays(t *testing.T) {
 		})
 	}
 }
+
+// A start is a fixture string like any other: a `vars:` entry can name it once,
+// and a table entry states it once for every row, which a row may override.
+func TestAStartReachesTheFixtureMachinery(t *testing.T) {
+	t.Parallel()
+
+	report := flowtest.RunSource("window", []byte(theWindowedReport), []byte(`edition: v2026.4
+vars:
+  monday: "2026-08-03T09:00:00Z"
+defaults:
+  stubs:
+    - task: log
+      returns: {}
+tests:
+  - name: a var names the start
+    started_at: ${vars.monday}
+    trigger: { kind: manual }
+    expect:
+      outputs: { started: "2026-08-03T09:00:00Z", start_year: 2026, to: "1970-01-01T00:00:00Z", from: "1969-12-31T00:00:00Z" }
+
+  - name: a table states the start once
+    started_at: 2027-02-01T00:00:00Z
+    trigger: { kind: manual }
+    cases:
+      - name: inherits it
+        expect:
+          outputs: { started: "2027-02-01T00:00:00Z", start_year: 2027, to: "1970-01-01T00:00:00Z", from: "1969-12-31T00:00:00Z" }
+      - name: overrides it
+        started_at: 2028-03-04T05:06:07Z
+        expect:
+          outputs: { started: "2028-03-04T05:06:07Z", start_year: 2028, to: "1970-01-01T00:00:00Z", from: "1969-12-31T00:00:00Z" }
+`))
+
+	require.Empty(t, report.GetRefused(), "the file was refused: %s", report.GetRefused())
+	require.Len(t, report.GetCases(), 3)
+	for _, c := range report.GetCases() {
+		assert.Truef(t, c.GetPassed(), "case %q failed: %v", c.GetName(), c.GetFailures())
+	}
+}

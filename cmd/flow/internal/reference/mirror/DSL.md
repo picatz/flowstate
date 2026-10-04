@@ -2265,9 +2265,11 @@ value: '${((trigger.kind == "schedule") ? trigger.scheduled_at : run.started_at)
 ```
 
 A `call:`ed workflow runs inside the same run and reads the same `run.started_at`, exactly
-as it reads the same `run.workflow_id`. A manual `flow schedule trigger` is a start nobody
-scheduled: `trigger.scheduled_at` reads whatever slot the execution carries, and the Unix epoch
-where it carries none.
+as it reads the same `run.workflow_id`. A manual `flow schedule trigger` is the schedule's own
+action run immediately, and Temporal stamps it with the moment it was asked for as its slot, so
+`trigger.scheduled_at` is that moment and the window above covers the day up to it; the run
+cannot tell it from an on-time firing, and the epoch would have made its window start in 1970.
+The Unix epoch is what an execution that carries no slot reads.
 
 **And both are settable in a test**, so a report's window arithmetic is exercisable with a
 clock the case owns:

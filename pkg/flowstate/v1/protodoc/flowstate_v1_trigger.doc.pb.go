@@ -234,6 +234,11 @@ func init() {
 				" every replay and across every Continue-As-New. Nothing reads a clock to\n" +
 				" produce it.\n" +
 				"\n" +
+				" A manual `flow schedule trigger` runs the schedule's action immediately, and\n" +
+				" Temporal names the moment it was asked for as its slot, so a manual fire\n" +
+				" reads that moment: indistinguishable, to the run, from an on-time firing,\n" +
+				" and a usable window where the epoch would not be.\n" +
+				"\n" +
 				" Unset for every kind that has no schedule, and for a run started before this\n" +
 				" field existed; `trigger.scheduled_at` then renders as the Unix epoch, so a\n" +
 				" file that reads it guards on `trigger.kind == \"schedule\"` first.\n",
