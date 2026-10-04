@@ -672,7 +672,7 @@ carries an action list must name the one the call needs:
 
 | Action | Covers |
 | --- | --- |
-| `workload.debug` | `DebugAttach`, `DebugGet`, `DebugResume`, `DebugSetBreakpoints`, and a raw `Signal` on the reserved `flowstate_debug` channel |
+| `workload.debug` | `DebugAttach`, `DebugGet`, `DebugHistory`, `DebugResume`, `DebugSetBreakpoints`, and a raw `Signal` on the reserved `flowstate_debug` channel |
 | `workload.debug_inspect` | `DebugInspect`, any breakpoint set carrying a condition or a log message, and reading those expressions back |
 
 Inspection is its own action because it is a disclosure: an expression can test
@@ -968,6 +968,17 @@ next task (a result, a signal, a task scheduled) replays and adds nothing: its
 state is the next boundary's. An event inside the commands a task wrote is
 refused as a divergence, and a prefix too short to hold a task is refused as such. Event ids order one run's history and
 say nothing about causality across `parallel:` branches, async work or runs.
+
+**Reading a point over RPC.** `DebugHistory` (`workload.debug`, and the run's own
+`debug:` policy) takes a workflow id, a run id and an event id, and answers with
+the reconstructed snapshot and progress, the point's `fidelity`, and every
+boundary the run can be read at. Zero names the last. It reads the history only
+up to the bound, runs four reconstructions at once and refuses the next as
+unavailable, ends at thirty seconds or when the caller goes, and refuses a
+point that is not a boundary, a run id that is not the execution named, and a
+history the running build cannot replay. A point before the run installed its
+debug session has progress and no snapshot. Each read is audited twice, with
+the exact run id: as `history` with the point asked for (0 is the last one) and as `history/resolved` with the point read.
 
 | Question at a past point | Answer | How it is known |
 | --- | --- | --- |

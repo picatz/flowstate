@@ -58,6 +58,9 @@ const (
 	// WorkflowServiceDebugGetProcedure is the fully-qualified name of the WorkflowService's DebugGet
 	// RPC.
 	WorkflowServiceDebugGetProcedure = "/flowstate.v1.WorkflowService/DebugGet"
+	// WorkflowServiceDebugHistoryProcedure is the fully-qualified name of the WorkflowService's
+	// DebugHistory RPC.
+	WorkflowServiceDebugHistoryProcedure = "/flowstate.v1.WorkflowService/DebugHistory"
 	// WorkflowServiceDebugResumeProcedure is the fully-qualified name of the WorkflowService's
 	// DebugResume RPC.
 	WorkflowServiceDebugResumeProcedure = "/flowstate.v1.WorkflowService/DebugResume"
@@ -222,6 +225,16 @@ type WorkflowServiceClient interface {
 	// Set `after_revision` and `wait` to wait for the next change instead of
 	// polling in a tight loop.
 	DebugGet(context.Context, *connect.Request[v1.DebugGetRequest]) (*connect.Response[v1.DebugGetResponse], error)
+	// DebugHistory reads a durable run as it was at one point of its recorded
+	// history, open or closed, and lists the points it can be read at.
+	//
+	// It is read-only: the interpreter is replayed over the history with no
+	// worker attached, so no task, plugin or other effect can be dispatched, and
+	// nothing is written to the run. The same `debug:` policy as the live
+	// debugger decides who may read it. Every value is labelled by how it is
+	// known; a point the history cannot be replayed to, a history from another
+	// build, and one over the bound are refused rather than guessed.
+	DebugHistory(context.Context, *connect.Request[v1.DebugHistoryRequest]) (*connect.Response[v1.DebugHistoryResponse], error)
 	// DebugResume releases a held durable run: continue, step in, step over,
 	// step out, run until a step, or detach.
 	//
@@ -389,6 +402,12 @@ func NewWorkflowServiceClient(httpClient connect.HTTPClient, baseURL string, opt
 			connect.WithSchema(workflowServiceMethods.ByName("DebugGet")),
 			connect.WithClientOptions(opts...),
 		),
+		debugHistory: connect.NewClient[v1.DebugHistoryRequest, v1.DebugHistoryResponse](
+			httpClient,
+			baseURL+WorkflowServiceDebugHistoryProcedure,
+			connect.WithSchema(workflowServiceMethods.ByName("DebugHistory")),
+			connect.WithClientOptions(opts...),
+		),
 		debugResume: connect.NewClient[v1.DebugResumeRequest, v1.DebugResumeResponse](
 			httpClient,
 			baseURL+WorkflowServiceDebugResumeProcedure,
@@ -482,6 +501,7 @@ type workflowServiceClient struct {
 	terminate           *connect.Client[v1.TerminateRequest, v1.TerminateResponse]
 	debugAttach         *connect.Client[v1.DebugAttachRequest, v1.DebugAttachResponse]
 	debugGet            *connect.Client[v1.DebugGetRequest, v1.DebugGetResponse]
+	debugHistory        *connect.Client[v1.DebugHistoryRequest, v1.DebugHistoryResponse]
 	debugResume         *connect.Client[v1.DebugResumeRequest, v1.DebugResumeResponse]
 	debugSetBreakpoints *connect.Client[v1.DebugSetBreakpointsRequest, v1.DebugSetBreakpointsResponse]
 	debugInspect        *connect.Client[v1.DebugInspectRequest, v1.DebugInspectResponse]
@@ -545,6 +565,11 @@ func (c *workflowServiceClient) DebugAttach(ctx context.Context, req *connect.Re
 // DebugGet calls flowstate.v1.WorkflowService.DebugGet.
 func (c *workflowServiceClient) DebugGet(ctx context.Context, req *connect.Request[v1.DebugGetRequest]) (*connect.Response[v1.DebugGetResponse], error) {
 	return c.debugGet.CallUnary(ctx, req)
+}
+
+// DebugHistory calls flowstate.v1.WorkflowService.DebugHistory.
+func (c *workflowServiceClient) DebugHistory(ctx context.Context, req *connect.Request[v1.DebugHistoryRequest]) (*connect.Response[v1.DebugHistoryResponse], error) {
+	return c.debugHistory.CallUnary(ctx, req)
 }
 
 // DebugResume calls flowstate.v1.WorkflowService.DebugResume.
@@ -736,6 +761,16 @@ type WorkflowServiceHandler interface {
 	// Set `after_revision` and `wait` to wait for the next change instead of
 	// polling in a tight loop.
 	DebugGet(context.Context, *connect.Request[v1.DebugGetRequest]) (*connect.Response[v1.DebugGetResponse], error)
+	// DebugHistory reads a durable run as it was at one point of its recorded
+	// history, open or closed, and lists the points it can be read at.
+	//
+	// It is read-only: the interpreter is replayed over the history with no
+	// worker attached, so no task, plugin or other effect can be dispatched, and
+	// nothing is written to the run. The same `debug:` policy as the live
+	// debugger decides who may read it. Every value is labelled by how it is
+	// known; a point the history cannot be replayed to, a history from another
+	// build, and one over the bound are refused rather than guessed.
+	DebugHistory(context.Context, *connect.Request[v1.DebugHistoryRequest]) (*connect.Response[v1.DebugHistoryResponse], error)
 	// DebugResume releases a held durable run: continue, step in, step over,
 	// step out, run until a step, or detach.
 	//
@@ -899,6 +934,12 @@ func NewWorkflowServiceHandler(svc WorkflowServiceHandler, opts ...connect.Handl
 		connect.WithSchema(workflowServiceMethods.ByName("DebugGet")),
 		connect.WithHandlerOptions(opts...),
 	)
+	workflowServiceDebugHistoryHandler := connect.NewUnaryHandler(
+		WorkflowServiceDebugHistoryProcedure,
+		svc.DebugHistory,
+		connect.WithSchema(workflowServiceMethods.ByName("DebugHistory")),
+		connect.WithHandlerOptions(opts...),
+	)
 	workflowServiceDebugResumeHandler := connect.NewUnaryHandler(
 		WorkflowServiceDebugResumeProcedure,
 		svc.DebugResume,
@@ -999,6 +1040,8 @@ func NewWorkflowServiceHandler(svc WorkflowServiceHandler, opts ...connect.Handl
 			workflowServiceDebugAttachHandler.ServeHTTP(w, r)
 		case WorkflowServiceDebugGetProcedure:
 			workflowServiceDebugGetHandler.ServeHTTP(w, r)
+		case WorkflowServiceDebugHistoryProcedure:
+			workflowServiceDebugHistoryHandler.ServeHTTP(w, r)
 		case WorkflowServiceDebugResumeProcedure:
 			workflowServiceDebugResumeHandler.ServeHTTP(w, r)
 		case WorkflowServiceDebugSetBreakpointsProcedure:
@@ -1072,6 +1115,10 @@ func (UnimplementedWorkflowServiceHandler) DebugAttach(context.Context, *connect
 
 func (UnimplementedWorkflowServiceHandler) DebugGet(context.Context, *connect.Request[v1.DebugGetRequest]) (*connect.Response[v1.DebugGetResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("flowstate.v1.WorkflowService.DebugGet is not implemented"))
+}
+
+func (UnimplementedWorkflowServiceHandler) DebugHistory(context.Context, *connect.Request[v1.DebugHistoryRequest]) (*connect.Response[v1.DebugHistoryResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("flowstate.v1.WorkflowService.DebugHistory is not implemented"))
 }
 
 func (UnimplementedWorkflowServiceHandler) DebugResume(context.Context, *connect.Request[v1.DebugResumeRequest]) (*connect.Response[v1.DebugResumeResponse], error) {

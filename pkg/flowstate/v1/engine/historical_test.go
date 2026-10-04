@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -325,6 +326,73 @@ func TestACancelledReadIsRefusedBeforeItReplays(t *testing.T) {
 			assert.Nil(t, got, name)
 		}
 	}
+}
+
+// TestAReconstructionHandsBackItsSlotWhenItsReplayEnds: Done is what a caller
+// that bounds concurrent replays releases its slot with, so it is called once
+// for every way a call can end: refused before any replay, abandoned by its
+// context while the replay it started still runs, and finished. The abandoned
+// case is the one that matters: the replay outlives the call.
+func TestAReconstructionHandsBackItsSlotWhenItsReplayEnds(t *testing.T) {
+	t.Parallel()
+
+	var name string
+	var history *historypb.History
+	for name, history = range recordedHistories(t) {
+		break
+	}
+	at := engine.Boundaries(history)
+	last := at[len(at)-1]
+
+	called := func(opts engine.ReconstructOptions, f func(engine.ReconstructOptions)) int {
+		var n atomic.Int32
+		opts.Done = func() { n.Add(1) }
+		f(opts)
+
+		return int(n.Load())
+	}
+
+	t.Run("refused before a replay", func(t *testing.T) {
+		over := &historypb.History{Events: make([]*historypb.HistoryEvent, engine.MaxReconstructionEvents+1)}
+		n := called(engine.ReconstructOptions{}, func(opts engine.ReconstructOptions) {
+			_, err := engine.ReconstructWith(t.Context(), opts, over, 0, corpusRun)
+			require.Error(t, err, name)
+		})
+		assert.Equal(t, 1, n, "a refusal that started no replay kept its slot")
+	})
+	t.Run("a context already done", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		n := called(engine.ReconstructOptions{}, func(opts engine.ReconstructOptions) {
+			_, err := engine.ReconstructWith(ctx, opts, history, last, corpusRun)
+			require.ErrorIs(t, err, context.Canceled)
+		})
+		assert.Equal(t, 1, n)
+	})
+	t.Run("finished", func(t *testing.T) {
+		n := called(engine.ReconstructOptions{}, func(opts engine.ReconstructOptions) {
+			_, err := engine.ReconstructWith(t.Context(), opts, history, last, corpusRun)
+			require.NoError(t, err)
+		})
+		assert.Equal(t, 1, n)
+	})
+	t.Run("abandoned while its replay runs", func(t *testing.T) {
+		done := make(chan struct{})
+		ctx, cancel := context.WithCancel(t.Context())
+		opts := engine.ReconstructOptions{Done: func() { close(done) }}
+		go cancel()
+		_, err := engine.ReconstructWith(ctx, opts, history, last, corpusRun)
+		if err == nil {
+			// The replay won the race with the cancel; Done is the same.
+			<-done
+
+			return
+		}
+		require.ErrorIs(t, err, context.Canceled)
+		// The slot comes back when the replay that outlived the call ends, and
+		// not before: waiting on it here is the assertion.
+		<-done
+	})
 }
 
 // TestTheReplayerHasNoWayToDispatchAnActivity is the structural half of "no

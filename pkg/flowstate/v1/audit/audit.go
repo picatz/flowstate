@@ -658,5 +658,6 @@ func auditDebugDetail(detail *v1.AuditDebugDetail) *v1.AuditDebugDetail {
 		Revision:         detail.GetRevision(),
 		Operation:        boundString(detail.GetOperation(), 64),
 		ExpressionDigest: boundString(detail.GetExpressionDigest(), 128),
+		RunId:            boundString(detail.GetRunId(), 128),
 	}
 }
