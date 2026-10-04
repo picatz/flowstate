@@ -1,0 +1,36 @@
+# A function is inlined where it is called, so what is worth testing is that the
+# calls compute what the definitions say, in a step, an `if:` and an output.
+edition: v2026.4
+defaults:
+  workflow: ./workflow.yaml
+  stubs:
+    - task: log
+      returns: {}
+tests:
+  - name: a title becomes a path
+    inputs:
+      title: "  Hello World "
+    expect:
+      ran: [publish]
+      skipped: [shorten]
+      outputs:
+        path: /posts/hello-world
+        long: false
+
+  - name: a function reads its own arguments, not the workflow's
+    inputs:
+      title: Hello World
+      section: notes
+    expect:
+      outputs:
+        path: /notes/hello-world
+        long: false
+
+  - name: a long title takes the branch the predicate guards
+    inputs:
+      title: A Rather Long Title For A Headline
+    expect:
+      ran: [publish, shorten]
+      outputs:
+        path: /posts/a-rather-long-title-for-a-headline
+        long: true

@@ -39,6 +39,7 @@ headings below, not this list.*
   - [`edition:` is required, and v-prefixed *(landed)*](#edition-is-required-and-v-prefixed-landed)
   - [Edition v2026.3: optional traversal, and the guarded-read rewrite *(landed)*](#edition-v20263-optional-traversal-and-the-guarded-read-rewrite-landed)
   - [Edition v2026.4: a type is a CEL type expression *(landed)*](#edition-v20264-a-type-is-a-cel-type-expression-landed)
+  - [`functions:`: a computation named once *(landed)*](#functions-a-computation-named-once-landed)
   - [`vars:`, and the shadowing rule that ships with it *(landed)*](#vars-and-the-shadowing-rule-that-ships-with-it-landed)
   - [`for_each` reads `as:` *(landed)*](#for_each-reads-as-landed)
   - [`http:` stays; its response scope gets a root *(landed)*](#http-stays-its-response-scope-gets-a-root-landed)
@@ -1304,6 +1305,92 @@ inputs:
   only until the run document has a plain-JSON form for them, and a worker
   built before the enum values existed reports an unknown declared type and
   refuses the run when it starts.
+
+### `functions:`: a computation named once *(landed)*
+
+Issue #1871. The dialect had no way to name a reusable computation: `vars:` are values
+and may read nothing, `cel.bind` names a value inside one expression, and `call:` is a
+whole durable run with a spec and a contract, the right tool for a process and a heavy
+one for `${normalizeEmail(x)}`. The same `${x.trim().lowerAscii().replace(" ", "-")}`
+chain appeared step after step, and a predicate was copied between a `switch:` and an
+`if:`. A `functions:` block declares one once:
+
+```yaml
+functions:
+  slug:
+    description: A title as it appears in a URL.
+    params:
+      title: string
+    returns: string
+    body: ${title.trim().lowerAscii().replace(" ", "-")}
+steps:
+  - id: publish
+    log:
+      message: ${"publishing /posts/" + slug(inputs.title)}
+```
+
+- **A definition, inlined; the runtime never sees a name.** The compiler replaces each
+  call with the body, the arguments bound once through `cel.bind`, so a compiled
+  specification holds plain CEL of the pinned profile and no call to a declared name.
+  Both drivers execute it unchanged, and a spec compiled with functions runs on a worker
+  that predates the feature. This is the invariant the decision implies: **the runtime
+  has no user-defined function**, so one spec cannot mean different things on different
+  workers, which invariant 3 forbids and Worker Versioning cannot see. It is the one
+  expander an imported helper library goes through (`ExpandPureHelpers`), reached from a
+  different declaration.
+- **The definition is in the spec, and the use is as written.** `Workflow.declared_functions`
+  carries each definition (a message, so `buf breaking` guards it) beside the expanded
+  expressions. Nothing evaluates it. It is what lets `flow fmt` write the file back
+  with the definitions and every call as the author wrote it, `slug(inputs.title)` and
+  not its expansion, by recording each expansion as the macro call it came from, the
+  way `cel.bind(...)` and `xs.map(x, ...)` already write back.
+- **Parameters only.** A body sees its parameters and the profile's vocabulary and
+  nothing else: not `inputs`, `vars`, `steps` or `run`. A function that needs a value
+  takes it as an argument, so a call shows every value the computation depends on and
+  one definition means one thing wherever it is called. The refusal says so. Closures
+  over the workflow's roots are what `vars:` already is, and are not offered.
+- **Typed at the definition, once.** A parameter is typed with the same type expressions
+  an input is (`string`, `list(int)`, `timestamp`, a record, `dyn`, which is allowed
+  and discouraged), `returns:` is required, and the body is checked against both when
+  the definition is compiled, so a wrong body is reported once, at the definition, with
+  the checker's sentence. A call is checked against the declared signature before it
+  is inlined: an argument of a type the parameter cannot take, or the wrong count, is
+  refused where the call is written. An argument the file cannot type is taken to fit,
+  as everywhere else in the checker, and one it can type (an `inputs.count` declared `int`)
+  is held to the parameter by `flow validate`, which checks the call as written and takes
+  its result to be the declared one. A field of a record parameter is checked against the
+  record in the body, as it is at an input.
+- **Composition yes, recursion no.** A function may call another declared in the file,
+  in either order. One that calls itself, directly or through another, is refused at its
+  definition by name (`ping calls pong calls ping`): an inlined call has no end to
+  expand to, which is the bound. A caller of a refused function is reported once, as
+  calling one that is not valid.
+- **Names are lowerCamel and may not shadow the profile.** `slug`, `isBusinessDay`;
+  never `size`, `has`, `string`, `sum`, a macro, or anything else the profile already
+  names, so a definition can never change what an existing expression means. A name is
+  also never a member (`x.slug()` is not a call).
+- **Bounded where it is spent.** At most 64 functions per file and 16 parameters each;
+  a body of at most 4096 nodes; at most 1024 calls in one expression; and an expansion
+  of at most 100000 nodes, checked from the arithmetic before the tree is built, so a
+  chain of functions that each call the next twice is refused while it is declared
+  instead of after it has allocated, and at most 100000 nodes in a file altogether, across the
+  definitions that call other functions and across every use, since each expansion within
+  its bound can still be wrapped sixty-four times or copied into hundreds of uses.
+- **Plugins stay CEL-free, and an operator cannot define one.** A function the
+  specification does not carry would make the same spec mean different things on
+  different workers. A function declared in a profile extension or registered by a
+  plugin is refused for that reason, and plugins evaluate no CEL (the first round's
+  "Plugins do not get CEL functions"). Definitions do not cross a `call:` boundary: a
+  library workflow exporting functions is the module design's (#106) to answer.
+
+Two evaluation details worth stating, since a call looks like a function call and
+behaves like one. Arguments are evaluated once and before the body, so an erroring
+argument fails the call whether or not the body reads it, and CEL's short-circuiting
+inside the body is untouched (`d == 0 || n / d > 1` still never divides by zero). And
+an argument is never captured: a later argument spelled like an earlier parameter (a
+loop variable named `denominator`) still reads the caller's own name, because such a
+call binds each argument to a name no expression can write before it binds the
+parameters.
 
 ### `vars:`, and the shadowing rule that ships with it *(landed)*
 

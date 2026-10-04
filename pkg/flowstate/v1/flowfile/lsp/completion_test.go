@@ -315,7 +315,7 @@ edition: v2026.4
 			name: "top level document keys",
 			src:  `|`,
 			exact: []string{
-				"edition", "name", "labels", "description", "types", "inputs", "outputs", "vars",
+				"edition", "name", "labels", "description", "types", "functions", "inputs", "outputs", "vars",
 				"steps", "triggers", "signals", "debug", "concurrency", "plugins",
 			},
 		},
@@ -744,6 +744,26 @@ steps:
 edition: v2026.4
 `,
 			exact: []string{},
+		},
+		{
+			// A function the file declares is offered wherever an expression is
+			// written, with its signature as the detail.
+			name: "a declared function is offered in an expression",
+			src: `edition: v2026.4
+name: c
+functions:
+  slugify:
+    params:
+      title: string
+    returns: string
+    body: ${title.trim()}
+steps:
+  - id: a
+    log:
+      message: ${slu|}
+`,
+			want:           []string{"slugify"},
+			detailContains: map[string]string{"slugify": "slugify(title: string) -> string"},
 		},
 		{
 			name: "nothing to complete for a step id",

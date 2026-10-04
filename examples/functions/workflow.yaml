@@ -1,0 +1,71 @@
+# `functions:` — a computation named once and called wherever an expression is.
+#
+# The same `${x.trim().lowerAscii().replace(" ", "-")}` chain written out in step
+# after step is the thing this replaces: the copies drift, one gets edited, and the
+# file still validates. `vars:` cannot hold it (a var is a value, and may read
+# nothing), `cel.bind` names a value inside one expression only, and `call:` is a
+# whole durable run for a one-line computation.
+#
+# A function declares its parameters with a type each, the type its body produces,
+# and the body. The body sees its parameters and nothing else (not `inputs`, `vars`
+# or `steps`), so a call shows every value the computation depends on, and a body
+# that is wrong is reported once, at its definition, rather than at every use.
+#
+# Nothing here is a runtime feature. The compiler replaces each call with the body,
+# arguments bound once, so a compiled workflow holds plain CEL and runs the same on
+# `flow run local` and on Temporal, on a worker that has never heard of `functions:`.
+# `flow fmt` writes the file back with the definitions and the calls as written.
+#
+# A function may call another, and may not call itself, directly or through another.
+# A name the language already has (`size`, `has`, `sum`) is refused, so a definition
+# can never change what an existing expression means.
+#
+#   flow run local examples/functions/workflow.yaml --input title="Hello, World"
+edition: v2026.4
+name: functions
+functions:
+  slug:
+    description: A title as it appears in a URL.
+    params:
+      title: string
+    returns: string
+    body: ${title.trim().lowerAscii().replace(" ", "-")}
+  postPath:
+    description: Where a post lives, in a section of the site.
+    params:
+      section: string
+      title: string
+    returns: string
+    body: ${"/" + section + "/" + slug(title)}
+  isLong:
+    description: Whether a title is too long for a headline.
+    params:
+      title: string
+      limit: int
+    returns: bool
+    body: ${size(title.trim()) > limit}
+inputs:
+  title:
+    type: string
+    required: true
+    description: the post's title
+  section:
+    type: string
+    default: posts
+steps:
+  - id: publish
+    log:
+      message: ${"publishing " + postPath(inputs.section, inputs.title)}
+  # The predicate is written once and used here and in the output below.
+  - id: shorten
+    if: ${isLong(inputs.title, 20)}
+    log:
+      message: ${"shorten before it is shown as " + slug(inputs.title)}
+outputs:
+  path:
+    value: ${postPath(inputs.section, inputs.title)}
+    type: string
+    description: the URL path the post is published at
+  long:
+    value: ${isLong(inputs.title, 20)}
+    type: bool
