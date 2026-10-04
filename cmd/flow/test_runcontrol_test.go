@@ -99,3 +99,72 @@ func TestJUnitMarksSkippedCases(t *testing.T) {
 	}
 	assert.True(t, found)
 }
+
+func TestListRefusesWhatItCannotReport(t *testing.T) {
+	dir := writeRunControlFixture(t)
+
+	for _, args := range [][]string{
+		{"--list", "-o", "json"},
+		{"--list", "--junit", filepath.Join(t.TempDir(), "j.xml")},
+		{"--list", "--fail-fast"},
+		{"--list", "--seeds", "2"},
+		{"--list", "--coverage-required"},
+	} {
+		_, err := runFlowTest(t, append(args, dir)...)
+		require.ErrorContains(t, err, "--list cannot be combined with", "%v", args)
+	}
+}
+
+func TestListFailsOnARefusedFile(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "broken.test.yaml"), []byte("tests: [not a case\n"), 0o600))
+
+	out, err := runFlowTest(t, "--list", dir)
+	require.Error(t, err, "a file that cannot be run must fail a listing used as a validity gate")
+	assert.Contains(t, out, "REFUSED")
+}
+
+func TestMachineReportCarriesSkippedCases(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.yaml"), []byte(scheduleStraightWorkflow), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.test.yaml"), []byte(`edition: v2026.4
+defaults:
+  workflow: ./workflow.yaml
+tests:
+  - name: only case
+    skip: not today
+    expect: {ran: [only]}
+`), 0o600))
+
+	out, err := runFlowTest(t, "-o", "json", dir)
+	require.NoError(t, err, "a skip never fails the run by itself")
+	assert.Contains(t, out, `"skipped"`)
+	assert.Contains(t, out, "not today")
+}
+
+func TestTimeoutIsRefusedWithDebug(t *testing.T) {
+	dir := writeRunControlFixture(t)
+
+	_, err := runFlowTest(t, "--timeout", "5s", "--debug", dir)
+	require.ErrorContains(t, err, "--timeout cannot be combined with --debug")
+}
+
+func TestFailFastHoldsAcrossFiles(t *testing.T) {
+	dir := writeRunControlFixture(t)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "z_later.test.yaml"), []byte(`edition: v2026.4
+defaults:
+  workflow: ./workflow.yaml
+  stubs:
+    - task: log
+      returns: {}
+tests:
+  - name: a later file case
+    expect: {ran: [only]}
+`), 0o600))
+
+	out, err := runFlowTest(t, "--fail-fast", dir)
+	require.Error(t, err)
+	assert.Contains(t, out, "a later file case")
+	assert.Contains(t, out, "not run after the first failure")
+	assert.NotContains(t, out, "PASS  "+filepath.Join(dir, "z_later.test.yaml"), "the later file's case must not run")
+}

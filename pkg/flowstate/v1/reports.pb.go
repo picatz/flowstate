@@ -528,7 +528,13 @@ type TestReport struct {
 	// written-order runs alone, so a verdict never depends on which seeds were
 	// drawn; a divergence here fails the command without changing any case's
 	// own passed/failed.
-	Schedules     *ScheduleExploration `protobuf:"bytes,5,opt,name=schedules,proto3" json:"schedules,omitempty"`
+	Schedules *ScheduleExploration `protobuf:"bytes,5,opt,name=schedules,proto3" json:"schedules,omitempty"`
+	// Skipped is every selected case that was not run, with why: a `skip:`
+	// reason the file wrote, or the first failure `--fail-fast` stopped at. A
+	// skipped case is not in Cases and reaches no coverage, so a report whose
+	// Cases is empty because everything was skipped is told apart here from one
+	// that ran nothing.
+	Skipped       []*SkippedTestCase `protobuf:"bytes,6,rep,name=skipped,proto3" json:"skipped,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -598,6 +604,69 @@ func (x *TestReport) GetSchedules() *ScheduleExploration {
 	return nil
 }
 
+func (x *TestReport) GetSkipped() []*SkippedTestCase {
+	if x != nil {
+		return x.Skipped
+	}
+	return nil
+}
+
+// SkippedTestCase is one case a `flow test` run selected and did not run.
+type SkippedTestCase struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Name is the case's full name, as TestCase.name spells it.
+	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	// Reason is the file's `skip:` text, or the sentence naming the failure a
+	// `--fail-fast` run stopped at.
+	Reason        string `protobuf:"bytes,2,opt,name=reason,proto3" json:"reason,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SkippedTestCase) Reset() {
+	*x = SkippedTestCase{}
+	mi := &file_flowstate_v1_reports_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SkippedTestCase) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SkippedTestCase) ProtoMessage() {}
+
+func (x *SkippedTestCase) ProtoReflect() protoreflect.Message {
+	mi := &file_flowstate_v1_reports_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SkippedTestCase.ProtoReflect.Descriptor instead.
+func (*SkippedTestCase) Descriptor() ([]byte, []int) {
+	return file_flowstate_v1_reports_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *SkippedTestCase) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *SkippedTestCase) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
 // ScheduleExploration is what running one `*.test.yaml`'s cases under seeded
 // schedules found, beyond the written-order run the rest of the report
 // describes.
@@ -633,7 +702,7 @@ type ScheduleExploration struct {
 
 func (x *ScheduleExploration) Reset() {
 	*x = ScheduleExploration{}
-	mi := &file_flowstate_v1_reports_proto_msgTypes[7]
+	mi := &file_flowstate_v1_reports_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -645,7 +714,7 @@ func (x *ScheduleExploration) String() string {
 func (*ScheduleExploration) ProtoMessage() {}
 
 func (x *ScheduleExploration) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_reports_proto_msgTypes[7]
+	mi := &file_flowstate_v1_reports_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -658,7 +727,7 @@ func (x *ScheduleExploration) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ScheduleExploration.ProtoReflect.Descriptor instead.
 func (*ScheduleExploration) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_reports_proto_rawDescGZIP(), []int{7}
+	return file_flowstate_v1_reports_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *ScheduleExploration) GetSchedules() int32 {
@@ -731,7 +800,7 @@ type ScheduleDivergenceReport struct {
 
 func (x *ScheduleDivergenceReport) Reset() {
 	*x = ScheduleDivergenceReport{}
-	mi := &file_flowstate_v1_reports_proto_msgTypes[8]
+	mi := &file_flowstate_v1_reports_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -743,7 +812,7 @@ func (x *ScheduleDivergenceReport) String() string {
 func (*ScheduleDivergenceReport) ProtoMessage() {}
 
 func (x *ScheduleDivergenceReport) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_reports_proto_msgTypes[8]
+	mi := &file_flowstate_v1_reports_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -756,7 +825,7 @@ func (x *ScheduleDivergenceReport) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ScheduleDivergenceReport.ProtoReflect.Descriptor instead.
 func (*ScheduleDivergenceReport) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_reports_proto_rawDescGZIP(), []int{8}
+	return file_flowstate_v1_reports_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *ScheduleDivergenceReport) GetCase() string {
@@ -859,7 +928,7 @@ type CoverageReport struct {
 
 func (x *CoverageReport) Reset() {
 	*x = CoverageReport{}
-	mi := &file_flowstate_v1_reports_proto_msgTypes[9]
+	mi := &file_flowstate_v1_reports_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -871,7 +940,7 @@ func (x *CoverageReport) String() string {
 func (*CoverageReport) ProtoMessage() {}
 
 func (x *CoverageReport) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_reports_proto_msgTypes[9]
+	mi := &file_flowstate_v1_reports_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -884,7 +953,7 @@ func (x *CoverageReport) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CoverageReport.ProtoReflect.Descriptor instead.
 func (*CoverageReport) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_reports_proto_rawDescGZIP(), []int{9}
+	return file_flowstate_v1_reports_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *CoverageReport) GetWorkflow() string {
@@ -995,7 +1064,7 @@ type SwitchArmCoverage struct {
 
 func (x *SwitchArmCoverage) Reset() {
 	*x = SwitchArmCoverage{}
-	mi := &file_flowstate_v1_reports_proto_msgTypes[10]
+	mi := &file_flowstate_v1_reports_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1007,7 +1076,7 @@ func (x *SwitchArmCoverage) String() string {
 func (*SwitchArmCoverage) ProtoMessage() {}
 
 func (x *SwitchArmCoverage) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_reports_proto_msgTypes[10]
+	mi := &file_flowstate_v1_reports_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1020,7 +1089,7 @@ func (x *SwitchArmCoverage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SwitchArmCoverage.ProtoReflect.Descriptor instead.
 func (*SwitchArmCoverage) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_reports_proto_rawDescGZIP(), []int{10}
+	return file_flowstate_v1_reports_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *SwitchArmCoverage) GetArm() string {
@@ -1085,7 +1154,7 @@ type TestReports struct {
 
 func (x *TestReports) Reset() {
 	*x = TestReports{}
-	mi := &file_flowstate_v1_reports_proto_msgTypes[11]
+	mi := &file_flowstate_v1_reports_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1097,7 +1166,7 @@ func (x *TestReports) String() string {
 func (*TestReports) ProtoMessage() {}
 
 func (x *TestReports) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_reports_proto_msgTypes[11]
+	mi := &file_flowstate_v1_reports_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1110,7 +1179,7 @@ func (x *TestReports) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TestReports.ProtoReflect.Descriptor instead.
 func (*TestReports) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_reports_proto_rawDescGZIP(), []int{11}
+	return file_flowstate_v1_reports_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *TestReports) GetFiles() []*TestReport {
@@ -1152,14 +1221,18 @@ const file_flowstate_v1_reports_proto_rawDesc = "" +
 	"\bfailures\x18\x03 \x03(\v2\x18.flowstate.v1.DiagnosticR\bfailures\x12\x14\n" +
 	"\x05error\x18\x04 \x01(\tR\x05error\x125\n" +
 	"\bduration\x18\x05 \x01(\v2\x19.google.protobuf.DurationR\bduration\x124\n" +
-	"\bwarnings\x18\x06 \x03(\v2\x18.flowstate.v1.DiagnosticR\bwarnings\"\xeb\x01\n" +
+	"\bwarnings\x18\x06 \x03(\v2\x18.flowstate.v1.DiagnosticR\bwarnings\"\xa4\x02\n" +
 	"\n" +
 	"TestReport\x12\x1a\n" +
 	"\x04file\x18\x01 \x01(\tB\x06\xbaH\x03\xc8\x01\x01R\x04file\x12,\n" +
 	"\x05cases\x18\x02 \x03(\v2\x16.flowstate.v1.TestCaseR\x05cases\x12\x18\n" +
 	"\arefused\x18\x03 \x01(\tR\arefused\x128\n" +
 	"\bcoverage\x18\x04 \x03(\v2\x1c.flowstate.v1.CoverageReportR\bcoverage\x12?\n" +
-	"\tschedules\x18\x05 \x01(\v2!.flowstate.v1.ScheduleExplorationR\tschedules\"\xcd\x01\n" +
+	"\tschedules\x18\x05 \x01(\v2!.flowstate.v1.ScheduleExplorationR\tschedules\x127\n" +
+	"\askipped\x18\x06 \x03(\v2\x1d.flowstate.v1.SkippedTestCaseR\askipped\"E\n" +
+	"\x0fSkippedTestCase\x12\x1a\n" +
+	"\x04name\x18\x01 \x01(\tB\x06\xbaH\x03\xc8\x01\x01R\x04name\x12\x16\n" +
+	"\x06reason\x18\x02 \x01(\tR\x06reason\"\xcd\x01\n" +
 	"\x13ScheduleExploration\x12\x1c\n" +
 	"\tschedules\x18\x01 \x01(\x05R\tschedules\x12\x14\n" +
 	"\x05cases\x18\x02 \x01(\x05R\x05cases\x12\x1c\n" +
@@ -1213,7 +1286,7 @@ func file_flowstate_v1_reports_proto_rawDescGZIP() []byte {
 	return file_flowstate_v1_reports_proto_rawDescData
 }
 
-var file_flowstate_v1_reports_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
+var file_flowstate_v1_reports_proto_msgTypes = make([]protoimpl.MessageInfo, 14)
 var file_flowstate_v1_reports_proto_goTypes = []any{
 	(*FixChange)(nil),                // 0: flowstate.v1.FixChange
 	(*FixReport)(nil),                // 1: flowstate.v1.FixReport
@@ -1222,38 +1295,40 @@ var file_flowstate_v1_reports_proto_goTypes = []any{
 	(*FmtReports)(nil),               // 4: flowstate.v1.FmtReports
 	(*TestCase)(nil),                 // 5: flowstate.v1.TestCase
 	(*TestReport)(nil),               // 6: flowstate.v1.TestReport
-	(*ScheduleExploration)(nil),      // 7: flowstate.v1.ScheduleExploration
-	(*ScheduleDivergenceReport)(nil), // 8: flowstate.v1.ScheduleDivergenceReport
-	(*CoverageReport)(nil),           // 9: flowstate.v1.CoverageReport
-	(*SwitchArmCoverage)(nil),        // 10: flowstate.v1.SwitchArmCoverage
-	(*TestReports)(nil),              // 11: flowstate.v1.TestReports
-	nil,                              // 12: flowstate.v1.CoverageReport.AcceptedEntry
-	(*Diagnostic)(nil),               // 13: flowstate.v1.Diagnostic
-	(*durationpb.Duration)(nil),      // 14: google.protobuf.Duration
+	(*SkippedTestCase)(nil),          // 7: flowstate.v1.SkippedTestCase
+	(*ScheduleExploration)(nil),      // 8: flowstate.v1.ScheduleExploration
+	(*ScheduleDivergenceReport)(nil), // 9: flowstate.v1.ScheduleDivergenceReport
+	(*CoverageReport)(nil),           // 10: flowstate.v1.CoverageReport
+	(*SwitchArmCoverage)(nil),        // 11: flowstate.v1.SwitchArmCoverage
+	(*TestReports)(nil),              // 12: flowstate.v1.TestReports
+	nil,                              // 13: flowstate.v1.CoverageReport.AcceptedEntry
+	(*Diagnostic)(nil),               // 14: flowstate.v1.Diagnostic
+	(*durationpb.Duration)(nil),      // 15: google.protobuf.Duration
 }
 var file_flowstate_v1_reports_proto_depIdxs = []int32{
 	0,  // 0: flowstate.v1.FixReport.changes:type_name -> flowstate.v1.FixChange
-	13, // 1: flowstate.v1.FixReport.refusals:type_name -> flowstate.v1.Diagnostic
-	13, // 2: flowstate.v1.FixReport.notes:type_name -> flowstate.v1.Diagnostic
-	13, // 3: flowstate.v1.FixReport.stale_pins:type_name -> flowstate.v1.Diagnostic
-	13, // 4: flowstate.v1.FmtReport.refusals:type_name -> flowstate.v1.Diagnostic
+	14, // 1: flowstate.v1.FixReport.refusals:type_name -> flowstate.v1.Diagnostic
+	14, // 2: flowstate.v1.FixReport.notes:type_name -> flowstate.v1.Diagnostic
+	14, // 3: flowstate.v1.FixReport.stale_pins:type_name -> flowstate.v1.Diagnostic
+	14, // 4: flowstate.v1.FmtReport.refusals:type_name -> flowstate.v1.Diagnostic
 	1,  // 5: flowstate.v1.FixReports.files:type_name -> flowstate.v1.FixReport
 	2,  // 6: flowstate.v1.FmtReports.files:type_name -> flowstate.v1.FmtReport
-	13, // 7: flowstate.v1.TestCase.failures:type_name -> flowstate.v1.Diagnostic
-	14, // 8: flowstate.v1.TestCase.duration:type_name -> google.protobuf.Duration
-	13, // 9: flowstate.v1.TestCase.warnings:type_name -> flowstate.v1.Diagnostic
+	14, // 7: flowstate.v1.TestCase.failures:type_name -> flowstate.v1.Diagnostic
+	15, // 8: flowstate.v1.TestCase.duration:type_name -> google.protobuf.Duration
+	14, // 9: flowstate.v1.TestCase.warnings:type_name -> flowstate.v1.Diagnostic
 	5,  // 10: flowstate.v1.TestReport.cases:type_name -> flowstate.v1.TestCase
-	9,  // 11: flowstate.v1.TestReport.coverage:type_name -> flowstate.v1.CoverageReport
-	7,  // 12: flowstate.v1.TestReport.schedules:type_name -> flowstate.v1.ScheduleExploration
-	8,  // 13: flowstate.v1.ScheduleExploration.divergence:type_name -> flowstate.v1.ScheduleDivergenceReport
-	12, // 14: flowstate.v1.CoverageReport.accepted:type_name -> flowstate.v1.CoverageReport.AcceptedEntry
-	10, // 15: flowstate.v1.CoverageReport.arms:type_name -> flowstate.v1.SwitchArmCoverage
-	6,  // 16: flowstate.v1.TestReports.files:type_name -> flowstate.v1.TestReport
-	17, // [17:17] is the sub-list for method output_type
-	17, // [17:17] is the sub-list for method input_type
-	17, // [17:17] is the sub-list for extension type_name
-	17, // [17:17] is the sub-list for extension extendee
-	0,  // [0:17] is the sub-list for field type_name
+	10, // 11: flowstate.v1.TestReport.coverage:type_name -> flowstate.v1.CoverageReport
+	8,  // 12: flowstate.v1.TestReport.schedules:type_name -> flowstate.v1.ScheduleExploration
+	7,  // 13: flowstate.v1.TestReport.skipped:type_name -> flowstate.v1.SkippedTestCase
+	9,  // 14: flowstate.v1.ScheduleExploration.divergence:type_name -> flowstate.v1.ScheduleDivergenceReport
+	13, // 15: flowstate.v1.CoverageReport.accepted:type_name -> flowstate.v1.CoverageReport.AcceptedEntry
+	11, // 16: flowstate.v1.CoverageReport.arms:type_name -> flowstate.v1.SwitchArmCoverage
+	6,  // 17: flowstate.v1.TestReports.files:type_name -> flowstate.v1.TestReport
+	18, // [18:18] is the sub-list for method output_type
+	18, // [18:18] is the sub-list for method input_type
+	18, // [18:18] is the sub-list for extension type_name
+	18, // [18:18] is the sub-list for extension extendee
+	0,  // [0:18] is the sub-list for field type_name
 }
 
 func init() { file_flowstate_v1_reports_proto_init() }
@@ -1268,7 +1343,7 @@ func file_flowstate_v1_reports_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_flowstate_v1_reports_proto_rawDesc), len(file_flowstate_v1_reports_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   13,
+			NumMessages:   14,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

@@ -199,6 +199,23 @@ message TestReport {
   // drawn; a divergence here fails the command without changing any case's
   // own passed/failed.
   ScheduleExploration schedules = 5;
+
+  // Skipped is every selected case that was not run, with why: a `skip:`
+  // reason the file wrote, or the first failure `--fail-fast` stopped at. A
+  // skipped case is not in Cases and reaches no coverage, so a report whose
+  // Cases is empty because everything was skipped is told apart here from one
+  // that ran nothing.
+  repeated SkippedTestCase skipped = 6;
+}
+
+// SkippedTestCase is one case a `flow test` run selected and did not run.
+message SkippedTestCase {
+  // Name is the case's full name, as TestCase.name spells it.
+  string name = 1 [(buf.validate.field).required = true];
+
+  // Reason is the file's `skip:` text, or the sentence naming the failure a
+  // `--fail-fast` run stopped at.
+  string reason = 2;
 }
 
 // ScheduleExploration is what running one `*.test.yaml`'s cases under seeded

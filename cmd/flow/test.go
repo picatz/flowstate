@@ -301,7 +301,31 @@ func runTest(cmd *cobra.Command, paths []string) error {
 		return fmt.Errorf("--timeout %s is outside 0 (the 30s default) to 10m; a case that needs longer is stuck, "+
 			"and the virtual clock already skips every wait", timeout)
 	}
+	if timeout > 0 && cmd.Flags().Changed("debug") {
+		return errors.New("--timeout cannot be combined with --debug: a debugger session is held by a person, not by a clock")
+	}
 	listing, _ := cmd.Flags().GetBool("list")
+	if listing {
+		// Listing runs nothing, so every flag that reads a run's outcome would
+		// be accepted and then quietly have nothing to act on: a machine format
+		// or a JUnit file that never appears reads as success.
+		for _, other := range []struct {
+			name string
+			set  bool
+		}{
+			{"-o json/jsonl", format.Machine()},
+			{"--junit", cmd.Flags().Changed("junit")},
+			{"--debug", cmd.Flags().Changed("debug")},
+			{"--watch", cmd.Flags().Changed("watch")},
+			{"--fail-fast", failFast},
+			{"--seeds", cmd.Flags().Changed("seeds") || cmd.Flags().Changed("seed")},
+			{"--coverage-required", coverageRequired},
+		} {
+			if other.set {
+				return fmt.Errorf("--list cannot be combined with %s: listing runs no case, so there is no result for it to report", other.name)
+			}
+		}
+	}
 
 	files, err := collectTestFiles(paths)
 	if err != nil {
@@ -342,6 +366,10 @@ func runTest(cmd *cobra.Command, paths []string) error {
 		anyFailed bool
 		results   []testFileResult
 	)
+	// halted is what `--fail-fast` stopped at, carried across files so the
+	// promise holds for the whole invocation: later files still report every
+	// selected case, as skipped, instead of running it.
+	halted := ""
 	for _, path := range files {
 		// cmd.Context() rather than a background one: `flow test` is where a
 		// legal Flowfile can park forever (a `wait_for_signal:` with no timeout
@@ -357,6 +385,7 @@ func runTest(cmd *cobra.Command, paths []string) error {
 			Select:      selectCase,
 			CaseTimeout: timeout,
 			FailFast:    failFast,
+			HaltedBy:    halted,
 			ListOnly:    listing,
 			// nil unless --debug, and a nil interface value in this field is
 			// what every other run in the world passes: the engine's boundary
@@ -377,6 +406,9 @@ func runTest(cmd *cobra.Command, paths []string) error {
 
 		if listing {
 			printListing(surface.Out, surface.Theme, report, run)
+			// A refused file is a file that cannot be run, which a CI step
+			// listing cases as a validity gate must see as a failure.
+			anyFailed = anyFailed || report.GetRefused() != ""
 			continue
 		}
 
@@ -408,9 +440,20 @@ func runTest(cmd *cobra.Command, paths []string) error {
 		if result.failed(coverageRequired, failOnWarning) {
 			anyFailed = true
 		}
+		if failFast && halted == "" {
+			switch {
+			case run.HaltedAt != "":
+				halted = path + ": " + run.HaltedAt
+			case report.GetRefused() != "":
+				halted = path + " (refused)"
+			}
+		}
 	}
 
 	if listing {
+		if anyFailed {
+			return errTestsFailed
+		}
 		return nil
 	}
 	if machine {

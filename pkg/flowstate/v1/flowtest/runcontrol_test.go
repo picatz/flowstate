@@ -7,6 +7,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/picatz/flowstate/pkg/flowstate/v1/dst"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowtest"
 )
 
@@ -121,9 +122,10 @@ tests:
 	require.Equal(t, "flaky upstream", run.Skipped[1].Reason)
 }
 
-// TestCaseTimeoutIsClampedNotUnbounded checks a Go caller cannot lift the
-// backstop past its ceiling; a timeout too short for the work fails the case.
-func TestCaseTimeoutIsClampedNotUnbounded(t *testing.T) {
+// TestCaseTimeoutBoundsACase checks a case that cannot finish inside the limit
+// fails rather than passing; the ceiling itself is held by the CLI flag's
+// bound and by `min` in the run loop.
+func TestCaseTimeoutBoundsACase(t *testing.T) {
 	t.Parallel()
 
 	run := flowtest.RunPath(context.Background(), runControlPath(t), flowtest.RunOptions{CaseTimeout: time.Nanosecond})
@@ -131,4 +133,93 @@ func TestCaseTimeoutIsClampedNotUnbounded(t *testing.T) {
 	for _, c := range run.Report.GetCases() {
 		require.False(t, c.GetPassed(), "%s should not pass under a 1ns limit", c.GetName())
 	}
+}
+
+// TestFailFastStopsOnAScheduleDivergence proves --fail-fast treats the finding
+// --seeds exists to make as a failure: the first case's answer depends on
+// which parallel branch asks first, and the second case is not explored.
+func TestFailFastStopsOnAScheduleDivergence(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeFile(t, dir+"/workflow.yaml", `
+edition: v2026.4
+name: racing
+steps:
+  - id: race
+    parallel:
+      - steps:
+          - id: left
+            log:
+              message: left
+      - steps:
+          - id: right
+            log:
+              message: right
+outputs:
+  left: {value: '${steps.left.n}'}
+`)
+	path := writeInline(t, dir, `
+tests:
+  - name: first answer goes to whoever asks first
+    workflow: ./workflow.yaml
+    stubs:
+      - task: log
+        times: 1
+        returns: {n: 1}
+      - task: log
+        returns: {n: 2}
+    expect: {failed: false}
+  - name: second case
+    workflow: ./workflow.yaml
+    stubs:
+      - task: log
+        returns: {n: 1}
+    expect: {failed: false}
+`)
+	budget := dst.Budget{Schedules: 16}
+	all := flowtest.RunPath(context.Background(), path, flowtest.RunOptions{Budget: budget})
+	require.Empty(t, all.Report.GetRefused())
+	require.NotNil(t, all.Schedules)
+	require.NotNil(t, all.Schedules.Divergence, "the fixture must diverge or this test proves nothing")
+	require.Len(t, all.Report.GetCases(), 2)
+
+	fast := flowtest.RunPath(context.Background(), path, flowtest.RunOptions{Budget: budget, FailFast: true})
+	require.Len(t, fast.Report.GetCases(), 1)
+	require.Len(t, fast.Skipped, 1)
+	require.Equal(t, "second case", fast.Skipped[0].Name)
+	require.Equal(t, "second case", fast.Report.GetSkipped()[0].GetName(), "the machine report carries the skip")
+}
+
+// TestSkippedCaseKeepsItsWorkflowInCoverage is the fail-closed half of skip: a
+// workflow whose every case is skipped still counts, with nothing reached, so
+// `--coverage-required` cannot pass over it.
+func TestSkippedCaseKeepsItsWorkflowInCoverage(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeDefaultsWorkflow(t, dir)
+	run := flowtest.RunPath(context.Background(), writeInline(t, dir, `
+tests:
+  - name: parked
+    skip: not yet
+    workflow: ./workflow.yaml
+    inputs: {amount: 1}
+    expect: {failed: false}
+`), flowtest.RunOptions{})
+	require.Empty(t, run.Report.GetRefused())
+	require.Len(t, run.Coverage, 1, "the skipped case's workflow must stay in the coverage universe")
+	require.NotEmpty(t, run.Coverage[0].Gaps())
+	require.Empty(t, run.Coverage[0].Reached)
+}
+
+// TestHaltedByReportsEveryCaseAsSkipped is how --fail-fast crosses files: the
+// next file runs nothing and says why.
+func TestHaltedByReportsEveryCaseAsSkipped(t *testing.T) {
+	t.Parallel()
+
+	run := flowtest.RunPath(context.Background(), runControlPath(t), flowtest.RunOptions{HaltedBy: "other.test.yaml: boom"})
+	require.Empty(t, run.Report.GetCases())
+	require.Len(t, run.Skipped, 4)
+	require.Contains(t, run.Skipped[0].Reason, "other.test.yaml: boom")
 }
