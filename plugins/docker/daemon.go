@@ -136,6 +136,7 @@ type hostConfig struct {
 	ReadonlyRootfs bool          `json:"ReadonlyRootfs"`
 	AutoRemove     bool          `json:"AutoRemove"`
 	Privileged     bool          `json:"Privileged"`
+	Runtime        string        `json:"Runtime,omitempty"`
 	CapDrop        []string      `json:"CapDrop"`
 	SecurityOpt    []string      `json:"SecurityOpt"`
 	Memory         int64         `json:"Memory"`

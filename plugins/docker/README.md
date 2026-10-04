@@ -96,7 +96,7 @@ The grants file has three top-level keys: `daemon` (`socket`, or `address`
 with `tls_ca_file`, `tls_cert_file` and `tls_key_file`; optional
 `api_version`), `mounts` (by name: `source`, `target`, `writable`), and `runs`
 (by name). A run grant takes `image`, `argv`, `parameters` (each a `pattern`
-and optional `max_bytes`), `env`, `working_dir`, `user`, `network`, `mounts`,
+and optional `max_bytes`), `env`, `working_dir`, `user`, `network`, `runtime`, `mounts`,
 `writable_root_filesystem`, `timeout`, `memory_bytes`, `nano_cpus`,
 `pids_limit`, `max_output_bytes`, `success_exit_codes` and `namespaces`.
 [`examples/plugins/docker/grants.yaml`](../../examples/plugins/docker/grants.yaml)

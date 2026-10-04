@@ -210,6 +210,9 @@ func execute(ctx context.Context, runtime *daemon, grant runGrant, name string, 
 			// with it.
 			AutoRemove: false,
 			Privileged: false,
+			// The operator's pinned OCI runtime (gVisor, Kata); empty is the
+			// daemon's default. Only the grant sets it.
+			Runtime: grant.Runtime,
 			// Dropped wholesale rather than pruned: a grant cannot add a
 			// capability back, so the set a container gets is the set every
 			// container here gets.
