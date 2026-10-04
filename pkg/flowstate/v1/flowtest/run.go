@@ -733,7 +733,6 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	// other package's, such as pkg/flowstate/embed's Tasks.Install. See
 	// [v1.LockDefaultRegistry].
 	unlockRegistry := v1.LockDefaultRegistry()
-	defer unlockRegistry()
 
 	// Swapped in before the workflow is even parsed, not just before it runs:
 	// a stub may name a task this build does not otherwise register — a
@@ -744,7 +743,16 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	// advertised. Only task-form stubs can name a missing task; a step-form
 	// stub names a step whose task the compiler already knows.
 	restore := swapRegistry(stubTaskNames(compiled))
-	defer restore()
+	// Released once the case has its own registry, and on any exit before: the
+	// process-wide one is held for compilation and for building [caseRegistry]
+	// and for nothing the run does, so a second case, such as the replay of a
+	// debugging session that is still held at a stop, is not made to wait for
+	// the first to end. Restored before unlocking, as the defers were.
+	releaseRegistry := sync.OnceFunc(func() {
+		restore()
+		unlockRegistry()
+	})
+	defer releaseRegistry()
 
 	workflow, err := load()
 	if err != nil {
@@ -872,6 +880,7 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 		return
 	}
 	ctx = v1.NewContextWithRegistry(ctx, registry)
+	releaseRegistry()
 
 	inputs := v1.NewNamedValues(test.Inputs)
 
