@@ -48,6 +48,22 @@ func TestAParkedRunSaysWhatItIsWaitingFor(t *testing.T) {
 				}, 45*time.Second)
 			}
 
+			// Early ones land before the question, so what the gate reports
+			// includes them; Finish ones land with the release.
+			for _, sends := range []struct {
+				at    time.Duration
+				sends []conformance.PendingSend
+			}{{10 * time.Second, test.Early}, {45 * time.Second, test.Finish}} {
+				for _, send := range sends.sends {
+					env.RegisterDelayedCallback(func() {
+						env.SignalWorkflow(send.Name, &v1.SignalDelivery{
+							Payload: &v1.Node_Outputs{NamedValues: send.Payload},
+							Sender:  send.Sender,
+						})
+					}, sends.at)
+				}
+			}
+
 			// Asked again once the gate has opened. The whole point of a live
 			// answer is that it stops being true: a registry that only ever
 			// grew would report a gate somebody already opened, which is worse

@@ -758,7 +758,15 @@ func runWait(ctx context.Context, node *Node, wait *Wait, scope *Scope) (*Node_O
 			return nil, err
 		}
 
-		outputs, err := waitForSignalsLocally(ctx, clock, node, kind.SignalBatch, scope, timeout, bounded)
+		// A quorum replaces the drain with a decision loop, so it is its own
+		// function on both drivers; everything after it, the shaping included,
+		// is shared with the drain.
+		receive := waitForSignalsLocally
+		if kind.SignalBatch.GetQuorum() != nil {
+			receive = waitForQuorumLocally
+		}
+
+		outputs, err := receive(ctx, clock, node, kind.SignalBatch, scope, timeout, bounded)
 		if err != nil {
 			return nil, err
 		}
@@ -1230,4 +1238,228 @@ func drainQueued(peeker signalPeeker, name string, deliveries []*SignalDelivery,
 	}
 
 	return deliveries
+}
+
+// waitForQuorumLocally is the local half of a `wait_for_signals:` that declares
+// a `quorum:`: it takes deliveries one at a time, folds each into a
+// [QuorumTally], and ends when the tally decides or the wait's deadline lapses.
+//
+// # What it shares with [waitForSignalsLocally], and what it does not
+//
+// The order of the subtleties is the drain's: what is already queued is taken
+// before anything blocks or announces, an already-lapsed bound answers before a
+// waiter is demanded, the prompt is evaluated and the wait announced at the
+// instant it is known to be parking, and the deadline is armed atomically with
+// respect to delivery. What differs is that one delivery no longer answers the
+// wait, so the blocking receive is repeated under *one* deadline: the moment is
+// fixed when the wait first parks, and each later receive arms what is left of
+// it, never a fresh `timeout:`. A stream of deliveries that decide nothing
+// therefore cannot hold a bounded gate open past its own deadline, which is the
+// rule the redelivery loop in [waitForSignalLocally] holds for duplicates.
+//
+// A delivery that decided the wait is the last this takes. What is queued behind
+// it stays queued for a later wait.
+func waitForQuorumLocally(
+	ctx context.Context,
+	clock Clock,
+	node *Node,
+	batch *SignalBatch,
+	scope *Scope,
+	timeout time.Duration,
+	bounded bool,
+) (*Node_Outputs, error) {
+	name := batch.GetName()
+	tally := NewQuorumTally(batch.GetQuorum())
+
+	waiter, hasWaiter := SignalWaiterFromContext(ctx)
+
+	var peeker signalPeeker
+	if hasWaiter {
+		peeker, _ = waiter.(signalPeeker)
+	}
+
+	var (
+		announced   bool
+		update      = func() {}
+		leave       = func() {}
+		deadlineAt  time.Time
+		signalState *signalWait
+	)
+	defer func() { leave() }()
+
+	take := func(delivery *SignalDelivery) error {
+		if err := tally.Take(ctx, delivery, scope, clock.Now()); err != nil {
+			return err
+		}
+		update()
+
+		return nil
+	}
+
+	for {
+		// Everything already in hand, oldest first, before anything blocks.
+		for tally.Decision() == "" && peeker != nil {
+			delivery, took := peeker.tryReceiveSignal(name)
+			if !took {
+				break
+			}
+			if err := take(delivery); err != nil {
+				return nil, err
+			}
+		}
+
+		if tally.Decision() != "" {
+			return tally.Outputs(), nil
+		}
+
+		// The remaining bound. The first pass spends exactly `timeout`, so a
+		// gate that parks is not charged for the time this function took to
+		// reach its block.
+		remaining := timeout
+		if bounded {
+			if deadlineAt.IsZero() {
+				deadlineAt = clock.Now().Add(timeout)
+			} else {
+				remaining = deadlineAt.Sub(clock.Now())
+			}
+			if remaining <= 0 {
+				// Ahead of the waiter requirement, as in the drain: a gate that
+				// waits for nothing does not demand a waiter to say so. Whatever
+				// was counted is reported, under a decision of timed_out.
+				return tally.Outputs(), nil
+			}
+		}
+
+		if !hasWaiter {
+			return nil, fmt.Errorf("%w: it waits for %q", ErrNoSignalWaiter, name)
+		}
+
+		var deadline <-chan time.Time
+		if bounded {
+			if peeker == nil {
+				// A waiter with no bookkeeping: register the deadline plainly,
+				// which is correct and merely less exact about when a virtual
+				// clock may move.
+				deadline = clock.After(remaining)
+			} else {
+				if signalState == nil {
+					var leaveWait func()
+					signalState, leaveWait = peeker.enterSignalWait(name)
+					defer leaveWait()
+				}
+
+				var (
+					delivered    *SignalDelivery
+					wasDelivered bool
+				)
+				// Armed under the delivery lock, which is also where a queued
+				// delivery is taken, so this never holds a deadline for a wait a
+				// delivery has just answered.
+				deadline, delivered, wasDelivered = signalState.armDeadline(clock, name, remaining)
+				if wasDelivered {
+					if err := take(delivered); err != nil {
+						return nil, err
+					}
+
+					continue
+				}
+			}
+		}
+
+		if !announced {
+			prompt, promptCut, err := EvalSignalBatchPrompt(ctx, batch, scope, clock.Now())
+			if err != nil {
+				DiscardTimer(clock, deadline)
+
+				return nil, err
+			}
+
+			var announcedDeadline *timestamppb.Timestamp
+			if bounded {
+				announcedDeadline = timestamppb.New(deadlineAt)
+			}
+
+			observeWaitStarted(ctx, node.GetId(), name, remaining, bounded)
+			update, leave = announceLocalQuorumWait(ctx, node, name, announcedDeadline, prompt, promptCut, tally)
+			announced = true
+		}
+
+		payload, sender, timedOut, err := receiveForQuorumLocally(ctx, clock, waiter, name, deadline, bounded)
+		if err != nil {
+			return nil, err
+		}
+		if timedOut {
+			return tally.Outputs(), nil
+		}
+
+		if err := take(&SignalDelivery{Payload: payload, Sender: sender}); err != nil {
+			return nil, err
+		}
+	}
+}
+
+// receiveForQuorumLocally blocks for one delivery, under deadline when the wait
+// is bounded, and reports whether it was the deadline that ended the wait.
+//
+// The blocking half of [waitForSignalLocally] as a function of its own, because
+// a quorum repeats it: its watcher, the deadline's withdrawal and the
+// distinction between a lapsed bound and a cancelled run all have to be undone
+// before the next receive begins.
+func receiveForQuorumLocally(
+	ctx context.Context,
+	clock Clock,
+	waiter SignalWaiter,
+	name string,
+	deadline <-chan time.Time,
+	bounded bool,
+) (payload *Node_Outputs, sender *SignalSender, timedOut bool, err error) {
+	if !bounded {
+		// Withdrawn from the clock for the whole blocking receive, for
+		// [waitForSignalLocally]'s reason: an unbounded wait is parked on
+		// something the clock does not control.
+		rejoin := LeaveClockWhile(ctx)
+		defer rejoin()
+
+		payload, sender, err = waiter.WaitForSignal(ctx, name)
+
+		return payload, sender, false, err
+	}
+
+	waitCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	defer DiscardTimer(clock, deadline)
+
+	lapsed := make(chan struct{})
+	watching := make(chan struct{})
+	go func() {
+		defer close(watching)
+
+		select {
+		case <-deadline:
+			close(lapsed)
+			cancel()
+		case <-waitCtx.Done():
+		}
+	}()
+
+	// Cancel first so a receive that was answered releases the watcher, then wait
+	// for it to have gone, before the deadline is discarded.
+	defer func() {
+		cancel()
+		<-watching
+	}()
+
+	payload, sender, err = waiter.WaitForSignal(waitCtx, name)
+	if err == nil {
+		return payload, sender, false, nil
+	}
+
+	select {
+	case <-lapsed:
+		return nil, nil, true, nil
+	default:
+	}
+
+	return nil, nil, false, err
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"sync"
 
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -49,8 +50,10 @@ const MaxPendingWaits = 64
 type PendingWaits struct {
 	mu sync.Mutex
 
-	// entries are the parked waits in the order they parked, each built once at
-	// the moment its wait blocks and never mutated after.
+	// entries are the parked waits in the order they parked, each built at the
+	// moment its wait blocks. The only field that changes afterwards is a quorum
+	// wait's approval count, and only under mu through [PendingWaits.report],
+	// which is why [PendingWaits.Snapshot] hands out copies.
 	entries []*PendingWait
 
 	// refused counts waits parked right now that are not in entries because
@@ -68,8 +71,9 @@ func NewPendingWaits() *PendingWaits { return &PendingWaits{} }
 //
 // A copy of the slice, because the run keeps appending to and cutting the live
 // one as gates open and close, and handing a caller that one would let the
-// answer change while it is being read. The messages inside are shared rather
-// than cloned: nothing mutates one after it is built.
+// answer change while it is being read. The messages inside are cloned as well,
+// because a quorum wait's approval count moves while it is parked: at most
+// [MaxPendingWaits] small messages, copied only when somebody asks.
 func (w *PendingWaits) Snapshot() (waits []*PendingWait, truncated bool) {
 	if w == nil {
 		return nil, false
@@ -82,7 +86,22 @@ func (w *PendingWaits) Snapshot() (waits []*PendingWait, truncated bool) {
 		return nil, w.refused > 0
 	}
 
-	return append(make([]*PendingWait, 0, len(w.entries)), w.entries...), w.refused > 0
+	waits = make([]*PendingWait, 0, len(w.entries))
+	for _, entry := range w.entries {
+		waits = append(waits, proto.Clone(entry).(*PendingWait))
+	}
+
+	return waits, w.refused > 0
+}
+
+// report rewrites a parked quorum wait's approval count from its tally, under
+// mu so a [PendingWaits.Snapshot] on another goroutine never sees it half
+// written.
+func (w *PendingWaits) report(wait *PendingWait, tally *QuorumTally) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	tally.Report(wait)
 }
 
 // enter registers a parked wait and returns the function that unregisters it.
@@ -270,13 +289,51 @@ func announceLocalWait(
 		return func() {}
 	}
 
-	return reporting.waits.enter(&PendingWait{
+	return reporting.waits.enter(reporting.pendingWait(node, signalName, deadline, prompt, promptTruncated))
+}
+
+// announceLocalQuorumWait is [announceLocalWait] for a `quorum:` wait: the
+// parked wait also reports the tally's approval count, and update re-reports it
+// after each delivery the wait takes.
+//
+// Both returned functions are always safe to call, and do nothing where nobody
+// is watching.
+func announceLocalQuorumWait(
+	ctx context.Context,
+	node *Node,
+	signalName string,
+	deadline *timestamppb.Timestamp,
+	prompt string,
+	promptTruncated bool,
+	tally *QuorumTally,
+) (update func(), leave func()) {
+	reporting, ok := waitReportingFromContext(ctx)
+	if !ok {
+		return func() {}, func() {}
+	}
+
+	wait := reporting.pendingWait(node, signalName, deadline, prompt, promptTruncated)
+	tally.Report(wait)
+
+	return func() { reporting.waits.report(wait, tally) }, reporting.waits.enter(wait)
+}
+
+// pendingWait describes a wait about to park, from what the run knows about
+// where it is.
+func (r *waitReporting) pendingWait(
+	node *Node,
+	signalName string,
+	deadline *timestamppb.Timestamp,
+	prompt string,
+	promptTruncated bool,
+) *PendingWait {
+	return &PendingWait{
 		StepId:          node.GetId(),
-		Path:            reporting.ancestry,
+		Path:            r.ancestry,
 		SignalName:      signalName,
 		Deadline:        deadline,
-		Policed:         reporting.policies[signalName] != nil,
+		Policed:         r.policies[signalName] != nil,
 		Prompt:          prompt,
 		PromptTruncated: promptTruncated,
-	})
+	}
 }

@@ -313,6 +313,11 @@ func workflowUsingEveryValuePosition() *Workflow {
 						Name:    "orders",
 						Prompt:  NewExpr("'send orders'"),
 						Outputs: map[string]*Value{"ids": NewExpr("deliveries.map(d, d.payload.id)")},
+						Quorum: &SignalQuorum{
+							Approve: 1,
+							Exclude: []*Value{NewExpr("run.identity.subject")},
+							Veto:    NewExpr("payload.approved == false"),
+						},
 					}},
 				}},
 			},

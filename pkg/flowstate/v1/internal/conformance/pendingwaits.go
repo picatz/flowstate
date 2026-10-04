@@ -59,6 +59,21 @@ type WantWait struct {
 	// they both import, so a driver answering differently here is a driver that
 	// found a second copy of it.
 	PromptTruncated bool
+
+	// Approvals and ApprovalsNeeded are what a `quorum:` gate must report of its
+	// running count: how many distinct approvals it holds and how many complete
+	// it. Zero for both is a gate with no quorum, which must report neither, so
+	// a count leaking onto a plain wait is a difference too.
+	Approvals       uint32
+	ApprovalsNeeded uint32
+}
+
+// PendingSend is one delivery a case makes to the run it parks, with the
+// attested sender a policed gate or a distinct quorum reads.
+type PendingSend struct {
+	Name    string
+	Payload map[string]*v1.Value
+	Sender  *v1.SignalSender
 }
 
 // PendingWaitCase is a workflow that parks, what it must say while parked, and
@@ -71,8 +86,17 @@ type PendingWaitCase struct {
 	// been delivered.
 	Workflow *v1.Workflow
 
+	// Early are deliveries made before the gate is first observed, so the
+	// parked wait has something to report beyond the specification: a quorum's
+	// running count. Both drivers hold them identically, queued or signalled.
+	Early []PendingSend
+
 	// Release names the signals to deliver, in order, to let the run finish.
 	Release []string
+
+	// Finish are deliveries made after the observation, alongside Release, for
+	// a gate whose release is a payload rather than the bare name.
+	Finish []PendingSend
 
 	// Want is the set of waits the run must report while it is parked. Order is
 	// not part of it: [AssertPendingWaits] compares as a set, since which
@@ -168,6 +192,43 @@ func PendingWaitCases() []PendingWaitCase {
 				HasDeadline:     true,
 				Prompt:          strings.Repeat("q", v1.MaxWaitPromptBytes),
 				PromptTruncated: true,
+			}},
+		},
+		{
+			// A quorum is the one gate whose parked report changes while it
+			// parks: one approval in, one more needed. Both drivers fill it
+			// from the one tally, so an operator told "1 of 2" is told it by
+			// either.
+			Name: "a quorum gate reports the approvals it holds and the approvals it needs",
+			Workflow: &v1.Workflow{
+				Name: "counting-gate",
+				Steps: []*v1.Node{{
+					Id: "sign_off",
+					Kind: &v1.Node_Wait{Wait: &v1.Wait{
+						Kind: &v1.Wait_SignalBatch{SignalBatch: &v1.SignalBatch{
+							Name:   "signed-off",
+							Quorum: &v1.SignalQuorum{Approve: 2},
+						}},
+						Timeout: durationpb.New(time.Hour),
+					}},
+				}},
+			},
+			Early: []PendingSend{{
+				Name:    "signed-off",
+				Payload: map[string]*v1.Value{"approved": v1.NewLiteral(true)},
+				Sender:  quorumSender("alice"),
+			}},
+			Finish: []PendingSend{{
+				Name:    "signed-off",
+				Payload: map[string]*v1.Value{"approved": v1.NewLiteral(true)},
+				Sender:  quorumSender("bob"),
+			}},
+			Want: []WantWait{{
+				StepID:          "sign_off",
+				SignalName:      "signed-off",
+				HasDeadline:     true,
+				Approvals:       1,
+				ApprovalsNeeded: 2,
 			}},
 		},
 		{
@@ -268,6 +329,13 @@ func AssertPendingWaits(t testing.TB, got []*v1.PendingWait, want []WantWait) {
 				expected.StepID, wait.GetPromptTruncated(), expected.PromptTruncated)
 		}
 
+		if wait.GetApprovals() != expected.Approvals || wait.GetApprovalsNeeded() != expected.ApprovalsNeeded {
+			t.Errorf("step %q reported %d of %d approvals, want %d of %d. Both drivers fill the count "+
+				"from the one quorum tally, so a disagreement means one of them kept a count of its own",
+				expected.StepID, wait.GetApprovals(), wait.GetApprovalsNeeded(),
+				expected.Approvals, expected.ApprovalsNeeded)
+		}
+
 		if wait.GetPoliced() != expected.Policed {
 			t.Errorf("step %q reported policed=%v, want %v. A refused delivery and a delivery "+
 				"nobody sent leave the run looking identical, which is why this is reported at all",
@@ -312,9 +380,9 @@ func describeWaits(waits []*v1.PendingWait) string {
 		if wait.GetDeadline() != nil {
 			deadline = wait.GetDeadline().AsTime().String()
 		}
-		described = append(described, fmt.Sprintf("{step %q path %v signal %q policed=%v %s prompt %q cut=%v}",
+		described = append(described, fmt.Sprintf("{step %q path %v signal %q policed=%v %s prompt %q cut=%v approvals %d/%d}",
 			wait.GetStepId(), wait.GetPath(), wait.GetSignalName(), wait.GetPoliced(), deadline,
-			wait.GetPrompt(), wait.GetPromptTruncated()))
+			wait.GetPrompt(), wait.GetPromptTruncated(), wait.GetApprovals(), wait.GetApprovalsNeeded()))
 	}
 	sort.Strings(described)
 
