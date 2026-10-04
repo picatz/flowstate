@@ -128,6 +128,7 @@ headings below, not this list.*
   - [Sensitivity: reaching, not surfacing](#sensitivity-reaching-not-surfacing)
   - [Bounded, and it says when it was cut](#bounded-and-it-says-when-it-was-cut)
   - [What it deliberately does not do](#what-it-deliberately-does-not-do)
+  - [Answering the gate in a browser *(landed)*](#answering-the-gate-in-a-browser-landed)
   - [Rehearsing the gate, and who a rehearsal stands in for](#rehearsing-the-gate-and-who-a-rehearsal-stands-in-for)
   - [The same two parties, in a `*.test.yaml`](#the-same-two-parties-in-a-testyaml)
   - [What a green case proves about that identity, and what it does not](#what-a-green-case-proves-about-that-identity-and-what-it-does-not)
@@ -5353,6 +5354,40 @@ newlines and control characters, exactly as a signal payload and a step's output
 already can, and the surface that displays untrusted text is the place that question
 belongs - not this field, which would be one renderer's escaping rules baked into
 the schema.
+
+### Answering the gate in a browser *(landed)*
+
+An approver is often a manager or an on-call engineer on a phone, handed a link rather
+than a terminal. `flow server --gates-ui` serves one page per open gate at
+`/gates/<workflow-id>/<signal>` (`gates.Path` spells it, so every notification prints
+the same link): the prompt, the step, who started the run, when the gate closes, and
+Approve and Deny buttons. The page is plain server-rendered HTML with no script, so it
+works from a phone, an email client's browser and a locked-down desktop. The prompt is
+text on it, never markup, which is where the previous section's rule lands.
+
+The page is a client of the API, not a second door beside it. It reads the run with
+`Get` and answers with `Signal`, calling the deployment's own authenticated handler in
+process with the visitor's `Authorization` header, so the tenancy check, the `signals:`
+decision, the sender attestation and the audit record are the ones `flow signal`
+produces, and a person the policy refuses is refused by the server and told so. It
+holds no credential and no session of its own; reach it through an identity-aware proxy
+that sets the header. Without the flag the routes do not exist.
+
+A gate declares a name, a prompt and a timeout, and no input schema, so the page sends
+the one payload the language's examples read: `approved` (a boolean) and, when the
+person typed one, `comment`. A workflow that wants a different answer shape uses the
+CLI or the API until a gate can declare its inputs.
+
+An answer is accepted only when the browser vouches that it came from this page
+(`Sec-Fetch-Site: same-origin`, or an `Origin` that matches the host for browsers too
+old to send it), and refused when it says nothing, so another site cannot answer on an
+approver's behalf through a proxy's ambient credential. The page re-reads the gate at
+the moment of answering: a gate that is already closed says so, and the late
+answer is not sent, because a signal to a name nobody waits on is held for the next gate
+that does. The answer is pinned to the run the gate was read on, so a stale page
+cannot answer another run. Two answers to the same gate submitted in the same instant can
+still both pass that read. A run holding more gates than one `Get` lists is reported as
+not looked up, never as closed.
 
 ### Rehearsing the gate, and who a rehearsal stands in for
 

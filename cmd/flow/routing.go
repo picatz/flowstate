@@ -8,6 +8,7 @@ import (
 
 	"connectrpc.com/authn"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/gates"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/server"
 )
 
@@ -73,7 +74,13 @@ import (
 func serverHandler(
 	logger *slog.Logger, verifier auth.Verifier, peerVerifier auth.PeerVerifier, broker *auth.Broker,
 	rpcResource string, rpc http.Handler, webhooks *server.WebhookReceiver, protectedResource *auth.ProtectedResource,
+	opts ...handlerOption,
 ) http.Handler {
+	var config handlerConfig
+	for _, opt := range opts {
+		opt(&config)
+	}
+
 	authenticatorOpts := []auth.AuthenticatorOption{
 		auth.WithExpectedResource(rpcResource),
 		auth.WithFailureObserver(func(ctx context.Context, req *http.Request, err error) {
@@ -99,8 +106,21 @@ func serverHandler(
 
 	authenticated := authn.NewMiddleware(auth.NewAuthenticator(verifier, authenticatorOpts...).Authenticate)
 
+	authenticatedRPC := authenticated.Wrap(rpc)
+
 	mux := http.NewServeMux()
-	mux.Handle("/", authenticated.Wrap(rpc))
+	mux.Handle("/", authenticatedRPC)
+
+	// The gate page, only where --gates-ui asked for it: a deployment that did
+	// not has no such route at all. It sits beside the RPC handler rather than
+	// behind the authenticator because it is a client of it: the page forwards the
+	// visitor's credential to authenticatedRPC in process, so who may see or answer
+	// a gate is decided by the same verifier, tenancy check, `signals:` policy and
+	// audit record every other caller meets, and a page that holds no credential
+	// answers 401 on the API's own word (see the gates package).
+	if config.gatesUI {
+		mux.Handle(gates.PathPrefix, gates.New(authenticatedRPC, gates.WithLogger(logger)))
+	}
 
 	// Liveness, deliberately unauthenticated and deliberately empty-handed. A
 	// load balancer or an orchestrator probes before it holds any credential —
@@ -138,6 +158,21 @@ func serverHandler(
 	}
 
 	return mux
+}
+
+// handlerConfig is what [handlerOption]s set on [serverHandler].
+type handlerConfig struct {
+	gatesUI bool
+}
+
+// handlerOption configures [serverHandler] beyond its positional arguments, which
+// are the facts every deployment has. An optional surface is an option so that a
+// caller that never asks for it builds the handler it always built.
+type handlerOption func(*handlerConfig)
+
+// withGatesUI mounts the browser page for pending approval gates (--gates-ui).
+func withGatesUI() handlerOption {
+	return func(c *handlerConfig) { c.gatesUI = true }
 }
 
 // healthzHandler answers a liveness probe with a status code and nothing
