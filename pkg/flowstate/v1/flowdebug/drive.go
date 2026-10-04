@@ -427,13 +427,25 @@ func (d *Driver) move(ctx context.Context, action v1.DebugResumeAction, until st
 }
 
 // back returns to an earlier stop through a target that can step back. It is
-// a movement like any other: the expected revision reaches the target, which
-// answers a stale one, and the rewound run is already held when the receipt is
-// applied, so the stop is read rather than waited for.
+// a movement like any other: the expected revision, or the current one when
+// the caller named none, reaches the target, which answers a stale one. The
+// rewound run is already held when the receipt is applied, so the stop is read
+// rather than waited for.
 func (d *Driver) back(ctx context.Context, toBreakpoint bool) (*DriveResult, error) {
 	reverser, ok := d.target.(Reverser)
 	if !ok {
 		return nil, errors.New("this session cannot step back: only a run replayed from its start can")
+	}
+	// Fenced to the stop the caller is looking at, as a forward movement is:
+	// another controller that moves the target first gets a stale receipt
+	// rather than a rewind from a stop nobody here saw.
+	expected := d.expected
+	if expected == 0 {
+		current, err := d.target.Snapshot(ctx)
+		if err != nil {
+			return nil, err
+		}
+		expected = current.GetRevision()
 	}
 	d.sending()
 	request := cmp.Or(d.request, newRequestID())
@@ -441,7 +453,7 @@ func (d *Driver) back(ctx context.Context, toBreakpoint bool) (*DriveResult, err
 	if toBreakpoint {
 		back = reverser.BackToBreakpoint
 	}
-	receipt, err := back(ctx, request, d.expected)
+	receipt, err := back(ctx, request, expected)
 	if err != nil {
 		return nil, err
 	}

@@ -928,3 +928,55 @@ func TestTheDriverSpellsBackAndReverseContinue(t *testing.T) {
 		require.ErrorContains(t, err, "cannot step back", line)
 	}
 }
+
+// fenceRecording is a reversible target that remembers the revision each
+// rewind was fenced to.
+type fenceRecording struct {
+	*flowdebug.Reversible
+	fences []uint64
+}
+
+func (f *fenceRecording) Back(ctx context.Context, requestID string, expected uint64) (*v1.DebugReceipt, error) {
+	f.fences = append(f.fences, expected)
+
+	return f.Reversible.Back(ctx, requestID, expected)
+}
+
+func (f *fenceRecording) BackToBreakpoint(ctx context.Context, requestID string, expected uint64) (*v1.DebugReceipt, error) {
+	f.fences = append(f.fences, expected)
+
+	return f.Reversible.BackToBreakpoint(ctx, requestID, expected)
+}
+
+// TestAnUnpinnedBackIsFencedToTheStopTheDriverSaw: a line that names no
+// revision still reaches the target pinned to the one the session was at when
+// it was read, as a forward movement does, and one that names a revision keeps
+// it.
+func TestAnUnpinnedBackIsFencedToTheStopTheDriverSaw(t *testing.T) {
+	t.Parallel()
+
+	workflow := parseJourney(t)
+	run := newReversing(t, func(int) *v1.Workflow { return workflow }, nil)
+	target := &fenceRecording{Reversible: run.target}
+	driver := flowdebug.NewDriver(target)
+	driver.Wait = 30 * time.Second
+
+	one := run.first()
+	two := run.move(one, v1.DebugResumeAction_DEBUG_RESUME_ACTION_STEP_IN)
+
+	_, err := driver.Do(t.Context(), "back")
+	require.NoError(t, err)
+	_, err = driver.Do(t.Context(), "step")
+	require.NoError(t, err)
+	current, err := target.Snapshot(t.Context())
+	require.NoError(t, err)
+	_, err = driver.Do(t.Context(), "rc")
+	require.NoError(t, err)
+	_, err = driver.DoWith(t.Context(), "back", flowdebug.DoOptions{ExpectedRevision: 1})
+	require.NoError(t, err)
+
+	require.Len(t, target.fences, 3)
+	assert.Equal(t, two.GetRevision(), target.fences[0], "back was not fenced to the stop it left")
+	assert.Equal(t, current.GetRevision(), target.fences[1], "reverse-continue was not fenced to the stop it left")
+	assert.Equal(t, uint64(1), target.fences[2], "a named revision was replaced")
+}
