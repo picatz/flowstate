@@ -315,9 +315,11 @@ func mergeExpectation(entry, row Expectation) Expectation {
 		merged.Others = entry.Others
 		merged.fromEntry.others = entry.Others != ""
 	}
-	if merged.Invocations == nil {
+	// An empty list names no target and asserts nothing, so unlike `ran: []`
+	// it is no statement and cannot erase the entry's claims.
+	if len(merged.Invocations) == 0 {
 		merged.Invocations = entry.Invocations
-		merged.fromEntry.invocations = entry.Invocations != nil
+		merged.fromEntry.invocations = len(entry.Invocations) > 0
 	}
 	// Check is the one accumulating field: the entry's claims and the row's
 	// all hold, entry first (see the field's own doc for why predicates

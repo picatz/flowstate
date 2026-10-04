@@ -105,6 +105,7 @@ func TestInvocationsRefusedBeforeTheRun(t *testing.T) {
 		`- {order: [announce, announce]}`:        "twice",
 		`- {order: [announce, small], count: 1}`: "stands alone",
 		`- {step: smal, count: 1}`:               `did you mean "small"`,
+		`- {task: lgo, never: true}`:             `did you mean "log"`,
 	} {
 		passed, _, refused := runInvocationCase(t, 1, "        "+claim+"\n")
 		assert.False(t, passed, claim)
@@ -180,4 +181,41 @@ tests:
 	require.Len(t, report.GetCases(), 2)
 	assert.True(t, report.GetCases()[0].GetPassed(), "%v %s", report.GetCases()[0].GetFailures(), report.GetCases()[0].GetError())
 	assert.Contains(t, report.GetCases()[1].GetError(), "not observable")
+}
+
+// TestAnEmptyInvocationsListIsNoClaim: unlike `ran: []`, an empty list names
+// no target, so it asserts nothing and a row stating it keeps its entry's.
+func TestAnEmptyInvocationsListIsNoClaim(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeDefaultsWorkflow(t, dir)
+	alone := flowtest.RunFile(writeInline(t, dir, `
+tests:
+  - name: empty alone claims nothing
+    workflow: ./workflow.yaml
+    inputs: {amount: 1}
+    expect: {invocations: []}
+`))
+	assert.Contains(t, alone.GetRefused(), "claims nothing")
+
+	report := flowtest.RunFile(writeInline(t, dir, `
+defaults:
+  stubs:
+    - {task: log, returns: {}}
+    - {task: http, returns: {tag: t}}
+tests:
+  - name: tabled
+    workflow: ./workflow.yaml
+    inputs: {amount: 1}
+    expect:
+      invocations:
+        - {task: log, count: 99}
+    cases:
+      - name: empty row
+        expect: {invocations: []}
+`))
+	require.Empty(t, report.GetRefused())
+	require.Len(t, report.GetCases(), 1)
+	assert.False(t, report.GetCases()[0].GetPassed(), "the row erased its entry's claim")
 }

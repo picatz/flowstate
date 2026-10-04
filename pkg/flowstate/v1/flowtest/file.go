@@ -1128,7 +1128,7 @@ type Expectation struct {
 func (e *Expectation) claimsNothing() bool {
 	return e.Outputs == nil && e.Inputs == nil && e.Refused == nil && e.IdempotencyKey == "" &&
 		e.Failed == nil && e.ErrorContains == "" && e.Compensated == nil && e.Ran == nil &&
-		e.Skipped == nil && e.Others == "" && e.Invocations == nil && len(e.Check) == 0
+		e.Skipped == nil && e.Others == "" && len(e.Invocations) == 0 && len(e.Check) == 0
 }
 
 // expectationProvenance is the writer of each field in an effective table

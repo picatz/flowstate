@@ -202,8 +202,25 @@ func checkInvocationNames(claims []InvocationClaim, spec *v1.Workflow) error {
 		return nil
 	}
 
+	var tasks []string
 	for i := range claims {
 		c := &claims[i]
+		if c.Task != "" {
+			if tasks == nil {
+				var err error
+				if tasks, err = v1.RequiredTaskNames(spec); err != nil {
+					return fmt.Errorf("expect.invocations: %w", err)
+				}
+			}
+			if !slices.Contains(tasks, c.Task) {
+				where := fmt.Sprintf("expect.invocations[%d]", i)
+				if suggestion, ok := nearest.Name(c.Task, tasks); ok {
+					return fmt.Errorf("%s: task names unknown task %q; did you mean %q?", where, c.Task, suggestion)
+				}
+
+				return fmt.Errorf("%s: task names unknown task %q, which this workflow, its callees and its compensations never invoke", where, c.Task)
+			}
+		}
 		if c.Step != "" {
 			if err := step(i, "step", c.Step, false); err != nil {
 				return err
