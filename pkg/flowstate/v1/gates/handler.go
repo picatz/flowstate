@@ -149,6 +149,11 @@ type gate struct {
 	Deadline   time.Time
 	Starter    string
 	Action     string
+
+	// MayAnswer is the API's own advice that the workflow's `signals:` policy
+	// would admit this visitor now. False renders the gate read-only; the
+	// Signal call remains the authority either way.
+	MayAnswer bool
 }
 
 // call returns the context a request to the API runs in: the browser's request
@@ -166,61 +171,60 @@ func (h *Handler) authorize(r *http.Request, header http.Header) {
 	}
 }
 
-// lookup reads the run and finds the open gate the request addresses. A run that
-// is gone, finished, not the caller's, or not waiting on that signal is one
-// answer, [errGateNotOpen]: telling them apart would tell a caller which runs
-// exist in a tenant it cannot read.
+// lookup reads the open gate the request addresses, with GetGate: the read
+// scoped to answering, so an approver who holds only the signal action can open
+// the page. A run that is gone, finished, not the caller's, or not waiting on
+// that signal is one answer, [errGateNotOpen]: telling them apart would tell a
+// caller which runs exist in a tenant it cannot read.
 func (h *Handler) lookup(ctx context.Context, r *http.Request, workflowID, signal string) (*gate, error) {
-	req := connect.NewRequest(&v1.GetRequest{WorkflowId: workflowID})
+	req := connect.NewRequest(&v1.GetGateRequest{WorkflowId: workflowID, SignalName: signal})
 	h.authorize(r, req.Header())
 
-	resp, err := h.client.Get(ctx, req)
+	resp, err := h.client.GetGate(ctx, req)
 	if err != nil {
-		if connect.CodeOf(err) == connect.CodeNotFound {
+		switch connect.CodeOf(err) {
+		case connect.CodeNotFound:
 			return nil, errGateNotOpen
+		case connect.CodeFailedPrecondition:
+			// The run holds more gates than one answer lists and this one is
+			// not among them: it has not been shown closed.
+			return nil, errLookupIncomplete
 		}
 
 		return nil, err
 	}
 
-	run := resp.Msg
-	if run.GetStatus() != v1.RunResponse_STATUS_RUNNING {
+	// An answer that does not name the run and gate asked about is not one to
+	// pin a signal to.
+	g := resp.Msg
+	if g.GetRunId() == "" || g.GetSignalName() != signal {
 		return nil, errGateNotOpen
 	}
 
-	for _, wait := range run.GetProgress().GetPendingWaits() {
-		if wait.GetSignalName() != signal {
-			continue
-		}
-
-		g := &gate{
-			WorkflowID: run.GetWorkflowId(),
-			RunID:      run.GetRunId(),
-			Signal:     signal,
-			Step:       wait.GetStepId(),
-			Prompt:     v1.WaitPromptDescription(wait),
-			Starter:    run.GetStarter(),
-			Action:     Path(workflowID, signal),
-		}
-		if wait.Deadline != nil {
-			g.Deadline = wait.GetDeadline().AsTime().UTC()
-		}
-
-		return g, nil
+	out := &gate{
+		WorkflowID: g.GetWorkflowId(),
+		RunID:      g.GetRunId(),
+		Signal:     signal,
+		Step:       g.GetStepId(),
+		Prompt: v1.WaitPromptDescription(&v1.PendingWait{
+			Prompt:          g.GetPrompt(),
+			PromptTruncated: g.GetPromptTruncated(),
+		}),
+		Starter:   g.GetStarter(),
+		Action:    Path(workflowID, signal),
+		MayAnswer: g.GetMayAnswer(),
+	}
+	if g.Deadline != nil {
+		out.Deadline = g.GetDeadline().AsTime().UTC()
 	}
 
-	// Get reports at most v1.MaxPendingWaits gates, so a run that says it left
-	// some out has not shown that this one is closed.
-	if run.GetProgress().GetPendingWaitsTruncated() {
-		return nil, errLookupIncomplete
-	}
-
-	return nil, errGateNotOpen
+	return out, nil
 }
 
 var (
 	errGateNotOpen      = errors.New("gates: no open gate")
 	errLookupIncomplete = errors.New("gates: the run holds more gates than one answer lists")
+	errRefusedByPolicy  = errors.New("the workflow's signal policy does not admit you to answer this gate")
 )
 
 func (h *Handler) show(w http.ResponseWriter, r *http.Request) {
@@ -284,6 +288,14 @@ func (h *Handler) answer(w http.ResponseWriter, r *http.Request) {
 	g, err := h.lookup(ctx, r, workflowID, signal)
 	if err != nil {
 		h.refuse(w, r, err)
+		return
+	}
+
+	// The policy refused this visitor at the read: show why instead of sending
+	// an answer the API would refuse. The Signal below stays the authority, so a
+	// policy that changes between the two is still decided by the server.
+	if !g.MayAnswer {
+		h.refuse(w, r, connect.NewError(connect.CodePermissionDenied, errRefusedByPolicy))
 		return
 	}
 

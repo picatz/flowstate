@@ -2,8 +2,8 @@
 // on: one server-rendered page per pending `wait_for_signal:` gate, with the
 // question the gate asks and the two answers a person can give it.
 //
-// The page is a client of the Connect API and nothing else. It reads a run with
-// Get and answers a gate with Signal, through the same handler, interceptors and
+// The page is a client of the Connect API and nothing else. It reads a gate with
+// GetGate and answers it with Signal, through the same handler, interceptors and
 // authenticator every other caller goes through, so the tenancy check, the
 // `signals:` policy decision, the sender attestation and the audit record are the
 // ones `flow signal` produces. There is no second authorization mechanism to
@@ -26,6 +26,12 @@
 // `approved` (a boolean) and an optional `comment` (text). The buttons are
 // Approve and Deny; both deliver the signal, and what the workflow does with a
 // denial is the workflow's decision.
+//
+// The read needs only the signal action, not the read action: an approver who
+// may answer a gate need not be able to read the whole run. GetGate also says
+// whether the workflow's `signals:` policy would admit this visitor, and a
+// visitor it refuses sees the question read-only, with no buttons and no
+// answer sent. The Signal call is still the authority.
 //
 // # What the page defends against
 //

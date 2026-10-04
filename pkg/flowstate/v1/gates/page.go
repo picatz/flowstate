@@ -67,7 +67,7 @@ var pages = template.Must(template.New("pages").Parse(`
 {{if .Starter}}<dt>Requested by</dt><dd>{{.Starter}}</dd>{{end}}
 {{if not .Deadline.IsZero}}<dt>Closes</dt><dd><time datetime="{{.Deadline.Format "2006-01-02T15:04:05Z07:00"}}">{{.Deadline.Format "2006-01-02 15:04 UTC"}}</time></dd>{{end}}
 </dl>
-<form method="post" action="{{.Action}}">
+{{if .MayAnswer}}<form method="post" action="{{.Action}}">
 <label for="comment">Comment (optional)</label>
 <textarea id="comment" name="comment" maxlength="2000"></textarea>
 <div class="actions">
@@ -75,6 +75,8 @@ var pages = template.Must(template.New("pages").Parse(`
 <button class="deny" type="submit" name="decision" value="deny">Deny</button>
 </div>
 </form>
+{{else}}<p class="detail" role="status">You can read this gate but not answer it: the workflow's signal policy does not admit you. Ask someone it does admit, or the person who requested this run.</p>
+{{end}}
 {{template "foot"}}{{end}}
 {{define "notice"}}{{template "head" .Title}}
 <h1>{{.Title}}</h1>

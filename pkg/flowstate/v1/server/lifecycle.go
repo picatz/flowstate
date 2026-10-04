@@ -16,6 +16,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/engine"
 )
 
@@ -753,6 +754,128 @@ func (s *FlowstateServer) Signal(ctx context.Context, req *connect.Request[v1.Si
 	}
 
 	return connect.NewResponse(&v1.SignalResponse{}), nil
+}
+
+// GetGate implements the RPC: one open gate, read for the caller who would
+// answer it, and whether that caller's `signals:` policy admits an answer now.
+//
+// It exists because [FlowstateServer.Get] is bound to `workload.read`, so an
+// approver granted only `workload.signal` was refused at the read, before the
+// policy that would have admitted them was ever evaluated. This verb is bound
+// to `workload.signal` and returns the gate alone.
+//
+// It reads the run the way Get does and cannot call Get's internal path
+// (FlowstateServer.get), because that path authorizes as "Get": the run is
+// resolved here through the same decision helper Signal uses, and what is read
+// from it is the same progress query and the same sensitive-declaration
+// redaction of prompts, so the two cannot disagree about what a prompt says.
+//
+// may_answer runs FlowstateServer.authorizeSignal, the decision Signal makes,
+// on the same attestation of the caller, and delivers nothing. It is advice for
+// rendering; Signal decides again at delivery.
+func (s *FlowstateServer) GetGate(ctx context.Context, req *connect.Request[v1.GetGateRequest]) (*connect.Response[v1.GetGateResponse], error) {
+	if err := v1.Validate(req.Msg); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+
+	workflowID, name := req.Msg.GetWorkflowId(), req.Msg.GetSignalName()
+
+	// Before anything is addressed, as Signal does, so a caller without
+	// `workload.signal` cannot tell a run from an absence.
+	if err := s.authorizeAction(ctx, "GetGate", v1.AuditResourceKind_AUDIT_RESOURCE_KIND_RUN, workflowID); err != nil {
+		return nil, err
+	}
+
+	temporal, resp, code, err := s.authorizeRunDecision(ctx, workflowID, "")
+	if err != nil {
+		if code == v1.AuditDenyCode_AUDIT_DENY_CODE_UNSPECIFIED {
+			return nil, err
+		}
+
+		return nil, s.auditDeny(ctx, "GetGate", v1.AuditResourceKind_AUDIT_RESOURCE_KIND_RUN, workflowID, code, err)
+	}
+	if err := s.auditAllow(ctx, "GetGate", v1.AuditResourceKind_AUDIT_RESOURCE_KIND_RUN, workflowID); err != nil {
+		return nil, err
+	}
+
+	// Not running is not open, and says nothing else about the run.
+	if getWorkflowExecutionStatus(resp) != v1.RunResponse_STATUS_RUNNING {
+		return nil, notFound(workflowID)
+	}
+
+	progress := runProgress(ctx, temporal, resp)
+	if progress == nil {
+		// The run's position could not be read (no worker answering, a timeout),
+		// which says nothing about whether the gate is open: not NotFound, and
+		// not a guess.
+		return nil, connect.NewError(connect.CodeUnavailable,
+			fmt.Errorf("the run's open gates could not be read; try again"))
+	}
+
+	// The prompt is withheld exactly as Get withholds it, through the same
+	// redaction over the same declarations, failing closed to withheld.
+	probe := &v1.GetResponse{Progress: progress}
+	if decl := s.sensitiveDeclarationsOf(ctx, workflowID, resp.GetWorkflowExecutionInfo().GetExecution().GetRunId()); decl.declares {
+		probe = v1.RedactGetResponseDecided(probe, decl.outputs, decl.carried)
+		if decl.outputs == nil {
+			v1.WithholdPendingWaitPrompts(probe)
+		}
+	}
+
+	for _, wait := range probe.GetProgress().GetPendingWaits() {
+		if wait.GetSignalName() != name {
+			continue
+		}
+
+		sender := &v1.SignalSender{Identity: s.identityFor(ctx), AcceptedAt: timestamppb.Now()}
+
+		out := &v1.GetGateResponse{
+			WorkflowId: workflowID,
+			RunId:      resp.GetWorkflowExecutionInfo().GetExecution().GetRunId(),
+			StepId:     wait.GetStepId(),
+			SignalName: name,
+			Deadline:   wait.Deadline,
+			MayAnswer:  s.authorizeSignal(resp, name, sender) == nil,
+		}
+
+		// What the question says and who asked it are for the people the policy
+		// admits, and for a caller who could read the run anyway. A caller that
+		// holds `workload.signal` and is refused by the `signals:` rule is told
+		// the gate exists and that they may not answer it, and nothing the
+		// author wrote for approvers: this verb must not widen what that caller
+		// could read through `Get`, which they were never granted.
+		if out.MayAnswer || holdsAction(ctx, v1.AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_READ) {
+			out.Prompt = wait.GetPrompt()
+			out.PromptTruncated = wait.GetPromptTruncated()
+			out.Starter = s.reportedStarter(resp)
+		}
+
+		return connect.NewResponse(out), nil
+	}
+
+	// The progress answer lists at most [v1.MaxPendingWaits] gates, so a run
+	// that says it left some out has not shown that this one is closed.
+	//
+	// Out of scope here and recorded rather than fixed: the engine's progress
+	// query still truncates at that bound, so a gate past it cannot be read by
+	// this RPC at all (issue #2290's acceptance criterion for runs holding more
+	// than that many gates stays open). This branch only keeps "cannot tell"
+	// distinct from "not open".
+	if probe.GetProgress().GetPendingWaitsTruncated() {
+		return nil, connect.NewError(connect.CodeFailedPrecondition,
+			fmt.Errorf("the run holds more than %d open gates and this one is not among those listed; answer it with `flow signal`", v1.MaxPendingWaits))
+	}
+
+	return nil, notFound(workflowID)
+}
+
+// holdsAction reports whether the authenticated caller was granted action
+// itself, which is how [FlowstateServer.revealAuthorized] asks the same
+// question for its own action.
+func holdsAction(ctx context.Context, action v1.AuthorizationAction) bool {
+	principal, ok := auth.PrincipalFromContext(ctx)
+
+	return ok && slices.Contains(principal.Actions, v1.AuthorizationActionScope(action))
 }
 
 // SignalWithStart delivers a signal to an entity, creating it first if none is

@@ -5489,13 +5489,27 @@ Approve and Deny buttons. The page is plain server-rendered HTML with no script,
 works from a phone, an email client's browser and a locked-down desktop. The prompt is
 text on it, never markup, which is where the previous section's rule lands.
 
-The page is a client of the API, not a second door beside it. It reads the run with
-`Get` and answers with `Signal`, calling the deployment's own authenticated handler in
+The page is a client of the API, not a second door beside it. It reads the gate with
+`GetGate` and answers with `Signal`, calling the deployment's own authenticated handler in
 process with the visitor's `Authorization` header, so the tenancy check, the `signals:`
 decision, the sender attestation and the audit record are the ones `flow signal`
 produces, and a person the policy refuses is refused by the server and told so. It
 holds no credential and no session of its own; reach it through an identity-aware proxy
 that sets the header. Without the flag the routes do not exist.
+
+`GetGate` is bound to `workload.signal`, not `workload.read`: an approver granted only
+the right to answer can open the page and see the question, and is not handed the run's
+outputs, inputs or carried state, which `Get` returns and the page never needs. It
+reports the one gate (step, prompt, deadline, who started the run) and `may_answer`,
+whether the workflow's `signals:` policy would admit this visitor's `Signal` now,
+decided by the same check `Signal` makes and delivering nothing. A visitor the policy
+refuses is told the gate exists and that the policy does not admit them, read-only with no
+buttons, and the page sends nothing for them; the prompt and the starter are withheld from
+them unless they also hold `workload.read`, because the author wrote the question for the
+people the policy admits. `may_answer` is advice for
+drawing the page: `Signal` decides again at delivery, and that decision is the audited
+one. The prompt is withheld as `Get` withholds it, when the run declares a sensitive
+output or its specification cannot be read.
 
 A gate declares a name, a prompt and a timeout, and no input schema, so the page sends
 the one payload the language's examples read: `approved` (a boolean) and, when the
@@ -5510,8 +5524,8 @@ the moment of answering: a gate that is already closed says so, and the late
 answer is not sent, because a signal to a name nobody waits on is held for the next gate
 that does. The answer is pinned to the run the gate was read on, so a stale page
 cannot answer another run. Two answers to the same gate submitted in the same instant can
-still both pass that read. A run holding more gates than one `Get` lists is reported as
-not looked up, never as closed.
+still both pass that read. A run holding more gates than one answer lists, where the
+named gate is not among those listed, is reported as not looked up, never as closed.
 
 With no proxy in front, the page can sign approvers in itself. `--gates-ui-issuer`,
 `--gates-ui-client-id` and `--gates-ui-redirect-url` (the address of `/gates/callback`,

@@ -39,6 +39,8 @@ const (
 	WorkflowServiceGetProcedure = "/flowstate.v1.WorkflowService/Get"
 	// WorkflowServiceSignalProcedure is the fully-qualified name of the WorkflowService's Signal RPC.
 	WorkflowServiceSignalProcedure = "/flowstate.v1.WorkflowService/Signal"
+	// WorkflowServiceGetGateProcedure is the fully-qualified name of the WorkflowService's GetGate RPC.
+	WorkflowServiceGetGateProcedure = "/flowstate.v1.WorkflowService/GetGate"
 	// WorkflowServiceSignalWithStartProcedure is the fully-qualified name of the WorkflowService's
 	// SignalWithStart RPC.
 	WorkflowServiceSignalWithStartProcedure = "/flowstate.v1.WorkflowService/SignalWithStart"
@@ -144,6 +146,20 @@ type WorkflowServiceClient interface {
 	// [SignalResponse] is empty: it says the signal was accepted, not what the run
 	// did with it. Call [Get] afterward to see whether a waiting step consumed it.
 	Signal(context.Context, *connect.Request[v1.SignalRequest]) (*connect.Response[v1.SignalResponse], error)
+	// GetGate reads one open approval gate for the caller who would answer it.
+	//
+	// [Get] reads a whole run and is bound to `workload.read`, which an approver
+	// need not hold: a person granted only `workload.signal` can answer a gate with
+	// [Signal] but could not see the question it asks. GetGate is the read scoped
+	// to answering. It is bound to `workload.signal`, returns only the gate (no
+	// step outputs, inputs or carried state), and says whether this caller's own
+	// `signals:` policy would admit a [Signal] now, without delivering one.
+	//
+	// A run that is not running, or holds no open gate by that name, answers
+	// NOT_FOUND, the same answer a run in another tenant gets. A run holding more
+	// gates than one answer lists, whose list does not include the named gate,
+	// answers FAILED_PRECONDITION: the gate may be open, and this read cannot say.
+	GetGate(context.Context, *connect.Request[v1.GetGateRequest]) (*connect.Response[v1.GetGateResponse], error)
 	// SignalWithStart delivers a signal to the entity holding a business key, an
 	// order id or a subscription id, creating that entity if this is the first
 	// event for the key.
@@ -360,6 +376,12 @@ func NewWorkflowServiceClient(httpClient connect.HTTPClient, baseURL string, opt
 			connect.WithSchema(workflowServiceMethods.ByName("Signal")),
 			connect.WithClientOptions(opts...),
 		),
+		getGate: connect.NewClient[v1.GetGateRequest, v1.GetGateResponse](
+			httpClient,
+			baseURL+WorkflowServiceGetGateProcedure,
+			connect.WithSchema(workflowServiceMethods.ByName("GetGate")),
+			connect.WithClientOptions(opts...),
+		),
 		signalWithStart: connect.NewClient[v1.SignalWithStartRequest, v1.SignalWithStartResponse](
 			httpClient,
 			baseURL+WorkflowServiceSignalWithStartProcedure,
@@ -494,6 +516,7 @@ type workflowServiceClient struct {
 	run                 *connect.Client[v1.RunRequest, v1.RunResponse]
 	get                 *connect.Client[v1.GetRequest, v1.GetResponse]
 	signal              *connect.Client[v1.SignalRequest, v1.SignalResponse]
+	getGate             *connect.Client[v1.GetGateRequest, v1.GetGateResponse]
 	signalWithStart     *connect.Client[v1.SignalWithStartRequest, v1.SignalWithStartResponse]
 	list                *connect.Client[v1.ListRequest, v1.ListResponse]
 	getTimeline         *connect.Client[v1.GetTimelineRequest, v1.GetTimelineResponse]
@@ -530,6 +553,11 @@ func (c *workflowServiceClient) Get(ctx context.Context, req *connect.Request[v1
 // Signal calls flowstate.v1.WorkflowService.Signal.
 func (c *workflowServiceClient) Signal(ctx context.Context, req *connect.Request[v1.SignalRequest]) (*connect.Response[v1.SignalResponse], error) {
 	return c.signal.CallUnary(ctx, req)
+}
+
+// GetGate calls flowstate.v1.WorkflowService.GetGate.
+func (c *workflowServiceClient) GetGate(ctx context.Context, req *connect.Request[v1.GetGateRequest]) (*connect.Response[v1.GetGateResponse], error) {
+	return c.getGate.CallUnary(ctx, req)
 }
 
 // SignalWithStart calls flowstate.v1.WorkflowService.SignalWithStart.
@@ -680,6 +708,20 @@ type WorkflowServiceHandler interface {
 	// [SignalResponse] is empty: it says the signal was accepted, not what the run
 	// did with it. Call [Get] afterward to see whether a waiting step consumed it.
 	Signal(context.Context, *connect.Request[v1.SignalRequest]) (*connect.Response[v1.SignalResponse], error)
+	// GetGate reads one open approval gate for the caller who would answer it.
+	//
+	// [Get] reads a whole run and is bound to `workload.read`, which an approver
+	// need not hold: a person granted only `workload.signal` can answer a gate with
+	// [Signal] but could not see the question it asks. GetGate is the read scoped
+	// to answering. It is bound to `workload.signal`, returns only the gate (no
+	// step outputs, inputs or carried state), and says whether this caller's own
+	// `signals:` policy would admit a [Signal] now, without delivering one.
+	//
+	// A run that is not running, or holds no open gate by that name, answers
+	// NOT_FOUND, the same answer a run in another tenant gets. A run holding more
+	// gates than one answer lists, whose list does not include the named gate,
+	// answers FAILED_PRECONDITION: the gate may be open, and this read cannot say.
+	GetGate(context.Context, *connect.Request[v1.GetGateRequest]) (*connect.Response[v1.GetGateResponse], error)
 	// SignalWithStart delivers a signal to the entity holding a business key, an
 	// order id or a subscription id, creating that entity if this is the first
 	// event for the key.
@@ -892,6 +934,12 @@ func NewWorkflowServiceHandler(svc WorkflowServiceHandler, opts ...connect.Handl
 		connect.WithSchema(workflowServiceMethods.ByName("Signal")),
 		connect.WithHandlerOptions(opts...),
 	)
+	workflowServiceGetGateHandler := connect.NewUnaryHandler(
+		WorkflowServiceGetGateProcedure,
+		svc.GetGate,
+		connect.WithSchema(workflowServiceMethods.ByName("GetGate")),
+		connect.WithHandlerOptions(opts...),
+	)
 	workflowServiceSignalWithStartHandler := connect.NewUnaryHandler(
 		WorkflowServiceSignalWithStartProcedure,
 		svc.SignalWithStart,
@@ -1026,6 +1074,8 @@ func NewWorkflowServiceHandler(svc WorkflowServiceHandler, opts ...connect.Handl
 			workflowServiceGetHandler.ServeHTTP(w, r)
 		case WorkflowServiceSignalProcedure:
 			workflowServiceSignalHandler.ServeHTTP(w, r)
+		case WorkflowServiceGetGateProcedure:
+			workflowServiceGetGateHandler.ServeHTTP(w, r)
 		case WorkflowServiceSignalWithStartProcedure:
 			workflowServiceSignalWithStartHandler.ServeHTTP(w, r)
 		case WorkflowServiceListProcedure:
@@ -1087,6 +1137,10 @@ func (UnimplementedWorkflowServiceHandler) Get(context.Context, *connect.Request
 
 func (UnimplementedWorkflowServiceHandler) Signal(context.Context, *connect.Request[v1.SignalRequest]) (*connect.Response[v1.SignalResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("flowstate.v1.WorkflowService.Signal is not implemented"))
+}
+
+func (UnimplementedWorkflowServiceHandler) GetGate(context.Context, *connect.Request[v1.GetGateRequest]) (*connect.Response[v1.GetGateResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("flowstate.v1.WorkflowService.GetGate is not implemented"))
 }
 
 func (UnimplementedWorkflowServiceHandler) SignalWithStart(context.Context, *connect.Request[v1.SignalWithStartRequest]) (*connect.Response[v1.SignalWithStartResponse], error) {

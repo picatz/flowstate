@@ -112,7 +112,7 @@ func (is *issuer) login(t *testing.T, mutate ...func(*LoginConfig)) *Login {
 func signedInAPI() *fakeAPI {
 	open := waiting("Approve?")
 
-	return &fakeAPI{get: func(req *connect.Request[v1.GetRequest]) (*connect.Response[v1.GetResponse], error) {
+	return &fakeAPI{get: func(req *connect.Request[v1.GetGateRequest]) (*connect.Response[v1.GetGateResponse], error) {
 		if req.Header().Get("Authorization") != "Bearer "+testToken {
 			return nil, connect.NewError(connect.CodeUnauthenticated, nil)
 		}
