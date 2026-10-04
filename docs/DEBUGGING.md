@@ -838,6 +838,7 @@ it drifts.
 | `observations` | a step that ran is reported between stops as finished | yes | yes |
 | `terminate` | `detach` releases the run and never ends it | no: says "the run continues" | no: says "the run continues" |
 | `reverse` | no resume action moves a run backwards | no: says "no resume action" | no: says "no resume action" |
+| `history` | no resume action reads a recorded point of the run | no: says "no resume action" | no: says "no resume action" |
 
 <!-- capabilities:end -->
 
@@ -854,6 +855,9 @@ What the table cannot carry:
 - A durable run resolves no source line itself. A client resolves a line to its
   step, only through a source map that matches the run's program, and names the
   step; `flow dap`'s attach has none.
+- `history` is offered by neither driver: it is the capability of a walk over a
+  recorded run ([Walking a recorded run](#walking-a-recorded-run)), a third
+  target that executes nothing, and `flowdebug`'s tests hold that target to it.
 - `terminate` is offered by neither driver, and `reverse` by no backend. Nothing
   in the contract ends a run, so the case exercises `detach`, which releases it;
   the surface that started a local run ends it with `quit`.
@@ -942,14 +946,15 @@ and something that fails when it is skipped:
 
 ## Reading a run's past: what is proven, and what is not
 
-Reverse stepping is not offered, and this is why it waits. A durable run's
+A durable run's
 debugging state lives in the interpreter's memory, and the interpreter rebuilds
 that memory by replaying the run's history: a worker restart already brings back
 a hold, its session, its revision and its observations that way. The open
 question was whether the same replay, stopped earlier, gives back the run *as it
 was*, and what it cannot. `engine.Reconstruct` is the engine's read of it and
-`pkg/flowstate/v1/engine/historical_test.go` is the evidence; it is a library
-call and no RPC, command or editor request reads it yet.
+`pkg/flowstate/v1/engine/historical_test.go` is the evidence. `DebugHistory`,
+`flow debug history`, the MCP tool and [walking a recorded run](#walking-a-recorded-run)
+read it.
 
 **The seam.** A history prefix is replayed through a `worker.WorkflowReplayer`
 with an SDK interceptor that notes the query handlers the interpreter installs
@@ -1020,21 +1025,47 @@ walk, and the corpus's small runs about a millisecond or less. Those are single-
 they say a checkpoint cache is not needed for runs of this size, and the
 history ceiling of 51,200 events is the bound on any one look.
 
-**What remains before reverse navigation is offered**, in the order it must be
-built: an authorized, bounded read path (history authority, a payload codec
-that can decrypt, a replay pool isolated from the workers that run effects,
-cancellation); the caller-supplied run identity; the run chain bound to the
-compiled artifact and interpreter version; a fidelity label on every value
-(reconstructed, recorded, unavailable, hypothetical); and then a `reverse`
-capability that moves among the supported points and never undoes an effect.
+## Walking a recorded run
+
+`flowdebug.Historical` is a target over a recorded durable run, and it is the
+third way to move through one: a local session moves a run that is executing and
+a remote one moves a run a server holds, and a `Historical` moves nothing. A step
+forward or back is a `DebugHistory` read of another point, so no activity, timer
+or effect happens because someone stepped, and a run that finished or failed is
+walked as freely as one still going.
+
+An editor reaches it with an `attach` carrying `"history": true` and a `runId`.
+It opens at the last point, which is where a post-mortem starts, and offers
+`stepBack` and `reverseContinue` because the target reports the `history`
+capability. The unit is the workflow-task boundary: step in, step over and step
+out move to the next one, continue moves to the last, and `reverseContinue`
+goes to the first, since a recorded run holds no breakpoints. A point where the
+run held a debug session shows that session's snapshot; any other shows the
+run's progress as a one-frame stop. Every point is a held stop, including the
+last of a run that ended, because a terminal state would end the editor's
+session; the recorded outcome is in the stop's message. The first and last
+points refuse a move past them, and an answer for a point that was not asked for
+is a server fault, not a position.
+
+It does not offer breakpoints, pause, run-until, terminate or values: each says
+so rather than being ignored. `history` is a capability of its own and not
+`reverse`, because `reverse` is a rerun that reproduces earlier stops and says
+nothing about what the run recorded.
+
+**What remains**, in the order it is built: reading a value at a past point
+(an expression is hypothetical, evaluated now over then's scope, and the scope
+is reconstructed), a bounded cache of the answers a walk has already paid for,
+the run chain bound to the compiled artifact and interpreter version, and
+entry from a failing simulation or fuzz seed straight into the walk.
 
 ## What it does not do yet
 
-- Go backwards through history. A local run launched through `flow dap` with
+- Go backwards through history, except by walking a recorded durable run
+  ([Walking a recorded run](#walking-a-recorded-run)), which only reads. A local run launched through `flow dap` with
   `"reverse": true` steps back by running the program again and replaying the
   commands it was given, checking each stop against what was shown ([Editors](EDITORS.md)
   says what that costs); a retained stubbed MCP session does too; no other front does, and no backend reports `reverse`
-  in the table above, since a rerun is not history. A replay that does not show
+  in the table above, since a rerun is not history; a walk reports `history`. A replay that does not show
   what the first visit showed is answered `diverged`, and the session stays at
   the stop it was at. [What is proven
   about reading a run's past](#reading-a-runs-past-what-is-proven-and-what-is-not)

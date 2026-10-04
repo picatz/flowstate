@@ -708,8 +708,16 @@ func init() {
 		},
 		{
 			Name: "flowstate.v1.DebugCapabilities.reverse",
-			Leading: " Reverse is backwards navigation. No backend offers it: a rerun is not\n" +
-				" history, and nothing here reconstructs one.\n",
+			Leading: " Reverse is backwards navigation by running the program again: a rerun\n" +
+				" that reproduces the earlier stops, which only a deterministic local\n" +
+				" session can promise.\n",
+		},
+		{
+			Name: "flowstate.v1.DebugCapabilities.history",
+			Leading: " History is navigation among the recorded points of a durable run. Moving\n" +
+				" forward or back reads a workflow-task boundary of its history, each answer\n" +
+				" is reconstructed (see [DebugFidelity]), and nothing runs: no step, wait or\n" +
+				" effect happens because the session moved.\n",
 		},
 		{
 			Name: "flowstate.v1.DebugObservation",

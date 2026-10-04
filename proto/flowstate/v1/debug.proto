@@ -939,9 +939,15 @@ message DebugCapabilities {
   // can offer it: a session observing a run it did not start reports false,
   // and the surface that started the run advertises termination itself.
   bool terminate = 14;
-  // Reverse is backwards navigation. No backend offers it: a rerun is not
-  // history, and nothing here reconstructs one.
+  // Reverse is backwards navigation by running the program again: a rerun
+  // that reproduces the earlier stops, which only a deterministic local
+  // session can promise.
   bool reverse = 15;
+  // History is navigation among the recorded points of a durable run. Moving
+  // forward or back reads a workflow-task boundary of its history, each answer
+  // is reconstructed (see [DebugFidelity]), and nothing runs: no step, wait or
+  // effect happens because the session moved.
+  bool history = 16;
 }
 
 // DebugObservationKind is what a run reported between stops.

@@ -248,11 +248,14 @@ type LaunchFunc func(ctx context.Context, args LaunchArguments) (*Launch, error)
 
 // AttachArguments are an attach request's arguments.
 type AttachArguments struct {
-	WorkflowID string          `json:"workflowId"`
-	RunID      string          `json:"runId"`
-	SessionID  string          `json:"sessionId"`
-	Program    string          `json:"program"`
-	Raw        json.RawMessage `json:"-"`
+	WorkflowID string `json:"workflowId"`
+	RunID      string `json:"runId"`
+	SessionID  string `json:"sessionId"`
+	Program    string `json:"program"`
+	// History walks the run's recorded history instead of attaching a live
+	// session: forward and back between its points, with nothing executing.
+	History bool            `json:"history"`
+	Raw     json.RawMessage `json:"-"`
 }
 
 // Attachment is what an [AttachFunc] attached to.
@@ -640,7 +643,7 @@ func (s *Server) capabilitiesBody() capabilities {
 		SupportsTerminateRequest:          terminable || caps.GetTerminate(),
 		SupportTerminateDebuggee:          terminable || caps.GetTerminate(),
 		SupportsDelayedStackTraceLoading:  true,
-		SupportsStepBack:                  caps.GetReverse() && s.canStepBack(),
+		SupportsStepBack:                  (caps.GetReverse() || caps.GetHistory()) && s.canStepBack(),
 		ExceptionBreakpointFilters:        []exceptionFilter{},
 	}
 	if caps.GetFailureBreakpoints() {
@@ -720,7 +723,7 @@ func (s *Server) launch(ctx context.Context, request inbound) {
 	if session, ok := launched.Target.(capable); ok {
 		s.capabilities = session.Capabilities()
 	}
-	reverse := s.capabilities.GetReverse()
+	reverse := s.capabilities.GetReverse() || s.capabilities.GetHistory()
 	s.mu.Unlock()
 
 	s.reply(request, nil)
@@ -1161,7 +1164,7 @@ func (s *Server) back(ctx context.Context, request inbound, toBreakpoint bool) {
 
 	reverser, ok := s.currentTarget().(Reverser)
 	if !ok || !s.capabilitiesBody().SupportsStepBack {
-		s.fail(request, "flowdap: this session cannot step back; launch with \"reverse\": true to run one that can")
+		s.fail(request, "flowdap: this session cannot step back; launch with \"reverse\": true to run one that can, or attach with \"history\": true to walk a recorded run")
 
 		return
 	}

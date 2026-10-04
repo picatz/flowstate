@@ -2509,9 +2509,15 @@ type DebugCapabilities struct {
 	// can offer it: a session observing a run it did not start reports false,
 	// and the surface that started the run advertises termination itself.
 	Terminate bool `protobuf:"varint,14,opt,name=terminate,proto3" json:"terminate,omitempty"`
-	// Reverse is backwards navigation. No backend offers it: a rerun is not
-	// history, and nothing here reconstructs one.
-	Reverse       bool `protobuf:"varint,15,opt,name=reverse,proto3" json:"reverse,omitempty"`
+	// Reverse is backwards navigation by running the program again: a rerun
+	// that reproduces the earlier stops, which only a deterministic local
+	// session can promise.
+	Reverse bool `protobuf:"varint,15,opt,name=reverse,proto3" json:"reverse,omitempty"`
+	// History is navigation among the recorded points of a durable run. Moving
+	// forward or back reads a workflow-task boundary of its history, each answer
+	// is reconstructed (see [DebugFidelity]), and nothing runs: no step, wait or
+	// effect happens because the session moved.
+	History       bool `protobuf:"varint,16,opt,name=history,proto3" json:"history,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2647,6 +2653,13 @@ func (x *DebugCapabilities) GetTerminate() bool {
 func (x *DebugCapabilities) GetReverse() bool {
 	if x != nil {
 		return x.Reverse
+	}
+	return false
+}
+
+func (x *DebugCapabilities) GetHistory() bool {
+	if x != nil {
+		return x.History
 	}
 	return false
 }
@@ -4641,7 +4654,7 @@ const file_flowstate_v1_debug_proto_rawDesc = "" +
 	"occurrence\x18\x03 \x01(\v2\x1d.flowstate.v1.DebugOccurrenceR\n" +
 	"occurrence\x129\n" +
 	"\x06source\x18\x04 \x01(\v2!.flowstate.v1.DebugSourceLocationR\x06source\x12\x16\n" +
-	"\x06scoped\x18\x05 \x01(\bR\x06scoped\"\x94\x04\n" +
+	"\x06scoped\x18\x05 \x01(\bR\x06scoped\"\xae\x04\n" +
 	"\x11DebugCapabilities\x12\x17\n" +
 	"\astep_in\x18\x01 \x01(\bR\x06stepIn\x12\x1b\n" +
 	"\tstep_over\x18\x02 \x01(\bR\bstepOver\x12\x19\n" +
@@ -4658,7 +4671,8 @@ const file_flowstate_v1_debug_proto_rawDesc = "" +
 	"\x0fvalue_expansion\x18\f \x01(\bR\x0evalueExpansion\x12\"\n" +
 	"\fobservations\x18\r \x01(\bR\fobservations\x12\x1c\n" +
 	"\tterminate\x18\x0e \x01(\bR\tterminate\x12\x18\n" +
-	"\areverse\x18\x0f \x01(\bR\areverse\"\xd6\x01\n" +
+	"\areverse\x18\x0f \x01(\bR\areverse\x12\x18\n" +
+	"\ahistory\x18\x10 \x01(\bR\ahistory\"\xd6\x01\n" +
 	"\x10DebugObservation\x12\x1a\n" +
 	"\bsequence\x18\x01 \x01(\x04R\bsequence\x12@\n" +
 	"\x04kind\x18\x02 \x01(\x0e2\".flowstate.v1.DebugObservationKindB\b\xbaH\x05\x82\x01\x02\x10\x01R\x04kind\x12!\n" +

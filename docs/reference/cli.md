@@ -351,6 +351,8 @@ A `launch` request runs the Flowfile named as `program` locally, with its `input
 
 An `attach` request with a `workflowId` (and optionally `runId`) debugs a durable run through the server named by --address and this command's credentials, which need `workload.debug` (and `workload.debug_inspect` to inspect values or to set or read conditions). A durable run holds only at step boundaries and has no logpoints or failure stops; the editor is told which. It shows source lines, and takes line breakpoints, when the attach's `program` is the file the run executes, and step addresses otherwise.
 
+An `attach` with `"history": true` and a `runId` walks the run's recorded history instead: step forward and **step back** between its workflow-task boundaries, in a run that is going or one that finished or failed. Each stop is reconstructed from the history and nothing executes, so it needs `workload.debug` and the run's own `debug:` policy, and has no breakpoints, pause or values yet.
+
 Examples:
 
 ```sh

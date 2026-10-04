@@ -218,12 +218,17 @@ func (r *Remote) remember(snapshot *v1.DebugSnapshot) *v1.DebugSnapshot {
 }
 
 // decorate adds verified source locations to a snapshot's frames.
-func (r *Remote) decorate(snapshot *v1.DebugSnapshot) {
-	if r.sourceMap == nil {
+func (r *Remote) decorate(snapshot *v1.DebugSnapshot) { decorateFrames(r.sourceMap, snapshot) }
+
+// decorateFrames gives each frame of snapshot the source location the map names
+// for its site. A nil map decorates nothing: the caller verifies it names the
+// program the snapshot is of.
+func decorateFrames(sourceMap *v1.DebugSourceMap, snapshot *v1.DebugSnapshot) {
+	if sourceMap == nil {
 		return
 	}
 	sources := map[string]*v1.DebugSourceLocation{}
-	for _, entry := range r.sourceMap.GetEntries() {
+	for _, entry := range sourceMap.GetEntries() {
 		key := v1.DebugSiteKey(entry.GetSite())
 		if _, seen := sources[key]; !seen {
 			sources[key] = entry.GetLocation()
