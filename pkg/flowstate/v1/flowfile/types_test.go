@@ -171,16 +171,28 @@ func TestTypesRefuseWhatCannotRun(t *testing.T) {
 			want:      "Line",
 		},
 		{
-			name: "a rule over the whole record",
+			name: "a rule over the whole record that does not compile",
 			types: `types:
   Order:
-    must: this.id != ""
+    must: this.id !=
     fields:
       id:
         type: string
 `,
 			inputType: "string",
-			want:      "a rule over the whole record is not carried yet",
+			want:      `type "Order"`,
+		},
+		{
+			name: "a field rule that reads the clock",
+			types: `types:
+  Order:
+    fields:
+      id:
+        type: string
+        must: this != string(now)
+`,
+			inputType: "string",
+			want:      `type "Order" field "id"`,
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -204,7 +216,7 @@ func TestAFieldRefusesWhatItDoesNotCarryYet(t *testing.T) {
 	t.Parallel()
 
 	for _, key := range []string{
-		"default: x", "example: x", "sensitive: true", "must: this != ''",
+		"default: x", "example: x", "sensitive: true",
 	} {
 		t.Run(strings.SplitN(key, ":", 2)[0], func(t *testing.T) {
 			t.Parallel()
@@ -543,4 +555,57 @@ steps:
 `)
 		assert.Contains(t, got, "the field at .tags must have at most 2 item(s); got 3")
 	})
+}
+
+// A rule on a field or on the type is checked by the function an input's `must:` is.
+// A literal in the file that breaks one is refused before a run, and the file
+// round-trips.
+func TestARecordRuleIsCheckedWhereAValueIsWritten(t *testing.T) {
+	t.Parallel()
+
+	const types = `types:
+  Window:
+    must: this.start < this.end
+    fields:
+      start:
+        type: int
+        required: true
+        must: this >= 0
+      end:
+        type: int
+        required: true
+`
+
+	source := func(example string) string {
+		return `edition: ` + flowfile.CurrentEdition + `
+name: t
+` + types + `inputs:
+  window:
+    type: Window
+    example: ` + example + `
+steps:
+  - id: a
+    log:
+      message: hi
+`
+	}
+	check := func(example string) string {
+		wf, _, err := flowfile.Parse([]byte(source(example)))
+		if err != nil {
+			return err.Error()
+		}
+
+		return flowfile.Validate(wf).Error()
+	}
+
+	assert.Empty(t, check("{start: 1, end: 5}"))
+	assert.Contains(t, check("{start: -1, end: 5}"), "the field at .start must satisfy `this >= 0`; got -1")
+	assert.Contains(t, check("{start: 5, end: 2}"), "the record Window must satisfy `this.start < this.end`")
+
+	wf, _, err := flowfile.Parse([]byte(source("{start: 1, end: 5}")))
+	require.NoError(t, err)
+	out, err := flowfile.Marshal(wf)
+	require.NoError(t, err)
+	assert.Contains(t, string(out), "must: this.start < this.end")
+	assert.Contains(t, string(out), "must: this >= 0")
 }

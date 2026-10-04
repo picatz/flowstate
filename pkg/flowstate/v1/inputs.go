@@ -261,6 +261,9 @@ func bindRunInputs(wf *Workflow, profile string, submitted map[string]*Value) (m
 		if err := CheckInputConstraints(profile, name, declaration, value); err != nil {
 			return nil, invalidInput(name, err)
 		}
+		if err := CheckRecordRules(table, profile, "input", name, declaration.GetSensitive(), declaration.DeclaredType(), value); err != nil {
+			return nil, invalidInput(name, err)
+		}
 
 		bound[name] = value
 	}
@@ -387,7 +390,11 @@ func CheckInputDefaultIn(table TypeTable, profile string, declaration *InputDecl
 		return err
 	}
 
-	return CheckInputConstraints(profile, declaration.GetName(), declaration, declaration.GetDefault())
+	if err := CheckInputConstraints(profile, declaration.GetName(), declaration, declaration.GetDefault()); err != nil {
+		return err
+	}
+
+	return CheckRecordRules(table, profile, "input", declaration.GetName(), declaration.GetSensitive(), declaration.DeclaredType(), declaration.GetDefault())
 }
 
 // CheckInputExample reports whether a declaration's example is a literal of
@@ -415,6 +422,9 @@ func CheckInputExampleIn(table TypeTable, profile string, declaration *InputDecl
 	}
 
 	if err := CheckInputConstraints(profile, declaration.GetName(), declaration, declaration.GetExample()); err != nil {
+		return fmt.Errorf("example: %w", err)
+	}
+	if err := CheckRecordRules(table, profile, "input", declaration.GetName(), declaration.GetSensitive(), declaration.DeclaredType(), declaration.GetExample()); err != nil {
 		return fmt.Errorf("example: %w", err)
 	}
 

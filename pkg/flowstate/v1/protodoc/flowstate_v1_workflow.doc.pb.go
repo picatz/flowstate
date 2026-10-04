@@ -482,9 +482,9 @@ func init() {
 				" `map(string, dyn)` already is.\n" +
 				"\n" +
 				" Only `name`, `type`, `value_type`, `required`, `description`, an enum's\n" +
-				" `values` and the length and item bounds (`min_len`, `max_len`, `min_items`,\n" +
-				" `max_items`) are carried by a field today. `default`, `example`, `sensitive`\n" +
-				" and `must` are refused by the compiler and at submit, not ignored.\n" +
+				" `values`, the length and item bounds (`min_len`, `max_len`, `min_items`,\n" +
+				" `max_items`) and `must` are carried by a field today. `default`, `example` and\n" +
+				" `sensitive` are refused by the compiler and at submit, not ignored.\n" +
 				"\n" +
 				" A value of a record type is a map at run time, keyed by field name, so a\n" +
 				" reader that does not know the type (an older worker, a CEL expression the\n" +
@@ -515,6 +515,16 @@ func init() {
 				" sensitive field withheld wherever the record travels, and each of those is a\n" +
 				" decision that has not been made. A field that sets one is refused rather\n" +
 				" than silently not enforced.\n",
+		},
+		{
+			Name: "flowstate.v1.TypeDeclaration.must",
+			Leading: " Must is a CEL predicate over `this`, the record, for a rule across fields that\n" +
+				" no field can state alone (`this.start < this.end`). A field's own `must` binds\n" +
+				" `this` to that field's value. Both are compiled and type-checked when the\n" +
+				" specification loads, evaluated by the one function an input's\n" +
+				" `InputDeclaration.must` is under the same cost bound, and refused if they read\n" +
+				" `now` or call anything nondeterministic. A value is held to the rules of every\n" +
+				" record it holds, at most 4096 evaluations per value.\n",
 		},
 		{
 			Name: "flowstate.v1.Concurrency",

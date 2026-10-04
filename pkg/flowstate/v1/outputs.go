@@ -91,6 +91,9 @@ func EvalRunOutputsWithCost(ctx context.Context, wf *Workflow, scope *Scope) (*R
 			if err := CheckOutputConstraint(scope.GetProfile(), declaration, value); err != nil {
 				return nil, spent, err
 			}
+			if err := CheckRecordRules(table, scope.GetProfile(), "output", name, declaration.GetSensitive(), declaration.DeclaredType(), value); err != nil {
+				return nil, spent, err
+			}
 
 			values[name] = value
 
@@ -123,6 +126,9 @@ func EvalRunOutputsWithCost(ctx context.Context, wf *Workflow, scope *Scope) (*R
 			// gets, pointed the other way: a run that cannot produce a value
 			// satisfying its own declaration has not succeeded, per this
 			// function's own doc comment.
+			return nil, spent, err
+		}
+		if err := CheckRecordRules(table, scope.GetProfile(), "output", name, declaration.GetSensitive(), declaration.DeclaredType(), computed); err != nil {
 			return nil, spent, err
 		}
 

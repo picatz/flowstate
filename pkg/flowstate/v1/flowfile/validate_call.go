@@ -137,6 +137,9 @@ func checkCallArgumentType(table *typeTable, stepID, name string, value *v1.Valu
 		if err := v1.CheckInputConstraints(profile, name, declaration, value); err != nil {
 			return &Diagnostic{Step: stepID, Field: "with." + name, Message: err.Error()}
 		}
+		if err := v1.CheckRecordRules(v1.TypesOf(callee), profile, "input", name, declaration.GetSensitive(), declaration.DeclaredType(), value); err != nil {
+			return &Diagnostic{Step: stepID, Field: "with." + name, Message: err.Error()}
+		}
 		return nil
 
 	case *v1.Value_Expr:

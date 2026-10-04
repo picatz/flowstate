@@ -65,3 +65,24 @@ tests:
     expect:
       failed: true
       error_contains: "the field at .lines[0].sku must be at least 2 character(s) long; got 1"
+
+  - name: a field rule is refused with the path of the field
+    inputs:
+      order:
+        id: o-1
+        status: open
+        lines: [{sku: kb-01, quantity: 0}]
+    expect:
+      failed: true
+      error_contains: "the field at .lines[0].quantity must satisfy `this > 0`; got 0"
+
+  - name: a rule across the fields of the record is refused
+    inputs:
+      order:
+        id: o-1
+        status: paid
+        lines: []
+    expect:
+      failed: true
+      error_contains: 'the record Order must satisfy `this.status != "paid" || size(this.lines) > 0`'
+
