@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
 
 	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -246,6 +247,22 @@ func TestLimitsEachBound(t *testing.T) {
 		expect(t, "entry bytes", err)
 		if _, _, err := ns.PutBlob(ctx, strings.NewReader(strings.Repeat("x", 10)), 1<<20); err != nil {
 			t.Errorf("at the bound: %v", err)
+		}
+	})
+	t.Run("namespace blobs", func(t *testing.T) {
+		l := base
+		l.MaxNamespaceBlobs = 2
+		ns := newNS(t, l)
+		for _, c := range []string{"a", "b"} {
+			if _, _, err := ns.PutBlob(ctx, strings.NewReader(c), 1<<20); err != nil {
+				t.Fatal(err)
+			}
+		}
+		_, _, err := ns.PutBlob(ctx, strings.NewReader("c"), 1<<20)
+		expect(t, "namespace blobs", err)
+		// Content already stored is a refresh, not a new blob.
+		if _, _, err := ns.PutBlob(ctx, strings.NewReader("a"), 1<<20); err != nil {
+			t.Errorf("re-put of an existing blob: %v", err)
 		}
 	})
 	t.Run("an unbounded reader costs at most the limit", func(t *testing.T) {
@@ -533,6 +550,53 @@ func TestManifestConformsToProto(t *testing.T) {
 	}
 	if err := flowstatev1.Validate(&flowstatev1.ArtifactRef{Digest: "short"}); err == nil {
 		t.Error("protovalidate accepted a short digest")
+	}
+}
+
+func TestManifestFieldsMatchProto(t *testing.T) {
+	// The hand-written canonical encoder knows these five fields. A field
+	// added to the schema must fail here until the encoder and Entry learn it.
+	want := map[string]int{"path": 1, "kind": 2, "executable": 3, "size_bytes": 4, "blob_sha256": 5}
+	fields := (&flowstatev1.ArtifactEntry{}).ProtoReflect().Descriptor().Fields()
+	if fields.Len() != len(want) {
+		t.Fatalf("ArtifactEntry has %d fields, the encoder knows %d", fields.Len(), len(want))
+	}
+	for i := range fields.Len() {
+		f := fields.Get(i)
+		if n, ok := want[string(f.Name())]; !ok || n != int(f.Number()) {
+			t.Errorf("ArtifactEntry field %s=%d is not the one the encoder handles", f.Name(), f.Number())
+		}
+	}
+	if n := (&flowstatev1.ArtifactManifest{}).ProtoReflect().Descriptor().Fields().Len(); n != 1 {
+		t.Errorf("ArtifactManifest has %d fields, the encoder knows 1", n)
+	}
+}
+
+func TestUnmarshalManifestIsStrictOnItsOwn(t *testing.T) {
+	l := artifacts.DefaultLimits()
+	unsorted := &artifacts.Manifest{Entries: []artifacts.Entry{
+		{Path: "z", Kind: artifacts.KindDir},
+		{Path: "a", Kind: artifacts.KindDir},
+	}}
+	if _, err := artifacts.UnmarshalManifest(unsorted.Marshal(), l); !errors.Is(err, artifacts.ErrInvalidManifest) {
+		t.Errorf("unsorted: err = %v, want ErrInvalidManifest", err)
+	}
+	orphan := &artifacts.Manifest{Entries: []artifacts.Entry{{Path: "d/f", Kind: artifacts.KindFile, BlobSHA256: sum(nil)}}}
+	if _, err := artifacts.UnmarshalManifest(orphan.Marshal(), l); !errors.Is(err, artifacts.ErrInvalidManifest) {
+		t.Errorf("orphan: err = %v, want ErrInvalidManifest", err)
+	}
+	// An explicit default (executable=false) is a different encoding of the
+	// same tree.
+	explicit := protowire.AppendTag(nil, 1, protowire.BytesType)
+	body := protowire.AppendTag(nil, 1, protowire.BytesType)
+	body = protowire.AppendString(body, "d")
+	body = protowire.AppendTag(body, 2, protowire.VarintType)
+	body = protowire.AppendVarint(body, uint64(artifacts.KindDir))
+	body = protowire.AppendTag(body, 3, protowire.VarintType)
+	body = protowire.AppendVarint(body, 0)
+	explicit = protowire.AppendBytes(explicit, body)
+	if _, err := artifacts.UnmarshalManifest(explicit, l); !errors.Is(err, artifacts.ErrInvalidManifest) {
+		t.Errorf("explicit default: err = %v, want ErrInvalidManifest", err)
 	}
 }
 

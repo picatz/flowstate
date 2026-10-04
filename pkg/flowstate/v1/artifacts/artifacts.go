@@ -79,6 +79,8 @@ const (
 	CeilingRunBytes int64 = 64 << 30
 	// CeilingNamespaceBytes is the largest total one namespace may store.
 	CeilingNamespaceBytes int64 = 1 << 40
+	// CeilingNamespaceBlobs is the largest blob count one namespace may hold.
+	CeilingNamespaceBlobs = 1 << 22
 )
 
 // Sentinel errors. Each is safe to show a user: none carries blob content.
@@ -137,6 +139,10 @@ type Limits struct {
 	MaxRunBytes int64
 	// MaxNamespaceBytes bounds the bytes one namespace may store.
 	MaxNamespaceBytes int64
+	// MaxNamespaceBlobs bounds the blobs one namespace may store. It bounds
+	// the work of the whole-namespace enumeration [Backend.List] and
+	// [Backend.PinnedDigests] perform, which bytes alone do not.
+	MaxNamespaceBlobs int
 }
 
 // DefaultLimits returns conservative bounds well under every ceiling.
@@ -149,6 +155,7 @@ func DefaultLimits() Limits {
 		MaxPathDepth:      32,
 		MaxRunBytes:       4 << 30,
 		MaxNamespaceBytes: 64 << 30,
+		MaxNamespaceBlobs: 100000,
 	}
 }
 
@@ -165,6 +172,7 @@ func (l Limits) Validate() error {
 		{"MaxPathDepth", int64(l.MaxPathDepth), CeilingPathDepth},
 		{"MaxRunBytes", l.MaxRunBytes, CeilingRunBytes},
 		{"MaxNamespaceBytes", l.MaxNamespaceBytes, CeilingNamespaceBytes},
+		{"MaxNamespaceBlobs", int64(l.MaxNamespaceBlobs), CeilingNamespaceBlobs},
 	}
 	for _, c := range checks {
 		if c.v <= 0 || c.v > c.ceil {
@@ -191,6 +199,8 @@ type nsState struct {
 	mu   sync.Mutex
 	init bool
 	used int64
+	// blobs is the number of blobs the namespace holds, kept with used.
+	blobs int
 	// reserved is the bytes in-flight puts have staged but not committed.
 	reserved int64
 }
@@ -420,6 +430,9 @@ func (n Namespaced) put(ctx context.Context, r io.Reader, limit int64, want stri
 	if statErr != nil && !errors.Is(statErr, ErrNotFound) {
 		return "", 0, statErr
 	}
+	if !exists && n.st.blobs >= n.store.limits.MaxNamespaceBlobs {
+		return "", 0, limitErr("namespace blobs", int64(n.store.limits.MaxNamespaceBlobs))
+	}
 	if !exists && (!staging || n.st.used+n.st.reserved+size > n.store.limits.MaxNamespaceBytes) {
 		return "", 0, limitErr("namespace bytes", n.store.limits.MaxNamespaceBytes)
 	}
@@ -440,6 +453,7 @@ func (n Namespaced) put(ctx context.Context, r io.Reader, limit int64, want stri
 	committed = true
 	if !exists {
 		n.st.used += size
+		n.st.blobs++
 	}
 	return digest, size, nil
 }
@@ -457,7 +471,7 @@ func (n Namespaced) initUsage(ctx context.Context) error {
 	for _, b := range blobs {
 		total += b.Size
 	}
-	n.st.used, n.st.init = total, true
+	n.st.used, n.st.blobs, n.st.init = total, len(blobs), true
 	return nil
 }
 
@@ -616,6 +630,10 @@ func (n Namespaced) Sweep(ctx context.Context, grace time.Duration) (SweepResult
 	}
 	n.st.mu.Lock()
 	defer n.st.mu.Unlock()
+	// Any early exit may follow deletes the counters have not seen; a stale
+	// total would charge the namespace for bytes already gone, so force a
+	// recount from the backend. The normal exit below sets exact values.
+	n.st.init = false
 	blobs, err := n.store.backend.List(ctx, n.ns)
 	if err != nil {
 		return res, err
@@ -626,6 +644,7 @@ func (n Namespaced) Sweep(ctx context.Context, grace time.Duration) (SweepResult
 	}
 	cutoff := n.store.now().Add(-grace)
 	var kept int64
+	var keptBlobs int
 	for _, b := range blobs {
 		if err := ctx.Err(); err != nil {
 			return res, err
@@ -633,6 +652,7 @@ func (n Namespaced) Sweep(ctx context.Context, grace time.Duration) (SweepResult
 		_, isPinned := pinned[b.Digest]
 		if isPinned || !b.ModTime.Before(cutoff) {
 			kept += b.Size
+			keptBlobs++
 			continue
 		}
 		if err := n.store.backend.Delete(ctx, n.ns, b.Digest); err != nil {
@@ -641,7 +661,7 @@ func (n Namespaced) Sweep(ctx context.Context, grace time.Duration) (SweepResult
 		res.Removed++
 		res.FreedBytes += b.Size
 	}
-	n.st.used, n.st.init = kept, true
+	n.st.used, n.st.blobs, n.st.init = kept, keptBlobs, true
 	if ts, ok := n.store.backend.(TempSweeper); ok {
 		removed, err := ts.SweepTemp(ctx, n.ns, cutoff)
 		res.TempRemoved = removed

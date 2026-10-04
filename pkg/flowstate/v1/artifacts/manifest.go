@@ -226,21 +226,22 @@ func (m *Manifest) Digest() string {
 
 // UnmarshalManifest decodes b strictly: an unknown field, a repeated or
 // out-of-order field, or any encoding other than the canonical one is
-// [ErrInvalidManifest]. It validates against l. Because the encoding is
-// canonical, one tree has exactly one digest.
+// [ErrInvalidManifest]. It validates against l, and requires that re-encoding
+// the result reproduces b exactly. Because the encoding is canonical, one tree
+// has exactly one digest.
 func UnmarshalManifest(b []byte, l Limits) (*Manifest, error) {
 	m := &Manifest{}
-	for len(b) > 0 {
-		num, typ, n := protowire.ConsumeTag(b)
+	for rest := b; len(rest) > 0; {
+		num, typ, n := protowire.ConsumeTag(rest)
 		if n < 0 || num != 1 || typ != protowire.BytesType {
 			return nil, fmt.Errorf("%w: unexpected field", ErrInvalidManifest)
 		}
-		b = b[n:]
-		body, n := protowire.ConsumeBytes(b)
+		rest = rest[n:]
+		body, n := protowire.ConsumeBytes(rest)
 		if n < 0 {
 			return nil, fmt.Errorf("%w: truncated entry", ErrInvalidManifest)
 		}
-		b = b[n:]
+		rest = rest[n:]
 		if len(m.Entries) >= l.MaxEntries {
 			return nil, limitErr("entry count", int64(l.MaxEntries))
 		}
@@ -249,6 +250,12 @@ func UnmarshalManifest(b []byte, l Limits) (*Manifest, error) {
 			return nil, err
 		}
 		m.Entries = append(m.Entries, e)
+	}
+	if err := m.Validate(l); err != nil {
+		return nil, err
+	}
+	if !bytes.Equal(m.Marshal(), b) {
+		return nil, fmt.Errorf("%w: not the canonical encoding", ErrInvalidManifest)
 	}
 	return m, nil
 }
@@ -344,12 +351,6 @@ func (n Namespaced) LoadManifest(ctx context.Context, digest string) (*Manifest,
 	m, err := UnmarshalManifest(b, n.store.limits)
 	if err != nil {
 		return nil, err
-	}
-	if err := m.Validate(n.store.limits); err != nil {
-		return nil, err
-	}
-	if !bytes.Equal(m.Marshal(), b) {
-		return nil, fmt.Errorf("%w: not the canonical encoding", ErrInvalidManifest)
 	}
 	return m, nil
 }

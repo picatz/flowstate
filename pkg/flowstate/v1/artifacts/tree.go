@@ -15,6 +15,9 @@ import (
 // that follows it, so a test can swap the directory in that window.
 var testHookAfterLstat func()
 
+// testHookBeforeDirOpen runs between the Lstat of a subdirectory and its open.
+var testHookBeforeDirOpen func(rel string)
+
 // openTreeRoot opens dir as an [os.Root], refusing a symlink and refusing a
 // directory that was swapped between the check and the open: the path is
 // Lstat'ed, opened, and the opened handle must be the very same file.
@@ -82,7 +85,11 @@ func (n Namespaced) Snapshot(ctx context.Context, runID, dir string) (Ref, error
 	defer root.Close()
 
 	w := &walker{ctx: ctx, n: n, root: root, l: n.store.limits}
-	if err := w.dir(""); err != nil {
+	rfi, err := root.Lstat(".")
+	if err != nil {
+		return Ref{}, err
+	}
+	if err := w.dir("", rfi); err != nil {
 		return Ref{}, err
 	}
 	slices.SortFunc(w.entries, func(a, b Entry) int { return strings.Compare(a.Path, b.Path) })
@@ -117,7 +124,10 @@ func (w *walker) add(e Entry) error {
 // dir walks one directory (rel is "" for the root). Names are read in batches
 // so a directory with millions of names is stopped by the entry bound rather
 // than loaded whole.
-func (w *walker) dir(rel string) error {
+func (w *walker) dir(rel string, lfi fs.FileInfo) error {
+	if testHookBeforeDirOpen != nil {
+		testHookBeforeDirOpen(rel)
+	}
 	f, err := w.root.OpenFile(dirName(rel), os.O_RDONLY|openNonblock, 0)
 	if err != nil {
 		return err
@@ -125,7 +135,7 @@ func (w *walker) dir(rel string) error {
 	defer f.Close()
 	if fi, err := f.Stat(); err != nil {
 		return err
-	} else if !fi.IsDir() {
+	} else if !fi.IsDir() || !os.SameFile(lfi, fi) {
 		return fmt.Errorf("%w: %s changed while being read", ErrSpecialFile, dirName(rel))
 	}
 	for {
@@ -173,7 +183,7 @@ func (w *walker) entry(p string) error {
 		if err := w.add(Entry{Path: p, Kind: KindDir}); err != nil {
 			return err
 		}
-		return w.dir(p)
+		return w.dir(p, fi)
 	case mode.IsRegular():
 		if linkCount(fi) > 1 {
 			return fmt.Errorf("%w: %s", ErrHardlink, p)
