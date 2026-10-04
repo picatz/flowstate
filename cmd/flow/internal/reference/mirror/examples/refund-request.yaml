@@ -1,0 +1,97 @@
+edition: v2026.4
+name: refund-request
+description: A customer asks for a refund. Small ones are paid straight away; large ones wait for a finance approver who is not the person who asked, and a failed payout is taken back.
+types:
+  Line:
+    fields:
+      sku:
+        type: string
+        required: true
+      cents:
+        type: int
+        required: true
+        must: this > 0
+  Refund:
+    description: What the customer is asking to have back.
+    fields:
+      order_id:
+        type: string
+        required: true
+      lines:
+        type: list(Line)
+        required: true
+        min_items: 1
+      reason:
+        type: enum
+        values:
+          - damaged
+          - late
+          - other
+        required: true
+      note:
+        type: string
+inputs:
+  refund:
+    type: Refund
+    required: true
+  auto_limit_cents:
+    type: int
+    default: 5000
+    description: refunds at or under this are paid without a person deciding
+# Who may decide is the file's policy, not an input: a requester who chose their
+# own approver would be choosing who checks them.
+signals:
+  refund-decision:
+    allow:
+      - claims:
+          team: finance
+    distinct_from_starter: true
+steps:
+  - id: total
+    value: ${inputs.refund.lines.map(l, l.cents).sum()}
+  - id: review
+    if: ${steps.total.value > inputs.auto_limit_cents}
+    wait_for_signal:
+      name: refund-decision
+      prompt: ${"Refund %d cents on order %s (%s)?".format([steps.total.value, inputs.refund.order_id, inputs.refund.reason])}
+      timeout: 72h
+      outputs:
+        decider: ${sender.identity.subject}
+        # A reply without `approved` is "undecided", never a silent no.
+        outcome: '${payload.?approved.optMap(a, a ? "approved" : "declined").orValue("undecided")}'
+  # Named once so the payout and the report read one fact. Under the limit the
+  # review never ran, so the left side has to answer.
+  - id: cleared
+    value: ${steps.total.value <= inputs.auto_limit_cents || steps.review.outcome == "approved"}
+  - id: payout
+    if: ${steps.cleared.value}
+    http:
+      headers:
+        Idempotency-Key: ${inputs.refund.order_id + "-refund"}
+      json:
+        order_id: ${inputs.refund.order_id}
+        cents: ${steps.total.value}
+      method: POST
+      outputs:
+        reference: ${response.json.reference}
+      parse_json: true
+      url: https://payments.example.com/refunds
+    undo:
+      http:
+        headers:
+          Idempotency-Key: ${inputs.refund.order_id + "-void"}
+        json:
+          order_id: ${inputs.refund.order_id}
+        method: POST
+        url: https://payments.example.com/refunds/void
+  - id: tell_customer
+    if: ${steps.cleared.value}
+    log:
+      message: '${"refunded %d cents for %s%s".format([steps.total.value, inputs.refund.order_id, inputs.refund.?note.optMap(n, ": " + n).orValue("")])}'
+outputs:
+  paid:
+    value: ${steps.cleared.value}
+    type: bool
+  total_cents:
+    value: ${steps.total.value}
+    type: int

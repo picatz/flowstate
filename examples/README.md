@@ -62,6 +62,7 @@ inventory below remains the source of truth for every directory.
 | Tolerating and retrying only some failure kinds | [failure-kinds](failure-kinds) | focused feature demonstration |
 | Retries, timeouts, cancellation, and undo | [conditional-and-retry](conditional-and-retry), [wait-timeout](wait-timeout), [order-fulfillment](order-fulfillment) | focused feature demonstration → production-shaped composition |
 | Signals and human decisions | [approval-gate](approval-gate), then [approval-escalation](approval-escalation), then [signal-quorum](signal-quorum) | policy/governance → production-shaped composition |
+| A business process with a person in it | [refund-request](refund-request) | production-shaped composition |
 | Long-lived entities many callers address | [entity-order](entity-order), [renewal-reminder](renewal-reminder), [signal-batch-drain](signal-batch-drain) | focused feature demonstration |
 | Schedules and trigger context | [scheduled-report](scheduled-report), [schedule-overlap-policies](schedule-overlap-policies), [webhook-trigger](webhook-trigger), [webhook-approval-bridge](webhook-approval-bridge), [trigger-context](trigger-context) | focused feature demonstration |
 | Local rehearsal and durable execution | [deployment-reconciler](deployment-reconciler), [approval-gate](approval-gate) | local-vs-Temporal parity |
@@ -139,6 +140,7 @@ says otherwise.
 | [feature-flags](feature-flags) | Map comprehension over a caller's flags (`filter` ranging over keys) beside `.?` reading one named key that might not be sent at all | no |
 | [usage-billing](usage-billing) | `math.greatest`, and `double()` before dividing so CEL's int-truncating division does not silently undercharge a partial block | no |
 | [interpolation](interpolation) | Text and expressions in one value: several `${...}` in a message, the `$${` escape, and the whole-value fence that keeps its type | no |
+| [refund-request](refund-request) | A typed `Refund` record, an optional field read with `.?`, a finance-only approval that cannot be given by the requester, an idempotent payout, and `undo:` when a later step fails | yes |
 | [approval-gate](approval-gate) | `wait_for_signal:` as a human approval gate, shaping its own `outputs:` so the gate is stated once and every branch and report reads one name | no |
 | [signal-rule-identity](signal-rule-identity) | Two `signals:` rules that gate on identity rather than a claim — `subject:` pinning one automated caller with no role to name, and `namespace:` beside `claims:` naming one tenant's holders of a role — and why each is the exception to gating on `claims:` alone | no |
 | [approval-escalation](approval-escalation) | The chase a real approval is — a `loop:` asking on a cadence, escalating to a backup approver the `signals:` policy already named, and auto-rejecting when the ask budget runs out, with a README on why that budget is `until:`'s and not `max_iterations:`'s | no |
