@@ -2,13 +2,11 @@ package engine_test
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -18,7 +16,6 @@ import (
 	enumspb "go.temporal.io/api/enums/v1"
 	historypb "go.temporal.io/api/history/v1"
 	"go.temporal.io/sdk/client"
-	"go.temporal.io/sdk/interceptor"
 	"go.temporal.io/sdk/worker"
 	"go.temporal.io/sdk/workflow"
 	"google.golang.org/protobuf/proto"
@@ -28,262 +25,13 @@ import (
 	"github.com/picatz/flowstate/pkg/flowstate/v1/engine"
 )
 
-// Historical reconstruction: the feasibility evidence for #2128.
-//
-// A durable run keeps its debugging state in the interpreter's memory, and the
-// interpreter rebuilds that memory by replaying the run's history. A worker
-// restart already relies on it (cmd/flow's TestADurableDebugSessionSurvivesItsWorkerBeingKilled):
-// the hold, the session, its revision and its observations come back because
-// they are a function of the history. The question #2128 asks is whether the
-// same replay, stopped earlier, gives back the run as it was — and what, if
-// anything, it cannot.
-//
-// # The seam
-//
-// A [worker.WorkflowReplayer] replays a history prefix through the interpreter
-// with no worker attached, so it has no path to dispatch an activity: the
-// replayer's interface registers workflows and nothing else. A SDK
-// interceptor sees the query handlers the interpreter installs
-// ([engine.ProgressQuery], [v1.DebugQuery], [v1.DebugInspectQuery]) as it
-// installs them, and after the prefix has replayed, this calls them exactly as
-// the SDK would for a live query. Nothing in the engine knows it is being
-// read: no code path was added, no command was added, and the recorded
-// command sequence is what the replay checks itself against.
-//
-// # Supported points
-//
-// The unit is a workflow-task boundary: the history through a WorkflowTaskStarted
-// event, or the whole of a closed run's. The answer at a boundary is the
-// interpreter's state after every earlier task has been processed and before
-// this one runs. An arbitrary event is not a supported point — a prefix ending
-// at a WorkflowTaskCompleted whose commands are then missing does not replay
-// (TestACutInsideAWorkflowTaskIsRefused) — so a caller can name only the
-// boundaries [boundaries] lists.
-
-// handlerCapture asks the query handlers a replayed workflow installs, from
-// inside the replay.
-//
-// Inside, and not after: the SDK tears a replayed workflow's coroutines down as
-// the replay returns, on a goroutine of its own, and a coroutine's deferred
-// cleanup runs then. The engine's cleanup edits the state the handlers read (a
-// wait leaves the registry as its coroutine exits), so a handler called once the
-// replay has returned reads a run being dismantled: the race detector reports
-// it, and a pending wait can already be gone. A coroutine of the replay's own
-// is the SDK's way to read at rest: the dispatcher runs every coroutine until
-// all of them stay blocked, and a coroutine that asks on each pass has asked
-// last on the pass where nothing moved.
-type handlerCapture struct {
-	interceptor.WorkerInterceptorBase
-
-	// inspections are the inspect requests to answer, in order.
-	inspections []*v1.DebugInspectRequest
-
-	mu       sync.Mutex
-	handlers map[string]any
-	answer   answers
-}
-
-// answers is what the handlers said on the latest pass.
-type answers struct {
-	progress   *v1.RunProgress
-	debug      *v1.DebugSnapshot
-	inspected  []*v1.DebugInspectResponse
-	inspectErr []error
-	// err is a handler that failed, which is not a run that declares nothing.
-	err error
-}
-
-type captureInbound struct {
-	interceptor.WorkflowInboundInterceptorBase
-
-	capture *handlerCapture
-}
-
-type captureOutbound struct {
-	interceptor.WorkflowOutboundInterceptorBase
-
-	capture *handlerCapture
-}
-
-func (c *handlerCapture) InterceptWorkflow(_ workflow.Context, next interceptor.WorkflowInboundInterceptor) interceptor.WorkflowInboundInterceptor {
-	return &captureInbound{WorkflowInboundInterceptorBase: interceptor.WorkflowInboundInterceptorBase{Next: next}, capture: c}
-}
-
-func (i *captureInbound) Init(outbound interceptor.WorkflowOutboundInterceptor) error {
-	return i.Next.Init(&captureOutbound{
-		WorkflowOutboundInterceptorBase: interceptor.WorkflowOutboundInterceptorBase{Next: outbound},
-		capture:                         i.capture,
-	})
-}
-
-func (i *captureInbound) ExecuteWorkflow(ctx workflow.Context, in *interceptor.ExecuteWorkflowInput) (any, error) {
-	// Disconnected from the run's own context: a cancelled run's context is
-	// done, and an Await on it returns at once, so the sentinel would read
-	// once at the cancel request and never again, missing the cleanup the
-	// cancellation runs in the coroutines after it.
-	sentinel, _ := workflow.NewDisconnectedContext(ctx)
-	workflow.Go(sentinel, func(ctx workflow.Context) {
-		_ = workflow.Await(ctx, func() bool {
-			i.capture.ask()
-
-			return false
-		})
-	})
-
-	return i.Next.ExecuteWorkflow(ctx, in)
-}
-
-func (o *captureOutbound) SetQueryHandler(ctx workflow.Context, name string, handler any) error {
-	o.capture.mu.Lock()
-	defer o.capture.mu.Unlock()
-
-	if o.capture.handlers == nil {
-		o.capture.handlers = map[string]any{}
-	}
-	o.capture.handlers[name] = handler
-
-	return o.Next.SetQueryHandler(ctx, name, handler)
-}
-
-// ask calls every installed handler and keeps what they said.
-func (c *handlerCapture) ask() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	var latest answers
-	if handler, ok := c.handlers[engine.ProgressQuery]; ok {
-		var err error
-		latest.progress, err = callHandler[*v1.RunProgress](handler)
-		latest.err = errors.Join(latest.err, err)
-	}
-	if handler, ok := c.handlers[v1.DebugQuery]; ok {
-		var err error
-		latest.debug, err = callHandler[*v1.DebugSnapshot](handler, "")
-		latest.err = errors.Join(latest.err, err)
-	}
-	if handler, ok := c.handlers[v1.DebugInspectQuery]; ok {
-		for _, request := range c.inspections {
-			response, err := callHandler[*v1.DebugInspectResponse](handler, request)
-			latest.inspected = append(latest.inspected, response)
-			latest.inspectErr = append(latest.inspectErr, err)
-		}
-	}
-	c.answer = latest
-}
-
-// maxReconstructionEvents bounds the history a reconstruction replays. A
-// replay is linear in the events before its target, so the bound is the bound
-// on its CPU, memory and history reads; it is the ceiling Temporal itself puts
-// on a history (51,200 events) — a longer one cannot exist.
-const maxReconstructionEvents = 51200
-
-// reconstruction is what the interpreter answers at one boundary of a
-// recorded run.
-type reconstruction struct {
-	// eventID is the id of the last event of the replayed prefix: the ordinal
-	// of the boundary in this run's history and nothing more. It orders events
-	// of one run, and says nothing about causality across runs or between
-	// branches.
-	eventID  int64
-	progress *v1.RunProgress
-	// debug is the session as the run held it, nil for a run that declares no
-	// `debug:` stanza.
-	debug *v1.DebugSnapshot
-	// inspected answers the inspections asked for, in order, and inspectErrs
-	// their refusals: an inspection of a revision the run was not at is
-	// refused there, as it is live.
-	inspected   []*v1.DebugInspectResponse
-	inspectErrs []error
-}
-
-// boundaries lists the supported points of a history: the index of every
-// WorkflowTaskStarted event, and the last event of a closed run. Each way a run
-// can end is exercised: completed and continued-as-new by the recorded corpus,
-// cancelled, failed, terminated and timed out by the dev-server tests.
-func boundaries(history *historypb.History) []int {
-	var at []int
-	for i, event := range history.GetEvents() {
-		switch event.GetEventType() {
-		case enumspb.EVENT_TYPE_WORKFLOW_TASK_STARTED:
-			at = append(at, i)
-		case enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_COMPLETED,
-			enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_FAILED,
-			enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_CONTINUED_AS_NEW,
-			enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_TERMINATED,
-			enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_TIMED_OUT,
-			enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_CANCELED:
-			at = append(at, i)
-		}
-	}
-
-	return at
-}
+// Historical reconstruction (#2128, #2248): the tests of [engine.Reconstruct].
+// The design, the seam and the supported points are described on that
+// function's file, historical.go.
 
 // corpusRun is the identity the offline corpus is replayed under, standing for
 // the run a caller named.
 var corpusRun = workflow.Execution{ID: "recorded-run", RunID: "recorded-run-id"}
-
-// reconstructAt replays history through the event at index, as the run
-// execution names, and asks the handlers the interpreter installed, or
-// refuses. inspections are answered at the same point, in the same replay.
-func reconstructAt(history *historypb.History, index int, execution workflow.Execution, inspections ...*v1.DebugInspectRequest) (*reconstruction, error) {
-	events := history.GetEvents()
-	if len(events) > maxReconstructionEvents {
-		return nil, fmt.Errorf("history has %d events, over the %d a reconstruction replays", len(events), maxReconstructionEvents)
-	}
-	if index < 0 || index >= len(events) {
-		return nil, fmt.Errorf("event index %d is outside a history of %d events", index, len(events))
-	}
-
-	capture := &handlerCapture{inspections: inspections}
-	replayer, err := worker.NewWorkflowReplayerWithOptions(worker.WorkflowReplayerOptions{
-		Interceptors: []interceptor.WorkerInterceptor{capture},
-	})
-	if err != nil {
-		return nil, err
-	}
-	engine.RegisterWorkflows(replayer)
-
-	// The run's identity is the caller's: the replay would otherwise run the
-	// workflow under one of its own.
-	err = replayer.ReplayWorkflowHistoryWithOptions(nil, &historypb.History{Events: events[:index+1]},
-		worker.ReplayWorkflowHistoryOptions{OriginalExecution: execution})
-	if err != nil {
-		return nil, fmt.Errorf("replaying through event %d: %w", events[index].GetEventId(), err)
-	}
-
-	capture.mu.Lock()
-	defer capture.mu.Unlock()
-	if capture.answer.err != nil {
-		return nil, fmt.Errorf("asking the run through event %d: %w", events[index].GetEventId(), capture.answer.err)
-	}
-
-	return &reconstruction{
-		eventID:     events[index].GetEventId(),
-		progress:    capture.answer.progress,
-		debug:       capture.answer.debug,
-		inspected:   capture.answer.inspected,
-		inspectErrs: capture.answer.inspectErr,
-	}, nil
-}
-
-// callHandler calls a query handler the way the SDK does: a function of its
-// arguments returning a value and an error.
-func callHandler[T any](handler any, args ...any) (T, error) {
-	in := make([]reflect.Value, len(args))
-	for i, arg := range args {
-		in[i] = reflect.ValueOf(arg)
-	}
-	out := reflect.ValueOf(handler).Call(in)
-
-	var zero T
-	if err, _ := out[1].Interface().(error); err != nil {
-		return zero, err
-	}
-	value, _ := out[0].Interface().(T)
-
-	return value, nil
-}
 
 // recordedHistories reads the replay corpus: histories real runs wrote on a
 // dev server, by earlier engines.
@@ -323,19 +71,19 @@ func TestEveryRecordedRunReconstructsAtEveryBoundary(t *testing.T) {
 
 			var last int32
 			var positions []string
-			for _, at := range boundaries(history) {
-				got, err := reconstructAt(history, at, corpusRun)
+			for _, at := range engine.Boundaries(history) {
+				got, err := engine.Reconstruct(t.Context(), history, at, corpusRun)
 				require.NoError(t, err, "a supported point must replay against the recorded commands")
 
-				if got.progress.GetStepId() == "" {
+				if got.Progress.GetStepId() == "" {
 					// The first task has not run the interpreter yet: nothing
 					// is reconstructed, and nothing is claimed.
 					continue
 				}
-				assert.GreaterOrEqual(t, got.progress.GetCompletedSteps(), last,
-					"a later point cannot have completed fewer steps (event %d)", got.eventID)
-				last = got.progress.GetCompletedSteps()
-				positions = append(positions, got.progress.GetStepId())
+				assert.GreaterOrEqual(t, got.Progress.GetCompletedSteps(), last,
+					"a later point cannot have completed fewer steps (event %d)", got.EventID)
+				last = got.Progress.GetCompletedSteps()
+				positions = append(positions, got.Progress.GetStepId())
 			}
 			assert.NotEmpty(t, positions, "no point of this history answered, so it proves nothing")
 		})
@@ -352,17 +100,17 @@ func TestAReconstructedWaitCarriesItsRecordedDeadline(t *testing.T) {
 	history := recordedHistories(t)["2026-08-21/wait-for-signal"]
 	require.NotNil(t, history)
 
-	var waiting *reconstruction
-	for _, at := range boundaries(history) {
-		got, err := reconstructAt(history, at, corpusRun)
+	var waiting *engine.Reconstruction
+	for _, at := range engine.Boundaries(history) {
+		got, err := engine.Reconstruct(t.Context(), history, at, corpusRun)
 		require.NoError(t, err)
-		if len(got.progress.GetPendingWaits()) > 0 {
+		if len(got.Progress.GetPendingWaits()) > 0 {
 			waiting = got
 		}
 	}
 	require.NotNil(t, waiting, "no point of the history shows the wait, so this proves nothing")
 
-	wait := waiting.progress.GetPendingWaits()[0]
+	wait := waiting.Progress.GetPendingWaits()[0]
 	assert.Equal(t, "approval", wait.GetStepId())
 	assert.Equal(t, "deploy-approved", wait.GetSignalName())
 	assert.Equal(t, "approve the corpus deploy?", wait.GetPrompt())
@@ -400,11 +148,11 @@ func TestAContinuedRunReconstructsWithinItsOwnHistory(t *testing.T) {
 		history := histories[name]
 		require.NotNil(t, history, name)
 
-		at := boundaries(history)
-		got, err := reconstructAt(history, at[len(at)-1], corpusRun)
+		at := engine.Boundaries(history)
+		got, err := engine.Reconstruct(t.Context(), history, at[len(at)-1], corpusRun)
 		require.NoError(t, err, name)
-		require.NotEmpty(t, got.progress.GetStepId(), name)
-		steps = append(steps, got.progress.GetStepId())
+		require.NotEmpty(t, got.Progress.GetStepId(), name)
+		steps = append(steps, got.Progress.GetStepId())
 
 		// The last event of a run that continued names the next; a run
 		// reconstructed alone can say it continued, and not what came after.
@@ -443,7 +191,7 @@ func TestACutInsideAWorkflowTaskIsRefused(t *testing.T) {
 
 	var tooShort, midTask, between int
 	for name, history := range recordedHistories(t) {
-		at := boundaries(history)
+		at := engine.Boundaries(history)
 		supported := map[int]bool{}
 		for _, index := range at {
 			supported[index] = true
@@ -462,7 +210,7 @@ func TestACutInsideAWorkflowTaskIsRefused(t *testing.T) {
 			if supported[i] {
 				continue
 			}
-			got, err := reconstructAt(history, i, corpusRun)
+			got, err := engine.Reconstruct(t.Context(), history, i, corpusRun)
 			switch {
 			case err != nil && strings.Contains(err.Error(), "at least 3 events"):
 				tooShort++
@@ -480,10 +228,10 @@ func TestACutInsideAWorkflowTaskIsRefused(t *testing.T) {
 				if !ok {
 					continue
 				}
-				after, err := reconstructAt(history, boundary, corpusRun)
+				after, err := engine.Reconstruct(t.Context(), history, boundary, corpusRun)
 				require.NoError(t, err)
-				assert.Empty(t, cmpDiff(after.progress, got.progress),
-					"%s: event %d (%v) is not the state at the next boundary (event %d)", name, event.GetEventId(), event.GetEventType(), after.eventID)
+				assert.Empty(t, cmpDiff(after.Progress, got.Progress),
+					"%s: event %d (%v) is not the state at the next boundary (event %d)", name, event.GetEventId(), event.GetEventType(), after.EventID)
 			}
 		}
 	}
@@ -520,8 +268,8 @@ func TestAHistoryFromANewerInterpreterIsRefused(t *testing.T) {
 			continue
 		}
 
-		at := boundaries(history)
-		_, err := reconstructAt(history, at[len(at)-1], corpusRun)
+		at := engine.Boundaries(history)
+		_, err := engine.Reconstruct(t.Context(), history, at[len(at)-1], corpusRun)
 		require.Error(t, err, "%s: a version this interpreter does not know was replayed as if it did", name)
 		assert.Contains(t, strings.ToLower(err.Error()), "version",
 			"%s: the refusal must name what it refused: %v", name, err)
@@ -536,13 +284,32 @@ func TestAHistoryFromANewerInterpreterIsRefused(t *testing.T) {
 func TestAReconstructionOverTheBoundIsRefusedBeforeItReplays(t *testing.T) {
 	t.Parallel()
 
-	events := make([]*historypb.HistoryEvent, maxReconstructionEvents+1)
+	events := make([]*historypb.HistoryEvent, engine.MaxReconstructionEvents+1)
 	for i := range events {
 		events[i] = &historypb.HistoryEvent{EventId: int64(i + 1)}
 	}
-	_, err := reconstructAt(&historypb.History{Events: events}, 0, corpusRun)
+	_, err := engine.Reconstruct(t.Context(), &historypb.History{Events: events}, 0, corpusRun)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "over the")
+}
+
+// TestACancelledReadIsRefusedBeforeItReplays: a caller that has gone away is
+// not owed a replay. The context's own error comes back, and no reconstruction
+// with it, for the first and the last boundary alike.
+func TestACancelledReadIsRefusedBeforeItReplays(t *testing.T) {
+	t.Parallel()
+
+	for name, history := range recordedHistories(t) {
+		at := engine.Boundaries(history)
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+
+		for _, index := range []int{at[0], at[len(at)-1]} {
+			got, err := engine.Reconstruct(ctx, history, index, corpusRun)
+			require.ErrorIs(t, err, context.Canceled, name)
+			assert.Nil(t, got, name)
+		}
+	}
 }
 
 // TestTheReplayerHasNoWayToDispatchAnActivity is the structural half of "no
@@ -646,27 +413,27 @@ func TestAHistoricalHoldIsWhatTheLiveSessionSaw(t *testing.T) {
 	heldAtBoundary := map[string]int{}
 
 	var previous *v1.DebugSnapshot
-	for _, at := range boundaries(history) {
-		got, err := reconstructAt(history, at, execution, inspections...)
+	for _, at := range engine.Boundaries(history) {
+		got, err := engine.Reconstruct(t.Context(), history, at, execution, inspections...)
 		require.NoError(t, err, "replaying the recorded run through event %d changed the command sequence", history.GetEvents()[at].GetEventId())
-		if got.debug == nil {
+		if got.Debug == nil {
 			continue
 		}
 
 		if previous != nil {
-			assert.GreaterOrEqual(t, got.debug.GetRevision(), previous.GetRevision(), "revisions only move forward")
-			require.GreaterOrEqual(t, len(got.debug.GetObservations()), len(previous.GetObservations()),
-				"an earlier point cannot have seen more than a later one (event %d)", got.eventID)
+			assert.GreaterOrEqual(t, got.Debug.GetRevision(), previous.GetRevision(), "revisions only move forward")
+			require.GreaterOrEqual(t, len(got.Debug.GetObservations()), len(previous.GetObservations()),
+				"an earlier point cannot have seen more than a later one (event %d)", got.EventID)
 			for i, observation := range previous.GetObservations() {
-				assert.Empty(t, cmpDiff(observation, got.debug.GetObservations()[i]),
+				assert.Empty(t, cmpDiff(observation, got.Debug.GetObservations()[i]),
 					"the observations at an earlier point are a prefix of a later one's")
 			}
 		}
-		previous = got.debug
+		previous = got.Debug
 
-		address := got.debug.GetOccurrence().GetAddress()
+		address := got.Debug.GetOccurrence().GetAddress()
 		want, ok := lives[address]
-		if !ok || got.debug.GetState() != v1.DebugRunState_DEBUG_RUN_STATE_HELD || got.debug.GetRevision() != want.snapshot.GetRevision() {
+		if !ok || got.Debug.GetState() != v1.DebugRunState_DEBUG_RUN_STATE_HELD || got.Debug.GetRevision() != want.snapshot.GetRevision() {
 			continue
 		}
 		found[address] = true
@@ -674,25 +441,25 @@ func TestAHistoricalHoldIsWhatTheLiveSessionSaw(t *testing.T) {
 
 		// Equal to the byte, the run's identity included: the caller named the
 		// run, so the replay ran it as that run.
-		assert.Empty(t, cmpDiff(want.snapshot, got.debug),
+		assert.Empty(t, cmpDiff(want.snapshot, got.Debug),
 			"the hold at %s, reconstructed, is not the one the live session read", address)
 
-		require.NoError(t, got.inspectErrs[want.asked])
-		assert.Empty(t, cmpDiff(want.roots, got.inspected[want.asked]),
+		require.NoError(t, got.InspectErrs[want.asked])
+		assert.Empty(t, cmpDiff(want.roots, got.Inspected[want.asked]),
 			"an inspection of the reconstructed hold at %s differs from the live one", address)
-		other := got.inspectErrs[1-want.asked]
+		other := got.InspectErrs[1-want.asked]
 		require.Error(t, other, "an inspection of a revision the run was not at must be refused, there as it is live")
 	}
 	assert.Equal(t, map[string]bool{"one": true, "two": true}, found, "a hold the live session read was not found in the history")
 
 	// Historical, and not the run as it is now: the run has finished, and the
 	// reconstructions of its holds are of points well before its end.
-	end := boundaries(history)
-	final, err := reconstructAt(history, end[len(end)-1], execution)
+	end := engine.Boundaries(history)
+	final, err := engine.Reconstruct(t.Context(), history, end[len(end)-1], execution)
 	require.NoError(t, err)
 	for address, at := range heldAtBoundary {
 		assert.Less(t, at, end[len(end)-1], "the hold at %s was found only at the end", address)
-		assert.Greater(t, final.debug.GetRevision(), lives[address].snapshot.GetRevision(),
+		assert.Greater(t, final.Debug.GetRevision(), lives[address].snapshot.GetRevision(),
 			"the run's last state must be past the hold at %s, or this reconstructed nothing", address)
 	}
 }
@@ -724,7 +491,7 @@ func cmpDiff(want, got proto.Message) string {
 // N boundaries pays N of them.
 func BenchmarkReconstructionToTarget(b *testing.B) {
 	for name, history := range recordedHistories(b) {
-		at := boundaries(history)
+		at := engine.Boundaries(history)
 		for _, position := range []struct {
 			label string
 			index int
@@ -732,7 +499,7 @@ func BenchmarkReconstructionToTarget(b *testing.B) {
 			b.Run(fmt.Sprintf("%s/%s", name, position.label), func(b *testing.B) {
 				b.ReportMetric(float64(position.index+1), "events")
 				for b.Loop() {
-					if _, err := reconstructAt(history, position.index, corpusRun); err != nil {
+					if _, err := engine.Reconstruct(b.Context(), history, position.index, corpusRun); err != nil {
 						b.Fatal(err)
 					}
 				}
@@ -765,32 +532,32 @@ func TestReconstructingALongRunBackwardCostsTheSumOfItsPrefixes(t *testing.T) {
 
 	history := recordedHistory(t, temporal, run.GetID(), run.GetRunID())
 	execution := workflow.Execution{ID: run.GetID(), RunID: run.GetRunID()}
-	at := boundaries(history)
+	at := engine.Boundaries(history)
 	require.Greater(t, len(at), steps, "fewer boundaries than steps, so the walk does not visit each step")
 
 	var total time.Duration
 	var replayed int
 	for k := len(at) - 1; k >= 0; k-- {
 		started := time.Now()
-		got, err := reconstructAt(history, at[k], execution)
+		got, err := engine.Reconstruct(t.Context(), history, at[k], execution)
 		total += time.Since(started)
 		require.NoError(t, err)
 		replayed += at[k] + 1
 
-		if got.progress.GetStepId() == "" {
+		if got.Progress.GetStepId() == "" {
 			continue
 		}
 		// The step the run was at when the boundary's task began, with every
 		// step before it complete.
 		var index int
-		_, err = fmt.Sscanf(got.progress.GetStepId(), "s%03d", &index)
+		_, err = fmt.Sscanf(got.Progress.GetStepId(), "s%03d", &index)
 		require.NoError(t, err)
 		want := int32(index)
 		if k == len(at)-1 {
 			// The closed run's last state: its last step has finished.
 			want++
 		}
-		assert.Equal(t, want, got.progress.GetCompletedSteps(), "event %d", got.eventID)
+		assert.Equal(t, want, got.Progress.GetCompletedSteps(), "event %d", got.EventID)
 	}
 	t.Logf("%d boundaries over %d events: %d events replayed in %s (%s per boundary)",
 		len(at), len(history.GetEvents()), replayed, total, total/time.Duration(len(at)))
@@ -825,11 +592,11 @@ func TestACancelledRunReconstructsAsHoldingNoWaits(t *testing.T) {
 	history := recordedHistory(t, temporal, run.GetID(), run.GetRunID())
 	execution := workflow.Execution{ID: run.GetID(), RunID: run.GetRunID()}
 
-	var parked, closed *reconstruction
-	for _, at := range boundaries(history) {
-		got, err := reconstructAt(history, at, execution)
+	var parked, closed *engine.Reconstruction
+	for _, at := range engine.Boundaries(history) {
+		got, err := engine.Reconstruct(t.Context(), history, at, execution)
 		require.NoError(t, err)
-		if len(got.progress.GetPendingWaits()) == 2 {
+		if len(got.Progress.GetPendingWaits()) == 2 {
 			parked = got
 		}
 		if history.GetEvents()[at].GetEventType() == enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_CANCELED {
@@ -838,7 +605,7 @@ func TestACancelledRunReconstructsAsHoldingNoWaits(t *testing.T) {
 	}
 	require.NotNil(t, parked, "no point showed both waits, so this proves nothing")
 	require.NotNil(t, closed, "the history has no cancelled end")
-	assert.Empty(t, closed.progress.GetPendingWaits(), "a cancelled run holds no waits")
+	assert.Empty(t, closed.Progress.GetPendingWaits(), "a cancelled run holds no waits")
 }
 
 // TestEveryWayARunEndsIsReconstructedAsItWas records a run of each way the
@@ -908,10 +675,10 @@ func TestEveryWayARunEndsIsReconstructedAsItWas(t *testing.T) {
 			last := history.GetEvents()[len(history.GetEvents())-1]
 			require.Equal(t, e.event, last.GetEventType())
 
-			got, err := reconstructAt(history, len(history.GetEvents())-1, workflow.Execution{ID: run.GetID(), RunID: run.GetRunID()})
+			got, err := engine.Reconstruct(t.Context(), history, len(history.GetEvents())-1, workflow.Execution{ID: run.GetID(), RunID: run.GetRunID()})
 			require.NoError(t, err)
-			assert.Equal(t, e.step, got.progress.GetStepId())
-			assert.Equal(t, e.waiting, len(got.progress.GetPendingWaits()) > 0,
+			assert.Equal(t, e.step, got.Progress.GetStepId())
+			assert.Equal(t, e.waiting, len(got.Progress.GetPendingWaits()) > 0,
 				"whether the reconstruction still shows the wait the run was parked on")
 		})
 	}
