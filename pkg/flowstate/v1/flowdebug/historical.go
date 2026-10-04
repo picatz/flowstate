@@ -311,6 +311,14 @@ func (h *Historical) move(ctx context.Context, requestID string, expected uint64
 	}
 
 	h.mu.Lock()
+	if h.closed {
+		// Closed while the read was in flight: the session is over, and a
+		// move now would close a channel Close already closed and report an
+		// applied move on a target nobody is attached to.
+		h.mu.Unlock()
+
+		return nil, ErrRunOver
+	}
 	h.at = index
 	h.here = answer
 	h.revision++

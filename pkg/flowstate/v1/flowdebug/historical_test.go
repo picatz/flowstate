@@ -310,3 +310,35 @@ func TestAHistoricalRefusesAnAnswerForAPointItDidNotAskFor(t *testing.T) {
 	_, err = h.Back(t.Context(), "wrong", 0)
 	require.Error(t, err, "an answer for another event is a server fault, not a position")
 }
+
+// TestAClosedSessionIsNotMovedByAReadStillInFlight: closing while a move is
+// reading ends the session, and the move neither panics on the channel Close
+// already closed nor reports itself applied.
+func TestAClosedSessionIsNotMovedByAReadStillInFlight(t *testing.T) {
+	t.Parallel()
+
+	reading, release := make(chan struct{}), make(chan struct{})
+	read := func(_ context.Context, event int64) (*v1.DebugHistoryResponse, error) {
+		if event == 0 {
+			return recordedAt(21), nil
+		}
+		close(reading)
+		<-release
+
+		return recordedAt(event), nil
+	}
+	h, err := flowdebug.OpenHistorical(t.Context(), read)
+	require.NoError(t, err)
+
+	moved := make(chan error, 1)
+	go func() {
+		_, err := h.Back(context.Background(), "back", 0)
+		moved <- err
+	}()
+	<-reading
+	require.NoError(t, h.Close())
+	close(release)
+
+	assert.ErrorIs(t, <-moved, flowdebug.ErrRunOver)
+	assert.Equal(t, 3, h.Position(), "a closed session stays where it was")
+}
