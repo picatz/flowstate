@@ -42,17 +42,16 @@ description: Moves money between two ledger accounts, requiring a role-authorize
 # shape for the real thing.
 #
 # Separation of duties here is `distinct_from_starter: true` on
-# `transfer-approved` itself (#207) - enforced by `FlowstateServer.Signal`
+# `transfer-approved` itself - enforced by `FlowstateServer.Signal`
 # (and, locally, by the identical `v1.SignalPolicyCheck` `flow test` and
 # `flow run local` call) before Temporal ever sees the signal, rather than
-# restated as a `run.identity` comparison in every step's own `if:` the way
-# this file used to carry it. What reaches `debit`/`credit`/`notify_settlement`
+# restated as a `run.identity` comparison in every step's own `if:`. What reaches `debit`/`credit`/`notify_settlement`
 # below was already attested, already role-checked, and already confirmed
 # distinct from whoever started this run - the workflow's own logic is just
 # "did the desk say yes." What this file does not add beyond that is a
 # `flow fix`-safe way to stop its own author from deleting `signals:` or
-# loosening a step's `if:` - see approval-gate's header, gap 3, #187. That
-# gap is identical here.
+# loosening a step's `if:`; a deployment-side `--task-policy` is the author-proof
+# complement (see task-shape-policy).
 inputs:
   from_account_id:
     type: string
@@ -137,12 +136,10 @@ steps:
       outputs:
         # What the desk said, stated ONCE here on the step that produced it,
         # the way approval-gate shapes its gate. The raw facts below - did a
-        # payload arrive, what was in it, did the gate lapse - used to be
-        # re-derived in every reader: `debit`/`credit`/`notify_settlement` all
-        # asked `has(payload.approved) && payload.approved`, `rejected` and
-        # `refused_malformed_payload` hand-negated pieces of it, and both
-        # `outputs:` spelled the whole ladder again. Every reader now compares
-        # this one recorded name.
+        # payload arrive, what was in it, did the gate lapse - would otherwise be
+        # re-derived in every reader, each hand-negating pieces of it and both
+        # `outputs:` spelling the whole ladder again. Every reader compares
+        # this one recorded name instead.
         #
         # Three states, because these are the three things a *payload* can
         # say. The fourth ending, the lapse, is `timed_out` below and belongs

@@ -7,10 +7,9 @@ description: Two keys about the file itself rather than about the work it does.
 # to work out why it does what it does.
 #
 # `edition:` names the grammar the file is written in, and every Flowfile carries
-# one. It used to be optional, with absent meaning "the current edition" — which
-# made a file's grammar depend on which build read it, and quietly re-read an old
-# file as a new one. Required, a file says what it is, and a build either has that
-# grammar or refuses.
+# one. It is required because an absent edition would make a file's grammar depend
+# on which build read it, and quietly re-read an old file as a new one. With it, a
+# file says what it is, and a build either has that grammar or refuses.
 #
 # What it buys is a refusal. Surface syntax here gets no deprecation window — a
 # spelling that is replaced is *gone*, because carrying two spellings costs the

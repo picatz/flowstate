@@ -2,10 +2,9 @@ edition: v2026.4
 name: callback-address
 description: Hands an external reviewer the address of this very run, then waits for the signal that address will carry back.
 # `approval-gate` and `expense-approval` wait for a person who already knows
-# which run to answer. This is the other half of that shape, and it is the one
-# that could not be written at all until `run.workflow_id` and `run.run_id`
-# existed: a workload that has to *tell* an outside system where to send the
-# answer, before there is any answer to send.
+# which run to answer. This is the other half of that shape, which `run.workflow_id` and
+# `run.run_id` make writable: a workload that has to *tell* an outside system
+# where to send the answer, before there is any answer to send.
 #
 # That is Temporal's own `expense` sample, and the comparison is worth stating
 # because the two designs differ in exactly one place. There, the workflow hands
@@ -80,8 +79,8 @@ steps:
       timeout: 6s
 
   # What the reviewer decided, named ONCE here rather than re-derived at every
-  # branch below and again in the `outcome` output — the decomposition #540
-  # asks for, over what used to be a `has()`-guarded read repeated three ways.
+  # branch below and again in the `outcome` output, rather than a `has()`-guarded
+  # read repeated three ways.
   # `.?accepted` is an optional select: present-and-true or present-and-false
   # when the reviewer actually answered, absent on a lapsed gate or a payload
   # that answered with something else entirely — both of which this reads as
@@ -90,10 +89,9 @@ steps:
     value: '${steps.decision.payload.?accepted.optMap(accepted, accepted ? "accepted" : "rejected").orValue("abandoned")}'
 
   # One switch over the named outcome, rather than three siblings each
-  # re-testing the payload or the timeout by hand. `rejected` and `abandoned`
-  # used to hand-negate each other's condition — the exact copy a De Morgan
-  # slip corrupts silently — and nothing tied the three together as a single
-  # dispatch a validator could check.
+  # re-testing the payload or the timeout by hand. Hand-negated sibling
+  # conditions are the copy a De Morgan slip corrupts silently, and nothing ties
+  # them together as a single dispatch a validator could check.
   - id: report
     switch:
       value: ${steps.outcome.value}

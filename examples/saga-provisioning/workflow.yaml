@@ -1,7 +1,8 @@
 # Provision three things, fail on the third, and take the first two back.
 #
-# This is the example that ends in a *failed* run on purpose, and it is the only
-# one in the corpus that does. A saga has nothing to show when everything works:
+# This is the smallest example that ends in a *failed* run on purpose
+# (`order-fulfillment` shows the same mechanism over a business transaction).
+# A saga has nothing to show when everything works:
 # the compensations are written, nothing runs them, and the file proves only that
 # it compiles. What is worth seeing is the other half — what the run leaves behind
 # when a step in the middle of it cannot be made to work.
