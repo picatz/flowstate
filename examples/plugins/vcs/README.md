@@ -68,56 +68,11 @@ This one makes a real, unauthenticated request to `github.com` to clone
 for years specifically as a test fixture) - it will fail without internet
 access, the same as any of the network examples one level up.
 
-## Why this is not `examples/vcs/workflow.yaml`
+## How this is checked
 
-Every plugin example in this repository lives a directory deeper than the
-rest, and [`examples/README.md`](../../README.md) says why in full: the
-corpus enumerated as `examples/*/workflow.yaml` is checked with the built-in
-task registry alone, by `flow validate examples/*/workflow.yaml` and by
-several tests, and a file naming a plugin's task is meant to be refused by a
-process that has not loaded that plugin:
-
-```console
-$ flow validate examples/plugins/vcs/workflow.yaml
-examples/plugins/vcs/workflow.yaml:20:5: step "history": no plugin task "vcs.log" is
-registered here; if the "vcs" plugin is installed on the worker this will run on, the
-file is fine and this process simply has not loaded it; `flow plugins` shows what a
-plugin directory provides
-examples/plugins/vcs/workflow.yaml:24:5: step "changes": no plugin task "vcs.diff" is
-registered here; if the "vcs" plugin is installed on the worker this will run on, the
-file is fine and this process simply has not loaded it; `flow plugins` shows what a
-plugin directory provides
-ERROR
-validation failed
-```
-
-That is the correct answer from a process that has not been told about this
-plugin, and it is worth keeping correct rather than growing an exception for
-this directory.
-
-Telling it is the other half, and it is a flag rather than an exception:
-`flow validate --plugin-dir <dir> examples/plugins/vcs/workflow.yaml` launches
-the plugins there and checks this file against the tasks and input schemas they
-provide, and `flow tasks --plugin-dir <dir>` lists them with the plugin each one
-came from (#724, #710). Build this plugin first — see
-[`plugins/vcs`](../../../plugins/vcs), which is a module of its own.
-
-## What proves this file is reachable
-
-`TestAFlowfileCanNameTheVCSPluginsTasks`, in
-[`plugins/vcs/reachable`](../../../plugins/vcs/reachable), is this file's
-equivalent of `TestAFlowfileCanNameAPluginTask` for `examples/plugins/greet`
-in `pkg/flowstate/v1/plugin`: it builds this plugin as a real, separately
-compiled binary, opens a [`plugin.Host`](../../../pkg/flowstate/v1/plugin)
-over it, and validates this exact file from disk before and after
-registration - refused with a diagnostic naming `vcs.log` beforehand, accepted
-afterward, its inputs checked against the descriptors the plugin actually
-shipped. It lives in its own package under `plugins/vcs` rather than beside
-`main.go`, and rather than in `pkg/flowstate/v1/plugin`: not in the root
-module, because that module must never depend on go-git, and not beside
-`main.go`, because that file imports this plugin's own generated types,
-which would register its schema in the test binary's own global proto
-registry before the test ever ran - see the package doc on
-`plugins/vcs/reachable` for what that would have hidden. It does not run
-`vcs.log` or `vcs.diff` for real, since both reach a real repository over
-HTTPS and that is not what this test is for.
+The file sits under `examples/plugins/` so the built-in-only corpus checks skip
+it; [`examples/README.md`](../../README.md#plugin-examples) says why and how it is
+validated against the plugin's real schema. `plugins/vcs/reachable` builds the
+binary and proves the files are refused before the plugin is registered and
+accepted after. It never runs `vcs.log` or `vcs.diff`, which reach a real
+repository over HTTPS. Build the plugin first; it is a module of its own.
