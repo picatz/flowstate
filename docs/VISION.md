@@ -15,10 +15,9 @@ be cited as though it were shipped.
 
 ## What the platform is for
 
-Not a replacement for CI: the engine targets anything that has to finish
-correctly despite crashes, network failures, and long waits, including the
-release and deployment work a CI job hands off. The workload shapes to design
-toward, beyond the obvious pipelines: security orchestration and response,
+The engine targets anything that has to finish correctly despite crashes,
+network failures, and long waits. CI/CD is one such workload, and it is not the
+center. The workload shapes to design toward: security orchestration and response,
 agentic investigations, business processes with humans in the loop, chat-driven
 operations (Slack/Discord bots as both trigger and approval surface), and
 LLM-driven workloads — including the platform powering an agentic system itself,
