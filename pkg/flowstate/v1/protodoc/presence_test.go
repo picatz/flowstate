@@ -455,7 +455,8 @@ func TestRunAndReportsProseIsPresent(t *testing.T) {
 		}
 	}
 
-	// 202 since ScheduleDivergenceReport.invariant joined to tell a faulted
+	// 204 since PendingWait.approvals and approvals_needed joined to report a
+	// quorum's tally on a parked wait; 202 since ScheduleDivergenceReport.invariant joined to tell a faulted
 	// run's broken claim from a schedule's divergence; 201 since TestReport.skipped and SkippedTestCase (a message, its two
 	// fields, and the field that holds them) joined to say which selected
 	// cases were not run; 197 since RunState.debug joined the run model to carry a debug session
@@ -464,8 +465,8 @@ func TestRunAndReportsProseIsPresent(t *testing.T) {
 	// that holds them. The count is pinned so that adding a declaration is a
 	// deliberate act with its prose written at the same moment, rather than
 	// something the walk silently absorbs.
-	if checked != 202 {
-		t.Errorf("run/report walk checked %d declarations; want 202", checked)
+	if checked != 204 {
+		t.Errorf("run/report walk checked %d declarations; want 204", checked)
 	}
 	if len(missing) > 0 {
 		sort.Strings(missing)

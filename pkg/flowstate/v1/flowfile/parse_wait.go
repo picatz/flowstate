@@ -49,7 +49,10 @@ var signalKeys = []string{"name", "timeout", "prompt", "outputs"}
 // point: a batch takes `max_batch:` and a single wait does not, so an author who
 // writes `max_batch:` under the wrong one is told so by the ordinary
 // unknown-key diagnostic rather than having it silently accepted and ignored.
-var signalBatchKeys = []string{"name", "max_batch", "timeout", "prompt", "outputs"}
+var signalBatchKeys = []string{"name", "max_batch", "timeout", "prompt", "outputs", "quorum"}
+
+// signalQuorumKeys are the keys of a `wait_for_signals:`'s `quorum:`.
+var signalQuorumKeys = []string{"approve", "distinct", "exclude", "veto"}
 
 // parseDuration reads a duration the way the DSL writes one, which is
 // [v1.ParseDuration] — Go's syntax, plus days.
@@ -554,7 +557,145 @@ func (c *compiler) waitForSignals(n ast.Node, path string, r ref) *v1.Wait {
 		}
 	}
 
+	if f, found := fields.get("quorum"); found {
+		quorum := c.signalQuorum(f.value, fieldPath(path, "quorum"), r)
+		if quorum == nil {
+			return nil
+		}
+		batch.Quorum = quorum
+
+		// The bound `approve:` is read against, checked here where both keys are
+		// in hand. [v1.SignalBatchSize] is the one reader of it, so the number
+		// the message names is the one the drivers enforce.
+		if bound := v1.SignalBatchSize(batch); int(quorum.GetApprove()) > bound {
+			c.report(spanOfNode(f.value), ref{step: r.step, path: fieldPath(fieldPath(path, "quorum"), "approve"), label: "wait_for_signals quorum approve"},
+				"is %d, but this wait takes at most %d deliveries (`max_batch:`), so the quorum could never be met; lower it or raise `max_batch:`",
+				quorum.GetApprove(), bound)
+			return nil
+		}
+	}
+
 	return wait
+}
+
+// signalQuorum compiles a `wait_for_signals:`'s `quorum:`.
+//
+//	quorum:
+//	  approve: 2
+//	  distinct: true
+//	  exclude: [${run.identity.subject}]
+//	  veto: ${payload.approved == false}
+//
+// `approve:` is required: a quorum with no count is not a smaller quorum, it is a
+// wait that decides nothing. Every other key is optional, and an absent one is the
+// default [v1.SignalQuorum] states: distinct approvers, no exclusions, and a veto
+// that is an `approved: false` payload.
+func (c *compiler) signalQuorum(n ast.Node, path string, r ref) *v1.SignalQuorum {
+	quorumRef := ref{step: r.step, path: path, label: "wait_for_signals quorum"}
+
+	c.pos.record(path, spanOfNode(c.resolveQuiet(n)))
+
+	fields, ok := c.fields(n, path, quorumRef, signalQuorumKeys)
+	if !ok {
+		c.report(spanOfNode(n), quorumRef,
+			"is a mapping saying how many approvals decide the wait: `approve:` (required), and optionally `distinct:`, `exclude:` and `veto:`")
+		return nil
+	}
+
+	approve, found := fields.get("approve")
+	if !found {
+		c.report(spanOfNode(n), quorumRef,
+			"needs `approve:`, how many approvals complete it; write `approve: 2`")
+		return nil
+	}
+
+	approvePath := fieldPath(path, "approve")
+	count, ok := c.integer(approve.value, approvePath,
+		ref{step: r.step, path: approvePath, label: "wait_for_signals quorum approve"}, 1, v1.MaxSignalBatch)
+	if !ok {
+		return nil
+	}
+
+	quorum := &v1.SignalQuorum{Approve: uint32(count)}
+	failed := false
+
+	if f, found := fields.get("distinct"); found {
+		distinctPath := fieldPath(path, "distinct")
+		if distinct, ok := c.boolean(f.value, distinctPath,
+			ref{step: r.step, path: distinctPath, label: "wait_for_signals quorum distinct"}); ok {
+			quorum.Distinct = &distinct
+		} else {
+			failed = true
+		}
+	}
+
+	if f, found := fields.get("exclude"); found {
+		excludePath := fieldPath(path, "exclude")
+		excludeRef := ref{step: r.step, path: excludePath, label: "wait_for_signals quorum exclude"}
+		c.pos.record(excludePath, spanOfNode(c.resolveQuiet(f.value)))
+
+		sequence, ok := c.resolve(f.value, excludePath, excludeRef).(*ast.SequenceNode)
+		switch {
+		case !ok:
+			c.report(spanOfNode(f.value), excludeRef,
+				"must be a list of subjects or expressions producing them, such as `[${run.identity.subject}]`")
+			failed = true
+
+		case len(sequence.Values) > 16:
+			c.report(spanOfNode(f.value), excludeRef, "has %d entries; at most 16", len(sequence.Values))
+			failed = true
+
+		default:
+			for i, item := range sequence.Values {
+				itemPath := indexPath(excludePath, i)
+				itemRef := ref{step: r.step, path: itemPath, label: "wait_for_signals quorum exclude"}
+
+				value := c.quorumValue(item, itemPath, itemRef, false)
+				if value == nil {
+					failed = true
+
+					continue
+				}
+				quorum.Exclude = append(quorum.Exclude, value)
+			}
+		}
+	}
+
+	if f, found := fields.get("veto"); found {
+		vetoPath := fieldPath(path, "veto")
+		veto := c.quorumValue(f.value, vetoPath,
+			ref{step: r.step, path: vetoPath, label: "wait_for_signals quorum veto"}, true)
+		if veto == nil {
+			failed = true
+		} else {
+			quorum.Veto = veto
+		}
+	}
+
+	if failed {
+		return nil
+	}
+
+	return quorum
+}
+
+// quorumValue compiles one expression position of a `quorum:`, refusing a secret
+// reference for the reason read at [notInQuorumHelp].
+//
+// asExpression is whether a bare string is expression source (`veto:`, a
+// boolean condition, as `if:` is) or text unless fenced (`exclude:`, where a
+// plain string is a subject to exclude).
+func (c *compiler) quorumValue(n ast.Node, path string, r ref, asExpression bool) *v1.Value {
+	if resolved := c.resolveQuiet(n); resolved != nil && c.holdsSecretMarker(resolved) {
+		c.report(c.secretMarkerSpan(resolved), r, "%s", notInQuorumHelp)
+		return nil
+	}
+
+	if asExpression {
+		return c.exprValue(n, path, r)
+	}
+
+	return c.inputValue(n, path, r)
 }
 
 // signalBatchWait builds the batch wait, reporting a name the schema will not

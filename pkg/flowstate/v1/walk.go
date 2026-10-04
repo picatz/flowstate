@@ -154,6 +154,11 @@ const (
 	SlotWaitBatchPrompt
 	// SlotWaitBatchOutput is one entry of a `wait_for_signals:`'s `outputs:`.
 	SlotWaitBatchOutput
+	// SlotWaitQuorumExclude is one entry of a `wait_for_signals:` quorum's
+	// `exclude:`: an expression naming subjects whose approvals do not count.
+	SlotWaitQuorumExclude
+	// SlotWaitQuorumVeto is a `wait_for_signals:` quorum's `veto:`.
+	SlotWaitQuorumVeto
 
 	// SlotConcurrencyKey is the workflow's `concurrency:` `key:` — the resource
 	// at most one run of this workflow may hold at a time. Evaluated at submit
@@ -219,9 +224,13 @@ func ValueSlotSchemaPath() map[ValueSlot]string {
 		SlotWaitSignalOutput: "Workflow.steps[].wait.signal.outputs{}",
 		SlotWaitBatchPrompt:  "Workflow.steps[].wait.signal_batch.prompt",
 		SlotWaitBatchOutput:  "Workflow.steps[].wait.signal_batch.outputs{}",
-		SlotStepValue:        "Workflow.steps[].value",
-		SlotCallArgument:     "Workflow.steps[].call.arguments{}",
-		SlotFailMessage:      "Workflow.steps[].fail.message",
+
+		SlotWaitQuorumExclude: "Workflow.steps[].wait.signal_batch.quorum.exclude[]",
+		SlotWaitQuorumVeto:    "Workflow.steps[].wait.signal_batch.quorum.veto",
+
+		SlotStepValue:    "Workflow.steps[].value",
+		SlotCallArgument: "Workflow.steps[].call.arguments{}",
+		SlotFailMessage:  "Workflow.steps[].fail.message",
 
 		SlotConcurrencyKey: "Workflow.concurrency.key",
 		SlotDebugSubject:   "Workflow.debug.allow[].subject_from",
@@ -369,6 +378,10 @@ func (s ValueSite) Field() string {
 		return "prompt"
 	case SlotWaitSignalOutput, SlotWaitBatchOutput:
 		return "outputs." + s.Name
+	case SlotWaitQuorumExclude:
+		return "quorum.exclude[" + strconv.Itoa(s.Index) + "]"
+	case SlotWaitQuorumVeto:
+		return "quorum.veto"
 	case SlotCallArgument:
 		return "with." + s.Name
 	case SlotConcurrencyKey:
@@ -714,6 +727,14 @@ func walkNodeValues(node *Node, w Walk) {
 		for _, name := range slices.Sorted(maps.Keys(shaped)) {
 			w.value(ValueSite{Slot: SlotWaitSignalOutput, Step: id, Name: name, Value: shaped[name]})
 		}
+
+		// A quorum's two expression positions: evaluated against every delivery
+		// the wait takes, so a reference in either is as live as one in `outputs:`.
+		quorum := kind.Wait.GetSignalBatch().GetQuorum()
+		for i, excluded := range quorum.GetExclude() {
+			w.value(ValueSite{Slot: SlotWaitQuorumExclude, Step: id, Index: i, Value: excluded})
+		}
+		w.value(ValueSite{Slot: SlotWaitQuorumVeto, Step: id, Value: quorum.GetVeto()})
 
 		batchShaped := kind.Wait.GetSignalBatch().GetOutputs()
 		for _, name := range slices.Sorted(maps.Keys(batchShaped)) {

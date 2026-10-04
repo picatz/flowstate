@@ -664,6 +664,20 @@ message PendingWait {
   // are reading part of the question. Truncation is at a UTF-8 boundary, so what
   // is reported is always text rather than half a rune.
   bool prompt_truncated = 7;
+
+  // Approvals is how many approvals the gate has counted so far, set only on a
+  // `wait_for_signals:` that declares a `quorum:`. Read it with
+  // [approvals_needed]: "1 of 2".
+  //
+  // Both drivers fill it from the one tally the quorum wait decides with, so a
+  // run reports the count it will act on. It changes as deliveries are taken,
+  // which is the one thing about this message that is not fixed when the wait
+  // parks.
+  uint32 approvals = 8;
+
+  // ApprovalsNeeded is the quorum's `approve:`, and zero on every wait that is
+  // not a quorum.
+  uint32 approvals_needed = 9;
 }
 
 // Frame is one level of the execution position within a workflow.

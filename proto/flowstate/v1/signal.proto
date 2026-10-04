@@ -307,6 +307,12 @@ message Signal {
 // because the policy is not at receive time — there is nothing new to enforce
 // here, only something to keep true.
 message SignalBatch {
+  option (buf.validate.message).cel = {
+    id: "signal_batch.quorum_approve_within_bound"
+    message: "quorum.approve may not exceed the batch bound (max_batch, or 128 when it is zero), because a quorum counts approvals inside the deliveries one wait may take"
+    expression: "!has(this.quorum) || this.quorum.approve <= (this.max_batch == 0 ? 128u : uint(this.max_batch))"
+  };
+
   // Name is what a sender addresses, under exactly `Signal.name`'s rules — the
   // same channel, read a different way.
   string name = 1 [
@@ -353,6 +359,93 @@ message SignalBatch {
   // and refused any reach to a `sensitive:` input or a `${secret(...)}` by
   // [CheckWaitPromptsAreAskable].
   Value prompt = 4;
+
+  // Quorum turns the wait into a decision: "two of these three must approve",
+  // with distinct approvers, a veto, and a record of who approved.
+  //
+  // Absent, the wait is the burst drain above and nothing about it changes.
+  // Present, it *replaces* the drain's shape (a first delivery and then
+  // whatever is already queued) with a loop that takes one delivery at a time
+  // until the quorum is decided or the wait's `timeout:` lapses; see
+  // [SignalQuorum] for how a delivery counts. Deliveries after the decision are
+  // not taken by this wait and stay on the channel for a later one, exactly as a
+  // delivery beyond `max_batch` does.
+  //
+  // A quorum wait's outputs are the batch's three (`deliveries`, `count`,
+  // `timed_out`) plus `decision`, `approvals` and `vetoed_by`; `outputs:` shapes
+  // them and sees all six. `max_batch` is the bound on `approve`.
+  SignalQuorum quorum = 5;
+}
+
+// SignalQuorum says how many approvals decide a `wait_for_signals:`, who may
+// count toward them, and what ends the wait early.
+//
+// # What counts
+//
+// A delivery is an *approval* when its payload's `approved` is boolean true,
+// which is exactly what the browser gate page sends. It is a *veto* when
+// [veto] is true for it (by default, when its payload's `approved` is boolean
+// false). A delivery that is neither is ignored: it is consumed by the wait and
+// reported in `deliveries`, but it moves nothing.
+//
+// A veto is checked first and ends the wait at once, whatever the count, so a
+// delivery that is both a veto and an approval vetoes. Admission is not
+// repeated here: the `signals:` policy refuses a sender before a delivery ever
+// reaches a wait, on both drivers, so a refused sender can neither approve nor
+// veto, and everything this message decides is about deliveries the policy
+// already let through.
+//
+// # Evaluated the same on both drivers
+//
+// The decision is one pure tally in `pkg/flowstate/v1` that both drivers call
+// as each delivery is taken, with [exclude] and [veto] evaluated by the same
+// evaluator that evaluates the batch's own `prompt:` and `outputs:`. Each sees
+// the enclosing scope (`run`, `inputs`, `steps`, ...), `now`, and the delivery
+// bound bare as `payload` and `sender`, as `outputs:` binds a single wait's.
+message SignalQuorum {
+  // Approve is how many counted approvals complete the wait. At least one, and
+  // no more than the batch's bound (a quorum is counted among at most that many
+  // deliveries), which the enclosing [SignalBatch]'s own constraint checks.
+  uint32 approve = 1 [
+    (buf.validate.field).required = true,
+    (buf.validate.field).uint32 = {
+      gte: 1
+      lte: 128
+    }
+  ];
+
+  // Distinct requires each counted approval to come from a different sender.
+  // Unset means true: a quorum that one person could meet by approving twice is
+  // almost never what was meant, so the safe reading is the default and
+  // `distinct: false` is the spelling that opts out.
+  //
+  // A sender is the verified identity's subject qualified by its issuer (see
+  // `QualifiedSubject`), the same comparison the `signals:` policy uses. A
+  // delivery with no identity subject (a local or unattested one) has nothing
+  // to be distinct by, so under a distinct quorum it never counts as an approval
+  // and is ignored: it fails closed rather than being counted as an anonymous
+  // somebody. A repeat approval from an already-counted sender is ignored too,
+  // and a later delivery from that sender is still considered for a veto.
+  optional bool distinct = 2;
+
+  // Exclude lists expressions naming subjects whose approvals do not count, the
+  // way four-eyes is spelled: `${run.identity.subject}` ignores the run
+  // starter's own approval. Each is evaluated for every delivery and must
+  // produce a string or a list of strings; a delivery whose identity subject
+  // equals any of them is not counted as an approval. It still can veto.
+  //
+  // An expression that does not evaluate, or produces anything else, fails the
+  // step: silently counting an approval an author asked to exclude is the
+  // direction this must not fail in. A delivery with an empty subject matches an
+  // empty excluded subject, so an unattested sender never slips past a run whose
+  // own starter is anonymous.
+  repeated Value exclude = 3 [(buf.validate.field).repeated = {max_items: 16}];
+
+  // Veto is one boolean expression over the delivery that ends the wait with
+  // decision `vetoed` when it is true. Omitted, a delivery whose payload
+  // `approved` is boolean false vetoes. A delivery is checked for a veto before
+  // it is considered an approval, whatever its subject.
+  Value veto = 4;
 }
 
 // SignalSender is who the server attests sent a signal, never what the

@@ -24,11 +24,17 @@ import (
 // outside the run reads it while the run is going: that is the local equivalent
 // of a query reaching a worker, and a test that was handed the answer by the run
 // itself would not be exercising the same thing.
-func runParkedLocally(t *testing.T, spec *v1.Workflow) (*v1.PendingWaits, *v1.LocalSignals, chan error) {
+func runParkedLocally(t *testing.T, spec *v1.Workflow, early ...conformance.PendingSend) (*v1.PendingWaits, *v1.LocalSignals, chan error) {
 	t.Helper()
 
 	waits := v1.NewPendingWaits()
 	signals := v1.NewLocalSignals()
+
+	// Queued before the run starts, so the gate has taken them by the time it
+	// first reports; the durable harness spells it as a signal before the query.
+	for _, send := range early {
+		require.NoError(t, deliverPending(signals, send))
+	}
 
 	ctx := v1.ContextWithPendingWaits(
 		v1.NewContextWithSignalWaiter(t.Context(), signals), waits)
@@ -48,6 +54,17 @@ func runParkedLocally(t *testing.T, spec *v1.Workflow) (*v1.PendingWaits, *v1.Lo
 	return waits, signals, done
 }
 
+// deliverPending sends one case delivery to a local queue, attested when the
+// case names a sender.
+func deliverPending(signals *v1.LocalSignals, send conformance.PendingSend) error {
+	payload := &v1.Node_Outputs{NamedValues: send.Payload}
+	if send.Sender == nil {
+		return signals.Deliver(send.Name, payload)
+	}
+
+	return signals.DeliverFrom(send.Name, payload, send.Sender)
+}
+
 // TestALocalRunSaysWhatItIsWaitingFor runs the shared table against the local
 // driver. The durable driver runs the same one, which is what keeps a gate from
 // describing itself differently in a rehearsal than in production.
@@ -58,12 +75,16 @@ func TestALocalRunSaysWhatItIsWaitingFor(t *testing.T) {
 		t.Run(test.Name, func(t *testing.T) {
 			t.Parallel()
 
-			waits, signals, done := runParkedLocally(t, test.Workflow)
+			waits, signals, done := runParkedLocally(t, test.Workflow, test.Early...)
 
 			parked, truncated := waits.Snapshot()
 			conformance.AssertPendingWaits(t, parked, test.Want)
 			assert.False(t, truncated,
 				"an answer with a handful of waits in it called itself truncated")
+
+			for _, send := range test.Finish {
+				require.NoError(t, deliverPending(signals, send))
+			}
 
 			for _, name := range test.Release {
 				require.Eventually(t, func() bool {

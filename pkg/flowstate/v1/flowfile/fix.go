@@ -1928,6 +1928,12 @@ func (f *fixer) expressions(n ast.Node, steps map[string]bool) {
 				// of sets keyed off which arm opened this subtree.
 				steps = without(steps, waitShapingNames)
 			}
+			if named && waiting && name == waitQuorumKey {
+				// A quorum's `exclude:` and `veto:` see the delivery bound bare, as
+				// `payload` and `sender`, so a step of either name is not what is
+				// written here. See [waitQuorumKey].
+				steps = without(steps, waitQuorumNames)
+			}
 			if named && name == triggersKey {
 				// `event` is bound throughout a trigger and nowhere else in the
 				// language. Subtracted for this subtree alone, the way `now` is below,

@@ -140,7 +140,7 @@ var dslKeys = map[string][]dslKey{
 			"Write `wait_for_signal: deploy-approved`, or a mapping with `name:` and `timeout:`. " +
 			"What the sender sent becomes this step's outputs. " + oneStepKind},
 		{name: "wait_for_signals", detail: "string or map", docs: "Wait for a named signal and then take every other delivery already buffered for it, in one step. " +
-			"Write `wait_for_signals: order-placed`, or a mapping with `name:`, `max_batch:` and `timeout:`. " +
+			"Write `wait_for_signals: order-placed`, or a mapping with `name:`, `max_batch:`, `timeout:` and `quorum:`. " +
 			"Reports `" + v1.DeliveriesOutput + "` (a list of `{" + v1.PayloadOutput + ", " + v1.SenderOutput + "}`, oldest first), `" +
 			v1.CountOutput + "`, and `" + v1.TimedOutOutput + "`. " + oneStepKind + "\n\n" +
 			"This is the event-accumulator spelling: the alternative is `loop:` around `wait_for_signal:`, which pays a loop iteration — " +
@@ -243,8 +243,23 @@ var dslKeys = map[string][]dslKey{
 		{name: "outputs", detail: "map", docs: "Shapes what this step produces, the way `wait_for_signal:`'s own `outputs:` does - same evaluator, same single moment, and it **replaces** rather than extends.\n\n" +
 			"What differs is the names bound bare: `" + v1.DeliveriesOutput + "`, `" + v1.CountOutput + "`, `" + v1.TimedOutOutput +
 			"`, and `" + v1.NowIdentifier + "`. There is no `" + v1.PayloadOutput + "` and no `" + v1.SenderOutput +
-			"`, because a batch has many of each.\n\n" +
+			"`, because a batch has many of each. With a `quorum:` it also binds `" + v1.DecisionOutput + "`, `" +
+			v1.ApprovalsOutput + "` and `" + v1.VetoedByOutput + "`.\n\n" +
 			"```yaml\noutputs:\n  ids: ${" + v1.DeliveriesOutput + ".map(d, d." + v1.PayloadOutput + ".id)}\n  processed: ${" + v1.CountOutput + "}\n```"},
+		{name: "quorum", detail: "map", docs: "Turns the wait into a decision: `approve:` approvals from distinct senders complete it, a veto ends it at once, and the `timeout:` lapsing ends it with what was counted.\n\n" +
+			"It **replaces** the drain: deliveries are taken one at a time until the quorum is decided, and what arrives after stays buffered for a later wait. " +
+			"Reports `" + v1.DecisionOutput + "` (`approved`, `vetoed` or `timed_out`), `" + v1.ApprovalsOutput + "` (who approved, in order) and `" +
+			v1.VetoedByOutput + "` (who vetoed), beside `" + v1.DeliveriesOutput + "`, `" + v1.CountOutput + "` and `" + v1.TimedOutOutput + "`.\n\n" +
+			"```yaml\nquorum:\n  approve: 2\n  exclude: [${run.identity.subject}]\n```"},
+	},
+	"quorum": {
+		{name: "approve", detail: "int", docs: "How many counted approvals complete the wait, from 1 up to `max_batch:` (itself at most 128). A delivery approves when its payload's `approved` is `true`, which is what the browser gate page sends."},
+		{name: "distinct", detail: "bool", docs: "Whether each counted approval must come from a different sender. Defaults to `true`: a sender is its verified identity subject qualified by its issuer, a repeat approval is ignored, and a delivery with no identity never counts.\n\n" +
+			"`distinct: false` counts every approving delivery."},
+		{name: "exclude", detail: "list", docs: "Subjects whose approvals do not count, each a string or an expression producing a string or a list of them, evaluated per delivery with `" +
+			v1.PayloadOutput + "` and `" + v1.SenderOutput + "` bound. Four-eyes is `[${run.identity.subject}]`, which ignores the run starter's own approval. An excluded sender can still veto."},
+		{name: "veto", detail: "expression", docs: "A boolean over the delivery (`" + v1.PayloadOutput + "`, `" + v1.SenderOutput +
+			"`) that ends the wait with decision `vetoed` when true. Omitted, a delivery whose payload `approved` is `false` vetoes. A refused sender's delivery never reaches the wait, so it cannot veto."},
 	},
 	"for_each": {
 		{name: "items", detail: "expression", docs: "An expression producing the list to iterate, written as `${...}`."},
@@ -390,6 +405,8 @@ func completeAt(doc *document, pos lsp.Position) *lsp.CompletionList {
 		return list(dslCandidates("fail", word, replace))
 	case endsWith(path, "wait_for_signal"):
 		return list(dslCandidates("wait_for_signal", word, replace))
+	case endsWith(path, "wait_for_signals", "quorum"):
+		return list(dslCandidates("quorum", word, replace))
 	case endsWith(path, "wait_for_signals"):
 		return list(dslCandidates("wait_for_signals", word, replace))
 	case endsWith(path, "steps"):
@@ -596,7 +613,7 @@ func bindsClock(key string, path []string) bool {
 		return key == waitUntilKey || key == sleepKey
 	case endsWith(path, "wait_for_signal"), endsWith(path, "wait_for_signals"):
 		return key == signalTimeoutKey
-	case withinWaitOutputsShaping(path):
+	case withinWaitOutputsShaping(path), withinWaitQuorum(path):
 		return true
 	}
 	return false
@@ -633,6 +650,18 @@ func withinWaitOutputsShaping(path []string) bool {
 	return false
 }
 
+// withinWaitQuorum reports whether path descends from a `wait_for_signals:`'s
+// `quorum:`, whose `exclude:` and `veto:` are evaluated in the wait's scope,
+// clock included, with the delivery bound bare.
+func withinWaitQuorum(path []string) bool {
+	for i := 0; i+1 < len(path); i++ {
+		if path[i] == "wait_for_signals" && path[i+1] == "quorum" && i > 0 && path[i-1] == "steps" {
+			return true
+		}
+	}
+	return false
+}
+
 // waitResultCandidates are the names bound bare inside a `wait_for_signal:`'s
 // `outputs:` shaping, and nowhere else in the language.
 //
@@ -645,6 +674,15 @@ func withinWaitOutputsShaping(path []string) bool {
 // outputs and the http task's shaping use the same word, and neither binds these
 // — so the path must show the wait above it.
 func waitResultCandidates(path []string) []celcomplete.Candidate {
+	if withinWaitQuorum(path) {
+		// A quorum's `exclude:` and `veto:` see one delivery, not the wait's
+		// result: see [v1.QuorumTally.Take].
+		return []celcomplete.Candidate{
+			{Name: v1.PayloadOutput, Kind: celcomplete.KindValue, Detail: "map", Docs: waitResultDoc(v1.PayloadOutput)},
+			{Name: v1.SenderOutput, Kind: celcomplete.KindValue, Detail: "map", Docs: waitResultDoc(v1.SenderOutput)},
+		}
+	}
+
 	if endsWith(path, "wait_for_signals", "outputs") {
 		// The batch spelling's own result, which is a different set of names —
 		// see [v1.SignalBatchOutputs]. Offered per arm rather than as a union of
@@ -669,6 +707,27 @@ func waitResultCandidates(path []string) []celcomplete.Candidate {
 				Kind:   celcomplete.KindValue,
 				Detail: "bool",
 				Docs:   waitResultDoc(v1.TimedOutOutput),
+			},
+			// Offered whether or not this wait declares a `quorum:`: the line scan
+			// that answers completion does not see the sibling key. The validator
+			// does, and refuses them on a plain batch.
+			{
+				Name:   v1.DecisionOutput,
+				Kind:   celcomplete.KindValue,
+				Detail: "string (quorum only)",
+				Docs:   waitResultDoc(v1.DecisionOutput),
+			},
+			{
+				Name:   v1.ApprovalsOutput,
+				Kind:   celcomplete.KindValue,
+				Detail: "list (quorum only)",
+				Docs:   waitResultDoc(v1.ApprovalsOutput),
+			},
+			{
+				Name:   v1.VetoedByOutput,
+				Kind:   celcomplete.KindValue,
+				Detail: "map (quorum only)",
+				Docs:   waitResultDoc(v1.VetoedByOutput),
 			},
 		}
 	}

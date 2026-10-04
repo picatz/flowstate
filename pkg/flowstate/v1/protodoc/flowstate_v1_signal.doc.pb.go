@@ -338,6 +338,93 @@ func init() {
 				" [CheckWaitPromptsAreAskable].\n",
 		},
 		{
+			Name: "flowstate.v1.SignalBatch.quorum",
+			Leading: " Quorum turns the wait into a decision: \"two of these three must approve\",\n" +
+				" with distinct approvers, a veto, and a record of who approved.\n" +
+				"\n" +
+				" Absent, the wait is the burst drain above and nothing about it changes.\n" +
+				" Present, it *replaces* the drain's shape (a first delivery and then\n" +
+				" whatever is already queued) with a loop that takes one delivery at a time\n" +
+				" until the quorum is decided or the wait's `timeout:` lapses; see\n" +
+				" [SignalQuorum] for how a delivery counts. Deliveries after the decision are\n" +
+				" not taken by this wait and stay on the channel for a later one, exactly as a\n" +
+				" delivery beyond `max_batch` does.\n" +
+				"\n" +
+				" A quorum wait's outputs are the batch's three (`deliveries`, `count`,\n" +
+				" `timed_out`) plus `decision`, `approvals` and `vetoed_by`; `outputs:` shapes\n" +
+				" them and sees all six. `max_batch` is the bound on `approve`.\n",
+		},
+		{
+			Name: "flowstate.v1.SignalQuorum",
+			Leading: " SignalQuorum says how many approvals decide a `wait_for_signals:`, who may\n" +
+				" count toward them, and what ends the wait early.\n" +
+				"\n" +
+				" # What counts\n" +
+				"\n" +
+				" A delivery is an *approval* when its payload's `approved` is boolean true,\n" +
+				" which is exactly what the browser gate page sends. It is a *veto* when\n" +
+				" [veto] is true for it (by default, when its payload's `approved` is boolean\n" +
+				" false). A delivery that is neither is ignored: it is consumed by the wait and\n" +
+				" reported in `deliveries`, but it moves nothing.\n" +
+				"\n" +
+				" A veto is checked first and ends the wait at once, whatever the count, so a\n" +
+				" delivery that is both a veto and an approval vetoes. Admission is not\n" +
+				" repeated here: the `signals:` policy refuses a sender before a delivery ever\n" +
+				" reaches a wait, on both drivers, so a refused sender can neither approve nor\n" +
+				" veto, and everything this message decides is about deliveries the policy\n" +
+				" already let through.\n" +
+				"\n" +
+				" # Evaluated the same on both drivers\n" +
+				"\n" +
+				" The decision is one pure tally in `pkg/flowstate/v1` that both drivers call\n" +
+				" as each delivery is taken, with [exclude] and [veto] evaluated by the same\n" +
+				" evaluator that evaluates the batch's own `prompt:` and `outputs:`. Each sees\n" +
+				" the enclosing scope (`run`, `inputs`, `steps`, ...), `now`, and the delivery\n" +
+				" bound bare as `payload` and `sender`, as `outputs:` binds a single wait's.\n",
+		},
+		{
+			Name: "flowstate.v1.SignalQuorum.approve",
+			Leading: " Approve is how many counted approvals complete the wait. At least one, and\n" +
+				" no more than the batch's bound (a quorum is counted among at most that many\n" +
+				" deliveries), which the enclosing [SignalBatch]'s own constraint checks.\n",
+		},
+		{
+			Name: "flowstate.v1.SignalQuorum.distinct",
+			Leading: " Distinct requires each counted approval to come from a different sender.\n" +
+				" Unset means true: a quorum that one person could meet by approving twice is\n" +
+				" almost never what was meant, so the safe reading is the default and\n" +
+				" `distinct: false` is the spelling that opts out.\n" +
+				"\n" +
+				" A sender is the verified identity's subject qualified by its issuer (see\n" +
+				" `QualifiedSubject`), the same comparison the `signals:` policy uses. A\n" +
+				" delivery with no identity subject (a local or unattested one) has nothing\n" +
+				" to be distinct by, so under a distinct quorum it never counts as an approval\n" +
+				" and is ignored: it fails closed rather than being counted as an anonymous\n" +
+				" somebody. A repeat approval from an already-counted sender is ignored too,\n" +
+				" and a later delivery from that sender is still considered for a veto.\n",
+		},
+		{
+			Name: "flowstate.v1.SignalQuorum.exclude",
+			Leading: " Exclude lists expressions naming subjects whose approvals do not count, the\n" +
+				" way four-eyes is spelled: `${run.identity.subject}` ignores the run\n" +
+				" starter's own approval. Each is evaluated for every delivery and must\n" +
+				" produce a string or a list of strings; a delivery whose identity subject\n" +
+				" equals any of them is not counted as an approval. It still can veto.\n" +
+				"\n" +
+				" An expression that does not evaluate, or produces anything else, fails the\n" +
+				" step: silently counting an approval an author asked to exclude is the\n" +
+				" direction this must not fail in. A delivery with an empty subject matches an\n" +
+				" empty excluded subject, so an unattested sender never slips past a run whose\n" +
+				" own starter is anonymous.\n",
+		},
+		{
+			Name: "flowstate.v1.SignalQuorum.veto",
+			Leading: " Veto is one boolean expression over the delivery that ends the wait with\n" +
+				" decision `vetoed` when it is true. Omitted, a delivery whose payload\n" +
+				" `approved` is boolean false vetoes. A delivery is checked for a veto before\n" +
+				" it is considered an approval, whatever its subject.\n",
+		},
+		{
 			Name: "flowstate.v1.SignalSender",
 			Leading: " SignalSender is who the server attests sent a signal, never what the\n" +
 				" sender's own payload claims.\n" +

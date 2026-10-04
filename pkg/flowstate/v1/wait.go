@@ -1,6 +1,7 @@
 package flowstatev1
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"maps"
@@ -227,6 +228,20 @@ func signalPayloadValue(payload *Node_Outputs) *Value {
 func SignalBatchOutputs(deliveries []*SignalDelivery, timedOut bool) *Node_Outputs {
 	out := TimerOutputs(timedOut)
 
+	out.NamedValues[DeliveriesOutput] = signalDeliveriesValue(deliveries)
+	out.NamedValues[CountOutput] = NewLiteral(int64(len(deliveries)))
+
+	return out
+}
+
+// signalDeliveriesValue renders deliveries as the list an expression reads under
+// [DeliveriesOutput], and a quorum wait's [ApprovalsOutput] too.
+//
+// One rendering for both lists, for [signalPayloadValue]'s reason: an entry of
+// `approvals` and an entry of `deliveries` are the same fact about one delivery,
+// and an author reading who approved should find the names where they already
+// look for who sent.
+func signalDeliveriesValue(deliveries []*SignalDelivery) *Value {
 	entries := make([]*expr.Value, 0, len(deliveries))
 	for _, delivery := range deliveries {
 		entries = append(entries, &expr.Value{
@@ -243,16 +258,13 @@ func SignalBatchOutputs(deliveries []*SignalDelivery, timedOut bool) *Node_Outpu
 		})
 	}
 
-	out.NamedValues[DeliveriesOutput] = &Value{
+	return &Value{
 		Kind: &Value_Literal{
 			Literal: &expr.Value{
 				Kind: &expr.Value_ListValue{ListValue: &expr.ListValue{Values: entries}},
 			},
 		},
 	}
-	out.NamedValues[CountOutput] = NewLiteral(int64(len(deliveries)))
-
-	return out
 }
 
 // SignalBatchSize reports how many deliveries one drain of batch may take.
@@ -270,6 +282,343 @@ func SignalBatchSize(batch *SignalBatch) int {
 	}
 
 	return n
+}
+
+// The names a `wait_for_signals:` that declares a `quorum:` adds to the three a
+// batch already produces.
+const (
+	// DecisionOutput is how a quorum wait ended: [QuorumApproved],
+	// [QuorumVetoed] or [QuorumTimedOut]. `${gate.decision == 'approved'}` is
+	// the condition a later step reads, and the only thing it has to read: the
+	// three outcomes are exclusive and it is always one of them.
+	DecisionOutput = "decision"
+
+	// ApprovalsOutput lists the approvals that were counted, in the order they
+	// arrived, each shaped as an entry of [DeliveriesOutput] is. Partial on a
+	// quorum that timed out, and holding every approval counted before a veto on
+	// one that was vetoed.
+	ApprovalsOutput = "approvals"
+
+	// VetoedByOutput is the sender of the delivery that vetoed, shaped as
+	// `sender` is for a single wait. Absent unless the decision is
+	// [QuorumVetoed]: a later step asks `has(steps.gate.vetoed_by)`, and the
+	// wait's own `outputs:` (where a bare name that is not there is an error,
+	// not an absent field) asks `decision == "vetoed"` first.
+	VetoedByOutput = "vetoed_by"
+)
+
+// The three ways a quorum wait ends.
+const (
+	QuorumApproved = "approved"
+	QuorumVetoed   = "vetoed"
+	QuorumTimedOut = "timed_out"
+)
+
+// MaxQuorumDeliveries bounds how many deliveries one quorum wait examines.
+//
+// A quorum wait is a loop over a stream somebody else controls, and unlike a
+// drain it has no natural end: deliveries that are ignored, repeated or
+// excluded decide nothing, so a sender repeating one could keep it reading, and
+// holding every delivery for `deliveries`, for as long as it likes. The bound is
+// on deliveries *taken*, because that is the work (one evaluation each, one
+// entry in the step's outputs); twice [MaxSignalBatch] leaves room for a
+// full-size quorum to be noisy. A wait that reaches it fails the step rather
+// than deciding: declaring a timeout or an approval nobody reached would be
+// inventing a decision.
+const MaxQuorumDeliveries = 2 * MaxSignalBatch
+
+// QuorumTally is the running count of one `quorum:` wait, and the one place its
+// decision is made.
+//
+// Both drivers hold one, call [QuorumTally.Take] for each delivery they take
+// off their channel, and stop when [QuorumTally.Decision] says so. Nothing
+// about counting, ignoring, excluding, de-duplicating or vetoing is written in
+// either driver, so the two cannot disagree about whether a delivery
+// approved: they disagree only if they hand it different deliveries, which is
+// what the shared conformance cases are for.
+//
+// It is state and not only a function of the deliveries so far because a
+// distinct quorum must remember who has counted and the exclusion and veto
+// expressions are not free to evaluate twice; the result is still a pure fold,
+// in arrival order, of the deliveries taken, and deterministic as workflow
+// code: expressions evaluate over the run's scope and the driver's own clock,
+// exactly as the wait's `outputs:` do.
+//
+// # Why it does not need carrying across Continue-As-New
+//
+// A wait is one step and a run continues as new only between steps, so a tally
+// never spans one. What does cross is the deliveries a wait has not taken, which
+// stay on the channel or in the carried pending signals; a tally re-derived on
+// a replay is rebuilt by taking the same deliveries in the same order.
+type QuorumTally struct {
+	quorum *SignalQuorum
+
+	// deliveries is everything this wait took, counted or not.
+	deliveries []*SignalDelivery
+
+	// approvals is the subset that counted.
+	approvals []*SignalDelivery
+
+	// counted holds the qualified subject of each counted approval, consulted
+	// only under a distinct quorum.
+	counted map[string]struct{}
+
+	vetoedBy *SignalDelivery
+	decision string
+}
+
+// NewQuorumTally starts a tally for quorum.
+func NewQuorumTally(quorum *SignalQuorum) *QuorumTally {
+	return &QuorumTally{quorum: quorum, counted: map[string]struct{}{}}
+}
+
+// Decision is how the wait has ended, or empty while it has not.
+func (t *QuorumTally) Decision() string { return t.decision }
+
+// Approvals is how many approvals have counted so far.
+func (t *QuorumTally) Approvals() uint32 { return uint32(len(t.approvals)) }
+
+// Needed is how many approvals complete the quorum.
+func (t *QuorumTally) Needed() uint32 { return t.quorum.GetApprove() }
+
+// Report writes the tally onto the pending wait a driver announces.
+//
+// The one place [PendingWait.Approvals] and [PendingWait.ApprovalsNeeded] are
+// filled, from the same tally the wait decides with, so a parked run says
+// "1 of 2" about the count it will act on rather than one a second copy kept.
+func (t *QuorumTally) Report(wait *PendingWait) {
+	if wait == nil {
+		return
+	}
+	wait.Approvals = t.Approvals()
+	wait.ApprovalsNeeded = t.Needed()
+}
+
+// quorumDistinct reports whether each counted approval must come from a
+// different sender, which is the default for a quorum that does not say.
+func quorumDistinct(quorum *SignalQuorum) bool {
+	return quorum.Distinct == nil || quorum.GetDistinct()
+}
+
+// payloadApproved reads the `approved` a sender put in a payload: its value and
+// whether it was a boolean at all. Anything else (absent, a string, a number)
+// is neither an approval nor, by default, a veto.
+func payloadApproved(payload *Node_Outputs) (approved, isBool bool) {
+	kind, ok := payload.GetNamedValues()["approved"].GetLiteral().GetKind().(*expr.Value_BoolValue)
+	if !ok {
+		return false, false
+	}
+
+	return kind.BoolValue, true
+}
+
+// Take folds one delivery into the tally, in the order the driver took it.
+//
+// A delivery is checked for a veto first, then as an approval; see
+// [SignalQuorum] for the rules. A failure (an exclusion or veto expression that
+// does not evaluate or produces the wrong kind, or too many deliveries) is
+// returned and leaves the wait undecided: the caller fails the step, which is
+// the fail-closed direction, since the alternative is counting or not counting
+// an approval on the strength of an expression that did not run.
+//
+// Taking a delivery after the wait has decided is a caller bug and is ignored.
+func (t *QuorumTally) Take(ctx context.Context, delivery *SignalDelivery, scope *Scope, now time.Time) error {
+	if t.decision != "" {
+		return nil
+	}
+
+	if len(t.deliveries) >= MaxQuorumDeliveries {
+		return fmt.Errorf(
+			"quorum wait took %d deliveries without reaching a decision; a quorum wait examines at most %d, so a sender that keeps repeating or contradicting itself cannot hold a step open",
+			len(t.deliveries), MaxQuorumDeliveries)
+	}
+
+	t.deliveries = append(t.deliveries, delivery)
+
+	var bound map[string]ref.Val
+
+	// Bound lazily: the default veto and a plain approval read the payload
+	// directly, so most deliveries never convert anything for CEL.
+	bind := func() (map[string]ref.Val, error) {
+		if bound != nil {
+			return bound, nil
+		}
+
+		// An ordered list rather than a map literal: workflow-side code does not
+		// iterate a map whose order can change which failure is reported.
+		names := [...]string{PayloadOutput, SenderOutput}
+		values := [...]*Value{signalPayloadValue(delivery.GetPayload()), signalSenderValue(delivery.GetSender())}
+
+		bound = make(map[string]ref.Val, len(names))
+		for i, name := range names {
+			converted, err := cel.ValueToRefValue(TypeAdapter, values[i].GetLiteral())
+			if err != nil {
+				return nil, fmt.Errorf("binding %q for quorum: %w", name, err)
+			}
+			bound[name] = converted
+		}
+
+		return bound, nil
+	}
+
+	vetoes, err := t.vetoes(ctx, delivery, scope, now, bind)
+	if err != nil {
+		return err
+	}
+	if vetoes {
+		t.vetoedBy = delivery
+		t.decision = QuorumVetoed
+
+		return nil
+	}
+
+	if approved, isBool := payloadApproved(delivery.GetPayload()); !approved || !isBool {
+		return nil
+	}
+
+	identity := delivery.GetSender().GetIdentity()
+	key := QualifiedSubject(identity.GetIssuer(), identity.GetSubject())
+
+	distinct := quorumDistinct(t.quorum)
+	if distinct && identity.GetSubject() == "" {
+		// Nobody to be distinct from: see [SignalQuorum.distinct].
+		return nil
+	}
+
+	excluded, err := t.excludes(ctx, identity, key, scope, now, bind)
+	if err != nil {
+		return err
+	}
+	if excluded {
+		return nil
+	}
+
+	if distinct {
+		if _, dup := t.counted[key]; dup {
+			return nil
+		}
+		t.counted[key] = struct{}{}
+	}
+
+	t.approvals = append(t.approvals, delivery)
+	if uint32(len(t.approvals)) >= t.quorum.GetApprove() {
+		t.decision = QuorumApproved
+	}
+
+	return nil
+}
+
+// vetoes reports whether delivery ends the wait: the author's `veto:`
+// expression, or by default a payload whose `approved` is boolean false.
+func (t *QuorumTally) vetoes(
+	ctx context.Context, delivery *SignalDelivery, scope *Scope, now time.Time,
+	bind func() (map[string]ref.Val, error),
+) (bool, error) {
+	if t.quorum.GetVeto() == nil {
+		approved, isBool := payloadApproved(delivery.GetPayload())
+
+		return isBool && !approved, nil
+	}
+
+	names, err := bind()
+	if err != nil {
+		return false, err
+	}
+
+	value, err := evalWaitExpr(ctx, t.quorum.GetVeto(), scope, now, names)
+	if err != nil {
+		return false, fmt.Errorf("evaluating quorum veto: %w", err)
+	}
+
+	veto, ok := value.Value().(bool)
+	if !ok {
+		return false, fmt.Errorf("quorum veto produced %s, but it must produce a boolean", value.Type())
+	}
+
+	return veto, nil
+}
+
+// excludes reports whether an approving delivery's sender is one of the
+// subjects the quorum's `exclude:` expressions name.
+//
+// A name matches the sender's bare subject or its issuer-qualified spelling
+// (`https://idp#alice`), so an expression may say either; matching more than
+// asked is the conservative direction for an exclusion. An empty subject
+// matches an empty name, so an unattested sender cannot pass for somebody
+// other than a run starter who is also anonymous.
+func (t *QuorumTally) excludes(
+	ctx context.Context, identity *WorkloadIdentity, qualified string, scope *Scope, now time.Time,
+	bind func() (map[string]ref.Val, error),
+) (bool, error) {
+	for i, expression := range t.quorum.GetExclude() {
+		names, err := bind()
+		if err != nil {
+			return false, err
+		}
+
+		value, err := evalWaitExpr(ctx, expression, scope, now, names)
+		if err != nil {
+			return false, fmt.Errorf("evaluating quorum exclude[%d]: %w", i, err)
+		}
+
+		converted, err := cel.RefValueToValue(value)
+		if err != nil {
+			return false, fmt.Errorf("converting quorum exclude[%d]: %w", i, err)
+		}
+
+		subjects, err := excludedSubjects(converted)
+		if err != nil {
+			return false, fmt.Errorf("quorum exclude[%d] %w", i, err)
+		}
+
+		if slices.ContainsFunc(subjects, func(subject string) bool {
+			return subject == identity.GetSubject() || subject == qualified
+		}) {
+			return true, nil
+		}
+	}
+
+	return false, nil
+}
+
+// excludedSubjects reads the strings an `exclude:` expression produced: one
+// string, or a list of them.
+func excludedSubjects(value *expr.Value) ([]string, error) {
+	switch kind := value.GetKind().(type) {
+	case *expr.Value_StringValue:
+		return []string{kind.StringValue}, nil
+
+	case *expr.Value_ListValue:
+		subjects := make([]string, 0, len(kind.ListValue.GetValues()))
+		for _, item := range kind.ListValue.GetValues() {
+			text, ok := item.GetKind().(*expr.Value_StringValue)
+			if !ok {
+				return nil, fmt.Errorf("produced a list holding a non-string; it must produce a subject or a list of subjects")
+			}
+			subjects = append(subjects, text.StringValue)
+		}
+
+		return subjects, nil
+
+	default:
+		return nil, fmt.Errorf("produced something other than a string; it must produce a subject or a list of subjects")
+	}
+}
+
+// Outputs builds the quorum wait's outputs. A wait that ends with the tally
+// undecided has run out of time, so it reports [QuorumTimedOut], with the
+// approvals counted so far.
+func (t *QuorumTally) Outputs() *Node_Outputs {
+	decision := cmp.Or(t.decision, QuorumTimedOut)
+
+	out := SignalBatchOutputs(t.deliveries, decision == QuorumTimedOut)
+	out.NamedValues[DecisionOutput] = NewLiteral(decision)
+	out.NamedValues[ApprovalsOutput] = signalDeliveriesValue(t.approvals)
+	if t.vetoedBy != nil {
+		out.NamedValues[VetoedByOutput] = signalSenderValue(t.vetoedBy.GetSender())
+	}
+
+	return out
 }
 
 // signalSenderValue renders a [SignalSender] as the map an expression reads
@@ -847,11 +1196,45 @@ func ValidateWait(wait *Wait) error {
 		if n := kind.SignalBatch.GetMaxBatch(); n < 0 {
 			return fmt.Errorf("wait_for_signals max_batch is negative (%d)", n)
 		}
-		return nil
+		return validateQuorum(kind.SignalBatch)
 
 	default:
 		return fmt.Errorf("wait must be one of sleep, wait_until, wait_for_signal, or wait_for_signals")
 	}
+}
+
+// validateQuorum checks a batch's `quorum:`, the backstop for the rules the
+// schema and the compiler state, for a caller that built a specification by
+// hand.
+func validateQuorum(batch *SignalBatch) error {
+	quorum := batch.GetQuorum()
+	if quorum == nil {
+		return nil
+	}
+
+	switch bound := SignalBatchSize(batch); {
+	case quorum.GetApprove() < 1:
+		return fmt.Errorf("wait_for_signals quorum needs approve of at least 1, or nothing could ever complete it")
+	case int(quorum.GetApprove()) > bound:
+		return fmt.Errorf(
+			"wait_for_signals quorum approve is %d, but a wait takes at most %d deliveries (max_batch), so it could never be met; lower it or raise max_batch",
+			quorum.GetApprove(), bound)
+	}
+
+	if n := len(quorum.GetExclude()); n > 16 {
+		return fmt.Errorf("wait_for_signals quorum has %d exclude expressions; at most 16", n)
+	}
+	for i, expression := range quorum.GetExclude() {
+		if expression.GetKind() == nil {
+			return fmt.Errorf("wait_for_signals quorum exclude[%d] has no expression", i)
+		}
+	}
+
+	if quorum.Veto != nil && quorum.GetVeto().GetKind() == nil {
+		return fmt.Errorf("wait_for_signals quorum veto has no expression")
+	}
+
+	return nil
 }
 
 // hasTimeout reports whether a bound was written at all, in either spelling.

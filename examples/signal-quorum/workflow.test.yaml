@@ -1,0 +1,131 @@
+# One case per rule the example states. A scripted `sender:` is checked against
+# the `signals:` policy the way a served signal is, so each approver below is
+# admitted for the reason a real one would be, and `at:` staggers the deliveries
+# so their order is the order the cases assert (`scriptSignals` orders signals
+# only across distinct virtual moments).
+edition: v2026.4
+defaults:
+  workflow: ./workflow.yaml
+  stubs:
+    - task: log
+      returns: {}
+tests:
+  - name: two distinct approvers complete the quorum and a third is not consumed
+    signals:
+      - name: release-approved
+        at: 200ms
+        sender: {subject: alice@example.com, issuer: https://issuer.example.com}
+        payload: {approved: true}
+      - name: release-approved
+        at: 400ms
+        sender: {subject: bob@example.com, issuer: https://issuer.example.com}
+        payload: {approved: true}
+      - name: release-approved
+        at: 600ms
+        sender: {subject: carol@example.com, issuer: https://issuer.example.com}
+        payload: {approved: true}
+    expect:
+      ran: [ask, gate, roll_out]
+      outputs:
+        decision: approved
+        approvers: [alice@example.com, bob@example.com]
+        vetoed_by: ""
+
+  - name: one approver approving twice is counted once
+    signals:
+      - name: release-approved
+        at: 200ms
+        sender: {subject: alice@example.com, issuer: https://issuer.example.com}
+        payload: {approved: true}
+      - name: release-approved
+        at: 400ms
+        sender: {subject: alice@example.com, issuer: https://issuer.example.com}
+        payload: {approved: true}
+      - name: release-approved
+        at: 600ms
+        sender: {subject: bob@example.com, issuer: https://issuer.example.com}
+        payload: {approved: true}
+    expect:
+      ran: [ask, gate, roll_out]
+      outputs:
+        decision: approved
+        approvers: [alice@example.com, bob@example.com]
+        vetoed_by: ""
+
+  - name: the requester's own approval is ignored
+    inputs:
+      requested_by: alice@example.com
+    signals:
+      - name: release-approved
+        at: 200ms
+        sender: {subject: alice@example.com, issuer: https://issuer.example.com}
+        payload: {approved: true}
+      - name: release-approved
+        at: 400ms
+        sender: {subject: bob@example.com, issuer: https://issuer.example.com}
+        payload: {approved: true}
+      - name: release-approved
+        at: 600ms
+        sender: {subject: carol@example.com, issuer: https://issuer.example.com}
+        payload: {approved: true}
+    expect:
+      ran: [ask, gate, roll_out]
+      outputs:
+        decision: approved
+        approvers: [bob@example.com, carol@example.com]
+        vetoed_by: ""
+
+  - name: a rejection ends the wait whatever has been approved
+    signals:
+      - name: release-approved
+        at: 200ms
+        sender: {subject: alice@example.com, issuer: https://issuer.example.com}
+        payload: {approved: true}
+      - name: release-approved
+        at: 400ms
+        sender: {subject: bob@example.com, issuer: https://issuer.example.com}
+        payload: {approved: false}
+      - name: release-approved
+        at: 600ms
+        sender: {subject: carol@example.com, issuer: https://issuer.example.com}
+        payload: {approved: true}
+    expect:
+      ran: [ask, gate]
+      outputs:
+        decision: vetoed
+        approvers: [alice@example.com]
+        vetoed_by: bob@example.com
+
+  - name: one approval is not a quorum, and the timeout reports what was counted
+    signals:
+      - name: release-approved
+        at: 200ms
+        sender: {subject: alice@example.com, issuer: https://issuer.example.com}
+        payload: {approved: true}
+    expect:
+      ran: [ask, gate]
+      outputs:
+        decision: timed_out
+        approvers: [alice@example.com]
+        vetoed_by: ""
+
+  - name: a sender the policy does not admit can neither approve nor veto
+    signals:
+      - name: release-approved
+        at: 200ms
+        sender: {subject: mallory@example.com, issuer: https://issuer.example.com}
+        payload: {approved: false}
+      - name: release-approved
+        at: 400ms
+        sender: {subject: alice@example.com, issuer: https://issuer.example.com}
+        payload: {approved: true}
+      - name: release-approved
+        at: 600ms
+        sender: {subject: bob@example.com, issuer: https://issuer.example.com}
+        payload: {approved: true}
+    expect:
+      ran: [ask, gate, roll_out]
+      outputs:
+        decision: approved
+        approvers: [alice@example.com, bob@example.com]
+        vetoed_by: ""
