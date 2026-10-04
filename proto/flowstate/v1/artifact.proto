@@ -1,0 +1,106 @@
+syntax = "proto3";
+
+package flowstate.v1;
+
+import "buf/validate/validate.proto";
+import "google/api/field_behavior.proto";
+
+option go_package = "flowstatev1";
+
+// ArtifactRef names an immutable tree of files by the digest of its canonical
+// [ArtifactManifest]. It is inert: it carries no bytes, no namespace, and no
+// authority to read anything, so it is safe in workflow history. Resolving one
+// needs a worker-side artifact store scoped to the caller's tenant.
+message ArtifactRef {
+  // Digest is the lowercase hex SHA-256 of the canonical, serialized
+  // [ArtifactManifest] (a Merkle root: the manifest names every file's own
+  // digest).
+  string digest = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field).string.pattern = "^[0-9a-f]{64}$"
+  ];
+
+  // SizeBytes is the sum of the file sizes the manifest declares. It is a
+  // reporting and admission hint, not a bound: the store enforces its limits
+  // against the manifest itself.
+  int64 size_bytes = 2 [
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field).int64 = {
+      gte: 0
+      lte: 17179869184
+    }
+  ];
+
+  // EntryCount is the number of manifest entries, files and directories both.
+  int32 entry_count = 3 [
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field).int32 = {
+      gte: 0
+      lte: 65536
+    }
+  ];
+}
+
+// ArtifactManifest is the canonical description of a tree: sorted entries,
+// each naming a path, a kind, and for files the digest of their content. Two
+// trees with the same files and modes produce byte-identical manifests, so the
+// manifest's digest identifies the tree.
+//
+// Entries are sorted by path bytes, paths are unique, and every parent
+// directory of an entry is itself an entry. Symlinks, hard links, devices,
+// sockets, and archives have no representation: a tree containing one is
+// refused when the manifest is built.
+message ArtifactManifest {
+  // Entries lists every file and directory in ascending path order.
+  repeated ArtifactEntry entries = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field).repeated.max_items = 65536
+  ];
+}
+
+// ArtifactEntry is one file or directory of an [ArtifactManifest].
+message ArtifactEntry {
+  // Kind is what an entry is. Only regular files and directories exist.
+  enum Kind {
+    // KIND_UNSPECIFIED is refused: an entry must say what it is.
+    KIND_UNSPECIFIED = 0;
+    // KIND_FILE is a regular file whose bytes are the blob named by blob_sha256.
+    KIND_FILE = 1;
+    // KIND_DIR is a directory; it has no content.
+    KIND_DIR = 2;
+  }
+
+  // Path is slash-separated, relative to the tree root, already clean, free of
+  // "..", control bytes, and a leading slash, and unique case-insensitively.
+  string path = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field).string = {
+      min_len: 1
+      max_bytes: 1024
+    }
+  ];
+
+  // Kind says whether the entry is a file or a directory.
+  Kind kind = 2 [
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field).enum = {
+      defined_only: true
+      not_in: [0]
+    }
+  ];
+
+  // Executable records whether a file is mode 0755 rather than 0644. Modes are
+  // normalized, so nothing else about permissions is preserved. It is false
+  // for a directory.
+  bool executable = 3;
+
+  // SizeBytes is the file's length in bytes; zero for a directory.
+  int64 size_bytes = 4 [(buf.validate.field).int64 = {
+    gte: 0
+    lte: 4294967296
+  }];
+
+  // BlobSha256 is the lowercase hex SHA-256 of a file's content, empty for a
+  // directory.
+  string blob_sha256 = 5 [(buf.validate.field).string.pattern = "^([0-9a-f]{64})?$"];
+}
