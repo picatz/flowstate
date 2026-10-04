@@ -1470,6 +1470,13 @@ func init() {
 			Leading: " Ended means the session or the run is over.\n",
 		},
 		{
+			Name: "flowstate.v1.DEBUG_COMMAND_STATUS_DIVERGED",
+			Leading: " Diverged means the command asked to reproduce a past stop, the\n" +
+				" reproduction did not match what was shown, and the session did not move.\n" +
+				" It is a refusal with a cause a client can act on: the run is not\n" +
+				" deterministic, so going back would show a different run as the earlier one.\n",
+		},
+		{
 			Name:    "flowstate.v1.DebugFailureMode",
 			Leading: " DebugFailureMode selects which step failures stop the run.\n",
 		},

@@ -617,9 +617,10 @@ func scopeDigest(ctx context.Context, target Target) (string, error) {
 // session is still at it, like [v1.DebugResumeRequest.ExpectedRevision]. The
 // receipt's status is applied when the rewound run is held at the previous
 // stop, and refused otherwise, with the reason: a run with nowhere to go back
-// to, a history in which a pause was still to land, a history past [MaxReversibleMoves], a
-// replay that failed, or one that diverged from what was shown ("diverged:" is
-// the message's first word).
+// to, a history in which a pause was still to land, a history past
+// [MaxReversibleMoves], or a replay that failed. A replay that did not show
+// what the first visit showed is answered as diverged, and the session stays
+// where it was.
 func (r *Reversible) Back(ctx context.Context, requestID string, expectedRevision uint64) (*v1.DebugReceipt, error) {
 	return r.back(ctx, requestID, expectedRevision, func([]stop) int { return 1 })
 }
@@ -721,6 +722,10 @@ func (r *Reversible) back(ctx context.Context, requestID string, expectedRevisio
 	r.mu.Unlock()
 	fresh, held, err := r.replay(replayCtx, replay, r.stops[:keep], r.rewinds)
 	if err != nil {
+		if _, ok := errors.AsType[*divergence](err); ok {
+			return refuse(v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_DIVERGED, err.Error())
+		}
+
 		return refuse(v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_REFUSED, err.Error())
 	}
 
@@ -796,7 +801,7 @@ func (r *Reversible) replay(ctx context.Context, commands []recorded, stops []st
 				return abandon(fmt.Errorf("unavailable: the replay could not restore the breakpoints: %w", err))
 			}
 			if status := response.GetReceipt().GetStatus(); status != v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_APPLIED {
-				return abandon(fmt.Errorf("diverged: the replay could not restore the breakpoints (%s)", status))
+				return abandon(divergedf("the replay could not restore the breakpoints (%s)", status))
 			}
 
 			continue
@@ -810,7 +815,7 @@ func (r *Reversible) replay(ctx context.Context, commands []recorded, stops []st
 			return abandon(fmt.Errorf("unavailable: the replay could not move: %w", err))
 		}
 		if receipt.GetStatus() != v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_APPLIED {
-			return abandon(fmt.Errorf("diverged: the replay's movement %d was %s: %s", moved+1, receipt.GetStatus(), receipt.GetMessage()))
+			return abandon(divergedf("the replay's movement %d was %s: %s", moved+1, receipt.GetStatus(), receipt.GetMessage()))
 		}
 		held, err = waitStop(ctx, fresh.Session, held.GetRevision())
 		if err != nil {
@@ -818,7 +823,7 @@ func (r *Reversible) replay(ctx context.Context, commands []recorded, stops []st
 		}
 		moved++
 		if moved >= len(stops) {
-			return abandon(fmt.Errorf("diverged: the replay made more movements than the stops shown"))
+			return abandon(divergedf("the replay made more movements than the stops shown"))
 		}
 		got, err := stopOf(ctx, fresh.Session, held)
 		if err != nil {
@@ -829,7 +834,7 @@ func (r *Reversible) replay(ctx context.Context, commands []recorded, stops []st
 		}
 	}
 	if moved != len(stops)-1 {
-		return abandon(fmt.Errorf("diverged: the replay made %d movements, and the stops shown call for %d", moved, len(stops)-1))
+		return abandon(divergedf("the replay made %d movements, and the stops shown call for %d", moved, len(stops)-1))
 	}
 
 	return fresh, held, nil
@@ -844,7 +849,25 @@ func interrupted(ctx context.Context, what, kind string, err error) error {
 		return fmt.Errorf("unavailable: the replay %s (%w)", what, ctx.Err())
 	}
 
+	if kind == "diverged" {
+		return divergedf("the replay %s: %w", what, err)
+	}
+
 	return fmt.Errorf("%s: the replay %s: %w", kind, what, err)
+}
+
+// divergence is a replay's refusal to show a different run as the earlier one.
+// [Reversible.Back] answers it as [v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_DIVERGED]
+// rather than a refusal without a cause.
+type divergence struct{ err error }
+
+func (d *divergence) Error() string { return d.err.Error() }
+
+func (d *divergence) Unwrap() error { return d.err }
+
+// divergedf formats a [divergence].
+func divergedf(format string, args ...any) error {
+	return &divergence{err: fmt.Errorf(format, args...)}
 }
 
 // diverged is the refusal for a replay that did not reproduce a stop.
@@ -854,7 +877,7 @@ func diverged(index int, want, got stop) error {
 		where = fmt.Sprintf("was at %s both times, but the account of how the run got there differs", want.address)
 	}
 
-	return fmt.Errorf("diverged: stop %d %s; the run is not deterministic, "+
+	return divergedf("stop %d %s; the run is not deterministic, "+
 		"so going back would show a different run as the earlier one", index, where)
 }
 

@@ -1015,7 +1015,9 @@ capability that moves among the supported points and never undoes an effect.
   `"reverse": true` steps back by running the program again and replaying the
   commands it was given, checking each stop against what was shown ([Editors](EDITORS.md)
   says what that costs); no other front does, and no backend reports `reverse`
-  in the table above, since a rerun is not history. [What is proven
+  in the table above, since a rerun is not history. A replay that does not show
+  what the first visit showed is answered `diverged`, and the session stays at
+  the stop it was at. [What is proven
   about reading a run's past](#reading-a-runs-past-what-is-proven-and-what-is-not)
   says what a reconstruction can and cannot recover.
 - Stop a durable run where a step fails, or record a logpoint durably. A
