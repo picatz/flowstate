@@ -773,6 +773,54 @@ outputs: {}
 		conn.await("event", "terminated")
 	})
 
+	// Breakpoints set before the run starts are part of what a replay repeats,
+	// so reverse-continue lands on the stop one decided rather than the first.
+	t.Run("reverse continue to a breakpoint", func(t *testing.T) {
+		t.Parallel()
+
+		conn := start(t)
+		conn.send("launch", map[string]any{"program": workflow, "reverse": true})
+		conn.await("response", "launch")
+		conn.send("setFunctionBreakpoints", map[string]any{"breakpoints": []map[string]any{{"name": "test"}}})
+		conn.await("response", "setFunctionBreakpoints")
+		conn.send("configurationDone", nil)
+		conn.await("response", "configurationDone")
+		conn.await("event", "stopped")
+		conn.send("continue", map[string]any{"threadId": 1})
+		conn.await("response", "continue")
+		hit := conn.await("event", "stopped")
+		require.Equal(t, "breakpoint", hit["body"].(map[string]any)["reason"])
+		assert.Contains(t, frame(conn), "test")
+		conn.send("stepIn", map[string]any{"threadId": 1})
+		conn.await("response", "stepIn")
+		conn.await("event", "stopped")
+		assert.Contains(t, frame(conn), "deploy")
+
+		conn.send("reverseContinue", map[string]any{"threadId": 1})
+		reversed := conn.await("response", "reverseContinue")
+		require.Equal(t, true, reversed["success"], "%v", reversed["message"])
+		stopped := conn.await("event", "stopped")
+		assert.Equal(t, "breakpoint", stopped["body"].(map[string]any)["reason"])
+		assert.Contains(t, frame(conn), "test")
+
+		// And once more: no breakpoint before that one, so the first stop.
+		conn.send("reverseContinue", map[string]any{"threadId": 1})
+		reversed = conn.await("response", "reverseContinue")
+		require.Equal(t, true, reversed["success"], "%v", reversed["message"])
+		conn.await("event", "stopped")
+		assert.Contains(t, frame(conn), "build")
+	})
+
+	t.Run("reverse and running past the entry stop disagree", func(t *testing.T) {
+		t.Parallel()
+
+		conn := start(t)
+		conn.send("launch", map[string]any{"program": workflow, "reverse": true, "stopOnEntry": false})
+		refused := conn.await("response", "launch")
+		assert.Equal(t, false, refused["success"])
+		assert.Contains(t, refused["message"], "stopOnEntry")
+	})
+
 	t.Run("not asked for", func(t *testing.T) {
 		t.Parallel()
 

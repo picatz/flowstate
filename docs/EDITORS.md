@@ -620,6 +620,8 @@ diverged and the run stays where it was. Reverse-continue lands on the nearest
 earlier stop a breakpoint decided, or the first stop. Because the program runs
 again, every effect its steps have happens again: set it for a workflow whose
 tasks are stubbed or harmless, never one that sends mail or charges a card.
+It keeps the run's first stop in its history, so it cannot be combined with
+`stopOnEntry: false`, and a launch that does is refused saying so.
 A run that has finished cannot be stepped back from, and a pause that landed
 wherever the run happened to be cannot be replayed, so a session that used one
 refuses to go back and says why. Going back is not offered for an attach to a

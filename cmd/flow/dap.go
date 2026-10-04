@@ -394,9 +394,24 @@ func (r *debuggedRun) reports() bool { return r.live.Load() && !r.stopped.Load()
 // `reverse: true`, and a replay that does not reproduce what the editor was
 // shown is refused rather than shown as if it had.
 func (b debuggedRunBuilder) reversible(args flowdap.LaunchArguments) (*flowdap.Launch, error) {
+	// The entry stop is the first stop in the history a step back returns to.
+	// Running past it unseen would leave a history whose first visible stop
+	// has a hidden one behind it, and stepping back would land there only to
+	// be sent forward again.
+	if args.StopOnEntry != nil && !*args.StopOnEntry {
+		return nil, errors.New("flowdap: \"reverse\" keeps the run's first stop in its history, " +
+			"so it cannot also run past it unseen; leave \"stopOnEntry\" out or set it true, " +
+			"or drop \"reverse\"")
+	}
+
 	var (
 		mu      sync.Mutex
 		current *debuggedRun
+		// started releases the first run, at configurationDone like any
+		// other launch: a client that disconnects before then has run nothing.
+		// Every later run is a replay, and starts at once.
+		started = make(chan struct{})
+		first   atomic.Bool
 	)
 	shown := func() *debuggedRun {
 		mu.Lock()
@@ -418,8 +433,18 @@ func (b debuggedRunBuilder) reversible(args flowdap.LaunchArguments) (*flowdap.L
 		}
 		var runCtx context.Context
 		runCtx, run.cancel = context.WithCancel(b.cmd.Context())
+		initial := !first.Swap(true)
 		go func() {
 			defer close(run.reported)
+			if initial {
+				select {
+				case <-started:
+				case <-runCtx.Done():
+					close(run.done)
+
+					return
+				}
+			}
 			finish := b.execute(runCtx, session, run.reports)
 			close(run.done)
 			finish()
@@ -450,10 +475,10 @@ func (b debuggedRunBuilder) reversible(args flowdap.LaunchArguments) (*flowdap.L
 	return &flowdap.Launch{
 		Target:    target,
 		SourceMap: b.sourceMap,
-		// The run is already started and held at its entry, so there is nothing
-		// to release; the editor's own continue, or its absence, is what
-		// follows. Wait lets the run in front finish if the editor detaches.
+		// Releases the first run, and then waits for the run in front to finish
+		// if the editor detaches, as a launch that ran once does.
 		Start: func() {
+			close(started)
 			for {
 				run := shown()
 				<-run.reported
