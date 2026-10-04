@@ -8,6 +8,10 @@ import (
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 )
 
+// The rules of one value also share one CEL cost budget, [DefaultCostLimit]: each
+// evaluation is bounded alone, and 4096 of them would otherwise each spend a whole
+// expression's allowance.
+
 // MaxRuleEvaluations bounds how many `must:` rules one value is held to: a list of
 // records each with rules is one evaluation per rule per element, and the element
 // bound of a value ([maxListElements]) says nothing about how many rules a type
@@ -67,6 +71,7 @@ type ruleWalk struct {
 	sensitive bool
 	asts      map[ruleKey]*cel.Ast
 	spent     int
+	cost      uint64
 }
 
 // value walks lit by the structural type t, evaluating the rules of every record it
@@ -162,7 +167,10 @@ func (w *ruleWalk) rule(must string, t InputDeclaration_Type, value *expr.Value,
 		w.asts[key] = ast
 	}
 
-	satisfied, err := evalMust(context.Background(), w.profile, t, ast, value)
+	satisfied, cost, err := evalMustWithCost(context.Background(), w.profile, t, ast, value)
+	if w.cost += cost; w.cost > DefaultCostLimit {
+		return fmt.Errorf("the `must:` rules of this value spend more than %d cost units together, which is the budget one expression is held to; a rule that is not evaluated does not hold, so it is refused", DefaultCostLimit)
+	}
 	if err != nil {
 		if w.sensitive {
 			return fmt.Errorf("%s%s: evaluating `must: %s` failed", subject, atPath(path), echoName(must))

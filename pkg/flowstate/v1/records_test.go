@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -575,4 +576,29 @@ func TestALiteralOutputThatBreaksATypeRuleIsRefusedAtSubmit(t *testing.T) {
 	)}}
 	_, err = v1.BindRunInputs(wf, nil)
 	require.NoError(t, err)
+}
+
+func TestRecordRulesShareOneCostBudget(t *testing.T) {
+	t.Parallel()
+
+	wf := recordOrderWorkflow()
+	line := wf.DeclaredTypes[0]
+	line.Fields[slices.IndexFunc(line.Fields, func(f *v1.InputDeclaration) bool { return f.GetName() == "sku" })].Must = new("this.matches('^[a-z]*$')")
+	require.NoError(t, v1.CheckRecordDeclarations(wf))
+
+	listOf := func(n int) *v1.Value {
+		lines := make([]*expr.Value, n)
+		for i := range lines {
+			lines[i] = recordLine(strings.Repeat("a", 2000), 1)
+		}
+
+		return &v1.Value{Kind: &v1.Value_Literal{Literal: &expr.Value{Kind: &expr.Value_ListValue{ListValue: &expr.ListValue{Values: lines}}}}}
+	}
+	lines := &v1.Type{Kind: &v1.Type_List{List: recordTypeOf("Line")}}
+
+	require.NoError(t, v1.CheckRecordRules(v1.TypesOf(wf), "", "input", "lines", false, lines, listOf(2)))
+
+	err := v1.CheckRecordRules(v1.TypesOf(wf), "", "input", "lines", false, lines, listOf(3000))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "cost units together")
 }

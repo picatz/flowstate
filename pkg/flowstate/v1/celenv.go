@@ -400,19 +400,26 @@ func checkLibraries(libs []string) error {
 // The activation may be a map[string]any or a cel.Activation, matching the CEL
 // runtime's own contract.
 func (e *Evaluator) Eval(ctx context.Context, env *cel.Env, ast *cel.Ast, activation any) (ref.Val, error) {
+	out, _, err := e.EvalWithCost(ctx, env, ast, activation)
+	return out, err
+}
+
+// EvalWithCost is [Evaluator.Eval] plus the deterministic actual cost CEL reports
+// for this evaluation, for a caller that holds many evaluations to one budget.
+func (e *Evaluator) EvalWithCost(ctx context.Context, env *cel.Env, ast *cel.Ast, activation any) (ref.Val, uint64, error) {
 	ordered, err := orderMapComprehensionsAST(ast)
 	if err != nil {
-		return nil, &ExpressionError{Err: fmt.Errorf("prepare expression: %w", err)}
+		return nil, 0, &ExpressionError{Err: fmt.Errorf("prepare expression: %w", err)}
 	}
 	programEnv, err := e.extendedEnvFor(env)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	prg, err := programEnv.Program(ordered, e.limits.programOptions()...)
 	if err != nil {
-		return nil, &ExpressionError{Err: fmt.Errorf("compile expression: %w", err)}
+		return nil, 0, &ExpressionError{Err: fmt.Errorf("compile expression: %w", err)}
 	}
-	return evalProgram(ctx, prg, activation)
+	return evalProgramWithCost(ctx, prg, activation)
 }
 
 // evalProgram runs a compiled program and classifies its failure, which is the
