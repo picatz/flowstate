@@ -167,8 +167,10 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/goccy/go-yaml/parser"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
@@ -373,6 +375,16 @@ type Test struct {
 	// `triggers:`, so the argument mapping is a unit test rather than the one
 	// part of a workflow debuggable only in production.
 	Trigger *TriggerDelivery `yaml:"trigger"`
+
+	// StartedAt is the instant the case starts at, as RFC 3339 (`2026-08-02T07:30:00Z`):
+	// what `${run.started_at}` reads, and where the case's virtual clock begins, so
+	// a wait's `now` advances from it. Omitted, a case starts at 2020-01-01T00:00:00Z,
+	// the same fixed instant every case has always started at.
+	//
+	// It exists so a report's window arithmetic is exercisable with a clock the case
+	// owns, on the one machine an author can see it on, which is the reason
+	// `trigger:` can state a context at all.
+	StartedAt string `yaml:"started_at"`
 
 	// Stubs replace the task registry for the duration of this case. A task
 	// this case never invokes needs no stub; a task it invokes with no
@@ -581,6 +593,15 @@ type TriggerDelivery struct {
 	// replays never has to state one.
 	DeliveryID string `yaml:"delivery_id"`
 
+	// ScheduledAt is the slot a stated `kind: schedule` context says the firing was
+	// meant for, as RFC 3339, read as `${trigger.scheduled_at}`. Legal only with
+	// that kind: no other has a schedule to have meant anything.
+	//
+	// What a backfilled or catch-up firing carries in production, and the reason a
+	// case sets it independently of `started_at:`: the two differ exactly when it
+	// matters.
+	ScheduledAt string `yaml:"scheduled_at"`
+
 	// Signature says whether this delivery verified: "valid" (the default, and
 	// what an omitted key means) or "invalid".
 	//
@@ -621,12 +642,42 @@ func (d *TriggerDelivery) Replays() bool { return d.Webhook != "" }
 // own from the trigger it replayed against, so that a case asserting on
 // `${trigger.name}` asserts against what the receiver would really have recorded.
 func (d *TriggerDelivery) Context() *v1.TriggerContext {
-	return &v1.TriggerContext{
+	trigger := &v1.TriggerContext{
 		Kind:       d.Kind,
 		Name:       d.Name,
 		Principal:  d.Principal,
 		DeliveryId: d.DeliveryID,
 	}
+	if at, err := parseInstant(d.ScheduledAt); err == nil && !at.IsZero() {
+		// Judged when the file loads ([checkTriggerContext]), so an unparsable one
+		// never gets here; the zero value is what an omitted key means.
+		trigger.ScheduledAt = timestamppb.New(at)
+	}
+
+	return trigger
+}
+
+// parseInstant reads the RFC 3339 instant a test file states, in UTC; empty is
+// the zero time and no error, which is what an omitted key means.
+func parseInstant(text string) (time.Time, error) {
+	if text == "" {
+		return time.Time{}, nil
+	}
+	at, err := time.Parse(time.RFC3339Nano, text)
+	if err != nil {
+		return time.Time{}, err
+	}
+
+	return at.UTC(), nil
+}
+
+// StartTime is the instant the case starts at: its `started_at:`, or [epoch].
+func (t *Test) StartTime() time.Time {
+	if at, err := parseInstant(t.StartedAt); err == nil && !at.IsZero() {
+		return at
+	}
+
+	return epoch
 }
 
 // Defaults is what a file states once for every case (issue #416): the base
@@ -1880,6 +1931,11 @@ func checkClaims(p *problems, r site, test *Test) {
 func checkTrigger(p *problems, r site, test *Test, requireWorkflow bool) {
 	stanza := r.in(r.at.field("trigger"))
 
+	if _, err := parseInstant(test.StartedAt); err != nil {
+		p.report(r.in(r.at.field("started_at")), "test %q started_at: %q is not an RFC 3339 instant; write it "+
+			"like `2026-08-02T07:30:00Z`", test.Name, test.StartedAt)
+	}
+
 	trigger := test.Trigger
 	if trigger == nil {
 		if test.Expect.Refused != nil {
@@ -1915,6 +1971,10 @@ func checkTrigger(p *problems, r site, test *Test, requireWorkflow bool) {
 	if trigger.Payload == "" {
 		p.report(stanza, "test %q trigger %q: names no payload; write `payload: ./testdata/<file>.json`, "+
 			"a stored delivery with `headers` and `body`", test.Name, trigger.Webhook)
+	}
+	if trigger.ScheduledAt != "" {
+		p.report(stanza.in(stanza.at.field("scheduled_at")), "test %q trigger %q: a replayed delivery has no "+
+			"schedule; `scheduled_at:` belongs to a stated `kind: schedule` context", test.Name, trigger.Webhook)
 	}
 	if !requireWorkflow {
 		p.report(stanza, "test %q trigger %q: a delivery is read relative to the test file's own "+
@@ -1982,6 +2042,19 @@ func checkTriggerContext(p *problems, r site, test *Test, trigger *TriggerDelive
 			"test %q trigger: states a context and expects mapped inputs; `expect.inputs:` "+
 				"asserts what replaying a delivery produced, and a case that states its own `inputs:` "+
 				"already knows them", test.Name)
+	}
+
+	if trigger.ScheduledAt != "" {
+		at := stanza.in(stanza.at.field("scheduled_at"))
+		switch _, err := parseInstant(trigger.ScheduledAt); {
+		case err != nil:
+			p.report(at, "test %q trigger: scheduled_at: %q is not an RFC 3339 instant; write it like "+
+				"`2026-08-02T07:00:00Z`", test.Name, trigger.ScheduledAt)
+		case trigger.Kind != v1.TriggerKindSchedule:
+			p.report(at, "test %q trigger: scheduled_at: belongs to `kind: %s`; a %s run has no schedule, "+
+				"so no slot it was meant for, and a case stating one asserts against a value production "+
+				"never produces", test.Name, v1.TriggerKindSchedule, trigger.Kind)
+		}
 	}
 
 	if trigger.Payload != "" || trigger.Signature != "" {

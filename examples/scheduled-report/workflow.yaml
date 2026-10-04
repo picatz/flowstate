@@ -111,11 +111,18 @@ triggers:
     # thirty.
     pause_on_failure: true
 steps:
+  # The window this run reports on, as the firing was meant rather than as it ran. A
+  # schedule that fires late (recovered after an outage, or backfilled over a past range)
+  # still reports the day its slot named, which `run.started_at` could not say and the
+  # clock must not be asked. A run started by hand has no slot, so it reports the day
+  # before it began.
+  - id: window
+    value: '${((trigger.kind == "schedule") ? trigger.scheduled_at : run.started_at) - duration("24h")}'
   - id: gather
     vars:
       scope: ${"region " + inputs.region}
     log:
-      message: ${"gathering yesterday's numbers for " + scope}
+      message: ${"gathering the numbers for " + scope + " from " + string(steps.window.value)}
 
   # An argument deciding whether a step happens at all, which is how one file serves
   # a terse schedule and a verbose one.
@@ -134,3 +141,6 @@ outputs:
   region:
     value: ${inputs.region}
     description: the region this report covered
+  window_start:
+    value: ${string(steps.window.value)}
+    description: the start of the day this report covered, from the slot the schedule meant

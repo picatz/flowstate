@@ -13,11 +13,11 @@ scope ────────────────────────�
   run.identity         {"claims":{},"issuer":"","namespace":"","subject":""}
   run.local            true
   run.run_id           "local"
+  run.started_at       "2026-08-03T09:00:00Z"
   run.workflow_id      "local"
   trigger.delivery_id  ""
   trigger.kind         "manual"
-  trigger.name         ""
-  1 more of 10 (`scope` lists the names; `inspect <name>` reads one)
+  3 more of 12 (`scope` lists the names; `inspect <name>` reads one)
 
 steps ─────────────────────────────────────────────────────────────────────────
   ✓ checkout ok
@@ -35,10 +35,10 @@ scope ────────────────────────�
   run.identity         {"claims":{},"issuer":"","namespace":"","subject":""}
   run.local            true
   run.run_id           "local"
+  run.started_at       "2026-08-03T09:00:00Z"
   run.workflow_id      "local"
   trigger.delivery_id  ""
-  trigger.kind         "manual"
-  2 more of 11 (`scope` lists the names; `inspect <name>` reads one)
+  4 more of 13 (`scope` lists the names; `inspect <name>` reads one)
 
 steps ─────────────────────────────────────────────────────────────────────────
   ✓ checkout ok
@@ -50,16 +50,16 @@ steps ────────────────────────�
   6 step(s)
 
 scope ─────────────────────────────────────────────────────────────────────────
-  steps.build          {"artifact":"build.tar.gz"}
-  steps.checkout       {"artifact":"checkout.tar.gz"}
-  vars.region          "eu-west-1"
-  inputs.version       "2026.9.0"
-  run.identity         {"claims":{},"issuer":"","namespace":"","subject":""}
-  run.local            true
-  run.run_id           "local"
-  run.workflow_id      "local"
-  trigger.delivery_id  ""
-  3 more of 12 (`scope` lists the names; `inspect <name>` reads one)
+  steps.build      {"artifact":"build.tar.gz"}
+  steps.checkout   {"artifact":"checkout.tar.gz"}
+  vars.region      "eu-west-1"
+  inputs.version   "2026.9.0"
+  run.identity     {"claims":{},"issuer":"","namespace":"","subject":""}
+  run.local        true
+  run.run_id       "local"
+  run.started_at   "2026-08-03T09:00:00Z"
+  run.workflow_id  "local"
+  5 more of 14 (`scope` lists the names; `inspect <name>` reads one)
 
 steps ─────────────────────────────────────────────────────────────────────────
   ✓ checkout ok
@@ -71,14 +71,14 @@ steps ────────────────────────�
   6 step(s)
 
 scope ─────────────────────────────────────────────────────────────────────────
-  steps.build      {"artifact":"build.tar.gz"}
-  steps.checkout   {"artifact":"checkout.tar.gz"}
-  steps.flaky      {"error":"deliberate failure","failure":{"kind":"Internal","m
-  vars.region      "eu-west-1"
-  inputs.version   "2026.9.0"
-  run.identity     {"claims":{},"issuer":"","namespace":"","subject":""}
-  run.local        true
-  run.run_id       "local"
-  run.workflow_id  "local"
-  4 more of 13 (`scope` lists the names; `inspect <name>` reads one)
+  steps.build     {"artifact":"build.tar.gz"}
+  steps.checkout  {"artifact":"checkout.tar.gz"}
+  steps.flaky     {"error":"deliberate failure","failure":{"kind":"Internal","me
+  vars.region     "eu-west-1"
+  inputs.version  "2026.9.0"
+  run.identity    {"claims":{},"issuer":"","namespace":"","subject":""}
+  run.local       true
+  run.run_id      "local"
+  run.started_at  "2026-08-03T09:00:00Z"
+  6 more of 15 (`scope` lists the names; `inspect <name>` reads one)
 

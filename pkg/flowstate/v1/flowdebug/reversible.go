@@ -97,7 +97,9 @@ type Run struct {
 // context and ends it in [Run.Stop].
 //
 // It must be deterministic: the same options, inputs, stubs and virtual
-// clock every time, because a rewind is only as good as its reproduction. A
+// clock every time — and the same run start, pinned once with
+// [v1.NewContextWithRunStart], because `run.started_at` is part of what a stop
+// shows — because a rewind is only as good as its reproduction. A
 // launcher that cannot promise that must not be wrapped; a difference is
 // caught and reported, but it is the host's to prevent.
 type Launcher func(ctx context.Context) (*Run, error)

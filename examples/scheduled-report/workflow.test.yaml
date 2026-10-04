@@ -12,9 +12,10 @@ edition: v2026.4
 tests:
   - name: the defaults report the declared region tersely, and the breakdown never runs
     workflow: ./workflow.yaml
+    started_at: 2026-08-03T09:00:00Z
     stubs:
       - task: log
-        where: "inputs.message == 'gathering yesterday\\'s numbers for region eu-west-1'"
+        where: "inputs.message == 'gathering the numbers for region eu-west-1 from 2026-08-02T09:00:00Z'"
         returns: {}
       - task: log
         where: inputs.message == 'report ready for eu-west-1' && inputs.level == 'info'
@@ -22,19 +23,21 @@ tests:
     expect:
       # Three steps ran, not a schedule created. `breakdown` is the branch the
       # default argument does not take.
-      ran: [gather, publish]
+      ran: [window, gather, publish]
       skipped: [breakdown]
       outputs:
         region: eu-west-1
+        window_start: "2026-08-02T09:00:00Z"
 
   - name: the arguments a schedule would bind change both the region and the branch
     workflow: ./workflow.yaml
     inputs:
       region: us-east-1
       detailed: true
+    started_at: 2026-08-03T09:00:00Z
     stubs:
       - task: log
-        where: "inputs.message == 'gathering yesterday\\'s numbers for region us-east-1'"
+        where: "inputs.message == 'gathering the numbers for region us-east-1 from 2026-08-02T09:00:00Z'"
         returns: {}
       - task: log
         where: inputs.message == 'per-service breakdown included'
@@ -43,6 +46,27 @@ tests:
         where: inputs.message == 'report ready for us-east-1' && inputs.level == 'info'
         returns: {}
     expect:
-      ran: [gather, breakdown, publish]
+      ran: [window, gather, breakdown, publish]
       outputs:
         region: us-east-1
+        window_start: "2026-08-02T09:00:00Z"
+
+  # The case the window exists for: the firing runs at nine in the morning but was
+  # meant for yesterday's 07:00 slot (recovered after an outage, or backfilled), and
+  # the report covers the day before the slot rather than the day before it ran.
+  - name: a recovered firing reports the window its slot named, not the day it ran
+    workflow: ./workflow.yaml
+    started_at: 2026-08-03T09:00:00Z
+    trigger:
+      kind: schedule
+      name: scheduled-report
+      scheduled_at: 2026-08-02T07:00:00Z
+    stubs:
+      - task: log
+        returns: {}
+    expect:
+      ran: [window, gather, publish]
+      skipped: [breakdown]
+      outputs:
+        region: eu-west-1
+        window_start: "2026-08-01T07:00:00Z"

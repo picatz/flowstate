@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/charmbracelet/colorprofile"
 	golden "github.com/charmbracelet/x/exp/golden"
@@ -76,6 +77,11 @@ func markStep(id string) *v1.Node {
 	}}}
 }
 
+// paneStart is the instant every pane run starts at, so `run.started_at` in a frame is the
+// same text on every draw: a golden that held the wall clock would be a different file each
+// time it was read.
+var paneStart = time.Date(2026, 8, 3, 9, 0, 0, 0, time.UTC)
+
 // paneWorkflow is the fixture the goldens are drawn from: one step of every
 // outcome a step list has a mark for, and two the run has not reached, so a
 // frame exercises every row shape rather than the two a happy path produces.
@@ -135,6 +141,7 @@ func replayed(t *testing.T, workflow *v1.Workflow, script string, caps ui.Capabi
 	t.Cleanup(func() { _ = session.Close() })
 
 	ctx := v1.NewContextWithRegistry(t.Context(), paneRegistry(t))
+	ctx = v1.NewContextWithClock(ctx, v1.NewVirtualClock(paneStart))
 	ctx = v1.NewContextWithDebugger(ctx, session)
 	ctx = v1.NewContextWithRunObserver(ctx, session)
 
@@ -179,6 +186,7 @@ func lastFrameOf(t *testing.T, workflow *v1.Workflow, script string, caps ui.Cap
 	t.Cleanup(func() { _ = session.Close() })
 
 	ctx := v1.NewContextWithRegistry(t.Context(), paneRegistry(t))
+	ctx = v1.NewContextWithClock(ctx, v1.NewVirtualClock(paneStart))
 	ctx = v1.NewContextWithDebugger(ctx, session)
 	ctx = v1.NewContextWithRunObserver(ctx, session)
 
@@ -343,6 +351,7 @@ func redactedRun(t *testing.T, redacting bool) string {
 	}
 
 	ctx := v1.NewContextWithRegistry(t.Context(), paneRegistry(t))
+	ctx = v1.NewContextWithClock(ctx, v1.NewVirtualClock(paneStart))
 	ctx = v1.NewContextWithDebugger(ctx, session)
 	ctx = v1.NewContextWithRunObserver(ctx, session)
 
@@ -528,6 +537,7 @@ func frameAtStep(t *testing.T, layout debugpane.Layout, inventory []flowdebug.St
 	}
 
 	ctx := v1.NewContextWithRegistry(t.Context(), paneRegistry(t))
+	ctx = v1.NewContextWithClock(ctx, v1.NewVirtualClock(paneStart))
 	ctx = v1.NewContextWithDebugger(ctx, session)
 	ctx = v1.NewContextWithRunObserver(ctx, session)
 

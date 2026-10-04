@@ -1030,32 +1030,33 @@ func (x *Scope) GetTrigger() *TriggerContext {
 	return nil
 }
 
-// RunAddress is a run's own address: the pair that identifies it to anything
-// outside it, including this engine's own control plane.
+// RunAddress is a run's own address, the pair that identifies it to anything
+// outside it including this engine's own control plane, and the instant it began.
 //
 // This exists because a workload that has to be *called back* (hand an external
 // system a token, wait for that system to answer) cannot say where the answer
 // should be sent without it. That is Temporal's `expense` sample, and it is also
 // every shape where one run tells a peer how to reach it.
 //
-// # Why exactly these two fields
+// # The address
 //
 // [workflow_id] is the address: it is what `flow signal <workflow-id> <name>`
 // takes, what `flow get` takes, and what the Signal RPC resolves. [run_id]
 // disambiguates which execution of that id: the same workflow id may be
 // reused once an earlier run has finished.
 //
-// What is deliberately absent is a start time and an attempt count, and the
-// absence is load-bearing rather than an oversight. A start time is a clock read
-// by another name: `now` is bound *only* inside a wait, and docs/ARCHITECTURE.md
-// argues that placement at length: a name resolvable only where a replay-safe
-// clock exists in every case. Putting a timestamp on the run root would make a
-// clock readable from every expression in the language, through a field nobody
-// would think of as a clock. An attempt count is the same mistake one layer
-// down: it is a fact about the substrate's scheduling, it changes underneath a
-// run, and a workflow branching on it is a workflow whose meaning depends on
-// how many times a worker happened to crash. Neither belongs here; adding one
-// to "complete" the message would quietly undo the reasoning behind `now`.
+// # Why a start time is here, and an attempt count is not
+//
+// [started_at] is the workload's start, which is fixed when the run begins and
+// identical on every replay. It is not a clock read, which is what `now` is
+// refused outside a wait for: `now` answers "what time is it", a different
+// answer every time it is asked, and this answers "when did this begin", the
+// same answer for the life of the run. A report that has to name its window
+// needs the second and must not be given the first.
+//
+// What stays absent is an attempt count. It is a fact about the substrate's
+// scheduling, it changes underneath a run, and a workflow branching on it is a
+// workflow whose meaning depends on how many times a worker happened to crash.
 type RunAddress struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// WorkflowID is the id the run is addressed by, the same id `flow signal`
@@ -1074,7 +1075,17 @@ type RunAddress struct {
 	// what `RunState.vars` exists to prevent for `vars:`. `FirstRunID` is
 	// preserved along the whole chain of continued executions, so it names the
 	// run an author thinks they wrote.
-	RunId         string `protobuf:"bytes,2,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
+	RunId string `protobuf:"bytes,2,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
+	// StartedAt is when the workload began, read as `run.started_at`: the first
+	// segment's start, carried unchanged across every Continue-As-New, so a run
+	// that suspended once reports the same instant before and after.
+	//
+	// Projected from [RunState.workload_started_at] on the durable driver, with
+	// the first segment's own start read off its history; the local driver fills
+	// it with the moment the run started, or the instant a `flow test` case names.
+	// Unset for a run that predates the field and for one whose chain began before
+	// [RunState.workload_started_at] existed, which renders as the Unix epoch.
+	StartedAt     *timestamppb.Timestamp `protobuf:"bytes,3,opt,name=started_at,json=startedAt,proto3" json:"started_at,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1121,6 +1132,13 @@ func (x *RunAddress) GetRunId() string {
 		return x.RunId
 	}
 	return ""
+}
+
+func (x *RunAddress) GetStartedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.StartedAt
+	}
+	return nil
 }
 
 // EntityState is a bounded projection of a running workload's carried state,
@@ -2531,12 +2549,14 @@ const file_flowstate_v1_run_proto_rawDesc = "" +
 	"\x05value\x18\x02 \x01(\v2\x13.flowstate.v1.ValueR\x05value:\x028\x01\x1aN\n" +
 	"\vInputsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12)\n" +
-	"\x05value\x18\x02 \x01(\v2\x13.flowstate.v1.ValueR\x05value:\x028\x01\"D\n" +
+	"\x05value\x18\x02 \x01(\v2\x13.flowstate.v1.ValueR\x05value:\x028\x01\"\x7f\n" +
 	"\n" +
 	"RunAddress\x12\x1f\n" +
 	"\vworkflow_id\x18\x01 \x01(\tR\n" +
 	"workflowId\x12\x15\n" +
-	"\x06run_id\x18\x02 \x01(\tR\x05runId\"\xce\x02\n" +
+	"\x06run_id\x18\x02 \x01(\tR\x05runId\x129\n" +
+	"\n" +
+	"started_at\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\tstartedAt\"\xce\x02\n" +
 	"\vEntityState\x127\n" +
 	"\x04vars\x18\x01 \x03(\v2#.flowstate.v1.EntityState.VarsEntryR\x04vars\x12G\n" +
 	"\n" +
@@ -2711,42 +2731,43 @@ var file_flowstate_v1_run_proto_depIdxs = []int32{
 	33, // 15: flowstate.v1.Scope.identity:type_name -> flowstate.v1.WorkloadIdentity
 	11, // 16: flowstate.v1.Scope.address:type_name -> flowstate.v1.RunAddress
 	34, // 17: flowstate.v1.Scope.trigger:type_name -> flowstate.v1.TriggerContext
-	23, // 18: flowstate.v1.EntityState.vars:type_name -> flowstate.v1.EntityState.VarsEntry
-	24, // 19: flowstate.v1.EntityState.loop_state:type_name -> flowstate.v1.EntityState.LoopStateEntry
-	35, // 20: flowstate.v1.PendingActivity.next_attempt_scheduled_time:type_name -> google.protobuf.Timestamp
-	15, // 21: flowstate.v1.RunProgress.pending_waits:type_name -> flowstate.v1.PendingWait
-	35, // 22: flowstate.v1.PendingWait.deadline:type_name -> google.protobuf.Timestamp
-	32, // 23: flowstate.v1.Frame.results:type_name -> flowstate.v1.Workflow.StepOutputs
-	32, // 24: flowstate.v1.Frame.call_outputs:type_name -> flowstate.v1.Workflow.StepOutputs
-	25, // 25: flowstate.v1.Frame.call_vars:type_name -> flowstate.v1.Frame.CallVarsEntry
-	36, // 26: flowstate.v1.Frame.loop_state:type_name -> flowstate.v1.Value
-	17, // 27: flowstate.v1.Frame.held_failures:type_name -> flowstate.v1.HeldFailure
-	37, // 28: flowstate.v1.RunState.workflow:type_name -> flowstate.v1.Workflow
-	32, // 29: flowstate.v1.RunState.outputs:type_name -> flowstate.v1.Workflow.StepOutputs
-	16, // 30: flowstate.v1.RunState.frames:type_name -> flowstate.v1.Frame
-	33, // 31: flowstate.v1.RunState.identity:type_name -> flowstate.v1.WorkloadIdentity
-	8,  // 32: flowstate.v1.RunState.pending_signals:type_name -> flowstate.v1.PendingSignal
-	26, // 33: flowstate.v1.RunState.vars:type_name -> flowstate.v1.RunState.VarsEntry
-	27, // 34: flowstate.v1.RunState.inputs:type_name -> flowstate.v1.RunState.InputsEntry
-	38, // 35: flowstate.v1.RunState.run_outputs:type_name -> flowstate.v1.RunOutputs
-	7,  // 36: flowstate.v1.RunState.pending_undo:type_name -> flowstate.v1.PendingUndo
-	34, // 37: flowstate.v1.RunState.trigger:type_name -> flowstate.v1.TriggerContext
-	35, // 38: flowstate.v1.RunState.workload_started_at:type_name -> google.protobuf.Timestamp
-	35, // 39: flowstate.v1.TimelineEntry.time:type_name -> google.protobuf.Timestamp
-	5,  // 40: flowstate.v1.TimelineEntry.kind:type_name -> flowstate.v1.TimelineEntry.Kind
-	36, // 41: flowstate.v1.Scope.VarsEntry.value:type_name -> flowstate.v1.Value
-	36, // 42: flowstate.v1.Scope.AmbientVarsEntry.value:type_name -> flowstate.v1.Value
-	36, // 43: flowstate.v1.Scope.InputsEntry.value:type_name -> flowstate.v1.Value
-	36, // 44: flowstate.v1.EntityState.VarsEntry.value:type_name -> flowstate.v1.Value
-	36, // 45: flowstate.v1.EntityState.LoopStateEntry.value:type_name -> flowstate.v1.Value
-	36, // 46: flowstate.v1.Frame.CallVarsEntry.value:type_name -> flowstate.v1.Value
-	36, // 47: flowstate.v1.RunState.VarsEntry.value:type_name -> flowstate.v1.Value
-	36, // 48: flowstate.v1.RunState.InputsEntry.value:type_name -> flowstate.v1.Value
-	49, // [49:49] is the sub-list for method output_type
-	49, // [49:49] is the sub-list for method input_type
-	49, // [49:49] is the sub-list for extension type_name
-	49, // [49:49] is the sub-list for extension extendee
-	0,  // [0:49] is the sub-list for field type_name
+	35, // 18: flowstate.v1.RunAddress.started_at:type_name -> google.protobuf.Timestamp
+	23, // 19: flowstate.v1.EntityState.vars:type_name -> flowstate.v1.EntityState.VarsEntry
+	24, // 20: flowstate.v1.EntityState.loop_state:type_name -> flowstate.v1.EntityState.LoopStateEntry
+	35, // 21: flowstate.v1.PendingActivity.next_attempt_scheduled_time:type_name -> google.protobuf.Timestamp
+	15, // 22: flowstate.v1.RunProgress.pending_waits:type_name -> flowstate.v1.PendingWait
+	35, // 23: flowstate.v1.PendingWait.deadline:type_name -> google.protobuf.Timestamp
+	32, // 24: flowstate.v1.Frame.results:type_name -> flowstate.v1.Workflow.StepOutputs
+	32, // 25: flowstate.v1.Frame.call_outputs:type_name -> flowstate.v1.Workflow.StepOutputs
+	25, // 26: flowstate.v1.Frame.call_vars:type_name -> flowstate.v1.Frame.CallVarsEntry
+	36, // 27: flowstate.v1.Frame.loop_state:type_name -> flowstate.v1.Value
+	17, // 28: flowstate.v1.Frame.held_failures:type_name -> flowstate.v1.HeldFailure
+	37, // 29: flowstate.v1.RunState.workflow:type_name -> flowstate.v1.Workflow
+	32, // 30: flowstate.v1.RunState.outputs:type_name -> flowstate.v1.Workflow.StepOutputs
+	16, // 31: flowstate.v1.RunState.frames:type_name -> flowstate.v1.Frame
+	33, // 32: flowstate.v1.RunState.identity:type_name -> flowstate.v1.WorkloadIdentity
+	8,  // 33: flowstate.v1.RunState.pending_signals:type_name -> flowstate.v1.PendingSignal
+	26, // 34: flowstate.v1.RunState.vars:type_name -> flowstate.v1.RunState.VarsEntry
+	27, // 35: flowstate.v1.RunState.inputs:type_name -> flowstate.v1.RunState.InputsEntry
+	38, // 36: flowstate.v1.RunState.run_outputs:type_name -> flowstate.v1.RunOutputs
+	7,  // 37: flowstate.v1.RunState.pending_undo:type_name -> flowstate.v1.PendingUndo
+	34, // 38: flowstate.v1.RunState.trigger:type_name -> flowstate.v1.TriggerContext
+	35, // 39: flowstate.v1.RunState.workload_started_at:type_name -> google.protobuf.Timestamp
+	35, // 40: flowstate.v1.TimelineEntry.time:type_name -> google.protobuf.Timestamp
+	5,  // 41: flowstate.v1.TimelineEntry.kind:type_name -> flowstate.v1.TimelineEntry.Kind
+	36, // 42: flowstate.v1.Scope.VarsEntry.value:type_name -> flowstate.v1.Value
+	36, // 43: flowstate.v1.Scope.AmbientVarsEntry.value:type_name -> flowstate.v1.Value
+	36, // 44: flowstate.v1.Scope.InputsEntry.value:type_name -> flowstate.v1.Value
+	36, // 45: flowstate.v1.EntityState.VarsEntry.value:type_name -> flowstate.v1.Value
+	36, // 46: flowstate.v1.EntityState.LoopStateEntry.value:type_name -> flowstate.v1.Value
+	36, // 47: flowstate.v1.Frame.CallVarsEntry.value:type_name -> flowstate.v1.Value
+	36, // 48: flowstate.v1.RunState.VarsEntry.value:type_name -> flowstate.v1.Value
+	36, // 49: flowstate.v1.RunState.InputsEntry.value:type_name -> flowstate.v1.Value
+	50, // [50:50] is the sub-list for method output_type
+	50, // [50:50] is the sub-list for method input_type
+	50, // [50:50] is the sub-list for extension type_name
+	50, // [50:50] is the sub-list for extension extendee
+	0,  // [0:50] is the sub-list for field type_name
 }
 
 func init() { file_flowstate_v1_run_proto_init() }

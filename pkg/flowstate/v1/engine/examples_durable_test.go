@@ -20,6 +20,7 @@ import (
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/testing/protocmp"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
@@ -719,6 +720,10 @@ func TestEveryExampleRunsDurably(t *testing.T) {
 // `server.WithMaxStepsPerRun` configures in a deployment — the server writes it into
 // `RunState.StepsBudget` at submit (server.go:346) — and the harness sets the field
 // directly because it submits the state itself rather than going through the service.
+// exampleRunStart is the one instant both drivers report as `run.started_at`
+// for an example, so that a file reading it answers the same on each.
+var exampleRunStart = time.Date(2026, 8, 3, 9, 0, 0, 0, time.UTC)
+
 func runExampleDurably(
 	t *testing.T,
 	c client.Client,
@@ -757,6 +762,12 @@ func runExampleDurably(
 			// attests is a fact about the deployment, exactly as `run.identity`
 			// already is, and the drivers differ there for the same reason.
 			Trigger: v1.NewManualTriggerContext(""),
+
+			// The instant `run.started_at` reports, pinned to the one the local run
+			// above is given: both drivers are asked for a start rather than left to
+			// read their own clocks, which would differ by however long the server
+			// took to schedule the first task.
+			WorkloadStartedAt: timestamppb.New(exampleRunStart),
 		})
 	require.NoError(t, err)
 
@@ -827,6 +838,7 @@ func runExampleLocally(
 	ctx, cancel := context.WithTimeout(t.Context(), exampleRunTimeout)
 	defer cancel()
 
+	ctx = v1.NewContextWithRunStart(ctx, exampleRunStart)
 	ctx = v1.ContextWithTaskRuntime(ctx, v1.TaskRuntime{
 		Store:    secretStore,
 		Policy:   authority.Policy(t),

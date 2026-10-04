@@ -47,6 +47,7 @@ headings below, not this list.*
   - [`triggers:` as a list of call sites — `webhook:` *(landed)*](#triggers-as-a-list-of-call-sites--webhook-landed)
   - [A `webhook:` may answer a gate instead of starting a run — `signal:` *(landed)*](#a-webhook-may-answer-a-gate-instead-of-starting-a-run--signal-landed)
   - [`manual:` narrows, and the body can read how a run started](#manual-narrows-and-the-body-can-read-how-a-run-started)
+  - [A run knows when it began, and a firing which slot it was for](#a-run-knows-when-it-began-and-a-firing-which-slot-it-was-for)
   - [`${...}` stays; `!expr` is refused](#-stays-expr-is-refused)
   - [`value:` landed, on the evidence the refusal asked for (#411)](#value-landed-on-the-evidence-the-refusal-asked-for-411)
   - [`switch:` landed — the word buys the checks, not the branch (#357)](#switch-landed--the-word-buys-the-checks-not-the-branch-357)
@@ -239,18 +240,22 @@ attested caller who started it, `run.workflow_id` and `run.run_id` for the run's
 address, which is what lets a workload hand an external system somewhere to send a
 callback (`examples/callback-address/`). The set is closed and `flow validate` reports an
 unknown field under it, which is the one thing `steps.*` and `inputs.*` cannot do: no file
-can add a field to `run`. Two fields a reader may expect are deliberately absent and will
-stay absent — a start time and an attempt count. A start time is a clock read by another
-name, and `now` is bound only inside a wait precisely so that a task cannot read a clock
-(see [ARCHITECTURE.md](ARCHITECTURE.md)'s execution model); an attempt count is a fact
-about the substrate's scheduling that changes underneath a run.
+can add a field to `run`. An attempt count is deliberately absent and will stay absent: it
+is a fact about the substrate's scheduling that changes underneath a run. A start time was
+absent too, on the argument that it is a clock read by another name, and that argument was
+wrong about the thing it named: `now` answers "what time is it", a different answer each
+time it is asked, which is why it is bound only inside a wait (see
+[ARCHITECTURE.md](ARCHITECTURE.md)'s execution model); `run.started_at` answers "when did
+this begin", the same answer for the life of the run, fixed in the first segment's history
+and carried across every Continue-As-New. See [A run knows when it began, and a firing
+which slot it was for](#a-run-knows-when-it-began-and-a-firing-which-slot-it-was-for).
 
 *Since written:* `trigger.*` joined them, and it is a fifth root rather than a field of
 `run` because it answers a different question with a different lifetime: `run` is which
 run this is (an address the substrate mints, an identity the server attested), and
 `trigger` is why the run is happening (established by whichever entry path admitted the
 submission). `trigger.kind`, `trigger.name`, `trigger.principal` and
-`trigger.delivery_id`, closed exactly as `run` is, and readable everywhere an ordinary
+`trigger.delivery_id` and `trigger.scheduled_at`, closed exactly as `run` is, and readable everywhere an ordinary
 expression is — see [`manual:` narrows, and the body can read how a run
 started](#manual-narrows-and-the-body-can-read-how-a-run-started).
 
@@ -2164,7 +2169,7 @@ trigger that started the run (empty for a manual start, since a person is not a 
 source); `trigger.principal` is the subject the server attested; `trigger.delivery_id`
 names one arrival, as a digest rather than the idempotency key itself, because the key is
 whatever the trigger computed from the delivery, and this value is written to durable
-history. The set is closed
+history; `trigger.scheduled_at` is the slot a schedule meant the run for. The set is closed
 and `flow validate` reports an unknown field under it, exactly as it does for `run`.
 
 This is safe to read anywhere, and the reason is worth stating: every field is fixed when
@@ -2214,6 +2219,75 @@ have computed, so the two could otherwise disagree about one run. What a case ca
 is make `principal:` mean anything: it is settable, freely, which is exactly why
 authorization must not be written where a test file can switch it off in one line.
 `examples/trigger-context` is the worked example, and it runs in CI like the rest.
+
+### A run knows when it began, and a firing which slot it was for
+
+A scheduled workload is almost always a workload *about a window of time*: yesterday's
+numbers, the hour that just closed, the month that ended. Nothing in the language let a
+run name that window, because the clock it would have read is the one thing a task may not
+read. Two fields close that gap without opening it:
+
+```yaml
+- id: window
+  value: ${trigger.scheduled_at - duration("24h")}    # the window this firing covers
+- id: stamp
+  log:
+    message: ${"report generated at " + string(run.started_at)}
+```
+
+- **`run.started_at`** is when the workload began, a `timestamp`. The durable driver reads
+  it off the first segment's own history and carries it across every Continue-As-New
+  (`RunState.workload_started_at`), so a run that suspended three times reports one
+  instant; the local driver reads the run's clock once, when the run begins, and `flow test`
+  starts each case at a fixed instant (below).
+- **`trigger.scheduled_at`** is the slot a schedule *meant* the run for, a `timestamp`.
+  It differs from the start under a backfill, a paused-then-resumed schedule, and a
+  catch-up window: a firing recovered at nine in the morning for yesterday's 07:00 slot
+  reads 07:00, which is the answer a report about that window needs and the wall clock
+  cannot give. Temporal attaches it to each firing as the `TemporalScheduledStartTime`
+  search attribute; the first segment reads it once and carries it in the trigger context
+  like `delivery_id`, so it is identical on every replay.
+
+Neither is a clock. `now` answers "what time is it", a different answer on every ask, and
+is therefore bound only inside a wait where a replay-safe clock exists. These answer "when
+did this begin" and "which slot was this for": fixed when the run starts, carried in its
+state, the same on every replay. That is the argument the whole `trigger.*` root rests on,
+and it is why neither needs a boundary: `${now}` outside a wait is still refused.
+
+The checker types both as `timestamp`, so `run.started_at - duration("24h")` and
+`.getFullYear()` check where they are written and `trigger.scheduled_at + 1` is refused
+there. Where there is no value they render as the Unix epoch rather than being absent:
+`trigger.scheduled_at` on a manual, webhook or older run, and `run.started_at` on a run
+that predates the field. A file that reads the slot guards on the kind first:
+
+```yaml
+value: '${((trigger.kind == "schedule") ? trigger.scheduled_at : run.started_at) - duration("24h")}'
+```
+
+A `call:`ed workflow runs inside the same run and reads the same `run.started_at`, exactly
+as it reads the same `run.workflow_id`. A manual `flow schedule trigger` is a start nobody
+scheduled: `trigger.scheduled_at` reads whatever slot the execution carries, and the Unix epoch
+where it carries none.
+
+**And both are settable in a test**, so a report's window arithmetic is exercisable with a
+clock the case owns:
+
+```yaml
+tests:
+  - name: the window is the slot minus a day, whenever the run happens
+    started_at: 2026-08-03T09:00:00Z          # where the case's virtual clock begins
+    trigger:
+      kind: schedule
+      name: nightly
+      scheduled_at: 2026-08-02T07:00:00Z      # the slot; legal only with kind: schedule
+    expect:
+      outputs:
+        window_start: "2026-08-01T07:00:00Z"
+```
+
+A case that states neither starts at 2020-01-01T00:00:00Z as every case always has, and a
+`scheduled_at:` that is not an RFC 3339 instant, or sits on any kind but `schedule`, is
+refused when the file loads. `examples/scheduled-report` is the worked example.
 
 ### `${...}` stays; `!expr` is refused
 

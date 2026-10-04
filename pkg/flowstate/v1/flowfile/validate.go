@@ -2776,12 +2776,14 @@ var runIdentityFields = []string{"subject", "issuer", "namespace", "claims"}
 
 // runFields are the fields [runRootValue] renders directly under `run`.
 //
-// The set is closed on purpose and the two absences are the interesting part:
-// there is no `start_time` and no `attempt`, so `${run.start_time}` is reported
-// here rather than silently resolving to something. [v1.RunAddress] records why
-// neither will be added — a start time is a clock read by another name, and
-// `now` is bound only inside a wait precisely so a task cannot read a clock.
-var runFields = []string{"identity", "local", "workflow_id", "run_id"}
+// The set is closed on purpose, and the absence worth knowing is `attempt`:
+// `${run.attempt}` is reported here rather than silently resolving to something,
+// because an attempt count is a fact about the substrate's scheduling that changes
+// underneath a run. `started_at` is here and `now` is not: a start is fixed when
+// the run begins and identical on every replay, where `now` is bound only inside a
+// wait precisely so a task cannot read a clock. [v1.RunAddress] records both
+// halves of that.
+var runFields = []string{"identity", "local", "workflow_id", "run_id", "started_at"}
 
 // unknownRunField reports a reference to a field `run` does not have.
 //

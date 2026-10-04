@@ -86,6 +86,32 @@ func ClockFromContext(ctx context.Context) Clock {
 	return RealClock
 }
 
+// runStartContextKey is the context key carrying a run's pinned start.
+type runStartContextKey struct{}
+
+// NewContextWithRunStart returns a context under which a local run reports
+// start as `run.started_at`, in place of reading its clock when it begins.
+//
+// A host that starts the same program more than once and needs the runs to be
+// indistinguishable pins the instant once and passes it to every start: a
+// reversible debugger replays a run from the beginning to reach an earlier
+// stop, and a replay that began a moment later would show an earlier stop with
+// a different `run.started_at` than the first visit did. It is a fact about the
+// run, not a clock: it never advances, and nothing else about time changes.
+func NewContextWithRunStart(ctx context.Context, start time.Time) context.Context {
+	return context.WithValue(ctx, runStartContextKey{}, start)
+}
+
+// runStartFromContext returns the start a context pins, or the instant its
+// clock reads now.
+func runStartFromContext(ctx context.Context) time.Time {
+	if start, ok := ctx.Value(runStartContextKey{}).(time.Time); ok {
+		return start
+	}
+
+	return ClockFromContext(ctx).Now()
+}
+
 // ClockParticipant is implemented by a [Clock] that needs to know when a
 // goroutine begins doing work that should hold the clock back from advancing,
 // and when it stops.

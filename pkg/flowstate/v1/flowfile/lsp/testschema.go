@@ -135,6 +135,7 @@ var testDocKeys = map[testDocLevel][]dslKey{
 		{name: "workflow", detail: "path", docs: "The Flowfile under test, resolved relative to the directory the *.test.yaml itself lives in — the same rule `call:` resolves against."},
 		{name: "inputs", detail: "map", docs: "Binds the workflow's declared `inputs:`, checked the same way a real run's are. Mutually exclusive with `trigger:`."},
 		{name: "trigger", detail: "map", docs: "Replays a stored delivery against one of the workflow's declared `triggers:`, or states a trigger context directly. Mutually exclusive with `inputs:`."},
+		{name: "started_at", detail: "timestamp", docs: "The instant the case starts at, as RFC 3339: what `${run.started_at}` reads, and where the case's virtual clock begins. Omitted, a case starts at 2020-01-01T00:00:00Z."},
 		{name: "stubs", detail: "list", docs: "Replaces the task registry for the duration of this case. A task this case never invokes needs no stub; one invoked with no matching stub fails the case."},
 		{name: "secrets", detail: "map", docs: "Replaces the real secret backend for this case, keyed by a `${secret(...)}` reference's text form and bound to the plaintext value it resolves to."},
 		{name: "signals", detail: "list", docs: "Scripts what to deliver to a `wait_for_signal:` step, and when."},
@@ -161,6 +162,7 @@ var testDocKeys = map[testDocLevel][]dslKey{
 		{name: "name", detail: "string", docs: "The trigger's own name for a context set directly: the schedule's, or the webhook's where a case states one rather than replaying it."},
 		{name: "principal", detail: "string", docs: "Who the context says started the run, read as `${trigger.principal}`. Settable here and attested nowhere — never the shape a workflow authorizes on."},
 		{name: "delivery_id", detail: "string", docs: "The delivery a directly-set context names, read as `${trigger.delivery_id}`. A replayed delivery computes its own."},
+		{name: "scheduled_at", detail: "timestamp", docs: "The slot a directly-set `kind: schedule` context says the firing was meant for, as RFC 3339, read as `${trigger.scheduled_at}`. Legal only with that kind."},
 		{name: "signature", detail: "string", docs: "Whether this delivery verified: `valid` (the default) or `invalid`. Legal only while the case binds none of the keys the trigger's `verify:` names."},
 	},
 	testLevelStub: {

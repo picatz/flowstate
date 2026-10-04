@@ -252,6 +252,18 @@ func (t *typeTable) leavesFor(parsed *expr.ParsedExpr, before int) map[string]*c
 		}
 	}
 
+	// The two instants a run is given, typed as the timestamps they render as, so
+	// `run.started_at - duration("24h")` and `.getFullYear()` check where they
+	// are written and `trigger.scheduled_at + 1` is refused there.
+	walkExpr(parsed.GetExpr(), func(root string, fields []string) {
+		switch {
+		case root == v1.RunRoot && fields[0] == "started_at" && len(fields) == 1:
+			add(v1.RunRoot+".started_at", cel.TimestampType)
+		case root == v1.TriggerRoot && fields[0] == "scheduled_at" && len(fields) == 1:
+			add(v1.TriggerRoot+".scheduled_at", cel.TimestampType)
+		}
+	})
+
 	return leaves
 }
 

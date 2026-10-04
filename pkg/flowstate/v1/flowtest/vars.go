@@ -2038,6 +2038,7 @@ func resolveVarsInTest(p *problems, where string, spot loc, test *Test, vars map
 			{"webhook", &trigger.Webhook}, {"payload", &trigger.Payload},
 			{"kind", &trigger.Kind}, {"name", &trigger.Name},
 			{"principal", &trigger.Principal}, {"delivery_id", &trigger.DeliveryID},
+			{"scheduled_at", &trigger.ScheduledAt},
 		} {
 			resolveVarsInString(p, where+".trigger."+field.name,
 				spot.field("trigger").field(field.name), field.target, vars)
