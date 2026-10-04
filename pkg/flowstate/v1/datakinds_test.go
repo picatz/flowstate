@@ -303,3 +303,24 @@ func TestAnEmbedderBuildsATimestampAndADurationFromGoValues(t *testing.T) {
 	_, err = v1.NormalizeDataKind(v1.InputDeclaration_TYPE_DURATION, v1.NewValue(at).GetLiteral())
 	require.Error(t, err, "a timestamp is not a duration")
 }
+
+// TestANonLiteralOutputIsNotReplacedByNormalizing pins that normalizing a literal
+// output leaves a value that is not a literal as it was: a hand-built output can
+// hold an error value, and turning it into an empty literal would change the answer
+// without saying so.
+func TestANonLiteralOutputIsNotReplacedByNormalizing(t *testing.T) {
+	t.Parallel()
+
+	held := &v1.Value{Kind: &v1.Value_Error_{Error: &v1.Value_Error{Message: "kept", Code: v1.Value_Error_CODE_INTERNAL}}}
+	wf := &v1.Workflow{
+		Name:    "out",
+		Profile: v1.CurrentProfile,
+		DeclaredOutputs: []*v1.OutputDeclaration{{
+			Name: "at", Type: v1.InputDeclaration_TYPE_TIMESTAMP, Value: held,
+		}},
+	}
+
+	out, err := v1.EvalRunOutputs(t.Context(), wf, &v1.Scope{})
+	require.NoError(t, err)
+	assert.NotNil(t, out.GetValues()["at"].GetError(), "the error value must not become an empty literal")
+}
