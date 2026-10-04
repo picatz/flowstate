@@ -186,7 +186,7 @@ func TestAuthorizationActionBindingsAreCopied(t *testing.T) {
 }
 
 // TestEveryBoundRequestFieldIsASchemaField holds request_fields to the schema:
-// each names a bool field of a WorkflowService request message, and the
+// each names a bool field, or a repeated one, of a WorkflowService request message, and the
 // lookup answers with its binding's action.
 func TestEveryBoundRequestFieldIsASchemaField(t *testing.T) {
 	t.Parallel()
@@ -203,7 +203,8 @@ func TestEveryBoundRequestFieldIsASchemaField(t *testing.T) {
 			require.True(t, ok, name)
 			field := msg.Fields().ByName(protoreflect.Name(name[i+1:]))
 			require.NotNil(t, field, "%s names a field the schema does not have", name)
-			require.Equal(t, protoreflect.BoolKind, field.Kind(), "%s is not a switch a caller turns on", name)
+			require.True(t, field.Kind() == protoreflect.BoolKind || field.IsList(),
+				"%s is neither a switch a caller turns on nor a list a caller fills", name)
 
 			action, err := v1.AuthorizationActionForRequestField(name)
 			require.NoError(t, err)

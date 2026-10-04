@@ -163,7 +163,35 @@ func OutputNames(node *Node, tasks *Registry) (names []NamedOutput, ok bool) {
 func waitOutputNames(wait *Wait) []NamedOutput {
 	if batch := wait.GetSignalBatch(); batch != nil {
 		if shaped := batch.GetOutputs(); len(shaped) > 0 {
+			if batch.GetQuorum() != nil {
+				return shapedWaitOutputNames(shaped,
+					DeliveriesOutput, CountOutput, TimedOutOutput, DecisionOutput, ApprovalsOutput, VetoedByOutput)
+			}
 			return shapedWaitOutputNames(shaped, DeliveriesOutput, CountOutput, TimedOutOutput)
+		}
+		if batch.GetQuorum() != nil {
+			return []NamedOutput{{
+				Name:        DecisionOutput,
+				Description: "How the quorum ended: `approved`, `vetoed` or `timed_out`.",
+				Type:        scalarType(Type_SCALAR_STRING),
+			}, {
+				Name:        ApprovalsOutput,
+				Description: "The approvals that counted, in arrival order, each containing its payload and server-attested sender. Partial when the quorum timed out.",
+			}, {
+				Name:        VetoedByOutput,
+				Description: "The server-attested sender of the delivery that vetoed. Present only when the decision is `vetoed`.",
+			}, {
+				Name:        TimedOutOutput,
+				Description: "Whether the quorum ended because its timeout lapsed before the approvals were counted. A lapsed gate is an ordinary outcome, not a failure.",
+				Type:        scalarType(Type_SCALAR_BOOL),
+			}, {
+				Name:        DeliveriesOutput,
+				Description: "Every delivery the quorum wait took, counted or not, in arrival order, each containing its payload and server-attested sender.",
+			}, {
+				Name:        CountOutput,
+				Description: "How many deliveries the quorum wait took, counted or not.",
+				Type:        scalarType(Type_SCALAR_INT),
+			}}
 		}
 		return []NamedOutput{{
 			Name:        TimedOutOutput,

@@ -756,6 +756,22 @@ func init() {
 				" is reported is always text rather than half a rune.\n",
 		},
 		{
+			Name: "flowstate.v1.PendingWait.approvals",
+			Leading: " Approvals is how many approvals the gate has counted so far, set only on a\n" +
+				" `wait_for_signals:` that declares a `quorum:`. Read it with\n" +
+				" [approvals_needed]: \"1 of 2\".\n" +
+				"\n" +
+				" Both drivers fill it from the one tally the quorum wait decides with, so a\n" +
+				" run reports the count it will act on. It changes as deliveries are taken,\n" +
+				" which is the one thing about this message that is not fixed when the wait\n" +
+				" parks.\n",
+		},
+		{
+			Name: "flowstate.v1.PendingWait.approvals_needed",
+			Leading: " ApprovalsNeeded is the quorum's `approve:`, and zero on every wait that is\n" +
+				" not a quorum.\n",
+		},
+		{
 			Name: "flowstate.v1.Frame",
 			Leading: " Frame is one level of the execution position within a workflow.\n" +
 				"\n" +

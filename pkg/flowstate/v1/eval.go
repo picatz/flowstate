@@ -1796,7 +1796,7 @@ func recordStepOutcome(ctx context.Context, node *Node, outputs *Node_Outputs, e
 		if ctx.Err() != nil && errors.Is(err, ctx.Err()) {
 			return fmt.Errorf("step %q: %w", node.GetId(), err)
 		}
-		if !node.GetPolicy().GetContinueOnError() {
+		if !StepTolerates(node.GetPolicy(), ClassifyError(err)) {
 			// Recorded on the way out, under the same key and in the same shape a
 			// tolerated failure is recorded in, so that the [PartialTranscript] the
 			// run hands back names the step it stopped on rather than ending one
@@ -2839,7 +2839,7 @@ func runStepWithPolicy(ctx context.Context, task *Task, policy *StepPolicy, scop
 
 		// Only failures that could plausibly succeed on another attempt are
 		// retried, matching how the durable driver classifies them.
-		if attempt >= attempts || !RetryPermitted(err) {
+		if attempt >= attempts || !RetryPermitted(err) || !RetryAllowsKind(policy.GetRetry(), ClassifyError(err)) {
 			return nil, err
 		}
 

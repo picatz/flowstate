@@ -381,6 +381,14 @@ var exampleLapsingGates = map[string]string{
 	// finishes. Bursts of two, three and five, drained across a `max_batch:`
 	// the burst genuinely exceeds, are `flow test`'s own three cases beside the
 	// file and the shared SignalBatchCases table both drivers run.
+	// signal-quorum needs two distinct approvers, and this harness answers a
+	// signal once from one fixed sender the file's policy does not admit, so
+	// answering it would only prove the refusal. Unanswered, its five-second
+	// gate lapses with decision timed_out on both drivers; the approving,
+	// vetoing, four-eyes and de-duplication cases are `flow test`'s own six beside
+	// the file and the shared SignalQuorumCases table both drivers run.
+	"signal-quorum": "the quorum needs two distinct admitted approvers and this harness has one fixed sender the policy refuses; its own flow test cases deliver real ones, and the shared conformance table runs them on both drivers",
+
 	"signal-batch-drain": "this harness answers a signal once, and a batch of one is not what the file is about; its own flow test cases send real bursts, and the shared conformance table runs them on both drivers",
 }
 

@@ -68,6 +68,10 @@ func TestNestedDSLKeysMatchMarshaledShapes(t *testing.T) {
 						InitialInterval:    durationpb.New(1_000_000_000),
 						BackoffCoefficient: 2,
 						MaxInterval:        durationpb.New(60_000_000_000),
+						// Both, though a valid file writes at most one: this fixture is
+						// only marshaled, to reach each key the table documents.
+						Only:   []string{"Upstream"},
+						Except: []string{"RateLimited"},
 					},
 				},
 				// A compensation, so `undo:` is a key this fixture actually reaches.
@@ -194,6 +198,12 @@ func TestNestedDSLKeysMatchMarshaledShapes(t *testing.T) {
 						Name:     "order-placed",
 						MaxBatch: 10,
 						Prompt:   v1.NewExpr(`"send order events"`),
+						Quorum: &v1.SignalQuorum{
+							Approve:  2,
+							Distinct: new(true),
+							Exclude:  []*v1.Value{v1.NewExpr("run.identity.subject")},
+							Veto:     v1.NewExpr("payload.approved == false"),
+						},
 						Outputs: map[string]*v1.Value{
 							"ids": v1.NewExpr("deliveries.map(d, d.payload.id)"),
 						},
@@ -1373,6 +1383,8 @@ steps:
       interval: 1s
       backoff: 2
       max_interval: 1m
+      only: [Upstream]
+      except: [RateLimited]
     log:
       message: hi
     undo:
@@ -1423,6 +1435,12 @@ steps:
       max_batch: 10
       prompt: send order events
       timeout: 30s
+      quorum:
+        approve: 2
+        distinct: true
+        exclude:
+          - ${run.identity.subject}
+        veto: ${payload.approved == false}
       outputs:
         ids: ${deliveries.map(d, d.payload.id)}
   - id: provision

@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -36,10 +37,10 @@ import (
 // cooperatively, so only one runs at a time and a query handler runs on that
 // same scheduler.
 type waitRegistry struct {
-	// entries are the parked waits, in the order they parked. Each is built
-	// once, at the moment its wait blocks, and never mutated afterwards, which
-	// is what lets [waitRegistry.snapshot] copy the slice rather than clone
-	// every message in it.
+	// entries are the parked waits, in the order they parked. Each is built at
+	// the moment its wait blocks, and only a quorum wait's approval count
+	// changes afterwards, in place, so [waitRegistry.snapshot] clones what it
+	// reports: a query serializes the copy and the wait goes on counting.
 	entries []*v1.PendingWait
 
 	// refused counts waits that are parked right now and are *not* in entries,
@@ -89,14 +90,20 @@ func (r *waitRegistry) enter(wait *v1.PendingWait) func() {
 // A copy of the slice for [progress.snapshot]'s reason: the underlying array is
 // appended to and cut as waits park and unpark, and handing a caller the live
 // one would let the answer change under serialization. The messages inside it
-// are shared rather than cloned because nothing ever mutates one after it is
-// built.
+// are cloned too, for the reason below.
 func (r *waitRegistry) snapshot() (waits []*v1.PendingWait, truncated bool) {
 	if r == nil || len(r.entries) == 0 {
 		return nil, r.isTruncated()
 	}
 
-	return append(make([]*v1.PendingWait, 0, len(r.entries)), r.entries...), r.isTruncated()
+	// Cloned, because a quorum wait updates its approval count in place while it
+	// is parked; see [executor.waitForQuorum].
+	waits = make([]*v1.PendingWait, 0, len(r.entries))
+	for _, entry := range r.entries {
+		waits = append(waits, proto.Clone(entry).(*v1.PendingWait))
+	}
+
+	return waits, r.isTruncated()
 }
 
 // isTruncated reports whether some wait parked right now went unrecorded.

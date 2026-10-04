@@ -240,6 +240,16 @@ func (h *historyRun) DebugHistory(_ context.Context, req *connect.Request[v1.Deb
 		EventId:    17,
 		Fidelity:   v1.DebugFidelity_DEBUG_FIDELITY_RECONSTRUCTED,
 		Boundaries: []int64{3, 10, 17},
+		Inspected: func() (answers []*v1.DebugHistoryInspected) {
+			for range req.Msg.GetInspections() {
+				answers = append(answers, &v1.DebugHistoryInspected{
+					Result:   &v1.DebugInspectResponse{Value: &v1.DebugValue{Type: "int", Rendered: "42"}},
+					Fidelity: v1.DebugFidelity_DEBUG_FIDELITY_HYPOTHETICAL,
+				})
+			}
+
+			return answers
+		}(),
 	}), nil
 }
 
@@ -261,6 +271,12 @@ func TestDebugHistoryReadsAPointAndListsThePoints(t *testing.T) {
 	assert.EqualValues(t, 17, handler.asked.GetEventId())
 	assert.Contains(t, res.Stdout, "at event 17 of 3 points · reconstructed")
 	assert.Contains(t, res.Stdout, "build")
+
+	res = runFlow(t, "debug", "history", "order-1", "--run-id", runID, "--inspect", "steps.quote.total", "--address", srv.URL)
+	require.NoError(t, res.Err)
+	require.Len(t, handler.asked.GetInspections(), 1)
+	assert.Equal(t, "steps.quote.total", handler.asked.GetInspections()[0].GetExpression())
+	assert.Contains(t, res.Stdout, "steps.quote.total = 42 (int) · hypothetical")
 
 	res = runFlow(t, "debug", "history", "order-1", "--run-id", runID, "--points", "--address", srv.URL)
 	require.NoError(t, res.Err)

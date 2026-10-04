@@ -2121,6 +2121,14 @@ func init() {
 				" because a budget the engine silently extends is not a budget.\n",
 		},
 		{
+			Name: "flowstate.v1.StepPolicy.tolerated_kinds",
+			Leading: " ToleratedKinds narrows ContinueOnError to the failure kinds it names: a step\n" +
+				" that fails with a kind outside the list ends the run as if it were not\n" +
+				" tolerated. Empty means every kind, which is what ContinueOnError alone has\n" +
+				" always meant. A kind is a built-in kind or one the workflow declares under\n" +
+				" `errors:`, and the list is only meaningful with ContinueOnError set.\n",
+		},
+		{
 			Name:    "flowstate.v1.RetryPolicy",
 			Leading: " RetryPolicy describes how a failed step attempt is retried.\n",
 		},
@@ -2148,6 +2156,18 @@ func init() {
 			Name: "flowstate.v1.RetryPolicy.max_interval",
 			Leading: " MaxInterval caps the delay between attempts, so exponential growth does not\n" +
 				" produce an unbounded wait.\n",
+		},
+		{
+			Name: "flowstate.v1.RetryPolicy.only",
+			Leading: " Only narrows retrying to the failure kinds it names: a failure of any other\n" +
+				" kind is not retried. Empty means every kind that is retryable by default.\n" +
+				" A list never widens: a kind that is permanent by classification is not\n" +
+				" retried because it is named here, and naming one is refused.\n",
+		},
+		{
+			Name: "flowstate.v1.RetryPolicy.except",
+			Leading: " Except removes the kinds it names from those retried, so a retryable kind a\n" +
+				" step should fail fast on (a rate limit it must not hammer) is written down.\n",
 		},
 		{
 			Name: "flowstate.v1.ResolvedTaskCapabilities",

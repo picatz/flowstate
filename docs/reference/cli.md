@@ -351,7 +351,7 @@ A `launch` request runs the Flowfile named as `program` locally, with its `input
 
 An `attach` request with a `workflowId` (and optionally `runId`) debugs a durable run through the server named by --address and this command's credentials, which need `workload.debug` (and `workload.debug_inspect` to inspect values or to set or read conditions). A durable run holds only at step boundaries and has no logpoints or failure stops; the editor is told which. It shows source lines, and takes line breakpoints, when the attach's `program` is the file the run executes, and step addresses otherwise.
 
-An `attach` with `"history": true` and a `runId` walks the run's recorded history instead: step forward and **step back** between its workflow-task boundaries, in a run that is going or one that finished or failed. Each stop is reconstructed from the history and nothing executes, so it needs `workload.debug` and the run's own `debug:` policy, and has no breakpoints, pause or values yet.
+An `attach` with `"history": true` and a `runId` walks the run's recorded history instead: step forward and **step back** between its workflow-task boundaries, in a run that is going or one that finished or failed. Each stop is reconstructed from the history and nothing executes, so it needs `workload.debug` and the run's own `debug:` policy, and has no breakpoints or pause. Watches, hovers and variables read values at the point shown, which needs `workload.debug_inspect` too.
 
 Examples:
 
@@ -551,7 +551,7 @@ Show a durable run as it was at a past point
 flow debug history <workflow-id> --run-id <run-id> [flags]
 ```
 
-Read a durable run, open or closed, as it was at one workflow-task boundary of its recorded history: where it was held, its frames, its progress. It replays the interpreter over the history with no worker attached, so it dispatches nothing and changes nothing. Every value is reconstructed; a point the history cannot be replayed to is refused. --points lists the points a run can be read at.
+Read a durable run, open or closed, as it was at one workflow-task boundary of its recorded history: where it was held, its frames, its progress. It replays the interpreter over the history with no worker attached, so it dispatches nothing and changes nothing. What the session held is reconstructed; a point the history cannot be replayed to is refused. --inspect evaluates an expression over the scope the run held at the point, which needs the debug_inspect action; the answer is labelled hypothetical, since the expression is evaluated now and never happened in the run. --points lists the points a run can be read at.
 
 Examples:
 
@@ -563,6 +563,11 @@ flow debug history order-1234 --run-id 5d3f…
 flow debug history order-1234 --run-id 5d3f… --points
 flow debug history order-1234 --run-id 5d3f… --at 17
 
+# A value at a point, and the same expression at an earlier one:
+flow debug history order-1234 --run-id 5d3f… --inspect steps.quote.total
+flow debug history order-1234 --run-id 5d3f… --at 17 \\
+  --inspect steps.quote.total
+
 # The answer as the schema's JSON:
 flow debug history order-1234 --run-id 5d3f… -o json
 ```
@@ -573,6 +578,7 @@ flow debug history order-1234 --run-id 5d3f… -o json
 | `--at <int64>` | `int64` | `0` | — | the event id of the point to read; 0 is the last |
 | `--audience <string>` | `string` | — | `FLOWSTATE_AUDIENCE` | the relying party a credential should be addressed to (overrides FLOWSTATE_AUDIENCE); required by `--credential-source=github-actions`, which mints a token for it. gitlab and terraform-cloud cannot mint on demand — their platform fixes the audience in the job or workspace configuration before the token exists — so for those it is checked against the token's own audience rather than requested, and a mismatch is refused with the setting to change |
 | `--credential-source <string>` | `string` | — | `FLOWSTATE_CREDENTIAL_SOURCE` | acquire a credential from a named source instead of `--token-file`/FLOWSTATE_TOKEN (overrides FLOWSTATE_CREDENTIAL_SOURCE); one of github-actions, gitlab, terraform-cloud, file, env. An unknown or unusable source is an error, never anonymous |
+| `--inspect <string,...>` | `stringArray` | — | — | evaluate an expression at the point; repeatable, at most 16 |
 | `-o, --output <string>` | `string` | `text` | — | output format: text, json, or jsonl |
 | `--points` | `bool` | `false` | — | list the points the run can be read at instead of reading one |
 | `--run-id <string>` | `string` | — | — | the execution to read; `flow get` prints a run's id (required) |

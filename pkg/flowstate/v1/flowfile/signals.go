@@ -565,3 +565,98 @@ func validateSignals(wf *v1.Workflow) Diagnostics {
 
 	return ds
 }
+
+// validateQuorums reports a `quorum:` that its own gate's `signals:` policy makes
+// impossible to meet.
+//
+// A distinct quorum needs `approve:` different senders, and when the policy for
+// the signal is a *closed* list - every `allow:` rule pins one exact
+// `<issuer>#<subject>` - the senders who can ever reach the wait are that list,
+// so an `approve:` above its length can never be satisfied and the run would sit
+// at the gate until its `timeout:`. Reported where somebody can fix it, rather
+// than discovered as a gate that never opens.
+//
+// # Conservative, because a false refusal is worse than a missed one
+//
+// A policy is closed only when it can be counted exactly. Anything that admits a
+// sender this check cannot enumerate leaves the quorum alone: a rule with no
+// `subject:` (a namespace, a `claims:` match or nothing at all), and a `subject:`
+// written as an expression, which is resolved from the run's inputs only at
+// submit. `distinct_from_starter:` and `exclude:` can only shrink the set further,
+// so ignoring them can only miss a refusal, never make one wrongly. A quorum with
+// `distinct: false` is not asked at all, since one sender may then meet it alone.
+func validateQuorums(root *v1.Workflow) Diagnostics {
+	return validateQuorumsIn(root, root.GetSteps(), 0)
+}
+
+// validateQuorumsIn walks one workflow's steps, and the steps of every callee
+// reached through a `call:`, against the policy of root.
+//
+// The root's `signals:` is the one a delivery is authorized against, durably
+// (the server records the top-level workflow's) and locally (the wait policies
+// are recorded from the top-level workflow only), so a callee's own declarations
+// admit nobody and are not the answer here. A callee gate is therefore asked of
+// the root's policy for its name, and a finding is reported at the call step
+// that reaches it, in the voice [validateCallAtDepth] gives every other callee
+// finding.
+func validateQuorumsIn(root *v1.Workflow, steps []*v1.Node, depth int) Diagnostics {
+	var ds Diagnostics
+
+	v1.WalkNodes(steps, v1.Walk{Node: func(node *v1.Node) {
+		if call := node.GetCall(); call != nil {
+			// Depth is reported by the call validation itself; stop here rather
+			// than recurse past the bound it names.
+			if callee := call.GetWorkflow(); callee != nil && v1.CheckCallDepth(depth+1) == nil {
+				for _, d := range validateQuorumsIn(root, callee.GetSteps(), depth+1) {
+					d.Step = node.GetId()
+					d.Message = fmt.Sprintf("workflow %q: %s", callee.GetName(), d.Message)
+					ds = append(ds, d)
+				}
+			}
+
+			return
+		}
+
+		batch := node.GetWait().GetSignalBatch()
+		quorum := batch.GetQuorum()
+		if quorum == nil || (quorum.Distinct != nil && !quorum.GetDistinct()) {
+			return
+		}
+
+		permitted, closed := closedPolicySubjects(root.GetSignals()[batch.GetName()])
+		if !closed || int(quorum.GetApprove()) <= permitted {
+			return
+		}
+
+		ds = append(ds, Diagnostic{
+			Step:  node.GetId(),
+			Field: "wait_for_signals.quorum.approve",
+			Message: fmt.Sprintf(
+				"is %d, but the `signals:` policy for %q permits only %d distinct subject(s), so the quorum can never be met; "+
+					"lower `approve:`, add the missing approvers to the policy, or set `distinct: false`",
+				quorum.GetApprove(), batch.GetName(), permitted),
+		})
+	}})
+
+	return ds
+}
+
+// closedPolicySubjects counts the distinct subjects a policy permits, and
+// reports whether that count is exact: false for no policy at all (any
+// authenticated caller may deliver) and for any rule that admits a sender it
+// cannot name.
+func closedPolicySubjects(policy *v1.SignalPolicy) (permitted int, closed bool) {
+	if len(policy.GetAllow()) == 0 {
+		return 0, false
+	}
+
+	subjects := make(map[string]struct{}, len(policy.GetAllow()))
+	for _, rule := range policy.GetAllow() {
+		if rule.GetSubject() == "" || rule.GetSubjectFrom() != nil {
+			return 0, false
+		}
+		subjects[rule.GetSubject()] = struct{}{}
+	}
+
+	return len(subjects), true
+}

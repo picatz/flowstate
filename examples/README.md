@@ -59,8 +59,9 @@ inventory below remains the source of truth for every directory.
 | Loops and bounded fan-out | [loop-accumulate](loop-accumulate), [fan-out-and-parallel](fan-out-and-parallel), [matrix-fan-out](matrix-fan-out) | focused feature demonstration |
 | Reusable workflow composition | [call-a-workflow](call-a-workflow), then [enterprise-customer-onboarding](enterprise-customer-onboarding) | production-shaped composition |
 | Declaring and raising your own errors | [declared-errors](declared-errors) | focused feature demonstration |
+| Tolerating and retrying only some failure kinds | [failure-kinds](failure-kinds) | focused feature demonstration |
 | Retries, timeouts, cancellation, and undo | [conditional-and-retry](conditional-and-retry), [wait-timeout](wait-timeout), [order-fulfillment](order-fulfillment) | focused feature demonstration → production-shaped composition |
-| Signals and human decisions | [approval-gate](approval-gate), then [approval-escalation](approval-escalation) | policy/governance → production-shaped composition |
+| Signals and human decisions | [approval-gate](approval-gate), then [approval-escalation](approval-escalation), then [signal-quorum](signal-quorum) | policy/governance → production-shaped composition |
 | Long-lived entities many callers address | [entity-order](entity-order), [renewal-reminder](renewal-reminder), [signal-batch-drain](signal-batch-drain) | focused feature demonstration |
 | Schedules and trigger context | [scheduled-report](scheduled-report), [schedule-overlap-policies](schedule-overlap-policies), [webhook-trigger](webhook-trigger), [webhook-approval-bridge](webhook-approval-bridge), [trigger-context](trigger-context) | focused feature demonstration |
 | Local rehearsal and durable execution | [deployment-reconciler](deployment-reconciler), [approval-gate](approval-gate) | local-vs-Temporal parity |
@@ -112,6 +113,7 @@ says otherwise.
 | [string-formatting](string-formatting) | `format()` from the profile, building a message from a var | no |
 | [conditional-and-retry](conditional-and-retry) | `if:`, `timeout:`, `retry:` and `continue_on_error:` per step, tolerating a step that really does fail | no |
 | [declared-errors](declared-errors) | `errors:` and `fail:` — a workflow names the ways it refuses (`InsufficientFunds`), raises one with a message built from its inputs, and the run fails with that name as its kind; the tests assert the refusal | no |
+| [failure-kinds](failure-kinds) | `continue_on_error:` and `retry:` naming failure kinds (`only:`, `except:`) — a step tolerates and retries the failures it expects and nothing else; the tests assert both directions | no |
 | [webhook-routing](webhook-routing) | `switch:` dispatching a webhook's action field — literal cases, a shared list case, written-down ignoring with `steps: []`, and a `default:` whose run is recorded | no |
 | [fan-out-and-parallel](fan-out-and-parallel) | `for_each` fan-out over a computed list, and concurrent `parallel:` branches | no |
 | [crossing-dependencies](crossing-dependencies) | `async:` — the N-graph, where each later step waits only for what it names, with the two-barrier version it replaces written in the file's own comment | yes |
@@ -120,6 +122,7 @@ says otherwise.
 | [paged-fan-out](paged-fan-out) | The batch shape — a `loop:` walking a cursor API to exhaustion with a `for_each` inside it fanning out over each page under `max_parallel:`, and the file honest about the window draining at every page boundary | yes |
 | [entity-order](entity-order) | An entity — `loop:` + `wait_for_signal:`, addressable, mutated by repeated signals, surviving Continue-As-New, closing on a terminal event rather than by exhausting its loop | no |
 | [signal-batch-drain](signal-batch-drain) | `wait_for_signals:` — the accumulator that drains a whole burst in one step rather than paying a loop iteration per event, with `max_batch:` reached rather than merely declared and the remainder left for the next drain | no |
+| [signal-quorum](signal-quorum) | `wait_for_signals:` with a `quorum:` — two of three named approvers, each counted once, the requester's own approval ignored by `exclude:`, a `veto:` that ends the wait at once, and the approvers named in the step's outputs | no |
 | [renewal-reminder](renewal-reminder) | The same two nodes as `entity-order` with the polarity reversed — a `loop:` around a `wait_for_signal:` whose *lapse* is the work (send the reminder, go round again) and whose delivered signal is the stop. Temporal's `sleep-for-days`, and the shape drift detection and certificate rotation take | no |
 | [deployment-reconciler](deployment-reconciler) | The reconciler shape: a `loop:` whose every pass reads the world and compares it against the state the run carries, so what a pass *decides* never depends on which event woke it — with a `wait_for_signal:` `timeout:` as the resync interval and a delivered signal as the interrupt. Level-triggered convergence, and a README naming what an n-way `select:` would add | yes |
 | [ops-healthcheck](ops-healthcheck) | `for_each` over a list of services, `continue_on_error:` tolerating the one that is down, and structured outputs shaped for a pager | yes |

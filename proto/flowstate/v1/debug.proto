@@ -1347,6 +1347,42 @@ message DebugHistoryRequest {
   // EventId is the point, one of the run's boundaries as a previous answer
   // listed them. Zero names the last one.
   int64 event_id = 3 [(buf.validate.field).int64 = {gte: 0}];
+
+  // Inspections are evaluated at the point, in the same replay that
+  // reconstructs it, against the session the run held there. Asking any needs
+  // the debug_inspect action as well as the debug one: an expression can test
+  // a sensitive value the printed answer withholds.
+  repeated DebugHistoryInspection inspections = 4 [(buf.validate.field).repeated.max_items = 16];
+}
+
+// DebugHistoryInspection is one evaluation asked at a recorded point: a
+// [DebugInspectRequest] that names no run, session or revision, which are the
+// point's own.
+message DebugHistoryInspection {
+  // Expression is evaluated against the scope the run held at the point.
+  // Empty lists the scope's roots.
+  string expression = 1 [(buf.validate.field).string = {max_bytes: 65536}];
+
+  // Children lists the value's children instead of evaluating it, a page of
+  // them at [offset].
+  bool children = 2;
+
+  int32 offset = 3 [(buf.validate.field).int32 = {gte: 0}];
+
+  int32 limit = 4 [(buf.validate.field).int32 = {
+    gte: 0
+    lte: 500
+  }];
+}
+
+// DebugHistoryInspected is one inspection's answer at a recorded point.
+message DebugHistoryInspected {
+  DebugInspectResponse result = 1;
+
+  // Fidelity is how the value is known: RECONSTRUCTED for the scope's roots,
+  // which the replay holds, and HYPOTHETICAL for an expression, which is
+  // evaluated now, over the reconstructed scope, and never happened in the run.
+  DebugFidelity fidelity = 2;
 }
 
 // DebugHistoryResponse is the run at the point asked for.
@@ -1376,6 +1412,10 @@ message DebugHistoryResponse {
   // run says it. The snapshot's own state is the debug session's and never
   // says the run ended: a session that detached or expired left the run going.
   DebugRunState outcome = 6 [(buf.validate.field).enum.defined_only = true];
+
+  // Inspected answers the inspections asked for, in order. A refusal (the run
+  // held no session at the point) is the result's error.
+  repeated DebugHistoryInspected inspected = 7;
 }
 
 // DebugResumeRequest releases a hold: continue, step, run until, or detach.

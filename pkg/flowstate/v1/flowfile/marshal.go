@@ -341,7 +341,11 @@ func stepToYAML(node *v1.Node) (yaml.MapSlice, error) {
 			step = append(step, yaml.MapItem{Key: "retry", Value: retryToYAML(retry)})
 		}
 		if policy.GetContinueOnError() {
-			step = append(step, yaml.MapItem{Key: "continue_on_error", Value: true})
+			var tolerated any = true
+			if kinds := policy.GetToleratedKinds(); len(kinds) > 0 {
+				tolerated = kinds
+			}
+			step = append(step, yaml.MapItem{Key: "continue_on_error", Value: tolerated})
 		}
 	}
 
@@ -721,6 +725,12 @@ func retryToYAML(retry *v1.RetryPolicy) yaml.MapSlice {
 	}
 	if maxInterval := retry.GetMaxInterval(); maxInterval != nil {
 		out = append(out, yaml.MapItem{Key: "max_interval", Value: durationToYAML(maxInterval)})
+	}
+	if only := retry.GetOnly(); len(only) > 0 {
+		out = append(out, yaml.MapItem{Key: "only", Value: only})
+	}
+	if except := retry.GetExcept(); len(except) > 0 {
+		out = append(out, yaml.MapItem{Key: "except", Value: except})
 	}
 	return out
 }
@@ -1386,6 +1396,16 @@ func waitToYAML(wait *v1.Wait) (string, any, error) {
 				yaml.MapItem{Key: "timeout", Value: durationToYAML(wait.GetTimeout())})
 		}
 
+		// After the timeout, which a quorum is decided under, and before
+		// `outputs:`, which shapes what the quorum produced.
+		if quorum := kind.SignalBatch.GetQuorum(); quorum != nil {
+			value, err := quorumToYAML(quorum)
+			if err != nil {
+				return "", nil, err
+			}
+			mapping = append(mapping, yaml.MapItem{Key: "quorum", Value: value})
+		}
+
 		if shaped := kind.SignalBatch.GetOutputs(); len(shaped) > 0 {
 			out := make(yaml.MapSlice, 0, len(shaped))
 			for _, name := range slices.Sorted(maps.Keys(shaped)) {
@@ -1524,4 +1544,40 @@ func declaredOutputsToYAML(declarations []*v1.OutputDeclaration) (yaml.MapSlice,
 	}
 
 	return out, nil
+}
+
+// quorumToYAML writes a `wait_for_signals:`'s `quorum:` back.
+//
+// Key by key, like the wait it sits in: `flow fix` rewrites through this, so a
+// key nothing writes back is a key the command silently removes. `distinct:` is
+// written only when the author wrote it, because the absent value and `true` are
+// the same behaviour and a round trip must not invent a line.
+func quorumToYAML(quorum *v1.SignalQuorum) (yaml.MapSlice, error) {
+	mapping := yaml.MapSlice{{Key: "approve", Value: int(quorum.GetApprove())}}
+
+	if quorum.Distinct != nil {
+		mapping = append(mapping, yaml.MapItem{Key: "distinct", Value: quorum.GetDistinct()})
+	}
+
+	if excluded := quorum.GetExclude(); len(excluded) > 0 {
+		list := make([]any, 0, len(excluded))
+		for i, value := range excluded {
+			written, err := inputValueToYAML(value)
+			if err != nil {
+				return nil, fmt.Errorf("wait_for_signals quorum exclude[%d]: %w", i, err)
+			}
+			list = append(list, written)
+		}
+		mapping = append(mapping, yaml.MapItem{Key: "exclude", Value: list})
+	}
+
+	if veto := quorum.GetVeto(); veto != nil {
+		written, err := exprValueToYAML(veto)
+		if err != nil {
+			return nil, fmt.Errorf("wait_for_signals quorum veto: %w", err)
+		}
+		mapping = append(mapping, yaml.MapItem{Key: "veto", Value: written})
+	}
+
+	return mapping, nil
 }

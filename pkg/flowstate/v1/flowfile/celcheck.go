@@ -274,6 +274,11 @@ var slotRequirements = map[v1.ValueSlot]struct {
 	v1.SlotCondition:    {read: "`if:` is a condition", required: types.BoolKind, name: "bool"},
 	v1.SlotLoopUntil:    {read: "`until:` is a condition", required: types.BoolKind, name: "bool"},
 	v1.SlotForEachItems: {read: "`items:` is the list to iterate", required: types.ListKind, name: "list"},
+
+	// A quorum's veto is read as a boolean by the tally; one that is statically
+	// something else would otherwise fail the gate at its first delivery.
+	// Dynamically typed expressions are still checked when the tally evaluates.
+	v1.SlotWaitQuorumVeto: {read: "`veto:` is a condition", required: types.BoolKind, name: "bool"},
 }
 
 // slotMismatch reports an expression whose checked type is known and is not the

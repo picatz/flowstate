@@ -205,6 +205,13 @@ func dslKeyAt(step *parsedStep, pos lsp.Position) (dslKey, lsp.Range, bool) {
 		}
 	}
 
+	// A batch's `quorum:` is a mapping of its own, one level in.
+	for _, e := range nestedEntries(step.waitForSignalsEntry) {
+		if e.key == "quorum" {
+			levels = append(levels, level{"quorum", nestedEntries(e)})
+		}
+	}
+
 	// A switch's case entries sit one level deeper than the block loop above
 	// reaches — each element of `cases:` is a mapping of its own — and the
 	// `default:` mapping's key is documented at its own level for the same
@@ -658,6 +665,19 @@ func waitResultDoc(name string) string {
 		fmt.Fprintf(&b, "\n\nHow many deliveries this drain took. Its own name rather than `size(%s)` because it is "+
 			"what nearly every reader wants: the `if:` deciding whether there was anything to process.",
 			v1.DeliveriesOutput)
+	case v1.DecisionOutput:
+		fmt.Fprintf(&b, "**`%s`** · `string`", v1.DecisionOutput)
+		b.WriteString("\n\nHow a `quorum:` ended: `approved` when the approvals were counted, `vetoed` when a veto arrived, " +
+			"`timed_out` when the `timeout:` lapsed first. Always exactly one of the three.")
+	case v1.ApprovalsOutput:
+		fmt.Fprintf(&b, "**`%s`** · `list`", v1.ApprovalsOutput)
+		fmt.Fprintf(&b, "\n\nThe approvals a `quorum:` counted, in arrival order, each a `{%s, %s}` map shaped as an entry of `%s` is. "+
+			"Partial when the quorum timed out.", v1.PayloadOutput, v1.SenderOutput, v1.DeliveriesOutput)
+	case v1.VetoedByOutput:
+		fmt.Fprintf(&b, "**`%s`** · `map`", v1.VetoedByOutput)
+		fmt.Fprintf(&b, "\n\nThe server-attested sender of the delivery that vetoed a `quorum:`, shaped as `%s` is. "+
+			"Absent unless the decision is `vetoed`: check `%s == \"vetoed\"` before reading it inside `outputs:`, or `has(steps.<id>.%s)` from a later step.",
+			v1.SenderOutput, v1.DecisionOutput, v1.VetoedByOutput)
 	case v1.TimedOutOutput:
 		fmt.Fprintf(&b, "**`%s`** · `bool`", v1.TimedOutOutput)
 		fmt.Fprintf(&b, "\n\nWhether the wait ended because nobody answered in time.")
@@ -962,6 +982,14 @@ func constructOutputNode(target *parsedStep) *v1.Node {
 
 	case target.waitForSignalsEntry != nil || target.hasKey("wait_for_signals"):
 		batch := &v1.SignalBatch{}
+		// A nested `quorum:` adds `decision`, `approvals` and `vetoed_by` to what
+		// the wait produces, and [v1.OutputNames] reads that from the field being
+		// set, never from its contents: so a bare placeholder says it.
+		for _, e := range nestedEntries(target.waitForSignalsEntry) {
+			if e.key == "quorum" {
+				batch.Quorum = &v1.SignalQuorum{}
+			}
+		}
 		if len(target.waitShapingEntries) > 0 {
 			batch.Outputs = make(map[string]*v1.Value, len(target.waitShapingEntries))
 			for _, e := range target.waitShapingEntries {

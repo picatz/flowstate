@@ -65,7 +65,13 @@ func TestStepGrammarKeysCoverNodeSchema(t *testing.T) {
 		case "condition":
 			schema = append(schema, "if")
 		case "policy":
-			schema = append(schema, descriptorFieldNames((&v1.StepPolicy{}).ProtoReflect().Descriptor())...)
+			for _, key := range descriptorFieldNames((&v1.StepPolicy{}).ProtoReflect().Descriptor()) {
+				// The tolerated kinds are written as the list form of
+				// `continue_on_error:`, not as a key of their own.
+				if key != "tolerated_kinds" {
+					schema = append(schema, key)
+				}
+			}
 		case "wait":
 			schema = append(schema, waitGrammarKeys(t)...)
 		case "call":
