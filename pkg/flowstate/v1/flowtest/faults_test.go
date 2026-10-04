@@ -332,3 +332,29 @@ func TestMalformedPinsAreRefusedAtLoad(t *testing.T) {
 		})
 	}
 }
+
+// A case that mixes a hand-written pin with a drawn fault keeps both in the
+// printed script, or replacing `faults:` with it would lose the pin.
+func TestThePrintedScriptKeepsTheCasesOwnPins(t *testing.T) {
+	t.Parallel()
+
+	const workflow = `edition: v2026.4
+name: two
+steps:
+  - id: first
+    continue_on_error: true
+    retry: {attempts: 1}
+    http: {method: GET, url: "https://example.com/a"}
+  - id: second
+    retry: {attempts: 1}
+    http: {method: GET, url: "https://example.com/b"}
+`
+	path := writeFaultFixture(t, workflow, pinnedHeader+
+		"    faults: [{step: first, on: [1], fails: {message: pinned}}, {step: second, rate: 1}]\n"+
+		"    invariants: [{that: \"run.failed == false\"}]\n    expect: {failed: true}\n")
+	_, _, schedules := flowtest.RunFileUnderSchedules(t.Context(), path, dst.Budget{Schedules: 2, Seed0: 1})
+	require.NotNil(t, schedules)
+	require.NotNil(t, schedules.Divergence)
+	assert.Contains(t, schedules.Divergence.Script, "step: first")
+	assert.Contains(t, schedules.Divergence.Script, "step: second")
+}

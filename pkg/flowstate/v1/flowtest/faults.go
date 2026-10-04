@@ -407,7 +407,7 @@ func (p *faultPlan) firedAny() bool {
 	return slices.ContainsFunc(p.drawn, func(n int) bool { return n > 0 })
 }
 
-// pinned writes the faults the seed fired as the `faults:` list that replays
+// pinned writes the faults that fired as the `faults:` list that replays
 // them without a seed: each fault that fired, pinned to the invocation numbers
 // it fired on, and everything else about it as declared. Empty when no draw
 // fired.
@@ -417,11 +417,16 @@ func (p *faultPlan) pinned() string {
 
 	var pins []Fault
 	for i, on := range p.script {
-		if len(on) == 0 {
+		pin := p.faults[i]
+		switch {
+		case len(pin.On) > 0 && p.fired[i] > 0:
+			// Already a script; kept as declared so replacing `faults:` with
+			// this list loses none of the case's own pins.
+		case len(on) > 0:
+			pin.Rate, pin.AtMost, pin.On = nil, nil, slices.Clone(on)
+		default:
 			continue
 		}
-		pin := p.faults[i]
-		pin.Rate, pin.AtMost, pin.On = nil, nil, slices.Clone(on)
 		pins = append(pins, pin)
 	}
 	if len(pins) == 0 {
