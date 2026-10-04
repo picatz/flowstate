@@ -224,11 +224,6 @@ func (m *Manifest) Digest() string {
 	return hex.EncodeToString(sum[:])
 }
 
-// ref summarizes the manifest.
-func (m *Manifest) ref() Ref {
-	return Ref{Digest: m.Digest(), SizeBytes: m.TotalBytes(), EntryCount: len(m.Entries)}
-}
-
 // UnmarshalManifest decodes b strictly: an unknown field, a repeated or
 // out-of-order field, or any encoding other than the canonical one is
 // [ErrInvalidManifest]. It validates against l. Because the encoding is
