@@ -337,6 +337,14 @@ func init() {
 				" be handled with the same trust as test output.\n",
 		},
 		{
+			Name: "flowstate.v1.ScheduleDivergenceReport.invariant",
+			Leading: " Invariant reports that the case declares `faults:` and this is a run with\n" +
+				" them injected that broke one of its `invariants:`, not a schedule that\n" +
+				" changed what the case observed. [written_order] is then empty and\n" +
+				" [seeded] lists the violations. The seed replays the same faults the same\n" +
+				" way: `flow test --seed <seed>` on the same file.\n",
+		},
+		{
 			Name: "flowstate.v1.CoverageReport",
 			Leading: " CoverageReport is `flow test`'s branch-coverage account for one workflow:\n" +
 				" which of that workflow's steps at least one case ran, and which no case ever\n" +

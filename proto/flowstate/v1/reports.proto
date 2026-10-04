@@ -285,6 +285,13 @@ message ScheduleDivergenceReport {
   // [seed], with the same values withheld. It may contain task output and must
   // be handled with the same trust as test output.
   string seeded = 6;
+
+  // Invariant reports that the case declares `faults:` and this is a run with
+  // them injected that broke one of its `invariants:`, not a schedule that
+  // changed what the case observed. [written_order] is then empty and
+  // [seeded] lists the violations. The seed replays the same faults the same
+  // way: `flow test --seed <seed>` on the same file.
+  bool invariant = 7;
 }
 
 // CoverageReport is `flow test`'s branch-coverage account for one workflow:

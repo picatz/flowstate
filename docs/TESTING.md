@@ -325,6 +325,44 @@ language profile and cost limit, the same as `inspect` in the
 [debugger](DEBUGGING.md). An expression you settle on at a breakpoint pastes
 into `check:` unchanged.
 
+### Faults and invariants: `--seeds` under a failing world
+
+`expect:` says what the workflow does when nothing goes wrong. `faults:` and
+`invariants:` say what must stay true when something does:
+
+```yaml
+- name: survives a flaky gateway
+  workflow: ./workflow.yaml
+  stubs:
+    - task: http
+      returns: {status_code: 200, body: ''}
+  faults:
+    - step: fetch                       # or `task: http`; exactly one
+      fails: {kind: Upstream, message: connection reset}
+      rate: 0.5                         # chance per matching invocation, in (0, 1]; default 0.5
+      at_most: 1                        # times it may fire in one run, 1..100; default 1
+  invariants:
+    - that: run.failed == false
+      because: one failed attempt must be absorbed
+  expect: {failed: false}
+```
+
+A plain `flow test` injects nothing, so a case with faults gives the same
+verdict as the same case without them; it only refuses a fault whose target the
+case never invokes, because a fault no run can reach reports resilience to
+something that never happened. Under `--seeds N` each seed draws, per matching
+invocation, whether the fault fires, and the run is judged by the case's
+`invariants:` alone (the claims of `check:`, over the same run) plus one oracle
+it owes without being told: a failure the world causes must not surface as an
+`Internal` error. A violation is reported as a finding with the seed that
+produced it, and `flow test --seed S` replays exactly those faults.
+
+A fault answers before the stubs and spends none of their `times:`. `fails.kind`
+is any error kind a task reports except `Internal` and `Expression`, which are
+defects, not faults. Rows of a table inherit the entry's `faults:` and
+`invariants:` when they state none. Not yet covered: delay faults, signal jitter,
+and shrinking a violating seed to its minimal fault set.
+
 ## One fixture, many rows
 
 Cases that differ in one or two values can share an entry and list their

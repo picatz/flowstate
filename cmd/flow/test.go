@@ -747,6 +747,18 @@ func printSchedules(out io.Writer, theme ui.Theme, report *v1.TestReport, schedu
 		return
 	}
 
+	if divergence.Invariant {
+		fmt.Fprintf(out, "%s  %s: %s\n", file, divergence.Case, theme.Danger.Render(
+			fmt.Sprintf("an invariant broke under injected faults (seed %d)", divergence.Seed)))
+		fmt.Fprintf(out, "       Seed %d injected the case's `faults:` and a claim in `invariants:` did not hold.\n", divergence.Seed)
+		fmt.Fprintf(out, "\n       REPLAY THESE EXACT FAULTS:\n\n           flow test --seed %d -- %s\n\n",
+			divergence.Seed, shellArg(report.GetFile()))
+		fmt.Fprintf(out, "       seed %d (%d scheduling decisions):\n%s",
+			divergence.Seed, divergence.Decisions, indentRendering(divergence.Seeded))
+
+		return
+	}
+
 	fmt.Fprintf(out, "%s  %s: %s\n", file, divergence.Case, theme.Danger.Render(
 		fmt.Sprintf("the schedule changed what this case observed (seed %d)", divergence.Seed)))
 

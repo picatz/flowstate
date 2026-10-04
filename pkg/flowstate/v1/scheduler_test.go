@@ -191,3 +191,39 @@ func TestAOneWayChoiceCostsNothing(t *testing.T) {
 	}
 	require.Zero(t, scheduler.Decisions())
 }
+
+// TestAFaultStreamIsSeededAndLeavesTheScheduleAlone pins the two promises the
+// fault chooser makes: one seed injects the same faults every time, and asking
+// for a fault never moves the permutations the seed already produced, so a seed
+// recorded before faults existed still replays the schedule it named.
+func TestAFaultStreamIsSeededAndLeavesTheScheduleAlone(t *testing.T) {
+	faults := func(seed uint64) []bool {
+		scheduler := v1.NewSeededScheduler(seed)
+		draws := make([]bool, 64)
+		for i := range draws {
+			draws[i] = scheduler.Fault("faults[0]", 0.5)
+		}
+
+		return draws
+	}
+	require.Equal(t, faults(7), faults(7))
+	require.NotEqual(t, faults(7), faults(8))
+
+	order := func(withFaults bool) [][]int {
+		scheduler := v1.NewSeededScheduler(7)
+		var orders [][]int
+		for range 20 {
+			if withFaults {
+				scheduler.Fault("faults[0]", 0.5)
+			}
+			orders = append(orders, scheduler.Order(v1.SchedulePointParallelBranches, 5))
+		}
+
+		return orders
+	}
+	require.Equal(t, order(false), order(true), "drawing faults changed the schedule's own permutations")
+
+	ctx := v1.NewContextWithScheduler(context.Background(), v1.NewSeededScheduler(1))
+	require.True(t, v1.InjectFault(ctx, "x", 1), "a rate of one always fires")
+	require.False(t, v1.InjectFault(context.Background(), "x", 1), "written order never injects")
+}

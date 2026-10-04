@@ -933,6 +933,11 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 		return
 	}
 
+	if err := checkFaultNames(test.Faults, workflow); err != nil {
+		caseError("%s", err)
+		return
+	}
+
 	// A scripted signal naming a gate the workflow never waits on is the same
 	// shape: the delivery disappears, the gate times out, and the case passes
 	// green — a test certifying behaviour nobody wrote (#1443).
@@ -965,6 +970,15 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	if len(test.Expect.Invocations) > 0 {
 		invocations = &invocationLog{}
 		ctx = contextWithInvocationLog(ctx, invocations)
+	}
+	// The fault plan is per run, so a seeded schedule's `at_most:` budgets are
+	// its own. Built even under written order, which injects nothing: it is
+	// how a fault aimed at an invocation the case never makes is found.
+	var faults *faultPlan
+	_, faulting := v1.SchedulerFromContext(ctx).(v1.FaultChooser)
+	if len(test.Faults) > 0 {
+		faults = newFaultPlan(workflow.GetName(), test.Faults)
+		ctx = contextWithFaultPlan(ctx, faults)
 	}
 	if record {
 		recorder = newRunRecorder(clock)
@@ -1246,7 +1260,7 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	if gatherer != nil {
 		sensitive = widenedBy(sensitive, gatherer.withheld())
 	}
-	shown = caseShown{sensitive: sensitive, runErr: runErr}
+	shown = caseShown{sensitive: sensitive, runErr: runErr, faultCase: len(test.Faults) > 0, faulted: faulting && faults != nil}
 
 	// The transcript coverage reads is the same one the verdict does. A failed
 	// run hands back the partial one ([v1.PartialTranscript]): the steps it ran
@@ -1279,6 +1293,18 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 		return
 	}
 
+	if shown.faulted {
+		// A run with faults injected is judged by what must hold of every
+		// run, and by the one oracle a faulted run owes unprompted
+		// ([faultedErrorClass]). `expect:` describes the run where nothing
+		// went wrong, which this one is not.
+		result.Failures = faultedErrorClass(runErr)
+		result.Failures = append(result.Failures, assertInvariants(ctx, test.Invariants, workflow, bound, vars, outputs, runErr, sensitive)...)
+		result.Passed = len(result.Failures) == 0
+
+		return
+	}
+
 	result.Failures = assertExpectation(&test.Expect, workflow, outputs, runErr, sensitive)
 	if invocations != nil {
 		result.Failures = append(result.Failures, assertInvocations(test.Expect.Invocations, workflow.GetName(), invocations)...)
@@ -1286,6 +1312,10 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	// The CEL claims (#1072), after the named fields so a report reads
 	// structure first, values second — the order the file states them in.
 	result.Failures = append(result.Failures, assertChecks(ctx, test.Expect.Check, workflow, bound, vars, outputs, runErr, sensitive)...)
+	result.Failures = append(result.Failures, assertInvariants(ctx, test.Invariants, workflow, bound, vars, outputs, runErr, sensitive)...)
+	if faults != nil {
+		result.Failures = append(result.Failures, faults.unreached()...)
+	}
 	result.Passed = len(result.Failures) == 0
 
 	// The autopsy (#1072 decision 4's follow-on): a failing case under a
@@ -2430,6 +2460,11 @@ func renderedRunError(runErr error, sensitive sensitiveInputs) string {
 type caseShown struct {
 	sensitive sensitiveInputs
 	runErr    error
+
+	// faultCase is that the case declares `faults:`, and faulted that this run
+	// injected them. A faulted case is compared across schedules by its
+	// invariants alone ([scheduleAccumulator.run]).
+	faultCase, faulted bool
 }
 
 // runErrorUnder is the run's failure as a schedule divergence shows it under
