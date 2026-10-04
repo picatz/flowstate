@@ -50,8 +50,8 @@ description: Moves money between two ledger accounts, requiring a role-authorize
 # distinct from whoever started this run - the workflow's own logic is just
 # "did the desk say yes." What this file does not add beyond that is a
 # `flow fix`-safe way to stop its own author from deleting `signals:` or
-# loosening a step's `if:` - see approval-gate's header, gap 3, #187. That
-# gap is identical here.
+# loosening a step's `if:`; a deployment-side `--task-policy` is the author-proof
+# complement (see task-shape-policy).
 inputs:
   from_account_id:
     type: string

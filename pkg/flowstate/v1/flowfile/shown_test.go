@@ -85,5 +85,4 @@ var shownDocs = []string{
 	filepath.Join("docs", "DSL.md"),
 	filepath.Join("docs", "ARCHITECTURE.md"),
 	filepath.Join("docs", "STYLE.md"),
-	filepath.Join("docs", "API.md"),
 }
