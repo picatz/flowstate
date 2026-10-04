@@ -694,6 +694,24 @@ func (s *parsedStep) entryForField(field string) *entry {
 				return e
 			}
 		}
+
+		// A quorum's own expressions, named by the validator as
+		// `quorum.exclude[N]` and `quorum.veto`: the key one level further in,
+		// with any list index cut, so a bad reference lands on the `exclude:` or
+		// `veto:` the author wrote rather than on the whole step.
+		if inner, isQuorum := strings.CutPrefix(name, "quorum."); isQuorum {
+			inner, _, _ = strings.Cut(inner, "[")
+			for _, q := range nestedEntries(s.waitForSignalsEntry) {
+				if q.key != "quorum" {
+					continue
+				}
+				for _, e := range nestedEntries(q) {
+					if e.key == inner {
+						return e
+					}
+				}
+			}
+		}
 	}
 	if name, isWait := strings.CutPrefix(field, "wait_for_signal."); isWait {
 		for _, e := range nestedEntries(s.waitForSignalEntry) {

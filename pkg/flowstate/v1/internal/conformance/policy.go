@@ -508,6 +508,30 @@ func ToleratedStepFailureCases() []Case {
 
 	return []Case{
 		{
+			// A tolerated kind that matches the failure is tolerated exactly as
+			// a bare `continue_on_error: true` is, and the record carries the
+			// kind the list matched on.
+			Name: "a failure whose kind continue_on_error lists is tolerated",
+			Workflow: &v1.Workflow{
+				Name: "tolerated-by-kind",
+				Steps: []*v1.Node{
+					func() *v1.Node {
+						node := withVars(says("gate", "unreachable"), map[string]*v1.Value{
+							"bad": v1.NewExpr(oops),
+						})
+						node.Policy = &v1.StepPolicy{ContinueOnError: true, ToleratedKinds: []string{"Upstream", "Expression"}}
+
+						return node
+					}(),
+					says("after", "still here"),
+				},
+			},
+			ExpectedOutputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
+				"gate":  v1.FailedStepOutputs(v1.StepFailure{Kind: v1.ErrorKindExpression, Text: `var "bad": ` + evaluated}),
+				"after": {},
+			}},
+		},
+		{
 			// A raised, declared failure that is tolerated is recorded under its
 			// declared name with the message the author evaluated, identically on
 			// both drivers: `failure.kind` carries the declared kind, the
@@ -532,6 +556,38 @@ func ToleratedStepFailureCases() []Case {
 				"refuse": v1.FailedStepOutputs(v1.StepFailure{
 					Kind: "QuotaExceeded",
 					Text: `task "fail" failed (QuotaExceeded): tenant acme is over quota`,
+				}),
+				"after": {},
+			}},
+		},
+		{
+			// The caller declares nothing: the kind is the callee's, and a `call:`
+			// step names it to tolerate it. Both drivers must treat the callee's
+			// declared kind as the failure's kind, or the list would tolerate
+			// nothing here and the run would end instead of continuing.
+			Name: "a call step tolerates a kind only its callee declares",
+			Workflow: &v1.Workflow{
+				Name: "tolerated-callee-kind",
+				Steps: []*v1.Node{
+					{
+						Id: "provision",
+						Kind: &v1.Node_Call{Call: &v1.Call{Workflow: &v1.Workflow{
+							Name:           "callee-refuses",
+							DeclaredErrors: []*v1.ErrorDeclaration{{Name: "QuotaExceeded"}},
+							Steps: []*v1.Node{{
+								Id:   "refuse",
+								Kind: &v1.Node_Fail{Fail: &v1.Fail{Error: "QuotaExceeded", Message: v1.NewExpr(`"over quota"`)}},
+							}},
+						}}},
+						Policy: &v1.StepPolicy{ContinueOnError: true, ToleratedKinds: []string{"QuotaExceeded"}},
+					},
+					says("after", "still here"),
+				},
+			},
+			ExpectedOutputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
+				"provision": v1.FailedStepOutputs(v1.StepFailure{
+					Kind: "QuotaExceeded",
+					Text: `task "fail" failed (QuotaExceeded): over quota`,
 				}),
 				"after": {},
 			}},

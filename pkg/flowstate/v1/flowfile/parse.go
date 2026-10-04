@@ -128,7 +128,7 @@ var (
 	// kind in the schema rather than anything in the registry.
 	nodeKindKeys = []string{"for_each", "loop", "parallel", "sleep", "wait_until", "wait_for_signal", "wait_for_signals", "call", "value", "switch", "fail"}
 
-	retryKeys   = []string{"attempts", "interval", "backoff", "max_interval"}
+	retryKeys   = []string{"attempts", "interval", "backoff", "max_interval", "only", "except"}
 	forEachKeys = []string{"items", "as", "max_parallel", "steps"}
 	loopKeys    = []string{"steps", "until", "max_iterations", "as", "init", "update"}
 	branchKeys  = []string{"steps"}
@@ -2238,10 +2238,11 @@ func (c *compiler) policy(fields *fieldSet, path string, r ref) *v1.StepPolicy {
 	}
 
 	if f, found := fields.get("continue_on_error"); found {
-		continueOnError, ok := c.boolean(f.value, fieldPath(path, "continue_on_error"),
+		continueOnError, kinds, ok := c.continueOnError(f.value, fieldPath(path, "continue_on_error"),
 			ref{step: r.step, path: fieldPath(path, "continue_on_error"), label: "continue_on_error"})
 		if ok {
 			policy.ContinueOnError = continueOnError
+			policy.ToleratedKinds = kinds
 			// A step that only says continue_on_error: false has said nothing: it
 			// asked for the default. Recording a policy for it would make two
 			// identical workflows unequal depending on whether one spelled the
@@ -2301,9 +2302,83 @@ func (c *compiler) retry(n ast.Node, path string, r ref) *v1.RetryPolicy {
 			retry.MaxInterval = maxInterval
 		}
 	}
+	if f, found := fields.get("only"); found {
+		retry.Only = c.kindList(f.value, fieldPath(path, "only"),
+			ref{step: r.step, path: fieldPath(path, "only"), label: "retry only"})
+	}
+	if f, found := fields.get("except"); found {
+		retry.Except = c.kindList(f.value, fieldPath(path, "except"),
+			ref{step: r.step, path: fieldPath(path, "except"), label: "retry except"})
+	}
 
 	return retry
 }
+
+// continueOnError reads `continue_on_error:`, which is `true` or `false`, or a
+// list of the failure kinds to tolerate. A list tolerates those kinds and no
+// others; it is `true` on the wire with the kinds beside it, so everything that
+// asks whether a step tolerates failures at all keeps asking the same question.
+func (c *compiler) continueOnError(n ast.Node, path string, r ref) (tolerate bool, kinds []string, ok bool) {
+	n = c.resolve(n, path, r)
+	if n == nil {
+		return false, nil, false
+	}
+	if _, isList := n.(*ast.SequenceNode); isList {
+		kinds = c.kindList(n, path, r)
+		if len(kinds) == 0 {
+			c.report(spanOfNode(n), r, "must name at least one failure kind; write `true` to tolerate every kind or `false` to tolerate none")
+			return false, nil, false
+		}
+
+		return true, kinds, true
+	}
+
+	tolerate, ok = c.boolean(n, path, r)
+
+	return tolerate, nil, ok
+}
+
+// kindList reads a list of failure kind names. Whether each names a kind this
+// workflow can fail with is the validator's to say, with the nearest spelling;
+// the compiler reads only the shape.
+func (c *compiler) kindList(n ast.Node, path string, r ref) []string {
+	n = c.resolve(n, path, r)
+	if n == nil {
+		return nil
+	}
+	c.pos.record(path, spanOfNode(n))
+
+	sequence, ok := n.(*ast.SequenceNode)
+	if !ok {
+		c.report(spanOfNode(n), r, "must be a list of failure kinds, but %s was written here", describeNode(n))
+		return nil
+	}
+	if len(sequence.Values) > maxKindListEntries {
+		c.report(spanOfNode(n), r, "names %d kinds; the most a list names is %d", len(sequence.Values), maxKindListEntries)
+		return nil
+	}
+
+	kinds := make([]string, 0, len(sequence.Values))
+	seen := map[string]bool{}
+	for i, value := range sequence.Values {
+		entryPath := indexPath(path, i)
+		kind, ok := c.text(value, entryPath, ref{step: r.step, path: entryPath, label: r.label})
+		if !ok {
+			continue
+		}
+		if seen[kind] {
+			c.report(spanOfNode(c.resolveQuiet(value)), ref{step: r.step, path: entryPath, label: r.label}, "names %q twice", kind)
+			continue
+		}
+		seen[kind] = true
+		kinds = append(kinds, kind)
+	}
+
+	return kinds
+}
+
+// maxKindListEntries bounds a kind list, matching the schema's bound.
+const maxKindListEntries = 64
 
 // recordTree records the span of a value and of everything nested inside it, so
 // that a diagnostic about one entry of a map of headers can point at that entry.

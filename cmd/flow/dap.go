@@ -55,7 +55,7 @@ func newDAPCommand() *cobra.Command {
 			"An `attach` with `\"history\": true` and a `runId` walks the run's recorded history instead: step " +
 			"forward and **step back** between its workflow-task boundaries, in a run that is going or one that " +
 			"finished or failed. Each stop is reconstructed from the history and nothing executes, so it needs " +
-			"`workload.debug` and the run's own `debug:` policy, and has no breakpoints, pause or values yet.",
+			"`workload.debug` and the run's own `debug:` policy, and has no breakpoints or pause. Watches, hovers and variables read values at the point shown, which needs `workload.debug_inspect` too.",
 		Args: cobra.NoArgs,
 		RunE: runDAP,
 		Example: `# What an editor's launch configuration runs, rather than a person:

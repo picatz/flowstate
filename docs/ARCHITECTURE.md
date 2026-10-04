@@ -972,6 +972,38 @@ fails.
 Bound a stream by messages, bytes, **and** duration. All three: a slow trickle of small
 messages defeats a message count and a byte cap both.
 
+## Artifact store
+
+`pkg/flowstate/v1/artifacts` is a tenant-scoped, content-addressed store for
+immutable trees of files. A blob is named by its SHA-256, verified while it
+streams on write and on read. An artifact is a canonical `ArtifactManifest`
+(sorted entries: path, file or directory, executable bit, size, blob digest)
+stored as a blob itself, so one digest names a whole tree. `ArtifactRef` is
+that digest plus two summary numbers: inert, with no bytes and no authority,
+like a secret reference.
+
+`Store.For(namespace)` binds a tenant; the empty namespace is refused and the
+same bytes stored by two tenants are two blobs, so a digest from one tenant
+resolves to nothing in another. Snapshotting a directory admits regular files
+and directories only and refuses symlinks, hard links, and special files by
+name; materializing writes into an empty directory through `os.Root` with
+exclusive creates, re-verifying every blob. Per-artifact, per-entry,
+entry-count, path, depth, per-run, and per-namespace bounds are independent,
+required, and capped by package ceilings; exceeding one is a typed
+`LimitExceededError`, never truncation. Runs pin what they use and a sweep
+removes unpinned blobs older than a grace window. Backends are a local
+directory (`<root>/<sha256(namespace)>/blobs/sha256/<hex>`) and an in-memory
+one.
+
+A store assumes it is the only process writing its backend: namespace byte
+counters, in-flight reservations, and the sweep lock live in memory, so two
+processes over one local root can drift past a bound until one sweeps.
+
+This is the storage foundation only. Nothing in the engine or the Flowfile
+reaches it yet: `ArtifactRef` as a value kind, the `workspace:` and `produce:`
+step keys, and `exec` working in a materialized workspace are the next slice
+(#200), so authors cannot use artifacts today.
+
 ## Design tensions worth knowing
 
 Honest notes on where the design strains, so future work does not rediscover them:

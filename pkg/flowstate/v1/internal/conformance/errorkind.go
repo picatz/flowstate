@@ -58,7 +58,89 @@ func ErrorKindCases(httpBaseURL string) []ErrorKindCase {
 		},
 	}
 
+	// Three more counters, each its own task so the attempts a case reads are its
+	// own. Every one fails Upstream, which is retryable by default, so what a
+	// case proves is only what its `retry:` kind list does to that default.
+	kindRetryTask := func(name string, attempts *atomic.Int32) *v1.TaskDef {
+		return &v1.TaskDef{
+			Name: name,
+			Fn: func(context.Context, map[string]*v1.Value, *v1.Scope) (*v1.Node_Outputs, error) {
+				attempts.Add(1)
+				return nil, v1.NewTaskError(name, v1.ErrorKindUpstream, errors.New("the upstream is struggling"))
+			},
+		}
+	}
+	retryNode := func(name string, retry *v1.RetryPolicy) *v1.Workflow {
+		retry.MaxAttempts = 3
+		retry.InitialInterval = durationpb.New(time.Millisecond)
+		retry.BackoffCoefficient = 1
+		retry.MaxInterval = durationpb.New(time.Millisecond)
+
+		return &v1.Workflow{
+			Name: "error-kind-retry-" + name,
+			Steps: []*v1.Node{{
+				Id:     "flaky",
+				Kind:   &v1.Node_Task{Task: &v1.Task{Name: name}},
+				Policy: &v1.StepPolicy{Retry: retry},
+			}},
+		}
+	}
+	var exceptAttempts, onlyOtherAttempts, onlyAttempts atomic.Int32
+	exceptTask := kindRetryTask("test.error_kind_retry_except", &exceptAttempts)
+	onlyOtherTask := kindRetryTask("test.error_kind_retry_only_other", &onlyOtherAttempts)
+	onlyTask := kindRetryTask("test.error_kind_retry_only", &onlyAttempts)
+
 	return []ErrorKindCase{
+		{
+			// `retry.except:` takes a retryable kind out of what is retried, on
+			// both drivers: three attempts are on offer and one is spent.
+			Name:             "a retry except list stops a retryable kind after one attempt",
+			Workflow:         retryNode(exceptTask.Name, &v1.RetryPolicy{Except: []string{"Upstream"}}),
+			ExpectedKind:     v1.ErrorKindUpstream,
+			TaskDef:          exceptTask,
+			Attempts:         exceptAttempts.Load,
+			ExpectedAttempts: 1,
+		},
+		{
+			// `retry.only:` that does not name the kind rules it out.
+			Name:             "a retry only list that omits the kind stops after one attempt",
+			Workflow:         retryNode(onlyOtherTask.Name, &v1.RetryPolicy{Only: []string{"Timeout"}}),
+			ExpectedKind:     v1.ErrorKindUpstream,
+			TaskDef:          onlyOtherTask,
+			Attempts:         onlyOtherAttempts.Load,
+			ExpectedAttempts: 1,
+		},
+		{
+			// And naming the kind leaves the default alone: all three attempts.
+			// Without this case the two above would pass for a driver that
+			// stopped retrying everything the moment a list was written.
+			Name:             "a retry only list that names the kind still retries it",
+			Workflow:         retryNode(onlyTask.Name, &v1.RetryPolicy{Only: []string{"Upstream"}}),
+			ExpectedKind:     v1.ErrorKindUpstream,
+			TaskDef:          onlyTask,
+			Attempts:         onlyAttempts.Load,
+			ExpectedAttempts: 3,
+		},
+		{
+			// Tolerance by kind: an Expression failure is not in the list, so
+			// the step is not tolerated and the run fails with it.
+			Name: "a failure outside continue_on_error's kinds ends the run",
+			Workflow: &v1.Workflow{
+				Name: "error-kind-untolerated-kind",
+				Steps: []*v1.Node{
+					{
+						Id: "bad",
+						Kind: &v1.Node_Task{Task: &v1.Task{
+							Name:   "log",
+							Inputs: map[string]*v1.Value{"message": v1.NewExpr("['a'][5]")},
+						}},
+						Policy: &v1.StepPolicy{ContinueOnError: true, ToleratedKinds: []string{"Upstream"}},
+					},
+					says("after", "unreachable"),
+				},
+			},
+			ExpectedKind: v1.ErrorKindExpression,
+		},
 		{
 			// Permanent because the specification names a task no worker
 			// provides — retrying evaluates the same specification against the

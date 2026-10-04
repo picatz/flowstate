@@ -122,6 +122,33 @@ func TestAuthorizeSignalDeniesEveryoneElse(t *testing.T) {
 	require.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
 }
 
+// TestAuthorizeSignalRefusesAVetoFromAnUnadmittedSender is the durable twin of
+// the v1 package's TestAVetoFromAnUnadmittedSenderNeverReachesAQuorumLocally.
+// A `quorum:` veto counts whoever's delivery reaches the wait, so what keeps a
+// stranger from ending an approval is admission, here, before the signal is ever
+// sent: mallory's rejection is refused at the door, the two admitted approvers
+// are not.
+func TestAuthorizeSignalRefusesAVetoFromAnUnadmittedSender(t *testing.T) {
+	resp := memoWithSignalPolicy(t, map[string]*v1types.SignalPolicy{
+		"release-approved": {Allow: []*v1types.SignalPolicyRule{
+			{Subject: "https://issuer.example.com#alice"},
+			{Subject: "https://issuer.example.com#bob"},
+		}},
+	})
+	srv := mustNew(t, nil)
+
+	err := srv.authorizeSignal(resp, "release-approved",
+		sender("https://issuer.example.com", "mallory", "team-a", nil))
+	require.Error(t, err, "a sender the policy does not admit reached a quorum")
+	require.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
+
+	for _, subject := range []string{"alice", "bob"} {
+		require.NoError(t, srv.authorizeSignal(resp, "release-approved",
+			sender("https://issuer.example.com", subject, "team-a", nil)),
+			"the admitted approver %q was refused", subject)
+	}
+}
+
 // TestAuthorizeSignalIssuerQualifiesTheSubject is #215's lesson, restated for
 // signal policy: the same subject string, minted by a different issuer, must
 // not be authorized. Comparing subject alone would let a second identity

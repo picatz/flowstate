@@ -141,7 +141,14 @@ func (e *executor) runWait(node *v1.Node, wait *v1.Wait) error {
 			return nodeFailed(err)
 		}
 
-		outputs, err := e.waitForSignals(node, kind.SignalBatch, timeout, bounded)
+		// A quorum replaces the drain with a decision loop, so it is its own
+		// method here as it is on the local driver; the shaping below is shared.
+		receive := e.waitForSignals
+		if kind.SignalBatch.GetQuorum() != nil {
+			receive = e.waitForQuorum
+		}
+
+		outputs, err := receive(node, kind.SignalBatch, timeout, bounded)
 		if err != nil {
 			return err
 		}
@@ -577,6 +584,174 @@ func (e *executor) waitForSignals(node *v1.Node, batch *v1.SignalBatch, timeout 
 		"id", node.GetId(), "signal", name, "count", len(deliveries))
 
 	return v1.SignalBatchOutputs(deliveries, false), nil
+}
+
+// waitForQuorum is the durable half of a `wait_for_signals:` that declares a
+// `quorum:`: it takes deliveries one at a time, folds each into a
+// [v1.QuorumTally], and ends when the tally decides or the timeout lapses.
+//
+// # The same four subtleties as [executor.waitForSignals], in the same order
+//
+// Carried signals before the channel, then whatever is already buffered, all
+// before the wait parks; a bound that has already lapsed answered before a
+// selector can race it; the prompt evaluated and the wait announced at the
+// instant it parks; and the [cancelSignalWaitTimerChange] gate on the timer. What
+// differs is the loop: no single delivery answers the wait, so the selector runs
+// again after each one under the *same* timer, armed once. Re-arming it per
+// delivery would let a stream of deliveries that decide nothing hold the gate
+// open past its own `timeout:`, which is the denial the redelivery loop already
+// prevents for duplicates.
+//
+// # Deterministic, and nothing to carry
+//
+// Every input to the tally is a delivery in the order the channel hands it over
+// and the workflow's own clock, so a replay takes the same deliveries and reaches
+// the same tally. Nothing is carried across Continue-As-New because a run
+// continues as new only between steps and a wait is one step (see
+// [v1.QuorumTally]); deliveries this wait did not take stay on the channel and
+// are drained into the carry like any others.
+func (e *executor) waitForQuorum(node *v1.Node, batch *v1.SignalBatch, timeout time.Duration, bounded bool) (*v1.Node_Outputs, error) {
+	name := batch.GetName()
+	tally := v1.NewQuorumTally(batch.GetQuorum())
+
+	channel := workflow.GetSignalChannel(e.ctx, name)
+
+	take := func(delivery *v1.SignalDelivery) error {
+		return tally.Take(evalContext(), delivery, e.scope, workflow.Now(e.ctx))
+	}
+
+	// Carried before the channel, for [executor.waitForSignals]'s reason: a
+	// carried signal is older than anything still buffered.
+	for tally.Decision() == "" {
+		payload, sender, ok := e.takePendingSignal(name)
+		if !ok {
+			break
+		}
+		if err := take(&v1.SignalDelivery{Payload: payload, Sender: sender}); err != nil {
+			return nil, nodeFailed(err)
+		}
+	}
+
+	for tally.Decision() == "" {
+		var delivery v1.SignalDelivery
+		if !channel.ReceiveAsync(&delivery) {
+			break
+		}
+		if !e.admitDelivery(delivery.GetSender()) {
+			continue
+		}
+		if err := take(&v1.SignalDelivery{Payload: delivery.GetPayload(), Sender: delivery.GetSender()}); err != nil {
+			return nil, nodeFailed(err)
+		}
+	}
+
+	if tally.Decision() != "" {
+		workflow.GetLogger(e.ctx).Info("quorum decided from signals that had already arrived",
+			"id", node.GetId(), "signal", name, "decision", tally.Decision())
+
+		return tally.Outputs(), nil
+	}
+
+	if bounded && timeout <= 0 {
+		workflow.GetLogger(e.ctx).Info("quorum wait timed out before it began",
+			"id", node.GetId(), "signal", name, "timeout", timeout)
+
+		return tally.Outputs(), nil
+	}
+
+	var deadline *timestamppb.Timestamp
+	if bounded {
+		deadline = timestamppb.New(workflow.Now(e.ctx).Add(timeout))
+	}
+
+	prompt, promptCut, err := v1.EvalSignalBatchPrompt(evalContext(), batch, e.scope, workflow.Now(e.ctx))
+	if err != nil {
+		return nil, nodeFailed(err)
+	}
+
+	// Announced with the count taken so far, and re-reported from the same tally
+	// after each delivery. The registry shares this message, so it is updated in
+	// place; a query clones it, see [waitRegistry.snapshot].
+	parked := e.pendingWait(node, name, deadline, prompt, promptCut)
+	tally.Report(parked)
+
+	leave := e.waits.enter(parked)
+	defer leave()
+
+	var (
+		cancelTimer workflow.CancelFunc
+		timer       workflow.Future
+	)
+	if bounded {
+		timerCtx := e.ctx
+		if workflow.GetVersion(e.ctx, cancelSignalWaitTimerChange, workflow.DefaultVersion, 1) != workflow.DefaultVersion {
+			timerCtx, cancelTimer = e.timerContext()
+		}
+		timer = workflow.NewTimerWithOptions(timerCtx, timeout,
+			workflow.TimerOptions{Summary: waitTimeoutSummary(e.path, node.GetId())})
+	}
+
+	var failure error
+	for tally.Decision() == "" {
+		var (
+			delivery v1.SignalDelivery
+			received bool
+		)
+
+		selector := workflow.NewSelector(e.ctx)
+		selector.AddReceive(channel, func(c workflow.ReceiveChannel, _ bool) {
+			received = c.Receive(e.ctx, &delivery)
+		})
+		selector.AddReceive(e.ctx.Done(), func(workflow.ReceiveChannel, bool) {})
+		if timer != nil {
+			selector.AddFuture(timer, func(workflow.Future) {})
+		}
+		selector.Select(e.ctx)
+
+		if !received || e.ctx.Err() != nil {
+			break
+		}
+		if !e.admitDelivery(delivery.GetSender()) {
+			continue
+		}
+
+		if failure = take(&v1.SignalDelivery{Payload: delivery.GetPayload(), Sender: delivery.GetSender()}); failure != nil {
+			break
+		}
+		tally.Report(parked)
+	}
+
+	if cancelTimer != nil {
+		cancelTimer()
+	}
+
+	// Cancellation before the timeout, for [executor.waitForSignal]'s reason: a
+	// cancelled quorum must stop the run, not report the decision nobody reached.
+	if err := e.ctx.Err(); err != nil {
+		return nil, stepFailed(err, "cancelled while waiting for signal %q", name)
+	}
+
+	if failure != nil {
+		return nil, nodeFailed(failure)
+	}
+
+	if tally.Decision() == "" {
+		// Only a deadline can end the loop undecided now that cancellation and a
+		// failed tally are handled.
+		if !bounded {
+			return nil, nodeFailed(fmt.Errorf("stopped waiting for signal %q", name))
+		}
+
+		workflow.GetLogger(e.ctx).Info("quorum wait timed out",
+			"id", node.GetId(), "signal", name, "timeout", timeout, "approvals", tally.Approvals())
+
+		return tally.Outputs(), nil
+	}
+
+	workflow.GetLogger(e.ctx).Info("quorum decided",
+		"id", node.GetId(), "signal", name, "decision", tally.Decision(), "approvals", tally.Approvals())
+
+	return tally.Outputs(), nil
 }
 
 // drainInto appends whatever is already buffered on channel to deliveries,

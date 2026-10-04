@@ -1,0 +1,56 @@
+# What a kind list means is only visible when a failure of the other kind
+# arrives, so the cases pin both directions.
+edition: v2026.4
+tests:
+  - name: tolerated kinds let the run continue
+    workflow: ./workflow.yaml
+    stubs:
+      - step: notify
+        fails:
+          kind: RateLimited
+          message: too many requests
+      - step: sync
+        fails:
+          kind: Upstream
+          message: connection refused
+      - task: log
+        returns: {}
+    expect:
+      ran: [notify, sync, carry_on]
+
+  - name: a kind outside the list ends the run
+    workflow: ./workflow.yaml
+    stubs:
+      - step: notify
+        fails:
+          kind: Upstream
+          message: connection refused
+      # `sync` does not tolerate a rate limit, though `notify` does, so it is not
+      # tolerated here even though the same kind was fine one step earlier.
+      - step: sync
+        fails:
+          kind: RateLimited
+          message: too many requests
+    expect:
+      failed: true
+      error_contains: too many requests
+
+  - name: a retryable kind listed under except is not retried
+    workflow: ./workflow.yaml
+    stubs:
+      # One failing answer and no other for `notify`: a retried `RateLimited`
+      # would find no stub to answer its second attempt and fail the run. It is
+      # not retried, so the first answer is the end.
+      - step: notify
+        times: 1
+        fails:
+          kind: RateLimited
+          message: too many requests
+      - step: sync
+        fails:
+          kind: Upstream
+          message: connection refused
+      - task: log
+        returns: {}
+    expect:
+      ran: [notify, sync, carry_on]

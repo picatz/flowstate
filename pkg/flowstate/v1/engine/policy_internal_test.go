@@ -186,3 +186,31 @@ func TestTheActivityPolicyDropsRunOnlyKinds(t *testing.T) {
 			"the exclusion set names a kind the permanent enumeration does not, kind=%s", kind)
 	}
 }
+
+// TestRetryExceptTimeoutNamesTemporalsOwnTimeoutTypes: excluding Timeout must
+// stop the attempt Temporal cut off as well as the task that reports one.
+//
+// The Temporal server matches a native timeout against "TemporalTimeout:" plus
+// the timeout type, not against an application error type, which is the
+// spelling the SDK's own session activities use for the same purpose. The test
+// environment's retry scheduler ignores the list for timeouts altogether, so
+// the names are pinned here rather than exercised by an attempt count: a
+// native timeout is not a shape any test in this repository can force against
+// a real server by timing.
+func TestRetryExceptTimeoutNamesTemporalsOwnTimeoutTypes(t *testing.T) {
+	t.Parallel()
+
+	opts := activityOptionsFor(&v1.StepPolicy{Retry: &v1.RetryPolicy{Except: []string{"Timeout"}}}, "")
+	assert.Subset(t, opts.RetryPolicy.NonRetryableErrorTypes,
+		[]string{"Timeout", "TemporalTimeout:StartToClose", "TemporalTimeout:Heartbeat"})
+
+	// An only: list excludes it by omission, and must reach the same types.
+	only := activityOptionsFor(&v1.StepPolicy{Retry: &v1.RetryPolicy{Only: []string{"Upstream"}}}, "")
+	assert.Subset(t, only.RetryPolicy.NonRetryableErrorTypes,
+		[]string{"Timeout", "TemporalTimeout:StartToClose", "TemporalTimeout:Heartbeat"})
+	assert.NotContains(t, only.RetryPolicy.NonRetryableErrorTypes, "Upstream")
+
+	// And a policy that never narrows Timeout leaves Temporal's retry of it alone.
+	plain := activityOptionsFor(&v1.StepPolicy{Retry: &v1.RetryPolicy{Except: []string{"RateLimited"}}}, "")
+	assert.NotContains(t, plain.RetryPolicy.NonRetryableErrorTypes, "TemporalTimeout:StartToClose")
+}

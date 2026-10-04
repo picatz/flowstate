@@ -723,6 +723,29 @@ var waitShapingNames = map[string]bool{
 	// is what these mappings already permit. Under-subtracting is the corruption.
 	v1.DeliveriesOutput: true,
 	v1.CountOutput:      true,
+
+	// A quorum's three: `decision`, `approvals` and `vetoed_by`, for the same
+	// reason and in the same set. Bound only when the batch declares a `quorum:`,
+	// and subtracted here whichever arm opened the subtree, on the over-
+	// subtracting-is-safe argument above.
+	v1.DecisionOutput:  true,
+	v1.ApprovalsOutput: true,
+	v1.VetoedByOutput:  true,
+}
+
+// waitQuorumKey is a `wait_for_signals:`'s `quorum:`, inside which `exclude:` and
+// `veto:` are evaluated once per delivery with the delivery bound bare as
+// `payload` and `sender` ([v1.QuorumTally.Take]).
+//
+// A key of its own for [waitOutputsKey]'s reason: the delivery exists only here,
+// so a bare `${payload.x}` under `timeout:` or `prompt:` still names a step, and
+// a file may legitimately contain a step called `payload`.
+const waitQuorumKey = "quorum"
+
+// waitQuorumNames are what a quorum's expressions bind bare.
+var waitQuorumNames = map[string]bool{
+	v1.PayloadOutput: true,
+	v1.SenderOutput:  true,
 }
 
 // bindsNow is the set of keys under which `now` is bound, which the rewriter reads

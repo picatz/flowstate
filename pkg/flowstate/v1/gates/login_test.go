@@ -235,6 +235,20 @@ func TestAConfidentialClientAuthenticatesTheExchange(t *testing.T) {
 	require.Equal(t, url.QueryEscape("s3cret/+"), pass, "RFC 6749 section 2.3.1: form-encoded before Basic")
 }
 
+// flipMiddle changes one character well inside a sealed value, where every bit
+// is a bit of the ciphertext: the last characters of a base64 value can carry
+// padding bits a decoder ignores, so altering them does not always alter what
+// the value opens to.
+func flipMiddle(value string) string {
+	i := len(value) / 2
+	swap := byte('A')
+	if value[i] == 'A' {
+		swap = 'B'
+	}
+
+	return value[:i] + string(swap) + value[i+1:]
+}
+
 func TestACallbackIsRefusedUnlessItIsThisBrowsersFlow(t *testing.T) {
 	t.Parallel()
 
@@ -247,7 +261,7 @@ func TestACallbackIsRefusedUnlessItIsThisBrowsersFlow(t *testing.T) {
 		"no sign-in cookie":      callbackReq(good, nil),
 		"wrong state":            callbackReq(url.Values{"code": {"good-code"}, "state": {"forged"}}, c),
 		"no state":               callbackReq(url.Values{"code": {"good-code"}}, c),
-		"tampered cookie":        callbackReq(good, &http.Cookie{Name: c.Name, Value: c.Value[:len(c.Value)-2] + "xx"}),
+		"tampered cookie":        callbackReq(good, &http.Cookie{Name: c.Name, Value: flipMiddle(c.Value)}),
 		"garbage cookie":         callbackReq(good, &http.Cookie{Name: c.Name, Value: "!!"}),
 		"a session as a sign-in": nil, // filled below
 	}

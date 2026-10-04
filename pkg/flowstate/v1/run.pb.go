@@ -1541,6 +1541,18 @@ type PendingWait struct {
 	// are reading part of the question. Truncation is at a UTF-8 boundary, so what
 	// is reported is always text rather than half a rune.
 	PromptTruncated bool `protobuf:"varint,7,opt,name=prompt_truncated,json=promptTruncated,proto3" json:"prompt_truncated,omitempty"`
+	// Approvals is how many approvals the gate has counted so far, set only on a
+	// `wait_for_signals:` that declares a `quorum:`. Read it with
+	// [approvals_needed]: "1 of 2".
+	//
+	// Both drivers fill it from the one tally the quorum wait decides with, so a
+	// run reports the count it will act on. It changes as deliveries are taken,
+	// which is the one thing about this message that is not fixed when the wait
+	// parks.
+	Approvals uint32 `protobuf:"varint,8,opt,name=approvals,proto3" json:"approvals,omitempty"`
+	// ApprovalsNeeded is the quorum's `approve:`, and zero on every wait that is
+	// not a quorum.
+	ApprovalsNeeded uint32 `protobuf:"varint,9,opt,name=approvals_needed,json=approvalsNeeded,proto3" json:"approvals_needed,omitempty"`
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache
 }
@@ -1622,6 +1634,20 @@ func (x *PendingWait) GetPromptTruncated() bool {
 		return x.PromptTruncated
 	}
 	return false
+}
+
+func (x *PendingWait) GetApprovals() uint32 {
+	if x != nil {
+		return x.Approvals
+	}
+	return 0
+}
+
+func (x *PendingWait) GetApprovalsNeeded() uint32 {
+	if x != nil {
+		return x.ApprovalsNeeded
+	}
+	return 0
 }
 
 // Frame is one level of the execution position within a workflow.
@@ -2558,7 +2584,7 @@ const file_flowstate_v1_run_proto_rawDesc = "" +
 	"\x04path\x18\x02 \x03(\tR\x04path\x12'\n" +
 	"\x0fcompleted_steps\x18\x03 \x01(\x05R\x0ecompletedSteps\x12>\n" +
 	"\rpending_waits\x18\x04 \x03(\v2\x19.flowstate.v1.PendingWaitR\fpendingWaits\x126\n" +
-	"\x17pending_waits_truncated\x18\x05 \x01(\bR\x15pendingWaitsTruncated\"\x82\x02\n" +
+	"\x17pending_waits_truncated\x18\x05 \x01(\bR\x15pendingWaitsTruncated\"\xcb\x02\n" +
 	"\vPendingWait\x12\x17\n" +
 	"\astep_id\x18\x01 \x01(\tR\x06stepId\x12\x12\n" +
 	"\x04path\x18\x02 \x03(\tR\x04path\x12\x1f\n" +
@@ -2567,7 +2593,9 @@ const file_flowstate_v1_run_proto_rawDesc = "" +
 	"\bdeadline\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampH\x00R\bdeadline\x88\x01\x01\x12\x18\n" +
 	"\apoliced\x18\x05 \x01(\bR\apoliced\x12\x16\n" +
 	"\x06prompt\x18\x06 \x01(\tR\x06prompt\x12)\n" +
-	"\x10prompt_truncated\x18\a \x01(\bR\x0fpromptTruncatedB\v\n" +
+	"\x10prompt_truncated\x18\a \x01(\bR\x0fpromptTruncated\x12\x1c\n" +
+	"\tapprovals\x18\b \x01(\rR\tapprovals\x12)\n" +
+	"\x10approvals_needed\x18\t \x01(\rR\x0fapprovalsNeededB\v\n" +
 	"\t_deadline\"\xe8\x03\n" +
 	"\x05Frame\x12$\n" +
 	"\tnext_node\x18\x01 \x01(\x05B\a\xbaH\x04\x1a\x02(\x00R\bnextNode\x12.\n" +

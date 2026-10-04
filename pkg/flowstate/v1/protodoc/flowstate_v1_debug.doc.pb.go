@@ -988,6 +988,39 @@ func init() {
 				" listed them. Zero names the last one.\n",
 		},
 		{
+			Name: "flowstate.v1.DebugHistoryRequest.inspections",
+			Leading: " Inspections are evaluated at the point, in the same replay that\n" +
+				" reconstructs it, against the session the run held there. Asking any needs\n" +
+				" the debug_inspect action as well as the debug one: an expression can test\n" +
+				" a sensitive value the printed answer withholds.\n",
+		},
+		{
+			Name: "flowstate.v1.DebugHistoryInspection",
+			Leading: " DebugHistoryInspection is one evaluation asked at a recorded point: a\n" +
+				" [DebugInspectRequest] that names no run, session or revision, which are the\n" +
+				" point's own.\n",
+		},
+		{
+			Name: "flowstate.v1.DebugHistoryInspection.expression",
+			Leading: " Expression is evaluated against the scope the run held at the point.\n" +
+				" Empty lists the scope's roots.\n",
+		},
+		{
+			Name: "flowstate.v1.DebugHistoryInspection.children",
+			Leading: " Children lists the value's children instead of evaluating it, a page of\n" +
+				" them at [offset].\n",
+		},
+		{
+			Name:    "flowstate.v1.DebugHistoryInspected",
+			Leading: " DebugHistoryInspected is one inspection's answer at a recorded point.\n",
+		},
+		{
+			Name: "flowstate.v1.DebugHistoryInspected.fidelity",
+			Leading: " Fidelity is how the value is known: RECONSTRUCTED for the scope's roots,\n" +
+				" which the replay holds, and HYPOTHETICAL for an expression, which is\n" +
+				" evaluated now, over the reconstructed scope, and never happened in the run.\n",
+		},
+		{
 			Name:    "flowstate.v1.DebugHistoryResponse",
 			Leading: " DebugHistoryResponse is the run at the point asked for.\n",
 		},
@@ -1022,6 +1055,11 @@ func init() {
 				" end (failed, cancelled, terminated, timed out), as a live read of a closed\n" +
 				" run says it. The snapshot's own state is the debug session's and never\n" +
 				" says the run ended: a session that detached or expired left the run going.\n",
+		},
+		{
+			Name: "flowstate.v1.DebugHistoryResponse.inspected",
+			Leading: " Inspected answers the inspections asked for, in order. A refusal (the run\n" +
+				" held no session at the point) is the result's error.\n",
 		},
 		{
 			Name:    "flowstate.v1.DebugResumeRequest",

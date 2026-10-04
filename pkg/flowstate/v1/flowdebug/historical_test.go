@@ -3,6 +3,7 @@ package flowdebug_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -46,13 +47,24 @@ func recordedAt(event int64) *v1.DebugHistoryResponse {
 // reads records what a Historical asked its reader for.
 type reads struct{ events []int64 }
 
-func (r *reads) read(_ context.Context, event int64) (*v1.DebugHistoryResponse, error) {
+func (r *reads) read(_ context.Context, event int64, inspections ...*v1.DebugHistoryInspection) (*v1.DebugHistoryResponse, error) {
 	if event == 0 {
 		event = historyPoints[len(historyPoints)-1]
 	}
 	r.events = append(r.events, event)
 
-	return recordedAt(event), nil
+	answer := recordedAt(event)
+	for _, asked := range inspections {
+		// The value says which point and which question it answers.
+		answer.Inspected = append(answer.Inspected, &v1.DebugHistoryInspected{
+			Result: &v1.DebugInspectResponse{Value: &v1.DebugValue{
+				Type: "string", Rendered: fmt.Sprintf("%s@%d", asked.GetExpression(), event),
+			}},
+			Fidelity: v1.DebugFidelity_DEBUG_FIDELITY_HYPOTHETICAL,
+		})
+	}
+
+	return answer, nil
 }
 
 func openHistorical(t *testing.T, opts ...flowdebug.HistoricalOption) (*flowdebug.Historical, *reads) {
@@ -206,7 +218,7 @@ func TestAHistoricalSaysWhatItCannotDo(t *testing.T) {
 	h, _ := openHistorical(t)
 	caps := h.Capabilities()
 	assert.True(t, caps.GetStepIn() && caps.GetStepOver() && caps.GetStepOut() && caps.GetHistory())
-	assert.False(t, caps.GetPause() || caps.GetRunUntil() || caps.GetInspect() || caps.GetTerminate() || caps.GetConditionalBreakpoints())
+	assert.False(t, caps.GetPause() || caps.GetRunUntil() || caps.GetTerminate() || caps.GetConditionalBreakpoints())
 
 	pause, err := h.Pause(t.Context(), "p")
 	require.NoError(t, err)
@@ -220,10 +232,120 @@ func TestAHistoricalSaysWhatItCannotDo(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_UNSUPPORTED, breakpoints.GetReceipt().GetStatus())
 
-	inspected, err := h.Inspect(t.Context(), &v1.DebugInspectRequest{})
+	assert.True(t, caps.GetInspect() && caps.GetValueExpansion(), "a recorded point's values are readable")
+}
+
+func inspectAt(t *testing.T, h *flowdebug.Historical, expression string) *v1.DebugInspectResponse {
+	t.Helper()
+
+	snapshot, err := h.Snapshot(t.Context())
 	require.NoError(t, err)
-	assert.NotEmpty(t, inspected.GetError(), "no value is read from a run that is somewhere else")
-	assert.Nil(t, inspected.GetValue())
+	got, err := h.Inspect(t.Context(), &v1.DebugInspectRequest{Expression: expression, Revision: snapshot.GetRevision()})
+	require.NoError(t, err)
+
+	return got
+}
+
+func TestAHistoricalReadsAValueAsThePointHeldIt(t *testing.T) {
+	t.Parallel()
+
+	h, _ := openHistorical(t)
+	got := inspectAt(t, h, "x")
+	assert.Equal(t, "x@21", got.GetValue().GetRendered())
+
+	_, err := step(h, "back", v1.DebugResumeAction_DEBUG_RESUME_ACTION_STEP_IN)
+	require.NoError(t, err) // already last: refused, so still at 21
+	_, err = h.Back(t.Context(), "b1", 0)
+	require.NoError(t, err)
+	got = inspectAt(t, h, "x")
+	assert.Equal(t, "x@15", got.GetValue().GetRendered(), "the value follows the point the session is at")
+
+	snapshot, err := h.Snapshot(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, snapshot.GetRevision(), got.GetRevision(), "the answer says which point it is for")
+}
+
+func TestAHistoricalAsksOncePerPointAndQuestion(t *testing.T) {
+	t.Parallel()
+
+	h, seen := openHistorical(t)
+	inspectAt(t, h, "x")
+	before := len(seen.events)
+	inspectAt(t, h, "x")
+	assert.Len(t, seen.events, before, "a recorded point answers the same question the same way")
+	inspectAt(t, h, "y")
+	assert.Len(t, seen.events, before+1, "another question is another read")
+}
+
+func TestAHistoricalCachesAtMostSomeAnswers(t *testing.T) {
+	t.Parallel()
+
+	h, seen := openHistorical(t)
+	for i := range 200 {
+		inspectAt(t, h, fmt.Sprintf("e%d", i))
+	}
+	before := len(seen.events)
+	inspectAt(t, h, "e0")
+	assert.Len(t, seen.events, before+1, "the oldest answer was dropped to keep the cache bounded")
+	inspectAt(t, h, "e199")
+	assert.Len(t, seen.events, before+1, "the newest is still held")
+}
+
+func TestAValueOfAnotherPointIsRefusedAsStale(t *testing.T) {
+	t.Parallel()
+
+	h, _ := openHistorical(t)
+	snapshot, err := h.Snapshot(t.Context())
+	require.NoError(t, err)
+	_, err = h.Back(t.Context(), "b", 0)
+	require.NoError(t, err)
+
+	got, err := h.Inspect(t.Context(), &v1.DebugInspectRequest{Expression: "x", Revision: snapshot.GetRevision()})
+	require.NoError(t, err)
+	assert.Contains(t, got.GetError(), "stale")
+	assert.Nil(t, got.GetValue())
+}
+
+func TestAnInspectionOfAClosedSessionIsRefused(t *testing.T) {
+	t.Parallel()
+
+	h, _ := openHistorical(t)
+	require.NoError(t, h.Close())
+	_, err := h.Inspect(t.Context(), &v1.DebugInspectRequest{Expression: "x"})
+	assert.ErrorIs(t, err, flowdebug.ErrRunOver)
+}
+
+func TestAnInspectionThatTheServerRefusesIsTheCallersError(t *testing.T) {
+	t.Parallel()
+
+	boom := errors.New("denied")
+	h, err := flowdebug.OpenHistorical(t.Context(), func(_ context.Context, event int64, inspections ...*v1.DebugHistoryInspection) (*v1.DebugHistoryResponse, error) {
+		if len(inspections) > 0 {
+			return nil, boom
+		}
+
+		return recordedAt(21), nil
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = h.Close() })
+	_, err = h.Inspect(t.Context(), &v1.DebugInspectRequest{Expression: "x"})
+	assert.ErrorIs(t, err, boom)
+}
+
+func TestAnInspectionAnsweredForAnotherPointIsRefused(t *testing.T) {
+	t.Parallel()
+
+	h, err := flowdebug.OpenHistorical(t.Context(), func(_ context.Context, _ int64, inspections ...*v1.DebugHistoryInspection) (*v1.DebugHistoryResponse, error) {
+		if len(inspections) > 0 {
+			return recordedAt(15), nil
+		}
+
+		return recordedAt(21), nil
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = h.Close() })
+	_, err = h.Inspect(t.Context(), &v1.DebugInspectRequest{Expression: "x"})
+	assert.Error(t, err)
 }
 
 func TestAWaitEndsWhenTheSessionMovesOrCloses(t *testing.T) {
@@ -265,7 +387,7 @@ func TestAFailedReadLeavesTheSessionWhereItWas(t *testing.T) {
 	t.Parallel()
 
 	failing := false
-	read := func(_ context.Context, event int64) (*v1.DebugHistoryResponse, error) {
+	read := func(_ context.Context, event int64, _ ...*v1.DebugHistoryInspection) (*v1.DebugHistoryResponse, error) {
 		if failing {
 			return nil, errors.New("the server went away")
 		}
@@ -292,7 +414,7 @@ func TestAFailedReadLeavesTheSessionWhereItWas(t *testing.T) {
 func TestAHistoricalRefusesAnAnswerForAPointItDidNotAskFor(t *testing.T) {
 	t.Parallel()
 
-	_, err := flowdebug.OpenHistorical(t.Context(), func(context.Context, int64) (*v1.DebugHistoryResponse, error) {
+	_, err := flowdebug.OpenHistorical(t.Context(), func(context.Context, int64, ...*v1.DebugHistoryInspection) (*v1.DebugHistoryResponse, error) {
 		return &v1.DebugHistoryResponse{EventId: 4, Boundaries: []int64{3, 9}}, nil
 	})
 	require.Error(t, err, "an event that is not one of the boundaries is not a point of this run")
@@ -300,7 +422,7 @@ func TestAHistoricalRefusesAnAnswerForAPointItDidNotAskFor(t *testing.T) {
 	_, err = flowdebug.OpenHistorical(t.Context(), nil)
 	require.Error(t, err)
 
-	h, err := flowdebug.OpenHistorical(t.Context(), func(_ context.Context, event int64) (*v1.DebugHistoryResponse, error) {
+	h, err := flowdebug.OpenHistorical(t.Context(), func(_ context.Context, event int64, _ ...*v1.DebugHistoryInspection) (*v1.DebugHistoryResponse, error) {
 		if event == 0 {
 			return recordedAt(21), nil
 		}
@@ -319,7 +441,7 @@ func TestAClosedSessionIsNotMovedByAReadStillInFlight(t *testing.T) {
 	t.Parallel()
 
 	reading, release := make(chan struct{}), make(chan struct{})
-	read := func(_ context.Context, event int64) (*v1.DebugHistoryResponse, error) {
+	read := func(_ context.Context, event int64, _ ...*v1.DebugHistoryInspection) (*v1.DebugHistoryResponse, error) {
 		if event == 0 {
 			return recordedAt(21), nil
 		}
@@ -354,7 +476,7 @@ func TestOnlyTheExecutionsOutcomeSaysTheRunEnded(t *testing.T) {
 		v1.DebugRunState_DEBUG_RUN_STATE_DETACHED, v1.DebugRunState_DEBUG_RUN_STATE_EXPIRED,
 		v1.DebugRunState_DEBUG_RUN_STATE_COMPLETED, v1.DebugRunState_DEBUG_RUN_STATE_FAILED,
 	} {
-		h, err := flowdebug.OpenHistorical(t.Context(), func(_ context.Context, _ int64) (*v1.DebugHistoryResponse, error) {
+		h, err := flowdebug.OpenHistorical(t.Context(), func(_ context.Context, _ int64, _ ...*v1.DebugHistoryInspection) (*v1.DebugHistoryResponse, error) {
 			answer := recordedAt(15)
 			answer.Snapshot.State = state
 
@@ -371,4 +493,27 @@ func TestOnlyTheExecutionsOutcomeSaysTheRunEnded(t *testing.T) {
 	snapshot, err := h.Snapshot(t.Context())
 	require.NoError(t, err)
 	assert.Contains(t, snapshot.GetMessage(), "The run ended completed here.")
+}
+
+func TestARefusedInspectionIsAskedAgain(t *testing.T) {
+	t.Parallel()
+
+	asked := 0
+	h, err := flowdebug.OpenHistorical(t.Context(), func(_ context.Context, _ int64, inspections ...*v1.DebugHistoryInspection) (*v1.DebugHistoryResponse, error) {
+		answer := recordedAt(21)
+		if len(inspections) > 0 {
+			asked++
+			result := &v1.DebugInspectResponse{Error: "timed out"}
+			if asked > 1 {
+				result = &v1.DebugInspectResponse{Value: &v1.DebugValue{Rendered: "ok"}}
+			}
+			answer.Inspected = []*v1.DebugHistoryInspected{{Result: result}}
+		}
+
+		return answer, nil
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = h.Close() })
+	assert.NotEmpty(t, inspectAt(t, h, "x").GetError())
+	assert.Equal(t, "ok", inspectAt(t, h, "x").GetValue().GetRendered(), "a refusal that may have been a timeout is not remembered")
 }

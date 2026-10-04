@@ -182,6 +182,7 @@ var engineProvidedFiles = sync.OnceValue(func() map[string]struct{} {
 	// necessarily a plugin host. The SDK, which is on the other side of that
 	// import and does talk to a host, names it through alsoProvided.
 	for _, file := range []protoreflect.FileDescriptor{
+		File_flowstate_v1_artifact_proto,
 		File_flowstate_v1_audit_proto,
 		File_flowstate_v1_authorization_proto,
 		File_flowstate_v1_catalog_proto,
