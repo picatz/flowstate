@@ -486,7 +486,22 @@ type SignalBatch struct {
 	// scope and `now` and not the wait's result, bounded by [MaxWaitPromptBytes],
 	// and refused any reach to a `sensitive:` input or a `${secret(...)}` by
 	// [CheckWaitPromptsAreAskable].
-	Prompt        *Value `protobuf:"bytes,4,opt,name=prompt,proto3" json:"prompt,omitempty"`
+	Prompt *Value `protobuf:"bytes,4,opt,name=prompt,proto3" json:"prompt,omitempty"`
+	// Quorum turns the wait into a decision: "two of these three must approve",
+	// with distinct approvers, a veto, and a record of who approved.
+	//
+	// Absent, the wait is the burst drain above and nothing about it changes.
+	// Present, it *replaces* the drain's shape (a first delivery and then
+	// whatever is already queued) with a loop that takes one delivery at a time
+	// until the quorum is decided or the wait's `timeout:` lapses; see
+	// [SignalQuorum] for how a delivery counts. Deliveries after the decision are
+	// not taken by this wait and stay on the channel for a later one, exactly as a
+	// delivery beyond `max_batch` does.
+	//
+	// A quorum wait's outputs are the batch's three (`deliveries`, `count`,
+	// `timed_out`) plus `decision`, `approvals` and `vetoed_by`; `outputs:` shapes
+	// them and sees all six. `max_batch` is the bound on `approve`.
+	Quorum        *SignalQuorum `protobuf:"bytes,5,opt,name=quorum,proto3" json:"quorum,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -545,6 +560,136 @@ func (x *SignalBatch) GetOutputs() map[string]*Value {
 func (x *SignalBatch) GetPrompt() *Value {
 	if x != nil {
 		return x.Prompt
+	}
+	return nil
+}
+
+func (x *SignalBatch) GetQuorum() *SignalQuorum {
+	if x != nil {
+		return x.Quorum
+	}
+	return nil
+}
+
+// SignalQuorum says how many approvals decide a `wait_for_signals:`, who may
+// count toward them, and what ends the wait early.
+//
+// # What counts
+//
+// A delivery is an *approval* when its payload's `approved` is boolean true,
+// which is exactly what the browser gate page sends. It is a *veto* when
+// [veto] is true for it (by default, when its payload's `approved` is boolean
+// false). A delivery that is neither is ignored: it is consumed by the wait and
+// reported in `deliveries`, but it moves nothing.
+//
+// A veto is checked first and ends the wait at once, whatever the count, so a
+// delivery that is both a veto and an approval vetoes. Admission is not
+// repeated here: the `signals:` policy refuses a sender before a delivery ever
+// reaches a wait, on both drivers, so a refused sender can neither approve nor
+// veto, and everything this message decides is about deliveries the policy
+// already let through.
+//
+// # Evaluated the same on both drivers
+//
+// The decision is one pure tally in `pkg/flowstate/v1` that both drivers call
+// as each delivery is taken, with [exclude] and [veto] evaluated by the same
+// evaluator that evaluates the batch's own `prompt:` and `outputs:`. Each sees
+// the enclosing scope (`run`, `inputs`, `steps`, ...), `now`, and the delivery
+// bound bare as `payload` and `sender`, as `outputs:` binds a single wait's.
+type SignalQuorum struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Approve is how many counted approvals complete the wait. At least one, and
+	// no more than the batch's bound (a quorum is counted among at most that many
+	// deliveries), which the enclosing [SignalBatch]'s own constraint checks.
+	Approve uint32 `protobuf:"varint,1,opt,name=approve,proto3" json:"approve,omitempty"`
+	// Distinct requires each counted approval to come from a different sender.
+	// Unset means true: a quorum that one person could meet by approving twice is
+	// almost never what was meant, so the safe reading is the default and
+	// `distinct: false` is the spelling that opts out.
+	//
+	// A sender is the verified identity's subject qualified by its issuer (see
+	// `QualifiedSubject`), the same comparison the `signals:` policy uses. A
+	// delivery with no identity subject (a local or unattested one) has nothing
+	// to be distinct by, so under a distinct quorum it never counts as an approval
+	// and is ignored: it fails closed rather than being counted as an anonymous
+	// somebody. A repeat approval from an already-counted sender is ignored too,
+	// and a later delivery from that sender is still considered for a veto.
+	Distinct *bool `protobuf:"varint,2,opt,name=distinct,proto3,oneof" json:"distinct,omitempty"`
+	// Exclude lists expressions naming subjects whose approvals do not count, the
+	// way four-eyes is spelled: `${run.identity.subject}` ignores the run
+	// starter's own approval. Each is evaluated for every delivery and must
+	// produce a string or a list of strings; a delivery whose identity subject
+	// equals any of them is not counted as an approval. It still can veto.
+	//
+	// An expression that does not evaluate, or produces anything else, fails the
+	// step: silently counting an approval an author asked to exclude is the
+	// direction this must not fail in. A delivery with an empty subject matches an
+	// empty excluded subject, so an unattested sender never slips past a run whose
+	// own starter is anonymous.
+	Exclude []*Value `protobuf:"bytes,3,rep,name=exclude,proto3" json:"exclude,omitempty"`
+	// Veto is one boolean expression over the delivery that ends the wait with
+	// decision `vetoed` when it is true. Omitted, a delivery whose payload
+	// `approved` is boolean false vetoes. A delivery is checked for a veto before
+	// it is considered an approval, whatever its subject.
+	Veto          *Value `protobuf:"bytes,4,opt,name=veto,proto3" json:"veto,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SignalQuorum) Reset() {
+	*x = SignalQuorum{}
+	mi := &file_flowstate_v1_signal_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SignalQuorum) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SignalQuorum) ProtoMessage() {}
+
+func (x *SignalQuorum) ProtoReflect() protoreflect.Message {
+	mi := &file_flowstate_v1_signal_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SignalQuorum.ProtoReflect.Descriptor instead.
+func (*SignalQuorum) Descriptor() ([]byte, []int) {
+	return file_flowstate_v1_signal_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *SignalQuorum) GetApprove() uint32 {
+	if x != nil {
+		return x.Approve
+	}
+	return 0
+}
+
+func (x *SignalQuorum) GetDistinct() bool {
+	if x != nil && x.Distinct != nil {
+		return *x.Distinct
+	}
+	return false
+}
+
+func (x *SignalQuorum) GetExclude() []*Value {
+	if x != nil {
+		return x.Exclude
+	}
+	return nil
+}
+
+func (x *SignalQuorum) GetVeto() *Value {
+	if x != nil {
+		return x.Veto
 	}
 	return nil
 }
@@ -623,7 +768,7 @@ type SignalSender struct {
 
 func (x *SignalSender) Reset() {
 	*x = SignalSender{}
-	mi := &file_flowstate_v1_signal_proto_msgTypes[4]
+	mi := &file_flowstate_v1_signal_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -635,7 +780,7 @@ func (x *SignalSender) String() string {
 func (*SignalSender) ProtoMessage() {}
 
 func (x *SignalSender) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_signal_proto_msgTypes[4]
+	mi := &file_flowstate_v1_signal_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -648,7 +793,7 @@ func (x *SignalSender) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SignalSender.ProtoReflect.Descriptor instead.
 func (*SignalSender) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_signal_proto_rawDescGZIP(), []int{4}
+	return file_flowstate_v1_signal_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *SignalSender) GetIdentity() *WorkloadIdentity {
@@ -702,16 +847,25 @@ const file_flowstate_v1_signal_proto_rawDesc = "" +
 	"\x06prompt\x18\x03 \x01(\v2\x13.flowstate.v1.ValueR\x06prompt\x1aO\n" +
 	"\fOutputsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12)\n" +
-	"\x05value\x18\x02 \x01(\v2\x13.flowstate.v1.ValueR\x05value:\x028\x01\"\xba\x02\n" +
+	"\x05value\x18\x02 \x01(\v2\x13.flowstate.v1.ValueR\x05value:\x028\x01\"\xa2\x05\n" +
 	"\vSignalBatch\x12B\n" +
 	"\x04name\x18\x01 \x01(\tB.\xe2A\x01\x02\xbaH'\xc8\x01\x01r\"\x10\x01\x18\x80\x012\x1b^[A-Za-z0-9][A-Za-z0-9-_]*$R\x04name\x12'\n" +
 	"\tmax_batch\x18\x02 \x01(\x05B\n" +
 	"\xbaH\a\x1a\x05\x18\x80\x01(\x00R\bmaxBatch\x12@\n" +
 	"\aoutputs\x18\x03 \x03(\v2&.flowstate.v1.SignalBatch.OutputsEntryR\aoutputs\x12+\n" +
-	"\x06prompt\x18\x04 \x01(\v2\x13.flowstate.v1.ValueR\x06prompt\x1aO\n" +
+	"\x06prompt\x18\x04 \x01(\v2\x13.flowstate.v1.ValueR\x06prompt\x122\n" +
+	"\x06quorum\x18\x05 \x01(\v2\x1a.flowstate.v1.SignalQuorumR\x06quorum\x1aO\n" +
 	"\fOutputsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12)\n" +
-	"\x05value\x18\x02 \x01(\v2\x13.flowstate.v1.ValueR\x05value:\x028\x01\"\xc7\x01\n" +
+	"\x05value\x18\x02 \x01(\v2\x13.flowstate.v1.ValueR\x05value:\x028\x01:\xb1\x02\xbaH\xad\x02\x1a\xaa\x02\n" +
+	"(signal_batch.quorum_approve_within_bound\x12\x9c\x01quorum.approve may not exceed the batch bound (max_batch, or 128 when it is zero), because a quorum counts approvals inside the deliveries one wait may take\x1a_!has(this.quorum) || this.quorum.approve <= (this.max_batch == 0 ? 128u : uint(this.max_batch))\"\xc7\x01\n" +
+	"\fSignalQuorum\x12'\n" +
+	"\aapprove\x18\x01 \x01(\rB\r\xbaH\n" +
+	"\xc8\x01\x01*\x05\x18\x80\x01(\x01R\aapprove\x12\x1f\n" +
+	"\bdistinct\x18\x02 \x01(\bH\x00R\bdistinct\x88\x01\x01\x127\n" +
+	"\aexclude\x18\x03 \x03(\v2\x13.flowstate.v1.ValueB\b\xbaH\x05\x92\x01\x02\x10\x10R\aexclude\x12'\n" +
+	"\x04veto\x18\x04 \x01(\v2\x13.flowstate.v1.ValueR\x04vetoB\v\n" +
+	"\t_distinct\"\xc7\x01\n" +
 	"\fSignalSender\x12:\n" +
 	"\bidentity\x18\x01 \x01(\v2\x1e.flowstate.v1.WorkloadIdentityR\bidentity\x12;\n" +
 	"\vaccepted_at\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
@@ -733,37 +887,41 @@ func file_flowstate_v1_signal_proto_rawDescGZIP() []byte {
 	return file_flowstate_v1_signal_proto_rawDescData
 }
 
-var file_flowstate_v1_signal_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
+var file_flowstate_v1_signal_proto_msgTypes = make([]protoimpl.MessageInfo, 9)
 var file_flowstate_v1_signal_proto_goTypes = []any{
 	(*SignalPolicy)(nil),          // 0: flowstate.v1.SignalPolicy
 	(*SignalPolicyRule)(nil),      // 1: flowstate.v1.SignalPolicyRule
 	(*Signal)(nil),                // 2: flowstate.v1.Signal
 	(*SignalBatch)(nil),           // 3: flowstate.v1.SignalBatch
-	(*SignalSender)(nil),          // 4: flowstate.v1.SignalSender
-	nil,                           // 5: flowstate.v1.SignalPolicyRule.ClaimsEntry
-	nil,                           // 6: flowstate.v1.Signal.OutputsEntry
-	nil,                           // 7: flowstate.v1.SignalBatch.OutputsEntry
-	(*Value)(nil),                 // 8: flowstate.v1.Value
-	(*WorkloadIdentity)(nil),      // 9: flowstate.v1.WorkloadIdentity
-	(*timestamppb.Timestamp)(nil), // 10: google.protobuf.Timestamp
+	(*SignalQuorum)(nil),          // 4: flowstate.v1.SignalQuorum
+	(*SignalSender)(nil),          // 5: flowstate.v1.SignalSender
+	nil,                           // 6: flowstate.v1.SignalPolicyRule.ClaimsEntry
+	nil,                           // 7: flowstate.v1.Signal.OutputsEntry
+	nil,                           // 8: flowstate.v1.SignalBatch.OutputsEntry
+	(*Value)(nil),                 // 9: flowstate.v1.Value
+	(*WorkloadIdentity)(nil),      // 10: flowstate.v1.WorkloadIdentity
+	(*timestamppb.Timestamp)(nil), // 11: google.protobuf.Timestamp
 }
 var file_flowstate_v1_signal_proto_depIdxs = []int32{
 	1,  // 0: flowstate.v1.SignalPolicy.allow:type_name -> flowstate.v1.SignalPolicyRule
-	5,  // 1: flowstate.v1.SignalPolicyRule.claims:type_name -> flowstate.v1.SignalPolicyRule.ClaimsEntry
-	8,  // 2: flowstate.v1.SignalPolicyRule.subject_from:type_name -> flowstate.v1.Value
-	6,  // 3: flowstate.v1.Signal.outputs:type_name -> flowstate.v1.Signal.OutputsEntry
-	8,  // 4: flowstate.v1.Signal.prompt:type_name -> flowstate.v1.Value
-	7,  // 5: flowstate.v1.SignalBatch.outputs:type_name -> flowstate.v1.SignalBatch.OutputsEntry
-	8,  // 6: flowstate.v1.SignalBatch.prompt:type_name -> flowstate.v1.Value
-	9,  // 7: flowstate.v1.SignalSender.identity:type_name -> flowstate.v1.WorkloadIdentity
-	10, // 8: flowstate.v1.SignalSender.accepted_at:type_name -> google.protobuf.Timestamp
-	8,  // 9: flowstate.v1.Signal.OutputsEntry.value:type_name -> flowstate.v1.Value
-	8,  // 10: flowstate.v1.SignalBatch.OutputsEntry.value:type_name -> flowstate.v1.Value
-	11, // [11:11] is the sub-list for method output_type
-	11, // [11:11] is the sub-list for method input_type
-	11, // [11:11] is the sub-list for extension type_name
-	11, // [11:11] is the sub-list for extension extendee
-	0,  // [0:11] is the sub-list for field type_name
+	6,  // 1: flowstate.v1.SignalPolicyRule.claims:type_name -> flowstate.v1.SignalPolicyRule.ClaimsEntry
+	9,  // 2: flowstate.v1.SignalPolicyRule.subject_from:type_name -> flowstate.v1.Value
+	7,  // 3: flowstate.v1.Signal.outputs:type_name -> flowstate.v1.Signal.OutputsEntry
+	9,  // 4: flowstate.v1.Signal.prompt:type_name -> flowstate.v1.Value
+	8,  // 5: flowstate.v1.SignalBatch.outputs:type_name -> flowstate.v1.SignalBatch.OutputsEntry
+	9,  // 6: flowstate.v1.SignalBatch.prompt:type_name -> flowstate.v1.Value
+	4,  // 7: flowstate.v1.SignalBatch.quorum:type_name -> flowstate.v1.SignalQuorum
+	9,  // 8: flowstate.v1.SignalQuorum.exclude:type_name -> flowstate.v1.Value
+	9,  // 9: flowstate.v1.SignalQuorum.veto:type_name -> flowstate.v1.Value
+	10, // 10: flowstate.v1.SignalSender.identity:type_name -> flowstate.v1.WorkloadIdentity
+	11, // 11: flowstate.v1.SignalSender.accepted_at:type_name -> google.protobuf.Timestamp
+	9,  // 12: flowstate.v1.Signal.OutputsEntry.value:type_name -> flowstate.v1.Value
+	9,  // 13: flowstate.v1.SignalBatch.OutputsEntry.value:type_name -> flowstate.v1.Value
+	14, // [14:14] is the sub-list for method output_type
+	14, // [14:14] is the sub-list for method input_type
+	14, // [14:14] is the sub-list for extension type_name
+	14, // [14:14] is the sub-list for extension extendee
+	0,  // [0:14] is the sub-list for field type_name
 }
 
 func init() { file_flowstate_v1_signal_proto_init() }
@@ -773,13 +931,14 @@ func file_flowstate_v1_signal_proto_init() {
 	}
 	file_flowstate_v1_identity_proto_init()
 	file_flowstate_v1_value_proto_init()
+	file_flowstate_v1_signal_proto_msgTypes[4].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_flowstate_v1_signal_proto_rawDesc), len(file_flowstate_v1_signal_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   8,
+			NumMessages:   9,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
