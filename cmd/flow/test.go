@@ -114,6 +114,18 @@ flow test -o jsonl examples/`,
 
 	addOutputFlag(cmd)
 
+	// Run control (#1472 neighbours): each answers one question a suite author
+	// asks of pytest, Jest and `go test`, and each says what it left unrun.
+	cmd.Flags().Bool("list", false,
+		"print the names of the cases that would run, one per line under their file, without "+
+			"running any; honours --run, and shows cases a `skip:` leaves out")
+	cmd.Flags().Bool("fail-fast", false,
+		"stop at the first failing case; the cases not run are reported as skipped, and "+
+			"--coverage-required is refused alongside it because a stopped suite's coverage is not the suite's")
+	cmd.Flags().Duration("timeout", 0,
+		"real-time limit for one case (default 30s, at most 10m); the virtual clock still decides "+
+			"what a workflow waits for, so this bounds a case that is stuck, not one that waits long")
+
 	cmd.Flags().Bool("watch", false,
 		"run once, then again after every change to a YAML file under the paths given, until "+
 			"interrupted; clears a terminal between runs and writes one document per run to a pipe; "+
@@ -279,6 +291,42 @@ func runTest(cmd *cobra.Command, paths []string) error {
 		selectCase = re.MatchString
 	}
 
+	failFast, _ := cmd.Flags().GetBool("fail-fast")
+	if failFast && coverageRequired {
+		return errors.New("--coverage-required cannot be combined with --fail-fast: a suite stopped at its " +
+			"first failure has not run the cases whose coverage it would be judged by; drop one of the two")
+	}
+	timeout, _ := cmd.Flags().GetDuration("timeout")
+	if timeout < 0 || timeout > 10*time.Minute {
+		return fmt.Errorf("--timeout %s is outside 0 (the 30s default) to 10m; a case that needs longer is stuck, "+
+			"and the virtual clock already skips every wait", timeout)
+	}
+	if timeout > 0 && cmd.Flags().Changed("debug") {
+		return errors.New("--timeout cannot be combined with --debug: a debugger session is held by a person, not by a clock")
+	}
+	listing, _ := cmd.Flags().GetBool("list")
+	if listing {
+		// Listing runs nothing, so every flag that reads a run's outcome would
+		// be accepted and then quietly have nothing to act on: a machine format
+		// or a JUnit file that never appears reads as success.
+		for _, other := range []struct {
+			name string
+			set  bool
+		}{
+			{"-o json/jsonl", format.Machine()},
+			{"--junit", cmd.Flags().Changed("junit")},
+			{"--debug", cmd.Flags().Changed("debug")},
+			{"--watch", cmd.Flags().Changed("watch")},
+			{"--fail-fast", failFast},
+			{"--seeds", cmd.Flags().Changed("seeds") || cmd.Flags().Changed("seed")},
+			{"--coverage-required", coverageRequired},
+		} {
+			if other.set {
+				return fmt.Errorf("--list cannot be combined with %s: listing runs no case, so there is no result for it to report", other.name)
+			}
+		}
+	}
+
 	files, err := collectTestFiles(paths)
 	if err != nil {
 		return err
@@ -318,6 +366,10 @@ func runTest(cmd *cobra.Command, paths []string) error {
 		anyFailed bool
 		results   []testFileResult
 	)
+	// halted is what `--fail-fast` stopped at, carried across files so the
+	// promise holds for the whole invocation: later files still report every
+	// selected case, as skipped, instead of running it.
+	halted := ""
 	for _, path := range files {
 		// cmd.Context() rather than a background one: `flow test` is where a
 		// legal Flowfile can park forever (a `wait_for_signal:` with no timeout
@@ -329,8 +381,12 @@ func runTest(cmd *cobra.Command, paths []string) error {
 		// owns that now, for every door at once, so the MCP tool and this
 		// command cannot disagree about what the document carries (#931).
 		run := flowtest.RunPath(cmd.Context(), path, flowtest.RunOptions{
-			Budget: budget,
-			Select: selectCase,
+			Budget:      budget,
+			Select:      selectCase,
+			CaseTimeout: timeout,
+			FailFast:    failFast,
+			HaltedBy:    halted,
+			ListOnly:    listing,
 			// nil unless --debug, and a nil interface value in this field is
 			// what every other run in the world passes: the engine's boundary
 			// does one context lookup and finds nothing.
@@ -345,14 +401,23 @@ func runTest(cmd *cobra.Command, paths []string) error {
 		restoreTerminal()
 
 		report, coverage, schedules := run.Report, run.Coverage, run.Schedules
-		result := testFileResult{report: report, coverage: coverage, schedules: schedules, filtered: run.Filtered}
+		result := testFileResult{report: report, coverage: coverage, schedules: schedules, filtered: run.Filtered, skipped: run.Skipped}
 		results = append(results, result)
+
+		if listing {
+			printListing(surface.Out, surface.Theme, report, run)
+			// A refused file is a file that cannot be run, which a CI step
+			// listing cases as a validity gate must see as a failure.
+			anyFailed = anyFailed || report.GetRefused() != ""
+			continue
+		}
 
 		if !machine {
 			printTestReport(surface.Out, surface.Theme, report, run.Transcripts, failOnWarning, verbose)
 			printCoverage(surface.Out, surface.Theme, report, coverage, coverageRequired)
 			printSchedules(surface.Out, surface.Theme, report, schedules)
 			printFiltered(surface.Out, surface.Theme, report, runPattern, run.Filtered)
+			printSkipped(surface.Out, surface.Theme, report, run.Skipped)
 		} else {
 			// The account of the exploration goes to stderr in machine mode, so
 			// stdout stays exactly the JSON document a consumer parses while the
@@ -369,13 +434,28 @@ func runTest(cmd *cobra.Command, paths []string) error {
 			// somebody reading the log must be able to see that the file held
 			// more (#929 slice 1; slice 1 adds no schema field).
 			printFiltered(surface.Err, surface.ErrTheme, report, runPattern, run.Filtered)
+			printSkipped(surface.Err, surface.ErrTheme, report, run.Skipped)
 		}
 
 		if result.failed(coverageRequired, failOnWarning) {
 			anyFailed = true
 		}
+		if failFast && halted == "" {
+			switch {
+			case run.HaltedAt != "":
+				halted = path + ": " + run.HaltedAt
+			case report.GetRefused() != "":
+				halted = path + " (refused)"
+			}
+		}
 	}
 
+	if listing {
+		if anyFailed {
+			return errTestsFailed
+		}
+		return nil
+	}
 	if machine {
 		if err := writeTestResults(surface, format, results); err != nil {
 			return err
@@ -446,7 +526,7 @@ func runTestWatch(cmd *cobra.Command, paths []string) error {
 // field states that distinction.
 func printSummary(out io.Writer, theme ui.Theme, results []testFileResult, coverageRequired, failOnWarning, filterActive bool, elapsed time.Duration) {
 	files, cases, passed, failed, refused := len(results), 0, 0, 0, 0
-	gaps, stale, filtered, warned, diverged := 0, 0, 0, 0, 0
+	gaps, stale, filtered, warned, diverged, skipped := 0, 0, 0, 0, 0, 0
 	for _, r := range results {
 		if r.report.GetRefused() != "" {
 			refused++
@@ -463,6 +543,7 @@ func printSummary(out io.Writer, theme ui.Theme, results []testFileResult, cover
 			}
 		}
 		filtered += r.filtered
+		skipped += len(r.skipped)
 		if r.schedules != nil && r.schedules.Divergence != nil {
 			diverged++
 		}
@@ -510,6 +591,9 @@ func printSummary(out io.Writer, theme ui.Theme, results []testFileResult, cover
 	if filterActive {
 		parts = append(parts, theme.Warning.Render(count(filtered, "case filtered out", "cases filtered out")))
 	}
+	if skipped > 0 {
+		parts = append(parts, theme.Warning.Render(count(skipped, "case skipped", "cases skipped")))
+	}
 	parts = append(parts, fmt.Sprintf("%.1fs", elapsed.Seconds()))
 
 	fmt.Fprintf(out, "\n%s\n", strings.Join(parts, " · "))
@@ -531,6 +615,28 @@ func printFiltered(out io.Writer, theme ui.Theme, report *v1.TestReport, pattern
 			pattern, ran, count(ran+filtered, "case", "cases"), filtered)))
 }
 
+// printSkipped names, beside one file, each selected case that did not run and
+// why: a skip is a decision a reader can read, never a silent absence.
+func printSkipped(out io.Writer, theme ui.Theme, report *v1.TestReport, skipped []flowtest.SkippedCase) {
+	for _, sk := range skipped {
+		fmt.Fprintf(out, "%s  %s\n", theme.Warning.Render("SKIP"),
+			fmt.Sprintf("%s: %s: %s", report.GetFile(), sk.Name, sk.Reason))
+	}
+}
+
+// printListing is `--list`: the cases that would run under a file, then the
+// ones a `skip:` leaves out, so the list answers "what would happen" exactly.
+func printListing(out io.Writer, theme ui.Theme, report *v1.TestReport, run flowtest.RunResult) {
+	if refused := report.GetRefused(); refused != "" {
+		fmt.Fprintf(out, "%s  %s\n", theme.Danger.Render("REFUSED"), refused)
+		return
+	}
+	for _, name := range run.Listed {
+		fmt.Fprintf(out, "%s: %s\n", report.GetFile(), name)
+	}
+	printSkipped(out, theme, report, run.Skipped)
+}
+
 // testFileResult pairs one file's report with the branch coverage its cases
 // achieved, one entry per workflow the file targeted, so the two travel
 // together into rendering. coverage is nil for a file with no workflow to
@@ -545,6 +651,11 @@ type testFileResult struct {
 	// the honesty line and the summary surface, because a green over a subset
 	// must never read as the file's green (#929).
 	filtered int
+
+	// skipped is every selected case that did not run — a `skip:` reason, or
+	// `--fail-fast` stopping at the first failure — each with its reason, so a
+	// green never hides a case that was not exercised.
+	skipped []flowtest.SkippedCase
 }
 
 // failed reports whether this file's result makes the command exit non-zero.

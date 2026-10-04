@@ -131,6 +131,7 @@ var testDocKeys = map[testDocLevel][]dslKey{
 	},
 	testLevelCase: {
 		{name: "name", detail: "string", docs: "Identifies the case in a report. Required."},
+		{name: "skip", detail: "string", docs: "The reason this case is not run. A skipped case is reported with its reason and does not fail the run; on a table entry it skips every row."},
 		{name: "workflow", detail: "path", docs: "The Flowfile under test, resolved relative to the directory the *.test.yaml itself lives in — the same rule `call:` resolves against."},
 		{name: "inputs", detail: "map", docs: "Binds the workflow's declared `inputs:`, checked the same way a real run's are. Mutually exclusive with `trigger:`."},
 		{name: "trigger", detail: "map", docs: "Replays a stored delivery against one of the workflow's declared `triggers:`, or states a trigger context directly. Mutually exclusive with `inputs:`."},

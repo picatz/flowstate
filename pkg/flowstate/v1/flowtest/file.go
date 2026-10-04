@@ -347,6 +347,13 @@ type Test struct {
 	// a name a person or a CI log can act on.
 	Name string `yaml:"name"`
 
+	// Skip, when non-empty, is the reason this case is not run. A skipped
+	// case is reported with its reason (never silently), contributes nothing
+	// to coverage, and does not fail the run. A reason is required because a
+	// skip is a decision a reader must be able to question; set on a table
+	// entry it skips every row.
+	Skip string `yaml:"skip"`
+
 	// Workflow is the Flowfile under test, resolved relative to the directory
 	// the *.test.yaml itself lives in — the same rule `call:` resolves
 	// against, and for the same reason: a test file is meant to travel with
