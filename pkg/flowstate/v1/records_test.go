@@ -3,6 +3,7 @@ package flowstatev1_test
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -149,7 +150,6 @@ func TestRecordDeclarationsRefuseWhatAFieldDoesNotCarry(t *testing.T) {
 		"example":   func(f *v1.InputDeclaration) { f.Example = v1.NewLiteral("x") },
 		"sensitive": func(f *v1.InputDeclaration) { f.Sensitive = true },
 		"must":      func(f *v1.InputDeclaration) { f.Must = new("this != ''") },
-		"min_len":   func(f *v1.InputDeclaration) { f.MinLen = new(uint64(1)) },
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
@@ -160,6 +160,88 @@ func TestRecordDeclarationsRefuseWhatAFieldDoesNotCarry(t *testing.T) {
 			err := v1.CheckRecordDeclarations(wf)
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), "`"+name+"`")
+		})
+	}
+}
+
+// A field carries the bounds an input does, judged by the same functions: the
+// declaration is refused where no value could satisfy it, and a value that breaks one
+// is refused with the path of the field.
+func TestARecordFieldCarriesLengthAndItemBounds(t *testing.T) {
+	t.Parallel()
+
+	declare := func(mutate func(id, lines *v1.InputDeclaration)) *v1.Workflow {
+		wf := recordOrderWorkflow()
+		fields := wf.DeclaredTypes[1].Fields // Order
+		named := func(name string) *v1.InputDeclaration {
+			return fields[slices.IndexFunc(fields, func(f *v1.InputDeclaration) bool { return f.GetName() == name })]
+		}
+		mutate(named("id"), named("lines"))
+
+		return wf
+	}
+
+	t.Run("a bound on a field that cannot hold it is refused", func(t *testing.T) {
+		t.Parallel()
+
+		err := v1.CheckRecordDeclarations(declare(func(_, lines *v1.InputDeclaration) { lines.MinLen = new(uint64(1)) }))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), `type "Order" field "lines" declares a string constraint`)
+	})
+
+	t.Run("a bound no value could satisfy is refused", func(t *testing.T) {
+		t.Parallel()
+
+		err := v1.CheckRecordDeclarations(declare(func(id, _ *v1.InputDeclaration) {
+			id.MinLen, id.MaxLen = new(uint64(5)), new(uint64(2))
+		}))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), `type "Order" field "id" min_len (5) is greater than max_len (2)`)
+	})
+
+	wf := declare(func(id, lines *v1.InputDeclaration) {
+		id.MinLen, id.MaxLen = new(uint64(2)), new(uint64(4))
+		lines.MinItems, lines.MaxItems = new(uint64(1)), new(uint64(2))
+	})
+	require.NoError(t, v1.CheckRecordDeclarations(wf))
+	table := v1.TypesOf(wf)
+
+	order := func(id string, lines int) *v1.Value {
+		items := make([]*expr.Value, lines)
+		for i := range items {
+			items[i] = recordLine("k", 1)
+		}
+
+		return &v1.Value{Kind: &v1.Value_Literal{Literal: mapLit(
+			recordStr("id"), recordStr(id), recordStr("status"), recordStr("open"),
+			recordStr("lines"), &expr.Value{Kind: &expr.Value_ListValue{ListValue: &expr.ListValue{Values: items}}},
+		)}}
+	}
+	input := &v1.InputDeclaration{Name: "order", Type: v1.InputDeclaration_TYPE_STRUCT, ValueType: recordTypeOf("Order")}
+
+	for _, test := range []struct {
+		name string
+		id   string
+		n    int
+		want string // empty accepts
+	}{
+		{"within every bound", "abc", 2, ""},
+		{"at the lower bound", "ab", 1, ""},
+		{"a string under its minimum", "a", 1, "the field at .id must be at least 2 character(s) long; got 1"},
+		{"a string over its maximum", "abcde", 1, "the field at .id must be at most 4 character(s) long; got 5"},
+		{"a list under its minimum", "abc", 0, "the field at .lines must have at least 1 item(s); got 0"},
+		{"a list over its maximum", "abc", 3, "the field at .lines must have at most 2 item(s); got 3"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := v1.CheckInputValueIn(table, "order", input, order(test.id, test.n))
+			if test.want == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), test.want)
 		})
 	}
 }

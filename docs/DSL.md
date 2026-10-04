@@ -718,14 +718,15 @@ A field is written exactly like an input, so an author who can declare one can d
 other, and a record may name another record, alone or inside `list(...)` and
 `map(string, ...)`. A record is closed: a value carrying a name the type does not declare is
 refused, a `required:` field that is absent is refused, and each field is held to its own type
-and, for an `enum`, its `values:`. The refusal names the path to what is wrong
+and, for an `enum`, its `values:`, `min_len:` and `max_len:` for a string, and `min_items:` and
+`max_items:` for a list, by the same functions an input is held to. The refusal names the path to what is wrong
 (`a string at .lines[1].quantity`) at `flow validate` for a literal written in the file, and at
 submit and on completion for a value that arrives, on both drivers through one function. A
 type that refers to itself, directly or through others, is refused, because a value of a
 recursive record has no bound until the type has one; so is a name nobody declared. At run
 time a record is a map keyed by field name, so an older reader sees what it sees for a
-`struct`. This slice checks the shape and nothing more: a field that sets `default:`,
-`example:`, `sensitive:`, `must:` or a length or item bound, and a `must:` on the type itself,
+`struct`. Beyond the shape and those bounds nothing is carried yet: a field that sets `default:`,
+`example:`, `sensitive:` or `must:`, and a `must:` on the type itself,
 is refused with that reason rather than parsed and silently not enforced.
 
 *Slice 2:* an expression reading a field is checked against the record. `inputs.order.id` is a
