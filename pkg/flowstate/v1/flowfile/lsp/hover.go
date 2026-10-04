@@ -982,6 +982,14 @@ func constructOutputNode(target *parsedStep) *v1.Node {
 
 	case target.waitForSignalsEntry != nil || target.hasKey("wait_for_signals"):
 		batch := &v1.SignalBatch{}
+		// A nested `quorum:` adds `decision`, `approvals` and `vetoed_by` to what
+		// the wait produces, and [v1.OutputNames] reads that from the field being
+		// set, never from its contents: so a bare placeholder says it.
+		for _, e := range nestedEntries(target.waitForSignalsEntry) {
+			if e.key == "quorum" {
+				batch.Quorum = &v1.SignalQuorum{}
+			}
+		}
 		if len(target.waitShapingEntries) > 0 {
 			batch.Outputs = make(map[string]*v1.Value, len(target.waitShapingEntries))
 			for _, e := range target.waitShapingEntries {

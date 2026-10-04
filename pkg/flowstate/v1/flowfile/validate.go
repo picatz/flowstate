@@ -321,7 +321,11 @@ func validateAtDepth(wf *v1.Workflow, profile string, depth int, placement v1.Un
 	ds = append(ds, validateDeclaredInputs(wf, profile)...)
 	ds = append(ds, validateTriggers(wf)...)
 	ds = append(ds, validateSignals(wf)...)
-	ds = append(ds, validateQuorums(wf)...)
+	if depth == 0 {
+		// Only from the root, which walks its callees itself: a callee's gate is
+		// admitted by the root's `signals:`, never by the callee's own.
+		ds = append(ds, validateQuorums(wf)...)
+	}
 	ds = append(ds, validateDebug(wf)...)
 	ds = append(ds, validateReservedSignalNames(wf)...)
 	ds = append(ds, validateConcurrency(wf)...)

@@ -4292,7 +4292,11 @@ batch bound (`max_batch:`, or `MaxPendingSignals` when omitted). Against a close
 `signals:` policy, `flow validate` refuses an `approve:` larger than the number of
 distinct subjects the policy names, because no run could ever meet it; a policy that
 admits by claim or by a computed subject cannot be counted, so it is not asked. A
-quorum with `distinct: false` is not asked either.
+quorum with `distinct: false` is not asked either. A quorum inside a `call:`ed
+workflow is asked of the *calling* workflow's policy, because that is the one a
+delivery is admitted against; the callee's own `signals:` is never consulted, and a
+finding is reported at the `call:` step. A `veto:` that can only ever be a string or
+a number is refused too, as any other condition is.
 
 **Bounded where the work is.** One wait examines at most `MaxQuorumDeliveries`
 (twice the batch bound) deliveries, counted or not. Deliveries that are repeated,

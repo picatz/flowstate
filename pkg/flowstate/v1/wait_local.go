@@ -1297,8 +1297,16 @@ func waitForQuorumLocally(
 	}
 
 	for {
-		// Everything already in hand, oldest first, before anything blocks.
-		for tally.Decision() == "" && peeker != nil {
+		// Everything already in hand, oldest first, before anything blocks, and
+		// only while the bound this wait fixed has not passed. The durable
+		// driver has one timer for the whole wait, so a delivery that landed
+		// after it fired cannot complete the quorum there; taking one here
+		// because processing the previous one ran past the deadline would make
+		// the same run `approved` locally and `timed_out` durably. The first
+		// pass has no deadline yet, which is what keeps a gate answered from
+		// what was already queued from being charged for the time it took.
+		for tally.Decision() == "" && peeker != nil &&
+			(deadlineAt.IsZero() || clock.Now().Before(deadlineAt)) {
 			delivery, took := peeker.tryReceiveSignal(name)
 			if !took {
 				break
@@ -1453,6 +1461,14 @@ func receiveForQuorumLocally(
 	payload, sender, err = waiter.WaitForSignal(waitCtx, name)
 	if err == nil {
 		return payload, sender, false, nil
+	}
+
+	// A cancelled run is a cancelled step, even when the deadline also lapsed
+	// before the cancellation was seen: the durable driver asks its context
+	// before it reports a timeout, so a run stopped at the same moment as its
+	// bound is stopped on both drivers, not "timed_out" on one.
+	if ctx.Err() != nil {
+		return nil, nil, false, err
 	}
 
 	select {

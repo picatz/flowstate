@@ -585,17 +585,45 @@ func validateSignals(wf *v1.Workflow) Diagnostics {
 // submit. `distinct_from_starter:` and `exclude:` can only shrink the set further,
 // so ignoring them can only miss a refusal, never make one wrongly. A quorum with
 // `distinct: false` is not asked at all, since one sender may then meet it alone.
-func validateQuorums(wf *v1.Workflow) Diagnostics {
+func validateQuorums(root *v1.Workflow) Diagnostics {
+	return validateQuorumsIn(root, root.GetSteps(), 0)
+}
+
+// validateQuorumsIn walks one workflow's steps, and the steps of every callee
+// reached through a `call:`, against the policy of root.
+//
+// The root's `signals:` is the one a delivery is authorized against, durably
+// (the server records the top-level workflow's) and locally (the wait policies
+// are recorded from the top-level workflow only), so a callee's own declarations
+// admit nobody and are not the answer here. A callee gate is therefore asked of
+// the root's policy for its name, and a finding is reported at the call step
+// that reaches it, in the voice [validateCallAtDepth] gives every other callee
+// finding.
+func validateQuorumsIn(root *v1.Workflow, steps []*v1.Node, depth int) Diagnostics {
 	var ds Diagnostics
 
-	v1.WalkNodes(wf.GetSteps(), v1.Walk{Node: func(node *v1.Node) {
+	v1.WalkNodes(steps, v1.Walk{Node: func(node *v1.Node) {
+		if call := node.GetCall(); call != nil {
+			// Depth is reported by the call validation itself; stop here rather
+			// than recurse past the bound it names.
+			if callee := call.GetWorkflow(); callee != nil && v1.CheckCallDepth(depth+1) == nil {
+				for _, d := range validateQuorumsIn(root, callee.GetSteps(), depth+1) {
+					d.Step = node.GetId()
+					d.Message = fmt.Sprintf("workflow %q: %s", callee.GetName(), d.Message)
+					ds = append(ds, d)
+				}
+			}
+
+			return
+		}
+
 		batch := node.GetWait().GetSignalBatch()
 		quorum := batch.GetQuorum()
 		if quorum == nil || (quorum.Distinct != nil && !quorum.GetDistinct()) {
 			return
 		}
 
-		permitted, closed := closedPolicySubjects(wf.GetSignals()[batch.GetName()])
+		permitted, closed := closedPolicySubjects(root.GetSignals()[batch.GetName()])
 		if !closed || int(quorum.GetApprove()) <= permitted {
 			return
 		}
