@@ -42,6 +42,11 @@ runs:
       CI: "true"
       PYTHONDONTWRITEBYTECODE: "1"
     mounts: [fixtures]
+    # Optional: the OCI runtime this container runs under, as the daemon
+    # registered it - `runsc` for gVisor, `kata-runtime` for Kata. The operator
+    # chooses it; a workflow cannot. A name the daemon lacks fails the run
+    # rather than falling back to a weaker one.
+    # runtime: runsc
     # Required, and bounded by the plugin's own ceilings. "The operator forgot"
     # is not a limit.
     memory_bytes: 536870912   # 512 MiB

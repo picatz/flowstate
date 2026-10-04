@@ -144,6 +144,7 @@ func TestAGrantsFileIsRefusedForWhatAnOperatorCanGetWrong(t *testing.T) {
 		"a daemon with neither socket nor address": strings.Replace(validDocument, "  socket: /var/run/docker.sock", "  api_version: v1.43", 1),
 		"a remote daemon with no TLS":              strings.Replace(validDocument, "  socket: /var/run/docker.sock", "  address: dockerd.internal:2376", 1),
 		"a misspelled key":                         strings.Replace(validDocument, "    memory_bytes:", "    memorybytes:", 1),
+		"a runtime that is not a name":             strings.Replace(validDocument, "    memory_bytes:", "    runtime: \"runsc --privileged\"\n    memory_bytes:", 1),
 		"no runs at all":                           "daemon:\n  socket: /var/run/docker.sock\nruns: {}\n",
 	} {
 		writeGrants(t, document)

@@ -140,6 +140,15 @@ type runGrant struct {
 	// daemon already has. There is no host networking here at all.
 	Network string `json:"network,omitempty" yaml:"network,omitempty"`
 
+	// Runtime is the OCI runtime the daemon runs this container under, by the
+	// name the operator registered it with ("runsc" for gVisor, "kata-runtime"
+	// or "kata" for Kata Containers). Empty takes the daemon's default. It is
+	// the operator's choice and never a workflow's: a workflow that could pick
+	// its runtime could pick the weakest one. A name the daemon has not
+	// registered is refused by the daemon at create time, so a missing sandbox
+	// stops the run rather than silently weakening it.
+	Runtime string `json:"runtime,omitempty" yaml:"runtime,omitempty"`
+
 	// Mounts are mount grant names, resolved through [grants.Mounts].
 	Mounts []string `json:"mounts,omitempty" yaml:"mounts,omitempty"`
 
@@ -398,6 +407,10 @@ func (r *runGrant) check(name string, mounts map[string]mountGrant) error {
 				"host's network reaches everything this worker can, including the loopback services an egress policy cannot see", name)
 	}
 
+	if r.Runtime != "" && !runtimePattern.MatchString(r.Runtime) {
+		return fmt.Errorf("run %q names a runtime %q that is not a name the daemon could have registered", name, truncate(r.Runtime, 64))
+	}
+
 	declared := make(map[string]bool, len(r.Parameters))
 	for parameter, grant := range r.Parameters {
 		if !parameterNamePattern.MatchString(parameter) {
@@ -488,6 +501,7 @@ var (
 	apiVersionPattern    = regexp.MustCompile(`^v[0-9]+\.[0-9]+$`)
 	userPattern          = regexp.MustCompile(`^[0-9]+(:[0-9]+)?$`)
 	networkPattern       = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$`)
+	runtimePattern       = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$`)
 
 	// imageNamePattern is a canonical reference: a registry host, at least one
 	// repository path segment, and a digest. No implicit registry, no tag, and

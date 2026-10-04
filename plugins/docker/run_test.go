@@ -104,6 +104,30 @@ func TestTheCreateRequestIsTheContract(t *testing.T) {
 	}
 }
 
+// TestThePinnedRuntimeReachesTheDaemon: the OCI runtime is the operator's
+// statement in the grant, forwarded unchanged, and absent when none is pinned
+// so the daemon's own default applies.
+func TestThePinnedRuntimeReachesTheDaemon(t *testing.T) {
+	for _, runtimeName := range []string{"", "runsc", "kata-runtime"} {
+		fake := newFakeDaemon(t)
+		grant := testRun()
+		grant.Runtime = runtimeName
+		authority := &grants{Daemon: fake.grant(), Runs: map[string]runGrant{"check": grant}}
+		withGrants(t, authority)
+
+		daemon, err := newDaemon(authority.Daemon)
+		if err != nil {
+			t.Fatalf("newDaemon: %v", err)
+		}
+		if _, err := execute(t.Context(), daemon, grant, "check", []string{"/usr/bin/check"}); err != nil {
+			t.Fatalf("execute(runtime %q): %v", runtimeName, err)
+		}
+		if got := fake.createRequest().HostConfig.Runtime; got != runtimeName {
+			t.Errorf("HostConfig.Runtime = %q, want %q", got, runtimeName)
+		}
+	}
+}
+
 // TestTheContainerIsRemovedOnEveryPath: a container left behind because a
 // workflow failed is the failure mode the contract names.
 func TestTheContainerIsRemovedOnEveryPath(t *testing.T) {
