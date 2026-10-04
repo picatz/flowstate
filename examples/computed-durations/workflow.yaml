@@ -2,9 +2,8 @@ edition: v2026.4
 name: computed-durations
 description: Sizes a grace period and an approval deadline from its inputs, so one definition serves a trial signup and an enterprise contract unedited.
 # `wait-until-a-moment` computes *when* a wait ends. This one computes *how
-# long* it lasts, which used to be the one thing a wait could not say: `sleep:`
-# and `wait_for_signal:`'s `timeout:` took a literal and nothing else, so a
-# per-plan grace period meant a copy of the file per plan.
+# long* it lasts: `sleep:` and `wait_for_signal:`'s `timeout:` take a computed
+# value, so one file serves every plan instead of a copy per plan.
 #
 # Three positions, one rule. Every duration a wait carries takes either a
 # literal or a `${...}`, the fence decides which, and `now` is bound inside all
