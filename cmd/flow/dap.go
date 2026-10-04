@@ -424,7 +424,7 @@ func (b debuggedRunBuilder) reversible(args flowdap.LaunchArguments) (*flowdap.L
 		run := &debuggedRun{done: make(chan struct{}), reported: make(chan struct{})}
 		// A replay is silent: the editor was shown that account the first time.
 		session, err := b.session(func(text string, _ flowdebug.Tone) {
-			if run.live.Load() {
+			if run.reports() {
 				b.console.write(text)
 			}
 		}, false)
