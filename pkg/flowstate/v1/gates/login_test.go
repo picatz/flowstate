@@ -370,11 +370,10 @@ func TestAnIssuerThatMisnamesItselfCannotSteerTheFlow(t *testing.T) {
 	require.Equal(t, http.StatusBadGateway, rec.Code)
 	require.Nil(t, setCookies(rec)[loginCookieName])
 
-	is = newIssuer(t)
 	for name, methods := range map[string]any{"plain only": []string{"plain"}, "empty": []string{}, "omitted": nil} {
-		is = newIssuer(t)
+		is := newIssuer(t)
 		is.discoveryExtra = map[string]any{"code_challenge_methods_supported": methods}
-		h = newHandler(signedInAPI(), WithLogin(is.login(t)))
+		h := newHandler(signedInAPI(), WithLogin(is.login(t)))
 		require.Equal(t, http.StatusBadGateway, do(h, httptest.NewRequest(http.MethodGet, LoginPath, nil)).Code,
 			"an issuer that does not advertise S256 cannot take part: "+name)
 	}
