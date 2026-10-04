@@ -73,7 +73,7 @@ steps ────────────────────────�
 scope ─────────────────────────────────────────────────────────────────────────
   steps.build      {"artifact":"build.tar.gz"}
   steps.checkout   {"artifact":"checkout.tar.gz"}
-  steps.flaky      {"error":"deliberate failure"}
+  steps.flaky      {"error":"deliberate failure","failure":{"kind":"Internal","m
   vars.region      "eu-west-1"
   inputs.version   "2026.9.0"
   run.identity     {"claims":{},"issuer":"","namespace":"","subject":""}

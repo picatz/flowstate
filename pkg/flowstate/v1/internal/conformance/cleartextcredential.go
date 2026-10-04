@@ -131,7 +131,7 @@ func CleartextCredentialCases(tlsServerURL string) []AuthorityCase {
 				Steps: []*v1.Node{bearerSecretStep("call", cleartextCredentialTarget, "fixture-secret", "API_TOKEN")},
 			},
 			ExpectedOutputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
-				"call": v1.FailedStepOutputs(`task "http" failed (PolicyDenied): ` + cleartextCredentialErrorText),
+				"call": v1.FailedStepOutputs(v1.StepFailure{Kind: v1.ErrorKindPolicyDenied, Text: `task "http" failed (PolicyDenied): ` + cleartextCredentialErrorText}),
 			}},
 			Authority: Authority{
 				// An authority that would succeed if ever consulted — see the
@@ -152,7 +152,7 @@ func CleartextCredentialCases(tlsServerURL string) []AuthorityCase {
 				Steps: []*v1.Node{credentialStep("call", cleartextCredentialTarget, "partner-api")},
 			},
 			ExpectedOutputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
-				"call": v1.FailedStepOutputs(`task "http" failed (PolicyDenied): ` + cleartextCredentialErrorText),
+				"call": v1.FailedStepOutputs(v1.StepFailure{Kind: v1.ErrorKindPolicyDenied, Text: `task "http" failed (PolicyDenied): ` + cleartextCredentialErrorText}),
 			}},
 			Authority: Authority{
 				Identity: identity,

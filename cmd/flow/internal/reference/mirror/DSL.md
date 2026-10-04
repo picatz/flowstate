@@ -71,6 +71,7 @@ headings below, not this list.*
   - [The transcripts are the acceptance bar](#the-transcripts-are-the-acceptance-bar)
   - [What this round adds](#what-this-round-adds-1)
 - [The fifth round: taking it back](#the-fifth-round-taking-it-back)
+  - [A tolerated failure is a typed value](#a-tolerated-failure-is-a-typed-value)
   - [It is `undo:`, not `on_failure:`](#it-is-undo-not-on_failure)
   - [Per-step, not a workflow-level handler list](#per-step-not-a-workflow-level-handler-list)
   - [Registered on success, and only on success](#registered-on-success-and-only-on-success)
@@ -3267,6 +3268,32 @@ section](#the-corpus-is-the-acceptance-list) was written ("saga/compensation"), 
 that it could arrive without breaking anyone who had registered a task by the name.
 This is that word being spent. `examples/saga-provisioning/` is the corpus entry
 graduating into CI, which is what the acceptance rule means by landed.
+
+### A tolerated failure is a typed value
+
+A step tolerated by `continue_on_error:` records two outputs, and they answer
+different questions. `${steps.<id>.error}` is the sentence, for *whether* it
+failed: `has(steps.x.error)` and `!= ''` keep the meaning they always had. And
+`${steps.<id>.failure}` is the classification, for *which* failure it was:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `kind` | string | the `ErrorKind` the engine classified it as: `InvalidInput`, `Upstream`, `Timeout`, `RateLimited`, `PolicyDenied`, ... |
+| `message` | string | the same sentence `error` holds, built from one value rather than rendered twice |
+| `retryable` | bool | whether that kind is worth retrying by default |
+
+```yaml
+- id: react
+  if: ${has(steps.fetch.failure) && steps.fetch.failure.kind == "RateLimited"}
+```
+
+Compare `kind` to a literal, never to a substring of `error`: the kind is a
+closed set, so `flow validate` refuses `failure.kind == "Timeuot"` with a
+did-you-mean, where a misspelled substring silently takes the other branch.
+`retryable` states what the classification permits, not whether a given attempt
+was retried; an attempt-level narrowing (an unknown outcome) belongs to the
+attempt. Both drivers record the same fields, pinned by the shared `ErrorText`
+conformance cases.
 
 ### It is `undo:`, not `on_failure:`
 

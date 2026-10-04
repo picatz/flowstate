@@ -187,13 +187,13 @@ func (e *SwitchBodyError) Unwrap() error { return e.Err }
 // switch had already made, so a failed switch's entry names its arm exactly as a
 // completed one's does.
 //
-// text is the failure sentence the calling driver has already rendered, and
+// failure is the failure the calling driver has already rendered, and
 // rendering it here instead is precisely how the two drivers would disagree: the
 // durable driver's body failure arrives wrapped in this engine's own words
 // (`engine: flowstate run failed: …`), which only its own extraction sheds. See
 // [StepFailureRecord].
-func (e *SwitchBodyError) Record(text string) *Node_Outputs {
-	out := FailedStepOutputs(text)
+func (e *SwitchBodyError) Record(failure StepFailure) *Node_Outputs {
+	out := FailedStepOutputs(failure)
 	maps.Copy(out.NamedValues, e.Selection.GetNamedValues())
 
 	return out

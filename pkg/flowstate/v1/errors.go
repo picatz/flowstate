@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 )
 
@@ -157,6 +158,15 @@ func (k ErrorKind) String() string { return string(k) }
 // RetryableErrorKinds returns the kinds that are worth retrying.
 func RetryableErrorKinds() []ErrorKind {
 	return []ErrorKind{ErrorKindUpstream, ErrorKindTimeout, ErrorKindInternal, ErrorKindRateLimited}
+}
+
+// ErrorKinds returns every kind a failure can be classified as, sorted by name.
+// It is the closed set `steps.<id>.failure.kind` is checked against.
+func ErrorKinds() []ErrorKind {
+	kinds := append(RetryableErrorKinds(), PermanentErrorKinds()...)
+	slices.Sort(kinds)
+
+	return kinds
 }
 
 // PermanentErrorKinds returns the kinds that cannot succeed on a retry.

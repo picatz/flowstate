@@ -1852,11 +1852,11 @@ func recordStepOutcome(ctx context.Context, node *Node, outputs *Node_Outputs, e
 // driver's failedAt does, reading the raw error at the one site it is raised and
 // never copying the record into the wrappers it builds above it.
 func failureRecord(err error) *Node_Outputs {
-	text := StepErrorText(err)
+	failure := NewStepFailure(err)
 	if account, ok := err.(StepFailureRecord); ok {
-		return account.Record(text)
+		return account.Record(failure)
 	}
-	return FailedStepOutputs(text)
+	return FailedStepOutputs(failure)
 }
 
 // runNodeWithVars executes a node with its own `vars:` block bound.

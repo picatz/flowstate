@@ -141,7 +141,9 @@ failures are retried under the step's `retry:` policy (tasks have defaults).
 timed out, is not retried unless the step says the endpoint is idempotent.
 
 A failed step fails the run, unless the step has `continue_on_error: true`, in
-which case its error becomes a value later steps can read. When a run fails or
+which case its error becomes a value later steps can read: `steps.<id>.error`
+is the sentence and `steps.<id>.failure` carries its `kind`, `message` and
+`retryable`. When a run fails or
 is cancelled, the `undo:` actions of the steps that had succeeded run in reverse
 order: saga compensation. `flow cancel` lets that cleanup happen;
 `flow terminate` stops the run at once and runs none of it.

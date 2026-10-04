@@ -359,7 +359,7 @@ func ErrorTextCases(baseURL string) []Case {
 			},
 			ExpectedOutputs: &v1.Workflow_StepOutputs{
 				StepValues: map[string]*v1.Node_Outputs{
-					"flaky": v1.FailedStepOutputs(permanent),
+					"flaky": v1.FailedStepOutputs(v1.StepFailure{Kind: v1.ErrorKindInvalidInput, Text: permanent}),
 				},
 			},
 		},
@@ -388,7 +388,40 @@ func ErrorTextCases(baseURL string) []Case {
 			},
 			ExpectedOutputs: &v1.Workflow_StepOutputs{
 				StepValues: map[string]*v1.Node_Outputs{
-					"flaky": v1.FailedStepOutputs(retryable),
+					"flaky": v1.FailedStepOutputs(v1.StepFailure{Kind: v1.ErrorKindUpstream, Text: retryable}),
+				},
+			},
+		},
+		{
+			// The typed read #1905 asks for: a later step branches on the kind and
+			// the retry default without matching the sentence's punctuation, and
+			// `message` is the same text `error` holds.
+			Name: "a later step reads a tolerated failure's kind, retryability and message",
+			Workflow: &v1.Workflow{
+				Name: "failure-typed-read",
+				Steps: append([]*v1.Node{
+					{
+						Id:     "flaky",
+						Policy: &v1.StepPolicy{ContinueOnError: true},
+						Kind: &v1.Node_Task{Task: &v1.Task{
+							Name: "http",
+							Inputs: map[string]*v1.Value{
+								"url": v1.NewValue(baseURL + "/status/404"),
+							},
+						}},
+					},
+				}, append(
+					pins("kind", `steps.flaky.failure.kind == "InvalidInput"`),
+					append(
+						pins("retry", `steps.flaky.failure.retryable == false`),
+						pins("same", `steps.flaky.failure.message == steps.flaky.error`)...)...)...),
+			},
+			ExpectedOutputs: &v1.Workflow_StepOutputs{
+				StepValues: map[string]*v1.Node_Outputs{
+					"flaky": v1.FailedStepOutputs(v1.StepFailure{Kind: v1.ErrorKindInvalidInput, Text: permanent}),
+					"kind":  {},
+					"retry": {},
+					"same":  {},
 				},
 			},
 		},
@@ -494,7 +527,7 @@ func ToleratedStepFailureCases() []Case {
 				},
 			},
 			ExpectedOutputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
-				"gate":  v1.FailedStepOutputs(`var "bad": ` + evaluated),
+				"gate":  v1.FailedStepOutputs(v1.StepFailure{Kind: v1.ErrorKindExpression, Text: `var "bad": ` + evaluated}),
 				"after": {},
 			}},
 		},
@@ -515,7 +548,7 @@ func ToleratedStepFailureCases() []Case {
 				},
 			},
 			ExpectedOutputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
-				"gate":  v1.FailedStepOutputs("evaluating items: " + evaluated),
+				"gate":  v1.FailedStepOutputs(v1.StepFailure{Kind: v1.ErrorKindExpression, Text: "evaluating items: " + evaluated}),
 				"after": {},
 			}},
 		},
@@ -538,7 +571,7 @@ func ToleratedStepFailureCases() []Case {
 				},
 			},
 			ExpectedOutputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
-				"gate":  v1.FailedStepOutputs("evaluating wait_until: " + evaluated),
+				"gate":  v1.FailedStepOutputs(v1.StepFailure{Kind: v1.ErrorKindExpression, Text: "evaluating wait_until: " + evaluated}),
 				"after": {},
 			}},
 		},
@@ -566,7 +599,7 @@ func ToleratedStepFailureCases() []Case {
 				},
 			},
 			ExpectedOutputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
-				"gate":  v1.FailedStepOutputs(`input "message": ` + evaluated),
+				"gate":  v1.FailedStepOutputs(v1.StepFailure{Kind: v1.ErrorKindExpression, Text: `input "message": ` + evaluated}),
 				"after": {},
 			}},
 		},
@@ -622,7 +655,7 @@ func NestedErrorTextCases() []Case {
 			},
 			ExpectedOutputs: &v1.Workflow_StepOutputs{
 				StepValues: map[string]*v1.Node_Outputs{
-					"outer": v1.FailedStepOutputs(recorded),
+					"outer": v1.FailedStepOutputs(v1.StepFailure{Kind: v1.ErrorKindExpression, Text: recorded}),
 				},
 			},
 		},
