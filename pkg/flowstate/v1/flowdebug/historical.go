@@ -481,7 +481,8 @@ func (h *Historical) Inspect(ctx context.Context, req *v1.DebugInspectRequest) (
 		// person has left.
 		return &v1.DebugInspectResponse{Revision: h.revision, Error: "the session moved to another point while the value was read"}, nil
 	}
-	if _, ok := h.values[key]; !ok {
+	// A refusal is not cached: it may be a timeout, and asking again may succeed.
+	if _, ok := h.values[key]; !ok && result.GetError() == "" {
 		h.values[key] = proto.CloneOf(result)
 		h.valueOrder = append(h.valueOrder, key)
 		for len(h.valueOrder) > maxCachedValues {

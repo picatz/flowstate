@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"reflect"
 	"sync"
+	"time"
 
 	enumspb "go.temporal.io/api/enums/v1"
 	historypb "go.temporal.io/api/history/v1"
@@ -67,6 +68,9 @@ type handlerCapture struct {
 	// names no session is asked of the session held at the point.
 	inspections []*v1.DebugInspectRequest
 
+	// evalAt is the start time of the last workflow task of the prefix.
+	evalAt time.Time
+
 	mu       sync.Mutex
 	handlers map[string]any
 	answer   answers
@@ -114,7 +118,7 @@ func (i *captureInbound) ExecuteWorkflow(ctx workflow.Context, in *interceptor.E
 	sentinel, _ := workflow.NewDisconnectedContext(ctx)
 	workflow.Go(sentinel, func(ctx workflow.Context) {
 		_ = workflow.Await(ctx, func() bool {
-			i.capture.ask()
+			i.capture.ask(workflow.Now(ctx))
 
 			return false
 		})
@@ -135,8 +139,13 @@ func (o *captureOutbound) SetQueryHandler(ctx workflow.Context, name string, han
 	return o.Next.SetQueryHandler(ctx, name, handler)
 }
 
-// ask calls every installed handler and keeps what they said.
-func (c *handlerCapture) ask() {
+// ask calls every installed handler and keeps what they said. now is the
+// workflow clock of the pass, which a workflow task fixes at its start. The
+// inspections are evaluated only on passes of the last task the prefix runs,
+// whose state is the point's: an expression costs up to its timeout, and
+// spending that on each of the thousands of passes before the point would be
+// work whose answer is dropped.
+func (c *handlerCapture) ask(now time.Time) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -151,7 +160,7 @@ func (c *handlerCapture) ask() {
 		latest.debug, err = callHandler[*v1.DebugSnapshot](handler, "")
 		latest.err = errors.Join(latest.err, err)
 	}
-	if handler, ok := c.handlers[v1.DebugInspectQuery]; ok && len(c.inspections) > 0 {
+	if handler, ok := c.handlers[v1.DebugInspectQuery]; ok && len(c.inspections) > 0 && c.evalAt.Equal(now) {
 		// A pass that moved nothing asks the same questions of the same
 		// state: keep the last answers rather than evaluate every
 		// expression again on each scheduler pass.
@@ -304,6 +313,18 @@ func ReconstructWith(ctx context.Context, opts ReconstructOptions, history *hist
 
 func reconstructAt(opts ReconstructOptions, events []*historypb.HistoryEvent, index int, execution workflow.Execution, inspections []*v1.DebugInspectRequest) (*Reconstruction, error) {
 	capture := &handlerCapture{inspections: inspections}
+	// A prefix that ends at a task's start never runs that task, so the point
+	// is the state the one before it left.
+	for i := index; i >= 0; i-- {
+		if i == index && events[i].GetEventType() == enumspb.EVENT_TYPE_WORKFLOW_TASK_STARTED {
+			continue
+		}
+		if events[i].GetEventType() == enumspb.EVENT_TYPE_WORKFLOW_TASK_STARTED {
+			capture.evalAt = events[i].GetEventTime().AsTime()
+
+			break
+		}
+	}
 	replayer, err := worker.NewWorkflowReplayerWithOptions(worker.WorkflowReplayerOptions{
 		DataConverter: opts.DataConverter,
 		Interceptors:  []interceptor.WorkerInterceptor{capture},

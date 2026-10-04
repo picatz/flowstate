@@ -494,3 +494,26 @@ func TestOnlyTheExecutionsOutcomeSaysTheRunEnded(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, snapshot.GetMessage(), "The run ended completed here.")
 }
+
+func TestARefusedInspectionIsAskedAgain(t *testing.T) {
+	t.Parallel()
+
+	asked := 0
+	h, err := flowdebug.OpenHistorical(t.Context(), func(_ context.Context, _ int64, inspections ...*v1.DebugHistoryInspection) (*v1.DebugHistoryResponse, error) {
+		answer := recordedAt(21)
+		if len(inspections) > 0 {
+			asked++
+			result := &v1.DebugInspectResponse{Error: "timed out"}
+			if asked > 1 {
+				result = &v1.DebugInspectResponse{Value: &v1.DebugValue{Rendered: "ok"}}
+			}
+			answer.Inspected = []*v1.DebugHistoryInspected{{Result: result}}
+		}
+
+		return answer, nil
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = h.Close() })
+	assert.NotEmpty(t, inspectAt(t, h, "x").GetError())
+	assert.Equal(t, "ok", inspectAt(t, h, "x").GetValue().GetRendered(), "a refusal that may have been a timeout is not remembered")
+}
