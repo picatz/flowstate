@@ -708,8 +708,16 @@ func init() {
 		},
 		{
 			Name: "flowstate.v1.DebugCapabilities.reverse",
-			Leading: " Reverse is backwards navigation. No backend offers it: a rerun is not\n" +
-				" history, and nothing here reconstructs one.\n",
+			Leading: " Reverse is backwards navigation by running the program again: a rerun\n" +
+				" that reproduces the earlier stops, which only a deterministic local\n" +
+				" session can promise.\n",
+		},
+		{
+			Name: "flowstate.v1.DebugCapabilities.history",
+			Leading: " History is navigation among the recorded points of a durable run. Moving\n" +
+				" forward or back reads a workflow-task boundary of its history, each answer\n" +
+				" is reconstructed (see [DebugFidelity]), and nothing runs: no step, wait or\n" +
+				" effect happens because the session moved.\n",
 		},
 		{
 			Name: "flowstate.v1.DebugObservation",
@@ -1006,6 +1014,14 @@ func init() {
 			Leading: " Boundaries are the points the run can be read at, as event ids in\n" +
 				" history order. At most one per workflow task, so no more than the\n" +
 				" history's own bound allows.\n",
+		},
+		{
+			Name: "flowstate.v1.DebugHistoryResponse.outcome",
+			Leading: " Outcome is how the execution ended, set only at the point that is its\n" +
+				" closing event: COMPLETED for a run that completed, FAILED for any other\n" +
+				" end (failed, cancelled, terminated, timed out), as a live read of a closed\n" +
+				" run says it. The snapshot's own state is the debug session's and never\n" +
+				" says the run ended: a session that detached or expired left the run going.\n",
 		},
 		{
 			Name:    "flowstate.v1.DebugResumeRequest",

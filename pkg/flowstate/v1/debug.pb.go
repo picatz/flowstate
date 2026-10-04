@@ -2509,9 +2509,15 @@ type DebugCapabilities struct {
 	// can offer it: a session observing a run it did not start reports false,
 	// and the surface that started the run advertises termination itself.
 	Terminate bool `protobuf:"varint,14,opt,name=terminate,proto3" json:"terminate,omitempty"`
-	// Reverse is backwards navigation. No backend offers it: a rerun is not
-	// history, and nothing here reconstructs one.
-	Reverse       bool `protobuf:"varint,15,opt,name=reverse,proto3" json:"reverse,omitempty"`
+	// Reverse is backwards navigation by running the program again: a rerun
+	// that reproduces the earlier stops, which only a deterministic local
+	// session can promise.
+	Reverse bool `protobuf:"varint,15,opt,name=reverse,proto3" json:"reverse,omitempty"`
+	// History is navigation among the recorded points of a durable run. Moving
+	// forward or back reads a workflow-task boundary of its history, each answer
+	// is reconstructed (see [DebugFidelity]), and nothing runs: no step, wait or
+	// effect happens because the session moved.
+	History       bool `protobuf:"varint,16,opt,name=history,proto3" json:"history,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2647,6 +2653,13 @@ func (x *DebugCapabilities) GetTerminate() bool {
 func (x *DebugCapabilities) GetReverse() bool {
 	if x != nil {
 		return x.Reverse
+	}
+	return false
+}
+
+func (x *DebugCapabilities) GetHistory() bool {
+	if x != nil {
+		return x.History
 	}
 	return false
 }
@@ -3766,7 +3779,13 @@ type DebugHistoryResponse struct {
 	// Boundaries are the points the run can be read at, as event ids in
 	// history order. At most one per workflow task, so no more than the
 	// history's own bound allows.
-	Boundaries    []int64 `protobuf:"varint,5,rep,packed,name=boundaries,proto3" json:"boundaries,omitempty"`
+	Boundaries []int64 `protobuf:"varint,5,rep,packed,name=boundaries,proto3" json:"boundaries,omitempty"`
+	// Outcome is how the execution ended, set only at the point that is its
+	// closing event: COMPLETED for a run that completed, FAILED for any other
+	// end (failed, cancelled, terminated, timed out), as a live read of a closed
+	// run says it. The snapshot's own state is the debug session's and never
+	// says the run ended: a session that detached or expired left the run going.
+	Outcome       DebugRunState `protobuf:"varint,6,opt,name=outcome,proto3,enum=flowstate.v1.DebugRunState" json:"outcome,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3834,6 +3853,13 @@ func (x *DebugHistoryResponse) GetBoundaries() []int64 {
 		return x.Boundaries
 	}
 	return nil
+}
+
+func (x *DebugHistoryResponse) GetOutcome() DebugRunState {
+	if x != nil {
+		return x.Outcome
+	}
+	return DebugRunState_DEBUG_RUN_STATE_UNSPECIFIED
 }
 
 // DebugResumeRequest releases a hold: continue, step, run until, or detach.
@@ -4641,7 +4667,7 @@ const file_flowstate_v1_debug_proto_rawDesc = "" +
 	"occurrence\x18\x03 \x01(\v2\x1d.flowstate.v1.DebugOccurrenceR\n" +
 	"occurrence\x129\n" +
 	"\x06source\x18\x04 \x01(\v2!.flowstate.v1.DebugSourceLocationR\x06source\x12\x16\n" +
-	"\x06scoped\x18\x05 \x01(\bR\x06scoped\"\x94\x04\n" +
+	"\x06scoped\x18\x05 \x01(\bR\x06scoped\"\xae\x04\n" +
 	"\x11DebugCapabilities\x12\x17\n" +
 	"\astep_in\x18\x01 \x01(\bR\x06stepIn\x12\x1b\n" +
 	"\tstep_over\x18\x02 \x01(\bR\bstepOver\x12\x19\n" +
@@ -4658,7 +4684,8 @@ const file_flowstate_v1_debug_proto_rawDesc = "" +
 	"\x0fvalue_expansion\x18\f \x01(\bR\x0evalueExpansion\x12\"\n" +
 	"\fobservations\x18\r \x01(\bR\fobservations\x12\x1c\n" +
 	"\tterminate\x18\x0e \x01(\bR\tterminate\x12\x18\n" +
-	"\areverse\x18\x0f \x01(\bR\areverse\"\xd6\x01\n" +
+	"\areverse\x18\x0f \x01(\bR\areverse\x12\x18\n" +
+	"\ahistory\x18\x10 \x01(\bR\ahistory\"\xd6\x01\n" +
 	"\x10DebugObservation\x12\x1a\n" +
 	"\bsequence\x18\x01 \x01(\x04R\bsequence\x12@\n" +
 	"\x04kind\x18\x02 \x01(\x0e2\".flowstate.v1.DebugObservationKindB\b\xbaH\x05\x82\x01\x02\x10\x01R\x04kind\x12!\n" +
@@ -4757,7 +4784,7 @@ const file_flowstate_v1_debug_proto_rawDesc = "" +
 	"\xc8\x01\x01r\x05\x10\x01(\x80\x02R\n" +
 	"workflowId\x12\"\n" +
 	"\x06run_id\x18\x02 \x01(\tB\v\xbaH\b\xc8\x01\x01r\x03\xb0\x01\x01R\x05runId\x12\"\n" +
-	"\bevent_id\x18\x03 \x01(\x03B\a\xbaH\x04\"\x02(\x00R\aeventId\"\xfa\x01\n" +
+	"\bevent_id\x18\x03 \x01(\x03B\a\xbaH\x04\"\x02(\x00R\aeventId\"\xbb\x02\n" +
 	"\x14DebugHistoryResponse\x127\n" +
 	"\bsnapshot\x18\x01 \x01(\v2\x1b.flowstate.v1.DebugSnapshotR\bsnapshot\x125\n" +
 	"\bprogress\x18\x02 \x01(\v2\x19.flowstate.v1.RunProgressR\bprogress\x12\x19\n" +
@@ -4765,7 +4792,8 @@ const file_flowstate_v1_debug_proto_rawDesc = "" +
 	"\bfidelity\x18\x04 \x01(\x0e2\x1b.flowstate.v1.DebugFidelityR\bfidelity\x12\x1e\n" +
 	"\n" +
 	"boundaries\x18\x05 \x03(\x03R\n" +
-	"boundaries\"\xad\x03\n" +
+	"boundaries\x12?\n" +
+	"\aoutcome\x18\x06 \x01(\x0e2\x1b.flowstate.v1.DebugRunStateB\b\xbaH\x05\x82\x01\x02\x10\x01R\aoutcome\"\xad\x03\n" +
 	"\x12DebugResumeRequest\x12.\n" +
 	"\vworkflow_id\x18\x01 \x01(\tB\r\xbaH\n" +
 	"\xc8\x01\x01r\x05\x10\x01(\x80\x02R\n" +
@@ -5059,32 +5087,33 @@ var file_flowstate_v1_debug_proto_depIdxs = []int32{
 	30, // 42: flowstate.v1.DebugHistoryResponse.snapshot:type_name -> flowstate.v1.DebugSnapshot
 	55, // 43: flowstate.v1.DebugHistoryResponse.progress:type_name -> flowstate.v1.RunProgress
 	9,  // 44: flowstate.v1.DebugHistoryResponse.fidelity:type_name -> flowstate.v1.DebugFidelity
-	6,  // 45: flowstate.v1.DebugResumeRequest.action:type_name -> flowstate.v1.DebugResumeAction
-	54, // 46: flowstate.v1.DebugResumeRequest.wait:type_name -> google.protobuf.Duration
-	31, // 47: flowstate.v1.DebugResumeResponse.receipt:type_name -> flowstate.v1.DebugReceipt
-	30, // 48: flowstate.v1.DebugResumeResponse.snapshot:type_name -> flowstate.v1.DebugSnapshot
-	32, // 49: flowstate.v1.DebugSetBreakpointsRequest.breakpoints:type_name -> flowstate.v1.DebugBreakpoint
-	8,  // 50: flowstate.v1.DebugSetBreakpointsRequest.failure_mode:type_name -> flowstate.v1.DebugFailureMode
-	54, // 51: flowstate.v1.DebugSetBreakpointsRequest.wait:type_name -> google.protobuf.Duration
-	31, // 52: flowstate.v1.DebugSetBreakpointsResponse.receipt:type_name -> flowstate.v1.DebugReceipt
-	34, // 53: flowstate.v1.DebugSetBreakpointsResponse.breakpoints:type_name -> flowstate.v1.DebugBreakpointState
-	30, // 54: flowstate.v1.DebugSetBreakpointsResponse.snapshot:type_name -> flowstate.v1.DebugSnapshot
-	35, // 55: flowstate.v1.DebugInspectResponse.value:type_name -> flowstate.v1.DebugValue
-	36, // 56: flowstate.v1.DebugInspectResponse.children:type_name -> flowstate.v1.DebugVariable
-	51, // 57: flowstate.v1.DebugCarry.holder:type_name -> flowstate.v1.WorkloadIdentity
-	52, // 58: flowstate.v1.DebugCarry.attached_at:type_name -> google.protobuf.Timestamp
-	52, // 59: flowstate.v1.DebugCarry.deadline:type_name -> google.protobuf.Timestamp
-	52, // 60: flowstate.v1.DebugCarry.lease_expires_at:type_name -> google.protobuf.Timestamp
-	54, // 61: flowstate.v1.DebugCarry.lease:type_name -> google.protobuf.Duration
-	6,  // 62: flowstate.v1.DebugCarry.next:type_name -> flowstate.v1.DebugResumeAction
-	32, // 63: flowstate.v1.DebugCarry.breakpoints:type_name -> flowstate.v1.DebugBreakpoint
-	31, // 64: flowstate.v1.DebugCarry.receipts:type_name -> flowstate.v1.DebugReceipt
-	3,  // 65: flowstate.v1.DebugCarry.ended:type_name -> flowstate.v1.DebugRunState
-	66, // [66:66] is the sub-list for method output_type
-	66, // [66:66] is the sub-list for method input_type
-	66, // [66:66] is the sub-list for extension type_name
-	66, // [66:66] is the sub-list for extension extendee
-	0,  // [0:66] is the sub-list for field type_name
+	3,  // 45: flowstate.v1.DebugHistoryResponse.outcome:type_name -> flowstate.v1.DebugRunState
+	6,  // 46: flowstate.v1.DebugResumeRequest.action:type_name -> flowstate.v1.DebugResumeAction
+	54, // 47: flowstate.v1.DebugResumeRequest.wait:type_name -> google.protobuf.Duration
+	31, // 48: flowstate.v1.DebugResumeResponse.receipt:type_name -> flowstate.v1.DebugReceipt
+	30, // 49: flowstate.v1.DebugResumeResponse.snapshot:type_name -> flowstate.v1.DebugSnapshot
+	32, // 50: flowstate.v1.DebugSetBreakpointsRequest.breakpoints:type_name -> flowstate.v1.DebugBreakpoint
+	8,  // 51: flowstate.v1.DebugSetBreakpointsRequest.failure_mode:type_name -> flowstate.v1.DebugFailureMode
+	54, // 52: flowstate.v1.DebugSetBreakpointsRequest.wait:type_name -> google.protobuf.Duration
+	31, // 53: flowstate.v1.DebugSetBreakpointsResponse.receipt:type_name -> flowstate.v1.DebugReceipt
+	34, // 54: flowstate.v1.DebugSetBreakpointsResponse.breakpoints:type_name -> flowstate.v1.DebugBreakpointState
+	30, // 55: flowstate.v1.DebugSetBreakpointsResponse.snapshot:type_name -> flowstate.v1.DebugSnapshot
+	35, // 56: flowstate.v1.DebugInspectResponse.value:type_name -> flowstate.v1.DebugValue
+	36, // 57: flowstate.v1.DebugInspectResponse.children:type_name -> flowstate.v1.DebugVariable
+	51, // 58: flowstate.v1.DebugCarry.holder:type_name -> flowstate.v1.WorkloadIdentity
+	52, // 59: flowstate.v1.DebugCarry.attached_at:type_name -> google.protobuf.Timestamp
+	52, // 60: flowstate.v1.DebugCarry.deadline:type_name -> google.protobuf.Timestamp
+	52, // 61: flowstate.v1.DebugCarry.lease_expires_at:type_name -> google.protobuf.Timestamp
+	54, // 62: flowstate.v1.DebugCarry.lease:type_name -> google.protobuf.Duration
+	6,  // 63: flowstate.v1.DebugCarry.next:type_name -> flowstate.v1.DebugResumeAction
+	32, // 64: flowstate.v1.DebugCarry.breakpoints:type_name -> flowstate.v1.DebugBreakpoint
+	31, // 65: flowstate.v1.DebugCarry.receipts:type_name -> flowstate.v1.DebugReceipt
+	3,  // 66: flowstate.v1.DebugCarry.ended:type_name -> flowstate.v1.DebugRunState
+	67, // [67:67] is the sub-list for method output_type
+	67, // [67:67] is the sub-list for method input_type
+	67, // [67:67] is the sub-list for extension type_name
+	67, // [67:67] is the sub-list for extension extendee
+	0,  // [0:67] is the sub-list for field type_name
 }
 
 func init() { file_flowstate_v1_debug_proto_init() }

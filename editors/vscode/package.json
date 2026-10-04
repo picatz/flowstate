@@ -202,6 +202,10 @@
               "program": {
                 "type": "string",
                 "description": "The Flowfile the run executes, used only to map lines; shown as step addresses when it is not byte for byte that file."
+              },
+              "history": {
+                "type": "boolean",
+                "description": "Walk the run's recorded history instead of attaching a live session: step forward and back between its workflow-task boundaries, in a run that is going or one that finished. Needs runId; nothing executes."
               }
             }
           }

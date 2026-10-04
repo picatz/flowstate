@@ -51,6 +51,7 @@ func TestDebugHistoryReadsAClosedRunAtEachOfItsPoints(t *testing.T) {
 	assert.Equal(t, v1.DebugFidelity_DEBUG_FIDELITY_RECONSTRUCTED, last.Msg.GetFidelity())
 	require.GreaterOrEqual(t, len(last.Msg.GetBoundaries()), 3, "a run with a gate has several workflow tasks")
 	assert.Equal(t, last.Msg.GetBoundaries()[len(last.Msg.GetBoundaries())-1], last.Msg.GetEventId(), "zero names the last point")
+	assert.Equal(t, v1.DebugRunState_DEBUG_RUN_STATE_COMPLETED, last.Msg.GetOutcome(), "the closing point says how the execution ended")
 	require.NotNil(t, last.Msg.GetSnapshot())
 	assert.Equal(t, v1.WorkflowIRDigest(debuggableWorkflow()), last.Msg.GetSnapshot().GetIrDigest(),
 		"the program the run executes is the one the snapshot names")
@@ -69,6 +70,7 @@ func TestDebugHistoryReadsAClosedRunAtEachOfItsPoints(t *testing.T) {
 	}))
 	require.NoError(t, err)
 	assert.Less(t, first.Msg.GetProgress().GetCompletedSteps(), last.Msg.GetProgress().GetCompletedSteps())
+	assert.Equal(t, v1.DebugRunState_DEBUG_RUN_STATE_UNSPECIFIED, first.Msg.GetOutcome(), "an earlier point is not an ending")
 }
 
 // historyDetails picks the debug-history records out of what a server emitted.
