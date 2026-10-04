@@ -727,10 +727,13 @@ a 1 MiB response body, and 5 redirects unless the egress policy says otherwise.
 Runs one program and returns `exit_code`, bounded `stdout` and `stderr`, and how
 it ended (`outcome`, `signal`, `duration_ms`). `argv` is a list, never a shell
 string; the program is a bare name looked up in the operator's allowlist, the
-environment starts empty and holds only `env`, and a nonzero exit is an output
-to branch on, not a failure. It is denied unless the operator starts the
-worker with `--exec-policy`; a policy limits executables, directories,
-arguments, time and output, and an erroring rule denies. A secret may not appear
+environment is assembled from nothing (the operator's `env`, variables the
+policy passes through from the worker, and the step's `env:` only for keys the
+policy lists as authored), and a nonzero exit is an output to branch on, not a
+failure. It is denied unless the operator loads `--exec-policy` (or
+`FLOWSTATE_EXEC_POLICY`) on the command that runs tasks; a policy limits
+executables, directories, arguments, environment, time and output, and an
+erroring rule denies. A secret may not appear
 in `argv`. `exec` is not a sandbox: it limits what a Flowfile may ask
 for, not what the program can do once it runs. See [DEPLOYMENT.md](DEPLOYMENT.md)
 and `examples/exec-checks/`.
@@ -1081,8 +1084,10 @@ approves when its payload has `approved: true` and its sender passed the
 counts each verified identity once, and a delivery with no identity never
 counts; `exclude` lists subjects whose approvals do not count, though they may
 still veto (`${run.identity.subject}` is the four-eyes rule); `veto` is a
-predicate over `payload` that ends the wait at once. Outputs: `decision`
-(`approved`, `vetoed` or `timed_out`), `approvals`, `count` and `vetoed_by`.
+predicate over `payload` and `sender` that ends the wait at once. The step keeps
+the batch outputs `deliveries`, `count` and `timed_out` and adds `decision`
+(`approved`, `vetoed` or `timed_out`), `approvals` (the deliveries that
+counted) and `vetoed_by` (bound only when the decision is `vetoed`).
 An `approve` larger than the `signals:` allow-list can supply is refused by
 `flow validate`. See `examples/signal-quorum/`.
 
@@ -1559,6 +1564,7 @@ the run is refused before it starts rather than failing partway.
 `errors`, `functions`, `inputs`, `triggers`, `concurrency`, `signals`, `debug`,
 `vars`, `steps`, `outputs`.
 
+**Type declaration:** `description`, `fields` (each written like an input), `must`.
 **Function declaration:** `description`, `params`, `returns`, `body`. **Error
 declaration:** `description`.
 
@@ -1582,7 +1588,7 @@ declaration:** `description`.
 `schedule` (`cron`, `every`, `calendars`, `time_zone`, `jitter`, `overlap`,
 `start_at`, `end_at`, `catchup_window`, `pause_on_failure`; a calendar has
 `second`, `minute`, `hour`, `day_of_month`, `month`, `year`, `day_of_week`,
-`comment`), `webhook`
+`comment`, and a range within one is written `start`, `end`, `step`), `webhook`
 (`verify`, `idempotency_key`, `with`, `signal` with `name`, `correlate`,
 `with`).
 
