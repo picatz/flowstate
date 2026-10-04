@@ -78,6 +78,7 @@ func NewFunctionSet(profile string, declared []*FunctionDeclaration) (*FunctionS
 	if err != nil {
 		return set, []*FunctionError{{Err: err}}
 	}
+	checker.budget = MaxFunctionExpansionNodes
 	reserved := profileFunctionNames(checker.base)
 
 	byName := make(map[string]*FunctionDeclaration, len(declared))
@@ -182,6 +183,38 @@ func (s *FunctionSet) Calls(parsed *exprpb.ParsedExpr) bool {
 		}
 	})
 	return found
+}
+
+// Declarations returns the typed signatures of the set's functions as environment
+// options, so a checker can judge a call as written, argument types and all.
+func (s *FunctionSet) Declarations() []cel.EnvOption {
+	if s == nil {
+		return nil
+	}
+	return slices.Clone(s.declarations)
+}
+
+// Retains reports whether parsed holds a call to a function in the set as the
+// macro call an expansion recorded ([FunctionSet.Expand]); an expression that was
+// never expanded holds the call itself and is [FunctionSet.Calls]'s question.
+//
+// What a checker does with it: unparsing an expression that retains calls writes
+// them back as the author wrote them, `slug(inputs.title)`, and that text checks
+// against [FunctionSet.Declarations] with whatever types the file states for the
+// names it reads, which the expanded tree, a `cel.bind` over untyped arguments,
+// cannot.
+func (s *FunctionSet) Retains(parsed *exprpb.ParsedExpr) bool {
+	if s == nil || len(s.checked) == 0 {
+		return false
+	}
+	for _, e := range parsed.GetSourceInfo().GetMacroCalls() {
+		if call := e.GetCallExpr(); call != nil && call.GetTarget() == nil {
+			if _, ok := s.checked[call.GetFunction()]; ok {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // Expand replaces every call to a function in the set, in the expression value

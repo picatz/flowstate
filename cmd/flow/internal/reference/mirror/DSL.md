@@ -1355,7 +1355,10 @@ steps:
   the checker's sentence. A call is checked against the declared signature before it
   is inlined: an argument of a type the parameter cannot take, or the wrong count, is
   refused where the call is written. An argument the file cannot type is taken to fit,
-  as everywhere else in the checker.
+  as everywhere else in the checker, and one it can type (an `inputs.count` declared `int`)
+  is held to the parameter by `flow validate`, which checks the call as written and takes
+  its result to be the declared one. A field of a record parameter is checked against the
+  record in the body, as it is at an input.
 - **Composition yes, recursion no.** A function may call another declared in the file,
   in either order. One that calls itself, directly or through another, is refused at its
   definition by name (`ping calls pong calls ping`): an inlined call has no end to
@@ -1369,8 +1372,9 @@ steps:
   a body of at most 4096 nodes; at most 1024 calls in one expression; and an expansion
   of at most 100000 nodes, checked from the arithmetic before the tree is built, so a
   chain of functions that each call the next twice is refused while it is declared
-  instead of after it has allocated, and at most 100000 nodes in a file altogether, since each
-  expansion within its bound can still be copied into hundreds of uses.
+  instead of after it has allocated, and at most 100000 nodes in a file altogether, across the
+  definitions that call other functions and across every use, since each expansion within
+  its bound can still be wrapped sixty-four times or copied into hundreds of uses.
 - **Plugins stay CEL-free, and an operator cannot define one.** A function the
   specification does not carry would make the same spec mean different things on
   different workers. A function declared in a profile extension or registered by a

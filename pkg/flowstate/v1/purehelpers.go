@@ -165,6 +165,13 @@ type helperChecker struct {
 	compose      bool
 	checked      map[string]checkedPureHelper
 	declarations []cel.EnvOption
+
+	// budget is the most CEL nodes the composed bodies may add up to, across every
+	// definition added; 0 is no aggregate bound. Each body is bounded alone, but
+	// sixty-four near-limit wrappers around one near-limit body are each within it
+	// and together are what a file's author chose to have allocated before a single
+	// call was written.
+	budget, spent int
 }
 
 func newHelperChecker(profile string, compose bool) (*helperChecker, error) {
@@ -216,6 +223,16 @@ func (hc *helperChecker) add(def helperDefinition) error {
 	}
 
 	if hc.compose {
+		if hc.budget > 0 && len(helperCallMatches(commonast.NavigateAST(body.NativeRep()), hc.checked)) > 0 {
+			// Charged from the arithmetic before the body is built, for the reason
+			// [projectedHelperSize] gives.
+			n := projectedHelperSize(body, hc.checked)
+			if hc.spent+n > hc.budget {
+				return fmt.Errorf("%s calls functions that expand past %d CEL nodes across this file's definitions altogether; "+
+					"call fewer functions from the definitions, or make the large ones smaller", def.label, hc.budget)
+			}
+			hc.spent += n
+		}
 		if body, err = expandWithin(env, body, hc.checked, def.label, true); err != nil {
 			return err
 		}
@@ -400,10 +417,9 @@ func (o *pureHelperOptimizer) Optimize(ctx *cel.OptimizerContext, tree *commonas
 			// `denominator`, say) would read that parameter instead of the caller's
 			// own. Bind each argument to a name an author has no reason to write first, and
 			// the parameters to those.
-			aliases := make([]string, len(params))
+			aliases := freshAliases(call, o.calls, names)
 			refs := make([]commonast.Expr, len(params))
-			for i, parameter := range params {
-				aliases[i] = fmt.Sprintf("__%s_%d_%s", strings.NewReplacer(".", "_").Replace(call.FunctionName()), o.calls, parameter.name)
+			for i := range params {
 				refs[i] = ctx.NewIdent(aliases[i])
 			}
 			replacement = bindInOrder(ctx, -1, names, refs, replacement, !o.keepCalls)
@@ -417,6 +433,49 @@ func (o *pureHelperOptimizer) Optimize(ctx *cel.OptimizerContext, tree *commonas
 		ctx.UpdateExpr(match, replacement)
 	}
 	return tree
+}
+
+// freshAliases names one binding per parameter of call's callee, each spelled
+// like no identifier in the call's arguments and like no parameter.
+//
+// A name an author is unlikely to write is not a name an author cannot write: a
+// caller whose own parameters are `numerator` and `__sub_1_numerator` can spell
+// the alias the expander would have chosen, and the alias would then shadow it
+// while a later argument is evaluated. So the candidate is checked against every
+// identifier the arguments mention, a comprehension's variables included, and is
+// extended until it is absent from them.
+func freshAliases(call commonast.CallExpr, n int, params []string) []string {
+	taken := make(map[string]bool, len(params))
+	for _, name := range params {
+		taken[name] = true
+	}
+	for _, arg := range call.Args() {
+		for _, e := range commonast.MatchDescendants(commonast.NavigateExpr(nil, arg), func(e commonast.NavigableExpr) bool {
+			return e.Kind() == commonast.IdentKind || e.Kind() == commonast.ComprehensionKind
+		}) {
+			if e.Kind() == commonast.IdentKind {
+				taken[e.AsIdent()] = true
+
+				continue
+			}
+			taken[e.AsComprehension().IterVar()] = true
+			taken[e.AsComprehension().IterVar2()] = true
+			taken[e.AsComprehension().AccuVar()] = true
+		}
+	}
+
+	prefix := strings.NewReplacer(".", "_").Replace(call.FunctionName())
+	aliases := make([]string, len(params))
+	for i, name := range params {
+		alias := fmt.Sprintf("__%s_%d_%s", prefix, n, name)
+		for taken[alias] {
+			alias += "_"
+		}
+		taken[alias] = true
+		aliases[i] = alias
+	}
+
+	return aliases
 }
 
 // bindInOrder wraps body in one cel.bind per name, outermost first, so inits[0] is

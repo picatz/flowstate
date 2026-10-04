@@ -332,6 +332,7 @@ func validateAtDepth(wf *v1.Workflow, profile string, depth int, placement v1.Un
 	// same mistake twice in two voices.
 	types := newTypeTable(wf)
 	ds = append(ds, checkExpressionTypes(wf, types)...)
+	ds = append(ds, checkFunctionBodies(wf)...)
 
 	// Two sibling steps whose `if:` conditions look like they were meant to be
 	// exact negations of each other, but have drifted apart — see negation.go.

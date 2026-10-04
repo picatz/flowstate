@@ -251,7 +251,7 @@ func TestFunctionSetExpansionIsBoundedBeforeItIsBuilt(t *testing.T) {
 		}
 		set, errs := v1.NewFunctionSet("", declared)
 		require.NotEmpty(t, errs, "an exponential chain must be refused while the set is built")
-		require.ErrorContains(t, errs[0], "CEL nodes once the functions it calls are inlined")
+		require.Regexp(t, "CEL nodes once the functions it calls are inlined|altogether", errs[0].Error())
 		require.NotContains(t, set.Names(), "f39")
 	})
 }
@@ -276,4 +276,31 @@ func TestFunctionSetLeavesAnExpressionWithoutCallsAlone(t *testing.T) {
 	require.Equal(t, before, value.GetExpr().String())
 	_, err = set.Expand(v1.NewLiteral("text"))
 	require.NoError(t, err)
+}
+
+// The alias the expander binds an argument to must not be a name the caller wrote.
+func TestFunctionSetAliasCannotCollideWithACallersIdentifier(t *testing.T) {
+	set, errs := v1.NewFunctionSet("", []*v1.FunctionDeclaration{
+		fn("sub", "numerator - x", tInt, param("numerator", tInt), param("x", tInt)),
+		// The spelling the expander would pick for `sub`'s first parameter, written
+		// by the author as a parameter of their own.
+		fn("capture", "sub(100, numerator + __sub_1_numerator)", tInt, param("numerator", tInt), param("__sub_1_numerator", tInt)),
+	})
+	require.Empty(t, errs)
+
+	got := evalExpanded(t, set, "capture(1, 10)", nil)
+	require.EqualValues(t, 100-(1+10), got)
+}
+
+// Sixty-four wrappers each within the per-body bound are not within the file's.
+func TestFunctionSetDefinitionsShareOneExpansionBudget(t *testing.T) {
+	declared := []*v1.FunctionDeclaration{fn("f0", "["+strings.Repeat("n, ", 3900)+"n].size()", tInt, param("n", tInt))}
+	for i := 1; i < 40; i++ {
+		declared = append(declared, fn(fmt.Sprintf("f%d", i), fmt.Sprintf("f%d(n)", i-1), tInt, param("n", tInt)))
+	}
+	set, errs := v1.NewFunctionSet("", declared)
+	require.NotEmpty(t, errs, "each wrapper is within its own bound and together they are not")
+	require.ErrorContains(t, errs[0], "altogether")
+	require.Less(t, len(set.Names()), len(declared))
+	require.Contains(t, set.Names(), "f0")
 }

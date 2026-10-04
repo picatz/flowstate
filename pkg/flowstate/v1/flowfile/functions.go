@@ -330,3 +330,35 @@ func declaredFunctionsToYAML(declared []*v1.FunctionDeclaration) (yaml.MapSlice,
 
 	return out, nil
 }
+
+// checkFunctionBodies reports a record parameter's field that the record does not
+// declare, in a function's body.
+//
+// The body is checked at the definition with a record parameter as a map, because
+// that is what a record is to the checker, so `user.misspelled` passes there and
+// fails as a missing key in a durable run. This is the check an input's fields get
+// ([typeTable.fieldErrors]) with the parameter as the root instead of `inputs`.
+func checkFunctionBodies(wf *v1.Workflow) Diagnostics {
+	records := v1.TypesOf(wf)
+	if len(records) == 0 {
+		return nil
+	}
+
+	var ds Diagnostics
+	for _, f := range wf.GetDeclaredFunctions() {
+		table := &typeTable{records: records, inputTypes: map[string]*v1.Type{}}
+		for _, p := range f.GetParameters() {
+			if p.GetType().GetMessage() != "" {
+				table.inputTypes[p.GetName()] = p.GetType()
+			}
+		}
+		if len(table.inputTypes) == 0 {
+			continue
+		}
+
+		field := fieldPath("functions", f.GetName()) + ".body"
+		ds = append(ds, pathErrors(table.parameterPaths(f.GetBody().GetExpr()), "", field)...)
+	}
+
+	return ds
+}

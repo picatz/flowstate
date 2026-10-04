@@ -484,3 +484,94 @@ func TestFunctionExpansionIsBoundedAcrossTheFile(t *testing.T) {
 	require.True(t, errors.As(err, &ds))
 	assert.Len(t, ds, 1, "the limit is reported once, not at every later use")
 }
+
+// An argument the file can type is held to the declared parameter, which the
+// expanded tree (a bind over an argument of unknown type) can no longer say.
+func TestACallIsCheckedAgainstTheTypesTheFileStatesForItsArguments(t *testing.T) {
+	t.Parallel()
+
+	source := func(use, slot string) string {
+		extra := ""
+		if slot == "if" {
+			extra = "\n    value: 1"
+		}
+
+		return `edition: v2026.4
+name: t
+functions:
+  identity:
+    params:
+      n: int
+    returns: int
+    body: ${n}
+inputs:
+  title:
+    type: string
+    required: true
+  count:
+    type: int
+    required: true
+steps:
+  - id: a
+    ` + slot + `: ` + use + extra + `
+`
+	}
+
+	wf, _, err := flowfile.Parse([]byte(source("${identity(inputs.title)}", "value")))
+	require.NoError(t, err, "the compiler cannot type an input; validation can")
+	err = flowfile.Validate(wf)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "identity")
+
+	wf, _, err = flowfile.Parse([]byte(source("${identity(inputs.count) + 1}", "value")))
+	require.NoError(t, err)
+	require.Empty(t, flowfile.Validate(wf), "a conforming call is not refused")
+
+	// The declared result is the call's type, so a position that wants a bool
+	// refuses an int-returning function by name rather than by what its body did.
+	wf, _, err = flowfile.Parse([]byte(source("${identity(inputs.count)}", "if")))
+	require.NoError(t, err)
+	err = flowfile.Validate(wf)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "condition")
+}
+
+// A record parameter's fields are the record's, in the body as at an input.
+func TestAFunctionBodyIsHeldToTheFieldsOfItsRecordParameter(t *testing.T) {
+	t.Parallel()
+
+	source := func(body string) string {
+		return `edition: v2026.4
+name: t
+types:
+  User:
+    fields:
+      id: {type: string}
+      email: {type: string}
+functions:
+  handle:
+    params:
+      user: User
+    returns: dyn
+    body: ` + body + `
+inputs:
+  who:
+    type: User
+    required: true
+steps:
+  - id: a
+    value: ${handle(inputs.who)}
+`
+	}
+
+	wf, _, err := flowfile.Parse([]byte(source("${user.email}")))
+	require.NoError(t, err)
+	require.Empty(t, flowfile.Validate(wf))
+
+	wf, _, err = flowfile.Parse([]byte(source("${user.emial}")))
+	require.NoError(t, err)
+	err = flowfile.Validate(wf)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `the record User has no field "emial"`)
+	assert.Contains(t, err.Error(), `Did you mean "email"?`)
+}

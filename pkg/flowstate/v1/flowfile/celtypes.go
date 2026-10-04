@@ -93,6 +93,12 @@ type typeTable struct {
 	// steps is how many top-level steps there are, which is the position of an
 	// output: evaluated after every step, it sees them all.
 	steps int
+
+	// functions are the file's declared functions, which an expression that calls
+	// one is checked against as written: the expanded tree holds the body over
+	// untyped arguments, so only the call can say a string went where an int was
+	// declared. Nil when the file declares none.
+	functions *v1.FunctionSet
 }
 
 // A valueStep is one `value:` step and what is known of its type.
@@ -138,6 +144,13 @@ func newTypeTable(wf *v1.Workflow) *typeTable {
 	}
 
 	table.steps = len(wf.GetSteps())
+
+	if len(wf.GetDeclaredFunctions()) > 0 {
+		// The set the compiler built, rebuilt from what the spec carries; a
+		// definition that did not check is absent, and a call to it was refused
+		// when the file compiled.
+		table.functions, _ = v1.NewFunctionSet(wf.GetProfile(), wf.GetDeclaredFunctions())
+	}
 
 	seen := map[string]int{}
 	for index, top := range wf.GetSteps() {
