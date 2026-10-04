@@ -1,4 +1,4 @@
-# The only example in the corpus that ends in a failed run on purpose, and the
+# This example ends in a failed run on purpose, and the
 # thing worth seeing is not the failure — it is the *order* the two
 # compensations ran in. `compensated:` checks a set in any order, so the order
 # is pinned through the failure text instead, which carries the engine's own

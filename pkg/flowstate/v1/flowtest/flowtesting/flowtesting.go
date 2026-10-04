@@ -35,11 +35,12 @@
 // itself reports which subtests ran, so a green over a subset never reads as
 // the file's green.
 //
-// Subtests run sequentially, and none calls [testing.T.Parallel]: cases swap
-// the process-wide task registry for their duration and serialize through
-// [v1.LockDefaultRegistry], so parallelism would buy contention, not speed.
-// Two packages' tests calling into this package concurrently are safe for the
-// same reason.
+// Subtests run sequentially, and none calls [testing.T.Parallel]: a case swaps
+// the process-wide task registry while it is compiled and its own registry is
+// built, serializing through [v1.LockDefaultRegistry] for that setup, so
+// parallelism would buy contention, not speed. The run itself holds no lock,
+// and two packages' tests calling into this package concurrently are safe
+// because that setup is.
 //
 // # Coverage is a property of the file, not of a case
 //

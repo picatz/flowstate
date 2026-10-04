@@ -398,6 +398,11 @@ calls instead:
 | `flowstate_debug_session_observe` | read the snapshot and the transcript since the last observe; `after_revision` and `wait_seconds` wait for the next stop |
 | `flowstate_debug_session_end` | end it: a durable run is detached and continues (`keep` leaves its session attached), a test case finishes and its report is returned |
 
+A stubbed session steps back as `flow dap` with `"reverse": true` does: `back`
+and `reverse-continue` (`rc`) run the case again beside the held one and replay
+the commands it was given, verifying each stop, and the replay's output is not
+said twice. A durable session answers them with "no resume action".
+
 ```json
 {"name": "flowstate_debug_session_command",
  "arguments": {"session_id": "5bd7…", "command": "break receipt if size(steps.flagged.value) > 0",
@@ -1017,7 +1022,7 @@ capability that moves among the supported points and never undoes an effect.
 - Go backwards through history. A local run launched through `flow dap` with
   `"reverse": true` steps back by running the program again and replaying the
   commands it was given, checking each stop against what was shown ([Editors](EDITORS.md)
-  says what that costs); no other front does, and no backend reports `reverse`
+  says what that costs); a retained stubbed MCP session does too; no other front does, and no backend reports `reverse`
   in the table above, since a rerun is not history. A replay that does not show
   what the first visit showed is answered `diverged`, and the session stays at
   the stop it was at. [What is proven

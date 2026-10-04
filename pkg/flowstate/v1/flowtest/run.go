@@ -727,13 +727,12 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 		return
 	}
 
-	// Serializes every case that swaps the process-wide default task registry
+	// Serializes the setup of every case that swaps the process-wide default task registry
 	// ([swapRegistry]) against every other such compound sequence in the
 	// process — this package's own, run one at a time by [RunFile], and any
 	// other package's, such as pkg/flowstate/embed's Tasks.Install. See
 	// [v1.LockDefaultRegistry].
 	unlockRegistry := v1.LockDefaultRegistry()
-	defer unlockRegistry()
 
 	// Swapped in before the workflow is even parsed, not just before it runs:
 	// a stub may name a task this build does not otherwise register — a
@@ -744,11 +743,38 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	// advertised. Only task-form stubs can name a missing task; a step-form
 	// stub names a step whose task the compiler already knows.
 	restore := swapRegistry(stubTaskNames(compiled))
-	defer restore()
+	// Released once the case has its own registry, and on any exit before: the
+	// process-wide one is held for compilation and for building [caseRegistry]
+	// and for nothing the run does, so a second case, such as the replay of a
+	// debugging session that is still held at a stop, is not made to wait for
+	// the first to end. Restored before unlocking, as the defers were.
+	releaseRegistry := sync.OnceFunc(func() {
+		restore()
+		unlockRegistry()
+	})
+	defer releaseRegistry()
 
 	workflow, err := load()
 	if err != nil {
 		caseError("%s", err)
+		return
+	}
+	// A `step:` stub may name a `call:` step to answer at the callee's
+	// boundary (#1599); the workflow the rest of the case runs and judges is
+	// the one with those calls replaced. See [stubCallBoundaries].
+	workflow, boundaries, err := stubCallBoundaries(workflow, compiled)
+	if err != nil {
+		caseError("%s", err)
+		return
+	}
+	defer swapRegistry(slices.Sorted(maps.Keys(boundaries)))()
+	if len(boundaries) > 0 && len(test.Expect.Compensated) > 0 {
+		// A callee's compensations run under its own step ids, which a
+		// stubbed callee never registers: the claim can neither be checked
+		// nor honestly pass, so it is refused rather than left to fail
+		// as an unexplained miss.
+		caseError("expect.compensated cannot be asserted in a case that stubs a call (callee stubbed); " +
+			"run the callee inline to assert its compensations")
 		return
 	}
 	// Reported to the caller for coverage: the workflow this case compiled is
@@ -782,6 +808,11 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	if err != nil {
 		caseError("%s", err)
 		return
+	}
+	for name, callee := range boundaries {
+		if stub, ok := stubs[name]; ok {
+			stub.callee = callee
+		}
 	}
 
 	// Refused before the run for the same reason a bad stub target is: an
@@ -872,6 +903,7 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 		return
 	}
 	ctx = v1.NewContextWithRegistry(ctx, registry)
+	releaseRegistry()
 
 	inputs := v1.NewNamedValues(test.Inputs)
 
@@ -1198,10 +1230,11 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	return
 }
 
-// swapRegistry replaces every task in [v1.DefaultRegistry] for the duration
-// of one case — stubbed tasks with their stub, and every other registered
-// task with a function that fails closed — and returns a func restoring what
-// was there before.
+// swapRegistry replaces every task in [v1.DefaultRegistry] for the setup of
+// one case — stubbed tasks with their stub, and every other registered task
+// with a function that fails closed — and returns a func restoring what was
+// there before. The run itself dispatches through the case's own registry
+// ([caseRegistry]), so the swap lasts only until that is built.
 //
 // Every task, not just the stubbed ones. `flow test`'s whole promise is no
 // network and no Temporal (#155): a task this case never bothered to stub
@@ -1216,10 +1249,10 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 // reason (`allowLoopback` in pkg/flowstate/v1/internal/conformance/conformance.go): the local
 // driver looks tasks up through the process-wide default registry
 // ([v1.LookupTask]), so replacing a task for the duration of one case means
-// mutating that registry and putting it back. Test cases within one `flow
-// test` invocation therefore cannot run concurrently with each other — they
-// do not; [RunFile] runs them in sequence — and not concurrently with
-// anything else touching the same registry in the same process.
+// mutating that registry and putting it back. The setup of test cases within
+// one `flow test` invocation therefore cannot overlap — it does not: the
+// caller holds [v1.LockDefaultRegistry] across it — nor overlap anything else
+// touching the same registry in the same process.
 func swapRegistry(taskNames []string) func() {
 	registry := v1.DefaultRegistry()
 
