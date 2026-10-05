@@ -219,7 +219,7 @@ var LocalTools = map[string]bool{
 // `wait_for_signal:` with the prompt the author wrote, the signal name that
 // releases it, its deadline and whether it is policed, and `starter` says who
 // asked for the run - which is exactly the set an approval card has to render,
-// and exactly the set a `distinct_from_starter` policy is compared against.
+// and exactly the set a predicate reading `run.identity` is compared against.
 //
 // The alternatives do not hold the data. `flowstate_signal` answers with an empty
 // SignalResponse, so a card on it would have nothing to draw and would be a form
@@ -1356,7 +1356,7 @@ const testToolDescriptionRest = "`tests` is a `*.test.yaml` document: `tests:` n
 	"To exercise a workflow's `signals:` policy: a scripted signal's `sender:` names who the delivery " +
 	"stands in for and `starter:` names who the run started as, each carrying `subject:`/`issuer:` " +
 	"together, `namespace:` and `claims:`, and both checked by the same policy function the server " +
-	"calls, so `distinct_from_starter:` refuses a sender who is the run's own starter here exactly as " +
+	"calls, so an `allow:` predicate comparing with `run.identity` refuses a sender who is the run's own starter here exactly as " +
 	"production would. Neither is attested: a delivery stands in for its sender, which is why a gate's " +
 	"own `sender.local` output reads true, and `starter:` never reaches `run.identity`.\n\n" +
 	"Answers with the same v1.TestReport `flow test -o json` writes: one verdict per case, and for a case " +

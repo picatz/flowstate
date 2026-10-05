@@ -120,7 +120,7 @@ func TestTwoGatesHeldAtOnceAreBothReported(t *testing.T) {
 	env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: &v1.Workflow{
 		Name: "two-gates",
 		Signals: map[string]*v1.SignalPolicy{
-			"left": {Allow: []*v1.SignalPolicyRule{{Subject: "https://idp.example#one"}}},
+			"left": {Allow: `sender.identity.principal == "https://idp.example#one"`},
 		},
 		Steps: []*v1.Node{{
 			Id: "both",

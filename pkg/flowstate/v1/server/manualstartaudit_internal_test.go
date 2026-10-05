@@ -44,7 +44,7 @@ func manualStartEntityWorkflow(name string, manual *v1.ManualTrigger) *v1.Workfl
 // manualStartRules is every rule [v1.CheckManualStart] can refuse under, each
 // reachable with no request-side setup: no request here carries a reason (so
 // require_reason refuses unconditionally) and none authenticates a principal
-// (so allowed_principals refuses on the "nobody" branch rather than the
+// (so an `allow:` predicate refuses on the "nobody" branch rather than the
 // wrong-principal one) — both are still real refusals through the same
 // function, which is what these tests are pinning the audit shape of.
 var manualStartRules = []struct {
@@ -53,9 +53,8 @@ var manualStartRules = []struct {
 }{
 	{name: "denied", manual: &v1.ManualTrigger{Denied: true}},
 	{name: "require_reason", manual: &v1.ManualTrigger{RequireReason: true}},
-	{name: "allowed_principals", manual: &v1.ManualTrigger{AllowedPrincipals: []string{"https://issuer.example.com#someone-else"}}},
 	// An unauthenticated caller, so the predicate refuses on the "nobody" branch.
-	{name: "allow_expr", manual: &v1.ManualTrigger{AllowExpr: `sender.identity.principal != "https://issuer.example.com#x"`}},
+	{name: "allow", manual: &v1.ManualTrigger{Allow: `sender.identity.principal != "https://issuer.example.com#x"`}},
 }
 
 // TestRunAuditsAManualStartRefusal covers #1889's Run half, under each rule

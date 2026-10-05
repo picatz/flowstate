@@ -109,7 +109,7 @@ func testInputSchema() map[string]any {
 					"optional `inputs:`, `stubs:` replacing task behavior, `signals:` scripting what a " +
 					"wait_for_signal step receives and when (each with an optional `sender:` naming who " +
 					"it stands in for), an optional `starter:` naming who the run starts as - what a " +
-					"`signals:` policy's `distinct_from_starter:` compares a sender against - and an " +
+					"`signals:` predicate reads as `run.identity` - and an " +
 					"`expect:` the run must satisfy. A " +
 					"case's own `workflow:` field is accepted, for compatibility with a file written to " +
 					"disk, but is never consulted here: every case runs against the `workflow` argument " +

@@ -1,7 +1,7 @@
 package conformance
 
 import (
-	"slices"
+	"strconv"
 	"testing"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -12,8 +12,8 @@ import (
 //
 // A local run exists to tell an author what production will do, and until #349
 // it could not tell them the most important thing an approval gate does. Every
-// `flow run local --signal` delivery attested nobody, no `allow:` rule a real
-// deployment writes matches nobody, and so the only outcome a rehearsal could
+// `flow run local --signal` delivery attested nobody, no `allow:` predicate a real
+// deployment writes admits nobody, and so the only outcome a rehearsal could
 // reach was the refusal. `--signal-as-subject` names the approver a delivery
 // stands in for; these cases are what pins the two drivers to the same verdict
 // about that name.
@@ -48,13 +48,13 @@ type RehearsalSignalCase struct {
 	// SignalName is the name delivered, and the key Policy is declared under.
 	SignalName string
 
-	// Policy is the resolved `signals:` entry governing SignalName - resolved,
-	// as in past [v1.ResolveSignalPolicySubjects]: an enforcement path never
-	// evaluates an expression, on either driver.
+	// Policy is the `signals:` entry governing SignalName, as it is recorded
+	// on a run: one `allow:` predicate, evaluated on every delivery by both
+	// drivers.
 	Policy *v1.SignalPolicy
 
-	// Starter is who started the run, which is what
-	// `distinct_from_starter:` compares a sender against. Both drivers
+	// Starter is who started the run, which is what a predicate's
+	// `run.identity` reads. Both drivers
 	// know one: durably from the run's memo, locally from `--as-subject`
 	// and its siblings.
 	Starter *v1.WorkloadIdentity
@@ -63,7 +63,7 @@ type RehearsalSignalCase struct {
 	// locally the plain [v1.LocalSignalSender], durably an authenticated
 	// caller a deployment configured no identity provider for. The two are
 	// the same fact from a policy's point of view, which is why one case
-	// covers both: nothing to match a rule against.
+	// covers both: nothing for a predicate to admit.
 	Sender *v1.WorkloadIdentity
 
 	// StarterUnknown is a run with no recorded starter: durably a memo that
@@ -84,7 +84,7 @@ type RehearsalSignalCase struct {
 	Why string
 }
 
-// approver is the identity examples/approval-gate's own `signals:` rule
+// approver is the identity examples/approval-gate's own `signals:` predicate
 // admits, spelled here the way that file spells it so a case failing here
 // and that example failing in CI are recognisably the same fact.
 func approver() *v1.WorkloadIdentity {
@@ -108,29 +108,28 @@ func webhookTrigger(workflow, trigger string) *v1.WorkloadIdentity {
 }
 
 // bridgedGate is the policy `examples/webhook-approval-bridge` declares: one
-// rule naming one webhook, which is the whole of what closes the signal zero
-// case on a public route.
+// predicate naming one webhook, which is the whole of what closes the signal
+// zero case on a public route.
 //
-// No `distinct_from_starter:`, and its absence is the record's own line rather
-// than an omission: an HMAC scheme attests a key holder, so that clause would
-// separate triggers rather than the two humans it reads as promising.
+// It does not compare with the starter, and that is the record's own line
+// rather than an omission: an HMAC scheme attests a key holder, so that clause
+// would separate triggers rather than the two humans it reads as promising.
 func bridgedGate() *v1.SignalPolicy {
-	return &v1.SignalPolicy{Allow: []*v1.SignalPolicyRule{{
-		Subject: v1.QualifiedSubject(v1.WebhookPrincipalIssuer,
-			v1.WebhookTriggerSubject("webhook-approval-bridge", "slack-approval")),
-	}}}
+	return predicate("sender.identity.principal == " + strconv.Quote(v1.QualifiedSubject(v1.WebhookPrincipalIssuer,
+		v1.WebhookTriggerSubject("webhook-approval-bridge", "slack-approval"))))
 }
 
-// policedGate is the policy that example declares: one rule, a subject and a
-// claim ANDed, plus the separation of duties a rule alone cannot express.
+// policedGate is the policy that example declares: a principal and a claim
+// ANDed, plus the separation of duties (a comparison with the starter) when
+// distinctFromStarter is set.
 func policedGate(distinctFromStarter bool) *v1.SignalPolicy {
-	return &v1.SignalPolicy{
-		Allow: []*v1.SignalPolicyRule{{
-			Subject: v1.QualifiedSubject("https://issuer.example.com", "sre-lead@example.com"),
-			Claims:  map[string]string{"team": "release-managers"},
-		}},
-		DistinctFromStarter: distinctFromStarter,
+	expression := `sender.identity.principal == "https://issuer.example.com#sre-lead@example.com"` +
+		` && sender.identity.claims["team"] == "release-managers"`
+	if distinctFromStarter {
+		expression += ` && sender.identity.principal != run.identity.principal`
 	}
+
+	return predicate(expression)
 }
 
 // RehearsalSignalCases is the shared table.
@@ -140,25 +139,15 @@ func policedGate(distinctFromStarter bool) *v1.SignalPolicy {
 // stands in for exactly the caller production would have authenticated, and
 // durably the caller is that person.
 //
-// It is the rule-list cases, each replayed through the predicate the
-// `flow fix` rewrite would emit for it ([predicateTwin]), and the cases only a
-// predicate can express ([signalPredicateCases]); both are answered by both
-// drivers or by neither.
+// It is the cases an approval gate's predicate exists to decide
+// ([rehearsalGateCases]), and the cases only a predicate can express
+// ([signalPredicateCases]); both are answered by both drivers or by neither.
 func RehearsalSignalCases() []RehearsalSignalCase {
-	rules := rehearsalRuleCases()
-
-	cases := slices.Clone(rules)
-	for _, c := range rules {
-		if twin, ok := predicateTwin(c); ok {
-			cases = append(cases, twin)
-		}
-	}
-
-	return append(cases, signalPredicateCases()...)
+	return append(rehearsalGateCases(), signalPredicateCases()...)
 }
 
-// rehearsalRuleCases are the cases written against the `allow:` rule list.
-func rehearsalRuleCases() []RehearsalSignalCase {
+// rehearsalGateCases are the cases a policed approval gate answers.
+func rehearsalGateCases() []RehearsalSignalCase {
 	starter := &v1.WorkloadIdentity{
 		Subject: "release-bot@example.com",
 		Issuer:  "https://issuer.example.com",
@@ -185,7 +174,7 @@ func rehearsalRuleCases() []RehearsalSignalCase {
 				Issuer:  "https://issuer.example.com",
 				Claims:  map[string]string{"team": "release-managers"},
 			},
-			Why: "the fields of one rule are ANDed, so half of it is not a match; this is the " +
+			Why: "the clauses are ANDed, so half of them is not a match; this is the " +
 				"case that would make a gate open for the whole team",
 		},
 		{
@@ -198,7 +187,7 @@ func rehearsalRuleCases() []RehearsalSignalCase {
 				Issuer:  "https://other-idp.example.com",
 				Claims:  map[string]string{"team": "release-managers"},
 			},
-			Why: "a subject is only unique within its issuer, and a rule matches the two joined; " +
+			Why: "a subject is only unique within its issuer, and a principal is the two joined; " +
 				"a second identity provider minting the same local part is not the same person",
 		},
 		{
@@ -206,7 +195,7 @@ func rehearsalRuleCases() []RehearsalSignalCase {
 			SignalName: "deploy-approved",
 			Policy:     policedGate(false),
 			Starter:    starter,
-			Why: "nothing attested, and nothing asserted either; the rule names somebody, and " +
+			Why: "nothing attested, and nothing asserted either; the predicate names somebody, and " +
 				"this is the pre-#349 shape every local delivery used to have",
 		},
 		{
@@ -218,8 +207,8 @@ func rehearsalRuleCases() []RehearsalSignalCase {
 				Issuer:  "https://issuer.example.com",
 			},
 			Sender: approver(),
-			Why: "distinct_from_starter: is ANDed onto whichever rule matched, so satisfying the " +
-				"rule is not enough; an approver may not approve their own request on either driver",
+			Why: "the comparison with the starter is ANDed on, so satisfying the rest is not " +
+				"enough; an approver may not approve their own request on either driver",
 		},
 		{
 			Name:       "the approver, distinct from the run's own starter",
@@ -234,13 +223,11 @@ func rehearsalRuleCases() []RehearsalSignalCase {
 		{
 			Name:       "a sender in the namespace a rule names",
 			SignalName: "release-approved",
-			Policy: &v1.SignalPolicy{Allow: []*v1.SignalPolicyRule{
-				{Namespace: "release-managers"},
-			}},
-			Starter:  starter,
-			Sender:   &v1.WorkloadIdentity{Subject: "anyone@example.com", Namespace: "release-managers"},
-			Admitted: true,
-			Why:      "a rule constrains only the fields it sets, so a namespace rule matches on namespace alone",
+			Policy:     predicate(`sender.identity.namespace == "release-managers"`),
+			Starter:    starter,
+			Sender:     &v1.WorkloadIdentity{Subject: "anyone@example.com", Namespace: "release-managers"},
+			Admitted:   true,
+			Why:        "a predicate constrains only what it compares, so a namespace comparison admits on namespace alone",
 		},
 		{
 			Name:       "the webhook trigger a bridged gate's rule names",
@@ -250,7 +237,7 @@ func rehearsalRuleCases() []RehearsalSignalCase {
 			Sender:     webhookTrigger("webhook-approval-bridge", "slack-approval"),
 			Admitted:   true,
 			Why: "a `signal:` on a webhook trigger answers a gate as the trigger itself, and the " +
-				"rule names that principal; a driver that refuses it cannot bridge a delivery at " +
+				"predicate names that principal; a driver that refuses it cannot bridge a delivery at " +
 				"all, only refuse one",
 		},
 		{
@@ -282,19 +269,17 @@ func rehearsalRuleCases() []RehearsalSignalCase {
 				Issuer:  "https://issuer.example.com",
 				Subject: "webhook-approval-bridge/slack-approval",
 			},
-			Why: "an issuer is half of every rule, and `flowstate://webhook` is a scheme no " +
+			Why: "an issuer is half of every principal, and `flowstate://webhook` is a scheme no " +
 				"identity provider can mint; a caller whose IdP hands out the trigger's subject " +
 				"still is not the trigger",
 		},
 		{
 			Name:       "a sender in another namespace",
 			SignalName: "release-approved",
-			Policy: &v1.SignalPolicy{Allow: []*v1.SignalPolicyRule{
-				{Namespace: "release-managers"},
-			}},
-			Starter: starter,
-			Sender:  &v1.WorkloadIdentity{Subject: "anyone@example.com", Namespace: "team-a"},
-			Why:     "the negative direction of the case above, which is the one a tenant boundary is made of",
+			Policy:     predicate(`sender.identity.namespace == "release-managers"`),
+			Starter:    starter,
+			Sender:     &v1.WorkloadIdentity{Subject: "anyone@example.com", Namespace: "team-a"},
+			Why:        "the negative direction of the case above, which is the one a tenant boundary is made of",
 		},
 	}
 }

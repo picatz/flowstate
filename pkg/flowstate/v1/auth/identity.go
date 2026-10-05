@@ -233,7 +233,8 @@ func (w WorkloadIdentity) LogValue() slog.Value {
 //   - The largest carried claim set anywhere in this repository is three
 //     (`repository`, `ref`, `job_workflow_ref`, on a GitHub Actions identity),
 //     and the nearest schema neighbour that bounds a claim map at all,
-//     `SignalPolicyRule.claims`, allows sixteen. [MaxCarriedClaims] is 32.
+//     the claim map a signal policy rule used to carry, allowed sixteen.
+//     [MaxCarriedClaims] is 32.
 //   - The longest claim *name* measured is 18 bytes (`runner_environment`);
 //     [MaxCarriedClaimNameBytes] is that neighbour's own 128.
 //   - The longest claim *value* measured is 63 bytes (a `job_workflow_ref`);

@@ -95,7 +95,7 @@ It answers with the ids to follow the run by and does not wait for the run to fi
 
 Get reports one run: its status, its timing, where it has reached, its outputs once it has finished, who started it, and every approval gate it is parked on right now.
 
-For each open gate the answer carries the question the gate asks, the signal name that releases it, whether a deadline lapses it, and whether the workflow declares a policy over who may answer. That set is what an approval surface has to render, and it is what a `distinct_from_starter` policy is compared against.
+For each open gate the answer carries the question the gate asks, the signal name that releases it, whether a deadline lapses it, and whether the workflow declares a policy over who may answer. That set is what an approval surface has to render, and it is what an `allow:` predicate over `run.identity` is compared against.
 
 To answer a gate, call `Signal` with the gate's signal name and a payload carrying the decision. Address the workflow rather than a run: a run id pins delivery to one attempt, and a workload that has been continued as new since the gate opened will refuse it.
 
@@ -267,7 +267,7 @@ What it does not prove: that a real task behaves the way a stub's `returns:` or 
 
 `tests` is a `*.test.yaml` document: `tests:` names one or more cases, each with an optional `inputs:`, `stubs:`, `signals:`, `starter:`, and an `expect:` the run must satisfy: `expect.outputs` compares the workflow's declared `outputs:`, `expect.failed`/`expect.error_contains` assert the run failing outright, `expect.compensated` the undo log, and `expect.ran`/`expect.skipped` step presence. A case's own `workflow:` field is accepted, for compatibility with a file written to disk, but is never consulted: every case here runs against the `workflow` argument, not a sibling file.
 
-To exercise a workflow's `signals:` policy: a scripted signal's `sender:` names who the delivery stands in for and `starter:` names who the run started as, each carrying `subject:`/`issuer:` together, `namespace:` and `claims:`, and both checked by the same policy function the server calls, so `distinct_from_starter:` refuses a sender who is the run's own starter here exactly as production would. Neither is attested: a delivery stands in for its sender, which is why a gate's own `sender.local` output reads true, and `starter:` never reaches `run.identity`.
+To exercise a workflow's `signals:` policy: a scripted signal's `sender:` names who the delivery stands in for and `starter:` names who the run started as, each carrying `subject:`/`issuer:` together, `namespace:` and `claims:`, and both checked by the same policy function the server calls, so an `allow:` predicate comparing with `run.identity` refuses a sender who is the run's own starter here exactly as production would. Neither is attested: a delivery stands in for its sender, which is why a gate's own `sender.local` output reads true, and `starter:` never reaches `run.identity`.
 
 Answers with the same v1.TestReport `flow test -o json` writes: one verdict per case, and for a case that did not pass, its unmet expectations as positioned diagnostics. A case that never reached a verdict at all (the workflow failed to compile, a stub named a task with no matching invocation, or the run failed in a way the case did not declare with `expect.failed`) reports why in `error` instead of `failures`. `refused` is set instead of any case running at all when the submitted `tests` document itself does not parse.
 

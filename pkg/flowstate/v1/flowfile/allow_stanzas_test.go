@@ -12,7 +12,7 @@ import (
 )
 
 // `debug: allow: ${...}` and `triggers: manual: allow: ${...}`: the grammar
-// `signals:` already has, accepted beside the old forms. The engine's behaviour
+// `signals:` already has, the one grammar every who-may-act stanza uses. The engine's behaviour
 // is pinned in pkg/flowstate/v1 and the server's; this file is what an author
 // writes, what it compiles to, and what the editor refuses with a position.
 
@@ -43,30 +43,29 @@ steps:
 `
 }
 
-func TestDebugAcceptsAnAllowPredicateBesideTheRuleList(t *testing.T) {
+func TestDebugAcceptsAnAllowPredicate(t *testing.T) {
 	t.Parallel()
 
 	workflow, err := flowfile.Unmarshal([]byte(debugSource(`'${sender.identity.claims.team == "sre"}'`)))
 	require.NoError(t, err)
-	assert.Equal(t, `sender.identity.claims.team == "sre"`, workflow.GetDebug().GetAllowExpr())
-	assert.Empty(t, workflow.GetDebug().GetAllow())
+	assert.Equal(t, `sender.identity.claims.team == "sre"`, workflow.GetDebug().GetAllow())
 
 	diagnostics, err := flowfile.ValidateSource([]byte(debugSource(`'${sender.identity.claims.team == "sre"}'`)))
 	require.NoError(t, err)
 	require.Empty(t, diagnostics)
 
-	// The rule list is untouched.
-	listed, err := flowfile.Unmarshal([]byte("edition: v2026.4\nname: dbg\nsteps:\n  - id: s\n    sleep: 1s\ndebug:\n  allow:\n    - claims: {team: sre}\n"))
-	require.NoError(t, err)
-	assert.Len(t, listed.GetDebug().GetAllow(), 1)
-	assert.Empty(t, listed.GetDebug().GetAllowExpr())
+	// The retired rule list is refused, with the way out and no echoed value.
+	_, err = flowfile.Unmarshal([]byte("edition: v2026.4\nname: dbg\nsteps:\n  - id: s\n    sleep: 1s\ndebug:\n  allow:\n    - claims: {team: secret-team}\n"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "flow fix")
+	assert.NotContains(t, err.Error(), "secret-team")
 
 	// Round trip, byte-stable.
 	written, err := flowfile.Marshal(workflow)
 	require.NoError(t, err)
 	again, err := flowfile.Unmarshal(written)
 	require.NoError(t, err)
-	assert.Equal(t, workflow.GetDebug().GetAllowExpr(), again.GetDebug().GetAllowExpr())
+	assert.Equal(t, workflow.GetDebug().GetAllow(), again.GetDebug().GetAllow())
 	rewritten, err := flowfile.Marshal(again)
 	require.NoError(t, err)
 	assert.Equal(t, string(written), string(rewritten))
@@ -101,7 +100,7 @@ func TestADebugPredicateIsRefusedInTheEditorWithAPosition(t *testing.T) {
 	assert.Contains(t, err.Error(), "not a `${...}` expression")
 }
 
-func TestManualAcceptsAnAllowPredicateBesideItsOldForms(t *testing.T) {
+func TestManualAcceptsAnAllowPredicate(t *testing.T) {
 	t.Parallel()
 
 	workflow, _, err := flowfile.Parse([]byte(manualSource(
@@ -110,8 +109,7 @@ func TestManualAcceptsAnAllowPredicateBesideItsOldForms(t *testing.T) {
 
 	manual := workflow.GetTriggers().GetManual()
 	require.NotNil(t, manual)
-	assert.Equal(t, `sender.identity.principal in ["https://issuer.example.com#ops@example.com"]`, manual.GetAllowExpr())
-	assert.Empty(t, manual.GetAllowedPrincipals())
+	assert.Equal(t, `sender.identity.principal in ["https://issuer.example.com#ops@example.com"]`, manual.GetAllow())
 
 	diagnostics, err := flowfile.ValidateSource([]byte(manualSource(
 		`      allow: '${sender.identity.principal in ["https://issuer.example.com#ops@example.com"]}'`)))
@@ -122,16 +120,25 @@ func TestManualAcceptsAnAllowPredicateBesideItsOldForms(t *testing.T) {
 	both, err := flowfile.Unmarshal([]byte(manualSource("      require_reason: true\n      allow: '${sender.identity.claims.team == \"ops\"}'")))
 	require.NoError(t, err)
 	assert.True(t, both.GetTriggers().GetManual().GetRequireReason())
-	assert.NotEmpty(t, both.GetTriggers().GetManual().GetAllowExpr())
-
-	// allowed_principals alone is unchanged.
-	old, err := flowfile.Unmarshal([]byte(manualSource("      allowed_principals: https://issuer.example.com#ops@example.com")))
-	require.NoError(t, err)
-	assert.Len(t, old.GetTriggers().GetManual().GetAllowedPrincipals(), 1)
-	assert.Empty(t, old.GetTriggers().GetManual().GetAllowExpr())
+	assert.NotEmpty(t, both.GetTriggers().GetManual().GetAllow())
 }
 
-func TestManualAllowRoundTripsAndMarshalRefusesBothMechanisms(t *testing.T) {
+func TestManualAllowedPrincipalsIsRefusedWithTheWayOut(t *testing.T) {
+	t.Parallel()
+
+	_, err := flowfile.Unmarshal([]byte(manualSource("      allowed_principals: https://issuer.example.com#secret-operator")))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "allowed_principals")
+	assert.Contains(t, err.Error(), "flow fix")
+	assert.NotContains(t, err.Error(), "secret-operator", "a refusal names the key, never the value")
+
+	_, err = flowfile.ValidateSource([]byte(manualSource("      allowed_principals: https://issuer.example.com#secret-operator")))
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), "secret-operator")
+	assert.Regexp(t, `^\d+:\d+: `, err.Error(), "the refusal carries a position")
+}
+
+func TestManualAllowRoundTrips(t *testing.T) {
 	t.Parallel()
 
 	workflow, err := flowfile.Unmarshal([]byte(manualSource(
@@ -142,32 +149,11 @@ func TestManualAllowRoundTripsAndMarshalRefusesBothMechanisms(t *testing.T) {
 	require.NoError(t, err)
 	again, err := flowfile.Unmarshal(written)
 	require.NoError(t, err, string(written))
-	assert.Equal(t, workflow.GetTriggers().GetManual().GetAllowExpr(), again.GetTriggers().GetManual().GetAllowExpr())
+	assert.Equal(t, workflow.GetTriggers().GetManual().GetAllow(), again.GetTriggers().GetManual().GetAllow())
 	assert.True(t, again.GetTriggers().GetManual().GetRequireReason())
 	rewritten, err := flowfile.Marshal(again)
 	require.NoError(t, err)
 	assert.Equal(t, string(written), string(rewritten), "a second Marshal is not byte-identical")
-
-	// Marshal refuses to delete one of two mechanisms from an author's block.
-	workflow.GetTriggers().GetManual().AllowedPrincipals = []string{"https://issuer.example.com#ops@example.com"}
-	_, err = flowfile.Marshal(workflow)
-	require.Error(t, err)
-}
-
-func TestAManualBlockWritingBothMechanismsIsRefusedInTheEditor(t *testing.T) {
-	t.Parallel()
-
-	source := manualSource("      allowed_principals: https://issuer.example.com#ops@example.com\n" +
-		"      allow: '${sender.identity.claims.team == \"ops\"}'")
-
-	workflow, err := flowfile.Unmarshal([]byte(source))
-	require.NoError(t, err, "the two keys parse; refusing the pair is validation's, with a position")
-	require.Error(t, v1.CheckManualTrigger(workflow.GetTriggers().GetManual()))
-
-	diagnostics, err := flowfile.ValidateSource([]byte(source))
-	require.NoError(t, err)
-	require.NotEmpty(t, diagnostics)
-	assert.Contains(t, diagnostics[0].Message, "one or the other")
 }
 
 func TestAManualPredicateIsRefusedInTheEditorWithAPosition(t *testing.T) {
@@ -207,5 +193,5 @@ func TestAManualPredicateIsRefusedInTheEditorWithAPosition(t *testing.T) {
 func TestADeniedManualBlockCannotAlsoWriteAPredicate(t *testing.T) {
 	t.Parallel()
 
-	require.Error(t, v1.CheckManualTrigger(&v1.ManualTrigger{Denied: true, AllowExpr: `sender.identity.claims.team == "ops"`}))
+	require.Error(t, v1.CheckManualTrigger(&v1.ManualTrigger{Denied: true, Allow: `sender.identity.claims.team == "ops"`}))
 }

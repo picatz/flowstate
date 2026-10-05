@@ -15,7 +15,7 @@ import (
 // the other two reach the evaluator, with their own scope, and fail closed.
 
 func debugPredicate(expression string) *v1.SignalPolicy {
-	return &v1.SignalPolicy{AllowExpr: expression}
+	return &v1.SignalPolicy{Allow: expression}
 }
 
 func TestADebugPredicateIsDecidedByTheSharedEvaluator(t *testing.T) {
@@ -25,7 +25,7 @@ func TestADebugPredicateIsDecidedByTheSharedEvaluator(t *testing.T) {
 	other := debugIdentity("https://idp.example", "dev-1", map[string]string{"team": "dev"})
 	policy := debugPredicate(`sender.identity.claims.team == "sre"`)
 
-	require.NoError(t, v1.CheckDebugPolicy(policy, false), "a predicate is a usable debug policy")
+	require.NoError(t, v1.CheckDebugPolicy(policy), "a predicate is a usable debug policy")
 	require.NoError(t, v1.DebugPolicyCheck(t.Context(), policy, sre, nil, false, nil))
 
 	err := v1.DebugPolicyCheck(t.Context(), policy, other, nil, false, nil)
@@ -75,29 +75,15 @@ func TestADebugPredicateFailsClosed(t *testing.T) {
 		map[string]*v1.Value{"who": v1.NewLiteral("x")}))
 }
 
-func TestADebugPolicyWritingBothMechanismsIsRefused(t *testing.T) {
-	t.Parallel()
-
-	both := &v1.SignalPolicy{
-		Allow:     []*v1.SignalPolicyRule{{Namespace: "team-a"}},
-		AllowExpr: `sender.identity.namespace == "team-a"`,
-	}
-	caller := debugIdentity("https://idp.example", "sre-1", nil)
-
-	require.Error(t, v1.CheckDebugPolicy(both, false))
-	require.Error(t, v1.DebugPolicyCheck(t.Context(), both, caller, nil, false, nil),
-		"a decoded memo holding both must never be answered by whichever mechanism is more permissive")
-}
-
 func TestADebugPredicateReadingInputsNeedsSomethingTheStarterCannotReach(t *testing.T) {
 	t.Parallel()
 
-	err := v1.CheckDebugPolicy(debugPredicate(`sender.identity.principal == "a#" + inputs.who`), false)
+	err := v1.CheckDebugPolicy(debugPredicate(`sender.identity.principal == "a#" + inputs.who`))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "cannot reach")
 
 	require.NoError(t, v1.CheckDebugPolicy(
-		debugPredicate(`sender.identity.principal == "a#" + inputs.who && sender.identity.claims.team == "sre"`), false))
+		debugPredicate(`sender.identity.principal == "a#" + inputs.who && sender.identity.claims.team == "sre"`)))
 }
 
 func TestADebugPredicateTellsTwoIssuersApart(t *testing.T) {
@@ -112,12 +98,12 @@ func TestADebugPredicateTellsTwoIssuersApart(t *testing.T) {
 		"the same subject from another issuer was admitted")
 }
 
-func TestADebugPredicateStillHonoursDistinctFromStarter(t *testing.T) {
+func TestADebugPredicateComparingWithTheStarterRefusesTheStarter(t *testing.T) {
 	t.Parallel()
 
 	starter := debugIdentity("https://idp.example", "starter", map[string]string{"team": "sre"})
 	other := debugIdentity("https://idp.example", "sre-2", map[string]string{"team": "sre"})
-	policy := &v1.SignalPolicy{AllowExpr: `sender.identity.claims.team == "sre"`, DistinctFromStarter: true}
+	policy := &v1.SignalPolicy{Allow: `sender.identity.claims.team == "sre" && sender.identity.principal != run.identity.principal`}
 
 	require.NoError(t, v1.DebugPolicyCheck(t.Context(), policy, other, starter, true, nil))
 	require.Error(t, v1.DebugPolicyCheck(t.Context(), policy, starter, starter, true, nil))
@@ -128,7 +114,7 @@ func TestADebugPredicateStillHonoursDistinctFromStarter(t *testing.T) {
 func manualPredicateWorkflow(expression string) *v1.Workflow {
 	return &v1.Workflow{
 		Name:     "manual-allow",
-		Triggers: &v1.Triggers{Manual: &v1.ManualTrigger{AllowExpr: expression}},
+		Triggers: &v1.Triggers{Manual: &v1.ManualTrigger{Allow: expression}},
 	}
 }
 
@@ -205,22 +191,11 @@ func TestAManualPredicateReadingTheRunIsRefusedAtCompileTime(t *testing.T) {
 	require.NoError(t, v1.CheckManualAllowExpr(`inputs.who == sender.identity.subject && sender.identity.claims.team == "ops"`))
 }
 
-func TestAManualAllowPredicateAndAllowedPrincipalsAreTwoAnswersAndRefused(t *testing.T) {
+func TestAManualAllowPredicateContradictsDenied(t *testing.T) {
 	t.Parallel()
 
-	manual := &v1.ManualTrigger{
-		AllowedPrincipals: []string{"https://idp.example#ops"},
-		AllowExpr:         `sender.identity.claims.team == "ops"`,
-	}
-	require.Error(t, v1.CheckManualTrigger(manual))
-
-	wf := &v1.Workflow{Name: "both", Triggers: &v1.Triggers{Manual: manual}}
-	caller := manualCaller("https://idp.example", "ops", map[string]string{"team": "ops"})
-	// At decision time too: whichever of the two is more permissive must not win.
-	require.Error(t, v1.CheckManualStart(t.Context(), wf, caller, "https://idp.example#ops", "", nil))
-
-	require.Error(t, v1.CheckManualTrigger(&v1.ManualTrigger{Denied: true, AllowExpr: `sender.identity.claims.team == "ops"`}),
-		"`denied` contradicts a predicate as it contradicts allowed_principals")
+	require.Error(t, v1.CheckManualTrigger(&v1.ManualTrigger{Denied: true, Allow: `sender.identity.claims.team == "ops"`}),
+		"`denied` contradicts a predicate: a refusal that also says who may start is two sentences that cannot both be true")
 }
 
 func TestAManualAllowPredicateTellsTwoIssuersApart(t *testing.T) {
@@ -240,7 +215,7 @@ func TestAManualAllowPredicateIsAskedBeforeTheReasonAndDoesNotReplaceIt(t *testi
 
 	caller := manualCaller("https://idp.example", "ops", map[string]string{"team": "ops"})
 	wf := &v1.Workflow{Name: "reasoned", Triggers: &v1.Triggers{Manual: &v1.ManualTrigger{
-		AllowExpr: `sender.identity.claims.team == "ops"`, RequireReason: true,
+		Allow: `sender.identity.claims.team == "ops"`, RequireReason: true,
 	}}}
 
 	require.Error(t, v1.CheckManualStart(t.Context(), wf, caller, "https://idp.example#ops", "  ", nil),

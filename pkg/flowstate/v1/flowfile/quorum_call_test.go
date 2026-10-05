@@ -1,6 +1,7 @@
 package flowfile_test
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -42,10 +43,11 @@ func quorumCaller(rootPolicy map[string]*v1.SignalPolicy, callee *v1.Workflow) *
 }
 
 func allowOnly(subjects ...string) map[string]*v1.SignalPolicy {
-	policy := &v1.SignalPolicy{}
-	for _, subject := range subjects {
-		policy.Allow = append(policy.Allow, &v1.SignalPolicyRule{Subject: "https://idp.example#" + subject})
+	principals := make([]string, len(subjects))
+	for i, subject := range subjects {
+		principals[i] = `"https://idp.example#` + subject + `"`
 	}
+	policy := &v1.SignalPolicy{Allow: "sender.identity.principal in [" + strings.Join(principals, ", ") + "]"}
 
 	return map[string]*v1.SignalPolicy{"release-approved": policy}
 }

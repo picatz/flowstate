@@ -919,7 +919,7 @@ message Concurrency {
   //
   // The expression is evaluated exactly once, in `FlowstateServer.Run`, after
   // [BindRunInputs] and before the run exists — the same moment and the same
-  // discipline `SignalPolicyRule.subject_from` established. `inputs.*` is the
+  // discipline signal policies once resolved their subjects with. `inputs.*` is the
   // whole of what it may read, and the validator refuses anything else, because
   // at that moment nothing else exists: no step has produced an output, `vars:`
   // have not been evaluated, and there is no run to have a `run.id`.

@@ -23,7 +23,7 @@ func debugPredicateWorkflow(expression string) *v1types.Workflow {
 	return &v1types.Workflow{
 		Name:    "dbg",
 		Profile: v1types.CurrentProfile,
-		Debug:   &v1types.SignalPolicy{AllowExpr: expression},
+		Debug:   &v1types.SignalPolicy{Allow: expression},
 	}
 }
 
@@ -32,7 +32,7 @@ func debugPredicateWorkflow(expression string) *v1types.Workflow {
 func debugRunMemo(t *testing.T, wf *v1types.Workflow, inputs map[string]*v1types.Value, starter *v1types.WorkloadIdentity, drop ...string) *workflowservice.DescribeWorkflowExecutionResponse {
 	t.Helper()
 
-	entries, err := policyMemoEntries(t.Context(), wf, inputs, starter)
+	entries, err := policyMemoEntries(wf, inputs, starter)
 	require.NoError(t, err)
 	for _, key := range drop {
 		delete(entries, key)
@@ -126,7 +126,7 @@ func TestADebugPredicateThatReadsNothingOfTheRunNeedsNoScope(t *testing.T) {
 	t.Parallel()
 
 	wf := debugPredicateWorkflow(`sender.identity.claims.team == "sre"`)
-	entries, err := policyMemoEntries(t.Context(), wf,
+	entries, err := policyMemoEntries(wf,
 		map[string]*v1types.Value{"secretish": v1types.NewLiteral("v")},
 		&v1types.WorkloadIdentity{Issuer: "i", Subject: "s", Claims: map[string]string{"team": "x"}})
 	require.NoError(t, err)
@@ -154,12 +154,12 @@ func TestOneRecordedScopeServesSignalsAndDebugTogether(t *testing.T) {
 		// signals reads only inputs; debug reads only the starter: the one entry
 		// must hold both.
 		Signals: map[string]*v1types.SignalPolicy{
-			"approved": {AllowExpr: `sender.identity.principal == "https://i#" + inputs.approver && sender.identity.claims.team == "x"`},
+			"approved": {Allow: `sender.identity.principal == "https://i#" + inputs.approver && sender.identity.claims.team == "x"`},
 		},
-		Debug: &v1types.SignalPolicy{AllowExpr: `sender.identity.claims.team == run.identity.claims.team`},
+		Debug: &v1types.SignalPolicy{Allow: `sender.identity.claims.team == run.identity.claims.team`},
 	}
 
-	entries, err := policyMemoEntries(t.Context(), wf, inputs, starter)
+	entries, err := policyMemoEntries(wf, inputs, starter)
 	require.NoError(t, err)
 
 	scope := &v1types.Scope{}
@@ -173,11 +173,11 @@ func TestADebugPredicateScopeOverItsBoundRefusesTheRun(t *testing.T) {
 
 	big := map[string]*v1types.Value{"blob": v1types.NewLiteral(string(make([]byte, v1types.MaxSignalPolicyScopeBytes+1)))}
 
-	_, err := policyMemoEntries(t.Context(),
+	_, err := policyMemoEntries(
 		debugPredicateWorkflow(`inputs.blob == "x" && sender.identity.claims.team == "y"`), big, nil)
 	require.Error(t, err, "a debug predicate over a partial copy of its inputs would be a different predicate")
 
-	_, err = policyMemoEntries(t.Context(), debugPredicateWorkflow(`sender.identity.claims.team == "y"`), big, nil)
+	_, err = policyMemoEntries(debugPredicateWorkflow(`sender.identity.claims.team == "y"`), big, nil)
 	require.NoError(t, err, "the bound is spent only where a predicate reads")
 }
 
@@ -207,7 +207,7 @@ func TestAuthorizeManualStartDecidesAPredicateOverTheCallerAndSubmittedInputs(t 
 	})
 
 	wf := manualStartWorkflow("manual-predicate", &v1types.ManualTrigger{
-		AllowExpr: `sender.identity.claims.team == "ops" && (!has(inputs.target) || inputs.target != "prod")`,
+		Allow: `sender.identity.claims.team == "ops" && (!has(inputs.target) || inputs.target != "prod")`,
 	})
 	asOps := func(inputs map[string]*v1types.Value) error {
 		return srv.authorizeManualStart(ops, "Run", v1types.AuditResourceKind_AUDIT_RESOURCE_KIND_RUN, "id", wf,
@@ -250,7 +250,7 @@ func TestAManualPredicateRefusalNamesNoInputOrClaimValue(t *testing.T) {
 	ctx := auth.ContextWithPrincipal(t.Context(), auth.Principal{
 		Issuer: "https://issuer.example.com", Subject: "ops@example.com", Claims: map[string]any{"n": secret},
 	})
-	wf := manualStartWorkflow("manual-secret", &v1types.ManualTrigger{AllowExpr: `int(sender.identity.claims["n"]) == 1`})
+	wf := manualStartWorkflow("manual-secret", &v1types.ManualTrigger{Allow: `int(sender.identity.claims["n"]) == 1`})
 
 	err := srv.authorizeManualStart(ctx, "Run", v1types.AuditResourceKind_AUDIT_RESOURCE_KIND_RUN, "id", wf,
 		srv.identityFor(ctx), "", nil)

@@ -1160,8 +1160,7 @@ func completeInExpression(pos lsp.Position, inner string, scope refScope) *lsp.C
 // signalAllowExpression reports whether the cursor is in a top-level
 // `signals:` policy's `allow:` *predicate*: the `${...}` that is the whole value
 // of `allow:`, on the line that opens it (the editor completes within one line,
-// as it does everywhere). An expression inside a rule of the rule list (`- subject:
-// ${...}`) is not one: it keeps the rule's own scope.
+// as it does everywhere).
 func signalAllowExpression(path []string, key, before string) bool {
 	switch {
 	case len(path) == 2 && path[0] == "signals", len(path) == 1 && path[0] == "debug":

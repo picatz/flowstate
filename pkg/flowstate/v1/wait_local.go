@@ -106,8 +106,8 @@ func LocalSignalSender() *SignalSender {
 // accepted this" for a workflow author. A rehearsal asserts who an approver
 // would have been; it never claims anybody attested it.
 //
-// identity is what a `signals:` rule is matched against - the `issuer`,
-// `subject`, `namespace` and `claims` fields [signalPolicyRuleMatches] reads.
+// identity is what a `signals:` predicate reads as `sender.identity` - the
+// `issuer`, `subject`, `namespace` and `claims` fields [SignalPolicyCheck] binds.
 // Nothing here is minted, signed, or carried anywhere: the value lives in one
 // process, for one run, and is discarded with it.
 func RehearsalSignalSender(identity *WorkloadIdentity) *SignalSender {
@@ -189,16 +189,13 @@ type LocalSignals struct {
 	waits map[string][]*signalWait
 
 	// policies is nil for an unpoliced [LocalSignals] — every delivery
-	// succeeds, the zero case [SignalPolicyAllows]'s own doc comment
-	// describes. Set through [NewPolicedLocalSignals], normally to a
-	// workflow's own `signals:` already resolved against the run's inputs by
-	// [ResolveSignalPolicySubjects] — the same resolution submit performs,
-	// so a `subject: ${inputs.x}` rule is checked against the same literal
-	// production would check it against, not re-evaluated here.
+	// succeeds, the zero case a signal name with no policy has. Set through
+	// [NewPolicedLocalSignals], normally to a workflow's own `signals:`: a
+	// predicate is evaluated on every delivery, here as on the server.
 	policies map[string]*SignalPolicy
 
 	// starter/hasStarter are this local run's own answer to "who started it,"
-	// for [SignalPolicyCheck]'s distinct_from_starter comparison only — see
+	// for a predicate that reads `run.identity` ([SignalPolicyCheck]) — see
 	// [NewPolicedLocalSignals].
 	starter    *WorkloadIdentity
 	hasStarter bool
@@ -244,7 +241,7 @@ type LocalSignals struct {
 // every delivery succeeds, unconditionally. The zero value works too.
 //
 // This is correct, not merely permissive, for a workflow that declares no
-// `signals:` policy at all — the zero case [SignalPolicyAllows] documents.
+// `signals:` policy at all — the zero case a signal name with no policy has.
 // A caller delivering to a workflow that *does* declare one and wants local
 // delivery to enforce it wants [NewPolicedLocalSignals] instead.
 func NewLocalSignals() *LocalSignals { return &LocalSignals{} }
@@ -255,24 +252,21 @@ func NewLocalSignals() *LocalSignals { return &LocalSignals{} }
 // step, restoring invariant 3 for a workflow whose `if:` trusts `signals:`
 // for authorization rather than restating it.
 //
-// policies is normally a workflow's own `wf.GetSignals()`, already resolved
-// against the run's bound inputs by [ResolveSignalPolicySubjects] — passing
-// the *declared*, unresolved map here would check a rule's `subject_from`
-// expression as though it had already become a literal, which it has not;
-// that is a caller bug, not a lenient mode, so this constructor does no
-// resolution of its own and trusts the caller to have done it (`flow test`'s
-// runCase and `flow run local`'s withLocalSignals both do, right after
-// binding the run's inputs the same way [RunWithInputs] itself would).
+// policies is normally a workflow's own `wf.GetSignals()`: nothing is
+// resolved at submit, so the declared map is what the server records and what
+// is enforced here (`flow test`'s runCase and `flow run local`'s
+// withLocalSignals pass it, beside the run's bound inputs bound the same way
+// [RunWithInputs] itself would).
 //
 // starter/hasStarter are this local run's own notion of who started it,
-// checked only against a policy that sets `distinct_from_starter`.
+// read only by a predicate that mentions `run.identity`.
 // hasStarter false is refused exactly like a durable run whose memo predates
 // the starter record — never treated as "unconstrained." A caller that
 // affirmatively knows its local run has no starter at all — `flow test`,
 // which has no concept of "who ran this test" to begin with — passes
 // hasStarter true with an empty [WorkloadIdentity]: that is a known fact
 // ("nobody"), not a gap in the record, and it is what makes
-// `distinct_from_starter` satisfiable at all against a scripted, genuinely
+// a comparison with `run.identity` satisfiable at all against a scripted, genuinely
 // attested sender — see flowtest's own runCase for why treating it as
 // "unknown" instead would make the happy path this exists to test
 // unreachable.

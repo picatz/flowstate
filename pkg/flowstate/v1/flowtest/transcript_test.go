@@ -276,8 +276,7 @@ edition: v2026.4
 name: policed
 signals:
   approve:
-    allow:
-      - subject: https://issuer.example.com#approver@example.com
+    allow: ${sender.identity.principal == "https://issuer.example.com#approver@example.com"}
 steps:
   - id: approval
     wait_for_signal:
@@ -1931,50 +1930,4 @@ tests:
 	require.Contains(t, text, "copied", "the caller's later step is not in the transcript, so this proves nothing")
 	assert.NotContains(t, text, secret, "the transcript showed the callee's sensitive output")
 	assert.Contains(t, text, "[redacted]")
-}
-
-// TestACaseErrorWithholdsASensitiveSubject is #2100 on `flow test`: a gate
-// whose `subject:` reads a sensitive input, bound to a value that is not
-// `<issuer>#<subject>`, is refused before the run, and the case's error
-// quotes what it resolved to. It is rendered through the run's own set, as
-// the transcript is.
-func TestACaseErrorWithholdsASensitiveSubject(t *testing.T) {
-	t.Parallel()
-
-	dir := t.TempDir()
-	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
-edition: v2026.4
-name: sensitive-subject
-inputs:
-  approver:
-    type: string
-    required: true
-    sensitive: true
-signals:
-  approve:
-    distinct_from_starter: true
-    allow:
-      - subject: ${inputs.approver}
-steps:
-  - id: gate
-    wait_for_signal:
-      name: approve
-      timeout: 1h
-outputs: {}
-`)
-	path := filepath.Join(dir, "workflow.test.yaml")
-	writeFile(t, path, `
-tests:
-  - name: a bare subject is refused
-    workflow: ./workflow.yaml
-    inputs:
-      approver: approver-"lead"@corp.example
-    expect:
-      ran: [gate]
-`)
-
-	result := flowtest.RunPath(t.Context(), path, flowtest.RunOptions{})
-	c := result.Report.GetCases()[0]
-	require.Contains(t, c.GetError(), "<issuer>#<subject>", "the case was not refused at its signal policy, so this proves nothing")
-	assert.NotContains(t, c.GetError(), "lead", "the case's error quotes the sensitive input")
 }

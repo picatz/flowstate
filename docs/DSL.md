@@ -2003,9 +2003,10 @@ the delivery is provable, depending on it is not.
 zero case is closed.** A signal name with no `signals:` entry admits any sender; that
 is the deliberate opt-in rule everywhere else, and it is not tolerable on a route
 anybody can POST to, where "any sender" means "whoever holds one signing key". So
-`flow validate` refuses a `signal:` whose name has no explicit policy, and one whose
-rule list has no rule that could admit the trigger's principal (a predicate is decided
-at delivery, over the sender, so it is not counted here):
+`flow validate` refuses a `signal:` whose name has no explicit policy. What a predicate
+admits is decided at delivery, over the sender, so the file check does not evaluate
+it, and a predicate that cannot admit the trigger's principal
+(`flowstate://webhook#<workflow>/<trigger>`) refuses every delivery instead (#2325):
 
 ```
 webhook "slack-approval" answers signal "stage-approved", which declares no `signals:`
@@ -2156,9 +2157,6 @@ principal, because the same subject can exist under more than one trusted issuer
 the issuer configured in the server's auth policy. The `--insecure-no-auth` development
 identity cannot satisfy a predicate that names particular callers. Omit `allow:` for an
 intentionally open development server; never use that posture on a shared network.
-
-The older `allowed_principals: [...]` spelling is the same thing as
-`allow: ${sender.identity.principal in [...]}`, and `flow fix` rewrites it.
 
 **Trigger context is readable for behaviour.** A run reads how it started under a root of
 its own:
@@ -4432,11 +4430,10 @@ tally by taking the same deliveries in the same order.
 
 ### One predicate decides who may act: `allow: ${...}` on `signals:`
 
-A `signals:` policy was a list of rules, a disjunction of conjunctions of `subject:`,
-`claims:` and `namespace:`, with `distinct_from_starter:` beside it. That grammar is a
+A `signals:` policy is one CEL predicate. A match-list grammar beside CEL would be a
 second, smaller language for a question CEL already answers (R1 and R2 in
-[docs/STYLE.md](STYLE.md), issue #326), so the same `allow:` key takes one predicate,
-and the predicate is the canonical spelling:
+[docs/STYLE.md](STYLE.md), issue #326), so `allow:` takes one predicate and nothing
+else:
 
 ```yaml
 signals:
@@ -4444,10 +4441,11 @@ signals:
     allow: ${(sender.identity.principal == "https://issuer.example.com#" + inputs.expected_approver && sender.identity.claims.team == "release-managers" || sender.identity.claims.role == "sre-lead") && sender.identity.principal != run.identity.principal}
 ```
 
-A string under `allow:` is the predicate and a list is the rules; a policy is one or
-the other, and a file cannot hold both. The list, `distinct_from_starter:` and
-`manual: allowed_principals:` still compile, and `flow fix` rewrites each of them into
-the predicate; see [What `flow fix` writes](#what-flow-fix-writes-for-who-may-act).
+A policy with no `allow:` authorizes nobody and is refused. A list under `allow:`, a
+`distinct_from_starter:` key and `manual: allowed_principals:` are retired: a file that
+still writes one is refused at parse with a sentence that names the key (never its
+value) and says to run `flow fix`, which rewrites each of them into the predicate; see
+[What `flow fix` writes](#what-flow-fix-writes-for-who-may-act).
 
 **The scope is closed.** `sender.identity.{principal,subject,issuer,namespace,claims}`
 is the server's own attestation of whoever is delivering. `run.identity` is the run's
@@ -4464,15 +4462,14 @@ bool, an evaluation error, a cost bound exceeded, or an expression that does not
 compile each refuse the sender. A missing claim key is an evaluation error, so test
 with `has(sender.identity.claims.team)` where absence is allowed. When the run has no
 recorded starter `run` is unbound, so a predicate that reads it errors and denies
-while one that never mentions it is unaffected, which is what
-`distinct_from_starter:` did without a keyword. The refusal says what went wrong and
+while one that never mentions it is unaffected. The refusal says what went wrong and
 never quotes an input or a claim.
 
 **Narrowing is syntactic.** Whoever starts a run chooses its `inputs`, so a predicate
 over them alone would let the starter name their own approver. A predicate that reads
 `inputs` must also read `sender.identity.claims` or `run.identity`, or `flow validate`
-refuses it. This is coarser than the per-rule check on `subject:`; it is the cost of
-having one predicate instead of a field grammar. Because the check only looks at which
+refuses it. It checks which names the expression reads, not what it proves.
+Because the check only looks at which
 names the expression reads, write conjunctions (`sender.identity.claims.team == "x" &&
 sender.identity.principal == "issuer#" + inputs.approver`): a claim read in one `||`
 alternative satisfies the check for the whole predicate, including an alternative that
@@ -4487,8 +4484,10 @@ claim to a name over reading a sensitive input.
 one function every enforcement point reaches, so the durable server, `flow run local`,
 `flow test` and the MCP tools answer it the same way. Submit records the values a
 predicate reads (its inputs, and the starter's identity when it reads `run`) with the
-run, bounded at 64 KiB and refused rather than truncated; a run whose policies are
-rules records nothing. One predicate is bounded at a fixed evaluation cost.
+run, bounded at 64 KiB and refused rather than truncated; a run whose predicates read
+neither records nothing. A run frozen by an earlier release that recorded the retired
+rule list decodes to a policy with no predicate and refuses every sender; start it again
+from the rewritten file. One predicate is bounded at a fixed evaluation cost.
 
 **`debug:` and `manual:` take the same predicate.** `debug: allow: ${...}` is decided by
 the same function over the same scope, with `inputs` and `run.identity` being the
@@ -4499,7 +4498,7 @@ debug:
   allow: ${sender.identity.claims.team == "sre"}
 ```
 
-`triggers: - manual:` takes `allow: ${...}`, and never beside `allowed_principals:`:
+`triggers: - manual:` takes `allow: ${...}`:
 
 ```yaml
 triggers:
@@ -4511,7 +4510,8 @@ A manual start has no run yet, so there `run` is not in scope and reading it is 
 compile error; `sender` is the caller and `inputs` are the arguments being submitted
 with this start. With no starter to compare against, the narrowing rule is that a
 predicate reading `inputs` must also read `sender.identity.claims`. A caller with no
-authenticated principal is refused, as `allowed_principals:` did. `denied`
+authenticated principal is refused before the predicate is consulted, since a predicate such as
+`principal != "x"` would otherwise admit nobody-at-all. `denied`
 and a predicate contradict each other and are refused; `require_reason:` still applies
 beside it. The values a `debug:` predicate reads of the run are recorded at submit with
 the same bound as for `signals:`.
@@ -4530,9 +4530,9 @@ Each old form has one reading, so the rewrite is text and nothing is judged:
 | `distinct_from_starter: true` | `&& sender.identity.principal != run.identity.principal` around the whole |
 | `manual: allowed_principals: [..]` | `allow: ${sender.identity.principal in [..]}` |
 
-`debug:` takes the same rewrite as a signal's policy. It is not an edition boundary:
-both spellings compile today, so there is nothing a build refuses that the rewrite has
-to rescue, and the boundary belongs to the change that removes the old spellings. A
+`debug:` takes the same rewrite as a signal's policy. No edition boundary was needed:
+the retired forms are refused by name inside `v2026.4`, so `flow fix` is the migration
+for any file still written in them. It works on the text, so it still reads them. A
 second run finds nothing to do, and what it writes is what `flow fmt` writes.
 
 Two things in the output are not in the input. An interpolated subject
@@ -4557,12 +4557,12 @@ one line; a policy or `manual:` block in flow style; a comment it cannot tell fr
 text. Comments written inside the old rule list are carried above the new line, and the
 change says so.
 
-**What it does not do yet.** The quorum "`approve:` larger than the allow-list" check
-counts rules and is silent about a predicate, and a bridged webhook's check that its
-signal's policy can admit the trigger does the same, so a policy rewritten by `flow fix`
-loses both until the checks learn a literal `in [...]` or an `||` of `principal ==`
-comparisons. The old spellings are removed in a later change, which is the edition
-boundary.
+**What a predicate can no longer be counted for.** A quorum's `approve:` is checked
+against a policy only when it can enumerate who the policy admits: a predicate made of
+`sender.identity.principal == "..."` and `in [...]` comparisons, joined by `||` (a union)
+or `&&` (the closed side), is counted, and anything else is open and never refused. A
+bridged webhook's check that its signal's policy can admit the trigger no longer reads
+the policy at all; a predicate that cannot admit it denies at every delivery (#2325).
 
 ### Bounded, because the author does not control the trip count
 
@@ -6004,7 +6004,7 @@ rehearsed only as its own refusal.
 `--as-subject` and its siblings, which name the run's own starter, because they
 answer the same shape of question about the other party - and the pairing is not
 decorative: a predicate comparing `sender.identity.principal` with
-`run.identity.principal` (what `distinct_from_starter:` was) compares the one against
+`run.identity.principal` compares the one against
 the other, so a rehearsal that names the same person for both is refused locally for the
 reason production refuses it.
 

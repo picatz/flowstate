@@ -846,9 +846,7 @@ func (r *WebhookReceiver) start(ctx context.Context, route *webhookRoute, delive
 	// on from outside.
 	identity := r.principalIdentity(ctx, route)
 
-	// Every sensitive input withheld here: a sender holds no file to redact a
-	// refusal against.
-	memo, temporal, options, err := r.server.prepareCreate(ctx, identity, spec, bound, v1.SensitiveInputNames(spec))
+	memo, temporal, options, err := r.server.prepareCreate(ctx, identity, spec, bound)
 	if err != nil {
 		return AcceptedDelivery{}, err
 	}

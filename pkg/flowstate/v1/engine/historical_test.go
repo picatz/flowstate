@@ -428,7 +428,7 @@ func TestAHistoricalHoldIsWhatTheLiveSessionSaw(t *testing.T) {
 			signalStep("gate", "go", 5*time.Minute),
 			logStep("one", "1"), logStep("two", "2"), logStep("three", "3"),
 		},
-		Debug: &v1.SignalPolicy{Allow: []*v1.SignalPolicyRule{{Claims: map[string]string{"role": "sre"}}}},
+		Debug: &v1.SignalPolicy{Allow: `sender.identity.claims["role"] == "sre"`},
 	}
 	run, err := temporal.ExecuteWorkflow(t.Context(),
 		client.StartWorkflowOptions{ID: "historical-hold", TaskQueue: engine.RunTaskQueueName},

@@ -110,10 +110,9 @@ func init() {
 				" webhook, lose `flow run` — and nobody discovers an inferred lock until\n" +
 				" they need it not to be there.\n" +
 				"\n" +
-				" Contradicts each field below that says who may start (allowed_principals\n" +
-				" and allow_expr), and the compiler refuses the combination\n" +
-				" rather than resolving it by precedence: a refusal that also lists who may\n" +
-				" start the workload is two sentences that cannot both be true.\n",
+				" Contradicts [allow], and the compiler refuses the combination rather than\n" +
+				" resolving it by precedence: a refusal that also says who may start the\n" +
+				" workload is two sentences that cannot both be true.\n",
 		},
 		{
 			Name: "flowstate.v1.ManualTrigger.require_reason",
@@ -126,29 +125,12 @@ func init() {
 				" who has one is still present to give it.\n",
 		},
 		{
-			Name: "flowstate.v1.ManualTrigger.allowed_principals",
-			Leading: " AllowedPrincipals restricts a manual start to these issuer-qualified\n" +
-				" authenticated identities, each written as \"<issuer>#<subject>\" and matched\n" +
-				" exactly against the caller's stable Principal.ID. Neither half comes from\n" +
-				" the request: OIDC and mTLS authentication establish both. The spelling has\n" +
-				" exactly one \"#\" separator; an identity with \"#\" in either half cannot be\n" +
-				" represented ambiguously and is therefore refused by an allowlist.\n" +
-				"\n" +
-				" Empty means every authenticated caller, which is today's behavior and what\n" +
-				" a workflow with no `manual:` block keeps. Non-empty is a closed set: a\n" +
-				" qualified principal that is not in it is refused. Bare subjects are invalid,\n" +
-				" not global aliases: a subject is unique only within its issuer. Missing,\n" +
-				" zero, and insecure anonymous development identities cannot satisfy the set.\n",
-		},
-		{
-			Name: "flowstate.v1.ManualTrigger.allow_expr",
-			Leading: " AllowExpr is one CEL predicate deciding who may start the workload by\n" +
-				" hand, written in a Flowfile as `manual: allow: ${...}`, accepted beside\n" +
-				" [allowed_principals] (which behaves exactly as before). A block sets one of\n" +
-				" the two, never both: two mechanisms would be two answers to \"who may act\".\n" +
+			Name: "flowstate.v1.ManualTrigger.allow",
+			Leading: " Allow is one CEL predicate deciding who may start the workload by hand,\n" +
+				" written in a Flowfile as `manual: allow: ${...}`.\n" +
 				"\n" +
 				" The source is stored without the `${` `}` fence and evaluated by the same\n" +
-				" function that decides `signals:` and `debug:` ([SignalPolicy.allow_expr]),\n" +
+				" function that decides `signals:` and `debug:` ([SignalPolicy.allow]),\n" +
 				" server-side, against the server's own attestation of the caller, over a\n" +
 				" closed scope: `sender.identity.{principal,subject,issuer,namespace,claims}`\n" +
 				" (the caller) and `inputs` (the arguments being SUBMITTED with this start).\n" +
@@ -163,7 +145,7 @@ func init() {
 				" A predicate that reads `inputs` must also read `sender.identity.claims`:\n" +
 				" the caller chooses the inputs, and there is no run starter to compare\n" +
 				" against, so a predicate over them alone would let the caller admit\n" +
-				" themselves. Like [allowed_principals], it contradicts [denied].\n",
+				" themselves. It contradicts [denied].\n",
 		},
 		{
 			Name: "flowstate.v1.TriggerContext",
@@ -380,7 +362,7 @@ func init() {
 				" admits or refuses a person.\n" +
 				"\n" +
 				" What that principal cannot say is *who clicked*. `hmac_sha256` and\n" +
-				" `stripe` attest a key holder, so `distinct_from_starter:` separates\n" +
+				" `stripe` attest a key holder, so an `allow:` predicate comparing `run.identity` separates\n" +
 				" triggers rather than humans on this path, and a workflow that needs two\n" +
 				" distinct people either side of a gate cannot get them from a webhook\n" +
 				" today.\n" +
@@ -388,11 +370,13 @@ func init() {
 				" # The zero case is closed here, and only here\n" +
 				"\n" +
 				" A signal name with no `signals:` entry admits any sender — the deliberate\n" +
-				" zero case, argued at [SignalPolicyAllows], and tolerable for `flow signal`\n" +
+				" zero case, argued at `SignalPolicyCheck`, and tolerable for `flow signal`\n" +
 				" behind the server's own authentication. It is not tolerable for a key\n" +
-				" holder on a public route, so a `signal:` naming a name with no policy that\n" +
-				" could admit this trigger's principal is refused when the file compiles.\n" +
-				" That refusal is a property of the *file*, so `flow validate` says it with\n" +
+				" holder on a public route, so a `signal:` naming a name with no policy is\n" +
+				" refused when the file compiles; a policy whose predicate cannot admit this\n" +
+				" trigger's principal denies every delivery instead, because what a\n" +
+				" predicate admits is decided at delivery, over the sender. The refusal of\n" +
+				" a missing policy is a property of the *file*, so `flow validate` says it with\n" +
 				" a line and a column rather than a receiver discovering it at three in the\n" +
 				" morning.\n",
 		},

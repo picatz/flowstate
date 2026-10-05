@@ -13,44 +13,25 @@ func init() {
 			Name: "flowstate.v1.SignalPolicy",
 			Leading: " SignalPolicy constrains who may deliver one named signal to a run.\n" +
 				"\n" +
-				" A sender is authorized if it satisfies *any* rule in [allow]: the rules\n" +
-				" are alternatives, not requirements every one of them must meet. See\n" +
-				" [SignalPolicyRule] for what one rule may require.\n",
+				" A sender is authorized when the one CEL predicate in [allow] is true. The\n" +
+				" same message carries the `debug:` stanza's policy, and `manual:` has the same\n" +
+				" shape in `ManualTrigger.allow`.\n" +
+				"\n" +
+				" Field 1 (the `allow` rule list of `SignalPolicyRule` messages), field 2\n" +
+				" (`distinct_from_starter`) and the rule message itself were retired in favor\n" +
+				" of the predicate: every rule list is a disjunction of conjunctions over the\n" +
+				" sender, and `flow fix` rewrites each one into the predicate that says the\n" +
+				" same. Their numbers are reserved so a policy frozen in an older run's memo\n" +
+				" decodes as a policy with no predicate, which authorizes nobody, never as one\n" +
+				" that reads a stale field as something else.\n",
 		},
 		{
 			Name: "flowstate.v1.SignalPolicy.allow",
-			Leading: " Allow lists the alternative rules that may authorize a sender. At least\n" +
-				" one unless [allow_expr] is set instead, or the policy authorizes nobody,\n" +
-				" which is indistinguishable from a typo and is refused by the compiler\n" +
+			Leading: " Allow is one CEL predicate that decides the whole policy, written in a\n" +
+				" Flowfile as `allow: ${...}`. A policy with none authorizes nobody, which\n" +
+				" is indistinguishable from a typo and is refused by the compiler\n" +
 				" (`CheckPolicyShape`) rather than accepted as (probably unintended)\n" +
-				" lockout.\n",
-		},
-		{
-			Name: "flowstate.v1.SignalPolicy.distinct_from_starter",
-			Leading: " DistinctFromStarter requires, in addition to whichever rule in [allow]\n" +
-				" an otherwise-authorized sender satisfies, that the sender not be this\n" +
-				" run's own starter: the same issuer and the same subject as the\n" +
-				" identity that submitted the run, compared the way `SignalPolicyRule.subject`\n" +
-				" already is (see `QualifiedSubject`). Set at the policy level, not on a\n" +
-				" rule, so it cannot be bypassed by adding a wide-open rule to `allow:`:\n" +
-				" separation of duties is ANDed onto every rule this policy has, present\n" +
-				" or future, rather than expressed as one more alternative a caller could\n" +
-				" satisfy around it.\n" +
-				"\n" +
-				" Enforced against the `flowstate.starter` value recorded on the run's\n" +
-				" memo at submit. A run whose memo predates that key (started before\n" +
-				" this field existed) has nothing to compare against, and is refused\n" +
-				" whenever this flag demands the comparison: a run that cannot prove\n" +
-				" separation does not get it, the same fail-closed rule\n" +
-				" [SignalPolicyAllows]'s own doc comment states for every other case once\n" +
-				" a policy exists.\n",
-		},
-		{
-			Name: "flowstate.v1.SignalPolicy.allow_expr",
-			Leading: " AllowExpr is one CEL predicate that decides the whole policy, written in a\n" +
-				" Flowfile as `allow: ${...}`, in place of the [allow] rule list. A policy\n" +
-				" sets one of the two, never both: two mechanisms in one policy would be two\n" +
-				" answers to \"who may act\", and the compiler refuses it.\n" +
+				" lockout.\n" +
 				"\n" +
 				" The source is stored without the `${` `}` fence. It is evaluated\n" +
 				" server-side, against the server's own attestation, over a closed scope:\n" +
@@ -66,95 +47,11 @@ func init() {
 				"\n" +
 				" A predicate that reads `inputs` must also read `sender.identity.claims` or\n" +
 				" `run.identity`: whoever started the run chose the inputs, so a predicate\n" +
-				" over them alone would let the starter name their own approver, the same\n" +
-				" fault `SignalPolicyRule.subject_from` is refused for. This is the coarser,\n" +
-				" syntactic form of that rule.\n",
-		},
-		{
-			Name: "flowstate.v1.SignalPolicyRule",
-			Leading: " SignalPolicyRule is one admissible sender, checked against the\n" +
-				" [SignalSender] the server itself attested, never against anything the\n" +
-				" signal's payload claims.\n" +
+				" over them alone would let the starter name their own approver. This is a\n" +
+				" syntactic rule, so authors should write the narrowing as a conjunction.\n" +
 				"\n" +
-				" Every field set on a rule must match (an AND); a rule with nothing set\n" +
-				" matches every sender, which defeats the point of writing one, so the\n" +
-				" compiler refuses it. Combine subject *and* claims in one rule to express\n" +
-				" \"this identity, and it must also carry this claim\". That is one list\n" +
-				" entry, not two policies an author has to keep in sync by hand.\n",
-		},
-		{
-			Name: "flowstate.v1.SignalPolicyRule.subject",
-			Leading: " Subject is an issuer-qualified identity, written as\n" +
-				" \"<issuer>#<subject>\", matched exactly against the attested sender's\n" +
-				" `issuer` and `subject` together.\n" +
-				"\n" +
-				" Issuer-qualified rather than subject alone, on purpose: a subject is\n" +
-				" only unique within its issuer (`auth/principal.go`'s own rule, restated\n" +
-				" by `examples/approval-gate/workflow.yaml`'s self-approval check for the\n" +
-				" identical reason), so two identity providers can each mint a \"runner\"\n" +
-				" subject that must not be treated as the same caller. A rule keyed on\n" +
-				" subject alone would authorize the wrong runner's signal under the right\n" +
-				" name, the same multi-IdP ambiguity a bare-subject `run.identity`\n" +
-				" comparison has. Only\n" +
-				" the qualified spelling is accepted; there is no subject-only form to be\n" +
-				" ambiguous about.\n",
-		},
-		{
-			Name: "flowstate.v1.SignalPolicyRule.namespace",
-			Leading: " Namespace restricts to one tenant, matched exactly against the attested\n" +
-				" sender's `namespace`.\n" +
-				"\n" +
-				" Rarely useful alone (every signal is already confined to its run's own\n" +
-				" tenant by `authorizeRun`, before this policy is even consulted), but\n" +
-				" combines with `claims` to express \"anyone in this tenant carrying this\n" +
-				" claim\" without naming individual subjects.\n",
-		},
-		{
-			Name: "flowstate.v1.SignalPolicyRule.claims",
-			Leading: " Claims are exact-match requirements against the attested sender's\n" +
-				" claims: every key here must be present on the sender with this value.\n" +
-				" Empty places no claim requirement, so a rule naming only `subject` is\n" +
-				" ordinary and common.\n",
-		},
-		{
-			Name: "flowstate.v1.SignalPolicyRule.subject_from",
-			Leading: " SubjectFrom carries `subject:` written as an expression (`subject:\n" +
-				" ${...}` in a Flowfile) rather than a literal. It resolves exactly\n" +
-				" once, at submit, against the run's bound inputs (after\n" +
-				" `BindRunInputs`, before anything else runs), and the result is written\n" +
-				" into [subject] and this field is cleared before the policy is frozen\n" +
-				" into the run's memo.\n" +
-				"\n" +
-				" That resolve-then-clear is why the enforcement path never evaluates an\n" +
-				" expression: by the time a signal can arrive, `subject` already holds a\n" +
-				" literal or is empty, and [subject_from] is always unset on whatever\n" +
-				" `SignalPolicyAllows` is asked to check. A decoded policy that still\n" +
-				" carries a populated `subject_from` is refused by\n" +
-				" `CheckSignalPolicyShape`: an unresolved expression must never survive\n" +
-				" to the path that authorizes a signal, because that path runs on every\n" +
-				" delivery and evaluating a caller-influenced expression there is\n" +
-				" exactly what `BindRunInputs`'s own input-value rule already refuses\n" +
-				" for an ordinary input.\n" +
-				"\n" +
-				" The narrowing rule: a rule that sets this field must also set\n" +
-				" [claims], or its policy must set [distinct_from_starter]. An\n" +
-				" interpolated subject alone would let whoever starts a run pick their\n" +
-				" own authorization by choosing what input value to submit — naming\n" +
-				" themselves as their own approver — so it must be accompanied by\n" +
-				" something the run's inputs cannot reach. Claims are attested on the\n" +
-				" sender's own token; `distinct_from_starter` refuses the starter by\n" +
-				" comparison rather than by matching at all.\n" +
-				"\n" +
-				" [namespace] is deliberately not one of them, though it looks like it\n" +
-				" should be. A namespace is compared against the sender's own, and no\n" +
-				" sender with a different one can reach the comparison: `Signal` reaches\n" +
-				" `authorizeSignal` only through `authorizeRun`, which refuses any\n" +
-				" caller outside the namespace recorded on the run — and the namespace\n" +
-				" recorded on a run is the starter's. So a namespace equal to the run's\n" +
-				" own tenant restates a constraint that already held, and any other\n" +
-				" value makes the rule unmatchable; either way it narrows nothing, while\n" +
-				" reading in the file as though the gate had been closed.\n" +
-				" `CheckSignalPolicyShape` enforces all of this.\n",
+				" This field was `allow_expr` at the same number before the rule list was\n" +
+				" retired; the wire encoding is unchanged and only the JSON name differs.\n",
 		},
 		{
 			Name: "flowstate.v1.Signal",

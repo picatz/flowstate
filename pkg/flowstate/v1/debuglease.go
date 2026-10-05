@@ -316,29 +316,29 @@ func NewDebugAsk(verb string, lease time.Duration) *Node_Outputs {
 // that is the whole difference between this and SignalPolicyCheck. An
 // ordinary signal name with no policy is unconstrained because authorization
 // there is opt-in and failing closed would have denied every existing
-// workflow's next delivery for a policy nobody wrote ([SignalPolicyAllows]
-// argues it in full). Nothing has ever paused a durable run, so there is no
+// workflow's next delivery for a policy nobody wrote (see
+// [SignalPolicyCheck]). Nothing has ever paused a durable run, so there is no
 // prior behavior to preserve here and the only reachable default is the
 // fail-closed one: #928's "no policy, no pause, no inspect", recorded
 // 2026-08-23.
 //
 // # It is SignalPolicyCheck once the policy exists
 //
-// Everything after the zero case — which rules authorize, how claims are
-// compared, `distinct_from_starter` — is that function, called, not a second
+// Everything after the zero case — how the predicate is evaluated, what
+// it may read, how it fails closed — is that function, called, not a second
 // matcher written beside it. A debug policy laxer than a signal policy for the
-// same words would be the drift CLAUDE.md's "one function, two callers" rule
-// exists to prevent, in the direction that matters most.
+// same words would be the drift the "one mechanism per concept" rule exists to
+// prevent, in the direction that matters most.
 //
 // inputs is the debugged run's bound arguments, which an `allow: ${...}`
 // predicate may read; nil leaves `inputs` unbound, so a predicate that reads
 // them errors and denies.
 func DebugPolicyCheck(ctx context.Context, policy *SignalPolicy, identity *WorkloadIdentity, starter *WorkloadIdentity, hasStarter bool, inputs map[string]*Value) error {
-	// Neither rules nor a predicate is the zero case. A policy with an
-	// `allow: ${...}` predicate has no rules and is a policy: it is decided by
-	// the one evaluator `signals:` uses, over the same scope (the sender, the
-	// run's starter, the debugged run's inputs), and fails closed the same way.
-	if policy == nil || (len(policy.GetAllow()) == 0 && policy.GetAllowExpr() == "") {
+	// No predicate is the zero case. A policy with an `allow: ${...}`
+	// predicate is decided by the one evaluator `signals:` uses, over the same
+	// scope (the sender, the run's starter, the debugged run's inputs), and
+	// fails closed the same way.
+	if policy == nil || policy.GetAllow() == "" {
 		return fmt.Errorf(
 			"this workflow declares no `debug:` policy, so no caller may pause its durable runs; " +
 				"a run with nothing saying who may debug it is not debuggable")
@@ -349,13 +349,7 @@ func DebugPolicyCheck(ctx context.Context, policy *SignalPolicy, identity *Workl
 
 // CheckDebugPolicy reports what is wrong with a workflow's declared `debug:`
 // stanza, on the same terms [CheckSignalPolicies] reports its neighbour's.
-//
-// requireResolvedSubjects follows [CheckSignalPolicyShape]'s meaning exactly:
-// false for a workflow's own declared stanza, checked at submit before inputs
-// are bound; true for a policy decoded back off a run's memo, where a
-// surviving `subject_from` is corruption rather than a resolution that has not
-// happened yet.
-func CheckDebugPolicy(policy *SignalPolicy, requireResolvedSubjects bool) error {
+func CheckDebugPolicy(policy *SignalPolicy) error {
 	if policy == nil {
 		// The zero case, and a legitimate one: a workflow that declares no
 		// `debug:` is well formed and simply not debuggable. Refusing it here
@@ -363,7 +357,7 @@ func CheckDebugPolicy(policy *SignalPolicy, requireResolvedSubjects bool) error 
 		return nil
 	}
 
-	return CheckPolicyShape("debug", policy, requireResolvedSubjects)
+	return CheckPolicyShape("debug", policy)
 }
 
 // CheckReservedSignalNames refuses a workflow that waits for, or declares a
@@ -617,7 +611,7 @@ func DebugLeaseHeld(lease *DebugSession, now time.Time) bool {
 // DebugLeaseHolder reports whether identity is the one holding lease.
 //
 // Compared as [QualifiedSubject] — issuer and subject together — which is the
-// same join `SignalPolicyRule.subject` is matched by, and for the same reason:
+// same join a predicate's `principal` is, and for the same reason:
 // a subject is unique only within its issuer, so two identity providers can
 // each mint a "runner" that must not be able to resume each other's leases.
 //

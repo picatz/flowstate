@@ -16,8 +16,7 @@ func bridgeSource(with string) string {
 name: deploy-gate
 signals:
   stage-approved:
-    allow:
-      - subject: flowstate://webhook#deploy-gate/slack-approval
+    allow: ${sender.identity.principal == "flowstate://webhook#deploy-gate/slack-approval"}
 triggers:
   - webhook: slack-approval
     verify:

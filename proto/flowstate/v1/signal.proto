@@ -12,42 +12,26 @@ option go_package = "flowstatev1";
 
 // SignalPolicy constrains who may deliver one named signal to a run.
 //
-// A sender is authorized if it satisfies *any* rule in [allow]: the rules
-// are alternatives, not requirements every one of them must meet. See
-// [SignalPolicyRule] for what one rule may require.
+// A sender is authorized when the one CEL predicate in [allow] is true. The
+// same message carries the `debug:` stanza's policy, and `manual:` has the same
+// shape in `ManualTrigger.allow`.
+//
+// Field 1 (the `allow` rule list of `SignalPolicyRule` messages), field 2
+// (`distinct_from_starter`) and the rule message itself were retired in favor
+// of the predicate: every rule list is a disjunction of conjunctions over the
+// sender, and `flow fix` rewrites each one into the predicate that says the
+// same. Their numbers are reserved so a policy frozen in an older run's memo
+// decodes as a policy with no predicate, which authorizes nobody, never as one
+// that reads a stale field as something else.
 message SignalPolicy {
-  // Allow lists the alternative rules that may authorize a sender. At least
-  // one unless [allow_expr] is set instead, or the policy authorizes nobody,
-  // which is indistinguishable from a typo and is refused by the compiler
+  reserved 1, 2;
+  reserved "distinct_from_starter";
+
+  // Allow is one CEL predicate that decides the whole policy, written in a
+  // Flowfile as `allow: ${...}`. A policy with none authorizes nobody, which
+  // is indistinguishable from a typo and is refused by the compiler
   // (`CheckPolicyShape`) rather than accepted as (probably unintended)
   // lockout.
-  repeated SignalPolicyRule allow = 1 [
-    (buf.validate.field).repeated = {max_items: 32}
-  ];
-
-  // DistinctFromStarter requires, in addition to whichever rule in [allow]
-  // an otherwise-authorized sender satisfies, that the sender not be this
-  // run's own starter: the same issuer and the same subject as the
-  // identity that submitted the run, compared the way `SignalPolicyRule.subject`
-  // already is (see `QualifiedSubject`). Set at the policy level, not on a
-  // rule, so it cannot be bypassed by adding a wide-open rule to `allow:`:
-  // separation of duties is ANDed onto every rule this policy has, present
-  // or future, rather than expressed as one more alternative a caller could
-  // satisfy around it.
-  //
-  // Enforced against the `flowstate.starter` value recorded on the run's
-  // memo at submit. A run whose memo predates that key (started before
-  // this field existed) has nothing to compare against, and is refused
-  // whenever this flag demands the comparison: a run that cannot prove
-  // separation does not get it, the same fail-closed rule
-  // [SignalPolicyAllows]'s own doc comment states for every other case once
-  // a policy exists.
-  bool distinct_from_starter = 2;
-
-  // AllowExpr is one CEL predicate that decides the whole policy, written in a
-  // Flowfile as `allow: ${...}`, in place of the [allow] rule list. A policy
-  // sets one of the two, never both: two mechanisms in one policy would be two
-  // answers to "who may act", and the compiler refuses it.
   //
   // The source is stored without the `${` `}` fence. It is evaluated
   // server-side, against the server's own attestation, over a closed scope:
@@ -63,101 +47,12 @@ message SignalPolicy {
   //
   // A predicate that reads `inputs` must also read `sender.identity.claims` or
   // `run.identity`: whoever started the run chose the inputs, so a predicate
-  // over them alone would let the starter name their own approver, the same
-  // fault `SignalPolicyRule.subject_from` is refused for. This is the coarser,
-  // syntactic form of that rule.
-  string allow_expr = 3 [(buf.validate.field).string.max_len = 2048];
-}
-
-// SignalPolicyRule is one admissible sender, checked against the
-// [SignalSender] the server itself attested, never against anything the
-// signal's payload claims.
-//
-// Every field set on a rule must match (an AND); a rule with nothing set
-// matches every sender, which defeats the point of writing one, so the
-// compiler refuses it. Combine subject *and* claims in one rule to express
-// "this identity, and it must also carry this claim". That is one list
-// entry, not two policies an author has to keep in sync by hand.
-message SignalPolicyRule {
-  // Subject is an issuer-qualified identity, written as
-  // "<issuer>#<subject>", matched exactly against the attested sender's
-  // `issuer` and `subject` together.
+  // over them alone would let the starter name their own approver. This is a
+  // syntactic rule, so authors should write the narrowing as a conjunction.
   //
-  // Issuer-qualified rather than subject alone, on purpose: a subject is
-  // only unique within its issuer (`auth/principal.go`'s own rule, restated
-  // by `examples/approval-gate/workflow.yaml`'s self-approval check for the
-  // identical reason), so two identity providers can each mint a "runner"
-  // subject that must not be treated as the same caller. A rule keyed on
-  // subject alone would authorize the wrong runner's signal under the right
-  // name, the same multi-IdP ambiguity a bare-subject `run.identity`
-  // comparison has. Only
-  // the qualified spelling is accepted; there is no subject-only form to be
-  // ambiguous about.
-  string subject = 1 [(buf.validate.field) = {
-    ignore: IGNORE_IF_UNPOPULATED
-    string: {
-      max_len: 320
-      pattern: "^[^#]+#[^#]+$"
-    }
-  }];
-
-  // Namespace restricts to one tenant, matched exactly against the attested
-  // sender's `namespace`.
-  //
-  // Rarely useful alone (every signal is already confined to its run's own
-  // tenant by `authorizeRun`, before this policy is even consulted), but
-  // combines with `claims` to express "anyone in this tenant carrying this
-  // claim" without naming individual subjects.
-  string namespace = 2 [(buf.validate.field).string = {max_len: 128}];
-
-  // Claims are exact-match requirements against the attested sender's
-  // claims: every key here must be present on the sender with this value.
-  // Empty places no claim requirement, so a rule naming only `subject` is
-  // ordinary and common.
-  map<string, string> claims = 3 [(buf.validate.field).map = {
-    max_pairs: 16
-    keys: {string: {min_len: 1, max_len: 128}}
-    values: {string: {max_len: 256}}
-  }];
-
-  // SubjectFrom carries `subject:` written as an expression (`subject:
-  // ${...}` in a Flowfile) rather than a literal. It resolves exactly
-  // once, at submit, against the run's bound inputs (after
-  // `BindRunInputs`, before anything else runs), and the result is written
-  // into [subject] and this field is cleared before the policy is frozen
-  // into the run's memo.
-  //
-  // That resolve-then-clear is why the enforcement path never evaluates an
-  // expression: by the time a signal can arrive, `subject` already holds a
-  // literal or is empty, and [subject_from] is always unset on whatever
-  // `SignalPolicyAllows` is asked to check. A decoded policy that still
-  // carries a populated `subject_from` is refused by
-  // `CheckSignalPolicyShape`: an unresolved expression must never survive
-  // to the path that authorizes a signal, because that path runs on every
-  // delivery and evaluating a caller-influenced expression there is
-  // exactly what `BindRunInputs`'s own input-value rule already refuses
-  // for an ordinary input.
-  //
-  // The narrowing rule: a rule that sets this field must also set
-  // [claims], or its policy must set [distinct_from_starter]. An
-  // interpolated subject alone would let whoever starts a run pick their
-  // own authorization by choosing what input value to submit — naming
-  // themselves as their own approver — so it must be accompanied by
-  // something the run's inputs cannot reach. Claims are attested on the
-  // sender's own token; `distinct_from_starter` refuses the starter by
-  // comparison rather than by matching at all.
-  //
-  // [namespace] is deliberately not one of them, though it looks like it
-  // should be. A namespace is compared against the sender's own, and no
-  // sender with a different one can reach the comparison: `Signal` reaches
-  // `authorizeSignal` only through `authorizeRun`, which refuses any
-  // caller outside the namespace recorded on the run — and the namespace
-  // recorded on a run is the starter's. So a namespace equal to the run's
-  // own tenant restates a constraint that already held, and any other
-  // value makes the rule unmatchable; either way it narrows nothing, while
-  // reading in the file as though the gate had been closed.
-  // `CheckSignalPolicyShape` enforces all of this.
-  Value subject_from = 4;
+  // This field was `allow_expr` at the same number before the rule list was
+  // retired; the wire encoding is unchanged and only the JSON name differs.
+  string allow = 3 [(buf.validate.field).string.max_len = 2048];
 }
 
 // Signal names something a workload waits to be told.

@@ -180,7 +180,7 @@ func TestGetGateShowsARefusedCallerNothingTheyWereNotGranted(t *testing.T) {
 			fake := runningFake(t)
 			fake.describe.WorkflowExecutionInfo.Memo.Fields[signalPolicyMemoKey] =
 				memoWithSignalPolicy(t, map[string]*v1.SignalPolicy{
-					"go": {Allow: []*v1.SignalPolicyRule{{Subject: "https://issuer.example#approver"}}},
+					"go": {Allow: `sender.identity.principal == "https://issuer.example#approver"`},
 				}).GetWorkflowExecutionInfo().GetMemo().GetFields()[signalPolicyMemoKey]
 			starter, err := converter.GetDefaultDataConverter().ToPayload("https://issuer.example#requester")
 			require.NoError(t, err)

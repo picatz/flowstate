@@ -1077,10 +1077,10 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 
 	ctx = v1.NewContextWithTrigger(ctx, trigger)
 
-	// Resolved here, against the case's own inputs, the same way submit
-	// resolves a `subject: ${inputs.x}` rule to a literal before anything is
-	// enforced ([v1.ResolveSignalPolicySubjects]) — so a scripted `sender:`
-	// is checked against the same literal production would check it against.
+	// The declared policies are enforced as written: a predicate is evaluated
+	// on every delivery against the scripted sender, the starter and these
+	// bound inputs, the same function production's `authorizeSignal` calls, so
+	// nothing is resolved here that production would resolve differently.
 	// A bind failure here is not reported directly: [v1.RunWithInputs] below
 	// performs the identical bind on the same inputs and is what the case's
 	// own `expect.failed`/`expect.error_contains` are written against, so a
@@ -1106,17 +1106,7 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 		// fails at the same bind before any step runs.
 		sensitive = sensitiveNativeValues(&v1.Scope{Inputs: bound}, v1.SensitiveInputNames(workflow))
 
-		resolved, err := v1.ResolveSignalPolicySubjects(ctx, workflow, bound)
-		if err != nil {
-			// A `subject:` that resolved to something other than
-			// `<issuer>#<subject>` is refused quoting what it resolved to,
-			// which can be a sensitive input's value (#2100): rendered
-			// through the run's own set, as every exit below it is.
-			posture = posture.Merge(sensitive)
-			caseError("resolving workflow %q's signal policy: %v", test.Workflow, err)
-			return
-		}
-		policies = resolved
+		policies = workflow.GetSignals()
 	} else {
 		// The run refuses at the same bind, and its refusal can quote the
 		// value it refused (`must satisfy …; got <value>`), which no step
@@ -1182,7 +1172,7 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	}
 
 	// Who this case runs as, for the one question a starter answers locally:
-	// what `distinct_from_starter:` compares a scripted `sender:` against.
+	// what a predicate reading `run.identity` compares a scripted `sender:` against.
 	// [Test.Starter] names it, the way `flow run local --as-subject` names it
 	// for a rehearsal on the command line; a case that names none runs as
 	// nobody, exactly as every case did before that field existed.
@@ -1191,7 +1181,7 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	// starter ran as nobody, which is a known fact, because a `flow test` case has
 	// no concept of "who ran this test" unless the case says: it is not a gap in a
 	// record the way a durable run predating [starterMemoKey] is. Treating it
-	// as unknown would make every `distinct_from_starter` policy
+	// as unknown would make every predicate that reads `run.identity`
 	// unconditionally refuse every case, including one that scripts a
 	// genuinely qualifying `sender:`, the happy path this harness exists to
 	// let an author exercise at all. See [v1.NewPolicedLocalSignals]'s own doc
@@ -1861,8 +1851,8 @@ func scriptedSender(s *ScriptedIdentity, deliveryID string) *v1.SignalSender {
 }
 
 // scriptedIdentity renders a [ScriptedIdentity] as the [v1.WorkloadIdentity] a
-// `signals:` policy is matched against - one conversion for both ends of that
-// comparison, because `distinct_from_starter:` compares a sender's rendering
+// `signals:` predicate reads - one conversion for both ends of that
+// comparison, because a `run.identity` comparison compares a sender's rendering
 // against a starter's and two conversions could disagree about a field.
 //
 // A nil identity renders as an empty one rather than nil, which is what a case

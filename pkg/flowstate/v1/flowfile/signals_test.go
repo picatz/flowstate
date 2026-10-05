@@ -12,9 +12,11 @@ import (
 )
 
 // #206 gap 1's grammar: `signals:` declares, per signal name, who may
-// deliver it. See [pkg/flowstate/v1/signalpolicy.go] for the enforcement
-// this describes and [pkg/flowstate/v1/server/lifecycle.go] for where it is
-// checked.
+// deliver it, as one `allow: ${...}` predicate. See
+// [pkg/flowstate/v1/signalpolicy.go] for the enforcement this describes and
+// [pkg/flowstate/v1/server/lifecycle.go] for where it is checked. The
+// predicate-specific grammar is pinned in signals_predicate_test.go; this file
+// is the block around it.
 const signaledSource = `edition: v2026.4
 name: deploy-gate
 steps:
@@ -24,10 +26,9 @@ steps:
       timeout: 24h
 signals:
   deploy-approved:
-    allow:
-      - subject: "https://issuer.example.com#release-manager@example.com"
-      - claims:
-          team: release-managers
+    allow: >-
+      ${sender.identity.principal == "https://issuer.example.com#release-manager@example.com" ||
+      sender.identity.claims.team == "release-managers"}
 `
 
 // TestParsingASignalsBlock pins what the block compiles to.
@@ -39,18 +40,11 @@ func TestParsingASignalsBlock(t *testing.T) {
 
 	policy := workflow.GetSignals()["deploy-approved"]
 	require.NotNil(t, policy)
-	require.Len(t, policy.GetAllow(), 2)
-
-	assert.Equal(t, "https://issuer.example.com#release-manager@example.com", policy.GetAllow()[0].GetSubject())
-	assert.Empty(t, policy.GetAllow()[0].GetClaims())
-
-	assert.Empty(t, policy.GetAllow()[1].GetSubject())
-	assert.Equal(t, map[string]string{"team": "release-managers"}, policy.GetAllow()[1].GetClaims())
+	assert.Contains(t, policy.GetAllow(), `sender.identity.principal == "https://issuer.example.com#release-manager@example.com"`)
+	assert.Contains(t, policy.GetAllow(), `sender.identity.claims.team == "release-managers"`)
 
 	for _, path := range []string{
 		"signals", "signals.deploy-approved", "signals.deploy-approved.allow",
-		"signals.deploy-approved.allow[0]", "signals.deploy-approved.allow[0].subject",
-		"signals.deploy-approved.allow[1]", "signals.deploy-approved.allow[1].claims",
 	} {
 		_, ok := positions.At(path)
 		assert.True(t, ok, "no recorded position for %q", path)
@@ -87,12 +81,7 @@ func TestMarshalIsTheInverseForSignals(t *testing.T) {
 	for name, policy := range workflow.GetSignals() {
 		roundTripped := again.GetSignals()[name]
 		require.NotNil(t, roundTripped, "signal %q vanished across Marshal/Unmarshal", name)
-		require.Len(t, roundTripped.GetAllow(), len(policy.GetAllow()))
-		for i, rule := range policy.GetAllow() {
-			assert.Equal(t, rule.GetSubject(), roundTripped.GetAllow()[i].GetSubject())
-			assert.Equal(t, rule.GetNamespace(), roundTripped.GetAllow()[i].GetNamespace())
-			assert.Equal(t, rule.GetClaims(), roundTripped.GetAllow()[i].GetClaims())
-		}
+		assert.Equal(t, policy.GetAllow(), roundTripped.GetAllow())
 	}
 }
 
@@ -115,11 +104,9 @@ steps:
       timeout: 1h
 signals:
   zzz-last:
-    allow:
-      - subject: "https://issuer.example.com#z@example.com"
+    allow: ${sender.identity.principal == "https://issuer.example.com#z@example.com"}
   aaa-first:
-    allow:
-      - subject: "https://issuer.example.com#a@example.com"
+    allow: ${sender.identity.principal == "https://issuer.example.com#a@example.com"}
 `
 	workflow, err := flowfile.Unmarshal([]byte(src))
 	require.NoError(t, err)
@@ -152,10 +139,9 @@ func TestSignalPolicyForAnUndeclaredNameIsMisspelled(t *testing.T) {
 	assert.Contains(t, diagnostics[0].Message, "no `wait_for_signal:`")
 }
 
-// TestSignalPolicyRuleWithNothingSetIsRefused checks the diagnostic for a
-// rule that would authorize every sender — almost certainly not what an
-// author meant when they wrote a rule at all.
-func TestSignalPolicyRuleWithNothingSetIsRefused(t *testing.T) {
+// TestSignalPolicyWithNoPredicateIsRefused checks the diagnostic for a policy
+// that authorizes nobody, which is indistinguishable from a typo.
+func TestSignalPolicyWithNoPredicateIsRefused(t *testing.T) {
 	t.Parallel()
 
 	source := `edition: v2026.4
@@ -166,29 +152,32 @@ steps:
       name: deploy-approved
       timeout: 24h
 signals:
-  deploy-approved:
-    allow:
-      - {}
+  deploy-approved: {}
 `
 	_, _, err := flowfile.Parse([]byte(source))
-	require.Error(t, err, "an empty rule under `allow:` was accepted silently")
-	assert.Contains(t, err.Error(), "match every sender")
+	require.Error(t, err, "a policy with no predicate was accepted silently")
+	assert.Contains(t, err.Error(), "authorizes nobody")
 }
 
-// TestSignalPolicySubjectMustBeIssuerQualified checks #215's lesson,
-// restated for signal policy: a bare subject with no issuer is refused with
-// an explanation, not merely rejected by protovalidate's generic pattern
-// message.
-func TestSignalPolicySubjectMustBeIssuerQualified(t *testing.T) {
+// TestSignalPolicyPredicateComparingABareSubjectCompilesButNeverMatches
+// restates #215's lesson for signal policy at the file level: the compiler
+// does not guess what a string compared with a principal was meant to be, so
+// the enforcement test pins that a bare subject never admits a qualified
+// sender (see signalpolicy_test.go).
+func TestSignalPolicyPredicateComparingABareSubjectCompilesButNeverMatches(t *testing.T) {
 	t.Parallel()
 
 	source := strings.Replace(signaledSource,
-		`subject: "https://issuer.example.com#release-manager@example.com"`,
-		`subject: "release-manager@example.com"`, 1)
+		`"https://issuer.example.com#release-manager@example.com"`,
+		`"release-manager@example.com"`, 1)
 
-	_, _, err := flowfile.Parse([]byte(source))
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "issuer")
+	workflow, err := flowfile.Unmarshal([]byte(source))
+	require.NoError(t, err)
+
+	policy := &v1.SignalPolicy{Allow: workflow.GetSignals()["deploy-approved"].GetAllow()}
+	require.Error(t, v1.SignalPolicyCheck(t.Context(), policy,
+		&v1.WorkloadIdentity{Issuer: "https://issuer.example.com", Subject: "release-manager@example.com"}, nil, false, nil),
+		"a bare subject admitted a qualified sender")
 }
 
 // TestAnEmptySignalsBlockDoesNotRoundTrip mirrors the `triggers:` and
@@ -212,16 +201,12 @@ signals: {}
 	assert.Nil(t, workflow.GetSignals(), "an empty `signals:` block compiled to something rather than nothing")
 }
 
-// #207 slice 1's grammar: `subject:` may be written `${...}`, resolved once
-// at submit against the run's bound inputs, and a policy may set
-// `distinct_from_starter:` to require a sender other than whoever started
-// the run.
+// #207 slice 1's per-run predicates: a predicate may read the run's inputs, so
+// long as something the starter cannot choose narrows it.
 
-// perRunSignaledSource is [signaledSource] with a per-run rule: an
-// interpolated subject, narrowed by the policy's own `distinct_from_starter:`
-// — one of the two shapes the narrowing check accepts. The `namespace:` beside
-// it is ordinary and permitted; it is simply not what makes this rule narrow
-// enough (see [TestNarrowingCheckRefusesAnInterpolatedSubjectNarrowedOnlyByNamespace]).
+// perRunSignaledSource is a predicate over the run's inputs, narrowed by a
+// comparison with the starter — one of the two shapes the narrowing check
+// accepts.
 const perRunSignaledSource = `edition: v2026.4
 name: deploy-gate
 inputs:
@@ -235,60 +220,36 @@ steps:
       timeout: 24h
 signals:
   deploy-approved:
-    allow:
-      - subject: "${inputs.expected_approver}"
-        namespace: release-managers-ns
-    distinct_from_starter: true
+    allow: >-
+      ${sender.identity.principal == "https://issuer.example.com#" + inputs.expected_approver &&
+      sender.identity.principal != run.identity.principal}
 `
 
-// TestParsingASubjectFromRule pins what an interpolated subject compiles to:
-// [v1.SignalPolicyRule.subject_from] set, [v1.SignalPolicyRule.subject]
-// empty, and the policy's own [v1.SignalPolicy.distinct_from_starter] read.
-func TestParsingASubjectFromRule(t *testing.T) {
-	t.Parallel()
-
-	workflow, positions, err := flowfile.Parse([]byte(perRunSignaledSource))
-	require.NoError(t, err)
-
-	policy := workflow.GetSignals()["deploy-approved"]
-	require.NotNil(t, policy)
-	require.True(t, policy.GetDistinctFromStarter())
-	require.Len(t, policy.GetAllow(), 1)
-
-	rule := policy.GetAllow()[0]
-	assert.Empty(t, rule.GetSubject(), "an interpolated subject was also written into the literal field")
-	require.NotNil(t, rule.GetSubjectFrom(), "subject: ${...} did not compile to subject_from")
-	assert.Equal(t, "release-managers-ns", rule.GetNamespace())
-
-	for _, path := range []string{
-		"signals.deploy-approved.allow[0].subject",
-		"signals.deploy-approved.distinct_from_starter",
-	} {
-		_, ok := positions.At(path)
-		assert.True(t, ok, "no recorded position for %q", path)
-	}
-}
-
-// TestASubjectFromRuleValidatesWhenNarrowed checks that the well-formed
-// case — an interpolated subject alongside a literal namespace — passes
-// [flowfile.Validate] cleanly, the property [TestNarrowingCheckRefusesAnInterpolationOnlyRule]
-// depends on being able to tell apart from a rule that lacks the
-// constraint.
-func TestASubjectFromRuleValidatesWhenNarrowed(t *testing.T) {
+// TestASignalPredicateReadingInputsValidatesWhenNarrowed checks that the
+// well-formed case passes [flowfile.Validate] cleanly, the property the
+// refusals below depend on being able to tell apart from a predicate that
+// lacks the constraint.
+func TestASignalPredicateReadingInputsValidatesWhenNarrowed(t *testing.T) {
 	t.Parallel()
 
 	diagnostics, err := flowfile.ValidateSource([]byte(perRunSignaledSource))
 	require.NoError(t, err)
-	require.Empty(t, diagnostics, "a properly narrowed subject_from rule reported a diagnostic")
+	require.Empty(t, diagnostics, "a properly narrowed per-run predicate reported a diagnostic")
+
+	workflow, positions, err := flowfile.Parse([]byte(perRunSignaledSource))
+	require.NoError(t, err)
+	assert.Contains(t, workflow.GetSignals()["deploy-approved"].GetAllow(), "inputs.expected_approver")
+
+	_, ok := positions.At("signals.deploy-approved.allow")
+	assert.True(t, ok)
 }
 
-// TestNarrowingCheckRefusesAnInterpolationOnlyRule is #207's narrowing
-// check, the negative direction: a rule whose subject is an expression and
-// which sets nothing else is refused — a caller must not be able to choose
-// their own authorization constraint by choosing what they submit — and the
-// diagnostic is positioned at the subject the author wrote, not just
-// reported with no line at all.
-func TestNarrowingCheckRefusesAnInterpolationOnlyRule(t *testing.T) {
+// TestNarrowingCheckRefusesAPredicateReadingOnlyInputs is #207's narrowing
+// check, the negative direction: a predicate that reads the run's inputs and
+// nothing the starter cannot choose is refused — a caller must not be able to
+// choose their own authorization constraint by choosing what they submit — and
+// the diagnostic is positioned at the `allow:` the author wrote.
+func TestNarrowingCheckRefusesAPredicateReadingOnlyInputs(t *testing.T) {
 	t.Parallel()
 
 	source := `edition: v2026.4
@@ -304,33 +265,28 @@ steps:
       timeout: 24h
 signals:
   deploy-approved:
-    allow:
-      - subject: "${inputs.expected_approver}"
+    allow: ${sender.identity.principal == "https://issuer.example.com#" + inputs.expected_approver}
 `
 	diagnostics, err := flowfile.ValidateSource([]byte(source))
 	require.NoError(t, err)
 	require.Len(t, diagnostics, 1)
 
 	d := diagnostics[0]
-	assert.Contains(t, d.Message, "they may name themselves as their own approver")
-	assert.Contains(t, d.Message, "add a `claims:` entry to the rule, or `distinct_from_starter: true`")
-	assert.NotZero(t, d.Line, "the narrowing diagnostic carried no source position")
+	assert.Contains(t, d.Message, "name themselves as their own approver")
+	assert.Contains(t, d.Message, "sender.identity.claims")
 	assert.NotZero(t, d.Column, "the narrowing diagnostic carried no source position")
-	// The diagnostic points at the line `subject:` is written on.
-	assert.Equal(t, 15, d.Line, "the narrowing diagnostic did not point at the subject: line")
+	// The diagnostic points at the line `allow:` is written on.
+	assert.Equal(t, 14, d.Line, "the narrowing diagnostic did not point at the allow: line")
 }
 
-// TestNarrowingCheckRefusesAnInterpolatedSubjectNarrowedOnlyByNamespace is the
-// case an author is most likely to write believing it is safe, and the reason
-// the diagnostic spends a sentence on it rather than only listing what to add.
+// TestNarrowingCheckRefusesAPredicateNarrowedOnlyByNamespace is the case an
+// author is most likely to write believing it is safe.
 //
-// A `namespace:` is compared against the sender's own namespace, and every
-// sender that can reach the check is already in the run's namespace — the
-// server refuses anyone else before a policy is consulted at all. So it
-// narrows nothing, and the rule authorizes exactly what the unnarrowed one
-// does. The validator has to say so here, in the editor, or the file reads as
-// though the gate had been closed until submission refuses it.
-func TestNarrowingCheckRefusesAnInterpolatedSubjectNarrowedOnlyByNamespace(t *testing.T) {
+// A namespace is compared against the sender's own namespace, and every sender
+// that can reach the check is already in the run's namespace — the server
+// refuses anyone else before a policy is consulted at all. So it narrows
+// nothing, and the predicate authorizes exactly what the unnarrowed one does.
+func TestNarrowingCheckRefusesAPredicateNarrowedOnlyByNamespace(t *testing.T) {
 	t.Parallel()
 
 	source := `edition: v2026.4
@@ -346,22 +302,19 @@ steps:
       timeout: 24h
 signals:
   deploy-approved:
-    allow:
-      - subject: "${inputs.expected_approver}"
-        namespace: release-managers-ns
+    allow: ${sender.identity.principal == "https://issuer.example.com#" + inputs.expected_approver && sender.identity.namespace == "release-managers-ns"}
 `
 	diagnostics, err := flowfile.ValidateSource([]byte(source))
 	require.NoError(t, err)
 	require.Len(t, diagnostics, 1,
-		"a namespace: was accepted as narrowing an interpolated subject, which it does not")
-	assert.Contains(t, diagnostics[0].Message, "A `namespace:` does not narrow this")
+		"a namespace comparison was accepted as narrowing a predicate over inputs, which it does not")
 	assert.NotZero(t, diagnostics[0].Line)
 }
 
-// TestNarrowingCheckAllowsAnInterpolatedSubjectWithClaims checks the
-// rule-level constraint the narrowing check accepts: `claims:` are attested on
-// the sender's own token, which the run's inputs cannot reach.
-func TestNarrowingCheckAllowsAnInterpolatedSubjectWithClaims(t *testing.T) {
+// TestNarrowingCheckAllowsAPredicateReadingInputsWithClaims checks the
+// constraint the narrowing check accepts: claims are attested on the sender's
+// own token, which the run's inputs cannot reach.
+func TestNarrowingCheckAllowsAPredicateReadingInputsWithClaims(t *testing.T) {
 	t.Parallel()
 
 	source := `edition: v2026.4
@@ -377,24 +330,17 @@ steps:
       timeout: 24h
 signals:
   deploy-approved:
-    allow:
-      - subject: "${inputs.expected_approver}"
-        claims:
-          team: release-managers
+    allow: ${sender.identity.principal == "https://issuer.example.com#" + inputs.expected_approver && sender.identity.claims.team == "release-managers"}
 `
 	diagnostics, err := flowfile.ValidateSource([]byte(source))
 	require.NoError(t, err)
-	require.Empty(t, diagnostics, "an interpolated subject narrowed by claims: reported a diagnostic")
+	require.Empty(t, diagnostics, "a predicate over inputs narrowed by claims reported a diagnostic")
 }
 
-// TestMarshalIsTheInverseForSubjectFromAndDistinctFromStarter is
-// [TestMarshalIsTheInverseForSignals] for the two pieces #207 slice 1 adds.
-// This file's own package doc warns that an asymmetric marshal silently
-// deletes an author's policy — round-tripping subject_from as a literal
-// would do exactly that, dropping the expression and freezing whatever
-// string happened to be in [v1.SignalPolicyRule.subject] (empty, in this
-// shape) in its place.
-func TestMarshalIsTheInverseForSubjectFromAndDistinctFromStarter(t *testing.T) {
+// TestMarshalIsTheInverseForAPerRunPredicate is [TestMarshalIsTheInverseForSignals]
+// for the per-run shape: the expression survives byte for byte, and a second
+// Marshal is identical to the first.
+func TestMarshalIsTheInverseForAPerRunPredicate(t *testing.T) {
 	t.Parallel()
 
 	workflow, err := flowfile.Unmarshal([]byte(perRunSignaledSource))
@@ -402,58 +348,46 @@ func TestMarshalIsTheInverseForSubjectFromAndDistinctFromStarter(t *testing.T) {
 
 	written, err := flowfile.Marshal(workflow)
 	require.NoError(t, err)
-	assert.Contains(t, string(written), "distinct_from_starter", "Marshal dropped distinct_from_starter")
-	assert.Contains(t, string(written), "inputs.expected_approver", "Marshal dropped the subject_from expression")
+	assert.Contains(t, string(written), "inputs.expected_approver", "Marshal dropped the expression")
+	assert.Contains(t, string(written), "run.identity.principal", "Marshal dropped the starter comparison")
 
 	again, err := flowfile.Unmarshal(written)
 	require.NoError(t, err)
+	assert.Equal(t,
+		workflow.GetSignals()["deploy-approved"].GetAllow(),
+		again.GetSignals()["deploy-approved"].GetAllow())
 
-	originalPolicy := workflow.GetSignals()["deploy-approved"]
-	roundTripped := again.GetSignals()["deploy-approved"]
-	require.NotNil(t, roundTripped)
-
-	assert.Equal(t, originalPolicy.GetDistinctFromStarter(), roundTripped.GetDistinctFromStarter())
-	require.Len(t, roundTripped.GetAllow(), 1)
-
-	originalRule, roundTrippedRule := originalPolicy.GetAllow()[0], roundTripped.GetAllow()[0]
-	assert.Empty(t, roundTrippedRule.GetSubject(), "subject_from round-tripped into a literal subject")
-	require.NotNil(t, roundTrippedRule.GetSubjectFrom(), "subject_from vanished across Marshal/Unmarshal")
-	assert.Equal(t, originalRule.GetNamespace(), roundTrippedRule.GetNamespace())
-
-	// A second Marshal is byte-identical to the first — the same determinism
-	// [TestMarshalWritesSignalsInSortedOrder] pins for the rest of this block.
 	again2, err := flowfile.Marshal(again)
 	require.NoError(t, err)
 	assert.Equal(t, string(written), string(again2))
 }
 
-// TestSignalPolicyAllowsAndDeniesEndToEnd exercises [v1.SignalPolicyAllows]
-// against the exact shape this file's grammar compiles to, closing the loop
-// between "what an author writes" and "what the server checks it against".
-func TestSignalPolicyAllowsAndDeniesEndToEnd(t *testing.T) {
+// TestSignalPolicyEndToEnd closes the loop between "what an author writes" and
+// "what the server checks it against".
+func TestSignalPolicyEndToEnd(t *testing.T) {
 	t.Parallel()
 
 	workflow, err := flowfile.Unmarshal([]byte(signaledSource))
 	require.NoError(t, err)
 
 	policy := workflow.GetSignals()["deploy-approved"]
+	check := func(identity *v1.WorkloadIdentity) bool {
+		return v1.SignalPolicyCheck(t.Context(), policy, identity, nil, false, nil) == nil
+	}
 
-	allowed := &v1.WorkloadIdentity{
+	assert.True(t, check(&v1.WorkloadIdentity{
 		Issuer:  "https://issuer.example.com",
 		Subject: "release-manager@example.com",
-	}
-	assert.True(t, v1.SignalPolicyAllows(policy, allowed), "the declared subject was refused")
+	}), "the declared subject was refused")
 
-	byClaim := &v1.WorkloadIdentity{
+	assert.True(t, check(&v1.WorkloadIdentity{
 		Issuer:  "https://issuer.example.com",
 		Subject: "whoever@example.com",
 		Claims:  map[string]string{"team": "release-managers"},
-	}
-	assert.True(t, v1.SignalPolicyAllows(policy, byClaim), "the declared claim was refused")
+	}), "the declared claim was refused")
 
-	denied := &v1.WorkloadIdentity{
+	assert.False(t, check(&v1.WorkloadIdentity{
 		Issuer:  "https://issuer.example.com",
 		Subject: "some-other-engineer@example.com",
-	}
-	assert.False(t, v1.SignalPolicyAllows(policy, denied), "an undeclared sender was authorized")
+	}), "an undeclared sender was authorized")
 }

@@ -64,7 +64,6 @@ func TestLanguageGuideNamesEveryKey(t *testing.T) {
 		"calendar range":      calendarRangeKeys,
 		"concurrency":         concurrencyKeys,
 		"signal policy":       signalPolicyKeys,
-		"signal rule":         signalRuleKeys,
 	}
 
 	var problems []string

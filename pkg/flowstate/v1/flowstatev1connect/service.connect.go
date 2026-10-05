@@ -123,8 +123,8 @@ type WorkflowServiceClient interface {
 	// For each open gate the answer carries the question the gate asks, the signal
 	// name that releases it, whether a deadline lapses it, and whether the workflow
 	// declares a policy over who may answer. That set is what an approval surface
-	// has to render, and it is what a `distinct_from_starter` policy is compared
-	// against.
+	// has to render, and it is what an `allow:` predicate over `run.identity` is
+	// compared against.
 	//
 	// To answer a gate, call [Signal] with the gate's signal name and a payload
 	// carrying the decision. Address the workflow rather than a run: a run id pins
@@ -685,8 +685,8 @@ type WorkflowServiceHandler interface {
 	// For each open gate the answer carries the question the gate asks, the signal
 	// name that releases it, whether a deadline lapses it, and whether the workflow
 	// declares a policy over who may answer. That set is what an approval surface
-	// has to render, and it is what a `distinct_from_starter` policy is compared
-	// against.
+	// has to render, and it is what an `allow:` predicate over `run.identity` is
+	// compared against.
 	//
 	// To answer a gate, call [Signal] with the gate's signal name and a payload
 	// carrying the decision. Address the workflow rather than a run: a run id pins

@@ -3,6 +3,7 @@ package conformance
 import (
 	"context"
 	"encoding/json"
+	"strconv"
 	"strings"
 	"time"
 
@@ -194,10 +195,8 @@ func bridgedWorkflow() *v1.Workflow {
 		Name:    "webhook-bridged",
 		Profile: v1.CurrentProfile,
 		Signals: map[string]*v1.SignalPolicy{
-			"stage-approved": {Allow: []*v1.SignalPolicyRule{{
-				Subject: v1.QualifiedSubject(v1.WebhookPrincipalIssuer,
-					v1.WebhookTriggerSubject("webhook-bridged", "storefront")),
-			}}},
+			"stage-approved": predicate("sender.identity.principal == " + strconv.Quote(v1.QualifiedSubject(
+				v1.WebhookPrincipalIssuer, v1.WebhookTriggerSubject("webhook-bridged", "storefront")))),
 		},
 		Triggers: &v1.Triggers{Webhooks: []*v1.WebhookTrigger{{
 			Name: "storefront",

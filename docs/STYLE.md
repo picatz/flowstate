@@ -495,13 +495,15 @@ The names the predicate needed exist now. `run.identity` is the run's starter, a
 predicate is the canonical spelling. `flow fix` rewrites each retired form into it,
 and every example that carried one was rewritten by that tool: the corpus test
 (`TestEveryRewrittenExampleIsExactlyWhatFixWritesFromItsOldSpelling`) holds each
-committed file to the tool's own output. The old spellings still compile until a later
-change removes them at an edition boundary, so the rewrite is not one yet.
+committed file to the tool's own output. The old spellings are gone: the compiler
+refuses each by name inside the current edition, with a sentence that says to run
+`flow fix`, so removing them did not need an edition boundary.
 
 What the predicate gives up is recorded rather than hidden: the narrowing rule is
 syntactic over the whole predicate and so coarser than the per-rule check it
-replaces, and two static checks (a quorum's `approve:` against a closed allow-list, a
-bridged webhook's reachability) read rule lists and are silent about a predicate.
+replaced, a quorum's `approve:` is checked only against a policy whose admitted
+principals can be enumerated, and a bridged webhook's reachability is decided at
+delivery rather than in the file.
 
 **The fencing split.** `must:` refuses a fence, `if:` accepts either. The language has
 shipped both answers to #545, which means the status quo is not the conservative
