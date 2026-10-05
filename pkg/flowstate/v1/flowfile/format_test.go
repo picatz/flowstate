@@ -414,6 +414,27 @@ steps:
 	assert.Equal(t, want, formatFile(t, src))
 }
 
+// TestFormatQuotesALoneQuestionMarkBeforeAKeyLineComment pins the document the
+// fuzzer found: `name: #` over a line holding only `?` reads `?` as the value,
+// and the plain spelling `name: ? #` puts the explicit-key indicator before the
+// comment, so the written file no longer parses. The comment stays and the value
+// is quoted.
+func TestFormatQuotesALoneQuestionMarkBeforeAKeyLineComment(t *testing.T) {
+	t.Parallel()
+
+	const src = "edition: v2026.4\nname: #\n?"
+
+	workflow, _, err := flowfile.Parse([]byte(src))
+	require.NoError(t, err, "the fixture is not readable, so it cannot say anything about formatting")
+
+	got, err := flowfile.Format([]byte(src), workflow)
+	require.NoError(t, err)
+	assert.Equal(t, "edition: v2026.4\nname: \"?\" #\n", string(got))
+
+	_, _, err = flowfile.Parse(got)
+	require.NoError(t, err, "the formatted document does not parse:\n%s", got)
+}
+
 // TestFormatRefusesSourceItCannotRead is the fail-closed reading of an unreadable
 // source: not seeing a comment is not the same as there being none, so a source
 // this cannot parse is refused rather than formatted without its comments.
