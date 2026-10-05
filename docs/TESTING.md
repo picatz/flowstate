@@ -309,7 +309,7 @@ expect:
 ```
 
 A check can read `steps.*`, `inputs.*`, `vars.*`, and a `run` root with
-`failed`, `error`, and `local`. It runs whether or not the run failed, so
+`failed`, `error`, `local`, and what the run did about failing (below). It runs whether or not the run failed, so
 `run.error.contains('must satisfy')` is a claim about a failure. A failing check
 prints the values it read:
 
@@ -319,6 +319,42 @@ expect.check[1]: check failed: steps.join.value.regions[0] == inputs.region
            steps.join.value.regions[0] = "us-east-1"
            inputs.region = "eu-west-1"
 ```
+
+`run` also says what compensation and the tasks did, so a claim can state a
+saga's promise rather than one scripted path:
+
+| Field | Value |
+| --- | --- |
+| `run.compensated` | `list(string)`: the steps whose `undo:` succeeded, in the order they ran (reverse registration). Always present, empty when nothing was undone. |
+| `run.uncompensated` | `list(string)`: the steps whose `undo:` failed or was not attempted before a cancellation's budget ran out. A step is in at most one list; a step that registered no `undo:` (skipped, failed, or without one) is in neither. |
+| `run.invocations.task` | `map(string, int)`: how many times each task ran anywhere in the run, callees and `undo:` compensations included. |
+| `run.invocations.step` | `map(string, int)`: how many times each step of the workflow under test ran its task, one per attempt, so a retried step counts every attempt. Compensations are not counted. |
+
+An absent key is zero, so test with `in` before indexing: `'debit' in run.invocations.step`.
+`expect.compensated:` and `expect.invocations:` read the same account, so the
+declarative and CEL spellings cannot disagree. `run.invocations` is unbound when
+a case made more invocations than the log keeps, and a claim reading it then
+fails rather than judging a prefix. These fields are bound for `invariants:` and
+the debugger's `inspect` after a failing case too, because they are the same
+scope.
+
+The fund-transfer saga is the worked example
+([`examples/enterprise-fund-transfer`](../examples/enterprise-fund-transfer/workflow.test.yaml)):
+
+```yaml
+invariants:
+  - that: >-
+      !run.failed
+      || !('debit' in run.invocations.step)
+      || 'debit' in run.compensated
+    because: a failed transfer must never leave a debit standing
+  - that: size(run.uncompensated) == 0
+    because: every compensation this saga declares must be able to run
+```
+
+The antecedent is the invocation rather than `'debit' in steps`: an attempt that
+faulted mid-flight still reached the bank, and that is the case the invariant
+exists for. Under `--seeds` the same invariants judge every drawn failure.
 
 A check is evaluated by the engine's own evaluator, under the workflow's
 language profile and cost limit, the same as `inspect` in the

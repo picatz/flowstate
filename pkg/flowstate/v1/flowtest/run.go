@@ -988,7 +988,7 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	// The invocation log is independent of the transcript: a claim needs a
 	// complete one even where the account is discarded.
 	var invocations *invocationLog
-	if len(test.Expect.Invocations) > 0 {
+	if len(test.Expect.Invocations) > 0 || len(test.Expect.Check) > 0 || len(test.Invariants) > 0 {
 		invocations = &invocationLog{}
 		ctx = contextWithInvocationLog(ctx, invocations)
 	}
@@ -1318,26 +1318,27 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 		return
 	}
 
+	facts := newRunFacts(runErr, invocations, workflow.GetName())
 	if shown.faulted {
 		// A run with faults injected is judged by what must hold of every
 		// run, and by the one oracle a faulted run owes unprompted
 		// ([faultedErrorClass]). `expect:` describes the run where nothing
 		// went wrong, which this one is not.
 		result.Failures = faultedErrorClass(runErr)
-		result.Failures = append(result.Failures, assertInvariants(ctx, test.StartTime(), test.Invariants, workflow, bound, vars, outputs, runErr, sensitive)...)
+		result.Failures = append(result.Failures, assertInvariants(ctx, test.StartTime(), test.Invariants, workflow, bound, vars, outputs, facts, sensitive)...)
 		result.Passed = len(result.Failures) == 0
 
 		return
 	}
 
 	result.Failures = assertExpectation(&test.Expect, workflow, outputs, runErr, sensitive)
-	if invocations != nil {
+	if invocations != nil && len(test.Expect.Invocations) > 0 {
 		result.Failures = append(result.Failures, assertInvocations(test.Expect.Invocations, workflow.GetName(), invocations)...)
 	}
 	// The CEL claims (#1072), after the named fields so a report reads
 	// structure first, values second — the order the file states them in.
-	result.Failures = append(result.Failures, assertChecks(ctx, test.StartTime(), test.Expect.Check, workflow, bound, vars, outputs, runErr, sensitive)...)
-	result.Failures = append(result.Failures, assertInvariants(ctx, test.StartTime(), test.Invariants, workflow, bound, vars, outputs, runErr, sensitive)...)
+	result.Failures = append(result.Failures, assertChecks(ctx, test.StartTime(), test.Expect.Check, workflow, bound, vars, outputs, facts, sensitive)...)
+	result.Failures = append(result.Failures, assertInvariants(ctx, test.StartTime(), test.Invariants, workflow, bound, vars, outputs, facts, sensitive)...)
 	if faults != nil {
 		result.Failures = append(result.Failures, faults.unreached()...)
 	}
@@ -1367,7 +1368,7 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 			if !sensitive.Empty() && setDebuggerRedactors(ctx, sensitive) {
 				defer setDebuggerRedactors(ctx, sensitiveInputs{})
 			}
-			examiner.Autopsy(ctx, scope, autopsyExtras(ctx, scope, vars, runErr, sensitive), rendered)
+			examiner.Autopsy(ctx, scope, autopsyExtras(ctx, scope, vars, facts, sensitive), rendered)
 		}
 	}
 
@@ -2323,9 +2324,9 @@ func assertExpectation(want *Expectation, spec *v1.Workflow, outputs *v1.Workflo
 			})
 		}
 	}
+	undone := compensatedSteps(runErr)
 	for _, step := range want.Compensated {
-		marker := fmt.Sprintf("undid %q", step)
-		if runErr == nil || !strings.Contains(runErr.Error(), marker) {
+		if !slices.Contains(undone, step) {
 			failures = append(failures, &v1.Diagnostic{
 				Field:   "expect.compensated",
 				Value:   step,
@@ -2872,4 +2873,18 @@ func setDebuggerRedactors(ctx context.Context, sensitive sensitiveInputs) bool {
 	}
 
 	return installed
+}
+
+// compensatedSteps are the steps whose `undo:` succeeded, in the order they
+// ran: the same list `run.compensated` binds, read from the structured account
+// rather than from the failure's text.
+func compensatedSteps(runErr error) []string {
+	var out []string
+	for _, r := range v1.UndoResultsOf(runErr) {
+		if r.Err == "" {
+			out = append(out, r.Step)
+		}
+	}
+
+	return out
 }

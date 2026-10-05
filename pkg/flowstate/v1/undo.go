@@ -687,10 +687,42 @@ func CheckUndoPlacement(node *Node, placement UndoScope) error {
 // to be built differently for exactly the same reason — Temporal decides CANCELED
 // from the error's *type* — and `engine.compensate` says so where it does it.
 func UndoRunError(err error, results []UndoResult) error {
-	summary := UndoSummary(results)
-	if summary == "" {
+	if len(results) == 0 {
 		return err
 	}
 
-	return fmt.Errorf("%w%s", err, summary)
+	return &UndoError{Cause: err, Results: results}
+}
+
+// UndoError is a run's failure together with what compensation did about it.
+//
+// It exists so that the account is data as well as text: the sentence an
+// operator reads is [UndoSummary] over Results, and a test asserting that a
+// step was compensated reads Results rather than searching the sentence for
+// `undid "<step>"`. Error is the cause's text with the summary appended, and
+// Unwrap reaches the cause, so `errors.Is(err, context.Canceled)` still holds
+// for a cancelled-and-compensated run (see [UndoRunError]).
+type UndoError struct {
+	// Cause is the failure that triggered the unwind.
+	Cause error
+
+	// Results is what each compensation did, in the order it ran.
+	Results []UndoResult
+}
+
+// Error is the cause's text followed by [UndoSummary].
+func (e *UndoError) Error() string { return e.Cause.Error() + UndoSummary(e.Results) }
+
+// Unwrap returns the failure the unwind answered.
+func (e *UndoError) Unwrap() error { return e.Cause }
+
+// UndoResultsOf reports what compensation did in the failure err carries, or
+// nil when no compensation ran.
+func UndoResultsOf(err error) []UndoResult {
+	var undone *UndoError
+	if errors.As(err, &undone) {
+		return undone.Results
+	}
+
+	return nil
 }

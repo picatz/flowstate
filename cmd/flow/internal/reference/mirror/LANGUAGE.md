@@ -380,6 +380,7 @@ take either a duration literal (`30s`) or a fenced expression.
 | `run.workflow_id`, `run.run_id` | This run's address, for callbacks. `"local"` under `flow run local`. | Steps and outputs |
 | `run.identity.subject`, `.issuer`, `.namespace`, `.claims`, `.principal` | Who started the run, as the server verified it. Empty when nobody authenticated. `principal` is `<issuer>#<subject>`, and `""` unless both are non-empty. | Steps and outputs |
 | `run.local` | `true` under the local driver | Steps and outputs |
+| `run.failed`, `.error`, `.compensated`, `.uncompensated`, `.invocations.task`, `.invocations.step` | How the run ended and what compensation and tasks did. [Checks](TESTING.md#claims-the-named-fields-cannot-make-check) | A `flow test` `check:` or `invariants:` claim, after the run |
 | `trigger.kind`, `.name`, `.principal`, `.delivery_id` | How the run started: `manual`, `schedule`, or `webhook`. [Triggers](#what-a-run-knows-about-its-start-trigger) | Steps and outputs |
 | a bare name | A loop's `as:` binding, or a step's own `vars:` | Inside that step or loop body |
 | `now` | The current time, as a timestamp | Inside a wait's own expressions only. [Waits](#the-clock-now) |

@@ -1,7 +1,9 @@
 package flowstatev1_test
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -204,4 +206,22 @@ func TestEveryRefusalOffersARemedyThatValidates(t *testing.T) {
 			"the refusal for scope %v recommends a `call:`, but IntoCall leaves the placement "+
 				"unchanged — an author following that remedy is refused again, one file later", scope)
 	}
+}
+
+// TestUndoRunErrorCarriesTheAccountAsData: the same text as before, a cause
+// that still unwraps, and the per-step results recoverable without parsing the
+// sentence.
+func TestUndoRunErrorCarriesTheAccountAsData(t *testing.T) {
+	t.Parallel()
+
+	results := []v1.UndoResult{{Step: "b"}, {Step: "a", Err: "boom"}}
+	err := v1.UndoRunError(context.Canceled, results)
+
+	require.ErrorIs(t, err, context.Canceled)
+	require.Equal(t, "context canceled"+v1.UndoSummary(results), err.Error())
+	require.Equal(t, results, v1.UndoResultsOf(fmt.Errorf("wrapped: %w", err)))
+
+	require.Equal(t, context.Canceled, v1.UndoRunError(context.Canceled, nil),
+		"nothing registered leaves the failure exactly as it was")
+	require.Nil(t, v1.UndoResultsOf(context.Canceled))
 }
