@@ -806,7 +806,17 @@ type ScheduleDivergenceReport struct {
 	// replays the faults the seed fired with no seed: each pinned to the
 	// invocations it fired on with `on:`. Pasted into the case, a plain
 	// `flow test` reproduces the violation. Empty otherwise.
-	FaultScript   string `protobuf:"bytes,8,opt,name=fault_script,json=faultScript,proto3" json:"fault_script,omitempty"`
+	FaultScript string `protobuf:"bytes,8,opt,name=fault_script,json=faultScript,proto3" json:"fault_script,omitempty"`
+	// FiredFaults is how many fault firings the seed injected, the size of the
+	// set [fault_script] was shrunk from. Zero when nothing was shrunk.
+	FiredFaults int32 `protobuf:"varint,9,opt,name=fired_faults,json=firedFaults,proto3" json:"fired_faults,omitempty"`
+	// ShrinkRuns is how many re-runs of the case the shrink spent looking for a
+	// smaller set that still violates. Zero when nothing was shrunk.
+	ShrinkRuns int32 `protobuf:"varint,10,opt,name=shrink_runs,json=shrinkRuns,proto3" json:"shrink_runs,omitempty"`
+	// ShrunkMinimal reports that no single firing could be removed from
+	// [fault_script] and keep the violation. False when the shrink budget ended
+	// the search first, or nothing was shrunk.
+	ShrunkMinimal bool `protobuf:"varint,11,opt,name=shrunk_minimal,json=shrunkMinimal,proto3" json:"shrunk_minimal,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -895,6 +905,27 @@ func (x *ScheduleDivergenceReport) GetFaultScript() string {
 		return x.FaultScript
 	}
 	return ""
+}
+
+func (x *ScheduleDivergenceReport) GetFiredFaults() int32 {
+	if x != nil {
+		return x.FiredFaults
+	}
+	return 0
+}
+
+func (x *ScheduleDivergenceReport) GetShrinkRuns() int32 {
+	if x != nil {
+		return x.ShrinkRuns
+	}
+	return 0
+}
+
+func (x *ScheduleDivergenceReport) GetShrunkMinimal() bool {
+	if x != nil {
+		return x.ShrunkMinimal
+	}
+	return false
 }
 
 // CoverageReport is `flow test`'s branch-coverage account for one workflow:
@@ -1267,7 +1298,7 @@ const file_flowstate_v1_reports_proto_rawDesc = "" +
 	"\ttruncated\x18\x04 \x01(\bR\ttruncated\x12F\n" +
 	"\n" +
 	"divergence\x18\x05 \x01(\v2&.flowstate.v1.ScheduleDivergenceReportR\n" +
-	"divergence\"\xfc\x01\n" +
+	"divergence\"\xe7\x02\n" +
 	"\x18ScheduleDivergenceReport\x12\x12\n" +
 	"\x04case\x18\x01 \x01(\tR\x04case\x12\x12\n" +
 	"\x04seed\x18\x02 \x01(\x04R\x04seed\x12\x1c\n" +
@@ -1276,7 +1307,12 @@ const file_flowstate_v1_reports_proto_rawDesc = "" +
 	"\rwritten_order\x18\x05 \x01(\tR\fwrittenOrder\x12\x16\n" +
 	"\x06seeded\x18\x06 \x01(\tR\x06seeded\x12\x1c\n" +
 	"\tinvariant\x18\a \x01(\bR\tinvariant\x12!\n" +
-	"\ffault_script\x18\b \x01(\tR\vfaultScript\"\x8e\x03\n" +
+	"\ffault_script\x18\b \x01(\tR\vfaultScript\x12!\n" +
+	"\ffired_faults\x18\t \x01(\x05R\vfiredFaults\x12\x1f\n" +
+	"\vshrink_runs\x18\n" +
+	" \x01(\x05R\n" +
+	"shrinkRuns\x12%\n" +
+	"\x0eshrunk_minimal\x18\v \x01(\bR\rshrunkMinimal\"\x8e\x03\n" +
 	"\x0eCoverageReport\x12\x1a\n" +
 	"\bworkflow\x18\x01 \x01(\tR\bworkflow\x12\x1f\n" +
 	"\vsteps_total\x18\x02 \x01(\x05R\n" +

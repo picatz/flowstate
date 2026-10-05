@@ -351,3 +351,17 @@ func TestAnInvariantViolationRendersItsPinnedScript(t *testing.T) {
 	assert.NotContains(t, reordered, "PIN THEM")
 	assert.Contains(t, reordered, "cannot be pinned by invocation number")
 }
+
+// The shrink note says what shrinking did and never overstates it: minimal when
+// the search finished, a possibly-longer list when the bound ended it, and
+// nothing when nothing was shrunk.
+func TestTheShrinkNoteSaysWhatShrinkingDid(t *testing.T) {
+	note := func(d flowtest.ScheduleDivergence) string { return shrinkNote(&d) }
+
+	assert.Empty(t, note(flowtest.ScheduleDivergence{Script: "faults: []"}))
+	assert.Contains(t, note(flowtest.ScheduleDivergence{FaultsFired: 5, ShrinkRuns: 9, Minimal: true}),
+		"Shrunk from 5 failures fired by the seed after 9 re-runs; removing any one")
+	bounded := note(flowtest.ScheduleDivergence{FaultsFired: 60, ShrinkRuns: flowtest.MaxShrinkRuns})
+	assert.Contains(t, bounded, "may not be minimal")
+	assert.NotContains(t, bounded, "removing any one")
+}

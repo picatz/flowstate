@@ -363,7 +363,18 @@ A violation also prints the faults the seed fired as a `faults:` list pinned wit
 the written-order one included, so the violation becomes a regression case
 that fails until the workflow is fixed, with no seed and no `--seeds`. Invocation numbers name a call only when nothing was
 reordered, so a seed that also permuted a `parallel:` block prints no pins and
-keeps its seed for replay. A pinned
+keeps its seed for replay. The list is shrunk before it is printed: the seed's firings are
+re-run in written order, delta-debugging style, until removing any one of the
+remaining failures stops the violation, and the report says how many the seed
+fired and how many re-runs that took. A pin the case declared itself is never
+dropped. The re-runs are bounded (256); past that the shortest violating list
+found is printed and the report says it may not be minimal. The shrunk list
+violates *an* invariant, not necessarily the one the seed broke first. A search that is cut off
+(cancelled, or out of the case's time) reports itself as not minimal. An invocation number counts
+the calls a fault could hit whether or not another fault fired on them, so a script
+keeps its meaning when a fault is removed; a script pasted before this was
+so counted may have numbered a later overlapping fault differently, so
+re-derive it from a fresh `--seeds` finding. A pinned
 fault takes no `rate:` or `at_most:`, and a script whose invocation the run no
 longer makes fails as drifted rather than passing for a fault that never
 happened.
@@ -371,8 +382,7 @@ happened.
 A fault answers before the stubs and spends none of their `times:`. `fails.kind`
 is any error kind a task reports except `Internal` and `Expression`, which are
 defects, and `RunTimeout`, which only a whole run can have. Rows of a table inherit the entry's `faults:` and
-`invariants:` when they state none. Not yet covered: delay faults, signal jitter,
-and shrinking a violating seed to its minimal fault set.
+`invariants:` when they state none. Not yet covered: delay faults and signal jitter.
 
 Seeded exploration is the local driver's. The durable driver has one check of
 its own that the local driver cannot have: a run survives the loss of its

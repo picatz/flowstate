@@ -235,6 +235,10 @@ type faultPlan struct {
 	// drawn counts the fires a seed decided, which a pinned fault's fires are
 	// not: only a drawn fire makes a seeded run a faulted one.
 	drawn []int
+	// pinnedFired is the invocation numbers each pinned fault fired on. A pin
+	// can be counted by [faultPlan.seen] and still not fire, when an earlier
+	// fault answered the call first, and that is a script that did not run.
+	pinnedFired [][]int
 	// script is the invocation numbers each drawn fault fired on, in order,
 	// from which [faultPlan.pinned] writes the regression case.
 	script [][]int
@@ -250,7 +254,23 @@ func newFaultPlan(root string, faults []Fault) *faultPlan {
 		fired:  make([]int, len(faults)),
 		drawn:  make([]int, len(faults)),
 		script: make([][]int, len(faults)),
+
+		pinnedFired: make([][]int, len(faults)),
 	}
+}
+
+type faultProbeKey struct{}
+
+// contextWithFaultProbe makes the run under ctx a shrink probe: the case runs
+// with exactly faults, all pinned, in place of its own.
+func contextWithFaultProbe(ctx context.Context, faults []Fault) context.Context {
+	return context.WithValue(ctx, faultProbeKey{}, faults)
+}
+
+func faultProbeFrom(ctx context.Context) ([]Fault, bool) {
+	faults, ok := ctx.Value(faultProbeKey{}).([]Fault)
+
+	return faults, ok
 }
 
 func contextWithFaultPlan(ctx context.Context, p *faultPlan) context.Context {
@@ -270,17 +290,29 @@ func (p *faultPlan) attempt(ctx context.Context, task string) error {
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
+
+	// Every matching fault counts the invocation before any of them decides, so
+	// "invocation n of this fault's target" does not depend on which other fault
+	// fired on the calls before it. A pinned script names calls by that number,
+	// and removing one fault from a script (see [shrinkFaults]) must not renumber
+	// the calls another fault is aimed at.
+	matches := make([]int, 0, len(p.faults))
 	for i := range p.faults {
 		f := &p.faults[i]
 		if f.Task != "" && f.Task != task || f.Step != "" && (f.Step != ref.Step || ref.Workflow != p.root) {
 			continue
 		}
 		p.seen[i]++
+		matches = append(matches, i)
+	}
+	for _, i := range matches {
+		f := &p.faults[i]
 		switch {
 		case len(f.On) > 0:
 			if !slices.Contains(f.On, p.seen[i]) {
 				continue
 			}
+			p.pinnedFired[i] = append(p.pinnedFired[i], p.seen[i])
 		case p.fired[i] >= f.limit():
 			continue
 		case !v1.InjectFault(ctx, fmt.Sprintf("faults[%d]", i), f.rate()):
@@ -321,6 +353,16 @@ func (p *faultPlan) unreached() []*v1.Diagnostic {
 				Field: fmt.Sprintf("faults[%d].on", i),
 				Message: fmt.Sprintf("is pinned to invocation %d of its target, but the run made only %d; "+
 					"the script has drifted from the workflow, so re-derive it from a fresh `--seeds` finding", last, p.seen[i]),
+			})
+
+			continue
+		}
+		if missed := slices.DeleteFunc(slices.Clone(f.On), func(n int) bool { return slices.Contains(p.pinnedFired[i], n) }); len(missed) > 0 {
+			out = append(out, &v1.Diagnostic{
+				Step:  f.Step,
+				Field: fmt.Sprintf("faults[%d].on", i),
+				Message: fmt.Sprintf("is pinned to invocation %d of its target, but an earlier fault answered that call "+
+					"first, so this one never fired; the script has drifted, so re-derive it from a fresh `--seeds` finding", missed[0]),
 			})
 
 			continue
@@ -408,28 +450,47 @@ func (p *faultPlan) firedAny() bool {
 	return slices.ContainsFunc(p.drawn, func(n int) bool { return n > 0 })
 }
 
-// pinned writes the faults that fired as the `faults:` list that replays
-// them without a seed: each fault that fired, pinned to the invocation numbers
-// it fired on, and everything else about it as declared. Empty when no draw
-// fired.
-func (p *faultPlan) pinned() string {
+// firedPinned reports whether any pinned fault fired in this run. A probe
+// ([shrinkFaults]) runs only pinned faults, so this is what makes its run a
+// faulted one.
+func (p *faultPlan) firedPinned() bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	var pins []Fault
+	return slices.ContainsFunc(p.fired, func(n int) bool { return n > 0 })
+}
+
+// pins are the faults that fired, each pinned to the invocation numbers it fired
+// on and everything else about it as declared. authored[i] is true for a pin
+// the case declared itself, which is part of the case and not something a seed
+// found. Empty when no draw fired.
+func (p *faultPlan) pins() (pins []Fault, authored []bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
 	for i, on := range p.script {
 		pin := p.faults[i]
 		switch {
 		case len(pin.On) > 0 && p.fired[i] > 0:
 			// Already a script; kept as declared so replacing `faults:` with
 			// this list loses none of the case's own pins.
+			pin.On = slices.Clone(pin.On)
+			authored = append(authored, true)
 		case len(on) > 0:
 			pin.Rate, pin.AtMost, pin.On = nil, nil, slices.Clone(on)
+			authored = append(authored, false)
 		default:
 			continue
 		}
 		pins = append(pins, pin)
 	}
+
+	return pins, authored
+}
+
+// pinnedScript writes pins as the `faults:` list that replays them without a
+// seed, or "" for none.
+func pinnedScript(pins []Fault) string {
 	if len(pins) == 0 {
 		return ""
 	}

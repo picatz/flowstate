@@ -115,8 +115,26 @@ type ScheduleDivergence struct {
 	Invariant bool
 
 	// Script is the `faults:` list that replays the diverging run's faults
-	// with no seed, for an invariant violation; empty otherwise.
+	// with no seed, for an invariant violation; empty otherwise. It is the
+	// shrunk list where [ScheduleDivergence.ShrinkRuns] is not zero.
 	Script string
+
+	// FaultsFired is how many fault firings the seed injected, the size
+	// shrinking started from; ShrinkRuns how many re-runs it spent; Minimal that
+	// no single firing could be removed from Script and keep the violation.
+	// Zero ShrinkRuns means nothing was shrunk.
+	FaultsFired int
+	ShrinkRuns  int
+	Minimal     bool
+}
+
+// faultedSeed is what a seed's faulted run left to pin: the script it prints and
+// the structured faults behind it. Both are empty when the seed also reordered
+// something, because an invocation number then names no stable call.
+type faultedSeed struct {
+	script   string
+	pins     []Fault
+	authored []bool
 }
 
 // Report renders this exploration as the schema message the machine report
@@ -134,14 +152,17 @@ func (s *ScheduleReport) Report() *v1.ScheduleExploration {
 
 	if d := s.Divergence; d != nil {
 		report.Divergence = &v1.ScheduleDivergenceReport{
-			Case:         d.Case,
-			Seed:         d.Seed,
-			Decisions:    int32(d.Decisions),
-			Truncated:    d.Truncated,
-			WrittenOrder: d.WrittenOrder,
-			Seeded:       d.Seeded,
-			Invariant:    d.Invariant,
-			FaultScript:  d.Script,
+			Case:          d.Case,
+			Seed:          d.Seed,
+			Decisions:     int32(d.Decisions),
+			Truncated:     d.Truncated,
+			WrittenOrder:  d.WrittenOrder,
+			Seeded:        d.Seeded,
+			Invariant:     d.Invariant,
+			FaultScript:   d.Script,
+			FiredFaults:   int32(d.FaultsFired),
+			ShrinkRuns:    int32(d.ShrinkRuns),
+			ShrunkMinimal: d.Minimal,
 		}
 	}
 
@@ -217,7 +238,7 @@ func (a *scheduleAccumulator) run(ctx context.Context, once caseRun) (*v1.TestCa
 		everything sensitiveInputs
 		// faultedSeeds are the seeds whose run injected a fault, so a
 		// divergence under one is an invariant violation.
-		faultedSeeds = map[uint64]string{}
+		faultedSeeds = map[uint64]faultedSeed{}
 		// baselineObserved is the written-order run's own observation, which a
 		// faulted run that broke nothing is compared as.
 		baselineObserved *dst.Result
@@ -240,11 +261,11 @@ func (a *scheduleAccumulator) run(ctx context.Context, once caseRun) (*v1.TestCa
 			// seed did not reorder anything: a permuted `parallel:` can make
 			// the first call of a task a different logical call than it is in
 			// written order, so such a run keeps its seed and prints no pins.
-			script := shown.pinned
+			fired := faultedSeed{script: shown.pinned, pins: shown.pins, authored: shown.authored}
 			if seeded.Decisions() > 0 {
-				script = ""
+				fired = faultedSeed{}
 			}
-			faultedSeeds[seeded.Seed()] = script
+			faultedSeeds[seeded.Seed()] = fired
 		}
 
 		// Compared as it is, shown as the case's own report would show it: a
@@ -313,9 +334,25 @@ func (a *scheduleAccumulator) run(ctx context.Context, once caseRun) (*v1.TestCa
 		result, account = a.reshown(ctx, once, result, account, everything)
 	}
 
-	script, faulted := "", false
-	if report.Divergence != nil {
-		script, faulted = faultedSeeds[report.Divergence.Diverged.Seed]
+	var (
+		fired   faultedSeed
+		faulted bool
+		shrunk  shrinkResult
+	)
+	if report.Divergence != nil && a.divergence == nil {
+		fired, faulted = faultedSeeds[report.Divergence.Diverged.Seed]
+		if faulted && len(fired.pins) > 0 {
+			shrunk = a.shrink(ctx, once, fired.pins, fired.authored)
+			switch {
+			case shrunk.Reproduced:
+				fired.script = pinnedScript(shrunk.Pins)
+			case !shrunk.Inconclusive:
+				// A completed replay that does not reproduce: nothing was shrunk.
+				shrunk = shrinkResult{}
+			}
+			// An inconclusive first replay keeps its counters, so the report
+			// says the list was not shrunk instead of staying silent.
+		}
 	}
 	if report.Divergence != nil && a.divergence == nil {
 		a.divergence = &ScheduleDivergence{
@@ -326,11 +363,37 @@ func (a *scheduleAccumulator) run(ctx context.Context, once caseRun) (*v1.TestCa
 			WrittenOrder: report.Divergence.Baseline.Rendering,
 			Seeded:       report.Divergence.Diverged.Rendering,
 			Invariant:    faulted,
-			Script:       script,
+			Script:       fired.script,
+			FaultsFired:  shrunk.From,
+			ShrinkRuns:   shrunk.Runs,
+			Minimal:      shrunk.Minimal,
 		}
 	}
 
 	return result, spec, transcript, account
+}
+
+// shrink reduces the pinned faults of a violating seed to a smaller set that
+// still violates, replaying each candidate in written order ([shrinkFaults]).
+// A probe runs the case, so it is bounded by [MaxShrinkRuns] and by the same
+// context bound as the exploration: when that ends, the search stops with what
+// it has.
+func (a *scheduleAccumulator) shrink(ctx context.Context, once caseRun, pins []Fault, authored []bool) shrinkResult {
+	probe := v1.NewContextWithScheduler(ctx, v1.WrittenOrder)
+
+	return shrinkFaults(pins, authored, MaxShrinkRuns, func(candidate []Fault) (bool, bool) {
+		if ctx.Err() != nil {
+			return false, false
+		}
+		result, _, _, _, shown, _ := once(contextWithFaultProbe(probe, candidate))
+		// A run the bound ended partway can fail for that reason alone, which
+		// would read as a violation the candidate does not have.
+		if ctx.Err() != nil {
+			return false, false
+		}
+
+		return shown.faulted && !result.GetPassed(), true
+	})
 }
 
 // reshown is the written-order run's report shown under everything: the

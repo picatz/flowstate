@@ -354,6 +354,22 @@ func init() {
 				" `flow test` reproduces the violation. Empty otherwise.\n",
 		},
 		{
+			Name: "flowstate.v1.ScheduleDivergenceReport.fired_faults",
+			Leading: " FiredFaults is how many fault firings the seed injected, the size of the\n" +
+				" set [fault_script] was shrunk from. Zero when nothing was shrunk.\n",
+		},
+		{
+			Name: "flowstate.v1.ScheduleDivergenceReport.shrink_runs",
+			Leading: " ShrinkRuns is how many re-runs of the case the shrink spent looking for a\n" +
+				" smaller set that still violates. Zero when nothing was shrunk.\n",
+		},
+		{
+			Name: "flowstate.v1.ScheduleDivergenceReport.shrunk_minimal",
+			Leading: " ShrunkMinimal reports that no single firing could be removed from\n" +
+				" [fault_script] and keep the violation. False when the shrink budget ended\n" +
+				" the search first, or nothing was shrunk.\n",
+		},
+		{
 			Name: "flowstate.v1.CoverageReport",
 			Leading: " CoverageReport is `flow test`'s branch-coverage account for one workflow:\n" +
 				" which of that workflow's steps at least one case ran, and which no case ever\n" +

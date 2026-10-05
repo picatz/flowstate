@@ -300,6 +300,19 @@ message ScheduleDivergenceReport {
   // invocations it fired on with `on:`. Pasted into the case, a plain
   // `flow test` reproduces the violation. Empty otherwise.
   string fault_script = 8;
+
+  // FiredFaults is how many fault firings the seed injected, the size of the
+  // set [fault_script] was shrunk from. Zero when nothing was shrunk.
+  int32 fired_faults = 9;
+
+  // ShrinkRuns is how many re-runs of the case the shrink spent looking for a
+  // smaller set that still violates. Zero when nothing was shrunk.
+  int32 shrink_runs = 10;
+
+  // ShrunkMinimal reports that no single firing could be removed from
+  // [fault_script] and keep the violation. False when the shrink budget ended
+  // the search first, or nothing was shrunk.
+  bool shrunk_minimal = 11;
 }
 
 // CoverageReport is `flow test`'s branch-coverage account for one workflow:

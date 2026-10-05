@@ -997,8 +997,14 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	// how a fault aimed at an invocation the case never makes is found.
 	var faults *faultPlan
 	_, faulting := v1.SchedulerFromContext(ctx).(v1.FaultChooser)
-	if len(test.Faults) > 0 {
-		faults = newFaultPlan(workflow.GetName(), test.Faults)
+	faultList, probing := test.Faults, false
+	if probe, ok := faultProbeFrom(base); ok {
+		// A shrink probe ([shrinkFaults]) runs the case under exactly the
+		// pinned faults it was handed, and judges the run as a faulted one.
+		faultList, probing = probe, true
+	}
+	if len(faultList) > 0 {
+		faults = newFaultPlan(workflow.GetName(), faultList)
 		ctx = contextWithFaultPlan(ctx, faults)
 	}
 	if record {
@@ -1274,9 +1280,11 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	if gatherer != nil {
 		sensitive = widenedBy(sensitive, gatherer.withheld())
 	}
-	shown = caseShown{sensitive: sensitive, runErr: runErr, faulted: faulting && faults != nil && faults.firedAny()}
+	shown = caseShown{sensitive: sensitive, runErr: runErr, faulted: faults != nil &&
+		(faulting && faults.firedAny() || probing && faults.firedPinned())}
 	if shown.faulted {
-		shown.pinned = faults.pinned()
+		shown.pins, shown.authored = faults.pins()
+		shown.pinned = pinnedScript(shown.pins)
 	}
 
 	// The transcript coverage reads is the same one the verdict does. A failed
@@ -2482,8 +2490,11 @@ type caseShown struct {
 	// schedules by its invariants alone ([scheduleAccumulator.run]).
 	faulted bool
 
-	// pinned is the `faults:` list that replays the faults this run fired.
-	pinned string
+	// pinned is the `faults:` list that replays the faults this run fired, and
+	// pins the same faults before they are written.
+	pinned   string
+	pins     []Fault
+	authored []bool
 }
 
 // runErrorUnder is the run's failure as a schedule divergence shows it under
