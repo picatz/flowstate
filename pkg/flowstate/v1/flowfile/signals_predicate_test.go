@@ -179,22 +179,6 @@ func TestAnAllowStringThatIsNotAnExpressionIsRefused(t *testing.T) {
 	assert.Contains(t, err.Error(), "not a `${...}` expression")
 }
 
-func TestDebugDoesNotAcceptAPredicateYet(t *testing.T) {
-	t.Parallel()
-
-	source := `edition: v2026.4
-name: dbg
-steps:
-  - id: s
-    sleep: 1s
-debug:
-  allow: '${sender.identity.claims.team == "sre"}'
-`
-	_, _, err := flowfile.Parse([]byte(source))
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "`debug:` does not accept yet")
-}
-
 func TestARuleListStillParsesAndRoundTripsUnchanged(t *testing.T) {
 	t.Parallel()
 

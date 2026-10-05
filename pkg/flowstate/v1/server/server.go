@@ -868,7 +868,7 @@ func starterMemoEntry(identity *v1.WorkloadIdentity) map[string]any {
 // wrapper type, which is what lets [signalPolicies] decode it with nothing
 // more than `proto.Unmarshal` into a `*v1.Workflow` and read `.GetSignals()`
 // back off it.
-func signalPolicyMemoEntry(ctx context.Context, wf *v1.Workflow, inputs map[string]*v1.Value, starter *v1.WorkloadIdentity) (map[string]any, error) {
+func signalPolicyMemoEntry(ctx context.Context, wf *v1.Workflow, inputs map[string]*v1.Value) (map[string]any, error) {
 	if len(wf.GetSignals()) == 0 {
 		return nil, nil
 	}
@@ -883,15 +883,7 @@ func signalPolicyMemoEntry(ctx context.Context, wf *v1.Workflow, inputs map[stri
 		return nil, fmt.Errorf("encoding the declared signal policy: %w", err)
 	}
 
-	entries := map[string]any{signalPolicyMemoKey: encoded}
-
-	scope, err := signalPolicyScopeMemoEntry(resolved, inputs, starter)
-	if err != nil {
-		return nil, err
-	}
-	maps.Copy(entries, scope)
-
-	return entries, nil
+	return map[string]any{signalPolicyMemoKey: encoded}, nil
 }
 
 // signalPolicyScopeMemoKey is the memo field recording the per-run values a
@@ -901,6 +893,12 @@ func signalPolicyMemoEntry(ctx context.Context, wf *v1.Workflow, inputs map[stri
 // Written only when some predicate reads them, and only what it reads. A run
 // whose policies are rules, or whose predicates read neither, records nothing,
 // so no inputs or claims are copied into a memo that nothing evaluates.
+//
+// One entry serves every stanza whose predicate reads the run: `signals:` and
+// `debug:` share the scope (the run's inputs and starter), so
+// [policyMemoEntries] records it once over both, and each decision site reads
+// it back through [FlowstateServer.predicateRunScope]. `triggers: manual:` is
+// decided before any run exists and records nothing.
 const signalPolicyScopeMemoKey = "flowstate.signalPolicyScope"
 
 // signalPolicyScopeMemoEntry encodes what the declared predicates read of the
@@ -1007,7 +1005,7 @@ func debugPolicyMemoEntry(ctx context.Context, wf *v1.Workflow, inputs map[strin
 func policyMemoEntries(ctx context.Context, wf *v1.Workflow, inputs map[string]*v1.Value, starter *v1.WorkloadIdentity) (map[string]any, error) {
 	entries := map[string]any{signalProtocolMemoKey: currentSignalProtocol}
 
-	signals, err := signalPolicyMemoEntry(ctx, wf, inputs, starter)
+	signals, err := signalPolicyMemoEntry(ctx, wf, inputs)
 	if err != nil {
 		return nil, err
 	}
@@ -1019,8 +1017,30 @@ func policyMemoEntries(ctx context.Context, wf *v1.Workflow, inputs map[string]*
 	}
 	maps.Copy(entries, debug)
 
+	// What the signal and debug predicates read of the run, recorded once. The
+	// debug stanza joins the signals' policies here: a `debug:` predicate that
+	// reads `run` or `inputs` finds them at the debug decision, and one that
+	// reads neither records nothing.
+	predicated := maps.Clone(wf.GetSignals())
+	if predicated == nil {
+		predicated = map[string]*v1.SignalPolicy{}
+	}
+	if wf.GetDebug() != nil {
+		predicated[debugPolicyScopeName] = wf.GetDebug()
+	}
+	scope, err := signalPolicyScopeMemoEntry(predicated, inputs, starter)
+	if err != nil {
+		return nil, err
+	}
+	maps.Copy(entries, scope)
+
 	return entries, nil
 }
+
+// debugPolicyScopeName keys the debug stanza among the signal policies whose
+// predicates' reads are summed for the one recorded scope. Not a valid signal
+// name (it contains a space), so it cannot collide with one.
+const debugPolicyScopeName = "debug policy"
 
 // withheldPolicyRefusal is err, a refusal from [policyMemoEntries], with the
 // values of the inputs named in unknown taken out. Resolving a rule's
@@ -1562,7 +1582,7 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 	// A workflow with no `manual:` block passes unchanged, which is every
 	// workflow that exists: `triggers:` is not exhaustive, and adding a webhook
 	// must never silently stop `flow run` from working.
-	if err := s.authorizeManualStart(ctx, "Run", v1.AuditResourceKind_AUDIT_RESOURCE_KIND_RUN, workflowID, workflow, req.Msg.GetReason()); err != nil {
+	if err := s.authorizeManualStart(ctx, "Run", v1.AuditResourceKind_AUDIT_RESOURCE_KIND_RUN, workflowID, workflow, identity, req.Msg.GetReason(), inputs); err != nil {
 		return nil, err
 	}
 

@@ -19,8 +19,18 @@ import (
 	"github.com/picatz/flowstate/pkg/flowstate/v1/celrule"
 )
 
-// `signals: <name>: allow: ${...}` — who may deliver a signal, as one CEL
-// predicate, evaluated where the signal is accepted.
+// `signals: <name>: allow: ${...}`, `debug: allow: ${...}` and
+// `triggers: manual: allow: ${...}` — who may deliver a signal, hold a debug
+// lease, or start a workload by hand, as one CEL predicate, evaluated where the
+// action is accepted.
+//
+// All three stanzas compile and run through this file. `signals:` and `debug:`
+// share one scope (the sender, the run's starter, the run's inputs) and both
+// reach [SignalPolicyCheck]; `manual:` has no run yet, so its scope is the
+// caller and the submitted inputs (see [CompileManualAllowPredicate]), and it
+// reaches the same evaluator through [CheckManualStart]. There is one
+// evaluator: the manual scope differs by one undeclared name, not by a second
+// compile or a second run loop.
 //
 // # One evaluator
 //
@@ -107,16 +117,27 @@ type signalPolicyActor struct {
 // ("v1"), not its declared package name; pinned by a test.
 const signalPolicyActorTypeName = "v1.signalPolicyActor"
 
-var signalPolicyEnv = sync.OnceValues(func() (*cel.Env, error) {
-	return cel.NewEnv(
+var signalPolicyEnv = sync.OnceValues(func() (*cel.Env, error) { return allowPolicyEnv(true) })
+
+// manualPolicyEnv is [signalPolicyEnv] without `run`: a manual start has no run
+// yet, so `run` is an undeclared name there and a predicate that reads it is a
+// compile error rather than one that errors at every start.
+var manualPolicyEnv = sync.OnceValues(func() (*cel.Env, error) { return allowPolicyEnv(false) })
+
+func allowPolicyEnv(withRun bool) (*cel.Env, error) {
+	opts := []cel.EnvOption{
 		ext.NativeTypes(ext.ParseStructTag("cel"),
 			reflect.TypeFor[signalPolicyActor](), reflect.TypeFor[signalPolicyIdentity]()),
 		cel.Variable("sender", cel.ObjectType(signalPolicyActorTypeName)),
-		cel.Variable("run", cel.ObjectType(signalPolicyActorTypeName)),
 		cel.Variable(InputsRoot, cel.MapType(cel.StringType, cel.DynType)),
 		ext.Strings(ext.StringsVersion(5)),
-	)
-})
+	}
+	if withRun {
+		opts = append(opts, cel.Variable("run", cel.ObjectType(signalPolicyActorTypeName)))
+	}
+
+	return cel.NewEnv(opts...)
+}
 
 // SignalPolicyPredicate is a compiled `allow:` predicate.
 type SignalPolicyPredicate struct {
@@ -147,9 +168,33 @@ func (p SignalPolicyPredicate) Reads() SignalPolicyReads { return p.reads }
 // The refusal quotes the expression, which the author wrote, and nothing a run
 // supplied.
 func CompileSignalPolicyPredicate(src string) (SignalPolicyPredicate, error) {
-	env, err := signalPolicyEnv()
+	return compileAllowPredicate(src, false)
+}
+
+// CompileManualAllowPredicate is [CompileSignalPolicyPredicate] for `triggers:
+// manual: allow: ${...}`: the same compile, bool requirement, cost bound and
+// narrowing rule over a scope without `run`.
+//
+// A manual start has no run, so the scope is `sender.identity.{...}` (the
+// caller) and `inputs` (the arguments submitted with this start), and nothing
+// else; `run` is an undeclared name. With no run starter to compare against,
+// the narrowing rule is that a predicate reading `inputs` must also read
+// `sender.identity.claims`: the caller chooses the inputs, so a predicate over
+// them alone would let them admit themselves.
+func CompileManualAllowPredicate(src string) (SignalPolicyPredicate, error) {
+	return compileAllowPredicate(src, true)
+}
+
+func compileAllowPredicate(src string, manual bool) (SignalPolicyPredicate, error) {
+	envFn, scopeDescription := signalPolicyEnv, signalPolicyScopeDescription
+	what := "signal policy"
+	if manual {
+		envFn, scopeDescription, what = manualPolicyEnv, manualPolicyScopeDescription, "manual start"
+	}
+
+	env, err := envFn()
 	if err != nil {
-		return SignalPolicyPredicate{}, fmt.Errorf("building the signal policy environment: %w", err)
+		return SignalPolicyPredicate{}, fmt.Errorf("building the %s environment: %w", what, err)
 	}
 
 	if strings.TrimSpace(src) == "" {
@@ -158,8 +203,8 @@ func CompileSignalPolicyPredicate(src string) (SignalPolicyPredicate, error) {
 
 	checked, issues := env.Compile(src)
 	if issues.Err() != nil {
-		return SignalPolicyPredicate{}, fmt.Errorf("%w; a signal policy predicate reads only %s",
-			issues.Err(), signalPolicyScopeDescription)
+		return SignalPolicyPredicate{}, fmt.Errorf("%w; a %s predicate reads only %s",
+			issues.Err(), what, scopeDescription)
 	}
 
 	rule, err := celrule.Build(env, checked, src, SignalPolicyExprCostLimit)
@@ -169,6 +214,13 @@ func CompileSignalPolicyPredicate(src string) (SignalPolicyPredicate, error) {
 
 	reads := signalPolicyReads(checked)
 	if reads.inputs && !reads.claims && !reads.run {
+		if manual {
+			return SignalPolicyPredicate{}, errors.New(
+				"the predicate reads `inputs` but not `sender.identity.claims`; the caller chooses the inputs " +
+					"they submit, so as written they may admit themselves by what they pass. Also compare " +
+					"`sender.identity.claims` (for example `sender.identity.claims.team == \"ops\"`)")
+		}
+
 		return SignalPolicyPredicate{}, errors.New(
 			"the predicate reads `inputs` but nothing alongside it that the run's inputs cannot reach; " +
 				"whoever starts the run chooses its inputs, so as written they may name themselves as their own " +
@@ -181,6 +233,17 @@ func CompileSignalPolicyPredicate(src string) (SignalPolicyPredicate, error) {
 
 const signalPolicyScopeDescription = "`sender.identity.{principal,subject,issuer,namespace,claims}`, " +
 	"`run.identity` (the starter, same fields) and `inputs`"
+
+const manualPolicyScopeDescription = "`sender.identity.{principal,subject,issuer,namespace,claims}` " +
+	"(the caller) and `inputs` (the arguments submitted with this start); there is no `run` yet"
+
+// CheckManualAllowExpr reports why src is not an acceptable `manual: allow`
+// predicate, or nil.
+func CheckManualAllowExpr(src string) error {
+	_, err := CompileManualAllowPredicate(src)
+
+	return err
+}
 
 // CheckSignalPolicyExpr reports why src is not an acceptable predicate, or nil.
 func CheckSignalPolicyExpr(src string) error {
@@ -317,18 +380,27 @@ func signalPolicyInputsValue(inputs map[string]*Value) ref.Val {
 
 // signalPolicyExprAllows evaluates one predicate for one sender and returns nil
 // only for a clean `true`. Every refusal it returns is a fixed sentence: it
-// wraps nothing the evaluation produced.
-func signalPolicyExprAllows(ctx context.Context, src string, identity, starter *WorkloadIdentity, hasStarter bool, inputs map[string]*Value) error {
-	return signalPolicyExprAllowsWithin(ctx, SignalPolicyExprTimeout, src, identity, starter, hasStarter, inputs)
+// wraps nothing the evaluation produced. label names the stanza in the refusal
+// ("signal", "debug policy").
+func signalPolicyExprAllows(ctx context.Context, label, src string, identity, starter *WorkloadIdentity, hasStarter bool, inputs map[string]*Value) error {
+	return allowPredicateAllowsWithin(ctx, SignalPolicyExprTimeout, label, false, src, identity, starter, hasStarter, inputs)
 }
 
 // signalPolicyExprAllowsWithin is [signalPolicyExprAllows] with the deadline a
 // parameter, so a test can prove the deadline is what denies.
 func signalPolicyExprAllowsWithin(ctx context.Context, timeout time.Duration, src string, identity, starter *WorkloadIdentity, hasStarter bool, inputs map[string]*Value) error {
-	predicate, err := CompileSignalPolicyPredicate(src)
+	return allowPredicateAllowsWithin(ctx, timeout, "signal", false, src, identity, starter, hasStarter, inputs)
+}
+
+// allowPredicateAllowsWithin is the one run loop behind all three stanzas:
+// compile (the scope picked by manual), bound by time, evaluate, and let only a
+// clean true through. label names the stanza in the refusal ("signal", "debug
+// policy", "manual start").
+func allowPredicateAllowsWithin(ctx context.Context, timeout time.Duration, label string, manual bool, src string, identity, starter *WorkloadIdentity, hasStarter bool, inputs map[string]*Value) error {
+	predicate, err := compileAllowPredicate(src, manual)
 	if err != nil {
-		return errors.New("this signal's allow predicate is not a valid policy, so no sender is authorized " +
-			"until it is fixed")
+		return fmt.Errorf("this %s's allow predicate is not a valid policy, so no sender is authorized "+
+			"until it is fixed", label)
 	}
 
 	// Bounded in time as well as in cost: the cost estimator counts steps, and a
@@ -343,15 +415,21 @@ func signalPolicyExprAllowsWithin(ctx context.Context, timeout time.Duration, sr
 		// Deliberately not wrapped, formatted in or inspected: cel-go's
 		// conversion errors quote their operand, and an operand can be an input
 		// or a claim. One sentence for every cause.
-		return errors.New("this signal's allow predicate could not be evaluated for this sender " +
-			"(it errored, for example by reading the run's starter when none is recorded or a claim or " +
-			"input that is missing, or it exceeded its cost bound), so the sender is refused")
+		return fmt.Errorf("this %s's allow predicate could not be evaluated for this sender "+
+			"(it errored, for example by reading the run's starter when none is recorded or a claim or "+
+			"input that is missing, or it exceeded its cost bound), so the sender is refused", label)
 	}
 	if !allowed {
-		return errors.New("the sender does not satisfy this signal's allow predicate")
+		return fmt.Errorf("the sender does not satisfy this %s's allow predicate", label)
 	}
 
 	return nil
+}
+
+// manualAllowExprAllows decides a `manual: allow: ${...}` start: the caller and
+// the submitted inputs, no run. Same loop as the other two stanzas.
+func manualAllowExprAllows(ctx context.Context, src string, caller *WorkloadIdentity, inputs map[string]*Value) error {
+	return allowPredicateAllowsWithin(ctx, SignalPolicyExprTimeout, "manual start", true, src, caller, nil, false, inputs)
 }
 
 // checkSignalPolicyExprShape is [CheckPolicyShape]'s half for a policy that

@@ -2153,6 +2153,11 @@ subjects; qualify them with the issuer configured in the server's auth policy. T
 the allowlist for an intentionally open development server; never use that posture on
 a shared network.
 
+Instead of the list, `allow: ${...}` is one predicate over the caller and the submitted
+inputs, the form `signals:` and `debug:` take; see
+[One predicate decides who may act](#one-predicate-decides-who-may-act-allow--on-signals).
+A block writes the list or the predicate, never both.
+
 **Trigger context is readable for behaviour.** A run reads how it started under a root of
 its own:
 
@@ -4475,8 +4480,33 @@ predicate reads (its inputs, and the starter's identity when it reads `run`) wit
 run, bounded at 64 KiB and refused rather than truncated; a run whose policies are
 rules records nothing. One predicate is bounded at a fixed evaluation cost.
 
-**What it does not do yet.** `debug:` still takes the rule list; a predicate there is
-refused. `distinct_from_starter:` still works beside a predicate. The quorum
+**`debug:` and `manual:` take the same predicate.** `debug: allow: ${...}` is decided by
+the same function over the same scope, with `inputs` and `run.identity` being the
+debugged run's, and the same narrowing rule:
+
+```yaml
+debug:
+  allow: ${sender.identity.claims.team == "sre"}
+```
+
+`triggers: - manual:` takes `allow: ${...}` beside `allowed_principals:`, never both:
+
+```yaml
+triggers:
+  - manual:
+      allow: ${sender.identity.principal in ["https://issuer.example.com#ops@example.com"]}
+```
+
+A manual start has no run yet, so there `run` is not in scope and reading it is a
+compile error; `sender` is the caller and `inputs` are the arguments being submitted
+with this start. With no starter to compare against, the narrowing rule is that a
+predicate reading `inputs` must also read `sender.identity.claims`. A caller with no
+authenticated principal is refused, as `allowed_principals:` refuses one. `denied`
+and a predicate contradict each other and are refused; `require_reason:` still applies
+beside it. The values a `debug:` predicate reads of the run are recorded at submit with
+the same bound as for `signals:`.
+
+**What it does not do yet.** `distinct_from_starter:` still works beside a predicate. The quorum
 "`approve:` larger than the allow-list" check counts rules and is silent about a
 predicate.
 

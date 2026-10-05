@@ -171,17 +171,6 @@ func TestSignalPolicyShapeRefusesAnUnusablePredicateWithTheStanzaNamed(t *testin
 	assert.Contains(t, err.Error(), "cannot reach")
 }
 
-func TestDebugStanzaDoesNotAcceptAnAllowPredicateYet(t *testing.T) {
-	t.Parallel()
-
-	policy := predicatePolicy(`sender.identity.claims["team"] == "sre"`)
-	caller := &v1.WorkloadIdentity{Claims: map[string]string{"team": "sre"}}
-
-	require.Error(t, v1.CheckDebugPolicy(policy, false))
-	require.Error(t, v1.DebugPolicyCheck(policy, caller, nil, false),
-		"a predicate in `debug:` must read as nobody, never as the caller it would admit")
-}
-
 func TestWebhookBridgeIsNotRefusedForAPredicatePolicy(t *testing.T) {
 	t.Parallel()
 

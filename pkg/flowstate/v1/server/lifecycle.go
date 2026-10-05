@@ -254,8 +254,16 @@ func (s *FlowstateServer) signalPolicies(memo *common.Memo) (map[string]*v1.Sign
 // allowed_principals match, must leave a DENY under the RPC's own name — not
 // an unaudited PermissionDenied, which reads in the trail as a request that
 // never made a second decision at all. See #1883 and #1889.
-func (s *FlowstateServer) authorizeManualStart(ctx context.Context, rpc string, resourceKind v1.AuditResourceKind, resourceKey string, wf *v1.Workflow, reason string) error {
-	if err := v1.CheckManualStart(wf, manualStartPrincipal(ctx), reason); err != nil {
+//
+// caller is the identity this server attested for the request and inputs the
+// arguments being submitted (bound, so defaults are filled and a start with
+// none passes an empty map, not nil): what a `manual: allow: ${...}` predicate
+// reads, there being no run yet.
+func (s *FlowstateServer) authorizeManualStart(ctx context.Context, rpc string, resourceKind v1.AuditResourceKind, resourceKey string, wf *v1.Workflow, caller *v1.WorkloadIdentity, reason string, inputs map[string]*v1.Value) error {
+	if inputs == nil {
+		inputs = map[string]*v1.Value{}
+	}
+	if err := v1.CheckManualStart(ctx, wf, caller, manualStartPrincipal(ctx), reason, inputs); err != nil {
 		return s.auditDeny(ctx, rpc, resourceKind, resourceKey,
 			v1.AuditDenyCode_AUDIT_DENY_CODE_POLICY_DENIED, connect.NewError(connect.CodePermissionDenied, err))
 	}
@@ -369,31 +377,10 @@ func (s *FlowstateServer) authorizeSignal(resp *workflowservice.DescribeWorkflow
 				"until it can be: %w", err))
 	}
 
-	// What an `allow: ${...}` predicate reads of the run beyond the starter's
-	// qualified subject: its inputs, and the starter's full identity. Absent
-	// is the answer for every run whose policies are rules.
-	runScope, err := s.signalPolicyScope(resp.GetWorkflowExecutionInfo().GetMemo())
+	starterIdentity, runInputs, err := s.predicateRunScope(resp.GetWorkflowExecutionInfo().GetMemo(),
+		fmt.Sprintf("signal %q", name), policy, starterIdentity, hasStarter)
 	if err != nil {
-		return connect.NewError(connect.CodePermissionDenied,
-			fmt.Errorf("this run's signal policy scope could not be read, so no sender is authorized "+
-				"until it can be: %w", err))
-	}
-	if hasStarter && runScope.GetIdentity() != nil {
-		starterIdentity = runScope.GetIdentity()
-	}
-	// A predicate that reads the run's inputs or starter needs the values
-	// submit recorded for it. Without them it would be evaluated over an empty
-	// scope, where `!has(inputs.x)` is true, so an absent record denies.
-	if reads := v1.SignalPolicyExprReads(map[string]*v1.SignalPolicy{name: policy}); (reads.Inputs || reads.Run) && runScope == nil {
-		return connect.NewError(connect.CodePermissionDenied,
-			fmt.Errorf("signal %q: this run recorded nothing for its allow predicate to read, so no sender is "+
-				"authorized", name))
-	}
-	// A recorded scope with no inputs is an empty set of inputs, not an unbound
-	// name; the wire form cannot tell the two apart, the memo's presence does.
-	runInputs := runScope.GetInputs()
-	if runScope != nil && runInputs == nil {
-		runInputs = map[string]*v1.Value{}
+		return err
 	}
 
 	// Background, not a request context: authorizeSignal is also asked by GetGate and the webhook bridge. The
@@ -404,6 +391,44 @@ func (s *FlowstateServer) authorizeSignal(resp *workflowservice.DescribeWorkflow
 	}
 
 	return nil
+}
+
+// predicateRunScope reads what an `allow: ${...}` predicate may read of the
+// run beyond the starter's qualified subject (its inputs, and the starter's
+// full identity), back off the run's memo, for whichever stanza is being
+// decided: a signal's policy and `debug:` record into and read from the one
+// scope entry ([signalPolicyScopeMemoKey]). what names the decision in a
+// refusal.
+//
+// Fail closed: an entry that cannot be read denies; a policy that reads the
+// run's inputs or starter denies when the run recorded no entry, because it
+// would otherwise be evaluated over an empty scope, where `!has(inputs.x)` is
+// true. A policy whose reads are empty is unaffected, so every run whose
+// policies are rules behaves as before. starter is returned replaced by the
+// recorded full identity when there is one.
+func (s *FlowstateServer) predicateRunScope(memo *common.Memo, what string, policy *v1.SignalPolicy, starter *v1.WorkloadIdentity, hasStarter bool) (*v1.WorkloadIdentity, map[string]*v1.Value, error) {
+	runScope, err := s.signalPolicyScope(memo)
+	if err != nil {
+		return nil, nil, connect.NewError(connect.CodePermissionDenied,
+			fmt.Errorf("this run's policy scope could not be read, so no sender is authorized "+
+				"until it can be: %w", err))
+	}
+	if hasStarter && runScope.GetIdentity() != nil {
+		starter = runScope.GetIdentity()
+	}
+	if reads := v1.SignalPolicyExprReads(map[string]*v1.SignalPolicy{"": policy}); (reads.Inputs || reads.Run) && runScope == nil {
+		return nil, nil, connect.NewError(connect.CodePermissionDenied,
+			fmt.Errorf("%s: this run recorded nothing for its allow predicate to read, so no sender is "+
+				"authorized", what))
+	}
+	// A recorded scope with no inputs is an empty set of inputs, not an unbound
+	// name; the wire form cannot tell the two apart, the memo's presence does.
+	inputs := runScope.GetInputs()
+	if runScope != nil && inputs == nil {
+		inputs = map[string]*v1.Value{}
+	}
+
+	return starter, inputs, nil
 }
 
 // authorizeExistingEntity asks the signal's policy of an entity that already
@@ -528,7 +553,20 @@ func (s *FlowstateServer) authorizeReservedSignal(
 				"until it can be: %w", err))
 	}
 
-	if err := v1.DebugPolicyCheck(policy, sender.GetIdentity(), starterIdentity, hasStarter); err != nil {
+	// The debugged run's inputs and the starter's full identity, recorded at
+	// submit when the predicate reads them: the same scope, read the same way,
+	// as a signal's predicate (predicateRunScope). Not asked for a policy that
+	// is absent, which DebugPolicyCheck refuses itself.
+	var runInputs map[string]*v1.Value
+	if policy != nil {
+		starterIdentity, runInputs, err = s.predicateRunScope(resp.GetWorkflowExecutionInfo().GetMemo(),
+			"debug", policy, starterIdentity, hasStarter)
+		if err != nil {
+			return err
+		}
+	}
+
+	if err := v1.DebugPolicyCheck(context.Background(), policy, sender.GetIdentity(), starterIdentity, hasStarter, runInputs); err != nil {
 		return connect.NewError(connect.CodePermissionDenied, fmt.Errorf("signal %q: %w", name, err))
 	}
 
@@ -1161,7 +1199,7 @@ func (s *FlowstateServer) SignalWithStart(ctx context.Context, req *connect.Requ
 	// through `Run` and not through here — which is the fail-closed direction:
 	// a requirement nothing can satisfy refuses, rather than being waived by the
 	// path that has nowhere to put it.
-	if err := s.authorizeManualStart(ctx, "SignalWithStart", v1.AuditResourceKind_AUDIT_RESOURCE_KIND_RUN, workflowID, workflow, ""); err != nil {
+	if err := s.authorizeManualStart(ctx, "SignalWithStart", v1.AuditResourceKind_AUDIT_RESOURCE_KIND_RUN, workflowID, workflow, identity, "", inputs); err != nil {
 		return nil, err
 	}
 
