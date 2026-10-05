@@ -12,14 +12,6 @@ breaking:
     - FILE
     - WIRE
 
-  # Retiring `retry.except`, which spelled the complement of `only`: workflow.proto
-  # `RetryPolicy` field 6 (`except`) is deleted, its number and name reserved.
-  # Nothing else in that file moves. Remove this block in the next commit on main,
-  # once this one is the baseline.
-  ignore_only:
-    FIELD_NO_DELETE:
-      - proto/flowstate/v1/workflow.proto
-
   # FILE and WIRE compare descriptors: names, numbers, types, cardinality, and
   # reservations. They do not prove that a runtime still gives a field the same
   # meaning. A semantic change needs a focused conformance case that distinguishes
