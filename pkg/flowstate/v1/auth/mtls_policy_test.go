@@ -48,6 +48,11 @@ func TestPolicyValidateMTLS(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name:    "an issuer label with '#' would make issuer#subject ambiguous",
+			policy:  spoil(func(i *auth.TrustedIssuer) { i.Issuer = "mesh#a" }),
+			wantErr: true,
+		},
+		{
 			name:    "no client_ca_file",
 			policy:  spoil(func(i *auth.TrustedIssuer) { i.ClientCAFile = "" }),
 			wantErr: true,

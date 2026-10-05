@@ -71,7 +71,7 @@ func AssertSignalSenderShape(t testing.TB, outputs *v1.Node_Outputs, wantLocal b
 		t.Fatalf("the sender mapping has no %q field", "identity")
 	}
 
-	for _, field := range []string{"subject", "issuer", "namespace", "deployment"} {
+	for _, field := range []string{"subject", "issuer", "namespace", "principal", "deployment"} {
 		if _, ok := identity[field]; !ok {
 			t.Fatalf("the sender's identity mapping has no %q field", field)
 		}

@@ -1111,14 +1111,33 @@ func (t TrustedIssuer) validate() error {
 		seenActions[action] = struct{}{}
 	}
 
+	var err error
 	switch t.kind() {
 	case IssuerKindMTLS:
-		return t.validateMTLS()
+		err = t.validateMTLS()
 	case IssuerKindOIDC:
-		return t.validateOIDC()
+		err = t.validateOIDC()
 	default:
 		return fmt.Errorf("kind %q is not supported: use %q (the default) or %q", t.Kind, IssuerKindOIDC, IssuerKindMTLS)
 	}
+	if err != nil {
+		return err
+	}
+
+	// An issuer is written into `issuer#subject` wherever an identity is named
+	// ([Principal.QualifiedSubject], a policy rule's `subject:`, an expression's
+	// `principal`). With no '#' in any issuer, ("mesh", "a#b") and ("mesh#a", "b")
+	// cannot name the same principal: the first '#' always ends the issuer. A
+	// parsed URL does not guarantee it (`https://idp.example/a#` parses with an
+	// empty fragment), and a `kind: mtls` label is free text, so every kind is
+	// held to it here.
+	if strings.Contains(t.Issuer, "#") {
+		// The value is not echoed: it is operator input that may be a misread
+		// credential, which the kind's own checks above only sometimes catch.
+		return fmt.Errorf("issuer contains '#', which separates the issuer from the subject in a qualified identity")
+	}
+
+	return nil
 }
 
 // validateOIDC checks the fields a kind: oidc entry (the default) uses, and

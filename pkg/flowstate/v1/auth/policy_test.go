@@ -53,6 +53,11 @@ func TestPolicyValidate(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name:    "an issuer ending in a bare '#', which parses with no fragment but would make issuer#subject ambiguous",
+			policy:  spoil(func(i *auth.TrustedIssuer) { i.Issuer = "https://issuer.example.com/a#" }),
+			wantErr: true,
+		},
+		{
 			name:    "an issuer with no name to audit against",
 			policy:  spoil(func(i *auth.TrustedIssuer) { i.Name = "" }),
 			wantErr: true,

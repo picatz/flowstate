@@ -53,7 +53,7 @@ func NewLocalRunAddressAt(started time.Time) *RunAddress {
 // runRootValue renders a run's own address and starter identity as the map an
 // expression reads under [RunRoot]: `run.workflow_id`, `run.run_id`,
 // `run.identity.subject`, `run.identity.issuer`, `run.identity.namespace`,
-// `run.identity.claims`, `run.local`, and `run.started_at`.
+// `run.identity.claims`, `run.identity.principal`, `run.local`, and `run.started_at`.
 //
 // The identity half is deliberately narrower than [WorkloadIdentity] itself —
 // see [Scope.identity]'s doc for why `deployment` is left off — and deliberately
@@ -85,21 +85,57 @@ func NewLocalRunAddressAt(started time.Time) *RunAddress {
 // inside a wait. The one field a reader may expect and will not find is an
 // attempt count, and [RunAddress] records why.
 func runRootValue(identity *WorkloadIdentity, local bool, address *RunAddress) ref.Val {
-	claims := make(map[string]any, len(identity.GetClaims()))
-	for _, k := range slices.Sorted(maps.Keys(identity.GetClaims())) {
-		claims[k] = identity.GetClaims()[k]
-	}
-
 	return TypeAdapter.NativeToValue(map[string]any{
-		"identity": map[string]any{
-			"subject":   identity.GetSubject(),
-			"issuer":    identity.GetIssuer(),
-			"namespace": identity.GetNamespace(),
-			"claims":    claims,
-		},
+		"identity":    IdentityShape(identity),
 		"local":       local,
 		"workflow_id": address.GetWorkflowId(),
 		"run_id":      address.GetRunId(),
 		"started_at":  address.GetStartedAt().AsTime(),
 	})
+}
+
+// IdentityShape is the one rendering of a [WorkloadIdentity] an expression
+// reads: `subject`, `issuer`, `namespace`, `claims` (a map, sorted by key), and
+// `principal`. Both `run.identity` ([runRootValue]) and a wait's
+// `sender.identity` ([signalSenderValue]) are built from it, so the two shapes
+// cannot drift; the sender drops `claims` and adds `deployment`.
+//
+// Claims are the run starter's own, which `run.identity.claims` already carries
+// to its author; a wait's sender is a third party and does not get them (see
+// [signalSenderValue]).
+//
+// A nil identity renders every string empty and claims empty.
+func IdentityShape(identity *WorkloadIdentity) map[string]any {
+	claims := make(map[string]any, len(identity.GetClaims()))
+	for _, k := range slices.Sorted(maps.Keys(identity.GetClaims())) {
+		claims[k] = identity.GetClaims()[k]
+	}
+
+	return map[string]any{
+		"subject":   identity.GetSubject(),
+		"issuer":    identity.GetIssuer(),
+		"namespace": identity.GetNamespace(),
+		"claims":    claims,
+		"principal": Principal(identity.GetIssuer(), identity.GetSubject()),
+	}
+}
+
+// Principal is `issuer#subject` ([QualifiedSubject]) when both halves are
+// present, and "" otherwise.
+//
+// The rule is decided once, here: an unauthenticated or local sender (no
+// identity) and an identity missing either half give "", never a half-formed
+// "#" or "issuer#". The empty value still equals itself, so a predicate that
+// compares a principal must treat "" as missing (require it non-empty) rather
+// than rely on the representation to keep anonymous callers apart.
+//
+// The join is injective because no trusted issuer contains '#' (policy
+// validation refuses one in either kind), so the first '#' always ends the
+// issuer and a subject may contain any further '#'.
+func Principal(issuer, subject string) string {
+	if issuer == "" || subject == "" {
+		return ""
+	}
+
+	return QualifiedSubject(issuer, subject)
 }
