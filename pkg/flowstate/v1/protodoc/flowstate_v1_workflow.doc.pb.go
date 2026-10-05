@@ -890,17 +890,6 @@ func init() {
 				" concrete task names have been written into its normalized program.\n",
 		},
 		{
-			Name: "flowstate.v1.PureHelper",
-			Leading: " PureHelper is an importable declaration normalized away before execution. It\n" +
-				" contributes a typed name to the compiler's CEL environment, never a runtime\n" +
-				" function or evaluator. The body may reference only its parameters and the\n" +
-				" pinned profile's pure CEL vocabulary.\n",
-		},
-		{
-			Name:    "flowstate.v1.PureHelperParameter",
-			Leading: " PureHelperParameter is one typed, body-local argument of a PureHelper.\n",
-		},
-		{
 			Name: "flowstate.v1.InputDeclaration",
 			Leading: " InputDeclaration is one parameter a run may be started with: what it is\n" +
 				" called, what a value for it must be, whether it may be left out, and what it\n" +
