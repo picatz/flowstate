@@ -1,6 +1,8 @@
 package server
 
 import (
+	"maps"
+	"slices"
 	"strings"
 	"testing"
 
@@ -11,6 +13,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	v1types "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 )
 
 // The shared conformance table (TestRehearsalSignalCasesDurably) already runs
@@ -63,6 +66,7 @@ func TestSignalPolicyScopeIsRecordedOnlyForWhatAPredicateReads(t *testing.T) {
 	withInputs := read(`sender.identity.principal == "https://issuer.example.com#" + inputs.expected_approver && sender.identity.claims["team"] == "x"`)
 	require.NotNil(t, withInputs)
 	assert.Contains(t, withInputs.GetInputs(), "expected_approver")
+	assert.Len(t, withInputs.GetInputs(), 1)
 	assert.Nil(t, withInputs.GetIdentity(), "the starter was recorded for a predicate that does not read it")
 
 	// A rule-list policy records no scope at all.
@@ -173,4 +177,58 @@ func TestAuthorizeSignalRefusalNamesNoClaimValue(t *testing.T) {
 		sender("https://issuer.example.com", "lead@example.com", "", map[string]string{"n": secret}))
 	require.Error(t, err)
 	assert.NotContains(t, err.Error(), secret)
+}
+
+// Secrets never enter durable history: a run records the inputs a predicate
+// names and nothing else, and a predicate that reads a `sensitive:` input is
+// refused rather than recorded.
+func TestSignalPolicyScopeRecordsOnlyTheInputsAPredicateNames(t *testing.T) {
+	t.Parallel()
+
+	wf := predicateWorkflow(`sender.identity.claims["team"] == "x" && sender.identity.principal == "i#" + inputs.approver`)
+	wf.DeclaredInputs = []*v1types.InputDeclaration{{Name: "approver"}, {Name: "token", Sensitive: true}, {Name: "note"}}
+	inputs := map[string]*v1types.Value{
+		"approver": v1types.NewLiteral("lead@example.com"),
+		"token":    v1types.NewLiteral("hunter2"),
+		"note":     v1types.NewLiteral("unrelated"),
+	}
+
+	entries, err := policyMemoEntries(wf, inputs, nil)
+	require.NoError(t, err)
+
+	scope := &v1types.Scope{}
+	require.NoError(t, proto.Unmarshal(entries[signalPolicyScopeMemoKey].([]byte), scope))
+	assert.Equal(t, []string{"approver"}, slices.Collect(maps.Keys(scope.GetInputs())),
+		"inputs no predicate names must not be copied into durable history")
+	assert.NotContains(t, string(entries[signalPolicyScopeMemoKey].([]byte)), "hunter2")
+
+	// Fail closed at the place the memo is written, for a specification that
+	// never met the validator.
+	wf.Signals["deploy-approved"].Allow = `sender.identity.claims["team"] == "x" && inputs.token == "hunter2"`
+	_, err = policyMemoEntries(wf, inputs, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `reads the input "token"`)
+	assert.NotContains(t, err.Error(), "hunter2")
+
+	// And at submit's validation, beside the other policy checks.
+	parsed, _, err := flowfile.Parse([]byte(`edition: v2026.4
+name: gate
+inputs:
+  token:
+    type: string
+    sensitive: true
+steps:
+  - id: approval
+    wait_for_signal:
+      name: deploy-approved
+      timeout: 24h
+signals:
+  deploy-approved:
+    allow: ${sender.identity.claims.team == "x" && inputs.token == "y"}
+`))
+	require.NoError(t, err)
+	err = (&FlowstateServer{}).validateSpecification(parsed)
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+	assert.Contains(t, err.Error(), `reads the input "token"`)
 }

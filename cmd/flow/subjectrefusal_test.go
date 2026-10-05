@@ -23,8 +23,9 @@ import (
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowstatev1connect"
 )
 
-// sensitiveSubjectWorkflow gates a signal on a principal read from a
-// `sensitive:` input. The refusals below are a server's, quoting that input in
+// sensitiveSubjectWorkflow declares a `sensitive:` input beside a signal gate
+// (a predicate may not read a sensitive input, so it names the starter instead).
+// The refusals below are a server's, quoting that input in
 // its own words: redacting what a server quotes is the CLI's and the MCP
 // tools' job whatever the server was refusing, and the fixture is what gives
 // the argument something to be redacted from.
@@ -37,7 +38,7 @@ inputs:
     sensitive: true
 signals:
   approved:
-    allow: ${sender.identity.principal == "https://issuer.example.com#" + inputs.approver && sender.identity.principal != run.identity.principal}
+    allow: ${sender.identity.principal != run.identity.principal}
 steps:
   - id: wait
     wait_for_signal:

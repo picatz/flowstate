@@ -1444,8 +1444,9 @@ from `inputs`, require exactly one `#` in the principal first
 "https://issuer.example.com#" + inputs.approver`), because an unauthenticated sender's
 `principal` is empty and equals an empty input, and a computed name could otherwise be
 matched by a principal holding a second `#`. Write conjunctions: the narrowing check is
-syntactic, and a predicate that reads `inputs` records them in the policy scope memo
-(including `sensitive:` inputs, 64 KiB cap; issue #2325).
+syntactic, and a predicate that reads `inputs` records the inputs it names in the policy
+scope memo (64 KiB cap). It may not read a `sensitive:` input or name no input at all
+(`inputs[k]`, `inputs` passed whole); both are refused.
 
 `debug:` takes the same predicate.
 

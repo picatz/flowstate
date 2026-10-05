@@ -68,11 +68,12 @@ func namesTheTrigger() *v1.SignalPolicy {
 // first: without it a `signal:` naming an unpoliced gate compiles, and one
 // leaked signing key answers every unpoliced gate the deployment serves.
 //
-// A predicate is decided at delivery over the sender, the starter and the run's
-// inputs, none of which the file check holds, so it does not refuse a predicate
-// the bridge's principal cannot satisfy. Each such case asserts both halves: the
-// file check passes, and the delivery is denied by [v1.SignalPolicyCheck], the
-// one function that decides it (#2325).
+// A predicate whose admitted principals are a closed set without the trigger is
+// refused in the file. One that is open (a claim, the namespace, the starter, the
+// inputs) is decided at delivery over values the file check does not hold, so it
+// is not refused; each such case asserts both halves: the file check passes, and
+// the delivery is denied by [v1.SignalPolicyCheck], the one function that decides
+// it (#2325).
 func TestABridgeNeedsAPolicyThatCouldAdmitItsTrigger(t *testing.T) {
 	t.Parallel()
 
@@ -96,13 +97,30 @@ func TestABridgeNeedsAPolicyThatCouldAdmitItsTrigger(t *testing.T) {
 			admitted: true,
 		},
 		{
-			name:   "a predicate naming a person passes the file check and denies at delivery",
-			policy: &v1.SignalPolicy{Allow: `sender.identity.principal == "` + v1.QualifiedSubject("https://issuer.example.com", "sre-lead@example.com") + `"`},
+			name:    "a predicate naming only a person can never admit the bridge, and is refused",
+			policy:  &v1.SignalPolicy{Allow: `sender.identity.principal == "` + v1.QualifiedSubject("https://issuer.example.com", "sre-lead@example.com") + `"`},
+			refused: "every delivery would be denied",
 		},
 		{
-			name: "a predicate naming another trigger on this workflow passes the file check and denies at delivery",
+			name: "a union of closed sets that omits the trigger is refused",
+			policy: &v1.SignalPolicy{Allow: `sender.identity.principal in ["` + v1.QualifiedSubject("https://issuer.example.com", "a@example.com") +
+				`", "` + v1.QualifiedSubject("https://issuer.example.com", "b@example.com") + `"]`},
+			refused: "every delivery would be denied",
+		},
+		{
+			name:     "a union that names the trigger beside a person admits it",
+			policy:   &v1.SignalPolicy{Allow: namesTheTrigger().GetAllow() + ` || sender.identity.principal == "https://issuer.example.com#a@example.com"`},
+			admitted: true,
+		},
+		{
+			name:   "an open side keeps a predicate satisfiable, so it is not refused",
+			policy: &v1.SignalPolicy{Allow: `sender.identity.principal == "https://issuer.example.com#a@example.com" || sender.identity.namespace == "ns"`},
+		},
+		{
+			name: "a predicate naming another trigger on this workflow is refused",
 			policy: &v1.SignalPolicy{Allow: `sender.identity.principal == "` + v1.QualifiedSubject(v1.WebhookPrincipalIssuer,
 				v1.WebhookTriggerSubject("deploy-gate", "pagerduty-ack")) + `"`},
+			refused: "every delivery would be denied",
 		},
 		{
 			name: "a predicate requiring a claim passes the file check and denies at delivery",

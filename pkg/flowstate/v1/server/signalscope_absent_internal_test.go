@@ -27,9 +27,7 @@ func TestAuthorizeSignalDeniesWhenTheScopeAPredicateReadsWasNeverRecorded(t *tes
 	lead := sender("https://issuer.example.com", "lead@example.com", "", map[string]string{"team": "payments"})
 
 	for _, expression := range []string{
-		`size(inputs) == 0 && sender.identity.claims["team"] == "payments"`,
 		`!has(inputs.x) && sender.identity.claims["team"] == "payments"`,
-		`inputs.size() == 0 && sender.identity.claims["team"] == "payments"`,
 		`"x" in inputs || sender.identity.claims["team"] == "payments"`,
 		`sender.identity.claims["team"] == "payments" || sender.identity.principal != run.identity.principal`,
 	} {
@@ -51,7 +49,7 @@ func TestAuthorizeSignalDeniesWhenTheScopeAPredicateReadsWasNeverRecorded(t *tes
 
 // The same, against a memo written by submit itself: the control admits with
 // the scope recorded, and the one difference in the denial is that the record
-// was removed. A predicate over `size(inputs)` does not dereference a missing
+// was removed. A predicate over `!has(inputs.x)` does not dereference a missing
 // input, so only the absent-record rule can refuse it.
 func TestAuthorizeSignalDeniesAPredicateWhoseRecordedScopeWasRemoved(t *testing.T) {
 	t.Parallel()
@@ -59,7 +57,7 @@ func TestAuthorizeSignalDeniesAPredicateWhoseRecordedScopeWasRemoved(t *testing.
 	wf := &v1types.Workflow{
 		Name: "gate",
 		Signals: map[string]*v1types.SignalPolicy{
-			"deploy-approved": {Allow: `size(inputs) == 0 && sender.identity.claims["team"] == "payments"`},
+			"deploy-approved": {Allow: `!has(inputs.x) && sender.identity.claims["team"] == "payments"`},
 		},
 	}
 	entries, err := policyMemoEntries(wf, nil, &v1types.WorkloadIdentity{Issuer: "i", Subject: "s"})

@@ -391,3 +391,46 @@ func TestSignalPolicyEndToEnd(t *testing.T) {
 		Subject: "some-other-engineer@example.com",
 	}), "an undeclared sender was authorized")
 }
+
+// A predicate's inputs are recorded in the run's memo, so one that reads an
+// input declared `sensitive:` is refused where it is written, naming the input
+// and no value; the same predicate over an ordinary input validates.
+func TestSignalPredicateReadingASensitiveInputIsRefused(t *testing.T) {
+	t.Parallel()
+
+	source := func(read string) string {
+		return `edition: v2026.4
+name: deploy-gate
+inputs:
+  approver:
+    type: string
+    required: true
+  token:
+    type: string
+    sensitive: true
+    required: true
+steps:
+  - id: approval
+    wait_for_signal:
+      name: deploy-approved
+      timeout: 24h
+signals:
+  deploy-approved:
+    allow: ${sender.identity.claims.team == "x" && sender.identity.principal == "i#" + ` + read + `}
+debug:
+  allow: ${sender.identity.claims.team == "x" && ` + read + ` == "y"}
+`
+	}
+
+	diagnostics, err := flowfile.ValidateSource([]byte(source("inputs.approver")))
+	require.NoError(t, err)
+	require.Empty(t, diagnostics)
+
+	diagnostics, err = flowfile.ValidateSource([]byte(source("inputs.token")))
+	require.NoError(t, err)
+	require.Len(t, diagnostics, 2, "both stanzas read the sensitive input")
+	for _, d := range diagnostics {
+		assert.Contains(t, d.Message, `reads the input "token", which is declared `+"`sensitive:`")
+		assert.NotZero(t, d.Line)
+	}
+}
