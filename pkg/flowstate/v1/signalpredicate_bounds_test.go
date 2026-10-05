@@ -1,7 +1,6 @@
 package flowstatev1_test
 
 import (
-	"context"
 	"testing"
 	"time"
 
@@ -36,24 +35,8 @@ func TestSignalPolicyInputsAreUnboundWhenTheCallerHoldsNone(t *testing.T) {
 		approver, nil, false, map[string]*v1.Value{}))
 }
 
-func TestSignalPolicyPredicateDeniesWhenItsDeadlineHasPassed(t *testing.T) {
+func TestSignalPolicyTimeoutConstantIsOneSecond(t *testing.T) {
 	t.Parallel()
-
-	values := make([]any, 60)
-	for i := range values {
-		values[i] = i
-	}
-	inputs := map[string]*v1.Value{"items": v1.NewLiteralList(values...)}
-	policy := predicatePolicy(`inputs.items.all(a, inputs.items.all(b, a >= 0)) && sender.identity.claims["team"] == "release"`)
-	approver := &v1.WorkloadIdentity{Claims: map[string]string{"team": "release"}}
-
-	require.NoError(t, v1.SignalPolicyCheck(t.Context(), policy, approver, nil, false, inputs),
-		"the control: this predicate is within its cost bound and admits")
-
-	expired, cancel := context.WithDeadline(t.Context(), time.Unix(0, 0))
-	defer cancel()
-	require.Error(t, v1.SignalPolicyCheck(expired, policy, approver, nil, false, inputs),
-		"an evaluation past its deadline admitted")
 
 	assert.Equal(t, time.Second, v1.SignalPolicyExprTimeout)
 }

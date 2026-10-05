@@ -406,24 +406,49 @@ func (s *FlowstateServer) authorizeSignal(resp *workflowservice.DescribeWorkflow
 	return nil
 }
 
+// authorizeExistingEntity asks the signal's policy of an entity that already
+// exists, on its own memo, and returns the run id the delivery is pinned to.
+//
+// The id comes from the execution that was just described and authorized
+// rather than from an error, because a pin is only a pin when it names
+// something: `hint` is normally populated, but an empty one would silently
+// degrade the signal to "whatever is current under this key" — the unpinned
+// behaviour SignalWithStart exists to avoid, arrived at by accident. The
+// described execution always has a concrete id. A refusal is audited as
+// Signal's is.
+func (s *FlowstateServer) authorizeExistingEntity(ctx context.Context, resp *workflowservice.DescribeWorkflowExecutionResponse, hint, workflowID, name string, sender *v1.SignalSender) (string, error) {
+	if err := s.authorizeSignal(resp, name, sender); err != nil {
+		return "", s.auditDeny(ctx, "SignalWithStart", v1.AuditResourceKind_AUDIT_RESOURCE_KIND_RUN, workflowID,
+			v1.AuditDenyCode_AUDIT_DENY_CODE_POLICY_DENIED, err)
+	}
+
+	runID := resp.GetWorkflowExecutionInfo().GetExecution().GetRunId()
+	if runID == "" {
+		runID = hint
+	}
+
+	return runID, nil
+}
+
 // describedByMemo is the Describe response a run carrying memo would produce,
 // so that [FlowstateServer.authorizeSignal] can be asked about a run that does
-// not exist yet with exactly the code that answers it once it does. A value
-// that cannot be encoded leaves its key out, which every reader of the memo
-// treats as absent and fails closed on.
-func describedByMemo(s *FlowstateServer, memo map[string]any) *workflowservice.DescribeWorkflowExecutionResponse {
+// not exist yet with exactly the code that answers it once it does. A
+// value that cannot be encoded is an error rather than a missing key: a
+// declared policy that fails to encode must never read as "no policy".
+func describedByMemo(s *FlowstateServer, memo map[string]any) (*workflowservice.DescribeWorkflowExecutionResponse, error) {
 	fields := make(map[string]*common.Payload, len(memo))
 	for key, value := range memo {
 		payload, err := s.dataConverter.ToPayload(value)
 		if err != nil {
-			continue
+			return nil, connect.NewError(connect.CodePermissionDenied,
+				fmt.Errorf("the run's memo entry %q could not be encoded, so its signal policy cannot be checked: %w", key, err))
 		}
 		fields[key] = payload
 	}
 
 	return &workflowservice.DescribeWorkflowExecutionResponse{
 		WorkflowExecutionInfo: &workflowpb.WorkflowExecutionInfo{Memo: &common.Memo{Fields: fields}},
-	}
+	}, nil
 }
 
 // usesCurrentSignalProtocol reports whether the run was submitted with the
@@ -1157,9 +1182,48 @@ func (s *FlowstateServer) SignalWithStart(ctx context.Context, req *connect.Requ
 	// the inputs and the predicate's scope are the ones a later Signal would
 	// see. A name the workflow declares no policy for is the zero case, as
 	// anywhere else.
-	if err := s.authorizeSignal(describedByMemo(s, memo), req.Msg.GetName(), sender); err != nil {
-		return nil, s.auditDeny(ctx, "SignalWithStart", v1.AuditResourceKind_AUDIT_RESOURCE_KIND_RUN, workflowID,
-			v1.AuditDenyCode_AUDIT_DENY_CODE_POLICY_DENIED, err)
+	//
+	// That memo records *this caller* as the starter, so it decides a create
+	// and nothing else. A refusal here does not mean the caller may not signal
+	// an entity somebody else already started (B signalling A's entity under
+	// `distinct_from_starter`, say, is exactly what the existing run's own
+	// memo admits), so a refusal never creates and instead looks for the
+	// entity: one that positively exists is answered on its real memo, exactly
+	// as the already-started arm below answers it; none, and the refusal stands.
+	// Nothing is created after a refusal, so a concurrent create cannot turn
+	// this into an admission.
+	described, createErr := describedByMemo(s, memo)
+	if createErr == nil {
+		createErr = s.authorizeSignal(described, req.Msg.GetName(), sender)
+	}
+	if createErr != nil {
+		existing, resp, _, err := s.authorizeRunDecision(ctx, workflowID, "")
+		if err != nil {
+			if connect.CodeOf(err) != connect.CodeNotFound {
+				return nil, err
+			}
+
+			return nil, s.auditDeny(ctx, "SignalWithStart", v1.AuditResourceKind_AUDIT_RESOURCE_KIND_RUN, workflowID,
+				v1.AuditDenyCode_AUDIT_DENY_CODE_POLICY_DENIED, createErr)
+		}
+
+		runID, err := s.authorizeExistingEntity(ctx, resp, "", workflowID, req.Msg.GetName(), sender)
+		if err != nil {
+			return nil, err
+		}
+		if err := existing.SignalWorkflow(ctx, workflowID, runID, req.Msg.GetName(), &v1.SignalDelivery{
+			Payload: payload,
+			Sender:  sender,
+		}); err != nil {
+			return nil, actOnRunError("signalling (with start)", workflowID, runID, err)
+		}
+
+		return connect.NewResponse(&v1.SignalWithStartResponse{
+			WorkflowId:               workflowID,
+			RunId:                    runID,
+			Created:                  false,
+			SpecificationAsSubmitted: proto.Bool(false),
+		}), nil
 	}
 
 	// Claim the entity key with the conflict error enabled. The initiating
@@ -1219,22 +1283,9 @@ func (s *FlowstateServer) SignalWithStart(ctx context.Context, req *connect.Requ
 		if err != nil {
 			return nil, err
 		}
-		if err := s.authorizeSignal(resp, req.Msg.GetName(), sender); err != nil {
-			return nil, s.auditDeny(ctx, "SignalWithStart", v1.AuditResourceKind_AUDIT_RESOURCE_KIND_RUN, workflowID,
-				v1.AuditDenyCode_AUDIT_DENY_CODE_POLICY_DENIED, err)
-		}
-
-		// From the execution that was just described and authorized, rather than
-		// from the error, because this value is what pins the delivery below and
-		// a pin is only a pin when it names something. `already.RunId` is
-		// normally populated, but an empty one here would silently degrade the
-		// signal to "whatever is current under this key" — the unpinned
-		// behaviour this whole path exists to avoid, arrived at by accident
-		// instead of by choice. The described execution always has a concrete
-		// id.
-		actualRunID = resp.GetWorkflowExecutionInfo().GetExecution().GetRunId()
-		if actualRunID == "" {
-			actualRunID = already.RunId
+		actualRunID, err = s.authorizeExistingEntity(ctx, resp, already.RunId, workflowID, req.Msg.GetName(), sender)
+		if err != nil {
+			return nil, err
 		}
 	}
 

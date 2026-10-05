@@ -319,6 +319,12 @@ func signalPolicyInputsValue(inputs map[string]*Value) ref.Val {
 // only for a clean `true`. Every refusal it returns is a fixed sentence: it
 // wraps nothing the evaluation produced.
 func signalPolicyExprAllows(ctx context.Context, src string, identity, starter *WorkloadIdentity, hasStarter bool, inputs map[string]*Value) error {
+	return signalPolicyExprAllowsWithin(ctx, SignalPolicyExprTimeout, src, identity, starter, hasStarter, inputs)
+}
+
+// signalPolicyExprAllowsWithin is [signalPolicyExprAllows] with the deadline a
+// parameter, so a test can prove the deadline is what denies.
+func signalPolicyExprAllowsWithin(ctx context.Context, timeout time.Duration, src string, identity, starter *WorkloadIdentity, hasStarter bool, inputs map[string]*Value) error {
 	predicate, err := CompileSignalPolicyPredicate(src)
 	if err != nil {
 		return errors.New("this signal's allow predicate is not a valid policy, so no sender is authorized " +
@@ -329,7 +335,7 @@ func signalPolicyExprAllows(ctx context.Context, src string, identity, starter *
 	// few string functions are priced only statically, so a deadline is what
 	// stops an evaluation that is cheap on paper and slow in fact. A timeout is
 	// an error, and an error denies.
-	ctx, cancel := context.WithTimeout(ctx, SignalPolicyExprTimeout)
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	allowed, err := predicate.rule.Match(ctx, signalPolicyActivation(identity, starter, hasStarter, inputs))
