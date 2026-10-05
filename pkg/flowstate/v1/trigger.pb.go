@@ -259,7 +259,8 @@ type ManualTrigger struct {
 	// webhook, lose `flow run` — and nobody discovers an inferred lock until
 	// they need it not to be there.
 	//
-	// Contradicts both fields below, and the compiler refuses the combination
+	// Contradicts each field below that says who may start (allowed_principals
+	// and allow_expr), and the compiler refuses the combination
 	// rather than resolving it by precedence: a refusal that also lists who may
 	// start the workload is two sentences that cannot both be true.
 	Denied bool `protobuf:"varint,1,opt,name=denied,proto3" json:"denied,omitempty"`
@@ -284,8 +285,31 @@ type ManualTrigger struct {
 	// not global aliases: a subject is unique only within its issuer. Missing,
 	// zero, and insecure anonymous development identities cannot satisfy the set.
 	AllowedPrincipals []string `protobuf:"bytes,3,rep,name=allowed_principals,json=allowedPrincipals,proto3" json:"allowed_principals,omitempty"`
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	// AllowExpr is one CEL predicate deciding who may start the workload by
+	// hand, written in a Flowfile as `manual: allow: ${...}`, accepted beside
+	// [allowed_principals] (which behaves exactly as before). A block sets one of
+	// the two, never both: two mechanisms would be two answers to "who may act".
+	//
+	// The source is stored without the `${` `}` fence and evaluated by the same
+	// function that decides `signals:` and `debug:` ([SignalPolicy.allow_expr]),
+	// server-side, against the server's own attestation of the caller, over a
+	// closed scope: `sender.identity.{principal,subject,issuer,namespace,claims}`
+	// (the caller) and `inputs` (the arguments being SUBMITTED with this start).
+	// There is no run yet, so `run` is not in scope and a predicate that reads it
+	// is refused when the file compiles.
+	//
+	// Fail closed: a result that is not a bool, an evaluation error, an exceeded
+	// cost or time bound, an expression that does not compile, and a caller with
+	// no authenticated principal all refuse the start; none ever allows. The
+	// refusal names no input or claim value.
+	//
+	// A predicate that reads `inputs` must also read `sender.identity.claims`:
+	// the caller chooses the inputs, and there is no run starter to compare
+	// against, so a predicate over them alone would let the caller admit
+	// themselves. Like [allowed_principals], it contradicts [denied].
+	AllowExpr     string `protobuf:"bytes,4,opt,name=allow_expr,json=allowExpr,proto3" json:"allow_expr,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ManualTrigger) Reset() {
@@ -337,6 +361,13 @@ func (x *ManualTrigger) GetAllowedPrincipals() []string {
 		return x.AllowedPrincipals
 	}
 	return nil
+}
+
+func (x *ManualTrigger) GetAllowExpr() string {
+	if x != nil {
+		return x.AllowExpr
+	}
+	return ""
 }
 
 // TriggerContext is how a run was started, as its own steps may read it:
@@ -1251,11 +1282,13 @@ const file_flowstate_v1_trigger_proto_rawDesc = "" +
 	"\bTriggers\x12?\n" +
 	"\bschedule\x18\x01 \x01(\v2\x1d.flowstate.v1.ScheduleTriggerB\x04\xe2A\x01\x01R\bschedule\x12F\n" +
 	"\bwebhooks\x18\x02 \x03(\v2\x1c.flowstate.v1.WebhookTriggerB\f\xe2A\x01\x01\xbaH\x05\x92\x01\x02\x10 R\bwebhooks\x129\n" +
-	"\x06manual\x18\x03 \x01(\v2\x1b.flowstate.v1.ManualTriggerB\x04\xe2A\x01\x01R\x06manual\"\xb1\x01\n" +
+	"\x06manual\x18\x03 \x01(\v2\x1b.flowstate.v1.ManualTriggerB\x04\xe2A\x01\x01R\x06manual\"\xde\x01\n" +
 	"\rManualTrigger\x12\x1c\n" +
 	"\x06denied\x18\x01 \x01(\bB\x04\xe2A\x01\x01R\x06denied\x12+\n" +
 	"\x0erequire_reason\x18\x02 \x01(\bB\x04\xe2A\x01\x01R\rrequireReason\x12U\n" +
-	"\x12allowed_principals\x18\x03 \x03(\tB&\xe2A\x01\x01\xbaH\x1f\x92\x01\x1c\x10@\x18\x01\"\x16r\x14\x10\x01\x18\xc0\x022\r^[^#]+#[^#]+$R\x11allowedPrincipals\"\xdc\x01\n" +
+	"\x12allowed_principals\x18\x03 \x03(\tB&\xe2A\x01\x01\xbaH\x1f\x92\x01\x1c\x10@\x18\x01\"\x16r\x14\x10\x01\x18\xc0\x022\r^[^#]+#[^#]+$R\x11allowedPrincipals\x12+\n" +
+	"\n" +
+	"allow_expr\x18\x04 \x01(\tB\f\xe2A\x01\x01\xbaH\x05r\x03\x18\x80\x10R\tallowExpr\"\xdc\x01\n" +
 	"\x0eTriggerContext\x12\x1b\n" +
 	"\x04kind\x18\x01 \x01(\tB\a\xbaH\x04r\x02\x18 R\x04kind\x12\x1b\n" +
 	"\x04name\x18\x02 \x01(\tB\a\xbaH\x04r\x02\x18@R\x04name\x12&\n" +

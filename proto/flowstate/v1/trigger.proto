@@ -106,7 +106,8 @@ message ManualTrigger {
   // webhook, lose `flow run` — and nobody discovers an inferred lock until
   // they need it not to be there.
   //
-  // Contradicts both fields below, and the compiler refuses the combination
+  // Contradicts each field below that says who may start (allowed_principals
+  // and allow_expr), and the compiler refuses the combination
   // rather than resolving it by precedence: a refusal that also lists who may
   // start the workload is two sentences that cannot both be true.
   bool denied = 1 [(google.api.field_behavior) = OPTIONAL];
@@ -145,6 +146,33 @@ message ManualTrigger {
         }
       }
     }
+  ];
+
+  // AllowExpr is one CEL predicate deciding who may start the workload by
+  // hand, written in a Flowfile as `manual: allow: ${...}`, accepted beside
+  // [allowed_principals] (which behaves exactly as before). A block sets one of
+  // the two, never both: two mechanisms would be two answers to "who may act".
+  //
+  // The source is stored without the `${` `}` fence and evaluated by the same
+  // function that decides `signals:` and `debug:` ([SignalPolicy.allow_expr]),
+  // server-side, against the server's own attestation of the caller, over a
+  // closed scope: `sender.identity.{principal,subject,issuer,namespace,claims}`
+  // (the caller) and `inputs` (the arguments being SUBMITTED with this start).
+  // There is no run yet, so `run` is not in scope and a predicate that reads it
+  // is refused when the file compiles.
+  //
+  // Fail closed: a result that is not a bool, an evaluation error, an exceeded
+  // cost or time bound, an expression that does not compile, and a caller with
+  // no authenticated principal all refuse the start; none ever allows. The
+  // refusal names no input or claim value.
+  //
+  // A predicate that reads `inputs` must also read `sender.identity.claims`:
+  // the caller chooses the inputs, and there is no run starter to compare
+  // against, so a predicate over them alone would let the caller admit
+  // themselves. Like [allowed_principals], it contradicts [denied].
+  string allow_expr = 4 [
+    (google.api.field_behavior) = OPTIONAL,
+    (buf.validate.field).string.max_len = 2048
   ];
 }
 

@@ -24,14 +24,14 @@ func TestCheckManualStartMatchesTheWholeQualifiedPrincipal(t *testing.T) {
 	t.Parallel()
 
 	workflow := manualWorkflow("https://issuer-a.example.com#runner")
-	require.NoError(t, v1.CheckManualStart(workflow, "https://issuer-a.example.com#runner", ""))
+	require.NoError(t, v1.CheckManualStart(t.Context(), workflow, nil, "https://issuer-a.example.com#runner", "", nil))
 
 	for _, principal := range []string{
 		"https://issuer-b.example.com#runner",
 		"runner",
 		"",
 	} {
-		err := v1.CheckManualStart(workflow, principal, "")
+		err := v1.CheckManualStart(t.Context(), workflow, nil, principal, "", nil)
 		require.Error(t, err, "principal %q was admitted", principal)
 	}
 }
@@ -42,7 +42,7 @@ func TestCheckManualStartRefusesAmbiguousQualifiedPrincipal(t *testing.T) {
 	// Principal.ID cannot distinguish ("mesh", "x#y") from ("mesh#x", "y").
 	// Refusing the resulting multi-separator configuration makes both identities
 	// fail closed rather than allowing either one under an ambiguous spelling.
-	err := v1.CheckManualStart(manualWorkflow("mesh#x#y"), "mesh#x#y", "")
+	err := v1.CheckManualStart(t.Context(), manualWorkflow("mesh#x#y"), nil, "mesh#x#y", "", nil)
 	require.ErrorContains(t, err, "<issuer>#<subject>")
 }
 
@@ -116,15 +116,15 @@ func TestManualTriggerSchemaRequiresQualifiedUniquePrincipals(t *testing.T) {
 func TestCheckManualStartPreservesOpenDeniedAndReasonBehavior(t *testing.T) {
 	t.Parallel()
 
-	require.NoError(t, v1.CheckManualStart(&v1.Workflow{Name: "open"}, "", ""),
+	require.NoError(t, v1.CheckManualStart(t.Context(), &v1.Workflow{Name: "open"}, nil, "", "", nil),
 		"no manual policy remains open")
-	require.NoError(t, v1.CheckManualStart(manualWorkflow(), "", ""),
+	require.NoError(t, v1.CheckManualStart(t.Context(), manualWorkflow(), nil, "", "", nil),
 		"an empty allowlist remains open")
 
 	denied := &v1.Workflow{Name: "denied", Triggers: &v1.Triggers{Manual: &v1.ManualTrigger{Denied: true}}}
-	assert.ErrorContains(t, v1.CheckManualStart(denied, "https://issuer.example.com#runner", ""), "manual: denied")
+	assert.ErrorContains(t, v1.CheckManualStart(t.Context(), denied, nil, "https://issuer.example.com#runner", "", nil), "manual: denied")
 
 	reason := &v1.Workflow{Name: "reason", Triggers: &v1.Triggers{Manual: &v1.ManualTrigger{RequireReason: true}}}
-	assert.ErrorContains(t, v1.CheckManualStart(reason, "https://issuer.example.com#runner", " "), "requires a reason")
-	require.NoError(t, v1.CheckManualStart(reason, "https://issuer.example.com#runner", "operator approved"))
+	assert.ErrorContains(t, v1.CheckManualStart(t.Context(), reason, nil, "https://issuer.example.com#runner", " ", nil), "requires a reason")
+	require.NoError(t, v1.CheckManualStart(t.Context(), reason, nil, "https://issuer.example.com#runner", "operator approved", nil))
 }

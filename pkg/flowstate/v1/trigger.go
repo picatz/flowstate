@@ -275,6 +275,23 @@ func CheckManualTrigger(manual *ManualTrigger) error {
 				"which cannot both hold; write `manual: denied` to refuse them, or list the principals to allow "+
 				"only those", len(manual.GetAllowedPrincipals()))
 		}
+
+		if manual.GetAllowExpr() != "" {
+			return fmt.Errorf("`manual:` both refuses manual starts and writes an `allow:` predicate for who may " +
+				"make one, which cannot both hold; write `manual: denied` to refuse them, or the predicate to " +
+				"allow only some callers")
+		}
+	}
+
+	if manual.GetAllowExpr() != "" {
+		if len(manual.GetAllowedPrincipals()) > 0 {
+			return fmt.Errorf("`manual:` sets both `allowed_principals:` and an `allow:` predicate; who may start " +
+				"the workload is answered one way, so write one or the other (the predicate can say " +
+				"`sender.identity.principal in [...]`)")
+		}
+		if err := CheckManualAllowExpr(manual.GetAllowExpr()); err != nil {
+			return fmt.Errorf("`manual.allow` is not a usable predicate: %w", err)
+		}
 	}
 
 	principals := manual.GetAllowedPrincipals()
@@ -326,6 +343,19 @@ func CheckManualTrigger(manual *ManualTrigger) error {
 // denied: a deployment with no authenticated identity cannot satisfy a policy
 // naming particular callers.
 //
+// # `manual: allow: ${...}`
+//
+// A manual block that writes an `allow:` predicate is decided by the one
+// evaluator `signals:` and `debug:` use ([manualAllowExprAllows]), over the
+// caller the server attested (caller) and the inputs this start submits
+// (inputs, bound and defaulted; nil leaves `inputs` unbound, so a predicate that
+// reads it denies). There is no run yet, so `run` is not in the scope. Only a
+// clean true admits: a non-bool, an evaluation error, an exceeded cost or time
+// bound or an uncompilable expression refuses, as does a caller with no
+// authenticated principal. A block that writes both the predicate and
+// `allowed_principals` is refused by [CheckManualTrigger], here as in `flow
+// validate`, never resolved by letting one of them win.
+//
 // # Where this is deliberately not called
 //
 // `flow run local` and `flow test`. The author's machine is not a deployment, it
@@ -333,7 +363,7 @@ func CheckManualTrigger(manual *ManualTrigger) error {
 // locally is not one anybody will maintain. Gating a rehearsal on a policy whose
 // inputs only exist in production would make every regulated workflow untestable
 // — the same reasoning that keeps an egress policy out of the validator.
-func CheckManualStart(wf *Workflow, principal, reason string) error {
+func CheckManualStart(ctx context.Context, wf *Workflow, caller *WorkloadIdentity, principal, reason string, inputs map[string]*Value) error {
 	manual := wf.GetTriggers().GetManual()
 	if manual == nil {
 		return nil
@@ -347,6 +377,22 @@ func CheckManualStart(wf *Workflow, principal, reason string) error {
 	if manual.GetDenied() {
 		return fmt.Errorf("workflow %q declares `manual: denied`, so it is started by its other declared "+
 			"triggers and not by a person; %s", wf.GetName(), manualStartAlternative(wf))
+	}
+
+	if manual.GetAllowExpr() != "" {
+		if principal == "" {
+			// The same line allowed_principals draws, for the same reason: a
+			// start nobody authenticated is not a caller a predicate can say
+			// anything true about, and a predicate such as `principal != "x"`
+			// would otherwise admit nobody-at-all.
+			return fmt.Errorf("workflow %q allows a manual start only by a caller its `manual: allow` predicate "+
+				"admits, and this caller has no authenticated issuer-qualified principal; an anonymous start is "+
+				"refused rather than admitted, so authenticate", wf.GetName())
+		}
+
+		if err := manualAllowExprAllows(ctx, manual.GetAllowExpr(), caller, inputs); err != nil {
+			return fmt.Errorf("workflow %q refuses this manual start: %w", wf.GetName(), err)
+		}
 	}
 
 	if len(manual.GetAllowedPrincipals()) > 0 && !slices.Contains(manual.GetAllowedPrincipals(), principal) {

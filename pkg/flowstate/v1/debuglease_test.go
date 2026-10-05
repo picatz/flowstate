@@ -103,13 +103,13 @@ func TestAWorkflowWithNoDebugStanzaIsNotDebuggable(t *testing.T) {
 	caller := debugIdentity("https://idp.example", "sre-1", map[string]string{"role": "sre"})
 	policy := debugPolicy(&v1.SignalPolicyRule{Claims: map[string]string{"role": "sre"}})
 
-	require.NoError(t, v1.DebugPolicyCheck(policy, caller, nil, false),
+	require.NoError(t, v1.DebugPolicyCheck(t.Context(), policy, caller, nil, false, nil),
 		"a caller matching a declared rule may take a lease")
 
-	absent := v1.DebugPolicyCheck(nil, caller, nil, false)
+	absent := v1.DebugPolicyCheck(t.Context(), nil, caller, nil, false, nil)
 	require.Error(t, absent,
 		"a workflow that declares no `debug:` stanza is not debuggable by anybody")
-	require.Error(t, v1.DebugPolicyCheck(debugPolicy(), caller, nil, false),
+	require.Error(t, v1.DebugPolicyCheck(t.Context(), debugPolicy(), caller, nil, false, nil),
 		"a policy with no rules authorizes nobody rather than everybody")
 
 	// The refusal has to *say* which case this is, and that sentence is the
@@ -123,8 +123,8 @@ func TestAWorkflowWithNoDebugStanzaIsNotDebuggable(t *testing.T) {
 	assert.Contains(t, absent.Error(), "declares no `debug:` policy",
 		"the refusal for an absent stanza reads as though a policy existed and rejected the caller")
 
-	unmatched := v1.DebugPolicyCheck(
-		debugPolicy(&v1.SignalPolicyRule{Subject: "https://idp.example#nobody"}), caller, nil, false)
+	unmatched := v1.DebugPolicyCheck(t.Context(),
+		debugPolicy(&v1.SignalPolicyRule{Subject: "https://idp.example#nobody"}), caller, nil, false, nil)
 	require.Error(t, unmatched)
 	assert.NotContains(t, unmatched.Error(), "declares no `debug:` policy",
 		"a caller who simply matched no rule was told the workflow declares nothing")
@@ -149,17 +149,17 @@ func TestADebugPolicyIsCheckedByTheSignalPolicyMatcher(t *testing.T) {
 	policy := debugPolicy(&v1.SignalPolicyRule{Namespace: "team-a"})
 	policy.DistinctFromStarter = true
 
-	require.NoError(t, v1.DebugPolicyCheck(policy, other, starter, true),
+	require.NoError(t, v1.DebugPolicyCheck(t.Context(), policy, other, starter, true, nil),
 		"somebody who is not the starter may debug under a separation-of-duties policy")
 
-	assert.Error(t, v1.DebugPolicyCheck(policy, starter, starter, true),
+	assert.Error(t, v1.DebugPolicyCheck(t.Context(), policy, starter, starter, true, nil),
 		"the run's own starter may not debug it when the policy demands separation")
-	assert.Error(t, v1.DebugPolicyCheck(policy, other, nil, false),
+	assert.Error(t, v1.DebugPolicyCheck(t.Context(), policy, other, nil, false, nil),
 		"a run with no recorded starter cannot prove separation, so it does not get it")
 
 	// A rule nobody matches is refused whatever the separation rule says.
-	assert.Error(t, v1.DebugPolicyCheck(
-		debugPolicy(&v1.SignalPolicyRule{Subject: "https://idp.example#somebody-else"}), other, nil, false),
+	assert.Error(t, v1.DebugPolicyCheck(t.Context(),
+		debugPolicy(&v1.SignalPolicyRule{Subject: "https://idp.example#somebody-else"}), other, nil, false, nil),
 		"a caller matching no rule is refused")
 }
 

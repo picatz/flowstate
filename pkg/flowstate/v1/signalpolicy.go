@@ -439,12 +439,19 @@ func signalPolicyRuleMatches(rule *SignalPolicyRule, identity *WorkloadIdentity)
 // inputs is the run's bound arguments: nil for a caller that has none, in which
 // case a predicate reading them errors and denies.
 func SignalPolicyCheck(ctx context.Context, policy *SignalPolicy, identity *WorkloadIdentity, starter *WorkloadIdentity, hasStarter bool, inputs map[string]*Value) error {
+	return signalPolicyCheck(ctx, "signal", policy, identity, starter, hasStarter, inputs)
+}
+
+// signalPolicyCheck is [SignalPolicyCheck] with the stanza's name for its
+// refusals: `debug:` is decided by this same function ([DebugPolicyCheck]) and
+// says "debug policy", not "signal".
+func signalPolicyCheck(ctx context.Context, label string, policy *SignalPolicy, identity *WorkloadIdentity, starter *WorkloadIdentity, hasStarter bool, inputs map[string]*Value) error {
 	switch {
 	case policy.GetAllowExpr() != "" && len(policy.GetAllow()) > 0:
-		return fmt.Errorf("this signal's policy sets both allow rules and an allow predicate, " +
-			"which is not a policy this server would have written, so no sender is authorized")
+		return fmt.Errorf("this %s's policy sets both allow rules and an allow predicate, "+
+			"which is not a policy this server would have written, so no sender is authorized", label)
 	case policy.GetAllowExpr() != "":
-		if err := signalPolicyExprAllows(ctx, policy.GetAllowExpr(), identity, starter, hasStarter, inputs); err != nil {
+		if err := signalPolicyExprAllows(ctx, label, policy.GetAllowExpr(), identity, starter, hasStarter, inputs); err != nil {
 			return err
 		}
 	case !SignalPolicyAllows(policy, identity):

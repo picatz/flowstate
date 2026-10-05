@@ -361,10 +361,15 @@ func completeAt(doc *document, pos lsp.Position) *lsp.CompletionList {
 	// YAML structure.
 	if inner, ok := openExpression(before); ok {
 		if signalAllowExpression(path, key, before) {
-			// A `signals:` policy's predicate has its own closed scope, not
-			// the step scope below: `sender`, `run.identity` and `inputs`,
-			// and nothing else — see [v1.CompileSignalPolicyPredicate].
-			return completeInSharedScope(pos, inner, signalAllowScope())
+			// A `signals:` or `debug:` policy's predicate has its own closed
+			// scope, not the step scope below: `sender`, `run.identity` and
+			// `inputs`, and nothing else — see [v1.CompileSignalPolicyPredicate].
+			return completeInSharedScope(pos, inner, signalAllowScope(true))
+		}
+		if manualAllowExpression(path, key, before) {
+			// `triggers: manual: allow:` has no run yet: the caller and the
+			// submitted inputs — see [v1.CompileManualAllowPredicate].
+			return completeInSharedScope(pos, inner, signalAllowScope(false))
 		}
 		scope := referenceScope(doc, pos, bindsClock(key, path), current, earlier)
 		scope.locals = append(waitResultCandidates(path), scope.locals...)
@@ -1158,30 +1163,45 @@ func completeInExpression(pos lsp.Position, inner string, scope refScope) *lsp.C
 // as it does everywhere). An expression inside a rule of the rule list (`- subject:
 // ${...}`) is not one: it keeps the rule's own scope.
 func signalAllowExpression(path []string, key, before string) bool {
-	if len(path) < 2 || path[0] != "signals" {
-		return false
-	}
-	trimmed := strings.TrimSpace(before)
 	switch {
-	case len(path) == 2:
-		// `allow: ${...` — the fence must directly follow the key, so a flow
-		// list written on the same line (`allow: [{subject: ${`) is not it.
-		i := strings.LastIndex(trimmed, "${")
-		if key != "allow" || i < 0 {
-			return false
-		}
-		head := strings.TrimRight(trimmed[:i], " '\"")
-		head = strings.TrimSpace(strings.TrimSuffix(head, ">-"))
-		return strings.HasSuffix(head, "allow:") && !strings.Contains(trimmed[:i], "[")
+	case len(path) == 2 && path[0] == "signals", len(path) == 1 && path[0] == "debug":
+		return allowFencedAfterKey(key, before)
 	default:
 		return false
 	}
 }
 
+// manualAllowExpression reports whether the cursor is in `triggers: manual:
+// allow: ${...}`, by the same rule as [signalAllowExpression].
+func manualAllowExpression(path []string, key, before string) bool {
+	if len(path) != 2 || path[0] != "triggers" || path[1] != "manual" {
+		return false
+	}
+
+	return allowFencedAfterKey(key, before)
+}
+
+// allowFencedAfterKey reports whether the line being completed is `allow:`
+// directly followed by an open `${` fence.
+func allowFencedAfterKey(key, before string) bool {
+	trimmed := strings.TrimSpace(before)
+	// `allow: ${...` — the fence must directly follow the key, so a flow
+	// list written on the same line (`allow: [{subject: ${`) is not it.
+	i := strings.LastIndex(trimmed, "${")
+	if key != "allow" || i < 0 {
+		return false
+	}
+	head := strings.TrimRight(trimmed[:i], " '\"")
+	head = strings.TrimSpace(strings.TrimSuffix(head, ">-"))
+
+	return strings.HasSuffix(head, "allow:") && !strings.Contains(trimmed[:i], "[")
+}
+
 // signalAllowScope is the closed scope an `allow: ${...}` predicate reads:
 // the roots [v1.CompileSignalPolicyPredicate] declares, with the identity
 // fields it types. A name outside it is a compile error, so none is offered.
-func signalAllowScope() celcomplete.Scope {
+// withRun is false for `triggers: manual:`, which has no run yet.
+func signalAllowScope(withRun bool) celcomplete.Scope {
 	identity := celcomplete.Candidate{
 		Name: "identity", Kind: celcomplete.KindField, Detail: "workload identity",
 		Docs: "The identity the server attested, or the run's starter: `principal` (issuer#subject, empty " +
@@ -1198,19 +1218,20 @@ func signalAllowScope() celcomplete.Scope {
 		},
 	}
 
-	return celcomplete.Scope{
-		Profile: v1.CurrentProfile,
-		Roots: []celcomplete.Candidate{
-			{Name: "sender", Kind: celcomplete.KindRoot, Detail: "who is delivering", Insert: "sender.",
-				Docs:    "The delivering caller, as the server attested it. Its claims are readable here and nowhere else.",
-				Members: []celcomplete.Candidate{identity}},
-			{Name: "run", Kind: celcomplete.KindRoot, Detail: "the run's starter", Insert: "run.",
-				Docs: "`run.identity` is who started the run. Unbound when the run has no recorded starter, so a " +
-					"predicate that reads it is refused rather than guessed.",
-				Members: []celcomplete.Candidate{identity}},
-			celcomplete.InputsRoot(nil),
-		},
+	roots := []celcomplete.Candidate{
+		{Name: "sender", Kind: celcomplete.KindRoot, Detail: "who is delivering", Insert: "sender.",
+			Docs:    "The calling identity, as the server attested it. Its claims are readable here and nowhere else.",
+			Members: []celcomplete.Candidate{identity}},
 	}
+	if withRun {
+		roots = append(roots, celcomplete.Candidate{Name: "run", Kind: celcomplete.KindRoot, Detail: "the run's starter", Insert: "run.",
+			Docs: "`run.identity` is who started the run. Unbound when the run has no recorded starter, so a " +
+				"predicate that reads it is refused rather than guessed.",
+			Members: []celcomplete.Candidate{identity}})
+	}
+	roots = append(roots, celcomplete.InputsRoot(nil))
+
+	return celcomplete.Scope{Profile: v1.CurrentProfile, Roots: roots}
 }
 
 // completeInSharedScope is [completeInExpression] for a scope that is not a

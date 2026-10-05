@@ -54,6 +54,8 @@ var manualStartRules = []struct {
 	{name: "denied", manual: &v1.ManualTrigger{Denied: true}},
 	{name: "require_reason", manual: &v1.ManualTrigger{RequireReason: true}},
 	{name: "allowed_principals", manual: &v1.ManualTrigger{AllowedPrincipals: []string{"https://issuer.example.com#someone-else"}}},
+	// An unauthenticated caller, so the predicate refuses on the "nobody" branch.
+	{name: "allow_expr", manual: &v1.ManualTrigger{AllowExpr: `sender.identity.principal != "https://issuer.example.com#x"`}},
 }
 
 // TestRunAuditsAManualStartRefusal covers #1889's Run half, under each rule

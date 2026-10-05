@@ -125,7 +125,7 @@ func (c *compiler) signalPolicy(n ast.Node, path string, r ref) *v1.SignalPolicy
 		// One `${...}` predicate in place of the rule list. The same key, told
 		// apart by what is written under it: a string is the predicate, a list
 		// is the rules.
-		expression, ok := c.signalPolicyPredicate(resolved, allowPath, allowRef, path == "debug")
+		expression, ok := c.signalPolicyPredicate(resolved, allowPath, allowRef, "a list of rules")
 		if !ok {
 			return nil
 		}
@@ -169,10 +169,10 @@ func isScalarNode(n ast.Node) bool {
 // server compiles. The text is stored trimmed and unnormalized, so [Marshal]
 // writes back exactly what was read.
 //
-// debug is the `debug:` stanza, which does not take a predicate yet: the
-// server answers it from the rule list alone, and a predicate accepted here
-// would read as authorizing somebody and authorize nobody.
-func (c *compiler) signalPolicyPredicate(n ast.Node, path string, r ref, debug bool) (string, bool) {
+// The one reader for all three stanzas that take `allow: ${...}` (`signals:`,
+// `debug:`, `triggers: manual:`); instead is what else the key could have
+// held, named in the "not a `${...}` expression" refusal ("" when nothing).
+func (c *compiler) signalPolicyPredicate(n ast.Node, path string, r ref, instead string) (string, bool) {
 	c.pos.record(path, spanOfNode(n))
 
 	var raw string
@@ -189,15 +189,13 @@ func (c *compiler) signalPolicyPredicate(n ast.Node, path string, r ref, debug b
 			c.report(spanOfNode(n), r, "%s", err)
 			return "", false
 		}
+		alternative := ""
+		if instead != "" {
+			alternative = ", or " + instead
+		}
 		c.report(spanOfNode(n), r,
 			"is a string that is not a `${...}` expression; write the whole predicate as one `${...}` "+
-				"(for example `${sender.identity.claims.team == \"release-managers\"}`), or a list of rules")
-		return "", false
-	}
-
-	if debug {
-		c.report(spanOfNode(n), r,
-			"is a `${...}` predicate, which `debug:` does not accept yet; write the list of rules")
+				"(for example `${sender.identity.claims.team == \"release-managers\"}`)%s", alternative)
 		return "", false
 	}
 

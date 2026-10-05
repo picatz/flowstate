@@ -492,7 +492,7 @@ func TestSignalPolicyMemoEntryResolvesSubjectFromAndClearsIt(t *testing.T) {
 	}
 	inputs := map[string]*v1types.Value{"expected_approver": v1types.NewLiteral(approver)}
 
-	entry, err := signalPolicyMemoEntry(context.Background(), wf, inputs, nil)
+	entry, err := signalPolicyMemoEntry(context.Background(), wf, inputs)
 	require.NoError(t, err)
 	require.Contains(t, entry, signalPolicyMemoKey)
 

@@ -329,17 +329,22 @@ func NewDebugAsk(verb string, lease time.Duration) *Node_Outputs {
 // matcher written beside it. A debug policy laxer than a signal policy for the
 // same words would be the drift CLAUDE.md's "one function, two callers" rule
 // exists to prevent, in the direction that matters most.
-func DebugPolicyCheck(policy *SignalPolicy, identity *WorkloadIdentity, starter *WorkloadIdentity, hasStarter bool) error {
-	// A policy with only an allow predicate has no rules and falls into the
-	// zero case below: `debug:` does not accept `allow: ${...}` yet, and a
-	// predicate there must not be read as anything but "nobody".
-	if policy == nil || len(policy.GetAllow()) == 0 || policy.GetAllowExpr() != "" {
+//
+// inputs is the debugged run's bound arguments, which an `allow: ${...}`
+// predicate may read; nil leaves `inputs` unbound, so a predicate that reads
+// them errors and denies.
+func DebugPolicyCheck(ctx context.Context, policy *SignalPolicy, identity *WorkloadIdentity, starter *WorkloadIdentity, hasStarter bool, inputs map[string]*Value) error {
+	// Neither rules nor a predicate is the zero case. A policy with an
+	// `allow: ${...}` predicate has no rules and is a policy: it is decided by
+	// the one evaluator `signals:` uses, over the same scope (the sender, the
+	// run's starter, the debugged run's inputs), and fails closed the same way.
+	if policy == nil || (len(policy.GetAllow()) == 0 && policy.GetAllowExpr() == "") {
 		return fmt.Errorf(
 			"this workflow declares no `debug:` policy, so no caller may pause its durable runs; " +
 				"a run with nothing saying who may debug it is not debuggable")
 	}
 
-	return SignalPolicyCheck(context.Background(), policy, identity, starter, hasStarter, nil)
+	return signalPolicyCheck(ctx, "debug policy", policy, identity, starter, hasStarter, inputs)
 }
 
 // CheckDebugPolicy reports what is wrong with a workflow's declared `debug:`
@@ -356,11 +361,6 @@ func CheckDebugPolicy(policy *SignalPolicy, requireResolvedSubjects bool) error 
 		// `debug:` is well formed and simply not debuggable. Refusing it here
 		// would make every workflow in the tree invalid.
 		return nil
-	}
-
-	if policy.GetAllowExpr() != "" {
-		return fmt.Errorf("debug declares an `allow:` predicate, which this stanza does not accept yet; " +
-			"write the `allow:` rule list")
 	}
 
 	return CheckPolicyShape("debug", policy, requireResolvedSubjects)

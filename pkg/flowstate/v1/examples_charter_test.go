@@ -81,6 +81,8 @@ var constructsWithoutAnExample = map[string]string{
 	"output.type.TYPE_BYTES": "an output cannot declare a data kind yet: the run document has no plain-JSON form for it (#1436)",
 	"signal_policy.allow_expr": "landed beside the rule list as the engine slice of #326; the examples move onto " +
 		"`allow: ${...}` in that issue's `flow fix` slice, which rewrites them by tool and is the example",
+	"manual.allow_expr": "landed beside `allowed_principals` as the engine slice of #326, with `debug: allow: ${...}`; " +
+		"the examples move onto the predicate in that issue's `flow fix` slice, which rewrites them by tool and is the example",
 }
 
 // The required set is derived from the schema three ways: the two `kind` oneofs

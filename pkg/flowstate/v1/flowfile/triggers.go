@@ -61,7 +61,7 @@ var triggerKindKeys = []string{"webhook", "schedule", "manual"}
 // declaring it at all is that a lock nobody can grep for is a lock nobody knows
 // about. Two spellings of one refusal would mean a search for the greppable one
 // misses half the files that have it.
-var manualKeys = []string{"require_reason", "allowed_principals"}
+var manualKeys = []string{"require_reason", "allowed_principals", "allow"}
 
 // manualDenied is the scalar that refuses manual starts.
 //
@@ -232,8 +232,8 @@ func (c *compiler) manualTrigger(key, n ast.Node, path string, r ref) *v1.Manual
 		if word != manualDenied {
 			c.report(spanOfNode(resolved), r,
 				"is %q, which is not something a `manual:` says. Write `manual: %s` to refuse manual "+
-					"starts outright, or a mapping with `require_reason:` and `allowed_principals:` to "+
-					"narrow them. Declaring nothing at all leaves manual starts as they are, which is "+
+					"starts outright, or a mapping with `require_reason:`, `allowed_principals:` or an "+
+					"`allow: ${...}` predicate to narrow them. Declaring nothing at all leaves manual starts as they are, which is "+
 					"what every workflow without this block does",
 				word, manualDenied)
 
@@ -262,14 +262,28 @@ func (c *compiler) manualTrigger(key, n ast.Node, path string, r ref) *v1.Manual
 		manual.AllowedPrincipals = c.manualPrincipals(f.value, p)
 	}
 
-	if !manual.GetRequireReason() && len(manual.GetAllowedPrincipals()) == 0 {
+	if f, found := fields.get("allow"); found {
+		p := fieldPath(path, "allow")
+		allowRef := ref{path: p, label: "manual allow"}
+		if resolved := c.resolveQuiet(f.value); !isScalarNode(resolved) {
+			c.pos.record(p, spanOfNode(resolved))
+			c.report(spanOfNode(resolved), allowRef,
+				"is not a `${...}` predicate; write the whole predicate as one `${...}` (for example "+
+					"`${sender.identity.claims.team == \"ops\"}`). Who may start the workload is one predicate, "+
+					"not a list; a list of principals is `allowed_principals:`")
+		} else if expression, ok := c.signalPolicyPredicate(resolved, p, allowRef, ""); ok {
+			manual.AllowExpr = expression
+		}
+	}
+
+	if !manual.GetRequireReason() && len(manual.GetAllowedPrincipals()) == 0 && manual.GetAllowExpr() == "" {
 		// A block that narrows nothing reads as if it did, which is the one thing a
 		// diagnostic here must not allow: `manual:` written with nothing under it is
 		// how somebody believes they have restricted a workflow they have not.
 		c.report(spanOrKey(resolved, key), r,
 			"narrows nothing, so it says exactly what writing no `manual:` at all says. Write "+
 				"`manual: %s` to refuse manual starts, `require_reason: true` to require a reason for "+
-				"one, or `allowed_principals:` to say who may make one",
+				"one, or `allowed_principals:` or `allow: ${...}` to say who may make one",
 			manualDenied)
 
 		return nil
@@ -1056,7 +1070,7 @@ func triggersToYAML(triggers *v1.Triggers) (any, error) {
 // turning the one greppable spelling into one nobody searches for.
 func manualTriggerToYAML(manual *v1.ManualTrigger) (any, error) {
 	if manual.GetDenied() {
-		if manual.GetRequireReason() || len(manual.GetAllowedPrincipals()) > 0 {
+		if manual.GetRequireReason() || len(manual.GetAllowedPrincipals()) > 0 || manual.GetAllowExpr() != "" {
 			// Refused rather than written, for the reason [scheduleTriggerToYAML]
 			// refuses a cadence-less schedule: the contradiction is what
 			// [v1.CheckManualTrigger] reports, so writing it would produce a file
@@ -1066,6 +1080,14 @@ func manualTriggerToYAML(manual *v1.ManualTrigger) (any, error) {
 		}
 
 		return manualDenied, nil
+	}
+
+	if manual.GetAllowExpr() != "" && len(manual.GetAllowedPrincipals()) > 0 {
+		// Refused rather than written, for the reason the refusal above is: the
+		// contradiction is [v1.CheckManualTrigger]'s, and a file that holds both
+		// keys is one this package's own validator rejects.
+		return nil, fmt.Errorf("triggers manual: sets both `allowed_principals:` and an `allow:` predicate, " +
+			"which cannot both hold; write one or the other")
 	}
 
 	doc := yaml.MapSlice{}
@@ -1084,9 +1106,13 @@ func manualTriggerToYAML(manual *v1.ManualTrigger) (any, error) {
 		doc = append(doc, yaml.MapItem{Key: "allowed_principals", Value: value})
 	}
 
+	if expression := manual.GetAllowExpr(); expression != "" {
+		doc = append(doc, yaml.MapItem{Key: "allow", Value: "${" + expression + "}"})
+	}
+
 	if len(doc) == 0 {
 		return nil, fmt.Errorf("triggers manual: narrows nothing, so there is nothing to write; give it " +
-			"`require_reason: true`, an `allowed_principals:`, or write `manual: denied`")
+			"`require_reason: true`, an `allowed_principals:`, an `allow:` predicate, or write `manual: denied`")
 	}
 
 	return doc, nil
@@ -1441,7 +1467,13 @@ func validateManualTrigger(wf *v1.Workflow) Diagnostics {
 	}
 
 	if err := v1.CheckManualTrigger(manual); err != nil {
-		return Diagnostics{{Field: "triggers.manual", Message: err.Error()}}
+		field := "triggers.manual"
+		if manual.GetAllowExpr() != "" && v1.CheckManualAllowExpr(manual.GetAllowExpr()) != nil {
+			// The predicate itself is what is wrong, so point at it.
+			field = fieldPath(field, "allow")
+		}
+
+		return Diagnostics{{Field: field, Message: err.Error()}}
 	}
 
 	if manual.GetDenied() && len(wf.GetTriggers().GetWebhooks()) == 0 && wf.GetTriggers().GetSchedule() == nil {

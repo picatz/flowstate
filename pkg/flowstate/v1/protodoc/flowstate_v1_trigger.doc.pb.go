@@ -110,7 +110,8 @@ func init() {
 				" webhook, lose `flow run` — and nobody discovers an inferred lock until\n" +
 				" they need it not to be there.\n" +
 				"\n" +
-				" Contradicts both fields below, and the compiler refuses the combination\n" +
+				" Contradicts each field below that says who may start (allowed_principals\n" +
+				" and allow_expr), and the compiler refuses the combination\n" +
 				" rather than resolving it by precedence: a refusal that also lists who may\n" +
 				" start the workload is two sentences that cannot both be true.\n",
 		},
@@ -138,6 +139,31 @@ func init() {
 				" qualified principal that is not in it is refused. Bare subjects are invalid,\n" +
 				" not global aliases: a subject is unique only within its issuer. Missing,\n" +
 				" zero, and insecure anonymous development identities cannot satisfy the set.\n",
+		},
+		{
+			Name: "flowstate.v1.ManualTrigger.allow_expr",
+			Leading: " AllowExpr is one CEL predicate deciding who may start the workload by\n" +
+				" hand, written in a Flowfile as `manual: allow: ${...}`, accepted beside\n" +
+				" [allowed_principals] (which behaves exactly as before). A block sets one of\n" +
+				" the two, never both: two mechanisms would be two answers to \"who may act\".\n" +
+				"\n" +
+				" The source is stored without the `${` `}` fence and evaluated by the same\n" +
+				" function that decides `signals:` and `debug:` ([SignalPolicy.allow_expr]),\n" +
+				" server-side, against the server's own attestation of the caller, over a\n" +
+				" closed scope: `sender.identity.{principal,subject,issuer,namespace,claims}`\n" +
+				" (the caller) and `inputs` (the arguments being SUBMITTED with this start).\n" +
+				" There is no run yet, so `run` is not in scope and a predicate that reads it\n" +
+				" is refused when the file compiles.\n" +
+				"\n" +
+				" Fail closed: a result that is not a bool, an evaluation error, an exceeded\n" +
+				" cost or time bound, an expression that does not compile, and a caller with\n" +
+				" no authenticated principal all refuse the start; none ever allows. The\n" +
+				" refusal names no input or claim value.\n" +
+				"\n" +
+				" A predicate that reads `inputs` must also read `sender.identity.claims`:\n" +
+				" the caller chooses the inputs, and there is no run starter to compare\n" +
+				" against, so a predicate over them alone would let the caller admit\n" +
+				" themselves. Like [allowed_principals], it contradicts [denied].\n",
 		},
 		{
 			Name: "flowstate.v1.TriggerContext",

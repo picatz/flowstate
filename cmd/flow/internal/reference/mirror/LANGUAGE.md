@@ -1321,6 +1321,14 @@ it. `manual:` can only narrow that:
 - `require_reason: true` requires `flow run --reason "..."`, recorded on the run.
 - `allowed_principals:` lists the only callers who may start it, each written
   `"<issuer>#<subject>"`.
+- `allow: ${...}` is one predicate over the caller instead of that list:
+  `allow: ${sender.identity.claims.team == "ops"}`. It reads
+  `sender.identity.{principal,subject,issuer,namespace,claims}` (the verified
+  caller) and `inputs` (the arguments submitted with this start), and nothing
+  else; there is no run yet, so reading `run` is a compile error. Only a clean
+  `true` allows, and a caller with no authenticated principal is refused. A
+  predicate that reads `inputs` must also read `sender.identity.claims`. A block
+  writes `allowed_principals:` or `allow:`, never both.
 
 `flow run local` and `flow test` are not gated by `manual:`.
 
@@ -1448,7 +1456,7 @@ allows: an error (a missing claim key, an unrecorded starter that the predicate
 reads), a result that is not a bool, or an expression over its cost bound all refuse
 the sender. A predicate that reads `inputs` must also read
 `sender.identity.claims` or `run.identity`. A policy writes the list or the
-predicate, never both. `debug:` takes the list only.
+predicate, never both. `debug:` takes the same two forms.
 
 The server checks the policy before the signal reaches Temporal, and refuses a
 sender who does not match with `PermissionDenied`. A signal name with **no**
@@ -1465,7 +1473,10 @@ debug:
         team: sre
 ```
 
-`debug:` has the same grammar as one `signals:` entry, and says who may attach
+`debug:` has the same grammar as one `signals:` entry, so `allow:` is a rule list
+or one predicate, over the same scope (`sender`, the debugged run's `run.identity`
+and `inputs`), written
+`allow: ${sender.identity.claims.team == "sre"}`. It says who may attach
 a debugger to a durable run — hold it at a step boundary, step it, and set
 breakpoints — under a lease that expires on its own. Evaluating expressions
 against it, or setting a breakpoint that carries a condition or a log message,
@@ -1605,7 +1616,8 @@ declaration:** `description`.
 `outputs`), `wait_for_signals` (`name`, `max_batch`, `timeout`, `prompt`,
 `outputs`, `quorum` with `approve`, `distinct`, `exclude`, `veto`).
 
-**Triggers:** `manual` (`denied`, or `require_reason` and `allowed_principals`),
+**Triggers:** `manual` (`denied`, or `require_reason`, and one of `allowed_principals` or an
+`allow` predicate),
 `schedule` (`cron`, `every`, `calendars`, `time_zone`, `jitter`, `overlap`,
 `start_at`, `end_at`, `catchup_window`, `pause_on_failure`; a calendar has
 `second`, `minute`, `hour`, `day_of_month`, `month`, `year`, `day_of_week`,
@@ -1615,7 +1627,7 @@ declaration:** `description`.
 
 **Concurrency:** `key`, `on_conflict`. **Signal policy:** `allow` (a list of
 rules of `subject`, `namespace`, `claims`, or one `${...}` predicate),
-`distinct_from_starter`. **Debug policy:** the same, with the rule list only.
+`distinct_from_starter`. **Debug policy:** the same.
 
 `needs` and `assert` are reserved for future versions of the grammar and are
 refused today.
