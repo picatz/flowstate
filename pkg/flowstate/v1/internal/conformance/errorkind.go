@@ -58,7 +58,7 @@ func ErrorKindCases(httpBaseURL string) []ErrorKindCase {
 		},
 	}
 
-	// Three more counters, each its own task so the attempts a case reads are its
+	// Two more counters, each its own task so the attempts a case reads are its
 	// own. Every one fails Upstream, which is retryable by default, so what a
 	// case proves is only what its `retry:` kind list does to that default.
 	kindRetryTask := func(name string, attempts *atomic.Int32) *v1.TaskDef {
