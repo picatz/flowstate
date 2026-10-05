@@ -22,6 +22,9 @@ type shrinkResult struct {
 	// Reproduced reports that the input violated when replayed on its own. When
 	// it did not, nothing was shrunk and Pins is the input.
 	Reproduced bool
+	// Inconclusive reports that the first replay was cut off (cancellation or
+	// the case's time bound), so it is not known whether the input reproduces.
+	Inconclusive bool
 	// Minimal reports that removing any single firing from Pins stopped the
 	// violation; false when the budget ended the search first.
 	Minimal bool
@@ -120,6 +123,7 @@ func shrinkFaults(pins []Fault, authored []bool, maxRuns int, violates func([]Fa
 	}
 
 	if len(atoms) == 0 || !probe(atoms) {
+		result.Inconclusive = exhausted
 		return result
 	}
 	result.Reproduced = true

@@ -261,9 +261,9 @@ func shrinkNote(d *flowtest.ScheduleDivergence) string {
 		return fmt.Sprintf("Shrunk from %s fired by the seed after %s; removing any one of the remaining failures stops the violation.",
 			count(d.FaultsFired, "failure", "failures"), count(d.ShrinkRuns, "re-run", "re-runs"))
 	default:
-		return fmt.Sprintf("Shrunk from %s fired by the seed in %s, then stopped at the %d-re-run bound; "+
-			"the list may not be minimal.", count(d.FaultsFired, "failure", "failures"), count(d.ShrinkRuns, "re-run", "re-runs"),
-			flowtest.MaxShrinkRuns)
+		return fmt.Sprintf("Shrinking stopped after %s with %s fired by the seed (the %d re-run bound, a cancellation, or the "+
+			"case's time); the list may not be minimal.", count(d.ShrinkRuns, "re-run", "re-runs"),
+			count(d.FaultsFired, "failure", "failures"), flowtest.MaxShrinkRuns)
 	}
 }
 

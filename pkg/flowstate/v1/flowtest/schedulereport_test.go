@@ -61,6 +61,9 @@ func TestScheduleReportRendersTheDivergence(t *testing.T) {
 			Seeded:       "b then a",
 			Invariant:    true,
 			Script:       "faults:\n- step: a\n",
+			FaultsFired:  7,
+			ShrinkRuns:   11,
+			Minimal:      true,
 		},
 	}
 
@@ -78,6 +81,9 @@ func TestScheduleReportRendersTheDivergence(t *testing.T) {
 	assert.True(t, d.GetTruncated())
 	assert.True(t, d.GetInvariant())
 	assert.Equal(t, "faults:\n- step: a\n", d.GetFaultScript())
+	assert.Equal(t, int32(7), d.GetFiredFaults())
+	assert.Equal(t, int32(11), d.GetShrinkRuns())
+	assert.True(t, d.GetShrunkMinimal())
 	assert.Equal(t, "a then b", d.GetWrittenOrder())
 	assert.Equal(t, "b then a", d.GetSeeded())
 }

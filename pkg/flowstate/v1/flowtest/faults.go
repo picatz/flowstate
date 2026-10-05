@@ -235,6 +235,10 @@ type faultPlan struct {
 	// drawn counts the fires a seed decided, which a pinned fault's fires are
 	// not: only a drawn fire makes a seeded run a faulted one.
 	drawn []int
+	// pinnedFired is the invocation numbers each pinned fault fired on. A pin
+	// can be counted by [faultPlan.seen] and still not fire, when an earlier
+	// fault answered the call first, and that is a script that did not run.
+	pinnedFired [][]int
 	// script is the invocation numbers each drawn fault fired on, in order,
 	// from which [faultPlan.pinned] writes the regression case.
 	script [][]int
@@ -250,6 +254,8 @@ func newFaultPlan(root string, faults []Fault) *faultPlan {
 		fired:  make([]int, len(faults)),
 		drawn:  make([]int, len(faults)),
 		script: make([][]int, len(faults)),
+
+		pinnedFired: make([][]int, len(faults)),
 	}
 }
 
@@ -306,6 +312,7 @@ func (p *faultPlan) attempt(ctx context.Context, task string) error {
 			if !slices.Contains(f.On, p.seen[i]) {
 				continue
 			}
+			p.pinnedFired[i] = append(p.pinnedFired[i], p.seen[i])
 		case p.fired[i] >= f.limit():
 			continue
 		case !v1.InjectFault(ctx, fmt.Sprintf("faults[%d]", i), f.rate()):
@@ -346,6 +353,16 @@ func (p *faultPlan) unreached() []*v1.Diagnostic {
 				Field: fmt.Sprintf("faults[%d].on", i),
 				Message: fmt.Sprintf("is pinned to invocation %d of its target, but the run made only %d; "+
 					"the script has drifted from the workflow, so re-derive it from a fresh `--seeds` finding", last, p.seen[i]),
+			})
+
+			continue
+		}
+		if missed := slices.DeleteFunc(slices.Clone(f.On), func(n int) bool { return slices.Contains(p.pinnedFired[i], n) }); len(missed) > 0 {
+			out = append(out, &v1.Diagnostic{
+				Step:  f.Step,
+				Field: fmt.Sprintf("faults[%d].on", i),
+				Message: fmt.Sprintf("is pinned to invocation %d of its target, but an earlier fault answered that call "+
+					"first, so this one never fired; the script has drifted, so re-derive it from a fresh `--seeds` finding", missed[0]),
 			})
 
 			continue

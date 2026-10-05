@@ -509,3 +509,29 @@ steps:
 	c := report.GetCases()[0]
 	assert.True(t, c.GetPassed(), "the run fails at `second`, the second http call, with the second fault's message: %v", c.GetFailures())
 }
+
+// A pin another fault answered first never ran. Counting the call for both
+// faults keeps their numbers independent, but must not let the second one pass
+// as exercised: the case would report resilience to a failure it never saw.
+func TestAPinAnEarlierFaultAnsweredFirstIsADrift(t *testing.T) {
+	t.Parallel()
+
+	const workflow = `edition: v2026.4
+name: one
+steps:
+  - id: fetch
+    continue_on_error: true
+    retry: {attempts: 1}
+    http: {method: GET, url: "https://example.com/a"}
+`
+	path := writeFaultFixture(t, workflow, pinnedHeader+
+		"    faults: [{step: fetch, on: [1], fails: {message: x}}, {step: fetch, on: [1], fails: {message: y}}]\n"+
+		"    expect: {failed: false}\n")
+	report, _ := flowtest.RunFileWithCoverage(path)
+	require.Len(t, report.GetCases(), 1)
+	c := report.GetCases()[0]
+	assert.False(t, c.GetPassed())
+	require.NotEmpty(t, c.GetFailures())
+	assert.Equal(t, "faults[1].on", c.GetFailures()[0].GetField())
+	assert.Contains(t, c.GetFailures()[0].GetMessage(), "an earlier fault answered that call first")
+}

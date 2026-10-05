@@ -343,11 +343,15 @@ func (a *scheduleAccumulator) run(ctx context.Context, once caseRun) (*v1.TestCa
 		fired, faulted = faultedSeeds[report.Divergence.Diverged.Seed]
 		if faulted && len(fired.pins) > 0 {
 			shrunk = a.shrink(ctx, once, fired.pins, fired.authored)
-			if shrunk.Reproduced {
+			switch {
+			case shrunk.Reproduced:
 				fired.script = pinnedScript(shrunk.Pins)
-			} else {
+			case !shrunk.Inconclusive:
+				// A completed replay that does not reproduce: nothing was shrunk.
 				shrunk = shrinkResult{}
 			}
+			// An inconclusive first replay keeps its counters, so the report
+			// says the list was not shrunk instead of staying silent.
 		}
 	}
 	if report.Divergence != nil && a.divergence == nil {

@@ -177,3 +177,20 @@ func TestShrinkCutOffMidSearchIsNotMinimal(t *testing.T) {
 	v, _ := needing(faultAtom{0, 5})(got.Pins)
 	assert.True(t, v, "and what it returns still violates")
 }
+
+// A first replay that was cut off says so, rather than looking like a replay
+// that completed and did not reproduce.
+func TestShrinkCutOffBeforeTheFirstReplayIsInconclusive(t *testing.T) {
+	t.Parallel()
+
+	pins, authored := pinsWith([]int{1, 2, 3})
+	got := shrinkFaults(pins, authored, MaxShrinkRuns, func([]Fault) (bool, bool) { return false, false })
+
+	assert.False(t, got.Reproduced)
+	assert.True(t, got.Inconclusive)
+	assert.False(t, got.Minimal)
+	assert.Equal(t, pins, got.Pins)
+
+	done := shrinkFaults(pins, authored, MaxShrinkRuns, func([]Fault) (bool, bool) { return false, true })
+	assert.False(t, done.Inconclusive, "a completed replay that does not reproduce is a definite answer")
+}
