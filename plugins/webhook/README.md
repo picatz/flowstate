@@ -58,6 +58,11 @@ There are no hidden retries; the workflow's retry policy is the one mechanism.
 
 ## Security boundary
 
+Send to an `https://` receiver. An `http://` one is accepted, as `slack` accepts it
+where the operator's egress policy allows it, but the body, the signature and the
+idempotency key then cross the network in the clear, and for `hmac_sha256`, which
+signs the body alone, a signature seen on the wire is replayable.
+
 The deployment's egress policy decides where a delivery may go, taken as `slack`
 takes it: the deployment default (public HTTPS, internal ranges and loopback
 denied) is accepted, an operator `--egress-policy` narrows it, and a grant that

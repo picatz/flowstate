@@ -225,9 +225,11 @@ func deliver(ctx context.Context, client *http.Client, in *webhookv1.SendInputs,
 		return nil, sdk.Failed("the receiver refused the delivery with HTTP %d", resp.StatusCode)
 	}
 
+	// Case-insensitively: a receiver that echoes a hex digest upper-cased has
+	// still returned a signature that is replayable for this body.
 	text := string(raw)
 	for _, target := range scrub {
-		text = strings.ReplaceAll(text, target, redacted)
+		text = regexp.MustCompile("(?i)"+regexp.QuoteMeta(target)).ReplaceAllLiteralString(text, redacted)
 	}
 	if len(text) > maxResponseBytes {
 		text, truncated = text[:maxResponseBytes], true

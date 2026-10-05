@@ -329,6 +329,28 @@ func TestAResponseIsBoundedAndASecretOnTheCutIsStillRedacted(t *testing.T) {
 	}
 }
 
+// A receiver that echoes the signature upper-cased has still returned a
+// signature that verifies for this body, so the scrub does not care about case.
+func TestAnUpperCasedEchoOfTheSignatureIsRedacted(t *testing.T) {
+	var got atomic.Pointer[received]
+	server := receiver(t, &got, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("echo: " + strings.ToUpper(r.Header.Get(flowstatev1.WebhookSignatureHeader))))
+	})
+
+	out, err := deliver(t.Context(), loopbackClient(t), &webhookv1.SendInputs{Url: server.URL, Body: `{}`}, key(testKey), time.Now())
+	if err != nil {
+		t.Fatalf("deliver: %v", err)
+	}
+
+	sig := got.Load().header.Get(flowstatev1.WebhookSignatureHeader)
+	if sig == "" {
+		t.Fatal("no signature header was sent")
+	}
+	if strings.Contains(strings.ToLower(out.GetResponse()), strings.ToLower(sig)) {
+		t.Fatalf("an upper-cased echo of the signature came back: %q", out.GetResponse())
+	}
+}
+
 func TestAnOperatorResponseCapStillReturnsTheAcceptedDelivery(t *testing.T) {
 	var got atomic.Pointer[received]
 	server := receiver(t, &got, func(w http.ResponseWriter, _ *http.Request) {
