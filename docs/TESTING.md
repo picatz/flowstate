@@ -378,7 +378,7 @@ Seeded exploration is the local driver's. The durable driver has one check of
 its own that the local driver cannot have: a run survives the loss of its
 worker. `TestWorkerRestartOverWorkflows` and `TestWorkerRestartOverUndoCases`
 (`pkg/flowstate/v1/engine/workerrestart_test.go`) run the shared conformance
-cases on a dev server, stop the first worker gracefully after a seed-chosen
+cases that need no trigger or inputs on a dev server, stop the first worker gracefully after a seed-chosen
 activity completion, and let a second worker with an empty cache rebuild the
 run from history and finish it with the answer both drivers already agree on.
 A failure prints the seed, the boundary the second worker resumed at, and the

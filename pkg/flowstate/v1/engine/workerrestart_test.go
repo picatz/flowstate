@@ -49,7 +49,8 @@ import (
 // assertable claim; a SIGKILL mid-activity makes at-least-once the honest one,
 // and belongs to a separate, weaker test. What this does exercise is
 // everything the second worker has to do cold: replay the history through the
-// interpreter, resume at the next command, and not run anything twice.
+// interpreter, resume at the next command. Exactly-once effects are asserted where the case
+// records effects (the saga cases); the others compare outputs only.
 //
 // It uses the shared corpus and no second task double, so there is no
 // durable-only stub seam (invariant 2 of AGENTS.md); effects are the corpus's
@@ -67,13 +68,6 @@ const restartSeedsEnv = "FLOWSTATE_RESTART_SEEDS"
 const (
 	defaultRestartSeeds = 3
 	maxRestartSeeds     = 50
-
-	// restartDrain is how long the completing activity holds its result back
-	// after asking for the stop, so the first worker has stopped polling before
-	// the server can hand it the next workflow task. Without it the first
-	// worker would usually run the next task itself and the restart would not
-	// be realized; the test still checks that it was.
-	restartDrain = 300 * time.Millisecond
 )
 
 // restartSeeds reads [restartSeedsEnv], falling back to the default for an
@@ -108,7 +102,9 @@ type completionCounter struct {
 	completed atomic.Int64
 	// stopAt is the completion that triggers stop; zero never does.
 	stopAt int64
-	// stop begins the stop and returns at once.
+	// stop begins the stop and returns once the first worker has been told to
+	// stop polling, so the completing activity reports its result only after
+	// the server can no longer hand the next workflow task to that worker.
 	stop func()
 	once sync.Once
 }
@@ -133,7 +129,6 @@ func (a *completionActivity) ExecuteActivity(
 	if n := c.completed.Add(1); c.stopAt != 0 && n == c.stopAt {
 		c.once.Do(func() {
 			c.stop()
-			time.Sleep(restartDrain)
 		})
 	}
 
@@ -198,13 +193,20 @@ func runWithRestart(ctx context.Context, t *testing.T, temporal client.Client, i
 	// cannot slip between the request and the stop.
 	counter.stop = func() {
 		stopped.Add(1)
+		stopping := make(chan struct{})
 		go func() {
 			defer stopped.Done()
-			stopFirst.Do(first.Stop)
+			stopFirst.Do(func() {
+				// Worker.Stop stops polling before it waits for in-flight
+				// work, and the activity reporting its result is that work.
+				close(stopping)
+				first.Stop()
+			})
 			if err := second.Start(); err != nil {
 				t.Errorf("starting the second worker: %v", err)
 			}
 		}()
+		<-stopping
 	}
 
 	require.NoError(t, first.Start())
