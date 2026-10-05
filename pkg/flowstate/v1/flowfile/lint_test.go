@@ -1093,3 +1093,38 @@ steps:
 `)
 	requireNoFindings(t, findingsFor(found, StyleSignatureHeaderKey))
 }
+
+// TestLintReportsAKeyThatIsAFilter is R11, positive: the workaround the DSL
+// notices, a ternary whose one arm is a placeholder, reported at the key with
+// the trigger's `when:` as the remedy.
+func TestLintReportsAKeyThatIsAFilter(t *testing.T) {
+	for name, key := range map[string]string{
+		"the placeholder in the else arm": `${event.body.type == "invoice.paid" ? event.body.id : "ignored"}`,
+		"the placeholder in the then arm": `${event.body.type != "invoice.paid" ? "ignored" : event.body.id}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			keyed := findingsFor(lintOf(t, webhookKeyedOn(key)), StyleKeyAsFilter)
+			require.Len(t, keyed, 1)
+			assert.Equal(t, 11, keyed[0].Line)
+			assert.Equal(t, "triggers[stripe].idempotency_key", keyed[0].Field)
+			assert.Contains(t, keyed[0].Message, "`when:`")
+			assert.Contains(t, keyed[0].String(), "docs/STYLE.md R11/key-as-filter")
+		})
+	}
+}
+
+// TestLintStaysSilentOnAKeyWithNoConstantArm is R11's negative direction: a key
+// that is a plain read, a ternary whose arms both read the delivery, or a
+// ternary nested inside a larger value is a key and not a filter.
+func TestLintStaysSilentOnAKeyWithNoConstantArm(t *testing.T) {
+	for name, key := range map[string]string{
+		"a plain read":                    `${event.body.id}`,
+		"both arms read the delivery":     `${has(event.body.id) ? event.body.id : event.headers["x-request-id"]}`,
+		"both arms constant":              `${event.body.id == "" ? "a" : "b"}`,
+		"a ternary inside a larger value": `${event.body.id + (event.body.live ? "-live" : "-test")}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			requireNoFindings(t, findingsFor(lintOf(t, webhookKeyedOn(key)), StyleKeyAsFilter))
+		})
+	}
+}

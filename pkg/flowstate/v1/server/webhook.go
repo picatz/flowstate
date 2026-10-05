@@ -667,8 +667,48 @@ func (r *WebhookReceiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		// that passed.
 		Verified: true,
 	})
+	if errors.Is(err, v1.ErrWebhookDeclined) {
+		// The workflow's own `when:` said no to a delivery that verified. Not a
+		// failure, so it neither marks the span errored nor logs at error level,
+		// and answered `204`: a provider reads any 2xx as delivered and must not
+		// retry what the workflow does not want. No body, because a 204 has none
+		// and the decision's reason is the audit record's to carry, not the
+		// sender's to read.
+		r.log.InfoContext(ctx, "declined a delivery",
+			"workflow", route.workflow.GetName(), "webhook", route.trigger.GetName())
+		if recordErr := r.recordRefusal(ctx, route, v1.EnforcementSubject{
+			Identity:     r.principalIdentity(ctx, route),
+			ResourceKind: v1.AuditResourceKind_AUDIT_RESOURCE_KIND_WEBHOOK_ROUTE,
+			ResourceKey:  webhookRouteKey(route),
+		}, v1.AuditDenyCode_AUDIT_DENY_CODE_WEBHOOK_DECLINED); recordErr != nil {
+			// A required recorder that could not write the decision down: the
+			// deployment's failure, which the sender may retry, exactly as the
+			// bridge's own refusals are answered.
+			w.Header().Set("Retry-After", "5")
+			http.Error(w, "the delivery could not be recorded; retry", http.StatusServiceUnavailable)
+
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+
+		return
+	}
+
 	recordDeliveryOutcome(span, accepted, err)
 	if err != nil {
+		if whenErr, ok := errors.AsType[*v1.WebhookWhenError](err); ok {
+			// Fail closed: the predicate could not say yes, so nothing started.
+			// Told to the key holder with the fixed sentence and recorded as the
+			// broken rule it is; the evaluator's own error stays here, in the
+			// operator's log, because it can quote the delivery.
+			r.log.WarnContext(ctx, "a webhook `when:` could not be answered; the delivery is refused",
+				"workflow", route.workflow.GetName(), "webhook", route.trigger.GetName(), "cause", whenErr.Cause())
+			r.refusedAtRoute(ctx, route, r.principalIdentity(ctx, route), v1.AuditDenyCode_AUDIT_DENY_CODE_RULE_ERROR)
+			http.Error(w, whenErr.Error(), http.StatusUnprocessableEntity)
+
+			return
+		}
+
 		// Logged through the delivery span's context rather than the request's,
 		// so the line carries this delivery's trace and span ids: `otelslog`
 		// reads them off the context, and a failure an operator is reading is

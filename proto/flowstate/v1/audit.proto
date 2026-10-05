@@ -623,6 +623,13 @@ enum AuditDenyCode {
   // The caller exceeded the codec server's per-caller request rate. Refused
   // before the body is read or a key is touched.
   AUDIT_DENY_CODE_RATE_LIMITED = 16;
+
+  // A webhook delivery verified and its trigger's `when:` answered false: the
+  // workflow declined it, so it started no run and delivered no signal. Not an
+  // attack and not a fault; recorded because a declined delivery is a decision
+  // the operator may need to count. A `when:` that could not be answered at
+  // all is RULE_ERROR, the code for a rule that is itself broken.
+  AUDIT_DENY_CODE_WEBHOOK_DECLINED = 17;
 }
 
 // AuditDebugDetail is what a debugger decision was about.

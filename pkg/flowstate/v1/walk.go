@@ -95,6 +95,9 @@ const (
 	SlotDeclaredOutput
 	// SlotWebhookIdempotencyKey is a webhook trigger's `idempotency_key:`.
 	SlotWebhookIdempotencyKey
+	// SlotWebhookWhen is a webhook trigger's `when:` — the admission predicate
+	// that lets a verified delivery be declined.
+	SlotWebhookWhen
 	// SlotWebhookArgument is one entry of a webhook trigger's `with:`.
 	SlotWebhookArgument
 	// SlotWebhookVerify is one entry of a webhook trigger's `verify:`.
@@ -189,6 +192,7 @@ func ValueSlotSchemaPath() map[ValueSlot]string {
 		SlotWorkflowVar:           "Workflow.vars{}",
 		SlotDeclaredOutput:        "Workflow.declared_outputs[].value",
 		SlotWebhookIdempotencyKey: "Workflow.triggers.webhooks[].idempotency_key",
+		SlotWebhookWhen:           "Workflow.triggers.webhooks[].when",
 		SlotWebhookArgument:       "Workflow.triggers.webhooks[].arguments{}",
 		SlotWebhookVerify:         "Workflow.triggers.webhooks[].verify{}",
 
@@ -315,6 +319,8 @@ func (s ValueSite) Field() string {
 		return "outputs." + s.Name
 	case SlotWebhookIdempotencyKey:
 		return s.triggerPath() + ".idempotency_key"
+	case SlotWebhookWhen:
+		return s.triggerPath() + ".when"
 	case SlotWebhookArgument:
 		return s.triggerPath() + ".with." + s.Name
 	case SlotWebhookVerify:
@@ -472,6 +478,10 @@ func walkWorkflowValuesAfterSteps(wf *Workflow, w Walk) {
 			Index: i,
 			Value: webhook.GetIdempotencyKey(),
 		})
+
+		if when := webhook.GetWhen(); when != nil {
+			w.value(ValueSite{Slot: SlotWebhookWhen, Owner: name, Index: i, Value: when})
+		}
 
 		for _, argument := range slices.Sorted(maps.Keys(webhook.GetArguments())) {
 			w.value(ValueSite{

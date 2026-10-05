@@ -1858,7 +1858,7 @@ sub-language.
 
 **`event` is the delivery, and it is bound in a trigger only.** `event.headers` (whose
 names are matched without regard to case) and `event.body` (the decoded payload) are
-in scope in `with:` and `idempotency_key:` and nowhere else in the language. A step
+in scope in `when:`, `with:` and `idempotency_key:` and nowhere else in the language. A step
 naming it is a positioned diagnostic, not a silent nil: everything a workflow operates
 on arrives through `with:` into `inputs:` and is read as `inputs.<name>`, because a
 second input path is one `flow validate` could not check. A step *called* `event` is
@@ -1893,6 +1893,46 @@ only a byte-identical resend, and starts a run for every real retry. `flow lint`
 reports that shape (`R10/signature-header-key`, docs/STYLE.md). What the validator
 does *not* do is resolve anything: whether the secret exists and whether this
 deployment has that scheme configured are a deployment's answers.
+
+**`when:` declines a delivery, and the key stays a key.** A provider does not send
+one event type: GitHub sends every action on a repository to one URL, and a workflow
+that cares about `pull_request.opened` would otherwise run for `synchronize` and
+`labeled` too. `when:` is a boolean over `event`, evaluated after `verify:` and
+before `idempotency_key:`, `with:` and `signal.correlate:`, by the evaluator and
+under the cost and deadline limits those use:
+
+```yaml
+- webhook: github
+  verify: { hmac_sha256: ${secret('env:GITHUB_WEBHOOK_SECRET')} }
+  when: ${event.headers["x-github-event"] == "pull_request" && event.body.action == "opened"}
+  idempotency_key: ${event.headers["x-github-delivery"]}
+```
+
+Only a clean `true` admits. `false` *declines*: no run starts, no signal is
+delivered, no key is recorded (so a later delivery of the same event is judged
+afresh), and the receiver answers `204 No Content`: a provider reads any 2xx as
+delivered and does not retry it, and a 204 says there is nothing to read. HTTP gives
+it no body, so the reason lives in the
+audit record (`AUDIT_DENY_CODE_WEBHOOK_DECLINED`, one bounded record per route per
+interval with a count, never the delivery) and in the receiver's log. Anything else
+fails closed and is *refused*, answered `422` with a fixed sentence that quotes
+nothing from the delivery and recorded as a broken rule (`AUDIT_DENY_CODE_RULE_ERROR`):
+an evaluation error, a result that is not a bool, an exceeded bound, and — the
+common one — a field this event type does not carry. An absent field is a decline
+only when the author says so: `event.body.?action.orValue("") == "opened"`, or
+`has(event.body.action) && event.body.action == "opened"`. Absent means every verified
+delivery is admitted, as before.
+
+A `when:` must read `event` (a predicate that cannot vary with the delivery admits
+all of them or none) and may not read a `${secret(...)}`. It applies to a `signal:`
+webhook as well, ahead of `correlate:`, so a filtered delivery never addresses a run;
+it is written once on the webhook, not again inside `signal:`. `flow test` replays it
+through the same function, and `expect: {refused: true}` asserts a decline.
+
+This is also what the key is not for: `${event.body.type == "invoice.paid" ?
+event.body.id : "ignored"}` collapses every uninteresting delivery onto one phantom
+run and dedupes *across* event types. Write the filter in `when:` and the key over the
+event's id.
 
 **Declaring is not serving.** A file declares a webhook; a deployment decides whether
 *this* installation serves it, because staging must not fire the production webhook.

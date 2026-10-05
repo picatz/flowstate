@@ -31,6 +31,7 @@ charter.
 | Is this snippet fit to be shown? | R8. Shown is a subset of canonical, and the subset is enforced |
 | This rule has no enforcement path | R9. The charter enforces itself or shrinks |
 | What should a webhook's `idempotency_key:` read? | R10. A dedupe key names the event, never the attempt |
+| How does a webhook decline a delivery it does not want? | R11. Declining a delivery is `when:`, never the key |
 
 Anti-goals are Part IV of the same file. A proposal that hits one is refused with
 that reference rather than a new parallel argument.

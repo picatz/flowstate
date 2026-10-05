@@ -361,7 +361,7 @@ means:
 
 | Kind | An unfenced value is | Fields |
 | --- | --- | --- |
-| Expression | CEL | `if:`, `value:`, `for_each.items`, `loop.until`, `switch.value`, `wait_until:`, an output's `value:`, webhook `idempotency_key:` and `correlate:` |
+| Expression | CEL | `if:`, `value:`, `for_each.items`, `loop.until`, `switch.value`, `wait_until:`, an output's `value:`, webhook `when:`, `idempotency_key:` and `correlate:` |
 | Value | Literal text | Task inputs, `vars:`, `with:`, loop `init:` and `update:`, a wait's `prompt:` and `outputs:` |
 | Literal | Literal; a fence is refused | `id`, `name`, `description`, `as:`, `must:`, input defaults, the step `timeout:` and `retry:` settings, a signal's `name:`, and other fields read when the file compiles |
 
@@ -1361,6 +1361,7 @@ receives it at `POST /webhooks/<workflow>/<webhook>` when started with
 | Key | Meaning |
 | --- | --- |
 | `verify` | Required. How to check the signature: `hmac_sha256` (an `X-Flowstate-Signature` HMAC of the body) or `stripe` (Stripe's signature scheme), each keyed by a secret reference. |
+| `when` | Optional. A boolean over the delivery that admits it, such as `${event.body.action == "opened"}`. Only a clean `true` admits; `false` answers `204` and starts nothing, and an expression that errors, is not a bool, or exceeds its bound is refused. Applies to a `signal:` webhook too, before `correlate:` runs. |
 | `idempotency_key` | Required. An expression over the delivery that names the *event*, such as `${event.body.id}`. A redelivery of the same event joins the run the first one started. Never key on a signature header, which changes on every retry. |
 | `with` | Maps the delivery to the workflow's inputs. Checked against `inputs:` both ways: every required input must be bound. |
 | `signal` | Instead of starting a run, deliver a signal to the run whose entity key `correlate:` computes. See [examples/webhook-approval-bridge](../examples/webhook-approval-bridge/workflow.yaml). |
@@ -1612,7 +1613,7 @@ declaration:** `description`.
 `start_at`, `end_at`, `catchup_window`, `pause_on_failure`; a calendar has
 `second`, `minute`, `hour`, `day_of_month`, `month`, `year`, `day_of_week`,
 `comment`, and a range within one is written `start`, `end`, `step`), `webhook`
-(`verify`, `idempotency_key`, `with`, `signal` with `name`, `correlate`,
+(`verify`, `when`, `idempotency_key`, `with`, `signal` with `name`, `correlate`,
 `with`).
 
 **Concurrency:** `key`, `on_conflict`. **Signal policy:** `allow` (one `${...}`

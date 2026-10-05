@@ -58,6 +58,17 @@ triggers:
     verify:
       stripe: ${secret('env:STRIPE_WEBHOOK_SECRET')}
 
+    # Whether this workflow wants the delivery at all. Stripe sends every event a
+    # subscription covers to one URL, and this workflow captures: a `charge.refunded`
+    # that verified would otherwise be a run about nothing. Only a clean `true`
+    # admits. `false` answers 204 so the provider does not retry, starts no run
+    # and records no key, so the key below stays a key rather than doubling as a
+    # filter (`type == "charge.captured" ? id : "ignored"` collapses every other
+    # event onto one phantom run). An expression that errors, or an event with no
+    # `type`, is refused instead: absent means "unanswerable", and
+    # `has(event.body.type) && ...` is how an author says it means "no".
+    when: ${event.body.type == "charge.captured"}
+
     # What names one delivery. Required rather than optional, because webhook
     # delivery is at-least-once by nature: without a dedupe key every retried
     # delivery is a second run, and "this integration will not retry" is not a

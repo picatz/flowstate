@@ -178,6 +178,53 @@ tests:
 	assert.Contains(t, failureText(report.GetCases()[0].GetFailures()), "it was accepted and mapped to inputs")
 }
 
+// TestAWhenDeclinesAReplayedDelivery: `flow test` honours the admission
+// predicate through the same binding the receiver calls, so a verified delivery
+// the trigger declines is a refusal with no run, and the same delivery the
+// predicate admits maps as before. Both directions, over one stored delivery.
+func TestAWhenDeclinesAReplayedDelivery(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name, when string
+		refused    bool
+	}{
+		{name: "declined", when: `${event.body.id == "evt_other"}`, refused: true},
+		{name: "admitted", when: `${event.body.id == "evt_9"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			dir := t.TempDir()
+			writeFile(t, dir+"/workflow.yaml", strings.Replace(triggerWorkflow,
+				"    idempotency_key:", "    when: "+tc.when+"\n    idempotency_key:", 1))
+			writeFile(t, dir+"/delivery.json", storedDelivery)
+			expect := "inputs: {order_id: ord_9, amount: 4200}"
+			if tc.refused {
+				expect = "refused: true"
+			}
+			writeFile(t, dir+"/x.test.yaml", `
+defaults:
+  stubs:
+    - task: log
+      returns: {}
+tests:
+  - name: a replayed delivery
+    workflow: ./workflow.yaml
+    trigger:
+      webhook: stripe
+      payload: ./delivery.json
+    expect:
+      `+expect+`
+`)
+			report := flowtest.RunFile(dir + "/x.test.yaml")
+			require.Empty(t, report.GetRefused())
+			require.Len(t, report.GetCases(), 1)
+			assert.True(t, report.GetCases()[0].GetPassed(), "failures: %v", report.GetCases()[0].GetFailures())
+		})
+	}
+}
+
 // TestAMappingThatDisagreesFailsTheCase, in both directions: an input the case
 // expects and did not get, and one it got and does not name — the second being
 // the drift a `with:` block exists to make visible when an input is added and a

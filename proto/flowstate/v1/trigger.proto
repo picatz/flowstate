@@ -368,6 +368,29 @@ message WebhookTrigger {
   // See [WebhookTrigger.Signal].
   Signal signal = 5 [(google.api.field_behavior) = OPTIONAL];
 
+  // When is the admission predicate: a boolean expression over `event` that
+  // decides whether a verified delivery is acted on at all, written
+  // `when: ${...}` in a Flowfile. It is the one thing a trigger could not say
+  // before: no.
+  //
+  // Evaluated at the boundary after verification and before `idempotency_key`,
+  // `arguments`, and (on a bridge) `signal.correlate`, in the same environment
+  // and under the same limits as those, by the same evaluator. It applies to a
+  // start and to a bridge alike, and is deliberately not repeated inside
+  // [Signal]: one trigger has one admission rule, and a second spelling per arm
+  // would be the second mechanism.
+  //
+  // Only a clean `true` admits. `false` declines the delivery: it starts no
+  // run, delivers no signal, records no idempotency key, and is answered `204`
+  // so the provider does not retry it. An evaluation error, a result that is
+  // not a bool, and an exceeded cost or time bound fail closed: the delivery is
+  // refused, with a fixed sentence that echoes nothing from it, and starts
+  // nothing. Absent means every verified delivery is admitted, as before.
+  //
+  // May not read a secret, and must read `event`: a predicate that cannot vary
+  // with the delivery admits all of them or none of them.
+  Value when = 6 [(google.api.field_behavior) = OPTIONAL];
+
   // Signal is a delivery answering a declared gate instead of starting a run.
   //
   // # It reuses `signals:`, and is not a second authorization
