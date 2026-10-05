@@ -51,10 +51,7 @@ inputs:
     description: the subject of the person asking for this release, whose own approval must not count toward it
 signals:
   release-approved:
-    allow:
-      - subject: "https://issuer.example.com#alice@example.com"
-      - subject: "https://issuer.example.com#bob@example.com"
-      - subject: "https://issuer.example.com#carol@example.com"
+    allow: ${sender.identity.principal == "https://issuer.example.com#alice@example.com" || sender.identity.principal == "https://issuer.example.com#bob@example.com" || sender.identity.principal == "https://issuer.example.com#carol@example.com"}
 steps:
   - id: ask
     log:

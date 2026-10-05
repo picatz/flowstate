@@ -41,8 +41,8 @@ description: Moves money between two ledger accounts, requiring a role-authorize
 # approval-and-compensation shape with that file's transactional idempotency
 # shape for the real thing.
 #
-# Separation of duties here is `distinct_from_starter: true` on
-# `transfer-approved` itself - enforced by `FlowstateServer.Signal`
+# Separation of duties here is the `sender.identity.principal !=
+# run.identity.principal` conjunct on `transfer-approved` itself - enforced by `FlowstateServer.Signal`
 # (and, locally, by the identical `v1.SignalPolicyCheck` `flow test` and
 # `flow run local` call) before Temporal ever sees the signal, rather than
 # restated as a `run.identity` comparison in every step's own `if:`. What reaches `debit`/`credit`/`notify_settlement`
@@ -92,16 +92,13 @@ inputs:
 # Who may deliver `transfer-approved` at all - a claim, not a named
 # individual, because a treasury desk is a team rather than one person. A
 # sender satisfying this claim is authorized to approve any transfer this
-# workflow definition gates; `distinct_from_starter` is what still refuses
+# workflow definition gates; the principal comparison is what still refuses
 # the one case a claim alone cannot: the approver being the same caller who
 # started the run - enforced here, structurally, rather than as a
 # `run.identity` comparison a step's own `if:` could be edited to drop.
 signals:
   transfer-approved:
-    allow:
-      - claims:
-          role: treasury-approver
-    distinct_from_starter: true
+    allow: ${sender.identity.claims.role == "treasury-approver" && sender.identity.principal != run.identity.principal}
 # Approval policy belongs to the reviewed workflow definition, not to run
 # inputs. A caller may choose the transfer amount, but cannot raise this value
 # to make that amount appear below the approval threshold.
@@ -296,7 +293,7 @@ steps:
 outputs:
   # `refused_unauthorized` is gone (#207): a payload can no longer arrive
   # here approved-but-wrong-sender, because `signals:`
-  # (claims + distinct_from_starter) refuses that sender before the payload
+  # (the claim plus the principal comparison) refuses that sender before the payload
   # is ever delivered. `decision` only has to distinguish what the desk
   # actually said - `has(payload.approved)`, its value, and `timed_out` -
   # never who said it.

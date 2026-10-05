@@ -1,0 +1,194 @@
+edition: v2026.4
+name: enterprise-customer-onboarding
+description: Checks quota, provisions a tenant's database, billing, and access grant as reusable sub-workflows, confirms go-live after a grace period, and undoes what it provisioned if activation fails.
+# Onboarding a customer is rarely one system's job - it is several teams'
+# provisioning APIs, called in an order that matters, with a real answer for
+# "what happens if the last step fails after earlier ones succeeded." Four
+# primitives, composed for that:
+#
+#   call: + undo: - `check_quota` and each `provision_*` step reach their own
+#                    reusable Flowfile under `workflows/`, the same shape
+#                    call-a-workflow's own callee demonstrates - a platform
+#                    team maintains "provision a database" once and every
+#                    workflow that needs one, not just onboarding, calls it
+#                    the same way. Each `provision_*` callee's own task step
+#                    carries its own `undo:` (see `workflows/provision-
+#                    database.yaml`), so the sub-workflow is a self-contained
+#                    unit: provision, and how to take itself back, reusable
+#                    by any caller regardless of what else that caller is
+#                    compensating. If `activate` fails after all three
+#                    succeeded, the engine undoes `provision_access`, then
+#                    `provision_billing`, then `provision_database` - reverse
+#                    of registration order, crossing the `call:` boundary
+#                    each provisioner sits behind exactly as if the three
+#                    were top-level steps, per docs/DSL.md's "Compensation
+#                    composes through a call" (#225). This file is that
+#                    change's house-gate example: it shipped with the
+#                    compensation hoisted to flat top-level steps as a
+#                    workaround for the composition gap #225 closed, and is
+#                    now the worked example of the composed shape rather than
+#                    the gap - see docs/USE_CASES.md for what changed and
+#                    why.
+#
+#   wait_until     - a configurable grace period between "provisioned" and
+#                    "live," a real shape (a tenant is not billed until a
+#                    grace window has passed, giving a chance to cancel
+#                    before anything is charged) and a real durable timer:
+#                    `${now + hours(inputs.activation_grace_hours)}` computes
+#                    the deadline from an input rather than a number baked
+#                    into the file, so the same workflow definition serves a
+#                    one-hour trial signup and a two-week enterprise
+#                    contract without being edited.
+#
+#   signals: +
+#   wait_for_signal
+#                  - `activation_confirmation` gates the actual go-live on an
+#                    `account-manager` claim, the same `signals:` shape every
+#                    other example in this portfolio uses for a different
+#                    role.
+#
+# "Tenant isolation via inputs" undersells what `call:`'s isolation actually
+# is and is not. `with: { tenant: inputs.tenant }` means a callee cannot read
+# anything of this file's *scope* it was not explicitly handed - it cannot
+# see `inputs.plan`, `steps.provision_database`, or this file's own vars,
+# the ordinary isolation a function call gives a callee over its caller's
+# locals. That is not the tenancy boundary docs/ARCHITECTURE.md describes
+# under "Tenancy": which secrets resolve, which egress rules apply, and
+# which runs are visible are all governed by the *authenticated caller's*
+# namespace, established once when the run is submitted - a property of who
+# started this run, never of an argument a Flowfile passes to a callee. A
+# malicious or buggy `with:` value cannot forge that boundary; conflating
+# the two is the mistake worth naming rather than repeating.
+inputs:
+  tenant:
+    type: string
+    required: true
+    description: the new tenant's slug - passed to every sub-workflow, never invented by one
+    example: acme
+    must: this.matches(r'^[a-z][a-z0-9-]*$')
+  plan:
+    type: string
+    required: true
+    description: the billing plan this tenant is being onboarded onto
+    example: growth
+    must: this in ["starter", "growth", "enterprise"]
+  activation_grace_hours:
+    type: int
+    required: true
+    description: how long after provisioning completes before the tenant goes live and billing starts - the SLA window a real deployment would size per plan
+    # `inputs.json` beside this file sets this to 0 - a real value (an
+    # immediate go-live, no grace period) and also the one that lets `flow
+    # run local` and this repo's own example harness finish in seconds
+    # rather than sitting through a real wait. `wait_until:` on a moment
+    # already past releases immediately (see wait-until-a-moment), so 0
+    # hours is not a special case in the engine, only a deliberately small
+    # one here - the same trade-off approval-gate's own header names for its
+    # day-long gate.
+    example: 1
+    must: this >= 0 && this <= 336
+
+# Who may deliver `activation-confirmed` at all, enforced by
+# `FlowstateServer.Signal` before Temporal ever sees the signal - the same
+# `signals:` shape every other example in this portfolio uses, here for the
+# account manager who owns the contract rather than a treasury desk or an
+# on-call rotation.
+signals:
+  activation-confirmed:
+    allow:
+      - claims:
+          role: account-manager
+steps:
+  # A read, not an effect - a reusable precondition every onboarding-shaped
+  # workflow can share without any of them needing to compensate it.
+  - id: check_quota
+    call: ./workflows/check-quota.yaml
+    with:
+      plan: ${inputs.plan}
+      tenant: ${inputs.tenant}
+
+  # Each callee's own `undo:` joins this run's undo stack the moment its
+  # `call:` step returns - see workflows/provision-database.yaml's comment
+  # for the shape and workflow.test.yaml's second case for the failure path
+  # that actually reverses these three.
+  - id: provision_database
+    call: ./workflows/provision-database.yaml
+    with:
+      tenant: ${inputs.tenant}
+  - id: provision_billing
+    call: ./workflows/provision-billing.yaml
+    with:
+      plan: ${inputs.plan}
+      tenant: ${inputs.tenant}
+  - id: provision_access
+    call: ./workflows/provision-access.yaml
+    with:
+      tenant: ${inputs.tenant}
+
+  # The grace window. A durable timer, not a sleeping worker - the tenant
+  # can sit here for two weeks while every worker in the fleet is replaced
+  # underneath the wait.
+  - id: activation_window
+    wait_until: ${now + hours(inputs.activation_grace_hours)}
+
+  # A final human check before anything is billed - an account manager
+  # confirming the contract is actually signed, restricted by `signals:`
+  # below to the one claim that may answer it. Simpler than approval-gate's
+  # own gate on purpose: this file already carries the compensation-composes
+  # story above, and a second full separation-of-duties check would be the
+  # same shape repeated rather than new range - see approval-gate for that
+  # version in full.
+  - id: activation_confirmation
+    wait_for_signal:
+      name: activation-confirmed
+      timeout: 1h
+      outputs:
+        # The go-live test, stated ONCE here on the step that produced the
+        # payload, the way approval-gate shapes its gate (#207). It used to be
+        # re-derived three times: positive in `activate`'s `if:`, hand-negated
+        # in `activation_deferred`'s, and spelled again in `outputs.activated`
+        # - a De Morgan slip in the negated copy is exactly the corruption
+        # this shaping exists to stop. Every reader now compares this one
+        # recorded name.
+        confirmed: ${payload.?confirmed.orValue(false)}
+        # Re-exposed because `outputs:` replaces what the wait produced:
+        # `activation_deferred`'s log line still distinguishes a lapsed
+        # window from an explicit non-confirmation.
+        timed_out: ${timed_out}
+
+  # The step most likely to fail in practice, and the one that triggers
+  # compensation in this file's failing test case - reversing `provision_access`,
+  # then `provision_billing`, then `provision_database`, in that order: the
+  # reverse of the order the three `call:` steps above ran in, crossing each
+  # one's own boundary exactly as docs/DSL.md's "Compensation composes
+  # through a call" describes.
+  - id: activate
+    if: ${steps.activation_confirmation.confirmed}
+    http:
+      json:
+        tenant: ${inputs.tenant}
+        database_id: ${steps.provision_database.resource_id}
+        billing_id: ${steps.provision_billing.resource_id}
+        access_id: ${steps.provision_access.resource_id}
+      method: POST
+      url: https://provisioning.internal.example.com/tenants/activate
+  - id: activation_deferred
+    if: ${!steps.activation_confirmation.confirmed}
+    log:
+      level: warn
+      message: '${"activation for %s deferred: %s".format([inputs.tenant, steps.activation_confirmation.timed_out ? "no confirmation within the window" : "confirmation was not given"])}'
+outputs:
+  activated:
+    value: ${steps.activation_confirmation.confirmed}
+    description: whether the account manager confirmed go-live and the tenant was actually activated
+  tenant:
+    value: ${inputs.tenant}
+    description: which tenant this run onboarded
+  database_id:
+    value: ${steps.provision_database.resource_id}
+    description: the provisioned database's id
+  billing_id:
+    value: ${steps.provision_billing.resource_id}
+    description: the provisioned billing account's id
+  access_id:
+    value: ${steps.provision_access.resource_id}
+    description: the provisioned access grant's id

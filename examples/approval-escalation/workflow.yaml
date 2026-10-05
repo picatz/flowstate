@@ -11,8 +11,8 @@ description: Asks an approver on a cadence, escalates to a backup when the prima
 #   - `approval-gate` owns the security half. Who may answer is `signals:`,
 #     checked by `FlowstateServer.Signal` against the attested sender before
 #     Temporal sees the delivery, never an `if:` in this file. That block below
-#     is that block, with one addition: two rules rather than one, so the
-#     backup approver this run escalates to can answer it as well.
+#     is that block, with one addition: two alternatives in the one predicate, so
+#     the backup approver this run escalates to can answer it as well.
 #   - `renewal-reminder` owns the cadence: a `loop:` around a bounded
 #     `wait_for_signal:`, where the deadline lapsing is the ordinary path and a
 #     delivered signal is the interrupt.
@@ -105,42 +105,36 @@ inputs:
   primary_approver:
     type: string
     required: true
-    description: who this run asks first — narrows the first `signals:` rule for this run
+    description: who this run asks first — narrows the first alternative of the `signals:` predicate for this run
     example: sre-lead@example.com
     must: this.matches(r'^[^@]+@[^@]+$')
   backup_approver:
     type: string
     required: true
-    description: who this run escalates to — narrows the second `signals:` rule for this run
+    description: who this run escalates to — narrows the second alternative of the `signals:` predicate for this run
     example: sre-manager@example.com
     must: this.matches(r'^[^@]+@[^@]+$')
 # The whole of who may answer, enforced by `FlowstateServer.Signal` against the
-# attested sender before Temporal ever sees the delivery. Two rules, matched as
-# alternatives (OR across rules, AND within one), which is what escalation
-# needs: the backup can answer the chase because this file's author wrote a
-# rule for them, not because the run escalated. Escalation changes who is
+# attested sender before Temporal ever sees the delivery. One predicate with two
+# alternatives joined by `||` (each one a conjunction), which is what escalation
+# needs: the backup can answer the chase because this file's author wrote an
+# alternative for them, not because the run escalated. Escalation changes who is
 # *asked*; it cannot widen who is *allowed*, and there is no moment in this
 # file's execution where the policy is different from what was frozen into the
 # run's memo at submit.
 #
-# Each rule pairs an interpolated `subject:` with a literal `claims:`
-# constraint, for the reason `approval-gate` states at length and `flow
+# Each alternative pairs an interpolated `sender.identity.principal`
+# comparison with a literal `sender.identity.claims` constraint, for the reason `approval-gate` states at length and `flow
 # validate` enforces: an interpolated field can only narrow a grant this file's
 # author already wrote, never invent one. A caller who names a stranger as
 # `backup_approver` has named somebody who still has to be a release manager to
 # answer anything. The subject is qualified with its issuer — never a bare
 # subject, since a second identity provider could mint the same local part for
-# somebody else entirely.
+# somebody else entirely. The final conjunct is the separation of duties: the
+# sender's principal is not the principal that started the run.
 signals:
   approval-decision:
-    allow:
-      - subject: ${"https://issuer.example.com#" + inputs.primary_approver}
-        claims:
-          team: release-managers
-      - subject: ${"https://issuer.example.com#" + inputs.backup_approver}
-        claims:
-          team: release-managers
-    distinct_from_starter: true
+    allow: ${((sender.identity.principal.split("#").size() == 2 && sender.identity.principal == "https://issuer.example.com#" + inputs.primary_approver && sender.identity.claims.team == "release-managers") || (sender.identity.principal.split("#").size() == 2 && sender.identity.principal == "https://issuer.example.com#" + inputs.backup_approver && sender.identity.claims.team == "release-managers")) && sender.identity.principal != run.identity.principal}
 vars:
   # How many times anybody is asked, in total, across both approvers. The
   # budget, and deliberately not `max_iterations:` — see the header.

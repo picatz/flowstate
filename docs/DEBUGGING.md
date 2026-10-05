@@ -662,9 +662,7 @@ it:
 
 ```yaml
 debug:
-  allow:
-    - claims:
-        team: sre
+  allow: ${sender.identity.claims.team == "sre"}
 ```
 
 The server then asks for one of two authorization actions, and a token that

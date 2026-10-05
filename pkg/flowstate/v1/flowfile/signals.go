@@ -418,7 +418,7 @@ func signalPolicyToYAML(policy *v1.SignalPolicy) (yaml.MapSlice, error) {
 			return nil, fmt.Errorf("policy sets both an `allow:` rule list and a predicate, and one `allow:` key cannot hold both")
 		}
 
-		doc := yaml.MapSlice{{Key: "allow", Value: "${" + expression + "}"}}
+		doc := yaml.MapSlice{{Key: "allow", Value: fencedToYAML(expression)}}
 		if policy.GetDistinctFromStarter() {
 			doc = append(doc, yaml.MapItem{Key: "distinct_from_starter", Value: true})
 		}

@@ -79,10 +79,20 @@ var exampleCorpusGlobs = []string{
 // written down here, not a silently reappearing map.
 var constructsWithoutAnExample = map[string]string{
 	"output.type.TYPE_BYTES": "an output cannot declare a data kind yet: the run document has no plain-JSON form for it (#1436)",
-	"signal_policy.allow_expr": "landed beside the rule list as the engine slice of #326; the examples move onto " +
-		"`allow: ${...}` in that issue's `flow fix` slice, which rewrites them by tool and is the example",
-	"manual.allow_expr": "landed beside `allowed_principals` as the engine slice of #326, with `debug: allow: ${...}`; " +
-		"the examples move onto the predicate in that issue's `flow fix` slice, which rewrites them by tool and is the example",
+
+	// The spellings `allow: ${...}` replaced (#326). They still compile, so the schema
+	// still names them, and no example may teach them: every one was rewritten by
+	// `flow fix`, and `flowfile/testdata/fixallow` keeps each file as it was written
+	// so a test can hold the committed example to the tool's output. The change that
+	// reserves these fields removes the entries with them, and this test refuses an
+	// entry for a construct the schema no longer has.
+	"signal_policy.allow":                 "the retired rule list, rewritten by `flow fix` into `allow: ${...}` (#326)",
+	"signal_policy.distinct_from_starter": "the retired keyword, rewritten by `flow fix` into `&& sender.identity.principal != run.identity.principal` (#326)",
+	"signal_policy_rule.subject":          "a field of the retired rule list, rewritten by `flow fix` (#326)",
+	"signal_policy_rule.subject_from":     "a field of the retired rule list, rewritten by `flow fix` (#326)",
+	"signal_policy_rule.namespace":        "a field of the retired rule list, rewritten by `flow fix` (#326)",
+	"signal_policy_rule.claims":           "a field of the retired rule list, rewritten by `flow fix` (#326)",
+	"manual.allowed_principals":           "the retired list, rewritten by `flow fix` into `allow: ${sender.identity.principal in [...]}` (#326)",
 }
 
 // The required set is derived from the schema three ways: the two `kind` oneofs

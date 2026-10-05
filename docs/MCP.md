@@ -197,8 +197,9 @@ configured with: the token file or credential source you gave it. An agent that
 sends `flowstate_signal` to approve a gate is approving as that identity, and a
 workflow's `signals:` policy judges it as that identity. If a gate should
 require a human, give it a `signals:` rule the agent's credential does not
-satisfy, such as a claim only people carry, or `distinct_from_starter: true`
-when the agent starts the run. See
+satisfy, such as a claim only people carry, or a
+`sender.identity.principal != run.identity.principal` clause when the agent starts
+the run. See
 [the language guide](LANGUAGE.md#who-may-send-a-signal-signals).
 
 Everything an agent reads from a run (outputs, payloads, prompts) is data a

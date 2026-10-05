@@ -95,14 +95,14 @@ triggers:
 # a webhook delivery is attested as the source that admitted it, never as a
 # person, because a signature proves a key and not a click.
 #
-# `distinct_from_starter:` is deliberately absent, and that absence is a fact
-# about what this route can prove rather than a relaxation: it separates
-# *triggers* on this path, so setting it would promise a separation of duties
-# between two humans that no HMAC scheme attests.
+# A `sender.identity.principal != run.identity.principal` conjunct is
+# deliberately absent, and that absence is a fact about what this route can
+# prove rather than a relaxation: it separates *triggers* on this path, so
+# writing it would promise a separation of duties between two humans that no
+# HMAC scheme attests.
 signals:
   stage-approved:
-    allow:
-      - subject: "flowstate://webhook#webhook-approval-bridge/slack-approval"
+    allow: ${sender.identity.principal == "flowstate://webhook#webhook-approval-bridge/slack-approval"}
 steps:
   - id: rollout
     description: Each stage waits for its own click, and one click answers one stage.

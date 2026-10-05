@@ -1107,7 +1107,7 @@ func manualTriggerToYAML(manual *v1.ManualTrigger) (any, error) {
 	}
 
 	if expression := manual.GetAllowExpr(); expression != "" {
-		doc = append(doc, yaml.MapItem{Key: "allow", Value: "${" + expression + "}"})
+		doc = append(doc, yaml.MapItem{Key: "allow", Value: fencedToYAML(expression)})
 	}
 
 	if len(doc) == 0 {

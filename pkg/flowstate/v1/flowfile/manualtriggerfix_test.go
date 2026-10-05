@@ -39,8 +39,7 @@ triggers:
       order_id: ${event.body.order_id}
   - manual:
       require_reason: true
-      allowed_principals:
-        - https://issuer.example.com#oncall@example.com
+      allow: ${sender.identity.principal in ["https://issuer.example.com#oncall@example.com"]}
 steps:
   - id: notify
     if: ${trigger.kind != "schedule"}

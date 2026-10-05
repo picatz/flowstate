@@ -1,0 +1,89 @@
+edition: v2026.4
+name: signal-quorum
+description: A release gate that needs two of three named approvers, each counted once, with the requester's own approval ignored and any one reviewer able to veto.
+
+# # Two of these three
+#
+# `wait_for_signal:` answers on the first delivery, so "two reviewers must sign
+# off" used to mean a `loop:` around it that tallied by hand: who has approved,
+# is this a repeat, did anyone object. `quorum:` on `wait_for_signals:` does the
+# tally once, in the engine, the same way on a laptop and on Temporal, and says
+# who approved in the step's outputs.
+#
+# It *replaces* the drain `wait_for_signals:` otherwise performs. Deliveries are
+# taken one at a time until the quorum is decided or `timeout:` lapses, and
+# anything that arrives after the decision stays buffered for a later wait.
+#
+# # What counts
+#
+# A delivery approves when its payload's `approved` is `true` -- exactly what
+# the browser gate page sends -- and from a sender the `signals:` policy below
+# admitted. A refused sender never reaches the gate, so it can neither approve
+# nor veto. Three rules decide the rest:
+#
+#   - `distinct:` (the default) counts each verified identity once, so one
+#     reviewer approving twice is one approval, and a delivery with no identity
+#     (a local or unattested one) never counts.
+#   - `exclude:` names subjects whose approvals do not count. Four-eyes is
+#     `${run.identity.subject}`, the run starter's own approval; the second entry
+#     here is an input, for a requester who is not the one starting the run. An
+#     excluded sender may still veto.
+#   - `veto:` ends the wait at once, whatever the count. Written out here as the
+#     default says it (`approved: false`); omit it to get exactly that.
+#
+# # An unsatisfiable quorum is refused before the run starts
+#
+# The policy lists three subjects and the quorum needs two, which is fine. Write
+# `approve: 4` and `flow validate` refuses it: the policy is a closed list of
+# three, so no four distinct approvers can ever reach the gate.
+#
+# Rehearse every case below with `flow test examples/signal-quorum`; send a real
+# approval with
+#
+#   flow signal <workflow-id> release-approved --data '{"approved": true}'
+#
+# The five-second timeout only keeps an unattended run finite: a gate nobody
+# answers lapses, and `decision` says `timed_out`.
+inputs:
+  requested_by:
+    type: string
+    default: ""
+    description: the subject of the person asking for this release, whose own approval must not count toward it
+signals:
+  release-approved:
+    allow:
+      - subject: "https://issuer.example.com#alice@example.com"
+      - subject: "https://issuer.example.com#bob@example.com"
+      - subject: "https://issuer.example.com#carol@example.com"
+steps:
+  - id: ask
+    log:
+      message: ${"release requested by " + inputs.requested_by + ", waiting for two approvals"}
+  - id: gate
+    description: Waits for two distinct approvals, a veto, or the timeout.
+    wait_for_signals:
+      name: release-approved
+      max_batch: 3
+      prompt: two of alice, bob and carol must approve this release
+      timeout: 5s
+      quorum:
+        approve: 2
+        distinct: true
+        exclude:
+          - ${run.identity.subject}
+          - ${inputs.requested_by}
+        veto: ${has(payload.approved) && payload.approved == false}
+  - id: roll_out
+    if: ${steps.gate.decision == "approved"}
+    log:
+      message: ${"released with approvals from " + steps.gate.approvals.map(a, a.sender.identity.subject).join(", ")}
+outputs:
+  decision:
+    value: ${steps.gate.decision}
+    description: how the gate ended, one of approved, vetoed and timed_out
+  approvers:
+    value: ${steps.gate.approvals.map(a, a.sender.identity.subject)}
+    description: who approved, in the order their approvals arrived
+  vetoed_by:
+    value: '${has(steps.gate.vetoed_by) ? steps.gate.vetoed_by.identity.subject : ""}'
+    description: who vetoed the release, or empty when nobody did

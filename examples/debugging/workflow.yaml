@@ -18,9 +18,7 @@ inputs:
     default: 0s
     description: how long to wait before charging, which gives a durable debugger time to attach
 debug:
-  allow:
-    - claims:
-        team: sre
+  allow: ${sender.identity.claims.team == "sre"}
 steps:
   - id: settle
     sleep: ${duration(inputs.settle)}
