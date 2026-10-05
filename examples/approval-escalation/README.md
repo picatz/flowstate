@@ -180,8 +180,8 @@ $ flow run local examples/approval-escalation/workflow.yaml \
 ```
 
 And durably, where the chase spans real days across as many worker deployments as it
-takes (needs a Temporal dev server, `flow worker` and `flow server` — see the main
-README's Quickstart):
+takes (start `flow server dev` in another
+terminal; it needs no sign-in):
 
 ```console
 $ flow run examples/approval-escalation/workflow.yaml \
