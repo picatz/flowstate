@@ -122,7 +122,7 @@ type PolicyCheckRow struct {
 	// Inputs are the arguments the run would be started with, read against the
 	// workflow's `inputs:` declarations. They replace, by name, any arguments
 	// given for every row. Their size once decoded is counted by the reader, and a
-	// whole number of 2^53 or more is refused: a Struct carries numbers as doubles,
+	// number of magnitude 2^53 or more is refused: a Struct carries numbers as doubles,
 	// which would round it, and a check that read a different value than the
 	// engine would answer for the wrong run. Give such a value with `--input`.
 	Inputs *structpb.Struct `protobuf:"bytes,7,opt,name=inputs,proto3" json:"inputs,omitempty"`

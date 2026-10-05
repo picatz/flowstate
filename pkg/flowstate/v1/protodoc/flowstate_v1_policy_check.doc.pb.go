@@ -76,7 +76,7 @@ func init() {
 			Leading: " Inputs are the arguments the run would be started with, read against the\n" +
 				" workflow's `inputs:` declarations. They replace, by name, any arguments\n" +
 				" given for every row. Their size once decoded is counted by the reader, and a\n" +
-				" whole number of 2^53 or more is refused: a Struct carries numbers as doubles,\n" +
+				" number of magnitude 2^53 or more is refused: a Struct carries numbers as doubles,\n" +
 				" which would round it, and a check that read a different value than the\n" +
 				" engine would answer for the wrong run. Give such a value with `--input`.\n",
 		},

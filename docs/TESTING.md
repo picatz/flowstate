@@ -634,10 +634,13 @@ gates it names. The file is defined by `proto/flowstate/v1/policy_check.proto`. 
 the `--input` arguments given for every row, and a row with no `starter:` or
 `expect:` takes `--starter-*` and `--expect`. A subject without an issuer, or the
 reverse, is refused by the rule a test file's `sender:` is held to. A matrix is
-bounded at 256 identities, 256 KiB and 64 levels of nesting, and holds one YAML
-document, with no anchors, aliases or merge keys. A whole number of 2^53 or more
-in a row's `inputs:` is refused, because the schema carries inputs as doubles
-and would round it; give such a value with `--input`, which applies to every row. A row that does not match its expectation
+bounded at 256 identities and 256 KiB, and holds one YAML document, with no
+anchors, aliases or merge keys. Nesting is bounded by counting bytes, not by
+reading YAML: the file may hold at most 4096 `[` and `{` characters, wherever
+they appear, and a line at most 128 leading spaces and 64 block indicators
+(`- `, `? `, `: `); a tab in indentation is refused. A number of magnitude 2^53
+or more in a row's `inputs:` is refused, whole or not, because the schema
+carries inputs as doubles and would round it; give such a value with `--input`, which applies to every row. A row that does not match its expectation
 makes the exit status 1.
 
 What it is not: a decision that depends on state only a run has, such as a

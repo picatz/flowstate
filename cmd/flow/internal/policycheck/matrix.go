@@ -1,6 +1,7 @@
 package policycheck
 
 import (
+	"bytes"
 	"cmp"
 	"errors"
 	"fmt"
@@ -46,14 +47,24 @@ const (
 	// reopen the memory a small file could cost.
 	MaxRowInputNodes = 4096
 
-	// MaxNesting bounds how deeply a matrix may nest, in flow collections
-	// (`[`, `{`) and block levels together. A parser builds its tree before any
-	// bound on the tree can run, and a few kilobytes of `[` cost it gigabytes,
-	// so this is checked on the bytes, before a parser sees them. A table of
-	// identities nests a handful of levels.
-	MaxNesting = 64
+	// MaxFlowOpeners bounds the `[` and `{` bytes in the whole file, counted
+	// wherever they sit: in quotes, in comments, in a block scalar. Flow nesting
+	// can never be deeper than the number of openers, so this bounds it without
+	// modelling YAML at all, which is the point: a scan that decided what was
+	// quoted or commented could disagree with the parser, and the parser's
+	// memory is the cost being bounded. 4096 is a ceiling no table reaches: 256
+	// rows of a claims map, a starter, an expectation and a few nested inputs
+	// come to under two thousand.
+	MaxFlowOpeners = 4096
 
-	// MaxExactInteger is the magnitude from which a whole number in a row's
+	// MaxBlockIndent and MaxBlockTokens bound block nesting the same way. Block
+	// depth on a line can never exceed its leading spaces plus the block
+	// indicators written on it (`- `, `? `, `: `), so a line with more than
+	// either is refused, whatever the line is.
+	MaxBlockIndent = 128
+	MaxBlockTokens = 64
+
+	// MaxExactInteger is the magnitude from which a number in a row's
 	// inputs is refused: the schema carries an input as a double, which holds
 	// integers exactly only below 2^53, and a check that rounded an argument
 	// could answer differently from the engine for the value actually passed.
@@ -210,8 +221,8 @@ func ParseMatrix(data []byte) (*Matrix, error) {
 			return nil, fmt.Errorf("%s carries inputs holding more than %d values", where, MaxRowInputNodes)
 		}
 
-		if inexactInteger(row.Inputs) {
-			return nil, fmt.Errorf("%s carries a whole number of 2^53 or more in its inputs, which a matrix cannot "+
+		if inexactNumber(row.Inputs) {
+			return nil, fmt.Errorf("%s carries a number of magnitude 2^53 or more in its inputs, which a matrix cannot "+
 				"carry exactly; give it with --input, which applies to every row", where)
 		}
 
@@ -587,16 +598,18 @@ func inputNodes(inputs map[string]any) int {
 	return count
 }
 
-// inexactInteger reports whether any value in inputs is a whole number of
+// inexactNumber reports whether any value in inputs is a number of
 // [MaxExactInteger] or more in magnitude, at any depth. The values arrive as
 // doubles (a schema Struct), so one at or past 2^53 may already have been
 // rounded from what the author wrote.
-func inexactInteger(inputs map[string]any) bool {
+func inexactNumber(inputs map[string]any) bool {
 	var walk func(value any) bool
 	walk = func(value any) bool {
 		switch v := value.(type) {
 		case float64:
-			return v == math.Trunc(v) && math.Abs(v) >= MaxExactInteger
+			// Any number, whole or not: at this magnitude every double is whole,
+			// and `1e16` is the same value the engine would read as an integer.
+			return math.Abs(v) >= MaxExactInteger
 		case map[string]any:
 			for _, held := range v {
 				if walk(held) {
@@ -617,112 +630,109 @@ func inexactInteger(inputs map[string]any) bool {
 	return walk(inputs)
 }
 
-// refuseDeepNesting refuses a document that nests deeper than [MaxNesting], by
-// reading its bytes once and building nothing.
+// refuseDeepNesting refuses a document whose nesting the parser could be made
+// to pay for, by counting bytes and modelling nothing.
 //
 // It runs before any parser does, because the cost it prevents is the parser's:
 // goccy builds its tree recursively, so `[[[[...` of a few hundred kilobytes
-// exhausts memory before a bound on the tree could be asked. Flow depth counts
-// `[` and `{` outside quoted text and comments; block depth is the nesting of
-// indentation and of `- ` entries. Both are approximations on the safe side of
-// a plain scalar that happens to contain a bracket, which a table of identities
-// does not need to write unquoted. The refusal is a fixed sentence with a
+// exhausts memory before a bound on the tree could be asked.
+//
+// # Why it does not read YAML
+//
+// An earlier scan tracked quotes and comments so that a bracket in text would
+// not count, and a stray quote in a plain scalar (`don 't`) put it in quote mode
+// while the parser read the same line as plain text and went on to build the
+// tree. Any rule about what is quoted is a guess the parser can contradict. So
+// this makes none. Flow depth is at most the number of `[` and `{` bytes, so
+// every one counts, wherever it is. Block depth on a line is at most its leading
+// spaces plus its block indicators, so a line with too many of either is
+// refused. Both are over-approximations: they refuse some documents the parser
+// would have read in bounded memory, and none it would not.
+//
+// A line ends at \n or \r, the two breaks the parser has. A tab in indentation
+// is refused, since the parser does and an indentation that counts differently
+// to the two is another way to disagree. The refusal is a fixed sentence with a
 // position and quotes nothing.
 func refuseDeepNesting(data []byte) error {
+	refuse := func(line, col int, what string) error {
+		return fmt.Errorf("line %d, column %d: %s; a table of identities needs none of that nesting", line, col, what)
+	}
+
+	data = bytes.TrimPrefix(data, []byte("\xef\xbb\xbf"))
+
 	var (
-		line, col = 1, 0
-		flow      int
-		quote     byte
-		inComment bool
-		lineStart = true
-		indent    int
-		indents   []int
-		prev      byte = '\n'
-		tooDeepAt      = func() error {
-			return fmt.Errorf("line %d, column %d: the matrix nests more than %d levels deep, which a table of "+
-				"identities does not need", line, max(col, 1), MaxNesting)
-		}
-		blockDepth = func() int { return len(indents) }
+		line, lineStart = 1, 0
+		openers         int
+		inIndent        = true
+		spaces, tokens  int
 	)
 
 	for i := 0; i < len(data); i++ {
 		c := data[i]
-		col++
+		col := i - lineStart + 1
 
-		if c == '\n' {
+		if c == '\n' || c == '\r' {
+			// A trailing indicator, with nothing after it on the line. Counted
+			// whatever precedes it: over-counting only refuses more.
+			if i > lineStart && isIndicator(data[i-1]) {
+				tokens++
+			}
+			if tokens > MaxBlockTokens {
+				return refuse(line, col, "a line carries too many block indicators")
+			}
+
+			// \r\n is one break.
+			if c == '\r' && i+1 < len(data) && data[i+1] == '\n' {
+				i++
+			}
+
 			line++
-			col = 0
-			inComment = false
-			lineStart = true
-			indent = 0
-			prev = '\n'
+			lineStart = i + 1
+			inIndent, spaces, tokens = true, 0, 0
 
 			continue
 		}
 
-		if inComment {
-			continue
-		}
-
-		if lineStart {
-			if c == ' ' {
-				indent++
-				prev = c
+		if inIndent {
+			switch c {
+			case ' ':
+				spaces++
+				if spaces > MaxBlockIndent {
+					return refuse(line, col, "a line is indented too deeply")
+				}
 
 				continue
+			case '\t':
+				return refuse(line, col, "a tab is not allowed in indentation")
 			}
 
-			lineStart = false
-
-			// Block level: pop what this line is not inside, push this one, and
-			// count each further `- ` that opens another sequence on the line.
-			if quote == 0 && c != '#' {
-				for len(indents) > 0 && indents[len(indents)-1] >= indent {
-					indents = indents[:len(indents)-1]
-				}
-				indents = append(indents, indent)
-
-				extra := 0
-				for j := i; j+1 < len(data) && data[j] == '-' && (data[j+1] == ' ' || data[j+1] == '\t'); {
-					extra++
-					for j += 2; j < len(data) && data[j] == ' '; j++ {
-					}
-				}
-
-				if blockDepth()+max(extra-1, 0)+flow > MaxNesting {
-					return tooDeepAt()
-				}
-			}
+			inIndent = false
 		}
 
 		switch {
-		case quote != 0:
-			switch {
-			case quote == '"' && c == '\\':
-				i++
-				col++
-			case c == quote:
-				quote = 0
-			}
-
-		case c == '#' && (prev == ' ' || prev == '\t' || prev == '\n'):
-			inComment = true
-
-		case (c == '"' || c == '\'') && strings.IndexByte(" \t\n[{,:-", prev) >= 0:
-			quote = c
-
 		case c == '[' || c == '{':
-			flow++
-			if blockDepth()+flow > MaxNesting {
-				return tooDeepAt()
+			openers++
+			if openers > MaxFlowOpeners {
+				return refuse(line, col, "the document holds too many flow collections")
 			}
 
-		case c == ']' || c == '}':
-			flow = max(flow-1, 0)
+		case isIndicator(c) && i+1 < len(data) && (data[i+1] == ' ' || data[i+1] == '\t'):
+			// Checked where the line ends, below and after the loop.
+			tokens++
 		}
+	}
 
-		prev = c
+	// A last line with no break after it ends the same way a broken one does.
+	if len(data) > lineStart && isIndicator(data[len(data)-1]) {
+		tokens++
+	}
+	if tokens > MaxBlockTokens {
+		return refuse(line, len(data)-lineStart+1, "a line carries too many block indicators")
 	}
 
 	return nil
 }
+
+// isIndicator reports whether c can open a block entry when a space follows it:
+// a sequence entry, an explicit key, or a mapping value.
+func isIndicator(c byte) bool { return c == '-' || c == '?' || c == ':' }
