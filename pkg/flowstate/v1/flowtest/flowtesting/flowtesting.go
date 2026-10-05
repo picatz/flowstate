@@ -349,10 +349,10 @@ func reportSchedules(t testing.TB, path string, schedules *flowtest.ScheduleRepo
 	}
 	t.Helper()
 
-	t.Logf("schedule exploration: %d schedules, up to %d scheduling decisions, truncated=%t",
-		schedules.Schedules, schedules.Decisions, schedules.Truncated)
-	if schedules.Decisions == 0 {
-		t.Logf("nothing was explored: this case reached no `parallel:` or `async:` junction, so every schedule was written order")
+	t.Logf("schedule exploration: %d schedules, up to %d scheduling decisions, %d fault draws, truncated=%t",
+		schedules.Schedules, schedules.Decisions, schedules.FaultDraws, schedules.Truncated)
+	if schedules.Decisions == 0 && schedules.FaultDraws == 0 {
+		t.Logf("nothing was explored: this case reached no `parallel:` or `async:` junction and no fault was on offer, so every schedule was written order")
 	}
 
 	d := schedules.Divergence

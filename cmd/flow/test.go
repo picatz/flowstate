@@ -749,10 +749,13 @@ func printSchedules(out io.Writer, theme ui.Theme, report *v1.TestReport, schedu
 		count(schedules.Schedules, "schedule", "schedules"),
 		count(schedules.Cases, "case", "cases"),
 		count(schedules.Decisions, "scheduling decision", "scheduling decisions"))
-	if schedules.Decisions == 0 {
+	if schedules.FaultDraws > 0 {
+		summary += fmt.Sprintf(" and %s", count(schedules.FaultDraws, "fault draw", "fault draws"))
+	}
+	if schedules.Decisions == 0 && schedules.FaultDraws == 0 {
 		summary += "; " + theme.Warning.Render(
-			"nothing was explored: no case reached a `parallel:` or `async:` junction, "+
-				"so every schedule was written order")
+			"nothing was explored: no case reached a `parallel:` or `async:` junction and no fault was on offer "+
+				"(`faults:`), so every schedule was written order")
 	}
 	if schedules.Truncated {
 		summary += "; " + theme.Warning.Render(fmt.Sprintf(

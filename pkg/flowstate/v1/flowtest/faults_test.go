@@ -87,6 +87,7 @@ func TestAFaultTheWorkflowAbsorbsIsNotADivergence(t *testing.T) {
 	assert.True(t, report.GetCases()[0].GetPassed(), "%v", report.GetCases()[0])
 	require.NotNil(t, schedules)
 	assert.Nil(t, schedules.Divergence)
+	assert.Positive(t, schedules.FaultDraws, "the seeds were offered the fault, so the exploration injected something")
 }
 
 // The same case against a workflow with no retry must be caught: the fault

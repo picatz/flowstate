@@ -357,6 +357,8 @@ it owes without being told: a failure the world causes must not surface as an
 `Internal` error. A violation is reported as a finding with the seed that
 produced it, and `flow test --seed S` replays exactly those faults.
 
+The `--seeds` summary counts the fault draws beside the scheduling decisions, and says it explored nothing only when it made neither: a file whose cases declare `faults:` is explored even with no `parallel:`. [`examples/data-enrichment`](../examples/data-enrichment/workflow.test.yaml) is a worked case: a lookup that retry must absorb, with the invariant that no record is lost.
+
 A violation also prints the faults the seed fired as a `faults:` list pinned with
 `on:` (the invocation numbers, from 1, that failed). Paste it over the case's
 `faults:` and a plain `flow test` fires exactly those failures in every run,

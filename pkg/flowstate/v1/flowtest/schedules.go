@@ -72,6 +72,12 @@ type ScheduleReport struct {
 	// invisible from the outcome alone.
 	Decisions int
 
+	// FaultDraws is the largest number of times any one schedule of any case was
+	// asked whether an injected fault fires. Zero means no case declared a fault
+	// a seed could reach, so nothing was explored in the failing-world direction
+	// either.
+	FaultDraws int
+
 	// Truncated reports that some schedule spent its whole
 	// [v1.MaxScheduleDecisions] budget and took written order for the rest of
 	// its run, so the interleaving it explored stopped partway.
@@ -144,10 +150,11 @@ type faultedSeed struct {
 // as [Coverage.Report], which this mirrors (issue #931).
 func (s *ScheduleReport) Report() *v1.ScheduleExploration {
 	report := &v1.ScheduleExploration{
-		Schedules: int32(s.Schedules),
-		Cases:     int32(s.Cases),
-		Decisions: int32(s.Decisions),
-		Truncated: s.Truncated,
+		Schedules:  int32(s.Schedules),
+		Cases:      int32(s.Cases),
+		Decisions:  int32(s.Decisions),
+		FaultDraws: int32(s.FaultDraws),
+		Truncated:  s.Truncated,
 	}
 
 	if d := s.Divergence; d != nil {
@@ -188,6 +195,7 @@ type scheduleAccumulator struct {
 	cases      int
 	schedules  int
 	decisions  int
+	faultDraws int
 	truncated  bool
 	divergence *ScheduleDivergence
 }
@@ -316,6 +324,7 @@ func (a *scheduleAccumulator) run(ctx context.Context, once caseRun) (*v1.TestCa
 	if decisions := report.Decisions(); decisions > a.decisions {
 		a.decisions = decisions
 	}
+	a.faultDraws = max(a.faultDraws, report.FaultDraws())
 	a.truncated = a.truncated || report.Truncated()
 
 	// A divergence is printed beside the case's own report, each of its sides
@@ -446,6 +455,7 @@ func (a *scheduleAccumulator) result() *ScheduleReport {
 		Schedules:  a.schedules,
 		Cases:      a.cases,
 		Decisions:  a.decisions,
+		FaultDraws: a.faultDraws,
 		Truncated:  a.truncated,
 		Divergence: a.divergence,
 	}

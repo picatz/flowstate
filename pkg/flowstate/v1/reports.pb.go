@@ -692,6 +692,11 @@ type ScheduleExploration struct {
 	// took written order for the rest of its run, so the interleaving it
 	// explored stopped partway.
 	Truncated bool `protobuf:"varint,4,opt,name=truncated,proto3" json:"truncated,omitempty"`
+	// FaultDraws is the largest number of times any one schedule of any case was
+	// asked whether an injected fault fires. Zero with a nonzero [decisions] means
+	// the exploration reordered but injected nothing; zero with zero [decisions]
+	// means it explored nothing at all.
+	FaultDraws int32 `protobuf:"varint,6,opt,name=fault_draws,json=faultDraws,proto3" json:"fault_draws,omitempty"`
 	// Divergence is the first case whose observables were not the same under a
 	// seeded schedule as under written order, or whose invariants broke under a
 	// seeded run's injected faults (see ScheduleDivergenceReport.invariant),
@@ -757,6 +762,13 @@ func (x *ScheduleExploration) GetTruncated() bool {
 		return x.Truncated
 	}
 	return false
+}
+
+func (x *ScheduleExploration) GetFaultDraws() int32 {
+	if x != nil {
+		return x.FaultDraws
+	}
+	return 0
 }
 
 func (x *ScheduleExploration) GetDivergence() *ScheduleDivergenceReport {
@@ -1290,12 +1302,14 @@ const file_flowstate_v1_reports_proto_rawDesc = "" +
 	"\askipped\x18\x06 \x03(\v2\x1d.flowstate.v1.SkippedTestCaseR\askipped\"E\n" +
 	"\x0fSkippedTestCase\x12\x1a\n" +
 	"\x04name\x18\x01 \x01(\tB\x06\xbaH\x03\xc8\x01\x01R\x04name\x12\x16\n" +
-	"\x06reason\x18\x02 \x01(\tR\x06reason\"\xcd\x01\n" +
+	"\x06reason\x18\x02 \x01(\tR\x06reason\"\xee\x01\n" +
 	"\x13ScheduleExploration\x12\x1c\n" +
 	"\tschedules\x18\x01 \x01(\x05R\tschedules\x12\x14\n" +
 	"\x05cases\x18\x02 \x01(\x05R\x05cases\x12\x1c\n" +
 	"\tdecisions\x18\x03 \x01(\x05R\tdecisions\x12\x1c\n" +
-	"\ttruncated\x18\x04 \x01(\bR\ttruncated\x12F\n" +
+	"\ttruncated\x18\x04 \x01(\bR\ttruncated\x12\x1f\n" +
+	"\vfault_draws\x18\x06 \x01(\x05R\n" +
+	"faultDraws\x12F\n" +
 	"\n" +
 	"divergence\x18\x05 \x01(\v2&.flowstate.v1.ScheduleDivergenceReportR\n" +
 	"divergence\"\xe7\x02\n" +
