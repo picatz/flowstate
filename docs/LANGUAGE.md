@@ -275,6 +275,39 @@ They cannot read each other, and they are private to the step. On a `for_each`,
 expressions and its whole body. One trap: a step's `if:` is evaluated *before*
 its vars, so it cannot read them.
 
+### Records: `types:`
+
+A shape that several declarations repeat is declared once under `types:` and
+used by name wherever a type is written:
+
+```yaml
+types:
+  Line:
+    fields:
+      sku: {type: string, required: true, min_len: 2}
+      quantity: {type: int, required: true, must: this > 0}
+  Order:
+    must: this.status != "paid" || size(this.lines) > 0
+    fields:
+      id: {type: string, required: true}
+      status: {type: enum, values: [open, paid], required: true}
+      lines: {type: "list(Line)", required: true, max_items: 20}
+inputs:
+  order: {type: Order, required: true}
+```
+
+A field is written like an input and takes the same bounds (`values`,
+`min_len`, `max_len`, `min_items`, `max_items`, `must`). A field's `must:` is a
+CEL predicate over `this`, the field's value; a `must:` on the type is one over
+the whole record, which is where a rule across fields goes. A record may name
+another record, alone or inside `list(...)` and `map(string, ...)`, but not
+itself. Records are closed: a name the type does not declare, or a missing
+`required:` field, is refused, at `flow validate` for a literal in the file and
+at submit for a value that arrives. Expressions are checked against the record,
+so `inputs.order.id + 1` is refused before the run starts and a misspelled field
+gets the nearest real one. `default:`, `example:` and `sensitive:` on a field
+are refused rather than ignored. See `examples/record-types/`.
+
 ### Labels
 
 ```yaml
@@ -432,6 +465,31 @@ values, encoders, two-variable comprehensions, and `cel.bind`. Flowstate adds:
 The complete list, with signatures, is the [CEL reference](reference/cel.md),
 also printed by `flow tasks --expressions`. An unknown function is an error
 that suggests the nearest real one.
+
+### Named computations: `functions:`
+
+`vars:` hold values and `cel.bind` names a value inside one expression. A
+computation used in several places is declared once under `functions:`:
+
+```yaml
+functions:
+  slug:
+    description: A title as it appears in a URL.
+    params:
+      title: string
+    returns: string
+    body: ${title.trim().lowerAscii().replace(" ", "-")}
+```
+
+and called like any CEL function: `${slug(inputs.title)}`. A body reads its
+parameters and the standard vocabulary and nothing else, not `inputs`, `vars`,
+`steps` or `run`, so a call shows every value it depends on. `params:` and
+`returns:` are required and typed like an input; the body is checked against
+them once, and each call is checked against the signature. Functions may call
+one another but not themselves. Names are lowerCamel and may not shadow a
+built-in. The compiler inlines each call, so a compiled spec holds plain CEL and
+the runtime has no user-defined function. At most 64 functions per file and 16
+parameters each. A `call:` does not carry them across. See `examples/functions/`.
 
 ### Where expressions run, and why they are limited
 
@@ -654,6 +712,31 @@ refused. A deployment replaces this with an egress policy
 (`--egress-policy`), and a local run can allow loopback with
 `FLOWSTATE_ALLOW_LOOPBACK_EGRESS=true`. Each request is bounded at 30 seconds,
 a 1 MiB response body, and 5 redirects unless the egress policy says otherwise.
+
+### `exec`
+
+```yaml
+- id: version
+  exec:
+    argv: [git, --version]
+    dir: /var/lib/flowstate/workspaces/demo
+    env:
+      LANG: C
+```
+
+Runs one program and returns `exit_code`, bounded `stdout` and `stderr`, and how
+it ended (`outcome`, `signal`, `duration_ms`). `argv` is a list, never a shell
+string; the program is a bare name looked up in the operator's allowlist, the
+environment is assembled from nothing (the operator's `env`, variables the
+policy passes through from the worker, and the step's `env:` only for keys the
+policy lists as authored), and a nonzero exit is an output to branch on, not a
+failure. It is denied unless the operator loads `--exec-policy` (or
+`FLOWSTATE_EXEC_POLICY`) on the command that runs tasks; a policy limits
+executables, directories, arguments, environment, time and output, and an
+erroring rule denies. A secret may not appear
+in `argv`. `exec` is not a sandbox: it limits what a Flowfile may ask
+for, not what the program can do once it runs. See [DEPLOYMENT.md](DEPLOYMENT.md)
+and `examples/exec-checks/`.
 
 ## Control flow
 
@@ -979,6 +1062,38 @@ Anything past the limit stays for the next drain. Outputs: `deliveries` (a list
 of `{payload, sender}`, oldest first), `count`, and `timed_out`. This drains a
 burst in one step where a loop would spend an iteration per event.
 
+### Counting approvals: `quorum:`
+
+`wait_for_signals:` can decide a vote instead of draining a burst:
+
+```yaml
+- id: gate
+  wait_for_signals:
+    name: release-approved
+    max_batch: 3
+    timeout: 1h
+    quorum:
+      approve: 2
+      distinct: true
+      exclude:
+        - ${run.identity.subject}
+      veto: ${has(payload.approved) && payload.approved == false}
+```
+
+With `quorum:` the step takes deliveries one at a time until the vote is
+decided or `timeout:` lapses; later deliveries stay buffered. A delivery
+approves when its payload has `approved: true` and its sender passed the
+`signals:` policy. `approve` is the count needed; `distinct` (the default)
+counts each verified identity once, and a delivery with no identity never
+counts; `exclude` lists subjects whose approvals do not count, though they may
+still veto (`${run.identity.subject}` is the four-eyes rule); `veto` is a
+predicate over `payload` and `sender` that ends the wait at once. The step keeps
+the batch outputs `deliveries`, `count` and `timed_out` and adds `decision`
+(`approved`, `vetoed` or `timed_out`), `approvals` (the deliveries that
+counted) and `vetoed_by` (bound only when the decision is `vetoed`).
+An `approve` larger than the `signals:` allow-list can supply is refused by
+`flow validate`. See `examples/signal-quorum/`.
+
 ### The clock: `now`
 
 `now` is bound only inside a wait's own expressions: `sleep:`, `wait_until:`,
@@ -1062,6 +1177,61 @@ A step with `continue_on_error: true` that fails, after its retries, does not
 fail the run. Its outputs become `{error: "<what happened>"}`, and `error` is
 absent when the step succeeded, so test it with `has()`. Cancellation, and an
 error in the step's own `if:`, are never tolerated.
+
+### Tolerating or retrying by kind
+
+`continue_on_error:` and `retry:` can name the failure kinds they mean:
+
+```yaml
+- id: notify
+  retry:
+    attempts: 3
+    except: [RateLimited]
+  continue_on_error: [Upstream, RateLimited]
+  http:
+    method: POST
+    url: https://hooks.example.com/notify
+```
+
+| Spelling | Meaning |
+| --- | --- |
+| `continue_on_error: true` | Tolerate every failure. |
+| `continue_on_error: [Kind, ...]` | Tolerate only these kinds; any other ends the run. |
+| `retry: {only: [Kind, ...]}` | Retry only these kinds. |
+| `retry: {except: [Kind, ...]}` | Never retry these kinds. |
+
+A kind is a built-in kind or one declared under `errors:`. The retry lists only
+narrow what would be retried anyway; naming a kind that is never retried is
+refused. A step writes at most one of `only:` and `except:`. A tolerated step
+also records `steps.<id>.failure` with `kind`, `message` and `retryable`, so
+compare `failure.kind` to a name and not a substring of `error`. See
+`examples/failure-kinds/`.
+
+### Naming a failure: `errors:` and `fail:`
+
+A refusal the workflow means has a name. `errors:` declares them and `fail:`
+raises one:
+
+```yaml
+errors:
+  InsufficientFunds:
+    description: the account cannot cover the amount requested
+steps:
+  - id: reject_overdraft
+    if: ${inputs.amount_cents > inputs.balance_cents}
+    fail:
+      error: InsufficientFunds
+      message: ${"balance " + string(inputs.balance_cents) + " cannot cover the amount"}
+```
+
+The run fails with `InsufficientFunds` as its kind, on both drivers, and a
+client reading the run gets that name as `error.kind`. A name starts with a
+capital letter and may not be a built-in kind. `fail:` is evaluated in workflow
+code and schedules nothing, so it refuses `retry:`, `timeout:`, `total_timeout:`
+and `undo:` and cannot be `async:`. The `message` is an expression of at most
+4096 bytes and may not read a secret or a `sensitive` input, because it is
+written to history. A declared error is never retried. See
+`examples/declared-errors/`.
 
 ### Compensation: `undo:`
 
@@ -1160,7 +1330,7 @@ it. `manual:` can only narrow that:
 | --- | --- |
 | `cron` | A cron expression, or a list of them. Five fields, or six with a year, or seven with seconds first, or `@daily`-style shorthands. |
 | `every` | A fixed interval, at least one minute. |
-| `calendars` | Calendar specifications (`hour`, `day_of_week`, `day_of_month`, …), for what cron cannot say. |
+| `calendars` | Calendar specifications, for what cron cannot say. Each entry matches on `second`, `minute`, `hour`, `day_of_month`, `month`, `year` and `day_of_week`, and may carry a `comment`. |
 | `time_zone` | An IANA time zone for `cron` and `calendars`. UTC when unset. |
 | `jitter` | Delay each firing by a random amount up to this long. |
 | `overlap` | What to do when a firing finds the previous run still going: `skip` (default), `buffer_one`, `buffer_all`, `cancel_other`, `terminate_other`, or `allow_all`. |
@@ -1393,8 +1563,13 @@ the run is refused before it starts rather than failing partway.
 
 ## Keys at a glance
 
-**Top level:** `edition`, `name`, `labels`, `description`, `plugins`, `inputs`,
-`triggers`, `concurrency`, `signals`, `debug`, `vars`, `steps`, `outputs`.
+**Top level:** `edition`, `name`, `labels`, `description`, `plugins`, `types`,
+`errors`, `functions`, `inputs`, `triggers`, `concurrency`, `signals`, `debug`,
+`vars`, `steps`, `outputs`.
+
+**Type declaration:** `description`, `fields` (each written like an input), `must`.
+**Function declaration:** `description`, `params`, `returns`, `body`. **Error
+declaration:** `description`.
 
 **Input declaration:** `type`, `values`, `required`, `default`, `description`,
 `example`, `sensitive`, `min_len`, `max_len`, `min_items`, `max_items`, `must`.
@@ -1403,18 +1578,20 @@ the run is refused before it starts rather than failing partway.
 `sensitive`.
 
 **Step:** `id`, `description`, `if`, `vars`, `async`, `timeout`,
-`total_timeout`, `retry` (`attempts`, `interval`, `backoff`, `max_interval`),
+`total_timeout`, `retry` (`attempts`, `interval`, `backoff`, `max_interval`, `only`, `except`),
 `continue_on_error`, `undo`, `with`, `digest`, and one kind: a task name,
 `value`, `switch` (`value`, `cases` with `case` and `steps`, `default`),
 `for_each` (`items`, `as`, `max_parallel`, `steps`), `parallel` (a list of
 `steps`), `loop` (`as`, `init`, `update`, `until`, `max_iterations`, `steps`),
-`call`, `sleep`, `wait_until`, `wait_for_signal` (`name`, `timeout`, `prompt`,
+`call`, `fail` (`error`, `message`), `sleep`, `wait_until`, `wait_for_signal` (`name`, `timeout`, `prompt`,
 `outputs`), `wait_for_signals` (`name`, `max_batch`, `timeout`, `prompt`,
-`outputs`).
+`outputs`, `quorum` with `approve`, `distinct`, `exclude`, `veto`).
 
 **Triggers:** `manual` (`denied`, or `require_reason` and `allowed_principals`),
 `schedule` (`cron`, `every`, `calendars`, `time_zone`, `jitter`, `overlap`,
-`start_at`, `end_at`, `catchup_window`, `pause_on_failure`), `webhook`
+`start_at`, `end_at`, `catchup_window`, `pause_on_failure`; a calendar has
+`second`, `minute`, `hour`, `day_of_month`, `month`, `year`, `day_of_week`,
+`comment`, and a range within one is written `start`, `end`, `step`), `webhook`
 (`verify`, `idempotency_key`, `with`, `signal` with `name`, `correlate`,
 `with`).
 
