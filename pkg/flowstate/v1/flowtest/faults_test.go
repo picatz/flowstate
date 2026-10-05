@@ -1,13 +1,16 @@
 package flowtest_test
 
 import (
+	"context"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/dst"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowtest"
 )
@@ -387,4 +390,44 @@ steps:
 	assert.True(t, schedules.Divergence.Invariant)
 	assert.Positive(t, schedules.Divergence.Decisions)
 	assert.Empty(t, schedules.Divergence.Script)
+}
+
+// holdingDebugger records each step it is asked to hold and lets the run go.
+type holdingDebugger struct {
+	mu    sync.Mutex
+	steps []string
+}
+
+func (d *holdingDebugger) BeforeStep(_ context.Context, node *v1.Node, _ *v1.Scope) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.steps = append(d.steps, node.GetId())
+
+	return nil
+}
+
+// A pinned seed under a debugger holds the seeded run and not the baseline: the
+// seed's fault fails `fetch`, so the run never reaches `done`, and the
+// written-order baseline an exploration runs first, which would, goes unheld.
+func TestAPinnedSeedUnderADebuggerHoldsTheSeededRunAlone(t *testing.T) {
+	t.Parallel()
+
+	path := writeFaultFixture(t, bareWorkflow, faultedCase)
+	_, _, found := flowtest.RunFileUnderSchedules(t.Context(), path, dst.Budget{Schedules: 4, Seed0: 1})
+	require.NotNil(t, found)
+	require.NotNil(t, found.Divergence)
+	seed := found.Divergence.Seed
+
+	debugger := &holdingDebugger{}
+	run := flowtest.RunPath(t.Context(), path, flowtest.RunOptions{Budget: dst.Budget{Pinned: &seed}, Debugger: debugger})
+	require.Len(t, run.Report.GetCases(), 1)
+	assert.Equal(t, []string{"fetch"}, debugger.steps,
+		"the seeded run was held at the step its fault failed, and nothing else was")
+
+	// The negative direction: the same case with no budget holds the baseline,
+	// which runs both steps. Without it the assertion above passes for a
+	// debugger that was never installed.
+	plain := &holdingDebugger{}
+	flowtest.RunPath(t.Context(), path, flowtest.RunOptions{Debugger: plain})
+	assert.Equal(t, []string{"fetch", "done"}, plain.steps)
 }

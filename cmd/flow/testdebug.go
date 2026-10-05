@@ -46,12 +46,15 @@ func debugSession(
 		return nil, nothingToRestore, errors.New("--debug reads commands and prints a prompt on the terminal, and " +
 			"--output json writes a document to the same stream; run one or the other")
 
-	case budget.Pinned != nil || budget.Schedules > 0:
+	case budget.Schedules > 0:
 		// A seeded exploration runs each case many times under different
 		// schedules. Stepping through "the" run of a case that is about to
-		// be run ten thousand times is a question with no answer.
-		return nil, nothingToRestore, errors.New("--debug steps through one run, and seeded exploration runs each " +
-			"case many times under different schedules; drop --seeds/--seed, or drop --debug")
+		// be run ten thousand times is a question with no answer. One seed
+		// is a question with an answer — the run a reported violation names —
+		// and is allowed: --seed replays exactly that run under the debugger.
+		return nil, nothingToRestore, errors.New("--debug steps through one run, and --seeds runs each " +
+			"case under many schedules; replay the one seed a finding names with --seed N --debug, " +
+			"or drop --seeds/--debug")
 
 	case len(files) != 1:
 		return nil, nothingToRestore, fmt.Errorf("--debug drives one console, and %d test files matched; "+

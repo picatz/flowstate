@@ -107,6 +107,12 @@ type RunOptions struct {
 	// implementer that only wants to pause should not have to write three
 	// empty methods to say so.
 	//
+	// Under a [Budget] that pins one seed ([dst.Budget.Pinned]) it holds that
+	// seeded run — the faults the seed injects and the order it chose — and
+	// not the written-order baseline the exploration runs first, which goes
+	// unheld. A budget that searches many seeds is the caller's to refuse:
+	// there is no one run to hold.
+	//
 	// Interactive by nature: nothing here bounds how long a run is held, and
 	// the caller that sets this owns that decision. `flow test --debug`
 	// refuses to set it for more than one case at a time.
@@ -378,6 +384,15 @@ func runSuite(ctx context.Context, file *File, opts RunOptions, loaderFor func(*
 				// applies there: suppression is only ever about exploratory
 				// invocations (Codex, #1052, twice).
 				reported := !schedules.explores || v1.SchedulerFromContext(ctx) == v1.WrittenOrder
+				// A pinned seed under a debugger is the run to step through:
+				// the written-order baseline an exploration always runs first
+				// is not, and holding it would put a person at the wrong run's
+				// first step. Taken off the baseline's context alone; every
+				// seeded run keeps the session, and a budget that searches
+				// many seeds was refused before it got here.
+				if opts.Debugger != nil && schedules.explores && v1.SchedulerFromContext(ctx) == v1.WrittenOrder {
+					ctx = v1.NewContextWithDebugger(ctx, nil)
+				}
 				result, spec, transcript, account, shown, err := runCase(ctx, &test, l.deliveryPath, l.load,
 					!opts.skipTranscript && reported,
 					fileVars{values: file.Vars, withheld: file.varsWithheld})
