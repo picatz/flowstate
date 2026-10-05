@@ -390,6 +390,11 @@ type fakeRunClient struct {
 	// progress, when set, is what the progress query answers.
 	progress *v1.RunProgress
 
+	// held, when set, is what the run retains to answer the gate query from,
+	// and gateQueries counts the asks it took.
+	held        *heldGates
+	gateQueries int
+
 	// resultRuns records the run id each result read asked for.
 	resultRuns []string
 
@@ -421,9 +426,14 @@ func (c *fakeRunClient) GetWorkflowHistory(context.Context, string, string, bool
 // QueryWorkflow refuses: a running run's progress query is beside the point
 // here, and [runProgress] treating an unavailable answer as "no progress" is
 // what a real worker that has not started answering looks like.
-func (c *fakeRunClient) QueryWorkflow(_ context.Context, _, _, query string, _ ...any) (converter.EncodedValue, error) {
+func (c *fakeRunClient) QueryWorkflow(_ context.Context, _, _, query string, args ...any) (converter.EncodedValue, error) {
 	if query == engine.ProgressQuery && c.progress != nil {
 		return progressAnswer{c.progress}, nil
+	}
+	if query == engine.GateQuery && c.held != nil {
+		c.gateQueries++
+
+		return progressAnswer{c.held.lookup(args)}, nil
 	}
 	return nil, errors.New("no worker is answering queries")
 }

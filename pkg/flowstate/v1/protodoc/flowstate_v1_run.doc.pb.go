@@ -650,6 +650,7 @@ func init() {
 			Leading: " PendingWaitsTruncated is true when this answer reports fewer waits than the\n" +
 				" run is actually parked on, because the run held more than the reporting\n" +
 				" bound (`v1.MaxPendingWaits`, in `pkg/flowstate/v1/waits.go`, which both drivers read).\n" +
+				" A gate past that bound is not lost: GetGate looks one up by signal name.\n" +
 				"\n" +
 				" A flag rather than silence, for `EntityState.truncated`'s reason: a reader\n" +
 				" must never mistake \"some of the waits\" for \"all of the waits\". Unlike that\n" +

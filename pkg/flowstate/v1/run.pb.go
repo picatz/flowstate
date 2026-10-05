@@ -1400,6 +1400,7 @@ type RunProgress struct {
 	// PendingWaitsTruncated is true when this answer reports fewer waits than the
 	// run is actually parked on, because the run held more than the reporting
 	// bound (`v1.MaxPendingWaits`, in `pkg/flowstate/v1/waits.go`, which both drivers read).
+	// A gate past that bound is not lost: GetGate looks one up by signal name.
 	//
 	// A flag rather than silence, for `EntityState.truncated`'s reason: a reader
 	// must never mistake "some of the waits" for "all of the waits". Unlike that

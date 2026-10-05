@@ -156,9 +156,13 @@ type WorkflowServiceClient interface {
 	// `signals:` policy would admit a [Signal] now, without delivering one.
 	//
 	// A run that is not running, or holds no open gate by that name, answers
-	// NOT_FOUND, the same answer a run in another tenant gets. A run holding more
-	// gates than one answer lists, whose list does not include the named gate,
-	// answers FAILED_PRECONDITION: the gate may be open, and this read cannot say.
+	// NOT_FOUND, the same answer a run in another tenant gets. The gate is looked
+	// up by name inside the run, so it is found however many gates the run holds
+	// (up to `v1.MaxHeldWaits`, in `pkg/flowstate/v1/waits.go`), not only among the
+	// `v1.MaxPendingWaits` that [Get] lists. A run that holds more gates than it
+	// retains, or one that cannot answer the lookup, and whose answer does not
+	// include the named gate, answers FAILED_PRECONDITION: the gate may be open,
+	// and this read cannot say.
 	GetGate(context.Context, *connect.Request[v1.GetGateRequest]) (*connect.Response[v1.GetGateResponse], error)
 	// SignalWithStart delivers a signal to the entity holding a business key, an
 	// order id or a subscription id, creating that entity if this is the first
@@ -718,9 +722,13 @@ type WorkflowServiceHandler interface {
 	// `signals:` policy would admit a [Signal] now, without delivering one.
 	//
 	// A run that is not running, or holds no open gate by that name, answers
-	// NOT_FOUND, the same answer a run in another tenant gets. A run holding more
-	// gates than one answer lists, whose list does not include the named gate,
-	// answers FAILED_PRECONDITION: the gate may be open, and this read cannot say.
+	// NOT_FOUND, the same answer a run in another tenant gets. The gate is looked
+	// up by name inside the run, so it is found however many gates the run holds
+	// (up to `v1.MaxHeldWaits`, in `pkg/flowstate/v1/waits.go`), not only among the
+	// `v1.MaxPendingWaits` that [Get] lists. A run that holds more gates than it
+	// retains, or one that cannot answer the lookup, and whose answer does not
+	// include the named gate, answers FAILED_PRECONDITION: the gate may be open,
+	// and this read cannot say.
 	GetGate(context.Context, *connect.Request[v1.GetGateRequest]) (*connect.Response[v1.GetGateResponse], error)
 	// SignalWithStart delivers a signal to the entity holding a business key, an
 	// order id or a subscription id, creating that entity if this is the first

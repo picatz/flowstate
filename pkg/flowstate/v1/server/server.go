@@ -2871,6 +2871,19 @@ const progressQueryTimeout = 2 * time.Second
 // unversioned or older workers this is an ordinary outcome, and an error line per
 // `flow get` would train whoever reads the logs to ignore them.
 func runProgress(ctx context.Context, temporal client.Client, resp *workflowservice.DescribeWorkflowExecutionResponse) *v1.RunProgress {
+	return queryRunProgress(ctx, temporal, resp, engine.ProgressQuery)
+}
+
+// runGate asks a running workload for one parked gate by signal name, through
+// [engine.GateQuery], with [runProgress]'s rules: nil where the run is not
+// running or the query could not be answered, which says nothing about the gate.
+// The answer holds at most that one wait and says, in PendingWaitsTruncated,
+// whether a miss is not proof because the run holds more than it retains.
+func runGate(ctx context.Context, temporal client.Client, resp *workflowservice.DescribeWorkflowExecutionResponse, signalName string) *v1.RunProgress {
+	return queryRunProgress(ctx, temporal, resp, engine.GateQuery, signalName)
+}
+
+func queryRunProgress(ctx context.Context, temporal client.Client, resp *workflowservice.DescribeWorkflowExecutionResponse, query string, args ...any) *v1.RunProgress {
 	// Only where Temporal itself says the execution is running.
 	//
 	// STATUS_RUNNING covers one case where it does not: a segment that continued as
@@ -2902,7 +2915,7 @@ func runProgress(ctx context.Context, temporal client.Client, resp *workflowserv
 	ctx, cancel := context.WithTimeout(ctx, progressQueryTimeout)
 	defer cancel()
 
-	encoded, err := temporal.QueryWorkflow(ctx, workflowID, runID, engine.ProgressQuery)
+	encoded, err := temporal.QueryWorkflow(ctx, workflowID, runID, query, args...)
 	if err != nil {
 		return nil
 	}

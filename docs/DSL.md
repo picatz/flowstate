@@ -5968,8 +5968,11 @@ the moment of answering: a gate that is already closed says so, and the late
 answer is not sent, because a signal to a name nobody waits on is held for the next gate
 that does. The answer is pinned to the run the gate was read on, so a stale page
 cannot answer another run. Two answers to the same gate submitted in the same instant can
-still both pass that read. A run holding more gates than one answer lists, where the
-named gate is not among those listed, is reported as not looked up, never as closed.
+still both pass that read. The gate is looked up by its signal name inside the run, so a
+run holding more than `v1.MaxPendingWaits` (64) gates, more than `Get` lists, still answers
+for each of them, up to the `v1.MaxHeldWaits` (1024) the run retains on either driver. Past
+that, or on a run whose worker cannot answer the lookup, the gate is reported as not looked
+up, never as closed.
 
 With no proxy in front, the page can sign approvers in itself. `--gates-ui-issuer`,
 `--gates-ui-client-id` and `--gates-ui-redirect-url` (the address of `/gates/callback`,
