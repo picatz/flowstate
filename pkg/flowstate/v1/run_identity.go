@@ -129,10 +129,9 @@ func IdentityShape(identity *WorkloadIdentity) map[string]any {
 // compares a principal must treat "" as missing (require it non-empty) rather
 // than rely on the representation to keep anonymous callers apart.
 //
-// The join is injective because no issuer contains '#': an OIDC issuer is a
-// fragment-free https URL and a `kind: mtls` issuer label is refused if it has
-// one (auth.TrustedIssuer validation), so the first '#' always ends the issuer
-// and a subject may contain any further '#'.
+// The join is injective because no trusted issuer contains '#' (policy
+// validation refuses one in either kind), so the first '#' always ends the
+// issuer and a subject may contain any further '#'.
 func Principal(issuer, subject string) string {
 	if issuer == "" || subject == "" {
 		return ""
