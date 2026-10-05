@@ -74,6 +74,7 @@ func TestParseMatrixRefusals(t *testing.T) {
 		{"a per-gate expect is one of two words", "identities:\n  - name: a\n    expect_by_gate: {debug: maybe}", "must be in list"},
 		{"no name", "identities:\n  - subject: a\n    issuer: b", "identities[0].name: must be at least 1"},
 		{"a name is not a control sequence", "identities:\n  - name: \"a\\u001b[31m\"", "does not match regex"},
+		{"a name is not a C1 control sequence", "identities:\n  - name: \"a\\u009b31m\"", "does not match regex"},
 		{"a long name", "identities:\n  - name: " + strings.Repeat("a", policycheck.MaxRowNameRunes+1), "must be at most 64"},
 		{"a duplicate name", "identities:\n  - name: a\n  - name: a", "listed twice"},
 		{"a subject without an issuer", "identities:\n  - name: a\n    subject: s", `identity "a" names a subject or an issuer without the other`},

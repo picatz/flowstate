@@ -54,7 +54,7 @@ func init() {
 			Name: "flowstate.v1.PolicyCheckRow.name",
 			Leading: " Name labels the row in the table and in a mismatch. Unique across the\n" +
 				" file (checked by the reader, which a schema rule cannot say), at most 64\n" +
-				" characters, and free of control characters, since it is printed.\n",
+				" characters, and free of control characters (C0, DEL and C1, so no terminal escape such as U+009B), since it is printed.\n",
 		},
 		{
 			Name: "flowstate.v1.PolicyCheckRow.subject",

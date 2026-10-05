@@ -103,7 +103,7 @@ type PolicyCheckRow struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Name labels the row in the table and in a mismatch. Unique across the
 	// file (checked by the reader, which a schema rule cannot say), at most 64
-	// characters, and free of control characters, since it is printed.
+	// characters, and free of control characters (C0, DEL and C1, so no terminal escape such as U+009B), since it is printed.
 	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
 	// Subject, Issuer, Namespace and Claims are the identity attempting the act.
 	// A subject and an issuer travel together or not at all, which the reader
@@ -302,9 +302,9 @@ const file_flowstate_v1_policy_check_proto_rawDesc = "" +
 	"\x11PolicyCheckMatrix\x12I\n" +
 	"\n" +
 	"identities\x18\x01 \x03(\v2\x1c.flowstate.v1.PolicyCheckRowB\v\xbaH\b\x92\x01\x05\b\x01\x10\x80\x02R\n" +
-	"identities\"\xaa\x05\n" +
-	"\x0ePolicyCheckRow\x122\n" +
-	"\x04name\x18\x01 \x01(\tB\x1e\xbaH\x1br\x19\x10\x01\x18@2\x13^[^\\x00-\\x1f\\x7f]+$R\x04name\x12\"\n" +
+	"identities\"\xb1\x05\n" +
+	"\x0ePolicyCheckRow\x129\n" +
+	"\x04name\x18\x01 \x01(\tB%\xbaH\"r \x10\x01\x18@2\x1a^[^\\x00-\\x1f\\x7f-\\x{9f}]+$R\x04name\x12\"\n" +
 	"\asubject\x18\x02 \x01(\tB\b\xbaH\x05r\x03\x18\x80\bR\asubject\x12 \n" +
 	"\x06issuer\x18\x03 \x01(\tB\b\xbaH\x05r\x03\x18\x80\bR\x06issuer\x12&\n" +
 	"\tnamespace\x18\x04 \x01(\tB\b\xbaH\x05r\x03\x18\x80\bR\tnamespace\x12X\n" +
