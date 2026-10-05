@@ -89,7 +89,7 @@ func TestAVetoFromAnUnadmittedSenderNeverReachesAQuorumLocally(t *testing.T) {
 	t.Parallel()
 
 	wf := quorumGate(time.Minute)
-	signals := v1.NewPolicedLocalSignals(wf.GetSignals(), &v1.WorkloadIdentity{}, true)
+	signals := v1.NewPolicedLocalSignals(wf.GetSignals(), &v1.WorkloadIdentity{}, true, nil)
 
 	sender := func(subject string) *v1.SignalSender {
 		return &v1.SignalSender{Identity: &v1.WorkloadIdentity{Subject: subject, Issuer: "https://idp.example"}}

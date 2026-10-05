@@ -368,7 +368,22 @@ func (s *FlowstateServer) authorizeSignal(resp *workflowservice.DescribeWorkflow
 				"until it can be: %w", err))
 	}
 
-	if err := v1.SignalPolicyCheck(policy, sender.GetIdentity(), starterIdentity, hasStarter); err != nil {
+	// What an `allow: ${...}` predicate reads of the run beyond the starter's
+	// qualified subject: its inputs, and the starter's full identity. Absent
+	// is the answer for every run whose policies are rules.
+	runScope, err := s.signalPolicyScope(resp.GetWorkflowExecutionInfo().GetMemo())
+	if err != nil {
+		return connect.NewError(connect.CodePermissionDenied,
+			fmt.Errorf("this run's signal policy scope could not be read, so no sender is authorized "+
+				"until it can be: %w", err))
+	}
+	if hasStarter && runScope.GetIdentity() != nil {
+		starterIdentity = runScope.GetIdentity()
+	}
+
+	// Background, not a request context: authorizeSignal is also asked by GetGate and the webhook bridge. The
+	// predicate's cost bound ([v1.SignalPolicyExprCostLimit]) is what limits the work.
+	if err := v1.SignalPolicyCheck(context.Background(), policy, sender.GetIdentity(), starterIdentity, hasStarter, runScope.GetInputs()); err != nil {
 		return connect.NewError(connect.CodePermissionDenied,
 			fmt.Errorf("signal %q: %w", name, err))
 	}
@@ -505,6 +520,33 @@ func (s *FlowstateServer) debugPolicy(memo *common.Memo) (*v1.SignalPolicy, erro
 	}
 
 	return declared, nil
+}
+
+// signalPolicyScope reads back the values a run's `allow: ${...}` predicates
+// read ([signalPolicyScopeMemoKey]). Absent is a nil scope and no error: every
+// run whose policies are rules records none. A present key that cannot be
+// decoded is an error, never a nil scope, so corruption denies rather than
+// evaluating a predicate over inputs that silently vanished.
+func (s *FlowstateServer) signalPolicyScope(memo *common.Memo) (*v1.Scope, error) {
+	payload, ok := memo.GetFields()[signalPolicyScopeMemoKey]
+	if !ok {
+		return nil, nil
+	}
+
+	var encoded []byte
+	if err := s.dataConverter.FromPayload(payload, &encoded); err != nil {
+		return nil, fmt.Errorf("server: reading the signal policy scope recorded on a run: %w", err)
+	}
+	if len(encoded) > v1.MaxSignalPolicyScopeBytes {
+		return nil, fmt.Errorf("server: the signal policy scope recorded on a run is over its %d-byte bound", v1.MaxSignalPolicyScopeBytes)
+	}
+
+	scope := &v1.Scope{}
+	if err := proto.Unmarshal(encoded, scope); err != nil {
+		return nil, fmt.Errorf("server: decoding the signal policy scope recorded on a run: %w", err)
+	}
+
+	return scope, nil
 }
 
 // starterAsIdentity reads a run's recorded starter and renders it as a

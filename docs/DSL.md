@@ -97,6 +97,7 @@ headings below, not this list.*
   - [`results` is bounded, and retained across Continue-As-New only when read](#results-is-bounded-and-retained-across-continue-as-new-only-when-read)
   - [The burst case has its own spelling: `wait_for_signals:`](#the-burst-case-has-its-own-spelling-wait_for_signals)
   - [Two of three must agree: `quorum:` on `wait_for_signals:`](#two-of-three-must-agree-quorum-on-wait_for_signals)
+  - [One predicate decides who may act: `allow: ${...}` on `signals:`](#one-predicate-decides-who-may-act-allow--on-signals)
   - [Bounded, because the author does not control the trip count](#bounded-because-the-author-does-not-control-the-trip-count)
   - [A `for_each` is bounded on its trip count too](#a-for_each-is-bounded-on-its-trip-count-too)
   - [Both drivers, and determinism](#both-drivers-and-determinism)
@@ -4421,6 +4422,63 @@ reading; reaching the bound fails the step rather than inventing a decision.
 only between steps, so a tally never spans one; the deliveries a wait has not taken
 stay on the channel or in the carried pending signals, and a replay rebuilds the
 tally by taking the same deliveries in the same order.
+
+### One predicate decides who may act: `allow: ${...}` on `signals:`
+
+A `signals:` policy used to be only a list of rules, a disjunction of conjunctions
+of `subject:`, `claims:` and `namespace:`. That grammar is a second, smaller
+language for a question CEL already answers, so the same `allow:` key now also
+takes one predicate:
+
+```yaml
+signals:
+  deploy-approved:
+    allow: >-
+      ${ (sender.identity.principal == "https://issuer.example.com#" + inputs.expected_approver
+          && sender.identity.claims.team == "release-managers"
+          || sender.identity.claims.role == "sre-lead")
+         && sender.identity.principal != run.identity.principal }
+```
+
+A string under `allow:` is the predicate and a list is the rules; a policy is one or
+the other, and a file cannot hold both. The list keeps working exactly as before.
+
+**The scope is closed.** `sender.identity.{principal,subject,issuer,namespace,claims}`
+is the server's own attestation of whoever is delivering. `run.identity` is the run's
+starter with the same fields, and `inputs` is the run's arguments. Nothing else is in
+scope: no steps, vars, clock or secrets, and a name outside it is a compile error
+rather than a predicate that quietly never matches. `principal` is `issuer#subject`
+(empty when either half is missing), so two identity providers minting the same
+subject are told apart by one comparison. Claims are read here, bound server-side
+from the verified identity, and are still never recorded in a wait's own `sender`
+output.
+
+**Fail closed, mechanically.** Only a clean `true` admits. A result that is not a
+bool, an evaluation error, a cost bound exceeded, or an expression that does not
+compile each refuse the sender. A missing claim key is an evaluation error, so test
+with `has(sender.identity.claims.team)` where absence is allowed. When the run has no
+recorded starter `run` is unbound, so a predicate that reads it errors and denies
+while one that never mentions it is unaffected, which is what
+`distinct_from_starter:` did without a keyword. The refusal says what went wrong and
+never quotes an input or a claim.
+
+**Narrowing is syntactic.** Whoever starts a run chooses its `inputs`, so a predicate
+over them alone would let the starter name their own approver. A predicate that reads
+`inputs` must also read `sender.identity.claims` or `run.identity`, or `flow validate`
+refuses it. This is coarser than the per-rule check on `subject:`; it is the cost of
+having one predicate instead of a field grammar.
+
+**Where it runs.** It is evaluated server-side where the signal is accepted, by the
+one function every enforcement point reaches, so the durable server, `flow run local`,
+`flow test` and the MCP tools answer it the same way. Submit records the values a
+predicate reads (its inputs, and the starter's identity when it reads `run`) with the
+run, bounded at 64 KiB and refused rather than truncated; a run whose policies are
+rules records nothing. One predicate is bounded at a fixed evaluation cost.
+
+**What it does not do yet.** `debug:` still takes the rule list; a predicate there is
+refused. `distinct_from_starter:` still works beside a predicate. The quorum
+"`approve:` larger than the allow-list" check counts rules and is silent about a
+predicate.
 
 ### Bounded, because the author does not control the trip count
 

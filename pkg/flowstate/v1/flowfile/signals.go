@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 
 	yaml "github.com/goccy/go-yaml"
 	"github.com/goccy/go-yaml/ast"
@@ -87,7 +88,7 @@ func (c *compiler) signals(n ast.Node, path string, r ref) map[string]*v1.Signal
 }
 
 // signalPolicy compiles one signal name's policy: the `allow:` list of
-// alternative rules.
+// alternative rules, or one `allow: ${...}` predicate in its place.
 func (c *compiler) signalPolicy(n ast.Node, path string, r ref) *v1.SignalPolicy {
 	c.pos.record(path, spanOfNode(c.resolveQuiet(n)))
 
@@ -117,12 +118,25 @@ func (c *compiler) signalPolicy(n ast.Node, path string, r ref) *v1.SignalPolicy
 	}
 
 	allowPath := fieldPath(path, "allow")
-	rules := c.signalPolicyRules(f.value, allowPath, ref{path: allowPath, label: r.label + ".allow"})
-	if len(rules) == 0 {
-		return nil
-	}
+	allowRef := ref{path: allowPath, label: r.label + ".allow"}
 
-	policy := &v1.SignalPolicy{Allow: rules}
+	var policy *v1.SignalPolicy
+	if resolved := c.resolveQuiet(f.value); isScalarNode(resolved) {
+		// One `${...}` predicate in place of the rule list. The same key, told
+		// apart by what is written under it: a string is the predicate, a list
+		// is the rules.
+		expression, ok := c.signalPolicyPredicate(resolved, allowPath, allowRef, path == "debug")
+		if !ok {
+			return nil
+		}
+		policy = &v1.SignalPolicy{AllowExpr: expression}
+	} else {
+		rules := c.signalPolicyRules(f.value, allowPath, allowRef)
+		if len(rules) == 0 {
+			return nil
+		}
+		policy = &v1.SignalPolicy{Allow: rules}
+	}
 
 	if f, found := fields.get("distinct_from_starter"); found {
 		distinctPath := fieldPath(path, "distinct_from_starter")
@@ -133,6 +147,71 @@ func (c *compiler) signalPolicy(n ast.Node, path string, r ref) *v1.SignalPolicy
 	}
 
 	return policy
+}
+
+// isScalarNode reports whether n is a string, the shape `allow: ${...}` is
+// written in. Block scalars are strings too.
+func isScalarNode(n ast.Node) bool {
+	switch n.(type) {
+	case *ast.StringNode, *ast.LiteralNode:
+		return true
+	default:
+		return false
+	}
+}
+
+// signalPolicyPredicate compiles `allow: ${...}`: the one CEL predicate that
+// decides who may act, kept as the source text between the fence.
+//
+// Only its syntax is checked here, with the position of the fault; its scope,
+// its type and the narrowing rule are [v1.CheckSignalPolicyExpr]'s, asked by
+// [validatePolicyRules] so the file the validator accepts is the policy the
+// server compiles. The text is stored trimmed and unnormalized, so [Marshal]
+// writes back exactly what was read.
+//
+// debug is the `debug:` stanza, which does not take a predicate yet: the
+// server answers it from the rule list alone, and a predicate accepted here
+// would read as authorizing somebody and authorize nobody.
+func (c *compiler) signalPolicyPredicate(n ast.Node, path string, r ref, debug bool) (string, bool) {
+	c.pos.record(path, spanOfNode(n))
+
+	var raw string
+	switch node := n.(type) {
+	case *ast.StringNode:
+		raw = node.Value
+	case *ast.LiteralNode:
+		raw = blockText(node)
+	}
+
+	inner, fenced := SplitFence(strings.TrimSpace(raw))
+	if !fenced {
+		if err := fenceError(raw); err != nil {
+			c.report(spanOfNode(n), r, "%s", err)
+			return "", false
+		}
+		c.report(spanOfNode(n), r,
+			"is a string that is not a `${...}` expression; write the whole predicate as one `${...}` "+
+				"(for example `${sender.identity.claims.team == \"release-managers\"}`), or a list of rules")
+		return "", false
+	}
+
+	if debug {
+		c.report(spanOfNode(n), r,
+			"is a `${...}` predicate, which `debug:` does not accept yet; write the list of rules")
+		return "", false
+	}
+
+	expression := strings.TrimSpace(inner)
+	span := spanWithin(n, inner)
+	c.recordExpr(path, span)
+
+	if val := v1.NewExpr(expression); val.Error() != nil {
+		at, msg := celFailure(val, span, expression)
+		c.report(at, r, "is not a valid expression: %s", msg)
+		return "", false
+	}
+
+	return expression, true
 }
 
 // signalPolicyRules compiles the `allow:` list.
@@ -333,6 +412,22 @@ func sortedPolicyNames(policies map[string]*v1.SignalPolicy) []string {
 // field that would round-trip to the zero value rather than write it out
 // redundantly.
 func signalPolicyToYAML(policy *v1.SignalPolicy) (yaml.MapSlice, error) {
+	if expression := policy.GetAllowExpr(); expression != "" {
+		if len(policy.GetAllow()) > 0 {
+			// Unreachable from a file, whose one `allow:` key holds a list or a
+			// predicate. Refused rather than written as one of them, which would
+			// delete the other from an author's policy.
+			return nil, fmt.Errorf("policy sets both an `allow:` rule list and a predicate, and one `allow:` key cannot hold both")
+		}
+
+		doc := yaml.MapSlice{{Key: "allow", Value: "${" + expression + "}"}}
+		if policy.GetDistinctFromStarter() {
+			doc = append(doc, yaml.MapItem{Key: "distinct_from_starter", Value: true})
+		}
+
+		return doc, nil
+	}
+
 	rules := make([]yaml.MapSlice, 0, len(policy.GetAllow()))
 	for _, rule := range policy.GetAllow() {
 		written, err := signalPolicyRuleToYAML(rule)
@@ -482,6 +577,30 @@ func validateReservedSignalNames(wf *v1.Workflow) Diagnostics {
 // pair of surfaces that would otherwise drift apart.
 func validatePolicyRules(field string, policy *v1.SignalPolicy) Diagnostics {
 	var ds Diagnostics
+
+	if policy.GetAllowExpr() != "" {
+		// One predicate replaces the rule list, so none of the per-rule
+		// questions below apply. What is asked instead is
+		// [v1.CheckSignalPolicyExpr], which is also what the server asks at
+		// submit and again at every delivery: unknown names and fields in the
+		// closed scope, a bool result, and the narrowing rule.
+		allowField := fieldPath(field, "allow")
+		if len(policy.GetAllow()) > 0 {
+			ds = append(ds, Diagnostic{
+				Field: allowField,
+				Message: "sets both a list of rules and a `${...}` predicate; a policy answers who may act " +
+					"one way, so write one or the other",
+			})
+		}
+		if err := v1.CheckSignalPolicyExpr(policy.GetAllowExpr()); err != nil {
+			ds = append(ds, Diagnostic{
+				Field:   allowField,
+				Message: "is not a usable `${...}` predicate: " + err.Error(),
+			})
+		}
+
+		return ds
+	}
 
 	for i, rule := range policy.GetAllow() {
 		interpolated := rule.GetSubjectFrom() != nil

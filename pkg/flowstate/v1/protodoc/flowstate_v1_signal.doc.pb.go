@@ -20,9 +20,10 @@ func init() {
 		{
 			Name: "flowstate.v1.SignalPolicy.allow",
 			Leading: " Allow lists the alternative rules that may authorize a sender. At least\n" +
-				" one, or the policy authorizes nobody, which is indistinguishable from a\n" +
-				" typo and is refused by the compiler rather than accepted as (probably\n" +
-				" unintended) lockout.\n",
+				" one unless [allow_expr] is set instead, or the policy authorizes nobody,\n" +
+				" which is indistinguishable from a typo and is refused by the compiler\n" +
+				" (`CheckPolicyShape`) rather than accepted as (probably unintended)\n" +
+				" lockout.\n",
 		},
 		{
 			Name: "flowstate.v1.SignalPolicy.distinct_from_starter",
@@ -43,6 +44,31 @@ func init() {
 				" separation does not get it, the same fail-closed rule\n" +
 				" [SignalPolicyAllows]'s own doc comment states for every other case once\n" +
 				" a policy exists.\n",
+		},
+		{
+			Name: "flowstate.v1.SignalPolicy.allow_expr",
+			Leading: " AllowExpr is one CEL predicate that decides the whole policy, written in a\n" +
+				" Flowfile as `allow: ${...}`, in place of the [allow] rule list. A policy\n" +
+				" sets one of the two, never both: two mechanisms in one policy would be two\n" +
+				" answers to \"who may act\", and the compiler refuses it.\n" +
+				"\n" +
+				" The source is stored without the `${` `}` fence. It is evaluated\n" +
+				" server-side, against the server's own attestation, over a closed scope:\n" +
+				" `sender.identity.{principal,subject,issuer,namespace,claims}`,\n" +
+				" `run.identity` (the starter, with the same shape; unbound when the run\n" +
+				" has no recorded starter, so a predicate that reads it errors), and\n" +
+				" `inputs` (the run's bound arguments). Nothing else is in scope.\n" +
+				"\n" +
+				" Fail closed: a result that is not a bool, an evaluation error, an unbound\n" +
+				" starter that is read, an exceeded cost bound, or an expression that does\n" +
+				" not compile all refuse the sender; none ever allows. The refusal names no\n" +
+				" input or claim value.\n" +
+				"\n" +
+				" A predicate that reads `inputs` must also read `sender.identity.claims` or\n" +
+				" `run.identity`: whoever started the run chose the inputs, so a predicate\n" +
+				" over them alone would let the starter name their own approver, the same\n" +
+				" fault `SignalPolicyRule.subject_from` is refused for. This is the coarser,\n" +
+				" syntactic form of that rule.\n",
 		},
 		{
 			Name: "flowstate.v1.SignalPolicyRule",

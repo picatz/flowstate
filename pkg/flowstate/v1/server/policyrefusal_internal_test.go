@@ -35,7 +35,7 @@ func TestAWithheldPolicyRefusalTakesOutWhatTheSpecificationDeclaresSensitive(t *
 	inputs := map[string]*v1.Value{"approver": v1.NewLiteral(approver)}
 	for _, sensitive := range []bool{true, false} {
 		wf := subjectGatedWorkflow(sensitive)
-		_, refusal := policyMemoEntries(t.Context(), wf, inputs)
+		_, refusal := policyMemoEntries(t.Context(), wf, inputs, nil)
 		require.Error(t, refusal, "a bare subject is refused")
 		require.Contains(t, refusal.Error(), "lead", "the resolver's refusal no longer quotes the value, so this proves nothing")
 

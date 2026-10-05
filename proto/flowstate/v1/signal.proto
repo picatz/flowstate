@@ -17,14 +17,12 @@ option go_package = "flowstatev1";
 // [SignalPolicyRule] for what one rule may require.
 message SignalPolicy {
   // Allow lists the alternative rules that may authorize a sender. At least
-  // one, or the policy authorizes nobody, which is indistinguishable from a
-  // typo and is refused by the compiler rather than accepted as (probably
-  // unintended) lockout.
+  // one unless [allow_expr] is set instead, or the policy authorizes nobody,
+  // which is indistinguishable from a typo and is refused by the compiler
+  // (`CheckPolicyShape`) rather than accepted as (probably unintended)
+  // lockout.
   repeated SignalPolicyRule allow = 1 [
-    (buf.validate.field).repeated = {
-      min_items: 1
-      max_items: 32
-    }
+    (buf.validate.field).repeated = {max_items: 32}
   ];
 
   // DistinctFromStarter requires, in addition to whichever rule in [allow]
@@ -45,6 +43,30 @@ message SignalPolicy {
   // [SignalPolicyAllows]'s own doc comment states for every other case once
   // a policy exists.
   bool distinct_from_starter = 2;
+
+  // AllowExpr is one CEL predicate that decides the whole policy, written in a
+  // Flowfile as `allow: ${...}`, in place of the [allow] rule list. A policy
+  // sets one of the two, never both: two mechanisms in one policy would be two
+  // answers to "who may act", and the compiler refuses it.
+  //
+  // The source is stored without the `${` `}` fence. It is evaluated
+  // server-side, against the server's own attestation, over a closed scope:
+  // `sender.identity.{principal,subject,issuer,namespace,claims}`,
+  // `run.identity` (the starter, with the same shape; unbound when the run
+  // has no recorded starter, so a predicate that reads it errors), and
+  // `inputs` (the run's bound arguments). Nothing else is in scope.
+  //
+  // Fail closed: a result that is not a bool, an evaluation error, an unbound
+  // starter that is read, an exceeded cost bound, or an expression that does
+  // not compile all refuse the sender; none ever allows. The refusal names no
+  // input or claim value.
+  //
+  // A predicate that reads `inputs` must also read `sender.identity.claims` or
+  // `run.identity`: whoever started the run chose the inputs, so a predicate
+  // over them alone would let the starter name their own approver, the same
+  // fault `SignalPolicyRule.subject_from` is refused for. This is the coarser,
+  // syntactic form of that rule.
+  string allow_expr = 3 [(buf.validate.field).string.max_len = 2048];
 }
 
 // SignalPolicyRule is one admissible sender, checked against the

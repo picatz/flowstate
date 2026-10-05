@@ -254,7 +254,7 @@ func TestTheDebugPolicyTravelsOnItsOwnMemoKey(t *testing.T) {
 		Debug: &v1types.SignalPolicy{Allow: []*v1types.SignalPolicyRule{
 			{Claims: map[string]string{"role": "sre"}},
 		}},
-	}, nil)
+	}, nil, nil)
 	require.NoError(t, err)
 
 	require.Contains(t, entries, debugPolicyMemoKey, "the debug policy is recorded")
@@ -272,7 +272,7 @@ func TestTheDebugPolicyTravelsOnItsOwnMemoKey(t *testing.T) {
 		Signals: map[string]*v1types.SignalPolicy{
 			"deploy-approved": {Allow: []*v1types.SignalPolicyRule{{Namespace: "team-a"}}},
 		},
-	}, nil)
+	}, nil, nil)
 	require.NoError(t, err)
 
 	require.Contains(t, entries, signalPolicyMemoKey)
@@ -295,7 +295,7 @@ func TestADebugPolicysPerRunSubjectResolvesAtSubmit(t *testing.T) {
 
 	entries, err := policyMemoEntries(t.Context(), wf, map[string]*v1types.Value{
 		"debugger": v1types.NewLiteral("https://issuer.example.com#sre-1@example.com"),
-	})
+	}, nil)
 	require.NoError(t, err)
 
 	encoded, ok := entries[debugPolicyMemoKey].([]byte)
@@ -314,6 +314,6 @@ func TestADebugPolicysPerRunSubjectResolvesAtSubmit(t *testing.T) {
 	// mistake, refused before the run exists.
 	_, err = policyMemoEntries(t.Context(), wf, map[string]*v1types.Value{
 		"debugger": v1types.NewLiteral("sre-1@example.com"),
-	})
+	}, nil)
 	require.Error(t, err, "a bare subject is refused at submit rather than frozen into a run's memo")
 }

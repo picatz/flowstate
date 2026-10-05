@@ -24,7 +24,7 @@ func TestRehearsalSignalCasesLocally(t *testing.T) {
 
 	conformance.AssertRehearsalSignalCases(t, func(t testing.TB, c conformance.RehearsalSignalCase) error {
 		signals := v1.NewPolicedLocalSignals(
-			map[string]*v1.SignalPolicy{c.SignalName: c.Policy}, c.Starter, true)
+			map[string]*v1.SignalPolicy{c.SignalName: c.Policy}, c.Starter, !c.StarterUnknown, c.Inputs)
 
 		// The two shapes `flow run local` delivers as, chosen the same way it
 		// chooses: a case naming nobody is the plain unattested delivery every
@@ -67,7 +67,7 @@ func TestRehearsedApprovalOpensAGateAndSaysItWasRehearsed(t *testing.T) {
 	// which is what distinct_from_starter compares the sender against.
 	starter := &v1.WorkloadIdentity{Subject: "local-user", Issuer: "flowstate:local"}
 
-	signals := v1.NewPolicedLocalSignals(policy, starter, true)
+	signals := v1.NewPolicedLocalSignals(policy, starter, true, nil)
 
 	require.NoError(t, signals.DeliverFrom("deploy-approved",
 		&v1.Node_Outputs{NamedValues: map[string]*v1.Value{"approved": v1.NewLiteral(true)}},
@@ -119,7 +119,7 @@ func TestRehearsedApprovalIsRefusedWhenItIsTheStarter(t *testing.T) {
 			}},
 			DistinctFromStarter: true,
 		},
-	}, starter, true)
+	}, starter, true, nil)
 
 	err := signals.DeliverFrom("deploy-approved",
 		&v1.Node_Outputs{NamedValues: map[string]*v1.Value{"approved": v1.NewLiteral(true)}},

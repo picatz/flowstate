@@ -255,7 +255,7 @@ func (s *FlowstateServer) CreateSchedule(ctx context.Context, req *connect.Reque
 	// the zero case, reached by a workflow that had in fact declared a
 	// policy. Sharing the one encoding function with [Run] is what makes
 	// that impossible to reintroduce by editing one path and not the other.
-	signalEntry, err := policyMemoEntries(ctx, workflow, inputs)
+	signalEntry, err := policyMemoEntries(ctx, workflow, inputs, identity)
 	if err != nil {
 		// Withheld here only where the client cannot redact it, as
 		// [FlowstateServer.prepareCreate] withholds it.

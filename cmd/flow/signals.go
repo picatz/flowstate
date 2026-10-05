@@ -66,7 +66,7 @@ var ()
 // as somebody, but who is unknown" - see [v1.NewPolicedLocalSignals]'s
 // hasStarter parameter.
 func withLocalSignals(ctx context.Context, cmd *cobra.Command, workflow *v1.Workflow, inputs map[string]*v1.Value, flags []string) (context.Context, error) {
-	policies, err := resolvedLocalSignalPolicies(ctx, workflow, inputs)
+	policies, bound, err := resolvedLocalSignalPolicies(ctx, workflow, inputs)
 	if err != nil {
 		return nil, err
 	}
@@ -86,7 +86,7 @@ func withLocalSignals(ctx context.Context, cmd *cobra.Command, workflow *v1.Work
 		Issuer:    starter.Issuer,
 		Claims:    starter.Claims,
 		Namespace: starter.Namespace,
-	}, true)
+	}, true, bound)
 
 	reportRehearsalSender(cmd.ErrOrStderr(), sender)
 
@@ -225,17 +225,22 @@ func refusedLocalSignal(name string, sender *v1.SignalSender, err error) error {
 // proceeds; this function only needs bound inputs when there is a policy to
 // resolve; when binding fails, the run is about to fail anyway, so an empty,
 // unpoliced result is returned rather than a second, differently-shaped error.
-func resolvedLocalSignalPolicies(ctx context.Context, workflow *v1.Workflow, inputs map[string]*v1.Value) (map[string]*v1.SignalPolicy, error) {
+//
+// Returns the bound inputs beside the policies: an `allow: ${...}` predicate
+// reads them at delivery, as the server reads the copy it recorded at submit.
+func resolvedLocalSignalPolicies(ctx context.Context, workflow *v1.Workflow, inputs map[string]*v1.Value) (map[string]*v1.SignalPolicy, map[string]*v1.Value, error) {
 	if len(workflow.GetSignals()) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 
 	bound, err := v1.BindRunInputs(workflow, inputs)
 	if err != nil {
-		return nil, nil
+		return nil, nil, nil
 	}
 
-	return v1.ResolveSignalPolicySubjects(ctx, workflow, bound)
+	policies, err := v1.ResolveSignalPolicySubjects(ctx, workflow, bound)
+
+	return policies, bound, err
 }
 
 // reportUnansweredGates warns about gates this run will block on.
