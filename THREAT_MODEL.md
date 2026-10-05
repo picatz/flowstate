@@ -463,7 +463,7 @@ run time; on Linux the verified file is executed through its descriptor). `dir` 
 resolve, through symlinks, under a configured root. The environment is assembled from
 nothing: operator literals, an operator passthrough list (loader variables refused),
 and step literals only for operator-listed keys. Timeout and per-stream output bytes
-are required and have compile-time ceilings (1h, 16MiB); on expiry the whole process
+are required and have compile-time ceilings (1h, 128KiB); on expiry the whole process
 group is terminated, then killed (a descendant that leaves the group with `setsid`
 is not reached; output capture is then cut off and reported as
 `capture_incomplete`); platforms without process groups refuse the task; stdin is

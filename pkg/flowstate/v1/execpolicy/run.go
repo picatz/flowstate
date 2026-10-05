@@ -161,7 +161,13 @@ func (c *Command) Run(ctx context.Context) (Result, error) {
 	// runners will provide.
 	dir, err := c.policy.checkDir(c.dir)
 	if err != nil {
-		return Result{}, &RunError{Outcome: OutcomeDidNotStart, Err: err}
+		// c.dir is the resolved path, where a symbolic link led when Check ran, so
+		// the recheck's own sentence would name it. A denial lands in a run's
+		// durable history; say only that the directory is no longer usable.
+		return Result{}, &RunError{Outcome: OutcomeDidNotStart, Err: &DeniedError{
+			Reason: ReasonDir,
+			Detail: "the working directory the policy authorized can no longer be used as it was",
+		}}
 	}
 	if dir != c.dir {
 		return Result{}, &DeniedError{
