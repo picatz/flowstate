@@ -232,7 +232,8 @@ func postRunScope(ctx context.Context, started time.Time, spec *v1.Workflow, bou
 // the autopsy through [autopsyExtras], which redacts what these bindings
 // would print, so the two surfaces share the names and shapes while only
 // the printing one withholds values.
-func postRunExtras(ctx context.Context, scope *v1.Scope, vars map[string]any, runErr error) map[string]ref.Val {
+func postRunExtras(ctx context.Context, scope *v1.Scope, vars map[string]any, facts runFacts) map[string]ref.Val {
+	runErr := facts.err
 	errText := ""
 	if runErr != nil {
 		errText = runErr.Error()
@@ -249,6 +250,7 @@ func postRunExtras(ctx context.Context, scope *v1.Scope, vars map[string]any, ru
 	}
 	root["failed"] = runErr != nil
 	root["error"] = errText
+	facts.bind(root)
 
 	extra := map[string]ref.Val{"run": v1.TypeAdapter.NativeToValue(root)}
 	if len(vars) > 0 {
@@ -268,16 +270,19 @@ func postRunExtras(ctx context.Context, scope *v1.Scope, vars map[string]any, ru
 // text can echo one. Evaluation stays raw in [assertChecks]: a check
 // comparing a secret value must see the value; only what renders withholds
 // it — the same split the transcript already lives by.
-func autopsyExtras(ctx context.Context, scope *v1.Scope, vars fileVars, runErr error, sensitive sensitiveInputs) map[string]ref.Val {
-	if runErr != nil {
-		text := sensitive.RedactSubstrings(runErr.Error())
+func autopsyExtras(ctx context.Context, scope *v1.Scope, vars fileVars, facts runFacts, sensitive sensitiveInputs) map[string]ref.Val {
+	if facts.err != nil {
+		text := sensitive.RedactSubstrings(facts.err.Error())
 		if sensitive.WithholdAll() {
 			text = "[withheld]"
 		}
-		runErr = errors.New(text)
+		// The compensation account is step ids, which are names, not values;
+		// it is read from the unredacted error before the text is replaced.
+		facts.undone = v1.UndoResultsOf(facts.err)
+		facts.err = errors.New(text)
 	}
 
-	return postRunExtras(ctx, scope, redactedVars(vars, sensitive), runErr)
+	return postRunExtras(ctx, scope, redactedVars(vars, sensitive), facts)
 }
 
 // redactedVars is the vars map as the autopsy may show it: each value through
@@ -377,7 +382,7 @@ func redactSubstringsTree(v any, sensitive sensitiveInputs) any {
 // Checks run whether or not the run failed — an error claim (`run.error`)
 // exists precisely for failed runs — against whatever the partial transcript
 // holds; a claim reaching a step the failure preceded errors, honestly.
-func assertChecks(ctx context.Context, started time.Time, claims []CheckClaim, spec *v1.Workflow, bound map[string]*v1.Value, vars fileVars, outputs *v1.Workflow_StepOutputs, runErr error, sensitive sensitiveInputs) []*v1.Diagnostic {
+func assertChecks(ctx context.Context, started time.Time, claims []CheckClaim, spec *v1.Workflow, bound map[string]*v1.Value, vars fileVars, outputs *v1.Workflow_StepOutputs, facts runFacts, sensitive sensitiveInputs) []*v1.Diagnostic {
 	if len(claims) == 0 {
 		return nil
 	}
@@ -389,7 +394,7 @@ func assertChecks(ctx context.Context, started time.Time, claims []CheckClaim, s
 	// carries `local` as well as the two fields checks exist for — dropping
 	// it would make `run.local` unreadable inside a check while every other
 	// expression in the run reads it true.
-	extra := postRunExtras(ctx, scope, vars.values, runErr)
+	extra := postRunExtras(ctx, scope, vars.values, facts)
 	activation := scope.ActivationWith(ctx, extra)
 
 	libs, err := v1.ProfileLibraries(spec.GetProfile())
@@ -691,4 +696,69 @@ func referencePath(e celast.Expr) (string, bool) {
 	default:
 		return "", false
 	}
+}
+
+// runFacts is what a finished run is questioned about beyond its transcript:
+// the failure, what compensation did about it, and the task invocations it
+// made. One value so the `run` root is built from a single place for a check,
+// an invariant and the debugger's autopsy.
+type runFacts struct {
+	err error
+
+	// undone is what compensation did, read from err unless an autopsy has
+	// replaced err with its redacted text.
+	undone []v1.UndoResult
+
+	// invocations is the case's log; nil when the case kept none.
+	invocations *invocationLog
+
+	// root names the workflow under test, whose steps `run.invocations.step`
+	// counts.
+	root string
+}
+
+// newRunFacts gathers what a finished run is judged on.
+func newRunFacts(runErr error, log *invocationLog, root string) runFacts {
+	return runFacts{err: runErr, undone: v1.UndoResultsOf(runErr), invocations: log, root: root}
+}
+
+// bind adds the compensation and invocation facts to the `run` root.
+//
+// compensated and uncompensated are lists of step ids, in the order the
+// compensations ran (reverse registration): a step whose `undo:` succeeded is
+// compensated; one whose `undo:` failed or was not attempted before the
+// cancellation budget ran out is uncompensated. A step that registered no
+// compensation (skipped, failed, or without an `undo:`) is in neither. Both are
+// always present, empty on a run that compensated nothing, so a claim reads
+// them without guarding.
+//
+// invocations is present only when the case kept a complete log. A log the
+// bound truncated leaves it unbound, so a claim reading it errors, which is
+// the check's way of failing closed: a count over a prefix reads as a fact.
+func (f runFacts) bind(root map[string]any) {
+	compensated, uncompensated := []any{}, []any{}
+	for _, r := range f.undone {
+		if r.Err == "" {
+			compensated = append(compensated, r.Step)
+		} else {
+			uncompensated = append(uncompensated, r.Step)
+		}
+	}
+	root["compensated"] = compensated
+	root["uncompensated"] = uncompensated
+
+	if f.invocations == nil || f.invocations.truncated() {
+		return
+	}
+	tasks, steps := f.invocations.counts(f.root)
+	root["invocations"] = map[string]any{"task": intMap(tasks), "step": intMap(steps)}
+}
+
+func intMap(m map[string]int) map[string]any {
+	out := make(map[string]any, len(m))
+	for k, v := range m {
+		out[k] = int64(v)
+	}
+
+	return out
 }
