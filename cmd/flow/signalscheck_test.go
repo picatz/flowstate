@@ -333,7 +333,7 @@ inputs:
     must: this.size() > 20
 signals:
   go:
-    allow: ${sender.identity.claims.pin == inputs.pin && sender.identity.claims.team == "ops"}
+    allow: ${sender.identity.claims.pin == "expected-pin" && sender.identity.claims.team == "ops"}
 steps:
   - id: a
     wait_for_signal:
