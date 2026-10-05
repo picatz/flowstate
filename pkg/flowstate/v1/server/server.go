@@ -868,7 +868,7 @@ func starterMemoEntry(identity *v1.WorkloadIdentity) map[string]any {
 // wrapper type, which is what lets [signalPolicies] decode it with nothing
 // more than `proto.Unmarshal` into a `*v1.Workflow` and read `.GetSignals()`
 // back off it.
-func signalPolicyMemoEntry(ctx context.Context, wf *v1.Workflow, inputs map[string]*v1.Value) (map[string]any, error) {
+func signalPolicyMemoEntry(ctx context.Context, wf *v1.Workflow, inputs map[string]*v1.Value, starter *v1.WorkloadIdentity) (map[string]any, error) {
 	if len(wf.GetSignals()) == 0 {
 		return nil, nil
 	}
@@ -883,7 +883,55 @@ func signalPolicyMemoEntry(ctx context.Context, wf *v1.Workflow, inputs map[stri
 		return nil, fmt.Errorf("encoding the declared signal policy: %w", err)
 	}
 
-	return map[string]any{signalPolicyMemoKey: encoded}, nil
+	entries := map[string]any{signalPolicyMemoKey: encoded}
+
+	scope, err := signalPolicyScopeMemoEntry(resolved, inputs, starter)
+	if err != nil {
+		return nil, err
+	}
+	maps.Copy(entries, scope)
+
+	return entries, nil
+}
+
+// signalPolicyScopeMemoKey is the memo field recording the per-run values a
+// signal policy's `allow: ${...}` predicate reads at delivery time: the run's
+// bound inputs and its starter's identity (with claims), as a [v1.Scope].
+//
+// Written only when some predicate reads them, and only what it reads. A run
+// whose policies are rules, or whose predicates read neither, records nothing,
+// so no inputs or claims are copied into a memo that nothing evaluates.
+const signalPolicyScopeMemoKey = "flowstate.signalPolicyScope"
+
+// signalPolicyScopeMemoEntry encodes what the declared predicates read of the
+// run — see [signalPolicyScopeMemoKey]. A scope over [v1.MaxSignalPolicyScopeBytes]
+// is refused, not truncated: a predicate evaluated over a partial copy of its
+// inputs is a different predicate.
+func signalPolicyScopeMemoEntry(policies map[string]*v1.SignalPolicy, inputs map[string]*v1.Value, starter *v1.WorkloadIdentity) (map[string]any, error) {
+	reads := v1.SignalPolicyExprReads(policies)
+	if !reads.Inputs && !reads.Run {
+		return nil, nil
+	}
+
+	scope := &v1.Scope{}
+	if reads.Inputs {
+		scope.Inputs = inputs
+	}
+	if reads.Run {
+		scope.Identity = starter
+	}
+
+	encoded, err := proto.Marshal(scope)
+	if err != nil {
+		return nil, fmt.Errorf("encoding the values the signal policy predicate reads: %w", err)
+	}
+	if len(encoded) > v1.MaxSignalPolicyScopeBytes {
+		return nil, fmt.Errorf("the signal policy predicate reads this run's inputs or starter, which must be recorded "+
+			"with the run to be evaluated at delivery, and they encode to %d bytes, over the %d-byte bound; "+
+			"submit smaller inputs or have the predicate read less", len(encoded), v1.MaxSignalPolicyScopeBytes)
+	}
+
+	return map[string]any{signalPolicyScopeMemoKey: encoded}, nil
 }
 
 // debugPolicyMemoKey is the memo field recording who may pause a run under a
@@ -956,10 +1004,10 @@ func debugPolicyMemoEntry(ctx context.Context, wf *v1.Workflow, inputs map[strin
 // a second policy joined the first. The hole it forecloses is the one a
 // scheduled approval gate already had once: a firing that carried the tenant
 // memo and not the policy, so enforcement silently became the zero case.
-func policyMemoEntries(ctx context.Context, wf *v1.Workflow, inputs map[string]*v1.Value) (map[string]any, error) {
+func policyMemoEntries(ctx context.Context, wf *v1.Workflow, inputs map[string]*v1.Value, starter *v1.WorkloadIdentity) (map[string]any, error) {
 	entries := map[string]any{signalProtocolMemoKey: currentSignalProtocol}
 
-	signals, err := signalPolicyMemoEntry(ctx, wf, inputs)
+	signals, err := signalPolicyMemoEntry(ctx, wf, inputs, starter)
 	if err != nil {
 		return nil, err
 	}
@@ -2135,7 +2183,7 @@ func (s *FlowstateServer) prepareCreate(
 	// against.
 	memo := map[string]any{namespaceMemoKey: identity.GetNamespace()}
 	maps.Copy(memo, starterMemoEntry(identity))
-	signalEntry, err := policyMemoEntries(ctx, wf, inputs)
+	signalEntry, err := policyMemoEntries(ctx, wf, inputs, identity)
 	if err != nil {
 		err = withheldPolicyRefusal(err, unknown, inputs)
 		// Two different failures share this one call, and they get the same

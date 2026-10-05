@@ -82,6 +82,11 @@ var exemptScopeConstruction = map[string]string{
 		"identity-less scope is read as the default tenant rather than as an activity declining to say whose work it is. " +
 		"Giving it an identity would delete the case.",
 
+	"pkg/flowstate/v1/server/lifecycle.go#(*FlowstateServer).signalPolicyScope": "decodes a memo entry: a Scope is only the " +
+		"container submit chose for a run's inputs and starter so a signal predicate can read them at delivery " +
+		"(signalPolicyScopeMemoEntry sets Identity itself). It is read in the server's authorization path and " +
+		"never dispatched to an activity.",
+
 	"pkg/flowstate/v1/nodes.go#NewScope": "the general constructor, over outputs and a profile. It is what #737's " +
 		"structural half would replace; every caller that builds a scope a run will dispatch assigns Identity after it " +
 		"(engine/workflow.go varsScope, v1/call.go CallScope).",

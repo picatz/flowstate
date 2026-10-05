@@ -1,6 +1,7 @@
 package conformance
 
 import (
+	"slices"
 	"testing"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -65,6 +66,16 @@ type RehearsalSignalCase struct {
 	// covers both: nothing to match a rule against.
 	Sender *v1.WorkloadIdentity
 
+	// StarterUnknown is a run with no recorded starter: durably a memo that
+	// predates the key, locally a caller that cannot say who started the run.
+	// Starter is then ignored by both drivers.
+	StarterUnknown bool
+
+	// Inputs are the run's bound arguments, which a policy's `allow: ${...}`
+	// predicate may read: recorded beside the policy at submit durably, passed
+	// to [v1.NewPolicedLocalSignals] locally.
+	Inputs map[string]*v1.Value
+
 	// Admitted is whether the delivery reaches the waiting step.
 	Admitted bool
 
@@ -128,7 +139,26 @@ func policedGate(distinctFromStarter bool) *v1.SignalPolicy {
 // that "admitted" means the same thing on both drivers: locally the rehearsal
 // stands in for exactly the caller production would have authenticated, and
 // durably the caller is that person.
+//
+// It is the rule-list cases, each replayed through the predicate the
+// `flow fix` rewrite would emit for it ([predicateTwin]), and the cases only a
+// predicate can express ([signalPredicateCases]); both are answered by both
+// drivers or by neither.
 func RehearsalSignalCases() []RehearsalSignalCase {
+	rules := rehearsalRuleCases()
+
+	cases := slices.Clone(rules)
+	for _, c := range rules {
+		if twin, ok := predicateTwin(c); ok {
+			cases = append(cases, twin)
+		}
+	}
+
+	return append(cases, signalPredicateCases()...)
+}
+
+// rehearsalRuleCases are the cases written against the `allow:` rule list.
+func rehearsalRuleCases() []RehearsalSignalCase {
 	starter := &v1.WorkloadIdentity{
 		Subject: "release-bot@example.com",
 		Issuer:  "https://issuer.example.com",

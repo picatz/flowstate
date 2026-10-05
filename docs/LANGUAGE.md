@@ -1432,6 +1432,24 @@ matches when **all** of its fields match the sender's verified identity:
 `distinct_from_starter: true` additionally requires that the sender is not the
 person who started the run: separation of duties.
 
+`allow:` may instead be one `${...}` predicate, in place of the rule list:
+
+```yaml
+signals:
+  deploy-approved:
+    allow: ${sender.identity.claims.team == "release-managers" &&
+      sender.identity.principal != run.identity.principal}
+```
+
+The predicate reads `sender.identity.{principal,subject,issuer,namespace,claims}`
+(the verified sender; `principal` is `"<issuer>#<subject>"`), `run.identity` (the
+starter, with the same fields) and `inputs`, and nothing else. Only a clean `true`
+allows: an error (a missing claim key, an unrecorded starter that the predicate
+reads), a result that is not a bool, or an expression over its cost bound all refuse
+the sender. A predicate that reads `inputs` must also read
+`sender.identity.claims` or `run.identity`. A policy writes the list or the
+predicate, never both. `debug:` takes the list only.
+
 The server checks the policy before the signal reaches Temporal, and refuses a
 sender who does not match with `PermissionDenied`. A signal name with **no**
 policy may be sent by any authenticated caller who can see the run. Local
@@ -1595,9 +1613,9 @@ declaration:** `description`.
 (`verify`, `idempotency_key`, `with`, `signal` with `name`, `correlate`,
 `with`).
 
-**Concurrency:** `key`, `on_conflict`. **Signal policy:** `allow` (rules of
-`subject`, `namespace`, `claims`), `distinct_from_starter`. **Debug policy:**
-the same.
+**Concurrency:** `key`, `on_conflict`. **Signal policy:** `allow` (a list of
+rules of `subject`, `namespace`, `claims`, or one `${...}` predicate),
+`distinct_from_starter`. **Debug policy:** the same, with the rule list only.
 
 `needs` and `assert` are reserved for future versions of the grammar and are
 refused today.

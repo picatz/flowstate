@@ -1094,6 +1094,9 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	var sensitive sensitiveInputs
 	if b, bindErr := v1.BindRunInputs(workflow, inputs); bindErr == nil {
 		bound = b
+		if bound == nil {
+			bound = map[string]*v1.Value{}
+		}
 		// The redaction set, built from the same bound inputs and the same
 		// `sensitive:` declarations the stub diagnostics read
 		// ([sensitiveNativeValues]) — one set, shared by the transcript's
@@ -1198,7 +1201,7 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	// empty with `run.local` true, as it does for every local run including
 	// `flow run local --as-subject`: a local run must never look like an
 	// attested production one (eval.go's eval). See [Test.Starter].
-	signals := v1.NewPolicedLocalSignals(policies, scriptedIdentity(test.Starter), true)
+	signals := v1.NewPolicedLocalSignals(policies, scriptedIdentity(test.Starter), true, bound)
 	ctx = v1.NewContextWithSignalWaiter(ctx, signals)
 
 	// Hold the run's own clock participant before any scripted signal can park,

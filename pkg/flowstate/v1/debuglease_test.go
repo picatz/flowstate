@@ -132,7 +132,7 @@ func TestAWorkflowWithNoDebugStanzaIsNotDebuggable(t *testing.T) {
 	// The other direction of the same boundary: an ordinary signal name with no
 	// policy is *allowed*, which is what makes the debug zero case a decision
 	// rather than a copy.
-	require.Error(t, v1.SignalPolicyCheck(debugPolicy(), caller, nil, false),
+	require.Error(t, v1.SignalPolicyCheck(t.Context(), debugPolicy(), caller, nil, false, nil),
 		"a signal policy with no rules refuses too — the difference is the absent policy, not the empty one")
 }
 

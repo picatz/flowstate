@@ -241,6 +241,15 @@ func CheckWebhookSignalPolicy(wf *Workflow, webhook string, signal *WebhookTrigg
 			webhook, name, name, qualified)
 	}
 
+	if policy.GetAllowExpr() != "" {
+		// A predicate is decided at delivery over the sender, the starter and
+		// the run's inputs, none of which this check holds, so it cannot say
+		// the bridge is unreachable. Not refused for that reason: it is the
+		// same "enforced in full at delivery" line `namespace:` sits on, and
+		// the bridge's delivery is still answered by [SignalPolicyCheck].
+		return nil
+	}
+
 	for _, rule := range policy.GetAllow() {
 		if len(rule.GetClaims()) > 0 {
 			// The receiver attaches no claims to a webhook principal — there is

@@ -32,9 +32,10 @@ const (
 type SignalPolicy struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Allow lists the alternative rules that may authorize a sender. At least
-	// one, or the policy authorizes nobody, which is indistinguishable from a
-	// typo and is refused by the compiler rather than accepted as (probably
-	// unintended) lockout.
+	// one unless [allow_expr] is set instead, or the policy authorizes nobody,
+	// which is indistinguishable from a typo and is refused by the compiler
+	// (`CheckPolicyShape`) rather than accepted as (probably unintended)
+	// lockout.
 	Allow []*SignalPolicyRule `protobuf:"bytes,1,rep,name=allow,proto3" json:"allow,omitempty"`
 	// DistinctFromStarter requires, in addition to whichever rule in [allow]
 	// an otherwise-authorized sender satisfies, that the sender not be this
@@ -54,8 +55,31 @@ type SignalPolicy struct {
 	// [SignalPolicyAllows]'s own doc comment states for every other case once
 	// a policy exists.
 	DistinctFromStarter bool `protobuf:"varint,2,opt,name=distinct_from_starter,json=distinctFromStarter,proto3" json:"distinct_from_starter,omitempty"`
-	unknownFields       protoimpl.UnknownFields
-	sizeCache           protoimpl.SizeCache
+	// AllowExpr is one CEL predicate that decides the whole policy, written in a
+	// Flowfile as `allow: ${...}`, in place of the [allow] rule list. A policy
+	// sets one of the two, never both: two mechanisms in one policy would be two
+	// answers to "who may act", and the compiler refuses it.
+	//
+	// The source is stored without the `${` `}` fence. It is evaluated
+	// server-side, against the server's own attestation, over a closed scope:
+	// `sender.identity.{principal,subject,issuer,namespace,claims}`,
+	// `run.identity` (the starter, with the same shape; unbound when the run
+	// has no recorded starter, so a predicate that reads it errors), and
+	// `inputs` (the run's bound arguments). Nothing else is in scope.
+	//
+	// Fail closed: a result that is not a bool, an evaluation error, an unbound
+	// starter that is read, an exceeded cost bound, or an expression that does
+	// not compile all refuse the sender; none ever allows. The refusal names no
+	// input or claim value.
+	//
+	// A predicate that reads `inputs` must also read `sender.identity.claims` or
+	// `run.identity`: whoever started the run chose the inputs, so a predicate
+	// over them alone would let the starter name their own approver, the same
+	// fault `SignalPolicyRule.subject_from` is refused for. This is the coarser,
+	// syntactic form of that rule.
+	AllowExpr     string `protobuf:"bytes,3,opt,name=allow_expr,json=allowExpr,proto3" json:"allow_expr,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *SignalPolicy) Reset() {
@@ -100,6 +124,13 @@ func (x *SignalPolicy) GetDistinctFromStarter() bool {
 		return x.DistinctFromStarter
 	}
 	return false
+}
+
+func (x *SignalPolicy) GetAllowExpr() string {
+	if x != nil {
+		return x.AllowExpr
+	}
+	return ""
 }
 
 // SignalPolicyRule is one admissible sender, checked against the
@@ -828,11 +859,12 @@ var File_flowstate_v1_signal_proto protoreflect.FileDescriptor
 
 const file_flowstate_v1_signal_proto_rawDesc = "" +
 	"\n" +
-	"\x19flowstate/v1/signal.proto\x12\fflowstate.v1\x1a\x1bbuf/validate/validate.proto\x1a\x1bflowstate/v1/identity.proto\x1a\x18flowstate/v1/value.proto\x1a\x1fgoogle/api/field_behavior.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\x84\x01\n" +
-	"\fSignalPolicy\x12@\n" +
-	"\x05allow\x18\x01 \x03(\v2\x1e.flowstate.v1.SignalPolicyRuleB\n" +
-	"\xbaH\a\x92\x01\x04\b\x01\x10 R\x05allow\x122\n" +
-	"\x15distinct_from_starter\x18\x02 \x01(\bR\x13distinctFromStarter\"\xc1\x02\n" +
+	"\x19flowstate/v1/signal.proto\x12\fflowstate.v1\x1a\x1bbuf/validate/validate.proto\x1a\x1bflowstate/v1/identity.proto\x1a\x18flowstate/v1/value.proto\x1a\x1fgoogle/api/field_behavior.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xab\x01\n" +
+	"\fSignalPolicy\x12>\n" +
+	"\x05allow\x18\x01 \x03(\v2\x1e.flowstate.v1.SignalPolicyRuleB\b\xbaH\x05\x92\x01\x02\x10 R\x05allow\x122\n" +
+	"\x15distinct_from_starter\x18\x02 \x01(\bR\x13distinctFromStarter\x12'\n" +
+	"\n" +
+	"allow_expr\x18\x03 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x10R\tallowExpr\"\xc1\x02\n" +
 	"\x10SignalPolicyRule\x124\n" +
 	"\asubject\x18\x01 \x01(\tB\x1a\xbaH\x17\xd8\x01\x01r\x12\x18\xc0\x022\r^[^#]+#[^#]+$R\asubject\x12&\n" +
 	"\tnamespace\x18\x02 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x01R\tnamespace\x12\\\n" +

@@ -163,6 +163,13 @@ func CheckSignalPolicyShape(declared map[string]*SignalPolicy, requireResolvedSu
 // label, not a lookup: it appears only in the diagnostic, so an author reading
 // a fault about `debug:` is not told about `signals:`.
 func CheckPolicyShape(where string, policy *SignalPolicy, requireResolvedSubjects bool) error {
+	if policy.GetAllowExpr() != "" {
+		// One predicate in place of the rule list; none of the per-rule
+		// checks below apply, and [checkSignalPolicyExprShape] refuses a
+		// policy that also writes rules.
+		return checkSignalPolicyExprShape(where, policy)
+	}
+
 	if len(policy.GetAllow()) == 0 {
 		return fmt.Errorf(
 			"%s declares no `allow:` rule, so it authorizes nobody", where)
@@ -318,6 +325,9 @@ func ResolvePolicySubjects(ctx context.Context, where string, policy *SignalPoli
 	return &SignalPolicy{
 		Allow:               allow,
 		DistinctFromStarter: policy.GetDistinctFromStarter(),
+		// A predicate is not resolved at submit: it reads the sender, so it
+		// runs on every delivery ([SignalPolicyCheck]).
+		AllowExpr: policy.GetAllowExpr(),
 	}, nil
 }
 
@@ -420,8 +430,24 @@ func signalPolicyRuleMatches(rule *SignalPolicyRule, identity *WorkloadIdentity)
 // false means nothing here can prove separation, and is refused exactly like
 // a run whose memo predates the starter record — never treated as
 // "unconstrained."
-func SignalPolicyCheck(policy *SignalPolicy, identity *WorkloadIdentity, starter *WorkloadIdentity, hasStarter bool) error {
-	if !SignalPolicyAllows(policy, identity) {
+//
+// A policy that sets allow_expr is decided by that one CEL predicate
+// ([signalPolicyExprAllows]) over the sender, the starter (when hasStarter) and
+// inputs, and fails closed on everything but a clean true. A policy that sets
+// both it and rules is refused outright, so a decoded memo carrying both can
+// never be answered by whichever mechanism happens to be more permissive.
+// inputs is the run's bound arguments: nil for a caller that has none, in which
+// case a predicate reading them errors and denies.
+func SignalPolicyCheck(ctx context.Context, policy *SignalPolicy, identity *WorkloadIdentity, starter *WorkloadIdentity, hasStarter bool, inputs map[string]*Value) error {
+	switch {
+	case policy.GetAllowExpr() != "" && len(policy.GetAllow()) > 0:
+		return fmt.Errorf("this signal's policy sets both allow rules and an allow predicate, " +
+			"which is not a policy this server would have written, so no sender is authorized")
+	case policy.GetAllowExpr() != "":
+		if err := signalPolicyExprAllows(ctx, policy.GetAllowExpr(), identity, starter, hasStarter, inputs); err != nil {
+			return err
+		}
+	case !SignalPolicyAllows(policy, identity):
 		return fmt.Errorf("the sender does not match any rule this signal's policy declares")
 	}
 

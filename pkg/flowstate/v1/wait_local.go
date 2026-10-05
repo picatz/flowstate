@@ -203,6 +203,10 @@ type LocalSignals struct {
 	starter    *WorkloadIdentity
 	hasStarter bool
 
+	// inputs is the run's bound arguments, read only by a policy's
+	// `allow: ${...}` predicate ([SignalPolicyCheck]).
+	inputs map[string]*Value
+
 	// consumed is the webhook delivery ids a wait in this run has already
 	// taken, this driver's copy of [RunState.consumed_delivery_ids] — a field
 	// here rather than a message field because a local run is one process and
@@ -272,8 +276,14 @@ func NewLocalSignals() *LocalSignals { return &LocalSignals{} }
 // attested sender — see flowtest's own runCase for why treating it as
 // "unknown" instead would make the happy path this exists to test
 // unreachable.
-func NewPolicedLocalSignals(policies map[string]*SignalPolicy, starter *WorkloadIdentity, hasStarter bool) *LocalSignals {
-	return &LocalSignals{policies: policies, starter: starter, hasStarter: hasStarter}
+//
+// inputs is the run's bound arguments, which a policy's `allow: ${...}`
+// predicate may read; the server records the same value beside the policy at
+// submit. nil leaves `inputs` unbound, so any predicate that reads it (even
+// `!has(inputs.x)` or `inputs.size() == 0`) errors and denies; a run with
+// bound inputs that happen to be empty passes an empty, non-nil map.
+func NewPolicedLocalSignals(policies map[string]*SignalPolicy, starter *WorkloadIdentity, hasStarter bool, inputs map[string]*Value) *LocalSignals {
+	return &LocalSignals{policies: policies, starter: starter, hasStarter: hasStarter, inputs: inputs}
 }
 
 // willAdmitLocked reports whether some wait is going to be able to take this
@@ -461,7 +471,7 @@ func (s *LocalSignals) DeliverFrom(name string, payload *Node_Outputs, sender *S
 	}
 
 	if policy, declared := s.policies[name]; declared {
-		if err := SignalPolicyCheck(policy, sender.GetIdentity(), s.starter, s.hasStarter); err != nil {
+		if err := SignalPolicyCheck(context.Background(), policy, sender.GetIdentity(), s.starter, s.hasStarter, s.inputs); err != nil {
 			return fmt.Errorf("flowstate: signal %q refused: %w", name, err)
 		}
 	}

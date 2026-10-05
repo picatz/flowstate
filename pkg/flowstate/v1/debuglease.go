@@ -1,6 +1,7 @@
 package flowstatev1
 
 import (
+	"context"
 	"fmt"
 	"maps"
 	"slices"
@@ -329,13 +330,16 @@ func NewDebugAsk(verb string, lease time.Duration) *Node_Outputs {
 // same words would be the drift CLAUDE.md's "one function, two callers" rule
 // exists to prevent, in the direction that matters most.
 func DebugPolicyCheck(policy *SignalPolicy, identity *WorkloadIdentity, starter *WorkloadIdentity, hasStarter bool) error {
-	if policy == nil || len(policy.GetAllow()) == 0 {
+	// A policy with only an allow predicate has no rules and falls into the
+	// zero case below: `debug:` does not accept `allow: ${...}` yet, and a
+	// predicate there must not be read as anything but "nobody".
+	if policy == nil || len(policy.GetAllow()) == 0 || policy.GetAllowExpr() != "" {
 		return fmt.Errorf(
 			"this workflow declares no `debug:` policy, so no caller may pause its durable runs; " +
 				"a run with nothing saying who may debug it is not debuggable")
 	}
 
-	return SignalPolicyCheck(policy, identity, starter, hasStarter)
+	return SignalPolicyCheck(context.Background(), policy, identity, starter, hasStarter, nil)
 }
 
 // CheckDebugPolicy reports what is wrong with a workflow's declared `debug:`
@@ -352,6 +356,11 @@ func CheckDebugPolicy(policy *SignalPolicy, requireResolvedSubjects bool) error 
 		// `debug:` is well formed and simply not debuggable. Refusing it here
 		// would make every workflow in the tree invalid.
 		return nil
+	}
+
+	if policy.GetAllowExpr() != "" {
+		return fmt.Errorf("debug declares an `allow:` predicate, which this stanza does not accept yet; " +
+			"write the `allow:` rule list")
 	}
 
 	return CheckPolicyShape("debug", policy, requireResolvedSubjects)
