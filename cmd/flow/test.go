@@ -250,6 +250,23 @@ func scheduleBudget(cmd *cobra.Command) (dst.Budget, error) {
 	return budget, nil
 }
 
+// shrinkNote says what shrinking did to the pinned faults, or "" when it did
+// nothing: the seed fired few enough that there was nothing to try, or its
+// faults did not reproduce on their own and the full list stands.
+func shrinkNote(d *flowtest.ScheduleDivergence) string {
+	switch {
+	case d.ShrinkRuns == 0 || d.FaultsFired == 0:
+		return ""
+	case d.Minimal:
+		return fmt.Sprintf("Shrunk from %s fired by the seed after %s; removing any one of the remaining failures stops the violation.",
+			count(d.FaultsFired, "failure", "failures"), count(d.ShrinkRuns, "re-run", "re-runs"))
+	default:
+		return fmt.Sprintf("Shrunk from %s fired by the seed in %s, then stopped at the %d-re-run bound; "+
+			"the list may not be minimal.", count(d.FaultsFired, "failure", "failures"), count(d.ShrinkRuns, "re-run", "re-runs"),
+			flowtest.MaxShrinkRuns)
+	}
+}
+
 // errTestsFailed reports that at least one case did not pass. It carries no
 // message of its own because the diagnostics have already been printed or
 // are in the machine report.
@@ -764,6 +781,9 @@ func printSchedules(out io.Writer, theme ui.Theme, report *v1.TestReport, schedu
 		if divergence.Script != "" {
 			fmt.Fprintf(out, "\n       OR PIN THEM AS A REGRESSION CASE (replace the case's `faults:`; `flow test` then runs them with no seed):\n\n%s",
 				indentRendering(divergence.Script))
+			if note := shrinkNote(divergence); note != "" {
+				fmt.Fprintf(out, "\n       %s\n", note)
+			}
 		}
 
 		return

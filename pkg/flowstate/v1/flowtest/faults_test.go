@@ -431,3 +431,81 @@ func TestAPinnedSeedUnderADebuggerHoldsTheSeededRunAlone(t *testing.T) {
 	flowtest.RunPath(t.Context(), path, flowtest.RunOptions{Debugger: plain})
 	assert.Equal(t, []string{"fetch", "done"}, plain.steps)
 }
+
+// A seed that fires several faults prints the ones the violation needs. Three
+// calls fail under this seed, but the first two are absorbed by
+// `continue_on_error:`; only the third, on the step that must succeed, breaks
+// the run, so that is the whole script.
+func TestAViolationPrintsOnlyTheFaultsItNeeds(t *testing.T) {
+	t.Parallel()
+
+	const workflow = `edition: v2026.4
+name: three
+steps:
+  - id: a
+    continue_on_error: true
+    retry: {attempts: 1}
+    http: {method: GET, url: "https://example.com/a"}
+  - id: b
+    continue_on_error: true
+    retry: {attempts: 1}
+    http: {method: GET, url: "https://example.com/b"}
+  - id: c
+    retry: {attempts: 1}
+    http: {method: GET, url: "https://example.com/c"}
+`
+	path := writeFaultFixture(t, workflow, pinnedHeader+
+		"    faults: [{task: http, rate: 1, at_most: 3, fails: {message: down}}]\n"+
+		"    invariants: [{that: \"run.failed == false\"}]\n    expect: {failed: false}\n")
+	_, _, schedules := flowtest.RunFileUnderSchedules(t.Context(), path, dst.Budget{Schedules: 2, Seed0: 1})
+	require.NotNil(t, schedules)
+	d := schedules.Divergence
+	require.NotNil(t, d)
+
+	assert.Equal(t, 3, d.FaultsFired, "the seed fired all three")
+	assert.Positive(t, d.ShrinkRuns)
+	assert.True(t, d.Minimal)
+	assert.Contains(t, d.Script, `"on": [3]`)
+	assert.NotContains(t, d.Script, "1")
+
+	// The shrunk script is a regression case on its own.
+	indented := ""
+	for _, line := range strings.Split(strings.TrimRight(d.Script, "\n"), "\n") {
+		indented += "    " + line + "\n"
+	}
+	pinned := writeFaultFixture(t, workflow, pinnedHeader+indented+"    invariants: [{that: \"run.failed == false\"}]\n    expect: {failed: true}\n")
+	report, _ := flowtest.RunFileWithCoverage(pinned)
+	require.Len(t, report.GetCases(), 1)
+	assert.False(t, report.GetCases()[0].GetPassed(), "the shrunk script alone reproduces the violation")
+	require.NotEmpty(t, report.GetCases()[0].GetFailures())
+	assert.Equal(t, "invariants[0]", report.GetCases()[0].GetFailures()[0].GetField())
+}
+
+// A script names calls by their number among the calls its fault could hit, and
+// that number must not depend on which other fault fired before it: dropping the
+// first fault from a script must leave the second aimed at the same call.
+func TestAnInvocationNumberDoesNotDependOnAnotherFaultFiring(t *testing.T) {
+	t.Parallel()
+
+	const workflow = `edition: v2026.4
+name: two
+steps:
+  - id: first
+    continue_on_error: true
+    retry: {attempts: 1}
+    http: {method: GET, url: "https://example.com/a"}
+  - id: second
+    retry: {attempts: 1}
+    http: {method: GET, url: "https://example.com/b"}
+`
+	// Both faults match `first`'s call. With the earlier one pinned the later one
+	// would, if the earlier hid the call from it, count `second` as its first
+	// invocation and fire there; it must count it as its second.
+	only := writeFaultFixture(t, workflow, pinnedHeader+
+		"    faults: [{step: first, on: [1], fails: {message: x}}, {task: http, on: [2], fails: {message: y}}]\n"+
+		"    expect: {failed: true, error_contains: y}\n")
+	report, _ := flowtest.RunFileWithCoverage(only)
+	require.Len(t, report.GetCases(), 1)
+	c := report.GetCases()[0]
+	assert.True(t, c.GetPassed(), "the run fails at `second`, the second http call, with the second fault's message: %v", c.GetFailures())
+}
