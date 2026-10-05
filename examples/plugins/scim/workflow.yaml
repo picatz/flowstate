@@ -55,7 +55,7 @@ inputs:
     example: compliance-lead@example.com
 signals:
   review-decided:
-    allow: ${sender.identity.principal == "https://issuer.example.com#" + inputs.expected_approver && sender.identity.claims.team == "compliance-reviewers" && sender.identity.principal != run.identity.principal}
+    allow: ${sender.identity.principal.split("#").size() == 2 && sender.identity.principal == "https://issuer.example.com#" + inputs.expected_approver && sender.identity.claims.team == "compliance-reviewers" && sender.identity.principal != run.identity.principal}
 steps:
   - id: in_scope
     scim.user_list:

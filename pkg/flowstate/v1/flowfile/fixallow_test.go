@@ -134,27 +134,27 @@ func TestFixWritesEachOldFormAsItsPredicate(t *testing.T) {
 		{
 			name: "an interpolated subject keeps its expression and the claim that narrows it", stanza: "signals",
 			old:  "allow:\n  - subject: ${\"https://issuer.example.com#\" + inputs.approver}\n    claims:\n      team: release-managers\ndistinct_from_starter: true\n",
-			want: "allow: ${sender.identity.principal == \"https://issuer.example.com#\" + inputs.approver && sender.identity.claims.team == \"release-managers\" && sender.identity.principal != run.identity.principal}\n",
+			want: "allow: ${sender.identity.principal.split(\"#\").size() == 2 && sender.identity.principal == \"https://issuer.example.com#\" + inputs.approver && sender.identity.claims.team == \"release-managers\" && sender.identity.principal != run.identity.principal}\n",
 		},
 		{
 			name: "an interpolated subject that could be empty is not allowed to match the empty principal", stanza: "signals",
 			old:  "allow:\n  - subject: ${inputs.spec}\n    claims: {team: x}\n",
-			want: "allow: ${sender.identity.principal != \"\" && sender.identity.principal == inputs.spec && sender.identity.claims.team == \"x\"}\n",
+			want: "allow: ${sender.identity.principal.split(\"#\").size() == 2 && sender.identity.principal == inputs.spec && sender.identity.claims.team == \"x\"}\n",
 		},
 		{
 			name: "an interpolated subject narrowed only by distinct_from_starter", stanza: "signals",
 			old:  "allow:\n  - subject: ${inputs.spec}\ndistinct_from_starter: true\n",
-			want: "allow: ${sender.identity.principal != \"\" && sender.identity.principal == inputs.spec && sender.identity.principal != run.identity.principal}\n",
+			want: "allow: ${sender.identity.principal.split(\"#\").size() == 2 && sender.identity.principal == inputs.spec && sender.identity.principal != run.identity.principal}\n",
 		},
 		{
 			name: "a ternary subject is parenthesized so it stays one operand", stanza: "signals",
 			old:  "allow:\n  - subject: '${inputs.approver == \"\" ? inputs.spec : \"https://issuer.example.com#\" + inputs.approver}'\n    claims: {team: x}\n",
-			want: "allow: '${sender.identity.principal != \"\" && sender.identity.principal == (inputs.approver == \"\" ? inputs.spec : \"https://issuer.example.com#\" + inputs.approver) && sender.identity.claims.team == \"x\"}'\n",
+			want: "allow: '${sender.identity.principal.split(\"#\").size() == 2 && sender.identity.principal == (inputs.approver == \"\" ? inputs.spec : \"https://issuer.example.com#\" + inputs.approver) && sender.identity.claims.team == \"x\"}'\n",
 		},
 		{
 			name: "a multi-line subject expression goes onto one line", stanza: "signals",
 			old:  "allow:\n  - subject: |-\n      ${\"https://issuer.example.com#\" +\n        inputs.approver}\n    claims: {team: x}\n",
-			want: "allow: ${sender.identity.principal == \"https://issuer.example.com#\" + inputs.approver && sender.identity.claims.team == \"x\"}\n",
+			want: "allow: ${sender.identity.principal.split(\"#\").size() == 2 && sender.identity.principal == \"https://issuer.example.com#\" + inputs.approver && sender.identity.claims.team == \"x\"}\n",
 		},
 		{
 			name: "claim names that are not identifiers, and values that need escaping", stanza: "signals",
@@ -235,6 +235,8 @@ func TestFixRefusesWhatItWouldHaveToGuess(t *testing.T) {
 			"allow:\n  - subject: |-\n      ${\"https://issuer.example.com#\" + inputs.approver // who\n      }\n    claims: {team: x}\n", "`//` comment"},
 		{"a comment beside a value that cannot be told from text", "signals",
 			"allow:\n  - claims:\n      team: it's # the sre team\n", "sits beside a value"},
+		{"a hash after an escaped quote, which is neither a comment nor safe to guess at", "signals",
+			"allow:\n  - claims:\n      q: \"say \\\"hi #ops\\\"\"\n", "sits beside a value"},
 		{"a predicate whose distinct_from_starter would make it pass narrowing", "signals",
 			"allow: ${inputs.spec == \"x\"}\ndistinct_from_starter: true\n", "does not validate on its own"},
 		{"both manual spellings", "manual",
@@ -317,6 +319,14 @@ func TestFixDoesNotRootAStepNamedSenderInsideThePredicate(t *testing.T) {
 	result = fixAllow(t, manual)
 	require.Empty(t, result.Refusals)
 	assert.NotContains(t, string(result.Source), "steps.sender")
+
+	// And only there. A `manual` key that is not under `triggers:` is an ordinary
+	// name, so `sender` inside it is still the step.
+	elsewhere := strings.Replace(workflowWith("signals", "allow:\n  - claims: {team: x}\n"),
+		"steps:\n", "steps:\n  - id: sender\n    value: 1\n  - id: shaped\n    value:\n      manual: ${sender.value}\n", 1)
+	result = fixAllow(t, elsewhere)
+	require.Empty(t, result.Refusals)
+	assert.Contains(t, string(result.Source), "manual: ${steps.sender.value}")
 }
 
 // ---------------------------------------------------------------------------
@@ -503,6 +513,11 @@ func TestFixedPredicateDecidesLikeTheRulesItReplaced(t *testing.T) {
 			require.NoError(t, err)
 			require.Empty(t, flowfile.Validate(newWF))
 
+			// A single-rule policy has no other alternative: when the rule list would have
+			// refused the run at submit, the predicate must admit nobody at all, not merely
+			// nobody anonymous. (With a second rule the run starts and that rule answers.)
+			singleRule := strings.Count(tc.old, "\n  - ") == 1
+
 			var allowed, denied, softer, unstarted, total int
 			for _, in := range tc.inputs {
 				values := inputsOf(in)
@@ -522,8 +537,8 @@ func TestFixedPredicateDecidesLikeTheRulesItReplaced(t *testing.T) {
 							// whatever it admits is a sender with a whole principal, never an
 							// unauthenticated one that an empty computed subject could equal.
 							unstarted++
-							if newAllows && v1.Principal(sender.GetIssuer(), sender.GetSubject()) == "" {
-								t.Errorf("the run is refused by the rule list, and the predicate admits a sender with no principal: sender=%v starter=%v inputs=%v\nrewritten: %s",
+							if newAllows && (singleRule || v1.Principal(sender.GetIssuer(), sender.GetSubject()) == "") {
+								t.Errorf("the run is refused by the rule list, and the predicate admits a sender it should not: sender=%v starter=%v inputs=%v\nrewritten: %s",
 									sender, starter, in, rewrittenPolicy(string(result.Source)))
 
 								return
@@ -593,7 +608,7 @@ func TestFixedInterpolatedSubjectKeepsTheConjunctionThatNarrowsIt(t *testing.T) 
 	line := rewrittenPolicy(string(result.Source))
 	// The first alternative still conjoins the subject computed from inputs with the
 	// claim, and the claim is not hoisted into the second alternative's place.
-	assert.Contains(t, line, `(sender.identity.principal == "https://issuer.example.com#" + inputs.approver && sender.identity.claims.team == "release-managers") || sender.identity.claims.role == "sre-lead"`)
+	assert.Contains(t, line, `(sender.identity.principal.split("#").size() == 2 && sender.identity.principal == "https://issuer.example.com#" + inputs.approver && sender.identity.claims.team == "release-managers") || sender.identity.claims.role == "sre-lead"`)
 
 	// And the engine agrees it is what narrows: an input-named approver who lacks
 	// the claim is refused, even though another alternative reads claims.
@@ -675,6 +690,14 @@ func TestNoExampleKeepsARetiredWhoMayActSpelling(t *testing.T) {
 		if err != nil {
 			return fmt.Errorf("%s: %w", path, err)
 		}
+		// A document that is not a Flowfile (an auth policy, an egress policy) has no
+		// who-may-act stanza to rewrite and is refused for exactly that reason.
+		if len(result.Refusals) == 1 && strings.Contains(result.Refusals[0].Message, "does not look like a Flowfile") {
+			return nil
+		}
+		// A complete result: a refused old form in an example must fail here, not pass
+		// because the changes that did get made look fine.
+		assert.True(t, result.Complete(), "%s: flow fix refused: %v", path, result.Refusals)
 		for _, change := range result.Changes {
 			assert.NotContains(t, change.Message, "`allow:` rule list", "%s", path)
 			assert.NotContains(t, change.Message, "`allowed_principals:`", "%s", path)

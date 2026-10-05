@@ -8,7 +8,6 @@ import (
 
 	"github.com/goccy/go-yaml/ast"
 	"github.com/google/cel-go/cel"
-	exprpb "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
@@ -57,13 +56,14 @@ import (
 //     monotone (`&&`, `||`, `==`, `!=`), so an error can only ever withhold a `true`,
 //     and the evaluator denies on error: the policy answers allow exactly where the
 //     rule list did.
-//   - A principal is "" for an identity missing either half, and "" equals
-//     itself. A literal subject is always `issuer#subject`, so it cannot equal ""; an
-//     interpolated one is whatever the run's inputs computed, and `${inputs.x}` with
-//     x set to "" would admit every unauthenticated sender. The rule list refused
-//     that at submit (the resolved subject was not qualified), so the predicate says
-//     `sender.identity.principal != ""` first, unless the expression visibly cannot be
-//     empty (a non-empty string literal concatenated into it).
+//   - A literal subject is always `issuer#subject`, one `#` with both halves, so it
+//     can be compared as is. An interpolated one is whatever the run's inputs
+//     computed, and the rule list refused the run at submit when that was not
+//     qualified: an empty value would equal the "" principal of every unauthenticated
+//     sender, and `a#b` would admit a sender whose subject is `a#b`. So the predicate
+//     says `sender.identity.principal.split("#").size() == 2` first, which holds only
+//     for a principal with exactly one `#` (and is false for ""), and the comparison
+//     that follows can then only admit a sender the rule list would have admitted.
 //   - The narrowing rule moved from a per-rule check to a syntactic one over the
 //     whole predicate, which is coarser. A policy the old rule accepted has, for
 //     every interpolated subject, a `claims:` entry beside it or a policy-level
@@ -94,6 +94,13 @@ const (
 	starterPrincipal = "run.identity.principal"
 	senderClaims     = "sender.identity.claims"
 	senderNamespace  = "sender.identity.namespace"
+
+	// singleSeparator keeps an interpolated subject what the rule list required of a
+	// resolved one: `<issuer>#<subject>` with exactly one `#` and both halves present.
+	// Asked of the sender's principal, which the predicate equates to the computed
+	// subject, so it bounds the computed value too. It is also false for "", so an
+	// unauthenticated sender (principal "") can never equal an empty computed subject.
+	singleSeparator = `sender.identity.principal.split("#").size() == 2`
 
 	// maxManualPrincipals is the most a `manual:` block names, the compiler's bound.
 	maxManualPrincipals = 64
@@ -138,6 +145,10 @@ func (f *fixer) signalPolicies(n ast.Node) {
 func (f *fixer) policyStanza(n ast.Node, where string) {
 	mapping := asMapping(n)
 	if mapping == nil {
+		return
+	}
+
+	if f.refuseMergeKey(mapping, where) {
 		return
 	}
 
@@ -224,6 +235,22 @@ func (f *fixer) policyStanza(n ast.Node, where string) {
 	}
 
 	f.writeAllow(allow, distinct, body, where, "")
+}
+
+// refuseMergeKey refuses a policy that merges keys in with `<<:`: what the merge
+// brings may be an old-form `allow:` or a `distinct_from_starter:` this walk cannot
+// see, and rewriting the keys written here would leave the merged ones to contradict
+// the predicate.
+func (f *fixer) refuseMergeKey(mapping *ast.MappingNode, where string) bool {
+	for _, v := range mapping.Values {
+		if _, isMerge := v.Key.(*ast.MergeKeyNode); isMerge {
+			f.refuse(v.Key, "%s: this policy merges keys in with `<<:`, which `flow fix` does not resolve, so it cannot tell what the policy says; write the keys out", where)
+
+			return true
+		}
+	}
+
+	return false
 }
 
 // rulesPredicate renders an `allow:` rule list as one predicate body (no fence).
@@ -350,7 +377,7 @@ func (f *fixer) subjectConjunct(n ast.Node, where string, narrowed bool) (string
 			return "", false
 		}
 
-		top, nonEmpty, err := inspectCEL(single)
+		top, err := inspectCEL(single)
 		if err != nil {
 			f.refuse(n, "%s: this expression does not parse (%v), so it cannot be moved", where, err)
 			return "", false
@@ -359,12 +386,7 @@ func (f *fixer) subjectConjunct(n ast.Node, where string, narrowed bool) (string
 			single = "(" + single + ")"
 		}
 
-		text := senderPrincipal + " == " + single
-		if !nonEmpty {
-			text = senderPrincipal + ` != "" && ` + text
-		}
-
-		return text, true
+		return singleSeparator + " && " + senderPrincipal + " == " + single, true
 	}
 
 	literal, ok := f.literal(n, where)
@@ -506,6 +528,10 @@ func (f *fixer) manualEntry(mapping *ast.MappingNode) {
 func (f *fixer) manualPolicy(n ast.Node) {
 	mapping := asMapping(n)
 	if mapping == nil {
+		return
+	}
+
+	if f.refuseMergeKey(mapping, "triggers.manual") {
 		return
 	}
 
@@ -671,14 +697,20 @@ func (f *fixer) writeAllow(old, distinct *ast.MappingValueNode, body, where, lea
 		pending += "; comments written inside the old rules would be moved above it"
 	}
 
+	if f.edits == nil {
+		f.edits = make(map[int]lineEdit)
+	}
+	// Both edits or neither: [fixer.record] drops a replacement whose line is taken,
+	// and a deletion left alone would remove `distinct_from_starter:` with nothing
+	// written in its place.
+	if _, taken := f.edits[keyLine]; taken {
+		return
+	}
 	if distinct != nil {
-		// A deletion rides on the same change: one rewrite, one line in the report.
-		if f.edits == nil {
-			f.edits = make(map[int]lineEdit)
-		}
 		if _, taken := f.edits[distinctLine]; taken {
 			return
 		}
+		// A deletion rides on the same change: one rewrite, one line in the report.
 		f.edits[distinctLine] = lineEdit{through: distinctLine}
 	}
 	f.record(keyLine, through, replacement, message, pending)
@@ -710,8 +742,18 @@ func (f *fixer) commentsIn(first, last int, pad string) ([]string, bool) {
 func yamlCommentStart(line string) int {
 	var quote rune
 	prev := ' '
+	escaped := false
 	for i, r := range line {
+		if escaped {
+			// The character after a backslash in a double-quoted scalar is part of
+			// the escape, so `\"` does not close the string and `#` after it is text.
+			escaped = false
+			prev = r
+			continue
+		}
 		switch {
+		case quote == '"' && r == '\\':
+			escaped = true
 		case quote != 0:
 			if r == quote {
 				quote = 0
@@ -821,45 +863,29 @@ func hasCELComment(src string) bool {
 }
 
 // inspectCEL parses src in the profile's environment and reports its top-level
-// operator ("" when it is not an operator call) and whether it is visibly never
-// the empty string.
-func inspectCEL(src string) (top string, visiblyNonEmpty bool, err error) {
+// operator, "" when it is not an operator call.
+func inspectCEL(src string) (top string, err error) {
 	libs, err := v1.ProfileLibraries(v1.CurrentProfile)
 	if err != nil {
-		return "", false, err
+		return "", err
 	}
 	env, err := v1.DefaultEvaluator().Env(libs...)
 	if err != nil {
-		return "", false, err
+		return "", err
 	}
 	parsed, issues := env.Parse(src)
 	if issues != nil && issues.Err() != nil {
-		return "", false, issues.Err()
+		return "", issues.Err()
 	}
 	expr, err := cel.AstToParsedExpr(parsed)
 	if err != nil {
-		return "", false, err
+		return "", err
 	}
-
-	root := expr.GetExpr()
-	if call := root.GetCallExpr(); call != nil {
+	if call := expr.GetExpr().GetCallExpr(); call != nil {
 		top = call.GetFunction()
 	}
 
-	return top, !mayBeEmpty(root), nil
-}
-
-// mayBeEmpty is false only for a string visibly built around a non-empty
-// literal: `"a#" + x` is never "", whatever x is.
-func mayBeEmpty(e *exprpb.Expr) bool {
-	if c := e.GetConstExpr(); c != nil {
-		return c.GetStringValue() == ""
-	}
-	if call := e.GetCallExpr(); call != nil && call.GetFunction() == "_+_" && len(call.GetArgs()) == 2 {
-		return mayBeEmpty(call.GetArgs()[0]) && mayBeEmpty(call.GetArgs()[1])
-	}
-
-	return true
+	return top, nil
 }
 
 // needsParensForEquality: an expression whose top operator binds no tighter
@@ -876,7 +902,7 @@ func needsParensForEquality(top string) bool {
 // needsParensForAnd: an expression must be parenthesized to be an operand of
 // `&&` when its top operator binds looser.
 func needsParensForAnd(src string) bool {
-	top, _, err := inspectCEL(src)
+	top, err := inspectCEL(src)
 
 	return err != nil || top == "_?_:_" || top == "_||_"
 }

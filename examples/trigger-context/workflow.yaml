@@ -20,7 +20,7 @@
 # validate` cannot reason about, and one a later refactor can reorder past the step
 # it was guarding. Authorization belongs on the trigger, where a deployment owns it
 # and a server enforces it against an identity it attested — which is the
-# `allowed_principals:` a few lines down. Same rule that keeps egress policy out of
+# `allow:` predicate a few lines down. Same rule that keeps egress policy out of
 # the validator: each decision lives where the thing that owns it lives.
 #
 # # `trigger` is metadata, never data

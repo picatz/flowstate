@@ -34,7 +34,7 @@ inputs:
     example: sre-lead@example.com
 signals:
   change-approved:
-    allow: ${sender.identity.principal == "https://issuer.example.com#" + inputs.expected_approver && sender.identity.claims.team == "release-managers" && sender.identity.principal != run.identity.principal}
+    allow: ${sender.identity.principal.split("#").size() == 2 && sender.identity.principal == "https://issuer.example.com#" + inputs.expected_approver && sender.identity.claims.team == "release-managers" && sender.identity.principal != run.identity.principal}
 steps:
   - id: notify
     slack.post:

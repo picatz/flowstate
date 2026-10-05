@@ -1884,8 +1884,8 @@ func (f *fixer) expressions(n ast.Node, steps map[string]bool) {
 	// recognised by the `outputs:` key alone, because `outputs:` is also the http
 	// task's own shaping key and the workflow's declared-output block — subtracting
 	// `payload` in either of those would leave a real step reference bare.
-	var walk func(n ast.Node, task taskScope, steps map[string]bool, workflow, waiting bool)
-	walk = func(n ast.Node, task taskScope, steps map[string]bool, workflow, waiting bool) {
+	var walk func(n ast.Node, task taskScope, steps map[string]bool, workflow, waiting, triggers bool)
+	walk = func(n ast.Node, task taskScope, steps map[string]bool, workflow, waiting, triggers bool) {
 		switch node := unwrapAnchor(n).(type) {
 		case *ast.MappingNode:
 			// The bindings a mapping introduces are written as siblings of the
@@ -1917,7 +1917,7 @@ func (f *fixer) expressions(n ast.Node, steps map[string]bool) {
 						visible = without(visible, policyScopeNames)
 					}
 				}
-				walk(v, task, visible, false, waiting)
+				walk(v, task, visible, false, waiting, triggers)
 			}
 		case *ast.MappingValueNode:
 			name, named := keyNameOf(node.Key)
@@ -1951,12 +1951,15 @@ func (f *fixer) expressions(n ast.Node, steps map[string]bool) {
 				// written here. See [waitQuorumKey].
 				steps = without(steps, waitQuorumNames)
 			}
-			if named && name == manualKey {
+			if triggers && named && name == manualKey {
 				// A `manual: allow:` predicate binds the caller as `sender`, so a step
-				// of that name is not what is written under it.
+				// of that name is not what is written under it. Only inside `triggers:`:
+				// a `manual` key anywhere else is an ordinary name, and a task input or a
+				// `value:` object holding one is still a reference to a step.
 				steps = without(steps, map[string]bool{"sender": true})
 			}
 			if named && name == triggersKey {
+				triggers = true
 				// `event` is bound throughout a trigger and nowhere else in the
 				// language. Subtracted for this subtree alone, the way `now` is below,
 				// because outside `triggers:` it is an ordinary name and a step may
@@ -2036,20 +2039,20 @@ func (f *fixer) expressions(n ast.Node, steps map[string]bool) {
 					walk(node.Value, taskScope{
 						name:     name,
 						deferred: deferredInputs(def),
-					}, steps, false, waiting)
+					}, steps, false, waiting, triggers)
 					return
 				}
 			}
-			walk(node.Value, task, steps, false, waiting)
+			walk(node.Value, task, steps, false, waiting, triggers)
 		case *ast.SequenceNode:
 			for _, v := range node.Values {
-				walk(v, task, steps, false, waiting)
+				walk(v, task, steps, false, waiting, triggers)
 			}
 		case *ast.StringNode:
 			f.rootScalar(node, steps)
 		}
 	}
-	walk(n, taskScope{}, steps, true, false)
+	walk(n, taskScope{}, steps, true, false, false)
 }
 
 // resolved follows anchors and aliases to the node that was actually written,

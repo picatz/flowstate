@@ -4472,7 +4472,16 @@ never quotes an input or a claim.
 over them alone would let the starter name their own approver. A predicate that reads
 `inputs` must also read `sender.identity.claims` or `run.identity`, or `flow validate`
 refuses it. This is coarser than the per-rule check on `subject:`; it is the cost of
-having one predicate instead of a field grammar.
+having one predicate instead of a field grammar. Because the check only looks at which
+names the expression reads, write conjunctions (`sender.identity.claims.team == "x" &&
+sender.identity.principal == "issuer#" + inputs.approver`): a claim read in one `||`
+alternative satisfies the check for the whole predicate, including an alternative that
+reads only `inputs`.
+
+A predicate that reads `inputs` records the run's inputs in the policy scope memo at
+submit, including inputs declared `sensitive:`, capped at 64 KiB (see issue #2325). Keep
+a secret out of a predicate's reach by not reading it there, and prefer comparing a
+claim to a name over reading a sensitive input.
 
 **Where it runs.** It is evaluated server-side where the signal is accepted, by the
 one function every enforcement point reaches, so the durable server, `flow run local`,
@@ -4526,14 +4535,16 @@ both spellings compile today, so there is nothing a build refuses that the rewri
 to rescue, and the boundary belongs to the change that removes the old spellings. A
 second run finds nothing to do, and what it writes is what `flow fmt` writes.
 
-Two things in the output are not in the input. An interpolated subject that could be
-empty (`subject: ${inputs.approver}`) gains `sender.identity.principal != "" &&` in
-front of it. The rule list refused a run whose subject did not resolve to
-`<issuer>#<subject>`; a predicate has no such step, and `principal` is empty for an
-unauthenticated sender, so an input left empty would otherwise equal it and admit
-every anonymous sender. A subject built around a non-empty literal
-(`"https://issuer.example.com#" + inputs.approver`) cannot be empty and is left bare.
-And an expression that was a rule's `subject:` keeps the claim or the
+Two things in the output are not in the input. An interpolated subject
+(`subject: ${inputs.approver}`, or `${"https://issuer.example.com#" + inputs.approver}`)
+gains `sender.identity.principal.split("#").size() == 2 &&` in front of it. The rule
+list refused, at submit, a run whose subject did not resolve to exactly one
+`<issuer>#<subject>`; a predicate has no such step. `principal` is empty for an
+unauthenticated sender, so an input left empty would otherwise equal it and admit every
+anonymous sender, and a computed subject such as `"issuer#" + inputs.x` would admit a
+sender whose subject is `a#b` when the rule list refused that run. The clause is false
+for an empty principal and for one with more than one `#`, so the predicate admits only
+what a run the rule list accepted would have admitted. And an expression that was a rule's `subject:` keeps the claim or the
 `distinct_from_starter:` that narrowed it, as a conjunct, because the narrowing rule is
 now one syntactic check over the whole predicate and would be satisfied by a claim
 read in a different alternative.

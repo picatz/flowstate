@@ -115,13 +115,13 @@ fails it is refused synchronously and the workflow is never told anything was se
 ```yaml
 signals:
   approval-decision:
-    allow: ${(sender.identity.principal == "https://issuer.example.com#" + inputs.primary_approver && sender.identity.claims.team == "release-managers" || sender.identity.principal == "https://issuer.example.com#" + inputs.backup_approver && sender.identity.claims.team == "release-managers") && sender.identity.principal != run.identity.principal}
+    allow: ${((sender.identity.principal.split("#").size() == 2 && sender.identity.principal == "https://issuer.example.com#" + inputs.primary_approver && sender.identity.claims.team == "release-managers") || (sender.identity.principal.split("#").size() == 2 && sender.identity.principal == "https://issuer.example.com#" + inputs.backup_approver && sender.identity.claims.team == "release-managers")) && sender.identity.principal != run.identity.principal}
 ```
 
 Two alternatives joined by `||` — and that is the whole of the escalation's security
 story. **Escalation changes who is asked; it cannot change who is allowed.** The backup
 approver can answer at any point in the run, including before the escalation ever
-happens, because this file's author wrote a rule naming them. There is no moment where
+happens, because this file's author wrote an alternative naming them. There is no moment where
 the policy is looser than it was at submit: `signals:` is read by the server from the
 run's own memo, frozen when the run started, never re-read from a running workflow's own
 reasoning. A chase that escalated by *widening a policy* would be a workflow that can

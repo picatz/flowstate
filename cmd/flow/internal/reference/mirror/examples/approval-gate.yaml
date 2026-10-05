@@ -50,7 +50,7 @@ signals:
     # So a deployment edits this line to name its own issuer, the same way it
     # edits any other policy it owns. The walkthrough in README.md substitutes
     # its local issuer into a copy of this file for exactly that reason.
-    allow: ${sender.identity.principal == "https://issuer.example.com#" + inputs.expected_approver && sender.identity.claims.team == "release-managers" && sender.identity.principal != run.identity.principal}
+    allow: ${sender.identity.principal.split("#").size() == 2 && sender.identity.principal == "https://issuer.example.com#" + inputs.expected_approver && sender.identity.claims.team == "release-managers" && sender.identity.principal != run.identity.principal}
 debug:
   # Debugging and approval are separate authorities.
   allow: ${sender.identity.claims.team == "sre"}

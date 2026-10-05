@@ -1440,9 +1440,13 @@ the predicate reads), a result that is not a bool, or an expression over its cos
 all refuse the sender. A predicate that reads `inputs` must also read
 `sender.identity.claims` or `run.identity`: whoever starts the run chooses its inputs, so
 a predicate over them alone would let them name their own approver. When a name comes
-from `inputs`, compare it to a name that cannot be empty (`"https://issuer.example.com#" +
-inputs.approver`), because an unauthenticated sender's `principal` is empty and equals
-an empty input.
+from `inputs`, require exactly one `#` in the principal first
+(`sender.identity.principal.split("#").size() == 2 && sender.identity.principal ==
+"https://issuer.example.com#" + inputs.approver`), because an unauthenticated sender's
+`principal` is empty and equals an empty input, and a computed name could otherwise be
+matched by a principal holding a second `#`. Write conjunctions: the narrowing check is
+syntactic, and a predicate that reads `inputs` records them in the policy scope memo
+(including `sensitive:` inputs, 64 KiB cap; issue #2325).
 
 The older spelling, an `allow:` list of rules (`subject:`, `claims:`, `namespace:`)
 with a `distinct_from_starter: true` beside it, still compiles. `flow fix` rewrites it
