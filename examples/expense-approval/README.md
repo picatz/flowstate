@@ -38,20 +38,40 @@ $ flow run local examples/expense-approval/workflow.yaml \
     --signal manager-approved='{"approved": true}'
 ```
 
-And the same file, run durably instead of in this process (needs a Temporal dev
-server, `flow worker`, and `flow server` — see the main README's Quickstart):
+And the same file, run durably instead of in this process. `flow server dev` starts
+Temporal, the API server and a worker on loopback with no sign-in, and keeps
+everything in memory (the first launch downloads the Temporal CLI):
 
 ```console
-$ flow run examples/expense-approval/workflow.yaml \
-    --input-file examples/expense-approval/inputs.json
-started workflow expense-approval; come back to it with `flow watch flowstate-workflow-...`
+$ flow server dev
 ```
 
-Then, from another terminal, addressing the id the first command printed:
+In another terminal, start the report with `--detach` so the command returns while
+the run waits, and give the first gate a timeout long enough to answer
+(`timeout: 10m` in place of `4s`):
+
+```console
+$ flow run --detach examples/expense-approval/workflow.yaml \
+    --input-file examples/expense-approval/inputs.json
+$ flow list
+```
+
+Then address the id `flow list` shows, and read the result:
 
 ```console
 $ flow signal <workflow-id> manager-approved --data '{"approved": true}'
+delivered manager-approved to <workflow-id>
+$ flow get <workflow-id>
+COMPLETED workflow <workflow-id> ...
+outputs
+  amount 482.5
+  approved_by anonymous
+  outcome approved_by_manager
 ```
+
+Without a sign-in, `approved_by` is `anonymous`; a production deployment names the
+verified approver and can refuse an answer from anyone else, which
+[`approval-gate`](../approval-gate) shows.
 
 `flow signal` is the durable spelling of `--signal`, addressed to a workload
 already waiting rather than answered before it starts — which is the part a local
