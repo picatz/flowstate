@@ -211,17 +211,22 @@ func CheckWebhookSignalCorrelate(webhook string, signal *WebhookTrigger_Signal) 
 // every workflow that deployment serves. The gap is closed in the file, where
 // an author can see it: a `signal:` requires an explicit policy for its name.
 //
-// # What it deliberately does not check
+// # What it checks of the predicate, and what it leaves to delivery
 //
-// Whether the policy's `allow:` predicate could admit this trigger's principal
-// ([WebhookTriggerPrincipal]: this issuer, this `<workflow>/<trigger>` subject,
-// no claims). A predicate is decided at delivery over the sender, the starter
-// and the run's inputs, none of which a file check holds, so it cannot say the
-// bridge is unreachable; it is enforced in full at delivery by
-// [SignalPolicyCheck], the only enforcement point either driver has. The
-// rule-list form of this check refused a policy no webhook could satisfy; that
-// refusal went with the list, and a predicate that cannot admit the bridge now
-// denies at delivery instead (#2325).
+// Only what is provable from the file: a predicate whose admitted principals
+// are a closed set ([SignalPolicyClosedPrincipals]: `principal == "<literal>"`
+// and `in [...]`, joined by `||` and `&&`) that does not contain this trigger's
+// principal ([WebhookTriggerPrincipal]) can never admit a delivery, so it is
+// refused where an author can fix it. An upper bound is enough for that: no
+// reading of the rest of the predicate can add a principal to the set.
+//
+// Anything open is left to delivery. A claims-only predicate, or one reading
+// the starter or the run's inputs, is decided over values a file check does not
+// hold, so it cannot say the bridge is unreachable (a webhook's principal has no
+// claims, but proving every claims expression unsatisfiable is a second
+// evaluator); [SignalPolicyCheck] enforces it in full, the only enforcement point
+// either driver has, and it denies there (#2325). Never refused: a predicate that
+// some delivery could satisfy.
 func CheckWebhookSignalPolicy(wf *Workflow, webhook string, signal *WebhookTrigger_Signal) error {
 	name := signal.GetName()
 	principal := WebhookTriggerPrincipal("", wf.GetName(), webhook)
@@ -233,6 +238,12 @@ func CheckWebhookSignalPolicy(wf *Workflow, webhook string, signal *WebhookTrigg
 			"no policy admits any sender, and this one is answerable by whoever holds this webhook's "+
 			"signing key. Declare it: under `signals: %s:` write `allow: ${sender.identity.principal == %q}`",
 			webhook, name, name, qualified)
+	}
+
+	if admitted, closed := SignalPolicyClosedPrincipals(wf.GetSignals()[name]); closed && !slices.Contains(admitted, qualified) {
+		return fmt.Errorf("webhook %q answers signal %q, but that signal's `allow:` predicate admits only "+
+			"named principals and %q is not one of them, so every delivery would be denied. Add it: "+
+			"`sender.identity.principal == %q`", webhook, name, qualified, qualified)
 	}
 
 	return nil

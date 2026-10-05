@@ -392,6 +392,12 @@ func runSuite(ctx context.Context, file *File, opts RunOptions, loaderFor func(*
 				// many seeds was refused before it got here.
 				if opts.Debugger != nil && schedules.explores && v1.SchedulerFromContext(ctx) == v1.WrittenOrder {
 					ctx = v1.NewContextWithDebugger(ctx, nil)
+					// A debugged invocation runs unbounded because a person is
+					// at the prompt; the baseline has nobody there, so it keeps
+					// the bound every unattended case gets.
+					var stop context.CancelFunc
+					ctx, stop = caseContextWithin(ctx, caseTimeout)
+					defer stop()
 				}
 				result, spec, transcript, account, shown, err := runCase(ctx, &test, l.deliveryPath, l.load,
 					!opts.skipTranscript && reported,

@@ -873,7 +873,8 @@ func signalPolicyMemoEntry(wf *v1.Workflow) (map[string]any, error) {
 
 // signalPolicyScopeMemoKey is the memo field recording the per-run values a
 // signal policy's `allow: ${...}` predicate reads at delivery time: the run's
-// bound inputs and its starter's identity (with claims), as a [v1.Scope].
+// bound inputs it names (never the others, and never a `sensitive:` one) and its
+// starter's identity (with claims), as a [v1.Scope].
 //
 // Written only when some predicate reads them, and only what it reads. A run
 // whose policies are rules, or whose predicates read neither, records nothing,
@@ -898,7 +899,14 @@ func signalPolicyScopeMemoEntry(policies map[string]*v1.SignalPolicy, inputs map
 
 	scope := &v1.Scope{}
 	if reads.Inputs {
-		scope.Inputs = inputs
+		// Only the inputs a predicate names, never the rest: a value nothing
+		// reads has no business in durable history ([v1.SignalPolicyReads]).
+		scope.Inputs = make(map[string]*v1.Value, len(reads.InputNames))
+		for _, name := range reads.InputNames {
+			if value, ok := inputs[name]; ok {
+				scope.Inputs[name] = value
+			}
+		}
 	}
 	if reads.Run {
 		scope.Identity = starter
@@ -978,6 +986,12 @@ func debugPolicyMemoEntry(wf *v1.Workflow) (map[string]any, error) {
 // memo and not the policy, so enforcement silently became the zero case.
 func policyMemoEntries(wf *v1.Workflow, inputs map[string]*v1.Value, starter *v1.WorkloadIdentity) (map[string]any, error) {
 	entries := map[string]any{signalProtocolMemoKey: currentSignalProtocol}
+
+	// Fail closed where the memo is written: a specification that never met
+	// validateSpecification must not get a sensitive input recorded either.
+	if err := v1.CheckWorkflowPolicyInputs(wf); err != nil {
+		return nil, err
+	}
 
 	signals, err := signalPolicyMemoEntry(wf)
 	if err != nil {
@@ -1973,6 +1987,12 @@ func (s *FlowstateServer) validateSpecification(wf *v1.Workflow) error {
 	// [v1.SignalPolicy] and is checked by the same rules — see
 	// [v1.CheckDebugPolicy].
 	if err := v1.CheckDebugPolicy(wf.GetDebug()); err != nil {
+		return connect.NewError(connect.CodeInvalidArgument, err)
+	}
+
+	// A predicate's inputs are recorded in the run's memo, so one that reads an
+	// input declared `sensitive:` is refused: a secret never enters history.
+	if err := v1.CheckWorkflowPolicyInputs(wf); err != nil {
 		return connect.NewError(connect.CodeInvalidArgument, err)
 	}
 

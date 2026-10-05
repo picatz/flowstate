@@ -2003,10 +2003,13 @@ the delivery is provable, depending on it is not.
 zero case is closed.** A signal name with no `signals:` entry admits any sender; that
 is the deliberate opt-in rule everywhere else, and it is not tolerable on a route
 anybody can POST to, where "any sender" means "whoever holds one signing key". So
-`flow validate` refuses a `signal:` whose name has no explicit policy. What a predicate
-admits is decided at delivery, over the sender, so the file check does not evaluate
-it, and a predicate that cannot admit the trigger's principal
-(`flowstate://webhook#<workflow>/<trigger>`) refuses every delivery instead (#2325):
+`flow validate` refuses a `signal:` whose name has no explicit policy, and one whose
+predicate admits only named principals (`sender.identity.principal == "..."` or `in
+[...]`, joined by `||` and `&&`) none of which is the trigger's
+(`flowstate://webhook#<workflow>/<trigger>`). Any other predicate is decided at
+delivery, over the sender, so the file check does not evaluate it, and one that cannot
+admit the trigger's principal (a claims-only predicate, say) refuses every delivery
+instead (#2325):
 
 ```
 webhook "slack-approval" answers signal "stage-approved", which declares no `signals:`
@@ -4475,10 +4478,15 @@ sender.identity.principal == "issuer#" + inputs.approver`): a claim read in one 
 alternative satisfies the check for the whole predicate, including an alternative that
 reads only `inputs`.
 
-A predicate that reads `inputs` records the run's inputs in the policy scope memo at
-submit, including inputs declared `sensitive:`, capped at 64 KiB (see issue #2325). Keep
-a secret out of a predicate's reach by not reading it there, and prefer comparing a
-claim to a name over reading a sensitive input.
+A predicate that reads `inputs` records, in the policy scope memo at submit, only the
+inputs it names (`inputs.name`, `inputs["name"]`, `has(inputs.name)` or `"name" in
+inputs`), capped at 64 KiB. A predicate that reads `inputs` without naming one
+(`inputs[<computed>]`, `inputs` passed whole to a function or iterated) is refused,
+because what it reads cannot be recorded narrowly. An input declared `sensitive:` can
+never be read by a `signals:` or `debug:` predicate: `flow validate` refuses it, naming
+the input and no value, and the server refuses it again at submit, because a secret
+never enters durable history (#2325). Compare a claim to a name instead, or drop
+`sensitive:` from an input that is really only an identifier.
 
 **Where it runs.** It is evaluated server-side where the signal is accepted, by the
 one function every enforcement point reaches, so the durable server, `flow run local`,
@@ -4561,8 +4569,9 @@ change says so.
 against a policy only when it can enumerate who the policy admits: a predicate made of
 `sender.identity.principal == "..."` and `in [...]` comparisons, joined by `||` (a union)
 or `&&` (the closed side), is counted, and anything else is open and never refused. A
-bridged webhook's check that its signal's policy can admit the trigger no longer reads
-the policy at all; a predicate that cannot admit it denies at every delivery (#2325).
+bridged webhook's check that its signal's policy can admit the trigger refuses a closed
+predicate that omits the trigger's principal and leaves every open one to delivery,
+where one that cannot admit it denies (#2325).
 
 ### Bounded, because the author does not control the trip count
 

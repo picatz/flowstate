@@ -157,6 +157,11 @@ type SignalPolicyPredicate struct {
 type SignalPolicyReads struct {
 	// Inputs: the run's `inputs`.
 	Inputs bool
+	// InputNames are the top-level input names the predicate reads, sorted and
+	// without repeats. Submit records exactly these and no other input: what a
+	// predicate does not name is never copied into history, and a predicate that
+	// names no input statically is refused (see [compileAllowPredicate]).
+	InputNames []string
 	// Run: `run.identity`, the starter, including its claims.
 	Run bool
 }
@@ -220,6 +225,12 @@ func compileAllowPredicate(src string, manual bool) (SignalPolicyPredicate, erro
 	}
 
 	reads := signalPolicyReads(checked)
+	if reads.opaqueInputs {
+		return SignalPolicyPredicate{}, errors.New(
+			"the predicate reads `inputs` without naming an input (`inputs[<computed>]`, `inputs` passed whole " +
+				"or iterated); the run records only the inputs a predicate names, so write each as " +
+				"`inputs.name` or `inputs[\"name\"]`")
+	}
 	if reads.inputs && !reads.claims && !reads.run {
 		if manual {
 			return SignalPolicyPredicate{}, errors.New(
@@ -235,7 +246,11 @@ func compileAllowPredicate(src string, manual bool) (SignalPolicyPredicate, erro
 				"`sender.identity.principal != run.identity.principal`)")
 	}
 
-	return SignalPolicyPredicate{rule: rule, reads: SignalPolicyReads{Inputs: reads.inputs, Run: reads.run}}, nil
+	return SignalPolicyPredicate{rule: rule, reads: SignalPolicyReads{
+		Inputs:     reads.inputs,
+		InputNames: slices.Sorted(maps.Keys(reads.inputNames)),
+		Run:        reads.run,
+	}}, nil
 }
 
 const signalPolicyScopeDescription = "`sender.identity.{principal,subject,issuer,namespace,claims}`, " +
@@ -271,15 +286,71 @@ func SignalPolicyExprReads(policies map[string]*SignalPolicy) SignalPolicyReads 
 		}
 		if p, err := CompileSignalPolicyPredicate(policy.GetAllow()); err == nil {
 			reads.Inputs = reads.Inputs || p.reads.Inputs
+			reads.InputNames = append(reads.InputNames, p.reads.InputNames...)
 			reads.Run = reads.Run || p.reads.Run
 		}
 	}
 
+	slices.Sort(reads.InputNames)
+	reads.InputNames = slices.Compact(reads.InputNames)
+
 	return reads
+}
+
+// CheckPolicyInputsNotSensitive refuses a predicate that reads an input the
+// workflow declares `sensitive:`. A predicate's inputs are recorded with the run
+// so it can be evaluated at delivery, and a sensitive value never enters
+// durable history (the rule `prompt:` and `fail: message:` already follow:
+// refuse the reach). sensitive is [SensitiveInputNames]; where names the stanza.
+//
+// The refusal names the input, which the author wrote, and no value. A
+// predicate that cannot be analysed (it does not compile) is not this check's
+// to refuse; [CheckSignalPolicyExpr] does.
+func CheckPolicyInputsNotSensitive(where string, policy *SignalPolicy, sensitive map[string]bool) error {
+	if len(sensitive) == 0 || policy.GetAllow() == "" {
+		return nil
+	}
+
+	p, err := CompileSignalPolicyPredicate(policy.GetAllow())
+	if err != nil {
+		return nil
+	}
+
+	for _, name := range p.reads.InputNames {
+		if sensitive[name] {
+			return fmt.Errorf("%s.allow reads the input %q, which is declared `sensitive:`; the inputs a "+
+				"predicate reads are recorded with the run, and a sensitive input is never recorded. "+
+				"Compare a claim or the starter instead, or drop `sensitive:` from that input", where, name)
+		}
+	}
+
+	return nil
+}
+
+// CheckWorkflowPolicyInputs is [CheckPolicyInputsNotSensitive] over every
+// `signals:` policy and `debug:` of wf, the one call submit makes.
+func CheckWorkflowPolicyInputs(wf *Workflow) error {
+	sensitive := SensitiveInputNames(wf)
+	if len(sensitive) == 0 {
+		return nil
+	}
+
+	for _, name := range slices.Sorted(maps.Keys(wf.GetSignals())) {
+		if err := CheckPolicyInputsNotSensitive(fmt.Sprintf("signals[%q]", name), wf.GetSignals()[name], sensitive); err != nil {
+			return err
+		}
+	}
+
+	return CheckPolicyInputsNotSensitive("debug", wf.GetDebug(), sensitive)
 }
 
 type signalPolicyScopeReads struct {
 	inputs, claims, run bool
+	// inputNames are the top-level keys read as `inputs.k`, `inputs["k"]`,
+	// `has(inputs.k)` or `"k" in inputs`; opaqueInputs is set by any other use
+	// of `inputs`, which names no key.
+	inputNames   map[string]struct{}
+	opaqueInputs bool
 }
 
 // signalPolicyReads reports which of the narrowing-relevant names a checked
@@ -294,11 +365,16 @@ func signalPolicyReads(checked *cel.Ast) signalPolicyScopeReads {
 		return e.Kind() == celast.IdentKind && e.AsIdent() == name && !signalPolicyIsLocal(e)
 	}
 
-	var reads signalPolicyScopeReads
+	reads := signalPolicyScopeReads{inputNames: map[string]struct{}{}}
 	for _, e := range celast.MatchDescendants(root, celast.AllMatcher()) {
 		switch {
 		case global(e, InputsRoot):
 			reads.inputs = true
+			if name, ok := signalPolicyInputKey(e); ok {
+				reads.inputNames[name] = struct{}{}
+			} else {
+				reads.opaqueInputs = true
+			}
 		case global(e, "run"):
 			reads.run = true
 		case e.Kind() == celast.SelectKind:
@@ -317,6 +393,50 @@ func signalPolicyReads(checked *cel.Ast) signalPolicyScopeReads {
 	}
 
 	return reads
+}
+
+// signalPolicyInputKey reports the one input name an `inputs` identifier is
+// used to read, from its parent: a field select, an index by a string literal,
+// or the right side of `"k" in inputs`. Anything else (a computed key, a call
+// taking the map, a comprehension over it, an optional select) names no key.
+func signalPolicyInputKey(ident celast.NavigableExpr) (string, bool) {
+	parent, ok := ident.Parent()
+	if !ok {
+		return "", false
+	}
+
+	switch parent.Kind() {
+	case celast.SelectKind:
+		if parent.AsSelect().Operand().ID() == ident.ID() {
+			return parent.AsSelect().FieldName(), true
+		}
+	case celast.CallKind:
+		call := parent.AsCall()
+		args := call.Args()
+		if len(args) != 2 {
+			return "", false
+		}
+		key := func(e celast.Expr) (string, bool) {
+			if e.Kind() != celast.LiteralKind {
+				return "", false
+			}
+			s, ok := e.AsLiteral().(types.String)
+
+			return string(s), ok
+		}
+		switch call.FunctionName() {
+		case operators.Index:
+			if args[0].ID() == ident.ID() {
+				return key(args[1])
+			}
+		case operators.In:
+			if args[1].ID() == ident.ID() {
+				return key(args[0])
+			}
+		}
+	}
+
+	return "", false
 }
 
 // signalPolicyIsLocal reports whether the identifier is bound by a

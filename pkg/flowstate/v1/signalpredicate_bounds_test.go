@@ -22,7 +22,6 @@ func TestSignalPolicyInputsAreUnboundWhenTheCallerHoldsNone(t *testing.T) {
 		`!has(inputs.x)` + narrow,
 		`"x" in inputs` + narrow,
 		`!("x" in inputs)` + narrow,
-		`inputs.size() == 0` + narrow,
 	} {
 		require.Error(t,
 			v1.SignalPolicyCheck(t.Context(), predicatePolicy(expression), approver, nil, false, nil),
@@ -31,7 +30,7 @@ func TestSignalPolicyInputsAreUnboundWhenTheCallerHoldsNone(t *testing.T) {
 
 	// Inputs that were recorded and are empty are a real answer: only a nil map
 	// means nothing was recorded.
-	require.NoError(t, v1.SignalPolicyCheck(t.Context(), predicatePolicy(`inputs.size() == 0`+narrow),
+	require.NoError(t, v1.SignalPolicyCheck(t.Context(), predicatePolicy(`!has(inputs.x)`+narrow),
 		approver, nil, false, map[string]*v1.Value{}))
 }
 
