@@ -115,6 +115,10 @@ task table in the README drifting from the code is exactly the failure this prev
 These are the rules that keep the system coherent as it grows. A change that violates one
 of these is a bug, even if it passes tests.
 
+Source comments cite this list as "ARCHITECTURE.md invariant N". `AGENTS.md` keeps a
+shorter list in a different order for agents; cite it as "AGENTS.md invariant N", never
+by bare number.
+
 1. **Proto-first.** Types that describe the system — workloads, steps, values, execution
    state, evaluation scope, identity — are defined in the schema, not as hand-written Go
    structs. A Go type that mirrors a schema concept is a second definition of it, and two
