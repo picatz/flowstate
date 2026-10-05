@@ -69,9 +69,7 @@ triggers:
   # authenticated, never by an expression this workflow evaluates about itself.
   - manual:
       require_reason: true
-      allowed_principals:
-        - "https://issuer.example.com#oncall@example.com"
-        - "https://issuer.example.com#release-bot@example.com"
+      allow: ${sender.identity.principal in ["https://issuer.example.com#oncall@example.com", "https://issuer.example.com#release-bot@example.com"]}
 steps:
   # The branch every author writes first. A scheduled sweep does not page anyone;
   # everything else does. This is behaviour, and `trigger.kind` is the right thing

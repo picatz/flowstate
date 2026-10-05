@@ -1,0 +1,278 @@
+edition: v2026.4
+name: enterprise-incident-response
+description: Pages an on-call responder, gathers evidence from three systems at once while waiting, escalates if nobody answers in time, and records who actually authorized remediation - never the person who opened the incident.
+# An incident runbook is not "a script with a sleep in it": it has to page
+# someone, keep working while it waits, escalate on its own if the page goes
+# unanswered, and end with an accountable decision rather than a chat log
+# somebody has to reconstruct afterward. Four primitives, one runbook:
+#
+#   wait_for_signal + timeout
+#                 - the page. `responder_ack` blocks until someone claims the
+#                   incident or the deadline passes; unlike enterprise-fund-
+#                   transfer's approval gate, being unanswered is not the end
+#                   of the runbook - it is the reason `escalate` exists.
+#
+#   parallel:     - evidence gathering happens *while the page is out*, not
+#                   after someone answers it. Logs, metrics, and recent
+#                   deploys are independent lookups with nothing to say to
+#                   each other, exactly the shape fan-out-and-parallel's own
+#                   `checks:` step demonstrates - here it is not filler, it is
+#                   the reason a responder who claims the incident already has
+#                   something to look at instead of waiting on three more
+#                   round trips.
+#
+#   escalation on timeout
+#                 - `escalate` runs only when `responder_ack` lapses, and
+#                   `remediation_ack` - the decision that actually matters -
+#                   is gated on *either* path answering, so a runbook nobody
+#                   claims within the first window does not stall the
+#                   incident, it pages wider.
+#
+#   separation of duties
+#                 - `run.identity` is who opened the incident (however this
+#                   run was started - a monitoring system's own identity, an
+#                   engineer running `flow run`). `steps.remediation_ack.sender`
+#                   is who the server attests actually authorized remediation.
+#                   `authorized` below refuses the case where they are the
+#                   same identity, for the identical reason approval-gate
+#                   refuses a deploy approving itself: an incident opener
+#                   signing off on their own remediation is not independent
+#                   review, it is a rubber stamp with an audit trail attached.
+#
+# Evidence gathering is `http` against simulated internal endpoints, the same
+# choice enterprise-access-review makes and for the same reason - this file
+# runs and its test passes without a plugin process. A production version
+# would likely reach observability systems through the `http` task against
+# real query APIs, exactly as written here, or through provider-specific
+# tasks as they land.
+inputs:
+  incident_id:
+    type: string
+    required: true
+    description: the incident this runbook is responding to
+    example: inc-2026-0142
+    must: this.matches(r'^inc-[0-9-]+$')
+  service:
+    type: string
+    required: true
+    description: the service the incident was opened against
+    example: checkout-api
+  severity:
+    type: string
+    required: true
+    description: initial severity, as declared when the incident was opened
+    example: sev2
+    must: this in ["sev1", "sev2", "sev3"]
+
+# Two distinct gates, two distinct claims. Anyone on the paging rotation may
+# acknowledge that they are looking at it; only someone with the narrower
+# `incident-commander` claim may sign off that remediation actually happened
+# and is safe to consider done - a real separation of on-call rotation from
+# the authority to close an incident out.
+signals:
+  remediation-authorized:
+    allow:
+      - claims:
+          role: incident-commander
+  responder-ack:
+    allow:
+      - claims:
+          role: on-call-responder
+steps:
+  - id: page
+    log:
+      level: warn
+      message: '${"%s opened by %s: paging on-call for %s".format([inputs.incident_id, (run.identity.subject == "") ? "an unattested caller" : run.identity.subject, inputs.service])}'
+
+  # The page and the evidence gathering run in the SAME `parallel:` block, as
+  # sibling branches, rather than one after the other - this was wrong in an
+  # earlier version of this file, which put `responder_ack` as its own
+  # top-level step before a separate `evidence` block. Top-level steps run
+  # in order, so that shape made the wait the *first* thing that happened
+  # and evidence gathering only start once someone acked or the fifteen
+  # minutes lapsed - exactly backwards for a runbook whose whole point is
+  # that a responder has something to look at *during* the page, not after
+  # it. A branch's steps flatten into this workflow's ordinary step
+  # namespace the same way a `for_each` body's do not - `steps.responder_ack`,
+  # `steps.logs`, `steps.metrics`, and `steps.recent_deploys` are all
+  # addressable exactly as if they were top-level, which is what lets
+  # `escalate` below keep reading `steps.responder_ack.timed_out` unchanged.
+  #
+  # Fifteen minutes is a real first-response window for a sev2; a sev1 in
+  # production would page harder and wait less, which is a policy decision
+  # this file leaves to its caller rather than hardcoding - see `severity`
+  # above, which a real deployment would read here to pick the timeout, left
+  # as a single fixed window in this example for clarity.
+  # The three evidence lookups below ask the observability stack about one
+  # service, and the query saying so was written three times. Stated once here
+  # instead: an http task's `query:` takes a whole map, so the repetition has a
+  # name rather than three copies a fourth lookup would make four
+  # (docs/STYLE.md R5, `flow lint`).
+  - id: observability_query
+    value:
+      service: ${inputs.service}
+  - id: page_and_gather_evidence
+    parallel:
+      - steps:
+          - id: responder_ack
+            wait_for_signal:
+              name: responder-ack
+              timeout: 15m
+      - steps:
+          - id: logs
+            timeout: 10s
+            continue_on_error: true
+            http:
+              method: GET
+              outputs:
+                summary: ${response.json.summary}
+              parse_json: true
+              query: ${steps.observability_query.value}
+              url: https://observability.internal.example.com/logs
+      - steps:
+          - id: metrics
+            timeout: 10s
+            continue_on_error: true
+            http:
+              method: GET
+              outputs:
+                error_rate: ${response.json.error_rate}
+              parse_json: true
+              query: ${steps.observability_query.value}
+              url: https://observability.internal.example.com/metrics
+      - steps:
+          - id: recent_deploys
+            timeout: 10s
+            continue_on_error: true
+            http:
+              method: GET
+              outputs:
+                deployed_version: ${response.json.deployed_version}
+              parse_json: true
+              query: ${steps.observability_query.value}
+              url: https://observability.internal.example.com/deploys
+
+  # Nobody claimed it in the first window - a real escalation, paged wider,
+  # not a silent timeout somebody has to notice on a dashboard later.
+  - id: escalate
+    if: ${steps.responder_ack.timed_out}
+    log:
+      level: error
+      message: ${"%s unacknowledged after 15m; escalating %s".format([inputs.incident_id, inputs.service])}
+
+  # The wider page. Only reached on the escalation path, so an incident that
+  # was claimed promptly never opens a second gate it does not need.
+  - id: escalated_ack
+    if: ${steps.responder_ack.timed_out}
+    wait_for_signal:
+      name: responder-ack
+      timeout: 30m
+
+  # Did somebody answer, on either page? The one question this runbook asks
+  # in six places, asked here once.
+  #
+  # It spans *two* waits, which is why shaping a wait's own `outputs:` cannot
+  # name it the way `remediation_ack` below names its authorization decision:
+  # no single gate can see both. Before `value:` existed this predicate was
+  # written out four times in `if:`s, plus its hand-expanded complement twice
+  # more in the `outputs:` block - and the complement is the copy a De Morgan
+  # slip corrupts while every reader nods along. Now there is one spelling and
+  # `!` does the negating.
+  #
+  # The short-circuit is load-bearing and unchanged: `escalated_ack` only runs
+  # when the first page lapsed, so when it did not, the left disjunct is true
+  # and the right is never evaluated.
+  - id: claimed_on_either_page
+    value: ${!steps.responder_ack.timed_out || steps.responder_ack.timed_out && !steps.escalated_ack.timed_out}
+
+  # Whether *someone* answered the page - not attestation, on purpose. This is
+  # evidence for a human reading the run, not the remediation decision itself
+  # (`remediation_ack` below), so it does not gate on `sender.local`/
+  # `run.local` the way that step's own `authorized` has to: it asks exactly
+  # the question above, and so does `remediation_ack`'s own `if:`.
+  - id: claimed
+    if: ${steps.claimed_on_either_page.value}
+    log:
+      message: ${inputs.incident_id + " claimed"}
+
+  # The decision that matters: authorized remediation, gated on the attested
+  # signer being a real, separate identity from whoever opened the incident.
+  - id: remediation_ack
+    if: ${steps.claimed_on_either_page.value}
+    wait_for_signal:
+      name: remediation-authorized
+      timeout: 1h
+      outputs:
+        # The authorization decision, stated ONCE here on the step that
+        # produced it, the way approval-gate shapes its gate. The six-line
+        # predicate below - attested, said yes, a real subject, and a separate
+        # identity from whoever opened the incident - used to be written four
+        # times: positive in `authorized`'s `if:`, hand-negated in `refused`'s,
+        # and re-derived again in each of the two `outputs:`. The hand-negated
+        # copy is the one a De Morgan slip corrupts without review noticing.
+        # Every reader now compares this recorded name.
+        #
+        # `run.local`/`sender.local` are read here exactly as they were in the
+        # raw predicate: a flow test rehearsal is always local, so `authorized`
+        # is unreachable here by design (see the test's coverage note) and this
+        # shapes to `refused` or `unremediated` in a rehearsal, never
+        # `authorized`.
+        #
+        # `payload.?authorized.orValue(false)` reads the one field a defaulted
+        # optional can answer correctly here: this line ANDs it against three
+        # more conditions that only ask what the sender was attested to be, so
+        # collapsing presence-and-truth into one defaulted read costs nothing
+        # `has(payload.authorized) && payload.authorized` had - both are false
+        # exactly when the field was absent or explicitly false.
+        # The lapse is not part of this question and is not folded in: a
+        # conditional inside a conditional is what `flow lint` reports
+        # (docs/STYLE.md R5), and `timed_out` below is its own name. The two
+        # `value:` steps after this gate are where they are joined.
+        authorized: |-
+          ${payload.?authorized.orValue(false) && !sender.local && !run.local && sender.identity.subject != "" &&
+          !(sender.identity.subject == run.identity.subject && sender.identity.issuer == run.identity.issuer)}
+        # Re-exposed because `outputs:` replaces what the wait produced:
+        # `authorized`'s log line and the `authorized_by` output still name the
+        # attested signer.
+        sender: ${sender}
+        timed_out: ${timed_out}
+
+  # What a signer who actually answered decided, and then the whole ending
+  # including the lapse - two steps rather than one three-way expression, per
+  # R5. Both are named in the vocabulary `outputs.outcome` reports rather than
+  # the gate's own, so the output reads one of them instead of translating.
+  #
+  # Guarded exactly as the gate above is: an incident nobody claimed never
+  # opened it, so there is nothing here to name.
+  - id: remediation_answer
+    if: ${steps.claimed_on_either_page.value}
+    value: '${steps.remediation_ack.authorized ? "remediated" : "refused"}'
+  - id: remediation_outcome
+    if: ${steps.claimed_on_either_page.value}
+    value: '${steps.remediation_ack.timed_out ? "claimed_unremediated" : steps.remediation_answer.value}'
+  - id: authorized
+    if: ${steps.claimed_on_either_page.value && steps.remediation_outcome.value == "remediated"}
+    log:
+      message: ${"remediation for %s authorized by %s".format([inputs.incident_id, steps.remediation_ack.sender.identity.subject])}
+
+  # Anything that reached this gate and did not qualify as a real, separate
+  # authorization - an explicit "no", an unattested sender (the case `flow
+  # test` itself always produces, since it has no authenticated caller), or
+  # the incident's own opener signing off on their own remediation. One
+  # bucket rather than three, unlike approval-gate's own three-way split of
+  # the identical shape - see docs/USE_CASES.md for that honest gap.
+  - id: refused
+    if: ${steps.claimed_on_either_page.value && steps.remediation_outcome.value == "refused"}
+    log:
+      level: warn
+      message: ${"remediation for %s was not authorized by a real, separate signer".format([inputs.incident_id])}
+outputs:
+  outcome:
+    value: '${steps.claimed_on_either_page.value ? steps.remediation_outcome.value : "unclaimed"}'
+    description: how this incident's runbook ended
+  authorized_by:
+    value: '${(steps.claimed_on_either_page.value && steps.remediation_ack.authorized) ? steps.remediation_ack.sender.identity.subject : ""}'
+    description: who the server attests authorized remediation, empty unless it genuinely was authorized by someone other than whoever opened the incident
+  escalated:
+    value: ${steps.responder_ack.timed_out}
+    description: whether the first page went unanswered and this runbook escalated

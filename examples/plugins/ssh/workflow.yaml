@@ -34,11 +34,7 @@ inputs:
     example: sre-oncall@example.com
 signals:
   restart-approved:
-    allow:
-      - subject: ${"https://issuer.example.com#" + inputs.expected_approver}
-        claims:
-          team: sre
-    distinct_from_starter: true
+    allow: ${sender.identity.principal == "https://issuer.example.com#" + inputs.expected_approver && sender.identity.claims.team == "sre" && sender.identity.principal != run.identity.principal}
 steps:
   # The parameters every step here fills, stated once: a grant's placeholder set
   # is the same on the read and the write, and two copies of it are two things

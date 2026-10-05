@@ -133,14 +133,7 @@ inputs:
 # somebody else entirely.
 signals:
   approval-decision:
-    allow:
-      - subject: ${"https://issuer.example.com#" + inputs.primary_approver}
-        claims:
-          team: release-managers
-      - subject: ${"https://issuer.example.com#" + inputs.backup_approver}
-        claims:
-          team: release-managers
-    distinct_from_starter: true
+    allow: ${((sender.identity.principal == "https://issuer.example.com#" + inputs.primary_approver && sender.identity.claims.team == "release-managers") || (sender.identity.principal == "https://issuer.example.com#" + inputs.backup_approver && sender.identity.claims.team == "release-managers")) && sender.identity.principal != run.identity.principal}
 vars:
   # How many times anybody is asked, in total, across both approvers. The
   # budget, and deliberately not `max_iterations:` — see the header.

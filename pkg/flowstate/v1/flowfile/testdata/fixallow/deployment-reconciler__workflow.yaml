@@ -1,0 +1,139 @@
+edition: v2026.4
+name: deployment-reconciler
+description: Converges a workload toward a desired replica count, one level-triggered pass at a time, woken either by a spec change or by the resync interval lapsing — and asleep, durably, in between.
+inputs:
+  target:
+    type: string
+    default: checkout-api
+    description: the workload this reconciler is responsible for
+  desired_replicas:
+    type: int
+    default: 5
+    description: the replica count to converge on at the start; a spec-changed signal carrying a valid new one replaces it for every later pass
+    must: this > 0 && this <= 100
+  max_passes:
+    type: int
+    default: 0
+    description: end the run after this many reconcile passes; 0 watches until the control plane reports the workload retired
+    must: this >= 0 && this <= 100
+
+  # The input narrows which platform controller may write this run's desired state.
+  spec_controller:
+    type: string
+    default: https://issuer.example.com#deploy-controller
+    description: the issuer-qualified subject allowed to send spec-changed
+signals:
+  spec-changed:
+    allow:
+      - subject: ${inputs.spec_controller}
+        claims:
+          team: platform-controllers
+steps:
+  - id: opened
+    description: A step before the loop, so a run that suspends before its first deadline has something to have carried across the handover.
+    log:
+      message: ${"reconciling %s toward %d replica(s)".format([inputs.target, inputs.desired_replicas])}
+  - id: reconcile
+    description: One pass per iteration - wait for a tick or a change, then observe, compare, and converge unless the pass is a retirement.
+    loop:
+      as: goal
+      init:
+        desired: ${inputs.desired_replicas}
+        passes: 0
+        wakeups: 0
+      update:
+        desired: ${steps.next_desired.value}
+        passes: '${steps.readable.value ? (goal.passes + 1) : goal.passes}'
+        wakeups: ${goal.wakeups + 1}
+      until: ${steps.retiring.value || inputs.max_passes > 0 && steps.readable.value && goal.passes + 1 >= inputs.max_passes}
+      max_iterations: 1000
+      steps:
+        # A signal advances the next observation; it does not replace it.
+        - id: pace
+          wait_for_signal:
+            name: spec-changed
+            timeout: 30s
+        - id: notified
+          value: ${!steps.pace.timed_out}
+
+        # An unreadable pass changes nothing and retries on the next resync.
+        - id: observed
+          timeout: 10s
+          retry:
+            attempts: 3
+            interval: 1s
+            backoff: 2.0
+            max_interval: 10s
+          continue_on_error: true
+          http:
+            method: GET
+            outputs:
+              replicas: "${(type(response.json) == type({}) && has(response.json.replicas)) ? response.json.replicas : -1}"
+              retired: '${(type(response.json) == type({}) && has(response.json.retired)) ? response.json.retired : "absent"}'
+            parse_json: true
+            query:
+              name: ${inputs.target}
+            url: https://control-plane.internal.example.com/workloads/status
+        - id: readable
+          value: |-
+            ${has(steps.observed.replicas) && has(steps.observed.retired) && (type(steps.observed.replicas) == type(0) ||
+            type(steps.observed.replicas) == type(0.0) && steps.observed.replicas >= 0.0 &&
+            steps.observed.replicas <= 100000.0 && steps.observed.replicas == double(int(steps.observed.replicas))) &&
+            steps.observed.replicas >= 0 && type(steps.observed.retired) == type(true)}
+
+        # Retirement comes from current state, never from a queued event's age.
+        - id: retiring
+          value: ${steps.readable.value && steps.observed.retired}
+        - id: proposed
+          value: "${(steps.notified.value && !steps.retiring.value && has(steps.pace.payload.desired_replicas)) ? steps.pace.payload.desired_replicas : -1}"
+        - id: proposed_is_int
+          value: ${type(steps.proposed.value) == type(0)}
+        - id: proposed_is_double
+          value: ${type(steps.proposed.value) == type(0.0)}
+        - id: proposed_ok
+          value: |-
+            ${(steps.proposed_is_int.value || steps.proposed_is_double.value) && steps.proposed.value > 0 &&
+            steps.proposed.value <= 100 && (steps.proposed_is_int.value || steps.proposed.value == double(int(steps.proposed.value)))}
+        - id: next_desired
+          value: "${steps.proposed_ok.value ? int(steps.proposed.value) : goal.desired}"
+        - id: drift
+          value: ${steps.readable.value && steps.observed.replicas != steps.next_desired.value}
+        - id: converge
+          if: ${!steps.retiring.value && steps.drift.value}
+          timeout: 10s
+          retry:
+            attempts: 3
+            interval: 1s
+            backoff: 2.0
+            max_interval: 10s
+          http:
+            json:
+              name: ${inputs.target}
+              replicas: ${steps.next_desired.value}
+            method: POST
+            outputs:
+              status: ${response.status_code}
+            # Setting an exact count is safe to repeat after a lost response.
+            retry_on_unknown_outcome: true
+            url: https://control-plane.internal.example.com/workloads/scale
+  - id: observations
+    value: ${steps.reconcile.results.filter(p, p.readable.value).map(p, p.observed.replicas)}
+  - id: pass_count
+    value: ${steps.observations.value.size()}
+outputs:
+  passes:
+    value: ${steps.pass_count.value}
+    description: how many reconcile passes ran; every pass reads the control plane, including the one that finds the workload retired
+  wakeups:
+    value: ${steps.reconcile.results.size()}
+    description: how many times this run woke - a spec change or a resync interval - which exceeds `passes` exactly when the control plane answered something this reconciler could not read
+  passes_that_acted:
+    value: ${steps.reconcile.results.filter(p, has(p.converge)).size()}
+    description: how many of those passes found drift and wrote to the control plane — the rest observed a converged workload and did nothing, which is the state a healthy reconciler spends most of its life in
+  final_desired_replicas:
+    # Loop update is skipped on the stopping iteration, so read that iteration.
+    value: ${steps.reconcile.results[steps.reconcile.results.size() - 1].next_desired.value}
+    description: the replica count this reconciler was responsible for when it stopped, after every valid spec change it was told about - including one adopted on the final pass
+  final_observed_replicas:
+    value: ${steps.observations.value[steps.pass_count.value - 1]}
+    description: what the control plane last reported, which is the claim about the world rather than about this run's intent

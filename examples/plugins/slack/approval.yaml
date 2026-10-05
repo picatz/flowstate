@@ -34,11 +34,7 @@ inputs:
     example: sre-lead@example.com
 signals:
   change-approved:
-    allow:
-      - subject: ${"https://issuer.example.com#" + inputs.expected_approver}
-        claims:
-          team: release-managers
-    distinct_from_starter: true
+    allow: ${sender.identity.principal == "https://issuer.example.com#" + inputs.expected_approver && sender.identity.claims.team == "release-managers" && sender.identity.principal != run.identity.principal}
 steps:
   - id: notify
     slack.post:

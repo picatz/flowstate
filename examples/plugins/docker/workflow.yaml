@@ -26,11 +26,7 @@ inputs:
     example: release-manager@example.com
 signals:
   release-approved:
-    allow:
-      - subject: ${"https://issuer.example.com#" + inputs.expected_approver}
-        claims:
-          team: release-managers
-    distinct_from_starter: true
+    allow: ${sender.identity.principal == "https://issuer.example.com#" + inputs.expected_approver && sender.identity.claims.team == "release-managers" && sender.identity.principal != run.identity.principal}
 steps:
   - id: tests
     docker.run:

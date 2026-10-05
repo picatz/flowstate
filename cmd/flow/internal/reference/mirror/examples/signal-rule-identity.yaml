@@ -69,15 +69,11 @@ signals:
   # expression form — the tenant a rule trusts is a fact this file's author
   # commits to, never one a caller's own argument could shift.
   hold-lifted:
-    allow:
-      - namespace: payments
-        claims:
-          role: on-call
+    allow: ${sender.identity.claims.role == "on-call" && sender.identity.namespace == "payments"}
   # One automated caller, named exactly, with no claim at all — there is
   # nothing to require beyond being that one identity.
   rollback-confirmed:
-    allow:
-      - subject: "https://issuer.example.com#release-bot@example.com"
+    allow: ${sender.identity.principal == "https://issuer.example.com#release-bot@example.com"}
 steps:
   - id: request
     log:

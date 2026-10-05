@@ -84,9 +84,7 @@ inputs:
 # named reviewer.
 signals:
   attestation-recorded:
-    allow:
-      - claims:
-          role: compliance-reviewer
+    allow: ${sender.identity.claims.role == "compliance-reviewer"}
 steps:
   # One lookup per grant, bounded concurrency, each failure tolerated so a
   # single flaky grant does not stop the review of the rest of the batch -

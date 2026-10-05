@@ -539,8 +539,8 @@ the other suites in the directory would print it. Move it into the suite's own
 A case can say who started the run (`starter:`) and who sent each signal
 (`sender:`). Both are assertions a case makes, not identities anyone attested.
 
-They reach the workflow's own `signals:` policy, including
-`distinct_from_starter:`, so a case can prove that an approver is admitted and
+They reach the workflow's own `signals:` policy, including a
+`sender.identity.principal != run.identity.principal` clause, so a case can prove that an approver is admitted and
 that the requester cannot approve their own run. They do not reach
 `run.identity` (empty in every case, with `run.local` true), egress policy (a
 stub answers the request that would have been checked), task-shape policy, or

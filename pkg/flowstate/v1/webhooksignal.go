@@ -237,7 +237,7 @@ func CheckWebhookSignalPolicy(wf *Workflow, webhook string, signal *WebhookTrigg
 	if !declared {
 		return fmt.Errorf("webhook %q answers signal %q, which declares no `signals:` policy; a signal with "+
 			"no policy admits any sender, and this one is answerable by whoever holds this webhook's "+
-			"signing key. Declare it: `signals: {%s: {allow: [{subject: %q}]}}`",
+			"signing key. Declare it: under `signals: %s:` write `allow: ${sender.identity.principal == %q}`",
 			webhook, name, name, qualified)
 	}
 
@@ -273,8 +273,8 @@ func CheckWebhookSignalPolicy(wf *Workflow, webhook string, signal *WebhookTrigg
 	}
 
 	return fmt.Errorf("webhook %q answers signal %q, and none of that signal's `allow:` rules can admit a "+
-		"webhook delivery: this trigger attests as %q and carries no claims. Add a rule naming it — "+
-		"`- subject: %q` — or answer a different signal",
+		"webhook delivery: this trigger attests as %q and carries no claims. Name it — "+
+		"`allow: ${sender.identity.principal == %q}` — or answer a different signal",
 		webhook, name, qualified, qualified)
 }
 

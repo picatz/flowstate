@@ -98,6 +98,7 @@ headings below, not this list.*
   - [The burst case has its own spelling: `wait_for_signals:`](#the-burst-case-has-its-own-spelling-wait_for_signals)
   - [Two of three must agree: `quorum:` on `wait_for_signals:`](#two-of-three-must-agree-quorum-on-wait_for_signals)
   - [One predicate decides who may act: `allow: ${...}` on `signals:`](#one-predicate-decides-who-may-act-allow--on-signals)
+  - [What `flow fix` writes for who may act](#what-flow-fix-writes-for-who-may-act)
   - [Bounded, because the author does not control the trip count](#bounded-because-the-author-does-not-control-the-trip-count)
   - [A `for_each` is bounded on its trip count too](#a-for_each-is-bounded-on-its-trip-count-too)
   - [Both drivers, and determinism](#both-drivers-and-determinism)
@@ -1966,8 +1967,7 @@ block where the entry would otherwise write `with:`:
 ```yaml
 signals:
   stage-approved:
-    allow:
-      - subject: flowstate://webhook#deploy-gate/slack-approval
+    allow: ${sender.identity.principal == "flowstate://webhook#deploy-gate/slack-approval"}
 
 triggers:
   - webhook: slack-approval
@@ -2003,8 +2003,9 @@ the delivery is provable, depending on it is not.
 zero case is closed.** A signal name with no `signals:` entry admits any sender; that
 is the deliberate opt-in rule everywhere else, and it is not tolerable on a route
 anybody can POST to, where "any sender" means "whoever holds one signing key". So
-`flow validate` refuses a `signal:` whose name has no explicit policy with a rule that
-could admit the trigger's principal:
+`flow validate` refuses a `signal:` whose name has no explicit policy, and one whose
+rule list has no rule that could admit the trigger's principal (a predicate is decided
+at delivery, over the sender, so it is not counted here):
 
 ```
 webhook "slack-approval" answers signal "stage-approved", which declares no `signals:`
@@ -2018,7 +2019,8 @@ one naming a person. It is the same principal the receiver already records as a
 webhook-started run's starter, checked by the same `authorizeSignal` and
 `SignalPolicyCheck` a `flow signal` goes through — there is no second policy language
 here. What a signature attests is possession of a key rather than a person, so
-`distinct_from_starter:` on a bridged gate separates triggers rather than humans, and
+`sender.identity.principal != run.identity.principal` on a bridged gate separates
+triggers rather than humans, and
 a workflow that needs two distinct people either side of a gate cannot get them from a
 webhook today.
 
@@ -2117,9 +2119,9 @@ triggers:
 
   - manual:
       require_reason: true                    # a start must say why, recorded on the run
-      # Exact stable caller IDs: <issuer>#<subject>. Bare subjects are rejected
+      # Exact stable caller IDs: <issuer>#<subject>. Bare subjects never match
       # because the same subject can exist under more than one trusted issuer.
-      allowed_principals: ["https://issuer.example.com#oncall@example.com"]
+      allow: ${sender.identity.principal in ["https://issuer.example.com#oncall@example.com"]}
 ```
 
 and refusal is something you write down, on one line:
@@ -2143,20 +2145,20 @@ the boundary, against an identity it authenticated and the `--reason` the caller
 the same placement `signals:` policy already has, and the same rule that keeps egress
 policy out of the validator.
 
-Each `allowed_principals` entry is the exact stable identity
-`<issuer>#<subject>` established by OIDC or identity-bearing mTLS authentication.
-That spelling has exactly one `#` separator; an identity containing `#` in either
-half cannot be represented ambiguously and therefore cannot satisfy an allowlist.
-Existing bare-subject entries are invalid rather than being reinterpreted as global
-subjects; qualify them with the issuer configured in the server's auth policy. The
-`--insecure-no-auth` development identity cannot satisfy a non-empty allowlist. Omit
-the allowlist for an intentionally open development server; never use that posture on
-a shared network.
-
-Instead of the list, `allow: ${...}` is one predicate over the caller and the submitted
-inputs, the form `signals:` and `debug:` take; see
+`allow: ${...}` is one predicate over the caller and the submitted inputs, the form
+`signals:` and `debug:` take; see
 [One predicate decides who may act](#one-predicate-decides-who-may-act-allow--on-signals).
-A block writes the list or the predicate, never both.
+A caller is named by `sender.identity.principal`, the exact stable identity
+`<issuer>#<subject>` established by OIDC or identity-bearing mTLS authentication. It is
+empty when either half is missing, so compare it to a name that is not empty: an
+unauthenticated caller then never equals a named one. A bare subject is never a
+principal, because the same subject can exist under more than one trusted issuer; write
+the issuer configured in the server's auth policy. The `--insecure-no-auth` development
+identity cannot satisfy a predicate that names particular callers. Omit `allow:` for an
+intentionally open development server; never use that posture on a shared network.
+
+The older `allowed_principals: [...]` spelling is the same thing as
+`allow: ${sender.identity.principal in [...]}`, and `flow fix` rewrites it.
 
 **Trigger context is readable for behaviour.** A run reads how it started under a root of
 its own:
@@ -2195,7 +2197,7 @@ anywhere in particular — a value that cannot drift can be read everywhere.
 
 In the body that is an expression a test can fake, one `flow validate` cannot reason
 about, and one a later refactor can reorder past the step it was guarding. Authorization
-belongs on the trigger — `manual: {allowed_principals: [...]}`, or `manual: denied` —
+belongs on the trigger — `manual: {allow: ${...}}`, or `manual: denied` —
 where a deployment owns it, the validator can see it, and a server enforces it before the
 run exists. Each decision lives where the thing that owns it lives.
 
@@ -4430,23 +4432,22 @@ tally by taking the same deliveries in the same order.
 
 ### One predicate decides who may act: `allow: ${...}` on `signals:`
 
-A `signals:` policy used to be only a list of rules, a disjunction of conjunctions
-of `subject:`, `claims:` and `namespace:`. That grammar is a second, smaller
-language for a question CEL already answers, so the same `allow:` key now also
-takes one predicate:
+A `signals:` policy was a list of rules, a disjunction of conjunctions of `subject:`,
+`claims:` and `namespace:`, with `distinct_from_starter:` beside it. That grammar is a
+second, smaller language for a question CEL already answers (R1 and R2 in
+[docs/STYLE.md](STYLE.md), issue #326), so the same `allow:` key takes one predicate,
+and the predicate is the canonical spelling:
 
 ```yaml
 signals:
   deploy-approved:
-    allow: >-
-      ${ (sender.identity.principal == "https://issuer.example.com#" + inputs.expected_approver
-          && sender.identity.claims.team == "release-managers"
-          || sender.identity.claims.role == "sre-lead")
-         && sender.identity.principal != run.identity.principal }
+    allow: ${(sender.identity.principal == "https://issuer.example.com#" + inputs.expected_approver && sender.identity.claims.team == "release-managers" || sender.identity.claims.role == "sre-lead") && sender.identity.principal != run.identity.principal}
 ```
 
 A string under `allow:` is the predicate and a list is the rules; a policy is one or
-the other, and a file cannot hold both. The list keeps working exactly as before.
+the other, and a file cannot hold both. The list, `distinct_from_starter:` and
+`manual: allowed_principals:` still compile, and `flow fix` rewrites each of them into
+the predicate; see [What `flow fix` writes](#what-flow-fix-writes-for-who-may-act).
 
 **The scope is closed.** `sender.identity.{principal,subject,issuer,namespace,claims}`
 is the server's own attestation of whoever is delivering. `run.identity` is the run's
@@ -4489,7 +4490,7 @@ debug:
   allow: ${sender.identity.claims.team == "sre"}
 ```
 
-`triggers: - manual:` takes `allow: ${...}` beside `allowed_principals:`, never both:
+`triggers: - manual:` takes `allow: ${...}`, and never beside `allowed_principals:`:
 
 ```yaml
 triggers:
@@ -4501,14 +4502,56 @@ A manual start has no run yet, so there `run` is not in scope and reading it is 
 compile error; `sender` is the caller and `inputs` are the arguments being submitted
 with this start. With no starter to compare against, the narrowing rule is that a
 predicate reading `inputs` must also read `sender.identity.claims`. A caller with no
-authenticated principal is refused, as `allowed_principals:` refuses one. `denied`
+authenticated principal is refused, as `allowed_principals:` did. `denied`
 and a predicate contradict each other and are refused; `require_reason:` still applies
 beside it. The values a `debug:` predicate reads of the run are recorded at submit with
 the same bound as for `signals:`.
 
-**What it does not do yet.** `distinct_from_starter:` still works beside a predicate. The quorum
-"`approve:` larger than the allow-list" check counts rules and is silent about a
-predicate.
+### What `flow fix` writes for who may act
+
+Each old form has one reading, so the rewrite is text and nothing is judged:
+
+| Written | Becomes |
+| --- | --- |
+| `subject: "<issuer>#<subject>"` | `sender.identity.principal == "<issuer>#<subject>"` |
+| `subject: ${expr}` | `sender.identity.principal == expr`, parenthesized when `expr` is a ternary or a comparison |
+| `claims: {k: v}` | `&& sender.identity.claims.k == "v"`, or `claims["k"]` when `k` is not a plain identifier |
+| `namespace: N` | `&& sender.identity.namespace == "N"` |
+| several rules | the rules joined with `||` |
+| `distinct_from_starter: true` | `&& sender.identity.principal != run.identity.principal` around the whole |
+| `manual: allowed_principals: [..]` | `allow: ${sender.identity.principal in [..]}` |
+
+`debug:` takes the same rewrite as a signal's policy. It is not an edition boundary:
+both spellings compile today, so there is nothing a build refuses that the rewrite has
+to rescue, and the boundary belongs to the change that removes the old spellings. A
+second run finds nothing to do, and what it writes is what `flow fmt` writes.
+
+Two things in the output are not in the input. An interpolated subject that could be
+empty (`subject: ${inputs.approver}`) gains `sender.identity.principal != "" &&` in
+front of it. The rule list refused a run whose subject did not resolve to
+`<issuer>#<subject>`; a predicate has no such step, and `principal` is empty for an
+unauthenticated sender, so an input left empty would otherwise equal it and admit
+every anonymous sender. A subject built around a non-empty literal
+(`"https://issuer.example.com#" + inputs.approver`) cannot be empty and is left bare.
+And an expression that was a rule's `subject:` keeps the claim or the
+`distinct_from_starter:` that narrowed it, as a conjunct, because the narrowing rule is
+now one syntactic check over the whole predicate and would be satisfied by a claim
+read in a different alternative.
+
+It refuses, and writes nothing, where it would have to guess: a value that is not a
+string or that holds a `${` where the old grammar read literal text; a subject that is
+not `<issuer>#<subject>`; an interpolated subject nothing narrows, which the compiler
+already refuses; a subject expression holding a `//` comment, which cannot move onto
+one line; a policy or `manual:` block in flow style; a comment it cannot tell from
+text. Comments written inside the old rule list are carried above the new line, and the
+change says so.
+
+**What it does not do yet.** The quorum "`approve:` larger than the allow-list" check
+counts rules and is silent about a predicate, and a bridged webhook's check that its
+signal's policy can admit the trigger does the same, so a policy rewritten by `flow fix`
+loses both until the checks learn a literal `in [...]` or an `||` of `principal ==`
+comparisons. The old spellings are removed in a later change, which is the edition
+boundary.
 
 ### Bounded, because the author does not control the trip count
 
@@ -5949,9 +5992,10 @@ rehearsed only as its own refusal.
 `--signal-as-claim` name the approver a delivery stands in for. They rhyme with
 `--as-subject` and its siblings, which name the run's own starter, because they
 answer the same shape of question about the other party - and the pairing is not
-decorative: `distinct_from_starter:` compares the one against the other, so a
-rehearsal that names the same person for both is refused locally for the reason
-production refuses it.
+decorative: a predicate comparing `sender.identity.principal` with
+`run.identity.principal` (what `distinct_from_starter:` was) compares the one against
+the other, so a rehearsal that names the same person for both is refused locally for the
+reason production refuses it.
 
 The identity is asserted, never attested, and the design turns on the two staying
 distinguishable. A rehearsed delivery carries the same `local` marker an unattested
@@ -5978,7 +6022,7 @@ example in the corpus needs it yet.
 A rehearsal on a command line is something an author does once. The version that
 survives is a case in the file beside the workflow, so `flow test` says the same two
 things: a scripted signal's `sender:` names who a delivery stands in for, and a case's
-own `starter:` names who the run started as - the two `distinct_from_starter:` compares.
+own `starter:` names who the run started as - the two a distinctness clause compares.
 Both carry `subject:`, `issuer:`, `namespace:` and `claims:`, one spelling for both ends
 of that comparison, and both are checked by `SignalPolicyCheck`, the function the server
 calls. So the pair a policy exists to keep apart is exercised in the file's own tests, in
@@ -5987,7 +6031,7 @@ the moment they are also the person who asked.
 
 A case that names no `starter:` runs as nobody, which is what every case did before the
 field existed. Nobody is *recorded* rather than unknown - a run that could not say who
-started it would have every `distinct_from_starter:` policy refuse it outright, which
+started it would have every policy that reads `run.identity` refuse it outright, which
 would take the admit direction away from the author entirely - so the refusal only
 becomes reachable when a case names a starter, which is the whole reason to name one.
 
@@ -6011,9 +6055,10 @@ and every policy a *deployment* installs is either absent from that process or
 evaluated against somebody else entirely.
 
 One surface reads a `starter:`, exhaustively: the workflow's own `signals:` policy,
-through `SignalPolicyCheck`, the function the server itself calls. That is a rule's
-`subject:`, `issuer:`, `namespace:` and `claims:` matching a scripted `sender:`, and
-`distinct_from_starter:` comparing the two qualified subjects. What does not read it:
+through `SignalPolicyCheck`, the function the server itself calls. That is the
+predicate reading a scripted `sender:`'s `principal`, `subject`, `issuer`, `namespace` and
+`claims`, and, where it reads `run.identity`, comparing it with the `starter:`. What does
+not read it:
 
 | Surface | What a case gets |
 | --- | --- |
@@ -6410,10 +6455,7 @@ verb.
 edition: v2026.4
 name: deploy-gate
 debug:
-  allow:
-    - claims:
-        team: sre
-  distinct_from_starter: true
+  allow: ${sender.identity.claims.team == "sre" && sender.identity.principal != run.identity.principal}
 steps:
   - id: ship
     log:
@@ -6427,11 +6469,10 @@ a signal policy is per name, and there is exactly one thing to debug — this ru
 
 ### It *is* the `signals:` policy, not a shape beside it
 
-`allow:` is the same list of alternative rules, with the same `subject:`,
-`namespace:`, `claims:` and `subject: ${...}`, matched against the same attested
-sender by the same check, refused by the same narrowing rule, and reported by the
-same diagnostics — with the field path naming `debug:` rather than a stanza the
-author did not write.
+`allow:` is the same predicate (it was the same list of alternative rules, and `flow fix`
+rewrites that), over the same attested sender, decided by the same check, refused by the
+same narrowing rule, and reported by the same diagnostics — with the field path naming
+`debug:` rather than a stanza the author did not write.
 
 That is the #726 lesson applied before the fact rather than after it. A fourth
 spelling of "this claim must carry this value" was the mistake that section is a

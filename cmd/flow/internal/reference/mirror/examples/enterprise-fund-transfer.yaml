@@ -98,10 +98,7 @@ inputs:
 # `run.identity` comparison a step's own `if:` could be edited to drop.
 signals:
   transfer-approved:
-    allow:
-      - claims:
-          role: treasury-approver
-    distinct_from_starter: true
+    allow: ${sender.identity.claims.role == "treasury-approver" && sender.identity.principal != run.identity.principal}
 # Approval policy belongs to the reviewed workflow definition, not to run
 # inputs. A caller may choose the transfer amount, but cannot raise this value
 # to make that amount appear below the approval threshold.

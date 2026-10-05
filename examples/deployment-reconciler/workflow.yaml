@@ -24,10 +24,7 @@ inputs:
     description: the issuer-qualified subject allowed to send spec-changed
 signals:
   spec-changed:
-    allow:
-      - subject: ${inputs.spec_controller}
-        claims:
-          team: platform-controllers
+    allow: ${sender.identity.principal != "" && sender.identity.principal == inputs.spec_controller && sender.identity.claims.team == "platform-controllers"}
 steps:
   - id: opened
     description: A step before the loop, so a run that suspends before its first deadline has something to have carried across the handover.

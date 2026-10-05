@@ -479,27 +479,29 @@ commit history of this file.
 
 ### Condemned, and worth migrating
 
-**`distinct_from_starter:` and the `allow:` match-list grammar.** Fails R1 (a keyword
-where a name in scope was missing) and R2 (a bespoke match grammar beside three CEL
-policy surfaces). This is #326, and the charter's contribution is to say that the
-answer follows from the rules rather than being open: signal authorization becomes a
-CEL predicate over a scope holding the attested `sender`, a name for the run's
-starter, and `inputs`, after which `distinct_from_starter: true` is one clause and
-the next relationship somebody needs is another one.
+**`distinct_from_starter:`, the `allow:` match-list grammar and `allowed_principals:`.**
+Fails R1 (a keyword where a name in scope was missing) and R2 (a bespoke match grammar
+beside three CEL policy surfaces). This is #326, and the charter's contribution is to
+say that the answer follows from the rules rather than being open: signal, debug and
+manual-start authorization become one CEL predicate, `allow: ${...}`, over a scope
+holding the attested `sender`, a name for the run's starter (`run.identity`), and
+`inputs`, after which `distinct_from_starter: true` is one clause,
+`&& sender.identity.principal != run.identity.principal`, and the next relationship
+somebody needs is another one.
 
-R1 also says what has to exist first, and a grep says it does not. The server already
-knows who started a run, because that is what the current keyword is checked against
-(`pkg/flowstate/v1/server/signalauth_internal_test.go:318`), but no `started_by` name
-is exposed anywhere an author can write one: nothing in `proto/flowstate/v1/` or the
-server declares it, and #514, which landed a run reading how it started, landed
-`trigger.kind` rather than the starter's identity. So the missing piece is a name in
-scope, exactly as R1 predicts, and the keyword was wrong the day it shipped.
+The names the predicate needed exist now. `run.identity` is the run's starter, a wait's
+`sender.identity` and the predicate's `sender.identity` are one shape, and `principal`
+(`issuer#subject`) is on both, so the multi-issuer rule is one comparison. The
+predicate is the canonical spelling. `flow fix` rewrites each retired form into it,
+and every example that carried one was rewritten by that tool: the corpus test
+(`TestEveryRewrittenExampleIsExactlyWhatFixWritesFromItsOldSpelling`) holds each
+committed file to the tool's own output. The old spellings still compile until a later
+change removes them at an edition boundary, so the rewrite is not one yet.
 
-Worth changing rather than grandfathering: three example workflows carry the key
-today (`examples/approval-gate`, `examples/enterprise-fund-transfer`,
-`examples/enterprise-access-review`), beside the server check and the CLI and MCP
-surfaces that spell it, and every month it stands it teaches the match-list idiom to
-more files.
+What the predicate gives up is recorded rather than hidden: the narrowing rule is
+syntactic over the whole predicate and so coarser than the per-rule check it
+replaces, and two static checks (a quorum's `approve:` against a closed allow-list, a
+bridged webhook's reachability) read rule lists and are silent about a predicate.
 
 **The fencing split.** `must:` refuses a fence, `if:` accepts either. The language has
 shipped both answers to #545, which means the status quo is not the conservative

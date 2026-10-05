@@ -290,8 +290,8 @@ can deliver. `--secret-require-namespace` is incompatible with the receiver, whi
 resolves in the deployment's own tenant.
 
 The bridge inherits that identity limit and does not narrow it: a delivery attests
-the trigger, so `distinct_from_starter:` on a bridged gate separates triggers rather
-than people, and nothing on this path establishes *who clicked* — a workflow needing
+the trigger, so `sender.identity.principal != run.identity.principal` on a bridged gate
+separates triggers rather than people, and nothing on this path establishes *who clicked* — a workflow needing
 two distinct humans either side of a gate cannot get them from a webhook. Anyone
 holding one trigger's key can answer any gate that trigger's `signals:` rules admit,
 in that trigger's workflow, for any run whose entity key they can name; the entity
@@ -307,7 +307,7 @@ because reaching either requires having already signed the body.
 flag, and stored deliveries for replay, #490, not landed. For the bridge: a wait-side
 `accepts:` declaration, so a payload's shape is checked against a signature rather
 than passed through (#96), and asymmetric schemes that could attest a person rather
-than a key holder — the evidence that would make `distinct_from_starter:` mean on
+than a key holder — the evidence that would make that distinctness clause mean on
 this route what it means everywhere else.
 
 ### Server to worker

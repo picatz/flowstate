@@ -101,8 +101,7 @@ triggers:
 # between two humans that no HMAC scheme attests.
 signals:
   stage-approved:
-    allow:
-      - subject: "flowstate://webhook#webhook-approval-bridge/slack-approval"
+    allow: ${sender.identity.principal == "flowstate://webhook#webhook-approval-bridge/slack-approval"}
 steps:
   - id: rollout
     description: Each stage waits for its own click, and one click answers one stage.

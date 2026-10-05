@@ -883,6 +883,12 @@ func (f *fixer) workflow(n ast.Node) {
 			f.steps(v.Value, stepScope{})
 		case "inputs", "outputs":
 			f.declarationTypes(v.Value)
+		case "signals":
+			f.signalPolicies(v.Value)
+		case "debug":
+			f.policyStanza(v.Value, "debug")
+		case triggersKey:
+			f.manualPolicies(v.Value)
 		case "edition":
 			declared = true
 			f.edition(v)
@@ -1900,7 +1906,18 @@ func (f *fixer) expressions(n ast.Node, steps map[string]bool) {
 			}
 
 			for _, v := range node.Values {
-				walk(v, task, sees(steps, v, vars, iterator), false, waiting)
+				visible := sees(steps, v, vars, iterator)
+				if workflow {
+					if name, named := keyNameOf(v.Key); named && policyStanzaKeys[name] {
+						// `signals:` and `debug:` are predicates over `sender` and `run`,
+						// bound there and nowhere else, so a step called either is not
+						// what is written. Without this the rewrite that produces these
+						// predicates came out as `steps.sender.identity...` for a file
+						// with a step named `sender`, and validated.
+						visible = without(visible, policyScopeNames)
+					}
+				}
+				walk(v, task, visible, false, waiting)
 			}
 		case *ast.MappingValueNode:
 			name, named := keyNameOf(node.Key)
@@ -1933,6 +1950,11 @@ func (f *fixer) expressions(n ast.Node, steps map[string]bool) {
 				// `payload` and `sender`, so a step of either name is not what is
 				// written here. See [waitQuorumKey].
 				steps = without(steps, waitQuorumNames)
+			}
+			if named && name == manualKey {
+				// A `manual: allow:` predicate binds the caller as `sender`, so a step
+				// of that name is not what is written under it.
+				steps = without(steps, map[string]bool{"sender": true})
 			}
 			if named && name == triggersKey {
 				// `event` is bound throughout a trigger and nowhere else in the

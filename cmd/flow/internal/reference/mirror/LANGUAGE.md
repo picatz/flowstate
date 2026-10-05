@@ -1319,16 +1319,16 @@ it. `manual:` can only narrow that:
 - `manual: denied` refuses manual starts. The workflow must have another
   trigger.
 - `require_reason: true` requires `flow run --reason "..."`, recorded on the run.
-- `allowed_principals:` lists the only callers who may start it, each written
-  `"<issuer>#<subject>"`.
-- `allow: ${...}` is one predicate over the caller instead of that list:
-  `allow: ${sender.identity.claims.team == "ops"}`. It reads
+- `allow: ${...}` is one predicate over the caller that says who may start it:
+  `allow: ${sender.identity.claims.team == "ops"}`, or
+  `allow: ${sender.identity.principal in ["https://issuer.example.com#oncall@example.com"]}`
+  for named callers, each written `"<issuer>#<subject>"`. It reads
   `sender.identity.{principal,subject,issuer,namespace,claims}` (the verified
   caller) and `inputs` (the arguments submitted with this start), and nothing
   else; there is no run yet, so reading `run` is a compile error. Only a clean
   `true` allows, and a caller with no authenticated principal is refused. A
-  predicate that reads `inputs` must also read `sender.identity.claims`. A block
-  writes `allowed_principals:` or `allow:`, never both.
+  predicate that reads `inputs` must also read `sender.identity.claims`.
+  `flow fix` rewrites the older `allowed_principals: [...]` into this.
 
 `flow run local` and `flow test` are not gated by `manual:`.
 
@@ -1417,46 +1417,38 @@ shows all three.
 ```yaml
 signals:
   deploy-approved:
-    allow:
-      - subject: ${"https://issuer.example.com#" + inputs.expected_approver}
-        claims:
-          team: release-managers
-      - claims:
-          role: sre-lead
-    distinct_from_starter: true
+    allow: ${(sender.identity.principal == "https://issuer.example.com#" + inputs.expected_approver && sender.identity.claims.team == "release-managers" || sender.identity.claims.role == "sre-lead") && sender.identity.principal != run.identity.principal}
 ```
 
-Each entry is a signal name the workflow waits for, and the senders allowed to
-deliver it. A sender is allowed if **any** `allow` rule matches, and a rule
-matches when **all** of its fields match the sender's verified identity:
+Each entry is a signal name the workflow waits for, and `allow:` is one `${...}`
+predicate that says which senders may deliver it. It reads
+`sender.identity.{principal,subject,issuer,namespace,claims}` (the verified sender;
+`principal` is `"<issuer>#<subject>"`, and empty when either half is missing),
+`run.identity` (the starter, with the same fields) and `inputs`, and nothing else:
 
-- `subject`: exactly `"<issuer>#<subject>"`. It may be an expression over
-  `inputs`, resolved once when the run starts; then the rule must also require
-  `claims`, or the policy must set `distinct_from_starter`.
-- `claims`: exact string matches against claims the server was configured to
-  record (`flow server --identity-claim team`).
-- `namespace`: the sender's tenant.
+- `sender.identity.principal == "<issuer>#<subject>"` names one sender exactly. The
+  right-hand side may be an expression over `inputs`, evaluated on every delivery.
+- `sender.identity.claims.team == "release-managers"` matches a claim the server was
+  configured to record (`flow server --identity-claim team`). A missing claim is an
+  error, which refuses the sender.
+- `sender.identity.namespace == "payments"` is the sender's tenant.
+- `sender.identity.principal != run.identity.principal` requires that the sender is not
+  the person who started the run: separation of duties.
 
-`distinct_from_starter: true` additionally requires that the sender is not the
-person who started the run: separation of duties.
+Only a clean `true` allows: an error (a missing claim key, an unrecorded starter that
+the predicate reads), a result that is not a bool, or an expression over its cost bound
+all refuse the sender. A predicate that reads `inputs` must also read
+`sender.identity.claims` or `run.identity`: whoever starts the run chooses its inputs, so
+a predicate over them alone would let them name their own approver. When a name comes
+from `inputs`, compare it to a name that cannot be empty (`"https://issuer.example.com#" +
+inputs.approver`), because an unauthenticated sender's `principal` is empty and equals
+an empty input.
 
-`allow:` may instead be one `${...}` predicate, in place of the rule list:
-
-```yaml
-signals:
-  deploy-approved:
-    allow: ${sender.identity.claims.team == "release-managers" &&
-      sender.identity.principal != run.identity.principal}
-```
-
-The predicate reads `sender.identity.{principal,subject,issuer,namespace,claims}`
-(the verified sender; `principal` is `"<issuer>#<subject>"`), `run.identity` (the
-starter, with the same fields) and `inputs`, and nothing else. Only a clean `true`
-allows: an error (a missing claim key, an unrecorded starter that the predicate
-reads), a result that is not a bool, or an expression over its cost bound all refuse
-the sender. A predicate that reads `inputs` must also read
-`sender.identity.claims` or `run.identity`. A policy writes the list or the
-predicate, never both. `debug:` takes the same two forms.
+The older spelling, an `allow:` list of rules (`subject:`, `claims:`, `namespace:`)
+with a `distinct_from_starter: true` beside it, still compiles. `flow fix` rewrites it
+into the predicate, and the predicate is the only form the rest of this page uses.
+A policy writes the list or the predicate, never both. `debug:` takes the same
+predicate.
 
 The server checks the policy before the signal reaches Temporal, and refuses a
 sender who does not match with `PermissionDenied`. A signal name with **no**
@@ -1468,15 +1460,11 @@ durable run always refuses a sender that was only asserted locally.
 
 ```yaml
 debug:
-  allow:
-    - claims:
-        team: sre
+  allow: ${sender.identity.claims.team == "sre"}
 ```
 
-`debug:` has the same grammar as one `signals:` entry, so `allow:` is a rule list
-or one predicate, over the same scope (`sender`, the debugged run's `run.identity`
-and `inputs`), written
-`allow: ${sender.identity.claims.team == "sre"}`. It says who may attach
+`debug:` has the same grammar as one `signals:` entry, so `allow:` is one predicate
+over the same scope (`sender`, the debugged run's `run.identity` and `inputs`). It says who may attach
 a debugger to a durable run — hold it at a step boundary, step it, and set
 breakpoints — under a lease that expires on its own. Evaluating expressions
 against it, or setting a breakpoint that carries a condition or a log message,
@@ -1616,8 +1604,8 @@ declaration:** `description`.
 `outputs`), `wait_for_signals` (`name`, `max_batch`, `timeout`, `prompt`,
 `outputs`, `quorum` with `approve`, `distinct`, `exclude`, `veto`).
 
-**Triggers:** `manual` (`denied`, or `require_reason`, and one of `allowed_principals` or an
-`allow` predicate),
+**Triggers:** `manual` (`denied`, or `require_reason` and an `allow` predicate; the retired
+`allowed_principals`, which `flow fix` rewrites into one),
 `schedule` (`cron`, `every`, `calendars`, `time_zone`, `jitter`, `overlap`,
 `start_at`, `end_at`, `catchup_window`, `pause_on_failure`; a calendar has
 `second`, `minute`, `hour`, `day_of_month`, `month`, `year`, `day_of_week`,
@@ -1625,9 +1613,9 @@ declaration:** `description`.
 (`verify`, `idempotency_key`, `with`, `signal` with `name`, `correlate`,
 `with`).
 
-**Concurrency:** `key`, `on_conflict`. **Signal policy:** `allow` (a list of
-rules of `subject`, `namespace`, `claims`, or one `${...}` predicate),
-`distinct_from_starter`. **Debug policy:** the same.
+**Concurrency:** `key`, `on_conflict`. **Signal policy:** `allow` (one `${...}`
+predicate; the retired list of rules of `subject`, `namespace`, `claims`, and the retired
+`distinct_from_starter`, which `flow fix` rewrites into one). **Debug policy:** the same.
 
 `needs` and `assert` are reserved for future versions of the grammar and are
 refused today.
