@@ -121,7 +121,56 @@ func TestDebugRefusesSeededExploration(t *testing.T) {
 
 	res := runFlowStdin(t, "", "test", "--debug", "--seeds", "4", "--run", "the debugged case", dir)
 	require.Error(t, res.Err)
-	assert.Contains(t, res.Stdout+res.Stderr, "seeded exploration runs each case many times")
+	assert.Contains(t, res.Stdout+res.Stderr, "--seeds runs each case under many schedules")
+}
+
+// TestDebugReplaysTheSeedAViolationNames: a violation printed under `--seeds`
+// names the seed that produced it, and `--seed N --debug` opens exactly that
+// run in the debugger: the injected fault fires at `fetch`, so the run stops
+// there and never reaches `done`, which the written-order baseline would.
+func TestDebugReplaysTheSeedAViolationNames(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.yaml"), []byte(`edition: v2026.4
+name: bare
+steps:
+  - id: fetch
+    retry: {attempts: 1}
+    http:
+      method: GET
+      url: https://example.com/ping
+  - id: done
+    http:
+      method: GET
+      url: https://example.com/done
+outputs: {}
+`), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.test.yaml"), []byte(`edition: v2026.4
+tests:
+  - name: survives a flaky fetch
+    workflow: ./workflow.yaml
+    stubs:
+      - task: http
+        returns: {status_code: 200, body: ''}
+    faults:
+      - step: fetch
+        rate: 1
+        fails: {kind: Upstream, message: connection reset}
+    invariants:
+      - that: run.failed == false
+        because: a single failed attempt must be absorbed
+    expect: {failed: false}
+`), 0o600))
+
+	found := runFlow(t, "test", "--seeds", "2", dir)
+	require.Error(t, found.Err, "the unabsorbed fault is a violation")
+	match := regexp.MustCompile(`flow test --seed (\d+)`).FindStringSubmatch(found.Stdout + found.Stderr)
+	require.NotNil(t, match, "the finding names the seed that replays it:\n%s", found.Stdout)
+
+	res := runFlowStdin(t, "step\nstep\nstep\n", "test", "--debug", "--seed", match[1], "--run", "survives a flaky fetch", dir)
+	out := res.Stdout
+	assert.Contains(t, out, `break at fetch (`, "the seeded run is held at its first step")
+	assert.NotContains(t, out, `break at done (`, "the fault failed the run at fetch; the baseline would have reached done")
+	assert.Equal(t, 1, strings.Count(out, `break at fetch (`), "the written-order baseline is not held beside it")
 }
 
 // TestDebugRefusesMoreThanOneCase names the number it found, and the flag

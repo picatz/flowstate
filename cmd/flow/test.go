@@ -192,7 +192,9 @@ flow test -o jsonl examples/`,
 		"stop before each step of one case and read commands from the terminal — step, "+
 			"continue, until, break, inspect, scope, quit; requires exactly one test file and "+
 			"exactly one selected case (narrow with `--run` when the file has more), and is "+
-			"refused with `--output json` and with seeded exploration")
+			"refused with `--output json` and with `--seeds`. With `--seed N` it steps through "+
+			"that seed's own run — the faults it injects and the order it chose — which is how "+
+			"a reported violation is opened in the debugger")
 
 	return cmd
 }

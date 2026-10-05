@@ -14,6 +14,7 @@ to the others:
 | You are | Reach for | What it drives |
 | --- | --- | --- |
 | a person, debugging a test case | `flow test --debug --run '<case>' <file>` | a prompt, over a stubbed run |
+| a person, opening a failing simulation | `flow test --seed <N> --debug --run '<case>' <file>` | the seeded run itself, faults and order included |
 | a person, debugging a real local run | `flow run local --debug <workflow>` | the same prompt, over a real run |
 | a person, debugging a durable run | `flow debug attach <workflow-id>` | the same commands, over a run on a worker |
 | an editor | [`flow dap`](EDITORS.md#stepping-a-run-flow-dap), launch or attach | a local run, or a durable one |
@@ -33,6 +34,15 @@ parallel block and a call — through every front, local and durable.
 
 `flow test --debug` steps through exactly one case in one test file; `--run`
 selects it when the file holds more than one.
+
+A violation `flow test --seeds N` finds names its seed (`flow test --seed 7 --
+<file>`). Add `--debug` to that command and the session holds the seed's own run:
+the faults the seed injects fire where it drew them, in the order it chose, so
+the stop at the step a fault fails is the failure the search found, not a
+rehearsal of it. The written-order baseline an exploration runs first goes
+unheld, and `--seeds` with `--debug` is refused, since many runs are not one to
+step through. The seeded run is local and is not a recorded history, so there is
+nothing to step back through yet.
 
 Local and durable sessions answer the same questions, but a durable run can be
 held at fewer places, for a bounded time, by a caller its workflow names. The
@@ -1074,7 +1084,9 @@ so rather than being ignored. `history` is a capability of its own and not
 nothing about what the run recorded.
 
 **What remains**, in the order it is built: the run chain bound to the compiled artifact and interpreter version, and
-entry from a failing simulation or fuzz seed straight into the walk.
+stepping back through a failing seed's run, which needs a durable run to walk
+(a failing seed already opens forward in the debugger with `flow test --seed N
+--debug`).
 
 ## What it does not do yet
 
