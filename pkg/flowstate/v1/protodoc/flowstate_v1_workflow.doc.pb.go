@@ -2165,11 +2165,6 @@ func init() {
 				" retried because it is named here, and naming one is refused.\n",
 		},
 		{
-			Name: "flowstate.v1.RetryPolicy.except",
-			Leading: " Except removes the kinds it names from those retried, so a retryable kind a\n" +
-				" step should fail fast on (a rate limit it must not hammer) is written down.\n",
-		},
-		{
 			Name: "flowstate.v1.ResolvedTaskCapabilities",
 			Leading: " ResolvedTaskCapabilities is the smallest replay contract for task\n" +
 				" availability: the canonical set of task names the workflow requires and the\n" +

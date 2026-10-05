@@ -20,7 +20,7 @@ steps:
     continue_on_error: [PolicyDenied, Refused]
     retry:
       attempts: 3
-      except: [RateLimited]
+      only: [Upstream, RateLimited]
     http:
       url: https://example.com/
   - id: sync
@@ -42,7 +42,7 @@ func TestPolicyKindListsRoundTrip(t *testing.T) {
 	fetch := workflow.GetSteps()[0].GetPolicy()
 	assert.True(t, fetch.GetContinueOnError(), "a list is tolerance, narrowed")
 	assert.Equal(t, []string{"PolicyDenied", "Refused"}, fetch.GetToleratedKinds())
-	assert.Equal(t, []string{"RateLimited"}, fetch.GetRetry().GetExcept())
+	assert.Equal(t, []string{"Upstream", "RateLimited"}, fetch.GetRetry().GetOnly())
 
 	sync := workflow.GetSteps()[1].GetPolicy()
 	assert.True(t, sync.GetContinueOnError())
@@ -64,7 +64,7 @@ func TestPolicyKindDiagnostics(t *testing.T) {
 	t.Parallel()
 
 	tests := map[string]struct {
-		edit string // replaces `except: [RateLimited]` in the source
+		edit string // replaces text in the source
 		from string
 		to   string
 		want string
@@ -74,7 +74,7 @@ func TestPolicyKindDiagnostics(t *testing.T) {
 			from: "PolicyDenied, Refused", to: "PolicyDenid, Refused", want: `did you mean "PolicyDenied"`,
 		},
 		"a misspelled retry kind suggests the nearest": {
-			from: "except: [RateLimited]", to: "except: [RateLimted]", want: `did you mean "RateLimited"`,
+			from: "only: [Upstream, RateLimited]", to: "only: [Upstream, RateLimted]", want: `did you mean "RateLimited"`,
 		},
 		"a permanent kind cannot be made retryable": {
 			from: "only: [Upstream, Timeout]", to: "only: [Upstream, InvalidInput]", want: "never retried",
@@ -82,11 +82,8 @@ func TestPolicyKindDiagnostics(t *testing.T) {
 		"a declared error is never retried": {
 			from: "only: [Upstream, Timeout]", to: "only: [Upstream, Refused]", want: "never retried",
 		},
-		"stopping a kind that is never retried changes nothing": {
-			from: "except: [RateLimited]", to: "except: [InvalidInput]", want: "never retried",
-		},
-		"a kind in both lists is a contradiction": {
-			from: "only: [Upstream, Timeout]", to: "only: [Upstream, Timeout]\n      except: [Upstream]", want: "in both",
+		"the removed except key is refused": {
+			from: "only: [Upstream, RateLimited]", to: "except: [RateLimited]", want: "except",
 		},
 		"an empty tolerated list is refused": {
 			from: "[PolicyDenied, Refused]", to: "[]", want: "at least one failure kind",
@@ -138,7 +135,7 @@ func TestPolicyKindRulesApplyAtSubmit(t *testing.T) {
 		"kinds without continue_on_error would tolerate nothing")
 	require.Error(t, v1.CheckPolicyKinds(policy(&v1.StepPolicy{ContinueOnError: true, ToleratedKinds: []string{"Nope"}})))
 	require.Error(t, v1.CheckPolicyKinds(policy(&v1.StepPolicy{Retry: &v1.RetryPolicy{Only: []string{"InvalidInput"}}})))
-	require.NoError(t, v1.CheckPolicyKinds(policy(&v1.StepPolicy{Retry: &v1.RetryPolicy{Except: []string{"RateLimited"}}})))
+	require.NoError(t, v1.CheckPolicyKinds(policy(&v1.StepPolicy{Retry: &v1.RetryPolicy{Only: []string{"RateLimited"}}})))
 }
 
 // TestCallStepMayToleratePolicyKindsItsCalleeDeclares: a `call:` step can fail

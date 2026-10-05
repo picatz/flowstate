@@ -728,7 +728,7 @@ steps:
       |
 edition: v2026.4
 `,
-			exact: []string{"attempts", "interval", "backoff", "max_interval", "only", "except"},
+			exact: []string{"attempts", "interval", "backoff", "max_interval", "only"},
 		},
 		{
 			// This was "task keys", and asserted the `name`, `description`, and

@@ -729,9 +729,6 @@ func retryToYAML(retry *v1.RetryPolicy) yaml.MapSlice {
 	if only := retry.GetOnly(); len(only) > 0 {
 		out = append(out, yaml.MapItem{Key: "only", Value: only})
 	}
-	if except := retry.GetExcept(); len(except) > 0 {
-		out = append(out, yaml.MapItem{Key: "except", Value: except})
-	}
 	return out
 }
 

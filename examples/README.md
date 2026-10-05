@@ -113,7 +113,7 @@ says otherwise.
 | [string-formatting](string-formatting) | `format()` from the profile, building a message from a var | no |
 | [conditional-and-retry](conditional-and-retry) | `if:`, `timeout:`, `retry:` and `continue_on_error:` per step, tolerating a step that really does fail | no |
 | [declared-errors](declared-errors) | `errors:` and `fail:` — a workflow names the ways it refuses (`InsufficientFunds`), raises one with a message built from its inputs, and the run fails with that name as its kind; the tests assert the refusal | no |
-| [failure-kinds](failure-kinds) | `continue_on_error:` and `retry:` naming failure kinds (`only:`, `except:`) — a step tolerates and retries the failures it expects and nothing else; the tests assert both directions | no |
+| [failure-kinds](failure-kinds) | `continue_on_error:` and `retry:` naming failure kinds (`only:`) — a step tolerates and retries the failures it expects and nothing else; the tests assert both directions | no |
 | [webhook-routing](webhook-routing) | `switch:` dispatching a webhook's action field — literal cases, a shared list case, written-down ignoring with `steps: []`, and a `default:` whose run is recorded | no |
 | [fan-out-and-parallel](fan-out-and-parallel) | `for_each` fan-out over a computed list, and concurrent `parallel:` branches | no |
 | [crossing-dependencies](crossing-dependencies) | `async:` — the N-graph, where each later step waits only for what it names, with the two-barrier version it replaces written in the file's own comment | yes |

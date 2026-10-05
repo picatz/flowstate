@@ -3947,10 +3947,7 @@ type RetryPolicy struct {
 	// kind is not retried. Empty means every kind that is retryable by default.
 	// A list never widens: a kind that is permanent by classification is not
 	// retried because it is named here, and naming one is refused.
-	Only []string `protobuf:"bytes,5,rep,name=only,proto3" json:"only,omitempty"`
-	// Except removes the kinds it names from those retried, so a retryable kind a
-	// step should fail fast on (a rate limit it must not hammer) is written down.
-	Except        []string `protobuf:"bytes,6,rep,name=except,proto3" json:"except,omitempty"`
+	Only          []string `protobuf:"bytes,5,rep,name=only,proto3" json:"only,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4016,13 +4013,6 @@ func (x *RetryPolicy) GetMaxInterval() *durationpb.Duration {
 func (x *RetryPolicy) GetOnly() []string {
 	if x != nil {
 		return x.Only
-	}
-	return nil
-}
-
-func (x *RetryPolicy) GetExcept() []string {
-	if x != nil {
-		return x.Except
 	}
 	return nil
 }
@@ -4679,14 +4669,13 @@ const file_flowstate_v1_workflow_proto_rawDesc = "" +
 	"\x05retry\x18\x02 \x01(\v2\x19.flowstate.v1.RetryPolicyR\x05retry\x12*\n" +
 	"\x11continue_on_error\x18\x03 \x01(\bR\x0fcontinueOnError\x12H\n" +
 	"\rtotal_timeout\x18\x04 \x01(\v2\x19.google.protobuf.DurationB\b\xbaH\x05\xaa\x01\x02*\x00R\ftotalTimeout\x12R\n" +
-	"\x0ftolerated_kinds\x18\x05 \x03(\tB)\xbaH&\x92\x01#\x10@\x18\x01\"\x1dr\x1b\x10\x01\x18\x80\x012\x14^[A-Z][A-Za-z0-9_]*$R\x0etoleratedKinds\"\x97\x03\n" +
+	"\x0ftolerated_kinds\x18\x05 \x03(\tB)\xbaH&\x92\x01#\x10@\x18\x01\"\x1dr\x1b\x10\x01\x18\x80\x012\x14^[A-Z][A-Za-z0-9_]*$R\x0etoleratedKinds\"\xe2\x02\n" +
 	"\vRetryPolicy\x12*\n" +
 	"\fmax_attempts\x18\x01 \x01(\x05B\a\xbaH\x04\x1a\x02(\x00R\vmaxAttempts\x12N\n" +
 	"\x10initial_interval\x18\x02 \x01(\v2\x19.google.protobuf.DurationB\b\xbaH\x05\xaa\x01\x02*\x00R\x0finitialInterval\x12B\n" +
 	"\x13backoff_coefficient\x18\x03 \x01(\x01B\x11\xbaH\x0e\xd8\x01\x01\x12\t)\x00\x00\x00\x00\x00\x00\xf0?R\x12backoffCoefficient\x12F\n" +
 	"\fmax_interval\x18\x04 \x01(\v2\x19.google.protobuf.DurationB\b\xbaH\x05\xaa\x01\x02*\x00R\vmaxInterval\x12=\n" +
-	"\x04only\x18\x05 \x03(\tB)\xbaH&\x92\x01#\x10@\x18\x01\"\x1dr\x1b\x10\x01\x18\x80\x012\x14^[A-Z][A-Za-z0-9_]*$R\x04only\x12A\n" +
-	"\x06except\x18\x06 \x03(\tB)\xbaH&\x92\x01#\x10@\x18\x01\"\x1dr\x1b\x10\x01\x18\x80\x012\x14^[A-Z][A-Za-z0-9_]*$R\x06except\"\xa5\x01\n" +
+	"\x04only\x18\x05 \x03(\tB)\xbaH&\x92\x01#\x10@\x18\x01\"\x1dr\x1b\x10\x01\x18\x80\x012\x14^[A-Z][A-Za-z0-9_]*$R\x04onlyJ\x04\b\x06\x10\aR\x06except\"\xa5\x01\n" +
 	"\x18ResolvedTaskCapabilities\x12.\n" +
 	"\x0eschema_version\x18\x01 \x01(\rB\a\xbaH\x04*\x02 \x00R\rschemaVersion\x12Y\n" +
 	"\n" +

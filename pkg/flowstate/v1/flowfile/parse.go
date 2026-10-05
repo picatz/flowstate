@@ -128,7 +128,7 @@ var (
 	// kind in the schema rather than anything in the registry.
 	nodeKindKeys = []string{"for_each", "loop", "parallel", "sleep", "wait_until", "wait_for_signal", "wait_for_signals", "call", "value", "switch", "fail"}
 
-	retryKeys   = []string{"attempts", "interval", "backoff", "max_interval", "only", "except"}
+	retryKeys   = []string{"attempts", "interval", "backoff", "max_interval", "only"}
 	forEachKeys = []string{"items", "as", "max_parallel", "steps"}
 	loopKeys    = []string{"steps", "until", "max_iterations", "as", "init", "update"}
 	branchKeys  = []string{"steps"}
@@ -2305,10 +2305,6 @@ func (c *compiler) retry(n ast.Node, path string, r ref) *v1.RetryPolicy {
 	if f, found := fields.get("only"); found {
 		retry.Only = c.kindList(f.value, fieldPath(path, "only"),
 			ref{step: r.step, path: fieldPath(path, "only"), label: "retry only"})
-	}
-	if f, found := fields.get("except"); found {
-		retry.Except = c.kindList(f.value, fieldPath(path, "except"),
-			ref{step: r.step, path: fieldPath(path, "except"), label: "retry except"})
 	}
 
 	return retry

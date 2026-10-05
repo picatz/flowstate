@@ -306,8 +306,7 @@ var dslKeys = map[string][]dslKey{
 		{name: "interval", detail: "duration", docs: "The delay before the second attempt."},
 		{name: "backoff", detail: "double", docs: "Multiplies the delay after each attempt."},
 		{name: "max_interval", detail: "duration", docs: "Caps the delay between attempts."},
-		{name: "only", detail: "list of kinds", docs: "Retry only these failure kinds. It narrows what would be retried by default; a kind that is never retried cannot be named here. At most one of `only:` and `except:`."},
-		{name: "except", detail: "list of kinds", docs: "Never retry these failure kinds, though they would be by default (such as `RateLimited`). At most one of `only:` and `except:`."},
+		{name: "only", detail: "list of kinds", docs: "Retry only these failure kinds. It narrows what would be retried by default; a kind that is never retried cannot be named here."},
 	},
 }
 
