@@ -4475,10 +4475,15 @@ sender.identity.principal == "issuer#" + inputs.approver`): a claim read in one 
 alternative satisfies the check for the whole predicate, including an alternative that
 reads only `inputs`.
 
-A predicate that reads `inputs` records the run's inputs in the policy scope memo at
-submit, including inputs declared `sensitive:`, capped at 64 KiB (see issue #2325). Keep
-a secret out of a predicate's reach by not reading it there, and prefer comparing a
-claim to a name over reading a sensitive input.
+A predicate that reads `inputs` records, in the policy scope memo at submit, only the
+inputs it names (`inputs.name`, `inputs["name"]`, `has(inputs.name)` or `"name" in
+inputs`), capped at 64 KiB. A predicate that reads `inputs` without naming one
+(`inputs[<computed>]`, `inputs` passed whole to a function or iterated) is refused,
+because what it reads cannot be recorded narrowly. An input declared `sensitive:` can
+never be read by a `signals:` or `debug:` predicate: `flow validate` refuses it, naming
+the input and no value, and the server refuses it again at submit, because a secret
+never enters durable history (#2325). Compare a claim to a name instead, or drop
+`sensitive:` from an input that is really only an identifier.
 
 **Where it runs.** It is evaluated server-side where the signal is accepted, by the
 one function every enforcement point reaches, so the durable server, `flow run local`,

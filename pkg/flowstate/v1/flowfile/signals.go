@@ -293,7 +293,7 @@ func validateDebug(wf *v1.Workflow) Diagnostics {
 		return nil
 	}
 
-	return validatePolicyRules("debug", policy)
+	return validatePolicyRules("debug", policy, v1.SensitiveInputNames(wf))
 }
 
 // reservedSignalWaitDiagnostic reports a wait on a name the engine reserved, or
@@ -366,8 +366,19 @@ func validateReservedSignalNames(wf *v1.Workflow) Diagnostics {
 // [v1.CheckSignalPolicyExpr], which is also what the server asks at submit and
 // again at every delivery: unknown names and fields in the closed scope, a bool
 // result, and the narrowing rule.
-func validatePolicyRules(field string, policy *v1.SignalPolicy) Diagnostics {
+//
+// sensitive is the workflow's `sensitive:` inputs: a predicate's inputs are
+// recorded with the run, so one that reads such an input is refused
+// ([v1.CheckPolicyInputsNotSensitive], which the server asks again at submit).
+func validatePolicyRules(field string, policy *v1.SignalPolicy, sensitive map[string]bool) Diagnostics {
 	if err := v1.CheckSignalPolicyExpr(policy.GetAllow()); err != nil {
+		return Diagnostics{{
+			Field:   fieldPath(field, "allow"),
+			Message: "is not a usable `${...}` predicate: " + err.Error(),
+		}}
+	}
+
+	if err := v1.CheckPolicyInputsNotSensitive(field, policy, sensitive); err != nil {
 		return Diagnostics{{
 			Field:   fieldPath(field, "allow"),
 			Message: "is not a usable `${...}` predicate: " + err.Error(),
@@ -395,6 +406,8 @@ func validateSignals(wf *v1.Workflow) Diagnostics {
 		known[name] = struct{}{}
 	}
 
+	sensitive := v1.SensitiveInputNames(wf)
+
 	for _, name := range sortedPolicyNames(declared) {
 		field := fieldPath("signals", name)
 
@@ -407,7 +420,7 @@ func validateSignals(wf *v1.Workflow) Diagnostics {
 			continue
 		}
 
-		ds = append(ds, validatePolicyRules(field, declared[name])...)
+		ds = append(ds, validatePolicyRules(field, declared[name], sensitive)...)
 	}
 
 	return ds

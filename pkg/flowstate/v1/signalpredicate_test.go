@@ -80,9 +80,9 @@ func TestSignalPolicyExprReportsWhichPerRunValuesItReads(t *testing.T) {
 
 	assert.Equal(t, v1.SignalPolicyReads{}, reads(`sender.identity.principal == "a#b"`))
 	assert.Equal(t, v1.SignalPolicyReads{Run: true}, reads(`sender.identity.principal != run.identity.principal`))
-	assert.Equal(t, v1.SignalPolicyReads{Inputs: true},
+	assert.Equal(t, v1.SignalPolicyReads{Inputs: true, InputNames: []string{"x"}},
 		reads(`sender.identity.claims["x"] == inputs.x`))
-	assert.Equal(t, v1.SignalPolicyReads{Inputs: true, Run: true},
+	assert.Equal(t, v1.SignalPolicyReads{Inputs: true, InputNames: []string{"x"}, Run: true},
 		reads(`inputs.x == "a" && sender.identity.principal != run.identity.principal`))
 	assert.Equal(t, v1.SignalPolicyReads{}, v1.SignalPolicyExprReads(map[string]*v1.SignalPolicy{
 		"none": {},
@@ -171,4 +171,73 @@ func TestWebhookBridgeIsNotRefusedForAPredicatePolicy(t *testing.T) {
 	}
 
 	require.NoError(t, v1.CheckWebhookSignalPolicy(wf, "slack", &v1.WebhookTrigger_Signal{Name: "stage-approved"}))
+}
+
+// The run records only the input names a predicate names, so a name has to be
+// readable statically, in every spelling that names one.
+func TestSignalPolicyExprReportsTheInputNamesItReads(t *testing.T) {
+	t.Parallel()
+
+	names := func(expression string) []string {
+		return v1.SignalPolicyExprReads(map[string]*v1.SignalPolicy{"a": predicatePolicy(expression)}).InputNames
+	}
+	const narrow = ` && sender.identity.claims["t"] == "x"`
+
+	assert.Equal(t, []string{"a", "b", "c", "d"},
+		names(`inputs.b == "" && inputs["a"] == "" && has(inputs.c) && "d" in inputs && inputs.a.x == ""`+narrow))
+	assert.Equal(t, []string{"x"}, names(`inputs.x == "" && inputs.x != "y"`+narrow), "a name read twice is one name")
+	assert.Empty(t, names(`[1].exists(inputs, inputs == 1) && sender.identity.claims["t"] == "x"`),
+		"a comprehension variable spelled inputs is the author's local, not the run's inputs")
+}
+
+// A predicate that reads `inputs` without naming a key cannot be recorded
+// narrowly, and recording everything would put sensitive inputs in history.
+func TestSignalPolicyRefusesAnInputsReadThatNamesNoInput(t *testing.T) {
+	t.Parallel()
+
+	const narrow = ` && sender.identity.claims["t"] == "x"`
+
+	for _, expression := range []string{
+		`inputs[sender.identity.claims["k"]] == "y"` + narrow,
+		`size(inputs) > 0` + narrow,
+		`inputs.exists(k, k == "a")` + narrow,
+		`has(inputs.a) && inputs.all(k, true)` + narrow,
+	} {
+		err := v1.CheckSignalPolicyExpr(expression)
+		require.Error(t, err, expression)
+		assert.Contains(t, err.Error(), "without naming an input", expression)
+	}
+}
+
+func TestCheckWorkflowPolicyInputsRefusesASensitiveInput(t *testing.T) {
+	t.Parallel()
+
+	workflow := func(signal, debug string) *v1.Workflow {
+		wf := &v1.Workflow{
+			DeclaredInputs: []*v1.InputDeclaration{
+				{Name: "approver"},
+				{Name: "token", Sensitive: true},
+			},
+			Signals: map[string]*v1.SignalPolicy{"go": predicatePolicy(signal)},
+		}
+		if debug != "" {
+			wf.Debug = predicatePolicy(debug)
+		}
+
+		return wf
+	}
+	const narrow = ` && sender.identity.claims["t"] == "x"`
+
+	require.NoError(t, v1.CheckWorkflowPolicyInputs(workflow(`inputs.approver == "a"`+narrow, "")))
+	require.NoError(t, v1.CheckWorkflowPolicyInputs(workflow(`sender.identity.claims["t"] == "x"`, "")),
+		"a predicate that reads no input reads no sensitive one")
+
+	err := v1.CheckWorkflowPolicyInputs(workflow(`inputs["token"] == "hunter2"`+narrow, ""))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `signals["go"].allow reads the input "token"`)
+	assert.NotContains(t, err.Error(), "hunter2", "the refusal quotes the author's input name, never a value")
+
+	err = v1.CheckWorkflowPolicyInputs(workflow(`inputs.approver == "a"`+narrow, `has(inputs.token)`+narrow))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `debug.allow reads the input "token"`)
 }
