@@ -61,7 +61,7 @@ Then address the id `flow list` shows, and read the result:
 ```console
 $ flow signal <workflow-id> manager-approved --data '{"approved": true}'
 delivered manager-approved to <workflow-id>
-$ flow get <workflow-id>
+$ flow watch <workflow-id>
 COMPLETED workflow <workflow-id> ...
 outputs
   amount 482.5
