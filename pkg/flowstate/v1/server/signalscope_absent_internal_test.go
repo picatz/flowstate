@@ -33,7 +33,7 @@ func TestAuthorizeSignalDeniesWhenTheScopeAPredicateReadsWasNeverRecorded(t *tes
 		`"x" in inputs || sender.identity.claims["team"] == "payments"`,
 		`sender.identity.claims["team"] == "payments" || sender.identity.principal != run.identity.principal`,
 	} {
-		resp := memoWithSignalPolicy(t, map[string]*v1types.SignalPolicy{"deploy-approved": {AllowExpr: expression}})
+		resp := memoWithSignalPolicy(t, map[string]*v1types.SignalPolicy{"deploy-approved": {Allow: expression}})
 		resp.GetWorkflowExecutionInfo().GetMemo().GetFields()[starterMemoKey] = starterPayload
 
 		err := mustNew(t, nil).authorizeSignal(resp, "deploy-approved", lead)
@@ -44,7 +44,7 @@ func TestAuthorizeSignalDeniesWhenTheScopeAPredicateReadsWasNeverRecorded(t *tes
 
 	// A predicate that reads neither needs no record, and is unaffected.
 	resp := memoWithSignalPolicy(t, map[string]*v1types.SignalPolicy{
-		"deploy-approved": {AllowExpr: `sender.identity.claims["team"] == "payments"`},
+		"deploy-approved": {Allow: `sender.identity.claims["team"] == "payments"`},
 	})
 	require.NoError(t, mustNew(t, nil).authorizeSignal(resp, "deploy-approved", lead))
 }
@@ -59,10 +59,10 @@ func TestAuthorizeSignalDeniesAPredicateWhoseRecordedScopeWasRemoved(t *testing.
 	wf := &v1types.Workflow{
 		Name: "gate",
 		Signals: map[string]*v1types.SignalPolicy{
-			"deploy-approved": {AllowExpr: `size(inputs) == 0 && sender.identity.claims["team"] == "payments"`},
+			"deploy-approved": {Allow: `size(inputs) == 0 && sender.identity.claims["team"] == "payments"`},
 		},
 	}
-	entries, err := policyMemoEntries(t.Context(), wf, nil, &v1types.WorkloadIdentity{Issuer: "i", Subject: "s"})
+	entries, err := policyMemoEntries(wf, nil, &v1types.WorkloadIdentity{Issuer: "i", Subject: "s"})
 	require.NoError(t, err)
 	require.Contains(t, entries, signalPolicyScopeMemoKey)
 

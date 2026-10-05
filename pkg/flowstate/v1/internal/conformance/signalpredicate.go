@@ -1,58 +1,13 @@
 package conformance
 
 import (
-	"maps"
-	"slices"
-	"strconv"
-	"strings"
-
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
 
-// `allow: ${...}` — the same question as [RehearsalSignalCases]' rule list,
-// asked of the one CEL predicate that replaces it. Both enforcement points
-// reach [v1.SignalPolicyCheck], which routes a policy with an `allow_expr` to
-// one evaluator; these cases are how "both drivers answer a predicate the same
-// way" stays a checked fact.
-
-// predicateTwin is the predicate the `flow fix` rewrite emits for a rule-list
-// policy, as a case with the same verdict: each rule is its fields ANDed
-// (`subject:` is a principal comparison, `claims:` an entry-wise comparison),
-// rules are joined with `||`, and `distinct_from_starter:` wraps the whole in
-// a comparison with the starter. Nothing about the rewrite needs judgment, so
-// replaying every existing case through it is what shows the predicate keeps
-// the verdicts the rule list gave.
-func predicateTwin(c RehearsalSignalCase) (RehearsalSignalCase, bool) {
-	if len(c.Policy.GetAllow()) == 0 || c.Policy.GetAllowExpr() != "" {
-		return RehearsalSignalCase{}, false
-	}
-
-	rules := make([]string, 0, len(c.Policy.GetAllow()))
-	for _, rule := range c.Policy.GetAllow() {
-		var parts []string
-		if subject := rule.GetSubject(); subject != "" {
-			parts = append(parts, "sender.identity.principal == "+strconv.Quote(subject))
-		}
-		if namespace := rule.GetNamespace(); namespace != "" {
-			parts = append(parts, "sender.identity.namespace == "+strconv.Quote(namespace))
-		}
-		for _, key := range slices.Sorted(maps.Keys(rule.GetClaims())) {
-			parts = append(parts, "sender.identity.claims["+strconv.Quote(key)+"] == "+strconv.Quote(rule.GetClaims()[key]))
-		}
-		rules = append(rules, "("+strings.Join(parts, " && ")+")")
-	}
-
-	expression := strings.Join(rules, " || ")
-	if c.Policy.GetDistinctFromStarter() {
-		expression = "(" + expression + ") && sender.identity.principal != run.identity.principal"
-	}
-
-	twin := c
-	twin.Name = c.Name + " (as an allow predicate)"
-	twin.Policy = &v1.SignalPolicy{AllowExpr: expression}
-
-	return twin, true
-}
+// `allow: ${...}` — the question [RehearsalSignalCases] asks, in the cases only a
+// predicate can express and the fail-closed arms. Both enforcement points reach
+// [v1.SignalPolicyCheck], which routes a policy to one evaluator; these cases
+// are how "both drivers answer a predicate the same way" stays a checked fact.
 
 // issuerA and issuerB mint the same local part, which is the multi-IdP fault
 // `principal` exists to make one comparison.
@@ -62,7 +17,7 @@ const (
 )
 
 func predicate(expression string) *v1.SignalPolicy {
-	return &v1.SignalPolicy{AllowExpr: expression}
+	return &v1.SignalPolicy{Allow: expression}
 }
 
 // signalPredicateCases are the cases only a predicate can express, and the
@@ -125,7 +80,7 @@ func signalPredicateCases() []RehearsalSignalCase {
 			Policy:  predicate(`sender.identity.principal != run.identity.principal`),
 			Starter: starter, StarterUnknown: true, Sender: approver(),
 			Why: "an unknown starter leaves run unbound, so reading it errors and denies, which is " +
-				"what `distinct_from_starter` already did without a keyword",
+				"nothing a predicate could compare against",
 		},
 		{
 			Name: "a predicate that never mentions the starter, with none recorded", SignalName: "deploy-approved",
@@ -203,23 +158,16 @@ func signalPredicateCases() []RehearsalSignalCase {
 				"the predicate's work, and exceeding the budget denies",
 		},
 		{
-			Name: "a policy that sets both the rule list and a predicate", SignalName: "deploy-approved",
-			Policy: &v1.SignalPolicy{
-				Allow:     policedGate(false).GetAllow(),
-				AllowExpr: `sender.identity.claims["team"] == "release-managers"`,
-			},
-			Starter: starter, Sender: approver(),
-			Why: "two mechanisms in one policy are refused outright, though either would admit " +
-				"this sender, so neither can be the permissive one by accident",
+			Name: "a policy with no predicate", SignalName: "deploy-approved",
+			Policy: &v1.SignalPolicy{}, Starter: starter, Sender: approver(),
+			Why: "what a run frozen by a release that still recorded the retired rule list decodes " +
+				"to; it authorizes nobody, and is never read as an absent policy",
 		},
 		{
-			Name: "a predicate beside distinct_from_starter, sender is the starter", SignalName: "deploy-approved",
-			Policy: &v1.SignalPolicy{
-				AllowExpr:           `sender.identity.claims["team"] == "release-managers"`,
-				DistinctFromStarter: true,
-			},
+			Name: "a predicate comparing with the starter, sender is the starter", SignalName: "deploy-approved",
+			Policy:  predicate(`sender.identity.claims["team"] == "release-managers" && sender.identity.principal != run.identity.principal`),
 			Starter: approver(), Sender: approver(),
-			Why: "separation of duties is ANDed onto whichever mechanism decided",
+			Why: "separation of duties is a comparison inside the one predicate",
 		},
 	}
 }

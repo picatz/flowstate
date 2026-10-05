@@ -68,8 +68,7 @@ var exampleCorpusGlobs = []string{
 //
 // #969 tracked fifteen of these. All fifteen now have an example —
 // `input.values`, `input.type.TYPE_ENUM`, `manual.denied`, `schedule.every`,
-// `schedule.start_at`, `schedule.end_at`, `signal_policy_rule.subject`,
-// `signal_policy_rule.namespace`, `schedule.overlap.OVERLAP_BUFFER_ONE`,
+// `schedule.start_at`, `schedule.end_at`, `schedule.overlap.OVERLAP_BUFFER_ONE`,
 // `input.max_len` (`alert-title-bound`), `output.must` (`utilization-guard`),
 // and the four remaining overlap policies — `OVERLAP_BUFFER_ALL`,
 // `OVERLAP_CANCEL_OTHER`, `OVERLAP_TERMINATE_OTHER`, `OVERLAP_ALLOW_ALL`, one
@@ -79,20 +78,6 @@ var exampleCorpusGlobs = []string{
 // written down here, not a silently reappearing map.
 var constructsWithoutAnExample = map[string]string{
 	"output.type.TYPE_BYTES": "an output cannot declare a data kind yet: the run document has no plain-JSON form for it (#1436)",
-
-	// The spellings `allow: ${...}` replaced (#326). They still compile, so the schema
-	// still names them, and no example may teach them: every one was rewritten by
-	// `flow fix`, and `flowfile/testdata/fixallow` keeps each file as it was written
-	// so a test can hold the committed example to the tool's output. The change that
-	// reserves these fields removes the entries with them, and this test refuses an
-	// entry for a construct the schema no longer has.
-	"signal_policy.allow":                 "the retired rule list, rewritten by `flow fix` into `allow: ${...}` (#326)",
-	"signal_policy.distinct_from_starter": "the retired keyword, rewritten by `flow fix` into `&& sender.identity.principal != run.identity.principal` (#326)",
-	"signal_policy_rule.subject":          "a field of the retired rule list, rewritten by `flow fix` (#326)",
-	"signal_policy_rule.subject_from":     "a field of the retired rule list, rewritten by `flow fix` (#326)",
-	"signal_policy_rule.namespace":        "a field of the retired rule list, rewritten by `flow fix` (#326)",
-	"signal_policy_rule.claims":           "a field of the retired rule list, rewritten by `flow fix` (#326)",
-	"manual.allowed_principals":           "the retired list, rewritten by `flow fix` into `allow: ${sender.identity.principal in [...]}` (#326)",
 }
 
 // The required set is derived from the schema three ways: the two `kind` oneofs
@@ -231,7 +216,6 @@ func writableSpecs() map[protoreflect.FullName]messageWritableSpec {
 		{&v1.ScheduleTrigger{}, "schedule", nil},
 		{&v1.Concurrency{}, "concurrency", nil},
 		{&v1.SignalPolicy{}, "signal_policy", nil},
-		{&v1.SignalPolicyRule{}, "signal_policy_rule", nil},
 		{&v1.Signal{}, "signal", nil},
 		{&v1.SignalBatch{}, "signal_batch", nil},
 		{&v1.SignalQuorum{}, "signal_quorum", nil},

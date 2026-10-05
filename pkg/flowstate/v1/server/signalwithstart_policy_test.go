@@ -31,38 +31,26 @@ func TestSignalWithStartCreateBranchAsksTheSignalPolicy(t *testing.T) {
 		admitted bool
 	}{
 		{
-			name:     "rule list admits the named caller",
-			policy:   map[string]*v1.SignalPolicy{"update": {Allow: []*v1.SignalPolicyRule{{Subject: qualified}}}},
-			caller:   owner,
-			admitted: true,
-		},
-		{
-			name:   "rule list refuses another caller",
-			policy: map[string]*v1.SignalPolicy{"update": {Allow: []*v1.SignalPolicyRule{{Subject: qualified}}}},
-			caller: stranger,
-		},
-		{
 			name:     "predicate admits the named caller",
-			policy:   map[string]*v1.SignalPolicy{"update": {AllowExpr: `sender.identity.principal == "` + qualified + `"`}},
+			policy:   map[string]*v1.SignalPolicy{"update": {Allow: `sender.identity.principal == "` + qualified + `"`}},
 			caller:   owner,
 			admitted: true,
 		},
 		{
 			name:   "predicate refuses another caller",
-			policy: map[string]*v1.SignalPolicy{"update": {AllowExpr: `sender.identity.principal == "` + qualified + `"`}},
+			policy: map[string]*v1.SignalPolicy{"update": {Allow: `sender.identity.principal == "` + qualified + `"`}},
 			caller: stranger,
 		},
 		{
-			name: "distinct_from_starter refuses the creator, who is the sender",
+			name: "a predicate naming the creator and comparing with the starter refuses the creator, who is the sender",
 			policy: map[string]*v1.SignalPolicy{"update": {
-				Allow:               []*v1.SignalPolicyRule{{Subject: qualified}},
-				DistinctFromStarter: true,
+				Allow: `sender.identity.principal == "` + qualified + `" && sender.identity.principal != run.identity.principal`,
 			}},
 			caller: owner,
 		},
 		{
 			name:   "a predicate comparing sender and starter refuses the creator",
-			policy: map[string]*v1.SignalPolicy{"update": {AllowExpr: `sender.identity.principal != run.identity.principal`}},
+			policy: map[string]*v1.SignalPolicy{"update": {Allow: `sender.identity.principal != run.identity.principal`}},
 			caller: owner,
 		},
 	} {
@@ -101,7 +89,7 @@ func TestSignalWithStartCreateBranchAsksTheSignalPolicy(t *testing.T) {
 
 // The create check decides a create and nothing else: its memo records the
 // *caller* as the starter. An entity somebody else already started is answered
-// on its own memo, where `distinct_from_starter` and `run.identity` mean the
+// on its own memo, where `run.identity` means the
 // real starter, so a caller the existing run admits must not be refused by the
 // create check's different answer.
 func TestSignalWithStartAnswersAnExistingEntityOnItsOwnMemo(t *testing.T) {
@@ -114,12 +102,8 @@ func TestSignalWithStartAnswersAnExistingEntityOnItsOwnMemo(t *testing.T) {
 	approverID := v1.QualifiedSubject(issuer, approver.Subject)
 
 	for name, policy := range map[string]*v1.SignalPolicy{
-		"rule list with distinct_from_starter": {
-			Allow:               []*v1.SignalPolicyRule{{Subject: approverID}, {Subject: v1.QualifiedSubject(issuer, creator.Subject)}},
-			DistinctFromStarter: true,
-		},
-		"predicate over the starter": {
-			AllowExpr: `sender.identity.principal in ["` + approverID + `", "` + v1.QualifiedSubject(issuer, creator.Subject) +
+		"a predicate naming both and comparing with the starter": {
+			Allow: `sender.identity.principal in ["` + approverID + `", "` + v1.QualifiedSubject(issuer, creator.Subject) +
 				`"] && sender.identity.principal != run.identity.principal`,
 		},
 	} {

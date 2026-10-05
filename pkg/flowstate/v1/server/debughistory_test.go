@@ -247,7 +247,6 @@ func TestAnOpenRunsPastIsInspectedOnlyByTheHolderOfItsSession(t *testing.T) {
 	t.Parallel()
 
 	workflow := debuggableWorkflow()
-	workflow.Debug.Allow = append(workflow.Debug.Allow, &v1.SignalPolicyRule{Subject: v1.QualifiedSubject(debugIssuer, "sre-2@example.com")})
 	sink := &auditSink{}
 	recorder, err := audit.NewRecorder(audit.WithoutStderr(), audit.WithEmitter(sink))
 	require.NoError(t, err)

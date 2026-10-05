@@ -113,7 +113,7 @@ func PendingWaitCases() []PendingWaitCase {
 			Workflow: &v1.Workflow{
 				Name: "policed-gate",
 				Signals: map[string]*v1.SignalPolicy{
-					"approve": {Allow: []*v1.SignalPolicyRule{{Subject: "https://idp.example#release-manager"}}},
+					"approve": predicate(`sender.identity.principal == "https://idp.example#release-manager"`),
 				},
 				Steps: []*v1.Node{
 					says("before", "starting"),

@@ -190,7 +190,7 @@ steps:
   # an attested sender who is not the expected reviewer, or an explicit
   # "no" - trading approval-gate's three-way split for fewer lines, a real
   # gap named in docs/USE_CASES.md. Unlike enterprise-fund-transfer's own
-  # `transfer-approved` (#207), this policy has no `distinct_from_starter`,
+  # `transfer-approved` (#207), this policy does not compare the sender with `run.identity`,
   # so "attested sender who is not the expected reviewer" still has to be
   # checked here rather than delegated to `signals:` entirely.
   - id: unattested

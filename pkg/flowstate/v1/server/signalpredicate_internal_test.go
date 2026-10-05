@@ -22,7 +22,7 @@ func predicateWorkflow(expression string) *v1types.Workflow {
 	return &v1types.Workflow{
 		Name: "gate",
 		Signals: map[string]*v1types.SignalPolicy{
-			"deploy-approved": {AllowExpr: expression},
+			"deploy-approved": {Allow: expression},
 		},
 	}
 }
@@ -37,7 +37,7 @@ func TestSignalPolicyScopeIsRecordedOnlyForWhatAPredicateReads(t *testing.T) {
 	inputs := map[string]*v1types.Value{"expected_approver": v1types.NewLiteral("lead@example.com")}
 
 	read := func(expression string) *v1types.Scope {
-		entries, err := policyMemoEntries(t.Context(), predicateWorkflow(expression), inputs, starter)
+		entries, err := policyMemoEntries(predicateWorkflow(expression), inputs, starter)
 		require.NoError(t, err)
 
 		raw, ok := entries[signalPolicyScopeMemoKey]
@@ -66,10 +66,10 @@ func TestSignalPolicyScopeIsRecordedOnlyForWhatAPredicateReads(t *testing.T) {
 	assert.Nil(t, withInputs.GetIdentity(), "the starter was recorded for a predicate that does not read it")
 
 	// A rule-list policy records no scope at all.
-	entries, err := policyMemoEntries(t.Context(), &v1types.Workflow{
+	entries, err := policyMemoEntries(&v1types.Workflow{
 		Name: "gate",
 		Signals: map[string]*v1types.SignalPolicy{
-			"deploy-approved": {Allow: []*v1types.SignalPolicyRule{{Namespace: "n"}}},
+			"deploy-approved": {Allow: `sender.identity.namespace == "n"`},
 		},
 	}, inputs, starter)
 	require.NoError(t, err)
@@ -81,14 +81,14 @@ func TestSignalPolicyScopeOverItsBoundRefusesTheRunInsteadOfTruncating(t *testin
 
 	big := map[string]*v1types.Value{"blob": v1types.NewLiteral(strings.Repeat("x", v1types.MaxSignalPolicyScopeBytes+1))}
 
-	_, err := policyMemoEntries(t.Context(),
+	_, err := policyMemoEntries(
 		predicateWorkflow(`inputs.blob == "x" && sender.identity.claims["team"] == "y"`), big, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "bound")
 
 	// The same inputs are fine when no predicate reads them: the bound is spent
 	// only where it is used.
-	_, err = policyMemoEntries(t.Context(), predicateWorkflow(`sender.identity.claims["team"] == "y"`), big, nil)
+	_, err = policyMemoEntries(predicateWorkflow(`sender.identity.claims["team"] == "y"`), big, nil)
 	require.NoError(t, err)
 }
 
@@ -103,7 +103,7 @@ func TestAuthorizeSignalReadsAPredicateOverTheRecordedScope(t *testing.T) {
 		` && sender.identity.principal == "https://issuer.example.com#" + inputs.approver`)
 	inputs := map[string]*v1types.Value{"approver": v1types.NewLiteral("lead@example.com")}
 
-	entries, err := policyMemoEntries(t.Context(), wf, inputs, starter)
+	entries, err := policyMemoEntries(wf, inputs, starter)
 	require.NoError(t, err)
 
 	resp := memoWithSignalPolicy(t, wf.GetSignals())
@@ -154,7 +154,7 @@ func TestAuthorizeSignalPredicateOnARunWithNoStarterRecordedDenies(t *testing.T)
 	t.Parallel()
 
 	policies := map[string]*v1types.SignalPolicy{
-		"deploy-approved": {AllowExpr: `sender.identity.principal != run.identity.principal`},
+		"deploy-approved": {Allow: `sender.identity.principal != run.identity.principal`},
 	}
 	err := mustNew(t, nil).authorizeSignal(memoWithSignalPolicy(t, policies), "deploy-approved",
 		sender("https://issuer.example.com", "lead@example.com", "", nil))
@@ -167,7 +167,7 @@ func TestAuthorizeSignalRefusalNamesNoClaimValue(t *testing.T) {
 
 	const secret = "CLAIMSECRET123"
 	policies := map[string]*v1types.SignalPolicy{
-		"deploy-approved": {AllowExpr: `int(sender.identity.claims["n"]) == 1`},
+		"deploy-approved": {Allow: `int(sender.identity.claims["n"]) == 1`},
 	}
 	err := mustNew(t, nil).authorizeSignal(memoWithSignalPolicy(t, policies), "deploy-approved",
 		sender("https://issuer.example.com", "lead@example.com", "", map[string]string{"n": secret}))

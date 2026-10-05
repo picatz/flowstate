@@ -28,7 +28,7 @@
 # other tenant's" a fact the file states rather than one a reader has to trust
 # `authorizeRun`'s own tenant check to be enforcing correctly elsewhere. Every
 # signal is already confined to its run's own tenant before this policy is ever
-# consulted ([SignalPolicyRule.namespace]'s own doc comment says so) — so this
+# consulted (the server refuses any other tenant's sender first) — so this
 # comparison does not *add* the boundary, it writes down the boundary that
 # already holds, the same way asserting a bound already true is worth doing in
 # a test.

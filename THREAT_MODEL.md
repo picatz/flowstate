@@ -322,7 +322,7 @@ namespace grammar forbids ([docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#tier-2--per-t
 per name, checked against the run's declared policy and its recorded starter, and
 fails closed on an unreadable memo or a missing starter where the policy demands the
 comparison (`pkg/flowstate/v1/server/lifecycle.go:140-234`,
-`pkg/flowstate/v1/signalpolicy.go:332`).
+`pkg/flowstate/v1/signalpolicy.go:154`).
 
 **Limits.** Mapping completeness is a warning, not a refusal: a tenant routed to a
 queue nothing polls gets runs that sit RUNNING with nothing wrong reported

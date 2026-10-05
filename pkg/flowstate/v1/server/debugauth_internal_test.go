@@ -68,9 +68,7 @@ func TestOnlyADeclaredDebugPolicyAdmitsAPauseAsk(t *testing.T) {
 	allowed := sender("https://issuer.example.com", "sre-1@example.com", "team-a",
 		map[string]string{"role": "sre"})
 
-	declared := memoWithDebugPolicy(t, &v1types.SignalPolicy{Allow: []*v1types.SignalPolicyRule{
-		{Claims: map[string]string{"role": "sre"}},
-	}})
+	declared := memoWithDebugPolicy(t, &v1types.SignalPolicy{Allow: `sender.identity.claims["role"] == "sre"`})
 
 	require.NoError(t,
 		mustNew(t, nil).authorizeSignal(declared, v1types.DebugSignal, allowed),
@@ -107,9 +105,7 @@ func TestALegacyRunKeepsItsWorkflowOwnedSignalNamespace(t *testing.T) {
 		"the entire prefix belonged to legacy workflows, not only today's debug spelling")
 
 	policed := memoWithSignalPolicy(t, map[string]*v1types.SignalPolicy{
-		v1types.DebugSignal: {Allow: []*v1types.SignalPolicyRule{
-			{Subject: "https://issuer.example.com#somebody-else@example.com"},
-		}},
+		v1types.DebugSignal: {Allow: `sender.identity.principal == "https://issuer.example.com#somebody-else@example.com"`},
 	})
 	require.Error(t, mustNew(t, nil).authorizeSignal(policed, v1types.DebugSignal, caller),
 		"legacy routing must not bypass an ordinary signal policy declared for the old workflow-owned name")
@@ -141,9 +137,7 @@ func TestAnUnknownOrUnreadableSignalProtocolRefusesReservedNames(t *testing.T) {
 // TestACallerTheDebugPolicyDoesNotNameCannotPause is the sender direction:
 // a policy exists, and somebody it does not describe is refused.
 func TestACallerTheDebugPolicyDoesNotNameCannotPause(t *testing.T) {
-	declared := memoWithDebugPolicy(t, &v1types.SignalPolicy{Allow: []*v1types.SignalPolicyRule{
-		{Claims: map[string]string{"role": "sre"}},
-	}})
+	declared := memoWithDebugPolicy(t, &v1types.SignalPolicy{Allow: `sender.identity.claims["role"] == "sre"`})
 
 	require.Error(t, mustNew(t, nil).authorizeSignal(declared, v1types.DebugSignal,
 		sender("https://issuer.example.com", "dev-1@example.com", "team-a",
@@ -159,9 +153,7 @@ func TestACallerTheDebugPolicyDoesNotNameCannotPause(t *testing.T) {
 // for a reserved name too. A rehearsal stands in for an approver on a local run
 // and attests nobody; it may no more hold a production run than answer a gate.
 func TestARehearsalIdentityNeverTakesADebugLease(t *testing.T) {
-	declared := memoWithDebugPolicy(t, &v1types.SignalPolicy{Allow: []*v1types.SignalPolicyRule{
-		{Namespace: "team-a"},
-	}})
+	declared := memoWithDebugPolicy(t, &v1types.SignalPolicy{Allow: `sender.identity.namespace == "team-a"`})
 
 	local := sender("https://issuer.example.com", "sre-1@example.com", "team-a", nil)
 	require.NoError(t, mustNew(t, nil).authorizeSignal(declared, v1types.DebugSignal, local),
@@ -176,9 +168,7 @@ func TestARehearsalIdentityNeverTakesADebugLease(t *testing.T) {
 // and delivering onto a channel nothing reads would report a success that did
 // nothing.
 func TestAReservedNameThisBuildDoesNotKnowIsRefused(t *testing.T) {
-	declared := memoWithDebugPolicy(t, &v1types.SignalPolicy{Allow: []*v1types.SignalPolicyRule{
-		{Namespace: "team-a"},
-	}})
+	declared := memoWithDebugPolicy(t, &v1types.SignalPolicy{Allow: `sender.identity.namespace == "team-a"`})
 
 	require.Error(t, mustNew(t, nil).authorizeSignal(declared,
 		v1types.ReservedSignalPrefix+"whatever", sender("https://issuer.example.com", "sre-1@example.com", "team-a", nil)),
@@ -210,7 +200,7 @@ func TestAnUnreadableDebugPolicyRefusesEverybody(t *testing.T) {
 
 // TestADebugPolicyThisServerWouldNotHaveWrittenIsRefused covers the shapes
 // [debugPolicyMemoEntry] never produces: a present key holding an empty policy,
-// and one holding a rule that matches every sender.
+// and one holding a predicate that does not compile.
 //
 // Both are refused rather than read, because a memo that decodes to either is
 // truncation or a bit flip, and reading "matches everybody" out of one would be
@@ -223,24 +213,15 @@ func TestADebugPolicyThisServerWouldNotHaveWrittenIsRefused(t *testing.T) {
 			memoWithDebugPolicy(t, nil), v1types.DebugSignal, caller))
 	})
 
-	t.Run("a policy with no rules", func(t *testing.T) {
+	t.Run("a policy with no predicate", func(t *testing.T) {
 		require.Error(t, mustNew(t, nil).authorizeSignal(
 			memoWithDebugPolicy(t, &v1types.SignalPolicy{}), v1types.DebugSignal, caller))
 	})
 
-	t.Run("a rule matching every sender", func(t *testing.T) {
+	t.Run("a predicate that does not compile", func(t *testing.T) {
 		require.Error(t, mustNew(t, nil).authorizeSignal(
-			memoWithDebugPolicy(t, &v1types.SignalPolicy{Allow: []*v1types.SignalPolicyRule{{}}}),
+			memoWithDebugPolicy(t, &v1types.SignalPolicy{Allow: `sender.identity.principal ==`}),
 			v1types.DebugSignal, caller))
-	})
-
-	t.Run("an expression that survived resolution", func(t *testing.T) {
-		require.Error(t, mustNew(t, nil).authorizeSignal(
-			memoWithDebugPolicy(t, &v1types.SignalPolicy{Allow: []*v1types.SignalPolicyRule{{
-				SubjectFrom: v1types.NewExpr("inputs.approver"),
-				Claims:      map[string]string{"role": "sre"},
-			}}}), v1types.DebugSignal, caller),
-			"the enforcement path never evaluates an expression, so one arriving here is a bug that skipped resolution")
 	})
 }
 
@@ -248,12 +229,10 @@ func TestADebugPolicyThisServerWouldNotHaveWrittenIsRefused(t *testing.T) {
 // must not have to write a signal-policy entry, because a present-but-empty
 // signal policy is exactly the corruption `signalPolicies` refuses.
 func TestTheDebugPolicyTravelsOnItsOwnMemoKey(t *testing.T) {
-	entries, err := policyMemoEntries(t.Context(), &v1types.Workflow{
+	entries, err := policyMemoEntries(&v1types.Workflow{
 		Name:    "debug-only",
 		Profile: v1types.CurrentProfile,
-		Debug: &v1types.SignalPolicy{Allow: []*v1types.SignalPolicyRule{
-			{Claims: map[string]string{"role": "sre"}},
-		}},
+		Debug:   &v1types.SignalPolicy{Allow: `sender.identity.claims["role"] == "sre"`},
 	}, nil, nil)
 	require.NoError(t, err)
 
@@ -266,11 +245,11 @@ func TestTheDebugPolicyTravelsOnItsOwnMemoKey(t *testing.T) {
 	// The other direction, so this is not a test about one workflow: a
 	// signals-only workflow writes no debug key, and a run with no debug key is
 	// not debuggable.
-	entries, err = policyMemoEntries(t.Context(), &v1types.Workflow{
+	entries, err = policyMemoEntries(&v1types.Workflow{
 		Name:    "signals-only",
 		Profile: v1types.CurrentProfile,
 		Signals: map[string]*v1types.SignalPolicy{
-			"deploy-approved": {Allow: []*v1types.SignalPolicyRule{{Namespace: "team-a"}}},
+			"deploy-approved": {Allow: `sender.identity.namespace == "team-a"`},
 		},
 	}, nil, nil)
 	require.NoError(t, err)
@@ -278,42 +257,4 @@ func TestTheDebugPolicyTravelsOnItsOwnMemoKey(t *testing.T) {
 	require.Contains(t, entries, signalPolicyMemoKey)
 	require.Equal(t, currentSignalProtocol, entries[signalProtocolMemoKey])
 	require.NotContains(t, entries, debugPolicyMemoKey)
-}
-
-// TestADebugPolicysPerRunSubjectResolvesAtSubmit: the stanza shares
-// `signals:`'s grammar including `subject: ${...}`, and resolution happens
-// once, here, so the enforcement path never evaluates anything.
-func TestADebugPolicysPerRunSubjectResolvesAtSubmit(t *testing.T) {
-	wf := &v1types.Workflow{
-		Name:    "resolves",
-		Profile: v1types.CurrentProfile,
-		Debug: &v1types.SignalPolicy{Allow: []*v1types.SignalPolicyRule{{
-			SubjectFrom: v1types.NewExpr(`inputs.debugger`),
-			Claims:      map[string]string{"role": "sre"},
-		}}},
-	}
-
-	entries, err := policyMemoEntries(t.Context(), wf, map[string]*v1types.Value{
-		"debugger": v1types.NewLiteral("https://issuer.example.com#sre-1@example.com"),
-	}, nil)
-	require.NoError(t, err)
-
-	encoded, ok := entries[debugPolicyMemoKey].([]byte)
-	require.True(t, ok, "the entry is the encoded specification")
-
-	var decoded v1types.Workflow
-	require.NoError(t, proto.Unmarshal(encoded, &decoded))
-
-	rule := decoded.GetDebug().GetAllow()[0]
-	require.Equal(t, "https://issuer.example.com#sre-1@example.com", rule.GetSubject(),
-		"the expression resolved into a literal subject")
-	require.Nil(t, rule.GetSubjectFrom(),
-		"and was cleared, so nothing downstream can evaluate it a second time")
-
-	// And a value that does not resolve to a qualified subject is the caller's
-	// mistake, refused before the run exists.
-	_, err = policyMemoEntries(t.Context(), wf, map[string]*v1types.Value{
-		"debugger": v1types.NewLiteral("sre-1@example.com"),
-	}, nil)
-	require.Error(t, err, "a bare subject is refused at submit rather than frozen into a run's memo")
 }

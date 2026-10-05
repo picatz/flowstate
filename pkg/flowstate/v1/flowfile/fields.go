@@ -45,6 +45,11 @@ type field struct {
 type fieldSet struct {
 	list  []field
 	index map[string]int
+
+	// retired counts the retired keys [compiler.fieldsRetiring] reported and
+	// left out, so a caller does not follow their migration sentence with a
+	// second one about the block being empty.
+	retired int
 }
 
 // get returns the field with the given name.
@@ -66,6 +71,38 @@ func (c *compiler) fields(n ast.Node, path string, r ref, known []string) (*fiel
 		return nil, false
 	}
 	return c.check(entries, r, known), true
+}
+
+// fieldsRetiring is [compiler.fields] for a mapping that has retired keys of its
+// own: a key in retired is reported with its migration sentence and left out of
+// the result, so it is never also reported as an unknown key.
+//
+// Local to the position, unlike [retiredKeys], which is keyed on the word alone
+// and only answers where the word's replacement is a key. These keys have no
+// one-word replacement, and the sentence names the key and never what was
+// written under it: a retired list can hold principals, claims and subjects.
+func (c *compiler) fieldsRetiring(n ast.Node, path string, r ref, known []string, retired map[string]string) (*fieldSet, bool) {
+	entries, ok := c.entries(n, path, r)
+	if !ok {
+		return nil, false
+	}
+
+	kept := make([]entry, 0, len(entries))
+	gone := 0
+	for _, e := range entries {
+		if message, isRetired := retired[e.name]; isRetired && !slices.Contains(known, e.name) {
+			c.report(spanOfNode(e.key), r, "%s", message)
+			gone++
+
+			continue
+		}
+		kept = append(kept, e)
+	}
+
+	fs := c.check(kept, r, known)
+	fs.retired = gone
+
+	return fs, true
 }
 
 // check reports any entry whose key is not one of known, and returns the rest.

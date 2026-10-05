@@ -209,31 +209,25 @@ func CheckWebhookSignalCorrelate(webhook string, signal *WebhookTrigger_Signal) 
 // anybody, and a delivery is admitted by holding one trigger's signing key — so
 // under the zero case, one leaked Slack secret answers every unpoliced gate in
 // every workflow that deployment serves. The gap is closed in the file, where
-// an author can see it: a `signal:` requires an explicit policy for its name,
-// and that policy must have a rule this trigger's principal could satisfy.
+// an author can see it: a `signal:` requires an explicit policy for its name.
 //
-// # What "could satisfy" means, and what it deliberately does not check
+// # What it deliberately does not check
 //
-// The principal is [WebhookTriggerPrincipal]: this issuer, this
-// `<workflow>/<trigger>` subject, no claims. A rule is reachable when its
-// `subject:` is empty or names exactly that pair, and when it requires no
-// claims — the receiver mints this principal from its own configuration and
-// attaches no claims to it, so a rule demanding one can never match, however
-// the deployment is set up.
-//
-// `namespace:` is not checked, and that is the honest line between what a file
-// knows and what a deployment answers: the receiver's tenant is chosen by
-// `--webhook-namespace`, `flow validate` performs no deployment lookups, and
-// refusing a namespace rule here would refuse a file that works. A rule naming
-// only a namespace therefore passes this check and is still enforced in full at
-// delivery, by [SignalPolicyCheck], which is the same function and the only
-// enforcement point either driver has.
+// Whether the policy's `allow:` predicate could admit this trigger's principal
+// ([WebhookTriggerPrincipal]: this issuer, this `<workflow>/<trigger>` subject,
+// no claims). A predicate is decided at delivery over the sender, the starter
+// and the run's inputs, none of which a file check holds, so it cannot say the
+// bridge is unreachable; it is enforced in full at delivery by
+// [SignalPolicyCheck], the only enforcement point either driver has. The
+// rule-list form of this check refused a policy no webhook could satisfy; that
+// refusal went with the list, and a predicate that cannot admit the bridge now
+// denies at delivery instead (#2325).
 func CheckWebhookSignalPolicy(wf *Workflow, webhook string, signal *WebhookTrigger_Signal) error {
 	name := signal.GetName()
 	principal := WebhookTriggerPrincipal("", wf.GetName(), webhook)
 	qualified := QualifiedSubject(principal.GetIssuer(), principal.GetSubject())
 
-	policy, declared := wf.GetSignals()[name]
+	_, declared := wf.GetSignals()[name]
 	if !declared {
 		return fmt.Errorf("webhook %q answers signal %q, which declares no `signals:` policy; a signal with "+
 			"no policy admits any sender, and this one is answerable by whoever holds this webhook's "+
@@ -241,41 +235,7 @@ func CheckWebhookSignalPolicy(wf *Workflow, webhook string, signal *WebhookTrigg
 			webhook, name, name, qualified)
 	}
 
-	if policy.GetAllowExpr() != "" {
-		// A predicate is decided at delivery over the sender, the starter and
-		// the run's inputs, none of which this check holds, so it cannot say
-		// the bridge is unreachable. Not refused for that reason: it is the
-		// same "enforced in full at delivery" line `namespace:` sits on, and
-		// the bridge's delivery is still answered by [SignalPolicyCheck].
-		return nil
-	}
-
-	for _, rule := range policy.GetAllow() {
-		if len(rule.GetClaims()) > 0 {
-			// The receiver attaches no claims to a webhook principal — there is
-			// nothing to attach, since a signature attests a key rather than a
-			// person — so a rule requiring one is unreachable from this route
-			// whatever the deployment does.
-			continue
-		}
-		if subject := rule.GetSubject(); subject != "" && subject != qualified {
-			continue
-		}
-		if rule.GetSubjectFrom() != nil {
-			// Resolved at submit, from the run's own inputs, to a literal this
-			// file cannot know. It may well resolve to the trigger's subject, so
-			// it is not refused — it simply cannot be counted as the rule that
-			// makes the bridge reachable, which is the fail-closed reading.
-			continue
-		}
-
-		return nil
-	}
-
-	return fmt.Errorf("webhook %q answers signal %q, and none of that signal's `allow:` rules can admit a "+
-		"webhook delivery: this trigger attests as %q and carries no claims. Name it — "+
-		"`allow: ${sender.identity.principal == %q}` — or answer a different signal",
-		webhook, name, qualified, qualified)
+	return nil
 }
 
 // WebhookAddressingField names which of a trigger's two addressing expressions

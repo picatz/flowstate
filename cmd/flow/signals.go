@@ -42,7 +42,7 @@ var ()
 // # Rehearsing who sent it (#349)
 //
 // A delivery used to carry [v1.LocalSignalSender] always - unattested, which no
-// `allow:` rule a real deployment writes can match - so a workflow whose gate
+// `allow:` predicate a real deployment writes can admit - so a workflow whose gate
 // declares a `signals:` policy could only ever be rehearsed as the case where
 // the approval is refused. --signal-as-subject and its siblings name the
 // approver a delivery stands in for, and the same [v1.SignalPolicyCheck] then
@@ -58,18 +58,15 @@ var ()
 // here read the way `--as-subject` already reads for the starter.
 //
 // --as-subject/--as-issuer/--as-namespace/--as-claim name this run's own
-// starter, which is what a `distinct_from_starter:` policy compares a sender
-// against - so a rehearsal whose --signal-as-subject equals its --as-subject is
+// starter, which is what an `allow:` predicate reading `run.identity` compares a
+// sender against - so a rehearsal whose --signal-as-subject equals its --as-subject is
 // refused here exactly as production refuses an approver approving their own
 // request. A separate starter identity from [WorkloadIdentity]'s zero value
 // distinguishes "this local run started as nobody" from "this local run started
 // as somebody, but who is unknown" - see [v1.NewPolicedLocalSignals]'s
 // hasStarter parameter.
 func withLocalSignals(ctx context.Context, cmd *cobra.Command, workflow *v1.Workflow, inputs map[string]*v1.Value, flags []string) (context.Context, error) {
-	policies, bound, err := resolvedLocalSignalPolicies(ctx, workflow, inputs)
-	if err != nil {
-		return nil, err
-	}
+	policies, bound := localSignalPolicies(workflow, inputs)
 
 	starter, err := localWorkloadIdentity(cmd)
 	if err != nil {
@@ -209,42 +206,38 @@ func refusedLocalSignal(name string, sender *v1.SignalSender, err error) error {
 			"go on waiting", err)
 	}
 
-	return fmt.Errorf("%w\n  this delivery attests nobody, which no `allow:` rule matches; "+
+	return fmt.Errorf("%w\n  this delivery attests nobody, which no `allow:` predicate admits; "+
 		"--signal-as-subject and --signal-as-issuer name the approver %q stands in for", err, name)
 }
 
-// resolvedLocalSignalPolicies is workflow's declared `signals:` — if any —
-// resolved against inputs the same way submit resolves them
-// ([v1.ResolveSignalPolicySubjects]), suitable for [v1.NewPolicedLocalSignals].
+// localSignalPolicies is workflow's declared `signals:` — if any — and the
+// run's bound inputs, suitable for [v1.NewPolicedLocalSignals].
 //
-// inputs is bound first ([v1.BindRunInputs]), matching what
-// [v1.ResolveSignalPolicySubjects] itself expects: a rule's `subject_from`
-// expression may read a defaulted input, not only one the caller typed. A bind
-// failure here is not reported directly — [v1.RunWithInputs] performs the
-// identical bind moments later and is what actually decides whether this run
-// proceeds; this function only needs bound inputs when there is a policy to
-// resolve; when binding fails, the run is about to fail anyway, so an empty,
-// unpoliced result is returned rather than a second, differently-shaped error.
+// inputs is bound first ([v1.BindRunInputs]): an `allow: ${...}` predicate that
+// reads `inputs` sees a defaulted one, not only one the caller typed, as the
+// server's recorded copy does. A bind failure here is not reported directly —
+// [v1.RunWithInputs] performs the identical bind moments later and is what
+// actually decides whether this run proceeds; when binding fails, the run is
+// about to fail anyway, so an empty, unpoliced result is returned rather than a
+// second, differently-shaped error.
 //
-// Returns the bound inputs beside the policies: an `allow: ${...}` predicate
-// reads them at delivery, as the server reads the copy it recorded at submit.
-func resolvedLocalSignalPolicies(ctx context.Context, workflow *v1.Workflow, inputs map[string]*v1.Value) (map[string]*v1.SignalPolicy, map[string]*v1.Value, error) {
+// Returns the bound inputs beside the policies: a predicate reads them at
+// delivery, as the server reads the copy it recorded at submit.
+func localSignalPolicies(workflow *v1.Workflow, inputs map[string]*v1.Value) (map[string]*v1.SignalPolicy, map[string]*v1.Value) {
 	if len(workflow.GetSignals()) == 0 {
-		return nil, nil, nil
+		return nil, nil
 	}
 
 	bound, err := v1.BindRunInputs(workflow, inputs)
 	if err != nil {
-		return nil, nil, nil
+		return nil, nil
 	}
 
 	if bound == nil {
 		bound = map[string]*v1.Value{}
 	}
 
-	policies, err := v1.ResolveSignalPolicySubjects(ctx, workflow, bound)
-
-	return policies, bound, err
+	return workflow.GetSignals(), bound
 }
 
 // reportUnansweredGates warns about gates this run will block on.

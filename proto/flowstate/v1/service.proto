@@ -411,8 +411,8 @@ message GetResponse {
   //
   // Empty when the run's starter was never recorded or could not be read.
   // Empty is "unknown", never an identity. Authorization does not read this
-  // field; a `distinct_from_starter` signal policy denies when the starter is
-  // unknown.
+  // field; a signal policy whose `allow:` predicate reads `run.identity` denies when
+  // the starter is unknown.
   string starter = 12;
 
   // FirstRunId is the segment the workload began at. Equal to run_id for a run
@@ -563,7 +563,7 @@ message GetGateResponse {
 
   // Starter is who submitted the run, `issuer#subject`, as [GetResponse.starter]
   // reports it; empty when the run recorded none. It is what a
-  // `distinct_from_starter` policy compares the answerer against. Withheld
+  // `allow:` predicate reading `run.identity` compares the answerer against. Withheld
   // on the same terms as prompt.
   string starter = 8;
 
@@ -946,8 +946,8 @@ service WorkflowService {
   // For each open gate the answer carries the question the gate asks, the signal
   // name that releases it, whether a deadline lapses it, and whether the workflow
   // declares a policy over who may answer. That set is what an approval surface
-  // has to render, and it is what a `distinct_from_starter` policy is compared
-  // against.
+  // has to render, and it is what an `allow:` predicate over `run.identity` is
+  // compared against.
   //
   // To answer a gate, call [Signal] with the gate's signal name and a payload
   // carrying the decision. Address the workflow rather than a run: a run id pins

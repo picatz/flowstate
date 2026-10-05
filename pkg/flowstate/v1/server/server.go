@@ -313,7 +313,7 @@ func WithPluginCatalog(catalog *v1.PluginCatalog) Option {
 // namespace and workflow name match one of these entries is authorized and
 // executed from the trusted copy, not from the copy carried by the request.
 // This is what makes restrictions such as `manual: denied` and
-// `manual.allowed_principals` authorization policy rather than caller input.
+// a `manual: allow:` predicate authorization policy rather than caller input.
 //
 // Workflows not named by this option retain the open submission behavior: the
 // Run API accepts ad-hoc specifications. Deployments that use manual restrictions
@@ -376,7 +376,7 @@ func WithTrustedWorkflows(namespace string, workflows ...*v1.Workflow) Option {
 				// Two registrations disagree about one tenant's workflow.
 				// Last-writer-wins here would let a later, weaker copy
 				// replace `manual: denied` or a narrower
-				// `allowed_principals` — silently, and decided by option
+				// `allow:` predicate — silently, and decided by option
 				// order rather than by anything an operator wrote down.
 				// An [Option] can report an error, and this deliberately
 				// does not: a conflict is scoped to one tenant's one
@@ -797,16 +797,16 @@ const namespaceMemoKey = "flowstate.namespace"
 // asking Temporal a second question or reaching into the run's own history.
 //
 // Absent when the workflow declared no signal policy at all — which is the
-// overwhelmingly common case today, and the zero case [v1.SignalPolicyAllows]'s
-// own doc comment states: nothing here means every signal name is
+// overwhelmingly common case today, and the zero case [v1.SignalPolicyCheck]
+// leaves to its caller: nothing here means every signal name is
 // unconstrained, exactly as it was before this key existed. There is
 // deliberately no compatibility arm to reach for, because absent already
 // means the right thing.
 const signalPolicyMemoKey = "flowstate.signalPolicy"
 
 // starterMemoKey is the memo field recording the qualified issuer#subject of
-// whoever started a run — the identity [v1.SignalPolicy.distinct_from_starter]
-// compares an authorized sender against.
+// whoever started a run — the identity a signal predicate reads as
+// `run.identity`.
 //
 // Set once, at submit, from the same identity [namespaceMemoKey] already
 // records, through [starterMemoEntry] — the one function both
@@ -820,8 +820,8 @@ const starterMemoKey = "flowstate.starter"
 // starterMemoEntry records the qualified issuer#subject of whoever is
 // starting a run, under [starterMemoKey], written by both
 // [FlowstateServer.Run] and [FlowstateServer.CreateSchedule] so that
-// `distinct_from_starter` enforces identically on a direct run and on every
-// firing of a schedule — the same discipline [signalPolicyMemoEntry]
+// a predicate over `run.identity` evaluates identically on a direct run and on
+// every firing of a schedule — the same discipline [signalPolicyMemoEntry]
 // follows for the policy itself, and for the identical reason: a scheduled
 // run's starter is whoever created the schedule, captured once and frozen,
 // because there is no caller left to derive an identity from when a
@@ -845,40 +845,25 @@ func starterMemoEntry(identity *v1.WorkloadIdentity) map[string]any {
 // paths cannot drift, because there is exactly one place that turns
 // [v1.Workflow.Signals] into bytes.
 //
-// Resolves every rule's subject_from against inputs before encoding anything
-// — through [v1.ResolveSignalPolicySubjects], which is also this function's
-// one place a rule's subject_from is ever evaluated. inputs must already be
-// the value [v1.BindRunInputs] returned; both callers pass it that way, so a
-// scheduled run resolves a `subject: ${...}` against exactly the arguments
-// the schedule was created with, and a direct run resolves against exactly
-// what the caller submitted. The resolved policy — literal subjects only,
-// subject_from always cleared — is what gets encoded; the caller's own
-// wf.GetSignals() is never mutated.
-//
 // Returns a nil map (add nothing) when the workflow declares no policy at
-// all, which is the zero case [v1.SignalPolicyAllows] documents: absent means
-// unconstrained. A workflow that *does* declare a policy always yields a
-// non-empty entry — CheckSignalPolicies refuses a `signals:` block that
-// compiles to nothing, so "the key is present" and "a policy was recorded"
-// are the same fact from every reader's side; see [signalPolicies] in
-// lifecycle.go, which relies on that being true to fail closed on a present
-// key that decodes to nothing.
+// all, which is the zero case: absent means unconstrained. A workflow that
+// *does* declare a policy always yields a non-empty entry —
+// CheckSignalPolicies refuses a `signals:` block that compiles to nothing, so
+// "the key is present" and "a policy was recorded" are the same fact from
+// every reader's side; see [signalPolicies] in lifecycle.go, which relies on
+// that being true to fail closed on a present key that decodes to nothing.
 //
 // Encoded through the specification's own message rather than a bespoke
 // wrapper type, which is what lets [signalPolicies] decode it with nothing
 // more than `proto.Unmarshal` into a `*v1.Workflow` and read `.GetSignals()`
-// back off it.
-func signalPolicyMemoEntry(ctx context.Context, wf *v1.Workflow, inputs map[string]*v1.Value) (map[string]any, error) {
+// back off it. The predicate is stored as written: it reads the sender, so it
+// runs on every delivery and nothing is resolved at submit.
+func signalPolicyMemoEntry(wf *v1.Workflow) (map[string]any, error) {
 	if len(wf.GetSignals()) == 0 {
 		return nil, nil
 	}
 
-	resolved, err := v1.ResolveSignalPolicySubjects(ctx, wf, inputs)
-	if err != nil {
-		return nil, fmt.Errorf("resolving the declared signal policy's per-run subjects: %w", err)
-	}
-
-	encoded, err := proto.Marshal(&v1.Workflow{Signals: resolved})
+	encoded, err := proto.Marshal(&v1.Workflow{Signals: wf.GetSignals()})
 	if err != nil {
 		return nil, fmt.Errorf("encoding the declared signal policy: %w", err)
 	}
@@ -965,26 +950,15 @@ const (
 // partial [v1.Workflow] marshalled with proto, so the reader needs nothing but
 // `proto.Unmarshal` and `.GetDebug()`.
 //
-// Resolves the stanza's `subject: ${...}` rules against the run's bound inputs
-// before encoding, for the identical reason its neighbour does — the
-// enforcement path must never evaluate an expression, because it runs on every
-// ask and the expression reads values the caller chose.
-//
 // Returns a nil map for a workflow with no `debug:`, which is the fail-closed
 // zero case: no key, no lease, no pause.
-func debugPolicyMemoEntry(ctx context.Context, wf *v1.Workflow, inputs map[string]*v1.Value) (map[string]any, error) {
+func debugPolicyMemoEntry(wf *v1.Workflow) (map[string]any, error) {
 	declared := wf.GetDebug()
 	if declared == nil {
 		return nil, nil
 	}
 
-	resolved, err := v1.ResolvePolicySubjects(ctx, "debug", declared,
-		&v1.Scope{Profile: wf.GetProfile(), Inputs: inputs})
-	if err != nil {
-		return nil, fmt.Errorf("resolving the declared debug policy's per-run subjects: %w", err)
-	}
-
-	encoded, err := proto.Marshal(&v1.Workflow{Debug: resolved})
+	encoded, err := proto.Marshal(&v1.Workflow{Debug: declared})
 	if err != nil {
 		return nil, fmt.Errorf("encoding the declared debug policy: %w", err)
 	}
@@ -1002,16 +976,16 @@ func debugPolicyMemoEntry(ctx context.Context, wf *v1.Workflow, inputs map[strin
 // a second policy joined the first. The hole it forecloses is the one a
 // scheduled approval gate already had once: a firing that carried the tenant
 // memo and not the policy, so enforcement silently became the zero case.
-func policyMemoEntries(ctx context.Context, wf *v1.Workflow, inputs map[string]*v1.Value, starter *v1.WorkloadIdentity) (map[string]any, error) {
+func policyMemoEntries(wf *v1.Workflow, inputs map[string]*v1.Value, starter *v1.WorkloadIdentity) (map[string]any, error) {
 	entries := map[string]any{signalProtocolMemoKey: currentSignalProtocol}
 
-	signals, err := signalPolicyMemoEntry(ctx, wf, inputs)
+	signals, err := signalPolicyMemoEntry(wf)
 	if err != nil {
 		return nil, err
 	}
 	maps.Copy(entries, signals)
 
-	debug, err := debugPolicyMemoEntry(ctx, wf, inputs)
+	debug, err := debugPolicyMemoEntry(wf)
 	if err != nil {
 		return nil, err
 	}
@@ -1041,69 +1015,6 @@ func policyMemoEntries(ctx context.Context, wf *v1.Workflow, inputs map[string]*
 // predicates' reads are summed for the one recorded scope. Not a valid signal
 // name (it contains a space), so it cannot collide with one.
 const debugPolicyScopeName = "debug policy"
-
-// withheldPolicyRefusal is err, a refusal from [policyMemoEntries], with the
-// values of the inputs named in unknown taken out. Resolving a rule's
-// `subject:` refuses a value that is not `<issuer>#<subject>` quoting what it
-// resolved to, which can be a sensitive input's value (#2100).
-//
-// unknown is the sensitive inputs the refusal's reader cannot know are
-// sensitive ([unknownSensitiveInputs]): those a deployment-owned copy declares
-// and the submitter's file does not, or every one for a webhook delivery,
-// whose sender holds no file. The rest the client holds the declarations for,
-// so it redacts them itself, and an operator's `--reveal-sensitive` still
-// shows them, as it does on the local driver.
-func withheldPolicyRefusal(err error, unknown map[string]bool, inputs map[string]*v1.Value) error {
-	if len(unknown) == 0 {
-		return err
-	}
-	sensitive := v1.SensitiveInputValues(inputs, unknown)
-	if sensitive.Empty() {
-		return err
-	}
-	text := sensitive.RedactText(err.Error(),
-		"resolving the declared policy's per-run subjects failed, and the refusal is withheld: "+
-			"a sensitive input could not be enumerated, so no part of it is provably free of one")
-	if text == err.Error() {
-		return err
-	}
-
-	return errors.New(text)
-}
-
-// unknownSensitiveInputs is the sensitive inputs of executed whose values a
-// client that submitted submitted, with the arguments sent, cannot redact in a
-// refusal of a run of executed. Nil when executed is what was submitted.
-//
-// An input is the client's to redact only when its own file declares it
-// sensitive and it holds the value: it sent the value, or its file's default
-// is the one executed binds. A deployment-owned copy's own default for an
-// input the caller left out is a value the caller never held, so it is
-// withheld here even though the caller's file declares the input sensitive.
-func unknownSensitiveInputs(executed, submitted *v1.Workflow, sent map[string]*v1.Value, trusted bool) map[string]bool {
-	if !trusted {
-		return nil
-	}
-	known := v1.SensitiveInputNames(submitted)
-	defaults := map[string]*v1.Value{}
-	for _, declared := range submitted.GetDeclaredInputs() {
-		defaults[declared.GetName()] = declared.GetDefault()
-	}
-	unknown := map[string]bool{}
-	for _, declared := range executed.GetDeclaredInputs() {
-		name := declared.GetName()
-		if !declared.GetSensitive() {
-			continue
-		}
-		_, held := sent[name]
-		if known[name] && (held || proto.Equal(defaults[name], declared.GetDefault())) {
-			continue
-		}
-		unknown[name] = true
-	}
-
-	return unknown
-}
 
 // workflowNameMemoKey is the memo field recording a workflow's own declared
 // name — see [v1.RunSummary.Name] for why this cannot be read off Temporal's
@@ -1563,8 +1474,8 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 		key, err := v1.ResolveConcurrencyKey(ctx, workflow, inputs)
 		if err != nil {
 			// The caller's mistake, and reported as one: what a key resolves to is
-			// decided by the inputs they submitted, exactly as a signal rule's
-			// `subject_from` is (see [signalPolicyMemoEntry]'s own refusal).
+			// decided by the inputs they submitted, exactly as the arguments a
+			// manual predicate reads are.
 			return nil, connect.NewError(connect.CodeInvalidArgument, err)
 		}
 
@@ -1586,7 +1497,7 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 		return nil, err
 	}
 
-	memo, temporal, options, err := s.prepareCreate(ctx, identity, workflow, inputs, unknownSensitiveInputs(workflow, submitted, req.Msg.GetInputs(), trusted))
+	memo, temporal, options, err := s.prepareCreate(ctx, identity, workflow, inputs)
 	if err != nil {
 		return nil, err
 	}
@@ -2060,10 +1971,8 @@ func (s *FlowstateServer) validateSpecification(wf *v1.Workflow) error {
 
 	// The same argument for the `debug:` stanza, which compiles to the same
 	// [v1.SignalPolicy] and is checked by the same rules — see
-	// [v1.CheckDebugPolicy]. false: this is the workflow's own declaration,
-	// checked before [v1.BindRunInputs] has resolved anything, so a rule may
-	// still legitimately carry an unresolved `subject_from`.
-	if err := v1.CheckDebugPolicy(wf.GetDebug(), false); err != nil {
+	// [v1.CheckDebugPolicy].
+	if err := v1.CheckDebugPolicy(wf.GetDebug()); err != nil {
 		return connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
@@ -2186,36 +2095,29 @@ func (s *FlowstateServer) pluginCatalogSnapshot() *v1.PluginCatalog {
 //
 // The caller still has to set options.ID: this only fills in everything that
 // does not depend on which workflow id was chosen.
-//
-// unknown names the sensitive inputs a refusal to resolve the declared
-// policies withholds here rather than leaving to the client
-// ([withheldPolicyRefusal]).
 func (s *FlowstateServer) prepareCreate(
-	ctx context.Context, identity *v1.WorkloadIdentity, wf *v1.Workflow, inputs map[string]*v1.Value, unknown map[string]bool,
+	ctx context.Context, identity *v1.WorkloadIdentity, wf *v1.Workflow, inputs map[string]*v1.Value,
 ) (map[string]any, client.Client, client.StartWorkflowOptions, error) {
-	// The declared signal policy, resolved against inputs and frozen into the
-	// memo now, exactly as the tenant is a few lines below — see
+	// The declared signal policy, frozen into the memo now, exactly as the tenant is a few lines below — see
 	// [signalPolicyMemoEntry], the one function this and
 	// [FlowstateServer.CreateSchedule] both call, so a scheduled run and a
-	// direct run resolve and enforce identically. And the starter, recorded
+	// direct run enforce identically. And the starter, recorded
 	// through [starterMemoEntry] for the same reason — what a policy's
-	// `distinct_from_starter` will need to compare an authorized sender
-	// against.
+	// `run.identity` reads when it compares an authorized sender with it.
 	memo := map[string]any{namespaceMemoKey: identity.GetNamespace()}
 	maps.Copy(memo, starterMemoEntry(identity))
-	signalEntry, err := policyMemoEntries(ctx, wf, inputs, identity)
+	signalEntry, err := policyMemoEntries(wf, inputs, identity)
 	if err != nil {
-		err = withheldPolicyRefusal(err, unknown, inputs)
 		// Two different failures share this one call, and they get the same
 		// answer for different reasons. CheckSignalPolicies and v1.Validate
 		// above already accepted the specification's shape, so an encoding
 		// failure is this handler unable to do what it just told the caller
-		// it would do — not a caller mistake. But resolving a rule's
-		// subject_from evaluates an expression over the caller's own bound
-		// inputs, and a value that does not resolve to "<issuer>#<subject>"
-		// is exactly the caller's mistake — the same one BindRunInputs above
-		// already reports as InvalidArgument for an ordinary input. Either
-		// way, refusing before the run starts is what invariant 6 asks for:
+		// it would do — not a caller mistake. But a predicate that reads the
+		// run's inputs records them beside the policy, and inputs over the
+		// scope bound are exactly the caller's mistake — the same kind
+		// BindRunInputs above already reports as InvalidArgument for an
+		// ordinary input. Either way, refusing before the run starts is what
+		// invariant 6 asks for:
 		// fail closed rather than start a run whose signal policy the server
 		// itself could not finish establishing.
 		return nil, nil, client.StartWorkflowOptions{}, connect.NewError(connect.CodeInvalidArgument, err)

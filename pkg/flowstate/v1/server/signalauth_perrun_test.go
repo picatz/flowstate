@@ -11,27 +11,28 @@ import (
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 )
 
-// #207 slice 1, end to end: per-run signal authorization. A rule's
-// `subject:` may now be an expression, resolved once at submit against the
-// caller's own bound inputs — see the decision record on issue #207 — and
-// [v1.SignalPolicy.distinct_from_starter] separates who started a run from
-// who may approve it. These tests exercise both through the real RPC
-// surface and through both submit paths ([FlowstateServer.Run] and
-// [FlowstateServer.CreateSchedule]), because the whole point of sharing one
-// resolution helper between them is that a scheduled run resolves and
-// enforces exactly what a direct run does.
+// #207 slice 1, end to end: per-run signal authorization. An `allow:`
+// predicate may read the run's own bound inputs, which the server records with
+// the run, and compare the sender with the run's starter
+// (`sender.identity.principal != run.identity.principal`) to separate who
+// started a run from who may approve it. These tests exercise both through
+// the real RPC surface and through both submit paths
+// ([FlowstateServer.Run] and [FlowstateServer.CreateSchedule]), because the
+// whole point of sharing one memo helper between them is that a scheduled run
+// records and enforces exactly what a direct run does.
 
-// perRunGatedWorkflow is [gatedWorkflow] with a signal policy whose subject
-// is resolved per run, from an input named "expected_approver" — the shape
-// #207's decision record calls "per-run signal authorization".
+// perRunGatedWorkflow is [gatedWorkflow] with a signal policy whose predicate
+// reads an input named "expected_approver" — the shape #207's decision record
+// calls "per-run signal authorization".
 //
-// distinct_from_starter is set because a `subject_from` rule is required to
-// carry something the run's own inputs cannot reach, and this is the cheaper
-// of the two such things to express here (claims: would need the server
-// configured with an identity-claim allowlist). It is not incidental to what
-// these tests assert: the input naming the approver is chosen by whoever
+// The comparison with the starter is there because a predicate over inputs is
+// required to carry something the run's own inputs cannot reach, and this is
+// the cheaper of the two such things to express here (claims would need the
+// server configured with an identity-claim allowlist). It is not incidental to
+// what these tests assert: the input naming the approver is chosen by whoever
 // starts the run, so without it the starter could name themselves — see
-// [v1.CheckSignalPolicyShape] for why a namespace: cannot serve instead.
+// [v1.CheckSignalPolicyShape] for why a namespace comparison cannot serve
+// instead.
 func perRunGatedWorkflow() *v1.Workflow {
 	wf := gatedWorkflow()
 	wf.DeclaredInputs = []*v1.InputDeclaration{
@@ -39,22 +40,19 @@ func perRunGatedWorkflow() *v1.Workflow {
 	}
 	wf.Signals = map[string]*v1.SignalPolicy{
 		"deploy-approved": {
-			Allow: []*v1.SignalPolicyRule{{
-				SubjectFrom: v1.NewExpr("inputs.expected_approver"),
-			}},
-			DistinctFromStarter: true,
+			Allow: `sender.identity.principal == inputs.expected_approver && sender.identity.principal != run.identity.principal`,
 		},
 	}
 	return wf
 }
 
-// TestSignalPolicySubjectFromResolvesAtRunSubmit is the positive-then-negative
+// TestSignalPolicyReadingInputsIsEvaluatedAgainstTheRunsOwnInputs is the positive-then-negative
 // pair for a direct run: the sender named by this particular run's own
 // `expected_approver` input is authorized, and a sender who would have
-// satisfied a *different* run's input is not — proving resolution happened
-// against this run's own bound inputs rather than against the workflow's
-// specification in the abstract.
-func TestSignalPolicySubjectFromResolvesAtRunSubmit(t *testing.T) {
+// satisfied a *different* run's input is not — proving the predicate was
+// evaluated against this run's own bound inputs rather than against the
+// workflow's specification in the abstract.
+func TestSignalPolicyReadingInputsIsEvaluatedAgainstTheRunsOwnInputs(t *testing.T) {
 	t.Parallel()
 
 	fixture := newTenantFixture(t)
@@ -104,14 +102,14 @@ func TestSignalPolicySubjectFromResolvesAtRunSubmit(t *testing.T) {
 	require.Eventually(t, func() bool {
 		resp, err := fixture.teamA.Get(t.Context(), connect.NewRequest(&v1.GetRequest{WorkflowId: workflowID}))
 		return err == nil && resp.Msg.GetStatus() == v1.RunResponse_STATUS_COMPLETED
-	}, 60*time.Second, 200*time.Millisecond, "the run did not complete after the per-run-resolved sender approved")
+	}, 60*time.Second, 200*time.Millisecond, "the run did not complete after the sender the run's input named approved")
 }
 
-// TestSignalPolicySubjectFromResolvesDifferentlyPerRun proves resolution is
+// TestSignalPolicyReadingInputsDecidesDifferentlyPerRun proves the decision is
 // truly per run and not merely per workflow: two runs of the identical
 // specification, started with two different `expected_approver` inputs,
 // each authorize only their own approver.
-func TestSignalPolicySubjectFromResolvesDifferentlyPerRun(t *testing.T) {
+func TestSignalPolicyReadingInputsDecidesDifferentlyPerRun(t *testing.T) {
 	t.Parallel()
 
 	fixture := newTenantFixture(t)
@@ -151,7 +149,7 @@ func TestSignalPolicySubjectFromResolvesDifferentlyPerRun(t *testing.T) {
 }
 
 // scheduledPerRunGatedWorkflow is [perRunGatedWorkflow]
-// with a schedule trigger, so its subject_from resolution can be exercised
+// with a schedule trigger, so its per-run predicate can be exercised
 // through [FlowstateServer.CreateSchedule] — the other submit path
 // [signalPolicyMemoEntry] serves, and #207's decision record's "both submit
 // paths" requirement.
@@ -167,14 +165,14 @@ func scheduledPerRunGatedWorkflow(name string) *v1.Workflow {
 	return wf
 }
 
-// TestScheduledSignalPolicySubjectFromResolvesAtScheduleCreation is
-// [TestSignalPolicySubjectFromResolvesAtRunSubmit] for the scheduled path:
-// `CreateSchedule` binds and resolves the policy once, against the inputs
-// the schedule was created with, and every firing's memo carries that same
-// resolved subject — proving [signalPolicyMemoEntry]'s "one function, two
-// callers" discipline actually holds for subject_from, not only for the
-// zero-case policy shape #206/#215 already covered.
-func TestScheduledSignalPolicySubjectFromResolvesAtScheduleCreation(t *testing.T) {
+// TestScheduledSignalPolicyReadingInputsIsRecordedAtScheduleCreation is
+// [TestSignalPolicyReadingInputsIsEvaluatedAgainstTheRunsOwnInputs] for the scheduled path:
+// `CreateSchedule` records the policy and the inputs it reads once, against
+// the inputs the schedule was created with, and every firing's memo carries
+// them — proving [policyMemoEntries]'s "one function, two callers" discipline
+// actually holds for a per-run predicate, not only for the zero-case policy
+// shape #206/#215 already covered.
+func TestScheduledSignalPolicyReadingInputsIsRecordedAtScheduleCreation(t *testing.T) {
 	t.Parallel()
 
 	fixture := newTenantFixture(t)
@@ -234,22 +232,22 @@ func TestScheduledSignalPolicySubjectFromResolvesAtScheduleCreation(t *testing.T
 			NamedValues: map[string]*v1.Value{"approved": v1.NewLiteral(true)},
 		},
 	}))
-	require.NoError(t, err, "the schedule's own resolved expected_approver was refused on its fired execution")
+	require.NoError(t, err, "the schedule's own expected_approver was refused on its fired execution")
 
 	require.Eventually(t, func() bool {
 		resp, err := fixture.teamA.Get(t.Context(), connect.NewRequest(&v1.GetRequest{WorkflowId: workflowID}))
 		return err == nil && resp.Msg.GetStatus() == v1.RunResponse_STATUS_COMPLETED
-	}, 60*time.Second, 200*time.Millisecond, "the scheduled run did not complete after the resolved sender approved")
+	}, 60*time.Second, 200*time.Millisecond, "the scheduled run did not complete after the named sender approved")
 }
 
-// TestSignalPolicyDistinctFromStarterEndToEnd exercises separation of duties
+// TestSignalPolicyComparingWithTheStarterEndToEnd exercises separation of duties
 // through the real RPC surface: whoever starts a run may be named by the
-// policy's own subject rule, but distinct_from_starter refuses their own
-// signal all the same — the run's starter and the deploy-approved rule's
-// subject are made to be the identical caller on purpose, so a pass here
-// could only come from the distinct_from_starter check itself, not from the
-// ordinary rule failing to match.
-func TestSignalPolicyDistinctFromStarterEndToEnd(t *testing.T) {
+// policy's own principal comparison, but the comparison with the starter
+// refuses their own signal all the same — the run's starter and one of the
+// principals the predicate names are made to be the identical caller on
+// purpose, so a pass here could only come from the starter comparison itself,
+// not from the principal comparison failing to match.
+func TestSignalPolicyComparingWithTheStarterEndToEnd(t *testing.T) {
 	t.Parallel()
 
 	fixture := newTenantFixture(t)
@@ -262,14 +260,7 @@ func TestSignalPolicyDistinctFromStarterEndToEnd(t *testing.T) {
 	wf := gatedWorkflow()
 	wf.Signals = map[string]*v1.SignalPolicy{
 		"deploy-approved": {
-			Allow: []*v1.SignalPolicyRule{
-				// Names *both* callers this test uses, so the rule alone would
-				// authorize the starter too — distinct_from_starter is the only
-				// thing standing between the starter and a successful signal.
-				{Subject: v1.QualifiedSubject("https://issuer.example.com", "requester@example.com")},
-				{Subject: v1.QualifiedSubject("https://issuer.example.com", "release-manager@example.com")},
-			},
-			DistinctFromStarter: true,
+			Allow: `((sender.identity.principal == "` + v1.QualifiedSubject("https://issuer.example.com", "requester@example.com") + `") || (sender.identity.principal == "` + v1.QualifiedSubject("https://issuer.example.com", "release-manager@example.com") + `")) && sender.identity.principal != run.identity.principal`,
 		},
 	}
 
@@ -287,13 +278,13 @@ func TestSignalPolicyDistinctFromStarterEndToEnd(t *testing.T) {
 			NamedValues: map[string]*v1.Value{"approved": v1.NewLiteral(true)},
 		},
 	}))
-	require.Error(t, err, "the run's own starter approved their own run despite distinct_from_starter")
+	require.Error(t, err, "the run's own starter approved their own run despite the starter comparison")
 	require.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
 
 	ran, err := stepsScheduled(t.Context(), fixture.temporal, workflowID)
 	require.NoError(t, err)
 	require.Equal(t, []string{"requesting approval"}, ran,
-		"a step ran after a self-approval distinct_from_starter should have refused")
+		"a step ran after a self-approval the starter comparison should have refused")
 
 	// A distinct sender, named by the same rule, succeeds.
 	approverCtx := auth.ContextWithPrincipal(t.Context(), auth.Principal{
@@ -307,7 +298,7 @@ func TestSignalPolicyDistinctFromStarterEndToEnd(t *testing.T) {
 			NamedValues: map[string]*v1.Value{"approved": v1.NewLiteral(true)},
 		},
 	}))
-	require.NoError(t, err, "a sender distinct from the run's starter was refused by distinct_from_starter")
+	require.NoError(t, err, "a sender distinct from the run's starter was refused by the starter comparison")
 
 	require.Eventually(t, func() bool {
 		resp, err := fixture.teamA.Get(t.Context(), connect.NewRequest(&v1.GetRequest{WorkflowId: workflowID}))

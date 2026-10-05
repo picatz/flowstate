@@ -23,9 +23,10 @@ import (
 //
 //   - the bytes written, against a golden, because a rewrite that still validates
 //     can mean something else (CLAUDE.md's rewriter section);
-//   - the *decision*, against the engine itself: the old spelling and the one
-//     the tool writes are both compiled and both asked, for every sender and
-//     starter in a grid, and must answer the same;
+//   - the *decision*, against the engine itself: the predicate the tool writes
+//     is compiled and asked, for every sender and starter in a grid, and must
+//     stay safe where the old spelling was refused (the old spelling is itself
+//     refused at parse now, so the two can no longer be compared side by side);
 //   - the committed examples, which must be exactly what the tool writes from the
 //     spelling they were in.
 
@@ -392,13 +393,8 @@ func inputsOf(m map[string]string) map[string]*v1.Value {
 }
 
 // decide asks the engine whether one sender may act under the policy a workflow
-// declares, resolving a rule list's interpolated subjects the way submit does.
-//
-// started is false when the run would never have been created: submit refuses a
-// rule list whose interpolated subject resolves to something that is not
-// "<issuer>#<subject>", before any signal could be delivered, so there is no
-// delivery whose answer could be compared.
-func decide(t *testing.T, stanza string, wf *v1.Workflow, sender, starter *v1.WorkloadIdentity, inputs map[string]*v1.Value) (allowed, started bool) {
+// declares.
+func decide(t *testing.T, stanza string, wf *v1.Workflow, sender, starter *v1.WorkloadIdentity, inputs map[string]*v1.Value) bool {
 	t.Helper()
 
 	ctx := context.Background()
@@ -406,21 +402,11 @@ func decide(t *testing.T, stanza string, wf *v1.Workflow, sender, starter *v1.Wo
 
 	switch stanza {
 	case "manual":
-		return v1.CheckManualStart(ctx, wf, sender, v1.Principal(sender.GetIssuer(), sender.GetSubject()), "because", inputs) == nil, true
+		return v1.CheckManualStart(ctx, wf, sender, v1.Principal(sender.GetIssuer(), sender.GetSubject()), "because", inputs) == nil
 	case "debug":
-		policy, err := v1.ResolvePolicySubjects(ctx, "debug", wf.GetDebug(), &v1.Scope{Inputs: inputs})
-		if err != nil {
-			return false, false
-		}
-
-		return v1.DebugPolicyCheck(ctx, policy, sender, starter, hasStarter, inputs) == nil, true
+		return v1.DebugPolicyCheck(ctx, wf.GetDebug(), sender, starter, hasStarter, inputs) == nil
 	default:
-		policy, err := v1.ResolvePolicySubjects(ctx, "signals[go]", wf.GetSignals()["go"], &v1.Scope{Inputs: inputs})
-		if err != nil {
-			return false, false
-		}
-
-		return v1.SignalPolicyCheck(ctx, policy, sender, starter, hasStarter, inputs) == nil, true
+		return v1.SignalPolicyCheck(ctx, wf.GetSignals()["go"], sender, starter, hasStarter, inputs) == nil
 	}
 }
 
@@ -451,74 +437,75 @@ func TestFixedPredicateDecidesLikeTheRulesItReplaced(t *testing.T) {
 	for _, tc := range []struct {
 		name, stanza, old string
 		inputs            []input
+		// unusable is true when some input makes the old rule list's
+		// interpolated subject something that is not "<issuer>#<subject>".
+		unusable bool
 	}{
-		{"claims", "signals", "allow:\n  - claims: {team: release-managers}\n", noInputs},
-		{"literal subject", "signals", "allow:\n  - subject: " + bot + "\n", noInputs},
+		{"claims", "signals", "allow:\n  - claims: {team: release-managers}\n", noInputs, false},
+		{"literal subject", "signals", "allow:\n  - subject: " + bot + "\n", noInputs, false},
 		{"literal subject, namespace and claims", "signals",
-			"allow:\n  - subject: " + bot + "\n    namespace: payments\n    claims: {team: sre}\n", noInputs},
-		{"namespace and claims", "signals", "allow:\n  - namespace: payments\n    claims: {role: on-call}\n", noInputs},
+			"allow:\n  - subject: " + bot + "\n    namespace: payments\n    claims: {team: sre}\n", noInputs, false},
+		{"namespace and claims", "signals", "allow:\n  - namespace: payments\n    claims: {role: on-call}\n", noInputs, false},
 		{"alternatives", "signals",
-			"allow:\n  - subject: " + bot + "\n    claims: {team: sre}\n  - claims: {role: sre-lead}\n  - namespace: other\n    claims: {team: x}\n", noInputs},
+			"allow:\n  - subject: " + bot + "\n    claims: {team: sre}\n  - claims: {role: sre-lead}\n  - namespace: other\n    claims: {team: x}\n", noInputs, false},
 		{"alternatives with distinct_from_starter", "signals",
-			"allow:\n  - claims: {team: x}\n  - claims: {role: sre-lead}\n  - subject: " + bot + "\ndistinct_from_starter: true\n", noInputs},
+			"allow:\n  - claims: {team: x}\n  - claims: {role: sre-lead}\n  - subject: " + bot + "\ndistinct_from_starter: true\n", noInputs, false},
 		{"one rule with distinct_from_starter", "signals",
-			"allow:\n  - claims: {team: x}\ndistinct_from_starter: true\n", noInputs},
+			"allow:\n  - claims: {team: x}\ndistinct_from_starter: true\n", noInputs, false},
 		{"distinct_from_starter: false", "signals",
-			"allow:\n  - claims: {team: x}\ndistinct_from_starter: false\n", noInputs},
+			"allow:\n  - claims: {team: x}\ndistinct_from_starter: false\n", noInputs, false},
 		{"claim names that are not identifiers", "signals",
-			"allow:\n  - claims:\n      team-name: a\n      in: b\n      \"a.b\": c\n      q: 'say \"hi\" \\ bye'\n", noInputs},
+			"allow:\n  - claims:\n      team-name: a\n      in: b\n      \"a.b\": c\n      q: 'say \"hi\" \\ bye'\n", noInputs, false},
 		{"interpolated subject and claims", "signals",
 			"allow:\n  - subject: ${\"" + policyIssuer + "#\" + inputs.approver}\n    claims: {team: release-managers}\ndistinct_from_starter: true\n",
-			[]input{{"approver": "alice@example.com"}, {"approver": "a@example.com"}, {"approver": ""}, {"approver": "a#b"}}},
+			[]input{{"approver": "alice@example.com"}, {"approver": "a@example.com"}, {"approver": ""}, {"approver": "a#b"}}, true},
 		{"interpolated subject and claims, two rules", "signals",
 			"allow:\n  - subject: ${\"" + policyIssuer + "#\" + inputs.approver}\n    claims: {team: x}\n  - subject: ${\"" + policyIssuer + "#\" + inputs.spec}\n    claims: {team: sre}\n",
-			[]input{{"approver": "alice@example.com", "spec": "a@example.com"}, {"approver": "b@example.com", "spec": ""}}},
+			[]input{{"approver": "alice@example.com", "spec": "a@example.com"}, {"approver": "b@example.com", "spec": ""}}, true},
 		{"interpolated subject narrowed by distinct_from_starter alone", "signals",
 			"allow:\n  - subject: ${\"" + policyIssuer + "#\" + inputs.approver}\ndistinct_from_starter: true\n",
-			[]input{{"approver": "alice@example.com"}, {"approver": "a@example.com"}, {"approver": ""}}},
+			[]input{{"approver": "alice@example.com"}, {"approver": "a@example.com"}, {"approver": ""}}, true},
 		// The case the empty-principal guard exists for: the input is empty, the
 		// rule list refused the run at submit, and a bare `principal == inputs.spec`
 		// would have admitted every unauthenticated sender.
 		{"interpolated subject that can be empty, and an anonymous sender", "signals",
 			"allow:\n  - subject: ${inputs.spec}\ndistinct_from_starter: true\n",
-			[]input{{"spec": alice}, {"spec": ""}, {"spec": "not-qualified"}, {"spec": bot}}},
+			[]input{{"spec": alice}, {"spec": ""}, {"spec": "not-qualified"}, {"spec": bot}}, true},
 		{"interpolated subject that can be empty, narrowed by a claim", "signals",
 			"allow:\n  - subject: ${inputs.spec}\n    claims: {team: x}\n",
-			[]input{{"spec": alice}, {"spec": ""}, {"spec": bot}}},
+			[]input{{"spec": alice}, {"spec": ""}, {"spec": bot}}, true},
 		{"ternary subject", "signals",
 			"allow:\n  - subject: '${inputs.approver == \"\" ? inputs.spec : \"" + policyIssuer + "#\" + inputs.approver}'\n    claims: {team: x}\n",
-			[]input{{"approver": "", "spec": alice}, {"approver": "a@example.com", "spec": ""}, {"approver": "", "spec": ""}}},
+			[]input{{"approver": "", "spec": alice}, {"approver": "a@example.com", "spec": ""}, {"approver": "", "spec": ""}}, true},
 		{"predicate gaining distinct_from_starter", "signals",
-			"allow: ${sender.identity.claims.team == \"x\" || sender.identity.claims.role == \"sre-lead\"}\ndistinct_from_starter: true\n", noInputs},
-		{"debug claims", "debug", "allow:\n  - claims: {team: sre}\n", noInputs},
+			"allow: ${sender.identity.claims.team == \"x\" || sender.identity.claims.role == \"sre-lead\"}\ndistinct_from_starter: true\n", noInputs, false},
+		{"debug claims", "debug", "allow:\n  - claims: {team: sre}\n", noInputs, false},
 		{"debug with an interpolated subject", "debug",
 			"allow:\n  - subject: ${\"" + policyIssuer + "#\" + inputs.approver}\n    claims: {team: sre}\n",
-			[]input{{"approver": "alice@example.com"}, {"approver": ""}}},
+			[]input{{"approver": "alice@example.com"}, {"approver": ""}}, true},
 		{"manual principals", "manual",
-			"allowed_principals:\n  - " + alice + "\n  - " + bot + "\n", noInputs},
-		{"manual one principal", "manual", "allowed_principals: " + bot + "\n", noInputs},
+			"allowed_principals:\n  - " + alice + "\n  - " + bot + "\n", noInputs, false},
+		{"manual one principal", "manual", "allowed_principals: " + bot + "\n", noInputs, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
 			oldSrc := workflowWith(tc.stanza, tc.old)
+
+			// The old spelling is refused at parse, with the way out.
+			_, _, err := flowfile.Parse([]byte(oldSrc))
+			require.Error(t, err, "the retired spelling still parses")
+			assert.Contains(t, err.Error(), "flow fix")
+
 			result := fixAllow(t, oldSrc)
 			require.Empty(t, result.Refusals)
 			require.True(t, result.Changed(), "the case does not exercise the rewrite")
 
-			oldWF, _, err := flowfile.Parse([]byte(oldSrc))
-			require.NoError(t, err)
-			require.Empty(t, flowfile.Validate(oldWF), "the old spelling must be a valid file for the comparison to mean anything")
 			newWF, _, err := flowfile.Parse(result.Source)
 			require.NoError(t, err)
 			require.Empty(t, flowfile.Validate(newWF))
 
-			// A single-rule policy has no other alternative: when the rule list would have
-			// refused the run at submit, the predicate must admit nobody at all, not merely
-			// nobody anonymous. (With a second rule the run starts and that rule answers.)
-			singleRule := strings.Count(tc.old, "\n  - ") == 1
-
-			var allowed, denied, softer, unstarted, total int
+			var allowed, denied, total int
 			for _, in := range tc.inputs {
 				values := inputsOf(in)
 				for _, sender := range senderGrid() {
@@ -527,55 +514,29 @@ func TestFixedPredicateDecidesLikeTheRulesItReplaced(t *testing.T) {
 							continue // a manual start has no run, so no starter
 						}
 
-						oldAllows, started := decide(t, tc.stanza, oldWF, sender, starter, values)
-						newAllows, _ := decide(t, tc.stanza, newWF, sender, starter, values)
 						total++
-
-						if !started {
-							// The rule list would have refused this run at submit, so there is
-							// nothing to compare, and the predicate has to be safe on its own:
-							// whatever it admits is a sender with a whole principal, never an
-							// unauthenticated one that an empty computed subject could equal.
-							unstarted++
-							if newAllows && (singleRule || v1.Principal(sender.GetIssuer(), sender.GetSubject()) == "") {
-								t.Errorf("the run is refused by the rule list, and the predicate admits a sender it should not: sender=%v starter=%v inputs=%v\nrewritten: %s",
-									sender, starter, in, rewrittenPolicy(string(result.Source)))
-
-								return
-							}
-
-							continue
-						}
-
-						if oldAllows {
-							allowed++
-						} else {
+						if !decide(t, tc.stanza, newWF, sender, starter, values) {
 							denied++
-						}
-
-						if oldAllows == newAllows {
 							continue
 						}
+						allowed++
 
-						// The one known divergence, and only in the stricter direction.
-						if oldAllows && !newAllows && (halfFormed(sender) || halfFormed(starter)) {
-							softer++
-							continue
-						}
+						// Whatever the predicate admits is a sender with a whole
+						// principal, never an unauthenticated or half-formed one that
+						// an empty or computed subject could equal.
+						if v1.Principal(sender.GetIssuer(), sender.GetSubject()) == "" && tc.unusable {
+							t.Errorf("the predicate admits a sender without a principal: sender=%v starter=%v inputs=%v\nrewritten: %s",
+								sender, starter, in, rewrittenPolicy(string(result.Source)))
 
-						t.Errorf("old=%v new=%v for sender=%v starter=%v inputs=%v\nrewritten: %s",
-							oldAllows, newAllows, sender, starter, in, rewrittenPolicy(string(result.Source)))
-						if t.Failed() {
 							return
 						}
 					}
 				}
 			}
 
-			assert.Positive(t, allowed, "no sender was ever allowed, so the comparison proved nothing about allowing")
-			assert.Positive(t, denied, "no sender was ever denied, so the comparison proved nothing about denying")
-			t.Logf("%d questions, %d allowed by the rule list, %d refused, %d for runs the rule list would not have started; %d stricter for half-formed identities",
-				total, allowed, denied, unstarted, softer)
+			assert.Positive(t, allowed, "no sender was ever allowed, so the grid proved nothing about allowing")
+			assert.Positive(t, denied, "no sender was ever denied, so the grid proved nothing about denying")
+			t.Logf("%d questions, %d allowed, %d refused", total, allowed, denied)
 		})
 	}
 }
@@ -616,11 +577,9 @@ func TestFixedInterpolatedSubjectKeepsTheConjunctionThatNarrowsIt(t *testing.T) 
 	require.NoError(t, err)
 	in := inputsOf(map[string]string{"approver": "alice@example.com"})
 	named := ident(policyIssuer, "alice@example.com", "", map[string]string{"team": "other"})
-	allowed, _ := decide(t, "signals", wf, named, nil, in)
-	assert.False(t, allowed)
+	assert.False(t, decide(t, "signals", wf, named, nil, in))
 	named.Claims["team"] = "release-managers"
-	allowed, _ = decide(t, "signals", wf, named, nil, in)
-	assert.True(t, allowed)
+	assert.True(t, decide(t, "signals", wf, named, nil, in))
 }
 
 // ---------------------------------------------------------------------------

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -22,9 +23,11 @@ import (
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowstatev1connect"
 )
 
-// sensitiveSubjectWorkflow gates a signal on a subject read from a
-// `sensitive:` input, so an argument that is not `<issuer>#<subject>` is
-// refused before the run starts, in a sentence quoting what it resolved to.
+// sensitiveSubjectWorkflow gates a signal on a principal read from a
+// `sensitive:` input. The refusals below are a server's, quoting that input in
+// its own words: redacting what a server quotes is the CLI's and the MCP
+// tools' job whatever the server was refusing, and the fixture is what gives
+// the argument something to be redacted from.
 const sensitiveSubjectWorkflow = `edition: v2026.4
 name: sensitive-subject
 inputs:
@@ -34,9 +37,7 @@ inputs:
     sensitive: true
 signals:
   approved:
-    distinct_from_starter: true
-    allow:
-      - subject: ${inputs.approver}
+    allow: ${sender.identity.principal == "https://issuer.example.com#" + inputs.approver && sender.identity.principal != run.identity.principal}
 steps:
   - id: wait
     wait_for_signal:
@@ -44,63 +45,21 @@ steps:
       timeout: 1s
 `
 
-// sensitiveSubject is the argument neither surface may quote: a bare subject,
-// with a quote in it so the refusal's `%q` spelling differs from the raw one.
+// sensitiveSubject is the argument neither surface may quote: it has a quote in
+// it so a refusal's `%q` spelling differs from the raw one.
 const sensitiveSubject = `approver-"lead"@corp.example`
 
-// TestASubjectRefusalWithholdsASensitiveInput is #2100 on `flow run local`:
-// the refusal still says what was wrong, without the value.
-func TestASubjectRefusalWithholdsASensitiveInput(t *testing.T) {
-	// Not t.Parallel(): runLocal shares the process-wide registry, as the
-	// other run-local tests say.
-	_, stderr, err := runLocal(t, sensitiveSubjectWorkflow, "--input", "approver="+sensitiveSubject)
-	require.Error(t, err, "a bare subject is refused")
-
-	for _, text := range []string{err.Error(), stderr} {
-		assert.NotContains(t, text, "lead", "the sensitive input reached the refusal")
-	}
-	assert.Contains(t, err.Error(), v1.SensitiveMarker, "a redaction, not a withholding")
-	assert.Contains(t, err.Error(), "<issuer>#<subject>", "the refusal no longer says what was wrong")
-
-	_, _, revealed := runLocal(t, sensitiveSubjectWorkflow, "--input", "approver="+sensitiveSubject, "--reveal-sensitive")
-	require.Error(t, revealed)
-	assert.Contains(t, revealed.Error(), "lead", "--reveal-sensitive did not show the value")
-}
-
-// TestTheRunLocalToolSubjectRefusalWithholdsASensitiveInput is #2100 on the
-// MCP `flowstate_run_local` tool.
-func TestTheRunLocalToolSubjectRefusalWithholdsASensitiveInput(t *testing.T) {
-	t.Parallel()
-
-	result, _ := callRunLocal(t, connectMCP(t, defaultLocalRunPosture()), map[string]any{
-		"source": sensitiveSubjectWorkflow,
-		"inputs": map[string]any{"approver": sensitiveSubject},
-	})
-	require.True(t, result.IsError, "a bare subject is refused")
-
-	text := result.Content[0].(*mcp.TextContent).Text
-	assert.NotContains(t, text, "lead", "the sensitive input reached the tool result")
-	assert.Contains(t, text, v1.SensitiveMarker, "a redaction, not a withholding")
-	assert.Contains(t, text, "<issuer>#<subject>", "the refusal no longer says what was wrong")
-}
-
-// subjectResolvingServer refuses a submission the way the server does when a
-// gate's `subject:` does not resolve to `<issuer>#<subject>`: InvalidArgument,
-// quoting the resolver's own refusal.
+// subjectResolvingServer refuses a submission with InvalidArgument, quoting the
+// argument it was sent the way a server's own detail can.
 type subjectResolvingServer struct {
 	flowstatev1connect.UnimplementedWorkflowServiceHandler
 }
 
-func (subjectResolvingServer) refuse(ctx context.Context, workflow *v1.Workflow, inputs map[string]*v1.Value) error {
-	bound, err := v1.BindRunInputs(workflow, inputs)
-	if err != nil {
-		return connect.NewError(connect.CodeInvalidArgument, err)
-	}
-	if _, err := v1.ResolveSignalPolicySubjects(ctx, workflow, bound); err != nil {
-		return connect.NewError(connect.CodeInvalidArgument, err)
-	}
+func (subjectResolvingServer) refuse(_ context.Context, _ *v1.Workflow, inputs map[string]*v1.Value) error {
+	approver := inputs["approver"].GetLiteral().GetStringValue()
 
-	return connect.NewError(connect.CodeUnimplemented, nil)
+	return connect.NewError(connect.CodeInvalidArgument,
+		fmt.Errorf("cannot admit approver %q: want an <issuer>#<subject> principal", approver))
 }
 
 func (s subjectResolvingServer) Run(ctx context.Context, req *connect.Request[v1.RunRequest]) (*connect.Response[v1.RunResponse], error) {
@@ -116,8 +75,7 @@ func (s subjectResolvingServer) CreateSchedule(ctx context.Context, req *connect
 }
 
 // TestADurableSubjectRefusalWithholdsASensitiveInput is #2100 on the durable
-// driver's submitting commands: the server's refusal quotes what the gate's
-// subject resolved to, and `flow run` and `flow schedule create` print it as
+// driver's submitting commands: the server's refusal quotes the argument, and `flow run` and `flow schedule create` print it as
 // `flow run local` does.
 func TestADurableSubjectRefusalWithholdsASensitiveInput(t *testing.T) {
 	t.Parallel()
@@ -148,8 +106,8 @@ func TestADurableSubjectRefusalWithholdsASensitiveInput(t *testing.T) {
 }
 
 // TestTheRunToolSubjectRefusalWithholdsASensitiveInput is #2100 on the MCP
-// tools that submit a run: the server's refusal of the submission quotes what
-// the gate's subject resolved to, and the tool result withholds it as `flow
+// tools that submit a run: the server's refusal of the submission quotes the
+// argument, and the tool result withholds it as `flow
 // run` does, against the workflow and arguments the request carried.
 func TestTheRunToolSubjectRefusalWithholdsASensitiveInput(t *testing.T) {
 	t.Parallel()

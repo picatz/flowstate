@@ -72,9 +72,7 @@ func TestCodecMemosAreReadThroughTheConfiguredConverter(t *testing.T) {
 	}
 
 	policy := map[string]*v1.SignalPolicy{
-		"deploy-approved": {Allow: []*v1.SignalPolicyRule{
-			{Subject: "https://issuer.example.com#release-bot@example.com"},
-		}},
+		"deploy-approved": {Allow: `sender.identity.principal == "https://issuer.example.com#release-bot@example.com"`},
 	}
 	encodedPolicy, err := proto.Marshal(&v1.Workflow{Signals: policy})
 	require.NoError(t, err)
@@ -105,8 +103,8 @@ func TestCodecMemosAreReadThroughTheConfiguredConverter(t *testing.T) {
 		require.NoError(t, err)
 		require.True(t, hasPolicy)
 		require.Contains(t, declared, "deploy-approved")
-		require.Equal(t, "https://issuer.example.com#release-bot@example.com",
-			declared["deploy-approved"].GetAllow()[0].GetSubject())
+		require.Equal(t, `sender.identity.principal == "https://issuer.example.com#release-bot@example.com"`,
+			declared["deploy-approved"].GetAllow())
 
 		require.Equal(t, "deploy", s.workflowNameOf(&workflow.WorkflowExecutionInfo{Memo: memo}))
 	})

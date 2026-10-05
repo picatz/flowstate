@@ -11,7 +11,7 @@ import (
 )
 
 func predicatePolicy(expression string) *v1.SignalPolicy {
-	return &v1.SignalPolicy{AllowExpr: expression}
+	return &v1.SignalPolicy{Allow: expression}
 }
 
 func TestSignalPolicyPredicateIsTypeCheckedAgainstTheClosedScope(t *testing.T) {
@@ -85,8 +85,8 @@ func TestSignalPolicyExprReportsWhichPerRunValuesItReads(t *testing.T) {
 	assert.Equal(t, v1.SignalPolicyReads{Inputs: true, Run: true},
 		reads(`inputs.x == "a" && sender.identity.principal != run.identity.principal`))
 	assert.Equal(t, v1.SignalPolicyReads{}, v1.SignalPolicyExprReads(map[string]*v1.SignalPolicy{
-		"rules": {Allow: []*v1.SignalPolicyRule{{Namespace: "x"}}},
-	}), "a rule-list policy reads nothing per-run")
+		"none": {},
+	}), "a policy with no predicate reads nothing per-run")
 }
 
 func TestSignalPolicyRefusalNeverQuotesAnInputOrAClaim(t *testing.T) {
@@ -133,31 +133,20 @@ func TestSignalPolicyPredicateDeniesWhenTheContextIsCancelled(t *testing.T) {
 	}
 }
 
-func TestSignalPolicyCheckSetsBothMechanismsRefusedAndNeitherRefused(t *testing.T) {
+func TestSignalPolicyCheckRefusesAPolicyWithNoPredicate(t *testing.T) {
 	t.Parallel()
 
-	both := &v1.SignalPolicy{
-		Allow:     []*v1.SignalPolicyRule{{Namespace: "n"}},
-		AllowExpr: `sender.identity.namespace == "n"`,
-	}
 	sender := &v1.WorkloadIdentity{Namespace: "n"}
 
-	require.Error(t, v1.SignalPolicyCheck(t.Context(), both, sender, nil, false, nil),
-		"a policy with both mechanisms was answered by one of them")
-	require.Error(t, v1.CheckPolicyShape(`signals["x"]`, both, false))
-	require.Error(t, v1.CheckPolicyShape(`signals["x"]`, &v1.SignalPolicy{}, false),
-		"a policy with neither authorizes nobody and is refused, not read as open")
+	require.Error(t, v1.SignalPolicyCheck(t.Context(), &v1.SignalPolicy{}, sender, nil, false, nil),
+		"a policy with no predicate was read as open")
+	require.Error(t, v1.CheckPolicyShape(`signals["x"]`, &v1.SignalPolicy{}),
+		"a policy with no predicate authorizes nobody and is refused, not read as open")
 
 	only := predicatePolicy(`sender.identity.namespace == "n"`)
-	require.NoError(t, v1.CheckPolicyShape(`signals["x"]`, only, false))
-	require.NoError(t, v1.CheckPolicyShape(`signals["x"]`, only, true), "the decoded side checks the same policy")
+	require.NoError(t, v1.CheckPolicyShape(`signals["x"]`, only))
 	require.NoError(t, v1.SignalPolicyCheck(t.Context(), only, sender, nil, false, nil))
 	require.Error(t, v1.SignalPolicyCheck(t.Context(), only, &v1.WorkloadIdentity{Namespace: "m"}, nil, false, nil))
-
-	// The rule list is unchanged by any of this.
-	rules := &v1.SignalPolicy{Allow: []*v1.SignalPolicyRule{{Namespace: "n"}}}
-	require.NoError(t, v1.SignalPolicyCheck(t.Context(), rules, sender, nil, false, nil))
-	require.Error(t, v1.SignalPolicyCheck(t.Context(), rules, &v1.WorkloadIdentity{Namespace: "m"}, nil, false, nil))
 }
 
 func TestSignalPolicyShapeRefusesAnUnusablePredicateWithTheStanzaNamed(t *testing.T) {
@@ -165,7 +154,7 @@ func TestSignalPolicyShapeRefusesAnUnusablePredicateWithTheStanzaNamed(t *testin
 
 	err := v1.CheckSignalPolicyShape(map[string]*v1.SignalPolicy{
 		"deploy-approved": predicatePolicy(`inputs.who == "x"`),
-	}, true)
+	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `signals["deploy-approved"].allow`)
 	assert.Contains(t, err.Error(), "cannot reach")

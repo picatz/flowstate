@@ -613,9 +613,7 @@ func plural(n int) string {
 //
 // and a workflow var may not read another var either, so the third remedy is
 // gone with the first two. A webhook trigger's expressions are bound before a
-// run exists at all, and a signal policy's computed `subject:` is evaluated by
-// the server deciding whether a sender may signal, which is not a place a step
-// output is in scope.
+// run exists at all.
 //
 // So those positions are silent rather than differently worded. Tier 4 owes a
 // mechanical replacement per check (docs/STYLE.md, Part II); a finding with no
@@ -629,11 +627,6 @@ func readsSteps(slot v1.ValueSlot) bool {
 	switch slot {
 	case v1.SlotWorkflowVar,
 		v1.SlotConcurrencyKey,
-		v1.SlotSignalSubject,
-		// A `debug:` rule's computed `subject:` is resolved at submit, by the
-		// server freezing the policy into the run's memo — earlier even than a
-		// signal policy's is consulted, and long before any step has run.
-		v1.SlotDebugSubject,
 		v1.SlotWebhookIdempotencyKey,
 		v1.SlotWebhookArgument,
 		v1.SlotWebhookVerify,

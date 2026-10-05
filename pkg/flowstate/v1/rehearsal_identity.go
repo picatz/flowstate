@@ -11,7 +11,7 @@ import "context"
 // exists to "rehearse policy as" an identity, and it reached three of the six
 // identity-aware surfaces: the secret-access policy and the credential broker
 // (through [TaskRuntime.Identity]), the plugin caller (through
-// [plugin.NewContextWithIdentity]), and `distinct_from_starter:` (through
+// [plugin.NewContextWithIdentity]), and a signal predicate's `run.identity` (through
 // [NewPolicedLocalSignals]). It reached none of the three that read
 // [Scope.identity] — the task-shape policy (#187), the egress policy's identity
 // dimension (#240), and `run.identity` in expressions — because the local driver

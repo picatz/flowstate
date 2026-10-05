@@ -16,8 +16,8 @@
 #
 # The sender every admitted case names is the trigger, not a person. That is
 # what a signature attests, and writing it out here is a reminder that
-# `distinct_from_starter:` on this route would separate webhooks rather than
-# humans.
+# comparing the sender with `run.identity` on this route would separate
+# webhooks rather than humans.
 vars:
   bridge: flowstate://webhook
   trigger: webhook-approval-bridge/slack-approval

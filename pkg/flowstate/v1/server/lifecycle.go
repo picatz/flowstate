@@ -182,8 +182,8 @@ func notFound(workflowID string) *connect.Error {
 // Describe, no reach into history.
 //
 // Absent (ok false, err nil) is not an error: it is the overwhelmingly common
-// case, and it means exactly what [v1.SignalPolicyAllows]'s doc comment says
-// the zero case means — no policy was declared for any signal name, so every
+// case, and it is the zero case [v1.SignalPolicyCheck] leaves to its caller —
+// no policy was declared for any signal name, so every
 // name stays unconstrained, exactly as every run behaved before this field
 // existed. A run whose memo predates this field reads the identical way,
 // with no compatibility arm needed, because "nothing here" already means the
@@ -205,10 +205,12 @@ func notFound(workflowID string) *connect.Error {
 // `signals:` block that would compile to one. So "the key is present" and "a
 // non-empty, well-formed policy was recorded" are the same fact on every
 // path that legitimately writes this memo. A present key that decodes to an
-// empty map, or to a policy with no rules, or to a rule that authorizes
-// every sender, is therefore not a policy this server ever wrote — it is
-// truncation, a bit flip, or a byte sequence nothing here produced — and is
-// refused exactly like a payload that fails to decode at all.
+// empty map, or to a policy with no predicate, is therefore not a policy this
+// server ever wrote — it is truncation, a bit flip, a byte sequence nothing
+// here produced, or a run frozen by a release that still recorded the retired
+// rule list (whose field numbers are reserved, so it decodes to a policy with
+// no predicate) — and is refused exactly like a payload that fails to decode
+// at all: a sender is never admitted by a policy this server cannot read.
 func (s *FlowstateServer) signalPolicies(memo *common.Memo) (map[string]*v1.SignalPolicy, bool, error) {
 	payload, ok := memo.GetFields()[signalPolicyMemoKey]
 	if !ok {
@@ -226,13 +228,7 @@ func (s *FlowstateServer) signalPolicies(memo *common.Memo) (map[string]*v1.Sign
 	}
 
 	declared := spec.GetSignals()
-	// true: this is a policy decoded back off a run's memo, which
-	// [server.signalPolicyMemoEntry] never writes with a rule's subject_from
-	// still populated — resolution happens once, at submit, before this
-	// memo entry is ever written. See [v1.CheckSignalPolicyShape]'s own doc
-	// comment for why the declared side (checked before submit resolves
-	// anything) asks the opposite question.
-	if err := v1.CheckSignalPolicyShape(declared, true); err != nil {
+	if err := v1.CheckSignalPolicyShape(declared); err != nil {
 		return nil, false, fmt.Errorf(
 			"server: the signal policy recorded on a run is not a policy this server would have written: %w", err)
 	}
@@ -250,8 +246,8 @@ func (s *FlowstateServer) signalPolicies(memo *common.Memo) (map[string]*v1.Sign
 // workflow, which has its own opinion about who may". Run and
 // SignalWithStart both write the admission ALLOW before reaching this, and
 // both are held to the same rule they call it for: a caller `manual:
-// denied` refused, or refused for lacking a required reason or an
-// allowed_principals match, must leave a DENY under the RPC's own name — not
+// denied` refused, or refused for lacking a required reason or
+// failing its `allow:` predicate, must leave a DENY under the RPC's own name — not
 // an unaudited PermissionDenied, which reads in the trail as a request that
 // never made a second decision at all. See #1883 and #1889.
 //
@@ -279,14 +275,12 @@ func (s *FlowstateServer) authorizeManualStart(ctx context.Context, rpc string, 
 // # Fail closed, deliberately unevenly
 //
 // A signal name with **no declared policy** is allowed: that is the zero
-// case, argued in full at [v1.SignalPolicyAllows] and at
-// [v1.Workflow.Signals] — authorization is opt-in per name, because the
+// case, argued in full at [v1.Workflow.Signals] — authorization is opt-in per name, because the
 // alternative is every existing workflow's next `flow signal` failing the
 // day this shipped, for a policy nobody wrote. Everything else fails closed
-// without exception: a memo that cannot be decoded, a sender that matches
-// no rule of a policy that *does* exist, or — when the policy sets
-// `distinct_from_starter` — a sender who turns out to be this run's own
-// starter, or a run with no starter recorded to compare against at all, is
+// without exception: a memo that cannot be decoded, a sender the
+// `allow:` predicate of a policy that *does* exist does not admit, or a
+// predicate reading `run.identity` on a run with no starter recorded, is
 // refused. There is no third outcome once a policy is declared.
 func (s *FlowstateServer) authorizeSignal(resp *workflowservice.DescribeWorkflowExecutionResponse, name string, sender *v1.SignalSender) error {
 	// A sender marked local is a local driver's own value - [v1.LocalSignalSender]
@@ -585,8 +579,7 @@ func (s *FlowstateServer) authorizeReservedSignal(
 // says nothing" are different sentences and only one of them is true.
 //
 // A present key that decodes to a policy this server would never have written —
-// no rules, a rule matching every sender, a `subject_from` that survived
-// resolution — is refused for [signalPolicies]'s reason, through the same
+// no predicate — is refused for [signalPolicies]'s reason, through the same
 // checker: [debugPolicyMemoEntry] never writes any of those shapes.
 func (s *FlowstateServer) debugPolicy(memo *common.Memo) (*v1.SignalPolicy, error) {
 	payload, ok := memo.GetFields()[debugPolicyMemoKey]
@@ -611,8 +604,7 @@ func (s *FlowstateServer) debugPolicy(memo *common.Memo) (*v1.SignalPolicy, erro
 				"server would have written — it writes no key at all for a workflow with no `debug:`")
 	}
 
-	// true: resolution happened once, at submit, before this was frozen.
-	if err := v1.CheckDebugPolicy(declared, true); err != nil {
+	if err := v1.CheckDebugPolicy(declared); err != nil {
 		return nil, fmt.Errorf(
 			"server: the debug policy recorded on a run is not a policy this server would have written: %w", err)
 	}
@@ -670,7 +662,7 @@ func (s *FlowstateServer) starterAsIdentity(memo *common.Memo) (*v1.WorkloadIden
 //
 // One derivation, shared with the authorization path rather than parallel to it:
 // this reads [FlowstateServer.memoStarter], which is the same function [starterAsIdentity] reads
-// for [authorizeSignal]'s `distinct_from_starter` comparison, off the same
+// for [authorizeSignal]'s `run.identity`, off the same
 // Describe response. A second reader that split or normalized the memo its own
 // way is how a surface comes to display an identity that the check compares
 // differently.
@@ -695,7 +687,7 @@ func (s *FlowstateServer) starterAsIdentity(memo *common.Memo) (*v1.WorkloadIden
 // That deliberately does not distinguish "unauthenticated starter" from
 // "nothing recorded", and it does not need to - both are the same answer to the
 // only question this field is asked. [authorizeSignal] keeps the distinction,
-// because `distinct_from_starter` genuinely does have to compare against an
+// because a predicate over `run.identity` genuinely does have to compare against an
 // empty subject rather than refuse for want of one; it reads [FlowstateServer.memoStarter]
 // itself and is untouched by this.
 //
@@ -745,8 +737,8 @@ func (s *FlowstateServer) memoTenant(memo *common.Memo) (string, error) {
 //
 // Absent (ok false, err nil) is not always an error: it is the ordinary case
 // for a run started before this key existed, or one whose declared signal
-// policy never sets `distinct_from_starter`. [authorizeSignal] is what turns
-// "absent, but the flag demands the comparison" into a denial — this
+// policy never reads `run.identity`. [authorizeSignal] is what turns
+// "absent, but the predicate reads it" into a denial — this
 // function only reports what the memo holds.
 func (s *FlowstateServer) memoStarter(memo *common.Memo) (string, bool, error) {
 	payload, ok := memo.GetFields()[starterMemoKey]
@@ -1203,7 +1195,7 @@ func (s *FlowstateServer) SignalWithStart(ctx context.Context, req *connect.Requ
 		return nil, err
 	}
 
-	memo, temporal, options, err := s.prepareCreate(ctx, identity, workflow, inputs, unknownSensitiveInputs(workflow, submitted, req.Msg.GetInputs(), trusted))
+	memo, temporal, options, err := s.prepareCreate(ctx, identity, workflow, inputs)
 	if err != nil {
 		return nil, err
 	}
@@ -1224,7 +1216,7 @@ func (s *FlowstateServer) SignalWithStart(ctx context.Context, req *connect.Requ
 	// That memo records *this caller* as the starter, so it decides a create
 	// and nothing else. A refusal here does not mean the caller may not signal
 	// an entity somebody else already started (B signalling A's entity under
-	// `distinct_from_starter`, say, is exactly what the existing run's own
+	// a `run.identity` comparison, say, is exactly what the existing run's own
 	// memo admits), so a refusal never creates and instead looks for the
 	// entity: one that positively exists is answered on its real memo, exactly
 	// as the already-started arm below answers it; none, and the refusal stands.

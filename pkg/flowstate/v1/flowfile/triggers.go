@@ -61,7 +61,16 @@ var triggerKindKeys = []string{"webhook", "schedule", "manual"}
 // declaring it at all is that a lock nobody can grep for is a lock nobody knows
 // about. Two spellings of one refusal would mean a search for the greppable one
 // misses half the files that have it.
-var manualKeys = []string{"require_reason", "allowed_principals", "allow"}
+var manualKeys = []string{"require_reason", "allow"}
+
+// retiredManualKeys are the keys a `manual:` mapping used to have, and what to
+// write instead. Held back from [manualKeys] so the migration sentence is the
+// one reported, and it names the key without echoing the principals written
+// under it.
+var retiredManualKeys = map[string]string{
+	"allowed_principals": "`allowed_principals:` is retired: write `allow: ${sender.identity.principal in " +
+		"[...]}` with the same principals. Run `flow fix` to rewrite this file",
+}
 
 // manualDenied is the scalar that refuses manual starts.
 //
@@ -232,7 +241,7 @@ func (c *compiler) manualTrigger(key, n ast.Node, path string, r ref) *v1.Manual
 		if word != manualDenied {
 			c.report(spanOfNode(resolved), r,
 				"is %q, which is not something a `manual:` says. Write `manual: %s` to refuse manual "+
-					"starts outright, or a mapping with `require_reason:`, `allowed_principals:` or an "+
+					"starts outright, or a mapping with `require_reason:` or an "+
 					"`allow: ${...}` predicate to narrow them. Declaring nothing at all leaves manual starts as they are, which is "+
 					"what every workflow without this block does",
 				word, manualDenied)
@@ -243,7 +252,7 @@ func (c *compiler) manualTrigger(key, n ast.Node, path string, r ref) *v1.Manual
 		return &v1.ManualTrigger{Denied: true}
 	}
 
-	fields, ok := c.fields(resolved, path, r, manualKeys)
+	fields, ok := c.fieldsRetiring(resolved, path, r, manualKeys, retiredManualKeys)
 	if !ok {
 		return nil
 	}
@@ -257,11 +266,6 @@ func (c *compiler) manualTrigger(key, n ast.Node, path string, r ref) *v1.Manual
 		}
 	}
 
-	if f, found := fields.get("allowed_principals"); found {
-		p := fieldPath(path, "allowed_principals")
-		manual.AllowedPrincipals = c.manualPrincipals(f.value, p)
-	}
-
 	if f, found := fields.get("allow"); found {
 		p := fieldPath(path, "allow")
 		allowRef := ref{path: p, label: "manual allow"}
@@ -270,112 +274,26 @@ func (c *compiler) manualTrigger(key, n ast.Node, path string, r ref) *v1.Manual
 			c.report(spanOfNode(resolved), allowRef,
 				"is not a `${...}` predicate; write the whole predicate as one `${...}` (for example "+
 					"`${sender.identity.claims.team == \"ops\"}`). Who may start the workload is one predicate, "+
-					"not a list; a list of principals is `allowed_principals:`")
-		} else if expression, ok := c.signalPolicyPredicate(resolved, p, allowRef, ""); ok {
-			manual.AllowExpr = expression
+					"not a list")
+		} else if expression, ok := c.signalPolicyPredicate(resolved, p, allowRef); ok {
+			manual.Allow = expression
 		}
 	}
 
-	if !manual.GetRequireReason() && len(manual.GetAllowedPrincipals()) == 0 && manual.GetAllowExpr() == "" {
+	if !manual.GetRequireReason() && manual.GetAllow() == "" && fields.retired == 0 {
 		// A block that narrows nothing reads as if it did, which is the one thing a
 		// diagnostic here must not allow: `manual:` written with nothing under it is
 		// how somebody believes they have restricted a workflow they have not.
 		c.report(spanOrKey(resolved, key), r,
 			"narrows nothing, so it says exactly what writing no `manual:` at all says. Write "+
 				"`manual: %s` to refuse manual starts, `require_reason: true` to require a reason for "+
-				"one, or `allowed_principals:` or `allow: ${...}` to say who may make one",
+				"one, or `allow: ${...}` to say who may make one",
 			manualDenied)
 
 		return nil
 	}
 
 	return manual
-}
-
-// manualPrincipals reads `allowed_principals:`, written as one subject or as a
-// list of them.
-//
-// One or many, the spelling `cron:` and `calendars:` already use for the same
-// schema shape and for the same reason: a file naming a single principal should not
-// have to write a one-element list to say so.
-//
-// Every entry is a subject a caller authenticates as, so an empty one is refused
-// where it is written. It would otherwise become a set member matching the empty
-// subject a deployment with no identity provider attests — a policy admitting
-// nobody in particular, which is a policy admitting everyone. [v1.CheckManualStart]
-// refuses that at the boundary too; this is the same rule with a line to point at.
-func (c *compiler) manualPrincipals(n ast.Node, path string) []string {
-	r := ref{path: path, label: "manual allowed_principals"}
-
-	resolved := c.resolve(n, path, r)
-	if resolved == nil {
-		return nil
-	}
-	c.pos.record(path, spanOfNode(resolved))
-
-	nodes, listed := []ast.Node{resolved}, false
-	if seq, ok := resolved.(*ast.SequenceNode); ok {
-		nodes, listed = seq.Values, true
-	}
-
-	if listed && len(nodes) == 0 {
-		c.report(spanOfNode(resolved), r,
-			"is an empty list, which allows nobody at all rather than everybody; remove the key to "+
-				"leave manual starts open, or write `manual: %s` to refuse them", manualDenied)
-
-		return nil
-	}
-	if len(nodes) > 64 {
-		c.report(spanOfNode(resolved), r,
-			"names %d principals, exceeding the limit of 64; narrow the allowlist", len(nodes))
-
-		return nil
-	}
-
-	out := make([]string, 0, len(nodes))
-	seen := make(map[string]struct{}, len(nodes))
-	for i, node := range nodes {
-		p := path
-		if listed {
-			p = indexPath(path, i)
-		}
-
-		subject, ok := c.text(node, p, ref{path: p, label: r.label})
-		if !ok {
-			continue
-		}
-		if strings.TrimSpace(subject) == "" {
-			c.report(spanOfNode(node), ref{path: p, label: r.label},
-				"is empty, which names nobody; write the subject a caller authenticates as, or remove "+
-					"the entry — an empty principal would match a caller a deployment with no identity "+
-					"provider attests, which is every caller")
-
-			continue
-		}
-		if !v1.LooksLikeQualifiedSubject(subject) {
-			c.report(spanOfNode(node), ref{path: p, label: r.label},
-				"%q is not \"<issuer>#<subject>\"; a bare or malformed subject is refused because a "+
-					"subject is only unique within its issuer", subject)
-
-			continue
-		}
-		if _, duplicate := seen[subject]; duplicate {
-			c.report(spanOfNode(node), ref{path: p, label: r.label},
-				"lists %q twice; a principal is either allowed or not, so the second entry does nothing",
-				subject)
-
-			continue
-		}
-		seen[subject] = struct{}{}
-
-		out = append(out, subject)
-	}
-
-	if len(out) == 0 {
-		return nil
-	}
-
-	return out
 }
 
 // triggerList compiles the call-site spelling: `triggers:` written as a list, one
@@ -1070,7 +988,7 @@ func triggersToYAML(triggers *v1.Triggers) (any, error) {
 // turning the one greppable spelling into one nobody searches for.
 func manualTriggerToYAML(manual *v1.ManualTrigger) (any, error) {
 	if manual.GetDenied() {
-		if manual.GetRequireReason() || len(manual.GetAllowedPrincipals()) > 0 || manual.GetAllowExpr() != "" {
+		if manual.GetRequireReason() || manual.GetAllow() != "" {
 			// Refused rather than written, for the reason [scheduleTriggerToYAML]
 			// refuses a cadence-less schedule: the contradiction is what
 			// [v1.CheckManualTrigger] reports, so writing it would produce a file
@@ -1082,37 +1000,19 @@ func manualTriggerToYAML(manual *v1.ManualTrigger) (any, error) {
 		return manualDenied, nil
 	}
 
-	if manual.GetAllowExpr() != "" && len(manual.GetAllowedPrincipals()) > 0 {
-		// Refused rather than written, for the reason the refusal above is: the
-		// contradiction is [v1.CheckManualTrigger]'s, and a file that holds both
-		// keys is one this package's own validator rejects.
-		return nil, fmt.Errorf("triggers manual: sets both `allowed_principals:` and an `allow:` predicate, " +
-			"which cannot both hold; write one or the other")
-	}
-
 	doc := yaml.MapSlice{}
 
 	if manual.GetRequireReason() {
 		doc = append(doc, yaml.MapItem{Key: "require_reason", Value: true})
 	}
 
-	if principals := manual.GetAllowedPrincipals(); len(principals) > 0 {
-		// A single principal is written bare rather than as a one-element list, the
-		// spelling `cron:` uses and the one [manualPrincipals] reads back.
-		var value any = principals
-		if len(principals) == 1 {
-			value = principals[0]
-		}
-		doc = append(doc, yaml.MapItem{Key: "allowed_principals", Value: value})
-	}
-
-	if expression := manual.GetAllowExpr(); expression != "" {
+	if expression := manual.GetAllow(); expression != "" {
 		doc = append(doc, yaml.MapItem{Key: "allow", Value: fencedToYAML(expression)})
 	}
 
 	if len(doc) == 0 {
 		return nil, fmt.Errorf("triggers manual: narrows nothing, so there is nothing to write; give it " +
-			"`require_reason: true`, an `allowed_principals:`, an `allow:` predicate, or write `manual: denied`")
+			"`require_reason: true`, an `allow:` predicate, or write `manual: denied`")
 	}
 
 	return doc, nil
@@ -1468,7 +1368,7 @@ func validateManualTrigger(wf *v1.Workflow) Diagnostics {
 
 	if err := v1.CheckManualTrigger(manual); err != nil {
 		field := "triggers.manual"
-		if manual.GetAllowExpr() != "" && v1.CheckManualAllowExpr(manual.GetAllowExpr()) != nil {
+		if manual.GetAllow() != "" && v1.CheckManualAllowExpr(manual.GetAllow()) != nil {
 			// The predicate itself is what is wrong, so point at it.
 			field = fieldPath(field, "allow")
 		}

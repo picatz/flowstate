@@ -46,9 +46,7 @@ func TestSignalWithStartAuditsAPolicyRefusalOnAnExistingEntity(t *testing.T) {
 
 	restricted := entityWorkflow(map[string]*v1.SignalPolicy{
 		"update": {
-			Allow: []*v1.SignalPolicyRule{
-				{Subject: v1.QualifiedSubject("https://issuer.example.com", "owner@example.com")},
-			},
+			Allow: `sender.identity.principal == "` + v1.QualifiedSubject("https://issuer.example.com", "owner@example.com") + `"`,
 		},
 	})
 
@@ -124,9 +122,7 @@ func TestSignalWithStartAuditsAPolicyRefusalOnTheConcurrencyCompatibilityArm(t *
 
 	restricted := entityWorkflow(map[string]*v1.SignalPolicy{
 		"update": {
-			Allow: []*v1.SignalPolicyRule{
-				{Subject: v1.QualifiedSubject("https://issuer.example.com", "owner@example.com")},
-			},
+			Allow: `sender.identity.principal == "` + v1.QualifiedSubject("https://issuer.example.com", "owner@example.com") + `"`,
 		},
 	})
 
@@ -214,9 +210,7 @@ func TestSignalWithStartSurfacesARequiredSinkFailureOnThePolicyDenial(t *testing
 
 	restricted := entityWorkflow(map[string]*v1.SignalPolicy{
 		"update": {
-			Allow: []*v1.SignalPolicyRule{
-				{Subject: v1.QualifiedSubject("https://issuer.example.com", "owner@example.com")},
-			},
+			Allow: `sender.identity.principal == "` + v1.QualifiedSubject("https://issuer.example.com", "owner@example.com") + `"`,
 		},
 	})
 

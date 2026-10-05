@@ -1342,7 +1342,7 @@ func eval(ctx context.Context, w *Workflow, inputs map[string]*Value) (*Workflow
 	// starter to name; set by `flow run local` from --as-subject and its
 	// siblings, the same identity that already reaches the secret-access
 	// policy, the credential broker, the plugin caller, and
-	// `distinct_from_starter:`. Three surfaces read this field — the
+	// a signal predicate's `run.identity`. Three surfaces read this field — the
 	// task-shape policy (#187), the egress policy's identity dimension
 	// (#240), and `run.identity` — and leaving it empty while the other four
 	// saw the rehearsal identity is what made one flag rehearse some of a

@@ -740,7 +740,7 @@ func init() {
 				"\n" +
 				" The expression is evaluated exactly once, in `FlowstateServer.Run`, after\n" +
 				" [BindRunInputs] and before the run exists — the same moment and the same\n" +
-				" discipline `SignalPolicyRule.subject_from` established. `inputs.*` is the\n" +
+				" discipline signal policies once resolved their subjects with. `inputs.*` is the\n" +
 				" whole of what it may read, and the validator refuses anything else, because\n" +
 				" at that moment nothing else exists: no step has produced an output, `vars:`\n" +
 				" have not been evaluated, and there is no run to have a `run.id`.\n" +

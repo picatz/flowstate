@@ -2623,9 +2623,9 @@ flow validate examples/hello-world/workflow.yaml`,
 			"A gate is the one exception, because a gate is the thing worth rehearsing. " +
 			"`--signal-as-subject` and its siblings name the approver a `--signal` delivery " +
 			"stands in for, and the workflow's `signals:` policy is checked here exactly as the " +
-			"server checks it — so an approver a rule admits in production opens the gate here, " +
-			"one it refuses is refused here, and this run's own starter is refused by " +
-			"`distinct_from_starter:` on both. The gate's `sender.local` output still reads " +
+			"server checks it — so an approver a predicate admits in production opens the gate here, " +
+			"one it refuses is refused here, and a predicate comparing with the run's own starter " +
+			"(`run.identity`) refuses it on both. The gate's `sender.local` output still reads " +
 			"true." + runDocumentHelp,
 		// Exactly one, as `flow run` and `flow compile` already hold: MinimumNArgs
 		// ran the first file and silently dropped the rest, so a habit carried

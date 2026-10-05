@@ -63,7 +63,7 @@ func TestAGetOnAParkedRunReportsTheGate(t *testing.T) {
 
 	started, err := fixture.teamA.Run(t.Context(), connect.NewRequest(&v1.RunRequest{
 		Workflow: gateWorkflow("parked-on-a-gate", "approve", &v1.SignalPolicy{
-			Allow: []*v1.SignalPolicyRule{{Subject: "https://idp.example#release-manager"}},
+			Allow: `sender.identity.principal == "https://idp.example#release-manager"`,
 		}),
 	}))
 	require.NoError(t, err)

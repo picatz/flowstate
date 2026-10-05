@@ -26,39 +26,24 @@ const (
 
 // SignalPolicy constrains who may deliver one named signal to a run.
 //
-// A sender is authorized if it satisfies *any* rule in [allow]: the rules
-// are alternatives, not requirements every one of them must meet. See
-// [SignalPolicyRule] for what one rule may require.
+// A sender is authorized when the one CEL predicate in [allow] is true. The
+// same message carries the `debug:` stanza's policy, and `manual:` has the same
+// shape in `ManualTrigger.allow`.
+//
+// Field 1 (the `allow` rule list of `SignalPolicyRule` messages), field 2
+// (`distinct_from_starter`) and the rule message itself were retired in favor
+// of the predicate: every rule list is a disjunction of conjunctions over the
+// sender, and `flow fix` rewrites each one into the predicate that says the
+// same. Their numbers are reserved so a policy frozen in an older run's memo
+// decodes as a policy with no predicate, which authorizes nobody, never as one
+// that reads a stale field as something else.
 type SignalPolicy struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Allow lists the alternative rules that may authorize a sender. At least
-	// one unless [allow_expr] is set instead, or the policy authorizes nobody,
-	// which is indistinguishable from a typo and is refused by the compiler
+	// Allow is one CEL predicate that decides the whole policy, written in a
+	// Flowfile as `allow: ${...}`. A policy with none authorizes nobody, which
+	// is indistinguishable from a typo and is refused by the compiler
 	// (`CheckPolicyShape`) rather than accepted as (probably unintended)
 	// lockout.
-	Allow []*SignalPolicyRule `protobuf:"bytes,1,rep,name=allow,proto3" json:"allow,omitempty"`
-	// DistinctFromStarter requires, in addition to whichever rule in [allow]
-	// an otherwise-authorized sender satisfies, that the sender not be this
-	// run's own starter: the same issuer and the same subject as the
-	// identity that submitted the run, compared the way `SignalPolicyRule.subject`
-	// already is (see `QualifiedSubject`). Set at the policy level, not on a
-	// rule, so it cannot be bypassed by adding a wide-open rule to `allow:`:
-	// separation of duties is ANDed onto every rule this policy has, present
-	// or future, rather than expressed as one more alternative a caller could
-	// satisfy around it.
-	//
-	// Enforced against the `flowstate.starter` value recorded on the run's
-	// memo at submit. A run whose memo predates that key (started before
-	// this field existed) has nothing to compare against, and is refused
-	// whenever this flag demands the comparison: a run that cannot prove
-	// separation does not get it, the same fail-closed rule
-	// [SignalPolicyAllows]'s own doc comment states for every other case once
-	// a policy exists.
-	DistinctFromStarter bool `protobuf:"varint,2,opt,name=distinct_from_starter,json=distinctFromStarter,proto3" json:"distinct_from_starter,omitempty"`
-	// AllowExpr is one CEL predicate that decides the whole policy, written in a
-	// Flowfile as `allow: ${...}`, in place of the [allow] rule list. A policy
-	// sets one of the two, never both: two mechanisms in one policy would be two
-	// answers to "who may act", and the compiler refuses it.
 	//
 	// The source is stored without the `${` `}` fence. It is evaluated
 	// server-side, against the server's own attestation, over a closed scope:
@@ -74,10 +59,12 @@ type SignalPolicy struct {
 	//
 	// A predicate that reads `inputs` must also read `sender.identity.claims` or
 	// `run.identity`: whoever started the run chose the inputs, so a predicate
-	// over them alone would let the starter name their own approver, the same
-	// fault `SignalPolicyRule.subject_from` is refused for. This is the coarser,
-	// syntactic form of that rule.
-	AllowExpr     string `protobuf:"bytes,3,opt,name=allow_expr,json=allowExpr,proto3" json:"allow_expr,omitempty"`
+	// over them alone would let the starter name their own approver. This is a
+	// syntactic rule, so authors should write the narrowing as a conjunction.
+	//
+	// This field was `allow_expr` at the same number before the rule list was
+	// retired; the wire encoding is unchanged and only the JSON name differs.
+	Allow         string `protobuf:"bytes,3,opt,name=allow,proto3" json:"allow,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -112,164 +99,11 @@ func (*SignalPolicy) Descriptor() ([]byte, []int) {
 	return file_flowstate_v1_signal_proto_rawDescGZIP(), []int{0}
 }
 
-func (x *SignalPolicy) GetAllow() []*SignalPolicyRule {
+func (x *SignalPolicy) GetAllow() string {
 	if x != nil {
 		return x.Allow
 	}
-	return nil
-}
-
-func (x *SignalPolicy) GetDistinctFromStarter() bool {
-	if x != nil {
-		return x.DistinctFromStarter
-	}
-	return false
-}
-
-func (x *SignalPolicy) GetAllowExpr() string {
-	if x != nil {
-		return x.AllowExpr
-	}
 	return ""
-}
-
-// SignalPolicyRule is one admissible sender, checked against the
-// [SignalSender] the server itself attested, never against anything the
-// signal's payload claims.
-//
-// Every field set on a rule must match (an AND); a rule with nothing set
-// matches every sender, which defeats the point of writing one, so the
-// compiler refuses it. Combine subject *and* claims in one rule to express
-// "this identity, and it must also carry this claim". That is one list
-// entry, not two policies an author has to keep in sync by hand.
-type SignalPolicyRule struct {
-	state protoimpl.MessageState `protogen:"open.v1"`
-	// Subject is an issuer-qualified identity, written as
-	// "<issuer>#<subject>", matched exactly against the attested sender's
-	// `issuer` and `subject` together.
-	//
-	// Issuer-qualified rather than subject alone, on purpose: a subject is
-	// only unique within its issuer (`auth/principal.go`'s own rule, restated
-	// by `examples/approval-gate/workflow.yaml`'s self-approval check for the
-	// identical reason), so two identity providers can each mint a "runner"
-	// subject that must not be treated as the same caller. A rule keyed on
-	// subject alone would authorize the wrong runner's signal under the right
-	// name, the same multi-IdP ambiguity a bare-subject `run.identity`
-	// comparison has. Only
-	// the qualified spelling is accepted; there is no subject-only form to be
-	// ambiguous about.
-	Subject string `protobuf:"bytes,1,opt,name=subject,proto3" json:"subject,omitempty"`
-	// Namespace restricts to one tenant, matched exactly against the attested
-	// sender's `namespace`.
-	//
-	// Rarely useful alone (every signal is already confined to its run's own
-	// tenant by `authorizeRun`, before this policy is even consulted), but
-	// combines with `claims` to express "anyone in this tenant carrying this
-	// claim" without naming individual subjects.
-	Namespace string `protobuf:"bytes,2,opt,name=namespace,proto3" json:"namespace,omitempty"`
-	// Claims are exact-match requirements against the attested sender's
-	// claims: every key here must be present on the sender with this value.
-	// Empty places no claim requirement, so a rule naming only `subject` is
-	// ordinary and common.
-	Claims map[string]string `protobuf:"bytes,3,rep,name=claims,proto3" json:"claims,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
-	// SubjectFrom carries `subject:` written as an expression (`subject:
-	// ${...}` in a Flowfile) rather than a literal. It resolves exactly
-	// once, at submit, against the run's bound inputs (after
-	// `BindRunInputs`, before anything else runs), and the result is written
-	// into [subject] and this field is cleared before the policy is frozen
-	// into the run's memo.
-	//
-	// That resolve-then-clear is why the enforcement path never evaluates an
-	// expression: by the time a signal can arrive, `subject` already holds a
-	// literal or is empty, and [subject_from] is always unset on whatever
-	// `SignalPolicyAllows` is asked to check. A decoded policy that still
-	// carries a populated `subject_from` is refused by
-	// `CheckSignalPolicyShape`: an unresolved expression must never survive
-	// to the path that authorizes a signal, because that path runs on every
-	// delivery and evaluating a caller-influenced expression there is
-	// exactly what `BindRunInputs`'s own input-value rule already refuses
-	// for an ordinary input.
-	//
-	// The narrowing rule: a rule that sets this field must also set
-	// [claims], or its policy must set [distinct_from_starter]. An
-	// interpolated subject alone would let whoever starts a run pick their
-	// own authorization by choosing what input value to submit — naming
-	// themselves as their own approver — so it must be accompanied by
-	// something the run's inputs cannot reach. Claims are attested on the
-	// sender's own token; `distinct_from_starter` refuses the starter by
-	// comparison rather than by matching at all.
-	//
-	// [namespace] is deliberately not one of them, though it looks like it
-	// should be. A namespace is compared against the sender's own, and no
-	// sender with a different one can reach the comparison: `Signal` reaches
-	// `authorizeSignal` only through `authorizeRun`, which refuses any
-	// caller outside the namespace recorded on the run — and the namespace
-	// recorded on a run is the starter's. So a namespace equal to the run's
-	// own tenant restates a constraint that already held, and any other
-	// value makes the rule unmatchable; either way it narrows nothing, while
-	// reading in the file as though the gate had been closed.
-	// `CheckSignalPolicyShape` enforces all of this.
-	SubjectFrom   *Value `protobuf:"bytes,4,opt,name=subject_from,json=subjectFrom,proto3" json:"subject_from,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *SignalPolicyRule) Reset() {
-	*x = SignalPolicyRule{}
-	mi := &file_flowstate_v1_signal_proto_msgTypes[1]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *SignalPolicyRule) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*SignalPolicyRule) ProtoMessage() {}
-
-func (x *SignalPolicyRule) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_signal_proto_msgTypes[1]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use SignalPolicyRule.ProtoReflect.Descriptor instead.
-func (*SignalPolicyRule) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_signal_proto_rawDescGZIP(), []int{1}
-}
-
-func (x *SignalPolicyRule) GetSubject() string {
-	if x != nil {
-		return x.Subject
-	}
-	return ""
-}
-
-func (x *SignalPolicyRule) GetNamespace() string {
-	if x != nil {
-		return x.Namespace
-	}
-	return ""
-}
-
-func (x *SignalPolicyRule) GetClaims() map[string]string {
-	if x != nil {
-		return x.Claims
-	}
-	return nil
-}
-
-func (x *SignalPolicyRule) GetSubjectFrom() *Value {
-	if x != nil {
-		return x.SubjectFrom
-	}
-	return nil
 }
 
 // Signal names something a workload waits to be told.
@@ -393,7 +227,7 @@ type Signal struct {
 
 func (x *Signal) Reset() {
 	*x = Signal{}
-	mi := &file_flowstate_v1_signal_proto_msgTypes[2]
+	mi := &file_flowstate_v1_signal_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -405,7 +239,7 @@ func (x *Signal) String() string {
 func (*Signal) ProtoMessage() {}
 
 func (x *Signal) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_signal_proto_msgTypes[2]
+	mi := &file_flowstate_v1_signal_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -418,7 +252,7 @@ func (x *Signal) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Signal.ProtoReflect.Descriptor instead.
 func (*Signal) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_signal_proto_rawDescGZIP(), []int{2}
+	return file_flowstate_v1_signal_proto_rawDescGZIP(), []int{1}
 }
 
 func (x *Signal) GetName() string {
@@ -539,7 +373,7 @@ type SignalBatch struct {
 
 func (x *SignalBatch) Reset() {
 	*x = SignalBatch{}
-	mi := &file_flowstate_v1_signal_proto_msgTypes[3]
+	mi := &file_flowstate_v1_signal_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -551,7 +385,7 @@ func (x *SignalBatch) String() string {
 func (*SignalBatch) ProtoMessage() {}
 
 func (x *SignalBatch) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_signal_proto_msgTypes[3]
+	mi := &file_flowstate_v1_signal_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -564,7 +398,7 @@ func (x *SignalBatch) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SignalBatch.ProtoReflect.Descriptor instead.
 func (*SignalBatch) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_signal_proto_rawDescGZIP(), []int{3}
+	return file_flowstate_v1_signal_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *SignalBatch) GetName() string {
@@ -669,7 +503,7 @@ type SignalQuorum struct {
 
 func (x *SignalQuorum) Reset() {
 	*x = SignalQuorum{}
-	mi := &file_flowstate_v1_signal_proto_msgTypes[4]
+	mi := &file_flowstate_v1_signal_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -681,7 +515,7 @@ func (x *SignalQuorum) String() string {
 func (*SignalQuorum) ProtoMessage() {}
 
 func (x *SignalQuorum) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_signal_proto_msgTypes[4]
+	mi := &file_flowstate_v1_signal_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -694,7 +528,7 @@ func (x *SignalQuorum) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SignalQuorum.ProtoReflect.Descriptor instead.
 func (*SignalQuorum) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_signal_proto_rawDescGZIP(), []int{4}
+	return file_flowstate_v1_signal_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *SignalQuorum) GetApprove() uint32 {
@@ -799,7 +633,7 @@ type SignalSender struct {
 
 func (x *SignalSender) Reset() {
 	*x = SignalSender{}
-	mi := &file_flowstate_v1_signal_proto_msgTypes[5]
+	mi := &file_flowstate_v1_signal_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -811,7 +645,7 @@ func (x *SignalSender) String() string {
 func (*SignalSender) ProtoMessage() {}
 
 func (x *SignalSender) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_signal_proto_msgTypes[5]
+	mi := &file_flowstate_v1_signal_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -824,7 +658,7 @@ func (x *SignalSender) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SignalSender.ProtoReflect.Descriptor instead.
 func (*SignalSender) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_signal_proto_rawDescGZIP(), []int{5}
+	return file_flowstate_v1_signal_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *SignalSender) GetIdentity() *WorkloadIdentity {
@@ -859,20 +693,9 @@ var File_flowstate_v1_signal_proto protoreflect.FileDescriptor
 
 const file_flowstate_v1_signal_proto_rawDesc = "" +
 	"\n" +
-	"\x19flowstate/v1/signal.proto\x12\fflowstate.v1\x1a\x1bbuf/validate/validate.proto\x1a\x1bflowstate/v1/identity.proto\x1a\x18flowstate/v1/value.proto\x1a\x1fgoogle/api/field_behavior.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xab\x01\n" +
-	"\fSignalPolicy\x12>\n" +
-	"\x05allow\x18\x01 \x03(\v2\x1e.flowstate.v1.SignalPolicyRuleB\b\xbaH\x05\x92\x01\x02\x10 R\x05allow\x122\n" +
-	"\x15distinct_from_starter\x18\x02 \x01(\bR\x13distinctFromStarter\x12'\n" +
-	"\n" +
-	"allow_expr\x18\x03 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x10R\tallowExpr\"\xc1\x02\n" +
-	"\x10SignalPolicyRule\x124\n" +
-	"\asubject\x18\x01 \x01(\tB\x1a\xbaH\x17\xd8\x01\x01r\x12\x18\xc0\x022\r^[^#]+#[^#]+$R\asubject\x12&\n" +
-	"\tnamespace\x18\x02 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x01R\tnamespace\x12\\\n" +
-	"\x06claims\x18\x03 \x03(\v2*.flowstate.v1.SignalPolicyRule.ClaimsEntryB\x18\xbaH\x15\x9a\x01\x12\x10\x10\"\ar\x05\x10\x01\x18\x80\x01*\x05r\x03\x18\x80\x02R\x06claims\x126\n" +
-	"\fsubject_from\x18\x04 \x01(\v2\x13.flowstate.v1.ValueR\vsubjectFrom\x1a9\n" +
-	"\vClaimsEntry\x12\x10\n" +
-	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x87\x02\n" +
+	"\x19flowstate/v1/signal.proto\x12\fflowstate.v1\x1a\x1bbuf/validate/validate.proto\x1a\x1bflowstate/v1/identity.proto\x1a\x18flowstate/v1/value.proto\x1a\x1fgoogle/api/field_behavior.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"Q\n" +
+	"\fSignalPolicy\x12\x1e\n" +
+	"\x05allow\x18\x03 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x10R\x05allowJ\x04\b\x01\x10\x02J\x04\b\x02\x10\x03R\x15distinct_from_starter\"\x87\x02\n" +
 	"\x06Signal\x12B\n" +
 	"\x04name\x18\x01 \x01(\tB.\xe2A\x01\x02\xbaH'\xc8\x01\x01r\"\x10\x01\x18\x80\x012\x1b^[A-Za-z0-9][A-Za-z0-9-_]*$R\x04name\x12;\n" +
 	"\aoutputs\x18\x02 \x03(\v2!.flowstate.v1.Signal.OutputsEntryR\aoutputs\x12+\n" +
@@ -919,41 +742,36 @@ func file_flowstate_v1_signal_proto_rawDescGZIP() []byte {
 	return file_flowstate_v1_signal_proto_rawDescData
 }
 
-var file_flowstate_v1_signal_proto_msgTypes = make([]protoimpl.MessageInfo, 9)
+var file_flowstate_v1_signal_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
 var file_flowstate_v1_signal_proto_goTypes = []any{
 	(*SignalPolicy)(nil),          // 0: flowstate.v1.SignalPolicy
-	(*SignalPolicyRule)(nil),      // 1: flowstate.v1.SignalPolicyRule
-	(*Signal)(nil),                // 2: flowstate.v1.Signal
-	(*SignalBatch)(nil),           // 3: flowstate.v1.SignalBatch
-	(*SignalQuorum)(nil),          // 4: flowstate.v1.SignalQuorum
-	(*SignalSender)(nil),          // 5: flowstate.v1.SignalSender
-	nil,                           // 6: flowstate.v1.SignalPolicyRule.ClaimsEntry
-	nil,                           // 7: flowstate.v1.Signal.OutputsEntry
-	nil,                           // 8: flowstate.v1.SignalBatch.OutputsEntry
-	(*Value)(nil),                 // 9: flowstate.v1.Value
-	(*WorkloadIdentity)(nil),      // 10: flowstate.v1.WorkloadIdentity
-	(*timestamppb.Timestamp)(nil), // 11: google.protobuf.Timestamp
+	(*Signal)(nil),                // 1: flowstate.v1.Signal
+	(*SignalBatch)(nil),           // 2: flowstate.v1.SignalBatch
+	(*SignalQuorum)(nil),          // 3: flowstate.v1.SignalQuorum
+	(*SignalSender)(nil),          // 4: flowstate.v1.SignalSender
+	nil,                           // 5: flowstate.v1.Signal.OutputsEntry
+	nil,                           // 6: flowstate.v1.SignalBatch.OutputsEntry
+	(*Value)(nil),                 // 7: flowstate.v1.Value
+	(*WorkloadIdentity)(nil),      // 8: flowstate.v1.WorkloadIdentity
+	(*timestamppb.Timestamp)(nil), // 9: google.protobuf.Timestamp
 }
 var file_flowstate_v1_signal_proto_depIdxs = []int32{
-	1,  // 0: flowstate.v1.SignalPolicy.allow:type_name -> flowstate.v1.SignalPolicyRule
-	6,  // 1: flowstate.v1.SignalPolicyRule.claims:type_name -> flowstate.v1.SignalPolicyRule.ClaimsEntry
-	9,  // 2: flowstate.v1.SignalPolicyRule.subject_from:type_name -> flowstate.v1.Value
-	7,  // 3: flowstate.v1.Signal.outputs:type_name -> flowstate.v1.Signal.OutputsEntry
-	9,  // 4: flowstate.v1.Signal.prompt:type_name -> flowstate.v1.Value
-	8,  // 5: flowstate.v1.SignalBatch.outputs:type_name -> flowstate.v1.SignalBatch.OutputsEntry
-	9,  // 6: flowstate.v1.SignalBatch.prompt:type_name -> flowstate.v1.Value
-	4,  // 7: flowstate.v1.SignalBatch.quorum:type_name -> flowstate.v1.SignalQuorum
-	9,  // 8: flowstate.v1.SignalQuorum.exclude:type_name -> flowstate.v1.Value
-	9,  // 9: flowstate.v1.SignalQuorum.veto:type_name -> flowstate.v1.Value
-	10, // 10: flowstate.v1.SignalSender.identity:type_name -> flowstate.v1.WorkloadIdentity
-	11, // 11: flowstate.v1.SignalSender.accepted_at:type_name -> google.protobuf.Timestamp
-	9,  // 12: flowstate.v1.Signal.OutputsEntry.value:type_name -> flowstate.v1.Value
-	9,  // 13: flowstate.v1.SignalBatch.OutputsEntry.value:type_name -> flowstate.v1.Value
-	14, // [14:14] is the sub-list for method output_type
-	14, // [14:14] is the sub-list for method input_type
-	14, // [14:14] is the sub-list for extension type_name
-	14, // [14:14] is the sub-list for extension extendee
-	0,  // [0:14] is the sub-list for field type_name
+	5,  // 0: flowstate.v1.Signal.outputs:type_name -> flowstate.v1.Signal.OutputsEntry
+	7,  // 1: flowstate.v1.Signal.prompt:type_name -> flowstate.v1.Value
+	6,  // 2: flowstate.v1.SignalBatch.outputs:type_name -> flowstate.v1.SignalBatch.OutputsEntry
+	7,  // 3: flowstate.v1.SignalBatch.prompt:type_name -> flowstate.v1.Value
+	3,  // 4: flowstate.v1.SignalBatch.quorum:type_name -> flowstate.v1.SignalQuorum
+	7,  // 5: flowstate.v1.SignalQuorum.exclude:type_name -> flowstate.v1.Value
+	7,  // 6: flowstate.v1.SignalQuorum.veto:type_name -> flowstate.v1.Value
+	8,  // 7: flowstate.v1.SignalSender.identity:type_name -> flowstate.v1.WorkloadIdentity
+	9,  // 8: flowstate.v1.SignalSender.accepted_at:type_name -> google.protobuf.Timestamp
+	7,  // 9: flowstate.v1.Signal.OutputsEntry.value:type_name -> flowstate.v1.Value
+	7,  // 10: flowstate.v1.SignalBatch.OutputsEntry.value:type_name -> flowstate.v1.Value
+	11, // [11:11] is the sub-list for method output_type
+	11, // [11:11] is the sub-list for method input_type
+	11, // [11:11] is the sub-list for extension type_name
+	11, // [11:11] is the sub-list for extension extendee
+	0,  // [0:11] is the sub-list for field type_name
 }
 
 func init() { file_flowstate_v1_signal_proto_init() }
@@ -963,14 +781,14 @@ func file_flowstate_v1_signal_proto_init() {
 	}
 	file_flowstate_v1_identity_proto_init()
 	file_flowstate_v1_value_proto_init()
-	file_flowstate_v1_signal_proto_msgTypes[4].OneofWrappers = []any{}
+	file_flowstate_v1_signal_proto_msgTypes[3].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_flowstate_v1_signal_proto_rawDesc), len(file_flowstate_v1_signal_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   9,
+			NumMessages:   7,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

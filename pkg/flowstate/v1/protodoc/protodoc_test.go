@@ -197,14 +197,19 @@ func TestCommentFindsProse(t *testing.T) {
 	}
 }
 
-func TestManualAllowedPrincipalsDocumentationIsIssuerQualified(t *testing.T) {
-	comment, ok := Comment("flowstate.v1.ManualTrigger.allowed_principals")
-	if !ok {
-		t.Fatal("manual allowed_principals has no descriptor documentation")
-	}
-	for _, want := range []string{"<issuer>#<subject>", "Principal.ID", "exactly one", "Bare subjects are invalid"} {
-		if !strings.Contains(comment, want) {
-			t.Errorf("manual allowed_principals descriptor documentation does not contain %q:\n%s", want, comment)
+func TestAllowPredicateDocumentationNamesItsScopeAndFailClosedRule(t *testing.T) {
+	for name, wants := range map[string][]string{
+		"flowstate.v1.SignalPolicy.allow":  {"sender.identity", "run.identity", "Fail closed", "inputs"},
+		"flowstate.v1.ManualTrigger.allow": {"sender.identity", "no run yet", "Fail closed", "inputs"},
+	} {
+		comment, ok := Comment(protoreflect.FullName(name))
+		if !ok {
+			t.Fatalf("%s has no descriptor documentation", name)
+		}
+		for _, want := range wants {
+			if !strings.Contains(comment, want) {
+				t.Errorf("%s descriptor documentation does not contain %q:\n%s", name, want, comment)
+			}
 		}
 	}
 }

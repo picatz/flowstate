@@ -379,8 +379,8 @@ func init() {
 				"\n" +
 				" Empty when the run's starter was never recorded or could not be read.\n" +
 				" Empty is \"unknown\", never an identity. Authorization does not read this\n" +
-				" field; a `distinct_from_starter` signal policy denies when the starter is\n" +
-				" unknown.\n",
+				" field; a signal policy whose `allow:` predicate reads `run.identity` denies when\n" +
+				" the starter is unknown.\n",
 		},
 		{
 			Name: "flowstate.v1.GetResponse.first_run_id",
@@ -523,7 +523,7 @@ func init() {
 			Name: "flowstate.v1.GetGateResponse.starter",
 			Leading: " Starter is who submitted the run, `issuer#subject`, as [GetResponse.starter]\n" +
 				" reports it; empty when the run recorded none. It is what a\n" +
-				" `distinct_from_starter` policy compares the answerer against. Withheld\n" +
+				" `allow:` predicate reading `run.identity` compares the answerer against. Withheld\n" +
 				" on the same terms as prompt.\n",
 		},
 		{
@@ -1180,8 +1180,8 @@ func init() {
 				" For each open gate the answer carries the question the gate asks, the signal\n" +
 				" name that releases it, whether a deadline lapses it, and whether the workflow\n" +
 				" declares a policy over who may answer. That set is what an approval surface\n" +
-				" has to render, and it is what a `distinct_from_starter` policy is compared\n" +
-				" against.\n" +
+				" has to render, and it is what an `allow:` predicate over `run.identity` is\n" +
+				" compared against.\n" +
 				"\n" +
 				" To answer a gate, call [Signal] with the gate's signal name and a payload\n" +
 				" carrying the decision. Address the workflow rather than a run: a run id pins\n" +

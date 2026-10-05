@@ -55,10 +55,7 @@ func quorumGate(timeout time.Duration) *v1.Workflow {
 	return &v1.Workflow{
 		Name: "policed-quorum",
 		Signals: map[string]*v1.SignalPolicy{
-			"release-approved": {Allow: []*v1.SignalPolicyRule{
-				{Subject: "https://idp.example#alice"},
-				{Subject: "https://idp.example#bob"},
-			}},
+			"release-approved": {Allow: `(sender.identity.principal == "https://idp.example#alice") || (sender.identity.principal == "https://idp.example#bob")`},
 		},
 		Steps: []*v1.Node{{
 			Id: "gate",

@@ -175,7 +175,7 @@
 // [Policy], [TrustedIssuer], and [ClaimRule] deliberately remain hand-written
 // Go rather than Protobuf. Proto-first is decided by whether a value travels:
 // a policy is parsed and consulted only in the process that serves requests,
-// while `SignalPolicyRule` claims ride a run's memo and an audit record exists
+// while a signal policy's predicate rides a run's memo and an audit record exists
 // to cross into a sink. Similar-looking claim requirements on
 // those boundaries therefore do not make this in-process policy a wire shape.
 // Its rule-implication and shadow analysis are Go semantics protovalidate could

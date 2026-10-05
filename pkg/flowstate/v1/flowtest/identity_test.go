@@ -11,8 +11,8 @@ import (
 // The identity seam of #344's slice 3: a case says who its run starts as
 // (`starter:`) and who each scripted signal stands in for (`sender:`), and the
 // same `v1.SignalPolicyCheck` production runs decides the delivery - including
-// `distinct_from_starter:`, which is unreachable without a starter to be
-// distinct from.
+// a comparison of the sender with `run.identity`, which is unreachable without
+// a starter to be distinct from.
 //
 // Two directions are asserted for every guard here, because the admit
 // direction alone is a functionality test wearing a security test's clothes
@@ -33,12 +33,11 @@ name: policed-gate
 
 signals:
   approve:
-    allow:
-      - subject: https://issuer.example.com#approver@example.com
-        namespace: payments
-        claims:
-          team: release-managers
-    distinct_from_starter: true
+    allow: >-
+      ${sender.identity.principal == "https://issuer.example.com#approver@example.com" &&
+      sender.identity.namespace == "payments" &&
+      sender.identity.claims.team == "release-managers" &&
+      sender.identity.principal != run.identity.principal}
 
 steps:
   - id: approval

@@ -1328,7 +1328,6 @@ it. `manual:` can only narrow that:
   else; there is no run yet, so reading `run` is a compile error. Only a clean
   `true` allows, and a caller with no authenticated principal is refused. A
   predicate that reads `inputs` must also read `sender.identity.claims`.
-  `flow fix` rewrites the older `allowed_principals: [...]` into this.
 
 `flow run local` and `flow test` are not gated by `manual:`.
 
@@ -1448,11 +1447,7 @@ matched by a principal holding a second `#`. Write conjunctions: the narrowing c
 syntactic, and a predicate that reads `inputs` records them in the policy scope memo
 (including `sensitive:` inputs, 64 KiB cap; issue #2325).
 
-The older spelling, an `allow:` list of rules (`subject:`, `claims:`, `namespace:`)
-with a `distinct_from_starter: true` beside it, still compiles. `flow fix` rewrites it
-into the predicate, and the predicate is the only form the rest of this page uses.
-A policy writes the list or the predicate, never both. `debug:` takes the same
-predicate.
+`debug:` takes the same predicate.
 
 The server checks the policy before the signal reaches Temporal, and refuses a
 sender who does not match with `PermissionDenied`. A signal name with **no**
@@ -1553,7 +1548,10 @@ specification, so changing the grammar never affects a run in flight.
 The retired spellings `flow fix` rewrites include `task:` blocks (now the task
 name as the key), `echo:` and `printf:` (now `log:`), `cel:` (now `value:`),
 `iterator:` (now `as:`), bare step references (now `steps.<id>`), and
-`has(x.y) && x.y` (now `x.?y.orValue(false)`).
+`has(x.y) && x.y` (now `x.?y.orValue(false)`), and the who-may-act forms (an `allow:`
+list of rules, `distinct_from_starter:` and `manual: allowed_principals:`, now one
+`allow: ${...}` predicate; see "What `flow fix` writes for who may act" in
+[DSL.md](DSL.md)).
 
 ## Limits
 
@@ -1608,8 +1606,7 @@ declaration:** `description`.
 `outputs`), `wait_for_signals` (`name`, `max_batch`, `timeout`, `prompt`,
 `outputs`, `quorum` with `approve`, `distinct`, `exclude`, `veto`).
 
-**Triggers:** `manual` (`denied`, or `require_reason` and an `allow` predicate; the retired
-`allowed_principals`, which `flow fix` rewrites into one),
+**Triggers:** `manual` (`denied`, or `require_reason` and an `allow` predicate),
 `schedule` (`cron`, `every`, `calendars`, `time_zone`, `jitter`, `overlap`,
 `start_at`, `end_at`, `catchup_window`, `pause_on_failure`; a calendar has
 `second`, `minute`, `hour`, `day_of_month`, `month`, `year`, `day_of_week`,
@@ -1618,8 +1615,7 @@ declaration:** `description`.
 `with`).
 
 **Concurrency:** `key`, `on_conflict`. **Signal policy:** `allow` (one `${...}`
-predicate; the retired list of rules of `subject`, `namespace`, `claims`, and the retired
-`distinct_from_starter`, which `flow fix` rewrites into one). **Debug policy:** the same.
+predicate). **Debug policy:** the same.
 
 `needs` and `assert` are reserved for future versions of the grammar and are
 refused today.

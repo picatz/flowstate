@@ -627,8 +627,8 @@ func runLocalToolHandler(posture *cobra.Command, providers *localSecrets) mcp.To
 
 		ctx, err = withLocalSignals(ctx, posture, workflow, inputs, signals)
 		if err != nil {
-			// A `subject_from:` refusal quotes what it resolved to, as on
-			// `flow run local`, and through the same seam (#2100).
+			// A refused delivery is redacted as on `flow run local`, through the
+			// same seam (#2100).
 			sensitive := refusedRunSensitiveValues(posture, workflow, inputs, err, revealSensitiveRequested(posture))
 			return flowmcp.ToolError(redactFailureError(err, sensitive)), nil
 		}

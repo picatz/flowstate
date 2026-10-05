@@ -930,9 +930,8 @@ func debugBacklogSummary(lease *v1.DebugSession) string {
 }
 
 // maxSummaryTextBytes bounds one caller-influenced value rendered into a
-// Temporal summary. [SignalPolicyRule.subject]'s schema bound counts code
-// points rather than bytes and an attested identity has no equivalent byte
-// bound, so a legitimate multibyte value may be truncated. [boundSummaryText]
+// Temporal summary. An attested identity's schema bound counts code points rather than bytes
+// and has no equivalent byte bound, so a legitimate multibyte value may be truncated. [boundSummaryText]
 // keeps the result valid UTF-8.
 const maxSummaryTextBytes = 320
 

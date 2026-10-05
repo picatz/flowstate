@@ -642,8 +642,8 @@ type GetResponse struct {
 	//
 	// Empty when the run's starter was never recorded or could not be read.
 	// Empty is "unknown", never an identity. Authorization does not read this
-	// field; a `distinct_from_starter` signal policy denies when the starter is
-	// unknown.
+	// field; a signal policy whose `allow:` predicate reads `run.identity` denies when
+	// the starter is unknown.
 	Starter string `protobuf:"bytes,12,opt,name=starter,proto3" json:"starter,omitempty"`
 	// FirstRunId is the segment the workload began at. Equal to run_id for a run
 	// that never continued as new; where it differs, run_id names the segment
@@ -1063,7 +1063,7 @@ type GetGateResponse struct {
 	Deadline *timestamppb.Timestamp `protobuf:"bytes,7,opt,name=deadline,proto3,oneof" json:"deadline,omitempty"`
 	// Starter is who submitted the run, `issuer#subject`, as [GetResponse.starter]
 	// reports it; empty when the run recorded none. It is what a
-	// `distinct_from_starter` policy compares the answerer against. Withheld
+	// `allow:` predicate reading `run.identity` compares the answerer against. Withheld
 	// on the same terms as prompt.
 	Starter string `protobuf:"bytes,8,opt,name=starter,proto3" json:"starter,omitempty"`
 	// MayAnswer is true when the workflow's `signals:` policy for this gate would

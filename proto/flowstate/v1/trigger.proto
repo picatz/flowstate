@@ -106,10 +106,9 @@ message ManualTrigger {
   // webhook, lose `flow run` — and nobody discovers an inferred lock until
   // they need it not to be there.
   //
-  // Contradicts each field below that says who may start (allowed_principals
-  // and allow_expr), and the compiler refuses the combination
-  // rather than resolving it by precedence: a refusal that also lists who may
-  // start the workload is two sentences that cannot both be true.
+  // Contradicts [allow], and the compiler refuses the combination rather than
+  // resolving it by precedence: a refusal that also says who may start the
+  // workload is two sentences that cannot both be true.
   bool denied = 1 [(google.api.field_behavior) = OPTIONAL];
 
   // RequireReason makes a manual start carry a reason, recorded on the run
@@ -121,40 +120,17 @@ message ManualTrigger {
   // who has one is still present to give it.
   bool require_reason = 2 [(google.api.field_behavior) = OPTIONAL];
 
-  // AllowedPrincipals restricts a manual start to these issuer-qualified
-  // authenticated identities, each written as "<issuer>#<subject>" and matched
-  // exactly against the caller's stable Principal.ID. Neither half comes from
-  // the request: OIDC and mTLS authentication establish both. The spelling has
-  // exactly one "#" separator; an identity with "#" in either half cannot be
-  // represented ambiguously and is therefore refused by an allowlist.
-  //
-  // Empty means every authenticated caller, which is today's behavior and what
-  // a workflow with no `manual:` block keeps. Non-empty is a closed set: a
-  // qualified principal that is not in it is refused. Bare subjects are invalid,
-  // not global aliases: a subject is unique only within its issuer. Missing,
-  // zero, and insecure anonymous development identities cannot satisfy the set.
-  repeated string allowed_principals = 3 [
-    (google.api.field_behavior) = OPTIONAL,
-    (buf.validate.field).repeated = {
-      max_items: 64
-      unique: true
-      items: {
-        string: {
-          min_len: 1
-          max_len: 320
-          pattern: "^[^#]+#[^#]+$"
-        }
-      }
-    }
-  ];
+  // Field 3 was `allowed_principals`, a closed list of issuer-qualified
+  // identities. It is retired: `allow: ${sender.identity.principal in [...]}`
+  // says the same, and `flow fix` writes it. The number is reserved.
+  reserved 3;
+  reserved "allowed_principals";
 
-  // AllowExpr is one CEL predicate deciding who may start the workload by
-  // hand, written in a Flowfile as `manual: allow: ${...}`, accepted beside
-  // [allowed_principals] (which behaves exactly as before). A block sets one of
-  // the two, never both: two mechanisms would be two answers to "who may act".
+  // Allow is one CEL predicate deciding who may start the workload by hand,
+  // written in a Flowfile as `manual: allow: ${...}`.
   //
   // The source is stored without the `${` `}` fence and evaluated by the same
-  // function that decides `signals:` and `debug:` ([SignalPolicy.allow_expr]),
+  // function that decides `signals:` and `debug:` ([SignalPolicy.allow]),
   // server-side, against the server's own attestation of the caller, over a
   // closed scope: `sender.identity.{principal,subject,issuer,namespace,claims}`
   // (the caller) and `inputs` (the arguments being SUBMITTED with this start).
@@ -169,8 +145,8 @@ message ManualTrigger {
   // A predicate that reads `inputs` must also read `sender.identity.claims`:
   // the caller chooses the inputs, and there is no run starter to compare
   // against, so a predicate over them alone would let the caller admit
-  // themselves. Like [allowed_principals], it contradicts [denied].
-  string allow_expr = 4 [
+  // themselves. It contradicts [denied].
+  string allow = 4 [
     (google.api.field_behavior) = OPTIONAL,
     (buf.validate.field).string.max_len = 2048
   ];
@@ -406,7 +382,7 @@ message WebhookTrigger {
   // admits or refuses a person.
   //
   // What that principal cannot say is *who clicked*. `hmac_sha256` and
-  // `stripe` attest a key holder, so `distinct_from_starter:` separates
+  // `stripe` attest a key holder, so an `allow:` predicate comparing `run.identity` separates
   // triggers rather than humans on this path, and a workflow that needs two
   // distinct people either side of a gate cannot get them from a webhook
   // today.
@@ -414,11 +390,13 @@ message WebhookTrigger {
   // # The zero case is closed here, and only here
   //
   // A signal name with no `signals:` entry admits any sender — the deliberate
-  // zero case, argued at [SignalPolicyAllows], and tolerable for `flow signal`
+  // zero case, argued at `SignalPolicyCheck`, and tolerable for `flow signal`
   // behind the server's own authentication. It is not tolerable for a key
-  // holder on a public route, so a `signal:` naming a name with no policy that
-  // could admit this trigger's principal is refused when the file compiles.
-  // That refusal is a property of the *file*, so `flow validate` says it with
+  // holder on a public route, so a `signal:` naming a name with no policy is
+  // refused when the file compiles; a policy whose predicate cannot admit this
+  // trigger's principal denies every delivery instead, because what a
+  // predicate admits is decided at delivery, over the sender. The refusal of
+  // a missing policy is a property of the *file*, so `flow validate` says it with
   // a line and a column rather than a receiver discovering it at three in the
   // morning.
   message Signal {

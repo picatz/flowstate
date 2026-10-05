@@ -40,10 +40,9 @@ func TestParsingAnAllowPredicate(t *testing.T) {
 
 	policy := workflow.GetSignals()["deploy-approved"]
 	require.NotNil(t, policy)
-	assert.Empty(t, policy.GetAllow(), "a predicate is not a rule list")
 	assert.Equal(t,
 		`sender.identity.claims.team == "release-managers" && sender.identity.principal != run.identity.principal`,
-		policy.GetAllowExpr(), "the stored source is the expression without its fence")
+		policy.GetAllow(), "the stored source is the expression without its fence")
 
 	_, ok := positions.At("signals.deploy-approved.allow")
 	assert.True(t, ok)
@@ -66,7 +65,7 @@ func TestAnAllowPredicateMayBeABlockScalar(t *testing.T) {
 	workflow, err := flowfile.Unmarshal([]byte(source))
 	require.NoError(t, err)
 
-	expression := workflow.GetSignals()["deploy-approved"].GetAllowExpr()
+	expression := workflow.GetSignals()["deploy-approved"].GetAllow()
 	assert.Contains(t, expression, `sender.identity.claims.team == "release-managers"`)
 	assert.NotContains(t, expression, "\n\n")
 
@@ -93,9 +92,8 @@ func TestMarshalIsTheInverseForAnAllowPredicate(t *testing.T) {
 		require.NoError(t, err, string(written))
 
 		assert.Equal(t,
-			workflow.GetSignals()["deploy-approved"].GetAllowExpr(),
-			again.GetSignals()["deploy-approved"].GetAllowExpr(), "the predicate changed across a round trip:\n%s", written)
-		assert.Empty(t, again.GetSignals()["deploy-approved"].GetAllow())
+			workflow.GetSignals()["deploy-approved"].GetAllow(),
+			again.GetSignals()["deploy-approved"].GetAllow(), "the predicate changed across a round trip:\n%s", written)
 
 		again2, err := flowfile.Marshal(again)
 		require.NoError(t, err)
@@ -103,29 +101,24 @@ func TestMarshalIsTheInverseForAnAllowPredicate(t *testing.T) {
 	}
 }
 
-func TestMarshalRefusesAPolicyHoldingBothMechanismsRatherThanDroppingOne(t *testing.T) {
-	t.Parallel()
-
-	workflow, err := flowfile.Unmarshal([]byte(predicateSource(`'` + releasePredicate + `'`)))
-	require.NoError(t, err)
-	workflow.GetSignals()["deploy-approved"].Allow = []*v1.SignalPolicyRule{{Namespace: "n"}}
-
-	_, err = flowfile.Marshal(workflow)
-	require.Error(t, err)
-}
-
-func TestAnAllowPredicateBesideDistinctFromStarterRoundTrips(t *testing.T) {
+func TestAnAllowPredicateBesideDistinctFromStarterIsRefusedWithTheWayOut(t *testing.T) {
 	t.Parallel()
 
 	source := strings.Replace(predicateSource(`'${sender.identity.claims.team == "x"}'`),
 		"    allow:", "    distinct_from_starter: true\n    allow:", 1)
-	workflow, err := flowfile.Unmarshal([]byte(source))
-	require.NoError(t, err)
-	assert.True(t, workflow.GetSignals()["deploy-approved"].GetDistinctFromStarter())
 
-	written, err := flowfile.Marshal(workflow)
-	require.NoError(t, err)
-	assert.Contains(t, string(written), "distinct_from_starter: true")
+	_, err := flowfile.Unmarshal([]byte(source))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "distinct_from_starter")
+	assert.Contains(t, err.Error(), "flow fix")
+	assert.Contains(t, err.Error(), "run.identity.principal", "the sentence says what to write instead")
+
+	// A retired key beside a good predicate is one diagnostic, not a pile, and
+	// it carries a position.
+	_, err = flowfile.ValidateSource([]byte(source))
+	require.Error(t, err)
+	assert.Equal(t, 1, strings.Count(err.Error(), "\n")+1, err.Error())
+	assert.Regexp(t, `^\d+:\d+: `, err.Error())
 }
 
 func TestAnAllowPredicateIsRefusedInTheEditorWithAPosition(t *testing.T) {
@@ -179,15 +172,22 @@ func TestAnAllowStringThatIsNotAnExpressionIsRefused(t *testing.T) {
 	assert.Contains(t, err.Error(), "not a `${...}` expression")
 }
 
-func TestARuleListStillParsesAndRoundTripsUnchanged(t *testing.T) {
+func TestARuleListIsRefusedWithTheWayOutAndNoEchoedValue(t *testing.T) {
 	t.Parallel()
 
-	workflow, err := flowfile.Unmarshal([]byte(signaledSource))
-	require.NoError(t, err)
+	source := strings.Replace(predicateSource("x"), "    allow: x\n",
+		"    allow:\n      - subject: https://issuer.example.com#secret-person@example.com\n        claims: {team: secret-team}\n", 1)
 
-	policy := workflow.GetSignals()["deploy-approved"]
-	assert.Len(t, policy.GetAllow(), 2)
-	assert.Empty(t, policy.GetAllowExpr())
+	_, err := flowfile.Unmarshal([]byte(source))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "list of rules, which is retired")
+	assert.Contains(t, err.Error(), "flow fix")
+	assert.NotContains(t, err.Error(), "secret-", "a refusal names the form, never the values an author wrote")
+
+	_, err = flowfile.ValidateSource([]byte(source))
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), "secret-")
+	assert.Regexp(t, `^\d+:\d+: `, err.Error(), "the refusal carries a position")
 }
 
 func TestAnAllowPredicatePolicyEndToEnd(t *testing.T) {

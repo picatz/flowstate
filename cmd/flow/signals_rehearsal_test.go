@@ -26,11 +26,7 @@ func policedGateWorkflow() *v1.Workflow {
 	return &v1.Workflow{
 		Signals: map[string]*v1.SignalPolicy{
 			"deploy-approved": {
-				Allow: []*v1.SignalPolicyRule{{
-					Subject: v1.QualifiedSubject("https://issuer.example.com", "sre-lead@example.com"),
-					Claims:  map[string]string{"team": "release-managers"},
-				}},
-				DistinctFromStarter: true,
+				Allow: `sender.identity.principal == "` + v1.QualifiedSubject("https://issuer.example.com", "sre-lead@example.com") + `" && sender.identity.claims["team"] == "release-managers" && sender.identity.principal != run.identity.principal`,
 			},
 		},
 		Steps: []*v1.Node{
@@ -114,7 +110,7 @@ func TestRehearsedSignalFromTheWrongApproverIsRefused(t *testing.T) {
 		`deploy-approved={"approved": true}`,
 	})
 	require.Error(t, err, "a rehearsal admitted an approver production's own policy refuses")
-	require.Contains(t, err.Error(), "does not match any rule")
+	require.Contains(t, err.Error(), "does not satisfy this signal's allow predicate")
 	require.Contains(t, err.Error(), "PermissionDenied",
 		"the refusal does not say that production refuses this the same way, which is the "+
 			"whole thing a rehearsal is for")
@@ -137,9 +133,9 @@ func TestRehearsedSignalFromTheStarterIsRefused(t *testing.T) {
 		`deploy-approved={"approved": true}`,
 	})
 	require.Error(t, err,
-		"an approver approving their own run was admitted locally, so distinct_from_starter: "+
-			"cannot be rehearsed at all")
-	require.Contains(t, err.Error(), "distinct from the run's own starter")
+		"an approver approving their own run was admitted locally, so comparing the sender "+
+			"with the starter cannot be rehearsed at all")
+	require.Contains(t, err.Error(), "does not satisfy this signal's allow predicate")
 }
 
 // TestUnrehearsedSignalIsStillRefusedAndSaysWhy pins the pre-#349 behavior,

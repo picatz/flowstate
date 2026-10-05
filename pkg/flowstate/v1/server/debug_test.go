@@ -30,10 +30,7 @@ func debuggableWorkflow() *v1.Workflow {
 			Name: "log", Inputs: map[string]*v1.Value{"message": v1.NewLiteral("after")},
 		}}},
 	)
-	wf.Debug = &v1.SignalPolicy{Allow: []*v1.SignalPolicyRule{
-		{Subject: v1.QualifiedSubject(debugIssuer, "sre-1@example.com")},
-		{Subject: v1.QualifiedSubject(debugIssuer, "sre-2@example.com")},
-	}}
+	wf.Debug = &v1.SignalPolicy{Allow: `(sender.identity.principal == "` + v1.QualifiedSubject(debugIssuer, "sre-1@example.com") + `") || (sender.identity.principal == "` + v1.QualifiedSubject(debugIssuer, "sre-2@example.com") + `")`}
 
 	return wf
 }

@@ -259,10 +259,9 @@ type ManualTrigger struct {
 	// webhook, lose `flow run` — and nobody discovers an inferred lock until
 	// they need it not to be there.
 	//
-	// Contradicts each field below that says who may start (allowed_principals
-	// and allow_expr), and the compiler refuses the combination
-	// rather than resolving it by precedence: a refusal that also lists who may
-	// start the workload is two sentences that cannot both be true.
+	// Contradicts [allow], and the compiler refuses the combination rather than
+	// resolving it by precedence: a refusal that also says who may start the
+	// workload is two sentences that cannot both be true.
 	Denied bool `protobuf:"varint,1,opt,name=denied,proto3" json:"denied,omitempty"`
 	// RequireReason makes a manual start carry a reason, recorded on the run
 	// (`RunRequest.reason`).
@@ -272,26 +271,11 @@ type ManualTrigger struct {
 	// absent is the failure. A start with no reason is refused while the person
 	// who has one is still present to give it.
 	RequireReason bool `protobuf:"varint,2,opt,name=require_reason,json=requireReason,proto3" json:"require_reason,omitempty"`
-	// AllowedPrincipals restricts a manual start to these issuer-qualified
-	// authenticated identities, each written as "<issuer>#<subject>" and matched
-	// exactly against the caller's stable Principal.ID. Neither half comes from
-	// the request: OIDC and mTLS authentication establish both. The spelling has
-	// exactly one "#" separator; an identity with "#" in either half cannot be
-	// represented ambiguously and is therefore refused by an allowlist.
-	//
-	// Empty means every authenticated caller, which is today's behavior and what
-	// a workflow with no `manual:` block keeps. Non-empty is a closed set: a
-	// qualified principal that is not in it is refused. Bare subjects are invalid,
-	// not global aliases: a subject is unique only within its issuer. Missing,
-	// zero, and insecure anonymous development identities cannot satisfy the set.
-	AllowedPrincipals []string `protobuf:"bytes,3,rep,name=allowed_principals,json=allowedPrincipals,proto3" json:"allowed_principals,omitempty"`
-	// AllowExpr is one CEL predicate deciding who may start the workload by
-	// hand, written in a Flowfile as `manual: allow: ${...}`, accepted beside
-	// [allowed_principals] (which behaves exactly as before). A block sets one of
-	// the two, never both: two mechanisms would be two answers to "who may act".
+	// Allow is one CEL predicate deciding who may start the workload by hand,
+	// written in a Flowfile as `manual: allow: ${...}`.
 	//
 	// The source is stored without the `${` `}` fence and evaluated by the same
-	// function that decides `signals:` and `debug:` ([SignalPolicy.allow_expr]),
+	// function that decides `signals:` and `debug:` ([SignalPolicy.allow]),
 	// server-side, against the server's own attestation of the caller, over a
 	// closed scope: `sender.identity.{principal,subject,issuer,namespace,claims}`
 	// (the caller) and `inputs` (the arguments being SUBMITTED with this start).
@@ -306,8 +290,8 @@ type ManualTrigger struct {
 	// A predicate that reads `inputs` must also read `sender.identity.claims`:
 	// the caller chooses the inputs, and there is no run starter to compare
 	// against, so a predicate over them alone would let the caller admit
-	// themselves. Like [allowed_principals], it contradicts [denied].
-	AllowExpr     string `protobuf:"bytes,4,opt,name=allow_expr,json=allowExpr,proto3" json:"allow_expr,omitempty"`
+	// themselves. It contradicts [denied].
+	Allow         string `protobuf:"bytes,4,opt,name=allow,proto3" json:"allow,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -356,16 +340,9 @@ func (x *ManualTrigger) GetRequireReason() bool {
 	return false
 }
 
-func (x *ManualTrigger) GetAllowedPrincipals() []string {
+func (x *ManualTrigger) GetAllow() string {
 	if x != nil {
-		return x.AllowedPrincipals
-	}
-	return nil
-}
-
-func (x *ManualTrigger) GetAllowExpr() string {
-	if x != nil {
-		return x.AllowExpr
+		return x.Allow
 	}
 	return ""
 }
@@ -975,7 +952,7 @@ func (x *ScheduleBackfill) GetOverlap() ScheduleTrigger_Overlap {
 // admits or refuses a person.
 //
 // What that principal cannot say is *who clicked*. `hmac_sha256` and
-// `stripe` attest a key holder, so `distinct_from_starter:` separates
+// `stripe` attest a key holder, so an `allow:` predicate comparing `run.identity` separates
 // triggers rather than humans on this path, and a workflow that needs two
 // distinct people either side of a gate cannot get them from a webhook
 // today.
@@ -983,11 +960,13 @@ func (x *ScheduleBackfill) GetOverlap() ScheduleTrigger_Overlap {
 // # The zero case is closed here, and only here
 //
 // A signal name with no `signals:` entry admits any sender — the deliberate
-// zero case, argued at [SignalPolicyAllows], and tolerable for `flow signal`
+// zero case, argued at `SignalPolicyCheck`, and tolerable for `flow signal`
 // behind the server's own authentication. It is not tolerable for a key
-// holder on a public route, so a `signal:` naming a name with no policy that
-// could admit this trigger's principal is refused when the file compiles.
-// That refusal is a property of the *file*, so `flow validate` says it with
+// holder on a public route, so a `signal:` naming a name with no policy is
+// refused when the file compiles; a policy whose predicate cannot admit this
+// trigger's principal denies every delivery instead, because what a
+// predicate admits is decided at delivery, over the sender. The refusal of
+// a missing policy is a property of the *file*, so `flow validate` says it with
 // a line and a column rather than a receiver discovering it at three in the
 // morning.
 type WebhookTrigger_Signal struct {
@@ -1282,13 +1261,11 @@ const file_flowstate_v1_trigger_proto_rawDesc = "" +
 	"\bTriggers\x12?\n" +
 	"\bschedule\x18\x01 \x01(\v2\x1d.flowstate.v1.ScheduleTriggerB\x04\xe2A\x01\x01R\bschedule\x12F\n" +
 	"\bwebhooks\x18\x02 \x03(\v2\x1c.flowstate.v1.WebhookTriggerB\f\xe2A\x01\x01\xbaH\x05\x92\x01\x02\x10 R\bwebhooks\x129\n" +
-	"\x06manual\x18\x03 \x01(\v2\x1b.flowstate.v1.ManualTriggerB\x04\xe2A\x01\x01R\x06manual\"\xde\x01\n" +
+	"\x06manual\x18\x03 \x01(\v2\x1b.flowstate.v1.ManualTriggerB\x04\xe2A\x01\x01R\x06manual\"\x98\x01\n" +
 	"\rManualTrigger\x12\x1c\n" +
 	"\x06denied\x18\x01 \x01(\bB\x04\xe2A\x01\x01R\x06denied\x12+\n" +
-	"\x0erequire_reason\x18\x02 \x01(\bB\x04\xe2A\x01\x01R\rrequireReason\x12U\n" +
-	"\x12allowed_principals\x18\x03 \x03(\tB&\xe2A\x01\x01\xbaH\x1f\x92\x01\x1c\x10@\x18\x01\"\x16r\x14\x10\x01\x18\xc0\x022\r^[^#]+#[^#]+$R\x11allowedPrincipals\x12+\n" +
-	"\n" +
-	"allow_expr\x18\x04 \x01(\tB\f\xe2A\x01\x01\xbaH\x05r\x03\x18\x80\x10R\tallowExpr\"\xdc\x01\n" +
+	"\x0erequire_reason\x18\x02 \x01(\bB\x04\xe2A\x01\x01R\rrequireReason\x12\"\n" +
+	"\x05allow\x18\x04 \x01(\tB\f\xe2A\x01\x01\xbaH\x05r\x03\x18\x80\x10R\x05allowJ\x04\b\x03\x10\x04R\x12allowed_principals\"\xdc\x01\n" +
 	"\x0eTriggerContext\x12\x1b\n" +
 	"\x04kind\x18\x01 \x01(\tB\a\xbaH\x04r\x02\x18 R\x04kind\x12\x1b\n" +
 	"\x04name\x18\x02 \x01(\tB\a\xbaH\x04r\x02\x18@R\x04name\x12&\n" +

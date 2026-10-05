@@ -12,8 +12,8 @@ import (
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 )
 
-// Who started a run has been recorded on every run since `distinct_from_starter`
-// shipped, and no RPC answered with it. So a workflow could declare "the approver
+// Who started a run has been recorded on every run since the comparison with the
+// starter shipped, and no RPC answered with it. So a workflow could declare "the approver
 // may not be whoever asked for this", the server could enforce it exactly, and
 // nobody outside the server could see the fact being compared against: an
 // operator refused a `flow signal` had no way to learn they were being refused

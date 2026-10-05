@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"slices"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/google/cel-go/common/types/ref"
 )
@@ -270,50 +269,17 @@ func CheckManualTrigger(manual *ManualTrigger) error {
 				"reason recorded")
 		}
 
-		if len(manual.GetAllowedPrincipals()) > 0 {
-			return fmt.Errorf("`manual:` both refuses manual starts and names %d principal(s) allowed to make one, "+
-				"which cannot both hold; write `manual: denied` to refuse them, or list the principals to allow "+
-				"only those", len(manual.GetAllowedPrincipals()))
-		}
-
-		if manual.GetAllowExpr() != "" {
+		if manual.GetAllow() != "" {
 			return fmt.Errorf("`manual:` both refuses manual starts and writes an `allow:` predicate for who may " +
 				"make one, which cannot both hold; write `manual: denied` to refuse them, or the predicate to " +
 				"allow only some callers")
 		}
 	}
 
-	if manual.GetAllowExpr() != "" {
-		if len(manual.GetAllowedPrincipals()) > 0 {
-			return fmt.Errorf("`manual:` sets both `allowed_principals:` and an `allow:` predicate; who may start " +
-				"the workload is answered one way, so write one or the other (the predicate can say " +
-				"`sender.identity.principal in [...]`)")
-		}
-		if err := CheckManualAllowExpr(manual.GetAllowExpr()); err != nil {
+	if manual.GetAllow() != "" {
+		if err := CheckManualAllowExpr(manual.GetAllow()); err != nil {
 			return fmt.Errorf("`manual.allow` is not a usable predicate: %w", err)
 		}
-	}
-
-	principals := manual.GetAllowedPrincipals()
-	if len(principals) > 64 {
-		return fmt.Errorf("`manual.allowed_principals` names %d principals, exceeding the limit of 64; narrow the allowlist",
-			len(principals))
-	}
-
-	seen := make(map[string]struct{}, len(principals))
-	for i, principal := range principals {
-		if utf8.RuneCountInString(principal) > 320 {
-			return fmt.Errorf("`manual.allowed_principals[%d]` exceeds the 320-character limit", i)
-		}
-		if !LooksLikeQualifiedSubject(principal) {
-			return fmt.Errorf("`manual.allowed_principals[%d]` %q is not \"<issuer>#<subject>\"; a bare or malformed subject is refused because a subject is only unique within its issuer",
-				i, principal)
-		}
-		if _, ok := seen[principal]; ok {
-			return fmt.Errorf("`manual.allowed_principals[%d]` lists %q twice; a principal is either allowed or not, so the duplicate does nothing",
-				i, principal)
-		}
-		seen[principal] = struct{}{}
 	}
 
 	return nil
@@ -337,11 +303,10 @@ func CheckManualTrigger(manual *ManualTrigger) error {
 // # Fail closed, in the two places it matters
 //
 // A malformed block ([CheckManualTrigger]) denies rather than being ignored, so a
-// contradiction that reached a server is a refusal and not a permit. Bare
-// configured subjects are refused rather than reinterpreted across every issuer.
-// And an empty canonical principal against a non-empty `allowed_principals` is
-// denied: a deployment with no authenticated identity cannot satisfy a policy
-// naming particular callers.
+// contradiction that reached a server is a refusal and not a permit. And an
+// empty canonical principal against an `allow:` predicate is denied: a
+// deployment with no authenticated identity cannot satisfy a policy naming
+// particular callers.
 //
 // # `manual: allow: ${...}`
 //
@@ -352,9 +317,9 @@ func CheckManualTrigger(manual *ManualTrigger) error {
 // reads it denies). There is no run yet, so `run` is not in the scope. Only a
 // clean true admits: a non-bool, an evaluation error, an exceeded cost or time
 // bound or an uncompilable expression refuses, as does a caller with no
-// authenticated principal. A block that writes both the predicate and
-// `allowed_principals` is refused by [CheckManualTrigger], here as in `flow
-// validate`, never resolved by letting one of them win.
+// authenticated principal. A block that writes both `denied` and the predicate
+// is refused by [CheckManualTrigger], here as in `flow validate`, never
+// resolved by letting one of them win.
 //
 // # Where this is deliberately not called
 //
@@ -379,35 +344,22 @@ func CheckManualStart(ctx context.Context, wf *Workflow, caller *WorkloadIdentit
 			"triggers and not by a person; %s", wf.GetName(), manualStartAlternative(wf))
 	}
 
-	if manual.GetAllowExpr() != "" {
+	if manual.GetAllow() != "" {
 		if principal == "" {
-			// The same line allowed_principals draws, for the same reason: a
-			// start nobody authenticated is not a caller a predicate can say
+			// A start nobody authenticated is not a caller a predicate can say
 			// anything true about, and a predicate such as `principal != "x"`
-			// would otherwise admit nobody-at-all.
+			// would otherwise admit nobody-at-all. Named separately because the
+			// remedy is different in kind: the caller is not the wrong person,
+			// they are nobody, and the fix is on the deployment rather than in
+			// the request.
 			return fmt.Errorf("workflow %q allows a manual start only by a caller its `manual: allow` predicate "+
 				"admits, and this caller has no authenticated issuer-qualified principal; an anonymous start is "+
 				"refused rather than admitted, so authenticate", wf.GetName())
 		}
 
-		if err := manualAllowExprAllows(ctx, manual.GetAllowExpr(), caller, inputs); err != nil {
+		if err := manualAllowExprAllows(ctx, manual.GetAllow(), caller, inputs); err != nil {
 			return fmt.Errorf("workflow %q refuses this manual start: %w", wf.GetName(), err)
 		}
-	}
-
-	if len(manual.GetAllowedPrincipals()) > 0 && !slices.Contains(manual.GetAllowedPrincipals(), principal) {
-		if principal == "" {
-			// Named separately because the remedy is different in kind: the caller
-			// is not the wrong person, they are nobody, and the fix is on the
-			// deployment rather than in the request.
-			return fmt.Errorf("workflow %q allows a manual start only by %s, and this caller has no authenticated "+
-				"issuer-qualified principal; an anonymous start is refused rather than admitted, so "+
-				"authenticate as one of those principals",
-				wf.GetName(), strings.Join(manual.GetAllowedPrincipals(), ", "))
-		}
-
-		return fmt.Errorf("workflow %q allows a manual start only by %s, and this caller is %q",
-			wf.GetName(), strings.Join(manual.GetAllowedPrincipals(), ", "), principal)
 	}
 
 	if manual.GetRequireReason() && strings.TrimSpace(reason) == "" {

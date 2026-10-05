@@ -6,12 +6,14 @@ import (
 	"fmt"
 	"maps"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/google/cel-go/cel"
 	celast "github.com/google/cel-go/common/ast"
+	"github.com/google/cel-go/common/operators"
 	"github.com/google/cel-go/common/types"
 	"github.com/google/cel-go/common/types/ref"
 	"github.com/google/cel-go/ext"
@@ -37,7 +39,7 @@ import (
 // [SignalPolicyCheck] is the one function every enforcement point reaches —
 // the server's `Signal` and `GetGate`'s `may_answer`, the local driver
 // ([LocalSignals]), `flow test`, `flow signal` rehearsal and MCP — and it
-// routes a policy that sets [SignalPolicy.allow_expr] here. There is no second
+// routes a policy's [SignalPolicy.allow] here. There is no second
 // evaluator: the predicate is compiled and run by [celrule], the machinery the
 // egress, assumption, secret and task-shape policies share, over an environment
 // this file owns (the one thing [celrule] leaves to each surface).
@@ -71,11 +73,11 @@ import (
 // # The narrowing rule, syntactically
 //
 // Whoever starts a run chooses its inputs, so a predicate over `inputs` alone
-// would let the starter name their own approver — the fault
-// `SignalPolicyRule.subject_from` is refused for. A predicate that reads
+// would let the starter name their own approver. A predicate that reads
 // `inputs` must therefore also read `sender.identity.claims` or `run.identity`,
-// something the starter's inputs cannot reach. This is coarser than the per-rule
-// check it replaces and is recorded as the cost; see [SignalPolicy.allow_expr].
+// something the starter's inputs cannot reach. The check is syntactic, so
+// `claims.x == 1 || inputs.admin == "y"` satisfies it: authors write the
+// narrowing as a conjunction. See [SignalPolicy.allow].
 
 // SignalPolicyExprCostLimit bounds the CEL evaluation cost of one signal
 // policy predicate, the same budget the other policy surfaces give a rule
@@ -131,6 +133,11 @@ func allowPolicyEnv(withRun bool) (*cel.Env, error) {
 		cel.Variable("sender", cel.ObjectType(signalPolicyActorTypeName)),
 		cel.Variable(InputsRoot, cel.MapType(cel.StringType, cel.DynType)),
 		ext.Strings(ext.StringsVersion(5)),
+		// The same literal check every other checker inherits from the shared
+		// profile (see buildEnv): a `matches('[')` is refused where it is
+		// written instead of denying every delivery at run time. It replaces
+		// the coverage the retired computed `subject:` position had.
+		cel.ASTValidators(cel.ValidateRegexLiterals()),
 	}
 	if withRun {
 		opts = append(opts, cel.Variable("run", cel.ObjectType(signalPolicyActorTypeName)))
@@ -259,10 +266,10 @@ func CheckSignalPolicyExpr(src string) error {
 func SignalPolicyExprReads(policies map[string]*SignalPolicy) SignalPolicyReads {
 	var reads SignalPolicyReads
 	for _, policy := range policies {
-		if policy.GetAllowExpr() == "" {
+		if policy.GetAllow() == "" {
 			continue
 		}
-		if p, err := CompileSignalPolicyPredicate(policy.GetAllowExpr()); err == nil {
+		if p, err := CompileSignalPolicyPredicate(policy.GetAllow()); err == nil {
 			reads.Inputs = reads.Inputs || p.reads.Inputs
 			reads.Run = reads.Run || p.reads.Run
 		}
@@ -432,18 +439,138 @@ func manualAllowExprAllows(ctx context.Context, src string, caller *WorkloadIden
 	return allowPredicateAllowsWithin(ctx, SignalPolicyExprTimeout, "manual start", true, src, caller, nil, false, inputs)
 }
 
-// checkSignalPolicyExprShape is [CheckPolicyShape]'s half for a policy that
-// sets allow_expr: the rule list and the expression are two mechanisms for one
-// answer, so a policy sets one.
-func checkSignalPolicyExprShape(where string, policy *SignalPolicy) error {
-	if len(policy.GetAllow()) > 0 {
-		return fmt.Errorf(
-			"%s sets both the `allow:` rule list and an `allow:` predicate; a policy answers "+
-				"who may act one way, so write one or the other", where)
-	}
-	if err := CheckSignalPolicyExpr(policy.GetAllowExpr()); err != nil {
-		return fmt.Errorf("%s.allow is not a usable predicate: %w", where, err)
+// SignalPolicyClosedPrincipals reports the principals a policy's predicate can
+// admit, and whether that set is exact enough to count: closed is false for no
+// policy, a predicate that does not compile, and any predicate that admits a
+// sender it cannot name.
+//
+// It is what lets a `quorum:` asking for more distinct approvers than the policy
+// can ever admit be refused where somebody can fix it. Conservative on purpose:
+// only `sender.identity.principal == "<literal>"` and `sender.identity.principal
+// in ["<literal>", ...]` name principals. `||` unions what its sides admit; `&&`
+// only narrows, so it is bounded by whichever side names principals (and by
+// their intersection when both do); everything else, such as a claims
+// comparison, is open. An upper bound is all the quorum check needs: an
+// `approve:` above it can never be met, however the narrowing resolves.
+func SignalPolicyClosedPrincipals(policy *SignalPolicy) (principals []string, closed bool) {
+	src := policy.GetAllow()
+	if src == "" {
+		return nil, false
 	}
 
-	return nil
+	env, err := signalPolicyEnv()
+	if err != nil {
+		return nil, false
+	}
+
+	checked, issues := env.Compile(src)
+	if issues.Err() != nil {
+		return nil, false
+	}
+
+	set, ok := closedPrincipals(checked.NativeRep().Expr())
+	if !ok {
+		return nil, false
+	}
+
+	return slices.Sorted(maps.Keys(set)), true
+}
+
+func closedPrincipals(e celast.Expr) (map[string]struct{}, bool) {
+	if e.Kind() != celast.CallKind {
+		return nil, false
+	}
+
+	call := e.AsCall()
+	args := call.Args()
+
+	switch call.FunctionName() {
+	case operators.LogicalOr:
+		if len(args) != 2 {
+			return nil, false
+		}
+		left, lok := closedPrincipals(args[0])
+		right, rok := closedPrincipals(args[1])
+		if !lok || !rok {
+			return nil, false
+		}
+		maps.Copy(left, right)
+
+		return left, true
+	case operators.LogicalAnd:
+		if len(args) != 2 {
+			return nil, false
+		}
+		left, lok := closedPrincipals(args[0])
+		right, rok := closedPrincipals(args[1])
+		switch {
+		case lok && rok:
+			for principal := range left {
+				if _, both := right[principal]; !both {
+					delete(left, principal)
+				}
+			}
+
+			return left, true
+		case lok:
+			return left, true
+		case rok:
+			return right, true
+		default:
+			return nil, false
+		}
+	case operators.Equals:
+		if len(args) != 2 {
+			return nil, false
+		}
+		for i, side := range args {
+			if !isSenderPrincipal(side) {
+				continue
+			}
+			if literal, ok := policyStringLiteral(args[1-i]); ok {
+				return map[string]struct{}{literal: {}}, true
+			}
+		}
+
+		return nil, false
+	case operators.In:
+		if len(args) != 2 || !isSenderPrincipal(args[0]) || args[1].Kind() != celast.ListKind {
+			return nil, false
+		}
+		set := make(map[string]struct{})
+		for _, element := range args[1].AsList().Elements() {
+			literal, ok := policyStringLiteral(element)
+			if !ok {
+				return nil, false
+			}
+			set[literal] = struct{}{}
+		}
+
+		return set, true
+	default:
+		return nil, false
+	}
+}
+
+// isSenderPrincipal reports whether e is exactly `sender.identity.principal`.
+func isSenderPrincipal(e celast.Expr) bool {
+	if e.Kind() != celast.SelectKind || e.AsSelect().FieldName() != "principal" {
+		return false
+	}
+	identity := e.AsSelect().Operand()
+	if identity.Kind() != celast.SelectKind || identity.AsSelect().FieldName() != "identity" {
+		return false
+	}
+	root := identity.AsSelect().Operand()
+
+	return root.Kind() == celast.IdentKind && root.AsIdent() == "sender"
+}
+
+func policyStringLiteral(e celast.Expr) (string, bool) {
+	if e.Kind() != celast.LiteralKind {
+		return "", false
+	}
+	s, ok := e.AsLiteral().Value().(string)
+
+	return s, ok
 }

@@ -213,9 +213,7 @@ func TestSignalWithStartAuthorizesCreateAndDeliverySeparately(t *testing.T) {
 
 	restricted := entityWorkflow(map[string]*v1.SignalPolicy{
 		"update": {
-			Allow: []*v1.SignalPolicyRule{
-				{Subject: v1.QualifiedSubject("https://issuer.example.com", "owner@example.com")},
-			},
+			Allow: `sender.identity.principal == "` + v1.QualifiedSubject("https://issuer.example.com", "owner@example.com") + `"`,
 		},
 	})
 

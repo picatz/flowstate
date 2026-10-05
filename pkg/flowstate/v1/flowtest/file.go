@@ -31,10 +31,10 @@
 // naming the two parties that policy is written about: [Test.Starter] is who
 // the run started as, and a [SignalScript.Sender] is who a scripted delivery
 // stands in for. Both are read by [v1.SignalPolicyCheck] - the function
-// `FlowstateServer.Signal` itself calls - so a rule that admits an approver in
-// production admits them here, one that refuses them refuses them here, and
-// `distinct_from_starter:` refuses the approver who is this run's own starter
-// (#344 slice 3).
+// `FlowstateServer.Signal` itself calls - so a predicate that admits an approver in
+// production admits them here, one that refuses them refuses them here, and a
+// comparison with `run.identity` refuses the approver who is this run's own
+// starter (#344 slice 3).
 //
 // Neither is an attestation, and the harness is careful to keep saying so.
 // A scripted delivery carries [v1.RehearsalSignalSender] - identity populated,
@@ -58,9 +58,9 @@
 // What reads a [Test.Starter], exhaustively: the workflow's own `signals:`
 // policy, through [v1.SignalPolicyCheck] - the function `FlowstateServer.Signal`
 // itself calls - reached from [v1.NewPolicedLocalSignals] in runCase. That is
-// a rule's `subject:`, `issuer:`, `namespace:` and `claims:` matching a
-// scripted [SignalScript.Sender], and `distinct_from_starter:` comparing that
-// sender's [v1.QualifiedSubject] against the starter's. Nothing else in this
+// a predicate over a scripted [SignalScript.Sender]'s `principal`, `issuer`,
+// `namespace` and `claims`, and a comparison of that sender's
+// [v1.QualifiedSubject] with the starter's. Nothing else in this
 // package passes the value anywhere.
 //
 // What does not read it, each for a reason worth stating separately:
@@ -417,18 +417,18 @@ type Test struct {
 	// Signals scripts what to deliver to a `wait_for_signal:` step, and when.
 	Signals []SignalScript `yaml:"signals"`
 
-	// Starter is who this case runs as: the identity a `signals:` policy's
-	// `distinct_from_starter:` compares a scripted [SignalScript.Sender]
+	// Starter is who this case runs as: the identity a `signals:` predicate
+	// reads as `run.identity`, to compare a scripted [SignalScript.Sender]
 	// against, exactly as `flow run local`'s `--as-subject` and its siblings
 	// name it for a rehearsal on the command line (#344 slice 3).
 	//
 	// Without it a case runs as nobody, which is what every case did before
 	// this field existed and remains the default: an empty identity that is
-	// *recorded* rather than unknown, so a `distinct_from_starter:` policy
+	// *recorded* rather than unknown, so a predicate comparing with `run.identity`
 	// admits a scripted approver instead of refusing every case outright
 	// (see [v1.NewPolicedLocalSignals]'s hasStarter parameter, and runCase).
 	// The consequence worth stating is that "nobody" is distinct from every
-	// named approver, so the refusal `distinct_from_starter:` exists to
+	// named approver, so the refusal such a comparison exists to
 	// produce is unreachable until a case names a starter - which is the
 	// whole reason this field exists.
 	//
@@ -583,7 +583,7 @@ type TriggerDelivery struct {
 	// letting a case set it freely — if a step's `if:` gates a destructive action
 	// on this string, the case that fakes it passes, and the diff that made it
 	// possible read as a security control. Authorization belongs on the trigger:
-	// `manual: {allowed_principals: [...]}`, enforced by the server against an
+	// `manual: {allow: ${...}}`, enforced by the server against an
 	// identity it attested.
 	Principal string `yaml:"principal"`
 
@@ -981,10 +981,10 @@ type SignalScript struct {
 // scripted signal ([SignalScript.Sender]) or the run's own starter
 // ([Test.Starter]), carrying the fields [v1.WorkloadIdentity] does that a `signals:` policy is
 // matched on: subject and issuer together, never subject alone, for the
-// identical multi-IdP reason `flow validate` requires a
-// `v1.SignalPolicyRule.subject` to be issuer-qualified.
+// identical multi-IdP reason a predicate compares `sender.identity.principal`
+// (`issuer#subject`) rather than a bare subject.
 //
-// One type for both ends on purpose. `distinct_from_starter:` compares the two
+// One type for both ends on purpose. A predicate comparing with `run.identity` compares the two
 // against each other, through [v1.QualifiedSubject] on each, so a case whose
 // starter and sender were spelled with two different sets of fields would be a
 // comparison an author could not read - the same reasoning that made

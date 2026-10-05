@@ -168,15 +168,15 @@ flow debug replay session.script examples/computed-outputs/workflow.yaml \
 // Temporal buffers signals for a run.
 //
 // And who those answers are from. A gate whose `signals:` policy names an
-// approver is unreachable without these: a delivery attesting nobody matches no
-// `allow:` rule, so the only rehearsal available was the refusal. They name the
+// approver is unreachable without these: a delivery attesting nobody satisfies no
+// `allow:` predicate, so the only rehearsal available was the refusal. They name the
 // approver every --signal of this run stands in for, and the same check
 // production runs then admits or refuses it here — including
-// `distinct_from_starter:`, compared against --as-subject/--as-issuer.
+// a comparison with `run.identity`, the starter named by --as-subject/--as-issuer.
 //
 // Spelled to rhyme with --as-subject and its siblings, which name the starter,
 // because they answer the same shape of question about the other party.
-// Deliberately no --signal-as-deployment: no `signals:` rule can match on a
+// Deliberately no --signal-as-deployment: no `signals:` predicate can admit a
 // deployment, so a flag for it would rehearse nothing.
 //
 // A function rather than two copies, because `flow run local` and `flow debug

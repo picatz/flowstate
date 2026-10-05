@@ -18,10 +18,11 @@ func quorumSource(quorum string, subjects ...string) string {
 	b.WriteString("edition: v2026.4\nname: release-gate\nsteps:\n  - id: gate\n    wait_for_signals:\n      name: release-approved\n      timeout: 1h\n      quorum:\n")
 	b.WriteString(quorum)
 	if len(subjects) > 0 {
-		b.WriteString("signals:\n  release-approved:\n    allow:\n")
-		for _, subject := range subjects {
-			b.WriteString("      - subject: \"https://idp.example#" + subject + "\"\n")
+		quoted := make([]string, len(subjects))
+		for i, subject := range subjects {
+			quoted[i] = `"https://idp.example#` + subject + `"`
 		}
+		b.WriteString("signals:\n  release-approved:\n    allow: ${sender.identity.principal in [" + strings.Join(quoted, ", ") + "]}\n")
 	}
 
 	return b.String()
@@ -118,13 +119,13 @@ func TestAnUnsatisfiableQuorumIsRefusedByValidate(t *testing.T) {
 }
 
 // TestAQuorumPolicyThatAdmitsByClaimIsNotCounted keeps the validator from
-// refusing a quorum it cannot know is unsatisfiable: a claims rule admits any
+// refusing a quorum it cannot know is unsatisfiable: a claims predicate admits any
 // number of subjects.
 func TestAQuorumPolicyThatAdmitsByClaimIsNotCounted(t *testing.T) {
 	t.Parallel()
 
 	source := quorumSource("        approve: 5\n") +
-		"signals:\n  release-approved:\n    allow:\n      - claims:\n          team: release-managers\n"
+		"signals:\n  release-approved:\n    allow: ${sender.identity.claims.team == \"release-managers\"}\n"
 
 	diagnostics, err := flowfile.ValidateSource([]byte(source))
 	require.NoError(t, err)

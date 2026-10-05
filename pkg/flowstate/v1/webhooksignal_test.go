@@ -55,27 +55,35 @@ func bridged(policy *v1.SignalPolicy) *v1.Workflow {
 	return wf
 }
 
-// namesTheTrigger is the rule an author has to write for the bridge to compile.
+// namesTheTrigger is the predicate an author writes for the bridge to answer.
 func namesTheTrigger() *v1.SignalPolicy {
-	return &v1.SignalPolicy{Allow: []*v1.SignalPolicyRule{{
-		Subject: v1.QualifiedSubject(v1.WebhookPrincipalIssuer,
-			v1.WebhookTriggerSubject("deploy-gate", "slack-approval")),
-	}}}
+	return &v1.SignalPolicy{Allow: `sender.identity.principal == "` + v1.QualifiedSubject(v1.WebhookPrincipalIssuer,
+		v1.WebhookTriggerSubject("deploy-gate", "slack-approval")) + `"`}
 }
 
 // TestABridgeNeedsAPolicyThatCouldAdmitItsTrigger is the zero-case rule, in
-// both directions.
+// both directions, and what the file check deliberately leaves to delivery.
 //
 // The negative direction is the one that matters and the one a mutation removes
 // first: without it a `signal:` naming an unpoliced gate compiles, and one
 // leaked signing key answers every unpoliced gate the deployment serves.
+//
+// A predicate is decided at delivery over the sender, the starter and the run's
+// inputs, none of which the file check holds, so it does not refuse a predicate
+// the bridge's principal cannot satisfy. Each such case asserts both halves: the
+// file check passes, and the delivery is denied by [v1.SignalPolicyCheck], the
+// one function that decides it (#2325).
 func TestABridgeNeedsAPolicyThatCouldAdmitItsTrigger(t *testing.T) {
 	t.Parallel()
+
+	webhook := v1.WebhookTriggerPrincipal("", "deploy-gate", "slack-approval")
 
 	for _, test := range []struct {
 		name    string
 		policy  *v1.SignalPolicy
 		refused string
+		// admitted is whether the bridge's own delivery satisfies the predicate.
+		admitted bool
 	}{
 		{
 			name:    "no policy at all is the zero case, and it is refused",
@@ -83,53 +91,49 @@ func TestABridgeNeedsAPolicyThatCouldAdmitItsTrigger(t *testing.T) {
 			refused: "declares no `signals:` policy",
 		},
 		{
-			name:   "a rule naming the trigger admits it",
-			policy: namesTheTrigger(),
+			name:     "a predicate naming the trigger admits it",
+			policy:   namesTheTrigger(),
+			admitted: true,
 		},
 		{
-			name: "a rule naming a person cannot admit a webhook",
-			policy: &v1.SignalPolicy{Allow: []*v1.SignalPolicyRule{{
-				Subject: v1.QualifiedSubject("https://issuer.example.com", "sre-lead@example.com"),
-			}}},
-			refused: "none of that signal's `allow:` rules can admit a webhook delivery",
+			name:   "a predicate naming a person passes the file check and denies at delivery",
+			policy: &v1.SignalPolicy{Allow: `sender.identity.principal == "` + v1.QualifiedSubject("https://issuer.example.com", "sre-lead@example.com") + `"`},
 		},
 		{
-			name: "a rule naming another trigger on this workflow cannot admit this one",
-			policy: &v1.SignalPolicy{Allow: []*v1.SignalPolicyRule{{
-				Subject: v1.QualifiedSubject(v1.WebhookPrincipalIssuer,
-					v1.WebhookTriggerSubject("deploy-gate", "pagerduty-ack")),
-			}}},
-			refused: "none of that signal's `allow:` rules can admit a webhook delivery",
+			name: "a predicate naming another trigger on this workflow passes the file check and denies at delivery",
+			policy: &v1.SignalPolicy{Allow: `sender.identity.principal == "` + v1.QualifiedSubject(v1.WebhookPrincipalIssuer,
+				v1.WebhookTriggerSubject("deploy-gate", "pagerduty-ack")) + `"`},
 		},
 		{
-			name: "a rule requiring a claim can never be reached from this route",
-			policy: &v1.SignalPolicy{Allow: []*v1.SignalPolicyRule{{
-				Subject: v1.QualifiedSubject(v1.WebhookPrincipalIssuer,
-					v1.WebhookTriggerSubject("deploy-gate", "slack-approval")),
-				Claims: map[string]string{"team": "release-managers"},
-			}}},
-			refused: "carries no claims",
+			name: "a predicate requiring a claim passes the file check and denies at delivery",
+			policy: &v1.SignalPolicy{Allow: `sender.identity.principal == "` + v1.QualifiedSubject(v1.WebhookPrincipalIssuer,
+				v1.WebhookTriggerSubject("deploy-gate", "slack-approval")) + `" && sender.identity.claims["team"] == "release-managers"`},
 		},
 		{
-			name: "a namespace-only rule is left to the deployment to satisfy",
-			policy: &v1.SignalPolicy{Allow: []*v1.SignalPolicyRule{{
-				Namespace: "release-managers",
-			}}},
+			name:   "a namespace-only predicate is left to the deployment to satisfy",
+			policy: &v1.SignalPolicy{Allow: `sender.identity.namespace == "release-managers"`},
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 
 			err := v1.CheckWebhookSignalBridges(bridged(test.policy))
-			if test.refused == "" {
-				require.NoError(t, err)
+			if test.refused != "" {
+				require.Error(t, err)
+				require.Containsf(t, err.Error(), test.refused,
+					"the refusal has to name what to write; got %q", err.Error())
 
 				return
 			}
 
-			require.Error(t, err)
-			require.Containsf(t, err.Error(), test.refused,
-				"the refusal has to name what to write; got %q", err.Error())
+			require.NoError(t, err)
+
+			delivery := v1.SignalPolicyCheck(t.Context(), test.policy, webhook, nil, false, nil)
+			if test.admitted {
+				require.NoError(t, delivery, "the bridge's own delivery was denied by the policy that names it")
+			} else {
+				require.Error(t, delivery, "a policy the bridge's principal cannot satisfy admitted its delivery")
+			}
 		})
 	}
 }
