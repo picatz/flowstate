@@ -1426,6 +1426,46 @@ func DebugTool() *mcp.Tool {
 	}
 }
 
+// CheckPolicyToolName is the static who-may-act check, as a tool: the same
+// question `flow signals check` answers, for an agent that has just written a
+// `signals:`, `debug:` or `triggers.manual` policy.
+const CheckPolicyToolName = ToolPrefix + "check_policy"
+
+// CheckPolicyToolDescription is written for the model deciding whether a
+// policy it wrote admits the identity it meant it to.
+const CheckPolicyToolDescription = "Ask whether an identity would be admitted by a Flowfile's authorization policy, " +
+	"executing no step, running no workflow and contacting no server: the same static check as " +
+	"`flow signals check`. Use it after writing a `signals:`, `debug:` or `triggers.manual` policy, " +
+	"to prove an `allow:` predicate admits who it should and refuses who it should not, including the " +
+	"requester approving their own request.\n\n" +
+	"`gate` picks which policy is asked: `signal` (who may answer a wait_for_signal gate, `signals:`; " +
+	"name one with `signal`, or leave it out to check every declared signal), `debug` (who may hold a " +
+	"debug lease, `debug:`), or `manual` (who may start the workflow by hand, `triggers.manual`). " +
+	"`sender` is the identity attempting the act; leave it out for an unauthenticated caller, which no " +
+	"`allow:` rule a real deployment writes admits. `starter` is who started the run, which a predicate " +
+	"reads as `run.identity`; leave it out and the starter is unknown, which refuses any predicate that " +
+	"reads `run.identity` (the fail-closed reading), and `{}` says the run was started by nobody " +
+	"authenticated. `inputs` are bound against the source's `inputs:` as a start binds them.\n\n" +
+	"Each gate is decided by the function the engine decides it with, so there is no second evaluator to " +
+	"disagree. Answers with {\"gates\": [...], \"results\": [{\"decisions\": [{\"gate\", \"outcome\": " +
+	"\"admitted\"|\"refused\", \"reason\", \"note\"}]}], \"matches\": true}. A refusal's `reason` is the " +
+	"engine's fixed sentence, which never quotes a claim, a subject or an input; a `sensitive:` input " +
+	"is never echoed. A signal no `signals:` policy governs is admitted for any sender, and `note` says " +
+	"so. A refusal is an answer, not a tool error: the call fails only when the question could not be " +
+	"put (a source that does not compile, a malformed identity, inputs the source does not accept), and " +
+	"then no verdict is given.\n\n" +
+	"What it does not model: state only a run has (a retry, a signal already consumed). `triggers.manual` " +
+	"is decided over the caller and the inputs alone, as the server decides it."
+
+// CheckPolicyTool declares the tool.
+func CheckPolicyTool() *mcp.Tool {
+	return &mcp.Tool{
+		Name:        CheckPolicyToolName,
+		Description: CheckPolicyToolDescription,
+		InputSchema: checkPolicyInputSchema(),
+	}
+}
+
 // NewMessage constructs an empty message for a descriptor.
 func NewMessage(md protoreflect.MessageDescriptor) proto.Message {
 	mt, err := protoregistry.GlobalTypes.FindMessageByName(md.FullName())

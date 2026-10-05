@@ -53,6 +53,7 @@ contracts and do not advertise a schema-owned result message.
 | `flowstate_run_local` | locally | — | — |
 | `flowstate_test` | locally | — | — |
 | `flowstate_debug` | locally | — | — |
+| `flowstate_check_policy` | locally | — | — |
 | `flowstate_debug_session_start` | locally | — | — |
 | `flowstate_debug_session_attach` | via a server | — | — |
 | `flowstate_debug_session_observe` | locally | — | — |
@@ -284,6 +285,16 @@ The answer carries the session transcript (every stop, every step's own outcome,
 A case that fails is held open once more after the verdict, its failures printed and the finished run still questionable — so one script can assert, see the failure, and then ask what the run actually produced.
 
 Runs on stubs, like flowstate_test: no egress, no secret resolved, a virtual clock. Debugging a real, unstubbed local run is not this tool.
+
+## `flowstate_check_policy`
+
+Ask whether an identity would be admitted by a Flowfile's authorization policy, executing no step, running no workflow and contacting no server: the same static check as `flow signals check`. Use it after writing a `signals:`, `debug:` or `triggers.manual` policy, to prove an `allow:` predicate admits who it should and refuses who it should not, including the requester approving their own request.
+
+`gate` picks which policy is asked: `signal` (who may answer a wait_for_signal gate, `signals:`; name one with `signal`, or leave it out to check every declared signal), `debug` (who may hold a debug lease, `debug:`), or `manual` (who may start the workflow by hand, `triggers.manual`). `sender` is the identity attempting the act; leave it out for an unauthenticated caller, which no `allow:` rule a real deployment writes admits. `starter` is who started the run, which a predicate reads as `run.identity`; leave it out and the starter is unknown, which refuses any predicate that reads `run.identity` (the fail-closed reading), and `{}` says the run was started by nobody authenticated. `inputs` are bound against the source's `inputs:` as a start binds them.
+
+Each gate is decided by the function the engine decides it with, so there is no second evaluator to disagree. Answers with {"gates": [...], "results": [{"decisions": [{"gate", "outcome": "admitted"|"refused", "reason", "note"}]}], "matches": true}. A refusal's `reason` is the engine's fixed sentence, which never quotes a claim, a subject or an input; a `sensitive:` input is never echoed. A signal no `signals:` policy governs is admitted for any sender, and `note` says so. A refusal is an answer, not a tool error: the call fails only when the question could not be put (a source that does not compile, a malformed identity, inputs the source does not accept), and then no verdict is given.
+
+What it does not model: state only a run has (a retry, a signal already consumed). `triggers.manual` is decided over the caller and the inputs alone, as the server decides it.
 
 ## `flowstate_debug_session_start`
 

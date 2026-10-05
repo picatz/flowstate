@@ -222,6 +222,11 @@ var documentedLocalTools = map[string]bool{
 	flowmcp.TestToolName:     true,
 	flowmcp.DebugToolName:    true,
 
+	// flowstate_check_policy: policycheck, in this process, the static form of
+	// the who-may-act decision `flow signals check` prints. Not an RPC because
+	// it contacts nothing and executes nothing: it compiles and decides.
+	flowmcp.CheckPolicyToolName: true,
+
 	debugSessionStartTool:   true,
 	debugSessionAttachTool:  true,
 	debugSessionObserveTool: true,

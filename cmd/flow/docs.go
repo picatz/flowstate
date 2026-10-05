@@ -169,6 +169,11 @@ func mcpToolDocs() []docsgen.MCPTool {
 		Description: flowmcp.DebugToolDescription,
 		Local:       true,
 	})
+	tools = append(tools, docsgen.MCPTool{
+		Name:        flowmcp.CheckPolicyToolName,
+		Description: flowmcp.CheckPolicyToolDescription,
+		Local:       true,
+	})
 
 	// The retained sessions, from their own registration so the reference
 	// cannot describe a tool other than the one served.
