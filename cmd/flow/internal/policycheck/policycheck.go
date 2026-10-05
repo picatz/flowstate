@@ -176,7 +176,7 @@ func ParseOutcome(word string) (Outcome, error) {
 	case OutcomeAdmitted, OutcomeRefused:
 		return Outcome(word), nil
 	default:
-		return "", fmt.Errorf("%q is not an outcome; write admitted or refused", word)
+		return "", errors.New("that is not an outcome; write admitted or refused")
 	}
 }
 
@@ -264,10 +264,15 @@ func listed(names []string) string {
 // given.
 //
 // An error is not a refusal: it means the question could not be put - a
-// malformed identity, or arguments the workflow's `inputs:` do not accept - and
+// malformed identity, arguments the workflow's `inputs:` do not accept, or a
+// context cancelled before the engine finished - and
 // no decision is returned, so a caller cannot read half an answer as a verdict.
 // A refusal is a [Decision] with Admitted false.
 func Evaluate(ctx context.Context, wf *v1.Workflow, gates []Gate, subject Subject) ([]Decision, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
 	// The same rule a test file's identities are loaded with, so a half-written
 	// issuer and subject is refused as itself here too, rather than as a policy
 	// that mystifies by never admitting a subject that does match it.
@@ -323,6 +328,15 @@ func Evaluate(ctx context.Context, wf *v1.Workflow, gates []Gate, subject Subjec
 
 		default:
 			return nil, fmt.Errorf("unknown gate %q", gate)
+		}
+
+		// A cancelled run is not a refusal. The engine folds every evaluator
+		// error, a cancelled parent context included, into its one fixed
+		// refusal sentence, so an interrupted check would otherwise print
+		// `refused` - and satisfy `--expect refused`. Asked after the engine
+		// answers and before the answer is recorded.
+		if err := ctx.Err(); err != nil {
+			return nil, err
 		}
 
 		if refusal != nil {

@@ -584,7 +584,9 @@ The sender is named with the `--signal-as-*` flags that `flow run local` takes,
 and the run's starter, which a predicate reads as `run.identity`, with
 `--starter-*`. Two defaults fail closed exactly as the engine does. A sender
 that names nobody is unauthenticated, which no `allow:` predicate a deployment
-writes admits and `triggers.manual` refuses outright. A starter that is not named
+writes admits, and a `triggers.manual` block that writes an `allow:` predicate refuses
+(with no such block, any caller the server authenticates may start the workflow,
+and the line says so). A starter that is not named
 is unknown, so a predicate that reads `run.identity` errors, and an error refuses.
 `--starter-anonymous` says the run was started by nobody authenticated, which is
 how `flow run local` models a run given no `--as-*` flags. Arguments are given

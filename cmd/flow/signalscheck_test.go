@@ -361,9 +361,6 @@ steps:
 		"a matrix row's int":      runFlow(t, "signals", "check", path, "--matrix", writeFile(t, "m2.yaml", "identities:\n  - name: ops\n    subject: ops@example.com\n    issuer: "+gateIssuer+"\n    claims: {pin: "+claimValue+"}\n    inputs: {attempts: 9876501234x}\n")),
 	} {
 		for _, word := range forbidden {
-			if name == "a matrix row" && word == "ops@example.com" {
-				continue // the row's own name is "ops"; its subject is never printed
-			}
 			require.NotContains(t, res.Output(), word, "%s echoed %q:\n%s", name, word, res.Output())
 		}
 	}

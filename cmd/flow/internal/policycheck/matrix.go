@@ -11,7 +11,11 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/goccy/go-yaml"
+	"github.com/goccy/go-yaml/parser"
+
 	"github.com/picatz/flowstate/internal/strictyaml"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowtest"
 )
 
@@ -29,6 +33,13 @@ const (
 	// MaxRowClaims and MaxRowInputs bound what one row may carry.
 	MaxRowClaims = 64
 	MaxRowInputs = 64
+
+	// MaxRowInputNodes bounds the values (counting every nested element) one
+	// row's `inputs:` may hold once decoded. The matrix refuses aliases, so
+	// this equals what was written; it is the second bound, on what a decoder
+	// produced, so that a decoder that began expanding references could not
+	// reopen the memory a small file could cost.
+	MaxRowInputNodes = 4096
 
 	// MaxRowNameRunes bounds a row's name, which is printed in a table.
 	MaxRowNameRunes = 64
@@ -143,9 +154,13 @@ func ParseMatrix(data []byte) (*Matrix, error) {
 		return nil, fmt.Errorf("the matrix is %d bytes, over the %d byte limit", len(data), MaxMatrixBytes)
 	}
 
+	if err := refuseAliasedYAML(data); err != nil {
+		return nil, err
+	}
+
 	var matrix Matrix
 	if err := strictyaml.UnmarshalStrict(data, &matrix); err != nil {
-		return nil, fmt.Errorf("the matrix is not a document of `identities:`: %w", err)
+		return nil, fmt.Errorf("the matrix is not a document of `identities:`: %w", withoutSource(err))
 	}
 
 	if len(matrix.Identities) == 0 {
@@ -174,6 +189,10 @@ func ParseMatrix(data []byte) (*Matrix, error) {
 		if len(row.Claims) > MaxRowClaims || len(row.Inputs) > MaxRowInputs ||
 			(row.Starter != nil && len(row.Starter.Claims) > MaxRowClaims) {
 			return nil, fmt.Errorf("%s carries more than %d claims or %d inputs", where, MaxRowClaims, MaxRowInputs)
+		}
+
+		if nodes := inputNodes(row.Inputs); nodes > MaxRowInputNodes {
+			return nil, fmt.Errorf("%s carries inputs holding more than %d values", where, MaxRowInputNodes)
 		}
 
 		if err := row.ScriptedIdentity.Check(where); err != nil {
@@ -304,6 +323,7 @@ func WriteTable(w io.Writer, gates []Gate, results []Result) error {
 	fmt.Fprintln(tw, strings.Join(header, "\t"))
 
 	reasons := map[Gate][]string{}
+	notes := map[Gate][]string{}
 
 	for _, result := range results {
 		cells := []string{result.Name}
@@ -320,6 +340,10 @@ func WriteTable(w io.Writer, gates []Gate, results []Result) error {
 				cell += " (expected " + string(want) + ")"
 			}
 			cells = append(cells, cell)
+
+			if decision.Note != "" && !slices.Contains(notes[gate], decision.Note) {
+				notes[gate] = append(notes[gate], decision.Note)
+			}
 
 			if decision.Reason != "" && !slices.Contains(reasons[gate], decision.Reason) {
 				reasons[gate] = append(reasons[gate], decision.Reason)
@@ -338,6 +362,14 @@ func WriteTable(w io.Writer, gates []Gate, results []Result) error {
 	// can refuse for more than one reason (the predicate said no, or it
 	// errored), which a single remembered sentence would hide.
 	for _, gate := range gates {
+		// An admission no policy produced is not a gate that was passed, and a
+		// bare `admitted` cell would read as one.
+		for _, note := range notes[gate] {
+			if _, err := fmt.Fprintf(w, "\n%s admits without a policy: %s\n", gate, note); err != nil {
+				return err
+			}
+		}
+
 		for _, reason := range reasons[gate] {
 			if _, err := fmt.Fprintf(w, "\n%s refuses with: %s\n", gate, reason); err != nil {
 				return err
@@ -421,4 +453,81 @@ func NewReport(gates []Gate, results []Result) Report {
 	}
 
 	return report
+}
+
+// refuseAliasedYAML refuses a matrix that holds an anchor, an alias or a merge
+// key, on the presence of the construct and before anything is decoded. They are
+// how a few hundred bytes become gigabytes - nested aliases multiply - and a
+// table of identities has no use for them, so the answer is the one the Flowfile
+// grammar gives ([flowfile.StrictYAMLRefusals]) rather than a bound that fires
+// after the cost is paid. The sentence is fixed and positions only: it quotes
+// nothing the document says.
+func refuseAliasedYAML(data []byte) (err error) {
+	defer func() {
+		if recover() != nil {
+			err = errors.New("the matrix could not be read as YAML")
+		}
+	}()
+
+	file, parseErr := parser.ParseBytes(data, 0)
+	if parseErr != nil {
+		return fmt.Errorf("the matrix is not YAML: %w", withoutSource(parseErr))
+	}
+
+	if found := flowfile.StrictYAMLRefusals(file); len(found) > 0 {
+		return fmt.Errorf("line %d, column %d: a matrix is a plain table; anchors (&), aliases (*) and merge keys (<<) "+
+			"are not accepted, so write each value out", found[0].Line, found[0].Column)
+	}
+
+	return nil
+}
+
+// withoutSource reduces a decoder's error to its message and position. The
+// decoder's own rendering annotates the offending line of the document, and in
+// a matrix that line can be a claim or an input value.
+func withoutSource(err error) error {
+	if located, ok := errors.AsType[yaml.Error](err); ok {
+		if tok := located.GetToken(); tok != nil && tok.Position != nil {
+			return fmt.Errorf("line %d, column %d: %s", tok.Position.Line, tok.Position.Column, located.GetMessage())
+		}
+
+		return errors.New(located.GetMessage())
+	}
+
+	return err
+}
+
+// inputNodes counts the values a row's inputs hold, every nested element
+// included, stopping as soon as the count passes [MaxRowInputNodes] (and at a
+// fixed depth) so the count itself is bounded however the value was built.
+func inputNodes(inputs map[string]any) int {
+	count := 0
+
+	var walk func(value any, depth int)
+	walk = func(value any, depth int) {
+		if count > MaxRowInputNodes {
+			return
+		}
+		count++
+
+		if depth > 32 {
+			count = MaxRowInputNodes + 1
+			return
+		}
+
+		switch v := value.(type) {
+		case map[string]any:
+			for _, held := range v {
+				walk(held, depth+1)
+			}
+		case []any:
+			for _, held := range v {
+				walk(held, depth+1)
+			}
+		}
+	}
+
+	walk(inputs, 0)
+
+	return count
 }

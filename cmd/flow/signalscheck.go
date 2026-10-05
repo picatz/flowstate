@@ -65,7 +65,8 @@ func newSignalsCheckCommand() *cobra.Command {
 			"`--signal-as-subject` with `--signal-as-issuer` (given together or not at all), " +
 			"`--signal-as-namespace` and `--signal-as-claim`. Name none and the sender is " +
 			"unauthenticated, which no `allow:` predicate a deployment writes admits, and which " +
-			"`triggers.manual` refuses outright. `--starter-*` names who started the run, which a " +
+			"`triggers.manual` refuses when its block writes an `allow:` predicate (with no block, any caller " +
+			"the server authenticates may start it, and the line says so). `--starter-*` names who started the run, which a " +
 			"predicate reads as `run.identity`; name none and the starter is unknown, which refuses " +
 			"any predicate that reads `run.identity`, as the engine does for a run with no recorded " +
 			"starter. `--starter-anonymous` says the run was started by nobody authenticated, which is " +
@@ -442,7 +443,10 @@ func parseIdentityClaimFlags(flag string, entries []string) (map[string]string, 
 	for _, entry := range entries {
 		name, value, found := strings.Cut(entry, "=")
 		if !found || name == "" || value == "" {
-			return nil, fmt.Errorf("invalid --%s %q: want NAME=VALUE", flag, entry)
+			// The entry is not quoted: a claim is an identity fact, and an entry
+			// that is malformed (no `=`, or an empty side) may well be the
+			// value typed without its name.
+			return nil, fmt.Errorf("invalid --%s: want NAME=VALUE, with both sides present", flag)
 		}
 		if _, duplicate := claims[name]; duplicate {
 			return nil, fmt.Errorf("duplicate --%s %q", flag, name)
