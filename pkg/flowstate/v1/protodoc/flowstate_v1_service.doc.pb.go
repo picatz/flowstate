@@ -1217,9 +1217,13 @@ func init() {
 				" `signals:` policy would admit a [Signal] now, without delivering one.\n" +
 				"\n" +
 				" A run that is not running, or holds no open gate by that name, answers\n" +
-				" NOT_FOUND, the same answer a run in another tenant gets. A run holding more\n" +
-				" gates than one answer lists, whose list does not include the named gate,\n" +
-				" answers FAILED_PRECONDITION: the gate may be open, and this read cannot say.\n",
+				" NOT_FOUND, the same answer a run in another tenant gets. The gate is looked\n" +
+				" up by name inside the run, so it is found however many gates the run holds\n" +
+				" (up to `v1.MaxHeldWaits`, in `pkg/flowstate/v1/waits.go`), not only among the\n" +
+				" `v1.MaxPendingWaits` that [Get] lists. A run that holds more gates than it\n" +
+				" retains, or one that cannot answer the lookup, and whose answer does not\n" +
+				" include the named gate, answers FAILED_PRECONDITION: the gate may be open,\n" +
+				" and this read cannot say.\n",
 		},
 		{
 			Name: "flowstate.v1.WorkflowService.SignalWithStart",

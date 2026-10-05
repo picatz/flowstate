@@ -106,3 +106,47 @@ tests:
     expect:
       failed: true
       error_contains: "must have at least"
+
+  # What must stay true when the enrichment service flakes, not only when it is
+  # up or permanently refuses. `flow test` runs this once with nothing injected;
+  # `flow test --seeds N` draws up to two transient failures on `lookup` per run,
+  # fewer than its three attempts, so retry must absorb every one and no record
+  # that can be enriched may be lost.
+  - name: transient lookup failures never cost a record that can be enriched
+    workflow: ./workflow.yaml
+    inputs:
+      records: [alpha, beta, gamma]
+    stubs:
+      - task: http
+        where: "'query' in inputs && inputs.query.record == 'alpha'"
+        returns:
+          id: alpha
+      - task: http
+        where: "'query' in inputs && inputs.query.record == 'beta'"
+        returns:
+          id: beta
+      - task: http
+        where: "'query' in inputs && inputs.query.record == 'gamma'"
+        returns:
+          id: gamma
+      - step: vendor_status
+        returns:
+          status_code: 200
+      - task: log
+        returns: {}
+    faults:
+      - step: lookup
+        rate: 0.5
+        at_most: 2
+        fails:
+          kind: Upstream
+          message: enrichment service reset the connection
+    invariants:
+      - that: size(steps.enrich.results.filter(r, has(r.lookup.id))) == size(inputs.records)
+        because: two transient failures fit inside three attempts, so every record is still enriched
+    expect:
+      outputs:
+        enriched: [alpha, beta, gamma]
+        failed: []
+        attempted: 3
+        vendor_outage_tolerated: false

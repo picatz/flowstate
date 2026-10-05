@@ -12,32 +12,13 @@ breaking:
     - FILE
     - WIRE
 
-  # Retiring the who-may-act rule lists (#326, part 2, PR 4). Each rule below is
-  # scoped to the one file that breaks it, and the wire is untouched:
-  #   - signal.proto: `SignalPolicy` field 1 (`allow`, the rule list), field 2
-  #     (`distinct_from_starter`) and the `SignalPolicyRule` message are deleted,
-  #     their numbers and names reserved; field 3 `allow_expr` is renamed `allow`
-  #     at the same number, which changes the JSON name only.
-  #   - trigger.proto: `ManualTrigger` field 3 (`allowed_principals`) is deleted
-  #     and reserved; field 4 `allow_expr` is renamed `allow` at the same number.
-  # Remove this block in the next commit on main, once this one is the baseline.
-  #
   # Retiring `retry.except`, which spelled the complement of `only`: workflow.proto
   # `RetryPolicy` field 6 (`except`) is deleted, its number and name reserved.
-  # Nothing else in that file moves. Remove its line below with the rest.
+  # Nothing else in that file moves. Remove this block in the next commit on main,
+  # once this one is the baseline.
   ignore_only:
-    MESSAGE_NO_DELETE:
-      - proto/flowstate/v1/signal.proto
     FIELD_NO_DELETE:
-      - proto/flowstate/v1/signal.proto
-      - proto/flowstate/v1/trigger.proto
       - proto/flowstate/v1/workflow.proto
-    FIELD_SAME_NAME:
-      - proto/flowstate/v1/signal.proto
-      - proto/flowstate/v1/trigger.proto
-    FIELD_SAME_JSON_NAME:
-      - proto/flowstate/v1/signal.proto
-      - proto/flowstate/v1/trigger.proto
 
   # FILE and WIRE compare descriptors: names, numbers, types, cardinality, and
   # reservations. They do not prove that a runtime still gives a field the same

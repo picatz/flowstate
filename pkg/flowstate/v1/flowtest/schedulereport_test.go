@@ -48,10 +48,11 @@ func TestScheduleReportRendersTheDivergence(t *testing.T) {
 	t.Parallel()
 
 	in := &flowtest.ScheduleReport{
-		Schedules: 8,
-		Cases:     2,
-		Decisions: 5,
-		Truncated: true,
+		Schedules:  8,
+		Cases:      2,
+		Decisions:  5,
+		FaultDraws: 9,
+		Truncated:  true,
 		Divergence: &flowtest.ScheduleDivergence{
 			Case:         "the racing case",
 			Seed:         42,
@@ -71,6 +72,7 @@ func TestScheduleReportRendersTheDivergence(t *testing.T) {
 	assert.Equal(t, int32(8), out.GetSchedules())
 	assert.Equal(t, int32(2), out.GetCases())
 	assert.Equal(t, int32(5), out.GetDecisions())
+	assert.Equal(t, int32(9), out.GetFaultDraws())
 	assert.True(t, out.GetTruncated())
 
 	d := out.GetDivergence()

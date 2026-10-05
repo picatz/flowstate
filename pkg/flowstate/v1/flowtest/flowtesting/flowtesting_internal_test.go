@@ -434,6 +434,12 @@ func TestReportSchedulesRendersTheFinding(t *testing.T) {
 	require.Contains(t, agreed.logs[0], "4 schedules")
 	require.Contains(t, agreed.logs[1], "nothing was explored")
 
+	faulted := &recorder{}
+	reportSchedules(faulted, "suite.test.yaml", &flowtest.ScheduleReport{Schedules: 4, Cases: 1, FaultDraws: 6})
+	require.Empty(t, faulted.errors)
+	require.Len(t, faulted.logs, 1, "a search that only injected faults explored something")
+	require.Contains(t, faulted.logs[0], "6 fault draws")
+
 	diverged := &flowtest.ScheduleReport{
 		Schedules: 4,
 		Cases:     1,

@@ -246,6 +246,12 @@ message ScheduleExploration {
   // explored stopped partway.
   bool truncated = 4;
 
+  // FaultDraws is the largest number of times any one schedule of any case was
+  // asked whether an injected fault fires. Zero with a nonzero [decisions] means
+  // the exploration reordered but injected nothing; zero with zero [decisions]
+  // means it explored nothing at all.
+  int32 fault_draws = 6;
+
   // Divergence is the first case whose observables were not the same under a
   // seeded schedule as under written order, or whose invariants broke under a
   // seeded run's injected faults (see ScheduleDivergenceReport.invariant),

@@ -365,3 +365,21 @@ func TestTheShrinkNoteSaysWhatShrinkingDid(t *testing.T) {
 	assert.Contains(t, bounded, "may not be minimal")
 	assert.NotContains(t, bounded, "removing any one")
 }
+
+// A search that only injected faults explored something: it must say how much,
+// and must not call itself an exploration of nothing because no `parallel:` was
+// reached.
+func TestSeedsReportsFaultDrawsAndDoesNotCallThatNothing(t *testing.T) {
+	render := func(s *flowtest.ScheduleReport) string {
+		var out strings.Builder
+		printSchedules(&out, ui.Plain(&out, &out).Theme, &v1.TestReport{File: "x.test.yaml"}, s)
+
+		return out.String()
+	}
+
+	faulted := render(&flowtest.ScheduleReport{Schedules: 4, Cases: 1, FaultDraws: 12})
+	assert.Contains(t, faulted, "12 fault draws")
+	assert.NotContains(t, faulted, "nothing was explored")
+
+	assert.Contains(t, render(&flowtest.ScheduleReport{Schedules: 4, Cases: 1}), "nothing was explored")
+}

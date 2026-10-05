@@ -289,6 +289,13 @@ func init() {
 				" explored stopped partway.\n",
 		},
 		{
+			Name: "flowstate.v1.ScheduleExploration.fault_draws",
+			Leading: " FaultDraws is the largest number of times any one schedule of any case was\n" +
+				" asked whether an injected fault fires. Zero with a nonzero [decisions] means\n" +
+				" the exploration reordered but injected nothing; zero with zero [decisions]\n" +
+				" means it explored nothing at all.\n",
+		},
+		{
 			Name: "flowstate.v1.ScheduleExploration.divergence",
 			Leading: " Divergence is the first case whose observables were not the same under a\n" +
 				" seeded schedule as under written order, or whose invariants broke under a\n" +

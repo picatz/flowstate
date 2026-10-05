@@ -455,7 +455,8 @@ func TestRunAndReportsProseIsPresent(t *testing.T) {
 		}
 	}
 
-	// 209 since ScheduleDivergenceReport.fired_faults, shrink_runs and shrunk_minimal
+	// 210 since ScheduleExploration.fault_draws joined, so a search that only injected
+	// faults is told from one that explored nothing; 209 since ScheduleDivergenceReport.fired_faults, shrink_runs and shrunk_minimal
 	// joined to say how far a violating seed's fault list was shrunk; 206 since RunAddress.started_at joined, so a run can say when it began; 205
 	// since ScheduleDivergenceReport.fault_script joined to carry the pinned
 	// replay of an invariant violation; 204 since PendingWait.approvals and
@@ -469,8 +470,8 @@ func TestRunAndReportsProseIsPresent(t *testing.T) {
 	// that holds them. The count is pinned so that adding a declaration is a
 	// deliberate act with its prose written at the same moment, rather than
 	// something the walk silently absorbs.
-	if checked != 209 {
-		t.Errorf("run/report walk checked %d declarations; want 209", checked)
+	if checked != 210 {
+		t.Errorf("run/report walk checked %d declarations; want 210", checked)
 	}
 	if len(missing) > 0 {
 		sort.Strings(missing)
