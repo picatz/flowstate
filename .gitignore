@@ -74,6 +74,7 @@ go.work
 /plugins/sql/sql
 /plugins/ssh/ssh
 /plugins/vcs/vcs
+/plugins/webhook/webhook
 
 # Agent worktrees. Worktree isolation for subagents materializes under
 # .claude/worktrees/, which is scratch by definition: each is a copy of the

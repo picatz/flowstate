@@ -94,6 +94,7 @@ updates:
       - /plugins/sql
       - /plugins/slack
       - /plugins/vcs
+      - /plugins/webhook
     schedule:
       interval: weekly
     open-pull-requests-limit: 3
