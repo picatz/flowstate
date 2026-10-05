@@ -285,7 +285,7 @@ func TestSignalsCheckMatrixIsBoundedAndStrict(t *testing.T) {
 	}{
 		{"a half identity", "identities:\n  - name: a\n    subject: s\n", "without the other"},
 		{"a misspelled key", "identities:\n  - name: a\n    expct: refused\n", "expct"},
-		{"an expectation about a gate not checked", "identities:\n  - name: a\n    expect: {debug: refused}\n", "does not decide"},
+		{"an expectation about a gate not checked", "identities:\n  - name: a\n    expect_by_gate: {debug: refused}\n", "does not decide"},
 		{"an oversized file", "identities:\n  - name: a\n" + strings.Repeat("#", policycheck.MaxMatrixBytes), "limit"},
 	}
 

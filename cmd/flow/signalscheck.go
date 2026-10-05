@@ -87,8 +87,8 @@ func newSignalsCheckCommand() *cobra.Command {
 			"      starter: {subject: dev@example.com, issuer: https://issuer.example.com}\n" +
 			"      inputs: {expected_approver: sre-lead@example.com}\n" +
 			"      expect: admitted\n\n" +
-			"`expect` is one outcome for every gate, or a map from gate (`signals.NAME`, `debug`, " +
-			"`triggers.manual`) to its outcome. A row's `inputs` replace, by name, the `--input` " +
+			"`expect` is one outcome for every gate, and `expect_by_gate` a map from gate (`signals.NAME`, " +
+			"`debug`, `triggers.manual`) to its outcome, which wins for the gates it names. A row's `inputs` replace, by name, the `--input` " +
 			"arguments given for every row; a row with no `starter` takes the `--starter-*` flags, " +
 			"and one with no `expect` takes `--expect`. A mismatching row makes the exit status 1. " +
 			fmt.Sprintf("A matrix is bounded at %d identities and %d KiB.",

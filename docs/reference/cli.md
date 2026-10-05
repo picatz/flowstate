@@ -2014,7 +2014,7 @@ Arguments are given as `flow run` takes them and are bound against the workflow'
       inputs: {expected_approver: sre-lead@example.com}
       expect: admitted
 
-`expect` is one outcome for every gate, or a map from gate (`signals.NAME`, `debug`, `triggers.manual`) to its outcome. A row's `inputs` replace, by name, the `--input` arguments given for every row; a row with no `starter` takes the `--starter-*` flags, and one with no `expect` takes `--expect`. A mismatching row makes the exit status 1. A matrix is bounded at 256 identities and 256 KiB.
+`expect` is one outcome for every gate, and `expect_by_gate` a map from gate (`signals.NAME`, `debug`, `triggers.manual`) to its outcome, which wins for the gates it names. A row's `inputs` replace, by name, the `--input` arguments given for every row; a row with no `starter` takes the `--starter-*` flags, and one with no `expect` takes `--expect`. A mismatching row makes the exit status 1. A matrix is bounded at 256 identities and 256 KiB.
 
 Nothing here runs the workflow: a decision that depends on state only a run has (a retry, a signal already consumed) is not modelled, and `triggers.manual` is decided over the caller and the inputs alone, as the server decides it, with no `run`.
 

@@ -626,8 +626,9 @@ identities:
     expect: refused
 ```
 
-`expect` is one outcome for every gate, or a map from gate (`signals.NAME`,
-`debug`, `triggers.manual`) to its outcome. A row's `inputs:` replace, by name,
+`expect` is one outcome for every gate, and `expect_by_gate` a map from gate
+(`signals.NAME`, `debug`, `triggers.manual`) to its outcome, which wins for the
+gates it names. The file is defined by `proto/flowstate/v1/policy_check.proto`. A row's `inputs:` replace, by name,
 the `--input` arguments given for every row, and a row with no `starter:` or
 `expect:` takes `--starter-*` and `--expect`. A subject without an issuer, or the
 reverse, is refused by the rule a test file's `sender:` is held to. A matrix is

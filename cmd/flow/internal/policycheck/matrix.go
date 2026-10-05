@@ -1,20 +1,21 @@
 package policycheck
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"io"
 	"maps"
+	"regexp"
 	"slices"
 	"strings"
 	"text/tabwriter"
-	"unicode"
-	"unicode/utf8"
 
 	"github.com/goccy/go-yaml"
 	"github.com/goccy/go-yaml/parser"
 
 	"github.com/picatz/flowstate/internal/strictyaml"
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowtest"
 )
@@ -22,17 +23,20 @@ import (
 // The bounds on a matrix file, enforced before anything is decided. It is a
 // document a person wrote, but it may be checked out from a fork or generated,
 // and every row is a full evaluation of every gate (invariant 5).
+//
+// The rows, names, claims and outcomes are bounded by the schema
+// ([v1.PolicyCheckMatrix]'s protovalidate rules), which is where those numbers
+// are written; the two constants here mirror it so a caller and a test can name
+// them, and a test holds them to the schema's own boundary. What a schema rule
+// cannot say is bounded here: the file's bytes, the YAML constructs that expand,
+// and the size of a row's inputs once decoded.
 const (
 	// MaxMatrixBytes is the largest matrix file accepted: far above a
 	// hundred-row table, far below something worth holding in memory.
 	MaxMatrixBytes = 256 << 10
 
-	// MaxMatrixRows is the most identities one matrix may list.
+	// MaxMatrixRows mirrors the schema's limit on identities.
 	MaxMatrixRows = 256
-
-	// MaxRowClaims and MaxRowInputs bound what one row may carry.
-	MaxRowClaims = 64
-	MaxRowInputs = 64
 
 	// MaxRowInputNodes bounds the values (counting every nested element) one
 	// row's `inputs:` may hold once decoded. The matrix refuses aliases, so
@@ -41,7 +45,8 @@ const (
 	// reopen the memory a small file could cost.
 	MaxRowInputNodes = 4096
 
-	// MaxRowNameRunes bounds a row's name, which is printed in a table.
+	// MaxRowNameRunes mirrors the schema's limit on a row's name, which is
+	// printed in a table.
 	MaxRowNameRunes = 64
 )
 
@@ -56,38 +61,39 @@ const (
 //	    inputs: {expected_approver: sre-lead@example.com}
 //	    expect: admitted
 //
-// The identity fields are those of a test file's `sender:` ([flowtest.ScriptedIdentity]),
-// validated by the same rule. It is decoded strictly: a misspelled key is a
-// refusal, because a misspelled `expect:` would otherwise assert nothing while
-// reading as if it asserted something.
+// The file's shape is [v1.PolicyCheckMatrix]; this is that message read into the
+// types the check works with. The identity fields are those of a test file's
+// `sender:` ([flowtest.ScriptedIdentity]), validated by the same rule. A
+// misspelled key is a refusal, because a misspelled `expect:` would otherwise
+// assert nothing while reading as if it asserted something.
 type Matrix struct {
-	Identities []Row `yaml:"identities"`
+	Identities []Row
 }
 
 // Row is one named identity in a [Matrix].
 type Row struct {
 	// Name labels the row in the table and in a mismatch. Required, unique, and
 	// free of control characters.
-	Name string `yaml:"name"`
+	Name string
 
 	// The identity attempting each act: subject, issuer, namespace and claims.
 	// All absent is an unauthenticated caller.
-	flowtest.ScriptedIdentity `yaml:",inline"`
+	flowtest.ScriptedIdentity
 
 	// Starter is who started the hypothetical run. Absent leaves the starter
 	// unknown (see [Subject.Starter]); `starter: {}` says it was started by
 	// nobody authenticated.
-	Starter *flowtest.ScriptedIdentity `yaml:"starter"`
+	Starter *flowtest.ScriptedIdentity
 
 	// Inputs are this row's arguments, read against the workflow's `inputs:`
 	// declarations by whoever runs the matrix. They replace, name by name, any
 	// arguments given for every row.
-	Inputs map[string]any `yaml:"inputs"`
+	Inputs map[string]any
 
 	// Expect is what this row must get: one outcome for every gate checked, or
 	// a map from gate (`signals.deploy-approved`, `debug`, `triggers.manual`) to
 	// the outcome that gate must give.
-	Expect Expectation `yaml:"expect"`
+	Expect Expectation
 }
 
 // Expectation is a row's assertion, either one [Outcome] for every gate or one
@@ -99,37 +105,6 @@ type Expectation struct {
 	// ByGate applies to the named gates only; a gate not named asserts
 	// nothing.
 	ByGate map[string]Outcome
-}
-
-// UnmarshalYAML reads the scalar form and the map form, and refuses anything
-// else, so an outcome is one of the two words wherever it is written.
-func (e *Expectation) UnmarshalYAML(unmarshal func(any) error) error {
-	var word string
-	if err := unmarshal(&word); err == nil {
-		outcome, err := ParseOutcome(word)
-		if err != nil {
-			return err
-		}
-		e.All = outcome
-
-		return nil
-	}
-
-	var words map[string]string
-	if err := unmarshal(&words); err != nil {
-		return errors.New("expect is admitted, refused, or a map from gate to one of those")
-	}
-
-	e.ByGate = make(map[string]Outcome, len(words))
-	for gate, word := range words {
-		outcome, err := ParseOutcome(word)
-		if err != nil {
-			return fmt.Errorf("expect for %s: %w", gate, err)
-		}
-		e.ByGate[gate] = outcome
-	}
-
-	return nil
 }
 
 // For is what the expectation asserts for a gate, and whether it asserts
@@ -144,11 +119,16 @@ func (e Expectation) For(gate Gate) (Outcome, bool) {
 
 // ParseMatrix reads and validates a matrix document.
 //
-// Everything that can be refused without a workflow is refused here: size, row
-// count, names, malformed identities (by [flowtest.ScriptedIdentity.Check], the
-// rule a test file's identities are held to), and per-row bounds. What needs the
-// workflow - a gate named in an expectation that is not being checked, an input
-// the workflow does not take - is the caller's, with [Matrix.CheckGates].
+// Everything that can be refused without a workflow is refused here: size, the
+// YAML constructs that expand, the schema's own rules ([v1.Validate] over
+// [v1.PolicyCheckMatrix]: rows, names, claims, outcomes), duplicate names,
+// malformed identities (by [flowtest.ScriptedIdentity.Check], the rule a test
+// file's identities are held to), and the size of each row's inputs. What needs
+// the workflow - a gate named in an expectation that is not being checked, an
+// input the workflow does not take - is the caller's, with [Matrix.CheckGates].
+//
+// No error quotes the document: not a claim, not an input, not a line of source.
+// A refusal says which field and which rule.
 func ParseMatrix(data []byte) (*Matrix, error) {
 	if len(data) > MaxMatrixBytes {
 		return nil, fmt.Errorf("the matrix is %d bytes, over the %d byte limit", len(data), MaxMatrixBytes)
@@ -158,38 +138,55 @@ func ParseMatrix(data []byte) (*Matrix, error) {
 		return nil, err
 	}
 
-	var matrix Matrix
-	if err := strictyaml.UnmarshalStrict(data, &matrix); err != nil {
-		return nil, fmt.Errorf("the matrix is not a document of `identities:`: %w", withoutSource(err))
+	var doc v1.PolicyCheckMatrix
+	if err := strictyaml.UnmarshalProto(data, &doc); err != nil {
+		return nil, fmt.Errorf("the matrix is not a document of `identities:`: %w", decodeError(err))
 	}
 
-	if len(matrix.Identities) == 0 {
-		return nil, errors.New("the matrix lists no identities; add at least one under `identities:`")
-	}
-	if len(matrix.Identities) > MaxMatrixRows {
-		return nil, fmt.Errorf("the matrix lists %d identities, over the limit of %d", len(matrix.Identities), MaxMatrixRows)
+	if err := v1.Validate(&doc); err != nil {
+		return nil, validationError(err)
 	}
 
-	seen := make(map[string]struct{}, len(matrix.Identities))
+	matrix := &Matrix{Identities: make([]Row, 0, len(doc.GetIdentities()))}
+	seen := make(map[string]struct{}, len(doc.GetIdentities()))
 
-	for i, row := range matrix.Identities {
-		where := fmt.Sprintf("identity %d", i+1)
-
-		if err := checkRowName(row.Name); err != nil {
-			return nil, fmt.Errorf("%s: %w", where, err)
+	for i, held := range doc.GetIdentities() {
+		row := Row{
+			Name: held.GetName(),
+			ScriptedIdentity: flowtest.ScriptedIdentity{
+				Subject:   held.GetSubject(),
+				Issuer:    held.GetIssuer(),
+				Namespace: held.GetNamespace(),
+				Claims:    held.GetClaims(),
+			},
+			Inputs: held.GetInputs().AsMap(),
+			Expect: Expectation{All: Outcome(held.GetExpect())},
 		}
 
-		where = fmt.Sprintf("identity %q", row.Name)
+		if starter := held.GetStarter(); starter != nil {
+			row.Starter = &flowtest.ScriptedIdentity{
+				Subject:   starter.GetSubject(),
+				Issuer:    starter.GetIssuer(),
+				Namespace: starter.GetNamespace(),
+				Claims:    starter.GetClaims(),
+			}
+		}
+
+		if len(held.GetExpectByGate()) > 0 {
+			row.Expect.ByGate = make(map[string]Outcome, len(held.GetExpectByGate()))
+			for gate, word := range held.GetExpectByGate() {
+				row.Expect.ByGate[gate] = Outcome(word)
+			}
+		}
+
+		where := fmt.Sprintf("identity %d", i+1)
 
 		if _, dup := seen[row.Name]; dup {
 			return nil, fmt.Errorf("%s is listed twice; names label the table, so they must be unique", where)
 		}
 		seen[row.Name] = struct{}{}
 
-		if len(row.Claims) > MaxRowClaims || len(row.Inputs) > MaxRowInputs ||
-			(row.Starter != nil && len(row.Starter.Claims) > MaxRowClaims) {
-			return nil, fmt.Errorf("%s carries more than %d claims or %d inputs", where, MaxRowClaims, MaxRowInputs)
-		}
+		where = fmt.Sprintf("identity %q", row.Name)
 
 		if nodes := inputNodes(row.Inputs); nodes > MaxRowInputNodes {
 			return nil, fmt.Errorf("%s carries inputs holding more than %d values", where, MaxRowInputNodes)
@@ -201,22 +198,47 @@ func ParseMatrix(data []byte) (*Matrix, error) {
 		if err := row.Starter.Check(where + " starter"); err != nil {
 			return nil, err
 		}
+
+		matrix.Identities = append(matrix.Identities, row)
 	}
 
-	return &matrix, nil
+	return matrix, nil
 }
 
-func checkRowName(name string) error {
-	switch {
-	case name == "":
-		return errors.New("has no `name:`")
-	case utf8.RuneCountInString(name) > MaxRowNameRunes:
-		return fmt.Errorf("has a name over %d characters", MaxRowNameRunes)
-	case strings.ContainsFunc(name, unicode.IsControl):
-		return errors.New("has a name containing a control character")
+// unknownField picks the name out of protojson's "unknown field" refusal, the
+// one decode error worth saying more about: a misspelled key.
+var unknownField = regexp.MustCompile(`unknown field "([^"]{1,64})"`)
+
+// decodeError reduces what reading the document into the message said to what
+// and, where the decoder knows it, where - never the source. protojson's own
+// text for a value of the wrong type quotes the value, and a matrix's values
+// are claims and inputs.
+func decodeError(err error) error {
+	if _, ok := errors.AsType[yaml.Error](err); ok {
+		return withoutSource(err)
 	}
 
-	return nil
+	if found := unknownField.FindStringSubmatch(err.Error()); found != nil {
+		return fmt.Errorf("unknown field %q", found[1])
+	}
+
+	return errors.New("a value has the wrong shape for its field (for example text where a mapping belongs)")
+}
+
+// validationError renders the schema's refusals as field and rule message,
+// which protovalidate words without the value that failed it.
+func validationError(err error) error {
+	invalid, ok := errors.AsType[*v1.ValidationError](err)
+	if !ok {
+		return errors.New("the matrix does not satisfy its schema")
+	}
+
+	lines := make([]string, 0, len(invalid.Violations))
+	for _, violation := range invalid.Violations[:min(len(invalid.Violations), 5)] {
+		lines = append(lines, fmt.Sprintf("%s: %s", cmp.Or(violation.Field, "the matrix"), violation.Message))
+	}
+
+	return fmt.Errorf("the matrix does not satisfy its schema: %s", strings.Join(lines, "; "))
 }
 
 // CheckGates refuses an expectation that names a gate which is not among the

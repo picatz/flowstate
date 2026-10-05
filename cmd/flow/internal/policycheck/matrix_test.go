@@ -24,7 +24,7 @@ identities:
     claims: {team: release-managers}
     starter: {subject: dev@example.com, issuer: https://issuer.example.com}
     inputs: {approver: sre-lead@example.com}
-    expect: {signals.approve: admitted, debug: refused}
+    expect_by_gate: {signals.approve: admitted, debug: refused}
   - name: nobody
     starter: {}
     expect: refused
@@ -67,20 +67,20 @@ func TestParseMatrixRefusals(t *testing.T) {
 		doc  string
 		want string
 	}{
-		{"empty", "identities: []", "lists no identities"},
+		{"empty", "identities: []", "must contain at least 1"},
 		{"a misspelled key is not ignored", "identities:\n  - name: a\n    expct: admitted", "expct"},
 		{"an unknown top-level key", "identities:\n  - name: a\nrows: []", "rows"},
-		{"expect is one of two words", "identities:\n  - name: a\n    expect: allowed", "not an outcome"},
-		{"a per-gate expect is one of two words", "identities:\n  - name: a\n    expect: {debug: maybe}", "not an outcome"},
-		{"no name", "identities:\n  - subject: a\n    issuer: b", "no `name:`"},
-		{"a name is not a control sequence", "identities:\n  - name: \"a\\u001b[31m\"", "control character"},
-		{"a long name", "identities:\n  - name: " + strings.Repeat("a", policycheck.MaxRowNameRunes+1), "name over"},
+		{"expect is one of two words", "identities:\n  - name: a\n    expect: allowed", "must be in list"},
+		{"a per-gate expect is one of two words", "identities:\n  - name: a\n    expect_by_gate: {debug: maybe}", "must be in list"},
+		{"no name", "identities:\n  - subject: a\n    issuer: b", "identities[0].name: must be at least 1"},
+		{"a name is not a control sequence", "identities:\n  - name: \"a\\u001b[31m\"", "does not match regex"},
+		{"a long name", "identities:\n  - name: " + strings.Repeat("a", policycheck.MaxRowNameRunes+1), "must be at most 64"},
 		{"a duplicate name", "identities:\n  - name: a\n  - name: a", "listed twice"},
 		{"a subject without an issuer", "identities:\n  - name: a\n    subject: s", `identity "a" names a subject or an issuer without the other`},
 		{"an issuer without a subject", "identities:\n  - name: a\n    issuer: i", "without the other"},
 		{"a half-specified starter", "identities:\n  - name: a\n    starter: {subject: s}", `identity "a" starter names a subject`},
 		{"an empty claim value", "identities:\n  - name: a\n    claims: {team: \"\"}", "empty value"},
-		{"too many rows", many, "over the limit"},
+		{"too many rows", many, "no more than 256"},
 		{"too large", "identities:\n  - name: a\n" + strings.Repeat("#", policycheck.MaxMatrixBytes), "byte limit"},
 	}
 
@@ -110,7 +110,7 @@ func TestAMatrixIdentityIsHeldToTheTestFileRule(t *testing.T) {
 func TestCheckGatesRefusesAnExpectationNothingDecides(t *testing.T) {
 	t.Parallel()
 
-	matrix, err := policycheck.ParseMatrix([]byte("identities:\n  - name: a\n    expect: {debug: refused}\n"))
+	matrix, err := policycheck.ParseMatrix([]byte("identities:\n  - name: a\n    expect_by_gate: {debug: refused}\n"))
 	require.NoError(t, err)
 
 	require.NoError(t, matrix.CheckGates([]policycheck.Gate{debugGate}))
