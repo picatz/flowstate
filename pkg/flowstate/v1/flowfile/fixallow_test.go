@@ -410,10 +410,6 @@ func decide(t *testing.T, stanza string, wf *v1.Workflow, sender, starter *v1.Wo
 	}
 }
 
-func halfFormed(id *v1.WorkloadIdentity) bool {
-	return id != nil && (id.GetIssuer() == "") != (id.GetSubject() == "")
-}
-
 // TestFixedPredicateDecidesLikeTheRulesItReplaced replays each old spelling and the
 // predicate the tool writes from it through the engine over a grid of senders,
 // starters and inputs, and requires the same answer to every question.

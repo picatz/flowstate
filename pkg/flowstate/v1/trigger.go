@@ -262,6 +262,15 @@ func CheckManualTrigger(manual *ManualTrigger) error {
 		return nil
 	}
 
+	// A block decoded from bytes an earlier release froze can still carry the
+	// retired `allowed_principals` as an unknown field. Without the check it
+	// would read as "no predicate" and admit any authenticated caller, where it
+	// used to admit only the listed ones.
+	if len(manual.ProtoReflect().GetUnknown()) > 0 {
+		return fmt.Errorf("`manual:` carries a field this version does not know, such as the retired " +
+			"`allowed_principals`; run `flow fix` on the Flowfile to write its `allow` predicate")
+	}
+
 	if manual.GetDenied() {
 		if manual.GetRequireReason() {
 			return fmt.Errorf("`manual:` both refuses manual starts and requires a reason for one, which cannot " +

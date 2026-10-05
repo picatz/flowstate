@@ -112,6 +112,13 @@ func CheckSignalPolicyShape(declared map[string]*SignalPolicy) error {
 // label, not a lookup: it appears only in the diagnostic, so an author reading
 // a fault about `debug:` is not told about `signals:`.
 func CheckPolicyShape(where string, policy *SignalPolicy) error {
+	// A policy frozen by an earlier release carries its retired rule list as
+	// unknown fields; refuse it by name rather than read it as a weaker policy.
+	if len(policy.ProtoReflect().GetUnknown()) > 0 {
+		return fmt.Errorf("%s carries a field this version does not know, such as the retired rule list or "+
+			"`distinct_from_starter`; run `flow fix` on the Flowfile to write its `allow` predicate", where)
+	}
+
 	if policy.GetAllow() == "" {
 		return fmt.Errorf(
 			"%s declares no `allow:` predicate, so it authorizes nobody", where)
