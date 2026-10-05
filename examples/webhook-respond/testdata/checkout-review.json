@@ -1,0 +1,11 @@
+{
+  "headers": {
+    "Content-Type": "application/json"
+  },
+  "body": {
+    "id": "evt_checkout_2",
+    "order_id": "ord_K7m2",
+    "amount": 99000,
+    "needs_review": true
+  }
+}

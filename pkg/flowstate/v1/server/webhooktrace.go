@@ -214,7 +214,7 @@ func (r *WebhookReceiver) startDeliverySpan(ctx context.Context, route *webhookR
 // The error's own text is never recorded, for the reason
 // [v1.RecordTaskOutcome] states: a start failure quotes whatever the cluster or
 // the binding said, and a span goes to a collector that is not tenant-scoped.
-func recordDeliveryOutcome(span trace.Span, accepted AcceptedDelivery, err error) {
+func recordDeliveryOutcome(span trace.Span, accepted v1.AcceptedDelivery, err error) {
 	if !span.IsRecording() {
 		return
 	}

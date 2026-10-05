@@ -261,6 +261,7 @@ signals:
 | `invocations` | How often tasks ran, and in what order. See below. |
 | `check` | CEL claims over the finished run. See below. |
 | `inputs`, `refused`, `idempotency_key` | For a case with a webhook `trigger:`: what the delivery bound, whether it was refused, and the key it produced. |
+| `response` | For a case with a webhook `trigger:` whose webhook declares `respond_within:`: the document its receiver would answer with. `status:` is `completed`, `failed` or `running`; `outputs:` (completed only) must equal the declared outputs exactly, a sensitive one as the withheld marker. |
 
 An `expect:` with nothing in it is refused, because a case that asserts nothing
 passes whatever the run did.
@@ -759,12 +760,20 @@ A case can start the run the way a trigger would:
   replays a stored delivery through the real verifier and binder, so the case
   checks the webhook's `with:` mapping and its signature handling.
   `expect.inputs`, `expect.refused`, and `expect.idempotency_key` assert what the
-  delivery produced.
+  delivery produced. For a webhook with `respond_within:`, `expect.response`
+  asserts the document the receiver would answer with, built by the same function
+  from the run the case executes: a run that finishes is `completed` with its
+  declared outputs, one that fails is `failed`, and one parked at a
+  `wait_for_signal:` with no `timeout:` that no scripted `signals:` entry answers is
+  `running`. The wait itself is not rehearsed: there is no listener and no run that
+  outlives its case, so a run's duration against the bound (a gate with a long
+  `timeout:` resolves on the virtual clock) is not compared with it.
 - `trigger: {kind: schedule, name: nightly}` sets `trigger.*` directly, so both
   sides of a step guarded by `trigger.kind` can be tested without a real
   schedule.
 
-See [`examples/webhook-trigger`](../examples/webhook-trigger/) and
+See [`examples/webhook-trigger`](../examples/webhook-trigger/),
+[`examples/webhook-respond`](../examples/webhook-respond/) and
 [`examples/trigger-context`](../examples/trigger-context/).
 
 ## Running tests

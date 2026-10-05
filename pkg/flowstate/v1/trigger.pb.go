@@ -614,7 +614,31 @@ type WebhookTrigger struct {
 	//
 	// May not read a secret, and must read `event`: a predicate that cannot vary
 	// with the delivery admits all of them or none of them.
-	When          *Value `protobuf:"bytes,6,opt,name=when,proto3" json:"when,omitempty"`
+	When *Value `protobuf:"bytes,6,opt,name=when,proto3" json:"when,omitempty"`
+	// RespondWithin is how long the receiver holds a delivery open to answer with
+	// the run's declared outputs, written `respond_within: 5s` in a Flowfile.
+	// Absent means the receiver answers as it always has: with the run's address,
+	// as soon as the run is started or joined.
+	//
+	// Set, the receiver waits for the run it started (or joined) for at most this
+	// long and answers with `status`: `completed` with the run's declared
+	// `outputs:`, `failed` with the failure's sentence, or `running` when the
+	// bound passed first, in which case the run continues and the caller reads it
+	// with `Get`. The HTTP status keeps its meaning (a delivery disposition), so a
+	// 2xx still tells a provider the delivery landed and must not be retried
+	// whatever the run did.
+	//
+	// The field is itself the bound, and there is no default: a wait the sender
+	// chose the length of, or the author never wrote down, would hold a
+	// receiver slot for as long as a run took. 100ms to 30s. A waiting delivery
+	// holds its slot of the receiver's concurrency bound for the whole wait.
+	//
+	// The only thing a run can answer with is its declared outputs, so this is
+	// refused with no `outputs:`, and refused with [signal]: a bridge starts
+	// nothing and has no run of its own to wait for. Sensitive outputs are
+	// withheld, and there is no way to reveal one on this surface. There is no
+	// callback form: a run that must tell somebody later does it as a last step.
+	RespondWithin *durationpb.Duration `protobuf:"bytes,7,opt,name=respond_within,json=respondWithin,proto3" json:"respond_within,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -687,6 +711,13 @@ func (x *WebhookTrigger) GetSignal() *WebhookTrigger_Signal {
 func (x *WebhookTrigger) GetWhen() *Value {
 	if x != nil {
 		return x.When
+	}
+	return nil
+}
+
+func (x *WebhookTrigger) GetRespondWithin() *durationpb.Duration {
+	if x != nil {
+		return x.RespondWithin
 	}
 	return nil
 }
@@ -1301,7 +1332,7 @@ const file_flowstate_v1_trigger_proto_rawDesc = "" +
 	"\tprincipal\x18\x03 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x02R\tprincipal\x12)\n" +
 	"\vdelivery_id\x18\x04 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x01R\n" +
 	"deliveryId\x12=\n" +
-	"\fscheduled_at\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\vscheduledAt\"\xaa\a\n" +
+	"\fscheduled_at\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\vscheduledAt\"\x83\b\n" +
 	"\x0eWebhookTrigger\x12;\n" +
 	"\x04name\x18\x01 \x01(\tB'\xe2A\x01\x02\xbaH r\x1e\x10\x01\x18@2\x18^[A-Za-z][A-Za-z0-9_-]*$R\x04name\x12X\n" +
 	"\x06verify\x18\x02 \x03(\v2(.flowstate.v1.WebhookTrigger.VerifyEntryB\x16\xe2A\x01\x02\xbaH\x0f\x9a\x01\f\b\x01\x10\b\"\x06r\x04\x10\x01\x18@R\x06verify\x12B\n" +
@@ -1309,7 +1340,8 @@ const file_flowstate_v1_trigger_proto_rawDesc = "" +
 	"\targuments\x18\x04 \x03(\v2+.flowstate.v1.WebhookTrigger.ArgumentsEntryB\x14\xe2A\x01\x01\xbaH\r\x9a\x01\n" +
 	"\x10@\"\x06r\x04\x10\x01\x18@R\targuments\x12A\n" +
 	"\x06signal\x18\x05 \x01(\v2#.flowstate.v1.WebhookTrigger.SignalB\x04\xe2A\x01\x01R\x06signal\x12-\n" +
-	"\x04when\x18\x06 \x01(\v2\x13.flowstate.v1.ValueB\x04\xe2A\x01\x01R\x04when\x1aN\n" +
+	"\x04when\x18\x06 \x01(\v2\x13.flowstate.v1.ValueB\x04\xe2A\x01\x01R\x04when\x12W\n" +
+	"\x0erespond_within\x18\a \x01(\v2\x19.google.protobuf.DurationB\x15\xe2A\x01\x01\xbaH\x0e\xaa\x01\v\"\x02\b\x1e2\x05\x10\x80\xc2\xd7/R\rrespondWithin\x1aN\n" +
 	"\vVerifyEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12)\n" +
 	"\x05value\x18\x02 \x01(\v2\x13.flowstate.v1.ValueR\x05value:\x028\x01\x1aQ\n" +
@@ -1407,33 +1439,34 @@ var file_flowstate_v1_trigger_proto_depIdxs = []int32{
 	8,  // 6: flowstate.v1.WebhookTrigger.arguments:type_name -> flowstate.v1.WebhookTrigger.ArgumentsEntry
 	9,  // 7: flowstate.v1.WebhookTrigger.signal:type_name -> flowstate.v1.WebhookTrigger.Signal
 	14, // 8: flowstate.v1.WebhookTrigger.when:type_name -> flowstate.v1.Value
-	15, // 9: flowstate.v1.ScheduleTrigger.every:type_name -> google.protobuf.Duration
-	15, // 10: flowstate.v1.ScheduleTrigger.jitter:type_name -> google.protobuf.Duration
-	0,  // 11: flowstate.v1.ScheduleTrigger.overlap:type_name -> flowstate.v1.ScheduleTrigger.Overlap
-	11, // 12: flowstate.v1.ScheduleTrigger.calendars:type_name -> flowstate.v1.ScheduleTrigger.Calendar
-	13, // 13: flowstate.v1.ScheduleTrigger.start_at:type_name -> google.protobuf.Timestamp
-	13, // 14: flowstate.v1.ScheduleTrigger.end_at:type_name -> google.protobuf.Timestamp
-	15, // 15: flowstate.v1.ScheduleTrigger.catchup_window:type_name -> google.protobuf.Duration
-	13, // 16: flowstate.v1.ScheduleBackfill.start_at:type_name -> google.protobuf.Timestamp
-	13, // 17: flowstate.v1.ScheduleBackfill.end_at:type_name -> google.protobuf.Timestamp
-	0,  // 18: flowstate.v1.ScheduleBackfill.overlap:type_name -> flowstate.v1.ScheduleTrigger.Overlap
-	14, // 19: flowstate.v1.WebhookTrigger.VerifyEntry.value:type_name -> flowstate.v1.Value
-	14, // 20: flowstate.v1.WebhookTrigger.ArgumentsEntry.value:type_name -> flowstate.v1.Value
-	14, // 21: flowstate.v1.WebhookTrigger.Signal.correlate:type_name -> flowstate.v1.Value
-	10, // 22: flowstate.v1.WebhookTrigger.Signal.arguments:type_name -> flowstate.v1.WebhookTrigger.Signal.ArgumentsEntry
-	14, // 23: flowstate.v1.WebhookTrigger.Signal.ArgumentsEntry.value:type_name -> flowstate.v1.Value
-	12, // 24: flowstate.v1.ScheduleTrigger.Calendar.second:type_name -> flowstate.v1.ScheduleTrigger.Calendar.Range
-	12, // 25: flowstate.v1.ScheduleTrigger.Calendar.minute:type_name -> flowstate.v1.ScheduleTrigger.Calendar.Range
-	12, // 26: flowstate.v1.ScheduleTrigger.Calendar.hour:type_name -> flowstate.v1.ScheduleTrigger.Calendar.Range
-	12, // 27: flowstate.v1.ScheduleTrigger.Calendar.day_of_month:type_name -> flowstate.v1.ScheduleTrigger.Calendar.Range
-	12, // 28: flowstate.v1.ScheduleTrigger.Calendar.month:type_name -> flowstate.v1.ScheduleTrigger.Calendar.Range
-	12, // 29: flowstate.v1.ScheduleTrigger.Calendar.year:type_name -> flowstate.v1.ScheduleTrigger.Calendar.Range
-	12, // 30: flowstate.v1.ScheduleTrigger.Calendar.day_of_week:type_name -> flowstate.v1.ScheduleTrigger.Calendar.Range
-	31, // [31:31] is the sub-list for method output_type
-	31, // [31:31] is the sub-list for method input_type
-	31, // [31:31] is the sub-list for extension type_name
-	31, // [31:31] is the sub-list for extension extendee
-	0,  // [0:31] is the sub-list for field type_name
+	15, // 9: flowstate.v1.WebhookTrigger.respond_within:type_name -> google.protobuf.Duration
+	15, // 10: flowstate.v1.ScheduleTrigger.every:type_name -> google.protobuf.Duration
+	15, // 11: flowstate.v1.ScheduleTrigger.jitter:type_name -> google.protobuf.Duration
+	0,  // 12: flowstate.v1.ScheduleTrigger.overlap:type_name -> flowstate.v1.ScheduleTrigger.Overlap
+	11, // 13: flowstate.v1.ScheduleTrigger.calendars:type_name -> flowstate.v1.ScheduleTrigger.Calendar
+	13, // 14: flowstate.v1.ScheduleTrigger.start_at:type_name -> google.protobuf.Timestamp
+	13, // 15: flowstate.v1.ScheduleTrigger.end_at:type_name -> google.protobuf.Timestamp
+	15, // 16: flowstate.v1.ScheduleTrigger.catchup_window:type_name -> google.protobuf.Duration
+	13, // 17: flowstate.v1.ScheduleBackfill.start_at:type_name -> google.protobuf.Timestamp
+	13, // 18: flowstate.v1.ScheduleBackfill.end_at:type_name -> google.protobuf.Timestamp
+	0,  // 19: flowstate.v1.ScheduleBackfill.overlap:type_name -> flowstate.v1.ScheduleTrigger.Overlap
+	14, // 20: flowstate.v1.WebhookTrigger.VerifyEntry.value:type_name -> flowstate.v1.Value
+	14, // 21: flowstate.v1.WebhookTrigger.ArgumentsEntry.value:type_name -> flowstate.v1.Value
+	14, // 22: flowstate.v1.WebhookTrigger.Signal.correlate:type_name -> flowstate.v1.Value
+	10, // 23: flowstate.v1.WebhookTrigger.Signal.arguments:type_name -> flowstate.v1.WebhookTrigger.Signal.ArgumentsEntry
+	14, // 24: flowstate.v1.WebhookTrigger.Signal.ArgumentsEntry.value:type_name -> flowstate.v1.Value
+	12, // 25: flowstate.v1.ScheduleTrigger.Calendar.second:type_name -> flowstate.v1.ScheduleTrigger.Calendar.Range
+	12, // 26: flowstate.v1.ScheduleTrigger.Calendar.minute:type_name -> flowstate.v1.ScheduleTrigger.Calendar.Range
+	12, // 27: flowstate.v1.ScheduleTrigger.Calendar.hour:type_name -> flowstate.v1.ScheduleTrigger.Calendar.Range
+	12, // 28: flowstate.v1.ScheduleTrigger.Calendar.day_of_month:type_name -> flowstate.v1.ScheduleTrigger.Calendar.Range
+	12, // 29: flowstate.v1.ScheduleTrigger.Calendar.month:type_name -> flowstate.v1.ScheduleTrigger.Calendar.Range
+	12, // 30: flowstate.v1.ScheduleTrigger.Calendar.year:type_name -> flowstate.v1.ScheduleTrigger.Calendar.Range
+	12, // 31: flowstate.v1.ScheduleTrigger.Calendar.day_of_week:type_name -> flowstate.v1.ScheduleTrigger.Calendar.Range
+	32, // [32:32] is the sub-list for method output_type
+	32, // [32:32] is the sub-list for method input_type
+	32, // [32:32] is the sub-list for extension type_name
+	32, // [32:32] is the sub-list for extension extendee
+	0,  // [0:32] is the sub-list for field type_name
 }
 
 func init() { file_flowstate_v1_trigger_proto_init() }

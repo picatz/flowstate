@@ -49,6 +49,27 @@ func (e *signalDenied) Is(target error) bool { return target == ErrSignalDenied 
 // it from a bug in their workload.
 var ErrNoSignalWaiter = errors.New("flowstate: this workload waits for a signal, and nothing can deliver one to it")
 
+// ErrRunParked reports that a run reached a wait for a signal with no `timeout:`
+// and nothing will ever answer it: the run is parked, and would stay so.
+//
+// Returned only by a [LocalSignals] told to ([LocalSignals.ParkUnboundedWaits]).
+// A durable run parks there for as long as it takes somebody to act, and a
+// rehearsal that scripted no signal at all has nobody who will, so ending the
+// run on a named sentinel is how `flow test` learns what a waiting receiver
+// would find at its bound — a run still going — where blocking would have
+// spent the case's wall-clock limit on an answer already known.
+var ErrRunParked = errors.New("flowstate: this run is parked at a wait for a signal that nothing will deliver")
+
+// parkedAtWait reports ErrRunParked for an unbounded wait on a waiter that was
+// told to park such waits, and nil for every other waiter.
+func parkedAtWait(waiter SignalWaiter, name string) error {
+	if parker, ok := waiter.(interface{ parksUnboundedWaits() bool }); ok && parker.parksUnboundedWaits() {
+		return fmt.Errorf("%w: it waits for %q", ErrRunParked, name)
+	}
+
+	return nil
+}
+
 // SignalWaiter delivers signals to a locally running workload.
 //
 // A signal that arrives before the step waiting for it is reached must still
@@ -188,6 +209,10 @@ func SignalWaiterFromContext(ctx context.Context) (SignalWaiter, bool) {
 type LocalSignals struct {
 	mu     sync.Mutex
 	queues map[string]chan *SignalDelivery
+
+	// parkUnbounded makes a wait with no `timeout:` end the run with
+	// [ErrRunParked] instead of blocking. See [LocalSignals.ParkUnboundedWaits].
+	parkUnbounded bool
 
 	// waits holds, per signal name, the waits currently blocked on it, each
 	// carrying how to withdraw the deadline it is waiting under (nil for an
@@ -579,6 +604,25 @@ type signalWait struct {
 	withdraw func()
 }
 
+// ParkUnboundedWaits makes a wait with no `timeout:` end the run with
+// [ErrRunParked] rather than block, for a caller that knows nothing will answer
+// it. Call it before the run starts; a bounded wait is unaffected, because its
+// deadline is the clock's to resolve.
+func (s *LocalSignals) ParkUnboundedWaits() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.parkUnbounded = true
+}
+
+// parksUnboundedWaits implements the check [parkedAtWait] makes.
+func (s *LocalSignals) parksUnboundedWaits() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.parkUnbounded
+}
+
 // enterSignalWait implements [signalPeeker].
 func (s *LocalSignals) enterSignalWait(name string) (*signalWait, func()) {
 	wait := &signalWait{signals: s}
@@ -923,6 +967,10 @@ func waitForSignalLocally(
 		observeWaitStarted(ctx, node.GetId(), name, 0, false)
 		defer announceLocalWait(ctx, node, name, nil, prompt, promptCut)()
 
+		if err := parkedAtWait(waiter, name); err != nil {
+			return nil, err
+		}
+
 		rejoin := LeaveClockWhile(ctx)
 		defer rejoin()
 
@@ -1134,6 +1182,10 @@ func waitForSignalsLocally(
 
 		observeWaitStarted(ctx, node.GetId(), name, 0, false)
 		defer announceLocalWait(ctx, node, name, nil, prompt, promptCut)()
+
+		if err := parkedAtWait(waiter, name); err != nil {
+			return nil, err
+		}
 
 		// Withdrawn from the clock for the whole blocking receive, for
 		// [waitForSignalLocally]'s reason: an unbounded wait is parked on
@@ -1441,6 +1493,10 @@ func receiveForQuorumLocally(
 	bounded bool,
 ) (payload *Node_Outputs, sender *SignalSender, timedOut bool, err error) {
 	if !bounded {
+		if err := parkedAtWait(waiter, name); err != nil {
+			return nil, nil, false, err
+		}
+
 		// Withdrawn from the clock for the whole blocking receive, for
 		// [waitForSignalLocally]'s reason: an unbounded wait is parked on
 		// something the clock does not control.

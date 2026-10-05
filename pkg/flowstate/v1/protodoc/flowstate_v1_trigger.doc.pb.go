@@ -371,6 +371,32 @@ func init() {
 				" with the delivery admits all of them or none of them.\n",
 		},
 		{
+			Name: "flowstate.v1.WebhookTrigger.respond_within",
+			Leading: " RespondWithin is how long the receiver holds a delivery open to answer with\n" +
+				" the run's declared outputs, written `respond_within: 5s` in a Flowfile.\n" +
+				" Absent means the receiver answers as it always has: with the run's address,\n" +
+				" as soon as the run is started or joined.\n" +
+				"\n" +
+				" Set, the receiver waits for the run it started (or joined) for at most this\n" +
+				" long and answers with `status`: `completed` with the run's declared\n" +
+				" `outputs:`, `failed` with the failure's sentence, or `running` when the\n" +
+				" bound passed first, in which case the run continues and the caller reads it\n" +
+				" with `Get`. The HTTP status keeps its meaning (a delivery disposition), so a\n" +
+				" 2xx still tells a provider the delivery landed and must not be retried\n" +
+				" whatever the run did.\n" +
+				"\n" +
+				" The field is itself the bound, and there is no default: a wait the sender\n" +
+				" chose the length of, or the author never wrote down, would hold a\n" +
+				" receiver slot for as long as a run took. 100ms to 30s. A waiting delivery\n" +
+				" holds its slot of the receiver's concurrency bound for the whole wait.\n" +
+				"\n" +
+				" The only thing a run can answer with is its declared outputs, so this is\n" +
+				" refused with no `outputs:`, and refused with [signal]: a bridge starts\n" +
+				" nothing and has no run of its own to wait for. Sensitive outputs are\n" +
+				" withheld, and there is no way to reveal one on this surface. There is no\n" +
+				" callback form: a run that must tell somebody later does it as a last step.\n",
+		},
+		{
 			Name: "flowstate.v1.WebhookTrigger.Signal",
 			Leading: " Signal is a delivery answering a declared gate instead of starting a run.\n" +
 				"\n" +

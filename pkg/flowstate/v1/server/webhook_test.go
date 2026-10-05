@@ -187,10 +187,10 @@ func forged(body string) string {
 }
 
 // readAccepted decodes what the receiver answered an accepted delivery with.
-func readAccepted(t *testing.T, resp *http.Response) server.AcceptedDelivery {
+func readAccepted(t *testing.T, resp *http.Response) v1.AcceptedDelivery {
 	t.Helper()
 
-	var accepted server.AcceptedDelivery
+	var accepted v1.AcceptedDelivery
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&accepted))
 
 	return accepted
@@ -309,7 +309,7 @@ func TestARetrySignedAfreshJoinsTheRun(t *testing.T) {
 
 			path := "/webhooks/" + test.Workflow.GetName() + "/" + test.Trigger().GetName()
 
-			var first server.AcceptedDelivery
+			var first v1.AcceptedDelivery
 			for attempt := range test.SignedAt {
 				req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(string(test.Body)))
 				for name, value := range test.Headers(key, time.Now(), attempt) {
@@ -359,7 +359,7 @@ func TestConcurrentRedeliveriesStartOneRun(t *testing.T) {
 	var (
 		wg      sync.WaitGroup
 		mu      sync.Mutex
-		results []server.AcceptedDelivery
+		results []v1.AcceptedDelivery
 	)
 	start := make(chan struct{})
 	for range arrivals {
@@ -370,7 +370,7 @@ func TestConcurrentRedeliveriesStartOneRun(t *testing.T) {
 				return
 			}
 
-			var accepted server.AcceptedDelivery
+			var accepted v1.AcceptedDelivery
 			if err := json.NewDecoder(resp.Body).Decode(&accepted); err != nil {
 				return
 			}
