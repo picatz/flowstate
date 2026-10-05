@@ -274,6 +274,10 @@ type Observation struct {
 	// run that explored nothing detectable.
 	Decisions int
 
+	// FaultDraws is how many times the run was asked whether an injected fault
+	// fires. Zero on every schedule of a case that declares no faults.
+	FaultDraws int
+
 	// Truncated reports that the run spent [v1.MaxScheduleDecisions] and took
 	// written order for the rest of itself.
 	Truncated bool
@@ -327,6 +331,18 @@ func (r *Report) Decisions() int {
 		if observation.Decisions > most {
 			most = observation.Decisions
 		}
+	}
+
+	return most
+}
+
+// FaultDraws is the largest number of fault draws any one schedule made: the
+// fault-injection counterpart of [Report.Decisions], so a search that injected
+// nothing is as detectable as one that reordered nothing.
+func (r *Report) FaultDraws() int {
+	most := 0
+	for _, observation := range r.Observations {
+		most = max(most, observation.FaultDraws)
 	}
 
 	return most
@@ -429,6 +445,7 @@ func observe(ctx context.Context, scheduler *v1.SeededScheduler, run RunFunc) (O
 
 	if scheduler != nil {
 		observation.Decisions = scheduler.Decisions()
+		observation.FaultDraws = scheduler.FaultDraws()
 		observation.Truncated = scheduler.Truncated()
 	}
 
