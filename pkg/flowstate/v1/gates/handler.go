@@ -192,8 +192,9 @@ func (h *Handler) lookup(ctx context.Context, r *http.Request, workflowID, signa
 		case connect.CodeNotFound:
 			return nil, errGateNotOpen
 		case connect.CodeFailedPrecondition:
-			// The run holds more gates than one answer lists and this one is
-			// not among them: it has not been shown closed.
+			// The run holds more gates than it retains for a lookup (or cannot
+			// answer one) and this one was not found: it has not been shown
+			// closed.
 			return nil, errLookupIncomplete
 		}
 
@@ -360,7 +361,7 @@ func (h *Handler) refuse(w http.ResponseWriter, r *http.Request, err error) {
 	if errors.Is(err, errLookupIncomplete) {
 		render(w, http.StatusServiceUnavailable, noticePage, notice{
 			Title:  "This gate could not be looked up",
-			Detail: "The run is waiting on more gates than this page can list. Answer it with the CLI (flow signal) or the API.",
+			Detail: "The run is waiting on more gates than this page can look up. Answer it with the CLI (flow signal) or the API.",
 		})
 		return
 	}

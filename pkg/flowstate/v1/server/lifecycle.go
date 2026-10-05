@@ -945,16 +945,37 @@ func (s *FlowstateServer) GetGate(ctx context.Context, req *connect.Request[v1.G
 	}
 
 	// The prompt is withheld exactly as Get withholds it, through the same
-	// redaction over the same declarations, failing closed to withheld.
-	probe := &v1.GetResponse{Progress: progress}
-	if decl := s.sensitiveDeclarationsOf(ctx, workflowID, resp.GetWorkflowExecutionInfo().GetExecution().GetRunId()); decl.declares {
-		probe = v1.RedactGetResponseDecided(probe, decl.outputs, decl.carried)
-		if decl.outputs == nil {
-			v1.WithholdPendingWaitPrompts(probe)
+	// redaction over the same declarations, failing closed to withheld. Decided
+	// once and applied to whichever answer a wait is read from.
+	decl := s.sensitiveDeclarationsOf(ctx, workflowID, resp.GetWorkflowExecutionInfo().GetExecution().GetRunId())
+	redacted := func(progress *v1.RunProgress) *v1.RunProgress {
+		probe := &v1.GetResponse{Progress: progress}
+		if decl.declares {
+			probe = v1.RedactGetResponseDecided(probe, decl.outputs, decl.carried)
+			if decl.outputs == nil {
+				v1.WithholdPendingWaitPrompts(probe)
+			}
+		}
+
+		return probe.GetProgress()
+	}
+	probe := redacted(progress)
+
+	// The progress answer lists at most [v1.MaxPendingWaits] gates, so a run that
+	// says it left some out may still hold this one: ask the run for it by name
+	// instead, which does not depend on that bound. A run that cannot answer
+	// (one begun before the lookup existed, or whose worker is away) leaves the
+	// miss as it was, "cannot tell", never "closed".
+	waits := probe.GetPendingWaits()
+	lookupMissed := probe.GetPendingWaitsTruncated()
+	if lookupMissed && !slices.ContainsFunc(waits, func(wait *v1.PendingWait) bool { return wait.GetSignalName() == name }) {
+		if found := runGate(ctx, temporal, resp, name); found != nil {
+			waits = redacted(found).GetPendingWaits()
+			lookupMissed = found.GetPendingWaitsTruncated()
 		}
 	}
 
-	for _, wait := range probe.GetProgress().GetPendingWaits() {
+	for _, wait := range waits {
 		if wait.GetSignalName() != name {
 			continue
 		}
@@ -997,17 +1018,11 @@ func (s *FlowstateServer) GetGate(ctx context.Context, req *connect.Request[v1.G
 		return connect.NewResponse(out), nil
 	}
 
-	// The progress answer lists at most [v1.MaxPendingWaits] gates, so a run
-	// that says it left some out has not shown that this one is closed.
-	//
-	// Out of scope here and recorded rather than fixed: the engine's progress
-	// query still truncates at that bound, so a gate past it cannot be read by
-	// this RPC at all (issue #2290's acceptance criterion for runs holding more
-	// than that many gates stays open). This branch only keeps "cannot tell"
-	// distinct from "not open".
-	if probe.GetProgress().GetPendingWaitsTruncated() {
+	// A run that said it holds gates it could not show, and could not find this
+	// one among them either, has not shown that this one is closed.
+	if lookupMissed {
 		return nil, connect.NewError(connect.CodeFailedPrecondition,
-			fmt.Errorf("the run holds more than %d open gates and this one is not among those listed; answer it with `flow signal`", v1.MaxPendingWaits))
+			fmt.Errorf("the run holds more open gates than it can list and this one could not be found among them; answer it with `flow signal`"))
 	}
 
 	return nil, notFound(workflowID)

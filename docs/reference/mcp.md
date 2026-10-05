@@ -128,7 +128,7 @@ GetGate reads one open approval gate for the caller who would answer it.
 
 `Get` reads a whole run and is bound to `workload.read`, which an approver need not hold: a person granted only `workload.signal` can answer a gate with `Signal` but could not see the question it asks. GetGate is the read scoped to answering. It is bound to `workload.signal`, returns only the gate (no step outputs, inputs or carried state), and says whether this caller's own `signals:` policy would admit a `Signal` now, without delivering one.
 
-A run that is not running, or holds no open gate by that name, answers NOT_FOUND, the same answer a run in another tenant gets. A run holding more gates than one answer lists, whose list does not include the named gate, answers FAILED_PRECONDITION: the gate may be open, and this read cannot say.
+A run that is not running, or holds no open gate by that name, answers NOT_FOUND, the same answer a run in another tenant gets. The gate is looked up by name inside the run, so it is found however many gates the run holds (up to `v1.MaxHeldWaits`, in `pkg/flowstate/v1/waits.go`), not only among the `v1.MaxPendingWaits` that `Get` lists. A run that holds more gates than it retains, or one that cannot answer the lookup, and whose answer does not include the named gate, answers FAILED_PRECONDITION: the gate may be open, and this read cannot say.
 
 ## `flowstate_signal_with_start`
 

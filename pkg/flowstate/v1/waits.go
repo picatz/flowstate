@@ -40,6 +40,20 @@ import (
 // applies anyway rather than keeping a second rule.
 const MaxPendingWaits = 64
 
+// MaxHeldWaits bounds how many parked waits a run keeps findable by signal
+// name, which is what lets the server's GetGate answer for a gate past the
+// [MaxPendingWaits] the summary lists.
+//
+// The summary is a bound on what one answer *says*; this is the bound on what
+// the run *retains* to look a single gate up in, and the two are different
+// resources: the first is a response size, the second is memory held inside a
+// workflow for as long as the gates stay open. Sized to a `for_each` over its
+// largest list ([MaxForEachItems]) with all of its iterations parked at once,
+// rounded up, so the shape that opens the most gates is findable; a gate past
+// it is not held, and the lookup says it cannot tell rather than that the gate
+// is closed. Read by both drivers from here for the reason [MaxPendingWaits] is.
+const MaxHeldWaits = 1024
+
 // PendingWaits is the set of signal waits a local run is parked on, and the
 // local driver's answer to the question engine.ProgressQuery answers durably.
 //
@@ -50,14 +64,14 @@ const MaxPendingWaits = 64
 type PendingWaits struct {
 	mu sync.Mutex
 
-	// entries are the parked waits in the order they parked, each built at the
-	// moment its wait blocks. The only field that changes afterwards is a quorum
+	// entries are the parked waits in the order they parked, at most
+	// [MaxHeldWaits] of them, each built at the moment its wait blocks. The only field that changes afterwards is a quorum
 	// wait's approval count, and only under mu through [PendingWaits.report],
 	// which is why [PendingWaits.Snapshot] hands out copies.
 	entries []*PendingWait
 
 	// refused counts waits parked right now that are not in entries because
-	// [MaxPendingWaits] was already spent when they arrived. A live count rather
+	// [MaxHeldWaits] was already spent when they arrived. A live count rather
 	// than a flag that has ever tripped, so an answer calls itself incomplete
 	// exactly while it is.
 	refused int
@@ -66,8 +80,8 @@ type PendingWaits struct {
 // NewPendingWaits returns an empty registry. The zero value works too.
 func NewPendingWaits() *PendingWaits { return &PendingWaits{} }
 
-// Snapshot returns the waits the run is parked on right now, and whether more
-// are parked than are reported.
+// Snapshot returns the waits the run is parked on right now, at most
+// [MaxPendingWaits] of them, and whether more are parked than are reported.
 //
 // A copy of the slice, because the run keeps appending to and cutting the live
 // one as gates open and close, and handing a caller that one would let the
@@ -82,16 +96,41 @@ func (w *PendingWaits) Snapshot() (waits []*PendingWait, truncated bool) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	if len(w.entries) == 0 {
-		return nil, w.refused > 0
+	reported := w.entries[:min(len(w.entries), MaxPendingWaits)]
+	truncated = len(w.entries) > len(reported) || w.refused > 0
+	if len(reported) == 0 {
+		return nil, truncated
 	}
 
-	waits = make([]*PendingWait, 0, len(w.entries))
-	for _, entry := range w.entries {
+	waits = make([]*PendingWait, 0, len(reported))
+	for _, entry := range reported {
 		waits = append(waits, proto.Clone(entry).(*PendingWait))
 	}
 
-	return waits, w.refused > 0
+	return waits, truncated
+}
+
+// Find returns a copy of the first parked wait on signalName, the answer to
+// "is this one gate open" that does not depend on [MaxPendingWaits].
+//
+// complete says whether a miss is a real one: false means some parked wait was
+// not retained because [MaxHeldWaits] was spent, so the name may be open and
+// unfindable. A hit is always complete.
+func (w *PendingWaits) Find(signalName string) (wait *PendingWait, complete bool) {
+	if w == nil {
+		return nil, true
+	}
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	for _, entry := range w.entries {
+		if entry.GetSignalName() == signalName {
+			return proto.Clone(entry).(*PendingWait), true
+		}
+	}
+
+	return nil, w.refused == 0
 }
 
 // report rewrites a parked quorum wait's approval count from its tally, under
@@ -118,7 +157,7 @@ func (w *PendingWaits) enter(wait *PendingWait) func() {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	if len(w.entries) >= MaxPendingWaits {
+	if len(w.entries) >= MaxHeldWaits {
 		w.refused++
 
 		return func() {

@@ -45,6 +45,19 @@ const ProgressQuery = "flowstate.progress"
 // workflow this engine runs.
 const StateQuery = "flowstate.state"
 
+// GateQuery is the query name a client asks for one parked gate by, with the
+// gate's signal name as its argument.
+//
+// A second query beside [ProgressQuery] for the reason [StateQuery] is one: the
+// two answer at different costs. The progress answer lists at most
+// [v1.MaxPendingWaits] gates, so a gate past that is not in it; this one looks
+// the name up among the [v1.MaxHeldWaits] the run retains and answers with that
+// one wait, so its size does not grow with the run. The answer is a
+// [v1.RunProgress] holding only PendingWaits (the match, if any) and
+// PendingWaitsTruncated, which here means "no match, and a miss is not proof":
+// the run parked more gates than it retains. No position, no output, no input.
+const GateQuery = "flowstate.gate"
+
 // progress is the run's position, shared by pointer with every nested executor.
 //
 // A pointer for the same reason [signalCarry] is one: a nested executor is a
@@ -434,6 +447,21 @@ func setProgressQuery(ctx workflow.Context, p *progress, w *waitRegistry) error 
 		out.PendingWaits, out.PendingWaitsTruncated = w.snapshot()
 
 		return out, nil
+	})
+}
+
+// setGateQuery installs the handler that answers [GateQuery], on
+// [setProgressQuery]'s reasoning: registered at the start, and replay-safe
+// because registering a handler schedules nothing and writes no history event.
+// Read-only, so it cannot make the run do anything.
+func setGateQuery(ctx workflow.Context, w *waitRegistry) error {
+	return workflow.SetQueryHandler(ctx, GateQuery, func(signalName string) (*v1.RunProgress, error) {
+		wait, complete := w.find(signalName)
+		if wait == nil {
+			return &v1.RunProgress{PendingWaitsTruncated: !complete}, nil
+		}
+
+		return &v1.RunProgress{PendingWaits: []*v1.PendingWait{wait}}, nil
 	})
 }
 
