@@ -133,6 +133,10 @@ const (
 	// StyleSignatureHeaderKey is R10: a webhook's `idempotency_key:` reads a
 	// signature header, which names the attempt rather than the event.
 	StyleSignatureHeaderKey StyleRule = "R10/signature-header-key"
+
+	// StyleKeyAsFilter is R11: a webhook's `idempotency_key:` is a ternary with a
+	// constant arm, which is a filter written as a key.
+	StyleKeyAsFilter StyleRule = "R11/key-as-filter"
 )
 
 // A StyleFinding is one tier-4 suggestion about one file.
@@ -221,6 +225,7 @@ func Lint(wf *v1.Workflow, pos *Positions) []StyleFinding {
 	findings = append(findings, repeatedExpressions(wf, pos)...)
 	findings = append(findings, equalityDispatch(wf, pos)...)
 	findings = append(findings, signatureHeaderKeys(wf, pos)...)
+	findings = append(findings, keysAsFilters(wf, pos)...)
 
 	slices.SortStableFunc(findings, func(a, b StyleFinding) int {
 		if a.Line != b.Line {
@@ -628,6 +633,7 @@ func readsSteps(slot v1.ValueSlot) bool {
 	case v1.SlotWorkflowVar,
 		v1.SlotConcurrencyKey,
 		v1.SlotWebhookIdempotencyKey,
+		v1.SlotWebhookWhen,
 		v1.SlotWebhookArgument,
 		v1.SlotWebhookVerify,
 		// A bridge's own two positions, for the identical reason: they are
@@ -913,6 +919,59 @@ func signatureHeaderKeys(wf *v1.Workflow, pos *Positions) []StyleFinding {
 					"so a retry of one event is named as a new event and starts a second run; "+
 					"key instead on %s",
 				header, signatureHeaders[header]),
+		})
+	})
+
+	return findings
+}
+
+// keysAsFilters reports a webhook `idempotency_key:` that is a ternary with a
+// constant arm.
+//
+// R11: a key names the event; declining one is `when:`. The shape
+// `${event.body.type == "invoice.paid" ? event.body.id : "ignored"}` collapses
+// every uninteresting delivery onto one key, so the first of them starts a
+// phantom run and the rest join it — and an `invoice.paid` and a
+// `customer.created` that both fall into the constant are one delivery to the
+// key, which is a correctness hole wearing a filter's clothes. The validator
+// cannot refuse it, for the reason [v1.CheckWebhookIdempotencyKey] gives: the
+// key does vary with the delivery where its author intends. What a checker can
+// see is the outermost ternary with exactly one constant arm, and the remedy is
+// name-shaped: the condition becomes the trigger's `when:`.
+//
+// Only the outermost expression, so a key that merely contains a ternary
+// somewhere inside it stays silent: the filter shape is the whole value being
+// "this, or a placeholder".
+func keysAsFilters(wf *v1.Workflow, pos *Positions) []StyleFinding {
+	var findings []StyleFinding
+
+	exprSites(wf, pos, func(written writtenExpr) {
+		if written.Slot != v1.SlotWebhookIdempotencyKey {
+			return
+		}
+
+		parsed := written.Value.GetExpr()
+		call := parsed.GetExpr().GetCallExpr()
+		if call == nil || call.GetFunction() != operators.Conditional || len(call.GetArgs()) != 3 {
+			return
+		}
+
+		_, thenConst := call.GetArgs()[1].GetExprKind().(*expr.Expr_ConstExpr)
+		_, elseConst := call.GetArgs()[2].GetExprKind().(*expr.Expr_ConstExpr)
+		if thenConst == elseConst {
+			return
+		}
+
+		at := exprPosition(pos, written.Step, written.Path, parsed)
+		findings = append(findings, StyleFinding{
+			Rule:   StyleKeyAsFilter,
+			Line:   at.Line,
+			Column: at.Column,
+			Field:  written.Field,
+			Message: "this key is a conditional with a constant arm, which is a filter written as a key: " +
+				"every delivery that takes the constant arm is named alike, so one of them starts a run " +
+				"and the rest join it, across event types. Move the condition to the trigger's `when:` " +
+				"and key on the event's id alone",
 		})
 	})
 

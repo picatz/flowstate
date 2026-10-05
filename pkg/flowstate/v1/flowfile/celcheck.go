@@ -271,6 +271,7 @@ var slotRequirements = map[v1.ValueSlot]struct {
 	required types.Kind
 	name     string
 }{
+	v1.SlotWebhookWhen:  {read: "`when:` is an admission predicate", required: types.BoolKind, name: "bool"},
 	v1.SlotCondition:    {read: "`if:` is a condition", required: types.BoolKind, name: "bool"},
 	v1.SlotLoopUntil:    {read: "`until:` is a condition", required: types.BoolKind, name: "bool"},
 	v1.SlotForEachItems: {read: "`items:` is the list to iterate", required: types.ListKind, name: "list"},

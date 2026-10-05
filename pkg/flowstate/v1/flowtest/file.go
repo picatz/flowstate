@@ -1169,7 +1169,8 @@ type Expectation struct {
 	// `failed: true`: a refused delivery does not produce a failed run, it
 	// produces no run — which is the whole point of deciding verification before
 	// anything attacker-chosen is evaluated. A case asserting this fails if the
-	// delivery is accepted, whatever the run would then have done.
+	// delivery is accepted, whatever the run would then have done. A delivery
+	// the trigger's `when:` declines is one of the refusals this holds.
 	Refused *bool `yaml:"refused"`
 
 	// IdempotencyKey, when set, must equal the key the replayed delivery

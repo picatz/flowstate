@@ -244,7 +244,11 @@ func replayDelivery(test *Test, deliveryPath string, workflow *v1.Workflow) (map
 	// then — anything the delivery chose.
 	bound, key, bindErr := v1.BindWebhookTriggerInputs(context.Background(), workflow, trigger, delivery)
 	if bindErr != nil {
-		if wantRefused {
+		// A `when:` that could not be answered is the receiver's 422, not a
+		// refusal the case may expect: a typo or a non-bool answer must not pass
+		// as the decline it was written to produce. Only a decision (false, or a
+		// failed verification) satisfies `expect.refused`.
+		if _, broken := errors.AsType[*v1.WebhookWhenError](bindErr); wantRefused && !broken {
 			return nil, "", nil, nil
 		}
 

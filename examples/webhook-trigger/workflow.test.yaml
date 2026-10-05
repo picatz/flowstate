@@ -90,6 +90,17 @@ tests:
     expect:
       refused: true
 
+  - name: a verified event the workflow does not want is declined, and no run happens
+    workflow: ./workflow.yaml
+    trigger:
+      webhook: stripe
+      # A genuine-looking `charge.refunded`: it verifies (nothing here says
+      # otherwise) and `when:` says no. Declined, not failed - there is no run
+      # for it to fail.
+      payload: ./testdata/stripe-charge-refunded.json
+    expect:
+      refused: true
+
   - name: a retry signed afresh is named the same event, so it joins the first run
     workflow: ./workflow.yaml
     secrets:

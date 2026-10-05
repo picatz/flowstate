@@ -84,7 +84,7 @@ const manualDenied = "denied"
 // In the order [webhookTriggerToYAML] writes them, which is the order the entry
 // reads in: which source this is, how a delivery from it is proved genuine, what
 // names one delivery, and what it binds.
-var webhookKeys = []string{"webhook", "verify", "idempotency_key", "with", "signal"}
+var webhookKeys = []string{"webhook", "verify", "when", "idempotency_key", "with", "signal"}
 
 // webhookSignalKeys are what a webhook's `signal:` block says: which gate this
 // delivery answers, which run it answers, and what it carries.
@@ -110,6 +110,11 @@ var scheduleItemKeys = []string{"schedule"}
 // list spelling and the mapping spelling hold the identical block and there is one
 // grammar for it rather than two.
 var manualItemKeys = []string{"manual"}
+
+// notInWhenHelp is why a `${secret(...)}` cannot appear in a webhook's `when:`.
+const notInWhenHelp = "a secret reference cannot appear in a `when:`; the predicate is evaluated over the " +
+	"delivery and its verdict is recorded, so there is nothing for a secret to be resolved into. Compare " +
+	"what the delivery carries (`event.body`, `event.headers`) against a literal instead"
 
 // notInTriggerHelp is why a `${secret(...)}` cannot appear in a webhook's `with:`.
 //
@@ -454,6 +459,21 @@ func (c *compiler) webhookTrigger(fields *fieldSet, path string, r ref) *v1.Webh
 		// built by hand reaches [v1.CheckWebhookTrigger] instead. Fail closed either
 		// way — a webhook with no scheme can never accept a delivery.
 		c.report(spanOfNode(nameField.key), webhookRef, "%s", v1.CheckWebhookVerify(name, nil).Error())
+	}
+
+	if f, found := fields.get("when"); found {
+		whenPath := fieldPath(path, "when")
+		whenRef := ref{path: whenPath, label: fmt.Sprintf("webhook %q when", name)}
+
+		// Refused here and not left to the evaluator, which binds no `secret(...)`
+		// and would answer a delivery with an error instead of the file with a
+		// line: a predicate is evaluated over the delivery and its verdict is
+		// audited, and neither is a place a reference belongs.
+		if resolved := c.resolveQuiet(f.value); resolved != nil && c.holdsSecretMarker(resolved) {
+			c.report(c.secretMarkerSpan(resolved), whenRef, "%s", notInWhenHelp)
+		} else {
+			webhook.When = c.exprValue(f.value, whenPath, whenRef)
+		}
 	}
 
 	if f, found := fields.get("idempotency_key"); found {
@@ -1090,6 +1110,14 @@ func webhookTriggerToYAML(webhook *v1.WebhookTrigger) (yaml.MapSlice, error) {
 		doc = append(doc, yaml.MapItem{Key: "verify", Value: written})
 	}
 
+	if when := webhook.GetWhen(); when != nil {
+		written, err := exprValueToYAML(when)
+		if err != nil {
+			return nil, fmt.Errorf("triggers webhook %q when: %w", webhook.GetName(), err)
+		}
+		doc = append(doc, yaml.MapItem{Key: "when", Value: written})
+	}
+
 	if key := webhook.GetIdempotencyKey(); key != nil {
 		written, err := exprValueToYAML(key)
 		if err != nil {
@@ -1456,6 +1484,12 @@ func validateWebhookTriggers(wf *v1.Workflow) Diagnostics {
 		} else {
 			ds = append(ds, validateTriggerExpr(
 				fieldPath(at, "idempotency_key"), name, "idempotency_key", webhook.GetIdempotencyKey())...)
+		}
+
+		if err := v1.CheckWebhookWhen(name, webhook.GetWhen()); err != nil {
+			ds = append(ds, Diagnostic{Field: fieldPath(at, "when"), Message: err.Error()})
+		} else if webhook.GetWhen() != nil {
+			ds = append(ds, validateTriggerExpr(fieldPath(at, "when"), name, "when", webhook.GetWhen())...)
 		}
 
 		ds = append(ds, validateWebhookSignal(wf, at, webhook)...)

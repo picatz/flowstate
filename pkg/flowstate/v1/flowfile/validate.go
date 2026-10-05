@@ -1783,7 +1783,7 @@ func validateInputRefs(stepID, inputName string, val *v1.Value, scope refScope, 
 			ds = append(ds, Diagnostic{
 				Step: stepID, Field: inputName,
 				Message: "`" + v1.EventRoot + "` is the delivery a trigger was started by, bound inside a " +
-					"webhook's `with:` and `idempotency_key:` and nowhere else; bind what this step needs " +
+					"webhook's `when:`, `with:` and `idempotency_key:` (and a `signal:` arm's `correlate:` and `with:`) and nowhere else; bind what this step needs " +
 					"under that `with:` and read it here as `" + v1.InputsRoot + ".<name>`",
 			})
 			continue

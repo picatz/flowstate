@@ -347,6 +347,30 @@ func init() {
 				" See [WebhookTrigger.Signal].\n",
 		},
 		{
+			Name: "flowstate.v1.WebhookTrigger.when",
+			Leading: " When is the admission predicate: a boolean expression over `event` that\n" +
+				" decides whether a verified delivery is acted on at all, written\n" +
+				" `when: ${...}` in a Flowfile. It is the one thing a trigger could not say\n" +
+				" before: no.\n" +
+				"\n" +
+				" Evaluated at the boundary after verification and before `idempotency_key`,\n" +
+				" `arguments`, and (on a bridge) `signal.correlate`, in the same environment\n" +
+				" and under the same limits as those, by the same evaluator. It applies to a\n" +
+				" start and to a bridge alike, and is deliberately not repeated inside\n" +
+				" [Signal]: one trigger has one admission rule, and a second spelling per arm\n" +
+				" would be the second mechanism.\n" +
+				"\n" +
+				" Only a clean `true` admits. `false` declines the delivery: it starts no\n" +
+				" run, delivers no signal, records no idempotency key, and is answered `204`\n" +
+				" so the provider does not retry it. An evaluation error, a result that is\n" +
+				" not a bool, and an exceeded cost or time bound fail closed: the delivery is\n" +
+				" refused, with a fixed sentence that echoes nothing from it, and starts\n" +
+				" nothing. Absent means every verified delivery is admitted, as before.\n" +
+				"\n" +
+				" May not read a secret, and must read `event`: a predicate that cannot vary\n" +
+				" with the delivery admits all of them or none of them.\n",
+		},
+		{
 			Name: "flowstate.v1.WebhookTrigger.Signal",
 			Leading: " Signal is a delivery answering a declared gate instead of starting a run.\n" +
 				"\n" +

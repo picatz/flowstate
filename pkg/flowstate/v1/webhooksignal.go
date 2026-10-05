@@ -436,6 +436,12 @@ func BindWebhookTriggerSignal(
 	activation := scope.ActivationWith(ctx, bound)
 	evaluator := DefaultEvaluator()
 
+	// The admission predicate, before `correlate:` can address a run: a
+	// declined delivery never names one. See [admitWebhookDelivery].
+	if err := admitWebhookDelivery(ctx, evaluator, scope.GetProfile(), trigger, activation); err != nil {
+		return "", nil, "", err
+	}
+
 	key, err := evaluator.EvalParsedBase(ctx, scope.GetProfile(), trigger.GetIdempotencyKey().GetExpr(), activation)
 	if err != nil {
 		return "", nil, "", fmt.Errorf("webhook %q: evaluating `idempotency_key:`: %w", trigger.GetName(), err)

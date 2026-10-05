@@ -199,7 +199,11 @@ func CheckWebhookTrigger(trigger *WebhookTrigger) error {
 		}
 	}
 
-	return CheckWebhookIdempotencyKey(trigger.GetName(), trigger.GetIdempotencyKey())
+	if err := CheckWebhookIdempotencyKey(trigger.GetName(), trigger.GetIdempotencyKey()); err != nil {
+		return err
+	}
+
+	return CheckWebhookWhen(trigger.GetName(), trigger.GetWhen())
 }
 
 // CheckWebhookName reports whether a webhook is named at all.
@@ -886,6 +890,12 @@ func BindWebhookTriggerInputs(ctx context.Context, wf *Workflow, trigger *Webhoo
 	activation := scope.ActivationWith(ctx, bound)
 
 	evaluator := DefaultEvaluator()
+
+	// The admission predicate, before anything else is computed from the
+	// delivery: a declined one names no run, binds no input and records no key.
+	if err := admitWebhookDelivery(ctx, evaluator, scope.GetProfile(), trigger, activation); err != nil {
+		return nil, "", err
+	}
 
 	key, err := evaluator.EvalParsedBase(ctx, scope.GetProfile(), trigger.GetIdempotencyKey().GetExpr(), activation)
 	if err != nil {

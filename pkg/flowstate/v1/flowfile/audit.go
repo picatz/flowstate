@@ -272,7 +272,7 @@ func exprSites(wf *v1.Workflow, pos *Positions, visit func(writtenExpr)) {
 					Value: site.Value,
 				})
 
-			case v1.SlotWebhookIdempotencyKey, v1.SlotWebhookArgument, v1.SlotWebhookVerify,
+			case v1.SlotWebhookIdempotencyKey, v1.SlotWebhookWhen, v1.SlotWebhookArgument, v1.SlotWebhookVerify,
 				v1.SlotWebhookSignalCorrelate, v1.SlotWebhookSignalArgument:
 				triggerSite(pos, site, visit)
 
@@ -339,6 +339,13 @@ func triggerSite(pos *Positions, site v1.ValueSite, visit func(writtenExpr)) {
 		visit(writtenExpr{
 			Field: field + ".idempotency_key",
 			Path:  fieldPath(at, "idempotency_key"),
+			Slot:  site.Slot,
+			Value: site.Value,
+		})
+	case v1.SlotWebhookWhen:
+		visit(writtenExpr{
+			Field: field + ".when",
+			Path:  fieldPath(at, "when"),
 			Slot:  site.Slot,
 			Value: site.Value,
 		})

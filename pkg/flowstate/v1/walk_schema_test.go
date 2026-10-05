@@ -347,6 +347,7 @@ func workflowUsingEveryValuePosition() *Workflow {
 			Webhooks: []*WebhookTrigger{{
 				Name:           "payments",
 				IdempotencyKey: NewExpr("event.id"),
+				When:           NewExpr("event.body.live"),
 				Arguments:      map[string]*Value{"order": NewExpr("event.body.order")},
 				Verify:         map[string]*Value{"stripe": NewLiteral("secret")},
 
