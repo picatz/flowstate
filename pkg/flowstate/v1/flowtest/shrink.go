@@ -81,7 +81,8 @@ func pinsOf(from []Fault, authored []bool, atoms []faultAtom) []Fault {
 // shrunk.
 //
 // violates must report whether a run with exactly that fault list breaks the
-// case. The input is probed first: a set that does not reproduce by itself, which
+// case, and ok=false when the run was cut off (a cancelled context, the case's
+// time bound) and so answers nothing. The input is probed first: a set that does not reproduce by itself, which
 // would mean the seed's violation depended on something a pin does not carry, is
 // returned unchanged with Minimal false, because a "smaller" set found from a
 // starting point that does not reproduce would not be a shrink of anything.
@@ -92,7 +93,7 @@ func pinsOf(from []Fault, authored []bool, atoms []faultAtom) []Fault {
 // whether the case breaks.
 //
 // At most maxRuns probes are spent, including the first.
-func shrinkFaults(pins []Fault, authored []bool, maxRuns int, violates func([]Fault) bool) shrinkResult {
+func shrinkFaults(pins []Fault, authored []bool, maxRuns int, violates func([]Fault) (violated, ok bool)) shrinkResult {
 	atoms := atomsOf(pins, authored)
 	result := shrinkResult{Pins: pins, From: len(atoms)}
 
@@ -105,7 +106,17 @@ func shrinkFaults(pins []Fault, authored []bool, maxRuns int, violates func([]Fa
 		}
 		result.Runs++
 
-		return violates(pinsOf(pins, authored, subset))
+		violated, ok := violates(pinsOf(pins, authored, subset))
+		if !ok {
+			// The probe was cut off, so its "no" says nothing about the
+			// subset; the search ends there rather than reading it as a
+			// removal that stopped the violation.
+			exhausted = true
+
+			return false
+		}
+
+		return violated
 	}
 
 	if len(atoms) == 0 || !probe(atoms) {

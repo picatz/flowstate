@@ -26,11 +26,11 @@ func pinsWith(on ...[]int) ([]Fault, []bool) {
 // needing is a violation that holds exactly when every firing in need is
 // present, which is how a real violation behaves when two failures together
 // are what the workflow cannot absorb.
-func needing(need ...faultAtom) func([]Fault) bool {
-	return func(candidate []Fault) bool {
+func needing(need ...faultAtom) func([]Fault) (bool, bool) {
+	return func(candidate []Fault) (bool, bool) {
 		have := firings(candidate)
 
-		return !slices.ContainsFunc(need, func(a faultAtom) bool { return !slices.Contains(have, a) })
+		return !slices.ContainsFunc(need, func(a faultAtom) bool { return !slices.Contains(have, a) }), true
 	}
 }
 
@@ -66,26 +66,28 @@ func TestShrinkResultIsOneMinimal(t *testing.T) {
 	t.Parallel()
 
 	pins, authored := pinsWith([]int{1, 2, 3, 4, 5, 6, 7, 8}, []int{1, 2, 3, 4})
-	violates := func(candidate []Fault) bool {
+	violates := func(candidate []Fault) (bool, bool) {
 		// Violates when any two firings of fault 0 are consecutive.
 		have := firings(candidate)
 		for _, a := range have {
 			if a.fault == 0 && slices.Contains(have, faultAtom{0, a.n + 1}) {
-				return true
+				return true, true
 			}
 		}
 
-		return false
+		return false, true
 	}
 	got := shrinkFaults(pins, authored, MaxShrinkRuns, violates)
 
 	require.True(t, got.Reproduced)
 	require.True(t, got.Minimal)
 	atoms := firings(got.Pins)
-	require.True(t, violates(got.Pins))
+	v, _ := violates(got.Pins)
+	require.True(t, v)
 	for i := range atoms {
 		without := pinsOf(got.Pins, make([]bool, len(got.Pins)), slices.Delete(slices.Clone(atoms), i, i+1))
-		assert.False(t, violates(without), "removing %v should stop the violation", atoms[i])
+		v, _ = violates(without)
+		assert.False(t, v, "removing %v should stop the violation", atoms[i])
 	}
 	assert.Len(t, atoms, 2)
 }
@@ -111,7 +113,7 @@ func TestShrinkRefusesAnInputThatDoesNotReproduce(t *testing.T) {
 	t.Parallel()
 
 	pins, authored := pinsWith([]int{1, 2, 3})
-	got := shrinkFaults(pins, authored, MaxShrinkRuns, func([]Fault) bool { return false })
+	got := shrinkFaults(pins, authored, MaxShrinkRuns, func([]Fault) (bool, bool) { return false, true })
 
 	assert.False(t, got.Reproduced)
 	assert.False(t, got.Minimal)
@@ -128,7 +130,7 @@ func TestShrinkSpendsAtMostItsBudgetAndSaysItIsNotMinimal(t *testing.T) {
 	}
 	pins, authored := pinsWith(on)
 	probes := 0
-	got := shrinkFaults(pins, authored, 5, func(candidate []Fault) bool {
+	got := shrinkFaults(pins, authored, 5, func(candidate []Fault) (bool, bool) {
 		probes++
 
 		return needing(faultAtom{0, 40})(candidate)
@@ -138,7 +140,8 @@ func TestShrinkSpendsAtMostItsBudgetAndSaysItIsNotMinimal(t *testing.T) {
 	assert.Equal(t, probes, got.Runs)
 	assert.True(t, got.Reproduced)
 	assert.False(t, got.Minimal, "a search the budget ended cannot claim minimality")
-	assert.True(t, needing(faultAtom{0, 40})(got.Pins), "and what it returns still violates")
+	v, _ := needing(faultAtom{0, 40})(got.Pins)
+	assert.True(t, v, "and what it returns still violates")
 }
 
 func TestShrinkOfASingleFiringIsMinimalAfterOneProbe(t *testing.T) {
@@ -149,4 +152,28 @@ func TestShrinkOfASingleFiringIsMinimalAfterOneProbe(t *testing.T) {
 
 	assert.True(t, got.Minimal)
 	assert.Equal(t, 1, got.Runs)
+}
+
+// A probe cut off by a cancelled context answers nothing. Reading its "no" as a
+// removal that stopped the violation would let a cancelled search claim a
+// minimality it never established.
+func TestShrinkCutOffMidSearchIsNotMinimal(t *testing.T) {
+	t.Parallel()
+
+	pins, authored := pinsWith([]int{1, 2, 3, 4, 5, 6})
+	calls := 0
+	got := shrinkFaults(pins, authored, MaxShrinkRuns, func(candidate []Fault) (bool, bool) {
+		calls++
+		if calls > 2 {
+			return false, false
+		}
+
+		return needing(faultAtom{0, 5})(candidate)
+	})
+
+	assert.True(t, got.Reproduced)
+	assert.False(t, got.Minimal)
+	assert.Equal(t, 3, calls, "the search stops at the first cut-off probe")
+	v, _ := needing(faultAtom{0, 5})(got.Pins)
+	assert.True(t, v, "and what it returns still violates")
 }

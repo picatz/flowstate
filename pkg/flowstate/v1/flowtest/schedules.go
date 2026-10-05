@@ -377,13 +377,18 @@ func (a *scheduleAccumulator) run(ctx context.Context, once caseRun) (*v1.TestCa
 func (a *scheduleAccumulator) shrink(ctx context.Context, once caseRun, pins []Fault, authored []bool) shrinkResult {
 	probe := v1.NewContextWithScheduler(ctx, v1.WrittenOrder)
 
-	return shrinkFaults(pins, authored, MaxShrinkRuns, func(candidate []Fault) bool {
+	return shrinkFaults(pins, authored, MaxShrinkRuns, func(candidate []Fault) (bool, bool) {
 		if ctx.Err() != nil {
-			return false
+			return false, false
 		}
 		result, _, _, _, shown, _ := once(contextWithFaultProbe(probe, candidate))
+		// A run the bound ended partway can fail for that reason alone, which
+		// would read as a violation the candidate does not have.
+		if ctx.Err() != nil {
+			return false, false
+		}
 
-		return shown.faulted && !result.GetPassed()
+		return shown.faulted && !result.GetPassed(), true
 	})
 }
 

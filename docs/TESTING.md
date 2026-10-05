@@ -369,7 +369,12 @@ remaining failures stops the violation, and the report says how many the seed
 fired and how many re-runs that took. A pin the case declared itself is never
 dropped. The re-runs are bounded (256); past that the shortest violating list
 found is printed and the report says it may not be minimal. The shrunk list
-violates *an* invariant, not necessarily the one the seed broke first. A pinned
+violates *an* invariant, not necessarily the one the seed broke first. A search that is cut off
+(cancelled, or out of the case's time) reports itself as not minimal. An invocation number counts
+the calls a fault could hit whether or not another fault fired on them, so a script
+keeps its meaning when a fault is removed; a script pasted before this was
+so counted may have numbered a later overlapping fault differently, so
+re-derive it from a fresh `--seeds` finding. A pinned
 fault takes no `rate:` or `at_most:`, and a script whose invocation the run no
 longer makes fails as drifted rather than passing for a fault that never
 happened.
