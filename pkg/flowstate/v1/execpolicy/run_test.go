@@ -503,6 +503,30 @@ func TestADirectoryRepointedToAnotherAllowedDirectoryIsRefused(t *testing.T) {
 	assert.NoFileExists(t, filepath.Join(teamB, "ran"), "the program ran in a directory the rules never judged")
 }
 
+// A recheck that fails must not say where the authored link led. Check stores
+// the resolved directory, and the recheck's own sentence would name it in a
+// denial that lands in the run's durable history.
+func TestARecheckFailureDoesNotNameWhereALinkLed(t *testing.T) {
+	t.Parallel()
+	cfg, root := base(t)
+	target := filepath.Join(root, "build-7f3a")
+	link := filepath.Join(root, "workspace")
+	require.NoError(t, os.Mkdir(target, 0o700))
+	require.NoError(t, os.Symlink(target, link))
+
+	cmd, err := mustPolicy(t, cfg).Check(context.Background(),
+		execpolicy.Request{Argv: []string{"sh", "-c", "touch ran"}, Dir: link})
+	require.NoError(t, err)
+
+	require.NoError(t, os.Remove(target))
+
+	_, err = cmd.Run(context.Background())
+	require.Error(t, err)
+	d := denied(t, err, execpolicy.ReasonDir)
+	assert.NotContains(t, d.Detail, "build-7f3a", "the symlink target reached the denial")
+	assert.NotContains(t, err.Error(), "build-7f3a", "the symlink target reached the error text")
+}
+
 // An image no kernel loader would claim natively (here a foreign-architecture
 // ELF, which a binfmt_misc registration would hand to an interpreter) is not
 // executed through a descriptor: the interpreter would be handed a path it

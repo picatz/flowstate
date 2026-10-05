@@ -24,7 +24,7 @@ directory the `workspace` input defaults to.
 - **The environment.** Built from nothing: operator `env`, then `env_passthrough`, then
   step `env:` only for keys in `env_authored`. Loader variables are refused.
 - **How long and how much.** `timeout` and `max_output_bytes` are required and have
-  ceilings (1h, 16MiB). On timeout the whole process group is killed.
+  ceilings (1h, 128KiB). On timeout the whole process group is killed.
 - **Whether this run may.** CEL `allow`/`deny` rules see `argv`, `executable`, `name`,
   `dir`, `env_keys` and `identity`; deny wins and a rule that errors denies.
 

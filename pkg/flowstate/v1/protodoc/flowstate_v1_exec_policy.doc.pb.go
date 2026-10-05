@@ -113,8 +113,8 @@ func init() {
 		{
 			Name: "flowstate.v1.ExecPolicy.Exec.max_output_bytes",
 			Leading: " MaxOutputBytes bounds what is kept of each output stream (standard output\n" +
-				" and standard error separately), written the way sizes are said: \"1MiB\",\n" +
-				" \"10MB\", or a bare count of bytes. Required, positive, and at most 16 MiB.\n" +
+				" and standard error separately), written the way sizes are said: \"64KiB\",\n" +
+				" \"10MB\", or a bare count of bytes. Required, positive, and at most 128 KiB.\n" +
 				" Bytes past the bound are read and discarded and the step reports the\n" +
 				" stream as truncated.\n",
 		},

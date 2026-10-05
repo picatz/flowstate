@@ -2775,7 +2775,7 @@ component-wise under one of the policy's `roots`.
 environment (assembled from nothing: operator `env`, then `env_passthrough` copied
 from the worker only if present, then step `env:` for keys in `env_authored`; loader
 variables such as `LD_PRELOAD` and `DYLD_*` are refused), a required `timeout`
-(ceiling 1h) and `max_output_bytes` per stream (ceiling 16MiB), and CEL `allow` /
+(ceiling 1h) and `max_output_bytes` per stream (ceiling 128KiB), and CEL `allow` /
 `deny` rules over `argv`, `executable`, `name`, `dir`, `env_keys` (names, never
 values) and `identity`. Deny wins, and a rule that cannot be evaluated denies.
 
