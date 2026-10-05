@@ -59,6 +59,10 @@ var authorizationActionBindings = []*AuthorizationActionBinding{
 	{
 		Action: AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_VALIDATE,
 		Rpcs:   []string{"Validate"},
+		// A static policy check compiles the caller's own source and decides
+		// its predicates: it runs no step and reads nothing the caller did
+		// not submit, so it asks no more than validating that source does.
+		McpTools: []string{"flowstate_check_policy"},
 	},
 	{
 		Action: AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_COMPILE,

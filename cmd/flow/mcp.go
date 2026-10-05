@@ -315,7 +315,7 @@ func fenceRegistryReaders(deps *flowmcp.Deps, sessions *debugSessions) {
 	deps.WrapResourceHandler = sessions.guardRegistryResource
 }
 
-// stdioExtraTools is the three tools on this surface that are not RPCs, in one
+// stdioExtraTools is the tools on this surface that are not RPCs, in one
 // place because the tests stand the same server up and a second list is the
 // two-copies defect [flowmcp.AddCapabilities] states for the registration it
 // owns — a tool added here and forgotten there is a tool nothing exercises.
@@ -338,6 +338,10 @@ func stdioExtraTools(ctx context.Context, cmd *cobra.Command, providers *localSe
 		// The debugger's own front (#928 slice 3), beside the tool whose
 		// verdicts it explains.
 		{Tool: flowmcp.DebugTool(), Handler: sessions.unlessStubbed(debugToolHandler(0))},
+		// The static who-may-act check: it compiles the submitted Flowfile
+		// against the task registry and decides predicates, and runs no step,
+		// so it needs no posture but is fenced as the other readers are.
+		{Tool: flowmcp.CheckPolicyTool(), Handler: sessions.readsRegistry(checkPolicyToolHandler())},
 	},
 		// Retained sessions (#2127): stdio only, where one caller owns the
 		// process. `flow mcp serve` serializes the process-wide registry

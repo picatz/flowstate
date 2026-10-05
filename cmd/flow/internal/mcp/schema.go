@@ -124,6 +124,73 @@ func testInputSchema() map[string]any {
 	}
 }
 
+// checkPolicyIdentitySchema is one identity in [checkPolicyInputSchema]: the
+// fields a test file's `sender:` takes, bounded as the identity in
+// [v1.PolicyCheckMatrix] is.
+func checkPolicyIdentitySchema(description string) map[string]any {
+	return map[string]any{
+		"type":        "object",
+		"description": description,
+		"properties": map[string]any{
+			"subject":   map[string]any{"type": "string", "maxLength": 1024, "description": "Authenticated subject; give it with `issuer` or not at all."},
+			"issuer":    map[string]any{"type": "string", "maxLength": 1024, "description": "Authenticated issuer; give it with `subject` or not at all."},
+			"namespace": map[string]any{"type": "string", "maxLength": 1024, "description": "Tenant namespace."},
+			"claims": map[string]any{
+				"type":                 "object",
+				"maxProperties":        64,
+				"additionalProperties": map[string]any{"type": "string", "maxLength": 4096},
+				"description":          "Authenticated string claims, matched literally.",
+			},
+		},
+		"additionalProperties": false,
+	}
+}
+
+// checkPolicyInputSchema is flowstate_check_policy's schema, written out for
+// the reason [runLocalInputSchema] is: the tool is not an RPC.
+//
+// Nothing here names a path, a URL or a secret: the Flowfile arrives as text,
+// like every other tool on this surface that takes one.
+func checkPolicyInputSchema() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"source": map[string]any{
+				"type": "string",
+				"description": "The Flowfile YAML whose policy is asked, exactly as it would be written to " +
+					"disk, including the `edition:` line.",
+			},
+			"gate": map[string]any{
+				"type":        "string",
+				"enum":        []any{"signal", "debug", "manual"},
+				"description": "Which policy to ask: `signal` (`signals:`), `debug` (`debug:`) or `manual` (`triggers.manual`).",
+			},
+			"signal": map[string]any{
+				"type": "string",
+				"description": "With gate `signal`, the one declared signal to check. Left out, every declared " +
+					"signal is checked.",
+			},
+			"sender": checkPolicyIdentitySchema("The identity attempting the act. Left out, an unauthenticated caller."),
+			"starter": checkPolicyIdentitySchema("Who started the run, read by a predicate as `run.identity`. " +
+				"Left out, unknown (a predicate reading it refuses); `{}` is nobody authenticated."),
+			"inputs": map[string]any{
+				"type": "object",
+				"additionalProperties": map[string]any{
+					"description": "The value for one declared input, as JSON of the declared type.",
+				},
+				"description": "Arguments the run would start with, keyed by declared input name, as " +
+					"`flowstate_run_local` takes them. A `sensitive:` input is bound and never echoed.",
+			},
+			"reason": map[string]any{
+				"type":        "string",
+				"description": "With gate `manual`, the reason the start would carry, for a `manual:` block that requires one.",
+			},
+		},
+		"required":             []any{"source", "gate"},
+		"additionalProperties": false,
+	}
+}
+
 // maxSchemaNodes bounds the total number of schema objects one projection
 // emits, across the whole walk rather than along any one path.
 //
