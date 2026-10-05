@@ -596,7 +596,9 @@ defaults too.
 With none of `--signal NAME`, `--debug` and `--manual`, every declared signal is
 checked; naming any of them checks only what is named. Each line is `admitted` or
 `refused`, and a refusal carries the engine's own sentence, which never quotes a
-claim, an input or an evaluation error. Nothing prints an input's value.
+claim, an input or an evaluation error. A `sensitive:` input is never printed; a
+refusal about an argument that is not sensitive can name it, as `flow run local`
+does. Claims, subjects and matrix content are never quoted.
 
 **In CI.** Without `--expect` the exit status is 0 whatever the answers, and
 non-zero only for a usage or compile error. `--expect admitted|refused` turns
@@ -632,7 +634,10 @@ gates it names. The file is defined by `proto/flowstate/v1/policy_check.proto`. 
 the `--input` arguments given for every row, and a row with no `starter:` or
 `expect:` takes `--starter-*` and `--expect`. A subject without an issuer, or the
 reverse, is refused by the rule a test file's `sender:` is held to. A matrix is
-bounded at 256 identities and 256 KiB. A row that does not match its expectation
+bounded at 256 identities, 256 KiB and 64 levels of nesting, and holds one YAML
+document, with no anchors, aliases or merge keys. A whole number of 2^53 or more
+in a row's `inputs:` is refused, because the schema carries inputs as doubles
+and would round it; give such a value with `--input`, which applies to every row. A row that does not match its expectation
 makes the exit status 1.
 
 What it is not: a decision that depends on state only a run has, such as a

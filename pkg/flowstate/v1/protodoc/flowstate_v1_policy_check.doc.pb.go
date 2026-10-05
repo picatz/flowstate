@@ -54,7 +54,9 @@ func init() {
 			Name: "flowstate.v1.PolicyCheckRow.name",
 			Leading: " Name labels the row in the table and in a mismatch. Unique across the\n" +
 				" file (checked by the reader, which a schema rule cannot say), at most 64\n" +
-				" characters, and free of control characters (C0, DEL and C1, so no terminal escape such as U+009B), since it is printed.\n",
+				" characters, and free of control characters (C0, DEL and C1, so no terminal\n" +
+				" escape such as U+009B) and of Unicode format characters (category Cf, such\n" +
+				" as the bidirectional override U+202E), since it is printed.\n",
 		},
 		{
 			Name: "flowstate.v1.PolicyCheckRow.subject",
@@ -73,7 +75,10 @@ func init() {
 			Name: "flowstate.v1.PolicyCheckRow.inputs",
 			Leading: " Inputs are the arguments the run would be started with, read against the\n" +
 				" workflow's `inputs:` declarations. They replace, by name, any arguments\n" +
-				" given for every row. Their size once decoded is counted by the reader.\n",
+				" given for every row. Their size once decoded is counted by the reader, and a\n" +
+				" whole number of 2^53 or more is refused: a Struct carries numbers as doubles,\n" +
+				" which would round it, and a check that read a different value than the\n" +
+				" engine would answer for the wrong run. Give such a value with `--input`.\n",
 		},
 		{
 			Name: "flowstate.v1.PolicyCheckRow.expect",

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"math"
 	"regexp"
 	"slices"
 	"strings"
@@ -44,6 +45,19 @@ const (
 	// produced, so that a decoder that began expanding references could not
 	// reopen the memory a small file could cost.
 	MaxRowInputNodes = 4096
+
+	// MaxNesting bounds how deeply a matrix may nest, in flow collections
+	// (`[`, `{`) and block levels together. A parser builds its tree before any
+	// bound on the tree can run, and a few kilobytes of `[` cost it gigabytes,
+	// so this is checked on the bytes, before a parser sees them. A table of
+	// identities nests a handful of levels.
+	MaxNesting = 64
+
+	// MaxExactInteger is the magnitude from which a whole number in a row's
+	// inputs is refused: the schema carries an input as a double, which holds
+	// integers exactly only below 2^53, and a check that rounded an argument
+	// could answer differently from the engine for the value actually passed.
+	MaxExactInteger = 1 << 53
 
 	// MaxRowNameRunes mirrors the schema's limit on a row's name, which is
 	// printed in a table.
@@ -134,6 +148,10 @@ func ParseMatrix(data []byte) (*Matrix, error) {
 		return nil, fmt.Errorf("the matrix is %d bytes, over the %d byte limit", len(data), MaxMatrixBytes)
 	}
 
+	if err := refuseDeepNesting(data); err != nil {
+		return nil, err
+	}
+
 	if err := refuseAliasedYAML(data); err != nil {
 		return nil, err
 	}
@@ -190,6 +208,11 @@ func ParseMatrix(data []byte) (*Matrix, error) {
 
 		if nodes := inputNodes(row.Inputs); nodes > MaxRowInputNodes {
 			return nil, fmt.Errorf("%s carries inputs holding more than %d values", where, MaxRowInputNodes)
+		}
+
+		if inexactInteger(row.Inputs) {
+			return nil, fmt.Errorf("%s carries a whole number of 2^53 or more in its inputs, which a matrix cannot "+
+				"carry exactly; give it with --input, which applies to every row", where)
 		}
 
 		if err := row.ScriptedIdentity.Check(where); err != nil {
@@ -496,6 +519,16 @@ func refuseAliasedYAML(data []byte) (err error) {
 		return fmt.Errorf("the matrix is not YAML: %w", withoutSource(parseErr))
 	}
 
+	documents := 0
+	for _, doc := range file.Docs {
+		if doc.Body != nil {
+			documents++
+		}
+	}
+	if documents > 1 {
+		return errors.New("a matrix is one document; a second, after `---`, would be silently ignored, so put every identity under one `identities:`")
+	}
+
 	if found := flowfile.StrictYAMLRefusals(file); len(found) > 0 {
 		return fmt.Errorf("line %d, column %d: a matrix is a plain table; anchors (&), aliases (*) and merge keys (<<) "+
 			"are not accepted, so write each value out", found[0].Line, found[0].Column)
@@ -552,4 +585,144 @@ func inputNodes(inputs map[string]any) int {
 	walk(inputs, 0)
 
 	return count
+}
+
+// inexactInteger reports whether any value in inputs is a whole number of
+// [MaxExactInteger] or more in magnitude, at any depth. The values arrive as
+// doubles (a schema Struct), so one at or past 2^53 may already have been
+// rounded from what the author wrote.
+func inexactInteger(inputs map[string]any) bool {
+	var walk func(value any) bool
+	walk = func(value any) bool {
+		switch v := value.(type) {
+		case float64:
+			return v == math.Trunc(v) && math.Abs(v) >= MaxExactInteger
+		case map[string]any:
+			for _, held := range v {
+				if walk(held) {
+					return true
+				}
+			}
+		case []any:
+			for _, held := range v {
+				if walk(held) {
+					return true
+				}
+			}
+		}
+
+		return false
+	}
+
+	return walk(inputs)
+}
+
+// refuseDeepNesting refuses a document that nests deeper than [MaxNesting], by
+// reading its bytes once and building nothing.
+//
+// It runs before any parser does, because the cost it prevents is the parser's:
+// goccy builds its tree recursively, so `[[[[...` of a few hundred kilobytes
+// exhausts memory before a bound on the tree could be asked. Flow depth counts
+// `[` and `{` outside quoted text and comments; block depth is the nesting of
+// indentation and of `- ` entries. Both are approximations on the safe side of
+// a plain scalar that happens to contain a bracket, which a table of identities
+// does not need to write unquoted. The refusal is a fixed sentence with a
+// position and quotes nothing.
+func refuseDeepNesting(data []byte) error {
+	var (
+		line, col = 1, 0
+		flow      int
+		quote     byte
+		inComment bool
+		lineStart = true
+		indent    int
+		indents   []int
+		prev      byte = '\n'
+		tooDeepAt      = func() error {
+			return fmt.Errorf("line %d, column %d: the matrix nests more than %d levels deep, which a table of "+
+				"identities does not need", line, max(col, 1), MaxNesting)
+		}
+		blockDepth = func() int { return len(indents) }
+	)
+
+	for i := 0; i < len(data); i++ {
+		c := data[i]
+		col++
+
+		if c == '\n' {
+			line++
+			col = 0
+			inComment = false
+			lineStart = true
+			indent = 0
+			prev = '\n'
+
+			continue
+		}
+
+		if inComment {
+			continue
+		}
+
+		if lineStart {
+			if c == ' ' {
+				indent++
+				prev = c
+
+				continue
+			}
+
+			lineStart = false
+
+			// Block level: pop what this line is not inside, push this one, and
+			// count each further `- ` that opens another sequence on the line.
+			if quote == 0 && c != '#' {
+				for len(indents) > 0 && indents[len(indents)-1] >= indent {
+					indents = indents[:len(indents)-1]
+				}
+				indents = append(indents, indent)
+
+				extra := 0
+				for j := i; j+1 < len(data) && data[j] == '-' && (data[j+1] == ' ' || data[j+1] == '\t'); {
+					extra++
+					for j += 2; j < len(data) && data[j] == ' '; j++ {
+					}
+				}
+
+				if blockDepth()+max(extra-1, 0)+flow > MaxNesting {
+					return tooDeepAt()
+				}
+			}
+		}
+
+		switch {
+		case quote != 0:
+			switch {
+			case quote == '"' && c == '\\':
+				i++
+				col++
+			case c == quote:
+				quote = 0
+			}
+
+		case c == '#' && (prev == ' ' || prev == '\t' || prev == '\n'):
+			inComment = true
+
+		case (c == '"' || c == '\'') && strings.IndexByte(" \t\n[{,:-", prev) >= 0:
+			quote = c
+
+		case c == '[' || c == '{':
+			flow++
+			if blockDepth()+flow > MaxNesting {
+				return tooDeepAt()
+			}
+
+		case c == ']' || c == '}':
+			flow = max(flow-1, 0)
+		}
+
+		prev = c
+	}
+
+	return nil
 }

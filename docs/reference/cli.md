@@ -1999,7 +1999,7 @@ With none of `--signal`, `--debug` and `--manual`, every declared signal is chec
 
 The sender is named as `flow run local` names the approver a `--signal` stands in for: `--signal-as-subject` with `--signal-as-issuer` (given together or not at all), `--signal-as-namespace` and `--signal-as-claim`. Name none and the sender is unauthenticated, which no `allow:` predicate a deployment writes admits, and which `triggers.manual` refuses when its block writes an `allow:` predicate (with no block, any caller the server authenticates may start it, and the line says so). `--starter-*` names who started the run, which a predicate reads as `run.identity`; name none and the starter is unknown, which refuses any predicate that reads `run.identity`, as the engine does for a run with no recorded starter. `--starter-anonymous` says the run was started by nobody authenticated, which is how `flow run local` models a run started with no `--as-*` flags.
 
-Arguments are given as `flow run` takes them and are bound against the workflow's `inputs:` as a start binds them, so a predicate reads defaults too. Nothing prints an input's value.
+Arguments are given as `flow run` takes them and are bound against the workflow's `inputs:` as a start binds them, so a predicate reads defaults too. A `sensitive:` input is never printed; a refusal about an argument that is not sensitive can name it, as `flow run local` does. Claims, subjects and matrix content are never quoted by this command.
 
 `--expect admitted|refused` makes the answer an assertion: the exit status is 1 when any decision differs, which is what makes this usable in CI. Without it the exit status is 0 whatever the answers, and non-zero only for a usage or compile error.
 

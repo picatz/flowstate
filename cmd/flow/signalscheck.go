@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -72,8 +73,9 @@ func newSignalsCheckCommand() *cobra.Command {
 			"starter. `--starter-anonymous` says the run was started by nobody authenticated, which is " +
 			"how `flow run local` models a run started with no `--as-*` flags.\n\n" +
 			"Arguments are given as `flow run` takes them and are bound against the workflow's " +
-			"`inputs:` as a start binds them, so a predicate reads defaults too. Nothing prints an " +
-			"input's value.\n\n" +
+			"`inputs:` as a start binds them, so a predicate reads defaults too. A `sensitive:` input is never printed; " +
+			"a refusal about an argument that is not sensitive can name it, as `flow run local` does. " +
+			"Claims, subjects and matrix content are never quoted by this command.\n\n" +
 			"`--expect admitted|refused` makes the answer an assertion: the exit status is 1 when " +
 			"any decision differs, which is what makes this usable in CI. Without it the exit status " +
 			"is 0 whatever the answers, and non-zero only for a usage or compile error.\n\n" +
@@ -379,9 +381,10 @@ func matrixResults(cmd *cobra.Command, workflow *v1.Workflow, gates []policychec
 		}
 
 		want := row.Expect
-		if want.All == "" && len(want.ByGate) == 0 {
-			want.All = expect
-		}
+		// A gate the row names keeps its own expectation; every other takes
+		// --expect, so a row that asserts one gate does not silently assert
+		// nothing about the rest.
+		want.All = cmp.Or(want.All, expect)
 
 		results = append(results, policycheck.Result{Name: row.Name, Decisions: decisions, Expect: want})
 	}

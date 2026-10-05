@@ -49,11 +49,13 @@ message PolicyCheckMatrix {
 message PolicyCheckRow {
   // Name labels the row in the table and in a mismatch. Unique across the
   // file (checked by the reader, which a schema rule cannot say), at most 64
-  // characters, and free of control characters (C0, DEL and C1, so no terminal escape such as U+009B), since it is printed.
+  // characters, and free of control characters (C0, DEL and C1, so no terminal
+  // escape such as U+009B) and of Unicode format characters (category Cf, such
+  // as the bidirectional override U+202E), since it is printed.
   string name = 1 [(buf.validate.field).string = {
     min_len: 1
     max_len: 64
-    pattern: "^[^\\x00-\\x1f\\x7f-\\x{9f}]+$"
+    pattern: "^[^\\x00-\\x1f\\x7f-\\x{9f}\\p{Cf}]+$"
   }];
 
   // Subject, Issuer, Namespace and Claims are the identity attempting the act.
@@ -76,7 +78,10 @@ message PolicyCheckRow {
 
   // Inputs are the arguments the run would be started with, read against the
   // workflow's `inputs:` declarations. They replace, by name, any arguments
-  // given for every row. Their size once decoded is counted by the reader.
+  // given for every row. Their size once decoded is counted by the reader, and a
+  // whole number of 2^53 or more is refused: a Struct carries numbers as doubles,
+  // which would round it, and a check that read a different value than the
+  // engine would answer for the wrong run. Give such a value with `--input`.
   google.protobuf.Struct inputs = 7;
 
   // Expect asserts one outcome for every gate checked: `admitted` or

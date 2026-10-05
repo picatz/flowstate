@@ -103,7 +103,9 @@ type PolicyCheckRow struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Name labels the row in the table and in a mismatch. Unique across the
 	// file (checked by the reader, which a schema rule cannot say), at most 64
-	// characters, and free of control characters (C0, DEL and C1, so no terminal escape such as U+009B), since it is printed.
+	// characters, and free of control characters (C0, DEL and C1, so no terminal
+	// escape such as U+009B) and of Unicode format characters (category Cf, such
+	// as the bidirectional override U+202E), since it is printed.
 	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
 	// Subject, Issuer, Namespace and Claims are the identity attempting the act.
 	// A subject and an issuer travel together or not at all, which the reader
@@ -119,7 +121,10 @@ type PolicyCheckRow struct {
 	Starter *PolicyCheckIdentity `protobuf:"bytes,6,opt,name=starter,proto3" json:"starter,omitempty"`
 	// Inputs are the arguments the run would be started with, read against the
 	// workflow's `inputs:` declarations. They replace, by name, any arguments
-	// given for every row. Their size once decoded is counted by the reader.
+	// given for every row. Their size once decoded is counted by the reader, and a
+	// whole number of 2^53 or more is refused: a Struct carries numbers as doubles,
+	// which would round it, and a check that read a different value than the
+	// engine would answer for the wrong run. Give such a value with `--input`.
 	Inputs *structpb.Struct `protobuf:"bytes,7,opt,name=inputs,proto3" json:"inputs,omitempty"`
 	// Expect asserts one outcome for every gate checked: `admitted` or
 	// `refused`. Empty asserts nothing.
@@ -302,9 +307,9 @@ const file_flowstate_v1_policy_check_proto_rawDesc = "" +
 	"\x11PolicyCheckMatrix\x12I\n" +
 	"\n" +
 	"identities\x18\x01 \x03(\v2\x1c.flowstate.v1.PolicyCheckRowB\v\xbaH\b\x92\x01\x05\b\x01\x10\x80\x02R\n" +
-	"identities\"\xb1\x05\n" +
-	"\x0ePolicyCheckRow\x129\n" +
-	"\x04name\x18\x01 \x01(\tB%\xbaH\"r \x10\x01\x18@2\x1a^[^\\x00-\\x1f\\x7f-\\x{9f}]+$R\x04name\x12\"\n" +
+	"identities\"\xb7\x05\n" +
+	"\x0ePolicyCheckRow\x12?\n" +
+	"\x04name\x18\x01 \x01(\tB+\xbaH(r&\x10\x01\x18@2 ^[^\\x00-\\x1f\\x7f-\\x{9f}\\p{Cf}]+$R\x04name\x12\"\n" +
 	"\asubject\x18\x02 \x01(\tB\b\xbaH\x05r\x03\x18\x80\bR\asubject\x12 \n" +
 	"\x06issuer\x18\x03 \x01(\tB\b\xbaH\x05r\x03\x18\x80\bR\x06issuer\x12&\n" +
 	"\tnamespace\x18\x04 \x01(\tB\b\xbaH\x05r\x03\x18\x80\bR\tnamespace\x12X\n" +
