@@ -381,8 +381,9 @@ worker. `TestWorkerRestartOverWorkflows` and `TestWorkerRestartOverUndoCases`
 cases that need no trigger or inputs on a dev server, stop the first worker gracefully after a seed-chosen
 activity completion, and let a second worker with an empty cache rebuild the
 run from history and finish it with the answer both drivers already agree on.
-A failure prints the seed, the boundary the second worker resumed at, and the
-`flow debug history … --at` command that opens it.
+A failure prints the seed, the boundary the second worker resumed at, and where
+the run's history was kept. The restarted run must also complete as many
+activities as the undisturbed one, so an activity run again after replay fails.
 `FLOWSTATE_RESTART_SEEDS=N` (default 3, at most 50) sets the points per case.
 Not yet covered: a worker killed mid-activity, a restart while parked on a
 timer or signal, and a restart across Continue-As-New.

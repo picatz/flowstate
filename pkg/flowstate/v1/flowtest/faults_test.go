@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -430,4 +431,25 @@ func TestAPinnedSeedUnderADebuggerHoldsTheSeededRunAlone(t *testing.T) {
 	plain := &holdingDebugger{}
 	flowtest.RunPath(t.Context(), path, flowtest.RunOptions{Debugger: plain})
 	assert.Equal(t, []string{"fetch", "done"}, plain.steps)
+}
+
+// TestThePinnedSeedsBaselineKeepsItsTimeUnderADebugger pins the bound the
+// unheld baseline keeps: a debugged invocation is unbounded for the person at
+// the prompt, and the baseline run beside it has nobody there. With a limit no
+// run can meet, the baseline fails on it, and the case with it; without the
+// bound the baseline would pass on its own and the case would too.
+func TestThePinnedSeedsBaselineKeepsItsTimeUnderADebugger(t *testing.T) {
+	t.Parallel()
+
+	path := writeFaultFixture(t, bareWorkflow, faultedCase)
+	_, _, found := flowtest.RunFileUnderSchedules(t.Context(), path, dst.Budget{Schedules: 4, Seed0: 1})
+	require.NotNil(t, found)
+	seed := found.Divergence.Seed
+
+	run := flowtest.RunPath(t.Context(), path, flowtest.RunOptions{
+		Budget: dst.Budget{Pinned: &seed}, Debugger: &holdingDebugger{}, CaseTimeout: time.Nanosecond,
+	})
+	require.Len(t, run.Report.GetCases(), 1)
+	assert.False(t, run.Report.GetCases()[0].GetPassed(),
+		"the baseline ran without its time bound under the debugger")
 }

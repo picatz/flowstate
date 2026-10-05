@@ -185,7 +185,10 @@ func runWithRestart(ctx context.Context, t *testing.T, temporal client.Client, i
 
 	counter := &completionCounter{stopAt: stopAt}
 	first := newWorker(firstWorkerIdentity, counter)
-	second := newWorker(secondWorkerIdentity, nil)
+	// One counter across both workers: the restarted run must complete the
+	// same number of activities as the undisturbed one, so a completed
+	// activity run again after replay, or skipped, is visible.
+	second := newWorker(secondWorkerIdentity, counter)
 
 	var stopped sync.WaitGroup
 	var stopFirst sync.Once
@@ -259,30 +262,44 @@ func runWithRestart(ctx context.Context, t *testing.T, temporal client.Client, i
 }
 
 // requireRestarted fails with the finding a restart run is read from: where it
-// stopped, where the second worker resumed, and how to open that point.
+// stopped and where the second worker resumed, with the history the run left
+// kept in a temporary directory so it outlives the test. The run itself lives
+// in a throwaway dev-server namespace, so what a person can open is the history:
+// [engine.Reconstruct] reads it at the event the finding names.
 //
 // A restart that was not realized — the first worker ran every task itself —
-// fails too: a pass that never exercised the second worker is not a pass.
+// fails too: a pass that never exercised the second worker is not a pass. So
+// does a restarted run whose activity completions differ from the undisturbed
+// run's, which is what a completed activity executed again after replay is.
 func requireRestarted(t *testing.T, name string, seed uint64, stopAt, completions int64, got restartOutcome) {
 	t.Helper()
 
-	path := filepath.Join(t.TempDir(), "history.json")
-	writeRecordedHistory(t, path, got.history)
-
 	finding := func(format string, args ...any) string {
+		dir, err := os.MkdirTemp("", "flowstate-worker-restart-")
+		require.NoError(t, err)
+		path := filepath.Join(dir, "history.json")
+		writeRecordedHistory(t, path, got.history)
+
 		return fmt.Sprintf("worker restart: case %q seed %d: restarted after activity completion %d/%d; "+
-			"resumed at event %d (boundary %d of %d); workflow %s run %s; open with: "+
-			"flow debug history %s --run-id %s --at %d; history: %s: %s",
+			"resumed at event %d (boundary %d of %d); workflow %s run %s; history kept at %s: %s",
 			name, seed, stopAt, completions, got.resumedAt, got.boundary, got.boundaries,
-			got.workflowID, got.runID, got.workflowID, got.runID, got.resumedAt, path, fmt.Sprintf(format, args...))
+			got.workflowID, got.runID, path, fmt.Sprintf(format, args...))
 	}
 
-	require.NotZero(t, got.resumedAt, finding("the second worker never ran a workflow task, so the restart was not realized"))
+	if got.resumedAt == 0 {
+		t.Fatal(finding("the second worker never ran a workflow task, so the restart was not realized"))
+	}
+	if got.completions != completions {
+		t.Fatal(finding("the restarted run completed %d activities and the undisturbed one %d: one ran again or was skipped",
+			got.completions, completions))
+	}
 
 	// The point the second worker resumed at must itself be readable: a
 	// restart the debugger cannot reconstruct is a finding about the debugger.
-	_, err := engine.Reconstruct(t.Context(), got.history, got.indexOf(got.resumedAt), workflow.Execution{ID: got.workflowID, RunID: got.runID})
-	require.NoError(t, err, finding("reconstructing the resume point"))
+	if _, err := engine.Reconstruct(t.Context(), got.history, got.indexOf(got.resumedAt),
+		workflow.Execution{ID: got.workflowID, RunID: got.runID}); err != nil {
+		t.Fatal(finding("reconstructing the resume point: %v", err))
+	}
 }
 
 // indexOf is the slice index of the event with the given id.
