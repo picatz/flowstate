@@ -24,8 +24,8 @@ $ flow run local examples/ops-healthcheck/workflow.yaml -o json | jq .runOutputs
 ```
 
 Nothing else changes to run this durably: the same file, submitted to a worker
-instead of executed in this process (needs a Temporal dev server, `flow worker`, and
-`flow server` — see the main README's Quickstart), checks the same services and
+instead of executed in this process (start `flow server dev` in another
+terminal; it needs no sign-in), checks the same services and
 answers with the same shape:
 
 ```console

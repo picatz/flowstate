@@ -37,8 +37,8 @@ $ flow run local examples/order-fulfillment/workflow.yaml \
     --input-file examples/order-fulfillment/inputs.json --input carrier_outage=true
 ```
 
-Both are the same file. Run durably instead of in this process (needs a Temporal
-dev server, `flow worker`, and `flow server` — see the main README's Quickstart)
+Both are the same file. Run durably instead of in this process (start `flow server dev`
+in another terminal; it needs no sign-in)
 and a failure partway through this saga unwinds the same way, from whichever
 worker happens to be running it when `arrange_shipment` fails — nothing about the
 compensation depends on it being the same worker that ran `reserve_inventory` in
