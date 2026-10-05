@@ -46,8 +46,8 @@ func RetryAllowsKind(retry *RetryPolicy, kind ErrorKind) bool {
 
 // RetryExcludedKinds returns the retryable built-in kinds a retry policy's `only:`
 // rules out, which the durable driver adds to the activity's non-retryable error
-// types: when `only:` is written, every retryable kind it does not name. Permanent kinds are not repeated here; they are already
-// never retried.
+// types: when `only:` is written, every retryable kind it does not name. Permanent kinds are not repeated
+// here; they are already never retried.
 func RetryExcludedKinds(retry *RetryPolicy) []string {
 	var excluded []string
 	for _, kind := range RetryableErrorKinds() {

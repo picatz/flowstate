@@ -197,7 +197,7 @@ func TestTheActivityPolicyDropsRunOnlyKinds(t *testing.T) {
 // the names are pinned here rather than exercised by an attempt count: a
 // native timeout is not a shape any test in this repository can force against
 // a real server by timing.
-func TestRetryExceptTimeoutNamesTemporalsOwnTimeoutTypes(t *testing.T) {
+func TestRetryOnlyTimeoutNamesTemporalsOwnTimeoutTypes(t *testing.T) {
 	t.Parallel()
 
 	// An only: list excludes Timeout by omission, and must reach those types.
