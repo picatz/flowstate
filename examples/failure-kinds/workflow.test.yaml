@@ -35,7 +35,7 @@ tests:
       failed: true
       error_contains: too many requests
 
-  - name: a retryable kind listed under except is not retried
+  - name: a retryable kind left out of only is not retried
     workflow: ./workflow.yaml
     stubs:
       # One failing answer and no other for `notify`: a retried `RateLimited`

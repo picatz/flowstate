@@ -2516,13 +2516,9 @@ message RetryPolicy {
     items: {string: {min_len: 1 max_len: 128 pattern: "^[A-Z][A-Za-z0-9_]*$"}}
   }];
 
-  // Except removes the kinds it names from those retried, so a retryable kind a
-  // step should fail fast on (a rate limit it must not hammer) is written down.
-  repeated string except = 6 [(buf.validate.field).repeated = {
-    max_items: 64
-    unique: true
-    items: {string: {min_len: 1 max_len: 128 pattern: "^[A-Z][A-Za-z0-9_]*$"}}
-  }];
+  // 6 was `except`, the complement of `only`; one list says it, so it is gone.
+  reserved 6;
+  reserved "except";
 }
 
 // ResolvedTaskCapabilities is the smallest replay contract for task

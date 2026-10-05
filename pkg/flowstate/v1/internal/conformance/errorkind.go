@@ -58,7 +58,7 @@ func ErrorKindCases(httpBaseURL string) []ErrorKindCase {
 		},
 	}
 
-	// Three more counters, each its own task so the attempts a case reads are its
+	// Two more counters, each its own task so the attempts a case reads are its
 	// own. Every one fails Upstream, which is retryable by default, so what a
 	// case proves is only what its `retry:` kind list does to that default.
 	kindRetryTask := func(name string, attempts *atomic.Int32) *v1.TaskDef {
@@ -85,22 +85,11 @@ func ErrorKindCases(httpBaseURL string) []ErrorKindCase {
 			}},
 		}
 	}
-	var exceptAttempts, onlyOtherAttempts, onlyAttempts atomic.Int32
-	exceptTask := kindRetryTask("test.error_kind_retry_except", &exceptAttempts)
+	var onlyOtherAttempts, onlyAttempts atomic.Int32
 	onlyOtherTask := kindRetryTask("test.error_kind_retry_only_other", &onlyOtherAttempts)
 	onlyTask := kindRetryTask("test.error_kind_retry_only", &onlyAttempts)
 
 	return []ErrorKindCase{
-		{
-			// `retry.except:` takes a retryable kind out of what is retried, on
-			// both drivers: three attempts are on offer and one is spent.
-			Name:             "a retry except list stops a retryable kind after one attempt",
-			Workflow:         retryNode(exceptTask.Name, &v1.RetryPolicy{Except: []string{"Upstream"}}),
-			ExpectedKind:     v1.ErrorKindUpstream,
-			TaskDef:          exceptTask,
-			Attempts:         exceptAttempts.Load,
-			ExpectedAttempts: 1,
-		},
 		{
 			// `retry.only:` that does not name the kind rules it out.
 			Name:             "a retry only list that omits the kind stops after one attempt",

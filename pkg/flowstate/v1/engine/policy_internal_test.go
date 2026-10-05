@@ -187,7 +187,7 @@ func TestTheActivityPolicyDropsRunOnlyKinds(t *testing.T) {
 	}
 }
 
-// TestRetryExceptTimeoutNamesTemporalsOwnTimeoutTypes: excluding Timeout must
+// TestRetryOnlyTimeoutNamesTemporalsOwnTimeoutTypes: excluding Timeout must
 // stop the attempt Temporal cut off as well as the task that reports one.
 //
 // The Temporal server matches a native timeout against "TemporalTimeout:" plus
@@ -197,20 +197,16 @@ func TestTheActivityPolicyDropsRunOnlyKinds(t *testing.T) {
 // the names are pinned here rather than exercised by an attempt count: a
 // native timeout is not a shape any test in this repository can force against
 // a real server by timing.
-func TestRetryExceptTimeoutNamesTemporalsOwnTimeoutTypes(t *testing.T) {
+func TestRetryOnlyTimeoutNamesTemporalsOwnTimeoutTypes(t *testing.T) {
 	t.Parallel()
 
-	opts := activityOptionsFor(&v1.StepPolicy{Retry: &v1.RetryPolicy{Except: []string{"Timeout"}}}, "")
-	assert.Subset(t, opts.RetryPolicy.NonRetryableErrorTypes,
-		[]string{"Timeout", "TemporalTimeout:StartToClose", "TemporalTimeout:Heartbeat"})
-
-	// An only: list excludes it by omission, and must reach the same types.
+	// An only: list excludes Timeout by omission, and must reach those types.
 	only := activityOptionsFor(&v1.StepPolicy{Retry: &v1.RetryPolicy{Only: []string{"Upstream"}}}, "")
 	assert.Subset(t, only.RetryPolicy.NonRetryableErrorTypes,
 		[]string{"Timeout", "TemporalTimeout:StartToClose", "TemporalTimeout:Heartbeat"})
 	assert.NotContains(t, only.RetryPolicy.NonRetryableErrorTypes, "Upstream")
 
 	// And a policy that never narrows Timeout leaves Temporal's retry of it alone.
-	plain := activityOptionsFor(&v1.StepPolicy{Retry: &v1.RetryPolicy{Except: []string{"RateLimited"}}}, "")
+	plain := activityOptionsFor(&v1.StepPolicy{Retry: &v1.RetryPolicy{Only: []string{"Timeout", "RateLimited"}}}, "")
 	assert.NotContains(t, plain.RetryPolicy.NonRetryableErrorTypes, "TemporalTimeout:StartToClose")
 }

@@ -1187,7 +1187,7 @@ error in the step's own `if:`, are never tolerated.
 - id: notify
   retry:
     attempts: 3
-    except: [RateLimited]
+    only: [Upstream, Timeout]
   continue_on_error: [Upstream, RateLimited]
   http:
     method: POST
@@ -1199,11 +1199,11 @@ error in the step's own `if:`, are never tolerated.
 | `continue_on_error: true` | Tolerate every failure. |
 | `continue_on_error: [Kind, ...]` | Tolerate only these kinds; any other ends the run. |
 | `retry: {only: [Kind, ...]}` | Retry only these kinds. |
-| `retry: {except: [Kind, ...]}` | Never retry these kinds. |
 
-A kind is a built-in kind or one declared under `errors:`. The retry lists only
-narrow what would be retried anyway; naming a kind that is never retried is
-refused. A step writes at most one of `only:` and `except:`. A tolerated step
+A kind is a built-in kind or one declared under `errors:`. `only:` only
+narrows what would be retried anyway (`Upstream`, `Timeout`, `Internal`,
+`RateLimited`); naming a kind that is never retried is refused. To retry
+everything but one kind, name the rest. A tolerated step
 also records `steps.<id>.failure` with `kind`, `message` and `retryable`, so
 compare `failure.kind` to a name and not a substring of `error`. See
 `examples/failure-kinds/`.
@@ -1599,7 +1599,7 @@ declaration:** `description`.
 `sensitive`.
 
 **Step:** `id`, `description`, `if`, `vars`, `async`, `timeout`,
-`total_timeout`, `retry` (`attempts`, `interval`, `backoff`, `max_interval`, `only`, `except`),
+`total_timeout`, `retry` (`attempts`, `interval`, `backoff`, `max_interval`, `only`),
 `continue_on_error`, `undo`, `with`, `digest`, and one kind: a task name,
 `value`, `switch` (`value`, `cases` with `case` and `steps`, `default`),
 `for_each` (`items`, `as`, `max_parallel`, `steps`), `parallel` (a list of

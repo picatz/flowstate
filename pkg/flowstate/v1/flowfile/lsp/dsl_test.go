@@ -68,10 +68,7 @@ func TestNestedDSLKeysMatchMarshaledShapes(t *testing.T) {
 						InitialInterval:    durationpb.New(1_000_000_000),
 						BackoffCoefficient: 2,
 						MaxInterval:        durationpb.New(60_000_000_000),
-						// Both, though a valid file writes at most one: this fixture is
-						// only marshaled, to reach each key the table documents.
-						Only:   []string{"Upstream"},
-						Except: []string{"RateLimited"},
+						Only:               []string{"Upstream"},
 					},
 				},
 				// A compensation, so `undo:` is a key this fixture actually reaches.
@@ -1384,7 +1381,6 @@ steps:
       backoff: 2
       max_interval: 1m
       only: [Upstream]
-      except: [RateLimited]
     log:
       message: hi
     undo:

@@ -3571,7 +3571,7 @@ tolerates and retries the failures it expects and nothing else:
   retry:
     attempts: 3
     interval: 1s
-    except: [RateLimited]     # retried by default; never hammer a rate limit
+    only: [Upstream, Timeout] # a rate limit is retryable by default; this leaves it out
   continue_on_error: [Upstream, RateLimited]
   http: {method: POST, url: https://hooks.example.com/notify}
 ```
@@ -3581,16 +3581,14 @@ tolerates and retries the failures it expects and nothing else:
 | `continue_on_error: true` | tolerate every failure, as before |
 | `continue_on_error: [Kind, ...]` | tolerate only these kinds; any other failure ends the run |
 | `retry: {only: [Kind, ...]}` | retry only these kinds |
-| `retry: {except: [Kind, ...]}` | never retry these kinds |
 
 A kind is a built-in kind or one declared under `errors:`; a `call:` step may
-also name a kind its callee declares, without repeating the declaration. Both retry lists only
-narrow what the engine would already retry (`Upstream`, `Timeout`, `Internal`,
+also name a kind its callee declares, without repeating the declaration. `only:` only
+narrows what the engine would already retry (`Upstream`, `Timeout`, `Internal`,
 `RateLimited`): naming a kind that is never retried, such as `PolicyDenied` or a
 declared error, cannot make it retryable, so `flow validate` refuses the list that
-tries rather than promise a retry that never happens. `only:` and `except:` say the
-same thing from opposite ends, so a step writes at most one, and `except:` may not
-name a kind that `only:` already leaves out. A misspelled kind is refused with the
+tries rather than promise a retry that never happens. To retry everything but one
+kind, name the rest: there is no second list for the complement. A misspelled kind is refused with the
 nearest real one. Both drivers apply the same rule, pinned by shared conformance
 cases; on the durable driver the narrowing compiles to Temporal's
 non-retryable error types and can only add to them. See
