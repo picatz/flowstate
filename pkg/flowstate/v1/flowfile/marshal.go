@@ -1110,6 +1110,9 @@ func scalarSurvives(s string, candidate any) bool {
 	if len(back) != 1 || back[0].Value != s {
 		return false
 	}
+	if !survivesATrailingComment(encoded, s) {
+		return false
+	}
 
 	encoded, err = yaml.Marshal(yaml.MapSlice{{Key: "v", Value: []any{candidate}}})
 	if err != nil {
@@ -1125,6 +1128,28 @@ func scalarSurvives(s string, candidate any) bool {
 		return false
 	}
 	return len(list.V) == 1 && list.V[0] == s
+}
+
+// survivesATrailingComment reports whether the one-line mapping entry encoded
+// still reads back as s once a comment follows it, which is where `flow fmt`
+// writes a comment that sat after the key (see [carriesTrailingComment]).
+//
+// A plain `?` is the case that needs it: `v: ?` reads back as the string "?",
+// but `v: ? # why` reads the `?` as the explicit-key indicator and the document
+// no longer parses (`undefined map key`). The emitter writes the first form
+// without quoting it, so the round trip above passes and only the commented
+// form is wrong. A multi-line rendering has no single line to follow, so it is
+// left to the checks around it.
+func survivesATrailingComment(encoded []byte, s string) bool {
+	line, ok := strings.CutSuffix(string(encoded), "\n")
+	if !ok || strings.Contains(line, "\n") {
+		return true
+	}
+	var back yaml.MapSlice
+	if err := strictyaml.Unmarshal([]byte(line+" # c\n"), &back); err != nil {
+		return false
+	}
+	return len(back) == 1 && back[0].Value == s
 }
 
 // expandsWhenRead reports whether reading encoded would expand something, so
