@@ -1193,6 +1193,16 @@ func (t TrustedIssuer) validateMTLS() error {
 		return fmt.Errorf("issuer is required: this deployment's own name for the trusted CA, not a value read from the certificate")
 	}
 
+	// An issuer is written into `issuer#subject` wherever an identity is named
+	// ([Principal.QualifiedSubject], a policy rule's `subject:`, an expression's
+	// `principal`). An OIDC issuer is a fragment-free https URL, so it cannot
+	// contain '#'; this label is the one issuer that is free text, and one with
+	// a '#' would let ("mesh", "a#b") and ("mesh#a", "b") name the same
+	// principal. Refused here, the first '#' always ends the issuer.
+	if strings.Contains(t.Issuer, "#") {
+		return fmt.Errorf("issuer %q contains '#', which separates the issuer from the subject in a qualified identity", t.Issuer)
+	}
+
 	if t.ClientCAFile == "" {
 		return fmt.Errorf("client_ca_file is required for kind: %s", IssuerKindMTLS)
 	}

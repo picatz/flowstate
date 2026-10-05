@@ -646,10 +646,11 @@ func signalSenderValue(sender *SignalSender) *Value {
 
 	// The shared shape, less the claims, plus the one field the sender carries
 	// beyond it. A sender is a third party, and its claims are whatever the
-	// operator chose to copy out of its token (`--identity-claim`); a wait's
-	// outputs are durable history, so they carry who sent (`principal`,
-	// `subject`, `issuer`, `namespace`) and not those attributes. The `allow:`
-	// predicate reads the claims server-side, where they are not recorded.
+	// operator chose to copy out of its token (`--identity-claim`); what an
+	// expression reads, and so what a wait's outputs record, is who sent
+	// (`principal`, `subject`, `issuer`, `namespace`) and not those attributes.
+	// This bounds the expression-visible shape only: the signal delivery
+	// itself still carries the verified identity, claims included.
 	identityMap := IdentityShape(identity)
 	delete(identityMap, "claims")
 	identityMap["deployment"] = identity.GetDeployment()

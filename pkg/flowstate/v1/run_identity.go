@@ -125,9 +125,14 @@ func IdentityShape(identity *WorkloadIdentity) map[string]any {
 //
 // The rule is decided once, here: an unauthenticated or local sender (no
 // identity) and an identity missing either half give "", never a half-formed
-// "#" or "issuer#". A policy comparing principals therefore cannot match an
-// anonymous caller against another anonymous caller, or against a rule that
-// names an empty subject.
+// "#" or "issuer#". The empty value still equals itself, so a predicate that
+// compares a principal must treat "" as missing (require it non-empty) rather
+// than rely on the representation to keep anonymous callers apart.
+//
+// The join is injective because no issuer contains '#': an OIDC issuer is a
+// fragment-free https URL and a `kind: mtls` issuer label is refused if it has
+// one (auth.TrustedIssuer validation), so the first '#' always ends the issuer
+// and a subject may contain any further '#'.
 func Principal(issuer, subject string) string {
 	if issuer == "" || subject == "" {
 		return ""
