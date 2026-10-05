@@ -31,9 +31,6 @@ regardless of judgment in tools, hooks, and CI.
 A change that violates one of these is a bug even when its immediate tests pass.
 The complete rationale lives in
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
-This list is numbered for this file; ARCHITECTURE.md numbers its own list
-differently, so cite either as "AGENTS.md invariant N" or "ARCHITECTURE.md
-invariant N", never by bare number.
 
 1. **Proto-first.** Boundary-crossing shapes are defined once in Protobuf.
    Hand-written Go types may add behavior, not duplicate schema-owned shape.
