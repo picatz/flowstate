@@ -250,7 +250,10 @@ func TestCheckPolicyToolFailsClosedWhenTheQuestionCannotBePut(t *testing.T) {
 		}), "over the limit"},
 		{"an oversized subject", with(t, func(a map[string]any) {
 			a["sender"] = map[string]any{"subject": strings.Repeat("s", maxCheckPolicyIdentityField+1), "issuer": gateIssuer}
-		}), "byte limit"},
+		}), "character limit"},
+		{"an oversized signal name", with(t, func(a map[string]any) {
+			a["signal"] = strings.Repeat("s", maxCheckPolicySignalName+1)
+		}), "signal is over"},
 	}
 
 	for _, tt := range tests {
@@ -349,4 +352,43 @@ steps:
 	result, text = call(map[string]any{"code": "short-secret-77"})
 	require.True(t, result.IsError, text)
 	require.Contains(t, text, "code")
+}
+
+// The limits count characters, as the matrix's max_len rules and the schema's
+// maxLength do, so a subject at the limit in a multi-byte script is a question
+// that can be put, and one character more is not.
+func TestCheckPolicyToolCountsCharactersNotBytes(t *testing.T) {
+	t.Parallel()
+
+	session := connectMCP(t, defaultLocalRunPosture())
+
+	for _, tt := range []struct {
+		name    string
+		extra   int
+		refused bool
+	}{
+		{"at the limit", 0, false},
+		{"one over", 1, true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			args := approvalGateArgs(t)
+			args["sender"] = map[string]any{
+				"subject": strings.Repeat("é", maxCheckPolicyIdentityField+tt.extra),
+				"issuer":  gateIssuer,
+			}
+
+			result, text := callCheckPolicy(t, session, args)
+
+			if tt.refused {
+				require.True(t, result.IsError, text)
+				require.Contains(t, text, "character limit")
+
+				return
+			}
+
+			require.False(t, result.IsError, "a subject at the character limit was refused: %s", text)
+		})
+	}
 }

@@ -166,7 +166,8 @@ func checkPolicyInputSchema() map[string]any {
 				"description": "Which policy to ask: `signal` (`signals:`), `debug` (`debug:`) or `manual` (`triggers.manual`).",
 			},
 			"signal": map[string]any{
-				"type": "string",
+				"type":      "string",
+				"maxLength": 256,
 				"description": "With gate `signal`, the one declared signal to check. Left out, every declared " +
 					"signal is checked.",
 			},

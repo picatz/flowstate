@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -37,6 +38,7 @@ const (
 	maxCheckPolicyClaims        = 64
 	maxCheckPolicyClaimName     = 256
 	maxCheckPolicyClaimValue    = 4096
+	maxCheckPolicySignalName    = 256
 )
 
 // checkPolicyIdentity is one identity argument: the fields of a test file's
@@ -72,8 +74,8 @@ func (id *checkPolicyIdentity) scripted(what string, emptyIsNil bool) (*flowtest
 	}
 
 	for field, value := range map[string]string{"subject": id.Subject, "issuer": id.Issuer, "namespace": id.Namespace} {
-		if len(value) > maxCheckPolicyIdentityField {
-			return nil, fmt.Errorf("%s %s is over the %d byte limit", what, field, maxCheckPolicyIdentityField)
+		if utf8.RuneCountInString(value) > maxCheckPolicyIdentityField {
+			return nil, fmt.Errorf("%s %s is over the %d character limit", what, field, maxCheckPolicyIdentityField)
 		}
 	}
 
@@ -82,8 +84,8 @@ func (id *checkPolicyIdentity) scripted(what string, emptyIsNil bool) (*flowtest
 	}
 
 	for name, value := range id.Claims {
-		if len(name) > maxCheckPolicyClaimName || len(value) > maxCheckPolicyClaimValue {
-			return nil, fmt.Errorf("%s has a claim over the %d byte name or %d byte value limit",
+		if utf8.RuneCountInString(name) > maxCheckPolicyClaimName || utf8.RuneCountInString(value) > maxCheckPolicyClaimValue {
+			return nil, fmt.Errorf("%s has a claim over the %d character name or %d character value limit",
 				what, maxCheckPolicyClaimName, maxCheckPolicyClaimValue)
 		}
 	}
@@ -128,6 +130,10 @@ func checkPolicyToolHandler() mcp.ToolHandler {
 		if strings.TrimSpace(args.Source) == "" {
 			return flowmcp.ToolError(errors.New(
 				"source is required: pass the Flowfile YAML whose policy is asked")), nil
+		}
+
+		if utf8.RuneCountInString(args.Signal) > maxCheckPolicySignalName {
+			return flowmcp.ToolError(fmt.Errorf("signal is over the %d character limit", maxCheckPolicySignalName)), nil
 		}
 
 		var signals []string
