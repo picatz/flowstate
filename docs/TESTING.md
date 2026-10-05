@@ -581,6 +581,99 @@ there, although the same suite passes under `flow test`.
 [`examples/approval-gate`](../examples/approval-gate/workflow.test.yaml) tests
 its separation of duties this way.
 
+### Who may act, without a run: `flow signals check`
+
+A case runs the workflow as one identity. The question "who may approve this,
+debug it, or start it?" is about the policy, not the run, and
+`flow signals check` asks it directly: it compiles the Flowfile, runs no step,
+contacts no server, and puts the identity to each gate through the check the
+engine itself uses:
+
+| Gate | Flowfile | Decided by |
+|---|---|---|
+| `signals.NAME` | `signals:` | `v1.SignalPolicyCheck`, the check a delivery meets on the server and in `flow run local` |
+| `debug` | `debug:` | `v1.DebugPolicyCheck` |
+| `triggers.manual` | `triggers: - manual:` | `v1.CheckManualStart` |
+
+```console
+$ flow signals check examples/approval-gate/workflow.yaml \
+    --input-file examples/approval-gate/inputs.json \
+    --starter-subject dev@example.com --starter-issuer https://issuer.example.com \
+    --signal-as-subject sre-lead@example.com --signal-as-issuer https://issuer.example.com \
+    --signal-as-claim team=release-managers
+signals.deploy-approved  admitted
+```
+
+The sender is named with the `--signal-as-*` flags that `flow run local` takes,
+and the run's starter, which a predicate reads as `run.identity`, with
+`--starter-*`. Two defaults fail closed exactly as the engine does. A sender
+that names nobody is unauthenticated, which no `allow:` predicate a deployment
+writes admits, and a `triggers.manual` block that writes an `allow:` predicate refuses
+(with no such block, any caller the server authenticates may start the workflow,
+and the line says so). A starter that is not named
+is unknown, so a predicate that reads `run.identity` errors, and an error refuses.
+`--starter-anonymous` says the run was started by nobody authenticated, which is
+how `flow run local` models a run given no `--as-*` flags. Arguments are given
+with `--input` or `--input-file`, bound as a start binds them, so a predicate sees
+defaults too.
+
+With none of `--signal NAME`, `--debug` and `--manual`, every declared signal is
+checked; naming any of them checks only what is named. Each line is `admitted` or
+`refused`, and a refusal carries the engine's own sentence, which never quotes a
+claim, an input or an evaluation error. A `sensitive:` input is never printed; a
+refusal about an argument that is not sensitive can name it, as `flow run local`
+does. Claims, subjects and matrix content are never quoted.
+
+**In CI.** Without `--expect` the exit status is 0 whatever the answers, and
+non-zero only for a usage or compile error. `--expect admitted|refused` turns
+the answer into an assertion: exit status 1 when any decision differs, after the
+answers are printed.
+
+**Many identities.** `--matrix FILE` asks every gate about a table of identities
+and prints senders by gates. The file is strict YAML, so a misspelled key is a
+refusal rather than an assertion that checks nothing:
+
+```yaml
+identities:
+  - name: sre-lead
+    subject: sre-lead@example.com
+    issuer: https://issuer.example.com
+    claims: {team: release-managers}
+    starter: {subject: dev@example.com, issuer: https://issuer.example.com}
+    expect: admitted
+  - name: self-approval            # the requester may not approve their own run
+    subject: dev@example.com
+    issuer: https://issuer.example.com
+    claims: {team: release-managers}
+    starter: {subject: dev@example.com, issuer: https://issuer.example.com}
+    expect: refused
+  - name: anonymous
+    starter: {}                    # started by nobody authenticated
+    expect: refused
+```
+
+`expect` is one outcome for every gate, and `expect_by_gate` a map from gate
+(`signals.NAME`, `debug`, `triggers.manual`) to its outcome, which wins for the
+gates it names. The file is defined by `proto/flowstate/v1/policy_check.proto`. A row's `inputs:` replace, by name,
+the `--input` arguments given for every row, and a row with no `starter:` or
+`expect:` takes `--starter-*` and `--expect`. A subject without an issuer, or the
+reverse, is refused by the rule a test file's `sender:` is held to. A matrix is
+bounded at 256 identities and 256 KiB, and holds one YAML document, with no
+anchors, aliases or merge keys. Nesting is bounded by counting bytes, not by
+reading YAML: the file may hold at most 4096 `[` and `{` characters, wherever
+they appear, and a line at most 128 leading spaces and 64 block indicators
+(`- `, `? `, `: `); a tab in indentation is refused. A number of magnitude 2^53
+or more in a row's `inputs:` is refused, whole or not, because the schema
+carries inputs as doubles and would round it; give such a value with `--input`, which applies to every row. A row that does not match its expectation
+makes the exit status 1.
+
+What it is not: a decision that depends on state only a run has, such as a
+signal already consumed, is not modelled, and `triggers.manual` is decided over
+the caller and the inputs alone, as the server decides it. Like a case's
+`sender:`, an identity here is an assertion, not one anybody attested, and the
+check says nothing about whether a deployment would let that identity through its
+authenticator.
+
 ## Triggers
 
 A case can start the run the way a trigger would:

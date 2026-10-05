@@ -191,3 +191,13 @@ func (c *compiler) refuseStrictYAML(root ast.Node) bool {
 	}
 	return len(findings) == 0
 }
+
+// StrictYAMLRefusals reports every anchor, alias and merge key in a parsed file,
+// positioned and worded as the compiler words them. Exported for a caller that
+// decodes a YAML document of its own shape and must refuse the same constructs
+// before anything is expanded - the refusal is on the presence of the construct,
+// so it costs the document's own size and never follows an alias. One collector
+// for every reader of YAML here, so none restates the rule.
+func StrictYAMLRefusals(file *ast.File) []Diagnostic {
+	return strictYAMLRefusalsIn(file)
+}

@@ -161,6 +161,7 @@
 package flowtest
 
 import (
+	"errors"
 	"fmt"
 	"maps"
 	"path/filepath"
@@ -1039,15 +1040,68 @@ type ScriptedIdentity struct {
 //     meant, and is matched literally rather than ignored - the mistake
 //     `--signal-as-claim`'s own NAME=VALUE check refuses.
 func checkScriptedIdentity(p *problems, r site, where string, identity *ScriptedIdentity) {
-	if identity == nil {
-		return
+	for _, fault := range scriptedIdentityFaults(where, identity) {
+		if fault.claim == nil {
+			p.report(r, "%s", fault.message)
+			continue
+		}
+
+		p.reportKey(r.in(r.at.field("claims").field(*fault.claim)), "%s", fault.message)
+	}
+}
+
+// Check reports what is wrong with the identity under the rules a test file is
+// loaded with ([checkScriptedIdentity]), as one error naming where, or nil. It is
+// the same decision for a caller that holds an identity outside a test file - the
+// `flow signals check` matrix - so that a half-specified issuer and subject is
+// refused for the one reason, in the one sentence, wherever it is written.
+//
+// A nil identity has nothing to refuse: it is the absence of one, which is a
+// meaningful answer (nobody authenticated) rather than a malformed one.
+func (identity *ScriptedIdentity) Check(where string) error {
+	faults := scriptedIdentityFaults(where, identity)
+	if len(faults) == 0 {
+		return nil
 	}
 
+	errs := make([]error, 0, len(faults))
+	for _, fault := range faults {
+		errs = append(errs, errors.New(fault.message))
+	}
+
+	return errors.Join(errs...)
+}
+
+// WorkloadIdentity renders the identity as the [v1.WorkloadIdentity] a policy
+// predicate reads - the conversion a test case's own sender and starter go
+// through, exported so another caller deciding the same predicates reads the
+// same fields. A nil identity renders as an empty one, never nil.
+func (identity *ScriptedIdentity) WorkloadIdentity() *v1.WorkloadIdentity {
+	return scriptedIdentity(identity)
+}
+
+// identityFault is one thing [scriptedIdentityFaults] found: the sentence, and
+// the claim name it is about when it is about one (so a test file can position
+// it at the key an author wrote).
+type identityFault struct {
+	claim   *string
+	message string
+}
+
+// scriptedIdentityFaults is the rule set itself, free of any position, so the
+// load-time diagnostic and [ScriptedIdentity.Check] cannot disagree.
+func scriptedIdentityFaults(where string, identity *ScriptedIdentity) []identityFault {
+	if identity == nil {
+		return nil
+	}
+
+	var faults []identityFault
+
 	if (identity.Subject == "") != (identity.Issuer == "") {
-		p.report(r,
+		faults = append(faults, identityFault{message: fmt.Sprintf(
 			"%s names a subject or an issuer without the other; give both, because a rule matches %q "+
 				"and never a bare subject - a subject is only unique within its issuer",
-			where, v1.QualifiedSubject("<issuer>", "<subject>"))
+			where, v1.QualifiedSubject("<issuer>", "<subject>"))})
 	}
 
 	// Sorted, so a file with two bad claims reports them in the same order
@@ -1061,12 +1115,14 @@ func checkScriptedIdentity(p *problems, r site, where string, identity *Scripted
 			empty = "name"
 		}
 		if name == "" || value == "" {
-			p.reportKey(r.in(r.at.field("claims").field(name)),
+			faults = append(faults, identityFault{claim: &name, message: fmt.Sprintf(
 				"%s declares a claim with an empty %s; a claim is matched literally, so write it as "+
 					"`name: value` with both present, or drop it",
-				where, empty)
+				where, empty)})
 		}
 	}
+
+	return faults
 }
 
 // Expectation is what a case's run must have produced to pass.

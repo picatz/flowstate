@@ -1,0 +1,111 @@
+syntax = "proto3";
+
+package flowstate.v1;
+
+import "buf/validate/validate.proto";
+import "google/protobuf/struct.proto";
+
+option go_package = "flowstatev1";
+
+// PolicyCheckMatrix is the file `flow signals check --matrix` reads: a table of
+// named identities to ask every selected authorization gate about, written as
+// YAML (or JSON).
+//
+// # Why the file is a message
+//
+// It is read by the process that runs the check and is never sent anywhere,
+// so it is not a wire shape in the usual sense. It is defined here because it
+// is a shape an author writes and more than one tool will read (the command
+// today, the MCP server later), and this schema is the one place a shape gets
+// one definition, its rules, and its documentation together.
+//
+// # What the schema does not bound
+//
+// The rules below bound the document as written: rows, names, claims. They
+// cannot see YAML anchors, aliases and merge keys, which are how a few hundred
+// bytes expand into gigabytes, nor the size of a row's `inputs` once decoded.
+// The reader refuses the first on their presence, before decoding, and counts
+// the second; both are checks the schema has no way to say.
+//
+// # Nothing here is attested
+//
+// Every identity in this file is an assertion the author makes. The check says
+// what the workflow's own policy would answer for it, and nothing about whether
+// a deployment would let that identity through its authenticator.
+message PolicyCheckMatrix {
+  // Identities are the rows. At least one, and no more than 256, because every
+  // row is a full evaluation of every gate checked.
+  repeated PolicyCheckRow identities = 1 [(buf.validate.field).repeated = {
+    min_items: 1
+    max_items: 256
+  }];
+}
+
+// PolicyCheckRow is one named identity: who attempts the act, who started the
+// hypothetical run, and what the check must answer.
+//
+// The identity fields sit directly on the row, as a test file's `sender:`
+// writes them. All of them absent is an unauthenticated caller.
+message PolicyCheckRow {
+  // Name labels the row in the table and in a mismatch. Unique across the
+  // file (checked by the reader, which a schema rule cannot say), at most 64
+  // characters, and free of control characters (C0, DEL and C1, so no terminal
+  // escape such as U+009B) and of Unicode format characters (category Cf, such
+  // as the bidirectional override U+202E), since it is printed.
+  string name = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^[^\\x00-\\x1f\\x7f-\\x{9f}\\p{Cf}]+$"
+  }];
+
+  // Subject, Issuer, Namespace and Claims are the identity attempting the act.
+  // A subject and an issuer travel together or not at all, which the reader
+  // enforces with the rule a test file's identities are held to.
+  string subject = 2 [(buf.validate.field).string.max_len = 1024];
+  string issuer = 3 [(buf.validate.field).string.max_len = 1024];
+  string namespace = 4 [(buf.validate.field).string.max_len = 1024];
+  map<string, string> claims = 5 [(buf.validate.field).map = {
+    max_pairs: 64
+    keys: {string: {max_len: 256}}
+    values: {string: {max_len: 4096}}
+  }];
+
+  // Starter is who started the hypothetical run, which a predicate reads as
+  // `run.identity`. Absent leaves the starter unknown, which refuses any
+  // predicate that reads it; present and empty (`starter: {}`) says the run
+  // was started by nobody authenticated.
+  PolicyCheckIdentity starter = 6;
+
+  // Inputs are the arguments the run would be started with, read against the
+  // workflow's `inputs:` declarations. They replace, by name, any arguments
+  // given for every row. Their size once decoded is counted by the reader, and a
+  // number of magnitude 2^53 or more is refused: a Struct carries numbers as doubles,
+  // which would round it, and a check that read a different value than the
+  // engine would answer for the wrong run. Give such a value with `--input`.
+  google.protobuf.Struct inputs = 7;
+
+  // Expect asserts one outcome for every gate checked: `admitted` or
+  // `refused`. Empty asserts nothing.
+  string expect = 8 [(buf.validate.field).string = {in: ["", "admitted", "refused"]}];
+
+  // ExpectByGate asserts an outcome per gate, keyed `signals.NAME`, `debug` or
+  // `triggers.manual`, and wins over [expect] for the gates it names. A key
+  // that is not a gate being checked is refused by the reader.
+  map<string, string> expect_by_gate = 9 [(buf.validate.field).map = {
+    max_pairs: 64
+    keys: {string: {min_len: 1, max_len: 256}}
+    values: {string: {in: ["admitted", "refused"]}}
+  }];
+}
+
+// PolicyCheckIdentity is an identity a row names for the run's starter.
+message PolicyCheckIdentity {
+  string subject = 1 [(buf.validate.field).string.max_len = 1024];
+  string issuer = 2 [(buf.validate.field).string.max_len = 1024];
+  string namespace = 3 [(buf.validate.field).string.max_len = 1024];
+  map<string, string> claims = 4 [(buf.validate.field).map = {
+    max_pairs: 64
+    keys: {string: {max_len: 256}}
+    values: {string: {max_len: 4096}}
+  }];
+}
