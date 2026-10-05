@@ -921,10 +921,10 @@ func signalPolicyScopeMemoEntry(policies map[string]*v1.SignalPolicy, inputs map
 
 	encoded, err := proto.Marshal(scope)
 	if err != nil {
-		return nil, fmt.Errorf("encoding the values the signal policy predicate reads: %w", err)
+		return nil, fmt.Errorf("encoding the values an allow predicate reads: %w", err)
 	}
 	if len(encoded) > v1.MaxSignalPolicyScopeBytes {
-		return nil, fmt.Errorf("the signal policy predicate reads this run's inputs or starter, which must be recorded "+
+		return nil, fmt.Errorf("an allow predicate (in signals: or debug:) reads this run's inputs or starter, which must be recorded "+
 			"with the run to be evaluated at delivery, and they encode to %d bytes, over the %d-byte bound; "+
 			"submit smaller inputs or have the predicate read less", len(encoded), v1.MaxSignalPolicyScopeBytes)
 	}

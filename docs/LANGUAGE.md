@@ -1616,7 +1616,7 @@ declaration:** `description`.
 `outputs`), `wait_for_signals` (`name`, `max_batch`, `timeout`, `prompt`,
 `outputs`, `quorum` with `approve`, `distinct`, `exclude`, `veto`).
 
-**Triggers:** `manual` (`denied`, or `require_reason`, `allowed_principals` and an
+**Triggers:** `manual` (`denied`, or `require_reason`, and one of `allowed_principals` or an
 `allow` predicate),
 `schedule` (`cron`, `every`, `calendars`, `time_zone`, `jitter`, `overlap`,
 `start_at`, `end_at`, `catchup_window`, `pause_on_failure`; a calendar has

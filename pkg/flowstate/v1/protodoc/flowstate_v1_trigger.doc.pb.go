@@ -110,7 +110,8 @@ func init() {
 				" webhook, lose `flow run` — and nobody discovers an inferred lock until\n" +
 				" they need it not to be there.\n" +
 				"\n" +
-				" Contradicts both fields below, and the compiler refuses the combination\n" +
+				" Contradicts each field below that says who may start (allowed_principals\n" +
+				" and allow_expr), and the compiler refuses the combination\n" +
 				" rather than resolving it by precedence: a refusal that also lists who may\n" +
 				" start the workload is two sentences that cannot both be true.\n",
 		},

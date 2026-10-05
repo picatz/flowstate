@@ -259,7 +259,8 @@ type ManualTrigger struct {
 	// webhook, lose `flow run` — and nobody discovers an inferred lock until
 	// they need it not to be there.
 	//
-	// Contradicts both fields below, and the compiler refuses the combination
+	// Contradicts each field below that says who may start (allowed_principals
+	// and allow_expr), and the compiler refuses the combination
 	// rather than resolving it by precedence: a refusal that also lists who may
 	// start the workload is two sentences that cannot both be true.
 	Denied bool `protobuf:"varint,1,opt,name=denied,proto3" json:"denied,omitempty"`
