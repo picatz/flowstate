@@ -1975,6 +1975,97 @@ flow signal deploy-abc123 deploy-approved -o json \
 | `--tls-client-key-file <string>` | `string` | — | `FLOWSTATE_TLS_CLIENT_KEY_FILE` | PEM private key matching `--tls-client-cert-file` (overrides FLOWSTATE_TLS_CLIENT_KEY_FILE) |
 | `--token-file <string>` | `string` | — | `FLOWSTATE_TOKEN_FILE` | file holding the bearer token to authenticate with (overrides FLOWSTATE_TOKEN_FILE); re-read per request, so a rotating token keeps working. Without it, FLOWSTATE_TOKEN is used, and neither means anonymous |
 
+## `flow signals`
+
+Check who may act on a workflow, without running it
+
+```
+flow signals [command]
+```
+
+The verbs about a workflow's authorization gates that read a Flowfile and run nothing. `flow signal` (singular) delivers to a run that is already waiting.
+
+## `flow signals check`
+
+Ask each authorization gate whether an identity may act
+
+```
+flow signals check <workflow-file> [flags]
+```
+
+Compile a Flowfile and ask its authorization gates whether an identity would be admitted, executing no step and contacting no server. Each gate is decided by the function the engine decides it with: `signals:` by the check the server applies to a delivery, `debug:` by the check a debug lease is granted with, and `triggers.manual` by the check a manual start is held to. A refusal is the engine's own sentence, which never quotes a claim or an input.
+
+With none of `--signal`, `--debug` and `--manual`, every declared signal is checked; naming any of them checks only what is named. One line is written per gate, `admitted` or `refused`. A signal no `signals:` policy governs is admitted for any sender, and the line says so, so it is not mistaken for a gate that was passed.
+
+The sender is named as `flow run local` names the approver a `--signal` stands in for: `--signal-as-subject` with `--signal-as-issuer` (given together or not at all), `--signal-as-namespace` and `--signal-as-claim`. Name none and the sender is unauthenticated, which no `allow:` predicate a deployment writes admits, and which `triggers.manual` refuses outright. `--starter-*` names who started the run, which a predicate reads as `run.identity`; name none and the starter is unknown, which refuses any predicate that reads `run.identity`, as the engine does for a run with no recorded starter. `--starter-anonymous` says the run was started by nobody authenticated, which is how `flow run local` models a run started with no `--as-*` flags.
+
+Arguments are given as `flow run` takes them and are bound against the workflow's `inputs:` as a start binds them, so a predicate reads defaults too. Nothing prints an input's value.
+
+`--expect admitted|refused` makes the answer an assertion: the exit status is 1 when any decision differs, which is what makes this usable in CI. Without it the exit status is 0 whatever the answers, and non-zero only for a usage or compile error.
+
+`--matrix FILE` asks the same gates about many identities at once and prints a senders-by-gates table. The file is a strict YAML document:
+
+  identities:
+    - name: sre-lead
+      subject: sre-lead@example.com
+      issuer: https://issuer.example.com
+      claims: {team: release-managers}
+      starter: {subject: dev@example.com, issuer: https://issuer.example.com}
+      inputs: {expected_approver: sre-lead@example.com}
+      expect: admitted
+
+`expect` is one outcome for every gate, or a map from gate (`signals.NAME`, `debug`, `triggers.manual`) to its outcome. A row's `inputs` replace, by name, the `--input` arguments given for every row; a row with no `starter` takes the `--starter-*` flags, and one with no `expect` takes `--expect`. A mismatching row makes the exit status 1. A matrix is bounded at 256 identities and 256 KiB.
+
+Nothing here runs the workflow: a decision that depends on state only a run has (a retry, a signal already consumed) is not modelled, and `triggers.manual` is decided over the caller and the inputs alone, as the server decides it, with no `run`.
+
+Examples:
+
+```sh
+# Who may answer the approval gate? Ask as the approver it names:
+flow signals check examples/approval-gate/workflow.yaml \
+  --input-file examples/approval-gate/inputs.json \
+  --starter-subject dev@example.com \
+  --starter-issuer https://issuer.example.com \
+  --signal-as-subject sre-lead@example.com \
+  --signal-as-issuer https://issuer.example.com \
+  --signal-as-claim team=release-managers
+
+# Assert, in CI, that the requester cannot approve their own deploy:
+flow signals check examples/approval-gate/workflow.yaml \
+  --input-file examples/approval-gate/inputs.json --expect refused \
+  --starter-subject sre-lead@example.com \
+  --starter-issuer https://issuer.example.com \
+  --signal-as-subject sre-lead@example.com \
+  --signal-as-issuer https://issuer.example.com \
+  --signal-as-claim team=release-managers
+
+# Every gate against a table of identities, with expectations:
+flow signals check examples/approval-gate/workflow.yaml \
+  --debug --matrix who.yaml \
+  --input-file examples/approval-gate/inputs.json
+```
+
+| Flag | Type | Default | Environment | Description |
+|---|---|---|---|---|
+| `--debug` | `bool` | `false` | — | check who may hold a debug lease, decided by the `debug:` stanza |
+| `--expect <string>` | `string` | — | — | assert every decision is `admitted` or `refused`; exit 1 when one differs |
+| `--input <string,...>` | `stringArray` | — | — | an argument this run is started with, as name=value (repeatable). The workflow's `inputs:` declaration decides how the value is read: an int is parsed as a number, a bool as true/false, and a list or struct as JSON |
+| `--input-file <string>` | `string` | — | — | a JSON object of arguments, keyed by input name. Values arrive with the types JSON gives them; a `--input` flag of the same name wins over the file |
+| `--manual` | `bool` | `false` | — | check who may start the workflow by hand, decided by `triggers.manual` |
+| `--matrix <string>` | `string` | — | — | a YAML file of named identities to check as a senders-by-gates table |
+| `-o, --output <string>` | `string` | `text` | — | output format: text, json, or jsonl |
+| `--reason <string>` | `string` | — | — | the reason a manual start would carry, for a `manual:` block that requires one |
+| `--signal <string,...>` | `stringArray` | — | — | check this declared signal (repeatable); by default every declared signal is checked |
+| `--signal-as-claim <string,...>` | `stringArray` | — | — | authenticated string claim NAME=VALUE of the identity attempting the act (repeatable) |
+| `--signal-as-issuer <string>` | `string` | — | — | authenticated issuer attempting the act, with `--signal-as-subject` |
+| `--signal-as-namespace <string>` | `string` | — | — | tenant namespace of the identity attempting the act |
+| `--signal-as-subject <string>` | `string` | — | — | authenticated subject attempting the act, with `--signal-as-issuer` |
+| `--starter-anonymous` | `bool` | `false` | — | the run was started by nobody authenticated, rather than by an unknown starter |
+| `--starter-claim <string,...>` | `stringArray` | — | — | authenticated string claim NAME=VALUE of whoever started the run (repeatable) |
+| `--starter-issuer <string>` | `string` | — | — | issuer of the subject that started the run, with `--starter-subject` |
+| `--starter-namespace <string>` | `string` | — | — | tenant namespace of whoever started the run |
+| `--starter-subject <string>` | `string` | — | — | subject that started the run, read as `run.identity`, with `--starter-issuer` |
+
 ## `flow task`
 
 Work with a single task

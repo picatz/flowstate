@@ -142,16 +142,9 @@ func rehearsalSignalSender(cmd *cobra.Command, delivered int) (*v1.SignalSender,
 				"issuer", v1.QualifiedSubject("<issuer>", "<subject>"))
 	}
 
-	claims := make(map[string]string, len(entries))
-	for _, entry := range entries {
-		name, value, found := strings.Cut(entry, "=")
-		if !found || name == "" || value == "" {
-			return nil, fmt.Errorf("invalid --signal-as-claim %q: want NAME=VALUE", entry)
-		}
-		if _, duplicate := claims[name]; duplicate {
-			return nil, fmt.Errorf("duplicate --signal-as-claim %q", name)
-		}
-		claims[name] = value
+	claims, err := parseIdentityClaimFlags("signal-as-claim", entries)
+	if err != nil {
+		return nil, err
 	}
 
 	return v1.RehearsalSignalSender(&v1.WorkloadIdentity{

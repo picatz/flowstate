@@ -3597,6 +3597,14 @@ flow lsp --plugin-dir /opt/flowstate/plugins`,
 	rootCmd.AddCommand(timelineCmd)
 	rootCmd.AddCommand(watchCmd)
 	rootCmd.AddCommand(signalCmd)
+
+	// Beside `signal`, the verb it is named for and must not be confused with:
+	// that one delivers to a waiting run and needs a server; this reads a
+	// Flowfile and asks who may act, running nothing.
+	signalsCmd := newSignalsCommand()
+	signalsCmd.GroupID = "workflow"
+	rootCmd.AddCommand(signalsCmd)
+
 	rootCmd.AddCommand(scheduleCmd)
 	for _, c := range lifecycleCmds {
 		rootCmd.AddCommand(c)
