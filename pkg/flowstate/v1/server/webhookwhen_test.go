@@ -1,8 +1,10 @@
 package server_test
 
 import (
+	"context"
 	"io"
 	"net/http"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -10,6 +12,8 @@ import (
 	"google.golang.org/protobuf/encoding/prototext"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/audit"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/server"
 )
 
 // The webhook admission predicate at the receiver: a delivery that verifies and
@@ -111,6 +115,64 @@ func TestAFloodOfDeclinesIsOneBoundedRecord(t *testing.T) {
 	}
 
 	assert.Len(t, sink.all(), 1, "every declined delivery wrote its own record")
+}
+
+// TestADeclineARequiredRecorderCannotWriteIsNeverAnsweredAsRecorded: the first
+// decline's write fails and answers 503; the window it opened must not turn the
+// retries into 204s that nothing recorded. Each is told to retry until a write
+// lands, and that write stands for every decline since.
+func TestADeclineARequiredRecorderCannotWriteIsNeverAnsweredAsRecorded(t *testing.T) {
+	t.Parallel()
+
+	sink := &flakySink{failures: 3}
+	recorder, err := audit.NewRecorder(audit.WithoutStderr(), audit.Required(), audit.WithEmitter(sink))
+	require.NoError(t, err)
+
+	receiver, err := mustNew(t, nil, server.WithAudit(recorder)).NewWebhookReceiver(t.Context(),
+		"", []*v1.Workflow{filteredWorkflow(`event.body.action == "opened"`)}, keyStore(t, webhookSecret))
+	require.NoError(t, err)
+
+	for _, event := range []string{"evt_1", "evt_2", "evt_3"} {
+		resp := deliver(t, receiver, filteredRoute, filteredBody(event, "labeled"), signed)
+		require.Equal(t, http.StatusServiceUnavailable, resp.StatusCode,
+			"a decline the recorder could not write was answered as though it were recorded")
+		assert.NotEmpty(t, resp.Header.Get("Retry-After"))
+	}
+
+	resp := deliver(t, receiver, filteredRoute, filteredBody("evt_4", "labeled"), signed)
+	require.Equal(t, http.StatusNoContent, resp.StatusCode)
+
+	records := sink.written()
+	require.Len(t, records, 1)
+	assert.GreaterOrEqual(t, records[0].GetCount(), uint32(4), "the retried write lost the declines before it")
+}
+
+// flakySink fails its first `failures` emits and records the rest.
+type flakySink struct {
+	mu       sync.Mutex
+	failures int
+	records  []*v1.AuditRecord
+}
+
+func (s *flakySink) Emit(_ context.Context, record *v1.AuditRecord) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.failures > 0 {
+		s.failures--
+
+		return context.DeadlineExceeded
+	}
+	s.records = append(s.records, record)
+
+	return nil
+}
+
+func (s *flakySink) written() []*v1.AuditRecord {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return append([]*v1.AuditRecord(nil), s.records...)
 }
 
 // TestAWhenThatCannotBeAnsweredRefusesTheDelivery: fail closed, as a refusal and

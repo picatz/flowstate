@@ -32,8 +32,10 @@ import (
 // share, after verification and before `idempotency_key:`, so a declined
 // delivery computes no key, addresses no run and binds no input (invariant 2).
 // The same evaluator and the same cost and deadline limits as its siblings bound
-// it (invariant 5); `flow test` replays it through those two functions, so a
-// rehearsal declines exactly what the receiver declines (invariant 3).
+// it (invariant 5). `flow test` replays a start-arm trigger through
+// [BindWebhookTriggerInputs], so that rehearsal declines exactly what the
+// receiver declines (invariant 3); it does not replay a `signal:` bridge, so a
+// bridge's predicate is covered by this package's and the receiver's tests alone.
 
 // ErrWebhookDeclined is what a binding returns when a trigger's `when:` answered
 // false: the delivery is well-formed and was verified, and the workflow does not

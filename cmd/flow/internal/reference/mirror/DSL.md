@@ -1858,7 +1858,7 @@ sub-language.
 
 **`event` is the delivery, and it is bound in a trigger only.** `event.headers` (whose
 names are matched without regard to case) and `event.body` (the decoded payload) are
-in scope in `when:`, `with:` and `idempotency_key:` and nowhere else in the language. A step
+in scope in `when:`, `with:` and `idempotency_key:` (and in a `signal:` arm's `correlate:` and `with:`) and nowhere else in the language. A step
 naming it is a positioned diagnostic, not a silent nil: everything a workflow operates
 on arrives through `with:` into `inputs:` and is read as `inputs.<name>`, because a
 second input path is one `flow validate` could not check. A step *called* `event` is

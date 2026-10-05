@@ -182,15 +182,20 @@ tests:
 // predicate through the same binding the receiver calls, so a verified delivery
 // the trigger declines is a refusal with no run, and the same delivery the
 // predicate admits maps as before. Both directions, over one stored delivery.
+// A predicate that cannot be answered is the receiver's 422, so it fails a case
+// expecting a refusal rather than passing as the decline it was meant to be.
 func TestAWhenDeclinesAReplayedDelivery(t *testing.T) {
 	t.Parallel()
 
 	for _, tc := range []struct {
 		name, when string
 		refused    bool
+		fails      bool
 	}{
 		{name: "declined", when: `${event.body.id == "evt_other"}`, refused: true},
 		{name: "admitted", when: `${event.body.id == "evt_9"}`},
+		{name: "a broken predicate is not a decline", when: `${event.body.missing == "x"}`, refused: true, fails: true},
+		{name: "a non-bool predicate is not a decline", when: `${event.body.id}`, refused: true, fails: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -220,7 +225,7 @@ tests:
 			report := flowtest.RunFile(dir + "/x.test.yaml")
 			require.Empty(t, report.GetRefused())
 			require.Len(t, report.GetCases(), 1)
-			assert.True(t, report.GetCases()[0].GetPassed(), "failures: %v", report.GetCases()[0].GetFailures())
+			assert.Equal(t, !tc.fails, report.GetCases()[0].GetPassed(), "failures: %v", report.GetCases()[0].GetFailures())
 		})
 	}
 }

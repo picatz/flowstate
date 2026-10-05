@@ -123,6 +123,25 @@ func (l *refusalLedger) admit(now time.Time, class refusalClass) (count uint32, 
 	return count, true
 }
 
+// release reopens a class whose record could not be written, carrying count
+// (what the failed write stood for) so the next refusal writes it again with
+// everything since. admit opens its window before the write, so without this a
+// required recorder's failure would suppress the very retries that exist to
+// get the decision written down, and answer them as though it were.
+func (l *refusalLedger) release(class refusalClass, count uint32) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	carried := count
+	if window := l.windows[class]; window != nil {
+		carried += window.suppressed
+		if carried < count {
+			carried = ^uint32(0)
+		}
+	}
+	l.windows[class] = &refusalWindow{suppressed: carried}
+}
+
 // webhookRouteKey is the resource key a delivery record carries for a route:
 // the two names the file declares, never the path the sender wrote. Empty for
 // a delivery that addressed no route, which is how the record says so without
@@ -167,6 +186,7 @@ func (r *WebhookReceiver) recordRefusal(ctx context.Context, route *webhookRoute
 	subject.Point = v1.AuditEnforcementPoint_AUDIT_ENFORCEMENT_POINT_WEBHOOK_DELIVERY
 	subject.Count = count
 	if err := r.server.audit.EnforcementDeny(ctx, subject, code); err != nil {
+		r.refusals.release(refusalClass{route: webhookRouteKey(route), code: code}, count)
 		r.log.ErrorContext(ctx, "a refused delivery could not be recorded", "route", webhookRouteKey(route), "error", err)
 
 		return err
