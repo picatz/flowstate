@@ -374,6 +374,19 @@ defects, and `RunTimeout`, which only a whole run can have. Rows of a table inhe
 `invariants:` when they state none. Not yet covered: delay faults, signal jitter,
 and shrinking a violating seed to its minimal fault set.
 
+Seeded exploration is the local driver's. The durable driver has one check of
+its own that the local driver cannot have: a run survives the loss of its
+worker. `TestWorkerRestartOverWorkflows` and `TestWorkerRestartOverUndoCases`
+(`pkg/flowstate/v1/engine/workerrestart_test.go`) run the shared conformance
+cases on a dev server, stop the first worker gracefully after a seed-chosen
+activity completion, and let a second worker with an empty cache rebuild the
+run from history and finish it with the answer both drivers already agree on.
+A failure prints the seed, the boundary the second worker resumed at, and the
+`flow debug history … --at` command that opens it.
+`FLOWSTATE_RESTART_SEEDS=N` (default 3, at most 50) sets the points per case.
+Not yet covered: a worker killed mid-activity, a restart while parked on a
+timer or signal, and a restart across Continue-As-New.
+
 ## One fixture, many rows
 
 Cases that differ in one or two values can share an entry and list their
