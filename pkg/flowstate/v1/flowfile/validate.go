@@ -2805,7 +2805,7 @@ var toleratedOutputs = []string{toleratedErrorOutput, toleratedFailureOutput}
 // [runRootValue]'s own doc says why (`deployment` is left off). This names what an
 // expression actually reaches, which is the only set a diagnostic here can be
 // honest about.
-var runIdentityFields = []string{"subject", "issuer", "namespace", "claims"}
+var runIdentityFields = []string{"subject", "issuer", "namespace", "claims", "principal"}
 
 // runFields are the fields [runRootValue] renders directly under `run`.
 //

@@ -345,7 +345,7 @@ take either a duration literal (`30s`) or a fenced expression.
 | `vars.<name>` | Workflow vars | Everywhere except workflow `vars:`, `must:`, `concurrency.key`, a `signals:` or `debug:` rule's `subject:`, and trigger expressions |
 | `steps.<id>.<output>` | An earlier step's outputs | After that step, in the same scope |
 | `run.workflow_id`, `run.run_id` | This run's address, for callbacks. `"local"` under `flow run local`. | Steps and outputs |
-| `run.identity.subject`, `.issuer`, `.namespace`, `.claims` | Who started the run, as the server verified it. Empty when nobody authenticated. | Steps and outputs |
+| `run.identity.subject`, `.issuer`, `.namespace`, `.claims`, `.principal` | Who started the run, as the server verified it. Empty when nobody authenticated. `principal` is `<issuer>#<subject>`, and `""` unless both are non-empty. | Steps and outputs |
 | `run.local` | `true` under the local driver | Steps and outputs |
 | `trigger.kind`, `.name`, `.principal`, `.delivery_id` | How the run started: `manual`, `schedule`, or `webhook`. [Triggers](#what-a-run-knows-about-its-start-trigger) | Steps and outputs |
 | a bare name | A loop's `as:` binding, or a step's own `vars:` | Inside that step or loop body |
@@ -909,9 +909,12 @@ The step waits for a signal named `name`. Its outputs:
 - `payload`: the JSON object the sender sent, read as
   `${steps.approval.payload.approved}`. Empty when the wait timed out.
 - `sender`: who sent it, as the server verified: `sender.identity.subject`,
-  `.issuer`, `.namespace`, and `.deployment`, `sender.accepted_at`, and
+  `.issuer`, `.namespace`, `.principal`, and `.deployment`, `sender.accepted_at`, and
   `sender.local` (`true` for a local rehearsal). A sender cannot forge these;
-  they are outside `payload`.
+  they are outside `payload`. `sender.identity` has the shape of
+  `run.identity` less `claims` (the sender is a third party, and a wait's outputs are
+  durable history) plus `deployment`; `principal` is `<issuer>#<subject>`, and `""`
+  for a local or unauthenticated sender or one missing either half.
 - `timed_out`: `true` if `timeout:` lapsed first.
 
 **A timeout is not a failure.** When `timeout:` lapses, the step succeeds with

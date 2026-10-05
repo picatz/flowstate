@@ -235,7 +235,7 @@ func waitOutputNames(wait *Wait) []NamedOutput {
 		Description: "What the sender's signal carried, under this root so a sender can never write outside it. Empty on a gate that timed out.",
 	}, {
 		Name:        SenderOutput,
-		Description: "The server-attested sender: `identity.subject`, `identity.issuer`, `accepted_at`, `local`. Never anything the payload claims.",
+		Description: "The server-attested sender: `identity.subject`, `identity.issuer`, `identity.principal`, `accepted_at`, `local`. Never anything the payload claims.",
 	}}
 }
 

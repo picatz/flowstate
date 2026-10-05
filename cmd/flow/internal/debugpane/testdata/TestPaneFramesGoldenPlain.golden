@@ -10,7 +10,7 @@ steps ────────────────────────�
 scope ─────────────────────────────────────────────────────────────────────────
   vars.region          "eu-west-1"
   inputs.version       "2026.9.0"
-  run.identity         {"claims":{},"issuer":"","namespace":"","subject":""}
+  run.identity         {"claims":{},"issuer":"","namespace":"","principal":"","s
   run.local            true
   run.run_id           "local"
   run.started_at       "2026-08-03T09:00:00Z"
@@ -32,7 +32,7 @@ scope ────────────────────────�
   steps.checkout       {"artifact":"checkout.tar.gz"}
   vars.region          "eu-west-1"
   inputs.version       "2026.9.0"
-  run.identity         {"claims":{},"issuer":"","namespace":"","subject":""}
+  run.identity         {"claims":{},"issuer":"","namespace":"","principal":"","s
   run.local            true
   run.run_id           "local"
   run.started_at       "2026-08-03T09:00:00Z"
@@ -54,7 +54,7 @@ scope ────────────────────────�
   steps.checkout   {"artifact":"checkout.tar.gz"}
   vars.region      "eu-west-1"
   inputs.version   "2026.9.0"
-  run.identity     {"claims":{},"issuer":"","namespace":"","subject":""}
+  run.identity     {"claims":{},"issuer":"","namespace":"","principal":"","subje
   run.local        true
   run.run_id       "local"
   run.started_at   "2026-08-03T09:00:00Z"
@@ -76,7 +76,7 @@ scope ────────────────────────�
   steps.flaky     {"error":"deliberate failure","failure":{"kind":"Internal","me
   vars.region     "eu-west-1"
   inputs.version  "2026.9.0"
-  run.identity    {"claims":{},"issuer":"","namespace":"","subject":""}
+  run.identity    {"claims":{},"issuer":"","namespace":"","principal":"","subjec
   run.local       true
   run.run_id      "local"
   run.started_at  "2026-08-03T09:00:00Z"
