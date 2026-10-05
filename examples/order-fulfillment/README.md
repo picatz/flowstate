@@ -22,6 +22,11 @@ already registered by the time that crash could happen.
 
 ## Two commands
 
+The inventory, payment and carrier calls go to `httpbin.org` as stand-ins for your
+own services, so these runs need internet access. With none, `flow test
+examples/order-fulfillment` rehearses all three cases offline, with the calls
+stubbed, including the refund-then-release order.
+
 The ordinary path — everything succeeds, and the run reports what it did:
 
 ```console
