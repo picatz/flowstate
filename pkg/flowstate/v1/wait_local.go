@@ -279,8 +279,9 @@ func NewLocalSignals() *LocalSignals { return &LocalSignals{} }
 //
 // inputs is the run's bound arguments, which a policy's `allow: ${...}`
 // predicate may read; the server records the same value beside the policy at
-// submit. nil reads as none, and a predicate that reads one then errors and
-// denies.
+// submit. nil leaves `inputs` unbound, so any predicate that reads it (even
+// `!has(inputs.x)` or `inputs.size() == 0`) errors and denies; a run with
+// bound inputs that happen to be empty passes an empty, non-nil map.
 func NewPolicedLocalSignals(policies map[string]*SignalPolicy, starter *WorkloadIdentity, hasStarter bool, inputs map[string]*Value) *LocalSignals {
 	return &LocalSignals{policies: policies, starter: starter, hasStarter: hasStarter, inputs: inputs}
 }

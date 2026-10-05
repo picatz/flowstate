@@ -360,7 +360,7 @@ func completeAt(doc *document, pos lsp.Position) *lsp.CompletionList {
 	// Inside ${...} nothing else applies: the cursor is in an expression, not in
 	// YAML structure.
 	if inner, ok := openExpression(before); ok {
-		if signalAllowExpression(path, key) {
+		if signalAllowExpression(path, key, before) {
 			// A `signals:` policy's predicate has its own closed scope, not
 			// the step scope below: `sender`, `run.identity` and `inputs`,
 			// and nothing else — see [v1.CompileSignalPolicyPredicate].
@@ -1153,14 +1153,26 @@ func completeInExpression(pos lsp.Position, inner string, scope refScope) *lsp.C
 }
 
 // signalAllowExpression reports whether the cursor is in a top-level
-// `signals:` policy's `allow:` value, written on its own line or continued
-// onto the lines of a block scalar under it.
-func signalAllowExpression(path []string, key string) bool {
+// `signals:` policy's `allow:` *predicate*: the `${...}` that is the whole value
+// of `allow:`, on the line that opens it (the editor completes within one line,
+// as it does everywhere). An expression inside a rule of the rule list (`- subject:
+// ${...}`) is not one: it keeps the rule's own scope.
+func signalAllowExpression(path []string, key, before string) bool {
+	if len(path) < 2 || path[0] != "signals" {
+		return false
+	}
+	trimmed := strings.TrimSpace(before)
 	switch {
-	case len(path) == 2 && path[0] == "signals":
-		return key == "allow"
-	case len(path) == 3 && path[0] == "signals":
-		return path[2] == "allow"
+	case len(path) == 2:
+		// `allow: ${...` — the fence must directly follow the key, so a flow
+		// list written on the same line (`allow: [{subject: ${`) is not it.
+		i := strings.LastIndex(trimmed, "${")
+		if key != "allow" || i < 0 {
+			return false
+		}
+		head := strings.TrimRight(trimmed[:i], " '\"")
+		head = strings.TrimSpace(strings.TrimSuffix(head, ">-"))
+		return strings.HasSuffix(head, "allow:") && !strings.Contains(trimmed[:i], "[")
 	default:
 		return false
 	}

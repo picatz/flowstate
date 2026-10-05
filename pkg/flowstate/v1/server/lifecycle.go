@@ -10,6 +10,7 @@ import (
 	"connectrpc.com/connect"
 	common "go.temporal.io/api/common/v1"
 	"go.temporal.io/api/serviceerror"
+	workflowpb "go.temporal.io/api/workflow/v1"
 	"go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/client"
 	"google.golang.org/protobuf/proto"
@@ -380,15 +381,49 @@ func (s *FlowstateServer) authorizeSignal(resp *workflowservice.DescribeWorkflow
 	if hasStarter && runScope.GetIdentity() != nil {
 		starterIdentity = runScope.GetIdentity()
 	}
+	// A predicate that reads the run's inputs or starter needs the values
+	// submit recorded for it. Without them it would be evaluated over an empty
+	// scope, where `!has(inputs.x)` is true, so an absent record denies.
+	if reads := v1.SignalPolicyExprReads(map[string]*v1.SignalPolicy{name: policy}); (reads.Inputs || reads.Run) && runScope == nil {
+		return connect.NewError(connect.CodePermissionDenied,
+			fmt.Errorf("signal %q: this run recorded nothing for its allow predicate to read, so no sender is "+
+				"authorized", name))
+	}
+	// A recorded scope with no inputs is an empty set of inputs, not an unbound
+	// name; the wire form cannot tell the two apart, the memo's presence does.
+	runInputs := runScope.GetInputs()
+	if runScope != nil && runInputs == nil {
+		runInputs = map[string]*v1.Value{}
+	}
 
 	// Background, not a request context: authorizeSignal is also asked by GetGate and the webhook bridge. The
 	// predicate's cost bound ([v1.SignalPolicyExprCostLimit]) is what limits the work.
-	if err := v1.SignalPolicyCheck(context.Background(), policy, sender.GetIdentity(), starterIdentity, hasStarter, runScope.GetInputs()); err != nil {
+	if err := v1.SignalPolicyCheck(context.Background(), policy, sender.GetIdentity(), starterIdentity, hasStarter, runInputs); err != nil {
 		return connect.NewError(connect.CodePermissionDenied,
 			fmt.Errorf("signal %q: %w", name, err))
 	}
 
 	return nil
+}
+
+// describedByMemo is the Describe response a run carrying memo would produce,
+// so that [FlowstateServer.authorizeSignal] can be asked about a run that does
+// not exist yet with exactly the code that answers it once it does. A value
+// that cannot be encoded leaves its key out, which every reader of the memo
+// treats as absent and fails closed on.
+func describedByMemo(s *FlowstateServer, memo map[string]any) *workflowservice.DescribeWorkflowExecutionResponse {
+	fields := make(map[string]*common.Payload, len(memo))
+	for key, value := range memo {
+		payload, err := s.dataConverter.ToPayload(value)
+		if err != nil {
+			continue
+		}
+		fields[key] = payload
+	}
+
+	return &workflowservice.DescribeWorkflowExecutionResponse{
+		WorkflowExecutionInfo: &workflowpb.WorkflowExecutionInfo{Memo: &common.Memo{Fields: fields}},
+	}
 }
 
 // usesCurrentSignalProtocol reports whether the run was submitted with the
@@ -1112,6 +1147,20 @@ func (s *FlowstateServer) SignalWithStart(ctx context.Context, req *connect.Requ
 	options.ID = workflowID
 	memo[triggerMemoKey] = v1.TriggerKindManual
 	options.Memo = memo
+
+	// The signal's own policy, asked before the run exists. The create branch
+	// delivers the first signal inside the new run's state, never through
+	// Signal, so without this a caller `signals:` would refuse could create the
+	// run and deliver as its starter. Asked of the memo submit is about to
+	// write, through the function that reads a run's memo for every other
+	// delivery, so the declared policies, the recorded starter (this caller),
+	// the inputs and the predicate's scope are the ones a later Signal would
+	// see. A name the workflow declares no policy for is the zero case, as
+	// anywhere else.
+	if err := s.authorizeSignal(describedByMemo(s, memo), req.Msg.GetName(), sender); err != nil {
+		return nil, s.auditDeny(ctx, "SignalWithStart", v1.AuditResourceKind_AUDIT_RESOURCE_KIND_RUN, workflowID,
+			v1.AuditDenyCode_AUDIT_DENY_CODE_POLICY_DENIED, err)
+	}
 
 	// Claim the entity key with the conflict error enabled. The initiating
 	// delivery is part of RunState rather than a second RPC: ExecuteWorkflow

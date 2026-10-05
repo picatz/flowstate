@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/google/cel-go/cel"
 	celast "github.com/google/cel-go/common/ast"
@@ -72,6 +73,10 @@ import (
 // including those of a caller the predicate is about to refuse, so it is a
 // work bound and not a reporting limit.
 const SignalPolicyExprCostLimit uint64 = 50_000
+
+// SignalPolicyExprTimeout bounds the wall-clock time one predicate evaluation
+// may take, on top of [SignalPolicyExprCostLimit].
+const SignalPolicyExprTimeout = time.Second
 
 // MaxSignalPolicyScopeBytes bounds the encoded run scope (its inputs and its
 // starter) a run records so a signal predicate can read them at delivery time
@@ -271,9 +276,12 @@ func signalPolicyIsLocal(ident celast.NavigableExpr) bool {
 // unknown starter denies a predicate that reads it and spares one that does
 // not.
 func signalPolicyActivation(identity, starter *WorkloadIdentity, hasStarter bool, inputs map[string]*Value) map[string]any {
-	vars := map[string]any{
-		"sender":   newSignalPolicyActor(identity),
-		InputsRoot: signalPolicyInputsValue(inputs),
+	vars := map[string]any{"sender": newSignalPolicyActor(identity)}
+	// inputs is unbound when the caller holds none (nil), not empty: a
+	// predicate over an empty scope would read `!has(inputs.x)` as true. A run
+	// that has inputs but none set passes an empty, non-nil map.
+	if inputs != nil {
+		vars[InputsRoot] = signalPolicyInputsValue(inputs)
 	}
 	if hasStarter {
 		vars["run"] = newSignalPolicyActor(starter)
@@ -316,6 +324,13 @@ func signalPolicyExprAllows(ctx context.Context, src string, identity, starter *
 		return errors.New("this signal's allow predicate is not a valid policy, so no sender is authorized " +
 			"until it is fixed")
 	}
+
+	// Bounded in time as well as in cost: the cost estimator counts steps, and a
+	// few string functions are priced only statically, so a deadline is what
+	// stops an evaluation that is cheap on paper and slow in fact. A timeout is
+	// an error, and an error denies.
+	ctx, cancel := context.WithTimeout(ctx, SignalPolicyExprTimeout)
+	defer cancel()
 
 	allowed, err := predicate.rule.Match(ctx, signalPolicyActivation(identity, starter, hasStarter, inputs))
 	if err != nil {

@@ -238,6 +238,10 @@ func resolvedLocalSignalPolicies(ctx context.Context, workflow *v1.Workflow, inp
 		return nil, nil, nil
 	}
 
+	if bound == nil {
+		bound = map[string]*v1.Value{}
+	}
+
 	policies, err := v1.ResolveSignalPolicySubjects(ctx, workflow, bound)
 
 	return policies, bound, err

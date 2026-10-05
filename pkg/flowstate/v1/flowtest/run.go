@@ -1094,6 +1094,9 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	var sensitive sensitiveInputs
 	if b, bindErr := v1.BindRunInputs(workflow, inputs); bindErr == nil {
 		bound = b
+		if bound == nil {
+			bound = map[string]*v1.Value{}
+		}
 		// The redaction set, built from the same bound inputs and the same
 		// `sensitive:` declarations the stub diagnostics read
 		// ([sensitiveNativeValues]) — one set, shared by the transcript's
