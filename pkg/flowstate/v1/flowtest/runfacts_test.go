@@ -95,8 +95,8 @@ func TestRunUncompensatedNamesAFailedUndo(t *testing.T) {
 }
 
 // TestExpectCompensatedReadsTheStructuredAccount: a failed compensation is not
-// a compensated step, which a search of the error text for `undid` also got
-// right, but only by accident of the wording.
+// a compensated step. The forward failure quotes `undid "network"` itself, so
+// a search of the error text would wrongly accept the claim.
 func TestExpectCompensatedReadsTheStructuredAccount(t *testing.T) {
 	t.Parallel()
 
@@ -114,7 +114,7 @@ tests:
         returns: {status: 200}
       - task: http
         where: inputs.method == "POST" && inputs.url == "https://example.internal/volumes"
-        fails: {kind: Upstream, message: quota exceeded}
+        fails: {kind: Upstream, message: 'quota exceeded; undid "network"'}
       - task: http
         where: inputs.method == "DELETE"
         fails: {kind: Upstream, message: delete refused}

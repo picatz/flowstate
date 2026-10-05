@@ -988,7 +988,7 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	// The invocation log is independent of the transcript: a claim needs a
 	// complete one even where the account is discarded.
 	var invocations *invocationLog
-	if len(test.Expect.Invocations) > 0 || len(test.Expect.Check) > 0 || len(test.Invariants) > 0 {
+	if len(test.Expect.Invocations) > 0 || len(test.Expect.Check) > 0 || len(test.Invariants) > 0 || v1.DebuggerFromContext(ctx) != nil {
 		invocations = &invocationLog{}
 		ctx = contextWithInvocationLog(ctx, invocations)
 	}

@@ -326,7 +326,7 @@ saga's promise rather than one scripted path:
 | Field | Value |
 | --- | --- |
 | `run.compensated` | `list(string)`: the steps whose `undo:` succeeded, in the order they ran (reverse registration). Always present, empty when nothing was undone. |
-| `run.uncompensated` | `list(string)`: the steps whose `undo:` failed or was not attempted before a cancellation's budget ran out. A step is in at most one list; a step that registered no `undo:` (skipped, failed, or without one) is in neither. |
+| `run.uncompensated` | `list(string)`: the steps whose `undo:` failed or was not attempted before a cancellation's budget ran out. Each registration is classified on its own, so a step an iteration of a `loop:` or `for_each:` registers more than once can appear in both lists, and being in `run.compensated` does not prove every registration was undone; a step that registered no `undo:` (skipped, failed, or without one) is in neither. |
 | `run.invocations.task` | `map(string, int)`: how many times each task ran anywhere in the run, callees and `undo:` compensations included. |
 | `run.invocations.step` | `map(string, int)`: how many times each step of the workflow under test ran its task, one per attempt, so a retried step counts every attempt. Compensations are not counted. |
 
