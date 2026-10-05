@@ -160,8 +160,8 @@ message ExecPolicy {
     }];
 
     // MaxOutputBytes bounds what is kept of each output stream (standard output
-    // and standard error separately), written the way sizes are said: "1MiB",
-    // "10MB", or a bare count of bytes. Required, positive, and at most 16 MiB.
+    // and standard error separately), written the way sizes are said: "64KiB",
+    // "10MB", or a bare count of bytes. Required, positive, and at most 128 KiB.
     // Bytes past the bound are read and discarded and the step reports the
     // stream as truncated.
     string max_output_bytes = 8 [(buf.validate.field).string = {

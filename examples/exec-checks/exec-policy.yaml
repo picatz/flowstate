@@ -32,7 +32,7 @@ exec:
     GIT_TERMINAL_PROMPT: "0"
   env_authored: [GIT_AUTHOR_NAME]
 
-  # Both required, both bounded by ceilings the file cannot raise (1h, 16MiB).
+  # Both required, both bounded by ceilings the file cannot raise (1h, 128KiB).
   timeout: 5m
   max_output_bytes: 64KiB
 

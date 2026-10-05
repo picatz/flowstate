@@ -44,7 +44,7 @@ func base(t *testing.T) (execpolicy.Config, string) {
 		Executables:    map[string]string{"sh": tool(t, "sh"), "env": tool(t, "env")},
 		Roots:          []string{root},
 		Timeout:        30 * time.Second,
-		MaxOutputBytes: 1 << 20,
+		MaxOutputBytes: 64 << 10,
 	}, resolved
 }
 
@@ -317,6 +317,14 @@ func TestDirMustResolveUnderARoot(t *testing.T) {
 			denied(t, err, execpolicy.ReasonDir)
 		})
 	}
+
+	t.Run("a refusal does not name where a link leads", func(t *testing.T) {
+		_, err := check(escape)
+		d := denied(t, err, execpolicy.ReasonDir)
+		assert.Contains(t, d.Detail, escape, "the author's own path is fine to echo")
+		assert.NotContains(t, d.Detail, outside,
+			"a denial lands in durable history, so it must not say where a symbolic link leads")
+	})
 
 	t.Run("no roots admits no directory", func(t *testing.T) {
 		cfg, root := base(t)

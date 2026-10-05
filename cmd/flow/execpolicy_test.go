@@ -40,7 +40,7 @@ func writeExecPolicy(t *testing.T) (policy, workdir string) {
 	require.NoError(t, err)
 
 	policy = filepath.Join(t.TempDir(), "exec-policy.yaml")
-	require.NoError(t, os.WriteFile(policy, []byte("exec:\n  executables: {echo: "+echo+"}\n  roots: ["+root+"]\n  timeout: 30s\n  max_output_bytes: 1MiB\n"), 0o600))
+	require.NoError(t, os.WriteFile(policy, []byte("exec:\n  executables: {echo: "+echo+"}\n  roots: ["+root+"]\n  timeout: 30s\n  max_output_bytes: 64KiB\n"), 0o600))
 
 	return policy, root
 }
@@ -77,11 +77,11 @@ func TestAnExecPolicyThatDoesNotLoadRefusesTheCommand(t *testing.T) {
 	restoreDefaultRegistryAfter(t) // applyExecPolicy replaces the process-wide exec task.
 
 	for name, contents := range map[string]string{
-		"unknown key":      "exec:\n  timeout: 30s\n  max_output_bytes: 1MiB\n  surprise: true\n",
-		"no timeout":       "exec:\n  max_output_bytes: 1MiB\n",
-		"missing program":  "exec:\n  executables: {x: /nonexistent/program}\n  timeout: 30s\n  max_output_bytes: 1MiB\n",
+		"unknown key":      "exec:\n  timeout: 30s\n  max_output_bytes: 64KiB\n  surprise: true\n",
+		"no timeout":       "exec:\n  max_output_bytes: 64KiB\n",
+		"missing program":  "exec:\n  executables: {x: /nonexistent/program}\n  timeout: 30s\n  max_output_bytes: 64KiB\n",
 		"no exec section":  "{}\n",
-		"timeout too long": "exec:\n  timeout: 2h\n  max_output_bytes: 1MiB\n",
+		"timeout too long": "exec:\n  timeout: 2h\n  max_output_bytes: 64KiB\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "p.yaml")

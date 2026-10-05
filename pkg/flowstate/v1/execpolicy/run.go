@@ -166,7 +166,7 @@ func (c *Command) Run(ctx context.Context) (Result, error) {
 	if dir != c.dir {
 		return Result{}, &DeniedError{
 			Reason: ReasonDir,
-			Detail: fmt.Sprintf("the working directory now resolves to %q, not the %q the policy authorized", dir, c.dir),
+			Detail: "the working directory now resolves somewhere other than the directory the policy authorized",
 		}
 	}
 	cmd.Dir = dir
