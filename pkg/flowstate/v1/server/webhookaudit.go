@@ -123,23 +123,34 @@ func (l *refusalLedger) admit(now time.Time, class refusalClass) (count uint32, 
 	return count, true
 }
 
-// release reopens a class whose record could not be written, carrying count
-// (what the failed write stood for) so the next refusal writes it again with
-// everything since. admit opens its window before the write, so without this a
-// required recorder's failure would suppress the very retries that exist to
-// get the decision written down, and answer them as though it were.
-func (l *refusalLedger) release(class refusalClass, count uint32) {
+// release is what a refusal whose record could not be written hands back: count,
+// the decisions the failed write stood for, which the next record carries.
+//
+// reopen says whether the next refusal may try again at once. A caller that
+// tells the sender to retry (the `when:` decline, the bridge) needs it: admit
+// opens its window before the write, so without it a required recorder's
+// failure would suppress the very retries meant to get the decision written
+// down, and answer them as though it were. A caller that ignores the failure
+// does not, and must not reopen it: the one-write-per-interval bound is what
+// keeps an unauthenticated prober from turning a sink that is down into a
+// write attempt per request.
+func (l *refusalLedger) release(class refusalClass, count uint32, reopen bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	carried := count
-	if window := l.windows[class]; window != nil {
-		carried += window.suppressed
-		if carried < count {
-			carried = ^uint32(0)
-		}
+	window := l.windows[class]
+	if window == nil {
+		window = &refusalWindow{}
+		l.windows[class] = window
 	}
-	l.windows[class] = &refusalWindow{suppressed: carried}
+
+	if window.suppressed += count; window.suppressed < count {
+		window.suppressed = ^uint32(0)
+	}
+
+	if reopen {
+		window.until = time.Time{}
+	}
 }
 
 // webhookRouteKey is the resource key a delivery record carries for a route:
@@ -177,7 +188,7 @@ func (r *WebhookReceiver) principalIdentity(ctx context.Context, route *webhookR
 // that a sender whose delivery was refused by a policy is told to retry when
 // the deployment could not write that down, exactly as [FlowstateServer.Signal]
 // answers under a required recorder.
-func (r *WebhookReceiver) recordRefusal(ctx context.Context, route *webhookRoute, subject v1.EnforcementSubject, code v1.AuditDenyCode) error {
+func (r *WebhookReceiver) recordRefusal(ctx context.Context, route *webhookRoute, subject v1.EnforcementSubject, code v1.AuditDenyCode, surfaced bool) error {
 	count, write := r.refusals.admit(r.now(), refusalClass{route: webhookRouteKey(route), code: code})
 	if !write {
 		return nil
@@ -186,7 +197,7 @@ func (r *WebhookReceiver) recordRefusal(ctx context.Context, route *webhookRoute
 	subject.Point = v1.AuditEnforcementPoint_AUDIT_ENFORCEMENT_POINT_WEBHOOK_DELIVERY
 	subject.Count = count
 	if err := r.server.audit.EnforcementDeny(ctx, subject, code); err != nil {
-		r.refusals.release(refusalClass{route: webhookRouteKey(route), code: code}, count)
+		r.refusals.release(refusalClass{route: webhookRouteKey(route), code: code}, count, surfaced)
 		r.log.ErrorContext(ctx, "a refused delivery could not be recorded", "route", webhookRouteKey(route), "error", err)
 
 		return err
@@ -204,7 +215,7 @@ func (r *WebhookReceiver) refusedAtRoute(ctx context.Context, route *webhookRout
 		Identity:     identity,
 		ResourceKind: v1.AuditResourceKind_AUDIT_RESOURCE_KIND_WEBHOOK_ROUTE,
 		ResourceKey:  webhookRouteKey(route),
-	}, code)
+	}, code, false)
 }
 
 // denied is the bridge's refusal: recorded against what the delivery addressed,
@@ -217,7 +228,7 @@ func (r *WebhookReceiver) denied(ctx context.Context, route *webhookRoute, ident
 		Identity:     identity,
 		ResourceKind: kind,
 		ResourceKey:  key,
-	}, code); err != nil {
+	}, code, true); err != nil {
 		return fmt.Errorf("%w: %w", errDeliveryNotStarted, err)
 	}
 

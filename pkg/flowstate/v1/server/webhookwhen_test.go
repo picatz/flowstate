@@ -147,10 +147,36 @@ func TestADeclineARequiredRecorderCannotWriteIsNeverAnsweredAsRecorded(t *testin
 	assert.GreaterOrEqual(t, records[0].GetCount(), uint32(4), "the retried write lost the declines before it")
 }
 
+// TestAFailingRecorderIsNotAWritePerProbe: reopening the window is for the
+// refusals that tell the sender to retry. A delivery refused before it proves
+// its key reports nothing, so under a sink that is down it stays one attempt per
+// interval however many unauthenticated probes arrive.
+func TestAFailingRecorderIsNotAWritePerProbe(t *testing.T) {
+	t.Parallel()
+
+	sink := &flakySink{failures: 1 << 30}
+	recorder, err := audit.NewRecorder(audit.WithoutStderr(), audit.Required(), audit.WithEmitter(sink))
+	require.NoError(t, err)
+
+	receiver, err := mustNew(t, nil, server.WithAudit(recorder)).NewWebhookReceiver(t.Context(),
+		"", []*v1.Workflow{filteredWorkflow(`event.body.action == "opened"`)}, keyStore(t, webhookSecret))
+	require.NoError(t, err)
+
+	for i := range 8 {
+		resp := deliver(t, receiver, filteredRoute, filteredBody("evt_"+string(rune('a'+i)), "opened"), signedWith("not the key"))
+		require.Equal(t, http.StatusNotFound, resp.StatusCode)
+	}
+
+	sink.mu.Lock()
+	defer sink.mu.Unlock()
+	assert.Equal(t, 1, sink.attempts, "each unauthenticated probe was a write attempt against a sink that is down")
+}
+
 // flakySink fails its first `failures` emits and records the rest.
 type flakySink struct {
 	mu       sync.Mutex
 	failures int
+	attempts int
 	records  []*v1.AuditRecord
 }
 
@@ -158,6 +184,7 @@ func (s *flakySink) Emit(_ context.Context, record *v1.AuditRecord) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	s.attempts++
 	if s.failures > 0 {
 		s.failures--
 

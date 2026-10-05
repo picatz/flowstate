@@ -680,7 +680,7 @@ func (r *WebhookReceiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			Identity:     r.principalIdentity(ctx, route),
 			ResourceKind: v1.AuditResourceKind_AUDIT_RESOURCE_KIND_WEBHOOK_ROUTE,
 			ResourceKey:  webhookRouteKey(route),
-		}, v1.AuditDenyCode_AUDIT_DENY_CODE_WEBHOOK_DECLINED); recordErr != nil {
+		}, v1.AuditDenyCode_AUDIT_DENY_CODE_WEBHOOK_DECLINED, true); recordErr != nil {
 			// A required recorder that could not write the decision down: the
 			// deployment's failure, which the sender may retry, exactly as the
 			// bridge's own refusals are answered.
