@@ -21,12 +21,17 @@ breaking:
   #   - trigger.proto: `ManualTrigger` field 3 (`allowed_principals`) is deleted
   #     and reserved; field 4 `allow_expr` is renamed `allow` at the same number.
   # Remove this block in the next commit on main, once this one is the baseline.
+  #
+  # Retiring `retry.except`, which spelled the complement of `only`: workflow.proto
+  # `RetryPolicy` field 6 (`except`) is deleted, its number and name reserved.
+  # Nothing else in that file moves. Remove its line below with the rest.
   ignore_only:
     MESSAGE_NO_DELETE:
       - proto/flowstate/v1/signal.proto
     FIELD_NO_DELETE:
       - proto/flowstate/v1/signal.proto
       - proto/flowstate/v1/trigger.proto
+      - proto/flowstate/v1/workflow.proto
     FIELD_SAME_NAME:
       - proto/flowstate/v1/signal.proto
       - proto/flowstate/v1/trigger.proto
