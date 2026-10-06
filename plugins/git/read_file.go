@@ -88,7 +88,7 @@ func doReadFile(ctx context.Context, p readFileParams) (*gitv1.ReadFileOutputs, 
 // parameter rather than the package's own maxReadFileBytes constant - the
 // same seam clone.go's cloneBoundedWithInflationCap exists for, so a test
 // can drive the real refusal path against a small, fast-to-exceed cap
-// without a fixture file that actually reaches 8 MiB. doReadFile is the
+// without a fixture file that actually reaches maxReadFileBytes. doReadFile is the
 // only production caller, always with the real constant.
 func doReadFileWithMax(ctx context.Context, p readFileParams, maxBytes int64) (*gitv1.ReadFileOutputs, error) {
 	flowstatev1.ReportProgress(ctx, flowstatev1.PhaseRequesting)
