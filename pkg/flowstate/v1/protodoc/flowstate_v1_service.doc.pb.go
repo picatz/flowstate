@@ -553,6 +553,69 @@ func init() {
 				" a quorum.\n",
 		},
 		{
+			Name:    "flowstate.v1.ListGatesRequest",
+			Leading: " ListGatesRequest asks for the open gates of one run.\n",
+		},
+		{
+			Name: "flowstate.v1.ListGatesRequest.workflow_id",
+			Leading: " WorkflowId identifies the workload whose gates are listed, as Run's\n" +
+				" `workflow_id` reports it. 1 to 256 bytes.\n" +
+				"\n" +
+				" A caller may address only runs in its own tenant. The namespace always\n" +
+				" comes from the caller's authenticated identity, never from the request.\n",
+		},
+		{
+			Name: "flowstate.v1.ListGatesRequest.page_size",
+			Leading: " PageSize is the most gates one page returns: 0 (the default) means 50, and\n" +
+				" at most 200.\n" +
+				"\n" +
+				" Lower than [ListRequest.page_size] because each gate carries a prompt of up\n" +
+				" to `v1.MaxWaitPromptBytes`. It bounds the answer, not the work: with\n" +
+				" `answerable_only` a page may come back short, or empty, with\n" +
+				" `next_page_token` set.\n",
+		},
+		{
+			Name: "flowstate.v1.ListGatesRequest.page_token",
+			Leading: " PageToken continues a previous ListGates: pass the previous response's\n" +
+				" `next_page_token`, with the same `workflow_id`, `answerable_only` and\n" +
+				" `page_size`. Opaque.\n" +
+				"\n" +
+				" A token is refused on the terms [ListRequest.page_token] is, and also when\n" +
+				" the run it was issued on has since been replaced by a later run of the same\n" +
+				" workload.\n",
+		},
+		{
+			Name: "flowstate.v1.ListGatesRequest.answerable_only",
+			Leading: " AnswerableOnly keeps only the gates whose [GetGateResponse.may_answer] is\n" +
+				" true for this caller, the list an approver acts on. False lists every open\n" +
+				" gate, each saying whether the caller may answer it.\n",
+		},
+		{
+			Name: "flowstate.v1.ListGatesResponse",
+			Leading: " ListGatesResponse is a page of a run's open gates, each exactly as GetGate\n" +
+				" reports it.\n",
+		},
+		{
+			Name: "flowstate.v1.ListGatesResponse.gates",
+			Leading: " Gates are the open gates on this page, oldest first, each the\n" +
+				" [GetGateResponse] GetGate would answer for that gate's signal name, with\n" +
+				" the same withholding of prompt and starter for a caller the `signals:`\n" +
+				" policy refuses. They carry no step output, input or carried state.\n",
+		},
+		{
+			Name: "flowstate.v1.ListGatesResponse.next_page_token",
+			Leading: " NextPageToken continues the listing; empty means this was the last page.\n" +
+				" A short or even empty page with a token set is not the end of the listing.\n",
+		},
+		{
+			Name: "flowstate.v1.ListGatesResponse.truncated",
+			Leading: " Truncated is true when the run is parked on more gates than it retains\n" +
+				" (`v1.MaxHeldWaits`, in `pkg/flowstate/v1/waits.go`), so the listing is not\n" +
+				" every open gate even read to its end: the gates it could not keep are\n" +
+				" answerable only with `flow signal`. A flag rather than silence, for\n" +
+				" [RunProgress.pending_waits_truncated]'s reason.\n",
+		},
+		{
 			Name: "flowstate.v1.SignalWithStartRequest",
 			Leading: " SignalWithStartRequest delivers a signal to an entity, creating it first if it\n" +
 				" does not yet exist.\n" +
@@ -1224,6 +1287,26 @@ func init() {
 				" retains, or one that cannot answer the lookup, and whose answer does not\n" +
 				" include the named gate, answers FAILED_PRECONDITION: the gate may be open,\n" +
 				" and this read cannot say.\n",
+		},
+		{
+			Name: "flowstate.v1.WorkflowService.ListGates",
+			Leading: " ListGates lists the open approval gates of one run, for the caller who would\n" +
+				" answer them.\n" +
+				"\n" +
+				" The list form of [GetGate], bound to the same `workload.signal` and\n" +
+				" reporting each gate the way GetGate does: its step, prompt, deadline,\n" +
+				" starter and whether this caller's `signals:` policy would admit a [Signal]\n" +
+				" now. `answerable_only` keeps just the gates the caller may answer. Unlike\n" +
+				" the progress summary [Get] carries, which stops at `v1.MaxPendingWaits`, it\n" +
+				" reads every gate the run retains (up to `v1.MaxHeldWaits`), a page at a\n" +
+				" time: keep calling with `page_token` set to the previous `next_page_token`\n" +
+				" until it comes back empty.\n" +
+				"\n" +
+				" A run that is not running answers NOT_FOUND, the same answer a run in\n" +
+				" another tenant gets; a running run with no open gate answers an empty list.\n" +
+				" A run that cannot answer the listing (no worker answering) answers\n" +
+				" UNAVAILABLE, never an empty list. A run parked on more gates than it retains\n" +
+				" says so with `truncated`.\n",
 		},
 		{
 			Name: "flowstate.v1.WorkflowService.SignalWithStart",

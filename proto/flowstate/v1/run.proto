@@ -579,7 +579,9 @@ message RunProgress {
   // PendingWaitsTruncated is true when this answer reports fewer waits than the
   // run is actually parked on, because the run held more than the reporting
   // bound (`v1.MaxPendingWaits`, in `pkg/flowstate/v1/waits.go`, which both drivers read).
-  // A gate past that bound is not lost: GetGate looks one up by signal name.
+  // A gate past that bound is not lost: GetGate looks one up by signal name, and
+  // ListGates lists every gate the run retains (`v1.MaxHeldWaits`). A run parked
+  // on more than that reports the rest only as ListGates' own `truncated`.
   //
   // A flag rather than silence, for `EntityState.truncated`'s reason: a reader
   // must never mistake "some of the waits" for "all of the waits". Unlike that
@@ -691,6 +693,35 @@ message PendingWait {
   // ApprovalsNeeded is the quorum's `approve:`, and zero on every wait that is
   // not a quorum.
   uint32 approvals_needed = 9;
+}
+
+// GatePage is one page of the gates a run is parked on, as the run answers the
+// `flowstate.gates` query: the engine's side of `ListGates`, never returned to a
+// caller as it stands.
+//
+// A page of the waits the run retains (`v1.MaxHeldWaits`, in
+// `pkg/flowstate/v1/waits.go`), in the order they parked, so a run holding more
+// gates than [RunProgress] lists can still be read in full, a bounded page at a
+// time. Each wait is the same projection `RunProgress.pending_waits` carries,
+// non-secret by construction, and the server withholds prompts from it exactly
+// as it does there.
+message GatePage {
+  // Waits are the gates on this page, oldest first.
+  repeated PendingWait waits = 1;
+
+  // LastSeq is the arrival number of the last wait on this page: the position to
+  // resume after. Zero when the page is empty. An arrival number rather than an
+  // index, so gates that close between two pages cannot make a later page skip
+  // one that is still open.
+  uint64 last_seq = 2;
+
+  // More is true when the run retains waits after this page.
+  bool more = 3;
+
+  // Incomplete is true when the run is parked on gates it did not retain
+  // because it was already holding `v1.MaxHeldWaits`: no listing can show them,
+  // however many pages it reads.
+  bool incomplete = 4;
 }
 
 // Frame is one level of the execution position within a workflow.

@@ -395,6 +395,9 @@ type fakeRunClient struct {
 	held        *heldGates
 	gateQueries int
 
+	// pageQueries counts the listing asks the run took.
+	pageQueries int
+
 	// resultRuns records the run id each result read asked for.
 	resultRuns []string
 
@@ -435,6 +438,11 @@ func (c *fakeRunClient) QueryWorkflow(_ context.Context, _, _, query string, arg
 
 		return progressAnswer{c.held.lookup(args)}, nil
 	}
+	if query == engine.GatesQuery && c.held != nil {
+		c.pageQueries++
+
+		return pageAnswer{c.held.page(args)}, nil
+	}
 	return nil, errors.New("no worker is answering queries")
 }
 
@@ -465,6 +473,16 @@ func (a progressAnswer) HasValue() bool { return true }
 
 func (a progressAnswer) Get(valuePtr any) error {
 	proto.Merge(valuePtr.(*v1.RunProgress), a.progress)
+	return nil
+}
+
+// pageAnswer is a gates query's answer, as a worker would give it.
+type pageAnswer struct{ page *v1.GatePage }
+
+func (a pageAnswer) HasValue() bool { return true }
+
+func (a pageAnswer) Get(valuePtr any) error {
+	proto.Merge(valuePtr.(*v1.GatePage), a.page)
 	return nil
 }
 
