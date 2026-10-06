@@ -715,6 +715,10 @@ type runFacts struct {
 	// root names the workflow under test, whose steps `run.invocations.step`
 	// counts.
 	root string
+
+	// signalsDropped names the signals a `signal:` fault lost a delivery of,
+	// sorted.
+	signalsDropped []string
 }
 
 // newRunFacts gathers what a finished run is judged on.
@@ -722,7 +726,10 @@ func newRunFacts(runErr error, log *invocationLog, root string) runFacts {
 	return runFacts{err: runErr, undone: v1.UndoResultsOf(runErr), invocations: log, root: root}
 }
 
-// bind adds the compensation and invocation facts to the `run` root.
+// bind adds the compensation, signal and invocation facts to the `run` root.
+//
+// signals.dropped lists the signals a `faults:` entry lost a delivery of; it is
+// always present, empty when nothing was lost.
 //
 // compensated and uncompensated are lists of step ids, in the order the
 // compensations ran (reverse registration): a step whose `undo:` succeeded is
@@ -746,6 +753,11 @@ func (f runFacts) bind(root map[string]any) {
 	}
 	root["compensated"] = compensated
 	root["uncompensated"] = uncompensated
+	dropped := make([]any, 0, len(f.signalsDropped))
+	for _, name := range f.signalsDropped {
+		dropped = append(dropped, name)
+	}
+	root["signals"] = map[string]any{"dropped": dropped}
 
 	if f.invocations == nil || f.invocations.truncated() {
 		return

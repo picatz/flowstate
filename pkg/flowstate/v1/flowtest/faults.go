@@ -52,6 +52,18 @@ type Fault struct {
 	// fail, one draw per attempt.
 	Step string `yaml:"step,omitempty"`
 
+	// Signal is the name of a scripted signal ([Test.Signals]) whose delivery
+	// may be lost, the third target beside Task and Step. Exactly one of the
+	// three. The n-th delivery of a name is the n-th script of that name in
+	// declaration order, which is the numbering `on:` uses.
+	Signal string `yaml:"signal,omitempty"`
+
+	// Drop makes a signal fault lose the delivery: the sender sent it, and the
+	// run never learns anything arrived, which is how a signal lost on the
+	// way looks to a gate in production. Required, and only valid, with
+	// Signal; it is the one effect a signal fault has so far.
+	Drop bool `yaml:"drop,omitempty"`
+
 	// Fails is the injected failure. Its kind defaults to Upstream, the
 	// ordinary transient one, and must be a kind a task can honestly report:
 	// Internal and Expression describe a bug in the engine or the workflow, not
@@ -111,8 +123,22 @@ func (f *Fault) kind() v1.ErrorKind {
 // It is the part of the judgment that needs no workflow.
 func checkFaultShape(i int, f *Fault) error {
 	where := fmt.Sprintf("faults[%d]", i)
-	if (f.Task == "") == (f.Step == "") {
-		return fmt.Errorf("%s: name exactly one of `task:` or `step:`", where)
+	targets := 0
+	for _, t := range []string{f.Task, f.Step, f.Signal} {
+		if t != "" {
+			targets++
+		}
+	}
+	if targets != 1 {
+		return fmt.Errorf("%s: name exactly one of `task:`, `step:` or `signal:`", where)
+	}
+	switch {
+	case f.Signal != "" && !f.Drop:
+		return fmt.Errorf("%s: a `signal:` fault says what happens to the delivery; write `drop: true`", where)
+	case f.Signal != "" && (f.Fails.Kind != "" || f.Fails.Message != ""):
+		return fmt.Errorf("%s: `fails:` is the failure of a task, and a signal fault loses the delivery instead; use `drop: true` alone", where)
+	case f.Signal == "" && f.Drop:
+		return fmt.Errorf("%s: `drop:` loses a signal's delivery, so it goes with `signal:`", where)
 	}
 	if f.Fails.Kind != "" {
 		kind, ok := v1.ParseErrorKind(f.Fails.Kind)
@@ -171,7 +197,10 @@ func kindList() string {
 // checkFaultNames refuses a fault aimed at a task or step the workflow under
 // test cannot invoke, before the run, for the reason [checkInvocationNames]
 // does: a fault at a ghost is a no-op that reads as resilience.
-func checkFaultNames(faults []Fault, spec *v1.Workflow) error {
+//
+// A `signal:` fault must name a signal the case scripts, since a delivery
+// that is never sent cannot be lost.
+func checkFaultNames(faults []Fault, spec *v1.Workflow, scripts []SignalScript) error {
 	if len(faults) == 0 {
 		return nil
 	}
@@ -199,6 +228,18 @@ func checkFaultNames(faults []Fault, spec *v1.Workflow) error {
 
 				return fmt.Errorf("%s: task names unknown task %q, which this workflow, its callees and its compensations never invoke", where, f.Task)
 			}
+		}
+		if f.Signal != "" && !slices.ContainsFunc(scripts, func(s SignalScript) bool { return s.Name == f.Signal }) {
+			sent := map[string]bool{}
+			for _, s := range scripts {
+				sent[s.Name] = true
+			}
+			scripted := slices.Sorted(maps.Keys(sent))
+			if suggestion, ok := nearest.Name(f.Signal, scripted); ok {
+				return fmt.Errorf("%s: signal names %q, which the case never sends; did you mean %q?", where, f.Signal, suggestion)
+			}
+
+			return fmt.Errorf("%s: signal names %q, which the case never sends, so there is no delivery to lose", where, f.Signal)
 		}
 		if f.Step != "" {
 			switch {
@@ -299,29 +340,17 @@ func (p *faultPlan) attempt(ctx context.Context, task string) error {
 	matches := make([]int, 0, len(p.faults))
 	for i := range p.faults {
 		f := &p.faults[i]
-		if f.Task != "" && f.Task != task || f.Step != "" && (f.Step != ref.Step || ref.Workflow != p.root) {
+		if f.Signal != "" || f.Task != "" && f.Task != task || f.Step != "" && (f.Step != ref.Step || ref.Workflow != p.root) {
 			continue
 		}
 		p.seen[i]++
 		matches = append(matches, i)
 	}
 	for _, i := range matches {
-		f := &p.faults[i]
-		switch {
-		case len(f.On) > 0:
-			if !slices.Contains(f.On, p.seen[i]) {
-				continue
-			}
-			p.pinnedFired[i] = append(p.pinnedFired[i], p.seen[i])
-		case p.fired[i] >= f.limit():
+		if !p.fires(ctx, i) {
 			continue
-		case !v1.InjectFault(ctx, fmt.Sprintf("faults[%d]", i), f.rate()):
-			continue
-		default:
-			p.drawn[i]++
-			p.script[i] = append(p.script[i], p.seen[i])
 		}
-		p.fired[i]++
+		f := &p.faults[i]
 		message := f.Fails.Message
 		if message == "" {
 			message = fmt.Sprintf("injected fault faults[%d]", i)
@@ -331,6 +360,62 @@ func (p *faultPlan) attempt(ctx context.Context, task string) error {
 	}
 
 	return nil
+}
+
+// fires decides whether fault i, which this invocation or delivery matched
+// and was counted for, fires on it, and records the fire. Called with the lock
+// held, once per matching fault, so a task fault and a signal fault take
+// exactly one decision rule.
+func (p *faultPlan) fires(ctx context.Context, i int) bool {
+	f := &p.faults[i]
+	switch {
+	case len(f.On) > 0:
+		if !slices.Contains(f.On, p.seen[i]) {
+			return false
+		}
+		p.pinnedFired[i] = append(p.pinnedFired[i], p.seen[i])
+	case p.fired[i] >= f.limit():
+		return false
+	case !v1.InjectFault(ctx, fmt.Sprintf("faults[%d]", i), f.rate()):
+		return false
+	default:
+		p.drawn[i]++
+		p.script[i] = append(p.script[i], p.seen[i])
+	}
+	p.fired[i]++
+
+	return true
+}
+
+// dropSignals decides, before the run starts, which of the scripted
+// deliveries are lost: one answer per script, in declaration order.
+//
+// Decided up front and not as each delivery comes due, because the fault
+// stream is one sequence shared with the task faults the run draws, and a
+// delivery's goroutine runs when the clock releases it, which no seed
+// controls. Declaration order is the one order a case fixes, so the same seed
+// loses the same deliveries.
+func (p *faultPlan) dropSignals(ctx context.Context, scripts []SignalScript) []bool {
+	dropped := make([]bool, len(scripts))
+	if p == nil {
+		return dropped
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	for n, s := range scripts {
+		for i := range p.faults {
+			if p.faults[i].Signal != s.Name {
+				continue
+			}
+			p.seen[i]++
+			if !dropped[n] && p.fires(ctx, i) {
+				dropped[n] = true
+			}
+		}
+	}
+
+	return dropped
 }
 
 // unreached lists the step faults no invocation was ever eligible for, as
