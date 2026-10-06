@@ -63,6 +63,12 @@ func checkDeniedSignalNames(want *Expectation, scripts []SignalScript, spec *v1.
 	if len(want.DeniedSignals) == 0 {
 		return nil
 	}
+	// A webhook replay the case expects refused ends the case before any run
+	// starts, so a signal denial could never be judged; refusing the pair keeps
+	// the claim from passing without having been checked.
+	if want.Refused != nil && *want.Refused {
+		return errors.New("expect.denied_signals cannot be combined with `refused: true`: a refused delivery starts no run, so no signal is ever sent; put the signal denial in a case that starts a run")
+	}
 	sent := map[string]bool{}
 	for _, s := range scripts {
 		sent[s.Name] = true

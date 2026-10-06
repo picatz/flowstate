@@ -1266,6 +1266,10 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	var outputs *v1.Workflow_StepOutputs
 	outputs, runErr = v1.RunWithInputs(ctx, workflow, inputs)
 	close(runFinished)
+	// Joined before anything reads what the senders did: a sender that passed
+	// its last `runFinished` check can still be inside the delivery, and
+	// `expect.denied_signals` is judged from what that delivery recorded.
+	stopScripts()
 
 	// Told the run has returned, with the run's own error rather than the
 	// case's verdict, so a debugger can say what the run never did (an
@@ -1840,10 +1844,17 @@ func scriptSignals(runFinished <-chan struct{}, clock *v1.VirtualClock, signals 
 		}(j)
 	}
 
+	// Idempotent: the case joins the senders itself before judging what they
+	// did, and the deferred call that guards every earlier return joins them
+	// again. A second drain of `done` would block forever.
+	var once sync.Once
+
 	return func() {
-		for range jobs {
-			<-done
-		}
+		once.Do(func() {
+			for range jobs {
+				<-done
+			}
+		})
 	}, nil
 }
 

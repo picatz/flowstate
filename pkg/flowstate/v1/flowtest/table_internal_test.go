@@ -202,3 +202,16 @@ func nonZeroExpectation() Expectation {
 		Check:          []CheckClaim{{That: "true"}},
 	}
 }
+
+// TestAnEmptyDeniedSignalsListIsNoClaim: `denied_signals: []` names no signal
+// and asserts nothing, so it neither counts as a claim nor erases an entry's.
+func TestAnEmptyDeniedSignalsListIsNoClaim(t *testing.T) {
+	t.Parallel()
+
+	assert.True(t, (&Expectation{DeniedSignals: []string{}}).claimsNothing())
+	assert.False(t, (&Expectation{DeniedSignals: []string{"a"}}).claimsNothing())
+
+	merged := mergeExpectation(Expectation{DeniedSignals: []string{"a"}}, Expectation{DeniedSignals: []string{}})
+	assert.Equal(t, []string{"a"}, merged.DeniedSignals)
+	assert.True(t, merged.fromEntry.deniedSignals)
+}

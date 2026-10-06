@@ -314,9 +314,11 @@ func mergeExpectation(entry, row Expectation) Expectation {
 		merged.Compensated = entry.Compensated
 		merged.fromEntry.compensated = entry.Compensated != nil
 	}
-	if merged.DeniedSignals == nil {
+	// An empty list names no signal and asserts nothing, so like `invocations`
+	// it is no statement and cannot erase the entry's claims.
+	if len(merged.DeniedSignals) == 0 {
 		merged.DeniedSignals = entry.DeniedSignals
-		merged.fromEntry.deniedSignals = entry.DeniedSignals != nil
+		merged.fromEntry.deniedSignals = len(entry.DeniedSignals) > 0
 	}
 	if merged.Ran == nil {
 		merged.Ran = entry.Ran

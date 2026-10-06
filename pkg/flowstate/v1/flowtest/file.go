@@ -1271,7 +1271,7 @@ type Expectation struct {
 // length.
 func (e *Expectation) claimsNothing() bool {
 	return e.Outputs == nil && e.Inputs == nil && e.Refused == nil && e.IdempotencyKey == "" &&
-		e.Failed == nil && e.ErrorContains == "" && e.Compensated == nil && e.DeniedSignals == nil && e.Ran == nil &&
+		e.Failed == nil && e.ErrorContains == "" && e.Compensated == nil && len(e.DeniedSignals) == 0 && e.Ran == nil &&
 		e.Skipped == nil && e.Others == "" && len(e.Invocations) == 0 && len(e.Check) == 0
 }
 
