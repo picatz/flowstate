@@ -1197,6 +1197,170 @@ func (x *GetGateResponse) GetApprovalsNeeded() uint32 {
 	return 0
 }
 
+// ListGatesRequest asks for the open gates of one run.
+type ListGatesRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// WorkflowId identifies the workload whose gates are listed, as Run's
+	// `workflow_id` reports it. 1 to 256 bytes.
+	//
+	// A caller may address only runs in its own tenant. The namespace always
+	// comes from the caller's authenticated identity, never from the request.
+	WorkflowId string `protobuf:"bytes,1,opt,name=workflow_id,json=workflowId,proto3" json:"workflow_id,omitempty"`
+	// PageSize is the most gates one page returns: 0 (the default) means 50, and
+	// at most 200.
+	//
+	// Lower than [ListRequest.page_size] because each gate carries a prompt of up
+	// to `v1.MaxWaitPromptBytes`. It bounds the answer, not the work: with
+	// `answerable_only` a page may come back short, or empty, with
+	// `next_page_token` set.
+	PageSize int32 `protobuf:"varint,2,opt,name=page_size,json=pageSize,proto3" json:"page_size,omitempty"`
+	// PageToken continues a previous ListGates: pass the previous response's
+	// `next_page_token`, with the same `workflow_id`, `answerable_only` and
+	// `page_size`. Opaque.
+	//
+	// A token is refused on the terms [ListRequest.page_token] is, and also when
+	// the run it was issued on has since been replaced by a later run of the same
+	// workload.
+	PageToken string `protobuf:"bytes,3,opt,name=page_token,json=pageToken,proto3" json:"page_token,omitempty"`
+	// AnswerableOnly keeps only the gates whose [GetGateResponse.may_answer] is
+	// true for this caller, the list an approver acts on. False lists every open
+	// gate, each saying whether the caller may answer it.
+	AnswerableOnly bool `protobuf:"varint,4,opt,name=answerable_only,json=answerableOnly,proto3" json:"answerable_only,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *ListGatesRequest) Reset() {
+	*x = ListGatesRequest{}
+	mi := &file_flowstate_v1_service_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListGatesRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListGatesRequest) ProtoMessage() {}
+
+func (x *ListGatesRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_flowstate_v1_service_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListGatesRequest.ProtoReflect.Descriptor instead.
+func (*ListGatesRequest) Descriptor() ([]byte, []int) {
+	return file_flowstate_v1_service_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *ListGatesRequest) GetWorkflowId() string {
+	if x != nil {
+		return x.WorkflowId
+	}
+	return ""
+}
+
+func (x *ListGatesRequest) GetPageSize() int32 {
+	if x != nil {
+		return x.PageSize
+	}
+	return 0
+}
+
+func (x *ListGatesRequest) GetPageToken() string {
+	if x != nil {
+		return x.PageToken
+	}
+	return ""
+}
+
+func (x *ListGatesRequest) GetAnswerableOnly() bool {
+	if x != nil {
+		return x.AnswerableOnly
+	}
+	return false
+}
+
+// ListGatesResponse is a page of a run's open gates, each exactly as GetGate
+// reports it.
+type ListGatesResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Gates are the open gates on this page, oldest first, each the
+	// [GetGateResponse] GetGate would answer for that gate's signal name, with
+	// the same withholding of prompt and starter for a caller the `signals:`
+	// policy refuses. They carry no step output, input or carried state.
+	Gates []*GetGateResponse `protobuf:"bytes,1,rep,name=gates,proto3" json:"gates,omitempty"`
+	// NextPageToken continues the listing; empty means this was the last page.
+	// A short or even empty page with a token set is not the end of the listing.
+	NextPageToken string `protobuf:"bytes,2,opt,name=next_page_token,json=nextPageToken,proto3" json:"next_page_token,omitempty"`
+	// Truncated is true when the run is parked on more gates than it retains
+	// (`v1.MaxHeldWaits`, in `pkg/flowstate/v1/waits.go`), so the listing is not
+	// every open gate even read to its end: the gates it could not keep are
+	// answerable only with `flow signal`. A flag rather than silence, for
+	// [RunProgress.pending_waits_truncated]'s reason.
+	Truncated     bool `protobuf:"varint,3,opt,name=truncated,proto3" json:"truncated,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListGatesResponse) Reset() {
+	*x = ListGatesResponse{}
+	mi := &file_flowstate_v1_service_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListGatesResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListGatesResponse) ProtoMessage() {}
+
+func (x *ListGatesResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_flowstate_v1_service_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListGatesResponse.ProtoReflect.Descriptor instead.
+func (*ListGatesResponse) Descriptor() ([]byte, []int) {
+	return file_flowstate_v1_service_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *ListGatesResponse) GetGates() []*GetGateResponse {
+	if x != nil {
+		return x.Gates
+	}
+	return nil
+}
+
+func (x *ListGatesResponse) GetNextPageToken() string {
+	if x != nil {
+		return x.NextPageToken
+	}
+	return ""
+}
+
+func (x *ListGatesResponse) GetTruncated() bool {
+	if x != nil {
+		return x.Truncated
+	}
+	return false
+}
+
 // SignalWithStartRequest delivers a signal to an entity, creating it first if it
 // does not yet exist.
 //
@@ -1240,7 +1404,7 @@ type SignalWithStartRequest struct {
 
 func (x *SignalWithStartRequest) Reset() {
 	*x = SignalWithStartRequest{}
-	mi := &file_flowstate_v1_service_proto_msgTypes[8]
+	mi := &file_flowstate_v1_service_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1252,7 +1416,7 @@ func (x *SignalWithStartRequest) String() string {
 func (*SignalWithStartRequest) ProtoMessage() {}
 
 func (x *SignalWithStartRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_service_proto_msgTypes[8]
+	mi := &file_flowstate_v1_service_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1265,7 +1429,7 @@ func (x *SignalWithStartRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SignalWithStartRequest.ProtoReflect.Descriptor instead.
 func (*SignalWithStartRequest) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_service_proto_rawDescGZIP(), []int{8}
+	return file_flowstate_v1_service_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *SignalWithStartRequest) GetEntityKey() string {
@@ -1330,7 +1494,7 @@ type SignalWithStartResponse struct {
 
 func (x *SignalWithStartResponse) Reset() {
 	*x = SignalWithStartResponse{}
-	mi := &file_flowstate_v1_service_proto_msgTypes[9]
+	mi := &file_flowstate_v1_service_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1342,7 +1506,7 @@ func (x *SignalWithStartResponse) String() string {
 func (*SignalWithStartResponse) ProtoMessage() {}
 
 func (x *SignalWithStartResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_service_proto_msgTypes[9]
+	mi := &file_flowstate_v1_service_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1355,7 +1519,7 @@ func (x *SignalWithStartResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SignalWithStartResponse.ProtoReflect.Descriptor instead.
 func (*SignalWithStartResponse) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_service_proto_rawDescGZIP(), []int{9}
+	return file_flowstate_v1_service_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *SignalWithStartResponse) GetWorkflowId() string {
@@ -1402,7 +1566,7 @@ type CancelRequest struct {
 
 func (x *CancelRequest) Reset() {
 	*x = CancelRequest{}
-	mi := &file_flowstate_v1_service_proto_msgTypes[10]
+	mi := &file_flowstate_v1_service_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1414,7 +1578,7 @@ func (x *CancelRequest) String() string {
 func (*CancelRequest) ProtoMessage() {}
 
 func (x *CancelRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_service_proto_msgTypes[10]
+	mi := &file_flowstate_v1_service_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1427,7 +1591,7 @@ func (x *CancelRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CancelRequest.ProtoReflect.Descriptor instead.
 func (*CancelRequest) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_service_proto_rawDescGZIP(), []int{10}
+	return file_flowstate_v1_service_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *CancelRequest) GetWorkflowId() string {
@@ -1458,7 +1622,7 @@ type CancelResponse struct {
 
 func (x *CancelResponse) Reset() {
 	*x = CancelResponse{}
-	mi := &file_flowstate_v1_service_proto_msgTypes[11]
+	mi := &file_flowstate_v1_service_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1470,7 +1634,7 @@ func (x *CancelResponse) String() string {
 func (*CancelResponse) ProtoMessage() {}
 
 func (x *CancelResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_service_proto_msgTypes[11]
+	mi := &file_flowstate_v1_service_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1483,7 +1647,7 @@ func (x *CancelResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CancelResponse.ProtoReflect.Descriptor instead.
 func (*CancelResponse) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_service_proto_rawDescGZIP(), []int{11}
+	return file_flowstate_v1_service_proto_rawDescGZIP(), []int{13}
 }
 
 // TerminateRequest stops a run immediately, without letting it clean up.
@@ -1506,7 +1670,7 @@ type TerminateRequest struct {
 
 func (x *TerminateRequest) Reset() {
 	*x = TerminateRequest{}
-	mi := &file_flowstate_v1_service_proto_msgTypes[12]
+	mi := &file_flowstate_v1_service_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1518,7 +1682,7 @@ func (x *TerminateRequest) String() string {
 func (*TerminateRequest) ProtoMessage() {}
 
 func (x *TerminateRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_service_proto_msgTypes[12]
+	mi := &file_flowstate_v1_service_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1531,7 +1695,7 @@ func (x *TerminateRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TerminateRequest.ProtoReflect.Descriptor instead.
 func (*TerminateRequest) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_service_proto_rawDescGZIP(), []int{12}
+	return file_flowstate_v1_service_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *TerminateRequest) GetWorkflowId() string {
@@ -1570,7 +1734,7 @@ type TerminateResponse struct {
 
 func (x *TerminateResponse) Reset() {
 	*x = TerminateResponse{}
-	mi := &file_flowstate_v1_service_proto_msgTypes[13]
+	mi := &file_flowstate_v1_service_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1582,7 +1746,7 @@ func (x *TerminateResponse) String() string {
 func (*TerminateResponse) ProtoMessage() {}
 
 func (x *TerminateResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_service_proto_msgTypes[13]
+	mi := &file_flowstate_v1_service_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1595,7 +1759,7 @@ func (x *TerminateResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TerminateResponse.ProtoReflect.Descriptor instead.
 func (*TerminateResponse) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_service_proto_rawDescGZIP(), []int{13}
+	return file_flowstate_v1_service_proto_rawDescGZIP(), []int{15}
 }
 
 // ListRequest asks for the caller's runs.
@@ -1644,7 +1808,7 @@ type ListRequest struct {
 
 func (x *ListRequest) Reset() {
 	*x = ListRequest{}
-	mi := &file_flowstate_v1_service_proto_msgTypes[14]
+	mi := &file_flowstate_v1_service_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1656,7 +1820,7 @@ func (x *ListRequest) String() string {
 func (*ListRequest) ProtoMessage() {}
 
 func (x *ListRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_service_proto_msgTypes[14]
+	mi := &file_flowstate_v1_service_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1669,7 +1833,7 @@ func (x *ListRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListRequest.ProtoReflect.Descriptor instead.
 func (*ListRequest) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_service_proto_rawDescGZIP(), []int{14}
+	return file_flowstate_v1_service_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *ListRequest) GetPageSize() int32 {
@@ -1758,7 +1922,7 @@ type RunSummary struct {
 
 func (x *RunSummary) Reset() {
 	*x = RunSummary{}
-	mi := &file_flowstate_v1_service_proto_msgTypes[15]
+	mi := &file_flowstate_v1_service_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1770,7 +1934,7 @@ func (x *RunSummary) String() string {
 func (*RunSummary) ProtoMessage() {}
 
 func (x *RunSummary) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_service_proto_msgTypes[15]
+	mi := &file_flowstate_v1_service_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1783,7 +1947,7 @@ func (x *RunSummary) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RunSummary.ProtoReflect.Descriptor instead.
 func (*RunSummary) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_service_proto_rawDescGZIP(), []int{15}
+	return file_flowstate_v1_service_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *RunSummary) GetWorkflowId() string {
@@ -1895,7 +2059,7 @@ type ListResponse struct {
 
 func (x *ListResponse) Reset() {
 	*x = ListResponse{}
-	mi := &file_flowstate_v1_service_proto_msgTypes[16]
+	mi := &file_flowstate_v1_service_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1907,7 +2071,7 @@ func (x *ListResponse) String() string {
 func (*ListResponse) ProtoMessage() {}
 
 func (x *ListResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_service_proto_msgTypes[16]
+	mi := &file_flowstate_v1_service_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1920,7 +2084,7 @@ func (x *ListResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListResponse.ProtoReflect.Descriptor instead.
 func (*ListResponse) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_service_proto_rawDescGZIP(), []int{16}
+	return file_flowstate_v1_service_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *ListResponse) GetRuns() []*RunSummary {
@@ -1983,7 +2147,7 @@ type ListCursor struct {
 
 func (x *ListCursor) Reset() {
 	*x = ListCursor{}
-	mi := &file_flowstate_v1_service_proto_msgTypes[17]
+	mi := &file_flowstate_v1_service_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1995,7 +2159,7 @@ func (x *ListCursor) String() string {
 func (*ListCursor) ProtoMessage() {}
 
 func (x *ListCursor) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_service_proto_msgTypes[17]
+	mi := &file_flowstate_v1_service_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2008,7 +2172,7 @@ func (x *ListCursor) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListCursor.ProtoReflect.Descriptor instead.
 func (*ListCursor) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_service_proto_rawDescGZIP(), []int{17}
+	return file_flowstate_v1_service_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *ListCursor) GetPosition() []byte {
@@ -2051,7 +2215,7 @@ type ValidateRequest struct {
 
 func (x *ValidateRequest) Reset() {
 	*x = ValidateRequest{}
-	mi := &file_flowstate_v1_service_proto_msgTypes[18]
+	mi := &file_flowstate_v1_service_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2063,7 +2227,7 @@ func (x *ValidateRequest) String() string {
 func (*ValidateRequest) ProtoMessage() {}
 
 func (x *ValidateRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_service_proto_msgTypes[18]
+	mi := &file_flowstate_v1_service_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2076,7 +2240,7 @@ func (x *ValidateRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ValidateRequest.ProtoReflect.Descriptor instead.
 func (*ValidateRequest) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_service_proto_rawDescGZIP(), []int{18}
+	return file_flowstate_v1_service_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *ValidateRequest) GetFiles() []*SourceFile {
@@ -2097,7 +2261,7 @@ type ValidateResponse struct {
 
 func (x *ValidateResponse) Reset() {
 	*x = ValidateResponse{}
-	mi := &file_flowstate_v1_service_proto_msgTypes[19]
+	mi := &file_flowstate_v1_service_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2109,7 +2273,7 @@ func (x *ValidateResponse) String() string {
 func (*ValidateResponse) ProtoMessage() {}
 
 func (x *ValidateResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_service_proto_msgTypes[19]
+	mi := &file_flowstate_v1_service_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2122,7 +2286,7 @@ func (x *ValidateResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ValidateResponse.ProtoReflect.Descriptor instead.
 func (*ValidateResponse) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_service_proto_rawDescGZIP(), []int{19}
+	return file_flowstate_v1_service_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *ValidateResponse) GetReport() *ValidationReport {
@@ -2169,7 +2333,7 @@ type GetTimelineRequest struct {
 
 func (x *GetTimelineRequest) Reset() {
 	*x = GetTimelineRequest{}
-	mi := &file_flowstate_v1_service_proto_msgTypes[20]
+	mi := &file_flowstate_v1_service_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2181,7 +2345,7 @@ func (x *GetTimelineRequest) String() string {
 func (*GetTimelineRequest) ProtoMessage() {}
 
 func (x *GetTimelineRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_service_proto_msgTypes[20]
+	mi := &file_flowstate_v1_service_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2194,7 +2358,7 @@ func (x *GetTimelineRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetTimelineRequest.ProtoReflect.Descriptor instead.
 func (*GetTimelineRequest) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_service_proto_rawDescGZIP(), []int{20}
+	return file_flowstate_v1_service_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *GetTimelineRequest) GetWorkflowId() string {
@@ -2283,7 +2447,7 @@ type GetTimelineResponse struct {
 
 func (x *GetTimelineResponse) Reset() {
 	*x = GetTimelineResponse{}
-	mi := &file_flowstate_v1_service_proto_msgTypes[21]
+	mi := &file_flowstate_v1_service_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2295,7 +2459,7 @@ func (x *GetTimelineResponse) String() string {
 func (*GetTimelineResponse) ProtoMessage() {}
 
 func (x *GetTimelineResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_service_proto_msgTypes[21]
+	mi := &file_flowstate_v1_service_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2308,7 +2472,7 @@ func (x *GetTimelineResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetTimelineResponse.ProtoReflect.Descriptor instead.
 func (*GetTimelineResponse) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_service_proto_rawDescGZIP(), []int{21}
+	return file_flowstate_v1_service_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *GetTimelineResponse) GetEntries() []*TimelineEntry {
@@ -2372,7 +2536,7 @@ type CompileRequest struct {
 
 func (x *CompileRequest) Reset() {
 	*x = CompileRequest{}
-	mi := &file_flowstate_v1_service_proto_msgTypes[22]
+	mi := &file_flowstate_v1_service_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2384,7 +2548,7 @@ func (x *CompileRequest) String() string {
 func (*CompileRequest) ProtoMessage() {}
 
 func (x *CompileRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_service_proto_msgTypes[22]
+	mi := &file_flowstate_v1_service_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2397,7 +2561,7 @@ func (x *CompileRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CompileRequest.ProtoReflect.Descriptor instead.
 func (*CompileRequest) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_service_proto_rawDescGZIP(), []int{22}
+	return file_flowstate_v1_service_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *CompileRequest) GetFile() *SourceFile {
@@ -2422,7 +2586,7 @@ type CompileResponse struct {
 
 func (x *CompileResponse) Reset() {
 	*x = CompileResponse{}
-	mi := &file_flowstate_v1_service_proto_msgTypes[23]
+	mi := &file_flowstate_v1_service_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2434,7 +2598,7 @@ func (x *CompileResponse) String() string {
 func (*CompileResponse) ProtoMessage() {}
 
 func (x *CompileResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_service_proto_msgTypes[23]
+	mi := &file_flowstate_v1_service_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2447,7 +2611,7 @@ func (x *CompileResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CompileResponse.ProtoReflect.Descriptor instead.
 func (*CompileResponse) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_service_proto_rawDescGZIP(), []int{23}
+	return file_flowstate_v1_service_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *CompileResponse) GetWorkflow() *Workflow {
@@ -2473,7 +2637,7 @@ type GetCatalogRequest struct {
 
 func (x *GetCatalogRequest) Reset() {
 	*x = GetCatalogRequest{}
-	mi := &file_flowstate_v1_service_proto_msgTypes[24]
+	mi := &file_flowstate_v1_service_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2485,7 +2649,7 @@ func (x *GetCatalogRequest) String() string {
 func (*GetCatalogRequest) ProtoMessage() {}
 
 func (x *GetCatalogRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_service_proto_msgTypes[24]
+	mi := &file_flowstate_v1_service_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2498,7 +2662,7 @@ func (x *GetCatalogRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetCatalogRequest.ProtoReflect.Descriptor instead.
 func (*GetCatalogRequest) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_service_proto_rawDescGZIP(), []int{24}
+	return file_flowstate_v1_service_proto_rawDescGZIP(), []int{26}
 }
 
 // GetCatalogResponse is the deployment's capability.
@@ -2517,7 +2681,7 @@ type GetCatalogResponse struct {
 
 func (x *GetCatalogResponse) Reset() {
 	*x = GetCatalogResponse{}
-	mi := &file_flowstate_v1_service_proto_msgTypes[25]
+	mi := &file_flowstate_v1_service_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2529,7 +2693,7 @@ func (x *GetCatalogResponse) String() string {
 func (*GetCatalogResponse) ProtoMessage() {}
 
 func (x *GetCatalogResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_service_proto_msgTypes[25]
+	mi := &file_flowstate_v1_service_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2542,7 +2706,7 @@ func (x *GetCatalogResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetCatalogResponse.ProtoReflect.Descriptor instead.
 func (*GetCatalogResponse) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_service_proto_rawDescGZIP(), []int{25}
+	return file_flowstate_v1_service_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *GetCatalogResponse) GetCatalog() *TaskCatalog {
@@ -2633,7 +2797,7 @@ type MutationResult struct {
 
 func (x *MutationResult) Reset() {
 	*x = MutationResult{}
-	mi := &file_flowstate_v1_service_proto_msgTypes[26]
+	mi := &file_flowstate_v1_service_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2645,7 +2809,7 @@ func (x *MutationResult) String() string {
 func (*MutationResult) ProtoMessage() {}
 
 func (x *MutationResult) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_service_proto_msgTypes[26]
+	mi := &file_flowstate_v1_service_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2658,7 +2822,7 @@ func (x *MutationResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MutationResult.ProtoReflect.Descriptor instead.
 func (*MutationResult) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_service_proto_rawDescGZIP(), []int{26}
+	return file_flowstate_v1_service_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *MutationResult) GetVerb() string {
@@ -2744,7 +2908,7 @@ type RunResponse_Error struct {
 
 func (x *RunResponse_Error) Reset() {
 	*x = RunResponse_Error{}
-	mi := &file_flowstate_v1_service_proto_msgTypes[28]
+	mi := &file_flowstate_v1_service_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2756,7 +2920,7 @@ func (x *RunResponse_Error) String() string {
 func (*RunResponse_Error) ProtoMessage() {}
 
 func (x *RunResponse_Error) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_service_proto_msgTypes[28]
+	mi := &file_flowstate_v1_service_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2894,7 +3058,20 @@ const file_flowstate_v1_service_proto_rawDesc = "" +
 	"\tapprovals\x18\n" +
 	" \x01(\rR\tapprovals\x12)\n" +
 	"\x10approvals_needed\x18\v \x01(\rR\x0fapprovalsNeededB\v\n" +
-	"\t_deadline\"\xc8\x03\n" +
+	"\t_deadline\"\xc1\x01\n" +
+	"\x10ListGatesRequest\x122\n" +
+	"\vworkflow_id\x18\x01 \x01(\tB\x11\xe2A\x01\x02\xbaH\n" +
+	"\xc8\x01\x01r\x05\x10\x01(\x80\x02R\n" +
+	"workflowId\x12'\n" +
+	"\tpage_size\x18\x02 \x01(\x05B\n" +
+	"\xbaH\a\x1a\x05\x18\xc8\x01(\x00R\bpageSize\x12'\n" +
+	"\n" +
+	"page_token\x18\x03 \x01(\tB\b\xbaH\x05r\x03\x18\x80 R\tpageToken\x12'\n" +
+	"\x0fanswerable_only\x18\x04 \x01(\bR\x0eanswerableOnly\"\x8e\x01\n" +
+	"\x11ListGatesResponse\x123\n" +
+	"\x05gates\x18\x01 \x03(\v2\x1d.flowstate.v1.GetGateResponseR\x05gates\x12&\n" +
+	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\x12\x1c\n" +
+	"\ttruncated\x18\x03 \x01(\bR\ttruncated\"\xc8\x03\n" +
 	"\x16SignalWithStartRequest\x12F\n" +
 	"\n" +
 	"entity_key\x18\x01 \x01(\tB'\xe2A\x01\x02\xbaH \xc8\x01\x01r\x1b\x10\x01\x18\x80\x012\x14^[a-z0-9][a-z0-9-]*$R\tentityKey\x12>\n" +
@@ -3010,12 +3187,13 @@ const file_flowstate_v1_service_proto_rawDesc = "" +
 	" SENSITIVE_DISCLOSURE_UNSPECIFIED\x10\x00\x12&\n" +
 	"\"SENSITIVE_DISCLOSURE_NONE_DECLARED\x10\x01\x12!\n" +
 	"\x1dSENSITIVE_DISCLOSURE_WITHHELD\x10\x02\x12!\n" +
-	"\x1dSENSITIVE_DISCLOSURE_REVEALED\x10\x032\xcd\x10\n" +
+	"\x1dSENSITIVE_DISCLOSURE_REVEALED\x10\x032\x9d\x11\n" +
 	"\x0fWorkflowService\x12<\n" +
 	"\x03Run\x12\x18.flowstate.v1.RunRequest\x1a\x19.flowstate.v1.RunResponse\"\x00\x12<\n" +
 	"\x03Get\x12\x18.flowstate.v1.GetRequest\x1a\x19.flowstate.v1.GetResponse\"\x00\x12E\n" +
 	"\x06Signal\x12\x1b.flowstate.v1.SignalRequest\x1a\x1c.flowstate.v1.SignalResponse\"\x00\x12H\n" +
-	"\aGetGate\x12\x1c.flowstate.v1.GetGateRequest\x1a\x1d.flowstate.v1.GetGateResponse\"\x00\x12`\n" +
+	"\aGetGate\x12\x1c.flowstate.v1.GetGateRequest\x1a\x1d.flowstate.v1.GetGateResponse\"\x00\x12N\n" +
+	"\tListGates\x12\x1e.flowstate.v1.ListGatesRequest\x1a\x1f.flowstate.v1.ListGatesResponse\"\x00\x12`\n" +
 	"\x0fSignalWithStart\x12$.flowstate.v1.SignalWithStartRequest\x1a%.flowstate.v1.SignalWithStartResponse\"\x00\x12?\n" +
 	"\x04List\x12\x19.flowstate.v1.ListRequest\x1a\x1a.flowstate.v1.ListResponse\"\x00\x12T\n" +
 	"\vGetTimeline\x12 .flowstate.v1.GetTimelineRequest\x1a!.flowstate.v1.GetTimelineResponse\"\x00\x12E\n" +
@@ -3053,7 +3231,7 @@ func file_flowstate_v1_service_proto_rawDescGZIP() []byte {
 }
 
 var file_flowstate_v1_service_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_flowstate_v1_service_proto_msgTypes = make([]protoimpl.MessageInfo, 31)
+var file_flowstate_v1_service_proto_msgTypes = make([]protoimpl.MessageInfo, 33)
 var file_flowstate_v1_service_proto_goTypes = []any{
 	(SensitiveDisclosure)(0),            // 0: flowstate.v1.SensitiveDisclosure
 	(RunResponse_Status)(0),             // 1: flowstate.v1.RunResponse.Status
@@ -3065,165 +3243,170 @@ var file_flowstate_v1_service_proto_goTypes = []any{
 	(*SignalResponse)(nil),              // 7: flowstate.v1.SignalResponse
 	(*GetGateRequest)(nil),              // 8: flowstate.v1.GetGateRequest
 	(*GetGateResponse)(nil),             // 9: flowstate.v1.GetGateResponse
-	(*SignalWithStartRequest)(nil),      // 10: flowstate.v1.SignalWithStartRequest
-	(*SignalWithStartResponse)(nil),     // 11: flowstate.v1.SignalWithStartResponse
-	(*CancelRequest)(nil),               // 12: flowstate.v1.CancelRequest
-	(*CancelResponse)(nil),              // 13: flowstate.v1.CancelResponse
-	(*TerminateRequest)(nil),            // 14: flowstate.v1.TerminateRequest
-	(*TerminateResponse)(nil),           // 15: flowstate.v1.TerminateResponse
-	(*ListRequest)(nil),                 // 16: flowstate.v1.ListRequest
-	(*RunSummary)(nil),                  // 17: flowstate.v1.RunSummary
-	(*ListResponse)(nil),                // 18: flowstate.v1.ListResponse
-	(*ListCursor)(nil),                  // 19: flowstate.v1.ListCursor
-	(*ValidateRequest)(nil),             // 20: flowstate.v1.ValidateRequest
-	(*ValidateResponse)(nil),            // 21: flowstate.v1.ValidateResponse
-	(*GetTimelineRequest)(nil),          // 22: flowstate.v1.GetTimelineRequest
-	(*GetTimelineResponse)(nil),         // 23: flowstate.v1.GetTimelineResponse
-	(*CompileRequest)(nil),              // 24: flowstate.v1.CompileRequest
-	(*CompileResponse)(nil),             // 25: flowstate.v1.CompileResponse
-	(*GetCatalogRequest)(nil),           // 26: flowstate.v1.GetCatalogRequest
-	(*GetCatalogResponse)(nil),          // 27: flowstate.v1.GetCatalogResponse
-	(*MutationResult)(nil),              // 28: flowstate.v1.MutationResult
-	nil,                                 // 29: flowstate.v1.RunRequest.InputsEntry
-	(*RunResponse_Error)(nil),           // 30: flowstate.v1.RunResponse.Error
-	nil,                                 // 31: flowstate.v1.SignalWithStartRequest.InputsEntry
-	nil,                                 // 32: flowstate.v1.RunSummary.LabelsEntry
-	(*Workflow)(nil),                    // 33: flowstate.v1.Workflow
-	(*Workflow_StepOutputs)(nil),        // 34: flowstate.v1.Workflow.StepOutputs
-	(*timestamppb.Timestamp)(nil),       // 35: google.protobuf.Timestamp
-	(*RunProgress)(nil),                 // 36: flowstate.v1.RunProgress
-	(*PendingActivity)(nil),             // 37: flowstate.v1.PendingActivity
-	(*RunOutputs)(nil),                  // 38: flowstate.v1.RunOutputs
-	(*EntityState)(nil),                 // 39: flowstate.v1.EntityState
-	(*Node_Outputs)(nil),                // 40: flowstate.v1.Node.Outputs
-	(*SourceFile)(nil),                  // 41: flowstate.v1.SourceFile
-	(*ValidationReport)(nil),            // 42: flowstate.v1.ValidationReport
-	(*TimelineEntry)(nil),               // 43: flowstate.v1.TimelineEntry
-	(*DiagnosticReport)(nil),            // 44: flowstate.v1.DiagnosticReport
-	(*TaskCatalog)(nil),                 // 45: flowstate.v1.TaskCatalog
-	(*PluginCatalog)(nil),               // 46: flowstate.v1.PluginCatalog
-	(*Value)(nil),                       // 47: flowstate.v1.Value
-	(*DebugAttachRequest)(nil),          // 48: flowstate.v1.DebugAttachRequest
-	(*DebugGetRequest)(nil),             // 49: flowstate.v1.DebugGetRequest
-	(*DebugHistoryRequest)(nil),         // 50: flowstate.v1.DebugHistoryRequest
-	(*DebugResumeRequest)(nil),          // 51: flowstate.v1.DebugResumeRequest
-	(*DebugSetBreakpointsRequest)(nil),  // 52: flowstate.v1.DebugSetBreakpointsRequest
-	(*DebugInspectRequest)(nil),         // 53: flowstate.v1.DebugInspectRequest
-	(*CreateScheduleRequest)(nil),       // 54: flowstate.v1.CreateScheduleRequest
-	(*ListSchedulesRequest)(nil),        // 55: flowstate.v1.ListSchedulesRequest
-	(*DescribeScheduleRequest)(nil),     // 56: flowstate.v1.DescribeScheduleRequest
-	(*DeleteScheduleRequest)(nil),       // 57: flowstate.v1.DeleteScheduleRequest
-	(*PauseScheduleRequest)(nil),        // 58: flowstate.v1.PauseScheduleRequest
-	(*ResumeScheduleRequest)(nil),       // 59: flowstate.v1.ResumeScheduleRequest
-	(*TriggerScheduleRequest)(nil),      // 60: flowstate.v1.TriggerScheduleRequest
-	(*DebugAttachResponse)(nil),         // 61: flowstate.v1.DebugAttachResponse
-	(*DebugGetResponse)(nil),            // 62: flowstate.v1.DebugGetResponse
-	(*DebugHistoryResponse)(nil),        // 63: flowstate.v1.DebugHistoryResponse
-	(*DebugResumeResponse)(nil),         // 64: flowstate.v1.DebugResumeResponse
-	(*DebugSetBreakpointsResponse)(nil), // 65: flowstate.v1.DebugSetBreakpointsResponse
-	(*DebugInspectResponse)(nil),        // 66: flowstate.v1.DebugInspectResponse
-	(*CreateScheduleResponse)(nil),      // 67: flowstate.v1.CreateScheduleResponse
-	(*ListSchedulesResponse)(nil),       // 68: flowstate.v1.ListSchedulesResponse
-	(*DescribeScheduleResponse)(nil),    // 69: flowstate.v1.DescribeScheduleResponse
-	(*DeleteScheduleResponse)(nil),      // 70: flowstate.v1.DeleteScheduleResponse
-	(*PauseScheduleResponse)(nil),       // 71: flowstate.v1.PauseScheduleResponse
-	(*ResumeScheduleResponse)(nil),      // 72: flowstate.v1.ResumeScheduleResponse
-	(*TriggerScheduleResponse)(nil),     // 73: flowstate.v1.TriggerScheduleResponse
+	(*ListGatesRequest)(nil),            // 10: flowstate.v1.ListGatesRequest
+	(*ListGatesResponse)(nil),           // 11: flowstate.v1.ListGatesResponse
+	(*SignalWithStartRequest)(nil),      // 12: flowstate.v1.SignalWithStartRequest
+	(*SignalWithStartResponse)(nil),     // 13: flowstate.v1.SignalWithStartResponse
+	(*CancelRequest)(nil),               // 14: flowstate.v1.CancelRequest
+	(*CancelResponse)(nil),              // 15: flowstate.v1.CancelResponse
+	(*TerminateRequest)(nil),            // 16: flowstate.v1.TerminateRequest
+	(*TerminateResponse)(nil),           // 17: flowstate.v1.TerminateResponse
+	(*ListRequest)(nil),                 // 18: flowstate.v1.ListRequest
+	(*RunSummary)(nil),                  // 19: flowstate.v1.RunSummary
+	(*ListResponse)(nil),                // 20: flowstate.v1.ListResponse
+	(*ListCursor)(nil),                  // 21: flowstate.v1.ListCursor
+	(*ValidateRequest)(nil),             // 22: flowstate.v1.ValidateRequest
+	(*ValidateResponse)(nil),            // 23: flowstate.v1.ValidateResponse
+	(*GetTimelineRequest)(nil),          // 24: flowstate.v1.GetTimelineRequest
+	(*GetTimelineResponse)(nil),         // 25: flowstate.v1.GetTimelineResponse
+	(*CompileRequest)(nil),              // 26: flowstate.v1.CompileRequest
+	(*CompileResponse)(nil),             // 27: flowstate.v1.CompileResponse
+	(*GetCatalogRequest)(nil),           // 28: flowstate.v1.GetCatalogRequest
+	(*GetCatalogResponse)(nil),          // 29: flowstate.v1.GetCatalogResponse
+	(*MutationResult)(nil),              // 30: flowstate.v1.MutationResult
+	nil,                                 // 31: flowstate.v1.RunRequest.InputsEntry
+	(*RunResponse_Error)(nil),           // 32: flowstate.v1.RunResponse.Error
+	nil,                                 // 33: flowstate.v1.SignalWithStartRequest.InputsEntry
+	nil,                                 // 34: flowstate.v1.RunSummary.LabelsEntry
+	(*Workflow)(nil),                    // 35: flowstate.v1.Workflow
+	(*Workflow_StepOutputs)(nil),        // 36: flowstate.v1.Workflow.StepOutputs
+	(*timestamppb.Timestamp)(nil),       // 37: google.protobuf.Timestamp
+	(*RunProgress)(nil),                 // 38: flowstate.v1.RunProgress
+	(*PendingActivity)(nil),             // 39: flowstate.v1.PendingActivity
+	(*RunOutputs)(nil),                  // 40: flowstate.v1.RunOutputs
+	(*EntityState)(nil),                 // 41: flowstate.v1.EntityState
+	(*Node_Outputs)(nil),                // 42: flowstate.v1.Node.Outputs
+	(*SourceFile)(nil),                  // 43: flowstate.v1.SourceFile
+	(*ValidationReport)(nil),            // 44: flowstate.v1.ValidationReport
+	(*TimelineEntry)(nil),               // 45: flowstate.v1.TimelineEntry
+	(*DiagnosticReport)(nil),            // 46: flowstate.v1.DiagnosticReport
+	(*TaskCatalog)(nil),                 // 47: flowstate.v1.TaskCatalog
+	(*PluginCatalog)(nil),               // 48: flowstate.v1.PluginCatalog
+	(*Value)(nil),                       // 49: flowstate.v1.Value
+	(*DebugAttachRequest)(nil),          // 50: flowstate.v1.DebugAttachRequest
+	(*DebugGetRequest)(nil),             // 51: flowstate.v1.DebugGetRequest
+	(*DebugHistoryRequest)(nil),         // 52: flowstate.v1.DebugHistoryRequest
+	(*DebugResumeRequest)(nil),          // 53: flowstate.v1.DebugResumeRequest
+	(*DebugSetBreakpointsRequest)(nil),  // 54: flowstate.v1.DebugSetBreakpointsRequest
+	(*DebugInspectRequest)(nil),         // 55: flowstate.v1.DebugInspectRequest
+	(*CreateScheduleRequest)(nil),       // 56: flowstate.v1.CreateScheduleRequest
+	(*ListSchedulesRequest)(nil),        // 57: flowstate.v1.ListSchedulesRequest
+	(*DescribeScheduleRequest)(nil),     // 58: flowstate.v1.DescribeScheduleRequest
+	(*DeleteScheduleRequest)(nil),       // 59: flowstate.v1.DeleteScheduleRequest
+	(*PauseScheduleRequest)(nil),        // 60: flowstate.v1.PauseScheduleRequest
+	(*ResumeScheduleRequest)(nil),       // 61: flowstate.v1.ResumeScheduleRequest
+	(*TriggerScheduleRequest)(nil),      // 62: flowstate.v1.TriggerScheduleRequest
+	(*DebugAttachResponse)(nil),         // 63: flowstate.v1.DebugAttachResponse
+	(*DebugGetResponse)(nil),            // 64: flowstate.v1.DebugGetResponse
+	(*DebugHistoryResponse)(nil),        // 65: flowstate.v1.DebugHistoryResponse
+	(*DebugResumeResponse)(nil),         // 66: flowstate.v1.DebugResumeResponse
+	(*DebugSetBreakpointsResponse)(nil), // 67: flowstate.v1.DebugSetBreakpointsResponse
+	(*DebugInspectResponse)(nil),        // 68: flowstate.v1.DebugInspectResponse
+	(*CreateScheduleResponse)(nil),      // 69: flowstate.v1.CreateScheduleResponse
+	(*ListSchedulesResponse)(nil),       // 70: flowstate.v1.ListSchedulesResponse
+	(*DescribeScheduleResponse)(nil),    // 71: flowstate.v1.DescribeScheduleResponse
+	(*DeleteScheduleResponse)(nil),      // 72: flowstate.v1.DeleteScheduleResponse
+	(*PauseScheduleResponse)(nil),       // 73: flowstate.v1.PauseScheduleResponse
+	(*ResumeScheduleResponse)(nil),      // 74: flowstate.v1.ResumeScheduleResponse
+	(*TriggerScheduleResponse)(nil),     // 75: flowstate.v1.TriggerScheduleResponse
 }
 var file_flowstate_v1_service_proto_depIdxs = []int32{
-	33, // 0: flowstate.v1.RunRequest.workflow:type_name -> flowstate.v1.Workflow
-	29, // 1: flowstate.v1.RunRequest.inputs:type_name -> flowstate.v1.RunRequest.InputsEntry
+	35, // 0: flowstate.v1.RunRequest.workflow:type_name -> flowstate.v1.Workflow
+	31, // 1: flowstate.v1.RunRequest.inputs:type_name -> flowstate.v1.RunRequest.InputsEntry
 	1,  // 2: flowstate.v1.RunResponse.status:type_name -> flowstate.v1.RunResponse.Status
-	30, // 3: flowstate.v1.RunResponse.error:type_name -> flowstate.v1.RunResponse.Error
-	34, // 4: flowstate.v1.RunResponse.outputs:type_name -> flowstate.v1.Workflow.StepOutputs
+	32, // 3: flowstate.v1.RunResponse.error:type_name -> flowstate.v1.RunResponse.Error
+	36, // 4: flowstate.v1.RunResponse.outputs:type_name -> flowstate.v1.Workflow.StepOutputs
 	1,  // 5: flowstate.v1.GetResponse.status:type_name -> flowstate.v1.RunResponse.Status
-	30, // 6: flowstate.v1.GetResponse.error:type_name -> flowstate.v1.RunResponse.Error
-	34, // 7: flowstate.v1.GetResponse.outputs:type_name -> flowstate.v1.Workflow.StepOutputs
-	35, // 8: flowstate.v1.GetResponse.start_time:type_name -> google.protobuf.Timestamp
-	35, // 9: flowstate.v1.GetResponse.close_time:type_name -> google.protobuf.Timestamp
-	36, // 10: flowstate.v1.GetResponse.progress:type_name -> flowstate.v1.RunProgress
-	37, // 11: flowstate.v1.GetResponse.pending_activities:type_name -> flowstate.v1.PendingActivity
-	38, // 12: flowstate.v1.GetResponse.run_outputs:type_name -> flowstate.v1.RunOutputs
-	39, // 13: flowstate.v1.GetResponse.entity_state:type_name -> flowstate.v1.EntityState
+	32, // 6: flowstate.v1.GetResponse.error:type_name -> flowstate.v1.RunResponse.Error
+	36, // 7: flowstate.v1.GetResponse.outputs:type_name -> flowstate.v1.Workflow.StepOutputs
+	37, // 8: flowstate.v1.GetResponse.start_time:type_name -> google.protobuf.Timestamp
+	37, // 9: flowstate.v1.GetResponse.close_time:type_name -> google.protobuf.Timestamp
+	38, // 10: flowstate.v1.GetResponse.progress:type_name -> flowstate.v1.RunProgress
+	39, // 11: flowstate.v1.GetResponse.pending_activities:type_name -> flowstate.v1.PendingActivity
+	40, // 12: flowstate.v1.GetResponse.run_outputs:type_name -> flowstate.v1.RunOutputs
+	41, // 13: flowstate.v1.GetResponse.entity_state:type_name -> flowstate.v1.EntityState
 	0,  // 14: flowstate.v1.GetResponse.sensitive_disclosure:type_name -> flowstate.v1.SensitiveDisclosure
-	40, // 15: flowstate.v1.SignalRequest.payload:type_name -> flowstate.v1.Node.Outputs
-	35, // 16: flowstate.v1.GetGateResponse.deadline:type_name -> google.protobuf.Timestamp
-	33, // 17: flowstate.v1.SignalWithStartRequest.workflow:type_name -> flowstate.v1.Workflow
-	31, // 18: flowstate.v1.SignalWithStartRequest.inputs:type_name -> flowstate.v1.SignalWithStartRequest.InputsEntry
-	40, // 19: flowstate.v1.SignalWithStartRequest.payload:type_name -> flowstate.v1.Node.Outputs
-	1,  // 20: flowstate.v1.RunSummary.status:type_name -> flowstate.v1.RunResponse.Status
-	35, // 21: flowstate.v1.RunSummary.start_time:type_name -> google.protobuf.Timestamp
-	35, // 22: flowstate.v1.RunSummary.close_time:type_name -> google.protobuf.Timestamp
-	32, // 23: flowstate.v1.RunSummary.labels:type_name -> flowstate.v1.RunSummary.LabelsEntry
-	35, // 24: flowstate.v1.RunSummary.segment_start_time:type_name -> google.protobuf.Timestamp
-	17, // 25: flowstate.v1.ListResponse.runs:type_name -> flowstate.v1.RunSummary
-	35, // 26: flowstate.v1.ListCursor.issued_at:type_name -> google.protobuf.Timestamp
-	41, // 27: flowstate.v1.ValidateRequest.files:type_name -> flowstate.v1.SourceFile
-	42, // 28: flowstate.v1.ValidateResponse.report:type_name -> flowstate.v1.ValidationReport
-	43, // 29: flowstate.v1.GetTimelineResponse.entries:type_name -> flowstate.v1.TimelineEntry
-	0,  // 30: flowstate.v1.GetTimelineResponse.sensitive_disclosure:type_name -> flowstate.v1.SensitiveDisclosure
-	41, // 31: flowstate.v1.CompileRequest.file:type_name -> flowstate.v1.SourceFile
-	33, // 32: flowstate.v1.CompileResponse.workflow:type_name -> flowstate.v1.Workflow
-	44, // 33: flowstate.v1.CompileResponse.report:type_name -> flowstate.v1.DiagnosticReport
-	45, // 34: flowstate.v1.GetCatalogResponse.catalog:type_name -> flowstate.v1.TaskCatalog
-	46, // 35: flowstate.v1.GetCatalogResponse.plugins:type_name -> flowstate.v1.PluginCatalog
-	47, // 36: flowstate.v1.RunRequest.InputsEntry.value:type_name -> flowstate.v1.Value
-	47, // 37: flowstate.v1.SignalWithStartRequest.InputsEntry.value:type_name -> flowstate.v1.Value
-	2,  // 38: flowstate.v1.WorkflowService.Run:input_type -> flowstate.v1.RunRequest
-	4,  // 39: flowstate.v1.WorkflowService.Get:input_type -> flowstate.v1.GetRequest
-	6,  // 40: flowstate.v1.WorkflowService.Signal:input_type -> flowstate.v1.SignalRequest
-	8,  // 41: flowstate.v1.WorkflowService.GetGate:input_type -> flowstate.v1.GetGateRequest
-	10, // 42: flowstate.v1.WorkflowService.SignalWithStart:input_type -> flowstate.v1.SignalWithStartRequest
-	16, // 43: flowstate.v1.WorkflowService.List:input_type -> flowstate.v1.ListRequest
-	22, // 44: flowstate.v1.WorkflowService.GetTimeline:input_type -> flowstate.v1.GetTimelineRequest
-	12, // 45: flowstate.v1.WorkflowService.Cancel:input_type -> flowstate.v1.CancelRequest
-	14, // 46: flowstate.v1.WorkflowService.Terminate:input_type -> flowstate.v1.TerminateRequest
-	48, // 47: flowstate.v1.WorkflowService.DebugAttach:input_type -> flowstate.v1.DebugAttachRequest
-	49, // 48: flowstate.v1.WorkflowService.DebugGet:input_type -> flowstate.v1.DebugGetRequest
-	50, // 49: flowstate.v1.WorkflowService.DebugHistory:input_type -> flowstate.v1.DebugHistoryRequest
-	51, // 50: flowstate.v1.WorkflowService.DebugResume:input_type -> flowstate.v1.DebugResumeRequest
-	52, // 51: flowstate.v1.WorkflowService.DebugSetBreakpoints:input_type -> flowstate.v1.DebugSetBreakpointsRequest
-	53, // 52: flowstate.v1.WorkflowService.DebugInspect:input_type -> flowstate.v1.DebugInspectRequest
-	20, // 53: flowstate.v1.WorkflowService.Validate:input_type -> flowstate.v1.ValidateRequest
-	24, // 54: flowstate.v1.WorkflowService.Compile:input_type -> flowstate.v1.CompileRequest
-	26, // 55: flowstate.v1.WorkflowService.GetCatalog:input_type -> flowstate.v1.GetCatalogRequest
-	54, // 56: flowstate.v1.WorkflowService.CreateSchedule:input_type -> flowstate.v1.CreateScheduleRequest
-	55, // 57: flowstate.v1.WorkflowService.ListSchedules:input_type -> flowstate.v1.ListSchedulesRequest
-	56, // 58: flowstate.v1.WorkflowService.DescribeSchedule:input_type -> flowstate.v1.DescribeScheduleRequest
-	57, // 59: flowstate.v1.WorkflowService.DeleteSchedule:input_type -> flowstate.v1.DeleteScheduleRequest
-	58, // 60: flowstate.v1.WorkflowService.PauseSchedule:input_type -> flowstate.v1.PauseScheduleRequest
-	59, // 61: flowstate.v1.WorkflowService.ResumeSchedule:input_type -> flowstate.v1.ResumeScheduleRequest
-	60, // 62: flowstate.v1.WorkflowService.TriggerSchedule:input_type -> flowstate.v1.TriggerScheduleRequest
-	3,  // 63: flowstate.v1.WorkflowService.Run:output_type -> flowstate.v1.RunResponse
-	5,  // 64: flowstate.v1.WorkflowService.Get:output_type -> flowstate.v1.GetResponse
-	7,  // 65: flowstate.v1.WorkflowService.Signal:output_type -> flowstate.v1.SignalResponse
-	9,  // 66: flowstate.v1.WorkflowService.GetGate:output_type -> flowstate.v1.GetGateResponse
-	11, // 67: flowstate.v1.WorkflowService.SignalWithStart:output_type -> flowstate.v1.SignalWithStartResponse
-	18, // 68: flowstate.v1.WorkflowService.List:output_type -> flowstate.v1.ListResponse
-	23, // 69: flowstate.v1.WorkflowService.GetTimeline:output_type -> flowstate.v1.GetTimelineResponse
-	13, // 70: flowstate.v1.WorkflowService.Cancel:output_type -> flowstate.v1.CancelResponse
-	15, // 71: flowstate.v1.WorkflowService.Terminate:output_type -> flowstate.v1.TerminateResponse
-	61, // 72: flowstate.v1.WorkflowService.DebugAttach:output_type -> flowstate.v1.DebugAttachResponse
-	62, // 73: flowstate.v1.WorkflowService.DebugGet:output_type -> flowstate.v1.DebugGetResponse
-	63, // 74: flowstate.v1.WorkflowService.DebugHistory:output_type -> flowstate.v1.DebugHistoryResponse
-	64, // 75: flowstate.v1.WorkflowService.DebugResume:output_type -> flowstate.v1.DebugResumeResponse
-	65, // 76: flowstate.v1.WorkflowService.DebugSetBreakpoints:output_type -> flowstate.v1.DebugSetBreakpointsResponse
-	66, // 77: flowstate.v1.WorkflowService.DebugInspect:output_type -> flowstate.v1.DebugInspectResponse
-	21, // 78: flowstate.v1.WorkflowService.Validate:output_type -> flowstate.v1.ValidateResponse
-	25, // 79: flowstate.v1.WorkflowService.Compile:output_type -> flowstate.v1.CompileResponse
-	27, // 80: flowstate.v1.WorkflowService.GetCatalog:output_type -> flowstate.v1.GetCatalogResponse
-	67, // 81: flowstate.v1.WorkflowService.CreateSchedule:output_type -> flowstate.v1.CreateScheduleResponse
-	68, // 82: flowstate.v1.WorkflowService.ListSchedules:output_type -> flowstate.v1.ListSchedulesResponse
-	69, // 83: flowstate.v1.WorkflowService.DescribeSchedule:output_type -> flowstate.v1.DescribeScheduleResponse
-	70, // 84: flowstate.v1.WorkflowService.DeleteSchedule:output_type -> flowstate.v1.DeleteScheduleResponse
-	71, // 85: flowstate.v1.WorkflowService.PauseSchedule:output_type -> flowstate.v1.PauseScheduleResponse
-	72, // 86: flowstate.v1.WorkflowService.ResumeSchedule:output_type -> flowstate.v1.ResumeScheduleResponse
-	73, // 87: flowstate.v1.WorkflowService.TriggerSchedule:output_type -> flowstate.v1.TriggerScheduleResponse
-	63, // [63:88] is the sub-list for method output_type
-	38, // [38:63] is the sub-list for method input_type
-	38, // [38:38] is the sub-list for extension type_name
-	38, // [38:38] is the sub-list for extension extendee
-	0,  // [0:38] is the sub-list for field type_name
+	42, // 15: flowstate.v1.SignalRequest.payload:type_name -> flowstate.v1.Node.Outputs
+	37, // 16: flowstate.v1.GetGateResponse.deadline:type_name -> google.protobuf.Timestamp
+	9,  // 17: flowstate.v1.ListGatesResponse.gates:type_name -> flowstate.v1.GetGateResponse
+	35, // 18: flowstate.v1.SignalWithStartRequest.workflow:type_name -> flowstate.v1.Workflow
+	33, // 19: flowstate.v1.SignalWithStartRequest.inputs:type_name -> flowstate.v1.SignalWithStartRequest.InputsEntry
+	42, // 20: flowstate.v1.SignalWithStartRequest.payload:type_name -> flowstate.v1.Node.Outputs
+	1,  // 21: flowstate.v1.RunSummary.status:type_name -> flowstate.v1.RunResponse.Status
+	37, // 22: flowstate.v1.RunSummary.start_time:type_name -> google.protobuf.Timestamp
+	37, // 23: flowstate.v1.RunSummary.close_time:type_name -> google.protobuf.Timestamp
+	34, // 24: flowstate.v1.RunSummary.labels:type_name -> flowstate.v1.RunSummary.LabelsEntry
+	37, // 25: flowstate.v1.RunSummary.segment_start_time:type_name -> google.protobuf.Timestamp
+	19, // 26: flowstate.v1.ListResponse.runs:type_name -> flowstate.v1.RunSummary
+	37, // 27: flowstate.v1.ListCursor.issued_at:type_name -> google.protobuf.Timestamp
+	43, // 28: flowstate.v1.ValidateRequest.files:type_name -> flowstate.v1.SourceFile
+	44, // 29: flowstate.v1.ValidateResponse.report:type_name -> flowstate.v1.ValidationReport
+	45, // 30: flowstate.v1.GetTimelineResponse.entries:type_name -> flowstate.v1.TimelineEntry
+	0,  // 31: flowstate.v1.GetTimelineResponse.sensitive_disclosure:type_name -> flowstate.v1.SensitiveDisclosure
+	43, // 32: flowstate.v1.CompileRequest.file:type_name -> flowstate.v1.SourceFile
+	35, // 33: flowstate.v1.CompileResponse.workflow:type_name -> flowstate.v1.Workflow
+	46, // 34: flowstate.v1.CompileResponse.report:type_name -> flowstate.v1.DiagnosticReport
+	47, // 35: flowstate.v1.GetCatalogResponse.catalog:type_name -> flowstate.v1.TaskCatalog
+	48, // 36: flowstate.v1.GetCatalogResponse.plugins:type_name -> flowstate.v1.PluginCatalog
+	49, // 37: flowstate.v1.RunRequest.InputsEntry.value:type_name -> flowstate.v1.Value
+	49, // 38: flowstate.v1.SignalWithStartRequest.InputsEntry.value:type_name -> flowstate.v1.Value
+	2,  // 39: flowstate.v1.WorkflowService.Run:input_type -> flowstate.v1.RunRequest
+	4,  // 40: flowstate.v1.WorkflowService.Get:input_type -> flowstate.v1.GetRequest
+	6,  // 41: flowstate.v1.WorkflowService.Signal:input_type -> flowstate.v1.SignalRequest
+	8,  // 42: flowstate.v1.WorkflowService.GetGate:input_type -> flowstate.v1.GetGateRequest
+	10, // 43: flowstate.v1.WorkflowService.ListGates:input_type -> flowstate.v1.ListGatesRequest
+	12, // 44: flowstate.v1.WorkflowService.SignalWithStart:input_type -> flowstate.v1.SignalWithStartRequest
+	18, // 45: flowstate.v1.WorkflowService.List:input_type -> flowstate.v1.ListRequest
+	24, // 46: flowstate.v1.WorkflowService.GetTimeline:input_type -> flowstate.v1.GetTimelineRequest
+	14, // 47: flowstate.v1.WorkflowService.Cancel:input_type -> flowstate.v1.CancelRequest
+	16, // 48: flowstate.v1.WorkflowService.Terminate:input_type -> flowstate.v1.TerminateRequest
+	50, // 49: flowstate.v1.WorkflowService.DebugAttach:input_type -> flowstate.v1.DebugAttachRequest
+	51, // 50: flowstate.v1.WorkflowService.DebugGet:input_type -> flowstate.v1.DebugGetRequest
+	52, // 51: flowstate.v1.WorkflowService.DebugHistory:input_type -> flowstate.v1.DebugHistoryRequest
+	53, // 52: flowstate.v1.WorkflowService.DebugResume:input_type -> flowstate.v1.DebugResumeRequest
+	54, // 53: flowstate.v1.WorkflowService.DebugSetBreakpoints:input_type -> flowstate.v1.DebugSetBreakpointsRequest
+	55, // 54: flowstate.v1.WorkflowService.DebugInspect:input_type -> flowstate.v1.DebugInspectRequest
+	22, // 55: flowstate.v1.WorkflowService.Validate:input_type -> flowstate.v1.ValidateRequest
+	26, // 56: flowstate.v1.WorkflowService.Compile:input_type -> flowstate.v1.CompileRequest
+	28, // 57: flowstate.v1.WorkflowService.GetCatalog:input_type -> flowstate.v1.GetCatalogRequest
+	56, // 58: flowstate.v1.WorkflowService.CreateSchedule:input_type -> flowstate.v1.CreateScheduleRequest
+	57, // 59: flowstate.v1.WorkflowService.ListSchedules:input_type -> flowstate.v1.ListSchedulesRequest
+	58, // 60: flowstate.v1.WorkflowService.DescribeSchedule:input_type -> flowstate.v1.DescribeScheduleRequest
+	59, // 61: flowstate.v1.WorkflowService.DeleteSchedule:input_type -> flowstate.v1.DeleteScheduleRequest
+	60, // 62: flowstate.v1.WorkflowService.PauseSchedule:input_type -> flowstate.v1.PauseScheduleRequest
+	61, // 63: flowstate.v1.WorkflowService.ResumeSchedule:input_type -> flowstate.v1.ResumeScheduleRequest
+	62, // 64: flowstate.v1.WorkflowService.TriggerSchedule:input_type -> flowstate.v1.TriggerScheduleRequest
+	3,  // 65: flowstate.v1.WorkflowService.Run:output_type -> flowstate.v1.RunResponse
+	5,  // 66: flowstate.v1.WorkflowService.Get:output_type -> flowstate.v1.GetResponse
+	7,  // 67: flowstate.v1.WorkflowService.Signal:output_type -> flowstate.v1.SignalResponse
+	9,  // 68: flowstate.v1.WorkflowService.GetGate:output_type -> flowstate.v1.GetGateResponse
+	11, // 69: flowstate.v1.WorkflowService.ListGates:output_type -> flowstate.v1.ListGatesResponse
+	13, // 70: flowstate.v1.WorkflowService.SignalWithStart:output_type -> flowstate.v1.SignalWithStartResponse
+	20, // 71: flowstate.v1.WorkflowService.List:output_type -> flowstate.v1.ListResponse
+	25, // 72: flowstate.v1.WorkflowService.GetTimeline:output_type -> flowstate.v1.GetTimelineResponse
+	15, // 73: flowstate.v1.WorkflowService.Cancel:output_type -> flowstate.v1.CancelResponse
+	17, // 74: flowstate.v1.WorkflowService.Terminate:output_type -> flowstate.v1.TerminateResponse
+	63, // 75: flowstate.v1.WorkflowService.DebugAttach:output_type -> flowstate.v1.DebugAttachResponse
+	64, // 76: flowstate.v1.WorkflowService.DebugGet:output_type -> flowstate.v1.DebugGetResponse
+	65, // 77: flowstate.v1.WorkflowService.DebugHistory:output_type -> flowstate.v1.DebugHistoryResponse
+	66, // 78: flowstate.v1.WorkflowService.DebugResume:output_type -> flowstate.v1.DebugResumeResponse
+	67, // 79: flowstate.v1.WorkflowService.DebugSetBreakpoints:output_type -> flowstate.v1.DebugSetBreakpointsResponse
+	68, // 80: flowstate.v1.WorkflowService.DebugInspect:output_type -> flowstate.v1.DebugInspectResponse
+	23, // 81: flowstate.v1.WorkflowService.Validate:output_type -> flowstate.v1.ValidateResponse
+	27, // 82: flowstate.v1.WorkflowService.Compile:output_type -> flowstate.v1.CompileResponse
+	29, // 83: flowstate.v1.WorkflowService.GetCatalog:output_type -> flowstate.v1.GetCatalogResponse
+	69, // 84: flowstate.v1.WorkflowService.CreateSchedule:output_type -> flowstate.v1.CreateScheduleResponse
+	70, // 85: flowstate.v1.WorkflowService.ListSchedules:output_type -> flowstate.v1.ListSchedulesResponse
+	71, // 86: flowstate.v1.WorkflowService.DescribeSchedule:output_type -> flowstate.v1.DescribeScheduleResponse
+	72, // 87: flowstate.v1.WorkflowService.DeleteSchedule:output_type -> flowstate.v1.DeleteScheduleResponse
+	73, // 88: flowstate.v1.WorkflowService.PauseSchedule:output_type -> flowstate.v1.PauseScheduleResponse
+	74, // 89: flowstate.v1.WorkflowService.ResumeSchedule:output_type -> flowstate.v1.ResumeScheduleResponse
+	75, // 90: flowstate.v1.WorkflowService.TriggerSchedule:output_type -> flowstate.v1.TriggerScheduleResponse
+	65, // [65:91] is the sub-list for method output_type
+	39, // [39:65] is the sub-list for method input_type
+	39, // [39:39] is the sub-list for extension type_name
+	39, // [39:39] is the sub-list for extension extendee
+	0,  // [0:39] is the sub-list for field type_name
 }
 
 func init() { file_flowstate_v1_service_proto_init() }
@@ -3249,14 +3432,14 @@ func file_flowstate_v1_service_proto_init() {
 		(*GetResponse_Outputs)(nil),
 	}
 	file_flowstate_v1_service_proto_msgTypes[7].OneofWrappers = []any{}
-	file_flowstate_v1_service_proto_msgTypes[9].OneofWrappers = []any{}
+	file_flowstate_v1_service_proto_msgTypes[11].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_flowstate_v1_service_proto_rawDesc), len(file_flowstate_v1_service_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   31,
+			NumMessages:   33,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

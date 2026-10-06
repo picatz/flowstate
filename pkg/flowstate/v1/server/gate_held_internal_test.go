@@ -37,6 +37,23 @@ func (h *heldGates) lookup(args []any) *v1.RunProgress {
 	return &v1.RunProgress{PendingWaitsTruncated: h.incomplete}
 }
 
+// page answers the gates query as the engine's handler does: the waits whose
+// arrival number (their place, counting from one) is past after, at most limit.
+func (h *heldGates) page(args []any) *v1.GatePage {
+	after, _ := args[0].(uint64)
+	limit, _ := args[1].(int)
+
+	out := &v1.GatePage{Incomplete: h.incomplete}
+	end := min(int(after)+limit, len(h.waits))
+	for i := int(after); i < end; i++ {
+		out.Waits = append(out.Waits, proto.Clone(h.waits[i]).(*v1.PendingWait))
+		out.LastSeq = uint64(i + 1)
+	}
+	out.More = end < len(h.waits)
+
+	return out
+}
+
 // crowdedRun returns a fake run holding gates open gates, of which its progress
 // answer lists only the first [v1.MaxPendingWaits], every one carrying a prompt.
 func crowdedRun(t *testing.T, gates int, policy map[string]*v1.SignalPolicy) *fakeRunClient {

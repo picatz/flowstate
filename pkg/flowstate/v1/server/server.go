@@ -2886,6 +2886,30 @@ func runGate(ctx context.Context, temporal client.Client, resp *workflowservice.
 }
 
 func queryRunProgress(ctx context.Context, temporal client.Client, resp *workflowservice.DescribeWorkflowExecutionResponse, query string, args ...any) *v1.RunProgress {
+	var progress v1.RunProgress
+	if !queryRunInto(ctx, temporal, resp, query, &progress, args...) {
+		return nil
+	}
+
+	return &progress
+}
+
+// runGates asks a running workload for one page of its parked gates through
+// [engine.GatesQuery], with [runProgress]'s rules: nil where the run is not
+// running or cannot answer, so a caller can tell "no answer" from an empty
+// page. after is the arrival number to resume after, and limit the page size.
+func runGates(ctx context.Context, temporal client.Client, resp *workflowservice.DescribeWorkflowExecutionResponse, after uint64, limit int) *v1.GatePage {
+	var page v1.GatePage
+	if !queryRunInto(ctx, temporal, resp, engine.GatesQuery, &page, after, limit) {
+		return nil
+	}
+
+	return &page
+}
+
+// queryRunInto is the one way a run is queried for a read-only projection of
+// itself, into out, and reports whether it answered.
+func queryRunInto(ctx context.Context, temporal client.Client, resp *workflowservice.DescribeWorkflowExecutionResponse, query string, out proto.Message, args ...any) bool {
 	// Only where Temporal itself says the execution is running.
 	//
 	// STATUS_RUNNING covers one case where it does not: a segment that continued as
@@ -2899,7 +2923,7 @@ func queryRunProgress(ctx context.Context, temporal client.Client, resp *workflo
 	// Unset instead. A caller holding a superseded run id is asking about an attempt
 	// that has handed off, and "no current position" is the true answer for it.
 	if resp.GetWorkflowExecutionInfo().GetStatus() != enums.WORKFLOW_EXECUTION_STATUS_RUNNING {
-		return nil
+		return false
 	}
 
 	workflowID := resp.GetWorkflowExecutionInfo().GetExecution().GetWorkflowId()
@@ -2919,15 +2943,10 @@ func queryRunProgress(ctx context.Context, temporal client.Client, resp *workflo
 
 	encoded, err := temporal.QueryWorkflow(ctx, workflowID, runID, query, args...)
 	if err != nil {
-		return nil
+		return false
 	}
 
-	var progress v1.RunProgress
-	if err := encoded.Get(&progress); err != nil {
-		return nil
-	}
-
-	return &progress
+	return encoded.Get(out) == nil
 }
 
 // entityState asks a running workload what it is carrying — its top-level

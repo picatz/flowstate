@@ -695,6 +695,19 @@ func WorkflowServiceMethods() []ServiceMethod {
 			},
 		},
 		{
+			Name:   "ListGates",
+			Input:  (&v1.ListGatesRequest{}).ProtoReflect().Descriptor(),
+			Output: (&v1.ListGatesResponse{}).ProtoReflect().Descriptor(),
+			Call: func(ctx context.Context, _ *server.FlowstateServer, remote func() flowstatev1connect.WorkflowServiceClient, in proto.Message) (proto.Message, error) {
+				resp, err := remote().ListGates(ctx, connect.NewRequest(in.(*v1.ListGatesRequest)))
+				if err != nil {
+					return nil, err
+				}
+
+				return resp.Msg, nil
+			},
+		},
+		{
 			// The entity idiom's entry point: address a run by business key and
 			// deliver to it, creating it if it is not there yet. An agent driving
 			// an order or a subscription needs this rather than Run, because it

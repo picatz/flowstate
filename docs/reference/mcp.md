@@ -33,6 +33,7 @@ contracts and do not advertise a schema-owned result message.
 | `flowstate_get_timeline` | via a server | `flowstate.v1.GetTimelineRequest` | `flowstate.v1.GetTimelineResponse` |
 | `flowstate_signal` | via a server | `flowstate.v1.SignalRequest` | `flowstate.v1.SignalResponse` |
 | `flowstate_get_gate` | via a server | `flowstate.v1.GetGateRequest` | `flowstate.v1.GetGateResponse` |
+| `flowstate_list_gates` | via a server | `flowstate.v1.ListGatesRequest` | `flowstate.v1.ListGatesResponse` |
 | `flowstate_signal_with_start` | via a server | `flowstate.v1.SignalWithStartRequest` | `flowstate.v1.SignalWithStartResponse` |
 | `flowstate_list` | via a server | `flowstate.v1.ListRequest` | `flowstate.v1.ListResponse` |
 | `flowstate_cancel` | via a server | `flowstate.v1.CancelRequest` | `flowstate.v1.CancelResponse` |
@@ -129,6 +130,14 @@ GetGate reads one open approval gate for the caller who would answer it.
 `Get` reads a whole run and is bound to `workload.read`, which an approver need not hold: a person granted only `workload.signal` can answer a gate with `Signal` but could not see the question it asks. GetGate is the read scoped to answering. It is bound to `workload.signal`, returns only the gate (no step outputs, inputs or carried state), and says whether this caller's own `signals:` policy would admit a `Signal` now, without delivering one.
 
 A run that is not running, or holds no open gate by that name, answers NOT_FOUND, the same answer a run in another tenant gets. The gate is looked up by name inside the run, so it is found however many gates the run holds (up to `v1.MaxHeldWaits`, in `pkg/flowstate/v1/waits.go`), not only among the `v1.MaxPendingWaits` that `Get` lists. A run that holds more gates than it retains, or one that cannot answer the lookup, and whose answer does not include the named gate, answers FAILED_PRECONDITION: the gate may be open, and this read cannot say.
+
+## `flowstate_list_gates`
+
+ListGates lists the open approval gates of one run, for the caller who would answer them.
+
+The list form of `GetGate`, bound to the same `workload.signal` and reporting each gate the way GetGate does: its step, prompt, deadline, starter and whether this caller's `signals:` policy would admit a `Signal` now. `answerable_only` keeps just the gates the caller may answer. Unlike the progress summary `Get` carries, which stops at `v1.MaxPendingWaits`, it reads every gate the run retains (up to `v1.MaxHeldWaits`), a page at a time: keep calling with `page_token` set to the previous `next_page_token` until it comes back empty.
+
+A run that is not running answers NOT_FOUND, the same answer a run in another tenant gets; a running run with no open gate answers an empty list. A run that cannot answer the listing (no worker answering) answers UNAVAILABLE, never an empty list. A run parked on more gates than it retains says so with `truncated`.
 
 ## `flowstate_signal_with_start`
 
