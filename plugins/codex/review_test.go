@@ -134,7 +134,7 @@ func TestBoundEventsTreatsAnExhaustedBudgetAsNothingMore(t *testing.T) {
 		}
 	}
 
-	if got, truncated := boundEvents(lines, 10, 250, secrets.NewScrubber()); len(got) != 2 || truncated {
+	if got, truncated := boundEvents(lines, 10, 2*(101+eventFramingBytes), secrets.NewScrubber()); len(got) != 2 || truncated {
 		t.Errorf("a sufficient budget returned %d events (truncated=%v), want 2 and false", len(got), truncated)
 	}
 }
