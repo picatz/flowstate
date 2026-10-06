@@ -43,12 +43,14 @@ func TestRunIdentityShapeLocalRehearsal(t *testing.T) {
 		Subject:   "release-requester@example.com",
 		Issuer:    "flowstate:test",
 		Namespace: "team-a",
+
+		PrincipalKind: v1.PrincipalKind_PRINCIPAL_KIND_AGENT,
 	})
 
 	outputs, err := v1.Run(ctx, conformance.RunIdentityWorkflow())
 	require.NoError(t, err)
 
-	conformance.AssertRunIdentityShape(t, outputs, true, "release-requester@example.com")
+	conformance.AssertRunIdentityKind(t, outputs, true, "release-requester@example.com", "agent")
 }
 
 // TestRunIdentityContainmentShapes checks the opposite direction from

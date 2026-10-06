@@ -1203,7 +1203,7 @@ func signalAllowScope(withRun bool) celcomplete.Scope {
 	identity := celcomplete.Candidate{
 		Name: "identity", Kind: celcomplete.KindField, Detail: "workload identity",
 		Docs: "The identity the server attested, or the run's starter: `principal` (issuer#subject, empty " +
-			"when either half is missing), `subject`, `issuer`, `namespace` and `claims`.",
+			"when either half is missing), `subject`, `issuer`, `namespace`, `kind` and `claims`.",
 		Insert: "identity.",
 		Members: []celcomplete.Candidate{
 			{Name: "principal", Kind: celcomplete.KindField, Detail: "string",
@@ -1211,6 +1211,8 @@ func signalAllowScope(withRun bool) celcomplete.Scope {
 			{Name: "subject", Kind: celcomplete.KindField, Detail: "string"},
 			{Name: "issuer", Kind: celcomplete.KindField, Detail: "string"},
 			{Name: "namespace", Kind: celcomplete.KindField, Detail: "string"},
+			{Name: "kind", Kind: celcomplete.KindField, Detail: "string",
+				Docs: "`human`, `workload` or `agent`, as the trust policy entry that admitted the caller assigned it; empty when it assigned none."},
 			{Name: "claims", Kind: celcomplete.KindField, Detail: "map(string, string)",
 				Docs: "Read as `claims[\"team\"]` or `claims.team`; a missing key is an error, which denies. Test with `has(...)`."},
 		},

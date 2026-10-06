@@ -3,6 +3,7 @@ package flowstatev1
 import (
 	"maps"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/google/cel-go/common/types/ref"
@@ -53,7 +54,7 @@ func NewLocalRunAddressAt(started time.Time) *RunAddress {
 // runRootValue renders a run's own address and starter identity as the map an
 // expression reads under [RunRoot]: `run.workflow_id`, `run.run_id`,
 // `run.identity.subject`, `run.identity.issuer`, `run.identity.namespace`,
-// `run.identity.claims`, `run.identity.principal`, `run.local`, and `run.started_at`.
+// `run.identity.claims`, `run.identity.principal`, `run.identity.kind`, `run.local`, and `run.started_at`.
 //
 // The identity half is deliberately narrower than [WorkloadIdentity] itself —
 // see [Scope.identity]'s doc for why `deployment` is left off — and deliberately
@@ -95,8 +96,8 @@ func runRootValue(identity *WorkloadIdentity, local bool, address *RunAddress) r
 }
 
 // IdentityShape is the one rendering of a [WorkloadIdentity] an expression
-// reads: `subject`, `issuer`, `namespace`, `claims` (a map, sorted by key), and
-// `principal`. Both `run.identity` ([runRootValue]) and a wait's
+// reads: `subject`, `issuer`, `namespace`, `claims` (a map, sorted by key),
+// `principal`, and `kind`. Both `run.identity` ([runRootValue]) and a wait's
 // `sender.identity` ([signalSenderValue]) are built from it, so the two shapes
 // cannot drift; the sender drops `claims` and adds `deployment`.
 //
@@ -117,7 +118,39 @@ func IdentityShape(identity *WorkloadIdentity) map[string]any {
 		"namespace": identity.GetNamespace(),
 		"claims":    claims,
 		"principal": Principal(identity.GetIssuer(), identity.GetSubject()),
+		"kind":      PrincipalKindName(identity.GetPrincipalKind()),
 	}
+}
+
+// PrincipalKindName is the lowercase name an expression and a trust policy
+// spell a [PrincipalKind] with ("human", "workload", "agent"), and "" for
+// UNSPECIFIED or a value this build does not know. Empty is the honest answer
+// to "the policy assigned none": a predicate must compare against a named kind
+// and cannot mistake the absence for WORKLOAD.
+func PrincipalKindName(kind PrincipalKind) string {
+	if kind == PrincipalKind_PRINCIPAL_KIND_UNSPECIFIED {
+		return ""
+	}
+	name, ok := strings.CutPrefix(kind.String(), "PRINCIPAL_KIND_")
+	if !ok {
+		return ""
+	}
+
+	return strings.ToLower(name)
+}
+
+// PrincipalKindNamed is the inverse of [PrincipalKindName]: the kind a trust
+// policy's `principal_kind:` names, and UNSPECIFIED for "" or any other string.
+func PrincipalKindNamed(name string) PrincipalKind {
+	kind := PrincipalKind(PrincipalKind_value["PRINCIPAL_KIND_"+strings.ToUpper(name)])
+
+	// Exact spelling only, as a trust policy takes it: "Human" is not "human", so a
+	// test or a rehearsal cannot certify a configuration production would refuse.
+	if PrincipalKindName(kind) != name {
+		return PrincipalKind_PRINCIPAL_KIND_UNSPECIFIED
+	}
+
+	return kind
 }
 
 // Principal is `issuer#subject` ([QualifiedSubject]) when both halves are

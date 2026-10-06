@@ -78,11 +78,17 @@ func withLocalSignals(ctx context.Context, cmd *cobra.Command, workflow *v1.Work
 		return nil, err
 	}
 
+	starterKind, err := localKindFlag(cmd, "as-kind")
+	if err != nil {
+		return nil, err
+	}
+
 	signals := v1.NewPolicedLocalSignals(policies, &v1.WorkloadIdentity{
-		Subject:   starter.Subject,
-		Issuer:    starter.Issuer,
-		Claims:    starter.Claims,
-		Namespace: starter.Namespace,
+		Subject:       starter.Subject,
+		Issuer:        starter.Issuer,
+		Claims:        starter.Claims,
+		Namespace:     starter.Namespace,
+		PrincipalKind: starterKind,
 	}, true, bound)
 
 	reportRehearsalSender(cmd.ErrOrStderr(), sender)
@@ -120,7 +126,12 @@ func rehearsalSignalSender(cmd *cobra.Command, delivered int) (*v1.SignalSender,
 	namespace, _ := cmd.Flags().GetString("signal-as-namespace")
 	entries, _ := cmd.Flags().GetStringArray("signal-as-claim")
 
-	if subject == "" && issuer == "" && namespace == "" && len(entries) == 0 {
+	kind, err := localKindFlag(cmd, "signal-as-kind")
+	if err != nil {
+		return nil, err
+	}
+
+	if subject == "" && issuer == "" && namespace == "" && kind == v1.PrincipalKind_PRINCIPAL_KIND_UNSPECIFIED && len(entries) == 0 {
 		return v1.LocalSignalSender(), nil
 	}
 
@@ -148,11 +159,30 @@ func rehearsalSignalSender(cmd *cobra.Command, delivered int) (*v1.SignalSender,
 	}
 
 	return v1.RehearsalSignalSender(&v1.WorkloadIdentity{
-		Subject:   subject,
-		Issuer:    issuer,
-		Namespace: namespace,
-		Claims:    claims,
+		Subject:       subject,
+		Issuer:        issuer,
+		Namespace:     namespace,
+		Claims:        claims,
+		PrincipalKind: kind,
 	}), nil
+}
+
+// localKindFlag reads a rehearsal's `--as-kind` or `--signal-as-kind`: one of
+// human, workload or agent, or empty for none. A misspelling is refused, because
+// it would otherwise record none and make a predicate that names a kind deny
+// with nothing to say why.
+func localKindFlag(cmd *cobra.Command, name string) (v1.PrincipalKind, error) {
+	value, _ := cmd.Flags().GetString(name)
+	if value == "" {
+		return v1.PrincipalKind_PRINCIPAL_KIND_UNSPECIFIED, nil
+	}
+
+	kind := v1.PrincipalKindNamed(value)
+	if kind == v1.PrincipalKind_PRINCIPAL_KIND_UNSPECIFIED || v1.PrincipalKindName(kind) != value {
+		return v1.PrincipalKind_PRINCIPAL_KIND_UNSPECIFIED, fmt.Errorf("--%s %q is not a kind: use human, workload or agent", name, value)
+	}
+
+	return kind, nil
 }
 
 // reportRehearsalSender says whose approval this run is standing in for,

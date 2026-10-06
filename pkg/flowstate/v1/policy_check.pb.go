@@ -132,7 +132,11 @@ type PolicyCheckRow struct {
 	// ExpectByGate asserts an outcome per gate, keyed `signals.NAME`, `debug` or
 	// `triggers.manual`, and wins over [expect] for the gates it names. A key
 	// that is not a gate being checked is refused by the reader.
-	ExpectByGate  map[string]string `protobuf:"bytes,9,rep,name=expect_by_gate,json=expectByGate,proto3" json:"expect_by_gate,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	ExpectByGate map[string]string `protobuf:"bytes,9,rep,name=expect_by_gate,json=expectByGate,proto3" json:"expect_by_gate,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	// Kind is the sort of party the identity attempting the act is, as the trust
+	// policy entry that admitted it would have assigned it: `human`, `workload` or
+	// `agent`. Empty assigns none, which a predicate naming a kind refuses.
+	Kind          string `protobuf:"bytes,10,opt,name=kind,proto3" json:"kind,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -230,13 +234,22 @@ func (x *PolicyCheckRow) GetExpectByGate() map[string]string {
 	return nil
 }
 
+func (x *PolicyCheckRow) GetKind() string {
+	if x != nil {
+		return x.Kind
+	}
+	return ""
+}
+
 // PolicyCheckIdentity is an identity a row names for the run's starter.
 type PolicyCheckIdentity struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Subject       string                 `protobuf:"bytes,1,opt,name=subject,proto3" json:"subject,omitempty"`
-	Issuer        string                 `protobuf:"bytes,2,opt,name=issuer,proto3" json:"issuer,omitempty"`
-	Namespace     string                 `protobuf:"bytes,3,opt,name=namespace,proto3" json:"namespace,omitempty"`
-	Claims        map[string]string      `protobuf:"bytes,4,rep,name=claims,proto3" json:"claims,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	Subject   string                 `protobuf:"bytes,1,opt,name=subject,proto3" json:"subject,omitempty"`
+	Issuer    string                 `protobuf:"bytes,2,opt,name=issuer,proto3" json:"issuer,omitempty"`
+	Namespace string                 `protobuf:"bytes,3,opt,name=namespace,proto3" json:"namespace,omitempty"`
+	Claims    map[string]string      `protobuf:"bytes,4,rep,name=claims,proto3" json:"claims,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	// Kind is the starter's kind, read as `run.identity.kind`; see the row's kind.
+	Kind          string `protobuf:"bytes,5,opt,name=kind,proto3" json:"kind,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -299,6 +312,13 @@ func (x *PolicyCheckIdentity) GetClaims() map[string]string {
 	return nil
 }
 
+func (x *PolicyCheckIdentity) GetKind() string {
+	if x != nil {
+		return x.Kind
+	}
+	return ""
+}
+
 var File_flowstate_v1_policy_check_proto protoreflect.FileDescriptor
 
 const file_flowstate_v1_policy_check_proto_rawDesc = "" +
@@ -307,7 +327,7 @@ const file_flowstate_v1_policy_check_proto_rawDesc = "" +
 	"\x11PolicyCheckMatrix\x12I\n" +
 	"\n" +
 	"identities\x18\x01 \x03(\v2\x1c.flowstate.v1.PolicyCheckRowB\v\xbaH\b\x92\x01\x05\b\x01\x10\x80\x02R\n" +
-	"identities\"\xb7\x05\n" +
+	"identities\"\xec\x05\n" +
 	"\x0ePolicyCheckRow\x12?\n" +
 	"\x04name\x18\x01 \x01(\tB+\xbaH(r&\x10\x01\x18@2 ^[^\\x00-\\x1f\\x7f-\\x{9f}\\p{Cf}]+$R\x04name\x12\"\n" +
 	"\asubject\x18\x02 \x01(\tB\b\xbaH\x05r\x03\x18\x80\bR\asubject\x12 \n" +
@@ -317,18 +337,21 @@ const file_flowstate_v1_policy_check_proto_rawDesc = "" +
 	"\astarter\x18\x06 \x01(\v2!.flowstate.v1.PolicyCheckIdentityR\astarter\x12/\n" +
 	"\x06inputs\x18\a \x01(\v2\x17.google.protobuf.StructR\x06inputs\x122\n" +
 	"\x06expect\x18\b \x01(\tB\x1a\xbaH\x17r\x15R\x00R\badmittedR\arefusedR\x06expect\x12~\n" +
-	"\x0eexpect_by_gate\x18\t \x03(\v2..flowstate.v1.PolicyCheckRow.ExpectByGateEntryB(\xbaH%\x9a\x01\"\x10@\"\ar\x05\x10\x01\x18\x80\x02*\x15r\x13R\badmittedR\arefusedR\fexpectByGate\x1a9\n" +
+	"\x0eexpect_by_gate\x18\t \x03(\v2..flowstate.v1.PolicyCheckRow.ExpectByGateEntryB(\xbaH%\x9a\x01\"\x10@\"\ar\x05\x10\x01\x18\x80\x02*\x15r\x13R\badmittedR\arefusedR\fexpectByGate\x123\n" +
+	"\x04kind\x18\n" +
+	" \x01(\tB\x1f\xbaH\x1cr\x1aR\x00R\x05humanR\bworkloadR\x05agentR\x04kind\x1a9\n" +
 	"\vClaimsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1a?\n" +
 	"\x11ExpectByGateEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x9d\x02\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xd2\x02\n" +
 	"\x13PolicyCheckIdentity\x12\"\n" +
 	"\asubject\x18\x01 \x01(\tB\b\xbaH\x05r\x03\x18\x80\bR\asubject\x12 \n" +
 	"\x06issuer\x18\x02 \x01(\tB\b\xbaH\x05r\x03\x18\x80\bR\x06issuer\x12&\n" +
 	"\tnamespace\x18\x03 \x01(\tB\b\xbaH\x05r\x03\x18\x80\bR\tnamespace\x12]\n" +
-	"\x06claims\x18\x04 \x03(\v2-.flowstate.v1.PolicyCheckIdentity.ClaimsEntryB\x16\xbaH\x13\x9a\x01\x10\x10@\"\x05r\x03\x18\x80\x02*\x05r\x03\x18\x80 R\x06claims\x1a9\n" +
+	"\x06claims\x18\x04 \x03(\v2-.flowstate.v1.PolicyCheckIdentity.ClaimsEntryB\x16\xbaH\x13\x9a\x01\x10\x10@\"\x05r\x03\x18\x80\x02*\x05r\x03\x18\x80 R\x06claims\x123\n" +
+	"\x04kind\x18\x05 \x01(\tB\x1f\xbaH\x1cr\x1aR\x00R\x05humanR\bworkloadR\x05agentR\x04kind\x1a9\n" +
 	"\vClaimsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01B\xaf\x01\n" +

@@ -373,6 +373,7 @@ flow run local --debug examples/hello-world/workflow.yaml
 | `--as-claim <string,...>` | `stringArray` | — | — | authenticated string claim NAME=VALUE to rehearse policy as (repeatable) |
 | `--as-deployment <string>` | `string` | `local` | — | Flowstate deployment name to rehearse policy as (local runs only) |
 | `--as-issuer <string>` | `string` | `flowstate:local` | — | authenticated issuer to rehearse policy as (local runs only) |
+| `--as-kind <string>` | `string` | — | — | kind of party to rehearse policy as: human, workload or agent (local runs only) |
 | `--as-namespace <string>` | `string` | — | — | tenant namespace to rehearse policy as (local runs only) |
 | `--as-subject <string>` | `string` | `local-user` | — | authenticated subject to rehearse policy as (local runs only) |
 | `--audience <string>` | `string` | — | `FLOWSTATE_AUDIENCE` | the relying party a credential should be addressed to (overrides FLOWSTATE_AUDIENCE); required by `--credential-source=github-actions`, which mints a token for it. gitlab and terraform-cloud cannot mint on demand — their platform fixes the audience in the job or workspace configuration before the token exists — so for those it is checked against the token's own audience rather than requested, and a mismatch is refused with the setting to change |
@@ -630,6 +631,7 @@ flow debug replay session.script examples/computed-outputs/workflow.yaml \
 | `--as-claim <string,...>` | `stringArray` | — | — | authenticated string claim NAME=VALUE to rehearse policy as (repeatable) |
 | `--as-deployment <string>` | `string` | `local` | — | Flowstate deployment name to rehearse policy as (local runs only) |
 | `--as-issuer <string>` | `string` | `flowstate:local` | — | authenticated issuer to rehearse policy as (local runs only) |
+| `--as-kind <string>` | `string` | — | — | kind of party to rehearse policy as: human, workload or agent (local runs only) |
 | `--as-namespace <string>` | `string` | — | — | tenant namespace to rehearse policy as (local runs only) |
 | `--as-subject <string>` | `string` | `local-user` | — | authenticated subject to rehearse policy as (local runs only) |
 | `--auth-policy <string>` | `string` | — | `FLOWSTATE_AUTH_POLICY` | path to the auth policy (YAML) whose `secrets:` section decides which secrets a step may read and whose `federation:` section defines the credentials a run may assume |
@@ -672,6 +674,7 @@ flow debug replay session.script examples/computed-outputs/workflow.yaml \
 | `--signal <string,...>` | `stringArray` | — | — | answer a wait_for_signal step, as name=json (repeatable), e.g. `--signal deploy-approved='{"approved": true}'` |
 | `--signal-as-claim <string,...>` | `stringArray` | — | — | authenticated string claim NAME=VALUE to deliver `--signal` as (repeatable) |
 | `--signal-as-issuer <string>` | `string` | — | — | authenticated issuer to deliver `--signal` as, with `--signal-as-subject` (local runs only) |
+| `--signal-as-kind <string>` | `string` | — | — | kind of party to deliver `--signal` as: human, workload or agent (local runs only) |
 | `--signal-as-namespace <string>` | `string` | — | — | tenant namespace to deliver `--signal` as (local runs only) |
 | `--signal-as-subject <string>` | `string` | — | — | authenticated subject to deliver `--signal` as, with `--signal-as-issuer` (local runs only) |
 | `--task-policy <string>` | `string` | — | `FLOWSTATE_TASK_POLICY` | path to a task-shape policy (YAML) governing which identities may dispatch which tasks (default $FLOWSTATE_TASK_POLICY); unset, every identity may dispatch every task |
@@ -1159,6 +1162,7 @@ flow mcp --plugin-dir ./plugins
 | `--as-claim <string,...>` | `stringArray` | — | — | authenticated string claim NAME=VALUE to rehearse policy as (repeatable) |
 | `--as-deployment <string>` | `string` | `local` | — | Flowstate deployment name to rehearse policy as (local runs only) |
 | `--as-issuer <string>` | `string` | `flowstate:local` | — | authenticated issuer to rehearse policy as (local runs only) |
+| `--as-kind <string>` | `string` | — | — | kind of party to rehearse policy as: human, workload or agent (local runs only) |
 | `--as-namespace <string>` | `string` | — | — | tenant namespace to rehearse policy as (local runs only) |
 | `--as-subject <string>` | `string` | `local-user` | — | authenticated subject to rehearse policy as (local runs only) |
 | `--audience <string>` | `string` | — | `FLOWSTATE_AUDIENCE` | the relying party a credential should be addressed to (overrides FLOWSTATE_AUDIENCE); required by `--credential-source=github-actions`, which mints a token for it. gitlab and terraform-cloud cannot mint on demand — their platform fixes the audience in the job or workspace configuration before the token exists — so for those it is checked against the token's own audience rather than requested, and a mismatch is refused with the setting to change |
@@ -1438,6 +1442,7 @@ flow run local examples/hello-world/workflow.yaml --debug
 | `--as-claim <string,...>` | `stringArray` | — | — | authenticated string claim NAME=VALUE to rehearse policy as (repeatable) |
 | `--as-deployment <string>` | `string` | `local` | — | Flowstate deployment name to rehearse policy as (local runs only) |
 | `--as-issuer <string>` | `string` | `flowstate:local` | — | authenticated issuer to rehearse policy as (local runs only) |
+| `--as-kind <string>` | `string` | — | — | kind of party to rehearse policy as: human, workload or agent (local runs only) |
 | `--as-namespace <string>` | `string` | — | — | tenant namespace to rehearse policy as (local runs only) |
 | `--as-subject <string>` | `string` | `local-user` | — | authenticated subject to rehearse policy as (local runs only) |
 | `--auth-policy <string>` | `string` | — | `FLOWSTATE_AUTH_POLICY` | path to the auth policy (YAML) whose `secrets:` section decides which secrets a step may read and whose `federation:` section defines the credentials a run may assume |
@@ -1481,6 +1486,7 @@ flow run local examples/hello-world/workflow.yaml --debug
 | `--signal <string,...>` | `stringArray` | — | — | answer a wait_for_signal step, as name=json (repeatable), e.g. `--signal deploy-approved='{"approved": true}'` |
 | `--signal-as-claim <string,...>` | `stringArray` | — | — | authenticated string claim NAME=VALUE to deliver `--signal` as (repeatable) |
 | `--signal-as-issuer <string>` | `string` | — | — | authenticated issuer to deliver `--signal` as, with `--signal-as-subject` (local runs only) |
+| `--signal-as-kind <string>` | `string` | — | — | kind of party to deliver `--signal` as: human, workload or agent (local runs only) |
 | `--signal-as-namespace <string>` | `string` | — | — | tenant namespace to deliver `--signal` as (local runs only) |
 | `--signal-as-subject <string>` | `string` | — | — | authenticated subject to deliver `--signal` as, with `--signal-as-issuer` (local runs only) |
 | `--task-policy <string>` | `string` | — | `FLOWSTATE_TASK_POLICY` | path to a task-shape policy (YAML) governing which identities may dispatch which tasks (default $FLOWSTATE_TASK_POLICY); unset, every identity may dispatch every task |
@@ -2058,11 +2064,13 @@ flow signals check examples/approval-gate/workflow.yaml \
 | `--signal <string,...>` | `stringArray` | — | — | check this declared signal (repeatable); by default every declared signal is checked |
 | `--signal-as-claim <string,...>` | `stringArray` | — | — | authenticated string claim NAME=VALUE of the identity attempting the act (repeatable) |
 | `--signal-as-issuer <string>` | `string` | — | — | authenticated issuer attempting the act, with `--signal-as-subject` |
+| `--signal-as-kind <string>` | `string` | — | — | kind of party the identity attempting the act is: human, workload or agent |
 | `--signal-as-namespace <string>` | `string` | — | — | tenant namespace of the identity attempting the act |
 | `--signal-as-subject <string>` | `string` | — | — | authenticated subject attempting the act, with `--signal-as-issuer` |
 | `--starter-anonymous` | `bool` | `false` | — | the run was started by nobody authenticated, rather than by an unknown starter |
 | `--starter-claim <string,...>` | `stringArray` | — | — | authenticated string claim NAME=VALUE of whoever started the run (repeatable) |
 | `--starter-issuer <string>` | `string` | — | — | issuer of the subject that started the run, with `--starter-subject` |
+| `--starter-kind <string>` | `string` | — | — | kind of party that started the run, read as `run.identity.kind`: human, workload or agent |
 | `--starter-namespace <string>` | `string` | — | — | tenant namespace of whoever started the run |
 | `--starter-subject <string>` | `string` | — | — | subject that started the run, read as `run.identity`, with `--starter-issuer` |
 
@@ -2130,6 +2138,7 @@ flow task run example.greet --input name=world --plugin-dir ./plugins \
 | `--as-claim <string,...>` | `stringArray` | — | — | authenticated string claim NAME=VALUE to rehearse policy as (repeatable) |
 | `--as-deployment <string>` | `string` | `local` | — | Flowstate deployment name to rehearse policy as (local runs only) |
 | `--as-issuer <string>` | `string` | `flowstate:local` | — | authenticated issuer to rehearse policy as (local runs only) |
+| `--as-kind <string>` | `string` | — | — | kind of party to rehearse policy as: human, workload or agent (local runs only) |
 | `--as-namespace <string>` | `string` | — | — | tenant namespace to rehearse policy as (local runs only) |
 | `--as-subject <string>` | `string` | `local-user` | — | authenticated subject to rehearse policy as (local runs only) |
 | `--auth-policy <string>` | `string` | — | `FLOWSTATE_AUTH_POLICY` | path to the auth policy (YAML) whose `secrets:` section decides which secrets a step may read and whose `federation:` section defines the credentials a run may assume |

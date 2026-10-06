@@ -40,7 +40,7 @@ func TestIdentityShape(t *testing.T) {
 	}
 
 	nilShape := v1.IdentityShape(nil)
-	require.ElementsMatch(t, []string{"subject", "issuer", "namespace", "claims", "principal"}, keys(nilShape))
+	require.ElementsMatch(t, []string{"subject", "issuer", "namespace", "claims", "principal", "kind"}, keys(nilShape))
 	require.Equal(t, "", nilShape["principal"])
 	require.Empty(t, nilShape["claims"])
 
@@ -51,5 +51,20 @@ func TestIdentityShape(t *testing.T) {
 	shape := v1.IdentityShape(id)
 	require.Equal(t, v1.QualifiedSubject("https://idp.example", "alice"), shape["principal"])
 	require.Equal(t, map[string]any{"team": "sre"}, shape["claims"])
+	require.Equal(t, "", shape["kind"], "a policy that assigned no kind renders none, never workload")
+
+	for kind, want := range map[v1.PrincipalKind]string{
+		v1.PrincipalKind_PRINCIPAL_KIND_HUMAN:    "human",
+		v1.PrincipalKind_PRINCIPAL_KIND_WORKLOAD: "workload",
+		v1.PrincipalKind_PRINCIPAL_KIND_AGENT:    "agent",
+		v1.PrincipalKind(99):                     "",
+	} {
+		require.Equal(t, want, v1.IdentityShape(&v1.WorkloadIdentity{PrincipalKind: kind})["kind"])
+		if want != "" {
+			require.Equal(t, kind, v1.PrincipalKindNamed(want))
+		}
+	}
+	require.Equal(t, v1.PrincipalKind_PRINCIPAL_KIND_UNSPECIFIED, v1.PrincipalKindNamed("humen"), "a misspelling is none, not a guess")
+	require.Equal(t, v1.PrincipalKind_PRINCIPAL_KIND_UNSPECIFIED, v1.PrincipalKindNamed("Human"), "a trust policy takes the lowercase spelling only, so a rehearsal must too")
 	require.NotContains(t, shape, "deployment", "deployment is the sender's addition, not part of the shared shape")
 }

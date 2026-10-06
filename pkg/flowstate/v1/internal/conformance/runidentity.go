@@ -35,6 +35,7 @@ func RunIdentityWorkflow() *v1.Workflow {
 			{Name: "subject", Value: v1.NewExpr("run.identity.subject")},
 			{Name: "issuer", Value: v1.NewExpr("run.identity.issuer")},
 			{Name: "namespace", Value: v1.NewExpr("run.identity.namespace")},
+			{Name: "kind", Value: v1.NewExpr("run.identity.kind")},
 		},
 	}
 }
@@ -45,6 +46,12 @@ func RunIdentityWorkflow() *v1.Workflow {
 // driver attests — the identical rule [AssertSignalSenderShape] states for a
 // wait's `sender`, applied to the run itself.
 func AssertRunIdentityShape(t testing.TB, outputs *v1.Workflow_StepOutputs, wantLocal bool, wantSubject string) {
+	AssertRunIdentityKind(t, outputs, wantLocal, wantSubject, "")
+}
+
+// AssertRunIdentityKind is [AssertRunIdentityShape] that also checks `run.identity.kind`:
+// "" for an identity whose trust policy assigned none, never a guess.
+func AssertRunIdentityKind(t testing.TB, outputs *v1.Workflow_StepOutputs, wantLocal bool, wantSubject, wantKind string) {
 	t.Helper()
 
 	run := outputs.GetRunOutputs()
@@ -70,6 +77,14 @@ func AssertRunIdentityShape(t testing.TB, outputs *v1.Workflow_StepOutputs, want
 	}
 	if got := subject.GetLiteral().GetStringValue(); got != wantSubject {
 		t.Fatalf("run.identity.subject = %q, want %q", got, wantSubject)
+	}
+
+	kind, ok := values["kind"]
+	if !ok {
+		t.Fatalf("the run's outputs have no %q field", "kind")
+	}
+	if got := kind.GetLiteral().GetStringValue(); got != wantKind {
+		t.Fatalf("run.identity.kind = %q, want %q", got, wantKind)
 	}
 
 	for _, field := range []string{"issuer", "namespace"} {

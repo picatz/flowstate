@@ -189,6 +189,7 @@ var testDocKeys = map[testDocLevel][]dslKey{
 		{name: "subject", detail: "string", docs: "The caller this identity stands in for, matched against a policy rule's `subject:` as `<issuer>#<subject>`."},
 		{name: "issuer", detail: "string", docs: "Identifies which identity provider would have attested subject."},
 		{name: "namespace", detail: "string", docs: "The tenant this identity belongs to, matched against a policy rule's `namespace:`."},
+		{name: "kind", detail: "string", docs: "The sort of party this identity stands in for — `human`, `workload` or `agent` — read as `sender.identity.kind` or `run.identity.kind`. Empty records none, as a trust policy that assigns none does."},
 		{name: "claims", detail: "map", docs: "Additional facts, matched against a policy rule's `claims:` — every key the rule names must be present here with the same value."},
 	},
 	testLevelExpect: {

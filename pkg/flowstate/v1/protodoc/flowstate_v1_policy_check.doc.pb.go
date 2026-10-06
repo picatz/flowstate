@@ -92,8 +92,18 @@ func init() {
 				" that is not a gate being checked is refused by the reader.\n",
 		},
 		{
+			Name: "flowstate.v1.PolicyCheckRow.kind",
+			Leading: " Kind is the sort of party the identity attempting the act is, as the trust\n" +
+				" policy entry that admitted it would have assigned it: `human`, `workload` or\n" +
+				" `agent`. Empty assigns none, which a predicate naming a kind refuses.\n",
+		},
+		{
 			Name:    "flowstate.v1.PolicyCheckIdentity",
 			Leading: " PolicyCheckIdentity is an identity a row names for the run's starter.\n",
+		},
+		{
+			Name:    "flowstate.v1.PolicyCheckIdentity.kind",
+			Leading: " Kind is the starter's kind, read as `run.identity.kind`; see the row's kind.\n",
 		},
 	})
 }

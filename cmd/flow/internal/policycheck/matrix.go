@@ -186,6 +186,7 @@ func ParseMatrix(data []byte) (*Matrix, error) {
 				Subject:   held.GetSubject(),
 				Issuer:    held.GetIssuer(),
 				Namespace: held.GetNamespace(),
+				Kind:      held.GetKind(),
 				Claims:    held.GetClaims(),
 			},
 			Inputs: held.GetInputs().AsMap(),
@@ -197,6 +198,7 @@ func ParseMatrix(data []byte) (*Matrix, error) {
 				Subject:   starter.GetSubject(),
 				Issuer:    starter.GetIssuer(),
 				Namespace: starter.GetNamespace(),
+				Kind:      starter.GetKind(),
 				Claims:    starter.GetClaims(),
 			}
 		}

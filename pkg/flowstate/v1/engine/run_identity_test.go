@@ -31,6 +31,8 @@ func TestRunIdentityShapeDurable(t *testing.T) {
 			Subject:   "release-requester@example.com",
 			Issuer:    "flowstate:test",
 			Namespace: "team-a",
+
+			PrincipalKind: v1.PrincipalKind_PRINCIPAL_KIND_HUMAN,
 		},
 	})
 
@@ -40,7 +42,7 @@ func TestRunIdentityShapeDurable(t *testing.T) {
 	var outputs v1.Workflow_StepOutputs
 	require.NoError(t, env.GetWorkflowResult(&outputs))
 
-	conformance.AssertRunIdentityShape(t, &outputs, false, "release-requester@example.com")
+	conformance.AssertRunIdentityKind(t, &outputs, false, "release-requester@example.com", "human")
 }
 
 // TestRunIdentityShapePredatesTheField checks invariant 10's own direction: a

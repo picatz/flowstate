@@ -46,8 +46,8 @@ import (
 //
 // # The scope is closed
 //
-//	sender.identity.{principal,subject,issuer,namespace,claims}
-//	run.identity.{principal,subject,issuer,namespace,claims}   (the starter)
+//	sender.identity.{principal,subject,issuer,namespace,kind,claims}
+//	run.identity.{principal,subject,issuer,namespace,kind,claims}   (the starter)
 //	inputs                                                      (the run's arguments)
 //
 // Nothing else: no steps, vars, secrets or clock. An unknown root or field is a
@@ -103,6 +103,7 @@ const MaxSignalPolicyScopeBytes = 64 << 10
 // at compile time.
 type signalPolicyIdentity struct {
 	Principal string            `cel:"principal"`
+	Kind      string            `cel:"kind"`
 	Subject   string            `cel:"subject"`
 	Issuer    string            `cel:"issuer"`
 	Namespace string            `cel:"namespace"`
@@ -253,10 +254,10 @@ func compileAllowPredicate(src string, manual bool) (SignalPolicyPredicate, erro
 	}}, nil
 }
 
-const signalPolicyScopeDescription = "`sender.identity.{principal,subject,issuer,namespace,claims}`, " +
+const signalPolicyScopeDescription = "`sender.identity.{principal,subject,issuer,namespace,kind,claims}`, " +
 	"`run.identity` (the starter, same fields) and `inputs`"
 
-const manualPolicyScopeDescription = "`sender.identity.{principal,subject,issuer,namespace,claims}` " +
+const manualPolicyScopeDescription = "`sender.identity.{principal,subject,issuer,namespace,kind,claims}` " +
 	"(the caller) and `inputs` (the arguments submitted with this start); there is no `run` yet"
 
 // CheckManualAllowExpr reports why src is not an acceptable `manual: allow`
@@ -489,6 +490,7 @@ func newSignalPolicyActor(identity *WorkloadIdentity) *signalPolicyActor {
 
 	return &signalPolicyActor{Identity: &signalPolicyIdentity{
 		Principal: shape["principal"].(string),
+		Kind:      shape["kind"].(string),
 		Subject:   shape["subject"].(string),
 		Issuer:    shape["issuer"].(string),
 		Namespace: shape["namespace"].(string),

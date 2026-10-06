@@ -14,6 +14,36 @@ func predicatePolicy(expression string) *v1.SignalPolicy {
 	return &v1.SignalPolicy{Allow: expression}
 }
 
+// TestSignalPolicyPredicateReadsTheKindAPolicyAssigned proves `kind` is read from
+// the identity and only equals a named kind: a sender the trust policy gave no
+// kind never satisfies `kind == "human"`, and is never mistaken for a workload.
+func TestSignalPolicyPredicateReadsTheKindAPolicyAssigned(t *testing.T) {
+	t.Parallel()
+
+	policy := predicatePolicy(`sender.identity.kind == "human" && sender.identity.principal != run.identity.principal`)
+	starter := &v1.WorkloadIdentity{Issuer: "https://i", Subject: "starter", PrincipalKind: v1.PrincipalKind_PRINCIPAL_KIND_WORKLOAD}
+
+	for kind, wantAllowed := range map[v1.PrincipalKind]bool{
+		v1.PrincipalKind_PRINCIPAL_KIND_HUMAN:       true,
+		v1.PrincipalKind_PRINCIPAL_KIND_AGENT:       false,
+		v1.PrincipalKind_PRINCIPAL_KIND_WORKLOAD:    false,
+		v1.PrincipalKind_PRINCIPAL_KIND_UNSPECIFIED: false,
+	} {
+		sender := &v1.WorkloadIdentity{Issuer: "https://i", Subject: "alice", PrincipalKind: kind}
+		err := v1.SignalPolicyCheck(context.Background(), policy, sender, starter, true, nil)
+		if wantAllowed {
+			require.NoError(t, err, kind.String())
+		} else {
+			require.Error(t, err, kind.String())
+		}
+	}
+
+	// The starter's own kind is readable too.
+	require.NoError(t, v1.SignalPolicyCheck(context.Background(),
+		predicatePolicy(`run.identity.kind == "workload" && sender.identity.principal != ""`),
+		&v1.WorkloadIdentity{Issuer: "https://i", Subject: "alice"}, starter, true, nil))
+}
+
 func TestSignalPolicyPredicateIsTypeCheckedAgainstTheClosedScope(t *testing.T) {
 	t.Parallel()
 

@@ -432,6 +432,8 @@ func addLocalRunFlags(cmd *cobra.Command) {
 		"authenticated subject to rehearse policy as (local runs only)")
 	cmd.Flags().String("as-issuer", "flowstate:local",
 		"authenticated issuer to rehearse policy as (local runs only)")
+	cmd.Flags().String("as-kind", "",
+		"kind of party to rehearse policy as: human, workload or agent (local runs only)")
 	cmd.Flags().String("as-namespace", "",
 		"tenant namespace to rehearse policy as (local runs only)")
 	cmd.Flags().String("as-deployment", "local",

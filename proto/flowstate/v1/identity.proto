@@ -28,6 +28,29 @@ enum WorkloadIdentityMode {
   WORKLOAD_IDENTITY_MODE_REHEARSAL = 2;
 }
 
+// PrincipalKind says what sort of party an authenticated caller is.
+//
+// It is assigned by the operator's trust policy entry that admitted the caller
+// (`principal_kind:`), never read from a token, so a caller cannot choose to be
+// a person. UNSPECIFIED is the zero value and means the policy said nothing:
+// authorization must not read it as WORKLOAD, and a predicate that cares
+// compares against a named kind.
+enum PrincipalKind {
+  // UNSPECIFIED means the admitting policy entry assigned no kind, or the
+  // identity was absent, or the receiver does not understand the value.
+  PRINCIPAL_KIND_UNSPECIFIED = 0;
+
+  // HUMAN is a person, authenticated through their own identity provider.
+  PRINCIPAL_KIND_HUMAN = 1;
+
+  // WORKLOAD is a machine identity: a CI job, a pod, a service.
+  PRINCIPAL_KIND_WORKLOAD = 2;
+
+  // AGENT is an automated actor that acts for a person or a system, such as an
+  // MCP client.
+  PRINCIPAL_KIND_AGENT = 3;
+}
+
 // WorkloadIdentity describes who a run acts as.
 //
 // A running workload has two identities at once, and both matter. It is a
@@ -133,4 +156,9 @@ message WorkloadIdentity {
   // or replace this value with UNSPECIFIED rather than relay a caller-supplied
   // one.
   WorkloadIdentityMode mode = 6;
+
+  // PrincipalKind is what sort of party the subject is, as the operator's trust
+  // policy assigned it when it admitted the caller. UNSPECIFIED when the policy
+  // assigned none. Identity, not a credential, so it is safe in durable history.
+  PrincipalKind principal_kind = 7;
 }

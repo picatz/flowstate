@@ -140,6 +140,8 @@ flow signals check examples/approval-gate/workflow.yaml \
 		"authenticated issuer attempting the act, with `--signal-as-subject`")
 	cmd.Flags().String("signal-as-namespace", "",
 		"tenant namespace of the identity attempting the act")
+	cmd.Flags().String("signal-as-kind", "",
+		"kind of party the identity attempting the act is: human, workload or agent")
 	cmd.Flags().StringArray("signal-as-claim", nil,
 		"authenticated string claim NAME=VALUE of the identity attempting the act (repeatable)")
 
@@ -147,6 +149,8 @@ flow signals check examples/approval-gate/workflow.yaml \
 		"subject that started the run, read as `run.identity`, with `--starter-issuer`")
 	cmd.Flags().String("starter-issuer", "",
 		"issuer of the subject that started the run, with `--starter-subject`")
+	cmd.Flags().String("starter-kind", "",
+		"kind of party that started the run, read as `run.identity.kind`: human, workload or agent")
 	cmd.Flags().String("starter-namespace", "",
 		"tenant namespace of whoever started the run")
 	cmd.Flags().StringArray("starter-claim", nil,
@@ -308,9 +312,10 @@ func identityFromFlags(cmd *cobra.Command, prefix, pair string) (*flowtest.Scrip
 	subject, _ := cmd.Flags().GetString(prefix + "-subject")
 	issuer, _ := cmd.Flags().GetString(prefix + "-issuer")
 	namespace, _ := cmd.Flags().GetString(prefix + "-namespace")
+	kind, _ := cmd.Flags().GetString(prefix + "-kind")
 	entries, _ := cmd.Flags().GetStringArray(prefix + "-claim")
 
-	if subject == "" && issuer == "" && namespace == "" && len(entries) == 0 {
+	if subject == "" && issuer == "" && namespace == "" && kind == "" && len(entries) == 0 {
 		return nil, nil
 	}
 
@@ -319,7 +324,7 @@ func identityFromFlags(cmd *cobra.Command, prefix, pair string) (*flowtest.Scrip
 		return nil, err
 	}
 
-	identity := &flowtest.ScriptedIdentity{Subject: subject, Issuer: issuer, Namespace: namespace, Claims: claims}
+	identity := &flowtest.ScriptedIdentity{Subject: subject, Issuer: issuer, Namespace: namespace, Kind: kind, Claims: claims}
 
 	if err := identity.Check(pair + " are given together or not at all:"); err != nil {
 		return nil, err
@@ -354,7 +359,7 @@ func matrixResults(cmd *cobra.Command, workflow *v1.Workflow, gates []policychec
 
 		// An identity with nothing in it is no identity: an unauthenticated
 		// caller, not an authenticated one with empty fields.
-		if row.Subject == "" && row.Issuer == "" && row.Namespace == "" && len(row.Claims) == 0 {
+		if row.Subject == "" && row.Issuer == "" && row.Namespace == "" && row.Kind == "" && len(row.Claims) == 0 {
 			subject.Sender = nil
 		}
 

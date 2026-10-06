@@ -4488,7 +4488,7 @@ still writes one is refused at parse with a sentence that names the key (never i
 value) and says to run `flow fix`, which rewrites each of them into the predicate; see
 [What `flow fix` writes](#what-flow-fix-writes-for-who-may-act).
 
-**The scope is closed.** `sender.identity.{principal,subject,issuer,namespace,claims}`
+**The scope is closed.** `sender.identity.{principal,subject,issuer,namespace,kind,claims}`
 is the server's own attestation of whoever is delivering. `run.identity` is the run's
 starter with the same fields, and `inputs` is the run's arguments. Nothing else is in
 scope: no steps, vars, clock or secrets, and a name outside it is a compile error
@@ -6049,8 +6049,8 @@ The one workflow shape most worth trying before production - a gate whose
 authorization lives in `signals:` rather than in the file's own `if:` - could be
 rehearsed only as its own refusal.
 
-`--signal-as-subject`, `--signal-as-issuer`, `--signal-as-namespace` and
-`--signal-as-claim` name the approver a delivery stands in for. They rhyme with
+`--signal-as-subject`, `--signal-as-issuer`, `--signal-as-namespace`,
+`--signal-as-kind` and `--signal-as-claim` name the approver a delivery stands in for. They rhyme with
 `--as-subject` and its siblings, which name the run's own starter, because they
 answer the same shape of question about the other party - and the pairing is not
 decorative: a predicate comparing `sender.identity.principal` with

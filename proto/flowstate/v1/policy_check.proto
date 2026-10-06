@@ -96,6 +96,11 @@ message PolicyCheckRow {
     keys: {string: {min_len: 1, max_len: 256}}
     values: {string: {in: ["admitted", "refused"]}}
   }];
+
+  // Kind is the sort of party the identity attempting the act is, as the trust
+  // policy entry that admitted it would have assigned it: `human`, `workload` or
+  // `agent`. Empty assigns none, which a predicate naming a kind refuses.
+  string kind = 10 [(buf.validate.field).string = {in: ["", "human", "workload", "agent"]}];
 }
 
 // PolicyCheckIdentity is an identity a row names for the run's starter.
@@ -108,4 +113,7 @@ message PolicyCheckIdentity {
     keys: {string: {max_len: 256}}
     values: {string: {max_len: 4096}}
   }];
+
+  // Kind is the starter's kind, read as `run.identity.kind`; see the row's kind.
+  string kind = 5 [(buf.validate.field).string = {in: ["", "human", "workload", "agent"]}];
 }

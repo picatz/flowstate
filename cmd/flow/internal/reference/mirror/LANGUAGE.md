@@ -379,7 +379,7 @@ take either a duration literal (`30s`) or a fenced expression.
 | `vars.<name>` | Workflow vars | Everywhere except workflow `vars:`, `must:`, `concurrency.key`, a `signals:` or `debug:` rule's `subject:`, and trigger expressions |
 | `steps.<id>.<output>` | An earlier step's outputs | After that step, in the same scope |
 | `run.workflow_id`, `run.run_id` | This run's address, for callbacks. `"local"` under `flow run local`. | Steps and outputs |
-| `run.identity.subject`, `.issuer`, `.namespace`, `.claims`, `.principal` | Who started the run, as the server verified it. Empty when nobody authenticated. `principal` is `<issuer>#<subject>`, and `""` unless both are non-empty. | Steps and outputs |
+| `run.identity.subject`, `.issuer`, `.namespace`, `.claims`, `.principal`, `.kind` | Who started the run, as the server verified it. Empty when nobody authenticated. `principal` is `<issuer>#<subject>`, and `""` unless both are non-empty. `kind` is `human`, `workload` or `agent` as the trust policy entry that admitted the caller assigned it, and `""` when it assigned none. | Steps and outputs |
 | `run.local` | `true` under the local driver | Steps and outputs |
 | `run.failed`, `.error`, `.compensated`, `.uncompensated`, `.invocations.task`, `.invocations.step` | How the run ended and what compensation and tasks did. [Checks](TESTING.md#claims-the-named-fields-cannot-make-check) | A `flow test` `check:` or `invariants:` claim, after the run |
 | `trigger.kind`, `.name`, `.principal`, `.delivery_id` | How the run started: `manual`, `schedule`, or `webhook`. [Triggers](#what-a-run-knows-about-its-start-trigger) | Steps and outputs |
@@ -1325,7 +1325,7 @@ it. `manual:` can only narrow that:
   `allow: ${sender.identity.claims.team == "ops"}`, or
   `allow: ${sender.identity.principal in ["https://issuer.example.com#oncall@example.com"]}`
   for named callers, each written `"<issuer>#<subject>"`. It reads
-  `sender.identity.{principal,subject,issuer,namespace,claims}` (the verified
+  `sender.identity.{principal,subject,issuer,namespace,kind,claims}` (the verified
   caller) and `inputs` (the arguments submitted with this start), and nothing
   else; there is no run yet, so reading `run` is a compile error. Only a clean
   `true` allows, and a caller with no authenticated principal is refused. A
@@ -1424,7 +1424,7 @@ signals:
 
 Each entry is a signal name the workflow waits for, and `allow:` is one `${...}`
 predicate that says which senders may deliver it. It reads
-`sender.identity.{principal,subject,issuer,namespace,claims}` (the verified sender;
+`sender.identity.{principal,subject,issuer,namespace,kind,claims}` (the verified sender;
 `principal` is `"<issuer>#<subject>"`, and empty when either half is missing),
 `run.identity` (the starter, with the same fields) and `inputs`, and nothing else:
 
@@ -1434,6 +1434,7 @@ predicate that says which senders may deliver it. It reads
   configured to record (`flow server --identity-claim team`). A missing claim is an
   error, which refuses the sender.
 - `sender.identity.namespace == "payments"` is the sender's tenant.
+- `sender.identity.kind == "human"` requires a person, as the trust policy entry that admitted the sender says (`principal_kind:`); it is `""` when that entry says nothing, which is not a workload. Rehearse it with `--signal-as-kind` (and `--as-kind` for the starter) on `flow run local`, `flow signals check` (`--starter-kind`), or `kind:` in a test file.
 - `sender.identity.principal != run.identity.principal` requires that the sender is not
   the person who started the run: separation of duties.
 
@@ -1491,7 +1492,7 @@ configured in the one trust policy, not in a Flowfile. Pass the same policy
 
 | Direction | The deployment configures | A Flowfile sees |
 | --- | --- | --- |
-| **Inbound**: who may reach Flowstate | `issuers:`, each `kind: oidc` (the default) or `kind: mtls`. An `oidc` entry takes `audiences`, claim rules, and a tenant fixed or read from `namespace_claim`. An `mtls` entry takes `client_ca_file` and `subject_from` and a fixed tenant, and refuses `audiences` and `namespace_claim` | `run.identity` with `principal`, `subject`, `issuer`, `namespace`, `claims`, and `sender.identity` the same, except that a wait's sender carries no `claims`. [Who may act](#who-may-act-on-a-run) |
+| **Inbound**: who may reach Flowstate | `issuers:`, each `kind: oidc` (the default) or `kind: mtls`. An `oidc` entry takes `audiences`, claim rules, and a tenant fixed or read from `namespace_claim`. An `mtls` entry takes `client_ca_file` and `subject_from` and a fixed tenant, and refuses `audiences` and `namespace_claim`. Either may assign `principal_kind:` `human`, `workload` or `agent`, which a token cannot choose for itself | `run.identity` with `principal`, `subject`, `issuer`, `namespace`, `kind`, `claims`, and `sender.identity` the same, except that a wait's sender carries no `claims`. [Who may act](#who-may-act-on-a-run) |
 | **Outbound**: what a workload may become | `federation:` with `targets:` (`token_exchange`, `client_credentials`, `gcp`, `aws`, `assertion`) and `allow`/`deny` rules over `target`, `audience` and `workload` | `credential:` on a task such as `http`. [Secrets and credentials](SECRETS.md#short-lived-credentials-instead-of-stored-ones) |
 
 Three rules hold in both directions:

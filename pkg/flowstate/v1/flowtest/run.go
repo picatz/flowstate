@@ -1934,6 +1934,8 @@ func scriptedIdentity(s *ScriptedIdentity) *v1.WorkloadIdentity {
 		Issuer:    s.Issuer,
 		Namespace: s.Namespace,
 		Claims:    s.Claims,
+
+		PrincipalKind: v1.PrincipalKindNamed(s.Kind),
 	}
 }
 
