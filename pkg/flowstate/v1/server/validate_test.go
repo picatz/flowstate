@@ -38,8 +38,8 @@ func TestValidateAnswersWithTheSameReportTheCommandPrints(t *testing.T) {
 
 	resp, err := s.Validate(t.Context(), connect.NewRequest(&v1.ValidateRequest{
 		Files: []*v1.SourceFile{
-			{Name: "clean.yaml", Source: []byte(aValidFile)},
-			{Name: "broken.yaml", Source: []byte(strings.Replace(aValidFile, "log:", "lg:", 1))},
+			{Name: "clean.yaml", Source: aValidFile},
+			{Name: "broken.yaml", Source: strings.Replace(aValidFile, "log:", "lg:", 1)},
 		},
 	}))
 	require.NoError(t, err)
@@ -75,8 +75,8 @@ func TestAFileThatIsNotYAMLIsADiagnosticNotAnRPCError(t *testing.T) {
 
 	resp, err := s.Validate(t.Context(), connect.NewRequest(&v1.ValidateRequest{
 		Files: []*v1.SourceFile{
-			{Name: "not-yaml.yaml", Source: []byte("\t{{{")},
-			{Name: "clean.yaml", Source: []byte(aValidFile)},
+			{Name: "not-yaml.yaml", Source: "\t{{{"},
+			{Name: "clean.yaml", Source: aValidFile},
 		},
 	}))
 	require.NoError(t, err,
@@ -134,7 +134,7 @@ func TestTheHandlerEnforcesItsOwnBounds(t *testing.T) {
 
 		files := make([]*v1.SourceFile, 65)
 		for i := range files {
-			files[i] = &v1.SourceFile{Name: "f.yaml", Source: []byte(aValidFile)}
+			files[i] = &v1.SourceFile{Name: "f.yaml", Source: aValidFile}
 		}
 
 		_, err := s.Validate(t.Context(), connect.NewRequest(&v1.ValidateRequest{Files: files}))
@@ -156,7 +156,7 @@ func TestTheHandlerEnforcesItsOwnBounds(t *testing.T) {
 		t.Parallel()
 
 		_, err := s.Validate(t.Context(), connect.NewRequest(&v1.ValidateRequest{
-			Files: []*v1.SourceFile{{Name: "big.yaml", Source: make([]byte, 1<<20+1)}},
+			Files: []*v1.SourceFile{{Name: "big.yaml", Source: strings.Repeat("a", 1<<20+1)}},
 		}))
 		require.Error(t, err,
 			"a file over the schema's megabyte bound reached the parser")
@@ -176,7 +176,7 @@ func TestCompileAnswersWithWhatRunTakes(t *testing.T) {
 		t.Parallel()
 
 		resp, err := s.Compile(t.Context(), connect.NewRequest(&v1.CompileRequest{
-			File: &v1.SourceFile{Name: "clean.yaml", Source: []byte(aValidFile)},
+			File: &v1.SourceFile{Name: "clean.yaml", Source: aValidFile},
 		}))
 		require.NoError(t, err)
 
@@ -201,7 +201,7 @@ func TestCompileAnswersWithWhatRunTakes(t *testing.T) {
 		resp, err := s.Compile(t.Context(), connect.NewRequest(&v1.CompileRequest{
 			File: &v1.SourceFile{
 				Name:   "broken.yaml",
-				Source: []byte(strings.Replace(aValidFile, "log:", "lg:", 1)),
+				Source: strings.Replace(aValidFile, "log:", "lg:", 1),
 			},
 		}))
 		require.NoError(t, err,
@@ -223,14 +223,14 @@ func TestCompileAnswersWithWhatRunTakes(t *testing.T) {
 
 func TestCompileRejectsUnknownDeploymentCredentialTarget(t *testing.T) {
 	s := mustNew(t, nil, server.WithCredentialTargets("partner-api"))
-	source := []byte(`edition: v2026.4
+	source := `edition: v2026.4
 name: federated
 steps:
   - id: call
     http:
       url: https://api.example.com
       credential: aws-prod
-`)
+`
 	response, err := s.Compile(t.Context(), connect.NewRequest(&v1.CompileRequest{
 		File: &v1.SourceFile{Name: "workflow.yaml", Source: source},
 	}))

@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -354,7 +353,7 @@ steps:
 		Name: flowmcp.ToolName("Compile"),
 		Arguments: map[string]any{"file": map[string]any{
 			"name":   "workflow.yaml",
-			"source": base64.StdEncoding.EncodeToString([]byte(source)),
+			"source": source,
 		}},
 	})
 	require.NoError(t, err)
@@ -563,8 +562,8 @@ func TestTheValidateToolAnswersOverTheProtocol(t *testing.T) {
 		Arguments: map[string]any{
 			"files": []map[string]any{{
 				"name": "broken.yaml",
-				// base64 of an invalid Flowfile; SourceFile.source is bytes.
-				"source": []byte("edition: v2026.4\nname: x\nsteps:\n  - id: a\n    nope:\n      x: y\n"),
+				// Plain YAML, the spelling flowstate_run_local takes (#1290).
+				"source": "edition: v2026.4\nname: x\nsteps:\n  - id: a\n    nope:\n      x: y\n",
 			}},
 		},
 	})

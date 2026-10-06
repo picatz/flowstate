@@ -88,7 +88,8 @@ or read its history with `GetTimeline`.
 
 - Field names are protojson lowerCamelCase: `workflowId`, `requestId`.
 - Enums are strings: `STATUS_COMPLETED`.
-- `bytes` fields, such as a source file, are base64. 64-bit integers are strings.
+- `bytes` fields are base64. A Flowfile in a `source` field is plain YAML text, as
+  it is for every other authoring tool. 64-bit integers are strings.
 - A value is a tagged union. Inputs, signal payloads, and outputs use
   `{"literal": {"stringValue": "…"}}`, `{"literal": {"int64Value": "3"}}`,
   `{"literal": {"boolValue": true}}`, and so on. Inputs and signal payloads must

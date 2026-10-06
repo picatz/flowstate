@@ -243,7 +243,11 @@ func init() {
 		},
 		{
 			Name: "flowstate.v1.SourceFile.source",
-			Leading: " Source is the file's bytes.\n" +
+			Leading: " Source is the file's text: the Flowfile as written, plain YAML, the same\n" +
+				" spelling every other authoring surface takes (`flowstate_run_local`, `flowstate_test`,\n" +
+				" `flowstate_debug`). It is a string rather than bytes so that a JSON caller, an\n" +
+				" agent among them, sends the document itself rather than its base64 (#1290);\n" +
+				" a Flowfile is UTF-8, and protobuf refuses a string that is not.\n" +
 				"\n" +
 				" Bounded at the same megabyte the offline parser bounds a Flowfile at, and for\n" +
 				" the same reason: this is input an outside party chooses, and the resource it\n" +
