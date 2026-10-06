@@ -144,3 +144,49 @@ func TestParseBytesBoundsABlockChainsCost(t *testing.T) {
 	require.Error(t, err)
 	require.Less(t, after.TotalAlloc-before.TotalAlloc, uint64(32<<20))
 }
+
+// The column a mapping value's `:` sits at moves with the length of its key, so
+// a stack keyed on it can be held flat by indenting each level one space more
+// and its key two characters shorter: the parser still nests a level per line.
+// The stack is keyed on where the entry starts.
+func TestParseBytesCountsMappingDepthByWhereTheEntryStartsNotItsColon(t *testing.T) {
+	t.Parallel()
+
+	const levels = 3 * strictyaml.MaxFlowDepth / 2
+
+	var doc strings.Builder
+	for i := range levels {
+		doc.WriteString(strings.Repeat(" ", i) + strings.Repeat("k", 2*(levels-i)) + ":\n")
+	}
+
+	doc.WriteString(strings.Repeat(" ", levels) + "v\n")
+
+	_, err := strictyaml.ParseBytes([]byte(doc.String()), 0)
+	nesting, ok := errors.AsType[*strictyaml.NestingError](err)
+	require.True(t, ok, "%v", err)
+	require.Contains(t, nesting.Reason, "block collections")
+}
+
+// Properties before a key start the entry too: an anchor or tag cannot be used
+// to move where an entry is counted from.
+func TestParseBytesCountsAnchoredAndTaggedEntriesFromTheirProperties(t *testing.T) {
+	t.Parallel()
+
+	const levels = 3 * strictyaml.MaxFlowDepth / 2
+
+	for name, prop := range map[string]func(n int) string{
+		"anchor": func(n int) string { return "&" + strings.Repeat("a", n) + " " },
+		"tag":    func(n int) string { return "!" + strings.Repeat("t", n) + " " },
+	} {
+		var doc strings.Builder
+		for i := range levels {
+			doc.WriteString(strings.Repeat(" ", i) + prop(2*(levels-i)) + "k:\n")
+		}
+
+		doc.WriteString(strings.Repeat(" ", levels) + "v\n")
+
+		_, err := strictyaml.ParseBytes([]byte(doc.String()), 0)
+		_, ok := errors.AsType[*strictyaml.NestingError](err)
+		require.True(t, ok, "%s: %v", name, err)
+	}
+}

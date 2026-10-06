@@ -52,11 +52,15 @@ func ParseBytes(data []byte, mode parser.Mode) (*ast.File, error) {
 // refuseDeepFlow is the depth check behind [ParseBytes] and [Unmarshal]: the
 // lexer's tokens are what the parser reads, so it counts what the parser would
 // open and nothing it would not. Flow depth is the brackets still open. Block
-// depth is the stack of columns at which a sequence entry (`- `) or a mapping
-// value (`: `) has been seen: nesting needs a column further right than its
-// parent, a sibling or a dedent pops back, so a chain such as `- - - x`, which
-// uses no brackets and costs the parser as much, is counted too. Entries inside
-// a flow collection belong to it and are not block structure.
+// depth is a stack of the columns at which block entries start: a sequence
+// entry at its `-`, a mapping entry at the first token of its key (its anchor or
+// tag if it has one, never the `:`, whose column an author can move by choosing
+// shorter keys). A child must start further right than its parent, so a
+// sibling or a dedent pops back and a chain such as `- - - x`, which uses no
+// brackets and costs the parser as much, is counted too. A sequence written at
+// its parent key's own column pops that key, so the count can fall short by at
+// most half; the bound is on cost, not on grammar. Entries inside a flow
+// collection belong to it and are not block structure.
 func refuseDeepFlow(tokens token.Tokens) error {
 	refuse := func(tk *token.Token, what string) error {
 		return &NestingError{
@@ -69,9 +73,33 @@ func refuseDeepFlow(tokens token.Tokens) error {
 	var (
 		flow  int
 		block []int
+
+		// entryCol is the column of the first token since the last line break
+		// or block indicator: where the entry being read began.
+		entryCol int
+		fresh    = true
+		lastLine int
 	)
 
+	push := func(tk *token.Token, col int) error {
+		for len(block) > 0 && block[len(block)-1] >= col {
+			block = block[:len(block)-1]
+		}
+
+		block = append(block, col)
+		if len(block) > MaxFlowDepth {
+			return refuse(tk, "block collections")
+		}
+
+		return nil
+	}
+
 	for _, tk := range tokens {
+		if tk.Position.Line != lastLine {
+			lastLine = tk.Position.Line
+			fresh = true
+		}
+
 		switch tk.Type {
 		case token.SequenceStartType, token.MappingStartType:
 			flow++
@@ -80,20 +108,28 @@ func refuseDeepFlow(tokens token.Tokens) error {
 			}
 		case token.SequenceEndType, token.MappingEndType:
 			flow = max(flow-1, 0)
-		case token.SequenceEntryType, token.MappingValueType:
-			if flow > 0 {
+		case token.SequenceEntryType:
+			if flow == 0 {
+				if err := push(tk, tk.Position.Column); err != nil {
+					return err
+				}
+				fresh = true
+
 				continue
 			}
+		case token.MappingValueType:
+			if flow == 0 {
+				if err := push(tk, entryCol); err != nil {
+					return err
+				}
+				fresh = true
 
-			col := tk.Position.Column
-			for len(block) > 0 && block[len(block)-1] >= col {
-				block = block[:len(block)-1]
+				continue
 			}
+		}
 
-			block = append(block, col)
-			if len(block) > MaxFlowDepth {
-				return refuse(tk, "block collections")
-			}
+		if fresh {
+			entryCol, fresh = tk.Position.Column, false
 		}
 	}
 
