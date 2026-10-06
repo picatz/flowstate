@@ -444,6 +444,37 @@ completion but the last, including ones that land after the first execution and
 resume from the carryover. The chain must give what the undisturbed chain gives.
 Not yet covered: a worker killed mid-activity.
 
+### Inputs you did not think of: `--fuzz`
+
+`flow test --fuzz N` runs each authored case over N generated sets of inputs.
+Generation is driven by the workflow's declared `inputs:`: boundary values for
+a `string` (empty, one character, non-ASCII, `${1 + 1}` as data, and `min_len:` or
+`max_len:` characters, capped at 4096), an `int` (zero, one past either side of zero, 2^31, 2^53-1),
+a `double` and a `bool`, every `values:` entry for an enum, and each optional
+input absent. The first runs walk these boundary values one input at a time
+with the others as the case wrote them, so a small `--fuzz N` still exercises
+each boundary and a failure points at one input; later runs combine them at
+random. Every candidate set is bound through the same `BindRunInputs` a
+real submit uses, so a value the declaration refuses (a `must:` it fails) is
+never run. The case's own `stubs:` answer, `expect:` is not applied (it
+describes the authored inputs), and `faults:` are not injected.
+
+A generated run fails when it ends in an `Internal` or `Expression` error (a
+`no such key` or a division by zero is a defect that an input reached) or
+breaks the case's `invariants:`. The first failure is reported apart from the
+authored cases with its seed and the `inputs:` overlay to merge over the case's own;
+`flow test --fuzz-seed S` replays exactly it (a `sensitive:` input is left out of the overlay, so the case keeps its own value for it). A generated case that errors before the run (an input the stubs have no answer for, for one) is reported as could not be judged, and a file where every generated case did so fails: nothing was verified. Inputs the workflow declares
+`sensitive:` are never generated or printed, and inputs of a type not generated
+yet (lists, maps, timestamps) are named in the report rather than skipped
+silently. `--fuzz` is refused with `--seeds`, `--debug` and `--list`: a run
+explores one dimension, so a finding names one cause. A finding can be an artifact of the stubs: they answer what the authored inputs
+need, so an input that takes a branch reading a field the stub's fixed answer
+lacks fails with a missing-key error that a real task would not. Read the
+reported failure before treating it as a workflow defect, and widen the stub.
+A `--fuzz` run in which no file judged a generated case fails, since it verified
+nothing. Not yet covered: stub answers drawn from output descriptors,
+structural input types, and shrinking.
+
 ## One fixture, many rows
 
 Cases that differ in one or two values can share an entry and list their

@@ -206,6 +206,9 @@ message TestReport {
   // Cases is empty because everything was skipped is told apart here from one
   // that ran nothing.
   repeated SkippedTestCase skipped = 6;
+
+  // Fuzz is what `flow test --fuzz` found, unset when nobody asked for it.
+  FuzzReport fuzz = 7;
 }
 
 // SkippedTestCase is one case a `flow test` run selected and did not run.
@@ -319,6 +322,53 @@ message ScheduleDivergenceReport {
   // [fault_script] and keep the violation. False when the shrink budget ended
   // the search first, or nothing was shrunk.
   bool shrunk_minimal = 11;
+}
+
+// FuzzReport is what running a file's cases over generated inputs found: the
+// type-driven dimension `--fuzz` adds beside the authored cases and the seeded
+// schedules. A generated case is never an authored one, so this is reported
+// apart from the cases and apart from coverage.
+message FuzzReport {
+  // Runs is how many generated cases were judged, across all cases: ran to a
+  // verdict on the properties. A case that errored before the run counts as
+  // inconclusive instead.
+  int32 runs = 1;
+
+  // Cases is how many of the file's cases were fuzzed.
+  int32 cases = 2;
+
+  // Inconclusive is how many generated cases could not be judged: the case
+  // errored before the run (an input the declaration refuses at submit, a
+  // task the case has no stub for) rather than failing a property.
+  int32 inconclusive = 3;
+
+  // SkippedInputs names the declared inputs nothing was generated for, each
+  // with the reason (a type not yet generated, a `sensitive:` input).
+  repeated string skipped_inputs = 4;
+
+  // Finding is the first generated case that broke a property, unset when
+  // none did.
+  FuzzFinding finding = 5;
+}
+
+// FuzzFinding is one generated case that failed: reproducible from its seed
+// and pasteable as an authored case.
+message FuzzFinding {
+  // Case is the authored case the inputs were generated around.
+  string case = 1;
+
+  // Seed is the generated case's seed: `flow test --fuzz-seed <seed>` on the
+  // same file replays exactly it.
+  uint64 seed = 2;
+
+  // Inputs is the `inputs:` overlay that reproduces the failure, as YAML to
+  // merge over the case's own `inputs:`. Inputs the workflow declares
+  // `sensitive:` are never generated and never printed, so the case keeps its
+  // own values for them.
+  string inputs = 3;
+
+  // Failure is what went wrong, withheld as the case's own report withholds.
+  string failure = 4;
 }
 
 // CoverageReport is `flow test`'s branch-coverage account for one workflow:
