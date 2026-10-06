@@ -25,6 +25,7 @@ call. The reasons behind the language's design are recorded in
 - [Failure, retries, and compensation](#failure-retries-and-compensation)
 - [Starting runs: triggers](#starting-runs-triggers)
 - [Who may act on a run](#who-may-act-on-a-run)
+- [Identity and trust](#identity-and-trust)
 - [Secrets](#secrets)
 - [Plugins](#plugins)
 - [Editions and migration](#editions-and-migration)
@@ -1478,6 +1479,39 @@ Local debugging needs no policy. See
 ### Labels are not policy
 
 `labels:` are for finding runs. Nothing authorizes on them.
+
+## Identity and trust
+
+A Flowfile never names an identity provider, a key, or a trust relationship. It
+reads who is acting and says what a step may use; the deployment decides who is
+believed and where assertions may go. Trust runs in two directions, and each is
+configured in the one trust policy, not in a Flowfile. Pass the same policy
+(`--auth-policy`) to `flow server`, which authenticates callers, and to
+`flow worker`, which builds the broker that steps use for `federation:`.
+
+| Direction | The deployment configures | A Flowfile sees |
+| --- | --- | --- |
+| **Inbound**: who may reach Flowstate | `issuers:`, each `kind: oidc` (the default) or `kind: mtls`. An `oidc` entry takes `audiences`, claim rules, and a tenant fixed or read from `namespace_claim`. An `mtls` entry takes `client_ca_file` and `subject_from` and a fixed tenant, and refuses `audiences` and `namespace_claim` | `run.identity` with `principal`, `subject`, `issuer`, `namespace`, `claims`, and `sender.identity` the same, except that a wait's sender carries no `claims`. [Who may act](#who-may-act-on-a-run) |
+| **Outbound**: what a workload may become | `federation:` with `targets:` (`token_exchange`, `client_credentials`, `gcp`, `aws`, `assertion`) and `allow`/`deny` rules over `target`, `audience` and `workload` | `credential:` on a task such as `http`. [Secrets and credentials](SECRETS.md#short-lived-credentials-instead-of-stored-ones) |
+
+Three rules hold in both directions:
+
+- **A tenant comes from the authenticated caller, never from the workflow.** A
+  verified caller whose tenant cannot be determined is refused.
+- **Policy fails closed.** A missing claim, an expression error, an unreachable
+  issuer, or a rule that cannot be evaluated refuses. The one exception, a
+  `federation:` section with no rules, is called out in
+  [Secrets](SECRETS.md#short-lived-credentials-instead-of-stored-ones).
+- **Credentials and tokens never enter a run's history.** A step names a
+  `credential:` or `${secret(...)}`; the worker resolves it where it is used.
+
+A webhook delivery holds no Flowstate credential, so its `sender.identity` names
+the trigger that admitted it, `flowstate://webhook#<workflow>/<webhook>`, and a
+`signals:` policy can match it. The identity of whoever holds the signing key is
+not carried. How workloads, people, and agents are federated, and what is built
+and what is not, is in
+[Workload identity federation](WORKLOAD_IDENTITY_FEDERATION.md); authorizing an
+agent over HTTP is in [MCP authorization](MCP_AUTHORIZATION.md).
 
 ## Secrets
 
