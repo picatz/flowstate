@@ -199,6 +199,7 @@ var testDocKeys = map[testDocLevel][]dslKey{
 		{name: "failed", detail: "bool", docs: "Asserts whether the run failed outright, as distinct from a step's failure being tolerated by `continue_on_error:`."},
 		{name: "error_contains", detail: "string", docs: "Must appear in the run's failure text. Only meaningful alongside `failed: true`."},
 		{name: "compensated", detail: "list", docs: "Names the steps that must have been undone, in any order."},
+		{name: "denied_signals", detail: "list", docs: "Names signals this case sends that the workflow's own `signals:` policy must refuse: each must have had at least one delivery denied, by the same check the server's Signal door runs."},
 		{name: "ran", detail: "list", docs: "Names steps that must have executed — present in the run's step outputs, whether they succeeded, were tolerated, or ended the run."},
 		{name: "skipped", detail: "list", docs: "Names steps that must not have executed — absent because their `if:` did not hold or the run never reached them."},
 		{name: "others", detail: "string", docs: "The only accepted value is `skipped`, closing the `ran:` claim: every step the workflow has that `ran:` does not name must have been skipped (issue #416)."},

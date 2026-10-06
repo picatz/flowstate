@@ -314,6 +314,10 @@ func mergeExpectation(entry, row Expectation) Expectation {
 		merged.Compensated = entry.Compensated
 		merged.fromEntry.compensated = entry.Compensated != nil
 	}
+	if merged.DeniedSignals == nil {
+		merged.DeniedSignals = entry.DeniedSignals
+		merged.fromEntry.deniedSignals = entry.DeniedSignals != nil
+	}
 	if merged.Ran == nil {
 		merged.Ran = entry.Ran
 		merged.fromEntry.ran = entry.Ran != nil
