@@ -54,7 +54,7 @@ sequenceDiagram
   P-->>W: outputs
 ```
 
-The thick box is all you write. The handshake, the socket, the token check, the
+The plugin (`flowstate-plugin-hello`) is all you write. The handshake, the socket, the token check, the
 signal handling and the shutdown are
 [`pkg/flowstate/v1/plugin/sdk`](../pkg/flowstate/v1/plugin/sdk)'s, and the host
 half is documented end to end in
