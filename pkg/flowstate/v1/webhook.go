@@ -110,7 +110,30 @@ const (
 	// named scheme rather than the generic one because getting the payload
 	// construction wrong is how signature checks come to pass on forged bodies.
 	WebhookSchemeStripe = "stripe"
+
+	// WebhookSchemeJWT admits a delivery that carries a bearer token from a
+	// trusted issuer, named by the deployment's trust policy. What the other two
+	// attest is a key holder; this attests a *sender*: the verified token's
+	// principal becomes the identity the delivery acts as, so an `allow:`
+	// predicate over `run.identity` can tell GitHub Actions' deploy job from
+	// anyone else.
+	//
+	// Its value is the name of a trust policy entry, never a key and never a
+	// URL. Issuer, audience, algorithms and claim rules are the deployment's, in
+	// the one place they are already written ([auth.TrustedIssuer]); a Flowfile
+	// that could spell its own would be a second trust policy, and one that could
+	// name a key source would let an author choose which host the receiver
+	// fetches from.
+	//
+	// A bearer token authenticates who sent the request and not the bytes in it.
+	// Pair it with a signing scheme when the body must be trusted too.
+	WebhookSchemeJWT = "jwt"
 )
+
+// WebhookAuthorizationHeader is the header [WebhookSchemeJWT] reads its
+// credential from, in lower case, as [NewWebhookEvent] and the receiver spell
+// every header name.
+const WebhookAuthorizationHeader = "authorization"
 
 // webhookSchemesSigningHeaders records, per scheme, whether its signature
 // covers arbitrary request headers.
@@ -131,6 +154,9 @@ const (
 var webhookSchemesSigningHeaders = map[string]bool{
 	WebhookSchemeHMACSHA256: false,
 	WebhookSchemeStripe:     false,
+	// A bearer token is a credential for the request, and covers neither the
+	// body nor any other header.
+	WebhookSchemeJWT: false,
 }
 
 // WebhookSchemeSignsHeaders reports whether a scheme's signature covers the
@@ -144,23 +170,59 @@ func WebhookSchemeSignsHeaders(scheme string) bool {
 	return webhookSchemesSigningHeaders[scheme]
 }
 
-// webhookVerificationSchemes is the set above, in the order a diagnostic lists
-// them: the generic one first, because it is the one an unfamiliar provider is
-// spelled with.
+// webhookVerificationSchemes is the set of schemes that check a delivery against
+// a key, in the order a diagnostic lists them: the generic one first, because it
+// is the one an unfamiliar provider is spelled with. [WebhookSchemeJWT] is not
+// one of them: it checks a credential against a trust policy rather than a body
+// against a key, and the constant-work loops in webhookverify.go range over this
+// set.
 var webhookVerificationSchemes = []string{WebhookSchemeHMACSHA256, WebhookSchemeStripe}
 
-// WebhookVerificationSchemes returns the schemes a `verify:` block may name.
+// WebhookSigningSchemes returns the schemes that sign a delivery's body with a
+// secret key: every scheme a `verify:` block may name except
+// [WebhookSchemeJWT].
 //
-// A copy, so a caller rendering it into a diagnostic cannot reorder the set every
-// other reader depends on.
-func WebhookVerificationSchemes() []string {
+// A copy, so a caller cannot reorder the set every other reader depends on.
+func WebhookSigningSchemes() []string {
 	return slices.Clone(webhookVerificationSchemes)
+}
+
+// WebhookVerificationSchemes returns every scheme a `verify:` block may name:
+// the signing schemes, then [WebhookSchemeJWT].
+func WebhookVerificationSchemes() []string {
+	return append(WebhookSigningSchemes(), WebhookSchemeJWT)
 }
 
 // KnownWebhookVerificationScheme reports whether name is a scheme this build can
 // verify a delivery with.
 func KnownWebhookVerificationScheme(name string) bool {
-	return slices.Contains(webhookVerificationSchemes, name)
+	return name == WebhookSchemeJWT || slices.Contains(webhookVerificationSchemes, name)
+}
+
+// WebhookNeedsSigningKeys reports whether any scheme a trigger declares is
+// checked with a secret key, which is whether a deployment serving it must be
+// able to resolve one. A trigger whose only scheme is [WebhookSchemeJWT] has no
+// key to resolve, and requiring a secret backend for it would make an operator
+// configure one only to leave it unused.
+func WebhookNeedsSigningKeys(trigger *WebhookTrigger) bool {
+	for scheme := range trigger.GetVerify() {
+		if scheme != WebhookSchemeJWT {
+			return true
+		}
+	}
+
+	return false
+}
+
+// WebhookJWTIssuer returns the trust policy entry name a trigger's `jwt` scheme
+// names, and whether the trigger declares the scheme at all.
+func WebhookJWTIssuer(trigger *WebhookTrigger) (string, bool) {
+	value, declared := trigger.GetVerify()[WebhookSchemeJWT]
+	if !declared {
+		return "", false
+	}
+
+	return value.GetLiteral().GetStringValue(), true
 }
 
 // CheckWebhookTrigger reports what is wrong with a declared webhook, in sentences
@@ -245,6 +307,19 @@ func CheckWebhookVerifyScheme(name, scheme string, key *Value) error {
 		return fmt.Errorf("webhook %q verifies with %q, which is not a scheme Flowstate can check a "+
 			"delivery against; the schemes are %s",
 			name, scheme, strings.Join(WebhookVerificationSchemes(), ", "))
+	}
+
+	if scheme == WebhookSchemeJWT {
+		// A name, not a secret: the bearer token is the sender's, and what the
+		// Flowfile holds is which trust policy entry may vouch for it.
+		if issuer := key.GetLiteral().GetStringValue(); issuer == "" {
+			return fmt.Errorf("webhook %q verifies with %q but names no trusted issuer; write "+
+				"`%s: <name>` with the name of an entry in this deployment's trust policy — a "+
+				"name and not a key, so the issuer, audience and claim rules stay the deployment's",
+				name, scheme, scheme)
+		}
+
+		return nil
 	}
 
 	if _, isSecret := key.GetKind().(*Value_SecretRef); !isSecret {
@@ -754,6 +829,14 @@ func NewWebhookEvent(headers map[string]string, body any) *Value {
 	for name, value := range headers {
 		lowered[strings.ToLower(name)] = value
 	}
+
+	// The credential [WebhookSchemeJWT] verified is not part of what an
+	// expression may read. `event` is evaluated into inputs, an idempotency key
+	// and a signal payload, all of which reach workflow history, and a bearer
+	// token that did so would be a live credential in a store invariant 7 calls
+	// durable and broadly readable. Removed here, in the one constructor a
+	// receiver and `flow test` share, so neither can forget.
+	delete(lowered, WebhookAuthorizationHeader)
 
 	return NewLiteralMap(map[string]any{
 		EventHeadersField: lowered,

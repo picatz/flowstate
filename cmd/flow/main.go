@@ -1519,7 +1519,7 @@ func runServer(cmd *cobra.Command, args []string) error {
 	// receiver that exists is one whose whole configuration was satisfiable, and
 	// a deployment that cannot satisfy it does not start — which is the same
 	// fail-closed rule --task-queue-prefix follows a hundred lines above.
-	receiver, err := webhookReceiver(cmd, flowServer, logger)
+	receiver, err := webhookReceiver(cmd, flowServer, verifier, policy, logger)
 	if err != nil {
 		return err
 	}
