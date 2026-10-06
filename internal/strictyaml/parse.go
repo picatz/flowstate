@@ -77,6 +77,8 @@ func refuseDeepFlow(tokens token.Tokens) error {
 		}
 	}
 
+	runs := newPropertyRuns(tokens)
+
 	var (
 		flow  int
 		block []int
@@ -145,7 +147,7 @@ func refuseDeepFlow(tokens token.Tokens) error {
 				}
 
 				fresh = true
-				pending, pendingCol, pendingSeq = lineEndsAfter(tokens, i+1, tk.Position.Line), tk.Position.Column, true
+				pending, pendingCol, pendingSeq = runs.lineEndsAfter(i+1, tk.Position.Line), tk.Position.Column, true
 
 				continue
 			}
@@ -170,7 +172,7 @@ func refuseDeepFlow(tokens token.Tokens) error {
 					after++ // the anchor's name
 				}
 
-				pending, pendingCol, pendingSeq = lineEndsAfter(tokens, after, tk.Position.Line), entryCol, false
+				pending, pendingCol, pendingSeq = runs.lineEndsAfter(after, tk.Position.Line), entryCol, false
 				if pending {
 					// A property or `?` alone on its line takes its value from
 					// the lines below, so it is a level of its own.
@@ -191,20 +193,46 @@ func refuseDeepFlow(tokens token.Tokens) error {
 	return nil
 }
 
-// lineEndsAfter reports whether the tokens from index i on, which follow a
-// token on line, leave the line to nothing but further properties: an anchor
-// (its `&` and its name), a tag or a comment.
-func lineEndsAfter(tokens token.Tokens, i, line int) bool {
-	for j := i; j < len(tokens); {
-		switch tokens[j].Type {
+// propertyRuns holds, for every token index, where the run of properties
+// starting there ends. Every property of a run asks where the run ends, so
+// asking by walking would cost a line of n anchors n² token reads before the
+// nesting bound refused anything; one right-to-left pass answers any start
+// exactly, whatever its alignment with the tokens around it.
+type propertyRuns struct {
+	tokens token.Tokens
+	// end[i] is the index of the first token at or after i that is not an
+	// anchor (with its name), a tag or a comment; len(tokens) when the
+	// properties run off the stream.
+	end []int
+}
+
+func newPropertyRuns(tokens token.Tokens) *propertyRuns {
+	n := len(tokens)
+	end := make([]int, n+1)
+	end[n] = n
+
+	for i := n - 1; i >= 0; i-- {
+		switch tokens[i].Type {
 		case token.AnchorType:
-			j += 2
+			end[i] = end[min(i+2, n)]
 		case token.TagType, token.CommentType:
-			j++
+			end[i] = end[i+1]
 		default:
-			return tokens[j].Position.Line != line
+			end[i] = i
 		}
 	}
 
-	return true
+	return &propertyRuns{tokens: tokens, end: end}
+}
+
+// lineEndsAfter reports whether the tokens from index i on, which follow a
+// token on line, leave the line to nothing but further properties: an anchor
+// (its `&` and its name), a tag or a comment.
+func (r *propertyRuns) lineEndsAfter(i, line int) bool {
+	j := r.end[min(i, len(r.tokens))]
+	if j >= len(r.tokens) {
+		return true
+	}
+
+	return r.tokens[j].Position.Line != line
 }
