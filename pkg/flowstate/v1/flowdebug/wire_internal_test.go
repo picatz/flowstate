@@ -35,7 +35,7 @@ func TestEveryCommandVerbIsOnTheWire(t *testing.T) {
 	require.NotEmpty(t, commands, "the command table is empty, so every claim below is vacuous")
 
 	// Every verb the prompt understands can be sent.
-	for _, c := range commands {
+	for _, c := range commandsOn(frontPrompt) {
 		verb, ok := verbFor(c.verb)
 		assert.True(t, ok,
 			"the prompt understands %q and the wire has no verb for it, so a client cannot send a command a person can type", c.verb)
@@ -68,7 +68,7 @@ func TestEveryCommandVerbIsOnTheWire(t *testing.T) {
 			"%v spells %q, which is an alias rather than the canonical verb", verb, spelling)
 	}
 
-	assert.Len(t, verbs, len(commands),
+	assert.Len(t, verbs, len(commandsOn(frontPrompt)),
 		"the wire vocabulary and the prompt's are different sizes, so one of them has a verb the other does not")
 }
 
@@ -216,7 +216,7 @@ func TestNoSpellingOfAVerbProducesALineTheRendererRefuses(t *testing.T) {
 	require.NotEmpty(t, commands, "the command table is empty, so this test is vacuous")
 
 	checked := 0
-	for _, c := range commands {
+	for _, c := range commandsOn(frontPrompt) {
 		for _, spelling := range append([]string{c.verb}, c.aliases...) {
 			// Exactly at the bound as typed, which is where a spelling shorter
 			// than its canonical verb crosses it once expanded.

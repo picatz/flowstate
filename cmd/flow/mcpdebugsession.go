@@ -688,10 +688,9 @@ func (r *debugSessions) tools() []flowmcp.ToolRegistration {
 		{Tool: &mcp.Tool{
 			Name: debugSessionCommandTool,
 			Description: "Run one debugger command in a retained session and answer with its typed result. Commands: " +
-				"step, next, finish, continue, until <step>, pause, break <step> [hit <n>] [if <expr>], log <step> <msg>, " +
-				"catch none|uncaught|all, delete <step>, clear, breakpoints, inspect <expr>, expand <expr>, scope, backtrace, " +
-				"detach, status. A stubbed session can also step back: back, and reverse-continue (rc) to the previous " +
-				"breakpoint. Movements answer with the next stop. Set expected_revision to the snapshot you acted on, " +
+				flowdebug.DriverCommandList() + ". back and reverse-continue (rc) need a stubbed session that can step back; " +
+				"any other says so and does not move. Movements answer with the next stop. Set expected_revision to the " +
+				"snapshot you acted on, " +
 				"so a command meant for a stop the run has left is refused as stale: a movement or an inspection is " +
 				"judged by the run in the same step as the command; any other command is checked just before it is sent.",
 			InputSchema: object(map[string]any{
