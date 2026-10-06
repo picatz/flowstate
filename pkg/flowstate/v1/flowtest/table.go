@@ -302,6 +302,10 @@ func mergeExpectation(entry, row Expectation) Expectation {
 		merged.IdempotencyKey = entry.IdempotencyKey
 		merged.fromEntry.idempotencyKey = entry.IdempotencyKey != ""
 	}
+	if merged.Response == nil {
+		merged.Response = entry.Response
+		merged.fromEntry.response = entry.Response != nil
+	}
 	if merged.Failed == nil {
 		merged.Failed = entry.Failed
 		merged.fromEntry.failed = entry.Failed != nil

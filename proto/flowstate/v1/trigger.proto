@@ -397,6 +397,37 @@ message WebhookTrigger {
   // with the delivery admits all of them or none of them.
   Value when = 6 [(google.api.field_behavior) = OPTIONAL];
 
+  // RespondWithin is how long the receiver holds a delivery open to answer with
+  // the run's declared outputs, written `respond_within: 5s` in a Flowfile.
+  // Absent means the receiver answers as it always has: with the run's address,
+  // as soon as the run is started or joined.
+  //
+  // Set, the receiver waits for the run it started (or joined) for at most this
+  // long and answers with `status`: `completed` with the run's declared
+  // `outputs:`, `failed` with the failure's sentence, or `running` when the
+  // bound passed first, in which case the run continues and the caller reads it
+  // with `Get`. The HTTP status keeps its meaning (a delivery disposition), so a
+  // 2xx still tells a provider the delivery landed and must not be retried
+  // whatever the run did.
+  //
+  // The field is itself the bound, and there is no default: a wait the sender
+  // chose the length of, or the author never wrote down, would hold a
+  // receiver slot for as long as a run took. 100ms to 30s. A waiting delivery
+  // holds its slot of the receiver's concurrency bound for the whole wait.
+  //
+  // The only thing a run can answer with is its declared outputs, so this is
+  // refused with no `outputs:`, and refused with [signal]: a bridge starts
+  // nothing and has no run of its own to wait for. Sensitive outputs are
+  // withheld, and there is no way to reveal one on this surface. There is no
+  // callback form: a run that must tell somebody later does it as a last step.
+  google.protobuf.Duration respond_within = 7 [
+    (google.api.field_behavior) = OPTIONAL,
+    (buf.validate.field).duration = {
+      gte: {nanos: 100000000}
+      lte: {seconds: 30}
+    }
+  ];
+
   // Signal is a delivery answering a declared gate instead of starting a run.
   //
   // # It reuses `signals:`, and is not a second authorization

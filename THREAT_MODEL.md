@@ -233,8 +233,11 @@ cannot check, or a key this deployment cannot resolve, stops the server. Compari
 is constant-time (`hmac.Equal`) and the key is revealed only into an HMAC. The body
 is capped by `http.MaxBytesReader` as the first statement of the handler, so no path
 below it can read past `v1.MaxWebhookPayloadBytes`; deliveries in flight are bounded
-and shed with a 503 past the bound; `with:` evaluation is bounded by the CEL cost
-limit; candidate signatures per header are bounded. Every refusal decided before a
+and shed with a 503 past the bound — a trigger declaring `respond_within:` holds its
+slot for the wait, at most the 30 s the field allows and ended early by the sender
+hanging up, and what it answers with is the run's declared outputs only, redacted as
+`Get` redacts them with no reveal, capped at `v1.MaxWebhookResponseBytes`; `with:`
+evaluation is bounded by the CEL cost limit; candidate signatures per header are bounded. Every refusal decided before a
 delivery is known genuine — unknown workflow, unknown trigger, bad signature — is one
 status and one sentence, with an HMAC spent on the unrouted path so the timings
 match. A run's id is a digest over tenant, workflow, trigger and idempotency key, so

@@ -83,8 +83,8 @@ const manualDenied = "denied"
 //
 // In the order [webhookTriggerToYAML] writes them, which is the order the entry
 // reads in: which source this is, how a delivery from it is proved genuine, what
-// names one delivery, and what it binds.
-var webhookKeys = []string{"webhook", "verify", "when", "idempotency_key", "with", "signal"}
+// names one delivery, what it binds, and how long the answer is held for.
+var webhookKeys = []string{"webhook", "verify", "when", "idempotency_key", "with", "signal", "respond_within"}
 
 // webhookSignalKeys are what a webhook's `signal:` block says: which gate this
 // delivery answers, which run it answers, and what it carries.
@@ -473,6 +473,13 @@ func (c *compiler) webhookTrigger(fields *fieldSet, path string, r ref) *v1.Webh
 			c.report(c.secretMarkerSpan(resolved), whenRef, "%s", notInWhenHelp)
 		} else {
 			webhook.When = c.exprValue(f.value, whenPath, whenRef)
+		}
+	}
+
+	if f, found := fields.get("respond_within"); found {
+		withinPath := fieldPath(path, "respond_within")
+		if within, ok := c.duration(f.value, withinPath, ref{path: withinPath, label: fmt.Sprintf("webhook %q respond_within", name)}); ok {
+			webhook.RespondWithin = within
 		}
 	}
 
@@ -1164,6 +1171,10 @@ func webhookTriggerToYAML(webhook *v1.WebhookTrigger) (yaml.MapSlice, error) {
 		doc = append(doc, yaml.MapItem{Key: "signal", Value: written})
 	}
 
+	if within := webhook.GetRespondWithin(); within != nil {
+		doc = append(doc, yaml.MapItem{Key: "respond_within", Value: durationToYAML(within)})
+	}
+
 	return doc, nil
 }
 
@@ -1490,6 +1501,10 @@ func validateWebhookTriggers(wf *v1.Workflow) Diagnostics {
 			ds = append(ds, Diagnostic{Field: fieldPath(at, "when"), Message: err.Error()})
 		} else if webhook.GetWhen() != nil {
 			ds = append(ds, validateTriggerExpr(fieldPath(at, "when"), name, "when", webhook.GetWhen())...)
+		}
+
+		if err := v1.CheckWebhookRespondWithin(wf, webhook); err != nil {
+			ds = append(ds, Diagnostic{Field: fieldPath(at, "respond_within"), Message: err.Error()})
 		}
 
 		ds = append(ds, validateWebhookSignal(wf, at, webhook)...)

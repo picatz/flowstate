@@ -197,6 +197,7 @@ var testDocKeys = map[testDocLevel][]dslKey{
 		{name: "inputs", detail: "map", docs: "Must equal the inputs a replayed delivery produced, exactly. Only meaningful alongside `trigger:`."},
 		{name: "refused", detail: "bool", docs: "Asserts that the delivery was refused and no run happened."},
 		{name: "idempotency_key", detail: "string", docs: "Must equal the key the replayed delivery evaluated to. Only meaningful alongside `trigger:`."},
+		{name: "response", detail: "map", docs: "The document a waiting receiver would answer the replayed delivery with, for a webhook that declares `respond_within:`: `status:` (`completed`, `failed` or `running`) and, for a completed run, its declared `outputs:`. Only meaningful alongside `trigger:`."},
 		{name: "failed", detail: "bool", docs: "Asserts whether the run failed outright, as distinct from a step's failure being tolerated by `continue_on_error:`."},
 		{name: "error_contains", detail: "string", docs: "Must appear in the run's failure text. Only meaningful alongside `failed: true`."},
 		{name: "compensated", detail: "list", docs: "Names the steps that must have been undone, in any order."},

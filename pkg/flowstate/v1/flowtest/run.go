@@ -1094,8 +1094,13 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 		trigger = test.Trigger.Context()
 	}
 
+	// The delivery id a replay computed, which the response document a
+	// `expect.response:` claim is judged against names.
+	var replayedDeliveryID string
+
 	if test.Trigger != nil && test.Trigger.Replays() {
 		mapped, deliveryID, failures, err := replayDelivery(test, deliveryPath, workflow)
+		replayedDeliveryID = deliveryID
 		if err != nil {
 			caseError("%s", err)
 			return
@@ -1238,6 +1243,14 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	// `flow run local --as-subject`: a local run must never look like an
 	// attested production one (eval.go's eval). See [Test.Starter].
 	signals := v1.NewPolicedLocalSignals(policies, scriptedIdentity(test.Starter), true, bound)
+	if test.Expect.Response != nil && len(test.Signals) == 0 {
+		// A case judging what a waiting receiver would answer, with no signal
+		// scripted: a run that reaches a wait with no `timeout:` is the run a
+		// caller would find still going at the bound, so it ends there on a
+		// sentinel rather than spending the case's wall-clock limit blocked on
+		// a delivery that cannot come. See [v1.ErrRunParked].
+		signals.ParkUnboundedWaits()
+	}
 	ctx = v1.NewContextWithSignalWaiter(ctx, signals)
 
 	// Hold the run's own clock participant before any scripted signal can park,
@@ -1356,7 +1369,23 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 		return
 	}
 
-	result.Failures = assertExpectation(&test.Expect, workflow, outputs, runErr, sensitive)
+	// A run parked at a wait is not a failed one: it is going, and a receiver
+	// would say so. The plain expectations judge it as the run it is.
+	// The record is the signals' own and not the surfaced error: a step that
+	// tolerates its failure swallows the sentinel, and the run Temporal would
+	// hold at that wait must not be rehearsed as one that finished.
+	// A park that coexists with a different, real failure (another branch of a
+	// parallel node) is that failure, not a held run.
+	parked := test.Expect.Response != nil && signals.Parked() && (runErr == nil || errors.Is(runErr, v1.ErrRunParked))
+	expectErr := runErr
+	if parked {
+		expectErr = nil
+	}
+	result.Failures = assertExpectation(&test.Expect, workflow, outputs, expectErr, sensitive)
+	if test.Expect.Response != nil {
+		result.Failures = append(result.Failures, assertResponse(test.Expect.Response, workflow,
+			test.Trigger.Webhook, replayedDeliveryID, bound, outputs, runErr, parked, sensitive)...)
+	}
 	if invocations != nil && len(test.Expect.Invocations) > 0 {
 		result.Failures = append(result.Failures, assertInvocations(test.Expect.Invocations, workflow.GetName(), invocations)...)
 	}
