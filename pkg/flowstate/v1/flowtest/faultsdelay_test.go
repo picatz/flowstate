@@ -128,7 +128,7 @@ func TestMalformedDelaysAreRefusedAtLoad(t *testing.T) {
 		"zero":           {"{step: fetch, delay: 0s}", "outside (0, 24h0m0s]"},
 		"negative":       {"{step: fetch, delay: -5s}", "outside (0, 24h0m0s]"},
 		"past the bound": {"{step: fetch, delay: 25h}", "outside (0, 24h0m0s]"},
-		"on a signal":    {"{signal: go, drop: true, delay: 5s}", "slows a task or step invocation"},
+		"drop and delay": {"{signal: go, drop: true, delay: 5s}", "lost or late, not both"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()

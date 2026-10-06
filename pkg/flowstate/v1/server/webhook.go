@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -204,6 +205,16 @@ type WebhookReceiver struct {
 	// See webhookaudit.go.
 	refusals *refusalLedger
 
+	// bearer is the deployment's trust policy as a verifier, and what checks the
+	// credential of a trigger declaring [v1.WebhookSchemeJWT]. Nil when the
+	// deployment was given none, which refuses such a trigger when the receiver
+	// is built.
+	bearer auth.Verifier
+
+	// trust is the policy bearer was built from, kept to read which entries
+	// exist. Never consulted to decide a delivery: that is the verifier's.
+	trust *auth.Policy
+
 	log *slog.Logger
 }
 
@@ -251,6 +262,21 @@ func WithWebhookClock(now func() time.Time) WebhookOption {
 			return
 		}
 		r.now = now
+	}
+}
+
+// WithWebhookTrust gives the receiver the deployment's trust policy, which is
+// what a trigger declaring `verify: {jwt: <name>}` needs: bearer verifies the
+// sender's token, and policy is the file it was built from, read once when the
+// receiver is built to refuse a name no entry has.
+//
+// Without it a trigger declaring `jwt` cannot be served, and building the
+// receiver says so; there is no reading in which an unchecked bearer scheme is
+// satisfied.
+func WithWebhookTrust(bearer auth.Verifier, policy *auth.Policy) WebhookOption {
+	return func(r *WebhookReceiver) {
+		r.bearer = bearer
+		r.trust = policy
 	}
 }
 
@@ -312,8 +338,11 @@ func WithWebhookLogger(log *slog.Logger) WebhookOption {
 func (s *FlowstateServer) NewWebhookReceiver(
 	ctx context.Context, namespace string, workflows []*v1.Workflow, store *secrets.Store, opts ...WebhookOption,
 ) (*WebhookReceiver, error) {
-	if store == nil {
-		return nil, fmt.Errorf("a webhook receiver needs a secret store: every trigger's `verify:` names a " +
+	// A store is required only by a deployment that serves a trigger signing with
+	// a key. One serving nothing but `verify: {jwt: ...}` has no key to resolve,
+	// and is refused below the moment a trigger that does appears.
+	if store == nil && slices.ContainsFunc(workflows, workflowNeedsSigningKeys) {
+		return nil, fmt.Errorf("a webhook receiver needs a secret store: a trigger's `verify:` names a " +
 			"key, and a deployment that cannot resolve one cannot check a delivery")
 	}
 
@@ -330,10 +359,14 @@ func (s *FlowstateServer) NewWebhookReceiver(
 	// namespace, or an empty one under a store built with
 	// [secrets.WithRequiredNamespace], is refused here rather than resolving a key
 	// in a tenant nobody chose.
-	resolver, err := store.For(secrets.Namespace(namespace))
-	if err != nil {
-		return nil, fmt.Errorf("scoping the signing keys of the webhooks served for namespace %q: %w",
-			namespace, err)
+	var resolver secrets.Resolver
+	if store != nil {
+		var err error
+		resolver, err = store.For(secrets.Namespace(namespace))
+		if err != nil {
+			return nil, fmt.Errorf("scoping the signing keys of the webhooks served for namespace %q: %w",
+				namespace, err)
+		}
 	}
 
 	// And the run half of that same namespace, asked now rather than on the first
@@ -454,6 +487,10 @@ func (r *WebhookReceiver) register(ctx context.Context, workflow *v1.Workflow, r
 
 	routes := make(map[string]*webhookRoute, len(triggers))
 	for _, trigger := range triggers {
+		if err := r.checkBearerScheme(name, trigger); err != nil {
+			return err
+		}
+
 		keys, err := resolveWebhookKeys(ctx, name, trigger, resolver)
 		if err != nil {
 			return err
@@ -469,6 +506,50 @@ func (r *WebhookReceiver) register(ctx context.Context, workflow *v1.Workflow, r
 	return nil
 }
 
+// checkBearerScheme refuses, when the receiver is built, a `jwt` scheme this
+// deployment could not honour: no trust policy to check a token against, or a
+// name no bearer entry of it has.
+//
+// Asked now rather than on a delivery for the reason keys are resolved now: the
+// alternative is an endpoint that starts, is advertised, and refuses every
+// genuine delivery with the reason in a log line. Only an `oidc` entry can vouch
+// for a bearer token; an `mtls` entry of the same name is a certificate
+// authority, and naming it here is a mistake worth stopping the server for.
+func (r *WebhookReceiver) checkBearerScheme(workflow string, trigger *v1.WebhookTrigger) error {
+	issuer, declared := v1.WebhookJWTIssuer(trigger)
+	if !declared {
+		return nil
+	}
+
+	if r.bearer == nil || r.trust == nil {
+		return fmt.Errorf("workflow %q, webhook %q: `verify: {jwt: %s}` names a trusted issuer and this "+
+			"deployment holds no trust policy to check a token against; start the server with --auth-policy "+
+			"(it cannot be combined with --insecure-no-auth)", workflow, trigger.GetName(), issuer)
+	}
+
+	for _, entry := range r.trust.Issuers {
+		if entry.Name != issuer {
+			continue
+		}
+		if entry.Kind == "" || entry.Kind == auth.IssuerKindOIDC {
+			return nil
+		}
+
+		return fmt.Errorf("workflow %q, webhook %q: trust policy entry %q is kind %q, which vouches for a "+
+			"certificate and not a bearer token; `jwt` names a kind %q entry",
+			workflow, trigger.GetName(), issuer, entry.Kind, auth.IssuerKindOIDC)
+	}
+
+	return fmt.Errorf("workflow %q, webhook %q: `verify: {jwt: %s}` names no entry of this deployment's trust "+
+		"policy; the entries are named by `name:` in the policy file", workflow, trigger.GetName(), issuer)
+}
+
+// workflowNeedsSigningKeys reports whether any webhook a workflow declares is
+// checked with a secret key. See [v1.WebhookNeedsSigningKeys].
+func workflowNeedsSigningKeys(workflow *v1.Workflow) bool {
+	return slices.ContainsFunc(workflow.GetTriggers().GetWebhooks(), v1.WebhookNeedsSigningKeys)
+}
+
 // resolveWebhookKeys resolves every key a trigger's `verify:` names, refusing the
 // configuration if any of them cannot be reached.
 //
@@ -481,6 +562,12 @@ func resolveWebhookKeys(
 ) (map[string]secrets.Secret, error) {
 	keys := make(map[string]secrets.Secret, len(trigger.GetVerify()))
 	for scheme, value := range trigger.GetVerify() {
+		if scheme == v1.WebhookSchemeJWT {
+			// A name in the trust policy, checked by [WebhookReceiver.checkBearerScheme]
+			// and holding no key to resolve.
+			continue
+		}
+
 		ref := value.GetSecretRef()
 		if ref == nil {
 			// CheckWebhookTriggers above already refused this, so reaching it
@@ -608,7 +695,9 @@ func (r *WebhookReceiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 
 	headers := webhookHeaders(req.Header)
-	if err := v1.VerifyWebhookDelivery(route.trigger, route.keys, headers, body, r.now()); err != nil {
+	sender, err := v1.VerifyWebhookDeliveryAs(req.Context(), route.trigger, route.keys, r.bearer, r.namespace,
+		headers, body, r.now())
+	if err != nil {
 		r.refuse(req, "the delivery did not verify",
 			"workflow", route.workflow.GetName(), "webhook", route.trigger.GetName(), "error", err)
 		writeWebhookRefusal(w)
@@ -617,6 +706,13 @@ func (r *WebhookReceiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		cancelUnverified()
 
 		return
+	}
+
+	// From here the delivery acts as the sender its token named, when it had
+	// one. Put on the context rather than passed beside it so that every record
+	// and every policy below reads the same principal.
+	if sender != nil {
+		req = req.WithContext(withWebhookSender(req.Context(), *sender))
 	}
 
 	// Only now is anything the delivery chose parsed, which is the order
@@ -658,7 +754,7 @@ func (r *WebhookReceiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		// serialize peer-chosen `traceparent`/`tracestate` into RunState and
 		// history. The receiver has already consumed them, from the original
 		// request headers, as the delivery span's link — see `withoutTraceHeaders`.
-		Headers: withoutTraceHeaders(headers),
+		Headers: withoutAuthorization(withoutTraceHeaders(headers)),
 		Body:    decoded,
 
 		// True because verification above said so, and set here rather than
@@ -1012,11 +1108,7 @@ func (r *WebhookReceiver) answer(ctx context.Context, route *webhookRoute, deliv
 	// everything below reads the caller the way every other verb does, from
 	// [FlowstateServer.identityFor]: a bridge that derived its own answer would
 	// be a second identity path with the same name.
-	ctx = auth.ContextWithPrincipal(ctx, auth.Principal{
-		Issuer:    webhookIssuer,
-		Subject:   v1.WebhookTriggerSubject(route.workflow.GetName(), route.trigger.GetName()),
-		Namespace: r.namespace,
-	})
+	ctx = auth.ContextWithPrincipal(ctx, r.actingPrincipal(ctx, route))
 	identity := r.server.identityFor(ctx)
 
 	// Stable-key addressing, composed exactly as `Run` and `SignalWithStart`
@@ -1203,6 +1295,17 @@ func decodeDeliveryBody(body []byte) (any, error) {
 	}
 
 	return v1.NormalizeDeliveryNumbers(decoded), nil
+}
+
+// withoutAuthorization removes the credential [v1.WebhookSchemeJWT] verified from
+// the headers a delivery carries onward. [v1.NewWebhookEvent] drops it too; this
+// is the receiver's own half, so a delivery value never holds a bearer token
+// whatever reads it next. Mutates the map it is given, which is always a copy
+// [withoutTraceHeaders] just made.
+func withoutAuthorization(headers map[string]string) map[string]string {
+	delete(headers, v1.WebhookAuthorizationHeader)
+
+	return headers
 }
 
 // webhookHeaders flattens a request's headers into what `event.headers` holds.

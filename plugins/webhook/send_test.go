@@ -96,7 +96,7 @@ func verifyAs(scheme string, k secrets.Secret, r *received, body []byte, now tim
 func TestADeliveryRoundTripsThroughTheEnginesVerifier(t *testing.T) {
 	const body = `{"id":"evt_1","amount":42}`
 
-	for _, scheme := range flowstatev1.WebhookVerificationSchemes() {
+	for _, scheme := range flowstatev1.WebhookSigningSchemes() {
 		t.Run(scheme, func(t *testing.T) {
 			var got atomic.Pointer[received]
 			server := receiver(t, &got, nil)
@@ -230,7 +230,7 @@ func TestAnEgressRuleNamingCredentialsSeesTheDelivery(t *testing.T) {
 // TestTheKeyAndSignatureNeverComeBack covers every path a receiver controls: an
 // echoed response, and the error text of each failing status.
 func TestTheKeyAndSignatureNeverComeBack(t *testing.T) {
-	for _, scheme := range flowstatev1.WebhookVerificationSchemes() {
+	for _, scheme := range flowstatev1.WebhookSigningSchemes() {
 		t.Run(scheme, func(t *testing.T) {
 			var got atomic.Pointer[received]
 			server := receiver(t, &got, func(w http.ResponseWriter, r *http.Request) {

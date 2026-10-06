@@ -20,6 +20,11 @@ import (
 // every matching invocation, so the list is work spent per task call.
 const MaxFaultsPerTest = 32
 
+// maxSignalDelay bounds a signal fault's `delay:`: a day-scale lateness is
+// the realistic stress, and an unbounded one is a signal that never arrives,
+// which `drop: true` already says.
+const maxSignalDelay = 30 * 24 * time.Hour
+
 // maxFaultAtMost bounds [Fault.AtMost]: a fault that may fire without limit is
 // a stub that always fails, which `stubs:` already says without a coin flip.
 const maxFaultAtMost = 100
@@ -63,26 +68,31 @@ type Fault struct {
 	// declaration order, which is the numbering `on:` uses.
 	Signal string `yaml:"signal,omitempty"`
 
+	// Delay makes the target late, a Go duration.
+	//
+	// On a signal fault the delivery that would have arrived at its scripted
+	// `at:` arrives that long after it, in (0, [maxSignalDelay]]: exactly one of
+	// Drop and Delay with Signal. A delivery the run ends before it is due never
+	// arrives, delayed or not, which is what a late signal to a finished run
+	// looks like.
+	//
+	// On a task or step fault the invocation parks on the run's virtual clock for
+	// that long, in (0, [maxFaultDelay]], before anything else happens. Where
+	// Fails says the call failed, Delay says it answered late, which is how a
+	// step's `timeout:` and `total_timeout:` meet a slow dependency under
+	// `flow test`: those bounds are measured on the same clock, so a delay past one
+	// ends the attempt as a Timeout and retry and tolerance take it from there.
+	// Alone, it slows the call and lets the stubs answer it; with `fails:` the call
+	// fails after the wait. The duration is fixed, so a seed decides which
+	// invocations are slow and never how slow, which is what lets a pinned fault
+	// replay it exactly.
+	Delay string `yaml:"delay,omitempty"`
+
 	// Drop makes a signal fault lose the delivery: the sender sent it, and the
 	// run never learns anything arrived, which is how a signal lost on the
 	// way looks to a gate in production. Required, and only valid, with
-	// Signal; it is the one effect a signal fault has so far.
+	// Signal and exclusive with Delay.
 	Drop bool `yaml:"drop,omitempty"`
-
-	// Delay makes the invocation slow: it parks on the run's virtual clock for
-	// this long, "15s" or "2m", before anything else happens. Where Fails says
-	// the call failed, Delay says it answered late, which is how a step's
-	// `timeout:` and `total_timeout:` meet a slow dependency under `flow test`:
-	// those bounds are measured on the same clock, so a delay past one ends the
-	// attempt as a Timeout and retry and tolerance take it from there.
-	//
-	// Alone, a delay slows the call and lets the stubs answer it; with `fails:`
-	// the call fails after the wait. It is the effect of a task or step fault
-	// only, parsed by [time.ParseDuration], positive and at most
-	// [maxFaultDelay]. The duration is fixed, so a seed decides which
-	// invocations are slow and never how slow, which is what lets a pinned
-	// fault replay it exactly.
-	Delay string `yaml:"delay,omitempty"`
 
 	// Fails is the injected failure. Its kind defaults to Upstream, the
 	// ordinary transient one, and must be a kind a task can honestly report:
@@ -123,20 +133,20 @@ func (f *Fault) rate() float64 {
 	return *f.Rate
 }
 
+// lateness is the fault's parsed delay, zero for none. [checkFaultShape] has
+// already refused one that does not parse.
+func (f *Fault) lateness() time.Duration {
+	d, _ := time.ParseDuration(f.Delay)
+
+	return max(d, 0)
+}
+
 func (f *Fault) limit() int {
 	if f.AtMost == nil {
 		return 1
 	}
 
 	return *f.AtMost
-}
-
-// delay is the fault's parsed delay, zero for none. [checkFaultShape] has
-// already refused one that does not parse.
-func (f *Fault) delay() time.Duration {
-	d, _ := time.ParseDuration(f.Delay)
-
-	return max(d, 0)
 }
 
 // fails reports whether the fault ends the invocation in a failure: a fault with
@@ -166,12 +176,12 @@ func checkFaultShape(i int, f *Fault) error {
 		return fmt.Errorf("%s: name exactly one of `task:`, `step:` or `signal:`", where)
 	}
 	switch {
-	case f.Signal != "" && !f.Drop:
-		return fmt.Errorf("%s: a `signal:` fault says what happens to the delivery; write `drop: true`", where)
-	case f.Signal != "" && f.Delay != "":
-		return fmt.Errorf("%s: `delay:` slows a task or step invocation; a signal fault loses the delivery with `drop: true`", where)
+	case f.Signal != "" && !f.Drop && f.Delay == "":
+		return fmt.Errorf("%s: a `signal:` fault says what happens to the delivery; write `drop: true` or `delay: <duration>`", where)
+	case f.Signal != "" && f.Drop && f.Delay != "":
+		return fmt.Errorf("%s: a delivery is lost or late, not both; write `drop: true` or `delay:`", where)
 	case f.Signal != "" && f.Fails != nil:
-		return fmt.Errorf("%s: `fails:` is the failure of a task, and a signal fault loses the delivery instead; use `drop: true` alone", where)
+		return fmt.Errorf("%s: `fails:` is the failure of a task, and a signal fault changes the delivery instead; use `drop:` or `delay:`", where)
 	case f.Signal == "" && f.Drop:
 		return fmt.Errorf("%s: `drop:` loses a signal's delivery, so it goes with `signal:`", where)
 	}
@@ -179,8 +189,10 @@ func checkFaultShape(i int, f *Fault) error {
 		d, err := time.ParseDuration(f.Delay)
 		switch {
 		case err != nil:
-			return fmt.Errorf("%s: delay %q is not a duration like \"15s\" or \"2m\"", where, f.Delay)
-		case d <= 0 || d > maxFaultDelay:
+			return fmt.Errorf("%s: delay %q is not a duration like \"15s\" or \"2m\": %v", where, f.Delay, err)
+		case f.Signal != "" && (d <= 0 || d > maxSignalDelay):
+			return fmt.Errorf("%s: delay %s is outside (0, %s]; a signal that never arrives is `drop: true`", where, d, maxSignalDelay)
+		case f.Signal == "" && (d <= 0 || d > maxFaultDelay):
 			return fmt.Errorf("%s: delay %s is outside (0, %s]; a delay that waits for nothing tests nothing", where, d, maxFaultDelay)
 		}
 	}
@@ -419,7 +431,7 @@ func (p *faultPlan) attempt(ctx context.Context, task string) faultAnswer {
 		}
 		p.record(i, p.seen[i])
 		f := &p.faults[i]
-		if d := f.delay(); d > 0 {
+		if d := f.lateness(); d > 0 {
 			if answer.delay == 0 {
 				answer.delayedBy = i
 			}
@@ -478,9 +490,13 @@ func (p *faultPlan) record(i, n int) {
 	p.fired[i]++
 }
 
-// signalDrop is the verdict that one scripted delivery is lost: the fault that
-// decided it and which of that fault's deliveries it was.
-type signalDrop struct{ fault, n int }
+// signalDrop is the verdict that one scripted delivery is lost or late: the
+// fault that decided it and which of that fault's deliveries it was. A zero
+// delay is a loss.
+type signalDrop struct {
+	fault, n int
+	delay    time.Duration
+}
 
 // dropSignals decides, before the run starts, which of the scripted
 // deliveries are lost: one answer per script, in declaration order, nil for a
@@ -508,7 +524,7 @@ func (p *faultPlan) dropSignals(ctx context.Context, scripts []SignalScript) []*
 			}
 			p.seen[i]++
 			if dropped[n] == nil && p.decide(ctx, i) {
-				dropped[n] = &signalDrop{fault: i, n: p.seen[i]}
+				dropped[n] = &signalDrop{fault: i, n: p.seen[i], delay: p.faults[i].lateness()}
 			}
 		}
 	}
@@ -516,7 +532,7 @@ func (p *faultPlan) dropSignals(ctx context.Context, scripts []SignalScript) []*
 	return dropped
 }
 
-// commitDrop records that the delivery d decided was due and was lost.
+// commitDrop records that the delivery d decided was due and was lost or late.
 func (p *faultPlan) commitDrop(d *signalDrop) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -552,7 +568,7 @@ func (p *faultPlan) unreached() []*v1.Diagnostic {
 			why := "an earlier fault answered that call first, so this one never fired"
 			target := "invocation"
 			if f.Signal != "" {
-				why, target = "the run ended before that delivery was due, so nothing was lost", "delivery"
+				why, target = "the run ended before the sender sent that delivery, so the fault changed nothing", "delivery"
 			}
 			out = append(out, &v1.Diagnostic{
 				Step:  f.Step,

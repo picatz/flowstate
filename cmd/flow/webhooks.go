@@ -8,7 +8,9 @@ import (
 	"github.com/spf13/cobra"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/server"
 )
 
@@ -28,12 +30,13 @@ func addWebhookFlags(cmd *cobra.Command) {
 			"/webhooks/<workflow>/<trigger>. Repeatable. The file is compiled, its `verify:` keys "+
 			"are resolved, and this deployment's own checks are run against it at startup, so a "+
 			"workflow this deployment cannot serve stops the server rather than refusing deliveries "+
-			"later. Needs the `--secret-*` flags that reach the signing keys")
+			"later. A webhook signed with a key needs the `--secret-*` flags that reach it; one that "+
+			"verifies with `jwt: <name>` needs an --auth-policy entry of that name instead")
 
 	cmd.Flags().String("webhook-namespace", "",
 		"the Flowstate tenant a delivery's run belongs to, and the tenant its `verify:` keys are "+
-			"read in. A sender presents a signature rather than an identity, so there is no caller "+
-			"to take a tenant from and an operator names it here. Required on a deployment whose "+
+			"read in. A sender presents a signature or a bearer token rather than a tenant, so an "+
+			"operator names it here, and a `jwt` webhook's token must belong to it. Required on a deployment whose "+
 			"trust policy maps tenants onto Temporal namespaces, which has nowhere to route the "+
 			"unnamed tenant; a single-tenant deployment leaves it empty")
 }
@@ -45,7 +48,9 @@ func addWebhookFlags(cmd *cobra.Command) {
 // deployment that starts, serves, and refuses every genuine delivery for a reason
 // visible only in a log line nobody is reading — which is precisely the failure
 // mode "decide when configuration loads" exists to prevent.
-func webhookReceiver(cmd *cobra.Command, flowServer *server.FlowstateServer, logger *slog.Logger) (*server.WebhookReceiver, error) {
+func webhookReceiver(
+	cmd *cobra.Command, flowServer *server.FlowstateServer, verifier auth.Verifier, policy *auth.Policy, logger *slog.Logger,
+) (*server.WebhookReceiver, error) {
 	paths, _ := cmd.Flags().GetStringArray("webhook")
 	if len(paths) == 0 {
 		return nil, nil
@@ -63,24 +68,33 @@ func webhookReceiver(cmd *cobra.Command, flowServer *server.FlowstateServer, log
 		workflows = append(workflows, workflow)
 	}
 
-	registry, _, closeProviders, err := secretRegistry(cmd)
-	if err != nil {
-		return nil, fmt.Errorf("configuring the secret providers a webhook's `verify:` keys resolve through: %w", err)
-	}
-	// Kept open for the process's life: nothing is resolved after startup, but a
-	// provider holding a file handle is closed when the process ends rather than
-	// here, and the server runs until it ends.
-	cmd.PostRun = func(*cobra.Command, []string) { closeProviders() }
+	// Secret providers only for a deployment that serves a key-signed webhook. A
+	// file whose every webhook is `verify: {jwt: ...}` has no key to resolve, and
+	// asking an operator to configure a provider to leave it unused would be the
+	// second mechanism they have to run for nothing.
+	var store *secrets.Store
+	if slices.ContainsFunc(workflows, func(w *v1.Workflow) bool {
+		return slices.ContainsFunc(w.GetTriggers().GetWebhooks(), v1.WebhookNeedsSigningKeys)
+	}) {
+		registry, _, closeProviders, err := secretRegistry(cmd)
+		if err != nil {
+			return nil, fmt.Errorf("configuring the secret providers a webhook's `verify:` keys resolve through: %w", err)
+		}
+		// Kept open for the process's life: nothing is resolved after startup, but a
+		// provider holding a file handle is closed when the process ends rather than
+		// here, and the server runs until it ends.
+		cmd.PostRun = func(*cobra.Command, []string) { closeProviders() }
 
-	if len(registry.Schemes()) == 0 {
-		return nil, fmt.Errorf("--webhook was given but no secret provider is configured, so no `verify:` " +
-			"key can be resolved and every delivery would be refused; configure one with the " +
-			"--secret-* flags")
-	}
+		if len(registry.Schemes()) == 0 {
+			return nil, fmt.Errorf("--webhook was given but no secret provider is configured, so no `verify:` " +
+				"key can be resolved and every delivery would be refused; configure one with the " +
+				"--secret-* flags")
+		}
 
-	store, err := newSecretStore(cmd, registry)
-	if err != nil {
-		return nil, err
+		store, err = newSecretStore(cmd, registry)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	// The tenant an operator established, handed over *with* the store rather than
@@ -95,8 +109,13 @@ func webhookReceiver(cmd *cobra.Command, flowServer *server.FlowstateServer, log
 	// Temporal namespaces and has no entry for the tenant named here.
 	namespace, _ := cmd.Flags().GetString("webhook-namespace")
 
+	// The trust policy this server authenticates callers with is the one a
+	// `verify: {jwt: <name>}` entry points into, so a sender's token is checked
+	// by the verifier the API uses and not by a second one with its own idea of
+	// an issuer. Nil under --insecure-no-auth, which leaves a `jwt` webhook
+	// refused at startup.
 	receiver, err := flowServer.NewWebhookReceiver(cmd.Context(), namespace, workflows, store,
-		server.WithWebhookLogger(logger))
+		server.WithWebhookLogger(logger), server.WithWebhookTrust(verifier, policy))
 	if err != nil {
 		return nil, err
 	}
