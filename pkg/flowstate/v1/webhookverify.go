@@ -603,7 +603,7 @@ func SignStripeBody(key secrets.Secret, body []byte, at time.Time) string {
 // accepts the body.
 //
 // It returns the header's name and value for any scheme in
-// [WebhookVerificationSchemes], and refuses a name outside that set. The two
+// [WebhookSigningSchemes], and refuses a name outside that set. The two
 // directions are one table, not two: a scheme added for verification without a
 // case here makes TestEveryDeclarableSchemeCanBeSigned and TestEveryDeclarableSchemeIsImplemented fail, and so does the
 // reverse, so a sender and a receiver built from one tree cannot disagree about

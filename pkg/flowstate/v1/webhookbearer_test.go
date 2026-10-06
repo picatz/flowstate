@@ -188,3 +188,12 @@ func TestTheAuthorizationHeaderIsNotPartOfTheEvent(t *testing.T) {
 	assert.NotContains(t, rendered, "secret-token")
 	assert.Contains(t, rendered, "x-request-id")
 }
+
+// A bearer token authenticates a sender and signs nothing, so the signer that
+// builds outgoing deliveries refuses the scheme rather than inventing a header.
+func TestTheSignerRefusesTheBearerScheme(t *testing.T) {
+	t.Parallel()
+
+	_, _, err := v1.SignWebhookDelivery(v1.WebhookSchemeJWT, signingKey("k"), []byte(`{}`), time.Now())
+	require.Error(t, err)
+}
