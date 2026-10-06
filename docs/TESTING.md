@@ -433,8 +433,12 @@ A failure prints the seed, the boundary the second worker resumed at, and where
 the run's history was kept. The restarted run must also complete as many
 activities as the undisturbed one, so an activity run again after replay fails.
 `FLOWSTATE_RESTART_SEEDS=N` (default 3, at most 50) sets the points per case.
-Not yet covered: a worker killed mid-activity, a restart while parked on a
-timer or signal, and a restart across Continue-As-New.
+`TestWorkerRestartWhileParkedAtAGate` does the same for a run held at a bounded
+gate: the worker is lost while the run is parked and the gate is then answered
+by a signal, or lapses while no worker is running, and the second worker must
+leave it the same way an undisturbed run does.
+Not yet covered: a worker killed mid-activity and a restart across
+Continue-As-New.
 
 ## One fixture, many rows
 
