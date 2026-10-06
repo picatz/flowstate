@@ -242,6 +242,10 @@ func init() {
 				" that ran nothing.\n",
 		},
 		{
+			Name:    "flowstate.v1.TestReport.fuzz",
+			Leading: " Fuzz is what `flow test --fuzz` found, unset when nobody asked for it.\n",
+		},
+		{
 			Name:    "flowstate.v1.SkippedTestCase",
 			Leading: " SkippedTestCase is one case a `flow test` run selected and did not run.\n",
 		},
@@ -375,6 +379,63 @@ func init() {
 			Leading: " ShrunkMinimal reports that no single firing could be removed from\n" +
 				" [fault_script] and keep the violation. False when the shrink budget ended\n" +
 				" the search first, or nothing was shrunk.\n",
+		},
+		{
+			Name: "flowstate.v1.FuzzReport",
+			Leading: " FuzzReport is what running a file's cases over generated inputs found: the\n" +
+				" type-driven dimension `--fuzz` adds beside the authored cases and the seeded\n" +
+				" schedules. A generated case is never an authored one, so this is reported\n" +
+				" apart from the cases and apart from coverage.\n",
+		},
+		{
+			Name: "flowstate.v1.FuzzReport.runs",
+			Leading: " Runs is how many generated cases were judged, across all cases: ran to a\n" +
+				" verdict on the properties. A case that errored before the run counts as\n" +
+				" inconclusive instead.\n",
+		},
+		{
+			Name:    "flowstate.v1.FuzzReport.cases",
+			Leading: " Cases is how many of the file's cases were fuzzed.\n",
+		},
+		{
+			Name: "flowstate.v1.FuzzReport.inconclusive",
+			Leading: " Inconclusive is how many generated cases could not be judged: the case\n" +
+				" errored before the run (an input the declaration refuses at submit, a\n" +
+				" task the case has no stub for) rather than failing a property.\n",
+		},
+		{
+			Name: "flowstate.v1.FuzzReport.skipped_inputs",
+			Leading: " SkippedInputs names the declared inputs nothing was generated for, each\n" +
+				" with the reason (a type not yet generated, a `sensitive:` input).\n",
+		},
+		{
+			Name: "flowstate.v1.FuzzReport.finding",
+			Leading: " Finding is the first generated case that broke a property, unset when\n" +
+				" none did.\n",
+		},
+		{
+			Name: "flowstate.v1.FuzzFinding",
+			Leading: " FuzzFinding is one generated case that failed: reproducible from its seed\n" +
+				" and pasteable as an authored case.\n",
+		},
+		{
+			Name:    "flowstate.v1.FuzzFinding.case",
+			Leading: " Case is the authored case the inputs were generated around.\n",
+		},
+		{
+			Name: "flowstate.v1.FuzzFinding.seed",
+			Leading: " Seed is the generated case's seed: `flow test --fuzz-seed <seed>` on the\n" +
+				" same file replays exactly it.\n",
+		},
+		{
+			Name: "flowstate.v1.FuzzFinding.inputs",
+			Leading: " Inputs is the `inputs:` stanza that reproduces the failure, as YAML to\n" +
+				" paste over the case's. Inputs the workflow declares `sensitive:` are\n" +
+				" never generated and never printed.\n",
+		},
+		{
+			Name:    "flowstate.v1.FuzzFinding.failure",
+			Leading: " Failure is what went wrong, withheld as the case's own report withholds.\n",
 		},
 		{
 			Name: "flowstate.v1.CoverageReport",

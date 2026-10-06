@@ -184,6 +184,14 @@ flow test -o jsonl examples/`,
 	cmd.Flags().Uint64("seed", 0,
 		"replay exactly one schedule, the seed a reported divergence names, instead of searching")
 
+	cmd.Flags().Int("fuzz", 0,
+		"also run every case over N generated sets of inputs drawn from the workflow's declared "+
+			"`inputs:` (types, `values:`, length bounds, `must:`), and fail when a generated run "+
+			"errors with an Internal or Expression failure or breaks the case's `invariants:`; "+
+			"0, the default, runs the authored cases only")
+	cmd.Flags().Uint64("fuzz-seed", 0,
+		"replay exactly one generated case, the seed a reported finding names, instead of searching")
+
 	// The step debugger (#928 slice 1). Interactive by nature, so it is
 	// refused wherever "interactive" is not true of the run: a machine-format
 	// run whose document a prompt would corrupt, a seeded exploration that
@@ -291,6 +299,10 @@ func runTest(cmd *cobra.Command, paths []string) error {
 	if err != nil {
 		return err
 	}
+	fuzzOpts, err := fuzzOptions(cmd, budget)
+	if err != nil {
+		return err
+	}
 
 	// The filter (#929 slice 1). Refusals before anything runs, both fail
 	// closed: a pattern that does not compile selects nothing knowable, and
@@ -338,6 +350,7 @@ func runTest(cmd *cobra.Command, paths []string) error {
 			{"--watch", cmd.Flags().Changed("watch")},
 			{"--fail-fast", failFast},
 			{"--seeds", cmd.Flags().Changed("seeds") || cmd.Flags().Changed("seed")},
+			{"--fuzz", cmd.Flags().Changed("fuzz") || cmd.Flags().Changed("fuzz-seed")},
 			{"--coverage-required", coverageRequired},
 		} {
 			if other.set {
@@ -401,6 +414,7 @@ func runTest(cmd *cobra.Command, paths []string) error {
 		// command cannot disagree about what the document carries (#931).
 		run := flowtest.RunPath(cmd.Context(), path, flowtest.RunOptions{
 			Budget:      budget,
+			Fuzz:        fuzzOpts,
 			Select:      selectCase,
 			CaseTimeout: timeout,
 			FailFast:    failFast,
@@ -435,6 +449,7 @@ func runTest(cmd *cobra.Command, paths []string) error {
 			printTestReport(surface.Out, surface.Theme, report, run.Transcripts, failOnWarning, verbose)
 			printCoverage(surface.Out, surface.Theme, report, coverage, coverageRequired)
 			printSchedules(surface.Out, surface.Theme, report, schedules)
+			printFuzz(surface.Out, surface.Theme, report)
 			printFiltered(surface.Out, surface.Theme, report, runPattern, run.Filtered)
 			printSkipped(surface.Out, surface.Theme, report, run.Skipped)
 		} else {
@@ -448,6 +463,7 @@ func runTest(cmd *cobra.Command, paths []string) error {
 			// issue #931), attached by flowtest's runSuite; this prose is the
 			// person-facing half, not the only copy.
 			printSchedules(surface.Err, surface.ErrTheme, report, schedules)
+			printFuzz(surface.Err, surface.ErrTheme, report)
 			// The filter's honesty line goes to stderr for the same reason:
 			// the cases the document carries are only the selected ones, and
 			// somebody reading the log must be able to see that the file held
@@ -723,7 +739,85 @@ func (r testFileResult) failed(coverageRequired, failOnWarning bool) bool {
 	// A divergence needs no opt-in beyond the `--seeds` that found it: asking
 	// for the schedule space to be explored is already the opt-in, and a case
 	// whose observables move with the schedule is a finding, not a statistic.
+	if r.report.GetFuzz().GetFinding() != nil || r.fuzzJudgedNothing() {
+		return true
+	}
+
 	return r.schedules != nil && r.schedules.Divergence != nil
+}
+
+// fuzzJudgedNothing reports a fuzz run that generated cases and judged none:
+// every one errored before the run (an input the stubs have no answer for, a
+// task the case never stubbed). That proves nothing about the workflow, and a
+// leg that did not verify is not green.
+func (r testFileResult) fuzzJudgedNothing() bool {
+	fuzz := r.report.GetFuzz()
+
+	return fuzz != nil && fuzz.GetRuns() == 0 && fuzz.GetInconclusive() > 0 && fuzz.GetFinding() == nil
+}
+
+// fuzzOptions reads `--fuzz` and `--fuzz-seed`. Fuzzing is the input dimension
+// and `--seeds` the schedule dimension; a run explores one, so the pair is
+// refused rather than multiplied.
+func fuzzOptions(cmd *cobra.Command, budget dst.Budget) (flowtest.FuzzOptions, error) {
+	runs, _ := cmd.Flags().GetInt("fuzz")
+	seed, _ := cmd.Flags().GetUint64("fuzz-seed")
+	pinned := cmd.Flags().Changed("fuzz-seed")
+	switch {
+	case runs < 0:
+		return flowtest.FuzzOptions{}, fmt.Errorf("--fuzz %d is not a count of generated cases; write a non-negative integer", runs)
+	case runs > flowtest.MaxFuzzRuns:
+		return flowtest.FuzzOptions{}, fmt.Errorf("--fuzz %d is above the %d this command will generate per case in one run; "+
+			"every generated case runs the whole case again", runs, flowtest.MaxFuzzRuns)
+	case (runs > 0 || pinned) && cmd.Flags().Changed("debug"):
+		return flowtest.FuzzOptions{}, errors.New("--fuzz cannot be combined with --debug: a debug session stops one case, " +
+			"and fuzzing runs many")
+	case pinned && runs > 0:
+		return flowtest.FuzzOptions{}, errors.New("--fuzz-seed replays one generated case and --fuzz searches many; pass one or the other")
+	case (runs > 0 || pinned) && (budget.Schedules > 0 || budget.Pinned != nil):
+		return flowtest.FuzzOptions{}, errors.New("--fuzz explores generated inputs and --seeds explores schedules; " +
+			"run them separately so a finding names one cause")
+	}
+
+	return flowtest.FuzzOptions{Runs: runs, Seed: seed, Pinned: pinned}, nil
+}
+
+// printFuzz renders what input fuzzing found for one file: nothing when nobody
+// asked, one summary line when every generated case held, and the finding with
+// the command that replays it and the case to paste when one did not.
+func printFuzz(out io.Writer, theme ui.Theme, report *v1.TestReport) {
+	fuzz := report.GetFuzz()
+	if fuzz == nil {
+		return
+	}
+	file := theme.Muted.Render(report.GetFile())
+	summary := fmt.Sprintf("%s generated and judged over %s", count(int(fuzz.GetRuns()), "case", "cases"),
+		count(int(fuzz.GetCases()), "authored case", "authored cases"))
+	if n := fuzz.GetInconclusive(); n > 0 {
+		summary += "; " + theme.Warning.Render(fmt.Sprintf("%s could not be judged (refused at submit, or errored before the run)",
+			count(int(n), "generated case", "generated cases")))
+	}
+	switch {
+	case fuzz.GetRuns() == 0 && fuzz.GetInconclusive() > 0:
+		summary += "; " + theme.Danger.Render("nothing was judged: every generated case errored before the run")
+	case fuzz.GetRuns() == 0 && fuzz.GetFinding() == nil:
+		summary += "; " + theme.Warning.Render("nothing was fuzzed: no case declares an input of a type that is generated")
+	}
+	fmt.Fprintf(out, "%s  %s\n", file, summary)
+	for _, skipped := range fuzz.GetSkippedInputs() {
+		fmt.Fprintf(out, "       not generated — %s\n", skipped)
+	}
+
+	finding := fuzz.GetFinding()
+	if finding == nil {
+		return
+	}
+	fmt.Fprintf(out, "%s  %s: %s\n", file, finding.GetCase(), theme.Danger.Render(
+		fmt.Sprintf("generated inputs broke it (fuzz seed %d)", finding.GetSeed())))
+	fmt.Fprintf(out, "%s", indentRendering(finding.GetFailure()))
+	fmt.Fprintf(out, "\n       REPLAY THIS EXACT CASE:\n\n           flow test --fuzz-seed %d -- %s\n\n",
+		finding.GetSeed(), shellArg(report.GetFile()))
+	fmt.Fprintf(out, "       OR PASTE IT AS A CASE (replace the case's `inputs:`):\n\n%s", indentRendering(finding.GetInputs()))
 }
 
 // printSchedules renders what seeded schedule exploration found for one file:

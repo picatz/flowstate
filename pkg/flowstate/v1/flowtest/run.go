@@ -70,6 +70,11 @@ type RunOptions struct {
 	// written-order pass (issue #800). The zero budget explores nothing.
 	Budget dst.Budget
 
+	// Fuzz additionally runs each case over generated inputs ([FuzzOptions]).
+	// Separate from Budget: schedules are the engine's choices, fuzzing is the
+	// caller's, and a run does one or the other.
+	Fuzz FuzzOptions
+
 	// Select filters which cases run, by name; nil runs every case. A case
 	// filtered out is not run, not reported, and counted in
 	// [RunResult.Filtered] — the number a caller's own output must surface,
@@ -307,6 +312,7 @@ func runSuite(ctx context.Context, file *File, opts RunOptions, loaderFor func(*
 		})
 		observeUnrun(test)
 	}
+	fuzz := newFuzzer(opts.Fuzz)
 	var transcripts [][]TranscriptLine
 	transcriptBudget := newSuiteTranscriptBudget()
 	warningBudget := newSuiteWarningBudget()
@@ -409,6 +415,10 @@ func runSuite(ctx context.Context, file *File, opts RunOptions, loaderFor func(*
 				return result, spec, transcript, account, shown, err
 			})
 		cancel()
+		if spec != nil && test.Trigger == nil && result.GetError() == "" && ctx.Err() == nil {
+			fuzz.run(ctx, &test, spec, l.deliveryPath, l.load,
+				fileVars{values: file.Vars, withheld: file.varsWithheld}, caseTimeout)
+		}
 		// The names a report prints are the file's own words, which an author
 		// can spell a withheld value as readily as a step id (#2229). The
 		// run's renderers take a value out under its posture; a step id in a
@@ -472,6 +482,7 @@ func runSuite(ctx context.Context, file *File, opts RunOptions, loaderFor func(*
 	if out.Schedules != nil {
 		report.Schedules = out.Schedules.Report()
 	}
+	report.Fuzz = fuzz.report()
 	return out
 }
 
