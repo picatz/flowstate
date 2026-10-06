@@ -184,26 +184,33 @@ func (f *fuzzer) run(ctx context.Context, test *Test, spec *v1.Workflow, deliver
 			continue
 		}
 
-		shrunk := shrinkInputs(test.Inputs, inputs, sensitive, func(candidate map[string]any) (bool, bool) {
-			again, _, verdict := judge(candidate)
+		// The last violating probe is the one the shrink ended on, since the
+		// search only moves to a probe that violated: its failure text and
+		// redaction state are the ones to report, with no replay to spend.
+		var lastProblems []string
+		lastShown := shown
+		shrunk := shrinkInputs(test.Inputs, inputs, sensitive, func(candidate map[string]any) (violated, ok, conclusive bool) {
+			again, shownAgain, verdict := judge(candidate)
+			switch {
+			case verdict == judgeCancelled:
+				return false, false, false
+			case len(again) > 0:
+				lastProblems, lastShown = again, shownAgain
 
-			return len(again) > 0, verdict != judgeCancelled
-		})
-		if shrunk.Reproduced {
-			// The finding names the smaller input set's failure: the probe
-			// that reproduced it is the last violating run, and its text is
-			// what the author will see when they paste the overlay.
-			if final, shownFinal, v := judge(shrunk.Inputs); v == judgeJudged && len(final) > 0 {
-				problems, shown = final, shownFinal
+				return true, true, true
 			}
-			inputs = shrunk.Inputs
+
+			return false, true, verdict == judgeJudged
+		})
+		if shrunk.Reproduced && lastProblems != nil {
+			problems, shown, inputs = lastProblems, lastShown, shrunk.Inputs
 		}
 
 		f.finding = &v1.FuzzFinding{
 			Case:       redactedErrorText(test.Name, shown.sensitive),
 			Seed:       seed,
 			Inputs:     redactedErrorText(pasteableInputs(overlayOf(test.Inputs, inputs), sensitive), shown.sensitive),
-			Absent:     absentInputs(test.Inputs, inputs, sensitive),
+			Absent:     redactedNames(absentInputs(test.Inputs, inputs, sensitive), shown.sensitive),
 			Failure:    redactedErrorText(strings.Join(problems, "\n"), shown.sensitive),
 			Changed:    int32(shrunk.From),
 			ShrinkRuns: int32(shrunk.Runs),
@@ -254,14 +261,57 @@ type inputShrink struct {
 // case never supplied it). It is 1-minimal, not the smallest set there is, and
 // reproduces *a* failure, which need not be the first. Sensitive inputs are
 // never generated, so they are never among the changed ones.
-func shrinkInputs(base, generated map[string]any, sensitive map[string]bool, violates func(map[string]any) (violated, ok bool)) inputShrink {
+//
+// violates reports whether a run over exactly that input set breaks the case,
+// whether it answered at all (ok false: the suite was cancelled, and the search
+// ends), and whether it was a verdict about the workflow (conclusive false: the
+// candidate was refused at submit or errored before the run, which does not
+// reproduce the failure but does not prove the inputs it put back matter, so
+// the result is reported as not minimal). The empty set, every input put back,
+// is probed last: a failure the case's own inputs already have is not caused by
+// any generated one.
+func shrinkInputs(base, generated map[string]any, sensitive map[string]bool, violates func(map[string]any) (violated, ok, conclusive bool)) inputShrink {
 	changed := changedInputs(base, generated, sensitive)
-	r := ddmin(changed, maxInputShrinkRuns, func(subset []string) (bool, bool) {
-		return violates(withInputs(base, generated, subset))
-	})
-	out := inputShrink{Inputs: generated, From: len(changed), Runs: r.Runs, Reproduced: r.Reproduced, Minimal: r.Minimal}
-	if r.Reproduced {
-		out.Inputs = withInputs(base, generated, r.Kept)
+	unconfirmed := false
+	probe := func(names []string) (bool, bool) {
+		violated, ok, conclusive := violates(withInputs(base, generated, names))
+		if ok && !violated && !conclusive {
+			unconfirmed = true
+		}
+
+		return violated, ok
+	}
+	// One probe is kept back for the empty set.
+	r := ddmin(changed, maxInputShrinkRuns-1, probe)
+	out := inputShrink{Inputs: generated, From: len(changed), Runs: r.Runs, Reproduced: r.Reproduced}
+	if !r.Reproduced {
+		return out
+	}
+	kept, minimal := r.Kept, r.Minimal
+	if len(kept) > 0 && minimal {
+		out.Runs++
+		violated, ok := probe(nil)
+		switch {
+		case !ok:
+			minimal = false
+		case violated:
+			kept = nil
+		}
+	}
+	out.Inputs = withInputs(base, generated, kept)
+	out.Minimal = minimal && !unconfirmed
+
+	return out
+}
+
+// redactedNames withholds each name as the case's own report withholds text.
+func redactedNames(names []string, sensitive sensitiveInputs) []string {
+	if len(names) == 0 {
+		return nil
+	}
+	out := make([]string, len(names))
+	for i, name := range names {
+		out[i] = redactedErrorText(name, sensitive)
 	}
 
 	return out

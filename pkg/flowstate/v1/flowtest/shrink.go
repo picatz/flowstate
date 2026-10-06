@@ -141,7 +141,7 @@ func ddmin[T any](items []T, maxRuns int, violates func([]T) (violated, ok bool)
 
 	exhausted := false
 	probe := func(subset []T) bool {
-		if result.Runs >= maxRuns {
+		if exhausted || result.Runs >= maxRuns {
 			exhausted = true
 
 			return false

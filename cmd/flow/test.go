@@ -837,7 +837,9 @@ func printFuzz(out io.Writer, theme ui.Theme, report *v1.TestReport) {
 	fmt.Fprintf(out, "%s  %s: %s\n", file, finding.GetCase(), theme.Danger.Render(
 		fmt.Sprintf("generated inputs broke it (fuzz seed %d)", finding.GetSeed())))
 	fmt.Fprintf(out, "%s", indentRendering(finding.GetFailure()))
-	if finding.GetChanged() > 1 {
+	// One re-run that did not minimise means the replay did not reproduce
+	// and nothing was shrunk, so there is nothing to report.
+	if finding.GetChanged() > 1 && (finding.GetMinimal() || finding.GetShrinkRuns() > 1) {
 		qualifier := "no single input can be put back"
 		if !finding.GetMinimal() {
 			qualifier = "the search ran out of re-runs, so it may not be minimal"

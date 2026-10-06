@@ -59,10 +59,10 @@ func TestShrinkInputsKeepsOnlyTheInputsTheFailureNeeds(t *testing.T) {
 	generated := map[string]any{"count": int64(0), "label": "", "region": "eu", "extra": int64(7)}
 
 	probes := 0
-	shrunk := shrinkInputs(base, generated, nil, func(candidate map[string]any) (bool, bool) {
+	shrunk := shrinkInputs(base, generated, nil, func(candidate map[string]any) (bool, bool, bool) {
 		probes++
 
-		return candidate["count"] == int64(0), true
+		return candidate["count"] == int64(0), true, true
 	})
 	require.True(t, shrunk.Reproduced)
 	assert.True(t, shrunk.Minimal)
@@ -81,10 +81,10 @@ func TestShrinkInputsNamesAnInputTheRunLeftOut(t *testing.T) {
 	base := map[string]any{"count": int64(4), "note": "x"}
 	generated := map[string]any{"count": int64(4)}
 
-	shrunk := shrinkInputs(base, generated, nil, func(candidate map[string]any) (bool, bool) {
+	shrunk := shrinkInputs(base, generated, nil, func(candidate map[string]any) (bool, bool, bool) {
 		_, has := candidate["note"]
 
-		return !has, true
+		return !has, true, true
 	})
 	require.True(t, shrunk.Reproduced)
 	assert.Equal(t, 1, shrunk.From)
@@ -113,8 +113,63 @@ func TestShrinkInputsReturnsTheInputWhenItDoesNotReproduce(t *testing.T) {
 	base := map[string]any{"count": int64(4)}
 	generated := map[string]any{"count": int64(0)}
 
-	shrunk := shrinkInputs(base, generated, nil, func(map[string]any) (bool, bool) { return false, true })
+	shrunk := shrinkInputs(base, generated, nil, func(map[string]any) (bool, bool, bool) { return false, true, true })
 	assert.False(t, shrunk.Reproduced)
 	assert.False(t, shrunk.Minimal)
 	assert.Equal(t, generated, shrunk.Inputs)
+}
+
+// A failure the case's own inputs already have is not caused by any generated
+// input: with everything put back it still fails, so the shrunk set is empty.
+func TestShrinkInputsFindsAFailureNoGeneratedInputCauses(t *testing.T) {
+	t.Parallel()
+
+	base := map[string]any{"count": int64(4)}
+	generated := map[string]any{"count": int64(0)}
+
+	shrunk := shrinkInputs(base, generated, nil, func(map[string]any) (bool, bool, bool) { return true, true, true })
+	require.True(t, shrunk.Reproduced)
+	assert.True(t, shrunk.Minimal)
+	assert.Equal(t, base, shrunk.Inputs)
+	assert.Empty(t, overlayOf(base, shrunk.Inputs))
+	assert.Equal(t, 2, shrunk.Runs, "the whole set, then the empty one")
+}
+
+// A candidate the run could not judge (refused at submit, or errored before the
+// run) does not reproduce the failure, but it does not prove the inputs it put
+// back matter either, so the result is not claimed minimal.
+func TestShrinkInputsDoesNotClaimMinimalFromAnUnjudgedProbe(t *testing.T) {
+	t.Parallel()
+
+	base := map[string]any{"a": int64(1), "b": int64(1)}
+	generated := map[string]any{"a": int64(2), "b": int64(2)}
+
+	shrunk := shrinkInputs(base, generated, nil, func(candidate map[string]any) (bool, bool, bool) {
+		both := candidate["a"] == int64(2) && candidate["b"] == int64(2)
+
+		return both, true, both // every smaller candidate is unjudged
+	})
+	require.True(t, shrunk.Reproduced)
+	assert.False(t, shrunk.Minimal)
+	assert.Equal(t, generated, shrunk.Inputs)
+}
+
+// A cancelled probe ends the search and leaves minimality unclaimed.
+func TestShrinkInputsStopsWhenAProbeIsCancelled(t *testing.T) {
+	t.Parallel()
+
+	base := map[string]any{"a": int64(1), "b": int64(1)}
+	generated := map[string]any{"a": int64(2), "b": int64(2)}
+
+	calls := 0
+	shrunk := shrinkInputs(base, generated, nil, func(map[string]any) (bool, bool, bool) {
+		calls++
+		if calls == 1 {
+			return true, true, true
+		}
+
+		return false, false, false
+	})
+	assert.False(t, shrunk.Minimal)
+	assert.Equal(t, 2, calls, "the search ends at the cancelled probe")
 }
