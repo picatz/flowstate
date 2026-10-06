@@ -425,6 +425,11 @@ var verbs = map[v1.DebugCommandVerb]string{
 	v1.DebugCommandVerb_DEBUG_COMMAND_VERB_LOG:         "log",
 	v1.DebugCommandVerb_DEBUG_COMMAND_VERB_CATCH:       "catch",
 	v1.DebugCommandVerb_DEBUG_COMMAND_VERB_DETACH:      "detach",
+
+	v1.DebugCommandVerb_DEBUG_COMMAND_VERB_EXPAND:           "expand",
+	v1.DebugCommandVerb_DEBUG_COMMAND_VERB_STATUS:           "status",
+	v1.DebugCommandVerb_DEBUG_COMMAND_VERB_BACK:             "back",
+	v1.DebugCommandVerb_DEBUG_COMMAND_VERB_REVERSE_CONTINUE: "reverse-continue",
 }
 
 // CommandProto is one command line as a wire message, reporting whether the

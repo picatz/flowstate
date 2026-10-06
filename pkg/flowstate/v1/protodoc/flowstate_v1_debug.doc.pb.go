@@ -1352,6 +1352,25 @@ func init() {
 				" unattended.\n",
 		},
 		{
+			Name: "flowstate.v1.DEBUG_COMMAND_VERB_EXPAND",
+			Leading: " Expand is `expand <expr>`: list a map's or list's children, one level, with\n" +
+				" how many the page left out.\n",
+		},
+		{
+			Name:    "flowstate.v1.DEBUG_COMMAND_VERB_STATUS",
+			Leading: " Status is `status`: where the run is, and why.\n",
+		},
+		{
+			Name: "flowstate.v1.DEBUG_COMMAND_VERB_BACK",
+			Leading: " Back is `back`: return to the previous stop, for a session that was built\n" +
+				" to be replayed from its start. One that was not answers that it cannot.\n",
+		},
+		{
+			Name: "flowstate.v1.DEBUG_COMMAND_VERB_REVERSE_CONTINUE",
+			Leading: " ReverseContinue is `reverse-continue`: return to the nearest earlier\n" +
+				" breakpoint stop, or the first, under the same condition as Back.\n",
+		},
+		{
 			Name:    "flowstate.v1.DebugSegmentKind",
 			Leading: " DebugSegmentKind is how execution entered a nested part of the program.\n",
 		},
