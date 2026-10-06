@@ -25,9 +25,7 @@ inputs:
 # identity the server attests, not a name the payload claims.
 signals:
   bid:
-    allow:
-      - claims:
-          role: vendor
+    allow: ${sender.identity.claims.role == "vendor"}
 steps:
   # The cutoff is fixed when the run begins, so a bid is on time or late by when
   # the server accepted it, not by when this workflow got round to reading it.

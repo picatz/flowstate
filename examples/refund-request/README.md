@@ -14,8 +14,8 @@ process, with a typed input.
   `reason`, an empty `lines`, or a field the type does not name is refused before
   the first step runs, with the path of what is wrong.
 - **Policy is the file's, not the caller's.** `signals:` says who may decide
-  (`team: finance`) and `distinct_from_starter: true` keeps a requester from
-  deciding their own refund. Neither is an input.
+  (`team: finance`) and a sender-differs-from-starter clause keeps a requester
+  from deciding their own refund. Neither is an input.
 - **No answer is not a yes.** The gate's `outcome` is `approved`, `declined` or
   `undecided`; only `approved` pays, and a lapsed 72 hours reads `undecided`.
 - **An optional field, read safely.** `inputs.refund.?note` is used only when

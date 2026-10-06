@@ -38,12 +38,9 @@ inputs:
 # own approver would be choosing who checks them.
 signals:
   refund-decision:
-    allow:
-      - claims:
-          team: finance
-    distinct_from_starter: true
+    allow: ${sender.identity.claims.team == "finance" && sender.identity.principal != run.identity.principal}
 # The limit belongs to the workflow, not to whoever starts it: a caller who could
-# raise it could pay any refund without a decision, and `distinct_from_starter`
+# raise it could pay any refund without a decision, and the `allow:` predicate
 # cannot check a gate that never runs.
 vars:
   auto_limit_cents: 5000
