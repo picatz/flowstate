@@ -8,7 +8,8 @@ import (
 
 // The claims a token's OAuth scopes travel in. RFC 9068 §2.2.3.1 registers
 // "scope" as a space-delimited string (RFC 6749 §3.3); several identity
-// providers instead issue "scp", a JSON array of strings.
+// providers instead issue "scp": a JSON array of strings, or, as Microsoft Entra
+// issues it, one space-delimited string.
 const (
 	scopeClaim = "scope"
 	scpClaim   = "scp"

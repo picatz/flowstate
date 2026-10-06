@@ -303,7 +303,7 @@ says plainly what it is missing.
   enum whose value names spell the scopes, and the metadata document advertises
   it as `scopes_supported`. Connect RPCs can now be restricted by the admitting
   trust-policy entry's `actions:` list, using those same spellings, and a token's
-  `scope` (RFC 9068 §2.2.3.1, space-delimited) or `scp` (array) claim can narrow
+  `scope` (RFC 9068 §2.2.3.1, space-delimited) or `scp` (array, or a space-delimited string as Microsoft Entra issues it) claim can narrow
   that list further, never widen it: the effective actions are the entry's list
   intersected with the token's scopes, and an entry with no `actions:` is
   unrestricted and ignores them. A token carrying both claims, or either in the
