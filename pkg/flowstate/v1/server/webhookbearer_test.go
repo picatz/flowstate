@@ -132,3 +132,24 @@ func TestABearerWebhookAdmitsOnlyTheSenderItsEntryVouchesFor(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, bearerDelivery(t, elsewhere, "Bearer "+bearerToken).StatusCode,
 		"a token from another tenant was admitted by this tenant's route")
 }
+
+// A deployment serving only `jwt` webhooks has no key to resolve, so it needs no
+// secret backend; one trigger signing with a key brings the requirement back.
+func TestAKeylessBearerWebhookNeedsNoSecretStore(t *testing.T) {
+	t.Parallel()
+
+	policy := trustPolicy(auth.TrustedIssuer{Name: "github-actions"})
+	trust := server.WithWebhookTrust(trustVerifier{name: "github-actions"}, policy)
+
+	receiver, err := mustNew(t, nil).NewWebhookReceiver(t.Context(), "", []*v1.Workflow{bearerWorkflow()}, nil, trust)
+	require.NoError(t, err, "a webhook with no key to resolve was refused for lacking a secret store")
+	assert.Equal(t, []string{"order-webhook/storefront"}, receiver.Routes())
+
+	signed := bearerWorkflow()
+	signed.Triggers.Webhooks[0].Verify[v1.WebhookSchemeHMACSHA256] =
+		orderWebhookWorkflow().Triggers.Webhooks[0].Verify[v1.WebhookSchemeHMACSHA256]
+
+	_, err = mustNew(t, nil).NewWebhookReceiver(t.Context(), "", []*v1.Workflow{signed}, nil, trust)
+	require.Error(t, err, "a trigger signing with a key was served with no way to resolve it")
+	assert.Contains(t, err.Error(), "secret store")
+}

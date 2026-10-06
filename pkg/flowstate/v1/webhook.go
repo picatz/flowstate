@@ -199,6 +199,21 @@ func KnownWebhookVerificationScheme(name string) bool {
 	return name == WebhookSchemeJWT || slices.Contains(webhookVerificationSchemes, name)
 }
 
+// WebhookNeedsSigningKeys reports whether any scheme a trigger declares is
+// checked with a secret key, which is whether a deployment serving it must be
+// able to resolve one. A trigger whose only scheme is [WebhookSchemeJWT] has no
+// key to resolve, and requiring a secret backend for it would make an operator
+// configure one only to leave it unused.
+func WebhookNeedsSigningKeys(trigger *WebhookTrigger) bool {
+	for scheme := range trigger.GetVerify() {
+		if scheme != WebhookSchemeJWT {
+			return true
+		}
+	}
+
+	return false
+}
+
 // WebhookJWTIssuer returns the trust policy entry name a trigger's `jwt` scheme
 // names, and whether the trigger declares the scheme at all.
 func WebhookJWTIssuer(trigger *WebhookTrigger) (string, bool) {

@@ -220,8 +220,11 @@ func replayDelivery(test *Test, deliveryPath string, workflow *v1.Workflow) (map
 	switch {
 	case len(trigger.GetVerify()) > 0 && len(missing) == 0:
 		// A bearer scheme has no key to bind, so `signature:` is what it can be
-		// told, and it states that leg alone: beside bound signing keys it cannot
-		// contradict their arithmetic, which is the case this refusal exists for.
+		// told. With every signing key bound it states the bearer leg alone, and
+		// cannot contradict their arithmetic, which is the case this refusal
+		// exists for. With none bound it declares the whole delivery, as it
+		// always has (the default branch below): a declaration, never a claim
+		// that a signature checked out.
 		if test.Trigger.Signature != "" && !bearer {
 			return nil, "", nil, fmt.Errorf("trigger %q: this case binds every key `verify:` names, so "+
 				"the verification outcome is computed by the same function the receiver runs — and it also "+

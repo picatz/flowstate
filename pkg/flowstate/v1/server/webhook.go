@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -337,8 +338,11 @@ func WithWebhookLogger(log *slog.Logger) WebhookOption {
 func (s *FlowstateServer) NewWebhookReceiver(
 	ctx context.Context, namespace string, workflows []*v1.Workflow, store *secrets.Store, opts ...WebhookOption,
 ) (*WebhookReceiver, error) {
-	if store == nil {
-		return nil, fmt.Errorf("a webhook receiver needs a secret store: every trigger's `verify:` names a " +
+	// A store is required only by a deployment that serves a trigger signing with
+	// a key. One serving nothing but `verify: {jwt: ...}` has no key to resolve,
+	// and is refused below the moment a trigger that does appears.
+	if store == nil && slices.ContainsFunc(workflows, workflowNeedsSigningKeys) {
+		return nil, fmt.Errorf("a webhook receiver needs a secret store: a trigger's `verify:` names a " +
 			"key, and a deployment that cannot resolve one cannot check a delivery")
 	}
 
@@ -355,10 +359,14 @@ func (s *FlowstateServer) NewWebhookReceiver(
 	// namespace, or an empty one under a store built with
 	// [secrets.WithRequiredNamespace], is refused here rather than resolving a key
 	// in a tenant nobody chose.
-	resolver, err := store.For(secrets.Namespace(namespace))
-	if err != nil {
-		return nil, fmt.Errorf("scoping the signing keys of the webhooks served for namespace %q: %w",
-			namespace, err)
+	var resolver secrets.Resolver
+	if store != nil {
+		var err error
+		resolver, err = store.For(secrets.Namespace(namespace))
+		if err != nil {
+			return nil, fmt.Errorf("scoping the signing keys of the webhooks served for namespace %q: %w",
+				namespace, err)
+		}
 	}
 
 	// And the run half of that same namespace, asked now rather than on the first
@@ -534,6 +542,12 @@ func (r *WebhookReceiver) checkBearerScheme(workflow string, trigger *v1.Webhook
 
 	return fmt.Errorf("workflow %q, webhook %q: `verify: {jwt: %s}` names no entry of this deployment's trust "+
 		"policy; the entries are named by `name:` in the policy file", workflow, trigger.GetName(), issuer)
+}
+
+// workflowNeedsSigningKeys reports whether any webhook a workflow declares is
+// checked with a secret key. See [v1.WebhookNeedsSigningKeys].
+func workflowNeedsSigningKeys(workflow *v1.Workflow) bool {
+	return slices.ContainsFunc(workflow.GetTriggers().GetWebhooks(), v1.WebhookNeedsSigningKeys)
 }
 
 // resolveWebhookKeys resolves every key a trigger's `verify:` names, refusing the

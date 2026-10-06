@@ -1865,7 +1865,7 @@ second input path is one `flow validate` could not check. A step *called* `event
 still legal — the name is not reserved, since inside a trigger there is no step scope
 for it to shadow — and `flow fix` knows the binding, so it will not root it.
 
-**Two keys are required, and fail closed.** `verify:` names at least one signing
+**Two keys are required, and fail closed.** `verify:` names at least one verification
 scheme (`hmac_sha256` or `stripe`, bound to a `${secret(...)}` reference, or `jwt`, bound to the name of a trust policy entry): there is
 deliberately no spelling that means "accept anything", so an unverifiable delivery is
 refused rather than allowed on the grounds that it could not be checked, and a webhook
