@@ -7,6 +7,8 @@ import (
 	"connectrpc.com/connect"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/encoding/protowire"
+	"google.golang.org/protobuf/proto"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/server"
@@ -38,8 +40,8 @@ func TestValidateAnswersWithTheSameReportTheCommandPrints(t *testing.T) {
 
 	resp, err := s.Validate(t.Context(), connect.NewRequest(&v1.ValidateRequest{
 		Files: []*v1.SourceFile{
-			{Name: "clean.yaml", Source: []byte(aValidFile)},
-			{Name: "broken.yaml", Source: []byte(strings.Replace(aValidFile, "log:", "lg:", 1))},
+			{Name: "clean.yaml", Source: aValidFile},
+			{Name: "broken.yaml", Source: strings.Replace(aValidFile, "log:", "lg:", 1)},
 		},
 	}))
 	require.NoError(t, err)
@@ -75,8 +77,8 @@ func TestAFileThatIsNotYAMLIsADiagnosticNotAnRPCError(t *testing.T) {
 
 	resp, err := s.Validate(t.Context(), connect.NewRequest(&v1.ValidateRequest{
 		Files: []*v1.SourceFile{
-			{Name: "not-yaml.yaml", Source: []byte("\t{{{")},
-			{Name: "clean.yaml", Source: []byte(aValidFile)},
+			{Name: "not-yaml.yaml", Source: "\t{{{"},
+			{Name: "clean.yaml", Source: aValidFile},
 		},
 	}))
 	require.NoError(t, err,
@@ -134,7 +136,7 @@ func TestTheHandlerEnforcesItsOwnBounds(t *testing.T) {
 
 		files := make([]*v1.SourceFile, 65)
 		for i := range files {
-			files[i] = &v1.SourceFile{Name: "f.yaml", Source: []byte(aValidFile)}
+			files[i] = &v1.SourceFile{Name: "f.yaml", Source: aValidFile}
 		}
 
 		_, err := s.Validate(t.Context(), connect.NewRequest(&v1.ValidateRequest{Files: files}))
@@ -156,12 +158,52 @@ func TestTheHandlerEnforcesItsOwnBounds(t *testing.T) {
 		t.Parallel()
 
 		_, err := s.Validate(t.Context(), connect.NewRequest(&v1.ValidateRequest{
-			Files: []*v1.SourceFile{{Name: "big.yaml", Source: make([]byte, 1<<20+1)}},
+			Files: []*v1.SourceFile{{Name: "big.yaml", Source: strings.Repeat("a", 1<<20+1)}},
 		}))
 		require.Error(t, err,
 			"a file over the schema's megabyte bound reached the parser")
 		assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 	})
+
+	t.Run("the bound counts bytes, not characters", func(t *testing.T) {
+		t.Parallel()
+
+		// 2-byte runes: 1<<19 of them is exactly the megabyte, and one more byte
+		// is over it, though both are far fewer than 1<<20 characters.
+		atBound := strings.Repeat("é", 1<<19)
+
+		_, err := s.Validate(t.Context(), connect.NewRequest(&v1.ValidateRequest{
+			Files: []*v1.SourceFile{{Name: "wide.yaml", Source: atBound}},
+		}))
+		require.NoError(t, err, "a file of exactly the bound was refused")
+
+		_, err = s.Validate(t.Context(), connect.NewRequest(&v1.ValidateRequest{
+			Files: []*v1.SourceFile{{Name: "wide.yaml", Source: atBound + "a"}},
+		}))
+		require.Error(t, err, "a file one byte over the bound, in multibyte text, was accepted")
+		assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+	})
+}
+
+// A source is text: bytes that are not UTF-8 are refused when the request is
+// read, which is the price of sending a Flowfile as plain YAML rather than as
+// its base64 (#1290).
+func TestSourceThatIsNotUTF8IsRefusedWhenTheRequestIsRead(t *testing.T) {
+	t.Parallel()
+
+	var file []byte
+	file = protowire.AppendTag(file, 1, protowire.BytesType)
+	file = protowire.AppendString(file, "bad.yaml")
+	file = protowire.AppendTag(file, 2, protowire.BytesType)
+	file = protowire.AppendBytes(file, []byte("name: \xff\xfe\n"))
+
+	var wire []byte
+	wire = protowire.AppendTag(wire, 1, protowire.BytesType)
+	wire = protowire.AppendBytes(wire, file)
+
+	err := proto.Unmarshal(wire, &v1.ValidateRequest{})
+	require.Error(t, err, "bytes that are not UTF-8 were read as a Flowfile")
+	assert.Contains(t, err.Error(), "UTF-8")
 }
 
 // TestCompileAnswersWithWhatRunTakes closes the loop review found open: an
@@ -176,7 +218,7 @@ func TestCompileAnswersWithWhatRunTakes(t *testing.T) {
 		t.Parallel()
 
 		resp, err := s.Compile(t.Context(), connect.NewRequest(&v1.CompileRequest{
-			File: &v1.SourceFile{Name: "clean.yaml", Source: []byte(aValidFile)},
+			File: &v1.SourceFile{Name: "clean.yaml", Source: aValidFile},
 		}))
 		require.NoError(t, err)
 
@@ -201,7 +243,7 @@ func TestCompileAnswersWithWhatRunTakes(t *testing.T) {
 		resp, err := s.Compile(t.Context(), connect.NewRequest(&v1.CompileRequest{
 			File: &v1.SourceFile{
 				Name:   "broken.yaml",
-				Source: []byte(strings.Replace(aValidFile, "log:", "lg:", 1)),
+				Source: strings.Replace(aValidFile, "log:", "lg:", 1),
 			},
 		}))
 		require.NoError(t, err,
@@ -223,14 +265,14 @@ func TestCompileAnswersWithWhatRunTakes(t *testing.T) {
 
 func TestCompileRejectsUnknownDeploymentCredentialTarget(t *testing.T) {
 	s := mustNew(t, nil, server.WithCredentialTargets("partner-api"))
-	source := []byte(`edition: v2026.4
+	source := `edition: v2026.4
 name: federated
 steps:
   - id: call
     http:
       url: https://api.example.com
       credential: aws-prod
-`)
+`
 	response, err := s.Compile(t.Context(), connect.NewRequest(&v1.CompileRequest{
 		File: &v1.SourceFile{Name: "workflow.yaml", Source: source},
 	}))

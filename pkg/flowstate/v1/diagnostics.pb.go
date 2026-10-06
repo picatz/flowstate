@@ -549,13 +549,17 @@ type SourceFile struct {
 	// the server resolves (nothing here opens anything), so a caller with no
 	// filesystem may say `<stdin>` or a request id and still get a readable report.
 	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
-	// Source is the file's bytes.
+	// Source is the file's text: the Flowfile as written, plain YAML, the same
+	// spelling every other authoring surface takes (`flowstate_run_local`, `flowstate_test`,
+	// `flowstate_debug`). It is a string rather than bytes so that a JSON caller, an
+	// agent among them, sends the document itself rather than its base64 (#1290);
+	// a Flowfile is UTF-8, and protobuf refuses a string that is not.
 	//
 	// Bounded at the same megabyte the offline parser bounds a Flowfile at, and for
 	// the same reason: this is input an outside party chooses, and the resource it
 	// spends is memory in the parser. A caller sending more is refused by
 	// protovalidate before anything reads it.
-	Source        []byte `protobuf:"bytes,2,opt,name=source,proto3" json:"source,omitempty"`
+	Source        string `protobuf:"bytes,2,opt,name=source,proto3" json:"source,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -597,11 +601,11 @@ func (x *SourceFile) GetName() string {
 	return ""
 }
 
-func (x *SourceFile) GetSource() []byte {
+func (x *SourceFile) GetSource() string {
 	if x != nil {
 		return x.Source
 	}
-	return nil
+	return ""
 }
 
 var File_flowstate_v1_diagnostics_proto protoreflect.FileDescriptor
@@ -643,7 +647,7 @@ const file_flowstate_v1_diagnostics_proto_rawDesc = "" +
 	"SourceFile\x12\x1e\n" +
 	"\x04name\x18\x01 \x01(\tB\n" +
 	"\xbaH\ar\x05\x10\x01\x18\x80\x04R\x04name\x12!\n" +
-	"\x06source\x18\x02 \x01(\fB\t\xbaH\x06z\x04\x18\x80\x80@R\x06sourceB\xaf\x01\n" +
+	"\x06source\x18\x02 \x01(\tB\t\xbaH\x06r\x04(\x80\x80@R\x06sourceB\xaf\x01\n" +
 	"\x10com.flowstate.v1B\x10DiagnosticsProtoP\x01Z8github.com/picatz/flowstate/pkg/flowstate/v1;flowstatev1\xa2\x02\x03FXX\xaa\x02\fFlowstate.V1\xca\x02\fFlowstate\\V1\xe2\x02\x18Flowstate\\V1\\GPBMetadata\xea\x02\rFlowstate::V1b\x06proto3"
 
 var (

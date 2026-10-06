@@ -62,7 +62,7 @@ func (s *FlowstateServer) Validate(
 	reports := make([]*v1.DiagnosticReport, 0, len(req.Msg.GetFiles()))
 
 	for _, file := range req.Msg.GetFiles() {
-		diagnostics, err := flowfile.ValidateSource(file.GetSource())
+		diagnostics, err := flowfile.ValidateSource([]byte(file.GetSource()))
 		if err != nil {
 			var parsed flowfile.Diagnostics
 			if !errors.As(err, &parsed) {
@@ -76,7 +76,7 @@ func (s *FlowstateServer) Validate(
 			diagnostics = parsed
 		}
 		if len(diagnostics) == 0 && s.credentialTargetsConfigured {
-			workflow, _, parseErr := flowfile.Parse(file.GetSource())
+			workflow, _, parseErr := flowfile.Parse([]byte(file.GetSource()))
 			if parseErr == nil {
 				if targetErr := v1.ValidateCredentialTargets(workflow, s.credentialTargets); targetErr != nil {
 					diagnostics = append(diagnostics, flowfile.Diagnostic{Message: targetErr.Error()})
@@ -113,7 +113,7 @@ func (s *FlowstateServer) Compile(
 	// Parse is the whole of the CLI's own compiler, which is the point: the
 	// specification this returns is byte-for-byte what `flow run` would submit
 	// for the same file, because it is the same function.
-	workflow, _, err := flowfile.Parse(file.GetSource())
+	workflow, _, err := flowfile.Parse([]byte(file.GetSource()))
 	if err != nil {
 		var diagnostics flowfile.Diagnostics
 		if !errors.As(err, &diagnostics) {
@@ -130,7 +130,7 @@ func (s *FlowstateServer) Compile(
 	// and a file with diagnostics answers with them and no specification. A
 	// specification handed out beside a list of its problems would be an
 	// invitation to run it anyway.
-	diagnostics, err := flowfile.ValidateSource(file.GetSource())
+	diagnostics, err := flowfile.ValidateSource([]byte(file.GetSource()))
 	if err != nil {
 		var parsed flowfile.Diagnostics
 		if !errors.As(err, &parsed) {

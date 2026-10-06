@@ -1007,7 +1007,7 @@ func init() {
 		{
 			Name: "flowstate.v1.CompileRequest.file",
 			Leading: " File is the Flowfile to compile: a `name` used in diagnostics and its\n" +
-				" `source` bytes, at most 1 MiB (base64 in JSON).\n",
+				" `source` text, plain YAML, at most 1 MiB.\n",
 		},
 		{
 			Name:    "flowstate.v1.CompileResponse",
@@ -1364,7 +1364,7 @@ func init() {
 				"\n" +
 				" The same checks and the same [ValidationReport] as `flow validate`: one\n" +
 				" entry per file, clean files included. Send 1 to 64 files; each file's\n" +
-				" `source` is its bytes, at most 1 MiB, base64-encoded in JSON. It reads,\n" +
+				" `source` is its text, plain YAML, at most 1 MiB. It reads,\n" +
 				" writes and starts nothing, so it is safe to call repeatedly while editing.\n",
 		},
 		{
@@ -1372,8 +1372,8 @@ func init() {
 			Leading: " Compile turns one Flowfile into the workflow specification that [Run]\n" +
 				" takes, executing nothing.\n" +
 				"\n" +
-				" `file.source` is the Flowfile's bytes, at most 1 MiB, base64-encoded in\n" +
-				" JSON. A file that does not compile is not an RPC error: the answer carries\n" +
+				" `file.source` is the Flowfile's text, plain YAML, at most 1 MiB. A file\n" +
+				" that does not compile is not an RPC error: the answer carries\n" +
 				" its diagnostics in `report` and no `workflow`. On success, pass `workflow`\n" +
 				" unchanged to [Run] or [CreateSchedule]. The same compiler as the CLI.\n",
 		},
