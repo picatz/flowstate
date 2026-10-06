@@ -17,16 +17,19 @@ seen a Flowfile; [Get started](GETTING_STARTED.md) is the quickest way to see on
 ```mermaid
 flowchart LR
   subgraph author["Authoring"]
-    File["Flowfile<br/>YAML + CEL"]
+    File["<b>Flowfile</b><br/>YAML + CEL"]
     Tools["flow validate · test · lsp · mcp"]
   end
-  Spec[["Workflow specification<br/>flowstate.v1.Workflow"]]
+
+  Spec["<b>Workflow specification</b><br/>flowstate.v1.Workflow"]
+
   subgraph run["Execution"]
     Local["local driver<br/>flow run local · flow test"]
     Server["API server<br/>flow server"]
-    Temporal[("Temporal")]
+    Temporal[("<b>Temporal</b><br/>durable history")]
     Worker["worker<br/>flow worker"]
   end
+
   Tasks["tasks<br/>built-ins + plugins"]
   Policy["identity · policy · secrets"]
 
@@ -38,11 +41,21 @@ flowchart LR
   Temporal <--> Worker
   Tasks --> Local
   Tasks --> Worker
-  Policy -. governs .-> Server
-  Policy -. governs .-> Worker
+  Policy -.-> |governs| Server
+  Policy -.-> |governs| Worker
 
-  classDef contract stroke-width:2px;
-  class Spec contract;
+  classDef authoring fill:#DDF4FF,stroke:#0969DA,color:#1F2328
+  classDef contract fill:#FFF1C2,stroke:#9A6700,stroke-width:3px,color:#1F2328
+  classDef runtime fill:#DAFBE1,stroke:#1A7F37,color:#1F2328
+  classDef durable fill:#FBEFFF,stroke:#8250DF,color:#1F2328
+  classDef govern fill:#FFEBE9,stroke:#CF222E,color:#1F2328
+  classDef neutral fill:#F6F8FA,stroke:#57606A,color:#1F2328
+  class File,Tools authoring
+  class Spec contract
+  class Local,Server,Worker runtime
+  class Temporal durable
+  class Policy govern
+  class Tasks neutral
 ```
 
 - **A Flowfile** is the workflow as you write it: YAML for structure, and
