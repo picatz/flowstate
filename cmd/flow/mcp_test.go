@@ -1513,7 +1513,7 @@ func TestRunLocalFlagsMirrorRunLocal(t *testing.T) {
 		"egress-policy",
 		"secret-env", "secret-dir", "secret-env-namespace",
 		"secret-dir-namespaced", "secret-require-namespace",
-		"as-subject", "as-issuer", "as-namespace", "as-deployment", "as-claim",
+		"as-subject", "as-issuer", "as-kind", "as-namespace", "as-deployment", "as-claim",
 		"auth-policy", "identity-key",
 	}
 
