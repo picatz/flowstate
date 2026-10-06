@@ -80,6 +80,16 @@ func (r *WebhookReceiver) awaitRun(ctx context.Context, route *webhookRoute, acc
 		}, spec)
 	}
 
+	// Only an error that says the run itself ended is a failure of the run. A
+	// transport error, a decode error or a closed connection says nothing about
+	// the run, and reporting it as one would tell a sender a healthy run failed.
+	if !runEnded(waitErr) {
+		r.log.WarnContext(ctx, "a waiting delivery could not read the run's result; answering it as running",
+			"workflow", route.workflow.GetName(), "webhook", route.trigger.GetName(), "error", waitErr)
+
+		return running
+	}
+
 	// The failure sentence is the one `Get` reports, from the same function, so
 	// the two surfaces cannot word one failure two ways. Its kind is dropped:
 	// this surface carries the sentence and nothing else.
@@ -91,6 +101,16 @@ func (r *WebhookReceiver) awaitRun(ctx context.Context, route *webhookRoute, acc
 		Failure: failure.GetMessage(),
 		Inputs:  inputs,
 	}, spec)
+}
+
+// runEnded reports whether an error from waiting on a run says the run itself
+// ended without an answer: the SDK wraps failed, canceled, terminated and
+// timed-out closes in a [temporal.WorkflowExecutionError], and nothing else is
+// a statement about the run.
+func runEnded(err error) bool {
+	var ended *temporal.WorkflowExecutionError
+
+	return errors.As(err, &ended)
 }
 
 // terminalStatus names how a run that did not complete ended, from the error
