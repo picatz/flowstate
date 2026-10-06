@@ -1485,12 +1485,13 @@ Local debugging needs no policy. See
 A Flowfile never names an identity provider, a key, or a trust relationship. It
 reads who is acting and says what a step may use; the deployment decides who is
 believed and where assertions may go. Trust runs in two directions, and each is
-configured in the one trust policy (`flow server --auth-policy`), not in a
-Flowfile.
+configured in the one trust policy, not in a Flowfile. Pass the same policy
+(`--auth-policy`) to `flow server`, which authenticates callers, and to
+`flow worker`, which builds the broker that steps use for `federation:`.
 
 | Direction | The deployment configures | A Flowfile sees |
 | --- | --- | --- |
-| **Inbound**: who may reach Flowstate | `issuers:`, each an `oidc` or `mtls` entry with `audiences`, claim rules, and a tenant (fixed, or read from `namespace_claim`) | `run.identity` and `sender.identity`, each with `principal`, `subject`, `issuer`, `namespace`, `claims`. [Who may act](#who-may-act-on-a-run) |
+| **Inbound**: who may reach Flowstate | `issuers:`, each `kind: oidc` (the default) or `kind: mtls`. An `oidc` entry takes `audiences`, claim rules, and a tenant fixed or read from `namespace_claim`. An `mtls` entry takes `client_ca_file` and `subject_from` and a fixed tenant, and refuses `audiences` and `namespace_claim` | `run.identity` and `sender.identity`, each with `principal`, `subject`, `issuer`, `namespace`, `claims`. [Who may act](#who-may-act-on-a-run) |
 | **Outbound**: what a workload may become | `federation:` with `targets:` (`token_exchange`, `client_credentials`, `gcp`, `aws`, `assertion`) and `allow`/`deny` rules over `target` and `workload` | `credential:` on a task such as `http`. [Secrets and credentials](SECRETS.md#short-lived-credentials-instead-of-stored-ones) |
 
 Three rules hold in both directions:
@@ -1504,9 +1505,11 @@ Three rules hold in both directions:
 - **Credentials and tokens never enter a run's history.** A step names a
   `credential:` or `${secret(...)}`; the worker resolves it where it is used.
 
-A webhook delivery is authenticated by its `verify:` signature rather than by an
-identity, so it has no `sender.identity` to authorize on yet. How workloads, people, and agents are
-federated, and what is built and what is not, is in
+A webhook delivery holds no Flowstate credential, so its `sender.identity` names
+the trigger that admitted it, `flowstate://webhook#<workflow>/<webhook>`, and a
+`signals:` policy can match it. The identity of whoever holds the signing key is
+not carried. How workloads, people, and agents are federated, and what is built
+and what is not, is in
 [Workload identity federation](WORKLOAD_IDENTITY_FEDERATION.md); authorizing an
 agent over HTTP is in [MCP authorization](MCP_AUTHORIZATION.md).
 
