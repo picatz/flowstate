@@ -128,6 +128,11 @@ type transcriptEvent struct {
 	stubOrdinal   int
 	stubStep      string
 	stubInherited bool
+
+	// delay and fault are what an eventFaultDelayed says: how long the
+	// invocation was held, and the `faults:` entry that held it.
+	delay time.Duration
+	fault int
 }
 
 type transcriptEventKind int
@@ -140,6 +145,7 @@ const (
 	eventSignalRefused
 	eventStubAnswered
 	eventStubUnmatched
+	eventFaultDelayed
 )
 
 // runRecorderKey carries the recorder to the two harness-side recording
@@ -368,6 +374,14 @@ func (r *runRecorder) stubAnswered(task string, ordinal int, stubStep, servingSt
 	})
 }
 
+// faultDelayed records that an invocation was held on the virtual clock by a
+// `faults:` entry's `delay:`, at the moment the wait began, so the lines after it
+// carry the time it cost. servingStep is "" for a compensation, which is then
+// labelled by its task.
+func (r *runRecorder) faultDelayed(task, servingStep string, delay time.Duration, fault int) {
+	r.record(transcriptEvent{kind: eventFaultDelayed, task: task, step: servingStep, delay: delay, fault: fault})
+}
+
 // stubUnmatched records that an invocation ended with no matcher answering —
 // the drained/unmatched fall-through. Its whole job is to clear a stale
 // attribution (Codex, #1052): a retried step whose earlier attempt a stub
@@ -454,6 +468,10 @@ func (r *runRecorder) render() []TranscriptLine {
 		case eventStubUnmatched:
 			delete(pendingStub, e.step)
 
+		case eventFaultDelayed:
+			lines = append(lines, transcriptLine(e.at, width, withheldName(transcriptLabel(e), sensitive),
+				fmt.Sprintf("delayed %s by faults[%d]", shortDuration(e.delay), e.fault), ToneInfo))
+
 		case eventStepFinished:
 			text, tone := stepOutcomeText(e, sensitive, switches)
 			if stub, ok := pendingStub[e.step]; ok {
@@ -527,7 +545,7 @@ func withheldName(name string, sensitive sensitiveInputs) string {
 
 // transcriptLabel is what an event puts in the step column.
 func transcriptLabel(e transcriptEvent) string {
-	if e.kind == eventStubAnswered && e.step == "" {
+	if (e.kind == eventStubAnswered || e.kind == eventFaultDelayed) && e.step == "" {
 		return e.task
 	}
 	return e.step

@@ -24,6 +24,11 @@ const MaxFaultsPerTest = 32
 // a stub that always fails, which `stubs:` already says without a coin flip.
 const maxFaultAtMost = 100
 
+// maxFaultDelay bounds [Fault.Delay]. The delay is virtual, so it costs no wall
+// time, but a bound still keeps a typo (`delay: 1000000h`) from walking the
+// run's clock past the years a `sleep:` or a signal script can express.
+const maxFaultDelay = 24 * time.Hour
+
 // defaultFaultRate is the chance a matching invocation fails when a fault
 // states no `rate:`: even odds, so a few seeds reach both the failed and the
 // untouched path.
@@ -64,14 +69,30 @@ type Fault struct {
 	// Signal; it is the one effect a signal fault has so far.
 	Drop bool `yaml:"drop,omitempty"`
 
+	// Delay makes the invocation slow: it parks on the run's virtual clock for
+	// this long, "15s" or "2m", before anything else happens. Where Fails says
+	// the call failed, Delay says it answered late, which is how a step's
+	// `timeout:` and `total_timeout:` meet a slow dependency under `flow test`:
+	// those bounds are measured on the same clock, so a delay past one ends the
+	// attempt as a Timeout and retry and tolerance take it from there.
+	//
+	// Alone, a delay slows the call and lets the stubs answer it; with `fails:`
+	// the call fails after the wait. It is the effect of a task or step fault
+	// only, parsed by [time.ParseDuration], positive and at most
+	// [maxFaultDelay]. The duration is fixed, so a seed decides which
+	// invocations are slow and never how slow, which is what lets a pinned
+	// fault replay it exactly.
+	Delay string `yaml:"delay,omitempty"`
+
 	// Fails is the injected failure. Its kind defaults to Upstream, the
 	// ordinary transient one, and must be a kind a task can honestly report:
 	// Internal and Expression describe a bug in the engine or the workflow, not
 	// a fault in the world, and an injected one would make the invariant that
-	// watches for them unfalsifiable.
+	// watches for them unfalsifiable. Absent beside a Delay, the fault only
+	// delays.
 	Fails *StubFailure `yaml:"fails,omitempty"`
 
-	// Rate is the chance, in (0, 1], that a matching invocation fails.
+	// Rate is the chance, in (0, 1], that a matching invocation fires.
 	// Absent means [defaultFaultRate]; a pointer because zero is not a rate a
 	// fault can usefully have, and silently reading it as the default would
 	// say something the author did not write.
@@ -110,6 +131,18 @@ func (f *Fault) limit() int {
 	return *f.AtMost
 }
 
+// delay is the fault's parsed delay, zero for none. [checkFaultShape] has
+// already refused one that does not parse.
+func (f *Fault) delay() time.Duration {
+	d, _ := time.ParseDuration(f.Delay)
+
+	return max(d, 0)
+}
+
+// fails reports whether the fault ends the invocation in a failure: a fault with
+// no delay always does, and one with a delay does only when it says `fails:`.
+func (f *Fault) fails() bool { return f.Delay == "" || f.Fails != nil }
+
 // kind is the failure's error kind, defaulted the way a stub's `fails:` is.
 func (f *Fault) kind() v1.ErrorKind {
 	if f.Fails == nil || f.Fails.Kind == "" {
@@ -135,10 +168,21 @@ func checkFaultShape(i int, f *Fault) error {
 	switch {
 	case f.Signal != "" && !f.Drop:
 		return fmt.Errorf("%s: a `signal:` fault says what happens to the delivery; write `drop: true`", where)
+	case f.Signal != "" && f.Delay != "":
+		return fmt.Errorf("%s: `delay:` slows a task or step invocation; a signal fault loses the delivery with `drop: true`", where)
 	case f.Signal != "" && f.Fails != nil:
 		return fmt.Errorf("%s: `fails:` is the failure of a task, and a signal fault loses the delivery instead; use `drop: true` alone", where)
 	case f.Signal == "" && f.Drop:
 		return fmt.Errorf("%s: `drop:` loses a signal's delivery, so it goes with `signal:`", where)
+	}
+	if f.Delay != "" {
+		d, err := time.ParseDuration(f.Delay)
+		switch {
+		case err != nil:
+			return fmt.Errorf("%s: delay %q is not a duration like \"15s\" or \"2m\"", where, f.Delay)
+		case d <= 0 || d > maxFaultDelay:
+			return fmt.Errorf("%s: delay %s is outside (0, %s]; a delay that waits for nothing tests nothing", where, d, maxFaultDelay)
+		}
 	}
 	if f.Fails != nil && f.Fails.Kind != "" {
 		kind, ok := v1.ParseErrorKind(f.Fails.Kind)
@@ -323,15 +367,31 @@ func contextWithFaultPlan(ctx context.Context, p *faultPlan) context.Context {
 	return context.WithValue(ctx, faultPlanKey{}, p)
 }
 
-// attempt consults the plan for one invocation of task, and returns the error
-// to fail it with, or nil to let the stubs answer. It records the invocation
-// as one the fault was eligible for whether or not it fires, which is how a
-// fault no invocation ever reached is told from one that merely drew
+// faultAnswer is what the plan decided for one invocation: how long to hold it
+// on the virtual clock, and the failure to end it with, if any. The zero value
+// lets the stubs answer at once.
+type faultAnswer struct {
+	// delay is the total virtual wait of every delay fault that fired.
+	delay time.Duration
+	// delayedBy is the first delay fault that fired, which a transcript names.
+	delayedBy int
+	err       error
+}
+
+// attempt consults the plan for one invocation of task. It records the
+// invocation as one the fault was eligible for whether or not it fires, which
+// is how a fault no invocation ever reached is told from one that merely drew
 // "no" ([faultPlan.unreached]).
+//
+// Every fault that fires and only delays adds its wait and lets the next one
+// decide; the first that fails ends the consultation, carrying the waits
+// before it and its own, so a slow failure is slow before it fails. A failing
+// fault answers instead of the stubs, which then spend none of their `times:`
+// budgets.
 //
 // Under a scheduler that is not a [v1.FaultChooser], which is the written-order
 // run, nothing is drawn; a pinned fault ([Fault.On]) fires regardless.
-func (p *faultPlan) attempt(ctx context.Context, task string) error {
+func (p *faultPlan) attempt(ctx context.Context, task string) faultAnswer {
 	ref, _ := v1.TaskStepRefFromContext(ctx)
 
 	p.mu.Lock()
@@ -351,12 +411,23 @@ func (p *faultPlan) attempt(ctx context.Context, task string) error {
 		p.seen[i]++
 		matches = append(matches, i)
 	}
+
+	var answer faultAnswer
 	for _, i := range matches {
 		if !p.decide(ctx, i) {
 			continue
 		}
 		p.record(i, p.seen[i])
 		f := &p.faults[i]
+		if d := f.delay(); d > 0 {
+			if answer.delay == 0 {
+				answer.delayedBy = i
+			}
+			answer.delay += d
+		}
+		if !f.fails() {
+			continue
+		}
 		message := ""
 		if f.Fails != nil {
 			message = f.Fails.Message
@@ -364,11 +435,12 @@ func (p *faultPlan) attempt(ctx context.Context, task string) error {
 		if message == "" {
 			message = fmt.Sprintf("injected fault faults[%d]", i)
 		}
+		answer.err = v1.NewTaskError(task, f.kind(), errors.New(message))
 
-		return v1.NewTaskError(task, f.kind(), errors.New(message))
+		return answer
 	}
 
-	return nil
+	return answer
 }
 
 // decide reports whether fault i, which this invocation or delivery matched

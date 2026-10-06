@@ -419,6 +419,26 @@ fault takes no `rate:` or `at_most:`, and a script whose invocation the run no
 longer makes fails as drifted rather than passing for a fault that never
 happened.
 
+A fault can make an invocation late instead of broken. `delay:` holds a task or
+step invocation on the virtual clock for a fixed duration (`15s`, `2m`, positive
+and at most 24h) before the stubs answer, with no wall time spent:
+
+```yaml
+  faults:
+    - step: lookup
+      delay: 15s          # alone, the call is slow and then answers as stubbed
+      at_most: 2          # a seed decides which calls are slow, never how slow
+```
+
+The step's `timeout:` and `total_timeout:` are measured on the same clock, so a
+delay past one ends the attempt as a `Timeout` at the bound, and `retry:` and
+`continue_on_error:` take it from there; a delay under the bound only moves
+the answer later. With `fails:` beside it the call fails after the wait. The
+account says `delayed 15s by faults[0]` at the moment the wait began, and a
+pinned script printed for a violation keeps the `delay:`. A delay is not a
+signal-fault effect, and a randomly drawn duration is not offered: a seed picking
+how long needs a pin that carries the drawn value.
+
 A fault answers before the stubs and spends none of their `times:`. `fails.kind`
 is any error kind a task reports except `Internal` and `Expression`, which are
 defects, and `RunTimeout`, which only a whole run can have. Rows of a table inherit the entry's `faults:` and
@@ -445,8 +465,8 @@ starts, so a seed loses the same deliveries however the clock orders them, and
 a dropped one never reaches the signal policy, so it is neither delivered nor
 denied; it is named in `run.signals.dropped` when its moment comes, and a delivery
 the run ended before is never sent, dropped or not. A violation prints the pinned `signal:` entries beside any task
-faults, and the shrinker treats them alike. Not yet covered: delay faults and
-signal jitter, and duplicated or reordered deliveries, which a second `signals:` entry with the same `delivery_id:` or a
+faults, and the shrinker treats them alike. Not yet covered: signal jitter,
+and duplicated or reordered deliveries, which a second `signals:` entry with the same `delivery_id:` or a
 later `at:` already says.
 
 Seeded exploration is the local driver's. The durable driver has one check of
