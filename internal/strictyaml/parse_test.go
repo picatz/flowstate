@@ -226,7 +226,8 @@ func TestParseBytesAcceptsNothingTheParserNestsFarPastTheBound(t *testing.T) {
 
 	// Shapes reviewers found that a column alone could not count, then the
 	// seeded draws.
-	templates := [][]string{{"- &a", "k:"}, {"- !t", "? k"}, {"- &a", "? k"}, {"- &a", "# c", "k:"}, {"- &a # c", "      # deeper", "k:"}}
+	templates := [][]string{{"- &a", "k:"}, {"- !t", "? k"}, {"- &a", "? k"}, {"- &a", "# c", "k:"}, {"- &a # c", "      # deeper", "k:"},
+		{"&a k:", "- # c"}, {"- &a # c", "k:"}, {"- # c", "&a k:"}}
 
 	rng := rand.New(rand.NewPCG(2338, 1))
 	for range 400 {
