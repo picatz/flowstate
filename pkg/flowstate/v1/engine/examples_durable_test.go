@@ -132,6 +132,13 @@ var exampleSignals = map[string]map[string]*v1.Node_Outputs{
 		}},
 	},
 
+	// webhook-respond parks at `review` only for an order that needs a person; the
+	// harness starts it with the file's own defaults, so the gate is not reached
+	// here, and the signal is what a person releasing a held order sends.
+	"webhook-respond": {
+		"released": {NamedValues: map[string]*v1.Value{}},
+	},
+
 	// release-approval is the getting-started tutorial's workflow, and this is
 	// the payload the tutorial's own `flow signal` line sends.
 	"release-approval": {
