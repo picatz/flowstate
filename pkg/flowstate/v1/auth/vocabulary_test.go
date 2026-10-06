@@ -242,9 +242,10 @@ func TestTheCallerHasNoRunContext(t *testing.T) {
 	}
 }
 
-// TestTheWorkloadSpellingStillCompiles pins that no existing policy broke. The
-// minted-assertion object keeps every field it had, under the name it had.
-func TestTheWorkloadSpellingStillCompiles(t *testing.T) {
+// TestTheWorkloadObjectCarriesTheMintedAssertionFields pins the fields the
+// minted-assertion object does carry; the caller is not among them, and its
+// old spellings are refused above.
+func TestTheWorkloadObjectCarriesTheMintedAssertionFields(t *testing.T) {
 	t.Parallel()
 
 	for _, rule := range []string{

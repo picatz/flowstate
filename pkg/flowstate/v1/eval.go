@@ -409,7 +409,7 @@ const InputsRoot = "inputs"
 // `workload` (the name egress and secret policy already bind this exact
 // [WorkloadIdentity] shape to, see auth/assume.go's attrWorkload) was rejected
 // because that grammar's `workload` carries a richer, different shape —
-// subject, namespace, deployment, workflow, run, step, on_behalf_of, claims —
+// subject, namespace, deployment, workflow, run, step —
 // and reusing the word here would make it answer two different questions in
 // two grammars a reader moves between.
 //
