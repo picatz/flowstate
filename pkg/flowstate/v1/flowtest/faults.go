@@ -80,8 +80,10 @@ type Fault struct {
 	// that long, in (0, [maxFaultDelay]], before anything else happens. Where
 	// Fails says the call failed, Delay says it answered late, which is how a
 	// step's `timeout:` and `total_timeout:` meet a slow dependency under
-	// `flow test`: those bounds are measured on the same clock, so a delay past one
-	// ends the attempt as a Timeout and retry and tolerance take it from there.
+	// `flow test`: those bounds are measured on the same clock. A delay past the
+	// per-attempt `timeout:` ends that attempt as a Timeout, and retry and
+	// tolerance take it from there; a delay past `total_timeout:`, which wraps
+	// every attempt, ends the step with no further retry.
 	// Alone, it slows the call and lets the stubs answer it; with `fails:` the call
 	// fails after the wait. The duration is fixed, so a seed decides which
 	// invocations are slow and never how slow, which is what lets a pinned fault

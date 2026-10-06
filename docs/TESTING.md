@@ -431,10 +431,11 @@ and at most 24h) before the stubs answer, with no wall time spent:
       at_most: 2          # a seed decides which calls are slow, never how slow
 ```
 
-The step's `timeout:` and `total_timeout:` are measured on the same clock, so a
-delay past one ends the attempt as a `Timeout` at the bound, and `retry:` and
-`continue_on_error:` take it from there; a delay under the bound only moves
-the answer later. With `fails:` beside it the call fails after the wait. The
+The step's `timeout:` and `total_timeout:` are measured on the same clock. A
+delay past `timeout:` ends that attempt as a `Timeout` at the bound, and
+`retry:` and `continue_on_error:` take it from there; a delay past
+`total_timeout:`, which bounds every attempt together, ends the step with no
+further retry. A delay under the bound only moves the answer later. With `fails:` beside it the call fails after the wait. The
 account says `delayed 15s by faults[0]` at the moment the wait began, and a
 pinned script printed for a violation keeps the `delay:`. The same key on a
 `signal:` fault, below, makes a delivery late; the duration is fixed either way,

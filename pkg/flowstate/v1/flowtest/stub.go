@@ -722,10 +722,10 @@ func compileReturnValue(v any) (any, error) {
 }
 
 // delayInvocation holds one invocation on the run's clock for the wait its
-// faults decided, so a step's `timeout:` and `total_timeout:`, measured on the
-// same clock, can end it. It returns nil when the wait elapsed and the context's
-// error when the attempt was ended first, which the engine reads as the timeout
-// it is. The deadline is withdrawn on every way out: an abandoned virtual timer
+// faults decided, so a step's `timeout:` (one attempt) or `total_timeout:` (the
+// whole retry loop), measured on the same clock, can end it. It returns nil when
+// the wait elapsed and the context's error when it was ended first, which the
+// engine reads as the timeout it is. The deadline is withdrawn on every way out: an abandoned virtual timer
 // would leave the clock believing this goroutine still parked, and advance to it.
 func delayInvocation(ctx context.Context, task string, answer faultAnswer) error {
 	if answer.delay <= 0 {
