@@ -56,9 +56,10 @@ import (
 //     set, and this says so in the verifier where the reason is legible.
 //
 //   - Scopes is deliberately nil, and no caller of this sets
-//     [mcpauth.RequireBearerTokenOptions.Scopes]. The action vocabulary now
-//     exists, but no per-action enforcement point can truthfully name which
-//     scope this request requires.
+//     [mcpauth.RequireBearerTokenOptions.Scopes]. The transport middleware runs
+//     before a tool is chosen, so it cannot name which scope a request
+//     requires; the action check is the tool handler's, once the tool is
+//     known (cmd/flow/internal/mcp's withMCPActions).
 //
 //   - Extra carries the verified [Principal], and nothing else. It is the
 //     Principal and not the raw claims map for the reason the previous note

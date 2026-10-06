@@ -3,11 +3,14 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/require"
 
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/audit"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/authtest"
 )
@@ -82,4 +85,34 @@ func TestMCPToolsAreGatedByTheCallersEffectiveActions(t *testing.T) {
 			require.Equal(t, !test.allowed, result.IsError, "a refusal is a tool error, not a protocol error")
 		})
 	}
+}
+
+// TestMCPDeniedCallReportsARequiredSinkFailure proves a denial that cannot be
+// recorded is reported to the operator through Deps.AuditFailure and still
+// refuses the call with the fixed public message, as the allow path does.
+func TestMCPDeniedCallReportsARequiredSinkFailure(t *testing.T) {
+	t.Parallel()
+
+	const privateSinkDetail = "collector.internal:4317 unavailable"
+	recorder, err := audit.NewRecorder(audit.WithoutStderr(), audit.WithEmitter(toolAuditEmitterFunc(
+		func(context.Context, *v1.AuditRecord) error { return errors.New(privateSinkDetail) },
+	)), audit.Required())
+	require.NoError(t, err)
+
+	var reported error
+	handler := wrapToolHandler(Deps{
+		Audit:        recorder,
+		AuditFailure: func(err error) { reported = err },
+	}, "flowstate_run_local", func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		t.Fatal("a refused call must not reach the tool")
+		return nil, nil
+	})
+
+	result, err := handler(t.Context(), actionsToolRequest(t, auth.ActionScopes{"mcp.test"}, nil))
+	require.NoError(t, err)
+	require.True(t, result.IsError)
+	require.ErrorContains(t, reported, privateSinkDetail, "the operator must hear about a denial the sink could not record")
+	text, ok := result.Content[0].(*mcp.TextContent)
+	require.True(t, ok)
+	require.NotContains(t, text.Text, privateSinkDetail)
 }

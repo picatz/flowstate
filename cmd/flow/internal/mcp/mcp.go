@@ -450,7 +450,7 @@ func wrapToolHandler(deps Deps, name string, handler mcp.ToolHandler) mcp.ToolHa
 
 	// Outside the recorder, so that disabling audit output cannot disable
 	// authorization, and inside the principal, which it reads.
-	handler = withMCPActions(deps.Audit, name, handler)
+	handler = withMCPActions(deps.Audit, deps.AuditFailure, name, handler)
 
 	return withMCPPrincipal(handler)
 }
@@ -466,7 +466,7 @@ func wrapToolHandler(deps Deps, name string, handler mcp.ToolHandler) mcp.ToolHa
 // silently escaped would not be one. The refusal is a tool error naming the
 // scope, never a protocol error, so a client can tell it from a transport
 // failure and request the scope.
-func withMCPActions(recorder *audit.Recorder, tool string, next mcp.ToolHandler) mcp.ToolHandler {
+func withMCPActions(recorder *audit.Recorder, reportFailure func(error), tool string, next mcp.ToolHandler) mcp.ToolHandler {
 	return func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		principal, ok := auth.PrincipalFromContext(ctx)
 		if !ok || principal.Actions == nil {
@@ -490,6 +490,9 @@ func withMCPActions(recorder *audit.Recorder, tool string, next mcp.ToolHandler)
 				IssuerName: principal.IssuerName,
 				Role:       principal.Role,
 			}, v1.AuditDenyCode_AUDIT_DENY_CODE_POLICY_DENIED); err != nil {
+				if reportFailure != nil {
+					reportFailure(err)
+				}
 				return ToolError(errors.New("the authorization decision could not be recorded; try again")), nil
 			}
 		}
@@ -512,7 +515,8 @@ func withMCPPrincipal(next mcp.ToolHandler) mcp.ToolHandler {
 	}
 }
 
-// withMCPAudit is the authoritative MCP tool-authorization seam: the SDK has
+// withMCPAudit is the MCP tool-allow recording seam (the action check is
+// [withMCPActions], which runs before it): the SDK has
 // resolved a registered tool and bearer admission has installed its attested,
 // token-free Principal, while neither argument parsing nor the tool's mutation
 // has happened yet. One allow is therefore complete and true even if the tool
