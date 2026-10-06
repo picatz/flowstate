@@ -491,6 +491,16 @@ func runTest(cmd *cobra.Command, paths []string) error {
 		}
 		return nil
 	}
+	// A fuzz leg that judged nothing anywhere verified nothing, and a CI step
+	// that asked for it must not read it as green. One file with nothing to
+	// generate is only a warning; the whole invocation having none is a failure.
+	if fuzzOpts.Runs > 0 || fuzzOpts.Pinned {
+		if fuzzedNothing(results) {
+			fmt.Fprintln(surface.Err, "--fuzz judged no generated case in any file: no case declares an input of a generated type, "+
+				"or every generated case errored before the run")
+			anyFailed = true
+		}
+	}
 	if machine {
 		if err := writeTestResults(surface, format, results); err != nil {
 			return err
@@ -754,6 +764,18 @@ func (r testFileResult) fuzzJudgedNothing() bool {
 	fuzz := r.report.GetFuzz()
 
 	return fuzz != nil && fuzz.GetRuns() == 0 && fuzz.GetInconclusive() > 0 && fuzz.GetFinding() == nil
+}
+
+// fuzzedNothing reports that no file's report holds a judged generated case or
+// a finding, so a requested fuzz run proved nothing.
+func fuzzedNothing(results []testFileResult) bool {
+	for _, r := range results {
+		if r.report.GetFuzz().GetRuns() > 0 || r.report.GetFuzz().GetFinding() != nil {
+			return false
+		}
+	}
+
+	return true
 }
 
 // fuzzOptions reads `--fuzz` and `--fuzz-seed`. Fuzzing is the input dimension

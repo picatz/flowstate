@@ -54,6 +54,10 @@ func newFuzzer(opts FuzzOptions) *fuzzer {
 		return nil
 	}
 
+	// The bound lives here as well as in the command: a library caller of
+	// [RunOptions] must not be able to ask for more than the command would.
+	opts.Runs = min(opts.Runs, MaxFuzzRuns)
+
 	return &fuzzer{opts: opts, skipped: map[string]bool{}}
 }
 
@@ -100,17 +104,18 @@ func (f *fuzzer) run(ctx context.Context, test *Test, spec *v1.Workflow, deliver
 	}
 	f.cases++
 
-	seeds := make([]uint64, 0, f.opts.Runs)
+	// Computed as it goes, so a large Runs allocates nothing up front.
+	count := f.opts.Runs
 	if f.opts.Pinned {
-		seeds = append(seeds, f.opts.Seed)
-	} else {
-		for k := range f.opts.Runs {
-			seeds = append(seeds, DefaultFuzzSeed0+uint64(k))
-		}
+		count = 1
 	}
 
 	sensitive := v1.SensitiveInputNames(spec)
-	for _, seed := range seeds {
+	for k := range count {
+		seed := DefaultFuzzSeed0 + uint64(k)
+		if f.opts.Pinned {
+			seed = f.opts.Seed
+		}
 		if ctx.Err() != nil {
 			return
 		}
@@ -131,6 +136,11 @@ func (f *fuzzer) run(ctx context.Context, test *Test, spec *v1.Workflow, deliver
 		runCtx, cancel := caseContextWithin(ctx, timeout)
 		result, _, _, _, shown, runErr := runCase(runCtx, &generated, deliveryPath, load, false, vars)
 		cancel()
+		// A cancelled suite is not a verdict about the workflow: the run's
+		// error would classify as Internal and read as a defect an input found.
+		if ctx.Err() != nil {
+			return
+		}
 
 		// An invocation no stub answers says nothing about the workflow: the
 		// case's stubs were written for its own inputs, and a generated one can

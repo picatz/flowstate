@@ -415,6 +415,9 @@ func runSuite(ctx context.Context, file *File, opts RunOptions, loaderFor func(*
 				return result, spec, transcript, account, shown, err
 			})
 		cancel()
+		if fuzz != nil && test.Trigger != nil {
+			fuzz.skipped[fmt.Sprintf("case %q: replays a trigger delivery, whose inputs the delivery maps, so it is not fuzzed", test.Name)] = true
+		}
 		if spec != nil && test.Trigger == nil && result.GetError() == "" && ctx.Err() == nil {
 			fuzz.run(ctx, &test, spec, l.deliveryPath, l.load,
 				fileVars{values: file.Vars, withheld: file.varsWithheld}, caseTimeout)

@@ -191,3 +191,39 @@ tests:
 	require.NotNil(t, finding)
 	assert.Contains(t, finding.GetFailure(), "invariants[0]")
 }
+
+// A finding never prints a sensitive input: it is not generated, and the
+// stanza to paste leaves out the authored case's own value for it.
+func TestFuzzFindingWithholdsSensitiveInputs(t *testing.T) {
+	t.Parallel()
+
+	const workflow = `edition: v2026.4
+name: secretive
+inputs:
+  count:
+    type: int
+    default: 4
+  token:
+    type: string
+    sensitive: true
+    default: s3cret-value
+steps:
+  - id: share
+    http:
+      method: GET
+      url: https://example.com/${100 / inputs.count}
+`
+	run := runFuzz(t, workflow, `edition: v2026.4
+tests:
+  - name: authored
+    workflow: ./workflow.yaml
+    inputs: {count: 4, token: s3cret-value}
+    stubs: [{task: http, returns: {status_code: 200, body: ''}}]
+    expect: {failed: false}
+`, flowtest.FuzzOptions{Runs: 200})
+	finding := run.Report.GetFuzz().GetFinding()
+	require.NotNil(t, finding)
+	assert.NotContains(t, finding.GetInputs(), "s3cret-value")
+	assert.NotContains(t, finding.GetInputs(), "token")
+	assert.NotContains(t, finding.GetFailure(), "s3cret-value")
+}

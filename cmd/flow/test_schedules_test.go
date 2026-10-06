@@ -440,3 +440,16 @@ func TestFuzzFlagsAreRefusedWhereTheyCannotWork(t *testing.T) {
 		})
 	}
 }
+
+// A fuzz run that judged no generated case in any file verified nothing; one
+// file with a judged case anywhere makes the invocation count.
+func TestFuzzedNothingIsAnInvocationWideVerdict(t *testing.T) {
+	judged := testFileResult{report: &v1.TestReport{Fuzz: &v1.FuzzReport{Runs: 5, Cases: 1}}}
+	idle := testFileResult{report: &v1.TestReport{Fuzz: &v1.FuzzReport{}}}
+	found := testFileResult{report: &v1.TestReport{Fuzz: &v1.FuzzReport{Finding: &v1.FuzzFinding{Seed: 1}}}}
+
+	assert.True(t, fuzzedNothing([]testFileResult{idle}))
+	assert.True(t, fuzzedNothing(nil))
+	assert.False(t, fuzzedNothing([]testFileResult{idle, judged}))
+	assert.False(t, fuzzedNothing([]testFileResult{found, idle}))
+}

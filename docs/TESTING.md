@@ -457,12 +457,17 @@ A generated run fails when it ends in an `Internal` or `Expression` error (a
 `no such key` or a division by zero is a defect that an input reached) or
 breaks the case's `invariants:`. The first failure is reported apart from the
 authored cases with its seed and the `inputs:` stanza to paste over the case's;
-`flow test --fuzz-seed S` replays exactly it. A generated case that errors before the run (an input the stubs have no answer for, for one) is reported as could not be judged, and a file where every generated case did so fails: nothing was verified. Inputs the workflow declares
+`flow test --fuzz-seed S` replays exactly it (a `sensitive:` input is left out of the stanza, so keep the authored case's own value for it). A generated case that errors before the run (an input the stubs have no answer for, for one) is reported as could not be judged, and a file where every generated case did so fails: nothing was verified. Inputs the workflow declares
 `sensitive:` are never generated or printed, and inputs of a type not generated
 yet (lists, maps, timestamps) are named in the report rather than skipped
 silently. `--fuzz` is refused with `--seeds`, `--debug` and `--list`: a run
-explores one dimension, so a finding names one cause. Not yet covered: stub
-answers drawn from output descriptors, structural input types, and shrinking.
+explores one dimension, so a finding names one cause. A finding can be an artifact of the stubs: they answer what the authored inputs
+need, so an input that takes a branch reading a field the stub's fixed answer
+lacks fails with a missing-key error that a real task would not. Read the
+reported failure before treating it as a workflow defect, and widen the stub.
+A `--fuzz` run in which no file judged a generated case fails, since it verified
+nothing. Not yet covered: stub answers drawn from output descriptors,
+structural input types, and shrinking.
 
 ## One fixture, many rows
 
