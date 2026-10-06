@@ -386,7 +386,7 @@ func TestDeliveringWithdrawsTheAnsweredWaitsDeadline(t *testing.T) {
 		"a gate answered without ever lapsing spent time it was not owed")
 }
 
-// gateOnly is w reduced to its wait steps, so a run under a virtual clock has no
+// gateOnly returns w reduced to its wait steps, so a run under a virtual clock has no
 // task step whose own timeout is a deadline beside the gate's.
 func gateOnly(w *v1.Workflow) *v1.Workflow {
 	out := &v1.Workflow{Name: w.GetName()}
