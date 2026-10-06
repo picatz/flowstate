@@ -92,3 +92,55 @@ func TestUnmarshalRefusesFlowNestingPastTheBound(t *testing.T) {
 
 	require.NoError(t, strictyaml.UnmarshalStrict([]byte("a: [[1]]\n"), &into))
 }
+
+// Block nesting costs the parser what flow nesting does, and `- - - x` needs no
+// bracket: a chain of sequence entries on one line, or mappings indented ever
+// further, must be refused on the columns the lexer reports, while documents
+// that are long rather than deep must not be.
+func TestParseBytesRefusesBlockNestingPastTheBound(t *testing.T) {
+	t.Parallel()
+
+	var nested strings.Builder
+	for i := range strictyaml.MaxFlowDepth + 1 {
+		nested.WriteString(strings.Repeat(" ", i) + "k:\n")
+	}
+
+	for name, doc := range map[string]string{
+		"a chain of sequence entries": strings.Repeat("- ", 40000) + "x\n",
+		"indented mappings":           nested.String() + strings.Repeat(" ", strictyaml.MaxFlowDepth+1) + "v\n",
+	} {
+		_, err := strictyaml.ParseBytes([]byte(doc), 0)
+		nesting, ok := errors.AsType[*strictyaml.NestingError](err)
+		require.True(t, ok, "%s: %v", name, err)
+		require.Contains(t, nesting.Reason, "block collections", name)
+	}
+}
+
+func TestParseBytesDoesNotCountSiblingsOrFlowEntriesAsBlockDepth(t *testing.T) {
+	t.Parallel()
+
+	var long strings.Builder
+	for range 5000 {
+		long.WriteString("- a: 1\n  b: {c: [1, 2], d: 3}\n- - x\n  - y\n")
+	}
+
+	_, err := strictyaml.ParseBytes([]byte(long.String()), 0)
+	require.NoError(t, err)
+
+	// A chain exactly at the bound is read.
+	_, err = strictyaml.ParseBytes([]byte(strings.Repeat("- ", strictyaml.MaxFlowDepth)+"x\n"), 0)
+	require.NoError(t, err)
+}
+
+func TestParseBytesBoundsABlockChainsCost(t *testing.T) {
+	// Serial: reads process-wide allocation counters.
+	doc := []byte(strings.Repeat("- ", 40000) + "x\n")
+
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	_, err := strictyaml.ParseBytes(doc, 0)
+	runtime.ReadMemStats(&after)
+
+	require.Error(t, err)
+	require.Less(t, after.TotalAlloc-before.TotalAlloc, uint64(32<<20))
+}
