@@ -77,7 +77,7 @@ func refuseDeepFlow(tokens token.Tokens) error {
 		}
 	}
 
-	runs := &propertyRuns{tokens: tokens, end: -1}
+	runs := newPropertyRuns(tokens)
 
 	var (
 		flow  int
@@ -193,40 +193,46 @@ func refuseDeepFlow(tokens token.Tokens) error {
 	return nil
 }
 
-// propertyRuns finds where a run of properties ends, remembering the answer
-// for the run it just walked. Every property of a run asks where the run
-// ends, so a line of n anchors would otherwise cost n² token reads before the
-// nesting bound refused anything; the memo keeps it linear.
+// propertyRuns holds, for every token index, where the run of properties
+// starting there ends. Every property of a run asks where the run ends, so
+// asking by walking would cost a line of n anchors n² token reads before the
+// nesting bound refused anything; one right-to-left pass answers any start
+// exactly, whatever its alignment with the tokens around it.
 type propertyRuns struct {
 	tokens token.Tokens
-	// from and end: the run last walked began at or before from and its first
-	// non-property token is at end (len(tokens) when it ran off the stream).
-	from, end int
+	// end[i] is the index of the first token at or after i that is not an
+	// anchor (with its name), a tag or a comment; len(tokens) when the
+	// properties run off the stream.
+	end []int
+}
+
+func newPropertyRuns(tokens token.Tokens) *propertyRuns {
+	n := len(tokens)
+	end := make([]int, n+1)
+	end[n] = n
+
+	for i := n - 1; i >= 0; i-- {
+		switch tokens[i].Type {
+		case token.AnchorType:
+			end[i] = end[min(i+2, n)]
+		case token.TagType, token.CommentType:
+			end[i] = end[i+1]
+		default:
+			end[i] = i
+		}
+	}
+
+	return &propertyRuns{tokens: tokens, end: end}
 }
 
 // lineEndsAfter reports whether the tokens from index i on, which follow a
 // token on line, leave the line to nothing but further properties: an anchor
 // (its `&` and its name), a tag or a comment.
 func (r *propertyRuns) lineEndsAfter(i, line int) bool {
-	if i < r.from || i > r.end {
-		r.from, r.end = i, i
-		for r.end < len(r.tokens) {
-			switch r.tokens[r.end].Type {
-			case token.AnchorType:
-				r.end += 2
-				continue
-			case token.TagType, token.CommentType:
-				r.end++
-				continue
-			}
-
-			break
-		}
-	}
-
-	if r.end >= len(r.tokens) {
+	j := r.end[min(i, len(r.tokens))]
+	if j >= len(r.tokens) {
 		return true
 	}
 
-	return r.tokens[r.end].Position.Line != line
+	return r.tokens[j].Position.Line != line
 }
