@@ -1834,6 +1834,15 @@ func scriptSignals(runFinished <-chan struct{}, clock *v1.VirtualClock, signals 
 				case <-runFinished:
 					return
 				}
+				// Both cases can be ready at once for a sender with no `at:`
+				// that first runs after the run returned; the timer may then
+				// win the select, so the completion is checked again before a
+				// fire is recorded, as the delivery path below does.
+				select {
+				case <-runFinished:
+					return
+				default:
+				}
 				faults.commitDrop(j.drop)
 				outcomes.noteDelayed(j.name)
 				wait = j.drop.delay
