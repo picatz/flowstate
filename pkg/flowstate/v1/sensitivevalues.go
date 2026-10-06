@@ -1,9 +1,12 @@
 package flowstatev1
 
 import (
+	"bytes"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"reflect"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -361,11 +364,10 @@ func SensitiveInputValues(inputs map[string]*Value, sensitiveNames map[string]bo
 				// that: a one-rune sensitive descendant turned every `\n` in
 				// every rendered line into the marker. This is the
 				// documented floor (#2073) doing its job at the escaped
-				// spelling too, and #2081 tracks the general shape of
-				// escaped-spelling redaction past this one case.
-				if escaped, ok := quotedSpelling(value); ok &&
-					(n.root || utf8.RuneCountInString(value) >= minSensitiveSubstringRunes) {
-					out.substrings = append(out.substrings, escaped)
+				// spelling too; [escapedSpellings] holds the `%q` and JSON
+				// forms (#2081).
+				if n.root || utf8.RuneCountInString(value) >= minSensitiveSubstringRunes {
+					out.substrings = append(out.substrings, escapedSpellings(value)...)
 				}
 			case int64, uint64, float64, bool:
 				// A non-string scalar's canonical text joins the backstop:
@@ -451,6 +453,45 @@ func quotedSpelling(value string) (string, bool) {
 	return quoted[1 : len(quoted)-1], true
 }
 
+// escapedSpellings is every spelling of value, other than value itself, that
+// a renderer which encodes before this set redacts would print: Go's `%q`
+// body (check witnesses, CEL and binding errors, flowtest's transcript) and
+// the JSON string body in both the HTML-escaping form [json.Marshal] gives
+// and the plain form protobuf JSON and [json.Encoder] with HTML escaping off
+// give (#2081). Each is returned only when it differs from value and from
+// the ones before it, since a second identical substring protects nothing.
+func escapedSpellings(value string) []string {
+	var out []string
+
+	add := func(spelling string) {
+		if spelling != value && !slices.Contains(out, spelling) {
+			out = append(out, spelling)
+		}
+	}
+
+	if quoted, ok := quotedSpelling(value); ok {
+		add(quoted)
+	}
+
+	for _, escapeHTML := range []bool{true, false} {
+		var buf bytes.Buffer
+
+		enc := json.NewEncoder(&buf)
+		enc.SetEscapeHTML(escapeHTML)
+
+		// A string always encodes; the error is unreachable.
+		if err := enc.Encode(value); err != nil {
+			continue
+		}
+
+		// Encode ends the value with a newline, and a string is quoted.
+		body := strings.TrimSuffix(buf.String(), "\n")
+		add(body[1 : len(body)-1])
+	}
+
+	return out
+}
+
 // WithValues returns a set holding everything this one holds plus each given
 // plaintext, in both halves: the value comparison catches the whole, the
 // substring backstop catches `"Bearer " + value`.
@@ -502,6 +543,7 @@ func (s SensitiveValues) WithValues(plaintexts ...string) SensitiveValues {
 		// the composite backstop uses a plaintext of two runes or more.
 		if utf8.RuneCountInString(plaintext) >= minSensitiveSubstringRunes {
 			state.substrings = append(state.substrings, plaintext)
+			state.substrings = append(state.substrings, escapedSpellings(plaintext)...)
 		}
 	}
 
