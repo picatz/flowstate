@@ -187,6 +187,7 @@ var engineProvidedFiles = sync.OnceValue(func() map[string]struct{} {
 		File_flowstate_v1_authorization_proto,
 		File_flowstate_v1_catalog_proto,
 		File_flowstate_v1_debug_proto,
+		File_flowstate_v1_decision_proto,
 		File_flowstate_v1_diagnostics_proto,
 		File_flowstate_v1_exec_policy_proto,
 		File_flowstate_v1_policy_check_proto,
