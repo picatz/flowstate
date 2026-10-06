@@ -77,6 +77,8 @@ func refuseDeepFlow(tokens token.Tokens) error {
 		}
 	}
 
+	runs := &propertyRuns{tokens: tokens, end: -1}
+
 	var (
 		flow  int
 		block []int
@@ -145,7 +147,7 @@ func refuseDeepFlow(tokens token.Tokens) error {
 				}
 
 				fresh = true
-				pending, pendingCol, pendingSeq = lineEndsAfter(tokens, i+1, tk.Position.Line), tk.Position.Column, true
+				pending, pendingCol, pendingSeq = runs.lineEndsAfter(i+1, tk.Position.Line), tk.Position.Column, true
 
 				continue
 			}
@@ -170,7 +172,7 @@ func refuseDeepFlow(tokens token.Tokens) error {
 					after++ // the anchor's name
 				}
 
-				pending, pendingCol, pendingSeq = lineEndsAfter(tokens, after, tk.Position.Line), entryCol, false
+				pending, pendingCol, pendingSeq = runs.lineEndsAfter(after, tk.Position.Line), entryCol, false
 				if pending {
 					// A property or `?` alone on its line takes its value from
 					// the lines below, so it is a level of its own.
@@ -191,20 +193,40 @@ func refuseDeepFlow(tokens token.Tokens) error {
 	return nil
 }
 
+// propertyRuns finds where a run of properties ends, remembering the answer
+// for the run it just walked. Every property of a run asks where the run
+// ends, so a line of n anchors would otherwise cost n² token reads before the
+// nesting bound refused anything; the memo keeps it linear.
+type propertyRuns struct {
+	tokens token.Tokens
+	// from and end: the run last walked began at or before from and its first
+	// non-property token is at end (len(tokens) when it ran off the stream).
+	from, end int
+}
+
 // lineEndsAfter reports whether the tokens from index i on, which follow a
 // token on line, leave the line to nothing but further properties: an anchor
 // (its `&` and its name), a tag or a comment.
-func lineEndsAfter(tokens token.Tokens, i, line int) bool {
-	for j := i; j < len(tokens); {
-		switch tokens[j].Type {
-		case token.AnchorType:
-			j += 2
-		case token.TagType, token.CommentType:
-			j++
-		default:
-			return tokens[j].Position.Line != line
+func (r *propertyRuns) lineEndsAfter(i, line int) bool {
+	if i < r.from || i > r.end {
+		r.from, r.end = i, i
+		for r.end < len(r.tokens) {
+			switch r.tokens[r.end].Type {
+			case token.AnchorType:
+				r.end += 2
+				continue
+			case token.TagType, token.CommentType:
+				r.end++
+				continue
+			}
+
+			break
 		}
 	}
 
-	return true
+	if r.end >= len(r.tokens) {
+		return true
+	}
+
+	return r.tokens[r.end].Position.Line != line
 }
