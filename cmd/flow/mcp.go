@@ -822,9 +822,9 @@ func testToolHandler(timeout time.Duration) mcp.ToolHandler {
 		if runCtx.Err() != nil {
 			return flowmcp.ToolError(fmt.Errorf(
 				"the submitted tests did not finish within %s and were stopped, so no verdict is "+
-					"reported: a case that never completes is usually a `wait_for_signal:` with no "+
-					"`timeout:` and no stub scripting its signal, which parks the virtual clock with "+
-					"no deadline to advance to. Script the signal, give the wait a timeout, or split "+
+					"reported: a case that runs this long is usually a long loop or too many cases "+
+					"for one call (a `wait_for_signal:` with no `timeout:` that nothing scripted can "+
+					"answer is reported as a stuck run, not as this). Lower `max_iterations:` or split "+
 					"the file into smaller cases", timeout)), nil
 		}
 
