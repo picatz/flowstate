@@ -4,11 +4,14 @@ import (
 	"bytes"
 	"cmp"
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 
 	"github.com/goccy/go-yaml/ast"
 	"github.com/goccy/go-yaml/token"
+
+	"github.com/picatz/flowstate/internal/strictyaml"
 )
 
 // Inlining a whole-value alias, which is the migration path across the refusal
@@ -137,7 +140,51 @@ func runAliasInliner(data []byte, file *ast.File) (*aliasInliner, []byte, bool) 
 		return in, nil, false
 	}
 
+	if len(in.sites) > 0 && !in.keepsMeaning(data, out) {
+		return in, nil, false
+	}
+
 	return in, out, true
+}
+
+// keepsMeaning reports whether the rewrite left the document meaning what it
+// meant. Copying a value's exact bytes is not enough to prove it, because the
+// parser reads the same text differently by context: a plain `8080:80` is the
+// mapping `{8080: 80}` inside a flow mapping and the string "8080:80" beside a
+// block key, so moving the text, or dropping the marker next to it, can change
+// the value and still look like a fix (#2117). So the input is decoded with its
+// aliases resolved and the output is decoded, and any difference refuses the
+// whole rewrite, with the position of the first alias, as every other refusal
+// here. Run only once there is an alias to inline, so a document without one
+// pays nothing, and only after the output is known to be within [maxBytes],
+// which bounds both decodes — the input's resolved aliases expand to no more
+// than the output the inliner has already charged for.
+func (in *aliasInliner) keepsMeaning(data, out []byte) bool {
+	before, errBefore := decodeMeaning(data)
+	after, errAfter := decodeMeaning(out)
+
+	switch {
+	case errBefore == nil && errAfter == nil && reflect.DeepEqual(before, after):
+		return true
+	case errBefore != nil && errAfter != nil:
+		// Neither reads as a value, so this cannot have changed what one is.
+		return true
+	}
+
+	site := in.sites[0].alias.Start.Position
+	in.refuseAt(site.Line, site.Column,
+		"writing these aliases out would change what the document means, because the same text reads differently once it is moved or its anchor is dropped (a plain `8080:80` is a mapping inside `{…}` and a string beside a block key); nothing was rewritten — write the value out by hand")
+
+	return false
+}
+
+// decodeMeaning decodes a document into plain Go values, aliases resolved, the
+// form two documents are compared in.
+func decodeMeaning(data []byte) (any, error) {
+	var v any
+	err := strictyaml.Unmarshal(data, &v)
+
+	return v, err
 }
 
 // An aliasSite is one alias this rewrite may replace: an alias written as the

@@ -1117,6 +1117,56 @@ steps:
 	}
 }
 
+// TestFixRefusesARewriteThatChangesWhatTheDocumentMeans pins #2117: copying a
+// value's exact bytes is not copying its meaning, because the parser reads a
+// plain scalar like `8080:80` as the mapping `{8080: 80}` inside a flow
+// mapping and as a string beside a block key. A rewrite whose output decodes
+// differently from its input, aliases resolved, is refused whole, with the
+// file coming back byte for byte, and one that changes nothing still inlines.
+func TestFixRefusesARewriteThatChangesWhatTheDocumentMeans(t *testing.T) {
+	t.Parallel()
+
+	refused := []struct {
+		name string
+		src  string
+	}{
+		{"a colon scalar inside a flow mapping", "vars:\n  o: {k: &p 8080:80, m: 1}\n  u: *p\n"},
+		{"a colon scalar in a flow sequence inside a flow mapping", "vars:\n  o: {ports: &p [8080:80]}\n  u: *p\n"},
+	}
+	for _, tt := range refused {
+		t.Run("refuses "+tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			result, err := flowfile.Fix([]byte(tt.src))
+			require.NoError(t, err)
+
+			assert.Equal(t, tt.src, string(result.Source), "a refused file has to come back byte for byte")
+			assert.False(t, result.Changed())
+
+			found := false
+			for _, refusal := range result.Refusals {
+				if strings.Contains(refusal.Message, "change what the document means") || strings.Contains(refusal.Message, "outer flow collection") {
+					found = true
+					assert.Positive(t, refusal.Line, "the refusal has to be positioned")
+				}
+			}
+			assert.True(t, found, "no refusal said the rewrite changes meaning; got %v", result.Refusals)
+		})
+	}
+
+	// The same text beside a block key reads the same wherever it is copied,
+	// so it still inlines.
+	t.Run("a colon scalar beside block keys still inlines", func(t *testing.T) {
+		t.Parallel()
+
+		result, err := flowfile.Fix([]byte("vars:\n  a: &p 8080:80\n  u: *p\n"))
+		require.NoError(t, err)
+
+		assert.Empty(t, result.Refusals)
+		assert.Contains(t, string(result.Source), "u: 8080:80")
+	})
+}
+
 // TestFixRefusesAnAliasExpansionPastTheNodeOrByteBudget is the bound this
 // rewrite exists on the wrong side of.
 //

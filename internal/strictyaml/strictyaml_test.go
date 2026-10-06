@@ -218,6 +218,7 @@ var legacyTypedDecodes = map[string]string{
 	"plugins/docker/grants.go":               "plugin-owned grant file in its own module, #1590",
 	"pkg/flowstate/v1/flowtest/bounds.go":    "the *.test.yaml format, migrating to a schema (#923 D9)",
 	"pkg/flowstate/v1/flowfile/marshal.go":   "reads back YAML this package just wrote, to prove a scalar round-trips; not a document anyone authors",
+	"pkg/flowstate/v1/flowfile/fixalias.go":  "decodes a document before and after a rewrite to compare what it means; not a shape anyone authors (#2117)",
 }
 
 // TestNewConfigurationIsDefinedInTheSchema refuses a new decode of a YAML
