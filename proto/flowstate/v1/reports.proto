@@ -361,9 +361,10 @@ message FuzzFinding {
   // same file replays exactly it.
   uint64 seed = 2;
 
-  // Inputs is the `inputs:` stanza that reproduces the failure, as YAML to
-  // paste over the case's. Inputs the workflow declares `sensitive:` are
-  // never generated and never printed.
+  // Inputs is the `inputs:` overlay that reproduces the failure, as YAML to
+  // merge over the case's own `inputs:`. Inputs the workflow declares
+  // `sensitive:` are never generated and never printed, so the case keeps its
+  // own values for them.
   string inputs = 3;
 
   // Failure is what went wrong, withheld as the case's own report withholds.

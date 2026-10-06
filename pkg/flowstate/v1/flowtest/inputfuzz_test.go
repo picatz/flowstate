@@ -146,7 +146,7 @@ tests:
 func TestFuzzCountsAnUnanswerableCaseAsInconclusive(t *testing.T) {
 	t.Parallel()
 
-	run := runFuzz(t, divideWorkflow, `edition: v2026.4
+	run := runFuzz(t, guardedWorkflow, `edition: v2026.4
 tests:
   - name: authored
     workflow: ./workflow.yaml

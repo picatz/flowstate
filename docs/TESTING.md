@@ -451,7 +451,10 @@ Generation is driven by the workflow's declared `inputs:`: boundary values for
 a `string` (empty, one character, non-ASCII, `${1 + 1}` as data, and `min_len:` or
 `max_len:` characters, capped at 4096), an `int` (zero, one past either side of zero, 2^31, 2^53-1),
 a `double` and a `bool`, every `values:` entry for an enum, and each optional
-input absent. Every candidate set is bound through the same `BindRunInputs` a
+input absent. The first runs walk these boundary values one input at a time
+with the others as the case wrote them, so a small `--fuzz N` still exercises
+each boundary and a failure points at one input; later runs combine them at
+random. Every candidate set is bound through the same `BindRunInputs` a
 real submit uses, so a value the declaration refuses (a `must:` it fails) is
 never run. The case's own `stubs:` answer, `expect:` is not applied (it
 describes the authored inputs), and `faults:` are not injected.
@@ -459,8 +462,8 @@ describes the authored inputs), and `faults:` are not injected.
 A generated run fails when it ends in an `Internal` or `Expression` error (a
 `no such key` or a division by zero is a defect that an input reached) or
 breaks the case's `invariants:`. The first failure is reported apart from the
-authored cases with its seed and the `inputs:` stanza to paste over the case's;
-`flow test --fuzz-seed S` replays exactly it (a `sensitive:` input is left out of the stanza, so keep the authored case's own value for it). A generated case that errors before the run (an input the stubs have no answer for, for one) is reported as could not be judged, and a file where every generated case did so fails: nothing was verified. Inputs the workflow declares
+authored cases with its seed and the `inputs:` overlay to merge over the case's own;
+`flow test --fuzz-seed S` replays exactly it (a `sensitive:` input is left out of the overlay, so the case keeps its own value for it). A generated case that errors before the run (an input the stubs have no answer for, for one) is reported as could not be judged, and a file where every generated case did so fails: nothing was verified. Inputs the workflow declares
 `sensitive:` are never generated or printed, and inputs of a type not generated
 yet (lists, maps, timestamps) are named in the report rather than skipped
 silently. `--fuzz` is refused with `--seeds`, `--debug` and `--list`: a run

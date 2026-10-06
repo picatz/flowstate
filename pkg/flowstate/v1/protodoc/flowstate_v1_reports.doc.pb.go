@@ -429,9 +429,10 @@ func init() {
 		},
 		{
 			Name: "flowstate.v1.FuzzFinding.inputs",
-			Leading: " Inputs is the `inputs:` stanza that reproduces the failure, as YAML to\n" +
-				" paste over the case's. Inputs the workflow declares `sensitive:` are\n" +
-				" never generated and never printed.\n",
+			Leading: " Inputs is the `inputs:` overlay that reproduces the failure, as YAML to\n" +
+				" merge over the case's own `inputs:`. Inputs the workflow declares\n" +
+				" `sensitive:` are never generated and never printed, so the case keeps its\n" +
+				" own values for them.\n",
 		},
 		{
 			Name:    "flowstate.v1.FuzzFinding.failure",

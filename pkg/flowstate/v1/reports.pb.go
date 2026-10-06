@@ -1049,9 +1049,10 @@ type FuzzFinding struct {
 	// Seed is the generated case's seed: `flow test --fuzz-seed <seed>` on the
 	// same file replays exactly it.
 	Seed uint64 `protobuf:"varint,2,opt,name=seed,proto3" json:"seed,omitempty"`
-	// Inputs is the `inputs:` stanza that reproduces the failure, as YAML to
-	// paste over the case's. Inputs the workflow declares `sensitive:` are
-	// never generated and never printed.
+	// Inputs is the `inputs:` overlay that reproduces the failure, as YAML to
+	// merge over the case's own `inputs:`. Inputs the workflow declares
+	// `sensitive:` are never generated and never printed, so the case keeps its
+	// own values for them.
 	Inputs string `protobuf:"bytes,3,opt,name=inputs,proto3" json:"inputs,omitempty"`
 	// Failure is what went wrong, withheld as the case's own report withholds.
 	Failure       string `protobuf:"bytes,4,opt,name=failure,proto3" json:"failure,omitempty"`

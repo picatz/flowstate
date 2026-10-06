@@ -155,7 +155,7 @@ func (f *fuzzer) run(ctx context.Context, test *Test, spec *v1.Workflow, deliver
 		f.runs++
 		var problems []string
 		if kind := v1.ClassifyError(runErr); runErr != nil && (kind == v1.ErrorKindInternal || kind == v1.ErrorKindExpression) {
-			problems = append(problems, fmt.Sprintf("the run failed with a %s error: %s", kind, shown.runErrorUnder(shown.sensitive)))
+			problems = append(problems, fmt.Sprintf("the run failed with an %s error: %s", kind, shown.runErrorUnder(shown.sensitive)))
 		}
 		// Only the invariants: the case's `expect:` was cleared because it
 		// describes the authored inputs, and what is left of it (a run that
@@ -181,8 +181,9 @@ func (f *fuzzer) run(ctx context.Context, test *Test, spec *v1.Workflow, deliver
 	}
 }
 
-// pasteableInputs renders inputs as the `inputs:` stanza that reproduces a
-// failure, leaving out every input the workflow declares sensitive.
+// pasteableInputs renders inputs as the `inputs:` overlay that reproduces a
+// failure, leaving out every input the workflow declares sensitive: merge it
+// over the case's own `inputs:`, which keep their sensitive entries.
 func pasteableInputs(inputs map[string]any, sensitive map[string]bool) string {
 	shown := map[string]any{}
 	for name, value := range inputs {
@@ -202,6 +203,12 @@ func pasteableInputs(inputs map[string]any, sensitive map[string]bool) string {
 // from seed. It reports the declared inputs it generated nothing for, and false
 // when no draw the declaration accepts at submit was found.
 //
+// The first seeds walk a corpus: every boundary value of every input in turn,
+// and every optional input absent, with the others left at the case's own
+// values, so a small `--fuzz N` still exercises each boundary and a failure is
+// localized to the one input that moved. Past the corpus, and for a corpus
+// entry the declaration refuses, the seed draws a random combination.
+//
 // Every candidate set is bound through [v1.BindRunInputs], the path a real
 // submit takes, so a generated value the declaration refuses (a `must:` it
 // fails, a length out of bounds) is never run: a refused input is a test of the
@@ -210,6 +217,12 @@ func generateInputs(spec *v1.Workflow, base map[string]any, seed uint64) (map[st
 	rng := rand.New(rand.NewPCG(seed, seed^0x9e3779b97f4a7c15))
 
 	slots, skipped := inputSlots(spec)
+
+	if seed >= DefaultFuzzSeed0 {
+		if inputs, ok := corpusInputs(spec, base, slots, seed-DefaultFuzzSeed0); ok {
+			return inputs, skipped, true
+		}
+	}
 
 	for range 16 {
 		inputs := maps.Clone(base)
@@ -233,6 +246,42 @@ func generateInputs(spec *v1.Workflow, base map[string]any, seed uint64) (map[st
 	}
 
 	return nil, skipped, false
+}
+
+// corpusInputs is the n-th deterministic corpus entry: one input at one of its
+// boundary values, or absent when optional, the rest as the case wrote them.
+// False when n is past the corpus or the declaration refuses that entry.
+func corpusInputs(spec *v1.Workflow, base map[string]any, slots []inputSlot, n uint64) (map[string]any, bool) {
+	for _, s := range slots {
+		variants := len(s.candidates)
+		if !s.required {
+			variants++
+		}
+		if n >= uint64(variants) {
+			n -= uint64(variants)
+
+			continue
+		}
+		inputs := maps.Clone(base)
+		if inputs == nil {
+			inputs = map[string]any{}
+		}
+		switch {
+		case !s.required && n == 0:
+			delete(inputs, s.name)
+		case !s.required:
+			inputs[s.name] = s.candidates[n-1]
+		default:
+			inputs[s.name] = s.candidates[n]
+		}
+		if _, err := v1.BindRunInputs(spec, v1.NewNamedValues(inputs)); err != nil {
+			return nil, false
+		}
+
+		return inputs, true
+	}
+
+	return nil, false
 }
 
 // inputSlot is one declared input a draw can vary.

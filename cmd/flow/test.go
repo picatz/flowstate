@@ -839,7 +839,7 @@ func printFuzz(out io.Writer, theme ui.Theme, report *v1.TestReport) {
 	fmt.Fprintf(out, "%s", indentRendering(finding.GetFailure()))
 	fmt.Fprintf(out, "\n       REPLAY THIS EXACT CASE:\n\n           flow test --fuzz-seed %d -- %s\n\n",
 		finding.GetSeed(), shellArg(report.GetFile()))
-	fmt.Fprintf(out, "       OR PASTE IT AS A CASE (replace the case's `inputs:`):\n\n%s", indentRendering(finding.GetInputs()))
+	fmt.Fprintf(out, "       OR MERGE THESE OVER THE CASE'S OWN `inputs:` (sensitive inputs are never printed; keep the case's):\n\n%s", indentRendering(finding.GetInputs()))
 }
 
 // printSchedules renders what seeded schedule exploration found for one file:
