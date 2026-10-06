@@ -220,12 +220,13 @@ func TestParseBytesAcceptsNothingTheParserNestsFarPastTheBound(t *testing.T) {
 	pieces := []string{
 		"- ", "- - ", "k:", "k: ", "? k", "? ", ": ", "&a", "!t", "&a k:", "!t k:",
 		"- &a", "- !t", "- k:", "k: &a", "k: !t", "- ? k", "- &a k:", "[", "{a: ",
+		"# c", "- # c", "k: # c", "- &a # c", "k: !t # c",
 	}
 	const tiles = 3 * strictyaml.MaxFlowDepth
 
 	// Shapes reviewers found that a column alone could not count, then the
 	// seeded draws.
-	templates := [][]string{{"- &a", "k:"}, {"- !t", "? k"}, {"- &a", "? k"}}
+	templates := [][]string{{"- &a", "k:"}, {"- !t", "? k"}, {"- &a", "? k"}, {"- &a", "# c", "k:"}, {"- &a # c", "      # deeper", "k:"}}
 
 	rng := rand.New(rand.NewPCG(2338, 1))
 	for range 400 {

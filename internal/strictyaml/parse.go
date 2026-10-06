@@ -110,6 +110,13 @@ func refuseDeepFlow(tokens token.Tokens) error {
 	}
 
 	for i, tk := range tokens {
+		// The parser reads past a comment, wherever it sits, so a comment line
+		// between an entry and its value neither ends the entry nor counts as
+		// the line its value begins on.
+		if tk.Type == token.CommentType {
+			continue
+		}
+
 		if tk.Position.Line != lastLine {
 			if pending && flow == 0 && tk.Position.Column <= pendingCol && !(pendingSeq && tk.Type == token.SequenceEntryType) {
 				shallow++
@@ -186,13 +193,13 @@ func refuseDeepFlow(tokens token.Tokens) error {
 
 // lineEndsAfter reports whether the tokens from index i on, which follow a
 // token on line, leave the line to nothing but further properties: an anchor
-// (its `&` and its name) or a tag.
+// (its `&` and its name), a tag or a comment.
 func lineEndsAfter(tokens token.Tokens, i, line int) bool {
 	for j := i; j < len(tokens); {
 		switch tokens[j].Type {
 		case token.AnchorType:
 			j += 2
-		case token.TagType:
+		case token.TagType, token.CommentType:
 			j++
 		default:
 			return tokens[j].Position.Line != line
