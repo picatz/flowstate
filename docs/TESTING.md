@@ -437,8 +437,11 @@ activities as the undisturbed one, so an activity run again after replay fails.
 gate: the worker is lost while the run is parked and the gate is then answered
 by a signal, or lapses while no worker is running, and the second worker must
 leave it the same way an undisturbed run does.
-Not yet covered: a worker killed mid-activity and a restart across
-Continue-As-New.
+`TestWorkerRestartAcrossContinueAsNew` runs shared cases with a step budget of
+one, so the run is a chain of executions, and loses the worker after each
+completion but the last, including ones that land after the first execution and
+resume from the carryover. The chain must give what the undisturbed chain gives.
+Not yet covered: a worker killed mid-activity.
 
 ## One fixture, many rows
 
