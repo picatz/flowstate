@@ -6,6 +6,8 @@ import (
 	"strings"
 	"time"
 	"unicode"
+
+	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
 
 // Bounds and validation this plugin applies to attacker-chosen input before
@@ -76,7 +78,26 @@ const (
 	// few hundred KiB) while still finite against the pathological one;
 	// see TestPaginateBoundedStopsWhenTheByteBudgetIsWhatBinds for a peer
 	// that reaches it with both other bounds far from spent.
-	maxResultBytes = 2 << 20 // 2 MiB
+	//
+	// Derived from the host's own bound rather than chosen: the listing
+	// becomes a step output, and one over flowstatev1.MaxTaskOutputBytes is
+	// refused by the engine after every page has been fetched. The budget
+	// counts a record's protobuf size plus recordFramingBytes, because the
+	// output spells every field of a record as a map entry with its name and
+	// a typed value (measured at about seventy bytes a field, however short
+	// the field), and a control character in a string costs JSON six bytes.
+	// The budget is the host's bound over that worst case,
+	// resultWorstCaseFactor, pinned for all three listings by
+	// TestResultBudgetFitsATaskOutput. resultEnvelopeReserve is the framing
+	// around the items and the cursor.
+	resultEnvelopeReserve = 64 << 10
+	resultWorstCaseFactor = 6
+	maxResultBytes        = (flowstatev1.MaxTaskOutputBytes - resultEnvelopeReserve) / resultWorstCaseFactor
+
+	// recordFramingBytes is what one record is charged beyond its protobuf
+	// size: the widest record has fourteen fields at about seventy bytes of
+	// framing each.
+	recordFramingBytes = 1024
 
 	// maxBranchFilterBytes bounds pull_request_list's optional base and head
 	// filters before they reach go-github's own request builder - mirrors

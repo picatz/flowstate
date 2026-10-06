@@ -230,11 +230,20 @@ func codexExec(ctx context.Context, inputs map[string]*flowstatev1.Value, _ *flo
 
 	patch, filesChanged, patchTruncated := computePatch(runCtx, gitBin, hardened, workDir, mutating, baseline, run.filesChanged)
 
-	// max_output_bytes bounds everything this task returns, not each field
-	// separately: the per-field caps below it are ceilings a single field may
-	// not exceed even when the total would allow it, and this is the allowance
-	// they are spent against. Allocated in a fixed order - final message, then
-	// patch, then events - so what survives truncation is deterministic.
+	return sdk.EncodeOutputs(spendOutputBudget(run, scrubber, patch, patchTruncated, filesChanged, maxOutput, maxEvents))
+}
+
+// spendOutputBudget builds what codex.exec returns, spending maxOutput across
+// every field whose size a run controls.
+//
+// max_output_bytes bounds everything this task returns, not each field
+// separately: the per-field caps below it are ceilings a single field may
+// not exceed even when the total would allow it, and this is the allowance
+// they are spent against. Allocated in a fixed order - final message, patch,
+// changed files, then events - so what survives truncation is deterministic.
+// Each file and event is charged for the text it carries (a path, a kind, a
+// summary); the framing around them is what maxMaxOutputBytes reserves.
+func spendOutputBudget(run runResult, scrubber *secrets.Scrubber, patch string, patchTruncated bool, filesChanged []fileChange, maxOutput, maxEvents int) *codexv1.ExecOutputs {
 	remaining := maxOutput
 
 	finalMessage, finalTruncated := truncateBytes(scrubber.Scrub(run.finalMessage), min(maxFinalMessageBytes, remaining))
@@ -245,21 +254,41 @@ func codexExec(ctx context.Context, inputs map[string]*flowstatev1.Value, _ *flo
 	}
 	remaining -= len(patch)
 
+	files, filesTruncated, spent := boundFiles(filesChanged, remaining)
+	remaining -= spent
+
 	events, eventsTruncated := boundEvents(run.events, maxEvents, remaining, scrubber)
 
-	truncated := run.streamTruncated || finalTruncated || patchTruncated || eventsTruncated || run.eventsTruncated
+	threadID, threadTruncated := truncateBytes(run.threadID, maxThreadIDBytes)
 
-	return sdk.EncodeOutputs(&codexv1.ExecOutputs{
+	return &codexv1.ExecOutputs{
 		FinalMessage:      finalMessage,
 		Patch:             patch,
-		FilesChanged:      filesChangedValue(filesChanged),
-		ThreadId:          run.threadID,
+		FilesChanged:      filesChangedValue(files),
+		ThreadId:          threadID,
 		InputTokens:       run.inputTokens,
 		CachedInputTokens: run.cachedInputTokens,
 		OutputTokens:      run.outputTokens,
 		Events:            eventsValue(events),
-		Truncated:         truncated,
-	})
+		Truncated:         run.streamTruncated || finalTruncated || patchTruncated || filesTruncated || eventsTruncated || threadTruncated || run.eventsTruncated,
+	}
+}
+
+// boundFiles keeps the leading files whose paths and change types fit in
+// budget, reporting whether any were dropped and what the kept ones cost. A
+// non-positive budget keeps none, never all.
+func boundFiles(files []fileChange, budget int) ([]fileChange, bool, int) {
+	spent := 0
+
+	for i, f := range files {
+		cost := len(f.Path) + len(f.OldPath) + len(f.ChangeType) + fileFramingBytes
+		if budget <= 0 || spent+cost > budget {
+			return files[:i], true, spent
+		}
+		spent += cost
+	}
+
+	return files, false, spent
 }
 
 // fileChange is this task's own in-memory shape for one changed file - not
@@ -526,11 +555,12 @@ func boundEvents(lines []eventLine, maxEvents, budget int, scrubber *secrets.Scr
 		// the final message and patch, so it legitimately arrives at or below
 		// zero - and treating that as "no limit" is how the one bound a caller
 		// asked for gets exceeded by the field most likely to be large.
-		if budget <= 0 || spent+len(summary) > budget {
+		cost := len(line.kind) + len(summary) + eventFramingBytes
+		if budget <= 0 || spent+cost > budget {
 			truncated = true
 			break
 		}
-		spent += len(summary)
+		spent += cost
 		out = append(out, eventLine{kind: line.kind, summary: summary})
 	}
 

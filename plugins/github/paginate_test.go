@@ -369,7 +369,7 @@ func TestPaginateBoundedStopsWhenTheByteBudgetIsWhatBinds(t *testing.T) {
 	// One converted record's own serialized size, computed the same way
 	// paginateBounded computes it - this is what the budget is measured
 	// against, not the raw string length.
-	perItemBytes := proto.Size(convert(strings.Repeat("a", recordSize)))
+	perItemBytes := proto.Size(convert(strings.Repeat("a", recordSize))) + recordFramingBytes
 	wantItems := maxResultBytes / perItemBytes
 
 	const maxItems = 10000

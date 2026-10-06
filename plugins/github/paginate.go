@@ -39,8 +39,8 @@ import (
 // the retained shape across the whole walk is only ever S, this task's own
 // converted summary type, never T, GitHub's full record. maxResultBytes
 // then bounds the running sum of each converted item's serialized size
-// (proto.Size, the same measure pkg/flowstate/v1/size.go uses for an
-// execution's own answer), and a page that would cross it stops the walk
+// (proto.Size) plus recordFramingBytes for what the output spells around
+// it, and a page that would cross it stops the walk
 // and reports truncated - the same refuse-or-truncate choice
 // PullRequestListOutputs.truncated already exists to report, extended to
 // cover the resource that was missing a bound. See
@@ -176,7 +176,7 @@ func paginateBounded[T any, S proto.Message](
 			// carry a body or other unbounded field this task's own
 			// summary never surfaces) never outlives this iteration.
 			converted := convert(got[i])
-			size := proto.Size(converted)
+			size := proto.Size(converted) + recordFramingBytes
 			if totalBytes+size > maxResultBytes {
 				// The byte budget is what stopped this walk, not the item
 				// or request count - proof that a further entry exists
