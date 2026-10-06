@@ -143,7 +143,7 @@ func runAliasInliner(data []byte, file *ast.File) (*aliasInliner, []byte, bool) 
 		return in, nil, false
 	}
 
-	if (len(in.sites) > 0 || len(in.anchorNodes) > 0) && !in.keepsMeaning(file, out) {
+	if (len(in.sites) > 0 || len(in.anchorNodes) > 0) && !in.keepsMeaning(data, out) {
 		return in, nil, false
 	}
 
@@ -166,16 +166,13 @@ func runAliasInliner(data []byte, file *ast.File) (*aliasInliner, []byte, bool) 
 // which bounds both decodes: the input's resolved aliases expand to no more
 // than the output the inliner has already charged for, and both parses went
 // through [strictyaml.ParseBytes], so nesting is bounded too.
-func (in *aliasInliner) keepsMeaning(file *ast.File, out []byte) bool {
-	before, errBefore := decodeMeaning(file)
-
-	var after []any
-	var errAfter error
-	if rewritten, err := strictyaml.ParseBytes(out, 0); err != nil {
-		errAfter = err
-	} else {
-		after, errAfter = decodeMeaning(rewritten)
-	}
+func (in *aliasInliner) keepsMeaning(data, out []byte) bool {
+	// Both sides are parsed the same way, without comments: the file this
+	// rewrite walks was parsed with them, and a comment attached to an alias
+	// changes how the decoder reads the node, which is not a meaning the
+	// document has.
+	before, errBefore := decodeBytes(data)
+	after, errAfter := decodeBytes(out)
 
 	switch {
 	case errBefore == nil && errAfter == nil && sameMeaning(before, after):
@@ -198,6 +195,16 @@ func (in *aliasInliner) keepsMeaning(file *ast.File, out []byte) bool {
 		"writing these aliases out would change what the document means, because the same text reads differently once it is moved or its anchor is dropped (a plain `8080:80` is a mapping inside `{…}` and a string beside a block key); nothing was rewritten — write the value out by hand")
 
 	return false
+}
+
+// decodeBytes parses and decodes a document, both through the bounded path.
+func decodeBytes(data []byte) ([]any, error) {
+	file, err := strictyaml.ParseBytes(data, 0)
+	if err != nil {
+		return nil, err
+	}
+
+	return decodeMeaning(file)
 }
 
 // decodeMeaning decodes every document of a parsed file into plain Go values,
