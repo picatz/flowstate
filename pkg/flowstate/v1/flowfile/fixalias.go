@@ -4,10 +4,13 @@ import (
 	"bytes"
 	"cmp"
 	"fmt"
+	"maps"
+	"math"
 	"reflect"
 	"slices"
 	"strings"
 
+	"github.com/goccy/go-yaml"
 	"github.com/goccy/go-yaml/ast"
 	"github.com/goccy/go-yaml/token"
 
@@ -140,7 +143,7 @@ func runAliasInliner(data []byte, file *ast.File) (*aliasInliner, []byte, bool) 
 		return in, nil, false
 	}
 
-	if len(in.sites) > 0 && !in.keepsMeaning(data, out) {
+	if len(in.sites) > 0 && !in.keepsMeaning(file, out) {
 		return in, nil, false
 	}
 
@@ -155,16 +158,23 @@ func runAliasInliner(data []byte, file *ast.File) (*aliasInliner, []byte, bool) 
 // the value and still look like a fix (#2117). So the input is decoded with its
 // aliases resolved and the output is decoded, and any difference refuses the
 // whole rewrite, with the position of the first alias, as every other refusal
-// here. Run only once there is an alias to inline, so a document without one
+// here. Every document of the file is compared. Run only once there is an alias to inline, so a document without one
 // pays nothing, and only after the output is known to be within [maxBytes],
 // which bounds both decodes — the input's resolved aliases expand to no more
 // than the output the inliner has already charged for.
-func (in *aliasInliner) keepsMeaning(data, out []byte) bool {
-	before, errBefore := decodeMeaning(data)
-	after, errAfter := decodeMeaning(out)
+func (in *aliasInliner) keepsMeaning(file *ast.File, out []byte) bool {
+	before, errBefore := decodeMeaning(file)
+
+	var after []any
+	var errAfter error
+	if rewritten, err := strictyaml.ParseBytes(out, 0); err != nil {
+		errAfter = err
+	} else {
+		after, errAfter = decodeMeaning(rewritten)
+	}
 
 	switch {
-	case errBefore == nil && errAfter == nil && reflect.DeepEqual(before, after):
+	case errBefore == nil && errAfter == nil && sameMeaning(before, after):
 		return true
 	case errBefore != nil && errAfter != nil:
 		// Neither reads as a value, so this cannot have changed what one is.
@@ -178,13 +188,52 @@ func (in *aliasInliner) keepsMeaning(data, out []byte) bool {
 	return false
 }
 
-// decodeMeaning decodes a document into plain Go values, aliases resolved, the
-// form two documents are compared in.
-func decodeMeaning(data []byte) (any, error) {
-	var v any
-	err := strictyaml.Unmarshal(data, &v)
+// decodeMeaning decodes every document of a parsed file into plain Go values,
+// aliases resolved, the form two files are compared in. A panic in the decoder
+// is an error, as [strictyaml.Unmarshal] makes it.
+func decodeMeaning(file *ast.File) (docs []any, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("the YAML decoder stopped on this document: %v", r)
+		}
+	}()
 
-	return v, err
+	for _, doc := range file.Docs {
+		var v any
+		if err := yaml.NodeToValue(doc.Body, &v); err != nil {
+			return nil, err
+		}
+		docs = append(docs, v)
+	}
+
+	return docs, nil
+}
+
+// sameMeaning compares two decoded values. It is [reflect.DeepEqual] except
+// that NaN equals NaN, which DeepEqual denies even for a value compared with
+// itself, so a `.nan` anywhere in a document would otherwise make every
+// rewrite of it look like a change.
+func sameMeaning(a, b any) bool {
+	switch x := a.(type) {
+	case float64:
+		y, ok := b.(float64)
+
+		return ok && (x == y || (math.IsNaN(x) && math.IsNaN(y)))
+	case []any:
+		y, ok := b.([]any)
+
+		return ok && slices.EqualFunc(x, y, sameMeaning)
+	case map[string]any:
+		y, ok := b.(map[string]any)
+
+		return ok && len(x) == len(y) && maps.EqualFunc(x, y, sameMeaning)
+	case map[any]any:
+		y, ok := b.(map[any]any)
+
+		return ok && len(x) == len(y) && maps.EqualFunc(x, y, sameMeaning)
+	default:
+		return reflect.DeepEqual(a, b)
+	}
 }
 
 // An aliasSite is one alias this rewrite may replace: an alias written as the

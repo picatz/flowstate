@@ -1131,7 +1131,7 @@ func TestFixRefusesARewriteThatChangesWhatTheDocumentMeans(t *testing.T) {
 		src  string
 	}{
 		{"a colon scalar inside a flow mapping", "vars:\n  o: {k: &p 8080:80, m: 1}\n  u: *p\n"},
-		{"a colon scalar in a flow sequence inside a flow mapping", "vars:\n  o: {ports: &p [8080:80]}\n  u: *p\n"},
+		{"a colon scalar in a later document", "vars:\n  a: 1\n---\nvars:\n  o: {k: &p 8080:80, m: 1}\n  u: *p\n"},
 	}
 	for _, tt := range refused {
 		t.Run("refuses "+tt.name, func(t *testing.T) {
@@ -1145,7 +1145,7 @@ func TestFixRefusesARewriteThatChangesWhatTheDocumentMeans(t *testing.T) {
 
 			found := false
 			for _, refusal := range result.Refusals {
-				if strings.Contains(refusal.Message, "change what the document means") || strings.Contains(refusal.Message, "outer flow collection") {
+				if strings.Contains(refusal.Message, "change what the document means") {
 					found = true
 					assert.Positive(t, refusal.Line, "the refusal has to be positioned")
 				}
@@ -1153,6 +1153,18 @@ func TestFixRefusesARewriteThatChangesWhatTheDocumentMeans(t *testing.T) {
 			assert.True(t, found, "no refusal said the rewrite changes meaning; got %v", result.Refusals)
 		})
 	}
+
+	// A `.nan` decodes to a value that is not equal to itself, which must not
+	// make every rewrite of the document look like a change.
+	t.Run("a NaN elsewhere in the document does not refuse an unrelated inline", func(t *testing.T) {
+		t.Parallel()
+
+		result, err := flowfile.Fix([]byte("vars:\n  a: &p 1\n  u: *p\n  n: .nan\n"))
+		require.NoError(t, err)
+
+		assert.Empty(t, result.Refusals)
+		assert.Contains(t, string(result.Source), "u: 1")
+	})
 
 	// The same text beside a block key reads the same wherever it is copied,
 	// so it still inlines.
