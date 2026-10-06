@@ -1491,8 +1491,8 @@ configured in the one trust policy, not in a Flowfile. Pass the same policy
 
 | Direction | The deployment configures | A Flowfile sees |
 | --- | --- | --- |
-| **Inbound**: who may reach Flowstate | `issuers:`, each `kind: oidc` (the default) or `kind: mtls`. An `oidc` entry takes `audiences`, claim rules, and a tenant fixed or read from `namespace_claim`. An `mtls` entry takes `client_ca_file` and `subject_from` and a fixed tenant, and refuses `audiences` and `namespace_claim` | `run.identity` and `sender.identity`, each with `principal`, `subject`, `issuer`, `namespace`, `claims`. [Who may act](#who-may-act-on-a-run) |
-| **Outbound**: what a workload may become | `federation:` with `targets:` (`token_exchange`, `client_credentials`, `gcp`, `aws`, `assertion`) and `allow`/`deny` rules over `target` and `workload` | `credential:` on a task such as `http`. [Secrets and credentials](SECRETS.md#short-lived-credentials-instead-of-stored-ones) |
+| **Inbound**: who may reach Flowstate | `issuers:`, each `kind: oidc` (the default) or `kind: mtls`. An `oidc` entry takes `audiences`, claim rules, and a tenant fixed or read from `namespace_claim`. An `mtls` entry takes `client_ca_file` and `subject_from` and a fixed tenant, and refuses `audiences` and `namespace_claim` | `run.identity` with `principal`, `subject`, `issuer`, `namespace`, `claims`, and `sender.identity` the same, except that a wait's sender carries no `claims`. [Who may act](#who-may-act-on-a-run) |
+| **Outbound**: what a workload may become | `federation:` with `targets:` (`token_exchange`, `client_credentials`, `gcp`, `aws`, `assertion`) and `allow`/`deny` rules over `target`, `audience` and `workload` | `credential:` on a task such as `http`. [Secrets and credentials](SECRETS.md#short-lived-credentials-instead-of-stored-ones) |
 
 Three rules hold in both directions:
 
