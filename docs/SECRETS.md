@@ -268,16 +268,20 @@ worked examples.
 flow keys generate --out /etc/flowstate/keys/2026-09.pem
 ```
 
-`--identity-key` names the key. The worker signs assertions; the server
-publishes the public keys at `/.well-known/jwks.json`, beside
-`/.well-known/openid-configuration`, so relying parties can verify them. Give
-both processes the same ordered list of keys. Configuring `federation:` without
-a key, or a key without `federation:`, refuses to start.
+`--identity-key` names the key. The worker signs assertions with the PKCS#8
+private key; the server publishes the public keys at `/.well-known/jwks.json`,
+beside `/.well-known/openid-configuration`, so relying parties can verify them.
+The server's `--identity-key` takes only the PKIX public key PEM that
+`flow keys public --in KEY.pem --pem` prints, named like the worker's file so
+both publish one key id, and it refuses a private key at start-up: the server
+holds no signing key. Configuring `federation:` without a key, or a key without
+`federation:`, refuses to start.
 
-`--identity-key` repeats, and order matters: the first key signs, and every
-later one is published for verification only. To rotate:
+On a worker `--identity-key` repeats, and order matters: the first key signs,
+and every later one is published for verification only. The server's list is
+every key to publish, newest first. To rotate:
 
-1. Generate a new key.
+1. Generate a new key, and print its public half for the server.
 2. Restart the server and every worker with the new key first and the old key
    second. New assertions use the new key, and ones already issued still verify.
 3. After `federation.key_retention` (default 24h), restart them all with the new

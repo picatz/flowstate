@@ -912,7 +912,7 @@ unreadable, and `flow worker` reads Temporal's client configuration from
 each unit a writable `/tmp`, where a worker makes its plugins' socket
 directories; `ProtectSystem=strict` otherwise leaves it read-only. `flow keys
 generate` writes a key with mode 0600, owned by whoever ran it, so hand it to
-the shared group and the secret directory to the worker alone:
+the shared group (the server is not in it: it reads only the public copy) and the secret directory to the worker alone:
 
 ```console
 $ sudo groupadd --system flowstate-keys
@@ -923,6 +923,9 @@ $ sudo useradd --system --user-group --home-dir /nonexistent --no-create-home \
 $ sudo install -d -o flowstate-worker -g flowstate-worker -m 0750 /var/lib/flowstate
 $ sudo chown root:flowstate-keys /etc/flowstate/identity-2026-07.pem
 $ sudo chmod 0640 /etc/flowstate/identity-2026-07.pem
+$ sudo install -d -m 0755 /etc/flowstate/public-keys
+$ sudo flow keys public --in /etc/flowstate/identity-2026-07.pem --pem \
+    | sudo tee /etc/flowstate/public-keys/identity-2026-07.pem >/dev/null
 $ sudo chown -R root:flowstate-worker /etc/flowstate/secrets
 $ sudo chmod -R u=rwX,g=rX,o= /etc/flowstate/secrets
 ```
@@ -998,7 +1001,7 @@ TEMPORAL_ADDRESS=temporal.internal:7233
 TEMPORAL_NAMESPACE=production
 FLOWSTATE_DEPLOYMENT_NAME=flowstate
 FLOWSTATE_AUTH_POLICY=/etc/flowstate/policy.yaml
-FLOWSTATE_IDENTITY_KEY=/etc/flowstate/identity-2026-07.pem
+FLOWSTATE_IDENTITY_KEY=/etc/flowstate/public-keys/identity-2026-07.pem
 FLOWSTATE_RPC_RESOURCE=https://flowstate.example.com/rpc
 ```
 
@@ -1018,7 +1021,6 @@ Restart=on-failure
 RestartSec=5s
 User=flowstate-server
 Group=flowstate-server
-SupplementaryGroups=flowstate-keys
 NoNewPrivileges=yes
 ProtectSystem=strict
 PrivateTmp=yes
@@ -1027,31 +1029,38 @@ PrivateTmp=yes
 WantedBy=multi-user.target
 ```
 
-Both units name the same `FLOWSTATE_IDENTITY_KEY` because this `policy.yaml`
+Both units name an `FLOWSTATE_IDENTITY_KEY` because this `policy.yaml`
 configures `federation:`: the worker signs the short-lived assertions a step
-exchanges for credentials, and the server publishes the matching public keys.
-Either process refuses to start with `federation:` and no key, or a key and no
+exchanges for credentials with the private key, and the server publishes the
+matching public key, so it is given only the PKIX public key PEM that `flow keys
+public --pem` prints. Name the two files alike, since the file's base name is the
+published key id and the server and the worker must agree on it. The server
+refuses a private key at start-up, so it never reads signing material. Either
+process refuses to start with `federation:` and no key, or a key and no
 `federation:`, so a deployment that does not federate removes the line from both
 files. [Secrets and credentials](SECRETS.md#signing-keys) covers rotation, which
 restarts both.
 
-Sharing that key is a trust boundary this recipe does not split. The server and
-every worker that federates hold the same private key, and whoever holds it can
-sign an assertion for any subject or namespace
+The server holds no signing key, but the signing key is still shared: every
+worker that federates holds the same private key, and whoever holds it can sign
+an assertion for any subject or namespace
 ([THREAT_MODEL.md §7](../THREAT_MODEL.md#7-the-issuer-as-a-single-point-of-failure)).
-So a compromise of the server, or of any one tenant's worker, reaches every
-tenant's federated credentials. The per-user isolation above keeps secret files
-apart; it does not narrow federation.
+So a compromise of any one tenant's worker reaches every tenant's federated
+credentials, because federation is one deployment-wide trust domain until
+per-tenant issuers land. The per-user isolation above keeps secret files apart;
+it does not narrow federation.
 
 `FLOWSTATE_IDENTITY_KEY` holds one path, and a rotation needs two for its
 overlap, so for that window the keys go on each unit's command line, new first.
 Repeated `--identity-key` flags replace the variable's value rather than adding
-to it. Give the new key the same ownership as the first before either unit
-opens it:
+to it. Give the new worker key the same ownership as the first, and derive the
+server's public copy of it, before either unit opens it:
 
 ```console
 $ sudo chown root:flowstate-keys /etc/flowstate/identity-2026-10.pem
 $ sudo chmod 0640 /etc/flowstate/identity-2026-10.pem
+$ sudo flow keys public --in /etc/flowstate/identity-2026-10.pem --pem \
+    | sudo tee /etc/flowstate/public-keys/identity-2026-10.pem >/dev/null
 ```
 
 ```ini
@@ -1060,7 +1069,8 @@ ExecStart=/usr/local/lib/flowstate/%i/flow worker --build-id %i --plugin-dir /us
     --identity-key /etc/flowstate/identity-2026-07.pem
 ```
 
-The server unit gets the same two flags. After editing the units, run `sudo
+The server unit gets the same two flags, naming the public copies under
+`/etc/flowstate/public-keys/`. After editing the units, run `sudo
 systemctl daemon-reload`, then restart the server before any worker instance,
 so it publishes the new key before a worker signs with it. After
 `federation.key_retention`, drop the flags, point `FLOWSTATE_IDENTITY_KEY` in

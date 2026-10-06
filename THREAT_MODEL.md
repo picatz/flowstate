@@ -752,7 +752,14 @@ change is unaudited by Flowstate.
 Flowstate presents outbound. Anyone holding it can mint an assertion for any
 subject, namespace, workflow, run and step this deployment could, and present it to
 every relying party that trusts the published key set. That is the outbound half of
-the entire federation story in one file.
+the entire federation story in one file. The server that publishes the key set does
+not hold it: `flow server --identity-key` accepts only the PKIX public key and
+refuses a private one at start-up, so the process facing callers never reads
+signing material (`auth.NewIssuer` in publish-only mode; `cmd/flow` `identityPublisher`).
+Workers sign, so the key is on every worker that federates; one shared signer across
+tenant workers remains a documented limit, and federation is a deployment-wide trust
+domain until per-tenant issuers land, so one tenant's worker compromise reaches every
+tenant's federated credentials.
 
 **What bounds it today.** Assertions are short-lived by default and cannot be
 configured long: `DefaultAssertionLifetime` is five minutes and
@@ -790,26 +797,29 @@ from the file name or its modification time.
 Workers sign assertions and the server publishes the key set, so every step below
 restarts the server *and every worker* with the same ordered list. A process left
 on the old list either signs with a key the others have stopped publishing or
-publishes a set missing the key in use. The commands show the server; a worker
-takes the same `--identity-key` flags.
+publishes a set missing the key in use. The commands show the server, whose
+`--identity-key` takes the PKIX public key PEM that `flow keys public --in KEY.pem
+--pem` prints (the file's base name is the key id, so name it like the worker's
+file); a worker takes the same flags naming the PKCS#8 private keys.
 
 ```sh
 # 1. Generate the new key. Naming the file names the published key id.
 flow keys generate --out /etc/flowstate/keys/2026-09.pem
+flow keys public --in /etc/flowstate/keys/2026-09.pem --pem > /etc/flowstate/public-keys/2026-09.pem
 
 # 2. Restart with both, newest first. Processes sign with 2026-09 and keep
 #    publishing 2026-08, so assertions signed before the restart keep verifying.
 flow server --auth-policy /etc/flowstate/auth.yaml \
   --rpc-resource https://flowstate.example.com/rpc \
-  --identity-key /etc/flowstate/keys/2026-09.pem \
-  --identity-key /etc/flowstate/keys/2026-08.pem
+  --identity-key /etc/flowstate/public-keys/2026-09.pem \
+  --identity-key /etc/flowstate/public-keys/2026-08.pem
 
 # 3. After the retention window (federation.key_retention, default 24h, which has
 #    to outlast both the old assertions and every relying party's cached key set),
 #    restart everything with the new key alone and delete the old one.
 flow server --auth-policy /etc/flowstate/auth.yaml \
   --rpc-resource https://flowstate.example.com/rpc \
-  --identity-key /etc/flowstate/keys/2026-09.pem
+  --identity-key /etc/flowstate/public-keys/2026-09.pem
 ```
 
 `--rpc-resource` appears in both restarts because the `auth.yaml` this procedure
@@ -826,17 +836,17 @@ minus the audience:
 # certificate-only deployment: every issuers[] entry is kind: mtls, so there is
 # no audience to bind and flow server refuses --rpc-resource here.
 flow server --auth-policy /etc/flowstate/auth.yaml \
-  --identity-key /etc/flowstate/keys/2026-09.pem \
-  --identity-key /etc/flowstate/keys/2026-08.pem
+  --identity-key /etc/flowstate/public-keys/2026-09.pem \
+  --identity-key /etc/flowstate/public-keys/2026-08.pem
 ```
 
-The start-up line names what was actually published (`signing_key` and
-`verify_only_keys`), so step 2 is verifiable rather than assumed. A key that cannot
+The start-up line names what was actually published (`published_keys`), so step 2 is verifiable rather than assumed. A key that cannot
 be read or parsed, and two keys publishing one key id, refuse start-up rather than
 being skipped: a key silently left out is a rotation the operator believes is
-covered and is not. A verify-only entry may be the old private key file already
+covered and is not. On a worker a verify-only entry may be the old private key file already
 mounted, or just its public half as a PKIX PEM (`openssl pkey -in 2026-08.pem
--pubout`), which is the narrower custody choice.
+-pubout`), which is the narrower custody choice; the server accepts only the
+public half.
 
 Rotating is not revoking. Publishing the outgoing key for its retention is
 precisely what keeps rotation from rejecting valid assertions, so it does nothing

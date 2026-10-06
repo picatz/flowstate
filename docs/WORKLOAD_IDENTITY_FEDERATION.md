@@ -135,6 +135,15 @@ pairs are `RS256`/`RSA` (2048 bits or larger), `ES256`/`EC` (P-256) and
 from a rotation until its retention expires, so an operator must pick the
 intersection their consumer accepts.
 
+The server that publishes this key set holds no signing key: its
+`--identity-key` takes the PKIX public key PEM (`flow keys public --pem`) of each
+key workers sign with, and refuses a private key. Assertions are signed in the
+worker that runs the step, with the matching PKCS#8 private key, under the same
+key id (the file's base name). The server's key set therefore has no "active"
+key of its own; it lists exactly the public keys it was given. Every worker that
+shares a key signs as the same issuer, so federation is one deployment-wide trust
+domain until per-tenant issuers land.
+
 ## Consumer compatibility
 
 These statements describe the Flowstate side exactly. Cloud products change

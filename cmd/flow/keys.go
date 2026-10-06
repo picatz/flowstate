@@ -103,13 +103,20 @@ func newKeysPublicCommand() *cobra.Command {
 		Args:  cobra.NoArgs,
 		RunE:  runKeysPublic,
 		Example: `# What this key publishes:
-flow keys public --in identity/2026-08.pem`,
+flow keys public --in identity/2026-08.pem
+
+# The PKIX public key PEM a server's --identity-key takes, so the server
+# never holds the private key (the file's base name is the key id):
+flow keys public --in identity/2026-08.pem --pem > server-identity/2026-08.pem`,
 	}
 
 	cmd.Flags().String("in", "", "path to a PKCS#8 private key PEM (required)")
 	cmd.Flags().String("id", "", "key id published in the JWK "+
 		"(default: `--in`'s file name, without its extension)")
 	cmd.Flags().Bool("jwks", false, "wrap the public key in a JSON Web Key Set document for a trust policy's jwks_file")
+	cmd.Flags().Bool("pem", false, "print a PKIX public key PEM instead of a JWK: the only form "+
+		"`flow server --identity-key` accepts, which publishes keys workers sign with without holding them")
+	cmd.MarkFlagsMutuallyExclusive("pem", "jwks")
 	_ = cmd.MarkFlagRequired("in")
 
 	return cmd
@@ -341,6 +348,7 @@ func runKeysPublic(cmd *cobra.Command, _ []string) error {
 	in, _ := cmd.Flags().GetString("in")
 	id, _ := cmd.Flags().GetString("id")
 	jwksDocument, _ := cmd.Flags().GetBool("jwks")
+	pemOutput, _ := cmd.Flags().GetBool("pem")
 
 	if id == "" {
 		id = keyIDFromPath(in)
@@ -354,6 +362,18 @@ func runKeysPublic(cmd *cobra.Command, _ []string) error {
 	key, err := auth.NewSigningKey(id, private)
 	if err != nil {
 		return fmt.Errorf("%s: %w", in, err)
+	}
+
+	if pemOutput {
+		public, err := publicKeyOf(private)
+		if err != nil {
+			return err
+		}
+		encoded, err := x509.MarshalPKIXPublicKey(public)
+		if err != nil {
+			return fmt.Errorf("encoding public key: %w", err)
+		}
+		return pem.Encode(surface.Out, &pem.Block{Type: "PUBLIC KEY", Bytes: encoded})
 	}
 
 	jwkValue, err := publicJWK(id, key, private)

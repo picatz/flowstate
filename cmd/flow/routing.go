@@ -35,7 +35,7 @@ import (
 // which is loud, rather than a private one accidentally not requiring one, which is
 // silent.
 //
-// A deployment that does not federate outward has no broker, and then nothing is
+// A deployment that does not federate outward has no issuer, and then nothing is
 // mounted unauthenticated at all.
 //
 // # Why the protected-resource route only exists when configured
@@ -72,7 +72,7 @@ import (
 // did not has no such route at all, which is the fail-closed default this file's
 // per-route wrapping exists to keep.
 func serverHandler(
-	logger *slog.Logger, verifier auth.Verifier, peerVerifier auth.PeerVerifier, broker *auth.Broker,
+	logger *slog.Logger, verifier auth.Verifier, peerVerifier auth.PeerVerifier, issuer *auth.Issuer,
 	rpcResource string, rpc http.Handler, webhooks *server.WebhookReceiver, protectedResource *auth.ProtectedResource,
 	opts ...handlerOption,
 ) http.Handler {
@@ -139,8 +139,7 @@ func serverHandler(
 		mux.Handle(server.WebhookPathPrefix, webhooks)
 	}
 
-	if broker != nil {
-		issuer := broker.Issuer()
+	if issuer != nil {
 		mux.Handle(auth.DiscoveryPath, issuer.Handler())
 		mux.Handle(auth.WorkloadIssuerMetadataPath, issuer.Handler())
 		mux.Handle(issuer.JWKSPath(), issuer.Handler())

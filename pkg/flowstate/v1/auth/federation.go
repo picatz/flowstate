@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"github.com/picatz/flowstate/internal/strictyaml"
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
@@ -397,6 +398,36 @@ func (p FederationPolicy) Broker(key SigningKey, opts ...FederationOption) (*Bro
 		opt(&cfg)
 	}
 
+	issuerOpts := p.issuerOptions(cfg)
+
+	issuer, err := NewIssuer(p.Issuer, key, issuerOpts...)
+	if err != nil {
+		return nil, err
+	}
+
+	exchangers, err := p.exchangers(cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	brokerOpts := []BrokerOption{
+		WithAssumeAllowRules(p.Allow...),
+		WithAssumeDenyRules(p.Deny...),
+	}
+	for name, exchanger := range exchangers {
+		brokerOpts = append(brokerOpts, WithTarget(name, exchanger))
+	}
+	if cfg.clock != nil {
+		brokerOpts = append(brokerOpts, WithBrokerClock(cfg.clock))
+	}
+
+	return NewBroker(issuer, brokerOpts...)
+}
+
+// issuerOptions translates the policy's issuer settings, and the verify-only
+// keys cfg collected, into [IssuerOption]s. [FederationPolicy.Broker] and
+// [FederationPolicy.PublishOnlyIssuer] share it so the two build one issuer.
+func (p FederationPolicy) issuerOptions(cfg federationConfig) []IssuerOption {
 	issuerOpts := []IssuerOption{}
 	if p.AssertionLifetime > 0 {
 		issuerOpts = append(issuerOpts, WithAssertionLifetime(p.AssertionLifetime))
@@ -425,28 +456,37 @@ func (p FederationPolicy) Broker(key SigningKey, opts ...FederationOption) (*Bro
 	// property a reader has to go and check.
 	issuerOpts = append(issuerOpts, cfg.verifyOnly...)
 
-	issuer, err := NewIssuer(p.Issuer, key, issuerOpts...)
-	if err != nil {
+	return issuerOpts
+}
+
+// PublishOnlyIssuer builds the issuer this policy describes with no signing key:
+// it serves the discovery documents and a key set holding exactly the
+// verify-only keys given by [WithFederationVerifyOnlyKey], and cannot mint. It
+// is what a server that publishes what its workers sign holds, so the process
+// serving the key set never reads private signing material. At least one
+// verify-only key is required; see [NewIssuer].
+func (p FederationPolicy) PublishOnlyIssuer(opts ...FederationOption) (*Issuer, error) {
+	if err := p.Validate(); err != nil {
 		return nil, err
 	}
 
-	exchangers, err := p.exchangers(cfg)
-	if err != nil {
-		return nil, err
+	var cfg federationConfig
+	for _, opt := range opts {
+		opt(&cfg)
 	}
 
-	brokerOpts := []BrokerOption{
-		WithAssumeAllowRules(p.Allow...),
-		WithAssumeDenyRules(p.Deny...),
-	}
-	for name, exchanger := range exchangers {
-		brokerOpts = append(brokerOpts, WithTarget(name, exchanger))
-	}
-	if cfg.clock != nil {
-		brokerOpts = append(brokerOpts, WithBrokerClock(cfg.clock))
-	}
+	return NewIssuer(p.Issuer, SigningKey{}, p.issuerOptions(cfg)...)
+}
 
-	return NewBroker(issuer, brokerOpts...)
+// TargetNames returns the configured target names, sorted: what
+// [Broker.Targets] reports, for a process that has no broker.
+func (p FederationPolicy) TargetNames() []string {
+	names := make([]string, 0, len(p.Targets))
+	for _, target := range p.Targets {
+		names = append(names, target.Name)
+	}
+	slices.Sort(names)
+	return names
 }
 
 // exchangers builds an exchanger for every configured target.
