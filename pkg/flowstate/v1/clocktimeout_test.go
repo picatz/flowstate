@@ -22,7 +22,7 @@ var clockTimeoutStart = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 // runUnderVirtualClock runs one step whose task spends `spend` of virtual time
 // (or the whole of a time it never gets, when spend is long) under policy, and
 // returns what the run reported and how much virtual time went by.
-func runUnderVirtualClock(t *testing.T, spend time.Duration, fail error, policy *v1.StepPolicy) (*v1.Workflow_StepOutputs, error, time.Duration) {
+func runUnderVirtualClock(t *testing.T, spend time.Duration, fail error, policy *v1.StepPolicy) (*v1.Workflow_StepOutputs, time.Duration, error) {
 	t.Helper()
 
 	registry := v1.NewRegistry()
@@ -66,7 +66,7 @@ func runUnderVirtualClock(t *testing.T, spend time.Duration, fail error, policy 
 	})
 	require.Less(t, time.Since(started), 10*time.Second, "the run spent real time; the clock was not driving it")
 
-	return out, err, clock.Now().Sub(clockTimeoutStart)
+	return out, clock.Now().Sub(clockTimeoutStart), err
 }
 
 // TestAStepTimeoutFiresOnTheVirtualClock is the claim itself: a task that would
@@ -74,7 +74,7 @@ func runUnderVirtualClock(t *testing.T, spend time.Duration, fail error, policy 
 func TestAStepTimeoutFiresOnTheVirtualClock(t *testing.T) {
 	t.Parallel()
 
-	_, err, elapsed := runUnderVirtualClock(t, time.Hour, nil,
+	_, elapsed, err := runUnderVirtualClock(t, time.Hour, nil,
 		&v1.StepPolicy{Timeout: durationpb.New(10 * time.Second), Retry: &v1.RetryPolicy{MaxAttempts: 1}})
 
 	require.Error(t, err)
@@ -89,7 +89,7 @@ func TestAStepUnderATimeoutThatAnswersInTimeSpendsOnlyItsOwnTime(t *testing.T) {
 	t.Parallel()
 
 	for _, spend := range []time.Duration{0, 4 * time.Second, 9 * time.Second} {
-		out, err, elapsed := runUnderVirtualClock(t, spend, nil,
+		out, elapsed, err := runUnderVirtualClock(t, spend, nil,
 			&v1.StepPolicy{Timeout: durationpb.New(10 * time.Second)})
 
 		require.NoError(t, err, "spent %s under a 10s timeout", spend)
@@ -104,7 +104,7 @@ func TestAStepUnderATimeoutThatAnswersInTimeSpendsOnlyItsOwnTime(t *testing.T) {
 func TestATotalTimeoutEndsTheRetryLoopOnTheVirtualClock(t *testing.T) {
 	t.Parallel()
 
-	_, err, elapsed := runUnderVirtualClock(t, 0, &v1.TaskError{Task: "spend_virtual_time", Kind: v1.ErrorKindUpstream, Err: errors.New("reset")},
+	_, elapsed, err := runUnderVirtualClock(t, 0, &v1.TaskError{Task: "spend_virtual_time", Kind: v1.ErrorKindUpstream, Err: errors.New("reset")},
 		&v1.StepPolicy{
 			TotalTimeout: durationpb.New(5 * time.Second),
 			Retry: &v1.RetryPolicy{
@@ -126,7 +126,7 @@ func TestATotalTimeoutEndsTheRetryLoopOnTheVirtualClock(t *testing.T) {
 func TestAnAttemptTimeoutUnderATotalTimeoutStillReadsAsADeadline(t *testing.T) {
 	t.Parallel()
 
-	_, err, elapsed := runUnderVirtualClock(t, time.Hour, nil, &v1.StepPolicy{
+	_, elapsed, err := runUnderVirtualClock(t, time.Hour, nil, &v1.StepPolicy{
 		Timeout:      durationpb.New(30 * time.Second),
 		TotalTimeout: durationpb.New(10 * time.Second),
 		Retry:        &v1.RetryPolicy{MaxAttempts: 1},
