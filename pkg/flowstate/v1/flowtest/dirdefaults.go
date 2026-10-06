@@ -9,7 +9,7 @@ import (
 	"reflect"
 	"slices"
 
-	"github.com/goccy/go-yaml/parser"
+	"github.com/picatz/flowstate/internal/strictyaml"
 )
 
 // `testdefaults.yaml` (#1072, slice 3): the values every suite in one
@@ -119,7 +119,7 @@ func parseDirDefaults(data []byte, path string) (*dirDefaults, error) {
 		return nil, refuse(fmt.Errorf("%d bytes exceeds the %d byte limit for a directory defaults file",
 			len(data), MaxTestFileBytes))
 	}
-	parsed, err := parser.ParseBytes(data, 0)
+	parsed, err := strictyaml.ParseBytes(data, 0)
 	if err != nil {
 		return nil, refuse(err)
 	}

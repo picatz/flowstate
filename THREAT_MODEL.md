@@ -249,6 +249,24 @@ record per class per route per minute with a count so the unauthenticated path
 cannot amplify into the sink (`docs/DEPLOYMENT.md` "Audit trail",
 `pkg/flowstate/v1/server/webhookaudit.go`).
 
+A trigger may instead (or also) declare `verify: {jwt: <name>}`, which admits a
+delivery carrying a bearer token from the named entry of the deployment's trust
+policy. The server's own verifier checks it (signature, issuer, audience, lifetime,
+claim rules, the entry's `kind: oidc`), the entry the token matched must be the one
+named, and its tenant must be the receiver's, or the delivery is refused with the
+one answer every refusal gets. A Flowfile cannot name a key or a URL, so an author
+cannot choose which host the receiver fetches keys from; unknown names and a
+missing trust policy stop the server at startup. The delivery then acts as the
+token's principal, with `kind` as the trust policy assigned it and never as a claim
+said, and the `Authorization` header is dropped from `event.headers` so a bearer
+token cannot reach an input, a key or a payload and so history. What a bearer token
+does not do is cover the body or other headers: bind it with `hmac_sha256` or
+`stripe` when the payload must be trusted, and note a token is replayable until its
+`exp` (bounded by the entry's maximum token age) — `idempotency_key:` is what makes
+a replayed delivery join the run rather than start another. The unrouted-path
+timing match spends only the signing schemes' work, so whether a route declares
+`jwt` is observable to a prober who can time it.
+
 A trigger declaring `signal:` answers a gate instead of starting a run, over the
 same route and past the same verification. What that adds is one authorization and
 one address, both decided by the server: the delivery acts as the principal the

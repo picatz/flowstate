@@ -562,6 +562,12 @@ type WebhookTrigger struct {
 	// material is a reference the receiver resolves rather than a value in a
 	// repository.
 	//
+	// `jwt` is the exception to "a secret reference": its value is the name of an
+	// entry in the deployment's trust policy, and the delivery must carry a bearer
+	// token that entry's issuer vouches for. It authenticates the sender (the
+	// delivery then acts as the token's principal) and covers none of the body.
+	// Every scheme written must verify.
+	//
 	// At least one entry, and the schemes are a closed set
 	// ([v1.WebhookVerificationSchemes]) checked when the file compiles: a scheme
 	// nobody implements is a delivery nobody can verify, which under the rule

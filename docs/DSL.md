@@ -1866,8 +1866,8 @@ second input path is one `flow validate` could not check. A step *called* `event
 still legal — the name is not reserved, since inside a trigger there is no step scope
 for it to shadow — and `flow fix` knows the binding, so it will not root it.
 
-**Two keys are required, and fail closed.** `verify:` names at least one signing
-scheme (`hmac_sha256` or `stripe`) bound to a `${secret(...)}` reference: there is
+**Two keys are required, and fail closed.** `verify:` names at least one verification
+scheme (`hmac_sha256` or `stripe`, bound to a `${secret(...)}` reference, or `jwt`, bound to the name of a trust policy entry): there is
 deliberately no spelling that means "accept anything", so an unverifiable delivery is
 refused rather than allowed on the grounds that it could not be checked, and a webhook
 with no scheme is inert rather than permissive. `idempotency_key:` names one delivery,
@@ -1991,7 +1991,15 @@ resolved through the deployment's `--secret-*` providers — so a deployment tha
 serve a webhook fails to start rather than refusing deliveries at three in the morning.
 The generic `hmac_sha256` scheme reads `X-Flowstate-Signature` (hex, optionally
 `sha256=`-prefixed, over the raw body); `stripe` reads `Stripe-Signature` with its own
-five-minute replay window. A delivery that verifies starts a run whose id is derived
+five-minute replay window; `jwt: <name>` reads `Authorization: Bearer <token>` and checks it
+against the entry of the deployment's `--auth-policy` of that name, which must be a
+`kind: oidc` entry — a name no entry has, or a server with no trust policy, stops the
+server at startup. The delivery then acts as that token's principal, in the receiver's
+tenant, which is what an `allow:` over `run.identity` or `sender.identity` sees; the
+token authenticates the sender and covers none of the body, so pair it with a signing
+scheme where the body matters. `flow test` has no trust policy to check a token with:
+a case's `signature: invalid` declares the token did not verify (valid by default), and
+a signing key beside it is still computed from the bound `secrets:`. A delivery that verifies starts a run whose id is derived
 from `idempotency_key:`, so a redelivery joins that run instead of starting a second
 one, and both drivers ignore the block entirely — `flow run local` still runs a file
 with a webhook on it once, now.

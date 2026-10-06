@@ -170,9 +170,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/goccy/go-yaml/parser"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	"github.com/picatz/flowstate/internal/strictyaml"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
 )
@@ -469,8 +469,9 @@ type Test struct {
 	Cases []Test `yaml:"cases"`
 
 	// Faults are failures `flow test --seeds` may inject into this case's task
-	// invocations; see [Fault]. They change nothing about a plain run, which
-	// only checks that each one names an invocation the case reaches. A row
+	// invocations, or deliveries a scripted signal may lose; see [Fault]. They
+	// change nothing about a plain run, which fires only the pinned ones and
+	// checks that each names an invocation the case reaches. A row
 	// that states none inherits its table entry's.
 	Faults []Fault `yaml:"faults"`
 
@@ -1454,7 +1455,7 @@ func parseSourceWith(data []byte, dd *dirDefaults, requireWorkflow bool) (*File,
 	// malformed document and reports it in the shape a caller already expects,
 	// and reporting it twice, once from each of two parsers, would be the same
 	// fact said two different ways depending on which noticed first.
-	parsed, parseErr := parser.ParseBytes(data, 0)
+	parsed, parseErr := strictyaml.ParseBytes(data, 0)
 	if parseErr == nil {
 		if err := checkExpansionBoundsIn(parsed); err != nil {
 			// Unpositioned on purpose: this is a property of the document as a

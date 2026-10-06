@@ -98,18 +98,57 @@ func pinsOf(from []Fault, authored []bool, atoms []faultAtom) []Fault {
 // At most maxRuns probes are spent, including the first.
 func shrinkFaults(pins []Fault, authored []bool, maxRuns int, violates func([]Fault) (violated, ok bool)) shrinkResult {
 	atoms := atomsOf(pins, authored)
-	result := shrinkResult{Pins: pins, From: len(atoms)}
+	r := ddmin(atoms, maxRuns, func(subset []faultAtom) (bool, bool) {
+		return violates(pinsOf(pins, authored, subset))
+	})
+	result := shrinkResult{
+		Pins: pins, From: len(atoms), Runs: r.Runs,
+		Reproduced: r.Reproduced, Inconclusive: r.Inconclusive, Minimal: r.Minimal,
+	}
+	if r.Reproduced {
+		result.Pins = pinsOf(pins, authored, r.Kept)
+	}
+
+	return result
+}
+
+// ddminResult is what [ddmin] found over a set of items.
+type ddminResult[T any] struct {
+	// Kept is the smallest violating subset found, in the input's order; the
+	// input itself when it did not reproduce.
+	Kept []T
+	// Runs is how many probes were spent.
+	Runs int
+	// Reproduced reports that the whole input violated when replayed on its
+	// own.
+	Reproduced bool
+	// Inconclusive reports that the first replay was cut off.
+	Inconclusive bool
+	// Minimal reports that removing any single item from Kept stopped the
+	// violation; false when the budget ended the search first or the input did
+	// not reproduce.
+	Minimal bool
+}
+
+// ddmin is the one delta-debugging search (Zeller and Hildebrandt, "Simplifying
+// and Isolating Failure-Inducing Input", TSE 2002) both shrinkers share: it
+// reduces items, a violating set, to a 1-minimal violating subset, spending at
+// most maxRuns calls of violates including the first. violates reports whether
+// a run with exactly that subset breaks the case, and ok=false when the run was
+// cut off and so answers nothing.
+func ddmin[T any](items []T, maxRuns int, violates func([]T) (violated, ok bool)) ddminResult[T] {
+	result := ddminResult[T]{Kept: items}
 
 	exhausted := false
-	probe := func(subset []faultAtom) bool {
-		if result.Runs >= maxRuns {
+	probe := func(subset []T) bool {
+		if exhausted || result.Runs >= maxRuns {
 			exhausted = true
 
 			return false
 		}
 		result.Runs++
 
-		violated, ok := violates(pinsOf(pins, authored, subset))
+		violated, ok := violates(subset)
 		if !ok {
 			// The probe was cut off, so its "no" says nothing about the
 			// subset; the search ends there rather than reading it as a
@@ -122,21 +161,22 @@ func shrinkFaults(pins []Fault, authored []bool, maxRuns int, violates func([]Fa
 		return violated
 	}
 
-	if len(atoms) == 0 || !probe(atoms) {
+	if len(items) == 0 || !probe(items) {
 		result.Inconclusive = exhausted
+
 		return result
 	}
 	result.Reproduced = true
 
 	granularity := 2
-	for len(atoms) >= 2 && !exhausted {
-		chunks := splitAtoms(atoms, granularity)
+	for len(items) >= 2 && !exhausted {
+		chunks := splitItems(items, granularity)
 		reduced := false
 
 		// A single chunk that violates on its own.
 		for _, chunk := range chunks {
 			if probe(chunk) {
-				atoms, granularity, reduced = chunk, 2, true
+				items, granularity, reduced = chunk, 2, true
 
 				break
 			}
@@ -147,37 +187,37 @@ func shrinkFaults(pins []Fault, authored []bool, maxRuns int, violates func([]Fa
 			rest := slices.Concat(chunks[:i]...)
 			rest = append(rest, slices.Concat(chunks[i+1:]...)...)
 			if len(rest) > 0 && probe(rest) {
-				atoms, granularity, reduced = rest, max(granularity-1, 2), true
+				items, granularity, reduced = rest, max(granularity-1, 2), true
 			}
 		}
 		if reduced {
 			continue
 		}
-		if granularity >= len(atoms) {
+		if granularity >= len(items) {
 			break
 		}
-		granularity = min(granularity*2, len(atoms))
+		granularity = min(granularity*2, len(items))
 	}
 
-	result.Pins = pinsOf(pins, authored, atoms)
-	// Every removal of a single firing was probed and stopped the violation,
+	result.Kept = items
+	// Every removal of a single item was probed and stopped the violation,
 	// unless the budget cut the search off before it could say so.
 	result.Minimal = !exhausted
 
 	return result
 }
 
-// splitAtoms divides atoms into n contiguous chunks of near-equal size.
-func splitAtoms(atoms []faultAtom, n int) [][]faultAtom {
-	chunks := make([][]faultAtom, 0, n)
-	size, extra := len(atoms)/n, len(atoms)%n
+// splitItems divides items into n contiguous chunks of near-equal size.
+func splitItems[T any](items []T, n int) [][]T {
+	chunks := make([][]T, 0, n)
+	size, extra := len(items)/n, len(items)%n
 	start := 0
 	for i := range n {
 		end := start + size
 		if i < extra {
 			end++
 		}
-		chunks = append(chunks, atoms[start:end])
+		chunks = append(chunks, items[start:end])
 		start = end
 	}
 

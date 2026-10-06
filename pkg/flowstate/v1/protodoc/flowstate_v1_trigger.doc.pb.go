@@ -309,6 +309,12 @@ func init() {
 				" material is a reference the receiver resolves rather than a value in a\n" +
 				" repository.\n" +
 				"\n" +
+				" `jwt` is the exception to \"a secret reference\": its value is the name of an\n" +
+				" entry in the deployment's trust policy, and the delivery must carry a bearer\n" +
+				" token that entry's issuer vouches for. It authenticates the sender (the\n" +
+				" delivery then acts as the token's principal) and covers none of the body.\n" +
+				" Every scheme written must verify.\n" +
+				"\n" +
 				" At least one entry, and the schemes are a closed set\n" +
 				" ([v1.WebhookVerificationSchemes]) checked when the file compiles: a scheme\n" +
 				" nobody implements is a delivery nobody can verify, which under the rule\n" +

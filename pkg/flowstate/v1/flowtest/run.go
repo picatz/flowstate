@@ -973,7 +973,7 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 		return
 	}
 
-	if err := checkFaultNames(test.Faults, workflow); err != nil {
+	if err := checkFaultNames(test.Faults, workflow, test.Signals); err != nil {
 		caseError("%s", err)
 		return
 	}
@@ -1272,7 +1272,7 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	runFinished := make(chan struct{})
 
 	outcomes := newSignalOutcomes()
-	stopScripts, scriptErr := scriptSignals(runFinished, clock, signals, test.Signals, recorder, outcomes)
+	stopScripts, scriptErr := scriptSignals(runFinished, clock, signals, test.Signals, faults.dropSignals(ctx, test.Signals), faults, recorder, outcomes)
 	defer stopScripts()
 	if scriptErr != nil {
 		caseError("%s", scriptErr)
@@ -1356,6 +1356,7 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	}
 
 	facts := newRunFacts(runErr, invocations, workflow.GetName())
+	facts.signalsDropped, facts.signalsDelayed = outcomes.droppedNames(), outcomes.delayedNames()
 	if shown.faulted {
 		// A run with faults injected is judged by what must hold of every
 		// run, and by the one oracle a faulted run owes unprompted
@@ -1767,7 +1768,7 @@ func unstubbedTaskFn(name string, seen *unstubbedTasks) v1.TaskFunc {
 // since before this existed, and delivered at once by [v1.VirtualClock.After]
 // exactly like zero — in the same tie group as the shared empty default
 // rather than racing it under a raw-duration key the two would never match.
-func scriptSignals(runFinished <-chan struct{}, clock *v1.VirtualClock, signals *v1.LocalSignals, scripts []SignalScript, recorder *runRecorder, outcomes *signalOutcomes) (stop func(), err error) {
+func scriptSignals(runFinished <-chan struct{}, clock *v1.VirtualClock, signals *v1.LocalSignals, scripts []SignalScript, dropped []*signalDrop, faults *faultPlan, recorder *runRecorder, outcomes *signalOutcomes) (stop func(), err error) {
 	if len(scripts) == 0 {
 		return func() {}, nil
 	}
@@ -1783,6 +1784,14 @@ func scriptSignals(runFinished <-chan struct{}, clock *v1.VirtualClock, signals 
 		// nobody.
 		senderSubject string
 
+		// drop is a fault's verdict that this delivery is lost on the way:
+		// the goroutine keeps its place in the order, and sends nothing.
+		drop *signalDrop
+
+		// sentAt is when the sender sends it, before any delay: the moment a
+		// fault's verdict takes effect.
+		sentAt time.Duration
+
 		// waitFor is closed once the nearest earlier job scripted for this
 		// same `at` has delivered (or given up), so this job's own delivery
 		// is ordered after it. Nil for a job that ties nothing before it.
@@ -1795,7 +1804,7 @@ func scriptSignals(runFinished <-chan struct{}, clock *v1.VirtualClock, signals 
 
 	jobs := make([]job, 0, len(scripts))
 	lastByAt := make(map[time.Duration]chan struct{}, len(scripts))
-	for _, s := range scripts {
+	for n, s := range scripts {
 		at := time.Duration(0)
 		if s.At != "" {
 			d, err := time.ParseDuration(s.At)
@@ -1811,6 +1820,10 @@ func scriptSignals(runFinished <-chan struct{}, clock *v1.VirtualClock, signals 
 			// tie group everything at-or-before the epoch resolves into.
 			at = max(d, 0)
 		}
+		sentAt := at
+		if dropped[n] != nil {
+			at = satAdd(at, dropped[n].delay)
+		}
 		subject := ""
 		if s.Sender != nil {
 			subject = s.Sender.Subject
@@ -1820,6 +1833,8 @@ func scriptSignals(runFinished <-chan struct{}, clock *v1.VirtualClock, signals 
 			name: s.Name, at: at, payload: s.Payload,
 			sender:        scriptedSender(s.Sender, s.DeliveryID),
 			senderSubject: subject,
+			drop:          dropped[n],
+			sentAt:        sentAt,
 			waitFor:       lastByAt[at],
 			turnDone:      turnDone,
 		})
@@ -1834,8 +1849,36 @@ func scriptSignals(runFinished <-chan struct{}, clock *v1.VirtualClock, signals 
 			defer func() { done <- struct{}{} }()
 			defer close(j.turnDone)
 
+			// A delay acts when the sender sends: it leaves on time and
+			// arrives after the delay. The fire is recorded at the sent
+			// moment, so a delay that carries the signal past the run's end
+			// still counts as a fault the run met, while a run that ended
+			// before the sender sent delays nothing. The clock's After is
+			// relative to the moment it is asked, so the second park waits
+			// the delay itself, not the absolute arrival offset.
+			wait := j.at
+			if j.drop != nil && j.drop.delay > 0 {
+				select {
+				case <-clock.After(j.sentAt):
+				case <-runFinished:
+					return
+				}
+				// Both cases can be ready at once for a sender with no `at:`
+				// that first runs after the run returned; the timer may then
+				// win the select, so the completion is checked again before a
+				// fire is recorded, as the delivery path below does.
+				select {
+				case <-runFinished:
+					return
+				default:
+				}
+				faults.commitDrop(j.drop)
+				outcomes.noteDelayed(j.name)
+				wait = j.drop.delay
+			}
+
 			select {
-			case <-clock.After(j.at):
+			case <-clock.After(wait):
 			case <-runFinished:
 				// The run ended before the clock ever advanced to this
 				// signal's moment — nothing is left to deliver to.
@@ -1866,6 +1909,18 @@ func scriptSignals(runFinished <-chan struct{}, clock *v1.VirtualClock, signals 
 			case <-runFinished:
 				return
 			default:
+			}
+
+			// A lost delivery is one the sender made and the run never learns
+			// of: nothing reaches the gate, so no policy decides it. It keeps
+			// its place in its tie group (the waitFor above), so a drop in the
+			// middle of a group does not let the next job overtake the one
+			// before it.
+			if j.drop != nil && j.drop.delay == 0 {
+				faults.commitDrop(j.drop)
+				outcomes.noteDropped(j.name)
+
+				return
 			}
 
 			// The send and its record are one atomic decision, and the record
@@ -1899,6 +1954,16 @@ func scriptSignals(runFinished <-chan struct{}, clock *v1.VirtualClock, signals 
 			}
 		})
 	}, nil
+}
+
+// satAdd is a + b, saturating at the largest duration: a script whose `at:` is
+// already at the limit stays there instead of wrapping to the past.
+func satAdd(a, b time.Duration) time.Duration {
+	if a > math.MaxInt64-b {
+		return math.MaxInt64
+	}
+
+	return a + b
 }
 
 // scriptedSender renders a [SignalScript]'s optional `sender:` as the

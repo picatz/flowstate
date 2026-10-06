@@ -2364,7 +2364,7 @@ func (x *GetTimelineResponse) GetSensitiveDisclosure() SensitiveDisclosure {
 type CompileRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// File is the Flowfile to compile: a `name` used in diagnostics and its
-	// `source` bytes, at most 1 MiB (base64 in JSON).
+	// `source` text, plain YAML, at most 1 MiB.
 	File          *SourceFile `protobuf:"bytes,1,opt,name=file,proto3" json:"file,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

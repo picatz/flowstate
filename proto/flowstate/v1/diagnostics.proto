@@ -212,11 +212,15 @@ message SourceFile {
     max_len: 512
   }];
 
-  // Source is the file's bytes.
+  // Source is the file's text: the Flowfile as written, plain YAML, the same
+  // spelling every other authoring surface takes (`flowstate_run_local`, `flowstate_test`,
+  // `flowstate_debug`). It is a string rather than bytes so that a JSON caller, an
+  // agent among them, sends the document itself rather than its base64 (#1290);
+  // a Flowfile is UTF-8, and protobuf refuses a string that is not.
   //
   // Bounded at the same megabyte the offline parser bounds a Flowfile at, and for
   // the same reason: this is input an outside party chooses, and the resource it
   // spends is memory in the parser. A caller sending more is refused by
   // protovalidate before anything reads it.
-  bytes source = 2 [(buf.validate.field).bytes = {max_len: 1048576}];
+  string source = 2 [(buf.validate.field).string = {max_bytes: 1048576}];
 }

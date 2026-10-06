@@ -12,13 +12,16 @@ breaking:
     - FILE
     - WIRE
 
-  # Removing the inline pure helpers (`PureHelper`, `PureHelperParameter`).
-  # Both messages are deleted outright; no other message references them, so no
-  # field or wire shape changes.
+  # `SourceFile.source` becomes a string (#1290): a JSON caller sends the
+  # Flowfile as plain YAML instead of its base64. The field keeps its name and
+  # number 2; only its type changes, so the Connect and protobuf wire bytes are
+  # the same for any valid UTF-8 document, and JSON callers change spelling.
   # Remove this block in the next commit on main, once this one is the baseline.
   ignore_only:
-    MESSAGE_NO_DELETE:
-      - proto/flowstate/v1/workflow.proto
+    FIELD_SAME_TYPE:
+      - proto/flowstate/v1/diagnostics.proto
+    FIELD_WIRE_COMPATIBLE_TYPE:
+      - proto/flowstate/v1/diagnostics.proto
 
   # FILE and WIRE compare descriptors: names, numbers, types, cardinality, and
   # reservations. They do not prove that a runtime still gives a field the same

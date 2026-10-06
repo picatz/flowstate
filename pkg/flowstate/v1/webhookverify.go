@@ -1,6 +1,7 @@
 package flowstatev1
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
 )
 
@@ -120,6 +122,11 @@ var (
 	// ErrWebhookKeyUnresolved: the trigger declares a scheme this deployment
 	// resolved no key for, so nothing could be checked.
 	ErrWebhookKeyUnresolved = errors.New("no key was resolved for a declared scheme")
+
+	// ErrWebhookBearerUnchecked: the trigger declares [WebhookSchemeJWT] and the
+	// caller could not check a bearer token, so the delivery is refused rather
+	// than accepted unchecked.
+	ErrWebhookBearerUnchecked = errors.New("the trigger declares a bearer token this caller cannot check")
 )
 
 // VerifyWebhookDelivery reports whether a delivery satisfies what its trigger
@@ -170,6 +177,122 @@ func VerifyWebhookDelivery(trigger *WebhookTrigger, keys map[string]secrets.Secr
 	if err := CheckWebhookTrigger(trigger); err != nil {
 		return err
 	}
+
+	// This entry point holds no trust policy, so it cannot check a bearer token,
+	// and a trigger that declares one must not pass for having satisfied it
+	// because the signing schemes beside it did, or because there were none.
+	// [VerifyWebhookDeliveryAs] is the one that can.
+	if issuer, declared := WebhookJWTIssuer(trigger); declared {
+		return fmt.Errorf("%w: webhook %q verifies with %q %q, which needs a trust policy to check",
+			ErrWebhookBearerUnchecked, trigger.GetName(), WebhookSchemeJWT, issuer)
+	}
+
+	return verifyWebhookSigning(trigger, keys, headers, body, now)
+}
+
+// VerifyWebhookDeliveryAs is [VerifyWebhookDelivery] for a receiver that holds a
+// trust policy, and returns the sender a [WebhookSchemeJWT] entry authenticated.
+//
+// Every declared scheme must verify, the bearer token among them. The sender is
+// nil when the trigger declares no bearer scheme, which is the signal that the
+// delivery acts as the trigger and nothing finer.
+//
+// The token must come from the trust policy entry the trigger names and no
+// other: a token the policy trusts, from another entry, is a different sender
+// vouched for by a different rule, and is refused. Its tenant must be the
+// receiver's own (namespace), because a webhook route belongs to one tenant and
+// a sender's token cannot move it to another; the check is here, beside the
+// token, so a caller cannot verify and forget it.
+//
+// bearer is called only when the trigger declares the scheme, and never fetches
+// anything the verifier's own key cache does not already bound. The Authorization
+// header is the credential and is not copied anywhere by this function; the
+// caller removes it from what becomes `event.headers` ([NewWebhookEvent]).
+func VerifyWebhookDeliveryAs(
+	ctx context.Context, trigger *WebhookTrigger, keys map[string]secrets.Secret,
+	bearer auth.Verifier, namespace string, headers map[string]string, body []byte, now time.Time,
+) (*auth.Principal, error) {
+	if err := CheckWebhookTrigger(trigger); err != nil {
+		return nil, err
+	}
+
+	issuer, declared := WebhookJWTIssuer(trigger)
+
+	// Signing schemes first and in full, so the work they spend does not depend on
+	// whether the bearer leg is going to refuse.
+	signingErr := verifyWebhookSigning(trigger, keys, headers, body, now)
+	if !declared {
+		return nil, signingErr
+	}
+
+	sender, bearerErr := verifyWebhookBearer(ctx, trigger.GetName(), issuer, bearer, namespace, headers)
+	if signingErr != nil {
+		return nil, signingErr
+	}
+	if bearerErr != nil {
+		return nil, bearerErr
+	}
+
+	return sender, nil
+}
+
+// verifyWebhookBearer checks the credential [WebhookSchemeJWT] names.
+func verifyWebhookBearer(
+	ctx context.Context, webhook, issuer string, bearer auth.Verifier, namespace string, headers map[string]string,
+) (*auth.Principal, error) {
+	if bearer == nil {
+		return nil, fmt.Errorf("%w: webhook %q verifies with %q %q and this deployment holds no trust policy",
+			ErrWebhookBearerUnchecked, webhook, WebhookSchemeJWT, issuer)
+	}
+
+	token, ok := bearerToken(webhookHeader(headers, WebhookAuthorizationHeader))
+	if !ok {
+		return nil, fmt.Errorf("%w: webhook %q: the delivery carried no bearer token in %s",
+			ErrWebhookSignatureMissing, webhook, WebhookAuthorizationHeader)
+	}
+
+	principal, err := bearer.Verify(ctx, token)
+	if err != nil {
+		return nil, fmt.Errorf("%w: webhook %q: the bearer token did not verify: %w",
+			ErrWebhookSignatureInvalid, webhook, err)
+	}
+
+	if principal.IssuerName != issuer {
+		return nil, fmt.Errorf("%w: webhook %q: the token was vouched for by trust policy entry %q, "+
+			"and this webhook accepts %q only", ErrWebhookSignatureInvalid, webhook, principal.IssuerName, issuer)
+	}
+
+	if principal.Namespace != namespace {
+		return nil, fmt.Errorf("%w: webhook %q: the token belongs to another tenant than this route",
+			ErrWebhookSignatureInvalid, webhook)
+	}
+
+	return &principal, nil
+}
+
+// bearerToken extracts the credential from an Authorization header value.
+//
+// RFC 9110 §11.1 makes the authentication scheme case-insensitive, and RFC 6750
+// §2.1 defines `Bearer` followed by one or more spaces and the token. Anything
+// else, including another scheme or a token with embedded whitespace, is no
+// credential.
+func bearerToken(header string) (string, bool) {
+	scheme, token, found := strings.Cut(header, " ")
+	if !found || !strings.EqualFold(scheme, "Bearer") {
+		return "", false
+	}
+
+	token = strings.TrimLeft(token, " ")
+	if token == "" || strings.ContainsAny(token, " \t") {
+		return "", false
+	}
+
+	return token, true
+}
+
+// verifyWebhookSigning is the signing half of verification: every scheme that
+// checks the body against a key. See [VerifyWebhookDelivery].
+func verifyWebhookSigning(trigger *WebhookTrigger, keys map[string]secrets.Secret, headers map[string]string, body []byte, now time.Time) error {
 
 	verify := trigger.GetVerify()
 
@@ -480,7 +603,7 @@ func SignStripeBody(key secrets.Secret, body []byte, at time.Time) string {
 // accepts the body.
 //
 // It returns the header's name and value for any scheme in
-// [WebhookVerificationSchemes], and refuses a name outside that set. The two
+// [WebhookSigningSchemes], and refuses a name outside that set. The two
 // directions are one table, not two: a scheme added for verification without a
 // case here makes TestEveryDeclarableSchemeCanBeSigned and TestEveryDeclarableSchemeIsImplemented fail, and so does the
 // reverse, so a sender and a receiver built from one tree cannot disagree about

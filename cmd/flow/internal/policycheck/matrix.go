@@ -14,7 +14,6 @@ import (
 	"text/tabwriter"
 
 	"github.com/goccy/go-yaml"
-	"github.com/goccy/go-yaml/parser"
 
 	"github.com/picatz/flowstate/internal/strictyaml"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -527,7 +526,7 @@ func refuseAliasedYAML(data []byte) (err error) {
 		}
 	}()
 
-	file, parseErr := parser.ParseBytes(data, 0)
+	file, parseErr := strictyaml.ParseBytes(data, 0)
 	if parseErr != nil {
 		return fmt.Errorf("the matrix is not YAML: %w", withoutSource(parseErr))
 	}

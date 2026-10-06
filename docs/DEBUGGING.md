@@ -39,7 +39,9 @@ A violation `flow test --seeds N` finds names its seed (`flow test --seed 7 --
 <file>`). Add `--debug` to that command and the session holds the seed's own run:
 the faults the seed injects fire where it drew them, in the order it chose, so
 the stop at the step a fault fails is the failure the search found, not a
-rehearsal of it. The written-order baseline an exploration runs first goes
+rehearsal of it. A `delay:` fault holds its call on the virtual clock, so stepping
+over a slow call costs no wall time and the next stop shows the later virtual
+time. The written-order baseline an exploration runs first goes
 unheld, and `--seeds` with `--debug` is refused, since many runs are not one to
 step through. The seeded run is local and is not a recorded history, so there is
 nothing to step back through yet.
@@ -104,41 +106,61 @@ held at orders[1]/charge (task "log") — breakpoint orders/charge, revision 6
 The vocabulary is the one a debugger has had since `dbx`, which is the point —
 nothing here is worth learning twice. `help` lists it.
 
-| Command | What it does |
-| --- | --- |
-| `step`, `s` | run to the next step anywhere, including inside this one. An empty line does the same at the prompt. |
-| `next`, `n` | run this step whole, including a loop, parallel, switch or call; stop at the next step at this level or above |
-| `finish`, `out` | run until the loop, parallel, switch or call around this step is left, stopping at the next step outside it — not at the next iteration or branch, which `next` reaches |
-| `continue`, `c` | run to the next breakpoint, or to the end |
-| `until <step>`, `u` | run to that step without stopping in between; a run that completes without reaching it says so, local or durable |
-| `until <step> if <expr>` | run to that step, stopping only where the expression holds |
-| `break <step>`, `b` | stop there whenever it is reached |
-| `break <step> if <expr>` | stop there only when the expression holds |
-| `break <step> hit <count>` | stop there from the given arrival on; `hit == 3`, `hit > 3`, `hit % 5` and the rest filter by count |
-| `log <step> <message>` | record the message at every arrival without stopping; each `{expr}` is CEL |
-| `catch none\|uncaught\|all` | stop where a step fails: never, when its failure will propagate, or always |
-| `delete <step>`, `d` | remove that breakpoint |
-| `breakpoints` | list them |
-| `backtrace`, `bt` | list this step and each iteration, branch, arm and call around it |
-| `inspect <expr>`, `p` | evaluate a CEL expression against the held run |
-| `complete <partial-command>` | list what could be written at the end of that text |
-| `scope` | list what the run can name right now |
-| `info` | describe the step it is stopped at |
-| `detach` | clear every breakpoint and let the run finish unattended |
-| `quit`, `q` | end the run here (which fails the case — see below) |
+<!-- commands:start -->
 
-A `<step>` is a bare id or an address. The structured fronts — `flow debug
+| Command | Where | What it does |
+| --- | --- | --- |
+| `step`, `s` | prompt, driver | run this step and stop at the next (also: an empty line) |
+| `next`, `n` | prompt, driver | run this step, including anything inside it, and stop at the next step at this level or above |
+| `finish`, `fin`, `out` | prompt, driver | run until the loop, parallel, switch, or call around this step is left |
+| `continue`, `c` | prompt, driver | run until the next breakpoint, or to the end |
+| `until <step-id> [if <expr>]`, `u` | prompt, driver | run until the step with that id, optionally only where the condition holds |
+| `back` | driver | return to the previous stop (a session that can step back) |
+| `reverse-continue`, `rc` | driver | return to the nearest earlier breakpoint stop, or the first |
+| `pause` | driver | hold at the next step boundary |
+| `break <step-id> [hit <count>] [if <expr>]`, `b` | prompt, driver | stop at that step, always, when the expression holds, or from the given arrival count |
+| `log <step-id> <message>` | prompt, driver | record the message at every arrival without stopping; {expr} holes are CEL |
+| `catch none\|uncaught\|all` | prompt, driver | stop where a step fails: never, when its failure propagates, or always |
+| `delete <step-id>`, `d` | prompt, driver | remove that breakpoint |
+| `clear` | driver | remove every breakpoint, whoever set it |
+| `breakpoints` | prompt, driver | list them |
+| `inspect <expr>`, `p` | every front | evaluate a CEL expression against this run's scope |
+| `expand <expr>` | driver | list a map's or list's children |
+| `scope` | every front | list what this run can name right now |
+| `complete <partial-command>` | prompt, autopsy | list what could be written at the end of that text |
+| `status` | driver | where the run is, and why |
+| `info`, `step-info` | prompt | describe the step the run is stopped at |
+| `backtrace`, `bt` | prompt, driver | list this step and each iteration, branch, arm and call around it |
+| `detach` | prompt, driver | clear every breakpoint and let the run finish unattended |
+| `quit`, `q` | prompt, autopsy | end the run here |
+| `help`, `h`, `?` | every front | list these |
+<!-- commands:end -->
+
+The table is generated from the command table every front reads, so a verb is
+answered on exactly the fronts it lists and the help of the prompt and of the
+structured fronts is rendered from it. The structured fronts — `flow debug
 attach` and `do`, the MCP session tools, and `embed`'s `Driver` — read the same
-lines, less the prompt's own `complete` and `quit`, plus six: `status` prints
-the current snapshot, `pause` holds a running run at its next boundary (a run
-that completes before reaching one says so), `expand <expr>` pages a map's or
-list's children, `clear` removes every breakpoint, whoever set it, and `back`
-and `reverse-continue` (`rc`) return to the previous stop and to the nearest
-earlier breakpoint stop, for a target that can step back; any other says
-so and does not move. One
-prompt form they do not take is `until <step> if <expr>`: a typed resume
-names a step and nothing more, so the condition is refused rather than dropped.
-`break <step> if <expr>` and `continue` say the same thing there.
+lines as the prompt, less the prompt's own `complete`, `info` and `quit`, plus
+the commands marked `driver`. A verb typed on a front that does not answer it is
+refused by name, with what to type instead, and is never "unknown command".
+
+The forms a verb takes:
+
+- `until <step>` runs to that step without stopping in between; a run that
+  completes without reaching it says so, local or durable. A `<step>` is a bare
+  id or an address like `pages[2]/page`.
+- `until <step> if <expr>` runs to that step, stopping only where the expression
+  holds. The structured fronts do not take it: a typed resume names a step and
+  nothing more, so the condition is refused rather than dropped, and
+  `break <step> if <expr>` with `continue` says the same thing there.
+- `break <step> if <expr>` stops there only when the expression holds, and
+  `break <step> hit <count>` from the given arrival on; `hit == 3`, `hit > 3`,
+  `hit % 5` and the rest filter by count.
+- `pause` holds a running run at its next boundary; a run that completes before
+  reaching one says so. `back` and `reverse-continue` (`rc`) return to the
+  previous stop and to the nearest earlier breakpoint stop, for a target that can
+  step back; any other says so and does not move.
+- An empty line at the prompt is `step`.
 
 A condition is the step's own `if:`, evaluated where the breakpoint is: the
 same function, the same scope, and the same refusal of anything that is not a

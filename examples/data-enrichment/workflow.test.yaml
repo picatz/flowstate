@@ -150,3 +150,43 @@ tests:
         failed: []
         attempted: 3
         vendor_outage_tolerated: false
+
+  # The other way a dependency misbehaves: it answers, but late. The delay is
+  # virtual, and `lookup`'s own `timeout: 10s` is measured on the same clock, so a
+  # 15s delay ends that attempt as a timeout and the retry must absorb it.
+  - name: a slow enrichment service never costs a record that can be enriched
+    workflow: ./workflow.yaml
+    inputs:
+      records: [alpha, beta, gamma]
+    stubs:
+      - task: http
+        where: "'query' in inputs && inputs.query.record == 'alpha'"
+        returns:
+          id: alpha
+      - task: http
+        where: "'query' in inputs && inputs.query.record == 'beta'"
+        returns:
+          id: beta
+      - task: http
+        where: "'query' in inputs && inputs.query.record == 'gamma'"
+        returns:
+          id: gamma
+      - step: vendor_status
+        returns:
+          status_code: 200
+      - task: log
+        returns: {}
+    faults:
+      - step: lookup
+        rate: 0.5
+        at_most: 2
+        delay: 15s
+    invariants:
+      - that: size(steps.enrich.results.filter(r, has(r.lookup.id))) == size(inputs.records)
+        because: a slow attempt times out at 10s and the retry answers, so every record is still enriched
+    expect:
+      outputs:
+        enriched: [alpha, beta, gamma]
+        failed: []
+        attempted: 3
+        vendor_outage_tolerated: false

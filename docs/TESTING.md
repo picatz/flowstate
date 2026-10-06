@@ -329,6 +329,8 @@ saga's promise rather than one scripted path:
 | --- | --- |
 | `run.compensated` | `list(string)`: the steps whose `undo:` succeeded, in the order they ran (reverse registration). Always present, empty when nothing was undone. |
 | `run.uncompensated` | `list(string)`: the steps whose `undo:` failed or was not attempted before a cancellation's budget ran out. Each registration is classified on its own, so a step an iteration of a `loop:` or `for_each:` registers more than once can appear in both lists, and being in `run.compensated` does not prove every registration was undone; a step that registered no `undo:` (skipped, failed, or without one) is in neither. |
+| `run.signals.dropped` | `list(string)`: the signals a `faults:` entry lost a delivery of, sorted. Always present, empty when nothing was lost. |
+| `run.signals.delayed` | `list(string)`: the signals a `faults:` entry made late, sorted, whether or not the run was still there when they arrived. Always present, empty when nothing was late. |
 | `run.invocations.task` | `map(string, int)`: how many times each task ran anywhere in the run, callees and `undo:` compensations included. |
 | `run.invocations.step` | `map(string, int)`: how many times each step of the workflow under test ran its task, one per attempt, so a retried step counts every attempt. Compensations are not counted. |
 
@@ -419,10 +421,63 @@ fault takes no `rate:` or `at_most:`, and a script whose invocation the run no
 longer makes fails as drifted rather than passing for a fault that never
 happened.
 
+A fault can make an invocation late instead of broken. `delay:` holds a task or
+step invocation on the virtual clock for a fixed duration (`15s`, `2m`, positive
+and at most 24h) before the stubs answer, with no wall time spent:
+
+```yaml
+  faults:
+    - step: lookup
+      delay: 15s          # alone, the call is slow and then answers as stubbed
+      at_most: 2          # a seed decides which calls are slow, never how slow
+```
+
+The step's `timeout:` and `total_timeout:` are measured on the same clock. A
+delay past `timeout:` ends that attempt as a `Timeout` at the bound, and
+`retry:` and `continue_on_error:` take it from there; a delay past
+`total_timeout:`, which bounds every attempt together, ends the step with no
+further retry. A delay under the bound only moves the answer later. With `fails:` beside it the call fails after the wait. The
+account says `delayed 15s by faults[0]` at the moment the wait began, and a
+pinned script printed for a violation keeps the `delay:`. The same key on a
+`signal:` fault, below, makes a delivery late; the duration is fixed either way,
+since a seed picking how long would need a pin that carries the drawn value.
+
 A fault answers before the stubs and spends none of their `times:`. `fails.kind`
 is any error kind a task reports except `Internal` and `Expression`, which are
 defects, and `RunTimeout`, which only a whole run can have. Rows of a table inherit the entry's `faults:` and
-`invariants:` when they state none. Not yet covered: delay faults and signal jitter.
+`invariants:` when they state none.
+
+A third target changes a signal's delivery instead of failing a task, either
+losing it or making it late:
+
+```yaml
+  signals:
+    - {name: finance-approved, at: 6s, payload: {approved: true}}
+    - {name: finance-approved, at: 20m, payload: {approved: true}}
+  faults:
+    - signal: finance-approved   # a signal the case scripts; exactly one of task, step, signal
+      drop: true                 # lost: the sender sent it and the run never learns of it
+    # or: delay: 45m             # late: arrives that long after its `at:`, up to 720h
+  invariants:
+    - that: "!run.failed || 'finance-approved' in run.signals.dropped"
+      because: the gate may lapse only when an approval was lost
+```
+
+`signal:` takes exactly one of `drop: true` and `delay: <duration>`. `rate:`,
+`at_most:` and `on:` mean what they mean for a task fault, counted over the
+scripted deliveries of that name in declaration order: `on: [2]` is the second
+`signals:` entry of that name. A delivery is decided before the run starts, so
+a seed changes the same deliveries however the clock orders them, but the fault
+takes effect when the sender sends, at the delivery's own `at:`. A delayed
+signal that arrives after the gate's `timeout:` is the case this exists for:
+the sender was on time and the gate lapsed anyway, and `run.signals.delayed`
+says so even though the signal never reached the run. A dropped delivery never
+reaches the signal policy, so it is neither delivered nor denied. A delivery the
+run ended before its sender sent it is untouched, and a pin for one fails as
+drifted. A violation prints the pinned `signal:` entries, `delay:` kept, beside
+any task faults, and the shrinker treats them alike. Duplicated and reordered
+deliveries are not faults: a second `signals:` entry with the same
+`delivery_id:` or a different `at:` already says them.
 
 Seeded exploration is the local driver's. The durable driver has one check of
 its own that the local driver cannot have: a run survives the loss of its
@@ -464,7 +519,7 @@ A generated run fails when it ends in an `Internal` or `Expression` error (a
 `no such key` or a division by zero is a defect that an input reached) or
 breaks the case's `invariants:`. The first failure is reported apart from the
 authored cases with its seed and the `inputs:` overlay to merge over the case's own;
-`flow test --fuzz-seed S` replays exactly it (a `sensitive:` input is left out of the overlay, so the case keeps its own value for it). A generated case that errors before the run (an input the stubs have no answer for, for one) is reported as could not be judged, and a file where every generated case did so fails: nothing was verified. Inputs the workflow declares
+`flow test --fuzz-seed S` replays exactly it (a `sensitive:` input is left out of the overlay, so the case keeps its own value for it). A finding is shrunk before it is printed: the inputs the seed changed are put back at the case's own values, delta-debugging style, until putting any one more back stops the failure, so the overlay holds only the inputs that matter. The search is bounded (256 re-runs) and reports itself as not minimal when it ran out; it finds *a* failure of the smaller set, not necessarily the first. An input the case supplies and the generated run left out cannot be written in an overlay, so the report names it separately to remove from the case. A generated case that errors before the run (an input the stubs have no answer for, for one) is reported as could not be judged, and a file where every generated case did so fails: nothing was verified. Inputs the workflow declares
 `sensitive:` are never generated or printed, and inputs of a type not generated
 yet (lists, maps, timestamps) are named in the report rather than skipped
 silently. `--fuzz` is refused with `--seeds`, `--debug` and `--list`: a run

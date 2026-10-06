@@ -99,28 +99,10 @@ type DriveResult struct {
 // sent: as many as a retained session keeps answers for.
 const maxRememberedRequests = 64
 
-// DriverHelp lists the lines a [Driver] understands.
-const DriverHelp = `status, info                 where the run is, and why
-step, s                      run to the next step anywhere, including inside this one
-next, n                      run this step whole; stop at the next step at this level or above
-finish, out                  run until the loop, parallel, switch, or call around this step is left
-continue, c                  run to the next breakpoint, or the end
-until <step>                 run to that step (an id or an address like pages[2]/page)
-pause                        hold at the next step boundary
-break <step> [hit <n>] [if <expr>]   stop there, when the count and condition allow
-log <step> <message>         record {expr} holes at every arrival, without stopping
-catch none|uncaught|all      stop where a step fails
-delete <step>|log <step>     remove that breakpoint, or that logpoint
-clear                        remove every breakpoint, whoever set it
-breakpoints                  list breakpoints and their hit counts
-inspect, p <expr>            evaluate a read-only CEL expression at this stop
-expand <expr>                list a map's or list's children
-scope                        list what this stop can name
-backtrace, bt                the step and every container around it
-back                         return to the previous stop (a session that can step back)
-reverse-continue, rc         return to the nearest earlier breakpoint stop, or the first
-detach                       clear breakpoints and let the run go on unattended
-help                         this list`
+// DriverHelp lists the lines a [Driver] understands, rendered from the same
+// table the prompt's `help` is, so the two fronts cannot describe one verb in
+// different words by accident or leave one out.
+var DriverHelp = helpText(frontDriver)
 
 // Do runs one line.
 func (d *Driver) Do(ctx context.Context, line string) (*DriveResult, error) {
@@ -135,6 +117,13 @@ func (d *Driver) DoWith(ctx context.Context, line string, opts DoOptions) (*Driv
 	}
 	verb, rest := split(line)
 	rest = strings.TrimSpace(rest)
+	// Aliases resolve through the table, and a verb that exists only at the
+	// prompt is refused by name rather than called unknown.
+	if known, ok := resolveOn(verb, frontDriver); ok {
+		verb = known.verb
+	} else if why, refused := refuse(verb, frontDriver); refused {
+		return nil, errors.New(why)
+	}
 
 	if d.detached && changesSession(verb) {
 		return nil, errors.New("this session was detached; attach again to debug the run")
@@ -150,7 +139,7 @@ func (d *Driver) DoWith(ctx context.Context, line string, opts DoOptions) (*Driv
 	}
 
 	switch verb {
-	case "status", "info":
+	case "status":
 		snapshot, err := d.target.Snapshot(ctx)
 		if err != nil {
 			return nil, err
@@ -158,15 +147,15 @@ func (d *Driver) DoWith(ctx context.Context, line string, opts DoOptions) (*Driv
 
 		return &DriveResult{Snapshot: snapshot, Text: FormatSnapshot(snapshot)}, nil
 
-	case "step", "s":
+	case "step":
 		return d.move(ctx, v1.DebugResumeAction_DEBUG_RESUME_ACTION_STEP_IN, "")
-	case "next", "n":
+	case "next":
 		return d.move(ctx, v1.DebugResumeAction_DEBUG_RESUME_ACTION_STEP_OVER, "")
-	case "finish", "fin", "out":
+	case "finish":
 		return d.move(ctx, v1.DebugResumeAction_DEBUG_RESUME_ACTION_STEP_OUT, "")
-	case "continue", "c":
+	case "continue":
 		return d.move(ctx, v1.DebugResumeAction_DEBUG_RESUME_ACTION_CONTINUE, "")
-	case "until", "u":
+	case "until":
 		if rest == "" {
 			return nil, errors.New("until needs a step: until <step>")
 		}
@@ -183,7 +172,7 @@ func (d *Driver) DoWith(ctx context.Context, line string, opts DoOptions) (*Driv
 		return d.move(ctx, v1.DebugResumeAction_DEBUG_RESUME_ACTION_RUN_UNTIL, rest)
 	case "back":
 		return d.back(ctx, false)
-	case "reverse-continue", "rc":
+	case "reverse-continue":
 		return d.back(ctx, true)
 	case "detach":
 		return d.move(ctx, v1.DebugResumeAction_DEBUG_RESUME_ACTION_DETACH, "")
@@ -211,7 +200,7 @@ func (d *Driver) DoWith(ctx context.Context, line string, opts DoOptions) (*Driv
 
 		return result, nil
 
-	case "break", "b":
+	case "break":
 		return d.addBreakpoint(ctx, rest)
 	case "log":
 		target, message := cutWord(rest)
@@ -226,7 +215,7 @@ func (d *Driver) DoWith(ctx context.Context, line string, opts DoOptions) (*Driv
 		return d.replace(ctx, append(d.withoutID("log "+target), &v1.DebugBreakpoint{
 			Id: "log " + target, Step: target, LogMessage: strings.TrimSpace(message),
 		}), d.failureMode, "log "+target)
-	case "delete", "d":
+	case "delete":
 		if rest == "" {
 			return nil, errors.New("delete needs a step: delete <step>")
 		}
@@ -261,7 +250,7 @@ func (d *Driver) DoWith(ctx context.Context, line string, opts DoOptions) (*Driv
 
 		return &DriveResult{Snapshot: snapshot, Breakpoints: snapshot.GetBreakpoints(), Text: d.formatBreakpoints(snapshot)}, nil
 
-	case "inspect", "p", "print":
+	case "inspect":
 		if rest == "" {
 			return nil, errors.New("inspect needs an expression: inspect steps.build.artifact")
 		}
@@ -276,7 +265,7 @@ func (d *Driver) DoWith(ctx context.Context, line string, opts DoOptions) (*Driv
 	case "scope":
 		return d.scope(ctx)
 
-	case "backtrace", "bt":
+	case "backtrace":
 		snapshot, err := d.target.Snapshot(ctx)
 		if err != nil {
 			return nil, err
@@ -284,7 +273,7 @@ func (d *Driver) DoWith(ctx context.Context, line string, opts DoOptions) (*Driv
 
 		return &DriveResult{Snapshot: snapshot, Text: formatFrames(snapshot)}, nil
 
-	case "help", "h", "?":
+	case "help":
 		return &DriveResult{Text: DriverHelp + "\n"}, nil
 
 	default:
@@ -309,24 +298,17 @@ func (d *Driver) sending() {
 // changesSession reports whether verb changes the session rather than reads
 // it: a movement, a pause, or a change to its breakpoints.
 func changesSession(verb string) bool {
-	switch verb {
-	case "pause", "break", "b", "log", "delete", "d", "clear", "catch":
-		return true
-	default:
-		return movement(verb)
-	}
+	c, ok := resolveOn(verb, frontDriver)
+
+	return ok && c.effect != effectRead
 }
 
 // movement reports whether verb resumes the run, and so carries an expected
 // revision to the target rather than having the driver check it.
 func movement(verb string) bool {
-	switch verb {
-	case "step", "s", "next", "n", "finish", "fin", "out", "continue", "c", "until", "u", "detach",
-		"back", "reverse-continue", "rc":
-		return true
-	default:
-		return false
-	}
+	c, ok := resolveOn(verb, frontDriver)
+
+	return ok && c.effect == effectMoves
 }
 
 // staleAt answers a stale receipt when the session has left the revision the

@@ -30,6 +30,7 @@ import (
 	"fmt"
 
 	"github.com/goccy/go-yaml"
+	"github.com/goccy/go-yaml/lexer"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 )
@@ -43,6 +44,10 @@ var ErrDecoderStopped = errors.New("the YAML decoder stopped on this document")
 // into an error naming the shape it is known to stop on. Options are the
 // decoder's; [UnmarshalStrict] is the form every boundary parser wants.
 func Unmarshal(data []byte, into any, opts ...yaml.DecodeOption) (err error) {
+	if err := refuseDeepFlow(lexer.Tokenize(string(data))); err != nil {
+		return err
+	}
+
 	defer func() {
 		r := recover()
 		if r == nil {

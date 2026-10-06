@@ -721,6 +721,31 @@ func compileReturnValue(v any) (any, error) {
 	return v, nil
 }
 
+// delayInvocation holds one invocation on the run's clock for the wait its
+// faults decided, so a step's `timeout:` (one attempt) or `total_timeout:` (the
+// whole retry loop), measured on the same clock, can end it. It returns nil when
+// the wait elapsed and the context's error when it was ended first, which the
+// engine reads as the timeout it is. The deadline is withdrawn on every way out: an abandoned virtual timer
+// would leave the clock believing this goroutine still parked, and advance to it.
+func delayInvocation(ctx context.Context, task string, answer faultAnswer) error {
+	if answer.delay <= 0 {
+		return nil
+	}
+	if recorder := runRecorderFromContext(ctx); recorder != nil {
+		serving, _ := v1.TaskStepFromContext(ctx)
+		recorder.faultDelayed(task, serving, answer.delay, answer.delayedBy)
+	}
+	clock := v1.ClockFromContext(ctx)
+	timer := clock.After(answer.delay)
+	defer v1.DiscardTimer(clock, timer)
+	select {
+	case <-timer:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 // fn builds the [v1.TaskFunc] this task's stubs answer through, in place of
 // whatever the task would otherwise have done.
 //
@@ -767,8 +792,12 @@ func (s *stubbedTask) fn(name string, sensitiveInputNames map[string]bool, unstu
 		// Before the matchers and outside the lock: an injected fault answers
 		// instead of the stubs and spends none of their `times:` budgets.
 		if plan, _ := ctx.Value(faultPlanKey{}).(*faultPlan); plan != nil {
-			if err := plan.attempt(ctx, name); err != nil {
+			answer := plan.attempt(ctx, name)
+			if err := delayInvocation(ctx, name, answer); err != nil {
 				return nil, err
+			}
+			if answer.err != nil {
+				return nil, answer.err
 			}
 		}
 		s.mu.Lock()

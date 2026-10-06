@@ -64,7 +64,7 @@ contracts and do not advertise a schema-owned result message.
 
 Validate checks Flowfiles and returns their diagnostics, executing nothing.
 
-The same checks and the same `ValidationReport` as `flow validate`: one entry per file, clean files included. Send 1 to 64 files; each file's `source` is its bytes, at most 1 MiB, base64-encoded in JSON. It reads, writes and starts nothing, so it is safe to call repeatedly while editing.
+The same checks and the same `ValidationReport` as `flow validate`: one entry per file, clean files included. Send 1 to 64 files; each file's `source` is its text, plain YAML, at most 1 MiB. It reads, writes and starts nothing, so it is safe to call repeatedly while editing.
 
 Answers locally, in this process. No server and no Temporal needed.
 
@@ -72,7 +72,7 @@ Answers locally, in this process. No server and no Temporal needed.
 
 Compile turns one Flowfile into the workflow specification that `Run` takes, executing nothing.
 
-`file.source` is the Flowfile's bytes, at most 1 MiB, base64-encoded in JSON. A file that does not compile is not an RPC error: the answer carries its diagnostics in `report` and no `workflow`. On success, pass `workflow` unchanged to `Run` or `CreateSchedule`. The same compiler as the CLI.
+`file.source` is the Flowfile's text, plain YAML, at most 1 MiB. A file that does not compile is not an RPC error: the answer carries its diagnostics in `report` and no `workflow`. On success, pass `workflow` unchanged to `Run` or `CreateSchedule`. The same compiler as the CLI.
 
 Answers locally, in this process. No server and no Temporal needed.
 
@@ -310,7 +310,7 @@ Read a retained session: its typed snapshot and the transcript since the last ob
 
 ## `flowstate_debug_session_command`
 
-Run one debugger command in a retained session and answer with its typed result. Commands: step, next, finish, continue, until <step>, pause, break <step> [hit <n>] [if <expr>], log <step> <msg>, catch none|uncaught|all, delete <step>, clear, breakpoints, inspect <expr>, expand <expr>, scope, backtrace, detach, status. A stubbed session can also step back: back, and reverse-continue (rc) to the previous breakpoint. Movements answer with the next stop. Set expected_revision to the snapshot you acted on, so a command meant for a stop the run has left is refused as stale: a movement or an inspection is judged by the run in the same step as the command; any other command is checked just before it is sent.
+Run one debugger command in a retained session and answer with its typed result. Commands: step, next, finish, continue, until <step>, back, reverse-continue, pause, break <step> [hit <n>] [if <expr>], log <step> <message>, catch none|uncaught|all, delete <step>|log <step>, clear, breakpoints, inspect <expr>, expand <expr>, scope, status, backtrace, detach. back and reverse-continue (rc) need a stubbed session that can step back; any other says so and does not move. Movements answer with the next stop. Set expected_revision to the snapshot you acted on, so a command meant for a stop the run has left is refused as stale: a movement or an inspection is judged by the run in the same step as the command; any other command is checked just before it is sent.
 
 ## `flowstate_debug_session_end`
 

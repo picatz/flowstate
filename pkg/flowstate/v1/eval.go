@@ -2795,7 +2795,7 @@ func runStepWithPolicy(ctx context.Context, task *Task, policy *StepPolicy, scop
 		// per-attempt context stays uncaused, so [withCancellationCause] can tell
 		// them apart by whether a cause is present at all.
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeoutCause(ctx, timeouts.ScheduleToClose,
+		ctx, cancel = withClockTimeout(ctx, timeouts.ScheduleToClose,
 			&scheduleToCloseTimeoutCause{timeout: timeouts.ScheduleToClose})
 		defer cancel()
 	}
@@ -2882,8 +2882,13 @@ func runStepWithPolicy(ctx context.Context, task *Task, policy *StepPolicy, scop
 		// a duration this driver blocks on, and `flow test` needs a case
 		// whose stub fails on the first attempt and succeeds on a later one
 		// to run at test speed rather than spend the backoff for real.
+		clock := ClockFromContext(ctx)
+		backoff := clock.After(delay)
 		select {
 		case <-ctx.Done():
+			// The backoff is withdrawn on a budget's end: left pending it
+			// would pull a virtual clock to a moment this run never reached.
+			DiscardTimer(clock, backoff)
 			// Keep the failure that was waiting to be retried as the cause. The
 			// schedule-to-close budget is the fact that ended the step, but the
 			// dependency's last answer is still the evidence explaining what the
@@ -2894,7 +2899,7 @@ func runStepWithPolicy(ctx context.Context, task *Task, policy *StepPolicy, scop
 				return nil, &scheduleToCloseTimeoutError{timeout: timeouts.ScheduleToClose, err: err}
 			}
 			return nil, withCancellationCause(ctx, ctx.Err())
-		case <-ClockFromContext(ctx).After(delay):
+		case <-backoff:
 		}
 	}
 }
@@ -3067,7 +3072,7 @@ func runStepAttemptSpanned(ctx context.Context, task *Task, timeout time.Duratio
 func runStepAttempt(ctx context.Context, task *Task, timeout time.Duration, scope *Scope) (*Node_Outputs, error) {
 	if timeout > 0 {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, timeout)
+		ctx, cancel = withClockTimeout(ctx, timeout, nil)
 		defer cancel()
 	}
 	return task.EvalInScope(ctx, scope)

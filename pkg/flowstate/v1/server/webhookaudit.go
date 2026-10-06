@@ -172,11 +172,41 @@ func webhookRouteKey(route *webhookRoute) string {
 // proved its key carries. See [WebhookReceiver.start] for why the tenant is
 // the receiver's.
 func (r *WebhookReceiver) principalIdentity(ctx context.Context, route *webhookRoute) *v1.WorkloadIdentity {
-	return r.server.identityFor(auth.ContextWithPrincipal(ctx, auth.Principal{
+	return r.server.identityFor(auth.ContextWithPrincipal(ctx, r.actingPrincipal(ctx, route)))
+}
+
+// webhookSenderKey carries the principal a verified bearer token named.
+type webhookSenderKey struct{}
+
+// withWebhookSender returns ctx recording that the delivery being handled
+// authenticated as sender, which only [WebhookReceiver.ServeHTTP] does and only
+// after [v1.VerifyWebhookDeliveryAs] said so.
+func withWebhookSender(ctx context.Context, sender auth.Principal) context.Context {
+	return context.WithValue(ctx, webhookSenderKey{}, sender)
+}
+
+// actingPrincipal is the principal a delivery to route acts as: the sender its
+// bearer token authenticated when the trigger declares one, and the trigger
+// itself otherwise.
+//
+// Either way the tenant is the receiver's. A sender's token was already refused
+// if it named another ([v1.VerifyWebhookDeliveryAs]), and setting it here
+// regardless means nothing downstream reads a namespace off a credential: the
+// one rule every identity in this server follows. Everything but the sender's
+// own claims is taken from the verified [auth.Principal], so `kind`, which only
+// the trust policy assigns, reaches `allow:` as it does on any other path.
+func (r *WebhookReceiver) actingPrincipal(ctx context.Context, route *webhookRoute) auth.Principal {
+	if sender, ok := ctx.Value(webhookSenderKey{}).(auth.Principal); ok {
+		sender.Namespace = r.namespace
+
+		return sender
+	}
+
+	return auth.Principal{
 		Issuer:    webhookIssuer,
 		Subject:   v1.WebhookTriggerSubject(route.workflow.GetName(), route.trigger.GetName()),
 		Namespace: r.namespace,
-	}))
+	}
 }
 
 // recordRefusal writes the bounded deny record for one refused delivery, and
@@ -274,7 +304,7 @@ func webhookDenyCode(err error) v1.AuditDenyCode {
 		return v1.AuditDenyCode_AUDIT_DENY_CODE_REPLAY_WINDOW
 	case errors.Is(err, v1.ErrWebhookTooManySignatures):
 		return v1.AuditDenyCode_AUDIT_DENY_CODE_TOO_MANY_SIGNATURES
-	case errors.Is(err, v1.ErrWebhookKeyUnresolved):
+	case errors.Is(err, v1.ErrWebhookKeyUnresolved), errors.Is(err, v1.ErrWebhookBearerUnchecked):
 		return v1.AuditDenyCode_AUDIT_DENY_CODE_NOT_CONFIGURED
 	default:
 		return v1.AuditDenyCode_AUDIT_DENY_CODE_SIGNATURE_INVALID
