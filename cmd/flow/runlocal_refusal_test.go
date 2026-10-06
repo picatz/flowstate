@@ -2,9 +2,13 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
+	"os"
 	"strings"
 	"testing"
 
+	"github.com/picatz/flowstate/cmd/flow/internal/ui"
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -342,4 +346,32 @@ func TestARevealedRefusalPrintsTheSensitiveCoercionWord(t *testing.T) {
 	require.Error(t, err)
 
 	assert.Contains(t, stdout, "pin=x")
+}
+
+// TestARefusalDocumentIsTheWholeReportAndBoundsTheInputName pins the two edges
+// of the document: stderr is not told the refusal a second time, and a name a
+// caller made up cannot outgrow the field's declared bound.
+func TestARefusalDocumentIsTheWholeReportAndBoundsTheInputName(t *testing.T) {
+	t.Parallel()
+
+	long := &v1.InputError{Input: strings.Repeat("x", maxRefusedInputBytes+1), Err: errors.New("no such input")}
+	response, _ := refusalResponse(long, v1.SensitiveValues{})
+	assert.Empty(t, response.GetError().GetInput(), "an oversized name rode into the document")
+	assert.Equal(t, "InvalidInput", response.GetError().GetKind())
+
+	short := &v1.InputError{Input: "tenant", Err: errors.New("required")}
+	response, _ = refusalResponse(short, v1.SensitiveValues{})
+	assert.Equal(t, "tenant", response.GetError().GetInput())
+
+	sink, err := os.CreateTemp(t.TempDir(), "refusal")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sink.Close() })
+	surface := ui.New(sink, sink, sink, nil)
+	err = refuseRunLocally(surface, runRendering{format: FormatJSON}, v1.SensitiveValues{}, short)
+	require.Error(t, err)
+	assert.True(t, isQuietError(err), "the refusal is reported twice: once as the document, once as prose")
+
+	err = refuseRunLocally(surface, runRendering{format: FormatText}, v1.SensitiveValues{}, short)
+	require.Error(t, err)
+	assert.False(t, isQuietError(err), "a text refusal has no document, so its prose is the report")
 }

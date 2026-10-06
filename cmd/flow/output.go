@@ -282,7 +282,9 @@ func refuseRunLocally(surface *ui.UI, rendering runRendering, sensitive v1.Sensi
 		return err
 	}
 
-	return redacted
+	// The document is the report, so the error that remains is the exit code
+	// alone: a prose trailer on stderr would say the refusal twice.
+	return newQuietError(redacted)
 }
 
 // refusalResponse is the run document for a refusal that happened before the run
@@ -314,11 +316,20 @@ func refusalResponse(refusal error, sensitive v1.SensitiveValues) (*v1.GetRespon
 	}, redacted
 }
 
+// maxRefusedInputBytes is RunResponse.Error.input's max_bytes in service.proto.
+const maxRefusedInputBytes = 256
+
 // refusedInputName is the input a submit refusal concerns, empty when err is not
 // one or names none. Read off the original chain for the same reason the kind
 // is: the redacted copy does not Unwrap.
 func refusedInputName(err error) string {
 	if refusal, ok := errors.AsType[*v1.InputError](err); ok {
+		// The field is bounded on the wire; a name the caller made up that is
+		// longer than that is still in the message, which the result floor caps.
+		if len(refusal.Input) > maxRefusedInputBytes {
+			return ""
+		}
+
 		return refusal.Input
 	}
 
@@ -426,6 +437,14 @@ const mutationFlagHelp = "\n\nWith `-o json` (or `-o jsonl` for one line), the u
 // silence is what makes people depend on a shape nobody agreed to. See
 // pkg/flowstate/v1/rundoc.go
 // for how the rendering is derived from the schema.
+// refusalDocumentHelp is the help sentence for a run refused before it starts,
+// shared by the commands that render one (#1552).
+const refusalDocumentHelp = "\n\nA refusal before the run starts (an argument the workflow's " +
+	"`inputs:` rejects, a script that does not fit the workflow) is part of the same " +
+	"document under `-o json`: `.status` is `FAILED`, `.error.kind` classifies it " +
+	"(`InvalidInput` for the caller's own argument), and `.error.input` names the " +
+	"input concerned. Standard error then stays empty."
+
 const runDocumentHelp = "\n\nThe run document on stdout is written for a program. A step's outputs " +
 	"are `.steps.<id>.<output>` — the path the file itself writes as " +
 	"`${steps.<id>.<output>}` — and the values a workflow declared under `outputs:` " +

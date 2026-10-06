@@ -606,6 +606,8 @@ The script is checked against the workflow before anything runs, so a `break` na
 
 This is a real run under this machine's own posture: the same policies, plugins, secrets and inputs `flow run local` uses, because a reproduction that runs under a different posture reproduces a different thing. The console's account goes to stderr and the answer stays the document on stdout, exactly as `flow run local --debug` leaves them.
 
+A refusal before the run starts (an argument the workflow's `inputs:` rejects, a script that does not fit the workflow) is part of the same document under `-o json`: `.status` is `FAILED`, `.error.kind` classifies it (`InvalidInput` for the caller's own argument), and `.error.input` names the input concerned. Standard error then stays empty.
+
 Examples:
 
 ```sh
@@ -1388,6 +1390,8 @@ Plugin tasks run here too, given `--plugin-dir`: the plugins are launched in thi
 That does not make the run attested. Nothing verified these flags, so `run.local` reads true, and a credential this run assumes is minted under a subject carrying a `_local` component no server-attested run can produce. A cloud trust policy written for your production subject deliberately does not match a rehearsal's.
 
 A gate is the one exception, because a gate is the thing worth rehearsing. `--signal-as-subject` and its siblings name the approver a `--signal` delivery stands in for, and the workflow's `signals:` policy is checked here exactly as the server checks it — so an approver a predicate admits in production opens the gate here, one it refuses is refused here, and a predicate comparing with the run's own starter (`run.identity`) refuses it on both. The gate's `sender.local` output still reads true.
+
+A refusal before the run starts (an argument the workflow's `inputs:` rejects, a script that does not fit the workflow) is part of the same document under `-o json`: `.status` is `FAILED`, `.error.kind` classifies it (`InvalidInput` for the caller's own argument), and `.error.input` names the input concerned. Standard error then stays empty.
 
 The run document on stdout is written for a program. A step's outputs are `.steps.<id>.<output>` — the path the file itself writes as `${steps.<id>.<output>}` — and the values a workflow declared under `outputs:` are `.runOutputs.<name>`, each a plain JSON value rather than a tagged union: `.runOutputs.replicas` is `3`. With `-o json` the same document is wrapped in the run's own state, so the transcript is `.outputs.steps` and the answer stays `.runOutputs`.
 

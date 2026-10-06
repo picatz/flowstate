@@ -126,7 +126,7 @@ const debugReplayLong = "Replay a recorded debugging session: read a script of d
 	"secrets and inputs `flow run local` uses, because a reproduction that runs under a " +
 	"different posture reproduces a different thing. The console's account goes to " +
 	"stderr and the answer stays the document on stdout, exactly as `flow run local " +
-	"--debug` leaves them."
+	"--debug` leaves them." + refusalDocumentHelp
 
 // debugReplayExample shows the shape of a script as well as the invocation,
 // because the file is the part nobody can guess.
