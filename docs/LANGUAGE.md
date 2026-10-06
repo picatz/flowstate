@@ -25,6 +25,7 @@ call. The reasons behind the language's design are recorded in
 - [Failure, retries, and compensation](#failure-retries-and-compensation)
 - [Starting runs: triggers](#starting-runs-triggers)
 - [Who may act on a run](#who-may-act-on-a-run)
+- [Identity and trust](#identity-and-trust)
 - [Secrets](#secrets)
 - [Plugins](#plugins)
 - [Editions and migration](#editions-and-migration)
@@ -1478,6 +1479,36 @@ Local debugging needs no policy. See
 ### Labels are not policy
 
 `labels:` are for finding runs. Nothing authorizes on them.
+
+## Identity and trust
+
+A Flowfile never names an identity provider, a key, or a trust relationship. It
+reads who is acting and says what a step may use; the deployment decides who is
+believed and where assertions may go. Trust runs in two directions, and each is
+configured in the one trust policy (`flow server --auth-policy`), not in a
+Flowfile.
+
+| Direction | The deployment configures | A Flowfile sees |
+| --- | --- | --- |
+| **Inbound**: who may reach Flowstate | `issuers:`, each an `oidc` or `mtls` entry with `audiences`, claim rules, and a tenant (fixed, or read from `namespace_claim`) | `run.identity` and `sender.identity`, each with `principal`, `subject`, `issuer`, `namespace`, `claims`. [Who may act](#who-may-act-on-a-run) |
+| **Outbound**: what a workload may become | `federation:` with `targets:` (`token_exchange`, `client_credentials`, `gcp`, `aws`, `assertion`) and `allow`/`deny` rules over `target` and `workload` | `credential:` on a task such as `http`. [Secrets and credentials](SECRETS.md#short-lived-credentials-instead-of-stored-ones) |
+
+Three rules hold in both directions:
+
+- **A tenant comes from the authenticated caller, never from the workflow.** A
+  verified caller whose tenant cannot be determined is refused.
+- **Policy fails closed.** A missing claim, an expression error, an unreachable
+  issuer, or a rule that cannot be evaluated refuses. The one exception, a
+  `federation:` section with no rules, is called out in
+  [Secrets](SECRETS.md#short-lived-credentials-instead-of-stored-ones).
+- **Credentials and tokens never enter a run's history.** A step names a
+  `credential:` or `${secret(...)}`; the worker resolves it where it is used.
+
+A webhook delivery is authenticated by its `verify:` signature rather than by an
+identity, so it has no `sender.identity` to authorize on yet. How workloads, people, and agents are
+federated, and what is built and what is not, is in
+[Workload identity federation](WORKLOAD_IDENTITY_FEDERATION.md); authorizing an
+agent over HTTP is in [MCP authorization](MCP_AUTHORIZATION.md).
 
 ## Secrets
 
