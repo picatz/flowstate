@@ -15,19 +15,22 @@ import (
 	"github.com/picatz/flowstate/pkg/flowstate/v1/nearest"
 )
 
-// A command is one verb the session understands.
+// A command is one verb a debugger front understands.
 //
-// The table is the vocabulary, in one place, because three things need it and a
-// verb known to two of them is a bug somebody meets rather than reads: `dispatch`
-// resolves an alias through it, `help` prints it, and the completer offers it.
-// Before it existed the aliases lived in the `case` labels and the help text was
-// a second hand-written copy of the same list — which is exactly the shape
-// CLAUDE.md names, one meaning written down twice, and a prompt that completed
-// `breakpoints` while `help` had forgotten to mention it would have been nobody's
-// fault in particular.
+// The table is the vocabulary, in one place, because every front needs it and a
+// verb known to some of them is a bug somebody meets rather than reads: the
+// prompt's `dispatch` resolves an alias through it, `help` prints it, the
+// completer offers it, [CheckScript] judges a script against it, the autopsy
+// reads which verbs are movement from it, the [Driver] dispatches and documents
+// itself from it, and the DEBUGGING.md command table is generated from it. Before
+// it existed the aliases lived in `case` labels, the help text was a second
+// hand-written copy of the same list, and the driver's help was a third — which
+// is exactly the shape AGENTS.md names, one meaning written down several times,
+// and a prompt that completed `breakpoints` while `help` had forgotten to
+// mention it would have been nobody's fault in particular.
 type command struct {
-	// verb is the canonical spelling, and the only one the dispatch switch
-	// below has a case for.
+	// verb is the canonical spelling, and the only one the dispatch switches
+	// have a case for.
 	verb string
 
 	// aliases are the short forms, in the order help shows them.
@@ -40,9 +43,75 @@ type command struct {
 	// help is the sentence beside the verb.
 	help string
 
+	// driverArgument and driverHelp are what the [Driver] says in place of
+	// argument and help, where the structured fronts read the verb a little
+	// differently (`until` takes a step and no condition there). Empty means the
+	// same words.
+	driverArgument, driverHelp string
+
 	// completes says what a surface should offer for this command's argument.
 	completes completionSubject
+
+	// fronts are where the verb is answered. A verb typed where it is not is
+	// refused by name, with [command.elsewhere], never as an unknown command.
+	fronts front
+
+	// effect is what the verb does to the run, which is what a driver needs to
+	// know to judge a stale revision and what the autopsy needs to know to
+	// treat a movement as leaving.
+	effect effect
+
+	// elsewhere is the sentence a front that does not answer this verb gives,
+	// naming what to type instead. Required for any verb not on every front.
+	elsewhere string
 }
+
+// front is a place a command line is read.
+type front uint8
+
+const (
+	// frontPrompt is a session read from its own prompt, script or stdin: the
+	// console of `flow run local --debug` and `flow test --debug`, and
+	// `flow debug replay`.
+	frontPrompt front = 1 << iota
+	// frontDriver is the structured fronts, which read the same lines through a
+	// [Driver]: `flow debug attach` and `do`, the MCP session tools, and `embed`.
+	frontDriver
+	// frontAutopsy is the prompt after a failed case, where the run is over and
+	// only questions are left.
+	frontAutopsy
+
+	frontsAll = frontPrompt | frontDriver | frontAutopsy
+	// frontsLive is every front that holds a run.
+	frontsLive = frontPrompt | frontDriver
+)
+
+// String names a front the way a refusal says it.
+func (f front) String() string {
+	switch f {
+	case frontPrompt:
+		return "prompt"
+	case frontDriver:
+		return "driver"
+	case frontAutopsy:
+		return "autopsy"
+	default:
+		return "front"
+	}
+}
+
+// effect is what a verb does to the run.
+type effect uint8
+
+const (
+	// effectRead only reads: it changes neither the breakpoints nor the run.
+	effectRead effect = iota
+	// effectChanges changes the session's breakpoints, logpoints or failure mode
+	// without resuming.
+	effectChanges
+	// effectMoves resumes the run, or steps it back.
+	effectMoves
+)
 
 // completionSubject is what the second word of a command names.
 type completionSubject int
@@ -59,45 +128,128 @@ const (
 )
 
 // commands is the whole vocabulary, in the order help lists it: movement first,
-// because that is what a session does most, then breakpoints, then the two
+// because that is what a session does most, then breakpoints, then the
 // questions, then leaving.
 var commands = []command{
-	{verb: "step", aliases: []string{"s"}, completes: completesNothing,
-		help: "run this step and stop at the next (also: an empty line)"},
-	{verb: "next", aliases: []string{"n"}, completes: completesNothing,
-		help: "run this step, including anything inside it, and stop at the next step at this level or above"},
-	{verb: "finish", aliases: []string{"fin", "out"}, completes: completesNothing,
+	{verb: "step", aliases: []string{"s"}, completes: completesNothing, fronts: frontsLive, effect: effectMoves,
+		help:       "run this step and stop at the next (also: an empty line)",
+		driverHelp: "run to the next step anywhere, including inside this one"},
+	{verb: "next", aliases: []string{"n"}, completes: completesNothing, fronts: frontsLive, effect: effectMoves,
+		help:       "run this step, including anything inside it, and stop at the next step at this level or above",
+		driverHelp: "run this step whole; stop at the next step at this level or above"},
+	{verb: "finish", aliases: []string{"fin", "out"}, completes: completesNothing, fronts: frontsLive, effect: effectMoves,
 		help: "run until the loop, parallel, switch, or call around this step is left"},
-	{verb: "continue", aliases: []string{"c"}, completes: completesNothing,
-		help: "run until the next breakpoint, or to the end"},
-	{verb: "until", aliases: []string{"u"}, argument: "<step-id> [if <expr>]", completes: completesStep,
-		help: "run until the step with that id, optionally only where the condition holds"},
-	{verb: "break", aliases: []string{"b"}, argument: "<step-id> [hit <count>] [if <expr>]", completes: completesStep,
-		help: "stop at that step, always, when the expression holds, or from the given arrival count"},
-	{verb: "log", argument: "<step-id> <message>", completes: completesStep,
-		help: "record the message at every arrival without stopping; {expr} holes are CEL"},
-	{verb: "catch", argument: "none|uncaught|all", completes: completesNothing,
-		help: "stop where a step fails: never, when its failure propagates, or always"},
-	{verb: "delete", aliases: []string{"d"}, argument: "<step-id>", completes: completesBreakpoint,
-		help: "remove that breakpoint"},
-	{verb: "breakpoints", completes: completesNothing,
-		help: "list them"},
-	{verb: "inspect", aliases: []string{"p"}, argument: "<expr>", completes: completesExpression,
-		help: "evaluate a CEL expression against this run's scope"},
-	{verb: "scope", completes: completesNothing,
-		help: "list what this run can name right now"},
-	{verb: "complete", argument: "<partial-command>", completes: completesNothing,
-		help: "list what could be written at the end of that text"},
-	{verb: "info", aliases: []string{"step-info"}, completes: completesNothing,
-		help: "describe the step the run is stopped at"},
-	{verb: "backtrace", aliases: []string{"bt"}, completes: completesNothing,
-		help: "list this step and each iteration, branch, arm and call around it"},
-	{verb: "detach", completes: completesNothing,
-		help: "clear every breakpoint and let the run finish unattended"},
-	{verb: "quit", aliases: []string{"q"}, completes: completesNothing,
-		help: "end the run here"},
-	{verb: "help", aliases: []string{"h", "?"}, completes: completesNothing,
-		help: "list these"},
+	{verb: "continue", aliases: []string{"c"}, completes: completesNothing, fronts: frontsLive, effect: effectMoves,
+		help:       "run until the next breakpoint, or to the end",
+		driverHelp: "run to the next breakpoint, or the end"},
+	{verb: "until", aliases: []string{"u"}, argument: "<step-id> [if <expr>]", completes: completesStep, fronts: frontsLive, effect: effectMoves,
+		help:           "run until the step with that id, optionally only where the condition holds",
+		driverArgument: "<step>",
+		driverHelp:     "run to that step (an id or an address like pages[2]/page); a condition is `break <step> if <expr>` and `continue`"},
+	{verb: "back", completes: completesNothing, fronts: frontDriver, effect: effectMoves,
+		help:      "return to the previous stop (a session that can step back)",
+		elsewhere: "`back` is a driver command, and a prompt session cannot step back"},
+	{verb: "reverse-continue", aliases: []string{"rc"}, completes: completesNothing, fronts: frontDriver, effect: effectMoves,
+		help:      "return to the nearest earlier breakpoint stop, or the first",
+		elsewhere: "`reverse-continue` is a driver command, and a prompt session cannot step back"},
+	{verb: "pause", completes: completesNothing, fronts: frontDriver, effect: effectChanges,
+		help:      "hold at the next step boundary",
+		elsewhere: "`pause` is a driver command: a prompt already holds the run at every stop"},
+	{verb: "break", aliases: []string{"b"}, argument: "<step-id> [hit <count>] [if <expr>]", completes: completesStep, fronts: frontsLive, effect: effectChanges,
+		help:           "stop at that step, always, when the expression holds, or from the given arrival count",
+		driverArgument: "<step> [hit <n>] [if <expr>]",
+		driverHelp:     "stop there, when the count and condition allow"},
+	{verb: "log", argument: "<step-id> <message>", completes: completesStep, fronts: frontsLive, effect: effectChanges,
+		help:           "record the message at every arrival without stopping; {expr} holes are CEL",
+		driverArgument: "<step> <message>"},
+	{verb: "catch", argument: "none|uncaught|all", completes: completesNothing, fronts: frontsLive, effect: effectChanges,
+		help:       "stop where a step fails: never, when its failure propagates, or always",
+		driverHelp: "stop where a step fails"},
+	{verb: "delete", aliases: []string{"d"}, argument: "<step-id>", completes: completesBreakpoint, fronts: frontsLive, effect: effectChanges,
+		help:           "remove that breakpoint",
+		driverArgument: "<step>|log <step>",
+		driverHelp:     "remove that breakpoint, or that logpoint"},
+	{verb: "clear", completes: completesNothing, fronts: frontDriver, effect: effectChanges,
+		help:      "remove every breakpoint, whoever set it",
+		elsewhere: "`clear` is a driver command: at a prompt `delete <step-id>` removes one breakpoint, and `detach` removes them all and lets the run go"},
+	{verb: "breakpoints", completes: completesNothing, fronts: frontsLive, effect: effectRead,
+		help:       "list them",
+		driverHelp: "list breakpoints and their hit counts"},
+	{verb: "inspect", aliases: []string{"p"}, argument: "<expr>", completes: completesExpression, fronts: frontsAll, effect: effectRead,
+		help:       "evaluate a CEL expression against this run's scope",
+		driverHelp: "evaluate a read-only CEL expression at this stop"},
+	{verb: "expand", argument: "<expr>", completes: completesExpression, fronts: frontDriver, effect: effectRead,
+		help:      "list a map's or list's children",
+		elsewhere: "`expand` is a driver command: at a prompt `inspect <expr>` prints the value in full"},
+	{verb: "scope", completes: completesNothing, fronts: frontsAll, effect: effectRead,
+		help:       "list what this run can name right now",
+		driverHelp: "list what this stop can name"},
+	{verb: "complete", argument: "<partial-command>", completes: completesNothing, fronts: frontPrompt | frontAutopsy, effect: effectRead,
+		help:      "list what could be written at the end of that text",
+		elsewhere: "`complete` is a prompt command: the structured fronts do not complete a line"},
+	{verb: "status", completes: completesNothing, fronts: frontDriver, effect: effectRead,
+		help:      "where the run is, and why",
+		elsewhere: "`status` is a driver command: a prompt prints where the run is at every stop, and `info` describes the step"},
+	{verb: "info", aliases: []string{"step-info"}, completes: completesNothing, fronts: frontPrompt, effect: effectRead,
+		help:      "describe the step the run is stopped at",
+		elsewhere: "`info` describes the step at a prompt; `status` says where the run is, and why"},
+	{verb: "backtrace", aliases: []string{"bt"}, completes: completesNothing, fronts: frontsLive, effect: effectRead,
+		help:       "list this step and each iteration, branch, arm and call around it",
+		driverHelp: "the step and every container around it"},
+	{verb: "detach", completes: completesNothing, fronts: frontsLive, effect: effectMoves,
+		help:       "clear every breakpoint and let the run finish unattended",
+		driverHelp: "clear breakpoints and let the run go on unattended"},
+	{verb: "quit", aliases: []string{"q"}, completes: completesNothing, fronts: frontPrompt | frontAutopsy, effect: effectMoves,
+		help:      "end the run here",
+		elsewhere: "`quit` ends a local run at its prompt; a durable or attached run is released with `detach`"},
+	{verb: "help", aliases: []string{"h", "?"}, completes: completesNothing, fronts: frontsAll, effect: effectRead,
+		help:       "list these",
+		driverHelp: "this list"},
+}
+
+// onFront reports whether the verb is answered on f.
+func (c command) onFront(f front) bool { return c.fronts&f != 0 }
+
+// argumentOn is the argument grammar f writes after the verb.
+func (c command) argumentOn(f front) string {
+	if f == frontDriver && c.driverArgument != "" {
+		return c.driverArgument
+	}
+
+	return c.argument
+}
+
+// helpOn is the sentence f writes beside the verb.
+func (c command) helpOn(f front) string {
+	if f == frontDriver && c.driverHelp != "" {
+		return c.driverHelp
+	}
+
+	return c.help
+}
+
+// commandsOn lists the commands f answers, in help's order.
+func commandsOn(f front) []command {
+	out := make([]command, 0, len(commands))
+	for _, c := range commands {
+		if c.onFront(f) {
+			out = append(out, c)
+		}
+	}
+
+	return out
+}
+
+// refuse is the sentence a front gives for a verb it does not answer, and
+// whether verb is in the vocabulary at all. A verb that exists elsewhere is never
+// "unknown": the author is looking for a misspelling that is not there.
+func refuse(verb string, at front) (string, bool) {
+	c, ok := resolve(verb)
+	if !ok || c.onFront(at) {
+		return "", false
+	}
+
+	return c.elsewhere, true
 }
 
 // The one-line usages three verbs print when their argument is missing.
@@ -139,6 +291,16 @@ func IsComment(line string) bool {
 	return strings.HasPrefix(strings.TrimLeft(line, " \t"), "#")
 }
 
+// resolveOn is [resolve] restricted to the verbs f answers: a verb that exists
+// only on another front is not this front's, whatever it is called.
+func resolveOn(typed string, f front) (command, bool) {
+	if c, ok := resolve(typed); ok && c.onFront(f) {
+		return c, true
+	}
+
+	return command{}, false
+}
+
 // resolve returns the canonical verb for what was typed, and whether it is one
 // this session knows.
 func resolve(typed string) (command, bool) {
@@ -177,6 +339,11 @@ func (s *Session) dispatch(ctx context.Context, line string, node *v1.Node, scop
 	verb := typed
 	if known, ok := resolve(typed); ok {
 		verb = known.verb
+	}
+	if why, refused := refuse(typed, frontPrompt); refused {
+		s.printfTone(ToneWarning, "%s\n", why)
+
+		return false, nil
 	}
 
 	// Recorded before the command runs and only for commands that were
@@ -1157,28 +1324,41 @@ func (s *Session) listBreakpoints() {
 	s.printf("breakpoints: %s\n", strings.Join(ids, ", "))
 }
 
-// help prints the vocabulary, rendered from [commands] rather than written out
-// beside it: a hand-kept second copy is how a verb comes to be understood and
-// undocumented, or documented and gone.
+// help prints the vocabulary the prompt answers, rendered from [commands]
+// rather than written out beside it: a hand-kept second copy is how a verb comes
+// to be understood and undocumented, or documented and gone.
 func (s *Session) help() {
-	// One pass to measure and one to print, so the sentences line up whatever
-	// the longest spelling turns out to be — a width constant would be a third
-	// place the vocabulary is written down.
-	width := 0
-	for _, c := range commands {
-		width = max(width, len(c.spelling()))
-	}
-	for _, c := range commands {
-		s.printf("%-*s   %s\n", width, c.spelling(), c.help)
-	}
+	s.printf("%s\n", helpText(frontPrompt))
 }
 
-// spelling renders a command the way help names it: the verb, its argument, and
-// then the short forms.
-func (c command) spelling() string {
+// helpText renders the commands f answers as the aligned list `help` prints.
+//
+// One pass to measure and one to print, so the sentences line up whatever the
+// longest spelling turns out to be — a width constant would be a third place the
+// vocabulary is written down.
+func helpText(f front) string {
+	list := commandsOn(f)
+	width := 0
+	for _, c := range list {
+		width = max(width, len(c.spellingOn(f)))
+	}
+	lines := make([]string, 0, len(list))
+	for _, c := range list {
+		lines = append(lines, fmt.Sprintf("%-*s   %s", width, c.spellingOn(f), c.helpOn(f)))
+	}
+
+	return strings.Join(lines, "\n")
+}
+
+// spelling renders a command the way the prompt's help names it: the verb, its
+// argument, and then the short forms.
+func (c command) spelling() string { return c.spellingOn(frontPrompt) }
+
+// spellingOn is [command.spelling] with the argument grammar f writes.
+func (c command) spellingOn(f front) string {
 	out := c.verb
-	if c.argument != "" {
-		out += " " + c.argument
+	if argument := c.argumentOn(f); argument != "" {
+		out += " " + argument
 	}
 	for _, alias := range c.aliases {
 		out += ", " + alias

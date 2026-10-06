@@ -120,7 +120,7 @@ func (s *Session) Complete(line string, pos int) Completion {
 	typed, rest := trimmed[:cut], trimmed[cut+1:]
 
 	known, ok := resolve(typed)
-	if !ok {
+	if !ok || !known.onFront(frontPrompt) {
 		return Completion{}
 	}
 	switch known.completes {
@@ -157,10 +157,11 @@ func (s *Session) Complete(line string, pos int) Completion {
 // but leave.
 func (s *Session) offerCommands(at promptSubject, prefix string) Completion {
 	out := Completion{Prefix: prefix}
-	for _, c := range commands {
-		if at.autopsy && !autopsyVerbs[c.verb] {
-			continue
-		}
+	front := frontPrompt
+	if at.autopsy {
+		front = frontAutopsy
+	}
+	for _, c := range commandsOn(front) {
 		if !strings.HasPrefix(c.verb, prefix) {
 			continue
 		}
@@ -178,24 +179,24 @@ func (s *Session) offerCommands(at promptSubject, prefix string) Completion {
 	return out
 }
 
-// autopsyVerbs are the commands the autopsy answers. It is the same reading
-// [Session.Autopsy]'s own switch makes — `inspect`, `complete`, `scope`,
-// `help`, and leaving — written as the set the completer offers.
+// autopsyVerbs are the commands the autopsy answers, read from the table's
+// [frontAutopsy] column: `inspect`, `complete`, `scope`, `help`, and leaving.
 //
-// Two lists for one vocabulary, which is why
-// TestEveryVerbIsDecidedAtTheAutopsy walks the switch rather than trusting
-// this: `complete` reached the main dispatch and not the autopsy's, so at the
-// one prompt where completion is worth most — the bindings a failed case was
-// judged under — it came back "unknown command" (Codex, #1117). The walk reads
-// both directions, since offering a verb the autopsy will refuse is the same
-// defect pointed the other way.
-var autopsyVerbs = map[string]bool{
-	"inspect":  true,
-	"complete": true,
-	"scope":    true,
-	"help":     true,
-	"quit":     true,
-}
+// It used to be a second list for the one vocabulary, which is why
+// TestEveryVerbIsDecidedAtTheAutopsy walks [Session.Autopsy]'s own switch rather
+// than trusting this: `complete` reached the main dispatch and not the autopsy's,
+// so at the one prompt where completion is worth most — the bindings a failed
+// case was judged under — it came back "unknown command" (Codex, #1117). The walk
+// reads both directions, since offering a verb the autopsy will refuse is the
+// same defect pointed the other way.
+var autopsyVerbs = func() map[string]bool {
+	out := map[string]bool{}
+	for _, c := range commandsOn(frontAutopsy) {
+		out[c.verb] = true
+	}
+
+	return out
+}()
 
 // argumentSpace is the separator a verb that takes an argument is written with.
 func argumentSpace(c command) string {

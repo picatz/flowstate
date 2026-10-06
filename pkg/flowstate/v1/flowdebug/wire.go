@@ -466,7 +466,7 @@ func CommandProto(line string) (*v1.DebugCommand, bool) {
 		return &v1.DebugCommand{Verb: v1.DebugCommandVerb_DEBUG_COMMAND_VERB_STEP}, true
 	}
 
-	known, ok := resolve(typed)
+	known, ok := resolveOn(typed, frontPrompt)
 	if !ok {
 		return nil, false
 	}
@@ -583,7 +583,7 @@ func CommandLine(command *v1.DebugCommand) (string, error) {
 	// deleting it survives — it is kept because the answer it gives is the
 	// fail-closed one and the alternative is rendering a line for a verb
 	// nothing understands.
-	known, ok := resolve(verb)
+	known, ok := resolveOn(verb, frontPrompt)
 	if !ok || known.argument == "" {
 		return "", fmt.Errorf("flowdebug: %s takes no argument, and %q was sent with it", verb, argument)
 	}

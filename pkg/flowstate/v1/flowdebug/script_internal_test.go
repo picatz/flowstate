@@ -30,7 +30,7 @@ func TestEveryVerbTheVocabularyHasIsOneAScriptMayCarry(t *testing.T) {
 	steps := []string{"build"}
 	checked := 0
 
-	for _, c := range commands {
+	for _, c := range commandsOn(frontPrompt) {
 		// What the verb's own table entry says follows it. Read from
 		// `completes` rather than chosen per verb, so a new entry is covered
 		// by declaring what it takes rather than by somebody remembering to
