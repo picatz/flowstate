@@ -251,6 +251,8 @@ func addLocalRehearsalFlags(cmd *cobra.Command) {
 		"tenant namespace to rehearse policy as (local runs only)")
 	cmd.Flags().String("as-deployment", "local",
 		"Flowstate deployment name to rehearse policy as (local runs only)")
+	cmd.Flags().String("as-kind", "",
+		"kind of party to rehearse policy as: human, workload or agent (local runs only)")
 	cmd.Flags().StringArray("as-claim", nil,
 		"authenticated string claim NAME=VALUE to rehearse policy as (repeatable)")
 	cmd.Flags().String("auth-policy", os.Getenv("FLOWSTATE_AUTH_POLICY"), runtimeAuthPolicyUsage)

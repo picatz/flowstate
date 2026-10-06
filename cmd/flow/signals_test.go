@@ -542,3 +542,39 @@ func TestSignalOnAnUnaddressableRunNamesEveryCause(t *testing.T) {
 	require.ErrorContains(t, err, "tenant")
 	require.ErrorContains(t, err, "retention")
 }
+
+// TestLocalKindFlagsRehearseAKind proves `--signal-as-kind` reaches the delivery's
+// sender and `--as-kind` the starter, and that a misspelling is refused instead of
+// recording no kind and denying a predicate that names one for no visible reason.
+func TestLocalKindFlagsRehearseAKind(t *testing.T) {
+	t.Parallel()
+
+	workflow := &v1.Workflow{
+		Steps: []*v1.Node{
+			{Id: "approval", Kind: &v1.Node_Wait{Wait: &v1.Wait{
+				Kind: &v1.Wait_Signal{Signal: &v1.Signal{Name: "deploy-approved"}},
+			}}},
+		},
+	}
+
+	cmd := localSignalsTestCommand(t)
+	require.NoError(t, cmd.Flags().Set("signal-as-subject", "alice"))
+	require.NoError(t, cmd.Flags().Set("signal-as-issuer", "https://issuer.example.com"))
+	require.NoError(t, cmd.Flags().Set("signal-as-kind", "human"))
+
+	ctx, err := withLocalSignals(t.Context(), cmd, workflow, nil, []string{`deploy-approved={}`})
+	require.NoError(t, err)
+
+	waiter, ok := v1.SignalWaiterFromContext(ctx)
+	require.True(t, ok)
+	_, sender, err := waiter.WaitForSignal(t.Context(), "deploy-approved")
+	require.NoError(t, err)
+	require.Equal(t, v1.PrincipalKind_PRINCIPAL_KIND_HUMAN, sender.GetIdentity().GetPrincipalKind())
+
+	for _, flag := range []string{"as-kind", "signal-as-kind"} {
+		bad := localSignalsTestCommand(t)
+		require.NoError(t, bad.Flags().Set(flag, "humen"))
+		_, err := withLocalSignals(t.Context(), bad, workflow, nil, []string{`deploy-approved={}`})
+		require.ErrorContains(t, err, "is not a kind", flag)
+	}
+}

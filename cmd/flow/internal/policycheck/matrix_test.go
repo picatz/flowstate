@@ -196,3 +196,24 @@ func TestRenderingAnswersEachGateOnceAndMarksAMismatch(t *testing.T) {
 	require.False(t, *report.Results[0].Decisions[1].Matches)
 	require.Nil(t, report.Results[1].Decisions[0].Matches, "no expectation, no verdict")
 }
+
+// TestMatrixCarriesAKindToItsRows proves a row's `kind:` and its starter's reach
+// the identities a predicate reads, and that a misspelled kind is refused when the
+// matrix is read rather than recording none.
+func TestMatrixCarriesAKindToItsRows(t *testing.T) {
+	t.Parallel()
+
+	matrix, err := policycheck.ParseMatrix([]byte(`identities:
+  - name: a person
+    subject: alice
+    issuer: https://issuer.example.com
+    kind: human
+    starter: {subject: ci, issuer: https://issuer.example.com, kind: workload}
+`))
+	require.NoError(t, err)
+	require.Equal(t, "human", matrix.Identities[0].Kind)
+	require.Equal(t, "workload", matrix.Identities[0].Starter.Kind)
+
+	_, err = policycheck.ParseMatrix([]byte("identities:\n  - name: typo\n    kind: humen\n"))
+	require.Error(t, err)
+}

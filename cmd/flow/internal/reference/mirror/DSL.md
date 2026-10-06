@@ -6049,8 +6049,8 @@ The one workflow shape most worth trying before production - a gate whose
 authorization lives in `signals:` rather than in the file's own `if:` - could be
 rehearsed only as its own refusal.
 
-`--signal-as-subject`, `--signal-as-issuer`, `--signal-as-namespace` and
-`--signal-as-claim` name the approver a delivery stands in for. They rhyme with
+`--signal-as-subject`, `--signal-as-issuer`, `--signal-as-namespace`,
+`--signal-as-kind` and `--signal-as-claim` name the approver a delivery stands in for. They rhyme with
 `--as-subject` and its siblings, which name the run's own starter, because they
 answer the same shape of question about the other party - and the pairing is not
 decorative: a predicate comparing `sender.identity.principal` with

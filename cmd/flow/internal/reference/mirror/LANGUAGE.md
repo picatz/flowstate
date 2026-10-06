@@ -1434,7 +1434,7 @@ predicate that says which senders may deliver it. It reads
   configured to record (`flow server --identity-claim team`). A missing claim is an
   error, which refuses the sender.
 - `sender.identity.namespace == "payments"` is the sender's tenant.
-- `sender.identity.kind == "human"` requires a person, as the trust policy entry that admitted the sender says (`principal_kind:`); it is `""` when that entry says nothing, which is not a workload.
+- `sender.identity.kind == "human"` requires a person, as the trust policy entry that admitted the sender says (`principal_kind:`); it is `""` when that entry says nothing, which is not a workload. Rehearse it with `--signal-as-kind` (and `--as-kind` for the starter) on `flow run local`, `flow signals check` (`--starter-kind`), or `kind:` in a test file.
 - `sender.identity.principal != run.identity.principal` requires that the sender is not
   the person who started the run: separation of duties.
 

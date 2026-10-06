@@ -193,6 +193,8 @@ func addLocalSignalFlags(cmd *cobra.Command) {
 		"authenticated issuer to deliver `--signal` as, with `--signal-as-subject` (local runs only)")
 	cmd.Flags().String("signal-as-namespace", "",
 		"tenant namespace to deliver `--signal` as (local runs only)")
+	cmd.Flags().String("signal-as-kind", "",
+		"kind of party to deliver `--signal` as: human, workload or agent (local runs only)")
 	cmd.Flags().StringArray("signal-as-claim", nil,
 		"authenticated string claim NAME=VALUE to deliver `--signal` as (repeatable)")
 }
