@@ -82,6 +82,11 @@ var exemptScopeConstruction = map[string]string{
 		"identity-less scope is read as the default tenant rather than as an activity declining to say whose work it is. " +
 		"Giving it an identity would delete the case.",
 
+	"pkg/flowstate/v1/server/lifecycle.go#(*FlowstateServer).signalPolicyScope": "decodes a memo entry: a Scope is only the " +
+		"container submit chose for a run's inputs and starter so a signal predicate can read them at delivery " +
+		"(signalPolicyScopeMemoEntry sets Identity itself). It is read in the server's authorization path and " +
+		"never dispatched to an activity.",
+
 	"pkg/flowstate/v1/nodes.go#NewScope": "the general constructor, over outputs and a profile. It is what #737's " +
 		"structural half would replace; every caller that builds a scope a run will dispatch assigns Identity after it " +
 		"(engine/workflow.go varsScope, v1/call.go CallScope).",
@@ -90,16 +95,6 @@ var exemptScopeConstruction = map[string]string{
 		"submit, against the run's bound inputs — before the run exists, and in fact before its workflow id has been " +
 		"composed, since the resolved key is what composes it. The scope is never an activity argument: the literal is " +
 		"digested into the id and discarded, and nothing inside a run ever reads the block.",
-
-	"pkg/flowstate/v1/server/server.go#debugPolicyMemoEntry": "the same shape as ResolveSignalPolicySubjects below, for the " +
-		"`debug:` stanza: it resolves `subject:` expressions at submit, against the run's bound inputs, before the run " +
-		"exists and so before there is a run identity to carry. The scope is discarded once the policy is encoded into " +
-		"the memo; it is never an activity argument, and the identity a debug policy decides on is the *asker's*, " +
-		"attested at delivery.",
-
-	"pkg/flowstate/v1/signalpolicy.go#ResolveSignalPolicySubjects": "resolves `subject_from:` expressions in the server, at " +
-		"submit, against the run's inputs — before the run exists and so before there is a run identity to carry. The scope " +
-		"is never an activity argument, and the identity a signal policy decides on is the *sender's*, attested at delivery.",
 
 	// The [v1.NewScope] callers that build a scope for one in-process evaluation
 	// and hand it straight to the evaluator. None of them is reachable from a

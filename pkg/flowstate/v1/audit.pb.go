@@ -369,6 +369,12 @@ const (
 	// The caller exceeded the codec server's per-caller request rate. Refused
 	// before the body is read or a key is touched.
 	AuditDenyCode_AUDIT_DENY_CODE_RATE_LIMITED AuditDenyCode = 16
+	// A webhook delivery verified and its trigger's `when:` answered false: the
+	// workflow declined it, so it started no run and delivered no signal. Not an
+	// attack and not a fault; recorded because a declined delivery is a decision
+	// the operator may need to count. A `when:` that could not be answered at
+	// all is RULE_ERROR, the code for a rule that is itself broken.
+	AuditDenyCode_AUDIT_DENY_CODE_WEBHOOK_DECLINED AuditDenyCode = 17
 )
 
 // Enum value maps for AuditDenyCode.
@@ -391,6 +397,7 @@ var (
 		14: "AUDIT_DENY_CODE_PAYLOAD_TOO_LARGE",
 		15: "AUDIT_DENY_CODE_BINDING_FAILED",
 		16: "AUDIT_DENY_CODE_RATE_LIMITED",
+		17: "AUDIT_DENY_CODE_WEBHOOK_DECLINED",
 	}
 	AuditDenyCode_value = map[string]int32{
 		"AUDIT_DENY_CODE_UNSPECIFIED":               0,
@@ -410,6 +417,7 @@ var (
 		"AUDIT_DENY_CODE_PAYLOAD_TOO_LARGE":         14,
 		"AUDIT_DENY_CODE_BINDING_FAILED":            15,
 		"AUDIT_DENY_CODE_RATE_LIMITED":              16,
+		"AUDIT_DENY_CODE_WEBHOOK_DECLINED":          17,
 	}
 )
 
@@ -992,7 +1000,7 @@ const file_flowstate_v1_audit_proto_rawDesc = "" +
 	"\x1aAUDIT_RESOURCE_KIND_SECRET\x10\x05\x12 \n" +
 	"\x1cAUDIT_RESOURCE_KIND_ENDPOINT\x10\x06\x12)\n" +
 	"%AUDIT_RESOURCE_KIND_CREDENTIAL_TARGET\x10\a\x12%\n" +
-	"!AUDIT_RESOURCE_KIND_WEBHOOK_ROUTE\x10\b*\x86\x05\n" +
+	"!AUDIT_RESOURCE_KIND_WEBHOOK_ROUTE\x10\b*\xac\x05\n" +
 	"\rAuditDenyCode\x12\x1f\n" +
 	"\x1bAUDIT_DENY_CODE_UNSPECIFIED\x10\x00\x12(\n" +
 	"$AUDIT_DENY_CODE_NAMESPACE_UNROUTABLE\x10\x01\x12&\n" +
@@ -1011,7 +1019,8 @@ const file_flowstate_v1_audit_proto_rawDesc = "" +
 	"#AUDIT_DENY_CODE_TOO_MANY_SIGNATURES\x10\r\x12%\n" +
 	"!AUDIT_DENY_CODE_PAYLOAD_TOO_LARGE\x10\x0e\x12\"\n" +
 	"\x1eAUDIT_DENY_CODE_BINDING_FAILED\x10\x0f\x12 \n" +
-	"\x1cAUDIT_DENY_CODE_RATE_LIMITED\x10\x10B\xa9\x01\n" +
+	"\x1cAUDIT_DENY_CODE_RATE_LIMITED\x10\x10\x12$\n" +
+	" AUDIT_DENY_CODE_WEBHOOK_DECLINED\x10\x11B\xa9\x01\n" +
 	"\x10com.flowstate.v1B\n" +
 	"AuditProtoP\x01Z8github.com/picatz/flowstate/pkg/flowstate/v1;flowstatev1\xa2\x02\x03FXX\xaa\x02\fFlowstate.V1\xca\x02\fFlowstate\\V1\xe2\x02\x18Flowstate\\V1\\GPBMetadata\xea\x02\rFlowstate::V1b\x06proto3"
 

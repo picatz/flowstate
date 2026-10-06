@@ -534,7 +534,9 @@ type TestReport struct {
 	// skipped case is not in Cases and reaches no coverage, so a report whose
 	// Cases is empty because everything was skipped is told apart here from one
 	// that ran nothing.
-	Skipped       []*SkippedTestCase `protobuf:"bytes,6,rep,name=skipped,proto3" json:"skipped,omitempty"`
+	Skipped []*SkippedTestCase `protobuf:"bytes,6,rep,name=skipped,proto3" json:"skipped,omitempty"`
+	// Fuzz is what `flow test --fuzz` found, unset when nobody asked for it.
+	Fuzz          *FuzzReport `protobuf:"bytes,7,opt,name=fuzz,proto3" json:"fuzz,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -607,6 +609,13 @@ func (x *TestReport) GetSchedules() *ScheduleExploration {
 func (x *TestReport) GetSkipped() []*SkippedTestCase {
 	if x != nil {
 		return x.Skipped
+	}
+	return nil
+}
+
+func (x *TestReport) GetFuzz() *FuzzReport {
+	if x != nil {
+		return x.Fuzz
 	}
 	return nil
 }
@@ -692,6 +701,11 @@ type ScheduleExploration struct {
 	// took written order for the rest of its run, so the interleaving it
 	// explored stopped partway.
 	Truncated bool `protobuf:"varint,4,opt,name=truncated,proto3" json:"truncated,omitempty"`
+	// FaultDraws is the largest number of times any one schedule of any case was
+	// asked whether an injected fault fires. Zero with a nonzero [decisions] means
+	// the exploration reordered but injected nothing; zero with zero [decisions]
+	// means it explored nothing at all.
+	FaultDraws int32 `protobuf:"varint,6,opt,name=fault_draws,json=faultDraws,proto3" json:"fault_draws,omitempty"`
 	// Divergence is the first case whose observables were not the same under a
 	// seeded schedule as under written order, or whose invariants broke under a
 	// seeded run's injected faults (see ScheduleDivergenceReport.invariant),
@@ -759,6 +773,13 @@ func (x *ScheduleExploration) GetTruncated() bool {
 	return false
 }
 
+func (x *ScheduleExploration) GetFaultDraws() int32 {
+	if x != nil {
+		return x.FaultDraws
+	}
+	return 0
+}
+
 func (x *ScheduleExploration) GetDivergence() *ScheduleDivergenceReport {
 	if x != nil {
 		return x.Divergence
@@ -806,7 +827,17 @@ type ScheduleDivergenceReport struct {
 	// replays the faults the seed fired with no seed: each pinned to the
 	// invocations it fired on with `on:`. Pasted into the case, a plain
 	// `flow test` reproduces the violation. Empty otherwise.
-	FaultScript   string `protobuf:"bytes,8,opt,name=fault_script,json=faultScript,proto3" json:"fault_script,omitempty"`
+	FaultScript string `protobuf:"bytes,8,opt,name=fault_script,json=faultScript,proto3" json:"fault_script,omitempty"`
+	// FiredFaults is how many fault firings the seed injected, the size of the
+	// set [fault_script] was shrunk from. Zero when nothing was shrunk.
+	FiredFaults int32 `protobuf:"varint,9,opt,name=fired_faults,json=firedFaults,proto3" json:"fired_faults,omitempty"`
+	// ShrinkRuns is how many re-runs of the case the shrink spent looking for a
+	// smaller set that still violates. Zero when nothing was shrunk.
+	ShrinkRuns int32 `protobuf:"varint,10,opt,name=shrink_runs,json=shrinkRuns,proto3" json:"shrink_runs,omitempty"`
+	// ShrunkMinimal reports that no single firing could be removed from
+	// [fault_script] and keep the violation. False when the shrink budget ended
+	// the search first, or nothing was shrunk.
+	ShrunkMinimal bool `protobuf:"varint,11,opt,name=shrunk_minimal,json=shrunkMinimal,proto3" json:"shrunk_minimal,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -897,6 +928,237 @@ func (x *ScheduleDivergenceReport) GetFaultScript() string {
 	return ""
 }
 
+func (x *ScheduleDivergenceReport) GetFiredFaults() int32 {
+	if x != nil {
+		return x.FiredFaults
+	}
+	return 0
+}
+
+func (x *ScheduleDivergenceReport) GetShrinkRuns() int32 {
+	if x != nil {
+		return x.ShrinkRuns
+	}
+	return 0
+}
+
+func (x *ScheduleDivergenceReport) GetShrunkMinimal() bool {
+	if x != nil {
+		return x.ShrunkMinimal
+	}
+	return false
+}
+
+// FuzzReport is what running a file's cases over generated inputs found: the
+// type-driven dimension `--fuzz` adds beside the authored cases and the seeded
+// schedules. A generated case is never an authored one, so this is reported
+// apart from the cases and apart from coverage.
+type FuzzReport struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Runs is how many generated cases were judged, across all cases: ran to a
+	// verdict on the properties. A case that errored before the run counts as
+	// inconclusive instead.
+	Runs int32 `protobuf:"varint,1,opt,name=runs,proto3" json:"runs,omitempty"`
+	// Cases is how many of the file's cases were fuzzed.
+	Cases int32 `protobuf:"varint,2,opt,name=cases,proto3" json:"cases,omitempty"`
+	// Inconclusive is how many generated cases could not be judged: the case
+	// errored before the run (an input the declaration refuses at submit, a
+	// task the case has no stub for) rather than failing a property.
+	Inconclusive int32 `protobuf:"varint,3,opt,name=inconclusive,proto3" json:"inconclusive,omitempty"`
+	// SkippedInputs names the declared inputs nothing was generated for, each
+	// with the reason (a type not yet generated, a `sensitive:` input).
+	SkippedInputs []string `protobuf:"bytes,4,rep,name=skipped_inputs,json=skippedInputs,proto3" json:"skipped_inputs,omitempty"`
+	// Finding is the first generated case that broke a property, unset when
+	// none did.
+	Finding       *FuzzFinding `protobuf:"bytes,5,opt,name=finding,proto3" json:"finding,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *FuzzReport) Reset() {
+	*x = FuzzReport{}
+	mi := &file_flowstate_v1_reports_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *FuzzReport) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*FuzzReport) ProtoMessage() {}
+
+func (x *FuzzReport) ProtoReflect() protoreflect.Message {
+	mi := &file_flowstate_v1_reports_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use FuzzReport.ProtoReflect.Descriptor instead.
+func (*FuzzReport) Descriptor() ([]byte, []int) {
+	return file_flowstate_v1_reports_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *FuzzReport) GetRuns() int32 {
+	if x != nil {
+		return x.Runs
+	}
+	return 0
+}
+
+func (x *FuzzReport) GetCases() int32 {
+	if x != nil {
+		return x.Cases
+	}
+	return 0
+}
+
+func (x *FuzzReport) GetInconclusive() int32 {
+	if x != nil {
+		return x.Inconclusive
+	}
+	return 0
+}
+
+func (x *FuzzReport) GetSkippedInputs() []string {
+	if x != nil {
+		return x.SkippedInputs
+	}
+	return nil
+}
+
+func (x *FuzzReport) GetFinding() *FuzzFinding {
+	if x != nil {
+		return x.Finding
+	}
+	return nil
+}
+
+// FuzzFinding is one generated case that failed: reproducible from its seed
+// and pasteable as an authored case.
+type FuzzFinding struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Case is the authored case the inputs were generated around.
+	Case string `protobuf:"bytes,1,opt,name=case,proto3" json:"case,omitempty"`
+	// Seed is the generated case's seed: `flow test --fuzz-seed <seed>` on the
+	// same file replays exactly it.
+	Seed uint64 `protobuf:"varint,2,opt,name=seed,proto3" json:"seed,omitempty"`
+	// Inputs is the `inputs:` overlay that reproduces the failure, as YAML to
+	// merge over the case's own `inputs:`. Inputs the workflow declares
+	// `sensitive:` are never generated and never printed, so the case keeps its
+	// own values for them.
+	Inputs string `protobuf:"bytes,3,opt,name=inputs,proto3" json:"inputs,omitempty"`
+	// Failure is what went wrong, withheld as the case's own report withholds.
+	Failure string `protobuf:"bytes,4,opt,name=failure,proto3" json:"failure,omitempty"`
+	// Absent names the inputs the case supplies that the generated run left out,
+	// which an `inputs:` overlay cannot say: remove them from the case to
+	// reproduce. Sorted, and never a `sensitive:` input.
+	Absent []string `protobuf:"bytes,5,rep,name=absent,proto3" json:"absent,omitempty"`
+	// Changed is how many inputs the seed changed from the case's own before the
+	// finding was shrunk; Inputs and Absent hold what is left of them.
+	Changed int32 `protobuf:"varint,6,opt,name=changed,proto3" json:"changed,omitempty"`
+	// ShrinkRuns is how many re-runs of the case the shrink spent putting inputs
+	// back at the case's own values; one means the first replay was all it took.
+	ShrinkRuns int32 `protobuf:"varint,7,opt,name=shrink_runs,json=shrinkRuns,proto3" json:"shrink_runs,omitempty"`
+	// Minimal reports that putting any one remaining input back at the case's own
+	// value stopped the failure; false when the budget ended the search first.
+	Minimal       bool `protobuf:"varint,8,opt,name=minimal,proto3" json:"minimal,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *FuzzFinding) Reset() {
+	*x = FuzzFinding{}
+	mi := &file_flowstate_v1_reports_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *FuzzFinding) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*FuzzFinding) ProtoMessage() {}
+
+func (x *FuzzFinding) ProtoReflect() protoreflect.Message {
+	mi := &file_flowstate_v1_reports_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use FuzzFinding.ProtoReflect.Descriptor instead.
+func (*FuzzFinding) Descriptor() ([]byte, []int) {
+	return file_flowstate_v1_reports_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *FuzzFinding) GetCase() string {
+	if x != nil {
+		return x.Case
+	}
+	return ""
+}
+
+func (x *FuzzFinding) GetSeed() uint64 {
+	if x != nil {
+		return x.Seed
+	}
+	return 0
+}
+
+func (x *FuzzFinding) GetInputs() string {
+	if x != nil {
+		return x.Inputs
+	}
+	return ""
+}
+
+func (x *FuzzFinding) GetFailure() string {
+	if x != nil {
+		return x.Failure
+	}
+	return ""
+}
+
+func (x *FuzzFinding) GetAbsent() []string {
+	if x != nil {
+		return x.Absent
+	}
+	return nil
+}
+
+func (x *FuzzFinding) GetChanged() int32 {
+	if x != nil {
+		return x.Changed
+	}
+	return 0
+}
+
+func (x *FuzzFinding) GetShrinkRuns() int32 {
+	if x != nil {
+		return x.ShrinkRuns
+	}
+	return 0
+}
+
+func (x *FuzzFinding) GetMinimal() bool {
+	if x != nil {
+		return x.Minimal
+	}
+	return false
+}
+
 // CoverageReport is `flow test`'s branch-coverage account for one workflow:
 // which of that workflow's steps at least one case ran, and which no case ever
 // reached.
@@ -955,7 +1217,7 @@ type CoverageReport struct {
 
 func (x *CoverageReport) Reset() {
 	*x = CoverageReport{}
-	mi := &file_flowstate_v1_reports_proto_msgTypes[10]
+	mi := &file_flowstate_v1_reports_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -967,7 +1229,7 @@ func (x *CoverageReport) String() string {
 func (*CoverageReport) ProtoMessage() {}
 
 func (x *CoverageReport) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_reports_proto_msgTypes[10]
+	mi := &file_flowstate_v1_reports_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -980,7 +1242,7 @@ func (x *CoverageReport) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CoverageReport.ProtoReflect.Descriptor instead.
 func (*CoverageReport) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_reports_proto_rawDescGZIP(), []int{10}
+	return file_flowstate_v1_reports_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *CoverageReport) GetWorkflow() string {
@@ -1091,7 +1353,7 @@ type SwitchArmCoverage struct {
 
 func (x *SwitchArmCoverage) Reset() {
 	*x = SwitchArmCoverage{}
-	mi := &file_flowstate_v1_reports_proto_msgTypes[11]
+	mi := &file_flowstate_v1_reports_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1103,7 +1365,7 @@ func (x *SwitchArmCoverage) String() string {
 func (*SwitchArmCoverage) ProtoMessage() {}
 
 func (x *SwitchArmCoverage) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_reports_proto_msgTypes[11]
+	mi := &file_flowstate_v1_reports_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1116,7 +1378,7 @@ func (x *SwitchArmCoverage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SwitchArmCoverage.ProtoReflect.Descriptor instead.
 func (*SwitchArmCoverage) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_reports_proto_rawDescGZIP(), []int{11}
+	return file_flowstate_v1_reports_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *SwitchArmCoverage) GetArm() string {
@@ -1181,7 +1443,7 @@ type TestReports struct {
 
 func (x *TestReports) Reset() {
 	*x = TestReports{}
-	mi := &file_flowstate_v1_reports_proto_msgTypes[12]
+	mi := &file_flowstate_v1_reports_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1193,7 +1455,7 @@ func (x *TestReports) String() string {
 func (*TestReports) ProtoMessage() {}
 
 func (x *TestReports) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_reports_proto_msgTypes[12]
+	mi := &file_flowstate_v1_reports_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1206,7 +1468,7 @@ func (x *TestReports) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TestReports.ProtoReflect.Descriptor instead.
 func (*TestReports) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_reports_proto_rawDescGZIP(), []int{12}
+	return file_flowstate_v1_reports_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *TestReports) GetFiles() []*TestReport {
@@ -1248,7 +1510,7 @@ const file_flowstate_v1_reports_proto_rawDesc = "" +
 	"\bfailures\x18\x03 \x03(\v2\x18.flowstate.v1.DiagnosticR\bfailures\x12\x14\n" +
 	"\x05error\x18\x04 \x01(\tR\x05error\x125\n" +
 	"\bduration\x18\x05 \x01(\v2\x19.google.protobuf.DurationR\bduration\x124\n" +
-	"\bwarnings\x18\x06 \x03(\v2\x18.flowstate.v1.DiagnosticR\bwarnings\"\xa4\x02\n" +
+	"\bwarnings\x18\x06 \x03(\v2\x18.flowstate.v1.DiagnosticR\bwarnings\"\xd2\x02\n" +
 	"\n" +
 	"TestReport\x12\x1a\n" +
 	"\x04file\x18\x01 \x01(\tB\x06\xbaH\x03\xc8\x01\x01R\x04file\x12,\n" +
@@ -1256,18 +1518,21 @@ const file_flowstate_v1_reports_proto_rawDesc = "" +
 	"\arefused\x18\x03 \x01(\tR\arefused\x128\n" +
 	"\bcoverage\x18\x04 \x03(\v2\x1c.flowstate.v1.CoverageReportR\bcoverage\x12?\n" +
 	"\tschedules\x18\x05 \x01(\v2!.flowstate.v1.ScheduleExplorationR\tschedules\x127\n" +
-	"\askipped\x18\x06 \x03(\v2\x1d.flowstate.v1.SkippedTestCaseR\askipped\"E\n" +
+	"\askipped\x18\x06 \x03(\v2\x1d.flowstate.v1.SkippedTestCaseR\askipped\x12,\n" +
+	"\x04fuzz\x18\a \x01(\v2\x18.flowstate.v1.FuzzReportR\x04fuzz\"E\n" +
 	"\x0fSkippedTestCase\x12\x1a\n" +
 	"\x04name\x18\x01 \x01(\tB\x06\xbaH\x03\xc8\x01\x01R\x04name\x12\x16\n" +
-	"\x06reason\x18\x02 \x01(\tR\x06reason\"\xcd\x01\n" +
+	"\x06reason\x18\x02 \x01(\tR\x06reason\"\xee\x01\n" +
 	"\x13ScheduleExploration\x12\x1c\n" +
 	"\tschedules\x18\x01 \x01(\x05R\tschedules\x12\x14\n" +
 	"\x05cases\x18\x02 \x01(\x05R\x05cases\x12\x1c\n" +
 	"\tdecisions\x18\x03 \x01(\x05R\tdecisions\x12\x1c\n" +
-	"\ttruncated\x18\x04 \x01(\bR\ttruncated\x12F\n" +
+	"\ttruncated\x18\x04 \x01(\bR\ttruncated\x12\x1f\n" +
+	"\vfault_draws\x18\x06 \x01(\x05R\n" +
+	"faultDraws\x12F\n" +
 	"\n" +
 	"divergence\x18\x05 \x01(\v2&.flowstate.v1.ScheduleDivergenceReportR\n" +
-	"divergence\"\xfc\x01\n" +
+	"divergence\"\xe7\x02\n" +
 	"\x18ScheduleDivergenceReport\x12\x12\n" +
 	"\x04case\x18\x01 \x01(\tR\x04case\x12\x12\n" +
 	"\x04seed\x18\x02 \x01(\x04R\x04seed\x12\x1c\n" +
@@ -1276,7 +1541,29 @@ const file_flowstate_v1_reports_proto_rawDesc = "" +
 	"\rwritten_order\x18\x05 \x01(\tR\fwrittenOrder\x12\x16\n" +
 	"\x06seeded\x18\x06 \x01(\tR\x06seeded\x12\x1c\n" +
 	"\tinvariant\x18\a \x01(\bR\tinvariant\x12!\n" +
-	"\ffault_script\x18\b \x01(\tR\vfaultScript\"\x8e\x03\n" +
+	"\ffault_script\x18\b \x01(\tR\vfaultScript\x12!\n" +
+	"\ffired_faults\x18\t \x01(\x05R\vfiredFaults\x12\x1f\n" +
+	"\vshrink_runs\x18\n" +
+	" \x01(\x05R\n" +
+	"shrinkRuns\x12%\n" +
+	"\x0eshrunk_minimal\x18\v \x01(\bR\rshrunkMinimal\"\xb6\x01\n" +
+	"\n" +
+	"FuzzReport\x12\x12\n" +
+	"\x04runs\x18\x01 \x01(\x05R\x04runs\x12\x14\n" +
+	"\x05cases\x18\x02 \x01(\x05R\x05cases\x12\"\n" +
+	"\finconclusive\x18\x03 \x01(\x05R\finconclusive\x12%\n" +
+	"\x0eskipped_inputs\x18\x04 \x03(\tR\rskippedInputs\x123\n" +
+	"\afinding\x18\x05 \x01(\v2\x19.flowstate.v1.FuzzFindingR\afinding\"\xd4\x01\n" +
+	"\vFuzzFinding\x12\x12\n" +
+	"\x04case\x18\x01 \x01(\tR\x04case\x12\x12\n" +
+	"\x04seed\x18\x02 \x01(\x04R\x04seed\x12\x16\n" +
+	"\x06inputs\x18\x03 \x01(\tR\x06inputs\x12\x18\n" +
+	"\afailure\x18\x04 \x01(\tR\afailure\x12\x16\n" +
+	"\x06absent\x18\x05 \x03(\tR\x06absent\x12\x18\n" +
+	"\achanged\x18\x06 \x01(\x05R\achanged\x12\x1f\n" +
+	"\vshrink_runs\x18\a \x01(\x05R\n" +
+	"shrinkRuns\x12\x18\n" +
+	"\aminimal\x18\b \x01(\bR\aminimal\"\x8e\x03\n" +
 	"\x0eCoverageReport\x12\x1a\n" +
 	"\bworkflow\x18\x01 \x01(\tR\bworkflow\x12\x1f\n" +
 	"\vsteps_total\x18\x02 \x01(\x05R\n" +
@@ -1315,7 +1602,7 @@ func file_flowstate_v1_reports_proto_rawDescGZIP() []byte {
 	return file_flowstate_v1_reports_proto_rawDescData
 }
 
-var file_flowstate_v1_reports_proto_msgTypes = make([]protoimpl.MessageInfo, 14)
+var file_flowstate_v1_reports_proto_msgTypes = make([]protoimpl.MessageInfo, 16)
 var file_flowstate_v1_reports_proto_goTypes = []any{
 	(*FixChange)(nil),                // 0: flowstate.v1.FixChange
 	(*FixReport)(nil),                // 1: flowstate.v1.FixReport
@@ -1327,37 +1614,41 @@ var file_flowstate_v1_reports_proto_goTypes = []any{
 	(*SkippedTestCase)(nil),          // 7: flowstate.v1.SkippedTestCase
 	(*ScheduleExploration)(nil),      // 8: flowstate.v1.ScheduleExploration
 	(*ScheduleDivergenceReport)(nil), // 9: flowstate.v1.ScheduleDivergenceReport
-	(*CoverageReport)(nil),           // 10: flowstate.v1.CoverageReport
-	(*SwitchArmCoverage)(nil),        // 11: flowstate.v1.SwitchArmCoverage
-	(*TestReports)(nil),              // 12: flowstate.v1.TestReports
-	nil,                              // 13: flowstate.v1.CoverageReport.AcceptedEntry
-	(*Diagnostic)(nil),               // 14: flowstate.v1.Diagnostic
-	(*durationpb.Duration)(nil),      // 15: google.protobuf.Duration
+	(*FuzzReport)(nil),               // 10: flowstate.v1.FuzzReport
+	(*FuzzFinding)(nil),              // 11: flowstate.v1.FuzzFinding
+	(*CoverageReport)(nil),           // 12: flowstate.v1.CoverageReport
+	(*SwitchArmCoverage)(nil),        // 13: flowstate.v1.SwitchArmCoverage
+	(*TestReports)(nil),              // 14: flowstate.v1.TestReports
+	nil,                              // 15: flowstate.v1.CoverageReport.AcceptedEntry
+	(*Diagnostic)(nil),               // 16: flowstate.v1.Diagnostic
+	(*durationpb.Duration)(nil),      // 17: google.protobuf.Duration
 }
 var file_flowstate_v1_reports_proto_depIdxs = []int32{
 	0,  // 0: flowstate.v1.FixReport.changes:type_name -> flowstate.v1.FixChange
-	14, // 1: flowstate.v1.FixReport.refusals:type_name -> flowstate.v1.Diagnostic
-	14, // 2: flowstate.v1.FixReport.notes:type_name -> flowstate.v1.Diagnostic
-	14, // 3: flowstate.v1.FixReport.stale_pins:type_name -> flowstate.v1.Diagnostic
-	14, // 4: flowstate.v1.FmtReport.refusals:type_name -> flowstate.v1.Diagnostic
+	16, // 1: flowstate.v1.FixReport.refusals:type_name -> flowstate.v1.Diagnostic
+	16, // 2: flowstate.v1.FixReport.notes:type_name -> flowstate.v1.Diagnostic
+	16, // 3: flowstate.v1.FixReport.stale_pins:type_name -> flowstate.v1.Diagnostic
+	16, // 4: flowstate.v1.FmtReport.refusals:type_name -> flowstate.v1.Diagnostic
 	1,  // 5: flowstate.v1.FixReports.files:type_name -> flowstate.v1.FixReport
 	2,  // 6: flowstate.v1.FmtReports.files:type_name -> flowstate.v1.FmtReport
-	14, // 7: flowstate.v1.TestCase.failures:type_name -> flowstate.v1.Diagnostic
-	15, // 8: flowstate.v1.TestCase.duration:type_name -> google.protobuf.Duration
-	14, // 9: flowstate.v1.TestCase.warnings:type_name -> flowstate.v1.Diagnostic
+	16, // 7: flowstate.v1.TestCase.failures:type_name -> flowstate.v1.Diagnostic
+	17, // 8: flowstate.v1.TestCase.duration:type_name -> google.protobuf.Duration
+	16, // 9: flowstate.v1.TestCase.warnings:type_name -> flowstate.v1.Diagnostic
 	5,  // 10: flowstate.v1.TestReport.cases:type_name -> flowstate.v1.TestCase
-	10, // 11: flowstate.v1.TestReport.coverage:type_name -> flowstate.v1.CoverageReport
+	12, // 11: flowstate.v1.TestReport.coverage:type_name -> flowstate.v1.CoverageReport
 	8,  // 12: flowstate.v1.TestReport.schedules:type_name -> flowstate.v1.ScheduleExploration
 	7,  // 13: flowstate.v1.TestReport.skipped:type_name -> flowstate.v1.SkippedTestCase
-	9,  // 14: flowstate.v1.ScheduleExploration.divergence:type_name -> flowstate.v1.ScheduleDivergenceReport
-	13, // 15: flowstate.v1.CoverageReport.accepted:type_name -> flowstate.v1.CoverageReport.AcceptedEntry
-	11, // 16: flowstate.v1.CoverageReport.arms:type_name -> flowstate.v1.SwitchArmCoverage
-	6,  // 17: flowstate.v1.TestReports.files:type_name -> flowstate.v1.TestReport
-	18, // [18:18] is the sub-list for method output_type
-	18, // [18:18] is the sub-list for method input_type
-	18, // [18:18] is the sub-list for extension type_name
-	18, // [18:18] is the sub-list for extension extendee
-	0,  // [0:18] is the sub-list for field type_name
+	10, // 14: flowstate.v1.TestReport.fuzz:type_name -> flowstate.v1.FuzzReport
+	9,  // 15: flowstate.v1.ScheduleExploration.divergence:type_name -> flowstate.v1.ScheduleDivergenceReport
+	11, // 16: flowstate.v1.FuzzReport.finding:type_name -> flowstate.v1.FuzzFinding
+	15, // 17: flowstate.v1.CoverageReport.accepted:type_name -> flowstate.v1.CoverageReport.AcceptedEntry
+	13, // 18: flowstate.v1.CoverageReport.arms:type_name -> flowstate.v1.SwitchArmCoverage
+	6,  // 19: flowstate.v1.TestReports.files:type_name -> flowstate.v1.TestReport
+	20, // [20:20] is the sub-list for method output_type
+	20, // [20:20] is the sub-list for method input_type
+	20, // [20:20] is the sub-list for extension type_name
+	20, // [20:20] is the sub-list for extension extendee
+	0,  // [0:20] is the sub-list for field type_name
 }
 
 func init() { file_flowstate_v1_reports_proto_init() }
@@ -1372,7 +1663,7 @@ func file_flowstate_v1_reports_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_flowstate_v1_reports_proto_rawDesc), len(file_flowstate_v1_reports_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   14,
+			NumMessages:   16,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

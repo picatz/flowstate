@@ -153,7 +153,7 @@ func activityOptionsFor(policy *v1.StepPolicy, summary string) workflow.Activity
 	if v := retry.GetMaxInterval().AsDuration(); v > 0 {
 		rp.MaximumInterval = v
 	}
-	// A step's `retry.only:` and `retry.except:` only ever add kinds to the types
+	// A step's `retry.only:` only ever adds kinds to the types
 	// Temporal will not retry, and a copy again: the default list is shared.
 	for _, kind := range v1.RetryExcludedKinds(retry) {
 		for _, errType := range nonRetryableTypesFor(kind) {

@@ -114,6 +114,34 @@ func (l *invocationLog) count(c *InvocationClaim, root string) int {
 	return n
 }
 
+// truncated reports that the bound latched the log full.
+func (l *invocationLog) truncated() bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	return l.full
+}
+
+// counts reports the log as the two maps `run.invocations` exposes to a CEL
+// claim: every invocation of each task anywhere in the run, and the
+// invocations made on behalf of each step of the workflow named root. These are
+// the two counting rules [InvocationClaim] documents, applied once here so the
+// declarative claims and the CEL ones cannot count differently.
+func (l *invocationLog) counts(root string) (tasks, steps map[string]int) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	tasks, steps = map[string]int{}, map[string]int{}
+	for _, inv := range l.list {
+		tasks[inv.task]++
+		if inv.ref.Step != "" && inv.ref.Workflow == root {
+			steps[inv.ref.Step]++
+		}
+	}
+
+	return tasks, steps
+}
+
 // first reports the index of the first invocation made for step in root, or -1.
 func (l *invocationLog) first(step, root string) int {
 	return slices.IndexFunc(l.list, func(inv invocation) bool {

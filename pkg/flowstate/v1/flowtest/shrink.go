@@ -1,0 +1,225 @@
+package flowtest
+
+import (
+	"slices"
+)
+
+// MaxShrinkRuns bounds how many times a violating seed's faults are re-run
+// while looking for a smaller set that still violates. Each probe is a whole run
+// of the case, and a seed can fire many faults, so the search spends a fixed
+// budget and reports the smallest set it found rather than running unbounded.
+const MaxShrinkRuns = 256
+
+// shrinkResult is what [shrinkFaults] found.
+type shrinkResult struct {
+	// Pins are the smallest violating set found, in the form of the input.
+	Pins []Fault
+	// From is how many fault firings the input held; len(atoms of Pins) is how
+	// many remain.
+	From int
+	// Runs is how many probes were spent.
+	Runs int
+	// Reproduced reports that the input violated when replayed on its own. When
+	// it did not, nothing was shrunk and Pins is the input.
+	Reproduced bool
+	// Inconclusive reports that the first replay was cut off (cancellation or
+	// the case's time bound), so it is not known whether the input reproduces.
+	Inconclusive bool
+	// Minimal reports that removing any single firing from Pins stopped the
+	// violation; false when the budget ended the search first.
+	Minimal bool
+}
+
+// faultAtom is one firing: fault index i fires on its n-th eligible invocation.
+type faultAtom struct{ fault, n int }
+
+func atomsOf(pins []Fault, authored []bool) []faultAtom {
+	var atoms []faultAtom
+	for i, pin := range pins {
+		if authored[i] {
+			continue
+		}
+		for _, n := range pin.On {
+			atoms = append(atoms, faultAtom{i, n})
+		}
+	}
+
+	return atoms
+}
+
+// pinsOf rebuilds a fault list holding only the given firings, keeping the
+// order and every other property of the faults they came from. A fault with no
+// firing left is dropped.
+func pinsOf(from []Fault, authored []bool, atoms []faultAtom) []Fault {
+	var out []Fault
+	for i, pin := range from {
+		if authored[i] {
+			out = append(out, pin)
+
+			continue
+		}
+		var on []int
+		for _, a := range atoms {
+			if a.fault == i {
+				on = append(on, a.n)
+			}
+		}
+		if len(on) == 0 {
+			continue
+		}
+		slices.Sort(on)
+		pin.On = on
+		out = append(out, pin)
+	}
+
+	return out
+}
+
+// shrinkFaults reduces pins, a violating set of pinned faults, to a smaller one
+// that still violates, by delta debugging (Zeller and Hildebrandt, "Simplifying
+// and Isolating Failure-Inducing Input", TSE 2002) over the set of firings.
+//
+// Pins the case declared itself (authored[i]) are fixed: they are the world
+// the case describes, and only the firings a seed drew on top of them are
+// shrunk.
+//
+// violates must report whether a run with exactly that fault list breaks the
+// case, and ok=false when the run was cut off (a cancelled context, the case's
+// time bound) and so answers nothing. The input is probed first: a set that does not reproduce by itself, which
+// would mean the seed's violation depended on something a pin does not carry, is
+// returned unchanged with Minimal false, because a "smaller" set found from a
+// starting point that does not reproduce would not be a shrink of anything.
+//
+// The result is 1-minimal when Minimal is true: no single firing can be removed
+// from it. It is a local minimum, not the smallest violating set there is, and
+// it may violate a different invariant than the input did; the probe asks only
+// whether the case breaks.
+//
+// At most maxRuns probes are spent, including the first.
+func shrinkFaults(pins []Fault, authored []bool, maxRuns int, violates func([]Fault) (violated, ok bool)) shrinkResult {
+	atoms := atomsOf(pins, authored)
+	r := ddmin(atoms, maxRuns, func(subset []faultAtom) (bool, bool) {
+		return violates(pinsOf(pins, authored, subset))
+	})
+	result := shrinkResult{
+		Pins: pins, From: len(atoms), Runs: r.Runs,
+		Reproduced: r.Reproduced, Inconclusive: r.Inconclusive, Minimal: r.Minimal,
+	}
+	if r.Reproduced {
+		result.Pins = pinsOf(pins, authored, r.Kept)
+	}
+
+	return result
+}
+
+// ddminResult is what [ddmin] found over a set of items.
+type ddminResult[T any] struct {
+	// Kept is the smallest violating subset found, in the input's order; the
+	// input itself when it did not reproduce.
+	Kept []T
+	// Runs is how many probes were spent.
+	Runs int
+	// Reproduced reports that the whole input violated when replayed on its
+	// own.
+	Reproduced bool
+	// Inconclusive reports that the first replay was cut off.
+	Inconclusive bool
+	// Minimal reports that removing any single item from Kept stopped the
+	// violation; false when the budget ended the search first or the input did
+	// not reproduce.
+	Minimal bool
+}
+
+// ddmin is the one delta-debugging search (Zeller and Hildebrandt, "Simplifying
+// and Isolating Failure-Inducing Input", TSE 2002) both shrinkers share: it
+// reduces items, a violating set, to a 1-minimal violating subset, spending at
+// most maxRuns calls of violates including the first. violates reports whether
+// a run with exactly that subset breaks the case, and ok=false when the run was
+// cut off and so answers nothing.
+func ddmin[T any](items []T, maxRuns int, violates func([]T) (violated, ok bool)) ddminResult[T] {
+	result := ddminResult[T]{Kept: items}
+
+	exhausted := false
+	probe := func(subset []T) bool {
+		if exhausted || result.Runs >= maxRuns {
+			exhausted = true
+
+			return false
+		}
+		result.Runs++
+
+		violated, ok := violates(subset)
+		if !ok {
+			// The probe was cut off, so its "no" says nothing about the
+			// subset; the search ends there rather than reading it as a
+			// removal that stopped the violation.
+			exhausted = true
+
+			return false
+		}
+
+		return violated
+	}
+
+	if len(items) == 0 || !probe(items) {
+		result.Inconclusive = exhausted
+
+		return result
+	}
+	result.Reproduced = true
+
+	granularity := 2
+	for len(items) >= 2 && !exhausted {
+		chunks := splitItems(items, granularity)
+		reduced := false
+
+		// A single chunk that violates on its own.
+		for _, chunk := range chunks {
+			if probe(chunk) {
+				items, granularity, reduced = chunk, 2, true
+
+				break
+			}
+		}
+		// Otherwise the input without one chunk.
+		// (At two chunks the complements are the chunks, already probed.)
+		for i := 0; !reduced && granularity > 2 && i < len(chunks); i++ {
+			rest := slices.Concat(chunks[:i]...)
+			rest = append(rest, slices.Concat(chunks[i+1:]...)...)
+			if len(rest) > 0 && probe(rest) {
+				items, granularity, reduced = rest, max(granularity-1, 2), true
+			}
+		}
+		if reduced {
+			continue
+		}
+		if granularity >= len(items) {
+			break
+		}
+		granularity = min(granularity*2, len(items))
+	}
+
+	result.Kept = items
+	// Every removal of a single item was probed and stopped the violation,
+	// unless the budget cut the search off before it could say so.
+	result.Minimal = !exhausted
+
+	return result
+}
+
+// splitItems divides items into n contiguous chunks of near-equal size.
+func splitItems[T any](items []T, n int) [][]T {
+	chunks := make([][]T, 0, n)
+	size, extra := len(items)/n, len(items)%n
+	start := 0
+	for i := range n {
+		end := start + size
+		if i < extra {
+			end++
+		}
+		chunks = append(chunks, items[start:end])
+		start = end
+	}
+
+	return chunks
+}

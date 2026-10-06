@@ -233,8 +233,11 @@ cannot check, or a key this deployment cannot resolve, stops the server. Compari
 is constant-time (`hmac.Equal`) and the key is revealed only into an HMAC. The body
 is capped by `http.MaxBytesReader` as the first statement of the handler, so no path
 below it can read past `v1.MaxWebhookPayloadBytes`; deliveries in flight are bounded
-and shed with a 503 past the bound; `with:` evaluation is bounded by the CEL cost
-limit; candidate signatures per header are bounded. Every refusal decided before a
+and shed with a 503 past the bound — a trigger declaring `respond_within:` holds its
+slot for the wait, at most the 30 s the field allows and ended early by the sender
+hanging up, and what it answers with is the run's declared outputs only, redacted as
+`Get` redacts them with no reveal, capped at `v1.MaxWebhookResponseBytes`; `with:`
+evaluation is bounded by the CEL cost limit; candidate signatures per header are bounded. Every refusal decided before a
 delivery is known genuine — unknown workflow, unknown trigger, bad signature — is one
 status and one sentence, with an HMAC spent on the unrouted path so the timings
 match. A run's id is a digest over tenant, workflow, trigger and idempotency key, so
@@ -245,6 +248,24 @@ run it started or answered, a refusal against the route by class, bounded to one
 record per class per route per minute with a count so the unauthenticated path
 cannot amplify into the sink (`docs/DEPLOYMENT.md` "Audit trail",
 `pkg/flowstate/v1/server/webhookaudit.go`).
+
+A trigger may instead (or also) declare `verify: {jwt: <name>}`, which admits a
+delivery carrying a bearer token from the named entry of the deployment's trust
+policy. The server's own verifier checks it (signature, issuer, audience, lifetime,
+claim rules, the entry's `kind: oidc`), the entry the token matched must be the one
+named, and its tenant must be the receiver's, or the delivery is refused with the
+one answer every refusal gets. A Flowfile cannot name a key or a URL, so an author
+cannot choose which host the receiver fetches keys from; unknown names and a
+missing trust policy stop the server at startup. The delivery then acts as the
+token's principal, with `kind` as the trust policy assigned it and never as a claim
+said, and the `Authorization` header is dropped from `event.headers` so a bearer
+token cannot reach an input, a key or a payload and so history. What a bearer token
+does not do is cover the body or other headers: bind it with `hmac_sha256` or
+`stripe` when the payload must be trusted, and note a token is replayable until its
+`exp` (bounded by the entry's maximum token age) — `idempotency_key:` is what makes
+a replayed delivery join the run rather than start another. The unrouted-path
+timing match spends only the signing schemes' work, so whether a route declares
+`jwt` is observable to a prober who can time it.
 
 A trigger declaring `signal:` answers a gate instead of starting a run, over the
 same route and past the same verification. What that adds is one authorization and
@@ -290,8 +311,8 @@ can deliver. `--secret-require-namespace` is incompatible with the receiver, whi
 resolves in the deployment's own tenant.
 
 The bridge inherits that identity limit and does not narrow it: a delivery attests
-the trigger, so `distinct_from_starter:` on a bridged gate separates triggers rather
-than people, and nothing on this path establishes *who clicked* — a workflow needing
+the trigger, so `sender.identity.principal != run.identity.principal` on a bridged gate
+separates triggers rather than people, and nothing on this path establishes *who clicked* — a workflow needing
 two distinct humans either side of a gate cannot get them from a webhook. Anyone
 holding one trigger's key can answer any gate that trigger's `signals:` rules admit,
 in that trigger's workflow, for any run whose entity key they can name; the entity
@@ -307,7 +328,7 @@ because reaching either requires having already signed the body.
 flag, and stored deliveries for replay, #490, not landed. For the bridge: a wait-side
 `accepts:` declaration, so a payload's shape is checked against a signature rather
 than passed through (#96), and asymmetric schemes that could attest a person rather
-than a key holder — the evidence that would make `distinct_from_starter:` mean on
+than a key holder — the evidence that would make that distinctness clause mean on
 this route what it means everywhere else.
 
 ### Server to worker
@@ -322,7 +343,7 @@ namespace grammar forbids ([docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#tier-2--per-t
 per name, checked against the run's declared policy and its recorded starter, and
 fails closed on an unreadable memo or a missing starter where the policy demands the
 comparison (`pkg/flowstate/v1/server/lifecycle.go:140-234`,
-`pkg/flowstate/v1/signalpolicy.go:332`).
+`pkg/flowstate/v1/signalpolicy.go:154`).
 
 **Limits.** Mapping completeness is a warning, not a refusal: a tenant routed to a
 queue nothing polls gets runs that sit RUNNING with nothing wrong reported
@@ -463,7 +484,7 @@ run time; on Linux the verified file is executed through its descriptor). `dir` 
 resolve, through symlinks, under a configured root. The environment is assembled from
 nothing: operator literals, an operator passthrough list (loader variables refused),
 and step literals only for operator-listed keys. Timeout and per-stream output bytes
-are required and have compile-time ceilings (1h, 16MiB); on expiry the whole process
+are required and have compile-time ceilings (1h, 128KiB); on expiry the whole process
 group is terminated, then killed (a descendant that leaves the group with `setsid`
 is not reached; output capture is then cut off and reported as
 `capture_incomplete`); platforms without process groups refuse the task; stdin is

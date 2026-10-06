@@ -1,6 +1,7 @@
 package flowstatev1
 
 import (
+	"bytes"
 	"context"
 	"os/exec"
 	"path/filepath"
@@ -63,4 +64,27 @@ func TestAContextThatEndsBeforeTheStartIsNotRetryableAsDidNotStart(t *testing.T)
 	assert.NotEqual(t, ErrorKindUpstream, ClassifyError(failure),
 		"an expired deadline was classified as a program that did not start, which is retried: %v", failure)
 	assert.Equal(t, ErrorKindTimeout, ClassifyError(failure), "%v", failure)
+}
+
+// TestExecOutputCeilingFitsTaskOutput holds the exec policy's output ceiling to
+// the bound a task result must fit. The policy ceiling is per stream, a result
+// carries both streams, and a result is measured as ProtoJSON, which spells a
+// control character as six bytes. Both streams at the ceiling and made of the
+// worst such byte are therefore the largest answer a policy can promise, and it
+// must be accepted: a ceiling the history cannot hold is a limit that lies.
+func TestExecOutputCeilingFitsTaskOutput(t *testing.T) {
+	t.Parallel()
+
+	worst := string(bytes.Repeat([]byte{0x01}, execpolicy.MaxOutputBytes))
+	out, err := nodeOutputsFromProtoMessage(&Task_Exec_Outputs{Stdout: worst, Stderr: worst, ExitCode: 1})
+	require.NoError(t, err)
+	require.NoError(t, CheckTaskOutputSize(out),
+		"two streams at the policy ceiling must fit a task result; lower execpolicy.MaxOutputBytes")
+
+	// The same construction one byte over would not be a useful probe, so show
+	// the ceiling is not vacuous: the bound is crossed by a modest multiple.
+	big := string(bytes.Repeat([]byte{0x01}, 4*execpolicy.MaxOutputBytes))
+	out, err = nodeOutputsFromProtoMessage(&Task_Exec_Outputs{Stdout: big, Stderr: big})
+	require.NoError(t, err)
+	assert.Error(t, CheckTaskOutputSize(out), "the probe must be able to fail, or it proves nothing")
 }

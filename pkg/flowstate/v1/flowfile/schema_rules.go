@@ -83,6 +83,10 @@ func compilerOwnsRule(field, rule string) bool {
 		return true
 	case "string.pattern":
 		return field == "name"
+	case "duration.gte_lte":
+		// A webhook's `respond_within:` bound, which [v1.CheckWebhookRespondWithin]
+		// says at the key with the fix beside it.
+		return strings.HasPrefix(field, "triggers.webhooks[") && strings.HasSuffix(field, ".respond_within")
 	}
 	return false
 }

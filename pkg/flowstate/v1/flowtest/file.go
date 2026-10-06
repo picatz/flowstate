@@ -31,10 +31,10 @@
 // naming the two parties that policy is written about: [Test.Starter] is who
 // the run started as, and a [SignalScript.Sender] is who a scripted delivery
 // stands in for. Both are read by [v1.SignalPolicyCheck] - the function
-// `FlowstateServer.Signal` itself calls - so a rule that admits an approver in
-// production admits them here, one that refuses them refuses them here, and
-// `distinct_from_starter:` refuses the approver who is this run's own starter
-// (#344 slice 3).
+// `FlowstateServer.Signal` itself calls - so a predicate that admits an approver in
+// production admits them here, one that refuses them refuses them here, and a
+// comparison with `run.identity` refuses the approver who is this run's own
+// starter (#344 slice 3).
 //
 // Neither is an attestation, and the harness is careful to keep saying so.
 // A scripted delivery carries [v1.RehearsalSignalSender] - identity populated,
@@ -58,9 +58,9 @@
 // What reads a [Test.Starter], exhaustively: the workflow's own `signals:`
 // policy, through [v1.SignalPolicyCheck] - the function `FlowstateServer.Signal`
 // itself calls - reached from [v1.NewPolicedLocalSignals] in runCase. That is
-// a rule's `subject:`, `issuer:`, `namespace:` and `claims:` matching a
-// scripted [SignalScript.Sender], and `distinct_from_starter:` comparing that
-// sender's [v1.QualifiedSubject] against the starter's. Nothing else in this
+// a predicate over a scripted [SignalScript.Sender]'s `principal`, `issuer`,
+// `namespace` and `claims`, and a comparison of that sender's
+// [v1.QualifiedSubject] with the starter's. Nothing else in this
 // package passes the value anywhere.
 //
 // What does not read it, each for a reason worth stating separately:
@@ -161,6 +161,7 @@
 package flowtest
 
 import (
+	"errors"
 	"fmt"
 	"maps"
 	"path/filepath"
@@ -169,9 +170,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/goccy/go-yaml/parser"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	"github.com/picatz/flowstate/internal/strictyaml"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
 )
@@ -417,18 +418,18 @@ type Test struct {
 	// Signals scripts what to deliver to a `wait_for_signal:` step, and when.
 	Signals []SignalScript `yaml:"signals"`
 
-	// Starter is who this case runs as: the identity a `signals:` policy's
-	// `distinct_from_starter:` compares a scripted [SignalScript.Sender]
+	// Starter is who this case runs as: the identity a `signals:` predicate
+	// reads as `run.identity`, to compare a scripted [SignalScript.Sender]
 	// against, exactly as `flow run local`'s `--as-subject` and its siblings
 	// name it for a rehearsal on the command line (#344 slice 3).
 	//
 	// Without it a case runs as nobody, which is what every case did before
 	// this field existed and remains the default: an empty identity that is
-	// *recorded* rather than unknown, so a `distinct_from_starter:` policy
+	// *recorded* rather than unknown, so a predicate comparing with `run.identity`
 	// admits a scripted approver instead of refusing every case outright
 	// (see [v1.NewPolicedLocalSignals]'s hasStarter parameter, and runCase).
 	// The consequence worth stating is that "nobody" is distinct from every
-	// named approver, so the refusal `distinct_from_starter:` exists to
+	// named approver, so the refusal such a comparison exists to
 	// produce is unreachable until a case names a starter - which is the
 	// whole reason this field exists.
 	//
@@ -468,8 +469,9 @@ type Test struct {
 	Cases []Test `yaml:"cases"`
 
 	// Faults are failures `flow test --seeds` may inject into this case's task
-	// invocations; see [Fault]. They change nothing about a plain run, which
-	// only checks that each one names an invocation the case reaches. A row
+	// invocations, or deliveries a scripted signal may lose; see [Fault]. They
+	// change nothing about a plain run, which fires only the pinned ones and
+	// checks that each names an invocation the case reaches. A row
 	// that states none inherits its table entry's.
 	Faults []Fault `yaml:"faults"`
 
@@ -583,7 +585,7 @@ type TriggerDelivery struct {
 	// letting a case set it freely — if a step's `if:` gates a destructive action
 	// on this string, the case that fakes it passes, and the diff that made it
 	// possible read as a security control. Authorization belongs on the trigger:
-	// `manual: {allowed_principals: [...]}`, enforced by the server against an
+	// `manual: {allow: ${...}}`, enforced by the server against an
 	// identity it attested.
 	Principal string `yaml:"principal"`
 
@@ -981,10 +983,10 @@ type SignalScript struct {
 // scripted signal ([SignalScript.Sender]) or the run's own starter
 // ([Test.Starter]), carrying the fields [v1.WorkloadIdentity] does that a `signals:` policy is
 // matched on: subject and issuer together, never subject alone, for the
-// identical multi-IdP reason `flow validate` requires a
-// `v1.SignalPolicyRule.subject` to be issuer-qualified.
+// identical multi-IdP reason a predicate compares `sender.identity.principal`
+// (`issuer#subject`) rather than a bare subject.
 //
-// One type for both ends on purpose. `distinct_from_starter:` compares the two
+// One type for both ends on purpose. A predicate comparing with `run.identity` compares the two
 // against each other, through [v1.QualifiedSubject] on each, so a case whose
 // starter and sender were spelled with two different sets of fields would be a
 // comparison an author could not read - the same reasoning that made
@@ -1006,6 +1008,12 @@ type ScriptedIdentity struct {
 	// Namespace is the tenant this identity belongs to, matched against a
 	// policy rule's `namespace:`.
 	Namespace string `yaml:"namespace"`
+
+	// Kind is the sort of party this identity stands in for, "human",
+	// "workload" or "agent", read as `sender.identity.kind` or
+	// `run.identity.kind`. Empty records none, as a trust policy that assigns
+	// none does.
+	Kind string `yaml:"kind"`
 
 	// Claims are additional facts, matched against a policy rule's `claims:`
 	// every key the rule names must be present here with the same value.
@@ -1039,15 +1047,75 @@ type ScriptedIdentity struct {
 //     meant, and is matched literally rather than ignored - the mistake
 //     `--signal-as-claim`'s own NAME=VALUE check refuses.
 func checkScriptedIdentity(p *problems, r site, where string, identity *ScriptedIdentity) {
-	if identity == nil {
-		return
+	for _, fault := range scriptedIdentityFaults(where, identity) {
+		if fault.claim == nil {
+			p.report(r, "%s", fault.message)
+			continue
+		}
+
+		p.reportKey(r.in(r.at.field("claims").field(*fault.claim)), "%s", fault.message)
+	}
+}
+
+// Check reports what is wrong with the identity under the rules a test file is
+// loaded with ([checkScriptedIdentity]), as one error naming where, or nil. It is
+// the same decision for a caller that holds an identity outside a test file - the
+// `flow signals check` matrix - so that a half-specified issuer and subject is
+// refused for the one reason, in the one sentence, wherever it is written.
+//
+// A nil identity has nothing to refuse: it is the absence of one, which is a
+// meaningful answer (nobody authenticated) rather than a malformed one.
+func (identity *ScriptedIdentity) Check(where string) error {
+	faults := scriptedIdentityFaults(where, identity)
+	if len(faults) == 0 {
+		return nil
 	}
 
+	errs := make([]error, 0, len(faults))
+	for _, fault := range faults {
+		errs = append(errs, errors.New(fault.message))
+	}
+
+	return errors.Join(errs...)
+}
+
+// WorkloadIdentity renders the identity as the [v1.WorkloadIdentity] a policy
+// predicate reads - the conversion a test case's own sender and starter go
+// through, exported so another caller deciding the same predicates reads the
+// same fields. A nil identity renders as an empty one, never nil.
+func (identity *ScriptedIdentity) WorkloadIdentity() *v1.WorkloadIdentity {
+	return scriptedIdentity(identity)
+}
+
+// identityFault is one thing [scriptedIdentityFaults] found: the sentence, and
+// the claim name it is about when it is about one (so a test file can position
+// it at the key an author wrote).
+type identityFault struct {
+	claim   *string
+	message string
+}
+
+// scriptedIdentityFaults is the rule set itself, free of any position, so the
+// load-time diagnostic and [ScriptedIdentity.Check] cannot disagree.
+func scriptedIdentityFaults(where string, identity *ScriptedIdentity) []identityFault {
+	if identity == nil {
+		return nil
+	}
+
+	var faults []identityFault
+
 	if (identity.Subject == "") != (identity.Issuer == "") {
-		p.report(r,
+		faults = append(faults, identityFault{message: fmt.Sprintf(
 			"%s names a subject or an issuer without the other; give both, because a rule matches %q "+
 				"and never a bare subject - a subject is only unique within its issuer",
-			where, v1.QualifiedSubject("<issuer>", "<subject>"))
+			where, v1.QualifiedSubject("<issuer>", "<subject>"))})
+	}
+
+	// A misspelled kind would parse as "none assigned" and make a predicate that
+	// names a kind deny for a reason nobody can see, so it is refused here.
+	if identity.Kind != "" && v1.PrincipalKindNamed(identity.Kind) == v1.PrincipalKind_PRINCIPAL_KIND_UNSPECIFIED {
+		faults = append(faults, identityFault{message: fmt.Sprintf(
+			"%s names kind %q; use human, workload or agent, or leave it out", where, identity.Kind)})
 	}
 
 	// Sorted, so a file with two bad claims reports them in the same order
@@ -1061,12 +1129,14 @@ func checkScriptedIdentity(p *problems, r site, where string, identity *Scripted
 			empty = "name"
 		}
 		if name == "" || value == "" {
-			p.reportKey(r.in(r.at.field("claims").field(name)),
+			faults = append(faults, identityFault{claim: &name, message: fmt.Sprintf(
 				"%s declares a claim with an empty %s; a claim is matched literally, so write it as "+
 					"`name: value` with both present, or drop it",
-				where, empty)
+				where, empty)})
 		}
 	}
+
+	return faults
 }
 
 // Expectation is what a case's run must have produced to pass.
@@ -1113,7 +1183,8 @@ type Expectation struct {
 	// `failed: true`: a refused delivery does not produce a failed run, it
 	// produces no run — which is the whole point of deciding verification before
 	// anything attacker-chosen is evaluated. A case asserting this fails if the
-	// delivery is accepted, whatever the run would then have done.
+	// delivery is accepted, whatever the run would then have done. A delivery
+	// the trigger's `when:` declines is one of the refusals this holds.
 	Refused *bool `yaml:"refused"`
 
 	// IdempotencyKey, when set, must equal the key the replayed delivery
@@ -1125,6 +1196,11 @@ type Expectation struct {
 	// gets a different key, or every delivery gets the same one, and both look
 	// like working software until a retry happens.
 	IdempotencyKey string `yaml:"idempotency_key"`
+
+	// Response asserts the document a waiting receiver would answer the
+	// replayed delivery with, for a webhook that declares `respond_within:`.
+	// Only meaningful alongside [Test.Trigger]. See [ResponseExpectation].
+	Response *ResponseExpectation `yaml:"response"`
 
 	// Failed asserts whether the run failed outright, as distinct from a
 	// step's failure being tolerated by `continue_on_error:` — an ordinary
@@ -1141,6 +1217,14 @@ type Expectation struct {
 	// order [v1.RunUndoLog] itself already guarantees and which
 	// pkg/flowstate/v1/internal/conformance/undo.go already pins for both drivers.
 	Compensated []string `yaml:"compensated"`
+
+	// DeniedSignals names signals the case sends that the workflow's own
+	// `signals:` policy must refuse: each must have had at least one scripted
+	// delivery denied, by the same evaluator the server's Signal door calls
+	// ([v1.SignalPolicyCheck]). A signal the policy also admitted from another
+	// sender still counts as denied, so one case can show the wrong sender
+	// refused and the right one let through.
+	DeniedSignals []string `yaml:"denied_signals"`
 
 	// Ran names steps that must have executed — present in the run's step
 	// outputs, whether they succeeded, were tolerated, or were the step whose
@@ -1206,7 +1290,7 @@ type Expectation struct {
 // length.
 func (e *Expectation) claimsNothing() bool {
 	return e.Outputs == nil && e.Inputs == nil && e.Refused == nil && e.IdempotencyKey == "" &&
-		e.Failed == nil && e.ErrorContains == "" && e.Compensated == nil && e.Ran == nil &&
+		e.Response == nil && e.Failed == nil && e.ErrorContains == "" && e.Compensated == nil && len(e.DeniedSignals) == 0 && e.Ran == nil &&
 		e.Skipped == nil && e.Others == "" && len(e.Invocations) == 0 && len(e.Check) == 0
 }
 
@@ -1219,9 +1303,11 @@ type expectationProvenance struct {
 	inputs         bool
 	refused        bool
 	idempotencyKey bool
+	response       bool
 	failed         bool
 	errorContains  bool
 	compensated    bool
+	deniedSignals  bool
 	ran            bool
 	skipped        bool
 	others         bool
@@ -1369,7 +1455,7 @@ func parseSourceWith(data []byte, dd *dirDefaults, requireWorkflow bool) (*File,
 	// malformed document and reports it in the shape a caller already expects,
 	// and reporting it twice, once from each of two parsers, would be the same
 	// fact said two different ways depending on which noticed first.
-	parsed, parseErr := parser.ParseBytes(data, 0)
+	parsed, parseErr := strictyaml.ParseBytes(data, 0)
 	if parseErr == nil {
 		if err := checkExpansionBoundsIn(parsed); err != nil {
 			// Unpositioned on purpose: this is a property of the document as a
@@ -1949,6 +2035,11 @@ func checkTrigger(p *problems, r site, test *Test, requireWorkflow bool) {
 					"asserts what a `trigger:` produced, and a case that states its own `inputs:` already "+
 					"knows them", test.Name)
 		}
+		if test.Expect.Response != nil {
+			p.report(r.in(r.at.field("expect").field("response")),
+				"test %q expects a response but replays no delivery; a response is what a waiting "+
+					"receiver answers a `trigger:` with, so give the case one", test.Name)
+		}
 
 		return
 	}
@@ -1996,6 +2087,8 @@ func checkTrigger(p *problems, r site, test *Test, requireWorkflow bool) {
 				"come from the delivery, so stating them here would override the mapping the case exists "+
 				"to check", test.Name, trigger.Webhook)
 	}
+
+	checkResponseClaim(p, r, test)
 }
 
 // checkTriggerContext refuses a directly-stated trigger context that cannot mean
@@ -2061,6 +2154,13 @@ func checkTriggerContext(p *problems, r site, test *Test, trigger *TriggerDelive
 		p.report(stanza, "test %q trigger: states a context (`kind: %s`) and also a delivery; a payload "+
 			"and a signature belong to a replay, which is written `webhook: <name>` and derives its own "+
 			"context", test.Name, trigger.Kind)
+	}
+
+	if test.Expect.Response != nil {
+		p.report(r.in(r.at.field("expect").field("response")),
+			"test %q trigger: states a context and expects a response; a response is what a "+
+				"waiting receiver answers a replayed *delivery* with, and a stated context replays none",
+			test.Name)
 	}
 
 	if test.Expect.Refused != nil {

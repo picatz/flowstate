@@ -242,6 +242,10 @@ func init() {
 				" that ran nothing.\n",
 		},
 		{
+			Name:    "flowstate.v1.TestReport.fuzz",
+			Leading: " Fuzz is what `flow test --fuzz` found, unset when nobody asked for it.\n",
+		},
+		{
 			Name:    "flowstate.v1.SkippedTestCase",
 			Leading: " SkippedTestCase is one case a `flow test` run selected and did not run.\n",
 		},
@@ -287,6 +291,13 @@ func init() {
 			Leading: " Truncated reports that some schedule spent its whole decision budget and\n" +
 				" took written order for the rest of its run, so the interleaving it\n" +
 				" explored stopped partway.\n",
+		},
+		{
+			Name: "flowstate.v1.ScheduleExploration.fault_draws",
+			Leading: " FaultDraws is the largest number of times any one schedule of any case was\n" +
+				" asked whether an injected fault fires. Zero with a nonzero [decisions] means\n" +
+				" the exploration reordered but injected nothing; zero with zero [decisions]\n" +
+				" means it explored nothing at all.\n",
 		},
 		{
 			Name: "flowstate.v1.ScheduleExploration.divergence",
@@ -352,6 +363,101 @@ func init() {
 				" replays the faults the seed fired with no seed: each pinned to the\n" +
 				" invocations it fired on with `on:`. Pasted into the case, a plain\n" +
 				" `flow test` reproduces the violation. Empty otherwise.\n",
+		},
+		{
+			Name: "flowstate.v1.ScheduleDivergenceReport.fired_faults",
+			Leading: " FiredFaults is how many fault firings the seed injected, the size of the\n" +
+				" set [fault_script] was shrunk from. Zero when nothing was shrunk.\n",
+		},
+		{
+			Name: "flowstate.v1.ScheduleDivergenceReport.shrink_runs",
+			Leading: " ShrinkRuns is how many re-runs of the case the shrink spent looking for a\n" +
+				" smaller set that still violates. Zero when nothing was shrunk.\n",
+		},
+		{
+			Name: "flowstate.v1.ScheduleDivergenceReport.shrunk_minimal",
+			Leading: " ShrunkMinimal reports that no single firing could be removed from\n" +
+				" [fault_script] and keep the violation. False when the shrink budget ended\n" +
+				" the search first, or nothing was shrunk.\n",
+		},
+		{
+			Name: "flowstate.v1.FuzzReport",
+			Leading: " FuzzReport is what running a file's cases over generated inputs found: the\n" +
+				" type-driven dimension `--fuzz` adds beside the authored cases and the seeded\n" +
+				" schedules. A generated case is never an authored one, so this is reported\n" +
+				" apart from the cases and apart from coverage.\n",
+		},
+		{
+			Name: "flowstate.v1.FuzzReport.runs",
+			Leading: " Runs is how many generated cases were judged, across all cases: ran to a\n" +
+				" verdict on the properties. A case that errored before the run counts as\n" +
+				" inconclusive instead.\n",
+		},
+		{
+			Name:    "flowstate.v1.FuzzReport.cases",
+			Leading: " Cases is how many of the file's cases were fuzzed.\n",
+		},
+		{
+			Name: "flowstate.v1.FuzzReport.inconclusive",
+			Leading: " Inconclusive is how many generated cases could not be judged: the case\n" +
+				" errored before the run (an input the declaration refuses at submit, a\n" +
+				" task the case has no stub for) rather than failing a property.\n",
+		},
+		{
+			Name: "flowstate.v1.FuzzReport.skipped_inputs",
+			Leading: " SkippedInputs names the declared inputs nothing was generated for, each\n" +
+				" with the reason (a type not yet generated, a `sensitive:` input).\n",
+		},
+		{
+			Name: "flowstate.v1.FuzzReport.finding",
+			Leading: " Finding is the first generated case that broke a property, unset when\n" +
+				" none did.\n",
+		},
+		{
+			Name: "flowstate.v1.FuzzFinding",
+			Leading: " FuzzFinding is one generated case that failed: reproducible from its seed\n" +
+				" and pasteable as an authored case.\n",
+		},
+		{
+			Name:    "flowstate.v1.FuzzFinding.case",
+			Leading: " Case is the authored case the inputs were generated around.\n",
+		},
+		{
+			Name: "flowstate.v1.FuzzFinding.seed",
+			Leading: " Seed is the generated case's seed: `flow test --fuzz-seed <seed>` on the\n" +
+				" same file replays exactly it.\n",
+		},
+		{
+			Name: "flowstate.v1.FuzzFinding.inputs",
+			Leading: " Inputs is the `inputs:` overlay that reproduces the failure, as YAML to\n" +
+				" merge over the case's own `inputs:`. Inputs the workflow declares\n" +
+				" `sensitive:` are never generated and never printed, so the case keeps its\n" +
+				" own values for them.\n",
+		},
+		{
+			Name:    "flowstate.v1.FuzzFinding.failure",
+			Leading: " Failure is what went wrong, withheld as the case's own report withholds.\n",
+		},
+		{
+			Name: "flowstate.v1.FuzzFinding.absent",
+			Leading: " Absent names the inputs the case supplies that the generated run left out,\n" +
+				" which an `inputs:` overlay cannot say: remove them from the case to\n" +
+				" reproduce. Sorted, and never a `sensitive:` input.\n",
+		},
+		{
+			Name: "flowstate.v1.FuzzFinding.changed",
+			Leading: " Changed is how many inputs the seed changed from the case's own before the\n" +
+				" finding was shrunk; Inputs and Absent hold what is left of them.\n",
+		},
+		{
+			Name: "flowstate.v1.FuzzFinding.shrink_runs",
+			Leading: " ShrinkRuns is how many re-runs of the case the shrink spent putting inputs\n" +
+				" back at the case's own values; one means the first replay was all it took.\n",
+		},
+		{
+			Name: "flowstate.v1.FuzzFinding.minimal",
+			Leading: " Minimal reports that putting any one remaining input back at the case's own\n" +
+				" value stopped the failure; false when the budget ended the search first.\n",
 		},
 		{
 			Name: "flowstate.v1.CoverageReport",

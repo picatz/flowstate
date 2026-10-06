@@ -25,6 +25,7 @@ call. The reasons behind the language's design are recorded in
 - [Failure, retries, and compensation](#failure-retries-and-compensation)
 - [Starting runs: triggers](#starting-runs-triggers)
 - [Who may act on a run](#who-may-act-on-a-run)
+- [Identity and trust](#identity-and-trust)
 - [Secrets](#secrets)
 - [Plugins](#plugins)
 - [Editions and migration](#editions-and-migration)
@@ -275,6 +276,39 @@ They cannot read each other, and they are private to the step. On a `for_each`,
 expressions and its whole body. One trap: a step's `if:` is evaluated *before*
 its vars, so it cannot read them.
 
+### Records: `types:`
+
+A shape that several declarations repeat is declared once under `types:` and
+used by name wherever a type is written:
+
+```yaml
+types:
+  Line:
+    fields:
+      sku: {type: string, required: true, min_len: 2}
+      quantity: {type: int, required: true, must: this > 0}
+  Order:
+    must: this.status != "paid" || size(this.lines) > 0
+    fields:
+      id: {type: string, required: true}
+      status: {type: enum, values: [open, paid], required: true}
+      lines: {type: "list(Line)", required: true, max_items: 20}
+inputs:
+  order: {type: Order, required: true}
+```
+
+A field is written like an input and takes the same bounds (`values`,
+`min_len`, `max_len`, `min_items`, `max_items`, `must`). A field's `must:` is a
+CEL predicate over `this`, the field's value; a `must:` on the type is one over
+the whole record, which is where a rule across fields goes. A record may name
+another record, alone or inside `list(...)` and `map(string, ...)`, but not
+itself. Records are closed: a name the type does not declare, or a missing
+`required:` field, is refused, at `flow validate` for a literal in the file and
+at submit for a value that arrives. Expressions are checked against the record,
+so `inputs.order.id + 1` is refused before the run starts and a misspelled field
+gets the nearest real one. `default:`, `example:` and `sensitive:` on a field
+are refused rather than ignored. See `examples/record-types/`.
+
 ### Labels
 
 ```yaml
@@ -328,7 +362,7 @@ means:
 
 | Kind | An unfenced value is | Fields |
 | --- | --- | --- |
-| Expression | CEL | `if:`, `value:`, `for_each.items`, `loop.until`, `switch.value`, `wait_until:`, an output's `value:`, webhook `idempotency_key:` and `correlate:` |
+| Expression | CEL | `if:`, `value:`, `for_each.items`, `loop.until`, `switch.value`, `wait_until:`, an output's `value:`, webhook `when:`, `idempotency_key:` and `correlate:` |
 | Value | Literal text | Task inputs, `vars:`, `with:`, loop `init:` and `update:`, a wait's `prompt:` and `outputs:` |
 | Literal | Literal; a fence is refused | `id`, `name`, `description`, `as:`, `must:`, input defaults, the step `timeout:` and `retry:` settings, a signal's `name:`, and other fields read when the file compiles |
 
@@ -345,8 +379,9 @@ take either a duration literal (`30s`) or a fenced expression.
 | `vars.<name>` | Workflow vars | Everywhere except workflow `vars:`, `must:`, `concurrency.key`, a `signals:` or `debug:` rule's `subject:`, and trigger expressions |
 | `steps.<id>.<output>` | An earlier step's outputs | After that step, in the same scope |
 | `run.workflow_id`, `run.run_id` | This run's address, for callbacks. `"local"` under `flow run local`. | Steps and outputs |
-| `run.identity.subject`, `.issuer`, `.namespace`, `.claims` | Who started the run, as the server verified it. Empty when nobody authenticated. | Steps and outputs |
+| `run.identity.subject`, `.issuer`, `.namespace`, `.claims`, `.principal`, `.kind` | Who started the run, as the server verified it. Empty when nobody authenticated. `principal` is `<issuer>#<subject>`, and `""` unless both are non-empty. `kind` is `human`, `workload` or `agent` as the trust policy entry that admitted the caller assigned it, and `""` when it assigned none. | Steps and outputs |
 | `run.local` | `true` under the local driver | Steps and outputs |
+| `run.failed`, `.error`, `.compensated`, `.uncompensated`, `.invocations.task`, `.invocations.step` | How the run ended and what compensation and tasks did. [Checks](TESTING.md#claims-the-named-fields-cannot-make-check) | A `flow test` `check:` or `invariants:` claim, after the run |
 | `trigger.kind`, `.name`, `.principal`, `.delivery_id` | How the run started: `manual`, `schedule`, or `webhook`. [Triggers](#what-a-run-knows-about-its-start-trigger) | Steps and outputs |
 | a bare name | A loop's `as:` binding, or a step's own `vars:` | Inside that step or loop body |
 | `now` | The current time, as a timestamp | Inside a wait's own expressions only. [Waits](#the-clock-now) |
@@ -432,6 +467,31 @@ values, encoders, two-variable comprehensions, and `cel.bind`. Flowstate adds:
 The complete list, with signatures, is the [CEL reference](reference/cel.md),
 also printed by `flow tasks --expressions`. An unknown function is an error
 that suggests the nearest real one.
+
+### Named computations: `functions:`
+
+`vars:` hold values and `cel.bind` names a value inside one expression. A
+computation used in several places is declared once under `functions:`:
+
+```yaml
+functions:
+  slug:
+    description: A title as it appears in a URL.
+    params:
+      title: string
+    returns: string
+    body: ${title.trim().lowerAscii().replace(" ", "-")}
+```
+
+and called like any CEL function: `${slug(inputs.title)}`. A body reads its
+parameters and the standard vocabulary and nothing else, not `inputs`, `vars`,
+`steps` or `run`, so a call shows every value it depends on. `params:` and
+`returns:` are required and typed like an input; the body is checked against
+them once, and each call is checked against the signature. Functions may call
+one another but not themselves. Names are lowerCamel and may not shadow a
+built-in. The compiler inlines each call, so a compiled spec holds plain CEL and
+the runtime has no user-defined function. At most 64 functions per file and 16
+parameters each. A `call:` does not carry them across. See `examples/functions/`.
 
 ### Where expressions run, and why they are limited
 
@@ -654,6 +714,31 @@ refused. A deployment replaces this with an egress policy
 (`--egress-policy`), and a local run can allow loopback with
 `FLOWSTATE_ALLOW_LOOPBACK_EGRESS=true`. Each request is bounded at 30 seconds,
 a 1 MiB response body, and 5 redirects unless the egress policy says otherwise.
+
+### `exec`
+
+```yaml
+- id: version
+  exec:
+    argv: [git, --version]
+    dir: /var/lib/flowstate/workspaces/demo
+    env:
+      LANG: C
+```
+
+Runs one program and returns `exit_code`, bounded `stdout` and `stderr`, and how
+it ended (`outcome`, `signal`, `duration_ms`). `argv` is a list, never a shell
+string; the program is a bare name looked up in the operator's allowlist, the
+environment is assembled from nothing (the operator's `env`, variables the
+policy passes through from the worker, and the step's `env:` only for keys the
+policy lists as authored), and a nonzero exit is an output to branch on, not a
+failure. It is denied unless the operator loads `--exec-policy` (or
+`FLOWSTATE_EXEC_POLICY`) on the command that runs tasks; a policy limits
+executables, directories, arguments, environment, time and output, and an
+erroring rule denies. A secret may not appear
+in `argv`. `exec` is not a sandbox: it limits what a Flowfile may ask
+for, not what the program can do once it runs. See [DEPLOYMENT.md](DEPLOYMENT.md)
+and `examples/exec-checks/`.
 
 ## Control flow
 
@@ -909,9 +994,12 @@ The step waits for a signal named `name`. Its outputs:
 - `payload`: the JSON object the sender sent, read as
   `${steps.approval.payload.approved}`. Empty when the wait timed out.
 - `sender`: who sent it, as the server verified: `sender.identity.subject`,
-  `.issuer`, `.namespace`, and `.deployment`, `sender.accepted_at`, and
+  `.issuer`, `.namespace`, `.principal`, and `.deployment`, `sender.accepted_at`, and
   `sender.local` (`true` for a local rehearsal). A sender cannot forge these;
-  they are outside `payload`.
+  they are outside `payload`. `sender.identity` has the shape of
+  `run.identity` less `claims` (the sender is a third party, and a wait's outputs are
+  durable history) plus `deployment`; `principal` is `<issuer>#<subject>`, and `""`
+  for a local or unauthenticated sender or one missing either half.
 - `timed_out`: `true` if `timeout:` lapsed first.
 
 **A timeout is not a failure.** When `timeout:` lapses, the step succeeds with
@@ -975,6 +1063,38 @@ waiting, up to `max_batch` (default and maximum 128), without waiting again.
 Anything past the limit stays for the next drain. Outputs: `deliveries` (a list
 of `{payload, sender}`, oldest first), `count`, and `timed_out`. This drains a
 burst in one step where a loop would spend an iteration per event.
+
+### Counting approvals: `quorum:`
+
+`wait_for_signals:` can decide a vote instead of draining a burst:
+
+```yaml
+- id: gate
+  wait_for_signals:
+    name: release-approved
+    max_batch: 3
+    timeout: 1h
+    quorum:
+      approve: 2
+      distinct: true
+      exclude:
+        - ${run.identity.subject}
+      veto: ${has(payload.approved) && payload.approved == false}
+```
+
+With `quorum:` the step takes deliveries one at a time until the vote is
+decided or `timeout:` lapses; later deliveries stay buffered. A delivery
+approves when its payload has `approved: true` and its sender passed the
+`signals:` policy. `approve` is the count needed; `distinct` (the default)
+counts each verified identity once, and a delivery with no identity never
+counts; `exclude` lists subjects whose approvals do not count, though they may
+still veto (`${run.identity.subject}` is the four-eyes rule); `veto` is a
+predicate over `payload` and `sender` that ends the wait at once. The step keeps
+the batch outputs `deliveries`, `count` and `timed_out` and adds `decision`
+(`approved`, `vetoed` or `timed_out`), `approvals` (the deliveries that
+counted) and `vetoed_by` (bound only when the decision is `vetoed`).
+An `approve` larger than the `signals:` allow-list can supply is refused by
+`flow validate`. See `examples/signal-quorum/`.
 
 ### The clock: `now`
 
@@ -1059,6 +1179,61 @@ A step with `continue_on_error: true` that fails, after its retries, does not
 fail the run. Its outputs become `{error: "<what happened>"}`, and `error` is
 absent when the step succeeded, so test it with `has()`. Cancellation, and an
 error in the step's own `if:`, are never tolerated.
+
+### Tolerating or retrying by kind
+
+`continue_on_error:` and `retry:` can name the failure kinds they mean:
+
+```yaml
+- id: notify
+  retry:
+    attempts: 3
+    only: [Upstream, Timeout]
+  continue_on_error: [Upstream, RateLimited]
+  http:
+    method: POST
+    url: https://hooks.example.com/notify
+```
+
+| Spelling | Meaning |
+| --- | --- |
+| `continue_on_error: true` | Tolerate every failure. |
+| `continue_on_error: [Kind, ...]` | Tolerate only these kinds; any other ends the run. |
+| `retry: {only: [Kind, ...]}` | Retry only these kinds. |
+
+A kind is a built-in kind or one declared under `errors:`. `only:` only
+narrows what would be retried anyway (`Upstream`, `Timeout`, `Internal`,
+`RateLimited`); naming a kind that is never retried is refused. To retry
+everything but one kind, name the rest. A tolerated step
+also records `steps.<id>.failure` with `kind`, `message` and `retryable`, so
+compare `failure.kind` to a name and not a substring of `error`. See
+`examples/failure-kinds/`.
+
+### Naming a failure: `errors:` and `fail:`
+
+A refusal the workflow means has a name. `errors:` declares them and `fail:`
+raises one:
+
+```yaml
+errors:
+  InsufficientFunds:
+    description: the account cannot cover the amount requested
+steps:
+  - id: reject_overdraft
+    if: ${inputs.amount_cents > inputs.balance_cents}
+    fail:
+      error: InsufficientFunds
+      message: ${"balance " + string(inputs.balance_cents) + " cannot cover the amount"}
+```
+
+The run fails with `InsufficientFunds` as its kind, on both drivers, and a
+client reading the run gets that name as `error.kind`. A name starts with a
+capital letter and may not be a built-in kind. `fail:` is evaluated in workflow
+code and schedules nothing, so it refuses `retry:`, `timeout:`, `total_timeout:`
+and `undo:` and cannot be `async:`. The `message` is an expression of at most
+4096 bytes and may not read a secret or a `sensitive` input, because it is
+written to history. A declared error is never retried. See
+`examples/declared-errors/`.
 
 ### Compensation: `undo:`
 
@@ -1146,8 +1321,15 @@ it. `manual:` can only narrow that:
 - `manual: denied` refuses manual starts. The workflow must have another
   trigger.
 - `require_reason: true` requires `flow run --reason "..."`, recorded on the run.
-- `allowed_principals:` lists the only callers who may start it, each written
-  `"<issuer>#<subject>"`.
+- `allow: ${...}` is one predicate over the caller that says who may start it:
+  `allow: ${sender.identity.claims.team == "ops"}`, or
+  `allow: ${sender.identity.principal in ["https://issuer.example.com#oncall@example.com"]}`
+  for named callers, each written `"<issuer>#<subject>"`. It reads
+  `sender.identity.{principal,subject,issuer,namespace,kind,claims}` (the verified
+  caller) and `inputs` (the arguments submitted with this start), and nothing
+  else; there is no run yet, so reading `run` is a compile error. Only a clean
+  `true` allows, and a caller with no authenticated principal is refused. A
+  predicate that reads `inputs` must also read `sender.identity.claims`.
 
 `flow run local` and `flow test` are not gated by `manual:`.
 
@@ -1157,7 +1339,7 @@ it. `manual:` can only narrow that:
 | --- | --- |
 | `cron` | A cron expression, or a list of them. Five fields, or six with a year, or seven with seconds first, or `@daily`-style shorthands. |
 | `every` | A fixed interval, at least one minute. |
-| `calendars` | Calendar specifications (`hour`, `day_of_week`, `day_of_month`, …), for what cron cannot say. |
+| `calendars` | Calendar specifications, for what cron cannot say. Each entry matches on `second`, `minute`, `hour`, `day_of_month`, `month`, `year` and `day_of_week`, and may carry a `comment`. |
 | `time_zone` | An IANA time zone for `cron` and `calendars`. UTC when unset. |
 | `jitter` | Delay each firing by a random amount up to this long. |
 | `overlap` | What to do when a firing finds the previous run still going: `skip` (default), `buffer_one`, `buffer_all`, `cancel_other`, `terminate_other`, or `allow_all`. |
@@ -1180,7 +1362,9 @@ receives it at `POST /webhooks/<workflow>/<webhook>` when started with
 
 | Key | Meaning |
 | --- | --- |
-| `verify` | Required. How to check the signature: `hmac_sha256` (an `X-Flowstate-Signature` HMAC of the body) or `stripe` (Stripe's signature scheme), each keyed by a secret reference. |
+| `verify` | Required. How to check the delivery, every scheme written must hold: `hmac_sha256` (an `X-Flowstate-Signature` HMAC of the body) or `stripe` (Stripe's signature scheme), each keyed by a secret reference; and `jwt`, the name of a trust policy entry whose issuer's bearer token the delivery must carry. See [Identity and trust](#identity-and-trust). |
+| `when` | Optional. A boolean over the delivery that admits it, such as `${event.body.action == "opened"}`. Only a clean `true` admits; `false` answers `204` and starts nothing, and an expression that errors, is not a bool, or exceeds its bound is refused. Applies to a `signal:` webhook too, before `correlate:` runs. |
+| `respond_within` | Optional. A duration, 100ms to 30s: hold the delivery open that long for the run's answer, then reply `completed` with the run's declared `outputs:`, `failed` with the failure sentence, or `running` (`202`) if the run is still going. Needs `outputs:`; refused with `signal:`. See [DSL.md](DSL.md). |
 | `idempotency_key` | Required. An expression over the delivery that names the *event*, such as `${event.body.id}`. A redelivery of the same event joins the run the first one started. Never key on a signature header, which changes on every retry. |
 | `with` | Maps the delivery to the workflow's inputs. Checked against `inputs:` both ways: every required input must be bound. |
 | `signal` | Instead of starting a run, deliver a signal to the run whose entity key `correlate:` computes. See [examples/webhook-approval-bridge](../examples/webhook-approval-bridge/workflow.yaml). |
@@ -1189,6 +1373,13 @@ Inside a webhook's expressions, `event.headers` and `event.body` are the only
 names in scope; the run does not exist yet. `flow test` can replay a stored
 delivery, including one whose signature does not verify
 ([examples/webhook-trigger](../examples/webhook-trigger/workflow.yaml)).
+
+Sending a signed delivery to another Flowstate's webhook is the `webhook.send`
+plugin task, which signs with the same two schemes `verify:` names, so one side's
+`scheme:` and the other's `verify:` entry are spelled alike. It signs exactly the
+`body:` text it sends, so build JSON with `json.encode(...)`, and the key is a
+whole `${secret(...)}` that stays worker-side
+([examples/plugins/webhook](../examples/plugins/webhook/)).
 
 ### What a run knows about its start: `trigger`
 
@@ -1236,28 +1427,40 @@ shows all three.
 ```yaml
 signals:
   deploy-approved:
-    allow:
-      - subject: ${"https://issuer.example.com#" + inputs.expected_approver}
-        claims:
-          team: release-managers
-      - claims:
-          role: sre-lead
-    distinct_from_starter: true
+    allow: ${(sender.identity.principal == "https://issuer.example.com#" + inputs.expected_approver && sender.identity.claims.team == "release-managers" || sender.identity.claims.role == "sre-lead") && sender.identity.principal != run.identity.principal}
 ```
 
-Each entry is a signal name the workflow waits for, and the senders allowed to
-deliver it. A sender is allowed if **any** `allow` rule matches, and a rule
-matches when **all** of its fields match the sender's verified identity:
+Each entry is a signal name the workflow waits for, and `allow:` is one `${...}`
+predicate that says which senders may deliver it. It reads
+`sender.identity.{principal,subject,issuer,namespace,kind,claims}` (the verified sender;
+`principal` is `"<issuer>#<subject>"`, and empty when either half is missing),
+`run.identity` (the starter, with the same fields) and `inputs`, and nothing else:
 
-- `subject`: exactly `"<issuer>#<subject>"`. It may be an expression over
-  `inputs`, resolved once when the run starts; then the rule must also require
-  `claims`, or the policy must set `distinct_from_starter`.
-- `claims`: exact string matches against claims the server was configured to
-  record (`flow server --identity-claim team`).
-- `namespace`: the sender's tenant.
+- `sender.identity.principal == "<issuer>#<subject>"` names one sender exactly. The
+  right-hand side may be an expression over `inputs`, evaluated on every delivery.
+- `sender.identity.claims.team == "release-managers"` matches a claim the server was
+  configured to record (`flow server --identity-claim team`). A missing claim is an
+  error, which refuses the sender.
+- `sender.identity.namespace == "payments"` is the sender's tenant.
+- `sender.identity.kind == "human"` requires a person, as the trust policy entry that admitted the sender says (`principal_kind:`); it is `""` when that entry says nothing, which is not a workload. Rehearse it with `--signal-as-kind` (and `--as-kind` for the starter) on `flow run local`, `flow signals check` (`--starter-kind`), or `kind:` in a test file.
+- `sender.identity.principal != run.identity.principal` requires that the sender is not
+  the person who started the run: separation of duties.
 
-`distinct_from_starter: true` additionally requires that the sender is not the
-person who started the run: separation of duties.
+Only a clean `true` allows: an error (a missing claim key, an unrecorded starter that
+the predicate reads), a result that is not a bool, or an expression over its cost bound
+all refuse the sender. A predicate that reads `inputs` must also read
+`sender.identity.claims` or `run.identity`: whoever starts the run chooses its inputs, so
+a predicate over them alone would let them name their own approver. When a name comes
+from `inputs`, require exactly one `#` in the principal first
+(`sender.identity.principal.split("#").size() == 2 && sender.identity.principal ==
+"https://issuer.example.com#" + inputs.approver`), because an unauthenticated sender's
+`principal` is empty and equals an empty input, and a computed name could otherwise be
+matched by a principal holding a second `#`. Write conjunctions: the narrowing check is
+syntactic, and a predicate that reads `inputs` records the inputs it names in the policy
+scope memo (64 KiB cap). It may not read a `sensitive:` input or name no input at all
+(`inputs[k]`, `inputs` passed whole); both are refused.
+
+`debug:` takes the same predicate.
 
 The server checks the policy before the signal reaches Temporal, and refuses a
 sender who does not match with `PermissionDenied`. A signal name with **no**
@@ -1269,12 +1472,11 @@ durable run always refuses a sender that was only asserted locally.
 
 ```yaml
 debug:
-  allow:
-    - claims:
-        team: sre
+  allow: ${sender.identity.claims.team == "sre"}
 ```
 
-`debug:` has the same grammar as one `signals:` entry, and says who may attach
+`debug:` has the same grammar as one `signals:` entry, so `allow:` is one predicate
+over the same scope (`sender`, the debugged run's `run.identity` and `inputs`). It says who may attach
 a debugger to a durable run — hold it at a step boundary, step it, and set
 breakpoints — under a lease that expires on its own. Evaluating expressions
 against it, or setting a breakpoint that carries a condition or a log message,
@@ -1286,6 +1488,48 @@ Local debugging needs no policy. See
 ### Labels are not policy
 
 `labels:` are for finding runs. Nothing authorizes on them.
+
+## Identity and trust
+
+A Flowfile never names an identity provider, a key, or a trust relationship. It
+reads who is acting and says what a step may use; the deployment decides who is
+believed and where assertions may go. Trust runs in two directions, and each is
+configured in the one trust policy, not in a Flowfile. Pass the same policy
+(`--auth-policy`) to `flow server`, which authenticates callers, and to
+`flow worker`, which builds the broker that steps use for `federation:`.
+
+| Direction | The deployment configures | A Flowfile sees |
+| --- | --- | --- |
+| **Inbound**: who may reach Flowstate | `issuers:`, each `kind: oidc` (the default) or `kind: mtls`. An `oidc` entry takes `audiences`, claim rules, and a tenant fixed or read from `namespace_claim`. An `mtls` entry takes `client_ca_file` and `subject_from` and a fixed tenant, and refuses `audiences` and `namespace_claim`. Either may assign `principal_kind:` `human`, `workload` or `agent`, which a token cannot choose for itself | `run.identity` with `principal`, `subject`, `issuer`, `namespace`, `kind`, `claims`, and `sender.identity` the same, except that a wait's sender carries no `claims`. [Who may act](#who-may-act-on-a-run) |
+| **Outbound**: what a workload may become | `federation:` with `targets:` (`token_exchange`, `client_credentials`, `gcp`, `aws`, `assertion`) and `allow`/`deny` rules over `target`, `audience` and `workload` | `credential:` on a task such as `http`. [Secrets and credentials](SECRETS.md#short-lived-credentials-instead-of-stored-ones) |
+
+Three rules hold in both directions:
+
+- **A tenant comes from the authenticated caller, never from the workflow.** A
+  verified caller whose tenant cannot be determined is refused.
+- **Policy fails closed.** A missing claim, an expression error, an unreachable
+  issuer, or a rule that cannot be evaluated refuses. The one exception, a
+  `federation:` section with no rules, is called out in
+  [Secrets](SECRETS.md#short-lived-credentials-instead-of-stored-ones).
+- **Credentials and tokens never enter a run's history.** A step names a
+  `credential:` or `${secret(...)}`; the worker resolves it where it is used.
+
+A webhook delivery signed with `hmac_sha256` or `stripe` holds no Flowstate
+credential, so its `sender.identity` names the trigger that admitted it,
+`flowstate://webhook#<workflow>/<webhook>`, and a `signals:` policy can match it.
+The identity of whoever holds the signing key is not carried. A webhook that
+also (or instead) writes `verify: {jwt: github-actions}` names an entry of the
+deployment's trust policy: the delivery must carry that issuer's bearer token in
+`Authorization`, and then acts as the token's principal — its `iss#sub`, its
+`kind`, the receiver's tenant — so a `signals:` or `manual:` `allow:` can tell one
+CI job from another. The Flowfile holds a name, never a key or a URL; the issuer,
+audience and claim rules stay the deployment's. A bearer token proves who sent
+the request and not what is in it, so write `jwt` beside a signing scheme when
+the body must be trusted too, and every scheme written has to verify. The
+`Authorization` header is never part of `event.headers`. How workloads, people, and agents are federated, and what is built
+and what is not, is in
+[Workload identity federation](WORKLOAD_IDENTITY_FEDERATION.md); authorizing an
+agent over HTTP is in [MCP authorization](MCP_AUTHORIZATION.md).
 
 ## Secrets
 
@@ -1359,7 +1603,10 @@ specification, so changing the grammar never affects a run in flight.
 The retired spellings `flow fix` rewrites include `task:` blocks (now the task
 name as the key), `echo:` and `printf:` (now `log:`), `cel:` (now `value:`),
 `iterator:` (now `as:`), bare step references (now `steps.<id>`), and
-`has(x.y) && x.y` (now `x.?y.orValue(false)`).
+`has(x.y) && x.y` (now `x.?y.orValue(false)`), and the who-may-act forms (an `allow:`
+list of rules, `distinct_from_starter:` and `manual: allowed_principals:`, now one
+`allow: ${...}` predicate; see "What `flow fix` writes for who may act" in
+[DSL.md](DSL.md)).
 
 ## Limits
 
@@ -1390,8 +1637,13 @@ the run is refused before it starts rather than failing partway.
 
 ## Keys at a glance
 
-**Top level:** `edition`, `name`, `labels`, `description`, `plugins`, `inputs`,
-`triggers`, `concurrency`, `signals`, `debug`, `vars`, `steps`, `outputs`.
+**Top level:** `edition`, `name`, `labels`, `description`, `plugins`, `types`,
+`errors`, `functions`, `inputs`, `triggers`, `concurrency`, `signals`, `debug`,
+`vars`, `steps`, `outputs`.
+
+**Type declaration:** `description`, `fields` (each written like an input), `must`.
+**Function declaration:** `description`, `params`, `returns`, `body`. **Error
+declaration:** `description`.
 
 **Input declaration:** `type`, `values`, `required`, `default`, `description`,
 `example`, `sensitive`, `min_len`, `max_len`, `min_items`, `max_items`, `must`.
@@ -1400,24 +1652,25 @@ the run is refused before it starts rather than failing partway.
 `sensitive`.
 
 **Step:** `id`, `description`, `if`, `vars`, `async`, `timeout`,
-`total_timeout`, `retry` (`attempts`, `interval`, `backoff`, `max_interval`),
+`total_timeout`, `retry` (`attempts`, `interval`, `backoff`, `max_interval`, `only`),
 `continue_on_error`, `undo`, `with`, `digest`, and one kind: a task name,
 `value`, `switch` (`value`, `cases` with `case` and `steps`, `default`),
 `for_each` (`items`, `as`, `max_parallel`, `steps`), `parallel` (a list of
 `steps`), `loop` (`as`, `init`, `update`, `until`, `max_iterations`, `steps`),
-`call`, `sleep`, `wait_until`, `wait_for_signal` (`name`, `timeout`, `prompt`,
+`call`, `fail` (`error`, `message`), `sleep`, `wait_until`, `wait_for_signal` (`name`, `timeout`, `prompt`,
 `outputs`), `wait_for_signals` (`name`, `max_batch`, `timeout`, `prompt`,
-`outputs`).
+`outputs`, `quorum` with `approve`, `distinct`, `exclude`, `veto`).
 
-**Triggers:** `manual` (`denied`, or `require_reason` and `allowed_principals`),
+**Triggers:** `manual` (`denied`, or `require_reason` and an `allow` predicate),
 `schedule` (`cron`, `every`, `calendars`, `time_zone`, `jitter`, `overlap`,
-`start_at`, `end_at`, `catchup_window`, `pause_on_failure`), `webhook`
-(`verify`, `idempotency_key`, `with`, `signal` with `name`, `correlate`,
-`with`).
+`start_at`, `end_at`, `catchup_window`, `pause_on_failure`; a calendar has
+`second`, `minute`, `hour`, `day_of_month`, `month`, `year`, `day_of_week`,
+`comment`, and a range within one is written `start`, `end`, `step`), `webhook`
+(`verify`, `when`, `idempotency_key`, `with`, `respond_within`, `signal` with
+`name`, `correlate`, `with`).
 
-**Concurrency:** `key`, `on_conflict`. **Signal policy:** `allow` (rules of
-`subject`, `namespace`, `claims`), `distinct_from_starter`. **Debug policy:**
-the same.
+**Concurrency:** `key`, `on_conflict`. **Signal policy:** `allow` (one `${...}`
+predicate). **Debug policy:** the same.
 
 `needs` and `assert` are reserved for future versions of the grammar and are
 refused today.

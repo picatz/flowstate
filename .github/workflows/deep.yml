@@ -584,10 +584,12 @@ jobs:
         continue-on-error: true
         if: steps.seeded.outcome == 'success'
         run: |
-          # One file reporting a nonzero decision count is enough; the zero
-          # case's own line always carries the "nothing was explored" suffix,
-          # so a line without it is a file that reached a real junction.
-          if grep -E 'scheduling decisions?' flowtest-seeded.log | grep -qv 'nothing was explored'; then
+          # One file reporting a nonzero scheduling-decision count is enough.
+          # Fault draws are reported on the same line ("up to 0 scheduling
+          # decisions and 4 fault draws") and do not count here: this guard is
+          # about junctions, so a sweep whose only exploration was injected
+          # faults must still fail it.
+          if grep -qE 'up to [1-9][0-9]* scheduling decisions?' flowtest-seeded.log; then
             echo "the sweep explored real scheduling decisions"
           else
             echo "::error::no file in examples/ explored a single scheduling decision; the sweep proved nothing"

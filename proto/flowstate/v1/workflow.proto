@@ -919,7 +919,7 @@ message Concurrency {
   //
   // The expression is evaluated exactly once, in `FlowstateServer.Run`, after
   // [BindRunInputs] and before the run exists — the same moment and the same
-  // discipline `SignalPolicyRule.subject_from` established. `inputs.*` is the
+  // discipline signal policies once resolved their subjects with. `inputs.*` is the
   // whole of what it may read, and the validator refuses anything else, because
   // at that moment nothing else exists: no step has produced an output, `vars:`
   // have not been evaluated, and there is no run to have a `run.id`.
@@ -1039,34 +1039,6 @@ message ResolvedCapabilityBinding {
   string qualifier = 4;
   string contract = 5;
   string contract_digest = 6;
-}
-
-// PureHelper is an importable declaration normalized away before execution. It
-// contributes a typed name to the compiler's CEL environment, never a runtime
-// function or evaluator. The body may reference only its parameters and the
-// pinned profile's pure CEL vocabulary.
-message PureHelper {
-  string name = 1 [(buf.validate.field).string = {
-    min_len: 1
-    max_len: 256
-    pattern: "^[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)+$"
-  }];
-  repeated PureHelperParameter parameters = 2 [(buf.validate.field).repeated = {max_items: 16}];
-  InputDeclaration.Type result_type = 3 [(buf.validate.field).enum = {defined_only: true not_in: [0]}];
-  Value body = 4 [(buf.validate.field).required = true];
-  string source = 5 [(buf.validate.field).string = {max_len: 1024}];
-  uint32 source_line = 6;
-  string description = 7 [(buf.validate.field).string = {max_len: 1024}];
-}
-
-// PureHelperParameter is one typed, body-local argument of a PureHelper.
-message PureHelperParameter {
-  string name = 1 [(buf.validate.field).string = {
-    min_len: 1
-    max_len: 64
-    pattern: "^[A-Za-z_][A-Za-z0-9_]*$"
-  }];
-  InputDeclaration.Type type = 2 [(buf.validate.field).enum = {defined_only: true not_in: [0]}];
 }
 
 // InputDeclaration is one parameter a run may be started with: what it is
@@ -2516,13 +2488,9 @@ message RetryPolicy {
     items: {string: {min_len: 1 max_len: 128 pattern: "^[A-Z][A-Za-z0-9_]*$"}}
   }];
 
-  // Except removes the kinds it names from those retried, so a retryable kind a
-  // step should fail fast on (a rate limit it must not hammer) is written down.
-  repeated string except = 6 [(buf.validate.field).repeated = {
-    max_items: 64
-    unique: true
-    items: {string: {min_len: 1 max_len: 128 pattern: "^[A-Z][A-Za-z0-9_]*$"}}
-  }];
+  // 6 was `except`, the complement of `only`; one list says it, so it is gone.
+  reserved 6;
+  reserved "except";
 }
 
 // ResolvedTaskCapabilities is the smallest replay contract for task

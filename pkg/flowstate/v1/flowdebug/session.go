@@ -2296,14 +2296,22 @@ func (s *Session) Autopsy(ctx context.Context, scope *v1.Scope, extra map[string
 		}
 
 		verb, rest := split(line)
-		switch verb {
-		case "", "step", "s", "continue", "c", "until", "u", "quit", "q",
-			"next", "n", "finish", "fin", "out", "detach":
+		known, isKnown := resolve(verb)
+		if isKnown {
+			verb = known.verb
+		}
+
+		// Every verb that moves the run is `quit` here, as is an empty line: there
+		// is no run left to move, and the table says which verbs those are rather
+		// than a case list that has to be kept equal to it.
+		if verb == "" || isKnown && known.effect == effectMoves && known.onFront(frontPrompt) {
 			s.record("quit")
 
 			return
+		}
 
-		case "inspect", "p":
+		switch verb {
+		case "inspect":
 			expression := strings.TrimSpace(rest)
 			if expression == "" {
 				s.printfTone(ToneWarning, "inspect needs an expression: inspect steps.build.artifact\n")
@@ -2324,21 +2332,20 @@ func (s *Session) Autopsy(ctx context.Context, scope *v1.Scope, extra map[string
 			s.record("scope")
 			s.showScopeWith(scope, extra)
 
-		case "help", "h", "?":
-			s.printf(`inspect <expr>              evaluate a CEL expression against the finished run
-complete <partial-command>  list what could be written at the end of that text
-scope                       list what the run can still name
-help, h, ?                  this list
-quit, q                     leave the autopsy (so do step/continue — the run is over)
-`)
+		case "help":
+			s.printf("%s\n", helpText(frontAutopsy))
 
 		default:
 			// A command the prompt knows is not a typo here: it has nothing
 			// left to act on, and saying "unknown" sends the author looking
 			// for a misspelling that is not there.
-			if c, known := resolve(verb); known {
+			if isKnown {
+				if why, refused := refuse(verb, frontPrompt); refused {
+					s.printfTone(ToneWarning, "%s\n", why)
+					continue
+				}
 				s.printfTone(ToneWarning, "`%s` has nothing to act on at the autopsy: the run is over, and "+
-					"inspect, complete, scope and help are what answer here\n", c.verb)
+					"inspect, complete, scope and help are what answer here\n", known.verb)
 				continue
 			}
 			s.printfTone(ToneWarning, "unknown command %q — try `help`\n", verb)

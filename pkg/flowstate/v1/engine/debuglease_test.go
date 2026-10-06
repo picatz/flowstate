@@ -50,9 +50,7 @@ func debugSpec(name string) *v1.Workflow {
 			logStep("first", "one"),
 			logStep("second", "two"),
 		},
-		Debug: &v1.SignalPolicy{Allow: []*v1.SignalPolicyRule{
-			{Claims: map[string]string{"role": "sre"}},
-		}},
+		Debug: &v1.SignalPolicy{Allow: `sender.identity.claims["role"] == "sre"`},
 	}
 }
 
@@ -158,9 +156,7 @@ func TestALeaseHoldsTheDurableCorpusWhereItSaysItDoes(t *testing.T) {
 				"a case with no holdable boundary states nothing about a lease")
 
 			spec := proto.CloneOf(test.Workflow)
-			spec.Debug = &v1.SignalPolicy{Allow: []*v1.SignalPolicyRule{
-				{Claims: map[string]string{"role": "sre"}},
-			}}
+			spec.Debug = &v1.SignalPolicy{Allow: `sender.identity.claims["role"] == "sre"`}
 
 			env := newWaitEnv(t)
 			start := env.Now()

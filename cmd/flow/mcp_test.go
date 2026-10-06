@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -222,6 +221,11 @@ var documentedLocalTools = map[string]bool{
 	flowmcp.TestToolName:     true,
 	flowmcp.DebugToolName:    true,
 
+	// flowstate_check_policy: policycheck, in this process, the static form of
+	// the who-may-act decision `flow signals check` prints. Not an RPC because
+	// it contacts nothing and executes nothing: it compiles and decides.
+	flowmcp.CheckPolicyToolName: true,
+
 	debugSessionStartTool:   true,
 	debugSessionAttachTool:  true,
 	debugSessionObserveTool: true,
@@ -349,7 +353,7 @@ steps:
 		Name: flowmcp.ToolName("Compile"),
 		Arguments: map[string]any{"file": map[string]any{
 			"name":   "workflow.yaml",
-			"source": base64.StdEncoding.EncodeToString([]byte(source)),
+			"source": source,
 		}},
 	})
 	require.NoError(t, err)
@@ -558,8 +562,8 @@ func TestTheValidateToolAnswersOverTheProtocol(t *testing.T) {
 		Arguments: map[string]any{
 			"files": []map[string]any{{
 				"name": "broken.yaml",
-				// base64 of an invalid Flowfile; SourceFile.source is bytes.
-				"source": []byte("edition: v2026.4\nname: x\nsteps:\n  - id: a\n    nope:\n      x: y\n"),
+				// Plain YAML, the spelling flowstate_run_local takes (#1290).
+				"source": "edition: v2026.4\nname: x\nsteps:\n  - id: a\n    nope:\n      x: y\n",
 			}},
 		},
 	})
@@ -1508,7 +1512,7 @@ func TestRunLocalFlagsMirrorRunLocal(t *testing.T) {
 		"egress-policy",
 		"secret-env", "secret-dir", "secret-env-namespace",
 		"secret-dir-namespaced", "secret-require-namespace",
-		"as-subject", "as-issuer", "as-namespace", "as-deployment", "as-claim",
+		"as-subject", "as-issuer", "as-kind", "as-namespace", "as-deployment", "as-claim",
 		"auth-policy", "identity-key",
 	}
 

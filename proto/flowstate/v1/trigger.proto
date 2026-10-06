@@ -106,9 +106,9 @@ message ManualTrigger {
   // webhook, lose `flow run` — and nobody discovers an inferred lock until
   // they need it not to be there.
   //
-  // Contradicts both fields below, and the compiler refuses the combination
-  // rather than resolving it by precedence: a refusal that also lists who may
-  // start the workload is two sentences that cannot both be true.
+  // Contradicts [allow], and the compiler refuses the combination rather than
+  // resolving it by precedence: a refusal that also says who may start the
+  // workload is two sentences that cannot both be true.
   bool denied = 1 [(google.api.field_behavior) = OPTIONAL];
 
   // RequireReason makes a manual start carry a reason, recorded on the run
@@ -120,31 +120,35 @@ message ManualTrigger {
   // who has one is still present to give it.
   bool require_reason = 2 [(google.api.field_behavior) = OPTIONAL];
 
-  // AllowedPrincipals restricts a manual start to these issuer-qualified
-  // authenticated identities, each written as "<issuer>#<subject>" and matched
-  // exactly against the caller's stable Principal.ID. Neither half comes from
-  // the request: OIDC and mTLS authentication establish both. The spelling has
-  // exactly one "#" separator; an identity with "#" in either half cannot be
-  // represented ambiguously and is therefore refused by an allowlist.
+  // Field 3 was `allowed_principals`, a closed list of issuer-qualified
+  // identities. It is retired: `allow: ${sender.identity.principal in [...]}`
+  // says the same, and `flow fix` writes it. The number is reserved.
+  reserved 3;
+  reserved "allowed_principals";
+
+  // Allow is one CEL predicate deciding who may start the workload by hand,
+  // written in a Flowfile as `manual: allow: ${...}`.
   //
-  // Empty means every authenticated caller, which is today's behavior and what
-  // a workflow with no `manual:` block keeps. Non-empty is a closed set: a
-  // qualified principal that is not in it is refused. Bare subjects are invalid,
-  // not global aliases: a subject is unique only within its issuer. Missing,
-  // zero, and insecure anonymous development identities cannot satisfy the set.
-  repeated string allowed_principals = 3 [
+  // The source is stored without the `${` `}` fence and evaluated by the same
+  // function that decides `signals:` and `debug:` ([SignalPolicy.allow]),
+  // server-side, against the server's own attestation of the caller, over a
+  // closed scope: `sender.identity.{principal,subject,issuer,namespace,claims}`
+  // (the caller) and `inputs` (the arguments being SUBMITTED with this start).
+  // There is no run yet, so `run` is not in scope and a predicate that reads it
+  // is refused when the file compiles.
+  //
+  // Fail closed: a result that is not a bool, an evaluation error, an exceeded
+  // cost or time bound, an expression that does not compile, and a caller with
+  // no authenticated principal all refuse the start; none ever allows. The
+  // refusal names no input or claim value.
+  //
+  // A predicate that reads `inputs` must also read `sender.identity.claims`:
+  // the caller chooses the inputs, and there is no run starter to compare
+  // against, so a predicate over them alone would let the caller admit
+  // themselves. It contradicts [denied].
+  string allow = 4 [
     (google.api.field_behavior) = OPTIONAL,
-    (buf.validate.field).repeated = {
-      max_items: 64
-      unique: true
-      items: {
-        string: {
-          min_len: 1
-          max_len: 320
-          pattern: "^[^#]+#[^#]+$"
-        }
-      }
-    }
+    (buf.validate.field).string.max_len = 2048
   ];
 }
 
@@ -306,6 +310,12 @@ message WebhookTrigger {
   // material is a reference the receiver resolves rather than a value in a
   // repository.
   //
+  // `jwt` is the exception to "a secret reference": its value is the name of an
+  // entry in the deployment's trust policy, and the delivery must carry a bearer
+  // token that entry's issuer vouches for. It authenticates the sender (the
+  // delivery then acts as the token's principal) and covers none of the body.
+  // Every scheme written must verify.
+  //
   // At least one entry, and the schemes are a closed set
   // ([v1.WebhookVerificationSchemes]) checked when the file compiles: a scheme
   // nobody implements is a delivery nobody can verify, which under the rule
@@ -364,6 +374,60 @@ message WebhookTrigger {
   // See [WebhookTrigger.Signal].
   Signal signal = 5 [(google.api.field_behavior) = OPTIONAL];
 
+  // When is the admission predicate: a boolean expression over `event` that
+  // decides whether a verified delivery is acted on at all, written
+  // `when: ${...}` in a Flowfile. It is the one thing a trigger could not say
+  // before: no.
+  //
+  // Evaluated at the boundary after verification and before `idempotency_key`,
+  // `arguments`, and (on a bridge) `signal.correlate`, in the same environment
+  // and under the same limits as those, by the same evaluator. It applies to a
+  // start and to a bridge alike, and is deliberately not repeated inside
+  // [Signal]: one trigger has one admission rule, and a second spelling per arm
+  // would be the second mechanism.
+  //
+  // Only a clean `true` admits. `false` declines the delivery: it starts no
+  // run, delivers no signal, records no idempotency key, and is answered `204`
+  // so the provider does not retry it. An evaluation error, a result that is
+  // not a bool, and an exceeded cost or time bound fail closed: the delivery is
+  // refused, with a fixed sentence that echoes nothing from it, and starts
+  // nothing. Absent means every verified delivery is admitted, as before.
+  //
+  // May not read a secret, and must read `event`: a predicate that cannot vary
+  // with the delivery admits all of them or none of them.
+  Value when = 6 [(google.api.field_behavior) = OPTIONAL];
+
+  // RespondWithin is how long the receiver holds a delivery open to answer with
+  // the run's declared outputs, written `respond_within: 5s` in a Flowfile.
+  // Absent means the receiver answers as it always has: with the run's address,
+  // as soon as the run is started or joined.
+  //
+  // Set, the receiver waits for the run it started (or joined) for at most this
+  // long and answers with `status`: `completed` with the run's declared
+  // `outputs:`, `failed` with the failure's sentence, or `running` when the
+  // bound passed first, in which case the run continues and the caller reads it
+  // with `Get`. The HTTP status keeps its meaning (a delivery disposition), so a
+  // 2xx still tells a provider the delivery landed and must not be retried
+  // whatever the run did.
+  //
+  // The field is itself the bound, and there is no default: a wait the sender
+  // chose the length of, or the author never wrote down, would hold a
+  // receiver slot for as long as a run took. 100ms to 30s. A waiting delivery
+  // holds its slot of the receiver's concurrency bound for the whole wait.
+  //
+  // The only thing a run can answer with is its declared outputs, so this is
+  // refused with no `outputs:`, and refused with [signal]: a bridge starts
+  // nothing and has no run of its own to wait for. Sensitive outputs are
+  // withheld, and there is no way to reveal one on this surface. There is no
+  // callback form: a run that must tell somebody later does it as a last step.
+  google.protobuf.Duration respond_within = 7 [
+    (google.api.field_behavior) = OPTIONAL,
+    (buf.validate.field).duration = {
+      gte: {nanos: 100000000}
+      lte: {seconds: 30}
+    }
+  ];
+
   // Signal is a delivery answering a declared gate instead of starting a run.
   //
   // # It reuses `signals:`, and is not a second authorization
@@ -378,7 +442,7 @@ message WebhookTrigger {
   // admits or refuses a person.
   //
   // What that principal cannot say is *who clicked*. `hmac_sha256` and
-  // `stripe` attest a key holder, so `distinct_from_starter:` separates
+  // `stripe` attest a key holder, so an `allow:` predicate comparing `run.identity` separates
   // triggers rather than humans on this path, and a workflow that needs two
   // distinct people either side of a gate cannot get them from a webhook
   // today.
@@ -386,11 +450,13 @@ message WebhookTrigger {
   // # The zero case is closed here, and only here
   //
   // A signal name with no `signals:` entry admits any sender — the deliberate
-  // zero case, argued at [SignalPolicyAllows], and tolerable for `flow signal`
+  // zero case, argued at `SignalPolicyCheck`, and tolerable for `flow signal`
   // behind the server's own authentication. It is not tolerable for a key
-  // holder on a public route, so a `signal:` naming a name with no policy that
-  // could admit this trigger's principal is refused when the file compiles.
-  // That refusal is a property of the *file*, so `flow validate` says it with
+  // holder on a public route, so a `signal:` naming a name with no policy is
+  // refused when the file compiles; a policy whose predicate cannot admit this
+  // trigger's principal denies every delivery instead, because what a
+  // predicate admits is decided at delivery, over the sender. The refusal of
+  // a missing policy is a property of the *file*, so `flow validate` says it with
   // a line and a column rather than a receiver discovering it at three in the
   // morning.
   message Signal {

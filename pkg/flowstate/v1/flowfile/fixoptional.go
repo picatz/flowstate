@@ -12,6 +12,7 @@ import (
 	exprpb "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/picatz/flowstate/internal/strictyaml"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
 
@@ -849,7 +850,7 @@ func (f *fixer) optionalReadScalar(node *ast.StringNode, key string) {
 // call site. Unparseable input answers false; [fixOnce] reports the parse error
 // properly, and a pass gated off is a pass that cannot act on a guess.
 func modernizesEdition(data []byte) bool {
-	file, err := parser.ParseBytes(data, parser.ParseComments)
+	file, err := strictyaml.ParseBytes(data, parser.ParseComments)
 	if err != nil {
 		return false
 	}

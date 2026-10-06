@@ -26,9 +26,7 @@ func gatedWorkflowRequiring(issuer, subject string) *v1.Workflow {
 	wf := gatedWorkflow()
 	wf.Signals = map[string]*v1.SignalPolicy{
 		"deploy-approved": {
-			Allow: []*v1.SignalPolicyRule{
-				{Subject: v1.QualifiedSubject(issuer, subject)},
-			},
+			Allow: `sender.identity.principal == "` + v1.QualifiedSubject(issuer, subject) + `"`,
 		},
 	}
 	return wf

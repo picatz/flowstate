@@ -61,7 +61,16 @@ var triggerKindKeys = []string{"webhook", "schedule", "manual"}
 // declaring it at all is that a lock nobody can grep for is a lock nobody knows
 // about. Two spellings of one refusal would mean a search for the greppable one
 // misses half the files that have it.
-var manualKeys = []string{"require_reason", "allowed_principals"}
+var manualKeys = []string{"require_reason", "allow"}
+
+// retiredManualKeys are the keys a `manual:` mapping used to have, and what to
+// write instead. Held back from [manualKeys] so the migration sentence is the
+// one reported, and it names the key without echoing the principals written
+// under it.
+var retiredManualKeys = map[string]string{
+	"allowed_principals": "`allowed_principals:` is retired: write `allow: ${sender.identity.principal in " +
+		"[...]}` with the same principals. Run `flow fix` to rewrite this file",
+}
 
 // manualDenied is the scalar that refuses manual starts.
 //
@@ -74,8 +83,8 @@ const manualDenied = "denied"
 //
 // In the order [webhookTriggerToYAML] writes them, which is the order the entry
 // reads in: which source this is, how a delivery from it is proved genuine, what
-// names one delivery, and what it binds.
-var webhookKeys = []string{"webhook", "verify", "idempotency_key", "with", "signal"}
+// names one delivery, what it binds, and how long the answer is held for.
+var webhookKeys = []string{"webhook", "verify", "when", "idempotency_key", "with", "signal", "respond_within"}
 
 // webhookSignalKeys are what a webhook's `signal:` block says: which gate this
 // delivery answers, which run it answers, and what it carries.
@@ -101,6 +110,11 @@ var scheduleItemKeys = []string{"schedule"}
 // list spelling and the mapping spelling hold the identical block and there is one
 // grammar for it rather than two.
 var manualItemKeys = []string{"manual"}
+
+// notInWhenHelp is why a `${secret(...)}` cannot appear in a webhook's `when:`.
+const notInWhenHelp = "a secret reference cannot appear in a `when:`; the predicate is evaluated over the " +
+	"delivery and its verdict is recorded, so there is nothing for a secret to be resolved into. Compare " +
+	"what the delivery carries (`event.body`, `event.headers`) against a literal instead"
 
 // notInTriggerHelp is why a `${secret(...)}` cannot appear in a webhook's `with:`.
 //
@@ -232,8 +246,8 @@ func (c *compiler) manualTrigger(key, n ast.Node, path string, r ref) *v1.Manual
 		if word != manualDenied {
 			c.report(spanOfNode(resolved), r,
 				"is %q, which is not something a `manual:` says. Write `manual: %s` to refuse manual "+
-					"starts outright, or a mapping with `require_reason:` and `allowed_principals:` to "+
-					"narrow them. Declaring nothing at all leaves manual starts as they are, which is "+
+					"starts outright, or a mapping with `require_reason:` or an "+
+					"`allow: ${...}` predicate to narrow them. Declaring nothing at all leaves manual starts as they are, which is "+
 					"what every workflow without this block does",
 				word, manualDenied)
 
@@ -243,7 +257,7 @@ func (c *compiler) manualTrigger(key, n ast.Node, path string, r ref) *v1.Manual
 		return &v1.ManualTrigger{Denied: true}
 	}
 
-	fields, ok := c.fields(resolved, path, r, manualKeys)
+	fields, ok := c.fieldsRetiring(resolved, path, r, manualKeys, retiredManualKeys)
 	if !ok {
 		return nil
 	}
@@ -257,111 +271,34 @@ func (c *compiler) manualTrigger(key, n ast.Node, path string, r ref) *v1.Manual
 		}
 	}
 
-	if f, found := fields.get("allowed_principals"); found {
-		p := fieldPath(path, "allowed_principals")
-		manual.AllowedPrincipals = c.manualPrincipals(f.value, p)
+	if f, found := fields.get("allow"); found {
+		p := fieldPath(path, "allow")
+		allowRef := ref{path: p, label: "manual allow"}
+		if resolved := c.resolveQuiet(f.value); !isScalarNode(resolved) {
+			c.pos.record(p, spanOfNode(resolved))
+			c.report(spanOfNode(resolved), allowRef,
+				"is not a `${...}` predicate; write the whole predicate as one `${...}` (for example "+
+					"`${sender.identity.claims.team == \"ops\"}`). Who may start the workload is one predicate, "+
+					"not a list")
+		} else if expression, ok := c.signalPolicyPredicate(resolved, p, allowRef); ok {
+			manual.Allow = expression
+		}
 	}
 
-	if !manual.GetRequireReason() && len(manual.GetAllowedPrincipals()) == 0 {
+	if !manual.GetRequireReason() && manual.GetAllow() == "" && fields.retired == 0 {
 		// A block that narrows nothing reads as if it did, which is the one thing a
 		// diagnostic here must not allow: `manual:` written with nothing under it is
 		// how somebody believes they have restricted a workflow they have not.
 		c.report(spanOrKey(resolved, key), r,
 			"narrows nothing, so it says exactly what writing no `manual:` at all says. Write "+
 				"`manual: %s` to refuse manual starts, `require_reason: true` to require a reason for "+
-				"one, or `allowed_principals:` to say who may make one",
+				"one, or `allow: ${...}` to say who may make one",
 			manualDenied)
 
 		return nil
 	}
 
 	return manual
-}
-
-// manualPrincipals reads `allowed_principals:`, written as one subject or as a
-// list of them.
-//
-// One or many, the spelling `cron:` and `calendars:` already use for the same
-// schema shape and for the same reason: a file naming a single principal should not
-// have to write a one-element list to say so.
-//
-// Every entry is a subject a caller authenticates as, so an empty one is refused
-// where it is written. It would otherwise become a set member matching the empty
-// subject a deployment with no identity provider attests — a policy admitting
-// nobody in particular, which is a policy admitting everyone. [v1.CheckManualStart]
-// refuses that at the boundary too; this is the same rule with a line to point at.
-func (c *compiler) manualPrincipals(n ast.Node, path string) []string {
-	r := ref{path: path, label: "manual allowed_principals"}
-
-	resolved := c.resolve(n, path, r)
-	if resolved == nil {
-		return nil
-	}
-	c.pos.record(path, spanOfNode(resolved))
-
-	nodes, listed := []ast.Node{resolved}, false
-	if seq, ok := resolved.(*ast.SequenceNode); ok {
-		nodes, listed = seq.Values, true
-	}
-
-	if listed && len(nodes) == 0 {
-		c.report(spanOfNode(resolved), r,
-			"is an empty list, which allows nobody at all rather than everybody; remove the key to "+
-				"leave manual starts open, or write `manual: %s` to refuse them", manualDenied)
-
-		return nil
-	}
-	if len(nodes) > 64 {
-		c.report(spanOfNode(resolved), r,
-			"names %d principals, exceeding the limit of 64; narrow the allowlist", len(nodes))
-
-		return nil
-	}
-
-	out := make([]string, 0, len(nodes))
-	seen := make(map[string]struct{}, len(nodes))
-	for i, node := range nodes {
-		p := path
-		if listed {
-			p = indexPath(path, i)
-		}
-
-		subject, ok := c.text(node, p, ref{path: p, label: r.label})
-		if !ok {
-			continue
-		}
-		if strings.TrimSpace(subject) == "" {
-			c.report(spanOfNode(node), ref{path: p, label: r.label},
-				"is empty, which names nobody; write the subject a caller authenticates as, or remove "+
-					"the entry — an empty principal would match a caller a deployment with no identity "+
-					"provider attests, which is every caller")
-
-			continue
-		}
-		if !v1.LooksLikeQualifiedSubject(subject) {
-			c.report(spanOfNode(node), ref{path: p, label: r.label},
-				"%q is not \"<issuer>#<subject>\"; a bare or malformed subject is refused because a "+
-					"subject is only unique within its issuer", subject)
-
-			continue
-		}
-		if _, duplicate := seen[subject]; duplicate {
-			c.report(spanOfNode(node), ref{path: p, label: r.label},
-				"lists %q twice; a principal is either allowed or not, so the second entry does nothing",
-				subject)
-
-			continue
-		}
-		seen[subject] = struct{}{}
-
-		out = append(out, subject)
-	}
-
-	if len(out) == 0 {
-		return nil
-	}
-
-	return out
 }
 
 // triggerList compiles the call-site spelling: `triggers:` written as a list, one
@@ -522,6 +459,28 @@ func (c *compiler) webhookTrigger(fields *fieldSet, path string, r ref) *v1.Webh
 		// built by hand reaches [v1.CheckWebhookTrigger] instead. Fail closed either
 		// way — a webhook with no scheme can never accept a delivery.
 		c.report(spanOfNode(nameField.key), webhookRef, "%s", v1.CheckWebhookVerify(name, nil).Error())
+	}
+
+	if f, found := fields.get("when"); found {
+		whenPath := fieldPath(path, "when")
+		whenRef := ref{path: whenPath, label: fmt.Sprintf("webhook %q when", name)}
+
+		// Refused here and not left to the evaluator, which binds no `secret(...)`
+		// and would answer a delivery with an error instead of the file with a
+		// line: a predicate is evaluated over the delivery and its verdict is
+		// audited, and neither is a place a reference belongs.
+		if resolved := c.resolveQuiet(f.value); resolved != nil && c.holdsSecretMarker(resolved) {
+			c.report(c.secretMarkerSpan(resolved), whenRef, "%s", notInWhenHelp)
+		} else {
+			webhook.When = c.exprValue(f.value, whenPath, whenRef)
+		}
+	}
+
+	if f, found := fields.get("respond_within"); found {
+		withinPath := fieldPath(path, "respond_within")
+		if within, ok := c.duration(f.value, withinPath, ref{path: withinPath, label: fmt.Sprintf("webhook %q respond_within", name)}); ok {
+			webhook.RespondWithin = within
+		}
 	}
 
 	if f, found := fields.get("idempotency_key"); found {
@@ -1056,7 +1015,7 @@ func triggersToYAML(triggers *v1.Triggers) (any, error) {
 // turning the one greppable spelling into one nobody searches for.
 func manualTriggerToYAML(manual *v1.ManualTrigger) (any, error) {
 	if manual.GetDenied() {
-		if manual.GetRequireReason() || len(manual.GetAllowedPrincipals()) > 0 {
+		if manual.GetRequireReason() || manual.GetAllow() != "" {
 			// Refused rather than written, for the reason [scheduleTriggerToYAML]
 			// refuses a cadence-less schedule: the contradiction is what
 			// [v1.CheckManualTrigger] reports, so writing it would produce a file
@@ -1074,19 +1033,13 @@ func manualTriggerToYAML(manual *v1.ManualTrigger) (any, error) {
 		doc = append(doc, yaml.MapItem{Key: "require_reason", Value: true})
 	}
 
-	if principals := manual.GetAllowedPrincipals(); len(principals) > 0 {
-		// A single principal is written bare rather than as a one-element list, the
-		// spelling `cron:` uses and the one [manualPrincipals] reads back.
-		var value any = principals
-		if len(principals) == 1 {
-			value = principals[0]
-		}
-		doc = append(doc, yaml.MapItem{Key: "allowed_principals", Value: value})
+	if expression := manual.GetAllow(); expression != "" {
+		doc = append(doc, yaml.MapItem{Key: "allow", Value: fencedToYAML(expression)})
 	}
 
 	if len(doc) == 0 {
 		return nil, fmt.Errorf("triggers manual: narrows nothing, so there is nothing to write; give it " +
-			"`require_reason: true`, an `allowed_principals:`, or write `manual: denied`")
+			"`require_reason: true`, an `allow:` predicate, or write `manual: denied`")
 	}
 
 	return doc, nil
@@ -1164,6 +1117,14 @@ func webhookTriggerToYAML(webhook *v1.WebhookTrigger) (yaml.MapSlice, error) {
 		doc = append(doc, yaml.MapItem{Key: "verify", Value: written})
 	}
 
+	if when := webhook.GetWhen(); when != nil {
+		written, err := exprValueToYAML(when)
+		if err != nil {
+			return nil, fmt.Errorf("triggers webhook %q when: %w", webhook.GetName(), err)
+		}
+		doc = append(doc, yaml.MapItem{Key: "when", Value: written})
+	}
+
 	if key := webhook.GetIdempotencyKey(); key != nil {
 		written, err := exprValueToYAML(key)
 		if err != nil {
@@ -1208,6 +1169,10 @@ func webhookTriggerToYAML(webhook *v1.WebhookTrigger) (yaml.MapSlice, error) {
 			written = append(written, yaml.MapItem{Key: "with", Value: payload})
 		}
 		doc = append(doc, yaml.MapItem{Key: "signal", Value: written})
+	}
+
+	if within := webhook.GetRespondWithin(); within != nil {
+		doc = append(doc, yaml.MapItem{Key: "respond_within", Value: durationToYAML(within)})
 	}
 
 	return doc, nil
@@ -1441,7 +1406,13 @@ func validateManualTrigger(wf *v1.Workflow) Diagnostics {
 	}
 
 	if err := v1.CheckManualTrigger(manual); err != nil {
-		return Diagnostics{{Field: "triggers.manual", Message: err.Error()}}
+		field := "triggers.manual"
+		if manual.GetAllow() != "" && v1.CheckManualAllowExpr(manual.GetAllow()) != nil {
+			// The predicate itself is what is wrong, so point at it.
+			field = fieldPath(field, "allow")
+		}
+
+		return Diagnostics{{Field: field, Message: err.Error()}}
 	}
 
 	if manual.GetDenied() && len(wf.GetTriggers().GetWebhooks()) == 0 && wf.GetTriggers().GetSchedule() == nil {
@@ -1524,6 +1495,16 @@ func validateWebhookTriggers(wf *v1.Workflow) Diagnostics {
 		} else {
 			ds = append(ds, validateTriggerExpr(
 				fieldPath(at, "idempotency_key"), name, "idempotency_key", webhook.GetIdempotencyKey())...)
+		}
+
+		if err := v1.CheckWebhookWhen(name, webhook.GetWhen()); err != nil {
+			ds = append(ds, Diagnostic{Field: fieldPath(at, "when"), Message: err.Error()})
+		} else if webhook.GetWhen() != nil {
+			ds = append(ds, validateTriggerExpr(fieldPath(at, "when"), name, "when", webhook.GetWhen())...)
+		}
+
+		if err := v1.CheckWebhookRespondWithin(wf, webhook); err != nil {
+			ds = append(ds, Diagnostic{Field: fieldPath(at, "respond_within"), Message: err.Error()})
 		}
 
 		ds = append(ds, validateWebhookSignal(wf, at, webhook)...)

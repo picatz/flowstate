@@ -310,6 +310,13 @@ func CheckScriptFor(lines []string, steps []string, workflow *v1.Workflow) (prob
 		verbColumn := columnOf(line, leadingSpace(line))
 
 		command, ok := resolve(verb)
+		if why, refused := refuse(verb, frontPrompt); refused {
+			// A script is the prompt's command stream, so a driver-only verb in
+			// one is refused with the sentence the prompt would answer it with.
+			report(number, verbColumn, "%s", why)
+
+			continue
+		}
 		if !ok {
 			if suggestion, found := nearest.Name(verb, spellings()); found {
 				report(number, verbColumn, "unknown command %q: did you mean %q?", verb, suggestion)
@@ -550,7 +557,7 @@ func columnOf(line string, offset int) int {
 // drift it exists to prevent.
 func spellings() []string {
 	var names []string
-	for _, c := range commands {
+	for _, c := range commandsOn(frontPrompt) {
 		names = append(names, c.verb)
 		names = append(names, c.aliases...)
 	}
@@ -565,7 +572,7 @@ func spellings() []string {
 // twenty-odd words half of which are one letter is a list somebody skims past.
 func verbList() string {
 	names := make([]string, 0, len(commands))
-	for _, c := range commands {
+	for _, c := range commandsOn(frontPrompt) {
 		names = append(names, c.verb)
 	}
 

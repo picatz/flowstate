@@ -24,15 +24,12 @@ steps:
       timeout: 24h
 signals:
   deploy-approved:
-    allow:
-      - claims:
-          team: release-managers
+    allow: ${sender.identity.claims.team == "release-managers"}
 debug:
-  allow:
-    - subject: "https://issuer.example.com#sre-1@example.com"
-    - claims:
-        team: sre
-  distinct_from_starter: true
+  allow: >-
+    ${(sender.identity.principal == "https://issuer.example.com#sre-1@example.com" ||
+    sender.identity.claims.team == "sre") &&
+    sender.identity.principal != run.identity.principal}
 `
 
 // TestParsingADebugStanza pins what the stanza compiles to, and that it lands
@@ -45,23 +42,18 @@ func TestParsingADebugStanza(t *testing.T) {
 
 	policy := workflow.GetDebug()
 	require.NotNil(t, policy, "the `debug:` stanza did not compile to anything")
-	require.Len(t, policy.GetAllow(), 2)
-
-	assert.Equal(t, "https://issuer.example.com#sre-1@example.com", policy.GetAllow()[0].GetSubject())
-	assert.Equal(t, map[string]string{"team": "sre"}, policy.GetAllow()[1].GetClaims())
-	assert.True(t, policy.GetDistinctFromStarter(),
+	assert.Contains(t, policy.GetAllow(), "https://issuer.example.com#sre-1@example.com")
+	assert.Contains(t, policy.GetAllow(), `sender.identity.claims.team == "sre"`)
+	assert.Contains(t, policy.GetAllow(), "sender.identity.principal != run.identity.principal",
 		"separation of duties is expressible for debugging exactly as it is for signals")
 
 	// The two stanzas are separate answers: who may approve is not who may
 	// debug, and the file says both.
 	require.NotNil(t, workflow.GetSignals()["deploy-approved"])
-	assert.NotEqual(t,
-		workflow.GetSignals()["deploy-approved"].GetAllow()[0].GetClaims(),
-		policy.GetAllow()[1].GetClaims())
+	assert.NotEqual(t, workflow.GetSignals()["deploy-approved"].GetAllow(), policy.GetAllow())
 
 	for _, path := range []string{
-		"debug", "debug.allow", "debug.allow[0]", "debug.allow[0].subject",
-		"debug.allow[1]", "debug.allow[1].claims",
+		"debug", "debug.allow", "signals.deploy-approved.allow",
 	} {
 		_, ok := positions.At(path)
 		assert.True(t, ok, "no recorded position for %q", path)
@@ -98,14 +90,7 @@ func TestMarshalIsTheInverseForDebug(t *testing.T) {
 
 	original, roundTripped := workflow.GetDebug(), again.GetDebug()
 	require.NotNil(t, roundTripped, "the debug policy vanished across Marshal/Unmarshal")
-	require.Len(t, roundTripped.GetAllow(), len(original.GetAllow()))
-
-	for i, rule := range original.GetAllow() {
-		assert.Equal(t, rule.GetSubject(), roundTripped.GetAllow()[i].GetSubject())
-		assert.Equal(t, rule.GetNamespace(), roundTripped.GetAllow()[i].GetNamespace())
-		assert.Equal(t, rule.GetClaims(), roundTripped.GetAllow()[i].GetClaims())
-	}
-	assert.Equal(t, original.GetDistinctFromStarter(), roundTripped.GetDistinctFromStarter())
+	assert.Equal(t, original.GetAllow(), roundTripped.GetAllow())
 
 	// Byte-identical on a second pass, so `flow fmt` is idempotent for this key
 	// too rather than only reversible.
@@ -114,27 +99,28 @@ func TestMarshalIsTheInverseForDebug(t *testing.T) {
 	assert.Equal(t, string(written), string(twice))
 }
 
-// TestADebugRuleWithNothingSetIsRefused: the shape checks a signal policy gets
-// apply here, reported against `debug:` rather than against a stanza the author
-// did not write.
-func TestADebugRuleWithNothingSetIsRefused(t *testing.T) {
+// TestADebugStanzaStillWritingTheRetiredFormsIsRefusedWithTheWayOut: the old
+// rule list and `distinct_from_starter:` are refused at parse, with a sentence
+// that says to run `flow fix` and names keys, never the values an author wrote.
+func TestADebugStanzaStillWritingTheRetiredFormsIsRefusedWithTheWayOut(t *testing.T) {
 	t.Parallel()
 
-	diagnostics, err := flowfile.ValidateSource([]byte(`edition: v2026.4
-name: wide-open
-steps:
-  - id: work
-    log:
-      message: hello
-debug:
-  allow:
-    - namespace: ""
-`))
-	require.NoError(t, err)
-	require.NotEmpty(t, diagnostics, "a rule that matches every sender was accepted")
+	for name, stanza := range map[string]string{
+		"a rule list":           "debug:\n  allow:\n    - subject: secret-subject@example.com\n",
+		"distinct_from_starter": "debug:\n  allow: ${sender.identity.claims.team == \"secret-team\"}\n  distinct_from_starter: true\n",
+	} {
+		source := "edition: v2026.4\nname: old\nsteps:\n  - id: work\n    log:\n      message: hello\n" + stanza
 
-	assert.Equal(t, "debug.allow[0]", diagnostics[0].Field)
-	assert.Contains(t, diagnostics[0].Message, "matches every sender")
+		_, err := flowfile.Unmarshal([]byte(source))
+		require.Error(t, err, name)
+		assert.Contains(t, err.Error(), "flow fix", name)
+		assert.NotContains(t, err.Error(), "secret-", "%s: a refusal names the key, never the value", name)
+
+		_, err = flowfile.ValidateSource([]byte(source))
+		require.Error(t, err, name)
+		assert.Contains(t, err.Error(), "flow fix", name)
+		assert.Regexp(t, `^\d+:\d+: `, err.Error(), name)
+	}
 }
 
 // TestADebugStanzaWithNoAllowNamesTheClosedDefault: the shared grammar refuses
@@ -151,10 +137,9 @@ steps:
   - id: work
     log:
       message: hello
-debug:
-  distinct_from_starter: true
+debug: {}
 `))
-	require.Error(t, err, "a debug policy with no allow list was accepted")
+	require.Error(t, err, "a debug policy with no allow predicate was accepted")
 
 	assert.Contains(t, err.Error(), "authorizes nobody")
 	assert.Contains(t, err.Error(), "not debuggable at all")
@@ -169,41 +154,14 @@ steps:
     wait_for_signal:
       name: go
 signals:
-  go:
-    distinct_from_starter: true
+  go: {}
 `))
 	require.Error(t, err, "a signal policy with no allow list was accepted")
 	assert.Contains(t, err.Error(), "any authenticated caller in the run's tenant may deliver it")
 }
 
-// TestADebugSubjectMustBeIssuerQualified: a subject is unique only within its
-// issuer, and the rule that says so is the same one `signals:` follows —
-// refused by the compiler, with a line and a column, because sharing the
-// grammar means sharing the diagnostics rather than only the message shape.
-func TestADebugSubjectMustBeIssuerQualified(t *testing.T) {
-	t.Parallel()
-
-	_, err := flowfile.ValidateSource([]byte(`edition: v2026.4
-name: bare-subject
-steps:
-  - id: work
-    log:
-      message: hello
-debug:
-  allow:
-    - subject: sre-1@example.com
-`))
-	require.Error(t, err, "a bare subject was accepted")
-
-	assert.Contains(t, err.Error(), "debug.allow[0].subject",
-		"the fault is reported at the path in the author's own file")
-	assert.Contains(t, err.Error(), "issuer")
-	assert.NotContains(t, err.Error(), "signals",
-		"an author reading a fault about `debug:` is not told about a stanza they did not write")
-}
-
 // TestTheNarrowingCheckAppliesToDebugToo is the security half of sharing the
-// grammar: a rule whose subject comes from the run's own inputs lets whoever
+// grammar: a predicate whose principal comes from the run's own inputs lets whoever
 // started the run name themselves, and a debug policy is exactly where that
 // would matter most.
 func TestTheNarrowingCheckAppliesToDebugToo(t *testing.T) {
@@ -220,22 +178,21 @@ steps:
     log:
       message: hello
 debug:
-  allow:
-    - subject: ${inputs.debugger}
+  allow: ${sender.identity.principal == "https://issuer.example.com#" + inputs.debugger}
 `
 
 	diagnostics, err := flowfile.ValidateSource([]byte(unnarrowed))
 	require.NoError(t, err)
 	require.NotEmpty(t, diagnostics, "a caller could name themselves as the caller allowed to pause their own run")
-	assert.Equal(t, "debug.allow[0].subject", diagnostics[0].Field)
-	assert.Contains(t, diagnostics[0].Message, "narrows")
+	assert.Equal(t, "debug.allow", diagnostics[0].Field)
+	assert.Contains(t, diagnostics[0].Message, "sender.identity.claims")
 
 	// And the same rule accepted once something the run's inputs cannot reach
 	// is beside it, so the diagnostic above is about the narrowing rather than
 	// about expressions being refused here at all.
 	narrowed := strings.Replace(unnarrowed,
-		"    - subject: ${inputs.debugger}\n",
-		"    - subject: ${inputs.debugger}\n      claims:\n        team: sre\n", 1)
+		`"https://issuer.example.com#" + inputs.debugger}`,
+		`"https://issuer.example.com#" + inputs.debugger && sender.identity.claims.team == "sre"}`, 1)
 
 	diagnostics, err = flowfile.ValidateSource([]byte(narrowed))
 	require.NoError(t, err)
@@ -314,9 +271,7 @@ steps:
       message: hello
 signals:
   ` + v1.DebugSignal + `:
-    allow:
-      - claims:
-          team: sre
+    allow: ${sender.identity.claims.team == "sre"}
 `))
 	require.NoError(t, err)
 	require.NotEmpty(t, diagnostics)

@@ -340,13 +340,14 @@ func workflowUsingEveryValuePosition() *Workflow {
 		DeclaredOutputs: []*OutputDeclaration{{Name: "answer", Value: NewExpr("42")}},
 		Concurrency:     &Concurrency{Key: NewExpr("inputs.who")},
 		Signals: map[string]*SignalPolicy{
-			"approval": {Allow: []*SignalPolicyRule{{SubjectFrom: NewExpr("'a#b'")}}},
+			"approval": {Allow: `sender.identity.principal == "a#b"`},
 		},
-		Debug: &SignalPolicy{Allow: []*SignalPolicyRule{{SubjectFrom: NewExpr("'a#b'")}}},
+		Debug: &SignalPolicy{Allow: `sender.identity.principal == "a#b"`},
 		Triggers: &Triggers{
 			Webhooks: []*WebhookTrigger{{
 				Name:           "payments",
 				IdempotencyKey: NewExpr("event.id"),
+				When:           NewExpr("event.body.live"),
 				Arguments:      map[string]*Value{"order": NewExpr("event.body.order")},
 				Verify:         map[string]*Value{"stripe": NewLiteral("secret")},
 

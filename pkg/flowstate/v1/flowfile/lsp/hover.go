@@ -651,9 +651,9 @@ func waitResultDoc(name string) string {
 	case v1.SenderOutput:
 		fmt.Fprintf(&b, "**`%s`** · `map`", v1.SenderOutput)
 		writeSchemaSentence(&b, signalSenderField)
-		fmt.Fprintf(&b, "\n\nRead as `%s.identity.subject`, `%s.identity.issuer`, `%s.accepted_at`, `%s.local`. "+
+		fmt.Fprintf(&b, "\n\nRead as `%s.identity.subject`, `%s.identity.issuer`, `%s.identity.principal`, `%s.accepted_at`, `%s.local`. "+
 			"Never anything the payload claims: a payload is evidence, a sender is identity.",
-			v1.SenderOutput, v1.SenderOutput, v1.SenderOutput, v1.SenderOutput)
+			v1.SenderOutput, v1.SenderOutput, v1.SenderOutput, v1.SenderOutput, v1.SenderOutput)
 	case v1.DeliveriesOutput:
 		fmt.Fprintf(&b, "**`%s`** · `list`", v1.DeliveriesOutput)
 		fmt.Fprintf(&b, "\n\nEvery delivery this drain took, oldest first, each a `{%s, %s}` map shaped exactly "+

@@ -53,6 +53,7 @@ contracts and do not advertise a schema-owned result message.
 | `flowstate_run_local` | locally | — | — |
 | `flowstate_test` | locally | — | — |
 | `flowstate_debug` | locally | — | — |
+| `flowstate_check_policy` | locally | — | — |
 | `flowstate_debug_session_start` | locally | — | — |
 | `flowstate_debug_session_attach` | via a server | — | — |
 | `flowstate_debug_session_observe` | locally | — | — |
@@ -63,7 +64,7 @@ contracts and do not advertise a schema-owned result message.
 
 Validate checks Flowfiles and returns their diagnostics, executing nothing.
 
-The same checks and the same `ValidationReport` as `flow validate`: one entry per file, clean files included. Send 1 to 64 files; each file's `source` is its bytes, at most 1 MiB, base64-encoded in JSON. It reads, writes and starts nothing, so it is safe to call repeatedly while editing.
+The same checks and the same `ValidationReport` as `flow validate`: one entry per file, clean files included. Send 1 to 64 files; each file's `source` is its text, plain YAML, at most 1 MiB. It reads, writes and starts nothing, so it is safe to call repeatedly while editing.
 
 Answers locally, in this process. No server and no Temporal needed.
 
@@ -71,7 +72,7 @@ Answers locally, in this process. No server and no Temporal needed.
 
 Compile turns one Flowfile into the workflow specification that `Run` takes, executing nothing.
 
-`file.source` is the Flowfile's bytes, at most 1 MiB, base64-encoded in JSON. A file that does not compile is not an RPC error: the answer carries its diagnostics in `report` and no `workflow`. On success, pass `workflow` unchanged to `Run` or `CreateSchedule`. The same compiler as the CLI.
+`file.source` is the Flowfile's text, plain YAML, at most 1 MiB. A file that does not compile is not an RPC error: the answer carries its diagnostics in `report` and no `workflow`. On success, pass `workflow` unchanged to `Run` or `CreateSchedule`. The same compiler as the CLI.
 
 Answers locally, in this process. No server and no Temporal needed.
 
@@ -95,7 +96,7 @@ It answers with the ids to follow the run by and does not wait for the run to fi
 
 Get reports one run: its status, its timing, where it has reached, its outputs once it has finished, who started it, and every approval gate it is parked on right now.
 
-For each open gate the answer carries the question the gate asks, the signal name that releases it, whether a deadline lapses it, and whether the workflow declares a policy over who may answer. That set is what an approval surface has to render, and it is what a `distinct_from_starter` policy is compared against.
+For each open gate the answer carries the question the gate asks, the signal name that releases it, whether a deadline lapses it, and whether the workflow declares a policy over who may answer. That set is what an approval surface has to render, and it is what an `allow:` predicate over `run.identity` is compared against.
 
 To answer a gate, call `Signal` with the gate's signal name and a payload carrying the decision. Address the workflow rather than a run: a run id pins delivery to one attempt, and a workload that has been continued as new since the gate opened will refuse it.
 
@@ -127,7 +128,7 @@ GetGate reads one open approval gate for the caller who would answer it.
 
 `Get` reads a whole run and is bound to `workload.read`, which an approver need not hold: a person granted only `workload.signal` can answer a gate with `Signal` but could not see the question it asks. GetGate is the read scoped to answering. It is bound to `workload.signal`, returns only the gate (no step outputs, inputs or carried state), and says whether this caller's own `signals:` policy would admit a `Signal` now, without delivering one.
 
-A run that is not running, or holds no open gate by that name, answers NOT_FOUND, the same answer a run in another tenant gets. A run holding more gates than one answer lists, whose list does not include the named gate, answers FAILED_PRECONDITION: the gate may be open, and this read cannot say.
+A run that is not running, or holds no open gate by that name, answers NOT_FOUND, the same answer a run in another tenant gets. The gate is looked up by name inside the run, so it is found however many gates the run holds (up to `v1.MaxHeldWaits`, in `pkg/flowstate/v1/waits.go`), not only among the `v1.MaxPendingWaits` that `Get` lists. A run that holds more gates than it retains, or one that cannot answer the lookup, and whose answer does not include the named gate, answers FAILED_PRECONDITION: the gate may be open, and this read cannot say.
 
 ## `flowstate_signal_with_start`
 
@@ -267,7 +268,7 @@ What it does not prove: that a real task behaves the way a stub's `returns:` or 
 
 `tests` is a `*.test.yaml` document: `tests:` names one or more cases, each with an optional `inputs:`, `stubs:`, `signals:`, `starter:`, and an `expect:` the run must satisfy: `expect.outputs` compares the workflow's declared `outputs:`, `expect.failed`/`expect.error_contains` assert the run failing outright, `expect.compensated` the undo log, and `expect.ran`/`expect.skipped` step presence. A case's own `workflow:` field is accepted, for compatibility with a file written to disk, but is never consulted: every case here runs against the `workflow` argument, not a sibling file.
 
-To exercise a workflow's `signals:` policy: a scripted signal's `sender:` names who the delivery stands in for and `starter:` names who the run started as, each carrying `subject:`/`issuer:` together, `namespace:` and `claims:`, and both checked by the same policy function the server calls, so `distinct_from_starter:` refuses a sender who is the run's own starter here exactly as production would. Neither is attested: a delivery stands in for its sender, which is why a gate's own `sender.local` output reads true, and `starter:` never reaches `run.identity`.
+To exercise a workflow's `signals:` policy: a scripted signal's `sender:` names who the delivery stands in for and `starter:` names who the run started as, each carrying `subject:`/`issuer:` together, `namespace:` and `claims:`, and both checked by the same policy function the server calls, so an `allow:` predicate comparing with `run.identity` refuses a sender who is the run's own starter here exactly as production would. Neither is attested: a delivery stands in for its sender, which is why a gate's own `sender.local` output reads true, and `starter:` never reaches `run.identity`.
 
 Answers with the same v1.TestReport `flow test -o json` writes: one verdict per case, and for a case that did not pass, its unmet expectations as positioned diagnostics. A case that never reached a verdict at all (the workflow failed to compile, a stub named a task with no matching invocation, or the run failed in a way the case did not declare with `expect.failed`) reports why in `error` instead of `failures`. `refused` is set instead of any case running at all when the submitted `tests` document itself does not parse.
 
@@ -285,6 +286,16 @@ A case that fails is held open once more after the verdict, its failures printed
 
 Runs on stubs, like flowstate_test: no egress, no secret resolved, a virtual clock. Debugging a real, unstubbed local run is not this tool.
 
+## `flowstate_check_policy`
+
+Ask whether an identity would be admitted by a Flowfile's authorization policy, executing no step, running no workflow and contacting no server: the same static check as `flow signals check`. Use it after writing a `signals:`, `debug:` or `triggers.manual` policy, to prove an `allow:` predicate admits who it should and refuses who it should not, including the requester approving their own request.
+
+`gate` picks which policy is asked: `signal` (who may answer a wait_for_signal gate, `signals:`; name one with `signal`, or leave it out to check every declared signal), `debug` (who may hold a debug lease, `debug:`), or `manual` (who may start the workflow by hand, `triggers.manual`). `sender` is the identity attempting the act; leave it out for an unauthenticated caller, which no `allow:` rule a real deployment writes admits. `starter` is who started the run, which a predicate reads as `run.identity`; leave it out and the starter is unknown, which refuses any predicate that reads `run.identity` (the fail-closed reading), and `{}` says the run was started by nobody authenticated. `inputs` are bound against the source's `inputs:` as a start binds them.
+
+Each gate is decided by the function the engine decides it with, so there is no second evaluator to disagree. Answers with {"gates": [...], "results": [{"decisions": [{"gate", "outcome": "admitted"|"refused", "reason", "note"}]}], "matches": true}. A refusal's `reason` is the engine's fixed sentence, which never quotes a claim, a subject or an input; a `sensitive:` input is never echoed. A signal no `signals:` policy governs is admitted for any sender, and `note` says so. A refusal is an answer, not a tool error: the call fails only when the question could not be put (a source that does not compile, a malformed identity, inputs the source does not accept), and then no verdict is given.
+
+What it does not model: state only a run has (a retry, a signal already consumed). `triggers.manual` is decided over the caller and the inputs alone, as the server decides it.
+
 ## `flowstate_debug_session_start`
 
 Start a retained debug session over one test case of a Flowfile — the same stubbed, egress-free, virtual-clock run flowstate_test uses — held at its first step. Drive it with flowstate_debug_session_command, read it with flowstate_debug_session_observe, and finish with flowstate_debug_session_end. The session is leased: each call renews it, and one idle for 10 minutes is ended. Answers with the session id, its typed snapshot (state, stop reason, occurrence address, frames, capabilities, revision), and the transcript so far.
@@ -299,7 +310,7 @@ Read a retained session: its typed snapshot and the transcript since the last ob
 
 ## `flowstate_debug_session_command`
 
-Run one debugger command in a retained session and answer with its typed result. Commands: step, next, finish, continue, until <step>, pause, break <step> [hit <n>] [if <expr>], log <step> <msg>, catch none|uncaught|all, delete <step>, clear, breakpoints, inspect <expr>, expand <expr>, scope, backtrace, detach, status. A stubbed session can also step back: back, and reverse-continue (rc) to the previous breakpoint. Movements answer with the next stop. Set expected_revision to the snapshot you acted on, so a command meant for a stop the run has left is refused as stale: a movement or an inspection is judged by the run in the same step as the command; any other command is checked just before it is sent.
+Run one debugger command in a retained session and answer with its typed result. Commands: step, next, finish, continue, until <step>, back, reverse-continue, pause, break <step> [hit <n>] [if <expr>], log <step> <message>, catch none|uncaught|all, delete <step>|log <step>, clear, breakpoints, inspect <expr>, expand <expr>, scope, status, backtrace, detach. back and reverse-continue (rc) need a stubbed session that can step back; any other says so and does not move. Movements answer with the next stop. Set expected_revision to the snapshot you acted on, so a command meant for a stop the run has left is refused as stale: a movement or an inspection is judged by the run in the same step as the command; any other command is checked just before it is sent.
 
 ## `flowstate_debug_session_end`
 

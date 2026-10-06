@@ -542,6 +542,9 @@ func runWorkflow(ctx workflow.Context, dc converter.DataConverter, st *v1.RunSta
 	if err := setProgressQuery(ctx, position, parked); err != nil {
 		return nil, fmt.Errorf("register progress query: %w", err)
 	}
+	if err := setGateQuery(ctx, parked); err != nil {
+		return nil, fmt.Errorf("register gate query: %w", err)
+	}
 	if err := setStateQuery(ctx, position); err != nil {
 		return nil, fmt.Errorf("register state query: %w", err)
 	}

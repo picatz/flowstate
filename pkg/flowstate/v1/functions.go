@@ -38,14 +38,12 @@ func (e *FunctionError) Unwrap() error { return e.Err }
 // It is the compile-time half of [FunctionDeclaration] and nothing in it exists at
 // run time: [FunctionSet.Expand] replaces each call with the callee's body, binds
 // the arguments once through `cel.bind`, and leaves an expression of ordinary CEL.
-// It is the same expander an imported [PureHelper] goes through
-// ([ExpandPureHelpers]), reached from a different declaration, so there is one
-// way to inline a computation and one place its bounds are stated.
+// There is one way to inline a computation and one place its bounds are stated.
 //
 // Immutable once built and safe for concurrent use.
 type FunctionSet struct {
 	profile      string
-	checked      map[string]checkedPureHelper
+	checked      map[string]checkedFunction
 	declarations []cel.EnvOption
 }
 
@@ -66,7 +64,7 @@ func NewFunctionSet(profile string, declared []*FunctionDeclaration) (*FunctionS
 	if profile == "" {
 		profile = CurrentProfile
 	}
-	set := &FunctionSet{profile: profile, checked: map[string]checkedPureHelper{}}
+	set := &FunctionSet{profile: profile, checked: map[string]checkedFunction{}}
 	if len(declared) == 0 {
 		return set, nil
 	}
@@ -74,7 +72,7 @@ func NewFunctionSet(profile string, declared []*FunctionDeclaration) (*FunctionS
 		return set, []*FunctionError{{Function: "", Err: fmt.Errorf("a workflow declares at most %d functions, this one declares %d", MaxFunctions, len(declared))}}
 	}
 
-	checker, err := newHelperChecker(profile, true)
+	checker, err := newHelperChecker(profile)
 	if err != nil {
 		return set, []*FunctionError{{Err: err}}
 	}
@@ -236,7 +234,7 @@ func (s *FunctionSet) Expand(value *Value) (int, error) {
 	if !s.Calls(value.GetExpr()) {
 		return 0, nil
 	}
-	if err := expandHelpersInValue(s.profile, value, s.checked, s.declarations, true); err != nil {
+	if err := expandHelpersInValue(s.profile, value, s.checked, s.declarations); err != nil {
 		return 0, err
 	}
 	nodes := 0

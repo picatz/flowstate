@@ -94,8 +94,18 @@ var allowedSelfImports = map[string][]string{
 		"entity.go",
 		"eval_task_http_run.go",
 		"taskruntime.go",
+		// webhookverify.go names [auth.Verifier] and [auth.Principal] so a
+		// `verify: {jwt: ...}` delivery is checked by the one function a
+		// receiver and `flow test` share. The edge is to an interface and a
+		// value type this package already imports elsewhere, and nothing new
+		// reaches the network from here.
+		"webhookverify.go",
 	},
+	// celrule is the one place a policy predicate is compiled, bounded and
+	// required to be a bool; signalpredicate.go is a second policy surface
+	// taking the edge taskpolicy.go already takes, over its own environment.
 	"celrule": {
+		"signalpredicate.go",
 		"taskpolicy.go",
 	},
 	// execpolicy is the built-in exec task's policy and runner, the same kind of

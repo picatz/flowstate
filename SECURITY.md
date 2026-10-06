@@ -30,8 +30,8 @@ and therefore most wants to hear about breaking:
 - A secret's material appearing anywhere in workflow history, logs, errors,
   memos, or telemetry, in any formatting shape.
 - An unauthenticated or under-authorized caller reaching an RPC, a signal
-  delivery satisfying a `signals:` policy it should not, or
-  `distinct_from_starter` being satisfiable by the starter.
+  delivery satisfying a `signals:` policy it should not, or the starter satisfying
+  a policy's `run.identity` distinctness clause.
 - Egress policy bypass: a task reaching a destination the deployment's policy
   denies, including via redirects, DNS tricks, or a plugin.
 - A parser, evaluator, or reader made to consume unbounded memory, time, or

@@ -78,7 +78,7 @@ func TestAnIdenticalTrustedRegistrationIsNotAConflict(t *testing.T) {
 	require.Error(t, err, "the trusted narrowed policy stopped binding")
 	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err),
 		"an identical re-registration was treated as a conflict: %v", err)
-	assert.Contains(t, err.Error(), "oncall@example.com")
+	assert.Contains(t, err.Error(), "`manual: allow` predicate", "the refusal names the rule that refused")
 }
 
 // TestAConflictIsScopedToItsOwnTenant is the other negative direction. The key
@@ -107,7 +107,7 @@ func TestAConflictIsScopedToItsOwnTenant(t *testing.T) {
 	require.Error(t, err)
 	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err),
 		"another tenant's conflicting registration refused this tenant's workflow: %v", err)
-	assert.Contains(t, err.Error(), "oncall@example.com")
+	assert.Contains(t, err.Error(), "`manual: allow` predicate", "the refusal names the rule that refused")
 }
 
 // TestAnInvalidTrustedRegistrationIsNotSubstituted is the second half of the

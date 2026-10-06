@@ -55,10 +55,7 @@ func quorumGate(timeout time.Duration) *v1.Workflow {
 	return &v1.Workflow{
 		Name: "policed-quorum",
 		Signals: map[string]*v1.SignalPolicy{
-			"release-approved": {Allow: []*v1.SignalPolicyRule{
-				{Subject: "https://idp.example#alice"},
-				{Subject: "https://idp.example#bob"},
-			}},
+			"release-approved": {Allow: `(sender.identity.principal == "https://idp.example#alice") || (sender.identity.principal == "https://idp.example#bob")`},
 		},
 		Steps: []*v1.Node{{
 			Id: "gate",
@@ -89,7 +86,7 @@ func TestAVetoFromAnUnadmittedSenderNeverReachesAQuorumLocally(t *testing.T) {
 	t.Parallel()
 
 	wf := quorumGate(time.Minute)
-	signals := v1.NewPolicedLocalSignals(wf.GetSignals(), &v1.WorkloadIdentity{}, true)
+	signals := v1.NewPolicedLocalSignals(wf.GetSignals(), &v1.WorkloadIdentity{}, true, nil)
 
 	sender := func(subject string) *v1.SignalSender {
 		return &v1.SignalSender{Identity: &v1.WorkloadIdentity{Subject: subject, Issuer: "https://idp.example"}}

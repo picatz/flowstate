@@ -11,11 +11,11 @@
 # hand start, and a reader looking for the lock does not have to know it can
 # also be spelled as a mapping with one key.
 #
-# # Why a workload would want this rather than a narrow allow-list
+# # Why a workload would want this rather than a narrow `allow:` predicate
 #
 # A vendor's dispute resolution is the case: their webhook is the *only*
 # honest way to know a chargeback was decided, because the decision itself
-# lives on their side. Narrowing `allowed_principals:` to a short list of
+# lives on their side. Narrowing `allow:` to a short list of
 # trusted people still leaves every one of them able to type an outcome by
 # hand — whatever they believe happened, the vendor's own system may
 # disagree, and this workload's whole job is to be the side that never

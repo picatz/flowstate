@@ -155,9 +155,9 @@ $ flow watch <workflow-id>
 ```
 
 The server evaluates `signals.deploy-approved.allow` against the authenticated
-sender before Temporal receives the signal. The fixed `team: release-managers`
+sender before Temporal receives the signal. The fixed `team == "release-managers"`
 claim is the grant; `expected_approver` only narrows that grant for this run. The
-`distinct_from_starter` check prevents self-approval. The payload says what the
+`sender.identity.principal != run.identity.principal` clause prevents self-approval. The payload says what the
 approver decided; it does not say who the approver is. Audit output reads the
 server-attested sender instead.
 

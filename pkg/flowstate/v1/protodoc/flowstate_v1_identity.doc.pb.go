@@ -51,10 +51,10 @@ func init() {
 				" that says something other than what was authorized.\n" +
 				"\n" +
 				" 32 pairs is ten times the largest set anything in this repository carries\n" +
-				" and twice `SignalPolicyRule.claims`'s bound; the key length is that rule's\n" +
-				" own 128, since both name claims out of the same tokens. Values get 1024\n" +
-				" rather than that rule's 256 because a carried value is data and not a\n" +
-				" match pattern — the longest real one measured here is a 63-byte GitHub\n" +
+				" and twice the sixteen claims a signal policy once compared; the key length\n" +
+				" is that comparison's own 128, since both name claims out of the same\n" +
+				" tokens. Values get 1024 rather than 256 because a carried value is data and\n" +
+				" not a match pattern — the longest real one measured here is a 63-byte GitHub\n" +
 				" Actions `job_workflow_ref`.\n" +
 				"\n" +
 				" `max_bytes` and not `max_len`, deliberately, and this is the whole reason\n" +
@@ -115,6 +115,12 @@ func init() {
 				" one.\n",
 		},
 		{
+			Name: "flowstate.v1.WorkloadIdentity.principal_kind",
+			Leading: " PrincipalKind is what sort of party the subject is, as the operator's trust\n" +
+				" policy assigned it when it admitted the caller. UNSPECIFIED when the policy\n" +
+				" assigned none. Identity, not a credential, so it is safe in durable history.\n",
+		},
+		{
 			Name: "flowstate.v1.WorkloadIdentityMode",
 			Leading: " WorkloadIdentityMode says whether the host executing a workload established\n" +
 				" this call as production or as a rehearsal.\n" +
@@ -139,6 +145,34 @@ func init() {
 			Name: "flowstate.v1.WORKLOAD_IDENTITY_MODE_REHEARSAL",
 			Leading: " REHEARSAL means the directly connected host established this as a local,\n" +
 				" unattested rehearsal.\n",
+		},
+		{
+			Name: "flowstate.v1.PrincipalKind",
+			Leading: " PrincipalKind says what sort of party an authenticated caller is.\n" +
+				"\n" +
+				" It is assigned by the operator's trust policy entry that admitted the caller\n" +
+				" (`principal_kind:`), never read from a token, so a caller cannot choose to be\n" +
+				" a person. UNSPECIFIED is the zero value and means the policy said nothing:\n" +
+				" authorization must not read it as WORKLOAD, and a predicate that cares\n" +
+				" compares against a named kind.\n",
+		},
+		{
+			Name: "flowstate.v1.PRINCIPAL_KIND_UNSPECIFIED",
+			Leading: " UNSPECIFIED means the admitting policy entry assigned no kind, or the\n" +
+				" identity was absent, or the receiver does not understand the value.\n",
+		},
+		{
+			Name:    "flowstate.v1.PRINCIPAL_KIND_HUMAN",
+			Leading: " HUMAN is a person, authenticated through their own identity provider.\n",
+		},
+		{
+			Name:    "flowstate.v1.PRINCIPAL_KIND_WORKLOAD",
+			Leading: " WORKLOAD is a machine identity: a CI job, a pod, a service.\n",
+		},
+		{
+			Name: "flowstate.v1.PRINCIPAL_KIND_AGENT",
+			Leading: " AGENT is an automated actor that acts for a person or a system, such as an\n" +
+				" MCP client.\n",
 		},
 	})
 }

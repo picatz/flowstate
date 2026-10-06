@@ -26,6 +26,21 @@ import (
 // that its payload becomes the step's outputs, and that a timeout is an output
 // rather than an error.
 
+// ErrSignalDenied is what [LocalSignals.DeliverFrom] reports, matched by
+// [errors.Is], when the signal's declared `signals:` policy refused the
+// sender. It separates that refusal from the other two a delivery can meet,
+// an over-deep payload and a full queue, which say nothing about who may act.
+// The message is the policy's own and unchanged.
+var ErrSignalDenied = errors.New("flowstate: signal denied by its policy")
+
+// signalDenied carries a policy's refusal as its own text and answers
+// [ErrSignalDenied].
+type signalDenied struct{ err error }
+
+func (e *signalDenied) Error() string        { return e.err.Error() }
+func (e *signalDenied) Unwrap() error        { return e.err }
+func (e *signalDenied) Is(target error) bool { return target == ErrSignalDenied }
+
 // ErrNoSignalWaiter reports that a workload waits for a signal and nothing was
 // configured to deliver one.
 //
@@ -33,6 +48,31 @@ import (
 // no explanation is the worst of the available behaviors: the author cannot tell
 // it from a bug in their workload.
 var ErrNoSignalWaiter = errors.New("flowstate: this workload waits for a signal, and nothing can deliver one to it")
+
+// ErrRunParked reports that a run reached a wait for a signal with no `timeout:`
+// and nothing will ever answer it: the run is parked, and would stay so.
+//
+// Returned only by a [LocalSignals] told to ([LocalSignals.ParkUnboundedWaits]).
+// A durable run parks there for as long as it takes somebody to act, and a
+// rehearsal that scripted no signal at all has nobody who will, so ending the
+// run on a named sentinel is how `flow test` learns what a waiting receiver
+// would find at its bound — a run still going — where blocking would have
+// spent the case's wall-clock limit on an answer already known.
+var ErrRunParked = errors.New("flowstate: this run is parked at a wait for a signal that nothing will deliver")
+
+// parkedAtWait reports ErrRunParked for an unbounded wait on a waiter that was
+// told to park such waits, and nil for every other waiter.
+func parkedAtWait(waiter SignalWaiter, name string) error {
+	if parker, ok := waiter.(interface{ parksUnboundedWaits() bool }); ok && parker.parksUnboundedWaits() {
+		if noter, ok := waiter.(interface{ noteParked() }); ok {
+			noter.noteParked()
+		}
+
+		return fmt.Errorf("%w: it waits for %q", ErrRunParked, name)
+	}
+
+	return nil
+}
 
 // SignalWaiter delivers signals to a locally running workload.
 //
@@ -106,8 +146,8 @@ func LocalSignalSender() *SignalSender {
 // accepted this" for a workflow author. A rehearsal asserts who an approver
 // would have been; it never claims anybody attested it.
 //
-// identity is what a `signals:` rule is matched against - the `issuer`,
-// `subject`, `namespace` and `claims` fields [signalPolicyRuleMatches] reads.
+// identity is what a `signals:` predicate reads as `sender.identity` - the
+// `issuer`, `subject`, `namespace` and `claims` fields [SignalPolicyCheck] binds.
 // Nothing here is minted, signed, or carried anywhere: the value lives in one
 // process, for one run, and is discarded with it.
 func RehearsalSignalSender(identity *WorkloadIdentity) *SignalSender {
@@ -174,6 +214,12 @@ type LocalSignals struct {
 	mu     sync.Mutex
 	queues map[string]chan *SignalDelivery
 
+	// parkUnbounded makes a wait with no `timeout:` end the run with
+	// [ErrRunParked] instead of blocking. See [LocalSignals.ParkUnboundedWaits].
+	parkUnbounded bool
+	// parked records that a wait ended in [ErrRunParked]. See [LocalSignals.Parked].
+	parked bool
+
 	// waits holds, per signal name, the waits currently blocked on it, each
 	// carrying how to withdraw the deadline it is waiting under (nil for an
 	// untimed one). Announced before a wait blocks and removed after it
@@ -189,19 +235,20 @@ type LocalSignals struct {
 	waits map[string][]*signalWait
 
 	// policies is nil for an unpoliced [LocalSignals] — every delivery
-	// succeeds, the zero case [SignalPolicyAllows]'s own doc comment
-	// describes. Set through [NewPolicedLocalSignals], normally to a
-	// workflow's own `signals:` already resolved against the run's inputs by
-	// [ResolveSignalPolicySubjects] — the same resolution submit performs,
-	// so a `subject: ${inputs.x}` rule is checked against the same literal
-	// production would check it against, not re-evaluated here.
+	// succeeds, the zero case a signal name with no policy has. Set through
+	// [NewPolicedLocalSignals], normally to a workflow's own `signals:`: a
+	// predicate is evaluated on every delivery, here as on the server.
 	policies map[string]*SignalPolicy
 
 	// starter/hasStarter are this local run's own answer to "who started it,"
-	// for [SignalPolicyCheck]'s distinct_from_starter comparison only — see
+	// for a predicate that reads `run.identity` ([SignalPolicyCheck]) — see
 	// [NewPolicedLocalSignals].
 	starter    *WorkloadIdentity
 	hasStarter bool
+
+	// inputs is the run's bound arguments, read only by a policy's
+	// `allow: ${...}` predicate ([SignalPolicyCheck]).
+	inputs map[string]*Value
 
 	// consumed is the webhook delivery ids a wait in this run has already
 	// taken, this driver's copy of [RunState.consumed_delivery_ids] — a field
@@ -240,7 +287,7 @@ type LocalSignals struct {
 // every delivery succeeds, unconditionally. The zero value works too.
 //
 // This is correct, not merely permissive, for a workflow that declares no
-// `signals:` policy at all — the zero case [SignalPolicyAllows] documents.
+// `signals:` policy at all — the zero case a signal name with no policy has.
 // A caller delivering to a workflow that *does* declare one and wants local
 // delivery to enforce it wants [NewPolicedLocalSignals] instead.
 func NewLocalSignals() *LocalSignals { return &LocalSignals{} }
@@ -251,29 +298,32 @@ func NewLocalSignals() *LocalSignals { return &LocalSignals{} }
 // step, restoring invariant 3 for a workflow whose `if:` trusts `signals:`
 // for authorization rather than restating it.
 //
-// policies is normally a workflow's own `wf.GetSignals()`, already resolved
-// against the run's bound inputs by [ResolveSignalPolicySubjects] — passing
-// the *declared*, unresolved map here would check a rule's `subject_from`
-// expression as though it had already become a literal, which it has not;
-// that is a caller bug, not a lenient mode, so this constructor does no
-// resolution of its own and trusts the caller to have done it (`flow test`'s
-// runCase and `flow run local`'s withLocalSignals both do, right after
-// binding the run's inputs the same way [RunWithInputs] itself would).
+// policies is normally a workflow's own `wf.GetSignals()`: nothing is
+// resolved at submit, so the declared map is what the server records and what
+// is enforced here (`flow test`'s runCase and `flow run local`'s
+// withLocalSignals pass it, beside the run's bound inputs bound the same way
+// [RunWithInputs] itself would).
 //
 // starter/hasStarter are this local run's own notion of who started it,
-// checked only against a policy that sets `distinct_from_starter`.
+// read only by a predicate that mentions `run.identity`.
 // hasStarter false is refused exactly like a durable run whose memo predates
 // the starter record — never treated as "unconstrained." A caller that
 // affirmatively knows its local run has no starter at all — `flow test`,
 // which has no concept of "who ran this test" to begin with — passes
 // hasStarter true with an empty [WorkloadIdentity]: that is a known fact
 // ("nobody"), not a gap in the record, and it is what makes
-// `distinct_from_starter` satisfiable at all against a scripted, genuinely
+// a comparison with `run.identity` satisfiable at all against a scripted, genuinely
 // attested sender — see flowtest's own runCase for why treating it as
 // "unknown" instead would make the happy path this exists to test
 // unreachable.
-func NewPolicedLocalSignals(policies map[string]*SignalPolicy, starter *WorkloadIdentity, hasStarter bool) *LocalSignals {
-	return &LocalSignals{policies: policies, starter: starter, hasStarter: hasStarter}
+//
+// inputs is the run's bound arguments, which a policy's `allow: ${...}`
+// predicate may read; the server records the same value beside the policy at
+// submit. nil leaves `inputs` unbound, so any predicate that reads it (even
+// `!has(inputs.x)` or `inputs.size() == 0`) errors and denies; a run with
+// bound inputs that happen to be empty passes an empty, non-nil map.
+func NewPolicedLocalSignals(policies map[string]*SignalPolicy, starter *WorkloadIdentity, hasStarter bool, inputs map[string]*Value) *LocalSignals {
+	return &LocalSignals{policies: policies, starter: starter, hasStarter: hasStarter, inputs: inputs}
 }
 
 // willAdmitLocked reports whether some wait is going to be able to take this
@@ -461,8 +511,8 @@ func (s *LocalSignals) DeliverFrom(name string, payload *Node_Outputs, sender *S
 	}
 
 	if policy, declared := s.policies[name]; declared {
-		if err := SignalPolicyCheck(policy, sender.GetIdentity(), s.starter, s.hasStarter); err != nil {
-			return fmt.Errorf("flowstate: signal %q refused: %w", name, err)
+		if err := SignalPolicyCheck(context.Background(), policy, sender.GetIdentity(), s.starter, s.hasStarter, s.inputs); err != nil {
+			return fmt.Errorf("flowstate: signal %q refused: %w", name, &signalDenied{err})
 		}
 	}
 
@@ -558,6 +608,44 @@ type signalPeeker interface {
 type signalWait struct {
 	signals  *LocalSignals
 	withdraw func()
+}
+
+// ParkUnboundedWaits makes a wait with no `timeout:` end the run with
+// [ErrRunParked] rather than block, for a caller that knows nothing will answer
+// it. Call it before the run starts; a bounded wait is unaffected, because its
+// deadline is the clock's to resolve.
+func (s *LocalSignals) ParkUnboundedWaits() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.parkUnbounded = true
+}
+
+// Parked reports whether any wait ended in [ErrRunParked]. The error alone is
+// not the record: a step that tolerates its own failure (`continue_on_error:`)
+// swallows it and the run goes on, while on Temporal the same run would hold at
+// that wait, so a caller judging what a waiting receiver answers reads this.
+func (s *LocalSignals) Parked() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.parked
+}
+
+// noteParked implements the record [parkedAtWait] makes.
+func (s *LocalSignals) noteParked() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.parked = true
+}
+
+// parksUnboundedWaits implements the check [parkedAtWait] makes.
+func (s *LocalSignals) parksUnboundedWaits() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.parkUnbounded
 }
 
 // enterSignalWait implements [signalPeeker].
@@ -904,6 +992,10 @@ func waitForSignalLocally(
 		observeWaitStarted(ctx, node.GetId(), name, 0, false)
 		defer announceLocalWait(ctx, node, name, nil, prompt, promptCut)()
 
+		if err := parkedAtWait(waiter, name); err != nil {
+			return nil, err
+		}
+
 		rejoin := LeaveClockWhile(ctx)
 		defer rejoin()
 
@@ -1115,6 +1207,10 @@ func waitForSignalsLocally(
 
 		observeWaitStarted(ctx, node.GetId(), name, 0, false)
 		defer announceLocalWait(ctx, node, name, nil, prompt, promptCut)()
+
+		if err := parkedAtWait(waiter, name); err != nil {
+			return nil, err
+		}
 
 		// Withdrawn from the clock for the whole blocking receive, for
 		// [waitForSignalLocally]'s reason: an unbounded wait is parked on
@@ -1422,6 +1518,10 @@ func receiveForQuorumLocally(
 	bounded bool,
 ) (payload *Node_Outputs, sender *SignalSender, timedOut bool, err error) {
 	if !bounded {
+		if err := parkedAtWait(waiter, name); err != nil {
+			return nil, nil, false, err
+		}
+
 		// Withdrawn from the clock for the whole blocking receive, for
 		// [waitForSignalLocally]'s reason: an unbounded wait is parked on
 		// something the clock does not control.

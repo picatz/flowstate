@@ -539,7 +539,21 @@ func withLocalTaskRuntimeUsing(cmd *cobra.Command, ctx context.Context, workflow
 	// [v1.ProtoWorkloadIdentity] to the wire shape [plugin.NewContextWithIdentity]
 	// carries, per the same rule engine/runtime.go's taskActivities.context
 	// follows for the durable driver.
-	ctx = plugin.NewContextWithIdentity(ctx, v1.ProtoWorkloadIdentity(identity))
+	kind, err := localKindFlag(cmd, "as-kind")
+	if err != nil {
+		return nil, err
+	}
+
+	// The kind is the one thing [auth.WorkloadIdentity] does not carry (it cannot
+	// name the generated enum), so it is set on each rendering from the same flag.
+	rehearsed := func() *v1.WorkloadIdentity {
+		proto := v1.ProtoWorkloadIdentity(identity)
+		proto.PrincipalKind = kind
+
+		return proto
+	}
+
+	ctx = plugin.NewContextWithIdentity(ctx, rehearsed())
 
 	// And onto the run's own scope, from that same one source, for the same
 	// reason and on the same unconditional path (#295). [v1.Scope]'s identity is
@@ -557,7 +571,7 @@ func withLocalTaskRuntimeUsing(cmd *cobra.Command, ctx context.Context, workflow
 	// [auth.NewLocalWorkloadIdentity] set above — the one that puts `_local` in
 	// every minted subject — travels with the [v1.TaskRuntime] identity, not
 	// with this. See [v1.NewContextWithRehearsalIdentity].
-	ctx = v1.NewContextWithRehearsalIdentity(ctx, v1.ProtoWorkloadIdentity(identity))
+	ctx = v1.NewContextWithRehearsalIdentity(ctx, rehearsed())
 
 	// The worker's own spelling, from [workerRuntime] directly above: a plugin
 	// that advertises a secrets backend registered it into this registry when

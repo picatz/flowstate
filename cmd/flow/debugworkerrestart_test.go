@@ -59,9 +59,7 @@ func TestADurableDebugSessionSurvivesItsWorkerBeingKilled(t *testing.T) {
 			logStep("two"),
 			logStep("three"),
 		},
-		Debug: &v1.SignalPolicy{Allow: []*v1.SignalPolicyRule{
-			{Subject: v1.QualifiedSubject(restartDebugIssuer, "sre@example.com")},
-		}},
+		Debug: &v1.SignalPolicy{Allow: `sender.identity.principal == "` + v1.QualifiedSubject(restartDebugIssuer, "sre@example.com") + `"`},
 	}
 	started, err := flowstate.Run(t.Context(), connect.NewRequest(&v1.RunRequest{Workflow: workflow}))
 	require.NoError(t, err)

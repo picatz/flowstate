@@ -156,7 +156,7 @@ func (s *FlowstateServer) CreateSchedule(ctx context.Context, req *connect.Reque
 	// Through the trusted lookup, for the identical reason [FlowstateServer.Run]
 	// and [FlowstateServer.SignalWithStart] do: a schedule is a run somebody
 	// arranged in advance, so the trust boundary that keeps `manual:` and
-	// `manual.allowed_principals` policy rather than caller input has to bind
+	// its `allow:` predicate are policy rather than caller input has to bind
 	// here too. Without it, a caller could take a trusted webhook-only workflow
 	// with `manual: denied`, add a `schedule:` trigger to their own copy, and
 	// have this handler create and later fire *that* copy under the trusted
@@ -255,14 +255,10 @@ func (s *FlowstateServer) CreateSchedule(ctx context.Context, req *connect.Reque
 	// the zero case, reached by a workflow that had in fact declared a
 	// policy. Sharing the one encoding function with [Run] is what makes
 	// that impossible to reintroduce by editing one path and not the other.
-	signalEntry, err := policyMemoEntries(ctx, workflow, inputs)
+	signalEntry, err := policyMemoEntries(workflow, inputs, identity)
 	if err != nil {
-		// Withheld here only where the client cannot redact it, as
-		// [FlowstateServer.prepareCreate] withholds it.
-		err = withheldPolicyRefusal(err, unknownSensitiveInputs(workflow, submitted, req.Msg.GetInputs(), trusted), inputs)
 		// Symmetric with Run's own refusal: an InvalidArgument covers a
-		// caller-supplied input that a rule's subject_from cannot resolve to
-		// a qualified subject; anything else is this handler unable to
+		// caller-supplied input the submission cannot bind; anything else is this handler unable to
 		// encode a specification CheckSignalPolicies and v1.Validate already
 		// accepted, and must not create a schedule whose every firing would
 		// silently enforce nothing.

@@ -6,7 +6,7 @@ import (
 	"strings"
 
 	"github.com/goccy/go-yaml/ast"
-	"github.com/goccy/go-yaml/parser"
+	"github.com/picatz/flowstate/internal/strictyaml"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 )
@@ -351,7 +351,7 @@ func yamlStringScalar(s string) (string, bool) {
 // — a leading `-` is a block sequence entry there and an ordinary character in a
 // document that is only a scalar.
 func readsBackAs(rendered, want string) bool {
-	file, err := parser.ParseBytes([]byte("v: "+rendered+"\n"), 0)
+	file, err := strictyaml.ParseBytes([]byte("v: "+rendered+"\n"), 0)
 	if err != nil || len(file.Docs) != 1 {
 		return false
 	}

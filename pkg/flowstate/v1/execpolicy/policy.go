@@ -33,7 +33,15 @@ const (
 	MaxTimeout = time.Hour
 
 	// MaxOutputBytes is the most a policy may keep of one output stream.
-	MaxOutputBytes = 16 << 20
+	//
+	// A step's standard output and standard error travel together in one task
+	// result, which is measured as ProtoJSON against the bound a durable
+	// history can carry (v1.MaxTaskOutputBytes). Both streams at this ceiling,
+	// made entirely of the bytes JSON spells longest, must still fit, or a
+	// policy would promise output the history cannot hold and the step would
+	// fail when it was fullest. TestExecOutputCeilingFitsTaskOutput holds the
+	// two together.
+	MaxOutputBytes = 128 << 10
 
 	// DefaultRuleCostLimit bounds the CEL evaluation cost of one rule, the same
 	// limit the egress and task-shape rules carry and for the same reason.
@@ -170,10 +178,10 @@ func New(cfg Config) (*Policy, error) {
 	p.timeout = cfg.Timeout
 
 	if cfg.MaxOutputBytes <= 0 {
-		return nil, bad("max_output_bytes is required and must be positive; the output bound cannot be left out of a policy, only chosen (at most 16MiB)")
+		return nil, bad("max_output_bytes is required and must be positive; the output bound cannot be left out of a policy, only chosen (at most 128KiB)")
 	}
 	if cfg.MaxOutputBytes > MaxOutputBytes {
-		return nil, bad("max_output_bytes %d is over the %d-byte ceiling (16MiB)", cfg.MaxOutputBytes, MaxOutputBytes)
+		return nil, bad("max_output_bytes %d is over the %d-byte ceiling (128KiB)", cfg.MaxOutputBytes, MaxOutputBytes)
 	}
 	p.maxOutput = cfg.MaxOutputBytes
 
@@ -622,7 +630,10 @@ func (p *Policy) checkDir(dir string) (string, error) {
 		}
 	}
 
-	return deny("dir %q (resolving to %s) is not under any root the policy configures", dir, resolved)
+	// The resolved path is deliberately not named: it is where a symbolic link
+	// leads, which is the worker's filesystem layout, and a denial is written
+	// into a run's durable history for anyone who can read the run.
+	return deny("dir %q is not under any root the policy configures", dir)
 }
 
 // within reports whether target is root or lies beneath it, comparing path

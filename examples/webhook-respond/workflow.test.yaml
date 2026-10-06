@@ -1,0 +1,67 @@
+# Replaying a delivery against a trigger that declares `respond_within:` rehearses
+# the document the receiver would answer it with. `expect.response:` is judged
+# against the same function the receiver calls (`v1.WebhookResponse`), built from
+# the run this case executes, so what a case pins here is what a caller reads.
+#
+# What `flow test` cannot rehearse is the wait itself. There is no listener and
+# no run that outlives its case, so how long a run takes against the five-second
+# bound is the receiver's alone. The statuses are what a run can be doing when
+# that bound is read: finished, failed, or still going.
+#
+# No `secrets:` here, so the verification outcome is the declared one (valid
+# unless a case says otherwise); examples/webhook-trigger computes it instead.
+edition: v2026.4
+defaults:
+  stubs:
+    - task: log
+      returns: {}
+tests:
+  - name: a finished run answers completed, with its declared outputs
+    workflow: ./workflow.yaml
+    trigger:
+      webhook: checkout
+      payload: ./testdata/checkout.json
+    expect:
+      ran: [charge]
+      response:
+        status: completed
+        # Only the workflow's declared `outputs:` leave. A step's own output
+        # (`steps.charge`) is never part of the answer, and an output marked
+        # `sensitive:` would be withheld here, with no way to ask for it.
+        outputs:
+          order: ord_H1x9
+          total: 4200
+
+  - name: a run that fails answers failed, and a failed run is still a delivered delivery
+    workflow: ./workflow.yaml
+    stubs:
+      - task: log
+        fails:
+          kind: Unavailable
+          message: the ledger is down
+    trigger:
+      webhook: checkout
+      payload: ./testdata/checkout.json
+    expect:
+      failed: true
+      error_contains: the ledger is down
+      response:
+        # The receiver's HTTP status is still 200: 2xx says the delivery landed,
+        # so the provider must not retry it. `status:` carries what happened to
+        # the run, and the document's `error.message` is the failure's sentence
+        # and never a stack.
+        status: failed
+
+  - name: a run waiting on a person answers running, and the caller reads it later
+    workflow: ./workflow.yaml
+    trigger:
+      webhook: checkout
+      payload: ./testdata/checkout-review.json
+    expect:
+      # No `signals:` entry answers `released`, so the run is parked where it
+      # would still be at the bound: a 202 `running` for a delivery that started
+      # it, a 200 `running` for a redelivery that joined it. The run goes on and
+      # `flow get` reads it.
+      ran: [charge]
+      response:
+        status: running

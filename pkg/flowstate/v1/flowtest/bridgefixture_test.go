@@ -22,8 +22,7 @@ edition: v2026.4
 name: bridged
 signals:
   stage-approved:
-    allow:
-      - subject: flowstate://webhook#bridged/slack
+    allow: ${sender.identity.principal == "flowstate://webhook#bridged/slack"}
 triggers:
   - webhook: slack
     verify:

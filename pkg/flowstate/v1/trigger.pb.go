@@ -259,9 +259,9 @@ type ManualTrigger struct {
 	// webhook, lose `flow run` — and nobody discovers an inferred lock until
 	// they need it not to be there.
 	//
-	// Contradicts both fields below, and the compiler refuses the combination
-	// rather than resolving it by precedence: a refusal that also lists who may
-	// start the workload is two sentences that cannot both be true.
+	// Contradicts [allow], and the compiler refuses the combination rather than
+	// resolving it by precedence: a refusal that also says who may start the
+	// workload is two sentences that cannot both be true.
 	Denied bool `protobuf:"varint,1,opt,name=denied,proto3" json:"denied,omitempty"`
 	// RequireReason makes a manual start carry a reason, recorded on the run
 	// (`RunRequest.reason`).
@@ -271,21 +271,29 @@ type ManualTrigger struct {
 	// absent is the failure. A start with no reason is refused while the person
 	// who has one is still present to give it.
 	RequireReason bool `protobuf:"varint,2,opt,name=require_reason,json=requireReason,proto3" json:"require_reason,omitempty"`
-	// AllowedPrincipals restricts a manual start to these issuer-qualified
-	// authenticated identities, each written as "<issuer>#<subject>" and matched
-	// exactly against the caller's stable Principal.ID. Neither half comes from
-	// the request: OIDC and mTLS authentication establish both. The spelling has
-	// exactly one "#" separator; an identity with "#" in either half cannot be
-	// represented ambiguously and is therefore refused by an allowlist.
+	// Allow is one CEL predicate deciding who may start the workload by hand,
+	// written in a Flowfile as `manual: allow: ${...}`.
 	//
-	// Empty means every authenticated caller, which is today's behavior and what
-	// a workflow with no `manual:` block keeps. Non-empty is a closed set: a
-	// qualified principal that is not in it is refused. Bare subjects are invalid,
-	// not global aliases: a subject is unique only within its issuer. Missing,
-	// zero, and insecure anonymous development identities cannot satisfy the set.
-	AllowedPrincipals []string `protobuf:"bytes,3,rep,name=allowed_principals,json=allowedPrincipals,proto3" json:"allowed_principals,omitempty"`
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	// The source is stored without the `${` `}` fence and evaluated by the same
+	// function that decides `signals:` and `debug:` ([SignalPolicy.allow]),
+	// server-side, against the server's own attestation of the caller, over a
+	// closed scope: `sender.identity.{principal,subject,issuer,namespace,claims}`
+	// (the caller) and `inputs` (the arguments being SUBMITTED with this start).
+	// There is no run yet, so `run` is not in scope and a predicate that reads it
+	// is refused when the file compiles.
+	//
+	// Fail closed: a result that is not a bool, an evaluation error, an exceeded
+	// cost or time bound, an expression that does not compile, and a caller with
+	// no authenticated principal all refuse the start; none ever allows. The
+	// refusal names no input or claim value.
+	//
+	// A predicate that reads `inputs` must also read `sender.identity.claims`:
+	// the caller chooses the inputs, and there is no run starter to compare
+	// against, so a predicate over them alone would let the caller admit
+	// themselves. It contradicts [denied].
+	Allow         string `protobuf:"bytes,4,opt,name=allow,proto3" json:"allow,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ManualTrigger) Reset() {
@@ -332,11 +340,11 @@ func (x *ManualTrigger) GetRequireReason() bool {
 	return false
 }
 
-func (x *ManualTrigger) GetAllowedPrincipals() []string {
+func (x *ManualTrigger) GetAllow() string {
 	if x != nil {
-		return x.AllowedPrincipals
+		return x.Allow
 	}
-	return nil
+	return ""
 }
 
 // TriggerContext is how a run was started, as its own steps may read it:
@@ -554,6 +562,12 @@ type WebhookTrigger struct {
 	// material is a reference the receiver resolves rather than a value in a
 	// repository.
 	//
+	// `jwt` is the exception to "a secret reference": its value is the name of an
+	// entry in the deployment's trust policy, and the delivery must carry a bearer
+	// token that entry's issuer vouches for. It authenticates the sender (the
+	// delivery then acts as the token's principal) and covers none of the body.
+	// Every scheme written must verify.
+	//
 	// At least one entry, and the schemes are a closed set
 	// ([v1.WebhookVerificationSchemes]) checked when the file compiles: a scheme
 	// nobody implements is a delivery nobody can verify, which under the rule
@@ -584,7 +598,53 @@ type WebhookTrigger struct {
 	// delivery *is* — one binds a run's `inputs:` as it starts, the other
 	// answers a run that is already parked — and one delivery cannot be both.
 	// See [WebhookTrigger.Signal].
-	Signal        *WebhookTrigger_Signal `protobuf:"bytes,5,opt,name=signal,proto3" json:"signal,omitempty"`
+	Signal *WebhookTrigger_Signal `protobuf:"bytes,5,opt,name=signal,proto3" json:"signal,omitempty"`
+	// When is the admission predicate: a boolean expression over `event` that
+	// decides whether a verified delivery is acted on at all, written
+	// `when: ${...}` in a Flowfile. It is the one thing a trigger could not say
+	// before: no.
+	//
+	// Evaluated at the boundary after verification and before `idempotency_key`,
+	// `arguments`, and (on a bridge) `signal.correlate`, in the same environment
+	// and under the same limits as those, by the same evaluator. It applies to a
+	// start and to a bridge alike, and is deliberately not repeated inside
+	// [Signal]: one trigger has one admission rule, and a second spelling per arm
+	// would be the second mechanism.
+	//
+	// Only a clean `true` admits. `false` declines the delivery: it starts no
+	// run, delivers no signal, records no idempotency key, and is answered `204`
+	// so the provider does not retry it. An evaluation error, a result that is
+	// not a bool, and an exceeded cost or time bound fail closed: the delivery is
+	// refused, with a fixed sentence that echoes nothing from it, and starts
+	// nothing. Absent means every verified delivery is admitted, as before.
+	//
+	// May not read a secret, and must read `event`: a predicate that cannot vary
+	// with the delivery admits all of them or none of them.
+	When *Value `protobuf:"bytes,6,opt,name=when,proto3" json:"when,omitempty"`
+	// RespondWithin is how long the receiver holds a delivery open to answer with
+	// the run's declared outputs, written `respond_within: 5s` in a Flowfile.
+	// Absent means the receiver answers as it always has: with the run's address,
+	// as soon as the run is started or joined.
+	//
+	// Set, the receiver waits for the run it started (or joined) for at most this
+	// long and answers with `status`: `completed` with the run's declared
+	// `outputs:`, `failed` with the failure's sentence, or `running` when the
+	// bound passed first, in which case the run continues and the caller reads it
+	// with `Get`. The HTTP status keeps its meaning (a delivery disposition), so a
+	// 2xx still tells a provider the delivery landed and must not be retried
+	// whatever the run did.
+	//
+	// The field is itself the bound, and there is no default: a wait the sender
+	// chose the length of, or the author never wrote down, would hold a
+	// receiver slot for as long as a run took. 100ms to 30s. A waiting delivery
+	// holds its slot of the receiver's concurrency bound for the whole wait.
+	//
+	// The only thing a run can answer with is its declared outputs, so this is
+	// refused with no `outputs:`, and refused with [signal]: a bridge starts
+	// nothing and has no run of its own to wait for. Sensitive outputs are
+	// withheld, and there is no way to reveal one on this surface. There is no
+	// callback form: a run that must tell somebody later does it as a last step.
+	RespondWithin *durationpb.Duration `protobuf:"bytes,7,opt,name=respond_within,json=respondWithin,proto3" json:"respond_within,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -650,6 +710,20 @@ func (x *WebhookTrigger) GetArguments() map[string]*Value {
 func (x *WebhookTrigger) GetSignal() *WebhookTrigger_Signal {
 	if x != nil {
 		return x.Signal
+	}
+	return nil
+}
+
+func (x *WebhookTrigger) GetWhen() *Value {
+	if x != nil {
+		return x.When
+	}
+	return nil
+}
+
+func (x *WebhookTrigger) GetRespondWithin() *durationpb.Duration {
+	if x != nil {
+		return x.RespondWithin
 	}
 	return nil
 }
@@ -944,7 +1018,7 @@ func (x *ScheduleBackfill) GetOverlap() ScheduleTrigger_Overlap {
 // admits or refuses a person.
 //
 // What that principal cannot say is *who clicked*. `hmac_sha256` and
-// `stripe` attest a key holder, so `distinct_from_starter:` separates
+// `stripe` attest a key holder, so an `allow:` predicate comparing `run.identity` separates
 // triggers rather than humans on this path, and a workflow that needs two
 // distinct people either side of a gate cannot get them from a webhook
 // today.
@@ -952,11 +1026,13 @@ func (x *ScheduleBackfill) GetOverlap() ScheduleTrigger_Overlap {
 // # The zero case is closed here, and only here
 //
 // A signal name with no `signals:` entry admits any sender — the deliberate
-// zero case, argued at [SignalPolicyAllows], and tolerable for `flow signal`
+// zero case, argued at `SignalPolicyCheck`, and tolerable for `flow signal`
 // behind the server's own authentication. It is not tolerable for a key
-// holder on a public route, so a `signal:` naming a name with no policy that
-// could admit this trigger's principal is refused when the file compiles.
-// That refusal is a property of the *file*, so `flow validate` says it with
+// holder on a public route, so a `signal:` naming a name with no policy is
+// refused when the file compiles; a policy whose predicate cannot admit this
+// trigger's principal denies every delivery instead, because what a
+// predicate admits is decided at delivery, over the sender. The refusal of
+// a missing policy is a property of the *file*, so `flow validate` says it with
 // a line and a column rather than a receiver discovering it at three in the
 // morning.
 type WebhookTrigger_Signal struct {
@@ -1251,25 +1327,27 @@ const file_flowstate_v1_trigger_proto_rawDesc = "" +
 	"\bTriggers\x12?\n" +
 	"\bschedule\x18\x01 \x01(\v2\x1d.flowstate.v1.ScheduleTriggerB\x04\xe2A\x01\x01R\bschedule\x12F\n" +
 	"\bwebhooks\x18\x02 \x03(\v2\x1c.flowstate.v1.WebhookTriggerB\f\xe2A\x01\x01\xbaH\x05\x92\x01\x02\x10 R\bwebhooks\x129\n" +
-	"\x06manual\x18\x03 \x01(\v2\x1b.flowstate.v1.ManualTriggerB\x04\xe2A\x01\x01R\x06manual\"\xb1\x01\n" +
+	"\x06manual\x18\x03 \x01(\v2\x1b.flowstate.v1.ManualTriggerB\x04\xe2A\x01\x01R\x06manual\"\x98\x01\n" +
 	"\rManualTrigger\x12\x1c\n" +
 	"\x06denied\x18\x01 \x01(\bB\x04\xe2A\x01\x01R\x06denied\x12+\n" +
-	"\x0erequire_reason\x18\x02 \x01(\bB\x04\xe2A\x01\x01R\rrequireReason\x12U\n" +
-	"\x12allowed_principals\x18\x03 \x03(\tB&\xe2A\x01\x01\xbaH\x1f\x92\x01\x1c\x10@\x18\x01\"\x16r\x14\x10\x01\x18\xc0\x022\r^[^#]+#[^#]+$R\x11allowedPrincipals\"\xdc\x01\n" +
+	"\x0erequire_reason\x18\x02 \x01(\bB\x04\xe2A\x01\x01R\rrequireReason\x12\"\n" +
+	"\x05allow\x18\x04 \x01(\tB\f\xe2A\x01\x01\xbaH\x05r\x03\x18\x80\x10R\x05allowJ\x04\b\x03\x10\x04R\x12allowed_principals\"\xdc\x01\n" +
 	"\x0eTriggerContext\x12\x1b\n" +
 	"\x04kind\x18\x01 \x01(\tB\a\xbaH\x04r\x02\x18 R\x04kind\x12\x1b\n" +
 	"\x04name\x18\x02 \x01(\tB\a\xbaH\x04r\x02\x18@R\x04name\x12&\n" +
 	"\tprincipal\x18\x03 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x02R\tprincipal\x12)\n" +
 	"\vdelivery_id\x18\x04 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x01R\n" +
 	"deliveryId\x12=\n" +
-	"\fscheduled_at\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\vscheduledAt\"\xfb\x06\n" +
+	"\fscheduled_at\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\vscheduledAt\"\x83\b\n" +
 	"\x0eWebhookTrigger\x12;\n" +
 	"\x04name\x18\x01 \x01(\tB'\xe2A\x01\x02\xbaH r\x1e\x10\x01\x18@2\x18^[A-Za-z][A-Za-z0-9_-]*$R\x04name\x12X\n" +
 	"\x06verify\x18\x02 \x03(\v2(.flowstate.v1.WebhookTrigger.VerifyEntryB\x16\xe2A\x01\x02\xbaH\x0f\x9a\x01\f\b\x01\x10\b\"\x06r\x04\x10\x01\x18@R\x06verify\x12B\n" +
 	"\x0fidempotency_key\x18\x03 \x01(\v2\x13.flowstate.v1.ValueB\x04\xe2A\x01\x02R\x0eidempotencyKey\x12_\n" +
 	"\targuments\x18\x04 \x03(\v2+.flowstate.v1.WebhookTrigger.ArgumentsEntryB\x14\xe2A\x01\x01\xbaH\r\x9a\x01\n" +
 	"\x10@\"\x06r\x04\x10\x01\x18@R\targuments\x12A\n" +
-	"\x06signal\x18\x05 \x01(\v2#.flowstate.v1.WebhookTrigger.SignalB\x04\xe2A\x01\x01R\x06signal\x1aN\n" +
+	"\x06signal\x18\x05 \x01(\v2#.flowstate.v1.WebhookTrigger.SignalB\x04\xe2A\x01\x01R\x06signal\x12-\n" +
+	"\x04when\x18\x06 \x01(\v2\x13.flowstate.v1.ValueB\x04\xe2A\x01\x01R\x04when\x12W\n" +
+	"\x0erespond_within\x18\a \x01(\v2\x19.google.protobuf.DurationB\x15\xe2A\x01\x01\xbaH\x0e\xaa\x01\v\"\x02\b\x1e2\x05\x10\x80\xc2\xd7/R\rrespondWithin\x1aN\n" +
 	"\vVerifyEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12)\n" +
 	"\x05value\x18\x02 \x01(\v2\x13.flowstate.v1.ValueR\x05value:\x028\x01\x1aQ\n" +
@@ -1366,33 +1444,35 @@ var file_flowstate_v1_trigger_proto_depIdxs = []int32{
 	14, // 5: flowstate.v1.WebhookTrigger.idempotency_key:type_name -> flowstate.v1.Value
 	8,  // 6: flowstate.v1.WebhookTrigger.arguments:type_name -> flowstate.v1.WebhookTrigger.ArgumentsEntry
 	9,  // 7: flowstate.v1.WebhookTrigger.signal:type_name -> flowstate.v1.WebhookTrigger.Signal
-	15, // 8: flowstate.v1.ScheduleTrigger.every:type_name -> google.protobuf.Duration
-	15, // 9: flowstate.v1.ScheduleTrigger.jitter:type_name -> google.protobuf.Duration
-	0,  // 10: flowstate.v1.ScheduleTrigger.overlap:type_name -> flowstate.v1.ScheduleTrigger.Overlap
-	11, // 11: flowstate.v1.ScheduleTrigger.calendars:type_name -> flowstate.v1.ScheduleTrigger.Calendar
-	13, // 12: flowstate.v1.ScheduleTrigger.start_at:type_name -> google.protobuf.Timestamp
-	13, // 13: flowstate.v1.ScheduleTrigger.end_at:type_name -> google.protobuf.Timestamp
-	15, // 14: flowstate.v1.ScheduleTrigger.catchup_window:type_name -> google.protobuf.Duration
-	13, // 15: flowstate.v1.ScheduleBackfill.start_at:type_name -> google.protobuf.Timestamp
-	13, // 16: flowstate.v1.ScheduleBackfill.end_at:type_name -> google.protobuf.Timestamp
-	0,  // 17: flowstate.v1.ScheduleBackfill.overlap:type_name -> flowstate.v1.ScheduleTrigger.Overlap
-	14, // 18: flowstate.v1.WebhookTrigger.VerifyEntry.value:type_name -> flowstate.v1.Value
-	14, // 19: flowstate.v1.WebhookTrigger.ArgumentsEntry.value:type_name -> flowstate.v1.Value
-	14, // 20: flowstate.v1.WebhookTrigger.Signal.correlate:type_name -> flowstate.v1.Value
-	10, // 21: flowstate.v1.WebhookTrigger.Signal.arguments:type_name -> flowstate.v1.WebhookTrigger.Signal.ArgumentsEntry
-	14, // 22: flowstate.v1.WebhookTrigger.Signal.ArgumentsEntry.value:type_name -> flowstate.v1.Value
-	12, // 23: flowstate.v1.ScheduleTrigger.Calendar.second:type_name -> flowstate.v1.ScheduleTrigger.Calendar.Range
-	12, // 24: flowstate.v1.ScheduleTrigger.Calendar.minute:type_name -> flowstate.v1.ScheduleTrigger.Calendar.Range
-	12, // 25: flowstate.v1.ScheduleTrigger.Calendar.hour:type_name -> flowstate.v1.ScheduleTrigger.Calendar.Range
-	12, // 26: flowstate.v1.ScheduleTrigger.Calendar.day_of_month:type_name -> flowstate.v1.ScheduleTrigger.Calendar.Range
-	12, // 27: flowstate.v1.ScheduleTrigger.Calendar.month:type_name -> flowstate.v1.ScheduleTrigger.Calendar.Range
-	12, // 28: flowstate.v1.ScheduleTrigger.Calendar.year:type_name -> flowstate.v1.ScheduleTrigger.Calendar.Range
-	12, // 29: flowstate.v1.ScheduleTrigger.Calendar.day_of_week:type_name -> flowstate.v1.ScheduleTrigger.Calendar.Range
-	30, // [30:30] is the sub-list for method output_type
-	30, // [30:30] is the sub-list for method input_type
-	30, // [30:30] is the sub-list for extension type_name
-	30, // [30:30] is the sub-list for extension extendee
-	0,  // [0:30] is the sub-list for field type_name
+	14, // 8: flowstate.v1.WebhookTrigger.when:type_name -> flowstate.v1.Value
+	15, // 9: flowstate.v1.WebhookTrigger.respond_within:type_name -> google.protobuf.Duration
+	15, // 10: flowstate.v1.ScheduleTrigger.every:type_name -> google.protobuf.Duration
+	15, // 11: flowstate.v1.ScheduleTrigger.jitter:type_name -> google.protobuf.Duration
+	0,  // 12: flowstate.v1.ScheduleTrigger.overlap:type_name -> flowstate.v1.ScheduleTrigger.Overlap
+	11, // 13: flowstate.v1.ScheduleTrigger.calendars:type_name -> flowstate.v1.ScheduleTrigger.Calendar
+	13, // 14: flowstate.v1.ScheduleTrigger.start_at:type_name -> google.protobuf.Timestamp
+	13, // 15: flowstate.v1.ScheduleTrigger.end_at:type_name -> google.protobuf.Timestamp
+	15, // 16: flowstate.v1.ScheduleTrigger.catchup_window:type_name -> google.protobuf.Duration
+	13, // 17: flowstate.v1.ScheduleBackfill.start_at:type_name -> google.protobuf.Timestamp
+	13, // 18: flowstate.v1.ScheduleBackfill.end_at:type_name -> google.protobuf.Timestamp
+	0,  // 19: flowstate.v1.ScheduleBackfill.overlap:type_name -> flowstate.v1.ScheduleTrigger.Overlap
+	14, // 20: flowstate.v1.WebhookTrigger.VerifyEntry.value:type_name -> flowstate.v1.Value
+	14, // 21: flowstate.v1.WebhookTrigger.ArgumentsEntry.value:type_name -> flowstate.v1.Value
+	14, // 22: flowstate.v1.WebhookTrigger.Signal.correlate:type_name -> flowstate.v1.Value
+	10, // 23: flowstate.v1.WebhookTrigger.Signal.arguments:type_name -> flowstate.v1.WebhookTrigger.Signal.ArgumentsEntry
+	14, // 24: flowstate.v1.WebhookTrigger.Signal.ArgumentsEntry.value:type_name -> flowstate.v1.Value
+	12, // 25: flowstate.v1.ScheduleTrigger.Calendar.second:type_name -> flowstate.v1.ScheduleTrigger.Calendar.Range
+	12, // 26: flowstate.v1.ScheduleTrigger.Calendar.minute:type_name -> flowstate.v1.ScheduleTrigger.Calendar.Range
+	12, // 27: flowstate.v1.ScheduleTrigger.Calendar.hour:type_name -> flowstate.v1.ScheduleTrigger.Calendar.Range
+	12, // 28: flowstate.v1.ScheduleTrigger.Calendar.day_of_month:type_name -> flowstate.v1.ScheduleTrigger.Calendar.Range
+	12, // 29: flowstate.v1.ScheduleTrigger.Calendar.month:type_name -> flowstate.v1.ScheduleTrigger.Calendar.Range
+	12, // 30: flowstate.v1.ScheduleTrigger.Calendar.year:type_name -> flowstate.v1.ScheduleTrigger.Calendar.Range
+	12, // 31: flowstate.v1.ScheduleTrigger.Calendar.day_of_week:type_name -> flowstate.v1.ScheduleTrigger.Calendar.Range
+	32, // [32:32] is the sub-list for method output_type
+	32, // [32:32] is the sub-list for method input_type
+	32, // [32:32] is the sub-list for extension type_name
+	32, // [32:32] is the sub-list for extension extendee
+	0,  // [0:32] is the sub-list for field type_name
 }
 
 func init() { file_flowstate_v1_trigger_proto_init() }

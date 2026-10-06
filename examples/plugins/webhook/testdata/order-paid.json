@@ -1,0 +1,8 @@
+{
+  "headers": {
+    "X-Flowstate-Signature": "42c5c30f579719fb9f74a2f6c3a5cccd250ba584f0e78e4b9fb343003a79a6b9",
+    "Idempotency-Key": "ord_H1x9",
+    "Content-Type": "application/json"
+  },
+  "body": {"amount":4200,"id":"ord_H1x9:paid","order_id":"ord_H1x9"}
+}

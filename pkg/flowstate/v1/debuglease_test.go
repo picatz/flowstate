@@ -24,8 +24,8 @@ func debugIdentity(issuer, subject string, claims map[string]string) *v1.Workloa
 }
 
 // debugPolicy is the shape a `debug:` stanza compiles to.
-func debugPolicy(rules ...*v1.SignalPolicyRule) *v1.SignalPolicy {
-	return &v1.SignalPolicy{Allow: rules}
+func debugPolicy(expression string) *v1.SignalPolicy {
+	return &v1.SignalPolicy{Allow: expression}
 }
 
 // TestADebugLeaseIsHonouredUpToTheCeilingAndNeverPastIt checks all three
@@ -101,16 +101,16 @@ func TestAWorkflowWithNoDebugStanzaIsNotDebuggable(t *testing.T) {
 	t.Parallel()
 
 	caller := debugIdentity("https://idp.example", "sre-1", map[string]string{"role": "sre"})
-	policy := debugPolicy(&v1.SignalPolicyRule{Claims: map[string]string{"role": "sre"}})
+	policy := debugPolicy(`sender.identity.claims["role"] == "sre"`)
 
-	require.NoError(t, v1.DebugPolicyCheck(policy, caller, nil, false),
+	require.NoError(t, v1.DebugPolicyCheck(t.Context(), policy, caller, nil, false, nil),
 		"a caller matching a declared rule may take a lease")
 
-	absent := v1.DebugPolicyCheck(nil, caller, nil, false)
+	absent := v1.DebugPolicyCheck(t.Context(), nil, caller, nil, false, nil)
 	require.Error(t, absent,
 		"a workflow that declares no `debug:` stanza is not debuggable by anybody")
-	require.Error(t, v1.DebugPolicyCheck(debugPolicy(), caller, nil, false),
-		"a policy with no rules authorizes nobody rather than everybody")
+	require.Error(t, v1.DebugPolicyCheck(t.Context(), debugPolicy(""), caller, nil, false, nil),
+		"a policy with no predicate authorizes nobody rather than everybody")
 
 	// The refusal has to *say* which case this is, and that sentence is the
 	// whole of what the zero-case arm adds — [v1.SignalPolicyCheck] already
@@ -123,8 +123,8 @@ func TestAWorkflowWithNoDebugStanzaIsNotDebuggable(t *testing.T) {
 	assert.Contains(t, absent.Error(), "declares no `debug:` policy",
 		"the refusal for an absent stanza reads as though a policy existed and rejected the caller")
 
-	unmatched := v1.DebugPolicyCheck(
-		debugPolicy(&v1.SignalPolicyRule{Subject: "https://idp.example#nobody"}), caller, nil, false)
+	unmatched := v1.DebugPolicyCheck(t.Context(),
+		debugPolicy(`sender.identity.principal == "https://idp.example#nobody"`), caller, nil, false, nil)
 	require.Error(t, unmatched)
 	assert.NotContains(t, unmatched.Error(), "declares no `debug:` policy",
 		"a caller who simply matched no rule was told the workflow declares nothing")
@@ -132,7 +132,7 @@ func TestAWorkflowWithNoDebugStanzaIsNotDebuggable(t *testing.T) {
 	// The other direction of the same boundary: an ordinary signal name with no
 	// policy is *allowed*, which is what makes the debug zero case a decision
 	// rather than a copy.
-	require.Error(t, v1.SignalPolicyCheck(debugPolicy(), caller, nil, false),
+	require.Error(t, v1.SignalPolicyCheck(t.Context(), debugPolicy(""), caller, nil, false, nil),
 		"a signal policy with no rules refuses too — the difference is the absent policy, not the empty one")
 }
 
@@ -146,20 +146,19 @@ func TestADebugPolicyIsCheckedByTheSignalPolicyMatcher(t *testing.T) {
 	starter := debugIdentity("https://idp.example", "starter", nil)
 	other := debugIdentity("https://idp.example", "sre-1", nil)
 
-	policy := debugPolicy(&v1.SignalPolicyRule{Namespace: "team-a"})
-	policy.DistinctFromStarter = true
+	policy := debugPolicy(`sender.identity.namespace == "team-a" && sender.identity.principal != run.identity.principal`)
 
-	require.NoError(t, v1.DebugPolicyCheck(policy, other, starter, true),
+	require.NoError(t, v1.DebugPolicyCheck(t.Context(), policy, other, starter, true, nil),
 		"somebody who is not the starter may debug under a separation-of-duties policy")
 
-	assert.Error(t, v1.DebugPolicyCheck(policy, starter, starter, true),
+	assert.Error(t, v1.DebugPolicyCheck(t.Context(), policy, starter, starter, true, nil),
 		"the run's own starter may not debug it when the policy demands separation")
-	assert.Error(t, v1.DebugPolicyCheck(policy, other, nil, false),
+	assert.Error(t, v1.DebugPolicyCheck(t.Context(), policy, other, nil, false, nil),
 		"a run with no recorded starter cannot prove separation, so it does not get it")
 
 	// A rule nobody matches is refused whatever the separation rule says.
-	assert.Error(t, v1.DebugPolicyCheck(
-		debugPolicy(&v1.SignalPolicyRule{Subject: "https://idp.example#somebody-else"}), other, nil, false),
+	assert.Error(t, v1.DebugPolicyCheck(t.Context(),
+		debugPolicy(`sender.identity.principal == "https://idp.example#somebody-else"`), other, nil, false, nil),
 		"a caller matching no rule is refused")
 }
 
@@ -281,7 +280,7 @@ func TestTheEngineOwnsTheReservedSignalPrefix(t *testing.T) {
 	policied := &v1.Workflow{
 		Name: "policied", Profile: v1.CurrentProfile,
 		Signals: map[string]*v1.SignalPolicy{
-			v1.DebugSignal: debugPolicy(&v1.SignalPolicyRule{Namespace: "team-a"}),
+			v1.DebugSignal: debugPolicy(`sender.identity.namespace == "team-a"`),
 		},
 	}
 	assert.Error(t, v1.CheckReservedSignalNames(policied),
@@ -294,22 +293,20 @@ func TestTheEngineOwnsTheReservedSignalPrefix(t *testing.T) {
 func TestADebugPolicyIsHeldToASignalPolicysShapeRules(t *testing.T) {
 	t.Parallel()
 
-	require.NoError(t, v1.CheckDebugPolicy(nil, false),
+	require.NoError(t, v1.CheckDebugPolicy(nil),
 		"a workflow with no `debug:` is well formed and simply not debuggable")
 	require.NoError(t, v1.CheckDebugPolicy(
-		debugPolicy(&v1.SignalPolicyRule{Claims: map[string]string{"role": "sre"}}), false),
-		"an ordinary rule is accepted")
+		debugPolicy(`sender.identity.claims["role"] == "sre"`)),
+		"an ordinary predicate is accepted")
 
 	for name, policy := range map[string]*v1.SignalPolicy{
-		"no rules at all":        debugPolicy(),
-		"a rule matching all":    debugPolicy(&v1.SignalPolicyRule{}),
-		"an unqualified subject": debugPolicy(&v1.SignalPolicyRule{Subject: "sre-1"}),
-		"an unnarrowed subject_from": debugPolicy(&v1.SignalPolicyRule{
-			SubjectFrom: v1.NewExpr("inputs.approver"),
-		}),
+		"no predicate at all":             debugPolicy(""),
+		"a predicate that does not parse": debugPolicy(`sender.identity.principal ==`),
+		"a predicate that is not a bool":  debugPolicy(`sender.identity.principal`),
+		"an unnarrowed inputs predicate":  debugPolicy(`sender.identity.principal == "a#" + inputs.approver`),
 	} {
 		t.Run(name, func(t *testing.T) {
-			err := v1.CheckDebugPolicy(policy, false)
+			err := v1.CheckDebugPolicy(policy)
 			require.Error(t, err)
 			assert.True(t, strings.HasPrefix(err.Error(), "debug"),
 				"the diagnostic names `debug:`, not `signals:`: %s", err)
@@ -318,14 +315,9 @@ func TestADebugPolicyIsHeldToASignalPolicysShapeRules(t *testing.T) {
 		})
 	}
 
-	resolved := debugPolicy(&v1.SignalPolicyRule{
-		SubjectFrom: v1.NewExpr("inputs.approver"),
-		Claims:      map[string]string{"role": "sre"},
-	})
-	require.NoError(t, v1.CheckDebugPolicy(resolved, false),
-		"a narrowed expression is legal in a workflow's own declaration")
-	assert.Error(t, v1.CheckDebugPolicy(resolved, true),
-		"and is corruption once the policy has been through resolution and frozen")
+	require.NoError(t, v1.CheckDebugPolicy(
+		debugPolicy(`sender.identity.principal == "a#" + inputs.approver && sender.identity.claims["role"] == "sre"`)),
+		"a narrowed inputs predicate is legal")
 }
 
 // TestADebugLeaseTakesEveryFactFromWhatWasAttested is the containment claim for
@@ -488,17 +480,17 @@ func TestAWorkflowMayDeclareBothStanzas(t *testing.T) {
 			Timeout: durationpb.New(time.Hour),
 		}}}},
 		Signals: map[string]*v1.SignalPolicy{
-			"deploy-approved": debugPolicy(&v1.SignalPolicyRule{Claims: map[string]string{"role": "approver"}}),
+			"deploy-approved": debugPolicy(`sender.identity.claims["role"] == "approver"`),
 		},
-		Debug: debugPolicy(&v1.SignalPolicyRule{Claims: map[string]string{"role": "sre"}}),
+		Debug: debugPolicy(`sender.identity.claims["role"] == "sre"`),
 	}
 
 	require.NoError(t, v1.Validate(wf))
 	require.NoError(t, v1.CheckSignalPolicies(wf))
-	require.NoError(t, v1.CheckDebugPolicy(wf.GetDebug(), false))
+	require.NoError(t, v1.CheckDebugPolicy(wf.GetDebug()))
 	require.NoError(t, v1.CheckReservedSignalNames(wf))
 
-	assert.NotEqual(t, wf.GetSignals()["deploy-approved"].GetAllow()[0].GetClaims(),
-		wf.GetDebug().GetAllow()[0].GetClaims(),
+	assert.NotEqual(t, wf.GetSignals()["deploy-approved"].GetAllow(),
+		wf.GetDebug().GetAllow(),
 		"who may approve and who may debug are separate answers to separate questions")
 }

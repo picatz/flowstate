@@ -281,6 +281,17 @@ func NewSeededScheduler(seed uint64) *SeededScheduler {
 // of what a failure has to report for someone to reproduce it.
 func (s *SeededScheduler) Seed() uint64 { return s.seed }
 
+// FaultDraws is how many times this scheduler was asked whether a fault fires,
+// counted apart from [SeededScheduler.Decisions] because a draw is not a
+// scheduling choice. Zero means no fault was ever on offer, so a search under
+// this scheduler explored no failing world.
+func (s *SeededScheduler) FaultDraws() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.faultDraws
+}
+
 // Decisions is how many choices this scheduler has been asked for, which is what
 // makes a bound that was never approached distinguishable from one that was hit.
 func (s *SeededScheduler) Decisions() int {

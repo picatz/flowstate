@@ -110,9 +110,9 @@ func init() {
 				" webhook, lose `flow run` — and nobody discovers an inferred lock until\n" +
 				" they need it not to be there.\n" +
 				"\n" +
-				" Contradicts both fields below, and the compiler refuses the combination\n" +
-				" rather than resolving it by precedence: a refusal that also lists who may\n" +
-				" start the workload is two sentences that cannot both be true.\n",
+				" Contradicts [allow], and the compiler refuses the combination rather than\n" +
+				" resolving it by precedence: a refusal that also says who may start the\n" +
+				" workload is two sentences that cannot both be true.\n",
 		},
 		{
 			Name: "flowstate.v1.ManualTrigger.require_reason",
@@ -125,19 +125,27 @@ func init() {
 				" who has one is still present to give it.\n",
 		},
 		{
-			Name: "flowstate.v1.ManualTrigger.allowed_principals",
-			Leading: " AllowedPrincipals restricts a manual start to these issuer-qualified\n" +
-				" authenticated identities, each written as \"<issuer>#<subject>\" and matched\n" +
-				" exactly against the caller's stable Principal.ID. Neither half comes from\n" +
-				" the request: OIDC and mTLS authentication establish both. The spelling has\n" +
-				" exactly one \"#\" separator; an identity with \"#\" in either half cannot be\n" +
-				" represented ambiguously and is therefore refused by an allowlist.\n" +
+			Name: "flowstate.v1.ManualTrigger.allow",
+			Leading: " Allow is one CEL predicate deciding who may start the workload by hand,\n" +
+				" written in a Flowfile as `manual: allow: ${...}`.\n" +
 				"\n" +
-				" Empty means every authenticated caller, which is today's behavior and what\n" +
-				" a workflow with no `manual:` block keeps. Non-empty is a closed set: a\n" +
-				" qualified principal that is not in it is refused. Bare subjects are invalid,\n" +
-				" not global aliases: a subject is unique only within its issuer. Missing,\n" +
-				" zero, and insecure anonymous development identities cannot satisfy the set.\n",
+				" The source is stored without the `${` `}` fence and evaluated by the same\n" +
+				" function that decides `signals:` and `debug:` ([SignalPolicy.allow]),\n" +
+				" server-side, against the server's own attestation of the caller, over a\n" +
+				" closed scope: `sender.identity.{principal,subject,issuer,namespace,claims}`\n" +
+				" (the caller) and `inputs` (the arguments being SUBMITTED with this start).\n" +
+				" There is no run yet, so `run` is not in scope and a predicate that reads it\n" +
+				" is refused when the file compiles.\n" +
+				"\n" +
+				" Fail closed: a result that is not a bool, an evaluation error, an exceeded\n" +
+				" cost or time bound, an expression that does not compile, and a caller with\n" +
+				" no authenticated principal all refuse the start; none ever allows. The\n" +
+				" refusal names no input or claim value.\n" +
+				"\n" +
+				" A predicate that reads `inputs` must also read `sender.identity.claims`:\n" +
+				" the caller chooses the inputs, and there is no run starter to compare\n" +
+				" against, so a predicate over them alone would let the caller admit\n" +
+				" themselves. It contradicts [denied].\n",
 		},
 		{
 			Name: "flowstate.v1.TriggerContext",
@@ -301,6 +309,12 @@ func init() {
 				" material is a reference the receiver resolves rather than a value in a\n" +
 				" repository.\n" +
 				"\n" +
+				" `jwt` is the exception to \"a secret reference\": its value is the name of an\n" +
+				" entry in the deployment's trust policy, and the delivery must carry a bearer\n" +
+				" token that entry's issuer vouches for. It authenticates the sender (the\n" +
+				" delivery then acts as the token's principal) and covers none of the body.\n" +
+				" Every scheme written must verify.\n" +
+				"\n" +
 				" At least one entry, and the schemes are a closed set\n" +
 				" ([v1.WebhookVerificationSchemes]) checked when the file compiles: a scheme\n" +
 				" nobody implements is a delivery nobody can verify, which under the rule\n" +
@@ -339,6 +353,56 @@ func init() {
 				" See [WebhookTrigger.Signal].\n",
 		},
 		{
+			Name: "flowstate.v1.WebhookTrigger.when",
+			Leading: " When is the admission predicate: a boolean expression over `event` that\n" +
+				" decides whether a verified delivery is acted on at all, written\n" +
+				" `when: ${...}` in a Flowfile. It is the one thing a trigger could not say\n" +
+				" before: no.\n" +
+				"\n" +
+				" Evaluated at the boundary after verification and before `idempotency_key`,\n" +
+				" `arguments`, and (on a bridge) `signal.correlate`, in the same environment\n" +
+				" and under the same limits as those, by the same evaluator. It applies to a\n" +
+				" start and to a bridge alike, and is deliberately not repeated inside\n" +
+				" [Signal]: one trigger has one admission rule, and a second spelling per arm\n" +
+				" would be the second mechanism.\n" +
+				"\n" +
+				" Only a clean `true` admits. `false` declines the delivery: it starts no\n" +
+				" run, delivers no signal, records no idempotency key, and is answered `204`\n" +
+				" so the provider does not retry it. An evaluation error, a result that is\n" +
+				" not a bool, and an exceeded cost or time bound fail closed: the delivery is\n" +
+				" refused, with a fixed sentence that echoes nothing from it, and starts\n" +
+				" nothing. Absent means every verified delivery is admitted, as before.\n" +
+				"\n" +
+				" May not read a secret, and must read `event`: a predicate that cannot vary\n" +
+				" with the delivery admits all of them or none of them.\n",
+		},
+		{
+			Name: "flowstate.v1.WebhookTrigger.respond_within",
+			Leading: " RespondWithin is how long the receiver holds a delivery open to answer with\n" +
+				" the run's declared outputs, written `respond_within: 5s` in a Flowfile.\n" +
+				" Absent means the receiver answers as it always has: with the run's address,\n" +
+				" as soon as the run is started or joined.\n" +
+				"\n" +
+				" Set, the receiver waits for the run it started (or joined) for at most this\n" +
+				" long and answers with `status`: `completed` with the run's declared\n" +
+				" `outputs:`, `failed` with the failure's sentence, or `running` when the\n" +
+				" bound passed first, in which case the run continues and the caller reads it\n" +
+				" with `Get`. The HTTP status keeps its meaning (a delivery disposition), so a\n" +
+				" 2xx still tells a provider the delivery landed and must not be retried\n" +
+				" whatever the run did.\n" +
+				"\n" +
+				" The field is itself the bound, and there is no default: a wait the sender\n" +
+				" chose the length of, or the author never wrote down, would hold a\n" +
+				" receiver slot for as long as a run took. 100ms to 30s. A waiting delivery\n" +
+				" holds its slot of the receiver's concurrency bound for the whole wait.\n" +
+				"\n" +
+				" The only thing a run can answer with is its declared outputs, so this is\n" +
+				" refused with no `outputs:`, and refused with [signal]: a bridge starts\n" +
+				" nothing and has no run of its own to wait for. Sensitive outputs are\n" +
+				" withheld, and there is no way to reveal one on this surface. There is no\n" +
+				" callback form: a run that must tell somebody later does it as a last step.\n",
+		},
+		{
 			Name: "flowstate.v1.WebhookTrigger.Signal",
 			Leading: " Signal is a delivery answering a declared gate instead of starting a run.\n" +
 				"\n" +
@@ -354,7 +418,7 @@ func init() {
 				" admits or refuses a person.\n" +
 				"\n" +
 				" What that principal cannot say is *who clicked*. `hmac_sha256` and\n" +
-				" `stripe` attest a key holder, so `distinct_from_starter:` separates\n" +
+				" `stripe` attest a key holder, so an `allow:` predicate comparing `run.identity` separates\n" +
 				" triggers rather than humans on this path, and a workflow that needs two\n" +
 				" distinct people either side of a gate cannot get them from a webhook\n" +
 				" today.\n" +
@@ -362,11 +426,13 @@ func init() {
 				" # The zero case is closed here, and only here\n" +
 				"\n" +
 				" A signal name with no `signals:` entry admits any sender — the deliberate\n" +
-				" zero case, argued at [SignalPolicyAllows], and tolerable for `flow signal`\n" +
+				" zero case, argued at `SignalPolicyCheck`, and tolerable for `flow signal`\n" +
 				" behind the server's own authentication. It is not tolerable for a key\n" +
-				" holder on a public route, so a `signal:` naming a name with no policy that\n" +
-				" could admit this trigger's principal is refused when the file compiles.\n" +
-				" That refusal is a property of the *file*, so `flow validate` says it with\n" +
+				" holder on a public route, so a `signal:` naming a name with no policy is\n" +
+				" refused when the file compiles; a policy whose predicate cannot admit this\n" +
+				" trigger's principal denies every delivery instead, because what a\n" +
+				" predicate admits is decided at delivery, over the sender. The refusal of\n" +
+				" a missing policy is a property of the *file*, so `flow validate` says it with\n" +
 				" a line and a column rather than a receiver discovering it at three in the\n" +
 				" morning.\n",
 		},

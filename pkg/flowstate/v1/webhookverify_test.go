@@ -218,7 +218,7 @@ func TestEveryDeclarableSchemeIsImplemented(t *testing.T) {
 	key := signingKey("whsec_test")
 	body := []byte(`{"id":"evt_1"}`)
 
-	for _, scheme := range v1.WebhookVerificationSchemes() {
+	for _, scheme := range v1.WebhookSigningSchemes() {
 		trigger := hmacTrigger()
 		trigger.Verify = map[string]*v1.Value{
 			scheme: {Kind: &v1.Value_SecretRef{
@@ -233,6 +233,56 @@ func TestEveryDeclarableSchemeIsImplemented(t *testing.T) {
 			"scheme %q is declarable in a Flowfile and has no verifier, so every genuine delivery to a "+
 				"webhook naming it would be refused", scheme)
 	}
+}
+
+// TestEveryDeclarableSchemeCanBeSigned is the outbound direction of the test
+// above, and the round trip that makes the two prove each other: what the signer
+// produces for a scheme, the verifier accepts, and a tampered body, a stale
+// timestamp or a different key is refused. A scheme added to one side without the
+// other fails here.
+func TestEveryDeclarableSchemeCanBeSigned(t *testing.T) {
+	t.Parallel()
+
+	key := signingKey("whsec_round_trip")
+	body := []byte(`{"id":"evt_1"}`)
+	now := time.Unix(1755043200, 0)
+
+	for _, scheme := range v1.WebhookSigningSchemes() {
+		trigger := hmacTrigger()
+		trigger.Verify = map[string]*v1.Value{scheme: {Kind: &v1.Value_SecretRef{
+			SecretRef: &v1.SecretRef{Scheme: "env", Name: "WEBHOOK_SECRET"},
+		}}}
+		keys := map[string]secrets.Secret{scheme: key}
+
+		header, value, err := v1.SignWebhookDelivery(scheme, key, body, now)
+		require.NoError(t, err, "scheme %q is verifiable and cannot be signed", scheme)
+		headers := map[string]string{header: value}
+
+		require.NoError(t, v1.VerifyWebhookDelivery(trigger, keys, headers, body, now),
+			"scheme %q: the verifier refused what the signer produced", scheme)
+
+		require.Error(t, v1.VerifyWebhookDelivery(trigger, keys, headers, append([]byte(nil), body[:len(body)-1]...), now),
+			"scheme %q: a tampered body verified", scheme)
+		require.Error(t, v1.VerifyWebhookDelivery(trigger,
+			map[string]secrets.Secret{scheme: signingKey("another_key")}, headers, body, now),
+			"scheme %q: a different key verified", scheme)
+	}
+
+	// The timestamp is part of the stripe payload and of its replay window.
+	header, value, err := v1.SignWebhookDelivery(v1.WebhookSchemeStripe, key, body, now)
+	require.NoError(t, err)
+	headers := map[string]string{header: value}
+	stripe := stripeSignedTrigger()
+	keys := map[string]secrets.Secret{v1.WebhookSchemeStripe: key}
+	require.Error(t, v1.VerifyWebhookDelivery(stripe, keys, headers, body, now.Add(v1.WebhookReplayWindow+time.Minute)),
+		"a stale timestamp verified")
+	forged := map[string]string{header: strings.Replace(value, "t=1755043200", "t=1755043201", 1)}
+	require.Error(t, v1.VerifyWebhookDelivery(stripe, keys, forged, body, now), "a retimed signature verified")
+
+	_, _, err = v1.SignWebhookDelivery("sha1", key, body, now)
+	require.Error(t, err, "an unknown scheme signed")
+	_, _, err = v1.SignWebhookDelivery(v1.WebhookSchemeHMACSHA256, secrets.Secret{}, body, now)
+	require.Error(t, err, "a zero key signed")
 }
 
 // TestAVerificationErrorNamesNoSecret is the containment shape, on the one error

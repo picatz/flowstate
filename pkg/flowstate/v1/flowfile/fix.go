@@ -11,6 +11,7 @@ import (
 	"github.com/goccy/go-yaml/parser"
 	"github.com/goccy/go-yaml/token"
 
+	"github.com/picatz/flowstate/internal/strictyaml"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
 
@@ -280,7 +281,7 @@ func fixOnce(data []byte, modernize bool) (FixResult, error) {
 		}}
 	}
 
-	file, err := parser.ParseBytes(data, parser.ParseComments)
+	file, err := strictyaml.ParseBytes(data, parser.ParseComments)
 	if err != nil {
 		return FixResult{}, err
 	}
@@ -663,7 +664,7 @@ func LooksLikeFlowfile(data []byte) bool {
 	if len(data) > maxBytes {
 		return false
 	}
-	file, err := parser.ParseBytes(data, 0)
+	file, err := strictyaml.ParseBytes(data, 0)
 	if err != nil || len(file.Docs) == 0 || file.Docs[0].Body == nil {
 		return false
 	}
@@ -693,7 +694,7 @@ func LooksLikeFlowfileTest(data []byte) bool {
 	if len(data) > maxBytes {
 		return false
 	}
-	file, err := parser.ParseBytes(data, 0)
+	file, err := strictyaml.ParseBytes(data, 0)
 	if err != nil || len(file.Docs) == 0 || file.Docs[0].Body == nil {
 		return false
 	}
@@ -744,7 +745,7 @@ func IsMalformedYAML(data []byte) bool {
 	if len(data) > maxBytes {
 		return false
 	}
-	_, err := parser.ParseBytes(data, 0)
+	_, err := strictyaml.ParseBytes(data, 0)
 	return err != nil
 }
 
@@ -883,6 +884,12 @@ func (f *fixer) workflow(n ast.Node) {
 			f.steps(v.Value, stepScope{})
 		case "inputs", "outputs":
 			f.declarationTypes(v.Value)
+		case "signals":
+			f.signalPolicies(v.Value)
+		case "debug":
+			f.policyStanza(v.Value, "debug")
+		case triggersKey:
+			f.manualPolicies(v.Value)
 		case "edition":
 			declared = true
 			f.edition(v)
@@ -1878,8 +1885,8 @@ func (f *fixer) expressions(n ast.Node, steps map[string]bool) {
 	// recognised by the `outputs:` key alone, because `outputs:` is also the http
 	// task's own shaping key and the workflow's declared-output block — subtracting
 	// `payload` in either of those would leave a real step reference bare.
-	var walk func(n ast.Node, task taskScope, steps map[string]bool, workflow, waiting bool)
-	walk = func(n ast.Node, task taskScope, steps map[string]bool, workflow, waiting bool) {
+	var walk func(n ast.Node, task taskScope, steps map[string]bool, workflow, waiting, triggers bool)
+	walk = func(n ast.Node, task taskScope, steps map[string]bool, workflow, waiting, triggers bool) {
 		switch node := unwrapAnchor(n).(type) {
 		case *ast.MappingNode:
 			// The bindings a mapping introduces are written as siblings of the
@@ -1900,7 +1907,18 @@ func (f *fixer) expressions(n ast.Node, steps map[string]bool) {
 			}
 
 			for _, v := range node.Values {
-				walk(v, task, sees(steps, v, vars, iterator), false, waiting)
+				visible := sees(steps, v, vars, iterator)
+				if workflow {
+					if name, named := keyNameOf(v.Key); named && policyStanzaKeys[name] {
+						// `signals:` and `debug:` are predicates over `sender` and `run`,
+						// bound there and nowhere else, so a step called either is not
+						// what is written. Without this the rewrite that produces these
+						// predicates came out as `steps.sender.identity...` for a file
+						// with a step named `sender`, and validated.
+						visible = without(visible, policyScopeNames)
+					}
+				}
+				walk(v, task, visible, false, waiting, triggers)
 			}
 		case *ast.MappingValueNode:
 			name, named := keyNameOf(node.Key)
@@ -1934,7 +1952,15 @@ func (f *fixer) expressions(n ast.Node, steps map[string]bool) {
 				// written here. See [waitQuorumKey].
 				steps = without(steps, waitQuorumNames)
 			}
+			if triggers && named && name == manualKey {
+				// A `manual: allow:` predicate binds the caller as `sender`, so a step
+				// of that name is not what is written under it. Only inside `triggers:`:
+				// a `manual` key anywhere else is an ordinary name, and a task input or a
+				// `value:` object holding one is still a reference to a step.
+				steps = without(steps, map[string]bool{"sender": true})
+			}
 			if named && name == triggersKey {
+				triggers = true
 				// `event` is bound throughout a trigger and nowhere else in the
 				// language. Subtracted for this subtree alone, the way `now` is below,
 				// because outside `triggers:` it is an ordinary name and a step may
@@ -2014,20 +2040,20 @@ func (f *fixer) expressions(n ast.Node, steps map[string]bool) {
 					walk(node.Value, taskScope{
 						name:     name,
 						deferred: deferredInputs(def),
-					}, steps, false, waiting)
+					}, steps, false, waiting, triggers)
 					return
 				}
 			}
-			walk(node.Value, task, steps, false, waiting)
+			walk(node.Value, task, steps, false, waiting, triggers)
 		case *ast.SequenceNode:
 			for _, v := range node.Values {
-				walk(v, task, steps, false, waiting)
+				walk(v, task, steps, false, waiting, triggers)
 			}
 		case *ast.StringNode:
 			f.rootScalar(node, steps)
 		}
 	}
-	walk(n, taskScope{}, steps, true, false)
+	walk(n, taskScope{}, steps, true, false, false)
 }
 
 // resolved follows anchors and aliases to the node that was actually written,

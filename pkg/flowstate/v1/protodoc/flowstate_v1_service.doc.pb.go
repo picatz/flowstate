@@ -379,8 +379,8 @@ func init() {
 				"\n" +
 				" Empty when the run's starter was never recorded or could not be read.\n" +
 				" Empty is \"unknown\", never an identity. Authorization does not read this\n" +
-				" field; a `distinct_from_starter` signal policy denies when the starter is\n" +
-				" unknown.\n",
+				" field; a signal policy whose `allow:` predicate reads `run.identity` denies when\n" +
+				" the starter is unknown.\n",
 		},
 		{
 			Name: "flowstate.v1.GetResponse.first_run_id",
@@ -523,7 +523,7 @@ func init() {
 			Name: "flowstate.v1.GetGateResponse.starter",
 			Leading: " Starter is who submitted the run, `issuer#subject`, as [GetResponse.starter]\n" +
 				" reports it; empty when the run recorded none. It is what a\n" +
-				" `distinct_from_starter` policy compares the answerer against. Withheld\n" +
+				" `allow:` predicate reading `run.identity` compares the answerer against. Withheld\n" +
 				" on the same terms as prompt.\n",
 		},
 		{
@@ -1007,7 +1007,7 @@ func init() {
 		{
 			Name: "flowstate.v1.CompileRequest.file",
 			Leading: " File is the Flowfile to compile: a `name` used in diagnostics and its\n" +
-				" `source` bytes, at most 1 MiB (base64 in JSON).\n",
+				" `source` text, plain YAML, at most 1 MiB.\n",
 		},
 		{
 			Name:    "flowstate.v1.CompileResponse",
@@ -1180,8 +1180,8 @@ func init() {
 				" For each open gate the answer carries the question the gate asks, the signal\n" +
 				" name that releases it, whether a deadline lapses it, and whether the workflow\n" +
 				" declares a policy over who may answer. That set is what an approval surface\n" +
-				" has to render, and it is what a `distinct_from_starter` policy is compared\n" +
-				" against.\n" +
+				" has to render, and it is what an `allow:` predicate over `run.identity` is\n" +
+				" compared against.\n" +
 				"\n" +
 				" To answer a gate, call [Signal] with the gate's signal name and a payload\n" +
 				" carrying the decision. Address the workflow rather than a run: a run id pins\n" +
@@ -1217,9 +1217,13 @@ func init() {
 				" `signals:` policy would admit a [Signal] now, without delivering one.\n" +
 				"\n" +
 				" A run that is not running, or holds no open gate by that name, answers\n" +
-				" NOT_FOUND, the same answer a run in another tenant gets. A run holding more\n" +
-				" gates than one answer lists, whose list does not include the named gate,\n" +
-				" answers FAILED_PRECONDITION: the gate may be open, and this read cannot say.\n",
+				" NOT_FOUND, the same answer a run in another tenant gets. The gate is looked\n" +
+				" up by name inside the run, so it is found however many gates the run holds\n" +
+				" (up to `v1.MaxHeldWaits`, in `pkg/flowstate/v1/waits.go`), not only among the\n" +
+				" `v1.MaxPendingWaits` that [Get] lists. A run that holds more gates than it\n" +
+				" retains, or one that cannot answer the lookup, and whose answer does not\n" +
+				" include the named gate, answers FAILED_PRECONDITION: the gate may be open,\n" +
+				" and this read cannot say.\n",
 		},
 		{
 			Name: "flowstate.v1.WorkflowService.SignalWithStart",
@@ -1360,7 +1364,7 @@ func init() {
 				"\n" +
 				" The same checks and the same [ValidationReport] as `flow validate`: one\n" +
 				" entry per file, clean files included. Send 1 to 64 files; each file's\n" +
-				" `source` is its bytes, at most 1 MiB, base64-encoded in JSON. It reads,\n" +
+				" `source` is its text, plain YAML, at most 1 MiB. It reads,\n" +
 				" writes and starts nothing, so it is safe to call repeatedly while editing.\n",
 		},
 		{
@@ -1368,8 +1372,8 @@ func init() {
 			Leading: " Compile turns one Flowfile into the workflow specification that [Run]\n" +
 				" takes, executing nothing.\n" +
 				"\n" +
-				" `file.source` is the Flowfile's bytes, at most 1 MiB, base64-encoded in\n" +
-				" JSON. A file that does not compile is not an RPC error: the answer carries\n" +
+				" `file.source` is the Flowfile's text, plain YAML, at most 1 MiB. A file\n" +
+				" that does not compile is not an RPC error: the answer carries\n" +
 				" its diagnostics in `report` and no `workflow`. On success, pass `workflow`\n" +
 				" unchanged to [Run] or [CreateSchedule]. The same compiler as the CLI.\n",
 		},

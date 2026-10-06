@@ -93,10 +93,11 @@ const (
 	SlotWorkflowVar
 	// SlotDeclaredOutput is a declared `outputs:` entry's value.
 	SlotDeclaredOutput
-	// SlotSignalSubject is a signal policy rule's computed `subject:`.
-	SlotSignalSubject
 	// SlotWebhookIdempotencyKey is a webhook trigger's `idempotency_key:`.
 	SlotWebhookIdempotencyKey
+	// SlotWebhookWhen is a webhook trigger's `when:` — the admission predicate
+	// that lets a verified delivery be declined.
+	SlotWebhookWhen
 	// SlotWebhookArgument is one entry of a webhook trigger's `with:`.
 	SlotWebhookArgument
 	// SlotWebhookVerify is one entry of a webhook trigger's `verify:`.
@@ -165,15 +166,6 @@ const (
 	// against the run's bound inputs and nothing else; see `Concurrency.key`.
 	SlotConcurrencyKey
 
-	// SlotDebugSubject is a `debug:` policy rule's computed `subject:`.
-	//
-	// Its own slot rather than sharing [SlotSignalSubject], for the reason
-	// [SlotWaitBatchPrompt] states next door: one schema position is one slot,
-	// and a slot covering two would let a third land on an already-claimed name
-	// — exactly the blindness `TestEveryValuePositionInTheSchemaIsWalked`
-	// exists to prevent. The two stanzas share a *message*, not a position.
-	SlotDebugSubject
-
 	// SlotTypeFieldDefault is a record type field's `default:`. A field does not
 	// carry one yet, and [CheckRecordDeclarations] refuses a field that sets it;
 	// the slot exists so a walk over a hand-built specification still meets the
@@ -199,8 +191,8 @@ func ValueSlotSchemaPath() map[ValueSlot]string {
 		SlotTypeFieldExample:      "Workflow.declared_types[].fields[].example",
 		SlotWorkflowVar:           "Workflow.vars{}",
 		SlotDeclaredOutput:        "Workflow.declared_outputs[].value",
-		SlotSignalSubject:         "Workflow.signals{}.allow[].subject_from",
 		SlotWebhookIdempotencyKey: "Workflow.triggers.webhooks[].idempotency_key",
+		SlotWebhookWhen:           "Workflow.triggers.webhooks[].when",
 		SlotWebhookArgument:       "Workflow.triggers.webhooks[].arguments{}",
 		SlotWebhookVerify:         "Workflow.triggers.webhooks[].verify{}",
 
@@ -233,7 +225,6 @@ func ValueSlotSchemaPath() map[ValueSlot]string {
 		SlotFailMessage:  "Workflow.steps[].fail.message",
 
 		SlotConcurrencyKey: "Workflow.concurrency.key",
-		SlotDebugSubject:   "Workflow.debug.allow[].subject_from",
 	}
 }
 
@@ -326,15 +317,10 @@ func (s ValueSite) Field() string {
 		return VarsRoot + "." + s.Name
 	case SlotDeclaredOutput:
 		return "outputs." + s.Name
-	case SlotSignalSubject:
-		return "signals." + s.Owner + ".allow[" + strconv.Itoa(s.Index) + "].subject"
-	case SlotDebugSubject:
-		// No owner, because there is one thing to debug — this run — where a
-		// signal policy is per name. The path is the one the author wrote, and
-		// the one flowfile's own diagnostics use.
-		return "debug.allow[" + strconv.Itoa(s.Index) + "].subject"
 	case SlotWebhookIdempotencyKey:
 		return s.triggerPath() + ".idempotency_key"
+	case SlotWebhookWhen:
+		return s.triggerPath() + ".when"
 	case SlotWebhookArgument:
 		return s.triggerPath() + ".with." + s.Name
 	case SlotWebhookVerify:
@@ -483,34 +469,6 @@ func walkWorkflowValuesAfterSteps(wf *Workflow, w Walk) {
 		w.value(ValueSite{Slot: SlotConcurrencyKey, Value: concurrency.GetKey()})
 	}
 
-	for _, policy := range slices.Sorted(maps.Keys(wf.GetSignals())) {
-		for i, rule := range wf.GetSignals()[policy].GetAllow() {
-			// A computed subject is written under `subject:` and routed to
-			// subject_from by the parser when it interpolates, so the field is the
-			// one the author wrote and the value read is where it landed.
-			w.value(ValueSite{
-				Slot:  SlotSignalSubject,
-				Owner: policy,
-				Index: i,
-				Value: rule.GetSubjectFrom(),
-			})
-		}
-	}
-
-	// The `debug:` stanza's own rules, walked beside `signals:` because they
-	// are the same message in the same class of position — a fact about who
-	// outside the run may act on it, resolved once at submit. Visited even
-	// though only one caller has an opinion about it: a walk that skipped a
-	// position because today's callers do not read it is the blindness this
-	// file exists to prevent.
-	for i, rule := range wf.GetDebug().GetAllow() {
-		w.value(ValueSite{
-			Slot:  SlotDebugSubject,
-			Index: i,
-			Value: rule.GetSubjectFrom(),
-		})
-	}
-
 	for i, webhook := range wf.GetTriggers().GetWebhooks() {
 		name := webhook.GetName()
 
@@ -520,6 +478,10 @@ func walkWorkflowValuesAfterSteps(wf *Workflow, w Walk) {
 			Index: i,
 			Value: webhook.GetIdempotencyKey(),
 		})
+
+		if when := webhook.GetWhen(); when != nil {
+			w.value(ValueSite{Slot: SlotWebhookWhen, Owner: name, Index: i, Value: when})
+		}
 
 		for _, argument := range slices.Sorted(maps.Keys(webhook.GetArguments())) {
 			w.value(ValueSite{

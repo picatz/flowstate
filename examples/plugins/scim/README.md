@@ -55,7 +55,7 @@ $ flow signal <run> review-decided --data '{"keep": false}' \
 
 The approver's token must be issued by `https://issuer.example.com` to the
 subject `expected_approver` names, with `team: compliance-reviewers`;
-`distinct_from_starter: true` refuses the starter's own.
+`sender.identity.principal != run.identity.principal` refuses the starter's own.
 
 ## What each step is protecting
 
@@ -71,7 +71,8 @@ subject `expected_approver` names, with `team: compliance-reviewers`;
 
 - **`decision`** is bounded by `signals:`. Only the subject
   `https://issuer.example.com#<expected_approver>` holding the claim
-  `team: compliance-reviewers` can answer, and `distinct_from_starter: true`
+  `team: compliance-reviewers` can answer, and the
+  `sender.identity.principal != run.identity.principal` clause
   means whoever *requested* the review cannot approve it. That constraint is
   enforced by the server, not by this file's good intentions.
 

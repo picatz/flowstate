@@ -542,5 +542,13 @@ func init() {
 			Leading: " The caller exceeded the codec server's per-caller request rate. Refused\n" +
 				" before the body is read or a key is touched.\n",
 		},
+		{
+			Name: "flowstate.v1.AUDIT_DENY_CODE_WEBHOOK_DECLINED",
+			Leading: " A webhook delivery verified and its trigger's `when:` answered false: the\n" +
+				" workflow declined it, so it started no run and delivered no signal. Not an\n" +
+				" attack and not a fault; recorded because a declined delivery is a decision\n" +
+				" the operator may need to count. A `when:` that could not be answered at\n" +
+				" all is RULE_ERROR, the code for a rule that is itself broken.\n",
+		},
 	})
 }

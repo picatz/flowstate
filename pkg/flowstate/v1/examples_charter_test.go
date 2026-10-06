@@ -68,8 +68,7 @@ var exampleCorpusGlobs = []string{
 //
 // #969 tracked fifteen of these. All fifteen now have an example —
 // `input.values`, `input.type.TYPE_ENUM`, `manual.denied`, `schedule.every`,
-// `schedule.start_at`, `schedule.end_at`, `signal_policy_rule.subject`,
-// `signal_policy_rule.namespace`, `schedule.overlap.OVERLAP_BUFFER_ONE`,
+// `schedule.start_at`, `schedule.end_at`, `schedule.overlap.OVERLAP_BUFFER_ONE`,
 // `input.max_len` (`alert-title-bound`), `output.must` (`utilization-guard`),
 // and the four remaining overlap policies — `OVERLAP_BUFFER_ALL`,
 // `OVERLAP_CANCEL_OTHER`, `OVERLAP_TERMINATE_OTHER`, `OVERLAP_ALLOW_ALL`, one
@@ -217,7 +216,6 @@ func writableSpecs() map[protoreflect.FullName]messageWritableSpec {
 		{&v1.ScheduleTrigger{}, "schedule", nil},
 		{&v1.Concurrency{}, "concurrency", nil},
 		{&v1.SignalPolicy{}, "signal_policy", nil},
-		{&v1.SignalPolicyRule{}, "signal_policy_rule", nil},
 		{&v1.Signal{}, "signal", nil},
 		{&v1.SignalBatch{}, "signal_batch", nil},
 		{&v1.SignalQuorum{}, "signal_quorum", nil},

@@ -94,9 +94,7 @@ inputs:
 # on-call rotation.
 signals:
   activation-confirmed:
-    allow:
-      - claims:
-          role: account-manager
+    allow: ${sender.identity.claims.role == "account-manager"}
 steps:
   # A read, not an effect - a reusable precondition every onboarding-shaped
   # workflow can share without any of them needing to compensate it.

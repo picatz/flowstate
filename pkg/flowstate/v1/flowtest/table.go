@@ -302,6 +302,10 @@ func mergeExpectation(entry, row Expectation) Expectation {
 		merged.IdempotencyKey = entry.IdempotencyKey
 		merged.fromEntry.idempotencyKey = entry.IdempotencyKey != ""
 	}
+	if merged.Response == nil {
+		merged.Response = entry.Response
+		merged.fromEntry.response = entry.Response != nil
+	}
 	if merged.Failed == nil {
 		merged.Failed = entry.Failed
 		merged.fromEntry.failed = entry.Failed != nil
@@ -313,6 +317,12 @@ func mergeExpectation(entry, row Expectation) Expectation {
 	if merged.Compensated == nil {
 		merged.Compensated = entry.Compensated
 		merged.fromEntry.compensated = entry.Compensated != nil
+	}
+	// An empty list names no signal and asserts nothing, so like `invocations`
+	// it is no statement and cannot erase the entry's claims.
+	if len(merged.DeniedSignals) == 0 {
+		merged.DeniedSignals = entry.DeniedSignals
+		merged.fromEntry.deniedSignals = len(entry.DeniedSignals) > 0
 	}
 	if merged.Ran == nil {
 		merged.Ran = entry.Ran

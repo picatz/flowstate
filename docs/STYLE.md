@@ -57,6 +57,7 @@ descend from are in Part I.
 | Reading a step's scalar output | `${steps.<id>.value}` | a bare `${steps.<id>}` | the six characters buy uniformity in every tool that reads outputs, and this is permanent (anti-goal 7) |
 | Bounding or re-attempting work | `timeout:` / `retry:` on the task step that does the work | the same keys on `for_each:`, `parallel:`, `call:`, `loop:`, `switch:`, a wait, or a `value:` | on those kinds the keys bind nothing, so the parser refuses them with a position and points at where they do work (`pkg/flowstate/v1/flowfile/parse_wait.go:397`) |
 | Naming a webhook delivery for dedupe | the event's own id, `${event.body.id}`, or a delivery id the sender repeats in a header — the body when both are on offer | a signature header, `${event.headers["stripe-signature"]}` | a signature is computed per attempt — a retry carries a new timestamp and a new MAC over the same event — so a key over it names the attempt and every real retry starts a second run; and a header is outside what the signature covers, so a captured delivery resends under a key of its sender's choosing (R10) |
+| Declining a webhook delivery the workflow does not want | the trigger's `when:`, `${event.body.action == "opened"}` | an `idempotency_key:` ternary with a placeholder arm, `${... ? event.body.id : "ignored"}` | the key names the event and `when:` decides whether it is wanted; folded together every declined delivery shares one key, so one starts a phantom run and the rest join it, across event types (R11) |
 | An expression in `if:`, or in a loop's `items:` | the fenced form, `${...}` | the bare form, which also parses | one spelling per position class; the fence is what tells data from code everywhere else in the file, so the fenced form is the one that reads the same way in every position |
 | A ternary, or any expression holding `: ` | the whole value quoted, `'${a ? b : c}'` | the bare fence, `${a ? b : c}` | YAML reads a plain scalar's first `: ` as a mapping key, so the bare form is a syntax error before this language sees it; the compiler names the trap and offers the quoting (#1683) |
 
@@ -428,6 +429,24 @@ header it found and the value to key on for that provider. Reachable from
 `flow validate`'s own guidance too: the diagnostic for a missing key suggests
 `${event.body.id}` and says why a signature header is not a key.
 
+### R11. Declining a delivery is `when:`, never the key
+
+A webhook that does not want some of what its provider sends says so in the trigger's
+`when:`, a boolean over `event` that admits only on a clean `true`. It does not say so
+in `idempotency_key:`. `${event.body.type == "invoice.paid" ? event.body.id :
+"ignored"}` is the workaround: every uninteresting delivery is named `"ignored"`, so
+the first starts a phantom run and the rest join it, and an `invoice.paid` and a
+`customer.created` that both fall into the constant are one delivery to the key. The
+key names the event; the filter decides whether the event is wanted; two jobs in one
+expression are how a dedupe key ends up collapsing events that are not duplicates.
+
+The validator cannot refuse it, because the key does vary with the delivery where its
+author intends. What a checker can see is the outermost ternary with exactly one
+constant arm.
+
+Enforcement: tier 4, as `R11/key-as-filter` in `flow lint`, which points at the key and
+names `when:` as the replacement.
+
 ## Part II: the tiers
 
 Four tiers over one idea: severity is decided by *whose problem it is*.
@@ -438,7 +457,7 @@ Four tiers over one idea: severity is decided by *whose problem it is*.
 | 1. Refuse | `flow validate` and the parser | position, problem, remedy; wrong everywhere rather than merely ugly; properties of the file only, never of a deployment | R4's fence rules, R6's no dead keys |
 | 2. Normalize | `flow fmt` | one form per construct, no options, idempotent, comments preserved | R7, and the byte-level half of R8 |
 | 3. Migrate | `flow fix` plus editions | byte-safe, exact-match, refuses rather than guesses, tested by bytes or by compiling the result and never by "still validates" | R3's retirements, R4's sweep, R5's guarded-read rewrite (shipped) |
-| 4. Suggest | `flow lint` | warns, never blocks; every check has a mechanical shape *and* a mechanical or name-shaped replacement; a check that fires on legitimate generated output gets fixed or deleted, because a disabled lint teaches nothing | R5's ternary, repeat and dispatch checks; R10's signature-header check; the tooling half of R8 |
+| 4. Suggest | `flow lint` | warns, never blocks; every check has a mechanical shape *and* a mechanical or name-shaped replacement; a check that fires on legitimate generated output gets fixed or deleted, because a disabled lint teaches nothing | R5's ternary, repeat and dispatch checks; R10's signature-header check; R11's key-as-filter check; the tooling half of R8 |
 
 Wrong-everywhere is tier 1. Same-meaning-two-spellings is tier 2 or tier 3.
 Legal-but-there-is-a-better-idiom is tier 4 and only tier 4, because promoting a
@@ -479,27 +498,31 @@ commit history of this file.
 
 ### Condemned, and worth migrating
 
-**`distinct_from_starter:` and the `allow:` match-list grammar.** Fails R1 (a keyword
-where a name in scope was missing) and R2 (a bespoke match grammar beside three CEL
-policy surfaces). This is #326, and the charter's contribution is to say that the
-answer follows from the rules rather than being open: signal authorization becomes a
-CEL predicate over a scope holding the attested `sender`, a name for the run's
-starter, and `inputs`, after which `distinct_from_starter: true` is one clause and
-the next relationship somebody needs is another one.
+**`distinct_from_starter:`, the `allow:` match-list grammar and `allowed_principals:`.**
+Fails R1 (a keyword where a name in scope was missing) and R2 (a bespoke match grammar
+beside three CEL policy surfaces). This is #326, and the charter's contribution is to
+say that the answer follows from the rules rather than being open: signal, debug and
+manual-start authorization become one CEL predicate, `allow: ${...}`, over a scope
+holding the attested `sender`, a name for the run's starter (`run.identity`), and
+`inputs`, after which `distinct_from_starter: true` is one clause,
+`&& sender.identity.principal != run.identity.principal`, and the next relationship
+somebody needs is another one.
 
-R1 also says what has to exist first, and a grep says it does not. The server already
-knows who started a run, because that is what the current keyword is checked against
-(`pkg/flowstate/v1/server/signalauth_internal_test.go:318`), but no `started_by` name
-is exposed anywhere an author can write one: nothing in `proto/flowstate/v1/` or the
-server declares it, and #514, which landed a run reading how it started, landed
-`trigger.kind` rather than the starter's identity. So the missing piece is a name in
-scope, exactly as R1 predicts, and the keyword was wrong the day it shipped.
+The names the predicate needed exist now. `run.identity` is the run's starter, a wait's
+`sender.identity` and the predicate's `sender.identity` are one shape, and `principal`
+(`issuer#subject`) is on both, so the multi-issuer rule is one comparison. The
+predicate is the canonical spelling. `flow fix` rewrites each retired form into it,
+and every example that carried one was rewritten by that tool: the corpus test
+(`TestEveryRewrittenExampleIsExactlyWhatFixWritesFromItsOldSpelling`) holds each
+committed file to the tool's own output. The old spellings are gone: the compiler
+refuses each by name inside the current edition, with a sentence that says to run
+`flow fix`, so removing them did not need an edition boundary.
 
-Worth changing rather than grandfathering: three example workflows carry the key
-today (`examples/approval-gate`, `examples/enterprise-fund-transfer`,
-`examples/enterprise-access-review`), beside the server check and the CLI and MCP
-surfaces that spell it, and every month it stands it teaches the match-list idiom to
-more files.
+What the predicate gives up is recorded rather than hidden: the narrowing rule is
+syntactic over the whole predicate and so coarser than the per-rule check it
+replaced, a quorum's `approve:` is checked only against a policy whose admitted
+principals can be enumerated, and a bridged webhook's reachability is decided at
+delivery rather than in the file.
 
 **The fencing split.** `must:` refuses a fence, `if:` accepts either. The language has
 shipped both answers to #545, which means the status quo is not the conservative

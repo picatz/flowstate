@@ -123,8 +123,8 @@ type WorkflowServiceClient interface {
 	// For each open gate the answer carries the question the gate asks, the signal
 	// name that releases it, whether a deadline lapses it, and whether the workflow
 	// declares a policy over who may answer. That set is what an approval surface
-	// has to render, and it is what a `distinct_from_starter` policy is compared
-	// against.
+	// has to render, and it is what an `allow:` predicate over `run.identity` is
+	// compared against.
 	//
 	// To answer a gate, call [Signal] with the gate's signal name and a payload
 	// carrying the decision. Address the workflow rather than a run: a run id pins
@@ -156,9 +156,13 @@ type WorkflowServiceClient interface {
 	// `signals:` policy would admit a [Signal] now, without delivering one.
 	//
 	// A run that is not running, or holds no open gate by that name, answers
-	// NOT_FOUND, the same answer a run in another tenant gets. A run holding more
-	// gates than one answer lists, whose list does not include the named gate,
-	// answers FAILED_PRECONDITION: the gate may be open, and this read cannot say.
+	// NOT_FOUND, the same answer a run in another tenant gets. The gate is looked
+	// up by name inside the run, so it is found however many gates the run holds
+	// (up to `v1.MaxHeldWaits`, in `pkg/flowstate/v1/waits.go`), not only among the
+	// `v1.MaxPendingWaits` that [Get] lists. A run that holds more gates than it
+	// retains, or one that cannot answer the lookup, and whose answer does not
+	// include the named gate, answers FAILED_PRECONDITION: the gate may be open,
+	// and this read cannot say.
 	GetGate(context.Context, *connect.Request[v1.GetGateRequest]) (*connect.Response[v1.GetGateResponse], error)
 	// SignalWithStart delivers a signal to the entity holding a business key, an
 	// order id or a subscription id, creating that entity if this is the first
@@ -275,14 +279,14 @@ type WorkflowServiceClient interface {
 	//
 	// The same checks and the same [ValidationReport] as `flow validate`: one
 	// entry per file, clean files included. Send 1 to 64 files; each file's
-	// `source` is its bytes, at most 1 MiB, base64-encoded in JSON. It reads,
+	// `source` is its text, plain YAML, at most 1 MiB. It reads,
 	// writes and starts nothing, so it is safe to call repeatedly while editing.
 	Validate(context.Context, *connect.Request[v1.ValidateRequest]) (*connect.Response[v1.ValidateResponse], error)
 	// Compile turns one Flowfile into the workflow specification that [Run]
 	// takes, executing nothing.
 	//
-	// `file.source` is the Flowfile's bytes, at most 1 MiB, base64-encoded in
-	// JSON. A file that does not compile is not an RPC error: the answer carries
+	// `file.source` is the Flowfile's text, plain YAML, at most 1 MiB. A file
+	// that does not compile is not an RPC error: the answer carries
 	// its diagnostics in `report` and no `workflow`. On success, pass `workflow`
 	// unchanged to [Run] or [CreateSchedule]. The same compiler as the CLI.
 	Compile(context.Context, *connect.Request[v1.CompileRequest]) (*connect.Response[v1.CompileResponse], error)
@@ -685,8 +689,8 @@ type WorkflowServiceHandler interface {
 	// For each open gate the answer carries the question the gate asks, the signal
 	// name that releases it, whether a deadline lapses it, and whether the workflow
 	// declares a policy over who may answer. That set is what an approval surface
-	// has to render, and it is what a `distinct_from_starter` policy is compared
-	// against.
+	// has to render, and it is what an `allow:` predicate over `run.identity` is
+	// compared against.
 	//
 	// To answer a gate, call [Signal] with the gate's signal name and a payload
 	// carrying the decision. Address the workflow rather than a run: a run id pins
@@ -718,9 +722,13 @@ type WorkflowServiceHandler interface {
 	// `signals:` policy would admit a [Signal] now, without delivering one.
 	//
 	// A run that is not running, or holds no open gate by that name, answers
-	// NOT_FOUND, the same answer a run in another tenant gets. A run holding more
-	// gates than one answer lists, whose list does not include the named gate,
-	// answers FAILED_PRECONDITION: the gate may be open, and this read cannot say.
+	// NOT_FOUND, the same answer a run in another tenant gets. The gate is looked
+	// up by name inside the run, so it is found however many gates the run holds
+	// (up to `v1.MaxHeldWaits`, in `pkg/flowstate/v1/waits.go`), not only among the
+	// `v1.MaxPendingWaits` that [Get] lists. A run that holds more gates than it
+	// retains, or one that cannot answer the lookup, and whose answer does not
+	// include the named gate, answers FAILED_PRECONDITION: the gate may be open,
+	// and this read cannot say.
 	GetGate(context.Context, *connect.Request[v1.GetGateRequest]) (*connect.Response[v1.GetGateResponse], error)
 	// SignalWithStart delivers a signal to the entity holding a business key, an
 	// order id or a subscription id, creating that entity if this is the first
@@ -837,14 +845,14 @@ type WorkflowServiceHandler interface {
 	//
 	// The same checks and the same [ValidationReport] as `flow validate`: one
 	// entry per file, clean files included. Send 1 to 64 files; each file's
-	// `source` is its bytes, at most 1 MiB, base64-encoded in JSON. It reads,
+	// `source` is its text, plain YAML, at most 1 MiB. It reads,
 	// writes and starts nothing, so it is safe to call repeatedly while editing.
 	Validate(context.Context, *connect.Request[v1.ValidateRequest]) (*connect.Response[v1.ValidateResponse], error)
 	// Compile turns one Flowfile into the workflow specification that [Run]
 	// takes, executing nothing.
 	//
-	// `file.source` is the Flowfile's bytes, at most 1 MiB, base64-encoded in
-	// JSON. A file that does not compile is not an RPC error: the answer carries
+	// `file.source` is the Flowfile's text, plain YAML, at most 1 MiB. A file
+	// that does not compile is not an RPC error: the answer carries
 	// its diagnostics in `report` and no `workflow`. On success, pass `workflow`
 	// unchanged to [Run] or [CreateSchedule]. The same compiler as the CLI.
 	Compile(context.Context, *connect.Request[v1.CompileRequest]) (*connect.Response[v1.CompileResponse], error)

@@ -150,6 +150,12 @@ func nonCaseVerdicts(r testFileResult, coverageRequired, failOnWarning bool) []s
 	if r.schedules != nil && r.schedules.Divergence != nil {
 		reasons = append(reasons, "--seeds: a case's observable behavior depends on the schedule")
 	}
+	if r.fuzzJudgedNothing() {
+		reasons = append(reasons, "--fuzz: every generated case errored before the run, so nothing was judged")
+	}
+	if finding := r.report.GetFuzz().GetFinding(); finding != nil {
+		reasons = append(reasons, fmt.Sprintf("--fuzz: generated inputs broke %q (fuzz seed %d)", finding.GetCase(), finding.GetSeed()))
+	}
 
 	return reasons
 }

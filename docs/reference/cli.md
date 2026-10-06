@@ -373,6 +373,7 @@ flow run local --debug examples/hello-world/workflow.yaml
 | `--as-claim <string,...>` | `stringArray` | — | — | authenticated string claim NAME=VALUE to rehearse policy as (repeatable) |
 | `--as-deployment <string>` | `string` | `local` | — | Flowstate deployment name to rehearse policy as (local runs only) |
 | `--as-issuer <string>` | `string` | `flowstate:local` | — | authenticated issuer to rehearse policy as (local runs only) |
+| `--as-kind <string>` | `string` | — | — | kind of party to rehearse policy as: human, workload or agent (local runs only) |
 | `--as-namespace <string>` | `string` | — | — | tenant namespace to rehearse policy as (local runs only) |
 | `--as-subject <string>` | `string` | `local-user` | — | authenticated subject to rehearse policy as (local runs only) |
 | `--audience <string>` | `string` | — | `FLOWSTATE_AUDIENCE` | the relying party a credential should be addressed to (overrides FLOWSTATE_AUDIENCE); required by `--credential-source=github-actions`, which mints a token for it. gitlab and terraform-cloud cannot mint on demand — their platform fixes the audience in the job or workspace configuration before the token exists — so for those it is checked against the token's own audience rather than requested, and a mismatch is refused with the setting to change |
@@ -630,6 +631,7 @@ flow debug replay session.script examples/computed-outputs/workflow.yaml \
 | `--as-claim <string,...>` | `stringArray` | — | — | authenticated string claim NAME=VALUE to rehearse policy as (repeatable) |
 | `--as-deployment <string>` | `string` | `local` | — | Flowstate deployment name to rehearse policy as (local runs only) |
 | `--as-issuer <string>` | `string` | `flowstate:local` | — | authenticated issuer to rehearse policy as (local runs only) |
+| `--as-kind <string>` | `string` | — | — | kind of party to rehearse policy as: human, workload or agent (local runs only) |
 | `--as-namespace <string>` | `string` | — | — | tenant namespace to rehearse policy as (local runs only) |
 | `--as-subject <string>` | `string` | `local-user` | — | authenticated subject to rehearse policy as (local runs only) |
 | `--auth-policy <string>` | `string` | — | `FLOWSTATE_AUTH_POLICY` | path to the auth policy (YAML) whose `secrets:` section decides which secrets a step may read and whose `federation:` section defines the credentials a run may assume |
@@ -672,6 +674,7 @@ flow debug replay session.script examples/computed-outputs/workflow.yaml \
 | `--signal <string,...>` | `stringArray` | — | — | answer a wait_for_signal step, as name=json (repeatable), e.g. `--signal deploy-approved='{"approved": true}'` |
 | `--signal-as-claim <string,...>` | `stringArray` | — | — | authenticated string claim NAME=VALUE to deliver `--signal` as (repeatable) |
 | `--signal-as-issuer <string>` | `string` | — | — | authenticated issuer to deliver `--signal` as, with `--signal-as-subject` (local runs only) |
+| `--signal-as-kind <string>` | `string` | — | — | kind of party to deliver `--signal` as: human, workload or agent (local runs only) |
 | `--signal-as-namespace <string>` | `string` | — | — | tenant namespace to deliver `--signal` as (local runs only) |
 | `--signal-as-subject <string>` | `string` | — | — | authenticated subject to deliver `--signal` as, with `--signal-as-issuer` (local runs only) |
 | `--task-policy <string>` | `string` | — | `FLOWSTATE_TASK_POLICY` | path to a task-shape policy (YAML) governing which identities may dispatch which tasks (default $FLOWSTATE_TASK_POLICY); unset, every identity may dispatch every task |
@@ -1159,6 +1162,7 @@ flow mcp --plugin-dir ./plugins
 | `--as-claim <string,...>` | `stringArray` | — | — | authenticated string claim NAME=VALUE to rehearse policy as (repeatable) |
 | `--as-deployment <string>` | `string` | `local` | — | Flowstate deployment name to rehearse policy as (local runs only) |
 | `--as-issuer <string>` | `string` | `flowstate:local` | — | authenticated issuer to rehearse policy as (local runs only) |
+| `--as-kind <string>` | `string` | — | — | kind of party to rehearse policy as: human, workload or agent (local runs only) |
 | `--as-namespace <string>` | `string` | — | — | tenant namespace to rehearse policy as (local runs only) |
 | `--as-subject <string>` | `string` | `local-user` | — | authenticated subject to rehearse policy as (local runs only) |
 | `--audience <string>` | `string` | — | `FLOWSTATE_AUDIENCE` | the relying party a credential should be addressed to (overrides FLOWSTATE_AUDIENCE); required by `--credential-source=github-actions`, which mints a token for it. gitlab and terraform-cloud cannot mint on demand — their platform fixes the audience in the job or workspace configuration before the token exists — so for those it is checked against the token's own audience rather than requested, and a mismatch is refused with the setting to change |
@@ -1383,7 +1387,7 @@ Plugin tasks run here too, given `--plugin-dir`: the plugins are launched in thi
 
 That does not make the run attested. Nothing verified these flags, so `run.local` reads true, and a credential this run assumes is minted under a subject carrying a `_local` component no server-attested run can produce. A cloud trust policy written for your production subject deliberately does not match a rehearsal's.
 
-A gate is the one exception, because a gate is the thing worth rehearsing. `--signal-as-subject` and its siblings name the approver a `--signal` delivery stands in for, and the workflow's `signals:` policy is checked here exactly as the server checks it — so an approver a rule admits in production opens the gate here, one it refuses is refused here, and this run's own starter is refused by `distinct_from_starter:` on both. The gate's `sender.local` output still reads true.
+A gate is the one exception, because a gate is the thing worth rehearsing. `--signal-as-subject` and its siblings name the approver a `--signal` delivery stands in for, and the workflow's `signals:` policy is checked here exactly as the server checks it — so an approver a predicate admits in production opens the gate here, one it refuses is refused here, and a predicate comparing with the run's own starter (`run.identity`) refuses it on both. The gate's `sender.local` output still reads true.
 
 The run document on stdout is written for a program. A step's outputs are `.steps.<id>.<output>` — the path the file itself writes as `${steps.<id>.<output>}` — and the values a workflow declared under `outputs:` are `.runOutputs.<name>`, each a plain JSON value rather than a tagged union: `.runOutputs.replicas` is `3`. With `-o json` the same document is wrapped in the run's own state, so the transcript is `.outputs.steps` and the answer stays `.runOutputs`.
 
@@ -1438,6 +1442,7 @@ flow run local examples/hello-world/workflow.yaml --debug
 | `--as-claim <string,...>` | `stringArray` | — | — | authenticated string claim NAME=VALUE to rehearse policy as (repeatable) |
 | `--as-deployment <string>` | `string` | `local` | — | Flowstate deployment name to rehearse policy as (local runs only) |
 | `--as-issuer <string>` | `string` | `flowstate:local` | — | authenticated issuer to rehearse policy as (local runs only) |
+| `--as-kind <string>` | `string` | — | — | kind of party to rehearse policy as: human, workload or agent (local runs only) |
 | `--as-namespace <string>` | `string` | — | — | tenant namespace to rehearse policy as (local runs only) |
 | `--as-subject <string>` | `string` | `local-user` | — | authenticated subject to rehearse policy as (local runs only) |
 | `--auth-policy <string>` | `string` | — | `FLOWSTATE_AUTH_POLICY` | path to the auth policy (YAML) whose `secrets:` section decides which secrets a step may read and whose `federation:` section defines the credentials a run may assume |
@@ -1481,6 +1486,7 @@ flow run local examples/hello-world/workflow.yaml --debug
 | `--signal <string,...>` | `stringArray` | — | — | answer a wait_for_signal step, as name=json (repeatable), e.g. `--signal deploy-approved='{"approved": true}'` |
 | `--signal-as-claim <string,...>` | `stringArray` | — | — | authenticated string claim NAME=VALUE to deliver `--signal` as (repeatable) |
 | `--signal-as-issuer <string>` | `string` | — | — | authenticated issuer to deliver `--signal` as, with `--signal-as-subject` (local runs only) |
+| `--signal-as-kind <string>` | `string` | — | — | kind of party to deliver `--signal` as: human, workload or agent (local runs only) |
 | `--signal-as-namespace <string>` | `string` | — | — | tenant namespace to deliver `--signal` as (local runs only) |
 | `--signal-as-subject <string>` | `string` | — | — | authenticated subject to deliver `--signal` as, with `--signal-as-issuer` (local runs only) |
 | `--task-policy <string>` | `string` | — | `FLOWSTATE_TASK_POLICY` | path to a task-shape policy (YAML) governing which identities may dispatch which tasks (default $FLOWSTATE_TASK_POLICY); unset, every identity may dispatch every task |
@@ -1840,8 +1846,8 @@ flow server --insecure-no-auth
 | `--tls-key-file <string>` | `string` | — | `FLOWSTATE_TLS_KEY_FILE` | PEM private key matching `--tls-cert-file` |
 | `--tls-min-version <string>` | `string` | `1.2` | `FLOWSTATE_TLS_MIN_VERSION` | minimum TLS protocol version to accept: "1.2" (the default and the floor) or "1.3" |
 | `--tls-terminated-upstream` | `bool` | `false` | — | allow the public listener to serve plain HTTP on a non-loopback address with no certificate configured (default from FLOWSTATE_TLS_TERMINATED_UPSTREAM). Set it only when something in front of this process terminates TLS or bounds who can reach it (a reverse proxy, an Ingress, a load balancer); otherwise configure `--tls-cert-file` and `--tls-key-file`, or bind loopback for local development |
-| `--webhook <string,...>` | `stringArray` | — | — | serve deliveries for the webhooks declared in this Flowfile, at /webhooks/<workflow>/<trigger>. Repeatable. The file is compiled, its `verify:` keys are resolved, and this deployment's own checks are run against it at startup, so a workflow this deployment cannot serve stops the server rather than refusing deliveries later. Needs the `--secret-*` flags that reach the signing keys |
-| `--webhook-namespace <string>` | `string` | — | — | the Flowstate tenant a delivery's run belongs to, and the tenant its `verify:` keys are read in. A sender presents a signature rather than an identity, so there is no caller to take a tenant from and an operator names it here. Required on a deployment whose trust policy maps tenants onto Temporal namespaces, which has nowhere to route the unnamed tenant; a single-tenant deployment leaves it empty |
+| `--webhook <string,...>` | `stringArray` | — | — | serve deliveries for the webhooks declared in this Flowfile, at /webhooks/<workflow>/<trigger>. Repeatable. The file is compiled, its `verify:` keys are resolved, and this deployment's own checks are run against it at startup, so a workflow this deployment cannot serve stops the server rather than refusing deliveries later. A webhook signed with a key needs the `--secret-*` flags that reach it; one that verifies with `jwt: <name>` needs an --auth-policy entry of that name instead |
+| `--webhook-namespace <string>` | `string` | — | — | the Flowstate tenant a delivery's run belongs to, and the tenant its `verify:` keys are read in. A sender presents a signature or a bearer token rather than a tenant, so an operator names it here, and a `jwt` webhook's token must belong to it. Required on a deployment whose trust policy maps tenants onto Temporal namespaces, which has nowhere to route the unnamed tenant; a single-tenant deployment leaves it empty |
 
 ## `flow server dev`
 
@@ -1975,6 +1981,99 @@ flow signal deploy-abc123 deploy-approved -o json \
 | `--tls-client-key-file <string>` | `string` | — | `FLOWSTATE_TLS_CLIENT_KEY_FILE` | PEM private key matching `--tls-client-cert-file` (overrides FLOWSTATE_TLS_CLIENT_KEY_FILE) |
 | `--token-file <string>` | `string` | — | `FLOWSTATE_TOKEN_FILE` | file holding the bearer token to authenticate with (overrides FLOWSTATE_TOKEN_FILE); re-read per request, so a rotating token keeps working. Without it, FLOWSTATE_TOKEN is used, and neither means anonymous |
 
+## `flow signals`
+
+Check who may act on a workflow, without running it
+
+```
+flow signals [command]
+```
+
+The verbs about a workflow's authorization gates that read a Flowfile and run nothing. `flow signal` (singular) delivers to a run that is already waiting.
+
+## `flow signals check`
+
+Ask each authorization gate whether an identity may act
+
+```
+flow signals check <workflow-file> [flags]
+```
+
+Compile a Flowfile and ask its authorization gates whether an identity would be admitted, executing no step and contacting no server. Each gate is decided by the function the engine decides it with: `signals:` by the check the server applies to a delivery, `debug:` by the check a debug lease is granted with, and `triggers.manual` by the check a manual start is held to. A refusal is the engine's own sentence, which never quotes a claim or an input.
+
+With none of `--signal`, `--debug` and `--manual`, every declared signal is checked; naming any of them checks only what is named. One line is written per gate, `admitted` or `refused`. A signal no `signals:` policy governs is admitted for any sender, and the line says so, so it is not mistaken for a gate that was passed.
+
+The sender is named as `flow run local` names the approver a `--signal` stands in for: `--signal-as-subject` with `--signal-as-issuer` (given together or not at all), `--signal-as-namespace` and `--signal-as-claim`. Name none and the sender is unauthenticated, which no `allow:` predicate a deployment writes admits, and which `triggers.manual` refuses when its block writes an `allow:` predicate (with no block, any caller the server authenticates may start it, and the line says so). `--starter-*` names who started the run, which a predicate reads as `run.identity`; name none and the starter is unknown, which refuses any predicate that reads `run.identity`, as the engine does for a run with no recorded starter. `--starter-anonymous` says the run was started by nobody authenticated, which is how `flow run local` models a run started with no `--as-*` flags.
+
+Arguments are given as `flow run` takes them and are bound against the workflow's `inputs:` as a start binds them, so a predicate reads defaults too. A `sensitive:` input is never printed; a refusal about an argument that is not sensitive can name it, as `flow run local` does. Claims, subjects and matrix content are never quoted by this command.
+
+`--expect admitted|refused` makes the answer an assertion: the exit status is 1 when any decision differs, which is what makes this usable in CI. Without it the exit status is 0 whatever the answers, and non-zero only for a usage or compile error.
+
+`--matrix FILE` asks the same gates about many identities at once and prints a senders-by-gates table. The file is a strict YAML document:
+
+  identities:
+    - name: sre-lead
+      subject: sre-lead@example.com
+      issuer: https://issuer.example.com
+      claims: {team: release-managers}
+      starter: {subject: dev@example.com, issuer: https://issuer.example.com}
+      inputs: {expected_approver: sre-lead@example.com}
+      expect: admitted
+
+`expect` is one outcome for every gate, and `expect_by_gate` a map from gate (`signals.NAME`, `debug`, `triggers.manual`) to its outcome, which wins for the gates it names. A row's `inputs` replace, by name, the `--input` arguments given for every row; a row with no `starter` takes the `--starter-*` flags, and one with no `expect` takes `--expect`. A mismatching row makes the exit status 1. A matrix is bounded at 256 identities and 256 KiB.
+
+Nothing here runs the workflow: a decision that depends on state only a run has (a retry, a signal already consumed) is not modelled, and `triggers.manual` is decided over the caller and the inputs alone, as the server decides it, with no `run`.
+
+Examples:
+
+```sh
+# Who may answer the approval gate? Ask as the approver it names:
+flow signals check examples/approval-gate/workflow.yaml \
+  --input-file examples/approval-gate/inputs.json \
+  --starter-subject dev@example.com \
+  --starter-issuer https://issuer.example.com \
+  --signal-as-subject sre-lead@example.com \
+  --signal-as-issuer https://issuer.example.com \
+  --signal-as-claim team=release-managers
+
+# Assert, in CI, that the requester cannot approve their own deploy:
+flow signals check examples/approval-gate/workflow.yaml \
+  --input-file examples/approval-gate/inputs.json --expect refused \
+  --starter-subject sre-lead@example.com \
+  --starter-issuer https://issuer.example.com \
+  --signal-as-subject sre-lead@example.com \
+  --signal-as-issuer https://issuer.example.com \
+  --signal-as-claim team=release-managers
+
+# Every gate against a table of identities, with expectations:
+flow signals check examples/approval-gate/workflow.yaml \
+  --debug --matrix who.yaml \
+  --input-file examples/approval-gate/inputs.json
+```
+
+| Flag | Type | Default | Environment | Description |
+|---|---|---|---|---|
+| `--debug` | `bool` | `false` | — | check who may hold a debug lease, decided by the `debug:` stanza |
+| `--expect <string>` | `string` | — | — | assert every decision is `admitted` or `refused`; exit 1 when one differs |
+| `--input <string,...>` | `stringArray` | — | — | an argument this run is started with, as name=value (repeatable). The workflow's `inputs:` declaration decides how the value is read: an int is parsed as a number, a bool as true/false, and a list or struct as JSON |
+| `--input-file <string>` | `string` | — | — | a JSON object of arguments, keyed by input name. Values arrive with the types JSON gives them; a `--input` flag of the same name wins over the file |
+| `--manual` | `bool` | `false` | — | check who may start the workflow by hand, decided by `triggers.manual` |
+| `--matrix <string>` | `string` | — | — | a YAML file of named identities to check as a senders-by-gates table |
+| `-o, --output <string>` | `string` | `text` | — | output format: text, json, or jsonl |
+| `--reason <string>` | `string` | — | — | the reason a manual start would carry, for a `manual:` block that requires one |
+| `--signal <string,...>` | `stringArray` | — | — | check this declared signal (repeatable); by default every declared signal is checked |
+| `--signal-as-claim <string,...>` | `stringArray` | — | — | authenticated string claim NAME=VALUE of the identity attempting the act (repeatable) |
+| `--signal-as-issuer <string>` | `string` | — | — | authenticated issuer attempting the act, with `--signal-as-subject` |
+| `--signal-as-kind <string>` | `string` | — | — | kind of party the identity attempting the act is: human, workload or agent |
+| `--signal-as-namespace <string>` | `string` | — | — | tenant namespace of the identity attempting the act |
+| `--signal-as-subject <string>` | `string` | — | — | authenticated subject attempting the act, with `--signal-as-issuer` |
+| `--starter-anonymous` | `bool` | `false` | — | the run was started by nobody authenticated, rather than by an unknown starter |
+| `--starter-claim <string,...>` | `stringArray` | — | — | authenticated string claim NAME=VALUE of whoever started the run (repeatable) |
+| `--starter-issuer <string>` | `string` | — | — | issuer of the subject that started the run, with `--starter-subject` |
+| `--starter-kind <string>` | `string` | — | — | kind of party that started the run, read as `run.identity.kind`: human, workload or agent |
+| `--starter-namespace <string>` | `string` | — | — | tenant namespace of whoever started the run |
+| `--starter-subject <string>` | `string` | — | — | subject that started the run, read as `run.identity`, with `--starter-issuer` |
+
 ## `flow task`
 
 Work with a single task
@@ -2039,6 +2138,7 @@ flow task run example.greet --input name=world --plugin-dir ./plugins \
 | `--as-claim <string,...>` | `stringArray` | — | — | authenticated string claim NAME=VALUE to rehearse policy as (repeatable) |
 | `--as-deployment <string>` | `string` | `local` | — | Flowstate deployment name to rehearse policy as (local runs only) |
 | `--as-issuer <string>` | `string` | `flowstate:local` | — | authenticated issuer to rehearse policy as (local runs only) |
+| `--as-kind <string>` | `string` | — | — | kind of party to rehearse policy as: human, workload or agent (local runs only) |
 | `--as-namespace <string>` | `string` | — | — | tenant namespace to rehearse policy as (local runs only) |
 | `--as-subject <string>` | `string` | `local-user` | — | authenticated subject to rehearse policy as (local runs only) |
 | `--auth-policy <string>` | `string` | — | `FLOWSTATE_AUTH_POLICY` | path to the auth policy (YAML) whose `secrets:` section decides which secrets a step may read and whose `federation:` section defines the credentials a run may assume |
@@ -2219,9 +2319,11 @@ flow test -o jsonl examples/
 | Flag | Type | Default | Environment | Description |
 |---|---|---|---|---|
 | `--coverage-required` | `bool` | `false` | — | fail when a workflow has a step, or a `switch:` arm, no test case reached and no coverage.allow_unreached entry records why |
-| `--debug` | `bool` | `false` | — | stop before each step of one case and read commands from the terminal — step, continue, until, break, inspect, scope, quit; requires exactly one test file and exactly one selected case (narrow with `--run` when the file has more), and is refused with `--output json` and with seeded exploration |
+| `--debug` | `bool` | `false` | — | stop before each step of one case and read commands from the terminal — step, continue, until, break, inspect, scope, quit; requires exactly one test file and exactly one selected case (narrow with `--run` when the file has more), and is refused with `--output json` and with `--seeds`. With `--seed N` it steps through that seed's own run — the faults it injects and the order it chose — which is how a reported violation is opened in the debugger |
 | `--fail-fast` | `bool` | `false` | — | stop at the first failing case; the cases not run are reported as skipped, and --coverage-required is refused alongside it because a stopped suite's coverage is not the suite's |
 | `--fail-on-warning` | `bool` | `false` | — | fail when a case reports a warning — a stub declared and never answered through, a task invoked with no stub declared, or an invocation that no declared stub answered — instead of only printing it |
+| `--fuzz <int>` | `int` | `0` | — | also run every case over N generated sets of inputs drawn from the workflow's declared `inputs:` (types, `values:`, length bounds, `must:`), and fail when a generated run errors with an Internal or Expression failure or breaks the case's `invariants:`; 0, the default, runs the authored cases only |
+| `--fuzz-seed <uint64>` | `uint64` | `0` | — | replay exactly one generated case, the seed a reported finding names, instead of searching |
 | `--junit <string>` | `string` | — | — | also write the results to this file as JUnit XML, for CI systems that annotate failures; failed expectations are <failure>, a case or file that could not be judged is <error> |
 | `--list` | `bool` | `false` | — | print the names of the cases that would run, one per line under their file, without running any; honours --run, and shows cases a `skip:` leaves out |
 | `-o, --output <string>` | `string` | `text` | — | output format: text, json, or jsonl |

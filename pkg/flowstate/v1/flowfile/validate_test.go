@@ -495,7 +495,7 @@ steps:
   - id: a
     log:
       message: >-
-        ${run.identity.subject + run.identity.issuer + run.identity.namespace +
+        ${run.identity.subject + run.identity.issuer + run.identity.namespace + run.identity.principal +
           run.workflow_id + run.run_id + (run.local ? "local" : "not local")}
 `,
 		},

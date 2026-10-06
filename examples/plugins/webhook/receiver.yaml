@@ -1,0 +1,37 @@
+edition: v2026.4
+name: order-fulfilment
+description: "Deployment B's half of a signed webhook: a verified delivery from another Flowstate starts a fulfilment run, and an unverified one starts nothing."
+# Deployment B, the receiver. Nothing here is specific to a Flowstate sender: this
+# is the ordinary `webhook:` trigger (`examples/webhook-trigger`), and `verify:`
+# names the same scheme and the same shared secret `sender.yaml`'s
+# `webhook.send` signs with. Serving it is the deployment's decision:
+#
+#     flow server --webhook examples/plugins/webhook/receiver.yaml
+inputs:
+  order_id:
+    type: string
+    default: ord_local
+    description: the order that was paid
+  amount:
+    type: int
+    default: 0
+    description: the amount captured, in the smallest currency unit
+triggers:
+  - webhook: order-paid
+    verify:
+      hmac_sha256: ${secret('env:PEER_WEBHOOK_KEY')}
+    # The sender's `Idempotency-Key` header is not signed under this scheme, so
+    # the dedupe key is read from the signed body, where the sender put it.
+    idempotency_key: ${event.body.id}
+    with:
+      amount: ${event.body.amount}
+      order_id: ${event.body.order_id}
+steps:
+  - id: fulfil
+    log:
+      level: info
+      message: ${"fulfilling " + inputs.order_id + " for " + string(inputs.amount)}
+outputs:
+  order:
+    value: ${inputs.order_id}
+    description: the order this run was started for

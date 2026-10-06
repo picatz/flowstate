@@ -97,6 +97,8 @@ headings below, not this list.*
   - [`results` is bounded, and retained across Continue-As-New only when read](#results-is-bounded-and-retained-across-continue-as-new-only-when-read)
   - [The burst case has its own spelling: `wait_for_signals:`](#the-burst-case-has-its-own-spelling-wait_for_signals)
   - [Two of three must agree: `quorum:` on `wait_for_signals:`](#two-of-three-must-agree-quorum-on-wait_for_signals)
+  - [One predicate decides who may act: `allow: ${...}` on `signals:`](#one-predicate-decides-who-may-act-allow--on-signals)
+  - [What `flow fix` writes for who may act](#what-flow-fix-writes-for-who-may-act)
   - [Bounded, because the author does not control the trip count](#bounded-because-the-author-does-not-control-the-trip-count)
   - [A `for_each` is bounded on its trip count too](#a-for_each-is-bounded-on-its-trip-count-too)
   - [Both drivers, and determinism](#both-drivers-and-determinism)
@@ -1355,8 +1357,9 @@ steps:
   that predates the feature. This is the invariant the decision implies: **the runtime
   has no user-defined function**, so one spec cannot mean different things on different
   workers, which invariant 3 forbids and Worker Versioning cannot see. It is the one
-  expander an imported helper library goes through (`ExpandPureHelpers`), reached from a
-  different declaration.
+  expander there is: an earlier prototype of importable helpers (`PureHelper`) had its own
+  schema and entry point over the same code, was never reachable from a Flowfile, and was
+  removed rather than kept as a second spelling.
 - **The definition is in the spec, and the use is as written.** `Workflow.declared_functions`
   carries each definition (a message, so `buf breaking` guards it) beside the expanded
   expressions. Nothing evaluates it. It is what lets `flow fmt` write the file back
@@ -1856,15 +1859,15 @@ sub-language.
 
 **`event` is the delivery, and it is bound in a trigger only.** `event.headers` (whose
 names are matched without regard to case) and `event.body` (the decoded payload) are
-in scope in `with:` and `idempotency_key:` and nowhere else in the language. A step
+in scope in `when:`, `with:` and `idempotency_key:` (and in a `signal:` arm's `correlate:` and `with:`) and nowhere else in the language. A step
 naming it is a positioned diagnostic, not a silent nil: everything a workflow operates
 on arrives through `with:` into `inputs:` and is read as `inputs.<name>`, because a
 second input path is one `flow validate` could not check. A step *called* `event` is
 still legal — the name is not reserved, since inside a trigger there is no step scope
 for it to shadow — and `flow fix` knows the binding, so it will not root it.
 
-**Two keys are required, and fail closed.** `verify:` names at least one signing
-scheme (`hmac_sha256` or `stripe`) bound to a `${secret(...)}` reference: there is
+**Two keys are required, and fail closed.** `verify:` names at least one verification
+scheme (`hmac_sha256` or `stripe`, bound to a `${secret(...)}` reference, or `jwt`, bound to the name of a trust policy entry): there is
 deliberately no spelling that means "accept anything", so an unverifiable delivery is
 refused rather than allowed on the grounds that it could not be checked, and a webhook
 with no scheme is inert rather than permissive. `idempotency_key:` names one delivery,
@@ -1892,6 +1895,86 @@ reports that shape (`R10/signature-header-key`, docs/STYLE.md). What the validat
 does *not* do is resolve anything: whether the secret exists and whether this
 deployment has that scheme configured are a deployment's answers.
 
+**`when:` declines a delivery, and the key stays a key.** A provider does not send
+one event type: GitHub sends every action on a repository to one URL, and a workflow
+that cares about `pull_request.opened` would otherwise run for `synchronize` and
+`labeled` too. `when:` is a boolean over `event`, evaluated after `verify:` and
+before `idempotency_key:`, `with:` and `signal.correlate:`, by the evaluator and
+under the cost and deadline limits those use:
+
+```yaml
+- webhook: github
+  verify: { hmac_sha256: ${secret('env:GITHUB_WEBHOOK_SECRET')} }
+  when: ${event.headers["x-github-event"] == "pull_request" && event.body.action == "opened"}
+  idempotency_key: ${event.headers["x-github-delivery"]}
+```
+
+Only a clean `true` admits. `false` *declines*: no run starts, no signal is
+delivered, no key is recorded (so a later delivery of the same event is judged
+afresh), and the receiver answers `204 No Content`: a provider reads any 2xx as
+delivered and does not retry it, and a 204 says there is nothing to read. HTTP gives
+it no body, so the reason lives in the
+audit record (`AUDIT_DENY_CODE_WEBHOOK_DECLINED`, one bounded record per route per
+interval with a count, never the delivery) and in the receiver's log. Anything else
+fails closed and is *refused*, answered `422` with a fixed sentence that quotes
+nothing from the delivery and recorded as a broken rule (`AUDIT_DENY_CODE_RULE_ERROR`):
+an evaluation error, a result that is not a bool, an exceeded bound, and — the
+common one — a field this event type does not carry. An absent field is a decline
+only when the author says so: `event.body.?action.orValue("") == "opened"`, or
+`has(event.body.action) && event.body.action == "opened"`. Absent means every verified
+delivery is admitted, as before.
+
+A `when:` must read `event` (a predicate that cannot vary with the delivery admits
+all of them or none) and may not read a `${secret(...)}`. It applies to a `signal:`
+webhook as well, ahead of `correlate:`, so a filtered delivery never addresses a run;
+it is written once on the webhook, not again inside `signal:`. `flow test` replays it
+through the same function, and `expect: {refused: true}` asserts a decline.
+
+This is also what the key is not for: `${event.body.type == "invoice.paid" ?
+event.body.id : "ignored"}` collapses every uninteresting delivery onto one phantom
+run and dedupes *across* event types. Write the filter in `when:` and the key over the
+event's id.
+
+**`respond_within:` answers the delivery with what the run produced.** A receiver
+answers a delivery with the run's address and nothing else, which suits a provider
+that only needs to know the event landed and not a form that needs the order number
+in the same exchange. `respond_within:` is the bound on a wait for that:
+
+```yaml
+- webhook: checkout
+  verify: { hmac_sha256: ${secret('env:CHECKOUT_WEBHOOK_SECRET')} }
+  idempotency_key: ${event.body.id}
+  with: { order_id: ${event.body.order_id} }
+  respond_within: 5s
+```
+
+The receiver starts the run (or joins the one a redelivery names), waits at most that
+long for it, and answers one JSON document. The HTTP status keeps its meaning, a
+delivery disposition: a 2xx says the delivery landed and must not be retried,
+whatever the run then did. `status` says what the run did:
+
+| Document | When |
+| --- | --- |
+| `200 {…, "status": "completed", "outputs": {…}}` | The run finished. `outputs` is the run's declared `outputs:` in the plain-JSON projection `flow get -o json` uses, and nothing else: never a step's output. |
+| `200 {…, "status": "failed", "error": {"message": …}}` | The run failed. The sentence `flow get` reports, never a stack, with sensitive input values removed. |
+| `202 {…, "status": "running"}` | The bound passed first, the sender hung up, or the answer would exceed 1 MiB. The run continues; read it with `flow get`. A redelivery that joined a running run is `200` with `joined: true`, as it is without the field. |
+
+The bound is the field, 100ms to 30s, and there is no default: a wait nobody wrote
+down would hold a receiver slot for as long as a run takes. It is refused beside
+`signal:` (a bridge starts no run to wait for) and in a workflow with no `outputs:`
+(nothing to answer with). A redelivery waits the same bound and answers the same
+document. Outputs declared `sensitive:` are withheld, and a run whose failure could
+quote one answers a withheld sentence, exactly as `Get` does; there is no way to
+reveal either on this surface.
+
+A waiting delivery holds one of the receiver's 64 concurrency slots (the one bound
+every delivery shares) for the whole wait, so 64 deliveries waiting five seconds each
+is the route's ceiling before it sheds with `503`; choose the bound for the traffic.
+There is deliberately no callback form: a run that has to tell somebody later does it
+as its last step, with `webhook.send`. `flow test` rehearses the *document* with
+`expect.response:` (see [TESTING.md](TESTING.md)), built by the function the receiver
+calls; the wait itself is the receiver's alone, and `flow run local` serves nothing.
+
 **Declaring is not serving.** A file declares a webhook; a deployment decides whether
 *this* installation serves it, because staging must not fire the production webhook.
 `flow server --webhook ./workflow.yaml` mounts the declaration at
@@ -1908,7 +1991,15 @@ resolved through the deployment's `--secret-*` providers — so a deployment tha
 serve a webhook fails to start rather than refusing deliveries at three in the morning.
 The generic `hmac_sha256` scheme reads `X-Flowstate-Signature` (hex, optionally
 `sha256=`-prefixed, over the raw body); `stripe` reads `Stripe-Signature` with its own
-five-minute replay window. A delivery that verifies starts a run whose id is derived
+five-minute replay window; `jwt: <name>` reads `Authorization: Bearer <token>` and checks it
+against the entry of the deployment's `--auth-policy` of that name, which must be a
+`kind: oidc` entry — a name no entry has, or a server with no trust policy, stops the
+server at startup. The delivery then acts as that token's principal, in the receiver's
+tenant, which is what an `allow:` over `run.identity` or `sender.identity` sees; the
+token authenticates the sender and covers none of the body, so pair it with a signing
+scheme where the body matters. `flow test` has no trust policy to check a token with:
+a case's `signature: invalid` declares the token did not verify (valid by default), and
+a signing key beside it is still computed from the bound `secrets:`. A delivery that verifies starts a run whose id is derived
 from `idempotency_key:`, so a redelivery joins that run instead of starting a second
 one, and both drivers ignore the block entirely — `flow run local` still runs a file
 with a webhook on it once, now.
@@ -1965,8 +2056,7 @@ block where the entry would otherwise write `with:`:
 ```yaml
 signals:
   stage-approved:
-    allow:
-      - subject: flowstate://webhook#deploy-gate/slack-approval
+    allow: ${sender.identity.principal == "flowstate://webhook#deploy-gate/slack-approval"}
 
 triggers:
   - webhook: slack-approval
@@ -2002,8 +2092,13 @@ the delivery is provable, depending on it is not.
 zero case is closed.** A signal name with no `signals:` entry admits any sender; that
 is the deliberate opt-in rule everywhere else, and it is not tolerable on a route
 anybody can POST to, where "any sender" means "whoever holds one signing key". So
-`flow validate` refuses a `signal:` whose name has no explicit policy with a rule that
-could admit the trigger's principal:
+`flow validate` refuses a `signal:` whose name has no explicit policy, and one whose
+predicate admits only named principals (`sender.identity.principal == "..."` or `in
+[...]`, joined by `||` and `&&`) none of which is the trigger's
+(`flowstate://webhook#<workflow>/<trigger>`). Any other predicate is decided at
+delivery, over the sender, so the file check does not evaluate it, and one that cannot
+admit the trigger's principal (a claims-only predicate, say) refuses every delivery
+instead (#2325):
 
 ```
 webhook "slack-approval" answers signal "stage-approved", which declares no `signals:`
@@ -2017,7 +2112,8 @@ one naming a person. It is the same principal the receiver already records as a
 webhook-started run's starter, checked by the same `authorizeSignal` and
 `SignalPolicyCheck` a `flow signal` goes through — there is no second policy language
 here. What a signature attests is possession of a key rather than a person, so
-`distinct_from_starter:` on a bridged gate separates triggers rather than humans, and
+`sender.identity.principal != run.identity.principal` on a bridged gate separates
+triggers rather than humans, and
 a workflow that needs two distinct people either side of a gate cannot get them from a
 webhook today.
 
@@ -2116,9 +2212,9 @@ triggers:
 
   - manual:
       require_reason: true                    # a start must say why, recorded on the run
-      # Exact stable caller IDs: <issuer>#<subject>. Bare subjects are rejected
+      # Exact stable caller IDs: <issuer>#<subject>. Bare subjects never match
       # because the same subject can exist under more than one trusted issuer.
-      allowed_principals: ["https://issuer.example.com#oncall@example.com"]
+      allow: ${sender.identity.principal in ["https://issuer.example.com#oncall@example.com"]}
 ```
 
 and refusal is something you write down, on one line:
@@ -2142,15 +2238,17 @@ the boundary, against an identity it authenticated and the `--reason` the caller
 the same placement `signals:` policy already has, and the same rule that keeps egress
 policy out of the validator.
 
-Each `allowed_principals` entry is the exact stable identity
-`<issuer>#<subject>` established by OIDC or identity-bearing mTLS authentication.
-That spelling has exactly one `#` separator; an identity containing `#` in either
-half cannot be represented ambiguously and therefore cannot satisfy an allowlist.
-Existing bare-subject entries are invalid rather than being reinterpreted as global
-subjects; qualify them with the issuer configured in the server's auth policy. The
-`--insecure-no-auth` development identity cannot satisfy a non-empty allowlist. Omit
-the allowlist for an intentionally open development server; never use that posture on
-a shared network.
+`allow: ${...}` is one predicate over the caller and the submitted inputs, the form
+`signals:` and `debug:` take; see
+[One predicate decides who may act](#one-predicate-decides-who-may-act-allow--on-signals).
+A caller is named by `sender.identity.principal`, the exact stable identity
+`<issuer>#<subject>` established by OIDC or identity-bearing mTLS authentication. It is
+empty when either half is missing, so compare it to a name that is not empty: an
+unauthenticated caller then never equals a named one. A bare subject is never a
+principal, because the same subject can exist under more than one trusted issuer; write
+the issuer configured in the server's auth policy. The `--insecure-no-auth` development
+identity cannot satisfy a predicate that names particular callers. Omit `allow:` for an
+intentionally open development server; never use that posture on a shared network.
 
 **Trigger context is readable for behaviour.** A run reads how it started under a root of
 its own:
@@ -2189,7 +2287,7 @@ anywhere in particular — a value that cannot drift can be read everywhere.
 
 In the body that is an expression a test can fake, one `flow validate` cannot reason
 about, and one a later refactor can reorder past the step it was guarding. Authorization
-belongs on the trigger — `manual: {allowed_principals: [...]}`, or `manual: denied` —
+belongs on the trigger — `manual: {allow: ${...}}`, or `manual: denied` —
 where a deployment owns it, the validator can see it, and a server enforces it before the
 run exists. Each decision lives where the thing that owns it lives.
 
@@ -2775,7 +2873,7 @@ component-wise under one of the policy's `roots`.
 environment (assembled from nothing: operator `env`, then `env_passthrough` copied
 from the worker only if present, then step `env:` for keys in `env_authored`; loader
 variables such as `LD_PRELOAD` and `DYLD_*` are refused), a required `timeout`
-(ceiling 1h) and `max_output_bytes` per stream (ceiling 16MiB), and CEL `allow` /
+(ceiling 1h) and `max_output_bytes` per stream (ceiling 128KiB), and CEL `allow` /
 `deny` rules over `argv`, `executable`, `name`, `dir`, `env_keys` (names, never
 values) and `identity`. Deny wins, and a rule that cannot be evaluated denies.
 
@@ -3562,7 +3660,7 @@ tolerates and retries the failures it expects and nothing else:
   retry:
     attempts: 3
     interval: 1s
-    except: [RateLimited]     # retried by default; never hammer a rate limit
+    only: [Upstream, Timeout] # a rate limit is retryable by default; this leaves it out
   continue_on_error: [Upstream, RateLimited]
   http: {method: POST, url: https://hooks.example.com/notify}
 ```
@@ -3572,16 +3670,14 @@ tolerates and retries the failures it expects and nothing else:
 | `continue_on_error: true` | tolerate every failure, as before |
 | `continue_on_error: [Kind, ...]` | tolerate only these kinds; any other failure ends the run |
 | `retry: {only: [Kind, ...]}` | retry only these kinds |
-| `retry: {except: [Kind, ...]}` | never retry these kinds |
 
 A kind is a built-in kind or one declared under `errors:`; a `call:` step may
-also name a kind its callee declares, without repeating the declaration. Both retry lists only
-narrow what the engine would already retry (`Upstream`, `Timeout`, `Internal`,
+also name a kind its callee declares, without repeating the declaration. `only:` only
+narrows what the engine would already retry (`Upstream`, `Timeout`, `Internal`,
 `RateLimited`): naming a kind that is never retried, such as `PolicyDenied` or a
 declared error, cannot make it retryable, so `flow validate` refuses the list that
-tries rather than promise a retry that never happens. `only:` and `except:` say the
-same thing from opposite ends, so a step writes at most one, and `except:` may not
-name a kind that `only:` already leaves out. A misspelled kind is refused with the
+tries rather than promise a retry that never happens. To retry everything but one
+kind, name the rest: there is no second list for the complement. A misspelled kind is refused with the
 nearest real one. Both drivers apply the same rule, pinned by shared conformance
 cases; on the durable driver the narrowing compiles to Temporal's
 non-retryable error types and can only add to them. See
@@ -4421,6 +4517,148 @@ reading; reaching the bound fails the step rather than inventing a decision.
 only between steps, so a tally never spans one; the deliveries a wait has not taken
 stay on the channel or in the carried pending signals, and a replay rebuilds the
 tally by taking the same deliveries in the same order.
+
+### One predicate decides who may act: `allow: ${...}` on `signals:`
+
+A `signals:` policy is one CEL predicate. A match-list grammar beside CEL would be a
+second, smaller language for a question CEL already answers (R1 and R2 in
+[docs/STYLE.md](STYLE.md), issue #326), so `allow:` takes one predicate and nothing
+else:
+
+```yaml
+signals:
+  deploy-approved:
+    allow: ${(sender.identity.principal == "https://issuer.example.com#" + inputs.expected_approver && sender.identity.claims.team == "release-managers" || sender.identity.claims.role == "sre-lead") && sender.identity.principal != run.identity.principal}
+```
+
+A policy with no `allow:` authorizes nobody and is refused. A list under `allow:`, a
+`distinct_from_starter:` key and `manual: allowed_principals:` are retired: a file that
+still writes one is refused at parse with a sentence that names the key (never its
+value) and says to run `flow fix`, which rewrites each of them into the predicate; see
+[What `flow fix` writes](#what-flow-fix-writes-for-who-may-act).
+
+**The scope is closed.** `sender.identity.{principal,subject,issuer,namespace,kind,claims}`
+is the server's own attestation of whoever is delivering. `run.identity` is the run's
+starter with the same fields, and `inputs` is the run's arguments. Nothing else is in
+scope: no steps, vars, clock or secrets, and a name outside it is a compile error
+rather than a predicate that quietly never matches. `principal` is `issuer#subject`
+(empty when either half is missing), so two identity providers minting the same
+subject are told apart by one comparison. Claims are read here, bound server-side
+from the verified identity, and are still never recorded in a wait's own `sender`
+output.
+
+**Fail closed, mechanically.** Only a clean `true` admits. A result that is not a
+bool, an evaluation error, a cost bound exceeded, or an expression that does not
+compile each refuse the sender. A missing claim key is an evaluation error, so test
+with `has(sender.identity.claims.team)` where absence is allowed. When the run has no
+recorded starter `run` is unbound, so a predicate that reads it errors and denies
+while one that never mentions it is unaffected. The refusal says what went wrong and
+never quotes an input or a claim.
+
+**Narrowing is syntactic.** Whoever starts a run chooses its `inputs`, so a predicate
+over them alone would let the starter name their own approver. A predicate that reads
+`inputs` must also read `sender.identity.claims` or `run.identity`, or `flow validate`
+refuses it. It checks which names the expression reads, not what it proves.
+Because the check only looks at which
+names the expression reads, write conjunctions (`sender.identity.claims.team == "x" &&
+sender.identity.principal == "issuer#" + inputs.approver`): a claim read in one `||`
+alternative satisfies the check for the whole predicate, including an alternative that
+reads only `inputs`.
+
+A predicate that reads `inputs` records, in the policy scope memo at submit, only the
+inputs it names (`inputs.name`, `inputs["name"]`, `has(inputs.name)` or `"name" in
+inputs`), capped at 64 KiB. A predicate that reads `inputs` without naming one
+(`inputs[<computed>]`, `inputs` passed whole to a function or iterated) is refused,
+because what it reads cannot be recorded narrowly. An input declared `sensitive:` can
+never be read by a `signals:` or `debug:` predicate: `flow validate` refuses it, naming
+the input and no value, and the server refuses it again at submit, because a secret
+never enters durable history (#2325). Compare a claim to a name instead, or drop
+`sensitive:` from an input that is really only an identifier.
+
+**Where it runs.** It is evaluated server-side where the signal is accepted, by the
+one function every enforcement point reaches, so the durable server, `flow run local`,
+`flow test` and the MCP tools answer it the same way. Submit records the values a
+predicate reads (its inputs, and the starter's identity when it reads `run`) with the
+run, bounded at 64 KiB and refused rather than truncated; a run whose predicates read
+neither records nothing. A run frozen by an earlier release that recorded the retired
+rule list decodes to a policy with no predicate and refuses every sender; start it again
+from the rewritten file. One predicate is bounded at a fixed evaluation cost.
+
+**`debug:` and `manual:` take the same predicate.** `debug: allow: ${...}` is decided by
+the same function over the same scope, with `inputs` and `run.identity` being the
+debugged run's, and the same narrowing rule:
+
+```yaml
+debug:
+  allow: ${sender.identity.claims.team == "sre"}
+```
+
+`triggers: - manual:` takes `allow: ${...}`:
+
+```yaml
+triggers:
+  - manual:
+      allow: ${sender.identity.principal in ["https://issuer.example.com#ops@example.com"]}
+```
+
+A manual start has no run yet, so there `run` is not in scope and reading it is a
+compile error; `sender` is the caller and `inputs` are the arguments being submitted
+with this start. With no starter to compare against, the narrowing rule is that a
+predicate reading `inputs` must also read `sender.identity.claims`. A caller with no
+authenticated principal is refused before the predicate is consulted, since a predicate such as
+`principal != "x"` would otherwise admit nobody-at-all. `denied`
+and a predicate contradict each other and are refused; `require_reason:` still applies
+beside it. The values a `debug:` predicate reads of the run are recorded at submit with
+the same bound as for `signals:`.
+
+### What `flow fix` writes for who may act
+
+Each old form has one reading, so the rewrite is text and nothing is judged:
+
+| Written | Becomes |
+| --- | --- |
+| `subject: "<issuer>#<subject>"` | `sender.identity.principal == "<issuer>#<subject>"` |
+| `subject: ${expr}` | `sender.identity.principal == expr`, parenthesized when `expr` is a ternary or a comparison |
+| `claims: {k: v}` | `&& sender.identity.claims.k == "v"`, or `claims["k"]` when `k` is not a plain identifier |
+| `namespace: N` | `&& sender.identity.namespace == "N"` |
+| several rules | the rules joined with `||` |
+| `distinct_from_starter: true` | `&& sender.identity.principal != run.identity.principal` around the whole |
+| `manual: allowed_principals: [..]` | `allow: ${sender.identity.principal in [..]}` |
+
+`debug:` takes the same rewrite as a signal's policy. No edition boundary was needed:
+the retired forms are refused by name inside `v2026.4`, so `flow fix` is the migration
+for any file still written in them. It works on the text, so it still reads them. A
+second run finds nothing to do, and what it writes is what `flow fmt` writes.
+
+Two things in the output are not in the input. An interpolated subject
+(`subject: ${inputs.approver}`, or `${"https://issuer.example.com#" + inputs.approver}`)
+gains `sender.identity.principal.split("#").size() == 2 &&` in front of it. The rule
+list refused, at submit, a run whose subject did not resolve to exactly one
+`<issuer>#<subject>`; a predicate has no such step. `principal` is empty for an
+unauthenticated sender, so an input left empty would otherwise equal it and admit every
+anonymous sender, and a computed subject such as `"issuer#" + inputs.x` would admit a
+sender whose subject is `a#b` when the rule list refused that run. The clause is false
+for an empty principal and for one with more than one `#`, so the predicate admits only
+what a run the rule list accepted would have admitted. And an expression that was a rule's `subject:` keeps the claim or the
+`distinct_from_starter:` that narrowed it, as a conjunct, because the narrowing rule is
+now one syntactic check over the whole predicate and would be satisfied by a claim
+read in a different alternative.
+
+It refuses, and writes nothing, where it would have to guess: a value that is not a
+string or that holds a `${` where the old grammar read literal text; a subject that is
+not `<issuer>#<subject>`; an interpolated subject nothing narrows, which the compiler
+already refuses; a subject expression holding a `//` comment, which cannot move onto
+one line; a policy or `manual:` block in flow style; a comment it cannot tell from
+text. Comments written inside the old rule list are carried above the new line, and the
+change says so.
+
+**What a predicate can no longer be counted for.** A quorum's `approve:` is checked
+against a policy only when it can enumerate who the policy admits: a predicate made of
+`sender.identity.principal == "..."` and `in [...]` comparisons, joined by `||` (a union)
+or `&&` (the closed side), is counted, and anything else is open and never refused. A
+bridged webhook's check that its signal's policy can admit the trigger refuses a closed
+predicate that omits the trigger's principal and leaves every open one to delivery,
+where one that cannot admit it denies (#2325).
 
 ### Bounded, because the author does not control the trip count
 
@@ -5817,8 +6055,11 @@ the moment of answering: a gate that is already closed says so, and the late
 answer is not sent, because a signal to a name nobody waits on is held for the next gate
 that does. The answer is pinned to the run the gate was read on, so a stale page
 cannot answer another run. Two answers to the same gate submitted in the same instant can
-still both pass that read. A run holding more gates than one answer lists, where the
-named gate is not among those listed, is reported as not looked up, never as closed.
+still both pass that read. The gate is looked up by its signal name inside the run, so a
+run holding more than `v1.MaxPendingWaits` (64) gates, more than `Get` lists, still answers
+for each of them, up to the `v1.MaxHeldWaits` (1024) the run retains on either driver. Past
+that, or on a run whose worker cannot answer the lookup, the gate is reported as not looked
+up, never as closed.
 
 With no proxy in front, the page can sign approvers in itself. `--gates-ui-issuer`,
 `--gates-ui-client-id` and `--gates-ui-redirect-url` (the address of `/gates/callback`,
@@ -5857,13 +6098,14 @@ The one workflow shape most worth trying before production - a gate whose
 authorization lives in `signals:` rather than in the file's own `if:` - could be
 rehearsed only as its own refusal.
 
-`--signal-as-subject`, `--signal-as-issuer`, `--signal-as-namespace` and
-`--signal-as-claim` name the approver a delivery stands in for. They rhyme with
+`--signal-as-subject`, `--signal-as-issuer`, `--signal-as-namespace`,
+`--signal-as-kind` and `--signal-as-claim` name the approver a delivery stands in for. They rhyme with
 `--as-subject` and its siblings, which name the run's own starter, because they
 answer the same shape of question about the other party - and the pairing is not
-decorative: `distinct_from_starter:` compares the one against the other, so a
-rehearsal that names the same person for both is refused locally for the reason
-production refuses it.
+decorative: a predicate comparing `sender.identity.principal` with
+`run.identity.principal` compares the one against
+the other, so a rehearsal that names the same person for both is refused locally for the
+reason production refuses it.
 
 The identity is asserted, never attested, and the design turns on the two staying
 distinguishable. A rehearsed delivery carries the same `local` marker an unattested
@@ -5890,7 +6132,7 @@ example in the corpus needs it yet.
 A rehearsal on a command line is something an author does once. The version that
 survives is a case in the file beside the workflow, so `flow test` says the same two
 things: a scripted signal's `sender:` names who a delivery stands in for, and a case's
-own `starter:` names who the run started as - the two `distinct_from_starter:` compares.
+own `starter:` names who the run started as - the two a distinctness clause compares.
 Both carry `subject:`, `issuer:`, `namespace:` and `claims:`, one spelling for both ends
 of that comparison, and both are checked by `SignalPolicyCheck`, the function the server
 calls. So the pair a policy exists to keep apart is exercised in the file's own tests, in
@@ -5899,7 +6141,7 @@ the moment they are also the person who asked.
 
 A case that names no `starter:` runs as nobody, which is what every case did before the
 field existed. Nobody is *recorded* rather than unknown - a run that could not say who
-started it would have every `distinct_from_starter:` policy refuse it outright, which
+started it would have every policy that reads `run.identity` refuse it outright, which
 would take the admit direction away from the author entirely - so the refusal only
 becomes reachable when a case names a starter, which is the whole reason to name one.
 
@@ -5923,9 +6165,10 @@ and every policy a *deployment* installs is either absent from that process or
 evaluated against somebody else entirely.
 
 One surface reads a `starter:`, exhaustively: the workflow's own `signals:` policy,
-through `SignalPolicyCheck`, the function the server itself calls. That is a rule's
-`subject:`, `issuer:`, `namespace:` and `claims:` matching a scripted `sender:`, and
-`distinct_from_starter:` comparing the two qualified subjects. What does not read it:
+through `SignalPolicyCheck`, the function the server itself calls. That is the
+predicate reading a scripted `sender:`'s `principal`, `subject`, `issuer`, `namespace` and
+`claims`, and, where it reads `run.identity`, comparing it with the `starter:`. What does
+not read it:
 
 | Surface | What a case gets |
 | --- | --- |
@@ -6322,10 +6565,7 @@ verb.
 edition: v2026.4
 name: deploy-gate
 debug:
-  allow:
-    - claims:
-        team: sre
-  distinct_from_starter: true
+  allow: ${sender.identity.claims.team == "sre" && sender.identity.principal != run.identity.principal}
 steps:
   - id: ship
     log:
@@ -6339,11 +6579,10 @@ a signal policy is per name, and there is exactly one thing to debug — this ru
 
 ### It *is* the `signals:` policy, not a shape beside it
 
-`allow:` is the same list of alternative rules, with the same `subject:`,
-`namespace:`, `claims:` and `subject: ${...}`, matched against the same attested
-sender by the same check, refused by the same narrowing rule, and reported by the
-same diagnostics — with the field path naming `debug:` rather than a stanza the
-author did not write.
+`allow:` is the same predicate (it was the same list of alternative rules, and `flow fix`
+rewrites that), over the same attested sender, decided by the same check, refused by the
+same narrowing rule, and reported by the same diagnostics — with the field path naming
+`debug:` rather than a stanza the author did not write.
 
 That is the #726 lesson applied before the fact rather than after it. A fourth
 spelling of "this claim must carry this value" was the mistake that section is a

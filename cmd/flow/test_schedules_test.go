@@ -351,3 +351,115 @@ func TestAnInvariantViolationRendersItsPinnedScript(t *testing.T) {
 	assert.NotContains(t, reordered, "PIN THEM")
 	assert.Contains(t, reordered, "cannot be pinned by invocation number")
 }
+
+// The shrink note says what shrinking did and never overstates it: minimal when
+// the search finished, a possibly-longer list when the bound ended it, and
+// nothing when nothing was shrunk.
+func TestTheShrinkNoteSaysWhatShrinkingDid(t *testing.T) {
+	note := func(d flowtest.ScheduleDivergence) string { return shrinkNote(&d) }
+
+	assert.Empty(t, note(flowtest.ScheduleDivergence{Script: "faults: []"}))
+	assert.Contains(t, note(flowtest.ScheduleDivergence{FaultsFired: 5, ShrinkRuns: 9, Minimal: true}),
+		"Shrunk from 5 failures fired by the seed after 9 re-runs; removing any one")
+	bounded := note(flowtest.ScheduleDivergence{FaultsFired: 60, ShrinkRuns: flowtest.MaxShrinkRuns})
+	assert.Contains(t, bounded, "may not be minimal")
+	assert.NotContains(t, bounded, "removing any one")
+}
+
+// A search that only injected faults explored something: it must say how much,
+// and must not call itself an exploration of nothing because no `parallel:` was
+// reached.
+func TestSeedsReportsFaultDrawsAndDoesNotCallThatNothing(t *testing.T) {
+	render := func(s *flowtest.ScheduleReport) string {
+		var out strings.Builder
+		printSchedules(&out, ui.Plain(&out, &out).Theme, &v1.TestReport{File: "x.test.yaml"}, s)
+
+		return out.String()
+	}
+
+	faulted := render(&flowtest.ScheduleReport{Schedules: 4, Cases: 1, FaultDraws: 12})
+	assert.Contains(t, faulted, "12 fault draws")
+	assert.NotContains(t, faulted, "nothing was explored")
+
+	assert.Contains(t, render(&flowtest.ScheduleReport{Schedules: 4, Cases: 1}), "nothing was explored")
+}
+
+// A fuzz finding prints its replay command and the case to paste, and fails
+// the file; a clean fuzz prints one summary line.
+func TestAFuzzFindingIsRenderedAndFailsTheFile(t *testing.T) {
+	render := func(fuzz *v1.FuzzReport) (string, testFileResult) {
+		report := &v1.TestReport{File: "deploy.test.yaml", Fuzz: fuzz, Cases: []*v1.TestCase{{Passed: true}}}
+		var out strings.Builder
+		printFuzz(&out, ui.Plain(&out, &out).Theme, report)
+
+		return out.String(), testFileResult{report: report}
+	}
+
+	clean, result := render(&v1.FuzzReport{Runs: 40, Cases: 2, Inconclusive: 3, SkippedInputs: []string{"tags: list inputs are not generated yet"}})
+	assert.Contains(t, clean, "40 cases generated and judged over 2 authored cases")
+	assert.Contains(t, clean, "3 generated cases could not be judged")
+	assert.Contains(t, clean, "not generated — tags")
+	assert.False(t, result.failed(false, false))
+
+	found, result := render(&v1.FuzzReport{Runs: 9, Cases: 1, Finding: &v1.FuzzFinding{
+		Case: "authored", Seed: 7, Inputs: "inputs:\n  count: 0\n", Failure: "the run failed with a Expression error: division by zero",
+	}})
+	assert.Contains(t, found, "generated inputs broke it (fuzz seed 7)")
+	assert.Contains(t, found, "flow test --fuzz-seed 7 -- deploy.test.yaml")
+	assert.Contains(t, found, "count: 0")
+	assert.True(t, result.failed(false, false))
+	assert.NotContains(t, found, "shrunk", "a finding that moved one input has nothing to say about a shrink")
+	assert.NotContains(t, found, "REMOVE FROM")
+
+	shrunk, _ := render(&v1.FuzzReport{Runs: 9, Cases: 1, Finding: &v1.FuzzFinding{
+		Case: "authored", Seed: 90, Inputs: "inputs:\n  count: 0\n", Failure: "the run failed", Absent: []string{"note", "tag"},
+		Changed: 5, ShrinkRuns: 11, Minimal: true,
+	}})
+	assert.Contains(t, shrunk, "5 inputs changed, shrunk by 11 re-runs; no single input can be put back")
+	assert.Contains(t, shrunk, "REMOVE FROM THE CASE'S `inputs:`")
+	assert.Contains(t, shrunk, "note, tag")
+
+	// Every generated case erroring before the run proves nothing, so it fails
+	// the file rather than reading as a clean fuzz.
+	unjudged, result := render(&v1.FuzzReport{Runs: 0, Cases: 1, Inconclusive: 5})
+	assert.Contains(t, unjudged, "nothing was judged")
+	assert.True(t, result.failed(false, false))
+	assert.Contains(t, nonCaseVerdicts(result, false, false), "--fuzz: every generated case errored before the run, so nothing was judged")
+
+	none, _ := render(nil)
+	assert.Empty(t, none)
+}
+
+func TestFuzzFlagsAreRefusedWhereTheyCannotWork(t *testing.T) {
+	for name, tc := range map[string]struct {
+		args []string
+		want string
+	}{
+		"with seeds": {[]string{"--fuzz", "5", "--seeds", "3"}, "run them separately"},
+		"negative":   {[]string{"--fuzz", "-1"}, "not a count"},
+		"pinned+n":   {[]string{"--fuzz", "5", "--fuzz-seed", "2"}, "pass one or the other"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cmd := newTestCommand()
+			require.NoError(t, cmd.ParseFlags(tc.args))
+			budget, err := scheduleBudget(cmd)
+			require.NoError(t, err)
+			_, err = fuzzOptions(cmd, budget)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.want)
+		})
+	}
+}
+
+// A fuzz run that judged no generated case in any file verified nothing; one
+// file with a judged case anywhere makes the invocation count.
+func TestFuzzedNothingIsAnInvocationWideVerdict(t *testing.T) {
+	judged := testFileResult{report: &v1.TestReport{Fuzz: &v1.FuzzReport{Runs: 5, Cases: 1}}}
+	idle := testFileResult{report: &v1.TestReport{Fuzz: &v1.FuzzReport{}}}
+	found := testFileResult{report: &v1.TestReport{Fuzz: &v1.FuzzReport{Finding: &v1.FuzzFinding{Seed: 1}}}}
+
+	assert.True(t, fuzzedNothing([]testFileResult{idle}))
+	assert.True(t, fuzzedNothing(nil))
+	assert.False(t, fuzzedNothing([]testFileResult{idle, judged}))
+	assert.False(t, fuzzedNothing([]testFileResult{found, idle}))
+}

@@ -740,7 +740,7 @@ func init() {
 				"\n" +
 				" The expression is evaluated exactly once, in `FlowstateServer.Run`, after\n" +
 				" [BindRunInputs] and before the run exists — the same moment and the same\n" +
-				" discipline `SignalPolicyRule.subject_from` established. `inputs.*` is the\n" +
+				" discipline signal policies once resolved their subjects with. `inputs.*` is the\n" +
 				" whole of what it may read, and the validator refuses anything else, because\n" +
 				" at that moment nothing else exists: no step has produced an output, `vars:`\n" +
 				" have not been evaluated, and there is no run to have a `run.id`.\n" +
@@ -888,17 +888,6 @@ func init() {
 				" capability parameter. BindingId is stable across edits; Revision changes for\n" +
 				" every semantic edit. A run is never re-resolved after this record and the\n" +
 				" concrete task names have been written into its normalized program.\n",
-		},
-		{
-			Name: "flowstate.v1.PureHelper",
-			Leading: " PureHelper is an importable declaration normalized away before execution. It\n" +
-				" contributes a typed name to the compiler's CEL environment, never a runtime\n" +
-				" function or evaluator. The body may reference only its parameters and the\n" +
-				" pinned profile's pure CEL vocabulary.\n",
-		},
-		{
-			Name:    "flowstate.v1.PureHelperParameter",
-			Leading: " PureHelperParameter is one typed, body-local argument of a PureHelper.\n",
 		},
 		{
 			Name: "flowstate.v1.InputDeclaration",
@@ -2163,11 +2152,6 @@ func init() {
 				" kind is not retried. Empty means every kind that is retryable by default.\n" +
 				" A list never widens: a kind that is permanent by classification is not\n" +
 				" retried because it is named here, and naming one is refused.\n",
-		},
-		{
-			Name: "flowstate.v1.RetryPolicy.except",
-			Leading: " Except removes the kinds it names from those retried, so a retryable kind a\n" +
-				" step should fail fast on (a rate limit it must not hammer) is written down.\n",
 		},
 		{
 			Name: "flowstate.v1.ResolvedTaskCapabilities",

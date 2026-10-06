@@ -34,10 +34,8 @@ func bridgedGateWorkflow() *v1.Workflow {
 		Name:    "gate-webhook",
 		Profile: v1.CurrentProfile,
 		Signals: map[string]*v1.SignalPolicy{
-			"stage-approved": {Allow: []*v1.SignalPolicyRule{{
-				Subject: v1.QualifiedSubject(v1.WebhookPrincipalIssuer,
-					v1.WebhookTriggerSubject("gate-webhook", "slack-approval")),
-			}}},
+			"stage-approved": {Allow: `sender.identity.principal == "` + v1.QualifiedSubject(v1.WebhookPrincipalIssuer,
+				v1.WebhookTriggerSubject("gate-webhook", "slack-approval")) + `"`},
 		},
 		Triggers: &v1.Triggers{Webhooks: []*v1.WebhookTrigger{{
 			Name: "slack-approval",

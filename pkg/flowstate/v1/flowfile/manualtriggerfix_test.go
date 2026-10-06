@@ -39,8 +39,7 @@ triggers:
       order_id: ${event.body.order_id}
   - manual:
       require_reason: true
-      allowed_principals:
-        - https://issuer.example.com#oncall@example.com
+      allow: ${sender.identity.principal in ["https://issuer.example.com#oncall@example.com"]}
 steps:
   - id: notify
     if: ${trigger.kind != "schedule"}
@@ -126,9 +125,7 @@ name: break-glass
 triggers:
   manual:
     require_reason: true
-    allowed_principals:
-      - https://issuer.example.com#oncall@example.com
-      - https://issuer.example.com#sre@example.com
+    allow: ${sender.identity.principal in ["https://issuer.example.com#oncall@example.com", "https://issuer.example.com#sre@example.com"]}
 steps:
   - id: rotate
     log:
@@ -156,12 +153,12 @@ steps:
 `,
 		},
 		{
-			name: "a single principal written bare",
+			name: "a single principal compared",
 			source: `edition: v2026.4
 name: one-principal
 triggers:
   manual:
-    allowed_principals: https://issuer.example.com#oncall@example.com
+    allow: ${sender.identity.principal == "https://issuer.example.com#oncall@example.com"}
 steps:
   - id: rotate
     log:
@@ -194,9 +191,9 @@ steps:
 			assert.Equal(t, workflow.GetTriggers().GetManual().GetRequireReason(),
 				again.GetTriggers().GetManual().GetRequireReason(),
 				"`require_reason:` did not survive the round trip:\n%s", written)
-			assert.Equal(t, workflow.GetTriggers().GetManual().GetAllowedPrincipals(),
-				again.GetTriggers().GetManual().GetAllowedPrincipals(),
-				"the allowed principals did not survive the round trip:\n%s", written)
+			assert.Equal(t, workflow.GetTriggers().GetManual().GetAllow(),
+				again.GetTriggers().GetManual().GetAllow(),
+				"the predicate did not survive the round trip:\n%s", written)
 		})
 	}
 }

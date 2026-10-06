@@ -115,32 +115,25 @@ fails it is refused synchronously and the workflow is never told anything was se
 ```yaml
 signals:
   approval-decision:
-    allow:
-      - subject: ${"https://issuer.example.com#" + inputs.primary_approver}
-        claims:
-          team: release-managers
-      - subject: ${"https://issuer.example.com#" + inputs.backup_approver}
-        claims:
-          team: release-managers
-    distinct_from_starter: true
+    allow: ${((sender.identity.principal.split("#").size() == 2 && sender.identity.principal == "https://issuer.example.com#" + inputs.primary_approver && sender.identity.claims.team == "release-managers") || (sender.identity.principal.split("#").size() == 2 && sender.identity.principal == "https://issuer.example.com#" + inputs.backup_approver && sender.identity.claims.team == "release-managers")) && sender.identity.principal != run.identity.principal}
 ```
 
-Two rules, matched as alternatives — and that is the whole of the escalation's security
+Two alternatives joined by `||` — and that is the whole of the escalation's security
 story. **Escalation changes who is asked; it cannot change who is allowed.** The backup
 approver can answer at any point in the run, including before the escalation ever
-happens, because this file's author wrote a rule naming them. There is no moment where
+happens, because this file's author wrote an alternative naming them. There is no moment where
 the policy is looser than it was at submit: `signals:` is read by the server from the
 run's own memo, frozen when the run started, never re-read from a running workflow's own
 reasoning. A chase that escalated by *widening a policy* would be a workflow that can
 grant itself authority, which is exactly the thing this shape must not be.
 
-Within each rule the two constraints are ANDed. The `claims:` half is literal — this
-file's author wrote `team: release-managers` and no caller's input can touch it. The
-`subject:` half is interpolated from an input, so a caller can narrow which release
+Within each alternative the two constraints are ANDed. The claim half is literal — this
+file's author wrote `team == "release-managers"` and no caller's input can touch it. The
+principal half is interpolated from an input, so a caller can narrow which release
 manager this particular run accepts, and cannot invent an approver outside the team the
-file already named. `flow validate` refuses an interpolated subject unless the rule
-carries `claims:` or the policy sets `distinct_from_starter: true`; either satisfies it,
-but only the literal `claims:` keeps the approver inside the team.
+file already named. `flow validate` refuses a predicate that reads `inputs` unless it
+also reads `sender.identity.claims` or `run.identity`; either satisfies it, but only the
+literal claim keeps the approver inside the team.
 
 `workflow.test.yaml` writes the negative direction rather than only the positive one: a
 sender who satisfies the claim exactly, is distinct from the starter, and is simply not
@@ -180,8 +173,8 @@ $ flow run local examples/approval-escalation/workflow.yaml \
 ```
 
 And durably, where the chase spans real days across as many worker deployments as it
-takes (needs a Temporal dev server, `flow worker` and `flow server` — see the main
-README's Quickstart):
+takes (start `flow server dev` in another
+terminal; it needs no sign-in):
 
 ```console
 $ flow run examples/approval-escalation/workflow.yaml \
@@ -194,7 +187,7 @@ $ flow signal <workflow-id> approval-decision --data '{"approved": true}'
 
 One note if you try that against the Quickstart's `flow server dev`: without `--auth`
 it makes every caller the same anonymous principal, and this gate names two qualified
-approver subjects and sets `distinct_from_starter: true`, so that `flow signal` is
+approver subjects and compares the sender with `run.identity.principal`, so that `flow signal` is
 refused and the chase keeps chasing — which is the gate working. Rehearse the answered
 paths with `flow test` above, or run the server with `--auth-policy` and real identities
 ([docs/DEPLOYMENT.md](../../docs/DEPLOYMENT.md)).

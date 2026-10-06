@@ -44,6 +44,7 @@ request and response messages.
 | `flowstate_get_catalog` | Only when `--address` or `FLOWSTATE_ADDRESS` is set | The tasks and functions available: this process's own without an address, or the addressed deployment's, refusing if that deployment is unreachable. |
 | `flowstate_test` | No | Run `*.test.yaml` cases against stubbed tasks on a virtual clock. The first thing to reach for after validating. |
 | `flowstate_debug` | No | Run a test case under a script of debugger commands (`break`, `continue`, `inspect`, …) and return the session transcript. At most 100 commands per call. |
+| `flowstate_check_policy` | No | Ask whether an identity would be admitted by a Flowfile's `signals:`, `debug:` or `triggers.manual` policy, executing no step. The same check as `flow signals check`; a refusal is the engine's fixed sentence and never quotes a claim or an input. Stdio only. |
 | `flowstate_debug_session_start`, `_attach`, `_observe`, `_command`, `_end` | Only `_attach` | Keep one debug session open across calls: over a test case, or attached to a durable run. Stdio only, and one test-case session at a time: while it is open, `flowstate_test` and `flowstate_debug` are refused. See [Debugging](DEBUGGING.md#a-session-that-outlives-the-call). |
 | `flowstate_run_local` | No | Rehearse a workflow for real in this process, with inputs and signals, and return the run plus what its `log:` steps wrote. |
 | `flowstate_run`, `flowstate_get`, `flowstate_get_timeline`, `flowstate_list`, `flowstate_signal`, `flowstate_signal_with_start`, `flowstate_cancel`, `flowstate_terminate` | Yes | Start and operate durable runs. |
@@ -93,7 +94,7 @@ process may do.
 
 | Flags | Effect |
 | --- | --- |
-| `--address` (or `FLOWSTATE_ADDRESS`), `--token-file`, `--credential-source`, `--audience`, TLS client flags | Which server the durable tools and `flowstate_get_catalog` call, and as whom. `flowstate_validate`, `flowstate_compile`, `flowstate_test`, `flowstate_debug`, and `flowstate_run_local` never dial. |
+| `--address` (or `FLOWSTATE_ADDRESS`), `--token-file`, `--credential-source`, `--audience`, TLS client flags | Which server the durable tools and `flowstate_get_catalog` call, and as whom. `flowstate_validate`, `flowstate_compile`, `flowstate_test`, `flowstate_debug`, `flowstate_check_policy`, and `flowstate_run_local` never dial. |
 | `--egress-policy` | What `http:` steps in `flowstate_run_local` may reach. **Without it, egress is denied entirely**, which is stricter than `flow run local`: the caller here is a model, not the file's author. |
 | `--secret-env`, `--secret-dir`, and the other [secret flags](SECRETS.md) | Which secret references `flowstate_run_local` may resolve. None, unless a flag says so. |
 | `--as-subject`, `--as-issuer`, `--as-namespace`, `--as-deployment`, `--as-claim` | The identity a local run rehearses policy as. |
@@ -197,8 +198,9 @@ configured with: the token file or credential source you gave it. An agent that
 sends `flowstate_signal` to approve a gate is approving as that identity, and a
 workflow's `signals:` policy judges it as that identity. If a gate should
 require a human, give it a `signals:` rule the agent's credential does not
-satisfy, such as a claim only people carry, or `distinct_from_starter: true`
-when the agent starts the run. See
+satisfy, such as a claim only people carry, or a
+`sender.identity.principal != run.identity.principal` clause when the agent starts
+the run. See
 [the language guide](LANGUAGE.md#who-may-send-a-signal-signals).
 
 Everything an agent reads from a run (outputs, payloads, prompts) is data a

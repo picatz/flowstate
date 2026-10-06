@@ -147,8 +147,8 @@ type ExecPolicy_Exec struct {
 	// is refused at load rather than clamped, so the file says what is enforced.
 	Timeout string `protobuf:"bytes,7,opt,name=timeout,proto3" json:"timeout,omitempty"`
 	// MaxOutputBytes bounds what is kept of each output stream (standard output
-	// and standard error separately), written the way sizes are said: "1MiB",
-	// "10MB", or a bare count of bytes. Required, positive, and at most 16 MiB.
+	// and standard error separately), written the way sizes are said: "64KiB",
+	// "10MB", or a bare count of bytes. Required, positive, and at most 128 KiB.
 	// Bytes past the bound are read and discarded and the step reports the
 	// stream as truncated.
 	MaxOutputBytes string `protobuf:"bytes,8,opt,name=max_output_bytes,json=maxOutputBytes,proto3" json:"max_output_bytes,omitempty"`

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 
 	yaml "github.com/goccy/go-yaml"
 	"github.com/goccy/go-yaml/ast"
@@ -21,37 +22,44 @@ import (
 // inverse of the parser below, and a key one of them knows about and the
 // other does not is a `flow fmt` that silently deletes an author's policy.
 //
-// Nothing here binds a name into any expression's scope. Unlike a loop's
-// `as:` or a step's own `vars:` — the shapes `flow fix`'s rewriter has to
-// know the grammar of, per CLAUDE.md — a signal policy's `subject:`,
-// `namespace:` and `claims:` values are plain strings the schema matches
-// literally, and `distinct_from_starter:` is a bare boolean; none of them are
-// bindings. `subject:` may additionally be written `${...}` — routed to
-// [v1.SignalPolicyRule.subject_from] rather than [v1.SignalPolicyRule.subject]
-// — but that expression only ever reads `inputs.*`, the ambient root every
-// expression in this file can already see, so it still introduces no name a
-// rewriter could rebind. There is nothing here for a rewriter to corrupt by
-// rebinding a reference, which is why this file carries no `flow fix` scope
-// rules the way `fixshadow_test.go` and its kin exist for `as:`/`vars:`/`now`.
+// Nothing here binds a name into any expression's scope: the one `allow:`
+// predicate reads `sender`, `run` and `inputs`, the ambient roots every
+// expression in this file can already see, so it introduces no name a rewriter
+// could rebind. There is nothing here for a rewriter to corrupt by rebinding a
+// reference, which is why this file carries no `flow fix` scope rules the way
+// `fixshadow_test.go` and its kin exist for `as:`/`vars:`/`now`.
+//
+// # The retired rule list
+//
+// Before the predicate, a policy was a list of rules (`subject:`, `namespace:`,
+// `claims:`) with an optional `distinct_from_starter:`. That grammar is gone:
+// the parser refuses it with a sentence that says to run `flow fix`, which
+// rewrites each list into the predicate that says the same ([fixallow.go]). The
+// refusals name the keys and never echo the values written under them.
 //
 // # The narrowing check
 //
-// A rule that writes `subject: ${...}` lets the *caller* choose what value
-// the subject resolves to, by choosing what they submit for the input the
-// expression reads. Left alone, that would let a caller author their own
-// authorization: submit `expected_approver: "attacker#id"` and a rule
-// checking only that expression would allow anyone. [validateSignals] refuses
-// a rule that sets a per-run subject and nothing else — an interpolated
-// field must be accompanied by at least one literal constraint (`namespace:`
-// or `claims:`) that the caller cannot influence, so a caller-supplied value
-// can only *narrow* a grant the workflow's author already wrote, never
-// invent one from nothing.
-
-// signalRuleKeys are what one rule under `allow:` may say.
-var signalRuleKeys = []string{"subject", "namespace", "claims"}
+// A predicate that reads `inputs` lets the *caller* influence the verdict by
+// choosing what they submit. [v1.CheckSignalPolicyExpr] refuses one that reads
+// `inputs` without also reading `sender.identity.claims` or `run.identity`, so
+// a caller-supplied value can only *narrow* a grant the workflow's author
+// already wrote, never invent one from nothing.
 
 // signalPolicyKeys are what one signal's policy may say.
-var signalPolicyKeys = []string{"allow", "distinct_from_starter"}
+var signalPolicyKeys = []string{"allow"}
+
+// retiredPolicyKeys are the keys a policy used to have beside `allow:`, and
+// what to write instead. Held back from [signalPolicyKeys] so the sentence is
+// the one reported, rather than an unknown-key suggestion for a typo nobody made.
+var retiredPolicyKeys = map[string]string{
+	"distinct_from_starter": "`distinct_from_starter:` is retired: compare the sender with the run's starter " +
+		"inside the one `allow:` predicate, as `sender.identity.principal != run.identity.principal`. " +
+		"Run `flow fix` to rewrite this file",
+}
+
+// retiredAllowList is reported for an `allow:` written as a list of rules.
+const retiredAllowList = "is a list of rules, which is retired: write one `${...}` predicate over " +
+	"`sender.identity` and `run.identity`, with alternatives joined by `||`. Run `flow fix` to rewrite this file"
 
 // signals compiles the top-level `signals:` block: one policy per signal
 // name, keyed by the name a `wait_for_signal:` elsewhere in the file uses.
@@ -86,22 +94,27 @@ func (c *compiler) signals(n ast.Node, path string, r ref) map[string]*v1.Signal
 	return policies
 }
 
-// signalPolicy compiles one signal name's policy: the `allow:` list of
-// alternative rules.
+// signalPolicy compiles one signal name's policy: the one `allow: ${...}`
+// predicate that decides who may act.
 func (c *compiler) signalPolicy(n ast.Node, path string, r ref) *v1.SignalPolicy {
 	c.pos.record(path, spanOfNode(c.resolveQuiet(n)))
 
-	fields, ok := c.fields(n, path, r, signalPolicyKeys)
+	fields, ok := c.fieldsRetiring(n, path, r, signalPolicyKeys, retiredPolicyKeys)
 	if !ok {
 		c.report(spanOfNode(n), r,
-			"is a mapping saying who may deliver this signal: `allow:`, a list of rules "+
-				"(each with a `subject:`, a `namespace:`, `claims:`, or a combination) and an "+
-				"optional `distinct_from_starter:`")
+			"is a mapping saying who may deliver this signal: `allow:`, one `${...}` predicate over "+
+				"`sender.identity` (and `run.identity`, the starter)")
 		return nil
 	}
 
 	f, found := fields.get("allow")
 	if !found {
+		if fields.retired > 0 {
+			// The retired key's sentence is the diagnostic; a second one about
+			// the missing predicate would be noise on a file `flow fix` repairs.
+			return nil
+		}
+
 		// The remedy is where the two stanzas sharing this grammar differ:
 		// removing a signal's policy opens the signal, and removing `debug:`
 		// closes debugging entirely (see [v1.Workflow.Debug]).
@@ -112,142 +125,63 @@ func (c *compiler) signalPolicy(n ast.Node, path string, r ref) *v1.SignalPolicy
 				"(every pause ask is refused)"
 		}
 		c.report(spanOfNode(n), r,
-			"declares no `allow:` list, so it authorizes nobody; write at least one rule, %s", remedy)
+			"declares no `allow:` predicate, so it authorizes nobody; write `allow: ${...}`, %s", remedy)
 		return nil
 	}
 
 	allowPath := fieldPath(path, "allow")
-	rules := c.signalPolicyRules(f.value, allowPath, ref{path: allowPath, label: r.label + ".allow"})
-	if len(rules) == 0 {
+	allowRef := ref{path: allowPath, label: r.label + ".allow"}
+
+	resolved := c.resolveQuiet(f.value)
+	if !isScalarNode(resolved) {
+		c.pos.record(allowPath, spanOfNode(resolved))
+		c.report(spanOfNode(resolved), allowRef, "%s", retiredAllowListMessage(resolved))
+
 		return nil
 	}
 
-	policy := &v1.SignalPolicy{Allow: rules}
-
-	if f, found := fields.get("distinct_from_starter"); found {
-		distinctPath := fieldPath(path, "distinct_from_starter")
-		if distinct, ok := c.boolean(f.value, distinctPath,
-			ref{path: distinctPath, label: r.label + ".distinct_from_starter"}); ok {
-			policy.DistinctFromStarter = distinct
-		}
-	}
-
-	return policy
-}
-
-// signalPolicyRules compiles the `allow:` list.
-func (c *compiler) signalPolicyRules(n ast.Node, path string, r ref) []*v1.SignalPolicyRule {
-	n = c.resolve(n, path, r)
-	if n == nil {
-		return nil
-	}
-	c.pos.record(path, spanOfNode(n))
-
-	sequence, ok := n.(*ast.SequenceNode)
+	expression, ok := c.signalPolicyPredicate(resolved, allowPath, allowRef)
 	if !ok {
-		c.report(spanOfNode(n), r, "must be a list of rules, each with a `subject:`, a `namespace:`, or `claims:`")
-		return nil
-	}
-	if len(sequence.Values) == 0 {
-		c.report(spanOfNode(n), r,
-			"is an empty list, so this policy authorizes nobody; write at least one rule, or remove the policy")
 		return nil
 	}
 
-	rules := make([]*v1.SignalPolicyRule, 0, len(sequence.Values))
-	for i, value := range sequence.Values {
-		elementPath := indexPath(path, i)
-		if rule := c.signalPolicyRule(value, elementPath, ref{path: elementPath, label: r.label}); rule != nil {
-			rules = append(rules, rule)
-		}
-	}
-
-	return rules
+	return &v1.SignalPolicy{Allow: expression}
 }
 
-// signalPolicyRule compiles one rule under `allow:`.
-func (c *compiler) signalPolicyRule(n ast.Node, path string, r ref) *v1.SignalPolicyRule {
-	c.pos.record(path, spanOfNode(c.resolveQuiet(n)))
-
-	fields, ok := c.fields(n, path, r, signalRuleKeys)
-	if !ok {
-		c.report(spanOfNode(n), r,
-			"is a mapping with a `subject:` (\"issuer#subject\"), a `namespace:`, `claims:` (a mapping), or a combination")
-		return nil
+// retiredAllowListMessage says why a non-string `allow:` is refused. A list is
+// the retired rule list and gets the migration sentence; anything else is just
+// the wrong shape. Neither echoes what was written.
+func retiredAllowListMessage(n ast.Node) string {
+	if _, isList := n.(*ast.SequenceNode); isList {
+		return retiredAllowList
 	}
 
-	rule := &v1.SignalPolicyRule{}
-	var anyField bool
-
-	if f, found := fields.get("subject"); found {
-		anyField = true
-		subjectPath := fieldPath(path, "subject")
-		subjectRef := ref{path: subjectPath, label: r.label + ".subject"}
-		if subject, exprVal, ok := c.signalSubject(f.value, subjectPath, subjectRef); ok {
-			if exprVal != nil {
-				// Routed to subject_from rather than subject — see this file's
-				// package doc for the narrowing check that applies to a rule
-				// shaped this way, and [v1.SignalPolicyRule.subject_from] for
-				// when it resolves.
-				rule.SubjectFrom = exprVal
-			} else {
-				if !v1.LooksLikeQualifiedSubject(subject) {
-					c.report(spanOfNode(f.value), subjectRef,
-						"is %q, which is not \"<issuer>#<subject>\"; a bare subject is refused because a "+
-							"subject is only unique within its issuer: two identity providers can mint the "+
-							"same subject for different callers, and matching on subject alone would "+
-							"authorize the wrong one's signal. Write both, joined by a single '#'",
-						subject)
-				}
-				rule.Subject = subject
-			}
-		}
-	}
-
-	if f, found := fields.get("namespace"); found {
-		anyField = true
-		namespacePath := fieldPath(path, "namespace")
-		if namespace, ok := c.text(f.value, namespacePath,
-			ref{path: namespacePath, label: r.label + ".namespace"}); ok {
-			rule.Namespace = namespace
-		}
-	}
-
-	if f, found := fields.get("claims"); found {
-		claimsPath := fieldPath(path, "claims")
-		claimsRef := ref{path: claimsPath, label: r.label + ".claims"}
-		claims := c.stringMap(f.value, claimsPath, claimsRef)
-		if len(claims) > 0 {
-			anyField = true
-			rule.Claims = claims
-		}
-	}
-
-	if !anyField {
-		c.report(spanOfNode(n), r,
-			"sets none of `subject:`, `namespace:`, or `claims:`, so it would match every sender; "+
-				"give it something to check, or remove the rule")
-		return nil
-	}
-
-	return rule
+	return "must be one `${...}` predicate, but " + describeNode(n) + " was written here"
 }
 
-// signalSubject compiles a rule's `subject:` value, which may be written
-// either way a scalar in this grammar can be: a literal "issuer#subject", or
-// a whole-value `${...}` fence resolved once at submit against the run's
-// bound inputs (routed to [v1.SignalPolicyRule.subject_from] — see this
-// file's package doc for the narrowing check that applies to a rule written
-// this way).
+// isScalarNode reports whether n is a string, the shape `allow: ${...}` is
+// written in. Block scalars are strings too.
+func isScalarNode(n ast.Node) bool {
+	switch n.(type) {
+	case *ast.StringNode, *ast.LiteralNode:
+		return true
+	default:
+		return false
+	}
+}
+
+// signalPolicyPredicate compiles `allow: ${...}`: the one CEL predicate that
+// decides who may act, kept as the source text between the fence.
 //
-// Returns exactly one of (literal, "") or ("", expression) on success; ok is
-// false only after a diagnostic has already been reported, mirroring
-// [compiler.text]'s own contract.
-func (c *compiler) signalSubject(n ast.Node, path string, r ref) (literal string, exprVal *v1.Value, ok bool) {
-	n = c.resolve(n, path, r)
-	if n == nil {
-		return "", nil, false
-	}
+// Only its syntax is checked here, with the position of the fault; its scope,
+// its type and the narrowing rule are [v1.CheckSignalPolicyExpr]'s, asked by
+// [validatePolicyRules] so the file the validator accepts is the policy the
+// server compiles. The text is stored trimmed and unnormalized, so [Marshal]
+// writes back exactly what was read.
+//
+// The one reader for all three stanzas that take `allow: ${...}` (`signals:`,
+// `debug:`, `triggers: manual:`).
+func (c *compiler) signalPolicyPredicate(n ast.Node, path string, r ref) (string, bool) {
 	c.pos.record(path, spanOfNode(n))
 
 	var raw string
@@ -256,25 +190,31 @@ func (c *compiler) signalSubject(n ast.Node, path string, r ref) (literal string
 		raw = node.Value
 	case *ast.LiteralNode:
 		raw = blockText(node)
-	default:
-		c.report(spanOfNode(n), r, "must be a string, but %s was written here", describeNode(n))
-		return "", nil, false
 	}
 
-	if inner, fenced := SplitFence(raw); fenced {
-		val := c.expression(n, inner, path, r, secretNotEvaluable)
-		if val == nil {
-			return "", nil, false
+	inner, fenced := SplitFence(strings.TrimSpace(raw))
+	if !fenced {
+		if err := fenceError(raw); err != nil {
+			c.report(spanOfNode(n), r, "%s", err)
+			return "", false
 		}
-		return "", val, true
+		c.report(spanOfNode(n), r,
+			"is a string that is not a `${...}` expression; write the whole predicate as one `${...}` "+
+				"(for example `${sender.identity.claims.team == \"release-managers\"}`)")
+		return "", false
 	}
 
-	if err := fenceError(raw); err != nil {
-		c.report(spanOfNode(n), r, "%s", err)
-		return "", nil, false
+	expression := strings.TrimSpace(inner)
+	span := spanWithin(n, inner)
+	c.recordExpr(path, span)
+
+	if val := v1.NewExpr(expression); val.Error() != nil {
+		at, msg := celFailure(val, span, expression)
+		c.report(at, r, "is not a valid expression: %s", msg)
+		return "", false
 	}
 
-	return raw, nil, true
+	return expression, true
 }
 
 // stringMap compiles a mapping of string to string, such as `claims:`.
@@ -327,65 +267,8 @@ func sortedPolicyNames(policies map[string]*v1.SignalPolicy) []string {
 }
 
 // signalPolicyToYAML writes one signal's policy.
-//
-// distinct_from_starter is written only when true — the compiler's default
-// (unset) is false, and Marshal's own rule everywhere else is to omit a
-// field that would round-trip to the zero value rather than write it out
-// redundantly.
 func signalPolicyToYAML(policy *v1.SignalPolicy) (yaml.MapSlice, error) {
-	rules := make([]yaml.MapSlice, 0, len(policy.GetAllow()))
-	for _, rule := range policy.GetAllow() {
-		written, err := signalPolicyRuleToYAML(rule)
-		if err != nil {
-			return nil, err
-		}
-		rules = append(rules, written)
-	}
-
-	doc := yaml.MapSlice{{Key: "allow", Value: rules}}
-	if policy.GetDistinctFromStarter() {
-		doc = append(doc, yaml.MapItem{Key: "distinct_from_starter", Value: true})
-	}
-
-	return doc, nil
-}
-
-// signalPolicyRuleToYAML writes one rule, in the order [signalPolicyRule]
-// reads it: subject, namespace, then claims.
-//
-// A rule's subject is written one of two ways depending on which of
-// [v1.SignalPolicyRule.subject] and [v1.SignalPolicyRule.subject_from] the
-// compiler set — never both, since [compiler.signalSubject] only ever
-// populates one. Getting this wrong in either direction is the asymmetric
-// marshal this file's package doc warns about: writing subject_from back as
-// a literal would silently drop the expression, turning `flow fmt` into a
-// command that deletes half of an author's policy.
-func signalPolicyRuleToYAML(rule *v1.SignalPolicyRule) (yaml.MapSlice, error) {
-	doc := yaml.MapSlice{}
-
-	switch {
-	case rule.GetSubjectFrom() != nil:
-		written, err := inputValueToYAML(rule.GetSubjectFrom())
-		if err != nil {
-			return nil, fmt.Errorf("subject: %w", err)
-		}
-		doc = append(doc, yaml.MapItem{Key: "subject", Value: written})
-	case rule.GetSubject() != "":
-		doc = append(doc, yaml.MapItem{Key: "subject", Value: rule.GetSubject()})
-	}
-
-	if namespace := rule.GetNamespace(); namespace != "" {
-		doc = append(doc, yaml.MapItem{Key: "namespace", Value: textToYAML(namespace)})
-	}
-	if claims := rule.GetClaims(); len(claims) > 0 {
-		claimsDoc := yaml.MapSlice{}
-		for _, k := range slices.Sorted(maps.Keys(claims)) {
-			claimsDoc = append(claimsDoc, yaml.MapItem{Key: k, Value: claims[k]})
-		}
-		doc = append(doc, yaml.MapItem{Key: "claims", Value: claimsDoc})
-	}
-
-	return doc, nil
+	return yaml.MapSlice{{Key: "allow", Value: fencedToYAML(policy.GetAllow())}}, nil
 }
 
 // validateDebug reports what is wrong with the declared `debug:` stanza.
@@ -410,7 +293,7 @@ func validateDebug(wf *v1.Workflow) Diagnostics {
 		return nil
 	}
 
-	return validatePolicyRules("debug", policy)
+	return validatePolicyRules("debug", policy, v1.SensitiveInputNames(wf))
 }
 
 // reservedSignalWaitDiagnostic reports a wait on a name the engine reserved, or
@@ -474,60 +357,35 @@ func validateReservedSignalNames(wf *v1.Workflow) Diagnostics {
 	return ds
 }
 
-// validatePolicyRules is the per-rule half of [validateSignals], asked of one
+// validatePolicyRules is the per-policy half of [validateSignals], asked of one
 // policy under the field path that carries it.
 //
 // Extracted when `debug:` became a second stanza compiling to the same message
-// — one checker, two call sites, the rule CLAUDE.md states for exactly the
-// pair of surfaces that would otherwise drift apart.
-func validatePolicyRules(field string, policy *v1.SignalPolicy) Diagnostics {
-	var ds Diagnostics
-
-	for i, rule := range policy.GetAllow() {
-		interpolated := rule.GetSubjectFrom() != nil
-
-		if rule.GetSubject() == "" && !interpolated && rule.GetNamespace() == "" && len(rule.GetClaims()) == 0 {
-			ds = append(ds, Diagnostic{
-				Field: indexPath(fieldPath(field, "allow"), i),
-				Message: "sets no `subject:`, `namespace:`, or `claims:`, so it matches every sender; " +
-					"give it something to check, or remove the rule",
-			})
-		}
-		if subject := rule.GetSubject(); subject != "" && !v1.LooksLikeQualifiedSubject(subject) {
-			ds = append(ds, Diagnostic{
-				Field: indexPath(fieldPath(field, "allow"), i) + ".subject",
-				Message: "is not \"<issuer>#<subject>\"; a bare subject is refused because a subject " +
-					"is only unique within its issuer",
-			})
-		}
-
-		// The narrowing check. A rule whose subject: is an expression lets
-		// whoever starts the run decide what it resolves to, by choosing
-		// what they submit for the input the expression reads — so a rule
-		// that interpolates and sets nothing else lets them name
-		// themselves as their own approver. It must be accompanied by
-		// something the run's inputs cannot reach.
-		//
-		// Asked of [v1.SubjectFromIsNarrowed] rather than restated here,
-		// because the server refuses the same shape at submit and a
-		// validator that disagreed with it would report a file as fine and
-		// then have it refused — see that function on why `namespace:` is
-		// not one of the constraints that counts, however much it looks
-		// like one.
-		if interpolated && !v1.SubjectFromIsNarrowed(policy, rule) {
-			ds = append(ds, Diagnostic{
-				Field: indexPath(fieldPath(field, "allow"), i) + ".subject",
-				Message: "is an expression resolved from this run's own inputs, but nothing alongside " +
-					"it narrows who that may name; whoever starts the run chooses that input, so as " +
-					"written they may name themselves as their own approver; add a `claims:` entry to " +
-					"the rule, or `distinct_from_starter: true` to the policy, or write the subject " +
-					"as a literal. A `namespace:` does not narrow this — every sender that reaches " +
-					"the check is already in the run's own namespace",
-			})
-		}
+// — one checker, two call sites, the rule the repository states for exactly the
+// pair of surfaces that would otherwise drift apart. What is asked is
+// [v1.CheckSignalPolicyExpr], which is also what the server asks at submit and
+// again at every delivery: unknown names and fields in the closed scope, a bool
+// result, and the narrowing rule.
+//
+// sensitive is the workflow's `sensitive:` inputs: a predicate's inputs are
+// recorded with the run, so one that reads such an input is refused
+// ([v1.CheckPolicyInputsNotSensitive], which the server asks again at submit).
+func validatePolicyRules(field string, policy *v1.SignalPolicy, sensitive map[string]bool) Diagnostics {
+	if err := v1.CheckSignalPolicyExpr(policy.GetAllow()); err != nil {
+		return Diagnostics{{
+			Field:   fieldPath(field, "allow"),
+			Message: "is not a usable `${...}` predicate: " + err.Error(),
+		}}
 	}
 
-	return ds
+	if err := v1.CheckPolicyInputsNotSensitive(field, policy, sensitive); err != nil {
+		return Diagnostics{{
+			Field:   fieldPath(field, "allow"),
+			Message: "is not a usable `${...}` predicate: " + err.Error(),
+		}}
+	}
+
+	return nil
 }
 
 // validateSignals reports what is wrong with the declared `signals:` block
@@ -548,6 +406,8 @@ func validateSignals(wf *v1.Workflow) Diagnostics {
 		known[name] = struct{}{}
 	}
 
+	sensitive := v1.SensitiveInputNames(wf)
+
 	for _, name := range sortedPolicyNames(declared) {
 		field := fieldPath("signals", name)
 
@@ -560,7 +420,7 @@ func validateSignals(wf *v1.Workflow) Diagnostics {
 			continue
 		}
 
-		ds = append(ds, validatePolicyRules(field, declared[name])...)
+		ds = append(ds, validatePolicyRules(field, declared[name], sensitive)...)
 	}
 
 	return ds
@@ -570,20 +430,21 @@ func validateSignals(wf *v1.Workflow) Diagnostics {
 // impossible to meet.
 //
 // A distinct quorum needs `approve:` different senders, and when the policy for
-// the signal is a *closed* list - every `allow:` rule pins one exact
-// `<issuer>#<subject>` - the senders who can ever reach the wait are that list,
-// so an `approve:` above its length can never be satisfied and the run would sit
-// at the gate until its `timeout:`. Reported where somebody can fix it, rather
-// than discovered as a gate that never opens.
+// the signal is a *closed* predicate - a literal `sender.identity.principal in
+// [...]`, or an `||` of `sender.identity.principal == "..."` comparisons, each
+// possibly narrowed by `&&` - the senders who can ever reach the wait are those
+// principals, so an `approve:` above their count can never be satisfied and the
+// run would sit at the gate until its `timeout:`. Reported where somebody can
+// fix it, rather than discovered as a gate that never opens.
 //
 // # Conservative, because a false refusal is worse than a missed one
 //
-// A policy is closed only when it can be counted exactly. Anything that admits a
-// sender this check cannot enumerate leaves the quorum alone: a rule with no
-// `subject:` (a namespace, a `claims:` match or nothing at all), and a `subject:`
-// written as an expression, which is resolved from the run's inputs only at
-// submit. `distinct_from_starter:` and `exclude:` can only shrink the set further,
-// so ignoring them can only miss a refusal, never make one wrongly. A quorum with
+// A policy is closed only when it can be counted exactly
+// ([v1.SignalPolicyClosedPrincipals]). Anything that admits a sender this check
+// cannot enumerate leaves the quorum alone: a predicate over claims, a
+// namespace, an expression, or any shape that is not one of the two above. An
+// `&&` clause can only shrink the set further, so ignoring it can only miss a
+// refusal, never make one wrongly; `exclude:` likewise. A quorum with
 // `distinct: false` is not asked at all, since one sender may then meet it alone.
 func validateQuorums(root *v1.Workflow) Diagnostics {
 	return validateQuorumsIn(root, root.GetSteps(), 0)
@@ -623,7 +484,8 @@ func validateQuorumsIn(root *v1.Workflow, steps []*v1.Node, depth int) Diagnosti
 			return
 		}
 
-		permitted, closed := closedPolicySubjects(root.GetSignals()[batch.GetName()])
+		principals, closed := v1.SignalPolicyClosedPrincipals(root.GetSignals()[batch.GetName()])
+		permitted := len(principals)
 		if !closed || int(quorum.GetApprove()) <= permitted {
 			return
 		}
@@ -639,24 +501,4 @@ func validateQuorumsIn(root *v1.Workflow, steps []*v1.Node, depth int) Diagnosti
 	}})
 
 	return ds
-}
-
-// closedPolicySubjects counts the distinct subjects a policy permits, and
-// reports whether that count is exact: false for no policy at all (any
-// authenticated caller may deliver) and for any rule that admits a sender it
-// cannot name.
-func closedPolicySubjects(policy *v1.SignalPolicy) (permitted int, closed bool) {
-	if len(policy.GetAllow()) == 0 {
-		return 0, false
-	}
-
-	subjects := make(map[string]struct{}, len(policy.GetAllow()))
-	for _, rule := range policy.GetAllow() {
-		if rule.GetSubject() == "" || rule.GetSubjectFrom() != nil {
-			return 0, false
-		}
-		subjects[rule.GetSubject()] = struct{}{}
-	}
-
-	return len(subjects), true
 }

@@ -1783,7 +1783,7 @@ func validateInputRefs(stepID, inputName string, val *v1.Value, scope refScope, 
 			ds = append(ds, Diagnostic{
 				Step: stepID, Field: inputName,
 				Message: "`" + v1.EventRoot + "` is the delivery a trigger was started by, bound inside a " +
-					"webhook's `with:` and `idempotency_key:` and nowhere else; bind what this step needs " +
+					"webhook's `when:`, `with:` and `idempotency_key:` (and a `signal:` arm's `correlate:` and `with:`) and nowhere else; bind what this step needs " +
 					"under that `with:` and read it here as `" + v1.InputsRoot + ".<name>`",
 			})
 			continue
@@ -2805,7 +2805,7 @@ var toleratedOutputs = []string{toleratedErrorOutput, toleratedFailureOutput}
 // [runRootValue]'s own doc says why (`deployment` is left off). This names what an
 // expression actually reaches, which is the only set a diagnostic here can be
 // honest about.
-var runIdentityFields = []string{"subject", "issuer", "namespace", "claims"}
+var runIdentityFields = []string{"subject", "issuer", "namespace", "claims", "principal", "kind"}
 
 // runFields are the fields [runRootValue] renders directly under `run`.
 //

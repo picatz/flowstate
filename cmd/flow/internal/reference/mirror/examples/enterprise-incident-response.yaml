@@ -71,13 +71,9 @@ inputs:
 # the authority to close an incident out.
 signals:
   remediation-authorized:
-    allow:
-      - claims:
-          role: incident-commander
+    allow: ${sender.identity.claims.role == "incident-commander"}
   responder-ack:
-    allow:
-      - claims:
-          role: on-call-responder
+    allow: ${sender.identity.claims.role == "on-call-responder"}
 steps:
   - id: page
     log:

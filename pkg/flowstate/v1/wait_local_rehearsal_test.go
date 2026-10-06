@@ -24,7 +24,7 @@ func TestRehearsalSignalCasesLocally(t *testing.T) {
 
 	conformance.AssertRehearsalSignalCases(t, func(t testing.TB, c conformance.RehearsalSignalCase) error {
 		signals := v1.NewPolicedLocalSignals(
-			map[string]*v1.SignalPolicy{c.SignalName: c.Policy}, c.Starter, true)
+			map[string]*v1.SignalPolicy{c.SignalName: c.Policy}, c.Starter, !c.StarterUnknown, c.Inputs)
 
 		// The two shapes `flow run local` delivers as, chosen the same way it
 		// chooses: a case naming nobody is the plain unattested delivery every
@@ -55,19 +55,15 @@ func TestRehearsedApprovalOpensAGateAndSaysItWasRehearsed(t *testing.T) {
 
 	policy := map[string]*v1.SignalPolicy{
 		"deploy-approved": {
-			Allow: []*v1.SignalPolicyRule{{
-				Subject: v1.QualifiedSubject("https://issuer.example.com", "sre-lead@example.com"),
-				Claims:  map[string]string{"team": "release-managers"},
-			}},
-			DistinctFromStarter: true,
+			Allow: `sender.identity.principal == "` + v1.QualifiedSubject("https://issuer.example.com", "sre-lead@example.com") + `" && sender.identity.claims["team"] == "release-managers" && sender.identity.principal != run.identity.principal`,
 		},
 	}
 
 	// The starter `flow run local` records from --as-subject/--as-issuer,
-	// which is what distinct_from_starter compares the sender against.
+	// which is what a comparison with `run.identity` compares the sender against.
 	starter := &v1.WorkloadIdentity{Subject: "local-user", Issuer: "flowstate:local"}
 
-	signals := v1.NewPolicedLocalSignals(policy, starter, true)
+	signals := v1.NewPolicedLocalSignals(policy, starter, true, nil)
 
 	require.NoError(t, signals.DeliverFrom("deploy-approved",
 		&v1.Node_Outputs{NamedValues: map[string]*v1.Value{"approved": v1.NewLiteral(true)}},
@@ -100,8 +96,8 @@ func TestRehearsedApprovalOpensAGateAndSaysItWasRehearsed(t *testing.T) {
 }
 
 // TestRehearsedApprovalIsRefusedWhenItIsTheStarter is requirement 4 of #349 at
-// the driver level: `distinct_from_starter:` is checked against the local run's
-// own starter, so rehearsing an approver who is that starter is refused here
+// the driver level: a predicate comparing with `run.identity` is checked against
+// the local run's own starter, so rehearsing an approver who is that starter is refused here
 // for the reason production refuses it.
 //
 // The gate then lapses rather than erroring, which is the other half of the
@@ -114,12 +110,9 @@ func TestRehearsedApprovalIsRefusedWhenItIsTheStarter(t *testing.T) {
 
 	signals := v1.NewPolicedLocalSignals(map[string]*v1.SignalPolicy{
 		"deploy-approved": {
-			Allow: []*v1.SignalPolicyRule{{
-				Subject: v1.QualifiedSubject("https://issuer.example.com", "sre-lead@example.com"),
-			}},
-			DistinctFromStarter: true,
+			Allow: `sender.identity.principal == "` + v1.QualifiedSubject("https://issuer.example.com", "sre-lead@example.com") + `" && sender.identity.principal != run.identity.principal`,
 		},
-	}, starter, true)
+	}, starter, true, nil)
 
 	err := signals.DeliverFrom("deploy-approved",
 		&v1.Node_Outputs{NamedValues: map[string]*v1.Value{"approved": v1.NewLiteral(true)}},
@@ -129,7 +122,7 @@ func TestRehearsedApprovalIsRefusedWhenItIsTheStarter(t *testing.T) {
 		}))
 	require.Error(t, err,
 		"an approver approving their own run was admitted locally, which production refuses")
-	require.Contains(t, err.Error(), "distinct from the run's own starter")
+	require.Contains(t, err.Error(), "allow predicate")
 
 	ctx := v1.NewContextWithSignalWaiter(t.Context(), signals)
 

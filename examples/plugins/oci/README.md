@@ -49,7 +49,7 @@ $ flow signal <run> digest-approved --data '{"approved": true}' \
 
 The approver's token must be issued by `https://issuer.example.com` to the
 subject `expected_approver` names, with `team: release-managers`;
-`distinct_from_starter: true` refuses the starter's own.
+`sender.identity.principal != run.identity.principal` refuses the starter's own.
 
 ## The steps, and why each is separate
 

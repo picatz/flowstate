@@ -315,7 +315,7 @@ func fenceRegistryReaders(deps *flowmcp.Deps, sessions *debugSessions) {
 	deps.WrapResourceHandler = sessions.guardRegistryResource
 }
 
-// stdioExtraTools is the three tools on this surface that are not RPCs, in one
+// stdioExtraTools is the tools on this surface that are not RPCs, in one
 // place because the tests stand the same server up and a second list is the
 // two-copies defect [flowmcp.AddCapabilities] states for the registration it
 // owns — a tool added here and forgotten there is a tool nothing exercises.
@@ -338,6 +338,10 @@ func stdioExtraTools(ctx context.Context, cmd *cobra.Command, providers *localSe
 		// The debugger's own front (#928 slice 3), beside the tool whose
 		// verdicts it explains.
 		{Tool: flowmcp.DebugTool(), Handler: sessions.unlessStubbed(debugToolHandler(0))},
+		// The static who-may-act check: it compiles the submitted Flowfile
+		// against the task registry and decides predicates, and runs no step,
+		// so it needs no posture but is fenced as the other readers are.
+		{Tool: flowmcp.CheckPolicyTool(), Handler: sessions.readsRegistry(checkPolicyToolHandler())},
 	},
 		// Retained sessions (#2127): stdio only, where one caller owns the
 		// process. `flow mcp serve` serializes the process-wide registry
@@ -428,6 +432,8 @@ func addLocalRunFlags(cmd *cobra.Command) {
 		"authenticated subject to rehearse policy as (local runs only)")
 	cmd.Flags().String("as-issuer", "flowstate:local",
 		"authenticated issuer to rehearse policy as (local runs only)")
+	cmd.Flags().String("as-kind", "",
+		"kind of party to rehearse policy as: human, workload or agent (local runs only)")
 	cmd.Flags().String("as-namespace", "",
 		"tenant namespace to rehearse policy as (local runs only)")
 	cmd.Flags().String("as-deployment", "local",
@@ -627,8 +633,8 @@ func runLocalToolHandler(posture *cobra.Command, providers *localSecrets) mcp.To
 
 		ctx, err = withLocalSignals(ctx, posture, workflow, inputs, signals)
 		if err != nil {
-			// A `subject_from:` refusal quotes what it resolved to, as on
-			// `flow run local`, and through the same seam (#2100).
+			// A refused delivery is redacted as on `flow run local`, through the
+			// same seam (#2100).
 			sensitive := refusedRunSensitiveValues(posture, workflow, inputs, err, revealSensitiveRequested(posture))
 			return flowmcp.ToolError(redactFailureError(err, sensitive)), nil
 		}

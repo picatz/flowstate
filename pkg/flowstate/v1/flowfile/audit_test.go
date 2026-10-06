@@ -229,40 +229,6 @@ steps:
 	}
 }
 
-// TestAuditSeesComputedSignalSubjects covers the workflow-level position
-// outside vars, steps and outputs: a signal rule's `subject:` written as an
-// expression lands in subject_from, and two rules resolving the same computed
-// subject are a repetition like any other.
-func TestAuditSeesComputedSignalSubjects(t *testing.T) {
-	t.Parallel()
-
-	found := auditOf(t, `edition: v2026.4
-name: gated
-inputs:
-  expected_approver:
-    type: string
-    required: true
-signals:
-  deploy-approved:
-    allow:
-      - subject: "${'https://issuer.example.com#' + inputs.expected_approver}"
-        namespace: release-managers-ns
-  teardown-approved:
-    allow:
-      - subject: "${'https://issuer.example.com#' + inputs.expected_approver}"
-        namespace: release-managers-ns
-steps:
-  - id: gate
-    wait_for_signal: deploy-approved
-`)
-
-	finding := findAudit(t, found, `"https://issuer.example.com#" + inputs.expected_approver`)
-	require.Equal(t, 2, finding.Count())
-	require.Equal(t, "", finding.Sites[0].Step)
-	require.Equal(t, "signals.deploy-approved.allow[0].subject", finding.Sites[0].Field)
-	require.Equal(t, "signals.teardown-approved.allow[0].subject", finding.Sites[1].Field)
-}
-
 // TestAuditSeesTriggerExpressions is issue #505: the audit walked vars, steps
 // and declared outputs, and never `wf.Triggers`, so an expression a webhook's
 // `with:` or `idempotency_key:` repeated was invisible to whatever the audit

@@ -41,13 +41,11 @@ func ciIdentity() *v1.WorkloadIdentity {
 func TestCISenderNamedBySignalPolicy(t *testing.T) {
 	identity := ciIdentity()
 
-	bySubject := &v1.SignalPolicy{Allow: []*v1.SignalPolicyRule{{
-		Subject: v1.QualifiedSubject(
-			"https://token.actions.githubusercontent.com",
-			"repo:octo-org/octo-repo:ref:refs/heads/main",
-		),
-	}}}
-	require.True(t, v1.SignalPolicyAllows(bySubject, identity),
+	bySubject := &v1.SignalPolicy{Allow: `sender.identity.principal == "` + v1.QualifiedSubject(
+		"https://token.actions.githubusercontent.com",
+		"repo:octo-org/octo-repo:ref:refs/heads/main",
+	) + `"`}
+	require.True(t, policyAllows(t, bySubject, identity),
 		"the qualified CI subject names the sender")
 
 	// The same rule against a job on another branch of the same repository. The
@@ -55,25 +53,20 @@ func TestCISenderNamedBySignalPolicy(t *testing.T) {
 	// already branch-specific with nothing extra written.
 	otherBranch := ciIdentity()
 	otherBranch.Subject = "repo:octo-org/octo-repo:ref:refs/heads/topic"
-	require.False(t, v1.SignalPolicyAllows(bySubject, otherBranch),
+	require.False(t, policyAllows(t, bySubject, otherBranch),
 		"another branch of the same repository is a different subject")
 
 	// And a rule keyed on a carried claim instead, which is how a policy names
 	// a repository without pinning the branch.
-	byClaim := &v1.SignalPolicy{Allow: []*v1.SignalPolicyRule{{
-		Namespace: "platform",
-		Claims:    map[string]string{"repository": "octo-org/octo-repo"},
-	}}}
-	require.True(t, v1.SignalPolicyAllows(byClaim, identity))
-	require.True(t, v1.SignalPolicyAllows(byClaim, otherBranch))
+	byClaim := &v1.SignalPolicy{Allow: `sender.identity.namespace == "platform" && sender.identity.claims["repository"] == "octo-org/octo-repo"`}
+	require.True(t, policyAllows(t, byClaim, identity))
+	require.True(t, policyAllows(t, byClaim, otherBranch))
 
 	// A claim the deployment did not carry cannot be matched, however the token
 	// was signed: the rule is checked against the attested identity, and an
 	// operator who did not name the claim has nothing to check.
-	notCarried := &v1.SignalPolicy{Allow: []*v1.SignalPolicyRule{{
-		Claims: map[string]string{"runner_environment": "github-hosted"},
-	}}}
-	require.False(t, v1.SignalPolicyAllows(notCarried, identity),
+	notCarried := &v1.SignalPolicy{Allow: `sender.identity.claims["runner_environment"] == "github-hosted"`}
+	require.False(t, policyAllows(t, notCarried, identity),
 		"a claim not carried into the identity cannot authorize anyone")
 }
 

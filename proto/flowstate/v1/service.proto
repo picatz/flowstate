@@ -411,8 +411,8 @@ message GetResponse {
   //
   // Empty when the run's starter was never recorded or could not be read.
   // Empty is "unknown", never an identity. Authorization does not read this
-  // field; a `distinct_from_starter` signal policy denies when the starter is
-  // unknown.
+  // field; a signal policy whose `allow:` predicate reads `run.identity` denies when
+  // the starter is unknown.
   string starter = 12;
 
   // FirstRunId is the segment the workload began at. Equal to run_id for a run
@@ -563,7 +563,7 @@ message GetGateResponse {
 
   // Starter is who submitted the run, `issuer#subject`, as [GetResponse.starter]
   // reports it; empty when the run recorded none. It is what a
-  // `distinct_from_starter` policy compares the answerer against. Withheld
+  // `allow:` predicate reading `run.identity` compares the answerer against. Withheld
   // on the same terms as prompt.
   string starter = 8;
 
@@ -946,8 +946,8 @@ service WorkflowService {
   // For each open gate the answer carries the question the gate asks, the signal
   // name that releases it, whether a deadline lapses it, and whether the workflow
   // declares a policy over who may answer. That set is what an approval surface
-  // has to render, and it is what a `distinct_from_starter` policy is compared
-  // against.
+  // has to render, and it is what an `allow:` predicate over `run.identity` is
+  // compared against.
   //
   // To answer a gate, call [Signal] with the gate's signal name and a payload
   // carrying the decision. Address the workflow rather than a run: a run id pins
@@ -981,9 +981,13 @@ service WorkflowService {
   // `signals:` policy would admit a [Signal] now, without delivering one.
   //
   // A run that is not running, or holds no open gate by that name, answers
-  // NOT_FOUND, the same answer a run in another tenant gets. A run holding more
-  // gates than one answer lists, whose list does not include the named gate,
-  // answers FAILED_PRECONDITION: the gate may be open, and this read cannot say.
+  // NOT_FOUND, the same answer a run in another tenant gets. The gate is looked
+  // up by name inside the run, so it is found however many gates the run holds
+  // (up to `v1.MaxHeldWaits`, in `pkg/flowstate/v1/waits.go`), not only among the
+  // `v1.MaxPendingWaits` that [Get] lists. A run that holds more gates than it
+  // retains, or one that cannot answer the lookup, and whose answer does not
+  // include the named gate, answers FAILED_PRECONDITION: the gate may be open,
+  // and this read cannot say.
   rpc GetGate(GetGateRequest) returns (GetGateResponse) {}
 
   // SignalWithStart delivers a signal to the entity holding a business key, an
@@ -1112,15 +1116,15 @@ service WorkflowService {
   //
   // The same checks and the same [ValidationReport] as `flow validate`: one
   // entry per file, clean files included. Send 1 to 64 files; each file's
-  // `source` is its bytes, at most 1 MiB, base64-encoded in JSON. It reads,
+  // `source` is its text, plain YAML, at most 1 MiB. It reads,
   // writes and starts nothing, so it is safe to call repeatedly while editing.
   rpc Validate(ValidateRequest) returns (ValidateResponse) {}
 
   // Compile turns one Flowfile into the workflow specification that [Run]
   // takes, executing nothing.
   //
-  // `file.source` is the Flowfile's bytes, at most 1 MiB, base64-encoded in
-  // JSON. A file that does not compile is not an RPC error: the answer carries
+  // `file.source` is the Flowfile's text, plain YAML, at most 1 MiB. A file
+  // that does not compile is not an RPC error: the answer carries
   // its diagnostics in `report` and no `workflow`. On success, pass `workflow`
   // unchanged to [Run] or [CreateSchedule]. The same compiler as the CLI.
   rpc Compile(CompileRequest) returns (CompileResponse) {}
@@ -1313,7 +1317,7 @@ message GetTimelineResponse {
 // CompileRequest is one Flowfile to compile.
 message CompileRequest {
   // File is the Flowfile to compile: a `name` used in diagnostics and its
-  // `source` bytes, at most 1 MiB (base64 in JSON).
+  // `source` text, plain YAML, at most 1 MiB.
   SourceFile file = 1 [
     (buf.validate.field).required = true,
     (google.api.field_behavior) = REQUIRED

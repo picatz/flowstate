@@ -644,12 +644,16 @@ func signalSenderValue(sender *SignalSender) *Value {
 
 	identity := sender.GetIdentity()
 
-	identityEntries := []*expr.MapValue_Entry{
-		{Key: NewLiteral("subject").GetLiteral(), Value: NewLiteral(identity.GetSubject()).GetLiteral()},
-		{Key: NewLiteral("issuer").GetLiteral(), Value: NewLiteral(identity.GetIssuer()).GetLiteral()},
-		{Key: NewLiteral("namespace").GetLiteral(), Value: NewLiteral(identity.GetNamespace()).GetLiteral()},
-		{Key: NewLiteral("deployment").GetLiteral(), Value: NewLiteral(identity.GetDeployment()).GetLiteral()},
-	}
+	// The shared shape, less the claims, plus the one field the sender carries
+	// beyond it. A sender is a third party, and its claims are whatever the
+	// operator chose to copy out of its token (`--identity-claim`); what an
+	// expression reads, and so what a wait's outputs record, is who sent
+	// (`principal`, `subject`, `issuer`, `namespace`) and not those attributes.
+	// This bounds the expression-visible shape only: the signal delivery
+	// itself still carries the verified identity, claims included.
+	identityMap := IdentityShape(identity)
+	delete(identityMap, "claims")
+	identityMap["deployment"] = identity.GetDeployment()
 
 	acceptedAt := ""
 	if at := sender.GetAcceptedAt(); at.IsValid() {
@@ -658,10 +662,8 @@ func signalSenderValue(sender *SignalSender) *Value {
 
 	entries := []*expr.MapValue_Entry{
 		{
-			Key: NewLiteral("identity").GetLiteral(),
-			Value: &expr.Value{
-				Kind: &expr.Value_MapValue{MapValue: &expr.MapValue{Entries: identityEntries}},
-			},
+			Key:   NewLiteral("identity").GetLiteral(),
+			Value: NewLiteralMap(identityMap).GetLiteral(),
 		},
 		{Key: NewLiteral("accepted_at").GetLiteral(), Value: NewLiteral(acceptedAt).GetLiteral()},
 		{Key: NewLiteral("local").GetLiteral(), Value: NewLiteral(local).GetLiteral()},

@@ -33,8 +33,8 @@ func narrowedWorkflow() *v1.Workflow {
 		Name:    "break-glass",
 		Profile: v1.CurrentProfile,
 		Triggers: &v1.Triggers{Manual: &v1.ManualTrigger{
-			RequireReason:     true,
-			AllowedPrincipals: []string{manualTestIssuer + "#oncall@example.com"},
+			RequireReason: true,
+			Allow:         `sender.identity.principal in [` + `"` + manualTestIssuer + "#oncall@example.com" + `"` + `]`,
 		}},
 		Steps: []*v1.Node{{
 			Id:   "rotate",
@@ -58,7 +58,7 @@ func TestManualStartHandlersUseIssuerQualifiedPrincipals(t *testing.T) {
 		Name:    "issuer-scoped-manual-start",
 		Profile: v1.CurrentProfile,
 		Triggers: &v1.Triggers{Manual: &v1.ManualTrigger{
-			AllowedPrincipals: []string{"https://issuer-a.example.com#runner"},
+			Allow: `sender.identity.principal in ["https://issuer-a.example.com#runner"]`,
 		}},
 		Steps: []*v1.Node{{
 			Id: "mutation",
@@ -104,7 +104,7 @@ func TestManualStartHandlersUseIssuerQualifiedPrincipals(t *testing.T) {
 			err := test.call(issuerB, "manual-qualified-denied")
 			require.Error(t, err, "issuer B reused issuer A's allowed subject")
 			assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
-			assert.Contains(t, err.Error(), "https://issuer-b.example.com#runner")
+			assert.Contains(t, err.Error(), "allow predicate", "the refusal names the rule that refused")
 			assert.NotContains(t, err.Error(), "must-not-appear",
 				"manual-start denial leaked an arbitrary verified claim")
 		})
@@ -114,16 +114,12 @@ func TestManualStartHandlersUseIssuerQualifiedPrincipals(t *testing.T) {
 		Issuer: "flowstate:mtls/mesh", Subject: "spiffe://example.test/ns/ops/sa/runner",
 	})
 	mtlsWorkflow := proto.Clone(workflow).(*v1.Workflow)
-	mtlsWorkflow.GetTriggers().GetManual().AllowedPrincipals = []string{
-		"flowstate:mtls/mesh#spiffe://example.test/ns/ops/sa/runner",
-	}
+	mtlsWorkflow.GetTriggers().GetManual().Allow = `sender.identity.principal in ["flowstate:mtls/mesh#spiffe://example.test/ns/ops/sa/runner"]`
 	_, err := flowstate.Run(mtls, connect.NewRequest(&v1.RunRequest{Workflow: mtlsWorkflow}))
 	require.NoError(t, err, "an mTLS principal's configured issuer and SAN-derived subject did not form its stable ID")
 
 	anonymousWorkflow := proto.Clone(workflow).(*v1.Workflow)
-	anonymousWorkflow.GetTriggers().GetManual().AllowedPrincipals = []string{
-		auth.AnonymousIssuer + "#" + auth.AnonymousSubject,
-	}
+	anonymousWorkflow.GetTriggers().GetManual().Allow = `sender.identity.principal in [` + `"` + auth.AnonymousIssuer + "#" + auth.AnonymousSubject + `"` + `]`
 	_, err = flowstate.Run(auth.ContextWithPrincipal(t.Context(), auth.AnonymousPrincipal()),
 		connect.NewRequest(&v1.RunRequest{Workflow: anonymousWorkflow}))
 	require.Error(t, err, "the insecure anonymous development identity satisfied a manual-start allowlist")
@@ -156,7 +152,7 @@ func TestRunRefusesAManualStartTheWorkflowNarrowedAway(t *testing.T) {
 			name:     "a principal outside the allowed set",
 			workflow: narrowedWorkflow(),
 			reason:   "rotating the leaked key",
-			contains: "oncall@example.com",
+			contains: "`manual: allow` predicate",
 		},
 		{
 			name:     "no reason where the workflow requires one",
@@ -207,7 +203,7 @@ func TestRunCannotRemoveADeploymentOwnedManualPolicy(t *testing.T) {
 
 	require.Error(t, err, "removing manual policy from the submitted copy bypassed authorization")
 	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
-	assert.Contains(t, err.Error(), "oncall@example.com")
+	assert.Contains(t, err.Error(), "`manual: allow` predicate", "the refusal names the rule that refused")
 }
 
 // reasonOnlyWorkflow narrows on the reason alone, so the reason can be tested

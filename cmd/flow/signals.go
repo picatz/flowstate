@@ -42,7 +42,7 @@ var ()
 // # Rehearsing who sent it (#349)
 //
 // A delivery used to carry [v1.LocalSignalSender] always - unattested, which no
-// `allow:` rule a real deployment writes can match - so a workflow whose gate
+// `allow:` predicate a real deployment writes can admit - so a workflow whose gate
 // declares a `signals:` policy could only ever be rehearsed as the case where
 // the approval is refused. --signal-as-subject and its siblings name the
 // approver a delivery stands in for, and the same [v1.SignalPolicyCheck] then
@@ -58,18 +58,15 @@ var ()
 // here read the way `--as-subject` already reads for the starter.
 //
 // --as-subject/--as-issuer/--as-namespace/--as-claim name this run's own
-// starter, which is what a `distinct_from_starter:` policy compares a sender
-// against - so a rehearsal whose --signal-as-subject equals its --as-subject is
+// starter, which is what an `allow:` predicate reading `run.identity` compares a
+// sender against - so a rehearsal whose --signal-as-subject equals its --as-subject is
 // refused here exactly as production refuses an approver approving their own
 // request. A separate starter identity from [WorkloadIdentity]'s zero value
 // distinguishes "this local run started as nobody" from "this local run started
 // as somebody, but who is unknown" - see [v1.NewPolicedLocalSignals]'s
 // hasStarter parameter.
 func withLocalSignals(ctx context.Context, cmd *cobra.Command, workflow *v1.Workflow, inputs map[string]*v1.Value, flags []string) (context.Context, error) {
-	policies, err := resolvedLocalSignalPolicies(ctx, workflow, inputs)
-	if err != nil {
-		return nil, err
-	}
+	policies, bound := localSignalPolicies(workflow, inputs)
 
 	starter, err := localWorkloadIdentity(cmd)
 	if err != nil {
@@ -81,12 +78,18 @@ func withLocalSignals(ctx context.Context, cmd *cobra.Command, workflow *v1.Work
 		return nil, err
 	}
 
+	starterKind, err := localKindFlag(cmd, "as-kind")
+	if err != nil {
+		return nil, err
+	}
+
 	signals := v1.NewPolicedLocalSignals(policies, &v1.WorkloadIdentity{
-		Subject:   starter.Subject,
-		Issuer:    starter.Issuer,
-		Claims:    starter.Claims,
-		Namespace: starter.Namespace,
-	}, true)
+		Subject:       starter.Subject,
+		Issuer:        starter.Issuer,
+		Claims:        starter.Claims,
+		Namespace:     starter.Namespace,
+		PrincipalKind: starterKind,
+	}, true, bound)
 
 	reportRehearsalSender(cmd.ErrOrStderr(), sender)
 
@@ -123,7 +126,12 @@ func rehearsalSignalSender(cmd *cobra.Command, delivered int) (*v1.SignalSender,
 	namespace, _ := cmd.Flags().GetString("signal-as-namespace")
 	entries, _ := cmd.Flags().GetStringArray("signal-as-claim")
 
-	if subject == "" && issuer == "" && namespace == "" && len(entries) == 0 {
+	kind, err := localKindFlag(cmd, "signal-as-kind")
+	if err != nil {
+		return nil, err
+	}
+
+	if subject == "" && issuer == "" && namespace == "" && kind == v1.PrincipalKind_PRINCIPAL_KIND_UNSPECIFIED && len(entries) == 0 {
 		return v1.LocalSignalSender(), nil
 	}
 
@@ -145,24 +153,36 @@ func rehearsalSignalSender(cmd *cobra.Command, delivered int) (*v1.SignalSender,
 				"issuer", v1.QualifiedSubject("<issuer>", "<subject>"))
 	}
 
-	claims := make(map[string]string, len(entries))
-	for _, entry := range entries {
-		name, value, found := strings.Cut(entry, "=")
-		if !found || name == "" || value == "" {
-			return nil, fmt.Errorf("invalid --signal-as-claim %q: want NAME=VALUE", entry)
-		}
-		if _, duplicate := claims[name]; duplicate {
-			return nil, fmt.Errorf("duplicate --signal-as-claim %q", name)
-		}
-		claims[name] = value
+	claims, err := parseIdentityClaimFlags("signal-as-claim", entries)
+	if err != nil {
+		return nil, err
 	}
 
 	return v1.RehearsalSignalSender(&v1.WorkloadIdentity{
-		Subject:   subject,
-		Issuer:    issuer,
-		Namespace: namespace,
-		Claims:    claims,
+		Subject:       subject,
+		Issuer:        issuer,
+		Namespace:     namespace,
+		Claims:        claims,
+		PrincipalKind: kind,
 	}), nil
+}
+
+// localKindFlag reads a rehearsal's `--as-kind` or `--signal-as-kind`: one of
+// human, workload or agent, or empty for none. A misspelling is refused, because
+// it would otherwise record none and make a predicate that names a kind deny
+// with nothing to say why.
+func localKindFlag(cmd *cobra.Command, name string) (v1.PrincipalKind, error) {
+	value, _ := cmd.Flags().GetString(name)
+	if value == "" {
+		return v1.PrincipalKind_PRINCIPAL_KIND_UNSPECIFIED, nil
+	}
+
+	kind := v1.PrincipalKindNamed(value)
+	if kind == v1.PrincipalKind_PRINCIPAL_KIND_UNSPECIFIED || v1.PrincipalKindName(kind) != value {
+		return v1.PrincipalKind_PRINCIPAL_KIND_UNSPECIFIED, fmt.Errorf("--%s %q is not a kind: use human, workload or agent", name, value)
+	}
+
+	return kind, nil
 }
 
 // reportRehearsalSender says whose approval this run is standing in for,
@@ -209,23 +229,24 @@ func refusedLocalSignal(name string, sender *v1.SignalSender, err error) error {
 			"go on waiting", err)
 	}
 
-	return fmt.Errorf("%w\n  this delivery attests nobody, which no `allow:` rule matches; "+
+	return fmt.Errorf("%w\n  this delivery attests nobody, which no `allow:` predicate admits; "+
 		"--signal-as-subject and --signal-as-issuer name the approver %q stands in for", err, name)
 }
 
-// resolvedLocalSignalPolicies is workflow's declared `signals:` — if any —
-// resolved against inputs the same way submit resolves them
-// ([v1.ResolveSignalPolicySubjects]), suitable for [v1.NewPolicedLocalSignals].
+// localSignalPolicies is workflow's declared `signals:` — if any — and the
+// run's bound inputs, suitable for [v1.NewPolicedLocalSignals].
 //
-// inputs is bound first ([v1.BindRunInputs]), matching what
-// [v1.ResolveSignalPolicySubjects] itself expects: a rule's `subject_from`
-// expression may read a defaulted input, not only one the caller typed. A bind
-// failure here is not reported directly — [v1.RunWithInputs] performs the
-// identical bind moments later and is what actually decides whether this run
-// proceeds; this function only needs bound inputs when there is a policy to
-// resolve; when binding fails, the run is about to fail anyway, so an empty,
-// unpoliced result is returned rather than a second, differently-shaped error.
-func resolvedLocalSignalPolicies(ctx context.Context, workflow *v1.Workflow, inputs map[string]*v1.Value) (map[string]*v1.SignalPolicy, error) {
+// inputs is bound first ([v1.BindRunInputs]): an `allow: ${...}` predicate that
+// reads `inputs` sees a defaulted one, not only one the caller typed, as the
+// server's recorded copy does. A bind failure here is not reported directly —
+// [v1.RunWithInputs] performs the identical bind moments later and is what
+// actually decides whether this run proceeds; when binding fails, the run is
+// about to fail anyway, so an empty, unpoliced result is returned rather than a
+// second, differently-shaped error.
+//
+// Returns the bound inputs beside the policies: a predicate reads them at
+// delivery, as the server reads the copy it recorded at submit.
+func localSignalPolicies(workflow *v1.Workflow, inputs map[string]*v1.Value) (map[string]*v1.SignalPolicy, map[string]*v1.Value) {
 	if len(workflow.GetSignals()) == 0 {
 		return nil, nil
 	}
@@ -235,7 +256,11 @@ func resolvedLocalSignalPolicies(ctx context.Context, workflow *v1.Workflow, inp
 		return nil, nil
 	}
 
-	return v1.ResolveSignalPolicySubjects(ctx, workflow, bound)
+	if bound == nil {
+		bound = map[string]*v1.Value{}
+	}
+
+	return workflow.GetSignals(), bound
 }
 
 // reportUnansweredGates warns about gates this run will block on.

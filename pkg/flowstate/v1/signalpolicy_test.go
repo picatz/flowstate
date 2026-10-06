@@ -1,7 +1,6 @@
 package flowstatev1_test
 
 import (
-	"context"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -28,6 +27,15 @@ func gateWorkflow() *v1.Workflow {
 	}
 }
 
+// policyAllows reports whether identity satisfies policy, as an enforcement
+// point asks it: through [v1.SignalPolicyCheck], with nothing known about a
+// starter or the run's inputs.
+func policyAllows(t *testing.T, policy *v1.SignalPolicy, identity *v1.WorkloadIdentity) bool {
+	t.Helper()
+
+	return v1.SignalPolicyCheck(t.Context(), policy, identity, nil, false, nil) == nil
+}
+
 func TestCheckSignalPoliciesAcceptsNoPolicyAtAll(t *testing.T) {
 	require.NoError(t, v1.CheckSignalPolicies(gateWorkflow()))
 }
@@ -35,9 +43,7 @@ func TestCheckSignalPoliciesAcceptsNoPolicyAtAll(t *testing.T) {
 func TestCheckSignalPoliciesAcceptsAWellFormedPolicy(t *testing.T) {
 	wf := gateWorkflow()
 	wf.Signals = map[string]*v1.SignalPolicy{
-		"deploy-approved": {Allow: []*v1.SignalPolicyRule{
-			{Subject: v1.QualifiedSubject("https://issuer.example.com", "release-manager@example.com")},
-		}},
+		"deploy-approved": {Allow: `sender.identity.principal == "` + v1.QualifiedSubject("https://issuer.example.com", "release-manager@example.com") + `"`},
 	}
 	require.NoError(t, v1.CheckSignalPolicies(wf))
 }
@@ -48,43 +54,36 @@ func TestCheckSignalPoliciesAcceptsAWellFormedPolicy(t *testing.T) {
 func TestCheckSignalPoliciesRefusesAnUndeclaredName(t *testing.T) {
 	wf := gateWorkflow()
 	wf.Signals = map[string]*v1.SignalPolicy{
-		"deploy-aproved": {Allow: []*v1.SignalPolicyRule{ // misspelled, on purpose
-			{Subject: v1.QualifiedSubject("https://issuer.example.com", "release-manager@example.com")},
-		}},
+		"deploy-aproved": {Allow: `sender.identity.principal == "` + v1.QualifiedSubject("https://issuer.example.com", "release-manager@example.com") + `"`},
 	}
 	err := v1.CheckSignalPolicies(wf)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "no `wait_for_signal:`")
 }
 
-// TestCheckSignalPoliciesRefusesARuleThatMatchesEverySender checks the
-// cross-field fact protovalidate's per-field rules cannot see on their own:
-// a rule with nothing set on it authorizes every sender, which defeats the
-// point of writing a policy at all.
-func TestCheckSignalPoliciesRefusesARuleThatMatchesEverySender(t *testing.T) {
+// TestCheckSignalPoliciesRefusesAPolicyWithNoPredicate checks the cross-field
+// fact protovalidate's per-field rules cannot see on their own: a policy with
+// no predicate authorizes nobody, which is indistinguishable from a typo.
+func TestCheckSignalPoliciesRefusesAPolicyWithNoPredicate(t *testing.T) {
 	wf := gateWorkflow()
 	wf.Signals = map[string]*v1.SignalPolicy{
-		"deploy-approved": {Allow: []*v1.SignalPolicyRule{{}}},
+		"deploy-approved": {},
 	}
 	err := v1.CheckSignalPolicies(wf)
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "matches every sender")
+	require.Contains(t, err.Error(), "authorizes nobody")
 }
 
-// TestCheckSignalPoliciesRefusesAnUnqualifiedSubject restates #215's lesson
-// for signal policy: a subject with no issuer is ambiguous across identity
-// providers and is refused rather than silently matching any issuer's
-// version of that subject.
-func TestCheckSignalPoliciesRefusesAnUnqualifiedSubject(t *testing.T) {
-	wf := gateWorkflow()
-	wf.Signals = map[string]*v1.SignalPolicy{
-		"deploy-approved": {Allow: []*v1.SignalPolicyRule{
-			{Subject: "release-manager@example.com"}, // no "issuer#" prefix
-		}},
-	}
-	err := v1.CheckSignalPolicies(wf)
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "issuer")
+// TestABareSubjectPredicateNeverAdmitsAQualifiedSender restates #215's lesson
+// for signal policy: a principal is "<issuer>#<subject>", so a predicate
+// comparing it with a bare subject can never match a real sender, whichever
+// issuer minted the subject.
+func TestABareSubjectPredicateNeverAdmitsAQualifiedSender(t *testing.T) {
+	policy := &v1.SignalPolicy{Allow: `sender.identity.principal == "release-manager@example.com"`}
+
+	require.False(t, policyAllows(t, policy, &v1.WorkloadIdentity{
+		Issuer: "https://issuer.example.com", Subject: "release-manager@example.com",
+	}))
 }
 
 func TestQualifiedSubjectAndLooksLikeQualifiedSubject(t *testing.T) {
@@ -96,222 +95,130 @@ func TestQualifiedSubjectAndLooksLikeQualifiedSubject(t *testing.T) {
 	require.False(t, v1.LooksLikeQualifiedSubject("#sub@example.com"), "empty issuer before '#'")
 	require.False(t, v1.LooksLikeQualifiedSubject("https://issuer.example.com#"), "empty subject after '#'")
 	require.False(t, v1.LooksLikeQualifiedSubject("mesh#x#y"), "more than one '#' is ambiguous")
-	require.Error(t, v1.Validate(&v1.SignalPolicyRule{Subject: "mesh#x#y"}),
-		"the descriptor must enforce the same unambiguous spelling")
 }
 
-// TestSignalPolicyAllowsRuleIsAnAndOfItsSetFields checks that a rule naming
-// both a subject and a claim requires both — an intersection within one
-// rule, not either alone.
-func TestSignalPolicyAllowsRuleIsAnAndOfItsSetFields(t *testing.T) {
-	policy := &v1.SignalPolicy{Allow: []*v1.SignalPolicyRule{{
-		Subject: v1.QualifiedSubject("https://issuer.example.com", "release-manager@example.com"),
-		Claims:  map[string]string{"team": "release-managers"},
-	}}}
+// TestSignalPolicyPredicateClausesAreAnded checks that a predicate naming both
+// a principal and a claim requires both: an intersection, not either alone.
+func TestSignalPolicyPredicateClausesAreAnded(t *testing.T) {
+	policy := &v1.SignalPolicy{Allow: `sender.identity.principal == "` + v1.QualifiedSubject("https://issuer.example.com", "release-manager@example.com") + `" && sender.identity.claims["team"] == "release-managers"`}
 
-	// Matches subject, but not the claim: refused.
-	require.False(t, v1.SignalPolicyAllows(policy, &v1.WorkloadIdentity{
+	// Matches the principal, but not the claim: refused.
+	require.False(t, policyAllows(t, policy, &v1.WorkloadIdentity{
 		Issuer:  "https://issuer.example.com",
 		Subject: "release-manager@example.com",
 		Claims:  map[string]string{"team": "some-other-team"},
 	}))
 
 	// Matches both: allowed.
-	require.True(t, v1.SignalPolicyAllows(policy, &v1.WorkloadIdentity{
+	require.True(t, policyAllows(t, policy, &v1.WorkloadIdentity{
 		Issuer:  "https://issuer.example.com",
 		Subject: "release-manager@example.com",
 		Claims:  map[string]string{"team": "release-managers"},
 	}))
 }
 
-// TestSignalPolicyAllowsRulesAreAlternatives checks that multiple rules in
-// one `allow:` list are OR'd: satisfying any one of them is enough.
-func TestSignalPolicyAllowsRulesAreAlternatives(t *testing.T) {
-	policy := &v1.SignalPolicy{Allow: []*v1.SignalPolicyRule{
-		{Subject: v1.QualifiedSubject("https://issuer.example.com", "alice@example.com")},
-		{Subject: v1.QualifiedSubject("https://issuer.example.com", "bob@example.com")},
-	}}
+// TestSignalPolicyPredicateAlternativesAreOred checks that `||` makes
+// alternatives: satisfying any one of them is enough.
+func TestSignalPolicyPredicateAlternativesAreOred(t *testing.T) {
+	policy := &v1.SignalPolicy{Allow: `sender.identity.principal == "` + v1.QualifiedSubject("https://issuer.example.com", "alice@example.com") + `" || sender.identity.principal == "` + v1.QualifiedSubject("https://issuer.example.com", "bob@example.com") + `"`}
 
-	require.True(t, v1.SignalPolicyAllows(policy, &v1.WorkloadIdentity{
+	require.True(t, policyAllows(t, policy, &v1.WorkloadIdentity{
 		Issuer: "https://issuer.example.com", Subject: "alice@example.com",
 	}))
-	require.True(t, v1.SignalPolicyAllows(policy, &v1.WorkloadIdentity{
+	require.True(t, policyAllows(t, policy, &v1.WorkloadIdentity{
 		Issuer: "https://issuer.example.com", Subject: "bob@example.com",
 	}))
-	require.False(t, v1.SignalPolicyAllows(policy, &v1.WorkloadIdentity{
+	require.False(t, policyAllows(t, policy, &v1.WorkloadIdentity{
 		Issuer: "https://issuer.example.com", Subject: "carol@example.com",
 	}))
 }
 
-// TestSignalPolicyAllowsNamespaceRule checks the namespace form
-// independently of subject and claims.
-func TestSignalPolicyAllowsNamespaceRule(t *testing.T) {
-	policy := &v1.SignalPolicy{Allow: []*v1.SignalPolicyRule{{Namespace: "release-managers-ns"}}}
+// TestSignalPolicyNamespacePredicate checks the namespace form independently of
+// principal and claims.
+func TestSignalPolicyNamespacePredicate(t *testing.T) {
+	policy := &v1.SignalPolicy{Allow: `sender.identity.namespace == "release-managers-ns"`}
 
-	require.True(t, v1.SignalPolicyAllows(policy, &v1.WorkloadIdentity{Namespace: "release-managers-ns"}))
-	require.False(t, v1.SignalPolicyAllows(policy, &v1.WorkloadIdentity{Namespace: "team-a"}))
+	require.True(t, policyAllows(t, policy, &v1.WorkloadIdentity{Namespace: "release-managers-ns"}))
+	require.False(t, policyAllows(t, policy, &v1.WorkloadIdentity{Namespace: "team-a"}))
 }
 
-// TestCheckSignalPolicyShapeAllowsUnresolvedSubjectWhenDeclared checks the
-// declare-time side of CheckSignalPolicyShape's two-caller split: a rule's
-// subject_from is expected to still be an unresolved expression before
-// BindRunInputs and resolution have run, and that is not refused.
-func TestCheckSignalPolicyShapeAllowsUnresolvedSubjectWhenDeclared(t *testing.T) {
-	policies := map[string]*v1.SignalPolicy{
-		"deploy-approved": {Allow: []*v1.SignalPolicyRule{
-			{SubjectFrom: v1.NewExpr("inputs.expected_approver"), Claims: map[string]string{"role": "release-manager"}},
-		}},
-	}
-	require.NoError(t, v1.CheckSignalPolicyShape(policies, false))
-}
-
-func TestCheckSignalPoliciesRefusesUnnarrowedSubjectFrom(t *testing.T) {
+// TestCheckSignalPoliciesRefusesAnInputsPredicateWithNothingNarrowing is the
+// narrowing rule at the policy level: whoever starts a run chooses its inputs,
+// so a predicate over them alone would let the starter name their own approver.
+func TestCheckSignalPoliciesRefusesAnInputsPredicateWithNothingNarrowing(t *testing.T) {
 	wf := gateWorkflow()
 	wf.Signals = map[string]*v1.SignalPolicy{
-		"deploy-approved": {Allow: []*v1.SignalPolicyRule{
-			{SubjectFrom: v1.NewExpr("inputs.expected_approver")},
-		}},
+		"deploy-approved": {Allow: `sender.identity.principal == "https://issuer.example.com#" + inputs.expected_approver`},
 	}
 	err := v1.CheckSignalPolicies(wf)
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "add claims: to the rule, or distinct_from_starter: true",
+	require.Contains(t, err.Error(), "name themselves as their own approver",
+		"the diagnostic must say what is wrong")
+	require.Contains(t, err.Error(), "sender.identity.claims",
 		"the diagnostic must say what to do, not only that something is wrong")
 }
 
-// TestCheckSignalPoliciesRefusesSubjectFromNarrowedOnlyByNamespace is the case
-// a namespace-counts-as-narrowing rule would let through, and it is the whole
-// of the hazard rather than an edge of it.
-//
-// A namespace on a rule is compared against the sender's own namespace, and
-// every sender that reaches that comparison is already in the run's namespace
-// — `FlowstateServer.Signal` reaches `authorizeSignal` only through
-// `authorizeRun`, which refuses anyone else. The run's namespace is the
-// starter's. So `subject_from` plus `namespace:` authorizes exactly the same
-// senders as `subject_from` alone: the starter, having named themselves
-// through the run's inputs, matches both halves. Accepting it would leave the
-// file reading as though the gate had been narrowed while it had not been,
-// which is worse than refusing it.
-func TestCheckSignalPoliciesRefusesSubjectFromNarrowedOnlyByNamespace(t *testing.T) {
-	wf := gateWorkflow()
-	wf.Signals = map[string]*v1.SignalPolicy{
-		"deploy-approved": {Allow: []*v1.SignalPolicyRule{{
-			SubjectFrom: v1.NewExpr("inputs.expected_approver"),
-			Namespace:   "release-managers-ns",
-		}}},
+// TestCheckSignalPoliciesAllowsANarrowedInputsPredicate is the positive
+// direction the refusal above needs to mean anything. Without it, a check that
+// refused every predicate reading inputs would satisfy it and still break the
+// feature outright.
+func TestCheckSignalPoliciesAllowsANarrowedInputsPredicate(t *testing.T) {
+	for name, expression := range map[string]string{
+		"narrowed by a comparison with the starter": `sender.identity.principal == "https://issuer.example.com#" + inputs.expected_approver && sender.identity.principal != run.identity.principal`,
+		"narrowed by claims":                        `sender.identity.principal == "https://issuer.example.com#" + inputs.expected_approver && sender.identity.claims["role"] == "release-manager"`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			wf := gateWorkflow()
+			wf.Signals = map[string]*v1.SignalPolicy{"deploy-approved": {Allow: expression}}
+			require.NoError(t, v1.CheckSignalPolicies(wf))
+		})
 	}
-	err := v1.CheckSignalPolicies(wf)
+}
+
+// TestCheckSignalPolicyShapeRefusesAMemoPolicyWithNoPredicate is the decoded
+// side: a policy read back off a run's memo that decodes to no predicate (a
+// run frozen by a release that still recorded the retired rule list, whose
+// field numbers are reserved) is refused, never read as "no policy".
+func TestCheckSignalPolicyShapeRefusesAMemoPolicyWithNoPredicate(t *testing.T) {
+	err := v1.CheckSignalPolicyShape(map[string]*v1.SignalPolicy{"deploy-approved": {}})
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "A namespace: does not narrow this",
-		"the diagnostic must say why the constraint the author reached for is not one")
+	require.Contains(t, err.Error(), "authorizes nobody")
 }
 
-// TestCheckSignalPoliciesAllowsNarrowedSubjectFrom is the positive direction the
-// refusals above need to mean anything. Without it, a rule that refused
-// every subject_from — rather than only the unnarrowed ones — would satisfy
-// all of them and still break the feature outright.
-func TestCheckSignalPoliciesAllowsNarrowedSubjectFrom(t *testing.T) {
-	t.Run("narrowed by distinct_from_starter", func(t *testing.T) {
-		wf := gateWorkflow()
-		wf.Signals = map[string]*v1.SignalPolicy{
-			"deploy-approved": {
-				Allow: []*v1.SignalPolicyRule{{
-					SubjectFrom: v1.NewExpr("inputs.expected_approver"),
-				}},
-				DistinctFromStarter: true,
-			},
-		}
-		require.NoError(t, v1.CheckSignalPolicies(wf))
-	})
+// TestSignalPolicyClosedPrincipals pins what the quorum check may count: only
+// predicates whose admitted principals can be enumerated exactly are closed.
+func TestSignalPolicyClosedPrincipals(t *testing.T) {
+	const a, b = "https://i#a", "https://i#b"
 
-	t.Run("narrowed by claims", func(t *testing.T) {
-		wf := gateWorkflow()
-		wf.Signals = map[string]*v1.SignalPolicy{
-			"deploy-approved": {Allow: []*v1.SignalPolicyRule{{
-				SubjectFrom: v1.NewExpr("inputs.expected_approver"),
-				Claims:      map[string]string{"role": "release-manager"},
-			}}},
-		}
-		require.NoError(t, v1.CheckSignalPolicies(wf))
-	})
-}
-
-func TestCheckSignalPoliciesRefusesSubjectAndSubjectFrom(t *testing.T) {
-	wf := gateWorkflow()
-	wf.Signals = map[string]*v1.SignalPolicy{
-		"deploy-approved": {Allow: []*v1.SignalPolicyRule{{
-			Subject:     v1.QualifiedSubject("https://issuer.example.com", "release-manager@example.com"),
-			SubjectFrom: v1.NewExpr("inputs.expected_approver"),
-			Claims:      map[string]string{"role": "release-manager"},
-		}}},
+	closed := map[string][]string{
+		`sender.identity.principal == "` + a + `"`:                                                                                     {a},
+		`"` + a + `" == sender.identity.principal`:                                                                                     {a},
+		`sender.identity.principal in ["` + a + `", "` + b + `"]`:                                                                      {a, b},
+		`sender.identity.principal == "` + a + `" || sender.identity.principal == "` + b + `"`:                                         {a, b},
+		`sender.identity.principal == "` + a + `" && sender.identity.claims["team"] == "x"`:                                            {a},
+		`(sender.identity.principal == "` + a + `" || sender.identity.principal == "` + b + `") && sender.identity.claims["t"] == "x"`: {a, b},
+		`sender.identity.principal == "` + a + `" && sender.identity.principal != run.identity.principal`:                              {a},
 	}
-	err := v1.CheckSignalPolicies(wf)
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "both subject and subject_from")
-}
-
-// TestCheckSignalPolicyShapeRefusesUnresolvedSubjectWhenResolved is the
-// negative direction: a policy decoded back off a run's memo must never
-// still carry a rule's subject_from, because resolution has already run
-// before anything reaches a memo. A populated subject_from at this point is
-// corruption, not an authoring-time fact, and is refused rather than
-// silently evaluated on a future signal delivery.
-func TestCheckSignalPolicyShapeRefusesUnresolvedSubjectWhenResolved(t *testing.T) {
-	policies := map[string]*v1.SignalPolicy{
-		"deploy-approved": {Allow: []*v1.SignalPolicyRule{
-			{SubjectFrom: v1.NewExpr("inputs.expected_approver"), Claims: map[string]string{"role": "release-manager"}},
-		}},
-	}
-	err := v1.CheckSignalPolicyShape(policies, true)
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "unresolved expression")
-}
-
-// TestResolveSignalPolicySubjectsResolvesAgainstBoundInputs is the positive
-// case: a rule's subject_from, referencing an input the run was bound with,
-// resolves to that input's value and subject_from is cleared.
-func TestResolveSignalPolicySubjectsResolvesAgainstBoundInputs(t *testing.T) {
-	approver := v1.QualifiedSubject("https://issuer.example.com", "release-manager@example.com")
-
-	wf := gateWorkflow()
-	wf.Signals = map[string]*v1.SignalPolicy{
-		"deploy-approved": {Allow: []*v1.SignalPolicyRule{
-			{SubjectFrom: v1.NewExpr("inputs.expected_approver"), Claims: map[string]string{"role": "release-manager"}},
-		}},
-	}
-	inputs := map[string]*v1.Value{
-		"expected_approver": v1.NewLiteral(approver),
+	for expression, want := range closed {
+		got, ok := v1.SignalPolicyClosedPrincipals(&v1.SignalPolicy{Allow: expression})
+		require.True(t, ok, expression)
+		require.Equal(t, want, got, expression)
 	}
 
-	resolved, err := v1.ResolveSignalPolicySubjects(context.Background(), wf, inputs)
-	require.NoError(t, err)
-
-	rule := resolved["deploy-approved"].GetAllow()[0]
-	require.Equal(t, approver, rule.GetSubject())
-	require.Nil(t, rule.GetSubjectFrom())
-	require.Equal(t, map[string]string{"role": "release-manager"}, rule.GetClaims(),
-		"resolution replaces the expression and carries every other field of the rule through untouched")
-
-	// The original, still-declared policy is untouched.
-	require.NotNil(t, wf.GetSignals()["deploy-approved"].GetAllow()[0].GetSubjectFrom())
-}
-
-// TestResolveSignalPolicySubjectsRefusesAMalformedResult checks that a
-// resolved subject is held to the same "<issuer>#<subject>" shape a literal
-// subject is: an interpolated field that resolves to something else is
-// refused rather than frozen into a policy no sender could ever satisfy
-// correctly (or, worse, one that matches more than intended).
-func TestResolveSignalPolicySubjectsRefusesAMalformedResult(t *testing.T) {
-	wf := gateWorkflow()
-	wf.Signals = map[string]*v1.SignalPolicy{
-		"deploy-approved": {Allow: []*v1.SignalPolicyRule{
-			{SubjectFrom: v1.NewExpr("inputs.expected_approver"), Claims: map[string]string{"role": "release-manager"}},
-		}},
-	}
-	inputs := map[string]*v1.Value{
-		"expected_approver": v1.NewLiteral("no-hash-here"),
+	for _, expression := range []string{
+		`sender.identity.claims["team"] == "x"`,
+		`sender.identity.namespace == "n"`,
+		`sender.identity.principal == "` + a + `" || sender.identity.claims["team"] == "x"`,
+		`sender.identity.principal == "x#" + inputs.who && sender.identity.claims["t"] == "x"`,
+		`!(sender.identity.principal == "` + a + `")`,
+		`sender.identity.principal.startsWith("https://i#")`,
+		`not a valid ((expression`,
+		``,
+	} {
+		_, ok := v1.SignalPolicyClosedPrincipals(&v1.SignalPolicy{Allow: expression})
+		require.False(t, ok, expression)
 	}
 
-	_, err := v1.ResolveSignalPolicySubjects(context.Background(), wf, inputs)
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "issuer")
+	_, ok := v1.SignalPolicyClosedPrincipals(nil)
+	require.False(t, ok, "no policy admits any authenticated caller, so nothing is closed")
 }

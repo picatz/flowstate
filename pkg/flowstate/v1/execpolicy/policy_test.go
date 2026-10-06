@@ -44,7 +44,7 @@ func base(t *testing.T) (execpolicy.Config, string) {
 		Executables:    map[string]string{"sh": tool(t, "sh"), "env": tool(t, "env")},
 		Roots:          []string{root},
 		Timeout:        30 * time.Second,
-		MaxOutputBytes: 1 << 20,
+		MaxOutputBytes: 64 << 10,
 	}, resolved
 }
 
@@ -318,6 +318,14 @@ func TestDirMustResolveUnderARoot(t *testing.T) {
 		})
 	}
 
+	t.Run("a refusal does not name where a link leads", func(t *testing.T) {
+		_, err := check(escape)
+		d := denied(t, err, execpolicy.ReasonDir)
+		assert.Contains(t, d.Detail, escape, "the author's own path is fine to echo")
+		assert.NotContains(t, d.Detail, outside,
+			"a denial lands in durable history, so it must not say where a symbolic link leads")
+	})
+
 	t.Run("no roots admits no directory", func(t *testing.T) {
 		cfg, root := base(t)
 		cfg.Roots = nil
@@ -494,8 +502,7 @@ func TestExactArgvShapesRefuseWhatRootsDoNotConfine(t *testing.T) {
 	cfg, root := base(t)
 	cfg.Allow = []string{
 		`name == "env" && argv == ["env", "--version"]`,
-		`name == "env" && argv.size() >= 2 && argv[1] in ["status", "log"] &&
-			argv.all(a, a in ["--stat", "--oneline", "--"] || !a.startsWith("-"))`,
+		`name == "env" && argv == ["env", "rev-parse", "--git-dir"]`,
 	}
 	cfg.Deny = []string{
 		`argv.exists(a, a == "-c" || a.startsWith("--output") || a == "--no-index" || a.startsWith("--ext-diff"))`,
@@ -509,13 +516,13 @@ func TestExactArgvShapesRefuseWhatRootsDoNotConfine(t *testing.T) {
 	}
 
 	require.NoError(t, check("env", "--version"))
-	require.NoError(t, check("env", "log", "--oneline", "main"))
+	require.NoError(t, check("env", "rev-parse", "--git-dir"))
 
 	for _, argv := range [][]string{
-		{"env", "log", "--output=/tmp/x"},
-		{"env", "log", "--ext-diff"},
-		{"env", "log", "/etc/passwd"},
-		{"env", "log", "../other"},
+		{"env", "rev-parse", "--output=/tmp/x"},
+		{"env", "rev-parse", "--ext-diff"},
+		{"env", "rev-parse", "/etc/passwd"},
+		{"env", "rev-parse", "../other"},
 		{"env", "-c", "core.pager=sh"},
 	} {
 		denied(t, check(argv...), execpolicy.ReasonDenyRule)
@@ -523,8 +530,14 @@ func TestExactArgvShapesRefuseWhatRootsDoNotConfine(t *testing.T) {
 
 	// Not named by a deny rule, but outside every allowed shape.
 	for _, argv := range [][]string{
-		{"env", "log", "--unlisted-flag"},
+		{"env", "rev-parse", "--unlisted-flag"},
 		{"env", "--version", "extra"},
+		// Subcommands that read the repository's own config, and so can run a
+		// program it names (core.fsmonitor, diff.external, textconv), are not
+		// listed.
+		{"env", "status"},
+		{"env", "diff"},
+		{"env", "log", "--oneline"},
 	} {
 		denied(t, check(argv...), execpolicy.ReasonNoAllowRule)
 	}

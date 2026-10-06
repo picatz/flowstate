@@ -257,9 +257,11 @@ signals:
 | `skipped` | Steps that must not have run. |
 | `others: skipped` | Closes `ran:`: every step not listed there must have been skipped, so a step added later fails the case until the case mentions it. |
 | `compensated` | The steps whose `undo:` ran. |
+| `denied_signals` | Signals the case sends that the workflow's `signals:` policy must refuse. Each needs at least one scripted delivery denied by the same check the server's Signal door runs; a signal another sender got through still counts. A name the workflow has no policy for, or the case never sends, is refused when the case loads. |
 | `invocations` | How often tasks ran, and in what order. See below. |
 | `check` | CEL claims over the finished run. See below. |
 | `inputs`, `refused`, `idempotency_key` | For a case with a webhook `trigger:`: what the delivery bound, whether it was refused, and the key it produced. |
+| `response` | For a case with a webhook `trigger:` whose webhook declares `respond_within:`: the document its receiver would answer with. `status:` is `completed`, `failed` or `running`; `outputs:` (completed only) must equal the declared outputs exactly, a sensitive one as the withheld marker. |
 
 An `expect:` with nothing in it is refused, because a case that asserts nothing
 passes whatever the run did.
@@ -309,7 +311,7 @@ expect:
 ```
 
 A check can read `steps.*`, `inputs.*`, `vars.*`, and a `run` root with
-`failed`, `error`, and `local`. It runs whether or not the run failed, so
+`failed`, `error`, `local`, and what the run did about failing (below). It runs whether or not the run failed, so
 `run.error.contains('must satisfy')` is a claim about a failure. A failing check
 prints the values it read:
 
@@ -319,6 +321,44 @@ expect.check[1]: check failed: steps.join.value.regions[0] == inputs.region
            steps.join.value.regions[0] = "us-east-1"
            inputs.region = "eu-west-1"
 ```
+
+`run` also says what compensation and the tasks did, so a claim can state a
+saga's promise rather than one scripted path:
+
+| Field | Value |
+| --- | --- |
+| `run.compensated` | `list(string)`: the steps whose `undo:` succeeded, in the order they ran (reverse registration). Always present, empty when nothing was undone. |
+| `run.uncompensated` | `list(string)`: the steps whose `undo:` failed or was not attempted before a cancellation's budget ran out. Each registration is classified on its own, so a step an iteration of a `loop:` or `for_each:` registers more than once can appear in both lists, and being in `run.compensated` does not prove every registration was undone; a step that registered no `undo:` (skipped, failed, or without one) is in neither. |
+| `run.signals.dropped` | `list(string)`: the signals a `faults:` entry lost a delivery of, sorted. Always present, empty when nothing was lost. |
+| `run.signals.delayed` | `list(string)`: the signals a `faults:` entry made late, sorted, whether or not the run was still there when they arrived. Always present, empty when nothing was late. |
+| `run.invocations.task` | `map(string, int)`: how many times each task ran anywhere in the run, callees and `undo:` compensations included. |
+| `run.invocations.step` | `map(string, int)`: how many times each step of the workflow under test ran its task, one per attempt, so a retried step counts every attempt. Compensations are not counted. |
+
+An absent key is zero, so test with `in` before indexing: `'debit' in run.invocations.step`.
+`expect.compensated:` and `expect.invocations:` read the same account, so the
+declarative and CEL spellings cannot disagree. `run.invocations` is unbound when
+a case made more invocations than the log keeps, and a claim reading it then
+fails rather than judging a prefix. These fields are bound for `invariants:` and
+the debugger's `inspect` after a failing case too, because they are the same
+scope.
+
+The fund-transfer saga is the worked example
+([`examples/enterprise-fund-transfer`](../examples/enterprise-fund-transfer/workflow.test.yaml)):
+
+```yaml
+invariants:
+  - that: >-
+      !run.failed
+      || !('debit' in run.invocations.step)
+      || 'debit' in run.compensated
+    because: a failed transfer must never leave a debit standing
+  - that: size(run.uncompensated) == 0
+    because: every compensation this saga declares must be able to run
+```
+
+The antecedent is the invocation rather than `'debit' in steps`: an attempt that
+faulted mid-flight still reached the bank, and that is the case the invariant
+exists for. Under `--seeds` the same invariants judge every drawn failure.
 
 A check is evaluated by the engine's own evaluator, under the workflow's
 language profile and cost limit, the same as `inspect` in the
@@ -357,22 +397,139 @@ it owes without being told: a failure the world causes must not surface as an
 `Internal` error. A violation is reported as a finding with the seed that
 produced it, and `flow test --seed S` replays exactly those faults.
 
+The `--seeds` summary counts the fault draws beside the scheduling decisions, and says it explored nothing only when it made neither: a file whose cases declare `faults:` is explored even with no `parallel:`. [`examples/data-enrichment`](../examples/data-enrichment/workflow.test.yaml) is a worked case: a lookup that retry must absorb, with the invariant that no record is lost.
+
 A violation also prints the faults the seed fired as a `faults:` list pinned with
 `on:` (the invocation numbers, from 1, that failed). Paste it over the case's
 `faults:` and a plain `flow test` fires exactly those failures in every run,
 the written-order one included, so the violation becomes a regression case
 that fails until the workflow is fixed, with no seed and no `--seeds`. Invocation numbers name a call only when nothing was
 reordered, so a seed that also permuted a `parallel:` block prints no pins and
-keeps its seed for replay. A pinned
+keeps its seed for replay. The list is shrunk before it is printed: the seed's firings are
+re-run in written order, delta-debugging style, until removing any one of the
+remaining failures stops the violation, and the report says how many the seed
+fired and how many re-runs that took. A pin the case declared itself is never
+dropped. The re-runs are bounded (256); past that the shortest violating list
+found is printed and the report says it may not be minimal. The shrunk list
+violates *an* invariant, not necessarily the one the seed broke first. A search that is cut off
+(cancelled, or out of the case's time) reports itself as not minimal. An invocation number counts
+the calls a fault could hit whether or not another fault fired on them, so a script
+keeps its meaning when a fault is removed; a script pasted before this was
+so counted may have numbered a later overlapping fault differently, so
+re-derive it from a fresh `--seeds` finding. A pinned
 fault takes no `rate:` or `at_most:`, and a script whose invocation the run no
 longer makes fails as drifted rather than passing for a fault that never
 happened.
 
+A fault can make an invocation late instead of broken. `delay:` holds a task or
+step invocation on the virtual clock for a fixed duration (`15s`, `2m`, positive
+and at most 24h) before the stubs answer, with no wall time spent:
+
+```yaml
+  faults:
+    - step: lookup
+      delay: 15s          # alone, the call is slow and then answers as stubbed
+      at_most: 2          # a seed decides which calls are slow, never how slow
+```
+
+The step's `timeout:` and `total_timeout:` are measured on the same clock. A
+delay past `timeout:` ends that attempt as a `Timeout` at the bound, and
+`retry:` and `continue_on_error:` take it from there; a delay past
+`total_timeout:`, which bounds every attempt together, ends the step with no
+further retry. A delay under the bound only moves the answer later. With `fails:` beside it the call fails after the wait. The
+account says `delayed 15s by faults[0]` at the moment the wait began, and a
+pinned script printed for a violation keeps the `delay:`. The same key on a
+`signal:` fault, below, makes a delivery late; the duration is fixed either way,
+since a seed picking how long would need a pin that carries the drawn value.
+
 A fault answers before the stubs and spends none of their `times:`. `fails.kind`
 is any error kind a task reports except `Internal` and `Expression`, which are
 defects, and `RunTimeout`, which only a whole run can have. Rows of a table inherit the entry's `faults:` and
-`invariants:` when they state none. Not yet covered: delay faults, signal jitter,
-and shrinking a violating seed to its minimal fault set.
+`invariants:` when they state none.
+
+A third target changes a signal's delivery instead of failing a task, either
+losing it or making it late:
+
+```yaml
+  signals:
+    - {name: finance-approved, at: 6s, payload: {approved: true}}
+    - {name: finance-approved, at: 20m, payload: {approved: true}}
+  faults:
+    - signal: finance-approved   # a signal the case scripts; exactly one of task, step, signal
+      drop: true                 # lost: the sender sent it and the run never learns of it
+    # or: delay: 45m             # late: arrives that long after its `at:`, up to 720h
+  invariants:
+    - that: "!run.failed || 'finance-approved' in run.signals.dropped"
+      because: the gate may lapse only when an approval was lost
+```
+
+`signal:` takes exactly one of `drop: true` and `delay: <duration>`. `rate:`,
+`at_most:` and `on:` mean what they mean for a task fault, counted over the
+scripted deliveries of that name in declaration order: `on: [2]` is the second
+`signals:` entry of that name. A delivery is decided before the run starts, so
+a seed changes the same deliveries however the clock orders them, but the fault
+takes effect when the sender sends, at the delivery's own `at:`. A delayed
+signal that arrives after the gate's `timeout:` is the case this exists for:
+the sender was on time and the gate lapsed anyway, and `run.signals.delayed`
+says so even though the signal never reached the run. A dropped delivery never
+reaches the signal policy, so it is neither delivered nor denied. A delivery the
+run ended before its sender sent it is untouched, and a pin for one fails as
+drifted. A violation prints the pinned `signal:` entries, `delay:` kept, beside
+any task faults, and the shrinker treats them alike. Duplicated and reordered
+deliveries are not faults: a second `signals:` entry with the same
+`delivery_id:` or a different `at:` already says them.
+
+Seeded exploration is the local driver's. The durable driver has one check of
+its own that the local driver cannot have: a run survives the loss of its
+worker. `TestWorkerRestartOverWorkflows` and `TestWorkerRestartOverUndoCases`
+(`pkg/flowstate/v1/engine/workerrestart_test.go`) run the shared conformance
+cases that need no trigger or inputs on a dev server, stop the first worker gracefully after a seed-chosen
+activity completion, and let a second worker with an empty cache rebuild the
+run from history and finish it with the answer both drivers already agree on.
+A failure prints the seed, the boundary the second worker resumed at, and where
+the run's history was kept. The restarted run must also complete as many
+activities as the undisturbed one, so an activity run again after replay fails.
+`FLOWSTATE_RESTART_SEEDS=N` (default 3, at most 50) sets the points per case.
+`TestWorkerRestartWhileParkedAtAGate` does the same for a run held at a bounded
+gate: the worker is lost while the run is parked and the gate is then answered
+by a signal, or lapses while no worker is running, and the second worker must
+leave it the same way an undisturbed run does.
+`TestWorkerRestartAcrossContinueAsNew` runs shared cases with a step budget of
+one, so the run is a chain of executions, and loses the worker after each
+completion but the last, including ones that land after the first execution and
+resume from the carryover. The chain must give what the undisturbed chain gives.
+Not yet covered: a worker killed mid-activity.
+
+### Inputs you did not think of: `--fuzz`
+
+`flow test --fuzz N` runs each authored case over N generated sets of inputs.
+Generation is driven by the workflow's declared `inputs:`: boundary values for
+a `string` (empty, one character, non-ASCII, `${1 + 1}` as data, and `min_len:` or
+`max_len:` characters, capped at 4096), an `int` (zero, one past either side of zero, 2^31, 2^53-1),
+a `double` and a `bool`, every `values:` entry for an enum, and each optional
+input absent. The first runs walk these boundary values one input at a time
+with the others as the case wrote them, so a small `--fuzz N` still exercises
+each boundary and a failure points at one input; later runs combine them at
+random. Every candidate set is bound through the same `BindRunInputs` a
+real submit uses, so a value the declaration refuses (a `must:` it fails) is
+never run. The case's own `stubs:` answer, `expect:` is not applied (it
+describes the authored inputs), and `faults:` are not injected.
+
+A generated run fails when it ends in an `Internal` or `Expression` error (a
+`no such key` or a division by zero is a defect that an input reached) or
+breaks the case's `invariants:`. The first failure is reported apart from the
+authored cases with its seed and the `inputs:` overlay to merge over the case's own;
+`flow test --fuzz-seed S` replays exactly it (a `sensitive:` input is left out of the overlay, so the case keeps its own value for it). A finding is shrunk before it is printed: the inputs the seed changed are put back at the case's own values, delta-debugging style, until putting any one more back stops the failure, so the overlay holds only the inputs that matter. The search is bounded (256 re-runs) and reports itself as not minimal when it ran out; it finds *a* failure of the smaller set, not necessarily the first. An input the case supplies and the generated run left out cannot be written in an overlay, so the report names it separately to remove from the case. A generated case that errors before the run (an input the stubs have no answer for, for one) is reported as could not be judged, and a file where every generated case did so fails: nothing was verified. Inputs the workflow declares
+`sensitive:` are never generated or printed, and inputs of a type not generated
+yet (lists, maps, timestamps) are named in the report rather than skipped
+silently. `--fuzz` is refused with `--seeds`, `--debug` and `--list`: a run
+explores one dimension, so a finding names one cause. A finding can be an artifact of the stubs: they answer what the authored inputs
+need, so an input that takes a branch reading a field the stub's fixed answer
+lacks fails with a missing-key error that a real task would not. Read the
+reported failure before treating it as a workflow defect, and widen the stub.
+A `--fuzz` run in which no file judged a generated case fails, since it verified
+nothing. Not yet covered: stub answers drawn from output descriptors,
+structural input types, and shrinking.
 
 ## One fixture, many rows
 
@@ -539,8 +696,8 @@ the other suites in the directory would print it. Move it into the suite's own
 A case can say who started the run (`starter:`) and who sent each signal
 (`sender:`). Both are assertions a case makes, not identities anyone attested.
 
-They reach the workflow's own `signals:` policy, including
-`distinct_from_starter:`, so a case can prove that an approver is admitted and
+They reach the workflow's own `signals:` policy, including a
+`sender.identity.principal != run.identity.principal` clause, so a case can prove that an approver is admitted and
 that the requester cannot approve their own run. They do not reach
 `run.identity` (empty in every case, with `run.local` true), egress policy (a
 stub answers the request that would have been checked), task-shape policy, or
@@ -557,6 +714,99 @@ there, although the same suite passes under `flow test`.
 [`examples/approval-gate`](../examples/approval-gate/workflow.test.yaml) tests
 its separation of duties this way.
 
+### Who may act, without a run: `flow signals check`
+
+A case runs the workflow as one identity. The question "who may approve this,
+debug it, or start it?" is about the policy, not the run, and
+`flow signals check` asks it directly: it compiles the Flowfile, runs no step,
+contacts no server, and puts the identity to each gate through the check the
+engine itself uses:
+
+| Gate | Flowfile | Decided by |
+|---|---|---|
+| `signals.NAME` | `signals:` | `v1.SignalPolicyCheck`, the check a delivery meets on the server and in `flow run local` |
+| `debug` | `debug:` | `v1.DebugPolicyCheck` |
+| `triggers.manual` | `triggers: - manual:` | `v1.CheckManualStart` |
+
+```console
+$ flow signals check examples/approval-gate/workflow.yaml \
+    --input-file examples/approval-gate/inputs.json \
+    --starter-subject dev@example.com --starter-issuer https://issuer.example.com \
+    --signal-as-subject sre-lead@example.com --signal-as-issuer https://issuer.example.com \
+    --signal-as-claim team=release-managers
+signals.deploy-approved  admitted
+```
+
+The sender is named with the `--signal-as-*` flags that `flow run local` takes,
+and the run's starter, which a predicate reads as `run.identity`, with
+`--starter-*`. Two defaults fail closed exactly as the engine does. A sender
+that names nobody is unauthenticated, which no `allow:` predicate a deployment
+writes admits, and a `triggers.manual` block that writes an `allow:` predicate refuses
+(with no such block, any caller the server authenticates may start the workflow,
+and the line says so). A starter that is not named
+is unknown, so a predicate that reads `run.identity` errors, and an error refuses.
+`--starter-anonymous` says the run was started by nobody authenticated, which is
+how `flow run local` models a run given no `--as-*` flags. Arguments are given
+with `--input` or `--input-file`, bound as a start binds them, so a predicate sees
+defaults too.
+
+With none of `--signal NAME`, `--debug` and `--manual`, every declared signal is
+checked; naming any of them checks only what is named. Each line is `admitted` or
+`refused`, and a refusal carries the engine's own sentence, which never quotes a
+claim, an input or an evaluation error. A `sensitive:` input is never printed; a
+refusal about an argument that is not sensitive can name it, as `flow run local`
+does. Claims, subjects and matrix content are never quoted.
+
+**In CI.** Without `--expect` the exit status is 0 whatever the answers, and
+non-zero only for a usage or compile error. `--expect admitted|refused` turns
+the answer into an assertion: exit status 1 when any decision differs, after the
+answers are printed.
+
+**Many identities.** `--matrix FILE` asks every gate about a table of identities
+and prints senders by gates. The file is strict YAML, so a misspelled key is a
+refusal rather than an assertion that checks nothing:
+
+```yaml
+identities:
+  - name: sre-lead
+    subject: sre-lead@example.com
+    issuer: https://issuer.example.com
+    claims: {team: release-managers}
+    starter: {subject: dev@example.com, issuer: https://issuer.example.com}
+    expect: admitted
+  - name: self-approval            # the requester may not approve their own run
+    subject: dev@example.com
+    issuer: https://issuer.example.com
+    claims: {team: release-managers}
+    starter: {subject: dev@example.com, issuer: https://issuer.example.com}
+    expect: refused
+  - name: anonymous
+    starter: {}                    # started by nobody authenticated
+    expect: refused
+```
+
+`expect` is one outcome for every gate, and `expect_by_gate` a map from gate
+(`signals.NAME`, `debug`, `triggers.manual`) to its outcome, which wins for the
+gates it names. The file is defined by `proto/flowstate/v1/policy_check.proto`. A row's `inputs:` replace, by name,
+the `--input` arguments given for every row, and a row with no `starter:` or
+`expect:` takes `--starter-*` and `--expect`. A subject without an issuer, or the
+reverse, is refused by the rule a test file's `sender:` is held to. A matrix is
+bounded at 256 identities and 256 KiB, and holds one YAML document, with no
+anchors, aliases or merge keys. Nesting is bounded by counting bytes, not by
+reading YAML: the file may hold at most 4096 `[` and `{` characters, wherever
+they appear, and a line at most 128 leading spaces and 64 block indicators
+(`- `, `? `, `: `); a tab in indentation is refused. A number of magnitude 2^53
+or more in a row's `inputs:` is refused, whole or not, because the schema
+carries inputs as doubles and would round it; give such a value with `--input`, which applies to every row. A row that does not match its expectation
+makes the exit status 1.
+
+What it is not: a decision that depends on state only a run has, such as a
+signal already consumed, is not modelled, and `triggers.manual` is decided over
+the caller and the inputs alone, as the server decides it. Like a case's
+`sender:`, an identity here is an assertion, not one anybody attested, and the
+check says nothing about whether a deployment would let that identity through its
+authenticator.
+
 ## Triggers
 
 A case can start the run the way a trigger would:
@@ -565,12 +815,20 @@ A case can start the run the way a trigger would:
   replays a stored delivery through the real verifier and binder, so the case
   checks the webhook's `with:` mapping and its signature handling.
   `expect.inputs`, `expect.refused`, and `expect.idempotency_key` assert what the
-  delivery produced.
+  delivery produced. For a webhook with `respond_within:`, `expect.response`
+  asserts the document the receiver would answer with, built by the same function
+  from the run the case executes: a run that finishes is `completed` with its
+  declared outputs, one that fails is `failed`, and one parked at a
+  `wait_for_signal:` with no `timeout:` that no scripted `signals:` entry answers is
+  `running`. The wait itself is not rehearsed: there is no listener and no run that
+  outlives its case, so a run's duration against the bound (a gate with a long
+  `timeout:` resolves on the virtual clock) is not compared with it.
 - `trigger: {kind: schedule, name: nightly}` sets `trigger.*` directly, so both
   sides of a step guarded by `trigger.kind` can be tested without a real
   schedule.
 
-See [`examples/webhook-trigger`](../examples/webhook-trigger/) and
+See [`examples/webhook-trigger`](../examples/webhook-trigger/),
+[`examples/webhook-respond`](../examples/webhook-respond/) and
 [`examples/trigger-context`](../examples/trigger-context/).
 
 ## Running tests
@@ -591,7 +849,7 @@ as given. Finding no test files is an error, and so is naming a workflow file.
 | `--coverage-required` | Fail when a step or `switch:` arm is reached by no case and not listed under `coverage.allow_unreached`. |
 | `--fail-on-warning` | Treat warnings as failures. |
 | `--seeds N` | Also run each case under N seeded orderings of `parallel:` branches and `async:` steps, and fail if any ordering changes what the case observes. `--seed` replays one reported seed. |
-| `--debug` | Step through one case. See [Debugging](DEBUGGING.md). |
+| `--debug` | Step through one case. Refused with `--seeds`; with `--seed N` it steps through that seed's own run, the faults it injects and the order it chose, which is how a reported violation is opened. See [Debugging](DEBUGGING.md). |
 | `-o json` | A machine-readable report: cases, failures, warnings, coverage. |
 | `--watch` | Run once, then again after every change to a YAML file under the paths given (a named file watches the YAML beside it; `.git` and `node_modules` are skipped; symlinks are followed to their targets), until Ctrl-C. A terminal showing text is cleared between runs; `-o json` and `-o jsonl` get one document per run and are never cleared. The walk is bounded at 50,000 directory entries. A failing run does not end the loop. Refused with `--debug`. |
 | `--junit <file>` | Also write the results as JUnit XML for CI systems. A failed expectation is a `<failure>`; a case or file that could not be judged is an `<error>`. Written even when the run fails. A promoted warning, a required-coverage gap, or a schedule divergence appears as a `(run verdict)` failure, so the report never shows green over a non-zero exit. It carries only what the report already shows. |

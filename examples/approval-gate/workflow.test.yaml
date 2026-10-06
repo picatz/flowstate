@@ -14,10 +14,11 @@
 # A case says who its run *starts* as with `starter:` (#344 slice 3), the way
 # `flow run local --as-subject` says it on the command line, and that is what
 # makes the last clause of this workflow's policy testable at all:
-# `distinct_from_starter: true` compares the scripted `sender:` against it, so
-# the separation of duties this gate promises is exercised in both directions
-# below - the approver this run named is admitted, and that same approver is
-# refused the moment they are also the person who asked for the deploy. Every
+# `sender.identity.principal != run.identity.principal` compares the scripted
+# `sender:` against it, so the separation of duties this gate promises is
+# exercised in both directions below - the approver this run named is
+# admitted, and that same approver is refused the moment they are also the
+# person who asked for the deploy. Every
 # other case here names no `starter:` and so runs as nobody, which is what
 # every case did before the field existed: nobody is distinct from everybody,
 # so the clause has nothing to refuse.
@@ -87,7 +88,7 @@ tests:
         decision: deployed
         approver_subject: "${vars.approver}"
 
-  # The pair `distinct_from_starter: true` exists for, and the reason this
+  # The pair the starter comparison exists for, and the reason this
   # file needs a `starter:` to state it: the two cases differ in exactly one
   # value - who started the run - and nothing else. The approver, the claim,
   # the payload and the inputs are identical.
@@ -108,8 +109,8 @@ tests:
         approver_subject: "${vars.approver}"
 
   # Refused for being the run's own starter, not for anything about the
-  # payload: the sender satisfies the rule's `subject:` and its `claims:`
-  # exactly, which is the point - `distinct_from_starter:` is the one clause a
+  # payload: the sender satisfies the predicate's principal and claim
+  # comparisons exactly, which is the point - the starter comparison is the one clause a
   # correctly-claimed, correctly-named approver still cannot get past. The
   # signal never reaches the step, so the gate lapses at its own timeout and
   # the run reports `undecided`, the same answer nobody answering at all

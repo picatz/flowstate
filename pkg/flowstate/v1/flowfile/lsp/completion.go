@@ -306,8 +306,7 @@ var dslKeys = map[string][]dslKey{
 		{name: "interval", detail: "duration", docs: "The delay before the second attempt."},
 		{name: "backoff", detail: "double", docs: "Multiplies the delay after each attempt."},
 		{name: "max_interval", detail: "duration", docs: "Caps the delay between attempts."},
-		{name: "only", detail: "list of kinds", docs: "Retry only these failure kinds. It narrows what would be retried by default; a kind that is never retried cannot be named here. At most one of `only:` and `except:`."},
-		{name: "except", detail: "list of kinds", docs: "Never retry these failure kinds, though they would be by default (such as `RateLimited`). At most one of `only:` and `except:`."},
+		{name: "only", detail: "list of kinds", docs: "Retry only these failure kinds. It narrows what would be retried by default; a kind that is never retried cannot be named here."},
 	},
 }
 
@@ -360,6 +359,17 @@ func completeAt(doc *document, pos lsp.Position) *lsp.CompletionList {
 	// Inside ${...} nothing else applies: the cursor is in an expression, not in
 	// YAML structure.
 	if inner, ok := openExpression(before); ok {
+		if signalAllowExpression(path, key, before) {
+			// A `signals:` or `debug:` policy's predicate has its own closed
+			// scope, not the step scope below: `sender`, `run.identity` and
+			// `inputs`, and nothing else — see [v1.CompileSignalPolicyPredicate].
+			return completeInSharedScope(pos, inner, signalAllowScope(true))
+		}
+		if manualAllowExpression(path, key, before) {
+			// `triggers: manual: allow:` has no run yet: the caller and the
+			// submitted inputs — see [v1.CompileManualAllowPredicate].
+			return completeInSharedScope(pos, inner, signalAllowScope(false))
+		}
 		scope := referenceScope(doc, pos, bindsClock(key, path), current, earlier)
 		scope.locals = append(waitResultCandidates(path), scope.locals...)
 		return completeInExpression(pos, inner, scope)
@@ -1143,7 +1153,91 @@ func (s refScope) shared() celcomplete.Scope {
 // what order, and what a dot reaches — and what is left here is the protocol:
 // turning each candidate into an item with the range it replaces.
 func completeInExpression(pos lsp.Position, inner string, scope refScope) *lsp.CompletionList {
-	result := celcomplete.Complete(inner, scope.shared())
+	return completeInSharedScope(pos, inner, scope.shared())
+}
+
+// signalAllowExpression reports whether the cursor is in a top-level
+// `signals:` policy's `allow:` *predicate*: the `${...}` that is the whole value
+// of `allow:`, on the line that opens it (the editor completes within one line,
+// as it does everywhere).
+func signalAllowExpression(path []string, key, before string) bool {
+	switch {
+	case len(path) == 2 && path[0] == "signals", len(path) == 1 && path[0] == "debug":
+		return allowFencedAfterKey(key, before)
+	default:
+		return false
+	}
+}
+
+// manualAllowExpression reports whether the cursor is in `triggers: manual:
+// allow: ${...}`, by the same rule as [signalAllowExpression].
+func manualAllowExpression(path []string, key, before string) bool {
+	if len(path) != 2 || path[0] != "triggers" || path[1] != "manual" {
+		return false
+	}
+
+	return allowFencedAfterKey(key, before)
+}
+
+// allowFencedAfterKey reports whether the line being completed is `allow:`
+// directly followed by an open `${` fence.
+func allowFencedAfterKey(key, before string) bool {
+	trimmed := strings.TrimSpace(before)
+	// `allow: ${...` — the fence must directly follow the key, so a flow
+	// list written on the same line (`allow: [{subject: ${`) is not it.
+	i := strings.LastIndex(trimmed, "${")
+	if key != "allow" || i < 0 {
+		return false
+	}
+	head := strings.TrimRight(trimmed[:i], " '\"")
+	head = strings.TrimSpace(strings.TrimSuffix(head, ">-"))
+
+	return strings.HasSuffix(head, "allow:") && !strings.Contains(trimmed[:i], "[")
+}
+
+// signalAllowScope is the closed scope an `allow: ${...}` predicate reads:
+// the roots [v1.CompileSignalPolicyPredicate] declares, with the identity
+// fields it types. A name outside it is a compile error, so none is offered.
+// withRun is false for `triggers: manual:`, which has no run yet.
+func signalAllowScope(withRun bool) celcomplete.Scope {
+	identity := celcomplete.Candidate{
+		Name: "identity", Kind: celcomplete.KindField, Detail: "workload identity",
+		Docs: "The identity the server attested, or the run's starter: `principal` (issuer#subject, empty " +
+			"when either half is missing), `subject`, `issuer`, `namespace`, `kind` and `claims`.",
+		Insert: "identity.",
+		Members: []celcomplete.Candidate{
+			{Name: "principal", Kind: celcomplete.KindField, Detail: "string",
+				Docs: "`issuer#subject`: one comparison that distinguishes two identity providers minting the same subject."},
+			{Name: "subject", Kind: celcomplete.KindField, Detail: "string"},
+			{Name: "issuer", Kind: celcomplete.KindField, Detail: "string"},
+			{Name: "namespace", Kind: celcomplete.KindField, Detail: "string"},
+			{Name: "kind", Kind: celcomplete.KindField, Detail: "string",
+				Docs: "`human`, `workload` or `agent`, as the trust policy entry that admitted the caller assigned it; empty when it assigned none."},
+			{Name: "claims", Kind: celcomplete.KindField, Detail: "map(string, string)",
+				Docs: "Read as `claims[\"team\"]` or `claims.team`; a missing key is an error, which denies. Test with `has(...)`."},
+		},
+	}
+
+	roots := []celcomplete.Candidate{
+		{Name: "sender", Kind: celcomplete.KindRoot, Detail: "who is delivering", Insert: "sender.",
+			Docs:    "The calling identity, as the server attested it. Its claims are readable here and nowhere else.",
+			Members: []celcomplete.Candidate{identity}},
+	}
+	if withRun {
+		roots = append(roots, celcomplete.Candidate{Name: "run", Kind: celcomplete.KindRoot, Detail: "the run's starter", Insert: "run.",
+			Docs: "`run.identity` is who started the run. Unbound when the run has no recorded starter, so a " +
+				"predicate that reads it is refused rather than guessed.",
+			Members: []celcomplete.Candidate{identity}})
+	}
+	roots = append(roots, celcomplete.InputsRoot(nil))
+
+	return celcomplete.Scope{Profile: v1.CurrentProfile, Roots: roots}
+}
+
+// completeInSharedScope is [completeInExpression] for a scope that is not a
+// step's.
+func completeInSharedScope(pos lsp.Position, inner string, scope celcomplete.Scope) *lsp.CompletionList {
+	result := celcomplete.Complete(inner, scope)
 	replace := rangeBack(pos, result.Prefix)
 
 	items := make([]lsp.CompletionItem, 0, len(result.Candidates))

@@ -70,6 +70,11 @@ type RunOptions struct {
 	// written-order pass (issue #800). The zero budget explores nothing.
 	Budget dst.Budget
 
+	// Fuzz additionally runs each case over generated inputs ([FuzzOptions]).
+	// Separate from Budget: schedules are the engine's choices, fuzzing is the
+	// caller's, and a run does one or the other.
+	Fuzz FuzzOptions
+
 	// Select filters which cases run, by name; nil runs every case. A case
 	// filtered out is not run, not reported, and counted in
 	// [RunResult.Filtered] — the number a caller's own output must surface,
@@ -106,6 +111,12 @@ type RunOptions struct {
 	// in the only implementation that exists ([flowdebug.Session]) and an
 	// implementer that only wants to pause should not have to write three
 	// empty methods to say so.
+	//
+	// Under a [Budget] that pins one seed ([dst.Budget.Pinned]) it holds that
+	// seeded run — the faults the seed injects and the order it chose — and
+	// not the written-order baseline the exploration runs first, which goes
+	// unheld. A budget that searches many seeds is the caller's to refuse:
+	// there is no one run to hold.
 	//
 	// Interactive by nature: nothing here bounds how long a run is held, and
 	// the caller that sets this owns that decision. `flow test --debug`
@@ -301,6 +312,7 @@ func runSuite(ctx context.Context, file *File, opts RunOptions, loaderFor func(*
 		})
 		observeUnrun(test)
 	}
+	fuzz := newFuzzer(opts.Fuzz)
 	var transcripts [][]TranscriptLine
 	transcriptBudget := newSuiteTranscriptBudget()
 	warningBudget := newSuiteWarningBudget()
@@ -378,6 +390,21 @@ func runSuite(ctx context.Context, file *File, opts RunOptions, loaderFor func(*
 				// applies there: suppression is only ever about exploratory
 				// invocations (Codex, #1052, twice).
 				reported := !schedules.explores || v1.SchedulerFromContext(ctx) == v1.WrittenOrder
+				// A pinned seed under a debugger is the run to step through:
+				// the written-order baseline an exploration always runs first
+				// is not, and holding it would put a person at the wrong run's
+				// first step. Taken off the baseline's context alone; every
+				// seeded run keeps the session, and a budget that searches
+				// many seeds was refused before it got here.
+				if opts.Debugger != nil && schedules.explores && v1.SchedulerFromContext(ctx) == v1.WrittenOrder {
+					ctx = v1.NewContextWithDebugger(ctx, nil)
+					// A debugged invocation runs unbounded because a person is
+					// at the prompt; the baseline has nobody there, so it keeps
+					// the bound every unattended case gets.
+					var stop context.CancelFunc
+					ctx, stop = caseContextWithin(ctx, caseTimeout)
+					defer stop()
+				}
 				result, spec, transcript, account, shown, err := runCase(ctx, &test, l.deliveryPath, l.load,
 					!opts.skipTranscript && reported,
 					fileVars{values: file.Vars, withheld: file.varsWithheld})
@@ -388,6 +415,13 @@ func runSuite(ctx context.Context, file *File, opts RunOptions, loaderFor func(*
 				return result, spec, transcript, account, shown, err
 			})
 		cancel()
+		if fuzz != nil && test.Trigger != nil {
+			fuzz.skipped[fmt.Sprintf("case %q: replays a trigger delivery, whose inputs the delivery maps, so it is not fuzzed", test.Name)] = true
+		}
+		if spec != nil && test.Trigger == nil && result.GetError() == "" && ctx.Err() == nil {
+			fuzz.run(ctx, &test, spec, l.deliveryPath, l.load,
+				fileVars{values: file.Vars, withheld: file.varsWithheld}, caseTimeout)
+		}
 		// The names a report prints are the file's own words, which an author
 		// can spell a withheld value as readily as a step id (#2229). The
 		// run's renderers take a value out under its posture; a step id in a
@@ -451,6 +485,7 @@ func runSuite(ctx context.Context, file *File, opts RunOptions, loaderFor func(*
 	if out.Schedules != nil {
 		report.Schedules = out.Schedules.Report()
 	}
+	report.Fuzz = fuzz.report()
 	return out
 }
 
@@ -933,7 +968,12 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 		return
 	}
 
-	if err := checkFaultNames(test.Faults, workflow); err != nil {
+	if err := checkDeniedSignalNames(&test.Expect, test.Signals, workflow); err != nil {
+		caseError("%s", err)
+		return
+	}
+
+	if err := checkFaultNames(test.Faults, workflow, test.Signals); err != nil {
 		caseError("%s", err)
 		return
 	}
@@ -967,7 +1007,7 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	// The invocation log is independent of the transcript: a claim needs a
 	// complete one even where the account is discarded.
 	var invocations *invocationLog
-	if len(test.Expect.Invocations) > 0 {
+	if len(test.Expect.Invocations) > 0 || len(test.Expect.Check) > 0 || len(test.Invariants) > 0 || v1.DebuggerFromContext(ctx) != nil {
 		invocations = &invocationLog{}
 		ctx = contextWithInvocationLog(ctx, invocations)
 	}
@@ -976,8 +1016,14 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	// how a fault aimed at an invocation the case never makes is found.
 	var faults *faultPlan
 	_, faulting := v1.SchedulerFromContext(ctx).(v1.FaultChooser)
-	if len(test.Faults) > 0 {
-		faults = newFaultPlan(workflow.GetName(), test.Faults)
+	faultList, probing := test.Faults, false
+	if probe, ok := faultProbeFrom(base); ok {
+		// A shrink probe ([shrinkFaults]) runs the case under exactly the
+		// pinned faults it was handed, and judges the run as a faulted one.
+		faultList, probing = probe, true
+	}
+	if len(faultList) > 0 {
+		faults = newFaultPlan(workflow.GetName(), faultList)
 		ctx = contextWithFaultPlan(ctx, faults)
 	}
 	if record {
@@ -1048,8 +1094,13 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 		trigger = test.Trigger.Context()
 	}
 
+	// The delivery id a replay computed, which the response document a
+	// `expect.response:` claim is judged against names.
+	var replayedDeliveryID string
+
 	if test.Trigger != nil && test.Trigger.Replays() {
 		mapped, deliveryID, failures, err := replayDelivery(test, deliveryPath, workflow)
+		replayedDeliveryID = deliveryID
 		if err != nil {
 			caseError("%s", err)
 			return
@@ -1077,10 +1128,10 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 
 	ctx = v1.NewContextWithTrigger(ctx, trigger)
 
-	// Resolved here, against the case's own inputs, the same way submit
-	// resolves a `subject: ${inputs.x}` rule to a literal before anything is
-	// enforced ([v1.ResolveSignalPolicySubjects]) — so a scripted `sender:`
-	// is checked against the same literal production would check it against.
+	// The declared policies are enforced as written: a predicate is evaluated
+	// on every delivery against the scripted sender, the starter and these
+	// bound inputs, the same function production's `authorizeSignal` calls, so
+	// nothing is resolved here that production would resolve differently.
 	// A bind failure here is not reported directly: [v1.RunWithInputs] below
 	// performs the identical bind on the same inputs and is what the case's
 	// own `expect.failed`/`expect.error_contains` are written against, so a
@@ -1094,6 +1145,9 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	var sensitive sensitiveInputs
 	if b, bindErr := v1.BindRunInputs(workflow, inputs); bindErr == nil {
 		bound = b
+		if bound == nil {
+			bound = map[string]*v1.Value{}
+		}
 		// The redaction set, built from the same bound inputs and the same
 		// `sensitive:` declarations the stub diagnostics read
 		// ([sensitiveNativeValues]) — one set, shared by the transcript's
@@ -1103,17 +1157,7 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 		// fails at the same bind before any step runs.
 		sensitive = sensitiveNativeValues(&v1.Scope{Inputs: bound}, v1.SensitiveInputNames(workflow))
 
-		resolved, err := v1.ResolveSignalPolicySubjects(ctx, workflow, bound)
-		if err != nil {
-			// A `subject:` that resolved to something other than
-			// `<issuer>#<subject>` is refused quoting what it resolved to,
-			// which can be a sensitive input's value (#2100): rendered
-			// through the run's own set, as every exit below it is.
-			posture = posture.Merge(sensitive)
-			caseError("resolving workflow %q's signal policy: %v", test.Workflow, err)
-			return
-		}
-		policies = resolved
+		policies = workflow.GetSignals()
 	} else {
 		// The run refuses at the same bind, and its refusal can quote the
 		// value it refused (`must satisfy …; got <value>`), which no step
@@ -1179,7 +1223,7 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	}
 
 	// Who this case runs as, for the one question a starter answers locally:
-	// what `distinct_from_starter:` compares a scripted `sender:` against.
+	// what a predicate reading `run.identity` compares a scripted `sender:` against.
 	// [Test.Starter] names it, the way `flow run local --as-subject` names it
 	// for a rehearsal on the command line; a case that names none runs as
 	// nobody, exactly as every case did before that field existed.
@@ -1188,7 +1232,7 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	// starter ran as nobody, which is a known fact, because a `flow test` case has
 	// no concept of "who ran this test" unless the case says: it is not a gap in a
 	// record the way a durable run predating [starterMemoKey] is. Treating it
-	// as unknown would make every `distinct_from_starter` policy
+	// as unknown would make every predicate that reads `run.identity`
 	// unconditionally refuse every case, including one that scripts a
 	// genuinely qualifying `sender:`, the happy path this harness exists to
 	// let an author exercise at all. See [v1.NewPolicedLocalSignals]'s own doc
@@ -1198,7 +1242,15 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	// empty with `run.local` true, as it does for every local run including
 	// `flow run local --as-subject`: a local run must never look like an
 	// attested production one (eval.go's eval). See [Test.Starter].
-	signals := v1.NewPolicedLocalSignals(policies, scriptedIdentity(test.Starter), true)
+	signals := v1.NewPolicedLocalSignals(policies, scriptedIdentity(test.Starter), true, bound)
+	if test.Expect.Response != nil && len(test.Signals) == 0 {
+		// A case judging what a waiting receiver would answer, with no signal
+		// scripted: a run that reaches a wait with no `timeout:` is the run a
+		// caller would find still going at the bound, so it ends there on a
+		// sentinel rather than spending the case's wall-clock limit blocked on
+		// a delivery that cannot come. See [v1.ErrRunParked].
+		signals.ParkUnboundedWaits()
+	}
 	ctx = v1.NewContextWithSignalWaiter(ctx, signals)
 
 	// Hold the run's own clock participant before any scripted signal can park,
@@ -1219,7 +1271,8 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	// an empty room after the fact — see [scriptSignals].
 	runFinished := make(chan struct{})
 
-	stopScripts, scriptErr := scriptSignals(runFinished, clock, signals, test.Signals, recorder)
+	outcomes := newSignalOutcomes()
+	stopScripts, scriptErr := scriptSignals(runFinished, clock, signals, test.Signals, faults.dropSignals(ctx, test.Signals), faults, recorder, outcomes)
 	defer stopScripts()
 	if scriptErr != nil {
 		caseError("%s", scriptErr)
@@ -1240,6 +1293,10 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	var outputs *v1.Workflow_StepOutputs
 	outputs, runErr = v1.RunWithInputs(ctx, workflow, inputs)
 	close(runFinished)
+	// Joined before anything reads what the senders did: a sender that passed
+	// its last `runFinished` check can still be inside the delivery, and
+	// `expect.denied_signals` is judged from what that delivery recorded.
+	stopScripts()
 
 	// Told the run has returned, with the run's own error rather than the
 	// case's verdict, so a debugger can say what the run never did (an
@@ -1260,9 +1317,11 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	if gatherer != nil {
 		sensitive = widenedBy(sensitive, gatherer.withheld())
 	}
-	shown = caseShown{sensitive: sensitive, runErr: runErr, faulted: faulting && faults != nil && faults.firedAny()}
+	shown = caseShown{sensitive: sensitive, runErr: runErr, faulted: faults != nil &&
+		(faulting && faults.firedAny() || probing && faults.firedPinned())}
 	if shown.faulted {
-		shown.pinned = faults.pinned()
+		shown.pins, shown.authored = faults.pins()
+		shown.pinned = pinnedScript(shown.pins)
 	}
 
 	// The transcript coverage reads is the same one the verdict does. A failed
@@ -1296,26 +1355,45 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 		return
 	}
 
+	facts := newRunFacts(runErr, invocations, workflow.GetName())
+	facts.signalsDropped, facts.signalsDelayed = outcomes.droppedNames(), outcomes.delayedNames()
 	if shown.faulted {
 		// A run with faults injected is judged by what must hold of every
 		// run, and by the one oracle a faulted run owes unprompted
 		// ([faultedErrorClass]). `expect:` describes the run where nothing
 		// went wrong, which this one is not.
 		result.Failures = faultedErrorClass(runErr)
-		result.Failures = append(result.Failures, assertInvariants(ctx, test.StartTime(), test.Invariants, workflow, bound, vars, outputs, runErr, sensitive)...)
+		result.Failures = append(result.Failures, assertInvariants(ctx, test.StartTime(), test.Invariants, workflow, bound, vars, outputs, facts, sensitive)...)
 		result.Passed = len(result.Failures) == 0
 
 		return
 	}
 
-	result.Failures = assertExpectation(&test.Expect, workflow, outputs, runErr, sensitive)
-	if invocations != nil {
+	// A run parked at a wait is not a failed one: it is going, and a receiver
+	// would say so. The plain expectations judge it as the run it is.
+	// The record is the signals' own and not the surfaced error: a step that
+	// tolerates its failure swallows the sentinel, and the run Temporal would
+	// hold at that wait must not be rehearsed as one that finished.
+	// A park that coexists with a different, real failure (another branch of a
+	// parallel node) is that failure, not a held run.
+	parked := test.Expect.Response != nil && signals.Parked() && (runErr == nil || errors.Is(runErr, v1.ErrRunParked))
+	expectErr := runErr
+	if parked {
+		expectErr = nil
+	}
+	result.Failures = assertExpectation(&test.Expect, workflow, outputs, expectErr, sensitive)
+	if test.Expect.Response != nil {
+		result.Failures = append(result.Failures, assertResponse(test.Expect.Response, workflow,
+			test.Trigger.Webhook, replayedDeliveryID, bound, outputs, runErr, parked, sensitive)...)
+	}
+	if invocations != nil && len(test.Expect.Invocations) > 0 {
 		result.Failures = append(result.Failures, assertInvocations(test.Expect.Invocations, workflow.GetName(), invocations)...)
 	}
+	result.Failures = append(result.Failures, deniedSignalFailures(&test.Expect, outcomes)...)
 	// The CEL claims (#1072), after the named fields so a report reads
 	// structure first, values second — the order the file states them in.
-	result.Failures = append(result.Failures, assertChecks(ctx, test.StartTime(), test.Expect.Check, workflow, bound, vars, outputs, runErr, sensitive)...)
-	result.Failures = append(result.Failures, assertInvariants(ctx, test.StartTime(), test.Invariants, workflow, bound, vars, outputs, runErr, sensitive)...)
+	result.Failures = append(result.Failures, assertChecks(ctx, test.StartTime(), test.Expect.Check, workflow, bound, vars, outputs, facts, sensitive)...)
+	result.Failures = append(result.Failures, assertInvariants(ctx, test.StartTime(), test.Invariants, workflow, bound, vars, outputs, facts, sensitive)...)
 	if faults != nil {
 		result.Failures = append(result.Failures, faults.unreached()...)
 	}
@@ -1345,7 +1423,7 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 			if !sensitive.Empty() && setDebuggerRedactors(ctx, sensitive) {
 				defer setDebuggerRedactors(ctx, sensitiveInputs{})
 			}
-			examiner.Autopsy(ctx, scope, autopsyExtras(ctx, scope, vars, runErr, sensitive), rendered)
+			examiner.Autopsy(ctx, scope, autopsyExtras(ctx, scope, vars, facts, sensitive), rendered)
 		}
 	}
 
@@ -1690,7 +1768,7 @@ func unstubbedTaskFn(name string, seen *unstubbedTasks) v1.TaskFunc {
 // since before this existed, and delivered at once by [v1.VirtualClock.After]
 // exactly like zero — in the same tie group as the shared empty default
 // rather than racing it under a raw-duration key the two would never match.
-func scriptSignals(runFinished <-chan struct{}, clock *v1.VirtualClock, signals *v1.LocalSignals, scripts []SignalScript, recorder *runRecorder) (stop func(), err error) {
+func scriptSignals(runFinished <-chan struct{}, clock *v1.VirtualClock, signals *v1.LocalSignals, scripts []SignalScript, dropped []*signalDrop, faults *faultPlan, recorder *runRecorder, outcomes *signalOutcomes) (stop func(), err error) {
 	if len(scripts) == 0 {
 		return func() {}, nil
 	}
@@ -1706,6 +1784,14 @@ func scriptSignals(runFinished <-chan struct{}, clock *v1.VirtualClock, signals 
 		// nobody.
 		senderSubject string
 
+		// drop is a fault's verdict that this delivery is lost on the way:
+		// the goroutine keeps its place in the order, and sends nothing.
+		drop *signalDrop
+
+		// sentAt is when the sender sends it, before any delay: the moment a
+		// fault's verdict takes effect.
+		sentAt time.Duration
+
 		// waitFor is closed once the nearest earlier job scripted for this
 		// same `at` has delivered (or given up), so this job's own delivery
 		// is ordered after it. Nil for a job that ties nothing before it.
@@ -1718,7 +1804,7 @@ func scriptSignals(runFinished <-chan struct{}, clock *v1.VirtualClock, signals 
 
 	jobs := make([]job, 0, len(scripts))
 	lastByAt := make(map[time.Duration]chan struct{}, len(scripts))
-	for _, s := range scripts {
+	for n, s := range scripts {
 		at := time.Duration(0)
 		if s.At != "" {
 			d, err := time.ParseDuration(s.At)
@@ -1734,6 +1820,10 @@ func scriptSignals(runFinished <-chan struct{}, clock *v1.VirtualClock, signals 
 			// tie group everything at-or-before the epoch resolves into.
 			at = max(d, 0)
 		}
+		sentAt := at
+		if dropped[n] != nil {
+			at = satAdd(at, dropped[n].delay)
+		}
 		subject := ""
 		if s.Sender != nil {
 			subject = s.Sender.Subject
@@ -1743,6 +1833,8 @@ func scriptSignals(runFinished <-chan struct{}, clock *v1.VirtualClock, signals 
 			name: s.Name, at: at, payload: s.Payload,
 			sender:        scriptedSender(s.Sender, s.DeliveryID),
 			senderSubject: subject,
+			drop:          dropped[n],
+			sentAt:        sentAt,
 			waitFor:       lastByAt[at],
 			turnDone:      turnDone,
 		})
@@ -1757,8 +1849,36 @@ func scriptSignals(runFinished <-chan struct{}, clock *v1.VirtualClock, signals 
 			defer func() { done <- struct{}{} }()
 			defer close(j.turnDone)
 
+			// A delay acts when the sender sends: it leaves on time and
+			// arrives after the delay. The fire is recorded at the sent
+			// moment, so a delay that carries the signal past the run's end
+			// still counts as a fault the run met, while a run that ended
+			// before the sender sent delays nothing. The clock's After is
+			// relative to the moment it is asked, so the second park waits
+			// the delay itself, not the absolute arrival offset.
+			wait := j.at
+			if j.drop != nil && j.drop.delay > 0 {
+				select {
+				case <-clock.After(j.sentAt):
+				case <-runFinished:
+					return
+				}
+				// Both cases can be ready at once for a sender with no `at:`
+				// that first runs after the run returned; the timer may then
+				// win the select, so the completion is checked again before a
+				// fire is recorded, as the delivery path below does.
+				select {
+				case <-runFinished:
+					return
+				default:
+				}
+				faults.commitDrop(j.drop)
+				outcomes.noteDelayed(j.name)
+				wait = j.drop.delay
+			}
+
 			select {
-			case <-clock.After(j.at):
+			case <-clock.After(wait):
 			case <-runFinished:
 				// The run ended before the clock ever advanced to this
 				// signal's moment — nothing is left to deliver to.
@@ -1791,26 +1911,59 @@ func scriptSignals(runFinished <-chan struct{}, clock *v1.VirtualClock, signals 
 			default:
 			}
 
+			// A lost delivery is one the sender made and the run never learns
+			// of: nothing reaches the gate, so no policy decides it. It keeps
+			// its place in its tie group (the waitFor above), so a drop in the
+			// middle of a group does not let the next job overtake the one
+			// before it.
+			if j.drop != nil && j.drop.delay == 0 {
+				faults.commitDrop(j.drop)
+				outcomes.noteDropped(j.name)
+
+				return
+			}
+
 			// The send and its record are one atomic decision, and the record
 			// is honest about the outcome — delivered, or refused by a
 			// declared signal policy or the queue's bound. See
 			// [runRecorder.deliverRecorded] for why both halves matter. A run
 			// recording no account delivers plainly.
+			deliver := func() error {
+				err := signals.DeliverFrom(j.name, &v1.Node_Outputs{NamedValues: v1.NewNamedValues(j.payload)}, j.sender)
+				outcomes.note(j.name, err)
+
+				return err
+			}
 			if recorder == nil {
-				_ = signals.DeliverFrom(j.name, &v1.Node_Outputs{NamedValues: v1.NewNamedValues(j.payload)}, j.sender)
+				_ = deliver()
 				return
 			}
-			recorder.deliverRecorded(j.name, j.payload, j.senderSubject, func() error {
-				return signals.DeliverFrom(j.name, &v1.Node_Outputs{NamedValues: v1.NewNamedValues(j.payload)}, j.sender)
-			})
+			recorder.deliverRecorded(j.name, j.payload, j.senderSubject, deliver)
 		}(j)
 	}
 
+	// Idempotent: the case joins the senders itself before judging what they
+	// did, and the deferred call that guards every earlier return joins them
+	// again. A second drain of `done` would block forever.
+	var once sync.Once
+
 	return func() {
-		for range jobs {
-			<-done
-		}
+		once.Do(func() {
+			for range jobs {
+				<-done
+			}
+		})
 	}, nil
+}
+
+// satAdd is a + b, saturating at the largest duration: a script whose `at:` is
+// already at the limit stays there instead of wrapping to the past.
+func satAdd(a, b time.Duration) time.Duration {
+	if a > math.MaxInt64-b {
+		return math.MaxInt64
+	}
+
+	return a + b
 }
 
 // scriptedSender renders a [SignalScript]'s optional `sender:` as the
@@ -1858,8 +2011,8 @@ func scriptedSender(s *ScriptedIdentity, deliveryID string) *v1.SignalSender {
 }
 
 // scriptedIdentity renders a [ScriptedIdentity] as the [v1.WorkloadIdentity] a
-// `signals:` policy is matched against - one conversion for both ends of that
-// comparison, because `distinct_from_starter:` compares a sender's rendering
+// `signals:` predicate reads - one conversion for both ends of that
+// comparison, because a `run.identity` comparison compares a sender's rendering
 // against a starter's and two conversions could disagree about a field.
 //
 // A nil identity renders as an empty one rather than nil, which is what a case
@@ -1875,6 +2028,8 @@ func scriptedIdentity(s *ScriptedIdentity) *v1.WorkloadIdentity {
 		Issuer:    s.Issuer,
 		Namespace: s.Namespace,
 		Claims:    s.Claims,
+
+		PrincipalKind: v1.PrincipalKindNamed(s.Kind),
 	}
 }
 
@@ -2301,9 +2456,9 @@ func assertExpectation(want *Expectation, spec *v1.Workflow, outputs *v1.Workflo
 			})
 		}
 	}
+	undone := compensatedSteps(runErr)
 	for _, step := range want.Compensated {
-		marker := fmt.Sprintf("undid %q", step)
-		if runErr == nil || !strings.Contains(runErr.Error(), marker) {
+		if !slices.Contains(undone, step) {
 			failures = append(failures, &v1.Diagnostic{
 				Field:   "expect.compensated",
 				Value:   step,
@@ -2468,8 +2623,11 @@ type caseShown struct {
 	// schedules by its invariants alone ([scheduleAccumulator.run]).
 	faulted bool
 
-	// pinned is the `faults:` list that replays the faults this run fired.
-	pinned string
+	// pinned is the `faults:` list that replays the faults this run fired, and
+	// pins the same faults before they are written.
+	pinned   string
+	pins     []Fault
+	authored []bool
 }
 
 // runErrorUnder is the run's failure as a schedule divergence shows it under
@@ -2847,4 +3005,18 @@ func setDebuggerRedactors(ctx context.Context, sensitive sensitiveInputs) bool {
 	}
 
 	return installed
+}
+
+// compensatedSteps are the steps whose `undo:` succeeded, in the order they
+// ran: the same list `run.compensated` binds, read from the structured account
+// rather than from the failure's text.
+func compensatedSteps(runErr error) []string {
+	var out []string
+	for _, r := range v1.UndoResultsOf(runErr) {
+		if r.Err == "" {
+			out = append(out, r.Step)
+		}
+	}
+
+	return out
 }

@@ -1,4 +1,4 @@
-# Nine cases. The first three are the shape money actually has to get
+# Ten cases. The first three are the shape money actually has to get
 # right — a small transfer clearing on its own, a large one clearing once a
 # genuinely qualifying `sender:` approves it (#207 slice 2: `flow test`
 # checks a scripted `sender:` against `signals:` through the same
@@ -128,6 +128,51 @@ tests:
       error_contains: settlement service unavailable
       compensated: [credit, debit]
 
+  - name: a failed settlement never leaves a debit or a credit standing
+    workflow: ./workflow.yaml
+    inputs:
+      amount_cents: 250000
+      idempotency_key: transfer-2026-08-06-0010
+    stubs:
+      - step: debit
+        returns:
+          reference: dbt-10
+      - step: credit
+        returns:
+          reference: crd-10
+      - step: notify_settlement
+        fails:
+          kind: Upstream
+          message: settlement service unavailable
+      - task: http
+        where: inputs.url == 'https://ledger.internal.example.com/debit' && inputs.json.account_id == 'acct-supplier-042'
+        returns: {}
+      - task: http
+        where: inputs.url == 'https://ledger.internal.example.com/credit' && inputs.json.account_id == 'acct-treasury-001'
+        returns: {}
+    # The saga's promise as an invariant over `run`, which says it of any run
+    # of this workflow rather than of the one scripted here: whatever fails, a
+    # leg that reached the ledger is taken back. The antecedent is the
+    # invocation, not `steps.debit`, because an attempt that failed mid-flight
+    # still reached the ledger. The same invariants guard a `faults:` case or a
+    # `--seeds` sweep, where the failure is drawn rather than scripted.
+    invariants:
+      - that: >-
+          !run.failed
+          || !('debit' in run.invocations.step)
+          || 'debit' in run.compensated
+        because: a failed transfer must never leave a debit standing
+      - that: >-
+          !run.failed
+          || !('credit' in run.invocations.step)
+          || 'credit' in run.compensated
+        because: a failed transfer must never leave a credit standing
+      - that: size(run.uncompensated) == 0
+        because: every compensation this saga declares must be able to run
+    expect:
+      failed: true
+      compensated: [credit, debit]
+
   - name: an explicit rejection above the threshold moves nothing
     workflow: ./workflow.yaml
     inputs:
@@ -199,6 +244,9 @@ tests:
           claims:
             role: engineer
     expect:
+      # The refusal itself, not only the gate lapsing: the same policy check
+      # the server's Signal door runs said no to this sender.
+      denied_signals: [transfer-approved]
       ran: [request, over_threshold, approval, approval_outcome, cleared_to_move, refusal, expired]
       others: skipped
       outputs:

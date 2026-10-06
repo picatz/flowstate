@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 )
 
@@ -87,5 +88,28 @@ func TestIdentityForWithNoConfiguredClaims(t *testing.T) {
 	}
 	if id.GetNamespace() != "solo" {
 		t.Fatalf("namespace = %q, want the server fallback %q for a principal naming none", id.GetNamespace(), "solo")
+	}
+}
+
+// TestIdentityForCarriesThePolicyAssignedKind proves the kind the admitting trust
+// policy entry assigned reaches the durable identity, and that a caller with none
+// stays unspecified rather than becoming a workload.
+func TestIdentityForCarriesThePolicyAssignedKind(t *testing.T) {
+	t.Parallel()
+
+	s := mustNew(t, nil, WithNamespace("solo"))
+
+	for kind, want := range map[auth.PrincipalKind]v1.PrincipalKind{
+		auth.PrincipalKindHuman:    v1.PrincipalKind_PRINCIPAL_KIND_HUMAN,
+		auth.PrincipalKindWorkload: v1.PrincipalKind_PRINCIPAL_KIND_WORKLOAD,
+		auth.PrincipalKindAgent:    v1.PrincipalKind_PRINCIPAL_KIND_AGENT,
+		"":                         v1.PrincipalKind_PRINCIPAL_KIND_UNSPECIFIED,
+	} {
+		ctx := auth.ContextWithPrincipal(context.Background(), auth.Principal{
+			Issuer: "https://idp.example", Subject: "alice", Kind: kind,
+		})
+		if got := s.identityFor(ctx).GetPrincipalKind(); got != want {
+			t.Errorf("kind %q became %s, want %s", kind, got, want)
+		}
 	}
 }

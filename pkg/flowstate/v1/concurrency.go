@@ -72,8 +72,8 @@ func ConcurrencyWorkflowID(namespace, workflow, key string) string {
 // run's bound inputs, returning the literal the permit is composed from.
 //
 // Called once, by `FlowstateServer.Run`, after [BindRunInputs] and before the run
-// exists — the resolve-once-at-submit discipline `SignalPolicyRule.subject_from`
-// established. inputs must already be [BindRunInputs]'s output.
+// exists — the resolve-once-at-submit discipline signal policies once used for
+// their computed subjects. inputs must already be [BindRunInputs]'s output.
 //
 // The difference from that discipline, stated because the shape is deliberately
 // not identical: a signal policy has a field to clear, because its resolved value

@@ -422,15 +422,15 @@ func TestEveryExpressionPositionIsChecked(t *testing.T) {
 				"    wait_until: ${" + broken + "}\n",
 		},
 		{
-			name: "a signal rule's computed subject",
+			name: "a signal policy's predicate",
 			src: "edition: v2026.4\nname: check\ninputs:\n  approver:\n    type: string\nsteps:\n" +
 				"  - id: gate\n    wait_for_signal:\n      name: go\n      timeout: 1h\n" +
-				"signals:\n  go:\n    allow:\n      - subject: \"${" + broken + "}\"\n        namespace: ns\n",
+				"signals:\n  go:\n    allow: ${" + broken + "}\n",
 		},
 		{
-			name: "a debug rule's computed subject",
+			name: "a debug policy's predicate",
 			src: "edition: v2026.4\nname: check\nsteps:\n  - id: say\n    log:\n      message: hi\n" +
-				"debug:\n  allow:\n    - subject: \"${" + broken + "}\"\n      namespace: ns\n",
+				"debug:\n  allow: ${" + broken + "}\n",
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -442,11 +442,11 @@ func TestEveryExpressionPositionIsChecked(t *testing.T) {
 	}
 }
 
-// TestInvalidFormatLiteralInSignalSubjectIsReported is the regression for the
+// TestInvalidFormatLiteralInAnAllowPredicateIsReported is the regression for the
 // P2 finding: a computed signal or debug subject containing an invalid format
 // literal — such as matches('[') — was silently accepted because
 // checkExpressionTypes skipped both slots.
-func TestInvalidFormatLiteralInSignalSubjectIsReported(t *testing.T) {
+func TestInvalidFormatLiteralInAnAllowPredicateIsReported(t *testing.T) {
 	t.Parallel()
 
 	for _, test := range []struct {
@@ -454,15 +454,15 @@ func TestInvalidFormatLiteralInSignalSubjectIsReported(t *testing.T) {
 		src  string
 	}{
 		{
-			name: "signal subject with invalid regex",
+			name: "signal predicate with invalid regex",
 			src: "edition: v2026.4\nname: check\ninputs:\n  approver:\n    type: string\nsteps:\n" +
 				"  - id: gate\n    wait_for_signal:\n      name: go\n      timeout: 1h\n" +
-				"signals:\n  go:\n    allow:\n      - subject: \"${inputs.approver.matches('[')}\"\n        namespace: ns\n",
+				"signals:\n  go:\n    allow: ${inputs.approver.matches('[') && sender.identity.claims.team == 'x'}\n",
 		},
 		{
-			name: "debug subject with invalid regex",
+			name: "debug predicate with invalid regex",
 			src: "edition: v2026.4\nname: check\nsteps:\n  - id: say\n    log:\n      message: hi\n" +
-				"debug:\n  allow:\n    - subject: \"${inputs.approver.matches('[')}\"\n      namespace: ns\n",
+				"debug:\n  allow: ${inputs.approver.matches('[') && sender.identity.claims.team == 'x'}\n",
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -470,7 +470,7 @@ func TestInvalidFormatLiteralInSignalSubjectIsReported(t *testing.T) {
 
 			reported := diagnosticsFor(t, test.src)
 			require.NotEmpty(t, reported,
-				"an invalid format literal in a computed subject was accepted")
+				"an invalid regex literal in an allow predicate was accepted")
 			assert.Contains(t, strings.Join(reported, "\n"), "invalid matches",
 				"the diagnostic did not name the invalid regex")
 		})

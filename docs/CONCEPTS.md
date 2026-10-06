@@ -215,7 +215,7 @@ covers the secret side, including short-lived credentials minted per request;
 
 | To... | Use |
 | --- | --- |
-| Add a task or a secret provider, in any language | A [plugin](PLUGINS.md): a separate executable the worker launches, speaking a typed protocol. First-party plugins cover Docker, Git, GitHub, JOSE, OCI, OIDC, SCIM, Slack, SQL, SSH, VCS, and Codex. |
+| Add a task or a secret provider, in any language | A [plugin](PLUGINS.md): a separate executable the worker launches, speaking a typed protocol. First-party plugins cover Docker, Git, GitHub, JOSE, OCI, OIDC, SCIM, Slack, SQL, SSH, VCS, Webhook, and Codex. |
 | Run workflows inside your own Go program | [Embedding](EMBEDDING.md) with `pkg/flowstate/embed`, including Go functions as tasks. |
 | Start and manage runs from another system | The [control-plane API](API.md), from any language. |
 | Let an AI agent author and operate workflows | [`flow mcp`](MCP.md). |

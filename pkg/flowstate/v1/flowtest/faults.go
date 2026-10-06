@@ -20,9 +20,19 @@ import (
 // every matching invocation, so the list is work spent per task call.
 const MaxFaultsPerTest = 32
 
+// maxSignalDelay bounds a signal fault's `delay:`: a day-scale lateness is
+// the realistic stress, and an unbounded one is a signal that never arrives,
+// which `drop: true` already says.
+const maxSignalDelay = 30 * 24 * time.Hour
+
 // maxFaultAtMost bounds [Fault.AtMost]: a fault that may fire without limit is
 // a stub that always fails, which `stubs:` already says without a coin flip.
 const maxFaultAtMost = 100
+
+// maxFaultDelay bounds [Fault.Delay]. The delay is virtual, so it costs no wall
+// time, but a bound still keeps a typo (`delay: 1000000h`) from walking the
+// run's clock past the years a `sleep:` or a signal script can express.
+const maxFaultDelay = 24 * time.Hour
 
 // defaultFaultRate is the chance a matching invocation fails when a fault
 // states no `rate:`: even odds, so a few seeds reach both the failed and the
@@ -52,14 +62,49 @@ type Fault struct {
 	// fail, one draw per attempt.
 	Step string `yaml:"step,omitempty"`
 
+	// Signal is the name of a scripted signal ([Test.Signals]) whose delivery
+	// may be lost, the third target beside Task and Step. Exactly one of the
+	// three. The n-th delivery of a name is the n-th script of that name in
+	// declaration order, which is the numbering `on:` uses.
+	Signal string `yaml:"signal,omitempty"`
+
+	// Delay makes the target late, a Go duration.
+	//
+	// On a signal fault the delivery that would have arrived at its scripted
+	// `at:` arrives that long after it, in (0, [maxSignalDelay]]: exactly one of
+	// Drop and Delay with Signal. A delivery the run ends before it is due never
+	// arrives, delayed or not, which is what a late signal to a finished run
+	// looks like.
+	//
+	// On a task or step fault the invocation parks on the run's virtual clock for
+	// that long, in (0, [maxFaultDelay]], before anything else happens. Where
+	// Fails says the call failed, Delay says it answered late, which is how a
+	// step's `timeout:` and `total_timeout:` meet a slow dependency under
+	// `flow test`: those bounds are measured on the same clock. A delay past the
+	// per-attempt `timeout:` ends that attempt as a Timeout, and retry and
+	// tolerance take it from there; a delay past `total_timeout:`, which wraps
+	// every attempt, ends the step with no further retry.
+	// Alone, it slows the call and lets the stubs answer it; with `fails:` the call
+	// fails after the wait. The duration is fixed, so a seed decides which
+	// invocations are slow and never how slow, which is what lets a pinned fault
+	// replay it exactly.
+	Delay string `yaml:"delay,omitempty"`
+
+	// Drop makes a signal fault lose the delivery: the sender sent it, and the
+	// run never learns anything arrived, which is how a signal lost on the
+	// way looks to a gate in production. Required, and only valid, with
+	// Signal and exclusive with Delay.
+	Drop bool `yaml:"drop,omitempty"`
+
 	// Fails is the injected failure. Its kind defaults to Upstream, the
 	// ordinary transient one, and must be a kind a task can honestly report:
 	// Internal and Expression describe a bug in the engine or the workflow, not
 	// a fault in the world, and an injected one would make the invariant that
-	// watches for them unfalsifiable.
-	Fails StubFailure `yaml:"fails,omitempty"`
+	// watches for them unfalsifiable. Absent beside a Delay, the fault only
+	// delays.
+	Fails *StubFailure `yaml:"fails,omitempty"`
 
-	// Rate is the chance, in (0, 1], that a matching invocation fails.
+	// Rate is the chance, in (0, 1], that a matching invocation fires.
 	// Absent means [defaultFaultRate]; a pointer because zero is not a rate a
 	// fault can usefully have, and silently reading it as the default would
 	// say something the author did not write.
@@ -90,6 +135,14 @@ func (f *Fault) rate() float64 {
 	return *f.Rate
 }
 
+// lateness is the fault's parsed delay, zero for none. [checkFaultShape] has
+// already refused one that does not parse.
+func (f *Fault) lateness() time.Duration {
+	d, _ := time.ParseDuration(f.Delay)
+
+	return max(d, 0)
+}
+
 func (f *Fault) limit() int {
 	if f.AtMost == nil {
 		return 1
@@ -98,9 +151,13 @@ func (f *Fault) limit() int {
 	return *f.AtMost
 }
 
+// fails reports whether the fault ends the invocation in a failure: a fault with
+// no delay always does, and one with a delay does only when it says `fails:`.
+func (f *Fault) fails() bool { return f.Delay == "" || f.Fails != nil }
+
 // kind is the failure's error kind, defaulted the way a stub's `fails:` is.
 func (f *Fault) kind() v1.ErrorKind {
-	if f.Fails.Kind == "" {
+	if f.Fails == nil || f.Fails.Kind == "" {
 		return v1.ErrorKindUpstream
 	}
 
@@ -111,10 +168,37 @@ func (f *Fault) kind() v1.ErrorKind {
 // It is the part of the judgment that needs no workflow.
 func checkFaultShape(i int, f *Fault) error {
 	where := fmt.Sprintf("faults[%d]", i)
-	if (f.Task == "") == (f.Step == "") {
-		return fmt.Errorf("%s: name exactly one of `task:` or `step:`", where)
+	targets := 0
+	for _, t := range []string{f.Task, f.Step, f.Signal} {
+		if t != "" {
+			targets++
+		}
 	}
-	if f.Fails.Kind != "" {
+	if targets != 1 {
+		return fmt.Errorf("%s: name exactly one of `task:`, `step:` or `signal:`", where)
+	}
+	switch {
+	case f.Signal != "" && !f.Drop && f.Delay == "":
+		return fmt.Errorf("%s: a `signal:` fault says what happens to the delivery; write `drop: true` or `delay: <duration>`", where)
+	case f.Signal != "" && f.Drop && f.Delay != "":
+		return fmt.Errorf("%s: a delivery is lost or late, not both; write `drop: true` or `delay:`", where)
+	case f.Signal != "" && f.Fails != nil:
+		return fmt.Errorf("%s: `fails:` is the failure of a task, and a signal fault changes the delivery instead; use `drop:` or `delay:`", where)
+	case f.Signal == "" && f.Drop:
+		return fmt.Errorf("%s: `drop:` loses a signal's delivery, so it goes with `signal:`", where)
+	}
+	if f.Delay != "" {
+		d, err := time.ParseDuration(f.Delay)
+		switch {
+		case err != nil:
+			return fmt.Errorf("%s: delay %q is not a duration like \"15s\" or \"2m\": %v", where, f.Delay, err)
+		case f.Signal != "" && (d <= 0 || d > maxSignalDelay):
+			return fmt.Errorf("%s: delay %s is outside (0, %s]; a signal that never arrives is `drop: true`", where, d, maxSignalDelay)
+		case f.Signal == "" && (d <= 0 || d > maxFaultDelay):
+			return fmt.Errorf("%s: delay %s is outside (0, %s]; a delay that waits for nothing tests nothing", where, d, maxFaultDelay)
+		}
+	}
+	if f.Fails != nil && f.Fails.Kind != "" {
 		kind, ok := v1.ParseErrorKind(f.Fails.Kind)
 		switch {
 		case !ok:
@@ -171,7 +255,10 @@ func kindList() string {
 // checkFaultNames refuses a fault aimed at a task or step the workflow under
 // test cannot invoke, before the run, for the reason [checkInvocationNames]
 // does: a fault at a ghost is a no-op that reads as resilience.
-func checkFaultNames(faults []Fault, spec *v1.Workflow) error {
+//
+// A `signal:` fault must name a signal the case scripts, since a delivery
+// that is never sent cannot be lost.
+func checkFaultNames(faults []Fault, spec *v1.Workflow, scripts []SignalScript) error {
 	if len(faults) == 0 {
 		return nil
 	}
@@ -199,6 +286,18 @@ func checkFaultNames(faults []Fault, spec *v1.Workflow) error {
 
 				return fmt.Errorf("%s: task names unknown task %q, which this workflow, its callees and its compensations never invoke", where, f.Task)
 			}
+		}
+		if f.Signal != "" && !slices.ContainsFunc(scripts, func(s SignalScript) bool { return s.Name == f.Signal }) {
+			sent := map[string]bool{}
+			for _, s := range scripts {
+				sent[s.Name] = true
+			}
+			scripted := slices.Sorted(maps.Keys(sent))
+			if suggestion, ok := nearest.Name(f.Signal, scripted); ok {
+				return fmt.Errorf("%s: signal names %q, which the case never sends; did you mean %q?", where, f.Signal, suggestion)
+			}
+
+			return fmt.Errorf("%s: signal names %q, which the case never sends, so there is no delivery to lose", where, f.Signal)
 		}
 		if f.Step != "" {
 			switch {
@@ -232,9 +331,17 @@ type faultPlan struct {
 	mu    sync.Mutex
 	seen  []int
 	fired []int
+	// decided counts the fires the plan has decided, which is the budget
+	// `at_most:` spends; a signal fault's decision precedes its fire, so the
+	// two differ for a delivery the run ended before.
+	decided []int
 	// drawn counts the fires a seed decided, which a pinned fault's fires are
 	// not: only a drawn fire makes a seeded run a faulted one.
 	drawn []int
+	// pinnedFired is the invocation numbers each pinned fault fired on. A pin
+	// can be counted by [faultPlan.seen] and still not fire, when an earlier
+	// fault answered the call first, and that is a script that did not run.
+	pinnedFired [][]int
 	// script is the invocation numbers each drawn fault fired on, in order,
 	// from which [faultPlan.pinned] writes the regression case.
 	script [][]int
@@ -244,61 +351,195 @@ type faultPlanKey struct{}
 
 func newFaultPlan(root string, faults []Fault) *faultPlan {
 	return &faultPlan{
-		root:   root,
-		faults: faults,
-		seen:   make([]int, len(faults)),
-		fired:  make([]int, len(faults)),
-		drawn:  make([]int, len(faults)),
-		script: make([][]int, len(faults)),
+		root:    root,
+		faults:  faults,
+		seen:    make([]int, len(faults)),
+		fired:   make([]int, len(faults)),
+		decided: make([]int, len(faults)),
+		drawn:   make([]int, len(faults)),
+		script:  make([][]int, len(faults)),
+
+		pinnedFired: make([][]int, len(faults)),
 	}
+}
+
+type faultProbeKey struct{}
+
+// contextWithFaultProbe makes the run under ctx a shrink probe: the case runs
+// with exactly faults, all pinned, in place of its own.
+func contextWithFaultProbe(ctx context.Context, faults []Fault) context.Context {
+	return context.WithValue(ctx, faultProbeKey{}, faults)
+}
+
+func faultProbeFrom(ctx context.Context) ([]Fault, bool) {
+	faults, ok := ctx.Value(faultProbeKey{}).([]Fault)
+
+	return faults, ok
 }
 
 func contextWithFaultPlan(ctx context.Context, p *faultPlan) context.Context {
 	return context.WithValue(ctx, faultPlanKey{}, p)
 }
 
-// attempt consults the plan for one invocation of task, and returns the error
-// to fail it with, or nil to let the stubs answer. It records the invocation
-// as one the fault was eligible for whether or not it fires, which is how a
-// fault no invocation ever reached is told from one that merely drew
+// faultAnswer is what the plan decided for one invocation: how long to hold it
+// on the virtual clock, and the failure to end it with, if any. The zero value
+// lets the stubs answer at once.
+type faultAnswer struct {
+	// delay is the total virtual wait of every delay fault that fired.
+	delay time.Duration
+	// delayedBy is the first delay fault that fired, which a transcript names.
+	delayedBy int
+	err       error
+}
+
+// attempt consults the plan for one invocation of task. It records the
+// invocation as one the fault was eligible for whether or not it fires, which
+// is how a fault no invocation ever reached is told from one that merely drew
 // "no" ([faultPlan.unreached]).
+//
+// Every fault that fires and only delays adds its wait and lets the next one
+// decide; the first that fails ends the consultation, carrying the waits
+// before it and its own, so a slow failure is slow before it fails. A failing
+// fault answers instead of the stubs, which then spend none of their `times:`
+// budgets.
 //
 // Under a scheduler that is not a [v1.FaultChooser], which is the written-order
 // run, nothing is drawn; a pinned fault ([Fault.On]) fires regardless.
-func (p *faultPlan) attempt(ctx context.Context, task string) error {
+func (p *faultPlan) attempt(ctx context.Context, task string) faultAnswer {
 	ref, _ := v1.TaskStepRefFromContext(ctx)
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
+
+	// Every matching fault counts the invocation before any of them decides, so
+	// "invocation n of this fault's target" does not depend on which other fault
+	// fired on the calls before it. A pinned script names calls by that number,
+	// and removing one fault from a script (see [shrinkFaults]) must not renumber
+	// the calls another fault is aimed at.
+	matches := make([]int, 0, len(p.faults))
 	for i := range p.faults {
 		f := &p.faults[i]
-		if f.Task != "" && f.Task != task || f.Step != "" && (f.Step != ref.Step || ref.Workflow != p.root) {
+		if f.Signal != "" || f.Task != "" && f.Task != task || f.Step != "" && (f.Step != ref.Step || ref.Workflow != p.root) {
 			continue
 		}
 		p.seen[i]++
-		switch {
-		case len(f.On) > 0:
-			if !slices.Contains(f.On, p.seen[i]) {
-				continue
-			}
-		case p.fired[i] >= f.limit():
+		matches = append(matches, i)
+	}
+
+	var answer faultAnswer
+	for _, i := range matches {
+		if !p.decide(ctx, i) {
 			continue
-		case !v1.InjectFault(ctx, fmt.Sprintf("faults[%d]", i), f.rate()):
-			continue
-		default:
-			p.drawn[i]++
-			p.script[i] = append(p.script[i], p.seen[i])
 		}
-		p.fired[i]++
-		message := f.Fails.Message
+		p.record(i, p.seen[i])
+		f := &p.faults[i]
+		if d := f.lateness(); d > 0 {
+			if answer.delay == 0 {
+				answer.delayedBy = i
+			}
+			answer.delay += d
+		}
+		if !f.fails() {
+			continue
+		}
+		message := ""
+		if f.Fails != nil {
+			message = f.Fails.Message
+		}
 		if message == "" {
 			message = fmt.Sprintf("injected fault faults[%d]", i)
 		}
+		answer.err = v1.NewTaskError(task, f.kind(), errors.New(message))
 
-		return v1.NewTaskError(task, f.kind(), errors.New(message))
+		return answer
 	}
 
-	return nil
+	return answer
+}
+
+// decide reports whether fault i, which this invocation or delivery matched
+// and was counted for, fires on it. Called with the lock held, once per
+// matching fault, so a task fault and a signal fault take exactly one decision
+// rule. It spends the fault's `at_most:` budget but records nothing a report
+// reads: [faultPlan.record] does that, when the fire actually happens.
+func (p *faultPlan) decide(ctx context.Context, i int) bool {
+	f := &p.faults[i]
+	switch {
+	case len(f.On) > 0:
+		if !slices.Contains(f.On, p.seen[i]) {
+			return false
+		}
+	case p.decided[i] >= f.limit():
+		return false
+	case !v1.InjectFault(ctx, fmt.Sprintf("faults[%d]", i), f.rate()):
+		return false
+	}
+	p.decided[i]++
+
+	return true
+}
+
+// record notes that fault i fired on its n-th matching invocation or delivery,
+// which is what makes a seeded run a faulted one and what a printed script
+// pins. Called with the lock held.
+func (p *faultPlan) record(i, n int) {
+	if len(p.faults[i].On) > 0 {
+		p.pinnedFired[i] = append(p.pinnedFired[i], n)
+	} else {
+		p.drawn[i]++
+		p.script[i] = append(p.script[i], n)
+	}
+	p.fired[i]++
+}
+
+// signalDrop is the verdict that one scripted delivery is lost or late: the
+// fault that decided it and which of that fault's deliveries it was. A zero
+// delay is a loss.
+type signalDrop struct {
+	fault, n int
+	delay    time.Duration
+}
+
+// dropSignals decides, before the run starts, which of the scripted
+// deliveries are lost: one answer per script, in declaration order, nil for a
+// delivery that arrives.
+//
+// Decided up front and not as each delivery comes due, because the fault
+// stream is one sequence shared with the task faults the run draws, and a
+// delivery's goroutine runs when the clock releases it, which no seed
+// controls. Declaration order is the one order a case fixes, so the same seed
+// loses the same deliveries. Nothing is *recorded* here: a delivery the run
+// ends before is never sent, so it loses nothing and must not make the run a
+// faulted one; [faultPlan.commitDrop] records the fire when the moment comes.
+func (p *faultPlan) dropSignals(ctx context.Context, scripts []SignalScript) []*signalDrop {
+	dropped := make([]*signalDrop, len(scripts))
+	if p == nil {
+		return dropped
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	for n, s := range scripts {
+		for i := range p.faults {
+			if p.faults[i].Signal != s.Name {
+				continue
+			}
+			p.seen[i]++
+			if dropped[n] == nil && p.decide(ctx, i) {
+				dropped[n] = &signalDrop{fault: i, n: p.seen[i], delay: p.faults[i].lateness()}
+			}
+		}
+	}
+
+	return dropped
+}
+
+// commitDrop records that the delivery d decided was due and was lost or late.
+func (p *faultPlan) commitDrop(d *signalDrop) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	p.record(d.fault, d.n)
 }
 
 // unreached lists the step faults no invocation was ever eligible for, as
@@ -321,6 +562,21 @@ func (p *faultPlan) unreached() []*v1.Diagnostic {
 				Field: fmt.Sprintf("faults[%d].on", i),
 				Message: fmt.Sprintf("is pinned to invocation %d of its target, but the run made only %d; "+
 					"the script has drifted from the workflow, so re-derive it from a fresh `--seeds` finding", last, p.seen[i]),
+			})
+
+			continue
+		}
+		if missed := slices.DeleteFunc(slices.Clone(f.On), func(n int) bool { return slices.Contains(p.pinnedFired[i], n) }); len(missed) > 0 {
+			why := "an earlier fault answered that call first, so this one never fired"
+			target := "invocation"
+			if f.Signal != "" {
+				why, target = "the run ended before the sender sent that delivery, so the fault changed nothing", "delivery"
+			}
+			out = append(out, &v1.Diagnostic{
+				Step:  f.Step,
+				Field: fmt.Sprintf("faults[%d].on", i),
+				Message: fmt.Sprintf("is pinned to %s %d of its target, but %s; "+
+					"the script has drifted, so re-derive it from a fresh `--seeds` finding", target, missed[0], why),
 			})
 
 			continue
@@ -389,8 +645,8 @@ func checkInvariants(p *problems, r site, test *Test, at loc) {
 // assertInvariants evaluates the case's invariants against a finished run, as
 // the claims they are: the same evaluation as `expect.check:`, reported under
 // the key the author wrote.
-func assertInvariants(ctx context.Context, started time.Time, claims []CheckClaim, spec *v1.Workflow, bound map[string]*v1.Value, vars fileVars, outputs *v1.Workflow_StepOutputs, runErr error, sensitive sensitiveInputs) []*v1.Diagnostic {
-	failures := assertChecks(ctx, started, claims, spec, bound, vars, outputs, runErr, sensitive)
+func assertInvariants(ctx context.Context, started time.Time, claims []CheckClaim, spec *v1.Workflow, bound map[string]*v1.Value, vars fileVars, outputs *v1.Workflow_StepOutputs, facts runFacts, sensitive sensitiveInputs) []*v1.Diagnostic {
+	failures := assertChecks(ctx, started, claims, spec, bound, vars, outputs, facts, sensitive)
 	for _, d := range failures {
 		d.Field = "invariants" + strings.TrimPrefix(d.Field, "expect.check")
 	}
@@ -408,28 +664,47 @@ func (p *faultPlan) firedAny() bool {
 	return slices.ContainsFunc(p.drawn, func(n int) bool { return n > 0 })
 }
 
-// pinned writes the faults that fired as the `faults:` list that replays
-// them without a seed: each fault that fired, pinned to the invocation numbers
-// it fired on, and everything else about it as declared. Empty when no draw
-// fired.
-func (p *faultPlan) pinned() string {
+// firedPinned reports whether any pinned fault fired in this run. A probe
+// ([shrinkFaults]) runs only pinned faults, so this is what makes its run a
+// faulted one.
+func (p *faultPlan) firedPinned() bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	var pins []Fault
+	return slices.ContainsFunc(p.fired, func(n int) bool { return n > 0 })
+}
+
+// pins are the faults that fired, each pinned to the invocation numbers it fired
+// on and everything else about it as declared. authored[i] is true for a pin
+// the case declared itself, which is part of the case and not something a seed
+// found. Empty when no draw fired.
+func (p *faultPlan) pins() (pins []Fault, authored []bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
 	for i, on := range p.script {
 		pin := p.faults[i]
 		switch {
 		case len(pin.On) > 0 && p.fired[i] > 0:
 			// Already a script; kept as declared so replacing `faults:` with
 			// this list loses none of the case's own pins.
+			pin.On = slices.Clone(pin.On)
+			authored = append(authored, true)
 		case len(on) > 0:
 			pin.Rate, pin.AtMost, pin.On = nil, nil, slices.Clone(on)
+			authored = append(authored, false)
 		default:
 			continue
 		}
 		pins = append(pins, pin)
 	}
+
+	return pins, authored
+}
+
+// pinnedScript writes pins as the `faults:` list that replays them without a
+// seed, or "" for none.
+func pinnedScript(pins []Fault) string {
 	if len(pins) == 0 {
 		return ""
 	}

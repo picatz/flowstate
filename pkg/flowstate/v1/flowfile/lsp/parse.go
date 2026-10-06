@@ -5,8 +5,8 @@ import (
 	"strings"
 
 	"github.com/goccy/go-yaml/ast"
-	"github.com/goccy/go-yaml/parser"
 	"github.com/goccy/go-yaml/token"
+	"github.com/picatz/flowstate/internal/strictyaml"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 	"github.com/sourcegraph/go-lsp"
@@ -815,7 +815,7 @@ func (p *parsedFile) stepAt(pos lsp.Position) *parsedStep {
 // one error with a token, which is a better diagnostic than anything that could
 // be reconstructed from a half-built tree.
 func parseFlowfile(text string, ix *lineIndex) (*parsedFile, error) {
-	file, err := parser.ParseBytes([]byte(text), 0)
+	file, err := strictyaml.ParseBytes([]byte(text), 0)
 	if err != nil {
 		return nil, err
 	}

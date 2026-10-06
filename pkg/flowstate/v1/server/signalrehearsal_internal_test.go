@@ -33,13 +33,35 @@ func runWithPolicyAndStarter(t *testing.T, c conformance.RehearsalSignalCase) *w
 	// starter this one adds.
 	resp := memoWithSignalPolicy(t, map[string]*v1types.SignalPolicy{c.SignalName: c.Policy})
 
+	fields := resp.GetWorkflowExecutionInfo().GetMemo().GetFields()
+
 	// Recorded exactly as [starterMemoEntry] writes it: one qualified
 	// "issuer#subject" string, which is the only shape a memo ever held one as.
-	starter, err := converter.GetDefaultDataConverter().ToPayload(
-		v1types.QualifiedSubject(c.Starter.GetIssuer(), c.Starter.GetSubject()))
-	require.NoError(t, err)
+	// Left out for a run with no recorded starter, the shape of a memo that
+	// predates the key.
+	if !c.StarterUnknown {
+		starter, err := converter.GetDefaultDataConverter().ToPayload(
+			v1types.QualifiedSubject(c.Starter.GetIssuer(), c.Starter.GetSubject()))
+		require.NoError(t, err)
 
-	resp.GetWorkflowExecutionInfo().GetMemo().GetFields()[starterMemoKey] = starter
+		fields[starterMemoKey] = starter
+	}
+
+	// And what an `allow: ${...}` predicate reads of the run, through the
+	// function submit calls, so the encoding the server writes is the encoding
+	// delivery reads back.
+	scope, err := signalPolicyScopeMemoEntry(
+		map[string]*v1types.SignalPolicy{c.SignalName: c.Policy}, c.Inputs, c.Starter)
+	if err != nil {
+		// Over the bound: nothing is recorded, as submit refuses the run.
+		return resp
+	}
+	for key, value := range scope {
+		payload, err := converter.GetDefaultDataConverter().ToPayload(value)
+		require.NoError(t, err)
+
+		fields[key] = payload
+	}
 
 	return resp
 }

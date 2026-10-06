@@ -3,6 +3,7 @@ package flowstatev1
 import (
 	"maps"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/google/cel-go/common/types/ref"
@@ -53,7 +54,7 @@ func NewLocalRunAddressAt(started time.Time) *RunAddress {
 // runRootValue renders a run's own address and starter identity as the map an
 // expression reads under [RunRoot]: `run.workflow_id`, `run.run_id`,
 // `run.identity.subject`, `run.identity.issuer`, `run.identity.namespace`,
-// `run.identity.claims`, `run.local`, and `run.started_at`.
+// `run.identity.claims`, `run.identity.principal`, `run.identity.kind`, `run.local`, and `run.started_at`.
 //
 // The identity half is deliberately narrower than [WorkloadIdentity] itself —
 // see [Scope.identity]'s doc for why `deployment` is left off — and deliberately
@@ -85,21 +86,89 @@ func NewLocalRunAddressAt(started time.Time) *RunAddress {
 // inside a wait. The one field a reader may expect and will not find is an
 // attempt count, and [RunAddress] records why.
 func runRootValue(identity *WorkloadIdentity, local bool, address *RunAddress) ref.Val {
-	claims := make(map[string]any, len(identity.GetClaims()))
-	for _, k := range slices.Sorted(maps.Keys(identity.GetClaims())) {
-		claims[k] = identity.GetClaims()[k]
-	}
-
 	return TypeAdapter.NativeToValue(map[string]any{
-		"identity": map[string]any{
-			"subject":   identity.GetSubject(),
-			"issuer":    identity.GetIssuer(),
-			"namespace": identity.GetNamespace(),
-			"claims":    claims,
-		},
+		"identity":    IdentityShape(identity),
 		"local":       local,
 		"workflow_id": address.GetWorkflowId(),
 		"run_id":      address.GetRunId(),
 		"started_at":  address.GetStartedAt().AsTime(),
 	})
+}
+
+// IdentityShape is the one rendering of a [WorkloadIdentity] an expression
+// reads: `subject`, `issuer`, `namespace`, `claims` (a map, sorted by key),
+// `principal`, and `kind`. Both `run.identity` ([runRootValue]) and a wait's
+// `sender.identity` ([signalSenderValue]) are built from it, so the two shapes
+// cannot drift; the sender drops `claims` and adds `deployment`.
+//
+// Claims are the run starter's own, which `run.identity.claims` already carries
+// to its author; a wait's sender is a third party and does not get them (see
+// [signalSenderValue]).
+//
+// A nil identity renders every string empty and claims empty.
+func IdentityShape(identity *WorkloadIdentity) map[string]any {
+	claims := make(map[string]any, len(identity.GetClaims()))
+	for _, k := range slices.Sorted(maps.Keys(identity.GetClaims())) {
+		claims[k] = identity.GetClaims()[k]
+	}
+
+	return map[string]any{
+		"subject":   identity.GetSubject(),
+		"issuer":    identity.GetIssuer(),
+		"namespace": identity.GetNamespace(),
+		"claims":    claims,
+		"principal": Principal(identity.GetIssuer(), identity.GetSubject()),
+		"kind":      PrincipalKindName(identity.GetPrincipalKind()),
+	}
+}
+
+// PrincipalKindName is the lowercase name an expression and a trust policy
+// spell a [PrincipalKind] with ("human", "workload", "agent"), and "" for
+// UNSPECIFIED or a value this build does not know. Empty is the honest answer
+// to "the policy assigned none": a predicate must compare against a named kind
+// and cannot mistake the absence for WORKLOAD.
+func PrincipalKindName(kind PrincipalKind) string {
+	if kind == PrincipalKind_PRINCIPAL_KIND_UNSPECIFIED {
+		return ""
+	}
+	name, ok := strings.CutPrefix(kind.String(), "PRINCIPAL_KIND_")
+	if !ok {
+		return ""
+	}
+
+	return strings.ToLower(name)
+}
+
+// PrincipalKindNamed is the inverse of [PrincipalKindName]: the kind a trust
+// policy's `principal_kind:` names, and UNSPECIFIED for "" or any other string.
+func PrincipalKindNamed(name string) PrincipalKind {
+	kind := PrincipalKind(PrincipalKind_value["PRINCIPAL_KIND_"+strings.ToUpper(name)])
+
+	// Exact spelling only, as a trust policy takes it: "Human" is not "human", so a
+	// test or a rehearsal cannot certify a configuration production would refuse.
+	if PrincipalKindName(kind) != name {
+		return PrincipalKind_PRINCIPAL_KIND_UNSPECIFIED
+	}
+
+	return kind
+}
+
+// Principal is `issuer#subject` ([QualifiedSubject]) when both halves are
+// present, and "" otherwise.
+//
+// The rule is decided once, here: an unauthenticated or local sender (no
+// identity) and an identity missing either half give "", never a half-formed
+// "#" or "issuer#". The empty value still equals itself, so a predicate that
+// compares a principal must treat "" as missing (require it non-empty) rather
+// than rely on the representation to keep anonymous callers apart.
+//
+// The join is injective because no trusted issuer contains '#' (policy
+// validation refuses one in either kind), so the first '#' always ends the
+// issuer and a subject may contain any further '#'.
+func Principal(issuer, subject string) string {
+	if issuer == "" || subject == "" {
+		return ""
+	}
+
+	return QualifiedSubject(issuer, subject)
 }

@@ -43,9 +43,7 @@ func asyncFailureThenLaterStep() *v1.Workflow {
 	return &v1.Workflow{
 		Name:    "async-failure-order",
 		Profile: v1.CurrentProfile,
-		Debug: &v1.SignalPolicy{Allow: []*v1.SignalPolicyRule{
-			{Claims: map[string]string{"role": "sre"}},
-		}},
+		Debug:   &v1.SignalPolicy{Allow: `sender.identity.claims["role"] == "sre"`},
 		Steps: []*v1.Node{
 			{
 				// A task, because `async:` is about work that leaves this
@@ -184,10 +182,8 @@ func TestADebugJoinedFailureSurvivesAContinuation(t *testing.T) {
 		Workflow: &v1.Workflow{
 			Name:    "async-failure-across-continuation",
 			Profile: v1.CurrentProfile,
-			Debug: &v1.SignalPolicy{Allow: []*v1.SignalPolicyRule{
-				{Claims: map[string]string{"role": "sre"}},
-			}},
-			Steps: steps,
+			Debug:   &v1.SignalPolicy{Allow: `sender.identity.claims["role"] == "sre"`},
+			Steps:   steps,
 		},
 		// Spent on `slow` and `a`, so the check fires at `a` — after the join
 		// that holds the failure, and with `b` and `c` still to come.
@@ -216,9 +212,7 @@ func TestADebugHeldFailureIsRaisedAtTheReferenceThatWouldHaveJoinedIt(t *testing
 		return &v1.Workflow{
 			Name:    "async-failure-reference",
 			Profile: v1.CurrentProfile,
-			Debug: &v1.SignalPolicy{Allow: []*v1.SignalPolicyRule{
-				{Claims: map[string]string{"role": "sre"}},
-			}},
+			Debug:   &v1.SignalPolicy{Allow: `sender.identity.claims["role"] == "sre"`},
 			Steps: []*v1.Node{
 				{
 					Id:     "failing",
@@ -308,9 +302,7 @@ func TestADebugHeldFailureSurvivesAContinuationFromInsideAStep(t *testing.T) {
 		Workflow: &v1.Workflow{
 			Name:    "async-failure-across-a-nested-continuation",
 			Profile: v1.CurrentProfile,
-			Debug: &v1.SignalPolicy{Allow: []*v1.SignalPolicyRule{
-				{Claims: map[string]string{"role": "sre"}},
-			}},
+			Debug:   &v1.SignalPolicy{Allow: `sender.identity.claims["role"] == "sre"`},
 			Steps: []*v1.Node{
 				{
 					Id:     "failing",
@@ -446,10 +438,8 @@ func failureReportedByTwoFailingAsyncSteps(t *testing.T, ask, reader bool) strin
 		Workflow: &v1.Workflow{
 			Name:    "two-failing-async-steps",
 			Profile: v1.CurrentProfile,
-			Debug: &v1.SignalPolicy{Allow: []*v1.SignalPolicyRule{
-				{Claims: map[string]string{"role": "sre"}},
-			}},
-			Steps: steps,
+			Debug:   &v1.SignalPolicy{Allow: `sender.identity.claims["role"] == "sre"`},
+			Steps:   steps,
 		},
 	})
 
@@ -497,9 +487,7 @@ func TestADebugHeldFailureSurvivesAContinuationFromInsideACall(t *testing.T) {
 		Workflow: &v1.Workflow{
 			Name:    "async-failure-across-a-call's-continuation",
 			Profile: v1.CurrentProfile,
-			Debug: &v1.SignalPolicy{Allow: []*v1.SignalPolicyRule{
-				{Claims: map[string]string{"role": "sre"}},
-			}},
+			Debug:   &v1.SignalPolicy{Allow: `sender.identity.claims["role"] == "sre"`},
 			Steps: []*v1.Node{
 				{
 					Id:     "failing",

@@ -1519,7 +1519,7 @@ func runServer(cmd *cobra.Command, args []string) error {
 	// receiver that exists is one whose whole configuration was satisfiable, and
 	// a deployment that cannot satisfy it does not start — which is the same
 	// fail-closed rule --task-queue-prefix follows a hundred lines above.
-	receiver, err := webhookReceiver(cmd, flowServer, logger)
+	receiver, err := webhookReceiver(cmd, flowServer, verifier, policy, logger)
 	if err != nil {
 		return err
 	}
@@ -2623,9 +2623,9 @@ flow validate examples/hello-world/workflow.yaml`,
 			"A gate is the one exception, because a gate is the thing worth rehearsing. " +
 			"`--signal-as-subject` and its siblings name the approver a `--signal` delivery " +
 			"stands in for, and the workflow's `signals:` policy is checked here exactly as the " +
-			"server checks it — so an approver a rule admits in production opens the gate here, " +
-			"one it refuses is refused here, and this run's own starter is refused by " +
-			"`distinct_from_starter:` on both. The gate's `sender.local` output still reads " +
+			"server checks it — so an approver a predicate admits in production opens the gate here, " +
+			"one it refuses is refused here, and a predicate comparing with the run's own starter " +
+			"(`run.identity`) refuses it on both. The gate's `sender.local` output still reads " +
 			"true." + runDocumentHelp,
 		// Exactly one, as `flow run` and `flow compile` already hold: MinimumNArgs
 		// ran the first file and silently dropped the rest, so a habit carried
@@ -3597,6 +3597,14 @@ flow lsp --plugin-dir /opt/flowstate/plugins`,
 	rootCmd.AddCommand(timelineCmd)
 	rootCmd.AddCommand(watchCmd)
 	rootCmd.AddCommand(signalCmd)
+
+	// Beside `signal`, the verb it is named for and must not be confused with:
+	// that one delivers to a waiting run and needs a server; this reads a
+	// Flowfile and asks who may act, running nothing.
+	signalsCmd := newSignalsCommand()
+	signalsCmd.GroupID = "workflow"
+	rootCmd.AddCommand(signalsCmd)
+
 	rootCmd.AddCommand(scheduleCmd)
 	for _, c := range lifecycleCmds {
 		rootCmd.AddCommand(c)

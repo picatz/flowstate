@@ -455,7 +455,10 @@ func TestRunAndReportsProseIsPresent(t *testing.T) {
 		}
 	}
 
-	// 206 since RunAddress.started_at joined, so a run can say when it began; 205
+	// 226 since FuzzFinding.absent, changed, shrink_runs and minimal joined to say how far a finding's inputs were shrunk; 222 since FuzzReport, FuzzFinding and TestReport.fuzz joined to carry what
+	// `--fuzz` found; 210 since ScheduleExploration.fault_draws joined, so a search that only injected
+	// faults is told from one that explored nothing; 209 since ScheduleDivergenceReport.fired_faults, shrink_runs and shrunk_minimal
+	// joined to say how far a violating seed's fault list was shrunk; 206 since RunAddress.started_at joined, so a run can say when it began; 205
 	// since ScheduleDivergenceReport.fault_script joined to carry the pinned
 	// replay of an invariant violation; 204 since PendingWait.approvals and
 	// approvals_needed joined to report a quorum's tally on a parked wait; 202
@@ -468,8 +471,8 @@ func TestRunAndReportsProseIsPresent(t *testing.T) {
 	// that holds them. The count is pinned so that adding a declaration is a
 	// deliberate act with its prose written at the same moment, rather than
 	// something the walk silently absorbs.
-	if checked != 206 {
-		t.Errorf("run/report walk checked %d declarations; want 206", checked)
+	if checked != 226 {
+		t.Errorf("run/report walk checked %d declarations; want 226", checked)
 	}
 	if len(missing) > 0 {
 		sort.Strings(missing)
