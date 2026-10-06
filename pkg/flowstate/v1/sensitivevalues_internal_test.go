@@ -907,43 +907,47 @@ func TestASensitiveNestedAndFractionalDataKindIsRedactedInCELSpelling(t *testing
 func TestRedactSubstringsCoversEveryEncodingARendererMayApply(t *testing.T) {
 	t.Parallel()
 
-	value := "pa\"ss\\w<o>rd&é\nx"
+	// The second value holds a control byte and U+2028, where `%q` and JSON
+	// disagree; the third mixes HTML characters with a control byte, the one
+	// shape where the plain-JSON spelling is neither the `%q` nor the
+	// HTML-escaped one, so dropping that leg fails.
+	for _, value := range []string{"pa\"ss\\w<o>rd&é\nx", "a\u2028b\x01c", "<a>&\x01"} {
+		htmlEscaped, err := json.Marshal(value)
+		require.NoError(t, err)
 
-	htmlEscaped, err := json.Marshal(value)
-	require.NoError(t, err)
+		var plain bytes.Buffer
 
-	var plain bytes.Buffer
+		enc := json.NewEncoder(&plain)
+		enc.SetEscapeHTML(false)
+		require.NoError(t, enc.Encode(value))
 
-	enc := json.NewEncoder(&plain)
-	enc.SetEscapeHTML(false)
-	require.NoError(t, enc.Encode(value))
+		// The quotes a renderer adds around the body are its own, not the value's.
+		bodyOf := func(quoted string) string { return quoted[1 : len(quoted)-1] }
 
-	// The quotes a renderer adds around the body are its own, not the value's.
-	bodyOf := func(quoted string) string { return quoted[1 : len(quoted)-1] }
+		spellings := map[string]string{
+			"plaintext":    value,
+			"percent-q":    bodyOf(strconv.Quote(value)),
+			"json":         bodyOf(string(htmlEscaped)),
+			"json-no-html": bodyOf(strings.TrimSuffix(plain.String(), "\n")),
+		}
 
-	spellings := map[string]string{
-		"plaintext":    value,
-		"percent-q":    bodyOf(strconv.Quote(value)),
-		"json":         bodyOf(string(htmlEscaped)),
-		"json-no-html": bodyOf(strings.TrimSuffix(plain.String(), "\n")),
-	}
+		sets := map[string]SensitiveValues{
+			"declared input": oneSensitiveInput("token", &Value{Kind: &Value_Literal{Literal: &expr.Value{
+				Kind: &expr.Value_StringValue{StringValue: value},
+			}}}),
+			"with values": SensitiveValues{}.WithValues(value),
+		}
 
-	sets := map[string]SensitiveValues{
-		"declared input": oneSensitiveInput("token", &Value{Kind: &Value_Literal{Literal: &expr.Value{
-			Kind: &expr.Value_StringValue{StringValue: value},
-		}}}),
-		"with values": SensitiveValues{}.WithValues(value),
-	}
+		for setName, set := range sets {
+			for spellingName, spelling := range spellings {
+				t.Run(fmt.Sprintf("%q/%s/%s", value, setName, spellingName), func(t *testing.T) {
+					t.Parallel()
 
-	for setName, set := range sets {
-		for spellingName, spelling := range spellings {
-			t.Run(setName+"/"+spellingName, func(t *testing.T) {
-				t.Parallel()
+					got := set.RedactSubstrings("line: " + spelling + " end")
 
-				got := set.RedactSubstrings("line: " + spelling + " end")
-
-				assert.Equal(t, "line: "+SensitiveMarker+" end", got)
-			})
+					assert.Equal(t, "line: "+SensitiveMarker+" end", got)
+				})
+			}
 		}
 	}
 }
