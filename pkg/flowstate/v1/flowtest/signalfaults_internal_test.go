@@ -1,7 +1,9 @@
 package flowtest
 
 import (
+	"math"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -39,4 +41,13 @@ func TestADropIsRecordedOnlyWhenItsDeliveryComesDue(t *testing.T) {
 	require.Len(t, pins, 1)
 	assert.Equal(t, []int{1}, pins[0].On)
 	assert.Equal(t, []bool{false}, authored)
+}
+
+// A script whose `at:` is already at the largest duration stays there when a
+// delay is added, instead of wrapping around to a moment in the past.
+func TestAddingADelayNeverWrapsToThePast(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t, time.Duration(math.MaxInt64), satAdd(math.MaxInt64, time.Hour))
+	assert.Equal(t, 90*time.Minute, satAdd(time.Hour, 30*time.Minute))
 }

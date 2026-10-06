@@ -719,6 +719,9 @@ type runFacts struct {
 	// signalsDropped names the signals a `signal:` fault lost a delivery of,
 	// sorted.
 	signalsDropped []string
+
+	// signalsDelayed names the signals a `signal:` fault made late, sorted.
+	signalsDelayed []string
 }
 
 // newRunFacts gathers what a finished run is judged on.
@@ -728,8 +731,9 @@ func newRunFacts(runErr error, log *invocationLog, root string) runFacts {
 
 // bind adds the compensation, signal and invocation facts to the `run` root.
 //
-// signals.dropped lists the signals a `faults:` entry lost a delivery of; it is
-// always present, empty when nothing was lost.
+// signals.dropped lists the signals a `faults:` entry lost a delivery of, and
+// signals.delayed those it made late; both are always
+// present, empty when nothing happened.
 //
 // compensated and uncompensated are lists of step ids, in the order the
 // compensations ran (reverse registration): a step whose `undo:` succeeded is
@@ -757,7 +761,11 @@ func (f runFacts) bind(root map[string]any) {
 	for _, name := range f.signalsDropped {
 		dropped = append(dropped, name)
 	}
-	root["signals"] = map[string]any{"dropped": dropped}
+	delayed := make([]any, 0, len(f.signalsDelayed))
+	for _, name := range f.signalsDelayed {
+		delayed = append(delayed, name)
+	}
+	root["signals"] = map[string]any{"dropped": dropped, "delayed": delayed}
 
 	if f.invocations == nil || f.invocations.truncated() {
 		return

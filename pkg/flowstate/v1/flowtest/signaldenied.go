@@ -29,6 +29,9 @@ type signalOutcomes struct {
 	// dropped counts the deliveries a `signal:` fault lost, which never
 	// reached the policy and so are neither delivered nor denied.
 	dropped map[string]int
+	// delayed counts the deliveries a `signal:` fault made late, whether or not
+	// the run was still there when they arrived.
+	delayed map[string]int
 }
 
 func newSignalOutcomes() *signalOutcomes {
@@ -37,6 +40,7 @@ func newSignalOutcomes() *signalOutcomes {
 		denied:       map[string]int{},
 		otherRefused: map[string]int{},
 		dropped:      map[string]int{},
+		delayed:      map[string]int{},
 	}
 }
 
@@ -67,6 +71,30 @@ func (o *signalOutcomes) noteDropped(name string) {
 	defer o.mu.Unlock()
 
 	o.dropped[name]++
+}
+
+// noteDelayed records that a fault made one delivery of name late, when the
+// sender sent it; it may arrive after the run has ended.
+func (o *signalOutcomes) noteDelayed(name string) {
+	if o == nil {
+		return
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+
+	o.delayed[name]++
+}
+
+// delayedNames lists, sorted, the signals at least one delivery of which a
+// fault made late.
+func (o *signalOutcomes) delayedNames() []string {
+	if o == nil {
+		return nil
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+
+	return slices.Sorted(maps.Keys(o.delayed))
 }
 
 // droppedNames lists, sorted, the signals at least one delivery of which a

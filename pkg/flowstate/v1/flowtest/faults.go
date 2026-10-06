@@ -20,6 +20,11 @@ import (
 // every matching invocation, so the list is work spent per task call.
 const MaxFaultsPerTest = 32
 
+// maxSignalDelay bounds a signal fault's `delay:`: a day-scale lateness is
+// the realistic stress, and an unbounded one is a signal that never arrives,
+// which `drop: true` already says.
+const maxSignalDelay = 30 * 24 * time.Hour
+
 // maxFaultAtMost bounds [Fault.AtMost]: a fault that may fire without limit is
 // a stub that always fails, which `stubs:` already says without a coin flip.
 const maxFaultAtMost = 100
@@ -58,10 +63,18 @@ type Fault struct {
 	// declaration order, which is the numbering `on:` uses.
 	Signal string `yaml:"signal,omitempty"`
 
+	// Delay makes a signal fault deliver late: the delivery that would have
+	// arrived at its scripted `at:` arrives that long after it, a Go duration
+	// in (0, [maxSignalDelay]]. Exactly one of Drop and Delay with Signal,
+	// and neither without it. A delivery the run ends before it is due never
+	// arrives, delayed or not, which is what a late signal to a finished run
+	// looks like.
+	Delay string `yaml:"delay,omitempty"`
+
 	// Drop makes a signal fault lose the delivery: the sender sent it, and the
 	// run never learns anything arrived, which is how a signal lost on the
 	// way looks to a gate in production. Required, and only valid, with
-	// Signal; it is the one effect a signal fault has so far.
+	// Signal and exclusive with Delay.
 	Drop bool `yaml:"drop,omitempty"`
 
 	// Fails is the injected failure. Its kind defaults to Upstream, the
@@ -102,6 +115,13 @@ func (f *Fault) rate() float64 {
 	return *f.Rate
 }
 
+// lateness is a signal fault's delay, zero for a drop.
+func (f *Fault) lateness() time.Duration {
+	d, _ := time.ParseDuration(f.Delay)
+
+	return d
+}
+
 func (f *Fault) limit() int {
 	if f.AtMost == nil {
 		return 1
@@ -133,12 +153,23 @@ func checkFaultShape(i int, f *Fault) error {
 		return fmt.Errorf("%s: name exactly one of `task:`, `step:` or `signal:`", where)
 	}
 	switch {
-	case f.Signal != "" && !f.Drop:
-		return fmt.Errorf("%s: a `signal:` fault says what happens to the delivery; write `drop: true`", where)
+	case f.Signal != "" && !f.Drop && f.Delay == "":
+		return fmt.Errorf("%s: a `signal:` fault says what happens to the delivery; write `drop: true` or `delay: <duration>`", where)
+	case f.Signal != "" && f.Drop && f.Delay != "":
+		return fmt.Errorf("%s: a delivery is lost or late, not both; write `drop: true` or `delay:`", where)
 	case f.Signal != "" && f.Fails != nil:
-		return fmt.Errorf("%s: `fails:` is the failure of a task, and a signal fault loses the delivery instead; use `drop: true` alone", where)
-	case f.Signal == "" && f.Drop:
-		return fmt.Errorf("%s: `drop:` loses a signal's delivery, so it goes with `signal:`", where)
+		return fmt.Errorf("%s: `fails:` is the failure of a task, and a signal fault changes the delivery instead; use `drop:` or `delay:`", where)
+	case f.Signal == "" && (f.Drop || f.Delay != ""):
+		return fmt.Errorf("%s: `drop:` and `delay:` change a signal's delivery, so they go with `signal:`", where)
+	}
+	if f.Delay != "" {
+		d, err := time.ParseDuration(f.Delay)
+		switch {
+		case err != nil:
+			return fmt.Errorf("%s: delay %q is not a duration: %v", where, f.Delay, err)
+		case d <= 0 || d > maxSignalDelay:
+			return fmt.Errorf("%s: delay %s is outside (0, %s]; a signal that never arrives is `drop: true`", where, d, maxSignalDelay)
+		}
 	}
 	if f.Fails != nil && f.Fails.Kind != "" {
 		kind, ok := v1.ParseErrorKind(f.Fails.Kind)
@@ -406,9 +437,13 @@ func (p *faultPlan) record(i, n int) {
 	p.fired[i]++
 }
 
-// signalDrop is the verdict that one scripted delivery is lost: the fault that
-// decided it and which of that fault's deliveries it was.
-type signalDrop struct{ fault, n int }
+// signalDrop is the verdict that one scripted delivery is lost or late: the
+// fault that decided it and which of that fault's deliveries it was. A zero
+// delay is a loss.
+type signalDrop struct {
+	fault, n int
+	delay    time.Duration
+}
 
 // dropSignals decides, before the run starts, which of the scripted
 // deliveries are lost: one answer per script, in declaration order, nil for a
@@ -436,7 +471,7 @@ func (p *faultPlan) dropSignals(ctx context.Context, scripts []SignalScript) []*
 			}
 			p.seen[i]++
 			if dropped[n] == nil && p.decide(ctx, i) {
-				dropped[n] = &signalDrop{fault: i, n: p.seen[i]}
+				dropped[n] = &signalDrop{fault: i, n: p.seen[i], delay: p.faults[i].lateness()}
 			}
 		}
 	}
@@ -444,7 +479,7 @@ func (p *faultPlan) dropSignals(ctx context.Context, scripts []SignalScript) []*
 	return dropped
 }
 
-// commitDrop records that the delivery d decided was due and was lost.
+// commitDrop records that the delivery d decided was due and was lost or late.
 func (p *faultPlan) commitDrop(d *signalDrop) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -480,7 +515,7 @@ func (p *faultPlan) unreached() []*v1.Diagnostic {
 			why := "an earlier fault answered that call first, so this one never fired"
 			target := "invocation"
 			if f.Signal != "" {
-				why, target = "the run ended before that delivery was due, so nothing was lost", "delivery"
+				why, target = "the run ended before the sender sent that delivery, so the fault changed nothing", "delivery"
 			}
 			out = append(out, &v1.Diagnostic{
 				Step:  f.Step,
