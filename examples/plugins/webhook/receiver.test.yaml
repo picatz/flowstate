@@ -1,0 +1,47 @@
+# Replays what `sender.yaml`'s `webhook.send` puts on the wire. The fixture's
+# body is the exact text `json.encode` renders for order ord_H1x9 and its
+# signature is the hex HMAC-SHA256 of those bytes under the key bound below, so
+# the first case is the round trip: the receiver's own arithmetic accepts the
+# sender's delivery. The second keeps that signature and edits the body, which
+# is the capture-and-edit shape the arithmetic exists to refuse.
+edition: v2026.4
+defaults:
+  stubs:
+    - task: log
+      returns: {}
+tests:
+  - name: a delivery signed by the sender verifies and starts a run
+    workflow: ./receiver.yaml
+    secrets:
+      "env:PEER_WEBHOOK_KEY": whsec_example_fixture_key
+    trigger:
+      webhook: order-paid
+      payload: ./testdata/order-paid.json
+    expect:
+      inputs:
+        order_id: ord_H1x9
+        amount: 4200
+      idempotency_key: ord_H1x9:paid
+      ran: [fulfil]
+      outputs:
+        order: ord_H1x9
+
+  - name: the same signature over an edited body starts nothing
+    workflow: ./receiver.yaml
+    secrets:
+      "env:PEER_WEBHOOK_KEY": whsec_example_fixture_key
+    trigger:
+      webhook: order-paid
+      payload: ./testdata/order-paid-forged.json
+    expect:
+      refused: true
+
+  - name: a delivery signed under another key starts nothing
+    workflow: ./receiver.yaml
+    secrets:
+      "env:PEER_WEBHOOK_KEY": a_different_key
+    trigger:
+      webhook: order-paid
+      payload: ./testdata/order-paid.json
+    expect:
+      refused: true
