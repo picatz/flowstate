@@ -4555,6 +4555,14 @@ recorded starter `run` is unbound, so a predicate that reads it errors and denie
 while one that never mentions it is unaffected. The refusal says what went wrong and
 never quotes an input or a claim.
 
+**Claims need `--identity-claim`.** `sender.identity.claims` holds only the claims
+the server was started to project (`flow server --identity-claim team`, repeatable).
+A token can carry `team` and the trust policy can verify it, and a predicate reading
+`sender.identity.claims.team` still never matches on a server not started with that
+flag. The refusal of a predicate that reads claims therefore names which claim names
+the sender identity carried (or that it carried none), never their values, so an
+empty projection reads differently from a wrong value.
+
 **Narrowing is syntactic.** Whoever starts a run chooses its `inputs`, so a predicate
 over them alone would let the starter name their own approver. A predicate that reads
 `inputs` must also read `sender.identity.claims` or `run.identity`, or `flow validate`
