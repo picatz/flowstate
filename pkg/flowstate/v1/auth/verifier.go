@@ -503,6 +503,12 @@ func (v *OIDCVerifier) Verify(ctx context.Context, rawToken string) (Principal, 
 		return Principal{}, fmt.Errorf("trusted issuer %q: %w", entry.Name, err)
 	}
 
+	// What the entry grants, narrowed by the token's own scopes; never widened.
+	actions, err := narrowActions(entry.Actions, claims)
+	if err != nil {
+		return Principal{}, fmt.Errorf("trusted issuer %q: %w", entry.Name, err)
+	}
+
 	return Principal{
 		Issuer:     issuer,
 		IssuerName: entry.Name,
@@ -511,7 +517,7 @@ func (v *OIDCVerifier) Verify(ctx context.Context, rawToken string) (Principal, 
 		Namespace:  namespace,
 		Role:       entry.Role,
 		Kind:       entry.PrincipalKind,
-		Actions:    slices.Clone(entry.Actions),
+		Actions:    actions,
 		IssuedAt:   lifetime.issuedAt,
 		ExpiresAt:  lifetime.expiresAt,
 		Claims:     claims,
