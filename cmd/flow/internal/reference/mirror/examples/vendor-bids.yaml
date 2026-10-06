@@ -1,0 +1,96 @@
+edition: v2026.4
+name: vendor-bids
+description: Ask vendors to quote a price, take the bids that arrive before the deadline, and award the cheapest valid one if enough different vendors answered.
+inputs:
+  item:
+    type: string
+    required: true
+    description: what is being bought
+  budget_cents:
+    type: int
+    required: true
+    description: no bid above this is considered
+    must: this > 0
+  min_bids:
+    type: int
+    default: 2
+    description: how many different vendors must bid validly (at most 50) for the comparison to be fair
+    must: this >= 1 && this <= 50
+  deadline:
+    type: duration
+    default: 48h
+    description: how long vendors have to answer
+    must: this > duration("0s")
+# Anyone may be asked, but only a vendor may answer. The vendor on a bid is the
+# identity the server attests, not a name the payload claims.
+signals:
+  bid:
+    allow: ${sender.identity.claims.role == "vendor"}
+steps:
+  # The cutoff is fixed when the run begins, so a bid is on time or late by when
+  # the server accepted it, not by when this workflow got round to reading it.
+  - id: cutoff
+    value: ${run.started_at + inputs.deadline}
+  # Bids are signals, and signals wait on the channel while this timer runs.
+  # `wait_for_signals:` returns on the first delivery, so draining straight away
+  # would take only the earliest bidders; sleeping out the window first and then
+  # draining takes everyone who answered in time.
+  - id: bidding_window
+    sleep: ${inputs.deadline}
+  # At most 50 bids are read, the first 50 accepted. That is the admission limit
+  # of this example, which is why `min_bids` stops at 50; a larger tender would
+  # drain again in a `loop:`.
+  - id: collect
+    wait_for_signals:
+      name: bid
+      max_batch: 50
+      prompt: ${"Quote a price for " + inputs.item + " within " + string(inputs.deadline)}
+      # Nothing buffered means nobody bid: an empty batch, not an error.
+      timeout: 1s
+      outputs:
+        # A payload is whatever the sender wrote, so each field is checked for its
+        # type as well as its presence. Anything wrong reads as -1 and is dropped
+        # below, rather than failing the whole award on one vendor's typo.
+        bids: '${deliveries.map(d, {"who": d.sender.identity.issuer + " " + d.sender.identity.subject, "vendor": d.sender.identity.subject, "price": (type(d.payload.?price_cents.orValue(null)) == int) ? d.payload.price_cents : -1, "lead_days": (type(d.payload.?lead_days.orValue(null)) == int) ? d.payload.lead_days : -1, "local": d.sender.local, "accepted_at": d.sender.accepted_at})}'
+  # A bid is on time when the server accepted it by the cutoff. A local rehearsal's
+  # sender has no acceptance time and is let through; an attested sender with none
+  # is late, so a missing stamp never counts in a bidder's favor.
+  - id: valid
+    value: |-
+      ${steps.collect.bids.filter(b, (b.local || b.accepted_at != "" && timestamp(b.accepted_at) <= steps.cutoff.value) &&
+      b.price > 0 && b.price <= inputs.budget_cents && b.lead_days >= 0)}
+  # Fairness is about vendors, not deliveries: one vendor bidding twice is still one
+  # vendor. Its cheapest bid is the one that can win.
+  - id: vendor_count
+    value: ${size(steps.valid.value.map(b, b.who).distinct())}
+  - id: quorum
+    value: ${steps.vendor_count.value >= inputs.min_bids}
+  # Cheapest price first, and only then the shorter lead time. Ranking by a
+  # weighted sum would let a very long lead time buy a cheaper-looking bid.
+  - id: best_price
+    if: ${steps.quorum.value}
+    value: ${steps.valid.value.sortBy(b, b.price)[0].price}
+  - id: winner
+    if: ${steps.quorum.value}
+    value: ${steps.valid.value.filter(b, b.price == steps.best_price.value).sortBy(b, b.lead_days)[0]}
+  - id: award
+    if: ${steps.quorum.value}
+    log:
+      message: ${"awarding %s to %s at %d cents, %d days".format([inputs.item, steps.winner.value.vendor, steps.winner.value.price, steps.winner.value.lead_days])}
+  - id: no_award
+    if: ${!steps.quorum.value}
+    log:
+      message: '${"not awarding %s: %d vendors bid validly, %d needed".format([inputs.item, steps.vendor_count.value, inputs.min_bids])}'
+outputs:
+  awarded_to:
+    value: '${steps.quorum.value ? steps.winner.value.vendor : ""}'
+    description: the winning vendor, empty when too few vendors bid validly
+  bids_received:
+    value: ${size(steps.collect.bids)}
+    type: int
+  bids_valid:
+    value: ${size(steps.valid.value)}
+    type: int
+  vendors_valid:
+    value: ${steps.vendor_count.value}
+    type: int

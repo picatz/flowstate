@@ -1,0 +1,159 @@
+# The refusals are the part worth showing: a decider outside finance, and the
+# requester deciding their own refund, are both refused before the step sees them.
+edition: v2026.4
+vars:
+  issuer: https://issuer.example.com
+defaults:
+  stubs:
+    - task: log
+      returns: {}
+  inputs:
+    refund:
+      order_id: o-1001
+      reason: damaged
+      lines: [{sku: kb-01, cents: 4000}, {sku: mouse-02, cents: 3000}]
+  sender:
+    subject: fin-lead@example.com
+    issuer: ${vars.issuer}
+    claims:
+      team: finance
+tests:
+  - name: a small refund is paid without anyone deciding
+    workflow: ./workflow.yaml
+    inputs:
+      refund:
+        order_id: o-1000
+        reason: late
+        lines: [{sku: kb-01, cents: 1500}]
+        note: sorry for the wait
+    stubs:
+      - step: payout
+        returns: {reference: pay-1}
+    expect:
+      ran: [total, cleared, payout, tell_customer]
+      others: skipped
+      outputs:
+        paid: true
+        total_cents: 1500
+
+  - name: a large refund waits for finance and is paid when approved
+    workflow: ./workflow.yaml
+    starter:
+      subject: support-agent@example.com
+      issuer: ${vars.issuer}
+    signals:
+      - name: refund-decision
+        payload: {approved: true}
+    stubs:
+      - step: payout
+        returns: {reference: pay-2}
+    expect:
+      ran: [total, review, cleared, payout, tell_customer]
+      outputs:
+        paid: true
+        total_cents: 7000
+
+  - name: a declined refund moves nothing
+    workflow: ./workflow.yaml
+    starter:
+      subject: support-agent@example.com
+      issuer: ${vars.issuer}
+    signals:
+      - name: refund-decision
+        payload: {approved: false}
+    expect:
+      ran: [total, review, cleared]
+      others: skipped
+      outputs:
+        paid: false
+        total_cents: 7000
+
+  - name: nobody answering is not a yes
+    workflow: ./workflow.yaml
+    expect:
+      ran: [total, review, cleared]
+      others: skipped
+      outputs:
+        paid: false
+        total_cents: 7000
+
+  - name: the requester cannot decide their own refund
+    workflow: ./workflow.yaml
+    starter:
+      subject: fin-lead@example.com
+      issuer: ${vars.issuer}
+    signals:
+      - name: refund-decision
+        payload: {approved: true}
+    expect:
+      ran: [total, review, cleared]
+      others: skipped
+      outputs:
+        paid: false
+        total_cents: 7000
+
+  - name: a decider outside finance is refused
+    workflow: ./workflow.yaml
+    starter:
+      subject: support-agent@example.com
+      issuer: ${vars.issuer}
+    signals:
+      - name: refund-decision
+        payload: {approved: true}
+        sender:
+          subject: eng-lead@example.com
+          issuer: ${vars.issuer}
+          claims:
+            team: engineering
+    expect:
+      ran: [total, review, cleared]
+      others: skipped
+      outputs:
+        paid: false
+        total_cents: 7000
+
+  - name: a malformed refund is refused before any step runs
+    workflow: ./workflow.yaml
+    inputs:
+      refund:
+        order_id: o-1002
+        reason: regret
+        lines: [{sku: kb-01, cents: 1500}]
+    expect:
+      failed: true
+      error_contains: regret
+
+  - name: a failed notification takes the payout back
+    workflow: ./workflow.yaml
+    inputs:
+      refund:
+        order_id: o-1003
+        reason: late
+        lines: [{sku: kb-01, cents: 1500}]
+    stubs:
+      - step: payout
+        returns: {reference: pay-3}
+      - step: tell_customer
+        fails:
+          kind: Upstream
+          message: mail service unavailable
+      - task: http
+        where: inputs.url == 'https://payments.example.com/refunds/void'
+        returns: {}
+    expect:
+      failed: true
+      error_contains: mail service unavailable
+      compensated: [payout]
+
+  # The limit is not an input, so a caller cannot raise it to skip the review.
+  - name: a caller cannot raise the auto-pay limit
+    workflow: ./workflow.yaml
+    inputs:
+      auto_limit_cents: 100000
+      refund:
+        order_id: o-1002
+        reason: other
+        lines: [{sku: kb-01, cents: 7000}]
+    expect:
+      failed: true
+      error_contains: auto_limit_cents
