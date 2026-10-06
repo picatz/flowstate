@@ -8,6 +8,7 @@ import (
 	"github.com/spf13/cobra"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/server"
 )
@@ -45,7 +46,9 @@ func addWebhookFlags(cmd *cobra.Command) {
 // deployment that starts, serves, and refuses every genuine delivery for a reason
 // visible only in a log line nobody is reading — which is precisely the failure
 // mode "decide when configuration loads" exists to prevent.
-func webhookReceiver(cmd *cobra.Command, flowServer *server.FlowstateServer, logger *slog.Logger) (*server.WebhookReceiver, error) {
+func webhookReceiver(
+	cmd *cobra.Command, flowServer *server.FlowstateServer, verifier auth.Verifier, policy *auth.Policy, logger *slog.Logger,
+) (*server.WebhookReceiver, error) {
 	paths, _ := cmd.Flags().GetStringArray("webhook")
 	if len(paths) == 0 {
 		return nil, nil
@@ -95,8 +98,13 @@ func webhookReceiver(cmd *cobra.Command, flowServer *server.FlowstateServer, log
 	// Temporal namespaces and has no entry for the tenant named here.
 	namespace, _ := cmd.Flags().GetString("webhook-namespace")
 
+	// The trust policy this server authenticates callers with is the one a
+	// `verify: {jwt: <name>}` entry points into, so a sender's token is checked
+	// by the verifier the API uses and not by a second one with its own idea of
+	// an issuer. Nil under --insecure-no-auth, which leaves a `jwt` webhook
+	// refused at startup.
 	receiver, err := flowServer.NewWebhookReceiver(cmd.Context(), namespace, workflows, store,
-		server.WithWebhookLogger(logger))
+		server.WithWebhookLogger(logger), server.WithWebhookTrust(verifier, policy))
 	if err != nil {
 		return nil, err
 	}

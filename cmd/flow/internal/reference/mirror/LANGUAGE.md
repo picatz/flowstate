@@ -1362,7 +1362,7 @@ receives it at `POST /webhooks/<workflow>/<webhook>` when started with
 
 | Key | Meaning |
 | --- | --- |
-| `verify` | Required. How to check the signature: `hmac_sha256` (an `X-Flowstate-Signature` HMAC of the body) or `stripe` (Stripe's signature scheme), each keyed by a secret reference. |
+| `verify` | Required. How to check the delivery, every scheme written must hold: `hmac_sha256` (an `X-Flowstate-Signature` HMAC of the body) or `stripe` (Stripe's signature scheme), each keyed by a secret reference; and `jwt`, the name of a trust policy entry whose issuer's bearer token the delivery must carry. See [Identity and trust](#identity-and-trust). |
 | `when` | Optional. A boolean over the delivery that admits it, such as `${event.body.action == "opened"}`. Only a clean `true` admits; `false` answers `204` and starts nothing, and an expression that errors, is not a bool, or exceeds its bound is refused. Applies to a `signal:` webhook too, before `correlate:` runs. |
 | `idempotency_key` | Required. An expression over the delivery that names the *event*, such as `${event.body.id}`. A redelivery of the same event joins the run the first one started. Never key on a signature header, which changes on every retry. |
 | `with` | Maps the delivery to the workflow's inputs. Checked against `inputs:` both ways: every required input must be bound. |
@@ -1506,10 +1506,19 @@ Three rules hold in both directions:
 - **Credentials and tokens never enter a run's history.** A step names a
   `credential:` or `${secret(...)}`; the worker resolves it where it is used.
 
-A webhook delivery holds no Flowstate credential, so its `sender.identity` names
-the trigger that admitted it, `flowstate://webhook#<workflow>/<webhook>`, and a
-`signals:` policy can match it. The identity of whoever holds the signing key is
-not carried. How workloads, people, and agents are federated, and what is built
+A webhook delivery signed with `hmac_sha256` or `stripe` holds no Flowstate
+credential, so its `sender.identity` names the trigger that admitted it,
+`flowstate://webhook#<workflow>/<webhook>`, and a `signals:` policy can match it.
+The identity of whoever holds the signing key is not carried. A webhook that
+also (or instead) writes `verify: {jwt: github-actions}` names an entry of the
+deployment's trust policy: the delivery must carry that issuer's bearer token in
+`Authorization`, and then acts as the token's principal — its `iss#sub`, its
+`kind`, the receiver's tenant — so a `signals:` or `manual:` `allow:` can tell one
+CI job from another. The Flowfile holds a name, never a key or a URL; the issuer,
+audience and claim rules stay the deployment's. A bearer token proves who sent
+the request and not what is in it, so write `jwt` beside a signing scheme when
+the body must be trusted too, and every scheme written has to verify. The
+`Authorization` header is never part of `event.headers`. How workloads, people, and agents are federated, and what is built
 and what is not, is in
 [Workload identity federation](WORKLOAD_IDENTITY_FEDERATION.md); authorizing an
 agent over HTTP is in [MCP authorization](MCP_AUTHORIZATION.md).

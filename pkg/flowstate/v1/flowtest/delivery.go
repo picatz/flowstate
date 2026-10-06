@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
 )
 
@@ -215,16 +216,22 @@ func replayDelivery(test *Test, deliveryPath string, workflow *v1.Workflow) (map
 	// mean to write.
 	var verifyErr error
 	keys, missing := caseVerifyKeys(test, trigger)
+	_, bearer := v1.WebhookJWTIssuer(trigger)
 	switch {
 	case len(trigger.GetVerify()) > 0 && len(missing) == 0:
-		if test.Trigger.Signature != "" {
+		// A bearer scheme has no key to bind, so `signature:` is what it can be
+		// told, and it states that leg alone: beside bound signing keys it cannot
+		// contradict their arithmetic, which is the case this refusal exists for.
+		if test.Trigger.Signature != "" && !bearer {
 			return nil, "", nil, fmt.Errorf("trigger %q: this case binds every key `verify:` names, so "+
 				"the verification outcome is computed by the same function the receiver runs — and it also "+
 				"declares `signature: %s`, which could contradict that arithmetic. Drop `signature:` to "+
 				"keep the computed outcome, or drop the bound keys to keep the declared rehearsal",
 				test.Trigger.Webhook, test.Trigger.Signature)
 		}
-		verifyErr = v1.VerifyWebhookDelivery(trigger, keys, delivery.Headers, rawBody, epoch)
+		_, verifyErr = v1.VerifyWebhookDeliveryAs(context.Background(), trigger, keys,
+			rehearsalBearer{trigger: trigger, vouches: test.Trigger.Verified()}, "",
+			withRehearsalToken(delivery.Headers), rawBody, epoch)
 		delivery.Verified = verifyErr == nil
 
 	case len(keys) > 0:
@@ -299,6 +306,53 @@ func replayDelivery(test *Test, deliveryPath string, workflow *v1.Workflow) (map
 	return bound, v1.WebhookDeliveryID(workflow.GetName(), trigger.GetName(), key), nil, nil
 }
 
+// rehearsalToken is the one bearer credential a rehearsal presents, standing in
+// for whatever a real sender's token would be.
+const rehearsalToken = "flowtest-rehearsal"
+
+// rehearsalBearer is the trust policy a `flow test` case has: none. A fixture
+// cannot carry a signed token worth the name, and a rehearsal holds no issuer to
+// fetch keys from, so what a case can say about a `jwt` scheme is whether the
+// sender's token verified, with the case's `signature:` — "valid" by default.
+//
+// It stands in for [auth.Verifier] *inside* [v1.VerifyWebhookDeliveryAs], so the
+// receiver's own function still runs: the header is read, the entry is named
+// and the tenant is checked exactly as they are in production, and only the
+// cryptography is declared.
+type rehearsalBearer struct {
+	trigger *v1.WebhookTrigger
+	vouches bool
+}
+
+// Verify vouches for [rehearsalToken] when the case says the token verified,
+// as the trust policy entry the trigger names, and for nothing else.
+func (r rehearsalBearer) Verify(_ context.Context, raw string) (auth.Principal, error) {
+	issuer, _ := v1.WebhookJWTIssuer(r.trigger)
+	if raw != rehearsalToken || !r.vouches {
+		return auth.Principal{}, errors.New("the case declares that the bearer token did not verify")
+	}
+
+	return auth.Principal{IssuerName: issuer, Subject: "flowtest"}, nil
+}
+
+// withRehearsalToken returns headers with the rehearsal's bearer credential in
+// place of whatever the fixture held, so a fixture never has to carry a token
+// and a stray one is never read.
+func withRehearsalToken(headers map[string]string) map[string]string {
+	out := maps.Clone(headers)
+	if out == nil {
+		out = make(map[string]string, 1)
+	}
+	for name := range out {
+		if strings.EqualFold(name, v1.WebhookAuthorizationHeader) {
+			delete(out, name)
+		}
+	}
+	out[v1.WebhookAuthorizationHeader] = "Bearer " + rehearsalToken
+
+	return out
+}
+
 // caseVerifyKeys resolves the trigger's `verify:` keys against the case's own
 // `secrets:` — the same reference boundary a stubbed task's `${secret(...)}`
 // resolves at, reused rather than invented (#321): the key is bound by the
@@ -311,6 +365,11 @@ func caseVerifyKeys(test *Test, trigger *v1.WebhookTrigger) (map[string]secrets.
 	keys := make(map[string]secrets.Secret, len(trigger.GetVerify()))
 	var missing []string
 	for scheme, value := range trigger.GetVerify() {
+		if scheme == v1.WebhookSchemeJWT {
+			// Names a trust policy entry, not a key: nothing for a case to bind.
+			continue
+		}
+
 		ref := value.GetSecretRef()
 		if ref == nil {
 			// CheckWebhookTrigger refuses this shape; unresolvable here means
