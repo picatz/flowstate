@@ -12,14 +12,6 @@ breaking:
     - FILE
     - WIRE
 
-  # Removing the inline pure helpers (`PureHelper`, `PureHelperParameter`).
-  # Both messages are deleted outright; no other message references them, so no
-  # field or wire shape changes.
-  # Remove this block in the next commit on main, once this one is the baseline.
-  ignore_only:
-    MESSAGE_NO_DELETE:
-      - proto/flowstate/v1/workflow.proto
-
   # FILE and WIRE compare descriptors: names, numbers, types, cardinality, and
   # reservations. They do not prove that a runtime still gives a field the same
   # meaning. A semantic change needs a focused conformance case that distinguishes

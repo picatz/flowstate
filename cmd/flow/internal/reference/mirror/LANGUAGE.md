@@ -1373,6 +1373,13 @@ names in scope; the run does not exist yet. `flow test` can replay a stored
 delivery, including one whose signature does not verify
 ([examples/webhook-trigger](../examples/webhook-trigger/workflow.yaml)).
 
+Sending a signed delivery to another Flowstate's webhook is the `webhook.send`
+plugin task, which signs with the same two schemes `verify:` names, so one side's
+`scheme:` and the other's `verify:` entry are spelled alike. It signs exactly the
+`body:` text it sends, so build JSON with `json.encode(...)`, and the key is a
+whole `${secret(...)}` that stays worker-side
+([examples/plugins/webhook](../examples/plugins/webhook/)).
+
 ### What a run knows about its start: `trigger`
 
 `trigger.kind` is `manual`, `schedule`, or `webhook`; `trigger.name` is the

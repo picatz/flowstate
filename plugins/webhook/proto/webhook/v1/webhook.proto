@@ -1,0 +1,69 @@
+syntax = "proto3";
+
+package webhook.v1;
+
+option go_package = "github.com/picatz/flowstate/plugins/webhook/gen/webhook/v1;webhookv1";
+
+import "flowstate/v1/value.proto";
+
+// SendInputs describes one signed outbound webhook delivery: the sending half
+// of the `verify:` block a Flowstate webhook trigger declares. The signature is
+// computed by the engine's own signer, so a delivery this task sends is
+// accepted by a receiver verifying under the same scheme and key, and by no
+// other.
+message SendInputs {
+  // Url is the receiver, an absolute http or https URL. The deployment's egress
+  // policy decides whether it may be reached; a destination it denies is never
+  // dialed. Credentials in the URL (userinfo) are refused so that a secret
+  // cannot enter the recorded input.
+  string url = 1;
+
+  // Body is the exact text that is signed and sent, byte for byte. The task
+  // never re-encodes it, so what a receiver verifies is what the author wrote;
+  // build JSON with `json.encode(...)` in the step. At most 1 MiB, and sent as
+  // `application/json` unless `headers` names another Content-Type.
+  string body = 2;
+
+  // SigningKey is the shared signing key. The task requires this entire input
+  // to be a secret reference, which the host resolves worker-side at the point
+  // of use. A literal key is refused before it can enter durable history. The
+  // key is only ever an input to the signature; it is never sent, returned or
+  // echoed in an error.
+  flowstate.v1.Value signing_key = 3;
+
+  // Scheme is how the body is signed, with the spelling a webhook trigger's
+  // `verify:` block uses: `hmac_sha256` (the default; a hex HMAC-SHA256 of the
+  // body in `X-Flowstate-Signature`) or `stripe` (`Stripe-Signature:
+  // t=<unix seconds>,v1=<hex>`, signed over the timestamp and the body, with a
+  // five-minute replay window at the receiver). An unknown scheme is refused.
+  string scheme = 4;
+
+  // IdempotencyKey is sent as the `Idempotency-Key` header so a receiver can
+  // deduplicate a delivery that is retried or replayed. Choose it once for the
+  // logical delivery and reuse it unchanged. At most 255 printable ASCII
+  // characters.
+  string idempotency_key = 5;
+
+  // Headers are extra request headers, by name, at most 16 of them. Credentials
+  // do not belong here: Authorization, Proxy-Authorization and Cookie are
+  // refused, as are the headers the task owns (the signature headers,
+  // Idempotency-Key, Host and Content-Length), because a value in this field is
+  // recorded in durable history.
+  map<string, string> headers = 6;
+}
+
+// SendOutputs reports the receiver's answer to a delivery it accepted.
+message SendOutputs {
+  // Status is the HTTP status the receiver answered with. Only a 2xx answer is
+  // a successful step; any other status fails it.
+  int32 status = 1;
+
+  // Response is the receiver's response body, cut at 64 KiB and with the
+  // signing key and the signature this task sent replaced by `[redacted]`
+  // should the receiver echo them.
+  string response = 2;
+
+  // ResponseTruncated is true when the receiver's response was longer than
+  // Response holds.
+  bool response_truncated = 3;
+}

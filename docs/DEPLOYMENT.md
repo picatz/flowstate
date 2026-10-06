@@ -302,6 +302,31 @@ timeout, malformed acknowledgement, a rate limit after a redirect, and
 ambiguous server errors return non-retryable unknown outcomes. Inspect Slack
 before manually retrying one of those outcomes.
 
+### Webhook outbound plugin
+
+`webhook.send` signs a body and POSTs it once to a receiver, which is the sending
+half of a webhook trigger's `verify:` block. Its `scheme` is `hmac_sha256`
+(default) or `stripe`, the schemes the engine's receiver verifies, and it signs
+with the engine's own signer, so a delivery it sends verifies at a Flowstate
+receiver holding the same key and at nothing else. The signed bytes are the
+`body` text, byte for byte; nothing is re-encoded.
+
+The entire `signing_key` input must be a host-resolved secret reference such as
+`${secret('env:PEER_WEBHOOK_KEY')}`; the key is resolved worker-side, used only as
+the HMAC key, and never sent, returned, or echoed in an error. Should a receiver
+echo the key or the signature, the `response` output replaces them with
+`[redacted]`. Destination authority is the worker's egress grant, taken exactly
+as `slack` takes it: the default permits public HTTPS and denies internal ranges,
+and an operator policy narrows it (`examples/plugins/webhook/egress-policy.yaml`).
+A delivery is marked as carrying a credential, so a `credentials && ...` rule
+sees it. Redirects are not followed, so a signed delivery goes only to the URL
+the author named. The body is capped at 1 MiB, the response output at 64 KiB, one
+request is bounded to 30 seconds, and nothing is retried inside the plugin: a
+429 carries its delay into the workflow retry mechanism, while a lost response
+or a 5xx is an unknown outcome that is not retried automatically. Send an
+`idempotency_key` (the `Idempotency-Key` header) so a receiver can deduplicate
+the delivery you choose to retry.
+
 ## The four-tier isolation model
 
 Each tier is a set of claims a security reviewer can check independently.
