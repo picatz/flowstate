@@ -142,7 +142,15 @@ func PrincipalKindName(kind PrincipalKind) string {
 // PrincipalKindNamed is the inverse of [PrincipalKindName]: the kind a trust
 // policy's `principal_kind:` names, and UNSPECIFIED for "" or any other string.
 func PrincipalKindNamed(name string) PrincipalKind {
-	return PrincipalKind(PrincipalKind_value["PRINCIPAL_KIND_"+strings.ToUpper(name)])
+	kind := PrincipalKind(PrincipalKind_value["PRINCIPAL_KIND_"+strings.ToUpper(name)])
+
+	// Exact spelling only, as a trust policy takes it: "Human" is not "human", so a
+	// test or a rehearsal cannot certify a configuration production would refuse.
+	if PrincipalKindName(kind) != name {
+		return PrincipalKind_PRINCIPAL_KIND_UNSPECIFIED
+	}
+
+	return kind
 }
 
 // Principal is `issuer#subject` ([QualifiedSubject]) when both halves are

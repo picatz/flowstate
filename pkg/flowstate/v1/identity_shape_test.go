@@ -65,5 +65,6 @@ func TestIdentityShape(t *testing.T) {
 		}
 	}
 	require.Equal(t, v1.PrincipalKind_PRINCIPAL_KIND_UNSPECIFIED, v1.PrincipalKindNamed("humen"), "a misspelling is none, not a guess")
+	require.Equal(t, v1.PrincipalKind_PRINCIPAL_KIND_UNSPECIFIED, v1.PrincipalKindNamed("Human"), "a trust policy takes the lowercase spelling only, so a rehearsal must too")
 	require.NotContains(t, shape, "deployment", "deployment is the sender's addition, not part of the shared shape")
 }

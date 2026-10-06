@@ -171,6 +171,26 @@ func TestMTLSVerifierVerifyPeerReadsEachSANKind(t *testing.T) {
 	}
 }
 
+// TestMTLSVerifierVerifyPeerCarriesThePolicyAssignedKind proves the mTLS admission
+// path records the kind its entry assigns, as the OIDC path does: a separate copy
+// of that assignment that nothing else would notice losing.
+func TestMTLSVerifierVerifyPeerCarriesThePolicyAssignedKind(t *testing.T) {
+	for _, kind := range []auth.PrincipalKind{"", auth.PrincipalKindWorkload, auth.PrincipalKindAgent} {
+		ca := newTestCA(t, "root")
+		verifier := newMTLSVerifier(t, auth.TrustedIssuer{
+			Name: "mesh", Kind: auth.IssuerKindMTLS, Issuer: "flowstate:mtls/mesh",
+			ClientCAFile: ca.clientCAFile(t), SubjectFrom: auth.SubjectFromDNSSAN,
+			Namespace: "ci", PrincipalKind: kind,
+		})
+
+		leaf := ca.issueLeaf(t, withDNSSAN("runner.mesh.internal"))
+
+		principal, err := verifier.VerifyPeer(t.Context(), chainFor(t, leaf, ca))
+		require.NoError(t, err)
+		require.Equal(t, kind, principal.Kind)
+	}
+}
+
 // TestMTLSVerifierVerifyPeerRejectsRequireMismatch is the SAN-shaped version
 // of a claim rule: a certificate that chains to a trusted CA but whose
 // subject no require rule accepts is refused.

@@ -1203,7 +1203,7 @@ func signalAllowScope(withRun bool) celcomplete.Scope {
 	identity := celcomplete.Candidate{
 		Name: "identity", Kind: celcomplete.KindField, Detail: "workload identity",
 		Docs: "The identity the server attested, or the run's starter: `principal` (issuer#subject, empty " +
-			"when either half is missing), `subject`, `issuer`, `namespace` and `claims`.",
+			"when either half is missing), `subject`, `issuer`, `namespace`, `kind` and `claims`.",
 		Insert: "identity.",
 		Members: []celcomplete.Candidate{
 			{Name: "principal", Kind: celcomplete.KindField, Detail: "string",

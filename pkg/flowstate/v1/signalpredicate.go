@@ -46,8 +46,8 @@ import (
 //
 // # The scope is closed
 //
-//	sender.identity.{principal,subject,issuer,namespace,claims}
-//	run.identity.{principal,subject,issuer,namespace,claims}   (the starter)
+//	sender.identity.{principal,subject,issuer,namespace,kind,claims}
+//	run.identity.{principal,subject,issuer,namespace,kind,claims}   (the starter)
 //	inputs                                                      (the run's arguments)
 //
 // Nothing else: no steps, vars, secrets or clock. An unknown root or field is a
@@ -254,10 +254,10 @@ func compileAllowPredicate(src string, manual bool) (SignalPolicyPredicate, erro
 	}}, nil
 }
 
-const signalPolicyScopeDescription = "`sender.identity.{principal,subject,issuer,namespace,claims}`, " +
+const signalPolicyScopeDescription = "`sender.identity.{principal,subject,issuer,namespace,kind,claims}`, " +
 	"`run.identity` (the starter, same fields) and `inputs`"
 
-const manualPolicyScopeDescription = "`sender.identity.{principal,subject,issuer,namespace,claims}` " +
+const manualPolicyScopeDescription = "`sender.identity.{principal,subject,issuer,namespace,kind,claims}` " +
 	"(the caller) and `inputs` (the arguments submitted with this start); there is no `run` yet"
 
 // CheckManualAllowExpr reports why src is not an acceptable `manual: allow`

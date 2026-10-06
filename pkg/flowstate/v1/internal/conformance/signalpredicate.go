@@ -49,7 +49,37 @@ func signalPredicateCases() []RehearsalSignalCase {
 	}
 	pairwise := predicate(`inputs.items.all(a, inputs.items.all(b, a >= 0)) && sender.identity.claims["team"] == "release-managers"`)
 
+	kinded := func(kind v1.PrincipalKind) *v1.WorkloadIdentity {
+		return &v1.WorkloadIdentity{Subject: "alice@example.com", Issuer: issuerA, PrincipalKind: kind}
+	}
+	needsAPerson := predicate(`sender.identity.kind == "human"`)
+
 	return []RehearsalSignalCase{
+		{
+			Name: "a sender the trust policy assigned the kind a predicate names", SignalName: "deploy-approved",
+			Policy: needsAPerson, Starter: starter, Sender: kinded(v1.PrincipalKind_PRINCIPAL_KIND_HUMAN), Admitted: true,
+			Why: "the kind is the one the admitting policy entry assigned, and both drivers read it",
+		},
+		{
+			Name: "a sender of another kind than a predicate names", SignalName: "deploy-approved",
+			Policy: needsAPerson, Starter: starter, Sender: kinded(v1.PrincipalKind_PRINCIPAL_KIND_AGENT),
+			Why: "an agent is not a person, whatever its subject looks like",
+		},
+		{
+			Name: "a sender the trust policy assigned no kind", SignalName: "deploy-approved",
+			Policy: needsAPerson, Starter: starter, Sender: kinded(v1.PrincipalKind_PRINCIPAL_KIND_UNSPECIFIED),
+			Why: "no kind is not a workload and is not a person: a predicate naming a kind denies it",
+		},
+		{
+			Name: "a predicate that reads the starter's kind", SignalName: "deploy-approved",
+			Policy: predicate(`run.identity.kind == "workload" && sender.identity.kind == "human"`),
+			Starter: &v1.WorkloadIdentity{
+				Subject: "release-bot@example.com", Issuer: "https://issuer.example.com",
+				PrincipalKind: v1.PrincipalKind_PRINCIPAL_KIND_WORKLOAD,
+			},
+			Sender: kinded(v1.PrincipalKind_PRINCIPAL_KIND_HUMAN), Admitted: true,
+			Why: "run.identity carries the starter's kind on both drivers, not only its subject",
+		},
 		{
 			Name: "a principal from the issuer a predicate names", SignalName: "deploy-approved",
 			Policy: byPrincipal, Starter: starter, Sender: alice(issuerA), Admitted: true,
