@@ -21,6 +21,47 @@ to the others:
 | an agent | the `flowstate_debug` tool, or the `flowstate_debug_session_*` tools | a scripted session, or one retained across calls |
 | a Go program | [`embed.Debug`](EMBEDDING.md#debugging-an-embedded-run) | a local run, in process |
 
+```mermaid
+flowchart LR
+  subgraph fronts["Fronts: one habit, every surface"]
+    Prompt["flow test --debug<br/>flow run local --debug"]
+    Attach["flow debug attach"]
+    DAP["flow dap<br/>editors"]
+    Agent["MCP tools<br/>for agents"]
+    Go["embed.Debug<br/>Go programs"]
+  end
+
+  Model["<b>debug.proto</b><br/>sites, occurrences, addresses<br/>snapshots with a revision and capabilities"]
+
+  subgraph targets["Targets"]
+    Case["a test case<br/>stubs, or a failing seed"]
+    Local["a local run"]
+    Durable["a durable run<br/>held on a worker"]
+    Past["a recorded run<br/>read from history"]
+  end
+
+  Prompt --> Model
+  Attach --> Model
+  DAP --> Model
+  Agent --> Model
+  Go --> Model
+  Model --> Case
+  Model --> Local
+  Model --> Durable
+  Model --> Past
+
+  classDef authoring fill:#DDF4FF,stroke:#0969DA,color:#1F2328
+  classDef contract fill:#FFF1C2,stroke:#9A6700,stroke-width:3px,color:#1F2328
+  classDef runtime fill:#DAFBE1,stroke:#1A7F37,color:#1F2328
+  classDef durable fill:#FBEFFF,stroke:#8250DF,color:#1F2328
+  classDef govern fill:#FFEBE9,stroke:#CF222E,color:#1F2328
+  classDef neutral fill:#F6F8FA,stroke:#57606A,color:#1F2328
+  class Prompt,Attach,DAP,Agent,Go authoring
+  class Model contract
+  class Case,Local,Durable runtime
+  class Past durable
+```
+
 To try it, step through a loop yourself, or replay a recorded session over the
 same file:
 
@@ -1069,6 +1110,32 @@ they say a checkpoint cache is not needed for runs of this size, and the
 history ceiling of 51,200 events is the bound on any one look.
 
 ## Walking a recorded run
+
+```mermaid
+flowchart LR
+  History[("<b>recorded history</b><br/>of a durable run")]
+  Pick["pick a point<br/>a workflow-task boundary"]
+  Replay["<b>replay the prefix</b><br/>WorkflowReplayer"]
+  Recorded["activities answered<br/>from recorded results<br/>none is dispatched"]
+  Query["query handlers<br/>flowstate.progress · flowstate.debug"]
+  Snap["<b>snapshot at that point</b><br/>scope · progress · fidelity"]
+  Move["step back or forward<br/>= read another point"]
+
+  History --> Pick --> Replay --> Query --> Snap
+  Replay --- Recorded
+  Snap --> Move --> Pick
+
+  classDef authoring fill:#DDF4FF,stroke:#0969DA,color:#1F2328
+  classDef contract fill:#FFF1C2,stroke:#9A6700,stroke-width:3px,color:#1F2328
+  classDef runtime fill:#DAFBE1,stroke:#1A7F37,color:#1F2328
+  classDef durable fill:#FBEFFF,stroke:#8250DF,color:#1F2328
+  classDef govern fill:#FFEBE9,stroke:#CF222E,color:#1F2328
+  classDef neutral fill:#F6F8FA,stroke:#57606A,color:#1F2328
+  class History durable
+  class Pick,Replay,Query,Move runtime
+  class Snap contract
+  class Recorded neutral
+```
 
 `flowdebug.Historical` is a target over a recorded durable run, and it is the
 third way to move through one: a local session moves a run that is executing and

@@ -14,6 +14,28 @@ no error on this side.
 
 So Flowstate publishes two documents, and they are not alternatives.
 
+```mermaid
+sequenceDiagram
+  participant S as step on a worker
+  participant P as federation rules
+  participant F as Flowstate issuer
+  participant C as cloud or Vault
+  participant K as discovery and JWKS
+
+  S->>P: may this identity mint a credential for this target?
+  alt not allowed
+    P-->>S: denied, so the step fails
+  else allowed
+    P->>F: mint an assertion
+    F-->>S: short-lived signed JWT<br/>iss, sub, aud, namespace, workflow, step
+    S->>C: present the assertion
+    C->>K: fetch openid-configuration and jwks_uri
+    K-->>C: public signing keys
+    C->>C: verify iss, aud, exp and signature
+    C-->>S: short-lived credential for this call
+  end
+```
+
 ## The two metadata documents
 
 ### `/.well-known/openid-configuration` — OpenID Provider Metadata

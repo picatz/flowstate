@@ -47,6 +47,48 @@ real service behaving like its stub. Run the workflow durably for those; see
 conformance cases that both drivers run are what keep a test's answer the same
 as production's.
 
+```mermaid
+flowchart TB
+  Spec["<b>compiled workflow</b><br/>the spec production runs"]
+
+  subgraph real["Runs for real"]
+    Exec["step executor<br/>if · switch · loops · retry<br/>timeout · undo · call · CEL"]
+  end
+
+  subgraph replaced["Replaced"]
+    Stubs["tasks → stubs<br/>an unstubbed task fails the step"]
+    Clock["time → virtual clock<br/>a one-day timeout lapses instantly"]
+    Sig["signals → scripted<br/>through the real signal policy"]
+  end
+
+  Verdict["expect · check · invariants"]
+  Seeds["<b>--seeds N</b><br/>each seed draws faults<br/>and a scheduling order"]
+  Finding["finding names its seed"]
+  Replay["flow test --seed S<br/>replays it exactly"]
+  Debug["add --debug<br/>to stop where the fault fires"]
+
+  Spec --> Exec
+  Stubs --> Exec
+  Clock --> Exec
+  Sig --> Exec
+  Exec --> Verdict
+  Exec --> Seeds
+  Seeds --> Finding --> Replay --> Debug
+
+  classDef authoring fill:#DDF4FF,stroke:#0969DA,color:#1F2328
+  classDef contract fill:#FFF1C2,stroke:#9A6700,stroke-width:3px,color:#1F2328
+  classDef runtime fill:#DAFBE1,stroke:#1A7F37,color:#1F2328
+  classDef durable fill:#FBEFFF,stroke:#8250DF,color:#1F2328
+  classDef govern fill:#FFEBE9,stroke:#CF222E,color:#1F2328
+  classDef neutral fill:#F6F8FA,stroke:#57606A,color:#1F2328
+  class Spec contract
+  class Exec runtime
+  class Stubs,Clock,Sig neutral
+  class Verdict,Seeds authoring
+  class Finding govern
+  class Replay,Debug authoring
+```
+
 ## Anatomy of a test file
 
 <!-- mirrors: examples/release-approval/workflow.test.yaml -->

@@ -106,6 +106,33 @@ A workflow declares typed `inputs:` (its arguments) and `outputs:` (its
 result). `vars:` holds named constants. Everything a step produces is recorded
 under its id.
 
+```mermaid
+stateDiagram-v2
+  direction LR
+  [*] --> Running: flow run
+  Running --> Waiting: sleep, wait_until,<br/>wait_for_signal
+  Waiting --> Running: timer fires, signal arrives,<br/>or the wait times out
+  Running --> Running: Continue-As-New<br/>(history is trimmed)
+  Running --> Completed: last step finishes
+  Running --> Unwinding: a step fails<br/>or flow cancel
+  Unwinding --> Failed: undo: steps ran in reverse
+  Unwinding --> Canceled: undo: steps ran in reverse
+  Running --> Terminated: flow terminate<br/>(nothing is undone)
+  Completed --> [*]
+  Failed --> [*]
+  Canceled --> [*]
+  Terminated --> [*]
+
+  classDef active fill:#DAFBE1,stroke:#1A7F37,color:#1F2328
+  classDef parked fill:#FBEFFF,stroke:#8250DF,color:#1F2328
+  classDef bad fill:#FFEBE9,stroke:#CF222E,color:#1F2328
+  classDef done fill:#DDF4FF,stroke:#0969DA,color:#1F2328
+  class Running active
+  class Waiting parked
+  class Unwinding,Failed,Canceled,Terminated bad
+  class Completed done
+```
+
 ## Values, expressions, and data flow
 
 A step reads what it needs through expressions. `${inputs.version}` reads an
@@ -142,6 +169,30 @@ step is reached is held for it. A workflow's `signals:` block says who may send
 each signal, and the server checks the sender's authenticated identity before
 Temporal sees it. That is how an approval gate knows its answer came from
 someone allowed to give it.
+
+```mermaid
+sequenceDiagram
+  participant R as requester
+  participant S as flow server
+  participant T as Temporal
+  participant W as worker
+  participant A as approver
+
+  R->>S: Run(release)
+  S->>T: start workflow
+  T->>W: run steps
+  W->>T: reach wait_for_signal, then park
+  Note over T,W: The run waits as state in Temporal.<br/>No worker or process is held, for hours or weeks.
+  A->>S: Signal(deploy-approved, payload) + bearer token
+  S->>S: verify the token, then check the signals: rule against the sender
+  alt sender not allowed
+    S-->>A: refused, and Temporal never sees it
+  else sender allowed
+    S->>T: deliver the signal with the sender's identity
+    T->>W: wake the run
+    W->>W: step payload and sender now readable
+  end
+```
 
 A wait with a `timeout:` does not fail when the timeout lapses. It reports
 `timed_out: true`, and the workflow decides what that means.
@@ -217,6 +268,40 @@ differs, and the last column says, because several allow by default.
 | May this identity dispatch this task? | The worker, before each attempt | The deployment's task policy, in CEL | Every task is allowed. |
 | May this step read this secret? | The worker, before the provider is asked | The trust policy's `secrets:` rules, in CEL | Nothing may be read. |
 | May this step mint a federated credential? | The worker, before the exchange | The trust policy's `federation:` rules, in CEL | Any configured target. Write an `allow:` rule for each. |
+
+```mermaid
+flowchart LR
+  Caller["<b>caller</b><br/>token from a trusted issuer"]
+
+  subgraph server["flow server · before Temporal sees the request"]
+    Trust["trust policy<br/>which actions this issuer may use"]
+    Rules["workflow rules<br/>triggers · signals · debug"]
+  end
+
+  Temporal[("<b>Temporal</b><br/>run records who started it")]
+
+  subgraph worker["flow worker · where the action happens"]
+    Task["task policy<br/>may this identity dispatch this task?"]
+    Egress["egress policy<br/>may it reach this host?"]
+    Secrets["secrets rules<br/>may it read this secret?"]
+    Fed["federation rules<br/>may it mint this credential?"]
+  end
+
+  Caller --> Trust --> Rules --> Temporal --> Task
+  Task --> Egress
+  Task --> Secrets
+  Task --> Fed
+
+  classDef authoring fill:#DDF4FF,stroke:#0969DA,color:#1F2328
+  classDef contract fill:#FFF1C2,stroke:#9A6700,stroke-width:3px,color:#1F2328
+  classDef runtime fill:#DAFBE1,stroke:#1A7F37,color:#1F2328
+  classDef durable fill:#FBEFFF,stroke:#8250DF,color:#1F2328
+  classDef govern fill:#FFEBE9,stroke:#CF222E,color:#1F2328
+  classDef neutral fill:#F6F8FA,stroke:#57606A,color:#1F2328
+  class Caller authoring
+  class Trust,Rules,Task,Egress,Secrets,Fed govern
+  class Temporal durable
+```
 
 Some policy lives in the workflow, because the author knows who should approve a
 release. The rest lives in the deployment, because an operator decides what a
