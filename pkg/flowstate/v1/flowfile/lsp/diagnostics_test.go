@@ -90,6 +90,18 @@ edition: v2026.4
 			}},
 		},
 		{
+			// The refusal is the lexer's depth, not a parser error, so its
+			// position is the opener it names rather than the document start.
+			name: "nesting past the bound lands on the offending opener",
+			src:  "name: deep\nsteps:\n  - id: a\n    log:\n      message: " + strings.Repeat("[", 300) + "\n" + editionSuffix,
+			want: []want{{
+				code:       codeYAMLSyntax,
+				severity:   lsp.Error,
+				contains:   "flow collections nest more than",
+				underlines: "[",
+			}},
+		},
+		{
 			name: "cel syntax error underlines inside the expression",
 			src: `name: badcel
 steps:

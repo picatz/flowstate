@@ -138,6 +138,69 @@ func TestEveryYAMLDecodeInTheModuleIsContained(t *testing.T) {
 	require.Positive(t, walked, "no file importing goccy/go-yaml was walked; the root is wrong, not the module")
 }
 
+// TestEveryYAMLParseInTheModuleIsBounded refuses a call to goccy's parser from
+// anywhere but [ParseBytes]: its memory grows with the square of the depth of
+// flow nesting, so a parse that skips the depth check lets a small document
+// cost gigabytes (#2338).
+func TestEveryYAMLParseInTheModuleIsBounded(t *testing.T) {
+	t.Parallel()
+
+	const root = "../.."
+
+	fset := token.NewFileSet()
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			name := d.Name()
+			if path != root && (strings.HasPrefix(name, ".") || name == "node_modules" || name == "testdata") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		if rel, _ := filepath.Rel(root, path); filepath.ToSlash(rel) == "internal/strictyaml/parse.go" {
+			return nil
+		}
+		file, err := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
+		if err != nil {
+			return err
+		}
+		alias := ""
+		for _, imp := range file.Imports {
+			if p, _ := strconv.Unquote(imp.Path.Value); p == "github.com/goccy/go-yaml/parser" {
+				alias = "parser"
+				if imp.Name != nil {
+					alias = imp.Name.Name
+				}
+			}
+		}
+		if alias == "" {
+			return nil
+		}
+		ast.Inspect(file, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			sel, ok := call.Fun.(*ast.SelectorExpr)
+			if !ok {
+				return true
+			}
+			if pkg, ok := sel.X.(*ast.Ident); ok && pkg.Name == alias && (sel.Sel.Name == "ParseBytes" || sel.Sel.Name == "Parse") {
+				t.Errorf("%s: parser.%s builds a tree with no bound on flow nesting; use strictyaml.ParseBytes",
+					fset.Position(call.Pos()), sel.Sel.Name)
+			}
+			return true
+		})
+		return nil
+	})
+	require.NoError(t, err)
+}
+
 // legacyTypedDecodes are the files allowed to decode YAML into a hand-written
 // Go type, each with the reason and the issue that removes it. The list may
 // only shrink: a file here that no longer makes a typed decode fails the test

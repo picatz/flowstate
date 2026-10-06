@@ -9,6 +9,7 @@ import (
 
 	yaml "github.com/goccy/go-yaml"
 	"github.com/google/cel-go/cel"
+	"github.com/picatz/flowstate/internal/strictyaml"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 	"github.com/sourcegraph/go-lsp"
@@ -257,6 +258,12 @@ func yamlDiagnostic(doc *document, err error, code string) (lsp.Diagnostic, flow
 		Source:   diagnosticSource,
 		Code:     code,
 		Message:  source.Message,
+	}
+
+	if nesting, ok := errors.AsType[*strictyaml.NestingError](err); ok {
+		start := doc.index.offsetOfYAML(nesting.Line, nesting.Column)
+		d.Range = doc.index.rangeOfOffsets(start, start+1)
+		return d, source
 	}
 
 	var yamlErr yaml.Error
