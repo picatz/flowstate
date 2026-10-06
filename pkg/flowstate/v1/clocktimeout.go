@@ -20,8 +20,8 @@ import (
 // stub's scripted delay, before a scripted signal at a later instant — instead of
 // never, because every stub answers in microseconds of wall time. The context's
 // Err reads [context.DeadlineExceeded] when its own deadline lapsed and its
-// Deadline reports none: a virtual instant means nothing to the wall-clock
-// readers a task may hand it to.
+// Deadline reports only the parent's: a virtual instant means nothing to the
+// wall-clock readers a task may hand it to.
 //
 // The deadline is registered by a goroutine that is its own clock participant,
 // entered before this returns. A deadline registered by the caller would count
@@ -104,5 +104,8 @@ func (c *clockDeadlineContext) Err() error {
 	return c.Context.Err()
 }
 
-// Deadline reports none: the bound is a virtual instant.
-func (c *clockDeadlineContext) Deadline() (time.Time, bool) { return time.Time{}, false }
+// Deadline reports the parent's own deadline, if it has one: only this
+// context's virtual bound is omitted, being an instant on no wall clock. A
+// wall-clock case deadline above it still cancels the task, and deadline-aware
+// code should still see it.
+func (c *clockDeadlineContext) Deadline() (time.Time, bool) { return c.parent.Deadline() }

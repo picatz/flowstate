@@ -136,3 +136,40 @@ func TestAnAttemptTimeoutUnderATotalTimeoutStillReadsAsADeadline(t *testing.T) {
 	require.Equal(t, v1.ErrorKindTimeout, v1.ClassifyError(err))
 	require.Equal(t, 10*time.Second, elapsed, "the nearer bound did not win")
 }
+
+// TestAVirtualBoundKeepsTheParentsWallDeadline: only the virtual instant is
+// hidden from a task. `flow test` installs a wall-clock case deadline above the
+// virtual clock, and deadline-aware tasks must keep seeing it.
+func TestAVirtualBoundKeepsTheParentsWallDeadline(t *testing.T) {
+	t.Parallel()
+
+	var sawDeadline bool
+	var deadline time.Time
+	registry := v1.NewRegistry()
+	require.NoError(t, registry.Register(v1.TaskDef{
+		Name:    "report_deadline",
+		Summary: "test fixture that reports whether its context carries a deadline",
+		Fn: func(ctx context.Context, _ map[string]*v1.Value, _ *v1.Scope) (*v1.Node_Outputs, error) {
+			deadline, sawDeadline = ctx.Deadline()
+			return &v1.Node_Outputs{}, nil
+		},
+	}))
+
+	parent, cancel := context.WithTimeout(t.Context(), time.Hour)
+	defer cancel()
+	wall, _ := parent.Deadline()
+
+	ctx := v1.NewContextWithRegistry(v1.NewContextWithClock(parent, v1.NewVirtualClock(clockTimeoutStart)), registry)
+	_, err := v1.Run(ctx, &v1.Workflow{
+		Name:    "clock-deadline",
+		Profile: v1.CurrentProfile,
+		Steps: []*v1.Node{{
+			Id:     "step",
+			Kind:   &v1.Node_Task{Task: &v1.Task{Name: "report_deadline"}},
+			Policy: &v1.StepPolicy{Timeout: durationpb.New(10 * time.Second)},
+		}},
+	})
+	require.NoError(t, err)
+	require.True(t, sawDeadline, "the parent's wall deadline was hidden from the task")
+	require.True(t, wall.Equal(deadline), "the task saw %s, not the parent's %s", deadline, wall)
+}
