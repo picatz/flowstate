@@ -2304,7 +2304,7 @@ func (s *Session) Autopsy(ctx context.Context, scope *v1.Scope, extra map[string
 		// Every verb that moves the run is `quit` here, as is an empty line: there
 		// is no run left to move, and the table says which verbs those are rather
 		// than a case list that has to be kept equal to it.
-		if verb == "" || isKnown && known.effect == effectMoves && known.onFront(frontPrompt) {
+		if verb == "" || isKnown && known.effect == effectMoves && !known.rewinds && known.onFront(frontPrompt) {
 			s.record("quit")
 
 			return

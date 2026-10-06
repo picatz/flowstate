@@ -565,6 +565,21 @@ enum DebugCommandVerb {
   // Detach is `detach`: clear every breakpoint and let the run finish
   // unattended.
   DEBUG_COMMAND_VERB_DETACH = 18;
+
+  // Expand is `expand <expr>`: list a map's or list's children, one level, with
+  // how many the page left out.
+  DEBUG_COMMAND_VERB_EXPAND = 19;
+
+  // Status is `status`: where the run is, and why.
+  DEBUG_COMMAND_VERB_STATUS = 20;
+
+  // Back is `back`: return to the previous stop, for a session that was built
+  // to be replayed from its start. One that was not answers that it cannot.
+  DEBUG_COMMAND_VERB_BACK = 21;
+
+  // ReverseContinue is `reverse-continue`: return to the nearest earlier
+  // breakpoint stop, or the first, under the same condition as Back.
+  DEBUG_COMMAND_VERB_REVERSE_CONTINUE = 22;
 }
 
 // DebugCommand is one thing a debug session is told to do.

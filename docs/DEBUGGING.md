@@ -115,8 +115,8 @@ nothing here is worth learning twice. `help` lists it.
 | `finish`, `fin`, `out` | prompt, driver | run until the loop, parallel, switch, or call around this step is left |
 | `continue`, `c` | prompt, driver | run until the next breakpoint, or to the end |
 | `until <step-id> [if <expr>]`, `u` | prompt, driver | run until the step with that id, optionally only where the condition holds |
-| `back` | driver | return to the previous stop (a session that can step back) |
-| `reverse-continue`, `rc` | driver | return to the nearest earlier breakpoint stop, or the first |
+| `back` | prompt, driver | return to the previous stop (a session that can step back) |
+| `reverse-continue`, `rc` | prompt, driver | return to the nearest earlier breakpoint stop, or the first |
 | `pause` | driver | hold at the next step boundary |
 | `break <step-id> [hit <count>] [if <expr>]`, `b` | prompt, driver | stop at that step, always, when the expression holds, or from the given arrival count |
 | `log <step-id> <message>` | prompt, driver | record the message at every arrival without stopping; {expr} holes are CEL |
@@ -125,10 +125,10 @@ nothing here is worth learning twice. `help` lists it.
 | `clear` | driver | remove every breakpoint, whoever set it |
 | `breakpoints` | prompt, driver | list them |
 | `inspect <expr>`, `p` | every front | evaluate a CEL expression against this run's scope |
-| `expand <expr>` | driver | list a map's or list's children |
+| `expand <expr>` | prompt, driver | list a map's or list's children |
 | `scope` | every front | list what this run can name right now |
 | `complete <partial-command>` | prompt, autopsy | list what could be written at the end of that text |
-| `status` | driver | where the run is, and why |
+| `status` | prompt, driver | where the run is, and why |
 | `info`, `step-info` | prompt | describe the step the run is stopped at |
 | `backtrace`, `bt` | prompt, driver | list this step and each iteration, branch, arm and call around it |
 | `detach` | prompt, driver | clear every breakpoint and let the run finish unattended |
