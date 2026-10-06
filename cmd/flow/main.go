@@ -184,7 +184,7 @@ type authFlags struct {
 	identityKeyPaths []string
 
 	// identityClaims names the caller token claims carried into each run's
-	// identity, where `workload.claims[...]` rules and downstream relying parties
+	// identity, where `sender.identity.claims[...]` and `identity.claims[...]` rules and downstream relying parties
 	// read them. Empty means a run's identity records the subject and issuer and
 	// nothing more.
 	identityClaims []string

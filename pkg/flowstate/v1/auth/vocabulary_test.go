@@ -227,6 +227,10 @@ func TestTheCallerHasNoRunContext(t *testing.T) {
 		`identity.step == "push"`,
 		`identity.deployment == "prod"`,
 		`identity.on_behalf_of == "x"`,
+		// The caller is `identity`; the minted-assertion object does not repeat it.
+		`workload.on_behalf_of == "x"`,
+		`workload.on_behalf_of_issuer == "https://idp"`,
+		`"repository" in workload.claims`,
 		// And an invented name is still refused, because adding a variable must
 		// not turn a type-checked environment into one that accepts anything.
 		`identity.tenant == "team-a"`,
@@ -250,9 +254,6 @@ func TestTheWorkloadSpellingStillCompiles(t *testing.T) {
 		`workload.workflow == "deploy"`,
 		`workload.run == "run-1"`,
 		`workload.step == "push"`,
-		`workload.on_behalf_of == "spiffe://acme/ci-runner"`,
-		`workload.on_behalf_of_issuer == "https://idp"`,
-		`"repository" in workload.claims`,
 	} {
 		if _, err := compileAssumeRules([]string{rule}, nil, DefaultAssumeRuleCostLimit); err != nil {
 			t.Errorf("compiling %q: %v", rule, err)

@@ -92,7 +92,7 @@ const (
 	devPostureUnversioned = "starting worker unversioned; deploying this binary changes every run in flight"
 	identityClaimUsage    = "caller token claim to carry into each run and signal sender identity " +
 		"(repeatable), such as team or email; only named claims are persisted, and they are what " +
-		"signals: and workload.claims[...] policy rules read"
+		"signals: (sender.identity.claims[...]) and outbound policy (identity.claims[...]) rules read"
 )
 
 // devTemporalNamespace is the namespace the dev server registers at start-up and
