@@ -194,9 +194,10 @@ func TestAFailingRunRehearsesTheFailedDocument(t *testing.T) {
 func TestAParkedRunRehearsesTheRunningDocument(t *testing.T) {
 	t.Parallel()
 
+	// The wait the run stopped on counts as run, for `expect.ran` and for coverage.
 	got := runRespondCase(t, "hold", `
     expect:
-      ran: [charge]
+      ran: [charge, hold]
       response:
         status: running
 `)

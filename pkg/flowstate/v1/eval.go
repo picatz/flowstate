@@ -1808,7 +1808,13 @@ func recordStepOutcome(ctx context.Context, node *Node, outputs *Node_Outputs, e
 		// A park is no more a failure than a cancellation is: the durable driver
 		// holds the run at the wait, so a tolerated park would let the local run
 		// walk on through steps the held run never reaches. See [ErrRunParked].
+		//
+		// The step is still the one the run stopped on, so the partial transcript
+		// names it, as it names any step a run stops on: `expect.ran` and coverage
+		// read that record, and a wait the run reached must count as reached.
 		if errors.Is(err, ErrRunParked) {
+			scope.Outputs.StepValues[node.GetId()] = failureRecord(err)
+
 			return fmt.Errorf("step %q: %w", node.GetId(), err)
 		}
 		if !StepTolerates(node.GetPolicy(), ClassifyError(err)) {
