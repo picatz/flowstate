@@ -1259,7 +1259,7 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	runFinished := make(chan struct{})
 
 	outcomes := newSignalOutcomes()
-	stopScripts, scriptErr := scriptSignals(runFinished, clock, signals, test.Signals, faults.dropSignals(ctx, test.Signals), recorder, outcomes)
+	stopScripts, scriptErr := scriptSignals(runFinished, clock, signals, test.Signals, faults.dropSignals(ctx, test.Signals), faults, recorder, outcomes)
 	defer stopScripts()
 	if scriptErr != nil {
 		caseError("%s", scriptErr)
@@ -1739,7 +1739,7 @@ func unstubbedTaskFn(name string, seen *unstubbedTasks) v1.TaskFunc {
 // since before this existed, and delivered at once by [v1.VirtualClock.After]
 // exactly like zero — in the same tie group as the shared empty default
 // rather than racing it under a raw-duration key the two would never match.
-func scriptSignals(runFinished <-chan struct{}, clock *v1.VirtualClock, signals *v1.LocalSignals, scripts []SignalScript, dropped []bool, recorder *runRecorder, outcomes *signalOutcomes) (stop func(), err error) {
+func scriptSignals(runFinished <-chan struct{}, clock *v1.VirtualClock, signals *v1.LocalSignals, scripts []SignalScript, dropped []*signalDrop, faults *faultPlan, recorder *runRecorder, outcomes *signalOutcomes) (stop func(), err error) {
 	if len(scripts) == 0 {
 		return func() {}, nil
 	}
@@ -1757,7 +1757,7 @@ func scriptSignals(runFinished <-chan struct{}, clock *v1.VirtualClock, signals 
 
 		// drop is a fault's verdict that this delivery is lost on the way:
 		// the goroutine keeps its place in the order, and sends nothing.
-		drop bool
+		drop *signalDrop
 
 		// waitFor is closed once the nearest earlier job scripted for this
 		// same `at` has delivered (or given up), so this job's own delivery
@@ -1796,7 +1796,7 @@ func scriptSignals(runFinished <-chan struct{}, clock *v1.VirtualClock, signals 
 			name: s.Name, at: at, payload: s.Payload,
 			sender:        scriptedSender(s.Sender, s.DeliveryID),
 			senderSubject: subject,
-			drop:          n < len(dropped) && dropped[n],
+			drop:          dropped[n],
 			waitFor:       lastByAt[at],
 			turnDone:      turnDone,
 		})
@@ -1847,7 +1847,8 @@ func scriptSignals(runFinished <-chan struct{}, clock *v1.VirtualClock, signals 
 
 			// A lost delivery is one the sender made and the run never
 			// learns of: nothing reaches the gate, so no policy decides it.
-			if j.drop {
+			if j.drop != nil {
+				faults.commitDrop(j.drop)
 				outcomes.noteDropped(j.name)
 				return
 			}

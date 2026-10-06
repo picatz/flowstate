@@ -173,6 +173,7 @@ func TestMalformedSignalFaultsAreRefused(t *testing.T) {
 		"no effect":        {"{signal: go}", "write `drop: true`"},
 		"drop false":       {"{signal: go, drop: false}", "write `drop: true`"},
 		"with fails":       {"{signal: go, drop: true, fails: {message: x}}", "`fails:` is the failure of a task"},
+		"with empty fails": {"{signal: go, drop: true, fails: {}}", "`fails:` is the failure of a task"},
 		"drop on a task":   {"{task: http, drop: true}", "goes with `signal:`"},
 		"two targets":      {"{signal: go, step: gate, drop: true}", "exactly one of `task:`, `step:` or `signal:`"},
 		"a ghost signal":   {"{signal: gp, drop: true}", `did you mean "go"`},
@@ -190,4 +191,32 @@ func TestMalformedSignalFaultsAreRefused(t *testing.T) {
 			assert.Contains(t, msg, tc.want)
 		})
 	}
+}
+
+// A pinned drop of a delivery the run ended before was a script that drifted:
+// nothing was lost, and the case says so instead of passing for a fault that
+// never happened.
+func TestAPinnedDropOfADeliveryThatNeverCameDueIsADrift(t *testing.T) {
+	t.Parallel()
+
+	path := writeFaultFixture(t, gatedWorkflow, `edition: v2026.4
+tests:
+  - name: the gate
+    workflow: ./workflow.yaml
+    signals:
+      - {name: go, at: 10m, payload: {}}
+      - {name: go, at: 30m, payload: {}}
+    faults:
+      - {signal: go, drop: true, on: [2]}
+    expect:
+      outputs: {decision: approved}
+`)
+	report, _ := flowtest.RunFileWithCoverage(path)
+
+	require.Len(t, report.GetCases(), 1)
+	c := report.GetCases()[0]
+	assert.False(t, c.GetPassed())
+	require.NotEmpty(t, c.GetFailures())
+	assert.Equal(t, "faults[0].on", c.GetFailures()[0].GetField())
+	assert.Contains(t, c.GetFailures()[0].GetMessage(), "the run ended before that delivery was due")
 }

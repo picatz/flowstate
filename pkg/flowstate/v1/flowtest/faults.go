@@ -69,7 +69,7 @@ type Fault struct {
 	// Internal and Expression describe a bug in the engine or the workflow, not
 	// a fault in the world, and an injected one would make the invariant that
 	// watches for them unfalsifiable.
-	Fails StubFailure `yaml:"fails,omitempty"`
+	Fails *StubFailure `yaml:"fails,omitempty"`
 
 	// Rate is the chance, in (0, 1], that a matching invocation fails.
 	// Absent means [defaultFaultRate]; a pointer because zero is not a rate a
@@ -112,7 +112,7 @@ func (f *Fault) limit() int {
 
 // kind is the failure's error kind, defaulted the way a stub's `fails:` is.
 func (f *Fault) kind() v1.ErrorKind {
-	if f.Fails.Kind == "" {
+	if f.Fails == nil || f.Fails.Kind == "" {
 		return v1.ErrorKindUpstream
 	}
 
@@ -135,12 +135,12 @@ func checkFaultShape(i int, f *Fault) error {
 	switch {
 	case f.Signal != "" && !f.Drop:
 		return fmt.Errorf("%s: a `signal:` fault says what happens to the delivery; write `drop: true`", where)
-	case f.Signal != "" && (f.Fails.Kind != "" || f.Fails.Message != ""):
+	case f.Signal != "" && f.Fails != nil:
 		return fmt.Errorf("%s: `fails:` is the failure of a task, and a signal fault loses the delivery instead; use `drop: true` alone", where)
 	case f.Signal == "" && f.Drop:
 		return fmt.Errorf("%s: `drop:` loses a signal's delivery, so it goes with `signal:`", where)
 	}
-	if f.Fails.Kind != "" {
+	if f.Fails != nil && f.Fails.Kind != "" {
 		kind, ok := v1.ParseErrorKind(f.Fails.Kind)
 		switch {
 		case !ok:
@@ -273,6 +273,10 @@ type faultPlan struct {
 	mu    sync.Mutex
 	seen  []int
 	fired []int
+	// decided counts the fires the plan has decided, which is the budget
+	// `at_most:` spends; a signal fault's decision precedes its fire, so the
+	// two differ for a delivery the run ended before.
+	decided []int
 	// drawn counts the fires a seed decided, which a pinned fault's fires are
 	// not: only a drawn fire makes a seeded run a faulted one.
 	drawn []int
@@ -289,12 +293,13 @@ type faultPlanKey struct{}
 
 func newFaultPlan(root string, faults []Fault) *faultPlan {
 	return &faultPlan{
-		root:   root,
-		faults: faults,
-		seen:   make([]int, len(faults)),
-		fired:  make([]int, len(faults)),
-		drawn:  make([]int, len(faults)),
-		script: make([][]int, len(faults)),
+		root:    root,
+		faults:  faults,
+		seen:    make([]int, len(faults)),
+		fired:   make([]int, len(faults)),
+		decided: make([]int, len(faults)),
+		drawn:   make([]int, len(faults)),
+		script:  make([][]int, len(faults)),
 
 		pinnedFired: make([][]int, len(faults)),
 	}
@@ -347,11 +352,15 @@ func (p *faultPlan) attempt(ctx context.Context, task string) error {
 		matches = append(matches, i)
 	}
 	for _, i := range matches {
-		if !p.fires(ctx, i) {
+		if !p.decide(ctx, i) {
 			continue
 		}
+		p.record(i, p.seen[i])
 		f := &p.faults[i]
-		message := f.Fails.Message
+		message := ""
+		if f.Fails != nil {
+			message = f.Fails.Message
+		}
 		if message == "" {
 			message = fmt.Sprintf("injected fault faults[%d]", i)
 		}
@@ -362,41 +371,58 @@ func (p *faultPlan) attempt(ctx context.Context, task string) error {
 	return nil
 }
 
-// fires decides whether fault i, which this invocation or delivery matched
-// and was counted for, fires on it, and records the fire. Called with the lock
-// held, once per matching fault, so a task fault and a signal fault take
-// exactly one decision rule.
-func (p *faultPlan) fires(ctx context.Context, i int) bool {
+// decide reports whether fault i, which this invocation or delivery matched
+// and was counted for, fires on it. Called with the lock held, once per
+// matching fault, so a task fault and a signal fault take exactly one decision
+// rule. It spends the fault's `at_most:` budget but records nothing a report
+// reads: [faultPlan.record] does that, when the fire actually happens.
+func (p *faultPlan) decide(ctx context.Context, i int) bool {
 	f := &p.faults[i]
 	switch {
 	case len(f.On) > 0:
 		if !slices.Contains(f.On, p.seen[i]) {
 			return false
 		}
-		p.pinnedFired[i] = append(p.pinnedFired[i], p.seen[i])
-	case p.fired[i] >= f.limit():
+	case p.decided[i] >= f.limit():
 		return false
 	case !v1.InjectFault(ctx, fmt.Sprintf("faults[%d]", i), f.rate()):
 		return false
-	default:
-		p.drawn[i]++
-		p.script[i] = append(p.script[i], p.seen[i])
 	}
-	p.fired[i]++
+	p.decided[i]++
 
 	return true
 }
 
+// record notes that fault i fired on its n-th matching invocation or delivery,
+// which is what makes a seeded run a faulted one and what a printed script
+// pins. Called with the lock held.
+func (p *faultPlan) record(i, n int) {
+	if len(p.faults[i].On) > 0 {
+		p.pinnedFired[i] = append(p.pinnedFired[i], n)
+	} else {
+		p.drawn[i]++
+		p.script[i] = append(p.script[i], n)
+	}
+	p.fired[i]++
+}
+
+// signalDrop is the verdict that one scripted delivery is lost: the fault that
+// decided it and which of that fault's deliveries it was.
+type signalDrop struct{ fault, n int }
+
 // dropSignals decides, before the run starts, which of the scripted
-// deliveries are lost: one answer per script, in declaration order.
+// deliveries are lost: one answer per script, in declaration order, nil for a
+// delivery that arrives.
 //
 // Decided up front and not as each delivery comes due, because the fault
 // stream is one sequence shared with the task faults the run draws, and a
 // delivery's goroutine runs when the clock releases it, which no seed
 // controls. Declaration order is the one order a case fixes, so the same seed
-// loses the same deliveries.
-func (p *faultPlan) dropSignals(ctx context.Context, scripts []SignalScript) []bool {
-	dropped := make([]bool, len(scripts))
+// loses the same deliveries. Nothing is *recorded* here: a delivery the run
+// ends before is never sent, so it loses nothing and must not make the run a
+// faulted one; [faultPlan.commitDrop] records the fire when the moment comes.
+func (p *faultPlan) dropSignals(ctx context.Context, scripts []SignalScript) []*signalDrop {
+	dropped := make([]*signalDrop, len(scripts))
 	if p == nil {
 		return dropped
 	}
@@ -409,13 +435,21 @@ func (p *faultPlan) dropSignals(ctx context.Context, scripts []SignalScript) []b
 				continue
 			}
 			p.seen[i]++
-			if !dropped[n] && p.fires(ctx, i) {
-				dropped[n] = true
+			if dropped[n] == nil && p.decide(ctx, i) {
+				dropped[n] = &signalDrop{fault: i, n: p.seen[i]}
 			}
 		}
 	}
 
 	return dropped
+}
+
+// commitDrop records that the delivery d decided was due and was lost.
+func (p *faultPlan) commitDrop(d *signalDrop) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	p.record(d.fault, d.n)
 }
 
 // unreached lists the step faults no invocation was ever eligible for, as
@@ -443,11 +477,16 @@ func (p *faultPlan) unreached() []*v1.Diagnostic {
 			continue
 		}
 		if missed := slices.DeleteFunc(slices.Clone(f.On), func(n int) bool { return slices.Contains(p.pinnedFired[i], n) }); len(missed) > 0 {
+			why := "an earlier fault answered that call first, so this one never fired"
+			target := "invocation"
+			if f.Signal != "" {
+				why, target = "the run ended before that delivery was due, so nothing was lost", "delivery"
+			}
 			out = append(out, &v1.Diagnostic{
 				Step:  f.Step,
 				Field: fmt.Sprintf("faults[%d].on", i),
-				Message: fmt.Sprintf("is pinned to invocation %d of its target, but an earlier fault answered that call "+
-					"first, so this one never fired; the script has drifted, so re-derive it from a fresh `--seeds` finding", missed[0]),
+				Message: fmt.Sprintf("is pinned to %s %d of its target, but %s; "+
+					"the script has drifted, so re-derive it from a fresh `--seeds` finding", target, missed[0], why),
 			})
 
 			continue
