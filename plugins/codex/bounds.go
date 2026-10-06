@@ -3,6 +3,7 @@ package main
 import (
 	"time"
 
+	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin/sdk"
 )
 
@@ -33,7 +34,18 @@ const (
 	// bound looks like a working request that quietly returns less than it
 	// asked for.
 	defaultMaxOutputBytes = 256 << 10 // 256 KiB
-	maxMaxOutputBytes     = 4 << 20   // 4 MiB
+	//
+	// The ceiling is derived from the host's own rather than chosen: what
+	// this task returns becomes a step output, and one over
+	// flowstatev1.MaxTaskOutputBytes is refused by the engine after the run
+	// has been paid for. outputEnvelopeReserve is what a result costs beside
+	// the text itself: per-event and per-file framing, the thread id, and
+	// the counters. The text is counted in bytes but carried as JSON, which
+	// spells a control character in six, so the ceiling is the host's bound
+	// over outputWorstCaseFactor.
+	outputEnvelopeReserve = 128 << 10
+	outputWorstCaseFactor = 6
+	maxMaxOutputBytes     = (flowstatev1.MaxTaskOutputBytes - outputEnvelopeReserve) / outputWorstCaseFactor
 
 	// defaultMaxEvents and maxMaxEvents bound how many EventSummary entries
 	// codex.exec returns, independent of maxOutputBytes: a run with a

@@ -8,6 +8,7 @@ import (
 	"unicode"
 
 	"github.com/go-git/go-git/v5/plumbing"
+	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
 
 // Bounds this plugin enforces on attacker-chosen input. See doc.go for the
@@ -132,7 +133,16 @@ const (
 	// is a worse failure mode than a clear refusal naming the actual size,
 	// since a workflow (or a human) reading a silently truncated file has
 	// no way to tell it apart from the real, complete content.
-	maxReadFileBytes = 8 << 20 // 8 MiB
+	//
+	// The ceiling is derived from the host's own rather than chosen: the
+	// content becomes a step output, and one over
+	// flowstatev1.MaxTaskOutputBytes is refused by the engine after the
+	// blob has been read. The content is a bytes field, which an output
+	// carries as base64, so a byte costs 4/3 of itself;
+	// readFileEnvelopeReserve is what the result costs beside the content:
+	// the size, the mode and the framing.
+	readFileEnvelopeReserve = 64 << 10
+	maxReadFileBytes        = (flowstatev1.MaxTaskOutputBytes - readFileEnvelopeReserve) / 4 * 3
 
 	// bytesToSniffForBinary bounds how much of a file's content
 	// isLikelyBinary examines before giving up and calling it text - the
