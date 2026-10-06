@@ -448,7 +448,54 @@ func wrapToolHandler(deps Deps, name string, handler mcp.ToolHandler) mcp.ToolHa
 		handler = withMCPAudit(deps.Audit, deps.AuditFailure, name, handler)
 	}
 
+	// Outside the recorder, so that disabling audit output cannot disable
+	// authorization, and inside the principal, which it reads.
+	handler = withMCPActions(deps.Audit, name, handler)
+
 	return withMCPPrincipal(handler)
+}
+
+// withMCPActions refuses a tool call whose caller's effective actions, the
+// trust policy entry's list narrowed by the token's own scopes
+// ([auth.Principal.Actions]), do not include the action the tool requires.
+//
+// A nil list is the entry that restricts nothing and passes, as it does on the
+// RPC surface ([server.FlowstateServer]'s authorizeAction); a present list,
+// empty included, is an allowlist. A tool the schema binds to no action is
+// refused for a caller holding one, because an allowlist that a new tool
+// silently escaped would not be one. The refusal is a tool error naming the
+// scope, never a protocol error, so a client can tell it from a transport
+// failure and request the scope.
+func withMCPActions(recorder *audit.Recorder, tool string, next mcp.ToolHandler) mcp.ToolHandler {
+	return func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		principal, ok := auth.PrincipalFromContext(ctx)
+		if !ok || principal.Actions == nil {
+			return next(ctx, req)
+		}
+
+		action, err := v1.AuthorizationActionForMCPTool(tool)
+		if err != nil {
+			return ToolError(errors.New("this caller is restricted to a list of actions and this tool requires none it can be checked against")), nil
+		}
+
+		scope := v1.AuthorizationActionScope(action)
+		if slices.Contains(principal.Actions, scope) {
+			return next(ctx, req)
+		}
+
+		if recorder != nil {
+			if err := recorder.Deny(ctx, audit.Subject{
+				MCPTool:    tool,
+				Identity:   v1.ProtoWorkloadIdentity(auth.IdentityFromPrincipal(principal, principal.Namespace, "")),
+				IssuerName: principal.IssuerName,
+				Role:       principal.Role,
+			}, v1.AuditDenyCode_AUDIT_DENY_CODE_POLICY_DENIED); err != nil {
+				return ToolError(errors.New("the authorization decision could not be recorded; try again")), nil
+			}
+		}
+
+		return ToolError(fmt.Errorf("the caller is not authorized for required action %q", scope)), nil
+	}
 }
 
 // withMCPPrincipal installs the verified, token-free caller on the same
