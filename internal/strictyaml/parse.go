@@ -173,9 +173,12 @@ func refuseDeepFlow(tokens token.Tokens) error {
 				}
 
 				pending, pendingCol, pendingSeq = runs.lineEndsAfter(after, tk.Position.Line), entryCol, false
-				if pending {
+				if pending || tk.Type == token.MappingKeyType {
 					// A property or `?` alone on its line takes its value from
-					// the lines below, so it is a level of its own.
+					// the lines below, so it is a level of its own. A `?` with its
+					// key on the same line is one too: a comment line after it
+					// makes the parser nest the next deeper `?` inside it, two
+					// levels per line, which no column otherwise counted (#2372).
 					if err := push(tk, entryCol); err != nil {
 						return err
 					}
