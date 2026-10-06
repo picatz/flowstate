@@ -973,7 +973,7 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 		return
 	}
 
-	if err := checkFaultNames(test.Faults, workflow); err != nil {
+	if err := checkFaultNames(test.Faults, workflow, test.Signals); err != nil {
 		caseError("%s", err)
 		return
 	}
@@ -1259,7 +1259,7 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	runFinished := make(chan struct{})
 
 	outcomes := newSignalOutcomes()
-	stopScripts, scriptErr := scriptSignals(runFinished, clock, signals, test.Signals, recorder, outcomes)
+	stopScripts, scriptErr := scriptSignals(runFinished, clock, signals, test.Signals, faults.dropSignals(ctx, test.Signals), faults, recorder, outcomes)
 	defer stopScripts()
 	if scriptErr != nil {
 		caseError("%s", scriptErr)
@@ -1343,6 +1343,7 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	}
 
 	facts := newRunFacts(runErr, invocations, workflow.GetName())
+	facts.signalsDropped = outcomes.droppedNames()
 	if shown.faulted {
 		// A run with faults injected is judged by what must hold of every
 		// run, and by the one oracle a faulted run owes unprompted
@@ -1738,7 +1739,7 @@ func unstubbedTaskFn(name string, seen *unstubbedTasks) v1.TaskFunc {
 // since before this existed, and delivered at once by [v1.VirtualClock.After]
 // exactly like zero — in the same tie group as the shared empty default
 // rather than racing it under a raw-duration key the two would never match.
-func scriptSignals(runFinished <-chan struct{}, clock *v1.VirtualClock, signals *v1.LocalSignals, scripts []SignalScript, recorder *runRecorder, outcomes *signalOutcomes) (stop func(), err error) {
+func scriptSignals(runFinished <-chan struct{}, clock *v1.VirtualClock, signals *v1.LocalSignals, scripts []SignalScript, dropped []*signalDrop, faults *faultPlan, recorder *runRecorder, outcomes *signalOutcomes) (stop func(), err error) {
 	if len(scripts) == 0 {
 		return func() {}, nil
 	}
@@ -1754,6 +1755,10 @@ func scriptSignals(runFinished <-chan struct{}, clock *v1.VirtualClock, signals 
 		// nobody.
 		senderSubject string
 
+		// drop is a fault's verdict that this delivery is lost on the way:
+		// the goroutine keeps its place in the order, and sends nothing.
+		drop *signalDrop
+
 		// waitFor is closed once the nearest earlier job scripted for this
 		// same `at` has delivered (or given up), so this job's own delivery
 		// is ordered after it. Nil for a job that ties nothing before it.
@@ -1766,7 +1771,7 @@ func scriptSignals(runFinished <-chan struct{}, clock *v1.VirtualClock, signals 
 
 	jobs := make([]job, 0, len(scripts))
 	lastByAt := make(map[time.Duration]chan struct{}, len(scripts))
-	for _, s := range scripts {
+	for n, s := range scripts {
 		at := time.Duration(0)
 		if s.At != "" {
 			d, err := time.ParseDuration(s.At)
@@ -1791,6 +1796,7 @@ func scriptSignals(runFinished <-chan struct{}, clock *v1.VirtualClock, signals 
 			name: s.Name, at: at, payload: s.Payload,
 			sender:        scriptedSender(s.Sender, s.DeliveryID),
 			senderSubject: subject,
+			drop:          dropped[n],
 			waitFor:       lastByAt[at],
 			turnDone:      turnDone,
 		})
@@ -1837,6 +1843,14 @@ func scriptSignals(runFinished <-chan struct{}, clock *v1.VirtualClock, signals 
 			case <-runFinished:
 				return
 			default:
+			}
+
+			// A lost delivery is one the sender made and the run never
+			// learns of: nothing reaches the gate, so no policy decides it.
+			if j.drop != nil {
+				faults.commitDrop(j.drop)
+				outcomes.noteDropped(j.name)
+				return
 			}
 
 			// The send and its record are one atomic decision, and the record

@@ -26,6 +26,9 @@ type signalOutcomes struct {
 	// otherRefused names a signal a delivery failed for a reason that is not
 	// the policy's: an over-deep payload, a full queue.
 	otherRefused map[string]int
+	// dropped counts the deliveries a `signal:` fault lost, which never
+	// reached the policy and so are neither delivered nor denied.
+	dropped map[string]int
 }
 
 func newSignalOutcomes() *signalOutcomes {
@@ -33,6 +36,7 @@ func newSignalOutcomes() *signalOutcomes {
 		delivered:    map[string]int{},
 		denied:       map[string]int{},
 		otherRefused: map[string]int{},
+		dropped:      map[string]int{},
 	}
 }
 
@@ -52,6 +56,29 @@ func (o *signalOutcomes) note(name string, err error) {
 	default:
 		o.otherRefused[name]++
 	}
+}
+
+// noteDropped records that a fault lost one delivery of name.
+func (o *signalOutcomes) noteDropped(name string) {
+	if o == nil {
+		return
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+
+	o.dropped[name]++
+}
+
+// droppedNames lists, sorted, the signals at least one delivery of which a
+// fault lost.
+func (o *signalOutcomes) droppedNames() []string {
+	if o == nil {
+		return nil
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+
+	return slices.Sorted(maps.Keys(o.dropped))
 }
 
 // checkDeniedSignalNames refuses an `expect.denied_signals:` entry that no

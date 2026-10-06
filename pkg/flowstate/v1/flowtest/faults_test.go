@@ -161,8 +161,8 @@ func TestMalformedFaultsAreRefusedAtLoad(t *testing.T) {
 	t.Parallel()
 
 	for name, tc := range map[string]struct{ faults, want string }{
-		"both targets":   {"- {task: http, step: fetch, fails: {message: x}}", "exactly one of `task:` or `step:`"},
-		"no target":      {"- {fails: {message: x}}", "exactly one of `task:` or `step:`"},
+		"both targets":   {"- {task: http, step: fetch, fails: {message: x}}", "exactly one of `task:`, `step:` or `signal:`"},
+		"no target":      {"- {fails: {message: x}}", "exactly one of `task:`, `step:` or `signal:`"},
 		"internal kind":  {"- {step: fetch, fails: {kind: Internal}}", "not a fault in the world"},
 		"unknown kind":   {"- {step: fetch, fails: {kind: Nope}}", "is not an error kind"},
 		"zero rate":      {"- {step: fetch, rate: 0}", "outside (0, 1]"},
