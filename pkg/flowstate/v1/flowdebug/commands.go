@@ -1350,11 +1350,8 @@ func helpText(f front) string {
 	return strings.Join(lines, "\n")
 }
 
-// spelling renders a command the way the prompt's help names it: the verb, its
-// argument, and then the short forms.
-func (c command) spelling() string { return c.spellingOn(frontPrompt) }
-
-// spellingOn is [command.spelling] with the argument grammar f writes.
+// spellingOn renders a command the way front f's help names it: the verb, the
+// argument grammar f writes, and then the short forms.
 func (c command) spellingOn(f front) string {
 	out := c.verb
 	if argument := c.argumentOn(f); argument != "" {
