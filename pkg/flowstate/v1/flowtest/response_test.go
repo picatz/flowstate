@@ -67,8 +67,15 @@ func respondDelivery(mode string) string {
 func runRespondCase(t *testing.T, mode, caseBody string) *v1.TestCase {
 	t.Helper()
 
+	return runRespondCaseOf(t, respondWorkflow, mode, caseBody)
+}
+
+// runRespondCaseOf is [runRespondCase] over a variant of respondWorkflow.
+func runRespondCaseOf(t *testing.T, workflow, mode, caseBody string) *v1.TestCase {
+	t.Helper()
+
 	dir := t.TempDir()
-	writeFile(t, dir+"/workflow.yaml", respondWorkflow)
+	writeFile(t, dir+"/workflow.yaml", workflow)
 	writeFile(t, dir+"/delivery.json", respondDelivery(mode))
 	writeFile(t, dir+"/x.test.yaml", `
 defaults:
@@ -206,6 +213,32 @@ func TestAParkedRunRehearsesTheRunningDocument(t *testing.T) {
 		require.False(t, wrong.GetPassed(), "a parked run was claimed %s and passed", claimed)
 		assert.Contains(t, failureText(wrong.GetFailures()), `answers "running"`)
 	}
+}
+
+// TestAParkedWaitThatTheStepToleratesStillRehearsRunning: a step that tolerates
+// its own failure swallows the park sentinel and the local run goes on to
+// finish, but on Temporal the same run holds at that wait and the receiver
+// answers running. The rehearsal follows the run, not the surfaced error.
+func TestAParkedWaitThatTheStepToleratesStillRehearsRunning(t *testing.T) {
+	t.Parallel()
+
+	tolerant := strings.Replace(respondWorkflow, "    wait_for_signal:\n      name: released\n",
+		"    continue_on_error: true\n    wait_for_signal:\n      name: released\n", 1)
+	require.NotEqual(t, respondWorkflow, tolerant, "the variant did not change the workflow")
+
+	got := runRespondCaseOf(t, tolerant, "hold", `
+    expect:
+      response:
+        status: running
+`)
+	assert.True(t, got.GetPassed(), "failures: %v", failureText(got.GetFailures()))
+
+	wrong := runRespondCaseOf(t, tolerant, "hold", `
+    expect:
+      response:
+        status: completed
+`)
+	assert.False(t, wrong.GetPassed(), "a run that holds at a tolerated wait was rehearsed as completed")
 }
 
 // TestAScriptedSignalLetsAGateCompleteSoTheRunAnswersCompleted: the park is the

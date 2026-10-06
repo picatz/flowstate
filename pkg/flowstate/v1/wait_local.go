@@ -64,6 +64,10 @@ var ErrRunParked = errors.New("flowstate: this run is parked at a wait for a sig
 // told to park such waits, and nil for every other waiter.
 func parkedAtWait(waiter SignalWaiter, name string) error {
 	if parker, ok := waiter.(interface{ parksUnboundedWaits() bool }); ok && parker.parksUnboundedWaits() {
+		if noter, ok := waiter.(interface{ noteParked() }); ok {
+			noter.noteParked()
+		}
+
 		return fmt.Errorf("%w: it waits for %q", ErrRunParked, name)
 	}
 
@@ -213,6 +217,8 @@ type LocalSignals struct {
 	// parkUnbounded makes a wait with no `timeout:` end the run with
 	// [ErrRunParked] instead of blocking. See [LocalSignals.ParkUnboundedWaits].
 	parkUnbounded bool
+	// parked records that a wait ended in [ErrRunParked]. See [LocalSignals.Parked].
+	parked bool
 
 	// waits holds, per signal name, the waits currently blocked on it, each
 	// carrying how to withdraw the deadline it is waiting under (nil for an
@@ -613,6 +619,25 @@ func (s *LocalSignals) ParkUnboundedWaits() {
 	defer s.mu.Unlock()
 
 	s.parkUnbounded = true
+}
+
+// Parked reports whether any wait ended in [ErrRunParked]. The error alone is
+// not the record: a step that tolerates its own failure (`continue_on_error:`)
+// swallows it and the run goes on, while on Temporal the same run would hold at
+// that wait, so a caller judging what a waiting receiver answers reads this.
+func (s *LocalSignals) Parked() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.parked
+}
+
+// noteParked implements the record [parkedAtWait] makes.
+func (s *LocalSignals) noteParked() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.parked = true
 }
 
 // parksUnboundedWaits implements the check [parkedAtWait] makes.

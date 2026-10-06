@@ -1370,7 +1370,10 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 
 	// A run parked at a wait is not a failed one: it is going, and a receiver
 	// would say so. The plain expectations judge it as the run it is.
-	parked := test.Expect.Response != nil && errors.Is(runErr, v1.ErrRunParked)
+	// The record is the signals' own and not the surfaced error: a step that
+	// tolerates its failure swallows the sentinel, and the run Temporal would
+	// hold at that wait must not be rehearsed as one that finished.
+	parked := test.Expect.Response != nil && signals.Parked()
 	expectErr := runErr
 	if parked {
 		expectErr = nil
