@@ -257,6 +257,7 @@ signals:
 | `skipped` | Steps that must not have run. |
 | `others: skipped` | Closes `ran:`: every step not listed there must have been skipped, so a step added later fails the case until the case mentions it. |
 | `compensated` | The steps whose `undo:` ran. |
+| `denied_signals` | Signals the case sends that the workflow's `signals:` policy must refuse. Each needs at least one scripted delivery denied by the same check the server's Signal door runs; a signal another sender got through still counts. A name the workflow has no policy for, or the case never sends, is refused when the case loads. |
 | `invocations` | How often tasks ran, and in what order. See below. |
 | `check` | CEL claims over the finished run. See below. |
 | `inputs`, `refused`, `idempotency_key` | For a case with a webhook `trigger:`: what the delivery bound, whether it was refused, and the key it produced. |

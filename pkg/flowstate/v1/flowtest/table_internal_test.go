@@ -48,7 +48,7 @@ func TestEveryExpectationFieldIsMerged(t *testing.T) {
 	}
 	assert.Equal(t, expectationProvenance{
 		outputs: true, inputs: true, refused: true, idempotencyKey: true, failed: true,
-		errorContains: true, compensated: true, ran: true, skipped: true, others: true, invocations: true,
+		errorContains: true, compensated: true, deniedSignals: true, ran: true, skipped: true, others: true, invocations: true,
 	}, merged.fromEntry, "every inherited value field must retain the entry as its writer")
 	for i := range merged.Check {
 		assert.True(t, merged.Check[i].fromEntry, "an accumulated entry claim lost its writer")
@@ -72,6 +72,7 @@ func TestAStatedFieldBeatsAnInheritedOne(t *testing.T) {
 		Failed:         new(false),
 		ErrorContains:  "row",
 		Compensated:    []string{"row"},
+		DeniedSignals:  []string{"row"},
 		Ran:            []string{"row"},
 		Skipped:        []string{"row"},
 		Others:         "ran",
@@ -193,10 +194,24 @@ func nonZeroExpectation() Expectation {
 		Failed:         new(true),
 		ErrorContains:  "entry",
 		Compensated:    []string{"entry"},
+		DeniedSignals:  []string{"entry"},
 		Ran:            []string{"entry"},
 		Skipped:        []string{"entry"},
 		Others:         "skipped",
 		Invocations:    []InvocationClaim{{Task: "entry", Never: true}},
 		Check:          []CheckClaim{{That: "true"}},
 	}
+}
+
+// TestAnEmptyDeniedSignalsListIsNoClaim: `denied_signals: []` names no signal
+// and asserts nothing, so it neither counts as a claim nor erases an entry's.
+func TestAnEmptyDeniedSignalsListIsNoClaim(t *testing.T) {
+	t.Parallel()
+
+	assert.True(t, (&Expectation{DeniedSignals: []string{}}).claimsNothing())
+	assert.False(t, (&Expectation{DeniedSignals: []string{"a"}}).claimsNothing())
+
+	merged := mergeExpectation(Expectation{DeniedSignals: []string{"a"}}, Expectation{DeniedSignals: []string{}})
+	assert.Equal(t, []string{"a"}, merged.DeniedSignals)
+	assert.True(t, merged.fromEntry.deniedSignals)
 }

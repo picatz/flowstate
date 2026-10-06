@@ -244,6 +244,9 @@ tests:
           claims:
             role: engineer
     expect:
+      # The refusal itself, not only the gate lapsing: the same policy check
+      # the server's Signal door runs said no to this sender.
+      denied_signals: [transfer-approved]
       ran: [request, over_threshold, approval, approval_outcome, cleared_to_move, refusal, expired]
       others: skipped
       outputs:

@@ -26,6 +26,21 @@ import (
 // that its payload becomes the step's outputs, and that a timeout is an output
 // rather than an error.
 
+// ErrSignalDenied is what [LocalSignals.DeliverFrom] reports, matched by
+// [errors.Is], when the signal's declared `signals:` policy refused the
+// sender. It separates that refusal from the other two a delivery can meet,
+// an over-deep payload and a full queue, which say nothing about who may act.
+// The message is the policy's own and unchanged.
+var ErrSignalDenied = errors.New("flowstate: signal denied by its policy")
+
+// signalDenied carries a policy's refusal as its own text and answers
+// [ErrSignalDenied].
+type signalDenied struct{ err error }
+
+func (e *signalDenied) Error() string        { return e.err.Error() }
+func (e *signalDenied) Unwrap() error        { return e.err }
+func (e *signalDenied) Is(target error) bool { return target == ErrSignalDenied }
+
 // ErrNoSignalWaiter reports that a workload waits for a signal and nothing was
 // configured to deliver one.
 //
@@ -466,7 +481,7 @@ func (s *LocalSignals) DeliverFrom(name string, payload *Node_Outputs, sender *S
 
 	if policy, declared := s.policies[name]; declared {
 		if err := SignalPolicyCheck(context.Background(), policy, sender.GetIdentity(), s.starter, s.hasStarter, s.inputs); err != nil {
-			return fmt.Errorf("flowstate: signal %q refused: %w", name, err)
+			return fmt.Errorf("flowstate: signal %q refused: %w", name, &signalDenied{err})
 		}
 	}
 

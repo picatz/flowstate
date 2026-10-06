@@ -954,6 +954,11 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 		return
 	}
 
+	if err := checkDeniedSignalNames(&test.Expect, test.Signals, workflow); err != nil {
+		caseError("%s", err)
+		return
+	}
+
 	if err := checkFaultNames(test.Faults, workflow); err != nil {
 		caseError("%s", err)
 		return
@@ -1239,7 +1244,8 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	// an empty room after the fact — see [scriptSignals].
 	runFinished := make(chan struct{})
 
-	stopScripts, scriptErr := scriptSignals(runFinished, clock, signals, test.Signals, recorder)
+	outcomes := newSignalOutcomes()
+	stopScripts, scriptErr := scriptSignals(runFinished, clock, signals, test.Signals, recorder, outcomes)
 	defer stopScripts()
 	if scriptErr != nil {
 		caseError("%s", scriptErr)
@@ -1260,6 +1266,10 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	var outputs *v1.Workflow_StepOutputs
 	outputs, runErr = v1.RunWithInputs(ctx, workflow, inputs)
 	close(runFinished)
+	// Joined before anything reads what the senders did: a sender that passed
+	// its last `runFinished` check can still be inside the delivery, and
+	// `expect.denied_signals` is judged from what that delivery recorded.
+	stopScripts()
 
 	// Told the run has returned, with the run's own error rather than the
 	// case's verdict, so a debugger can say what the run never did (an
@@ -1335,6 +1345,7 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	if invocations != nil && len(test.Expect.Invocations) > 0 {
 		result.Failures = append(result.Failures, assertInvocations(test.Expect.Invocations, workflow.GetName(), invocations)...)
 	}
+	result.Failures = append(result.Failures, deniedSignalFailures(&test.Expect, outcomes)...)
 	// The CEL claims (#1072), after the named fields so a report reads
 	// structure first, values second — the order the file states them in.
 	result.Failures = append(result.Failures, assertChecks(ctx, test.StartTime(), test.Expect.Check, workflow, bound, vars, outputs, facts, sensitive)...)
@@ -1713,7 +1724,7 @@ func unstubbedTaskFn(name string, seen *unstubbedTasks) v1.TaskFunc {
 // since before this existed, and delivered at once by [v1.VirtualClock.After]
 // exactly like zero — in the same tie group as the shared empty default
 // rather than racing it under a raw-duration key the two would never match.
-func scriptSignals(runFinished <-chan struct{}, clock *v1.VirtualClock, signals *v1.LocalSignals, scripts []SignalScript, recorder *runRecorder) (stop func(), err error) {
+func scriptSignals(runFinished <-chan struct{}, clock *v1.VirtualClock, signals *v1.LocalSignals, scripts []SignalScript, recorder *runRecorder, outcomes *signalOutcomes) (stop func(), err error) {
 	if len(scripts) == 0 {
 		return func() {}, nil
 	}
@@ -1819,20 +1830,31 @@ func scriptSignals(runFinished <-chan struct{}, clock *v1.VirtualClock, signals 
 			// declared signal policy or the queue's bound. See
 			// [runRecorder.deliverRecorded] for why both halves matter. A run
 			// recording no account delivers plainly.
+			deliver := func() error {
+				err := signals.DeliverFrom(j.name, &v1.Node_Outputs{NamedValues: v1.NewNamedValues(j.payload)}, j.sender)
+				outcomes.note(j.name, err)
+
+				return err
+			}
 			if recorder == nil {
-				_ = signals.DeliverFrom(j.name, &v1.Node_Outputs{NamedValues: v1.NewNamedValues(j.payload)}, j.sender)
+				_ = deliver()
 				return
 			}
-			recorder.deliverRecorded(j.name, j.payload, j.senderSubject, func() error {
-				return signals.DeliverFrom(j.name, &v1.Node_Outputs{NamedValues: v1.NewNamedValues(j.payload)}, j.sender)
-			})
+			recorder.deliverRecorded(j.name, j.payload, j.senderSubject, deliver)
 		}(j)
 	}
 
+	// Idempotent: the case joins the senders itself before judging what they
+	// did, and the deferred call that guards every earlier return joins them
+	// again. A second drain of `done` would block forever.
+	var once sync.Once
+
 	return func() {
-		for range jobs {
-			<-done
-		}
+		once.Do(func() {
+			for range jobs {
+				<-done
+			}
+		})
 	}, nil
 }
 

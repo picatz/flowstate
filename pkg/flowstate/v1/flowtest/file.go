@@ -1199,6 +1199,14 @@ type Expectation struct {
 	// pkg/flowstate/v1/internal/conformance/undo.go already pins for both drivers.
 	Compensated []string `yaml:"compensated"`
 
+	// DeniedSignals names signals the case sends that the workflow's own
+	// `signals:` policy must refuse: each must have had at least one scripted
+	// delivery denied, by the same evaluator the server's Signal door calls
+	// ([v1.SignalPolicyCheck]). A signal the policy also admitted from another
+	// sender still counts as denied, so one case can show the wrong sender
+	// refused and the right one let through.
+	DeniedSignals []string `yaml:"denied_signals"`
+
 	// Ran names steps that must have executed — present in the run's step
 	// outputs, whether they succeeded, were tolerated, or were the step whose
 	// failure ended the run.
@@ -1263,7 +1271,7 @@ type Expectation struct {
 // length.
 func (e *Expectation) claimsNothing() bool {
 	return e.Outputs == nil && e.Inputs == nil && e.Refused == nil && e.IdempotencyKey == "" &&
-		e.Failed == nil && e.ErrorContains == "" && e.Compensated == nil && e.Ran == nil &&
+		e.Failed == nil && e.ErrorContains == "" && e.Compensated == nil && len(e.DeniedSignals) == 0 && e.Ran == nil &&
 		e.Skipped == nil && e.Others == "" && len(e.Invocations) == 0 && len(e.Check) == 0
 }
 
@@ -1279,6 +1287,7 @@ type expectationProvenance struct {
 	failed         bool
 	errorContains  bool
 	compensated    bool
+	deniedSignals  bool
 	ran            bool
 	skipped        bool
 	others         bool
