@@ -39,7 +39,9 @@ A violation `flow test --seeds N` finds names its seed (`flow test --seed 7 --
 <file>`). Add `--debug` to that command and the session holds the seed's own run:
 the faults the seed injects fire where it drew them, in the order it chose, so
 the stop at the step a fault fails is the failure the search found, not a
-rehearsal of it. The written-order baseline an exploration runs first goes
+rehearsal of it. A `delay:` fault holds its call on the virtual clock, so stepping
+over a slow call costs no wall time and the next stop shows the later virtual
+time. The written-order baseline an exploration runs first goes
 unheld, and `--seeds` with `--debug` is refused, since many runs are not one to
 step through. The seeded run is local and is not a recorded history, so there is
 nothing to step back through yet.
