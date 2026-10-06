@@ -85,6 +85,71 @@ func (WorkloadIdentityMode) EnumDescriptor() ([]byte, []int) {
 	return file_flowstate_v1_identity_proto_rawDescGZIP(), []int{0}
 }
 
+// PrincipalKind says what sort of party an authenticated caller is.
+//
+// It is assigned by the operator's trust policy entry that admitted the caller
+// (`principal_kind:`), never read from a token, so a caller cannot choose to be
+// a person. UNSPECIFIED is the zero value and means the policy said nothing:
+// authorization must not read it as WORKLOAD, and a predicate that cares
+// compares against a named kind.
+type PrincipalKind int32
+
+const (
+	// UNSPECIFIED means the admitting policy entry assigned no kind, or the
+	// identity was absent, or the receiver does not understand the value.
+	PrincipalKind_PRINCIPAL_KIND_UNSPECIFIED PrincipalKind = 0
+	// HUMAN is a person, authenticated through their own identity provider.
+	PrincipalKind_PRINCIPAL_KIND_HUMAN PrincipalKind = 1
+	// WORKLOAD is a machine identity: a CI job, a pod, a service.
+	PrincipalKind_PRINCIPAL_KIND_WORKLOAD PrincipalKind = 2
+	// AGENT is an automated actor that acts for a person or a system, such as an
+	// MCP client.
+	PrincipalKind_PRINCIPAL_KIND_AGENT PrincipalKind = 3
+)
+
+// Enum value maps for PrincipalKind.
+var (
+	PrincipalKind_name = map[int32]string{
+		0: "PRINCIPAL_KIND_UNSPECIFIED",
+		1: "PRINCIPAL_KIND_HUMAN",
+		2: "PRINCIPAL_KIND_WORKLOAD",
+		3: "PRINCIPAL_KIND_AGENT",
+	}
+	PrincipalKind_value = map[string]int32{
+		"PRINCIPAL_KIND_UNSPECIFIED": 0,
+		"PRINCIPAL_KIND_HUMAN":       1,
+		"PRINCIPAL_KIND_WORKLOAD":    2,
+		"PRINCIPAL_KIND_AGENT":       3,
+	}
+)
+
+func (x PrincipalKind) Enum() *PrincipalKind {
+	p := new(PrincipalKind)
+	*p = x
+	return p
+}
+
+func (x PrincipalKind) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (PrincipalKind) Descriptor() protoreflect.EnumDescriptor {
+	return file_flowstate_v1_identity_proto_enumTypes[1].Descriptor()
+}
+
+func (PrincipalKind) Type() protoreflect.EnumType {
+	return &file_flowstate_v1_identity_proto_enumTypes[1]
+}
+
+func (x PrincipalKind) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use PrincipalKind.Descriptor instead.
+func (PrincipalKind) EnumDescriptor() ([]byte, []int) {
+	return file_flowstate_v1_identity_proto_rawDescGZIP(), []int{1}
+}
+
 // WorkloadIdentity describes who a run acts as.
 //
 // A running workload has two identities at once, and both matter. It is a
@@ -176,7 +241,11 @@ type WorkloadIdentity struct {
 	// plugin transport must authenticate the host and preserve that authority,
 	// or replace this value with UNSPECIFIED rather than relay a caller-supplied
 	// one.
-	Mode          WorkloadIdentityMode `protobuf:"varint,6,opt,name=mode,proto3,enum=flowstate.v1.WorkloadIdentityMode" json:"mode,omitempty"`
+	Mode WorkloadIdentityMode `protobuf:"varint,6,opt,name=mode,proto3,enum=flowstate.v1.WorkloadIdentityMode" json:"mode,omitempty"`
+	// PrincipalKind is what sort of party the subject is, as the operator's trust
+	// policy assigned it when it admitted the caller. UNSPECIFIED when the policy
+	// assigned none. Identity, not a credential, so it is safe in durable history.
+	PrincipalKind PrincipalKind `protobuf:"varint,7,opt,name=principal_kind,json=principalKind,proto3,enum=flowstate.v1.PrincipalKind" json:"principal_kind,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -253,11 +322,18 @@ func (x *WorkloadIdentity) GetMode() WorkloadIdentityMode {
 	return WorkloadIdentityMode_WORKLOAD_IDENTITY_MODE_UNSPECIFIED
 }
 
+func (x *WorkloadIdentity) GetPrincipalKind() PrincipalKind {
+	if x != nil {
+		return x.PrincipalKind
+	}
+	return PrincipalKind_PRINCIPAL_KIND_UNSPECIFIED
+}
+
 var File_flowstate_v1_identity_proto protoreflect.FileDescriptor
 
 const file_flowstate_v1_identity_proto_rawDesc = "" +
 	"\n" +
-	"\x1bflowstate/v1/identity.proto\x12\fflowstate.v1\x1a\x1bbuf/validate/validate.proto\"\xd3\x02\n" +
+	"\x1bflowstate/v1/identity.proto\x12\fflowstate.v1\x1a\x1bbuf/validate/validate.proto\"\x97\x03\n" +
 	"\x10WorkloadIdentity\x12\x18\n" +
 	"\asubject\x18\x01 \x01(\tR\asubject\x12\x16\n" +
 	"\x06issuer\x18\x02 \x01(\tR\x06issuer\x12\\\n" +
@@ -266,14 +342,20 @@ const file_flowstate_v1_identity_proto_rawDesc = "" +
 	"\n" +
 	"deployment\x18\x05 \x01(\tR\n" +
 	"deployment\x126\n" +
-	"\x04mode\x18\x06 \x01(\x0e2\".flowstate.v1.WorkloadIdentityModeR\x04mode\x1a9\n" +
+	"\x04mode\x18\x06 \x01(\x0e2\".flowstate.v1.WorkloadIdentityModeR\x04mode\x12B\n" +
+	"\x0eprincipal_kind\x18\a \x01(\x0e2\x1b.flowstate.v1.PrincipalKindR\rprincipalKind\x1a9\n" +
 	"\vClaimsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01*\x8b\x01\n" +
 	"\x14WorkloadIdentityMode\x12&\n" +
 	"\"WORKLOAD_IDENTITY_MODE_UNSPECIFIED\x10\x00\x12%\n" +
 	"!WORKLOAD_IDENTITY_MODE_PRODUCTION\x10\x01\x12$\n" +
-	" WORKLOAD_IDENTITY_MODE_REHEARSAL\x10\x02B\xac\x01\n" +
+	" WORKLOAD_IDENTITY_MODE_REHEARSAL\x10\x02*\x80\x01\n" +
+	"\rPrincipalKind\x12\x1e\n" +
+	"\x1aPRINCIPAL_KIND_UNSPECIFIED\x10\x00\x12\x18\n" +
+	"\x14PRINCIPAL_KIND_HUMAN\x10\x01\x12\x1b\n" +
+	"\x17PRINCIPAL_KIND_WORKLOAD\x10\x02\x12\x18\n" +
+	"\x14PRINCIPAL_KIND_AGENT\x10\x03B\xac\x01\n" +
 	"\x10com.flowstate.v1B\rIdentityProtoP\x01Z8github.com/picatz/flowstate/pkg/flowstate/v1;flowstatev1\xa2\x02\x03FXX\xaa\x02\fFlowstate.V1\xca\x02\fFlowstate\\V1\xe2\x02\x18Flowstate\\V1\\GPBMetadata\xea\x02\rFlowstate::V1b\x06proto3"
 
 var (
@@ -288,21 +370,23 @@ func file_flowstate_v1_identity_proto_rawDescGZIP() []byte {
 	return file_flowstate_v1_identity_proto_rawDescData
 }
 
-var file_flowstate_v1_identity_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
+var file_flowstate_v1_identity_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
 var file_flowstate_v1_identity_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
 var file_flowstate_v1_identity_proto_goTypes = []any{
 	(WorkloadIdentityMode)(0), // 0: flowstate.v1.WorkloadIdentityMode
-	(*WorkloadIdentity)(nil),  // 1: flowstate.v1.WorkloadIdentity
-	nil,                       // 2: flowstate.v1.WorkloadIdentity.ClaimsEntry
+	(PrincipalKind)(0),        // 1: flowstate.v1.PrincipalKind
+	(*WorkloadIdentity)(nil),  // 2: flowstate.v1.WorkloadIdentity
+	nil,                       // 3: flowstate.v1.WorkloadIdentity.ClaimsEntry
 }
 var file_flowstate_v1_identity_proto_depIdxs = []int32{
-	2, // 0: flowstate.v1.WorkloadIdentity.claims:type_name -> flowstate.v1.WorkloadIdentity.ClaimsEntry
+	3, // 0: flowstate.v1.WorkloadIdentity.claims:type_name -> flowstate.v1.WorkloadIdentity.ClaimsEntry
 	0, // 1: flowstate.v1.WorkloadIdentity.mode:type_name -> flowstate.v1.WorkloadIdentityMode
-	2, // [2:2] is the sub-list for method output_type
-	2, // [2:2] is the sub-list for method input_type
-	2, // [2:2] is the sub-list for extension type_name
-	2, // [2:2] is the sub-list for extension extendee
-	0, // [0:2] is the sub-list for field type_name
+	1, // 2: flowstate.v1.WorkloadIdentity.principal_kind:type_name -> flowstate.v1.PrincipalKind
+	3, // [3:3] is the sub-list for method output_type
+	3, // [3:3] is the sub-list for method input_type
+	3, // [3:3] is the sub-list for extension type_name
+	3, // [3:3] is the sub-list for extension extendee
+	0, // [0:3] is the sub-list for field type_name
 }
 
 func init() { file_flowstate_v1_identity_proto_init() }
@@ -315,7 +399,7 @@ func file_flowstate_v1_identity_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_flowstate_v1_identity_proto_rawDesc), len(file_flowstate_v1_identity_proto_rawDesc)),
-			NumEnums:      1,
+			NumEnums:      2,
 			NumMessages:   2,
 			NumExtensions: 0,
 			NumServices:   0,

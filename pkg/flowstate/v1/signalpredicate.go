@@ -103,6 +103,7 @@ const MaxSignalPolicyScopeBytes = 64 << 10
 // at compile time.
 type signalPolicyIdentity struct {
 	Principal string            `cel:"principal"`
+	Kind      string            `cel:"kind"`
 	Subject   string            `cel:"subject"`
 	Issuer    string            `cel:"issuer"`
 	Namespace string            `cel:"namespace"`
@@ -489,6 +490,7 @@ func newSignalPolicyActor(identity *WorkloadIdentity) *signalPolicyActor {
 
 	return &signalPolicyActor{Identity: &signalPolicyIdentity{
 		Principal: shape["principal"].(string),
+		Kind:      shape["kind"].(string),
 		Subject:   shape["subject"].(string),
 		Issuer:    shape["issuer"].(string),
 		Namespace: shape["namespace"].(string),

@@ -48,6 +48,15 @@ func TestPolicyValidate(t *testing.T) {
 			}},
 		},
 		{
+			name:   "a named principal kind",
+			policy: spoil(func(i *auth.TrustedIssuer) { i.PrincipalKind = auth.PrincipalKindAgent }),
+		},
+		{
+			name:    "a misspelled principal kind, which would otherwise record none and deny silently",
+			policy:  spoil(func(i *auth.TrustedIssuer) { i.PrincipalKind = "humen" }),
+			wantErr: true,
+		},
+		{
 			name:    "no issuers, which would trust nobody",
 			policy:  auth.Policy{},
 			wantErr: true,

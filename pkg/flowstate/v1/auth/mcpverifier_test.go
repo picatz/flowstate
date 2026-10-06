@@ -630,6 +630,8 @@ func changedPrincipalField(t *testing.T, base auth.Principal, i int) auth.Princi
 		field.SetString(value + "-changed")
 	case []string:
 		field.Set(reflect.ValueOf([]string{"https://changed.example.com"}))
+	case auth.PrincipalKind:
+		field.Set(reflect.ValueOf(auth.PrincipalKindAgent))
 	case auth.ActionScopes:
 		field.Set(reflect.ValueOf(auth.ActionScopes{"workload.read"}))
 	case time.Time:

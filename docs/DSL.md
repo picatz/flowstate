@@ -4488,7 +4488,7 @@ still writes one is refused at parse with a sentence that names the key (never i
 value) and says to run `flow fix`, which rewrites each of them into the predicate; see
 [What `flow fix` writes](#what-flow-fix-writes-for-who-may-act).
 
-**The scope is closed.** `sender.identity.{principal,subject,issuer,namespace,claims}`
+**The scope is closed.** `sender.identity.{principal,subject,issuer,namespace,kind,claims}`
 is the server's own attestation of whoever is delivering. `run.identity` is the run's
 starter with the same fields, and `inputs` is the run's arguments. Nothing else is in
 scope: no steps, vars, clock or secrets, and a name outside it is a compile error

@@ -1008,6 +1008,12 @@ type ScriptedIdentity struct {
 	// policy rule's `namespace:`.
 	Namespace string `yaml:"namespace"`
 
+	// Kind is the sort of party this identity stands in for, "human",
+	// "workload" or "agent", read as `sender.identity.kind` or
+	// `run.identity.kind`. Empty records none, as a trust policy that assigns
+	// none does.
+	Kind string `yaml:"kind"`
+
 	// Claims are additional facts, matched against a policy rule's `claims:`
 	// every key the rule names must be present here with the same value.
 	Claims map[string]string `yaml:"claims"`
@@ -1102,6 +1108,13 @@ func scriptedIdentityFaults(where string, identity *ScriptedIdentity) []identity
 			"%s names a subject or an issuer without the other; give both, because a rule matches %q "+
 				"and never a bare subject - a subject is only unique within its issuer",
 			where, v1.QualifiedSubject("<issuer>", "<subject>"))})
+	}
+
+	// A misspelled kind would parse as "none assigned" and make a predicate that
+	// names a kind deny for a reason nobody can see, so it is refused here.
+	if identity.Kind != "" && v1.PrincipalKindNamed(identity.Kind) == v1.PrincipalKind_PRINCIPAL_KIND_UNSPECIFIED {
+		faults = append(faults, identityFault{message: fmt.Sprintf(
+			"%s names kind %q; use human, workload or agent, or leave it out", where, identity.Kind)})
 	}
 
 	// Sorted, so a file with two bad claims reports them in the same order

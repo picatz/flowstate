@@ -534,6 +534,13 @@ type TrustedIssuer struct {
 	// token, so a caller cannot choose its own role.
 	Role string `json:"role,omitempty" yaml:"role,omitempty"`
 
+	// PrincipalKind says what sort of party the callers this entry admits are:
+	// "human", "workload" or "agent", recorded as [Principal.Kind]. Like Role it
+	// comes from the policy and never from the token, so a caller cannot choose
+	// to be a person. Omitted records no kind, which is not "workload": a
+	// predicate that cares compares against a named kind.
+	PrincipalKind PrincipalKind `json:"principal_kind,omitempty" yaml:"principal_kind,omitempty"`
+
 	// Actions optionally restricts callers admitted by this entry to exact
 	// actions from Flowstate's canonical scope vocabulary. Omitted preserves the
 	// pre-authorization behavior for the RPC actions (all of them); [] grants
@@ -1109,6 +1116,11 @@ func (t TrustedIssuer) validate() error {
 			return fmt.Errorf("actions[%d]: duplicate action %q", i, action)
 		}
 		seenActions[action] = struct{}{}
+	}
+
+	if !t.PrincipalKind.valid() {
+		return fmt.Errorf("principal_kind %q is not supported: use %q, %q or %q, or omit it",
+			t.PrincipalKind, PrincipalKindHuman, PrincipalKindWorkload, PrincipalKindAgent)
 	}
 
 	var err error

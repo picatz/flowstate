@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/authtest"
 	"github.com/stretchr/testify/require"
 )
 
@@ -144,4 +145,27 @@ func TestPrincipalLogValue(t *testing.T) {
 	buffer.Reset()
 	logger.Info("rejected", "principal", auth.Principal{})
 	require.Contains(t, buffer.String(), "unauthenticated")
+}
+
+// TestPrincipalKindComesFromThePolicyNeverTheToken proves the verifier records the
+// kind the admitting entry assigns, and that a token claiming to be something
+// else is not believed: the policy decides who is a person.
+func TestPrincipalKindComesFromThePolicyNeverTheToken(t *testing.T) {
+	var (
+		clock  = authtest.NewClock(referenceTime)
+		issuer = newTestIssuer(t, authtest.WithClock(clock.Now))
+	)
+
+	for _, kind := range []auth.PrincipalKind{"", auth.PrincipalKindHuman, auth.PrincipalKindAgent} {
+		verifier := newVerifier(t, auth.Policy{Issuers: []auth.TrustedIssuer{{
+			Name: "idp", Issuer: issuer.URL(), Audiences: []string{"flowstate"}, PrincipalKind: kind,
+		}}}, auth.WithClock(clock.Now))
+
+		token := issuer.MintToken(map[string]any{"kind": "human", "principal_kind": "human"},
+			authtest.WithSubject("runner"), authtest.WithAudience("flowstate"))
+
+		principal, err := verifier.Verify(t.Context(), token)
+		require.NoError(t, err)
+		require.Equal(t, kind, principal.Kind)
+	}
 }

@@ -20,6 +20,35 @@ const (
 	AnonymousRole = "anonymous"
 )
 
+// PrincipalKind is what sort of party an authenticated caller is, assigned by
+// the trust policy entry that admitted it. The empty value records no kind.
+type PrincipalKind string
+
+// The kinds a trust policy entry may assign. They are the lowercase names of
+// the flowstate.v1.PrincipalKind enum values.
+const (
+	// PrincipalKindHuman is a person authenticated through their own identity
+	// provider.
+	PrincipalKindHuman PrincipalKind = "human"
+
+	// PrincipalKindWorkload is a machine identity: a CI job, a pod, a service.
+	PrincipalKindWorkload PrincipalKind = "workload"
+
+	// PrincipalKindAgent is an automated actor that acts for a person or a
+	// system, such as an MCP client.
+	PrincipalKindAgent PrincipalKind = "agent"
+)
+
+// valid reports whether k is one of the named kinds or empty.
+func (k PrincipalKind) valid() bool {
+	switch k {
+	case "", PrincipalKindHuman, PrincipalKindWorkload, PrincipalKindAgent:
+		return true
+	}
+
+	return false
+}
+
 // Principal is an authenticated caller: the verified assertions a trusted
 // issuer made about whoever is on the other end of a request.
 //
@@ -74,6 +103,11 @@ type Principal struct {
 	// [TrustedIssuer.Role]; it is never derived from the token itself, so a
 	// caller cannot choose its own role.
 	Role string `json:"role,omitempty"`
+
+	// Kind is the policy-assigned sort of party this caller is, from
+	// [TrustedIssuer.PrincipalKind]. It never comes from token claims, and empty
+	// means the admitting entry assigned none.
+	Kind PrincipalKind `json:"kind,omitempty"`
 
 	// Actions is the policy-assigned allowlist of canonical Flowstate action
 	// scopes. Nil means the admitting policy entry did not restrict actions;

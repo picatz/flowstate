@@ -1211,6 +1211,8 @@ func signalAllowScope(withRun bool) celcomplete.Scope {
 			{Name: "subject", Kind: celcomplete.KindField, Detail: "string"},
 			{Name: "issuer", Kind: celcomplete.KindField, Detail: "string"},
 			{Name: "namespace", Kind: celcomplete.KindField, Detail: "string"},
+			{Name: "kind", Kind: celcomplete.KindField, Detail: "string",
+				Docs: "`human`, `workload` or `agent`, as the trust policy entry that admitted the caller assigned it; empty when it assigned none."},
 			{Name: "claims", Kind: celcomplete.KindField, Detail: "map(string, string)",
 				Docs: "Read as `claims[\"team\"]` or `claims.team`; a missing key is an error, which denies. Test with `has(...)`."},
 		},

@@ -2337,6 +2337,8 @@ func (s *FlowstateServer) identityFor(ctx context.Context) *v1.WorkloadIdentity 
 		Claims:     derived.Claims,
 		Namespace:  derived.Namespace,
 		Deployment: derived.Deployment,
+
+		PrincipalKind: v1.PrincipalKindNamed(string(principal.Kind)),
 	}
 }
 

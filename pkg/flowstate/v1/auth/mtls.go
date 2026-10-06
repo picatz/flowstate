@@ -300,6 +300,7 @@ func (v *MTLSVerifier) VerifyPeer(ctx context.Context, chains [][]*x509.Certific
 		Subject:               subject,
 		Namespace:             namespace,
 		Role:                  entry.issuer.Role,
+		Kind:                  entry.issuer.PrincipalKind,
 		Actions:               slices.Clone(entry.issuer.Actions),
 		Claims:                claims,
 		CertificateThumbprint: sha256Hex(leaf.Raw),
