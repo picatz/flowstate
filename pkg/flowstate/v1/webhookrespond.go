@@ -1,8 +1,10 @@
 package flowstatev1
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"time"
 )
@@ -183,12 +185,23 @@ func WebhookResponse(accepted AcceptedDelivery, run WebhookRun, spec *Workflow) 
 		}
 
 		encoded, err := MarshalRunDocument(redactRunOutputs(outputs, sensitive, false), false, false)
-		if err != nil || len(encoded) > MaxWebhookResponseBytes {
+		if err != nil {
+			return document
+		}
+
+		// The bound is on what is sent, so it is measured over the whole
+		// document as the receiver writes it: its envelope, its newline, and the
+		// escaping the JSON encoder applies to `<`, `>` and `&` inside the
+		// outputs, which the projection above does not.
+		completed := document
+		completed.Status = WebhookRunCompleted
+		completed.Outputs = encoded
+		if wireSize(completed) > MaxWebhookResponseBytes {
 			// Not truncated: the caller reads the whole answer with `Get`.
 			return document
 		}
-		document.Status = WebhookRunCompleted
-		document.Outputs = encoded
+
+		return completed
 
 	case WebhookRunFailed:
 		document.Status = WebhookRunFailed
@@ -200,6 +213,17 @@ func WebhookResponse(accepted AcceptedDelivery, run WebhookRun, spec *Workflow) 
 	}
 
 	return document
+}
+
+// wireSize is the length of the document as the receiver writes it: the
+// default JSON encoder's output, newline included.
+func wireSize(document WebhookResponseDocument) int {
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(document); err != nil {
+		return math.MaxInt
+	}
+
+	return buf.Len()
 }
 
 // sensitivityUndecidable reports a specification embedding a workflow that

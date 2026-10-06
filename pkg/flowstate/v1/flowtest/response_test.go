@@ -223,13 +223,18 @@ func TestAParkedWaitThatTheStepToleratesStillRehearsRunning(t *testing.T) {
 	t.Parallel()
 
 	tolerant := strings.Replace(respondWorkflow, "    wait_for_signal:\n      name: released\n",
-		"    continue_on_error: true\n    wait_for_signal:\n      name: released\n", 1)
+		"    continue_on_error: true\n    wait_for_signal:\n      name: released\n"+
+			"  - id: after\n    log:\n      message: past the wait\n", 1)
 	require.NotEqual(t, respondWorkflow, tolerant, "the variant did not change the workflow")
 
+	// One `log` call, the charge's own: the step after the wait is never reached.
 	got := runRespondCaseOf(t, tolerant, "hold", `
     expect:
       response:
         status: running
+      invocations:
+        - task: log
+          count: 1
 `)
 	assert.True(t, got.GetPassed(), "failures: %v", failureText(got.GetFailures()))
 
@@ -239,6 +244,68 @@ func TestAParkedWaitThatTheStepToleratesStillRehearsRunning(t *testing.T) {
         status: completed
 `)
 	assert.False(t, wrong.GetPassed(), "a run that holds at a tolerated wait was rehearsed as completed")
+}
+
+// TestAParkedRunIsHeldWhereItStandsAndUndoesNothing: the durable driver holds a
+// run at a wait with nothing taken back, so the rehearsal of a run parked at a
+// wait does not run the compensations of the steps before it, and a step's
+// `continue_on_error:` does not walk the run on past the wait.
+func TestAParkedRunIsHeldWhereItStandsAndUndoesNothing(t *testing.T) {
+	t.Parallel()
+
+	withUndo := strings.Replace(respondWorkflow, `  - id: charge
+    log:
+      message: ${'order ' + inputs.order_id}
+`, `  - id: charge
+    log:
+      message: ${'order ' + inputs.order_id}
+    undo:
+      log:
+        message: refund
+  - id: after
+    if: ${inputs.mode == "never"}
+    log:
+      message: unreachable
+`, 1)
+	require.NotEqual(t, respondWorkflow, withUndo, "the variant did not change the workflow")
+
+	// One `log` call, the charge's own: a compensation would make it two.
+	got := runRespondCaseOf(t, withUndo, "hold", `
+    expect:
+      ran: [charge]
+      response:
+        status: running
+      invocations:
+        - task: log
+          count: 1
+`)
+	assert.True(t, got.GetPassed(), "failures: %v", failureText(got.GetFailures()))
+}
+
+// TestAResponseClaimBesideARefusalIsRefused: a refused delivery starts no run,
+// so there is no response document to assert, and the case would pass without
+// ever checking it.
+func TestAResponseClaimBesideARefusalIsRefused(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeFile(t, dir+"/workflow.yaml", respondWorkflow)
+	writeFile(t, dir+"/delivery.json", respondDelivery("ok"))
+	writeFile(t, dir+"/x.test.yaml", `
+tests:
+  - name: both
+    workflow: ./workflow.yaml
+    trigger:
+      webhook: checkout
+      payload: ./delivery.json
+    expect:
+      refused: true
+      response:
+        status: completed
+`)
+
+	report := flowtest.RunFile(dir + "/x.test.yaml")
+	assert.Contains(t, report.GetRefused(), "refused: true", "a response claim beside a refusal was accepted")
 }
 
 // TestAScriptedSignalLetsAGateCompleteSoTheRunAnswersCompleted: the park is the

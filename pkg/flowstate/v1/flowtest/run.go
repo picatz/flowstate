@@ -1373,7 +1373,9 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	// The record is the signals' own and not the surfaced error: a step that
 	// tolerates its failure swallows the sentinel, and the run Temporal would
 	// hold at that wait must not be rehearsed as one that finished.
-	parked := test.Expect.Response != nil && signals.Parked()
+	// A park that coexists with a different, real failure (another branch of a
+	// parallel node) is that failure, not a held run.
+	parked := test.Expect.Response != nil && signals.Parked() && (runErr == nil || errors.Is(runErr, v1.ErrRunParked))
 	expectErr := runErr
 	if parked {
 		expectErr = nil
@@ -1381,7 +1383,7 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	result.Failures = assertExpectation(&test.Expect, workflow, outputs, expectErr, sensitive)
 	if test.Expect.Response != nil {
 		result.Failures = append(result.Failures, assertResponse(test.Expect.Response, workflow,
-			test.Trigger.Webhook, replayedDeliveryID, bound, outputs, runErr, parked)...)
+			test.Trigger.Webhook, replayedDeliveryID, bound, outputs, runErr, parked, sensitive)...)
 	}
 	if invocations != nil && len(test.Expect.Invocations) > 0 {
 		result.Failures = append(result.Failures, assertInvocations(test.Expect.Invocations, workflow.GetName(), invocations)...)

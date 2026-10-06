@@ -66,11 +66,19 @@ func (r *WebhookReceiver) awaitRun(ctx context.Context, route *webhookRoute, acc
 		spec   *v1.Workflow
 		inputs map[string]*v1.Value
 	)
-	if state, err := r.server.startedRunState(ctx, namespace, accepted.WorkflowID, accepted.RunID); err == nil {
+	//
+	// Read under the wait's own bound, as is the failure sentence below: the
+	// delivery holds its slot for `respond_within:` and no longer, so a read
+	// that stalls after the run finished ends the wait the same way a slow run
+	// does.
+	if state, err := r.server.startedRunState(waitCtx, namespace, accepted.WorkflowID, accepted.RunID); err == nil {
 		spec, inputs = state.GetWorkflow(), state.GetInputs()
 	} else {
 		r.log.WarnContext(ctx, "a waiting delivery could not read the run's specification; withholding its answer",
 			"workflow", route.workflow.GetName(), "webhook", route.trigger.GetName(), "error", err)
+	}
+	if waitCtx.Err() != nil {
+		return running
 	}
 
 	if waitErr == nil {
@@ -93,8 +101,12 @@ func (r *WebhookReceiver) awaitRun(ctx context.Context, route *webhookRoute, acc
 	// The failure sentence is the one `Get` reports, from the same function, so
 	// the two surfaces cannot word one failure two ways. Its kind is dropped:
 	// this surface carries the sentence and nothing else.
-	failure := failureError(ctx, client, accepted.WorkflowID, accepted.RunID, terminalStatus(waitErr),
+	failure := failureError(waitCtx, client, accepted.WorkflowID, accepted.RunID, terminalStatus(waitErr),
 		func(string) bool { return false })
+
+	if waitCtx.Err() != nil {
+		return running
+	}
 
 	return v1.WebhookResponse(accepted, v1.WebhookRun{
 		Status:  v1.WebhookRunFailed,

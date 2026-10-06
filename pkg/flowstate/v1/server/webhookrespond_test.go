@@ -3,6 +3,7 @@ package server_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -16,6 +17,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.temporal.io/api/enums/v1"
+	historypb "go.temporal.io/api/history/v1"
 	"go.temporal.io/sdk/client"
 	"google.golang.org/protobuf/types/known/durationpb"
 
@@ -312,6 +314,47 @@ func TestAnAnswerTooLargeToSendIsAnsweredRunning(t *testing.T) {
 	require.NoError(t, temporal.GetWorkflow(t.Context(), document.WorkflowID, document.RunID).Get(t.Context(), &out))
 	assert.Len(t, out.GetRunOutputs().GetValues()["padded"].GetLiteral().GetStringValue(), 1_200_000,
 		"the run itself was affected by the oversize answer")
+}
+
+// stallingHistory is a client whose history reads never answer on their own: the
+// call returns when its context ends, as a stalled frontend would.
+type stallingHistory struct{ client.Client }
+
+func (stallingHistory) GetWorkflowHistory(ctx context.Context, _, _ string, _ bool, _ enums.HistoryEventFilterType) client.HistoryEventIterator {
+	return stalledIterator{ctx: ctx}
+}
+
+type stalledIterator struct{ ctx context.Context }
+
+func (i stalledIterator) HasNext() bool { <-i.ctx.Done(); return false }
+
+func (stalledIterator) Next() (*historypb.HistoryEvent, error) { return nil, errors.New("stalled") }
+
+// TestAReadThatStallsAfterTheRunFinishedIsHeldToTheBound: the bound covers the
+// reads that follow the result as well as the wait for it. The run completes
+// at once and the read of its specification never answers; the delivery is
+// answered running at the bound rather than holding its slot until the sender
+// gives up.
+func TestAReadThatStallsAfterTheRunFinishedIsHeldToTheBound(t *testing.T) {
+	t.Parallel()
+
+	temporal, _ := newTemporalNamespace(t)
+	startWorker(t, temporal)
+	receiver := respondReceiver(t, stallingHistory{Client: temporal}, respondWorkflow(500*time.Millisecond))
+
+	answered := make(chan *http.Response, 1)
+	go func() {
+		answered <- deliver(t, receiver, respondRoute, respondBody("evt_stall", "ord_H1x9", ""), signed)
+	}()
+
+	select {
+	case resp := <-answered:
+		document, _ := readRespond(t, resp)
+		assert.Equal(t, "running", document.Status)
+		assert.Nil(t, document.Outputs, "an answer left while the run's specification could not be read")
+	case <-time.After(10 * time.Second):
+		t.Fatal("the delivery was held past respond_within by a read that stalled after the run finished")
+	}
 }
 
 // TestAHungUpSenderEndsTheWaitWithoutEndingTheRun: the request context is the

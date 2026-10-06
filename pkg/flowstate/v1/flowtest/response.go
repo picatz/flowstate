@@ -45,6 +45,9 @@ func checkResponseClaim(p *problems, r site, test *Test) {
 	known := []string{string(v1.WebhookRunCompleted), string(v1.WebhookRunFailed), string(v1.WebhookRunRunning)}
 
 	switch {
+	case test.Expect.Refused != nil && *test.Expect.Refused:
+		p.report(at, "test %q expect.response: claims a response alongside `refused: true`, but a refused "+
+			"delivery starts no run and so has no response document to assert; drop one of the two", test.Name)
 	case want.Status == "":
 		p.report(at, "test %q expect.response: names no `status:`; write one of %s", test.Name, strings.Join(known, ", "))
 	case !slices.Contains(known, want.Status):
@@ -65,6 +68,7 @@ func checkResponseClaim(p *problems, r site, test *Test) {
 // assert, which is a failure of the case rather than a vacuous pass.
 func assertResponse(want *ResponseExpectation, workflow *v1.Workflow, webhook, deliveryID string,
 	inputs map[string]*v1.Value, outputs *v1.Workflow_StepOutputs, runErr error, parked bool,
+	sensitive sensitiveInputs,
 ) []*v1.Diagnostic {
 	trigger, _ := v1.FindWebhookTrigger(workflow, webhook)
 	if trigger.GetRespondWithin() == nil {
@@ -97,7 +101,7 @@ func assertResponse(want *ResponseExpectation, workflow *v1.Workflow, webhook, d
 	}
 
 	if want.Outputs != nil {
-		failures = append(failures, compareResponseOutputs(want.Outputs, document)...)
+		failures = append(failures, compareResponseOutputs(want.Outputs, document, sensitive)...)
 	}
 
 	return failures
@@ -106,7 +110,7 @@ func assertResponse(want *ResponseExpectation, workflow *v1.Workflow, webhook, d
 // compareResponseOutputs checks a document's `outputs` against a claim, in both
 // directions, reading the JSON the receiver would write rather than the values
 // the run held: what a caller is told is what is asserted.
-func compareResponseOutputs(want map[string]any, document v1.WebhookResponseDocument) []*v1.Diagnostic {
+func compareResponseOutputs(want map[string]any, document v1.WebhookResponseDocument, sensitive sensitiveInputs) []*v1.Diagnostic {
 	if document.Status != v1.WebhookRunCompleted {
 		return []*v1.Diagnostic{{
 			Field:   "expect.response.outputs",
@@ -138,7 +142,7 @@ func compareResponseOutputs(want map[string]any, document v1.WebhookResponseDocu
 			failures = append(failures, &v1.Diagnostic{
 				Field: "expect.response.outputs", Value: name,
 				Message: fmt.Sprintf("output %q: expected %s, the answer carries %s", name,
-					typedText(wantValue, sensitiveInputs{}), typedText(jsonNative(gotValue), sensitiveInputs{})),
+					typedText(wantValue, sensitive), typedText(jsonNative(gotValue), sensitive)),
 			})
 		}
 	}

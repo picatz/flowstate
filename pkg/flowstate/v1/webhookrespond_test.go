@@ -205,6 +205,25 @@ func TestAnAnswerOverTheResponseBoundIsRunningWithNoOutputs(t *testing.T) {
 	assert.LessOrEqual(t, len(within.Outputs), v1.MaxWebhookResponseBytes)
 }
 
+// TestTheResponseBoundIsMeasuredOnTheWire: the JSON encoder the receiver writes
+// with escapes `<`, `>` and `&` to six bytes each, so an output the projection
+// holds under the bound can be several times larger on the wire. The bound is on
+// what is sent.
+func TestTheResponseBoundIsMeasuredOnTheWire(t *testing.T) {
+	t.Parallel()
+
+	spec := respondSpec()
+	spec.DeclaredOutputs = spec.GetDeclaredOutputs()[:1]
+
+	// 200,000 bytes in the projection, 1.2 MB once escaped.
+	document := v1.WebhookResponse(v1.AcceptedDelivery{}, v1.WebhookRun{
+		Status:  v1.WebhookRunCompleted,
+		Outputs: &v1.RunOutputs{Values: map[string]*v1.Value{"order": v1.NewLiteral(strings.Repeat("<", 200_000))}},
+	}, spec)
+	assert.Equal(t, v1.WebhookRunRunning, document.Status, "an answer past the bound on the wire was sent")
+	assert.Empty(t, document.Outputs)
+}
+
 // TestACompletedRunWithNoOutputsAnswersAnEmptyObject: `{}` and not `null`, the
 // stable answer a run document gives.
 func TestACompletedRunWithNoOutputsAnswersAnEmptyObject(t *testing.T) {
