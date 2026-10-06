@@ -4,11 +4,17 @@ import (
 	"bytes"
 	"cmp"
 	"fmt"
+	"maps"
+	"math"
+	"reflect"
 	"slices"
 	"strings"
 
+	"github.com/goccy/go-yaml"
 	"github.com/goccy/go-yaml/ast"
 	"github.com/goccy/go-yaml/token"
+
+	"github.com/picatz/flowstate/internal/strictyaml"
 )
 
 // Inlining a whole-value alias, which is the migration path across the refusal
@@ -137,7 +143,116 @@ func runAliasInliner(data []byte, file *ast.File) (*aliasInliner, []byte, bool) 
 		return in, nil, false
 	}
 
+	if (len(in.sites) > 0 || len(in.anchorNodes) > 0) && !in.keepsMeaning(data, out) {
+		return in, nil, false
+	}
+
 	return in, out, true
+}
+
+// keepsMeaning reports whether the rewrite left the document meaning what it
+// meant. Copying a value's exact bytes is not enough to prove it, because the
+// parser reads the same text differently by context: a plain `8080:80` is the
+// mapping `{8080: 80}` inside a flow mapping and the string "8080:80" beside a
+// block key, so moving the text, or dropping the marker next to it, can change
+// the value and still look like a fix (#2117). So the input is decoded with its
+// aliases resolved and the output is decoded, and any difference refuses the
+// whole rewrite, with the position of the first alias (or, when the document
+// has anchors but no alias, the first anchor: dropping a marker can change a
+// value on its own), as every other refusal here. Every document of the file
+// is compared. It runs only when there is an anchor or alias to rewrite, so a
+// document without either pays nothing, and only after the output is known to
+// be within [maxBytes] and every alias expansion has been charged against it,
+// which bounds both decodes: the input's resolved aliases expand to no more
+// than the output the inliner has already charged for, and both parses went
+// through [strictyaml.ParseBytes], so nesting is bounded too.
+func (in *aliasInliner) keepsMeaning(data, out []byte) bool {
+	// Both sides are parsed the same way, without comments: the file this
+	// rewrite walks was parsed with them, and a comment attached to an alias
+	// changes how the decoder reads the node, which is not a meaning the
+	// document has.
+	before, errBefore := decodeBytes(data)
+	after, errAfter := decodeBytes(out)
+
+	switch {
+	case errBefore == nil && errAfter == nil && sameMeaning(before, after):
+		return true
+	case errBefore != nil && errAfter != nil:
+		// Neither reads as a value, so this cannot have changed what one is.
+		return true
+	}
+
+	// Dropping an anchor's marker can change a value on its own, with no alias
+	// anywhere, so the position is the first alias when there is one and the
+	// first anchor when there is not.
+	var at *token.Position
+	if len(in.sites) > 0 {
+		at = in.sites[0].alias.Start.Position
+	} else {
+		at = in.anchorNodes[0].Start.Position
+	}
+	in.refuseAt(at.Line, at.Column,
+		"writing these aliases out would change what the document means, because the same text reads differently once it is moved or its anchor is dropped (a plain `8080:80` is a mapping inside `{…}` and a string beside a block key); nothing was rewritten — write the value out by hand")
+
+	return false
+}
+
+// decodeBytes parses and decodes a document, both through the bounded path.
+func decodeBytes(data []byte) ([]any, error) {
+	file, err := strictyaml.ParseBytes(data, 0)
+	if err != nil {
+		return nil, err
+	}
+
+	return decodeMeaning(file)
+}
+
+// decodeMeaning decodes every document of a parsed file into plain Go values,
+// aliases resolved, the form two files are compared in. A panic in the decoder
+// is an error, as [strictyaml.Unmarshal] makes it.
+func decodeMeaning(file *ast.File) (docs []any, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("the YAML decoder stopped on this document: %v", r)
+		}
+	}()
+
+	for _, doc := range file.Docs {
+		var v any
+		if err := yaml.NodeToValue(doc.Body, &v); err != nil {
+			return nil, err
+		}
+		docs = append(docs, v)
+	}
+
+	return docs, nil
+}
+
+// sameMeaning compares two decoded values. It is [reflect.DeepEqual] except
+// that NaN equals NaN, which DeepEqual denies even for a value compared with
+// itself, so a `.nan` anywhere in a document would otherwise make every
+// rewrite of it look like a change.
+func sameMeaning(a, b any) bool {
+	switch x := a.(type) {
+	case float64:
+		y, ok := b.(float64)
+
+		return ok && (x == y || (math.IsNaN(x) && math.IsNaN(y)))
+	case []any:
+		y, ok := b.([]any)
+
+		return ok && slices.EqualFunc(x, y, sameMeaning)
+	case map[string]any:
+		y, ok := b.(map[string]any)
+
+		return ok && len(x) == len(y) && maps.EqualFunc(x, y, sameMeaning)
+	case map[any]any:
+		y, ok := b.(map[any]any)
+
+		return ok && len(x) == len(y) && maps.EqualFunc(x, y, sameMeaning)
+	default:
+		return reflect.DeepEqual(a, b)
+	}
 }
 
 // An aliasSite is one alias this rewrite may replace: an alias written as the
