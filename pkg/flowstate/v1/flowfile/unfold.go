@@ -6,10 +6,10 @@ import (
 
 	yaml "github.com/goccy/go-yaml"
 	"github.com/goccy/go-yaml/ast"
-	"github.com/goccy/go-yaml/parser"
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/picatz/flowstate/internal/strictyaml"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
 
@@ -217,7 +217,7 @@ func unfoldCompilesBack(value *v1.Value, candidate any, inSequence bool) bool {
 	if err != nil {
 		return false
 	}
-	file, err := parser.ParseBytes(encoded, 0)
+	file, err := strictyaml.ParseBytes(encoded, 0)
 	if err != nil {
 		return false
 	}

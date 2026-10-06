@@ -1405,6 +1405,15 @@ func eval(ctx context.Context, w *Workflow, inputs map[string]*Value) (*Workflow
 		// the call already.
 		err = WithFailureSensitiveValues(err, ExecutingSensitiveFromContext(ctx))
 
+		// A run parked at a wait nothing will answer is not failing: the durable
+		// driver holds it there, with nothing undone, and the receiver of a
+		// `respond_within:` webhook answers it running. Compensating would run
+		// registrations the held run never reaches, so it is handed back as it
+		// stands, with what it had done so far. See [ErrRunParked].
+		if errors.Is(err, ErrRunParked) {
+			return PartialTranscript(stepOutputs), err
+		}
+
 		// A cancellation compensates too, and it is the one case that cannot use
 		// the context it arrived on. Every call made with a cancelled context
 		// fails immediately, so compensating on `ctx` would attempt each entry,
@@ -1794,6 +1803,18 @@ func recordStepOutcome(ctx context.Context, node *Node, outputs *Node_Outputs, e
 		// step's own `timeout:` also arrives here as a context error and that
 		// one is an ordinary failure the policy exists to tolerate.
 		if ctx.Err() != nil && errors.Is(err, ctx.Err()) {
+			return fmt.Errorf("step %q: %w", node.GetId(), err)
+		}
+		// A park is no more a failure than a cancellation is: the durable driver
+		// holds the run at the wait, so a tolerated park would let the local run
+		// walk on through steps the held run never reaches. See [ErrRunParked].
+		//
+		// The step is still the one the run stopped on, so the partial transcript
+		// names it, as it names any step a run stops on: `expect.ran` and coverage
+		// read that record, and a wait the run reached must count as reached.
+		if errors.Is(err, ErrRunParked) {
+			scope.Outputs.StepValues[node.GetId()] = failureRecord(err)
+
 			return fmt.Errorf("step %q: %w", node.GetId(), err)
 		}
 		if !StepTolerates(node.GetPolicy(), ClassifyError(err)) {
@@ -2774,7 +2795,7 @@ func runStepWithPolicy(ctx context.Context, task *Task, policy *StepPolicy, scop
 		// per-attempt context stays uncaused, so [withCancellationCause] can tell
 		// them apart by whether a cause is present at all.
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeoutCause(ctx, timeouts.ScheduleToClose,
+		ctx, cancel = withClockTimeout(ctx, timeouts.ScheduleToClose,
 			&scheduleToCloseTimeoutCause{timeout: timeouts.ScheduleToClose})
 		defer cancel()
 	}
@@ -2861,8 +2882,13 @@ func runStepWithPolicy(ctx context.Context, task *Task, policy *StepPolicy, scop
 		// a duration this driver blocks on, and `flow test` needs a case
 		// whose stub fails on the first attempt and succeeds on a later one
 		// to run at test speed rather than spend the backoff for real.
+		clock := ClockFromContext(ctx)
+		backoff := clock.After(delay)
 		select {
 		case <-ctx.Done():
+			// The backoff is withdrawn on a budget's end: left pending it
+			// would pull a virtual clock to a moment this run never reached.
+			DiscardTimer(clock, backoff)
 			// Keep the failure that was waiting to be retried as the cause. The
 			// schedule-to-close budget is the fact that ended the step, but the
 			// dependency's last answer is still the evidence explaining what the
@@ -2873,7 +2899,7 @@ func runStepWithPolicy(ctx context.Context, task *Task, policy *StepPolicy, scop
 				return nil, &scheduleToCloseTimeoutError{timeout: timeouts.ScheduleToClose, err: err}
 			}
 			return nil, withCancellationCause(ctx, ctx.Err())
-		case <-ClockFromContext(ctx).After(delay):
+		case <-backoff:
 		}
 	}
 }
@@ -3046,7 +3072,7 @@ func runStepAttemptSpanned(ctx context.Context, task *Task, timeout time.Duratio
 func runStepAttempt(ctx context.Context, task *Task, timeout time.Duration, scope *Scope) (*Node_Outputs, error) {
 	if timeout > 0 {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, timeout)
+		ctx, cancel = withClockTimeout(ctx, timeout, nil)
 		defer cancel()
 	}
 	return task.EvalInScope(ctx, scope)

@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -204,6 +205,16 @@ type WebhookReceiver struct {
 	// See webhookaudit.go.
 	refusals *refusalLedger
 
+	// bearer is the deployment's trust policy as a verifier, and what checks the
+	// credential of a trigger declaring [v1.WebhookSchemeJWT]. Nil when the
+	// deployment was given none, which refuses such a trigger when the receiver
+	// is built.
+	bearer auth.Verifier
+
+	// trust is the policy bearer was built from, kept to read which entries
+	// exist. Never consulted to decide a delivery: that is the verifier's.
+	trust *auth.Policy
+
 	log *slog.Logger
 }
 
@@ -251,6 +262,21 @@ func WithWebhookClock(now func() time.Time) WebhookOption {
 			return
 		}
 		r.now = now
+	}
+}
+
+// WithWebhookTrust gives the receiver the deployment's trust policy, which is
+// what a trigger declaring `verify: {jwt: <name>}` needs: bearer verifies the
+// sender's token, and policy is the file it was built from, read once when the
+// receiver is built to refuse a name no entry has.
+//
+// Without it a trigger declaring `jwt` cannot be served, and building the
+// receiver says so; there is no reading in which an unchecked bearer scheme is
+// satisfied.
+func WithWebhookTrust(bearer auth.Verifier, policy *auth.Policy) WebhookOption {
+	return func(r *WebhookReceiver) {
+		r.bearer = bearer
+		r.trust = policy
 	}
 }
 
@@ -312,8 +338,11 @@ func WithWebhookLogger(log *slog.Logger) WebhookOption {
 func (s *FlowstateServer) NewWebhookReceiver(
 	ctx context.Context, namespace string, workflows []*v1.Workflow, store *secrets.Store, opts ...WebhookOption,
 ) (*WebhookReceiver, error) {
-	if store == nil {
-		return nil, fmt.Errorf("a webhook receiver needs a secret store: every trigger's `verify:` names a " +
+	// A store is required only by a deployment that serves a trigger signing with
+	// a key. One serving nothing but `verify: {jwt: ...}` has no key to resolve,
+	// and is refused below the moment a trigger that does appears.
+	if store == nil && slices.ContainsFunc(workflows, workflowNeedsSigningKeys) {
+		return nil, fmt.Errorf("a webhook receiver needs a secret store: a trigger's `verify:` names a " +
 			"key, and a deployment that cannot resolve one cannot check a delivery")
 	}
 
@@ -330,10 +359,14 @@ func (s *FlowstateServer) NewWebhookReceiver(
 	// namespace, or an empty one under a store built with
 	// [secrets.WithRequiredNamespace], is refused here rather than resolving a key
 	// in a tenant nobody chose.
-	resolver, err := store.For(secrets.Namespace(namespace))
-	if err != nil {
-		return nil, fmt.Errorf("scoping the signing keys of the webhooks served for namespace %q: %w",
-			namespace, err)
+	var resolver secrets.Resolver
+	if store != nil {
+		var err error
+		resolver, err = store.For(secrets.Namespace(namespace))
+		if err != nil {
+			return nil, fmt.Errorf("scoping the signing keys of the webhooks served for namespace %q: %w",
+				namespace, err)
+		}
 	}
 
 	// And the run half of that same namespace, asked now rather than on the first
@@ -427,6 +460,9 @@ func (r *WebhookReceiver) register(ctx context.Context, workflow *v1.Workflow, r
 	if err := v1.CheckWebhookSignalBridges(workflow); err != nil {
 		return fmt.Errorf("workflow %q cannot be served: %w", name, err)
 	}
+	if err := v1.CheckWebhookRespondTriggers(workflow); err != nil {
+		return fmt.Errorf("workflow %q cannot be served: %w", name, err)
+	}
 
 	// And the half a *deployment* answers, asked now rather than on the first
 	// delivery. [FlowstateServer.validateSpecification] is the specification-only
@@ -454,6 +490,10 @@ func (r *WebhookReceiver) register(ctx context.Context, workflow *v1.Workflow, r
 
 	routes := make(map[string]*webhookRoute, len(triggers))
 	for _, trigger := range triggers {
+		if err := r.checkBearerScheme(name, trigger); err != nil {
+			return err
+		}
+
 		keys, err := resolveWebhookKeys(ctx, name, trigger, resolver)
 		if err != nil {
 			return err
@@ -469,6 +509,50 @@ func (r *WebhookReceiver) register(ctx context.Context, workflow *v1.Workflow, r
 	return nil
 }
 
+// checkBearerScheme refuses, when the receiver is built, a `jwt` scheme this
+// deployment could not honour: no trust policy to check a token against, or a
+// name no bearer entry of it has.
+//
+// Asked now rather than on a delivery for the reason keys are resolved now: the
+// alternative is an endpoint that starts, is advertised, and refuses every
+// genuine delivery with the reason in a log line. Only an `oidc` entry can vouch
+// for a bearer token; an `mtls` entry of the same name is a certificate
+// authority, and naming it here is a mistake worth stopping the server for.
+func (r *WebhookReceiver) checkBearerScheme(workflow string, trigger *v1.WebhookTrigger) error {
+	issuer, declared := v1.WebhookJWTIssuer(trigger)
+	if !declared {
+		return nil
+	}
+
+	if r.bearer == nil || r.trust == nil {
+		return fmt.Errorf("workflow %q, webhook %q: `verify: {jwt: %s}` names a trusted issuer and this "+
+			"deployment holds no trust policy to check a token against; start the server with --auth-policy "+
+			"(it cannot be combined with --insecure-no-auth)", workflow, trigger.GetName(), issuer)
+	}
+
+	for _, entry := range r.trust.Issuers {
+		if entry.Name != issuer {
+			continue
+		}
+		if entry.Kind == "" || entry.Kind == auth.IssuerKindOIDC {
+			return nil
+		}
+
+		return fmt.Errorf("workflow %q, webhook %q: trust policy entry %q is kind %q, which vouches for a "+
+			"certificate and not a bearer token; `jwt` names a kind %q entry",
+			workflow, trigger.GetName(), issuer, entry.Kind, auth.IssuerKindOIDC)
+	}
+
+	return fmt.Errorf("workflow %q, webhook %q: `verify: {jwt: %s}` names no entry of this deployment's trust "+
+		"policy; the entries are named by `name:` in the policy file", workflow, trigger.GetName(), issuer)
+}
+
+// workflowNeedsSigningKeys reports whether any webhook a workflow declares is
+// checked with a secret key. See [v1.WebhookNeedsSigningKeys].
+func workflowNeedsSigningKeys(workflow *v1.Workflow) bool {
+	return slices.ContainsFunc(workflow.GetTriggers().GetWebhooks(), v1.WebhookNeedsSigningKeys)
+}
+
 // resolveWebhookKeys resolves every key a trigger's `verify:` names, refusing the
 // configuration if any of them cannot be reached.
 //
@@ -481,6 +565,12 @@ func resolveWebhookKeys(
 ) (map[string]secrets.Secret, error) {
 	keys := make(map[string]secrets.Secret, len(trigger.GetVerify()))
 	for scheme, value := range trigger.GetVerify() {
+		if scheme == v1.WebhookSchemeJWT {
+			// A name in the trust policy, checked by [WebhookReceiver.checkBearerScheme]
+			// and holding no key to resolve.
+			continue
+		}
+
 		ref := value.GetSecretRef()
 		if ref == nil {
 			// CheckWebhookTriggers above already refused this, so reaching it
@@ -608,7 +698,9 @@ func (r *WebhookReceiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 
 	headers := webhookHeaders(req.Header)
-	if err := v1.VerifyWebhookDelivery(route.trigger, route.keys, headers, body, r.now()); err != nil {
+	sender, err := v1.VerifyWebhookDeliveryAs(req.Context(), route.trigger, route.keys, r.bearer, r.namespace,
+		headers, body, r.now())
+	if err != nil {
 		r.refuse(req, "the delivery did not verify",
 			"workflow", route.workflow.GetName(), "webhook", route.trigger.GetName(), "error", err)
 		writeWebhookRefusal(w)
@@ -617,6 +709,13 @@ func (r *WebhookReceiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		cancelUnverified()
 
 		return
+	}
+
+	// From here the delivery acts as the sender its token named, when it had
+	// one. Put on the context rather than passed beside it so that every record
+	// and every policy below reads the same principal.
+	if sender != nil {
+		req = req.WithContext(withWebhookSender(req.Context(), *sender))
 	}
 
 	// Only now is anything the delivery chose parsed, which is the order
@@ -658,7 +757,7 @@ func (r *WebhookReceiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		// serialize peer-chosen `traceparent`/`tracestate` into RunState and
 		// history. The receiver has already consumed them, from the original
 		// request headers, as the delivery span's link — see `withoutTraceHeaders`.
-		Headers: withoutTraceHeaders(headers),
+		Headers: withoutAuthorization(withoutTraceHeaders(headers)),
 		Body:    decoded,
 
 		// True because verification above said so, and set here rather than
@@ -770,6 +869,16 @@ func (r *WebhookReceiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		"workflow", route.workflow.GetName(), "webhook", route.trigger.GetName(),
 		"delivery", accepted.DeliveryID, "run", accepted.RunID, "joined", accepted.Joined)
 
+	if within := route.trigger.GetRespondWithin(); within != nil {
+		// Held open for the run's answer, a start's only: `signal:` is refused
+		// beside `respond_within:` when the file compiles. The status code is
+		// the document's own, so the two never disagree about the delivery.
+		document := r.awaitRun(ctx, route, accepted, within.AsDuration())
+		writeWebhookJSON(w, document.HTTPStatus(), document)
+
+		return
+	}
+
 	status := http.StatusAccepted
 	if accepted.Joined {
 		// 200 rather than 202: nothing was accepted for processing, because this
@@ -779,28 +888,6 @@ func (r *WebhookReceiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		status = http.StatusOK
 	}
 	writeWebhookJSON(w, status, accepted)
-}
-
-// AcceptedDelivery is what a receiver answers a sender with.
-//
-// Deliberately small. It names the run so a sender can correlate, and says whether
-// this delivery started it, and nothing else: a response body is the one part of
-// this exchange an attacker who *does* hold the signing key can read, so it
-// carries no specification, no inputs and no deployment detail.
-type AcceptedDelivery struct {
-	// WorkflowID is the run's addressable id, derived from the idempotency key.
-	WorkflowID string `json:"workflow_id"`
-
-	// RunID is the Temporal run this delivery started or joined.
-	RunID string `json:"run_id"`
-
-	// DeliveryID names the delivery, and is what provenance records — a digest of
-	// the idempotency key rather than the key itself. See [v1.WebhookDeliveryID].
-	DeliveryID string `json:"delivery_id"`
-
-	// Joined is true when this delivery was a redelivery: the run already
-	// existed, and no second one was started.
-	Joined bool `json:"joined"`
 }
 
 // route resolves a request path to what serves it.
@@ -847,7 +934,7 @@ func (r *WebhookReceiver) route(path string) (*webhookRoute, bool) {
 // between a success and an error. Refusing would be the same amount of dedupe and
 // a worse answer — a provider that reads a 4xx as "this event was rejected" would
 // keep retrying or start alerting about a delivery that in fact succeeded.
-func (r *WebhookReceiver) start(ctx context.Context, route *webhookRoute, delivery v1.WebhookDelivery) (AcceptedDelivery, error) {
+func (r *WebhookReceiver) start(ctx context.Context, route *webhookRoute, delivery v1.WebhookDelivery) (v1.AcceptedDelivery, error) {
 	// The mapping, which is the one function `flow test` replays offline and the
 	// receiver calls here — never a second binding path. It checks the trigger,
 	// refuses an unverified delivery, evaluates `with:` and `idempotency_key:`
@@ -855,7 +942,7 @@ func (r *WebhookReceiver) start(ctx context.Context, route *webhookRoute, delive
 	// the same [v1.BindRunInputs] every other entry path uses.
 	inputs, key, err := v1.BindWebhookTriggerInputs(ctx, route.workflow, route.trigger, delivery)
 	if err != nil {
-		return AcceptedDelivery{}, err
+		return v1.AcceptedDelivery{}, err
 	}
 
 	// Cloned because the submission pipeline writes to the specification it is
@@ -870,7 +957,7 @@ func (r *WebhookReceiver) start(ctx context.Context, route *webhookRoute, delive
 	// entry path with laxer rules than the one a person uses.
 	bound, err := r.server.validateSubmission(spec, inputs)
 	if err != nil {
-		return AcceptedDelivery{}, err
+		return v1.AcceptedDelivery{}, err
 	}
 
 	// The principal a delivery acts as. A sender holds no Flowstate credential,
@@ -888,7 +975,7 @@ func (r *WebhookReceiver) start(ctx context.Context, route *webhookRoute, delive
 
 	memo, temporal, options, err := r.server.prepareCreate(ctx, identity, spec, bound)
 	if err != nil {
-		return AcceptedDelivery{}, err
+		return v1.AcceptedDelivery{}, err
 	}
 
 	deliveryID := v1.WebhookDeliveryID(route.workflow.GetName(), route.trigger.GetName(), key)
@@ -915,7 +1002,7 @@ func (r *WebhookReceiver) start(ctx context.Context, route *webhookRoute, delive
 	// The decision, written down before the start it permits: this delivery
 	// verified, mapped, bound and weighed, and may start the run its key names.
 	if err := r.admitted(ctx, identity, options.ID, deliveryID, false); err != nil {
-		return AcceptedDelivery{}, err
+		return v1.AcceptedDelivery{}, err
 	}
 
 	run, err := temporal.ExecuteWorkflow(ctx, options, engine.Run, &v1.RunState{
@@ -941,10 +1028,10 @@ func (r *WebhookReceiver) start(ctx context.Context, route *webhookRoute, delive
 			// naming the run it was answered with. See [WebhookReceiver.admitted]
 			// for why this one is written after the attempt.
 			if err := r.admitted(ctx, identity, options.ID, deliveryID, true); err != nil {
-				return AcceptedDelivery{}, err
+				return v1.AcceptedDelivery{}, err
 			}
 
-			return AcceptedDelivery{
+			return v1.AcceptedDelivery{
 				WorkflowID: options.ID,
 				RunID:      already.RunId,
 				DeliveryID: deliveryID,
@@ -952,10 +1039,10 @@ func (r *WebhookReceiver) start(ctx context.Context, route *webhookRoute, delive
 			}, nil
 		}
 
-		return AcceptedDelivery{}, fmt.Errorf("%w: %w", errDeliveryNotStarted, err)
+		return v1.AcceptedDelivery{}, fmt.Errorf("%w: %w", errDeliveryNotStarted, err)
 	}
 
-	return AcceptedDelivery{
+	return v1.AcceptedDelivery{
 		WorkflowID: options.ID,
 		RunID:      run.GetRunID(),
 		DeliveryID: deliveryID,
@@ -988,7 +1075,7 @@ func (r *WebhookReceiver) start(ctx context.Context, route *webhookRoute, delive
 // therefore answered exactly as the first delivery was, which is what a dedupe
 // key promises a sender — the difference between them is invisible from
 // outside, and is the engine's to make, not the receiver's.
-func (r *WebhookReceiver) answer(ctx context.Context, route *webhookRoute, delivery v1.WebhookDelivery) (AcceptedDelivery, error) {
+func (r *WebhookReceiver) answer(ctx context.Context, route *webhookRoute, delivery v1.WebhookDelivery) (v1.AcceptedDelivery, error) {
 	// The mapping, which is the one function `flow test` replays offline and
 	// this calls rather than reimplements. It checks the trigger and the bridge,
 	// refuses an unverified delivery, and only then evaluates `correlate:`,
@@ -996,7 +1083,7 @@ func (r *WebhookReceiver) answer(ctx context.Context, route *webhookRoute, deliv
 	// [v1.DefaultCostLimit].
 	entityKey, payload, key, err := v1.BindWebhookTriggerSignal(ctx, route.workflow, route.trigger, delivery)
 	if err != nil {
-		return AcceptedDelivery{}, err
+		return v1.AcceptedDelivery{}, err
 	}
 
 	// Scoped to this source, which is what makes the run's per-run consumed set
@@ -1012,11 +1099,7 @@ func (r *WebhookReceiver) answer(ctx context.Context, route *webhookRoute, deliv
 	// everything below reads the caller the way every other verb does, from
 	// [FlowstateServer.identityFor]: a bridge that derived its own answer would
 	// be a second identity path with the same name.
-	ctx = auth.ContextWithPrincipal(ctx, auth.Principal{
-		Issuer:    webhookIssuer,
-		Subject:   v1.WebhookTriggerSubject(route.workflow.GetName(), route.trigger.GetName()),
-		Namespace: r.namespace,
-	})
+	ctx = auth.ContextWithPrincipal(ctx, r.actingPrincipal(ctx, route))
 	identity := r.server.identityFor(ctx)
 
 	// Stable-key addressing, composed exactly as `Run` and `SignalWithStart`
@@ -1025,7 +1108,7 @@ func (r *WebhookReceiver) answer(ctx context.Context, route *webhookRoute, deliv
 	// holder inside the tenant their trigger was configured in.
 	workflowID, err := v1.EntityWorkflowID(identity.GetNamespace(), entityKey)
 	if err != nil {
-		return AcceptedDelivery{}, r.denied(ctx, route, identity,
+		return v1.AcceptedDelivery{}, r.denied(ctx, route, identity,
 			v1.AuditResourceKind_AUDIT_RESOURCE_KIND_WEBHOOK_ROUTE, webhookRouteKey(route),
 			v1.AuditDenyCode_AUDIT_DENY_CODE_BINDING_FAILED,
 			fmt.Errorf("%w: %w", errDeliveryUnaddressed, err))
@@ -1050,10 +1133,10 @@ func (r *WebhookReceiver) answer(ctx context.Context, route *webhookRoute, deliv
 		refusal := fmt.Errorf("%w: no run is waiting under entity key %q in this webhook's tenant",
 			errDeliveryUnaddressed, entityKey)
 		if code == v1.AuditDenyCode_AUDIT_DENY_CODE_UNSPECIFIED {
-			return AcceptedDelivery{}, refusal
+			return v1.AcceptedDelivery{}, refusal
 		}
 
-		return AcceptedDelivery{}, r.denied(ctx, route, identity,
+		return v1.AcceptedDelivery{}, r.denied(ctx, route, identity,
 			v1.AuditResourceKind_AUDIT_RESOURCE_KIND_RUN, workflowID, code, refusal)
 	}
 
@@ -1081,7 +1164,7 @@ func (r *WebhookReceiver) answer(ctx context.Context, route *webhookRoute, deliv
 		// Recorded as not found, which is what the sender is told and the
 		// oracle bound above is about: the run is not one this webhook can
 		// reach, and the trail says so without naming which workflow it was.
-		return AcceptedDelivery{}, r.denied(ctx, route, identity,
+		return v1.AcceptedDelivery{}, r.denied(ctx, route, identity,
 			v1.AuditResourceKind_AUDIT_RESOURCE_KIND_RUN, workflowID,
 			v1.AuditDenyCode_AUDIT_DENY_CODE_RESOURCE_NOT_FOUND,
 			fmt.Errorf("%w: entity key %q names a run this webhook's workflow does "+
@@ -1102,7 +1185,7 @@ func (r *WebhookReceiver) answer(ctx context.Context, route *webhookRoute, deliv
 	// checked by, before Temporal sees anything. A refusal here never reaches
 	// the workflow at all.
 	if err := r.server.authorizeSignal(resp, name, sender); err != nil {
-		return AcceptedDelivery{}, r.denied(ctx, route, identity,
+		return v1.AcceptedDelivery{}, r.denied(ctx, route, identity,
 			v1.AuditResourceKind_AUDIT_RESOURCE_KIND_RUN, workflowID,
 			v1.AuditDenyCode_AUDIT_DENY_CODE_POLICY_DENIED,
 			fmt.Errorf("%w: %w", errDeliveryRefused, err))
@@ -1114,7 +1197,7 @@ func (r *WebhookReceiver) answer(ctx context.Context, route *webhookRoute, deliv
 	// that cannot record refuses the delivery rather than proceeding
 	// unrecorded, which the sender may retry.
 	if err := r.admitted(ctx, identity, workflowID, deliveryID, true); err != nil {
-		return AcceptedDelivery{}, err
+		return v1.AcceptedDelivery{}, err
 	}
 
 	runID := resp.GetWorkflowExecutionInfo().GetExecution().GetRunId()
@@ -1128,10 +1211,10 @@ func (r *WebhookReceiver) answer(ctx context.Context, route *webhookRoute, deliv
 		Payload: payload,
 		Sender:  sender,
 	}); err != nil {
-		return AcceptedDelivery{}, fmt.Errorf("%w: %w", errDeliveryNotStarted, err)
+		return v1.AcceptedDelivery{}, fmt.Errorf("%w: %w", errDeliveryNotStarted, err)
 	}
 
-	return AcceptedDelivery{
+	return v1.AcceptedDelivery{
 		WorkflowID: workflowID,
 		RunID:      runID,
 		DeliveryID: deliveryID,
@@ -1203,6 +1286,17 @@ func decodeDeliveryBody(body []byte) (any, error) {
 	}
 
 	return v1.NormalizeDeliveryNumbers(decoded), nil
+}
+
+// withoutAuthorization removes the credential [v1.WebhookSchemeJWT] verified from
+// the headers a delivery carries onward. [v1.NewWebhookEvent] drops it too; this
+// is the receiver's own half, so a delivery value never holds a bearer token
+// whatever reads it next. Mutates the map it is given, which is always a copy
+// [withoutTraceHeaders] just made.
+func withoutAuthorization(headers map[string]string) map[string]string {
+	delete(headers, v1.WebhookAuthorizationHeader)
+
+	return headers
 }
 
 // webhookHeaders flattens a request's headers into what `event.headers` holds.
@@ -1281,9 +1375,10 @@ func recordContext(req *http.Request) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.WithoutCancel(req.Context()), webhookRecordTimeout)
 }
 
-// writeWebhookJSON answers an accepted delivery.
-func writeWebhookJSON(w http.ResponseWriter, status int, accepted AcceptedDelivery) {
+// writeWebhookJSON answers an accepted delivery: the address alone, or the
+// document a waiting trigger builds around it.
+func writeWebhookJSON(w http.ResponseWriter, status int, document any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(accepted)
+	_ = json.NewEncoder(w).Encode(document)
 }

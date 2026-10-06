@@ -48,21 +48,22 @@ outputs:
     value: ${"hello, " + inputs.who}
 EOF
 $ API=http://localhost:9233/flowstate.v1.WorkflowService
-$ SRC=$(base64 -w0 hello.yaml)       # bytes fields are base64 in JSON; on macOS, base64 -i hello.yaml
 ```
 
 Validate and compile it:
 
 ```console
 $ curl -sS -X POST $API/Validate -H 'Content-Type: application/json' \
-    -d "{\"files\":[{\"name\":\"hello.yaml\",\"source\":\"$SRC\"}]}"
+    -d "$(jq -Rs '{files: [{name: "hello.yaml", source: .}]}' hello.yaml)"
 {"report":{"files":[{"file":"hello.yaml"}]}}
 
 $ curl -sS -X POST $API/Compile -H 'Content-Type: application/json' \
-    -d "{\"file\":{\"name\":\"hello.yaml\",\"source\":\"$SRC\"}}" > compiled.json
+    -d "$(jq -Rs '{file: {name: "hello.yaml", source: .}}' hello.yaml)" > compiled.json
 ```
 
-A file entry with no `diagnostics` is clean. A file that does not compile is not
+`source` is the Flowfile as plain YAML text, so `jq -Rs` is all the encoding it
+needs; a document that is not valid UTF-8 is refused as a whole request, not
+reported as a diagnostic. A file entry with no `diagnostics` is clean. A file that does not compile is not
 an RPC error: `Compile` answers with the diagnostics in `report` and no
 `workflow`.
 
@@ -88,7 +89,8 @@ or read its history with `GetTimeline`.
 
 - Field names are protojson lowerCamelCase: `workflowId`, `requestId`.
 - Enums are strings: `STATUS_COMPLETED`.
-- `bytes` fields, such as a source file, are base64. 64-bit integers are strings.
+- `bytes` fields are base64. A Flowfile in a `source` field is plain YAML text, as
+  it is for every other authoring tool. 64-bit integers are strings.
 - A value is a tagged union. Inputs, signal payloads, and outputs use
   `{"literal": {"stringValue": "…"}}`, `{"literal": {"int64Value": "3"}}`,
   `{"literal": {"boolValue": true}}`, and so on. Inputs and signal payloads must

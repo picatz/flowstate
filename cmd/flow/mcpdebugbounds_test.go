@@ -427,7 +427,7 @@ func TestAStubbedSessionFencesTheRegistryOverStdio(t *testing.T) {
 		t.Helper()
 		result, err := client.CallTool(t.Context(), &mcp.CallToolParams{
 			Name:      flowmcp.ToolName("Validate"),
-			Arguments: map[string]any{"files": []map[string]any{{"name": "wf.yaml", "source": []byte(debugWorkflow)}}},
+			Arguments: map[string]any{"files": []map[string]any{{"name": "wf.yaml", "source": debugWorkflow}}},
 		})
 		require.NoError(t, err)
 

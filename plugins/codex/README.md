@@ -327,7 +327,7 @@ a Flowfile author, a prompt, or the model's own output — controls (see
 | Bound | What it limits |
 | --- | --- |
 | `maxPromptBytes`, `maxModelBytes`, `maxWorkingContextBytes` | Input string sizes, checked before anything reaches the subprocess |
-| `max_output_bytes` (default 256 KiB, ceiling 4 MiB) | The combined size of `final_message`, `patch`, and every event summary |
+| `max_output_bytes` (default 256 KiB, ceiling 288 KiB: the host's `flowstatev1.MaxTaskOutputBytes` less a 256 KiB envelope, over 6 for JSON escaping) | The combined size of `final_message`, `patch`, and every event summary |
 | `max_events` (default 200, ceiling 2000) | How many `EventSummary` entries `codex.exec` returns - enforced at collection time, not only when the response is built |
 | `maxFinalMessageBytes`, `maxEventSummaryBytes` | Individual text fields, so one enormous field cannot consume the whole output budget |
 | `maxPatchBytes`, `maxDiffFiles` | The rendered diff and its file list, independently - a rename-heavy run can have many files and a small patch, or the reverse |

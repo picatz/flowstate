@@ -1055,7 +1055,20 @@ type FuzzFinding struct {
 	// own values for them.
 	Inputs string `protobuf:"bytes,3,opt,name=inputs,proto3" json:"inputs,omitempty"`
 	// Failure is what went wrong, withheld as the case's own report withholds.
-	Failure       string `protobuf:"bytes,4,opt,name=failure,proto3" json:"failure,omitempty"`
+	Failure string `protobuf:"bytes,4,opt,name=failure,proto3" json:"failure,omitempty"`
+	// Absent names the inputs the case supplies that the generated run left out,
+	// which an `inputs:` overlay cannot say: remove them from the case to
+	// reproduce. Sorted, and never a `sensitive:` input.
+	Absent []string `protobuf:"bytes,5,rep,name=absent,proto3" json:"absent,omitempty"`
+	// Changed is how many inputs the seed changed from the case's own before the
+	// finding was shrunk; Inputs and Absent hold what is left of them.
+	Changed int32 `protobuf:"varint,6,opt,name=changed,proto3" json:"changed,omitempty"`
+	// ShrinkRuns is how many re-runs of the case the shrink spent putting inputs
+	// back at the case's own values; one means the first replay was all it took.
+	ShrinkRuns int32 `protobuf:"varint,7,opt,name=shrink_runs,json=shrinkRuns,proto3" json:"shrink_runs,omitempty"`
+	// Minimal reports that putting any one remaining input back at the case's own
+	// value stopped the failure; false when the budget ended the search first.
+	Minimal       bool `protobuf:"varint,8,opt,name=minimal,proto3" json:"minimal,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1116,6 +1129,34 @@ func (x *FuzzFinding) GetFailure() string {
 		return x.Failure
 	}
 	return ""
+}
+
+func (x *FuzzFinding) GetAbsent() []string {
+	if x != nil {
+		return x.Absent
+	}
+	return nil
+}
+
+func (x *FuzzFinding) GetChanged() int32 {
+	if x != nil {
+		return x.Changed
+	}
+	return 0
+}
+
+func (x *FuzzFinding) GetShrinkRuns() int32 {
+	if x != nil {
+		return x.ShrinkRuns
+	}
+	return 0
+}
+
+func (x *FuzzFinding) GetMinimal() bool {
+	if x != nil {
+		return x.Minimal
+	}
+	return false
 }
 
 // CoverageReport is `flow test`'s branch-coverage account for one workflow:
@@ -1512,12 +1553,17 @@ const file_flowstate_v1_reports_proto_rawDesc = "" +
 	"\x05cases\x18\x02 \x01(\x05R\x05cases\x12\"\n" +
 	"\finconclusive\x18\x03 \x01(\x05R\finconclusive\x12%\n" +
 	"\x0eskipped_inputs\x18\x04 \x03(\tR\rskippedInputs\x123\n" +
-	"\afinding\x18\x05 \x01(\v2\x19.flowstate.v1.FuzzFindingR\afinding\"g\n" +
+	"\afinding\x18\x05 \x01(\v2\x19.flowstate.v1.FuzzFindingR\afinding\"\xd4\x01\n" +
 	"\vFuzzFinding\x12\x12\n" +
 	"\x04case\x18\x01 \x01(\tR\x04case\x12\x12\n" +
 	"\x04seed\x18\x02 \x01(\x04R\x04seed\x12\x16\n" +
 	"\x06inputs\x18\x03 \x01(\tR\x06inputs\x12\x18\n" +
-	"\afailure\x18\x04 \x01(\tR\afailure\"\x8e\x03\n" +
+	"\afailure\x18\x04 \x01(\tR\afailure\x12\x16\n" +
+	"\x06absent\x18\x05 \x03(\tR\x06absent\x12\x18\n" +
+	"\achanged\x18\x06 \x01(\x05R\achanged\x12\x1f\n" +
+	"\vshrink_runs\x18\a \x01(\x05R\n" +
+	"shrinkRuns\x12\x18\n" +
+	"\aminimal\x18\b \x01(\bR\aminimal\"\x8e\x03\n" +
 	"\x0eCoverageReport\x12\x1a\n" +
 	"\bworkflow\x18\x01 \x01(\tR\bworkflow\x12\x1f\n" +
 	"\vsteps_total\x18\x02 \x01(\x05R\n" +

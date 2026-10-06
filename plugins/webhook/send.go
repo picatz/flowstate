@@ -123,8 +123,8 @@ func validateSend(in *webhookv1.SendInputs) error {
 	if len(in.GetBody()) > maxBodyBytes {
 		return sdk.InvalidInput("body must be no longer than %d bytes", maxBodyBytes)
 	}
-	if !flowstatev1.KnownWebhookVerificationScheme(schemeOf(in)) {
-		return sdk.InvalidInput("scheme must be one of %s", strings.Join(flowstatev1.WebhookVerificationSchemes(), ", "))
+	if !slices.Contains(flowstatev1.WebhookSigningSchemes(), schemeOf(in)) {
+		return sdk.InvalidInput("scheme must be one of %s", strings.Join(flowstatev1.WebhookSigningSchemes(), ", "))
 	}
 	if k := in.GetIdempotencyKey(); len(k) > maxIdempotencyKeyBytes || !printableASCII(k) {
 		return sdk.InvalidInput("idempotency_key must be at most %d printable ASCII characters", maxIdempotencyKeyBytes)

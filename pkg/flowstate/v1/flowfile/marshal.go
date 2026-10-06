@@ -3,16 +3,15 @@ package flowfile
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/picatz/flowstate/internal/strictyaml"
 	"maps"
 	"slices"
 	"strings"
 	"time"
 
 	yaml "github.com/goccy/go-yaml"
-	"github.com/goccy/go-yaml/parser"
 	"github.com/google/cel-go/cel"
 
+	"github.com/picatz/flowstate/internal/strictyaml"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 	"google.golang.org/protobuf/types/known/durationpb"
@@ -1187,7 +1186,7 @@ func survivesATrailingComment(encoded []byte, s string) bool {
 // Unreadable bytes report true, which is the fail-closed reading: unable to tell
 // whether reading this expands something is not the same as knowing it does not.
 func expandsWhenRead(encoded []byte) bool {
-	file, err := parser.ParseBytes(encoded, 0)
+	file, err := strictyaml.ParseBytes(encoded, 0)
 	if err != nil {
 		return true
 	}

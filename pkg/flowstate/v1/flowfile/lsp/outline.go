@@ -7,8 +7,8 @@ import (
 	"sync/atomic"
 
 	"github.com/goccy/go-yaml/ast"
-	"github.com/goccy/go-yaml/parser"
 
+	"github.com/picatz/flowstate/internal/strictyaml"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
 
@@ -181,7 +181,7 @@ func yamlStringScalar(src string) (string, bool) {
 		}
 	}
 
-	f, err := parser.ParseBytes([]byte(src), 0)
+	f, err := strictyaml.ParseBytes([]byte(src), 0)
 	if err != nil || len(f.Docs) != 1 || f.Docs[0].Body == nil {
 		return "", false
 	}
@@ -464,7 +464,7 @@ func scalarText(rest string) string {
 	if strings.TrimSpace(rest) == "" {
 		return ""
 	}
-	f, err := parser.ParseBytes([]byte(rest), 0)
+	f, err := strictyaml.ParseBytes([]byte(rest), 0)
 	if err != nil || len(f.Docs) != 1 || f.Docs[0].Body == nil {
 		return ""
 	}

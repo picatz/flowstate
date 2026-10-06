@@ -218,7 +218,7 @@ func TestEveryDeclarableSchemeIsImplemented(t *testing.T) {
 	key := signingKey("whsec_test")
 	body := []byte(`{"id":"evt_1"}`)
 
-	for _, scheme := range v1.WebhookVerificationSchemes() {
+	for _, scheme := range v1.WebhookSigningSchemes() {
 		trigger := hmacTrigger()
 		trigger.Verify = map[string]*v1.Value{
 			scheme: {Kind: &v1.Value_SecretRef{
@@ -247,7 +247,7 @@ func TestEveryDeclarableSchemeCanBeSigned(t *testing.T) {
 	body := []byte(`{"id":"evt_1"}`)
 	now := time.Unix(1755043200, 0)
 
-	for _, scheme := range v1.WebhookVerificationSchemes() {
+	for _, scheme := range v1.WebhookSigningSchemes() {
 		trigger := hmacTrigger()
 		trigger.Verify = map[string]*v1.Value{scheme: {Kind: &v1.Value_SecretRef{
 			SecretRef: &v1.SecretRef{Scheme: "env", Name: "WEBHOOK_SECRET"},

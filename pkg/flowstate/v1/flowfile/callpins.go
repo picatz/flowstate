@@ -6,6 +6,8 @@ import (
 
 	"github.com/goccy/go-yaml/ast"
 	"github.com/goccy/go-yaml/parser"
+
+	"github.com/picatz/flowstate/internal/strictyaml"
 )
 
 // Reading the `digest:` pins a file wrote, from the file rather than from what
@@ -131,7 +133,7 @@ type sourcePin struct {
 // Flowfile, its exported contract does not get to assume is well-formed) cannot
 // make it write a pin that names nothing.
 func sourcePins(source []byte) (map[string]sourcePin, error) {
-	file, err := parser.ParseBytes(source, parser.ParseComments)
+	file, err := strictyaml.ParseBytes(source, parser.ParseComments)
 	if err != nil {
 		// The caller compiled this source, so it parses. Refusing rather than
 		// carrying on is the fail-closed reading, the same one sourceComments

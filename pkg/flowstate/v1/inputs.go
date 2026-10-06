@@ -172,6 +172,12 @@ func bindRunInputs(wf *Workflow, profile string, submitted map[string]*Value) (m
 		return nil, err
 	}
 
+	// And the bound a webhook holds a delivery open for, which names a signal
+	// bridge or a workflow with no outputs as the contradictions they are.
+	if err := CheckWebhookRespondTriggers(wf); err != nil {
+		return nil, err
+	}
+
 	// And the fourth, for the fourth time the same reason applies. A `manual:`
 	// block that both refuses manual starts and narrows them satisfies the
 	// schema perfectly — protovalidate has nothing to say about two booleans

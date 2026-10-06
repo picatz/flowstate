@@ -715,6 +715,13 @@ type runFacts struct {
 	// root names the workflow under test, whose steps `run.invocations.step`
 	// counts.
 	root string
+
+	// signalsDropped names the signals a `signal:` fault lost a delivery of,
+	// sorted.
+	signalsDropped []string
+
+	// signalsDelayed names the signals a `signal:` fault made late, sorted.
+	signalsDelayed []string
 }
 
 // newRunFacts gathers what a finished run is judged on.
@@ -722,7 +729,11 @@ func newRunFacts(runErr error, log *invocationLog, root string) runFacts {
 	return runFacts{err: runErr, undone: v1.UndoResultsOf(runErr), invocations: log, root: root}
 }
 
-// bind adds the compensation and invocation facts to the `run` root.
+// bind adds the compensation, signal and invocation facts to the `run` root.
+//
+// signals.dropped lists the signals a `faults:` entry lost a delivery of, and
+// signals.delayed those it made late; both are always
+// present, empty when nothing happened.
 //
 // compensated and uncompensated are lists of step ids, in the order the
 // compensations ran (reverse registration): a step whose `undo:` succeeded is
@@ -746,6 +757,15 @@ func (f runFacts) bind(root map[string]any) {
 	}
 	root["compensated"] = compensated
 	root["uncompensated"] = uncompensated
+	dropped := make([]any, 0, len(f.signalsDropped))
+	for _, name := range f.signalsDropped {
+		dropped = append(dropped, name)
+	}
+	delayed := make([]any, 0, len(f.signalsDelayed))
+	for _, name := range f.signalsDelayed {
+		delayed = append(delayed, name)
+	}
+	root["signals"] = map[string]any{"dropped": dropped, "delayed": delayed}
 
 	if f.invocations == nil || f.invocations.truncated() {
 		return

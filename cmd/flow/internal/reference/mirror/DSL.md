@@ -1866,8 +1866,8 @@ second input path is one `flow validate` could not check. A step *called* `event
 still legal — the name is not reserved, since inside a trigger there is no step scope
 for it to shadow — and `flow fix` knows the binding, so it will not root it.
 
-**Two keys are required, and fail closed.** `verify:` names at least one signing
-scheme (`hmac_sha256` or `stripe`) bound to a `${secret(...)}` reference: there is
+**Two keys are required, and fail closed.** `verify:` names at least one verification
+scheme (`hmac_sha256` or `stripe`, bound to a `${secret(...)}` reference, or `jwt`, bound to the name of a trust policy entry): there is
 deliberately no spelling that means "accept anything", so an unverifiable delivery is
 refused rather than allowed on the grounds that it could not be checked, and a webhook
 with no scheme is inert rather than permissive. `idempotency_key:` names one delivery,
@@ -1935,6 +1935,46 @@ event.body.id : "ignored"}` collapses every uninteresting delivery onto one phan
 run and dedupes *across* event types. Write the filter in `when:` and the key over the
 event's id.
 
+**`respond_within:` answers the delivery with what the run produced.** A receiver
+answers a delivery with the run's address and nothing else, which suits a provider
+that only needs to know the event landed and not a form that needs the order number
+in the same exchange. `respond_within:` is the bound on a wait for that:
+
+```yaml
+- webhook: checkout
+  verify: { hmac_sha256: ${secret('env:CHECKOUT_WEBHOOK_SECRET')} }
+  idempotency_key: ${event.body.id}
+  with: { order_id: ${event.body.order_id} }
+  respond_within: 5s
+```
+
+The receiver starts the run (or joins the one a redelivery names), waits at most that
+long for it, and answers one JSON document. The HTTP status keeps its meaning, a
+delivery disposition: a 2xx says the delivery landed and must not be retried,
+whatever the run then did. `status` says what the run did:
+
+| Document | When |
+| --- | --- |
+| `200 {…, "status": "completed", "outputs": {…}}` | The run finished. `outputs` is the run's declared `outputs:` in the plain-JSON projection `flow get -o json` uses, and nothing else: never a step's output. |
+| `200 {…, "status": "failed", "error": {"message": …}}` | The run failed. The sentence `flow get` reports, never a stack, with sensitive input values removed. |
+| `202 {…, "status": "running"}` | The bound passed first, the sender hung up, or the answer would exceed 1 MiB. The run continues; read it with `flow get`. A redelivery that joined a running run is `200` with `joined: true`, as it is without the field. |
+
+The bound is the field, 100ms to 30s, and there is no default: a wait nobody wrote
+down would hold a receiver slot for as long as a run takes. It is refused beside
+`signal:` (a bridge starts no run to wait for) and in a workflow with no `outputs:`
+(nothing to answer with). A redelivery waits the same bound and answers the same
+document. Outputs declared `sensitive:` are withheld, and a run whose failure could
+quote one answers a withheld sentence, exactly as `Get` does; there is no way to
+reveal either on this surface.
+
+A waiting delivery holds one of the receiver's 64 concurrency slots (the one bound
+every delivery shares) for the whole wait, so 64 deliveries waiting five seconds each
+is the route's ceiling before it sheds with `503`; choose the bound for the traffic.
+There is deliberately no callback form: a run that has to tell somebody later does it
+as its last step, with `webhook.send`. `flow test` rehearses the *document* with
+`expect.response:` (see [TESTING.md](TESTING.md)), built by the function the receiver
+calls; the wait itself is the receiver's alone, and `flow run local` serves nothing.
+
 **Declaring is not serving.** A file declares a webhook; a deployment decides whether
 *this* installation serves it, because staging must not fire the production webhook.
 `flow server --webhook ./workflow.yaml` mounts the declaration at
@@ -1951,7 +1991,15 @@ resolved through the deployment's `--secret-*` providers — so a deployment tha
 serve a webhook fails to start rather than refusing deliveries at three in the morning.
 The generic `hmac_sha256` scheme reads `X-Flowstate-Signature` (hex, optionally
 `sha256=`-prefixed, over the raw body); `stripe` reads `Stripe-Signature` with its own
-five-minute replay window. A delivery that verifies starts a run whose id is derived
+five-minute replay window; `jwt: <name>` reads `Authorization: Bearer <token>` and checks it
+against the entry of the deployment's `--auth-policy` of that name, which must be a
+`kind: oidc` entry — a name no entry has, or a server with no trust policy, stops the
+server at startup. The delivery then acts as that token's principal, in the receiver's
+tenant, which is what an `allow:` over `run.identity` or `sender.identity` sees; the
+token authenticates the sender and covers none of the body, so pair it with a signing
+scheme where the body matters. `flow test` has no trust policy to check a token with:
+a case's `signature: invalid` declares the token did not verify (valid by default), and
+a signing key beside it is still computed from the bound `secrets:`. A delivery that verifies starts a run whose id is derived
 from `idempotency_key:`, so a redelivery joins that run instead of starting a second
 one, and both drivers ignore the block entirely — `flow run local` still runs a file
 with a webhook on it once, now.

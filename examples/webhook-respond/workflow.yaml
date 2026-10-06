@@ -1,0 +1,80 @@
+# A delivery that is answered with what the run produced.
+#
+# A webhook receiver answers a delivery with the run's address and nothing else,
+# which is right for a provider that only needs to know the event landed. A
+# checkout form is different: it needs the order number in the same exchange.
+# `respond_within:` is that, and it is the whole feature. The receiver starts the
+# run, waits up to five seconds for it, and answers with the run's *declared
+# outputs* — never a step's output, never anything `outputs:` below does not name.
+#
+#     flow server --webhook examples/webhook-respond/workflow.yaml
+#
+# The answer is one JSON document. The HTTP status keeps its meaning (a 2xx says
+# the delivery landed, so the provider must not retry it) and `status` says what
+# the run did:
+#
+#     200 {"status":"completed","outputs":{"order":"ord_H1x9","total":4200},...}
+#     200 {"status":"failed","error":{"message":"..."},...}
+#     202 {"status":"running",...}     the bound passed; read the run with `flow get`
+#
+# Nothing here is a second way to read a run. A run still going at the bound
+# simply keeps going, and a redelivery of the same event joins it, waits the
+# same bound and gets the same document. Outputs declared `sensitive:` are
+# withheld, and there is no way to ask for them on this surface.
+#
+# The wait is receiver-only. `flow test` has no listener, so it rehearses the
+# *document* (`expect.response:` in workflow.test.yaml) from the run it replays,
+# and `flow run local` serves nothing. Every waiting delivery holds one of the
+# receiver's 64 concurrency slots for the whole wait, so a long bound on a busy
+# route is throughput an author chose to spend.
+#
+# Declined on purpose: a callback. A run that has to tell somebody later does it
+# as its last step, with the same `webhook.send` any other workflow uses.
+edition: v2026.4
+name: webhook-respond
+inputs:
+  order_id:
+    type: string
+    default: ord_local
+    description: the order this checkout is about
+  amount:
+    type: int
+    default: 0
+    description: the amount to charge, in the smallest currency unit
+  needs_review:
+    type: bool
+    default: false
+    description: hold the order for a person to release before it is confirmed
+triggers:
+  - webhook: checkout
+    verify:
+      hmac_sha256: ${secret('env:CHECKOUT_WEBHOOK_SECRET')}
+    idempotency_key: ${event.body.id}
+    with:
+      amount: ${event.body.amount}
+      needs_review: ${event.body.needs_review}
+      order_id: ${event.body.order_id}
+
+    # How long the receiver holds the delivery open for the run's answer. The
+    # bound is required to be written down: there is no default, and 100ms to
+    # 30s is what the schema allows. Refused with `signal:` (a bridge starts no
+    # run to wait for) and in a workflow with no `outputs:` (nothing to answer
+    # with).
+    respond_within: 5s
+steps:
+  - id: charge
+    log:
+      message: ${"charging " + string(inputs.amount) + " for " + inputs.order_id}
+
+  # A run that needs a person parks here, so a caller that asked for an answer
+  # inside five seconds is told `running` and reads the order later.
+  - id: review
+    if: ${inputs.needs_review}
+    wait_for_signal: released
+outputs:
+  order:
+    value: ${inputs.order_id}
+    description: the order this checkout created
+  total:
+    value: ${inputs.amount}
+    description: the amount charged

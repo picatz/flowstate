@@ -183,7 +183,7 @@ func TestADecisionEmitsExactlyOneRecord(t *testing.T) {
 		s := mustNew(t, &fakeRunClient{}, WithAudit(recorderFor(t, sink)))
 
 		_, err := s.Validate(t.Context(), connect.NewRequest(&v1.ValidateRequest{
-			Files: []*v1.SourceFile{{Name: "flow.yaml", Source: []byte("name: demo\n")}},
+			Files: []*v1.SourceFile{{Name: "flow.yaml", Source: "name: demo\n"}},
 		}))
 		require.NoError(t, err)
 

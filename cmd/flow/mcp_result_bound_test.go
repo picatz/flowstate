@@ -44,7 +44,7 @@ func TestAnRPCToolAnswerIsBounded(t *testing.T) {
 	for i := range 64 {
 		files = append(files, map[string]any{
 			"name":   fmt.Sprintf("%s-%02d.yaml", strings.Repeat("d", 48), i),
-			"source": []byte(source.String()),
+			"source": source.String(),
 		})
 	}
 
@@ -87,7 +87,7 @@ func TestAnRPCToolAnswerUnderTheCeilingIsUnchanged(t *testing.T) {
 		Arguments: map[string]any{
 			"files": []map[string]any{{
 				"name":   "ok.yaml",
-				"source": []byte("edition: v2026.4\nname: x\nsteps:\n  - id: a\n    log:\n      message: hi\n"),
+				"source": "edition: v2026.4\nname: x\nsteps:\n  - id: a\n    log:\n      message: hi\n",
 			}},
 		},
 	})

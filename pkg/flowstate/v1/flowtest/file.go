@@ -170,9 +170,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/goccy/go-yaml/parser"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	"github.com/picatz/flowstate/internal/strictyaml"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
 )
@@ -469,8 +469,9 @@ type Test struct {
 	Cases []Test `yaml:"cases"`
 
 	// Faults are failures `flow test --seeds` may inject into this case's task
-	// invocations; see [Fault]. They change nothing about a plain run, which
-	// only checks that each one names an invocation the case reaches. A row
+	// invocations, or deliveries a scripted signal may lose; see [Fault]. They
+	// change nothing about a plain run, which fires only the pinned ones and
+	// checks that each names an invocation the case reaches. A row
 	// that states none inherits its table entry's.
 	Faults []Fault `yaml:"faults"`
 
@@ -1196,6 +1197,11 @@ type Expectation struct {
 	// like working software until a retry happens.
 	IdempotencyKey string `yaml:"idempotency_key"`
 
+	// Response asserts the document a waiting receiver would answer the
+	// replayed delivery with, for a webhook that declares `respond_within:`.
+	// Only meaningful alongside [Test.Trigger]. See [ResponseExpectation].
+	Response *ResponseExpectation `yaml:"response"`
+
 	// Failed asserts whether the run failed outright, as distinct from a
 	// step's failure being tolerated by `continue_on_error:` — an ordinary
 	// case, asserted through Outputs like any other. Nil means "no assertion
@@ -1284,7 +1290,7 @@ type Expectation struct {
 // length.
 func (e *Expectation) claimsNothing() bool {
 	return e.Outputs == nil && e.Inputs == nil && e.Refused == nil && e.IdempotencyKey == "" &&
-		e.Failed == nil && e.ErrorContains == "" && e.Compensated == nil && len(e.DeniedSignals) == 0 && e.Ran == nil &&
+		e.Response == nil && e.Failed == nil && e.ErrorContains == "" && e.Compensated == nil && len(e.DeniedSignals) == 0 && e.Ran == nil &&
 		e.Skipped == nil && e.Others == "" && len(e.Invocations) == 0 && len(e.Check) == 0
 }
 
@@ -1297,6 +1303,7 @@ type expectationProvenance struct {
 	inputs         bool
 	refused        bool
 	idempotencyKey bool
+	response       bool
 	failed         bool
 	errorContains  bool
 	compensated    bool
@@ -1448,7 +1455,7 @@ func parseSourceWith(data []byte, dd *dirDefaults, requireWorkflow bool) (*File,
 	// malformed document and reports it in the shape a caller already expects,
 	// and reporting it twice, once from each of two parsers, would be the same
 	// fact said two different ways depending on which noticed first.
-	parsed, parseErr := parser.ParseBytes(data, 0)
+	parsed, parseErr := strictyaml.ParseBytes(data, 0)
 	if parseErr == nil {
 		if err := checkExpansionBoundsIn(parsed); err != nil {
 			// Unpositioned on purpose: this is a property of the document as a
@@ -2028,6 +2035,11 @@ func checkTrigger(p *problems, r site, test *Test, requireWorkflow bool) {
 					"asserts what a `trigger:` produced, and a case that states its own `inputs:` already "+
 					"knows them", test.Name)
 		}
+		if test.Expect.Response != nil {
+			p.report(r.in(r.at.field("expect").field("response")),
+				"test %q expects a response but replays no delivery; a response is what a waiting "+
+					"receiver answers a `trigger:` with, so give the case one", test.Name)
+		}
 
 		return
 	}
@@ -2075,6 +2087,8 @@ func checkTrigger(p *problems, r site, test *Test, requireWorkflow bool) {
 				"come from the delivery, so stating them here would override the mapping the case exists "+
 				"to check", test.Name, trigger.Webhook)
 	}
+
+	checkResponseClaim(p, r, test)
 }
 
 // checkTriggerContext refuses a directly-stated trigger context that cannot mean
@@ -2140,6 +2154,13 @@ func checkTriggerContext(p *problems, r site, test *Test, trigger *TriggerDelive
 		p.report(stanza, "test %q trigger: states a context (`kind: %s`) and also a delivery; a payload "+
 			"and a signature belong to a replay, which is written `webhook: <name>` and derives its own "+
 			"context", test.Name, trigger.Kind)
+	}
+
+	if test.Expect.Response != nil {
+		p.report(r.in(r.at.field("expect").field("response")),
+			"test %q trigger: states a context and expects a response; a response is what a "+
+				"waiting receiver answers a replayed *delivery* with, and a stated context replays none",
+			test.Name)
 	}
 
 	if test.Expect.Refused != nil {

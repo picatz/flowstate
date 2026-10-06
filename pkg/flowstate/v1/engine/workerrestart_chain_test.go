@@ -25,6 +25,10 @@ import (
 // first: a restart confined to the first would prove nothing about carryover, so
 // the test fails when no seed of any case resumed past it.
 func TestWorkerRestartAcrossContinueAsNew(t *testing.T) {
+	if withoutDevServer() {
+		t.Skip("skipping: needs the shared Temporal dev server, which this process did not start (-short, or a fuzzing run); CI runs the full suite")
+	}
+
 	base := conformance.NewHTTPServer(t)
 
 	type chainCase struct {

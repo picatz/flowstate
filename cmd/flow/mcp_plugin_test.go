@@ -147,7 +147,7 @@ func mcpValidateDiagnostics(t *testing.T, posture *cobra.Command, source string)
 		Arguments: map[string]any{
 			"files": []map[string]any{{
 				"name":   "wf.yaml",
-				"source": []byte(source),
+				"source": source,
 			}},
 		},
 	})

@@ -10,10 +10,10 @@ import (
 
 	yaml "github.com/goccy/go-yaml"
 	"github.com/goccy/go-yaml/ast"
-	"github.com/goccy/go-yaml/parser"
 	"github.com/goccy/go-yaml/token"
 	"github.com/google/cel-go/cel"
 
+	"github.com/picatz/flowstate/internal/strictyaml"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/nearest"
 	"google.golang.org/protobuf/proto"
@@ -536,7 +536,7 @@ func parse(data []byte, path string, callStack []string, callBudget *int) (*v1.W
 		}}
 	}
 
-	file, err := parser.ParseBytes(data, 0)
+	file, err := strictyaml.ParseBytes(data, 0)
 	if err != nil {
 		return nil, nil, YAMLSyntaxDiagnostics(data, err)
 	}
@@ -618,6 +618,10 @@ var yamlCoordinate = regexp.MustCompile(` at \[(\d+):(\d+)\]$`)
 // whole" everywhere else in this package.
 func YAMLSyntaxDiagnostics(data []byte, err error) Diagnostics {
 	d := Diagnostic{Message: err.Error()}
+
+	if nesting, ok := errors.AsType[*strictyaml.NestingError](err); ok {
+		return Diagnostics{{Line: nesting.Line, Column: nesting.Column, Message: nesting.Reason}}
+	}
 
 	if yamlErr, ok := errors.AsType[yaml.Error](err); ok {
 		if msg := yamlErr.GetMessage(); msg != "" {

@@ -439,6 +439,27 @@ func init() {
 			Leading: " Failure is what went wrong, withheld as the case's own report withholds.\n",
 		},
 		{
+			Name: "flowstate.v1.FuzzFinding.absent",
+			Leading: " Absent names the inputs the case supplies that the generated run left out,\n" +
+				" which an `inputs:` overlay cannot say: remove them from the case to\n" +
+				" reproduce. Sorted, and never a `sensitive:` input.\n",
+		},
+		{
+			Name: "flowstate.v1.FuzzFinding.changed",
+			Leading: " Changed is how many inputs the seed changed from the case's own before the\n" +
+				" finding was shrunk; Inputs and Absent hold what is left of them.\n",
+		},
+		{
+			Name: "flowstate.v1.FuzzFinding.shrink_runs",
+			Leading: " ShrinkRuns is how many re-runs of the case the shrink spent putting inputs\n" +
+				" back at the case's own values; one means the first replay was all it took.\n",
+		},
+		{
+			Name: "flowstate.v1.FuzzFinding.minimal",
+			Leading: " Minimal reports that putting any one remaining input back at the case's own\n" +
+				" value stopped the failure; false when the budget ended the search first.\n",
+		},
+		{
 			Name: "flowstate.v1.CoverageReport",
 			Leading: " CoverageReport is `flow test`'s branch-coverage account for one workflow:\n" +
 				" which of that workflow's steps at least one case ran, and which no case ever\n" +

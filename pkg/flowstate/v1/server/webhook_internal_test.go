@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
 )
 
@@ -153,4 +154,31 @@ func TestWithoutTraceHeadersStripsOnlyTraceContext(t *testing.T) {
 		require.Equal(t, original[kept], got[kept],
 			"%s was stripped, but only trace context headers should be — a signature header shape (x-*) must survive", kept)
 	}
+}
+
+// A delivery acts as its trigger unless a bearer token named a sender, and in
+// both cases in the receiver's tenant: nothing downstream reads a namespace off a
+// credential.
+func TestAWebhookActsAsItsSenderInItsOwnTenant(t *testing.T) {
+	t.Parallel()
+
+	receiver := &WebhookReceiver{namespace: "team-a"}
+	route := &webhookRoute{
+		workflow: &v1.Workflow{Name: "deploy"},
+		trigger:  &v1.WebhookTrigger{Name: "release"},
+	}
+
+	trigger := receiver.actingPrincipal(t.Context(), route)
+	assert.Equal(t, webhookIssuer, trigger.Issuer)
+	assert.Equal(t, "team-a", trigger.Namespace)
+	assert.Empty(t, trigger.Kind, "a trigger is not a kind of party")
+
+	ctx := withWebhookSender(t.Context(), auth.Principal{
+		Issuer: "https://idp.example", Subject: "ci", Namespace: "elsewhere", Kind: auth.PrincipalKindAgent,
+	})
+	sender := receiver.actingPrincipal(ctx, route)
+	assert.Equal(t, "https://idp.example", sender.Issuer)
+	assert.Equal(t, "ci", sender.Subject)
+	assert.Equal(t, auth.PrincipalKindAgent, sender.Kind)
+	assert.Equal(t, "team-a", sender.Namespace, "a sender's own tenant leaked into the identity the run is attested with")
 }

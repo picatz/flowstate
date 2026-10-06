@@ -233,8 +233,11 @@ cannot check, or a key this deployment cannot resolve, stops the server. Compari
 is constant-time (`hmac.Equal`) and the key is revealed only into an HMAC. The body
 is capped by `http.MaxBytesReader` as the first statement of the handler, so no path
 below it can read past `v1.MaxWebhookPayloadBytes`; deliveries in flight are bounded
-and shed with a 503 past the bound; `with:` evaluation is bounded by the CEL cost
-limit; candidate signatures per header are bounded. Every refusal decided before a
+and shed with a 503 past the bound — a trigger declaring `respond_within:` holds its
+slot for the wait, at most the 30 s the field allows and ended early by the sender
+hanging up, and what it answers with is the run's declared outputs only, redacted as
+`Get` redacts them with no reveal, capped at `v1.MaxWebhookResponseBytes`; `with:`
+evaluation is bounded by the CEL cost limit; candidate signatures per header are bounded. Every refusal decided before a
 delivery is known genuine — unknown workflow, unknown trigger, bad signature — is one
 status and one sentence, with an HMAC spent on the unrouted path so the timings
 match. A run's id is a digest over tenant, workflow, trigger and idempotency key, so
@@ -245,6 +248,24 @@ run it started or answered, a refusal against the route by class, bounded to one
 record per class per route per minute with a count so the unauthenticated path
 cannot amplify into the sink (`docs/DEPLOYMENT.md` "Audit trail",
 `pkg/flowstate/v1/server/webhookaudit.go`).
+
+A trigger may instead (or also) declare `verify: {jwt: <name>}`, which admits a
+delivery carrying a bearer token from the named entry of the deployment's trust
+policy. The server's own verifier checks it (signature, issuer, audience, lifetime,
+claim rules, the entry's `kind: oidc`), the entry the token matched must be the one
+named, and its tenant must be the receiver's, or the delivery is refused with the
+one answer every refusal gets. A Flowfile cannot name a key or a URL, so an author
+cannot choose which host the receiver fetches keys from; unknown names and a
+missing trust policy stop the server at startup. The delivery then acts as the
+token's principal, with `kind` as the trust policy assigned it and never as a claim
+said, and the `Authorization` header is dropped from `event.headers` so a bearer
+token cannot reach an input, a key or a payload and so history. What a bearer token
+does not do is cover the body or other headers: bind it with `hmac_sha256` or
+`stripe` when the payload must be trusted, and note a token is replayable until its
+`exp` (bounded by the entry's maximum token age) — `idempotency_key:` is what makes
+a replayed delivery join the run rather than start another. The unrouted-path
+timing match spends only the signing schemes' work, so whether a route declares
+`jwt` is observable to a prober who can time it.
 
 A trigger declaring `signal:` answers a gate instead of starting a run, over the
 same route and past the same verification. What that adds is one authorization and
