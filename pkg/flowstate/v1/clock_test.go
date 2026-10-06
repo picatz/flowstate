@@ -351,12 +351,16 @@ func TestDeliveringWithdrawsTheAnsweredWaitsDeadline(t *testing.T) {
 	}
 	done := make(chan result, 1)
 	go func() {
-		outputs, err := v1.Run(ctx, gatedLocalWorkflow(720*time.Hour))
+		outputs, err := v1.Run(ctx, gateOnly(gatedLocalWorkflow(720*time.Hour)))
 		done <- result{outputs: outputs, err: err}
 	}()
 
 	// One pending deadline is the gate's, and its being pending is what says
-	// the run is blocked on it — the state this test needs to catch.
+	// the run is blocked on it — the state this test needs to catch. The gate
+	// is the run's only step, because a task step's own timeout is a deadline
+	// on this clock too: a neighbour's briefly makes the count one before the
+	// gate has registered, and the answer would then be queued ahead of a wait
+	// that had not begun.
 	require.Eventually(t, func() bool { return clock.Pending() == 1 },
 		2*time.Second, time.Millisecond, "the gate never registered its deadline")
 
@@ -380,4 +384,17 @@ func TestDeliveringWithdrawsTheAnsweredWaitsDeadline(t *testing.T) {
 		"the gate reported a timeout although its signal was delivered")
 	require.Equal(t, start, clock.Now(),
 		"a gate answered without ever lapsing spent time it was not owed")
+}
+
+// gateOnly is w reduced to its wait steps, so a run under a virtual clock has no
+// task step whose own timeout is a deadline beside the gate's.
+func gateOnly(w *v1.Workflow) *v1.Workflow {
+	out := &v1.Workflow{Name: w.GetName()}
+	for _, step := range w.GetSteps() {
+		if step.GetWait() != nil {
+			out.Steps = append(out.Steps, step)
+		}
+	}
+
+	return out
 }
