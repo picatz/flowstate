@@ -2901,7 +2901,14 @@ type RunResponse_Error struct {
 	// `Upstream`, `Timeout`, `RateLimited` and `Internal` are the retryable
 	// kinds; the rest are permanent. Always set alongside `message`. A consumer
 	// that does not recognize a kind should treat it as permanent.
-	Kind          string `protobuf:"bytes,2,opt,name=kind,proto3" json:"kind,omitempty"`
+	Kind string `protobuf:"bytes,2,opt,name=kind,proto3" json:"kind,omitempty"`
+	// Input names the input a refusal concerns, when the run was refused at
+	// submit because of one: a missing required input, a value of the wrong
+	// type, a `must:` that did not hold, or a name the workflow does not
+	// declare (the name the caller sent). Always paired with `InvalidInput`
+	// in `kind`, and empty for every other failure, so a program can point at
+	// the argument to fix without parsing `message`.
+	Input         string `protobuf:"bytes,3,opt,name=input,proto3" json:"input,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2950,6 +2957,13 @@ func (x *RunResponse_Error) GetKind() string {
 	return ""
 }
 
+func (x *RunResponse_Error) GetInput() string {
+	if x != nil {
+		return x.Input
+	}
+	return ""
+}
+
 var File_flowstate_v1_service_proto protoreflect.FileDescriptor
 
 const file_flowstate_v1_service_proto_rawDesc = "" +
@@ -2969,7 +2983,7 @@ const file_flowstate_v1_service_proto_rawDesc = "" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12)\n" +
 	"\x05value\x18\x02 \x01(\v2\x13.flowstate.v1.ValueR\x05value:\x028\x01B\r\n" +
 	"\v_entity_keyB\r\n" +
-	"\v_request_id\"\xab\x05\n" +
+	"\v_request_id\"\xcb\x05\n" +
 	"\vRunResponse\x12.\n" +
 	"\vworkflow_id\x18\x01 \x01(\tB\r\xbaH\n" +
 	"\xc8\x01\x01r\x05\x10\x01(\x80\x02R\n" +
@@ -2981,10 +2995,11 @@ const file_flowstate_v1_service_proto_rawDesc = "" +
 	"\aoutputs\x18\x05 \x01(\v2\".flowstate.v1.Workflow.StepOutputsH\x00R\aoutputs\x12A\n" +
 	"\x1aspecification_as_submitted\x18\x06 \x01(\bH\x01R\x18specificationAsSubmitted\x88\x01\x01\x12\x16\n" +
 	"\x06joined\x18\a \x01(\bR\x06joined\x12\x1c\n" +
-	"\x06reused\x18\b \x01(\bB\x04\xe2A\x01\x03R\x06reused\x1a=\n" +
+	"\x06reused\x18\b \x01(\bB\x04\xe2A\x01\x03R\x06reused\x1a]\n" +
 	"\x05Error\x12 \n" +
 	"\amessage\x18\x01 \x01(\tB\x06\xbaH\x03\xc8\x01\x01R\amessage\x12\x12\n" +
-	"\x04kind\x18\x02 \x01(\tR\x04kind\"\x9f\x01\n" +
+	"\x04kind\x18\x02 \x01(\tR\x04kind\x12\x1e\n" +
+	"\x05input\x18\x03 \x01(\tB\b\xbaH\x05r\x03(\x80\x02R\x05input\"\x9f\x01\n" +
 	"\x06Status\x12\x16\n" +
 	"\x12STATUS_UNSPECIFIED\x10\x00\x12\x12\n" +
 	"\x0eSTATUS_RUNNING\x10\x01\x12\x14\n" +

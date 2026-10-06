@@ -620,7 +620,20 @@ func runLocalToolHandler(posture *cobra.Command, providers *localSecrets) mcp.To
 			// a bind failure (#2076).
 			reveal := revealSensitiveRequested(posture)
 			sensitive := refusedRunSensitiveValues(posture, workflow, inputs, err, reveal)
-			return flowmcp.ToolError(redactFailureError(err, sensitive)), nil
+
+			// The run document `flow run local --output json` writes for the
+			// same refusal, so an agent corrects the call from `error.kind` and
+			// `error.input` rather than from prose (#1552).
+			response, redacted := refusalResponse(err, sensitive)
+			encoded, renderErr := renderRunLocalResult(response, nil, nil)
+			if renderErr != nil {
+				return flowmcp.ToolError(redacted), nil
+			}
+
+			return &mcp.CallToolResult{
+				IsError: true,
+				Content: []mcp.Content{&mcp.TextContent{Text: string(encoded)}},
+			}, nil
 		}
 
 		timeout, _ := posture.Flags().GetDuration("run-local-timeout")

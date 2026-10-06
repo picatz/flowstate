@@ -229,6 +229,15 @@ func init() {
 				" that does not recognize a kind should treat it as permanent.\n",
 		},
 		{
+			Name: "flowstate.v1.RunResponse.Error.input",
+			Leading: " Input names the input a refusal concerns, when the run was refused at\n" +
+				" submit because of one: a missing required input, a value of the wrong\n" +
+				" type, a `must:` that did not hold, or a name the workflow does not\n" +
+				" declare (the name the caller sent). Always paired with `InvalidInput`\n" +
+				" in `kind`, and empty for every other failure, so a program can point at\n" +
+				" the argument to fix without parsing `message`.\n",
+		},
+		{
 			Name:    "flowstate.v1.RunResponse.Status",
 			Leading: " Status is where a run is in its lifecycle.\n",
 		},

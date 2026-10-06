@@ -171,6 +171,14 @@ message RunResponse {
     // kinds; the rest are permanent. Always set alongside `message`. A consumer
     // that does not recognize a kind should treat it as permanent.
     string kind = 2;
+
+    // Input names the input a refusal concerns, when the run was refused at
+    // submit because of one: a missing required input, a value of the wrong
+    // type, a `must:` that did not hold, or a name the workflow does not
+    // declare (the name the caller sent). Always paired with `InvalidInput`
+    // in `kind`, and empty for every other failure, so a program can point at
+    // the argument to fix without parsing `message`.
+    string input = 3 [(buf.validate.field).string.max_bytes = 256];
   }
 
   // Status is where a run is in its lifecycle.
