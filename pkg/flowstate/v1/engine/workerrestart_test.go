@@ -146,6 +146,9 @@ type restartOutcome struct {
 	// resumedAt is the event id of the first workflow task the second worker
 	// started, zero when it ran none.
 	resumedAt int64
+	// resumedRun is the index, in the Continue-As-New chain, of the execution
+	// that task is in; chainRuns is the length of the chain.
+	resumedRun, chainRuns int
 	// boundary is that task's index among [engine.Boundaries].
 	boundary   int
 	boundaries int
@@ -246,15 +249,24 @@ func runWithRestart(ctx context.Context, t *testing.T, temporal client.Client, i
 	stopped.Wait()
 	outcome.completions = counter.completed.Load()
 
-	outcome.history = &historypb.History{}
-	iter := temporal.GetWorkflowHistory(ctx, outcome.workflowID, outcome.runID, false, enumspb.HISTORY_EVENT_FILTER_TYPE_ALL_EVENT)
-	for iter.HasNext() {
-		event, err := iter.Next()
-		require.NoError(t, err)
-		outcome.history.Events = append(outcome.history.Events, event)
+	// Every execution of a Continue-As-New chain, since the second worker may
+	// take over in any of them. A run without one is a chain of a single.
+	chain := recordRunChain(ctx, t, temporal, outcome.workflowID, outcome.runID)
+	outcome.chainRuns = len(chain)
+	outcome.history = chain[0]
+	outcome.boundaries = len(engine.Boundaries(chain[0]))
+	runID := outcome.runID
+	for i, history := range chain {
+		if i > 0 {
+			last := chain[i-1].GetEvents()
+			runID = last[len(last)-1].GetWorkflowExecutionContinuedAsNewEventAttributes().GetNewExecutionRunId()
+		}
+		if at, boundary, boundaries := secondWorkerResume(history); at != 0 {
+			outcome.history, outcome.runID = history, runID
+			outcome.resumedAt, outcome.boundary, outcome.boundaries, outcome.resumedRun = at, boundary, boundaries, i
+			break
+		}
 	}
-
-	outcome.resumedAt, outcome.boundary, outcome.boundaries = secondWorkerResume(outcome.history)
 
 	return outcome
 }
