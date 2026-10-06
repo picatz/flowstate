@@ -598,6 +598,36 @@ func SignStripeBody(key secrets.Secret, body []byte, at time.Time) string {
 	return fmt.Sprintf("t=%s,v1=%s", seconds, hex.EncodeToString(signHMACSHA256(key, signed)))
 }
 
+// SignWebhookDelivery is the outbound half of [verifyScheme]: the one header a
+// sender attaches so that a receiver verifying under the same scheme and key
+// accepts the body.
+//
+// It returns the header's name and value for any scheme in
+// [WebhookVerificationSchemes], and refuses a name outside that set. The two
+// directions are one table, not two: a scheme added for verification without a
+// case here makes TestEveryDeclarableSchemeCanBeSigned and TestEveryDeclarableSchemeIsImplemented fail, and so does the
+// reverse, so a sender and a receiver built from one tree cannot disagree about
+// what a scheme is. `at` is the time a timestamped scheme signs; the generic
+// scheme signs the body alone and ignores it.
+//
+// The key is revealed into the digest inside [signHMACSHA256] and nowhere else,
+// and the error never carries it.
+func SignWebhookDelivery(scheme string, key secrets.Secret, body []byte, at time.Time) (header, value string, err error) {
+	if key.IsZero() {
+		return "", "", fmt.Errorf("scheme %q has no signing key", scheme)
+	}
+
+	switch scheme {
+	case WebhookSchemeHMACSHA256:
+		return WebhookSignatureHeader, SignWebhookBody(key, body), nil
+	case WebhookSchemeStripe:
+		return StripeSignatureHeader, SignStripeBody(key, body, at), nil
+	default:
+		return "", "", fmt.Errorf("scheme %q is not one this build can sign with; it signs with %s",
+			scheme, strings.Join(webhookVerificationSchemes, ", "))
+	}
+}
+
 // splitSignatures reads the candidates one header may offer, bounded.
 //
 // A single value is the ordinary case; a comma-separated list is what a sender

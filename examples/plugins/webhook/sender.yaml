@@ -1,0 +1,41 @@
+edition: v2026.4
+name: order-paid-notify
+description: Tells another Flowstate deployment that an order was paid, as a signed delivery to its webhook trigger; the signing key is a secret reference and never a value in a step.
+# Deployment A, the sender. `receiver.yaml` is deployment B's half of the same
+# conversation: the `verify:` block on its trigger and the `signing_key:` below
+# name the same shared secret, and both sides compute the signature with the one
+# engine function, so a delivery from here is the delivery B's trigger accepts.
+plugins:
+  webhook: v0.1.0
+inputs:
+  order_id:
+    type: string
+    required: true
+    description: the order that was paid
+    example: ord_H1x9
+  amount:
+    type: int
+    required: true
+    description: the amount captured, in the smallest currency unit
+    example: 4200
+steps:
+  - id: notify
+    webhook.send:
+      # What is signed is exactly what is sent: this text, byte for byte, which
+      # is why the body is built here with `json.encode` and not left to the
+      # task. A receiver verifies the bytes on the wire.
+      body: '${json.encode({"id": inputs.order_id + ":paid", "order_id": inputs.order_id, "amount": inputs.amount})}'
+      # Sent as `Idempotency-Key`. Chosen once per logical delivery, so a retry
+      # of this step is the same delivery to a receiver that dedupes.
+      idempotency_key: ${inputs.order_id}
+      # Same spelling as the receiver's `verify:` entry; `stripe` is the other.
+      scheme: hmac_sha256
+      # The whole input is a secret reference. The worker resolves it at the
+      # point of use, inside the plugin; the value is never in an expression,
+      # in this step's recorded input, or in its output.
+      signing_key: ${secret('env:PEER_WEBHOOK_KEY')}
+      url: https://flowstate.peer.example.com/webhooks/order-fulfilment/order-paid
+outputs:
+  status:
+    value: ${steps.notify.status}
+    description: the HTTP status the receiver answered with

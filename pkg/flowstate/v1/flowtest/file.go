@@ -469,8 +469,9 @@ type Test struct {
 	Cases []Test `yaml:"cases"`
 
 	// Faults are failures `flow test --seeds` may inject into this case's task
-	// invocations; see [Fault]. They change nothing about a plain run, which
-	// only checks that each one names an invocation the case reaches. A row
+	// invocations, or deliveries a scripted signal may lose; see [Fault]. They
+	// change nothing about a plain run, which fires only the pinned ones and
+	// checks that each names an invocation the case reaches. A row
 	// that states none inherits its table entry's.
 	Faults []Fault `yaml:"faults"`
 

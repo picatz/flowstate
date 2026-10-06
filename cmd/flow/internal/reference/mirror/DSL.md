@@ -1357,8 +1357,9 @@ steps:
   that predates the feature. This is the invariant the decision implies: **the runtime
   has no user-defined function**, so one spec cannot mean different things on different
   workers, which invariant 3 forbids and Worker Versioning cannot see. It is the one
-  expander an imported helper library goes through (`ExpandPureHelpers`), reached from a
-  different declaration.
+  expander there is: an earlier prototype of importable helpers (`PureHelper`) had its own
+  schema and entry point over the same code, was never reachable from a Flowfile, and was
+  removed rather than kept as a second spelling.
 - **The definition is in the spec, and the use is as written.** `Workflow.declared_functions`
   carries each definition (a message, so `buf breaking` guards it) beside the expanded
   expressions. Nothing evaluates it. It is what lets `flow fmt` write the file back
