@@ -279,14 +279,14 @@ type WorkflowServiceClient interface {
 	//
 	// The same checks and the same [ValidationReport] as `flow validate`: one
 	// entry per file, clean files included. Send 1 to 64 files; each file's
-	// `source` is its bytes, at most 1 MiB, base64-encoded in JSON. It reads,
+	// `source` is its text, plain YAML, at most 1 MiB. It reads,
 	// writes and starts nothing, so it is safe to call repeatedly while editing.
 	Validate(context.Context, *connect.Request[v1.ValidateRequest]) (*connect.Response[v1.ValidateResponse], error)
 	// Compile turns one Flowfile into the workflow specification that [Run]
 	// takes, executing nothing.
 	//
-	// `file.source` is the Flowfile's bytes, at most 1 MiB, base64-encoded in
-	// JSON. A file that does not compile is not an RPC error: the answer carries
+	// `file.source` is the Flowfile's text, plain YAML, at most 1 MiB. A file
+	// that does not compile is not an RPC error: the answer carries
 	// its diagnostics in `report` and no `workflow`. On success, pass `workflow`
 	// unchanged to [Run] or [CreateSchedule]. The same compiler as the CLI.
 	Compile(context.Context, *connect.Request[v1.CompileRequest]) (*connect.Response[v1.CompileResponse], error)
@@ -845,14 +845,14 @@ type WorkflowServiceHandler interface {
 	//
 	// The same checks and the same [ValidationReport] as `flow validate`: one
 	// entry per file, clean files included. Send 1 to 64 files; each file's
-	// `source` is its bytes, at most 1 MiB, base64-encoded in JSON. It reads,
+	// `source` is its text, plain YAML, at most 1 MiB. It reads,
 	// writes and starts nothing, so it is safe to call repeatedly while editing.
 	Validate(context.Context, *connect.Request[v1.ValidateRequest]) (*connect.Response[v1.ValidateResponse], error)
 	// Compile turns one Flowfile into the workflow specification that [Run]
 	// takes, executing nothing.
 	//
-	// `file.source` is the Flowfile's bytes, at most 1 MiB, base64-encoded in
-	// JSON. A file that does not compile is not an RPC error: the answer carries
+	// `file.source` is the Flowfile's text, plain YAML, at most 1 MiB. A file
+	// that does not compile is not an RPC error: the answer carries
 	// its diagnostics in `report` and no `workflow`. On success, pass `workflow`
 	// unchanged to [Run] or [CreateSchedule]. The same compiler as the CLI.
 	Compile(context.Context, *connect.Request[v1.CompileRequest]) (*connect.Response[v1.CompileResponse], error)

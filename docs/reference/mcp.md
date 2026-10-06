@@ -64,7 +64,7 @@ contracts and do not advertise a schema-owned result message.
 
 Validate checks Flowfiles and returns their diagnostics, executing nothing.
 
-The same checks and the same `ValidationReport` as `flow validate`: one entry per file, clean files included. Send 1 to 64 files; each file's `source` is its bytes, at most 1 MiB, base64-encoded in JSON. It reads, writes and starts nothing, so it is safe to call repeatedly while editing.
+The same checks and the same `ValidationReport` as `flow validate`: one entry per file, clean files included. Send 1 to 64 files; each file's `source` is its text, plain YAML, at most 1 MiB. It reads, writes and starts nothing, so it is safe to call repeatedly while editing.
 
 Answers locally, in this process. No server and no Temporal needed.
 
@@ -72,7 +72,7 @@ Answers locally, in this process. No server and no Temporal needed.
 
 Compile turns one Flowfile into the workflow specification that `Run` takes, executing nothing.
 
-`file.source` is the Flowfile's bytes, at most 1 MiB, base64-encoded in JSON. A file that does not compile is not an RPC error: the answer carries its diagnostics in `report` and no `workflow`. On success, pass `workflow` unchanged to `Run` or `CreateSchedule`. The same compiler as the CLI.
+`file.source` is the Flowfile's text, plain YAML, at most 1 MiB. A file that does not compile is not an RPC error: the answer carries its diagnostics in `report` and no `workflow`. On success, pass `workflow` unchanged to `Run` or `CreateSchedule`. The same compiler as the CLI.
 
 Answers locally, in this process. No server and no Temporal needed.
 
