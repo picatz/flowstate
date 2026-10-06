@@ -445,6 +445,14 @@ issuers:
         any_of: [ci]
 ```
 
+A token can narrow what its entry grants but never widen it. When an entry has an
+`actions:` list, the token's `scope` (space-delimited) or `scp` (an array, or a space-delimited string as Microsoft Entra issues it) claim is
+intersected with it: a token whose scopes name only some of the listed actions
+holds only those, one that names none of them holds none, and a scope the entry
+does not list adds nothing. A token with no scope claim holds the entry's full
+list, an entry without `actions:` ignores the claim, and a token carrying both
+claims or either in the wrong shape is refused.
+
 These disjoint entries let the dashboard inspect and CI submit while neither may
 terminate. `actions` omitted preserves the pre-action-policy behavior for the RPC
 actions and adds no restriction there; `actions: []` grants no control-plane
