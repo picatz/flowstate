@@ -1,6 +1,7 @@
 package flowfile_test
 
 import (
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -307,4 +308,29 @@ steps:
 	// wrong line.
 	assert.NotContains(t, ds.Error(), "unknown step",
 		"the reference is fine; the id is what has to change")
+}
+
+// A flow sequence nested tens of thousands of levels deep costs the YAML parser
+// memory quadratic in the depth, before any size or depth bound on the tree can
+// run (#2338: 40,000 levels in an 80 KB file took 2.5 GB). Parse and Fix refuse it
+// on the bytes, with a position, and the allocation stays under a budget a parse
+// of the document could not meet.
+func TestDeeplyNestedFlowSequenceIsRefusedBeforeTheParserRuns(t *testing.T) {
+	// Serial: reads process-wide allocation counters.
+	doc := "edition: v2026.4\nname: deep\ninputs:\n  x:\n    type: string\n    default: " +
+		strings.Repeat("[", 40000) + "\n"
+
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+
+	_, _, parseErr := flowfile.Parse([]byte(doc))
+	_, fixErr := flowfile.Fix([]byte(doc))
+
+	runtime.ReadMemStats(&after)
+
+	require.Error(t, parseErr)
+	require.Contains(t, parseErr.Error(), "flow collections nest more than")
+	require.Contains(t, parseErr.Error(), "6:")
+	require.Error(t, fixErr)
+	require.Less(t, after.TotalAlloc-before.TotalAlloc, uint64(32<<20))
 }

@@ -170,9 +170,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/goccy/go-yaml/parser"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	"github.com/picatz/flowstate/internal/strictyaml"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
 )
@@ -1448,7 +1448,7 @@ func parseSourceWith(data []byte, dd *dirDefaults, requireWorkflow bool) (*File,
 	// malformed document and reports it in the shape a caller already expects,
 	// and reporting it twice, once from each of two parsers, would be the same
 	// fact said two different ways depending on which noticed first.
-	parsed, parseErr := parser.ParseBytes(data, 0)
+	parsed, parseErr := strictyaml.ParseBytes(data, 0)
 	if parseErr == nil {
 		if err := checkExpansionBoundsIn(parsed); err != nil {
 			// Unpositioned on purpose: this is a property of the document as a

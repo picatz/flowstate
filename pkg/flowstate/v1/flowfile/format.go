@@ -10,6 +10,7 @@ import (
 	"github.com/goccy/go-yaml/ast"
 	"github.com/goccy/go-yaml/parser"
 
+	"github.com/picatz/flowstate/internal/strictyaml"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
 
@@ -118,7 +119,7 @@ func Format(source []byte, wf *v1.Workflow) ([]byte, error) {
 		return formatted, nil
 	}
 
-	rendered, err := parser.ParseBytes(formatted, parser.ParseComments)
+	rendered, err := strictyaml.ParseBytes(formatted, parser.ParseComments)
 	if err != nil {
 		// Marshal wrote it, so this cannot happen from a Flowfile; if it ever
 		// does, the honest answer is that the document is not one this can
@@ -206,7 +207,7 @@ const (
 
 // sourceComments collects every comment in a document, keyed by where it sits.
 func sourceComments(source []byte) (map[commentAnchor]*ast.CommentGroupNode, error) {
-	file, err := parser.ParseBytes(source, parser.ParseComments)
+	file, err := strictyaml.ParseBytes(source, parser.ParseComments)
 	if err != nil {
 		// The caller compiled this source, so it parses. Refusing rather than
 		// carrying on is the fail-closed reading: unable to see the comments is
@@ -743,7 +744,7 @@ func insertPin(mapping *ast.MappingNode, digest string) (bool, error) {
 	}
 
 	snippet := fmt.Sprintf("_:\n%sdigest: %s\n", strings.Repeat(" ", column-1), digest)
-	parsed, err := parser.ParseBytes([]byte(snippet), parser.ParseComments)
+	parsed, err := strictyaml.ParseBytes([]byte(snippet), parser.ParseComments)
 	if err != nil {
 		return false, fmt.Errorf("digest %q could not be written back: %w", digest, err)
 	}

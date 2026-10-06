@@ -11,6 +11,7 @@ import (
 	"github.com/goccy/go-yaml/parser"
 	"github.com/goccy/go-yaml/token"
 
+	"github.com/picatz/flowstate/internal/strictyaml"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
 
@@ -280,7 +281,7 @@ func fixOnce(data []byte, modernize bool) (FixResult, error) {
 		}}
 	}
 
-	file, err := parser.ParseBytes(data, parser.ParseComments)
+	file, err := strictyaml.ParseBytes(data, parser.ParseComments)
 	if err != nil {
 		return FixResult{}, err
 	}
@@ -663,7 +664,7 @@ func LooksLikeFlowfile(data []byte) bool {
 	if len(data) > maxBytes {
 		return false
 	}
-	file, err := parser.ParseBytes(data, 0)
+	file, err := strictyaml.ParseBytes(data, 0)
 	if err != nil || len(file.Docs) == 0 || file.Docs[0].Body == nil {
 		return false
 	}
@@ -693,7 +694,7 @@ func LooksLikeFlowfileTest(data []byte) bool {
 	if len(data) > maxBytes {
 		return false
 	}
-	file, err := parser.ParseBytes(data, 0)
+	file, err := strictyaml.ParseBytes(data, 0)
 	if err != nil || len(file.Docs) == 0 || file.Docs[0].Body == nil {
 		return false
 	}
@@ -744,7 +745,7 @@ func IsMalformedYAML(data []byte) bool {
 	if len(data) > maxBytes {
 		return false
 	}
-	_, err := parser.ParseBytes(data, 0)
+	_, err := strictyaml.ParseBytes(data, 0)
 	return err != nil
 }
 
