@@ -61,6 +61,13 @@ func ParseBytes(data []byte, mode parser.Mode) (*ast.File, error) {
 // its parent key's own column pops that key, so the count can fall short by at
 // most half; the bound is on cost, not on grammar. Entries inside a flow
 // collection belong to it and are not block structure.
+//
+// The columns are the document's honest reading, and the parser is more
+// generous than that: it hands a `-`, a `?`, an anchor or a tag that ends its
+// line the next line's content as its value wherever that line starts, even at
+// the same column (`- &a` then `k:`), so a column cannot count that level. A
+// level opened that way is counted separately, never popped, and bounded by the
+// same limit; honest documents put the value of such a token deeper.
 func refuseDeepFlow(tokens token.Tokens) error {
 	refuse := func(tk *token.Token, what string) error {
 		return &NestingError{
@@ -79,6 +86,14 @@ func refuseDeepFlow(tokens token.Tokens) error {
 		entryCol int
 		fresh    = true
 		lastLine int
+
+		// pending is set when a line ended on a token that takes its value from
+		// the lines after it, with pendingCol the column its entry started at.
+		// shallow counts the times that value began no deeper.
+		pending    bool
+		pendingCol int
+		pendingSeq bool // the token was a `-`, whose null entries may follow one another
+		shallow    int
 	)
 
 	push := func(tk *token.Token, col int) error {
@@ -94,8 +109,16 @@ func refuseDeepFlow(tokens token.Tokens) error {
 		return nil
 	}
 
-	for _, tk := range tokens {
+	for i, tk := range tokens {
 		if tk.Position.Line != lastLine {
+			if pending && flow == 0 && tk.Position.Column <= pendingCol && !(pendingSeq && tk.Type == token.SequenceEntryType) {
+				shallow++
+				if shallow > MaxFlowDepth {
+					return refuse(tk, "entries whose value starts no deeper than the entry; they")
+				}
+			}
+
+			pending = false
 			lastLine = tk.Position.Line
 			fresh = true
 		}
@@ -113,7 +136,9 @@ func refuseDeepFlow(tokens token.Tokens) error {
 				if err := push(tk, tk.Position.Column); err != nil {
 					return err
 				}
+
 				fresh = true
+				pending, pendingCol, pendingSeq = lineEndsAfter(tokens, i+1, tk.Position.Line), tk.Position.Column, true
 
 				continue
 			}
@@ -122,7 +147,30 @@ func refuseDeepFlow(tokens token.Tokens) error {
 				if err := push(tk, entryCol); err != nil {
 					return err
 				}
+
 				fresh = true
+
+				continue
+			}
+		case token.MappingKeyType, token.AnchorType, token.TagType:
+			if flow == 0 {
+				if fresh {
+					entryCol, fresh = tk.Position.Column, false
+				}
+
+				after := i + 1
+				if tk.Type == token.AnchorType {
+					after++ // the anchor's name
+				}
+
+				pending, pendingCol, pendingSeq = lineEndsAfter(tokens, after, tk.Position.Line), entryCol, false
+				if pending {
+					// A property or `?` alone on its line takes its value from
+					// the lines below, so it is a level of its own.
+					if err := push(tk, entryCol); err != nil {
+						return err
+					}
+				}
 
 				continue
 			}
@@ -134,4 +182,22 @@ func refuseDeepFlow(tokens token.Tokens) error {
 	}
 
 	return nil
+}
+
+// lineEndsAfter reports whether the tokens from index i on, which follow a
+// token on line, leave the line to nothing but further properties: an anchor
+// (its `&` and its name) or a tag.
+func lineEndsAfter(tokens token.Tokens, i, line int) bool {
+	for j := i; j < len(tokens); {
+		switch tokens[j].Type {
+		case token.AnchorType:
+			j += 2
+		case token.TagType:
+			j++
+		default:
+			return tokens[j].Position.Line != line
+		}
+	}
+
+	return true
 }

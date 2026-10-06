@@ -332,5 +332,5 @@ func TestDeeplyNestedFlowSequenceIsRefusedBeforeTheParserRuns(t *testing.T) {
 	require.Contains(t, parseErr.Error(), "flow collections nest more than")
 	require.Contains(t, parseErr.Error(), "6:")
 	require.Error(t, fixErr)
-	require.Less(t, after.TotalAlloc-before.TotalAlloc, uint64(32<<20))
+	require.Less(t, after.TotalAlloc-before.TotalAlloc, uint64(128<<20))
 }

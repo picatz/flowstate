@@ -2,10 +2,12 @@ package strictyaml_test
 
 import (
 	"errors"
+	"math/rand/v2"
 	"runtime"
 	"strings"
 	"testing"
 
+	"github.com/goccy/go-yaml/ast"
 	"github.com/goccy/go-yaml/parser"
 	"github.com/stretchr/testify/require"
 
@@ -188,5 +190,73 @@ func TestParseBytesCountsAnchoredAndTaggedEntriesFromTheirProperties(t *testing.
 		_, err := strictyaml.ParseBytes([]byte(doc.String()), 0)
 		_, ok := errors.AsType[*strictyaml.NestingError](err)
 		require.True(t, ok, "%s: %v", name, err)
+	}
+}
+
+// depthVisitor measures how deeply the parser nested a tree, which is what its
+// cost follows, whatever the lexer's columns suggested.
+type depthVisitor struct {
+	depth int
+	max   *int
+}
+
+func (v depthVisitor) Visit(ast.Node) ast.Visitor {
+	*v.max = max(*v.max, v.depth)
+
+	return depthVisitor{depth: v.depth + 1, max: v.max}
+}
+
+// A column-based check can be fooled by a shape its author did not think of
+// (the anchor alone on a `- &a` line, then its key at the same column, nests in
+// the parser and is flat in the columns). So the property is checked against
+// the parser rather than reasoned about: whatever a tiled template is, a
+// document the check accepts must stay within a few multiples of the bound in
+// the parser's own tree (the flow, block and value-below counters each take up
+// to the bound, so the sum is the ceiling that matters, and it is a constant). The templates are a fixed seed's worth of one to three line
+// combinations of the tokens that open a level.
+func TestParseBytesAcceptsNothingTheParserNestsFarPastTheBound(t *testing.T) {
+	t.Parallel()
+
+	pieces := []string{
+		"- ", "- - ", "k:", "k: ", "? k", "? ", ": ", "&a", "!t", "&a k:", "!t k:",
+		"- &a", "- !t", "- k:", "k: &a", "k: !t", "- ? k", "- &a k:", "[", "{a: ",
+	}
+	const tiles = 3 * strictyaml.MaxFlowDepth
+
+	// Shapes reviewers found that a column alone could not count, then the
+	// seeded draws.
+	templates := [][]string{{"- &a", "k:"}, {"- !t", "? k"}, {"- &a", "? k"}}
+
+	rng := rand.New(rand.NewPCG(2338, 1))
+	for range 400 {
+		lines := make([]string, 1+rng.IntN(3))
+		for i := range lines {
+			lines[i] = pieces[rng.IntN(len(pieces))]
+		}
+
+		templates = append(templates, lines)
+	}
+
+	for _, lines := range templates {
+		step := rng.IntN(3)
+
+		var doc strings.Builder
+		for level := range tiles {
+			for i, line := range lines {
+				// Each level indents `step` further; a later line of a template
+				// may sit at the level's own column or one deeper.
+				doc.WriteString(strings.Repeat(" ", level*step+(i%2)*rng.IntN(2)) + line + "\n")
+			}
+		}
+
+		tree, err := strictyaml.ParseBytes([]byte(doc.String()), 0)
+		if err != nil {
+			continue
+		}
+
+		deepest := 0
+		ast.Walk(depthVisitor{max: &deepest}, tree.Docs[0].Body)
+		require.LessOrEqual(t, deepest, 4*strictyaml.MaxFlowDepth,
+			"the check accepted a document the parser nests %d deep: lines %q, step %d", deepest, lines, step)
 	}
 }
