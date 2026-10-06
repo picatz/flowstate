@@ -408,6 +408,16 @@ func TestAFuzzFindingIsRenderedAndFailsTheFile(t *testing.T) {
 	assert.Contains(t, found, "flow test --fuzz-seed 7 -- deploy.test.yaml")
 	assert.Contains(t, found, "count: 0")
 	assert.True(t, result.failed(false, false))
+	assert.NotContains(t, found, "shrunk", "a finding that moved one input has nothing to say about a shrink")
+	assert.NotContains(t, found, "REMOVE FROM")
+
+	shrunk, _ := render(&v1.FuzzReport{Runs: 9, Cases: 1, Finding: &v1.FuzzFinding{
+		Case: "authored", Seed: 90, Inputs: "inputs:\n  count: 0\n", Failure: "the run failed", Absent: []string{"note", "tag"},
+		Changed: 5, ShrinkRuns: 11, Minimal: true,
+	}})
+	assert.Contains(t, shrunk, "5 inputs changed, shrunk by 11 re-runs; no single input can be put back")
+	assert.Contains(t, shrunk, "REMOVE FROM THE CASE'S `inputs:`")
+	assert.Contains(t, shrunk, "note, tag")
 
 	// Every generated case erroring before the run proves nothing, so it fails
 	// the file rather than reading as a clean fuzz.

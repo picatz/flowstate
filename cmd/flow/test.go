@@ -837,9 +837,22 @@ func printFuzz(out io.Writer, theme ui.Theme, report *v1.TestReport) {
 	fmt.Fprintf(out, "%s  %s: %s\n", file, finding.GetCase(), theme.Danger.Render(
 		fmt.Sprintf("generated inputs broke it (fuzz seed %d)", finding.GetSeed())))
 	fmt.Fprintf(out, "%s", indentRendering(finding.GetFailure()))
+	// One re-run that did not minimise means the replay did not reproduce
+	// and nothing was shrunk, so there is nothing to report.
+	if finding.GetChanged() > 1 && (finding.GetMinimal() || finding.GetShrinkRuns() > 1) {
+		qualifier := "no single input can be put back"
+		if !finding.GetMinimal() {
+			qualifier = "the search ran out of re-runs, so it may not be minimal"
+		}
+		fmt.Fprintf(out, "\n       %s changed, shrunk by %s; %s\n",
+			count(int(finding.GetChanged()), "input", "inputs"), count(int(finding.GetShrinkRuns()), "re-run", "re-runs"), qualifier)
+	}
 	fmt.Fprintf(out, "\n       REPLAY THIS EXACT CASE:\n\n           flow test --fuzz-seed %d -- %s\n\n",
 		finding.GetSeed(), shellArg(report.GetFile()))
 	fmt.Fprintf(out, "       OR MERGE THESE OVER THE CASE'S OWN `inputs:` (sensitive inputs are never printed; keep the case's):\n\n%s", indentRendering(finding.GetInputs()))
+	if absent := finding.GetAbsent(); len(absent) > 0 {
+		fmt.Fprintf(out, "\n       AND REMOVE FROM THE CASE'S `inputs:` (an overlay cannot say absent): %s\n", strings.Join(absent, ", "))
+	}
 }
 
 // printSchedules renders what seeded schedule exploration found for one file:
