@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/assert"
@@ -613,22 +614,25 @@ outputs: {}
 // Against the handler rather than through a client session, because the claim
 // is about the context the handler runs the case under, and cancelling a live
 // MCP request from the client side is the SDK's plumbing rather than this
-// tool's behaviour. The request is cancelled before the call: a run rooted
-// anywhere else would not hear it and would answer with a verdict, where a run
-// rooted at the request is stopped and reports that no verdict was reached. (A
-// run held at an unanswerable gate used to be the fixture, but flowtest now
-// reports that as a stuck run, so it no longer outlives anything.)
+// tool's behaviour. A `continue` into a gate with no `timeout:` holds the run
+// for flowtest's liveness settle, a few real milliseconds, before it would be
+// reported as stuck; the request is cancelled inside that window, so what ends
+// the call is the cancellation and the answer is that no verdict was reached,
+// never a verdict. A run no request could stop no longer outlives the call
+// indefinitely (the liveness check ends it), so this guards the answer, and the
+// timing is the one thing it cannot make exact.
 func TestTheDebugToolHonoursRequestCancellation(t *testing.T) {
 	t.Parallel()
 
 	ctx, cancel := context.WithCancel(t.Context())
-	cancel()
+	defer cancel()
+	time.AfterFunc(5*time.Millisecond, cancel)
 
 	result, err := debugToolHandler(0)(ctx, &mcp.CallToolRequest{
 		Params: &mcp.CallToolParamsRaw{
 			Arguments: json.RawMessage(`{
-				"workflow": "edition: v2026.4\nname: napping\nsteps:\n- id: nap\n  sleep: 1s\n",
-				"tests": "tests:\n  - name: it naps\n    expect:\n      failed: false\n",
+				"workflow": "edition: v2026.4\nname: parked\nsteps:\n- id: gate\n  wait_for_signal:\n    name: approve\n",
+				"tests": "tests:\n  - name: it waits\n    expect:\n      failed: true\n",
 				"commands": ["continue"]
 			}`),
 		},

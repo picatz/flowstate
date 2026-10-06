@@ -561,6 +561,7 @@ func (s *LocalSignals) DeliverFrom(name string, payload *Node_Outputs, sender *S
 	select {
 	case s.queueLocked(name) <- delivery:
 		s.enqueuedLocked(delivery)
+		s.bump(&s.pending, name, 1)
 	default:
 		return fmt.Errorf(
 			"flowstate: %d signals named %q are already waiting to be read", localSignalQueueDepth, name)
