@@ -1343,7 +1343,7 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	}
 
 	facts := newRunFacts(runErr, invocations, workflow.GetName())
-	facts.signalsDropped = outcomes.droppedNames()
+	facts.signalsDropped, facts.signalsDelayed = outcomes.droppedNames(), outcomes.delayedNames()
 	if shown.faulted {
 		// A run with faults injected is judged by what must hold of every
 		// run, and by the one oracle a faulted run owes unprompted
@@ -1759,6 +1759,10 @@ func scriptSignals(runFinished <-chan struct{}, clock *v1.VirtualClock, signals 
 		// the goroutine keeps its place in the order, and sends nothing.
 		drop *signalDrop
 
+		// sentAt is when the sender sends it, before any delay: the moment a
+		// fault's verdict takes effect.
+		sentAt time.Duration
+
 		// waitFor is closed once the nearest earlier job scripted for this
 		// same `at` has delivered (or given up), so this job's own delivery
 		// is ordered after it. Nil for a job that ties nothing before it.
@@ -1787,6 +1791,10 @@ func scriptSignals(runFinished <-chan struct{}, clock *v1.VirtualClock, signals 
 			// tie group everything at-or-before the epoch resolves into.
 			at = max(d, 0)
 		}
+		sentAt := at
+		if dropped[n] != nil {
+			at = satAdd(at, dropped[n].delay)
+		}
 		subject := ""
 		if s.Sender != nil {
 			subject = s.Sender.Subject
@@ -1797,6 +1805,7 @@ func scriptSignals(runFinished <-chan struct{}, clock *v1.VirtualClock, signals 
 			sender:        scriptedSender(s.Sender, s.DeliveryID),
 			senderSubject: subject,
 			drop:          dropped[n],
+			sentAt:        sentAt,
 			waitFor:       lastByAt[at],
 			turnDone:      turnDone,
 		})
@@ -1810,6 +1819,28 @@ func scriptSignals(runFinished <-chan struct{}, clock *v1.VirtualClock, signals 
 			defer clock.Leave()
 			defer func() { done <- struct{}{} }()
 			defer close(j.turnDone)
+
+			// A fault acts when the sender sends: a lost delivery is one the
+			// sender made and the run never learns of, and a late one leaves
+			// the sender on time and arrives after its delay. The fire is
+			// recorded here, at the sent moment, so a delay that carries the
+			// signal past the run's end still counts as a fault the run
+			// met, while a run that ended before the sender sent loses and
+			// delays nothing.
+			if j.drop != nil {
+				select {
+				case <-clock.After(j.sentAt):
+				case <-runFinished:
+					return
+				}
+				faults.commitDrop(j.drop)
+				if j.drop.delay == 0 {
+					outcomes.noteDropped(j.name)
+
+					return
+				}
+				outcomes.noteDelayed(j.name)
+			}
 
 			select {
 			case <-clock.After(j.at):
@@ -1845,14 +1876,6 @@ func scriptSignals(runFinished <-chan struct{}, clock *v1.VirtualClock, signals 
 			default:
 			}
 
-			// A lost delivery is one the sender made and the run never
-			// learns of: nothing reaches the gate, so no policy decides it.
-			if j.drop != nil {
-				faults.commitDrop(j.drop)
-				outcomes.noteDropped(j.name)
-				return
-			}
-
 			// The send and its record are one atomic decision, and the record
 			// is honest about the outcome — delivered, or refused by a
 			// declared signal policy or the queue's bound. See
@@ -1884,6 +1907,16 @@ func scriptSignals(runFinished <-chan struct{}, clock *v1.VirtualClock, signals 
 			}
 		})
 	}, nil
+}
+
+// satAdd is a + b, saturating at the largest duration: a script whose `at:` is
+// already at the limit stays there instead of wrapping to the past.
+func satAdd(a, b time.Duration) time.Duration {
+	if a > math.MaxInt64-b {
+		return math.MaxInt64
+	}
+
+	return a + b
 }
 
 // scriptedSender renders a [SignalScript]'s optional `sender:` as the

@@ -329,6 +329,7 @@ saga's promise rather than one scripted path:
 | `run.compensated` | `list(string)`: the steps whose `undo:` succeeded, in the order they ran (reverse registration). Always present, empty when nothing was undone. |
 | `run.uncompensated` | `list(string)`: the steps whose `undo:` failed or was not attempted before a cancellation's budget ran out. Each registration is classified on its own, so a step an iteration of a `loop:` or `for_each:` registers more than once can appear in both lists, and being in `run.compensated` does not prove every registration was undone; a step that registered no `undo:` (skipped, failed, or without one) is in neither. |
 | `run.signals.dropped` | `list(string)`: the signals a `faults:` entry lost a delivery of, sorted. Always present, empty when nothing was lost. |
+| `run.signals.delayed` | `list(string)`: the signals a `faults:` entry made late, sorted, whether or not the run was still there when they arrived. Always present, empty when nothing was late. |
 | `run.invocations.task` | `map(string, int)`: how many times each task ran anywhere in the run, callees and `undo:` compensations included. |
 | `run.invocations.step` | `map(string, int)`: how many times each step of the workflow under test ran its task, one per attempt, so a retried step counts every attempt. Compensations are not counted. |
 
@@ -424,7 +425,8 @@ is any error kind a task reports except `Internal` and `Expression`, which are
 defects, and `RunTimeout`, which only a whole run can have. Rows of a table inherit the entry's `faults:` and
 `invariants:` when they state none.
 
-A third target loses a signal's delivery instead of failing a task:
+A third target changes a signal's delivery instead of failing a task, either
+losing it or making it late:
 
 ```yaml
   signals:
@@ -432,22 +434,28 @@ A third target loses a signal's delivery instead of failing a task:
     - {name: finance-approved, at: 20m, payload: {approved: true}}
   faults:
     - signal: finance-approved   # a signal the case scripts; exactly one of task, step, signal
-      drop: true                 # required: the sender sent it and the run never learns of it
+      drop: true                 # lost: the sender sent it and the run never learns of it
+    # or: delay: 45m             # late: arrives that long after its `at:`, up to 720h
   invariants:
     - that: "!run.failed || 'finance-approved' in run.signals.dropped"
       because: the gate may lapse only when an approval was lost
 ```
 
-`rate:`, `at_most:` and `on:` mean what they mean for a task fault, counted over
-the scripted deliveries of that name in declaration order: `on: [2]` is the
-second `signals:` entry of that name. A delivery is decided before the run
-starts, so a seed loses the same deliveries however the clock orders them, and
-a dropped one never reaches the signal policy, so it is neither delivered nor
-denied; it is named in `run.signals.dropped` when its moment comes, and a delivery
-the run ended before is never sent, dropped or not. A violation prints the pinned `signal:` entries beside any task
-faults, and the shrinker treats them alike. Not yet covered: delay faults and
-signal jitter, and duplicated or reordered deliveries, which a second `signals:` entry with the same `delivery_id:` or a
-later `at:` already says.
+`signal:` takes exactly one of `drop: true` and `delay: <duration>`. `rate:`,
+`at_most:` and `on:` mean what they mean for a task fault, counted over the
+scripted deliveries of that name in declaration order: `on: [2]` is the second
+`signals:` entry of that name. A delivery is decided before the run starts, so
+a seed changes the same deliveries however the clock orders them, but the fault
+takes effect when the sender sends, at the delivery's own `at:`. A delayed
+signal that arrives after the gate's `timeout:` is the case this exists for:
+the sender was on time and the gate lapsed anyway, and `run.signals.delayed`
+says so even though the signal never reached the run. A dropped delivery never
+reaches the signal policy, so it is neither delivered nor denied. A delivery the
+run ended before its sender sent it is untouched, and a pin for one fails as
+drifted. A violation prints the pinned `signal:` entries, `delay:` kept, beside
+any task faults, and the shrinker treats them alike. Duplicated and reordered
+deliveries are not faults: a second `signals:` entry with the same
+`delivery_id:` or a different `at:` already says them.
 
 Seeded exploration is the local driver's. The durable driver has one check of
 its own that the local driver cannot have: a run survives the loss of its
