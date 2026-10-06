@@ -369,6 +369,23 @@ message FuzzFinding {
 
   // Failure is what went wrong, withheld as the case's own report withholds.
   string failure = 4;
+
+  // Absent names the inputs the case supplies that the generated run left out,
+  // which an `inputs:` overlay cannot say: remove them from the case to
+  // reproduce. Sorted, and never a `sensitive:` input.
+  repeated string absent = 5;
+
+  // Changed is how many inputs the seed changed from the case's own before the
+  // finding was shrunk; Inputs and Absent hold what is left of them.
+  int32 changed = 6;
+
+  // ShrinkRuns is how many re-runs of the case the shrink spent putting inputs
+  // back at the case's own values; one means the first replay was all it took.
+  int32 shrink_runs = 7;
+
+  // Minimal reports that putting any one remaining input back at the case's own
+  // value stopped the failure; false when the budget ended the search first.
+  bool minimal = 8;
 }
 
 // CoverageReport is `flow test`'s branch-coverage account for one workflow:

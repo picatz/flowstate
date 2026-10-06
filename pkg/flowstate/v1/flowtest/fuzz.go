@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"maps"
 	"math/rand/v2"
+	"reflect"
 	"slices"
 	"strings"
 	"time"
@@ -111,6 +112,46 @@ func (f *fuzzer) run(ctx context.Context, test *Test, spec *v1.Workflow, deliver
 	}
 
 	sensitive := v1.SensitiveInputNames(spec)
+	// judge runs the case once over inputs and says what, if anything, is
+	// wrong with the run: the one verdict the search and the shrink share.
+	judge := func(inputs map[string]any) ([]string, caseShown, judgeVerdict) {
+		generated := *test
+		generated.Inputs = inputs
+		generated.Expect = Expectation{}
+		generated.Faults = nil
+		runCtx, cancel := caseContextWithin(ctx, timeout)
+		result, _, _, _, shown, runErr := runCase(runCtx, &generated, deliveryPath, load, false, vars)
+		cancel()
+		// A cancelled suite is not a verdict about the workflow: the run's
+		// error would classify as Internal and read as a defect an input found.
+		if ctx.Err() != nil {
+			return nil, shown, judgeCancelled
+		}
+
+		// An invocation no stub answers says nothing about the workflow: the
+		// case's stubs were written for its own inputs, and a generated one can
+		// route a call past every `where:`. Inconclusive, like a case that
+		// errored before the run.
+		var unanswered *stubDiagnostic
+		if result.GetError() != "" || errors.As(runErr, &unanswered) {
+			return nil, shown, judgeInconclusive
+		}
+		var problems []string
+		if kind := v1.ClassifyError(runErr); runErr != nil && (kind == v1.ErrorKindInternal || kind == v1.ErrorKindExpression) {
+			problems = append(problems, fmt.Sprintf("the run failed with an %s error: %s", kind, shown.runErrorUnder(shown.sensitive)))
+		}
+		// Only the invariants: the case's `expect:` was cleared because it
+		// describes the authored inputs, and what is left of it (a run that
+		// failed with nothing declaring it should) is not a property of every
+		// input.
+		for _, failure := range result.GetFailures() {
+			if strings.HasPrefix(failure.GetField(), "invariants") {
+				problems = append(problems, failure.GetField()+": "+failure.GetMessage())
+			}
+		}
+
+		return problems, shown, judgeJudged
+	}
 	for k := range count {
 		seed := DefaultFuzzSeed0 + uint64(k)
 		if f.opts.Pinned {
@@ -129,56 +170,173 @@ func (f *fuzzer) run(ctx context.Context, test *Test, spec *v1.Workflow, deliver
 			continue
 		}
 
-		generated := *test
-		generated.Inputs = inputs
-		generated.Expect = Expectation{}
-		generated.Faults = nil
-		runCtx, cancel := caseContextWithin(ctx, timeout)
-		result, _, _, _, shown, runErr := runCase(runCtx, &generated, deliveryPath, load, false, vars)
-		cancel()
-		// A cancelled suite is not a verdict about the workflow: the run's
-		// error would classify as Internal and read as a defect an input found.
-		if ctx.Err() != nil {
+		problems, shown, verdict := judge(inputs)
+		switch verdict {
+		case judgeCancelled:
 			return
-		}
-
-		// An invocation no stub answers says nothing about the workflow: the
-		// case's stubs were written for its own inputs, and a generated one can
-		// route a call past every `where:`. Inconclusive, like a case that
-		// errored before the run.
-		var unanswered *stubDiagnostic
-		if result.GetError() != "" || errors.As(runErr, &unanswered) {
+		case judgeInconclusive:
 			f.inconclusive++
 
 			continue
 		}
 		f.runs++
-		var problems []string
-		if kind := v1.ClassifyError(runErr); runErr != nil && (kind == v1.ErrorKindInternal || kind == v1.ErrorKindExpression) {
-			problems = append(problems, fmt.Sprintf("the run failed with an %s error: %s", kind, shown.runErrorUnder(shown.sensitive)))
-		}
-		// Only the invariants: the case's `expect:` was cleared because it
-		// describes the authored inputs, and what is left of it (a run that
-		// failed with nothing declaring it should) is not a property of every
-		// input.
-		for _, failure := range result.GetFailures() {
-			if strings.HasPrefix(failure.GetField(), "invariants") {
-				problems = append(problems, failure.GetField()+": "+failure.GetMessage())
-			}
-		}
 		if len(problems) == 0 {
 			continue
 		}
 
+		shrunk := shrinkInputs(test.Inputs, inputs, sensitive, func(candidate map[string]any) (bool, bool) {
+			again, _, verdict := judge(candidate)
+
+			return len(again) > 0, verdict != judgeCancelled
+		})
+		if shrunk.Reproduced {
+			// The finding names the smaller input set's failure: the probe
+			// that reproduced it is the last violating run, and its text is
+			// what the author will see when they paste the overlay.
+			if final, shownFinal, v := judge(shrunk.Inputs); v == judgeJudged && len(final) > 0 {
+				problems, shown = final, shownFinal
+			}
+			inputs = shrunk.Inputs
+		}
+
 		f.finding = &v1.FuzzFinding{
-			Case:    redactedErrorText(test.Name, shown.sensitive),
-			Seed:    seed,
-			Inputs:  redactedErrorText(pasteableInputs(inputs, sensitive), shown.sensitive),
-			Failure: redactedErrorText(strings.Join(problems, "\n"), shown.sensitive),
+			Case:       redactedErrorText(test.Name, shown.sensitive),
+			Seed:       seed,
+			Inputs:     redactedErrorText(pasteableInputs(overlayOf(test.Inputs, inputs), sensitive), shown.sensitive),
+			Absent:     absentInputs(test.Inputs, inputs, sensitive),
+			Failure:    redactedErrorText(strings.Join(problems, "\n"), shown.sensitive),
+			Changed:    int32(shrunk.From),
+			ShrinkRuns: int32(shrunk.Runs),
+			Minimal:    shrunk.Minimal,
 		}
 
 		return
 	}
+}
+
+// judgeVerdict is whether one generated run said anything about the workflow.
+type judgeVerdict int
+
+const (
+	// judgeJudged: the run reached a verdict, clean or not.
+	judgeJudged judgeVerdict = iota
+	// judgeInconclusive: the run errored before it ran, or hit an invocation
+	// no stub answers, so it says nothing.
+	judgeInconclusive
+	// judgeCancelled: the suite was cancelled; nothing was learned.
+	judgeCancelled
+)
+
+// maxInputShrinkRuns bounds the re-runs spent shrinking one finding's inputs,
+// the same budget a violating seed's faults get.
+const maxInputShrinkRuns = MaxShrinkRuns
+
+// inputShrink is what [shrinkInputs] found.
+type inputShrink struct {
+	// Inputs is the generated set reduced to the inputs that matter: every
+	// other input is back at the case's own value.
+	Inputs map[string]any
+	// From is how many inputs the seed changed from the case's own.
+	From int
+	// Runs is how many probes were spent.
+	Runs int
+	// Reproduced reports that the full generated set violated again when
+	// replayed; when it did not nothing was shrunk.
+	Reproduced bool
+	// Minimal reports that putting any one remaining input back at its own
+	// value stopped the failure.
+	Minimal bool
+}
+
+// shrinkInputs reduces a failing generated input set to the inputs that cause
+// the failure, by [ddmin] over the inputs the seed changed: each candidate puts
+// every other input back at the case's own value (or leaves it out when the
+// case never supplied it). It is 1-minimal, not the smallest set there is, and
+// reproduces *a* failure, which need not be the first. Sensitive inputs are
+// never generated, so they are never among the changed ones.
+func shrinkInputs(base, generated map[string]any, sensitive map[string]bool, violates func(map[string]any) (violated, ok bool)) inputShrink {
+	changed := changedInputs(base, generated, sensitive)
+	r := ddmin(changed, maxInputShrinkRuns, func(subset []string) (bool, bool) {
+		return violates(withInputs(base, generated, subset))
+	})
+	out := inputShrink{Inputs: generated, From: len(changed), Runs: r.Runs, Reproduced: r.Reproduced, Minimal: r.Minimal}
+	if r.Reproduced {
+		out.Inputs = withInputs(base, generated, r.Kept)
+	}
+
+	return out
+}
+
+// changedInputs names, sorted, the non-sensitive inputs generated differs from
+// base in: a different value, or a value base never supplied, or a value base
+// supplied that generated left out.
+func changedInputs(base, generated map[string]any, sensitive map[string]bool) []string {
+	var names []string
+	for name := range maps.Keys(generated) {
+		if !sensitive[name] && !sameInput(base, generated, name) {
+			names = append(names, name)
+		}
+	}
+	for name := range maps.Keys(base) {
+		if _, kept := generated[name]; !kept && !sensitive[name] {
+			names = append(names, name)
+		}
+	}
+	slices.Sort(names)
+
+	return slices.Compact(names)
+}
+
+func sameInput(a, b map[string]any, name string) bool {
+	av, aok := a[name]
+	bv, bok := b[name]
+
+	return aok == bok && reflect.DeepEqual(av, bv)
+}
+
+// withInputs is base with the named inputs taken from generated: set where
+// generated has them, deleted where it left them out.
+func withInputs(base, generated map[string]any, names []string) map[string]any {
+	out := maps.Clone(base)
+	if out == nil {
+		out = map[string]any{}
+	}
+	for _, name := range names {
+		if v, ok := generated[name]; ok {
+			out[name] = v
+		} else {
+			delete(out, name)
+		}
+	}
+
+	return out
+}
+
+// overlayOf is the part of inputs the case's own inputs do not already say: the
+// `inputs:` overlay to merge over them.
+func overlayOf(base, inputs map[string]any) map[string]any {
+	overlay := map[string]any{}
+	for name, v := range inputs {
+		if !sameInput(base, inputs, name) {
+			overlay[name] = v
+		}
+	}
+
+	return overlay
+}
+
+// absentInputs names, sorted, the non-sensitive inputs the case supplies and
+// the run left out, which an overlay cannot say.
+func absentInputs(base, inputs map[string]any, sensitive map[string]bool) []string {
+	var names []string
+	for name := range maps.Keys(base) {
+		if _, kept := inputs[name]; !kept && !sensitive[name] {
+			names = append(names, name)
+		}
+	}
+	slices.Sort(names)
+
+	return names
 }
 
 // pasteableInputs renders inputs as the `inputs:` overlay that reproduces a

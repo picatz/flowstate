@@ -78,6 +78,8 @@ func TestFuzzFindsTheInputTheAuthoredCaseNeverTried(t *testing.T) {
 	require.NotNil(t, finding, "a division by zero is reachable from a declared int input")
 	assert.Equal(t, "authored", finding.GetCase())
 	assert.Contains(t, finding.GetFailure(), "Expression")
+	assert.EqualValues(t, 1, finding.GetChanged(), "the corpus moves one input at a time, so the finding is already minimal")
+	assert.True(t, finding.GetMinimal())
 	assert.Contains(t, finding.GetInputs(), "count: 0")
 
 	replay := runFuzz(t, divideWorkflow, fuzzedCase, flowtest.FuzzOptions{Seed: finding.GetSeed(), Pinned: true})
