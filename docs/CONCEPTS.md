@@ -203,7 +203,7 @@ differs, and the last column says, because several allow by default.
 | May this task reach this host? | The worker, as the connection is made | The deployment's egress policy, with CEL rules | Internal and loopback addresses are refused; public ones are allowed. |
 | May this identity dispatch this task? | The worker, before each attempt | The deployment's task policy, in CEL | Every task is allowed. |
 | May this step read this secret? | The worker, before the provider is asked | The trust policy's `secrets:` rules, in CEL | Nothing may be read. |
-| May this step mint a federated credential? | The worker, before the exchange | The trust policy's `federation:` rules, in CEL | Any configured target. Write an `allow:` rule for each. |
+| May this step mint a federated credential? | The worker, before the exchange | The trust policy's `federation:` rules, in CEL | Nothing: with no `allow:` rule no target may be assumed. |
 
 Some policy lives in the workflow, because the author knows who should approve a
 release. The rest lives in the deployment, because an operator decides what a

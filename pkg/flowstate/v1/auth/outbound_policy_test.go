@@ -474,6 +474,7 @@ targets:
 		permissive, err := auth.ParseFederationPolicy([]byte(`
 issuer: ` + identityServer.URL + `
 declared_claims: [repository]
+allow: ['true']
 targets:
   - name: partner
     token_exchange:

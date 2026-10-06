@@ -121,8 +121,9 @@ func WithBrokerClock(clock func() time.Time) BrokerOption {
 // startup error rather than a surprise at the first credential request.
 //
 // A broker with no targets is valid and refuses every request with
-// [ErrUnknownTarget]. A broker with no rules permits any workload to use any
-// configured target, which is why a real deployment writes rules.
+// [ErrUnknownTarget]. A broker with no allow rule refuses every request with
+// [ReasonAssumeNoAllowRule], the same as secret access: a target is usable only
+// when an allow rule permits it.
 func NewBroker(issuer *Issuer, opts ...BrokerOption) (*Broker, error) {
 	if issuer == nil {
 		return nil, fmt.Errorf("%w: a broker needs an issuer to mint assertions with", ErrInvalidPolicy)

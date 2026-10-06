@@ -156,10 +156,20 @@ type assumeRules struct {
 // evaluate applies the rules and returns an [*AssumeDeniedError] when the request
 // is refused.
 //
-// Deny rules run first and win, then allow rules gate the request when any are
-// configured. A rule that fails to evaluate refuses the request: a policy that
-// cannot be evaluated is not a policy that permits everything.
+// Deny rules run first and win, then an allow rule must match: a broker with no
+// allow rule permits nothing, the same as secret access. A rule that fails to
+// evaluate refuses the request: a policy that cannot be evaluated is not a policy
+// that permits everything.
 func (rs assumeRules) evaluate(ctx context.Context, target, subject string, vars map[string]any) error {
+	if len(rs.Allow) == 0 {
+		return &AssumeDeniedError{
+			Target:  target,
+			Subject: subject,
+			Reason:  ReasonAssumeNoAllowRule,
+			Detail:  "no allow rule is configured, and a target must be permitted by an allow rule",
+		}
+	}
+
 	decision, err := rs.Decide(ctx, vars)
 	if err != nil {
 		return assumeRuleFailure(ctx, target, subject, err)
