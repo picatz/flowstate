@@ -226,7 +226,7 @@ func TestParseBytesAcceptsNothingTheParserNestsFarPastTheBound(t *testing.T) {
 
 	// Shapes reviewers found that a column alone could not count, then the
 	// seeded draws.
-	templates := [][]string{{"- &a", "k:"}, {"- !t", "? k"}, {"- &a", "? k"}, {"- &a", "# c", "k:"}, {"- &a # c", "      # deeper", "k:"},
+	templates := [][]string{{"? k", "# c"}, {"? k", "- # c"}, {"- &a", "k:"}, {"- !t", "? k"}, {"- &a", "? k"}, {"- &a", "# c", "k:"}, {"- &a # c", "      # deeper", "k:"},
 		{"&a k:", "- # c"}, {"- &a # c", "k:"}, {"- # c", "&a k:"}}
 
 	rng := rand.New(rand.NewPCG(2338, 1))
@@ -260,5 +260,25 @@ func TestParseBytesAcceptsNothingTheParserNestsFarPastTheBound(t *testing.T) {
 		ast.Walk(depthVisitor{max: &deepest}, tree.Docs[0].Body)
 		require.LessOrEqual(t, deepest, 4*strictyaml.MaxFlowDepth,
 			"the check accepted a document the parser nests %d deep: lines %q, step %d", deepest, lines, step)
+	}
+}
+
+// TestParseBytesCountsAQuestionKeyBeforeACommentLine pins #2372: with a comment
+// line after `? k`, the parser nests the next deeper `?` inside it, two AST
+// levels per line, and no column of the check counted it, so 768 lines got a
+// document 1,537 deep through a bound of 256 levels.
+func TestParseBytesCountsAQuestionKeyBeforeACommentLine(t *testing.T) {
+	t.Parallel()
+
+	for _, step := range []int{1, 2} {
+		var doc strings.Builder
+		for level := range 3 * strictyaml.MaxFlowDepth {
+			doc.WriteString(strings.Repeat(" ", level*step) + "? k\n" + strings.Repeat(" ", level*step) + "# c\n")
+		}
+
+		_, err := strictyaml.ParseBytes([]byte(doc.String()), 0)
+
+		var nesting *strictyaml.NestingError
+		require.ErrorAs(t, err, &nesting, "step %d", step)
 	}
 }
