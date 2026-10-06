@@ -479,6 +479,14 @@ any task faults, and the shrinker treats them alike. Duplicated and reordered
 deliveries are not faults: a second `signals:` entry with the same
 `delivery_id:` or a different `at:` already says them.
 
+A dropped delivery to a gate with no `timeout:` leaves a run nothing can wake.
+The harness reports that as a failure the moment it is true: `stuck: the run
+waits for signal "go" and nothing pending can deliver it`, naming any signal a
+fault dropped. It is a verdict like a failed invariant, so `--seeds` and
+`--fuzz` find it, shrink it and print the replaying script, and no seed spends
+the case's `--timeout`. It is a harness check on the local driver's virtual
+clock; the durable driver holds the same run at the same gate.
+
 Seeded exploration is the local driver's. The durable driver has one check of
 its own that the local driver cannot have: a run survives the loss of its
 worker. `TestWorkerRestartOverWorkflows` and `TestWorkerRestartOverUndoCases`
@@ -845,7 +853,7 @@ as given. Finding no test files is an error, and so is naming a workflow file.
 | `--run <regex>` | Run only cases whose full name matches. |
 | `--list` | Print the names of the cases that would run, one per line under their file, without running any. Honours `--run`, and names the cases a `skip:` leaves out. A file that cannot be run is reported `REFUSED` and fails the command. Refused with `-o json`, `--junit`, `--debug`, `--watch`, `--fail-fast`, `--seeds` and `--coverage-required`, which all read a run's result. |
 | `--fail-fast` | Stop at the first failing case, or the first schedule divergence under `--seeds`. The cases not run are reported as skipped with the reason. Refused with `--coverage-required`, whose bar a stopped suite cannot meet. |
-| `--timeout <duration>` | The real-time limit for one case, default 30s and at most 10m. The virtual clock still decides what a workflow waits for, so this bounds a case that is stuck, not one that waits long. |
+| `--timeout <duration>` | The real-time limit for one case, default 30s and at most 10m. The virtual clock still decides what a workflow waits for, so this bounds a case that is stuck, not one that waits long. A run held at an untimed `wait_for_signal:` that nothing scripted can still answer is reported as stuck at once, without spending this limit. |
 | `--coverage-required` | Fail when a step or `switch:` arm is reached by no case and not listed under `coverage.allow_unreached`. |
 | `--fail-on-warning` | Treat warnings as failures. |
 | `--seeds N` | Also run each case under N seeded orderings of `parallel:` branches and `async:` steps, and fail if any ordering changes what the case observes. `--seed` replays one reported seed. |

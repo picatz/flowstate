@@ -270,10 +270,11 @@ own:
   `flowstate_debug` call with it — the debugger drives the same stubbed run
   through the same door, and a script that runs out resumes it rather than
   holding it, so the two share a bound as they share a risk. A submitted
-  workflow can park forever on its own — flowtest's virtual clock advances only
-  when every participant is parked, so a `wait_for_signal:` with no timeout and
-  no scripted signal has no deadline to advance to — and that is a legal
-  Flowfile, so the refusal cannot live in validation. It matters more here than
+  workflow can hold a call open on its own — a long loop, or a debugger session
+  left paused — and that is a legal Flowfile, so the refusal cannot live in
+  validation. (A `wait_for_signal:` with no timeout that nothing scripted can
+  answer is not one of these: flowtest reports it as a stuck run at once.) It
+  matters more here than
   the two above because a `flowstate_test` call also holds the surface's
   registry lock while it runs, so an unbounded one stops the surface for
   everyone rather than only for the caller who asked. A call the deadline

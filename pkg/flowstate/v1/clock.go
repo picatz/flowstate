@@ -289,6 +289,7 @@ type VirtualClock struct {
 	participants int
 	parked       int
 	timers       []*virtualTimer
+	idle         chan<- struct{}
 }
 
 // NewVirtualClock returns a [VirtualClock] whose notion of "now" starts at
@@ -390,6 +391,8 @@ func (c *VirtualClock) Discard(ch <-chan time.Time) {
 // timer due at or before that moment, repeating for as long as doing so keeps
 // every registered participant parked. Called with mu held.
 func (c *VirtualClock) advanceLocked() {
+	defer c.notifyIdleLocked()
+
 	for c.parked > 0 && c.parked >= c.participants {
 		deadline, found := c.earliestLocked()
 		if !found {
@@ -492,4 +495,44 @@ func (c *VirtualClock) Pending() int {
 		}
 	}
 	return n
+}
+
+// NotifyIdle registers ch to be nudged, without blocking, each time the clock
+// is left with no participant and no pending timer: the state a harness reads
+// as "nothing registered with this clock can make progress by itself". The nudge
+// carries no verdict. A goroutine that has left the clock to block on a real
+// event (an untimed `wait_for_signal:`) looks the same until the event's owner
+// says whether anything is coming, so the receiver asks [VirtualClock.Idle] and
+// the owner again rather than trusting the edge.
+//
+// The send is non-blocking and made with the clock's lock held, so ch should be
+// buffered; the receiver must not be required to run before the clock moves on.
+func (c *VirtualClock) NotifyIdle(ch chan<- struct{}) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.idle = ch
+}
+
+// Idle reports that no goroutine is registered with the clock and no timer is
+// pending: nothing the clock owns can ever fire again. See [VirtualClock.NotifyIdle].
+func (c *VirtualClock) Idle() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	return c.idleLocked()
+}
+
+func (c *VirtualClock) idleLocked() bool {
+	return c.participants <= 0 && c.parked <= 0 && len(c.timers) == 0
+}
+
+func (c *VirtualClock) notifyIdleLocked() {
+	if c.idle == nil || !c.idleLocked() {
+		return
+	}
+	select {
+	case c.idle <- struct{}{}:
+	default:
+	}
 }

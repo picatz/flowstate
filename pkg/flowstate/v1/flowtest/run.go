@@ -1291,6 +1291,9 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	// case can pass with a failed run and schedule exploration compares the
 	// failure text ([caseObservables]).
 	var outputs *v1.Workflow_StepOutputs
+	ctx, cancelRun := context.WithCancelCause(ctx)
+	defer cancelRun(nil)
+	watchLiveness(ctx, clock, signals, outcomes, runFinished, cancelRun)
 	outputs, runErr = v1.RunWithInputs(ctx, workflow, inputs)
 	close(runFinished)
 	// Joined before anything reads what the senders did: a sender that passed
@@ -1332,6 +1335,13 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	// them (issue #453), and `expect.ran`/`expect.skipped` read the same record,
 	// which is what keeps the two from disagreeing about one run.
 	transcript = outputs
+	var stuck *stuckError
+	if errors.As(context.Cause(ctx), &stuck) {
+		caseError("%s", stuck)
+		result.Passed = false
+
+		return
+	}
 	if errors.Is(context.Cause(ctx), errCaseWallTime) {
 		caseError("%s", context.Cause(ctx))
 		result.Passed = false
