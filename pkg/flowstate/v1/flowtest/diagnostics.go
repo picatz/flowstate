@@ -379,8 +379,8 @@ type problems struct {
 }
 
 // withholdText widens what a problem's message may not print with text, in
-// both plain and `%q` spellings — the pair [bothSpellings] gives every other
-// rendering in this package. Called once, by [File.evaluateVars], right after
+// both plain and `%q` spellings — the pair [v1.SensitiveValues.WithValues] gives every
+// other rendering in this package. Called once, by [File.evaluateVars], right after
 // it computes what the file's vars withhold.
 //
 // A set too large to enumerate withholds every later message whole, which
@@ -389,7 +389,7 @@ type problems struct {
 // problem is recorded before the set is installed so it reads in the clear.
 // It names no sizes: the bound is [v1.SensitiveValues]' own.
 func (p *problems) withholdText(text []string) {
-	sensitive := p.sensitive.WithValues(bothSpellings(text)...)
+	sensitive := p.sensitive.WithValues(text...)
 	if sensitive.WithholdAll() {
 		p.report(site{at: at(v1.VarsRoot)}, "vars: the material this file withholds exceeds what one "+
 			"redaction set can enumerate; keep a value derived from a secret to the shape a fixture needs")
