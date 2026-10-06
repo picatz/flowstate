@@ -156,6 +156,31 @@ const (
 	secondWorkerIdentity = "restart-b"
 )
 
+// newRestartWorker is a worker whose stop is graceful and whose sticky queue
+// hands a stopped worker's next task over quickly, with identity written into
+// every workflow task it starts so history says which worker ran what.
+// counter, when set, counts the activities it completes.
+func newRestartWorker(temporal client.Client, identity string, counter *completionCounter) worker.Worker {
+	var interceptors []interceptor.WorkerInterceptor
+	if counter != nil {
+		interceptors = append(interceptors, counter)
+	}
+	w := worker.New(temporal, engine.RunTaskQueueName, worker.Options{
+		Identity:            identity,
+		WorkflowPanicPolicy: engine.WorkerWorkflowPanicPolicy,
+		Interceptors:        interceptors,
+		// Long enough for an in-flight activity to finish and report, which
+		// is what makes the stop graceful.
+		WorkerStopTimeout: 30 * time.Second,
+		// A stopped worker's sticky queue holds the next task until this
+		// lapses; short, so the second worker is handed it quickly.
+		StickyScheduleToStartTimeout: time.Second,
+	})
+	engine.Register(w)
+
+	return w
+}
+
 // runWithRestart runs state on a fresh worker. With stopAt zero the worker is
 // left alone. Otherwise the worker is stopped gracefully after its stopAt-th
 // activity completion and a second worker, with nothing cached, takes over.
@@ -163,24 +188,7 @@ func runWithRestart(ctx context.Context, t *testing.T, temporal client.Client, i
 	t.Helper()
 
 	newWorker := func(identity string, counter *completionCounter) worker.Worker {
-		var interceptors []interceptor.WorkerInterceptor
-		if counter != nil {
-			interceptors = append(interceptors, counter)
-		}
-		w := worker.New(temporal, engine.RunTaskQueueName, worker.Options{
-			Identity:            identity,
-			WorkflowPanicPolicy: engine.WorkerWorkflowPanicPolicy,
-			Interceptors:        interceptors,
-			// Long enough for an in-flight activity to finish and report, which
-			// is what makes the stop graceful.
-			WorkerStopTimeout: 30 * time.Second,
-			// A stopped worker's sticky queue holds the next task until this
-			// lapses; short, so the second worker is handed it quickly.
-			StickyScheduleToStartTimeout: time.Second,
-		})
-		engine.Register(w)
-
-		return w
+		return newRestartWorker(temporal, identity, counter)
 	}
 
 	counter := &completionCounter{stopAt: stopAt}
@@ -246,19 +254,25 @@ func runWithRestart(ctx context.Context, t *testing.T, temporal client.Client, i
 		outcome.history.Events = append(outcome.history.Events, event)
 	}
 
-	bounds := engine.Boundaries(outcome.history)
-	outcome.boundaries = len(bounds)
+	outcome.resumedAt, outcome.boundary, outcome.boundaries = secondWorkerResume(outcome.history)
+
+	return outcome
+}
+
+// secondWorkerResume finds the first workflow task the second worker started:
+// its event id, its index among [engine.Boundaries], and how many boundaries
+// the history has. The event id is zero when the second worker ran none.
+func secondWorkerResume(history *historypb.History) (eventID int64, boundary, boundaries int) {
+	bounds := engine.Boundaries(history)
 	for i, at := range bounds {
-		event := outcome.history.GetEvents()[at]
+		event := history.GetEvents()[at]
 		if event.GetEventType() == enumspb.EVENT_TYPE_WORKFLOW_TASK_STARTED &&
 			event.GetWorkflowTaskStartedEventAttributes().GetIdentity() == secondWorkerIdentity {
-			outcome.resumedAt, outcome.boundary = event.GetEventId(), i
-
-			break
+			return event.GetEventId(), i, len(bounds)
 		}
 	}
 
-	return outcome
+	return 0, 0, len(bounds)
 }
 
 // requireRestarted fails with the finding a restart run is read from: where it
