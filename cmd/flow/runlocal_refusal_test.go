@@ -81,29 +81,43 @@ func TestARefusedCommandLineIsStillADocument(t *testing.T) {
 }
 
 // TestARefusedCommandLineNamesTheInputItIsAbout keeps the fact a caller acts on
-// addressable: which input was wrong.
+// addressable: which input was wrong, as a field of the document and not only a
+// word in its sentence.
 //
-// Asserted on the message rather than on a field of its own, which is what the
-// issue asked for and what this deliberately does not do: `RunResponse.Error`
-// has `message` and `kind` and nothing to hold a name, and adding one is a
-// schema change that belongs with #1439's structured step address rather than
-// beside it. The binder already writes the name into every one of these
-// sentences, so this pins that it stays there.
+// `error.input` is the name the refusal concerns: the declaration's, or the name
+// the caller sent when nothing declares it. The sentence names it too, and that
+// stays pinned, since a person reads the sentence and a program reads the field.
 func TestARefusedCommandLineNamesTheInputItIsAbout(t *testing.T) {
 	t.Parallel()
 
-	stdout, _, err := runLocal(t, refusalWorkflow, "--output", "json",
-		"--input", "tenant=acme", "--input", "shards=0")
-	require.Error(t, err)
+	for name, tc := range map[string]struct {
+		args  []string
+		input string
+	}{
+		"a must: that did not hold":      {[]string{"--input", "tenant=acme", "--input", "shards=0"}, "shards"},
+		"a value the flag cannot coerce": {[]string{"--input", "tenant=acme", "--input", "shards=many"}, "shards"},
+		"a required input nobody gave":   {nil, "tenant"},
+		"a name nothing declares":        {[]string{"--input", "tenant=acme", "--input", "bogus=1"}, "bogus"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 
-	var document struct {
-		Error struct {
-			Message string `json:"message"`
-		} `json:"error"`
+			stdout, _, err := runLocal(t, refusalWorkflow, append([]string{"--output", "json"}, tc.args...)...)
+			require.Error(t, err)
+
+			var document struct {
+				Error struct {
+					Message string `json:"message"`
+					Input   string `json:"input"`
+				} `json:"error"`
+			}
+			require.NoError(t, json.Unmarshal([]byte(stdout), &document))
+			assert.Equal(t, tc.input, document.Error.Input,
+				"the document does not name the input the refusal is about")
+			assert.Contains(t, document.Error.Message, `"`+tc.input+`"`,
+				"the sentence does not say which input it is about")
+		})
 	}
-	require.NoError(t, json.Unmarshal([]byte(stdout), &document))
-	assert.Contains(t, document.Error.Message, `"shards"`,
-		"the refusal does not say which input it is about")
 }
 
 // TestATextFormattedRefusalWritesNoDocument is the direction the change must

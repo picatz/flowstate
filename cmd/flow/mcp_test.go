@@ -795,6 +795,52 @@ steps:
 		"an int input arrived as something other than an int")
 }
 
+// TestTheRunLocalToolAnswersARefusedArgumentWithTheRunDocument: an argument the
+// source's `inputs:` refuses is the same refusal `flow run local --output json`
+// answers with a document (#1552), so an agent corrects the call from
+// `error.kind` and `error.input` and not from prose.
+func TestTheRunLocalToolAnswersARefusedArgumentWithTheRunDocument(t *testing.T) {
+	t.Parallel()
+
+	session := connectMCP(t, defaultLocalRunPosture())
+
+	result, err := session.CallTool(t.Context(), &mcp.CallToolParams{
+		Name: flowmcp.RunLocalToolName,
+		Arguments: map[string]any{
+			"source": `edition: v2026.4
+name: needs-service
+inputs:
+  service:
+    type: string
+    required: true
+steps:
+  - id: plan
+    log:
+      message: ${'planning ' + inputs.service}
+`,
+		},
+	})
+	require.NoError(t, err)
+	require.True(t, result.IsError, "a refused call reported success")
+
+	var document struct {
+		Run struct {
+			Status string `json:"status"`
+			Error  struct {
+				Message string `json:"message"`
+				Kind    string `json:"kind"`
+				Input   string `json:"input"`
+			} `json:"error"`
+		} `json:"run"`
+	}
+	text := result.Content[0].(*mcp.TextContent).Text
+	require.NoError(t, json.Unmarshal([]byte(text), &document), "the refusal is not a document: %s", text)
+	assert.Equal(t, "STATUS_FAILED", document.Run.Status)
+	assert.Equal(t, "InvalidInput", document.Run.Error.Kind)
+	assert.Equal(t, "service", document.Run.Error.Input)
+	assert.Contains(t, document.Run.Error.Message, `"service" is required`)
+}
+
 // TestTheRunLocalToolRedactsSensitiveOutputs is the MCP half of the gap PR #205
 // left: an agent's context is an untrusted-consumer surface exactly like a
 // terminal, so a value the submitted source declared `sensitive: true` must not

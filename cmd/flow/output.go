@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"maps"
 	"os"
@@ -271,28 +272,10 @@ func writeRunJSON(surface *ui.UI, rendering runRendering, message proto.Message)
 // refusals that never get that far. See refusedRunSensitiveValues for why the
 // set is built differently here.
 func refuseRunLocally(surface *ui.UI, rendering runRendering, sensitive v1.SensitiveValues, refusal error) error {
-	// Classified off the original chain, before the redaction below drops it.
-	// [redactFailureError] deliberately does not Unwrap — that is the whole
-	// point of it — so a classification read afterwards would report Internal,
-	// a defect in Flowstate, for the caller's own bad argument: the exact
-	// regression #1552 landed to fix.
-	kind := v1.ClassifyError(refusal).String()
-
-	redacted := redactFailureError(refusal, sensitive)
+	response, redacted := refusalResponse(refusal, sensitive)
 
 	if !rendering.WantsDocument() {
 		return redacted
-	}
-
-	response := &v1.GetResponse{
-		Status: v1.RunResponse_STATUS_FAILED,
-		Kind: &v1.GetResponse_Error{Error: &v1.RunResponse_Error{
-			// The redacted sentence itself rather than a second pass with
-			// [redactFailureText], so the document and the stderr line cannot
-			// come to say different things about one refusal.
-			Message: redacted.Error(),
-			Kind:    kind,
-		}},
 	}
 
 	if err := writeRunJSON(surface, rendering, response); err != nil {
@@ -300,6 +283,46 @@ func refuseRunLocally(surface *ui.UI, rendering runRendering, sensitive v1.Sensi
 	}
 
 	return redacted
+}
+
+// refusalResponse is the run document for a refusal that happened before the run
+// started, and the redacted error it reports, for every surface that owes a
+// caller that document: `flow run local --output json` and `flowstate_run_local`
+// both render this one value, so a refusal reads the same from either.
+//
+// The kind is classified off the original chain, before the redaction drops it.
+// [redactFailureError] deliberately does not Unwrap — that is the whole point of
+// it — so a classification read afterwards would report Internal, a defect in
+// Flowstate, for the caller's own bad argument: the exact regression #1552
+// landed to fix. The input name is read off the same chain for the same reason.
+func refusalResponse(refusal error, sensitive v1.SensitiveValues) (*v1.GetResponse, error) {
+	kind := v1.ClassifyError(refusal).String()
+	input := refusedInputName(refusal)
+
+	redacted := redactFailureError(refusal, sensitive)
+
+	return &v1.GetResponse{
+		Status: v1.RunResponse_STATUS_FAILED,
+		Kind: &v1.GetResponse_Error{Error: &v1.RunResponse_Error{
+			// The redacted sentence itself rather than a second pass with
+			// [redactFailureText], so the document and the stderr line cannot
+			// come to say different things about one refusal.
+			Message: redacted.Error(),
+			Kind:    kind,
+			Input:   input,
+		}},
+	}, redacted
+}
+
+// refusedInputName is the input a submit refusal concerns, empty when err is not
+// one or names none. Read off the original chain for the same reason the kind
+// is: the redacted copy does not Unwrap.
+func refusedInputName(err error) string {
+	if refusal, ok := errors.AsType[*v1.InputError](err); ok {
+		return refusal.Input
+	}
+
+	return ""
 }
 
 // A mutation's result is an answer, so the verbs that perform one carry `--output`

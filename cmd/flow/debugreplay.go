@@ -10,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/picatz/flowstate/cmd/flow/internal/ui"
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowdebug"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 )
@@ -228,7 +229,7 @@ func replayDebugScript(cmd *cobra.Command, args []string) error {
 	// The workflow too, when it parsed, so an address is resolved against its
 	// sites as the prompt resolves it.
 	if problems, total := flowdebug.CheckScriptFor(lines, steps, workflow); len(problems) > 0 {
-		return scriptProblemsError(scriptPath, problems, total)
+		return refuseReplay(cmd, scriptProblemsError(scriptPath, problems, total))
 	}
 
 	// The reveal question, answered by the function `flow run local --debug`
@@ -274,6 +275,23 @@ func replayDebugScript(cmd *cobra.Command, args []string) error {
 	reportScriptRemainder(cmd, scriptPath, stream, runErr)
 
 	return runErr
+}
+
+// refuseReplay answers a script this workflow cannot replay, as the run document
+// a machine format promises (#1552).
+//
+// Under `--output json` the answer is a document, and a script the checker
+// refuses is a refusal like a submit refusal: the caller's own argument, found
+// before anything runs. It goes through [refuseRunLocally], so it is the same
+// document with the same `InvalidInput` kind as every other refusal of this
+// shape, and the text shapes still get the error alone.
+func refuseReplay(cmd *cobra.Command, refusal error) error {
+	rendering, err := resolveRunRendering(cmd)
+	if err != nil {
+		return refusal
+	}
+
+	return refuseRunLocally(newSurface(cmd), rendering, v1.SensitiveValues{}, &v1.InputError{Err: refusal})
 }
 
 // readDebugScript reads and bounds one script file.
