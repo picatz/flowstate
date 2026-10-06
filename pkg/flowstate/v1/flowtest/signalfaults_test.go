@@ -299,3 +299,75 @@ tests:
 	assert.Contains(t, schedules.Divergence.Script, "delay: 30m")
 	assert.Contains(t, schedules.Divergence.Script, `"on": [1]`)
 }
+
+// A delay is relative to the sender's own moment: sent at 30m and 20m late the
+// signal arrives at 50m, inside the gate's hour, so the gate approves. A park
+// that counted the scripted `at:` twice would land it at 80m and lapse the gate.
+func TestADelayIsAddedToTheSentMomentOnce(t *testing.T) {
+	t.Parallel()
+
+	path := writeFaultFixture(t, gatedWorkflow, `edition: v2026.4
+tests:
+  - name: the gate
+    workflow: ./workflow.yaml
+    signals:
+      - {name: go, at: 30m, payload: {}}
+    faults:
+      - {signal: go, delay: 20m, on: [1]}
+    invariants:
+      - that: run.signals.delayed == ['go']
+        because: the signal was late
+    expect:
+      outputs: {decision: approved}
+`)
+	report, _ := flowtest.RunFileWithCoverage(path)
+
+	require.Len(t, report.GetCases(), 1)
+	assert.True(t, report.GetCases()[0].GetPassed(), "%v", report.GetCases()[0])
+}
+
+// A dropped delivery in the middle of a group scripted for the same moment
+// keeps its place: the one after it still waits for the one before it, so the
+// gates below see 1 and then 3, never 3 before 1 (the declaration-order rule
+// scripts at one moment have).
+func TestADropInTheMiddleOfATieGroupKeepsTheOrder(t *testing.T) {
+	t.Parallel()
+
+	const workflow = `edition: v2026.4
+name: twogates
+steps:
+  - id: first
+    wait_for_signal:
+      name: go
+      timeout: 1h
+      outputs:
+        n: ${payload.n}
+  - id: second
+    wait_for_signal:
+      name: go
+      timeout: 1h
+      outputs:
+        n: ${payload.n}
+outputs:
+  order:
+    value: '${string(steps.first.n) + "," + string(steps.second.n)}'
+`
+	path := writeFaultFixture(t, workflow, `edition: v2026.4
+tests:
+  - name: the gates
+    workflow: ./workflow.yaml
+    signals:
+      - {name: go, payload: {n: 1}}
+      - {name: go, payload: {n: 2}}
+      - {name: go, payload: {n: 3}}
+    faults:
+      - {signal: go, drop: true, on: [2]}
+    expect:
+      outputs: {order: "1,3"}
+`)
+	for range 20 {
+		report, _ := flowtest.RunFileWithCoverage(path)
+		require.Len(t, report.GetCases(), 1)
+		require.True(t, report.GetCases()[0].GetPassed(), "%v", report.GetCases()[0])
+	}
+}
