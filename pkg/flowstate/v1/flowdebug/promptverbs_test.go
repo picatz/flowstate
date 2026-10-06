@@ -37,6 +37,7 @@ func TestExpandAtThePromptNeedsAnExpressionAndSaysWhenItCannotRead(t *testing.T)
 	require.NoError(t, err)
 
 	assert.Contains(t, out, "expand needs an expression: expand steps.build")
+	assert.Contains(t, out, "no such attribute(s): nosuchroot.x", "the evaluator's own diagnostic is what a failed read says")
 	assert.NotContains(t, out, "has no children", "a failed read is not an empty listing")
 }
 
@@ -56,7 +57,8 @@ func TestAPromptThatCannotStepBackSaysSo(t *testing.T) {
 
 			assert.Contains(t, out, "this session cannot step back")
 			assert.NotContains(t, out, "unknown command")
-			assert.NotContains(t, strings.Join(session.Script(), "\n"), verb, "a refused command is not recorded")
+			assert.Equal(t, []string{"step", "continue"}, session.Script(),
+				"a refused command is not recorded, under any spelling, canonical or not")
 		})
 	}
 }
