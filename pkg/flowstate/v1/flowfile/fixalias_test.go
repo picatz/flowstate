@@ -1154,6 +1154,21 @@ func TestFixRefusesARewriteThatChangesWhatTheDocumentMeans(t *testing.T) {
 		})
 	}
 
+	// Dropping an anchor's marker can change a value with no alias anywhere:
+	// the inliner removes every marker, so the check cannot wait for an alias.
+	t.Run("refuses an anchor with no alias whose marker changes the value", func(t *testing.T) {
+		t.Parallel()
+
+		src := "vars:\n  o: {k: &p 8080:80, m: 1}\n"
+		result, err := flowfile.Fix([]byte(src))
+		require.NoError(t, err)
+
+		assert.Equal(t, src, string(result.Source))
+		require.NotEmpty(t, result.Refusals)
+		assert.Contains(t, result.Refusals[0].Message, "change what the document means")
+		assert.Equal(t, 2, result.Refusals[0].Line)
+	})
+
 	// A `.nan` decodes to a value that is not equal to itself, which must not
 	// make every rewrite of the document look like a change.
 	t.Run("a NaN elsewhere in the document does not refuse an unrelated inline", func(t *testing.T) {

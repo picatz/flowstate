@@ -143,7 +143,7 @@ func runAliasInliner(data []byte, file *ast.File) (*aliasInliner, []byte, bool) 
 		return in, nil, false
 	}
 
-	if len(in.sites) > 0 && !in.keepsMeaning(file, out) {
+	if (len(in.sites) > 0 || len(in.anchorNodes) > 0) && !in.keepsMeaning(file, out) {
 		return in, nil, false
 	}
 
@@ -157,11 +157,15 @@ func runAliasInliner(data []byte, file *ast.File) (*aliasInliner, []byte, bool) 
 // block key, so moving the text, or dropping the marker next to it, can change
 // the value and still look like a fix (#2117). So the input is decoded with its
 // aliases resolved and the output is decoded, and any difference refuses the
-// whole rewrite, with the position of the first alias, as every other refusal
-// here. Every document of the file is compared. Run only once there is an alias to inline, so a document without one
-// pays nothing, and only after the output is known to be within [maxBytes],
-// which bounds both decodes — the input's resolved aliases expand to no more
-// than the output the inliner has already charged for.
+// whole rewrite, with the position of the first alias (or, when the document
+// has anchors but no alias, the first anchor: dropping a marker can change a
+// value on its own), as every other refusal here. Every document of the file
+// is compared. It runs only when there is an anchor or alias to rewrite, so a
+// document without either pays nothing, and only after the output is known to
+// be within [maxBytes] and every alias expansion has been charged against it,
+// which bounds both decodes: the input's resolved aliases expand to no more
+// than the output the inliner has already charged for, and both parses went
+// through [strictyaml.ParseBytes], so nesting is bounded too.
 func (in *aliasInliner) keepsMeaning(file *ast.File, out []byte) bool {
 	before, errBefore := decodeMeaning(file)
 
@@ -181,8 +185,16 @@ func (in *aliasInliner) keepsMeaning(file *ast.File, out []byte) bool {
 		return true
 	}
 
-	site := in.sites[0].alias.Start.Position
-	in.refuseAt(site.Line, site.Column,
+	// Dropping an anchor's marker can change a value on its own, with no alias
+	// anywhere, so the position is the first alias when there is one and the
+	// first anchor when there is not.
+	var at *token.Position
+	if len(in.sites) > 0 {
+		at = in.sites[0].alias.Start.Position
+	} else {
+		at = in.anchorNodes[0].Start.Position
+	}
+	in.refuseAt(at.Line, at.Column,
 		"writing these aliases out would change what the document means, because the same text reads differently once it is moved or its anchor is dropped (a plain `8080:80` is a mapping inside `{…}` and a string beside a block key); nothing was rewritten — write the value out by hand")
 
 	return false
