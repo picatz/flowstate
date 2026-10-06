@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -2325,35 +2324,7 @@ func casePosture(test *Test, vars fileVars) sensitiveInputs {
 	material = append(material, test.entrySecretMaterial...)
 	material = append(material, vars.withheld.text...)
 
-	return sensitiveInputs{}.WithValues(bothSpellings(material)...)
-}
-
-// bothSpellings is each value as written and, where they differ, as a `%q`
-// rendering escapes it.
-//
-// The value set matches by content, and %q *transforms* content: a value
-// holding a newline, a tab, a quote or a backslash is rewritten before the
-// redaction ever reads the sentence, so a search for the plaintext finds
-// nothing and the escaped spelling prints (Codex). An escaped secret is a
-// secret — `sk\tlive` is one keystroke from `sk<tab>live`.
-//
-// Both spellings rather than un-escaping the rendered line, because the line
-// is prose with a quoted fragment inside it and there is no un-escaping that
-// without knowing which part was quoted. Adding the second spelling needs to
-// know nothing about the sentence.
-func bothSpellings(values []string) []string {
-	out := make([]string, 0, len(values)*2)
-	for _, value := range values {
-		out = append(out, value)
-
-		// Trimmed of the quotes strconv adds: what appears in the rendered
-		// line is the escaped body, inside quotes the sentence supplied.
-		if quoted := strconv.Quote(value); quoted != `"`+value+`"` {
-			out = append(out, quoted[1:len(quoted)-1])
-		}
-	}
-
-	return out
+	return sensitiveInputs{}.WithValues(material...)
 }
 
 // CheckSignalNames reports a scripted signal in test that names no gate the
@@ -2396,7 +2367,7 @@ func (f *File) CheckSignalNames(test *Test, spec *v1.Workflow) error {
 				collectVarStrings(value, 0, &material)
 			}
 		}
-		posture = posture.WithValues(bothSpellings(material)...)
+		posture = posture.WithValues(material...)
 	}
 
 	return errors.New(redactedErrorText(err.Error(), posture))

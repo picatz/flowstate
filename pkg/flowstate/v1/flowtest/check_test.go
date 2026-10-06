@@ -448,7 +448,7 @@ tests:
 // TestASensitiveInputHoldingATabSurvivesEscapedInARunTimeCheckWitness is
 // #2079's issue comment: a check witness renders a string with Go's `%q`,
 // which rewrites a tab, a newline, a quote or a backslash before the
-// redaction set ever reads the line ([bothSpellings]'s whole reason to
+// redaction set ever reads the line ([v1.SensitiveValues.WithValues]'s whole reason to
 // exist). [v1.SensitiveInputValues]' own substring backstop used to hold a
 // `sensitive:` input's root value exactly as bound, with no escaped
 // spelling — the validate-time path ([File.CheckSignalNames]) has carried

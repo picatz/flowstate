@@ -951,3 +951,20 @@ func TestRedactSubstringsCoversEveryEncodingARendererMayApply(t *testing.T) {
 		}
 	}
 }
+
+// TestWithValuesHoldsAnEscapeHeavyValueWithinTheMatcherBound pins that a
+// caller hands [SensitiveValues.WithValues] the raw value once: it adds the
+// escaped spellings itself, so a caller that pre-expanded them would escape
+// the `%q` body a second time and spend more of the matcher's budget than the
+// value is worth.
+func TestWithValuesHoldsAnEscapeHeavyValueWithinTheMatcherBound(t *testing.T) {
+	t.Parallel()
+
+	value := strings.Repeat(`\`, 10_000)
+
+	once := SensitiveValues{}.WithValues(value)
+	assert.False(t, once.WithholdAll(), "a raw value with its own spellings fits the bound")
+
+	twice := SensitiveValues{}.WithValues(value, strconv.Quote(value))
+	assert.True(t, twice.WithholdAll(), "a pre-expanded argument is expanded again and overruns it")
+}
