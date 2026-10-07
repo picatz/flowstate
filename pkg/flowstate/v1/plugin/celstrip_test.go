@@ -100,3 +100,80 @@ func TestStripCELRulesCountsWhatItRemovesAndKeepsStandardRules(t *testing.T) {
 }
 
 func protoValue(s string) protoreflect.Value { return protoreflect.ValueOfString(s) }
+
+// TestStripCELRulesReachesEveryPlaceAnExpressionCanBeWritten walks the shapes
+// the first test does not: the `cel_expression` spelling, a repeated rule's
+// items, a map rule's keys and values, a rule on a nested message and on an
+// extension, and a predefined rule's own `cel`. Each is a place protovalidate
+// would read an expression from, so each must come out empty while the standard
+// rule beside it survives.
+func TestStripCELRulesReachesEveryPlaceAnExpressionCanBeWritten(t *testing.T) {
+	t.Parallel()
+
+	rule := func() *validate.Rule {
+		return &validate.Rule{Id: proto.String("r"), Expression: proto.String("true")}
+	}
+	field := func(rules *validate.FieldRules) *descriptorpb.FieldOptions {
+		options := &descriptorpb.FieldOptions{}
+		proto.SetExtension(options, validate.E_Field, rules)
+
+		return options
+	}
+
+	itemRules := &validate.FieldRules{CelExpression: []string{"this != ''"}}
+	keyRules := &validate.FieldRules{Cel: []*validate.Rule{rule()}}
+	valueRules := &validate.FieldRules{CelExpression: []string{"this > 0"}}
+
+	predefined := func() *descriptorpb.FieldOptions {
+		options := &descriptorpb.FieldOptions{}
+		proto.SetExtension(options, validate.E_Predefined, &validate.PredefinedRules{Cel: []*validate.Rule{rule()}})
+
+		return options
+	}
+
+	messageOptions := &descriptorpb.MessageOptions{}
+	proto.SetExtension(messageOptions, validate.E_Message, &validate.MessageRules{CelExpression: []string{"true"}})
+
+	file := &descriptorpb.FileDescriptorProto{
+		MessageType: []*descriptorpb.DescriptorProto{{
+			Name: proto.String("Outer"),
+			Field: []*descriptorpb.FieldDescriptorProto{
+				{Name: proto.String("tags"), Options: field(&validate.FieldRules{
+					CelExpression: []string{"true"},
+					Type: &validate.FieldRules_Repeated{Repeated: &validate.RepeatedRules{
+						MinItems: proto.Uint64(1), Items: itemRules,
+					}},
+				})},
+				{Name: proto.String("scores"), Options: field(&validate.FieldRules{
+					Type: &validate.FieldRules_Map{Map: &validate.MapRules{
+						MinPairs: proto.Uint64(1), Keys: keyRules, Values: valueRules,
+					}},
+				})},
+			},
+			Extension: []*descriptorpb.FieldDescriptorProto{{Name: proto.String("declared"), Options: predefined()}},
+			NestedType: []*descriptorpb.DescriptorProto{{
+				Name:    proto.String("Inner"),
+				Options: messageOptions,
+			}},
+		}},
+		Extension: []*descriptorpb.FieldDescriptorProto{{Name: proto.String("filewide"), Options: predefined()}},
+	}
+
+	// Seven expression-bearing rules: tags.cel_expression, items, keys, values,
+	// the nested message, and a predefined rule on a message-level extension
+	// and on a file-level one.
+	assert.Equal(t, 7, stripCELRules(file))
+	assert.Zero(t, stripCELRules(file), "nothing is left to strip the second time")
+
+	tags, ok := proto.GetExtension(file.GetMessageType()[0].GetField()[0].GetOptions(), validate.E_Field).(*validate.FieldRules)
+	require.True(t, ok)
+	assert.Empty(t, tags.GetCelExpression())
+	assert.Equal(t, uint64(1), tags.GetRepeated().GetMinItems(), "the standard rule beside the expression survives")
+	assert.Empty(t, tags.GetRepeated().GetItems().GetCelExpression())
+
+	scores, ok := proto.GetExtension(file.GetMessageType()[0].GetField()[1].GetOptions(), validate.E_Field).(*validate.FieldRules)
+	require.True(t, ok)
+	assert.Equal(t, uint64(1), scores.GetMap().GetMinPairs())
+	assert.Empty(t, scores.GetMap().GetKeys().GetCel())
+	assert.Empty(t, scores.GetMap().GetValues().GetCelExpression())
+}
