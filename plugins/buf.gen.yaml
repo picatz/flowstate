@@ -24,8 +24,8 @@ managed:
       path: flowstate/v1/value.proto
       value: github.com/picatz/flowstate/pkg/flowstate/v1;flowstatev1
     - file_option: go_package
-      path: flowstate/v1/decision.proto
-      value: github.com/picatz/flowstate/pkg/flowstate/v1;flowstatev1
+      path: flowstate/decision/v1/decision.proto
+      value: github.com/picatz/flowstate/pkg/flowstate/decision/v1;decisionv1
     - file_option: go_package
       path: flowstate/v1/schema.proto
       value: github.com/picatz/flowstate/pkg/flowstate/v1;flowstatev1

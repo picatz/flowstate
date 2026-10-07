@@ -3,9 +3,9 @@
 `anthropic.decide` puts a set of typed questions to a Claude model about some
 evidence and returns one validated, provider-neutral answer per question. It is
 the Anthropic half of the decision contract in
-[`proto/flowstate/v1/decision.proto`](../../proto/flowstate/v1/decision.proto)
-(#2376): the questions and answers are `flowstate.v1.QuestionSet` and
-`flowstate.v1.Answer`, so a Flowfile that routes on an answer reads the same
+[`proto/flowstate/decision/v1/decision.proto`](../../proto/flowstate/decision/v1/decision.proto)
+(#2376): the questions and answers are `flowstate.decision.v1.QuestionSet` and
+`flowstate.decision.v1.Answer`, so a Flowfile that routes on an answer reads the same
 under any provider plugin. It adds no Flowfile keyword; a decision is an
 ordinary plugin task whose output an `if:` or `switch:` reads.
 
@@ -13,9 +13,9 @@ ordinary plugin task whose output an `if:` or `switch:` reads.
 
 Inputs are `api_key`, `model`, `evidence`, `question_set`, and optional
 `report_confidence` and `max_tokens`; the output is `answers`, a list of
-`flowstate.v1.Answer` in the question set's order.
+`flowstate.decision.v1.Answer` in the question set's order.
 
-- `question_set` is a `flowstate.v1.QuestionSet` written as a mapping: each
+- `question_set` is a `flowstate.decision.v1.QuestionSet` written as a mapping: each
   question has a `name`, optional `instructions`, and one of `predicate: {}`,
   `choice: {options: [...]}` or `score: {levels: [...]}` (levels lowest to
   highest). It is validated against the schema before any request is made, and
@@ -61,7 +61,7 @@ before trusting a confidence; the example does.
 Every provider answer is validated before it is returned: each answer must name
 a question that was asked, be of that question's kind, select one of its options
 or levels, and satisfy the `Answer` rules, all through `flowstate.v1.Validate`
-over a `flowstate.v1.Decision`. A missing or extra question, a value of the
+over a `flowstate.decision.v1.Decision`. A missing or extra question, a value of the
 wrong JSON type, an option the question did not offer, a confidence outside 0 to
 1 or one nobody asked for, a reply with no `record_decisions` call or more than
 one, a reply cut off at `max_tokens`, a body that is not JSON, and a body over

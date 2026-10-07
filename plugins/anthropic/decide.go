@@ -18,6 +18,7 @@ import (
 
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 
+	decisionv1 "github.com/picatz/flowstate/pkg/flowstate/decision/v1"
 	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin/sdk"
@@ -139,7 +140,7 @@ func keyFromValue(v *flowstatev1.Value) (string, error) {
 	}
 }
 
-func validateInputs(in *anthropicv1.DecideInputs) (*flowstatev1.QuestionSet, error) {
+func validateInputs(in *anthropicv1.DecideInputs) (*decisionv1.QuestionSet, error) {
 	if len(in.GetModel()) > maxModelBytes || !modelPattern.MatchString(in.GetModel()) {
 		return nil, sdk.InvalidInput("model must be a model identifier of at most %d bytes", maxModelBytes)
 	}
@@ -156,7 +157,7 @@ func validateInputs(in *anthropicv1.DecideInputs) (*flowstatev1.QuestionSet, err
 }
 
 // decide sends the request and turns the reply into validated answers.
-func decide(ctx context.Context, client *http.Client, endpoint, key string, in *anthropicv1.DecideInputs, set *flowstatev1.QuestionSet) ([]*flowstatev1.Answer, error) {
+func decide(ctx context.Context, client *http.Client, endpoint, key string, in *anthropicv1.DecideInputs, set *decisionv1.QuestionSet) ([]*decisionv1.Answer, error) {
 	body, err := json.Marshal(messagesRequest{
 		Model:     in.GetModel(),
 		MaxTokens: cmp.Or(in.GetMaxTokens(), defaultMaxTokens),

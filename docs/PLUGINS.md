@@ -387,6 +387,17 @@ expression (a cross-field check, a computed bound) belongs in your plugin's own
 process, where your own limits apply; `now`, which protovalidate binds and `must:`
 refuses, is never reachable this way.
 
+Files under `flowstate/<domain>/v1/`, such as `flowstate/decision/v1/decision.proto`,
+are engine-provided in the same way as `flowstate/v1` and `flowstate/plugin/v1`: the
+host has them compiled in, so a plugin that imports one sends the import as a name and
+never ships its bytes (see [Proto packages: core versus
+domain](ARCHITECTURE.md#proto-packages-core-versus-domain)). That matters for the rules
+above. The host removes `cel` rules from files a plugin *ships*, but it resolves a
+domain file from its own registry, so that file's `cel` rules, such as the ones tying
+an `Answer` to its `Question` in a `Decision`, are intact when it validates against it.
+Import the domain file rather than copying its messages into your own schema, or the
+copy is a plugin-shipped file and loses them.
+
 ### Your field comments, in somebody else's editor
 
 Everything above travels: names, types, required-ness, protovalidate bounds. The
@@ -505,13 +516,13 @@ Two things follow that are worth knowing before you build on it:
   `pkg/flowstate/v1/plugin/sdk` pulls the module: 368 packages across 126 modules
   in the graph for the chapter-one plugin, and a 24 MB binary. That is a
   consequence of `TaskFunc` speaking in `flowstatev1.Value` and
-  `flowstatev1.Scope` (`pkg/flowstate/v1/plugin/sdk/sdk.go:316`), which is also what makes a plugin task
+  `flowstatev1.Scope` (`pkg/flowstate/v1/plugin/sdk/sdk.go:317`), which is also what makes a plugin task
   identical in shape to a built-in one.
 - **The wire protocol is versioned; the Go API is not.** The protocol is
   negotiated at launch and a mismatch is refused at startup with a message saying
-  which side to upgrade. The current version is 7 (`Version7`,
+  which side to upgrade. The current version is 8 (`Version8`,
   `pkg/flowstate/v1/plugin/internal/protocol/protocol.go`); [Reaching the
-  network](#reaching-the-network) says what versions 6 and 7 changed. Nothing
+  network](#reaching-the-network) says what versions 6 to 8 changed. Nothing
   equivalent covers the Go types you compile against.
 
 The in-tree plugin modules are not the counter-example they look like. Each
@@ -836,6 +847,12 @@ exchange. `flowstate/v1/schema.proto`, the file a schema's own options live in
 plugin that imports it ships no copy — and a version 6 host has no such file to
 link the plugin's task descriptors against. A host and its plugins built on
 either side of that change are refused at the handshake, naming both numbers.
+
+Protocol version 8 is the same kind of change: the decision types moved from
+`flowstate/v1` to `flowstate/decision/v1`, a domain package the engine
+provides, so a plugin built after the move ships no copy of
+`flowstate/decision/v1/decision.proto` and a version 7 host has no such file to
+link against. Mixed builds are refused at the handshake.
 
 Which posture to take toward the default is yours, and both are defensible. A
 plugin whose work is an ordinary request to a public host accepts it — `git`,
