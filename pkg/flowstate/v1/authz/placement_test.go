@@ -16,7 +16,7 @@ import (
 // decision. The check "does this caller hold this action" was once written six
 // times, each copy with its own idea of what an absent action list meant; a
 // seventh copy would be a new place for that meaning to drift. Reading
-// Principal.Actions to answer the question belongs in this package, and in the
+// an Actions list to answer the question belongs in this package, and in the
 // auth package that builds the list, and nowhere else.
 func TestNoActionCheckOutsideAuthz(t *testing.T) {
 	root := filepath.Join("..", "..", "..", "..")
@@ -30,7 +30,8 @@ func TestNoActionCheckOutsideAuthz(t *testing.T) {
 			}
 
 			slash := filepath.ToSlash(path)
-			if strings.Contains(slash, "/v1/authz/") || strings.Contains(slash, "/v1/auth/") || strings.HasSuffix(slash, ".pb.go") {
+			if strings.Contains(slash, "/pkg/flowstate/v1/authz/") || strings.Contains(slash, "/pkg/flowstate/v1/auth/") ||
+				strings.HasSuffix(slash, ".pb.go") {
 				return nil
 			}
 
@@ -44,11 +45,13 @@ func TestNoActionCheckOutsideAuthz(t *testing.T) {
 				if !ok || selector.Sel.Name != "Actions" {
 					return true
 				}
-				// A policy entry's own list (validation, cloning) is not a caller's;
-				// only a Principal's list answers a caller's authority.
-				if inner, ok := selector.X.(*ast.Ident); ok && (inner.Name == "principal" || inner.Name == "p") {
-					offences = append(offences, slash)
+				// Any read of an Actions field is an offence, whatever the receiver
+				// is called, except a policy entry's own list that validation walks:
+				// that is configuration, not a caller's authority.
+				if inner, ok := selector.X.(*ast.Ident); ok && inner.Name == "issuer" {
+					return true
 				}
+				offences = append(offences, slash)
 				return true
 			})
 
