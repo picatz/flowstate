@@ -393,6 +393,35 @@ func ErrorTextCases(baseURL string) []Case {
 			},
 		},
 		{
+			// An expression that fails at run time says which operation failed and
+			// what it was given (#1551). The sentence is written out literally, as
+			// every case here is, so both drivers are held to one spelling of it:
+			// the local driver and the durable activity both reach it through the
+			// one evaluator seam, and a driver that reworded it would show here.
+			Name: "a tolerated expression failure names the operator and its operand types",
+			Workflow: &v1.Workflow{
+				Name: "error-text-expression",
+				Steps: []*v1.Node{
+					{Id: "n", Kind: &v1.Node_Value{Value: v1.NewExpr("2")}},
+					{
+						Id:     "bad",
+						Policy: &v1.StepPolicy{ContinueOnError: true},
+						Kind:   &v1.Node_Value{Value: v1.NewExpr(`steps.n.value + "x"`)},
+					},
+				},
+			},
+			ExpectedOutputs: &v1.Workflow_StepOutputs{
+				StepValues: map[string]*v1.Node_Outputs{
+					"n": {NamedValues: map[string]*v1.Value{"value": v1.NewLiteral(int64(2))}},
+					"bad": v1.FailedStepOutputs(v1.StepFailure{
+						Kind: v1.ErrorKindExpression,
+						Text: "evaluating value: evaluate expression: no such overload " +
+							"(operator \"+\" applied to (int, string) in `steps.n.value + \"x\"`)",
+					}),
+				},
+			},
+		},
+		{
 			// The typed read #1905 asks for: a later step branches on the kind and
 			// the retry default without matching the sentence's punctuation, and
 			// `message` is the same text `error` holds.
