@@ -518,7 +518,7 @@ func TestDecodeInputsRefusals(t *testing.T) {
 		{
 			name:        "the wrong type",
 			inputs:      map[string]*flowstatev1.Value{"url": flowstatev1.NewLiteral(42)},
-			wantMessage: "is not a string",
+			wantMessage: "expected a string",
 		},
 		{
 			name:        "an unresolved expression",
@@ -537,7 +537,7 @@ func TestDecodeInputsRefusals(t *testing.T) {
 		{
 			name:        "a map where a scalar belongs",
 			inputs:      map[string]*flowstatev1.Value{"url": flowstatev1.NewLiteralMap(map[string]any{"a": "b"})},
-			wantMessage: "is not a string",
+			wantMessage: "expected a string",
 		},
 		{
 			name:        "a scalar where a map belongs",

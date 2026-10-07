@@ -490,6 +490,22 @@ func populateProtoMessageFromValueMap(ctx context.Context, input map[string]*Val
 		if !ok {
 			continue // Field not provided in input map
 		}
+		// Every field that is not a flowstate.v1.Value, or a list or map of them,
+		// is converted by the same routine the plugin SDK fills its input with,
+		// so the host's check and the plugin's decode cannot disagree about what
+		// an input may hold, nested or not. A value that is neither a literal nor
+		// an expression — a secret reference, or a structure that may hold one —
+		// keeps the paths below, which say why such a value does not fit.
+		if sharedConversion(fieldDesc, val) {
+			literal, err := nestedLiteral(ctx, val, scope)
+			if err != nil {
+				return fmt.Errorf("field %q: %w", fieldName, err)
+			}
+			if err := SetLiteralField(msg.ProtoReflect(), fieldDesc, literal, RefuseTestOnlyEnums()); err != nil {
+				return fmt.Errorf("field %q: %w", fieldName, err)
+			}
+			continue
+		}
 		if fieldDesc.IsMap() {
 			// Support string-keyed maps with primitive values and flowstate.v1.Value messages.
 			m := msg.ProtoReflect().Mutable(fieldDesc).Map()
@@ -718,4 +734,55 @@ func PopulateLiterals(msg proto.Message, inputs map[string]*Value) error {
 	}
 
 	return populateProtoMessageFromValueMap(context.Background(), literals, msg, nil)
+}
+
+// sharedConversion reports whether a field's value is converted by
+// [SetLiteralField]: anything but flowstate.v1.Value (alone, in a list or as a
+// map's value), which carries what the author wrote unconverted, and anything
+// but a value that is not yet a literal or an expression.
+func sharedConversion(field protoreflect.FieldDescriptor, val *Value) bool {
+	switch val.GetKind().(type) {
+	case *Value_Literal, *Value_Expr:
+	default:
+		return false
+	}
+
+	element := field
+	if field.IsMap() {
+		element = field.MapValue()
+	}
+	if element.Kind() == protoreflect.MessageKind {
+		name := element.Message().FullName()
+		if name == flowValueName || name == celValueName {
+			return false
+		}
+	}
+
+	return true
+}
+
+// nestedLiteral resolves a value written for a nested-message field to the
+// literal to convert: a literal as written, an expression as its result. A
+// secret reference or a structure holding one is refused, since the field's type
+// has nowhere to keep it.
+func nestedLiteral(ctx context.Context, val *Value, scope *Scope) (*expr.Value, error) {
+	switch kind := val.GetKind().(type) {
+	case *Value_Literal:
+		return kind.Literal, nil
+	case *Value_Expr:
+		out, err := valueToCEL(ctx, val, scope)
+		if err != nil {
+			return nil, err
+		}
+		literal, err := cel.RefValueToValue(out)
+		if err != nil {
+			return nil, fmt.Errorf("converting expression result: %w", err)
+		}
+		return literal, nil
+	case *Value_SecretRef:
+		return nil, fmt.Errorf("was given a secret reference (%s:%s), which this field's type cannot hold",
+			kind.SecretRef.GetScheme(), kind.SecretRef.GetName())
+	default:
+		return nil, fmt.Errorf("was given %T, which this field's type cannot hold%s", val.GetKind(), nestedSecretHelp)
+	}
 }
