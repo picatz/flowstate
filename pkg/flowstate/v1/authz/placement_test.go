@@ -23,7 +23,7 @@ func TestNoActionCheckOutsideAuthz(t *testing.T) {
 
 	var offences []string
 
-	for _, dir := range []string{"pkg", "cmd", "plugins", "internal"} {
+	for _, dir := range []string{"pkg", "cmd", "plugins", "internal", "tools", "examples"} {
 		err := filepath.WalkDir(filepath.Join(root, dir), func(path string, entry fs.DirEntry, err error) error {
 			if err != nil || entry.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
 				return err
