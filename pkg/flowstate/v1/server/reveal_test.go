@@ -54,7 +54,7 @@ func revealWorkflow(t *testing.T, doc string) *v1.Workflow {
 }
 
 func caller(ctx context.Context, actions ...string) context.Context {
-	p := auth.Principal{Issuer: "https://issuer.example", Subject: "reader"}
+	p := auth.Principal{Actions: ordinaryActions(), Issuer: "https://issuer.example", Subject: "reader"}
 	if actions != nil {
 		p.Actions = actions
 	}

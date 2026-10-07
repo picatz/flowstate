@@ -21,7 +21,7 @@ func TestPolicyAssignedActionsEnforceLeastPrivilege(t *testing.T) {
 	startWorker(t, temporal)
 	flowstate := mustNew(t, temporal)
 
-	unrestricted := auth.ContextWithPrincipal(t.Context(), auth.Principal{
+	unrestricted := auth.ContextWithPrincipal(t.Context(), auth.Principal{Actions: everyAction,
 		Issuer:  "https://issuer.example",
 		Subject: "owner",
 	})

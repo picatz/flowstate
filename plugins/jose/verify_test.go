@@ -28,7 +28,7 @@ func trustedIssuer(t *testing.T, entries ...auth.TrustedIssuer) *authtest.Issuer
 	t.Cleanup(func() { _ = issuer.Close() })
 
 	if len(entries) == 0 {
-		entries = []auth.TrustedIssuer{{
+		entries = []auth.TrustedIssuer{{Actions: []string{},
 			Name:      "build-system",
 			Issuer:    issuer.URL(),
 			JWKSURL:   issuer.JWKSURL(),

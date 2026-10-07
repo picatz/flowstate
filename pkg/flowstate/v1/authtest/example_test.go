@@ -21,7 +21,7 @@ func Example() {
 	defer func() { _ = issuer.Close() }()
 
 	verifier, err := auth.NewOIDCVerifier(auth.Policy{
-		Issuers: []auth.TrustedIssuer{{
+		Issuers: []auth.TrustedIssuer{{Actions: []string{},
 			Name:      "ci",
 			Issuer:    issuer.URL(),
 			Audiences: []string{"flowstate"},

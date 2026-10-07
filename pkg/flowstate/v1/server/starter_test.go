@@ -38,7 +38,7 @@ func TestGetReportsWhoStartedTheRun(t *testing.T) {
 
 	fixture := newTenantFixture(t)
 
-	ctx := auth.ContextWithPrincipal(t.Context(), auth.Principal{
+	ctx := auth.ContextWithPrincipal(t.Context(), auth.Principal{Actions: everyAction,
 		Issuer:  "https://issuer.example.com",
 		Subject: "requester@example.com",
 	})
@@ -79,7 +79,7 @@ func TestGetReportsTheStarterOnATerminalRun(t *testing.T) {
 
 	fixture := newTenantFixture(t)
 
-	ctx := auth.ContextWithPrincipal(t.Context(), auth.Principal{
+	ctx := auth.ContextWithPrincipal(t.Context(), auth.Principal{Actions: everyAction,
 		Issuer:  "https://issuer.example.com",
 		Subject: "requester@example.com",
 	})

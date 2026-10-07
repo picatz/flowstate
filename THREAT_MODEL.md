@@ -650,10 +650,10 @@ declares a sensitive value, or whose declarations cannot be read, unless
 disclosure is authorized: `--reveal-sensitive`, `"revealSensitive": true`, or
 `DebugOptions.RevealSensitive`. Either way a predicate over a withheld value answers
 truthfully: `inputs.token == "guess"` is a yes or no about the real value. That
-is what `workload.debug_inspect` gates. A caller whose token carries no action
-list keeps the legacy posture and holds every action, this one included, so a
-deployment that must not disclose a run's values to an operator gives that
-operator's issuer an `actions:` list that omits it. A condition's or log message's
+is what `workload.debug_inspect` gates. A caller holds only the actions its
+issuer entry lists, this one included, so a deployment that must not disclose a
+run's values to an operator gives that operator's issuer an `actions:` list that
+omits it. A condition's or log message's
 text is written to history in the ask that carries it, readable by whoever can
 read history. A
 hold stops workflow code only: activities, timers and called work already

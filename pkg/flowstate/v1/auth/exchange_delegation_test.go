@@ -120,7 +120,7 @@ func TestDelegatedCredentialsAreNotSharedBetweenDelegators(t *testing.T) {
 	party := newRelyingParty(t, func(w http.ResponseWriter, r *http.Request, body recordedRequest) {
 		principal, err := auth.NewOIDCVerifier(
 			auth.Policy{
-				Issuers: []auth.TrustedIssuer{{
+				Issuers: []auth.TrustedIssuer{{Actions: []string{},
 					Name:      "delegators",
 					Issuer:    delegatorIssuer.URL(),
 					Audiences: []string{"https://as.example.com"},

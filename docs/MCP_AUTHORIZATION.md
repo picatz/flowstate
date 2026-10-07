@@ -107,6 +107,7 @@ Two things, both already-familiar shapes rather than new machinery:
   ```yaml
   issuers:
     - name: agent-idp
+      actions: [mcp.run_local, mcp.test]
       issuer: https://acme.okta.com
       audiences:
         - https://flowstate.example.com/mcp
@@ -306,16 +307,15 @@ says plainly what it is missing.
   trust-policy entry's `actions:` list, using those same spellings, and a token's
   `scope` (RFC 9068 §2.2.3.1, space-delimited) or `scp` (array, or a space-delimited string as Microsoft Entra issues it) claim can narrow
   that list further, never widen it: the effective actions are the entry's list
-  intersected with the token's scopes, and an entry with no `actions:` is
-  unrestricted and ignores them. A token carrying both claims, or either in the
+  intersected with the token's scopes, and an entry must carry an `actions:`
+  list, because one without it is refused when the policy loads. A token carrying both claims, or either in the
   wrong shape, is refused. This MCP surface applies the resulting list on every
   tool call, before the tool runs: a caller whose effective actions do not
   include the action the tool is bound to in the schema gets a tool error naming
   the required scope, and the refusal is recorded as a policy denial when audit
-  is on. A restricted caller is also refused a tool the schema binds to no
-  action, so a tool added without a binding cannot escape an allowlist. A caller
-  admitted through an entry with no `actions:` list may call every tool this
-  reduced surface registers. `tools/list` still advertises every registered
+  is on. A caller is also refused a tool the schema binds to no
+  action, so a tool added without a binding cannot escape an allowlist. Over
+  stdio there is no caller to restrict, so the process's own trust applies. `tools/list` still advertises every registered
   tool; the gate is on the call.
 
   Two things the published list does not say, worth being explicit about

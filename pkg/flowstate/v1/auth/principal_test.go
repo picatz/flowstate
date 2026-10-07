@@ -157,7 +157,7 @@ func TestPrincipalKindComesFromThePolicyNeverTheToken(t *testing.T) {
 	)
 
 	for _, kind := range []auth.PrincipalKind{"", auth.PrincipalKindHuman, auth.PrincipalKindAgent} {
-		verifier := newVerifier(t, auth.Policy{Issuers: []auth.TrustedIssuer{{
+		verifier := newVerifier(t, auth.Policy{Issuers: []auth.TrustedIssuer{{Actions: []string{},
 			Name: "idp", Issuer: issuer.URL(), Audiences: []string{"flowstate"}, PrincipalKind: kind,
 		}}}, auth.WithClock(clock.Now))
 

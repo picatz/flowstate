@@ -109,7 +109,7 @@ func newMCPServeFixtureForIssuer(
 ) *mcpServeFixture {
 	t.Helper()
 
-	policy := &auth.Policy{Issuers: []auth.TrustedIssuer{{
+	policy := &auth.Policy{Issuers: []auth.TrustedIssuer{{Actions: everyAction,
 		Name:      "agent-idp",
 		Issuer:    issuer.URL(),
 		Audiences: []string{mcpServeTestResource, mcpServeTestOtherResource},
@@ -964,7 +964,7 @@ func TestMCPServeFlushesAuditOnAnErrorAfterInitialization(t *testing.T) {
 
 	issuer := authCheckIssuer(t)
 	const resource = "https://flowstate.example.com/mcp"
-	policy := writeAuthCheckPolicy(t, auth.TrustedIssuer{
+	policy := writeAuthCheckPolicy(t, auth.TrustedIssuer{Actions: everyAction,
 		Name: "agent-idp", Issuer: issuer.URL(), Audiences: []string{resource},
 	})
 
@@ -1060,7 +1060,7 @@ func TestMCPServeAtABareOriginServesOnlyTheRootPath(t *testing.T) {
 	issuer := authtest.NewIssuer()
 	t.Cleanup(func() { _ = issuer.Close() })
 
-	policy := &auth.Policy{Issuers: []auth.TrustedIssuer{{
+	policy := &auth.Policy{Issuers: []auth.TrustedIssuer{{Actions: everyAction,
 		Name: "agent-idp", Issuer: issuer.URL(), Audiences: []string{bareOrigin},
 	}}}
 

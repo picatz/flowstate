@@ -102,10 +102,10 @@ type Policy struct {
 	Tenancy *Tenancy `json:"tenancy,omitempty" yaml:"tenancy,omitempty"`
 }
 
-// ActionScopes is an optional allowlist of Flowstate authorization actions,
-// written using the canonical OAuth scope spellings published by the protected
-// resource (for example, "workload.read"). Nil means the policy entry does not
-// restrict actions; a present empty list grants none.
+// ActionScopes is an allowlist of Flowstate authorization actions, written using
+// the canonical OAuth scope spellings published by the protected resource (for
+// example, "workload.read"). A trusted issuer entry must carry one; a present
+// empty list grants none, and nil is refused at load.
 //
 // The auth package preserves and bounds these strings but does not own their
 // vocabulary. The parent flowstate.v1 package validates them against
@@ -114,8 +114,8 @@ type Policy struct {
 type ActionScopes []string
 
 // IsZero distinguishes an omitted allowlist from an explicitly empty one when
-// policy files are serialized: only omission preserves legacy unrestricted
-// behavior.
+// policy files are serialized, so that an empty list is written out rather than
+// dropped and read back as an omission.
 func (s ActionScopes) IsZero() bool { return s == nil }
 
 // NamespaceMap is the wire type of [TrustedIssuer.NamespaceMap]: an exact
@@ -541,11 +541,11 @@ type TrustedIssuer struct {
 	// predicate that cares compares against a named kind.
 	PrincipalKind PrincipalKind `json:"principal_kind,omitempty" yaml:"principal_kind,omitempty"`
 
-	// Actions optionally restricts callers admitted by this entry to exact
-	// actions from Flowstate's canonical scope vocabulary. Omitted preserves the
-	// pre-authorization behavior for the RPC actions (all of them); [] grants
-	// none. Disclosure actions such as workload.reveal_sensitive are granted only when
-	// listed, whatever this holds. Role remains an audit label and does not
+	// Actions lists exactly what callers admitted by this entry may do, from
+	// Flowstate's canonical scope vocabulary. It is required: an entry that
+	// names no actions is refused at load, because an omission that grants
+	// everything is how a caller ends up holding more than anyone decided.
+	// [] grants none. A token's own scopes narrow the list, never widen it. Role remains an audit label and does not
 	// grant authority by itself.
 	Actions ActionScopes `json:"actions,omitzero" yaml:"actions,omitempty"`
 
@@ -795,41 +795,12 @@ func ParsePolicy(data []byte) (Policy, error) {
 	if err := rejectNullNamespaceMap(data, policy); err != nil {
 		return Policy{}, err
 	}
-	if err := rejectNullActions(data, policy); err != nil {
-		return Policy{}, err
-	}
 
 	if err := policy.Validate(); err != nil {
 		return Policy{}, err
 	}
 
 	return policy, nil
-}
-
-// rejectNullActions preserves the security-significant distinction between an
-// omitted action restriction and a present empty one. goccy/go-yaml decodes an
-// explicit null directly to nil without invoking a field unmarshaler, so inspect
-// the already-valid raw document exactly as rejectNullNamespaceMap does.
-func rejectNullActions(data []byte, policy Policy) error {
-	var raw struct {
-		Issuers []map[string]any `yaml:"issuers" json:"issuers"`
-	}
-	if err := strictyaml.Unmarshal(data, &raw); err != nil {
-		return nil
-	}
-
-	for i, issuer := range raw.Issuers {
-		if i >= len(policy.Issuers) {
-			break
-		}
-		if _, present := issuer["actions"]; !present || policy.Issuers[i].Actions != nil {
-			continue
-		}
-		return fmt.Errorf("%w: issuers[%d] (%q): actions is present but null; remove it to preserve unrestricted legacy behavior, or use [] to grant no actions",
-			ErrInvalidPolicy, i, policy.Issuers[i].Name)
-	}
-
-	return nil
 }
 
 // rejectNullNamespaceMap catches a case [NamespaceMap]'s own doc explains the
@@ -1103,6 +1074,9 @@ func (t TrustedIssuer) validate() error {
 	if len(t.Role) > MaxPolicyProvenanceBytes {
 		return fmt.Errorf("role is %d bytes, over the %d byte audit provenance limit",
 			len(t.Role), MaxPolicyProvenanceBytes)
+	}
+	if t.Actions == nil {
+		return fmt.Errorf("actions is required; list the actions this entry grants, or use [] to grant none")
 	}
 	if len(t.Actions) > 64 {
 		return fmt.Errorf("actions has %d entries, over the 64 entry limit", len(t.Actions))
