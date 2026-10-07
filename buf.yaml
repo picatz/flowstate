@@ -19,6 +19,18 @@ breaking:
   # both meanings, make an explicit compatibility or version/edition decision;
   # passing this check is not that decision.
 
+  # `PolicyTestIdentity` (`flow policy test`) drops its flat `subject`, `issuer`,
+  # `namespace` and `claims` for one `principal`, the message every other
+  # surface already carries, and its `ClaimsEntry` map message goes with them.
+  # Every removed number and name is reserved and no field changes type in
+  # place, so what is suppressed is the two delete rules, in the one file.
+  # Remove this block in the next commit on main, once this one is the baseline.
+  ignore_only:
+    FIELD_NO_DELETE:
+      - proto/flowstate/v1/policy_suite.proto
+    MESSAGE_NO_DELETE:
+      - proto/flowstate/v1/policy_suite.proto
+
   # Nothing suppressed, which is the only state this file should be found in
   # for longer than one commit. That includes the rules v2 added to FILE and
   # WIRE (EXTENSION_NO_DELETE, FIELD_SAME_DEFAULT), which `buf config migrate`
