@@ -210,9 +210,9 @@ var File_anthropic_v1_anthropic_proto protoreflect.FileDescriptor
 
 const file_anthropic_v1_anthropic_proto_rawDesc = "" +
 	"\n" +
-	"\x1canthropic/v1/anthropic.proto\x12\fanthropic.v1\x1a\x1bflowstate/v1/decision.proto\x1a\x18flowstate/v1/value.proto\"\xf2\x01\n" +
-	"\fDecideInputs\x12,\n" +
-	"\aapi_key\x18\x01 \x01(\v2\x13.flowstate.v1.ValueR\x06apiKey\x12\x14\n" +
+	"\x1canthropic/v1/anthropic.proto\x12\fanthropic.v1\x1a\x1bflowstate/v1/decision.proto\x1a\x19flowstate/v1/schema.proto\x1a\x18flowstate/v1/value.proto\"\xfa\x01\n" +
+	"\fDecideInputs\x124\n" +
+	"\aapi_key\x18\x01 \x01(\v2\x13.flowstate.v1.ValueB\x06\x8a\xb5\x18\x02\b\x02R\x06apiKey\x12\x14\n" +
 	"\x05model\x18\x02 \x01(\tR\x05model\x12\x1a\n" +
 	"\bevidence\x18\x03 \x01(\tR\bevidence\x126\n" +
 	"\fquestion_set\x18\x04 \x01(\v2\x13.flowstate.v1.ValueR\vquestionSet\x12+\n" +

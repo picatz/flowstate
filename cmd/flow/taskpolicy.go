@@ -57,22 +57,34 @@ func applyTaskPolicy(cmd *cobra.Command) error {
 		return nil
 	}
 
-	data, err := readBoundedFile(path, "a task-shape policy", maxPolicyFileBytes)
+	policy, err := loadTaskPolicy(path)
 	if err != nil {
-		return fmt.Errorf("reading task-shape policy: %w", err)
-	}
-
-	cfg, err := v1.ParseTaskPolicyConfig(data)
-	if err != nil {
-		return fmt.Errorf("parsing task-shape policy %s: %w", path, err)
-	}
-
-	policy, err := cfg.Policy()
-	if err != nil {
-		return fmt.Errorf("task-shape policy %s: %w", path, err)
+		return err
 	}
 
 	v1.SetDefaultTaskPolicy(policy)
 
 	return nil
+}
+
+// loadTaskPolicy reads and compiles a task-shape policy file, shared by
+// [applyTaskPolicy], which installs it, and `flow policy test`, which asks it
+// questions.
+func loadTaskPolicy(path string) (*v1.TaskPolicy, error) {
+	data, err := readBoundedFile(path, "a task-shape policy", maxPolicyFileBytes)
+	if err != nil {
+		return nil, fmt.Errorf("reading task-shape policy: %w", err)
+	}
+
+	cfg, err := v1.ParseTaskPolicyConfig(data)
+	if err != nil {
+		return nil, fmt.Errorf("parsing task-shape policy %s: %w", path, err)
+	}
+
+	policy, err := cfg.Policy()
+	if err != nil {
+		return nil, fmt.Errorf("task-shape policy %s: %w", path, err)
+	}
+
+	return policy, nil
 }
