@@ -89,8 +89,9 @@ type FederationPolicy struct {
 	// the authenticated caller, carrying subject, issuer, namespace and claims —
 	// the same four an egress or task-shape rule sees, meaning the same things —
 	// and `workload`, the assertion this request would mint, carrying subject,
-	// namespace, deployment, workflow, run, step, on_behalf_of,
-	// on_behalf_of_issuer and claims.
+	// namespace, deployment, workflow, run, step. The caller that submitted the
+	// run is `identity`; the assertion's on_behalf_of claims are derived from it
+	// and are not a second name for it in a rule.
 	//
 	// Grouped rather than bare because `namespace` is a reserved identifier in
 	// CEL and cannot be a variable name, and a claim an operator carries could
@@ -99,7 +100,7 @@ type FederationPolicy struct {
 	//
 	//	# assumption policy
 	//	allow:
-	//	  - 'target == "aws-prod" && workload.on_behalf_of.startsWith("repo:acme/infra:")'
+	//	  - 'target == "aws-prod" && identity.subject.startsWith("repo:acme/infra:")'
 	//	  - 'target == "partner" && identity.namespace == "acme"'
 	Allow []string `json:"allow,omitempty" yaml:"allow,omitempty"`
 

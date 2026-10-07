@@ -304,15 +304,15 @@
 //
 //	# assumption policy
 //	allow:
-//	  - 'target == "aws-prod" && workload.on_behalf_of.startsWith("repo:picatz/flowstate:")'
+//	  - 'target == "aws-prod" && identity.subject.startsWith("repo:picatz/flowstate:")'
 //	  - 'target == "partner" && workload.namespace == "acme"'
 //	deny:
 //	  - 'workload.step == "debug"'
 //
 // A rule sees target, audience, and the workload object, whose fields are the same
 // names as the assertion's claims: workload.subject, workload.namespace,
-// workload.deployment, workload.workflow, workload.run, workload.step,
-// workload.on_behalf_of, workload.on_behalf_of_issuer, and workload.claims.
+// workload.deployment, workload.workflow, workload.run, workload.step, and the
+// caller as identity.subject, identity.issuer, and identity.claims.
 //
 // # Tenancy
 //

@@ -721,16 +721,6 @@ func validateCondition(id string, node *v1.Node, scope refScope, index int, wf *
 	return validateInputRefs(id, "if", node.GetCondition(), scope, index, wf)
 }
 
-// branchStepNodes returns every step across a parallel block's branches,
-// including those nested inside branch control flow whose outputs also merge out.
-func branchStepNodes(parallel *v1.Parallel) []*v1.Node {
-	var nodes []*v1.Node
-	for _, branch := range parallel.GetBranches() {
-		nodes = append(nodes, mergedStepNodes(branch.GetSteps())...)
-	}
-	return nodes
-}
-
 // mergedStepNodes returns the steps whose outputs become visible to steps
 // following a list of nodes.
 //
@@ -743,19 +733,7 @@ func branchStepNodes(parallel *v1.Parallel) []*v1.Node {
 // find its node by searching the whole workflow for that id, which is the wrong
 // step as soon as two blocks legally reuse one (#323). Recording what was put in
 // scope, at the point it is put there, is what makes the later lookup exact.
-func mergedStepNodes(nodes []*v1.Node) []*v1.Node {
-	var out []*v1.Node
-	for _, node := range nodes {
-		out = append(out, node)
-		if p, ok := node.GetKind().(*v1.Node_Parallel); ok {
-			out = append(out, branchStepNodes(p.Parallel)...)
-		}
-		if s, ok := node.GetKind().(*v1.Node_Switch); ok {
-			out = append(out, switchStepNodes(s.Switch)...)
-		}
-	}
-	return out
-}
+func mergedStepNodes(nodes []*v1.Node) []*v1.Node { return v1.MergedSteps(nodes) }
 
 // recordStepInScope marks a finished step in the scope the steps after it are
 // checked against: its own id, plus — for a parallel block or a switch — the
@@ -913,6 +891,19 @@ func validateLoop(stepID string, loop *v1.ForEach, enclosing refScope, index int
 		ds = append(ds, Diagnostic{
 			Step: stepID, Field: "as",
 			Message: fmt.Sprintf("%q is a CEL reserved word, so ${%s} cannot be parsed", iterator, iterator),
+		})
+	}
+	if enclosing.locals[iterator] {
+		// The rule step `vars:` and a `loop:`'s state name already follow: a bare
+		// name means one thing at a time. A nested iterator reusing its parent's
+		// `as:`, or a for_each step whose own `vars:` bind the same name, would
+		// make the inner binding win silently inside the body.
+		ds = append(ds, Diagnostic{
+			Step: stepID, Field: "as", Value: iterator,
+			Message: fmt.Sprintf(
+				"`%s` is already bound here by an enclosing loop or step, and a bare name may "+
+					"mean one thing at a time; choose another iterator, or read the outer value under a "+
+					"different name", iterator),
 		})
 	}
 	if v1.IsDeclarationRoot(iterator) {

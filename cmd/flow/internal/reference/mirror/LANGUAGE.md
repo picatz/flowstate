@@ -232,8 +232,9 @@ outputs:
 Outputs are evaluated once, after the last step, in the order written. They can
 read `inputs`, `vars`, `run`, `trigger`, and any step the top-level scope can
 see: top-level steps, the steps of the `switch:` arm that ran, and the steps
-written directly in a `parallel:` branch. Steps inside a `for_each:` or `loop:`
-body, or nested in a block inside a `parallel:` branch, are not visible. `value:` is required;
+written in a `parallel:` branch, including those inside a `switch:` or a nested
+`parallel:` in it. Steps inside a `for_each:` or `loop:` body are not visible.
+`value:` is required;
 `type:`, `values:`, and `must:` are checked when the value is computed, and
 `description:` and `sensitive:` mean what they do on an input. If an output
 cannot be computed, or fails its type or `must:`, the run fails and its
@@ -1266,6 +1267,29 @@ done is the first undone. This is the saga pattern.
   fixed order (by position, not by completion time), and a callee's
   compensations join the caller's.
 - `undo:` goes on task steps only. For a `call:`, put it on the callee's steps.
+
+```mermaid
+flowchart LR
+  N["network<br/>created"]
+  D["database<br/>created"]
+  X["deploy<br/>fails"]
+  UD["undo: database"]
+  UN["undo: network"]
+  F["run ends FAILED<br/>error lists what was undone"]
+
+  N -->|"registers undo"| D -->|"registers undo"| X
+  X -->|"unwind in reverse"| UD --> UN --> F
+
+  classDef authoring fill:#DDF4FF,stroke:#0969DA,color:#1F2328
+  classDef contract fill:#FFF1C2,stroke:#9A6700,stroke-width:3px,color:#1F2328
+  classDef runtime fill:#DAFBE1,stroke:#1A7F37,color:#1F2328
+  classDef durable fill:#FBEFFF,stroke:#8250DF,color:#1F2328
+  classDef govern fill:#FFEBE9,stroke:#CF222E,color:#1F2328
+  classDef neutral fill:#F6F8FA,stroke:#57606A,color:#1F2328
+  class N,D runtime
+  class X,F govern
+  class UD,UN durable
+```
 
 [examples/saga-provisioning](../examples/saga-provisioning/workflow.yaml) fails
 on purpose to show the unwinding.

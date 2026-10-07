@@ -42,17 +42,19 @@ stdout, and then talks Connect RPC to it over that socket for as long as the
 worker lives.
 
 ```mermaid
-flowchart LR
-  W[flow worker] -->|launch, env| P[flowstate-plugin-hello]
-  P -->|one handshake line| W
-  W -->|Describe| P
-  P -->|manifest + descriptors| W
-  W -->|Execute| P
-  classDef yours stroke-width:2px;
-  class P yours
+sequenceDiagram
+  participant W as flow worker
+  participant P as flowstate-plugin-hello
+
+  W->>P: launch, with env
+  P-->>W: one handshake line
+  W->>P: Describe
+  P-->>W: manifest + descriptors
+  W->>P: Execute
+  P-->>W: outputs
 ```
 
-The thick box is all you write. The handshake, the socket, the token check, the
+The plugin (`flowstate-plugin-hello`) is all you write. The handshake, the socket, the token check, the
 signal handling and the shutdown are
 [`pkg/flowstate/v1/plugin/sdk`](../pkg/flowstate/v1/plugin/sdk)'s, and the host
 half is documented end to end in

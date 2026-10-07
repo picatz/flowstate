@@ -254,6 +254,68 @@ steps:
 			want: "already bound here by an enclosing loop or step",
 		},
 		{
+			name: "a nested for_each reusing its parent's iterator",
+			src: `
+edition: v2026.4
+name: t
+steps:
+  - id: outer
+    for_each:
+      items: ${["a"]}
+      as: item
+      steps:
+        - id: inner
+          for_each:
+            items: ${["b"]}
+            as: item
+            steps:
+              - id: leaf
+                log:
+                  message: ${item}
+`,
+			want: "already bound here by an enclosing loop or step",
+		},
+		{
+			name: "a for_each whose own vars bind its iterator's name",
+			src: `
+edition: v2026.4
+name: t
+steps:
+  - id: each
+    vars:
+      item: x
+    for_each:
+      items: ${["a"]}
+      as: item
+      steps:
+        - id: leaf
+          log:
+            message: ${item}
+`,
+			want: "already bound here by an enclosing loop or step",
+		},
+		{
+			name: "a nested for_each with its own iterator is fine",
+			src: `
+edition: v2026.4
+name: t
+steps:
+  - id: outer
+    for_each:
+      items: ${["a"]}
+      as: row
+      steps:
+        - id: inner
+          for_each:
+            items: ${["b"]}
+            as: cell
+            steps:
+              - id: leaf
+                log:
+                  message: ${row}${cell}
+`,
+		},
+		{
 			name: "taking the name now",
 			src: `
 edition: v2026.4
@@ -642,4 +704,69 @@ steps:
 	require.Contains(t, got, "durable history")
 	require.Contains(t, got, "nothing that evaluates it resolves secrets")
 	require.Contains(t, got, "Write ${secret('...')} directly on the task input that consumes the secret instead")
+}
+
+// TestAParallelBranchIdNestedInASwitchCollidesAcrossBranches holds the collision
+// check to the same rule the scope walk and both drivers' joins read
+// ([v1.MergedSteps], #1425): an id nested in a branch's `switch:` merges out
+// beside the branches', so a sibling branch reusing it is one namespace with two
+// owners, not two private scopes.
+func TestAParallelBranchIdNestedInASwitchCollidesAcrossBranches(t *testing.T) {
+	t.Parallel()
+
+	src := `
+edition: v2026.4
+name: t
+steps:
+  - id: fan
+    parallel:
+      - steps:
+          - id: route
+            switch:
+              value: ${"a"}
+              cases:
+                - case: a
+                  steps:
+                    - id: shared
+                      value: ${"I"}
+      - steps:
+          - id: shared
+            value: ${"R"}
+`
+
+	require.Contains(t, diagnose(t, src), "duplicate id \"shared\"",
+		"a nested id colliding with a sibling branch's id was accepted")
+}
+
+// TestASwitchArmIdNestedInAnotherArmCollides is the switch half of the rule
+// [TestAParallelBranchIdNestedInASwitchCollidesAcrossBranches] holds for a
+// parallel block: every arm's merged ids, nested ones included, share one
+// namespace, so an id one arm nests and another writes directly is one name with
+// two owners.
+func TestASwitchArmIdNestedInAnotherArmCollides(t *testing.T) {
+	t.Parallel()
+
+	src := `
+edition: v2026.4
+name: t
+steps:
+  - id: route
+    switch:
+      value: ${"a"}
+      cases:
+        - case: a
+          steps:
+            - id: wrap
+              parallel:
+                - steps:
+                    - id: shared
+                      value: ${"I"}
+        - case: b
+          steps:
+            - id: shared
+              value: ${"R"}
+`
+
+	require.Contains(t, diagnose(t, src), "id is already used outside",
+		"a nested id colliding with another switch arm's id was accepted")
 }

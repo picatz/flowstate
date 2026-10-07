@@ -378,7 +378,7 @@ const InputsRoot = "inputs"
 // `workload` (the name egress and secret policy already bind this exact
 // [WorkloadIdentity] shape to, see auth/assume.go's attrWorkload) was rejected
 // because that grammar's `workload` carries a richer, different shape —
-// subject, namespace, deployment, workflow, run, step, on_behalf_of, claims —
+// subject, namespace, deployment, workflow, run, step —
 // and reusing the word here would make it answer two different questions in
 // two grammars a reader moves between.
 //
@@ -2616,7 +2616,7 @@ func runParallel(ctx context.Context, id string, parallel *Parallel, scope *Scop
 	// does after its channel drain: the merged result is the same regardless of
 	// the order branches completed in, and nothing merges on failure.
 	for i, branch := range parallel.GetBranches() {
-		for _, node := range branch.GetSteps() {
+		for _, node := range MergedSteps(branch.GetSteps()) {
 			if outputs, ok := branchResults[i].GetStepValues()[node.GetId()]; ok {
 				scope.Outputs.StepValues[node.GetId()] = outputs
 			}

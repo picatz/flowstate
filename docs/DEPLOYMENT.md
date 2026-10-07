@@ -21,10 +21,25 @@ run submitted with no worker polling its task queue is accepted and waits.
 
 ```mermaid
 flowchart LR
-  Caller["flow CLI, API client,<br/>webhook sender"] -->|"bearer token or mTLS"| Server["flow server"]
-  Server <--> Temporal[("Temporal")]
-  Temporal <--> Worker["flow worker"]
-  Worker --> Targets["HTTP services,<br/>plugins, secret providers"]
+  Caller["flow CLI, API client,<br/>webhook sender"]
+  Server["<b>flow server</b>"]
+  Temporal[("<b>Temporal</b>")]
+  Worker["<b>flow worker</b>"]
+  Targets["HTTP services,<br/>plugins, secret providers"]
+
+  Caller -->|"bearer token or mTLS"| Server
+  Server <--> Temporal
+  Temporal <--> Worker
+  Worker --> Targets
+
+  classDef authoring fill:#DDF4FF,stroke:#0969DA,color:#1F2328
+  classDef runtime fill:#DAFBE1,stroke:#1A7F37,color:#1F2328
+  classDef durable fill:#FBEFFF,stroke:#8250DF,color:#1F2328
+  classDef neutral fill:#F6F8FA,stroke:#57606A,color:#1F2328
+  class Caller authoring
+  class Server,Worker runtime
+  class Temporal durable
+  class Targets neutral
 ```
 
 ### Before a production rollout
@@ -338,16 +353,30 @@ people most often assume they already have arrive last:
 
 ```mermaid
 flowchart LR
-  T0["Tier 0<br/>flow run local"] -->|"an --auth-policy<br/>and one ownedBy check"| T1a["Tier 1a<br/>shared worker"]
-  T1a -->|"policy rules keyed on<br/>identity.namespace"| T1b["Tier 1b<br/>shared worker,<br/>per-tenant rules"]
-  T1b -->|"a Temporal namespace and<br/>a worker fleet per tenant"| T2["Tier 2<br/>per-tenant namespace<br/>+ worker"]
-  T2 -->|"containers, microVMs,<br/>substrate credentials"| T3["Tier 3<br/>substrate isolation"]
+  T0["<b>Tier 0</b><br/>flow run local"]
+  T1a["<b>Tier 1a</b><br/>shared worker"]
+  T1b["<b>Tier 1b</b><br/>shared worker,<br/>per-tenant rules"]
+  T2["<b>Tier 2</b><br/>per-tenant namespace<br/>+ worker"]
+  T3["<b>Tier 3</b><br/>substrate isolation<br/>(not built)"]
+
+  T0 -->|"an --auth-policy<br/>and one ownedBy check"| T1a
+  T1a -->|"policy rules keyed on<br/>identity.namespace"| T1b
+  T1b -->|"a Temporal namespace and<br/>a worker fleet per tenant"| T2
+  T2 -->|"containers, microVMs,<br/>substrate credentials"| T3
 
   History(["history privacy<br/>between tenants"]) -.->|"first true here"| T2
   Blast(["worker blast radius<br/>of one tenant"]) -.->|"first true here"| T2
 
-  classDef notbuilt stroke-dasharray: 5 5;
-  class T3 notbuilt;
+  classDef authoring fill:#DDF4FF,stroke:#0969DA,color:#1F2328
+  classDef runtime fill:#DAFBE1,stroke:#1A7F37,color:#1F2328
+  classDef durable fill:#FBEFFF,stroke:#8250DF,color:#1F2328
+  classDef govern fill:#FFEBE9,stroke:#CF222E,color:#1F2328
+  classDef planned fill:#F6F8FA,stroke:#57606A,stroke-dasharray:5 4,color:#1F2328
+  class T0 authoring
+  class T1a,T1b runtime
+  class T2 durable
+  class T3 planned
+  class History,Blast govern
 ```
 
 Tier 3 is dashed because it is documented and not built: it is what a substrate
@@ -849,7 +878,7 @@ issuer for a shared deployment.
 
 Claims beyond subject, issuer, and namespace are not copied into durable run or
 signal-sender identity unless the server names them. Add repeatable
-`--identity-claim <name>` flags when a local `signals:` or `workload.claims[...]`
+`--identity-claim <name>` flags when a local `signals:` (`sender.identity.claims[...]`) or `identity.claims[...]`
 rule needs to inspect a verified claim, just as on `flow server`; for example,
 the [authenticated approval journey](../examples/approval-gate/README.md#run-an-authenticated-approval)
 uses `--identity-claim team`.

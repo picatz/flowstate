@@ -10,7 +10,7 @@ import (
 // TestProtoIdentityCarriesClaims is the regression case for a bug Codex found
 // in review: ProtoIdentity copied every scalar field of Authority.Identity but
 // dropped Claims, so a shared case whose policy keys on
-// workload.claims["repository"] would see them on the local driver — which
+// identity.claims["repository"] would see them on the local driver — which
 // installs auth.WorkloadIdentity directly — and lose them on the durable
 // driver, which only ever sees what crossed this conversion. That is exactly
 // the shape of driver disagreement this harness exists to catch, except this

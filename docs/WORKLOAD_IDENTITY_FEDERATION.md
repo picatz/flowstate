@@ -14,6 +14,28 @@ no error on this side.
 
 So Flowstate publishes two documents, and they are not alternatives.
 
+```mermaid
+sequenceDiagram
+  participant S as step on a worker
+  participant P as federation rules
+  participant F as Flowstate issuer
+  participant C as cloud or Vault
+  participant K as discovery and JWKS
+
+  S->>P: may this identity mint a credential for this target?
+  alt not allowed
+    P-->>S: denied, so the step fails
+  else allowed
+    P->>F: mint an assertion
+    F-->>S: short-lived signed JWT<br/>iss, sub, aud, namespace, workflow, step
+    S->>C: present the assertion
+    C->>K: fetch openid-configuration and jwks_uri
+    K-->>C: public signing keys
+    C->>C: verify iss, aud, exp and signature
+    C-->>S: short-lived credential for this call
+  end
+```
+
 ## The two metadata documents
 
 ### `/.well-known/openid-configuration` — OpenID Provider Metadata
@@ -84,6 +106,13 @@ authentication; no OIDC client.
 `TestWorkloadMetadataNeverClaimsAnUnimplementedProtocol` pins the negative
 direction on the workload document, which is under no compatibility obligation
 and therefore has no excuse for advertising any of it.
+
+**Delegated egress.** The RFC 8693 delegated exchange (`actor_token`) exists as a
+library capability only and no policy field or flag reaches it. Its delegator
+token would be the human's own bearer token, which cannot be stored in a run's
+durable history, so it stays unreachable until the inbound `act` chain is carried
+on the principal and a token-exchange service lets a workload present its own
+chain-bearing token.
 
 ## The assertions themselves
 

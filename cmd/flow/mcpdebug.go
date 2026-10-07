@@ -264,8 +264,9 @@ func debugToolHandler(timeout time.Duration) mcp.ToolHandler {
 			return flowmcp.ToolError(fmt.Errorf(
 				"the debugged case did not finish within %s and was stopped, so no verdict is "+
 					"reported. A debugger cannot rescue a run that never reaches another step: this "+
-					"is usually a `wait_for_signal:` with no `timeout:` and no stub scripting its "+
-					"signal, which parks the virtual clock with no deadline to advance to", timeout)), nil
+					"is usually a long loop, or a request that was cancelled (a `wait_for_signal:` "+
+					"with no `timeout:` that nothing scripted can answer is reported as a stuck run "+
+					"instead)", timeout)), nil
 		}
 
 		encoded, err := renderDebugResult(result.Report, transcript, session.Script(), session.ScriptTruncated())
