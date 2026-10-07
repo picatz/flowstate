@@ -367,6 +367,13 @@ func TaskNeedsAuthority(task *Task) bool {
 		if ValueHoldsSecretRef(value) {
 			return true
 		}
+		// A credential reference needs the authority to mint one, which is
+		// the same question one rung over: the worker that runs this task is
+		// the only party that may exchange for it, so the task must reach the
+		// activity that carries the worker's runtime.
+		if ValueHoldsCredentialRef(value) {
+			return true
+		}
 	}
 
 	// The declared half, which is the only half that needs a registry. A miss

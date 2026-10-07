@@ -687,7 +687,7 @@ func (c *compiler) signalQuorum(n ast.Node, path string, r ref) *v1.SignalQuorum
 // plain string is a subject to exclude).
 func (c *compiler) quorumValue(n ast.Node, path string, r ref, asExpression bool) *v1.Value {
 	if resolved := c.resolveQuiet(n); resolved != nil && c.holdsSecretMarker(resolved) {
-		c.report(c.secretMarkerSpan(resolved), r, "%s", notInQuorumHelp)
+		c.report(c.secretMarkerSpan(resolved), r, "%s", c.markerHelp(resolved, notInQuorumHelp))
 		return nil
 	}
 

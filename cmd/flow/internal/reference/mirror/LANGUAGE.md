@@ -1538,7 +1538,8 @@ Three rules hold in both directions:
 - **Policy fails closed.** A missing claim, an expression error, an unreachable
   issuer, or a rule that cannot be evaluated refuses.
 - **Credentials and tokens never enter a run's history.** A step names a
-  `credential:` or `${secret(...)}`; the worker resolves it where it is used.
+  `credential:`, `${credential(...)}` or `${secret(...)}`; the worker resolves
+  it where it is used.
 
 A webhook delivery signed with `hmac_sha256` or `stripe` holds no Flowstate
 credential, so its `sender.identity` names the trigger that admitted it,
@@ -1572,6 +1573,26 @@ whole value of an input that accepts one, such as `http`'s `bearer:` or one
 entry of its `headers:`. It is refused in `vars:`, in anything the workflow
 evaluates itself, and in text. [Secrets and credentials](SECRETS.md) covers
 where references are allowed and how a deployment resolves them.
+
+### Federated credentials
+
+```yaml
+- id: ask
+  anthropic.decide:
+    api_key: ${credential('anthropic')}
+```
+
+`${credential('target')}` names a federation target in the deployment's trust
+policy (`federation: targets:`) where `${secret(...)}` would name a stored
+secret. The worker running the step exchanges its own workload identity for a
+short-lived credential at the moment the task needs one, so no key is stored
+anywhere. It is a reference like a secret and held to the same rules, and
+fewer places: it has to be the whole value of a task input, never an entry
+nested in a list or a mapping. It is refused in `vars:`, in a call's `with:`, in
+anything the workflow evaluates itself, and combined with text. The target is
+written out, not computed. A task that does not accept a credential in an input
+refuses one there, and a target the deployment does not federate is refused when
+the workflow is validated or submitted, not when the step runs.
 
 ### Sensitive values
 

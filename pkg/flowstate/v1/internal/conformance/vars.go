@@ -383,5 +383,47 @@ func VarsSecretRefusalCases() []Refusal {
 			},
 			Contains: `workflow "callee" var "token" is a secret reference`,
 		},
+		{
+			// The credential reference's half of the same rule, which is what
+			// keeps `${credential('anthropic')}` out of history by the
+			// specification's own check rather than only the compiler's: a var is
+			// evaluated by the workflow, nothing on that path mints a credential,
+			// and so a reference held there has no contained place to be
+			// resolved.
+			Name: "a workflow var holding a credential reference is refused",
+			Workflow: &v1.Workflow{
+				Name:    "wfvar-credential",
+				Profile: v1.CurrentProfile,
+				Vars:    map[string]*v1.Value{"key": v1.NewCredentialRef("anthropic")},
+				Steps:   []*v1.Node{says("noop", "hi")},
+			},
+			Contains: `workflow var "key" is a credential reference`,
+		},
+		{
+			Name: "a step var holding a credential reference is refused",
+			Workflow: &v1.Workflow{
+				Name:    "stepvar-credential",
+				Profile: v1.CurrentProfile,
+				Steps: []*v1.Node{
+					withVars(says("noop", "hi"), map[string]*v1.Value{"key": v1.NewCredentialRef("anthropic")}),
+				},
+			},
+			Contains: `step "noop" var "key" is a credential reference`,
+		},
+		{
+			// Nested, which the compiler never produces for a credential and a
+			// hand-built specification can: the walk has to look inside a
+			// structure for the same reason the secret's does.
+			Name: "a workflow var holding a structure with a nested credential reference is refused",
+			Workflow: &v1.Workflow{
+				Name:    "wfvar-credential-nested",
+				Profile: v1.CurrentProfile,
+				Vars: map[string]*v1.Value{
+					"headers": v1.NewStructureMap(map[string]*v1.Value{"Authorization": v1.NewCredentialRef("anthropic")}),
+				},
+				Steps: []*v1.Node{says("noop", "hi")},
+			},
+			Contains: `workflow var "headers" is a credential reference`,
+		},
 	}
 }

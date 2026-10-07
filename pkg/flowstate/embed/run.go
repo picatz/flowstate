@@ -154,10 +154,7 @@ func checkStarter(ctx context.Context, workflow *Workflow, opts RunOptions, verb
 	if p := opts.Starter.Principal; !p.IsZero() && !p.IsAnonymous() {
 		principal = p.ID()
 		derived := auth.IdentityFromPrincipal(p, opts.Starter.Namespace, "", opts.Starter.Claims...)
-		identity = &v1.WorkloadIdentity{
-			Subject: derived.Subject, Issuer: derived.Issuer, Claims: derived.Claims, Namespace: derived.Namespace,
-			PrincipalKind: v1.PrincipalKindNamed(string(p.Kind)),
-		}
+		identity = v1.ProtoWorkloadIdentity(derived)
 	}
 
 	if err := v1.CheckManualStart(ctx, workflow, identity, principal, opts.Starter.Reason, bound); err != nil {

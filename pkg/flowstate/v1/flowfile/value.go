@@ -165,7 +165,7 @@ func (c *compiler) exprValue(n ast.Node, path string, r ref) *v1.Value {
 // refused rather than modeled.
 func (c *compiler) callArgumentValue(n ast.Node, path string, r ref) *v1.Value {
 	if resolved := c.resolveQuiet(n); resolved != nil && c.holdsSecretMarker(resolved) {
-		c.report(spanOfNode(resolved), r, "%s", notAcrossCallHelp)
+		c.report(spanOfNode(resolved), r, "%s", c.markerHelp(resolved, notAcrossCallHelp))
 		return nil
 	}
 	return c.value(n, path, r, false)
@@ -183,7 +183,7 @@ func (c *compiler) callArgumentValue(n ast.Node, path string, r ref) *v1.Value {
 // falsehood to reach a refusal here. See [notInVarHelp].
 func (c *compiler) varValue(n ast.Node, path string, r ref) *v1.Value {
 	if resolved := c.resolveQuiet(n); resolved != nil && c.holdsSecretMarker(resolved) {
-		c.report(c.secretMarkerSpan(resolved), r, "%s", notInVarHelp)
+		c.report(c.secretMarkerSpan(resolved), r, "%s", c.markerHelp(resolved, notInVarHelp))
 		return nil
 	}
 	return c.inputValue(n, path, r)
@@ -196,7 +196,7 @@ func (c *compiler) varValue(n ast.Node, path string, r ref) *v1.Value {
 // placements [misplacedHelp] draws describes it honestly.
 func (c *compiler) waitOutputValue(n ast.Node, path string, r ref) *v1.Value {
 	if resolved := c.resolveQuiet(n); resolved != nil && c.holdsSecretMarker(resolved) {
-		c.report(c.secretMarkerSpan(resolved), r, "%s", notInWaitOutputsHelp)
+		c.report(c.secretMarkerSpan(resolved), r, "%s", c.markerHelp(resolved, notInWaitOutputsHelp))
 		return nil
 	}
 	return c.inputValue(n, path, r)
@@ -208,7 +208,7 @@ func (c *compiler) waitOutputValue(n ast.Node, path string, r ref) *v1.Value {
 // and its result travels across every Continue-As-New.
 func (c *compiler) loopStateValue(n ast.Node, path string, r ref) *v1.Value {
 	if resolved := c.resolveQuiet(n); resolved != nil && c.holdsSecretMarker(resolved) {
-		c.report(c.secretMarkerSpan(resolved), r, "%s", notInLoopStateHelp)
+		c.report(c.secretMarkerSpan(resolved), r, "%s", c.markerHelp(resolved, notInLoopStateHelp))
 		return nil
 	}
 	return c.inputValue(n, path, r)

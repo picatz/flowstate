@@ -1454,7 +1454,7 @@ decide and the implementation did.
 - **A workflow-level var may reference nothing at all** — not a step (none has run),
   not another var, not a root written bare. `flow validate` says which of those three
   it was, because they are three different misunderstandings.
-- **A var may not hold a `${secret(...)}` reference**, at either position, in any
+- **A var may not hold a `${secret(...)}` or `${credential(...)}` reference**, at either position, in any
   spelling — bare, buried in a larger expression, nested in a list or a mapping, or
   behind a YAML anchor. Every position that *does* carry a reference carries it to a
   worker: a task input, or an entry of a structure the task applies inside its own
@@ -1462,7 +1462,7 @@ decide and the implementation did.
   into the scope every later expression reads, so the resolved secret is in durable
   history before anything has asked what it was for. Reference the secret where it is
   consumed instead, on the task input that needs it, which is the same `${secret(...)}`
-  written one line further down. `flow validate` reports it at the reference; a
+  (or `${credential(...)}`) written one line further down. `flow validate` reports it at the reference; a
   specification built by hand rather than parsed is refused at submit by
   `BindRunInputs`, on both drivers (#169).
 - **`vars` written bare is a legal operand.** `${vars["region"]}` with a computed key,
@@ -2525,9 +2525,9 @@ position:
 - **`undo:`**, because a value changes nothing outside the run, so there is nothing to
   take back. Write the compensation on the steps whose effects the value decides.
 
-A `${secret(...)}` reference may not be written here, for the reason it may not go in
-`vars:`: the workflow evaluates this, and what the workflow evaluates is written to
-durable history.
+A `${secret(...)}` or `${credential(...)}` reference may not be written here, for the
+reason it may not go in `vars:`: the workflow evaluates this, and what the workflow
+evaluates is written to durable history.
 
 `if:` composes exactly as it does on every other kind. A value that is skipped
 produces no outputs, so a later reference to it does not resolve, which is the honest
@@ -5355,7 +5355,8 @@ has designed and no other input in this schema has). So it is refused, at compil
 with a position: *"a secret reference cannot cross a call boundary; pass it to the task
 that needs it inside the callee, or declare the input there."* The callee's own task can
 still write `${secret(...)}` directly — nothing about isolation stops that, because the
-reference never left the file that resolves it.
+reference never left the file that resolves it. A `${credential('target')}` is refused at
+the same boundary for the same reason.
 
 ### Compile-time resolution, and why
 
