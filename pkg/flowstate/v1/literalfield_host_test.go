@@ -240,3 +240,51 @@ func TestANestedEnumKeepsTheSchemasRules(t *testing.T) {
 	_, err = fill(int64(99))
 	require.ErrorContains(t, err, "is not one of")
 }
+
+// TestATestOnlyEnumValueIsTheCallersToRefuse: the plugin that owns a task decides
+// at its point of use what a released build refuses, so the decode it runs accepts
+// a value the schema marks test-only; the host, which cannot, asks for it to be
+// refused, by name or by number, where the author can see it.
+func TestATestOnlyEnumValueIsTheCallersToRefuse(t *testing.T) {
+	t.Parallel()
+
+	testOnly := &descriptorpb.EnumValueOptions{}
+	proto.SetExtension(testOnly, E_TestOnly, true)
+
+	file, err := protodesc.NewFile(&descriptorpb.FileDescriptorProto{
+		Name: proto.String("engine.proto"), Package: proto.String("engine.v1"), Syntax: proto.String("proto3"),
+		EnumType: []*descriptorpb.EnumDescriptorProto{{
+			Name: proto.String("Engine"),
+			Value: []*descriptorpb.EnumValueDescriptorProto{
+				{Name: proto.String("ENGINE_UNSPECIFIED"), Number: proto.Int32(0)},
+				{Name: proto.String("ENGINE_POSTGRES"), Number: proto.Int32(1)},
+				{Name: proto.String("ENGINE_SQLITE"), Number: proto.Int32(2), Options: testOnly},
+			},
+		}},
+		MessageType: []*descriptorpb.DescriptorProto{{
+			Name: proto.String("Inputs"),
+			Field: []*descriptorpb.FieldDescriptorProto{{
+				Name: proto.String("engine"), Number: proto.Int32(1), JsonName: proto.String("engine"),
+				Label:    descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(),
+				Type:     descriptorpb.FieldDescriptorProto_TYPE_ENUM.Enum(),
+				TypeName: proto.String(".engine.v1.Engine"),
+			}},
+		}},
+	}, nil)
+	require.NoError(t, err)
+
+	field := file.Messages().ByName("Inputs").Fields().ByName("engine")
+	fill := func(value any, options ...LiteralOption) error {
+		inputs := dynamicpb.NewMessage(file.Messages().ByName("Inputs"))
+		return SetLiteralField(inputs, field, NewValue(value).GetLiteral(), options...)
+	}
+
+	require.NoError(t, fill("ENGINE_SQLITE"), "the plugin's own decode accepts a test-only value")
+	require.NoError(t, fill("sqlite"))
+	require.NoError(t, fill(int64(2)))
+	require.NoError(t, fill("postgres", RefuseTestOnlyEnums()))
+
+	for _, value := range []any{"ENGINE_SQLITE", "sqlite", int64(2)} {
+		require.ErrorContains(t, fill(value, RefuseTestOnlyEnums()), "a released build refuses it", "%v", value)
+	}
+}

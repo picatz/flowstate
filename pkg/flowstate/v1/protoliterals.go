@@ -500,7 +500,7 @@ func populateProtoMessageFromValueMap(ctx context.Context, input map[string]*Val
 			if err != nil {
 				return fmt.Errorf("field %q: %w", fieldName, err)
 			}
-			if err := SetLiteralField(msg.ProtoReflect(), fieldDesc, literal); err != nil {
+			if err := SetLiteralField(msg.ProtoReflect(), fieldDesc, literal, RefuseTestOnlyEnums()); err != nil {
 				return fmt.Errorf("field %q: %w", fieldName, err)
 			}
 			continue

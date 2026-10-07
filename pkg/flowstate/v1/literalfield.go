@@ -33,8 +33,27 @@ var ErrFieldUnsupported = errors.New("the task's declaration, not the input, is 
 // values in all. Messages are built through the descriptor's own constructors,
 // so a field whose type is described only by a dynamic descriptor works as well
 // as a generated one.
-func SetLiteralField(msg protoreflect.Message, field protoreflect.FieldDescriptor, literal *expr.Value) error {
-	return (&literalDecoder{}).setLiteral(msg, field, literal, 0)
+//
+// An enum value the schema marks test-only is accepted unless the caller passes
+// [RefuseTestOnlyEnums]: the plugin that owns the task decides at its point of use
+// what a released build refuses, and the host, which cannot, refuses it where the
+// author can see it.
+func SetLiteralField(msg protoreflect.Message, field protoreflect.FieldDescriptor, literal *expr.Value, options ...LiteralOption) error {
+	d := &literalDecoder{}
+	for _, option := range options {
+		option(d)
+	}
+
+	return d.setLiteral(msg, field, literal, 0)
+}
+
+// A LiteralOption adjusts one call of [SetLiteralField].
+type LiteralOption func(*literalDecoder)
+
+// RefuseTestOnlyEnums makes [SetLiteralField] refuse an enum value the schema
+// marks `test_only`, by name or by number, as a released build does.
+func RefuseTestOnlyEnums() LiteralOption {
+	return func(d *literalDecoder) { d.refuseTestOnly = true }
 }
 
 // Bounds on a structural decode. A nested input is shaped by whatever the
@@ -50,7 +69,10 @@ const (
 )
 
 // literalDecoder carries the work budget of decoding one input.
-type literalDecoder struct{ nodes int }
+type literalDecoder struct {
+	nodes          int
+	refuseTestOnly bool
+}
 
 // spend charges n converted values against the input's budget.
 func (d *literalDecoder) spend(n int) error {
@@ -182,23 +204,24 @@ func (d *literalDecoder) scalar(field protoreflect.FieldDescriptor, value *expr.
 			return protoreflect.ValueOfFloat64(f), nil
 		}
 	case protoreflect.EnumKind:
-		// The schema's own rules, shared with the diagnostics: either spelling of
-		// a name, any case, no zero by name, and nothing the schema marks
-		// test-only, which a released build refuses at the point of use. A number
-		// must name a value the enum defines, for the same reason.
+		// Names resolve as the schema's own diagnostics resolve them: either
+		// spelling, any case, and no zero by name. A number must name a value the
+		// enum defines.
 		if n, ok := integer(value); ok && n >= math.MinInt32 && n <= math.MaxInt32 {
-			if enum := field.Enum().Values().ByNumber(protoreflect.EnumNumber(n)); enum != nil && !EnumValueTestOnly(enum) {
+			if enum := field.Enum().Values().ByNumber(protoreflect.EnumNumber(n)); enum != nil {
+				if d.refuseTestOnly && EnumValueTestOnly(enum) {
+					return protoreflect.Value{}, withheldEnum(field.Enum(), enum.Name())
+				}
 				return protoreflect.ValueOfEnum(enum.Number()), nil
 			}
 			return protoreflect.Value{}, fmt.Errorf("%d is not one of %s", n, strings.Join(EnumValueNames(field.Enum()), ", "))
 		}
 		if v, ok := value.GetKind().(*expr.Value_StringValue); ok {
-			if n, known := EnumValueNumber(field.Enum(), v.StringValue); known {
-				return protoreflect.ValueOfEnum(n), nil
-			}
-			if EnumValueWithheld(field.Enum(), v.StringValue) {
-				return protoreflect.Value{}, fmt.Errorf("%q is compiled into test builds of %s only, and a released build refuses it",
-					textbound.Truncate(v.StringValue, 64), field.Enum().FullName())
+			if enum := enumValueWritten(field.Enum(), v.StringValue); enum != nil {
+				if d.refuseTestOnly && EnumValueTestOnly(enum) {
+					return protoreflect.Value{}, withheldEnum(field.Enum(), protoreflect.Name(textbound.Truncate(v.StringValue, 64)))
+				}
+				return protoreflect.ValueOfEnum(enum.Number()), nil
 			}
 			return protoreflect.Value{}, fmt.Errorf("%q is not one of %s", textbound.Truncate(v.StringValue, 64), strings.Join(EnumValueNames(field.Enum()), ", "))
 		}
@@ -347,4 +370,9 @@ func number(value *expr.Value) (float64, bool) {
 		return float64(v.Uint64Value), true
 	}
 	return 0, false
+}
+
+// withheldEnum is the refusal for a value compiled into test builds only.
+func withheldEnum(enum protoreflect.EnumDescriptor, written protoreflect.Name) error {
+	return fmt.Errorf("%q is compiled into test builds of %s only, and a released build refuses it", written, enum.FullName())
 }
