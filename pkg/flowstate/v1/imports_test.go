@@ -60,12 +60,13 @@ const selfPrefix = "github.com/picatz/flowstate/pkg/flowstate/v1/"
 //     whose only import is cel-go, which this package already inherits for
 //     the interpreter, so the edge adds nothing to what an importer pulls in.
 //
-//   - principal — the one CEL-typed caller (principal.Caller) that egress,
-//     exec, task-shape, secret and signal rules all bind, with the renderer
-//     from a WorkloadIdentity (CallerOf) living here. It replaces three
-//     per-surface identity structs, and is a leaf whose only imports are the
-//     standard library and cel-go, so the edge adds nothing an importer does
-//     not already inherit.
+//   - principal — the CEL-typed caller (principal.Caller) that egress, exec and
+//     task-shape rules bind. This change deletes two structs it replaces,
+//     netpolicy.Identity and taskPolicyIdentity; the edge is allowlisted
+//     because this package now imports principal to render a WorkloadIdentity
+//     into a Caller (CallerOf) and to bind it for task-shape rules. It is a
+//     leaf whose only imports are the standard library and cel-go, so the edge
+//     adds nothing an importer does not already inherit.
 //
 //   - metricschema — the metric vocabulary the task instruments record through
 //     (#526). The one edge added *after* this ratchet existed, so it owes the
@@ -140,7 +141,7 @@ var allowedSelfImports = map[string][]string{
 		"eval_task_http_def.go",
 		"eval_task_http_run.go",
 	},
-	// principal is the one CEL-typed caller every policy surface binds; this
+	// principal is the caller type egress, exec and task-shape rules bind; this
 	// package renders a WorkloadIdentity into it (CallerOf) and taskpolicy.go
 	// binds it for task-shape rules.
 	"principal": {

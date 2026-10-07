@@ -1,14 +1,14 @@
-// Package principal is the one CEL-typed rendering of an authenticated caller.
+// Package principal is the CEL-typed rendering of an authenticated caller.
 //
-// Every operator-authored policy surface that lets a rule read who is calling
-// (egress, exec, task shape, secret access, credential assumption, signal
-// predicates) binds the same [Caller] type, so a deployment gates all of them
-// on one notion of identity and a field added here is readable everywhere at
-// once. The variable's name stays per surface (`identity`, `sender.identity`,
-// `run.identity`); the type does not.
+// Today it is the shape egress, exec and task-shape rules share: they bind the
+// same [Caller] type, so a field added here is readable in all three at once.
+// Secret access, credential assumption and signal predicates do not bind it
+// yet; they migrate in later slices, and until then they keep their own
+// spellings. The variable's name stays per surface (`identity`,
+// `sender.identity`, `run.identity`); the type does not.
 //
 // The package is a leaf: it imports only the standard library and cel-go, so
-// the packages that evaluate rules (netpolicy, execpolicy, auth) and the root
+// the packages that evaluate rules (netpolicy, execpolicy) and the root
 // package that renders a run's attested identity into a [Caller] can all depend
 // on it without a cycle. How a Caller is established is outside this package.
 package principal
