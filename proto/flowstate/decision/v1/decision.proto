@@ -1,11 +1,12 @@
 syntax = "proto3";
 
-package flowstate.v1;
+package flowstate.decision.v1;
 
 import "buf/validate/validate.proto";
 import "google/api/field_behavior.proto";
 
-option go_package = "flowstatev1";
+option go_package = "flowstatedecisionv1";
+
 
 // The provider-neutral shape of a typed decision: a named question put to a
 // model, and the typed answer that comes back (#2376).

@@ -55,7 +55,7 @@ func identityForNamespace(ctx context.Context, namespace string) *flowstatev1.Wo
 		return nil
 	}
 
-	if identity.GetNamespace() != "" && identity.GetNamespace() != namespace {
+	if identity.GetPrincipal().GetNamespace() != "" && identity.GetPrincipal().GetNamespace() != namespace {
 		return nil
 	}
 

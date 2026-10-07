@@ -76,9 +76,7 @@ func runPluginIdentityDurable(t *testing.T, needsScope bool, identity *v1.Worklo
 func TestPluginTaskObservesCallerDurable(t *testing.T) {
 	for _, needsScope := range []bool{true, false} {
 		t.Run(map[bool]string{true: "TaskInScope", false: "Task"}[needsScope], func(t *testing.T) {
-			subject, namespace, mode, present := runPluginIdentityDurable(t, needsScope, &v1.WorkloadIdentity{
-				Subject: "svc-reader", Issuer: "https://issuer.example", Namespace: "team-a",
-			})
+			subject, namespace, mode, present := runPluginIdentityDurable(t, needsScope, &v1.WorkloadIdentity{Principal: &v1.Principal{Subject: "svc-reader", Issuer: "https://issuer.example", Namespace: "team-a"}})
 
 			require.True(t, present, "the plugin task's context carried no identity at all")
 			require.Equal(t, "svc-reader", subject)
@@ -97,12 +95,8 @@ func TestPluginTaskObservesCallerDurable(t *testing.T) {
 // registration, which is the closure-at-load trap #235's fix guidance names —
 // this is what proves this driver does not fall into it either.
 func TestPluginTaskCallerNotStickyAcrossRunsDurable(t *testing.T) {
-	firstSubject, firstNamespace, _, _ := runPluginIdentityDurable(t, true, &v1.WorkloadIdentity{
-		Subject: "svc-a", Issuer: "https://issuer.example", Namespace: "team-a",
-	})
-	secondSubject, secondNamespace, _, _ := runPluginIdentityDurable(t, true, &v1.WorkloadIdentity{
-		Subject: "svc-b", Issuer: "https://issuer.example", Namespace: "team-b",
-	})
+	firstSubject, firstNamespace, _, _ := runPluginIdentityDurable(t, true, &v1.WorkloadIdentity{Principal: &v1.Principal{Subject: "svc-a", Issuer: "https://issuer.example", Namespace: "team-a"}})
+	secondSubject, secondNamespace, _, _ := runPluginIdentityDurable(t, true, &v1.WorkloadIdentity{Principal: &v1.Principal{Subject: "svc-b", Issuer: "https://issuer.example", Namespace: "team-b"}})
 
 	require.Equal(t, "svc-a", firstSubject)
 	require.Equal(t, "team-a", firstNamespace)
@@ -137,11 +131,7 @@ func TestPluginTaskCallerModeCannotBeForgedByDurableInput(t *testing.T) {
 		v1.WorkloadIdentityMode_WORKLOAD_IDENTITY_MODE_REHEARSAL,
 		v1.WorkloadIdentityMode(99),
 	} {
-		_, _, mode, _ := runPluginIdentityDurable(t, true, &v1.WorkloadIdentity{
-			Subject: "svc-reader",
-			Claims:  map[string]string{"mode": "rehearsal"},
-			Mode:    claimed,
-		})
+		_, _, mode, _ := runPluginIdentityDurable(t, true, &v1.WorkloadIdentity{Principal: &v1.Principal{Subject: "svc-reader", Claims: v1.StringClaimValues(map[string]string{"mode": "rehearsal"})}, Mode: claimed})
 		require.Equal(t, v1.WorkloadIdentityMode_WORKLOAD_IDENTITY_MODE_PRODUCTION, mode)
 	}
 }

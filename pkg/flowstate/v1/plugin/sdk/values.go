@@ -109,6 +109,10 @@ func setField(msg protoreflect.Message, field protoreflect.FieldDescriptor, valu
 		return fmt.Errorf(
 			"is a secret reference, which this field's type cannot hold; declare the field as flowstate.v1.Value to receive one (%w)",
 			errTaskDeclaration)
+	case *flowstatev1.Value_CredentialRef:
+		return fmt.Errorf(
+			"is a credential reference, which this field's type cannot hold; declare the field as flowstate.v1.Value to receive one (%w)",
+			errTaskDeclaration)
 	case *flowstatev1.Value_Error_:
 		return fmt.Errorf("is an error value: %s", textbound.Truncate(kind.Error.GetMessage(), 256))
 	default:

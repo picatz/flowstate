@@ -32,9 +32,9 @@ import (
 func TestIdentityFromAnotherNamespaceIsNeverForwarded(t *testing.T) {
 	t.Parallel()
 
-	teamA := &flowstatev1.WorkloadIdentity{Subject: "ci", Issuer: "https://issuer.example", Namespace: "team-a"}
-	teamB := &flowstatev1.WorkloadIdentity{Subject: "ci", Issuer: "https://issuer.example", Namespace: "team-b"}
-	unscoped := &flowstatev1.WorkloadIdentity{Subject: "ci", Issuer: "https://issuer.example"}
+	teamA := &flowstatev1.WorkloadIdentity{Principal: &flowstatev1.Principal{Subject: "ci", Issuer: "https://issuer.example", Namespace: "team-a"}}
+	teamB := &flowstatev1.WorkloadIdentity{Principal: &flowstatev1.Principal{Subject: "ci", Issuer: "https://issuer.example", Namespace: "team-b"}}
+	unscoped := &flowstatev1.WorkloadIdentity{Principal: &flowstatev1.Principal{Subject: "ci", Issuer: "https://issuer.example"}}
 
 	tests := []struct {
 		name      string
@@ -92,16 +92,16 @@ func TestIdentityFromAnotherNamespaceIsNeverForwarded(t *testing.T) {
 				if got != nil {
 					t.Fatalf("identity %q would have been sent to a plugin resolving in namespace %q; "+
 						"a plugin told one tenant's identity beside another's namespace authorizes against the wrong one",
-						got.GetNamespace(), test.namespace)
+						got.GetPrincipal().GetNamespace(), test.namespace)
 				}
 				return
 			}
 			if got == nil {
 				t.Fatalf("the caller's own identity was dropped in namespace %q", test.namespace)
 			}
-			if got.GetSubject() != test.want.GetSubject() || got.GetNamespace() != test.want.GetNamespace() {
+			if got.GetPrincipal().GetSubject() != test.want.GetPrincipal().GetSubject() || got.GetPrincipal().GetNamespace() != test.want.GetPrincipal().GetNamespace() {
 				t.Errorf("forwarded identity = %q/%q, want %q/%q",
-					got.GetNamespace(), got.GetSubject(), test.want.GetNamespace(), test.want.GetSubject())
+					got.GetPrincipal().GetNamespace(), got.GetPrincipal().GetSubject(), test.want.GetPrincipal().GetNamespace(), test.want.GetPrincipal().GetSubject())
 			}
 		})
 	}
@@ -142,11 +142,7 @@ func TestExecuteStreamCarriesTheCallersOwnIdentity(t *testing.T) {
 	execute := func(t *testing.T, namespace, subject string) map[string]*flowstatev1.Value {
 		t.Helper()
 
-		ctx := NewContextWithIdentity(t.Context(), &flowstatev1.WorkloadIdentity{
-			Subject:   subject,
-			Issuer:    "https://issuer.example",
-			Namespace: namespace,
-		})
+		ctx := NewContextWithIdentity(t.Context(), &flowstatev1.WorkloadIdentity{Principal: &flowstatev1.Principal{Subject: subject, Issuer: "https://issuer.example", Namespace: namespace}})
 
 		outputs, err := def.Fn(ctx, map[string]*flowstatev1.Value{
 			"message": flowstatev1.NewLiteral("hello"),

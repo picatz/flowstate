@@ -27,13 +27,7 @@ func TestRunIdentityShapeDurable(t *testing.T) {
 
 	env.ExecuteWorkflow(engine.Run, &v1.RunState{
 		Workflow: conformance.RunIdentityWorkflow(),
-		Identity: &v1.WorkloadIdentity{
-			Subject:   "release-requester@example.com",
-			Issuer:    "flowstate:test",
-			Namespace: "team-a",
-
-			PrincipalKind: v1.PrincipalKind_PRINCIPAL_KIND_HUMAN,
-		},
+		Identity: &v1.WorkloadIdentity{Principal: &v1.Principal{Subject: "release-requester@example.com", Issuer: "flowstate:test", Namespace: "team-a", Kind: v1.PrincipalKind_PRINCIPAL_KIND_HUMAN}},
 	})
 
 	require.True(t, env.IsWorkflowCompleted())

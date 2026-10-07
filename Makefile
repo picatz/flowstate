@@ -109,7 +109,7 @@ check:
 	$(BUF) lint
 	$(BUF) breaking --against '.git#branch=origin/main'
 	$(BUF) generate
-	$(BUF) generate $(EXAMPLE_PLUGIN)/proto --template $(EXAMPLE_PLUGIN)/buf.gen.yaml -o $(EXAMPLE_PLUGIN) --clean
+	$(BUF) generate --config '{"version":"v2","modules":[{"path":"proto"},{"path":"$(EXAMPLE_PLUGIN)/proto"}],"deps":["buf.build/bufbuild/protovalidate","buf.build/googleapis/googleapis"]}' --template $(EXAMPLE_PLUGIN)/buf.gen.yaml --clean --path $(EXAMPLE_PLUGIN)/proto/example -o $(EXAMPLE_PLUGIN)
 	$(MAKE) plugin-proto
 	git diff --exit-code
 	$(MAKE) check-untracked-generated

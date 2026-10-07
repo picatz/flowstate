@@ -17,6 +17,7 @@ pkg/flowstate/v1/auth                      NamespaceMap.UnmarshalYAML   FuzzName
 pkg/flowstate/v1/auth                      NamespaceMap.UnmarshalJSON   FuzzNamespaceMap
 pkg/flowstate/v1/auth                      Material.UnmarshalJSON       FuzzNamespaceMap
 pkg/flowstate/v1/auth                      OIDCVerifier.Verify          FuzzVerifyRefusesAMutatedToken
+pkg/flowstate/v1/auth                      MapClaims                    FuzzMapClaims
 pkg/flowstate/v1/plugin/internal/protocol  ParseHandshake               FuzzPluginHandshake
 pkg/flowstate/v1/plugin/internal/protocol  ParseVersions                FuzzPluginHandshake
 pkg/flowstate/v1/plugin/internal/protocol  ReadToken                    FuzzPluginHandshake

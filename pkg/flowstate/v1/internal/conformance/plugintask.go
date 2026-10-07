@@ -92,6 +92,18 @@ func PluginTaskInputsTaskDef() v1.TaskDef {
 				"token_kind":    v1.NewLiteral(valueKindName(inputs["token"])),
 			}
 
+			if credential := inputs["token"].GetCredentialRef(); credential != nil {
+				// Carried, not minted: the fixture stands in for the task that will
+				// one day own the exchange, and what this case pins is that both
+				// drivers hand it the reference unresolved. Nothing here mints, so
+				// there is no length to report and nothing for the containment
+				// check to find.
+				out["token_ref"] = v1.NewLiteral("credential:" + credential.GetTarget())
+				out["token_length"] = v1.NewLiteral(int64(0))
+
+				return &v1.Node_Outputs{NamedValues: out}, nil
+			}
+
 			ref := inputs["token"].GetSecretRef()
 			if ref == nil {
 				// Not an error the case expects: reaching here means the value
@@ -173,6 +185,8 @@ func valueKindName(value *v1.Value) string {
 	switch value.GetKind().(type) {
 	case *v1.Value_SecretRef:
 		return "secret_ref"
+	case *v1.Value_CredentialRef:
+		return "credential_ref"
 	case *v1.Value_Expr:
 		return "expression"
 	case *v1.Value_Literal:
@@ -191,6 +205,14 @@ func valueKindName(value *v1.Value) string {
 // PluginTaskInputStep builds the one-step workflow the cases run, the way a
 // Flowfile compiles a plugin task step.
 func PluginTaskInputStep(workflowName, stepID string) *v1.Workflow {
+	return pluginTaskInputStepWith(workflowName, stepID, &v1.Value{Kind: &v1.Value_SecretRef{SecretRef: &v1.SecretRef{
+		Scheme: PluginTaskInputsScheme, Name: PluginTaskInputsSecretName,
+	}}})
+}
+
+// pluginTaskInputStepWith is [PluginTaskInputStep] with the reference the
+// `token` input holds chosen by the caller.
+func pluginTaskInputStepWith(workflowName, stepID string, token *v1.Value) *v1.Workflow {
 	return &v1.Workflow{
 		Name: workflowName,
 		Steps: []*v1.Node{{
@@ -200,9 +222,7 @@ func PluginTaskInputStep(workflowName, stepID string) *v1.Workflow {
 				Inputs: map[string]*v1.Value{
 					"resolved": v1.NewExpr(`"hello" + " " + "world"`),
 					"deferred": v1.NewExpr("steps.nowhere.value"),
-					"token": {Kind: &v1.Value_SecretRef{SecretRef: &v1.SecretRef{
-						Scheme: PluginTaskInputsScheme, Name: PluginTaskInputsSecretName,
-					}}},
+					"token":    token,
 				},
 			}},
 		}},
@@ -248,6 +268,30 @@ func PluginTaskInputCases() []AuthorityCase {
 				},
 			},
 			ContainmentValue: PluginTaskInputsMaterial,
+		},
+		{
+			// The credential reference travels exactly as the secret one does: both
+			// drivers leave it a reference through input resolution, so the task
+			// receives a name and not a credential (invariant 7). It is the
+			// carrying half of the containment `VarsSecretRefusalCases` holds the
+			// refusing half of, and it is what the host's resolution builds on.
+			Name:     "a plugin task is handed a credential reference unresolved",
+			Workflow: pluginTaskInputStepWith("plugin-task-credential", "call", v1.NewCredentialRef("anthropic")),
+			ExpectedOutputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
+				"call": {NamedValues: map[string]*v1.Value{
+					"resolved_kind": v1.NewLiteral("literal"),
+					"resolved_text": v1.NewLiteral("hello world"),
+					"deferred_kind": v1.NewLiteral("expression"),
+					"token_kind":    v1.NewLiteral("credential_ref"),
+					"token_ref":     v1.NewLiteral("credential:anthropic"),
+					"token_length":  v1.NewLiteral(int64(0)),
+				}},
+			}},
+			Authority: Authority{
+				Identity: auth.WorkloadIdentity{
+					Subject: "svc-reader", Issuer: "https://issuer.example", Namespace: "acme-tenant",
+				},
+			},
 		},
 	}
 }

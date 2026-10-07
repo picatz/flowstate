@@ -35,9 +35,9 @@ func TestParseMatrixRefusesAnchorsAliasesAndMergeKeys(t *testing.T) {
 		doc  string
 	}{
 		{"an alias bomb", bomb},
-		{"an anchor", "identities:\n  - name: a\n    claims: &c {team: dev}\n"},
-		{"an alias", "x: &c {team: dev}\nidentities:\n  - name: a\n    claims: *c\n"},
-		{"a merge key", "base: &b {team: dev}\nidentities:\n  - name: a\n    claims:\n      <<: *b\n"},
+		{"an anchor", "identities:\n  - name: a\n    principal: {claims: &c {team: dev}}\n"},
+		{"an alias", "x: &c {team: dev}\nidentities:\n  - name: a\n    principal: {claims: *c}\n"},
+		{"a merge key", "base: &b {team: dev}\nidentities:\n  - name: a\n    principal:\n      claims:\n        <<: *b\n"},
 	}
 
 	// Serial: the allocation bound reads process-wide counters.
@@ -84,11 +84,11 @@ func TestParseMatrixErrorsQuoteNoSource(t *testing.T) {
 	const secret = "SECRET-claim-value-42"
 
 	docs := map[string]string{
-		"an unknown key beside a claim":  "identities:\n  - name: a\n    expct: admitted\n    claims: {team: " + secret + "}\n",
-		"a type error beside a claim":    "identities:\n  - name: a\n    subject: [" + secret + "]\n    claims: {team: " + secret + "}\n",
-		"a type error in the value":      "identities:\n  - name: a\n    claims: " + secret + "\n",
+		"an unknown key beside a claim":  "identities:\n  - name: a\n    expct: admitted\n    principal: {claims: {team: " + secret + "}}\n",
+		"a type error beside a claim":    "identities:\n  - name: a\n    principal:\n      subject: [" + secret + "]\n      claims: {team: " + secret + "}\n",
+		"a type error in the value":      "identities:\n  - name: a\n    principal: {claims: " + secret + "}\n",
 		"a bad outcome beside an input":  "identities:\n  - name: a\n    inputs: {pin: " + secret + "}\n    expect: " + secret + "\n",
-		"a syntax error beside a secret": "identities:\n  - name: a\n    claims: {team: " + secret + "\n  - : :\n",
+		"a syntax error beside a secret": "identities:\n  - name: a\n    principal: {claims: {team: " + secret + "\n  - : :\n",
 	}
 
 	for name, doc := range docs {

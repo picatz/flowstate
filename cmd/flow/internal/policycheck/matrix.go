@@ -14,8 +14,11 @@ import (
 	"text/tabwriter"
 
 	"github.com/goccy/go-yaml"
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/types/known/structpb"
 
 	"github.com/picatz/flowstate/internal/strictyaml"
+	"github.com/picatz/flowstate/internal/textbound"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowtest"
@@ -78,16 +81,19 @@ const (
 //
 //	identities:
 //	  - name: sre-lead
-//	    subject: sre-lead@example.com
-//	    issuer: https://issuer.example.com
-//	    claims: {team: release-managers}
-//	    starter: {subject: dev@example.com, issuer: https://issuer.example.com}
+//	    principal:
+//	      subject: sre-lead@example.com
+//	      issuer: https://issuer.example.com
+//	      claims: {team: release-managers}
+//	    starter: {principal: {subject: dev@example.com, issuer: https://issuer.example.com}}
 //	    inputs: {expected_approver: sre-lead@example.com}
 //	    expect: admitted
 //
 // The file's shape is [v1.PolicyCheckMatrix]; this is that message read into the
-// types the check works with. The identity fields are those of a test file's
-// `sender:` ([flowtest.ScriptedIdentity]), validated by the same rule. A
+// types the check works with. A row's `principal:` is a [v1.Principal]; the check
+// reads the part of it a test file's `sender:` ([flowtest.ScriptedIdentity])
+// carries, validated by the same rule, and refuses what it cannot (a claim that
+// is not a string, `actions`, `issuer_entry`) rather than ignore it. A
 // misspelled key is a refusal, because a misspelled `expect:` would otherwise
 // assert nothing while reading as if it asserted something.
 type Matrix struct {
@@ -100,8 +106,9 @@ type Row struct {
 	// free of control characters.
 	Name string
 
-	// The identity attempting each act: subject, issuer, namespace and claims.
-	// All absent is an unauthenticated caller.
+	// The identity attempting each act: the row's principal, read as a subject,
+	// issuer, namespace, kind and claims. All absent is an unauthenticated
+	// caller.
 	flowtest.ScriptedIdentity
 
 	// Starter is who started the hypothetical run. Absent leaves the starter
@@ -167,7 +174,7 @@ func ParseMatrix(data []byte) (*Matrix, error) {
 	}
 
 	var doc v1.PolicyCheckMatrix
-	if err := strictyaml.UnmarshalProto(data, &doc); err != nil {
+	if err := readMatrix(data, &doc); err != nil {
 		return nil, fmt.Errorf("the matrix is not a document of `identities:`: %w", decodeError(err))
 	}
 
@@ -179,27 +186,24 @@ func ParseMatrix(data []byte) (*Matrix, error) {
 	seen := make(map[string]struct{}, len(doc.GetIdentities()))
 
 	for i, held := range doc.GetIdentities() {
+		caller, err := scriptedFromPrincipal(fmt.Sprintf("identity %q", held.GetName()), held.GetPrincipal())
+		if err != nil {
+			return nil, err
+		}
+
 		row := Row{
-			Name: held.GetName(),
-			ScriptedIdentity: flowtest.ScriptedIdentity{
-				Subject:   held.GetSubject(),
-				Issuer:    held.GetIssuer(),
-				Namespace: held.GetNamespace(),
-				Kind:      held.GetKind(),
-				Claims:    held.GetClaims(),
-			},
-			Inputs: held.GetInputs().AsMap(),
-			Expect: Expectation{All: Outcome(held.GetExpect())},
+			Name:             held.GetName(),
+			ScriptedIdentity: caller,
+			Inputs:           held.GetInputs().AsMap(),
+			Expect:           Expectation{All: Outcome(held.GetExpect())},
 		}
 
 		if starter := held.GetStarter(); starter != nil {
-			row.Starter = &flowtest.ScriptedIdentity{
-				Subject:   starter.GetSubject(),
-				Issuer:    starter.GetIssuer(),
-				Namespace: starter.GetNamespace(),
-				Kind:      starter.GetKind(),
-				Claims:    starter.GetClaims(),
+			who, err := scriptedFromPrincipal(fmt.Sprintf("identity %q starter", held.GetName()), starter.GetPrincipal())
+			if err != nil {
+				return nil, err
 			}
+			row.Starter = &who
 		}
 
 		if len(held.GetExpectByGate()) > 0 {
@@ -238,6 +242,83 @@ func ParseMatrix(data []byte) (*Matrix, error) {
 	}
 
 	return matrix, nil
+}
+
+// scriptedFromPrincipal reads a row's wire [v1.Principal] as the scripted
+// identity the gates are asked about.
+//
+// A scripted identity is what `flow test` and the command line spell, and a
+// signal predicate's `claims` read strings, so what it cannot carry is refused
+// rather than dropped: a check that ignored a list claim or granted actions would
+// answer for an identity other than the one written. The refusal names the field
+// and never a value.
+func scriptedFromPrincipal(where string, who *v1.Principal) (flowtest.ScriptedIdentity, error) {
+	if who.GetIssuerEntry() != "" {
+		return flowtest.ScriptedIdentity{}, fmt.Errorf("%s: `issuer_entry` names a trust policy entry, which a check has none of", where)
+	}
+
+	if len(who.GetActions()) > 0 {
+		return flowtest.ScriptedIdentity{}, fmt.Errorf("%s: `actions` are not read by the gates a check decides", where)
+	}
+
+	var claims map[string]string
+	for _, name := range slices.Sorted(maps.Keys(who.GetClaims())) {
+		text, ok := who.GetClaims()[name].GetKind().(*structpb.Value_StringValue)
+		if !ok {
+			return flowtest.ScriptedIdentity{}, fmt.Errorf("%s: claim %q is not a string, and a signal predicate reads claims as strings", where, textbound.Truncate(name, 64))
+		}
+		if claims == nil {
+			claims = make(map[string]string, len(who.GetClaims()))
+		}
+		claims[name] = text.StringValue
+	}
+
+	return flowtest.ScriptedIdentity{
+		Subject:   who.GetSubject(),
+		Issuer:    who.GetIssuer(),
+		Namespace: who.GetNamespace(),
+		Kind:      v1.PrincipalKindName(who.GetKind()),
+		Claims:    claims,
+	}, nil
+}
+
+// readMatrix decodes the document into the schema's message, letting a row
+// write `kind: human`, the spelling a trust policy and every other surface use,
+// where the schema's own enum name is PRINCIPAL_KIND_HUMAN. Only the exact
+// lowercase names are rewritten, so the spelling stays as strict as a trust
+// policy's; anything else reaches the schema untouched and is refused there.
+//
+// The document is read once as a generic message, its kinds respelled, and then
+// read into the schema, so both reads keep the strictness of
+// [strictyaml.UnmarshalProto] and protojson.
+func readMatrix(data []byte, into *v1.PolicyCheckMatrix) error {
+	doc := &structpb.Struct{}
+	if err := strictyaml.UnmarshalProto(data, doc); err != nil {
+		return err
+	}
+
+	respell := func(identity *structpb.Value) {
+		who := identity.GetStructValue().GetFields()["principal"].GetStructValue().GetFields()
+		name, ok := who["kind"].GetKind().(*structpb.Value_StringValue)
+		if !ok {
+			return
+		}
+		if kind := v1.PrincipalKindNamed(name.StringValue); kind != v1.PrincipalKind_PRINCIPAL_KIND_UNSPECIFIED {
+			who["kind"] = structpb.NewStringValue(kind.String())
+		}
+	}
+
+	for _, row := range doc.GetFields()["identities"].GetListValue().GetValues() {
+		respell(row)
+		respell(row.GetStructValue().GetFields()["starter"])
+	}
+
+	encoded, err := protojson.Marshal(doc)
+	if err != nil {
+		return err
+	}
+
+	return protojson.Unmarshal(encoded, into)
 }
 
 // unknownField picks the name out of protojson's "unknown field" refusal, the

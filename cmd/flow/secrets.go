@@ -83,7 +83,7 @@ func addSecretFlags(cmd *cobra.Command) {
 		"address of the Vault or OpenBao instance vault: secrets are read from, such as "+
 			"https://vault.example.com:8200 (default $"+secretVaultAddrEnv+")")
 	cmd.Flags().String("secret-vault-token-file", os.Getenv(secretVaultTokenFileEnv),
-		"file holding a static Vault client token, re-read per login (default $"+secretVaultTokenFileEnv+
+		"file holding a Vault client token, re-read when Vault rejects the token in hand (default $"+secretVaultTokenFileEnv+
 			"; falls back to $"+secretVaultTokenEnv+" directly, for a development vault or a test)")
 	cmd.Flags().String("secret-vault-kubernetes-role", os.Getenv(secretVaultK8sRoleEnv),
 		"Vault role to authenticate as via the Kubernetes auth method, using this pod's "+
@@ -314,11 +314,7 @@ func registerVaultProvider(cmd *cobra.Command, registry *secrets.Registry) (bool
 			"configure one Vault authentication method, not both --secret-vault-token-file and " +
 				"--secret-vault-kubernetes-role")
 	case tokenFile != "":
-		token, err := readToken(tokenFile)
-		if err != nil {
-			return false, fmt.Errorf("reading %s: %w", secretVaultTokenFileEnv, err)
-		}
-		opts = append(opts, vault.WithToken(token))
+		opts = append(opts, vault.WithTokenFile(tokenFile))
 	case role != "":
 		opts = append(opts, vault.WithKubernetesAuth(role))
 		if mount, _ := cmd.Flags().GetString("secret-vault-kubernetes-mount"); mount != "" {
@@ -396,6 +392,15 @@ func localWorkloadIdentity(cmd *cobra.Command) (auth.WorkloadIdentity, error) {
 	// supplies can turn it off. See [auth.WorkloadIdentity] and
 	// [auth.WorkloadIdentity.SubjectFor].
 	identity := auth.NewLocalWorkloadIdentity(subject, issuer, namespace, deployment, claims)
+
+	// The kind rides on the identity itself, so the secret and assumption rules,
+	// the plugin caller and the run's own scope all read the one `--as-kind`.
+	kind, err := localKindFlag(cmd, "as-kind")
+	if err != nil {
+		return auth.WorkloadIdentity{}, err
+	}
+	identity.Kind = v1.PrincipalKindName(kind)
+
 	if err := identity.Validate(); err != nil {
 		return auth.WorkloadIdentity{}, fmt.Errorf("local rehearsal identity: %w", err)
 	}
@@ -539,19 +544,7 @@ func withLocalTaskRuntimeUsing(cmd *cobra.Command, ctx context.Context, workflow
 	// [v1.ProtoWorkloadIdentity] to the wire shape [plugin.NewContextWithIdentity]
 	// carries, per the same rule engine/runtime.go's taskActivities.context
 	// follows for the durable driver.
-	kind, err := localKindFlag(cmd, "as-kind")
-	if err != nil {
-		return nil, err
-	}
-
-	// The kind is the one thing [auth.WorkloadIdentity] does not carry (it cannot
-	// name the generated enum), so it is set on each rendering from the same flag.
-	rehearsed := func() *v1.WorkloadIdentity {
-		proto := v1.ProtoWorkloadIdentity(identity)
-		proto.PrincipalKind = kind
-
-		return proto
-	}
+	rehearsed := func() *v1.WorkloadIdentity { return v1.ProtoWorkloadIdentity(identity) }
 
 	ctx = plugin.NewContextWithIdentity(ctx, rehearsed())
 

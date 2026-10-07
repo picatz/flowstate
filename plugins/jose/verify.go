@@ -135,7 +135,8 @@ func classifyVerification(err error) error {
 	return sdk.PermissionDenied("the token was not verified: %v", err)
 }
 
-// boundedClaims renders the verified claim set for a step's outputs.
+// boundedClaims renders the carried claim set (what the matching trust entry
+// carries) for a step's outputs.
 //
 // Sorted, so what reaches durable history does not depend on map iteration.
 //

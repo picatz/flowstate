@@ -1,0 +1,69 @@
+edition: v2026.4
+
+# Proves the routing on an answer, in CI with no plugin process, no model and no
+# network. The stub returns what the plugin's validated output looks like once
+# the engine has it: one entry per question, with calibration as its enum number
+# (2 self-reported, 3 none) and an absent confidence reading 0. The three cases
+# are the three things the gate has to tell apart: a confident urgent answer, an
+# urgent answer the model was unsure of, and an urgent answer that carries no
+# confidence at all, which must not page however it is phrased.
+defaults:
+  inputs:
+    ticket: The checkout page has returned a 500 for every customer since 14:02.
+    model: any-model-identifier
+  stubs:
+    - task: log
+      returns: {}
+
+tests:
+  - name: a confidently urgent ticket pages on-call
+    workflow: ./triage.yaml
+    secrets:
+      env:ANTHROPIC_API_KEY: not-a-real-key
+    stubs:
+      - task: anthropic.decide
+        where: "inputs.model == 'any-model-identifier' && inputs.report_confidence == true"
+        returns:
+          answers:
+            - {name: category, choice: outage, calibration: 2, confidence: 0.92, distribution: {}}
+            - {name: urgent, predicate: true, calibration: 2, confidence: 0.9, distribution: {}}
+    expect:
+      ran: [decide, urgent, category, confident_and_urgent, page]
+      skipped: [review]
+      outputs:
+        paged: true
+        category: outage
+
+  - name: an urgent answer below the threshold goes to a person
+    workflow: ./triage.yaml
+    secrets:
+      env:ANTHROPIC_API_KEY: not-a-real-key
+    stubs:
+      - task: anthropic.decide
+        returns:
+          answers:
+            - {name: category, choice: billing, calibration: 2, confidence: 0.95, distribution: {}}
+            - {name: urgent, predicate: true, calibration: 2, confidence: 0.55, distribution: {}}
+    expect:
+      ran: [decide, urgent, category, confident_and_urgent, review]
+      skipped: [page]
+      outputs:
+        paged: false
+        category: billing
+
+  - name: an urgent answer with no confidence never pages
+    workflow: ./triage.yaml
+    secrets:
+      env:ANTHROPIC_API_KEY: not-a-real-key
+    stubs:
+      - task: anthropic.decide
+        returns:
+          answers:
+            - {name: category, choice: outage, calibration: 3, confidence: 0.0, distribution: {}}
+            - {name: urgent, predicate: true, calibration: 3, confidence: 0.0, distribution: {}}
+    expect:
+      ran: [decide, urgent, category, confident_and_urgent, review]
+      skipped: [page]
+      outputs:
+        paged: false
+        category: outage

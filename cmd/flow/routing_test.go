@@ -37,7 +37,7 @@ func TestIdentityDocumentsAreReachableWithoutCredentials(t *testing.T) {
 
 	// A verifier that refuses everything, so an authenticated route answering at
 	// all would mean the middleware was not applied.
-	handler := serverHandler(discardLogger(), refusingVerifier{}, nil, broker, "", http.HandlerFunc(
+	handler := serverHandler(discardLogger(), refusingVerifier{}, nil, broker.Issuer(), "", http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte(`{"api":"reached"}`))
@@ -268,7 +268,7 @@ func TestTheServerTakesTheIdentityFlags(t *testing.T) {
 	require.NotNil(t, server, "there is no server command")
 
 	for _, name := range []string{
-		"identity-claim", "deployment-name", "auth-policy", "identity-key",
+		"deployment-name", "auth-policy", "identity-key",
 		"rpc-resource", "allow-issuer-wide-audiences",
 
 		// The receiver's own surface, and the secret flags it cannot resolve a
@@ -397,7 +397,7 @@ func TestProtectedResourceRouteMountedOnlyWhenConfigured(t *testing.T) {
 	t.Parallel()
 
 	policy := &auth.Policy{Issuers: []auth.TrustedIssuer{
-		{Name: "as", Issuer: "https://trusted.example.com", Audiences: []string{"https://flowstate.example.com/mcp"}},
+		{Actions: []string{}, Name: "as", Issuer: "https://trusted.example.com", Audiences: []string{"https://flowstate.example.com/mcp"}},
 	}}
 
 	pr, err := resolveProtectedResource(protectedResourceFlags{
@@ -455,7 +455,7 @@ func TestProtectedResourceChallengeMatchesServedDocument(t *testing.T) {
 	t.Parallel()
 
 	policy := &auth.Policy{Issuers: []auth.TrustedIssuer{
-		{Name: "as", Issuer: "https://trusted.example.com", Audiences: []string{"https://flowstate.example.com/mcp"}},
+		{Actions: []string{}, Name: "as", Issuer: "https://trusted.example.com", Audiences: []string{"https://flowstate.example.com/mcp"}},
 	}}
 
 	pr, err := resolveProtectedResource(protectedResourceFlags{
@@ -501,7 +501,7 @@ func TestProtectedResourceChallengeUnaffectedByForgedHost(t *testing.T) {
 	t.Parallel()
 
 	policy := &auth.Policy{Issuers: []auth.TrustedIssuer{
-		{Name: "as", Issuer: "https://trusted.example.com", Audiences: []string{"https://flowstate.example.com/mcp"}},
+		{Actions: []string{}, Name: "as", Issuer: "https://trusted.example.com", Audiences: []string{"https://flowstate.example.com/mcp"}},
 	}}
 
 	pr, err := resolveProtectedResource(protectedResourceFlags{
@@ -538,7 +538,7 @@ func TestResolveProtectedResourceRefusesUntrustedAuthorizationServer(t *testing.
 	t.Parallel()
 
 	policy := &auth.Policy{Issuers: []auth.TrustedIssuer{
-		{Name: "as", Issuer: "https://trusted.example.com", Audiences: []string{"https://flowstate.example.com/mcp"}},
+		{Actions: []string{}, Name: "as", Issuer: "https://trusted.example.com", Audiences: []string{"https://flowstate.example.com/mcp"}},
 	}}
 
 	_, err := resolveProtectedResource(protectedResourceFlags{
@@ -596,7 +596,7 @@ func TestCheckProtectedResourceRouteCollisionRefusesJWKSPathCollision(t *testing
 	require.NoError(t, err)
 
 	policy := &auth.Policy{Issuers: []auth.TrustedIssuer{
-		{Name: "as", Issuer: "https://trusted.example.com", Audiences: []string{"https://flowstate.example.com/mcp"}},
+		{Actions: []string{}, Name: "as", Issuer: "https://trusted.example.com", Audiences: []string{"https://flowstate.example.com/mcp"}},
 	}}
 	pr, err := resolveProtectedResource(protectedResourceFlags{
 		resource:             "https://flowstate.example.com/mcp",
@@ -605,14 +605,14 @@ func TestCheckProtectedResourceRouteCollisionRefusesJWKSPathCollision(t *testing
 	require.NoError(t, err)
 	require.Equal(t, collidingPath, pr.Path(), "test setup: the two paths must actually collide")
 
-	err = checkProtectedResourceRouteCollision(pr, broker)
+	err = checkProtectedResourceRouteCollision(pr, broker.Issuer())
 	require.Error(t, err)
 	require.ErrorContains(t, err, collidingPath)
 
 	// And the positive control: what this check exists to prevent actually
 	// panics serverHandler if the check is skipped.
 	require.Panics(t, func() {
-		serverHandler(discardLogger(), refusingVerifier{}, nil, broker, "",
+		serverHandler(discardLogger(), refusingVerifier{}, nil, broker.Issuer(), "",
 			http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}), nil, pr)
 	}, "a colliding route should panic serverHandler's mux.Handle, which is exactly what the check must catch first")
 }
@@ -627,7 +627,7 @@ func TestCheckProtectedResourceRouteCollisionAllowsTheOrdinaryCase(t *testing.T)
 	broker := testBroker(t)
 
 	policy := &auth.Policy{Issuers: []auth.TrustedIssuer{
-		{Name: "as", Issuer: "https://trusted.example.com", Audiences: []string{"https://flowstate.example.com/mcp"}},
+		{Actions: []string{}, Name: "as", Issuer: "https://trusted.example.com", Audiences: []string{"https://flowstate.example.com/mcp"}},
 	}}
 	pr, err := resolveProtectedResource(protectedResourceFlags{
 		resource:             "https://flowstate.example.com/mcp",
@@ -635,9 +635,9 @@ func TestCheckProtectedResourceRouteCollisionAllowsTheOrdinaryCase(t *testing.T)
 	}, policy)
 	require.NoError(t, err)
 
-	require.NoError(t, checkProtectedResourceRouteCollision(pr, broker))
+	require.NoError(t, checkProtectedResourceRouteCollision(pr, broker.Issuer()))
 	require.NoError(t, checkProtectedResourceRouteCollision(pr, nil))
-	require.NoError(t, checkProtectedResourceRouteCollision(nil, broker))
+	require.NoError(t, checkProtectedResourceRouteCollision(nil, broker.Issuer()))
 }
 
 // staticProvider resolves any reference to a fixed value, standing in for
@@ -781,8 +781,8 @@ func TestGatesUISignInFlagsAreValidatedAtStart(t *testing.T) {
 	}
 
 	trust := &auth.Policy{Issuers: []auth.TrustedIssuer{
-		{Name: "mesh", Kind: auth.IssuerKindMTLS, Issuer: "https://issuer.example.com"},
-		{Issuer: "https://issuer.example.com", Audiences: []string{"https://api.example.com"}},
+		{Actions: []string{}, Name: "mesh", Kind: auth.IssuerKindMTLS, Issuer: "https://issuer.example.com"},
+		{Actions: []string{}, Issuer: "https://issuer.example.com", Audiences: []string{"https://api.example.com"}},
 	}}
 
 	opts, err := gatesUIOptions(set(t, signIn...), trust, "https://api.example.com", discardLogger())
@@ -793,9 +793,9 @@ func TestGatesUISignInFlagsAreValidatedAtStart(t *testing.T) {
 	// refuse it refuses the server at start.
 	for name, policy := range map[string]*auth.Policy{
 		"no trust policy":    nil,
-		"another issuer":     {Issuers: []auth.TrustedIssuer{{Issuer: "https://other.example.com", Audiences: []string{"https://api.example.com"}}}},
-		"another audience":   {Issuers: []auth.TrustedIssuer{{Issuer: "https://issuer.example.com", Audiences: []string{"https://elsewhere.example.com"}}}},
-		"only an mTLS entry": {Issuers: []auth.TrustedIssuer{{Name: "mesh", Kind: auth.IssuerKindMTLS, Issuer: "https://issuer.example.com"}}},
+		"another issuer":     {Issuers: []auth.TrustedIssuer{{Actions: []string{}, Issuer: "https://other.example.com", Audiences: []string{"https://api.example.com"}}}},
+		"another audience":   {Issuers: []auth.TrustedIssuer{{Actions: []string{}, Issuer: "https://issuer.example.com", Audiences: []string{"https://elsewhere.example.com"}}}},
+		"only an mTLS entry": {Issuers: []auth.TrustedIssuer{{Actions: []string{}, Name: "mesh", Kind: auth.IssuerKindMTLS, Issuer: "https://issuer.example.com"}}},
 	} {
 		_, err := gatesUIOptions(set(t, signIn...), policy, "https://api.example.com", discardLogger())
 		require.ErrorContains(t, err, "trust policy", name)

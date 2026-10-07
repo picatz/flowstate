@@ -169,8 +169,8 @@ func init() {
 			Leading: " Releasing the plaintext of a Temporal namespace's stored payloads through\n" +
 				" the codec server (`flow codec serve`), which Temporal's Web UI and CLI\n" +
 				" call to display history. No RPC either. It reveals everything the\n" +
-				" namespace's runs wrote, so it is never implied: a principal whose policy\n" +
-				" entry lists no actions is not granted it, unlike the RPC actions above.\n",
+				" namespace's runs wrote, so it is never implied: a principal holds it only when its policy\n" +
+				" entry lists it.\n",
 		},
 		{
 			Name: "flowstate.v1.AUTHORIZATION_ACTION_PAYLOAD_ENCODE",
@@ -185,8 +185,17 @@ func init() {
 			Leading: " Reading the values a run's workflow declared `sensitive: true` in the\n" +
 				" clear, through GetRequest.reveal_sensitive or\n" +
 				" GetTimelineRequest.reveal_sensitive. Without it those RPCs withhold the\n" +
-				" values. It is never implied: a policy entry that lists no actions is not\n" +
-				" granted it, unlike the RPC actions above.\n",
+				" values. It is never implied: a caller holds it only when its policy entry lists it.\n",
+		},
+		{
+			Name: "flowstate.v1.AUTHORIZATION_ACTION_IDENTITY_READ",
+			Leading: " Asking who the server believes the caller is: Whoami. It reveals nothing\n" +
+				" but the caller's own principal, so every caller holds it without a policy\n" +
+				" entry listing it: authz.DecidePrincipal grants it to a verified caller\n" +
+				" whose entry names no actions, to the anonymous caller, and to a deployment\n" +
+				" with no authentication. It exists in the vocabulary so the RPC still has\n" +
+				" exactly one action to be audited under, and a policy entry that lists it\n" +
+				" is redundant, not wrong. An embedder's Decider can still refuse it.\n",
 		},
 		{
 			Name: "flowstate.v1.authorization_action",

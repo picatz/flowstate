@@ -20,7 +20,7 @@ func TestSignalPolicyPredicateDeniesWhenItsOwnDeadlineExpires(t *testing.T) {
 	}
 	inputs := map[string]*Value{"items": NewLiteralList(values...)}
 	src := `inputs.items.all(a, inputs.items.all(b, a >= 0)) && sender.identity.claims["team"] == "release"`
-	approver := &WorkloadIdentity{Claims: map[string]string{"team": "release"}}
+	approver := &WorkloadIdentity{Principal: &Principal{Claims: StringClaimValues(map[string]string{"team": "release"})}}
 
 	require.NoError(t, signalPolicyExprAllows(context.Background(), "signal", src, approver, nil, false, inputs),
 		"the control: the same predicate admits under the normal timeout")
@@ -41,7 +41,7 @@ func TestDebugAndManualPredicatesDenyWhenTheirOwnDeadlineExpires(t *testing.T) {
 	}
 	inputs := map[string]*Value{"items": NewLiteralList(values...)}
 	src := `inputs.items.all(a, inputs.items.all(b, a >= 0)) && sender.identity.claims["team"] == "release"`
-	caller := &WorkloadIdentity{Claims: map[string]string{"team": "release"}}
+	caller := &WorkloadIdentity{Principal: &Principal{Claims: StringClaimValues(map[string]string{"team": "release"})}}
 
 	for name, manual := range map[string]bool{"debug policy": false, "manual start": true} {
 		require.NoError(t, allowPredicateAllowsWithin(context.Background(), SignalPolicyExprTimeout, name, manual, src,

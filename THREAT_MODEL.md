@@ -150,7 +150,8 @@ policy of the #187 shape, which can require that a workflow of a given shape car
 the gate. Egress, secret access, and task shape are configured on the worker, never
 in the file; the server resolves secrets only for webhook `verify:` keys. `flow validate` reports properties of the file and stays silent
 about deployment decisions, deliberately, so a diagnostic never asserts a rule the
-author's machine may not share ([docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#tier-1b--shared-worker-per-tenant-policy-rules),
+author's machine may not share (the one exception is opt-in: `--auth-policy`
+names the policy to check identity claim reads against) ([docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#tier-1b--shared-worker-per-tenant-policy-rules),
 `pkg/flowstate/v1/eval_task_http_check.go:17-25`).
 
 **Limits.** Task-shape policy is opt-in: a nil policy permits every task
@@ -173,7 +174,7 @@ whose namespace claim is missing or fails the namespace grammar is rejected, nev
 admitted to a default tenant (`:119-142`, `:345`). Unauthenticated error text never
 describes the trust policy (`pkg/flowstate/v1/auth/connect.go:113-120`). An issuer
 entry may grant an exact allowlist from the schema-owned control-plane action
-vocabulary. An omitted allowlist preserves unrestricted legacy behavior; an empty
+vocabulary. An omitted allowlist is refused at load; an empty
 one grants nothing, role names grant nothing, and token `scope`/`scp` claims are not
 authority. Enforcement is shared by every WorkflowService RPC at the audit seam and
 records a policy denial before returning `PermissionDenied`
@@ -182,12 +183,32 @@ specifications are size-bounded at submit (`pkg/flowstate/v1/size.go:39`, `:103`
 and `List` is bounded by executions read and by requests made
 (`pkg/flowstate/v1/server/list.go:56`, `:68`).
 
+**Claims and groups reach policy only as the entry carries them.** A verified
+token holds whatever its issuer put in it, and a policy rule reads
+`identity.claims` on every surface, so the claims a rule can read are an
+authorization input the token's issuer controls. The admitting entry's
+`carry_claims` and `groups_claim` (`pkg/flowstate/v1/auth/claimmap.go`) are the
+only path from a token's claims to a principal's: nothing else is carried, a
+claim of another type than declared is left out and not coerced, and an
+absent claim makes a rule that reads it error, which every surface denies.
+Carried claims and groups are bounded where they are spent (32 claims; a list or
+object at most 4 KiB, 4 levels and 512 values; 64 groups of 256 bytes; a path of
+at most four segments), and a group list is refused whole, never trimmed, when
+the IdP signals an overage (`_claim_names`, `hasgroups`) or it is over a bound: a
+rule over membership would otherwise decide on a membership the caller does not
+have, in the direction that grants or in the one that fails to deny. The public
+reason names neither the entry nor the claim; the server's error does. Limits:
+`group_map` is an allowlist, so a deny rule on a group the map does not list
+never matches, and an IdP that sends no overage marker for a list it cut gives
+Flowstate nothing to refuse on. `flow validate --auth-policy` is advisory and
+runs on the author's machine against a policy file the deployment may not share.
+
 **Declared-sensitive values.** `Get` and `GetTimeline` withhold values a run's
 workflow declared `sensitive: true` before the response leaves `flow server`,
 decided against the specification the run executed (read from its start input), and
 say so in `sensitive_disclosure` (`pkg/flowstate/v1/server/sensitive.go`). A caller
 receives them only by asking (`reveal_sensitive`) while holding
-`workload.reveal_sensitive`, which an entry with no action list is not granted; every
+`workload.reveal_sensitive`, which no caller is implied; every
 such request is audited under that action. Before this, the RPCs returned the values
 raw to any `workload.read` caller and only the CLI's renderer hid them, which is still
 what a client does against such a server: it withholds declared outputs, transcript and
@@ -215,8 +236,8 @@ the flag's help text is the whole of the control. The CLI
 refuses to send a token over plaintext to anything but this machine
 (`cmd/flow/credentials.go:63`), which protects the client, not the server's own
 posture. `--insecure-no-auth` admits everyone as anonymous and is a
-development posture (read in `authFlagsOf` at `cmd/flow/main.go:224-226`, resolved to
-`auth.InsecureAnonymousVerifier` at `cmd/flow/main.go:1777`;
+development posture (read in `authFlagsOf` at `cmd/flow/main.go:227-231`, resolved to
+`auth.InsecureAnonymousVerifier` at `cmd/flow/main.go:1776`;
 `pkg/flowstate/v1/auth/connect.go:142-160`, [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#the-four-tier-isolation-model)).
 
 **Planned.** OAuth 2.1 alignment for the remote MCP surface and webhook ingress as
@@ -636,8 +657,8 @@ Durable history holds the debug protocol, not the run's secrets: the asks (sessi
 ids, request ids, breakpoint targets with their conditions, log messages and hit
 counts, and `until` targets, as the caller wrote them), the receipts, and the attested holder's identity. Inspection
 is a query and writes nothing to history. A condition is the caller's own
-expression; `secret(...)` is compiled to a reference and is never a function a
-debugger can call, so no resolved secret reaches a condition, an answer, or
+expression; `secret(...)` and `credential(...)` are compiled to references and are never
+functions a debugger can call, so no resolved secret reaches a condition, an answer, or
 history (invariant 7).
 
 **Limits.** Redaction in a debugger is a transcript control, not a
@@ -650,10 +671,10 @@ declares a sensitive value, or whose declarations cannot be read, unless
 disclosure is authorized: `--reveal-sensitive`, `"revealSensitive": true`, or
 `DebugOptions.RevealSensitive`. Either way a predicate over a withheld value answers
 truthfully: `inputs.token == "guess"` is a yes or no about the real value. That
-is what `workload.debug_inspect` gates. A caller whose token carries no action
-list keeps the legacy posture and holds every action, this one included, so a
-deployment that must not disclose a run's values to an operator gives that
-operator's issuer an `actions:` list that omits it. A condition's or log message's
+is what `workload.debug_inspect` gates. A caller holds only the actions its
+issuer entry lists, this one included, so a deployment that must not disclose a
+run's values to an operator gives that operator's issuer an `actions:` list that
+omits it. A condition's or log message's
 text is written to history in the ask that carries it, readable by whoever can
 read history. A
 hold stops workflow code only: activities, timers and called work already
@@ -752,7 +773,23 @@ change is unaudited by Flowstate.
 Flowstate presents outbound. Anyone holding it can mint an assertion for any
 subject, namespace, workflow, run and step this deployment could, and present it to
 every relying party that trusts the published key set. That is the outbound half of
-the entire federation story in one file.
+the entire federation story in one file. The server that publishes the key set does
+not hold it: `flow server --identity-key` accepts only the PKIX public key and
+refuses a private one at start-up, so the process facing callers never reads
+signing material (`auth.NewIssuer` in publish-only mode; `cmd/flow` `identityPublisher`).
+Workers sign, so with a key file the key is on every worker that federates. With
+`--identity-signer vault-transit://…` it is not: the key lives in a Vault or OpenBao
+Transit engine, non-exportable, and a worker holds only a token that may ask Transit
+to sign (`update` on `transit/sign/KEY`) and read the key's public versions; the
+server needs only the read (`pkg/flowstate/v1/auth/signers/vaulttransit`). A worker
+compromise then yields the ability to have assertions signed while the token is
+valid, which Vault's audit log records and revoking the token ends, rather than a
+key that signs anywhere forever; it does not narrow what those assertions may claim.
+The deployment guide recommends this shape past a single VM
+([signing keys in Vault Transit](docs/DEPLOYMENT.md#signing-keys-in-vault-transit)).
+One shared signer across tenant workers remains a documented limit, and federation is a deployment-wide trust
+domain until per-tenant issuers land, so one tenant's worker compromise reaches every
+tenant's federated credentials.
 
 **What bounds it today.** Assertions are short-lived by default and cannot be
 configured long: `DefaultAssertionLifetime` is five minutes and
@@ -790,26 +827,31 @@ from the file name or its modification time.
 Workers sign assertions and the server publishes the key set, so every step below
 restarts the server *and every worker* with the same ordered list. A process left
 on the old list either signs with a key the others have stopped publishing or
-publishes a set missing the key in use. The commands show the server; a worker
-takes the same `--identity-key` flags.
+publishes a set missing the key in use. The commands show the server, whose
+`--identity-key` takes the PKIX public key PEM that `flow keys public --in KEY.pem
+--pem` prints (the file's base name is the key id, so name it like the worker's
+file); a worker takes the same flags naming the PKCS#8 private keys.
 
 ```sh
 # 1. Generate the new key. Naming the file names the published key id.
 flow keys generate --out /etc/flowstate/keys/2026-09.pem
+flow keys public --in /etc/flowstate/keys/2026-09.pem --pem > /etc/flowstate/public-keys/2026-09.pem
 
 # 2. Restart with both, newest first. Processes sign with 2026-09 and keep
 #    publishing 2026-08, so assertions signed before the restart keep verifying.
 flow server --auth-policy /etc/flowstate/auth.yaml \
   --rpc-resource https://flowstate.example.com/rpc \
-  --identity-key /etc/flowstate/keys/2026-09.pem \
-  --identity-key /etc/flowstate/keys/2026-08.pem
+  --identity-key /etc/flowstate/public-keys/2026-09.pem \
+  --identity-key /etc/flowstate/public-keys/2026-08.pem
 
 # 3. After the retention window (federation.key_retention, default 24h, which has
 #    to outlast both the old assertions and every relying party's cached key set),
-#    restart everything with the new key alone and delete the old one.
+#    restart everything with the new key alone and delete the old one. The server
+#    publishes every key it is given until it restarts: it holds no signing key,
+#    so retention never expires them, and dropping the old one is the operator's act.
 flow server --auth-policy /etc/flowstate/auth.yaml \
   --rpc-resource https://flowstate.example.com/rpc \
-  --identity-key /etc/flowstate/keys/2026-09.pem
+  --identity-key /etc/flowstate/public-keys/2026-09.pem
 ```
 
 `--rpc-resource` appears in both restarts because the `auth.yaml` this procedure
@@ -826,17 +868,17 @@ minus the audience:
 # certificate-only deployment: every issuers[] entry is kind: mtls, so there is
 # no audience to bind and flow server refuses --rpc-resource here.
 flow server --auth-policy /etc/flowstate/auth.yaml \
-  --identity-key /etc/flowstate/keys/2026-09.pem \
-  --identity-key /etc/flowstate/keys/2026-08.pem
+  --identity-key /etc/flowstate/public-keys/2026-09.pem \
+  --identity-key /etc/flowstate/public-keys/2026-08.pem
 ```
 
-The start-up line names what was actually published (`signing_key` and
-`verify_only_keys`), so step 2 is verifiable rather than assumed. A key that cannot
+The start-up line names what was actually published (`published_keys`), so step 2 is verifiable rather than assumed. A key that cannot
 be read or parsed, and two keys publishing one key id, refuse start-up rather than
 being skipped: a key silently left out is a rotation the operator believes is
-covered and is not. A verify-only entry may be the old private key file already
+covered and is not. On a worker a verify-only entry may be the old private key file already
 mounted, or just its public half as a PKIX PEM (`openssl pkey -in 2026-08.pem
--pubout`), which is the narrower custody choice.
+-pubout`), which is the narrower custody choice; the server accepts only the
+public half.
 
 Rotating is not revoking. Publishing the outgoing key for its retention is
 precisely what keeps rotation from rejecting valid assertions, so it does nothing

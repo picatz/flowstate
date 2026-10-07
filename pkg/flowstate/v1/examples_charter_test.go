@@ -267,6 +267,8 @@ var messagesOutsideTheCharter = map[protoreflect.FullName]string{
 	// example demonstrates is the call, not this message's fields.
 	"flowstate.v1.SecretRef": "the author-facing spelling is the secret() call inside an expression, not this message",
 
+	"flowstate.v1.CredentialRef": "the author-facing spelling is the credential() call inside an expression, not this message",
+
 	// A parallel branch holds only a body, and the block itself is already
 	// required through the kind oneof.
 	"flowstate.v1.Parallel.Branch": "a branch is its body; node.parallel is the construct",

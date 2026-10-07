@@ -15,10 +15,16 @@ issuers:
   # require with the task's `trust:` input, and what a run's history records as
   # the rule that admitted a token.
   - name: github-actions
+    actions: [workload.run, workload.read]
     issuer: https://token.actions.githubusercontent.com
     # The audience this deployment mints tokens for. A token for somebody else's
     # audience is somebody else's token.
     audiences: [flowstate]
+    # Only the claims an entry carries reach a workflow's `steps.<id>.claims`:
+    # the operator, not the token, decides what a policy decision may read.
+    carry_claims:
+      - {claim: repository, type: string}
+      - {claim: ref, type: string}
     # Claim requirements are the policy's, not the workflow's: a workflow that
     # could choose them would be choosing what counts as valid.
     require:

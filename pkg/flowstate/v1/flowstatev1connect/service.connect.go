@@ -104,6 +104,8 @@ const (
 	// WorkflowServiceTriggerScheduleProcedure is the fully-qualified name of the WorkflowService's
 	// TriggerSchedule RPC.
 	WorkflowServiceTriggerScheduleProcedure = "/flowstate.v1.WorkflowService/TriggerSchedule"
+	// WorkflowServiceWhoamiProcedure is the fully-qualified name of the WorkflowService's Whoami RPC.
+	WorkflowServiceWhoamiProcedure = "/flowstate.v1.WorkflowService/Whoami"
 )
 
 // WorkflowServiceClient is a client for the flowstate.v1.WorkflowService service.
@@ -370,6 +372,17 @@ type WorkflowServiceClient interface {
 	// It answers with no run id. The cluster takes the action after answering, so
 	// what the firing started is read back with [DescribeSchedule].
 	TriggerSchedule(context.Context, *connect.Request[v1.TriggerScheduleRequest]) (*connect.Response[v1.TriggerScheduleResponse], error)
+	// Whoami answers with the caller's own [Principal]: the issuer, subject,
+	// namespace, kind, admitting policy entry, carried claims and actions the
+	// server established from the credential on this request. It is what
+	// `flow auth whoami` prints.
+	//
+	// Any caller may ask, whatever its policy entry's `actions:` list holds,
+	// because the answer is only what the caller already is. A caller that was
+	// not authenticated, which only an explicitly insecure development server
+	// admits, is answered with `authenticated` false and an anonymous
+	// principal, not with an error. The answer never contains the credential.
+	Whoami(context.Context, *connect.Request[v1.WhoamiRequest]) (*connect.Response[v1.WhoamiResponse], error)
 }
 
 // NewWorkflowServiceClient constructs a client for the flowstate.v1.WorkflowService service. By
@@ -539,6 +552,12 @@ func NewWorkflowServiceClient(httpClient connect.HTTPClient, baseURL string, opt
 			connect.WithSchema(workflowServiceMethods.ByName("TriggerSchedule")),
 			connect.WithClientOptions(opts...),
 		),
+		whoami: connect.NewClient[v1.WhoamiRequest, v1.WhoamiResponse](
+			httpClient,
+			baseURL+WorkflowServiceWhoamiProcedure,
+			connect.WithSchema(workflowServiceMethods.ByName("Whoami")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -570,6 +589,7 @@ type workflowServiceClient struct {
 	pauseSchedule       *connect.Client[v1.PauseScheduleRequest, v1.PauseScheduleResponse]
 	resumeSchedule      *connect.Client[v1.ResumeScheduleRequest, v1.ResumeScheduleResponse]
 	triggerSchedule     *connect.Client[v1.TriggerScheduleRequest, v1.TriggerScheduleResponse]
+	whoami              *connect.Client[v1.WhoamiRequest, v1.WhoamiResponse]
 }
 
 // Run calls flowstate.v1.WorkflowService.Run.
@@ -700,6 +720,11 @@ func (c *workflowServiceClient) ResumeSchedule(ctx context.Context, req *connect
 // TriggerSchedule calls flowstate.v1.WorkflowService.TriggerSchedule.
 func (c *workflowServiceClient) TriggerSchedule(ctx context.Context, req *connect.Request[v1.TriggerScheduleRequest]) (*connect.Response[v1.TriggerScheduleResponse], error) {
 	return c.triggerSchedule.CallUnary(ctx, req)
+}
+
+// Whoami calls flowstate.v1.WorkflowService.Whoami.
+func (c *workflowServiceClient) Whoami(ctx context.Context, req *connect.Request[v1.WhoamiRequest]) (*connect.Response[v1.WhoamiResponse], error) {
+	return c.whoami.CallUnary(ctx, req)
 }
 
 // WorkflowServiceHandler is an implementation of the flowstate.v1.WorkflowService service.
@@ -966,6 +991,17 @@ type WorkflowServiceHandler interface {
 	// It answers with no run id. The cluster takes the action after answering, so
 	// what the firing started is read back with [DescribeSchedule].
 	TriggerSchedule(context.Context, *connect.Request[v1.TriggerScheduleRequest]) (*connect.Response[v1.TriggerScheduleResponse], error)
+	// Whoami answers with the caller's own [Principal]: the issuer, subject,
+	// namespace, kind, admitting policy entry, carried claims and actions the
+	// server established from the credential on this request. It is what
+	// `flow auth whoami` prints.
+	//
+	// Any caller may ask, whatever its policy entry's `actions:` list holds,
+	// because the answer is only what the caller already is. A caller that was
+	// not authenticated, which only an explicitly insecure development server
+	// admits, is answered with `authenticated` false and an anonymous
+	// principal, not with an error. The answer never contains the credential.
+	Whoami(context.Context, *connect.Request[v1.WhoamiRequest]) (*connect.Response[v1.WhoamiResponse], error)
 }
 
 // NewWorkflowServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -1131,6 +1167,12 @@ func NewWorkflowServiceHandler(svc WorkflowServiceHandler, opts ...connect.Handl
 		connect.WithSchema(workflowServiceMethods.ByName("TriggerSchedule")),
 		connect.WithHandlerOptions(opts...),
 	)
+	workflowServiceWhoamiHandler := connect.NewUnaryHandler(
+		WorkflowServiceWhoamiProcedure,
+		svc.Whoami,
+		connect.WithSchema(workflowServiceMethods.ByName("Whoami")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/flowstate.v1.WorkflowService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case WorkflowServiceRunProcedure:
@@ -1185,6 +1227,8 @@ func NewWorkflowServiceHandler(svc WorkflowServiceHandler, opts ...connect.Handl
 			workflowServiceResumeScheduleHandler.ServeHTTP(w, r)
 		case WorkflowServiceTriggerScheduleProcedure:
 			workflowServiceTriggerScheduleHandler.ServeHTTP(w, r)
+		case WorkflowServiceWhoamiProcedure:
+			workflowServiceWhoamiHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -1296,4 +1340,8 @@ func (UnimplementedWorkflowServiceHandler) ResumeSchedule(context.Context, *conn
 
 func (UnimplementedWorkflowServiceHandler) TriggerSchedule(context.Context, *connect.Request[v1.TriggerScheduleRequest]) (*connect.Response[v1.TriggerScheduleResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("flowstate.v1.WorkflowService.TriggerSchedule is not implemented"))
+}
+
+func (UnimplementedWorkflowServiceHandler) Whoami(context.Context, *connect.Request[v1.WhoamiRequest]) (*connect.Response[v1.WhoamiResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("flowstate.v1.WorkflowService.Whoami is not implemented"))
 }

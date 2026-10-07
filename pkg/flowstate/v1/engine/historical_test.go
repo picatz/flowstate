@@ -98,7 +98,7 @@ func TestEveryRecordedRunReconstructsAtEveryBoundary(t *testing.T) {
 func TestAReconstructedWaitCarriesItsRecordedDeadline(t *testing.T) {
 	t.Parallel()
 
-	history := recordedHistories(t)["2026-08-21/wait-for-signal"]
+	history := recordedHistories(t)["2026-10-07/wait-for-signal"]
 	require.NotNil(t, history)
 
 	var waiting *engine.Reconstruction

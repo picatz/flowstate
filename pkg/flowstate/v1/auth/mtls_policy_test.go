@@ -19,7 +19,7 @@ import (
 func TestPolicyValidateMTLS(t *testing.T) {
 	caFile := newTestCA(t, "test-ca").clientCAFile(t)
 
-	valid := auth.TrustedIssuer{
+	valid := auth.TrustedIssuer{Actions: []string{},
 		Name:         "mesh",
 		Kind:         auth.IssuerKindMTLS,
 		Issuer:       "flowstate:mtls/mesh",
@@ -148,13 +148,13 @@ func TestPolicyValidateKeySourceAgreementAppliesOnlyToOIDCEntries(t *testing.T) 
 	const issuerLabel = "https://shared.example.com"
 
 	policy := auth.Policy{Issuers: []auth.TrustedIssuer{
-		{
+		{Actions: []string{},
 			Name:      "tokens",
 			Issuer:    issuerLabel,
 			Audiences: []string{"flowstate"},
 			JWKSFile:  "/etc/flowstate/issuer.jwks",
 		},
-		{
+		{Actions: []string{},
 			Name:         "mesh",
 			Kind:         auth.IssuerKindMTLS,
 			Issuer:       issuerLabel,
@@ -174,7 +174,7 @@ func TestPolicyValidateKeySourceAgreementAppliesOnlyToOIDCEntries(t *testing.T) 
 func TestPolicyValidateOIDCRefusesMTLSFields(t *testing.T) {
 	caFile := newTestCA(t, "test-ca").clientCAFile(t)
 
-	base := auth.TrustedIssuer{
+	base := auth.TrustedIssuer{Actions: []string{},
 		Name:      "idp",
 		Issuer:    "https://issuer.example.com",
 		Audiences: []string{"flowstate"},
@@ -204,7 +204,7 @@ func TestPolicyValidateOIDCRefusesMTLSFields(t *testing.T) {
 // keeps every deployment that never configures mTLS unaffected by this
 // package's existence.
 func TestNewMTLSVerifierNilWhenNoMTLSEntries(t *testing.T) {
-	policy := auth.Policy{Issuers: []auth.TrustedIssuer{{
+	policy := auth.Policy{Issuers: []auth.TrustedIssuer{{Actions: []string{},
 		Name: "idp", Issuer: "https://issuer.example.com", Audiences: []string{"flowstate"},
 	}}}
 
@@ -225,7 +225,7 @@ func TestNewMTLSVerifierBoundsClientCAFile(t *testing.T) {
 	}
 	require.NoError(t, os.WriteFile(path, huge, 0o600))
 
-	policy := auth.Policy{Issuers: []auth.TrustedIssuer{{
+	policy := auth.Policy{Issuers: []auth.TrustedIssuer{{Actions: []string{},
 		Name: "mesh", Kind: auth.IssuerKindMTLS, Issuer: "flowstate:mtls/mesh",
 		ClientCAFile: path, SubjectFrom: auth.SubjectFromURISAN,
 	}}}

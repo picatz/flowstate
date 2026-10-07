@@ -31,13 +31,15 @@ func runPanicPlugin() int {
 		Version:     "0.0.1",
 		Description: "a fixture plugin that panics once inside a task",
 		Tasks: []sdk.Task{{
-			Name:         panicFixtureTask,
-			Input:        &flowstatev1.Task_Log_Inputs{},
+			Name: panicFixtureTask,
+			// A schema of its own, because the host reads the secret claim off
+			// the input message and refuses a manifest that says otherwise.
+			Input:        claimedInputsMessage(map[string]flowstatev1.Secret{"token": flowstatev1.Secret_SECRET_WHOLE_VALUE}),
 			Output:       &flowstatev1.Task_Log_Outputs{},
-			SecretInputs: []string{"message"},
+			SecretInputs: []string{"token"},
 			Fn: func(_ context.Context, inputs map[string]*flowstatev1.Value, _ *flowstatev1.Scope) (*flowstatev1.Node_Outputs, error) {
 				if calls.Add(1) == 1 {
-					panic("task side effect may have happened for " + inputs["message"].GetLiteral().GetStringValue())
+					panic("task side effect may have happened for " + inputs["token"].GetLiteral().GetStringValue())
 				}
 				return &flowstatev1.Node_Outputs{}, nil
 			},
@@ -74,7 +76,7 @@ func TestSDKTaskPanicIsPermanentAndProcessSurvives(t *testing.T) {
 
 	ctx := flowstatev1.ContextWithTaskRuntime(t.Context(), hostSecretRuntime(t, "TOKEN", material))
 	inputs := map[string]*flowstatev1.Value{
-		"message": {Kind: &flowstatev1.Value_SecretRef{SecretRef: &flowstatev1.SecretRef{
+		"token": {Kind: &flowstatev1.Value_SecretRef{SecretRef: &flowstatev1.SecretRef{
 			Scheme: "env", Name: "TOKEN",
 		}}},
 	}

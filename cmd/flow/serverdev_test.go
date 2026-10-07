@@ -516,7 +516,7 @@ func TestServerDevAuthCompletesAnAuthenticatedApprovalJourney(t *testing.T) {
 	root.SetOut(out)
 	root.SetErr(errOut)
 	root.SetArgs([]string{
-		"server", "dev", "--auth", "--identity-claim", "team",
+		"server", "dev", "--auth",
 		"--listen", "localhost:0", "--ui-port", "0", "-o", "json",
 	})
 

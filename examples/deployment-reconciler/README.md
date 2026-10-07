@@ -120,7 +120,7 @@ That signal is admitted only from the controller the file's `signals:` block nam
 the subject the `spec_controller` input holds
 (`https://issuer.example.com#deploy-controller` by default), carrying the claim
 `team: platform-controllers`. So it needs a server that authenticates callers and
-keeps the `team` claim (`--identity-claim team`, as
+carries the `team` claim in its issuer entry (`carry_claims`, as
 [approval-gate](../approval-gate/README.md) shows), and that controller's
 credential; any other caller, including the anonymous one
 `flow server dev` makes of everybody unless started with `--auth`, is refused

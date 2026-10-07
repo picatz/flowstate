@@ -531,7 +531,7 @@ func (e *executor) applyDebugAsk(delivery *v1.SignalDelivery, parked bool) (defe
 
 	logger := workflow.GetLogger(e.ctx)
 	sender := delivery.GetSender()
-	who := v1.QualifiedSubject(sender.GetIdentity().GetIssuer(), sender.GetIdentity().GetSubject())
+	who := v1.QualifiedSubject(sender.GetIdentity().GetPrincipal().GetIssuer(), sender.GetIdentity().GetPrincipal().GetSubject())
 	now := workflow.Now(e.ctx)
 	held := v1.DebugLeaseHeld(e.debug.lease, now)
 
@@ -602,7 +602,7 @@ func (e *executor) applyDebugAsk(delivery *v1.SignalDelivery, parked bool) (defe
 			// the run is held, by somebody this record names.
 			logger.Warn("refusing a debug pause: this run is already held under another caller's lease",
 				"sender", who, "holder", v1.QualifiedSubject(
-					e.debug.lease.GetAttachedBy().GetIssuer(), e.debug.lease.GetAttachedBy().GetSubject()),
+					e.debug.lease.GetAttachedBy().GetPrincipal().GetIssuer(), e.debug.lease.GetAttachedBy().GetPrincipal().GetSubject()),
 				"session", e.debug.lease.GetSessionId())
 
 		case pauseExtends:
@@ -851,7 +851,7 @@ func (e *executor) holdForDebugLease(node *v1.Node, backlogged bool) {
 			logger.Info("the debug lease expired; resuming the run",
 				"id", node.GetId(), "session", e.debug.lease.GetSessionId(),
 				"holder", v1.QualifiedSubject(
-					e.debug.lease.GetAttachedBy().GetIssuer(), e.debug.lease.GetAttachedBy().GetSubject()),
+					e.debug.lease.GetAttachedBy().GetPrincipal().GetIssuer(), e.debug.lease.GetAttachedBy().GetPrincipal().GetSubject()),
 				"expired_at", e.debug.lease.GetLeaseExpiresAt().AsTime())
 
 			e.releaseDebugLease()
@@ -913,7 +913,7 @@ func (e *executor) showDebugLease(lease *v1.DebugSession) {
 // grammar-constrained the way a step id is.
 func debugLeaseSummary(lease *v1.DebugSession) string {
 	holder := v1.QualifiedSubject(
-		lease.GetAttachedBy().GetIssuer(), lease.GetAttachedBy().GetSubject())
+		lease.GetAttachedBy().GetPrincipal().GetIssuer(), lease.GetAttachedBy().GetPrincipal().GetSubject())
 
 	return fmt.Sprintf("debug lease %s held by %s expires",
 		lease.GetSessionId(), boundSummaryText(holder))

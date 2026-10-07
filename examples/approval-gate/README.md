@@ -37,13 +37,14 @@ contract. Use a database so the generated signing key and credential paths stay
 stable until you remove them:
 
 ```console
-$ flow server dev --auth --identity-claim team --db /tmp/flowstate-approval.db -o json > /tmp/flowstate-approval-stack.json
+$ flow server dev --auth --db /tmp/flowstate-approval.db -o json > /tmp/flowstate-approval-stack.json
 ```
 
-`--identity-claim team` is deliberate: verified tokens can carry many claims,
-but the server persists only the names policy evaluation needs. Omitting it
-means a `signals:` rule cannot read `sender.identity.claims.team`, and this gate
-fails closed.
+The generated local issuer entry carries `team` and nothing else, deliberately:
+verified tokens can hold many claims, but a run records only the ones the issuer
+entry's `carry_claims` names. A production policy that did not carry `team` would
+leave this gate unable to read `sender.identity.claims.team`, and it would fail
+closed; `flow validate --auth-policy` reports that before a server does.
 
 In the second terminal, read the fields the running stack emitted and mint two
 short-lived local credentials. The private key and tokens remain beneath the

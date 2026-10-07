@@ -44,8 +44,16 @@ signal. These three cover the three ways a wait ends.
 | File | What it covers |
 | --- | --- |
 | `wait-sleep.json` | `sleep: 1s`. A durable timer between two ordinary steps, which is the whole footprint a `sleep:` has in history: it schedules no activity at all. |
-| `wait-for-signal.json` | A `wait_for_signal:` with `timeout: 1h`, parked and then answered. The signal wins the selector, so history holds the timeout timer being started and then *cancelled* — the #770 path, issued only behind a `workflow.GetVersion` marker this history records. |
+| `wait-for-signal.json` | Retired, see `2026-10-07`. |
 | `wait-for-signal-timeout.json` | The same gate with `timeout: 2s` and nobody answering. The timer wins instead, and the run walks on with `timed_out` rather than failing. |
+
+### `2026-10-07`
+
+| File | What it covers |
+| --- | --- |
+| `wait-for-signal.json` | The same scenario as the `2026-08-21` entry of this name — a `wait_for_signal:` with `timeout: 1h`, parked and then answered, so history holds the timeout timer being started and then *cancelled* (the #770 path, behind a `workflow.GetVersion` marker this history records) — recorded again from the engine that carries a caller as `Principal`. |
+
+The `2026-08-21` recording was **retired** in the commit that introduced `flowstate.v1.Principal`, deliberately and not to turn the gate green. Its signal payload recorded the sender as `identity: {subject, issuer}`, fields `WorkloadIdentity` no longer has (`reserved 1, 2, 3, 4, 7`), so the current engine cannot decode that signal and replay diverges at the timer the answered gate cancels. The break is intended and is a greenfield one: a run in flight across the deploy would carry the old shape in its stored state and in its signals, and is safe only because Worker Versioning pins a run to the interpreter it started on. The diff of this directory is that claim.
 
 ### `2026-10-04`
 

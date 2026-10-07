@@ -22,8 +22,8 @@ import (
 
 // claimSet returns count claims of the given value length, named so that no two
 // collide and none is a reserved claim.
-func claimSet(count, valueBytes int) map[string]string {
-	claims := make(map[string]string, count)
+func claimSet(count, valueBytes int) map[string]any {
+	claims := make(map[string]any, count)
 	for i := range count {
 		claims[fmt.Sprintf("carried_%03d", i)] = strings.Repeat("v", valueBytes)
 	}
@@ -50,7 +50,7 @@ func TestMintRefusesAnOverBoundClaimSet(t *testing.T) {
 
 	tests := []struct {
 		name   string
-		claims map[string]string
+		claims map[string]any
 		want   string
 	}{
 		{
@@ -60,12 +60,12 @@ func TestMintRefusesAnOverBoundClaimSet(t *testing.T) {
 		},
 		{
 			name:   "one value too long",
-			claims: map[string]string{"carried_000": strings.Repeat("v", auth.MaxCarriedClaimValueBytes+1)},
+			claims: map[string]any{"carried_000": strings.Repeat("v", auth.MaxCarriedClaimValueBytes+1)},
 			want:   fmt.Sprintf("at most %d", auth.MaxCarriedClaimValueBytes),
 		},
 		{
 			name:   "one name too long",
-			claims: map[string]string{strings.Repeat("n", auth.MaxCarriedClaimNameBytes+1): "v"},
+			claims: map[string]any{strings.Repeat("n", auth.MaxCarriedClaimNameBytes+1): "v"},
 			want:   fmt.Sprintf("at most %d", auth.MaxCarriedClaimNameBytes),
 		},
 		{
@@ -90,7 +90,8 @@ func TestMintRefusesAnOverBoundClaimSet(t *testing.T) {
 			// The refusal travels into workflow history through the durable
 			// driver's failure conversion, so it names claims and never says
 			// what they hold.
-			for _, value := range test.claims {
+			for _, claim := range test.claims {
+				value, _ := claim.(string)
 				if len(value) >= 8 {
 					require.NotContains(t, err.Error(), value, "a claim value must not appear in an error")
 				}
@@ -121,10 +122,16 @@ func TestVerifierRefusesAnOverBoundToken(t *testing.T) {
 
 	verifier := newVerifier(t,
 		auth.Policy{
-			Issuers: []auth.TrustedIssuer{{
-				Name:      "foreign",
-				Issuer:    issuer.URL(),
-				Audiences: []string{"flowstate"},
+			Issuers: []auth.TrustedIssuer{{Actions: []string{},
+				Name:        "foreign",
+				Issuer:      issuer.URL(),
+				Audiences:   []string{"flowstate"},
+				CarryClaims: []auth.CarryClaim{{Claim: "padding_031", Type: auth.ClaimTypeString}},
+				GroupsClaim: "groups",
+				GroupMap: map[string]string{
+					"11111111-2222-3333-4444-000000000007": "sre",
+					"11111111-2222-3333-4444-000000000250": "dev",
+				},
 			}},
 		},
 		auth.WithClock(clock.Now),
@@ -211,9 +218,11 @@ func TestVerifierRefusesAnOverBoundToken(t *testing.T) {
 			groups[i] = fmt.Sprintf("11111111-2222-3333-4444-%012d", i)
 		}
 
+		// Carried through the entry's group_map: the map is what names the groups
+		// a rule can read, so 300 in the token become the 2 the entry maps.
 		principal, err := verifier.Verify(t.Context(), issuer.MintToken(claims(map[string]any{"groups": groups})))
 		require.NoError(t, err)
-		require.Len(t, principal.Claims["groups"], 300)
+		require.Equal(t, []any{"sre", "dev"}, principal.Claims["groups"])
 	})
 
 	t.Run("an ordinary provider token is admitted", func(t *testing.T) {
@@ -228,7 +237,8 @@ func TestVerifierRefusesAnOverBoundToken(t *testing.T) {
 		principal, err := verifier.Verify(t.Context(), issuer.MintToken(claims(extra)))
 		require.NoError(t, err)
 		require.Equal(t, "workflow-runner", principal.Subject)
-		require.Contains(t, principal.Claims, "padding_031")
+		require.Equal(t, map[string]any{"padding_031": "value"}, principal.Claims,
+			"only the entry's carry_claims reach the principal")
 	})
 }
 
@@ -247,7 +257,7 @@ func TestMintRefusesAnUndeclaredClaim(t *testing.T) {
 		issuer, _ := newIssuer(t, clock)
 
 		identity := testIdentity()
-		identity.Claims = map[string]string{"environment": "production"}
+		identity.Claims = map[string]any{"environment": "production"}
 
 		assertion, err := issuer.Mint(t.Context(), identity, testStepRef(), "sts.amazonaws.com")
 		require.ErrorIs(t, err, auth.ErrUndeclaredClaim)
@@ -260,7 +270,7 @@ func TestMintRefusesAnUndeclaredClaim(t *testing.T) {
 		issuer, _ := newIssuer(t, clock, auth.WithDeclaredClaims("environment"))
 
 		identity := testIdentity()
-		identity.Claims = map[string]string{"environment": "production"}
+		identity.Claims = map[string]any{"environment": "production"}
 
 		assertion, err := issuer.Mint(t.Context(), identity, testStepRef(), "sts.amazonaws.com")
 		require.NoError(t, err)

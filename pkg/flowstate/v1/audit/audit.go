@@ -450,10 +450,14 @@ func auditIdentity(identity *v1.WorkloadIdentity) *v1.WorkloadIdentity {
 		return nil
 	}
 
+	who := identity.GetPrincipal()
+
 	return &v1.WorkloadIdentity{
-		Subject:    identity.GetSubject(),
-		Issuer:     identity.GetIssuer(),
-		Namespace:  identity.GetNamespace(),
+		Principal: &v1.Principal{
+			Subject:   who.GetSubject(),
+			Issuer:    who.GetIssuer(),
+			Namespace: who.GetNamespace(),
+		},
 		Deployment: identity.GetDeployment(),
 	}
 }

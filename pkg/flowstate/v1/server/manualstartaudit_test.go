@@ -50,7 +50,7 @@ func TestSignalWithStartAuditsAPolicyRefusalOnAnExistingEntity(t *testing.T) {
 		},
 	})
 
-	owner := auth.ContextWithPrincipal(t.Context(), auth.Principal{
+	owner := auth.ContextWithPrincipal(t.Context(), auth.Principal{Actions: everyAction,
 		Issuer:  "https://issuer.example.com",
 		Subject: "owner@example.com",
 	})
@@ -63,7 +63,7 @@ func TestSignalWithStartAuditsAPolicyRefusalOnAnExistingEntity(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, created.Msg.GetCreated())
 
-	stranger := auth.ContextWithPrincipal(t.Context(), auth.Principal{
+	stranger := auth.ContextWithPrincipal(t.Context(), auth.Principal{Actions: everyAction,
 		Issuer:  "https://issuer.example.com",
 		Subject: "some-other-engineer@example.com",
 	})
@@ -126,7 +126,7 @@ func TestSignalWithStartAuditsAPolicyRefusalOnTheConcurrencyCompatibilityArm(t *
 		},
 	})
 
-	owner := auth.ContextWithPrincipal(t.Context(), auth.Principal{
+	owner := auth.ContextWithPrincipal(t.Context(), auth.Principal{Actions: everyAction,
 		Issuer:  "https://issuer.example.com",
 		Subject: "owner@example.com",
 	})
@@ -146,7 +146,7 @@ func TestSignalWithStartAuditsAPolicyRefusalOnTheConcurrencyCompatibilityArm(t *
 	// enough, exactly as the existing success-path test for this arm does.
 	restricted.Concurrency = &v1.Concurrency{Key: v1.NewLiteral("prod-eu")}
 
-	stranger := auth.ContextWithPrincipal(t.Context(), auth.Principal{
+	stranger := auth.ContextWithPrincipal(t.Context(), auth.Principal{Actions: everyAction,
 		Issuer:  "https://issuer.example.com",
 		Subject: "some-other-engineer@example.com",
 	})
@@ -214,7 +214,7 @@ func TestSignalWithStartSurfacesARequiredSinkFailureOnThePolicyDenial(t *testing
 		},
 	})
 
-	owner := auth.ContextWithPrincipal(t.Context(), auth.Principal{
+	owner := auth.ContextWithPrincipal(t.Context(), auth.Principal{Actions: everyAction,
 		Issuer:  "https://issuer.example.com",
 		Subject: "owner@example.com",
 	})
@@ -227,7 +227,7 @@ func TestSignalWithStartSurfacesARequiredSinkFailureOnThePolicyDenial(t *testing
 	require.NoError(t, err)
 	require.True(t, created.Msg.GetCreated())
 
-	stranger := auth.ContextWithPrincipal(t.Context(), auth.Principal{
+	stranger := auth.ContextWithPrincipal(t.Context(), auth.Principal{Actions: everyAction,
 		Issuer:  "https://issuer.example.com",
 		Subject: "some-other-engineer@example.com",
 	})

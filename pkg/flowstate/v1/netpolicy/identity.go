@@ -1,54 +1,12 @@
 package netpolicy
 
-import "context"
+import (
+	"context"
 
-// Identity is the workload identity an egress rule reads as `identity.<field>`.
-//
-// It is the same identity the other operator-authored policy surfaces reason
-// over — secret access and credential assumption (`auth`'s `identity`) and task
-// shape (`v1`'s task-policy `identity`) — so a deployment can gate all of them on
-// one notion of who is running. The value comes from the run's single attested
-// WorkloadIdentity; a caller renders it into this shape from that one source
-// rather than deriving it a second way, which is what keeps the surfaces from disagreeing about who is
-// calling. netpolicy declares no dependency on the identity's origin, so the
-// rendering — and the single source it reads — stay outside this package.
-//
-// The zero value is "no attested caller": every string empty and no claims, which
-// is exactly what a local run or a scope that predates identity presents. A rule
-// meaning "only this tenant" therefore both selects its tenant and, by not
-// matching the zero value, denies a request that carries no identity at all — the
-// fail-closed reading, since a request denied by every allow rule is denied.
-//
-// The fields are deliberately the tenant-identity subset, the same one the
-// task-shape surface renders: `deployment`, the step reference, and the delegation
-// chain answer "which installation ran this" or "what is running", not "who may
-// reach what", and an egress rule wants the last of those.
-type Identity struct {
-	Subject   string            `cel:"subject"`
-	Issuer    string            `cel:"issuer"`
-	Namespace string            `cel:"namespace"`
-	Claims    map[string]string `cel:"claims"`
-}
+	"github.com/picatz/flowstate/pkg/flowstate/v1/principal"
+)
 
-// identityTypeName is how [Identity] is named in CEL, which appears in a type
-// error when a rule misuses a field. [ext.NativeTypes] derives it from the type's
-// Go directory, which for this package is also its declared name.
-const identityTypeName = "netpolicy.Identity"
-
-// normalized returns the identity a rule is evaluated against: the same fields,
-// with claims guaranteed non-nil. CEL cannot index a null map, so a rule reading
-// `identity.claims[...]` against an identity that carries none would error — and
-// an errored rule denies — where the intent is for it simply not to match. An
-// absent *key* still errors, which is the documented convention (`"k" in
-// identity.claims` guards it); only the null map is smoothed here.
-func (id Identity) normalized() Identity {
-	if id.Claims == nil {
-		id.Claims = map[string]string{}
-	}
-	return id
-}
-
-// identityKey is the context key for a request's [Identity]. It is an unexported
+// identityKey is the context key for a request's [principal.Caller]. It is an unexported
 // empty struct type so no other package can collide with it or forge a value.
 type identityKey struct{}
 
@@ -60,7 +18,7 @@ type identityKey struct{}
 // It is the one seam by which identity enters this package: the value is rendered
 // from the run's WorkloadIdentity by the caller, keeping this package free of any
 // dependency on how identity is established.
-func ContextWithIdentity(ctx context.Context, id Identity) context.Context {
+func ContextWithIdentity(ctx context.Context, id principal.Caller) context.Context {
 	return context.WithValue(ctx, identityKey{}, id)
 }
 
@@ -68,7 +26,7 @@ func ContextWithIdentity(ctx context.Context, id Identity) context.Context {
 // "no attested caller" — when none is present. The zero value is a deliberate
 // answer rather than a sentinel: a rule is always evaluated against some identity,
 // and an absent one reads as empty fields, which a tenant rule declines to match.
-func identityFromContext(ctx context.Context) Identity {
-	id, _ := ctx.Value(identityKey{}).(Identity)
-	return id.normalized()
+func identityFromContext(ctx context.Context) principal.Caller {
+	id, _ := ctx.Value(identityKey{}).(principal.Caller)
+	return id.Normalized()
 }

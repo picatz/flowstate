@@ -20,8 +20,8 @@ func TestSignalWithStartCreateBranchAsksTheSignalPolicy(t *testing.T) {
 	t.Parallel()
 
 	const issuer = "https://issuer.example.com"
-	owner := auth.Principal{Issuer: issuer, Subject: "owner@example.com", Claims: map[string]any{"team": "release"}}
-	stranger := auth.Principal{Issuer: issuer, Subject: "stranger@example.com"}
+	owner := auth.Principal{Actions: everyAction, Issuer: issuer, Subject: "owner@example.com", Claims: map[string]any{"team": "release"}}
+	stranger := auth.Principal{Actions: everyAction, Issuer: issuer, Subject: "stranger@example.com"}
 	qualified := v1.QualifiedSubject(issuer, owner.Subject)
 
 	for _, tc := range []struct {
@@ -96,9 +96,9 @@ func TestSignalWithStartAnswersAnExistingEntityOnItsOwnMemo(t *testing.T) {
 	t.Parallel()
 
 	const issuer = "https://issuer.example.com"
-	creator := auth.Principal{Issuer: issuer, Subject: "creator@example.com"}
-	approver := auth.Principal{Issuer: issuer, Subject: "approver@example.com"}
-	outsider := auth.Principal{Issuer: issuer, Subject: "outsider@example.com"}
+	creator := auth.Principal{Actions: everyAction, Issuer: issuer, Subject: "creator@example.com"}
+	approver := auth.Principal{Actions: everyAction, Issuer: issuer, Subject: "approver@example.com"}
+	outsider := auth.Principal{Actions: everyAction, Issuer: issuer, Subject: "outsider@example.com"}
 	approverID := v1.QualifiedSubject(issuer, approver.Subject)
 
 	for name, policy := range map[string]*v1.SignalPolicy{

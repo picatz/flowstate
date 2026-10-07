@@ -30,8 +30,8 @@ operate.
 ## The plugin ecosystem
 
 The built-in registry stays small — the admission test in DSL.md holds — so the
-breadth lives in plugins, spelled `<plugin>.<task>:`. Thirteen ship in-tree and so are
-no longer listed here — `codex`, `docker`, `git`, `github`, `jose`, `oci`, `oidc`, `scim`, `slack`, `sql`, `ssh`, `vcs`, `webhook`; the
+breadth lives in plugins, spelled `<plugin>.<task>:`. Fourteen ship in-tree and so are
+no longer listed here — `anthropic`, `codex`, `docker`, `git`, `github`, `jose`, `oci`, `oidc`, `scim`, `slack`, `sql`, `ssh`, `vcs`, `webhook`; the
 README's *Extend* row and [PLUGINS.md](PLUGINS.md) are the record. Still wanted,
 each landing with a worked example verified in CI:
 

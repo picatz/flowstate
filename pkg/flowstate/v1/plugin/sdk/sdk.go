@@ -89,6 +89,7 @@ import (
 	"google.golang.org/protobuf/types/known/durationpb"
 
 	"github.com/picatz/flowstate/internal/textbound"
+	decisionv1 "github.com/picatz/flowstate/pkg/flowstate/decision/v1"
 	pluginv1 "github.com/picatz/flowstate/pkg/flowstate/plugin/v1"
 	pluginv1connect "github.com/picatz/flowstate/pkg/flowstate/plugin/v1/pluginv1connect"
 	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -620,7 +621,7 @@ func readEnvironment() (environment, error) {
 		return environment{}, fmt.Errorf("sdk: %s: %w", protocol.VersionsEnv, err)
 	}
 
-	version, ok := protocol.Negotiate(offered, []int{protocol.Version7})
+	version, ok := protocol.Negotiate(offered, []int{protocol.Version8})
 	if !ok {
 		// Say what to do, not only what is wrong. This refusal is the whole
 		// point of the version bump: it is reached by whichever side is older,
@@ -631,7 +632,7 @@ func readEnvironment() (environment, error) {
 			"%w: the host offered %s and this plugin speaks %d; "+
 				"a host and its plugins must be upgraded together across this change, "+
 				"so upgrade whichever of the two is older",
-			ErrProtocolVersion, protocol.FormatVersions(offered), protocol.Version7,
+			ErrProtocolVersion, protocol.FormatVersions(offered), protocol.Version8,
 		)
 	}
 
@@ -920,8 +921,9 @@ func (t Task) checkInputNames() error {
 // engine is known to have are left out deliberately, and the set of those is
 // derived rather than listed: it is the transitive imports of flowstate's own
 // schema files, which MessageDescriptorBytes leaves out for every caller — plus
-// plugin.proto, which an engine that can talk to a plugin necessarily has and a
-// reader of a catalog does not, so it is named here rather than there. That
+// plugin.proto and the flowstate/<domain>/v1 files (decision.proto), which an
+// engine that can talk to a plugin necessarily has and a reader of a catalog
+// does not, so they are named here rather than there. That
 // keeps a descriptor small — a task whose input references a flowstate type
 // would otherwise carry protobuf's, protovalidate's, and CEL's descriptors along
 // with it — without hardcoding an assumption about the engine that could quietly
@@ -946,6 +948,7 @@ func describeMessage(msg proto.Message, comments flowstatev1.CommentLookup) ([]b
 		msg.ProtoReflect().Descriptor(),
 		comments,
 		pluginv1.File_flowstate_plugin_v1_plugin_proto,
+		decisionv1.File_flowstate_decision_v1_decision_proto,
 	)
 }
 

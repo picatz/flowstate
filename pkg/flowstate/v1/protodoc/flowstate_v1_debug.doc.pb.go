@@ -294,7 +294,7 @@ func init() {
 				" The two disagree on any non-ASCII rendering, and a limit written down\n" +
 				" twice in two units is a boundary that refuses values its producer\n" +
 				" considers legal. Same unit, both layers — the rule\n" +
-				" `WorkloadIdentity.claims` states at length.\n" +
+				" `Principal.claims` states at length.\n" +
 				"\n" +
 				" 4160 rather than the content bound of 4096, because the marker is part\n" +
 				" of what travels and a bound that forgot it would refuse a value\n" +

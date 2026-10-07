@@ -17,6 +17,7 @@ import (
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/audit"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/authz"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/engine"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowstatev1connect"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
@@ -95,7 +96,7 @@ type Option func(*FlowstateServer) error
 // which it was previously documented as: Temporal routing is the client's own
 // configuration, or [WithNamespacePool] when tenants map to separate namespaces.
 // The distinction matters because this value ends up in
-// [v1.WorkloadIdentity.Namespace], which every authorization decision
+// [v1.Principal.Namespace], which every authorization decision
 // about a run compares against.
 //
 // # The namespace is checked here, once, for everything that derives from it
@@ -263,16 +264,6 @@ func WithMaxStepsPerRun(steps int) Option {
 	return func(s *FlowstateServer) error { s.maxStepsPerRun = steps; return nil }
 }
 
-// WithIdentityClaims names the caller token claims to carry into a run's
-// identity.
-//
-// Only named claims are copied, so the identity records what authorization
-// decisions actually need — a repository, an environment, a team — rather than
-// becoming a copy of whole tokens in workflow history.
-func WithIdentityClaims(claims ...string) Option {
-	return func(s *FlowstateServer) error { s.identityClaims = claims; return nil }
-}
-
 // WithCredentialTargets makes validation deployment-aware: a Flowfile naming a
 // JIT target this server's workers do not configure is refused before submission.
 func WithCredentialTargets(targets ...string) Option {
@@ -292,6 +283,17 @@ func WithCredentialTargets(targets ...string) Option {
 // where the records come from.
 func WithAudit(recorder *audit.Recorder) Option {
 	return func(s *FlowstateServer) error { s.audit = recorder; return nil }
+}
+
+// WithDecider adds an authorization check to the trust policy's own. The
+// policy still decides first, from the caller's issuer entry, and the extra
+// decider is asked only about what the policy allows, so it can refuse
+// (a maintenance freeze, a per-tenant allowlist) and can never grant what the
+// policy withholds. It sees every action check the server makes, including
+// the ones that choose what a response may show. It must not block, and a panic
+// in it is a refusal. See [authz.Restrict].
+func WithDecider(extra authz.Decider) Option {
+	return func(s *FlowstateServer) error { s.decider = authz.Restrict(nil, extra); return nil }
 }
 
 // WithPluginCatalog supplies the server/worker capability snapshot used to pin
@@ -476,7 +478,6 @@ type FlowstateServer struct {
 
 	namespace                   string
 	deployment                  string
-	identityClaims              []string
 	credentialTargets           []string
 	credentialTargetsConfigured bool
 	pluginCatalog               *v1.PluginCatalog
@@ -529,6 +530,10 @@ type FlowstateServer struct {
 	// process that serves rather than for the library. See [WithAudit] and
 	// pkg/flowstate/v1/audit.
 	audit *audit.Recorder
+
+	// decider is the authorization decision: the trust policy, narrowed by an
+	// embedder's [WithDecider]. Nil is the trust policy alone.
+	decider authz.Decider
 
 	// historySlots bounds how many [FlowstateServer.DebugHistory]
 	// reconstructions run at once. Set in [New].
@@ -835,7 +840,7 @@ const starterMemoKey = "flowstate.starter"
 // distinction [FlowstateServer.memoStarter] needs to answer a run that predates this key.
 func starterMemoEntry(identity *v1.WorkloadIdentity) map[string]any {
 	return map[string]any{
-		starterMemoKey: v1.QualifiedSubject(identity.GetIssuer(), identity.GetSubject()),
+		starterMemoKey: v1.QualifiedSubject(identity.GetPrincipal().GetIssuer(), identity.GetPrincipal().GetSubject()),
 	}
 }
 
@@ -1396,7 +1401,7 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 	// cannot answer without the workflow in hand — and it is audited
 	// separately, as its own DENY, rather than folded into this ALLOW. See
 	// #1889.
-	if err := s.auditAllow(ctx, "Run", v1.AuditResourceKind_AUDIT_RESOURCE_KIND_NAMESPACE, identity.GetNamespace()); err != nil {
+	if err := s.auditAllow(ctx, "Run", v1.AuditResourceKind_AUDIT_RESOURCE_KIND_NAMESPACE, identity.GetPrincipal().GetNamespace()); err != nil {
 		return nil, err
 	}
 
@@ -1413,7 +1418,7 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 	// equality that can only ever answer true.
 	submitted := proto.Clone(req.Msg.GetWorkflow()).(*v1.Workflow)
 
-	workflow, trusted, err := s.trustedWorkflow(identity.GetNamespace(), req.Msg.GetWorkflow())
+	workflow, trusted, err := s.trustedWorkflow(identity.GetPrincipal().GetNamespace(), req.Msg.GetWorkflow())
 	if err != nil {
 		return nil, err
 	}
@@ -1429,7 +1434,7 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 	// and the inputs as just bound — see [newSubmissionKey] — and from the
 	// namespace the identity above attested, never one the request named. Nil
 	// when the field is unset, which is every request before it existed.
-	submission, err := newSubmissionKey(identity.GetNamespace(), req.Msg.GetRequestId(), submitted, inputs)
+	submission, err := newSubmissionKey(identity.GetPrincipal().GetNamespace(), req.Msg.GetRequestId(), submitted, inputs)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
@@ -1453,7 +1458,7 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 		workflowID = submission.workflowID
 	}
 	if key := req.Msg.GetEntityKey(); key != "" {
-		entityID, err := v1.EntityWorkflowID(identity.GetNamespace(), key)
+		entityID, err := v1.EntityWorkflowID(identity.GetPrincipal().GetNamespace(), key)
 		if err != nil {
 			// protovalidate already checked entity_key against the same grammar
 			// [v1.EntityWorkflowID] enforces, so reaching this is either the
@@ -1493,7 +1498,7 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 			return nil, connect.NewError(connect.CodeInvalidArgument, err)
 		}
 
-		workflowID = v1.ConcurrencyWorkflowID(identity.GetNamespace(), workflow.GetName(), key)
+		workflowID = v1.ConcurrencyWorkflowID(identity.GetPrincipal().GetNamespace(), workflow.GetName(), key)
 	}
 
 	// This is a manual start — the `Run` RPC is what `flow run`, an agent over
@@ -1639,7 +1644,7 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 		// place that knows: a person asked, and this server attested who they
 		// are. Carried in state rather than derived, which is what makes
 		// `${trigger.kind}` the same value on every replay.
-		Trigger: v1.NewManualTriggerContext(identity.GetSubject()),
+		Trigger: v1.NewManualTriggerContext(identity.GetPrincipal().GetSubject()),
 	}
 
 	// No request id of its own (the SDK's stands): this is here so the
@@ -2124,7 +2129,7 @@ func (s *FlowstateServer) prepareCreate(
 	// direct run enforce identically. And the starter, recorded
 	// through [starterMemoEntry] for the same reason — what a policy's
 	// `run.identity` reads when it compares an authorized sender with it.
-	memo := map[string]any{namespaceMemoKey: identity.GetNamespace()}
+	memo := map[string]any{namespaceMemoKey: identity.GetPrincipal().GetNamespace()}
 	maps.Copy(memo, starterMemoEntry(identity))
 	signalEntry, err := policyMemoEntries(wf, inputs, identity)
 	if err != nil {
@@ -2159,7 +2164,7 @@ func (s *FlowstateServer) prepareCreate(
 	// before anything is started, rather than defaulted onto the shared queue:
 	// a tenant whose fleet was asked for but not configured must not quietly
 	// land on everyone else's workers.
-	taskQueue, err := s.taskQueueFor(identity.GetNamespace())
+	taskQueue, err := s.taskQueueFor(identity.GetPrincipal().GetNamespace())
 	if err != nil {
 		return nil, nil, client.StartWorkflowOptions{}, err
 	}
@@ -2206,7 +2211,7 @@ func (s *FlowstateServer) prepareCreate(
 		// same rule as the namespace above: a workload must not be able to name
 		// the bucket it is scheduled in, or the first thing anyone writes is the
 		// one that puts them in their own.
-		Priority: fairnessFor(identity.GetNamespace()),
+		Priority: fairnessFor(identity.GetPrincipal().GetNamespace()),
 
 		// Unconditional and built from the exact values the memo above already
 		// carries — see [runStaticSummary]. Makes a run legible in the Temporal
@@ -2214,7 +2219,7 @@ func (s *FlowstateServer) prepareCreate(
 		// unset here because prepareCreate has no natural longer-form
 		// description at this call site the memo does not already say more
 		// tersely — see [FlowstateServer.CreateSchedule], which does.
-		StaticSummary: runStaticSummary(identity.GetNamespace(), wf.GetName()),
+		StaticSummary: runStaticSummary(identity.GetPrincipal().GetNamespace(), wf.GetName()),
 
 		// False unless the process that built this server co-locates a worker
 		// on the very client below, and said so — see [WithEagerWorkflowStart],
@@ -2232,13 +2237,13 @@ func (s *FlowstateServer) prepareCreate(
 	// makes Temporal refuse the whole submission, so a deployment that never
 	// registered must never attach one, not even hopefully.
 	if s.searchAttributesRegistered {
-		options.TypedSearchAttributes = runSearchAttributes(identity.GetNamespace(), wf.GetName())
+		options.TypedSearchAttributes = runSearchAttributes(identity.GetPrincipal().GetNamespace(), wf.GetName())
 	}
 
 	// Chosen from the identity established by authenticating the caller, never
 	// from anything the request said, so a workload cannot ask to run in another
 	// tenant's namespace.
-	temporal, err := s.clientFor(identity.GetNamespace())
+	temporal, err := s.clientFor(identity.GetPrincipal().GetNamespace())
 	if err != nil {
 		return nil, nil, client.StartWorkflowOptions{}, err
 	}
@@ -2317,10 +2322,7 @@ func (s *FlowstateServer) identityFor(ctx context.Context) *v1.WorkloadIdentity 
 		// An unauthenticated caller yields an identity with no subject rather
 		// than an error: whether to allow that at all is the authenticator's
 		// decision, not this one's.
-		return &v1.WorkloadIdentity{
-			Namespace:  s.namespace,
-			Deployment: s.deployment,
-		}
+		return &v1.WorkloadIdentity{Principal: &v1.Principal{Namespace: s.namespace}, Deployment: s.deployment}
 	}
 
 	// Derived rather than assembled here, so the namespace precedence has one
@@ -2329,17 +2331,9 @@ func (s *FlowstateServer) identityFor(ctx context.Context) *v1.WorkloadIdentity 
 	// single tenant. The other order would make the tenant boundary decorative —
 	// a namespace determined by how the server was started rather than by who the
 	// caller is means every tenant shares one.
-	derived := auth.IdentityFromPrincipal(principal, s.namespace, s.deployment, s.identityClaims...)
+	derived := auth.IdentityFromPrincipal(principal, s.namespace, s.deployment)
 
-	return &v1.WorkloadIdentity{
-		Subject:    derived.Subject,
-		Issuer:     derived.Issuer,
-		Claims:     derived.Claims,
-		Namespace:  derived.Namespace,
-		Deployment: derived.Deployment,
-
-		PrincipalKind: v1.PrincipalKindNamed(string(principal.Kind)),
-	}
+	return &v1.WorkloadIdentity{Principal: v1.ProtoPrincipal(derived), Deployment: derived.Deployment}
 }
 
 // manualStartPrincipal returns the canonical identity manual-start policy may
@@ -2511,7 +2505,7 @@ func (s *FlowstateServer) declaredFailureKind(ctx context.Context, workflowID, r
 	return func(kind string) bool {
 		if !read {
 			read = true
-			if state, err := s.startedRunState(ctx, s.identityFor(ctx).GetNamespace(), workflowID, runID); err == nil {
+			if state, err := s.startedRunState(ctx, s.identityFor(ctx).GetPrincipal().GetNamespace(), workflowID, runID); err == nil {
 				workflow = state.GetWorkflow()
 			}
 		}

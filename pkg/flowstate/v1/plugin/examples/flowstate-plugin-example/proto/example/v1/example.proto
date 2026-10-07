@@ -4,6 +4,8 @@ package example.v1;
 
 option go_package = "github.com/picatz/flowstate/pkg/flowstate/v1/plugin/examples/flowstate-plugin-example/gen/example/v1;examplev1";
 
+import "flowstate/v1/schema.proto";
+
 // The example plugin's own task schema.
 //
 // It is defined here, in the plugin's own module, rather than reusing one of the
@@ -35,7 +37,7 @@ message GreetInputs {
   // sdk.Task.SecretInputs in this plugin's main.go, and TaskManifest's own
   // secret_inputs field, for why the host resolves rather than this plugin
   // asking it to.
-  string token = 3;
+  string token = 3 [(flowstate.v1.input).secret = SECRET_WHOLE_VALUE];
 }
 
 // GreetOutputs are the results of the greet task.

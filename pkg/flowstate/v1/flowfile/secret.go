@@ -34,6 +34,27 @@ import (
 // compiler recognizes.
 const SecretMarker = "secret"
 
+// CredentialMarker is what a Flowfile writes to reference a federated credential,
+// ${credential('anthropic')}, where the argument names a target in the
+// deployment's federation policy.
+//
+// It is [SecretMarker]'s sibling and is recognized, placed and refused by the
+// same machinery for the same reason: it compiles into a [v1.CredentialRef]
+// rather than a call, so nothing evaluates it, the specification carries a name
+// and no credential, and only the worker running the step mints one. The two
+// differ in what the argument is (a target name, not a `scheme:name` reference)
+// and in where a reference may go: a credential is only ever the whole value of a
+// task input, never an entry nested in a list or a mapping.
+//
+// Exported for the reason [SecretMarker] is.
+const CredentialMarker = "credential"
+
+// isMarkerName reports whether a call's function name is one of the two
+// reference spellings.
+func isMarkerName(name string) bool {
+	return name == SecretMarker || name == CredentialMarker
+}
+
 // secretPlacement says whether a value is somewhere a secret reference may appear,
 // and when it is not, which of the two reasons applies.
 type secretPlacement int
@@ -50,6 +71,11 @@ const (
 
 	// secretInStructure is nested in a list or a mapping that cannot carry one.
 	secretInStructure
+
+	// secretStructureEntry is the whole value of one entry of a structure that
+	// holds a reference. A secret may be here and a credential may not: a
+	// credential reference is only ever the whole value of a task input.
+	secretStructureEntry
 
 	// secretNotEvaluable is a field the workflow evaluates itself: a step's
 	// condition, or a loop's items.
@@ -105,6 +131,27 @@ const (
 
 	malformedCallHelp = "secret() takes one reference, written out, like ${secret('env:API_KEY')}; " +
 		"a computed reference cannot be checked when the workflow is compiled"
+
+	// The credential reference's own refusals, three rather than the secret
+	// reference's nine because they say what is true of every position at once:
+	// a credential reference is the whole value of a task input and nowhere else.
+	// Fewer sentences also means fewer places for the two spellings' rules to
+	// drift apart; [compiler.markerHelp] picks between them.
+	credentialNotWholeValueHelp = "a credential reference has to be the whole value of a task input; " +
+		"it names a federation target whose credential does not exist until the worker running the " +
+		"step mints it, so nothing workflow-side can combine it with anything else"
+
+	credentialNotNestedHelp = "a credential reference cannot be nested inside a list or a mapping: " +
+		"it has to be the whole value of a task input, such as `api_key: ${credential('anthropic')}`, " +
+		"because the worker that mints it hands the task one credential for the input it is written on"
+
+	credentialNotHereHelp = "a credential reference can only be the whole value of a task input; " +
+		"anything the workflow evaluates, stores, or passes between steps is written to durable, " +
+		"broadly readable history, and a credential minted there would be in it. Write " +
+		"${credential('...')} directly on the task input that consumes the credential instead"
+
+	malformedCredentialCallHelp = "credential() takes one federation target, written out, like " +
+		"${credential('anthropic')}; a computed target cannot be checked when the workflow is compiled"
 
 	// notAcrossCallHelp is deliberately specific rather than a reuse of
 	// notEvaluableHelp: `with:` is not a field the workflow evaluates for its
@@ -205,7 +252,7 @@ func (c *compiler) secretMarkerSpan(n ast.Node) Span {
 		if parsed.Error() != nil {
 			return false
 		}
-		call, found := findSecretCall(parsed.GetExpr().GetExpr())
+		call, found := findMarkerCall(parsed.GetExpr().GetExpr())
 		if !found {
 			return false
 		}
@@ -222,22 +269,40 @@ func (c *compiler) secretMarkerSpan(n ast.Node) Span {
 // The third return reports whether the expression held a marker at all, so that an
 // ordinary expression carries on being compiled as one.
 func (c *compiler) secret(parsed *expr.ParsedExpr, src string, span Span, r ref, placement secretPlacement) (*v1.Value, bool) {
-	call, found := findSecretCall(parsed.GetExpr())
+	call, found := findMarkerCall(parsed.GetExpr())
 	if !found {
 		return nil, false
 	}
 
 	at := markerSpan(parsed, call.GetId(), src, span)
+	credential := call.GetCallExpr().GetFunction() == CredentialMarker
 
-	if help := misplacedHelp(placement, call == parsed.GetExpr()); help != "" {
+	if help := misplacedHelp(placement, call == parsed.GetExpr(), credential); help != "" {
 		c.report(at, r, "%s", help)
 		return nil, true
 	}
 
 	text, ok := secretArgument(call)
 	if !ok {
-		c.report(at, r, "%s", malformedCallHelp)
+		if credential {
+			c.report(at, r, "%s", malformedCredentialCallHelp)
+		} else {
+			c.report(at, r, "%s", malformedCallHelp)
+		}
 		return nil, true
+	}
+
+	if credential {
+		// The same job [secrets.ParseRef] does below, for the same reason: a
+		// Flowfile cannot compile a reference the worker would later refuse.
+		// Whether the deployment federates the target is a fact the file does
+		// not carry, so that half is [v1.ValidateCredentialTargets]', run
+		// wherever the deployment's configuration is known.
+		if err := v1.ValidateCredentialTarget(text); err != nil {
+			c.report(at, r, "%s", err)
+			return nil, true
+		}
+		return v1.NewCredentialRef(text), true
 	}
 
 	// The reference is validated by the package that resolves them, so that a
@@ -267,6 +332,14 @@ func (c *compiler) secret(parsed *expr.ParsedExpr, src string, span Span, r ref,
 // thing none of this may do. So its entries stay Values and travel as they were
 // written.
 func (c *compiler) structure(n ast.Node, path string, r ref) *v1.Value {
+	if at, found := c.credentialMarkerSpan(n); found {
+		// Before the secret rules, which would say the wrong thing: a structure
+		// holding a credential reference is refused wherever it is, so there is no
+		// input to point an author at.
+		c.report(at, r, "%s", credentialNotNestedHelp)
+		return nil
+	}
+
 	if !v1.AcceptsNestedSecret(r.task, r.input) {
 		c.report(spanOfNode(c.markerNode(n)), r, "%s%s", inStructureHelp, acceptedElsewhere(r.task))
 		return nil
@@ -422,7 +495,7 @@ func (c *compiler) structureScalar(n ast.Node, text, path string, r ref) *v1.Val
 	// A whole entry, so the reference may be the whole of it and nothing else:
 	// `${'Bearer ' + secret('env:T')}` is refused here by the same rule that
 	// refuses it as a whole input, and with the same sentence.
-	if reference, isSecret := c.secret(val.GetExpr(), inner, span, r, secretAllowed); isSecret {
+	if reference, isSecret := c.secret(val.GetExpr(), inner, span, r, secretStructureEntry); isSecret {
 		return reference
 	}
 
@@ -445,8 +518,12 @@ func (c *compiler) reportInterpolatedSecret(n ast.Node, text string, segs []segm
 		if parsed.Error() != nil {
 			continue
 		}
-		if _, found := findSecretCall(parsed.GetExpr().GetExpr()); found {
-			c.report(span, r, "%s", notWholeValueHelp)
+		if call, found := findMarkerCall(parsed.GetExpr().GetExpr()); found {
+			help := notWholeValueHelp
+			if call.GetCallExpr().GetFunction() == CredentialMarker {
+				help = credentialNotWholeValueHelp
+			}
+			c.report(span, r, "%s", help)
 			return
 		}
 	}
@@ -463,6 +540,57 @@ func (c *compiler) holdsSecretMarker(n ast.Node) bool {
 		return false
 	})
 	return found
+}
+
+// credentialMarkerSpan returns the span of the first ${credential(...)} inside n,
+// reporting whether there is one. It is how a structure is refused for holding a
+// credential reference before the secret rules get a turn at it.
+func (c *compiler) credentialMarkerSpan(n ast.Node) (Span, bool) {
+	var at Span
+	found := false
+
+	c.walkMarkers(n, func(scalar ast.Node, src string) bool {
+		parsed := v1.NewExpr(src)
+		if parsed.Error() != nil {
+			return true
+		}
+		call, ok := findMarkerCall(parsed.GetExpr().GetExpr())
+		if !ok || call.GetCallExpr().GetFunction() != CredentialMarker {
+			// A secret marker, or a call this walk is not about: keep looking, the
+			// structure may hold a credential further along.
+			return true
+		}
+
+		found = true
+		at = markerSpan(parsed.GetExpr(), call.GetId(), src, spanWithin(scalar, src))
+		return false
+	})
+
+	return at, found
+}
+
+// markerHelp is the sentence for a reference that is somewhere the workflow
+// evaluates or stores a value, chosen by which reference n holds: secretHelp
+// when its first marker is a secret, and the credential's own when it is one.
+//
+// One parameterized choice rather than a second copy of every position's
+// sentence, so a position added for secrets says something true about a
+// credential the day it is added.
+func (c *compiler) markerHelp(n ast.Node, secretHelp string) string {
+	help := secretHelp
+
+	c.walkMarkers(n, func(_ ast.Node, src string) bool {
+		parsed := v1.NewExpr(src)
+		if parsed.Error() != nil {
+			return true
+		}
+		if call, ok := findMarkerCall(parsed.GetExpr().GetExpr()); ok && call.GetCallExpr().GetFunction() == CredentialMarker {
+			help = credentialNotHereHelp
+		}
+		return false
+	})
+
+	return help
 }
 
 // walkMarkers visits every scalar inside n whose expression calls the marker,
@@ -498,7 +626,7 @@ func (c *compiler) walkMarkers(n ast.Node, visit func(ast.Node, string) bool) bo
 			if parsed.Error() != nil {
 				continue
 			}
-			if _, found := findSecretCall(parsed.GetExpr().GetExpr()); !found {
+			if _, found := findMarkerCall(parsed.GetExpr().GetExpr()); !found {
 				continue
 			}
 			if !visit(n, sg.text) {
@@ -538,13 +666,17 @@ func (c *compiler) walkMarkers(n ast.Node, visit func(ast.Node, string) bool) bo
 // isWholeExpression distinguishes a reference written on its own from one buried in
 // a larger expression, which is the difference between a task input that is a
 // reference and one that computes with a value it must never see.
-func misplacedHelp(placement secretPlacement, isWholeExpression bool) string {
+func misplacedHelp(placement secretPlacement, isWholeExpression, credential bool) string {
+	if credential {
+		return misplacedCredentialHelp(placement, isWholeExpression)
+	}
+
 	switch {
 	case placement == secretNotEvaluable:
 		return notEvaluableHelp
 	case placement == secretInStructure:
 		// Reached only if [compiler.holdsSecretMarker] and this disagree about what
-		// a marker is — they call the same [findSecretCall] over the same scalars,
+		// a marker is — they call the same [findMarkerCall] over the same scalars,
 		// so they should not. Kept because the direction of the disagreement
 		// matters: without this, a marker the first walk missed would be compiled
 		// into the one expression that builds the structure, and the workflow would
@@ -557,7 +689,24 @@ func misplacedHelp(placement secretPlacement, isWholeExpression bool) string {
 	}
 }
 
-// findSecretCall returns the outermost call to the marker anywhere in an
+// misplacedCredentialHelp is [misplacedHelp] for a credential reference, which
+// has one rule where a secret reference has several: it is the whole value of a
+// task input or it is refused, and what an author is told depends only on which
+// of "not whole" and "not a task input" is true of the position.
+func misplacedCredentialHelp(placement secretPlacement, isWholeExpression bool) string {
+	switch {
+	case placement == secretNotEvaluable:
+		return credentialNotHereHelp
+	case placement == secretInStructure, placement == secretStructureEntry:
+		return credentialNotNestedHelp
+	case placement == secretNotWholeValue, !isWholeExpression:
+		return credentialNotWholeValueHelp
+	default:
+		return ""
+	}
+}
+
+// findMarkerCall returns the outermost call to either marker anywhere in an
 // expression.
 //
 // The search is not limited to the root because a reference nested in a larger
@@ -568,38 +717,38 @@ func misplacedHelp(placement secretPlacement, isWholeExpression bool) string {
 // Only a global call counts. `secret` as a step id (${steps.secret.result}), a bare name
 // (${secret}), or a method on something (${x.secret('a')}) is not the marker, since
 // none of those is the thing a Flowfile writes to name a secret.
-func findSecretCall(e *expr.Expr) (*expr.Expr, bool) {
+func findMarkerCall(e *expr.Expr) (*expr.Expr, bool) {
 	if e == nil {
 		return nil, false
 	}
 
 	switch kind := e.GetExprKind().(type) {
 	case *expr.Expr_CallExpr:
-		if kind.CallExpr.GetTarget() == nil && kind.CallExpr.GetFunction() == SecretMarker {
+		if kind.CallExpr.GetTarget() == nil && isMarkerName(kind.CallExpr.GetFunction()) {
 			return e, true
 		}
-		if found, ok := findSecretCall(kind.CallExpr.GetTarget()); ok {
+		if found, ok := findMarkerCall(kind.CallExpr.GetTarget()); ok {
 			return found, true
 		}
 		for _, arg := range kind.CallExpr.GetArgs() {
-			if found, ok := findSecretCall(arg); ok {
+			if found, ok := findMarkerCall(arg); ok {
 				return found, true
 			}
 		}
 	case *expr.Expr_SelectExpr:
-		return findSecretCall(kind.SelectExpr.GetOperand())
+		return findMarkerCall(kind.SelectExpr.GetOperand())
 	case *expr.Expr_ListExpr:
 		for _, element := range kind.ListExpr.GetElements() {
-			if found, ok := findSecretCall(element); ok {
+			if found, ok := findMarkerCall(element); ok {
 				return found, true
 			}
 		}
 	case *expr.Expr_StructExpr:
 		for _, entry := range kind.StructExpr.GetEntries() {
-			if found, ok := findSecretCall(entry.GetMapKey()); ok {
+			if found, ok := findMarkerCall(entry.GetMapKey()); ok {
 				return found, true
 			}
-			if found, ok := findSecretCall(entry.GetValue()); ok {
+			if found, ok := findMarkerCall(entry.GetValue()); ok {
 				return found, true
 			}
 		}
@@ -612,7 +761,7 @@ func findSecretCall(e *expr.Expr) (*expr.Expr, bool) {
 			comprehension.GetLoopStep(),
 			comprehension.GetResult(),
 		} {
-			if found, ok := findSecretCall(part); ok {
+			if found, ok := findMarkerCall(part); ok {
 				return found, true
 			}
 		}
@@ -660,8 +809,11 @@ func markerSpan(parsed *expr.ParsedExpr, id int64, src string, span Span) Span {
 	if at > len(runes) {
 		return span
 	}
-	if name := len([]rune(SecretMarker)); at >= name && string(runes[at-name:at]) == SecretMarker {
-		at -= name
+	for _, marker := range []string{SecretMarker, CredentialMarker} {
+		if name := len([]rune(marker)); at >= name && string(runes[at-name:at]) == marker {
+			at -= name
+			break
+		}
 	}
 
 	start := span.Start
@@ -676,4 +828,14 @@ func secretRefToDSL(reference *v1.SecretRef) (string, error) {
 	}
 	return fmt.Sprintf("%s%s(%s)%s",
 		fenceOpen, SecretMarker, quoteCELString(secrets.RefString(reference)), fenceClose), nil
+}
+
+// credentialRefToDSL renders a credential reference back into the form a Flowfile
+// writes.
+func credentialRefToDSL(reference *v1.CredentialRef) (string, error) {
+	if err := v1.ValidateCredentialTarget(reference.GetTarget()); err != nil {
+		return "", fmt.Errorf("cannot be written: %w", err)
+	}
+	return fmt.Sprintf("%s%s(%s)%s",
+		fenceOpen, CredentialMarker, quoteCELString(reference.GetTarget()), fenceClose), nil
 }

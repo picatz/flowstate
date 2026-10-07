@@ -88,11 +88,7 @@ type RehearsalSignalCase struct {
 // admits, spelled here the way that file spells it so a case failing here
 // and that example failing in CI are recognisably the same fact.
 func approver() *v1.WorkloadIdentity {
-	return &v1.WorkloadIdentity{
-		Subject: "sre-lead@example.com",
-		Issuer:  "https://issuer.example.com",
-		Claims:  map[string]string{"team": "release-managers"},
-	}
+	return &v1.WorkloadIdentity{Principal: &v1.Principal{Subject: "sre-lead@example.com", Issuer: "https://issuer.example.com", Claims: v1.StringClaimValues(map[string]string{"team": "release-managers"})}}
 }
 
 // webhookTrigger is the identity a delivery to one webhook attests as, built
@@ -148,10 +144,7 @@ func RehearsalSignalCases() []RehearsalSignalCase {
 
 // rehearsalGateCases are the cases a policed approval gate answers.
 func rehearsalGateCases() []RehearsalSignalCase {
-	starter := &v1.WorkloadIdentity{
-		Subject: "release-bot@example.com",
-		Issuer:  "https://issuer.example.com",
-	}
+	starter := &v1.WorkloadIdentity{Principal: &v1.Principal{Subject: "release-bot@example.com", Issuer: "https://issuer.example.com"}}
 
 	return []RehearsalSignalCase{
 		{
@@ -169,11 +162,7 @@ func rehearsalGateCases() []RehearsalSignalCase {
 			SignalName: "deploy-approved",
 			Policy:     policedGate(false),
 			Starter:    starter,
-			Sender: &v1.WorkloadIdentity{
-				Subject: "someone-else@example.com",
-				Issuer:  "https://issuer.example.com",
-				Claims:  map[string]string{"team": "release-managers"},
-			},
+			Sender:     &v1.WorkloadIdentity{Principal: &v1.Principal{Subject: "someone-else@example.com", Issuer: "https://issuer.example.com", Claims: v1.StringClaimValues(map[string]string{"team": "release-managers"})}},
 			Why: "the clauses are ANDed, so half of them is not a match; this is the " +
 				"case that would make a gate open for the whole team",
 		},
@@ -182,11 +171,7 @@ func rehearsalGateCases() []RehearsalSignalCase {
 			SignalName: "deploy-approved",
 			Policy:     policedGate(false),
 			Starter:    starter,
-			Sender: &v1.WorkloadIdentity{
-				Subject: "sre-lead@example.com",
-				Issuer:  "https://other-idp.example.com",
-				Claims:  map[string]string{"team": "release-managers"},
-			},
+			Sender:     &v1.WorkloadIdentity{Principal: &v1.Principal{Subject: "sre-lead@example.com", Issuer: "https://other-idp.example.com", Claims: v1.StringClaimValues(map[string]string{"team": "release-managers"})}},
 			Why: "a subject is only unique within its issuer, and a principal is the two joined; " +
 				"a second identity provider minting the same local part is not the same person",
 		},
@@ -202,11 +187,8 @@ func rehearsalGateCases() []RehearsalSignalCase {
 			Name:       "the approver, who is also the run's own starter",
 			SignalName: "deploy-approved",
 			Policy:     policedGate(true),
-			Starter: &v1.WorkloadIdentity{
-				Subject: "sre-lead@example.com",
-				Issuer:  "https://issuer.example.com",
-			},
-			Sender: approver(),
+			Starter:    &v1.WorkloadIdentity{Principal: &v1.Principal{Subject: "sre-lead@example.com", Issuer: "https://issuer.example.com"}},
+			Sender:     approver(),
 			Why: "the comparison with the starter is ANDed on, so satisfying the rest is not " +
 				"enough; an approver may not approve their own request on either driver",
 		},
@@ -225,7 +207,7 @@ func rehearsalGateCases() []RehearsalSignalCase {
 			SignalName: "release-approved",
 			Policy:     predicate(`sender.identity.namespace == "release-managers"`),
 			Starter:    starter,
-			Sender:     &v1.WorkloadIdentity{Subject: "anyone@example.com", Namespace: "release-managers"},
+			Sender:     &v1.WorkloadIdentity{Principal: &v1.Principal{Subject: "anyone@example.com", Namespace: "release-managers"}},
 			Admitted:   true,
 			Why:        "a predicate constrains only what it compares, so a namespace comparison admits on namespace alone",
 		},
@@ -265,10 +247,7 @@ func rehearsalGateCases() []RehearsalSignalCase {
 			SignalName: "stage-approved",
 			Policy:     bridgedGate(),
 			Starter:    starter,
-			Sender: &v1.WorkloadIdentity{
-				Issuer:  "https://issuer.example.com",
-				Subject: "webhook-approval-bridge/slack-approval",
-			},
+			Sender:     &v1.WorkloadIdentity{Principal: &v1.Principal{Issuer: "https://issuer.example.com", Subject: "webhook-approval-bridge/slack-approval"}},
 			Why: "an issuer is half of every principal, and `flowstate://webhook` is a scheme no " +
 				"identity provider can mint; a caller whose IdP hands out the trigger's subject " +
 				"still is not the trigger",
@@ -278,7 +257,7 @@ func rehearsalGateCases() []RehearsalSignalCase {
 			SignalName: "release-approved",
 			Policy:     predicate(`sender.identity.namespace == "release-managers"`),
 			Starter:    starter,
-			Sender:     &v1.WorkloadIdentity{Subject: "anyone@example.com", Namespace: "team-a"},
+			Sender:     &v1.WorkloadIdentity{Principal: &v1.Principal{Subject: "anyone@example.com", Namespace: "team-a"}},
 			Why:        "the negative direction of the case above, which is the one a tenant boundary is made of",
 		},
 	}

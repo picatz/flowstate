@@ -19,21 +19,15 @@ import (
 // The identity below is the one `IdentityFromPrincipal` derives from a token a
 // CI platform minted, with GitHub Actions as the concrete shape: the subject is
 // the platform's own "repo:<owner>/<name>:ref:refs/heads/<branch>", and the
-// claims are the ones an operator named with `--identity-claim`.
+// claims are the ones an operator named in the entry's `carry_claims`.
 
 // ciIdentity is what a run started by a CI job acts as.
 func ciIdentity() *v1.WorkloadIdentity {
-	return &v1.WorkloadIdentity{
-		Subject:    "repo:octo-org/octo-repo:ref:refs/heads/main",
-		Issuer:     "https://token.actions.githubusercontent.com",
-		Namespace:  "platform",
-		Deployment: "prod",
-		Claims: map[string]string{
-			"repository":       "octo-org/octo-repo",
-			"ref":              "refs/heads/main",
-			"job_workflow_ref": "octo-org/octo-repo/.github/workflows/deploy.yml@refs/heads/main",
-		},
-	}
+	return &v1.WorkloadIdentity{Principal: &v1.Principal{Subject: "repo:octo-org/octo-repo:ref:refs/heads/main", Issuer: "https://token.actions.githubusercontent.com", Namespace: "platform", Claims: v1.StringClaimValues(map[string]string{
+		"repository":       "octo-org/octo-repo",
+		"ref":              "refs/heads/main",
+		"job_workflow_ref": "octo-org/octo-repo/.github/workflows/deploy.yml@refs/heads/main",
+	})}, Deployment: "prod"}
 }
 
 // TestCISenderNamedBySignalPolicy checks that a signal policy can name a CI job
@@ -52,7 +46,7 @@ func TestCISenderNamedBySignalPolicy(t *testing.T) {
 	// branch is part of the subject the platform mints, so an exact match is
 	// already branch-specific with nothing extra written.
 	otherBranch := ciIdentity()
-	otherBranch.Subject = "repo:octo-org/octo-repo:ref:refs/heads/topic"
+	otherBranch.Principal.Subject = "repo:octo-org/octo-repo:ref:refs/heads/topic"
 	require.False(t, policyAllows(t, bySubject, otherBranch),
 		"another branch of the same repository is a different subject")
 
@@ -96,6 +90,6 @@ func TestCIIdentityInTaskPolicyRules(t *testing.T) {
 
 	// A run from another repository satisfies no allow rule.
 	other := ciIdentity()
-	other.Claims = map[string]string{"repository": "octo-org/other-repo"}
+	other.Principal.Claims = v1.StringClaimValues(map[string]string{"repository": "octo-org/other-repo"})
 	require.Error(t, policy.Check(context.Background(), "http.request", other))
 }

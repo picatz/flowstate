@@ -260,7 +260,7 @@ func TestCIVendorClaimShapes(t *testing.T) {
 			issuer := newTestIssuer(t, authtest.WithClock(clock.Now), authtest.WithKeys(key))
 
 			verifier, err := auth.NewOIDCVerifier(auth.Policy{
-				Issuers: []auth.TrustedIssuer{{
+				Issuers: []auth.TrustedIssuer{{Actions: []string{},
 					Name:        fixture.name,
 					Issuer:      issuer.URL(),
 					Audiences:   []string{"https://flowstate.example.com"},
@@ -345,7 +345,7 @@ func TestCIVendorDocumentedIssuerIsMatchedExactly(t *testing.T) {
 			// entry just has to be a valid one; the pinning rule has its own
 			// tests in multitenant_test.go.
 			verifier, err := auth.NewOIDCVerifier(auth.Policy{
-				Issuers: []auth.TrustedIssuer{{
+				Issuers: []auth.TrustedIssuer{{Actions: []string{},
 					Name:      fixture.name,
 					Issuer:    fixture.documentedIssuer,
 					Audiences: []string{"https://flowstate.example.com"},
@@ -395,7 +395,7 @@ func TestCIVendorTenantClaims(t *testing.T) {
 			token := fixture.principal.mint(issuer, "https://flowstate.example.com")
 
 			t.Run("a path-shaped claim can never be a namespace on its own", func(t *testing.T) {
-				verifier := verifierFor(t, auth.TrustedIssuer{NamespaceClaim: fixture.unmappableClaim})
+				verifier := verifierFor(t, auth.TrustedIssuer{Actions: []string{}, NamespaceClaim: fixture.unmappableClaim})
 
 				principal, err := verifier.Verify(context.Background(), token)
 				require.Error(t, err, "%q names more than one thing, so it cannot be a tenant",
@@ -406,7 +406,7 @@ func TestCIVendorTenantClaims(t *testing.T) {
 			})
 
 			t.Run("a name-shaped claim maps directly when it is already legal", func(t *testing.T) {
-				verifier := verifierFor(t, auth.TrustedIssuer{NamespaceClaim: fixture.directNamespaceClaim})
+				verifier := verifierFor(t, auth.TrustedIssuer{Actions: []string{}, NamespaceClaim: fixture.directNamespaceClaim})
 
 				principal, err := verifier.Verify(context.Background(), token)
 				require.NoError(t, err)
@@ -414,7 +414,7 @@ func TestCIVendorTenantClaims(t *testing.T) {
 			})
 
 			t.Run("namespace_map carries the tenant claim whatever its shape", func(t *testing.T) {
-				verifier := verifierFor(t, auth.TrustedIssuer{
+				verifier := verifierFor(t, auth.TrustedIssuer{Actions: []string{},
 					NamespaceClaim: fixture.tenantClaim,
 					NamespaceMap:   map[string]string{fixture.tenantValue: "platform"},
 				})
@@ -428,7 +428,7 @@ func TestCIVendorTenantClaims(t *testing.T) {
 				// The negative direction: same platform, same issuer, same
 				// signature, a tenant the operator did not list. Nothing about
 				// it may reach the mapped namespace.
-				verifier := verifierFor(t, auth.TrustedIssuer{
+				verifier := verifierFor(t, auth.TrustedIssuer{Actions: []string{},
 					NamespaceClaim: fixture.tenantClaim,
 					NamespaceMap:   map[string]string{"some-other-tenant": "platform"},
 				})

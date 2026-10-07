@@ -144,7 +144,7 @@ func commandContext(cmd *cobra.Command) context.Context {
 func addEgressPolicyFlag(cmd *cobra.Command) {
 	cmd.Flags().String("egress-policy", os.Getenv(egressPolicyEnv),
 		"path to an egress policy (YAML) governing built-in HTTP and granted to every plugin the worker launches "+
-			"(default $"+egressPolicyEnv+"); the first-party git, github, slack, sql and vcs plugins enforce the "+
+			"(default $"+egressPolicyEnv+"); the first-party anthropic, git, github, slack, sql, ssh and vcs plugins enforce the "+
 			"grant on their own connections; Codex CLI control-plane traffic always bypasses the grant, while network "+
 			"from commands its agent starts follows Codex sandbox policy, and a third-party plugin can ignore the grant; "+
 			"with no file, plugins are granted the default policy built-in HTTP runs under, which sql "+
@@ -172,42 +172,9 @@ func applyEgressPolicy(cmd *cobra.Command) error {
 		return nil
 	}
 
-	file, err := os.Open(path)
+	data, policy, err := loadEgressPolicy(path)
 	if err != nil {
-		return fmt.Errorf("reading egress policy: %w", err)
-	}
-	defer file.Close()
-
-	data, err := io.ReadAll(io.LimitReader(file, maxEgressPolicyBytes+1))
-	if err != nil {
-		return fmt.Errorf("reading egress policy: %w", err)
-	}
-	if len(data) > maxEgressPolicyBytes {
-		return fmt.Errorf("reading egress policy %s: file exceeds the %d-byte limit", path, maxEgressPolicyBytes)
-	}
-
-	cfg, err := netpolicy.ParseConfig(data)
-	if err != nil {
-		return fmt.Errorf("parsing egress policy %s: %w", path, err)
-	}
-
-	// deployment_default is the worker's own signature on the document it grants
-	// a plugin when no operator file was configured, and a plugin decides what
-	// it will do under the default from it (sql refuses a database; git, vcs,
-	// github and slack accept). An operator file wearing that signature would be
-	// telling those plugins the operator had written nothing — refused here, at
-	// the one place an operator's own bytes enter, rather than left to mean
-	// something different in each plugin that reads it.
-	if cfg.DeploymentDefault {
-		return fmt.Errorf(
-			"egress policy %s sets deployment_default; that key marks the default policy a worker "+
-				"grants its plugins when no --egress-policy is configured, and is not something a "+
-				"policy file says about itself — delete it", path)
-	}
-
-	policy, err := cfg.Policy()
-	if err != nil {
-		return fmt.Errorf("egress policy %s: %w", path, err)
+		return err
 	}
 
 	// Non-nil even for a zero-byte file. Nil is how this command spells "no
@@ -228,6 +195,52 @@ func applyEgressPolicy(cmd *cobra.Command) error {
 	}
 
 	return nil
+}
+
+// loadEgressPolicy reads and compiles an egress policy file: the one path an
+// operator's bytes take into a policy, shared by [applyEgressPolicy], which
+// enforces it, and `flow policy test`, which asks it questions. It returns the
+// exact bytes parsed alongside the policy built from them.
+func loadEgressPolicy(path string) ([]byte, *netpolicy.Policy, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, nil, fmt.Errorf("reading egress policy: %w", err)
+	}
+	defer file.Close()
+
+	data, err := io.ReadAll(io.LimitReader(file, maxEgressPolicyBytes+1))
+	if err != nil {
+		return nil, nil, fmt.Errorf("reading egress policy: %w", err)
+	}
+	if len(data) > maxEgressPolicyBytes {
+		return nil, nil, fmt.Errorf("reading egress policy %s: file exceeds the %d-byte limit", path, maxEgressPolicyBytes)
+	}
+
+	cfg, err := netpolicy.ParseConfig(data)
+	if err != nil {
+		return nil, nil, fmt.Errorf("parsing egress policy %s: %w", path, err)
+	}
+
+	// deployment_default is the worker's own signature on the document it grants
+	// a plugin when no operator file was configured, and a plugin decides what
+	// it will do under the default from it (sql refuses a database; git, vcs,
+	// github and slack accept). An operator file wearing that signature would be
+	// telling those plugins the operator had written nothing — refused here, at
+	// the one place an operator's own bytes enter, rather than left to mean
+	// something different in each plugin that reads it.
+	if cfg.DeploymentDefault {
+		return nil, nil, fmt.Errorf(
+			"egress policy %s sets deployment_default; that key marks the default policy a worker "+
+				"grants its plugins when no --egress-policy is configured, and is not something a "+
+				"policy file says about itself — delete it", path)
+	}
+
+	policy, err := cfg.Policy()
+	if err != nil {
+		return nil, nil, fmt.Errorf("egress policy %s: %w", path, err)
+	}
+
+	return data, policy, nil
 }
 
 // hasEgressPolicyFile reports whether cmd was given an explicit --egress-policy

@@ -13,6 +13,7 @@ import (
 	"github.com/picatz/flowstate/pkg/flowstate/v1/audit"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/authtest"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/authz"
 )
 
 // actionsToolRequest verifies a real token against a policy entry holding
@@ -24,6 +25,12 @@ func actionsToolRequest(t *testing.T, granted auth.ActionScopes, claims map[stri
 
 	issuer := authtest.NewIssuer()
 	t.Cleanup(func() { _ = issuer.Close() })
+
+	// An entry must name its actions, so a test that is not about authority
+	// passes none and is given every one.
+	if granted == nil {
+		granted = everyAction
+	}
 
 	verifier, err := auth.NewOIDCVerifier(auth.Policy{
 		Issuers: []auth.TrustedIssuer{{
@@ -55,7 +62,6 @@ func TestMCPToolsAreGatedByTheCallersEffectiveActions(t *testing.T) {
 		tool    string
 		allowed bool
 	}{
-		{"no action list restricts nothing", nil, nil, "flowstate_run_local", true},
 		{"listed action is allowed", auth.ActionScopes{"mcp.run_local"}, nil, "flowstate_run_local", true},
 		{"unlisted action is refused", auth.ActionScopes{"mcp.test"}, nil, "flowstate_run_local", false},
 		{"an empty list grants nothing", auth.ActionScopes{}, nil, "flowstate_run_local", false},
@@ -115,4 +121,81 @@ func TestMCPDeniedCallReportsARequiredSinkFailure(t *testing.T) {
 	text, ok := result.Content[0].(*mcp.TextContent)
 	require.True(t, ok)
 	require.NotContains(t, text.Text, privateSinkDetail)
+}
+
+// TestMCPExtraDeciderRefusesWhatThePolicyGrants proves an embedder's decider
+// narrows the trust policy on this surface and never widens it.
+func TestMCPExtraDeciderRefusesWhatThePolicyGrants(t *testing.T) {
+	t.Parallel()
+
+	refuse := authz.DeciderFunc(func(context.Context, authz.Request) authz.Decision {
+		return authz.Decision{Scope: "freeze"}
+	})
+	allow := authz.DeciderFunc(func(context.Context, authz.Request) authz.Decision {
+		return authz.Decision{Allowed: true}
+	})
+
+	for name, test := range map[string]struct {
+		extra   authz.Decider
+		granted auth.ActionScopes
+		allowed bool
+	}{
+		"a refusing decider narrows a grant":         {refuse, auth.ActionScopes{"mcp.run_local"}, false},
+		"an allowing decider changes nothing":        {allow, auth.ActionScopes{"mcp.run_local"}, true},
+		"an allowing decider never widens a refusal": {allow, auth.ActionScopes{"mcp.test"}, false},
+		"no decider is the trust policy alone":       {nil, auth.ActionScopes{"mcp.run_local"}, true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			var reached bool
+			handler := wrapToolHandler(Deps{Decider: test.extra}, "flowstate_run_local",
+				func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+					reached = true
+					return &mcp.CallToolResult{}, nil
+				})
+
+			result, err := handler(t.Context(), actionsToolRequest(t, test.granted, nil))
+			require.NoError(t, err)
+			require.Equal(t, test.allowed, reached)
+			require.Equal(t, !test.allowed, result.IsError)
+		})
+	}
+}
+
+// TestMCPStdioCallerWithNoPrincipalIsUnrestricted proves the open zero case of
+// the stdio transport: with no principal and no embedder decider every tool is
+// reached, including one bound to no action, and an embedder's decider still
+// narrows it.
+func TestMCPStdioCallerWithNoPrincipalIsUnrestricted(t *testing.T) {
+	t.Parallel()
+
+	request := &mcp.CallToolRequest{Params: &mcp.CallToolParamsRaw{Arguments: json.RawMessage(`{}`)}}
+	refuse := authz.DeciderFunc(func(context.Context, authz.Request) authz.Decision { return authz.Decision{} })
+
+	for name, test := range map[string]struct {
+		extra   authz.Decider
+		tool    string
+		reached bool
+	}{
+		"an ordinary tool is reached":          {nil, "flowstate_run_local", true},
+		"a tool bound to no action is reached": {nil, "flowstate_unbound_tool", true},
+		"an embedder's decider still narrows":  {refuse, "flowstate_run_local", false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			var reached bool
+			handler := wrapToolHandler(Deps{Decider: test.extra}, test.tool,
+				func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+					reached = true
+					return &mcp.CallToolResult{}, nil
+				})
+
+			result, err := handler(t.Context(), request)
+			require.NoError(t, err)
+			require.Equal(t, test.reached, reached)
+			require.Equal(t, !test.reached, result.IsError)
+		})
+	}
 }

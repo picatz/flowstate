@@ -58,6 +58,10 @@ func (p *Plugin) taskDef(manifest *pluginv1.TaskManifest, cfg Config) (flowstate
 		return flowstatev1.TaskDef{}, err
 	}
 
+	if err := checkDescriptorSecretClaims(inputs, manifest.GetSecretInputs(), manifest.GetRequiredSecretInputs()); err != nil {
+		return flowstatev1.TaskDef{}, pluginError(p.name, p.path, fmt.Errorf("task %q: %w", textbound.Truncate(name, 64), err))
+	}
+
 	return flowstatev1.TaskDef{
 		Name:           qualified,
 		Summary:        manifest.GetSummary(),
@@ -133,6 +137,54 @@ func checkManifestInputNames(inputs protoreflect.MessageDescriptor, manifest *pl
 	return check(manifest.GetRequiredSecretInputs(), "required_secret_inputs")
 }
 
+// checkDescriptorSecretClaims refuses a task whose manifest lists and whose
+// input descriptor disagree about which inputs accept a secret reference.
+//
+// The descriptor is the source of truth for the claims (the `flowstate.v1.input`
+// option on a field); the manifest lists are carried until the protocol drops
+// them, and a disagreement either way is a plugin the host cannot trust to mean
+// what it says. A nested claim is refused outright: no plugin task input accepts
+// a reference inside a list or a mapping (see [resolvePluginSecretInputs]).
+func checkDescriptorSecretClaims(inputs protoreflect.MessageDescriptor, secretInputs, requiredSecretInputs []string) error {
+	whole, required, nested, err := flowstatev1.SecretInputClaims(inputs)
+	if err != nil {
+		return fmt.Errorf("inputs: %w", err)
+	}
+	if len(nested) > 0 {
+		return fmt.Errorf("input %q declares SECRET_NESTED, which no plugin task input accepts",
+			textbound.Truncate(nested[0], 64))
+	}
+
+	for _, c := range []struct {
+		label    string
+		manifest []string
+		derived  []string
+	}{
+		{"secret_inputs", secretInputs, whole},
+		{"required_secret_inputs", requiredSecretInputs, required},
+	} {
+		declared := slices.Sorted(slices.Values(c.manifest))
+		declared = slices.Compact(declared)
+		if slices.Equal(declared, c.derived) {
+			continue
+		}
+		for _, name := range declared {
+			if !slices.Contains(c.derived, name) {
+				return fmt.Errorf("%s names %q but its input descriptor does not declare it with the flowstate.v1.input option",
+					c.label, textbound.Truncate(name, 64))
+			}
+		}
+		for _, name := range c.derived {
+			if !slices.Contains(declared, name) {
+				return fmt.Errorf("input %q is declared secret in its descriptor but %s does not name it",
+					textbound.Truncate(name, 64), c.label)
+			}
+		}
+	}
+
+	return nil
+}
+
 // taskFunc returns the function that executes a task by asking the plugin to.
 func (p *Plugin) taskFunc(manifest *pluginv1.TaskManifest, outputDescriptor protoreflect.MessageDescriptor) flowstatev1.TaskFunc {
 	// Two names for one task, each used where it is true. The wire carries the
@@ -198,7 +250,7 @@ func (p *Plugin) taskFunc(manifest *pluginv1.TaskManifest, outputDescriptor prot
 				Inputs: resolvedInputs,
 			},
 			Identity:  identity,
-			Namespace: identity.GetNamespace(),
+			Namespace: identity.GetPrincipal().GetNamespace(),
 		}
 
 		// The scope travels only when the manifest said the task evaluates its
@@ -484,6 +536,15 @@ func resolvePluginSecretInputs(
 				"input %q holds a secret reference nested inside a list or a mapping, "+
 					"which no plugin task input accepts", name))
 
+		case flowstatev1.ValueHoldsCredentialRef(v):
+			// Refused here rather than forwarded: the host does not mint a
+			// credential for a plugin task yet, and passing the reference through
+			// would hand a plugin a name it cannot resolve and a host contract it
+			// never agreed to. The host resolution that accepts one for a
+			// declared input replaces this arm.
+			return nil, nil, flowstatev1.NewTaskError(taskName, flowstatev1.ErrorKindInvalidInput, fmt.Errorf(
+				"input %q is a credential reference, which no plugin task input accepts", name))
+
 		default:
 			resolved[name] = v
 		}
@@ -530,6 +591,11 @@ func scrubPluginOutputs(scrubber *secrets.Scrubber, outputs *flowstatev1.Node_Ou
 		if flowstatev1.ValueHoldsSecretRef(v) {
 			return fmt.Errorf(
 				"output %q holds a secret reference, which a task output must never be: "+
+					"step outputs are written to workflow history", name)
+		}
+		if flowstatev1.ValueHoldsCredentialRef(v) {
+			return fmt.Errorf(
+				"output %q holds a credential reference, which a task output must never be: "+
 					"step outputs are written to workflow history", name)
 		}
 		if v == nil {

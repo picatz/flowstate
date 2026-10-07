@@ -3,6 +3,7 @@ syntax = "proto3";
 package flowstate.v1;
 
 import "buf/validate/validate.proto";
+import "google/protobuf/struct.proto";
 
 option go_package = "flowstatev1";
 
@@ -51,6 +52,122 @@ enum PrincipalKind {
   PRINCIPAL_KIND_AGENT = 3;
 }
 
+// Principal is an authenticated party: who they are, which tenant they belong
+// to, what sort of party they are, and what the operator chose to carry from
+// the credential that admitted them.
+//
+// It is the one wire shape of "the caller". A run's [WorkloadIdentity] holds one,
+// a policy-check row names one, and every operator-written policy surface (egress,
+// exec, task shape, secret access, credential assumption, signal predicates)
+// reads the same rendering of it as `identity`: `identity.issuer`,
+// `identity.subject`, `identity.namespace`, `identity.kind`, `identity.principal`
+// (the `issuer#subject` join), `identity.claims` and `identity.actions`.
+//
+// It holds identity, never credentials: it is persisted in workflow history,
+// which is durable and broadly readable, so nothing secret may appear here.
+message Principal {
+  // Issuer is the identity provider that vouched for the subject.
+  string issuer = 1 [(buf.validate.field).string.max_bytes = 1024];
+
+  // Subject identifies the caller within the issuer, as established by
+  // authenticating their request. Empty when the run was started without
+  // authentication, which is only possible in development.
+  string subject = 2 [(buf.validate.field).string.max_bytes = 1024];
+
+  // Namespace is the tenant, and it is the boundary every authorization decision
+  // about a run turns on: the caller's namespace is compared against the one
+  // recorded on the run, and a mismatch is answered "no such run".
+  //
+  // It comes from the trust policy entry that admitted the caller, never from
+  // the request, and when the policy names none the deployment's own namespace
+  // is recorded here, so a run has exactly one tenant to compare.
+  string namespace = 3 [(buf.validate.field).string.max_bytes = 1024];
+
+  // Kind is what sort of party the subject is, as the operator's trust policy
+  // assigned it when it admitted the caller. UNSPECIFIED when the policy
+  // assigned none. A receiver that does not know a value treats it as
+  // UNSPECIFIED, so an unknown kind is never read as a more trusted one.
+  PrincipalKind kind = 4;
+
+  // IssuerEntry is the name of the trust policy entry that admitted the caller,
+  // so an audit record names the rule that granted access and not only the
+  // issuer that signed the token.
+  string issuer_entry = 5 [(buf.validate.field).string.max_bytes = 128];
+
+  // Claims carries the non-secret claims from the caller's token that authorization
+  // decisions may key on, such as a repository, a team, or a `groups` list. Only
+  // claims an operator has named in the admitting entry are copied here, so this
+  // does not become a dumping ground for whole tokens. A value may be any JSON
+  // shape, so a rule reads `identity.claims.groups` as a list and
+  // `identity.claims.slack.user` as a nested object, and guards an absent claim
+  // with `"k" in identity.claims`; reading one the caller lacks is an error, and
+  // an errored rule denies.
+  //
+  // The bounds say the same thing the sentence above says, in a form the machine
+  // enforces. 32 pairs is ten times the largest set anything in this repository
+  // carries; the key length is the signal-policy comparison's own 128, since both
+  // name claims out of the same tokens. They are the schema half of
+  // `auth.MaxCarriedClaims` and its neighbours, which refuse the same sizes at
+  // mint: a claim set is a wire format that gets signed and cached by relying
+  // parties, so an oversized one has to be refused rather than truncated — a
+  // truncated claim set is a token that says something other than what was
+  // authorized.
+  //
+  // `max_bytes` and not `max_len`, deliberately. protovalidate's `max_len` is
+  // `this.size()`, which counts Unicode *code points*; `max_bytes` is
+  // `bytes(this).size()`, which is what Go's `len` on a string counts and what
+  // the Go bound therefore enforces. Under `max_len` a value of 700 two-byte runes
+  // passes the schema at 700 and is refused at the mint at 1400 bytes — one limit
+  // written down twice in two units. Same number, same unit, both layers.
+  //
+  // A string value is bounded at 1024 bytes, more than a match pattern's 256
+  // because a carried value is data (the longest real one measured here is a
+  // 63-byte GitHub Actions `job_workflow_ref`).
+  //
+  // What the schema cannot say is the shape of a value that is itself a list or
+  // an object: protovalidate has no recursion. The reader bounds that where the
+  // work is spent. `auth.WorkloadIdentity.WithWireClaims` walks no deeper than 4
+  // levels nor past 512 values in one claim, and a claim over either is left out
+  // and remembered as refused, so a rule reading it errors (which denies) and
+  // every credential mint for the identity fails. The mint then holds a list or
+  // object claim to 4096 bytes, by the same function that measured it.
+  map<string, google.protobuf.Value> claims = 6 [
+    (buf.validate.field).map = {
+      max_pairs: 32
+      keys: {
+        string: {
+          min_bytes: 1
+          max_bytes: 128
+        }
+      }
+    },
+    (buf.validate.field).cel = {
+      id: "principal.claims.string_value_bytes"
+      message: "a string claim value must be at most 1024 bytes"
+      expression: "this.all(k, type(this[k]) != string || bytes(this[k]).size() <= 1024)"
+    }
+  ];
+
+  // Actions are the canonical action scopes the admitting entry granted, such as
+  // `run.start`; a rule reads them as `identity.actions`. Empty means none were
+  // carried, which a rule reads as no action matched, not as every action.
+  repeated string actions = 7 [(buf.validate.field).repeated = {
+    max_items: 64
+    unique: true
+    items: {
+      string: {
+        min_bytes: 1
+        max_bytes: 128
+      }
+    }
+  }];
+
+  // Reserved for the delegation chain (`actors`), which is added with the slice
+  // that enforces it and not before.
+  reserved 8;
+  reserved "actors";
+}
+
 // WorkloadIdentity describes who a run acts as.
 //
 // A running workload has two identities at once, and both matter. It is a
@@ -66,78 +183,30 @@ enum PrincipalKind {
 // persisted in workflow history, which is durable and broadly readable, so
 // nothing secret may appear here.
 message WorkloadIdentity {
-  // Subject identifies the caller that requested the run, as established by
-  // authenticating their request. Empty when the run was started without
+  // The fields that described the caller directly (`subject`, `issuer`, `claims`,
+  // `namespace`, `principal_kind`) live on [Principal] now, so a caller is one
+  // shape wherever it appears.
+  reserved 1, 2, 3, 4, 7;
+  reserved "subject", "issuer", "claims", "namespace", "principal_kind";
+
+  // Principal is the caller that requested the run, as established by
+  // authenticating their request. Unset when the run was started without
   // authentication, which is only possible in development.
-  string subject = 1;
-
-  // Issuer is the identity provider that vouched for the subject.
-  string issuer = 2;
-
-  // Claims carries additional non-secret claims from the caller's token that
-  // authorization decisions may key on, such as a repository, environment, or
-  // team. Only claims an operator has configured as relevant are copied here,
-  // so this does not become a dumping ground for whole tokens.
-  //
-  // The bounds say the same thing the sentence above says, in a form the
-  // machine enforces. They are the schema half of `auth.MaxCarriedClaims` and
-  // its neighbours, which refuse the same sizes at mint: a claim set is a wire
-  // format that gets signed and cached by relying parties, so an oversized one
-  // has to be refused rather than truncated — a truncated claim set is a token
-  // that says something other than what was authorized.
-  //
-  // 32 pairs is ten times the largest set anything in this repository carries
-  // and twice the sixteen claims a signal policy once compared; the key length
-  // is that comparison's own 128, since both name claims out of the same
-  // tokens. Values get 1024 rather than 256 because a carried value is data and
-  // not a match pattern — the longest real one measured here is a 63-byte GitHub
-  // Actions `job_workflow_ref`.
-  //
-  // `max_bytes` and not `max_len`, deliberately, and this is the whole reason
-  // the unit is named in these field names. protovalidate's `max_len` is
-  // `this.size()`, which counts Unicode *code points*; `max_bytes` is
-  // `bytes(this).size()`, which is what Go's `len` on a string counts and what
-  // `auth.validateCarriedClaims` therefore enforces. Under `max_len` a value of
-  // 700 two-byte runes passes the schema at 700 and is refused at the mint at
-  // 1400 bytes — one limit written down twice in two units, so the schema and
-  // the mint disagree about which identities are valid, and the identity that
-  // falls in the gap validates and then cannot obtain a credential. Same
-  // number, same unit, both layers.
-  map<string, string> claims = 3 [(buf.validate.field).map = {
-    max_pairs: 32
-    keys: {
-      string: {
-        min_bytes: 1
-        max_bytes: 128
-      }
-    }
-    values: {string: {max_bytes: 1024}}
-  }];
-
-  // Namespace is the tenant, and it is the boundary every authorization decision
-  // about a run turns on: the caller's namespace is compared against the one
-  // recorded on the run, and a mismatch is answered "no such run".
-  //
-  // Worth stating outright, because this field used to be described alongside
-  // `deployment` as identifying "which Flowstate installation is running the
-  // workload". That is what `deployment` is for. Reading the two as a pair
-  // suggests both are labels for telling environments apart, and one of them
-  // decides who may act on what.
-  string namespace = 4;
+  Principal principal = 8;
 
   // Deployment identifies which Flowstate installation is running the workload,
   // so an assertion from a staging deployment is distinguishable from a
   // production one.
   //
-  // Not the tenant, and not what run access turns on: that is `namespace`
-  // above. But not decorative either: an outbound authorization policy sees it as
-  // `workload.deployment` and may key on it, which is how a rule like
-  // `target == "internal" && workload.deployment == "prod"` keeps a staging
-  // installation from assuming a production role.
+  // Not the tenant, and not what run access turns on: that is
+  // `principal.namespace`. But not decorative either: an outbound authorization
+  // policy sees it as `workload.deployment` and may key on it, which is how a
+  // rule like `target == "internal" && workload.deployment == "prod"` keeps a
+  // staging installation from assuming a production role.
   //
-  // So the two are load-bearing for different decisions. `namespace` decides who
-  // may act on a run; `deployment` is one of the attributes a policy may use to
-  // decide what a run may reach.
+  // So the two are load-bearing for different decisions. `principal.namespace`
+  // decides who may act on a run; `deployment` is one of the attributes a policy
+  // may use to decide what a run may reach.
   string deployment = 5;
 
   // Mode is operational context, not a credential or an identity claim. When
@@ -156,9 +225,4 @@ message WorkloadIdentity {
   // or replace this value with UNSPECIFIED rather than relay a caller-supplied
   // one.
   WorkloadIdentityMode mode = 6;
-
-  // PrincipalKind is what sort of party the subject is, as the operator's trust
-  // policy assigned it when it admitted the caller. UNSPECIFIED when the policy
-  // assigned none. Identity, not a credential, so it is safe in durable history.
-  PrincipalKind principal_kind = 7;
 }

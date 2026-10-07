@@ -77,6 +77,9 @@ func TestTrustedIssuerFieldsAreAccountedFor(t *testing.T) {
 		"Namespace":      "determined after admission; failure rejects, never falls through",
 		"NamespaceClaim": "same",
 		"NamespaceMap":   "same",
+		"CarryClaims":    "shapes the principal's claims after an entry has already won",
+		"GroupsClaim":    "same",
+		"GroupMap":       "same",
 		"JWKSURL":        "entries sharing an issuer must already agree on it (Policy.Validate)",
 		"JWKSFile":       "entries sharing an issuer must already agree on it (Policy.Validate)",
 	}
@@ -224,7 +227,7 @@ func shadowTestEntries() []TrustedIssuer {
 		for _, alg := range algs {
 			for _, age := range ages {
 				for _, rule := range rules {
-					entries = append(entries, TrustedIssuer{
+					entries = append(entries, TrustedIssuer{Actions: []string{},
 						Name:        "entry",
 						Issuer:      "https://issuer.example",
 						Audiences:   audience,
@@ -292,17 +295,17 @@ func shadowTestTokens() []shadowToken {
 // shadow one another: two entries share a key only where
 // [TrustedIssuer.shadows] could possibly return true for them.
 func TestShadowKeySeparatesEntriesThatCannotCompete(t *testing.T) {
-	oidc := TrustedIssuer{Issuer: "https://issuer.example", Audiences: []string{"flowstate"}}
-	otherOIDC := TrustedIssuer{Issuer: "https://other.example", Audiences: []string{"flowstate"}}
-	mesh := TrustedIssuer{Kind: IssuerKindMTLS, Issuer: "mesh-ca", ClientCAFile: "/ca.pem", SubjectFrom: SubjectFromURISAN}
-	otherMesh := TrustedIssuer{Kind: IssuerKindMTLS, Issuer: "mesh-ca", ClientCAFile: "/other-ca.pem", SubjectFrom: SubjectFromURISAN}
-	future := TrustedIssuer{Name: "spiffe-one", Kind: "spiffe"}
-	otherFuture := TrustedIssuer{Name: "spiffe-two", Kind: "spiffe"}
+	oidc := TrustedIssuer{Actions: []string{}, Issuer: "https://issuer.example", Audiences: []string{"flowstate"}}
+	otherOIDC := TrustedIssuer{Actions: []string{}, Issuer: "https://other.example", Audiences: []string{"flowstate"}}
+	mesh := TrustedIssuer{Actions: []string{}, Kind: IssuerKindMTLS, Issuer: "mesh-ca", ClientCAFile: "/ca.pem", SubjectFrom: SubjectFromURISAN}
+	otherMesh := TrustedIssuer{Actions: []string{}, Kind: IssuerKindMTLS, Issuer: "mesh-ca", ClientCAFile: "/other-ca.pem", SubjectFrom: SubjectFromURISAN}
+	future := TrustedIssuer{Actions: []string{}, Name: "spiffe-one", Kind: "spiffe"}
+	otherFuture := TrustedIssuer{Actions: []string{}, Name: "spiffe-two", Kind: "spiffe"}
 
 	// Entries that can compete share a key: an explicit kind: oidc and the
 	// default empty one are the same kind.
-	require.Equal(t, oidc.shadowKey(), TrustedIssuer{Kind: IssuerKindOIDC, Issuer: oidc.Issuer}.shadowKey())
-	require.Equal(t, mesh.shadowKey(), TrustedIssuer{
+	require.Equal(t, oidc.shadowKey(), TrustedIssuer{Actions: []string{}, Kind: IssuerKindOIDC, Issuer: oidc.Issuer}.shadowKey())
+	require.Equal(t, mesh.shadowKey(), TrustedIssuer{Actions: []string{},
 		Kind: IssuerKindMTLS, Issuer: "another-label", ClientCAFile: "/ca.pem",
 	}.shadowKey(), "mtls candidates are selected by CA pool, not by the issuer label")
 

@@ -2,12 +2,14 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
 	"strings"
 
 	"github.com/picatz/flowstate/pkg/flowstate/v1/credentialsource"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/deviceflow"
 )
 
 // How the CLI proves who it is.
@@ -31,7 +33,8 @@ import (
 // check it against --audience rather than minting for it, because neither
 // platform can be asked for a second token; "file" and "env" force the
 // token-file or FLOWSTATE_TOKEN reading below even when the other would
-// otherwise win.
+// otherwise win, and "login" presents the stored `flow login` token (FLOWSTATE_ISSUER
+// and FLOWSTATE_CLIENT_ID choose among several).
 // Naming a source is asking for a credential, so any of them failing to
 // produce one is a refusal — never a silent slide into anonymous.
 //
@@ -42,6 +45,11 @@ import (
 //     projects a service account token to a path and rotates the file
 //     underneath you.
 //   - FLOWSTATE_TOKEN, for a token already in the environment.
+//   - The login `flow login` stored (the "login" source), refreshed when it is
+//     near expiry. Consulted only when the two above name nothing, so it
+//     changes nothing for anyone who never logged in; once a login exists, one
+//     that cannot be renewed is an error telling the user to run `flow login`,
+//     never a slide into anonymous.
 //   - Nothing, which is anonymous — the right answer against a development
 //     server started with --insecure-no-auth.
 //
@@ -68,13 +76,28 @@ var allowPlaintextCredential = os.Getenv("FLOWSTATE_INSECURE_PLAINTEXT_TOKEN") =
 // than an error.
 func credentialSourceFor(server serverFlags) (credentialsource.Source, error) {
 	if server.credentialSource != "" {
+		issuer, clientID := loginSelectorFromEnv()
 		return credentialsource.Resolve(server.credentialSource, credentialsource.Config{
 			Audience:  server.audience,
 			TokenFile: server.tokenFile,
+			Issuer:    issuer,
+			ClientID:  clientID,
 		})
 	}
 
-	return defaultSource{tokenFile: server.tokenFile}, nil
+	return defaultSource{tokenFile: server.tokenFile, login: defaultLoginSource()}, nil
+}
+
+// defaultLoginSource is the stored `flow login` credential the default chain
+// falls back to, or nil where there is nowhere to look (no user config
+// directory), which is the same as no login.
+func defaultLoginSource() credentialsource.Source {
+	store, err := deviceflow.DefaultStore()
+	if err != nil {
+		return nil
+	}
+	issuer, clientID := loginSelectorFromEnv()
+	return credentialsource.NewLoginSource(store, issuer, clientID)
 }
 
 // defaultSource is the CLI's behavior when no --credential-source was named:
@@ -86,7 +109,13 @@ func credentialSourceFor(server serverFlags) (credentialsource.Source, error) {
 // re-read-every-call treatment [credentialsource.NewFileSource] documents,
 // through the same implementation an explicitly named "file" or "env" source
 // uses.
-type defaultSource struct{ tokenFile string }
+type defaultSource struct {
+	tokenFile string
+
+	// login is consulted last, and only by [credentialSourceFor]: nil where
+	// a caller wants a token file or FLOWSTATE_TOKEN and nothing else.
+	login credentialsource.Source
+}
 
 func (defaultSource) Name() string { return "default" }
 
@@ -100,26 +129,22 @@ func (d defaultSource) Token(ctx context.Context) (credentialsource.Token, error
 	// [credentialsource.NewEnvSource]. The difference is exactly whether a
 	// credential was asked for by name.
 	if strings.TrimSpace(os.Getenv("FLOWSTATE_TOKEN")) == "" {
-		return credentialsource.Token{}, nil
+		if d.login == nil {
+			return credentialsource.Token{}, nil
+		}
+
+		// No stored login is anonymous too. A stored one that is loose,
+		// ambiguous or unrenewable is not: someone logged in, so silently
+		// sending nothing would turn a credential problem into a confusing
+		// "unauthenticated".
+		token, err := d.login.Token(ctx)
+		if errors.Is(err, deviceflow.ErrNotLoggedIn) {
+			return credentialsource.Token{}, nil
+		}
+		return token, err
 	}
 
 	return credentialsource.NewEnvSource("FLOWSTATE_TOKEN").Token(ctx)
-}
-
-// readToken reads a bearer token the CLI's original way: a file if one is
-// named, else FLOWSTATE_TOKEN, else empty.
-//
-// This exists for callers outside the server-credential path that still want
-// exactly that precedence — registerVaultProvider in secrets.go reads a
-// Vault token file through it, bounded and re-read per call the same way a
-// Flowstate server token is.
-func readToken(tokenFile string) (string, error) {
-	token, err := defaultSource{tokenFile: tokenFile}.Token(context.Background())
-	if err != nil {
-		return "", err
-	}
-	raw, _ := token.Bearer()
-	return raw, nil
 }
 
 // tokenFor returns the bearer token to present to the given base URL, from
@@ -137,6 +162,9 @@ func readToken(tokenFile string) (string, error) {
 // what their network is; it is named so that finding it in a shell profile is
 // alarming.
 func tokenFor(ctx context.Context, baseURL string, source credentialsource.Source) (string, error) {
+	// Which server the token is for travels with the request, so a stored
+	// login made for one server is refused for any other.
+	ctx = credentialsource.ContextWithServerOrigin(ctx, baseURL)
 	token, err := source.Token(ctx)
 	if err != nil {
 		return "", err

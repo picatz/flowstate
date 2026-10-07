@@ -291,8 +291,7 @@ func init() {
 			Leading: " RevealSensitive asks for the values the run's workflow declared\n" +
 				" `sensitive: true` in the clear. The server withholds them by default, and\n" +
 				" honours this only for a caller whose policy entry lists the\n" +
-				" `workload.reveal_sensitive` action explicitly: an entry with no action list\n" +
-				" is not granted it. A caller without it is answered normally, with the\n" +
+				" `workload.reveal_sensitive` action explicitly: it is never implied. A caller without it is answered normally, with the\n" +
 				" values withheld and `sensitive_disclosure` saying so, rather than refused.\n",
 		},
 		{
@@ -954,6 +953,27 @@ func init() {
 				" since changed.\n",
 		},
 		{
+			Name:    "flowstate.v1.WhoamiRequest",
+			Leading: " WhoamiRequest asks who the server believes the caller is. It has no fields.\n",
+		},
+		{
+			Name:    "flowstate.v1.WhoamiResponse",
+			Leading: " WhoamiResponse is the caller as the server sees it.\n",
+		},
+		{
+			Name: "flowstate.v1.WhoamiResponse.principal",
+			Leading: " Principal is the caller's identity as established for this request. For\n" +
+				" an unauthenticated caller it names the anonymous issuer or is empty,\n" +
+				" never another party's identity.\n",
+		},
+		{
+			Name: "flowstate.v1.WhoamiResponse.authenticated",
+			Leading: " Authenticated is false when the server established no identity for the\n" +
+				" caller: an insecure development server that admits anonymous callers, or a\n" +
+				" deployment with no authentication. It is true only for a verified caller,\n" +
+				" so a reader need not recognize the anonymous issuer's spelling.\n",
+		},
+		{
 			Name:    "flowstate.v1.ValidateRequest",
 			Leading: " ValidateRequest is one or more files to check.\n",
 		},
@@ -1543,6 +1563,19 @@ func init() {
 				"\n" +
 				" It answers with no run id. The cluster takes the action after answering, so\n" +
 				" what the firing started is read back with [DescribeSchedule].\n",
+		},
+		{
+			Name: "flowstate.v1.WorkflowService.Whoami",
+			Leading: " Whoami answers with the caller's own [Principal]: the issuer, subject,\n" +
+				" namespace, kind, admitting policy entry, carried claims and actions the\n" +
+				" server established from the credential on this request. It is what\n" +
+				" `flow auth whoami` prints.\n" +
+				"\n" +
+				" Any caller may ask, whatever its policy entry's `actions:` list holds,\n" +
+				" because the answer is only what the caller already is. A caller that was\n" +
+				" not authenticated, which only an explicitly insecure development server\n" +
+				" admits, is answered with `authenticated` false and an anonymous\n" +
+				" principal, not with an error. The answer never contains the credential.\n",
 		},
 	})
 }

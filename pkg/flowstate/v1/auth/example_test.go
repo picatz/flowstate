@@ -20,7 +20,7 @@ import (
 // policy is well-formed and the verifier is ready.
 func ExampleNewOIDCVerifier() {
 	verifier, err := auth.NewOIDCVerifier(auth.Policy{
-		Issuers: []auth.TrustedIssuer{{
+		Issuers: []auth.TrustedIssuer{{Actions: []string{},
 			Name:      "ci",
 			Issuer:    "https://token.actions.githubusercontent.com",
 			Audiences: []string{"flowstate"},
@@ -50,13 +50,13 @@ func ExampleNewOIDCVerifier() {
 func ExampleNewOIDCVerifier_failClosed() {
 	_, err := auth.NewOIDCVerifier(auth.Policy{
 		Issuers: []auth.TrustedIssuer{
-			{
+			{Actions: []string{},
 				Name:      "tenant-a",
 				Issuer:    "https://issuer-a.example.com",
 				Audiences: []string{"flowstate"},
 				Namespace: "tenant-a",
 			},
-			{
+			{Actions: []string{},
 				Name:      "shared",
 				Issuer:    "https://issuer-b.example.com",
 				Audiences: []string{"flowstate"},

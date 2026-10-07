@@ -153,6 +153,7 @@ Reads are authorized by the `secrets:` section of the trust policy file given to
 ```yaml
 issuers:
   - name: ci
+    actions: [workload.run, workload.read]
     issuer: https://token.actions.githubusercontent.com
     audiences: [https://flowstate.example.com/rpc]
     require:
@@ -170,11 +171,13 @@ secrets:
 - No `secrets:` section, or no `allow` rule, means nothing may be read. A `deny`
   that matches wins, and a rule that errors denies.
 - A rule sees `secret.scheme` and `secret.name`; the authenticated caller as
-  `identity.subject`, `identity.issuer`, `identity.namespace`, and
-  `identity.claims`; and the workload as `workload.namespace`,
+  `identity.subject`, `identity.issuer`, `identity.namespace`, `identity.kind`
+  (`human`, `workload` or `agent`), `identity.actions`, and `identity.claims`;
+  and the workload as `workload.namespace`,
   `workload.workflow`, `workload.run`, `workload.step`, and related fields.
   Reading a claim that is not present is an error, which denies; guard it with
-  `"team" in identity.claims`.
+  `"team" in identity.claims`. A claim keeps its JSON shape, so a list reads as
+  `"sre" in identity.claims.groups` and a scalar read from a nested path (`{claim: slack.user, as: slack_user}`) as `identity.claims.slack_user`.
 - The file must also contain at least one valid `issuers:` entry, even on a
   worker, which does not authenticate callers itself. A server and its workers
   normally share one reviewed file.
@@ -242,7 +245,19 @@ federation:
 
 A target is one of `token_exchange`, `client_credentials`, `gcp`, `aws`, or
 `assertion` (present the signed assertion itself to a relying party that
-verifies OIDC). The generic `http` task does not apply AWS session credentials,
+verifies OIDC).
+
+A task input that takes a secret can take a target instead, written
+`${credential('partner-api')}` where it would write `${secret('env:KEY')}`. The
+specification carries the target's name, never a credential: the compiler turns
+it into a reference, workflow-side evaluation refuses to read it, and only the
+worker running the task mints it. It must be the whole value of the input, and
+it is refused in `vars:`, across a call, and anywhere the workflow evaluates
+the value itself. Naming a target the deployment's `federation:` does not
+configure fails when the workflow is validated (`flow validate` against a
+server, `flow run local` with a trust policy) or submitted, with a diagnostic
+that names the target and lists the configured ones; with no trust policy
+configured there is nothing to check it against. The generic `http` task does not apply AWS session credentials,
 which require SigV4 signing. [examples/http-federated](../examples/http-federated/)
 and [examples/federation-flow-to-flow](../examples/federation-flow-to-flow/) are
 worked examples.
@@ -253,20 +268,32 @@ worked examples.
 flow keys generate --out /etc/flowstate/keys/2026-09.pem
 ```
 
-`--identity-key` names the key. The worker signs assertions; the server
-publishes the public keys at `/.well-known/jwks.json`, beside
-`/.well-known/openid-configuration`, so relying parties can verify them. Give
-both processes the same ordered list of keys. Configuring `federation:` without
-a key, or a key without `federation:`, refuses to start.
+`--identity-key` names the key. The worker signs assertions with the PKCS#8
+private key; the server publishes the public keys at `/.well-known/jwks.json`,
+beside `/.well-known/openid-configuration`, so relying parties can verify them.
+The server's `--identity-key` takes only the PKIX public key PEM that
+`flow keys public --in KEY.pem --pem` prints, named like the worker's file so
+both publish one key id, and it refuses a private key at start-up: the server
+holds no signing key. Configuring `federation:` without a key, or a key without
+`federation:`, refuses to start.
 
-`--identity-key` repeats, and order matters: the first key signs, and every
-later one is published for verification only. To rotate:
+On a worker `--identity-key` repeats, and order matters: the first key signs,
+and every later one is published for verification only. The server's list is
+every key to publish, newest first. To rotate:
 
-1. Generate a new key.
+1. Generate a new key, and print its public half for the server.
 2. Restart the server and every worker with the new key first and the old key
    second. New assertions use the new key, and ones already issued still verify.
 3. After `federation.key_retention` (default 24h), restart them all with the new
    key alone, and delete the old one.
+
+The key need not be a file. `--identity-signer vault-transit://HOST/KEY` signs
+through a Vault or OpenBao Transit key whose private half never reaches the worker,
+and the server publishes the public versions it reads from the same key, in place
+of `--identity-key` on both. Rotation is then a rotation in Transit and a restart,
+with the older versions published for the overlap automatically; see
+[Signing keys in Vault Transit](DEPLOYMENT.md#signing-keys-in-vault-transit) for the
+policy it needs.
 
 [Workload identity federation](WORKLOAD_IDENTITY_FEDERATION.md) describes the
 metadata documents a relying party reads and what each cloud requires of them.

@@ -20,9 +20,10 @@ import (
 func newAuthCommand() *cobra.Command {
 	authCmd := &cobra.Command{
 		Use:   "auth",
-		Short: "Diagnose caller authentication against an auth policy",
+		Short: "Diagnose caller authentication: check a token against a policy, or ask who the server sees",
 	}
 	authCmd.AddCommand(newAuthCheckCommand())
+	authCmd.AddCommand(newAuthWhoamiCommand())
 	return authCmd
 }
 

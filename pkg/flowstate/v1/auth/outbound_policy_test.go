@@ -271,6 +271,7 @@ func TestPolicyCarriesBothDirections(t *testing.T) {
 	policy, err := auth.ParsePolicy([]byte(`
 issuers:
   - name: github-actions
+    actions: []
     issuer: https://token.actions.githubusercontent.com
     audiences: [flowstate]
     role: deployer
@@ -309,6 +310,7 @@ federation:
 		_, err := auth.ParsePolicy([]byte(`
 issuers:
   - name: github-actions
+    actions: []
     issuer: https://token.actions.githubusercontent.com
     audiences: [flowstate]
 
@@ -330,6 +332,7 @@ federation:
 		policy, err := auth.ParsePolicy([]byte(`
 issuers:
   - name: github-actions
+    actions: []
     issuer: https://token.actions.githubusercontent.com
     audiences: [flowstate]
     require:
@@ -379,7 +382,7 @@ func TestFederationRoundTrip(t *testing.T) {
 
 		verifier, err := auth.NewOIDCVerifier(
 			auth.Policy{
-				Issuers: []auth.TrustedIssuer{{
+				Issuers: []auth.TrustedIssuer{{Actions: []string{},
 					Name:      "flowstate",
 					Issuer:    identityServer.URL,
 					Audiences: []string{relyingParty.URL},
@@ -389,7 +392,8 @@ func TestFederationRoundTrip(t *testing.T) {
 						auth.RequireClaim(auth.ClaimWorkflow, "deploy-service"),
 						auth.RequireClaim(auth.ClaimOnBehalfOf, "repo:picatz/flowstate:ref:refs/heads/main"),
 					},
-					Role: "partner-client",
+					Role:        "partner-client",
+					CarryClaims: []auth.CarryClaim{{Claim: auth.ClaimOnBehalfOf, As: "peer_on_behalf_of", Type: auth.ClaimTypeString}},
 				}},
 			},
 			auth.WithClock(clock.Now),
@@ -457,7 +461,7 @@ targets:
 	require.Equal(t, identityServer.URL, principal.Issuer)
 	require.Equal(t, "partner-client", principal.Role)
 
-	onBehalfOf, ok := principal.StringClaim(auth.ClaimOnBehalfOf)
+	onBehalfOf, ok := principal.StringClaim("peer_on_behalf_of")
 	require.True(t, ok)
 	require.Equal(t, "repo:picatz/flowstate:ref:refs/heads/main", onBehalfOf)
 

@@ -1,6 +1,7 @@
 package conformance
 
 import (
+	"cmp"
 	"strings"
 	"testing"
 
@@ -43,6 +44,11 @@ type EgressIdentityCase struct {
 	// [TaskPolicyCase.Identity], which states the same split.
 	Identity *v1.WorkloadIdentity
 
+	// Rule is the allow rule the case runs under; empty means
+	// [EgressIdentityAllowRule]. Only the principal-kind rows set it, because
+	// the tenant rule cannot see a kind.
+	Rule string
+
 	// Denied is true when the egress policy must refuse the request.
 	Denied bool
 }
@@ -54,7 +60,13 @@ type EgressIdentityCase struct {
 // cases discriminate is the *identity* — a set where each case brought its own
 // rule could not tell a policy that discriminates from a set of policies that
 // each happen to answer correctly for their own case.
-const EgressIdentityAllowRule = `identity.namespace == "team-a"`
+//
+// It also reads the caller's kind and a list claim: an agent is admitted only
+// when its `groups` claim holds "sre", while every other kind is held to the
+// tenant alone. That keeps one rule for every case and still discriminates the
+// carrier: a driver that lost the kind or the list refuses the agent it should
+// admit, or admits the agent it should refuse.
+const EgressIdentityAllowRule = `identity.namespace == "team-a" && (identity.kind != "agent" || "sre" in identity.claims.groups)`
 
 // EgressIdentityWorkflow returns a one-step workflow that egresses to the
 // loopback test server, for a case to run under [EgressIdentityAllowRule].
@@ -74,9 +86,15 @@ func EgressIdentityExpectedOutputs() *v1.Workflow_StepOutputs {
 	}}
 }
 
-// InstallEgressIdentityPolicy registers an http task enforcing
-// [EgressIdentityAllowRule] for the duration of the test, restoring whatever
-// was registered before.
+// EgressIdentityKindRule is the allow rule the principal-kind rows run under.
+// Like [EgressIdentityAllowRule] it is shared by every row that uses it, so the
+// rows discriminate the identity rather than each bringing a rule that agrees
+// with itself.
+const EgressIdentityKindRule = `identity.kind == "workload"`
+
+// InstallEgressIdentityPolicy registers an http task enforcing the case's rule
+// ([EgressIdentityAllowRule] unless it names another) for the duration of the
+// test, restoring whatever was registered before.
 //
 // It permits loopback for the same reason [allowLoopback] does — the test
 // server is loopback and the shipped default correctly refuses it — and it is
@@ -99,12 +117,12 @@ func EgressIdentityExpectedOutputs() *v1.Workflow_StepOutputs {
 // nothing here can detect it — testing.TB does not say whether its test is
 // parallel. So it is written down instead: do not call this from a parallel
 // test; give it its own [v1.Registry] if you need one.
-func InstallEgressIdentityPolicy(tb testing.TB) {
+func InstallEgressIdentityPolicy(tb testing.TB, c EgressIdentityCase) {
 	tb.Helper()
 
 	policy, err := netpolicy.New(
 		netpolicy.WithAllowLoopback(),
-		netpolicy.WithAllowRules(EgressIdentityAllowRule),
+		netpolicy.WithAllowRules(cmp.Or(c.Rule, EgressIdentityAllowRule)),
 	)
 	if err != nil {
 		tb.Fatalf("building the identity-scoped egress policy: %v", err)
@@ -127,9 +145,10 @@ func InstallEgressIdentityPolicy(tb testing.TB) {
 // The negative direction is the point, per CLAUDE.md: an allowlist that admits
 // its own tenant proves nothing on its own, because a driver that lost the
 // identity entirely would fail it in one direction and a driver that ignored
-// the rule entirely would pass it. The set is therefore three answers to one
+// the rule entirely would pass it. The tenant rows are three answers to one
 // rule — the tenant it names, a tenant it does not, and a run naming nobody —
-// and a driver has to get all three right.
+// and the kind rows are the same pair plus an identity with no kind, under
+// [EgressIdentityKindRule]; a driver has to get all of them right.
 func EgressIdentityCases() []EgressIdentityCase {
 	return []EgressIdentityCase{
 		{
@@ -137,12 +156,21 @@ func EgressIdentityCases() []EgressIdentityCase {
 			// the rule admits, so the request goes out. This is what a local
 			// run refused while production allowed it.
 			Name:     "the admitted tenant egresses",
-			Identity: &v1.WorkloadIdentity{Namespace: "team-a", Subject: "spiffe://acme/team-a"},
+			Identity: &v1.WorkloadIdentity{Principal: &v1.Principal{Namespace: "team-a", Subject: "spiffe://acme/team-a"}},
+		},
+		{
+			Name:     "an agent whose list claim holds the group egresses",
+			Identity: carrierWorkloadIdentity(v1.PrincipalKind_PRINCIPAL_KIND_AGENT, "dev", "sre"),
+		},
+		{
+			Name:     "an agent whose list claim lacks the group is refused",
+			Identity: carrierWorkloadIdentity(v1.PrincipalKind_PRINCIPAL_KIND_AGENT, "dev"),
+			Denied:   true,
 		},
 		{
 			// The boundary: a different tenant, the same rule, refused.
 			Name:     "another tenant is refused the same host",
-			Identity: &v1.WorkloadIdentity{Namespace: "team-b", Subject: "spiffe://acme/team-b"},
+			Identity: &v1.WorkloadIdentity{Principal: &v1.Principal{Namespace: "team-b", Subject: "spiffe://acme/team-b"}},
 			Denied:   true,
 		},
 		{
@@ -153,6 +181,36 @@ func EgressIdentityCases() []EgressIdentityCase {
 			// it ever becomes one.
 			Name:   "a run that names nobody is refused",
 			Denied: true,
+		},
+		{
+			// identity.kind is what the shared principal.Caller added to this
+			// surface, and it travels on its own field: a driver that carried
+			// the namespace and subject but dropped the principal kind passes
+			// every row above and fails these.
+			Name:     "a workload egresses under a kind rule",
+			Rule:     EgressIdentityKindRule,
+			Identity: &v1.WorkloadIdentity{Principal: &v1.Principal{Subject: "spiffe://acme/ci", Kind: v1.PrincipalKind_PRINCIPAL_KIND_WORKLOAD}},
+		},
+		{
+			Name:     "a human is refused by the same kind rule",
+			Rule:     EgressIdentityKindRule,
+			Identity: &v1.WorkloadIdentity{Principal: &v1.Principal{Subject: "spiffe://acme/kent", Kind: v1.PrincipalKind_PRINCIPAL_KIND_HUMAN}},
+			Denied:   true,
+		},
+		{
+			// The claim sat in the token and the issuer entry did not carry it,
+			// so no surface may see it: the rule can never match, on either driver.
+			Name:     "a claim the entry did not carry is absent from the rule",
+			Rule:     carrierUncarriedRule,
+			Identity: carrierWorkloadIdentity(v1.PrincipalKind_PRINCIPAL_KIND_AGENT, "sre"),
+			Denied:   true,
+		},
+		{
+			// A trust policy that assigned no kind is not a workload.
+			Name:     "an identity with no kind is refused by the same kind rule",
+			Rule:     EgressIdentityKindRule,
+			Identity: &v1.WorkloadIdentity{Principal: &v1.Principal{Subject: "spiffe://acme/ci"}},
+			Denied:   true,
 		},
 	}
 }

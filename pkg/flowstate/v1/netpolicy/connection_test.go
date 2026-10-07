@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/picatz/flowstate/pkg/flowstate/v1/principal"
 )
 
 func TestCheckConnectionRequiresExplicitProtocolAndChecksResolvedAddress(t *testing.T) {
@@ -32,7 +34,7 @@ func TestCheckConnectionUsesExistingCELVocabulary(t *testing.T) {
 	require.NoError(t, err)
 
 	ctx := ContextWithCredentials(t.Context(), true)
-	ctx = ContextWithIdentity(ctx, Identity{Namespace: "team-a"})
+	ctx = ContextWithIdentity(ctx, principal.Caller{Namespace: "team-a"})
 	require.NoError(t, policy.CheckConnection(ctx, "postgres", "database.example", netip.MustParseAddrPort("8.8.8.8:5432")))
 	require.ErrorIs(t,
 		policy.CheckConnection(ctx, "postgres", "database.example", netip.MustParseAddrPort("203.0.113.9:5432")),

@@ -838,6 +838,10 @@ type ScheduleDivergenceReport struct {
 	// [fault_script] and keep the violation. False when the shrink budget ended
 	// the search first, or nothing was shrunk.
 	ShrunkMinimal bool `protobuf:"varint,11,opt,name=shrunk_minimal,json=shrunkMinimal,proto3" json:"shrunk_minimal,omitempty"`
+	// Swarm reports that the seed ran under `--swarm`, with only some of the
+	// case's `faults:` on. A replay of [seed] needs `--swarm` too, or it draws
+	// against every fault and is a different run.
+	Swarm         bool `protobuf:"varint,12,opt,name=swarm,proto3" json:"swarm,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -945,6 +949,13 @@ func (x *ScheduleDivergenceReport) GetShrinkRuns() int32 {
 func (x *ScheduleDivergenceReport) GetShrunkMinimal() bool {
 	if x != nil {
 		return x.ShrunkMinimal
+	}
+	return false
+}
+
+func (x *ScheduleDivergenceReport) GetSwarm() bool {
+	if x != nil {
+		return x.Swarm
 	}
 	return false
 }
@@ -1532,7 +1543,7 @@ const file_flowstate_v1_reports_proto_rawDesc = "" +
 	"faultDraws\x12F\n" +
 	"\n" +
 	"divergence\x18\x05 \x01(\v2&.flowstate.v1.ScheduleDivergenceReportR\n" +
-	"divergence\"\xe7\x02\n" +
+	"divergence\"\xfd\x02\n" +
 	"\x18ScheduleDivergenceReport\x12\x12\n" +
 	"\x04case\x18\x01 \x01(\tR\x04case\x12\x12\n" +
 	"\x04seed\x18\x02 \x01(\x04R\x04seed\x12\x1c\n" +
@@ -1546,7 +1557,8 @@ const file_flowstate_v1_reports_proto_rawDesc = "" +
 	"\vshrink_runs\x18\n" +
 	" \x01(\x05R\n" +
 	"shrinkRuns\x12%\n" +
-	"\x0eshrunk_minimal\x18\v \x01(\bR\rshrunkMinimal\"\xb6\x01\n" +
+	"\x0eshrunk_minimal\x18\v \x01(\bR\rshrunkMinimal\x12\x14\n" +
+	"\x05swarm\x18\f \x01(\bR\x05swarm\"\xb6\x01\n" +
 	"\n" +
 	"FuzzReport\x12\x12\n" +
 	"\x04runs\x18\x01 \x01(\x05R\x04runs\x12\x14\n" +

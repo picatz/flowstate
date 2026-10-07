@@ -18,6 +18,7 @@ that only ever offers things the engine will accept.
 | **Go to definition** | Jump from a `${steps.<id>.<output>}` reference to that step's `id:` declaration, from a loop's bare iterator name to the loop that binds it, and from a `call:` target to the called Flowfile — opened at its `name:`, and resolved relative to the calling file's own directory by the same rule the compiler uses, so the file you arrive in is the file the run compiles. A call the compiler would refuse, or one naming a file that is not there, navigates nowhere rather than somewhere wrong. |
 | **Document symbols** | An outline of the workflow's steps, each labelled with the task it runs, and for a nested step the block it belongs to. |
 | **Formatting** | Rewrites the whole document into the form `flow fmt` and `flowfile.Format` write. Comments are kept, carried onto the rewritten document at the key, value or list entry they were written against; whitespace is not, so a blank line, a mapping's key order, and a string literal's quote style are all normalized away. A document that does not compile draws no edit at all, never a partial or guessed one, and neither does one carrying a comment the rewrite cannot keep. Because of the rewrite, this is opt-in in most editors' configuration rather than run on every save; see the per-editor notes below for how to bind it deliberately. |
+| **Semantic tokens** | Colour inside `${...}` and inside a bare-CEL value such as `must:`: the engine's roots (`inputs`, `vars`, `steps`, `run`, `this`, …) apart from names an author chose, members, functions and methods, strings, numbers, operators and keywords. Lexical, so a half-typed expression is already coloured; full-document answers only. An expression whose bytes cannot be tied to document positions — a folded `>` block scalar — is left to the editor's own grammar. Token types are standard LSP names, so an editor's default theme needs no Flowstate knowledge. |
 | **Code actions** | A quick fix for each diagnostic the validator can repair itself, such as renaming a misspelled key to the one it meant, and the migration `flow fix` performs. The migration comes in two kinds of the same thing: a `source.fixAll` action titled *Migrate to edition …*, and a `quickfix` on each line the migration rewrites, so it is reachable from the diagnostic that told you to run the command. Both carry one whole-document edit holding exactly what `flow fix` writes — comments and untouched lines copied through byte for byte, unlike formatting. A document already in the current edition, one that does not parse, and one where the rewriter *refuses* — a `task:` written in flow style, a binding through an alias it cannot resolve — each draw no action at all, because the only edit that could be offered there is the guess `flow fix` declined to make. |
 
 Everything above is read from the task registry and the Protobuf schema at the
@@ -399,7 +400,9 @@ filetype does not have to be `flowfile`:
 the design in [#585](https://github.com/picatz/flowstate/issues/585): the
 language client, the same filename/pattern association as the table above, and
 palette commands (`Flowstate: Validate/Test/Fix/Run Local`) that shell out to the
-matching subcommand and show its own output. See `editors/vscode/README.md` for
+matching subcommand and show its own output, and a TextMate grammar that colours
+the YAML and the CEL inside `${...}` and `must:` (the server's semantic tokens
+refine it). See `editors/vscode/README.md` for
 what it does, what it deliberately leaves out (a workflow tree view and a
 step-graph webview are both designed but not shipped yet), and exactly what has
 been compiled and unit-tested here versus what still needs a human with a real

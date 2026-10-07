@@ -1454,7 +1454,7 @@ decide and the implementation did.
 - **A workflow-level var may reference nothing at all** — not a step (none has run),
   not another var, not a root written bare. `flow validate` says which of those three
   it was, because they are three different misunderstandings.
-- **A var may not hold a `${secret(...)}` reference**, at either position, in any
+- **A var may not hold a `${secret(...)}` or `${credential(...)}` reference**, at either position, in any
   spelling — bare, buried in a larger expression, nested in a list or a mapping, or
   behind a YAML anchor. Every position that *does* carry a reference carries it to a
   worker: a task input, or an entry of a structure the task applies inside its own
@@ -1462,7 +1462,7 @@ decide and the implementation did.
   into the scope every later expression reads, so the resolved secret is in durable
   history before anything has asked what it was for. Reference the secret where it is
   consumed instead, on the task input that needs it, which is the same `${secret(...)}`
-  written one line further down. `flow validate` reports it at the reference; a
+  (or `${credential(...)}`) written one line further down. `flow validate` reports it at the reference; a
   specification built by hand rather than parsed is refused at submit by
   `BindRunInputs`, on both drivers (#169).
 - **`vars` written bare is a legal operand.** `${vars["region"]}` with a computed key,
@@ -2525,9 +2525,9 @@ position:
 - **`undo:`**, because a value changes nothing outside the run, so there is nothing to
   take back. Write the compensation on the steps whose effects the value decides.
 
-A `${secret(...)}` reference may not be written here, for the reason it may not go in
-`vars:`: the workflow evaluates this, and what the workflow evaluates is written to
-durable history.
+A `${secret(...)}` or `${credential(...)}` reference may not be written here, for the
+reason it may not go in `vars:`: the workflow evaluates this, and what the workflow
+evaluates is written to durable history.
 
 `if:` composes exactly as it does on every other kind. A value that is skipped
 produces no outputs, so a later reference to it does not resolve, which is the honest
@@ -2886,7 +2886,11 @@ from the worker only if present, then step `env:` for keys in `env_authored`; lo
 variables such as `LD_PRELOAD` and `DYLD_*` are refused), a required `timeout`
 (ceiling 1h) and `max_output_bytes` per stream (ceiling 128KiB), and CEL `allow` /
 `deny` rules over `argv`, `executable`, `name`, `dir`, `env_keys` (names, never
-values) and `identity`. Deny wins, and a rule that cannot be evaluated denies.
+values) and `identity` (`identity.subject`, `.issuer`, `.namespace`, `.claims`,
+`.principal`, `.kind`, `.actions`: the caller shape egress, exec and task-shape rules share;
+`kind` is `human`, `workload`, or `agent` and is empty when none was assigned, and
+`actions` is empty until the run's identity carries granted actions). Deny wins, and
+a rule that cannot be evaluated denies.
 
 **Outputs.** `exit_code`, `stdout`, `stderr`, `stdout_truncated`, `stderr_truncated`,
 `signal`, `duration_ms`, `capture_incomplete` and `outcome` (`ran`, `did_not_start`,
@@ -4548,7 +4552,7 @@ still writes one is refused at parse with a sentence that names the key (never i
 value) and says to run `flow fix`, which rewrites each of them into the predicate; see
 [What `flow fix` writes](#what-flow-fix-writes-for-who-may-act).
 
-**The scope is closed.** `sender.identity.{principal,subject,issuer,namespace,kind,claims}`
+**The scope is closed.** `sender.identity.{principal,subject,issuer,namespace,kind,claims,actions}`
 is the server's own attestation of whoever is delivering. `run.identity` is the run's
 starter with the same fields, and `inputs` is the run's arguments. Nothing else is in
 scope: no steps, vars, clock or secrets, and a name outside it is a compile error
@@ -4566,13 +4570,22 @@ recorded starter `run` is unbound, so a predicate that reads it errors and denie
 while one that never mentions it is unaffected. The refusal says what went wrong and
 never quotes an input or a claim.
 
-**Claims need `--identity-claim`.** `sender.identity.claims` holds only the claims
-the server was started to project (`flow server --identity-claim team`, repeatable).
-A token can carry `team` and the trust policy can verify it, and a predicate reading
-`sender.identity.claims.team` still never matches on a server not started with that
-flag. The refusal of a predicate that reads claims therefore names which claim names
+**Claims need `carry_claims`.** `sender.identity.claims` holds only the claims
+the issuer entry that admitted the sender carries (`carry_claims` and `groups_claim`
+in the auth policy; see [Carrying claims and groups into policy](DEPLOYMENT.md#carrying-claims-and-groups-into-policy)).
+A token can hold `team` and the trust policy can verify it, and a predicate reading
+`sender.identity.claims.team` still never matches when that entry does not carry it;
+`flow validate --auth-policy auth.yaml` reports the read before a server does. The refusal of a predicate that reads claims therefore names which claim names
 the sender identity carried (or that it carried none), never their values, so an
 empty projection reads differently from a wrong value.
+
+**Claims keep their JSON shape.** The one `principal.Caller` every policy surface
+binds is read here too: `"sre" in sender.identity.claims.groups` reads a list claim,
+`sender.identity.claims.slack_user == "U1"` a scalar read from a nested path with `carry_claims: [{claim: slack.user, as: slack_user, type: string}]`, and
+`sender.identity.actions` the scopes the sender was granted. The same fields are
+read as `identity.*` by `allow:`/`deny:` rules on egress, exec, task shape, secrets
+and assumption. A claim the caller does not carry is an error on every surface, so
+the rule denies; guard it with `has(...)` or `"k" in identity.claims`.
 
 **Narrowing is syntactic.** Whoever starts a run chooses its `inputs`, so a predicate
 over them alone would let the starter name their own approver. A predicate that reads
@@ -5343,7 +5356,8 @@ has designed and no other input in this schema has). So it is refused, at compil
 with a position: *"a secret reference cannot cross a call boundary; pass it to the task
 that needs it inside the callee, or declare the input there."* The callee's own task can
 still write `${secret(...)}` directly — nothing about isolation stops that, because the
-reference never left the file that resolves it.
+reference never left the file that resolves it. A `${credential('target')}` is refused at
+the same boundary for the same reason.
 
 ### Compile-time resolution, and why
 

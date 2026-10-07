@@ -7,6 +7,7 @@ import "flowstate/v1/authorization.proto";
 import "flowstate/v1/catalog.proto";
 import "flowstate/v1/debug.proto";
 import "flowstate/v1/diagnostics.proto";
+import "flowstate/v1/identity.proto";
 import "flowstate/v1/run.proto";
 import "flowstate/v1/schedule.proto";
 import "flowstate/v1/value.proto";
@@ -329,8 +330,7 @@ message GetRequest {
   // RevealSensitive asks for the values the run's workflow declared
   // `sensitive: true` in the clear. The server withholds them by default, and
   // honours this only for a caller whose policy entry lists the
-  // `workload.reveal_sensitive` action explicitly: an entry with no action list
-  // is not granted it. A caller without it is answered normally, with the
+  // `workload.reveal_sensitive` action explicitly: it is never implied. A caller without it is answered normally, with the
   // values withheld and `sensitive_disclosure` saying so, rather than refused.
   bool reveal_sensitive = 3;
 }
@@ -1349,6 +1349,37 @@ service WorkflowService {
   rpc TriggerSchedule(TriggerScheduleRequest) returns (TriggerScheduleResponse) {
     option (flowstate.v1.authorization_action) = AUTHORIZATION_ACTION_SCHEDULE_TRIGGER;
   }
+
+  // Whoami answers with the caller's own [Principal]: the issuer, subject,
+  // namespace, kind, admitting policy entry, carried claims and actions the
+  // server established from the credential on this request. It is what
+  // `flow auth whoami` prints.
+  //
+  // Any caller may ask, whatever its policy entry's `actions:` list holds,
+  // because the answer is only what the caller already is. A caller that was
+  // not authenticated, which only an explicitly insecure development server
+  // admits, is answered with `authenticated` false and an anonymous
+  // principal, not with an error. The answer never contains the credential.
+  rpc Whoami(WhoamiRequest) returns (WhoamiResponse) {
+    option (flowstate.v1.authorization_action) = AUTHORIZATION_ACTION_IDENTITY_READ;
+  }
+}
+
+// WhoamiRequest asks who the server believes the caller is. It has no fields.
+message WhoamiRequest {}
+
+// WhoamiResponse is the caller as the server sees it.
+message WhoamiResponse {
+  // Principal is the caller's identity as established for this request. For
+  // an unauthenticated caller it names the anonymous issuer or is empty,
+  // never another party's identity.
+  Principal principal = 1;
+
+  // Authenticated is false when the server established no identity for the
+  // caller: an insecure development server that admits anonymous callers, or a
+  // deployment with no authentication. It is true only for a verified caller,
+  // so a reader need not recognize the anonymous issuer's spelling.
+  bool authenticated = 2;
 }
 
 // ValidateRequest is one or more files to check.

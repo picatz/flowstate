@@ -297,7 +297,7 @@ func (i secretIdentity) GetNamespace() string { return i.namespace }
 //
 // It exists on this side of the boundary rather than as a method on
 // auth.WorkloadIdentity because auth deliberately imports no other Flowstate
-// package — see [auth.IdentitySource] for why — so the direction that needs the
+// package — see the auth package documentation for why — so the direction that needs the
 // generated type has to do the converting. This is the local driver's half of
 // the identity the durable driver already has natively: engine/runtime.go's
 // activities receive *v1.WorkloadIdentity straight from RunState, while the
@@ -316,10 +316,7 @@ func ProtoWorkloadIdentity(identity auth.WorkloadIdentity) *WorkloadIdentity {
 	}
 
 	return &WorkloadIdentity{
-		Subject:    identity.Subject,
-		Issuer:     identity.Issuer,
-		Claims:     identity.Claims,
-		Namespace:  identity.Namespace,
+		Principal:  ProtoPrincipal(identity),
 		Deployment: identity.Deployment,
 		Mode:       mode,
 	}

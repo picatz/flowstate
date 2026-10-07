@@ -62,6 +62,7 @@ go.work
 # which the two patterns above do not match. /embedding above records the
 # 46 MB version of this mistake; this is the plugin-shaped one. A glob cannot
 # say "the file whose name is its directory's", so the modules are named.
+/plugins/anthropic/anthropic
 /plugins/codex/codex
 /plugins/docker/docker
 /plugins/git/git

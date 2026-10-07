@@ -47,14 +47,15 @@ func mcpTestVerifier(t *testing.T) (*authtest.Issuer, auth.Verifier) {
 	t.Cleanup(func() { _ = issuer.Close() })
 
 	verifier, err := auth.NewOIDCVerifier(auth.Policy{
-		Issuers: []auth.TrustedIssuer{{
+		Issuers: []auth.TrustedIssuer{{Actions: []string{},
 			Name:   "agent-idp",
 			Issuer: issuer.URL(),
 			// Two audiences on one entry, which is the configuration that
 			// makes the adapter's own audience check load-bearing rather than
 			// redundant: the verifier admits a token for either, and only this
 			// surface knows which one it is.
-			Audiences: []string{mcpResource, mcpOtherResource},
+			Audiences:   []string{mcpResource, mcpOtherResource},
+			CarryClaims: []auth.CarryClaim{{Claim: "email", Type: auth.ClaimTypeString}},
 		}},
 	}, auth.WithEgressPolicy(authtest.EgressPolicy()))
 	require.NoError(t, err)
@@ -415,7 +416,7 @@ func TestMCPTokenVerifierIsDeterministicOnAClock(t *testing.T) {
 	t.Cleanup(func() { _ = issuer.Close() })
 
 	verifier, err := auth.NewOIDCVerifier(auth.Policy{
-		Issuers: []auth.TrustedIssuer{{Name: "idp", Issuer: issuer.URL(), Audiences: []string{mcpResource}}},
+		Issuers: []auth.TrustedIssuer{{Actions: []string{}, Name: "idp", Issuer: issuer.URL(), Audiences: []string{mcpResource}}},
 	}, auth.WithClock(clock.Now), auth.WithEgressPolicy(authtest.EgressPolicy()))
 	require.NoError(t, err)
 
@@ -441,7 +442,7 @@ func TestMCPTokenVerifierIsDeterministicOnAClock(t *testing.T) {
 func TestNewProtectedResourceRefusesAQuery(t *testing.T) {
 	t.Parallel()
 
-	policy := &auth.Policy{Issuers: []auth.TrustedIssuer{{
+	policy := &auth.Policy{Issuers: []auth.TrustedIssuer{{Actions: []string{},
 		Name:      "idp",
 		Issuer:    "https://idp.example.com",
 		Audiences: []string{"https://flowstate.example.com/mcp?tenant=a"},

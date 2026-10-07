@@ -41,7 +41,8 @@ const selfPrefix = "github.com/picatz/flowstate/pkg/flowstate/v1/"
 //     longer registers its own built-ins.
 //
 //   - auth — entity.go (the namespace grammar, for a bound checked at compile
-//     time) and taskruntime.go.
+//     time), taskruntime.go, and run_identity.go, which reads the wire identity
+//     as an auth.WorkloadIdentity (AuthIdentity) and writes it back.
 //
 //   - secrets — taskruntime.go and webhookverify.go. secrets imports auth, so
 //     this edge carries that one with it.
@@ -59,6 +60,14 @@ const selfPrefix = "github.com/picatz/flowstate/pkg/flowstate/v1/"
 //     is what keeps a fix to one of them a fix to all of them. It is a leaf
 //     whose only import is cel-go, which this package already inherits for
 //     the interpreter, so the edge adds nothing to what an importer pulls in.
+//
+//   - principal — the CEL-typed caller (principal.Caller) that egress, exec and
+//     task-shape rules bind. This change deletes two structs it replaces,
+//     netpolicy.Identity and taskPolicyIdentity; the edge is allowlisted
+//     because this package now imports principal to render a WorkloadIdentity
+//     into a Caller (CallerOf) and to bind it for task-shape rules. It is a
+//     leaf whose only imports are the standard library and cel-go, so the edge
+//     adds nothing an importer does not already inherit.
 //
 //   - metricschema — the metric vocabulary the task instruments record through
 //     (#526). The one edge added *after* this ratchet existed, so it owes the
@@ -93,6 +102,7 @@ var allowedSelfImports = map[string][]string{
 	"auth": {
 		"entity.go",
 		"eval_task_http_run.go",
+		"run_identity.go",
 		"taskruntime.go",
 		// webhookverify.go names [auth.Verifier] and [auth.Principal] so a
 		// `verify: {jwt: ...}` delivery is checked by the one function a
@@ -129,10 +139,18 @@ var allowedSelfImports = map[string][]string{
 		"debugbreakpoint.go",
 	},
 	"netpolicy": {
-		"eval_task_exec.go",
 		"eval_task_exec_policy.go",
 		"eval_task_http_def.go",
 		"eval_task_http_run.go",
+	},
+	// principal is the caller type every policy surface binds; this
+	// package renders a WorkloadIdentity into it (CallerOf) and taskpolicy.go
+	// binds it for task-shape rules, and signalpredicate.go for the signal and
+	// manual-start predicates' `sender` and `run`.
+	"principal": {
+		"run_identity.go",
+		"signalpredicate.go",
+		"taskpolicy.go",
 	},
 	"secrets": {
 		"eval_task_http_run.go",

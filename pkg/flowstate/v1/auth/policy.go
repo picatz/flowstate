@@ -2,11 +2,13 @@ package auth
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/picatz/flowstate/internal/strictyaml"
 	"maps"
+	"net/http"
 	"net/netip"
 	"net/url"
 	"slices"
@@ -102,10 +104,10 @@ type Policy struct {
 	Tenancy *Tenancy `json:"tenancy,omitempty" yaml:"tenancy,omitempty"`
 }
 
-// ActionScopes is an optional allowlist of Flowstate authorization actions,
-// written using the canonical OAuth scope spellings published by the protected
-// resource (for example, "workload.read"). Nil means the policy entry does not
-// restrict actions; a present empty list grants none.
+// ActionScopes is an allowlist of Flowstate authorization actions, written using
+// the canonical OAuth scope spellings published by the protected resource (for
+// example, "workload.read"). A trusted issuer entry must carry one; a present
+// empty list grants none, and nil is refused at load.
 //
 // The auth package preserves and bounds these strings but does not own their
 // vocabulary. The parent flowstate.v1 package validates them against
@@ -114,8 +116,8 @@ type Policy struct {
 type ActionScopes []string
 
 // IsZero distinguishes an omitted allowlist from an explicitly empty one when
-// policy files are serialized: only omission preserves legacy unrestricted
-// behavior.
+// policy files are serialized, so that an empty list is written out rather than
+// dropped and read back as an omission.
 func (s ActionScopes) IsZero() bool { return s == nil }
 
 // NamespaceMap is the wire type of [TrustedIssuer.NamespaceMap]: an exact
@@ -541,11 +543,11 @@ type TrustedIssuer struct {
 	// predicate that cares compares against a named kind.
 	PrincipalKind PrincipalKind `json:"principal_kind,omitempty" yaml:"principal_kind,omitempty"`
 
-	// Actions optionally restricts callers admitted by this entry to exact
-	// actions from Flowstate's canonical scope vocabulary. Omitted preserves the
-	// pre-authorization behavior for the RPC actions (all of them); [] grants
-	// none. Disclosure actions such as workload.reveal_sensitive are granted only when
-	// listed, whatever this holds. Role remains an audit label and does not
+	// Actions lists exactly what callers admitted by this entry may do, from
+	// Flowstate's canonical scope vocabulary. It is required: an entry that
+	// names no actions is refused at load, because an omission that grants
+	// everything is how a caller ends up holding more than anyone decided.
+	// [] grants none. A token's own scopes narrow the list, never widen it. Role remains an audit label and does not
 	// grant authority by itself.
 	Actions ActionScopes `json:"actions,omitzero" yaml:"actions,omitempty"`
 
@@ -620,6 +622,33 @@ type TrustedIssuer struct {
 	// already defers to the same IsZero method when a field implements it
 	// (goccy/go-yaml's yaml.go doc), so the YAML tag needs no change.
 	NamespaceMap NamespaceMap `json:"namespace_map,omitzero" yaml:"namespace_map,omitempty"`
+
+	// CarryClaims names the token claims this entry copies into the caller's
+	// [Principal] claims, each with the type it must have and an optional rename.
+	// Only these reach `identity.claims` on any policy surface, on either driver:
+	// a token holds far more than authorization needs, and what is carried is
+	// recorded with each run. See [CarryClaim] and [MapClaims].
+	//
+	// An empty list carries none, so a rule reading a claim the entry does not
+	// carry never matches; `flow validate --auth-policy` says so.
+	CarryClaims []CarryClaim `json:"carry_claims,omitempty" yaml:"carry_claims,omitempty"`
+
+	// GroupsClaim is the dotted path of the token claim holding the caller's
+	// groups, such as `groups` or `realm_access.roles`. The list is carried as
+	// the list-valued claim `groups`, so `"x" in identity.claims.groups` works on
+	// every policy surface. It is bounded by [MaxGroups] and [MaxGroupBytes], and
+	// a token that signals an overage (Entra's `_claim_names`/`hasgroups`) or
+	// exceeds a bound is refused with [ErrGroupsOverage], never read in part.
+	//
+	// The name `groups` is reserved for this field: a CarryClaims entry that
+	// carries it, with or without GroupsClaim, is refused when the policy loads.
+	GroupsClaim string `json:"groups_claim,omitempty" yaml:"groups_claim,omitempty"`
+
+	// GroupMap maps an IdP's group value (a name, a GUID) to the Flowstate group
+	// a rule names. With it, only listed values are carried: the map is the
+	// allowlist of groups policy can refer to, so a rule that must deny on a
+	// group has to map it. Requires GroupsClaim.
+	GroupMap map[string]string `json:"group_map,omitempty" yaml:"group_map,omitempty"`
 
 	// JWKSURL is the issuer's JSON Web Key Set URL. Leave it empty to discover
 	// it from the issuer's /.well-known/openid-configuration document, which is
@@ -795,38 +824,67 @@ func ParsePolicy(data []byte) (Policy, error) {
 	if err := rejectNullNamespaceMap(data, policy); err != nil {
 		return Policy{}, err
 	}
-	if err := rejectNullActions(data, policy); err != nil {
+
+	if err := policy.Validate(); err != nil {
 		return Policy{}, err
 	}
 
-	if err := policy.Validate(); err != nil {
+	if err := policy.validateFetchEgress(); err != nil {
 		return Policy{}, err
 	}
 
 	return policy, nil
 }
 
-// rejectNullActions preserves the security-significant distinction between an
-// omitted action restriction and a present empty one. goccy/go-yaml decodes an
-// explicit null directly to nil without invoking a field unmarshaler, so inspect
-// the already-valid raw document exactly as rejectNullNamespaceMap does.
-func rejectNullActions(data []byte, policy Policy) error {
-	var raw struct {
-		Issuers []map[string]any `yaml:"issuers" json:"issuers"`
-	}
-	if err := strictyaml.Unmarshal(data, &raw); err != nil {
-		return nil
+// validateFetchEgress refuses an issuer or key set URL that the policy's own
+// identity egress policy would refuse to fetch, in the fetch's own words, so the
+// first token does not meet what the file could have said at load (#1694).
+//
+// It asks the policy what the transport asks, without the network: the exact
+// request discovery or the key set fetch makes (so path rules see the same
+// URL), and, when the host is an IP literal, the address verdict
+// [netpolicy.Policy.CheckAddr] gives it. A host name is not resolved here, so a
+// name that resolves to a denied address is still refused only at the fetch.
+//
+// It is [ParsePolicy]'s check rather than [Policy.Validate]'s because only a
+// file has no other say: a verifier built in Go may pass [WithEgressPolicy],
+// which replaces the section, so Validate cannot know what will do the fetch.
+func (p Policy) validateFetchEgress() error {
+	egress, err := p.EgressPolicy()
+	if err != nil {
+		return err
 	}
 
-	for i, issuer := range raw.Issuers {
-		if i >= len(policy.Issuers) {
-			break
-		}
-		if _, present := issuer["actions"]; !present || policy.Issuers[i].Actions != nil {
+	for i, issuer := range p.Issuers {
+		if issuer.kind() != IssuerKindOIDC || issuer.JWKSFile != "" {
 			continue
 		}
-		return fmt.Errorf("%w: issuers[%d] (%q): actions is present but null; remove it to preserve unrestricted legacy behavior, or use [] to grant no actions",
-			ErrInvalidPolicy, i, policy.Issuers[i].Name)
+		fetched, field := strings.TrimSuffix(issuer.Issuer, "/")+discoveryPath, "issuer"
+		if issuer.JWKSURL != "" {
+			fetched, field = issuer.JWKSURL, "jwks_url"
+		}
+		target, err := url.Parse(fetched)
+		if err != nil {
+			continue
+		}
+
+		denial := egress.CheckURL(context.Background(), http.MethodGet, target)
+		if denial == nil {
+			if addr, err := netip.ParseAddr(target.Hostname()); err == nil {
+				port, _ := strconv.ParseUint(target.Port(), 10, 16)
+				if port == 0 {
+					port = map[string]uint64{"http": 80, "https": 443}[target.Scheme]
+				}
+				denial = egress.CheckAddr(netip.AddrPortFrom(addr, uint16(port)))
+			}
+		}
+
+		var deny *netpolicy.DenyError
+		if errors.As(denial, &deny) {
+			return fmt.Errorf("%w: issuers[%d]: %s %q is refused by the identity egress policy: %v; "+
+				"configure the trust policy's egress: section to allow this fetch: %s",
+				ErrInvalidPolicy, i, field, target.Redacted(), deny, egressRemedy(deny))
+		}
 	}
 
 	return nil
@@ -1104,6 +1162,12 @@ func (t TrustedIssuer) validate() error {
 		return fmt.Errorf("role is %d bytes, over the %d byte audit provenance limit",
 			len(t.Role), MaxPolicyProvenanceBytes)
 	}
+	if t.Issuer == AnonymousIssuer {
+		return fmt.Errorf("issuer %q is reserved for the anonymous caller, whose implied actions are not an allowlist", AnonymousIssuer)
+	}
+	if t.Actions == nil {
+		return fmt.Errorf("actions is required; list the actions this entry grants, or use [] to grant none")
+	}
 	if len(t.Actions) > 64 {
 		return fmt.Errorf("actions has %d entries, over the 64 entry limit", len(t.Actions))
 	}
@@ -1121,6 +1185,10 @@ func (t TrustedIssuer) validate() error {
 	if !t.PrincipalKind.valid() {
 		return fmt.Errorf("principal_kind %q is not supported: use %q, %q or %q, or omit it",
 			t.PrincipalKind, PrincipalKindHuman, PrincipalKindWorkload, PrincipalKindAgent)
+	}
+
+	if err := t.validateClaimCarriage(); err != nil {
+		return err
 	}
 
 	var err error
@@ -2034,6 +2102,8 @@ func (t TrustedIssuer) clone() TrustedIssuer {
 		clone.Require[i].NoneOf = slices.Clone(rule.NoneOf)
 	}
 	clone.NamespaceMap = maps.Clone(t.NamespaceMap)
+	clone.CarryClaims = slices.Clone(t.CarryClaims)
+	clone.GroupMap = maps.Clone(t.GroupMap)
 
 	return clone
 }

@@ -109,7 +109,7 @@ func newMCPServeFixtureForIssuer(
 ) *mcpServeFixture {
 	t.Helper()
 
-	policy := &auth.Policy{Issuers: []auth.TrustedIssuer{{
+	policy := &auth.Policy{Issuers: []auth.TrustedIssuer{{Actions: everyAction,
 		Name:      "agent-idp",
 		Issuer:    issuer.URL(),
 		Audiences: []string{mcpServeTestResource, mcpServeTestOtherResource},
@@ -829,7 +829,7 @@ func TestMCPServeLeaksNoTokenMaterial(t *testing.T) {
 	record := fixture.audit.Records()[0]
 	require.Equal(t, flowmcp.ToolName("Validate"), record.GetMcpTool())
 	require.Equal(t, v1.AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_VALIDATE, record.GetAction())
-	require.Equal(t, "agent", record.GetIdentity().GetSubject())
+	require.Equal(t, "agent", record.GetIdentity().GetPrincipal().GetSubject())
 	require.Equal(t, "agent-idp", record.GetIssuerName())
 	auditRendering := renderEveryShape(record)
 	require.NotContains(t, auditRendering, token, "the token reached the audit record")
@@ -964,7 +964,7 @@ func TestMCPServeFlushesAuditOnAnErrorAfterInitialization(t *testing.T) {
 
 	issuer := authCheckIssuer(t)
 	const resource = "https://flowstate.example.com/mcp"
-	policy := writeAuthCheckPolicy(t, auth.TrustedIssuer{
+	policy := writeAuthCheckPolicy(t, auth.TrustedIssuer{Actions: everyAction,
 		Name: "agent-idp", Issuer: issuer.URL(), Audiences: []string{resource},
 	})
 
@@ -1060,7 +1060,7 @@ func TestMCPServeAtABareOriginServesOnlyTheRootPath(t *testing.T) {
 	issuer := authtest.NewIssuer()
 	t.Cleanup(func() { _ = issuer.Close() })
 
-	policy := &auth.Policy{Issuers: []auth.TrustedIssuer{{
+	policy := &auth.Policy{Issuers: []auth.TrustedIssuer{{Actions: everyAction,
 		Name: "agent-idp", Issuer: issuer.URL(), Audiences: []string{bareOrigin},
 	}}}
 

@@ -1,0 +1,105 @@
+package principal_test
+
+import (
+	"testing"
+
+	"github.com/google/cel-go/cel"
+	"github.com/stretchr/testify/require"
+
+	"github.com/picatz/flowstate/pkg/flowstate/v1/principal"
+)
+
+func newEnv(t *testing.T) *cel.Env {
+	t.Helper()
+	env, err := cel.NewEnv(principal.EnvOptions(), principal.Var("identity"))
+	require.NoError(t, err)
+
+	return env
+}
+
+func eval(t *testing.T, env *cel.Env, expr string, c principal.Caller) (any, error) {
+	t.Helper()
+	ast, iss := env.Compile(expr)
+	require.NoError(t, iss.Err(), expr)
+	prg, err := env.Program(ast)
+	require.NoError(t, err)
+	out, _, err := prg.Eval(map[string]any{"identity": c.Normalized()})
+	if err != nil {
+		return nil, err
+	}
+
+	return out.Value(), nil
+}
+
+func TestTypeName_isPinned(t *testing.T) {
+	require.Equal(t, "principal.Caller", principal.TypeName)
+
+	// The registered type really carries that name: a mismatch would fail to
+	// compile any rule that touches the variable.
+	ast, iss := newEnv(t).Compile("identity")
+	require.NoError(t, iss.Err())
+	require.Equal(t, principal.TypeName, ast.OutputType().TypeName())
+}
+
+func TestCaller_Normalized(t *testing.T) {
+	n := principal.Caller{}.Normalized()
+	require.NotNil(t, n.Claims.Map())
+	require.NotNil(t, n.Actions)
+	require.Zero(t, n.Claims.Len())
+	require.Empty(t, n.Actions)
+
+	in := principal.Caller{Subject: "s", Claims: principal.StringClaims(map[string]string{"k": "v"}), Actions: []string{"a"}}
+	require.Equal(t, in, in.Normalized(), "populated values are untouched")
+}
+
+func TestCaller_readableFromExpression(t *testing.T) {
+	env := newEnv(t)
+	c := principal.Caller{
+		Issuer: "https://idp", Subject: "ci", Namespace: "team-a", Kind: "workload",
+		Principal: "https://idp#ci",
+		Claims:    principal.StringClaims(map[string]string{"repo": "x/y"}),
+		Actions:   []string{"run.start", "run.read"},
+	}
+
+	for expr, want := range map[string]any{
+		`identity.kind == "workload"`:            true,
+		`identity.kind == "human"`:               false,
+		`"run.start" in identity.actions`:        true,
+		`"run.delete" in identity.actions`:       false,
+		`identity.principal == "https://idp#ci"`: true,
+		`identity.claims["repo"] == "x/y"`:       true,
+		`identity.namespace == "team-a"`:         true,
+		`size(identity.actions)`:                 int64(2),
+	} {
+		got, err := eval(t, env, expr, c)
+		require.NoError(t, err, expr)
+		require.Equal(t, want, got, expr)
+	}
+}
+
+func TestCaller_zeroValueDoesNotMatchOrError(t *testing.T) {
+	env := newEnv(t)
+	for expr, want := range map[string]any{
+		`identity.kind == "workload"`: false,
+		`"x" in identity.actions`:     false,
+		`"k" in identity.claims`:      false,
+		`identity.principal == ""`:    true,
+		`size(identity.claims) == 0`:  true,
+	} {
+		got, err := eval(t, env, expr, principal.Caller{})
+		require.NoError(t, err, expr)
+		require.Equal(t, want, got, expr)
+	}
+
+	// An absent key still errors, as documented, so a rule must guard it.
+	_, err := eval(t, env, `identity.claims["k"] == "v"`, principal.Caller{})
+	require.Error(t, err)
+}
+
+func TestCaller_unknownFieldIsACompileError(t *testing.T) {
+	env := newEnv(t)
+	_, iss := env.Compile(`identity.nonexistent == "x"`)
+	require.Error(t, iss.Err())
+	_, iss = env.Compile(`identity.kind == 1`)
+	require.Error(t, iss.Err(), "kind is a string")
+}

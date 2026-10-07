@@ -28,7 +28,7 @@ func TestRunWorkflowEgressIdentity(t *testing.T) {
 
 	for _, tc := range conformance.EgressIdentityCases() {
 		t.Run(tc.Name, func(t *testing.T) {
-			conformance.InstallEgressIdentityPolicy(t)
+			conformance.InstallEgressIdentityPolicy(t, tc)
 
 			testSuite := &testsuite.WorkflowTestSuite{}
 			env := testSuite.NewTestWorkflowEnvironment()

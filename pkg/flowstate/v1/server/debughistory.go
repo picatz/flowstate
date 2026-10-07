@@ -167,7 +167,7 @@ func (s *FlowstateServer) DebugHistory(ctx context.Context, req *connect.Request
 	// snapshot to show; authorization already refused a run that declares none.
 	snapshot := rec.Debug
 	if snapshot != nil {
-		snapshot = expressionsFor(ctx, snapshot)
+		snapshot = s.expressionsFor(ctx, snapshot)
 	}
 
 	return connect.NewResponse(&v1.DebugHistoryResponse{
@@ -198,7 +198,7 @@ func (s *FlowstateServer) historyInspectAuthorized(ctx context.Context, workflow
 	subject := s.debugAuditSubject(ctx, "DebugHistory", workflowID, detail)
 	subject.RequestField = historyInspectionsField
 
-	refusal := authz.Decide(ctx, action, authz.Implied).Refusal()
+	refusal := s.decide(ctx, action, authz.Implied).Refusal()
 	if refusal == nil {
 		return s.audit.Allow(ctx, subject)
 	}
@@ -223,7 +223,7 @@ func (s *FlowstateServer) holderMayInspect(run *debugRun, events []*historypb.Hi
 
 	return func(snapshot *v1.DebugSnapshot) error {
 		holder := snapshot.GetSession().GetAttachedBy()
-		if holder != nil && v1.QualifiedSubject(holder.GetIssuer(), holder.GetSubject()) != v1.QualifiedSubject(caller.GetIssuer(), caller.GetSubject()) {
+		if holder != nil && v1.QualifiedSubject(holder.GetPrincipal().GetIssuer(), holder.GetPrincipal().GetSubject()) != v1.QualifiedSubject(caller.GetPrincipal().GetIssuer(), caller.GetPrincipal().GetSubject()) {
 			return errors.New("only the session's holder may inspect the past of a run that is still going")
 		}
 

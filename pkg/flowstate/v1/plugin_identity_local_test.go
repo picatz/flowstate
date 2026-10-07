@@ -106,7 +106,7 @@ func TestPluginTaskCallerExplicitlyEmptyLocal(t *testing.T) {
 func TestProtoWorkloadIdentityModeComesOnlyFromTheLocalMarker(t *testing.T) {
 	claimed := v1.ProtoWorkloadIdentity(auth.WorkloadIdentity{
 		Subject: "caller",
-		Claims:  map[string]string{"mode": "rehearsal", "local": "true"},
+		Claims:  map[string]any{"mode": "rehearsal", "local": "true"},
 	})
 	require.Equal(t, v1.WorkloadIdentityMode_WORKLOAD_IDENTITY_MODE_PRODUCTION, claimed.GetMode())
 
