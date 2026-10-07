@@ -479,3 +479,44 @@ tests:
 		})
 	}
 }
+
+// A form fixture is the receiver's form reader over its exact bytes: `body`
+// embeds a JSON value and cannot carry one, and `raw_body` under a form
+// content type decodes as the receiver would decode it, so the failure here is a
+// mapping verdict and not a body that "will not decode".
+func TestAFormDeliveryIsRehearsedThroughTheReceiversDecoder(t *testing.T) {
+	t.Parallel()
+
+	dir := writeVerifyWorkflow(t)
+	writeFile(t, dir+"/x.test.yaml", `
+tests:
+  - name: a form delivery
+    workflow: ./workflow.yaml
+    secrets:
+      "env:HOOK_KEY": whsec_fixture_key
+    trigger:
+      webhook: orders
+      payload: ./delivery.json
+    expect:
+      refused: true
+`)
+
+	const form = "command=%2Fdeploy&text=prod"
+
+	writeFile(t, dir+"/delivery.json", fmt.Sprintf(`{
+  "headers": {"Content-Type": "application/x-www-form-urlencoded", "X-Flowstate-Signature": %q},
+  "body": {"command": "/deploy"}
+}`, hmacHex(fixtureKey, form)))
+	report := flowtest.RunFile(dir + "/x.test.yaml")
+	require.Len(t, report.GetCases(), 1)
+	assert.Contains(t, report.GetCases()[0].GetError(), "store its exact bytes under `raw_body`")
+
+	writeFile(t, dir+"/delivery.json", fmt.Sprintf(`{
+  "headers": {"Content-Type": "application/x-www-form-urlencoded", "X-Flowstate-Signature": %q},
+  "raw_body": %q
+}`, hmacHex(fixtureKey, form), form))
+	report = flowtest.RunFile(dir + "/x.test.yaml")
+	require.Len(t, report.GetCases(), 1)
+	assert.NotContains(t, report.GetCases()[0].GetError(), "will not decode",
+		"a form body was refused as not JSON by the rehearsal")
+}

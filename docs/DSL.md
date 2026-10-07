@@ -2006,6 +2006,15 @@ from `idempotency_key:`, so a redelivery joins that run instead of starting a se
 one, and both drivers ignore the block entirely — `flow run local` still runs a file
 with a webhook on it once, now.
 
+`event.body` is the delivery's one JSON document, or, when its `Content-Type` is
+`application/x-www-form-urlencoded`, its form: a map of field to text, which is what a Slack
+slash command is. A form whose only field is `payload` (Slack interactivity) is that field's
+JSON document, so `event.body.actions[0].action_id` reads the same as it would in a JSON
+delivery. A form that repeats a field is refused, since two values for one name has no single
+reading. A webhook verified with `slack` also answers Slack's `url_verification` handshake
+with the challenge, after the signature verifies and without starting a run. In `flow test`,
+a form fixture states its `Content-Type` header and holds its exact bytes under `raw_body`.
+
 The mapping is the part a file controls, and it is the part `flow test` replays
 offline from a stored delivery, with no network and no receiver:
 
