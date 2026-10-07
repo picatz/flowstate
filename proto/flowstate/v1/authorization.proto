@@ -3,6 +3,7 @@ syntax = "proto3";
 package flowstate.v1;
 
 import "buf/validate/validate.proto";
+import "google/protobuf/descriptor.proto";
 
 option go_package = "flowstatev1";
 
@@ -156,10 +157,11 @@ enum AuthorizationAction {
 // AuthorizationActionBinding says which operations one action covers.
 //
 // The bindings are what keep the vocabulary attached to the surfaces it is a
-// vocabulary of: TestEveryRPCHasExactlyOneAuthorizationAction walks
-// flowstate.v1.WorkflowService's descriptor and fails when an RPC is named by
-// no binding or by two, so an RPC added to the schema cannot arrive without an
-// action, and a binding cannot name an RPC the service no longer declares.
+// vocabulary of: each WorkflowService method carries its action in its
+// authorization_action option, the bindings' rpcs are read from those options,
+// and TestEveryRPCHasExactlyOneAuthorizationAction walks the service descriptor
+// and fails when a method carries no option, so an RPC added to the schema
+// cannot arrive without an action.
 //
 // rpcs holds RPC names only. The MCP tool projected from an RPC is derived
 // from the RPC name and is deliberately not listed: which tools a given MCP
@@ -183,6 +185,7 @@ message AuthorizationActionBinding {
   AuthorizationAction parent = 2 [(buf.validate.field).enum.defined_only = true];
 
   // The WorkflowService methods this action covers, by their schema names.
+  // Read from each method's authorization_action option, never written out.
   repeated string rpcs = 3 [(buf.validate.field).repeated = {
     unique: true
     max_items: 8
@@ -239,4 +242,16 @@ message AuthorizationActionBinding {
       }
     }
   }];
+}
+
+extend google.protobuf.MethodOptions {
+  // authorization_action is the action a WorkflowService method is authorized
+  // as, set on the method itself so that the binding and the RPC cannot drift:
+  // a method without it is refused by TestEveryRPCHasExactlyOneAuthorizationAction,
+  // and AuthorizationActionBinding.rpcs is derived from it rather than written
+  // out beside the schema.
+  //
+  // Several methods may share an action; the grouping is the judgement the
+  // option records, and the reason for a non-obvious one belongs on the method.
+  AuthorizationAction authorization_action = 50001;
 }

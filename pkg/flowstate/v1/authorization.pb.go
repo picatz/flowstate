@@ -10,6 +10,7 @@ import (
 	_ "buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go/buf/validate"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
+	descriptorpb "google.golang.org/protobuf/types/descriptorpb"
 	reflect "reflect"
 	sync "sync"
 	unsafe "unsafe"
@@ -205,10 +206,11 @@ func (AuthorizationAction) EnumDescriptor() ([]byte, []int) {
 // AuthorizationActionBinding says which operations one action covers.
 //
 // The bindings are what keep the vocabulary attached to the surfaces it is a
-// vocabulary of: TestEveryRPCHasExactlyOneAuthorizationAction walks
-// flowstate.v1.WorkflowService's descriptor and fails when an RPC is named by
-// no binding or by two, so an RPC added to the schema cannot arrive without an
-// action, and a binding cannot name an RPC the service no longer declares.
+// vocabulary of: each WorkflowService method carries its action in its
+// authorization_action option, the bindings' rpcs are read from those options,
+// and TestEveryRPCHasExactlyOneAuthorizationAction walks the service descriptor
+// and fails when a method carries no option, so an RPC added to the schema
+// cannot arrive without an action.
 //
 // rpcs holds RPC names only. The MCP tool projected from an RPC is derived
 // from the RPC name and is deliberately not listed: which tools a given MCP
@@ -228,6 +230,7 @@ type AuthorizationActionBinding struct {
 	// step-up challenge and the policy that provokes it read one relation.
 	Parent AuthorizationAction `protobuf:"varint,2,opt,name=parent,proto3,enum=flowstate.v1.AuthorizationAction" json:"parent,omitempty"`
 	// The WorkflowService methods this action covers, by their schema names.
+	// Read from each method's authorization_action option, never written out.
 	Rpcs []string `protobuf:"bytes,3,rep,name=rpcs,proto3" json:"rpcs,omitempty"`
 	// The MCP tools this action covers that no RPC projects, by their full tool
 	// names. Held to the tools actually registered by a test in cmd/flow, which
@@ -317,11 +320,37 @@ func (x *AuthorizationActionBinding) GetHttpEndpoints() []string {
 	return nil
 }
 
+var file_flowstate_v1_authorization_proto_extTypes = []protoimpl.ExtensionInfo{
+	{
+		ExtendedType:  (*descriptorpb.MethodOptions)(nil),
+		ExtensionType: (*AuthorizationAction)(nil),
+		Field:         50001,
+		Name:          "flowstate.v1.authorization_action",
+		Tag:           "varint,50001,opt,name=authorization_action,enum=flowstate.v1.AuthorizationAction",
+		Filename:      "flowstate/v1/authorization.proto",
+	},
+}
+
+// Extension fields to descriptorpb.MethodOptions.
+var (
+	// authorization_action is the action a WorkflowService method is authorized
+	// as, set on the method itself so that the binding and the RPC cannot drift:
+	// a method without it is refused by TestEveryRPCHasExactlyOneAuthorizationAction,
+	// and AuthorizationActionBinding.rpcs is derived from it rather than written
+	// out beside the schema.
+	//
+	// Several methods may share an action; the grouping is the judgement the
+	// option records, and the reason for a non-obvious one belongs on the method.
+	//
+	// optional flowstate.v1.AuthorizationAction authorization_action = 50001;
+	E_AuthorizationAction = &file_flowstate_v1_authorization_proto_extTypes[0]
+)
+
 var File_flowstate_v1_authorization_proto protoreflect.FileDescriptor
 
 const file_flowstate_v1_authorization_proto_rawDesc = "" +
 	"\n" +
-	" flowstate/v1/authorization.proto\x12\fflowstate.v1\x1a\x1bbuf/validate/validate.proto\"\xee\x03\n" +
+	" flowstate/v1/authorization.proto\x12\fflowstate.v1\x1a\x1bbuf/validate/validate.proto\x1a google/protobuf/descriptor.proto\"\xee\x03\n" +
 	"\x1aAuthorizationActionBinding\x12E\n" +
 	"\x06action\x18\x01 \x01(\x0e2!.flowstate.v1.AuthorizationActionB\n" +
 	"\xbaH\a\x82\x01\x04\x10\x01 \x00R\x06action\x12C\n" +
@@ -354,7 +383,8 @@ const file_flowstate_v1_authorization_proto_rawDesc = "" +
 	"+AUTHORIZATION_ACTION_WORKLOAD_DEBUG_INSPECT\x10\x13\x12'\n" +
 	"#AUTHORIZATION_ACTION_PAYLOAD_DECODE\x10\x14\x12'\n" +
 	"#AUTHORIZATION_ACTION_PAYLOAD_ENCODE\x10\x15\x122\n" +
-	".AUTHORIZATION_ACTION_WORKLOAD_REVEAL_SENSITIVE\x10\x16B\xb1\x01\n" +
+	".AUTHORIZATION_ACTION_WORKLOAD_REVEAL_SENSITIVE\x10\x16:v\n" +
+	"\x14authorization_action\x12\x1e.google.protobuf.MethodOptions\x18ц\x03 \x01(\x0e2!.flowstate.v1.AuthorizationActionR\x13authorizationActionB\xb1\x01\n" +
 	"\x10com.flowstate.v1B\x12AuthorizationProtoP\x01Z8github.com/picatz/flowstate/pkg/flowstate/v1;flowstatev1\xa2\x02\x03FXX\xaa\x02\fFlowstate.V1\xca\x02\fFlowstate\\V1\xe2\x02\x18Flowstate\\V1\\GPBMetadata\xea\x02\rFlowstate::V1b\x06proto3"
 
 var (
@@ -374,14 +404,17 @@ var file_flowstate_v1_authorization_proto_msgTypes = make([]protoimpl.MessageInf
 var file_flowstate_v1_authorization_proto_goTypes = []any{
 	(AuthorizationAction)(0),           // 0: flowstate.v1.AuthorizationAction
 	(*AuthorizationActionBinding)(nil), // 1: flowstate.v1.AuthorizationActionBinding
+	(*descriptorpb.MethodOptions)(nil), // 2: google.protobuf.MethodOptions
 }
 var file_flowstate_v1_authorization_proto_depIdxs = []int32{
 	0, // 0: flowstate.v1.AuthorizationActionBinding.action:type_name -> flowstate.v1.AuthorizationAction
 	0, // 1: flowstate.v1.AuthorizationActionBinding.parent:type_name -> flowstate.v1.AuthorizationAction
-	2, // [2:2] is the sub-list for method output_type
-	2, // [2:2] is the sub-list for method input_type
-	2, // [2:2] is the sub-list for extension type_name
-	2, // [2:2] is the sub-list for extension extendee
+	2, // 2: flowstate.v1.authorization_action:extendee -> google.protobuf.MethodOptions
+	0, // 3: flowstate.v1.authorization_action:type_name -> flowstate.v1.AuthorizationAction
+	4, // [4:4] is the sub-list for method output_type
+	4, // [4:4] is the sub-list for method input_type
+	3, // [3:4] is the sub-list for extension type_name
+	2, // [2:3] is the sub-list for extension extendee
 	0, // [0:2] is the sub-list for field type_name
 }
 
@@ -397,13 +430,14 @@ func file_flowstate_v1_authorization_proto_init() {
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_flowstate_v1_authorization_proto_rawDesc), len(file_flowstate_v1_authorization_proto_rawDesc)),
 			NumEnums:      1,
 			NumMessages:   1,
-			NumExtensions: 0,
+			NumExtensions: 1,
 			NumServices:   0,
 		},
 		GoTypes:           file_flowstate_v1_authorization_proto_goTypes,
 		DependencyIndexes: file_flowstate_v1_authorization_proto_depIdxs,
 		EnumInfos:         file_flowstate_v1_authorization_proto_enumTypes,
 		MessageInfos:      file_flowstate_v1_authorization_proto_msgTypes,
+		ExtensionInfos:    file_flowstate_v1_authorization_proto_extTypes,
 	}.Build()
 	File_flowstate_v1_authorization_proto = out.File
 	file_flowstate_v1_authorization_proto_goTypes = nil

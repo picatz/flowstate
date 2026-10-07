@@ -2968,7 +2968,7 @@ var File_flowstate_v1_service_proto protoreflect.FileDescriptor
 
 const file_flowstate_v1_service_proto_rawDesc = "" +
 	"\n" +
-	"\x1aflowstate/v1/service.proto\x12\fflowstate.v1\x1a\x1bbuf/validate/validate.proto\x1a\x1aflowstate/v1/catalog.proto\x1a\x18flowstate/v1/debug.proto\x1a\x1eflowstate/v1/diagnostics.proto\x1a\x16flowstate/v1/run.proto\x1a\x1bflowstate/v1/schedule.proto\x1a\x18flowstate/v1/value.proto\x1a\x1bflowstate/v1/workflow.proto\x1a\x1fgoogle/api/field_behavior.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xcc\x03\n" +
+	"\x1aflowstate/v1/service.proto\x12\fflowstate.v1\x1a\x1bbuf/validate/validate.proto\x1a flowstate/v1/authorization.proto\x1a\x1aflowstate/v1/catalog.proto\x1a\x18flowstate/v1/debug.proto\x1a\x1eflowstate/v1/diagnostics.proto\x1a\x16flowstate/v1/run.proto\x1a\x1bflowstate/v1/schedule.proto\x1a\x18flowstate/v1/value.proto\x1a\x1bflowstate/v1/workflow.proto\x1a\x1fgoogle/api/field_behavior.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xcc\x03\n" +
 	"\n" +
 	"RunRequest\x12>\n" +
 	"\bworkflow\x18\x01 \x01(\v2\x16.flowstate.v1.WorkflowB\n" +
@@ -3202,35 +3202,37 @@ const file_flowstate_v1_service_proto_rawDesc = "" +
 	" SENSITIVE_DISCLOSURE_UNSPECIFIED\x10\x00\x12&\n" +
 	"\"SENSITIVE_DISCLOSURE_NONE_DECLARED\x10\x01\x12!\n" +
 	"\x1dSENSITIVE_DISCLOSURE_WITHHELD\x10\x02\x12!\n" +
-	"\x1dSENSITIVE_DISCLOSURE_REVEALED\x10\x032\x9d\x11\n" +
-	"\x0fWorkflowService\x12<\n" +
-	"\x03Run\x12\x18.flowstate.v1.RunRequest\x1a\x19.flowstate.v1.RunResponse\"\x00\x12<\n" +
-	"\x03Get\x12\x18.flowstate.v1.GetRequest\x1a\x19.flowstate.v1.GetResponse\"\x00\x12E\n" +
-	"\x06Signal\x12\x1b.flowstate.v1.SignalRequest\x1a\x1c.flowstate.v1.SignalResponse\"\x00\x12H\n" +
-	"\aGetGate\x12\x1c.flowstate.v1.GetGateRequest\x1a\x1d.flowstate.v1.GetGateResponse\"\x00\x12N\n" +
-	"\tListGates\x12\x1e.flowstate.v1.ListGatesRequest\x1a\x1f.flowstate.v1.ListGatesResponse\"\x00\x12`\n" +
-	"\x0fSignalWithStart\x12$.flowstate.v1.SignalWithStartRequest\x1a%.flowstate.v1.SignalWithStartResponse\"\x00\x12?\n" +
-	"\x04List\x12\x19.flowstate.v1.ListRequest\x1a\x1a.flowstate.v1.ListResponse\"\x00\x12T\n" +
-	"\vGetTimeline\x12 .flowstate.v1.GetTimelineRequest\x1a!.flowstate.v1.GetTimelineResponse\"\x00\x12E\n" +
-	"\x06Cancel\x12\x1b.flowstate.v1.CancelRequest\x1a\x1c.flowstate.v1.CancelResponse\"\x00\x12N\n" +
-	"\tTerminate\x12\x1e.flowstate.v1.TerminateRequest\x1a\x1f.flowstate.v1.TerminateResponse\"\x00\x12T\n" +
-	"\vDebugAttach\x12 .flowstate.v1.DebugAttachRequest\x1a!.flowstate.v1.DebugAttachResponse\"\x00\x12K\n" +
-	"\bDebugGet\x12\x1d.flowstate.v1.DebugGetRequest\x1a\x1e.flowstate.v1.DebugGetResponse\"\x00\x12W\n" +
-	"\fDebugHistory\x12!.flowstate.v1.DebugHistoryRequest\x1a\".flowstate.v1.DebugHistoryResponse\"\x00\x12T\n" +
-	"\vDebugResume\x12 .flowstate.v1.DebugResumeRequest\x1a!.flowstate.v1.DebugResumeResponse\"\x00\x12l\n" +
-	"\x13DebugSetBreakpoints\x12(.flowstate.v1.DebugSetBreakpointsRequest\x1a).flowstate.v1.DebugSetBreakpointsResponse\"\x00\x12W\n" +
-	"\fDebugInspect\x12!.flowstate.v1.DebugInspectRequest\x1a\".flowstate.v1.DebugInspectResponse\"\x00\x12K\n" +
-	"\bValidate\x12\x1d.flowstate.v1.ValidateRequest\x1a\x1e.flowstate.v1.ValidateResponse\"\x00\x12H\n" +
-	"\aCompile\x12\x1c.flowstate.v1.CompileRequest\x1a\x1d.flowstate.v1.CompileResponse\"\x00\x12Q\n" +
+	"\x1dSENSITIVE_DISCLOSURE_REVEALED\x10\x032\x85\x12\n" +
+	"\x0fWorkflowService\x12@\n" +
+	"\x03Run\x12\x18.flowstate.v1.RunRequest\x1a\x19.flowstate.v1.RunResponse\"\x04\x88\xb5\x18\x01\x12@\n" +
+	"\x03Get\x12\x18.flowstate.v1.GetRequest\x1a\x19.flowstate.v1.GetResponse\"\x04\x88\xb5\x18\x02\x12I\n" +
+	"\x06Signal\x12\x1b.flowstate.v1.SignalRequest\x1a\x1c.flowstate.v1.SignalResponse\"\x04\x88\xb5\x18\x03\x12L\n" +
+	"\aGetGate\x12\x1c.flowstate.v1.GetGateRequest\x1a\x1d.flowstate.v1.GetGateResponse\"\x04\x88\xb5\x18\x03\x12R\n" +
+	"\tListGates\x12\x1e.flowstate.v1.ListGatesRequest\x1a\x1f.flowstate.v1.ListGatesResponse\"\x04\x88\xb5\x18\x03\x12d\n" +
+	"\x0fSignalWithStart\x12$.flowstate.v1.SignalWithStartRequest\x1a%.flowstate.v1.SignalWithStartResponse\"\x04\x88\xb5\x18\x01\x12C\n" +
+	"\x04List\x12\x19.flowstate.v1.ListRequest\x1a\x1a.flowstate.v1.ListResponse\"\x04\x88\xb5\x18\x02\x12X\n" +
+	"\vGetTimeline\x12 .flowstate.v1.GetTimelineRequest\x1a!.flowstate.v1.GetTimelineResponse\"\x04\x88\xb5\x18\x02\x12I\n" +
+	"\x06Cancel\x12\x1b.flowstate.v1.CancelRequest\x1a\x1c.flowstate.v1.CancelResponse\"\x04\x88\xb5\x18\x04\x12R\n" +
+	"\tTerminate\x12\x1e.flowstate.v1.TerminateRequest\x1a\x1f.flowstate.v1.TerminateResponse\"\x04\x88\xb5\x18\x05\x12X\n" +
+	"\vDebugAttach\x12 .flowstate.v1.DebugAttachRequest\x1a!.flowstate.v1.DebugAttachResponse\"\x04\x88\xb5\x18\x12\x12O\n" +
+	"\bDebugGet\x12\x1d.flowstate.v1.DebugGetRequest\x1a\x1e.flowstate.v1.DebugGetResponse\"\x04\x88\xb5\x18\x12\x12[\n" +
+	"\fDebugHistory\x12!.flowstate.v1.DebugHistoryRequest\x1a\".flowstate.v1.DebugHistoryResponse\"\x04\x88\xb5\x18\x12\x12X\n" +
+	"\vDebugResume\x12 .flowstate.v1.DebugResumeRequest\x1a!.flowstate.v1.DebugResumeResponse\"\x04\x88\xb5\x18\x12\x12p\n" +
+	"\x13DebugSetBreakpoints\x12(.flowstate.v1.DebugSetBreakpointsRequest\x1a).flowstate.v1.DebugSetBreakpointsResponse\"\x04\x88\xb5\x18\x12\x12[\n" +
+	"\fDebugInspect\x12!.flowstate.v1.DebugInspectRequest\x1a\".flowstate.v1.DebugInspectResponse\"\x04\x88\xb5\x18\x13\x12O\n" +
+	"\bValidate\x12\x1d.flowstate.v1.ValidateRequest\x1a\x1e.flowstate.v1.ValidateResponse\"\x04\x88\xb5\x18\x06\x12L\n" +
+	"\aCompile\x12\x1c.flowstate.v1.CompileRequest\x1a\x1d.flowstate.v1.CompileResponse\"\x04\x88\xb5\x18\a\x12U\n" +
 	"\n" +
-	"GetCatalog\x12\x1f.flowstate.v1.GetCatalogRequest\x1a .flowstate.v1.GetCatalogResponse\"\x00\x12]\n" +
-	"\x0eCreateSchedule\x12#.flowstate.v1.CreateScheduleRequest\x1a$.flowstate.v1.CreateScheduleResponse\"\x00\x12Z\n" +
-	"\rListSchedules\x12\".flowstate.v1.ListSchedulesRequest\x1a#.flowstate.v1.ListSchedulesResponse\"\x00\x12c\n" +
-	"\x10DescribeSchedule\x12%.flowstate.v1.DescribeScheduleRequest\x1a&.flowstate.v1.DescribeScheduleResponse\"\x00\x12]\n" +
-	"\x0eDeleteSchedule\x12#.flowstate.v1.DeleteScheduleRequest\x1a$.flowstate.v1.DeleteScheduleResponse\"\x00\x12Z\n" +
-	"\rPauseSchedule\x12\".flowstate.v1.PauseScheduleRequest\x1a#.flowstate.v1.PauseScheduleResponse\"\x00\x12]\n" +
-	"\x0eResumeSchedule\x12#.flowstate.v1.ResumeScheduleRequest\x1a$.flowstate.v1.ResumeScheduleResponse\"\x00\x12`\n" +
-	"\x0fTriggerSchedule\x12$.flowstate.v1.TriggerScheduleRequest\x1a%.flowstate.v1.TriggerScheduleResponse\"\x00B\xab\x01\n" +
+	"GetCatalog\x12\x1f.flowstate.v1.GetCatalogRequest\x1a .flowstate.v1.GetCatalogResponse\"\x04\x88\xb5\x18\b\x12a\n" +
+	"\x0eCreateSchedule\x12#.flowstate.v1.CreateScheduleRequest\x1a$.flowstate.v1.CreateScheduleResponse\"\x04\x88\xb5\x18\t\x12^\n" +
+	"\rListSchedules\x12\".flowstate.v1.ListSchedulesRequest\x1a#.flowstate.v1.ListSchedulesResponse\"\x04\x88\xb5\x18\n" +
+	"\x12g\n" +
+	"\x10DescribeSchedule\x12%.flowstate.v1.DescribeScheduleRequest\x1a&.flowstate.v1.DescribeScheduleResponse\"\x04\x88\xb5\x18\n" +
+	"\x12a\n" +
+	"\x0eDeleteSchedule\x12#.flowstate.v1.DeleteScheduleRequest\x1a$.flowstate.v1.DeleteScheduleResponse\"\x04\x88\xb5\x18\v\x12^\n" +
+	"\rPauseSchedule\x12\".flowstate.v1.PauseScheduleRequest\x1a#.flowstate.v1.PauseScheduleResponse\"\x04\x88\xb5\x18\f\x12a\n" +
+	"\x0eResumeSchedule\x12#.flowstate.v1.ResumeScheduleRequest\x1a$.flowstate.v1.ResumeScheduleResponse\"\x04\x88\xb5\x18\r\x12d\n" +
+	"\x0fTriggerSchedule\x12$.flowstate.v1.TriggerScheduleRequest\x1a%.flowstate.v1.TriggerScheduleResponse\"\x04\x88\xb5\x18\x0eB\xab\x01\n" +
 	"\x10com.flowstate.v1B\fServiceProtoP\x01Z8github.com/picatz/flowstate/pkg/flowstate/v1;flowstatev1\xa2\x02\x03FXX\xaa\x02\fFlowstate.V1\xca\x02\fFlowstate\\V1\xe2\x02\x18Flowstate\\V1\\GPBMetadata\xea\x02\rFlowstate::V1b\x06proto3"
 
 var (
@@ -3429,6 +3431,7 @@ func file_flowstate_v1_service_proto_init() {
 	if File_flowstate_v1_service_proto != nil {
 		return
 	}
+	file_flowstate_v1_authorization_proto_init()
 	file_flowstate_v1_catalog_proto_init()
 	file_flowstate_v1_debug_proto_init()
 	file_flowstate_v1_diagnostics_proto_init()
