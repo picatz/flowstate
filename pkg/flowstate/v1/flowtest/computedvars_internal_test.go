@@ -2,6 +2,7 @@ package flowtest
 
 import (
 	"fmt"
+	"github.com/google/cel-go/common/types"
 	"strings"
 	"testing"
 
@@ -313,13 +314,61 @@ func TestAChainOfWholeValueReadsIsRefusedByWhatItCopies(t *testing.T) {
 	assert.Contains(t, p.err().Error(), "computed vars produce more than 12 leaves")
 }
 
-func TestLeafCountCountsAnEmptyContainerOnce(t *testing.T) {
+func TestBoundedLeavesCountsAnEmptyContainerOnce(t *testing.T) {
 	t.Parallel()
 
-	assert.Equal(t, 1, leafCount(1))
-	assert.Equal(t, 1, leafCount(map[string]any{}))
-	assert.Equal(t, 1, leafCount([]any{}))
-	assert.Equal(t, 3, leafCount(map[string]any{"a": []any{1, 2}, "b": "x"}))
+	count := func(v any) int {
+		n, ok := boundedLeaves(types.DefaultTypeAdapter.NativeToValue(v), 1000)
+		require.True(t, ok)
+
+		return n
+	}
+	assert.Equal(t, 1, count(1))
+	assert.Equal(t, 1, count(map[string]any{}))
+	assert.Equal(t, 1, count([]any{}))
+	assert.Equal(t, 3, count(map[string]any{"a": []any{1, 2}, "b": "x"}))
+}
+
+// TestBoundedLeavesStopsAtTheLimit pins the reviewer's finding on #2456: one
+// expression naming a large table many times builds far more than the budget
+// in a single evaluation, so the count has to stop walking at the limit rather
+// than sizing the whole value. A thousand references to a hundred-leaf table is
+// a hundred thousand leaves; a limit of 250 must cost about 250 of them.
+func TestBoundedLeavesStopsAtTheLimit(t *testing.T) {
+	t.Parallel()
+
+	table := make([]any, 100)
+	for i := range table {
+		table[i] = i
+	}
+	fan := make([]any, 1000)
+	for i := range fan {
+		fan[i] = table
+	}
+
+	n, ok := boundedLeaves(types.DefaultTypeAdapter.NativeToValue(fan), 250)
+
+	assert.False(t, ok)
+	assert.LessOrEqual(t, n, 251, "the walk must stop at the limit, not size the whole value")
+}
+
+// TestOneExpressionNamingATableManyTimesIsRefused is the load-level form: a
+// single var, so no chain for a per-link count to catch.
+func TestOneExpressionNamingATableManyTimesIsRefused(t *testing.T) {
+	t.Parallel()
+
+	file := &File{
+		Vars: map[string]any{
+			"t":   []any{1, 2, 3, 4},
+			"big": "${[vars.t, vars.t, vars.t, vars.t]}",
+		},
+		leafLimit: 12,
+	}
+	p := newProblems(nil)
+	file.evaluateVars(p, nil)
+
+	require.Error(t, p.err())
+	assert.Contains(t, p.err().Error(), "computed vars produce more than 12 leaves")
 }
 
 func TestDeclareVarsCountsComputedLeavesBeforeBuildingGraph(t *testing.T) {

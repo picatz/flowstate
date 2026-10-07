@@ -3,6 +3,7 @@ package flowtest
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"regexp"
@@ -12,6 +13,9 @@ import (
 
 	"github.com/google/cel-go/cel"
 	celast "github.com/google/cel-go/common/ast"
+	"github.com/google/cel-go/common/types"
+	"github.com/google/cel-go/common/types/ref"
+	"github.com/google/cel-go/common/types/traits"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
@@ -292,7 +296,8 @@ const maxVarDependencyScans = 20_000_000
 // of it, and a chain of such reads depends on one var per link, so neither the
 // edge budget nor the scan budget sees it: 100 links over a 20,000-leaf table
 // is about 20,000 edges and 2,000,000 copied leaves, 17.7s and 2.6GB from a
-// small file (#1317). The copy is the resource, so the copy is what is counted.
+// small file (#1317). The copy is the resource, so the copy is what is counted,
+// on the CEL value and before it is converted: see [boundedLeaves].
 //
 // Three times [maxExpandedNodes]: it must admit everything the edge budget
 // does, since a direct reader of a table of L leaves both costs L edges and
@@ -300,31 +305,6 @@ const maxVarDependencyScans = 20_000_000
 // 300,000 leaves is tens of megabytes at the worst, far under the 1GiB the
 // repository's tests run under.
 const maxVarMaterializedLeaves = 3 * maxExpandedNodes
-
-// leafCount is the number of leaves in a decoded value: a scalar is one, a
-// container is the sum of its elements, and an empty container is one so that
-// a million empty maps are still counted. Work is the value's own size, which
-// is what the evaluation that produced it already spent.
-func leafCount(v any) int {
-	switch v := v.(type) {
-	case map[string]any:
-		n := 0
-		for _, e := range v {
-			n += leafCount(e)
-		}
-
-		return max(n, 1)
-	case []any:
-		n := 0
-		for _, e := range v {
-			n += leafCount(e)
-		}
-
-		return max(n, 1)
-	default:
-		return 1
-	}
-}
 
 // depBudget is what one load's dependency scan may still spend: edges
 // retained and node visits made. Separate because they bound different
@@ -1144,7 +1124,12 @@ func (f *File) evaluateVars(p *problems, restated []string) {
 					continue
 				}
 
-				value, err := evaluateVar(base, d, activation)
+				value, leaves, err := evaluateVar(base, d, activation, leavesLeft)
+				if errors.Is(err, errVarLeavesExceeded) {
+					p.report(site{at: block}, "computed vars produce more than %d leaves between them; each `${vars.name}` read of a container copies it, so read a leaf of it, or read it from fewer vars", cmp.Or(f.leafLimit, maxVarMaterializedLeaves))
+
+					break
+				}
 				if err != nil {
 					p.report(d.spot, "vars.%s: evaluating its expression failed: %s",
 						name, scrubbedVarError(err, taint, d.deps, d.hasLiteral))
@@ -1154,12 +1139,6 @@ func (f *File) evaluateVars(p *problems, restated []string) {
 				// Charged for the copy the evaluation just made, before it is
 				// stored: past the budget the file is refused whole, and no
 				// later link gets to copy again (#1317).
-				leaves := leafCount(value)
-				if leaves > leavesLeft {
-					p.report(site{at: block}, "computed vars produce more than %d leaves between them; each `${vars.name}` read of a container copies it, so read a leaf of it, or read it from fewer vars", cmp.Or(f.leafLimit, maxVarMaterializedLeaves))
-
-					break
-				}
 				leavesLeft -= leaves
 				if len(d.path) > 1 {
 					switch value.(type) {
@@ -1547,20 +1526,77 @@ func checkVarExpression(p *problems, spot site, name string, root celast.Expr, b
 // [cel.RefValueToValue] then [literalToGo] — rather than a second conversion
 // beside it, so a map a var builds and a map a run produces reach a comparison
 // as the same Go value.
-func evaluateVar(base *cel.Env, d *varDeclaration, activation map[string]any) (any, error) {
+func evaluateVar(base *cel.Env, d *varDeclaration, activation map[string]any, leaves int) (any, int, error) {
 	// Background rather than a caller's context, because this loader has none
 	// to thread: the bound that matters here is cost, not time (CLAUDE.md), and
 	// [maxVarCost] is enforced whatever the context says.
 	out, err := varEvaluator().Eval(context.Background(), base, d.ast, activation)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
+	}
+	// Counted on the CEL value, before it is converted: the conversion below is
+	// the copy [maxVarMaterializedLeaves] exists to bound, and a CEL cost of
+	// one per reference does not price how large a referenced container is, so
+	// one expression naming a table many times can build far more than the
+	// budget before any count of the finished value sees it.
+	n, within := boundedLeaves(out, leaves)
+	if !within {
+		return nil, n, errVarLeavesExceeded
 	}
 	literal, err := cel.RefValueToValue(out)
 	if err != nil {
-		return nil, err
+		return nil, n, err
+	}
+	value, err := literalToGo(literal)
+
+	return value, n, err
+}
+
+// errVarLeavesExceeded reports that one var's value alone is past the leaves
+// the file has left. It carries no text of its own: [File.evaluateVars] words
+// the refusal, naming the limit.
+var errVarLeavesExceeded = errors.New("computed var exceeds the leaf budget")
+
+// boundedLeaves counts the leaves of a CEL value the way [leafCount] counts a
+// decoded one, and stops as soon as the count passes limit, so the work is
+// proportional to the limit and not to the value. The bool is false past it.
+func boundedLeaves(v ref.Val, limit int) (int, bool) {
+	n := 0
+	ok := walkLeaves(v, &n, limit, 0)
+
+	return n, ok
+}
+
+func walkLeaves(v ref.Val, n *int, limit, depth int) bool {
+	if depth > v1.MaxStructureDepth {
+		*n += 1
+
+		return *n <= limit
+	}
+	before := *n
+	switch c := v.(type) {
+	case traits.Lister:
+		for it := c.Iterator(); it.HasNext() == types.True; {
+			if !walkLeaves(it.Next(), n, limit, depth+1) {
+				return false
+			}
+		}
+	case traits.Mapper:
+		for it := c.Iterator(); it.HasNext() == types.True; {
+			if !walkLeaves(c.Get(it.Next()), n, limit, depth+1) {
+				return false
+			}
+		}
+	default:
+		*n += 1
+
+		return *n <= limit
+	}
+	if *n == before {
+		*n += 1
 	}
 
-	return literalToGo(literal)
+	return *n <= limit
 }
 
 // scrubbedVarError is what one evaluation failure may say.
