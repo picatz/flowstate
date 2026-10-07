@@ -94,9 +94,9 @@ func DecisionPoints() []DecisionPoint {
 			Proof: []string{"TestMCPToolsAreGatedByTheCallersEffectiveActions", "TestMCPStdioCallerWithNoPrincipalIsUnrestricted"},
 		},
 		{
-			ID: "action", Name: "Does this caller hold the action this operation needs?", Layer: LayerDeployment,
+			ID: "action", Name: "Does a verified caller hold the action this operation needs?", Layer: LayerDeployment,
 			Enforced: "pkg/flowstate/v1/authz/authz.go: DecidePrincipal",
-			Zero:     ZeroClosed, ZeroNote: "A verified caller holds exactly what its trusted issuer entry lists, an entry cannot omit the list, and an embedder's Decider can only narrow it.",
+			Zero:     ZeroClosed, ZeroNote: "A verified caller holds exactly what its trusted issuer entry lists, an entry cannot omit the list, and an embedder's Decider can only narrow it. This is not authentication: a context with no principal at all, which is a deployment that configured none or a process-trusted transport, holds every ordinary action and no explicit one.",
 			Proof: []string{"TestDecidePrincipal", "TestNoActionCheckOutsideAuthz", "TestRestrictOnlyNarrowsThePolicy"},
 		},
 		{
@@ -162,8 +162,8 @@ func DecisionPoints() []DecisionPoint {
 		{
 			ID: "egress", Name: "May this task reach this host?", Layer: LayerWorker,
 			Enforced: "pkg/flowstate/v1/netpolicy/netpolicy.go: decideDial",
-			Zero:     ZeroDefault, ZeroNote: "With no policy a task reaches public addresses only: loopback, private, link-local and metadata ranges are denied and every redirect is re-checked. There is no fully closed mode without writing allow rules.",
-			Proof: []string{"Test_Policy_Client_addressPolicy", "Test_Policy_Client_redirectPolicy"},
+			Zero:     ZeroDefault, ZeroNote: "With no policy a task reaches public addresses only: loopback, private, link-local and metadata ranges are denied and every redirect is re-checked. The MCP run-local tool is stricter: with no egress policy file it denies all egress. Elsewhere a deployment closes the default by writing an egress policy.",
+			Proof: []string{"Test_Policy_Client_addressPolicy", "Test_Policy_Client_redirectPolicy", "TestTheRunLocalToolRefusesEgressByDefault"},
 		},
 		{
 			ID: "exec", Name: "May this task run this program?", Layer: LayerWorker,

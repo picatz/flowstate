@@ -14,7 +14,7 @@ An **open** zero case permits when nothing is configured and must say why. A **d
 | [Who is this caller, and may it reach the system at all?](#admission) | transport | **closed** | `pkg/flowstate/v1/auth/admission.go: admitBearer` |
 | [May an unauthenticated caller use a server that was explicitly left open?](#insecure-no-auth) | transport | **open** | `pkg/flowstate/v1/auth/connect.go: InsecureAnonymousVerifier` |
 | [May a process that speaks MCP over its own stdio act?](#mcp-stdio) | transport | **open** | `cmd/flow/internal/mcp/mcp.go: withMCPActions` |
-| [Does this caller hold the action this operation needs?](#action) | deployment | **closed** | `pkg/flowstate/v1/authz/authz.go: DecidePrincipal` |
+| [Does a verified caller hold the action this operation needs?](#action) | deployment | **closed** | `pkg/flowstate/v1/authz/authz.go: DecidePrincipal` |
 | [May this caller read sensitive values or use the codec server?](#explicit-actions) | deployment | **closed** | `pkg/flowstate/v1/server/sensitive.go: revealAuthorized` |
 | [Does this run belong to the caller's tenant?](#tenancy) | deployment | **closed** | `pkg/flowstate/v1/server/lifecycle.go: authorizeRunDecision` |
 | [May this caller decode or encode a tenant's payloads?](#codec-server) | deployment | **closed** | `pkg/flowstate/v1/codecserver/codecserver.go: authorize` |
@@ -60,10 +60,10 @@ An **open** zero case permits when nothing is configured and must say why. A **d
 
 ## action
 
-<a id="action"></a>Does this caller hold the action this operation needs?
+<a id="action"></a>Does a verified caller hold the action this operation needs?
 
 - Layer: deployment
-- Zero case: **closed**. A verified caller holds exactly what its trusted issuer entry lists, an entry cannot omit the list, and an embedder's Decider can only narrow it.
+- Zero case: **closed**. A verified caller holds exactly what its trusted issuer entry lists, an entry cannot omit the list, and an embedder's Decider can only narrow it. This is not authentication: a context with no principal at all, which is a deployment that configured none or a process-trusted transport, holds every ordinary action and no explicit one.
 - Enforced in: `pkg/flowstate/v1/authz/authz.go: DecidePrincipal`
 - Proven by: `TestDecidePrincipal`, `TestNoActionCheckOutsideAuthz`, `TestRestrictOnlyNarrowsThePolicy`
 
@@ -162,9 +162,9 @@ An **open** zero case permits when nothing is configured and must say why. A **d
 <a id="egress"></a>May this task reach this host?
 
 - Layer: worker
-- Zero case: **default**. With no policy a task reaches public addresses only: loopback, private, link-local and metadata ranges are denied and every redirect is re-checked. There is no fully closed mode without writing allow rules.
+- Zero case: **default**. With no policy a task reaches public addresses only: loopback, private, link-local and metadata ranges are denied and every redirect is re-checked. The MCP run-local tool is stricter: with no egress policy file it denies all egress. Elsewhere a deployment closes the default by writing an egress policy.
 - Enforced in: `pkg/flowstate/v1/netpolicy/netpolicy.go: decideDial`
-- Proven by: `Test_Policy_Client_addressPolicy`, `Test_Policy_Client_redirectPolicy`
+- Proven by: `Test_Policy_Client_addressPolicy`, `Test_Policy_Client_redirectPolicy`, `TestTheRunLocalToolRefusesEgressByDefault`
 
 ## exec
 
