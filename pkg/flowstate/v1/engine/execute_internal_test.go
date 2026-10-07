@@ -140,10 +140,19 @@ func TestRunUndoTaskDoesNotNameUndoBudgetExpiryForAnOrdinaryFailure(t *testing.T
 			return nil, activityError("log", v1.NewTaskError("log", v1.ErrorKindInvalidInput, errors.New("bad input")), false)
 		})
 
-	// Narrowed exactly as the budget-expiry case is (well under the defaults),
-	// so a bug that named the budget for *any* narrowed-timeout failure rather
-	// than specifically a Temporal timeout would still be caught here.
-	env.ExecuteWorkflow(probe, 50*time.Millisecond)
+	// Narrowed below the defaults, as the budget-expiry case is, so a bug that
+	// named the budget for *any* narrowed-timeout failure rather than
+	// specifically a Temporal timeout would still be caught here. Only "below
+	// the defaults" matters, not "short": the test environment enforces an
+	// activity's StartToClose against the wall clock, so a budget of tens of
+	// milliseconds raced the mocked activity's own return on a loaded machine
+	// and sometimes won, producing the very timeout this case says must not be
+	// named. A minute is narrowed (the ceiling is two minutes) and cannot be
+	// reached by a mock that returns at once.
+	const within = time.Minute
+	require.Less(t, within, v1.DefaultStartToCloseTimeout,
+		"the budget has to be narrower than the ceiling, or nothing is narrowed")
+	env.ExecuteWorkflow(probe, within)
 	require.True(t, env.IsWorkflowCompleted(), "the probe workflow never finished")
 	require.NoError(t, env.GetWorkflowError())
 
