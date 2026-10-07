@@ -80,7 +80,7 @@
           ]
         }
       ],
-      "protocolVersion": 7,
+      "protocolVersion": 8,
       "taskSchemaDigest": "sha256:9db27b8016cb79585d06765724b060e72e07dd704ef39457bd164d7a12e3eae5",
       "claimsDigest": "sha256:569d12ecde6b803be0c126e24a0bcc57adbefafc5052ddde6ed396365d72c66b"
     },
@@ -239,7 +239,7 @@
           "requiredSecretInputs": []
         }
       ],
-      "protocolVersion": 7,
+      "protocolVersion": 8,
       "taskSchemaDigest": "sha256:f3ed2101c84ca80979885245bfa276b68a8fd429a51198a6a0933af8df304d1d",
       "claimsDigest": "sha256:b5dd70042bdd23befca5989ea040080ef4a81fca6cf2d82e444220955ace33eb"
     },
@@ -324,7 +324,7 @@
           "requiredSecretInputs": []
         }
       ],
-      "protocolVersion": 7,
+      "protocolVersion": 8,
       "taskSchemaDigest": "sha256:0e2882a6352434e1f45d110be901dc4e717c04dcd1511a48257094dda96d8c45",
       "claimsDigest": "sha256:40ef9c189ed75ea650bb2a3f0aec65c28bd96df24e54512107a753a0876d4157"
     },
@@ -401,7 +401,7 @@
           "requiredSecretInputs": []
         }
       ],
-      "protocolVersion": 7,
+      "protocolVersion": 8,
       "taskSchemaDigest": "sha256:d6a6eb6822c5443da1e30455813377edd40f5c87830451c3a2de221ab80351ad",
       "claimsDigest": "sha256:203b7ca4d6aa5596479ba0c6e02a893bfe3c5d434738dc0b0a4497ed4076cb0a"
     },
@@ -797,7 +797,7 @@
           ]
         }
       ],
-      "protocolVersion": 7,
+      "protocolVersion": 8,
       "taskSchemaDigest": "sha256:8f6137ec2ab24d7d71999c1b434d11625192c4cd5656364a14fd43dfa80b101f",
       "claimsDigest": "sha256:bcbce8a3c6332d07a054bd942d7ace4f88ba77b25d564aedf6c6df5e7ec8d4ed"
     },
@@ -1493,7 +1493,7 @@
           ]
         }
       ],
-      "protocolVersion": 7,
+      "protocolVersion": 8,
       "taskSchemaDigest": "sha256:50634e54dfde8e2d5ebc2f5f54d8a0947113de6d38b8f76b4f33aaaf1527c203",
       "claimsDigest": "sha256:b85791e367c47b103ff192779ff3c606f47b1e310e5582bd6ebc6220352b0902"
     },
@@ -1596,7 +1596,7 @@
           "requiredSecretInputs": []
         }
       ],
-      "protocolVersion": 7,
+      "protocolVersion": 8,
       "taskSchemaDigest": "sha256:f83fad19bc2585828b8f34395fa68ac90144f571761b5910e74390ed3930164f",
       "claimsDigest": "sha256:8e62e7398d511e8c50057ee311bc595f71588b7314e7cb8c51186d029aba10ca"
     },
@@ -1889,7 +1889,7 @@
           ]
         }
       ],
-      "protocolVersion": 7,
+      "protocolVersion": 8,
       "taskSchemaDigest": "sha256:fd6cfdc41328cb17c01106b8d4ccb4c3a4fede6f389d899633bfa522493b7837",
       "claimsDigest": "sha256:2a2abcbe1cd1956825b51cf9b6b949669a208437d68de744513b34c9701945e2"
     },
@@ -1901,7 +1901,7 @@
         "oidc"
       ],
       "tasks": [],
-      "protocolVersion": 7,
+      "protocolVersion": 8,
       "taskSchemaDigest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "claimsDigest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
@@ -2187,7 +2187,7 @@
           ]
         }
       ],
-      "protocolVersion": 7,
+      "protocolVersion": 8,
       "taskSchemaDigest": "sha256:cad73e422e6cecb48056cf18eeb1db1865e0bdc6a1170cf9e77896be83088886",
       "claimsDigest": "sha256:1abeaf62ceac05e137bd86493593a62f9cfd32f05ed2c7a9212d85562392a07a"
     },
@@ -2271,7 +2271,7 @@
           ]
         }
       ],
-      "protocolVersion": 7,
+      "protocolVersion": 8,
       "taskSchemaDigest": "sha256:57fcd55c87214e241a4715af45d303d04b34f594605806034b5f41182d9858e8",
       "claimsDigest": "sha256:8bf5a50bd61c95744f4a98f21ad1a44b3482a53be5d4498d109ff7ded67159ca"
     },
@@ -2428,7 +2428,7 @@
           ]
         }
       ],
-      "protocolVersion": 7,
+      "protocolVersion": 8,
       "taskSchemaDigest": "sha256:7c16b2c3e2eeb79fb5fcc1a7613b7eb0b4bc167c31daa4bd3c34f5ee1f7ff743",
       "claimsDigest": "sha256:9fe13b9671d955e53dda98a95e044d119782cf15ba341a936fbf971814e67a7b"
     },
@@ -2520,7 +2520,7 @@
           "requiredSecretInputs": []
         }
       ],
-      "protocolVersion": 7,
+      "protocolVersion": 8,
       "taskSchemaDigest": "sha256:10cc0b3ca499e38d9dbb97cd9159b3033a1fa1614ee1c39596aa5ddf70fcdc6d",
       "claimsDigest": "sha256:685ca5aae686c533ce51291c529f168f9c81e09fb917b4d1ade3df143def8077"
     },
@@ -2679,7 +2679,7 @@
           ]
         }
       ],
-      "protocolVersion": 7,
+      "protocolVersion": 8,
       "taskSchemaDigest": "sha256:d59a2383062219531fa4c49df18baa4ff7f10939094214e20e4c3e4db214a8aa",
       "claimsDigest": "sha256:568efc111a8e63f042c2d507e5c7e2b99b8ba6ac930a7a9dccda34c1f2ce8f09"
     },
@@ -2777,7 +2777,7 @@
           ]
         }
       ],
-      "protocolVersion": 7,
+      "protocolVersion": 8,
       "taskSchemaDigest": "sha256:c01a9632f001fc6faecf381c93a0257ae9a1bd99d6c22fa945d2696365a10e7e",
       "claimsDigest": "sha256:054bb444cb78d9e8dcbbf349e5cf57a6600af043a1b9ca7d374ca60809c44081"
     }
