@@ -2,11 +2,13 @@ package auth
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/picatz/flowstate/internal/strictyaml"
 	"maps"
+	"net/http"
 	"net/netip"
 	"net/url"
 	"slices"
@@ -827,7 +829,52 @@ func ParsePolicy(data []byte) (Policy, error) {
 		return Policy{}, err
 	}
 
+	if err := policy.validateFetchEgress(); err != nil {
+		return Policy{}, err
+	}
+
 	return policy, nil
+}
+
+// validateFetchEgress refuses an issuer or key set URL that the policy's own
+// identity egress policy cannot fetch, so a file that loads is a file that can
+// fetch.
+//
+// It is [ParsePolicy]'s check rather than [Policy.Validate]'s because only a
+// file has no other say: a verifier built in Go may pass [WithEgressPolicy],
+// which replaces the section, so Validate cannot know what will do the fetch.
+func (p Policy) validateFetchEgress() error {
+	egress, err := p.EgressPolicy()
+	if err != nil {
+		return err
+	}
+
+	// [ValidateHTTPSURL] admits plain http on loopback, so a rehearsal issuer
+	// loads; the identity egress policy then refuses the first fetch unless the
+	// section admits the scheme. Say so here, in the fetch's own words, rather
+	// than at the first token (#1694). Scheme and port only: no address is
+	// resolved at load.
+	for i, issuer := range p.Issuers {
+		if issuer.kind() != IssuerKindOIDC || issuer.JWKSFile != "" {
+			continue
+		}
+		fetched, field := issuer.Issuer, "issuer"
+		if issuer.JWKSURL != "" {
+			fetched, field = issuer.JWKSURL, "jwks_url"
+		}
+		target, err := url.Parse(fetched)
+		if err != nil || target.Scheme != "http" {
+			continue
+		}
+		var deny *netpolicy.DenyError
+		if err := egress.CheckURL(context.Background(), http.MethodGet, target); errors.As(err, &deny) {
+			return fmt.Errorf("%w: issuers[%d]: %s %q is refused by the identity egress policy: %v; "+
+				"configure the trust policy's egress: section to allow this fetch: %s",
+				ErrInvalidPolicy, i, field, target.Redacted(), deny, egressRemedy(deny))
+		}
+	}
+
+	return nil
 }
 
 // rejectNullNamespaceMap catches a case [NamespaceMap]'s own doc explains the

@@ -239,6 +239,46 @@ egress:
 	require.Equal(t, "runner", principal.Subject)
 }
 
+// TestALoopbackHTTPIssuerIsRefusedAtLoadAsTheFetchWouldRefuseIt is #1694's
+// agreement: [auth.ValidateHTTPSURL] admits plain http on loopback, so a
+// rehearsal issuer or jwks_url is valid configuration, and the default identity
+// egress policy then refuses to fetch it. A file that loads must be a file that
+// can fetch, so the load refuses with the fetch's own sentence, and the verifier
+// built from the same policy another way refuses the fetch with that sentence.
+func TestALoopbackHTTPIssuerIsRefusedAtLoadAsTheFetchWouldRefuseIt(t *testing.T) {
+	t.Parallel()
+
+	var (
+		key    = authtest.GenerateKey("primary", jwa.ES256)
+		clock  = authtest.NewClock(referenceTime)
+		issuer = newTestIssuer(t, authtest.WithClock(clock.Now), authtest.WithKeys(key))
+	)
+
+	const remedy = "configure the trust policy's egress: section to allow this fetch: add `schemes: [http, https]`"
+
+	for _, entry := range []string{
+		"issuer: " + issuer.URL(),
+		"issuer: https://idp.example.com\n    jwks_url: " + issuer.URL() + "/jwks.json",
+	} {
+		_, err := auth.ParsePolicy([]byte("issuers:\n  - name: rehearsal\n    actions: []\n    audiences: [flowstate]\n    " + entry + "\n"))
+		require.ErrorIs(t, err, auth.ErrInvalidPolicy, entry)
+		require.ErrorContains(t, err, remedy, entry)
+	}
+
+	// The same entry built in Go, which no load refuses, fails at the fetch with
+	// the same remedy.
+	verifier, err := auth.NewOIDCVerifier(auth.Policy{
+		Issuers: []auth.TrustedIssuer{{Actions: []string{},
+			Name: "rehearsal", Issuer: issuer.URL(), Audiences: []string{"flowstate"},
+		}},
+	}, auth.WithClock(clock.Now))
+	require.NoError(t, err)
+
+	_, err = verifier.Verify(t.Context(),
+		issuer.MintToken(nil, authtest.WithSubject("runner"), authtest.WithAudience("flowstate")))
+	require.ErrorContains(t, err, remedy)
+}
+
 // TestTrustPolicyEgressSectionIsCompiledWhenTheFileLoads is the fail-closed half
 // of the section above: a rule that cannot compile is a configuration error at
 // start-up, not a surprise on the first fetch of the first token.
