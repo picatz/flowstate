@@ -30,7 +30,7 @@ func ContextWithCredentials(ctx context.Context, present bool) context.Context {
 // once: a request made outside a Flowstate task (nothing ever marked the
 // context) and a rule written before this attribute existed (which never
 // mentions credentials and so never depended on the answer). Both read the
-// absence the same way an absent [Identity] does — as the unremarkable case —
+// absence the same way an absent [principal.Caller] does — as the unremarkable case —
 // rather than as an error, which keeps an old rule's meaning exactly what it
 // was before this attribute existed.
 func credentialsFromContext(ctx context.Context) bool {

@@ -612,12 +612,7 @@ func taskFuncHTTP(policy *netpolicy.Policy) TaskFunc {
 		// the empty identity, which an identity-scoped allow rule declines to match:
 		// the fail-closed reading, and the same one the task-shape surface gives.
 		if id := scope.GetIdentity(); id != nil {
-			ctx = netpolicy.ContextWithIdentity(ctx, netpolicy.Identity{
-				Subject:   id.GetSubject(),
-				Issuer:    id.GetIssuer(),
-				Namespace: id.GetNamespace(),
-				Claims:    id.GetClaims(),
-			})
+			ctx = netpolicy.ContextWithIdentity(ctx, CallerOf(id))
 		}
 
 		// Mark whether this request carries a worker-resolved credential, so an

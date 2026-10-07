@@ -9,6 +9,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/picatz/flowstate/pkg/flowstate/v1/principal"
 )
 
 // shippedEgressPolicy builds the egress policy example the repository ships, so
@@ -33,7 +35,7 @@ func shippedEgressPolicy(t *testing.T) *Policy {
 // requestAs asks the shipped policy about a request, without making one. The
 // example names hosts that exist — api.github.com among them — and a test that
 // reaches any of them would be asserting something about the internet.
-func requestAs(t *testing.T, policy *Policy, method, target string, id Identity) error {
+func requestAs(t *testing.T, policy *Policy, method, target string, id principal.Caller) error {
 	t.Helper()
 
 	req, err := http.NewRequestWithContext(ContextWithIdentity(t.Context(), id), method, target, nil)
@@ -74,8 +76,8 @@ func TestShippedEgressPolicyExampleRefusesTheOtherTenant(t *testing.T) {
 
 	policy := shippedEgressPolicy(t)
 
-	teamA := Identity{Subject: "spiffe://acme/team-a", Namespace: "team-a"}
-	teamB := Identity{Subject: "spiffe://acme/team-b", Namespace: "team-b"}
+	teamA := principal.Caller{Subject: "spiffe://acme/team-a", Namespace: "team-a"}
+	teamB := principal.Caller{Subject: "spiffe://acme/team-b", Namespace: "team-b"}
 
 	require.NoError(t,
 		requestAs(t, policy, http.MethodGet, "https://partner-a.example.com/v1", teamA),
@@ -90,7 +92,7 @@ func TestShippedEgressPolicyExampleRefusesTheOtherTenant(t *testing.T) {
 	// partner API because the empty string matched nothing is the fail-open shape
 	// this whole surface exists to refuse.
 	requireDenied(t,
-		requestAs(t, policy, http.MethodGet, "https://partner-a.example.com/v1", Identity{}),
+		requestAs(t, policy, http.MethodGet, "https://partner-a.example.com/v1", principal.Caller{}),
 		ReasonNoAllowRule, "no allow rule matched")
 
 	// And the allowance that is deliberately shared: whatever the partner rule
@@ -107,7 +109,7 @@ func TestShippedEgressPolicyExampleHoldsItsOtherPromises(t *testing.T) {
 	t.Parallel()
 
 	policy := shippedEgressPolicy(t)
-	teamB := Identity{Subject: "spiffe://acme/team-b", Namespace: "team-b"}
+	teamB := principal.Caller{Subject: "spiffe://acme/team-b", Namespace: "team-b"}
 
 	// "Deny beats allow": the method rule refuses a write to a host the allow
 	// rules admit, rather than the allow rule winning because it matched first.

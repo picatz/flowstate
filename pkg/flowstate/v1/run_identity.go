@@ -8,6 +8,8 @@ import (
 
 	"github.com/google/cel-go/common/types/ref"
 	"google.golang.org/protobuf/types/known/timestamppb"
+
+	"github.com/picatz/flowstate/pkg/flowstate/v1/principal"
 )
 
 // LocalRunAddress is what a run started by the local driver answers for both
@@ -120,6 +122,26 @@ func IdentityShape(identity *WorkloadIdentity) map[string]any {
 		"principal": Principal(identity.GetIssuer(), identity.GetSubject()),
 		"kind":      PrincipalKindName(identity.GetPrincipalKind()),
 	}
+}
+
+// CallerOf renders a [WorkloadIdentity] as the one [principal.Caller] a policy
+// rule reads as `identity`: the egress, exec, and task-shape surfaces all bind
+// this value, so they cannot disagree about who is calling. A nil identity
+// renders the zero Caller ("no attested caller"), which a rule scoped to a
+// tenant, kind, or action declines to match.
+//
+// The identity carries no granted actions yet, so Actions renders empty; the
+// field is declared so a rule naming it is valid today and starts matching when
+// the identity carries them.
+func CallerOf(identity *WorkloadIdentity) principal.Caller {
+	return principal.Caller{
+		Issuer:    identity.GetIssuer(),
+		Subject:   identity.GetSubject(),
+		Namespace: identity.GetNamespace(),
+		Kind:      PrincipalKindName(identity.GetPrincipalKind()),
+		Principal: Principal(identity.GetIssuer(), identity.GetSubject()),
+		Claims:    identity.GetClaims(),
+	}.Normalized()
 }
 
 // PrincipalKindName is the lowercase name an expression and a trust policy

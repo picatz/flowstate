@@ -2886,7 +2886,11 @@ from the worker only if present, then step `env:` for keys in `env_authored`; lo
 variables such as `LD_PRELOAD` and `DYLD_*` are refused), a required `timeout`
 (ceiling 1h) and `max_output_bytes` per stream (ceiling 128KiB), and CEL `allow` /
 `deny` rules over `argv`, `executable`, `name`, `dir`, `env_keys` (names, never
-values) and `identity`. Deny wins, and a rule that cannot be evaluated denies.
+values) and `identity` (`identity.subject`, `.issuer`, `.namespace`, `.claims`,
+`.principal`, `.kind`, `.actions`: the one caller shape every policy surface reads;
+`kind` is `human`, `workload`, or `agent` and is empty when none was assigned, and
+`actions` is empty until the run's identity carries granted actions). Deny wins, and
+a rule that cannot be evaluated denies.
 
 **Outputs.** `exit_code`, `stdout`, `stderr`, `stdout_truncated`, `stderr_truncated`,
 `signal`, `duration_ms`, `capture_incomplete` and `outcome` (`ran`, `did_not_start`,
