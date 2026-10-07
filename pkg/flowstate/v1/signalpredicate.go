@@ -228,7 +228,8 @@ func compileAllowPredicate(src string, manual bool) (SignalPolicyPredicate, erro
 		return SignalPolicyPredicate{}, err
 	}
 
-	reads := signalPolicyReads(checked)
+	analysis := analyzeSignalPredicate(checked)
+	reads := analysis.reads
 	if reads.opaqueInputs {
 		return SignalPolicyPredicate{}, errors.New(
 			"the predicate reads `inputs` without naming an input (`inputs[<computed>]`, `inputs` passed whole " +
@@ -359,20 +360,70 @@ type signalPolicyScopeReads struct {
 	opaqueInputs bool
 }
 
-// signalPolicyReads reports which of the narrowing-relevant names a checked
-// predicate reads. Only names that resolve to the environment's own variables
-// count: a comprehension variable that happens to be spelled `run` is the
-// author's local ([signalPolicyIsLocal]) and must not satisfy the narrowing
-// rule.
-func signalPolicyReads(checked *cel.Ast) signalPolicyScopeReads {
+// signalPredicateAnalysis is everything one walk of a checked `allow:`
+// predicate learns: the scope it reads and the senders it can admit.
+type signalPredicateAnalysis struct {
+	reads signalPolicyScopeReads
+	// principals and closed are the closed-principal result for the whole
+	// predicate; see [SignalPolicyClosedPrincipals] for what closed means.
+	principals map[string]struct{}
+	closed     bool
+}
+
+// analyzeSignalPredicate is the single traversal of a checked predicate. Both
+// results come from it, so the two cannot disagree about what the predicate
+// contains or drift apart as the supported shapes grow.
+//
+// Reads. It reports which of the narrowing-relevant names the predicate reads.
+// Only names that resolve to the environment's own variables count: a
+// comprehension variable that happens to be spelled `run` is the author's local
+// ([signalPolicyIsLocal]) and must not satisfy the narrowing rule.
+//
+// Closed principals. Each node is analyzed after its children, so the result of
+// `||` and `&&` is built from their operands' results as they are produced; see
+// [closedOfCall] for the rules and [SignalPolicyClosedPrincipals] for what is
+// and is not covered.
+//
+// Bounded. The walk keeps an explicit stack instead of recursing, so its depth
+// is heap, not goroutine stack, and it visits each node once: its work is
+// linear in the predicate, which the parser's own recursion and size limits
+// already cap before a checked AST exists. A shape the walk cannot analyze
+// takes the conservative answer: open for principals, and an `inputs` read it
+// cannot name is opaque.
+func analyzeSignalPredicate(checked *cel.Ast) signalPredicateAnalysis {
 	root := celast.NavigateAST(checked.NativeRep())
 
 	global := func(e celast.NavigableExpr, name string) bool {
 		return e.Kind() == celast.IdentKind && e.AsIdent() == name && !signalPolicyIsLocal(e)
 	}
 
-	reads := signalPolicyScopeReads{inputNames: map[string]struct{}{}}
-	for _, e := range celast.MatchDescendants(root, celast.AllMatcher()) {
+	out := signalPredicateAnalysis{reads: signalPolicyScopeReads{inputNames: map[string]struct{}{}}}
+	reads := &out.reads
+
+	// sets holds the closed-principal result of each node already analyzed that
+	// has one, keyed by node ID and consumed by its parent.
+	sets := map[int64]map[string]struct{}{}
+
+	type frame struct {
+		node     celast.NavigableExpr
+		children []celast.NavigableExpr
+		next     int
+	}
+	stack := []frame{{node: root, children: root.Children()}}
+
+	for len(stack) > 0 {
+		top := &stack[len(stack)-1]
+		if top.next < len(top.children) {
+			child := top.children[top.next]
+			top.next++
+			stack = append(stack, frame{node: child, children: child.Children()})
+
+			continue
+		}
+
+		e := top.node
+		stack = stack[:len(stack)-1]
+
 		switch {
 		case global(e, InputsRoot):
 			reads.inputs = true
@@ -395,10 +446,16 @@ func signalPolicyReads(checked *cel.Ast) signalPolicyScopeReads {
 			if global(identity.Children()[0], "sender") {
 				reads.claims = true
 			}
+		case e.Kind() == celast.CallKind:
+			if set, ok := closedOfCall(e.AsCall(), sets); ok {
+				sets[e.ID()] = set
+			}
 		}
 	}
 
-	return reads
+	out.principals, out.closed = sets[root.ID()]
+
+	return out
 }
 
 // signalPolicyInputKey reports the one input name an `inputs` identifier is
@@ -594,13 +651,33 @@ func manualAllowExprAllows(ctx context.Context, src string, caller *WorkloadIden
 // sender it cannot name.
 //
 // It is what lets a `quorum:` asking for more distinct approvers than the policy
-// can ever admit be refused where somebody can fix it. Conservative on purpose:
-// only `sender.identity.principal == "<literal>"` and `sender.identity.principal
-// in ["<literal>", ...]` name principals. `||` unions what its sides admit; `&&`
-// only narrows, so it is bounded by whichever side names principals (and by
-// their intersection when both do); everything else, such as a claims
-// comparison, is open. An upper bound is all the quorum check needs: an
-// `approve:` above it can never be met, however the narrowing resolves.
+// can ever admit be refused where somebody can fix it, and it comes from the
+// same single walk ([analyzeSignalPredicate]) that reports the predicate's
+// reads.
+//
+// Covered. Only `sender.identity.principal == "<literal>"` (either operand
+// order) and `sender.identity.principal in ["<literal>", ...]` name principals.
+// `||` unions what its sides admit. `&&` only narrows, so it is bounded by
+// whichever side names principals, and by their intersection when both do; an
+// operand that names none leaves the other's bound standing.
+//
+// Not covered. Everything else is open: a claims, namespace, kind or issuer
+// comparison, `!=`, `!`, a method such as `startsWith`, a computed literal
+// (`"x#" + inputs.who`), a list holding a non-literal, a macro, a ternary, and a
+// predicate reading only `run` or `inputs`. The analysis never reasons about
+// what such a term excludes, so it never lets one close a set.
+//
+// What open means for quorum. A predicate that is not closed counts as an open
+// set: it may admit any number of distinct senders, so the quorum check has no
+// upper bound to compare `approve:` against and does not refuse it. The check
+// is therefore lost, not wrong: a `quorum:` that is unreachable because a claims
+// term admits fewer approvers than `approve:` is accepted at validation and
+// only ever stalls at run time. The same holds for a `||` with one open side
+// (the whole disjunction is open) and for a predicate that does not compile.
+// The bound is an upper bound only: it counts principals the predicate could
+// admit, not how many of them the narrowing terms in an `&&` actually let
+// through, so a closed set larger than `approve:` does not prove the quorum is
+// reachable.
 func SignalPolicyClosedPrincipals(policy *SignalPolicy) (principals []string, closed bool) {
 	src := policy.GetAllow()
 	if src == "" {
@@ -617,20 +694,19 @@ func SignalPolicyClosedPrincipals(policy *SignalPolicy) (principals []string, cl
 		return nil, false
 	}
 
-	set, ok := closedPrincipals(checked.NativeRep().Expr())
-	if !ok {
+	analysis := analyzeSignalPredicate(checked)
+	if !analysis.closed {
 		return nil, false
 	}
 
-	return slices.Sorted(maps.Keys(set)), true
+	return slices.Sorted(maps.Keys(analysis.principals)), true
 }
 
-func closedPrincipals(e celast.Expr) (map[string]struct{}, bool) {
-	if e.Kind() != celast.CallKind {
-		return nil, false
-	}
-
-	call := e.AsCall()
+// closedOfCall is the closed-principal rule for one call node, given the
+// results of its operands in sets (keyed by node ID, filled by the walk in
+// operand-first order). ok is false when the call admits a sender it cannot
+// name.
+func closedOfCall(call celast.CallExpr, sets map[int64]map[string]struct{}) (map[string]struct{}, bool) {
 	args := call.Args()
 
 	switch call.FunctionName() {
@@ -638,20 +714,30 @@ func closedPrincipals(e celast.Expr) (map[string]struct{}, bool) {
 		if len(args) != 2 {
 			return nil, false
 		}
-		left, lok := closedPrincipals(args[0])
-		right, rok := closedPrincipals(args[1])
+		left, lok := sets[args[0].ID()]
+		right, rok := sets[args[1].ID()]
 		if !lok || !rok {
 			return nil, false
 		}
+		// Fold the smaller operand into the larger, and drop both entries: they
+		// are consumed here, so a long chain neither re-copies its growing union
+		// at every parent nor keeps every intermediate set alive.
+		if len(left) < len(right) {
+			left, right = right, left
+		}
 		maps.Copy(left, right)
+		delete(sets, args[0].ID())
+		delete(sets, args[1].ID())
 
 		return left, true
 	case operators.LogicalAnd:
 		if len(args) != 2 {
 			return nil, false
 		}
-		left, lok := closedPrincipals(args[0])
-		right, rok := closedPrincipals(args[1])
+		left, lok := sets[args[0].ID()]
+		right, rok := sets[args[1].ID()]
+		delete(sets, args[0].ID())
+		delete(sets, args[1].ID())
 		switch {
 		case lok && rok:
 			for principal := range left {
