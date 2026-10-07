@@ -123,9 +123,15 @@ func TestVerifierRefusesAnOverBoundToken(t *testing.T) {
 	verifier := newVerifier(t,
 		auth.Policy{
 			Issuers: []auth.TrustedIssuer{{Actions: []string{},
-				Name:      "foreign",
-				Issuer:    issuer.URL(),
-				Audiences: []string{"flowstate"},
+				Name:        "foreign",
+				Issuer:      issuer.URL(),
+				Audiences:   []string{"flowstate"},
+				CarryClaims: []auth.CarryClaim{{Claim: "padding_031", Type: auth.ClaimTypeString}},
+				GroupsClaim: "groups",
+				GroupMap: map[string]string{
+					"11111111-2222-3333-4444-000000000007": "sre",
+					"11111111-2222-3333-4444-000000000250": "dev",
+				},
 			}},
 		},
 		auth.WithClock(clock.Now),
@@ -212,9 +218,11 @@ func TestVerifierRefusesAnOverBoundToken(t *testing.T) {
 			groups[i] = fmt.Sprintf("11111111-2222-3333-4444-%012d", i)
 		}
 
+		// Carried through the entry's group_map: the map is what names the groups
+		// a rule can read, so 300 in the token become the 2 the entry maps.
 		principal, err := verifier.Verify(t.Context(), issuer.MintToken(claims(map[string]any{"groups": groups})))
 		require.NoError(t, err)
-		require.Len(t, principal.Claims["groups"], 300)
+		require.Equal(t, []any{"sre", "dev"}, principal.Claims["groups"])
 	})
 
 	t.Run("an ordinary provider token is admitted", func(t *testing.T) {
@@ -229,7 +237,8 @@ func TestVerifierRefusesAnOverBoundToken(t *testing.T) {
 		principal, err := verifier.Verify(t.Context(), issuer.MintToken(claims(extra)))
 		require.NoError(t, err)
 		require.Equal(t, "workflow-runner", principal.Subject)
-		require.Contains(t, principal.Claims, "padding_031")
+		require.Equal(t, map[string]any{"padding_031": "value"}, principal.Claims,
+			"only the entry's carry_claims reach the principal")
 	})
 }
 

@@ -122,13 +122,6 @@ type Starter struct {
 	// `manual: require_reason` block.
 	Reason string
 
-	// Claims names the principal's claims a `manual: allow:` predicate may
-	// read as `sender.identity.claims.<name>`, the way a server's
-	// `WithIdentityClaims` does. Only the names listed are copied, so a
-	// predicate that reads any other claim sees it absent and refuses; the
-	// default is none.
-	Claims []string
-
 	// Namespace is the tenant a principal that names none falls into, the way
 	// a server's `WithNamespace` is. The verified principal's own namespace
 	// always wins over it.
@@ -153,7 +146,7 @@ func checkStarter(ctx context.Context, workflow *Workflow, opts RunOptions, verb
 	identity := &v1.WorkloadIdentity{}
 	if p := opts.Starter.Principal; !p.IsZero() && !p.IsAnonymous() {
 		principal = p.ID()
-		derived := auth.IdentityFromPrincipal(p, opts.Starter.Namespace, "", opts.Starter.Claims...)
+		derived := auth.IdentityFromPrincipal(p, opts.Starter.Namespace, "")
 		identity = v1.ProtoWorkloadIdentity(derived)
 	}
 

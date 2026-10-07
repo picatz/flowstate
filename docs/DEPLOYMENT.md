@@ -777,6 +777,68 @@ GitHub Actions or AWS and GCP STS publish carries one; the service account email
 in GCP's impersonation request is a path this server composes itself under a
 validated `iam_endpoint`, not one an operator writes.
 
+### Carrying claims and groups into policy
+
+A token holds far more than authorization needs, and what a run carries is
+recorded in its history and can be signed into assertions sent to third parties.
+So a policy rule sees only what the issuer entry that admitted the caller says to
+carry, in the entry itself; there is no server-wide flag. Everything a rule reads
+as `identity.claims` (egress, exec, task, secret and assumption rules) or
+`sender.identity.claims` and `run.identity.claims` (`signals:`, `debug:`,
+`manual:`) is exactly this, on both drivers:
+
+```yaml
+issuers:
+  - name: keycloak
+    issuer: https://idp.example.com/realms/acme
+    audiences: [https://flowstate.example.com/rpc]
+    namespace: acme
+    actions: [workload.run, workload.read]
+    carry_claims:
+      - {claim: team, type: string}
+      - {claim: acme.cost_center, as: cost_center, type: string}
+    groups_claim: realm_access.roles
+    group_map:
+      flowstate-sre: sre
+      flowstate-dev: dev
+```
+
+`carry_claims` lists typed claims. `claim` is a top-level name or a dotted path
+into nested objects (at most four segments; a token claim whose own name has
+dots, such as `https://example.com/team`, is read by that exact name first),
+`type` is `string`, `string_list`, `bool` or `number`, and `as` renames the claim
+as rules see it (default: the `claim` text, dots included, as
+`identity.claims["acme.cost_center"]`). A claim that is absent, of another type
+than declared, or over the carried-claim bounds is left out, never coerced or
+trimmed, so a rule reading it errors and denies. At most 32 claims are carried;
+a list or object claim is at most 4 KiB, 4 levels deep and 512 values.
+
+`groups_claim` is the dotted path of the token's group list, carried as the
+list-valued claim `groups`, so `"sre" in identity.claims.groups` reads the same
+on every surface whichever IdP supplies it. `group_map` renames IdP values (a
+name, an Entra GUID) to the Flowstate group a rule names, and when present it is
+also the allowlist: a value it does not list is not carried, so a rule that must
+deny on a group has to map that group. The name `groups` is reserved for
+`groups_claim`: a `carry_claims` entry that carries it is refused when the policy loads.
+
+A group list is never trimmed. At most 64 groups of 256 bytes are carried, and a
+token that exceeds that, or carries an overage indicator (Entra's
+`_claim_names.groups` and `hasgroups`, or `groups_truncated` from a gateway that
+flags a cut list), is refused: the server logs an error naming the entry and the
+claim, and the caller sees only "token group membership is incomplete or over the
+supported bound". Fix it at the IdP: send fewer groups, assign the application
+only the groups it needs, or use app roles (`groups_claim: roles`) with a
+`group_map`. A token with no groups claim at all carries no groups.
+
+A `kind: mtls` entry carries only the claim `subject` and no groups.
+
+`flow validate --auth-policy auth.yaml workflow.yaml` reads every identity
+expression in the Flowfiles (`signals:`, `debug:`, `triggers: manual:`) and in the
+policy's own `secrets:` and `federation:` rules. A claim read that no entry
+carries is a diagnostic: a rule requiring it can never match. Embedders
+that need a different mapping pass `auth.WithClaimMapper` to the verifier; its
+result is held to the same bounds.
+
 ### Bearer-token audiences are per surface
 
 A `flow server` whose trust policy has a `kind: oidc` issuer requires a canonical
@@ -877,11 +939,13 @@ server --auth-policy ... --rpc-resource ...` and a discoverable organizational
 issuer for a shared deployment.
 
 Claims beyond subject, issuer, and namespace are not copied into durable run or
-signal-sender identity unless the server names them. Add repeatable
-`--identity-claim <name>` flags when a local `signals:` (`sender.identity.claims[...]`) or `identity.claims[...]`
-rule needs to inspect a verified claim, just as on `flow server`; for example,
-the [authenticated approval journey](../examples/approval-gate/README.md#run-an-authenticated-approval)
-uses `--identity-claim team`.
+signal-sender identity unless the issuer entry carries them (see
+[Carrying claims and groups into policy](#carrying-claims-and-groups-into-policy)).
+The generated dev entry carries one, `team` (a string), so
+`flow jwt sign --claim team=...` reaches a local `signals:`
+(`sender.identity.claims.team`) or `identity.claims.team` rule; the
+[authenticated approval journey](../examples/approval-gate/README.md#run-an-authenticated-approval)
+uses it.
 
 ### Docker Compose
 
@@ -1192,7 +1256,7 @@ There is exactly one probe endpoint — `flow server` does not expose a
 separate readiness or startup route. What makes `/healthz` usable as more than
 a bare liveness check is startup ordering: `flow server` dials Temporal with
 the SDK's eager `client.DialContext` (`pkg/flowstate/v1/temporalclient/temporalclient.go:269`,
-reached from `cmd/flow/main.go:282` through `temporalclient.DialWithNamespace`)
+reached from `cmd/flow/main.go:274` through `temporalclient.DialWithNamespace`)
 and mounts the HTTP mux — the one carrying `/healthz` — only after that dial,
 and every other startup check (TLS configuration, auth policy load, plugin
 catalog build), succeeds. So the first `200` from `/healthz` already implies

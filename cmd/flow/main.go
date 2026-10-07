@@ -185,12 +185,6 @@ type authFlags struct {
 	// public key published for verification and none signs — see
 	// [identityPublisher].
 	identityKeyPaths []string
-
-	// identityClaims names the caller token claims carried into each run's
-	// identity, where `sender.identity.claims[...]` and `identity.claims[...]` rules and downstream relying parties
-	// read them. Empty means a run's identity records the subject and issuer and
-	// nothing more.
-	identityClaims []string
 }
 
 // identityKeyDefault is what --identity-key holds when it is not given: the one
@@ -229,14 +223,12 @@ func authFlagsOf(cmd *cobra.Command) authFlags {
 	policyPath, _ := cmd.Flags().GetString("auth-policy")
 	insecure, _ := cmd.Flags().GetBool("insecure-no-auth")
 	identityKeyPaths, _ := cmd.Flags().GetStringArray("identity-key")
-	identityClaims, _ := cmd.Flags().GetStringArray("identity-claim")
 
 	return authFlags{
 		policyPath:       policyPath,
 		policyPathGiven:  cmd.Flags().Changed("auth-policy"),
 		insecure:         insecure,
 		identityKeyPaths: identityKeyPaths,
-		identityClaims:   identityClaims,
 	}
 }
 
@@ -1401,9 +1393,6 @@ func runServer(cmd *cobra.Command, args []string) error {
 	if temporalCfg.deploymentName != "" {
 		serverOpts = append(serverOpts, server.WithDeployment(temporalCfg.deploymentName))
 	}
-	if len(authCfg.identityClaims) > 0 {
-		serverOpts = append(serverOpts, server.WithIdentityClaims(authCfg.identityClaims...))
-	}
 	if policy != nil {
 		var targets []string
 		if policy.Federation != nil {
@@ -2307,8 +2296,17 @@ func runValidate(cmd *cobra.Command, args []string) error {
 		catalog = fromFile
 	}
 
+	// The deployment's auth policy, when named: what every identity expression
+	// below is checked against. Loaded before anything is read so that a policy
+	// that will not load fails the command rather than reporting every claim
+	// as uncarried.
+	claims, err := claimCheckOf(cmd)
+	if err != nil {
+		return err
+	}
+
 	if format.Machine() {
-		return validateMachine(cmd, args, format, catalog)
+		return validateMachine(cmd, args, format, catalog, claims)
 	}
 
 	// Through the surface, and with its theme, for the reason renderHelp and
@@ -2367,6 +2365,7 @@ func runValidate(cmd *cobra.Command, args []string) error {
 		// mismatch and an unknown-task read the same on the line and in the exit
 		// status.
 		diagnostics = append(diagnostics, validatePluginRequirements(target, catalog)...)
+		diagnostics = append(diagnostics, claims.workflow(target)...)
 
 		if len(diagnostics) == 0 {
 			// The one word worth finding in a run over nineteen files: everything
@@ -2378,6 +2377,11 @@ func runValidate(cmd *cobra.Command, args []string) error {
 
 		failed = true
 		writeDiagnostics(out, theme.Muted.Render(path), diagnostics)
+	}
+
+	for _, file := range claims.policies() {
+		failed = true
+		writeDiagnostics(out, theme.Muted.Render(file.path), file.diagnostics)
 	}
 
 	if failed {
@@ -2408,7 +2412,7 @@ func runValidate(cmd *cobra.Command, args []string) error {
 //
 // A file that *parses* badly is the opposite: that is a fact about the workflow, so it
 // becomes a diagnostic like any other.
-func validateMachine(cmd *cobra.Command, args []string, format OutputFormat, catalog *v1.PluginCatalog) error {
+func validateMachine(cmd *cobra.Command, args []string, format OutputFormat, catalog *v1.PluginCatalog, claims *claimCheck) error {
 	surface := newSurface(cmd)
 
 	targets, err := collectValidateTargets(args, cmd.InOrStdin())
@@ -2451,8 +2455,12 @@ func validateMachine(cmd *cobra.Command, args []string, format OutputFormat, cat
 		// green a person would not (#835 review). A no-op with no catalog, and
 		// skipped for a file that did not parse (its diagnostics already say so).
 		diagnostics = append(diagnostics, validatePluginRequirements(target, catalog)...)
+		diagnostics = append(diagnostics, claims.workflow(target)...)
 
 		reports = append(reports, diagnostics.Report(path))
+	}
+	for _, file := range claims.policies() {
+		reports = append(reports, file.diagnostics.Report(file.path))
 	}
 
 	var failed bool
@@ -3028,7 +3036,6 @@ flow server --insecure-no-auth`,
 	serverCmd.Flags().String("deployment-name", os.Getenv("FLOWSTATE_DEPLOYMENT_NAME"),
 		"name of this Flowstate installation (not a Temporal Worker Deployment), recorded in "+
 			"each run's workload identity and in every assertion subject it mints")
-	serverCmd.Flags().StringArray("identity-claim", nil, identityClaimUsage)
 
 	// The public listener's own address. Until now this was the one setting in
 	// the tree configured by environment variable with no flag beside it:
@@ -3139,7 +3146,10 @@ flow validate --plugin-dir ./plugins examples/plugins/greet/workflow.yaml
 # The same check against a saved catalog, launching nothing:
 flow plugins --plugin-dir ./plugins -o json > plugins.lock.json
 flow validate --plugin-catalog plugins.lock.json \
-  examples/plugins/greet/workflow.yaml`,
+  examples/plugins/greet/workflow.yaml
+
+# Check every claim a rule reads is carried by the deployment's auth policy:
+flow validate --auth-policy auth.yaml approval.yaml`,
 	}
 
 	// Diagnostics are a schema message, so `-o json` means here what it means on
@@ -3169,6 +3179,11 @@ flow validate --plugin-catalog plugins.lock.json \
 	// and the one a CI job wants, since a checked-in catalog validates plugin
 	// examples with no plugin binaries in the runner.
 	addPluginCatalogFlag(validateCmd)
+
+	// The cross-check against a deployment's auth policy: a rule that reads a
+	// claim no issuer entry carries can never match, and this is where an author
+	// learns that instead of from a denial in production.
+	addValidateAuthPolicyFlags(validateCmd)
 
 	// Get command, which asks a server what a run is doing.
 	//

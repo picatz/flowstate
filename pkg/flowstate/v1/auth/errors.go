@@ -166,6 +166,13 @@ var (
 	// boundary becomes decorative.
 	ErrNoNamespace = errors.New("auth: cannot determine the caller's namespace")
 
+	// ErrGroupsOverage is returned when a token's group list cannot be read in
+	// full: the IdP signalled an overage (Entra's `_claim_names`/`hasgroups`) or
+	// the list is over the bounds on a carried group list. The caller is refused
+	// rather than admitted with a prefix of its groups, because a rule over
+	// groups decides on membership, and a partial one can grant or fail to deny.
+	ErrGroupsOverage = errors.New("auth: token group list is incomplete or over bound")
+
 	// ErrSecretDenied is returned when no rule permits a workload to read a
 	// secret. See [SecretDeniedError].
 	ErrSecretDenied = errors.New("auth: denied by secret access policy")
@@ -542,6 +549,9 @@ func publicReason(err error) string {
 		return "token is missing a required claim"
 	case errors.Is(err, ErrInvalidAudience):
 		return "token audience is not accepted"
+	case errors.Is(err, ErrGroupsOverage):
+		// The entry and claim are named in the server-side error, not here.
+		return "token group membership is incomplete or over the supported bound"
 	case errors.Is(err, ErrDelegatedToken):
 		// Placed before the claim cases below because a delegation refusal is
 		// not "your issuer forgot something": the claim is present and this

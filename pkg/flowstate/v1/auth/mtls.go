@@ -294,6 +294,11 @@ func (v *MTLSVerifier) VerifyPeer(ctx context.Context, chains [][]*x509.Certific
 		return Principal{}, fmt.Errorf("trusted issuer %q: %w", entry.issuer.Name, err)
 	}
 
+	carried, err := principalClaims(nil, entry.issuer, claims)
+	if err != nil {
+		return Principal{}, err
+	}
+
 	return Principal{
 		Issuer:                entry.issuer.Issuer,
 		IssuerName:            entry.issuer.Name,
@@ -302,7 +307,7 @@ func (v *MTLSVerifier) VerifyPeer(ctx context.Context, chains [][]*x509.Certific
 		Role:                  entry.issuer.Role,
 		Kind:                  entry.issuer.PrincipalKind,
 		Actions:               slices.Clone(entry.issuer.Actions),
-		Claims:                claims,
+		Claims:                carried,
 		CertificateThumbprint: sha256Hex(leaf.Raw),
 	}, nil
 }

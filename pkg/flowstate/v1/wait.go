@@ -646,7 +646,7 @@ func signalSenderValue(sender *SignalSender) *Value {
 
 	// The shared shape, less the claims, plus the one field the sender carries
 	// beyond it. A sender is a third party, and its claims are whatever the
-	// operator chose to copy out of its token (`--identity-claim`); what an
+	// operator chose to copy out of its token (`carry_claims`); what an
 	// expression reads, and so what a wait's outputs record, is who sent
 	// (`principal`, `subject`, `issuer`, `namespace`) and not those attributes.
 	// This bounds the expression-visible shape only: the signal delivery

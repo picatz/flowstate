@@ -1,18 +1,26 @@
 package conformance
 
 import (
+	"sync/atomic"
+
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
-	"google.golang.org/protobuf/types/known/structpb"
 )
 
 // Cases for what a policy rule can read of the caller beyond strings: its kind
 // and claims of any JSON shape, through the one [principal.Caller] every
-// surface renders. A rule that read only strings would pass with the list and
-// the nested object silently dropped, so each rule here reads one of each, and
-// a driver that lost the kind, the list or the object on its route to the
-// policy disagrees with the rule that needs it.
+// surface renders. A rule that read only strings would pass with the list
+// dropped, so each rule here reads a list and a scalar, and a driver that lost
+// the kind or the list on its route to the policy disagrees with the rule that
+// needs it.
+//
+// The claims are not written by hand: they are what [auth.MapClaims] produces
+// for a Keycloak-shaped token under [carrierEntry], so the cases prove the
+// claims an issuer entry carries (a group list through `groups_claim` and
+// `group_map`, a nested scalar renamed by `carry_claims`) are the ones every
+// surface reads, and that a claim the token held but the entry did not carry
+// is absent on all of them ([carrierUncarriedRule]).
 //
 // The allow:, egress and exec surfaces carry the same identity through
 // [EgressIdentityCases], [ExecCases] and [TaskPolicyCases]; this file holds the
@@ -20,18 +28,58 @@ import (
 // a policy on the task.
 
 // carrierRule reads the caller's kind, a list claim and a nested object claim.
-const carrierRule = `identity.kind == "agent" && "sre" in identity.claims.groups && identity.claims.slack.user == "U1"`
+const carrierRule = `identity.kind == "agent" && "sre" in identity.claims.groups && identity.claims.slack_user == "U1"`
 
-// carrierIdentity is a caller whose claims are a list and a nested object,
-// holding the given groups.
-func carrierIdentity(kind string, groups ...any) auth.WorkloadIdentity {
+// carrierUncarriedRule reads a claim the token held and the entry did not
+// carry, so it can never match: the caller has no such claim on any surface,
+// and the rule fails to evaluate, which every surface reads as a denial.
+const carrierUncarriedRule = `identity.claims.team == "platform"`
+
+// carrierEntry is the trust policy entry the cases' callers were admitted by:
+// groups read from a nested claim through a map, one nested scalar renamed, and
+// nothing else carried.
+func carrierEntry(groups []string) auth.TrustedIssuer {
+	groupMap := make(map[string]string, len(groups))
+	for _, group := range groups {
+		groupMap["idp-"+group] = group
+	}
+
+	return auth.TrustedIssuer{
+		Name:        "carrier-idp",
+		GroupsClaim: "realm_access.roles",
+		GroupMap:    groupMap,
+		CarryClaims: []auth.CarryClaim{{Claim: "slack.user", As: "slack_user", Type: auth.ClaimTypeString}},
+	}
+}
+
+// carrierClaims is what the entry carries of a token that also holds a `team`
+// and an `email` it does not.
+func carrierClaims(groups ...string) map[string]any {
+	roles := make([]any, len(groups))
+	for i, group := range groups {
+		roles[i] = "idp-" + group
+	}
+
+	claims, err := auth.MapClaims(carrierEntry(groups), map[string]any{
+		"team":         "platform",
+		"email":        "reader@example.com",
+		"realm_access": map[string]any{"roles": append(roles, "idp-unmapped")},
+		"slack":        map[string]any{"user": "U1"},
+	})
+	if err != nil {
+		panic(err)
+	}
+
+	return claims
+}
+
+// carrierIdentity is a caller admitted by [carrierEntry], holding the given
+// groups.
+func carrierIdentity(kind string, groups ...string) auth.WorkloadIdentity {
 	return auth.WorkloadIdentity{
 		Subject: "svc-reader", Issuer: "https://issuer.example", Namespace: "acme-tenant",
-		Kind: kind,
-		Claims: map[string]any{
-			"groups": groups,
-			"slack":  map[string]any{"user": "U1"},
-		},
+		Kind:   kind,
+		Claims: carrierClaims(groups...),
 	}
 }
 
@@ -94,7 +142,10 @@ func PrincipalCarrierCases(baseURL string) []AuthorityCase {
 func PrincipalCarrierDenialCases() []AuthorityCase {
 	const unreachable = "https://authority-denial.invalid/never-dialed"
 
-	denied := func(identity auth.WorkloadIdentity, name string) AuthorityCase {
+	const noMatch = `allow rules: no allow rule matched`
+	const uncarried = `rule error: allow rule "identity.claims.team == \"platform\"" could not be evaluated: no such key: team`
+
+	denied := func(identity auth.WorkloadIdentity, name, allow, detail string) AuthorityCase {
 		return AuthorityCase{
 			Case: Case{
 				Name: name,
@@ -107,39 +158,52 @@ func PrincipalCarrierDenialCases() []AuthorityCase {
 						`resolving bearer reference fixture-secret:API_TOKEN: ` +
 						`auth: denied by secret access policy: no rule permits workload ` +
 						`"flowstate:acme-tenant/_default/authority-carrier-denied/read" ` +
-						`in namespace "acme-tenant" to read fixture-secret:API_TOKEN (allow rules: no allow rule matched)`}),
+						`in namespace "acme-tenant" to read fixture-secret:API_TOKEN (` + detail + `)`}),
 				}},
 			},
 			Authority: Authority{
 				Scheme: "fixture-secret", FixtureValue: "must-not-resolve",
-				Allow: []string{carrierRule}, Identity: identity,
+				Allow: []string{allow}, Identity: identity,
 			},
 		}
 	}
 
+	assumptionDenied := AuthorityCase{
+		Case: Case{
+			Name: "an assumption allow rule refuses a claim the entry did not carry",
+			Workflow: &v1.Workflow{
+				Name:  "authority-carrier-jit-uncarried",
+				Steps: []*v1.Node{credentialStep("read", unreachable, "partner-api")},
+			},
+			ExpectedOutputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
+				"read": v1.FailedStepOutputs(v1.StepFailure{Kind: v1.ErrorKindPolicyDenied, Text: `task "http" failed (PolicyDenied): ` +
+					`authorizing federation target "partner-api": auth: denied by assumption policy: ` +
+					`"flowstate:acme-tenant/_default/authority-carrier-jit-uncarried/read" may not assume "partner-api" ` +
+					`(` + uncarried + `)`}),
+			}},
+		},
+		Authority: Authority{
+			Identity:   carrierIdentity("agent", "sre"),
+			Federation: &Federation{Target: "partner-api", Token: "must-not-mint", Allow: []string{carrierUncarriedRule}, ExchangeCalls: new(atomic.Int32)},
+		},
+	}
+
 	return []AuthorityCase{
-		denied(carrierIdentity("agent", "dev"), "a secret allow rule refuses a list claim without the group"),
-		denied(carrierIdentity("human", "sre"), "a secret allow rule refuses another kind"),
+		assumptionDenied,
+		denied(carrierIdentity("agent", "dev"), "a secret allow rule refuses a list claim without the group", carrierRule, noMatch),
+		denied(carrierIdentity("human", "sre"), "a secret allow rule refuses another kind", carrierRule, noMatch),
+		// The claim is in the token and not in the entry's carry_claims, so the
+		// caller has no `team` however it reads.
+		denied(carrierIdentity("agent", "sre"), "a secret allow rule refuses a claim the entry did not carry", carrierUncarriedRule, uncarried),
 	}
 }
 
 // carrierWorkloadIdentity is the wire form of the same caller: a principal of
-// the given kind in team-a whose claims are a list of groups and a nested
-// object, for the surfaces whose cases carry a [v1.WorkloadIdentity].
+// the given kind in team-a, admitted by [carrierEntry], for the surfaces whose
+// cases carry a [v1.WorkloadIdentity].
 func carrierWorkloadIdentity(kind v1.PrincipalKind, groups ...string) *v1.WorkloadIdentity {
-	list := make([]any, len(groups))
-	for i, g := range groups {
-		list[i] = g
-	}
-	claims, err := structpb.NewStruct(map[string]any{
-		"groups": list,
-		"slack":  map[string]any{"user": "U1"},
-	})
-	if err != nil {
-		panic(err)
-	}
 	return &v1.WorkloadIdentity{Principal: &v1.Principal{
 		Subject: "spiffe://acme/agent", Issuer: "https://issuer.example.com", Namespace: "team-a",
-		Kind: kind, Claims: claims.GetFields(),
+		Kind: kind, Claims: auth.ClaimsToStruct(carrierClaims(groups...)),
 	}}
 }

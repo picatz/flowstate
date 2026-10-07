@@ -8,18 +8,17 @@ import (
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 )
 
-// TestIdentityForCarriesConfiguredClaims exercises the handoff the auth
-// package's federation tests cannot see: WithIdentityClaims through
-// FlowstateServer.identityFor. Those tests prove a CI-issued token becomes a
-// Principal with its claims intact, and prove IdentityFromPrincipal copies
-// whatever names it is handed; neither would notice this server option
-// dropping or misrouting the names on the way through. This is the join, so
-// it gets its own test.
+// TestIdentityForCarriesThePrincipalsClaims exercises the handoff the auth
+// package's federation tests cannot see: the verified principal's claims
+// through FlowstateServer.identityFor into the durable identity. Those tests
+// prove a CI-issued token becomes a Principal whose claims are the entry's
+// carry_claims; this proves the server copies exactly the principal's claims
+// and nothing else.
 //
 // The principal is shaped like the one ci_federation_test.go verifies out of
 // a CI-issued token, built directly here because the join under test begins
 // after verification.
-func TestIdentityForCarriesConfiguredClaims(t *testing.T) {
+func TestIdentityForCarriesThePrincipalsClaims(t *testing.T) {
 	t.Parallel()
 
 	principal := auth.Principal{
@@ -27,10 +26,9 @@ func TestIdentityForCarriesConfiguredClaims(t *testing.T) {
 		Subject:   "repo:example/service:ref:refs/heads/main",
 		Namespace: "team-a",
 		Claims: map[string]any{
-			"repository":       "example/service",
-			"ref":              "refs/heads/main",
-			"workflow":         "deploy",
-			"repository_owner": "example",
+			"repository": "example/service",
+			"ref":        "refs/heads/main",
+			"groups":     []any{"sre"},
 		},
 	}
 	ctx := auth.ContextWithPrincipal(context.Background(), principal)
@@ -38,7 +36,6 @@ func TestIdentityForCarriesConfiguredClaims(t *testing.T) {
 	s := mustNew(t, nil,
 		WithNamespace("fallback-tenant"),
 		WithDeployment("prod"),
-		WithIdentityClaims("repository", "ref"),
 	)
 
 	id := s.identityFor(ctx)
@@ -58,33 +55,30 @@ func TestIdentityForCarriesConfiguredClaims(t *testing.T) {
 		"ref":        "refs/heads/main",
 	} {
 		if got := id.GetPrincipal().GetClaims()[claim].GetStringValue(); got != want {
-			t.Errorf("configured claim %q = %q, want %q", claim, got, want)
+			t.Errorf("claim %q = %q, want %q", claim, got, want)
 		}
 	}
-	// Only named claims are carried: the identity is persisted in workflow
-	// history, so an unconfigured claim leaking through is a disclosure, not
-	// a convenience.
-	for _, claim := range []string{"workflow", "repository_owner"} {
-		if got, ok := id.GetPrincipal().GetClaims()[claim]; ok {
-			t.Errorf("unconfigured claim %q carried into the identity as %q", claim, got)
-		}
+	if got := id.GetPrincipal().GetClaims()["groups"].GetListValue().GetValues(); len(got) != 1 || got[0].GetStringValue() != "sre" {
+		t.Errorf("groups = %v, want [sre]", got)
+	}
+	if len(id.GetPrincipal().GetClaims()) != 3 {
+		t.Errorf("claims = %v, want exactly the principal's three", id.GetPrincipal().GetClaims())
 	}
 }
 
-// TestIdentityForWithNoConfiguredClaims pins the default: a server configured
-// with no identity claims carries none, however many the verified token held.
-func TestIdentityForWithNoConfiguredClaims(t *testing.T) {
+// TestIdentityForWithNoCarriedClaims pins the default: a principal whose entry
+// carried none yields an identity with none.
+func TestIdentityForWithNoCarriedClaims(t *testing.T) {
 	t.Parallel()
 
 	ctx := auth.ContextWithPrincipal(context.Background(), auth.Principal{
 		Issuer:  "https://token.actions.githubusercontent.com",
 		Subject: "repo:example/service:ref:refs/heads/main",
-		Claims:  map[string]any{"repository": "example/service"},
 	})
 
 	id := mustNew(t, nil, WithNamespace("solo")).identityFor(ctx)
 	if len(id.GetPrincipal().GetClaims()) != 0 {
-		t.Fatalf("claims = %v, want none carried by default", id.GetPrincipal().GetClaims())
+		t.Fatalf("claims = %v, want none", id.GetPrincipal().GetClaims())
 	}
 	if id.GetPrincipal().GetNamespace() != "solo" {
 		t.Fatalf("namespace = %q, want the server fallback %q for a principal naming none", id.GetPrincipal().GetNamespace(), "solo")

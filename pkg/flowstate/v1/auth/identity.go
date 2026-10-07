@@ -94,16 +94,18 @@ func isNilPointer(value any) bool {
 // namespace supplied by the submitting request, rather than derived from the
 // verified token, would let a caller choose its own tenant.
 //
-// Only the named claims are carried, whatever their JSON shape: a string, a
-// list such as `groups`, or a nested object. A workload's identity should assert
-// what a downstream relying party needs to authorize it, not everything the
-// submitting caller's token happened to contain, and claims copied here can end
-// up in an assertion sent to a third party.
+// The principal's claims are carried whole, whatever their JSON shape: a string,
+// a list such as `groups`, or a nested object. They are already only what the
+// admitting trust policy entry names in carry_claims and groups_claim, because a
+// workload's identity should assert what a downstream relying party needs to
+// authorize it, not everything the submitting caller's token happened to
+// contain, and claims copied here can end up in an assertion sent to a third
+// party.
 //
-// A named claim over the carried-claim bounds (see [MaxCarriedClaims]) is carried
-// whole and refused by [WorkloadIdentity.Validate], never trimmed: a truncated
-// list would grant on a prefix.
-func IdentityFromPrincipal(principal Principal, namespace, deployment string, claimNames ...string) WorkloadIdentity {
+// A claim over the carried-claim bounds (see [MaxCarriedClaims]) is refused by
+// [WorkloadIdentity.Validate], never trimmed: a truncated list would grant on a
+// prefix.
+func IdentityFromPrincipal(principal Principal, namespace, deployment string) WorkloadIdentity {
 	if principal.Namespace != "" {
 		namespace = principal.Namespace
 	}
@@ -118,13 +120,11 @@ func IdentityFromPrincipal(principal Principal, namespace, deployment string, cl
 		Deployment:  deployment,
 	}
 
-	for _, name := range claimNames {
-		value, ok := principal.Claims[name]
-		if !ok {
-			continue
-		}
+	// A principal's claims are already only what its trust policy entry carries
+	// (see [MapClaims]), so all of them are the identity's.
+	for name, value := range principal.Claims {
 		if identity.Claims == nil {
-			identity.Claims = make(map[string]any, len(claimNames))
+			identity.Claims = make(map[string]any, len(principal.Claims))
 		}
 		identity.Claims[name] = cloneClaim(value)
 	}

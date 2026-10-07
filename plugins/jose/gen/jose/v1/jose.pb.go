@@ -122,8 +122,10 @@ type VerifyOutputs struct {
 	ExpiresAt string `protobuf:"bytes,5,opt,name=expires_at,json=expiresAt,proto3" json:"expires_at,omitempty"`
 	// IssuedAt is the verified "iat" claim, as RFC 3339.
 	IssuedAt string `protobuf:"bytes,6,opt,name=issued_at,json=issuedAt,proto3" json:"issued_at,omitempty"`
-	// Claims is the whole verified claims set, for the issuer-specific claims a
-	// policy decision needs - a repository, an email, a group list.
+	// Claims is the verified claims the matching trust entry carries
+	// (carry_claims and groups_claim), for the issuer-specific claims a policy
+	// decision needs - a repository, an email, a group list. A claim the entry
+	// does not carry is absent, whatever the token held.
 	Claims        *v1alpha1.Value `protobuf:"bytes,7,opt,name=claims,proto3" json:"claims,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

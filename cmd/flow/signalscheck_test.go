@@ -54,7 +54,7 @@ func TestSignalsCheckAnswersOneLinePerGate(t *testing.T) {
 	lines := strings.Split(strings.TrimSpace(res.Stdout), "\n")
 	require.Len(t, lines, 2, res.Stdout)
 	require.Regexp(t, `^signals\.deploy-approved\s+admitted$`, lines[0])
-	require.Regexp(t, `^debug\s+refused: the sender does not satisfy this debug policy's allow predicate; the predicate reads sender\.identity\.claims, and the sender identity carried only the claims team \(.*--identity-claim.*\)$`, lines[1],
+	require.Regexp(t, `^debug\s+refused: the sender does not satisfy this debug policy's allow predicate; the predicate reads sender\.identity\.claims, and the sender identity carried only the claims team \(.*carry_claims.*\)$`, lines[1],
 		"a refusal is the engine's own sentence")
 }
 

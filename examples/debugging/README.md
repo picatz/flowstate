@@ -109,10 +109,10 @@ configuration for the durable run below is in the same section of
 
 This half needs two terminals, `jq`, and the network once, to download the
 Temporal CLI `flow server dev` starts. In the first, start the stack with a
-local issuer, persisting the `team` claim the `debug:` block reads:
+local issuer, whose entry carries the `team` claim the `debug:` block reads:
 
 ```console
-$ flow server dev --auth --identity-claim team --db /tmp/flowstate-debugging.db -o json > /tmp/flowstate-debugging-stack.json
+$ flow server dev --auth --db /tmp/flowstate-debugging.db -o json > /tmp/flowstate-debugging-stack.json
 ```
 
 In the second, mint an hour-long credential that carries `team: sre`:

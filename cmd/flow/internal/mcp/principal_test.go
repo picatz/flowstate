@@ -52,9 +52,10 @@ func verifiedTokenInfo(t *testing.T, claims map[string]any) (*mcp.CallToolReques
 
 	verifier, err := auth.NewOIDCVerifier(auth.Policy{
 		Issuers: []auth.TrustedIssuer{{Actions: everyAction,
-			Name:      "agent-idp",
-			Issuer:    issuer.URL(),
-			Audiences: []string{principalTestResource},
+			Name:        "agent-idp",
+			Issuer:      issuer.URL(),
+			Audiences:   []string{principalTestResource},
+			CarryClaims: []auth.CarryClaim{{Claim: "email", Type: auth.ClaimTypeString}},
 		}},
 	}, auth.WithEgressPolicy(authtest.EgressPolicy()))
 	require.NoError(t, err)

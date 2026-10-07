@@ -150,7 +150,8 @@ policy of the #187 shape, which can require that a workflow of a given shape car
 the gate. Egress, secret access, and task shape are configured on the worker, never
 in the file; the server resolves secrets only for webhook `verify:` keys. `flow validate` reports properties of the file and stays silent
 about deployment decisions, deliberately, so a diagnostic never asserts a rule the
-author's machine may not share ([docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#tier-1b--shared-worker-per-tenant-policy-rules),
+author's machine may not share (the one exception is opt-in: `--auth-policy`
+names the policy to check identity claim reads against) ([docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#tier-1b--shared-worker-per-tenant-policy-rules),
 `pkg/flowstate/v1/eval_task_http_check.go:17-25`).
 
 **Limits.** Task-shape policy is opt-in: a nil policy permits every task
@@ -181,6 +182,26 @@ records a policy denial before returning `PermissionDenied`
 specifications are size-bounded at submit (`pkg/flowstate/v1/size.go:39`, `:103`),
 and `List` is bounded by executions read and by requests made
 (`pkg/flowstate/v1/server/list.go:56`, `:68`).
+
+**Claims and groups reach policy only as the entry carries them.** A verified
+token holds whatever its issuer put in it, and a policy rule reads
+`identity.claims` on every surface, so the claims a rule can read are an
+authorization input the token's issuer controls. The admitting entry's
+`carry_claims` and `groups_claim` (`pkg/flowstate/v1/auth/claimmap.go`) are the
+only path from a token's claims to a principal's: nothing else is carried, a
+claim of another type than declared is left out and not coerced, and an
+absent claim makes a rule that reads it error, which every surface denies.
+Carried claims and groups are bounded where they are spent (32 claims; a list or
+object at most 4 KiB, 4 levels and 512 values; 64 groups of 256 bytes; a path of
+at most four segments), and a group list is refused whole, never trimmed, when
+the IdP signals an overage (`_claim_names`, `hasgroups`) or it is over a bound: a
+rule over membership would otherwise decide on a membership the caller does not
+have, in the direction that grants or in the one that fails to deny. The public
+reason names neither the entry nor the claim; the server's error does. Limits:
+`group_map` is an allowlist, so a deny rule on a group the map does not list
+never matches, and an IdP that sends no overage marker for a list it cut gives
+Flowstate nothing to refuse on. `flow validate --auth-policy` is advisory and
+runs on the author's machine against a policy file the deployment may not share.
 
 **Declared-sensitive values.** `Get` and `GetTimeline` withhold values a run's
 workflow declared `sensitive: true` before the response leaves `flow server`,
@@ -215,8 +236,8 @@ the flag's help text is the whole of the control. The CLI
 refuses to send a token over plaintext to anything but this machine
 (`cmd/flow/credentials.go:63`), which protects the client, not the server's own
 posture. `--insecure-no-auth` admits everyone as anonymous and is a
-development posture (read in `authFlagsOf` at `cmd/flow/main.go:228-230`, resolved to
-`auth.InsecureAnonymousVerifier` at `cmd/flow/main.go:1780`;
+development posture (read in `authFlagsOf` at `cmd/flow/main.go:222-225`, resolved to
+`auth.InsecureAnonymousVerifier` at `cmd/flow/main.go:1797`;
 `pkg/flowstate/v1/auth/connect.go:142-160`, [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#the-four-tier-isolation-model)).
 
 **Planned.** OAuth 2.1 alignment for the remote MCP surface and webhook ingress as

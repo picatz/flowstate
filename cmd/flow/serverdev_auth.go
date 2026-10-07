@@ -105,7 +105,12 @@ func configureDevAuthentication(flags devFlags, address string) (devAuthenticati
 		Algorithms:     []jwa.Algorithm{signingKey.Algorithm()},
 		Role:           "developer",
 		NamespaceClaim: "namespace",
-		JWKSFile:       jwksPath,
+		// The one claim a dev token may carry into rules: `flow jwt sign
+		// --claim team=...` then reads as `sender.identity.claims.team` in a
+		// signals: allow predicate. Anything else in a dev token never reaches
+		// policy, which is what a real entry does too.
+		CarryClaims: []auth.CarryClaim{{Claim: "team", Type: auth.ClaimTypeString}},
+		JWKSFile:    jwksPath,
 		// Every action, listed rather than left unrestricted, so the
 		// developer this dev stack mints tokens for also holds the ones that
 		// must be granted explicitly (workload.reveal_sensitive,

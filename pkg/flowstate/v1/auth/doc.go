@@ -317,6 +317,29 @@
 // workload.deployment, workload.workflow, workload.run, workload.step, and the
 // caller as identity.subject, identity.issuer, and identity.claims.
 //
+// # Claims and groups
+//
+// A rule reads only the claims the admitting entry carries. [MapClaims] is the one
+// mapping from a verified token's claims to a [Principal]'s; an embedder
+// replaces it for OIDC entries with [WithClaimMapper] (a kind: mtls entry
+// carries only the certificate subject), and what it returns is held to the
+// same bounds:
+//
+//	issuers:
+//	  - name: keycloak
+//	    issuer: https://idp.example.com/realms/acme
+//	    audiences: [flowstate]
+//	    carry_claims:
+//	      - {claim: team, type: string}
+//	      - {claim: acme.cost_center, as: cost_center, type: string}
+//	    groups_claim: realm_access.roles
+//	    group_map: {flowstate-sre: sre}
+//
+// A claim that is absent, of another type than declared, or over the bounds is
+// left out, so a rule reading it errors and refuses. A group list is carried as
+// the list claim "groups", and is refused whole with [ErrGroupsOverage] when the
+// IdP signals an overage or the list is over [MaxGroups] or [MaxGroupBytes].
+//
 // # Tenancy
 //
 // Teams sharing a deployment need their workloads, secrets, and egress kept apart,

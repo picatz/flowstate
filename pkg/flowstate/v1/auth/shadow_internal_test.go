@@ -77,6 +77,9 @@ func TestTrustedIssuerFieldsAreAccountedFor(t *testing.T) {
 		"Namespace":      "determined after admission; failure rejects, never falls through",
 		"NamespaceClaim": "same",
 		"NamespaceMap":   "same",
+		"CarryClaims":    "shapes the principal's claims after an entry has already won",
+		"GroupsClaim":    "same",
+		"GroupMap":       "same",
 		"JWKSURL":        "entries sharing an issuer must already agree on it (Policy.Validate)",
 		"JWKSFile":       "entries sharing an issuer must already agree on it (Policy.Validate)",
 	}

@@ -27,14 +27,13 @@ func TestIdentityFromPrincipal(t *testing.T) {
 		Claims: map[string]any{
 			"repository": "picatz/flowstate",
 			"ref":        "refs/heads/main",
-			"email":      "someone@example.com",
 			"verified":   true,
 			"groups":     []any{"eng", "oncall"},
 			"slack":      map[string]any{"user": "U1"},
 		},
 	}
 
-	identity := auth.IdentityFromPrincipal(principal, "acme", "prod", "repository", "ref", "absent", "verified", "groups", "slack")
+	identity := auth.IdentityFromPrincipal(principal, "acme", "prod")
 
 	require.Equal(t, principal.Subject, identity.Subject)
 	require.Equal(t, principal.Issuer, identity.Issuer)
@@ -44,8 +43,9 @@ func TestIdentityFromPrincipal(t *testing.T) {
 	require.Equal(t, "acme", identity.Namespace)
 	require.Equal(t, "prod", identity.Deployment)
 
-	// Only the named claims are carried, of every JSON shape the entry names: a
-	// list such as groups and a nested object are what a rule needs to read, and an
+	// The principal's claims are carried whole, of every JSON shape: a list such
+	// as groups and a nested object are what a rule needs to read. They are
+	// already only what the admitting entry carries (see MapClaims), and an
 	// assertion goes to a third party, so what it says about the caller should be
 	// what an operator chose to say.
 	require.Equal(t, map[string]any{
@@ -55,9 +55,6 @@ func TestIdentityFromPrincipal(t *testing.T) {
 		"groups":     []any{"eng", "oncall"},
 		"slack":      map[string]any{"user": "U1"},
 	}, identity.Claims)
-
-	require.NotContains(t, identity.Claims, "email", "a claim nobody named must not be carried")
-	require.NotContains(t, identity.Claims, "absent")
 
 	// The identity owns its claims: a later change to the caller's token cannot
 	// change what an assertion will say.
@@ -79,15 +76,17 @@ func TestIdentityFromPrincipal(t *testing.T) {
 		}
 		big := auth.Principal{Subject: "s", Issuer: "i", Claims: map[string]any{"many": many, "ok": "v"}}
 
-		identity := auth.IdentityFromPrincipal(big, "", "", "many", "ok")
+		identity := auth.IdentityFromPrincipal(big, "", "")
 		require.Len(t, identity.Claims["many"], 400, "nothing is trimmed")
 		require.ErrorIs(t, identity.Validate(), auth.ErrInvalidIdentity)
 		require.Contains(t, identity.Validate().Error(), "many")
 		require.NotContains(t, identity.Validate().Error(), "gggg", "a claim value never appears in an error")
 	})
 
-	t.Run("naming no claims carries none", func(t *testing.T) {
-		identity := auth.IdentityFromPrincipal(principal, "acme", "prod")
+	t.Run("a principal with no claims yields none", func(t *testing.T) {
+		bare := principal
+		bare.Claims = nil
+		identity := auth.IdentityFromPrincipal(bare, "acme", "prod")
 		require.Empty(t, identity.Claims)
 		require.NoError(t, identity.Validate())
 	})

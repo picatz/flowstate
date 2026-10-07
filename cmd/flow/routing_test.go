@@ -268,7 +268,7 @@ func TestTheServerTakesTheIdentityFlags(t *testing.T) {
 	require.NotNil(t, server, "there is no server command")
 
 	for _, name := range []string{
-		"identity-claim", "deployment-name", "auth-policy", "identity-key",
+		"deployment-name", "auth-policy", "identity-key",
 		"rpc-resource", "allow-issuer-wide-audiences",
 
 		// The receiver's own surface, and the secret flags it cannot resolve a
