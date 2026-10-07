@@ -97,8 +97,6 @@ func TestEveryRevealRequestIsAuditedUnderItsOwnAction(t *testing.T) {
 	}{
 		"held":     {actions: []string{"workload.read", "workload.reveal_sensitive"}, want: v1.AuditDecision_AUDIT_DECISION_ALLOW, reveals: true},
 		"not held": {actions: []string{"workload.read"}, want: v1.AuditDecision_AUDIT_DECISION_DENY},
-		// An entry with no action list holds every RPC action and not this one.
-		"no action list": {want: v1.AuditDecision_AUDIT_DECISION_DENY},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()

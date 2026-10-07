@@ -353,8 +353,7 @@ The server's rules:
   refused at startup rather than admitting no one.
 - **Explicit action.** The caller's policy entry must list `payload.decode`
   (or `payload.encode` to encrypt what someone types into the UI). An entry
-  that lists no actions is *not* granted it. This differs from the RPC
-  actions, where no list means unrestricted.
+  that lists no actions is granted nothing, this included.
 - **Own namespace only.** `X-Namespace` must be the Temporal namespace the
   caller's own tenant maps to. A caller who names another is refused.
 - **No shared namespaces.** If more than one tenant maps to the namespace, or

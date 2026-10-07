@@ -25,7 +25,7 @@ func TestWrongAudienceTokenHasExactlyOneDefect(t *testing.T) {
 	clock := authtest.NewClock(referenceTime)
 	issuer := newIssuer(t, authtest.WithClock(clock.Now))
 
-	verifier := verifierFor(t, issuer, clock, auth.TrustedIssuer{Audiences: []string{"https://mcp.example.com/"}})
+	verifier := verifierFor(t, issuer, clock, auth.TrustedIssuer{Actions: []string{}, Audiences: []string{"https://mcp.example.com/"}})
 
 	token := issuer.WrongAudienceToken(
 		"https://someone-else.example.com/",
@@ -71,7 +71,7 @@ func TestWrongAudienceTokenLastAudienceWins(t *testing.T) {
 		authtest.WithAudience("https://ignored.example.com/"),
 	)
 
-	verifier := verifierFor(t, issuer, clock, auth.TrustedIssuer{
+	verifier := verifierFor(t, issuer, clock, auth.TrustedIssuer{Actions: []string{},
 		Audiences: []string{"https://wrong.example.com/"},
 	})
 	principal, err := verifier.Verify(t.Context(), token)
@@ -101,7 +101,7 @@ func TestWrongAudienceTokenWinsOverWithoutAudience(t *testing.T) {
 	// The token carries the named audience — provable by a verifier that
 	// trusts it: were the "aud" claim absent, this verification would fail
 	// on the missing audience rather than succeed on the matching one.
-	verifier := verifierFor(t, issuer, clock, auth.TrustedIssuer{
+	verifier := verifierFor(t, issuer, clock, auth.TrustedIssuer{Actions: []string{},
 		Audiences: []string{"https://wrong.example.com/"},
 	})
 	principal, err := verifier.Verify(t.Context(), token)
@@ -141,7 +141,7 @@ func TestWrongIssuerTokenHasExactlyOneDefect(t *testing.T) {
 	clock := authtest.NewClock(referenceTime)
 	trusted := newIssuer(t, authtest.WithClock(clock.Now))
 
-	verifier, err := auth.NewOIDCVerifier(auth.Policy{Issuers: []auth.TrustedIssuer{{
+	verifier, err := auth.NewOIDCVerifier(auth.Policy{Issuers: []auth.TrustedIssuer{{Actions: []string{},
 		Name:      "trusted",
 		Issuer:    trusted.URL(),
 		Audiences: []string{"flowstate"},
@@ -203,7 +203,7 @@ func TestWrongIssuerTokenForcesItsOwnIssuerClaim(t *testing.T) {
 	clock := authtest.NewClock(referenceTime)
 	trusted := newIssuer(t, authtest.WithClock(clock.Now))
 
-	verifier, err := auth.NewOIDCVerifier(auth.Policy{Issuers: []auth.TrustedIssuer{{
+	verifier, err := auth.NewOIDCVerifier(auth.Policy{Issuers: []auth.TrustedIssuer{{Actions: []string{},
 		Name:      "trusted",
 		Issuer:    trusted.URL(),
 		Audiences: []string{"flowstate"},

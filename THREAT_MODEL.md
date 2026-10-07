@@ -173,7 +173,7 @@ whose namespace claim is missing or fails the namespace grammar is rejected, nev
 admitted to a default tenant (`:119-142`, `:345`). Unauthenticated error text never
 describes the trust policy (`pkg/flowstate/v1/auth/connect.go:113-120`). An issuer
 entry may grant an exact allowlist from the schema-owned control-plane action
-vocabulary. An omitted allowlist preserves unrestricted legacy behavior; an empty
+vocabulary. An omitted allowlist is refused at load; an empty
 one grants nothing, role names grant nothing, and token `scope`/`scp` claims are not
 authority. Enforcement is shared by every WorkflowService RPC at the audit seam and
 records a policy denial before returning `PermissionDenied`
@@ -187,7 +187,7 @@ workflow declared `sensitive: true` before the response leaves `flow server`,
 decided against the specification the run executed (read from its start input), and
 say so in `sensitive_disclosure` (`pkg/flowstate/v1/server/sensitive.go`). A caller
 receives them only by asking (`reveal_sensitive`) while holding
-`workload.reveal_sensitive`, which an entry with no action list is not granted; every
+`workload.reveal_sensitive`, which no caller is implied; every
 such request is audited under that action. Before this, the RPCs returned the values
 raw to any `workload.read` caller and only the CLI's renderer hid them, which is still
 what a client does against such a server: it withholds declared outputs, transcript and
@@ -650,10 +650,10 @@ declares a sensitive value, or whose declarations cannot be read, unless
 disclosure is authorized: `--reveal-sensitive`, `"revealSensitive": true`, or
 `DebugOptions.RevealSensitive`. Either way a predicate over a withheld value answers
 truthfully: `inputs.token == "guess"` is a yes or no about the real value. That
-is what `workload.debug_inspect` gates. A caller whose token carries no action
-list keeps the legacy posture and holds every action, this one included, so a
-deployment that must not disclose a run's values to an operator gives that
-operator's issuer an `actions:` list that omits it. A condition's or log message's
+is what `workload.debug_inspect` gates. A caller holds only the actions its
+issuer entry lists, this one included, so a deployment that must not disclose a
+run's values to an operator gives that operator's issuer an `actions:` list that
+omits it. A condition's or log message's
 text is written to history in the ask that carries it, readable by whoever can
 read history. A
 hold stops workflow code only: activities, timers and called work already

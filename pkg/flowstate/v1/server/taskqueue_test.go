@@ -119,7 +119,7 @@ func TestRoutingRefusesATenantItCannotPlace(t *testing.T) {
 
 	spec := &v1.Workflow{Name: "routing", Steps: []*v1.Node{bulky("only", 1)}}
 
-	ctx := auth.ContextWithPrincipal(t.Context(), auth.Principal{
+	ctx := auth.ContextWithPrincipal(t.Context(), auth.Principal{Actions: everyAction,
 		Subject:   "someone@example.com",
 		Issuer:    "https://issuer.example.com",
 		Namespace: "Prod Team",

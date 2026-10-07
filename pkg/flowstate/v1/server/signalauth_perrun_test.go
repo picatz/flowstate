@@ -71,7 +71,7 @@ func TestSignalPolicyReadingInputsIsEvaluatedAgainstTheRunsOwnInputs(t *testing.
 	// The negative direction first: a sender this run's own input never
 	// named is refused, even though they are an ordinary authenticated,
 	// in-tenant caller.
-	deniedCtx := auth.ContextWithPrincipal(t.Context(), auth.Principal{
+	deniedCtx := auth.ContextWithPrincipal(t.Context(), auth.Principal{Actions: everyAction,
 		Issuer:  "https://issuer.example.com",
 		Subject: "some-other-engineer@example.com",
 	})
@@ -86,7 +86,7 @@ func TestSignalPolicyReadingInputsIsEvaluatedAgainstTheRunsOwnInputs(t *testing.
 	require.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
 
 	// The positive direction: the sender this run's own input named.
-	allowedCtx := auth.ContextWithPrincipal(t.Context(), auth.Principal{
+	allowedCtx := auth.ContextWithPrincipal(t.Context(), auth.Principal{Actions: everyAction,
 		Issuer:  "https://issuer.example.com",
 		Subject: "release-manager@example.com",
 	})
@@ -127,7 +127,7 @@ func TestSignalPolicyReadingInputsDecidesDifferentlyPerRun(t *testing.T) {
 		workflowID := started.Msg.GetWorkflowId()
 		waitUntilParkedAtTheGate(t, fixture.temporal, workflowID)
 
-		ctx := auth.ContextWithPrincipal(t.Context(), auth.Principal{
+		ctx := auth.ContextWithPrincipal(t.Context(), auth.Principal{Actions: everyAction,
 			Issuer:  "https://issuer.example.com",
 			Subject: senderSubject,
 		})
@@ -206,7 +206,7 @@ func TestScheduledSignalPolicyReadingInputsIsRecordedAtScheduleCreation(t *testi
 	waitUntilParkedAtTheGate(t, fixture.temporal, workflowID)
 
 	// Negative: the schedule's declared input named nobody else.
-	deniedCtx := auth.ContextWithPrincipal(t.Context(), auth.Principal{
+	deniedCtx := auth.ContextWithPrincipal(t.Context(), auth.Principal{Actions: everyAction,
 		Issuer:  "https://issuer.example.com",
 		Subject: "some-other-engineer@example.com",
 	})
@@ -221,7 +221,7 @@ func TestScheduledSignalPolicyReadingInputsIsRecordedAtScheduleCreation(t *testi
 	require.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
 
 	// Positive: the schedule's own bound input.
-	allowedCtx := auth.ContextWithPrincipal(t.Context(), auth.Principal{
+	allowedCtx := auth.ContextWithPrincipal(t.Context(), auth.Principal{Actions: everyAction,
 		Issuer:  "https://issuer.example.com",
 		Subject: "release-manager@example.com",
 	})
@@ -252,7 +252,7 @@ func TestSignalPolicyComparingWithTheStarterEndToEnd(t *testing.T) {
 
 	fixture := newTenantFixture(t)
 
-	starterCtx := auth.ContextWithPrincipal(t.Context(), auth.Principal{
+	starterCtx := auth.ContextWithPrincipal(t.Context(), auth.Principal{Actions: everyAction,
 		Issuer:  "https://issuer.example.com",
 		Subject: "requester@example.com",
 	})
@@ -287,7 +287,7 @@ func TestSignalPolicyComparingWithTheStarterEndToEnd(t *testing.T) {
 		"a step ran after a self-approval the starter comparison should have refused")
 
 	// A distinct sender, named by the same rule, succeeds.
-	approverCtx := auth.ContextWithPrincipal(t.Context(), auth.Principal{
+	approverCtx := auth.ContextWithPrincipal(t.Context(), auth.Principal{Actions: everyAction,
 		Issuer:  "https://issuer.example.com",
 		Subject: "release-manager@example.com",
 	})

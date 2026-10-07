@@ -89,7 +89,7 @@ func TestRealCITokenVerifies(t *testing.T) {
 	rawToken := requestCIToken(ctx, t, requestURL, requestToken, ciFederationAudience)
 
 	policy := auth.Policy{
-		Issuers: []auth.TrustedIssuer{{
+		Issuers: []auth.TrustedIssuer{{Actions: []string{},
 			Name:       "github-actions",
 			Issuer:     githubActionsIssuer,
 			Audiences:  []string{ciFederationAudience},
@@ -163,7 +163,7 @@ func TestRealCITokenVerifies(t *testing.T) {
 		other := repository + "/not-this-one"
 
 		verifier, err := auth.NewOIDCVerifier(auth.Policy{
-			Issuers: []auth.TrustedIssuer{{
+			Issuers: []auth.TrustedIssuer{{Actions: []string{},
 				Name:       "github-actions-elsewhere",
 				Issuer:     githubActionsIssuer,
 				Audiences:  []string{ciFederationAudience},

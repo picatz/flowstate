@@ -66,7 +66,7 @@ func TestProtectedResourceMetadataSupportsBoundedConditionalCaching(t *testing.T
 }
 
 func protectedResourcePolicy() *auth.Policy {
-	return &auth.Policy{Issuers: []auth.TrustedIssuer{{
+	return &auth.Policy{Issuers: []auth.TrustedIssuer{{Actions: []string{},
 		Name:      "issuer",
 		Issuer:    "https://issuer.example.com",
 		Audiences: []string{"https://flowstate.example.com/mcp"},
@@ -79,7 +79,7 @@ func protectedResourcePolicy() *auth.Policy {
 func trustingPolicy(issuers ...string) *auth.Policy {
 	policy := &auth.Policy{}
 	for _, issuer := range issuers {
-		policy.Issuers = append(policy.Issuers, auth.TrustedIssuer{
+		policy.Issuers = append(policy.Issuers, auth.TrustedIssuer{Actions: []string{},
 			Name:      "as-" + issuer,
 			Issuer:    issuer,
 			Audiences: []string{"https://flowstate.example.com/mcp"},
@@ -298,7 +298,7 @@ func TestProtectedResourceEscapedPathIsActuallyReachable(t *testing.T) {
 func TestNewProtectedResourceRefusesAuthorizationServerNotAcceptingResourceAudience(t *testing.T) {
 	t.Parallel()
 
-	policy := &auth.Policy{Issuers: []auth.TrustedIssuer{{
+	policy := &auth.Policy{Issuers: []auth.TrustedIssuer{{Actions: []string{},
 		Name:      "as",
 		Issuer:    "https://trusted.example.com",
 		Audiences: []string{"https://some-other-resource.example.com"},
@@ -731,11 +731,11 @@ func TestAdmitsBearerTokensReadsTheKindAndNotTheAudienceList(t *testing.T) {
 		{name: "no issuers at all", policy: &auth.Policy{}},
 		{
 			name:   "a certificate-only policy",
-			policy: &auth.Policy{Issuers: []auth.TrustedIssuer{{Name: "mesh", Kind: auth.IssuerKindMTLS, Issuer: "flowstate:mtls/mesh"}}},
+			policy: &auth.Policy{Issuers: []auth.TrustedIssuer{{Actions: []string{}, Name: "mesh", Kind: auth.IssuerKindMTLS, Issuer: "flowstate:mtls/mesh"}}},
 		},
 		{
 			name: "a certificate-only policy with an audience list it may not have",
-			policy: &auth.Policy{Issuers: []auth.TrustedIssuer{{
+			policy: &auth.Policy{Issuers: []auth.TrustedIssuer{{Actions: []string{},
 				Name: "mesh", Kind: auth.IssuerKindMTLS, Issuer: "flowstate:mtls/mesh",
 				Audiences: []string{"https://flowstate.example.com/rpc"},
 			}}},
@@ -748,8 +748,8 @@ func TestAdmitsBearerTokensReadsTheKindAndNotTheAudienceList(t *testing.T) {
 		{
 			name: "a mixed policy",
 			policy: &auth.Policy{Issuers: []auth.TrustedIssuer{
-				{Name: "mesh", Kind: auth.IssuerKindMTLS, Issuer: "flowstate:mtls/mesh"},
-				{Name: "idp", Kind: auth.IssuerKindOIDC, Issuer: "https://idp.example.com", Audiences: []string{"flowstate"}},
+				{Actions: []string{}, Name: "mesh", Kind: auth.IssuerKindMTLS, Issuer: "flowstate:mtls/mesh"},
+				{Actions: []string{}, Name: "idp", Kind: auth.IssuerKindOIDC, Issuer: "https://idp.example.com", Audiences: []string{"flowstate"}},
 			}},
 			admits: true,
 		},
@@ -791,14 +791,14 @@ func TestValidateResourceAudienceRefusesWhatNoBearerIssuerAccepts(t *testing.T) 
 
 	const rpc = "https://flowstate.example.com/rpc"
 
-	bearer := &auth.Policy{Issuers: []auth.TrustedIssuer{{
+	bearer := &auth.Policy{Issuers: []auth.TrustedIssuer{{Actions: []string{},
 		Name: "idp", Issuer: "https://idp.example.com", Audiences: []string{rpc},
 	}}}
 	require.NoError(t, auth.ValidateResourceAudience(rpc, bearer))
 
 	// A kind: mtls entry cannot satisfy it, however its audience list reads:
 	// the token whose "aud" this narrows does not exist on that path.
-	certificateOnly := &auth.Policy{Issuers: []auth.TrustedIssuer{{
+	certificateOnly := &auth.Policy{Issuers: []auth.TrustedIssuer{{Actions: []string{},
 		Name: "mesh", Kind: auth.IssuerKindMTLS, Issuer: "flowstate:mtls/mesh", Audiences: []string{rpc},
 	}}}
 	require.ErrorContains(t, auth.ValidateResourceAudience(rpc, certificateOnly), "kind: oidc",
@@ -806,7 +806,7 @@ func TestValidateResourceAudienceRefusesWhatNoBearerIssuerAccepts(t *testing.T) 
 
 	// Trusted issuer, wrong audience: the exact-match rule [TrustedIssuer]
 	// applies to a token's "aud", checked here at start-up instead.
-	elsewhere := &auth.Policy{Issuers: []auth.TrustedIssuer{{
+	elsewhere := &auth.Policy{Issuers: []auth.TrustedIssuer{{Actions: []string{},
 		Name: "idp", Issuer: "https://idp.example.com", Audiences: []string{"https://flowstate.example.com/mcp"},
 	}}}
 	require.ErrorContains(t, auth.ValidateResourceAudience(rpc, elsewhere), "audiences")

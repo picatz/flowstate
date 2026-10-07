@@ -43,6 +43,9 @@ func verifierFor(t *testing.T, issuer *authtest.Issuer, clock *authtest.Clock, e
 	if entry.Audiences == nil {
 		entry.Audiences = []string{"flowstate"}
 	}
+	if entry.Actions == nil {
+		entry.Actions = []string{}
+	}
 
 	verifier, err := auth.NewOIDCVerifier(
 		auth.Policy{Issuers: []auth.TrustedIssuer{entry}},
@@ -63,7 +66,7 @@ func TestIssuerMintsVerifiableTokens(t *testing.T) {
 	clock := authtest.NewClock(referenceTime)
 	issuer := newIssuer(t, authtest.WithClock(clock.Now))
 
-	verifier := verifierFor(t, issuer, clock, auth.TrustedIssuer{Role: "operator"})
+	verifier := verifierFor(t, issuer, clock, auth.TrustedIssuer{Actions: []string{}, Role: "operator"})
 
 	token := issuer.MintToken(
 		map[string]any{"team": "platform"},
@@ -256,7 +259,7 @@ func TestIssuerSignsEveryAlgorithm(t *testing.T) {
 			key := authtest.GenerateKey("signing", algorithm)
 			issuer := newIssuer(t, authtest.WithClock(clock.Now), authtest.WithKeys(key))
 
-			verifier := verifierFor(t, issuer, clock, auth.TrustedIssuer{
+			verifier := verifierFor(t, issuer, clock, auth.TrustedIssuer{Actions: []string{},
 				Algorithms: []jwa.Algorithm{algorithm},
 			})
 
@@ -505,7 +508,7 @@ func TestClockMovesByHand(t *testing.T) {
 
 	clock := authtest.NewClock(referenceTime)
 	issuer := newIssuer(t, authtest.WithClock(clock.Now))
-	verifier := verifierFor(t, issuer, clock, auth.TrustedIssuer{MaxTokenAge: 10 * time.Minute})
+	verifier := verifierFor(t, issuer, clock, auth.TrustedIssuer{Actions: []string{}, MaxTokenAge: 10 * time.Minute})
 
 	token := issuer.MintToken(nil, authtest.WithAudience("flowstate"))
 

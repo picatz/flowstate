@@ -54,7 +54,7 @@ func revealWorkflow(t *testing.T, doc string) *v1.Workflow {
 }
 
 func caller(ctx context.Context, actions ...string) context.Context {
-	p := auth.Principal{Issuer: "https://issuer.example", Subject: "reader"}
+	p := auth.Principal{Actions: ordinaryActions(), Issuer: "https://issuer.example", Subject: "reader"}
 	if actions != nil {
 		p.Actions = actions
 	}
@@ -106,7 +106,7 @@ func TestTheServerDecidesWhatSensitiveValuesLeaveIt(t *testing.T) {
 
 	for name, ctx := range map[string]context.Context{
 		"no principal":            t.Context(),
-		"no action list":          caller(t.Context()),
+		"the ordinary actions":    caller(t.Context()),
 		"read only":               caller(t.Context(), "workload.read"),
 		"read and payload decode": caller(t.Context(), "workload.read", "payload.decode"),
 	} {

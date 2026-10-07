@@ -115,7 +115,7 @@ func FuzzVerifyRefusesAMutatedToken(f *testing.F) {
 	f.Cleanup(func() { _ = issuer.Close() })
 
 	verifier, err := auth.NewOIDCVerifier(auth.Policy{
-		Issuers: []auth.TrustedIssuer{{
+		Issuers: []auth.TrustedIssuer{{Actions: []string{},
 			Name:      "fuzz-idp",
 			Issuer:    issuer.URL(),
 			Audiences: []string{"flowstate"},

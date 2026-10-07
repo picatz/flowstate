@@ -66,6 +66,7 @@
 //			Issuer:    "https://example.okta.com/oauth2/default",
 //			Audiences: []string{"flowstate"},
 //			Role:      "operator",
+//			Actions:   auth.ActionScopes{"workload.run", "workload.read"},
 //		}},
 //	}
 //

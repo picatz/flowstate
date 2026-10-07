@@ -202,7 +202,7 @@ func TestRevokedKeyStopsVerifyingRealAssertions(t *testing.T) {
 
 	verifier := newVerifier(t,
 		auth.Policy{
-			Issuers: []auth.TrustedIssuer{{
+			Issuers: []auth.TrustedIssuer{{Actions: []string{},
 				Name:      "flowstate",
 				Issuer:    server.URL,
 				Audiences: []string{"https://api.partner.example.com"},

@@ -10,6 +10,7 @@
 # and another Flowstate is just the nearest example of one.
 issuers:
   - name: peer-flowstate
+    actions: [workload.run, workload.read]
     issuer: https://flowstate.example.com
 
     # The audience A minted for. This is what stops an assertion A obtained for

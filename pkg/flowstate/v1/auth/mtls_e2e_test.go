@@ -100,7 +100,7 @@ func callMTLS(t *testing.T, server *httptest.Server, client *http.Client) (*http
 // mtlsPolicyEntry is the one kind: mtls entry every test in this file uses,
 // customized per test.
 func mtlsPolicyEntry(caFile string, opts ...func(*auth.TrustedIssuer)) auth.TrustedIssuer {
-	issuer := auth.TrustedIssuer{
+	issuer := auth.TrustedIssuer{Actions: []string{},
 		Name: "mesh", Kind: auth.IssuerKindMTLS, Issuer: "flowstate:mtls/mesh",
 		ClientCAFile: caFile, SubjectFrom: auth.SubjectFromURISAN,
 		Require: []auth.ClaimRule{
@@ -254,7 +254,7 @@ func TestAuthenticatorWithoutPeerVerifierIgnoresClientCertificate(t *testing.T) 
 		tokenIssuer = newTestIssuer(t, authtest.WithClock(clock.Now), authtest.WithKeys(key))
 	)
 	tokenVerifier := newVerifier(t,
-		auth.Policy{Issuers: []auth.TrustedIssuer{{
+		auth.Policy{Issuers: []auth.TrustedIssuer{{Actions: []string{},
 			Name: "idp", Issuer: tokenIssuer.URL(), Audiences: []string{"flowstate"},
 		}}},
 		auth.WithClock(clock.Now),
@@ -289,7 +289,7 @@ func TestAuthenticatorRefusesCertificateAndTokenNamingDifferentPrincipals(t *tes
 		tokenIssuer = newTestIssuer(t, authtest.WithClock(clock.Now), authtest.WithKeys(key))
 	)
 	tokenVerifier := newVerifier(t,
-		auth.Policy{Issuers: []auth.TrustedIssuer{{
+		auth.Policy{Issuers: []auth.TrustedIssuer{{Actions: []string{},
 			Name: "idp", Issuer: tokenIssuer.URL(), Audiences: []string{"flowstate"},
 		}}},
 		auth.WithClock(clock.Now),
@@ -344,7 +344,7 @@ func TestAuthenticatorAcceptsCertificateAndTokenNamingTheSamePrincipal(t *testin
 	}))
 
 	tokenVerifier := newVerifier(t,
-		auth.Policy{Issuers: []auth.TrustedIssuer{{
+		auth.Policy{Issuers: []auth.TrustedIssuer{{Actions: []string{},
 			Name: "idp", Issuer: tokenIssuer.URL(), Audiences: []string{"flowstate"},
 		}}},
 		auth.WithClock(clock.Now),

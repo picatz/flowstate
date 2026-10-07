@@ -57,6 +57,7 @@ file, and a reviewer learns one spelling:
 ```yaml
 issuers:
   - name: github-actions
+    actions: [workload.run, workload.read]
     issuer: https://token.actions.githubusercontent.com
     audiences: [flowstate]
     require:

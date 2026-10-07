@@ -49,7 +49,7 @@ func TestADecisionEmitsExactlyOneRecord(t *testing.T) {
 
 		sink := &recordingEmitter{}
 		s := mustNew(t, &fakeRunClient{describe: running}, WithAudit(recorderFor(t, sink)))
-		ctx := auth.ContextWithPrincipal(t.Context(), auth.Principal{
+		ctx := auth.ContextWithPrincipal(t.Context(), auth.Principal{Actions: everyAction,
 			Issuer:     "https://issuer.example",
 			IssuerName: "production-issuer",
 			Subject:    "agent-1",
