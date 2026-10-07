@@ -264,12 +264,35 @@ const maxVarExpressions = MaxVarsPerFile
 //
 // What this constant does not bound, named so its next reader does not credit
 // it: the per-read scan over the node map (a probe that retains no new edge
-// spends no budget), and the material evaluation itself retains (a chain of
+// spends no edge budget; [maxVarDependencyScans] bounds it), and the material evaluation itself retains (a chain of
 // whole-value container reads copies the table once per link on ~one edge per
 // link). Those are the dependency model's costs, not this budget's; collapsing
 // a container read to one edge on the container would remove the quadratic
 // product — and most of this constant's job — entirely.
 const maxVarDependencyEdges = 2 * maxExpandedNodes
+
+// maxVarDependencyScans bounds the node visits the dependency scan spends
+// across the whole file, the resource [maxVarDependencyEdges] does not see: a
+// read that matches no leaf retains no edge and still walks the whole node
+// map, so 190 computed vars each holding 350 non-matching reads of a
+// 20,000-leaf table cost over a minute from a 785KB file with the edge budget
+// untouched (#1353). Each read charges one visit per node.
+//
+// 16,000,000 admits 200 computed vars ([MaxVarsPerFile]) making four reads
+// each of a 20,000-node table, far past any fixture that is not an attack, and
+// at roughly 45ns a visit bounds the loader's scan to about 0.7s.
+const maxVarDependencyScans = 16_000_000
+
+// depBudget is what one load's dependency scan may still spend: edges
+// retained and node visits made. Separate because they bound different
+// resources and neither substitutes for the other.
+type depBudget struct {
+	edges, scans int
+}
+
+func newDepBudget() *depBudget {
+	return &depBudget{edges: maxVarDependencyEdges, scans: maxVarDependencyScans}
+}
 
 // varReference matches a whole-value reference: `${vars.<name>}` and nothing
 // around it. The name grammar is CEL's identifier grammar, because a var must
@@ -807,18 +830,24 @@ func setVarNode(vars map[string]any, path varPath, value any) {
 	}
 }
 
-func dependenciesFor(reads []varPath, nodes map[string]varNode, remaining *int) ([]string, bool) {
+func dependenciesFor(reads []varPath, nodes map[string]varNode, budget *depBudget) ([]string, bool) {
 	deps := map[string]bool{}
 	for _, read := range reads {
+		// Charged up front for the whole walk: a read that matches nothing
+		// costs exactly as much as one that matches everything (#1353).
+		if budget.scans < len(nodes) {
+			return nil, false
+		}
+		budget.scans -= len(nodes)
 		for id, node := range nodes {
 			// Reading a fixed container depends on all of its leaves. Selecting
 			// from a whole-value computed node depends on that node.
 			if (pathHasPrefix(node.path, read) || pathHasPrefix(read, node.path)) && !deps[id] {
-				if *remaining == 0 {
+				if budget.edges == 0 {
 					return nil, false
 				}
 				deps[id] = true
-				*remaining--
+				budget.edges--
 			}
 		}
 	}
@@ -1162,7 +1191,7 @@ func (f *File) declareVars(p *problems) map[string]*varDeclaration {
 	}
 
 	declared := map[string]*varDeclaration{}
-	remainingEdges := maxVarDependencyEdges
+	budget := newDepBudget()
 	for _, id := range slices.Sorted(maps.Keys(nodes)) {
 		node := nodes[id]
 		text, fenced := fencedVarValue(node.value)
@@ -1189,9 +1218,9 @@ func (f *File) declareVars(p *problems) map[string]*varDeclaration {
 				reads = append(reads, varPath{{key: name}})
 			}
 			var withinBound bool
-			d.deps, withinBound = dependenciesFor(reads, nodes, &remainingEdges)
+			d.deps, withinBound = dependenciesFor(reads, nodes, budget)
 			if !withinBound {
-				p.report(site{at: at(v1.VarsRoot)}, "computed vars have more than %d dependency edges; a computed var reading a container depends on each of its leaves, so shrink the containers computed vars read, or read them from fewer vars", maxVarDependencyEdges)
+				p.report(site{at: at(v1.VarsRoot)}, "computed vars exceed the dependency budget (%d edges, %d scan steps); a computed var reading a container depends on each of its leaves, and every read scans every var leaf, so shrink the containers computed vars read, or read them from fewer vars", maxVarDependencyEdges, maxVarDependencyScans)
 				return nil
 			}
 
@@ -1208,9 +1237,9 @@ func (f *File) declareVars(p *problems) map[string]*varDeclaration {
 		// walking an incomplete graph, and an independent var's evaluator
 		// error printed the plaintext.
 		var withinBound bool
-		d.deps, withinBound = dependenciesFor(reads, nodes, &remainingEdges)
+		d.deps, withinBound = dependenciesFor(reads, nodes, budget)
 		if !withinBound {
-			p.report(site{at: at(v1.VarsRoot)}, "computed vars have more than %d dependency edges; a computed var reading a container depends on each of its leaves, so shrink the containers computed vars read, or read them from fewer vars", maxVarDependencyEdges)
+			p.report(site{at: at(v1.VarsRoot)}, "computed vars exceed the dependency budget (%d edges, %d scan steps); a computed var reading a container depends on each of its leaves, and every read scans every var leaf, so shrink the containers computed vars read, or read them from fewer vars", maxVarDependencyEdges, maxVarDependencyScans)
 			return nil
 		}
 		if !ok {

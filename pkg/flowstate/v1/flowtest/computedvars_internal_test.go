@@ -215,12 +215,67 @@ func TestVarDependenciesStopAtWholeFileEdgeBound(t *testing.T) {
 		"big[1]": {path: varPath{{key: "big"}, {index: 1, list: true}}},
 		"big[2]": {path: varPath{{key: "big"}, {index: 2, list: true}}},
 	}
-	remaining := 2
-	deps, withinBound := dependenciesFor([]varPath{{{key: "big"}}}, nodes, &remaining)
+	budget := &depBudget{edges: 2, scans: 100}
+	deps, withinBound := dependenciesFor([]varPath{{{key: "big"}}}, nodes, budget)
 
 	assert.False(t, withinBound)
 	assert.Nil(t, deps)
-	assert.Zero(t, remaining)
+	assert.Zero(t, budget.edges)
+}
+
+// TestVarDependencyScansAreSpentByReadsThatMatchNothing pins #1353: a read
+// naming no leaf retains no edge, so only the scan budget can refuse it.
+func TestVarDependencyScansAreSpentByReadsThatMatchNothing(t *testing.T) {
+	t.Parallel()
+
+	nodes := map[string]varNode{}
+	for i := range 10 {
+		nodes[fmt.Sprintf("t[%d]", i)] = varNode{path: varPath{{key: "t"}, {index: i, list: true}}}
+	}
+	miss := varPath{{key: "other"}}
+	budget := &depBudget{edges: 1000, scans: 25}
+
+	// Two walks of ten nodes fit in 25; the third does not.
+	for range 2 {
+		deps, within := dependenciesFor([]varPath{miss}, nodes, budget)
+		require.True(t, within)
+		require.Empty(t, deps)
+	}
+	deps, within := dependenciesFor([]varPath{miss}, nodes, budget)
+	assert.False(t, within)
+	assert.Nil(t, deps)
+	assert.Equal(t, 1000, budget.edges, "a miss retains no edge")
+}
+
+// TestAFileOfNonMatchingReadsIsRefused is the load-level form of #1353: many
+// computed vars each reading many paths that name no leaf of a large table.
+func TestAFileOfNonMatchingReadsIsRefused(t *testing.T) {
+	t.Parallel()
+
+	var reads strings.Builder
+	for i := range 350 {
+		if i > 0 {
+			reads.WriteString(", ")
+		}
+		fmt.Fprintf(&reads, "vars.t.q%d", i)
+	}
+	var b strings.Builder
+	b.WriteString("vars:\n  t: {")
+	for i := range 20_000 {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		fmt.Fprintf(&b, "k%d: %d", i, i)
+	}
+	b.WriteString("}\n")
+	for i := range 60 {
+		fmt.Fprintf(&b, "  a%03d: \"${size([%s])}\"\n", i, reads.String())
+	}
+	b.WriteString("tests:\n  - name: loads\n    workflow: ./workflow.yaml\n    expect:\n      failed: true\n")
+
+	_, err := LoadSource([]byte(b.String()))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "computed vars exceed the dependency budget")
 }
 
 func TestDeclareVarsCountsComputedLeavesBeforeBuildingGraph(t *testing.T) {
@@ -283,7 +338,7 @@ func TestQuadraticSharedTableFanOutIsRefused(t *testing.T) {
 	_, err := LoadSource(sharedTableSource(20_000, 100))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(),
-		fmt.Sprintf("computed vars have more than %d dependency edges", maxVarDependencyEdges))
+		"computed vars exceed the dependency budget")
 }
 
 // TestEverySiteRecognisesBothSpellings is the audit. `vars.token` and
