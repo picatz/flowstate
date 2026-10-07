@@ -4,14 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"slices"
 	"sync"
 
 	"connectrpc.com/connect"
 	enumspb "go.temporal.io/api/enums/v1"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
-	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/authz"
 )
 
 // The server's half of `sensitive: true`: what a run's declared-sensitive
@@ -152,10 +151,8 @@ func (s *FlowstateServer) revealAuthorized(ctx context.Context, rpc, field, work
 	if err != nil {
 		return false, connect.NewError(connect.CodeInternal, err)
 	}
-	scope := v1.AuthorizationActionScope(action)
 
-	principal, ok := auth.PrincipalFromContext(ctx)
-	allowed := ok && slices.Contains(principal.Actions, scope)
+	allowed := authz.Decide(ctx, action, authz.Explicit).Allowed
 
 	subject := s.auditSubject(ctx, rpc, v1.AuditResourceKind_AUDIT_RESOURCE_KIND_RUN, workflowID)
 	subject.RequestField = field
