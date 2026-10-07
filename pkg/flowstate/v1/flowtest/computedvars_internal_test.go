@@ -278,6 +278,31 @@ func TestAFileOfNonMatchingReadsIsRefused(t *testing.T) {
 	assert.Contains(t, err.Error(), "computed vars exceed the dependency budget")
 }
 
+// TestTheWidestOrdinaryScanIsAdmitted pins the budget's legitimate side: one
+// 20,000-leaf table and the 199 computed vars that fit beside it, each making
+// four reads, is 16.1M scan steps once the computed leaves are counted as
+// nodes, and has to load.
+func TestTheWidestOrdinaryScanIsAdmitted(t *testing.T) {
+	t.Parallel()
+
+	var b strings.Builder
+	b.WriteString("vars:\n  t: [")
+	for i := range 20_000 {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		fmt.Fprintf(&b, "%d", i)
+	}
+	b.WriteString("]\n")
+	for i := range MaxVarsPerFile - 1 {
+		fmt.Fprintf(&b, "  a%03d: \"${size([vars.t[0], vars.t[1], vars.t[2], vars.t[3]])}\"\n", i)
+	}
+	b.WriteString("tests:\n  - name: loads\n    workflow: ./workflow.yaml\n    expect:\n      failed: true\n")
+
+	_, err := LoadSource([]byte(b.String()))
+	require.NoError(t, err)
+}
+
 func TestDeclareVarsCountsComputedLeavesBeforeBuildingGraph(t *testing.T) {
 	t.Parallel()
 

@@ -278,10 +278,12 @@ const maxVarDependencyEdges = 2 * maxExpandedNodes
 // 20,000-leaf table cost over a minute from a 785KB file with the edge budget
 // untouched (#1353). Each read charges one visit per node.
 //
-// 16,000,000 admits 200 computed vars ([MaxVarsPerFile]) making four reads
-// each of a 20,000-node table, far past any fixture that is not an attack, and
-// at roughly 45ns a visit bounds the loader's scan to about 0.7s.
-const maxVarDependencyScans = 16_000_000
+// 20,000,000 admits one 20,000-leaf table read four times by each of the 199
+// computed vars a file may add beside it: 199 * 4 * 20,199 nodes is 16.1M,
+// because the computed leaves are nodes too. That is far past any fixture that
+// is not an attack, and at roughly 45ns a visit it bounds the loader's scan to
+// about 0.9s.
+const maxVarDependencyScans = 20_000_000
 
 // depBudget is what one load's dependency scan may still spend: edges
 // retained and node visits made. Separate because they bound different
