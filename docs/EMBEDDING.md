@@ -363,11 +363,37 @@ deployment's rules refused it, never a scope to request, and the decider may be
 asked more than once per request, so keep it cheap and stateless in its answer.
 To change what a caller is granted, change its issuer entry, not the decider.
 
+### Who is starting an in-process run
+
+`flow run local` does not consult a workflow's `triggers.manual:` block: a
+rehearsal on the author's machine has no one to attest. A program that runs
+workflows in-process on behalf of authenticated callers can ask for the
+server's answer with `RunOptions.Starter`:
+
+```go
+outputs, err := embed.RunLocal(ctx, workflow, embed.RunOptions{
+	Starter: &embed.Starter{Principal: verified, Reason: "incident 42"},
+})
+```
+
+The run is refused before any step if the block says `denied`, its `allow:`
+predicate does not admit the caller, or it requires a reason and none was
+given. A zero or anonymous principal satisfies no `allow:` predicate, and a
+workflow with no `manual:` block admits any starter, as on a server. The
+program is the authority on who the caller is, so authenticate first and pass
+what the verifier returned. A predicate reads `sender.identity.claims.<name>`
+only for the names in `Starter.Claims` (none by default, as with a server's
+`WithIdentityClaims`), and a principal with no namespace falls into
+`Starter.Namespace`, which never overrides the principal's own. With `Starter`
+nil nothing is consulted.
+
 ## What is not curated here
 
 - **`call:` across embedder files.** Compiling from bytes has no directory to
   resolve one against.
-- **The Flowstate server and RPC surface.** A curation problem of its own.
+- **The Flowstate server and RPC surface.** A curation problem of its own: it spans a
+  Temporal client, a verifier, audit and a decider, and wants one design rather than
+  a re-export of `server.New`.
 - **Schedules, plugin-process hosting.** Real capabilities of the system;
   neither is exposed by this package.
 - **Schema version skew between an embedder and the Flowstate build it
