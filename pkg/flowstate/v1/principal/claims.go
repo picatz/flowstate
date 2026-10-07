@@ -36,18 +36,28 @@ import (
 // without the claim: a rule that only tests absence (`!("k" in identity.claims)`,
 // or a deny rule on `"contractors" in identity.claims.groups`) would evaluate
 // against a set the dropped claim is missing from and permit. [RefusedClaims]
-// is the carrier for that case. Every read of it, whatever the rule asks, is an
-// evaluation error, and an errored rule denies on every surface, so the one
-// place a Caller's claims are built is also the one place this fails closed.
+// is the carrier for that case. A rule's reading of refused claims, whatever it
+// asks, is an evaluation error, and an errored rule denies on every surface.
+//
+// The refusal is enforced where the [Caller] is bound, by [Caller.Bind], which
+// renders the claims as a CEL error value, and not by the carrier alone. A
+// carrier is a map to every other operand: equality dispatches on the left
+// operand, so `{} == identity.claims` runs the standard map's Equal, which
+// answers false on a size mismatch without asking the carrier, and cel-go's `!=`
+// reads any non-true Equal as true, so `identity.claims != {}` would succeed.
+// The carrier's own methods remain as a second line (a [Caller] bound without
+// Bind still errors on the reads the carrier serves) and cannot be relied on
+// for the operator forms.
 type Claims struct {
 	m       map[string]any
 	refused error
 }
 
 // RefusedClaims is the claim set of a caller whose claims were over their
-// bounds and so were not all read. Every CEL operation on it evaluates to an
-// error (see "Refused claims" on [Claims]); [Claims.Map] still reports the
-// claims that were read, for diagnostics that must not fail.
+// bounds and so were not all read. Bound through [Caller.Bind], every CEL
+// operation on it evaluates to an error (see "Refused claims" on [Claims]);
+// [Claims.Map] still reports the claims that were read, for diagnostics that
+// must not fail.
 func RefusedClaims(read map[string]any, err error) Claims {
 	return Claims{m: read, refused: err}
 }

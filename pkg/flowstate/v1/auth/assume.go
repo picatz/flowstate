@@ -225,7 +225,7 @@ func assumeVars(target, mintedSubject, audience string, identity WorkloadIdentit
 		attrTarget:   target,
 		attrAudience: audience,
 		// Two principals, deliberately distinct. See [attrIdentity].
-		attrIdentity: identity.Caller(),
+		attrIdentity: identity.Caller().Bind(),
 		attrWorkload: who,
 	}
 }

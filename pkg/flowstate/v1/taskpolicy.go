@@ -358,7 +358,7 @@ func (p *TaskPolicy) check(ctx context.Context, task string, identity *WorkloadI
 
 	vars := map[string]any{
 		"task":     task,
-		"identity": CallerOf(identity),
+		"identity": CallerOf(identity).Bind(),
 	}
 
 	return p.rules.evaluate(ctx, task, vars)

@@ -41,6 +41,12 @@ func refusedClaimsCaller(t *testing.T, overBound bool) *v1.WorkloadIdentity {
 const (
 	refusedClaimsAllow = `identity.namespace == "team-a" && !("contractors" in identity.claims)`
 	refusedClaimsDeny  = `"contractors" in identity.claims`
+
+	// The operator forms: equality dispatches on the left operand and `!=` reads
+	// a non-true answer as true, so these admit a caller whose claims were
+	// refused unless the claims value itself errors. Both admit the readable one.
+	refusedClaimsNeq = `identity.claims != {}`
+	refusedClaimsEq  = `{} == identity.claims`
 )
 
 func TestRefusedClaimsAreRefusedByTheSharedCaller(t *testing.T) {
@@ -58,8 +64,10 @@ func TestRefusedClaimsDenyOnTheTaskShapeSurface(t *testing.T) {
 	t.Parallel()
 
 	for name, cfg := range map[string]v1.TaskPolicyConfig{
-		"allow": {Allow: []string{refusedClaimsAllow}},
-		"deny":  {Allow: []string{`true`}, Deny: []string{refusedClaimsDeny}},
+		"allow":          {Allow: []string{refusedClaimsAllow}},
+		"deny":           {Allow: []string{`true`}, Deny: []string{refusedClaimsDeny}},
+		"operator allow": {Allow: []string{refusedClaimsNeq}},
+		"operator deny":  {Allow: []string{`true`}, Deny: []string{refusedClaimsEq}},
 	} {
 		policy, err := cfg.Policy()
 		require.NoError(t, err, name)
@@ -74,8 +82,10 @@ func TestRefusedClaimsDenyOnTheSignalPredicateSurface(t *testing.T) {
 	t.Parallel()
 
 	for name, src := range map[string]string{
-		"allow": `!("contractors" in sender.identity.claims)`,
-		"deny":  `!("contractors" in sender.identity.claims) || sender.identity.namespace == "never"`,
+		"allow":              `!("contractors" in sender.identity.claims)`,
+		"deny":               `!("contractors" in sender.identity.claims) || sender.identity.namespace == "never"`,
+		"operator not equal": `sender.identity.claims != {}`,
+		"operator equal":     `!({} == sender.identity.claims)`,
 	} {
 		policy := &v1.SignalPolicy{Allow: src}
 
@@ -91,8 +101,10 @@ func TestRefusedClaimsDenyOnTheEgressSurface(t *testing.T) {
 	target := &url.URL{Scheme: "http", Host: "127.0.0.1:1", Path: "/"}
 
 	for name, option := range map[string]netpolicy.Option{
-		"allow": netpolicy.WithAllowRules(refusedClaimsAllow),
-		"deny":  netpolicy.WithDenyRules(refusedClaimsDeny),
+		"allow":          netpolicy.WithAllowRules(refusedClaimsAllow),
+		"deny":           netpolicy.WithDenyRules(refusedClaimsDeny),
+		"operator allow": netpolicy.WithAllowRules(refusedClaimsNeq),
+		"operator deny":  netpolicy.WithDenyRules(refusedClaimsEq),
 	} {
 		policy, err := netpolicy.New(netpolicy.WithAllowLoopback(), option)
 		require.NoError(t, err, name)
@@ -119,8 +131,10 @@ func TestRefusedClaimsDenyOnTheExecSurface(t *testing.T) {
 	require.NoError(t, err)
 
 	for name, rules := range map[string]struct{ allow, deny []string }{
-		"allow": {allow: []string{refusedClaimsAllow}},
-		"deny":  {allow: []string{`true`}, deny: []string{refusedClaimsDeny}},
+		"allow":          {allow: []string{refusedClaimsAllow}},
+		"deny":           {allow: []string{`true`}, deny: []string{refusedClaimsDeny}},
+		"operator allow": {allow: []string{refusedClaimsNeq}},
+		"operator deny":  {allow: []string{`true`}, deny: []string{refusedClaimsEq}},
 	} {
 		policy, err := execpolicy.New(execpolicy.Config{
 			Executables: map[string]string{"sh": sh}, Roots: []string{root},

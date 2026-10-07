@@ -855,9 +855,11 @@ delegation claims: carry such a claim under another name with `as`.
 A claim set that a run or plugin hands back over the carried-claim bounds (a
 claim nested deeper than four levels or holding more than 512 values, or more than
 32 claims) is refused, not trimmed, and the refusal travels with the identity:
-every policy rule that reads `identity.claims`, on egress, exec, task shape,
-secret, assumption and signal surfaces, is an evaluation error and denies. That
-includes a rule that only tests absence, such as `!("contractors" in identity.claims)`,
+every policy rule that touches `identity.claims`, on egress, exec, task shape,
+secret, assumption and signal surfaces, is an evaluation error and denies,
+whatever it does with them: a membership or absence test, a comparison with `==`
+or `!=` in either order, `size`, or a comprehension. That includes a rule that
+only tests absence, such as `!("contractors" in identity.claims)`,
 which would otherwise read the dropped claim as missing and permit. Rules that
 read no claim are unchanged.
 

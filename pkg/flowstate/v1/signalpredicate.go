@@ -105,6 +105,14 @@ type signalPolicyActor struct {
 	Identity principal.Caller `cel:"identity"`
 }
 
+// refusedSignalPolicyActor is [signalPolicyActor] with its one field typed `any`,
+// so it can hold [principal.Caller.Bind]'s stand-in for a caller whose claims
+// were refused. cel-go reads the declared `identity` field by its index, so the
+// stand-in is what `sender.identity` evaluates to.
+type refusedSignalPolicyActor struct {
+	Identity any `cel:"identity"`
+}
+
 // ext.NativeTypes names a type by the last element of its package *path*
 // ("v1"), not its declared package name; pinned by a test.
 const signalPolicyActorTypeName = "v1.signalPolicyActor"
@@ -532,11 +540,19 @@ func signalPolicyActivation(identity, starter *WorkloadIdentity, hasStarter bool
 	return vars
 }
 
-func newSignalPolicyActor(identity *WorkloadIdentity) *signalPolicyActor {
+func newSignalPolicyActor(identity *WorkloadIdentity) any {
 	// The same principal.Caller every policy surface binds as `identity`, so a
 	// kind, a list claim or a nested claim reads the same here as in an egress
 	// or task rule ([CallerOf]).
-	return &signalPolicyActor{Identity: CallerOf(identity).Normalized()}
+	caller := CallerOf(identity).Normalized()
+	if caller.Claims.Refused() != nil {
+		// A field of the typed actor can only hold the claims carrier, which
+		// does not refuse `!=` or a left-hand `{} ==`; the bound caller does
+		// ([principal.Caller.Bind]).
+		return &refusedSignalPolicyActor{Identity: caller.Bind()}
+	}
+
+	return &signalPolicyActor{Identity: caller}
 }
 
 func signalPolicyInputsValue(inputs map[string]*Value) ref.Val {
