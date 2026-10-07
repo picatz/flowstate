@@ -2,6 +2,7 @@ package embed
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -298,5 +299,53 @@ func TestTasksInstall_RestoresAPreexistingTask(t *testing.T) {
 	if after.Summary != before.Summary {
 		t.Errorf("Unregister/restore did not put back the original log task: got summary %q, want %q",
 			after.Summary, before.Summary)
+	}
+}
+
+// TestTaskFnClassifiedErrors proves the failure vocabulary an embedded task
+// has: InvalidInput is reported as such and runs exactly once, where a plain
+// error would be retried under the default policy and reported as Internal
+// (#1557).
+func TestTaskFnClassifiedErrors(t *testing.T) {
+	const taskName = "classified_error_task"
+
+	for _, tc := range []struct {
+		name     string
+		wrap     func(error) error
+		wantKind v1.ErrorKind
+	}{
+		{"InvalidInput", InvalidInput, v1.ErrorKindInvalidInput},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			attempts := 0
+			tasks := NewTasks()
+			err := tasks.Register(Task{Name: taskName, Fn: func(context.Context, map[string]*v1.Value, *v1.Scope) (*v1.Node_Outputs, error) {
+				attempts++
+				return nil, tc.wrap(errors.New("name is required"))
+			}})
+			if err != nil {
+				t.Fatalf("Register: %v", err)
+			}
+			uninstall, err := tasks.Install()
+			if err != nil {
+				t.Fatalf("Install: %v", err)
+			}
+			defer uninstall()
+
+			workflow, err := flowfile.Unmarshal(echoWorkflowSource(taskName))
+			if err != nil {
+				t.Fatalf("Unmarshal: %v", err)
+			}
+			_, err = RunLocal(context.Background(), workflow, RunOptions{Tasks: tasks})
+			if err == nil {
+				t.Fatal("RunLocal: expected the task's failure")
+			}
+			if got := v1.ClassifyError(err); got != tc.wantKind {
+				t.Errorf("ClassifyError = %q, want %q (err: %v)", got, tc.wantKind, err)
+			}
+			if attempts != 1 {
+				t.Errorf("task ran %d times, want 1: a classified permanent failure is not retried", attempts)
+			}
+		})
 	}
 }
