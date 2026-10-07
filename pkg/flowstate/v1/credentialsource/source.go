@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/picatz/flowstate/pkg/flowstate/v1/deviceflow"
 )
 
 // Sentinel errors this package returns. Callers distinguish failures with
@@ -53,6 +55,7 @@ const (
 	SourceTerraformCloud = "terraform-cloud"
 	SourceFile           = "file"
 	SourceEnv            = "env"
+	SourceLogin          = "login"
 )
 
 // knownSources lists every buildable name, for the error a typo gets. Spelled
@@ -64,6 +67,7 @@ var knownSources = []string{
 	SourceTerraformCloud,
 	SourceFile,
 	SourceEnv,
+	SourceLogin,
 }
 
 // Config gathers the values a named [Source] may need. Which names read a
@@ -93,6 +97,16 @@ type Config struct {
 	// audience names the tagged variable (see
 	// [TerraformCloudTaggedEnvVar]). Ignored by the rest.
 	EnvVar string
+
+	// Issuer and ClientID pick which stored `flow login` entry [SourceLogin]
+	// serves. Either may be empty to mean the only stored login; several
+	// stored logins and neither given is a refusal. Ignored by the rest.
+	Issuer   string
+	ClientID string
+
+	// LoginStore is where [SourceLogin] reads logins; nil means
+	// [deviceflow.DefaultStore]. Ignored by the rest.
+	LoginStore *deviceflow.Store
 }
 
 // Resolve builds the named [Source].
@@ -135,6 +149,16 @@ func Resolve(name string, cfg Config) (Source, error) {
 			v = "FLOWSTATE_TOKEN"
 		}
 		return NewEnvSource(v), nil
+
+	case name == SourceLogin:
+		store := cfg.LoginStore
+		if store == nil {
+			var err error
+			if store, err = deviceflow.DefaultStore(); err != nil {
+				return nil, fmt.Errorf("%w: %s: %w", ErrSourceUnusable, SourceLogin, err)
+			}
+		}
+		return NewLoginSource(store, cfg.Issuer, cfg.ClientID), nil
 
 	default:
 		return nil, fmt.Errorf("%w: %q (known sources: %s)",

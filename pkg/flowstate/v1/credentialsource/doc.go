@@ -49,6 +49,13 @@
 // account token in place, and reading it fresh on every call is what makes that
 // keep working without this package or its caller ever needing to notice.
 //
+// [SourceLogin] is the one for a person: it presents the access token `flow
+// login` stored through [github.com/picatz/flowstate/pkg/flowstate/v1/deviceflow]
+// (the OAuth 2.0 Device Authorization Grant, RFC 8628), and refreshes it with the
+// stored refresh token (RFC 6749 section 6) shortly before it expires. Where the
+// refresh cannot succeed it refuses with a message to run `flow login` again; the
+// stale token is never returned.
+//
 // # Fail closed
 //
 // A [Source] obtained by name through [Resolve] is a source a caller explicitly

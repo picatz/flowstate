@@ -72,8 +72,8 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 		{
 			name:    "FLOWSTATE_ADDRESS",
 			value:   g.src.DefaultAddress,
-			purpose: "Address the API server listens on, and that the client commands connect to.",
-			read:    "cmd/flow/client.go, cmd/flow/main.go, cmd/flow/mcp.go, cmd/flow/serverdev.go",
+			purpose: "Address the API server listens on, and that the client commands connect to. On `flow login`, the server the stored login is bound to.",
+			read:    "cmd/flow/client.go, cmd/flow/login.go, cmd/flow/main.go, cmd/flow/mcp.go, cmd/flow/serverdev.go",
 		},
 		{
 			name:    "FLOWSTATE_ALLOW_LOOPBACK_EGRESS",
@@ -84,8 +84,8 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 		{
 			name:    "FLOWSTATE_AUDIENCE",
 			value:   "unset",
-			purpose: "Default for `--audience`: the relying party a credential is addressed to. Required by `--credential-source=github-actions`, which mints a token for it. Checked against the token's own `aud` claim by `gitlab` and `terraform-cloud`, whose platforms bound the audience at job or workspace configuration and cannot be asked for another; a mismatch is refused with the setting to change. Ignored by `file` and `env`.",
-			read:    "cmd/flow/client.go",
+			purpose: "Default for `--audience`: the relying party a credential is addressed to; on `flow login` the audience requested for the access token. Required by `--credential-source=github-actions`, which mints a token for it. Checked against the token's own `aud` claim by `gitlab` and `terraform-cloud`, whose platforms bound the audience at job or workspace configuration and cannot be asked for another; a mismatch is refused with the setting to change. Ignored by `file` and `env`.",
+			read:    "cmd/flow/client.go, cmd/flow/login.go",
 		},
 		{
 			name:    "FLOWSTATE_AUTH_POLICY",
@@ -106,6 +106,12 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 			read:    "cmd/flow/main.go",
 		},
 		{
+			name:    "FLOWSTATE_CLIENT_ID",
+			value:   "unset",
+			purpose: "Default for `--client-id` on `flow login` and `flow logout`: the OAuth client registered for the CLI at the identity provider. Also selects which stored login a command presents when several are stored.",
+			read:    "cmd/flow/login.go",
+		},
+		{
 			name:    "FLOWSTATE_CODEC_RESOURCE",
 			value:   "unset",
 			purpose: "Default for `--codec-resource` on `flow codec serve`: the canonical resource URI required in every bearer token's `aud` claim there, so a token minted for another Flowstate surface cannot be spent to decode history. Required whenever `--auth-policy` trusts a `kind: oidc` issuer; distinct from the RPC and MCP resources.",
@@ -114,7 +120,7 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 		{
 			name:    "FLOWSTATE_CREDENTIAL_SOURCE",
 			value:   "unset",
-			purpose: "Default for `--credential-source`: acquire a credential from a named source (`github-actions`, `gitlab`, `terraform-cloud`, `file`, `env`) instead of the `--token-file`/`FLOWSTATE_TOKEN` default. An unknown or unusable source is an error, never anonymous.",
+			purpose: "Default for `--credential-source`: acquire a credential from a named source (`github-actions`, `gitlab`, `terraform-cloud`, `file`, `env`, `login`) instead of the `--token-file`/`FLOWSTATE_TOKEN` default. An unknown or unusable source is an error, never anonymous.",
 			read:    "cmd/flow/client.go",
 		},
 		{
@@ -226,6 +232,12 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 			read:    "cmd/flow/internallistener.go",
 		},
 		{
+			name:    "FLOWSTATE_ISSUER",
+			value:   "unset",
+			purpose: "Default for `--issuer` on `flow login` and `flow logout`: the OIDC issuer URL of the identity provider to sign in to. Also selects which stored login a command presents when several are stored.",
+			read:    "cmd/flow/login.go",
+		},
+		{
 			name:    "FLOWSTATE_MAX_STEPS_PER_RUN",
 			value:   "unset",
 			purpose: "Server-side ceiling on the steps one run may submit. An unparseable or non-positive value is ignored rather than lowering the bound.",
@@ -302,6 +314,12 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 			value:   "unset",
 			purpose: "Default for `--rpc-resource` on `flow server`: the canonical Connect RPC resource URI required in every bearer token's `aud` claim. Required whenever `--auth-policy` trusts a `kind: oidc` issuer, unless the migration-only `--allow-issuer-wide-audiences` flag explicitly restores the older issuer-wide behavior; a policy of nothing but `kind: mtls` entries mints no token to bind and needs neither flag. Distinct from the remote MCP protected resource and from any future HTTP surface.",
 			read:    "cmd/flow/rpcresource.go",
+		},
+		{
+			name:    "FLOWSTATE_SCOPE",
+			value:   "unset",
+			purpose: "Default for `--scope` on `flow login`: the space-delimited OAuth scope requested. Without it, `openid offline_access`.",
+			read:    "cmd/flow/login.go",
 		},
 		{
 			name:    "FLOWSTATE_SECRET_COMMAND",
@@ -505,7 +523,7 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 		{
 			name:    "FLOWSTATE_TOKEN",
 			value:   "unset",
-			purpose: "Bearer token the client authenticates with, used when no token file is set.",
+			purpose: "Bearer token the client authenticates with, used when no token file is set. Outranks the login stored by `flow login`.",
 			read:    "cmd/flow/credentials.go",
 		},
 		{

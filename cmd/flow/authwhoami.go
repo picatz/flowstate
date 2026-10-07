@@ -35,7 +35,8 @@ func newAuthWhoamiCommand() *cobra.Command {
 			"callers (`flow server dev` without `--auth`) answers `authenticated: false` rather than " +
 			"refusing. The credential itself is never printed.\n\n" +
 			"The credential is read as every server verb reads it: `--token-file`, " +
-			"FLOWSTATE_TOKEN_FILE or FLOWSTATE_TOKEN, or `--credential-source`.",
+			"FLOWSTATE_TOKEN_FILE or FLOWSTATE_TOKEN, the login stored by `flow login`, or " +
+			"`--credential-source`.",
 		Args: cobra.NoArgs,
 		RunE: runAuthWhoami,
 		Example: `# Who does the server think I am?
