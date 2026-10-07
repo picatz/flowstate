@@ -32,20 +32,23 @@ steps:
       # A whole secret reference, resolved on the worker that makes the call. It
       # is never in the Flowfile, the run's history, or an error.
       api_key: ${secret('env:ANTHROPIC_API_KEY')}
-      model: ${inputs.model}
       evidence: ${inputs.ticket}
-      # Ask the model to say how sure it is. What comes back is labelled
-      # self-reported; without this every answer is labelled as carrying none.
-      report_confidence: true
+      model: ${inputs.model}
       question_set:
         questions:
           - name: category
             instructions: Which team should own this ticket?
             choice:
-              options: [billing, outage, other]
+              options:
+                - billing
+                - outage
+                - other
           - name: urgent
             instructions: Is a customer-facing service down or losing money right now?
             predicate: {}
+      # Ask the model to say how sure it is. What comes back is labelled
+      # self-reported; without this every answer is labelled as carrying none.
+      report_confidence: true
   - id: urgent
     value: ${steps.decide.answers.filter(a, a.name == "urgent")[0]}
   - id: category
