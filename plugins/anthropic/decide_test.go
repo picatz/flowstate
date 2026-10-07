@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	decisionv1 "github.com/picatz/flowstate/pkg/flowstate/decision/v1"
 	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -638,5 +639,17 @@ func TestEscapeEvidence(t *testing.T) {
 		if got := escapeEvidence(in); got != want {
 			t.Errorf("escapeEvidence(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+func TestBoundedNeverSplitsARune(t *testing.T) {
+	// An odd number of single-byte characters in front makes the byte cap fall
+	// in the middle of a two-byte rune, which is the case being guarded.
+	got := bounded(strings.Repeat("a", maxErrorBytes-1) + "éé")
+	if want := strings.Repeat("a", maxErrorBytes-1) + "…"; got != want {
+		t.Fatalf("bounded = %q, want the whole runes under the cap and the marker", got)
+	}
+	if !utf8.ValidString(got) {
+		t.Fatalf("bounded produced invalid UTF-8: %q", got)
 	}
 }
