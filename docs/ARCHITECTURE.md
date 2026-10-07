@@ -149,6 +149,14 @@ by bare number.
    cancelable, rules are compiled and type-checked when configuration is loaded rather than
    when a request arrives, and a rule that errors denies.
 
+   protovalidate is the one deliberate second CEL evaluator: it checks the `buf.validate`
+   rules on Flowstate's own protos, with its own environment and no cost limit, so it is
+   only ever given expressions this repository wrote. A peer-authored schema is not: the host
+   removes every expression-bearing rule (`cel`, `cel_expression`, predefined `cel`) from a
+   plugin's descriptor before linking it (`stripCELRules`), and honours the standard rules
+   (`string.max_len`, `repeated.min_items`, `in`, ...). A plugin that wants a computed or
+   cross-field rule enforces it in its own process, under its own limits.
+
    Note that CEL reserves identifiers that make plausible variable names, `namespace` among
    them (the full list is in `flowfile/validate.go`). Attributes are therefore better grouped
    under an object than declared flat, which also keeps compile-time field checking so a
