@@ -1387,14 +1387,14 @@ tests:
 	assert.NotContains(t, err.Error(), "index out of bounds")
 }
 
-// TestAMixedFenceLiteralIsWithheldBeforeCheckVarsQuotesIt is Copilot's finding
+// TestAMixedFenceRefusalQuotesNothingTheAuthorWrote is Copilot's finding
 // on #2080's load-time redaction fix: checkVars' own mixed-fence refusal
 // quoted a var's raw, pre-evaluation text, and it runs before evaluateVars has
 // decided what this file withholds — so the literal text around the fence, a
 // secret's material in every shape below, printed whether the var was named
 // from `secrets:` directly, reached through an alias (Codex), or named by
-// nothing at all. The refusal now quotes only the fence it found.
-func TestAMixedFenceLiteralIsWithheldBeforeCheckVarsQuotesIt(t *testing.T) {
+// nothing at all. The refusal names the var and quotes nothing the author wrote (#2108).
+func TestAMixedFenceRefusalQuotesNothingTheAuthorWrote(t *testing.T) {
 	t.Parallel()
 
 	const secret = "sk-live-earlyleak-8834"
@@ -2022,7 +2022,7 @@ vars:
   region: eu-west-1
   seed: "${vars.token + steps.nope}"
   elsewhere: "${vars.region + steps.nope}"
-  probe: "${ {'known': 1}[vars.region] }"
+  probe: "${ {vars.region + vars.region: 1}[vars.region] }"
 tests:
   - name: never loads
     workflow: ./workflow.yaml
@@ -2160,11 +2160,12 @@ tests:
 		"the chain runs out through the source and back to the entry that names it")
 }
 
-// TestAVarsRefusalQuotesTheExpressionNotTheValue: a load-time refusal is the
-// one path where a value could reach a message without passing a redaction
-// set, because there is no case yet and so no set. It quotes what the author
-// wrote, and scrubs what CEL put in its own error.
-func TestAVarsRefusalQuotesTheExpressionNotTheValue(t *testing.T) {
+// TestAVarsRefusalQuotesNeitherTheExpressionNorTheValue: a load-time refusal is
+// the one path where a value could reach a message without passing a redaction
+// set, because there is no case yet and so no set. It names the var and
+// withholds what CEL put in its own error, whether the operand is the value or
+// text composed from the expression's literals (#2108).
+func TestAVarsRefusalQuotesNeitherTheExpressionNorTheValue(t *testing.T) {
 	t.Parallel()
 
 	_, err := flowtest.Load(writeInline(t, t.TempDir(), `
@@ -2397,8 +2398,9 @@ func TestAVarDiagnosticNeverEchoesLiteralMaterialInItsExpression(t *testing.T) {
 	t.Parallel()
 
 	for _, tc := range []struct{ name, value, secret, want string }{
-		{"parse error", "${a} sk-live-probe-1111 ${b}", "sk-live-probe-1111", "not valid CEL (syntax error at column"},
+		{"parse error", "${a} sk-live-probe-1111 ${b}", "sk-live-probe-1111", "not valid CEL (syntax error at line 1, column"},
 		{"evaluation error", "${'sk-live-probe-7777' + 1}", "sk-live-probe-7777", "vars.token: evaluating its expression failed"},
+		{"fragmented literals", `${{'known': 1}['sk-' + 'liv' + 'e-p' + 'rob' + 'e']}`, "sk-live-probe", "vars.token: evaluating its expression failed"},
 		{"mixed fence", `prefix-${"sk-live-inner-4242"}`, "sk-live-inner-4242", "vars.token mixes text with a `${...}` expression"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

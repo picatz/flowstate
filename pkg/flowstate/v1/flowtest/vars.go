@@ -680,9 +680,10 @@ type varDeclaration struct {
 	// deps are the sibling vars the expression reads, sorted and deduplicated.
 	deps []string
 
-	// literals are the string and bytes literals the expression wrote, which
-	// an evaluation error quoting its source must not print (#2108).
-	literals []string
+	// hasLiteral is whether the expression wrote a string or bytes literal,
+	// which an evaluation error quoting or composing from it must not print
+	// (#2108).
+	hasLiteral bool
 }
 
 type varPathPart struct {
@@ -1073,7 +1074,7 @@ func (f *File) evaluateVars(p *problems, restated []string) {
 				value, err := evaluateVar(base, d, activation)
 				if err != nil {
 					p.report(d.spot, "vars.%s: evaluating its expression failed: %s",
-						name, scrubbedVarError(err, taint, d.deps, d.literals))
+						name, scrubbedVarError(err, taint, d.deps, d.hasLiteral))
 
 					continue
 				}
@@ -1225,7 +1226,7 @@ func (f *File) declareVars(p *problems) map[string]*varDeclaration {
 			continue
 		}
 		d.ast = parsed
-		d.literals = stringLiterals(parsed)
+		d.hasLiteral = hasStringLiteral(parsed)
 	}
 	return declared
 }
@@ -1242,7 +1243,8 @@ func parseFailure(issues *cel.Issues) string {
 	}
 	loc := errs[0].Location
 
-	return fmt.Sprintf("the expression is not valid CEL (syntax error at column %d)", loc.Column()+1)
+	return fmt.Sprintf("the expression is not valid CEL (syntax error at line %d, column %d of the expression)",
+		loc.Line(), loc.Column()+1)
 }
 
 // checkVarExpression walks one parsed var expression, reporting every root a
@@ -1501,7 +1503,7 @@ func evaluateVar(base *cel.Env, d *varDeclaration, activation map[string]any) (a
 //
 // No diagnostic here quotes the expression or the value; this is the one place
 // a value could reach a message by another road, and this is that road closed.
-func scrubbedVarError(err error, taint varTaint, deps []string, literals []string) string {
+func scrubbedVarError(err error, taint varTaint, deps []string, literal bool) string {
 	// deps are sorted by [checkVarExpression], so the var named here is the
 	// same one on every run over the same file.
 	for _, dep := range deps {
@@ -1510,48 +1512,34 @@ func scrubbedVarError(err error, taint varTaint, deps []string, literals []strin
 		}
 	}
 
-	// A CEL error quotes its source line, and its source is the author's
-	// expression: a string literal inside it is as secret as one a var holds
-	// (#2108). Each literal the expression wrote is cleared from the text,
-	// which keeps what makes the error useful (`cost limit exceeded`, the
-	// operator and its operand types) and loses only the author's text.
-	msg := err.Error()
-	for _, lit := range literals {
-		msg = strings.ReplaceAll(msg, lit, withheldLiteral)
+	// A CEL error quotes its source line, and the error's operand can be
+	// composed from the expression's string literals (`'sk-' + 'live'`), so
+	// clearing the literals one by one cannot bound it. An expression that
+	// wrote any string or bytes literal therefore has its detail withheld
+	// whole; one that wrote none has nothing of the author's to quote, and
+	// keeps the detail that makes the error useful (#2108).
+	if literal {
+		return "[withheld: this expression writes a string literal, which a CEL error can quote or compose]"
 	}
 
-	return msg
+	return err.Error()
 }
 
-// withheldLiteral stands where [scrubbedVarError] cleared a literal.
-const withheldLiteral = "[literal withheld]"
-
-// minScrubbedLiteral is the shortest string literal [scrubbedVarError] clears.
-// A shorter one is a separator or a key, and clearing it would shred the
-// message around it for text no secret fits in.
-const minScrubbedLiteral = 4
-
-// stringLiterals lists the string and bytes literals an expression wrote, long
-// enough to be worth clearing from an error that quotes its source.
-func stringLiterals(ast *cel.Ast) []string {
-	var out []string
+// hasStringLiteral reports whether an expression wrote a string or bytes
+// literal, however short.
+func hasStringLiteral(ast *cel.Ast) bool {
+	found := false
 	celast.PreOrderVisit(ast.NativeRep().Expr(), celast.NewExprVisitor(func(e celast.Expr) {
 		if e.Kind() != celast.LiteralKind {
 			return
 		}
-		var text string
-		switch v := e.AsLiteral().Value().(type) {
-		case string:
-			text = v
-		case []byte:
-			text = string(v)
-		}
-		if len(text) >= minScrubbedLiteral {
-			out = append(out, text)
+		switch e.AsLiteral().Value().(type) {
+		case string, []byte:
+			found = true
 		}
 	}))
 
-	return out
+	return found
 }
 
 // varOrder returns the computed vars in an order where every var's
