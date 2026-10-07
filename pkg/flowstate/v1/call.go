@@ -206,7 +206,8 @@ func CallOutputs(ctx context.Context, callee *Workflow, scope *Scope) (*Node_Out
 }
 
 // CallOutputsWithCost is [CallOutputs] plus the deterministic CEL cost of the
-// callee's declared `outputs:` expressions.
+// callee's declared `outputs:`: each expression, its `must:` predicate, and its
+// record rules.
 //
 // Unlike a run's own outputs, a call's are evaluated once per `call:` step, so a
 // call inside a loop repeats the whole block every iteration. See

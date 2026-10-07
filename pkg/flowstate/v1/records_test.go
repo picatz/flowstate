@@ -602,3 +602,33 @@ func TestRecordRulesShareOneCostBudget(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "cost units together")
 }
+
+// TestEvalRunOutputsWithCostChargesRecordRules pins the record-rule half of
+// #1970's fourth level: a type's rule is CEL evaluated beneath an output, so a
+// satisfied one and a refused one both land in the total the workflow-side
+// budget reads. Reverting the charge at either call site in
+// [v1.EvalRunOutputsWithCost] fails this.
+func TestEvalRunOutputsWithCostChargesRecordRules(t *testing.T) {
+	t.Parallel()
+
+	for name, id := range map[string]string{"a satisfied rule": "fine", "a refused rule": "banned"} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			wf := recordOrderWorkflow()
+			wf.DeclaredTypes[1].Must = new("this.id != 'banned'")
+			wf.DeclaredInputs = nil
+			wf.DeclaredOutputs = []*v1.OutputDeclaration{{
+				Name: "answer", Type: v1.InputDeclaration_TYPE_STRUCT, ValueType: recordTypeOf("Order"),
+				Value: &v1.Value{Kind: &v1.Value_Literal{Literal: mapLit(
+					recordStr("id"), recordStr(id), recordStr("status"), recordStr("open"),
+				)}},
+			}}
+			require.NoError(t, v1.CheckRecordDeclarations(wf))
+
+			_, cost, err := v1.EvalRunOutputsWithCost(t.Context(), wf, v1.NewScope("", &v1.Workflow_StepOutputs{}))
+			assert.Equal(t, id == "banned", err != nil)
+			assert.Positive(t, cost, "the rule is CEL work whether or not it held")
+		})
+	}
+}
