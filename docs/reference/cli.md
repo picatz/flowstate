@@ -126,6 +126,8 @@ A named file is taken as given; a directory is walked for Flowfiles, the same wa
 
 A workflow is its path: two files declaring one `name:` in different directories are two workflows, each compared against the file at its own path at the ref. A file that moved since the ref is matched with `--moved old=new`; without it the old path reads as removed and the new one as brand new.
 
+A removed workflow breaks its callers, so it is a finding. A deliberate removal is acknowledged with `--removed path`, naming the file at the ref; the flag is a no-op once the ref no longer has that file, and an error while the file still exists.
+
 Examples:
 
 ```sh
@@ -138,12 +140,17 @@ flow breaking --against HEAD~1 examples/hello-world/workflow.yaml
 # A file that moved is compared against its old path, not reported as removed:
 flow breaking --against origin/main \
   --moved shared/notify.yaml=workflows/notify.yaml .
+
+# A workflow deleted on purpose, with no callers left, is acknowledged by path:
+flow breaking --against origin/main \
+  --removed examples/release-approval/workflow.yaml examples/
 ```
 
 | Flag | Type | Default | Environment | Description |
 |---|---|---|---|---|
 | `--against <string>` | `string` | — | — | git ref holding the old contract to compare the working tree against, such as origin/main |
 | `--moved <string,...>` | `stringArray` | — | — | a Flowfile that moved since the ref, as old=new paths, so it is compared against its old self (repeatable) |
+| `--removed <string,...>` | `stringArray` | — | — | a Flowfile deliberately deleted since the ref, as its path at the ref, so its removal is not reported (repeatable) |
 
 ## `flow cancel`
 
