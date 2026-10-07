@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/cel-go/cel"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -172,4 +173,34 @@ func TestAHyphenatedKeyIsNotListed(t *testing.T) {
 	assert.False(t, declaredNameShape("api-token"))
 	assert.False(t, declaredNameShape("9lives"))
 	assert.False(t, declaredNameShape(strings.Repeat("a", maxFailureNameLen+1)))
+}
+
+// TestFailureDiagnosticsChargeTheCostAnEvaluationReports pins the other half of
+// the shared budget: an operand evaluation that finishes is charged its actual
+// cost, so the next one starts from what is left rather than a fresh limit.
+func TestFailureDiagnosticsChargeTheCostAnEvaluationReports(t *testing.T) {
+	t.Parallel()
+
+	env, err := cel.NewEnv()
+	require.NoError(t, err)
+	ast, iss := env.Compile(`[1, 2, 3].map(x, x + 1).size() > 0`)
+	require.NoError(t, iss.Err())
+	prog, err := env.Program(ast, cel.EvalOptions(cel.OptTrackCost))
+	require.NoError(t, err)
+	_, details, err := prog.Eval(map[string]any{})
+	require.NoError(t, err)
+	require.NotNil(t, details.ActualCost())
+	require.NotZero(t, *details.ActualCost())
+
+	const budget = 1000
+	work := newFailureWork(budget)
+	require.True(t, work.take())
+	work.spend(details)
+	assert.Equal(t, uint64(budget)-*details.ActualCost(), work.remaining,
+		"a finished evaluation is charged what it cost")
+	assert.Equal(t, work.remaining, work.limits(Limits{Cost: budget}).Cost,
+		"the next evaluation is limited to what is left")
+
+	work.spend(&cel.EvalDetails{})
+	assert.Zero(t, work.remaining, "an evaluation that reports no cost spends the rest")
 }
