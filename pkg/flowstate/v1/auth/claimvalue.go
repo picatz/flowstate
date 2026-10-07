@@ -89,12 +89,6 @@ func claimBytes(value any) (int, bool) {
 	return walk(value, 0)
 }
 
-// claimWithinBounds reports whether one carried claim is carriable: a named,
-// bounded, JSON-shaped value.
-func claimWithinBounds(name string, value any) bool {
-	return checkCarriedClaim(name, value) == nil
-}
-
 // checkCarriedClaim returns why a claim is over its bounds, naming the claim
 // and the size and never the value (see [validateCarriedClaims]).
 func checkCarriedClaim(name string, value any) error {
