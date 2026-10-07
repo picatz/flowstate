@@ -406,7 +406,7 @@ func (c *Client) Discover(ctx context.Context, issuer string) (Endpoints, error)
 		}
 		// Plain http is for a loopback rehearsal, where the issuer is loopback
 		// too; an https issuer pointing at http (even loopback) is a downgrade.
-		if strings.HasPrefix(endpoint, "http://") && !issuerLoopback {
+		if u, perr := url.Parse(endpoint); perr == nil && u.Scheme == "http" && !issuerLoopback {
 			return Endpoints{}, fmt.Errorf("%w: %s: %w: an https issuer may not name an http endpoint",
 				ErrInvalidDiscovery, name, ErrInsecureURL)
 		}

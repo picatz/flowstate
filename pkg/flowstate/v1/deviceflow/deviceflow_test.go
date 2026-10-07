@@ -519,12 +519,21 @@ func TestSleepNeverOutlastsTheDeviceCode(t *testing.T) {
 }
 
 func TestHTTPSIssuerMayNotNameAnHTTPEndpoint(t *testing.T) {
+	// The scheme is decided on the parsed URL, so spelling it in another case
+	// is no way around the downgrade rule.
+	for _, tokenEndpoint := range []string{"http://127.0.0.1:1/token", "HTTP://127.0.0.1:1/token", "Http://localhost:1/token"} {
+		t.Run(tokenEndpoint, func(t *testing.T) { httpsIssuerNaming(t, tokenEndpoint) })
+	}
+}
+
+func httpsIssuerNaming(t *testing.T, tokenEndpoint string) {
+	t.Helper()
 	var issuer string
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"issuer":                        issuer,
 			"device_authorization_endpoint": issuer + "/device",
-			"token_endpoint":                "http://127.0.0.1:1/token",
+			"token_endpoint":                tokenEndpoint,
 		})
 	}))
 	t.Cleanup(srv.Close)
