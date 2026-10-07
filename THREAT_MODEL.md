@@ -215,8 +215,8 @@ the flag's help text is the whole of the control. The CLI
 refuses to send a token over plaintext to anything but this machine
 (`cmd/flow/credentials.go:63`), which protects the client, not the server's own
 posture. `--insecure-no-auth` admits everyone as anonymous and is a
-development posture (read in `authFlagsOf` at `cmd/flow/main.go:224-226`, resolved to
-`auth.InsecureAnonymousVerifier` at `cmd/flow/main.go:1777`;
+development posture (read in `authFlagsOf` at `cmd/flow/main.go:228-230`, resolved to
+`auth.InsecureAnonymousVerifier` at `cmd/flow/main.go:1780`;
 `pkg/flowstate/v1/auth/connect.go:142-160`, [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#the-four-tier-isolation-model)).
 
 **Planned.** OAuth 2.1 alignment for the remote MCP surface and webhook ingress as

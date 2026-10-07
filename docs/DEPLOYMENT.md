@@ -1192,7 +1192,7 @@ There is exactly one probe endpoint — `flow server` does not expose a
 separate readiness or startup route. What makes `/healthz` usable as more than
 a bare liveness check is startup ordering: `flow server` dials Temporal with
 the SDK's eager `client.DialContext` (`pkg/flowstate/v1/temporalclient/temporalclient.go:269`,
-reached from `cmd/flow/main.go:278` through `temporalclient.DialWithNamespace`)
+reached from `cmd/flow/main.go:282` through `temporalclient.DialWithNamespace`)
 and mounts the HTTP mux — the one carrying `/healthz` — only after that dial,
 and every other startup check (TLS configuration, auth policy load, plugin
 catalog build), succeeds. So the first `200` from `/healthz` already implies
@@ -1339,7 +1339,7 @@ are equally plaintext `httpGet` checks against the TLS-terminated port and
 fail the same way if left as they are. `exec` runs the command inside the
 container's own network namespace, which loopback is reachable from, and the
 internal listener never carries TLS or client-cert requirements of its own
-(`internalHandler`, `cmd/flow/routing.go:226`) regardless of what the public
+(`internalHandler`, `cmd/flow/routing.go:225`) regardless of what the public
 listener demands:
 
 ```yaml
