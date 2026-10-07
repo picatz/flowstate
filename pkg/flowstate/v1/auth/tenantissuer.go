@@ -50,6 +50,23 @@ func validateFederationTenants(tenants []string) error {
 	return nil
 }
 
+// validateFederationPaths refuses a custom path the tenant prefix mount would
+// shadow or collide with. The server mounts every tenant's issuer under
+// "/tenants/", a subtree, so a key set path at or under it is served by the
+// wrong handler, and a bare "/tenants/" duplicates the mount's own pattern, which
+// a ServeMux refuses by panicking at start-up. It is refused here, at policy
+// load, so no custom path can reach a mux. "/tenants" itself is refused too: a
+// mux redirects it into the subtree.
+func validateFederationPaths(p FederationPolicy) error {
+	root := "/" + TenantIssuerSegment
+	if p.JWKSPath == root || strings.HasPrefix(p.JWKSPath, root+"/") {
+		return fmt.Errorf("%w: federation.jwks_path %q must not be %q or under it: that prefix is where each tenant's issuer is mounted",
+			ErrInvalidPolicy, p.JWKSPath, root+"/")
+	}
+
+	return nil
+}
+
 // TenantIssuerURL returns the issuer identifier of a tenant: the policy's
 // Issuer for the default tenant (empty), and Issuer plus "/tenants/<tenant>" for
 // a name in the policy's Tenants list. Any other name is [ErrUnknownTenant], and

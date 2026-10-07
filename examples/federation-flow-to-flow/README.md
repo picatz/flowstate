@@ -75,26 +75,33 @@ does not, and where the alternative is a long-lived token in a secret store.
 The hosts are `example.com`, so this is a file to read and adapt. It takes three
 processes, because A has to *publish* its identity as well as *present* it.
 
-Deployment A's **server** is what mounts the discovery document and JWKS at A's
-issuer URL — the worker mints but exposes no HTTP, so without this server B has
-nowhere to fetch A's keys from (`cmd/flow/routing.go` mounts the identity
-handlers only when a broker is configured, which needs the federation policy and
-the key):
+Each tenant A lists under `federation.tenants` is an issuer of its own, at
+`https://flowstate.example.com/tenants/acme` here, with its own signing key, so a
+compromised worker for one tenant cannot mint an assertion another tenant's
+relying parties would accept. That is why B's `trust.yaml` names the tenant's
+issuer URL and not A's bare one.
+
+Deployment A's **server** is what mounts each tenant's discovery document and
+JWKS at its issuer URL — the worker mints but exposes no HTTP, so without this
+server B has nowhere to fetch A's keys from. It holds public keys only, one
+directory per tenant (`DIR/acme/KEY.pem`; `flow keys public --in KEY.pem --pem`
+makes one from the worker's private key):
 
 ```console
 $ flow server --auth-policy examples/federation-flow-to-flow/auth-policy.yaml \
-    --identity-key /etc/flowstate/identity.pem \
+    --identity-key-dir /etc/flowstate/public-keys \
     --rpc-resource https://flowstate.example.com/rpc \
     --deployment-name prod
 ```
 
-Deployment A's **worker** runs the workflow and mints the assertion, with the
-same policy and the same key so the assertion it signs verifies against the keys
-the server publishes:
+Deployment A's **worker** serves one tenant, runs the workflow and mints the
+assertion, with the same policy and that tenant's private key, whose public half
+is the one the server publishes under `acme`:
 
 ```console
 $ flow worker --auth-policy examples/federation-flow-to-flow/auth-policy.yaml \
-    --identity-key /etc/flowstate/identity.pem \
+    --tenant acme --task-queue-prefix flowstate-run \
+    --identity-key /etc/flowstate/acme/identity.pem \
     --temporal-deployment-name flowstate --build-id "$(git rev-parse --short HEAD)"
 ```
 
@@ -119,7 +126,7 @@ precisely because it names B.
 installation name in the identity every run carries, and the worker mints the
 assertion from that identity. The worker's own `--temporal-deployment-name` is
 Temporal's Worker Deployment and never enters an identity. A rehearsal has to
-supply the same identity by hand, because `flow run local` defaults `--as-namespace`
+supply the same identity by hand (`--as-namespace acme` also selects the `acme` issuer and key, as `--tenant acme` does for a worker), because `flow run local` defaults `--as-namespace`
 to empty and `--as-deployment` to `local` — and A's own allow rule requires
 namespace `acme` (a mismatch is `ErrAssumeDenied`, before anything is minted)
 while B requires deployment `prod`:
@@ -127,7 +134,7 @@ while B requires deployment `prod`:
 ```console
 $ flow run local examples/federation-flow-to-flow/workflow.yaml \
     --auth-policy examples/federation-flow-to-flow/auth-policy.yaml \
-    --identity-key /etc/flowstate/identity.pem \
+    --identity-key /etc/flowstate/acme/identity.pem \
     --as-namespace acme --as-deployment prod
 ```
 

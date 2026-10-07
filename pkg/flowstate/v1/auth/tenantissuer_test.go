@@ -413,3 +413,24 @@ func mustURL(t *testing.T, policy auth.FederationPolicy, tenant string) string {
 
 	return issuerURL
 }
+
+// TestAKeySetPathInsideTheTenantMountIsRefused holds the policy to the mux's
+// rules: the server mounts "/tenants/" as a subtree, so a custom key set path at
+// or under it would collide with that pattern (a bare "/tenants/" panics a
+// ServeMux at start-up) or be shadowed by it. It is refused at load instead.
+func TestAKeySetPathInsideTheTenantMountIsRefused(t *testing.T) {
+	t.Parallel()
+
+	for _, path := range []string{"/tenants", "/tenants/", "/tenants/jwks.json", "/tenants/acme/keys"} {
+		policy := auth.FederationPolicy{Issuer: "https://flowstate.example.com", JWKSPath: path}
+		require.ErrorIs(t, policy.Validate(), auth.ErrInvalidPolicy, path)
+
+		_, err := auth.ParseFederationPolicy([]byte("issuer: https://flowstate.example.com\njwks_path: " + path + "\n"))
+		require.ErrorIs(t, err, auth.ErrInvalidPolicy, path)
+	}
+
+	for _, path := range []string{"/keys.json", "/tenantsfoo", "/a/tenants/keys"} {
+		policy := auth.FederationPolicy{Issuer: "https://flowstate.example.com", JWKSPath: path}
+		require.NoError(t, policy.Validate(), path)
+	}
+}

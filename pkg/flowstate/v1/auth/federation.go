@@ -252,6 +252,10 @@ func (p FederationPolicy) Validate() error {
 		return err
 	}
 
+	if err := validateFederationPaths(p); err != nil {
+		return err
+	}
+
 	// Checked here as well as in [NewIssuer], so that a declaration that can
 	// never apply is a parse error rather than something an operator learns
 	// about the first time a workload asks for a credential.
@@ -459,7 +463,7 @@ func (p FederationPolicy) Broker(key SigningKey, opts ...FederationOption) (*Bro
 
 // issuerOptions translates the policy's issuer settings, and the verify-only
 // keys cfg collected, into [IssuerOption]s. [FederationPolicy.Broker] and
-// [FederationPolicy.PublishOnlyIssuer] share it so the two build one issuer.
+// [FederationPolicy.PublishOnlyIssuers] share it so the two build one issuer.
 func (p FederationPolicy) issuerOptions(cfg federationConfig) []IssuerOption {
 	issuerOpts := []IssuerOption{}
 	if p.AssertionLifetime > 0 {
