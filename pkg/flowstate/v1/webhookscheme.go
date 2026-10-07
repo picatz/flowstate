@@ -41,8 +41,8 @@ type webhookScheme struct {
 	// separately from the signature, and is empty otherwise.
 	timestampHeader string
 
-	// prefix is what a sender writes before the encoded digest. A verifier
-	// accepts the digest with or without it.
+	// prefix is what a sender writes before the encoded digest. The body-HMAC
+	// kind accepts the digest with or without it; [kindSlack] requires it.
 	prefix string
 
 	// base64 selects standard base64 over hex for the digest.

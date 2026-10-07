@@ -141,3 +141,28 @@ func TestSlackSchemeRefusesAStaleOrMovedTimestamp(t *testing.T) {
 	missing := map[string]string{"X-Slack-Signature": headers["X-Slack-Signature"]}
 	require.Error(t, v1.VerifyWebhookDelivery(trigger, keys, missing, body, at))
 }
+
+// A timestamp so far from now that the duration saturates is outside the window
+// in both directions, not inside it by overflow.
+func TestReplayWindowHoldsAtTheExtremes(t *testing.T) {
+	t.Parallel()
+
+	key := signingKey("k")
+	body := []byte(`x`)
+	now := time.Unix(1755043200, 0)
+
+	slackKeys := map[string]secrets.Secret{v1.WebhookSchemeSlack: key}
+	stripeKeys := map[string]secrets.Secret{v1.WebhookSchemeStripe: key}
+
+	for _, at := range []time.Time{time.Unix(1<<62, 0), time.Unix(-(1 << 62), 0)} {
+		slack, err := v1.SignWebhookDelivery(v1.WebhookSchemeSlack, key, body, at)
+		require.NoError(t, err)
+		require.ErrorIs(t, v1.VerifyWebhookDelivery(schemeTrigger(v1.WebhookSchemeSlack), slackKeys, slack, body, now),
+			v1.ErrWebhookReplayWindow, "slack at %v", at.Unix())
+
+		stripe, err := v1.SignWebhookDelivery(v1.WebhookSchemeStripe, key, body, at)
+		require.NoError(t, err)
+		require.ErrorIs(t, v1.VerifyWebhookDelivery(schemeTrigger(v1.WebhookSchemeStripe), stripeKeys, stripe, body, now),
+			v1.ErrWebhookReplayWindow, "stripe at %v", at.Unix())
+	}
+}

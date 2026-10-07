@@ -69,10 +69,10 @@ const (
 
 // WebhookReplayWindow is how far a signed timestamp may be from now.
 //
-// It applies to [WebhookSchemeStripe], which is the scheme that signs one: a
-// signature with no timestamp in it is replayable forever by whoever captured it,
-// and the window is the whole reason the named scheme exists rather than the
-// generic one being pointed at Stripe's header.
+// It applies to [WebhookSchemeStripe] and [WebhookSchemeSlack], the schemes that
+// sign one: a signature with no timestamp in it is replayable forever by whoever
+// captured it, and the window is the whole reason a named scheme exists rather
+// than the generic one being pointed at a provider's header.
 //
 // Five minutes is Stripe's own documented default tolerance. It bounds the value
 // of a captured delivery rather than the cost of one, so it is deliberately not a
@@ -153,7 +153,7 @@ var (
 // # Constant work, regardless of what is declared
 //
 // This spends exactly one verification of every scheme this build knows —
-// [webhookVerificationSchemes], currently two — on every call, whatever the
+// [webhookVerificationSchemes], one row of the table each — on every call, whatever the
 // trigger declares and whatever keys resolved. A trigger naming one scheme, a
 // trigger naming both, and a trigger whose one scheme resolved no key all cost
 // the same: an outside party timing a known route could otherwise count how
@@ -441,6 +441,20 @@ func verifyBodyHMAC(scheme webhookScheme, key secrets.Secret, headers map[string
 		ErrWebhookSignatureInvalid, scheme.header)
 }
 
+// replaySkew is how far a signed timestamp is from now, in either direction.
+//
+// The later instant is always the minuend: [time.Time.Sub] saturates at the
+// extremes, and negating a saturated minimum overflows back to a negative, which
+// would make an enormously distant timestamp read as inside the window.
+func replaySkew(now time.Time, seconds int64) time.Duration {
+	signed := time.Unix(seconds, 0)
+	if signed.After(now) {
+		return signed.Sub(now)
+	}
+
+	return now.Sub(signed)
+}
+
 // verifySlack checks Slack's request signing: `v0=<hex>` over
 // `v0:<timestamp>:<body>`, with the timestamp held to [WebhookReplayWindow].
 //
@@ -467,10 +481,7 @@ func verifySlack(scheme webhookScheme, key secrets.Secret, headers map[string]st
 			ErrWebhookSignatureInvalid, scheme.timestampHeader)
 	}
 
-	skew := now.Sub(time.Unix(seconds, 0))
-	if skew < 0 {
-		skew = -skew
-	}
+	skew := replaySkew(now, seconds)
 	if skew > WebhookReplayWindow {
 		return fmt.Errorf("%w: the %s header is %s away from now, outside the %s replay window",
 			ErrWebhookReplayWindow, scheme.timestampHeader, skew.Round(time.Second), WebhookReplayWindow)
@@ -571,10 +582,7 @@ func verifyStripe(key secrets.Secret, headers map[string]string, body []byte, no
 	// would let a captured delivery be replayed indefinitely by re-signing it
 	// with a timestamp far ahead — which the attacker cannot do without the key,
 	// but a clock that has jumped can hand them for free.
-	skew := now.Sub(time.Unix(seconds, 0))
-	if skew < 0 {
-		skew = -skew
-	}
+	skew := replaySkew(now, seconds)
 	if skew > WebhookReplayWindow {
 		return fmt.Errorf("%w: the %s header's timestamp is %s away from now, outside the %s replay window",
 			ErrWebhookReplayWindow, StripeSignatureHeader, skew.Round(time.Second), WebhookReplayWindow)
