@@ -66,9 +66,21 @@ Envelope encryption, in three layers:
 
 ```mermaid
 flowchart LR
-  WK["wrapping key<br/>(local file, Vault Transit,<br/>or HPKE recipient)"] -- "wraps, once per window" --> DK["data key<br/>32 random bytes<br/>per namespace"]
-  DK -- "HKDF with a fresh salt,<br/>per payload" --> CK["content key<br/>(single use)"]
-  CK -- "AES-256-GCM or<br/>XChaCha20-Poly1305" --> P["sealed payload<br/>+ header with the wrapped data key"]
+  WK["<b>wrapping key</b><br/>local file, Vault Transit,<br/>or HPKE recipient"]
+  DK["<b>data key</b><br/>32 random bytes<br/>per namespace"]
+  CK["<b>content key</b><br/>single use"]
+  P["<b>sealed payload</b><br/>+ header with the wrapped data key"]
+
+  WK -- "wraps, once per window" --> DK
+  DK -- "HKDF with a fresh salt,<br/>per payload" --> CK
+  CK -- "AES-256-GCM or<br/>XChaCha20-Poly1305" --> P
+
+  classDef govern fill:#FFEBE9,stroke:#CF222E,color:#1F2328
+  classDef runtime fill:#DAFBE1,stroke:#1A7F37,color:#1F2328
+  classDef durable fill:#FBEFFF,stroke:#8250DF,color:#1F2328
+  class WK govern
+  class DK,CK runtime
+  class P durable
 ```
 
 - The **wrapping key** stays with its key provider. For a Vault Transit key

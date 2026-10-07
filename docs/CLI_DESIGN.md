@@ -47,6 +47,11 @@ message every RPC already returns — read by three different tools. See section
    ask. `-o` is available on every command that produces an answer worth
    addressing — see `addOutputFlag` — including `flow cancel` and
    `flow terminate`, whose JSON form is the account of what was asked.
+   A machine format means the answer is a document, and **a refusal is part of
+   it**: `--output json` on `flow run local`, `flow debug replay` and the MCP
+   `flowstate_run_local` tool answers an argument or script the command refuses
+   with the run document (`status`, `error.kind`, and `error.input` for a
+   refused input), never prose with an empty stdout (#1552).
 3. **`NO_COLOR` and `--no-color` win over the terminal's own colour capability**,
    folded into the same `colorprofile.Detect` computation `ui.Detect` already runs
    rather than checked separately — see `environForSurface` in `cmd/flow/output.go`.

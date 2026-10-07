@@ -28,8 +28,8 @@ const (
 
 	// defaultMaxOutputBytes and maxMaxOutputBytes bound the combined size of
 	// text this task reads out of a run - the final message, the computed
-	// patch, and every event summary together. A request for more than the
-	// ceiling is refused rather than silently clamped, the same reasoning
+	// patch, the changed-file list, and every event kind and summary
+	// together. A request for more than the ceiling is refused rather than silently clamped, the same reasoning
 	// plugins/vcs/validate.go's clampMaxCommits gives: a silently reduced
 	// bound looks like a working request that quietly returns less than it
 	// asked for.

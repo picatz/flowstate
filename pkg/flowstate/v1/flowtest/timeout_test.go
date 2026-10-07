@@ -30,7 +30,7 @@ import (
 // costs the bubble nothing — the deadline can only fire once `runCase` is
 // truly parked on the unscripted wait, deterministically, on a loaded runner
 // or an idle one alike.
-func TestRunCaseBoundsAnUnscriptedSignalWait(t *testing.T) {
+func TestRunCaseEndsAnUnscriptedSignalWaitAsStuck(t *testing.T) {
 	const source = `
 edition: v2026.4
 name: missing-signal
@@ -54,16 +54,16 @@ steps:
 		result, _, transcript, _, _, _ := runCase(ctx, &Test{Name: "missing signal"}, "", load, false, fileVars{})
 
 		require.False(t, result.GetPassed())
-		require.Contains(t, result.GetError(), "wall-clock limit")
-		require.Contains(t, result.GetError(), limit.String())
+		require.Contains(t, result.GetError(), "stuck")
+		require.Contains(t, result.GetError(), `"approve"`)
 		require.Contains(t, transcript.GetStepValues(), "before",
 			"the completed work before the blocked signal wait must remain available for coverage")
 		// Exact, not a headroom check: nothing else in this case's bubble ever
-		// parks on a timer, so the bubble's clock advances straight from zero
-		// to the deadline the instant `runCase` blocks on `approval` — real
-		// scheduler jitter never enters into it.
-		require.Equal(t, limit, time.Since(started),
-			"the case's own backstop, not real scheduling delay, must be what ends this run")
+		// parks on a timer, so the bubble's clock advances straight to the
+		// liveness settle the instant `runCase` blocks on `approval`, well short
+		// of the case's own limit.
+		require.Equal(t, livenessSettle, time.Since(started),
+			"the liveness check, not the wall-clock backstop, must be what ends this run")
 	})
 }
 

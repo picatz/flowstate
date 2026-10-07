@@ -53,6 +53,16 @@ func markStep(id string) *v1.Node {
 func runDebugged(t *testing.T, script string, opts flowdebug.Options) (out string, ran []string, runErr error) {
 	t.Helper()
 
+	_, out, ran, runErr = runDebuggedSession(t, script, opts)
+
+	return out, ran, runErr
+}
+
+// runDebuggedSession is [runDebugged] that also returns the session, for a test
+// that asks what it recorded.
+func runDebuggedSession(t *testing.T, script string, opts flowdebug.Options) (session *flowdebug.Session, out string, ran []string, runErr error) {
+	t.Helper()
+
 	var console strings.Builder
 	opts.In = strings.NewReader(script)
 	opts.Out = &console
@@ -71,7 +81,7 @@ func runDebugged(t *testing.T, script string, opts flowdebug.Options) (out strin
 
 	_, runErr = v1.Run(ctx, workflow)
 
-	return console.String(), ran2.ids, runErr
+	return session, console.String(), ran2.ids, runErr
 }
 
 // TestASessionStopsAtTheFirstStepAndStepsThrough: with no breakpoints named,

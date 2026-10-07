@@ -165,6 +165,9 @@ type SignalPolicyReads struct {
 	InputNames []string
 	// Run: `run.identity`, the starter, including its claims.
 	Run bool
+	// Claims: `sender.identity.claims`, which carries only the claims the
+	// server was started to project (`--identity-claim`).
+	Claims bool
 }
 
 // Reads reports which per-run parts of the scope the predicate reads.
@@ -251,6 +254,7 @@ func compileAllowPredicate(src string, manual bool) (SignalPolicyPredicate, erro
 		Inputs:     reads.inputs,
 		InputNames: slices.Sorted(maps.Keys(reads.inputNames)),
 		Run:        reads.run,
+		Claims:     reads.claims,
 	}}, nil
 }
 
@@ -289,6 +293,7 @@ func SignalPolicyExprReads(policies map[string]*SignalPolicy) SignalPolicyReads 
 			reads.Inputs = reads.Inputs || p.reads.Inputs
 			reads.InputNames = append(reads.InputNames, p.reads.InputNames...)
 			reads.Run = reads.Run || p.reads.Run
+			reads.Claims = reads.Claims || p.reads.Claims
 		}
 	}
 
@@ -546,13 +551,35 @@ func allowPredicateAllowsWithin(ctx context.Context, timeout time.Duration, labe
 		// or a claim. One sentence for every cause.
 		return fmt.Errorf("this %s's allow predicate could not be evaluated for this sender "+
 			"(it errored, for example by reading the run's starter when none is recorded or a claim or "+
-			"input that is missing, or it exceeded its cost bound), so the sender is refused", label)
+			"input that is missing, or it exceeded its cost bound), so the sender is refused%s",
+			label, senderClaimsHint(predicate.reads.Claims, identity))
 	}
 	if !allowed {
-		return fmt.Errorf("the sender does not satisfy this %s's allow predicate", label)
+		return fmt.Errorf("the sender does not satisfy this %s's allow predicate%s",
+			label, senderClaimsHint(predicate.reads.Claims, identity))
 	}
 
 	return nil
+}
+
+// senderClaimsHint explains a refusal of a predicate that reads
+// `sender.identity.claims`: which claim names the sender identity carried, so an
+// empty projection reads differently from a wrong value. Names only, never
+// values. The sender identity holds only the claims the server projects, which
+// is the coupling an operator otherwise cannot see.
+func senderClaimsHint(readsClaims bool, sender *WorkloadIdentity) string {
+	if !readsClaims {
+		return ""
+	}
+
+	names := slices.Sorted(maps.Keys(sender.GetClaims()))
+	carried := "no claims"
+	if len(names) > 0 {
+		carried = "only the claims " + strings.Join(names, ", ")
+	}
+
+	return fmt.Sprintf("; the predicate reads sender.identity.claims, and the sender identity carried %s "+
+		"(a server projects a token's claim into it only when started with `--identity-claim <name>`)", carried)
 }
 
 // manualAllowExprAllows decides a `manual: allow: ${...}` start: the caller and

@@ -127,20 +127,46 @@ to run it durably with separate requester and approver credentials.
 ## From file to durable run
 
 ```mermaid
-flowchart TB
-  File["Flowfile<br/>YAML + CEL"] --> Check["validate · compile · test"]
-  Check --> Spec["Workflow protobuf<br/>typed and frozen"]
-  Spec --> Local["local driver<br/>in process"]
-  Spec --> API["ConnectRPC API"]
-  API <--> Temporal[("Temporal")]
-  Temporal <--> Worker["Flowstate worker"]
-  Registry["task registry<br/>built-ins + plugins"] --> Local
-  Registry --> Worker
-  Policy["identity · policy · secrets"] -. constrains .-> API
-  Policy -. constrains .-> Worker
+flowchart LR
+  subgraph author["1 · Author"]
+    File["<b>Flowfile</b><br/>YAML + CEL"]
+    Check["validate · compile · test"]
+  end
 
-  classDef contract stroke-width:2px;
-  class Spec contract;
+  Spec["<b>Workflow protobuf</b><br/>typed and frozen"]
+
+  subgraph execute["2 · Execute"]
+    Local["local driver<br/>in process"]
+    API["ConnectRPC API"]
+    Temporal[("<b>Temporal</b><br/>durable history")]
+    Worker["Flowstate worker"]
+  end
+
+  Registry["task registry<br/>built-ins + plugins"]
+  Policy["identity · policy · secrets"]
+
+  File --> Check --> Spec
+  Spec --> Local
+  Spec --> API
+  API <--> Temporal
+  Temporal <--> Worker
+  Registry --> Local
+  Registry --> Worker
+  Policy -.-> |constrains| API
+  Policy -.-> |constrains| Worker
+
+  classDef authoring fill:#DDF4FF,stroke:#0969DA,color:#1F2328
+  classDef contract fill:#FFF1C2,stroke:#9A6700,stroke-width:3px,color:#1F2328
+  classDef runtime fill:#DAFBE1,stroke:#1A7F37,color:#1F2328
+  classDef durable fill:#FBEFFF,stroke:#8250DF,color:#1F2328
+  classDef govern fill:#FFEBE9,stroke:#CF222E,color:#1F2328
+  classDef neutral fill:#F6F8FA,stroke:#57606A,color:#1F2328
+  class File,Check authoring
+  class Spec contract
+  class Local,API,Worker runtime
+  class Temporal durable
+  class Policy govern
+  class Registry neutral
 ```
 
 The Flowfile is how you write a workflow; the compiled `flowstate.v1.Workflow`

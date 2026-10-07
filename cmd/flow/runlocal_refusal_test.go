@@ -2,9 +2,13 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
+	"os"
 	"strings"
 	"testing"
 
+	"github.com/picatz/flowstate/cmd/flow/internal/ui"
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -81,29 +85,43 @@ func TestARefusedCommandLineIsStillADocument(t *testing.T) {
 }
 
 // TestARefusedCommandLineNamesTheInputItIsAbout keeps the fact a caller acts on
-// addressable: which input was wrong.
+// addressable: which input was wrong, as a field of the document and not only a
+// word in its sentence.
 //
-// Asserted on the message rather than on a field of its own, which is what the
-// issue asked for and what this deliberately does not do: `RunResponse.Error`
-// has `message` and `kind` and nothing to hold a name, and adding one is a
-// schema change that belongs with #1439's structured step address rather than
-// beside it. The binder already writes the name into every one of these
-// sentences, so this pins that it stays there.
+// `error.input` is the name the refusal concerns: the declaration's, or the name
+// the caller sent when nothing declares it. The sentence names it too, and that
+// stays pinned, since a person reads the sentence and a program reads the field.
 func TestARefusedCommandLineNamesTheInputItIsAbout(t *testing.T) {
 	t.Parallel()
 
-	stdout, _, err := runLocal(t, refusalWorkflow, "--output", "json",
-		"--input", "tenant=acme", "--input", "shards=0")
-	require.Error(t, err)
+	for name, tc := range map[string]struct {
+		args  []string
+		input string
+	}{
+		"a must: that did not hold":      {[]string{"--input", "tenant=acme", "--input", "shards=0"}, "shards"},
+		"a value the flag cannot coerce": {[]string{"--input", "tenant=acme", "--input", "shards=many"}, "shards"},
+		"a required input nobody gave":   {nil, "tenant"},
+		"a name nothing declares":        {[]string{"--input", "tenant=acme", "--input", "bogus=1"}, "bogus"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 
-	var document struct {
-		Error struct {
-			Message string `json:"message"`
-		} `json:"error"`
+			stdout, _, err := runLocal(t, refusalWorkflow, append([]string{"--output", "json"}, tc.args...)...)
+			require.Error(t, err)
+
+			var document struct {
+				Error struct {
+					Message string `json:"message"`
+					Input   string `json:"input"`
+				} `json:"error"`
+			}
+			require.NoError(t, json.Unmarshal([]byte(stdout), &document))
+			assert.Equal(t, tc.input, document.Error.Input,
+				"the document does not name the input the refusal is about")
+			assert.Contains(t, document.Error.Message, `"`+tc.input+`"`,
+				"the sentence does not say which input it is about")
+		})
 	}
-	require.NoError(t, json.Unmarshal([]byte(stdout), &document))
-	assert.Contains(t, document.Error.Message, `"shards"`,
-		"the refusal does not say which input it is about")
 }
 
 // TestATextFormattedRefusalWritesNoDocument is the direction the change must
@@ -328,4 +346,32 @@ func TestARevealedRefusalPrintsTheSensitiveCoercionWord(t *testing.T) {
 	require.Error(t, err)
 
 	assert.Contains(t, stdout, "pin=x")
+}
+
+// TestARefusalDocumentIsTheWholeReportAndBoundsTheInputName pins the two edges
+// of the document: stderr is not told the refusal a second time, and a name a
+// caller made up cannot outgrow the field's declared bound.
+func TestARefusalDocumentIsTheWholeReportAndBoundsTheInputName(t *testing.T) {
+	t.Parallel()
+
+	long := &v1.InputError{Input: strings.Repeat("x", maxRefusedInputBytes+1), Err: errors.New("no such input")}
+	response, _ := refusalResponse(long, v1.SensitiveValues{})
+	assert.Empty(t, response.GetError().GetInput(), "an oversized name rode into the document")
+	assert.Equal(t, "InvalidInput", response.GetError().GetKind())
+
+	short := &v1.InputError{Input: "tenant", Err: errors.New("required")}
+	response, _ = refusalResponse(short, v1.SensitiveValues{})
+	assert.Equal(t, "tenant", response.GetError().GetInput())
+
+	sink, err := os.CreateTemp(t.TempDir(), "refusal")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sink.Close() })
+	surface := ui.New(sink, sink, sink, nil)
+	err = refuseRunLocally(surface, runRendering{format: FormatJSON}, v1.SensitiveValues{}, short)
+	require.Error(t, err)
+	assert.True(t, isQuietError(err), "the refusal is reported twice: once as the document, once as prose")
+
+	err = refuseRunLocally(surface, runRendering{format: FormatText}, v1.SensitiveValues{}, short)
+	require.Error(t, err)
+	assert.False(t, isQuietError(err), "a text refusal has no document, so its prose is the report")
 }

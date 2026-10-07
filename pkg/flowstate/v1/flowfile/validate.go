@@ -990,6 +990,19 @@ func validateLoop(stepID string, loop *v1.ForEach, enclosing refScope, index int
 			Message: fmt.Sprintf("%q is a CEL reserved word, so ${%s} cannot be parsed", iterator, iterator),
 		})
 	}
+	if enclosing.locals[iterator] {
+		// The rule step `vars:` and a `loop:`'s state name already follow: a bare
+		// name means one thing at a time. A nested iterator reusing its parent's
+		// `as:`, or a for_each step whose own `vars:` bind the same name, would
+		// make the inner binding win silently inside the body.
+		ds = append(ds, Diagnostic{
+			Step: stepID, Field: "as", Value: iterator,
+			Message: fmt.Sprintf(
+				"`%s` is already bound here by an enclosing loop or step, and a bare name may "+
+					"mean one thing at a time; choose another iterator, or read the outer value under a "+
+					"different name", iterator),
+		})
+	}
 	if isDeclarationRoot(iterator) {
 		// A root, by the other route into a body's scope. A bound name wins over
 		// the scope it is bound into, so an iterator spelled `steps` hides every

@@ -254,6 +254,68 @@ steps:
 			want: "already bound here by an enclosing loop or step",
 		},
 		{
+			name: "a nested for_each reusing its parent's iterator",
+			src: `
+edition: v2026.4
+name: t
+steps:
+  - id: outer
+    for_each:
+      items: ${["a"]}
+      as: item
+      steps:
+        - id: inner
+          for_each:
+            items: ${["b"]}
+            as: item
+            steps:
+              - id: leaf
+                log:
+                  message: ${item}
+`,
+			want: "already bound here by an enclosing loop or step",
+		},
+		{
+			name: "a for_each whose own vars bind its iterator's name",
+			src: `
+edition: v2026.4
+name: t
+steps:
+  - id: each
+    vars:
+      item: x
+    for_each:
+      items: ${["a"]}
+      as: item
+      steps:
+        - id: leaf
+          log:
+            message: ${item}
+`,
+			want: "already bound here by an enclosing loop or step",
+		},
+		{
+			name: "a nested for_each with its own iterator is fine",
+			src: `
+edition: v2026.4
+name: t
+steps:
+  - id: outer
+    for_each:
+      items: ${["a"]}
+      as: row
+      steps:
+        - id: inner
+          for_each:
+            items: ${["b"]}
+            as: cell
+            steps:
+              - id: leaf
+                log:
+                  message: ${row}${cell}
+`,
+		},
+		{
 			name: "taking the name now",
 			src: `
 edition: v2026.4

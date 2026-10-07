@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 	"time"
 
@@ -234,6 +235,18 @@ type LocalSignals struct {
 	// cannot say so — see [LocalSignals.DeliverFrom] and [signalWait].
 	waits map[string][]*signalWait
 
+	// blocked counts, per name, the receives parked in [LocalSignals.WaitForSignal],
+	// and pending the deliveries enqueued and not yet taken. A name with one or
+	// more blocked and none pending is held at a gate nothing has sent to. Both
+	// move under mu, in the same section that takes the delivery, so the pair
+	// never reads as "stuck" in the instant between a receive and its record.
+	// See [LocalSignals.StuckWaits].
+	blocked map[string]int
+	pending map[string]int
+	// nudge is told, without blocking, when a receive parks or drops a
+	// redelivery. See [LocalSignals.NotifyBlocked].
+	nudge chan<- struct{}
+
 	// policies is nil for an unpoliced [LocalSignals] — every delivery
 	// succeeds, the zero case a signal name with no policy has. Set through
 	// [NewPolicedLocalSignals], normally to a workflow's own `signals:`: a
@@ -409,6 +422,7 @@ func (s *LocalSignals) takeLocked(name string) (*SignalDelivery, bool) {
 		select {
 		case delivery := <-queue:
 			s.dequeuedLocked(delivery)
+			s.bump(&s.pending, name, -1)
 			if !s.admitLocked(delivery) {
 				continue
 			}
@@ -547,6 +561,7 @@ func (s *LocalSignals) DeliverFrom(name string, payload *Node_Outputs, sender *S
 	select {
 	case s.queueLocked(name) <- delivery:
 		s.enqueuedLocked(delivery)
+		s.bump(&s.pending, name, 1)
 	default:
 		return fmt.Errorf(
 			"flowstate: %d signals named %q are already waiting to be read", localSignalQueueDepth, name)
@@ -754,12 +769,23 @@ func (s *LocalSignals) WaitForSignal(ctx context.Context, name string) (*Node_Ou
 	// untouched. That is the durable driver's rule as well, and for the same
 	// reason: a stream of replays must not be able to hold a bounded gate open
 	// past its own `timeout:`.
+	s.mu.Lock()
+	s.bump(&s.blocked, name, 1)
+	s.nudgeLocked()
+	s.mu.Unlock()
+
 	for {
 		select {
 		case delivery := <-s.queue(name):
 			s.mu.Lock()
 			s.dequeuedLocked(delivery)
+			s.bump(&s.pending, name, -1)
 			admitted := s.admitLocked(delivery)
+			if admitted {
+				s.bump(&s.blocked, name, -1)
+			} else {
+				s.nudgeLocked()
+			}
 			s.mu.Unlock()
 
 			if !admitted {
@@ -768,9 +794,64 @@ func (s *LocalSignals) WaitForSignal(ctx context.Context, name string) (*Node_Ou
 
 			return delivery.GetPayload(), delivery.GetSender(), nil
 		case <-ctx.Done():
+			s.mu.Lock()
+			s.bump(&s.blocked, name, -1)
+			s.mu.Unlock()
+
 			return nil, nil, ctx.Err()
 		}
 	}
+}
+
+// bump adds n to the count for name in *m, creating the map and dropping a
+// zeroed entry. Called with s.mu held.
+func (s *LocalSignals) bump(m *map[string]int, name string, n int) {
+	if *m == nil {
+		*m = map[string]int{}
+	}
+	(*m)[name] += n
+	if (*m)[name] <= 0 {
+		delete(*m, name)
+	}
+}
+
+func (s *LocalSignals) nudgeLocked() {
+	if s.nudge == nil {
+		return
+	}
+	select {
+	case s.nudge <- struct{}{}:
+	default:
+	}
+}
+
+// NotifyBlocked registers ch to be nudged, without blocking, when a receive
+// parks or discards a redelivery: the moments [LocalSignals.StuckWaits] can
+// start to be true without the clock having moved. ch should be buffered.
+func (s *LocalSignals) NotifyBlocked(ch chan<- struct{}) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.nudge = ch
+}
+
+// StuckWaits names, sorted, the signals a receive is blocked on that nothing is
+// queued for. It says nothing about whether anything could still send: a
+// caller that owns the senders (`flow test`'s scripts) reads it together with
+// the clock to decide that.
+func (s *LocalSignals) StuckWaits() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var names []string
+	for name, n := range s.blocked {
+		if n > 0 && s.pending[name] == 0 {
+			names = append(names, name)
+		}
+	}
+	slices.Sort(names)
+
+	return names
 }
 
 // runWait executes a wait in the local driver.

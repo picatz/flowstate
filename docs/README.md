@@ -82,6 +82,7 @@ trust boundary, what enforces it, and the known gaps; and the
 | --- | --- |
 | [Contributing](../CONTRIBUTING.md) | Propose and land a change. |
 | [CI](CI.md) | Understand what the verification tiers run and how the gate decides. |
+| [Diagrams](DIAGRAMS.md) | Draw a Mermaid diagram that matches the rest of the documentation: the palette, the diagram type for each job, and what GitHub renders. |
 | [Agent configuration](agents/README.md) | See how Claude Code, Codex, and Amp are configured to work on this repository. |
 | [plans/](plans/) | Internal: agent-orchestration process and past plans. Not product documentation. |
 

@@ -1366,7 +1366,10 @@ func TestMCPSessionLimiterBoundsRequestsWithinOneSession(t *testing.T) {
 func TestMCPServeTimedOutTestCallIsNotAPassingVerdict(t *testing.T) {
 	t.Parallel()
 
-	fixture := newMCPServeFixtureWithTestTimeout(t, 2*time.Second)
+	// Shorter than the liveness settle (flowtest reports a gate nothing can
+	// answer as a stuck run after a few real milliseconds), so the serving
+	// deadline is what ends this call while the run is still held at the gate.
+	fixture := newMCPServeFixtureWithTestTimeout(t, 10*time.Millisecond)
 	session := fixture.connect(t, fixture.goodToken("agent"))
 
 	result, err := session.CallTool(t.Context(), &mcp.CallToolParams{
@@ -1381,8 +1384,9 @@ func TestMCPServeTimedOutTestCallIsNotAPassingVerdict(t *testing.T) {
 
 	require.True(t, result.IsError,
 		"a call the serving deadline stopped must not be reported as a passing suite")
-	require.Contains(t, renderEveryShape(result), "did not finish",
-		"the answer has to say the tests were stopped, not report a verdict about them")
+	answer := renderEveryShape(result)
+	require.True(t, strings.Contains(answer, "did not finish") || strings.Contains(answer, "never started"),
+		"the answer has to say the tests were stopped, not report a verdict about them: %s", answer)
 }
 
 // TestMCPServeDescriptionsDescribeThisSurface is Codex's finding on the last

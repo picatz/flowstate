@@ -179,6 +179,17 @@ const (
 	// Detach is `detach`: clear every breakpoint and let the run finish
 	// unattended.
 	DebugCommandVerb_DEBUG_COMMAND_VERB_DETACH DebugCommandVerb = 18
+	// Expand is `expand <expr>`: list a map's or list's children, one level, with
+	// how many the page left out.
+	DebugCommandVerb_DEBUG_COMMAND_VERB_EXPAND DebugCommandVerb = 19
+	// Status is `status`: where the run is, and why.
+	DebugCommandVerb_DEBUG_COMMAND_VERB_STATUS DebugCommandVerb = 20
+	// Back is `back`: return to the previous stop, for a session that was built
+	// to be replayed from its start. One that was not answers that it cannot.
+	DebugCommandVerb_DEBUG_COMMAND_VERB_BACK DebugCommandVerb = 21
+	// ReverseContinue is `reverse-continue`: return to the nearest earlier
+	// breakpoint stop, or the first, under the same condition as Back.
+	DebugCommandVerb_DEBUG_COMMAND_VERB_REVERSE_CONTINUE DebugCommandVerb = 22
 )
 
 // Enum value maps for DebugCommandVerb.
@@ -203,27 +214,35 @@ var (
 		16: "DEBUG_COMMAND_VERB_LOG",
 		17: "DEBUG_COMMAND_VERB_CATCH",
 		18: "DEBUG_COMMAND_VERB_DETACH",
+		19: "DEBUG_COMMAND_VERB_EXPAND",
+		20: "DEBUG_COMMAND_VERB_STATUS",
+		21: "DEBUG_COMMAND_VERB_BACK",
+		22: "DEBUG_COMMAND_VERB_REVERSE_CONTINUE",
 	}
 	DebugCommandVerb_value = map[string]int32{
-		"DEBUG_COMMAND_VERB_UNSPECIFIED": 0,
-		"DEBUG_COMMAND_VERB_STEP":        1,
-		"DEBUG_COMMAND_VERB_CONTINUE":    2,
-		"DEBUG_COMMAND_VERB_UNTIL":       3,
-		"DEBUG_COMMAND_VERB_BREAK":       4,
-		"DEBUG_COMMAND_VERB_DELETE":      5,
-		"DEBUG_COMMAND_VERB_BREAKPOINTS": 6,
-		"DEBUG_COMMAND_VERB_INSPECT":     7,
-		"DEBUG_COMMAND_VERB_SCOPE":       8,
-		"DEBUG_COMMAND_VERB_COMPLETE":    9,
-		"DEBUG_COMMAND_VERB_INFO":        10,
-		"DEBUG_COMMAND_VERB_QUIT":        11,
-		"DEBUG_COMMAND_VERB_HELP":        12,
-		"DEBUG_COMMAND_VERB_BACKTRACE":   13,
-		"DEBUG_COMMAND_VERB_NEXT":        14,
-		"DEBUG_COMMAND_VERB_FINISH":      15,
-		"DEBUG_COMMAND_VERB_LOG":         16,
-		"DEBUG_COMMAND_VERB_CATCH":       17,
-		"DEBUG_COMMAND_VERB_DETACH":      18,
+		"DEBUG_COMMAND_VERB_UNSPECIFIED":      0,
+		"DEBUG_COMMAND_VERB_STEP":             1,
+		"DEBUG_COMMAND_VERB_CONTINUE":         2,
+		"DEBUG_COMMAND_VERB_UNTIL":            3,
+		"DEBUG_COMMAND_VERB_BREAK":            4,
+		"DEBUG_COMMAND_VERB_DELETE":           5,
+		"DEBUG_COMMAND_VERB_BREAKPOINTS":      6,
+		"DEBUG_COMMAND_VERB_INSPECT":          7,
+		"DEBUG_COMMAND_VERB_SCOPE":            8,
+		"DEBUG_COMMAND_VERB_COMPLETE":         9,
+		"DEBUG_COMMAND_VERB_INFO":             10,
+		"DEBUG_COMMAND_VERB_QUIT":             11,
+		"DEBUG_COMMAND_VERB_HELP":             12,
+		"DEBUG_COMMAND_VERB_BACKTRACE":        13,
+		"DEBUG_COMMAND_VERB_NEXT":             14,
+		"DEBUG_COMMAND_VERB_FINISH":           15,
+		"DEBUG_COMMAND_VERB_LOG":              16,
+		"DEBUG_COMMAND_VERB_CATCH":            17,
+		"DEBUG_COMMAND_VERB_DETACH":           18,
+		"DEBUG_COMMAND_VERB_EXPAND":           19,
+		"DEBUG_COMMAND_VERB_STATUS":           20,
+		"DEBUG_COMMAND_VERB_BACK":             21,
+		"DEBUG_COMMAND_VERB_REVERSE_CONTINUE": 22,
 	}
 )
 
@@ -5044,7 +5063,7 @@ const file_flowstate_v1_debug_proto_rawDesc = "" +
 	"\x15DEBUG_STEP_STATE_DONE\x10\x03\x12\x1e\n" +
 	"\x1aDEBUG_STEP_STATE_TOLERATED\x10\x04\x12\x1b\n" +
 	"\x17DEBUG_STEP_STATE_FAILED\x10\x05\x12\x1c\n" +
-	"\x18DEBUG_STEP_STATE_SKIPPED\x10\x06*\xe0\x04\n" +
+	"\x18DEBUG_STEP_STATE_SKIPPED\x10\x06*\xe4\x05\n" +
 	"\x10DebugCommandVerb\x12\"\n" +
 	"\x1eDEBUG_COMMAND_VERB_UNSPECIFIED\x10\x00\x12\x1b\n" +
 	"\x17DEBUG_COMMAND_VERB_STEP\x10\x01\x12\x1f\n" +
@@ -5065,7 +5084,11 @@ const file_flowstate_v1_debug_proto_rawDesc = "" +
 	"\x19DEBUG_COMMAND_VERB_FINISH\x10\x0f\x12\x1a\n" +
 	"\x16DEBUG_COMMAND_VERB_LOG\x10\x10\x12\x1c\n" +
 	"\x18DEBUG_COMMAND_VERB_CATCH\x10\x11\x12\x1d\n" +
-	"\x19DEBUG_COMMAND_VERB_DETACH\x10\x12*\xb1\x01\n" +
+	"\x19DEBUG_COMMAND_VERB_DETACH\x10\x12\x12\x1d\n" +
+	"\x19DEBUG_COMMAND_VERB_EXPAND\x10\x13\x12\x1d\n" +
+	"\x19DEBUG_COMMAND_VERB_STATUS\x10\x14\x12\x1b\n" +
+	"\x17DEBUG_COMMAND_VERB_BACK\x10\x15\x12'\n" +
+	"#DEBUG_COMMAND_VERB_REVERSE_CONTINUE\x10\x16*\xb1\x01\n" +
 	"\x10DebugSegmentKind\x12\"\n" +
 	"\x1eDEBUG_SEGMENT_KIND_UNSPECIFIED\x10\x00\x12\x1b\n" +
 	"\x17DEBUG_SEGMENT_KIND_CALL\x10\x01\x12 \n" +
