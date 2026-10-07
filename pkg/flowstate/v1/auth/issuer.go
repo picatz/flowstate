@@ -1067,6 +1067,13 @@ func (i *Issuer) mintFor(ctx context.Context, identity WorkloadIdentity, ref Ste
 		return Assertion{}, fmt.Errorf("%w: this issuer only publishes keys", ErrNoSigningKey)
 	}
 
+	// The assertion has no "act" claim, so one minted for a delegated caller
+	// would say the delegator acted alone. Every mint path, Mint and the RFC
+	// 7523 client assertion alike, passes here.
+	if len(identity.Actors) > 0 {
+		return Assertion{}, ErrDelegatedCaller
+	}
+
 	if subject == "" {
 		return Assertion{}, fmt.Errorf("%w: an assertion needs a subject", ErrInvalidIdentity)
 	}

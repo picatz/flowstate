@@ -434,6 +434,11 @@ func credentialKey(target, subject string, identity WorkloadIdentity) string {
 		write("claim", name, claimKeyText(identity.Claims[name]))
 	}
 
+	// The act chain, in order: current actor first, so [A B] and [B A] differ.
+	for _, actor := range identity.Actors {
+		write("actor", actor.Issuer, actor.Subject)
+	}
+
 	// What the assumption rules read also shapes which credential is reusable:
 	// two identities that differ only in kind or granted actions are different
 	// callers to a rule, so they must not share a cached credential.

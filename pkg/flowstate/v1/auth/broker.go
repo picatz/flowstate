@@ -214,6 +214,12 @@ func (b *Broker) Credential(ctx context.Context, identity WorkloadIdentity, ref 
 		return Credential{}, err
 	}
 
+	// Refused before policy and cache: a cached credential is never served to,
+	// and no assertion is minted for, a caller whose chain it cannot carry.
+	if len(identity.Actors) > 0 {
+		return Credential{}, ErrDelegatedCaller
+	}
+
 	subject, err := identity.SubjectFor(ref)
 	if err != nil {
 		return Credential{}, err

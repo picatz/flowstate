@@ -30,6 +30,7 @@ import (
 	"github.com/picatz/flowstate/pkg/flowstate/v1/payloadcodec"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/payloadcodec/envelope"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/payloadcodec/keyprovider/local"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/principal"
 )
 
 const (
@@ -53,6 +54,25 @@ var principals = map[string]auth.Principal{
 	"a-reader":  {Issuer: "https://issuer.example", Subject: "ann", Namespace: "team-a", Actions: []string{"workload.read"}},
 	"a-legacy":  {Issuer: "https://issuer.example", Subject: "abe", Namespace: "team-a"},
 	"b-decoder": {Issuer: "https://issuer.example", Subject: "bob", Namespace: "team-b", Actions: []string{"payload.decode"}},
+	"a-agent": {Issuer: "https://issuer.example", Subject: "alice", Namespace: "team-a", Actions: []string{"payload.decode"},
+		Actors: []principal.Actor{{Issuer: "https://agents.example", Subject: "triage-bot"}}},
+}
+
+// TestCodecAuditRecordsCarryTheActChain pins that a delegated caller's codec
+// decision names the chain beside the subject, as an RPC decision does.
+func TestCodecAuditRecordsCarryTheActChain(t *testing.T) {
+	t.Parallel()
+
+	f := newFixture(t, nil)
+	resp, body := f.post(t, codecserver.DecodeEndpoint, "a-agent", "ns-a", f.seal(t, "ns-a", markerA))
+	require.Equal(t, http.StatusOK, resp.StatusCode, body)
+
+	var rec v1.AuditRecord
+	require.NoError(t, protojson.Unmarshal([]byte(strings.TrimSpace(f.trail.String())), &rec))
+	actors := rec.GetIdentity().GetPrincipal().GetActors()
+	require.Len(t, actors, 1)
+	require.Equal(t, "triage-bot", actors[0].GetSubject())
+	require.Equal(t, "https://agents.example", actors[0].GetIssuer())
 }
 
 func newFixture(t *testing.T, mutate func(*codecserver.Options)) *fixture {

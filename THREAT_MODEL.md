@@ -223,7 +223,11 @@ trusts every issuer that mints that name. `may_act` is refused everywhere, and a
 delegated token presented beside a client certificate is refused as ambiguous,
 because the certificate's principal has no chain to record. Outbound delegation
 (an `actor_token` exchange) and an `act` claim on assertions Flowstate mints are
-separate work.
+separate work. Until they land a delegated caller cannot mint or broker
+credentials: the issuer and the broker refuse any identity carrying a chain with
+`ErrDelegatedCaller`, because an assertion without `act` would present the
+delegator as acting alone, and `jose.verify` refuses a delegated token for the
+same reason (its outputs cannot represent a chain).
 
 **Declared-sensitive values.** `Get` and `GetTimeline` withhold values a run's
 workflow declared `sensitive: true` before the response leaves `flow server`,

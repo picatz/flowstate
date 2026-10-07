@@ -925,6 +925,13 @@ and `flow validate --auth-policy` reports a rule that reads `actors` or
 by the issuer that signed the token; see the threat model's note on delegation.
 A stanza must name at least one actor; there is no way to accept every actor.
 
+Delegated callers cannot mint or broker credentials yet. The assertion issuer
+and the credential broker refuse an identity that carries a chain (the error
+reads `a delegated caller cannot mint or broker credentials yet`), because the
+assertions they sign have no `act` claim and would present the delegator as
+acting alone. The `jose.verify` task refuses a delegated token for the same
+reason.
+
 ### Trust policy per identity provider
 
 One issuer entry per identity provider, each pinning the issuer string exactly

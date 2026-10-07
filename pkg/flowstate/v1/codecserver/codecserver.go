@@ -394,7 +394,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// The same coordinates an RPC decision records, from the same
 		// derivation, so one caller's codec and RPC records correlate.
 		derived := auth.IdentityFromPrincipal(principal, "", "")
-		subject.Identity = &v1.WorkloadIdentity{Principal: &v1.Principal{Subject: derived.Subject, Issuer: derived.Issuer, Namespace: derived.Namespace}}
+		subject.Identity = &v1.WorkloadIdentity{Principal: &v1.Principal{
+			Subject: derived.Subject, Issuer: derived.Issuer, Namespace: derived.Namespace,
+			Actors: v1.ProtoActors(derived.Actors),
+		}}
 	}
 
 	if status, msg, code, missing := h.authorize(r.Context(), principal, endpoint, namespace); status != 0 {
