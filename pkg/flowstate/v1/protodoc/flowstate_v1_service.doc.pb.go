@@ -547,6 +547,16 @@ func init() {
 				" at the moment of delivery, and the run may have changed since.\n",
 		},
 		{
+			Name: "flowstate.v1.GetGateResponse.depends_on_payload",
+			Leading: " DependsOnPayload is true when the gate's `allow:` predicate reads `payload`\n" +
+				" (for example to admit a reject from anyone and an approve only from an\n" +
+				" approver), so no answer about the caller alone exists: it depends on what\n" +
+				" they would send. The payload is bound per delivery and a gate listing has\n" +
+				" none, so may_answer is then false, which means undecided rather than\n" +
+				" refused; the prompt and starter are withheld on the same terms as for a\n" +
+				" refused caller. Signal decides again with the real payload.\n",
+		},
+		{
 			Name: "flowstate.v1.GetGateResponse.approvals",
 			Leading: " Approvals is how many approvals the gate has counted so far, set only when\n" +
 				" the gate is a `wait_for_signals:` with a `quorum:`; read it with\n" +

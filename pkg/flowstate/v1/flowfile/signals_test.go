@@ -176,7 +176,7 @@ func TestSignalPolicyPredicateComparingABareSubjectCompilesButNeverMatches(t *te
 
 	policy := &v1.SignalPolicy{Allow: workflow.GetSignals()["deploy-approved"].GetAllow()}
 	require.Error(t, v1.SignalPolicyCheck(t.Context(), policy,
-		&v1.WorkloadIdentity{Issuer: "https://issuer.example.com", Subject: "release-manager@example.com"}, nil, false, nil),
+		&v1.WorkloadIdentity{Issuer: "https://issuer.example.com", Subject: "release-manager@example.com"}, nil, false, nil, nil),
 		"a bare subject admitted a qualified sender")
 }
 
@@ -372,7 +372,7 @@ func TestSignalPolicyEndToEnd(t *testing.T) {
 
 	policy := workflow.GetSignals()["deploy-approved"]
 	check := func(identity *v1.WorkloadIdentity) bool {
-		return v1.SignalPolicyCheck(t.Context(), policy, identity, nil, false, nil) == nil
+		return v1.SignalPolicyCheck(t.Context(), policy, identity, nil, false, nil, nil) == nil
 	}
 
 	assert.True(t, check(&v1.WorkloadIdentity{

@@ -34,7 +34,7 @@ func TestAuthorizeSignalDeniesWhenTheScopeAPredicateReadsWasNeverRecorded(t *tes
 		resp := memoWithSignalPolicy(t, map[string]*v1types.SignalPolicy{"deploy-approved": {Allow: expression}})
 		resp.GetWorkflowExecutionInfo().GetMemo().GetFields()[starterMemoKey] = starterPayload
 
-		err := mustNew(t, nil).authorizeSignal(resp, "deploy-approved", lead)
+		err := mustNew(t, nil).authorizeSignal(resp, "deploy-approved", lead, nil)
 		require.Error(t, err, expression)
 		assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err), expression)
 		assert.Contains(t, err.Error(), "recorded nothing", expression)
@@ -44,7 +44,7 @@ func TestAuthorizeSignalDeniesWhenTheScopeAPredicateReadsWasNeverRecorded(t *tes
 	resp := memoWithSignalPolicy(t, map[string]*v1types.SignalPolicy{
 		"deploy-approved": {Allow: `sender.identity.claims["team"] == "payments"`},
 	})
-	require.NoError(t, mustNew(t, nil).authorizeSignal(resp, "deploy-approved", lead))
+	require.NoError(t, mustNew(t, nil).authorizeSignal(resp, "deploy-approved", lead, nil))
 }
 
 // The same, against a memo written by submit itself: the control admits with
@@ -83,9 +83,9 @@ func TestAuthorizeSignalDeniesAPredicateWhoseRecordedScopeWasRemoved(t *testing.
 	lead := sender("https://issuer.example.com", "lead@example.com", "", map[string]string{"team": "payments"})
 	srv := mustNew(t, nil)
 
-	require.NoError(t, srv.authorizeSignal(build(false), "deploy-approved", lead), "the control, with the scope recorded")
+	require.NoError(t, srv.authorizeSignal(build(false), "deploy-approved", lead, nil), "the control, with the scope recorded")
 
-	err = srv.authorizeSignal(build(true), "deploy-approved", lead)
+	err = srv.authorizeSignal(build(true), "deploy-approved", lead, nil)
 	require.Error(t, err)
 	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
 	assert.Contains(t, err.Error(), "recorded nothing")

@@ -74,6 +74,6 @@ func TestALegacySignalPolicyIsRefusedByEveryDecisionPoint(t *testing.T) {
 	require.Error(t, v1.CheckSignalPolicyShape(map[string]*v1.SignalPolicy{"go": policy}))
 
 	sender := &v1.WorkloadIdentity{Issuer: "https://issuer.example.com", Subject: "approver"}
-	require.Error(t, v1.SignalPolicyCheck(t.Context(), policy, sender, nil, false, nil))
+	require.Error(t, v1.SignalPolicyCheck(t.Context(), policy, sender, nil, false, nil, nil))
 	require.Error(t, v1.DebugPolicyCheck(t.Context(), policy, sender, nil, false, nil))
 }

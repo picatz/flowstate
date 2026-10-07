@@ -73,7 +73,7 @@ func sender(issuer, subject, namespace string, claims map[string]string) *v1type
 func TestAuthorizeSignalZeroCaseNoMemoKey(t *testing.T) {
 	resp := memoWithNoSignalPolicy()
 
-	err := mustNew(t, nil).authorizeSignal(resp, "deploy-approved", sender("https://issuer.example.com", "anybody@example.com", "team-a", nil))
+	err := mustNew(t, nil).authorizeSignal(resp, "deploy-approved", sender("https://issuer.example.com", "anybody@example.com", "team-a", nil), nil)
 	require.NoError(t, err, "a run with no declared signal policy refused an ordinary sender")
 }
 
@@ -85,7 +85,7 @@ func TestAuthorizeSignalZeroCasePerName(t *testing.T) {
 		"deploy-approved": {Allow: `sender.identity.principal == "https://issuer.example.com#release-manager@example.com"`},
 	})
 
-	err := mustNew(t, nil).authorizeSignal(resp, "cancel", sender("https://issuer.example.com", "anybody@example.com", "team-a", nil))
+	err := mustNew(t, nil).authorizeSignal(resp, "cancel", sender("https://issuer.example.com", "anybody@example.com", "team-a", nil), nil)
 	require.NoError(t, err, "a policy declared for one signal name constrained a different, undeclared name")
 }
 
@@ -97,7 +97,7 @@ func TestAuthorizeSignalAllowsTheDeclaredSubject(t *testing.T) {
 	})
 
 	err := mustNew(t, nil).authorizeSignal(resp, "deploy-approved",
-		sender("https://issuer.example.com", "release-manager@example.com", "team-a", nil))
+		sender("https://issuer.example.com", "release-manager@example.com", "team-a", nil), nil)
 	require.NoError(t, err, "the declared subject was refused")
 }
 
@@ -111,7 +111,7 @@ func TestAuthorizeSignalDeniesEveryoneElse(t *testing.T) {
 	})
 
 	err := mustNew(t, nil).authorizeSignal(resp, "deploy-approved",
-		sender("https://issuer.example.com", "some-other-engineer@example.com", "team-a", nil))
+		sender("https://issuer.example.com", "some-other-engineer@example.com", "team-a", nil), nil)
 	require.Error(t, err, "a sender who is not the declared subject was authorized")
 	require.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
 }
@@ -129,13 +129,13 @@ func TestAuthorizeSignalRefusesAVetoFromAnUnadmittedSender(t *testing.T) {
 	srv := mustNew(t, nil)
 
 	err := srv.authorizeSignal(resp, "release-approved",
-		sender("https://issuer.example.com", "mallory", "team-a", nil))
+		sender("https://issuer.example.com", "mallory", "team-a", nil), nil)
 	require.Error(t, err, "a sender the policy does not admit reached a quorum")
 	require.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
 
 	for _, subject := range []string{"alice", "bob"} {
 		require.NoError(t, srv.authorizeSignal(resp, "release-approved",
-			sender("https://issuer.example.com", subject, "team-a", nil)),
+			sender("https://issuer.example.com", subject, "team-a", nil), nil),
 			"the admitted approver %q was refused", subject)
 	}
 }
@@ -150,7 +150,7 @@ func TestAuthorizeSignalIssuerQualifiesTheSubject(t *testing.T) {
 	})
 
 	err := mustNew(t, nil).authorizeSignal(resp, "deploy-approved",
-		sender("https://a-different-issuer.example.com", "release-manager@example.com", "team-a", nil))
+		sender("https://a-different-issuer.example.com", "release-manager@example.com", "team-a", nil), nil)
 	require.Error(t, err, "a different issuer's identically-named subject was authorized")
 	require.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
 }
@@ -165,13 +165,13 @@ func TestAuthorizeSignalAllowsByClaim(t *testing.T) {
 	err := mustNew(t, nil).authorizeSignal(resp, "deploy-approved",
 		sender("https://issuer.example.com", "whoever@example.com", "team-a", map[string]string{
 			"team": "release-managers",
-		}))
+		}), nil)
 	require.NoError(t, err, "a sender carrying the required claim was refused")
 
 	err = mustNew(t, nil).authorizeSignal(resp, "deploy-approved",
 		sender("https://issuer.example.com", "whoever@example.com", "team-a", map[string]string{
 			"team": "some-other-team",
-		}))
+		}), nil)
 	require.Error(t, err, "a sender carrying the wrong claim value was authorized")
 	require.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
 }
@@ -195,7 +195,7 @@ func TestAuthorizeSignalFailsClosedOnUnreadableMemo(t *testing.T) {
 	}
 
 	err = mustNew(t, nil).authorizeSignal(resp, "deploy-approved",
-		sender("https://issuer.example.com", "release-manager@example.com", "team-a", nil))
+		sender("https://issuer.example.com", "release-manager@example.com", "team-a", nil), nil)
 	require.Error(t, err, "a corrupted signal policy memo authorized a signal instead of refusing it")
 	require.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err),
 		"a corrupted memo must be refused the same way an unauthorized sender is, not with some other code "+
@@ -221,7 +221,7 @@ func TestAuthorizeSignalFailsClosedOnWrongPayloadShape(t *testing.T) {
 	}
 
 	err = mustNew(t, nil).authorizeSignal(resp, "deploy-approved",
-		sender("https://issuer.example.com", "release-manager@example.com", "team-a", nil))
+		sender("https://issuer.example.com", "release-manager@example.com", "team-a", nil), nil)
 	require.Error(t, err)
 	require.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
 }
@@ -268,7 +268,7 @@ func TestAuthorizeSignalFailsClosedOnPresentButEmptyPayload(t *testing.T) {
 	}
 
 	err = mustNew(t, nil).authorizeSignal(resp, "deploy-approved",
-		sender("https://issuer.example.com", "some-other-engineer@example.com", "team-a", nil))
+		sender("https://issuer.example.com", "some-other-engineer@example.com", "team-a", nil), nil)
 	require.Error(t, err,
 		"a present-but-empty signal policy payload authorized a sender instead of refusing — the key's "+
 			"presence proves a policy was recorded, so an empty decode must deny, not fall through to "+
@@ -292,7 +292,7 @@ func TestAuthorizeSignalFailsClosedOnAnUnauthorizingPolicyShape(t *testing.T) {
 		})
 
 		err := mustNew(t, nil).authorizeSignal(resp, "deploy-approved",
-			sender("https://issuer.example.com", "release-manager@example.com", "team-a", nil))
+			sender("https://issuer.example.com", "release-manager@example.com", "team-a", nil), nil)
 		require.Error(t, err, "a policy with no allow predicate authorized a sender instead of refusing")
 		require.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
 	})
@@ -303,7 +303,7 @@ func TestAuthorizeSignalFailsClosedOnAnUnauthorizingPolicyShape(t *testing.T) {
 		})
 
 		err := mustNew(t, nil).authorizeSignal(resp, "deploy-approved",
-			sender("https://issuer.example.com", "anybody-at-all@example.com", "team-a", nil))
+			sender("https://issuer.example.com", "anybody-at-all@example.com", "team-a", nil), nil)
 		require.Error(t, err,
 			"a predicate that does not compile was accepted from the memo instead of refused — this "+
 				"shape is refused at submit (CheckSignalPolicies) and must be refused identically if it "+
@@ -324,7 +324,7 @@ func TestAuthorizeSignalZeroCaseStillAllowsWhenTheKeyIsGenuinelyAbsent(t *testin
 	resp := memoWithNoSignalPolicy()
 
 	err := mustNew(t, nil).authorizeSignal(resp, "deploy-approved",
-		sender("https://issuer.example.com", "anybody-at-all@example.com", "team-a", nil))
+		sender("https://issuer.example.com", "anybody-at-all@example.com", "team-a", nil), nil)
 	require.NoError(t, err,
 		"a memo with no signal-policy key at all must still allow — the zero case must survive the "+
 			"present-but-corrupt fix, not be swallowed by it")
@@ -378,7 +378,7 @@ func TestAuthorizeSignalComparingWithTheStarterRefusesTheStartersOwnSignal(t *te
 	}, starter)
 
 	err := mustNew(t, nil).authorizeSignal(resp, "deploy-approved",
-		sender("https://issuer.example.com", "release-manager@example.com", "team-a", nil))
+		sender("https://issuer.example.com", "release-manager@example.com", "team-a", nil), nil)
 	require.Error(t, err, "the run's own starter delivered a signal a policy comparing the sender with the starter should have refused")
 	require.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
 }
@@ -397,7 +397,7 @@ func TestAuthorizeSignalComparingWithTheStarterAllowsADistinctSender(t *testing.
 	}, starter)
 
 	err := mustNew(t, nil).authorizeSignal(resp, "deploy-approved",
-		sender("https://issuer.example.com", "release-manager@example.com", "team-a", nil))
+		sender("https://issuer.example.com", "release-manager@example.com", "team-a", nil), nil)
 	require.NoError(t, err, "a sender distinct from the run's starter was refused by the starter comparison")
 }
 
@@ -414,7 +414,7 @@ func TestAuthorizeSignalComparingWithTheStarterRefusesARunPredatingTheStarterKey
 	}) // no starterMemoKey entry at all
 
 	err := mustNew(t, nil).authorizeSignal(resp, "deploy-approved",
-		sender("https://issuer.example.com", "release-manager@example.com", "team-a", nil))
+		sender("https://issuer.example.com", "release-manager@example.com", "team-a", nil), nil)
 	require.Error(t, err,
 		"a run predating the starter memo key was authorized under a starter comparison instead of "+
 			"refused — a run that cannot prove separation must not get it")
@@ -432,7 +432,7 @@ func TestAuthorizeSignalRefusesASenderMatchingClaimsButNotThePrincipal(t *testin
 
 	err := mustNew(t, nil).authorizeSignal(resp, "deploy-approved",
 		sender("https://issuer.example.com", "some-other-engineer@example.com", "team-a",
-			map[string]string{"team": "release-managers"}))
+			map[string]string{"team": "release-managers"}), nil)
 	require.Error(t, err,
 		"a sender carrying the right claim but the wrong subject was authorized — the two are an AND, "+
 			"not a fallback to whichever field matches")

@@ -525,7 +525,7 @@ func (s *LocalSignals) DeliverFrom(name string, payload *Node_Outputs, sender *S
 	}
 
 	if policy, declared := s.policies[name]; declared {
-		if err := SignalPolicyCheck(context.Background(), policy, sender.GetIdentity(), s.starter, s.hasStarter, s.inputs); err != nil {
+		if err := SignalPolicyCheck(context.Background(), policy, sender.GetIdentity(), s.starter, s.hasStarter, s.inputs, BoundSignalPayload(payload)); err != nil {
 			return fmt.Errorf("flowstate: signal %q refused: %w", name, &signalDenied{err})
 		}
 	}

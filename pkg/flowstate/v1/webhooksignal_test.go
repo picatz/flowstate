@@ -146,7 +146,7 @@ func TestABridgeNeedsAPolicyThatCouldAdmitItsTrigger(t *testing.T) {
 
 			require.NoError(t, err)
 
-			delivery := v1.SignalPolicyCheck(t.Context(), test.policy, webhook, nil, false, nil)
+			delivery := v1.SignalPolicyCheck(t.Context(), test.policy, webhook, nil, false, nil, nil)
 			if test.admitted {
 				require.NoError(t, delivery, "the bridge's own delivery was denied by the policy that names it")
 			} else {

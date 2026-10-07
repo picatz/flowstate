@@ -22,7 +22,7 @@ func TestSignalPolicyRefusalNamesTheClaimsTheSenderCarried(t *testing.T) {
 	policy := predicatePolicy(`sender.identity.claims.team == "platform"`)
 	check := func(claims map[string]string) error {
 		sender := &v1.WorkloadIdentity{Issuer: "https://i", Subject: "alice", Claims: claims}
-		return v1.SignalPolicyCheck(context.Background(), policy, sender, nil, false, nil)
+		return v1.SignalPolicyCheck(context.Background(), policy, sender, nil, false, nil, nil)
 	}
 
 	require.NoError(t, check(map[string]string{"team": "platform"}), "a projected claim still admits")
@@ -43,7 +43,7 @@ func TestSignalPolicyRefusalNamesTheClaimsTheSenderCarried(t *testing.T) {
 	assert.NotContains(t, err.Error(), "wrong-value")
 
 	err = v1.SignalPolicyCheck(context.Background(), predicatePolicy(`sender.identity.subject == "bob"`),
-		&v1.WorkloadIdentity{Issuer: "https://i", Subject: "alice"}, nil, false, nil)
+		&v1.WorkloadIdentity{Issuer: "https://i", Subject: "alice"}, nil, false, nil, nil)
 	require.Error(t, err)
 	assert.NotContains(t, err.Error(), hint)
 }

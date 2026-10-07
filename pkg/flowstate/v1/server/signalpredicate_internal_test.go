@@ -124,10 +124,10 @@ func TestAuthorizeSignalReadsAPredicateOverTheRecordedScope(t *testing.T) {
 
 	srv := mustNew(t, nil)
 	lead := sender("https://issuer.example.com", "lead@example.com", "", map[string]string{"team": "payments"})
-	require.NoError(t, srv.authorizeSignal(resp, "deploy-approved", lead))
+	require.NoError(t, srv.authorizeSignal(resp, "deploy-approved", lead, nil))
 
 	err = srv.authorizeSignal(resp, "deploy-approved",
-		sender("https://issuer.example.com", "lead@example.com", "", map[string]string{"team": "other"}))
+		sender("https://issuer.example.com", "lead@example.com", "", map[string]string{"team": "other"}), nil)
 	require.Error(t, err, "a claim that differs from the starter's was admitted")
 	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
 
@@ -138,7 +138,7 @@ func TestAuthorizeSignalReadsAPredicateOverTheRecordedScope(t *testing.T) {
 	garbage, err := converter.GetDefaultDataConverter().ToPayload([]byte{0xff, 0xff, 0xff})
 	require.NoError(t, err)
 	corrupt.GetWorkflowExecutionInfo().GetMemo().GetFields()[signalPolicyScopeMemoKey] = garbage
-	err = srv.authorizeSignal(corrupt, "deploy-approved", lead)
+	err = srv.authorizeSignal(corrupt, "deploy-approved", lead, nil)
 	require.Error(t, err)
 	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
 
@@ -146,12 +146,12 @@ func TestAuthorizeSignalReadsAPredicateOverTheRecordedScope(t *testing.T) {
 	oversized, err := converter.GetDefaultDataConverter().ToPayload(make([]byte, v1types.MaxSignalPolicyScopeBytes+1))
 	require.NoError(t, err)
 	corrupt.GetWorkflowExecutionInfo().GetMemo().GetFields()[signalPolicyScopeMemoKey] = oversized
-	require.Error(t, srv.authorizeSignal(corrupt, "deploy-approved", lead))
+	require.Error(t, srv.authorizeSignal(corrupt, "deploy-approved", lead, nil))
 
 	// A run with no scope recorded and a predicate that needs one denies.
 	missing := memoWithSignalPolicy(t, wf.GetSignals())
 	missing.GetWorkflowExecutionInfo().GetMemo().GetFields()[starterMemoKey] = starterPayload
-	require.Error(t, srv.authorizeSignal(missing, "deploy-approved", lead))
+	require.Error(t, srv.authorizeSignal(missing, "deploy-approved", lead, nil))
 }
 
 func TestAuthorizeSignalPredicateOnARunWithNoStarterRecordedDenies(t *testing.T) {
@@ -161,7 +161,7 @@ func TestAuthorizeSignalPredicateOnARunWithNoStarterRecordedDenies(t *testing.T)
 		"deploy-approved": {Allow: `sender.identity.principal != run.identity.principal`},
 	}
 	err := mustNew(t, nil).authorizeSignal(memoWithSignalPolicy(t, policies), "deploy-approved",
-		sender("https://issuer.example.com", "lead@example.com", "", nil))
+		sender("https://issuer.example.com", "lead@example.com", "", nil), nil)
 	require.Error(t, err)
 	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
 }
@@ -174,7 +174,7 @@ func TestAuthorizeSignalRefusalNamesNoClaimValue(t *testing.T) {
 		"deploy-approved": {Allow: `int(sender.identity.claims["n"]) == 1`},
 	}
 	err := mustNew(t, nil).authorizeSignal(memoWithSignalPolicy(t, policies), "deploy-approved",
-		sender("https://issuer.example.com", "lead@example.com", "", map[string]string{"n": secret}))
+		sender("https://issuer.example.com", "lead@example.com", "", map[string]string{"n": secret}), nil)
 	require.Error(t, err)
 	assert.NotContains(t, err.Error(), secret)
 }

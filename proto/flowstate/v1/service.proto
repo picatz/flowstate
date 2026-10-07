@@ -586,6 +586,15 @@ message GetGateResponse {
   // at the moment of delivery, and the run may have changed since.
   bool may_answer = 9;
 
+  // DependsOnPayload is true when the gate's `allow:` predicate reads `payload`
+  // (for example to admit a reject from anyone and an approve only from an
+  // approver), so no answer about the caller alone exists: it depends on what
+  // they would send. The payload is bound per delivery and a gate listing has
+  // none, so may_answer is then false, which means undecided rather than
+  // refused; the prompt and starter are withheld on the same terms as for a
+  // refused caller. Signal decides again with the real payload.
+  bool depends_on_payload = 12;
+
   // Approvals is how many approvals the gate has counted so far, set only when
   // the gate is a `wait_for_signals:` with a `quorum:`; read it with
   // [approvals_needed] as "1 of 2". It is [PendingWait.approvals], and is

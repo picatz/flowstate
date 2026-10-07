@@ -86,7 +86,7 @@ func TestRehearsalSignalCasesDurably(t *testing.T) {
 
 		return mustNew(t, nil).authorizeSignal(
 			runWithPolicyAndStarter(t.(*testing.T), c), c.SignalName,
-			&v1types.SignalSender{Identity: identity})
+			&v1types.SignalSender{Identity: identity}, c.Delivered())
 	})
 }
 
@@ -107,7 +107,7 @@ func TestRehearsalSenderIsNeverAuthorizedDurably(t *testing.T) {
 	conformance.AssertRehearsalSenderIsNeverAuthorizedDurably(t,
 		func(t testing.TB, c conformance.RehearsalSignalCase, sender *v1types.SignalSender) error {
 			return mustNew(t, nil).authorizeSignal(
-				runWithPolicyAndStarter(t.(*testing.T), c), c.SignalName, sender)
+				runWithPolicyAndStarter(t.(*testing.T), c), c.SignalName, sender, c.Delivered())
 		})
 }
 
@@ -123,7 +123,7 @@ func TestRehearsalSenderIsRefusedEvenWithNoPolicyDeclared(t *testing.T) {
 		v1types.RehearsalSignalSender(&v1types.WorkloadIdentity{
 			Subject: "sre-lead@example.com",
 			Issuer:  "https://issuer.example.com",
-		}))
+		}), nil)
 
 	require.Error(t, err,
 		"an unpoliced signal accepted a local rehearsal identity; the zero case widens which "+

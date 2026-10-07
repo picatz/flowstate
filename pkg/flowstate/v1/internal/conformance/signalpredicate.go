@@ -54,7 +54,67 @@ func signalPredicateCases() []RehearsalSignalCase {
 	}
 	needsAPerson := predicate(`sender.identity.kind == "human"`)
 
+	// The canonical per-action policy: anyone may reject, only an approver may
+	// approve, told apart by the delivery's own payload.
+	perAction := predicate(`payload.decision == "reject" || (payload.decision == "approve" && ` +
+		`sender.identity.claims["team"] == "release-managers")`)
+	decision := func(v any) map[string]*v1.Value { return map[string]*v1.Value{"decision": v1.NewLiteral(v)} }
+
 	return []RehearsalSignalCase{
+		{
+			Name: "an approver's approve under a per-action predicate", SignalName: "deploy-approved",
+			Policy: perAction, Starter: starter, Sender: approver(), Payload: decision("approve"), Admitted: true,
+			Why: "the payload says approve and the sender's attested claim is the approver's",
+		},
+		{
+			Name: "a non-approver's approve under a per-action predicate", SignalName: "deploy-approved",
+			Policy: perAction, Starter: starter, Sender: alice(issuerA), Payload: decision("approve"),
+			Why: "payload is sender-chosen, so saying approve admits nobody without the claim; the " +
+				"negative direction the per-action predicate exists for",
+		},
+		{
+			Name: "a non-approver's reject under a per-action predicate", SignalName: "deploy-approved",
+			Policy: perAction, Starter: starter, Sender: alice(issuerA), Payload: decision("reject"), Admitted: true,
+			Why: "a reject is the cheap answer the predicate leaves open, and it short-circuits before " +
+				"reading a claim the sender does not carry",
+		},
+		{
+			Name: "an approver's payload without a decision", SignalName: "deploy-approved",
+			Policy: perAction, Starter: starter, Sender: approver(),
+			Payload: map[string]*v1.Value{"note": v1.NewLiteral("looks fine")},
+			Why:     "a payload missing the key the predicate reads is an evaluation error, which denies on both drivers",
+		},
+		{
+			Name: "a payload decision that is neither answer", SignalName: "deploy-approved",
+			Policy: perAction, Starter: starter, Sender: approver(), Payload: decision("maybe"),
+			Why: "only the two spelled values admit; anything else falls through to false",
+		},
+		{
+			Name: "a predicate reading only the payload", SignalName: "deploy-approved",
+			Policy: predicate(`payload.decision == "approve"`), Starter: starter, Sender: approver(),
+			Payload: decision("approve"),
+			Why: "the sender chose the payload, so this admits anyone who can write it; the narrowing " +
+				"rule refuses it at validation, and a policy that reached delivery anyway is refused by " +
+				"the same compile",
+		},
+		{
+			Name: "a payload predicate narrowed by the starter", SignalName: "deploy-approved",
+			Policy:  predicate(`payload.decision == "approve" && sender.identity.principal != run.identity.principal`),
+			Starter: starter, Sender: approver(), Payload: decision("approve"), Admitted: true,
+			Why: "run.identity also satisfies the narrowing rule, and separation of duties composes with the payload",
+		},
+		{
+			Name: "a payload predicate over a payload delivered empty", SignalName: "deploy-approved",
+			Policy: perAction, Starter: starter, Sender: approver(), Payload: map[string]*v1.Value{},
+			Why: "an empty payload is bound and empty, not unbound: the key is missing, so the predicate errors and denies",
+		},
+		{
+			Name: "a payload value compared like any other", SignalName: "deploy-approved",
+			Policy:  predicate(`payload.token == "hunter2" && sender.identity.claims["team"] == "release-managers"`),
+			Starter: starter, Sender: approver(), Payload: map[string]*v1.Value{"token": v1.NewLiteral("hunter2")},
+			Admitted: true,
+			Why:      "a payload value compares like any other; the refusal text, not the verdict, is what must never carry it",
+		},
 		{
 			Name: "a sender the trust policy assigned the kind a predicate names", SignalName: "deploy-approved",
 			Policy: needsAPerson, Starter: starter, Sender: kinded(v1.PrincipalKind_PRINCIPAL_KIND_HUMAN), Admitted: true,

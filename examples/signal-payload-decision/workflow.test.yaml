@@ -1,0 +1,61 @@
+# Each case delivers one decision through the same `v1.SignalPolicyCheck` a
+# served signal is checked with. A refused delivery is silent: the gate lapses
+# at its own timeout, which `flow test`'s virtual clock makes instant.
+edition: v2026.4
+defaults:
+  workflow: ./workflow.yaml
+  stubs:
+    - task: log
+      returns: {}
+tests:
+  - name: a non-approver's approve is refused
+    signals:
+      - name: release-decision
+        sender:
+          subject: intern@example.com
+          issuer: https://issuer.example.com
+          claims:
+            team: interns
+        payload: {decision: approve}
+    expect:
+      outputs:
+        decision: none
+
+  - name: a non-approver's reject is admitted
+    signals:
+      - name: release-decision
+        sender:
+          subject: intern@example.com
+          issuer: https://issuer.example.com
+          claims:
+            team: interns
+        payload: {decision: reject}
+    expect:
+      outputs:
+        decision: reject
+
+  - name: an approver's payload without a decision is refused, not read as a reject
+    signals:
+      - name: release-decision
+        sender:
+          subject: release-lead@example.com
+          issuer: https://issuer.example.com
+          claims:
+            team: release-approvers
+        payload: {note: looks fine}
+    expect:
+      outputs:
+        decision: none
+
+  - name: an approver's approve is admitted
+    signals:
+      - name: release-decision
+        sender:
+          subject: release-lead@example.com
+          issuer: https://issuer.example.com
+          claims:
+            team: release-approvers
+        payload: {decision: approve}
+    expect:
+      outputs:
+        decision: approve

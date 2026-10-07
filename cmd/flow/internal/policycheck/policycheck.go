@@ -139,6 +139,13 @@ type Subject struct {
 
 	// Reason is what a `triggers.manual` start that requires one would carry.
 	Reason string
+
+	// Payload is the delivery's bound `with:` map a `signals:` predicate reads
+	// as `payload`. Nil is unbound, not empty: a rehearsal that names no
+	// delivery cannot decide a gate whose predicate reads it, and reports
+	// [Decision.DependsOnPayload] instead of reading a missing key as a
+	// verdict. Not read by `debug:` or `triggers.manual`, which have no payload.
+	Payload map[string]*v1.Value
 }
 
 // Decision is the engine's answer for one gate.
@@ -152,6 +159,11 @@ type Decision struct {
 	// is false. It is fixed text that quotes no claim, input or error; see the
 	// package documentation.
 	Reason string
+
+	// DependsOnPayload is true when the gate's predicate reads `payload` and the
+	// subject carried none, so the engine was not asked: the gate is reported
+	// refused (it is never read as admitted) with a fixed reason saying why.
+	DependsOnPayload bool
 
 	// Note qualifies an admission that is not a policy saying yes: the workflow
 	// declares nothing for this gate, so nothing was asked of the sender.
@@ -314,7 +326,19 @@ func Evaluate(ctx context.Context, wf *v1.Workflow, gates []Gate, subject Subjec
 				break
 			}
 
-			refusal = v1.SignalPolicyCheck(ctx, policy, sender, starter, hasStarter, bound)
+			// The engine would deny a predicate over a missing payload at every
+			// sender, which reads as "this identity may not" when the truth is
+			// "it depends on what they send". Said as that instead, and never
+			// as admitted.
+			if subject.Payload == nil && v1.SignalPolicyExprReads(map[string]*v1.SignalPolicy{"": policy}).Payload {
+				decision.DependsOnPayload = true
+				refusal = errors.New("this gate's allow predicate reads `payload`, which a delivery carries and " +
+					"this check was given none of, so the answer depends on payload")
+
+				break
+			}
+
+			refusal = v1.SignalPolicyCheck(ctx, policy, sender, starter, hasStarter, bound, v1.BoundSignalPayload(&v1.Node_Outputs{NamedValues: subject.Payload}))
 
 		case StanzaDebug:
 			refusal = v1.DebugPolicyCheck(ctx, wf.GetDebug(), sender, starter, hasStarter, bound)

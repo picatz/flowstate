@@ -1075,6 +1075,14 @@ type GetGateResponse struct {
 	// caller also holds `workload.read`. It is advice for rendering, never authority: Signal decides again
 	// at the moment of delivery, and the run may have changed since.
 	MayAnswer bool `protobuf:"varint,9,opt,name=may_answer,json=mayAnswer,proto3" json:"may_answer,omitempty"`
+	// DependsOnPayload is true when the gate's `allow:` predicate reads `payload`
+	// (for example to admit a reject from anyone and an approve only from an
+	// approver), so no answer about the caller alone exists: it depends on what
+	// they would send. The payload is bound per delivery and a gate listing has
+	// none, so may_answer is then false, which means undecided rather than
+	// refused; the prompt and starter are withheld on the same terms as for a
+	// refused caller. Signal decides again with the real payload.
+	DependsOnPayload bool `protobuf:"varint,12,opt,name=depends_on_payload,json=dependsOnPayload,proto3" json:"depends_on_payload,omitempty"`
 	// Approvals is how many approvals the gate has counted so far, set only when
 	// the gate is a `wait_for_signals:` with a `quorum:`; read it with
 	// [approvals_needed] as "1 of 2". It is [PendingWait.approvals], and is
@@ -1178,6 +1186,13 @@ func (x *GetGateResponse) GetStarter() string {
 func (x *GetGateResponse) GetMayAnswer() bool {
 	if x != nil {
 		return x.MayAnswer
+	}
+	return false
+}
+
+func (x *GetGateResponse) GetDependsOnPayload() bool {
+	if x != nil {
+		return x.DependsOnPayload
 	}
 	return false
 }
@@ -3055,7 +3070,7 @@ const file_flowstate_v1_service_proto_rawDesc = "" +
 	"\xc8\x01\x01r\x05\x10\x01(\x80\x02R\n" +
 	"workflowId\x12O\n" +
 	"\vsignal_name\x18\x02 \x01(\tB.\xe2A\x01\x02\xbaH'\xc8\x01\x01r\"\x10\x01\x18\x80\x012\x1b^[A-Za-z0-9][A-Za-z0-9-_]*$R\n" +
-	"signalName\"\x92\x03\n" +
+	"signalName\"\xc0\x03\n" +
 	"\x0fGetGateResponse\x12\x1f\n" +
 	"\vworkflow_id\x18\x01 \x01(\tR\n" +
 	"workflowId\x12\x15\n" +
@@ -3068,7 +3083,8 @@ const file_flowstate_v1_service_proto_rawDesc = "" +
 	"\bdeadline\x18\a \x01(\v2\x1a.google.protobuf.TimestampH\x00R\bdeadline\x88\x01\x01\x12\x18\n" +
 	"\astarter\x18\b \x01(\tR\astarter\x12\x1d\n" +
 	"\n" +
-	"may_answer\x18\t \x01(\bR\tmayAnswer\x12\x1c\n" +
+	"may_answer\x18\t \x01(\bR\tmayAnswer\x12,\n" +
+	"\x12depends_on_payload\x18\f \x01(\bR\x10dependsOnPayload\x12\x1c\n" +
 	"\tapprovals\x18\n" +
 	" \x01(\rR\tapprovals\x12)\n" +
 	"\x10approvals_needed\x18\v \x01(\rR\x0fapprovalsNeededB\v\n" +

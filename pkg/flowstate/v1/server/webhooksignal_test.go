@@ -332,3 +332,42 @@ func TestABridgeIsRefusedAtLoadWhenItsGateCannotAdmitIt(t *testing.T) {
 }
 
 var _ = secrets.NewRef
+
+// TestABridgedDeliveryIsAuthorizedByWhatItCarries is the per-action half at the
+// receiver: the gate's predicate reads the delivery's own `payload`, so the same
+// signed route admits a reject and refuses an approve from the same sender, and
+// the refused one never reaches the run. The trigger carries no claim, so only
+// the reject branch is satisfiable without one.
+func TestABridgedDeliveryIsAuthorizedByWhatItCarries(t *testing.T) {
+	t.Parallel()
+
+	temporal, _ := newTemporalNamespace(t)
+	startWorker(t, temporal)
+
+	perAction := func() *v1.Workflow {
+		wf := bridgedGateWorkflow()
+		wf.Signals["stage-approved"].Allow = `sender.identity.principal == "` + v1.QualifiedSubject(v1.WebhookPrincipalIssuer,
+			v1.WebhookTriggerSubject("gate-webhook", "slack-approval")) +
+			`" && (payload.approved == false || sender.identity.claims.team == "release-managers")`
+
+		return wf
+	}
+
+	deployment, receiver := gateDeployment(t, temporal, perAction())
+	workflowID, runID := startParkedRun(t, deployment, perAction(), "order-4490")
+
+	refused := deliver(t, receiver, "/webhooks/gate-webhook/slack-approval",
+		gateDelivery("evt_approve", "order-4490", "approve"), signed)
+	assert.Equal(t, http.StatusForbidden, refused.StatusCode,
+		"an approve the predicate does not admit was accepted")
+
+	admitted := deliver(t, receiver, "/webhooks/gate-webhook/slack-approval",
+		gateDelivery("evt_reject", "order-4490", "reject"), signed)
+	require.Equal(t, http.StatusOK, admitted.StatusCode, "a reject the predicate admits was refused")
+
+	var out v1.Workflow_StepOutputs
+	require.NoError(t, temporal.GetWorkflow(t.Context(), workflowID, runID).Get(t.Context(), &out))
+	assert.Equal(t, "held",
+		out.GetStepValues()["gate"].GetNamedValues()["decision"].GetLiteral().GetStringValue(),
+		"the gate resolved with something other than the one delivery the predicate admitted")
+}

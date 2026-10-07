@@ -76,12 +76,27 @@ type RehearsalSignalCase struct {
 	// to [v1.NewPolicedLocalSignals] locally.
 	Inputs map[string]*v1.Value
 
+	// Payload is the delivery's bound `with:` map, which a predicate reads as
+	// `payload`. Nil delivers [defaultPayload], the one the table's other
+	// cases have always sent; both drivers bind it from [RehearsalSignalCase.Delivered].
+	Payload map[string]*v1.Value
+
 	// Admitted is whether the delivery reaches the waiting step.
 	Admitted bool
 
 	// Why says what the case is pinning, and is what a failure reports -
 	// "refused" alone does not tell the next reader which rule they broke.
 	Why string
+}
+
+// Delivered is the payload this case's delivery carries, built once so the
+// drivers cannot bind different ones.
+func (c RehearsalSignalCase) Delivered() *v1.Node_Outputs {
+	if c.Payload == nil {
+		return &v1.Node_Outputs{NamedValues: map[string]*v1.Value{"approved": v1.NewLiteral(true)}}
+	}
+
+	return &v1.Node_Outputs{NamedValues: c.Payload}
 }
 
 // approver is the identity examples/approval-gate's own `signals:` predicate

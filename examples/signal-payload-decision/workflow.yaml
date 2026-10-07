@@ -1,0 +1,33 @@
+# A `signals:` predicate that tells an approve from a reject by the delivery's
+# own `payload`: anyone may stop a release, only a release approver may let it
+# through.
+#
+# `payload` is what the *sender* chose to send, exactly as `inputs` is what the
+# starter chose, so `payload.decision == "approve"` alone would admit anyone who
+# can write that payload. The predicate reads `sender.identity.claims` beside it
+# (the server's own attestation, which a payload cannot reach), and `flow
+# validate` refuses a predicate that does not.
+#
+# Claims are strings today, so the approver check is a `team` claim equality; a
+# list-valued `groups` claim and `"release-approvers" in
+# sender.identity.claims.groups` arrive with structured claims.
+#
+# A sender that omits `decision` errors the predicate, which refuses: a missing
+# key never reads as a reject.
+edition: v2026.4
+name: signal-payload-decision
+signals:
+  release-decision:
+    allow: ${payload.decision == "reject" || (payload.decision == "approve" && sender.identity.claims.team == "release-approvers")}
+steps:
+  - id: decide
+    wait_for_signal:
+      name: release-decision
+      timeout: 20s
+  - id: record
+    log:
+      message: '${steps.decide.timed_out ? "no admitted decision" : ("decision recorded: " + steps.decide.payload.decision)}'
+outputs:
+  decision:
+    value: '${steps.decide.timed_out ? "none" : steps.decide.payload.decision}'
+    description: what the admitted sender decided, or none when nobody was admitted in time

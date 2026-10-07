@@ -4550,8 +4550,8 @@ value) and says to run `flow fix`, which rewrites each of them into the predicat
 
 **The scope is closed.** `sender.identity.{principal,subject,issuer,namespace,kind,claims}`
 is the server's own attestation of whoever is delivering. `run.identity` is the run's
-starter with the same fields, and `inputs` is the run's arguments. Nothing else is in
-scope: no steps, vars, clock or secrets, and a name outside it is a compile error
+starter with the same fields, `inputs` is the run's arguments and `payload` is the
+delivery's own bound `with:` map (see below). Nothing else is in scope: no steps, vars, clock or secrets, and a name outside it is a compile error
 rather than a predicate that quietly never matches. `principal` is `issuer#subject`
 (empty when either half is missing), so two identity providers minting the same
 subject are told apart by one comparison. Claims are read here, bound server-side
@@ -4583,6 +4583,35 @@ names the expression reads, write conjunctions (`sender.identity.claims.team == 
 sender.identity.principal == "issuer#" + inputs.approver`): a claim read in one `||`
 alternative satisfies the check for the whole predicate, including an alternative that
 reads only `inputs`.
+
+**`payload` tells an approve from a reject.** `payload` is the bound `with:` map the
+delivery carries, the value a wait reads under `payload`, bound at every door that accepts
+a delivery (the webhook bridge, `Signal`, `flow signal`, MCP, `flow run local` and `flow
+test`) and decided by the one function, so the drivers agree. It is what the *sender*
+chose, exactly as `inputs` is what the starter chose, so a predicate over it alone admits
+anyone who can write that payload; a predicate that reads `payload` must also read
+`sender.identity.claims` or `run.identity`, or `flow validate` refuses it. Write the
+cheap answer open and the consequential one narrow:
+
+```yaml
+signals:
+  release-decision:
+    allow: ${payload.decision == "reject" || (payload.decision == "approve" && sender.identity.claims.team == "release-approvers")}
+triggers:
+  - webhook:
+      # ...
+      with: {decision: '${event.body.actions[0].action_id}'}
+```
+
+`claims` is a map of strings today, so the approver check is a claim equality
+(`claims.team == "release-approvers"`); a list-valued `groups` claim and `"x" in
+sender.identity.claims.groups` arrive with structured claims. The payload is per delivery
+and nothing about it is recorded in the run's memo or history; the existing payload size
+bound is its bound. A key the delivery does not carry is an evaluation error, which
+refuses, and a refusal names no payload value. `debug:` has no payload and refuses a
+predicate that reads it. `GetGate` and `flow signals check` cannot decide such a gate for
+a caller alone: they report `depends_on_payload` (with `may_answer` false, meaning
+undecided) instead of `true`.
 
 A predicate that reads `inputs` records, in the policy scope memo at submit, only the
 inputs it names (`inputs.name`, `inputs["name"]`, `has(inputs.name)` or `"name" in

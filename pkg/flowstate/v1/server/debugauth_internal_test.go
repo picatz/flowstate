@@ -71,10 +71,10 @@ func TestOnlyADeclaredDebugPolicyAdmitsAPauseAsk(t *testing.T) {
 	declared := memoWithDebugPolicy(t, &v1types.SignalPolicy{Allow: `sender.identity.claims["role"] == "sre"`})
 
 	require.NoError(t,
-		mustNew(t, nil).authorizeSignal(declared, v1types.DebugSignal, allowed),
+		mustNew(t, nil).authorizeSignal(declared, v1types.DebugSignal, allowed, nil),
 		"a caller matching the declared debug policy may pause the run")
 	require.NoError(t,
-		mustNew(t, nil).authorizeSignal(declared, v1types.DebugSignal, allowed),
+		mustNew(t, nil).authorizeSignal(declared, v1types.DebugSignal, allowed, nil),
 		"and may resume it — both asks are governed by the one stanza")
 
 	// The negative direction, which is the claim that matters: a run that says
@@ -83,10 +83,10 @@ func TestOnlyADeclaredDebugPolicyAdmitsAPauseAsk(t *testing.T) {
 	silent := memoWithCurrentSignalProtocol(t)
 
 	require.Error(t,
-		mustNew(t, nil).authorizeSignal(silent, v1types.DebugSignal, allowed),
+		mustNew(t, nil).authorizeSignal(silent, v1types.DebugSignal, allowed, nil),
 		"a run with no `debug:` stanza refused nobody, so anyone could pause production")
 	require.NoError(t,
-		mustNew(t, nil).authorizeSignal(silent, "deploy-approved", allowed),
+		mustNew(t, nil).authorizeSignal(silent, "deploy-approved", allowed, nil),
 		"an ordinary signal on the same run keeps its own fail-open zero case")
 }
 
@@ -98,16 +98,16 @@ func TestALegacyRunKeepsItsWorkflowOwnedSignalNamespace(t *testing.T) {
 	legacy := memoWithNoSignalPolicy()
 	caller := sender("https://issuer.example.com", "sre-1@example.com", "team-a", nil)
 
-	require.NoError(t, mustNew(t, nil).authorizeSignal(legacy, v1types.DebugSignal, caller),
+	require.NoError(t, mustNew(t, nil).authorizeSignal(legacy, v1types.DebugSignal, caller, nil),
 		"an absent protocol marker identifies a run submitted before the prefix was reserved")
 	require.NoError(t, mustNew(t, nil).authorizeSignal(legacy,
-		v1types.ReservedSignalPrefix+"custom", caller),
+		v1types.ReservedSignalPrefix+"custom", caller, nil),
 		"the entire prefix belonged to legacy workflows, not only today's debug spelling")
 
 	policed := memoWithSignalPolicy(t, map[string]*v1types.SignalPolicy{
 		v1types.DebugSignal: {Allow: `sender.identity.principal == "https://issuer.example.com#somebody-else@example.com"`},
 	})
-	require.Error(t, mustNew(t, nil).authorizeSignal(policed, v1types.DebugSignal, caller),
+	require.Error(t, mustNew(t, nil).authorizeSignal(policed, v1types.DebugSignal, caller, nil),
 		"legacy routing must not bypass an ordinary signal policy declared for the old workflow-owned name")
 }
 
@@ -128,7 +128,7 @@ func TestAnUnknownOrUnreadableSignalProtocolRefusesReservedNames(t *testing.T) {
 				},
 			}
 
-			require.Error(t, mustNew(t, nil).authorizeSignal(memo, v1types.DebugSignal, caller),
+			require.Error(t, mustNew(t, nil).authorizeSignal(memo, v1types.DebugSignal, caller, nil),
 				"a reserved signal must not be guessed onto an unknown protocol")
 		})
 	}
@@ -141,11 +141,11 @@ func TestACallerTheDebugPolicyDoesNotNameCannotPause(t *testing.T) {
 
 	require.Error(t, mustNew(t, nil).authorizeSignal(declared, v1types.DebugSignal,
 		sender("https://issuer.example.com", "dev-1@example.com", "team-a",
-			map[string]string{"role": "developer"})),
+			map[string]string{"role": "developer"}), nil),
 		"a caller carrying the wrong claim may not pause the run")
 
 	require.Error(t, mustNew(t, nil).authorizeSignal(declared, v1types.DebugSignal,
-		sender("https://issuer.example.com", "anon@example.com", "team-a", nil)),
+		sender("https://issuer.example.com", "anon@example.com", "team-a", nil), nil),
 		"a caller carrying no claims at all may not pause the run")
 }
 
@@ -156,11 +156,11 @@ func TestARehearsalIdentityNeverTakesADebugLease(t *testing.T) {
 	declared := memoWithDebugPolicy(t, &v1types.SignalPolicy{Allow: `sender.identity.namespace == "team-a"`})
 
 	local := sender("https://issuer.example.com", "sre-1@example.com", "team-a", nil)
-	require.NoError(t, mustNew(t, nil).authorizeSignal(declared, v1types.DebugSignal, local),
+	require.NoError(t, mustNew(t, nil).authorizeSignal(declared, v1types.DebugSignal, local, nil),
 		"the same sender is admitted while it is not marked local")
 
 	local.Local = true
-	require.Error(t, mustNew(t, nil).authorizeSignal(declared, v1types.DebugSignal, local),
+	require.Error(t, mustNew(t, nil).authorizeSignal(declared, v1types.DebugSignal, local, nil),
 		"a sender marked as a local rehearsal identity may not take a durable debug lease")
 }
 
@@ -171,7 +171,7 @@ func TestAReservedNameThisBuildDoesNotKnowIsRefused(t *testing.T) {
 	declared := memoWithDebugPolicy(t, &v1types.SignalPolicy{Allow: `sender.identity.namespace == "team-a"`})
 
 	require.Error(t, mustNew(t, nil).authorizeSignal(declared,
-		v1types.ReservedSignalPrefix+"whatever", sender("https://issuer.example.com", "sre-1@example.com", "team-a", nil)),
+		v1types.ReservedSignalPrefix+"whatever", sender("https://issuer.example.com", "sre-1@example.com", "team-a", nil), nil),
 		"a reserved name with no channel behind it is refused rather than delivered")
 }
 
@@ -194,7 +194,7 @@ func TestAnUnreadableDebugPolicyRefusesEverybody(t *testing.T) {
 	}
 
 	require.Error(t, mustNew(t, nil).authorizeSignal(corrupt, v1types.DebugSignal,
-		sender("https://issuer.example.com", "sre-1@example.com", "team-a", nil)),
+		sender("https://issuer.example.com", "sre-1@example.com", "team-a", nil), nil),
 		"a debug policy that cannot be decoded authorizes nobody")
 }
 
@@ -210,18 +210,18 @@ func TestADebugPolicyThisServerWouldNotHaveWrittenIsRefused(t *testing.T) {
 
 	t.Run("a present key holding nothing", func(t *testing.T) {
 		require.Error(t, mustNew(t, nil).authorizeSignal(
-			memoWithDebugPolicy(t, nil), v1types.DebugSignal, caller))
+			memoWithDebugPolicy(t, nil), v1types.DebugSignal, caller, nil))
 	})
 
 	t.Run("a policy with no predicate", func(t *testing.T) {
 		require.Error(t, mustNew(t, nil).authorizeSignal(
-			memoWithDebugPolicy(t, &v1types.SignalPolicy{}), v1types.DebugSignal, caller))
+			memoWithDebugPolicy(t, &v1types.SignalPolicy{}), v1types.DebugSignal, caller, nil))
 	})
 
 	t.Run("a predicate that does not compile", func(t *testing.T) {
 		require.Error(t, mustNew(t, nil).authorizeSignal(
 			memoWithDebugPolicy(t, &v1types.SignalPolicy{Allow: `sender.identity.principal ==`}),
-			v1types.DebugSignal, caller))
+			v1types.DebugSignal, caller, nil))
 	})
 }
 

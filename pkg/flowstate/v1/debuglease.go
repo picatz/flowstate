@@ -344,7 +344,7 @@ func DebugPolicyCheck(ctx context.Context, policy *SignalPolicy, identity *Workl
 				"a run with nothing saying who may debug it is not debuggable")
 	}
 
-	return signalPolicyCheck(ctx, "debug policy", policy, identity, starter, hasStarter, inputs)
+	return signalPolicyCheck(ctx, "debug policy", policy, identity, starter, hasStarter, inputs, nil)
 }
 
 // CheckDebugPolicy reports what is wrong with a workflow's declared `debug:`
@@ -357,7 +357,19 @@ func CheckDebugPolicy(policy *SignalPolicy) error {
 		return nil
 	}
 
-	return CheckPolicyShape("debug", policy)
+	if err := CheckPolicyShape("debug", policy); err != nil {
+		return err
+	}
+
+	// A debug ask is not a delivery with an author-shaped payload to branch on,
+	// so `payload` has nothing bound there and a predicate reading it would deny
+	// every caller. Refused where it is written instead.
+	if p, err := CompileSignalPolicyPredicate(policy.GetAllow()); err == nil && p.reads.Payload {
+		return fmt.Errorf("debug.allow reads `payload`, which a debug lease has none of; " +
+			"compare `sender.identity.claims` or `run.identity` instead")
+	}
+
+	return nil
 }
 
 // CheckReservedSignalNames refuses a workflow that waits for, or declares a

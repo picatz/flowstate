@@ -33,7 +33,7 @@ func gateWorkflow() *v1.Workflow {
 func policyAllows(t *testing.T, policy *v1.SignalPolicy, identity *v1.WorkloadIdentity) bool {
 	t.Helper()
 
-	return v1.SignalPolicyCheck(t.Context(), policy, identity, nil, false, nil) == nil
+	return v1.SignalPolicyCheck(t.Context(), policy, identity, nil, false, nil, nil) == nil
 }
 
 func TestCheckSignalPoliciesAcceptsNoPolicyAtAll(t *testing.T) {

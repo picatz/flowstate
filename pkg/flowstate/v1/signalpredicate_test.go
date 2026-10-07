@@ -30,7 +30,7 @@ func TestSignalPolicyPredicateReadsTheKindAPolicyAssigned(t *testing.T) {
 		v1.PrincipalKind_PRINCIPAL_KIND_UNSPECIFIED: false,
 	} {
 		sender := &v1.WorkloadIdentity{Issuer: "https://i", Subject: "alice", PrincipalKind: kind}
-		err := v1.SignalPolicyCheck(context.Background(), policy, sender, starter, true, nil)
+		err := v1.SignalPolicyCheck(context.Background(), policy, sender, starter, true, nil, nil)
 		if wantAllowed {
 			require.NoError(t, err, kind.String())
 		} else {
@@ -41,7 +41,7 @@ func TestSignalPolicyPredicateReadsTheKindAPolicyAssigned(t *testing.T) {
 	// The starter's own kind is readable too.
 	require.NoError(t, v1.SignalPolicyCheck(context.Background(),
 		predicatePolicy(`run.identity.kind == "workload" && sender.identity.principal != ""`),
-		&v1.WorkloadIdentity{Issuer: "https://i", Subject: "alice"}, starter, true, nil))
+		&v1.WorkloadIdentity{Issuer: "https://i", Subject: "alice"}, starter, true, nil, nil))
 }
 
 func TestSignalPolicyPredicateIsTypeCheckedAgainstTheClosedScope(t *testing.T) {
@@ -130,20 +130,20 @@ func TestSignalPolicyRefusalNeverQuotesAnInputOrAClaim(t *testing.T) {
 	byInput := predicatePolicy(`int(inputs.n) == 1 && sender.identity.claims["x"] == "y"`)
 	err := v1.SignalPolicyCheck(t.Context(), byInput,
 		&v1.WorkloadIdentity{Claims: map[string]string{"x": "y"}}, nil, false,
-		map[string]*v1.Value{"n": v1.NewLiteral(secret)})
+		map[string]*v1.Value{"n": v1.NewLiteral(secret)}, nil)
 	require.Error(t, err)
 	assert.NotContains(t, err.Error(), secret, "an input's value reached the refusal")
 
 	byClaim := predicatePolicy(`int(sender.identity.claims["n"]) == 1`)
 	err = v1.SignalPolicyCheck(t.Context(), byClaim,
-		&v1.WorkloadIdentity{Claims: map[string]string{"n": secret}}, nil, false, nil)
+		&v1.WorkloadIdentity{Claims: map[string]string{"n": secret}}, nil, false, nil, nil)
 	require.Error(t, err)
 	assert.NotContains(t, err.Error(), secret, "a claim's value reached the refusal")
 
 	// A predicate that is itself refused at compile names the author's own
 	// expression and nothing a run supplied.
 	err = v1.SignalPolicyCheck(t.Context(), predicatePolicy(`inputs.n == "`+"x"+`"`),
-		&v1.WorkloadIdentity{}, nil, false, map[string]*v1.Value{"n": v1.NewLiteral(secret)})
+		&v1.WorkloadIdentity{}, nil, false, map[string]*v1.Value{"n": v1.NewLiteral(secret)}, nil)
 	require.Error(t, err)
 	assert.NotContains(t, err.Error(), secret)
 }
@@ -156,7 +156,7 @@ func TestSignalPolicyPredicateDeniesWhenTheContextIsCancelled(t *testing.T) {
 
 	err := v1.SignalPolicyCheck(cancelled,
 		predicatePolicy(`sender.identity.principal == "a#b"`),
-		&v1.WorkloadIdentity{Issuer: "a", Subject: "b"}, nil, false, nil)
+		&v1.WorkloadIdentity{Issuer: "a", Subject: "b"}, nil, false, nil, nil)
 	// Whether the interpreter notices before a trivial predicate finishes is
 	// not the contract; that it never errors into an allow is.
 	if err != nil {
@@ -169,15 +169,15 @@ func TestSignalPolicyCheckRefusesAPolicyWithNoPredicate(t *testing.T) {
 
 	sender := &v1.WorkloadIdentity{Namespace: "n"}
 
-	require.Error(t, v1.SignalPolicyCheck(t.Context(), &v1.SignalPolicy{}, sender, nil, false, nil),
+	require.Error(t, v1.SignalPolicyCheck(t.Context(), &v1.SignalPolicy{}, sender, nil, false, nil, nil),
 		"a policy with no predicate was read as open")
 	require.Error(t, v1.CheckPolicyShape(`signals["x"]`, &v1.SignalPolicy{}),
 		"a policy with no predicate authorizes nobody and is refused, not read as open")
 
 	only := predicatePolicy(`sender.identity.namespace == "n"`)
 	require.NoError(t, v1.CheckPolicyShape(`signals["x"]`, only))
-	require.NoError(t, v1.SignalPolicyCheck(t.Context(), only, sender, nil, false, nil))
-	require.Error(t, v1.SignalPolicyCheck(t.Context(), only, &v1.WorkloadIdentity{Namespace: "m"}, nil, false, nil))
+	require.NoError(t, v1.SignalPolicyCheck(t.Context(), only, sender, nil, false, nil, nil))
+	require.Error(t, v1.SignalPolicyCheck(t.Context(), only, &v1.WorkloadIdentity{Namespace: "m"}, nil, false, nil, nil))
 }
 
 func TestSignalPolicyShapeRefusesAnUnusablePredicateWithTheStanzaNamed(t *testing.T) {

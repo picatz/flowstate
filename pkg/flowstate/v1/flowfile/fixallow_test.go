@@ -406,7 +406,7 @@ func decide(t *testing.T, stanza string, wf *v1.Workflow, sender, starter *v1.Wo
 	case "debug":
 		return v1.DebugPolicyCheck(ctx, wf.GetDebug(), sender, starter, hasStarter, inputs) == nil
 	default:
-		return v1.SignalPolicyCheck(ctx, wf.GetSignals()["go"], sender, starter, hasStarter, inputs) == nil
+		return v1.SignalPolicyCheck(ctx, wf.GetSignals()["go"], sender, starter, hasStarter, inputs, nil) == nil
 	}
 }
 

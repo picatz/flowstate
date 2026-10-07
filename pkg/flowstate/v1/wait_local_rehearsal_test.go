@@ -34,9 +34,7 @@ func TestRehearsalSignalCasesLocally(t *testing.T) {
 			sender = v1.RehearsalSignalSender(c.Sender)
 		}
 
-		return signals.DeliverFrom(c.SignalName, &v1.Node_Outputs{
-			NamedValues: map[string]*v1.Value{"approved": v1.NewLiteral(true)},
-		}, sender)
+		return signals.DeliverFrom(c.SignalName, c.Delivered(), sender)
 	})
 }
 

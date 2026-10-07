@@ -70,7 +70,7 @@ inventory below remains the source of truth for every directory.
 | `flow test`, directory fixtures, and `testdefaults.yaml` | [testing-defaults](testing-defaults), then any sibling `workflow.test.yaml` | testing/debugging/editor/agent journey; regression fixture |
 | CLI, MCP, and DAP debugging, local and durable | [debugging](debugging), [loop-accumulate](loop-accumulate), [debugger guide](../docs/DEBUGGING.md) | testing/debugging/editor/agent journey |
 | LSP and editor setup | [editor setup](../docs/EDITORS.md), [VS Code client](../editors/vscode/README.md) | testing/debugging/editor/agent journey |
-| Task, egress, and identity policy | [task-shape-policy](task-shape-policy), [signal-rule-identity](signal-rule-identity), [http-secret](http-secret) | policy/governance |
+| Task, egress, and identity policy | [task-shape-policy](task-shape-policy), [signal-rule-identity](signal-rule-identity), [signal-payload-decision](signal-payload-decision), [http-secret](http-secret) | policy/governance |
 | Running a program under an operator's allowlist | [exec-checks](exec-checks) | policy/governance |
 | Holding a credential a step needs | [http-secret](http-secret), then [vault-secret](vault-secret), [http-federated](http-federated) | policy/governance |
 | One run at a time, and one tenant's fleet | [exclusive-cluster-drain](exclusive-cluster-drain), [operations/tenant-routing](operations/tenant-routing/) | policy/governance |
@@ -146,6 +146,7 @@ says otherwise.
 | [refund-request](refund-request) | A typed `Refund` record, an optional field read with `.?`, a finance-only approval that cannot be given by the requester, an idempotent payout, and `undo:` when a later step fails | yes |
 | [approval-gate](approval-gate) | `wait_for_signal:` as a human approval gate, shaping its own `outputs:` so the gate is stated once and every branch and report reads one name | no |
 | [signal-rule-identity](signal-rule-identity) | Two `signals:` rules that gate on identity rather than a claim — `subject:` pinning one automated caller with no role to name, and `namespace:` beside `claims:` naming one tenant's holders of a role — and why each is the exception to gating on `claims:` alone | no |
+| [signal-payload-decision](signal-payload-decision) | A `signals:` predicate that reads the delivery's own `payload` so anyone may reject and only an approver may approve, with the claim read that keeps a sender-chosen payload from admitting itself | no |
 | [approval-escalation](approval-escalation) | The chase a real approval is — a `loop:` asking on a cadence, escalating to a backup approver the `signals:` policy already named, and auto-rejecting when the ask budget runs out, with a README on why that budget is `until:`'s and not `max_iterations:`'s | no |
 | [wait-timeout](wait-timeout) | The same gate going unanswered: `timeout:` lapses, `timed_out` is true, and the run carries on rather than failing | no |
 | [wait-until-a-moment](wait-until-a-moment) | `wait_until:` a computed moment, with `now` and the duration builders | no |

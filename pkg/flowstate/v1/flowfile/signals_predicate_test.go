@@ -199,7 +199,7 @@ func TestAnAllowPredicatePolicyEndToEnd(t *testing.T) {
 
 	check := func(issuer, subject string) error {
 		return v1.SignalPolicyCheck(t.Context(), policy,
-			&v1.WorkloadIdentity{Issuer: issuer, Subject: subject}, nil, false, nil)
+			&v1.WorkloadIdentity{Issuer: issuer, Subject: subject}, nil, false, nil, nil)
 	}
 
 	require.NoError(t, check("https://a.example.com", "alice"))

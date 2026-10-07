@@ -1197,7 +1197,7 @@ func (r *WebhookReceiver) answer(ctx context.Context, route *webhookRoute, deliv
 	// The gate's own policy, checked by the same function `flow signal` is
 	// checked by, before Temporal sees anything. A refusal here never reaches
 	// the workflow at all.
-	if err := r.server.authorizeSignal(resp, name, sender); err != nil {
+	if err := r.server.authorizeSignal(resp, name, sender, v1.BoundSignalPayload(payload)); err != nil {
 		return v1.AcceptedDelivery{}, r.denied(ctx, route, identity,
 			v1.AuditResourceKind_AUDIT_RESOURCE_KIND_RUN, workflowID,
 			v1.AuditDenyCode_AUDIT_DENY_CODE_POLICY_DENIED,

@@ -151,19 +151,26 @@ func CheckPolicyShape(where string, policy *SignalPolicy) error {
 // errors and denies, the same as a run whose memo predates the starter record.
 // inputs is the run's bound arguments: nil for a caller that has none, in which
 // case a predicate reading them errors and denies.
-func SignalPolicyCheck(ctx context.Context, policy *SignalPolicy, identity *WorkloadIdentity, starter *WorkloadIdentity, hasStarter bool, inputs map[string]*Value) error {
-	return signalPolicyCheck(ctx, "signal", policy, identity, starter, hasStarter, inputs)
+//
+// payload is the delivery's bound `with:` map, the value a wait reads under
+// `payload`: every door that delivers passes the payload it is delivering, so a
+// predicate tells an approve from a reject identically on both drivers. nil is
+// a caller with no delivery (a gate listing, a rehearsal that names none): a
+// predicate reading `payload` errors and denies there, rather than reading an
+// empty one. A delivery with no payload passes an empty, non-nil value.
+func SignalPolicyCheck(ctx context.Context, policy *SignalPolicy, identity *WorkloadIdentity, starter *WorkloadIdentity, hasStarter bool, inputs map[string]*Value, payload *Node_Outputs) error {
+	return signalPolicyCheck(ctx, "signal", policy, identity, starter, hasStarter, inputs, payload)
 }
 
 // signalPolicyCheck is [SignalPolicyCheck] with the stanza's name for its
 // refusals: `debug:` is decided by this same function ([DebugPolicyCheck]) and
 // says "debug policy", not "signal".
-func signalPolicyCheck(ctx context.Context, label string, policy *SignalPolicy, identity *WorkloadIdentity, starter *WorkloadIdentity, hasStarter bool, inputs map[string]*Value) error {
+func signalPolicyCheck(ctx context.Context, label string, policy *SignalPolicy, identity *WorkloadIdentity, starter *WorkloadIdentity, hasStarter bool, inputs map[string]*Value, payload *Node_Outputs) error {
 	if policy.GetAllow() == "" {
 		return fmt.Errorf("this %s's policy declares no allow predicate, so no sender is authorized", label)
 	}
 
-	return signalPolicyExprAllows(ctx, label, policy.GetAllow(), identity, starter, hasStarter, inputs)
+	return signalPolicyExprAllows(ctx, label, policy.GetAllow(), identity, starter, hasStarter, inputs, payload)
 }
 
 // QualifiedSubject renders an issuer and subject as "<issuer>#<subject>", the
@@ -183,4 +190,15 @@ func QualifiedSubject(issuer, subject string) string {
 func LooksLikeQualifiedSubject(s string) bool {
 	i := strings.IndexByte(s, '#')
 	return i > 0 && i < len(s)-1 && strings.LastIndexByte(s, '#') == i
+}
+
+// BoundSignalPayload is the payload a delivery presents to [SignalPolicyCheck]:
+// the delivery's own, or an empty one for a delivery that carries none, so a
+// door never passes nil (which means "no delivery to offer") by accident.
+func BoundSignalPayload(payload *Node_Outputs) *Node_Outputs {
+	if payload == nil {
+		return &Node_Outputs{}
+	}
+
+	return payload
 }

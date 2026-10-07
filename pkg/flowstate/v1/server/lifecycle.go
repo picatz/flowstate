@@ -285,7 +285,12 @@ func (s *FlowstateServer) authorizeManualStart(ctx context.Context, rpc string, 
 // `allow:` predicate of a policy that *does* exist does not admit, or a
 // predicate reading `run.identity` on a run with no starter recorded, is
 // refused. There is no third outcome once a policy is declared.
-func (s *FlowstateServer) authorizeSignal(resp *workflowservice.DescribeWorkflowExecutionResponse, name string, sender *v1.SignalSender) error {
+//
+// payload is what this delivery carries, bound for a predicate that reads
+// `payload` and recorded nowhere; nil means the caller has no delivery to offer
+// ([FlowstateServer.gateOf]) and a predicate reading it denies. Every door that
+// delivers passes its own, so the verdict is the one the local driver reaches.
+func (s *FlowstateServer) authorizeSignal(resp *workflowservice.DescribeWorkflowExecutionResponse, name string, sender *v1.SignalSender, payload *v1.Node_Outputs) error {
 	// A sender marked local is a local driver's own value - [v1.LocalSignalSender]
 	// for a delivery that attests nobody, [v1.RehearsalSignalSender] for one a
 	// `flow run local --signal-as-subject` rehearsal asserts on an approver's
@@ -382,7 +387,7 @@ func (s *FlowstateServer) authorizeSignal(resp *workflowservice.DescribeWorkflow
 
 	// Background, not a request context: authorizeSignal is also asked by GetGate and the webhook bridge. The
 	// predicate's cost bound ([v1.SignalPolicyExprCostLimit]) is what limits the work.
-	if err := v1.SignalPolicyCheck(context.Background(), policy, sender.GetIdentity(), starterIdentity, hasStarter, runInputs); err != nil {
+	if err := v1.SignalPolicyCheck(context.Background(), policy, sender.GetIdentity(), starterIdentity, hasStarter, runInputs, payload); err != nil {
 		return connect.NewError(connect.CodePermissionDenied,
 			fmt.Errorf("signal %q: %w", name, err))
 	}
@@ -428,6 +433,22 @@ func (s *FlowstateServer) predicateRunScope(memo *common.Memo, what string, poli
 	return starter, inputs, nil
 }
 
+// signalPolicyReadsPayload reports whether the run's policy for name reads
+// `payload`. A memo that cannot be read reports false: [authorizeSignal] then
+// denies on the same unreadable memo, so the advice stays "no".
+func (s *FlowstateServer) signalPolicyReadsPayload(resp *workflowservice.DescribeWorkflowExecutionResponse, name string) bool {
+	policies, hasMemo, err := s.signalPolicies(resp.GetWorkflowExecutionInfo().GetMemo())
+	if err != nil || !hasMemo {
+		return false
+	}
+	policy, declared := policies[name]
+	if !declared {
+		return false
+	}
+
+	return v1.SignalPolicyExprReads(map[string]*v1.SignalPolicy{"": policy}).Payload
+}
+
 // authorizeExistingEntity asks the signal's policy of an entity that already
 // exists, on its own memo, and returns the run id the delivery is pinned to.
 //
@@ -438,8 +459,8 @@ func (s *FlowstateServer) predicateRunScope(memo *common.Memo, what string, poli
 // behaviour SignalWithStart exists to avoid, arrived at by accident. The
 // described execution always has a concrete id. A refusal is audited as
 // Signal's is.
-func (s *FlowstateServer) authorizeExistingEntity(ctx context.Context, resp *workflowservice.DescribeWorkflowExecutionResponse, hint, workflowID, name string, sender *v1.SignalSender) (string, error) {
-	if err := s.authorizeSignal(resp, name, sender); err != nil {
+func (s *FlowstateServer) authorizeExistingEntity(ctx context.Context, resp *workflowservice.DescribeWorkflowExecutionResponse, hint, workflowID, name string, sender *v1.SignalSender, payload *v1.Node_Outputs) (string, error) {
+	if err := s.authorizeSignal(resp, name, sender, payload); err != nil {
 		return "", s.auditDeny(ctx, "SignalWithStart", v1.AuditResourceKind_AUDIT_RESOURCE_KIND_RUN, workflowID,
 			v1.AuditDenyCode_AUDIT_DENY_CODE_POLICY_DENIED, err)
 	}
@@ -873,7 +894,7 @@ func (s *FlowstateServer) Signal(ctx context.Context, req *connect.Request[v1.Si
 	// gets PermissionDenied synchronously, not a signal silently dropped or a
 	// wait that quietly never resolves. See [authorizeSignal] for the
 	// zero-case and fail-closed rules this enforces.
-	if err := s.authorizeSignal(resp, req.Msg.GetName(), sender); err != nil {
+	if err := s.authorizeSignal(resp, req.Msg.GetName(), sender, v1.BoundSignalPayload(payload)); err != nil {
 		return nil, s.auditDeny(ctx, "Signal", v1.AuditResourceKind_AUDIT_RESOURCE_KIND_RUN, workflowID,
 			v1.AuditDenyCode_AUDIT_DENY_CODE_POLICY_DENIED, err)
 	}
@@ -1033,7 +1054,15 @@ func (s *FlowstateServer) gateOf(ctx context.Context, resp *workflowservice.Desc
 		StepId:     wait.GetStepId(),
 		SignalName: name,
 		Deadline:   wait.Deadline,
-		MayAnswer:  s.authorizeSignal(resp, name, sender) == nil,
+	}
+
+	// A predicate over the delivery's payload has no answer about the caller
+	// alone: the gate listing carries no payload to bind, so the question is
+	// reported as depending on it rather than decided (and never as true).
+	if s.signalPolicyReadsPayload(resp, name) {
+		out.DependsOnPayload = true
+	} else {
+		out.MayAnswer = s.authorizeSignal(resp, name, sender, nil) == nil
 	}
 
 	// Signal asks for `workload.debug` as well on the reserved debug channel,
@@ -1262,7 +1291,7 @@ func (s *FlowstateServer) SignalWithStart(ctx context.Context, req *connect.Requ
 		// trusted-workflow replacement adds concurrency.
 		temporal, resp, _, existingErr := s.authorizeRunDecision(ctx, workflowID, "")
 		if existingErr == nil {
-			if err := s.authorizeSignal(resp, req.Msg.GetName(), sender); err != nil {
+			if err := s.authorizeSignal(resp, req.Msg.GetName(), sender, v1.BoundSignalPayload(payload)); err != nil {
 				return nil, s.auditDeny(ctx, "SignalWithStart", v1.AuditResourceKind_AUDIT_RESOURCE_KIND_RUN, workflowID,
 					v1.AuditDenyCode_AUDIT_DENY_CODE_POLICY_DENIED, err)
 			}
@@ -1366,7 +1395,7 @@ func (s *FlowstateServer) SignalWithStart(ctx context.Context, req *connect.Requ
 	// this into an admission.
 	described, createErr := describedByMemo(s, memo)
 	if createErr == nil {
-		createErr = s.authorizeSignal(described, req.Msg.GetName(), sender)
+		createErr = s.authorizeSignal(described, req.Msg.GetName(), sender, v1.BoundSignalPayload(payload))
 	}
 	if createErr != nil {
 		existing, resp, _, err := s.authorizeRunDecision(ctx, workflowID, "")
@@ -1379,7 +1408,7 @@ func (s *FlowstateServer) SignalWithStart(ctx context.Context, req *connect.Requ
 				v1.AuditDenyCode_AUDIT_DENY_CODE_POLICY_DENIED, createErr)
 		}
 
-		runID, err := s.authorizeExistingEntity(ctx, resp, "", workflowID, req.Msg.GetName(), sender)
+		runID, err := s.authorizeExistingEntity(ctx, resp, "", workflowID, req.Msg.GetName(), sender, v1.BoundSignalPayload(payload))
 		if err != nil {
 			return nil, err
 		}
@@ -1455,7 +1484,7 @@ func (s *FlowstateServer) SignalWithStart(ctx context.Context, req *connect.Requ
 		if err != nil {
 			return nil, err
 		}
-		actualRunID, err = s.authorizeExistingEntity(ctx, resp, already.RunId, workflowID, req.Msg.GetName(), sender)
+		actualRunID, err = s.authorizeExistingEntity(ctx, resp, already.RunId, workflowID, req.Msg.GetName(), sender, v1.BoundSignalPayload(payload))
 		if err != nil {
 			return nil, err
 		}

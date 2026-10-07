@@ -49,6 +49,7 @@ import (
 //	sender.identity.{principal,subject,issuer,namespace,kind,claims}
 //	run.identity.{principal,subject,issuer,namespace,kind,claims}   (the starter)
 //	inputs                                                      (the run's arguments)
+//	payload                                                     (the delivery's bound `with:` map)
 //
 // Nothing else: no steps, vars, secrets or clock. An unknown root or field is a
 // type error at compile time, so a misspelling is a refusal rather than a
@@ -78,6 +79,16 @@ import (
 // something the starter's inputs cannot reach. The check is syntactic, so
 // `claims.x == 1 || inputs.admin == "y"` satisfies it: authors write the
 // narrowing as a conjunction. See [SignalPolicy.allow].
+//
+// `payload` is the same hazard from the other side: it is what the sender
+// chose to send (the bound `with:` map the delivery carries, the value a wait
+// reads under `payload`), so `payload.decision == "approve"` alone admits
+// anyone who can write that payload. A predicate that reads `payload` must
+// also read `sender.identity.claims` or `run.identity`. Unlike `inputs`, the
+// payload is per delivery: it is bound when the delivery is evaluated at every
+// door and recorded nowhere (not in the memo, not in history), and its size is
+// bounded by [CheckSignalPayloadSize]. A key the payload does not carry is an
+// evaluation error, which denies, and a refusal names no payload value.
 
 // SignalPolicyExprCostLimit bounds the CEL evaluation cost of one signal
 // policy predicate, the same budget the other policy surfaces give a rule
@@ -141,7 +152,11 @@ func allowPolicyEnv(withRun bool) (*cel.Env, error) {
 		cel.ASTValidators(cel.ValidateRegexLiterals()),
 	}
 	if withRun {
-		opts = append(opts, cel.Variable("run", cel.ObjectType(signalPolicyActorTypeName)))
+		opts = append(opts,
+			cel.Variable("run", cel.ObjectType(signalPolicyActorTypeName)),
+			// Only where there is a delivery: a manual start carries inputs, not
+			// a payload, so `payload` is an undeclared name there.
+			cel.Variable(PayloadOutput, cel.MapType(cel.StringType, cel.DynType)))
 	}
 
 	return cel.NewEnv(opts...)
@@ -168,6 +183,10 @@ type SignalPolicyReads struct {
 	// Claims: `sender.identity.claims`, which carries only the claims the
 	// server was started to project (`--identity-claim`).
 	Claims bool
+	// Payload: the delivery's `payload`. Nothing is recorded for it: it is
+	// bound per delivery, so a surface that cannot supply one (a gate
+	// listing) reports the answer as depending on it rather than deciding.
+	Payload bool
 }
 
 // Reads reports which per-run parts of the scope the predicate reads.
@@ -235,6 +254,14 @@ func compileAllowPredicate(src string, manual bool) (SignalPolicyPredicate, erro
 				"or iterated); the run records only the inputs a predicate names, so write each as " +
 				"`inputs.name` or `inputs[\"name\"]`")
 	}
+	if reads.payload && !reads.claims && !reads.run {
+		return SignalPolicyPredicate{}, errors.New(
+			"the predicate reads `payload` but nothing alongside it that the sender's payload cannot reach; " +
+				"the sender chooses the payload they send, so as written anyone who can write it is admitted. " +
+				"Also compare `sender.identity.claims` or `run.identity` (for example " +
+				"`payload.decision == \"reject\" || (payload.decision == \"approve\" && " +
+				"\"release-approvers\" in sender.identity.claims.groups)`)")
+	}
 	if reads.inputs && !reads.claims && !reads.run {
 		if manual {
 			return SignalPolicyPredicate{}, errors.New(
@@ -255,11 +282,12 @@ func compileAllowPredicate(src string, manual bool) (SignalPolicyPredicate, erro
 		InputNames: slices.Sorted(maps.Keys(reads.inputNames)),
 		Run:        reads.run,
 		Claims:     reads.claims,
+		Payload:    reads.payload,
 	}}, nil
 }
 
 const signalPolicyScopeDescription = "`sender.identity.{principal,subject,issuer,namespace,kind,claims}`, " +
-	"`run.identity` (the starter, same fields) and `inputs`"
+	"`run.identity` (the starter, same fields), `inputs` and `payload` (the delivery's `with:` map)"
 
 const manualPolicyScopeDescription = "`sender.identity.{principal,subject,issuer,namespace,kind,claims}` " +
 	"(the caller) and `inputs` (the arguments submitted with this start); there is no `run` yet"
@@ -294,6 +322,7 @@ func SignalPolicyExprReads(policies map[string]*SignalPolicy) SignalPolicyReads 
 			reads.InputNames = append(reads.InputNames, p.reads.InputNames...)
 			reads.Run = reads.Run || p.reads.Run
 			reads.Claims = reads.Claims || p.reads.Claims
+			reads.Payload = reads.Payload || p.reads.Payload
 		}
 	}
 
@@ -351,7 +380,7 @@ func CheckWorkflowPolicyInputs(wf *Workflow) error {
 }
 
 type signalPolicyScopeReads struct {
-	inputs, claims, run bool
+	inputs, claims, run, payload bool
 	// inputNames are the top-level keys read as `inputs.k`, `inputs["k"]`,
 	// `has(inputs.k)` or `"k" in inputs`; opaqueInputs is set by any other use
 	// of `inputs`, which names no key.
@@ -383,6 +412,8 @@ func signalPolicyReads(checked *cel.Ast) signalPolicyScopeReads {
 			}
 		case global(e, "run"):
 			reads.run = true
+		case global(e, PayloadOutput):
+			reads.payload = true
 		case e.Kind() == celast.SelectKind:
 			sel := e.AsSelect()
 			if sel.IsTestOnly() || sel.FieldName() != "claims" {
@@ -471,7 +502,12 @@ func signalPolicyIsLocal(ident celast.NavigableExpr) bool {
 // starter is known: an unbound name is an evaluation error, which is how an
 // unknown starter denies a predicate that reads it and spares one that does
 // not.
-func signalPolicyActivation(identity, starter *WorkloadIdentity, hasStarter bool, inputs map[string]*Value) map[string]any {
+//
+// payload is the delivery's bound `with:` map, rendered exactly as a wait
+// renders it ([signalPayloadValue]'s literals), and is unbound when nil for the
+// reason inputs is: a caller with no delivery to offer (a rehearsal, a gate
+// listing) must not have a predicate read an empty payload as "decision absent".
+func signalPolicyActivation(identity, starter *WorkloadIdentity, hasStarter bool, inputs map[string]*Value, payload *Node_Outputs) map[string]any {
 	vars := map[string]any{"sender": newSignalPolicyActor(identity)}
 	// inputs is unbound when the caller holds none (nil), not empty: a
 	// predicate over an empty scope would read `!has(inputs.x)` as true. A run
@@ -481,6 +517,17 @@ func signalPolicyActivation(identity, starter *WorkloadIdentity, hasStarter bool
 	}
 	if hasStarter {
 		vars["run"] = newSignalPolicyActor(starter)
+	}
+	if payload != nil {
+		literals := make(map[string]*Value, len(payload.GetNamedValues()))
+		for name, v := range payload.GetNamedValues() {
+			// Literals only, the rule [signalPayloadValue] applies: a signal
+			// carries data, not expressions.
+			if v.GetLiteral() != nil {
+				literals[name] = v
+			}
+		}
+		vars[PayloadOutput] = signalPolicyInputsValue(literals)
 	}
 
 	return vars
@@ -516,21 +563,21 @@ func signalPolicyInputsValue(inputs map[string]*Value) ref.Val {
 // only for a clean `true`. Every refusal it returns is a fixed sentence: it
 // wraps nothing the evaluation produced. label names the stanza in the refusal
 // ("signal", "debug policy").
-func signalPolicyExprAllows(ctx context.Context, label, src string, identity, starter *WorkloadIdentity, hasStarter bool, inputs map[string]*Value) error {
-	return allowPredicateAllowsWithin(ctx, SignalPolicyExprTimeout, label, false, src, identity, starter, hasStarter, inputs)
+func signalPolicyExprAllows(ctx context.Context, label, src string, identity, starter *WorkloadIdentity, hasStarter bool, inputs map[string]*Value, payload *Node_Outputs) error {
+	return allowPredicateAllowsWithin(ctx, SignalPolicyExprTimeout, label, false, src, identity, starter, hasStarter, inputs, payload)
 }
 
 // signalPolicyExprAllowsWithin is [signalPolicyExprAllows] with the deadline a
 // parameter, so a test can prove the deadline is what denies.
-func signalPolicyExprAllowsWithin(ctx context.Context, timeout time.Duration, src string, identity, starter *WorkloadIdentity, hasStarter bool, inputs map[string]*Value) error {
-	return allowPredicateAllowsWithin(ctx, timeout, "signal", false, src, identity, starter, hasStarter, inputs)
+func signalPolicyExprAllowsWithin(ctx context.Context, timeout time.Duration, src string, identity, starter *WorkloadIdentity, hasStarter bool, inputs map[string]*Value, payload *Node_Outputs) error {
+	return allowPredicateAllowsWithin(ctx, timeout, "signal", false, src, identity, starter, hasStarter, inputs, payload)
 }
 
 // allowPredicateAllowsWithin is the one run loop behind all three stanzas:
 // compile (the scope picked by manual), bound by time, evaluate, and let only a
 // clean true through. label names the stanza in the refusal ("signal", "debug
 // policy", "manual start").
-func allowPredicateAllowsWithin(ctx context.Context, timeout time.Duration, label string, manual bool, src string, identity, starter *WorkloadIdentity, hasStarter bool, inputs map[string]*Value) error {
+func allowPredicateAllowsWithin(ctx context.Context, timeout time.Duration, label string, manual bool, src string, identity, starter *WorkloadIdentity, hasStarter bool, inputs map[string]*Value, payload *Node_Outputs) error {
 	predicate, err := compileAllowPredicate(src, manual)
 	if err != nil {
 		return fmt.Errorf("this %s's allow predicate is not a valid policy, so no sender is authorized "+
@@ -544,14 +591,14 @@ func allowPredicateAllowsWithin(ctx context.Context, timeout time.Duration, labe
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	allowed, err := predicate.rule.Match(ctx, signalPolicyActivation(identity, starter, hasStarter, inputs))
+	allowed, err := predicate.rule.Match(ctx, signalPolicyActivation(identity, starter, hasStarter, inputs, payload))
 	if err != nil {
 		// Deliberately not wrapped, formatted in or inspected: cel-go's
 		// conversion errors quote their operand, and an operand can be an input
 		// or a claim. One sentence for every cause.
 		return fmt.Errorf("this %s's allow predicate could not be evaluated for this sender "+
-			"(it errored, for example by reading the run's starter when none is recorded or a claim or "+
-			"input that is missing, or it exceeded its cost bound), so the sender is refused%s",
+			"(it errored, for example by reading the run's starter when none is recorded or a claim, "+
+			"input or payload key that is missing, or it exceeded its cost bound), so the sender is refused%s",
 			label, senderClaimsHint(predicate.reads.Claims, identity))
 	}
 	if !allowed {
@@ -585,7 +632,7 @@ func senderClaimsHint(readsClaims bool, sender *WorkloadIdentity) string {
 // manualAllowExprAllows decides a `manual: allow: ${...}` start: the caller and
 // the submitted inputs, no run. Same loop as the other two stanzas.
 func manualAllowExprAllows(ctx context.Context, src string, caller *WorkloadIdentity, inputs map[string]*Value) error {
-	return allowPredicateAllowsWithin(ctx, SignalPolicyExprTimeout, "manual start", true, src, caller, nil, false, inputs)
+	return allowPredicateAllowsWithin(ctx, SignalPolicyExprTimeout, "manual start", true, src, caller, nil, false, inputs, nil)
 }
 
 // SignalPolicyClosedPrincipals reports the principals a policy's predicate can
