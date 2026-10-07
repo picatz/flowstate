@@ -1085,7 +1085,7 @@ the core: no separate module and no BSR push, and `make plugin-proto` and
 `buf generate` produce it with the rest. It is engine-provided, so the host has it
 compiled in and a plugin never ships a copy: the SDK names it beside
 `flowstate.plugin.v1` in the `describeMessage` hook, and `flowstatev1` does not
-import it. `TestEveryDomainFileIsEngineProvided` walks the registry for every
+import it. `TestEveryDomainFileIsEngineProvided` walks the proto sources for every
 `flowstate/<domain>/v1` file and fails on one the SDK would still ship. A domain
 package is `v1` until it breaks; a break is a new `v2` directory and Go path, not
 an edit in place. `flowstate.chat.v1` is planned to follow this rule.

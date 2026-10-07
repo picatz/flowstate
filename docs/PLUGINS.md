@@ -520,9 +520,9 @@ Two things follow that are worth knowing before you build on it:
   identical in shape to a built-in one.
 - **The wire protocol is versioned; the Go API is not.** The protocol is
   negotiated at launch and a mismatch is refused at startup with a message saying
-  which side to upgrade. The current version is 7 (`Version7`,
+  which side to upgrade. The current version is 8 (`Version8`,
   `pkg/flowstate/v1/plugin/internal/protocol/protocol.go`); [Reaching the
-  network](#reaching-the-network) says what versions 6 and 7 changed. Nothing
+  network](#reaching-the-network) says what versions 6 to 8 changed. Nothing
   equivalent covers the Go types you compile against.
 
 The in-tree plugin modules are not the counter-example they look like. Each
