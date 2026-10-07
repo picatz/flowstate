@@ -37,7 +37,7 @@ func init() {
 		{
 			Name: "flowstate.v1.Question.Predicate",
 			Leading: " Predicate asks a yes/no question. It has no fields: the question is its\n" +
-				" [Question.instructions].\n",
+				" `instructions`.\n",
 		},
 		{
 			Name:    "flowstate.v1.Question.Choice",
@@ -80,7 +80,7 @@ func init() {
 		},
 		{
 			Name:    "flowstate.v1.Answer.name",
-			Leading: " Name is the [Question.name] this answers.\n",
+			Leading: " Name is the name of the question this answers.\n",
 		},
 		{
 			Name:    "flowstate.v1.Answer.predicate",

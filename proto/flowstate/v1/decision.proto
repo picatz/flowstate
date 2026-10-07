@@ -101,7 +101,7 @@ message Question {
   }
 
   // Predicate asks a yes/no question. It has no fields: the question is its
-  // [Question.instructions].
+  // `instructions`.
   message Predicate {}
 
   // Choice picks one of a closed set of unordered options.
@@ -198,7 +198,7 @@ message Answer {
     expression: "this.distribution.size() == 0 || (has(this.predicate) ? ('true' in this.distribution && 'false' in this.distribution && this.distribution.size() == 2) : has(this.choice) ? this.choice in this.distribution : this.score in this.distribution)"
   };
 
-  // Name is the [Question.name] this answers.
+  // Name is the name of the question this answers.
   string name = 1 [
     (buf.validate.field).required = true,
     (google.api.field_behavior) = REQUIRED,

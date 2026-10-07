@@ -270,7 +270,7 @@ func (x *QuestionSet) GetQuestions() []*Question {
 // are.
 type Answer struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Name is the [Question.name] this answers.
+	// Name is the name of the question this answers.
 	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
 	// Result is the decision itself, of the kind the question asked for.
 	//
@@ -474,7 +474,7 @@ func (x *Decision) GetAnswer() *Answer {
 }
 
 // Predicate asks a yes/no question. It has no fields: the question is its
-// [Question.instructions].
+// `instructions`.
 type Question_Predicate struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
