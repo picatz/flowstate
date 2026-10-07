@@ -6,7 +6,6 @@ import (
 	"maps"
 	"regexp"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 
@@ -620,23 +619,16 @@ func checkVarLeaves(p *problems, r site, where string, value any, depth int) {
 	case string:
 		if strings.Contains(v, "${") {
 			if _, fenced := flowfile.SplitFence(v); !fenced {
-				// Quotes the fences and never the text around them: this runs
-				// before [File.evaluateVars] knows what the file withholds,
-				// and the literal text is exactly what a secret-holding leaf
-				// would carry (#2080). The fences are the expression as
-				// written — what [varDeclaration.fence] quotes — and together
-				// no longer than the leaf; a literal inside one still prints
-				// (#2108).
-				var quoted []string
-				for _, fence := range flowfile.Fences(v) {
-					quoted = append(quoted, strconv.Quote(v[fence.Open:fence.End]))
-				}
+				// Quotes neither the text around the fences nor the fences:
+				// this runs before [File.evaluateVars] knows what the file
+				// withholds, and both are text the author wrote, which is
+				// exactly where a secret-holding leaf keeps its material
+				// (#2080, #2108). The leaf's own position says where.
 				const rule = "a computed leaf must be one whole-value `${...}` expression, with no literal text around it"
-				if len(quoted) == 0 {
+				if len(flowfile.Fences(v)) == 0 {
 					p.report(r, "%s holds `${` outside one whole-value fence; %s", where, rule)
 				} else {
-					p.report(r, "%s holds the expression %s surrounded by other text; %s",
-						where, strings.Join(quoted, " and "), rule)
+					p.report(r, "%s mixes text with a `${...}` expression; %s", where, rule)
 				}
 			}
 		}
@@ -667,8 +659,10 @@ func fencedVarValue(value any) (string, bool) {
 	return flowfile.SplitFence(text)
 }
 
-// A varDeclaration is one computed var: the fence as the file wrote it, the
-// expression parsed once, and the siblings it reads.
+// A varDeclaration is one computed var: where it is, the expression parsed
+// once, and the siblings it reads. Diagnostics about it name the var and its
+// position and never quote the expression: that is text the author wrote, and
+// a var that stands in for a secret is where an author puts one (#2108).
 type varDeclaration struct {
 	// path is the position below `vars`, used both as the graph node's stable
 	// name and to replace exactly this leaf after evaluation.
@@ -678,13 +672,6 @@ type varDeclaration struct {
 	// provenance.
 	spot site
 
-	// fence is the value as written, `${...}` and all. Every diagnostic about
-	// this var quotes *this* and never the value the expression produced or
-	// read: a computed var can hold a secret's material (see [withheldFrom]),
-	// and a refusal that echoed it would be a second output channel around the
-	// redaction set.
-	fence string
-
 	// ast is the expression inside the fence, parsed in the library-less
 	// environment it will evaluate in. Nil when the parse or a root check
 	// refused it, which is how [File.evaluateVars] knows not to evaluate.
@@ -692,6 +679,10 @@ type varDeclaration struct {
 
 	// deps are the sibling vars the expression reads, sorted and deduplicated.
 	deps []string
+
+	// literals are the string and bytes literals the expression wrote, which
+	// an evaluation error quoting its source must not print (#2108).
+	literals []string
 }
 
 type varPathPart struct {
@@ -1081,8 +1072,8 @@ func (f *File) evaluateVars(p *problems, restated []string) {
 
 				value, err := evaluateVar(base, d, activation)
 				if err != nil {
-					p.report(d.spot, "vars.%s: evaluating %s: %s",
-						name, d.fence, scrubbedVarError(err, taint, d.deps))
+					p.report(d.spot, "vars.%s: evaluating its expression failed: %s",
+						name, scrubbedVarError(err, taint, d.deps, d.literals))
 
 					continue
 				}
@@ -1122,15 +1113,9 @@ func (f *File) evaluateVars(p *problems, restated []string) {
 	// runs next — so every one of them is cleared through what this file
 	// withholds, in both spellings (#2080). Installed once, here, rather than
 	// raced by an earlier partial set: nothing has been substituted before
-	// this line, and [checkVarLeaves] no longer quotes the literal text around
-	// a leaf's fences. What is still quoted above this line is the expression
-	// as written, by the established rule: each fence [checkVarLeaves] finds,
-	// [varDeclaration.fence] in an evaluation error, and cel-go's source
-	// snippet in a parse error. That text is the author's, and it can hold
-	// literal material of its own — a string literal inside a fence, or
-	// everything between the braces of `${a} literal ${b}`, which
-	// [flowfile.SplitFence] accepts as one expression — so nothing here
-	// guarantees that no var text precedes this line (#2108).
+	// this line, and no var diagnostic above it quotes the author's expression
+	// text ([checkVarLeaves], [parseFailure], the evaluation report): a literal
+	// inside a fence is as secret as one outside it (#2108).
 	p.withholdText(f.varsWithheld.text)
 }
 
@@ -1184,7 +1169,7 @@ func (f *File) declareVars(p *problems) map[string]*varDeclaration {
 			continue
 		}
 		spot := node.spot
-		d := &varDeclaration{path: node.path, spot: spot, fence: node.value.(string)}
+		d := &varDeclaration{path: node.path, spot: spot}
 		declared[id] = d
 
 		if strings.TrimSpace(text) == "" {
@@ -1194,7 +1179,7 @@ func (f *File) declareVars(p *problems) map[string]*varDeclaration {
 		}
 		parsed, issues := base.Parse(text)
 		if issues != nil && issues.Err() != nil {
-			p.report(spot, "vars.%s: %s", id, issues.Err())
+			p.report(spot, "vars.%s: %s", id, parseFailure(issues))
 			// No AST to read edges from, so they are read from the text —
 			// see [textualVarDeps] for why an over-approximation is the safe
 			// direction and a missing edge is not.
@@ -1240,8 +1225,24 @@ func (f *File) declareVars(p *problems) map[string]*varDeclaration {
 			continue
 		}
 		d.ast = parsed
+		d.literals = stringLiterals(parsed)
 	}
 	return declared
+}
+
+// parseFailure is what one parse failure may say: where it is, never what cel-go
+// quotes. Its message carries the source line and a caret, and its token
+// complaints carry fragments of the text, which is text the author wrote and
+// can hold a literal secret before the file's redaction set exists (#2108).
+// Columns count within the expression, inside the fence.
+func parseFailure(issues *cel.Issues) string {
+	errs := issues.Errors()
+	if len(errs) == 0 {
+		return "the expression is not valid CEL"
+	}
+	loc := errs[0].Location
+
+	return fmt.Sprintf("the expression is not valid CEL (syntax error at column %d)", loc.Column()+1)
 }
 
 // checkVarExpression walks one parsed var expression, reporting every root a
@@ -1498,10 +1499,9 @@ func evaluateVar(base *cel.Env, d *varDeclaration, activation map[string]any) (a
 // Naming the var is the useful half, as it is there: an author learns which
 // dependency to break, and a name is not a value.
 //
-// Every diagnostic here quotes the *expression* rather than the value, which
-// is the same rule stated on [varDeclaration.fence]; this is the one place a
-// value could reach a message by another road, and this is that road closed.
-func scrubbedVarError(err error, taint varTaint, deps []string) string {
+// No diagnostic here quotes the expression or the value; this is the one place
+// a value could reach a message by another road, and this is that road closed.
+func scrubbedVarError(err error, taint varTaint, deps []string, literals []string) string {
 	// deps are sorted by [checkVarExpression], so the var named here is the
 	// same one on every run over the same file.
 	for _, dep := range deps {
@@ -1510,7 +1510,48 @@ func scrubbedVarError(err error, taint varTaint, deps []string) string {
 		}
 	}
 
-	return err.Error()
+	// A CEL error quotes its source line, and its source is the author's
+	// expression: a string literal inside it is as secret as one a var holds
+	// (#2108). Each literal the expression wrote is cleared from the text,
+	// which keeps what makes the error useful (`cost limit exceeded`, the
+	// operator and its operand types) and loses only the author's text.
+	msg := err.Error()
+	for _, lit := range literals {
+		msg = strings.ReplaceAll(msg, lit, withheldLiteral)
+	}
+
+	return msg
+}
+
+// withheldLiteral stands where [scrubbedVarError] cleared a literal.
+const withheldLiteral = "[literal withheld]"
+
+// minScrubbedLiteral is the shortest string literal [scrubbedVarError] clears.
+// A shorter one is a separator or a key, and clearing it would shred the
+// message around it for text no secret fits in.
+const minScrubbedLiteral = 4
+
+// stringLiterals lists the string and bytes literals an expression wrote, long
+// enough to be worth clearing from an error that quotes its source.
+func stringLiterals(ast *cel.Ast) []string {
+	var out []string
+	celast.PreOrderVisit(ast.NativeRep().Expr(), celast.NewExprVisitor(func(e celast.Expr) {
+		if e.Kind() != celast.LiteralKind {
+			return
+		}
+		var text string
+		switch v := e.AsLiteral().Value().(type) {
+		case string:
+			text = v
+		case []byte:
+			text = string(v)
+		}
+		if len(text) >= minScrubbedLiteral {
+			out = append(out, text)
+		}
+	}))
+
+	return out
 }
 
 // varOrder returns the computed vars in an order where every var's

@@ -1423,8 +1423,8 @@ func TestAMixedFenceLiteralIsWithheldBeforeCheckVarsQuotesIt(t *testing.T) {
     workflow: ./workflow.yaml
 `+tc.secrets))
 			require.Error(t, err)
-			assert.Contains(t, err.Error(), `vars.token holds the expression "${bad}"`,
-				"the positive control: the mixed-fence refusal is still reported, quoting the fence")
+			assert.Contains(t, err.Error(), "vars.token mixes text with a `${...}` expression",
+				"the positive control: the mixed-fence refusal is still reported")
 			assert.NotContains(t, err.Error(), secret,
 				"the mixed-fence refusal quoted a var's literal text before evaluateVars had decided what this file withholds (#2080)")
 		})
@@ -1628,8 +1628,8 @@ tests:
 	require.True(t, refused)
 	messages := problemMessages(problems)
 
-	assert.Contains(t, messages, "vars.request.bad: evaluating ${[0][size(vars.token)]}",
-		"the expression the author wrote is still quoted; it is theirs")
+	assert.Contains(t, messages, "vars.request.bad: evaluating its expression failed",
+		"the failing var is named; its expression is not quoted (#2108)")
 	assert.Contains(t, messages, "[withheld: this expression reads vars.token, which this file withholds]",
 		"and the dependency that cost it its detail is named, because a name is not a value")
 	assert.NotContains(t, messages, "index out of bounds")
@@ -2179,8 +2179,9 @@ tests:
 `))
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "vars.probe")
-	require.Contains(t, err.Error(), "{'known': 1}[vars.token]",
-		"the refusal quotes the expression the author wrote")
+	require.Contains(t, err.Error(), "evaluating its expression failed",
+		"the refusal names the var and the failure, and does not quote the expression (#2108)")
+	require.NotContains(t, err.Error(), "{'known': 1}[vars.token]")
 	require.NotContains(t, err.Error(), "s3cr3t-value",
 		"cel-go's `no such key` carries the operand, which here is a secret's plaintext")
 }
@@ -2376,7 +2377,7 @@ tests:
     workflow: ./workflow.yaml
 `))
 			require.Error(t, err)
-			require.Contains(t, err.Error(), "vars.who holds the expression")
+			require.Contains(t, err.Error(), "vars.who mixes text with a `${...}` expression")
 		})
 	}
 }
@@ -2386,4 +2387,33 @@ tests:
 // way into the fixture.
 func quoteYAML(s string) string {
 	return `"` + strings.ReplaceAll(strings.ReplaceAll(s, `\`, `\\`), `"`, `\"`) + `"`
+}
+
+// TestAVarDiagnosticNeverEchoesLiteralMaterialInItsExpression is #2108: a var's
+// parse error, evaluation error and mixed-fence refusal used to quote the
+// expression the author wrote, and a literal inside a fence printed before the
+// file's redaction set existed. Each probe still names its var and says why.
+func TestAVarDiagnosticNeverEchoesLiteralMaterialInItsExpression(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct{ name, value, secret, want string }{
+		{"parse error", "${a} sk-live-probe-1111 ${b}", "sk-live-probe-1111", "not valid CEL (syntax error at column"},
+		{"evaluation error", "${'sk-live-probe-7777' + 1}", "sk-live-probe-7777", "vars.token: evaluating its expression failed"},
+		{"mixed fence", `prefix-${"sk-live-inner-4242"}`, "sk-live-inner-4242", "vars.token mixes text with a `${...}` expression"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := flowtest.Load(writeInline(t, t.TempDir(), "vars:\n  token: "+strconv.Quote(tc.value)+`
+tests:
+  - name: never loads
+    workflow: ./workflow.yaml
+    secrets:
+      env:TOKEN: ${vars.token}
+`))
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.want)
+			assert.NotContains(t, err.Error(), tc.secret)
+		})
+	}
 }
