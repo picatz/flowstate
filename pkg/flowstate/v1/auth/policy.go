@@ -2,11 +2,13 @@ package auth
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/picatz/flowstate/internal/strictyaml"
 	"maps"
+	"net/http"
 	"net/netip"
 	"net/url"
 	"slices"
@@ -827,7 +829,65 @@ func ParsePolicy(data []byte) (Policy, error) {
 		return Policy{}, err
 	}
 
+	if err := policy.validateFetchEgress(); err != nil {
+		return Policy{}, err
+	}
+
 	return policy, nil
+}
+
+// validateFetchEgress refuses an issuer or key set URL that the policy's own
+// identity egress policy would refuse to fetch, in the fetch's own words, so the
+// first token does not meet what the file could have said at load (#1694).
+//
+// It asks the policy what the transport asks, without the network: the exact
+// request discovery or the key set fetch makes (so path rules see the same
+// URL), and, when the host is an IP literal, the address verdict
+// [netpolicy.Policy.CheckAddr] gives it. A host name is not resolved here, so a
+// name that resolves to a denied address is still refused only at the fetch.
+//
+// It is [ParsePolicy]'s check rather than [Policy.Validate]'s because only a
+// file has no other say: a verifier built in Go may pass [WithEgressPolicy],
+// which replaces the section, so Validate cannot know what will do the fetch.
+func (p Policy) validateFetchEgress() error {
+	egress, err := p.EgressPolicy()
+	if err != nil {
+		return err
+	}
+
+	for i, issuer := range p.Issuers {
+		if issuer.kind() != IssuerKindOIDC || issuer.JWKSFile != "" {
+			continue
+		}
+		fetched, field := strings.TrimSuffix(issuer.Issuer, "/")+discoveryPath, "issuer"
+		if issuer.JWKSURL != "" {
+			fetched, field = issuer.JWKSURL, "jwks_url"
+		}
+		target, err := url.Parse(fetched)
+		if err != nil {
+			continue
+		}
+
+		denial := egress.CheckURL(context.Background(), http.MethodGet, target)
+		if denial == nil {
+			if addr, err := netip.ParseAddr(target.Hostname()); err == nil {
+				port, _ := strconv.ParseUint(target.Port(), 10, 16)
+				if port == 0 {
+					port = map[string]uint64{"http": 80, "https": 443}[target.Scheme]
+				}
+				denial = egress.CheckAddr(netip.AddrPortFrom(addr, uint16(port)))
+			}
+		}
+
+		var deny *netpolicy.DenyError
+		if errors.As(denial, &deny) {
+			return fmt.Errorf("%w: issuers[%d]: %s %q is refused by the identity egress policy: %v; "+
+				"configure the trust policy's egress: section to allow this fetch: %s",
+				ErrInvalidPolicy, i, field, target.Redacted(), deny, egressRemedy(deny))
+		}
+	}
+
+	return nil
 }
 
 // rejectNullNamespaceMap catches a case [NamespaceMap]'s own doc explains the

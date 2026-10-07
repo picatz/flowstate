@@ -723,15 +723,41 @@ needs; a loopback address also needs `allow_loopback: true`)
 ```
 
 The section is the trust policy's own `egress:` block, and its fields are the
-ones the worker's `--egress-policy` file takes:
+ones the worker's `--egress-policy` file takes (the complete set is
+`netpolicy.EgressConfig`: it also narrows with `deny_networks`, `allow_ports`,
+`deny_ports` and CEL rules, and sets timeouts, TLS and proxy). The four that
+widen what an identity provider may be are
+`schemes`, `allow_loopback`, `allow_private_networks` and `allow_networks`. A
+policy file whose issuer or `jwks_url` the section would refuse (a plain `http`
+URL it does not admit, or an IP-literal host in an address class it does not
+admit) is refused when it loads, with the sentence above, rather than at the
+first token. That check reads the exact request, and the address only when the
+host is a literal; a host name is not resolved at load, so one that points at a
+denied address is still refused at the first fetch. The in-cluster case, an
+identity provider on a private address, admits private networks and keeps https:
 
 ```yaml
-# An in-cluster identity provider (Keycloak, Dex, the Kubernetes API server):
-# private addresses admitted, https kept.
+issuers:
+  - name: keycloak
+    issuer: https://keycloak.keycloak.svc.cluster.local:8443/realms/acme
+    audiences: [https://flowstate.example.com/rpc]
+    actions: [workload.run, workload.read]
+    namespace: acme
+
 egress:
   allow_private_networks: true
+```
 
-# A loopback rehearsal on a laptop: plain http on this machine only.
+A loopback rehearsal on a laptop admits plain http on this machine only:
+
+```yaml
+issuers:
+  - name: rehearsal
+    issuer: http://127.0.0.1:8555
+    audiences: [http://127.0.0.1:9233]
+    actions: [workload.run, workload.read]
+    namespace: rehearsal
+
 egress:
   schemes: [http, https]
   allow_loopback: true
@@ -841,6 +867,173 @@ policy's own `secrets:` and `federation:` rules. A claim read that no entry
 carries is a diagnostic: a rule requiring it can never match. Embedders
 that need a different mapping pass `auth.WithClaimMapper` to the verifier; its
 result is held to the same bounds.
+
+### Trust policy per identity provider
+
+One issuer entry per identity provider, each pinning the issuer string exactly
+(no normalization, so a trailing slash or a `/v2.0` is part of it), an audience
+this server's `--rpc-resource` names, and the claims that identify the caller.
+Every block below is a complete policy that `flow auth check --auth-policy`
+loads, and `go test ./pkg/flowstate/v1/auth` loads each one from this page, so an
+example cannot drift from the schema. What the examples cannot prove is what a
+provider mints: where a claim name or issuer shape comes from a provider's own
+documentation rather than from this repository, a note says to check it against
+a real token (`flow jwt inspect`, or your provider's token inspector) before you
+rely on it.
+
+A tenant claim that is not already a namespace (lowercase letters, digits and
+dashes) is mapped with `namespace_map`: an exact table from a claim value to a
+namespace, where a value the table does not list is refused rather than defaulted.
+A policy whose entries name a namespace must do so for every entry, so each block
+below is one deployment's whole policy, not a fragment to paste beside another's.
+
+**GitHub Actions.** The workflow requests a token for the audience with
+`permissions: id-token: write`. `repository` is `owner/name`, which is not a
+namespace, so it is mapped:
+
+```yaml
+issuers:
+  - name: github-actions
+    issuer: https://token.actions.githubusercontent.com
+    audiences: [https://flowstate.example.com/rpc]
+    algorithms: [RS256]
+    actions: [workload.run, workload.read]
+    namespace_claim: repository
+    namespace_map:
+      acme/infra: infra
+      acme/platform: platform
+    max_token_age: 10m
+```
+
+**GitLab CI.** A job declares `id_tokens:` with an `aud:` of the RPC resource.
+`project_path` is `group/project`, so it is mapped. For a self-managed GitLab the
+issuer is the instance's own URL. Add a `require:` rule on `ref_protected` to
+admit only protected branches (a note to check: GitLab documents it as the
+string `"true"`):
+
+```yaml
+issuers:
+  - name: gitlab
+    issuer: https://gitlab.com
+    audiences: [https://flowstate.example.com/rpc]
+    actions: [workload.run, workload.read]
+    namespace_claim: project_path
+    namespace_map:
+      acme/infra: infra
+      acme/platform: platform
+    require:
+      - claim: ref_protected
+        any_of: ["true"]
+    max_token_age: 10m
+```
+
+**Kubernetes projected service-account tokens.** The issuer is the cluster's
+`--service-account-issuer` value and the audience is the `audience:` of the
+`serviceAccountToken` projection; read both from the cluster rather than from
+this page. The subject is `system:serviceaccount:NAMESPACE:NAME`, so mapping it
+names exactly the service accounts admitted. The control plane must be able to
+read the issuer's discovery document, which an in-cluster issuer behind a
+private address needs the `egress:` section for (see
+[Identity egress](#identity-egress-where-the-trust-policy-may-fetch-keys-from));
+a `jwks_url` or `jwks_file` avoids discovery:
+
+```yaml
+issuers:
+  - name: kubernetes
+    issuer: https://oidc.cluster.example.com
+    audiences: [https://flowstate.example.com/rpc]
+    actions: [workload.run, workload.read]
+    namespace_claim: sub
+    namespace_map:
+      system:serviceaccount:team-a:runner: team-a
+      system:serviceaccount:team-b:runner: team-b
+
+egress:
+  allow_private_networks: true
+```
+
+**Keycloak.** An audience mapper on the client puts the RPC resource in `aud`.
+Realm roles arrive in `realm_access.roles`. Keycloak has no tenant claim of its
+own, so the tenant is the entry's fixed `namespace`:
+
+```yaml
+issuers:
+  - name: keycloak
+    issuer: https://keycloak.example.com/realms/acme
+    audiences: [https://flowstate.example.com/rpc]
+    actions: [workload.run, workload.read]
+    namespace: acme
+    groups_claim: realm_access.roles
+    group_map:
+      flowstate-sre: sre
+      flowstate-dev: dev
+```
+
+**Okta.** Use a custom authorization server (the org authorization server's
+access tokens are not for your own APIs) whose audience is the RPC resource.
+Okta does not add a `groups` claim to an access token by default; add one in the
+authorization server's Claims tab (a note to check against a real token):
+
+```yaml
+issuers:
+  - name: okta
+    issuer: https://acme.okta.com/oauth2/default
+    audiences: [https://flowstate.example.com/rpc]
+    actions: [workload.run, workload.read]
+    namespace: acme
+    groups_claim: groups
+    group_map:
+      flowstate-sre: sre
+      flowstate-dev: dev
+```
+
+**Microsoft Entra ID.** Set the API's `accessTokenAcceptedVersion` to 2 so `iss`
+is the v2.0 issuer below, with the directory's GUID in place of `TENANT`. The
+`tid` claim names the directory, so it maps a directory GUID to a namespace.
+Prefer app roles (`roles`) to `groups`, whose values are GUIDs and which Entra
+replaces with an overage indicator past a size limit; a token that carries the
+indicator (`_claim_names.groups`) is refused here even with `groups_claim: roles`
+(see above). `group_map` renames what a rule reads; it does not gate admission,
+which the audience, `require:` and the namespace rules decide. The audience Entra puts in `aud` is the
+application ID URI or client ID of your API: check a real token:
+
+```yaml
+issuers:
+  - name: entra
+    issuer: https://login.microsoftonline.com/00000000-0000-0000-0000-000000000000/v2.0
+    audiences: [api://11111111-1111-1111-1111-111111111111]
+    actions: [workload.run, workload.read]
+    namespace_claim: tid
+    namespace_map:
+      00000000-0000-0000-0000-000000000000: acme
+    groups_claim: roles
+    group_map:
+      Flowstate.Sre: sre
+      Flowstate.Dev: dev
+```
+
+**Auth0.** The issuer ends in a slash, and the discovery document repeats it, so
+leave it. The audience is the API identifier. Auth0 puts custom claims on an
+access token only under a namespaced name you choose in an Action, such as the
+URL below (a note to check: the name is yours, not Auth0's):
+
+```yaml
+issuers:
+  - name: auth0
+    issuer: https://acme.us.auth0.com/
+    audiences: [https://flowstate.example.com/rpc]
+    actions: [workload.run, workload.read]
+    namespace: acme
+    groups_claim: https://flowstate.example.com/groups
+    group_map:
+      sre: sre
+      dev: dev
+```
+
+AWS and GCP identity tokens are issued by ordinary OIDC issuers and take the same
+shape: pin the issuer and audience, then identify the caller with a `require:`
+rule on the claim that names it. The claim names are the provider's to document,
+so this page does not guess them.
 
 ### Bearer-token audiences are per surface
 
