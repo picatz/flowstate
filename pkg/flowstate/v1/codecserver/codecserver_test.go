@@ -25,6 +25,7 @@ import (
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/audit"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/authz"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/codecserver"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/payloadcodec"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/payloadcodec/envelope"
@@ -688,4 +689,26 @@ func TestEveryAuthorizableNamespaceNeedsKeys(t *testing.T) {
 
 	_, err := codecserver.New(codecserver.Options{Codecs: codecs, DefaultNamespace: "ns-b"})
 	require.NoError(t, err, "an unmapped deployment dialing a namespace it holds keys for")
+}
+
+// TestAnEmbeddersDeciderNarrowsTheCodecServer: a refusing Decider stops a
+// caller the policy grants, and an allowing one grants nothing the policy
+// withholds.
+func TestAnEmbeddersDeciderNarrowsTheCodecServer(t *testing.T) {
+	t.Parallel()
+
+	refuse := authz.DeciderFunc(func(context.Context, authz.Request) authz.Decision { return authz.Decision{Scope: "freeze"} })
+	allow := authz.DeciderFunc(func(context.Context, authz.Request) authz.Decision { return authz.Decision{Allowed: true} })
+
+	frozen := newFixture(t, func(o *codecserver.Options) { o.Decider = refuse })
+	a := frozen.seal(t, "ns-a", markerA)
+	resp, body := frozen.post(t, codecserver.DecodeEndpoint, "a-decoder", "ns-a", a)
+	require.Equal(t, http.StatusForbidden, resp.StatusCode)
+	require.NotContains(t, body, markerA)
+	require.Empty(t, resp.Header.Get("WWW-Authenticate"), "an embedder's refusal offered a scope to request")
+
+	open := newFixture(t, func(o *codecserver.Options) { o.Decider = allow })
+	b := open.seal(t, "ns-b", markerB)
+	resp, _ = open.post(t, codecserver.EncodeEndpoint, "b-decoder", "ns-b", b)
+	require.Equal(t, http.StatusForbidden, resp.StatusCode, "an allowing decider granted payload.encode the policy withholds")
 }

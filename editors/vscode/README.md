@@ -28,12 +28,16 @@ change that would have the extension judge a Flowfile belongs in
    (`docs/EDITORS.md`'s "Which files are Flowfiles" list, mirrored here);
    the server checks the two test-file shapes with `flow test`'s own loader
    rather than the workflow grammar. Comment toggling (`#`) and bracket/indent behavior
-   come from `language-configuration.json`. There is no bundled grammar, so
-   Flowfiles render as plain text unless you also map the language to YAML's
-   tokenizer:
-   ```json
-   { "files.associations": { "**/workflow.yaml": "flowfile" } }
-   ```
+   come from `language-configuration.json`.
+   A bundled TextMate grammar (`syntaxes/`) colours Flowfiles: `source.flowfile`
+   is YAML plus an injection that scopes `${...}` and a bare-CEL `must:` value as
+   `source.cel`, which `syntaxes/cel.tmLanguage.json` tokenizes. The language
+   server's semantic tokens then refine those colours with what the grammar
+   cannot know. A fence is highlighted when it is written on one line,
+   including inside a block scalar; one split across lines by a flow scalar
+   falls back to the semantic tokens. The same grammar is the one a GitHub
+   Linguist entry would reference.
+
 3. **Commands that shell out.** `Flowstate: Validate/Test/Fix/Run Local` run
    `flow validate|test|fix|run local <file>` on the active file as a VS Code
    task, and show the CLI's own output in a dedicated terminal panel. The

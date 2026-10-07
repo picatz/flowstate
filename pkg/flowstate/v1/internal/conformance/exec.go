@@ -193,6 +193,9 @@ func ExecCases(root string) []ExecCase {
 	teamA := &v1.WorkloadIdentity{Subject: "spiffe://acme/a", Issuer: "https://issuer.example.com", Namespace: "team-a"}
 	teamB := &v1.WorkloadIdentity{Subject: "spiffe://acme/b", Issuer: "https://issuer.example.com", Namespace: "team-b"}
 
+	workloadCI := &v1.WorkloadIdentity{Subject: "spiffe://acme/ci", PrincipalKind: v1.PrincipalKind_PRINCIPAL_KIND_WORKLOAD}
+	humanKent := &v1.WorkloadIdentity{Subject: "spiffe://acme/kent", PrincipalKind: v1.PrincipalKind_PRINCIPAL_KIND_HUMAN}
+
 	denied := func(contains ...string) []string { return append([]string{"exec"}, contains...) }
 
 	return []ExecCase{
@@ -343,6 +346,57 @@ func ExecCases(root string) []ExecCase {
 			Identity:      teamB,
 			ExpectedKind:  v1.ErrorKindPolicyDenied,
 			ExpectedError: denied("allow rules", "no allow rule matched"),
+		},
+		{
+			// identity.kind rides on its own field of the identity, so a driver
+			// that carried the namespace and dropped the kind passes the tenant
+			// cases above and fails these three.
+			Name:  "an allow rule keyed on principal kind permits a workload",
+			Allow: []string{`identity.kind == "workload" && name == "sh"`},
+			Workflow: execWorkflow("exec-kind-allow",
+				execStep("program", shArgv(`printf ok`), root, nil)),
+			Identity: workloadCI,
+			Check: func(tb testing.TB, out *v1.Workflow_StepOutputs) {
+				require.Equal(tb, "ok", execField(tb, out, "program", "stdout"))
+			},
+		},
+		{
+			Name:  "the same kind rule refuses a human",
+			Allow: []string{`identity.kind == "workload" && name == "sh"`},
+			Workflow: execWorkflow("exec-kind-allow-human",
+				execStep("program", shArgv(`printf no`), root, nil)),
+			Identity:      humanKent,
+			ExpectedKind:  v1.ErrorKindPolicyDenied,
+			ExpectedError: denied("allow rules", "no allow rule matched"),
+		},
+		{
+			// A trust policy that assigned no kind is never a workload.
+			Name:  "the same kind rule refuses an identity with no kind",
+			Allow: []string{`identity.kind == "workload" && name == "sh"`},
+			Workflow: execWorkflow("exec-kind-allow-unassigned",
+				execStep("program", shArgv(`printf no`), root, nil)),
+			Identity:      &v1.WorkloadIdentity{Subject: "spiffe://acme/ci"},
+			ExpectedKind:  v1.ErrorKindPolicyDenied,
+			ExpectedError: denied("allow rules", "no allow rule matched"),
+		},
+		{
+			Name: "a deny rule keyed on principal kind refuses a human",
+			Deny: []string{`identity.kind == "human"`},
+			Workflow: execWorkflow("exec-kind-deny",
+				execStep("program", shArgv(`printf no`), root, nil)),
+			Identity:      humanKent,
+			ExpectedKind:  v1.ErrorKindPolicyDenied,
+			ExpectedError: denied("deny rule"),
+		},
+		{
+			Name: "the same kind deny rule does not reach a workload",
+			Deny: []string{`identity.kind == "human"`},
+			Workflow: execWorkflow("exec-kind-deny-workload",
+				execStep("program", shArgv(`printf ok`), root, nil)),
+			Identity: workloadCI,
+			Check: func(tb testing.TB, out *v1.Workflow_StepOutputs) {
+				require.Equal(tb, "ok", execField(tb, out, "program", "stdout"))
+			},
 		},
 		{
 			Name:  "a run with no identity matches no tenant rule",

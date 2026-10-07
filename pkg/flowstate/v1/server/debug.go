@@ -433,7 +433,7 @@ func (s *FlowstateServer) DebugAttach(ctx context.Context, req *connect.Request[
 		return nil, err
 	}
 
-	return connect.NewResponse(&v1.DebugAttachResponse{Receipt: receipt, Snapshot: expressionsFor(ctx, snapshot), SessionId: session}), nil
+	return connect.NewResponse(&v1.DebugAttachResponse{Receipt: receipt, Snapshot: s.expressionsFor(ctx, snapshot), SessionId: session}), nil
 }
 
 // DebugGet reads a durable run's debug state, optionally waiting for a
@@ -459,7 +459,7 @@ func (s *FlowstateServer) DebugGet(ctx context.Context, req *connect.Request[v1.
 			return nil, run.readError(ctx, err)
 		}
 		if snapshot.GetRevision() > req.Msg.GetAfterRevision() || deadline.IsZero() || time.Now().After(deadline) || !run.open() {
-			return connect.NewResponse(&v1.DebugGetResponse{Snapshot: expressionsFor(ctx, snapshot)}), nil
+			return connect.NewResponse(&v1.DebugGetResponse{Snapshot: s.expressionsFor(ctx, snapshot)}), nil
 		}
 		if err := sleepCtx(ctx, debugPollEvery); err != nil {
 			return nil, err
@@ -500,7 +500,7 @@ func (s *FlowstateServer) DebugResume(ctx context.Context, req *connect.Request[
 		return nil, err
 	}
 
-	return connect.NewResponse(&v1.DebugResumeResponse{Receipt: receipt, Snapshot: expressionsFor(ctx, snapshot)}), nil
+	return connect.NewResponse(&v1.DebugResumeResponse{Receipt: receipt, Snapshot: s.expressionsFor(ctx, snapshot)}), nil
 }
 
 // DebugSetBreakpoints replaces a durable session's breakpoints.
@@ -534,7 +534,7 @@ func (s *FlowstateServer) DebugSetBreakpoints(ctx context.Context, req *connect.
 		return nil, err
 	}
 
-	snapshot = expressionsFor(ctx, snapshot)
+	snapshot = s.expressionsFor(ctx, snapshot)
 
 	return connect.NewResponse(&v1.DebugSetBreakpointsResponse{
 		Receipt:     receipt,
@@ -638,7 +638,7 @@ func (s *FlowstateServer) authorizeDebugChannel(ctx context.Context, workflowID 
 // requireDebugAction refuses a caller whose issuer entry does not list
 // action, auditing the refusal under rpc.
 func (s *FlowstateServer) requireDebugAction(ctx context.Context, rpc, workflowID string, action v1.AuthorizationAction, detail *v1.AuditDebugDetail) error {
-	refusal := authz.Decide(ctx, action, authz.Implied).Refusal()
+	refusal := s.decide(ctx, action, authz.Implied).Refusal()
 	if refusal == nil {
 		return nil
 	}
@@ -654,8 +654,8 @@ func (s *FlowstateServer) requireDebugAction(ctx context.Context, rpc, workflowI
 // rather than drop the expression — and without its message or its last
 // error, which quote the condition when it did not compile and the values it
 // read when it failed to evaluate.
-func expressionsFor(ctx context.Context, snapshot *v1.DebugSnapshot) *v1.DebugSnapshot {
-	if holdsAction(ctx, v1.AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_DEBUG_INSPECT) {
+func (s *FlowstateServer) expressionsFor(ctx context.Context, snapshot *v1.DebugSnapshot) *v1.DebugSnapshot {
+	if s.holdsAction(ctx, v1.AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_DEBUG_INSPECT) {
 		return snapshot
 	}
 	// A run pinned to an interpreter from before definitions were reported

@@ -329,6 +329,39 @@ local-only; a durable run does not carry them.
 `Example_debug` in `pkg/flowstate/embed/debug_example_test.go` is the whole
 program, run as a test.
 
+## Identity and policy when you embed the server
+
+Two layers decide who may do what, and an embedder configures each in its own
+place.
+
+- **Deployment authority** is the trust policy: which issuers are trusted and,
+  for each, the `actions:` list its callers hold. The list is required; an
+  entry without one is refused at load, and a verified caller holds only what
+  its entry lists. It is the outer bound on everything below.
+- **Author authority** is the Flowfile's own `allow:` predicates, which decide
+  who may answer one gate or start one workflow. The deployment does not
+  evaluate or override them.
+
+To add a rule of your own, such as a maintenance freeze or a per-tenant
+allowlist, hand the server an `authz.Decider`:
+
+```go
+srv, err := server.New(temporalClient,
+	server.WithDecider(authz.DeciderFunc(func(ctx context.Context, req authz.Request) authz.Decision {
+		return authz.Decision{Allowed: !frozen(ctx, req.Principal), Scope: "maintenance.freeze"}
+	})))
+```
+
+The trust policy answers first and your decider is asked only about what it
+allows, so a decider can refuse and can never grant. A panic in it is a
+refusal. The same seam exists on the codec server (`codecserver.Options.Decider`; its
+`Insecure` loopback mode skips authorization altogether, decider included), and
+every check goes through `authz`; a test refuses a new comparison of a caller's
+actions anywhere else. A decider's refusal tells the caller only that the
+deployment's rules refused it, never a scope to request, and the decider may be
+asked more than once per request, so keep it cheap and stateless in its answer.
+To change what a caller is granted, change its issuer entry, not the decider.
+
 ## What is not curated here
 
 - **`call:` across embedder files.** Compiling from bytes has no directory to

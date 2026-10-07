@@ -10,12 +10,14 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/picatz/flowstate/pkg/flowstate/v1/principal"
 )
 
 // getAs performs a GET with the policy's client, carrying id as the request's
 // workload identity — the seam a task uses to let an egress rule see who is
 // running.
-func getAs(t *testing.T, policy *Policy, target string, id Identity) (*http.Response, error) {
+func getAs(t *testing.T, policy *Policy, target string, id principal.Caller) (*http.Response, error) {
 	t.Helper()
 
 	req, err := http.NewRequestWithContext(ContextWithIdentity(t.Context(), id), http.MethodGet, target, nil)
@@ -48,14 +50,14 @@ func Test_Policy_connectionRules_areRecheckedAcrossIdentities(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	resp, err := getAs(t, policy, server.URL, Identity{Namespace: "team-a"})
+	resp, err := getAs(t, policy, server.URL, principal.Caller{Namespace: "team-a"})
 	require.NoError(t, err)
 	_, err = io.Copy(io.Discard, resp.Body)
 	require.NoError(t, err)
 	require.NoError(t, resp.Body.Close())
 	require.Equal(t, int64(1), connections.Load())
 
-	_, err = getAs(t, policy, server.URL, Identity{Namespace: "team-b"})
+	_, err = getAs(t, policy, server.URL, principal.Caller{Namespace: "team-b"})
 	requireDenied(t, err, ReasonNoAllowRule, "no allow rule matched")
 	require.Equal(t, int64(1), connections.Load(), "the denied request must not reach the server")
 }
@@ -104,7 +106,7 @@ func Test_Policy_connectionRules_areRecheckedAcrossIdentities_overHTTP2(t *testi
 	)
 	require.NoError(t, err)
 
-	resp, err := getAs(t, policy, server.URL, Identity{Namespace: "team-a"})
+	resp, err := getAs(t, policy, server.URL, principal.Caller{Namespace: "team-a"})
 	require.NoError(t, err)
 	require.Equal(t, 2, resp.ProtoMajor, "the server must actually be speaking HTTP/2 for this test to mean anything")
 	_, err = io.Copy(io.Discard, resp.Body)
@@ -114,7 +116,7 @@ func Test_Policy_connectionRules_areRecheckedAcrossIdentities_overHTTP2(t *testi
 
 	// The negative direction: another identity must not be carried by the
 	// connection the first one established.
-	_, err = getAs(t, policy, server.URL, Identity{Namespace: "team-b"})
+	_, err = getAs(t, policy, server.URL, principal.Caller{Namespace: "team-b"})
 	requireDenied(t, err, ReasonNoAllowRule, "no allow rule matched")
 	require.Equal(t, int64(1), connections.Load(), "the denied request must not reach the server")
 }
@@ -190,7 +192,7 @@ func Test_Policy_connectionRules_areRecheckedWhileAConnectionIsInFlight(t *testi
 
 	first := make(chan *http.Response, 1)
 	go func() {
-		resp, err := getAs(t, policy, server.URL, Identity{Namespace: "team-a"})
+		resp, err := getAs(t, policy, server.URL, principal.Caller{Namespace: "team-a"})
 		if err != nil {
 			first <- nil
 			return
@@ -202,7 +204,7 @@ func Test_Policy_connectionRules_areRecheckedWhileAConnectionIsInFlight(t *testi
 
 	// team-b, while team-a's stream is still open. It must not be carried by
 	// team-a's connection.
-	_, err = getAs(t, policy, server.URL, Identity{Namespace: "team-b"})
+	_, err = getAs(t, policy, server.URL, principal.Caller{Namespace: "team-b"})
 	requireDenied(t, err, ReasonNoAllowRule, "no allow rule matched")
 	require.Equal(t, int64(1), requests.Load(), "the denied request must not reach the server")
 
@@ -219,14 +221,14 @@ func Test_Policy_connectionRules_areRecheckedWhileAConnectionIsInFlight(t *testi
 func Test_Policy_rules_identity(t *testing.T) {
 	server, _ := testServer(t, "ok")
 
-	teamA := Identity{Subject: "spiffe://acme/team-a", Namespace: "team-a"}
-	teamB := Identity{Subject: "spiffe://acme/team-b", Namespace: "team-b"}
-	admin := Identity{Namespace: "team-a", Claims: map[string]string{"role": "admin"}}
+	teamA := principal.Caller{Subject: "spiffe://acme/team-a", Namespace: "team-a"}
+	teamB := principal.Caller{Subject: "spiffe://acme/team-b", Namespace: "team-b"}
+	admin := principal.Caller{Namespace: "team-a", Claims: map[string]string{"role": "admin"}}
 
 	tests := []struct {
 		name  string
 		opts  []Option
-		id    Identity
+		id    principal.Caller
 		check func(t *testing.T, resp *http.Response, err error)
 	}{
 		{
@@ -253,7 +255,7 @@ func Test_Policy_rules_identity(t *testing.T) {
 		{
 			name: "an absent identity is denied by an identity allow rule",
 			opts: []Option{WithAllowRules(`identity.namespace == "team-a"`)},
-			id:   Identity{},
+			id:   principal.Caller{},
 			check: func(t *testing.T, _ *http.Response, err error) {
 				requireDenied(t, err, ReasonNoAllowRule, "no allow rule matched")
 			},

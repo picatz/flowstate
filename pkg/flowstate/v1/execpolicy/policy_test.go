@@ -17,7 +17,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/picatz/flowstate/pkg/flowstate/v1/execpolicy"
-	"github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/principal"
 )
 
 // tool finds a program the tests run for real, skipping where the machine
@@ -462,7 +462,7 @@ func TestRulesSeeResolvedValuesAndFailClosed(t *testing.T) {
 		edit := func(c *execpolicy.Config) { c.Allow = []string{`identity.namespace == "team-a"`} }
 		withID := func(ns string) execpolicy.Request {
 			r := argv("sh")
-			r.Identity = netpolicy.Identity{Namespace: ns, Claims: map[string]string{"team": ns}}
+			r.Identity = principal.Caller{Namespace: ns, Claims: map[string]string{"team": ns}}
 			return r
 		}
 		require.NoError(t, run(t, edit, withID("team-a")))
@@ -474,6 +474,29 @@ func TestRulesSeeResolvedValuesAndFailClosed(t *testing.T) {
 		// Absent identity has a non-nil empty claims map; indexing a missing key
 		// errors, and an errored rule denies.
 		denied(t, run(t, claims, argv("sh")), execpolicy.ReasonRuleError)
+	})
+
+	t.Run("identity kind and actions scope the rule", func(t *testing.T) {
+		as := func(c principal.Caller) execpolicy.Request {
+			r := argv("sh")
+			r.Identity = c
+			return r
+		}
+		human := principal.Caller{Kind: "human", Actions: []string{"run.start"}}
+		workload := principal.Caller{Kind: "workload"}
+
+		allow := func(c *execpolicy.Config) { c.Allow = []string{`identity.kind == "workload"`} }
+		require.NoError(t, run(t, allow, as(workload)))
+		denied(t, run(t, allow, as(human)), execpolicy.ReasonNoAllowRule)
+		denied(t, run(t, allow, argv("sh")), execpolicy.ReasonNoAllowRule)
+
+		deny := func(c *execpolicy.Config) { c.Deny = []string{`identity.kind == "human"`} }
+		denied(t, run(t, deny, as(human)), execpolicy.ReasonDenyRule)
+		require.NoError(t, run(t, deny, as(workload)))
+
+		byAction := func(c *execpolicy.Config) { c.Allow = []string{`"run.start" in identity.actions`} }
+		require.NoError(t, run(t, byAction, as(human)))
+		denied(t, run(t, byAction, as(workload)), execpolicy.ReasonNoAllowRule)
 	})
 
 	t.Run("a cancelled context is not a policy decision", func(t *testing.T) {

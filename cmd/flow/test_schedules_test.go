@@ -218,6 +218,11 @@ func TestSeedFlagsRefuseCombinationsThatWouldDoNothing(t *testing.T) {
 			says: "no search for --seed0 to start",
 		},
 		{
+			name: "swarm with no seed to choose faults for",
+			args: []string{"--swarm"},
+			says: "pass --seeds N or --seed N",
+		},
+		{
 			name: "more schedules than this command will run",
 			args: []string{"--seeds", "10001"},
 			says: "the cost is linear in this number",

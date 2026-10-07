@@ -132,6 +132,9 @@ type ScheduleDivergence struct {
 	FaultsFired int
 	ShrinkRuns  int
 	Minimal     bool
+	// Swarm reports that the diverging seed ran under swarm testing, so its
+	// replay needs the same flag.
+	Swarm bool
 }
 
 // faultedSeed is what a seed's faulted run left to pin: the script it prints and
@@ -170,6 +173,7 @@ func (s *ScheduleReport) Report() *v1.ScheduleExploration {
 			FiredFaults:   int32(d.FaultsFired),
 			ShrinkRuns:    int32(d.ShrinkRuns),
 			ShrunkMinimal: d.Minimal,
+			Swarm:         d.Swarm,
 		}
 	}
 
@@ -376,6 +380,7 @@ func (a *scheduleAccumulator) run(ctx context.Context, once caseRun) (*v1.TestCa
 			FaultsFired:  shrunk.From,
 			ShrinkRuns:   shrunk.Runs,
 			Minimal:      shrunk.Minimal,
+			Swarm:        a.budget.Swarm,
 		}
 	}
 

@@ -178,6 +178,10 @@ flow test -o jsonl examples/`,
 		"also run every case under N seeded schedules of the local driver's own choices "+
 			"(`parallel:` branch order, where an `async:` step's work happens), and fail when a "+
 			"case's observables depend on which one ran; 0, the default, runs written order only")
+	cmd.Flags().Bool("swarm", false,
+		"with `--seeds` or `--seed`, run each seed with a random subset of the case's `faults:` on "+
+			"instead of all of them, so a failure that needs one kind of fault alone, or two without "+
+			"a third, can occur; a reported seed replays only with the same flag")
 	cmd.Flags().Uint64("seed0", dst.DefaultSeed0,
 		"the first seed `--seeds` walks upward from, to move the search to a different part of "+
 			"the seed space")
@@ -251,11 +255,25 @@ func scheduleBudget(cmd *cobra.Command) (dst.Budget, error) {
 	}
 
 	budget := dst.Budget{Schedules: seeds, Seed0: seed0}
+	budget.Swarm, _ = cmd.Flags().GetBool("swarm")
+	if budget.Swarm && seeds == 0 && !pinned {
+		return dst.Budget{}, errors.New(
+			"--swarm chooses which faults a seed runs with, and no seed was asked for; pass --seeds N or --seed N")
+	}
 	if pinned {
 		budget.Pinned = &seed
 	}
 
 	return budget, nil
+}
+
+// swarmFlag is the flag a replay of divergence needs beside its seed.
+func swarmFlag(divergence *flowtest.ScheduleDivergence) string {
+	if divergence.Swarm {
+		return " --swarm"
+	}
+
+	return ""
 }
 
 // shrinkNote says what shrinking did to the pinned faults, or "" when it did
@@ -902,8 +920,8 @@ func printSchedules(out io.Writer, theme ui.Theme, report *v1.TestReport, schedu
 		fmt.Fprintf(out, "%s  %s: %s\n", file, divergence.Case, theme.Danger.Render(
 			fmt.Sprintf("an invariant broke under injected faults (seed %d)", divergence.Seed)))
 		fmt.Fprintf(out, "       Seed %d injected the case's `faults:` and a claim in `invariants:` did not hold.\n", divergence.Seed)
-		fmt.Fprintf(out, "\n       REPLAY THESE EXACT FAULTS:\n\n           flow test --seed %d -- %s\n\n",
-			divergence.Seed, shellArg(report.GetFile()))
+		fmt.Fprintf(out, "\n       REPLAY THESE EXACT FAULTS:\n\n           flow test --seed %d%s -- %s\n\n",
+			divergence.Seed, swarmFlag(divergence), shellArg(report.GetFile()))
 		fmt.Fprintf(out, "       seed %d (%d scheduling decisions):\n%s",
 			divergence.Seed, divergence.Decisions, indentRendering(divergence.Seeded))
 		if divergence.Script == "" && divergence.Decisions > 0 {
@@ -941,8 +959,8 @@ func printSchedules(out io.Writer, theme ui.Theme, report *v1.TestReport, schedu
 		fmt.Fprintf(out, "       %s\n", line)
 	}
 
-	fmt.Fprintf(out, "\n       REPLAY THIS EXACT SCHEDULE:\n\n           flow test --seed %d -- %s\n\n",
-		divergence.Seed, shellArg(report.GetFile()))
+	fmt.Fprintf(out, "\n       REPLAY THIS EXACT SCHEDULE:\n\n           flow test --seed %d%s -- %s\n\n",
+		divergence.Seed, swarmFlag(divergence), shellArg(report.GetFile()))
 	fmt.Fprintf(out, "       written order:\n%s", indentRendering(divergence.WrittenOrder))
 	fmt.Fprintf(out, "       seed %d (%d scheduling decisions):\n%s",
 		divergence.Seed, divergence.Decisions, indentRendering(divergence.Seeded))

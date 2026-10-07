@@ -74,6 +74,7 @@ var implementedCapabilities = map[string]string{
 	"DocumentSymbolProvider":     "textDocument/documentSymbol",
 	"DocumentFormattingProvider": "textDocument/formatting",
 	"CodeActionProvider":         "textDocument/codeAction",
+	"SemanticTokensProvider":     "textDocument/semanticTokens/full",
 }
 
 // TestNoCapabilityIsAdvertisedWithoutAHandler is the check the list above cannot be
@@ -110,6 +111,10 @@ func TestNoCapabilityIsAdvertisedWithoutAHandler(t *testing.T) {
 		// Advertised in the options form, which shadows the embedded bool — so the
 		// scan below will always find that one zero and this is where it is counted.
 		set["CodeActionProvider"] = true
+	}
+	if got.SemanticTokensProvider != nil {
+		// Also a wrapper field: go-lsp has no such capability to scan.
+		set["SemanticTokensProvider"] = true
 	}
 	for i := range fields.NumField() {
 		if value.Field(i).IsZero() {

@@ -549,8 +549,9 @@ cheap to turn on, and undocumented until now.
   `flow server` or `flow validate`, for the same reason egress policy isn't:
   a deployment refusal is not a file diagnostic (`cmd/flow/taskpolicy.go`).
   A rule is CEL over `task` (the qualified task name) and `identity`
-  (`identity.subject`, `.issuer`, `.namespace`, `.claims` — the run's attested
-  identity), so `task == "log" && identity.namespace != "platform"` denies a
+  (`identity.subject`, `.issuer`, `.namespace`, `.claims`, `.principal`, `.kind`,
+  `.actions` — the run's attested identity, the same `principal.Caller` shape
+  egress and exec rules read), so `task == "log" && identity.namespace != "platform"` denies a
   task to every tenant but one. Fail-closed the same way secret rules are: no
   policy configured permits everything (today's default, unchanged); a
   malformed policy refuses the command to start rather than running
@@ -562,7 +563,7 @@ cheap to turn on, and undocumented until now.
   configuration.
 - ✅ **Egress keyed on `identity.namespace` is now real (#240).** The egress
   CEL environment carries an `identity` object — `identity.subject`, `.issuer`,
-  `.namespace`, `.claims` — the same run identity the secret and task rules
+  `.namespace`, `.claims`, `.principal`, `.kind`, `.actions` — the same run identity the secret and task rules
   read, from the same source. So `identity.namespace == "team-a" && host ==
   "partner-a.example.com"` in one worker's `--egress-policy` file lets team-a
   reach a host that every other tenant on that worker is denied — the one

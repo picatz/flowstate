@@ -151,7 +151,7 @@ func (s *FlowstateServer) revealAuthorized(ctx context.Context, rpc, field, work
 		return false, connect.NewError(connect.CodeInternal, err)
 	}
 
-	allowed := authz.Decide(ctx, action, authz.Explicit).Allowed
+	allowed := s.decide(ctx, action, authz.Explicit).Allowed
 
 	subject := s.auditSubject(ctx, rpc, v1.AuditResourceKind_AUDIT_RESOURCE_KIND_RUN, workflowID)
 	subject.RequestField = field

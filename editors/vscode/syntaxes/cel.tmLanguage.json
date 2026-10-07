@@ -1,0 +1,101 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Common Expression Language",
+  "scopeName": "source.cel",
+  "patterns": [
+    { "include": "#comment" },
+    { "include": "#braces" },
+    { "include": "#string" },
+    { "include": "#number" },
+    { "include": "#keyword" },
+    { "include": "#optional-select" },
+    { "include": "#member-call" },
+    { "include": "#function-call" },
+    { "include": "#member" },
+    { "include": "#root" },
+    { "include": "#operator" },
+    { "include": "#identifier" }
+  ],
+  "repository": {
+    "braces": {
+      "comment": "A map or message literal. Nested so that its closing brace is not mistaken for the end of a ${...} fence around it.",
+      "begin": "\\{",
+      "end": "\\}",
+      "patterns": [{ "include": "$self" }]
+    },
+    "comment": {
+      "name": "comment.line.double-slash.cel",
+      "match": "//.*$"
+    },
+    "string": {
+      "patterns": [
+        {
+          "name": "string.quoted.triple.cel",
+          "begin": "(?i)(?<!\\w)(?:rb?|br?)?\"\"\"",
+          "end": "\"\"\"",
+          "patterns": [{ "include": "#escape" }]
+        },
+        {
+          "name": "string.quoted.triple.cel",
+          "begin": "(?i)(?<!\\w)(?:rb?|br?)?'''",
+          "end": "'''",
+          "patterns": [{ "include": "#escape" }]
+        },
+        {
+          "name": "string.quoted.double.cel",
+          "begin": "(?i)(?<!\\w)(?:rb?|br?)?\"",
+          "end": "\"|(?=$)",
+          "patterns": [{ "include": "#escape" }]
+        },
+        {
+          "name": "string.quoted.single.cel",
+          "begin": "(?i)(?<!\\w)(?:rb?|br?)?'",
+          "end": "'|(?=$)",
+          "patterns": [{ "include": "#escape" }]
+        }
+      ]
+    },
+    "escape": {
+      "name": "constant.character.escape.cel",
+      "match": "\\\\(?:[abfnrtv\"'`?\\\\]|[0-7]{3}|[xX][0-9a-fA-F]{2}|u[0-9a-fA-F]{4}|U[0-9a-fA-F]{8})"
+    },
+    "number": {
+      "name": "constant.numeric.cel",
+      "match": "(?<![\\w.])(?:0[xX][0-9a-fA-F]+[uU]?|(?:\\d+\\.\\d+|\\.\\d+|\\d+)(?:[eE][+-]?\\d+)?[uU]?)(?![\\w.])"
+    },
+    "keyword": {
+      "patterns": [
+        { "name": "constant.language.cel", "match": "(?<![\\w.])(?:true|false|null)\\b" },
+        { "name": "keyword.operator.word.cel", "match": "(?<![\\w.])in\\b" }
+      ]
+    },
+    "optional-select": {
+      "name": "keyword.operator.optional.cel",
+      "match": "\\.\\?"
+    },
+    "member-call": {
+      "match": "(?<=\\.)([A-Za-z_]\\w*)(?=\\s*\\()",
+      "captures": { "1": { "name": "entity.name.function.member.cel" } }
+    },
+    "function-call": {
+      "match": "(?<![\\w.])([A-Za-z_]\\w*)(?=\\s*\\()",
+      "captures": { "1": { "name": "entity.name.function.cel" } }
+    },
+    "member": {
+      "match": "(?<=\\.|\\.\\?)([A-Za-z_]\\w*)",
+      "captures": { "1": { "name": "variable.other.property.cel" } }
+    },
+    "root": {
+      "name": "variable.language.cel",
+      "match": "(?<![\\w.])(?:inputs|vars|steps|run|event|trigger|response|this|now|sender)\\b"
+    },
+    "operator": {
+      "name": "keyword.operator.cel",
+      "match": "&&|\\|\\||==|!=|<=|>=|[-+*/%!<>?:]"
+    },
+    "identifier": {
+      "name": "variable.other.cel",
+      "match": "(?<![\\w.])[A-Za-z_]\\w*"
+    }
+  }
+}

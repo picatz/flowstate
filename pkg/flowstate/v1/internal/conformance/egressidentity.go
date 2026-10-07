@@ -1,6 +1,7 @@
 package conformance
 
 import (
+	"cmp"
 	"strings"
 	"testing"
 
@@ -43,6 +44,11 @@ type EgressIdentityCase struct {
 	// [TaskPolicyCase.Identity], which states the same split.
 	Identity *v1.WorkloadIdentity
 
+	// Rule is the allow rule the case runs under; empty means
+	// [EgressIdentityAllowRule]. Only the principal-kind rows set it, because
+	// the tenant rule cannot see a kind.
+	Rule string
+
 	// Denied is true when the egress policy must refuse the request.
 	Denied bool
 }
@@ -74,9 +80,15 @@ func EgressIdentityExpectedOutputs() *v1.Workflow_StepOutputs {
 	}}
 }
 
-// InstallEgressIdentityPolicy registers an http task enforcing
-// [EgressIdentityAllowRule] for the duration of the test, restoring whatever
-// was registered before.
+// EgressIdentityKindRule is the allow rule the principal-kind rows run under.
+// Like [EgressIdentityAllowRule] it is shared by every row that uses it, so the
+// rows discriminate the identity rather than each bringing a rule that agrees
+// with itself.
+const EgressIdentityKindRule = `identity.kind == "workload"`
+
+// InstallEgressIdentityPolicy registers an http task enforcing the case's rule
+// ([EgressIdentityAllowRule] unless it names another) for the duration of the
+// test, restoring whatever was registered before.
 //
 // It permits loopback for the same reason [allowLoopback] does — the test
 // server is loopback and the shipped default correctly refuses it — and it is
@@ -99,12 +111,12 @@ func EgressIdentityExpectedOutputs() *v1.Workflow_StepOutputs {
 // nothing here can detect it — testing.TB does not say whether its test is
 // parallel. So it is written down instead: do not call this from a parallel
 // test; give it its own [v1.Registry] if you need one.
-func InstallEgressIdentityPolicy(tb testing.TB) {
+func InstallEgressIdentityPolicy(tb testing.TB, c EgressIdentityCase) {
 	tb.Helper()
 
 	policy, err := netpolicy.New(
 		netpolicy.WithAllowLoopback(),
-		netpolicy.WithAllowRules(EgressIdentityAllowRule),
+		netpolicy.WithAllowRules(cmp.Or(c.Rule, EgressIdentityAllowRule)),
 	)
 	if err != nil {
 		tb.Fatalf("building the identity-scoped egress policy: %v", err)
@@ -127,9 +139,10 @@ func InstallEgressIdentityPolicy(tb testing.TB) {
 // The negative direction is the point, per CLAUDE.md: an allowlist that admits
 // its own tenant proves nothing on its own, because a driver that lost the
 // identity entirely would fail it in one direction and a driver that ignored
-// the rule entirely would pass it. The set is therefore three answers to one
+// the rule entirely would pass it. The tenant rows are three answers to one
 // rule — the tenant it names, a tenant it does not, and a run naming nobody —
-// and a driver has to get all three right.
+// and the kind rows are the same pair plus an identity with no kind, under
+// [EgressIdentityKindRule]; a driver has to get all of them right.
 func EgressIdentityCases() []EgressIdentityCase {
 	return []EgressIdentityCase{
 		{
@@ -153,6 +166,28 @@ func EgressIdentityCases() []EgressIdentityCase {
 			// it ever becomes one.
 			Name:   "a run that names nobody is refused",
 			Denied: true,
+		},
+		{
+			// identity.kind is what the shared principal.Caller added to this
+			// surface, and it travels on its own field: a driver that carried
+			// the namespace and subject but dropped the principal kind passes
+			// every row above and fails these.
+			Name:     "a workload egresses under a kind rule",
+			Rule:     EgressIdentityKindRule,
+			Identity: &v1.WorkloadIdentity{Subject: "spiffe://acme/ci", PrincipalKind: v1.PrincipalKind_PRINCIPAL_KIND_WORKLOAD},
+		},
+		{
+			Name:     "a human is refused by the same kind rule",
+			Rule:     EgressIdentityKindRule,
+			Identity: &v1.WorkloadIdentity{Subject: "spiffe://acme/kent", PrincipalKind: v1.PrincipalKind_PRINCIPAL_KIND_HUMAN},
+			Denied:   true,
+		},
+		{
+			// A trust policy that assigned no kind is not a workload.
+			Name:     "an identity with no kind is refused by the same kind rule",
+			Rule:     EgressIdentityKindRule,
+			Identity: &v1.WorkloadIdentity{Subject: "spiffe://acme/ci"},
+			Denied:   true,
 		},
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/cel-go/cel"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -115,4 +116,91 @@ func TestAFailureBoundsTheSubexpressionItEchoes(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no such overload")
 	assert.Less(t, len(err.Error()), 1024)
+}
+
+// TestAMissingKeyListsOnlyNamesSpelledLikeDeclarations pins the sweep's finding
+// that candidates come from the runtime map: a key shaped like data is never
+// listed, whichever map it sits in.
+func TestAMissingKeyListsOnlyNamesSpelledLikeDeclarations(t *testing.T) {
+	t.Parallel()
+
+	_, err := evalInProfile(t, `steps.fetch.nope`, map[string]any{
+		"steps": map[string]any{"fetch": map[string]any{
+			"value":             int64(1),
+			"alice@example.com": int64(2),
+			"/etc/passwd":       int64(3),
+		}},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "available: value")
+	assert.NotContains(t, err.Error(), "alice@example.com")
+	assert.NotContains(t, err.Error(), "/etc/passwd")
+
+	_, err = evalInProfile(t, `steps.fetch.nope`, map[string]any{
+		"steps": map[string]any{"fetch": map[string]any{"alice@example.com": int64(2)}},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "none of its names can be shown", "a filtered map is not reported as empty")
+	assert.NotContains(t, err.Error(), "there are none")
+}
+
+// TestFailureDiagnosticsShareOneCostBudget pins that re-evaluating operands is
+// paid from one budget: with the cost limit spent by the failed evaluation, the
+// operands are not re-run on fresh budgets, so the types read `?`.
+func TestFailureDiagnosticsShareOneCostBudget(t *testing.T) {
+	t.Parallel()
+
+	work := newFailureWork(10)
+	require.True(t, work.take())
+	work.spend(nil)
+	assert.Zero(t, work.remaining, "an evaluation that reported no cost spends what is left")
+	assert.False(t, work.take(), "nothing is left for another operand")
+
+	counted := newFailureWork(0)
+	counted.evals = 2
+	require.True(t, counted.take())
+	require.True(t, counted.take())
+	assert.False(t, counted.take(), "the evaluation count bounds work even with no cost limit")
+}
+
+// TestAHyphenatedKeyIsNotListed pins that the shape is the canonical CEL
+// identifier the declarations are held to, so `api-token` is not listed.
+func TestAHyphenatedKeyIsNotListed(t *testing.T) {
+	t.Parallel()
+
+	assert.True(t, declaredNameShape("value"))
+	assert.True(t, declaredNameShape("_x9"))
+	assert.False(t, declaredNameShape("api-token"))
+	assert.False(t, declaredNameShape("9lives"))
+	assert.False(t, declaredNameShape(strings.Repeat("a", maxFailureNameLen+1)))
+}
+
+// TestFailureDiagnosticsChargeTheCostAnEvaluationReports pins the other half of
+// the shared budget: an operand evaluation that finishes is charged its actual
+// cost, so the next one starts from what is left rather than a fresh limit.
+func TestFailureDiagnosticsChargeTheCostAnEvaluationReports(t *testing.T) {
+	t.Parallel()
+
+	env, err := cel.NewEnv()
+	require.NoError(t, err)
+	ast, iss := env.Compile(`[1, 2, 3].map(x, x + 1).size() > 0`)
+	require.NoError(t, iss.Err())
+	prog, err := env.Program(ast, cel.EvalOptions(cel.OptTrackCost))
+	require.NoError(t, err)
+	_, details, err := prog.Eval(map[string]any{})
+	require.NoError(t, err)
+	require.NotNil(t, details.ActualCost())
+	require.NotZero(t, *details.ActualCost())
+
+	const budget = 1000
+	work := newFailureWork(budget)
+	require.True(t, work.take())
+	work.spend(details)
+	assert.Equal(t, uint64(budget)-*details.ActualCost(), work.remaining,
+		"a finished evaluation is charged what it cost")
+	assert.Equal(t, work.remaining, work.limits(Limits{Cost: budget}).Cost,
+		"the next evaluation is limited to what is left")
+
+	work.spend(&cel.EvalDetails{})
+	assert.Zero(t, work.remaining, "an evaluation that reports no cost spends the rest")
 }

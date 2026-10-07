@@ -4,13 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"reflect"
 	"strings"
 
 	"github.com/google/cel-go/cel"
 
 	"github.com/google/cel-go/ext"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/celrule"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/principal"
 )
 
 // ruleSet holds the allow and deny rules that apply at one evaluation scope:
@@ -94,8 +94,8 @@ func newRuleCompiler(costLimit uint64) (*ruleCompiler, error) {
 	// a native type makes a rule naming `identity.nonexistent` a build-time error
 	// rather than one that silently never matches.
 	identityDecls := []cel.EnvOption{
-		ext.NativeTypes(ext.ParseStructTag("cel"), reflect.TypeFor[Identity]()),
-		cel.Variable("identity", cel.ObjectType(identityTypeName)),
+		principal.EnvOptions(),
+		principal.Var("identity"),
 	}
 
 	// Request-scoped attributes are known before a connection is made and are

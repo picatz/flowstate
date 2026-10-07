@@ -1,6 +1,8 @@
 package server_test
 
 import (
+	"context"
+	"sync/atomic"
 	"testing"
 
 	"connectrpc.com/connect"
@@ -8,6 +10,8 @@ import (
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/authz"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/server"
 )
 
 // TestPolicyAssignedActionsEnforceLeastPrivilege is the bounded control-plane
@@ -91,4 +95,44 @@ func assertInsufficientAction(t *testing.T, err error, scope string) {
 	require.ErrorAs(t, err, &connectErr)
 	require.Equal(t, `Bearer error="insufficient_scope", scope="`+scope+`"`,
 		connectErr.Meta().Get("WWW-Authenticate"))
+}
+
+// TestAnEmbeddersDeciderNarrowsTheTrustPolicy proves server.WithDecider can
+// refuse what the caller's entry grants and can never grant what it withholds.
+func TestAnEmbeddersDeciderNarrowsTheTrustPolicy(t *testing.T) {
+	t.Parallel()
+
+	temporal, _ := newTemporalNamespace(t)
+	startWorker(t, temporal)
+
+	var frozen atomic.Bool
+	flowstate := mustNew(t, temporal, server.WithDecider(authz.DeciderFunc(
+		func(_ context.Context, req authz.Request) authz.Decision {
+			// Allows everything it is asked about, except while frozen.
+			return authz.Decision{Allowed: !frozen.Load(), Scope: "maintenance.freeze"}
+		})))
+
+	holder := auth.ContextWithPrincipal(t.Context(), auth.Principal{
+		Issuer: "https://issuer.example", Subject: "ci",
+		Actions: auth.ActionScopes{v1.AuthorizationActionScope(v1.AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_RUN)},
+	})
+	stranger := auth.ContextWithPrincipal(t.Context(), auth.Principal{
+		Issuer: "https://issuer.example", Subject: "nobody", Actions: auth.ActionScopes{},
+	})
+
+	_, err := flowstate.Run(holder, connect.NewRequest(&v1.RunRequest{Workflow: gatedWorkflow()}))
+	require.NoError(t, err, "a decider that allows changed what the policy grants")
+
+	_, err = flowstate.Run(stranger, connect.NewRequest(&v1.RunRequest{Workflow: gatedWorkflow()}))
+	assertInsufficientAction(t, err, "workload.run")
+
+	frozen.Store(true)
+	_, err = flowstate.Run(holder, connect.NewRequest(&v1.RunRequest{Workflow: gatedWorkflow()}))
+	require.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err), "the decider's refusal did not stop a granted caller")
+
+	// The caller cannot fix an embedder's refusal by asking for a scope, so none is offered.
+	var refusal *connect.Error
+	require.ErrorAs(t, err, &refusal)
+	require.Empty(t, refusal.Meta().Get("WWW-Authenticate"))
+	require.NotContains(t, err.Error(), "maintenance.freeze")
 }
