@@ -40,6 +40,11 @@ type Task struct {
 	Outputs protoreflect.MessageDescriptor
 
 	// Fn executes the task.
+	//
+	// A plain error returned from Fn is retried under the default policy and
+	// reported as Internal. Return [InvalidInput] for anything the caller, not
+	// Flowstate, caused, and [Unavailable] for a transient fault in a
+	// dependency.
 	Fn v1.TaskFunc
 }
 
