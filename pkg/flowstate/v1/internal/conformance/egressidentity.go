@@ -219,6 +219,19 @@ func EgressIdentityCases() []EgressIdentityCase {
 			Denied:   true,
 		},
 		{
+			// #2426: the tenant matches and the absence test would pass if the
+			// over-bound claim were silently dropped; it is refused instead.
+			Name:     "a caller whose claims were refused is refused by an absence rule",
+			Rule:     refusedClaimsRule,
+			Identity: refusedClaimsIdentity(),
+			Denied:   true,
+		},
+		{
+			Name:     "a caller without the excluded claim egresses under the same absence rule",
+			Rule:     refusedClaimsRule,
+			Identity: carrierWorkloadIdentity(v1.PrincipalKind_PRINCIPAL_KIND_AGENT, "dev"),
+		},
+		{
 			// The act chain travels on its own field of the principal, as the kind
 			// does: a driver that carried everything else but dropped the actors
 			// passes every row above and fails these.

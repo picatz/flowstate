@@ -629,7 +629,7 @@ func (p *Policy) checkRequest(req *http.Request) error {
 		"port":        int64(port),
 		"method":      req.Method,
 		"path":        rulePath(req.URL),
-		"identity":    identityFromContext(req.Context()),
+		"identity":    identityFromContext(req.Context()).Bind(),
 		"credentials": credentialsFromContext(req.Context()),
 	})
 }
@@ -777,7 +777,7 @@ func (p *Policy) evalConnRules(ctx context.Context, target, scheme, host string,
 		"host":     host,
 		"port":     int64(addrPort.Port()),
 		"ip":       normalize(addrPort.Addr()).String(),
-		"identity": identityFromContext(ctx),
+		"identity": identityFromContext(ctx).Bind(),
 	})
 }
 

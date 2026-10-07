@@ -511,7 +511,7 @@ func (p *Policy) Check(ctx context.Context, req Request) (*Command, error) {
 			"name":       req.Argv[0],
 			"dir":        dir,
 			"env_keys":   keys,
-			"identity":   identity,
+			"identity":   identity.Bind(),
 		})
 		if err != nil {
 			if ctxErr := ctx.Err(); ctxErr != nil {

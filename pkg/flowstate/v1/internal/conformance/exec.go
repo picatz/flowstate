@@ -427,6 +427,27 @@ func ExecCases(root string) []ExecCase {
 			ExpectedError: denied("rule error", "no such key: team"),
 		},
 		{
+			// #2426: a deny rule on a claim the identity refused would never fire
+			// if the claim were silently dropped; the rule errors and denies.
+			Name: "a deny rule on a claim the identity refused refuses the invocation",
+			Deny: []string{refusedClaimsDenyRule},
+			Workflow: execWorkflow("exec-identity-refused-claims",
+				execStep("program", shArgv(`printf no`), root, nil)),
+			Identity:      refusedClaimsIdentity(),
+			ExpectedKind:  v1.ErrorKindPolicyDenied,
+			ExpectedError: denied("rule error"),
+		},
+		{
+			Name: "the same deny rule does not reach a caller without the claim",
+			Deny: []string{refusedClaimsDenyRule},
+			Workflow: execWorkflow("exec-identity-unrefused-claims",
+				execStep("program", shArgv(`printf ok`), root, nil)),
+			Identity: carrierWorkloadIdentity(v1.PrincipalKind_PRINCIPAL_KIND_AGENT, "dev"),
+			Check: func(tb testing.TB, out *v1.Workflow_StepOutputs) {
+				require.Equal(tb, "ok", execField(tb, out, "program", "stdout"))
+			},
+		},
+		{
 			Name:  "a run with no identity matches no tenant rule",
 			Allow: []string{`identity.namespace == "team-a"`},
 			Workflow: execWorkflow("exec-identity-absent",

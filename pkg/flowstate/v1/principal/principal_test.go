@@ -23,7 +23,7 @@ func eval(t *testing.T, env *cel.Env, expr string, c principal.Caller) (any, err
 	require.NoError(t, iss.Err(), expr)
 	prg, err := env.Program(ast)
 	require.NoError(t, err)
-	out, _, err := prg.Eval(map[string]any{"identity": c.Normalized()})
+	out, _, err := prg.Eval(map[string]any{"identity": c.Normalized().Bind()})
 	if err != nil {
 		return nil, err
 	}
