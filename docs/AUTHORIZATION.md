@@ -19,13 +19,13 @@ An **open** zero case permits when nothing is configured and must say why. A **d
 | [Does this run belong to the caller's tenant?](#tenancy) | deployment | **closed** | `pkg/flowstate/v1/server/lifecycle.go: authorizeRunDecision` |
 | [May this caller decode or encode a tenant's payloads?](#codec-server) | deployment | **closed** | `pkg/flowstate/v1/codecserver/codecserver.go: authorize` |
 | [May this caller start this workflow by hand?](#manual-trigger) | author | **open** | `pkg/flowstate/v1/trigger.go: CheckManualStart` |
-| [May this sender answer this signal?](#signal) | author | **open** | `pkg/flowstate/v1/signalpolicy.go: signalPolicyCheck` |
+| [May this sender answer this signal?](#signal) | author | **open** | `pkg/flowstate/v1/server/lifecycle.go: authorizeSignal` |
 | [May this caller pause and step this run?](#debug) | author | **closed** | `pkg/flowstate/v1/debuglease.go: DebugPolicyCheck` |
-| [Is this caller the one holding the debug lease?](#debug-lease) | author | **closed** | `pkg/flowstate/v1/debuglease.go: DebugLeaseHolder` |
+| [Is this caller the one holding the debug lease?](#debug-lease) | author | **closed** | `pkg/flowstate/v1/debuglease.go: DebugLeaseHeld` |
 | [Is this webhook delivery authentic and wanted?](#webhook-delivery) | author | **closed** | `pkg/flowstate/v1/webhookverify.go: VerifyWebhookDelivery` |
 | [May a webhook answer this signal gate?](#webhook-signal-bridge) | author | **closed** | `pkg/flowstate/v1/webhooksignal.go: CheckWebhookSignalPolicy` |
 | [May this task run with these inputs?](#task-shape) | worker | **open** | `pkg/flowstate/v1/taskpolicy.go: check` |
-| [May this task reach this host?](#egress) | worker | **default** | `pkg/flowstate/v1/netpolicy/rules.go: evaluate` |
+| [May this task reach this host?](#egress) | worker | **default** | `pkg/flowstate/v1/netpolicy/netpolicy.go: decideDial` |
 | [May this task run this program?](#exec) | worker | **closed** | `pkg/flowstate/v1/execpolicy/policy.go: Check` |
 | [May this workload read this secret?](#secret) | worker | **closed** | `pkg/flowstate/v1/auth/secretpolicy.go: Authorize` |
 | [May this workload assume this credential target?](#credential-assumption) | worker | **closed** | `pkg/flowstate/v1/auth/assume.go: evaluate` |
@@ -38,7 +38,7 @@ An **open** zero case permits when nothing is configured and must say why. A **d
 - Layer: transport
 - Zero case: **closed**. A server with no verifier refuses every token, and `flow server` refuses to start without an auth policy unless told `--insecure-no-auth`.
 - Enforced in: `pkg/flowstate/v1/auth/admission.go: admitBearer`
-- Proven by: `TestAuthenticatorWithoutVerifier`, `TestNewMTLSVerifierNilWhenNoMTLSEntries`
+- Proven by: `TestAuthenticatorWithoutVerifier`
 
 ## insecure-no-auth
 
@@ -56,7 +56,7 @@ An **open** zero case permits when nothing is configured and must say why. A **d
 - Layer: transport
 - Zero case: **open**. The process's own trust is the caller's, so no principal holds every ordinary action and no explicit one; open because whoever started the process is the operator.
 - Enforced in: `cmd/flow/internal/mcp/mcp.go: withMCPActions`
-- Proven by: `TestMCPToolsAreGatedByTheCallersEffectiveActions`
+- Proven by: `TestMCPToolsAreGatedByTheCallersEffectiveActions`, `TestMCPStdioCallerWithNoPrincipalIsUnrestricted`
 
 ## action
 
@@ -99,7 +99,7 @@ An **open** zero case permits when nothing is configured and must say why. A **d
 <a id="manual-trigger"></a>May this caller start this workflow by hand?
 
 - Layer: author
-- Zero case: **open**. A workflow with no `triggers.manual:` block is startable by any authenticated caller in its tenant; open so a plain workflow runs without ceremony, and the action check still applies.
+- Zero case: **open**. A workflow with no `triggers.manual:` block is startable by any caller the action check admits, in its tenant, including the anonymous caller of an insecure server; open so a plain workflow runs without ceremony.
 - Enforced in: `pkg/flowstate/v1/trigger.go: CheckManualStart`
 - Proven by: `TestCheckManualStartPreservesOpenDeniedAndReasonBehavior`, `TestCheckManualStartRefusesAnAnonymousCallerWhateverThePredicateSays`
 
@@ -108,8 +108,8 @@ An **open** zero case permits when nothing is configured and must say why. A **d
 <a id="signal"></a>May this sender answer this signal?
 
 - Layer: author
-- Zero case: **open**. A signal name with no declared policy admits any authenticated sender in the tenant, which keeps existing workflows working; a declared policy with no `allow:` admits nobody, and an error or a non-true result refuses.
-- Enforced in: `pkg/flowstate/v1/signalpolicy.go: signalPolicyCheck`
+- Zero case: **open**. A signal name with no declared policy admits any sender the action check admits, in the tenant, which keeps existing workflows working; a declared policy with no `allow:` admits nobody, and an error or a non-true result refuses.
+- Enforced in: `pkg/flowstate/v1/server/lifecycle.go: authorizeSignal`
 - Proven by: `TestAuthorizeSignalZeroCaseNoMemoKey`, `TestAuthorizeSignalZeroCasePerName`
 
 ## debug
@@ -126,8 +126,8 @@ An **open** zero case permits when nothing is configured and must say why. A **d
 <a id="debug-lease"></a>Is this caller the one holding the debug lease?
 
 - Layer: author
-- Zero case: **closed**. A nil lease holds nothing, a lease with no expiry never holds, and only the identity that took the lease may resume it.
-- Enforced in: `pkg/flowstate/v1/debuglease.go: DebugLeaseHolder`
+- Zero case: **closed**. A nil lease holds nothing, a lease with no expiry never holds, and `DebugLeaseHolder` lets only the identity that took the lease resume it.
+- Enforced in: `pkg/flowstate/v1/debuglease.go: DebugLeaseHeld`
 - Proven by: `TestOnlyTheHolderMayBeTheHolder`, `TestALeaseThatHasLapsedHoldsNothing`
 
 ## webhook-delivery
@@ -163,8 +163,8 @@ An **open** zero case permits when nothing is configured and must say why. A **d
 
 - Layer: worker
 - Zero case: **default**. With no policy a task reaches public addresses only: loopback, private, link-local and metadata ranges are denied and every redirect is re-checked. There is no fully closed mode without writing allow rules.
-- Enforced in: `pkg/flowstate/v1/netpolicy/rules.go: evaluate`
-- Proven by: `Test_New_defaults`, `TestTheDefaultDocumentBuildsTheDefaultPolicy`
+- Enforced in: `pkg/flowstate/v1/netpolicy/netpolicy.go: decideDial`
+- Proven by: `Test_Policy_Client_addressPolicy`, `Test_Policy_Client_redirectPolicy`
 
 ## exec
 

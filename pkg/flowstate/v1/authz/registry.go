@@ -79,7 +79,7 @@ func DecisionPoints() []DecisionPoint {
 			ID: "admission", Name: "Who is this caller, and may it reach the system at all?", Layer: LayerTransport,
 			Enforced: "pkg/flowstate/v1/auth/admission.go: admitBearer",
 			Zero:     ZeroClosed, ZeroNote: "A server with no verifier refuses every token, and `flow server` refuses to start without an auth policy unless told `--insecure-no-auth`.",
-			Proof: []string{"TestAuthenticatorWithoutVerifier", "TestNewMTLSVerifierNilWhenNoMTLSEntries"},
+			Proof: []string{"TestAuthenticatorWithoutVerifier"},
 		},
 		{
 			ID: "insecure-no-auth", Name: "May an unauthenticated caller use a server that was explicitly left open?", Layer: LayerTransport,
@@ -91,7 +91,7 @@ func DecisionPoints() []DecisionPoint {
 			ID: "mcp-stdio", Name: "May a process that speaks MCP over its own stdio act?", Layer: LayerTransport,
 			Enforced: "cmd/flow/internal/mcp/mcp.go: withMCPActions",
 			Zero:     ZeroOpen, ZeroNote: "The process's own trust is the caller's, so no principal holds every ordinary action and no explicit one; open because whoever started the process is the operator.",
-			Proof: []string{"TestMCPToolsAreGatedByTheCallersEffectiveActions"},
+			Proof: []string{"TestMCPToolsAreGatedByTheCallersEffectiveActions", "TestMCPStdioCallerWithNoPrincipalIsUnrestricted"},
 		},
 		{
 			ID: "action", Name: "Does this caller hold the action this operation needs?", Layer: LayerDeployment,
@@ -120,13 +120,13 @@ func DecisionPoints() []DecisionPoint {
 		{
 			ID: "manual-trigger", Name: "May this caller start this workflow by hand?", Layer: LayerAuthor,
 			Enforced: "pkg/flowstate/v1/trigger.go: CheckManualStart",
-			Zero:     ZeroOpen, ZeroNote: "A workflow with no `triggers.manual:` block is startable by any authenticated caller in its tenant; open so a plain workflow runs without ceremony, and the action check still applies.",
+			Zero:     ZeroOpen, ZeroNote: "A workflow with no `triggers.manual:` block is startable by any caller the action check admits, in its tenant, including the anonymous caller of an insecure server; open so a plain workflow runs without ceremony.",
 			Proof: []string{"TestCheckManualStartPreservesOpenDeniedAndReasonBehavior", "TestCheckManualStartRefusesAnAnonymousCallerWhateverThePredicateSays"},
 		},
 		{
 			ID: "signal", Name: "May this sender answer this signal?", Layer: LayerAuthor,
-			Enforced: "pkg/flowstate/v1/signalpolicy.go: signalPolicyCheck",
-			Zero:     ZeroOpen, ZeroNote: "A signal name with no declared policy admits any authenticated sender in the tenant, which keeps existing workflows working; a declared policy with no `allow:` admits nobody, and an error or a non-true result refuses.",
+			Enforced: "pkg/flowstate/v1/server/lifecycle.go: authorizeSignal",
+			Zero:     ZeroOpen, ZeroNote: "A signal name with no declared policy admits any sender the action check admits, in the tenant, which keeps existing workflows working; a declared policy with no `allow:` admits nobody, and an error or a non-true result refuses.",
 			Proof: []string{"TestAuthorizeSignalZeroCaseNoMemoKey", "TestAuthorizeSignalZeroCasePerName"},
 		},
 		{
@@ -137,8 +137,8 @@ func DecisionPoints() []DecisionPoint {
 		},
 		{
 			ID: "debug-lease", Name: "Is this caller the one holding the debug lease?", Layer: LayerAuthor,
-			Enforced: "pkg/flowstate/v1/debuglease.go: DebugLeaseHolder",
-			Zero:     ZeroClosed, ZeroNote: "A nil lease holds nothing, a lease with no expiry never holds, and only the identity that took the lease may resume it.",
+			Enforced: "pkg/flowstate/v1/debuglease.go: DebugLeaseHeld",
+			Zero:     ZeroClosed, ZeroNote: "A nil lease holds nothing, a lease with no expiry never holds, and `DebugLeaseHolder` lets only the identity that took the lease resume it.",
 			Proof: []string{"TestOnlyTheHolderMayBeTheHolder", "TestALeaseThatHasLapsedHoldsNothing"},
 		},
 		{
@@ -161,9 +161,9 @@ func DecisionPoints() []DecisionPoint {
 		},
 		{
 			ID: "egress", Name: "May this task reach this host?", Layer: LayerWorker,
-			Enforced: "pkg/flowstate/v1/netpolicy/rules.go: evaluate",
+			Enforced: "pkg/flowstate/v1/netpolicy/netpolicy.go: decideDial",
 			Zero:     ZeroDefault, ZeroNote: "With no policy a task reaches public addresses only: loopback, private, link-local and metadata ranges are denied and every redirect is re-checked. There is no fully closed mode without writing allow rules.",
-			Proof: []string{"Test_New_defaults", "TestTheDefaultDocumentBuildsTheDefaultPolicy"},
+			Proof: []string{"Test_Policy_Client_addressPolicy", "Test_Policy_Client_redirectPolicy"},
 		},
 		{
 			ID: "exec", Name: "May this task run this program?", Layer: LayerWorker,

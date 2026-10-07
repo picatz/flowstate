@@ -35,6 +35,37 @@ func repoRoot(t *testing.T) string {
 	}
 }
 
+// isTestFunc reports whether fn is a test the go tool would run: a Test name
+// taking one *testing.T, so a helper, example or benchmark cannot stand as proof.
+func isTestFunc(fn *ast.FuncDecl) bool {
+	if !strings.HasPrefix(fn.Name.Name, "Test") || fn.Type.Params == nil || len(fn.Type.Params.List) != 1 {
+		return false
+	}
+	star, ok := fn.Type.Params.List[0].Type.(*ast.StarExpr)
+	if !ok {
+		return false
+	}
+	sel, ok := star.X.(*ast.SelectorExpr)
+
+	return ok && sel.Sel.Name == "T"
+}
+
+// declares reports whether the Go file at path declares a function or method
+// named symbol, so an Enforced pointer cannot outlive a rename.
+func declares(t *testing.T, path, symbol string) bool {
+	t.Helper()
+
+	file, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.SkipObjectResolution)
+	require.NoError(t, err)
+	for _, decl := range file.Decls {
+		if fn, ok := decl.(*ast.FuncDecl); ok && fn.Name.Name == symbol {
+			return true
+		}
+	}
+
+	return false
+}
+
 // testFuncs returns the name of every top-level Test function under root.
 func testFuncs(t *testing.T, root string) map[string]bool {
 	t.Helper()
@@ -60,7 +91,7 @@ func testFuncs(t *testing.T, root string) map[string]bool {
 			return nil
 		}
 		for _, decl := range file.Decls {
-			if fn, ok := decl.(*ast.FuncDecl); ok && fn.Recv == nil {
+			if fn, ok := decl.(*ast.FuncDecl); ok && fn.Recv == nil && isTestFunc(fn) {
 				names[fn.Name.Name] = true
 			}
 		}
@@ -89,10 +120,13 @@ func TestEveryDecisionPointIsProven(t *testing.T) {
 		require.NotEmpty(t, p.Layer, p.ID)
 		require.NotEmpty(t, p.ZeroNote, "%s does not say what its zero case does", p.ID)
 
-		path, _, ok := strings.Cut(p.Enforced, ": ")
+		path, symbol, ok := strings.Cut(p.Enforced, ": ")
 		require.True(t, ok, "%s: Enforced must read `path: symbol`", p.ID)
 		_, err := os.Stat(filepath.Join(root, path))
 		require.NoError(t, err, "%s: enforced in a file that does not exist", p.ID)
+		if strings.HasSuffix(path, ".go") {
+			require.True(t, declares(t, filepath.Join(root, path), symbol), "%s: %s does not declare %s", p.ID, path, symbol)
+		}
 
 		if len(p.Proof) == 0 {
 			require.True(t, strings.HasPrefix(path, "proto/"), "%s has no proof and is a point the host enforces", p.ID)
