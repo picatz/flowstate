@@ -1136,6 +1136,12 @@ func markerArgumentAt(src string, cursor int, marker string) (string, [2]int, er
 			return "", span, errNoSecretRef
 		}
 		start := at + i
+		if start > 0 && isCallPrefix(src[start-1]) {
+			// `mycredential(` and `client.credential(` are not the global call the
+			// compiler recognizes.
+			at = start + len(call)
+			continue
+		}
 
 		rest := src[start+len(call):]
 		quote := strings.IndexAny(rest, `'"`)
@@ -1159,6 +1165,12 @@ func markerArgumentAt(src string, cursor int, marker string) (string, [2]int, er
 		}
 		at = span[1]
 	}
+}
+
+// isCallPrefix reports whether c, directly before a marker name, makes the text a
+// different identifier or a method call rather than the global marker.
+func isCallPrefix(c byte) bool {
+	return c == '_' || c == '.' || c >= '0' && c <= '9' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z'
 }
 
 // errNoSecretRef reports that a cursor is not inside a secret reference. It is a

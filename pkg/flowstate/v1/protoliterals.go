@@ -3,6 +3,7 @@ package flowstatev1
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/google/cel-go/cel"
@@ -671,7 +672,7 @@ func populateProtoMessageFromValueMap(ctx context.Context, input map[string]*Val
 				"field %q was given a credential reference (%s), which this field's type "+
 					"cannot hold; only a field declared as flowstate.v1.Value that the task "+
 					"marks as accepting a credential receives one whole",
-				fieldName, kind.CredentialRef.GetTarget())
+				fieldName, strconv.Quote(kind.CredentialRef.GetTarget()))
 
 		case *Value_Structure_:
 			// A list or a mapping where the field holds one value. Named for the

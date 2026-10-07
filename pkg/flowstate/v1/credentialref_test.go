@@ -65,6 +65,10 @@ func TestValidateCredentialTarget(t *testing.T) {
 	require.NoError(t, v1.ValidateCredentialTarget("aws-prod.eu_1"))
 	require.NoError(t, v1.ValidateCredentialTarget(strings.Repeat("a", v1.MaxCredentialTargetLen)))
 
+	// The limit counts characters, as the protobuf max_len does, not bytes.
+	require.NoError(t, v1.ValidateCredentialTarget(strings.Repeat("é", v1.MaxCredentialTargetLen)))
+	require.ErrorContains(t, v1.ValidateCredentialTarget(strings.Repeat("é", v1.MaxCredentialTargetLen+1)), "longer than")
+
 	require.ErrorContains(t, v1.ValidateCredentialTarget(""), "must not be empty")
 	require.ErrorContains(t, v1.ValidateCredentialTarget(strings.Repeat("a", v1.MaxCredentialTargetLen+1)), "longer than")
 	require.ErrorContains(t, v1.ValidateCredentialTarget("any\nthing"), "control character")

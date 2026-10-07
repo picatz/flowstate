@@ -39,6 +39,20 @@ edition: v2026.4
 		assert.Equal(t, "credential('anthropic')", textInRange(src, *got.Range))
 	})
 
+	t.Run("a lookalike call is not described as the marker", func(t *testing.T) {
+		for _, call := range []string{"mycredential('x')", "client.credential('x')"} {
+			src := "name: credentials\nsteps:\n  - id: a\n    log:\n      message: ${" + call + "}\nedition: v2026.4\n"
+			uri := "file:///credential-lookalike.yaml"
+			c.open(uri, src)
+
+			pos := positionOf(t, src, call, 3)
+			got := c.hover(uri, pos.Line, pos.Character)
+			if got != nil {
+				assert.NotContains(t, hoverText(got), "federation target", call)
+			}
+		}
+	})
+
 	t.Run("a reference the compiler refuses is reported, not described as working", func(t *testing.T) {
 		const src = `name: credentials
 steps:

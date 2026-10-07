@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
 
 // A [CredentialRef] is a [SecretRef]'s sibling and is held to the same
@@ -51,7 +52,7 @@ func ValidateCredentialTarget(target string) error {
 	switch {
 	case target == "":
 		return fmt.Errorf("credential target must not be empty")
-	case len(target) > MaxCredentialTargetLen:
+	case utf8.RuneCountInString(target) > MaxCredentialTargetLen:
 		return fmt.Errorf("credential target is longer than %d characters", MaxCredentialTargetLen)
 	}
 	if i := strings.IndexFunc(target, unicode.IsControl); i >= 0 {
