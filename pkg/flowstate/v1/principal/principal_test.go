@@ -43,12 +43,12 @@ func TestTypeName_isPinned(t *testing.T) {
 
 func TestCaller_Normalized(t *testing.T) {
 	n := principal.Caller{}.Normalized()
-	require.NotNil(t, n.Claims)
+	require.NotNil(t, n.Claims.Map())
 	require.NotNil(t, n.Actions)
-	require.Empty(t, n.Claims)
+	require.Zero(t, n.Claims.Len())
 	require.Empty(t, n.Actions)
 
-	in := principal.Caller{Subject: "s", Claims: map[string]string{"k": "v"}, Actions: []string{"a"}}
+	in := principal.Caller{Subject: "s", Claims: principal.StringClaims(map[string]string{"k": "v"}), Actions: []string{"a"}}
 	require.Equal(t, in, in.Normalized(), "populated values are untouched")
 }
 
@@ -57,7 +57,7 @@ func TestCaller_readableFromExpression(t *testing.T) {
 	c := principal.Caller{
 		Issuer: "https://idp", Subject: "ci", Namespace: "team-a", Kind: "workload",
 		Principal: "https://idp#ci",
-		Claims:    map[string]string{"repo": "x/y"},
+		Claims:    principal.StringClaims(map[string]string{"repo": "x/y"}),
 		Actions:   []string{"run.start", "run.read"},
 	}
 

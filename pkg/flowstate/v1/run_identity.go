@@ -140,7 +140,7 @@ func CallerOf(identity *WorkloadIdentity) principal.Caller {
 		Namespace: identity.GetNamespace(),
 		Kind:      PrincipalKindName(identity.GetPrincipalKind()),
 		Principal: Principal(identity.GetIssuer(), identity.GetSubject()),
-		Claims:    identity.GetClaims(),
+		Claims:    principal.StringClaims(identity.GetClaims()),
 	}.Normalized()
 }
 
