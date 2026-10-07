@@ -146,7 +146,7 @@ var authorizationActionBindings = []*AuthorizationActionBinding{
 // Only identity.read is: it reveals nothing but the caller's own principal, so
 // withholding it would protect nothing and would make `flow auth whoami` fail
 // on exactly the misconfigured entries it exists to diagnose. Held in the
-// schema's package, beside the vocabulary, so [authz.DecidePrincipal] and the
+// schema's package, beside the vocabulary, so `authz.DecidePrincipal` and the
 // documentation read one answer.
 func AuthorizationActionHeldByEveryCaller(action AuthorizationAction) bool {
 	return action == AuthorizationAction_AUTHORIZATION_ACTION_IDENTITY_READ
