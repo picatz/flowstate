@@ -215,7 +215,7 @@ func Document() string {
 		}
 		b.WriteString("\n")
 	}
-	b.WriteString("## Not yet listed\n\nSchedule tenancy and actions, the required audit recorder that refuses to release what it cannot record, the webhook `jwt` bearer scheme, the credential target catalog and the refusal of delegated (`act`) tokens each decide something and are not in the registry yet.\n")
+	b.WriteString("## Not yet listed\n\nSchedule tenancy and actions, the required audit recorder that refuses to release what it cannot record, the webhook `jwt` bearer scheme, the credential target catalog and the delegated (`act`) token rules, which admit an inbound actor chain only under a delegation stanza and refuse delegated callers at minting, brokering and `jose.verify`, each decide something and are not in the registry yet.\n")
 
 	return b.String()
 }

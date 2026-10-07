@@ -334,6 +334,12 @@ func TestClaimCarriagePolicyValidation(t *testing.T) {
 		{name: "a reserved claim name would fail every surface that mints from the identity", wantErr: "reserved claim name", change: func(i *auth.TrustedIssuer) {
 			i.CarryClaims = []auth.CarryClaim{{Claim: auth.ClaimWorkflow, Type: auth.ClaimTypeString}}
 		}},
+		{name: "act would verify and then fail admission", wantErr: `delegation claim`, change: func(i *auth.TrustedIssuer) {
+			i.CarryClaims = []auth.CarryClaim{{Claim: auth.ClaimActor, Type: auth.ClaimTypeString}}
+		}},
+		{name: "a rename onto may_act is the same refusal", wantErr: `delegation claim`, change: func(i *auth.TrustedIssuer) {
+			i.CarryClaims = []auth.CarryClaim{{Claim: "delegate", As: auth.ClaimMayAct, Type: auth.ClaimTypeString}}
+		}},
 		{name: "groups carried with no groups_claim would skip the overage refusal", wantErr: `which is reserved for groups_claim`, change: func(i *auth.TrustedIssuer) {
 			i.CarryClaims = []auth.CarryClaim{{Claim: "groups", Type: auth.ClaimTypeStringList}}
 		}},

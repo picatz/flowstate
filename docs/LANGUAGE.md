@@ -1469,6 +1469,13 @@ predicate that says which senders may deliver it. It reads
   `sender.identity.claims.slack_user == "U1"` a scalar read from a nested path (`carry_claims: [{claim: slack.user, as: slack_user, type: string}]`). Guard an absent one with
   `has(sender.identity.claims.groups)`; reading one the sender lacks is an error, which
   refuses. `sender.identity.actions` is the list of scopes the sender was granted.
+- `sender.identity.actors` is who is acting on behalf of the sender (an RFC 8693 `act`
+  chain, current actor first, at most two, each with an `issuer` and a `subject`) and
+  `sender.identity.delegated` is true when it is not empty. Guard a read with it:
+  `!sender.identity.delegated || sender.identity.actors[0].subject == "triage-bot"`, or
+  refuse agents outright with `!sender.identity.delegated`. They are data the admitting
+  issuer vouched for, never authority, and are empty unless the trust policy entry that
+  admitted the sender has a `delegation:` stanza ([Accepting delegated tokens](DEPLOYMENT.md#accepting-delegated-tokens-the-act-chain)).
 - `sender.identity.namespace == "payments"` is the sender's tenant.
 - `sender.identity.kind == "human"` requires a person, as the trust policy entry that admitted the sender says (`principal_kind:`); it is `""` when that entry says nothing, which is not a workload. Rehearse it with `--signal-as-kind` (and `--as-kind` for the starter) on `flow run local`, `flow signals check` (`--starter-kind`), or `kind:` in a test file.
 - `sender.identity.principal != run.identity.principal` requires that the sender is not

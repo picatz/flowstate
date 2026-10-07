@@ -66,39 +66,75 @@ var identityClaimsParser = sync.OnceValues(func() (*cel.Env, error) { return cel
 // The expression is parsed, not compiled: it need not type-check in any one
 // environment. An expression that does not parse is an error.
 func IdentityClaimReads(src string) ([]string, error) {
+	names := map[string]struct{}{}
+	err := walkIdentitySelects(src, func(field string, e celast.NavigableExpr) {
+		if field != "claims" || e.AsSelect().IsTestOnly() {
+			return
+		}
+		if name, ok := signalPolicyMapKey(e); ok {
+			names[name] = struct{}{}
+		}
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return slices.Sorted(maps.Keys(names)), nil
+}
+
+// IdentityReadsActors reports whether an expression reads the caller's
+// delegation chain on any policy surface: `identity.actors` or
+// `identity.delegated`, including as `sender.identity.actors` and
+// `run.identity.delegated`, in any form (a select, an index, `has(...)`, a
+// comprehension over the list). It is the question `flow validate
+// --auth-policy` asks to find a rule that can only match where some trust policy
+// entry has a `delegation:` stanza, and shares [IdentityClaimReads]'s walk, so
+// the two cannot disagree about what is the caller's identity.
+//
+// The expression is parsed, not compiled; one that does not parse is an error.
+func IdentityReadsActors(src string) (bool, error) {
+	var reads bool
+	err := walkIdentitySelects(src, func(field string, _ celast.NavigableExpr) {
+		if field == "actors" || field == "delegated" {
+			reads = true
+		}
+	})
+
+	return reads, err
+}
+
+// walkIdentitySelects parses src and calls visit for every field selected from
+// the caller's identity on any policy surface (`identity.claims`,
+// `sender.identity.actors`), with the field name and the select expression.
+// The walk is over syntax and never evaluates.
+func walkIdentitySelects(src string, visit func(field string, e celast.NavigableExpr)) error {
 	env, err := identityClaimsParser()
 	if err != nil {
-		return nil, fmt.Errorf("building the claim-read parser: %w", err)
+		return fmt.Errorf("building the claim-read parser: %w", err)
 	}
 
 	parsed, issues := env.Parse(src)
 	if issues.Err() != nil {
-		return nil, issues.Err()
+		return issues.Err()
 	}
 
 	root := celast.NavigateAST(parsed.NativeRep())
 
 	// An explicit stack, as in [analyzeSignalPredicate]: the walk's depth is
 	// heap, and its work is linear in an expression the parser already bounded.
-	names := map[string]struct{}{}
 	stack := []celast.NavigableExpr{root}
 	for len(stack) > 0 {
 		e := stack[len(stack)-1]
 		stack = stack[:len(stack)-1]
 		stack = append(stack, e.Children()...)
 
-		if e.Kind() != celast.SelectKind || e.AsSelect().FieldName() != "claims" || e.AsSelect().IsTestOnly() {
+		if e.Kind() != celast.SelectKind || !isCallerIdentity(e.Children()[0]) {
 			continue
 		}
-		if !isCallerIdentity(e.Children()[0]) {
-			continue
-		}
-		if name, ok := signalPolicyMapKey(e); ok {
-			names[name] = struct{}{}
-		}
+		visit(e.AsSelect().FieldName(), e)
 	}
 
-	return slices.Sorted(maps.Keys(names)), nil
+	return nil
 }
 
 // isCallerIdentity reports whether e is the caller's identity on some surface:

@@ -416,3 +416,42 @@ func TestAuthCheckReportsTheLoadersOwnRefusal(t *testing.T) {
 		"auth check and the loader disagree about the same bytes")
 	assert.NotContains(t, unwrapped, "policy is malformed")
 }
+
+// TestAuthCheckShowsTheActorChainAndNarrowedActions: a delegated token an entry
+// accepts is reported with who is acting and what is left of the entry's actions
+// once each actor has narrowed them; one the entry does not accept is refused in
+// the public vocabulary without echoing the chain.
+func TestAuthCheckShowsTheActorChainAndNarrowedActions(t *testing.T) {
+	t.Parallel()
+	issuer := authCheckIssuer(t)
+
+	entry := authCheckEntry("agents", issuer.URL())
+	entry.Actions = []string{"workload.run", "workload.read"}
+	entry.Delegation = &auth.Delegation{Actors: []auth.DelegationActor{
+		{Issuer: "https://agents.example", Subject: "triage-bot", Actions: []string{"workload.read"}},
+	}}
+	withStanza := writeAuthCheckPolicy(t, entry)
+	plain := authCheckEntry("agents", issuer.URL())
+	plain.Actions = entry.Actions
+	withoutStanza := writeAuthCheckPolicy(t, plain)
+
+	delegated := issuer.MintToken(nil, authtest.WithSubject("alice"), authtest.WithAudience("flowstate"),
+		authtest.WithDelegation(map[string]any{"iss": "https://agents.example", "sub": "triage-bot"}))
+	alone := issuer.MintToken(nil, authtest.WithSubject("alice"), authtest.WithAudience("flowstate"))
+
+	res := runFlowStdin(t, delegated, "auth", "check", "--auth-policy", withStanza, "--token-file", "-")
+	require.Equal(t, 0, res.ExitCode, res.Output())
+	assert.Contains(t, res.Stdout, `accepted by issuers[0] ("agents")`)
+	assert.Contains(t, res.Stdout, "acting via https://agents.example#triage-bot")
+	assert.Contains(t, res.Stdout, "actions: workload.read\n", "the actor narrowed the entry's two actions to one")
+	assert.NotContains(t, res.Stdout, "workload.run")
+
+	res = runFlowStdin(t, alone, "auth", "check", "--auth-policy", withStanza, "--token-file", "-")
+	require.Equal(t, 0, res.ExitCode, res.Output())
+	assert.NotContains(t, res.Stdout, "acting via")
+
+	res = runFlowStdin(t, delegated, "auth", "check", "--auth-policy", withoutStanza, "--token-file", "-")
+	assert.Equal(t, exitCodeFailure, res.ExitCode, res.Output())
+	assert.Contains(t, res.Stderr, `token carries an unsupported "act" delegation claim`)
+	assert.NotContains(t, res.Output(), "triage-bot", "the refusal does not echo the chain")
+}

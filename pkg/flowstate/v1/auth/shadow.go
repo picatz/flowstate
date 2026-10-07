@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"slices"
 	"time"
+
+	"github.com/picatz/flowstate/pkg/flowstate/v1/principal"
 )
 
 // UnreachableIssuer names one entry of [Policy.Issuers] that can never admit
@@ -293,6 +295,9 @@ func (t TrustedIssuer) shadows(narrow TrustedIssuer) bool {
 		if !ageIsAtLeastAsPermissive(t.MaxTokenAge, narrow.MaxTokenAge) {
 			return false
 		}
+		if !delegationCovers(t.Delegation, narrow.Delegation) {
+			return false
+		}
 	case IssuerKindMTLS:
 		if t.ClientCAFile == "" || t.ClientCAFile != narrow.ClientCAFile {
 			return false
@@ -305,6 +310,29 @@ func (t TrustedIssuer) shadows(narrow TrustedIssuer) bool {
 	}
 
 	return claimRulesCover(t.Require, narrow.Require)
+}
+
+// delegationCovers reports whether an entry with the broad stanza admits every
+// `act` chain an entry with the narrow one does. No stanza admits no chain, so
+// it is covered by anything; a stanza is covered by one that lists every one of
+// its actors and accepts at least its depth. The actors' `actions` are not
+// compared: they narrow what an admitted caller holds and take no part in
+// whether it is admitted.
+func delegationCovers(broad, narrow *Delegation) bool {
+	if narrow == nil {
+		return true
+	}
+	if broad == nil || broad.depth() < narrow.depth() {
+		return false
+	}
+
+	for _, actor := range narrow.Actors {
+		if _, listed := broad.actor(principal.Actor{Issuer: actor.Issuer, Subject: actor.Subject}); !listed {
+			return false
+		}
+	}
+
+	return true
 }
 
 // covers reports whether every element of narrow appears in broad, and that

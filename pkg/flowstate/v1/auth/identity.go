@@ -56,6 +56,12 @@ type WorkloadIdentity struct {
 	// IssuerEntry is the name of the trust policy entry that admitted the caller.
 	IssuerEntry string
 
+	// Actors is the RFC 8693 `act` chain the caller's token carried, current
+	// actor first (see [Principal.Actors]). It is data about who is acting for
+	// Subject and never a source of authority: Actions already has the actors'
+	// narrowing applied. Nil when the caller acts for themselves.
+	Actors []principal.Actor
+
 	// Namespace is the tenant or environment the workload runs in.
 	Namespace string
 
@@ -117,6 +123,7 @@ func IdentityFromPrincipal(principal Principal, namespace, deployment string) Wo
 		Namespace:   namespace,
 		Kind:        string(principal.Kind),
 		Actions:     slices.Clone(principal.Actions),
+		Actors:      slices.Clone(principal.Actors),
 		Deployment:  deployment,
 	}
 
@@ -181,6 +188,7 @@ func (w WorkloadIdentity) Caller() principal.Caller {
 		Principal: principal.Qualified(w.Issuer, w.Subject),
 		Claims:    principal.NewClaims(w.Claims),
 		Actions:   w.Actions,
+		Actors:    w.Actors,
 	}.Normalized()
 }
 
@@ -475,5 +483,28 @@ func (w WorkloadIdentity) Validate() error {
 		}
 	}
 
+	if err := validateActors(w.Actors); err != nil {
+		return err
+	}
+
 	return validateCarriedClaims(w.Claims)
+}
+
+// validateActors holds an identity's actor chain to the bounds the verifier
+// admits it under, so a chain that arrived some other way (a wire message, a
+// hand-built identity) is refused rather than trusted to have been checked.
+func validateActors(actors []principal.Actor) error {
+	if len(actors) > MaxActorDepth {
+		return fmt.Errorf("%w: identity names %d actors, and at most %d are allowed", ErrInvalidIdentity, len(actors), MaxActorDepth)
+	}
+	for _, actor := range actors {
+		switch {
+		case actor.Issuer == "" || actor.Subject == "":
+			return fmt.Errorf("%w: an actor needs both an issuer and a subject", ErrInvalidIdentity)
+		case len(actor.Issuer) > MaxActorFieldBytes || len(actor.Subject) > MaxActorFieldBytes:
+			return fmt.Errorf("%w: an actor's issuer and subject are at most %d bytes", ErrInvalidIdentity, MaxActorFieldBytes)
+		}
+	}
+
+	return nil
 }

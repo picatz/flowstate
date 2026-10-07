@@ -17,6 +17,7 @@ import (
 	"connectrpc.com/connect"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/authtest"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/principal"
 	"github.com/picatz/jose/pkg/jwa"
 	"github.com/picatz/jose/pkg/jwt"
 	"github.com/stretchr/testify/require"
@@ -41,6 +42,33 @@ func TestAuthenticatorRefusesSameIdentityWithDifferentActionGrants(t *testing.T)
 	require.Nil(t, principal)
 	require.Error(t, err, "the certificate's broader grant replaced the token's restriction")
 	require.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
+}
+
+func TestAuthenticatorRefusesDelegatedTokenBesideCertificate(t *testing.T) {
+	t.Parallel()
+
+	grants := auth.ActionScopes{"workload.read"}
+	token := fixedPrincipalVerifier{principal: auth.Principal{
+		Issuer: "issuer", Subject: "caller", Actions: grants,
+		Actors: []principal.Actor{{Issuer: "https://bot.example", Subject: "bot"}},
+	}}
+	peer := fixedPeerPrincipalVerifier{principal: auth.Principal{
+		Issuer: "issuer", Subject: "caller", Actions: grants,
+	}}
+
+	var observed []error
+	authenticator := auth.NewAuthenticator(token, auth.WithPeerVerifier(peer),
+		auth.WithFailureObserver(func(_ context.Context, _ *http.Request, err error) { observed = append(observed, err) }))
+
+	req := httptest.NewRequest(http.MethodPost, "https://flowstate.example.com/", nil)
+	req.Header.Set("Authorization", "Bearer token")
+	req.TLS = &tls.ConnectionState{VerifiedChains: [][]*x509.Certificate{{{}}}}
+
+	got, err := authenticator.Authenticate(t.Context(), req)
+	require.Nil(t, got, "the certificate principal would have dropped the delegation chain")
+	require.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
+	require.Len(t, observed, 1)
+	require.ErrorIs(t, observed[0], auth.ErrAmbiguousIdentity)
 }
 
 func TestAuthenticatorAcceptsSameActionGrantsInDifferentOrder(t *testing.T) {

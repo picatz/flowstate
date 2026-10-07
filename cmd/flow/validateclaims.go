@@ -21,7 +21,8 @@ func addValidateAuthPolicyFlags(cmd *cobra.Command) {
 		"path to the deployment's auth policy (YAML); when given, every identity expression in the checked "+
 			"files (`signals:`, `debug:`, `triggers: manual:`) and in the policy's own `secrets:` and "+
 			"`federation:` rules is checked against what its issuer entries carry (`carry_claims`, "+
-			"`groups_claim`), and a claim no entry carries is reported: a rule requiring it can never match")
+			"`groups_claim`), and a claim no entry carries is reported: a rule requiring it can never match; a rule "+
+			"reading `actors` or `delegated` is reported when no entry has a `delegation:` stanza")
 }
 
 // claimCheck is `flow validate --auth-policy`: the claims the policy's issuer
@@ -29,6 +30,10 @@ func addValidateAuthPolicyFlags(cmd *cobra.Command) {
 type claimCheck struct {
 	// carriedBy maps each carried claim name to the entries carrying it.
 	carriedBy map[string][]string
+
+	// delegating names the entries with a `delegation:` stanza, the only ones
+	// whose callers can have `identity.actors`.
+	delegating []string
 
 	// policyFiles are the expressions the auth policy's own rules hold, which
 	// are checked once per invocation and not once per Flowfile.
@@ -65,6 +70,9 @@ func claimCheckOf(cmd *cobra.Command) (*claimCheck, error) {
 		for _, name := range entry.ClaimNames() {
 			check.carriedBy[name] = append(check.carriedBy[name], entry.Name)
 		}
+		if entry.Delegation != nil {
+			check.delegating = append(check.delegating, entry.Name)
+		}
 	}
 
 	// The policy's own secret and assumption rules are read against the entries
@@ -89,11 +97,28 @@ func claimCheckOf(cmd *cobra.Command) (*claimCheck, error) {
 }
 
 // diagnose reports each claim an expression reads that no issuer entry carries,
-// at the expression's position when the span lookup knows it.
+// and each read of the caller's actor chain when no issuer entry has a
+// `delegation:` stanza, at the expression's position when the span lookup knows
+// it.
 func (c *claimCheck) diagnose(expressions []v1.PolicyExpression, span func(where string) (line, column int)) flowfile.Diagnostics {
 	var out flowfile.Diagnostics
 
 	for _, expression := range expressions {
+		if reads, err := v1.IdentityReadsActors(expression.Source); err == nil && reads && len(c.delegating) == 0 {
+			line, column := 0, 0
+			if span != nil {
+				line, column = span(expression.Where)
+			}
+			out = append(out, flowfile.Diagnostic{
+				Line: line, Column: column,
+				Message: fmt.Sprintf("%s reads the caller's `actors` or `delegated`, but no issuer entry in the auth policy has a "+
+					"`delegation:` stanza, so a token's `act` chain is refused and no caller is ever delegated: `delegated` is "+
+					"always false and `actors` is always empty, and a rule requiring an actor can never match; add `delegation:` "+
+					"to the entry that admits the delegating callers",
+					expression.Where),
+			})
+		}
+
 		reads, err := v1.IdentityClaimReads(expression.Source)
 		if err != nil {
 			// An expression that does not parse is the file's own diagnostic,

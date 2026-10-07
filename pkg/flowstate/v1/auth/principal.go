@@ -3,7 +3,10 @@ package auth
 import (
 	"log/slog"
 	"slices"
+	"strings"
 	"time"
+
+	"github.com/picatz/flowstate/pkg/flowstate/v1/principal"
 )
 
 // Identity values assigned to callers admitted by [InsecureAnonymousVerifier].
@@ -115,6 +118,17 @@ type Principal struct {
 	// never comes from token claims.
 	Actions ActionScopes `json:"actions,omitzero"`
 
+	// Actors is the token's RFC 8693 "act" chain, current actor first and at
+	// most [MaxActorDepth] deep: who is acting on behalf of Subject. It is set
+	// only when the admitting entry has a [Delegation] stanza listing every
+	// actor, and is nil for a caller acting for themselves.
+	//
+	// It is data the admitting issuer vouched for and nothing more. Kind,
+	// Actions and IssuerName come from the admitting entry, never from the
+	// chain, and Actions already has the actors' narrowing applied. Treat the
+	// slice as read-only.
+	Actors []principal.Actor `json:"actors,omitempty"`
+
 	// IssuedAt is the token's "iat" claim.
 	IssuedAt time.Time `json:"issued_at"`
 
@@ -201,16 +215,51 @@ func (p Principal) HasAudience(audience string) bool {
 	return slices.Contains(p.Audience, audience)
 }
 
+// Delegated reports whether the caller is acting on behalf of the subject, that
+// is, whether the token that admitted it carried an accepted "act" chain.
+func (p Principal) Delegated() bool { return len(p.Actors) > 0 }
+
+// ActingVia renders the actor chain for a human reader or an audit record as
+// `acting via issuer#subject`, current actor first with any further actor
+// joined by `, via`. It is empty for a caller acting for themselves.
+func (p Principal) ActingVia() string {
+	if len(p.Actors) == 0 {
+		return ""
+	}
+	parts := make([]string, len(p.Actors))
+	for i, actor := range p.Actors {
+		parts[i] = actor.String()
+	}
+
+	return "acting via " + strings.Join(parts, ", via ")
+}
+
+// DelegationReport renders the actor chain and what is left of the trusted
+// issuer entry's actions once each actor has narrowed them, as two lines for
+// an operator: `acting via ...` and `actions: a, b`. It reports and decides
+// nothing; an enforcement point asks authz.Decide. It is empty for a caller
+// acting for themselves.
+func (p Principal) DelegationReport() string {
+	if !p.Delegated() {
+		return ""
+	}
+	return p.ActingVia() + "\nactions: " + strings.Join(p.Actions, ", ") + "\n"
+}
+
 // String returns the caller's identity, and role when it has one, for use in
-// human-readable messages.
+// human-readable messages. A delegated caller reads `sub, acting via A`.
 func (p Principal) String() string {
 	if p.IsZero() {
 		return "unauthenticated"
 	}
-	if p.Role == "" {
-		return p.ID()
+	text := p.ID()
+	if via := p.ActingVia(); via != "" {
+		text += ", " + via
 	}
-	return p.ID() + " (" + p.Role + ")"
+	if p.Role == "" {
+		return text
+	}
+	return text + " (" + p.Role + ")"
 }
 
 // LogValue implements [slog.LogValuer] so that logging a Principal records who
@@ -230,6 +279,9 @@ func (p Principal) LogValue() slog.Value {
 	}
 	if p.Role != "" {
 		attrs = append(attrs, slog.String("role", p.Role))
+	}
+	if via := p.ActingVia(); via != "" {
+		attrs = append(attrs, slog.String("acting_via", strings.TrimPrefix(via, "acting via ")))
 	}
 	if !p.ExpiresAt.IsZero() {
 		attrs = append(attrs, slog.Time("expires_at", p.ExpiresAt))

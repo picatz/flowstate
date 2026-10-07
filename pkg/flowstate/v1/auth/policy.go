@@ -670,6 +670,12 @@ type TrustedIssuer struct {
 	// Entries that share an Issuer must agree on this value.
 	JWKSFile string `json:"jwks_file,omitempty" yaml:"jwks_file,omitempty"`
 
+	// Delegation, when set, lets a token this entry admits carry an RFC 8693
+	// `act` chain, and names which actors may appear in it and what each may
+	// do. Without it an `act` claim is refused, never ignored. See [Delegation]
+	// for the narrowing-only rule.
+	Delegation *Delegation `json:"delegation,omitempty" yaml:"delegation,omitempty"`
+
 	// MaxTokenAge, when positive, rejects tokens whose "iat" claim is older
 	// than this, regardless of the lifetime the issuer chose. Workload tokens
 	// are short-lived by design, so an operator can insist on that: a captured
@@ -1168,18 +1174,8 @@ func (t TrustedIssuer) validate() error {
 	if t.Actions == nil {
 		return fmt.Errorf("actions is required; list the actions this entry grants, or use [] to grant none")
 	}
-	if len(t.Actions) > 64 {
-		return fmt.Errorf("actions has %d entries, over the 64 entry limit", len(t.Actions))
-	}
-	seenActions := make(map[string]struct{}, len(t.Actions))
-	for i, action := range t.Actions {
-		if action == "" || len(action) > 64 || strings.ContainsAny(action, " \t\r\n") {
-			return fmt.Errorf("actions[%d] must be a non-empty canonical scope of at most 64 bytes with no whitespace", i)
-		}
-		if _, duplicate := seenActions[action]; duplicate {
-			return fmt.Errorf("actions[%d]: duplicate action %q", i, action)
-		}
-		seenActions[action] = struct{}{}
+	if err := validateActionScopes("actions", t.Actions); err != nil {
+		return err
 	}
 
 	if !t.PrincipalKind.valid() {
@@ -1215,6 +1211,28 @@ func (t TrustedIssuer) validate() error {
 		// The value is not echoed: it is operator input that may be a misread
 		// credential, which the kind's own checks above only sometimes catch.
 		return fmt.Errorf("issuer contains '#', which separates the issuer from the subject in a qualified identity")
+	}
+
+	return nil
+}
+
+// validateActionScopes checks one list of canonical action scopes: at most 64,
+// each non-empty, at most 64 bytes, with no whitespace and no repeats. field
+// names the list in the refusal, so an entry's `actions` and a delegation
+// actor's `delegation.actors[i].actions` are held to the one rule.
+func validateActionScopes(field string, scopes ActionScopes) error {
+	if len(scopes) > 64 {
+		return fmt.Errorf("%s has %d entries, over the 64 entry limit", field, len(scopes))
+	}
+	seen := make(map[string]struct{}, len(scopes))
+	for i, action := range scopes {
+		if action == "" || len(action) > 64 || strings.ContainsAny(action, " \t\r\n") {
+			return fmt.Errorf("%s[%d] must be a non-empty canonical scope of at most 64 bytes with no whitespace", field, i)
+		}
+		if _, duplicate := seen[action]; duplicate {
+			return fmt.Errorf("%s[%d]: duplicate action %q", field, i, action)
+		}
+		seen[action] = struct{}{}
 	}
 
 	return nil
@@ -1264,6 +1282,10 @@ func (t TrustedIssuer) validateOIDC() error {
 	}
 
 	if err := t.validateMultiTenantPinning(); err != nil {
+		return err
+	}
+
+	if err := t.validateDelegation(); err != nil {
 		return err
 	}
 
@@ -1321,6 +1343,9 @@ func (t TrustedIssuer) validateMTLS() error {
 	}
 	if t.MaxTokenAge != 0 {
 		return fmt.Errorf("max_token_age is not meaningful for kind: %s entries: a client certificate carries no issued-at claim to age", IssuerKindMTLS)
+	}
+	if t.Delegation != nil {
+		return fmt.Errorf("delegation is not meaningful for kind: %s entries: a client certificate carries no act claim", IssuerKindMTLS)
 	}
 
 	if err := t.validateRequire(); err != nil {
@@ -2104,6 +2129,7 @@ func (t TrustedIssuer) clone() TrustedIssuer {
 	clone.NamespaceMap = maps.Clone(t.NamespaceMap)
 	clone.CarryClaims = slices.Clone(t.CarryClaims)
 	clone.GroupMap = maps.Clone(t.GroupMap)
+	clone.Delegation = t.Delegation.clone()
 
 	return clone
 }
@@ -2147,7 +2173,18 @@ func (t TrustedIssuer) admits(alg jwa.Algorithm, audiences []string, window life
 		}
 	}
 
-	return nil
+	// An "act" chain is part of what a token says, so whether this entry accepts
+	// it is part of whether the entry admits the token: an entry without a
+	// `delegation:` stanza does not admit a delegated token, and of two entries
+	// for one issuer the one that lists the actor is the match. The verifier has
+	// already refused a chain that does not parse, so the error here is
+	// unreachable through it and still refuses.
+	actors, err := ActorChain(claims)
+	if err != nil {
+		return err
+	}
+
+	return t.admitsActors(actors)
 }
 
 // check reports whether a verified claims set satisfies this rule.

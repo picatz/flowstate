@@ -109,3 +109,57 @@ func TestValidateChecksIdentityReadsAgainstTheAuthPolicy(t *testing.T) {
 		require.NoError(t, res.Err, res.Output())
 	})
 }
+
+// TestValidateChecksActorReadsAgainstTheAuthPolicy is the delegation half of the
+// cross-check: a rule that reads `actors` or `delegated` can only ever see a
+// delegated caller where some issuer entry has a `delegation:` stanza, and is a
+// diagnostic where none has.
+func TestValidateChecksActorReadsAgainstTheAuthPolicy(t *testing.T) {
+	t.Parallel()
+
+	const flowfile = `edition: v2026.4
+name: actor-check
+signals:
+  approve:
+    allow: ${!sender.identity.delegated || sender.identity.actors[0].subject == "triage-bot"}
+steps:
+  - id: gate
+    wait_for_signal:
+      name: approve
+      timeout: 1h
+`
+	const entry = `
+issuers:
+  - name: agents
+    issuer: https://idp.example.com
+    audiences: [flowstate]
+    actions: [workload.read]
+`
+	const stanza = `    delegation:
+      actors:
+        - {issuer: https://agents.example, subject: triage-bot, actions: [workload.read]}
+`
+	const policyRule = `secrets:
+  allow:
+    - 'identity.delegated'
+`
+
+	dir := t.TempDir()
+	workflow := filepath.Join(dir, "workflow.yaml")
+	without := filepath.Join(dir, "without.yaml")
+	with := filepath.Join(dir, "with.yaml")
+	require.NoError(t, os.WriteFile(workflow, []byte(flowfile), 0o600))
+	require.NoError(t, os.WriteFile(without, []byte(entry+policyRule), 0o600))
+	require.NoError(t, os.WriteFile(with, []byte(entry+stanza+policyRule), 0o600))
+
+	res := runFlow(t, "validate", "--auth-policy", without, workflow)
+	require.Error(t, res.Err)
+	out := res.Output()
+	require.Contains(t, out, "signals.approve.allow reads the caller's `actors` or `delegated`")
+	require.Contains(t, out, "no issuer entry in the auth policy has a `delegation:` stanza")
+	require.Contains(t, out, "secrets.allow[0] reads the caller's `actors` or `delegated`", "the policy's own rules are read the same way")
+
+	res = runFlow(t, "validate", "--auth-policy", with, workflow)
+	require.NoError(t, res.Err, res.Output())
+	require.NotContains(t, res.Output(), "delegation:")
+}

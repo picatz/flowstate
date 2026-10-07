@@ -105,6 +105,35 @@ func init() {
 				" carried, which a rule reads as no action matched, not as every action.\n",
 		},
 		{
+			Name: "flowstate.v1.Principal.actors",
+			Leading: " Actors is the RFC 8693 `act` chain the caller's token carried: who is acting\n" +
+				" on behalf of `subject`, current actor first, at most two deep. Empty means\n" +
+				" the caller acts for themselves. A rule reads it as `identity.actors`, and\n" +
+				" `identity.delegated` is true exactly when it is not empty.\n" +
+				"\n" +
+				" Actors are data about who is acting, never a source of authority. Only the\n" +
+				" admitting trust policy entry's `delegation:` stanza lets a token carry one,\n" +
+				" and the stanza can only narrow the subject's actions; `kind`, `actions` and\n" +
+				" `issuer_entry` above still come from the entry alone. The issuer that signed\n" +
+				" the token vouches for the chain and nobody else does, so a rule that wants\n" +
+				" to trust an actor names its exact `issuer` and `subject`.\n",
+		},
+		{
+			Name: "flowstate.v1.Actor",
+			Leading: " Actor is one party named in a caller's RFC 8693 `act` claim: someone acting\n" +
+				" on behalf of the `Principal.subject`. It names the party and nothing else; an\n" +
+				" actor has no claims, no kind and no actions, so a chain cannot carry\n" +
+				" authority the admitting trust policy entry did not grant.\n",
+		},
+		{
+			Name:    "flowstate.v1.Actor.issuer",
+			Leading: " Issuer is the actor's `iss` as the token's own issuer stated it.\n",
+		},
+		{
+			Name:    "flowstate.v1.Actor.subject",
+			Leading: " Subject is the actor's `sub` as the token's own issuer stated it.\n",
+		},
+		{
 			Name: "flowstate.v1.WorkloadIdentity",
 			Leading: " WorkloadIdentity describes who a run acts as.\n" +
 				"\n" +

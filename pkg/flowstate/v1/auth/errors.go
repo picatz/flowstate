@@ -116,6 +116,13 @@ var (
 	// not describe a workload well enough to mint an assertion for it.
 	ErrInvalidIdentity = errors.New("auth: invalid workload identity")
 
+	// ErrDelegatedCaller is returned when an assertion or a brokered credential
+	// is requested for an identity that arrived through an RFC 8693 "act"
+	// chain. Assertions carry no "act" claim yet, so minting one would present
+	// the delegator as acting alone and launder the chain; the request is
+	// refused instead. The message names no actor and no token value.
+	ErrDelegatedCaller = errors.New("auth: a delegated caller cannot mint or broker credentials yet")
+
 	// ErrUndeclaredClaim is returned when a mint is asked to carry a claim the
 	// issuer does not declare. The claim set an assertion may carry is a closed
 	// set, and a name absent from it is refused rather than signed: see

@@ -149,9 +149,11 @@ func Restrict(base, extra Decider) Decider {
 
 		// The extra decider gets its own copy of the action list, so a decider
 		// that writes to it cannot change what a later check on this request
-		// finds in the caller's principal.
+		// finds in the caller's principal. The same goes for the delegation
+		// chain: a shallow copy would share its backing array.
 		isolated := req
 		isolated.Principal.Actions = slices.Clone(req.Principal.Actions)
+		isolated.Principal.Actors = slices.Clone(req.Principal.Actors)
 		if extra := extra.Decide(ctx, isolated); !extra.Allowed {
 			return Decision{Scope: decision.Scope, Embedder: true}
 		}

@@ -4582,7 +4582,12 @@ empty projection reads differently from a wrong value.
 **Claims keep their JSON shape.** The one `principal.Caller` every policy surface
 binds is read here too: `"sre" in sender.identity.claims.groups` reads a list claim,
 `sender.identity.claims.slack_user == "U1"` a scalar read from a nested path with `carry_claims: [{claim: slack.user, as: slack_user, type: string}]`, and
-`sender.identity.actions` the scopes the sender was granted. The same fields are
+`sender.identity.actions` the scopes the sender was granted. `sender.identity.actors`
+lists who is acting on behalf of the sender (an RFC 8693 `act` chain, current actor
+first, each with an `issuer` and a `subject`) and `sender.identity.delegated` is true
+when it is not empty; both are empty unless the admitting trust policy entry has a
+`delegation:` stanza, and an actor read is guarded with `!sender.identity.delegated ||
+sender.identity.actors[0].subject == "triage-bot"`. The same fields are
 read as `identity.*` by `allow:`/`deny:` rules on egress, exec, task shape, secrets
 and assumption. A claim the caller does not carry is an error on every surface, so
 the rule denies; guard it with `has(...)` or `"k" in identity.claims`.

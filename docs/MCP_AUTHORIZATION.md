@@ -326,18 +326,22 @@ says plainly what it is missing.
   client actually discovers them, through MCP's own `tools/list`, rather than
   from an OAuth metadata document its authorization layer reads. Grants come from
   trusted configuration, and a token claim can only give some of them up.
-- **No delegation.** A token carrying an RFC 8693 `act` or `may_act` claim —
-  the shape an agent acting for a human produces — is refused outright, not
+- **Delegation is opt-in per entry.** A token carrying an RFC 8693 `act` claim —
+  the shape an agent acting for a human produces — is accepted only by a trust
+  policy entry with a `delegation:` stanza naming the actors it may list, and
+  the actors can only narrow what the subject holds
+  ([Accepting delegated tokens](DEPLOYMENT.md#accepting-delegated-tokens-the-act-chain)).
+  Everywhere else, and always for `may_act`, the token is refused outright, not
   silently accepted as the bare subject and not stripped down to one. Refusal
   preserves what the token itself claims; silently admitting it as an
   undelegated caller would let the request proceed under a story the audit
-  trail no longer tells. This is deferred fail-closed rather than
+  trail no longer tells. This is fail-closed rather than
   deferred-by-omission, because unlike a missing scope string, a delegation
-  claim this deployment cannot yet interpret is exactly the shape a confused
-  deputy attack takes. Delegation semantics are `PrincipalKind` and
-  `on_behalf_of` on the schema (#567's S3, gated on the D2 naming decision)
-  and RFC 8693 `actor_token` support in the existing token exchanger (S8);
-  neither has landed.
+  claim this deployment does not interpret is exactly the shape a confused
+  deputy attack takes. An MCP session is pinned to the chain as well as the
+  subject, so the subject acting alone cannot resume a session an agent
+  opened for them. Outbound delegation (`actor_token` in the token exchanger)
+  has not landed.
 - **No dynamic client registration and no Client ID Metadata Documents.** A
   resource server needs neither — client registration is an authorization
   server's obligation, and flowstate is not one. Revisit only alongside the

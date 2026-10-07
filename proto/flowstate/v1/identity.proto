@@ -162,10 +162,36 @@ message Principal {
     }
   }];
 
-  // Reserved for the delegation chain (`actors`), which is added with the slice
-  // that enforces it and not before.
-  reserved 8;
-  reserved "actors";
+  // Actors is the RFC 8693 `act` chain the caller's token carried: who is acting
+  // on behalf of `subject`, current actor first, at most two deep. Empty means
+  // the caller acts for themselves. A rule reads it as `identity.actors`, and
+  // `identity.delegated` is true exactly when it is not empty.
+  //
+  // Actors are data about who is acting, never a source of authority. Only the
+  // admitting trust policy entry's `delegation:` stanza lets a token carry one,
+  // and the stanza can only narrow the subject's actions; `kind`, `actions` and
+  // `issuer_entry` above still come from the entry alone. The issuer that signed
+  // the token vouches for the chain and nobody else does, so a rule that wants
+  // to trust an actor names its exact `issuer` and `subject`.
+  repeated Actor actors = 8 [(buf.validate.field).repeated.max_items = 2];
+}
+
+// Actor is one party named in a caller's RFC 8693 `act` claim: someone acting
+// on behalf of the `Principal.subject`. It names the party and nothing else; an
+// actor has no claims, no kind and no actions, so a chain cannot carry
+// authority the admitting trust policy entry did not grant.
+message Actor {
+  // Issuer is the actor's `iss` as the token's own issuer stated it.
+  string issuer = 1 [(buf.validate.field).string = {
+    min_bytes: 1
+    max_bytes: 1024
+  }];
+
+  // Subject is the actor's `sub` as the token's own issuer stated it.
+  string subject = 2 [(buf.validate.field).string = {
+    min_bytes: 1
+    max_bytes: 1024
+  }];
 }
 
 // WorkloadIdentity describes who a run acts as.

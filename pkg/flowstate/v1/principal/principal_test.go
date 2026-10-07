@@ -47,9 +47,65 @@ func TestCaller_Normalized(t *testing.T) {
 	require.NotNil(t, n.Actions)
 	require.Zero(t, n.Claims.Len())
 	require.Empty(t, n.Actions)
+	require.NotNil(t, n.Actors)
+	require.False(t, n.Delegated)
 
-	in := principal.Caller{Subject: "s", Claims: principal.StringClaims(map[string]string{"k": "v"}), Actions: []string{"a"}}
+	in := principal.Caller{
+		Subject: "s", Claims: principal.StringClaims(map[string]string{"k": "v"}), Actions: []string{"a"},
+		Actors: []principal.Actor{{Issuer: "https://agents", Subject: "bot"}}, Delegated: true,
+	}
 	require.Equal(t, in, in.Normalized(), "populated values are untouched")
+
+	// delegated is derived from the chain, so a hand-built Caller cannot claim
+	// one without the other.
+	forged := principal.Caller{Delegated: true}.Normalized()
+	require.False(t, forged.Delegated, "delegated without actors is not delegated")
+	unflagged := principal.Caller{Actors: []principal.Actor{{Issuer: "i", Subject: "s"}}}.Normalized()
+	require.True(t, unflagged.Delegated, "actors without the flag is delegated")
+}
+
+func TestCaller_actorsReadableFromExpression(t *testing.T) {
+	env := newEnv(t)
+	c := principal.Caller{
+		Issuer: "https://idp", Subject: "alice",
+		Actors: []principal.Actor{
+			{Issuer: "https://agents", Subject: "triage-bot"},
+			{Issuer: "https://platform", Subject: "orchestrator"},
+		},
+	}
+
+	for expr, want := range map[string]any{
+		`identity.delegated`:                                           true,
+		`size(identity.actors)`:                                        int64(2),
+		`identity.actors[0].subject == "triage-bot"`:                   true,
+		`identity.actors[1].issuer == "https://platform"`:              true,
+		`!identity.delegated || identity.actors[0].subject == "other"`: false,
+		`identity.actors.exists(a, a.subject == "orchestrator")`:       true,
+	} {
+		got, err := eval(t, env, expr, c)
+		require.NoError(t, err, expr)
+		require.Equal(t, want, got, expr)
+	}
+
+	// An undelegated caller passes the guard without indexing an empty list.
+	got, err := eval(t, env, `!identity.delegated || identity.actors[0].subject == "other"`, principal.Caller{Subject: "alice"})
+	require.NoError(t, err)
+	require.Equal(t, true, got)
+
+	// Indexing past the chain errors, which every surface reads as a denial.
+	_, err = eval(t, env, `identity.actors[0].subject == "x"`, principal.Caller{})
+	require.Error(t, err)
+
+	// Map renders the same chain for the surfaces that bind a plain map.
+	m := c.Map()
+	require.Equal(t, true, m["delegated"])
+	require.Equal(t, []any{
+		map[string]any{"issuer": "https://agents", "subject": "triage-bot"},
+		map[string]any{"issuer": "https://platform", "subject": "orchestrator"},
+	}, m["actors"])
+	require.Equal(t, []any{}, principal.Caller{}.Map()["actors"])
+	require.Equal(t, false, principal.Caller{}.Map()["delegated"])
+	require.Equal(t, "https://agents#triage-bot", c.Actors[0].String())
 }
 
 func TestCaller_readableFromExpression(t *testing.T) {

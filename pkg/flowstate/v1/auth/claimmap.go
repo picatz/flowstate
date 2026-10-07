@@ -360,6 +360,13 @@ func (t TrustedIssuer) validateClaimCarriage() error {
 			// that mints from it.
 			return fmt.Errorf("carry_claims[%d] carries %q, which is a reserved claim name: rename it with `as`", i, name)
 		}
+		if name == ClaimActor || name == ClaimMayAct {
+			// The delegation claims are read from the token by the entry's own
+			// delegation setting and surface as Principal.Actors. A carried claim
+			// under either name would verify and then be refused by every
+			// surface that admits the principal.
+			return fmt.Errorf("carry_claims[%d] carries %q, which is an RFC 8693 delegation claim and a reserved claim name: rename it with `as`", i, name)
+		}
 		if name == GroupsClaim {
 			// Reserved even without a groups_claim: groups carried here would skip the
 			// overage refusal, the bounds and the group_map allowlist, and a rule

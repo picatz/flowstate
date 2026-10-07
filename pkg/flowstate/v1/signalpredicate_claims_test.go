@@ -93,3 +93,37 @@ func TestSignalPolicyPredicateReadsListAndNestedClaims(t *testing.T) {
 	require.NoError(t, check(`"sre" in run.identity.claims.groups`, sender(claims([]any{"sre"}, nil))))
 	require.NoError(t, check(`!has(sender.identity.claims.nothing) && sender.identity.principal != ""`, sender(nil)))
 }
+
+// TestSignalPolicyPredicateReadsTheActorChain proves a predicate reads who is
+// acting for the sender and for the run's starter, and that the guard an author
+// is told to write holds in both directions: a delegated sender through the
+// named actor is admitted, one through another actor or none is refused, and
+// `!sender.identity.delegated` refuses every delegated sender.
+func TestSignalPolicyPredicateReadsTheActorChain(t *testing.T) {
+	t.Parallel()
+
+	sender := func(actors ...*v1.Actor) *v1.WorkloadIdentity {
+		return &v1.WorkloadIdentity{Principal: &v1.Principal{Issuer: "https://i", Subject: "alice", Actors: actors}}
+	}
+	bot := &v1.Actor{Issuer: "https://agents.example", Subject: "triage-bot"}
+	other := &v1.Actor{Issuer: "https://agents.example", Subject: "other-bot"}
+
+	named := predicatePolicy(`sender.identity.delegated && sender.identity.actors[0].issuer == "https://agents.example" && sender.identity.actors[0].subject == "triage-bot"`)
+	require.NoError(t, v1.SignalPolicyCheck(context.Background(), named, sender(bot), nil, false, nil))
+	require.Error(t, v1.SignalPolicyCheck(context.Background(), named, sender(other), nil, false, nil), "another actor")
+	require.Error(t, v1.SignalPolicyCheck(context.Background(), named, sender(), nil, false, nil), "no actor")
+
+	guarded := predicatePolicy(`!sender.identity.delegated || sender.identity.actors[0].subject == "triage-bot"`)
+	require.NoError(t, v1.SignalPolicyCheck(context.Background(), guarded, sender(), nil, false, nil), "acting alone passes the guard")
+	require.NoError(t, v1.SignalPolicyCheck(context.Background(), guarded, sender(bot), nil, false, nil))
+	require.Error(t, v1.SignalPolicyCheck(context.Background(), guarded, sender(other), nil, false, nil))
+
+	noAgents := predicatePolicy(`!sender.identity.delegated`)
+	require.NoError(t, v1.SignalPolicyCheck(context.Background(), noAgents, sender(), nil, false, nil))
+	require.Error(t, v1.SignalPolicyCheck(context.Background(), noAgents, sender(bot), nil, false, nil))
+
+	// The run's starter reads the same way: a rule about who started the run.
+	starter := predicatePolicy(`run.identity.actors[0].subject == "triage-bot"`)
+	require.NoError(t, v1.SignalPolicyCheck(context.Background(), starter, sender(), sender(bot), true, nil))
+	require.Error(t, v1.SignalPolicyCheck(context.Background(), starter, sender(), sender(other), true, nil))
+}

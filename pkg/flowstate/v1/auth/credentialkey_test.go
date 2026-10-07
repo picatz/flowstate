@@ -1,6 +1,34 @@
 package auth
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/picatz/flowstate/pkg/flowstate/v1/principal"
+)
+
+// TestCredentialKeyDistinguishesTheActChain pins that the same subject acting
+// alone, through one actor, or through the same actors in another order are
+// different callers to a rule and never share a cached credential.
+func TestCredentialKeyDistinguishesTheActChain(t *testing.T) {
+	t.Parallel()
+
+	a := principal.Actor{Issuer: "https://a.example", Subject: "a"}
+	b := principal.Actor{Issuer: "https://b.example", Subject: "b"}
+	identity := func(actors ...principal.Actor) WorkloadIdentity {
+		return WorkloadIdentity{Subject: "s", Issuer: "i", Namespace: "n", Actors: actors}
+	}
+
+	keys := map[string]string{}
+	for name, id := range map[string]WorkloadIdentity{
+		"alone": identity(), "a": identity(a), "b": identity(b), "ab": identity(a, b), "ba": identity(b, a),
+	} {
+		key := credentialKey("target", "sub", id)
+		if other, dup := keys[key]; dup {
+			t.Fatalf("%q and %q share a credential cache key", name, other)
+		}
+		keys[key] = name
+	}
+}
 
 // TestCredentialKeyDistinguishesWhatARuleCanTellApart pins that two identities a
 // rule could treat differently never share a cached credential: a typed claim is

@@ -230,7 +230,19 @@ type Principal struct {
 	// Actions are the canonical action scopes the admitting entry granted, such as
 	// `run.start`; a rule reads them as `identity.actions`. Empty means none were
 	// carried, which a rule reads as no action matched, not as every action.
-	Actions       []string `protobuf:"bytes,7,rep,name=actions,proto3" json:"actions,omitempty"`
+	Actions []string `protobuf:"bytes,7,rep,name=actions,proto3" json:"actions,omitempty"`
+	// Actors is the RFC 8693 `act` chain the caller's token carried: who is acting
+	// on behalf of `subject`, current actor first, at most two deep. Empty means
+	// the caller acts for themselves. A rule reads it as `identity.actors`, and
+	// `identity.delegated` is true exactly when it is not empty.
+	//
+	// Actors are data about who is acting, never a source of authority. Only the
+	// admitting trust policy entry's `delegation:` stanza lets a token carry one,
+	// and the stanza can only narrow the subject's actions; `kind`, `actions` and
+	// `issuer_entry` above still come from the entry alone. The issuer that signed
+	// the token vouches for the chain and nobody else does, so a rule that wants
+	// to trust an actor names its exact `issuer` and `subject`.
+	Actors        []*Actor `protobuf:"bytes,8,rep,name=actors,proto3" json:"actors,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -314,6 +326,71 @@ func (x *Principal) GetActions() []string {
 	return nil
 }
 
+func (x *Principal) GetActors() []*Actor {
+	if x != nil {
+		return x.Actors
+	}
+	return nil
+}
+
+// Actor is one party named in a caller's RFC 8693 `act` claim: someone acting
+// on behalf of the `Principal.subject`. It names the party and nothing else; an
+// actor has no claims, no kind and no actions, so a chain cannot carry
+// authority the admitting trust policy entry did not grant.
+type Actor struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Issuer is the actor's `iss` as the token's own issuer stated it.
+	Issuer string `protobuf:"bytes,1,opt,name=issuer,proto3" json:"issuer,omitempty"`
+	// Subject is the actor's `sub` as the token's own issuer stated it.
+	Subject       string `protobuf:"bytes,2,opt,name=subject,proto3" json:"subject,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Actor) Reset() {
+	*x = Actor{}
+	mi := &file_flowstate_v1_identity_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Actor) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Actor) ProtoMessage() {}
+
+func (x *Actor) ProtoReflect() protoreflect.Message {
+	mi := &file_flowstate_v1_identity_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Actor.ProtoReflect.Descriptor instead.
+func (*Actor) Descriptor() ([]byte, []int) {
+	return file_flowstate_v1_identity_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *Actor) GetIssuer() string {
+	if x != nil {
+		return x.Issuer
+	}
+	return ""
+}
+
+func (x *Actor) GetSubject() string {
+	if x != nil {
+		return x.Subject
+	}
+	return ""
+}
+
 // WorkloadIdentity describes who a run acts as.
 //
 // A running workload has two identities at once, and both matter. It is a
@@ -370,7 +447,7 @@ type WorkloadIdentity struct {
 
 func (x *WorkloadIdentity) Reset() {
 	*x = WorkloadIdentity{}
-	mi := &file_flowstate_v1_identity_proto_msgTypes[1]
+	mi := &file_flowstate_v1_identity_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -382,7 +459,7 @@ func (x *WorkloadIdentity) String() string {
 func (*WorkloadIdentity) ProtoMessage() {}
 
 func (x *WorkloadIdentity) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_identity_proto_msgTypes[1]
+	mi := &file_flowstate_v1_identity_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -395,7 +472,7 @@ func (x *WorkloadIdentity) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WorkloadIdentity.ProtoReflect.Descriptor instead.
 func (*WorkloadIdentity) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_identity_proto_rawDescGZIP(), []int{1}
+	return file_flowstate_v1_identity_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *WorkloadIdentity) GetPrincipal() *Principal {
@@ -423,7 +500,7 @@ var File_flowstate_v1_identity_proto protoreflect.FileDescriptor
 
 const file_flowstate_v1_identity_proto_rawDesc = "" +
 	"\n" +
-	"\x1bflowstate/v1/identity.proto\x12\fflowstate.v1\x1a\x1bbuf/validate/validate.proto\x1a\x1cgoogle/protobuf/struct.proto\"\xdb\x04\n" +
+	"\x1bflowstate/v1/identity.proto\x12\fflowstate.v1\x1a\x1bbuf/validate/validate.proto\x1a\x1cgoogle/protobuf/struct.proto\"\x84\x05\n" +
 	"\tPrincipal\x12 \n" +
 	"\x06issuer\x18\x01 \x01(\tB\b\xbaH\x05r\x03(\x80\bR\x06issuer\x12\"\n" +
 	"\asubject\x18\x02 \x01(\tB\b\xbaH\x05r\x03(\x80\bR\asubject\x12&\n" +
@@ -432,10 +509,16 @@ const file_flowstate_v1_identity_proto_rawDesc = "" +
 	"\fissuer_entry\x18\x05 \x01(\tB\b\xbaH\x05r\x03(\x80\x01R\vissuerEntry\x12\xf1\x01\n" +
 	"\x06claims\x18\x06 \x03(\v2#.flowstate.v1.Principal.ClaimsEntryB\xb3\x01\xbaH\xaf\x01\xba\x01\x9d\x01\n" +
 	"#principal.claims.string_value_bytes\x12/a string claim value must be at most 1024 bytes\x1aEthis.all(k, type(this[k]) != string || bytes(this[k]).size() <= 1024)\x9a\x01\v\x10 \"\ar\x05 \x01(\x80\x01R\x06claims\x12-\n" +
-	"\aactions\x18\a \x03(\tB\x13\xbaH\x10\x92\x01\r\x10@\x18\x01\"\ar\x05 \x01(\x80\x01R\aactions\x1aQ\n" +
+	"\aactions\x18\a \x03(\tB\x13\xbaH\x10\x92\x01\r\x10@\x18\x01\"\ar\x05 \x01(\x80\x01R\aactions\x125\n" +
+	"\x06actors\x18\b \x03(\v2\x13.flowstate.v1.ActorB\b\xbaH\x05\x92\x01\x02\x10\x02R\x06actors\x1aQ\n" +
 	"\vClaimsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12,\n" +
-	"\x05value\x18\x02 \x01(\v2\x16.google.protobuf.ValueR\x05value:\x028\x01J\x04\b\b\x10\tR\x06actors\"\xf3\x01\n" +
+	"\x05value\x18\x02 \x01(\v2\x16.google.protobuf.ValueR\x05value:\x028\x01\"Q\n" +
+	"\x05Actor\x12\"\n" +
+	"\x06issuer\x18\x01 \x01(\tB\n" +
+	"\xbaH\ar\x05 \x01(\x80\bR\x06issuer\x12$\n" +
+	"\asubject\x18\x02 \x01(\tB\n" +
+	"\xbaH\ar\x05 \x01(\x80\bR\asubject\"\xf3\x01\n" +
 	"\x10WorkloadIdentity\x125\n" +
 	"\tprincipal\x18\b \x01(\v2\x17.flowstate.v1.PrincipalR\tprincipal\x12\x1e\n" +
 	"\n" +
@@ -466,26 +549,28 @@ func file_flowstate_v1_identity_proto_rawDescGZIP() []byte {
 }
 
 var file_flowstate_v1_identity_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_flowstate_v1_identity_proto_msgTypes = make([]protoimpl.MessageInfo, 3)
+var file_flowstate_v1_identity_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
 var file_flowstate_v1_identity_proto_goTypes = []any{
 	(WorkloadIdentityMode)(0), // 0: flowstate.v1.WorkloadIdentityMode
 	(PrincipalKind)(0),        // 1: flowstate.v1.PrincipalKind
 	(*Principal)(nil),         // 2: flowstate.v1.Principal
-	(*WorkloadIdentity)(nil),  // 3: flowstate.v1.WorkloadIdentity
-	nil,                       // 4: flowstate.v1.Principal.ClaimsEntry
-	(*structpb.Value)(nil),    // 5: google.protobuf.Value
+	(*Actor)(nil),             // 3: flowstate.v1.Actor
+	(*WorkloadIdentity)(nil),  // 4: flowstate.v1.WorkloadIdentity
+	nil,                       // 5: flowstate.v1.Principal.ClaimsEntry
+	(*structpb.Value)(nil),    // 6: google.protobuf.Value
 }
 var file_flowstate_v1_identity_proto_depIdxs = []int32{
 	1, // 0: flowstate.v1.Principal.kind:type_name -> flowstate.v1.PrincipalKind
-	4, // 1: flowstate.v1.Principal.claims:type_name -> flowstate.v1.Principal.ClaimsEntry
-	2, // 2: flowstate.v1.WorkloadIdentity.principal:type_name -> flowstate.v1.Principal
-	0, // 3: flowstate.v1.WorkloadIdentity.mode:type_name -> flowstate.v1.WorkloadIdentityMode
-	5, // 4: flowstate.v1.Principal.ClaimsEntry.value:type_name -> google.protobuf.Value
-	5, // [5:5] is the sub-list for method output_type
-	5, // [5:5] is the sub-list for method input_type
-	5, // [5:5] is the sub-list for extension type_name
-	5, // [5:5] is the sub-list for extension extendee
-	0, // [0:5] is the sub-list for field type_name
+	5, // 1: flowstate.v1.Principal.claims:type_name -> flowstate.v1.Principal.ClaimsEntry
+	3, // 2: flowstate.v1.Principal.actors:type_name -> flowstate.v1.Actor
+	2, // 3: flowstate.v1.WorkloadIdentity.principal:type_name -> flowstate.v1.Principal
+	0, // 4: flowstate.v1.WorkloadIdentity.mode:type_name -> flowstate.v1.WorkloadIdentityMode
+	6, // 5: flowstate.v1.Principal.ClaimsEntry.value:type_name -> google.protobuf.Value
+	6, // [6:6] is the sub-list for method output_type
+	6, // [6:6] is the sub-list for method input_type
+	6, // [6:6] is the sub-list for extension type_name
+	6, // [6:6] is the sub-list for extension extendee
+	0, // [0:6] is the sub-list for field type_name
 }
 
 func init() { file_flowstate_v1_identity_proto_init() }
@@ -499,7 +584,7 @@ func file_flowstate_v1_identity_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_flowstate_v1_identity_proto_rawDesc), len(file_flowstate_v1_identity_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   3,
+			NumMessages:   4,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

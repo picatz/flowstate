@@ -172,7 +172,8 @@ secrets:
   that matches wins, and a rule that errors denies.
 - A rule sees `secret.scheme` and `secret.name`; the authenticated caller as
   `identity.subject`, `identity.issuer`, `identity.namespace`, `identity.kind`
-  (`human`, `workload` or `agent`), `identity.actions`, and `identity.claims`;
+  (`human`, `workload` or `agent`), `identity.actions`, `identity.claims`, and, for a
+  delegated caller, `identity.actors` and `identity.delegated`;
   and the workload as `workload.namespace`,
   `workload.workflow`, `workload.run`, `workload.step`, and related fields.
   Reading a claim that is not present is an error, which denies; guard it with

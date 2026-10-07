@@ -66,3 +66,30 @@ func TestWorkflowIdentityExpressions(t *testing.T) {
 	}
 	assert.Equal(t, []string{"signals.a.allow", "signals.b.allow", "debug.allow", "triggers.manual.allow"}, wheres)
 }
+
+// TestIdentityReadsActors is the question `flow validate --auth-policy` asks of
+// a rule: does it read the delegation chain, on any surface and in any form.
+func TestIdentityReadsActors(t *testing.T) {
+	t.Parallel()
+
+	for src, want := range map[string]bool{
+		`identity.delegated`: true,
+		`!identity.delegated || identity.actors[0].subject == "x"`: true,
+		`identity.actors.exists(a, a.issuer == "https://a")`:       true,
+		`has(identity.actors)`:                       true,
+		`size(sender.identity.actors) == 0`:          true,
+		`run.identity.delegated == false`:            true,
+		`identity.claims.actors == "x"`:              false,
+		`identity.subject == "x"`:                    false,
+		`inputs.actors == "x"`:                       false,
+		`other.identity.actors`:                      false,
+		`[1].exists(identity, identity.actors == 1)`: false,
+	} {
+		got, err := v1.IdentityReadsActors(src)
+		require.NoError(t, err, src)
+		require.Equal(t, want, got, src)
+	}
+
+	_, err := v1.IdentityReadsActors(`identity.actors ==`)
+	require.Error(t, err)
+}

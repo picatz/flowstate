@@ -118,7 +118,7 @@ Show the identity the server established for this caller
 flow auth whoami [flags]
 ```
 
-Ask the server which principal it established for the credential this command presents: the issuer and subject, the namespace (tenant), the principal kind, the trust policy entry that admitted the caller (issuer_entry), the actions that entry grants, and the claims it carries. This is the answer to "why was I refused" and "which tenant am I in" before any workflow runs.
+Ask the server which principal it established for the credential this command presents: the issuer and subject, the namespace (tenant), the principal kind, the trust policy entry that admitted the caller (issuer_entry), the actions that entry grants (narrowed by any actor), the RFC 8693 actor chain when a delegated token was admitted (`actors`, current actor first), and the claims it carries. This is the answer to "why was I refused" and "which tenant am I in" before any workflow runs.
 
 Every authenticated caller may ask, whatever its policy entry's `actions:` list holds, because the answer is only the caller's own identity. A server that admits anonymous callers (`flow server dev` without `--auth`) answers `authenticated: false` rather than refusing. The credential itself is never printed.
 
@@ -2603,7 +2603,7 @@ flow validate --auth-policy auth.yaml approval.yaml
 | Flag | Type | Default | Environment | Description |
 |---|---|---|---|---|
 | `--allow-insecure-plugin-dir` | `bool` | `false` | — | permit a plugin directory other users can write to, which lets them choose what this worker runs |
-| `--auth-policy <string>` | `string` | — | — | path to the deployment's auth policy (YAML); when given, every identity expression in the checked files (`signals:`, `debug:`, `triggers: manual:`) and in the policy's own `secrets:` and `federation:` rules is checked against what its issuer entries carry (`carry_claims`, `groups_claim`), and a claim no entry carries is reported: a rule requiring it can never match |
+| `--auth-policy <string>` | `string` | — | — | path to the deployment's auth policy (YAML); when given, every identity expression in the checked files (`signals:`, `debug:`, `triggers: manual:`) and in the policy's own `secrets:` and `federation:` rules is checked against what its issuer entries carry (`carry_claims`, `groups_claim`), and a claim no entry carries is reported: a rule requiring it can never match; a rule reading `actors` or `delegated` is reported when no entry has a `delegation:` stanza |
 | `-o, --output <string>` | `string` | `text` | — | output format: text, json, or jsonl |
 | `--plugin <string,...>` | `stringArray` | — | — | launch only the named plugin, repeatable; a name with no binary is an error |
 | `--plugin-catalog <string>` | `string` | — | — | check against a saved plugin catalog (`flow plugins --plugin-dir <dir> --output json`) instead of launching plugins; no process is started |
