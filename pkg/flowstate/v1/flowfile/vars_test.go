@@ -737,3 +737,36 @@ steps:
 	require.Contains(t, diagnose(t, src), "id is already used outside branch",
 		"a nested id colliding with a sibling branch's id was accepted")
 }
+
+// TestASwitchArmIdNestedInAnotherArmCollides is the switch half of the rule
+// [TestAParallelBranchIdNestedInASwitchCollidesAcrossBranches] holds for a
+// parallel block: every arm's merged ids, nested ones included, share one
+// namespace, so an id one arm nests and another writes directly is one name with
+// two owners.
+func TestASwitchArmIdNestedInAnotherArmCollides(t *testing.T) {
+	t.Parallel()
+
+	src := `
+edition: v2026.4
+name: t
+steps:
+  - id: route
+    switch:
+      value: ${"a"}
+      cases:
+        - case: a
+          steps:
+            - id: wrap
+              parallel:
+                - steps:
+                    - id: shared
+                      value: ${"I"}
+        - case: b
+          steps:
+            - id: shared
+              value: ${"R"}
+`
+
+	require.Contains(t, diagnose(t, src), "id is already used outside",
+		"a nested id colliding with another switch arm's id was accepted")
+}
