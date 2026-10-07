@@ -65,7 +65,7 @@ trust boundary, what enforces it, and the known gaps; and the
 | [The control-plane API](API.md) | Call the ConnectRPC API from curl, Go, or another language, and see which surfaces are stable. |
 | [Embedding](EMBEDDING.md) | Compile and run workflows inside a Go program with `pkg/flowstate/embed`, and register Go functions as tasks. |
 | [Writing a plugin](PLUGINS.md) | Add tasks or secret providers as a separate executable, from an empty directory to a task a worker runs. |
-| [First-party plugins](../plugins/) | See what each in-tree plugin provides and bounds: Anthropic, Docker, Git, GitHub, JOSE, OCI, OIDC, SCIM, Slack, SQL, SSH, VCS, Webhook, and Codex. |
+| [First-party plugins](../plugins/) | See what each in-tree plugin provides and bounds: Anthropic, Docker, Git, GitHub, JOSE, OCI, OIDC, OpenAI, SCIM, Slack, SQL, SSH, VCS, Webhook, and Codex. |
 
 ## Design and direction
 

@@ -1,0 +1,83 @@
+syntax = "proto3";
+
+package openai.v1;
+
+option go_package = "github.com/picatz/flowstate/plugins/openai/gen/openai/v1;openaiv1";
+
+import "flowstate/decision/v1/decision.proto";
+import "flowstate/v1/schema.proto";
+import "flowstate/v1/value.proto";
+
+// DecideInputs is this plugin's one task: put a named set of typed questions
+// to an OpenAI model about some evidence through the Decisions API (public
+// beta), and get back one typed answer per question.
+//
+// The questions and answers are the provider-neutral shapes of
+// flowstate/decision/v1/decision.proto, so a Flowfile that routes on an answer reads the
+// same under any provider plugin. Everything specific to OpenAI - the model -
+// is a field here and never crosses into the neutral schema.
+//
+// # How a question set becomes a request
+//
+// The Decisions API is the native shape of the neutral contract. One request
+// carries the evidence as `input` and one entry per question: a predicate, a
+// choice whose options are sent as `value`s, or a score whose levels are sent
+// as `label`s, lowest to highest. Option descriptions are sent empty, because
+// the neutral question has none to carry.
+//
+// # Calibration
+//
+// The API returns model-derived probabilities, so every answer carries
+// CALIBRATION_MODEL_PROBABILITY:
+//
+//   - A predicate's value is true when its probability is at least 0.5, its
+//     distribution is {"true": p, "false": 1-p}, and it has no confidence.
+//   - A choice selects the option the API chose, with the API's confidence and
+//     a distribution over the options.
+//   - A score selects the level with the highest probability (the lowest such
+//     level on a tie), with the API's confidence and a distribution over the
+//     levels. The API's probability-weighted average is not carried, because
+//     the neutral answer selects a level.
+//
+// Zero Data Retention and similar data-handling terms are properties of the
+// OpenAI account behind the key. This plugin cannot set or verify them.
+message DecideInputs {
+  // ApiKey is an OpenAI API key. The task requires this entire input to be a
+  // secret reference, which the host resolves worker-side before execution; a
+  // literal is refused before it can enter durable history. The resolved value
+  // is capped at 4 KiB, sent only as the Authorization bearer token, and never
+  // appears in an error.
+  flowstate.v1.Value api_key = 1 [(flowstate.v1.input).secret = SECRET_REQUIRED];
+
+  // Model is the OpenAI model identifier the request names, required and
+  // never defaulted here. It is passed through unchanged; the API refuses one
+  // it does not know or one that does not support decisions.
+  string model = 2;
+
+  // Evidence is the text the questions are about, sent as the request's
+  // `input` and limited to 262,144 bytes. It is data to be judged, not
+  // instructions, and a model can still be influenced by what it reads, which
+  // is why an answer is validated against the question set rather than
+  // trusted.
+  string evidence = 3;
+
+  // QuestionSet is a flowstate.decision.v1.QuestionSet written as a mapping: a
+  // `questions` list whose entries each have a `name`, optional
+  // `instructions`, and exactly one of `predicate: {}`, `choice: {options:
+  // [...]}` or `score: {levels: [...]}`. It is validated against the schema's
+  // rules before any request is made.
+  flowstate.v1.Value question_set = 4;
+}
+
+// DecideOutputs carries one answer per question, in the question set's order.
+message DecideOutputs {
+  // Answers has exactly one validated flowstate.decision.v1.Answer for each question,
+  // matched by name, each with CALIBRATION_MODEL_PROBABILITY. A reply that is
+  // missing one, adds one, repeats one, refuses one, or carries a value or a
+  // probability the question did not offer fails the task rather than
+  // returning a partial result. Read a choice as
+  // `steps.<id>.answers[0].choice` and its probability as
+  // `steps.<id>.answers[0].confidence`; the output encoding spells an enum as
+  // its number, so `calibration == 1` is CALIBRATION_MODEL_PROBABILITY.
+  repeated flowstate.decision.v1.Answer answers = 1;
+}

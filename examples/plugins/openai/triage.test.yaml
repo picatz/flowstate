@@ -1,0 +1,70 @@
+edition: v2026.4
+
+# Proves the routing on an answer, in CI with no plugin process, no model and no
+# network. The stub returns what the plugin's validated output looks like once
+# the engine has it: one entry per question, with calibration as its enum number
+# (1 model probability, 3 none), an absent confidence reading 0, and a
+# predicate's distribution keyed "true" and "false". The cases are the things
+# the gate has to tell apart: a probably urgent ticket, an urgent answer whose
+# probability is below the threshold, and an answer from a provider that gave
+# no probability at all, which must not page however it is phrased.
+defaults:
+  inputs:
+    ticket: The checkout page has returned a 500 for every customer since 14:02.
+    model: any-model-identifier
+  stubs:
+    - task: log
+      returns: {}
+
+tests:
+  - name: a probably urgent ticket pages on-call
+    workflow: ./triage.yaml
+    secrets:
+      env:OPENAI_API_KEY: not-a-real-key
+    stubs:
+      - task: openai.decide
+        where: "inputs.model == 'any-model-identifier'"
+        returns:
+          answers:
+            - {name: category, choice: outage, calibration: 1, confidence: 0.92, distribution: {billing: 0.02, outage: 0.92, other: 0.06}}
+            - {name: urgent, predicate: true, calibration: 1, distribution: {"true": 0.97, "false": 0.03}}
+    expect:
+      ran: [decide, urgent, category, confident_and_urgent, team, page]
+      skipped: [review]
+      outputs:
+        paged: true
+        team: outage
+
+  - name: an urgent answer below the threshold goes to a person
+    workflow: ./triage.yaml
+    secrets:
+      env:OPENAI_API_KEY: not-a-real-key
+    stubs:
+      - task: openai.decide
+        returns:
+          answers:
+            - {name: category, choice: billing, calibration: 1, confidence: 0.45, distribution: {billing: 0.45, outage: 0.4, other: 0.15}}
+            - {name: urgent, predicate: true, calibration: 1, distribution: {"true": 0.62, "false": 0.38}}
+    expect:
+      ran: [decide, urgent, category, confident_and_urgent, team, review]
+      skipped: [page]
+      outputs:
+        paged: false
+        team: unassigned
+
+  - name: an answer with no probability never pages
+    workflow: ./triage.yaml
+    secrets:
+      env:OPENAI_API_KEY: not-a-real-key
+    stubs:
+      - task: openai.decide
+        returns:
+          answers:
+            - {name: category, choice: outage, calibration: 3, confidence: 0.0, distribution: {}}
+            - {name: urgent, predicate: true, calibration: 3, confidence: 0.0, distribution: {}}
+    expect:
+      ran: [decide, urgent, category, confident_and_urgent, team, review]
+      skipped: [page]
+      outputs:
+        paged: false
+        team: unassigned

@@ -70,6 +70,7 @@ go.work
 /plugins/jose/jose
 /plugins/oci/oci
 /plugins/oidc/oidc
+/plugins/openai/openai
 /plugins/scim/scim
 /plugins/slack/slack
 /plugins/sql/sql
