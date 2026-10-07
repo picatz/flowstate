@@ -398,9 +398,10 @@ outputs
   total_cents 5700
 ```
 
-A value the workflow declares `sensitive: true` is shown as `[redacted: <name>]`
-until you pass `--reveal-sensitive`. Nothing in this workflow is sensitive, so
-every value above is shown.
+A value the workflow declares `sensitive: true` is shown as `[redacted: <name>]`.
+Nothing in this workflow is sensitive, so every value above is shown. Revealing
+a sensitive value needs an authenticated caller the server's trust policy allows
+to; see [Deployment](DEPLOYMENT.md).
 
 `flow run` without `--detach` follows the run to the end in one command and
 prints its outputs itself, since it holds the file it submitted.

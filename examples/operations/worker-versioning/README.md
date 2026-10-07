@@ -97,7 +97,7 @@ do.
 6. Approve the first run, and see which version finished it:
 
    ```console
-   $ flow signal "$ID" release-approved --data '{"approved": true}'
+   $ flow signal "$ID" refund-approved --data '{"approved": true}'
    $ temporal workflow describe -w "$ID"
    ...
    Versioning Info:
