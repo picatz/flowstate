@@ -8,12 +8,12 @@
 surface: egress
 cases:
   - name: team-a reaches its partner API
-    identity: {namespace: team-a}
+    principal: {namespace: team-a}
     request: {url: "https://partner-a.example.com/v1/orders"}
     expect: allow
 
   - name: team-b is refused team-a's partner API
-    identity: {namespace: team-b}
+    principal: {namespace: team-b}
     request: {url: "https://partner-a.example.com/v1/orders"}
     expect: deny
     # No deny rule fires; team-b matches no allow rule at all.
@@ -25,24 +25,24 @@ cases:
     rule: allow rules
 
   - name: every tenant reads GitHub
-    identity: {namespace: team-b}
+    principal: {namespace: team-b}
     request: {url: "https://api.github.com/repos/picatz/flowstate"}
     expect: allow
 
   - name: even team-a may not write to its partner
-    identity: {namespace: team-a}
+    principal: {namespace: team-a}
     request: {url: "https://partner-a.example.com/v1/orders", method: POST}
     expect: deny
     rule: 'method != "GET" && method != "HEAD"'
 
   - name: plain http is refused whoever asks
-    identity: {namespace: team-a}
+    principal: {namespace: team-a}
     request: {url: "http://partner-a.example.com/v1/orders"}
     expect: deny
     rule: scheme
 
   - name: a port other than 443 is refused
-    identity: {namespace: team-a}
+    principal: {namespace: team-a}
     request: {url: "https://partner-a.example.com:8443/v1/orders"}
     expect: deny
     rule: port
@@ -51,13 +51,13 @@ cases:
   # cannot exercise without DNS. An address literal in the URL needs no `ip`,
   # but the allow rules refuse it first, so name an allowed host instead.
   - name: a hostname that resolves to the cloud metadata endpoint is refused
-    identity: {namespace: team-a}
+    principal: {namespace: team-a}
     request: {url: "https://api.github.com/", ip: "169.254.169.254"}
     expect: deny
     rule: address
 
   - name: a hostname that resolves to loopback is refused
-    identity: {namespace: team-a}
+    principal: {namespace: team-a}
     request: {url: "https://api.github.com/", ip: "127.0.0.1"}
     expect: deny
     rule: address

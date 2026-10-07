@@ -235,3 +235,19 @@ func TestMatrixRefusesWhatAScriptedIdentityCannotCarry(t *testing.T) {
 		})
 	}
 }
+
+// protojson reads a number as an enum value, so `kind: 1` would be HUMAN and
+// `kind: 99` an unknown kind kept as written. A kind is a name.
+func TestMatrixRefusesANumericKind(t *testing.T) {
+	for _, kind := range []string{"1", "99", "null", "[human]"} {
+		for name, yaml := range map[string]string{
+			"a row":     "principal: {kind: " + kind + "}",
+			"a starter": "principal: {}\n    starter: {principal: {kind: " + kind + "}}",
+		} {
+			t.Run(name+" "+kind, func(t *testing.T) {
+				_, err := policycheck.ParseMatrix([]byte("identities:\n  - name: a\n    " + yaml + "\n"))
+				require.Error(t, err)
+			})
+		}
+	}
+}

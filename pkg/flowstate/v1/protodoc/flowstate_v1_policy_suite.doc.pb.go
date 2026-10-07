@@ -56,9 +56,16 @@ func init() {
 				" C1) and Unicode format characters (category Cf), since it is printed.\n",
 		},
 		{
-			Name: "flowstate.v1.PolicyTestCase.identity",
-			Leading: " Identity is who the request is made as. Absent is no attested caller, which\n" +
-				" a rule that scopes by tenant declines to match.\n",
+			Name: "flowstate.v1.PolicyTestCase.principal",
+			Leading: " Principal is who the request is made as: the [Principal] a run records, a\n" +
+				" trust policy entry assigns and every policy surface reads as\n" +
+				" `identity.<field>`, so a case can say its `kind`, a list or nested claim\n" +
+				" (`groups`), the `actions` it was granted and the `actors` acting for it, and\n" +
+				" a rule reads them exactly as it would on a worker. A subject and an issuer\n" +
+				" travel together or not at all, and `issuer_entry` is refused: it names a\n" +
+				" trust policy entry, which a case has none of. Absent is no attested caller,\n" +
+				" which a rule that scopes by tenant declines to match. Nothing here is\n" +
+				" attested, so a case never gains authority its principal does not carry.\n",
 		},
 		{
 			Name: "flowstate.v1.PolicyTestCase.request",
@@ -78,11 +85,6 @@ func init() {
 				" when no allow rule matched, `rule error`, and for egress and exec the\n" +
 				" category: `scheme`, `port`, `address`, `executable`, `argv`, `dir`, `env`).\n" +
 				" A policy that denies for a different reason fails the case.\n",
-		},
-		{
-			Name: "flowstate.v1.PolicyTestIdentity",
-			Leading: " PolicyTestIdentity is the identity a case is made as: the fields every policy\n" +
-				" surface reads as `identity.<field>`.\n",
 		},
 		{
 			Name:    "flowstate.v1.PolicyTestRequest",

@@ -41,11 +41,11 @@ func TestPolicyTestEgressReportsWhichRuleDenied(t *testing.T) {
 	cases := writeFile(t, "cases.yaml", `surface: egress
 cases:
   - name: team-a reaches its partner
-    identity: {namespace: team-a}
+    principal: {namespace: team-a}
     request: {url: "https://partner-a.example.com/v1"}
     expect: allow
   - name: team-b does not
-    identity: {namespace: team-b}
+    principal: {namespace: team-b}
     request: {url: "https://partner-a.example.com/v1"}
     expect: deny
     rule: allow rules
@@ -53,12 +53,12 @@ cases:
     request: {url: "https://partner-a.example.com/v1"}
     expect: deny
   - name: a write is refused by the deny rule
-    identity: {namespace: team-a}
+    principal: {namespace: team-a}
     request: {url: "https://partner-a.example.com/v1", method: POST}
     expect: deny
     rule: 'method != "GET"'
   - name: a lowercase method is judged as written, as the worker does
-    identity: {namespace: team-a}
+    principal: {namespace: team-a}
     request: {url: "https://partner-a.example.com/v1", method: get}
     expect: deny
     rule: 'method != "GET"'
@@ -106,7 +106,7 @@ func TestPolicyTestAPolicyThatWronglyAllowsFailsItsDenyCase(t *testing.T) {
 	cases := writeFile(t, "cases.yaml", `surface: egress
 cases:
   - name: team-b is refused team-a's partner
-    identity: {namespace: team-b}
+    principal: {namespace: team-b}
     request: {url: "https://partner-a.example.com/v1"}
     expect: deny
 `)
@@ -131,7 +131,7 @@ func TestPolicyTestADenialForTheWrongRuleFails(t *testing.T) {
 	cases := writeFile(t, "cases.yaml", `surface: egress
 cases:
   - name: refused, but not by the rule the case names
-    identity: {namespace: team-b}
+    principal: {namespace: team-b}
     request: {url: "https://partner-a.example.com/v1"}
     expect: deny
     rule: 'method != "GET"'
@@ -157,7 +157,7 @@ cases:
     expect: deny
     rule: rule error
   - name: a caller with the claim is admitted
-    identity: {claims: {team: release}}
+    principal: {claims: {team: release}}
     request: {task: http}
     expect: allow
 `)
@@ -216,7 +216,7 @@ cases:
     expect: deny
     rule: dir
   - name: a blocked tenant is refused by the rule
-    identity: {namespace: blocked}
+    principal: {namespace: blocked}
     request: {argv: [sh], dir: `+root+`}
     expect: deny
     rule: 'identity.namespace == "blocked"'
@@ -265,6 +265,12 @@ func TestPolicyTestRefusesWhatCannotBeTrusted(t *testing.T) {
 		"a bad ip":                              {"surface: egress\ncases:\n  - {name: a, request: {url: \"https://api.github.com/\", ip: nope}, expect: allow}\n", "request.ip"},
 		"an ip that contradicts a literal host": {"surface: egress\ncases:\n  - {name: a, request: {url: \"https://127.0.0.1/\", ip: \"8.8.8.8\"}, expect: deny}\n", "IP-literal host"},
 		"a url with no port":                    {"surface: egress\ncases:\n  - {name: a, request: {url: \"ftp://10.0.0.1/\"}, expect: allow}\n", "write the port"},
+		"the retired identity key":              {"surface: egress\ncases:\n  - {name: a, identity: {namespace: team-a}, request: {url: \"https://api.github.com/\"}, expect: allow}\n", "identity"},
+		"a misspelled principal field":          {"surface: egress\ncases:\n  - {name: a, principal: {namespce: team-a}, request: {url: \"https://api.github.com/\"}, expect: allow}\n", "namespce"},
+		"a subject with no issuer":              {"surface: egress\ncases:\n  - {name: a, principal: {subject: a@example.com}, request: {url: \"https://api.github.com/\"}, expect: allow}\n", "without the other"},
+		"an issuer entry nothing admitted":      {"surface: egress\ncases:\n  - {name: a, principal: {issuer_entry: ci}, request: {url: \"https://api.github.com/\"}, expect: allow}\n", "issuer_entry"},
+		"a kind no policy assigns":              {"surface: egress\ncases:\n  - {name: a, principal: {kind: robot}, request: {url: \"https://api.github.com/\"}, expect: allow}\n", "robot"},
+		"a kind spelled in the enum's case":     {"surface: egress\ncases:\n  - {name: a, principal: {kind: Human}, request: {url: \"https://api.github.com/\"}, expect: allow}\n", "Human"},
 		"a surface mismatched":                  {"surface: task\ncases:\n  - {name: a, request: {url: \"https://api.github.com/\"}, expect: allow}\n", "another surface"},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -326,4 +332,153 @@ func TestPolicyTestBoundsTheSuite(t *testing.T) {
 	res = runFlow(t, "policy", "test", policy, writeFile(t, "big.yaml", suite(1)+"# "+strings.Repeat("x", policytest.MaxSuiteBytes)))
 	require.NotEqual(t, 0, res.ExitCode)
 	require.Contains(t, res.Output(), "limit")
+}
+
+// A case declares the whole caller a rule can read, not only the tenant: its
+// kind, a list claim, the actions it was granted and who acts for it. The same
+// rule is put to each declared identity, and only the one that carries every
+// fact it names is admitted; a case never gains what it did not write.
+func TestPolicyTestAPrincipalCarriesOnlyWhatTheCaseDeclares(t *testing.T) {
+	t.Parallel()
+
+	policy := writeFile(t, "task.yaml", `allow:
+  - identity.kind == "agent" && "ops" in identity.claims.groups && "run.start" in identity.actions && !identity.delegated
+`)
+	cases := writeFile(t, "cases.yaml", `surface: task
+cases:
+  - name: an agent in ops, granted run.start, acting for itself, is admitted
+    principal:
+      subject: bot@example.com
+      issuer: https://issuer.example.com
+      kind: agent
+      claims: {groups: [dev, ops]}
+      actions: [run.start]
+    request: {task: http}
+    expect: allow
+  - name: the same caller as a human is refused
+    principal:
+      kind: human
+      claims: {groups: [ops]}
+      actions: [run.start]
+    request: {task: http}
+    expect: deny
+    rule: allow rules
+  - name: no kind is no kind, not agent
+    principal:
+      claims: {groups: [ops]}
+      actions: [run.start]
+    request: {task: http}
+    expect: deny
+    rule: allow rules
+  - name: a groups claim without ops is refused
+    principal:
+      kind: agent
+      claims: {groups: [dev]}
+      actions: [run.start]
+    request: {task: http}
+    expect: deny
+    rule: allow rules
+  - name: an agent granted no action is refused
+    principal:
+      kind: agent
+      claims: {groups: [ops]}
+    request: {task: http}
+    expect: deny
+    rule: allow rules
+  - name: an agent acting on behalf of another is refused
+    principal:
+      kind: agent
+      claims: {groups: [ops]}
+      actions: [run.start]
+      actors:
+        - {issuer: "https://issuer.example.com", subject: "carol@example.com"}
+    request: {task: http}
+    expect: deny
+    rule: allow rules
+  - name: a case that declares nobody is refused
+    request: {task: http}
+    expect: deny
+    rule: allow rules
+`)
+
+	res, report := policyTestJSON(t, policy, cases)
+	require.Equal(t, 0, res.ExitCode, res.Output())
+	require.Equal(t, 7, report.Passed, res.Output())
+}
+
+// The kind a case declares reaches the egress and exec evaluators through the
+// same Caller, so one spelling tests every surface.
+func TestPolicyTestAKindAndAListClaimReachEgress(t *testing.T) {
+	t.Parallel()
+
+	policy := writeFile(t, "egress.yaml", `egress:
+  schemes: [https]
+  allow:
+    - identity.kind == "workload" && "payments" in identity.claims.teams && host == "partner-a.example.com"
+`)
+	cases := writeFile(t, "cases.yaml", `surface: egress
+cases:
+  - name: a payments workload reaches the partner
+    principal: {kind: workload, claims: {teams: [payments]}}
+    request: {url: "https://partner-a.example.com/v1"}
+    expect: allow
+  - name: a payments human does not
+    principal: {kind: human, claims: {teams: [payments]}}
+    request: {url: "https://partner-a.example.com/v1"}
+    expect: deny
+    rule: allow rules
+`)
+
+	res, report := policyTestJSON(t, policy, cases)
+	require.Equal(t, 0, res.ExitCode, res.Output())
+	require.Equal(t, 2, report.Passed, res.Output())
+}
+
+// A kind is a name: protojson would read `kind: 1` as HUMAN and keep `kind: 99`
+// as an unknown kind that renders as none, so a case would stand for a caller
+// it did not describe.
+func TestPolicyTestRefusesANumericKind(t *testing.T) {
+	t.Parallel()
+
+	policy := writeFile(t, "egress.yaml", tenantEgressPolicy)
+
+	for _, kind := range []string{"1", "99", "null", "[human]"} {
+		t.Run(kind, func(t *testing.T) {
+			t.Parallel()
+
+			res := runFlow(t, "policy", "test", policy, writeFile(t, "cases.yaml",
+				"surface: egress\ncases:\n  - {name: a, principal: {kind: "+kind+"}, request: {url: \"https://api.github.com/\"}, expect: allow}\n"))
+			require.NotEqual(t, 0, res.ExitCode, res.Output())
+			require.Empty(t, res.Stdout)
+		})
+	}
+}
+
+// A claim over the carried-claim bounds is dropped when the identity is read,
+// which would let a deny case pass for a caller it did not describe, so the
+// case is refused instead.
+func TestPolicyTestRefusesAnOverBoundClaim(t *testing.T) {
+	t.Parallel()
+
+	policy := writeFile(t, "egress.yaml", tenantEgressPolicy)
+
+	deep := "x"
+	for range 6 {
+		deep = "[" + deep + "]"
+	}
+
+	wide := "[" + strings.Repeat("a, ", 600) + "a]"
+
+	for name, claim := range map[string]string{"over depth": deep, "over count": wide} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			res := runFlow(t, "policy", "test", policy, writeFile(t, "cases.yaml",
+				"surface: egress\ncases:\n  - {name: a, principal: {claims: {groups: "+claim+"}}, request: {url: \"https://api.github.com/\"}, expect: deny}\n"))
+			require.NotEqual(t, 0, res.ExitCode, res.Output())
+			require.Empty(t, res.Stdout, "a refused suite must not print a verdict")
+			require.Contains(t, res.Output(), "principal.claims")
+			require.Contains(t, res.Output(), `"groups"`)
+		})
+	}
 }
