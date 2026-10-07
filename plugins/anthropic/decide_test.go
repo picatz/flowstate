@@ -518,7 +518,7 @@ func TestAQuestionSetThatBreaksTheSchemaIsRefusedBeforeARequest(t *testing.T) {
 }
 
 func TestInputsAreBoundedBeforeAnyRequest(t *testing.T) {
-	set := flowstatev1.NewValue(map[string]any{"questions": []any{map[string]any{"name": "a", "predicate": map[string]any{}}}})
+	set := &decisionv1.QuestionSet{Questions: []*decisionv1.Question{{Name: "a", Kind: &decisionv1.Question_Predicate_{Predicate: &decisionv1.Question_Predicate{}}}}}
 	valid := func() *anthropicv1.DecideInputs {
 		return &anthropicv1.DecideInputs{Model: "a-model", Evidence: "text", QuestionSet: set}
 	}
@@ -639,4 +639,15 @@ func TestEscapeEvidence(t *testing.T) {
 			t.Errorf("escapeEvidence(%q) = %q, want %q", in, got, want)
 		}
 	}
+}
+
+// parseQuestionSet is the author's mapping as the plugin receives it: filled
+// into the typed input by the SDK, the same routine the host runs, and then
+// checked by the plugin.
+func parseQuestionSet(v *flowstatev1.Value) (*decisionv1.QuestionSet, error) {
+	var in anthropicv1.DecideInputs
+	if err := sdk.DecodeInputs(map[string]*flowstatev1.Value{"question_set": v}, &in); err != nil {
+		return nil, err
+	}
+	return checkQuestionSet(in.GetQuestionSet())
 }

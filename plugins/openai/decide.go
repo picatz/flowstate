@@ -129,7 +129,7 @@ func validateInputs(in *openaiv1.DecideInputs) (*decisionv1.QuestionSet, error) 
 	if len(in.GetEvidence()) > maxEvidenceBytes || !utf8.ValidString(in.GetEvidence()) {
 		return nil, sdk.InvalidInput("evidence must be valid UTF-8 no longer than %d bytes", maxEvidenceBytes)
 	}
-	return parseQuestionSet(in.GetQuestionSet())
+	return checkQuestionSet(in.GetQuestionSet())
 }
 
 // decide sends the request and turns the reply into validated answers.

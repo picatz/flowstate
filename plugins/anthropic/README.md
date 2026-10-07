@@ -18,8 +18,10 @@ Inputs are `api_key`, `model`, `evidence`, `question_set`, and optional
 - `question_set` is a `flowstate.decision.v1.QuestionSet` written as a mapping: each
   question has a `name`, optional `instructions`, and one of `predicate: {}`,
   `choice: {options: [...]}` or `score: {levels: [...]}` (levels lowest to
-  highest). It is validated against the schema before any request is made, and
-  question names are further limited to 64 bytes, the longest tool-schema
+  highest). It is a typed input, so `flow validate` checks it against the
+  schema's rules at the line that wrote it (a repeated option, a name that is
+  not an identifier, an empty list of levels), and the plugin checks it again
+  before any request is made. Question names are further limited to 64 bytes, the longest tool-schema
   property name the Messages API accepts.
 - `evidence` is text, up to 256 KiB. It is framed to the model as data to be
   judged, not instructions to follow, and `&` and `<` are escaped in it so that
