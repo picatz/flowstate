@@ -130,8 +130,7 @@ func runAuthCheck(cmd *cobra.Command, _ []string) error {
 				// to know what a delegated caller can do. Both are the
 				// issuer's statement and the entry's allowlist, never a token
 				// value beyond the actors' own names.
-				_, err := fmt.Fprintf(cmd.OutOrStdout(), "%s\nactions: %s\n",
-					principal.ActingVia(), strings.Join(principal.Actions, ", "))
+				_, err := io.WriteString(cmd.OutOrStdout(), principal.DelegationReport())
 				return err
 			}
 			return nil
