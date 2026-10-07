@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"github.com/picatz/flowstate/pkg/flowstate/v1/execpolicy"
-	"github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
 )
 
 // ExecTaskDef returns the exec task definition enforcing the given policy.
@@ -74,12 +73,7 @@ func taskFuncExec(policy *execpolicy.Policy) TaskFunc {
 		// policies read, so the surfaces agree about who is calling. Absent, the
 		// zero identity, which an identity-scoped allow rule declines to match.
 		if id := scope.GetIdentity(); id != nil {
-			request.Identity = netpolicy.Identity{
-				Subject:   id.GetSubject(),
-				Issuer:    id.GetIssuer(),
-				Namespace: id.GetNamespace(),
-				Claims:    id.GetClaims(),
-			}
+			request.Identity = CallerOf(id)
 		}
 
 		command, err := policy.Check(ctx, request)

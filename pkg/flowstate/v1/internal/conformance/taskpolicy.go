@@ -121,6 +121,12 @@ func TaskPolicyCases() []TaskPolicyCase {
 		Claims:    map[string]string{"team": "b"},
 	}
 
+	// Identities differing in the principal kind the operator's trust policy
+	// assigned, so a case on identity.kind cannot pass on any other field.
+	workload := &v1.WorkloadIdentity{Subject: "spiffe://acme/ci", PrincipalKind: v1.PrincipalKind_PRINCIPAL_KIND_WORKLOAD}
+	human := &v1.WorkloadIdentity{Subject: "spiffe://acme/kent", PrincipalKind: v1.PrincipalKind_PRINCIPAL_KIND_HUMAN}
+	unassigned := &v1.WorkloadIdentity{Subject: "spiffe://acme/unassigned"}
+
 	return []TaskPolicyCase{
 		{
 			// #295's own reproduction, in the direction that issue reports:
@@ -314,6 +320,76 @@ func TaskPolicyCases() []TaskPolicyCase {
 			DeniedTask:     "log",
 			DeniedReason:   v1.TaskPolicyReasonDenyRule,
 			DeniedIdentity: "no identity",
+		},
+		{
+			// identity.kind is the field the shared principal.Caller added to
+			// this surface. It is not the namespace or a claim, so a driver
+			// that dropped the run's principal kind on the way to the policy
+			// would pass every case above and fail only here.
+			Name: "an allow rule keyed on principal kind permits a workload",
+			Workflow: &v1.Workflow{
+				Name:    "task-policy-kind-allow",
+				Profile: v1.CurrentProfile,
+				Steps:   []*v1.Node{says("report", "this may run")},
+			},
+			Identity:        workload,
+			Policy:          v1.TaskPolicyConfig{Allow: []string{`task == "log" && identity.kind == "workload"`}},
+			ExpectedOutputs: held("report"),
+		},
+		{
+			// Its negative pair: the same rule, an identity of a different
+			// kind, refused.
+			Name: "the same kind rule refuses a human",
+			Workflow: &v1.Workflow{
+				Name:    "task-policy-kind-allow-human",
+				Profile: v1.CurrentProfile,
+				Steps:   []*v1.Node{says("report", "this must not run")},
+			},
+			Identity:       human,
+			Policy:         v1.TaskPolicyConfig{Allow: []string{`task == "log" && identity.kind == "workload"`}},
+			DeniedTask:     "log",
+			DeniedReason:   v1.TaskPolicyReasonNoAllowRule,
+			DeniedIdentity: `subject="spiffe://acme/kent"`,
+		},
+		{
+			// An identity whose trust policy assigned no kind is never a
+			// workload: absence is not a default.
+			Name: "the same kind rule refuses an identity with no kind",
+			Workflow: &v1.Workflow{
+				Name:    "task-policy-kind-allow-unassigned",
+				Profile: v1.CurrentProfile,
+				Steps:   []*v1.Node{says("report", "this must not run")},
+			},
+			Identity:       unassigned,
+			Policy:         v1.TaskPolicyConfig{Allow: []string{`task == "log" && identity.kind == "workload"`}},
+			DeniedTask:     "log",
+			DeniedReason:   v1.TaskPolicyReasonNoAllowRule,
+			DeniedIdentity: `subject="spiffe://acme/unassigned"`,
+		},
+		{
+			// The deny half, where a lost kind refuses too little.
+			Name: "a deny rule keyed on principal kind refuses a human",
+			Workflow: &v1.Workflow{
+				Name:    "task-policy-kind-deny",
+				Profile: v1.CurrentProfile,
+				Steps:   []*v1.Node{says("report", "this must not run")},
+			},
+			Identity:       human,
+			Policy:         v1.TaskPolicyConfig{Deny: []string{`identity.kind == "human"`}},
+			DeniedTask:     "log",
+			DeniedReason:   v1.TaskPolicyReasonDenyRule,
+			DeniedIdentity: `subject="spiffe://acme/kent"`,
+		},
+		{
+			Name: "the same kind deny rule does not reach a workload",
+			Workflow: &v1.Workflow{
+				Name:    "task-policy-kind-deny-workload",
+				Profile: v1.CurrentProfile,
+				Steps:   []*v1.Node{says("report", "this may run")},
+			},
+			Identity:        workload,
+			Policy:          v1.TaskPolicyConfig{Deny: []string{`identity.kind == "human"`}},
+			ExpectedOutputs: held("report"),
 		},
 	}
 }

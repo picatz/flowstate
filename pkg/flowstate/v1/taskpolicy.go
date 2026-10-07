@@ -5,13 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"maps"
-	"reflect"
 	"slices"
 
 	"github.com/google/cel-go/cel"
 
 	"github.com/google/cel-go/ext"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/celrule"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/principal"
 )
 
 // Task-shape policy: deployment-side CEL rules over which identities may
@@ -355,59 +355,13 @@ func (p *TaskPolicy) check(ctx context.Context, task string, identity *WorkloadI
 		return "", nil
 	}
 
-	claims := identity.GetClaims()
-	if claims == nil {
-		// CEL cannot index a null map, and a rule reading claims["x"] against
-		// an identity that carries none should simply not match rather than
-		// error the evaluation.
-		claims = map[string]string{}
-	}
-
 	vars := map[string]any{
-		"task": task,
-		"identity": taskPolicyIdentity{
-			Subject:   identity.GetSubject(),
-			Issuer:    identity.GetIssuer(),
-			Namespace: identity.GetNamespace(),
-			Claims:    claims,
-		},
+		"task":     task,
+		"identity": CallerOf(identity),
 	}
 
 	return p.rules.evaluate(ctx, task, vars)
 }
-
-// taskPolicyIdentity is the CEL-typed rendering of a [WorkloadIdentity] a
-// task-shape rule reads as `identity.<field>`.
-//
-// A struct with `cel:` tags, exactly as auth's assumption rules render a
-// workload (`auth/assume.go`'s `workload` type) and as [runRootValue] renders
-// `run.identity` for ordinary expressions — declaring the fields is what
-// makes a rule naming `identity.nonexistent` a compile-time error rather than
-// a rule that silently never matches. This is a rendering, not a parallel
-// identity type: every caller of this package still carries a
-// *[WorkloadIdentity], and this shape exists only for the moment a CEL
-// environment needs typed fields to check against.
-//
-// Deliberately narrower than [WorkloadIdentity] itself, the same way
-// [Scope.identity] already is: `deployment` answers "which installation ran
-// this" rather than "who may run what", which is [WorkloadIdentity.deployment]'s
-// own distinction restated for this surface.
-type taskPolicyIdentity struct {
-	Subject   string            `cel:"subject"`
-	Issuer    string            `cel:"issuer"`
-	Namespace string            `cel:"namespace"`
-	Claims    map[string]string `cel:"claims"`
-}
-
-// taskPolicyIdentityTypeName is how [taskPolicyIdentity] is named in CEL,
-// which appears in a type error when a rule misuses a field. [ext.NativeTypes]
-// derives this from the type's Go *directory* rather than its declared
-// package name — "v1", not "flowstatev1" — which is where this package's own
-// name and its import path (".../pkg/flowstate/v1") part ways; the same
-// pattern `auth.workloadTypeName` pins for its own native type happens to
-// read as the package name only because that package's directory and its
-// declared name are the same word.
-const taskPolicyIdentityTypeName = "v1.taskPolicyIdentity"
 
 // newTaskPolicyEnv builds the CEL environment task-shape rules are compiled
 // against. Declaring every attribute here is what makes a misspelled or
@@ -415,9 +369,9 @@ const taskPolicyIdentityTypeName = "v1.taskPolicyIdentity"
 // matches.
 func newTaskPolicyEnv() (*cel.Env, error) {
 	return cel.NewEnv(
-		ext.NativeTypes(ext.ParseStructTag("cel"), reflect.TypeFor[taskPolicyIdentity]()),
+		principal.EnvOptions(),
 		cel.Variable("task", cel.StringType),
-		cel.Variable("identity", cel.ObjectType(taskPolicyIdentityTypeName)),
+		principal.Var("identity"),
 		ext.Strings(ext.StringsVersion(5)),
 	)
 }
