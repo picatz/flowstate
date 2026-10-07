@@ -4,61 +4,46 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/descriptorpb"
 )
 
 // authorizationActionBindings attaches every action in the schema's closed
 // vocabulary to the operations it covers.
 //
-// Written out rather than derived, for the same reason
-// mcp.WorkflowServiceMethods is: nothing in the descriptor says which RPCs
-// share an authorization action, and grouping them is the judgement this list
-// exists to record. What keeps a hand-written list honest is the test beside
-// it — TestEveryRPCHasExactlyOneAuthorizationAction walks the service
-// descriptor in both directions, so an RPC added to the schema without a
-// binding fails, and a binding naming an RPC the service dropped fails too.
+// The RPCs each action covers are not written here: they are read from the
+// (flowstate.v1.authorization_action) option on each WorkflowService method
+// (see [boundActions]), so the binding sits on the RPC and cannot drift from it.
+// What this list still records is everything the descriptor cannot say — the
+// escalation lineage, and the MCP-only tools, HTTP endpoints, and request
+// fields an action covers. TestEveryRPCHasExactlyOneAuthorizationAction
+// still fails for a method that carries no option.
 //
 // The order is the enum's, and [AuthorizationActionScopes] publishes it, so a
 // reader comparing the metadata document to this file sees the same sequence.
 var authorizationActionBindings = []*AuthorizationActionBinding{
 	{
 		Action: AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_RUN,
-		Rpcs:   []string{"Run", "SignalWithStart"},
 	},
 	{
 		Action: AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_READ,
-		// GetTimeline joins these rather than taking a scope of its own, and
-		// the reason is which way the disclosure actually runs. A timeline
-		// reads no payload at all — labels the interpreter chose, and a
-		// failure's outermost message — while Get on a completed run returns
-		// the whole of its step outputs, which is the workload's data. A scope
-		// separating them would grant strictly less than the one beside it: a
-		// distinction with no security difference, and a fourth spelling of
-		// "may this caller read this run".
-		Rpcs: []string{"Get", "GetTimeline", "List"},
 	},
 	{
 		Action: AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_SIGNAL,
 		Parent: AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_RUN,
-		// GetGate is the read an approver needs to answer: bound here rather than
-		// to `workload.read` so a caller who may signal a gate can see the
-		// question it asks, and no more of the run than that.
-		Rpcs: []string{"Signal", "GetGate"},
 	},
 	{
 		Action: AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_CANCEL,
 		Parent: AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_RUN,
-		Rpcs:   []string{"Cancel"},
 	},
 	{
 		Action: AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_TERMINATE,
 		Parent: AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_CANCEL,
-		Rpcs:   []string{"Terminate"},
 	},
 	{
 		Action: AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_VALIDATE,
-		Rpcs:   []string{"Validate"},
 		// A static policy check compiles the caller's own source and decides
 		// its predicates: it runs no step and reads nothing the caller did
 		// not submit, so it asks no more than validating that source does.
@@ -67,36 +52,28 @@ var authorizationActionBindings = []*AuthorizationActionBinding{
 	{
 		Action: AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_COMPILE,
 		Parent: AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_VALIDATE,
-		Rpcs:   []string{"Compile"},
 	},
 	{
 		Action: AuthorizationAction_AUTHORIZATION_ACTION_CATALOG_READ,
-		Rpcs:   []string{"GetCatalog"},
 	},
 	{
 		Action: AuthorizationAction_AUTHORIZATION_ACTION_SCHEDULE_CREATE,
-		Rpcs:   []string{"CreateSchedule"},
 	},
 	{
 		Action: AuthorizationAction_AUTHORIZATION_ACTION_SCHEDULE_READ,
-		Rpcs:   []string{"ListSchedules", "DescribeSchedule"},
 	},
 	{
 		Action: AuthorizationAction_AUTHORIZATION_ACTION_SCHEDULE_DELETE,
-		Rpcs:   []string{"DeleteSchedule"},
 	},
 	{
 		Action: AuthorizationAction_AUTHORIZATION_ACTION_SCHEDULE_PAUSE,
-		Rpcs:   []string{"PauseSchedule"},
 	},
 	{
 		Action: AuthorizationAction_AUTHORIZATION_ACTION_SCHEDULE_RESUME,
-		Rpcs:   []string{"ResumeSchedule"},
 	},
 	{
 		Action: AuthorizationAction_AUTHORIZATION_ACTION_SCHEDULE_TRIGGER,
 		Parent: AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_RUN,
-		Rpcs:   []string{"TriggerSchedule"},
 	},
 	{
 		Action:   AuthorizationAction_AUTHORIZATION_ACTION_MCP_RUN_LOCAL,
@@ -125,12 +102,10 @@ var authorizationActionBindings = []*AuthorizationActionBinding{
 	{
 		Action: AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_DEBUG,
 		Parent: AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_SIGNAL,
-		Rpcs:   []string{"DebugAttach", "DebugGet", "DebugHistory", "DebugResume", "DebugSetBreakpoints"},
 	},
 	{
 		Action: AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_DEBUG_INSPECT,
 		Parent: AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_DEBUG,
-		Rpcs:   []string{"DebugInspect"},
 		// DebugHistory keeps workload.debug; asking it to evaluate expressions
 		// at a recorded point additionally needs this.
 		RequestFields: []string{"flowstate.v1.DebugHistoryRequest.inspections"},
@@ -160,6 +135,31 @@ var authorizationActionBindings = []*AuthorizationActionBinding{
 		},
 	},
 }
+
+// boundActions fills each binding's rpcs from the authorization_action option
+// on the WorkflowService methods, in the schema's declaration order, once. A
+// method with no option is left in no binding, which [AuthorizationActionForRPC]
+// then refuses and the descriptor-walking test reports. It is lazy rather than
+// an init function because this package's generated descriptors initialize in
+// file order, and service.proto's comes after this file's.
+var boundActions = sync.OnceValue(func() []*AuthorizationActionBinding {
+	methods := File_flowstate_v1_service_proto.Services().ByName("WorkflowService").Methods()
+	for i := range methods.Len() {
+		method := methods.Get(i)
+		options, _ := method.Options().(*descriptorpb.MethodOptions)
+		if !proto.HasExtension(options, E_AuthorizationAction) {
+			continue
+		}
+		action, _ := proto.GetExtension(options, E_AuthorizationAction).(AuthorizationAction)
+		for _, binding := range authorizationActionBindings {
+			if binding.GetAction() == action {
+				binding.Rpcs = append(binding.Rpcs, string(method.Name()))
+			}
+		}
+	}
+
+	return authorizationActionBindings
+})
 
 // authorizationActionScopePrefix is what an enum value name carries in front
 // of the scope it spells. See [AuthorizationActionScope].
@@ -211,8 +211,8 @@ func AuthorizationActionScopes() []string {
 // AuthorizationActionBindings returns a defensive copy of the bindings, so a
 // caller ranging over the vocabulary cannot edit it.
 func AuthorizationActionBindings() []*AuthorizationActionBinding {
-	bindings := make([]*AuthorizationActionBinding, 0, len(authorizationActionBindings))
-	for _, binding := range authorizationActionBindings {
+	bindings := make([]*AuthorizationActionBinding, 0, len(boundActions()))
+	for _, binding := range boundActions() {
 		bindings = append(bindings, proto.CloneOf(binding))
 	}
 
@@ -227,7 +227,7 @@ func AuthorizationActionBindings() []*AuthorizationActionBinding {
 // "no action" is not an answer it can act on. The descriptor-walking test
 // makes reaching this branch a build-time failure rather than a runtime one.
 func AuthorizationActionForRPC(rpc string) (AuthorizationAction, error) {
-	for _, binding := range authorizationActionBindings {
+	for _, binding := range boundActions() {
 		if slices.Contains(binding.GetRpcs(), rpc) {
 			return binding.GetAction(), nil
 		}
@@ -271,7 +271,7 @@ func MCPToolNameForRPC(rpc string) string {
 // that cannot accidentally audit a tool under a different action than the one
 // authorization assigns it.
 func AuthorizationActionForMCPTool(tool string) (AuthorizationAction, error) {
-	for _, binding := range authorizationActionBindings {
+	for _, binding := range boundActions() {
 		if slices.Contains(binding.GetMcpTools(), tool) {
 			return binding.GetAction(), nil
 		}
@@ -290,7 +290,7 @@ func AuthorizationActionForMCPTool(tool string) (AuthorizationAction, error) {
 // service, by its bound path suffix, to the action it requires. Unknown
 // endpoints fail closed.
 func AuthorizationActionForHTTPEndpoint(endpoint string) (AuthorizationAction, error) {
-	for _, binding := range authorizationActionBindings {
+	for _, binding := range boundActions() {
 		if slices.Contains(binding.GetHttpEndpoints(), endpoint) {
 			return binding.GetAction(), nil
 		}
@@ -304,7 +304,7 @@ func AuthorizationActionForHTTPEndpoint(endpoint string) (AuthorizationAction, e
 // by its full name, to the action it additionally requires. Unknown fields
 // fail closed.
 func AuthorizationActionForRequestField(field string) (AuthorizationAction, error) {
-	for _, binding := range authorizationActionBindings {
+	for _, binding := range boundActions() {
 		if slices.Contains(binding.GetRequestFields(), field) {
 			return binding.GetAction(), nil
 		}

@@ -40,8 +40,9 @@ func init() {
 				" step-up challenge and the policy that provokes it read one relation.\n",
 		},
 		{
-			Name:    "flowstate.v1.AuthorizationActionBinding.rpcs",
-			Leading: " The WorkflowService methods this action covers, by their schema names.\n",
+			Name: "flowstate.v1.AuthorizationActionBinding.rpcs",
+			Leading: " The WorkflowService methods this action covers, by their schema names.\n" +
+				" Read from each method's authorization_action option, never written out.\n",
 		},
 		{
 			Name: "flowstate.v1.AuthorizationActionBinding.mcp_tools",
@@ -185,6 +186,17 @@ func init() {
 				" GetTimelineRequest.reveal_sensitive. Without it those RPCs withhold the\n" +
 				" values. It is never implied: a policy entry that lists no actions is not\n" +
 				" granted it, unlike the RPC actions above.\n",
+		},
+		{
+			Name: "flowstate.v1.authorization_action",
+			Leading: " authorization_action is the action a WorkflowService method is authorized\n" +
+				" as, set on the method itself so that the binding and the RPC cannot drift:\n" +
+				" a method without it is refused by TestEveryRPCHasExactlyOneAuthorizationAction,\n" +
+				" and AuthorizationActionBinding.rpcs is derived from it rather than written\n" +
+				" out beside the schema.\n" +
+				"\n" +
+				" Several methods may share an action; the grouping is the judgement the\n" +
+				" option records, and the reason for a non-obvious one belongs on the method.\n",
 		},
 	})
 }

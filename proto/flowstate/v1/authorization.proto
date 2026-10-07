@@ -3,6 +3,7 @@ syntax = "proto3";
 package flowstate.v1;
 
 import "buf/validate/validate.proto";
+import "google/protobuf/descriptor.proto";
 
 option go_package = "flowstatev1";
 
@@ -183,6 +184,7 @@ message AuthorizationActionBinding {
   AuthorizationAction parent = 2 [(buf.validate.field).enum.defined_only = true];
 
   // The WorkflowService methods this action covers, by their schema names.
+  // Read from each method's authorization_action option, never written out.
   repeated string rpcs = 3 [(buf.validate.field).repeated = {
     unique: true
     max_items: 8
@@ -239,4 +241,16 @@ message AuthorizationActionBinding {
       }
     }
   }];
+}
+
+extend google.protobuf.MethodOptions {
+  // authorization_action is the action a WorkflowService method is authorized
+  // as, set on the method itself so that the binding and the RPC cannot drift:
+  // a method without it is refused by TestEveryRPCHasExactlyOneAuthorizationAction,
+  // and AuthorizationActionBinding.rpcs is derived from it rather than written
+  // out beside the schema.
+  //
+  // Several methods may share an action; the grouping is the judgement the
+  // option records, and the reason for a non-obvious one belongs on the method.
+  AuthorizationAction authorization_action = 50001;
 }
