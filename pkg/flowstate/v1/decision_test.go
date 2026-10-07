@@ -3,7 +3,9 @@ package flowstatev1_test
 import (
 	"fmt"
 	"maps"
+	"math"
 	"slices"
+	"strings"
 	"testing"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -166,4 +168,88 @@ func TestDecisionDistributionBound(t *testing.T) {
 	requireRule(t, v1.Validate(decision(short, options...)), "answer.distribution_sums_to_one")
 
 	requireRule(t, v1.Validate(decision(nil, append(slices.Clone(options), "extra")...)), "repeated.max_items")
+}
+
+// TestDecisionBounds proves the size and finiteness limits in both
+// directions: a message at the limit is accepted and one past it is rejected
+// by the limit's rule. They are the schema's work bounds, so a limit that is
+// loosened or dropped has to fail a test.
+func TestDecisionBounds(t *testing.T) {
+	const none = v1.Calibration_CALIBRATION_NONE
+	const modelProb = v1.Calibration_CALIBRATION_MODEL_PROBABILITY
+	names := func(n int) []string {
+		out := make([]string, n)
+		for i := range out {
+			out[i] = fmt.Sprintf("o%d", i)
+		}
+		return out
+	}
+	questions := func(n int) []*v1.Question {
+		out := make([]*v1.Question, n)
+		for i := range out {
+			out[i] = predicateQuestion(fmt.Sprintf("q%d", i))
+		}
+		return out
+	}
+	// distribution spreads 1 evenly over keys, so it sums to 1 at any size.
+	distribution := func(keys []string) map[string]float64 {
+		d := make(map[string]float64, len(keys))
+		for _, k := range keys {
+			d[k] = 1 / float64(len(keys))
+		}
+		return d
+	}
+	long := func(n int) string { return strings.Repeat("a", n) }
+	nan, inf := math.NaN(), math.Inf(1)
+
+	cases := []struct {
+		name string
+		msg  proto.Message
+		rule string // empty: must be accepted
+	}{
+		{"question set at the maximum", &v1.QuestionSet{Questions: questions(32)}, ""},
+		{"question set past the maximum", &v1.QuestionSet{Questions: questions(33)}, "repeated.max_items"},
+		{"options at the maximum", choiceQuestion("a", names(32)...), ""},
+		{"options past the maximum", choiceQuestion("a", names(33)...), "repeated.max_items"},
+		{"levels at the maximum", scoreQuestion("a", names(32)...), ""},
+		{"levels past the maximum", scoreQuestion("a", names(33)...), "repeated.max_items"},
+
+		{"question name at the limit", predicateQuestion(long(128)), ""},
+		{"question name past the limit", predicateQuestion(long(129)), "string.max_len"},
+		{"option at the limit", choiceQuestion("a", long(128)), ""},
+		{"option past the limit", choiceQuestion("a", long(129)), "string.max_len"},
+		{"level at the limit", scoreQuestion("a", long(128)), ""},
+		{"level past the limit", scoreQuestion("a", long(129)), "string.max_len"},
+		{"instructions at the limit", &v1.Question{Name: "a", Instructions: long(16384), Kind: &v1.Question_Predicate_{Predicate: &v1.Question_Predicate{}}}, ""},
+		{"instructions past the limit", &v1.Question{Name: "a", Instructions: long(16385), Kind: &v1.Question_Predicate_{Predicate: &v1.Question_Predicate{}}}, "string.max_bytes"},
+
+		{"answer name past the limit", choiceAnswer(long(129), "x", none), "string.max_len"},
+		{"selected choice past the limit", choiceAnswer("a", long(129), none), "string.max_len"},
+		{"selected level past the limit", &v1.Answer{Name: "a", Result: &v1.Answer_Score{Score: long(129)}, Calibration: none}, "string.max_len"},
+
+		{"distribution at the maximum", withNumbers(choiceAnswer("a", "o0", modelProb), nil, distribution(names(32))), ""},
+		{"distribution past the maximum", withNumbers(choiceAnswer("a", "o0", modelProb), nil, distribution(names(33))), "map.max_pairs"},
+		{"distribution key at the limit", withNumbers(choiceAnswer("a", long(128), modelProb), nil, map[string]float64{long(128): 1}), ""},
+		{"distribution key past the limit", withNumbers(choiceAnswer("a", "x", modelProb), nil, map[string]float64{"x": 0.5, long(129): 0.5}), "string.max_len"},
+		{"distribution key empty", withNumbers(choiceAnswer("a", "x", modelProb), nil, map[string]float64{"x": 0.5, "": 0.5}), "string.min_len"},
+
+		{"confidence NaN", withNumbers(choiceAnswer("a", "x", modelProb), ptr(nan), nil), "double.finite"},
+		{"confidence infinite", withNumbers(choiceAnswer("a", "x", modelProb), ptr(inf), nil), "double.finite"},
+		{"distribution NaN", withNumbers(choiceAnswer("a", "x", modelProb), nil, map[string]float64{"x": nan}), "double.finite"},
+		{"distribution infinite", withNumbers(choiceAnswer("a", "x", modelProb), nil, map[string]float64{"x": inf}), "double.finite"},
+
+		{"calibration outside the enum", choiceAnswer("a", "x", v1.Calibration(99)), "enum.defined_only"},
+		{"decision answer required", &v1.Decision{Question: predicateQuestion("q")}, "required"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := v1.Validate(tc.msg)
+			if tc.rule == "" {
+				require.NoError(t, err)
+				return
+			}
+			requireRule(t, err, tc.rule)
+		})
+	}
 }
