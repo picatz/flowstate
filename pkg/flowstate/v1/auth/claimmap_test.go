@@ -201,6 +201,15 @@ func TestMapClaimsRefusesAnIncompleteGroupList(t *testing.T) {
 			want:  `"groups_truncated"`,
 		},
 		{
+			name:  "a distributed claim keyed by the literal dotted groups_claim",
+			entry: auth.TrustedIssuer{GroupsClaim: "realm_access.roles"},
+			raw: map[string]any{
+				"realm_access.roles": many(2),
+				"_claim_names":       map[string]any{"realm_access.roles": "src1"},
+			},
+			want: `"_claim_names"`,
+		},
+		{
 			name:  "more groups than an identity carries",
 			entry: auth.TrustedIssuer{GroupsClaim: "groups"},
 			raw:   map[string]any{"groups": many(auth.MaxGroups + 1)},
@@ -321,6 +330,9 @@ func TestClaimCarriagePolicyValidation(t *testing.T) {
 		{name: "carry_claims and groups_claim both carrying groups", wantErr: `which is reserved for groups_claim`, change: func(i *auth.TrustedIssuer) {
 			i.CarryClaims = []auth.CarryClaim{{Claim: "groups", Type: auth.ClaimTypeStringList}}
 			i.GroupsClaim = "realm_access.roles"
+		}},
+		{name: "a reserved claim name would fail every surface that mints from the identity", wantErr: "reserved claim name", change: func(i *auth.TrustedIssuer) {
+			i.CarryClaims = []auth.CarryClaim{{Claim: auth.ClaimWorkflow, Type: auth.ClaimTypeString}}
 		}},
 		{name: "groups carried with no groups_claim would skip the overage refusal", wantErr: `which is reserved for groups_claim`, change: func(i *auth.TrustedIssuer) {
 			i.CarryClaims = []auth.CarryClaim{{Claim: "groups", Type: auth.ClaimTypeStringList}}

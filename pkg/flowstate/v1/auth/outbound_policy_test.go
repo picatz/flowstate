@@ -393,7 +393,7 @@ func TestFederationRoundTrip(t *testing.T) {
 						auth.RequireClaim(auth.ClaimOnBehalfOf, "repo:picatz/flowstate:ref:refs/heads/main"),
 					},
 					Role:        "partner-client",
-					CarryClaims: []auth.CarryClaim{{Claim: auth.ClaimOnBehalfOf, Type: auth.ClaimTypeString}},
+					CarryClaims: []auth.CarryClaim{{Claim: auth.ClaimOnBehalfOf, As: "peer_on_behalf_of", Type: auth.ClaimTypeString}},
 				}},
 			},
 			auth.WithClock(clock.Now),
@@ -461,7 +461,7 @@ targets:
 	require.Equal(t, identityServer.URL, principal.Issuer)
 	require.Equal(t, "partner-client", principal.Role)
 
-	onBehalfOf, ok := principal.StringClaim(auth.ClaimOnBehalfOf)
+	onBehalfOf, ok := principal.StringClaim("peer_on_behalf_of")
 	require.True(t, ok)
 	require.Equal(t, "repo:picatz/flowstate:ref:refs/heads/main", onBehalfOf)
 

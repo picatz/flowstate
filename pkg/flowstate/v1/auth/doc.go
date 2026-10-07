@@ -320,9 +320,10 @@
 // # Claims and groups
 //
 // A rule reads only the claims the admitting entry carries. [MapClaims] is the one
-// mapping from a verified token's claims to a [Principal]'s, for every entry
-// kind; an embedder replaces it with [WithClaimMapper], and what it returns is
-// held to the same bounds:
+// mapping from a verified token's claims to a [Principal]'s; an embedder
+// replaces it for OIDC entries with [WithClaimMapper] (a kind: mtls entry
+// carries only the certificate subject), and what it returns is held to the
+// same bounds:
 //
 //	issuers:
 //	  - name: keycloak

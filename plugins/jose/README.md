@@ -94,7 +94,7 @@ grant rather than beside it.
 | `trust_name` | the policy entry that admitted the token |
 | `audience` | the verified `aud`, always a list |
 | `expires_at`, `issued_at` | the verified `exp` and `iat`, RFC 3339; the verifier requires both, so a token missing either is refused and these are always set |
-| `claims` | the whole verified claim set, as a map |
+| `claims` | the claims the matching trust entry carries (`carry_claims`, `groups_claim`), as a map; a claim it does not carry is absent |
 
 ## Verification is not authorization
 
@@ -132,7 +132,7 @@ one that came from a secret store should be passed as `${secret(...)}`.
 | What | Limit |
 | --- | --- |
 | a token | 64 KiB (the verifier bounds it again) |
-| claims returned | every verified claim, sorted, never trimmed |
+| claims returned | every carried claim, sorted, never trimmed |
 | `trust` / `audience` inputs | 128 B / 512 B |
 | the trust policy file | 1 MiB |
 

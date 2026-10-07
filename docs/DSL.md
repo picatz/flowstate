@@ -4581,7 +4581,7 @@ empty projection reads differently from a wrong value.
 
 **Claims keep their JSON shape.** The one `principal.Caller` every policy surface
 binds is read here too: `"sre" in sender.identity.claims.groups` reads a list claim,
-`sender.identity.claims.slack.user == "U1"` a nested object, and
+`sender.identity.claims.slack_user == "U1"` a scalar read from a nested path with `carry_claims: [{claim: slack.user, as: slack_user, type: string}]`, and
 `sender.identity.actions` the scopes the sender was granted. The same fields are
 read as `identity.*` by `allow:`/`deny:` rules on egress, exec, task shape, secrets
 and assumption. A claim the caller does not carry is an error on every surface, so

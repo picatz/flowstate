@@ -109,9 +109,11 @@ func (t TrustedIssuer) ClaimNames() []string {
 // shape is not an error: it is left out.
 type ClaimMapper func(entry TrustedIssuer, raw map[string]any) (map[string]any, error)
 
-// WithClaimMapper replaces [MapClaims], the mapper a verifier calls once an
-// entry has admitted a token. One mapper serves every entry: it receives the
-// entry, so it can read the same carry_claims and groups configuration.
+// WithClaimMapper replaces [MapClaims], the mapper the OIDC verifier calls once
+// an entry has admitted a token. One mapper serves every OIDC entry: it receives
+// the entry, so it can read the same carry_claims and groups configuration. A
+// kind: mtls entry carries only the certificate's subject through [MapClaims]
+// and is not affected.
 //
 // What it returns is held to the carried-claim bounds before it reaches a
 // [Principal], so a mapper cannot carry more than the policy surfaces will
@@ -258,9 +260,14 @@ func overageMarked(marker string, value any, groupsClaim string) bool {
 		if !ok {
 			return false
 		}
+		// The claim named exactly as configured, then the object it would sit
+		// in: a literal dotted groups_claim is read by its exact name first, so
+		// the marker may be keyed the same way.
 		_, distributed := names[GroupsClaim]
-		if !distributed {
-			_, distributed = names[strings.SplitN(groupsClaim, ".", 2)[0]]
+		for _, name := range []string{groupsClaim, strings.SplitN(groupsClaim, ".", 2)[0]} {
+			if _, ok := names[name]; ok {
+				distributed = true
+			}
 		}
 
 		return distributed
@@ -346,6 +353,12 @@ func (t TrustedIssuer) validateClaimCarriage() error {
 		name := carried.name()
 		if name == "" || len(name) > MaxCarriedClaimNameBytes {
 			return fmt.Errorf("carry_claims[%d]: the carried name must be 1 to %d bytes", i, MaxCarriedClaimNameBytes)
+		}
+		if slices.Contains(builtInClaimNames, name) {
+			// The same names WorkloadIdentity.Validate refuses: an identity
+			// carrying one would authenticate and then fail on every surface
+			// that mints from it.
+			return fmt.Errorf("carry_claims[%d] carries %q, which is a reserved claim name: rename it with `as`", i, name)
 		}
 		if name == GroupsClaim {
 			// Reserved even without a groups_claim: groups carried here would skip the

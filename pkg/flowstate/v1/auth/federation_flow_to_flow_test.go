@@ -85,8 +85,8 @@ func TestFlowstateToFlowstateFederation(t *testing.T) {
 					NamespaceClaim: auth.ClaimNamespace,
 					Role:           "peer",
 					CarryClaims: []auth.CarryClaim{
-						{Claim: auth.ClaimWorkflow, Type: auth.ClaimTypeString},
-						{Claim: auth.ClaimRun, Type: auth.ClaimTypeString},
+						{Claim: auth.ClaimWorkflow, As: "peer_workflow", Type: auth.ClaimTypeString},
+						{Claim: auth.ClaimRun, As: "peer_run", Type: auth.ClaimTypeString},
 					},
 				}},
 			},
@@ -163,11 +163,11 @@ targets:
 	require.Equal(t, "peer", principal.Role)
 	require.Equal(t, "acme", principal.Namespace, "the namespace claim A minted decides the tenant B lands the caller in")
 
-	workflow, ok := principal.StringClaim(auth.ClaimWorkflow)
+	workflow, ok := principal.StringClaim("peer_workflow")
 	require.True(t, ok)
 	require.Equal(t, "deploy-service", workflow)
 
-	run, ok := principal.StringClaim(auth.ClaimRun)
+	run, ok := principal.StringClaim("peer_run")
 	require.True(t, ok)
 	require.Equal(t, "run-1", run, "which run called is legible to the callee, which is what makes an audit trail cross the boundary")
 

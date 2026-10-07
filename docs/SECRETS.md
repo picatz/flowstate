@@ -177,7 +177,7 @@ secrets:
   `workload.workflow`, `workload.run`, `workload.step`, and related fields.
   Reading a claim that is not present is an error, which denies; guard it with
   `"team" in identity.claims`. A claim keeps its JSON shape, so a list reads as
-  `"sre" in identity.claims.groups` and an object as `identity.claims.slack.user`.
+  `"sre" in identity.claims.groups` and a scalar read from a nested path (`{claim: slack.user, as: slack_user}`) as `identity.claims.slack_user`.
 - The file must also contain at least one valid `issuers:` entry, even on a
   worker, which does not authenticate callers itself. A server and its workers
   normally share one reviewed file.
