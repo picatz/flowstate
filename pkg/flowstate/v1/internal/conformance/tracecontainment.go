@@ -57,7 +57,7 @@ const (
 	ContainmentTaskName = "trace_containment_failure"
 
 	// ContainmentStepID is the step the task runs for.
-	ContainmentStepID = "contained-failure"
+	ContainmentStepID = "contained_failure"
 
 	// ContainmentSecretScheme and ContainmentSecretName address the reference the
 	// step reads, from inside a structure rather than as a whole input — the

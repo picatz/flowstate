@@ -52,6 +52,24 @@ func LogCases() []Case {
 			}},
 		},
 		{
+			// The other direction of [StepIDRefusalCases]: ids that are CEL
+			// identifiers run whatever they look like, including ones that only
+			// *contain* a root's or a lexer word's spelling.
+			Name: "ids that are valid identifiers run beside a vars block",
+			Workflow: &v1.Workflow{
+				Name:    "log-valid-ids",
+				Profile: v1.CurrentProfile,
+				Vars:    map[string]*v1.Value{"region": v1.NewLiteral("eu")},
+				Steps: []*v1.Node{
+					says("_", "underscore"),
+					says("A1", "mixed case"),
+					says("vars_", "a root's name with more after it"),
+					says("in_", "a lexer word with more after it"),
+				},
+			},
+			ExpectedOutputs: held("_", "A1", "vars_", "in_"),
+		},
+		{
 			// A message built from an expression, which is the ordinary shape — a
 			// constant log line is a comment. This is also the case that would fail if
 			// a driver forgot to resolve the task's inputs before running it, since

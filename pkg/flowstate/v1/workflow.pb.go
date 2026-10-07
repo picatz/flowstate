@@ -2298,6 +2298,13 @@ type Node struct {
 	// Each node has a unique identifier within the workflow. This ID is used to reference the
 	// node in the workflow's step outputs and can be used to access the outputs of the
 	// node after the workflow has been executed.
+	//
+	// An ID is a CEL identifier, because expressions name a step as
+	// `steps.<id>`: a letter or underscore, then letters, digits and underscores.
+	// Uniqueness and the words an ID may not be (the five root names and the
+	// lexer's `true`, `false`, `null` and `in`) are whole-workflow rules that
+	// protovalidate cannot express per field; the submit boundary enforces them
+	// with the same check `flow validate` runs.
 	Id string `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
 	// A node must be a specific kind of operation.
 	//
@@ -4408,9 +4415,9 @@ const file_flowstate_v1_workflow_proto_rawDesc = "" +
 	"\x06values\x18\x01 \x03(\v2$.flowstate.v1.RunOutputs.ValuesEntryB\x12\xe2A\x01\x01\xbaH\v\x9a\x01\b\x10@\"\x04r\x02\x10\x01R\x06values\x1aN\n" +
 	"\vValuesEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12)\n" +
-	"\x05value\x18\x02 \x01(\v2\x13.flowstate.v1.ValueR\x05value:\x028\x01\"\xa2\b\n" +
-	"\x04Node\x123\n" +
-	"\x02id\x18\x01 \x01(\tB#\xe2A\x01\x02\xbaH\x1c\xc8\x01\x01r\x17\x10\x01\x18\x80\x012\x10^[A-Za-z0-9-_]+$R\x02id\x12(\n" +
+	"\x05value\x18\x02 \x01(\v2\x13.flowstate.v1.ValueR\x05value:\x028\x01\"\xaa\b\n" +
+	"\x04Node\x12;\n" +
+	"\x02id\x18\x01 \x01(\tB+\xe2A\x01\x02\xbaH$\xc8\x01\x01r\x1f\x10\x01\x18\x80\x012\x18^[A-Za-z_][A-Za-z0-9_]*$R\x02id\x12(\n" +
 	"\x04task\x18\x02 \x01(\v2\x12.flowstate.v1.TaskH\x00R\x04task\x122\n" +
 	"\bfor_each\x18\x05 \x01(\v2\x15.flowstate.v1.ForEachH\x00R\aforEach\x124\n" +
 	"\bparallel\x18\x06 \x01(\v2\x16.flowstate.v1.ParallelH\x00R\bparallel\x12(\n" +

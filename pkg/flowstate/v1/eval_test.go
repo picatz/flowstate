@@ -976,6 +976,22 @@ func TestRunWorkflowInputsRefused(t *testing.T) {
 	}
 }
 
+// TestRunWorkflowStepIDsRefused is the local driver's half of the step-id scope
+// rules at the submit boundary (#1430): a hand-built specification with a step
+// named for a root, a duplicate id, or an id `steps.<id>` cannot parse is refused
+// before any step runs. The engine package runs the identical cases through
+// [v1.BindRunInputs], which the server's submission reaches.
+func TestRunWorkflowStepIDsRefused(t *testing.T) {
+	for _, test := range conformance.StepIDRefusalCases() {
+		t.Run(test.Name, func(t *testing.T) {
+			out, err := v1.RunWithInputs(t.Context(), test.Workflow, test.Inputs)
+			require.Error(t, err, "the submission was accepted")
+			require.Contains(t, err.Error(), test.Contains)
+			require.Empty(t, out.GetStepValues(), "a step ran before the refusal")
+		})
+	}
+}
+
 // TestRunWorkflowValueDepthRefused is the local driver's half of the depth
 // bound on a literal the specification carries (#1765): a `vars:` or step
 // `value:` literal nested past [v1.MaxStructureDepth] is refused at submit,

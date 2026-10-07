@@ -3,7 +3,6 @@ package flowfile
 import (
 	"errors"
 	"fmt"
-	"slices"
 
 	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/common/types"
@@ -26,49 +25,6 @@ import (
 // list in the schema is one list, and a reader comparing the two should not have to
 // find seven places.
 
-// declarationRoots are the rooted namespaces a name may not shadow.
-//
-// A step id, a loop's binding and a step's own `vars:` key are all names that win
-// over a root when an expression resolves — the first because a specification
-// compiled before a root existed may hold a step of that name, the other two
-// because a bare binding wins over everything. So a file that takes one of these
-// names does not collide with the root: it *hides* it, silently, for every
-// expression after the point it is bound.
-//
-// Written as the category rather than as the one root that needed it first. `steps`
-// was refused as a step id when rooting landed and the rule stopped there, which is
-// how `vars` — a root since — could be taken by a loop's `as:` and hide the
-// workflow's whole var namespace inside the body with nothing said.
-var declarationRoots = []string{v1.StepsRoot, v1.VarsRoot, v1.InputsRoot, v1.RunRoot, v1.TriggerRoot}
-
-// isDeclarationRoot reports whether a name is one of the rooted namespaces.
-func isDeclarationRoot(name string) bool { return slices.Contains(declarationRoots, name) }
-
-// shadowsRoot renders the refusal for a name that would hide a root.
-func shadowsRoot(what, name string) string {
-	return fmt.Sprintf(
-		"%q is the root %s are named under, so a %s of that name would hide all of them; choose another %s name",
-		name, rootHolds(name), what, what)
-}
-
-// rootHolds says what a root answers with, for the sentence above.
-func rootHolds(root string) string {
-	switch root {
-	case v1.StepsRoot:
-		return "every step's outputs"
-	case v1.VarsRoot:
-		return "the workflow's vars"
-	case v1.InputsRoot:
-		return "the run's inputs"
-	case v1.RunRoot:
-		return "the run's own address and starter identity"
-	case v1.TriggerRoot:
-		return "how the run started"
-	default:
-		return "those values"
-	}
-}
-
 // validateDeclaredInputs reports what is wrong with the `inputs:` block as a whole.
 func validateDeclaredInputs(wf *v1.Workflow, profile string) Diagnostics {
 	var ds Diagnostics
@@ -86,7 +42,7 @@ func validateDeclaredInputs(wf *v1.Workflow, profile string) Diagnostics {
 				Field:   fmt.Sprintf("%s[%d]", v1.InputsRoot, i),
 				Message: "input has no name; an input is declared by the name a run supplies it under",
 			})
-		case slices.Contains(celUnusableStepIDs, name):
+		case v1.IsCELUnusableStepID(name):
 			// The four CEL lexer tokens. Rooting makes the other seventeen reserved
 			// words legal here — `inputs.namespace` is a field selection — but these
 			// four are literals and an operator, so `inputs.in` is a syntax error in
@@ -98,7 +54,7 @@ func validateDeclaredInputs(wf *v1.Workflow, profile string) Diagnostics {
 					"name %q is punctuation in CEL rather than a name, so ${%s.%s} cannot be parsed at all; choose another name",
 					name, v1.InputsRoot, name),
 			})
-		case !isCELIdentifier(name):
+		case !v1.IsCELIdentifier(name):
 			ds = append(ds, Diagnostic{
 				Field: field, Value: name,
 				Message: fmt.Sprintf(
@@ -284,7 +240,7 @@ func validateDeclaredOutputs(wf *v1.Workflow, profile string, scope refScope, in
 				Field:   fmt.Sprintf("outputs[%d]", i),
 				Message: "output has no name; an output is the name a caller reads the value back under",
 			})
-		case slices.Contains(celUnusableStepIDs, name):
+		case v1.IsCELUnusableStepID(name):
 			// Refused for the reason an input's name is, though nothing selects an
 			// output through CEL today: the two halves of one contract should not
 			// disagree about what a name is, and a later `${outputs.<name>}` must not
@@ -295,7 +251,7 @@ func validateDeclaredOutputs(wf *v1.Workflow, profile string, scope refScope, in
 					"name %q is punctuation in CEL rather than a name; an output is named the way an input is, so choose another name",
 					name),
 			})
-		case !isCELIdentifier(name):
+		case !v1.IsCELIdentifier(name):
 			ds = append(ds, Diagnostic{
 				Field: field, Value: name,
 				Message: fmt.Sprintf(

@@ -393,7 +393,7 @@ func holdsNestedConditional(e *expr.Expr, inside bool, budget *int) bool {
 //
 // The test is positive rather than a list of names to subtract: every free
 // identifier has to be one of the roots a workflow-level expression can read
-// ([declarationRoots]). A list of locals to exclude is a list that is wrong the
+// ([v1.DeclarationRoots]). A list of locals to exclude is a list that is wrong the
 // day a task binds a new name; a list of roots is the language's own, and
 // anything not on it is by construction bound by something between the
 // expression and the file.
@@ -667,7 +667,7 @@ func hoistable(e *expr.Expr) bool {
 	var failure error
 
 	walkFreeIdents(e, nil, func(_ int64, name string) error {
-		if !isDeclarationRoot(name) {
+		if !v1.IsDeclarationRoot(name) {
 			free = false
 		}
 		return nil

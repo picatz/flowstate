@@ -118,7 +118,7 @@ func parallelWithTasks(name string, count int, firstRuns bool) *v1.Workflow {
 		for taskIndex := range branchSize {
 			guarded := !firstRuns || branchIndex != 0 || taskIndex != 0
 			steps = append(steps, atomicTask(
-				"branch-"+strconv.Itoa(branchIndex)+"-task-"+strconv.Itoa(taskIndex),
+				"branch_"+strconv.Itoa(branchIndex)+"_task_"+strconv.Itoa(taskIndex),
 				guarded,
 			))
 		}
@@ -148,13 +148,13 @@ func siblingParallelForEachBlocks() *v1.Workflow {
 	parallel := func(id string) *v1.Node {
 		body := make([]*v1.Node, 0, 3)
 		for i := range 3 {
-			body = append(body, atomicTask(id+"-body-"+strconv.Itoa(i), true))
+			body = append(body, atomicTask(id+"_body_"+strconv.Itoa(i), true))
 		}
 		return &v1.Node{
 			Id: id,
 			Kind: &v1.Node_Parallel{Parallel: &v1.Parallel{
 				Branches: []*v1.Parallel_Branch{{Steps: []*v1.Node{{
-					Id: id + "-fan",
+					Id: id + "_fan",
 					Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{
 						Items: v1.NewExpr("[]"),
 						Body:  body,
@@ -220,7 +220,7 @@ func fansOutAtomically(name string, n int) *v1.Workflow {
 	body := make([]*v1.Node, 0, atomicBodySteps)
 	for i := range atomicBodySteps {
 		body = append(body, &v1.Node{
-			Id:        "body-" + strconv.Itoa(i),
+			Id:        "body_" + strconv.Itoa(i),
 			Condition: v1.NewExpr("false"),
 			Kind: &v1.Node_Task{Task: &v1.Task{
 				Name: "http",
