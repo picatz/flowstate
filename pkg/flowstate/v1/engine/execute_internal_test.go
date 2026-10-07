@@ -111,7 +111,7 @@ func TestWorkflowYieldHandsTheSchedulerControl(t *testing.T) {
 
 // TestRunUndoTaskDoesNotNameUndoBudgetExpiryForAnOrdinaryFailure is the
 // negative direction: a compensation that fails for its own classified
-// reason, under the identical narrowed timeout budget, must not have its
+// reason, under a narrowed timeout budget, must not have its
 // failure overwritten with a guess about the budget. Only Temporal's own
 // timeout, arriving with no classification of its own, is ambiguous enough to
 // need the budget named for it.
