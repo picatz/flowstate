@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -195,4 +196,21 @@ func TestStoreKeepsTheServerOrigin(t *testing.T) {
 	got, err := store.Load("https://idp.example", "flow-cli")
 	require.NoError(t, err)
 	require.Equal(t, "https://flowstate.example.com", got.ServerOrigin)
+}
+
+func TestSaveRefusesAnEntryLoadWouldRefuse(t *testing.T) {
+	store := newStore(t)
+	e := sampleEntry("https://idp.example", "flow-cli")
+	e.Tokens.AccessToken = strings.Repeat("a", 300<<10)
+
+	err := store.Save(e)
+	require.ErrorContains(t, err, "too large to store")
+	files, _ := os.ReadDir(store.Dir())
+	require.Empty(t, files, "nothing may be written, not even a temporary file")
+
+	// An entry just under the limit round-trips.
+	e.Tokens.AccessToken = strings.Repeat("a", 200<<10)
+	require.NoError(t, store.Save(e))
+	_, err = store.Load(e.Issuer, e.ClientID)
+	require.NoError(t, err)
 }

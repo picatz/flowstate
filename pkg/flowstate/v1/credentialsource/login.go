@@ -111,6 +111,19 @@ func (s *loginSource) Token(ctx context.Context) (Token, error) {
 // refresh renews entry and persists the result. Where another process got to
 // the refresh token first, its stored result is used instead of failing.
 func (s *loginSource) refresh(ctx context.Context, entry deviceflow.Entry) (deviceflow.Entry, error) {
+	// Re-read just before spending the refresh token: another process may have
+	// refreshed (and rotated it) since this entry was read, or replaced the
+	// login outright. Whatever is stored is held to the same server binding.
+	if current, err := s.store.Load(entry.Issuer, entry.ClientID); err == nil {
+		if err := checkLoginServer(ctx, current); err != nil {
+			return entry, err
+		}
+		if !current.Tokens.ExpiresWithin(LoginRefreshMargin, s.now()) {
+			return current, nil
+		}
+		entry = current
+	}
+
 	renewed, err := s.client.Renew(ctx, entry)
 	if err == nil {
 		if err := s.store.Save(renewed); err != nil {
@@ -120,9 +133,14 @@ func (s *loginSource) refresh(ctx context.Context, entry deviceflow.Entry) (devi
 		return renewed, nil
 	}
 
+	// A refresh that lost a race against another process leaves that process's
+	// result in the store; use it only if it is for this request's server.
 	if current, loadErr := s.store.Load(entry.Issuer, entry.ClientID); loadErr == nil &&
 		current.Tokens.AccessToken != entry.Tokens.AccessToken &&
 		!current.Tokens.ExpiresWithin(LoginRefreshMargin, s.now()) {
+		if err := checkLoginServer(ctx, current); err != nil {
+			return entry, err
+		}
 		return current, nil
 	}
 

@@ -1174,7 +1174,7 @@ Forget a stored login and revoke its tokens
 flow logout [flags]
 ```
 
-Delete the login stored by `flow login` and, when the identity provider advertises a revocation_endpoint (RFC 7009), ask it to revoke the refresh token. Revocation is best effort: if it fails the stored tokens are still deleted and a warning is printed.
+Delete the login stored by `flow login` and, when the identity provider advertises a revocation_endpoint (RFC 7009), ask it to revoke the stored refresh token (the access token when there is no refresh token). Revocation is best effort: an access token already issued may stay valid until it expires, and if revocation fails the stored login is still deleted and a warning is printed.
 
 With no flags, the only stored login is removed; when several are stored, choose one with `--issuer` and `--client-id`. Logging out when nothing is stored is not an error.
 

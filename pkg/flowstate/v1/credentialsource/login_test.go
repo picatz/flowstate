@@ -23,6 +23,10 @@ type refreshIdP struct {
 	*httptest.Server
 	refreshes atomic.Int64
 	reject    atomic.Bool
+
+	// onRefresh runs inside the token endpoint, before it answers: a way to
+	// make another process act mid-refresh.
+	onRefresh func()
 }
 
 func newRefreshIdP(t *testing.T) *refreshIdP {
@@ -34,6 +38,9 @@ func newRefreshIdP(t *testing.T) *refreshIdP {
 	mux.HandleFunc("/token", func(w http.ResponseWriter, r *http.Request) {
 		_ = r.ParseForm()
 		p.refreshes.Add(1)
+		if p.onRefresh != nil {
+			p.onRefresh()
+		}
 		w.Header().Set("Content-Type", "application/json")
 		if p.reject.Load() || r.PostForm.Get("refresh_token") != "refresh-1" {
 			w.WriteHeader(http.StatusBadRequest)
@@ -177,4 +184,48 @@ func TestLoginSourceRefusesAnEntryWithNoRecordedServer(t *testing.T) {
 	}))
 	_, err := credentialsource.NewLoginSource(store, "", "").Token(forServer(t, serverOrigin))
 	require.ErrorIs(t, err, credentialsource.ErrWrongServer)
+}
+
+// TestLoginSourceFallbackRechecksTheServerBinding: another `flow login`, for
+// server B, replaces the entry while a request for A is refreshing and fails.
+// B's fresher token must not be returned to the request for A.
+func TestLoginSourceFallbackRechecksTheServerBinding(t *testing.T) {
+	p := newRefreshIdP(t)
+	p.reject.Store(true)
+	store := storeWith(t, p, time.Now().Add(-time.Minute), "refresh-1")
+	p.onRefresh = func() {
+		require.NoError(t, store.Save(deviceflow.Entry{
+			Issuer: p.URL, ClientID: "flow-cli", ServerOrigin: "https://server-b.example.com",
+			Endpoints: deviceflow.Endpoints{Issuer: p.URL, Token: p.URL + "/token"},
+			Tokens:    deviceflow.Tokens{AccessToken: "access-for-B", RefreshToken: "refresh-B", ExpiresAt: time.Now().Add(time.Hour)},
+		}))
+	}
+	source := credentialsource.NewLoginSource(store, p.URL, "flow-cli")
+
+	token, err := source.Token(forServer(t, serverOrigin))
+	require.ErrorIs(t, err, credentialsource.ErrWrongServer)
+	require.True(t, token.IsZero())
+	require.NotContains(t, fmt.Sprint(err), "access-for-B")
+}
+
+// TestLoginSourceUsesAFresherStoredTokenInsteadOfRefreshing covers the
+// re-read before the refresh token is spent.
+func TestLoginSourceUsesAFresherStoredTokenInsteadOfRefreshing(t *testing.T) {
+	p := newRefreshIdP(t)
+	store := storeWith(t, p, time.Now().Add(-time.Minute), "refresh-1")
+	source := credentialsource.NewLoginSource(store, p.URL, "flow-cli")
+
+	// The source reads the expired entry; before it can refresh, another
+	// process stores a fresh one. Simulated by refreshing through a second
+	// source first.
+	other := credentialsource.NewLoginSource(store, p.URL, "flow-cli")
+	_, err := other.Token(forServer(t, serverOrigin))
+	require.NoError(t, err)
+	require.EqualValues(t, 1, p.refreshes.Load())
+
+	token, err := source.Token(forServer(t, serverOrigin))
+	require.NoError(t, err)
+	bearer, _ := token.Bearer()
+	require.Equal(t, "access-refreshed", bearer)
+	require.EqualValues(t, 1, p.refreshes.Load(), "the rotated refresh token must not be spent twice")
 }

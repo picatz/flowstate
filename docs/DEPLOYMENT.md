@@ -930,9 +930,15 @@ Where the login lives and when it is used:
   is an error that says to run `flow login` again; it is never sent expired and
   never silently anonymous. With several stored logins, pick one with
   `FLOWSTATE_ISSUER` and `FLOWSTATE_CLIENT_ID`.
-- `flow logout` revokes the refresh token at the `revocation_endpoint` when the
-  IdP advertises one ([RFC 7009](https://www.rfc-editor.org/rfc/rfc7009); best
-  effort, a failure is a warning) and deletes the file.
+- `flow logout` asks the IdP to revoke the stored refresh token at the
+  `revocation_endpoint` when it advertises one
+  ([RFC 7009](https://www.rfc-editor.org/rfc/rfc7009); best effort, a failure is
+  a warning) and deletes the file. An access token already issued may stay valid
+  until it expires, because revoking a refresh token does not promise to revoke
+  it.
+- A logged-in user who needs to reach a different server unauthenticated or
+  with another credential runs `flow logout`, or supplies one explicitly with
+  `--token-file` or `FLOWSTATE_TOKEN`, which outrank the stored login.
 
 What the server verifies is the **access token**, so the IdP must issue a JWT
 access token whose `iss` and `aud` match an issuer entry in the trust policy
@@ -944,8 +950,8 @@ exact console wording):
 | IdP | Issuer | Notes |
 | --- | --- | --- |
 | Keycloak | `https://host/realms/NAME` | Enable "OAuth 2.0 Device Authorization Grant" on a public client. Add an audience mapper so the access token's `aud` is the RPC resource. `offline_access` yields a refresh token. |
-| Okta | `https://ORG.okta.com/oauth2/default` (a custom authorization server) | Enable the Device Authorization grant on a Native app. Use a custom authorization server whose audience is the RPC resource; the org authorization server's access tokens are not for your own APIs. Grant `offline_access` for refresh. |
-| Auth0 | `https://TENANT.auth0.com/` (note the trailing slash; the discovery document must repeat it exactly) | Enable the Device Code grant on a Native application. Pass `--audience` with the API identifier, or the access token is opaque. Enable "Allow Offline Access" on the API for refresh. |
+| Okta | `https://ORG.okta.com/oauth2/default` (a custom authorization server) | On the Native app enable both the Device Authorization and Refresh Token grant types. Use a custom authorization server whose audience is the RPC resource (the org authorization server's access tokens are not for your own APIs), and allow the Device Authorization grant in that server's access-policy rule. Requesting `offline_access` alone does not yield renewable tokens. |
+| Auth0 | `https://TENANT.auth0.com/` (note the trailing slash; the discovery document must repeat it exactly) | Enable the Device Code and Refresh Token grants on a Native application. Pass `--audience` with the API identifier, or the access token is opaque. Enable "Allow Offline Access" on the API for refresh. |
 | Microsoft Entra ID | `https://login.microsoftonline.com/TENANT/v2.0` | Enable "Allow public client flows". Request a scope on your own API, such as `api://APP-ID/.default openid offline_access`, and set the API's `accessTokenAcceptedVersion` to 2 so `iss` matches the v2.0 issuer. No `revocation_endpoint` is advertised, so `flow logout` only forgets the tokens locally. |
 
 An IdP whose device flow returns opaque access tokens (Google's, for one)

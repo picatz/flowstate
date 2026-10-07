@@ -450,3 +450,86 @@ func TestTokensNeverRenderTheirValues(t *testing.T) {
 		require.NotContains(t, rendered, "SECRET")
 	}
 }
+
+func TestAuthorizationNeverRendersTheDeviceCode(t *testing.T) {
+	p := newIdP(t)
+	ep, err := deviceflow.New().Discover(t.Context(), p.URL)
+	require.NoError(t, err)
+	auth, err := deviceflow.New().Authorize(t.Context(), ep, p.config())
+	require.NoError(t, err)
+	require.Equal(t, secretDeviceCode, auth.DeviceCode)
+
+	asJSON, err := json.Marshal(auth)
+	require.NoError(t, err)
+	var logged, loggedJSON strings.Builder
+	slog.New(slog.NewTextHandler(&logged, nil)).Info("auth", "authorization", auth)
+	slog.New(slog.NewJSONHandler(&loggedJSON, nil)).Info("auth", "authorization", auth)
+	type wrapper struct{ Auth deviceflow.Authorization }
+	wrapped, err := json.Marshal(wrapper{auth})
+	require.NoError(t, err)
+
+	for _, rendered := range []string{
+		string(asJSON), string(wrapped), logged.String(), loggedJSON.String(),
+		fmt.Sprint(auth), fmt.Sprintf("%+v", auth), fmt.Sprintf("%#v", auth), fmt.Sprintf("%#v", wrapper{auth}),
+	} {
+		require.NotContains(t, rendered, secretDeviceCode)
+		require.NotContains(t, rendered, "SECRET")
+	}
+	require.Contains(t, string(asJSON), "WDJB-MJHT")
+}
+
+func TestSubmittedCredentialsAreRedactedFromOAuthErrors(t *testing.T) {
+	// The secret sits across the 200-byte cut, so truncating first would leave
+	// a recognizable prefix of it.
+	describe := func(secret string) answer {
+		return answer{400, map[string]any{"error": "server_error", "error_description": strings.Repeat("x", 190) + secret + " trailing"}}
+	}
+
+	t.Run("poll", func(t *testing.T) {
+		p := newIdP(t, describe(secretDeviceCode))
+		_, err := newClock().client().Login(t.Context(), p.config(), func(deviceflow.Authorization) {})
+		require.Error(t, err)
+		require.NotContains(t, err.Error(), "SECRET")
+		require.NotContains(t, err.Error(), "device-code")
+		require.Contains(t, err.Error(), "[redacted]")
+	})
+
+	t.Run("refresh", func(t *testing.T) {
+		p := newIdP(t, describe(secretRefresh))
+		ep, err := deviceflow.New().Discover(t.Context(), p.URL)
+		require.NoError(t, err)
+		_, err = deviceflow.New().Refresh(t.Context(), ep, "flow-cli", deviceflow.Tokens{AccessToken: "a", RefreshToken: secretRefresh})
+		require.Error(t, err)
+		require.NotContains(t, err.Error(), "SECRET")
+		require.NotContains(t, err.Error(), "refresh-token")
+		require.Contains(t, err.Error(), "[redacted]")
+	})
+}
+
+func TestSleepNeverOutlastsTheDeviceCode(t *testing.T) {
+	p := newIdP(t, pending())
+	p.deviceBody["interval"] = 300
+	p.deviceBody["expires_in"] = 1
+	clk := newClock()
+
+	_, err := clk.client().Login(t.Context(), p.config(), func(deviceflow.Authorization) {})
+	require.ErrorIs(t, err, deviceflow.ErrExpiredToken)
+	require.Equal(t, []time.Duration{time.Second}, clk.Sleeps(), "the sleep is clamped to the 1s that remained")
+	require.Zero(t, p.tokenRequests(), "no request is made once the code has expired")
+}
+
+func TestHTTPSIssuerMayNotNameAnHTTPEndpoint(t *testing.T) {
+	var issuer string
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"issuer":                        issuer,
+			"device_authorization_endpoint": issuer + "/device",
+			"token_endpoint":                "http://127.0.0.1:1/token",
+		})
+	}))
+	t.Cleanup(srv.Close)
+	issuer = srv.URL
+
+	_, err := deviceflow.New(deviceflow.WithHTTPClient(srv.Client())).Discover(t.Context(), issuer)
+	require.ErrorIs(t, err, deviceflow.ErrInsecureURL)
+}

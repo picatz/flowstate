@@ -146,8 +146,10 @@ func newLogoutCommand() *cobra.Command {
 		Use:   "logout",
 		Short: "Forget a stored login and revoke its tokens",
 		Long: "Delete the login stored by `flow login` and, when the identity provider advertises a " +
-			"revocation_endpoint (RFC 7009), ask it to revoke the refresh token. Revocation is best " +
-			"effort: if it fails the stored tokens are still deleted and a warning is printed.\n\n" +
+			"revocation_endpoint (RFC 7009), ask it to revoke the stored refresh token (the access token " +
+			"when there is no refresh token). Revocation is best effort: an access token already issued " +
+			"may stay valid until it expires, and if revocation fails the stored login is still deleted " +
+			"and a warning is printed.\n\n" +
 			"With no flags, the only stored login is removed; when several are stored, choose one with " +
 			"`--issuer` and `--client-id`. Logging out when nothing is stored is not an error.",
 		Args: cobra.NoArgs,
@@ -177,29 +179,31 @@ func runLogout(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("reading the stored login: %w", err)
 	}
 
-	revoked := revokeLogin(cmd.Context(), entry)
+	revokedWhat, revoked := revokeLogin(cmd.Context(), entry)
 	if err := store.Delete(entry.Issuer, entry.ClientID); err != nil && !errors.Is(err, deviceflow.ErrNotLoggedIn) {
 		return fmt.Errorf("deleting the stored login: %w", err)
 	}
 
 	switch {
 	case revoked == nil:
-		_, err = fmt.Fprintf(cmd.OutOrStdout(), "Logged out of %s and revoked its tokens.\n", entry.Issuer)
+		_, err = fmt.Fprintf(cmd.OutOrStdout(), "Removed the stored login for %s and revoked its %s at the identity provider. "+
+			"An access token already issued may stay valid until it expires.\n", entry.Issuer, revokedWhat)
 	case errors.Is(revoked, deviceflow.ErrRevocationUnsupported):
-		_, err = fmt.Fprintf(cmd.OutOrStdout(), "Logged out of %s. The identity provider advertises no revocation endpoint, so the tokens stay valid until they expire.\n", entry.Issuer)
+		_, err = fmt.Fprintf(cmd.OutOrStdout(), "Removed the stored login for %s. The identity provider advertises no revocation endpoint, so nothing was revoked and its tokens stay valid until they expire.\n", entry.Issuer)
 	default:
-		_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "warning: could not revoke the tokens at the identity provider: %v\n", revoked)
-		_, err = fmt.Fprintf(cmd.OutOrStdout(), "Logged out of %s.\n", entry.Issuer)
+		_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "warning: could not revoke the %s at the identity provider: %v\n", revokedWhat, revoked)
+		_, err = fmt.Fprintf(cmd.OutOrStdout(), "Removed the stored login for %s. Nothing was revoked.\n", entry.Issuer)
 	}
 	return err
 }
 
 // revokeLogin asks the IdP to revoke the stored tokens: the refresh token,
 // which ends the session, else the access token.
-func revokeLogin(ctx context.Context, entry deviceflow.Entry) error {
-	token, hint := entry.Tokens.RefreshToken, "refresh_token"
+// It returns a name for the one token it asked about, and the error.
+func revokeLogin(ctx context.Context, entry deviceflow.Entry) (string, error) {
+	token, hint, what := entry.Tokens.RefreshToken, "refresh_token", "refresh token"
 	if token == "" {
-		token, hint = entry.Tokens.AccessToken, "access_token"
+		token, hint, what = entry.Tokens.AccessToken, "access_token", "access token"
 	}
-	return newDeviceflowClient().Revoke(ctx, entry.Endpoints, entry.ClientID, token, hint)
+	return what, newDeviceflowClient().Revoke(ctx, entry.Endpoints, entry.ClientID, token, hint)
 }

@@ -188,7 +188,8 @@ func TestLoginStoresATokenWhoamiThenUsesAndLogoutRemovesIt(t *testing.T) {
 
 	out := runFlow(t, "logout")
 	require.NoError(t, out.Err, out.Stderr)
-	require.Contains(t, out.Stdout, "revoked")
+	require.Contains(t, out.Stdout, "revoked its refresh token")
+	require.NotContains(t, out.Stdout, "revoked its tokens", "only the refresh token was asked about")
 	require.Equal(t, []string{loginRefreshToken}, p.revoked)
 	requireNoSecrets(t, out)
 
@@ -316,7 +317,8 @@ func TestLogoutWithFailedRevocationStillForgets(t *testing.T) {
 	res := runFlow(t, "logout")
 	require.NoError(t, res.Err)
 	require.Contains(t, res.Stderr, "warning: could not revoke")
-	require.Contains(t, res.Stdout, "Logged out")
+	require.Contains(t, res.Stdout, "Removed the stored login")
+	require.Contains(t, res.Stdout, "Nothing was revoked")
 	requireNoSecrets(t, res)
 
 	_, err := store.Load(p.URL, "flow-cli")

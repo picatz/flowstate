@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -169,6 +170,27 @@ type Authorization struct {
 // Format keeps the device code out of any verb that reaches the struct.
 func (a Authorization) Format(f fmt.State, _ rune) {
 	_, _ = fmt.Fprintf(f, "device authorization for user code %s", a.UserCode)
+}
+
+// LogValue implements [slog.LogValuer] without the device code.
+func (a Authorization) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("user_code", a.UserCode),
+		slog.String("verification_uri", a.VerificationURI),
+		slog.Duration("expires_in", a.ExpiresIn),
+	)
+}
+
+// MarshalJSON omits the device code, as [Tokens.MarshalJSON] omits its
+// secrets.
+func (a Authorization) MarshalJSON() ([]byte, error) {
+	return json.Marshal(struct {
+		UserCode                string `json:"user_code"`
+		VerificationURI         string `json:"verification_uri"`
+		VerificationURIComplete string `json:"verification_uri_complete,omitempty"`
+		ExpiresIn               int64  `json:"expires_in"`
+		Interval                int64  `json:"interval"`
+	}{a.UserCode, a.VerificationURI, a.VerificationURIComplete, int64(a.ExpiresIn / time.Second), int64(a.Interval / time.Second)})
 }
 
 // Client runs the flow. The zero value is not usable; build one with [New].
@@ -369,6 +391,8 @@ func (c *Client) Discover(ctx context.Context, issuer string) (Endpoints, error)
 		return Endpoints{}, fmt.Errorf("%w: no device_authorization_endpoint; this identity provider "+
 			"does not support the device authorization grant for this issuer", ErrInvalidDiscovery)
 	}
+	issuerURL, _ := url.Parse(issuer)
+	issuerLoopback := issuerURL != nil && issuerURL.Scheme == "http" && isLoopbackHost(issuerURL.Hostname())
 	for name, endpoint := range map[string]string{
 		"token_endpoint":                doc.TokenEndpoint,
 		"device_authorization_endpoint": doc.DeviceAuthorizationEndpoint,
@@ -379,6 +403,12 @@ func (c *Client) Discover(ctx context.Context, issuer string) (Endpoints, error)
 		}
 		if err := RequireSecureURL(endpoint); err != nil {
 			return Endpoints{}, fmt.Errorf("%w: %s: %w", ErrInvalidDiscovery, name, err)
+		}
+		// Plain http is for a loopback rehearsal, where the issuer is loopback
+		// too; an https issuer pointing at http (even loopback) is a downgrade.
+		if strings.HasPrefix(endpoint, "http://") && !issuerLoopback {
+			return Endpoints{}, fmt.Errorf("%w: %s: %w: an https issuer may not name an http endpoint",
+				ErrInvalidDiscovery, name, ErrInsecureURL)
 		}
 	}
 	return Endpoints{
@@ -482,18 +512,34 @@ type tokenResponse struct {
 	ErrorDescription string      `json:"error_description"`
 }
 
+// redact removes every submitted credential from text an IdP sent back. It
+// runs on the whole string, before truncation, so a secret that straddles the
+// cut is not left as a recognizable prefix.
+func redact(s string, secrets []string) string {
+	for _, secret := range secrets {
+		if secret != "" {
+			s = strings.ReplaceAll(s, secret, "[redacted]")
+		}
+	}
+	return s
+}
+
 // parseTokens interprets a token endpoint answer: tokens, an *[OAuthError], or
 // an error for anything else. previousRefresh is kept when a refresh answer
 // carries no new refresh token ([RFC 6749 §6]).
 //
 // [RFC 6749 §6]: https://www.rfc-editor.org/rfc/rfc6749#section-6
-func (c *Client) parseTokens(status int, body []byte, previousRefresh string) (Tokens, error) {
+func (c *Client) parseTokens(status int, body []byte, previousRefresh string, submitted ...string) (Tokens, error) {
 	var resp tokenResponse
 	if err := json.Unmarshal(bytes.TrimSpace(body), &resp); err != nil {
 		return Tokens{}, fmt.Errorf("unexpected response from the identity provider (HTTP %d)", status)
 	}
 	if resp.Error != "" {
-		return Tokens{}, &OAuthError{Code: clean(resp.Error, 64), Description: clean(resp.ErrorDescription, 200), Status: status}
+		return Tokens{}, &OAuthError{
+			Code:        clean(redact(resp.Error, submitted), 64),
+			Description: clean(redact(resp.ErrorDescription, submitted), 200),
+			Status:      status,
+		}
 	}
 	if status != http.StatusOK || resp.AccessToken == "" {
 		return Tokens{}, fmt.Errorf("incomplete token response from the identity provider (HTTP %d)", status)
@@ -531,7 +577,13 @@ func (c *Client) Poll(ctx context.Context, ep Endpoints, cfg Config, auth Author
 		"client_id":   {cfg.ClientID},
 	}
 	for {
-		if err := c.sleep(ctx, interval); err != nil {
+		// Never sleep past the code's lifetime: an interval longer than what
+		// is left would hold the user at a code that has already expired.
+		remaining := deadline.Sub(c.now())
+		if remaining <= 0 {
+			return Tokens{}, ErrExpiredToken
+		}
+		if err := c.sleep(ctx, min(interval, remaining)); err != nil {
 			return Tokens{}, err
 		}
 		if !c.now().Before(deadline) {
@@ -542,7 +594,7 @@ func (c *Client) Poll(ctx context.Context, ep Endpoints, cfg Config, auth Author
 		if err != nil {
 			return Tokens{}, fmt.Errorf("polling for the sign-in: %w", err)
 		}
-		tokens, err := c.parseTokens(status, body, "")
+		tokens, err := c.parseTokens(status, body, "", auth.DeviceCode)
 		if err == nil {
 			return tokens, nil
 		}
@@ -582,7 +634,7 @@ func (c *Client) Refresh(ctx context.Context, ep Endpoints, clientID string, pre
 	if err != nil {
 		return Tokens{}, fmt.Errorf("refreshing the sign-in: %w", err)
 	}
-	tokens, err := c.parseTokens(status, body, prev.RefreshToken)
+	tokens, err := c.parseTokens(status, body, prev.RefreshToken, prev.RefreshToken)
 	if err != nil {
 		return Tokens{}, fmt.Errorf("refreshing the sign-in: %w", err)
 	}

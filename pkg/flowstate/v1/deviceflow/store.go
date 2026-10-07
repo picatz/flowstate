@@ -179,6 +179,13 @@ func (s *Store) Save(e Entry) error {
 		return err
 	}
 
+	// The reader's bound, enforced where the entry is made: an entry [Store.Load]
+	// would refuse is a login that reports success and then never works.
+	if len(data) > maxEntryBytes {
+		return fmt.Errorf("deviceflow: the login is %d bytes, over the %d-byte limit for a stored entry; "+
+			"the identity provider's tokens are too large to store", len(data), maxEntryBytes)
+	}
+
 	tmp, err := os.CreateTemp(s.dir, ".login-*.tmp")
 	if err != nil {
 		return fmt.Errorf("writing login: %w", err)
