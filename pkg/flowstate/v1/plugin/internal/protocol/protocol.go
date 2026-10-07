@@ -447,12 +447,26 @@ const Version6 = 6
 // [Version1] is.
 const Version7 = 7
 
-// Version8 is the current version of the plugin protocol: the same services and
+// Version8 was the eighth version of the plugin protocol: the same services and
 // routes as [Version7], and the same launch environment, with
 // flowstate/decision/v1/decision.proto among the files the engine provides and
 // a plugin's descriptors therefore omit. Any later domain package the engine
 // provides is another descriptor-exchange change and moves the number again.
+//
+// What ended version 8 is exactly that: flowstate.chat.v1, the vendor-neutral
+// chat model, joined the domain packages the engine provides. A plugin built
+// after it imports flowstate/chat/v1/chat.proto and ships no copy, and a version
+// 8 host has no such path to link its task descriptors against, so the handshake
+// would succeed and the first manifest would fail to reconstruct. Retired rather
+// than deleted, for the reason [Version1] is.
 const Version8 = 8
+
+// Version9 is the current version of the plugin protocol: the same services and
+// routes as [Version8], and the same launch environment, with
+// flowstate/chat/v1/chat.proto among the files the engine provides and a
+// plugin's descriptors therefore omit. Any later domain package the engine
+// provides is another descriptor-exchange change and moves the number again.
+const Version9 = 9
 
 // MaxHandshakeLine bounds the handshake line, because it is the first thing an
 // untrusted process gets to say and the host reads it before it knows anything
@@ -560,7 +574,7 @@ const NetworkUnix = "unix"
 // 4, at parsing the grant for version 5, at descriptor linking again for
 // version 6 — which is precisely the failure each bump exists to prevent. A
 // version that cannot work must not be offered.
-func HostVersions() []int { return []int{Version8} }
+func HostVersions() []int { return []int{Version9} }
 
 // Handshake is what a plugin announces about itself once it is listening.
 type Handshake struct {

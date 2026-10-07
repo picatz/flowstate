@@ -107,7 +107,7 @@ func greet(_ context.Context, inputs map[string]*flowstatev1.Value, _ *flowstate
 }
 ```
 
-`sdk.Main` is the whole of `func main` (`pkg/flowstate/v1/plugin/sdk/sdk.go:333-346`). The manifest the
+`sdk.Main` is the whole of `func main` (`pkg/flowstate/v1/plugin/sdk/sdk.go:334-347`). The manifest the
 engine sees is derived from that struct rather than written beside it, so a
 plugin built this way cannot advertise a capability it did not implement:
 `Secrets` being set
@@ -141,7 +141,7 @@ the binary's suffix and ignores everything without the prefix
 `flow plugins` will tell you the directory is empty. The suffix is also the
 qualifier a Flowfile writes — `hello.greet:` — and a plugin cannot choose or
 forge it, which is why two plugins may each provide `post` without colliding
-(`pkg/flowstate/v1/plugin/sdk/sdk.go:164-173`).
+(`pkg/flowstate/v1/plugin/sdk/sdk.go:165-174`).
 
 Run the binary from a shell and it explains itself rather than speaking a binary
 protocol at your terminal (`pkg/flowstate/v1/plugin/sdk/sdk.go`):
@@ -167,7 +167,7 @@ task's `Input` and `Output` are zero values of protobuf messages whose
 descriptors travel to the engine in the manifest, which is what lets the engine
 validate a workflow using your task, complete its fields in an editor, and
 document it — without compiling a line of your code
-(`pkg/flowstate/v1/plugin/sdk/sdk.go:179-187`, `pkg/flowstate/v1/plugin/descriptor.go:25-29`).
+(`pkg/flowstate/v1/plugin/sdk/sdk.go:180-188`, `pkg/flowstate/v1/plugin/descriptor.go:25-29`).
 
 So: a schema of your own. Three files beside the `main.go` you already have.
 
@@ -388,7 +388,8 @@ process, where your own limits apply; `now`, which protovalidate binds and `must
 refuses, is never reachable this way.
 
 Files under `flowstate/<domain>/v1/`, such as `flowstate/decision/v1/decision.proto`,
-are engine-provided in the same way as `flowstate/v1` and `flowstate/plugin/v1`: the
+are engine-provided in the same way as `flowstate/v1` and `flowstate/plugin/v1`
+(`flowstate/chat/v1/chat.proto` is another): the
 host has them compiled in, so a plugin that imports one sends the import as a name and
 never ships its bytes (see [Proto packages: core versus
 domain](ARCHITECTURE.md#proto-packages-core-versus-domain)). That matters for the rules
@@ -501,7 +502,7 @@ a host, to somebody who may not be able to fix them.
 
 ### 1. Declaring no schema is a silent opt-out of the whole contract
 
-`Task.Input` and `Task.Output` may be nil (`pkg/flowstate/v1/plugin/sdk/sdk.go:228-229`), the host
+`Task.Input` and `Task.Output` may be nil (`pkg/flowstate/v1/plugin/sdk/sdk.go:229-230`), the host
 accepts a manifest that names no message for a side
 (`pkg/flowstate/v1/plugin/descriptor.go:34-36`), and `flow plugins` renders it as `inputs none`
 (`cmd/flow/tasks.go:592-596`, rendered from `cmd/flow/plugins.go:298-301`). Every
@@ -558,13 +559,13 @@ Two things follow that are worth knowing before you build on it:
   `pkg/flowstate/v1/plugin/sdk` pulls the module: 368 packages across 126 modules
   in the graph for the chapter-one plugin, and a 24 MB binary. That is a
   consequence of `TaskFunc` speaking in `flowstatev1.Value` and
-  `flowstatev1.Scope` (`pkg/flowstate/v1/plugin/sdk/sdk.go:323`), which is also what makes a plugin task
+  `flowstatev1.Scope` (`pkg/flowstate/v1/plugin/sdk/sdk.go:324`), which is also what makes a plugin task
   identical in shape to a built-in one.
 - **The wire protocol is versioned; the Go API is not.** The protocol is
   negotiated at launch and a mismatch is refused at startup with a message saying
-  which side to upgrade. The current version is 8 (`Version8`,
+  which side to upgrade. The current version is 9 (`Version9`,
   `pkg/flowstate/v1/plugin/internal/protocol/protocol.go`); [Reaching the
-  network](#reaching-the-network) says what versions 6 to 8 changed. Nothing
+  network](#reaching-the-network) says what versions 6 to 9 changed. Nothing
   equivalent covers the Go types you compile against.
 
 The in-tree plugin modules are not the counter-example they look like. Each
@@ -665,7 +666,7 @@ it.** Setting it says this task reads an input named `outputs` as a mapping of
 name to expression and returns *those* names instead of its declared ones. The
 compiler, the validator and the language server all describe the step in those
 terms, so a task that sets it and returns its declared outputs anyway gets all
-three describing a step that produces something else (`pkg/flowstate/v1/plugin/sdk/sdk.go:291-310`).
+three describing a step that produces something else (`pkg/flowstate/v1/plugin/sdk/sdk.go:292-311`).
 False is the right answer for every ordinary task, including one that happens to
 have an input called `outputs`.
 
@@ -682,12 +683,12 @@ The fields not covered above, each a claim the engine acts on:
 
 | Field | What it says | Reference |
 | --- | --- | --- |
-| `NeedsScope` | This task receives prior step outputs and enclosing loop variables. Most tasks do not, and asking for it puts data on the wire for nothing. | `pkg/flowstate/v1/plugin/sdk/sdk.go:260-264` |
-| `DeferredInputs` | This task evaluates these inputs' expressions itself, in a scope the workflow does not have. The engine passes them through untouched. | `pkg/flowstate/v1/plugin/sdk/sdk.go:231-239` |
-| `ExpressionInputs` | These inputs must be *written* as `${...}` rather than as a literal — a different question from who evaluates them. | `pkg/flowstate/v1/plugin/sdk/sdk.go:241-258` |
-| `SecretInputs` | A Flowfile may write `${secret(...)}` or `${credential('target')}` into these inputs. The host resolves the reference before your process sees the request, so `Fn` always receives a value and never a reference: the stored secret, or the bearer token of a credential the worker minted for the step. | `pkg/flowstate/v1/plugin/sdk/sdk.go:266-282` |
-| `ShapesOutputs` | This task returns the output names its `outputs` input maps, in place of its declared ones. | `pkg/flowstate/v1/plugin/sdk/sdk.go:291-310` |
-| `Health` | Whether the plugin can serve. Leave it nil unless you depend on something; report not-serving when that dependency is unreachable rather than failing every request. | `pkg/flowstate/v1/plugin/sdk/sdk.go:141-151` |
+| `NeedsScope` | This task receives prior step outputs and enclosing loop variables. Most tasks do not, and asking for it puts data on the wire for nothing. | `pkg/flowstate/v1/plugin/sdk/sdk.go:261-265` |
+| `DeferredInputs` | This task evaluates these inputs' expressions itself, in a scope the workflow does not have. The engine passes them through untouched. | `pkg/flowstate/v1/plugin/sdk/sdk.go:232-240` |
+| `ExpressionInputs` | These inputs must be *written* as `${...}` rather than as a literal — a different question from who evaluates them. | `pkg/flowstate/v1/plugin/sdk/sdk.go:242-259` |
+| `SecretInputs` | A Flowfile may write `${secret(...)}` or `${credential('target')}` into these inputs. The host resolves the reference before your process sees the request, so `Fn` always receives a value and never a reference: the stored secret, or the bearer token of a credential the worker minted for the step. | `pkg/flowstate/v1/plugin/sdk/sdk.go:267-283` |
+| `ShapesOutputs` | This task returns the output names its `outputs` input maps, in place of its declared ones. | `pkg/flowstate/v1/plugin/sdk/sdk.go:292-311` |
+| `Health` | Whether the plugin can serve. Leave it nil unless you depend on something; report not-serving when that dependency is unreachable rather than failing every request. | `pkg/flowstate/v1/plugin/sdk/sdk.go:142-152` |
 
 `ExpressionInputs` is enforced by `flow validate` when the validator has been
 told about your plugin. Against the chapter-two plugin declaring `greeting` as
@@ -897,6 +898,11 @@ provides, so a plugin built after the move ships no copy of
 `flowstate/decision/v1/decision.proto` and a version 7 host has no such file to
 link against. Mixed builds are refused at the handshake.
 
+Protocol version 9 is the same kind of change again: `flowstate.chat.v1`, the
+vendor-neutral chat model, joined the engine-provided domain packages, so a
+plugin built after it ships no copy of `flowstate/chat/v1/chat.proto` and a
+version 8 host has no such file to link against.
+
 Which posture to take toward the default is yours, and both are defensible. A
 plugin whose work is an ordinary request to a public host accepts it — `git`,
 `vcs`, `github`, `slack`, `anthropic` and `openai` do, so a worker nobody configured reaches public hosts
@@ -1004,7 +1010,7 @@ constructors rather than as a bare error (`pkg/flowstate/v1/plugin/sdk/errors.go
 > An error from a plugin is surfaced to users and written to workflow history,
 > which is durable and broadly readable. Never interpolate a secret, a token, or
 > a credential-bearing backend message into one. The same applies to stderr and
-> what a `Health` check returns, which the engine logs (`pkg/flowstate/v1/plugin/sdk/sdk.go:1067-1077`). As
+> what a `Health` check returns, which the engine logs (`pkg/flowstate/v1/plugin/sdk/sdk.go:1068-1078`). As
 > accidental containment, the host scrubs known resolved values and their common
 > encodings from plugin stderr, reserved post-handshake stdout, health text, and
 > manifest text. It retains at most 256 delivered values per plugin process while

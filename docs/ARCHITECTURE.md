@@ -1078,7 +1078,7 @@ records, or the plugin protocol. A type whose only consumers are plugins is a
 | Proto | `proto/flowstate/v1/*.proto` | `proto/flowstate/<domain>/v1/<domain>.proto` |
 | Package | `flowstate.v1` | `flowstate.<domain>.v1` |
 | Go | `pkg/flowstate/v1` | `pkg/flowstate/<domain>/v1` (name `<domain>v1`) |
-| Example | `Value`, `TaskDef`, `Workflow` | `flowstate.decision.v1` (`Question`, `Answer`, `Decision`) |
+| Example | `Value`, `TaskDef`, `Workflow` | `flowstate.decision.v1` (`Question`, `Answer`, `Decision`); `flowstate.chat.v1` (`Text`, `Button`, `Card`) |
 
 A domain package is in the same buf module (`proto/`) and the same Go module as
 the core: no separate module and no BSR push, and `make plugin-proto` and
@@ -1088,7 +1088,10 @@ compiled in and a plugin never ships a copy: the SDK names it beside
 import it. `TestEveryDomainFileIsEngineProvided` walks the proto sources for every
 `flowstate/<domain>/v1` file and fails on one the SDK would still ship. A domain
 package is `v1` until it breaks; a break is a new `v2` directory and Go path, not
-an edit in place. `flowstate.chat.v1` is planned to follow this rule.
+an edit in place. `flowstate.chat.v1` (`proto/flowstate/chat/v1/chat.proto`) is the
+vendor-neutral chat model: safe `Text`, `Button`, four `Card` presets and the
+`Interaction` a platform event maps onto. It is provided like the decision
+package, so its protovalidate limits are enforced at the host.
 
 ## Design tensions worth knowing
 
