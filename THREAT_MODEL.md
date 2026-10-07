@@ -187,7 +187,7 @@ workflow declared `sensitive: true` before the response leaves `flow server`,
 decided against the specification the run executed (read from its start input), and
 say so in `sensitive_disclosure` (`pkg/flowstate/v1/server/sensitive.go`). A caller
 receives them only by asking (`reveal_sensitive`) while holding
-`workload.reveal_sensitive`, which an entry with no action list is not granted; every
+`workload.reveal_sensitive`, which no caller is implied; every
 such request is audited under that action. Before this, the RPCs returned the values
 raw to any `workload.read` caller and only the CLI's renderer hid them, which is still
 what a client does against such a server: it withholds declared outputs, transcript and

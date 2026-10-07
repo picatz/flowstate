@@ -1075,6 +1075,9 @@ func (t TrustedIssuer) validate() error {
 		return fmt.Errorf("role is %d bytes, over the %d byte audit provenance limit",
 			len(t.Role), MaxPolicyProvenanceBytes)
 	}
+	if t.Issuer == AnonymousIssuer {
+		return fmt.Errorf("issuer %q is reserved for the anonymous caller, whose implied actions are not an allowlist", AnonymousIssuer)
+	}
 	if t.Actions == nil {
 		return fmt.Errorf("actions is required; list the actions this entry grants, or use [] to grant none")
 	}

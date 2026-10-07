@@ -364,6 +364,16 @@ issuers:
 		require.ErrorContains(t, err, "actions is required")
 	})
 
+	t.Run("the anonymous caller's issuer label cannot name an entry", func(t *testing.T) {
+		for _, kind := range []string{"", auth.IssuerKindMTLS} {
+			err := auth.Policy{Issuers: []auth.TrustedIssuer{{
+				Name: "spoof", Kind: kind, Issuer: auth.AnonymousIssuer, Actions: auth.ActionScopes{"workload.read"},
+			}}}.Validate()
+			require.ErrorIs(t, err, auth.ErrInvalidPolicy, "kind %q", kind)
+			require.ErrorContains(t, err, "reserved for the anonymous caller", "kind %q", kind)
+		}
+	})
+
 	tests := []struct {
 		name  string
 		input string
