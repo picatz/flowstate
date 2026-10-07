@@ -975,6 +975,10 @@ Examples:
 ```sh
 # What this key publishes:
 flow keys public --in identity/2026-08.pem
+
+# The PKIX public key PEM a server's --identity-key takes, so the server
+# never holds the private key (the file's base name is the key id):
+flow keys public --in identity/2026-08.pem --pem > server-identity/2026-08.pem
 ```
 
 | Flag | Type | Default | Environment | Description |
@@ -982,6 +986,7 @@ flow keys public --in identity/2026-08.pem
 | `--id <string>` | `string` | — | — | key id published in the JWK (default: `--in`'s file name, without its extension) |
 | `--in <string>` | `string` | — | — | path to a PKCS#8 private key PEM (required) |
 | `--jwks` | `bool` | `false` | — | wrap the public key in a JSON Web Key Set document for a trust policy's jwks_file |
+| `--pem` | `bool` | `false` | — | print a PKIX public key PEM instead of a JWK: the only form `flow server --identity-key` accepts, which publishes keys workers sign with without holding them |
 
 ## `flow lint`
 
@@ -1855,7 +1860,7 @@ flow server --insecure-no-auth
 | `--gates-ui-scope <string,...>` | `stringSlice` | — | — | scope to request at sign-in; repeatable. None is required by the page |
 | `--gates-ui-session-key-file <string>` | `string` | — | — | file holding the base64 of a 32-byte key that seals the sign-in cookies. Replicas that should accept each other's sessions share one; without it a random key is made at start and a restart signs everyone out. Generate one with `head -c32 /dev/urandom \| base64` |
 | `--identity-claim <string,...>` | `stringArray` | — | — | caller token claim to carry into each run and signal sender identity (repeatable), such as team or email; only named claims are persisted, and they are what signals:, debug: and manual: allow predicates (sender.identity.claims[...]) and outbound policy rules (identity.claims[...]) read; a claim not named here is absent from the identity, so a rule requiring it never matches |
-| `--identity-key <string,...>` | `stringArray` | — | `FLOWSTATE_IDENTITY_KEY` | path to a PKCS#8 PEM private key Flowstate signs its own assertions with, required when the auth policy configures federation; the file's base name becomes the published key id, so 2026-07.pem publishes as "2026-07". Repeatable: the first occurrence signs and every later one is published for verification only, so a restart that rotates keys does not reject assertions the previous process signed |
+| `--identity-key <string,...>` | `stringArray` | — | `FLOWSTATE_IDENTITY_KEY` | path to a PKIX public key PEM (`flow keys public --in KEY.pem --pem`) to publish for verifying assertions workers sign, required when the auth policy configures federation; a private key is refused, since the server holds no signing key (workers take the PKCS#8 private key). The file's base name becomes the published key id, so 2026-07.pem publishes as "2026-07". Repeatable: list the current key and any previous ones, so a rotation does not reject assertions signed with the old key |
 | `--insecure-no-auth` | `bool` | `false` | — | allow unauthenticated access, for local development only; cannot be combined with `--auth-policy` (or an inherited FLOWSTATE_AUTH_POLICY) |
 | `--internal-listen <string>` | `string` | — | `FLOWSTATE_INTERNAL_ADDRESS` | address for health and pprof, on a private socket of this process's own; empty (the default) means no internal listener at all. Pass a loopback address, such as `--internal-listen 127.0.0.1:9090`, to turn it on — nothing else is accepted: it serves pprof, whose profiles carry this process's memory and running goroutines (secret values resolved into it among them), and it carries no authentication and no TLS configuration of its own, so reach it over a private network rather than exposing it |
 | `--listen <string>` | `string` | `localhost:9233` | `FLOWSTATE_ADDRESS` | address this server listens on, as host:port (default $FLOWSTATE_ADDRESS); not a URL, and not the client's `--address`. Off loopback it requires `--tls-cert-file` and `--tls-key-file` (or `--tls-acme-hosts`), or `--tls-terminated-upstream` |

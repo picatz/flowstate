@@ -474,6 +474,8 @@ type retiredKey struct {
 	id        string
 	algorithm jwa.Algorithm
 	published jwk.Value
+	// expiresAt is when retention ends; the zero time means the key is published
+	// until the process stops, which is how a publish-only issuer holds its keys.
 	expiresAt time.Time
 
 	// generation is the installation this key is, from [Issuer.generations].
@@ -622,16 +624,22 @@ func WithIssuerClock(clock func() time.Time) IssuerOption {
 
 // NewIssuer returns an issuer that mints assertions signed with the given key.
 //
+// # Publish-only mode
+//
+// A zero key together with at least one [WithVerifyOnlyKey] builds a
+// publish-only issuer: it serves the discovery documents and a key set holding
+// exactly the verify-only keys, and holds no private material at all. It is
+// what a server that only has to publish what its workers sign wants, so the
+// process serving the key set cannot sign. [Issuer.Mint] and [Issuer.Rotate]
+// return [ErrNoSigningKey] on it, and [Issuer.ActiveKeyID] is empty. A zero key
+// with no verify-only key is still refused: there would be nothing to publish.
+//
 // The issuer URL is the identity Flowstate presents to the world: it goes in the
 // "iss" claim of every assertion, and it is where relying parties fetch the
 // discovery document and key set from. It must therefore be the URL at which
 // [Issuer.Handler] is actually reachable by those relying parties, and must be
 // https outside of local development.
 func NewIssuer(issuerURL string, key SigningKey, opts ...IssuerOption) (*Issuer, error) {
-	if key.IsZero() {
-		return nil, fmt.Errorf("%w: an issuer needs a signing key", ErrNoSigningKey)
-	}
-
 	issuer := &Issuer{
 		url:            strings.TrimSuffix(issuerURL, "/"),
 		jwksPath:       DefaultJWKSPath,
@@ -642,10 +650,16 @@ func NewIssuer(issuerURL string, key SigningKey, opts ...IssuerOption) (*Issuer,
 		active:         key,
 	}
 
-	issuer.activeGen = issuer.nextGeneration()
-
 	for _, opt := range opts {
 		opt(issuer)
+	}
+
+	if key.IsZero() {
+		if len(issuer.verifyOnly) == 0 {
+			return nil, fmt.Errorf("%w: an issuer needs a signing key, or at least one verify-only key to publish", ErrNoSigningKey)
+		}
+	} else {
+		issuer.activeGen = issuer.nextGeneration()
 	}
 
 	if err := validateIssuerURL(issuer.url); err != nil {
@@ -684,6 +698,11 @@ func NewIssuer(issuerURL string, key SigningKey, opts ...IssuerOption) (*Issuer,
 	return issuer, nil
 }
 
+// expired reports whether the key's retention has ended at now.
+func (k retiredKey) expired(now time.Time) bool {
+	return !k.expiresAt.IsZero() && now.After(k.expiresAt)
+}
+
 // installVerifyOnlyKeys turns what [WithVerifyOnlyKey] collected into retired
 // keys, once every option has been applied and the retention and clock are
 // settled.
@@ -695,6 +714,7 @@ func NewIssuer(issuerURL string, key SigningKey, opts ...IssuerOption) (*Issuer,
 // failure this option exists to prevent, arriving without a message.
 func (i *Issuer) installVerifyOnlyKeys() error {
 	now := i.clock()
+	publishOnly := i.active.IsZero()
 
 	for _, key := range i.verifyOnly {
 		switch {
@@ -718,17 +738,26 @@ func (i *Issuer) installVerifyOnlyKeys() error {
 			return err
 		}
 
-		i.retired = append(i.retired, retiredKey{
+		retired := retiredKey{
 			id:         key.id,
 			algorithm:  algorithm,
 			published:  published,
 			generation: i.nextGeneration(),
+		}
+		if !publishOnly {
 			// Measured from start-up, because that is when this key stopped
 			// signing as far as this process can tell. An operator whose
 			// retention has to outlast a longer gap configures a longer
 			// key_retention rather than getting an unbounded one by default.
-			expiresAt: now.Add(i.keyRetention),
-		})
+			//
+			// A publish-only issuer is the exception: it has no signing key of
+			// its own, so each key it was given is one a worker is signing with
+			// now, not one that stopped. Letting retention lapse would empty the
+			// key set a day after start-up while workers still sign. Rotation
+			// there is the operator replacing the files and restarting.
+			retired.expiresAt = now.Add(i.keyRetention)
+		}
+		i.retired = append(i.retired, retired)
 	}
 
 	i.verifyOnly = nil
@@ -856,6 +885,10 @@ func (i *Issuer) Rotate(key SigningKey) error {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 
+	if i.active.IsZero() {
+		return fmt.Errorf("%w: a publish-only issuer holds no signing key to rotate", ErrNoSigningKey)
+	}
+
 	if key.id == i.active.id {
 		return fmt.Errorf("%w: key id %q is already active; a new key needs a new id, or verifiers cannot tell them apart",
 			ErrInvalidPolicy, key.id)
@@ -965,7 +998,7 @@ func (i *Issuer) publishedLocked(generation uint64, now time.Time) bool {
 		return true
 	}
 	return slices.ContainsFunc(i.retired, func(key retiredKey) bool {
-		return key.generation == generation && !now.After(key.expiresAt)
+		return key.generation == generation && !key.expired(now)
 	})
 }
 
@@ -973,11 +1006,12 @@ func (i *Issuer) publishedLocked(generation uint64, now time.Time) bool {
 // for writing.
 func (i *Issuer) pruneLocked(now time.Time) {
 	i.retired = slices.DeleteFunc(i.retired, func(key retiredKey) bool {
-		return now.After(key.expiresAt)
+		return key.expired(now)
 	})
 }
 
-// ActiveKeyID returns the id of the key assertions are currently signed with.
+// ActiveKeyID returns the id of the key assertions are currently signed with,
+// or "" for a publish-only issuer, which signs with none.
 func (i *Issuer) ActiveKeyID() string {
 	i.mu.RLock()
 	defer i.mu.RUnlock()
@@ -1022,6 +1056,15 @@ func (i *Issuer) Mint(ctx context.Context, identity WorkloadIdentity, ref StepRe
 func (i *Issuer) mintFor(ctx context.Context, identity WorkloadIdentity, ref StepRef, subject, audience string) (Assertion, error) {
 	if err := ctx.Err(); err != nil {
 		return Assertion{}, err
+	}
+
+	// A publish-only issuer refuses before anything else, so the answer does not
+	// depend on whether the request would otherwise have been valid.
+	i.mu.RLock()
+	publishOnly := i.active.IsZero()
+	i.mu.RUnlock()
+	if publishOnly {
+		return Assertion{}, fmt.Errorf("%w: this issuer only publishes keys", ErrNoSigningKey)
 	}
 
 	if subject == "" {

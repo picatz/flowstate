@@ -13,6 +13,7 @@
 package main
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"crypto"
@@ -177,10 +178,12 @@ type authFlags struct {
 	// server verifies callers but issues nothing, which is the inbound-only
 	// deployment.
 	//
-	// The first names the private key assertions are signed with. Any after it
-	// are published for verification only, so assertions a previous process
-	// signed keep verifying across the restart that rotation actually is — see
-	// [identityBroker].
+	// For a worker the first names the private key assertions are signed with
+	// and any after it are published for verification only, so assertions a
+	// previous process signed keep verifying across the restart that rotation
+	// actually is — see [identityBroker]. For the server every entry is a PKIX
+	// public key published for verification and none signs — see
+	// [identityPublisher].
 	identityKeyPaths []string
 
 	// identityClaims names the caller token claims carried into each run's
@@ -210,7 +213,8 @@ func identityKeyDefault() []string {
 }
 
 // identityKeyUsage is the help text every command that loads identity keys
-// shows for --identity-key, so the rotation rule is worded once.
+// shows for --identity-key, so the rotation rule is worded once. The server
+// declares its own text: it only publishes, so it takes public keys.
 const identityKeyUsage = "PKCS#8 PEM key used to mint short-lived workload assertions for federation " +
 	"targets (repeatable: the first signs, and every later one is published for verification only, " +
 	"so assertions signed before a restart keep verifying)"
@@ -1214,7 +1218,7 @@ func runServer(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	broker, err := identityBroker(authCfg, policy)
+	issuer, err := identityPublisher(authCfg, policy)
 	if err != nil {
 		return err
 	}
@@ -1228,7 +1232,7 @@ func runServer(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := checkProtectedResourceRouteCollision(protectedResource, broker); err != nil {
+	if err := checkProtectedResourceRouteCollision(protectedResource, issuer); err != nil {
 		return err
 	}
 
@@ -1402,8 +1406,8 @@ func runServer(cmd *cobra.Command, args []string) error {
 	}
 	if policy != nil {
 		var targets []string
-		if broker != nil {
-			targets = broker.Targets()
+		if policy.Federation != nil {
+			targets = policy.Federation.TargetNames()
 		}
 		serverOpts = append(serverOpts, server.WithCredentialTargets(targets...))
 	}
@@ -1539,7 +1543,7 @@ func runServer(cmd *cobra.Command, args []string) error {
 		// deployment cannot have this listener bind an address this function
 		// already refused.
 		Addr: publicAddr,
-		Handler: serverHandler(logger, verifier, peerVerifier, broker, rpcResource, rpcMux, receiver, protectedResource,
+		Handler: serverHandler(logger, verifier, peerVerifier, issuer, rpcResource, rpcMux, receiver, protectedResource,
 			gatesOpts...),
 
 		// nil when no certificate was configured, which is only reachable here
@@ -1576,7 +1580,7 @@ func runServer(cmd *cobra.Command, args []string) error {
 		logger.Warn("authentication is disabled; every caller is anonymous and can start workflows",
 			"use", "local development only")
 	}
-	if broker != nil {
+	if issuer != nil {
 		// Log the discovery URL rather than the fact of federation: an operator
 		// configuring a relying party needs this exact string, and finding it by
 		// reading source is the sort of friction that gets solved by guessing.
@@ -1584,10 +1588,9 @@ func runServer(cmd *cobra.Command, args []string) error {
 		// with a different --identity-key list and its whole result is which
 		// keys this process publishes and which one of them signs. An operator
 		// who cannot read that back has rehearsed nothing.
-		logger.Info("issuing workload identity assertions",
-			"discovery", broker.Issuer().URL()+auth.DiscoveryPath,
-			"signing_key", broker.Issuer().ActiveKeyID(),
-			"verify_only_keys", verifyOnlyKeyIDs(broker.Issuer()))
+		logger.Info("publishing workload identity keys; workers sign, this server holds no signing key",
+			"discovery", issuer.URL()+auth.DiscoveryPath,
+			"published_keys", verifyOnlyKeyIDs(issuer))
 	}
 	if protectedResource != nil {
 		logger.Info("serving RFC 9728 protected resource metadata",
@@ -1948,6 +1951,87 @@ func identityBroker(flags authFlags, policy *auth.Policy) (*auth.Broker, error) 
 		return nil, fmt.Errorf("configuring identity federation: %w", err)
 	}
 	return broker, nil
+}
+
+// identityPublisher builds the publish-only issuer a server serves its discovery
+// documents and key set from, or returns nil when the deployment does not
+// federate outward.
+//
+// The server never mints: assertions are signed in the worker that runs the
+// step, so the server is handed only the public keys to publish and never reads
+// private signing material. Every --identity-key entry is therefore a PKIX
+// public key PEM (`flow keys public --pem`), published for verification, and a
+// private key is refused at start-up rather than read for its public half — a
+// server that accepted one would be a server holding one. The key id is the file
+// name, as for a worker, so a worker's `2026-08.pem` and the server's
+// `2026-08.pem` publish and sign under one id.
+//
+// Federation is a deployment-wide trust domain: every worker that signs with a
+// shared key signs as the same issuer, whatever tenant its run belongs to.
+func identityPublisher(flags authFlags, policy *auth.Policy) (*auth.Issuer, error) {
+	if policy == nil || policy.Federation == nil {
+		if len(flags.identityKeyPaths) > 0 {
+			return nil, fmt.Errorf("--identity-key was given but the trust policy configures no federation: " +
+				"add a federation section, or drop the key")
+		}
+		return nil, nil
+	}
+
+	if len(flags.identityKeyPaths) == 0 {
+		return nil, fmt.Errorf("the trust policy configures federation but no identity key was given: " +
+			"pass --identity-key with the PKIX public key PEM of each key workers sign with " +
+			"(flow keys public --in KEY.pem --pem), since the server publishes keys and holds no signing key")
+	}
+
+	opts := make([]auth.FederationOption, 0, len(flags.identityKeyPaths))
+	for _, path := range flags.identityKeyPaths {
+		data, err := readBoundedFile(path, "a PEM public key", maxPEMFileBytes)
+		if err != nil {
+			return nil, fmt.Errorf("reading identity key: %w", err)
+		}
+		id, public, err := parsePublicIdentityKey(path, data)
+		if err != nil {
+			return nil, err
+		}
+		opts = append(opts, auth.WithFederationVerifyOnlyKey(id, public))
+	}
+
+	// A duplicate id is refused by [auth.NewIssuer], as for a worker.
+	issuer, err := policy.Federation.PublishOnlyIssuer(opts...)
+	if err != nil {
+		return nil, fmt.Errorf("configuring identity federation: %w", err)
+	}
+	return issuer, nil
+}
+
+// parsePublicIdentityKey decodes a server's --identity-key entry, which must be
+// a PKIX public key PEM. It is the server-side counterpart of
+// [parseVerifyOnlyKey], which also accepts a private key for its public half;
+// this one refuses any private key, because the server must not read one.
+func parsePublicIdentityKey(path string, data []byte) (string, crypto.PublicKey, error) {
+	block, rest := pem.Decode(data)
+	if block == nil {
+		return "", nil, fmt.Errorf("identity key %s is not PEM-encoded", path)
+	}
+
+	// Exactly one block: anything after it, a private key above all, would have
+	// been read into this process by the caller and then silently ignored.
+	if len(bytes.TrimSpace(rest)) > 0 {
+		return "", nil, fmt.Errorf("identity key %s holds more than one PEM block; give the server a file with exactly one public key", path)
+	}
+
+	if strings.HasSuffix(block.Type, "PRIVATE KEY") {
+		return "", nil, fmt.Errorf("identity key %s is a private key, and the server never signs, so it must not hold one: "+
+			"give it the public half, which `flow keys public --in %s --pem` prints "+
+			"(workers keep taking the private key)", path, path)
+	}
+
+	public, err := x509.ParsePKIXPublicKey(block.Bytes)
+	if err != nil {
+		return "", nil, fmt.Errorf("identity key %s is not a PKIX public key PEM "+
+			"(print one from a private key with: flow keys public --in KEY.pem --pem): %w", path, err)
+	}
+	return keyIDFromPath(path), public, nil
 }
 
 // verifyOnlyKeyIDs names the keys the issuer publishes that it does not sign
@@ -2927,12 +3011,13 @@ flow server --insecure-no-auth`,
 	addRPCResourceFlags(serverCmd)
 	serverCmd.Flags().StringArray("identity-key",
 		identityKeyDefault(),
-		"path to a PKCS#8 PEM private key Flowstate signs its own assertions with, "+
-			"required when the auth policy configures federation; the file's base name "+
+		"path to a PKIX public key PEM (`flow keys public --in KEY.pem --pem`) to publish "+
+			"for verifying assertions workers sign, required when the auth policy "+
+			"configures federation; a private key is refused, since the server holds no "+
+			"signing key (workers take the PKCS#8 private key). The file's base name "+
 			"becomes the published key id, so 2026-07.pem publishes as \"2026-07\". "+
-			"Repeatable: the first occurrence signs and every later one is published for "+
-			"verification only, so a restart that rotates keys does not reject assertions "+
-			"the previous process signed")
+			"Repeatable: list the current key and any previous ones, so a rotation does "+
+			"not reject assertions signed with the old key")
 
 	// The server's deployment name is not the worker's Worker Deployment pair: it
 	// names this Flowstate installation in the identity every run carries, so an

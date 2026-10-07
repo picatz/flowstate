@@ -117,9 +117,9 @@ func resolveProtectedResource(flags protectedResourceFlags, policy *auth.Policy)
 // http.ServeMux panics on a second registration of an identical pattern
 // (verified: "pattern %q ... conflicts with pattern %q"), which without this
 // check would turn two independently valid flags into a crash at start-up
-// instead of a diagnosis. broker nil (no federation configured) skips the
+// instead of a diagnosis. issuer nil (no federation configured) skips the
 // JWKS half; there is nothing to collide with.
-func checkProtectedResourceRouteCollision(pr *auth.ProtectedResource, broker *auth.Broker) error {
+func checkProtectedResourceRouteCollision(pr *auth.ProtectedResource, issuer *auth.Issuer) error {
 	if pr == nil {
 		return nil
 	}
@@ -130,8 +130,8 @@ func checkProtectedResourceRouteCollision(pr *auth.ProtectedResource, broker *au
 			"whose path does not end in %q", pr.Path(), auth.DiscoveryPath)
 	}
 
-	if broker != nil {
-		if jwksPath := broker.Issuer().JWKSPath(); pr.Path() == jwksPath {
+	if issuer != nil {
+		if jwksPath := issuer.JWKSPath(); pr.Path() == jwksPath {
 			return fmt.Errorf("--protected-resource: the computed metadata path %q is identical to "+
 				"this deployment's JWKS path (%q, from --auth-policy's federation.jwks_path); the "+
 				"two would register the same route and this server would panic at start-up rather "+
