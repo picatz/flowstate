@@ -15,6 +15,7 @@
 package authz
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"slices"
@@ -66,6 +67,91 @@ func (d Decision) Refusal() *connect.Error {
 	return refusal
 }
 
+// Request is one authorization question: may this caller hold this action.
+type Request struct {
+	// Principal is the verified caller. It is meaningful only when
+	// Authenticated is true.
+	Principal auth.Principal
+
+	// Authenticated is false when no principal was established: a deployment
+	// with no authentication configured, or a transport whose trust is the
+	// process itself.
+	Authenticated bool
+
+	// Action is the action the caller needs.
+	Action v1.AuthorizationAction
+
+	// Mode says whether the action is implied for an unrestricted caller.
+	Mode Mode
+}
+
+// A Decider answers a [Request]. [PolicyDecider] is the built-in answer, the
+// trusted issuer entry's list; an embedder adds its own with [Restrict].
+type Decider interface {
+	Decide(ctx context.Context, req Request) Decision
+}
+
+// DeciderFunc adapts a function to a [Decider].
+type DeciderFunc func(ctx context.Context, req Request) Decision
+
+// Decide calls f.
+func (f DeciderFunc) Decide(ctx context.Context, req Request) Decision { return f(ctx, req) }
+
+// PolicyDecider is the built-in [Decider]: a verified caller holds what its
+// trusted issuer entry lists, narrowed by its token's scopes, and nothing else.
+type PolicyDecider struct{}
+
+// Decide answers req from the caller's action list.
+func (PolicyDecider) Decide(_ context.Context, req Request) Decision {
+	return DecidePrincipal(req.Principal, req.Authenticated, req.Action, req.Mode)
+}
+
+// Restrict returns a Decider that allows a request only when base and extra
+// both allow it. An embedder's extra check can therefore refuse what the trust
+// policy grants, such as a maintenance freeze or a per-tenant allowlist, but can
+// never grant what the trust policy withholds: the deployment's policy stays the
+// outer bound, and a bug in the extra check fails closed. extra is consulted
+// only once base has allowed, and a panic in it is a refusal. A nil extra
+// returns base, and a nil base is [PolicyDecider].
+func Restrict(base, extra Decider) Decider {
+	if base == nil {
+		base = PolicyDecider{}
+	}
+	if extra == nil {
+		return base
+	}
+
+	return DeciderFunc(func(ctx context.Context, req Request) (decision Decision) {
+		decision = base.Decide(ctx, req)
+		if !decision.Allowed {
+			return decision
+		}
+
+		defer func() {
+			if recover() != nil {
+				decision.Allowed = false
+			}
+		}()
+
+		if extra := extra.Decide(ctx, req); !extra.Allowed {
+			return Decision{Scope: cmp.Or(extra.Scope, decision.Scope)}
+		}
+
+		return decision
+	})
+}
+
+// DecideWith asks d whether the caller authenticated on ctx holds action. A nil
+// d is [PolicyDecider].
+func DecideWith(ctx context.Context, d Decider, action v1.AuthorizationAction, mode Mode) Decision {
+	if d == nil {
+		d = PolicyDecider{}
+	}
+	principal, ok := auth.PrincipalFromContext(ctx)
+
+	return d.Decide(ctx, Request{Principal: principal, Authenticated: ok, Action: action, Mode: mode})
+}
+
 // Decide reports whether the caller authenticated on ctx holds action.
 //
 // A context with no principal belongs to a deployment that configured no
@@ -74,9 +160,7 @@ func (d Decision) Refusal() *connect.Error {
 // is held and an [Explicit] one is not. A verified caller whose entry lists no
 // action holds none.
 func Decide(ctx context.Context, action v1.AuthorizationAction, mode Mode) Decision {
-	principal, ok := auth.PrincipalFromContext(ctx)
-
-	return DecidePrincipal(principal, ok, action, mode)
+	return DecideWith(ctx, nil, action, mode)
 }
 
 // Restricted reports whether the caller's trusted issuer entry decides what it

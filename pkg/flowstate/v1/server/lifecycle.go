@@ -1042,7 +1042,7 @@ func (s *FlowstateServer) gateOf(ctx context.Context, resp *workflowservice.Desc
 	// wrong. Asked without writing a record: the denial that counts is the one
 	// Signal makes.
 	if out.MayAnswer && v1.IsDebugSignalName(name) &&
-		!holdsAction(ctx, v1.AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_DEBUG) {
+		!s.holdsAction(ctx, v1.AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_DEBUG) {
 		out.MayAnswer = false
 	}
 
@@ -1052,7 +1052,7 @@ func (s *FlowstateServer) gateOf(ctx context.Context, resp *workflowservice.Desc
 	// the gate exists and that they may not answer it, and nothing the
 	// author wrote for approvers: this verb must not widen what that caller
 	// could read through `Get`, which they were never granted.
-	if out.MayAnswer || holdsAction(ctx, v1.AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_READ) {
+	if out.MayAnswer || s.holdsAction(ctx, v1.AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_READ) {
 		out.Prompt = wait.GetPrompt()
 		out.PromptTruncated = wait.GetPromptTruncated()
 		out.Starter = s.reportedStarter(resp)
@@ -1165,8 +1165,14 @@ func (s *FlowstateServer) ListGates(ctx context.Context, req *connect.Request[v1
 // entry's list names, and only a context with no authentication holds every
 // action. Asked, unlike authorizeAction, without
 // refusing or recording anything, for a decision about what to show.
-func holdsAction(ctx context.Context, action v1.AuthorizationAction) bool {
-	return authz.Decide(ctx, action, authz.Implied).Allowed
+func (s *FlowstateServer) holdsAction(ctx context.Context, action v1.AuthorizationAction) bool {
+	return s.decide(ctx, action, authz.Implied).Allowed
+}
+
+// decide asks the server's [authz.Decider], which is the trust policy unless an
+// embedder narrowed it with [WithDecider].
+func (s *FlowstateServer) decide(ctx context.Context, action v1.AuthorizationAction, mode authz.Mode) authz.Decision {
+	return authz.DecideWith(ctx, s.decider, action, mode)
 }
 
 // SignalWithStart delivers a signal to an entity, creating it first if none is

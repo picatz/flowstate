@@ -42,11 +42,11 @@ func TestBreakpointExpressionsNeedTheInspectAction(t *testing.T) {
 		"no principal":       t.Context(),
 		"the inspect action": as("workload.debug", "workload.debug_inspect"),
 	} {
-		assert.True(t, proto.Equal(original, expressionsFor(ctx, snapshot)), "%s: the snapshot was changed", name)
+		assert.True(t, proto.Equal(original, (&FlowstateServer{}).expressionsFor(ctx, snapshot)), "%s: the snapshot was changed", name)
 	}
 
-	withheld := expressionsFor(as("workload.debug"), snapshot)
-	assert.True(t, proto.Equal(withheld, expressionsFor(as(), snapshot)),
+	withheld := (&FlowstateServer{}).expressionsFor(as("workload.debug"), snapshot)
+	assert.True(t, proto.Equal(withheld, (&FlowstateServer{}).expressionsFor(as(), snapshot)),
 		"a verified caller with no action list was shown definitions")
 	require.Len(t, withheld.GetBreakpoints(), 6)
 	for _, plain := range []int{0, 5} {

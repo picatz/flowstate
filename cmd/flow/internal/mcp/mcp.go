@@ -236,6 +236,12 @@ var ToolViews = map[string]string{
 // package — kept to the smallest seam that crosses the boundary; see the
 // package doc for why redaction is the one thing that has to.
 type Deps struct {
+	// Decider adds an authorization check to the trust policy's own: the
+	// policy decides first from the caller's issuer entry, and this is asked
+	// only about what the policy allows, so it can refuse and never grant. See
+	// [authz.Restrict]. Nil is the trust policy alone.
+	Decider authz.Decider
+
 	// Redact narrows a GetResponse to what this surface may show, the way
 	// `flow get` narrows a spec-less answer (workflow is always nil here:
 	// this dispatch has no specification in reach). Required; a nil field
@@ -451,7 +457,7 @@ func wrapToolHandler(deps Deps, name string, handler mcp.ToolHandler) mcp.ToolHa
 
 	// Outside the recorder, so that disabling audit output cannot disable
 	// authorization, and inside the principal, which it reads.
-	handler = withMCPActions(deps.Audit, deps.AuditFailure, name, handler)
+	handler = withMCPActions(deps.Decider, deps.Audit, deps.AuditFailure, name, handler)
 
 	return withMCPPrincipal(handler)
 }
@@ -467,19 +473,26 @@ func wrapToolHandler(deps Deps, name string, handler mcp.ToolHandler) mcp.ToolHa
 // that a new tool silently escaped would not be one. The refusal is a tool error naming the
 // scope, never a protocol error, so a client can tell it from a transport
 // failure and request the scope.
-func withMCPActions(recorder *audit.Recorder, reportFailure func(error), tool string, next mcp.ToolHandler) mcp.ToolHandler {
+func withMCPActions(extra authz.Decider, recorder *audit.Recorder, reportFailure func(error), tool string, next mcp.ToolHandler) mcp.ToolHandler {
 	return func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		principal, ok := auth.PrincipalFromContext(ctx)
-		if !authz.Restricted(principal, ok) {
+		restricted := authz.Restricted(principal, ok)
+		if !restricted && extra == nil {
 			return next(ctx, req)
 		}
 
 		action, err := v1.AuthorizationActionForMCPTool(tool)
 		if err != nil {
+			if !restricted {
+				return next(ctx, req)
+			}
+
 			return ToolError(errors.New("this caller is restricted to a list of actions and this tool requires none it can be checked against")), nil
 		}
 
-		decision := authz.DecidePrincipal(principal, ok, action, authz.Implied)
+		decision := authz.Restrict(nil, extra).Decide(ctx, authz.Request{
+			Principal: principal, Authenticated: ok, Action: action, Mode: authz.Implied,
+		})
 		if decision.Allowed {
 			return next(ctx, req)
 		}

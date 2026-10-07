@@ -1,6 +1,7 @@
 package authz_test
 
 import (
+	"context"
 	"testing"
 
 	"connectrpc.com/connect"
@@ -59,4 +60,40 @@ func TestRefusalNamesTheScopeAndChallenges(t *testing.T) {
 	require.Equal(t, connect.CodePermissionDenied, refusal.Code())
 	require.Contains(t, refusal.Message(), scope)
 	require.Equal(t, `Bearer error="insufficient_scope", scope="`+scope+`"`, refusal.Meta().Get("WWW-Authenticate"))
+}
+
+func TestRestrictOnlyNarrowsThePolicy(t *testing.T) {
+	t.Parallel()
+
+	const run = v1.AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_RUN
+	holder := auth.Principal{Issuer: "https://issuer.example", Subject: "a", Actions: auth.ActionScopes{"workload.run"}}
+	stranger := auth.Principal{Issuer: "https://issuer.example", Subject: "b", Actions: auth.ActionScopes{}}
+
+	allowAll := authz.DeciderFunc(func(context.Context, authz.Request) authz.Decision {
+		return authz.Decision{Allowed: true, Scope: "workload.run"}
+	})
+	denyAll := authz.DeciderFunc(func(context.Context, authz.Request) authz.Decision {
+		return authz.Decision{Scope: "freeze"}
+	})
+	panics := authz.DeciderFunc(func(context.Context, authz.Request) authz.Decision { panic("boom") })
+
+	ask := func(d authz.Decider, p auth.Principal) authz.Decision {
+		return d.Decide(t.Context(), authz.Request{Principal: p, Authenticated: true, Action: run, Mode: authz.Implied})
+	}
+
+	require.True(t, ask(authz.Restrict(nil, allowAll), holder).Allowed, "an agreeing extra check changes nothing")
+	require.False(t, ask(authz.Restrict(nil, allowAll), stranger).Allowed,
+		"an extra check that allows must not grant what the trust policy withholds")
+	require.False(t, ask(authz.Restrict(nil, denyAll), holder).Allowed, "an extra check can refuse what the policy grants")
+	require.Equal(t, "freeze", ask(authz.Restrict(nil, denyAll), holder).Scope)
+	require.False(t, ask(authz.Restrict(nil, panics), holder).Allowed, "a panicking extra check is a refusal")
+	require.Equal(t, authz.PolicyDecider{}, authz.Restrict(nil, nil))
+
+	calls := 0
+	counting := authz.DeciderFunc(func(context.Context, authz.Request) authz.Decision {
+		calls++
+		return authz.Decision{Allowed: true}
+	})
+	ask(authz.Restrict(nil, counting), stranger)
+	require.Zero(t, calls, "the extra check is consulted only once the policy has allowed")
 }
