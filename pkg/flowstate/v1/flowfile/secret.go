@@ -39,7 +39,7 @@ const SecretMarker = "secret"
 // deployment's federation policy.
 //
 // It is [SecretMarker]'s sibling and is recognized, placed and refused by the
-// same machinery for the same reason: it compiles into a [flowstatev1.CredentialRef]
+// same machinery for the same reason: it compiles into a [v1.CredentialRef]
 // rather than a call, so nothing evaluates it, the specification carries a name
 // and no credential, and only the worker running the step mints one. The two
 // differ in what the argument is (a target name, not a `scheme:name` reference)
