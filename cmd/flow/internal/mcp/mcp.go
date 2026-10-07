@@ -512,6 +512,10 @@ func withMCPActions(extra authz.Decider, recorder *audit.Recorder, reportFailure
 			}
 		}
 
+		if decision.Embedder {
+			return ToolError(errors.New("the request was refused by this deployment's authorization rules")), nil
+		}
+
 		return ToolError(fmt.Errorf("the caller is not authorized for required action %q", scope)), nil
 	}
 }

@@ -85,7 +85,11 @@ func TestRestrictOnlyNarrowsThePolicy(t *testing.T) {
 	require.False(t, ask(authz.Restrict(nil, allowAll), stranger).Allowed,
 		"an extra check that allows must not grant what the trust policy withholds")
 	require.False(t, ask(authz.Restrict(nil, denyAll), holder).Allowed, "an extra check can refuse what the policy grants")
-	require.Equal(t, "freeze", ask(authz.Restrict(nil, denyAll), holder).Scope)
+	refused := ask(authz.Restrict(nil, denyAll), holder)
+	require.True(t, refused.Embedder)
+	require.Equal(t, "workload.run", refused.Scope, "a refusal names the action needed, not the embedder's own label")
+	require.Empty(t, refused.Refusal().Meta().Get("WWW-Authenticate"))
+	require.False(t, ask(authz.Restrict(nil, allowAll), stranger).Embedder, "the policy's own refusal is not an embedder's")
 	require.False(t, ask(authz.Restrict(nil, panics), holder).Allowed, "a panicking extra check is a refusal")
 	require.Equal(t, authz.PolicyDecider{}, authz.Restrict(nil, nil))
 

@@ -15,8 +15,8 @@
 package authz
 
 import (
-	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 
@@ -49,6 +49,11 @@ type Decision struct {
 
 	// Scope is the wire spelling of the action, for a refusal to name.
 	Scope string
+
+	// Embedder is true when an embedder's [Decider], not the caller's action
+	// list, refused the request. A refusal then names no scope, because the
+	// caller cannot fix it by asking for one.
+	Embedder bool
 }
 
 // Refusal returns the error that tells a caller it lacks the action, or nil
@@ -58,6 +63,11 @@ type Decision struct {
 func (d Decision) Refusal() *connect.Error {
 	if d.Allowed {
 		return nil
+	}
+
+	if d.Embedder {
+		return connect.NewError(connect.CodePermissionDenied,
+			errors.New("the request was refused by this deployment's authorization rules"))
 	}
 
 	refusal := connect.NewError(connect.CodePermissionDenied,
@@ -85,7 +95,9 @@ type Request struct {
 	Mode Mode
 }
 
-// A Decider answers a [Request]. [PolicyDecider] is the built-in answer, the
+// A Decider answers a [Request]. It may be asked more than once for one
+// request, so it must be cheap and its answer must not depend on how often it
+// has been asked. [PolicyDecider] is the built-in answer, the
 // trusted issuer entry's list; an embedder adds its own with [Restrict].
 type Decider interface {
 	Decide(ctx context.Context, req Request) Decision
@@ -111,8 +123,10 @@ func (PolicyDecider) Decide(_ context.Context, req Request) Decision {
 // policy grants, such as a maintenance freeze or a per-tenant allowlist, but can
 // never grant what the trust policy withholds: the deployment's policy stays the
 // outer bound, and a bug in the extra check fails closed. extra is consulted
-// only once base has allowed, and a panic in it is a refusal. A nil extra
-// returns base, and a nil base is [PolicyDecider].
+// only once base has allowed, and a panic in it is a refusal. Its Allowed is the
+// only part of its answer that is used: a refusal reports the action the caller
+// needed and says an embedder refused, not what the extra decider put in Scope.
+// A nil extra returns base, and a nil base is [PolicyDecider].
 func Restrict(base, extra Decider) Decider {
 	if base == nil {
 		base = PolicyDecider{}
@@ -129,12 +143,12 @@ func Restrict(base, extra Decider) Decider {
 
 		defer func() {
 			if recover() != nil {
-				decision.Allowed = false
+				decision = Decision{Scope: decision.Scope, Embedder: true}
 			}
 		}()
 
 		if extra := extra.Decide(ctx, req); !extra.Allowed {
-			return Decision{Scope: cmp.Or(extra.Scope, decision.Scope)}
+			return Decision{Scope: decision.Scope, Embedder: true}
 		}
 
 		return decision

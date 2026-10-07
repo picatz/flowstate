@@ -406,7 +406,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// namespace or shared-namespace refusal is not, and a client told
 		// otherwise would keep asking for a scope it already holds.
 		if decision := h.decide(ctx, principal, endpoint); status == http.StatusForbidden &&
-			!decision.Allowed {
+			!decision.Allowed && !decision.Embedder {
 			header.Set("WWW-Authenticate", fmt.Sprintf(`Bearer error="insufficient_scope", scope=%q`, decision.Scope))
 		}
 		h.refuse(ctx, w, subject, code, status, msg)
@@ -562,6 +562,11 @@ func (h *Handler) authorize(ctx context.Context, principal auth.Principal, endpo
 	}
 
 	if decision := h.decide(ctx, principal, endpoint); !decision.Allowed {
+		if decision.Embedder {
+			return http.StatusForbidden, "the request was refused by this deployment's authorization rules",
+				v1.AuditDenyCode_AUDIT_DENY_CODE_POLICY_DENIED
+		}
+
 		return http.StatusForbidden,
 			fmt.Sprintf("the caller's policy entry does not grant %q, which this endpoint requires explicitly", decision.Scope),
 			v1.AuditDenyCode_AUDIT_DENY_CODE_POLICY_DENIED

@@ -705,6 +705,7 @@ func TestAnEmbeddersDeciderNarrowsTheCodecServer(t *testing.T) {
 	resp, body := frozen.post(t, codecserver.DecodeEndpoint, "a-decoder", "ns-a", a)
 	require.Equal(t, http.StatusForbidden, resp.StatusCode)
 	require.NotContains(t, body, markerA)
+	require.Empty(t, resp.Header.Get("WWW-Authenticate"), "an embedder's refusal offered a scope to request")
 
 	open := newFixture(t, func(o *codecserver.Options) { o.Decider = allow })
 	b := open.seal(t, "ns-b", markerB)

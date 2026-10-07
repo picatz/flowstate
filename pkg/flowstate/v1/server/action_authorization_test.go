@@ -129,4 +129,10 @@ func TestAnEmbeddersDeciderNarrowsTheTrustPolicy(t *testing.T) {
 	frozen.Store(true)
 	_, err = flowstate.Run(holder, connect.NewRequest(&v1.RunRequest{Workflow: gatedWorkflow()}))
 	require.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err), "the decider's refusal did not stop a granted caller")
+
+	// The caller cannot fix an embedder's refusal by asking for a scope, so none is offered.
+	var refusal *connect.Error
+	require.ErrorAs(t, err, &refusal)
+	require.Empty(t, refusal.Meta().Get("WWW-Authenticate"))
+	require.NotContains(t, err.Error(), "maintenance.freeze")
 }

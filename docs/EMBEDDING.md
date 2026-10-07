@@ -354,9 +354,12 @@ srv, err := server.New(temporalClient,
 
 The trust policy answers first and your decider is asked only about what it
 allows, so a decider can refuse and can never grant. A panic in it is a
-refusal. The same seam exists on the codec server (`codecserver.Options.Decider`)
-and the MCP adapter (`mcp.Deps.Decider`), and every check goes through
-`authz`; a test refuses a new comparison of a caller's actions anywhere else.
+refusal. The same seam exists on the codec server (`codecserver.Options.Decider`; its
+`Insecure` loopback mode skips authorization altogether, decider included), and
+every check goes through `authz`; a test refuses a new comparison of a caller's
+actions anywhere else. A decider's refusal tells the caller only that the
+deployment's rules refused it, never a scope to request, and the decider may be
+asked more than once per request, so keep it cheap and stateless in its answer.
 To change what a caller is granted, change its issuer entry, not the decider.
 
 ## What is not curated here
