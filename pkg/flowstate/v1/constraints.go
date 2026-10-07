@@ -869,8 +869,19 @@ func CheckInputConstraints(profile, name string, decl *InputDeclaration, value *
 // only `must:`, checked once the output's own expression has produced value,
 // so a workflow cannot report an answer that violates its own declaration.
 func CheckOutputConstraint(profile string, decl *OutputDeclaration, value *Value) error {
+	_, err := CheckOutputConstraintWithCost(context.Background(), profile, decl, value)
+
+	return err
+}
+
+// CheckOutputConstraintWithCost is [CheckOutputConstraint] under ctx, plus the
+// CEL cost its `must:` evaluation spent, for a caller that charges a workflow's
+// deterministic work: a call inside a loop reaches this once per iteration
+// through [EvalRunOutputsWithCost]. The cost is returned with an error too,
+// because a refused evaluation still did the work it was priced for.
+func CheckOutputConstraintWithCost(ctx context.Context, profile string, decl *OutputDeclaration, value *Value) (uint64, error) {
 	if decl.Must == nil {
-		return nil
+		return 0, nil
 	}
 
 	lit := value.GetLiteral()
@@ -879,30 +890,30 @@ func CheckOutputConstraint(profile string, decl *OutputDeclaration, value *Value
 		// evaluate it, or produced something this constraint layer has no
 		// value to check — is a different failure, reported by the caller
 		// that computed it.
-		return nil
+		return 0, nil
 	}
 
 	if err := checkConstraintValueBound("output", decl.GetName(), lit); err != nil {
-		return err
+		return 0, err
 	}
 
 	ast, err := CompileOutputMustExpression(profile, decl.GetMust())
 	if err != nil {
-		return fmt.Errorf("output %q %w", decl.GetName(), err)
+		return 0, fmt.Errorf("output %q %w", decl.GetName(), err)
 	}
 
 	env, err := mustEnvFor(profile, InputDeclaration_TYPE_UNSPECIFIED)
 	if err != nil {
-		return fmt.Errorf("output %q: %w", decl.GetName(), err)
+		return 0, fmt.Errorf("output %q: %w", decl.GetName(), err)
 	}
 	thisVal, err := cel.ValueToRefValue(TypeAdapter, lit)
 	if err != nil {
-		return fmt.Errorf("output %q: %w", decl.GetName(), err)
+		return 0, fmt.Errorf("output %q: %w", decl.GetName(), err)
 	}
 
-	out, err := DefaultEvaluator().Eval(context.Background(), env, ast, map[string]any{"this": thisVal})
+	out, cost, err := DefaultEvaluator().EvalWithCost(ctx, env, ast, map[string]any{"this": thisVal})
 	if err != nil {
-		return fmt.Errorf("output %q: evaluating `must: %s`: %w", decl.GetName(), decl.GetMust(), err)
+		return cost, fmt.Errorf("output %q: evaluating `must: %s`: %w", decl.GetName(), decl.GetMust(), err)
 	}
 	satisfied, ok := out.Value().(bool)
 	if !ok || !satisfied {
@@ -916,7 +927,7 @@ func CheckOutputConstraint(profile string, decl *OutputDeclaration, value *Value
 		// here is a whole task result — a string, or a map of them — and an
 		// unbounded one would be a failure the durable driver cannot persist
 		// while the local driver returns it.
-		return fmt.Errorf("output %q must satisfy `%s`; got %s",
+		return cost, fmt.Errorf("output %q must satisfy `%s`; got %s",
 			decl.GetName(), decl.GetMust(), redactedIfSensitive(decl.GetSensitive(), func() string {
 				got, _ := literalToNative(lit)
 
@@ -924,7 +935,7 @@ func CheckOutputConstraint(profile string, decl *OutputDeclaration, value *Value
 			}))
 	}
 
-	return nil
+	return cost, nil
 }
 
 // evalMust evaluates a compiled must: ast against one value, through
