@@ -468,10 +468,7 @@ jobs:
           git fetch --no-tags --depth=1 origin "+$BASE_SHA:refs/remotes/origin/main"
       - name: Example workflow contracts did not shrink against main
         if: matrix.lane == 'rest'
-        # The tutorial's release-approval example was replaced by refund-approval
-        # (a domain swap, so not a --moved). Nothing calls it. The flag is a no-op
-        # once main stops having the file; drop it in the next change.
-        run: go run ./cmd/flow breaking --against origin/main --removed examples/release-approval/workflow.yaml examples/
+        run: go run ./cmd/flow breaking --against origin/main examples/
 
       # The observability lab is eight services of other people's software, so
       # standing it up here would make this repository's build depend on seven
