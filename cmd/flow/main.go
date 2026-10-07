@@ -3405,6 +3405,8 @@ flow plugins -o json \
 	codecCmd := newCodecCommand()
 	jwtCmd := newJWTCommand()
 	authCmd := newAuthCommand()
+	loginCmd := newLoginCommand()
+	logoutCmd := newLogoutCommand()
 
 	// Version command, answering "which build" the way a bug report or an
 	// agent transcript needs to: see version.go for why this is a verb rather
@@ -3604,6 +3606,8 @@ flow lsp --plugin-dir /opt/flowstate/plugins`,
 	workerCmd.GroupID = "infrastructure"
 	serverCmd.GroupID = "infrastructure"
 	authCmd.GroupID = "infrastructure"
+	loginCmd.GroupID = "infrastructure"
+	logoutCmd.GroupID = "infrastructure"
 	lspCmd.GroupID = "development"
 	keysCmd.GroupID = "development"
 	codecCmd.GroupID = "infrastructure"
@@ -3718,6 +3722,8 @@ flow lsp --plugin-dir /opt/flowstate/plugins`,
 	rootCmd.AddCommand(workerCmd)
 	rootCmd.AddCommand(serverCmd)
 	rootCmd.AddCommand(authCmd)
+	rootCmd.AddCommand(loginCmd)
+	rootCmd.AddCommand(logoutCmd)
 
 	// The whole stack in one command, under `server` because that is where
 	// somebody looking for a server looks. Everything it is lives in

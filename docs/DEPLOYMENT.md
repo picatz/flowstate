@@ -882,6 +882,75 @@ to request it, then set `--rpc-resource`. If that cannot be atomic,
 migration window. It is mutually exclusive with `--rpc-resource`; remove it to
 complete migration. New deployments should never set it.
 
+### Interactive login with `flow login`
+
+A person at a terminal signs in with the OAuth 2.0 Device Authorization Grant
+([RFC 8628](https://www.rfc-editor.org/rfc/rfc8628)); nothing is pasted from an
+IdP console and no token is ever an argument:
+
+```sh
+flow login --issuer https://idp.example.com/realms/acme --client-id flow-cli \
+  --address flowstate.example.com:9233
+# To sign in, open: https://idp.example.com/realms/acme/device
+# and enter the code: WDJB-MJHT          (printed to stderr)
+flow auth whoami --address flowstate.example.com:9233
+flow logout
+```
+
+The command reads `device_authorization_endpoint` and `token_endpoint` from the
+issuer's `/.well-known/openid-configuration` (and `revocation_endpoint` when
+advertised), prints the verification URL and user code to stderr, polls at the
+interval the IdP names (adding five seconds on `slow_down`, giving up when the
+code expires), and stores the result. `--issuer`, `--client-id`, `--address`
+(required), `--scope` (default `openid offline_access`) and `--audience` also
+come from `FLOWSTATE_ISSUER`, `FLOWSTATE_CLIENT_ID`, `FLOWSTATE_ADDRESS`,
+`FLOWSTATE_SCOPE` and `FLOWSTATE_AUDIENCE`. The issuer and every endpoint it names must be https, or
+http on a loopback host, and the discovery document must name the issuer you
+asked for; redirects away from the original origin are refused.
+
+Where the login lives and when it is used:
+
+- One file per issuer and client ID under the user config directory
+  (`$XDG_CONFIG_HOME/flowstate/login` on Linux), mode 0600 in a 0700 directory,
+  written atomically. A file or directory that is group- or world-accessible
+  is refused, not read. Anyone who can read the file can act as you until the
+  tokens expire or are revoked, so treat it like an SSH key.
+- The login is bound to the server `--address` named when it was made: its
+  origin (scheme, host and port, lowercased, default ports dropped; an address
+  with userinfo, a path or a query is refused) is stored with the tokens, and
+  the token is presented to that origin and no other. A command aimed anywhere
+  else, whether by a mistyped or a hostile `--address`, fails with a message
+  naming `flow login --address ...` instead of sending the token or going
+  anonymous. This applies to `--credential-source login` too. To use another
+  server, log in again for it.
+- Every server command presents it after `--token-file` and `FLOWSTATE_TOKEN`,
+  so existing setups are unchanged; `--credential-source login` asks for it by
+  name. It is refreshed with the refresh token a minute before the access token
+  expires. A login that cannot be refreshed (revoked, expired, no refresh token)
+  is an error that says to run `flow login` again; it is never sent expired and
+  never silently anonymous. With several stored logins, pick one with
+  `FLOWSTATE_ISSUER` and `FLOWSTATE_CLIENT_ID`.
+- `flow logout` revokes the refresh token at the `revocation_endpoint` when the
+  IdP advertises one ([RFC 7009](https://www.rfc-editor.org/rfc/rfc7009); best
+  effort, a failure is a warning) and deletes the file.
+
+What the server verifies is the **access token**, so the IdP must issue a JWT
+access token whose `iss` and `aud` match an issuer entry in the trust policy
+(the audience being the `--rpc-resource`). Register the CLI as a *public*
+client with the device grant enabled; a confidential client secret is not
+supported. Per-IdP notes (check your provider's current documentation for the
+exact console wording):
+
+| IdP | Issuer | Notes |
+| --- | --- | --- |
+| Keycloak | `https://host/realms/NAME` | Enable "OAuth 2.0 Device Authorization Grant" on a public client. Add an audience mapper so the access token's `aud` is the RPC resource. `offline_access` yields a refresh token. |
+| Okta | `https://ORG.okta.com/oauth2/default` (a custom authorization server) | Enable the Device Authorization grant on a Native app. Use a custom authorization server whose audience is the RPC resource; the org authorization server's access tokens are not for your own APIs. Grant `offline_access` for refresh. |
+| Auth0 | `https://TENANT.auth0.com/` (note the trailing slash; the discovery document must repeat it exactly) | Enable the Device Code grant on a Native application. Pass `--audience` with the API identifier, or the access token is opaque. Enable "Allow Offline Access" on the API for refresh. |
+| Microsoft Entra ID | `https://login.microsoftonline.com/TENANT/v2.0` | Enable "Allow public client flows". Request a scope on your own API, such as `api://APP-ID/.default openid offline_access`, and set the API's `accessTokenAcceptedVersion` to 2 so `iss` matches the v2.0 issuer. No `revocation_endpoint` is advertised, so `flow logout` only forgets the tokens locally. |
+
+An IdP whose device flow returns opaque access tokens (Google's, for one)
+cannot sign in to a Flowstate server this way.
+
 ### Tier 3 — substrate isolation
 
 Containers or microVMs per tenant, network-level enforcement, per-tenant cloud
