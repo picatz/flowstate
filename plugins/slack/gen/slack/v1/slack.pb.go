@@ -178,10 +178,10 @@ var File_slack_v1_slack_proto protoreflect.FileDescriptor
 
 const file_slack_v1_slack_proto_rawDesc = "" +
 	"\n" +
-	"\x14slack/v1/slack.proto\x12\bslack.v1\x1a\x18flowstate/v1/value.proto\"\xa3\x01\n" +
+	"\x14slack/v1/slack.proto\x12\bslack.v1\x1a\x19flowstate/v1/schema.proto\x1a\x18flowstate/v1/value.proto\"\xab\x01\n" +
 	"\n" +
-	"PostInputs\x12)\n" +
-	"\x05token\x18\x01 \x01(\v2\x13.flowstate.v1.ValueR\x05token\x12\x18\n" +
+	"PostInputs\x121\n" +
+	"\x05token\x18\x01 \x01(\v2\x13.flowstate.v1.ValueB\x06\x8a\xb5\x18\x02\b\x02R\x05token\x12\x18\n" +
 	"\achannel\x18\x02 \x01(\tR\achannel\x12\x12\n" +
 	"\x04text\x18\x03 \x01(\tR\x04text\x12\x1f\n" +
 	"\vmessage_key\x18\x04 \x01(\tR\n" +

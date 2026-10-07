@@ -499,7 +499,7 @@ var File_vcs_v1_vcs_proto protoreflect.FileDescriptor
 
 const file_vcs_v1_vcs_proto_rawDesc = "" +
 	"\n" +
-	"\x10vcs/v1/vcs.proto\x12\x06vcs.v1\x1a\x18flowstate/v1/value.proto\"\x99\x01\n" +
+	"\x10vcs/v1/vcs.proto\x12\x06vcs.v1\x1a\x19flowstate/v1/schema.proto\x1a\x18flowstate/v1/value.proto\"\x99\x01\n" +
 	"\x06Commit\x12\x10\n" +
 	"\x03sha\x18\x01 \x01(\tR\x03sha\x12\x1f\n" +
 	"\vauthor_name\x18\x02 \x01(\tR\n" +
@@ -507,13 +507,13 @@ const file_vcs_v1_vcs_proto_rawDesc = "" +
 	"\fauthor_email\x18\x03 \x01(\tR\vauthorEmail\x12\x18\n" +
 	"\amessage\x18\x04 \x01(\tR\amessage\x12\x1f\n" +
 	"\vauthored_at\x18\x05 \x01(\tR\n" +
-	"authoredAt\"{\n" +
+	"authoredAt\"\x83\x01\n" +
 	"\tLogInputs\x12\x10\n" +
 	"\x03url\x18\x01 \x01(\tR\x03url\x12\x10\n" +
 	"\x03ref\x18\x02 \x01(\tR\x03ref\x12\x1f\n" +
 	"\vmax_commits\x18\x03 \x01(\x05R\n" +
-	"maxCommits\x12)\n" +
-	"\x05token\x18\x04 \x01(\v2\x13.flowstate.v1.ValueR\x05token\"w\n" +
+	"maxCommits\x121\n" +
+	"\x05token\x18\x04 \x01(\v2\x13.flowstate.v1.ValueB\x06\x8a\xb5\x18\x02\b\x02R\x05token\"w\n" +
 	"\n" +
 	"LogOutputs\x12(\n" +
 	"\acommits\x18\x01 \x03(\v2\x0e.vcs.v1.CommitR\acommits\x12!\n" +
@@ -526,13 +526,13 @@ const file_vcs_v1_vcs_proto_rawDesc = "" +
 	"\vchange_type\x18\x03 \x01(\tR\n" +
 	"changeType\x12\x1c\n" +
 	"\tadditions\x18\x04 \x01(\x03R\tadditions\x12\x1c\n" +
-	"\tdeletions\x18\x05 \x01(\x03R\tdeletions\"q\n" +
+	"\tdeletions\x18\x05 \x01(\x03R\tdeletions\"y\n" +
 	"\n" +
 	"DiffInputs\x12\x10\n" +
 	"\x03url\x18\x01 \x01(\tR\x03url\x12\x12\n" +
 	"\x04base\x18\x02 \x01(\tR\x04base\x12\x12\n" +
-	"\x04head\x18\x03 \x01(\tR\x04head\x12)\n" +
-	"\x05token\x18\x04 \x01(\v2\x13.flowstate.v1.ValueR\x05token\"k\n" +
+	"\x04head\x18\x03 \x01(\tR\x04head\x121\n" +
+	"\x05token\x18\x04 \x01(\v2\x13.flowstate.v1.ValueB\x06\x8a\xb5\x18\x02\b\x02R\x05token\"k\n" +
 	"\vDiffOutputs\x12\x14\n" +
 	"\x05patch\x18\x01 \x01(\tR\x05patch\x12(\n" +
 	"\x05files\x18\x02 \x03(\v2\x12.vcs.v1.FileChangeR\x05files\x12\x1c\n" +

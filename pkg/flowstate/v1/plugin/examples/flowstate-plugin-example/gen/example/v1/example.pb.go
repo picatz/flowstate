@@ -7,6 +7,7 @@
 package examplev1
 
 import (
+	_ "github.com/picatz/flowstate/pkg/flowstate/v1"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	reflect "reflect"
@@ -171,15 +172,18 @@ var File_example_v1_example_proto protoreflect.FileDescriptor
 const file_example_v1_example_proto_rawDesc = "" +
 	"\n" +
 	"\x18example/v1/example.proto\x12\n" +
-	"example.v1\"S\n" +
+	"example.v1\x1a\x19flowstate/v1/schema.proto\"[\n" +
 	"\vGreetInputs\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1a\n" +
-	"\bgreeting\x18\x02 \x01(\tR\bgreeting\x12\x14\n" +
-	"\x05token\x18\x03 \x01(\tR\x05token\"f\n" +
+	"\bgreeting\x18\x02 \x01(\tR\bgreeting\x12\x1c\n" +
+	"\x05token\x18\x03 \x01(\tB\x06\x8a\xb5\x18\x02\b\x01R\x05token\"f\n" +
 	"\fGreetOutputs\x12\x18\n" +
 	"\amessage\x18\x01 \x01(\tR\amessage\x12\x16\n" +
 	"\x06length\x18\x02 \x01(\x03R\x06length\x12$\n" +
-	"\rauthenticated\x18\x03 \x01(\bR\rauthenticatedBpZngithub.com/picatz/flowstate/pkg/flowstate/v1/plugin/examples/flowstate-plugin-example/gen/example/v1;examplev1b\x06proto3"
+	"\rauthenticated\x18\x03 \x01(\bR\rauthenticatedB\xd7\x01\n" +
+	"\x0ecom.example.v1B\fExampleProtoP\x01Zngithub.com/picatz/flowstate/pkg/flowstate/v1/plugin/examples/flowstate-plugin-example/gen/example/v1;examplev1\xa2\x02\x03EXX\xaa\x02\n" +
+	"Example.V1\xca\x02\n" +
+	"Example\\V1\xe2\x02\x16Example\\V1\\GPBMetadata\xea\x02\vExample::V1b\x06proto3"
 
 var (
 	file_example_v1_example_proto_rawDescOnce sync.Once
