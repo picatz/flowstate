@@ -141,9 +141,11 @@ var allowedSelfImports = map[string][]string{
 		"eval_task_http_run.go",
 	},
 	// principal is the one CEL-typed caller every policy surface binds; this
-	// package renders a WorkloadIdentity into it (CallerOf).
+	// package renders a WorkloadIdentity into it (CallerOf) and taskpolicy.go
+	// binds it for task-shape rules.
 	"principal": {
 		"run_identity.go",
+		"taskpolicy.go",
 	},
 	"secrets": {
 		"eval_task_http_run.go",
