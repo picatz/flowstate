@@ -37,7 +37,7 @@ const (
 
 	// Explicit actions are held only when named. They gate what an operator
 	// must grant on purpose (reading sensitive values in the clear, using the
-	// codec server), so no absent list and no unrestricted entry implies them.
+	// codec server), so neither an absent list nor anonymity implies them.
 	Explicit
 )
 
