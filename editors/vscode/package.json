@@ -39,6 +39,17 @@
         "configuration": "./language-configuration.json"
       }
     ],
+    "grammars": [
+      {
+        "language": "flowfile",
+        "scopeName": "source.flowfile",
+        "path": "./syntaxes/flowfile.tmLanguage.json"
+      },
+      {
+        "scopeName": "source.cel",
+        "path": "./syntaxes/cel.tmLanguage.json"
+      }
+    ],
     "configuration": {
       "title": "Flowstate",
       "properties": {
@@ -251,6 +262,9 @@
   "devDependencies": {
     "@types/node": "26.6.3",
     "@types/vscode": "1.138.0",
-    "typescript": "7.0.2"
+    "tm-grammars": "1.32.22",
+    "typescript": "7.0.2",
+    "vscode-oniguruma": "2.0.1",
+    "vscode-textmate": "9.3.2"
   }
 }

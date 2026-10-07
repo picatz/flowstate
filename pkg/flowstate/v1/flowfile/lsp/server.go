@@ -310,6 +310,17 @@ func (s *FlowfileServer) dispatch(ctx context.Context, conn *jsonrpc2.Conn, req 
 		}
 		return edits, nil
 
+	case "textDocument/semanticTokens/full":
+		var params semanticTokensParams
+		if err := decode(req, &params); err != nil {
+			return nil, err
+		}
+		doc, ok := s.awaitDoc(ctx, conn, params.TextDocument.URI)
+		if !ok {
+			return semanticTokensResult{Data: []uint32{}}, nil
+		}
+		return semanticTokens(doc), nil
+
 	case "textDocument/codeAction":
 		var params codeActionParams
 		if err := decode(req, &params); err != nil {
@@ -380,6 +391,9 @@ type serverCapabilities struct {
 	lsp.ServerCapabilities
 
 	CodeActionProvider *codeActionOptions `json:"codeActionProvider,omitempty"`
+
+	// SemanticTokensProvider is absent from go-lsp, which predates the feature.
+	SemanticTokensProvider *semanticTokensProvider `json:"semanticTokensProvider,omitempty"`
 }
 
 // codeActionOptions says which kinds of action the server can return.
@@ -396,6 +410,13 @@ type codeActionOptions struct {
 // answer, which reads to a user as the feature being broken rather than absent.
 func capabilities() serverCapabilities {
 	return serverCapabilities{
+		SemanticTokensProvider: &semanticTokensProvider{
+			Legend: semanticTokensLegend{
+				TokenTypes:     semanticTokenTypes,
+				TokenModifiers: semanticTokenModifiers,
+			},
+			Full: true,
+		},
 		CodeActionProvider: &codeActionOptions{
 			// Both spellings of the same migration: the quickfix an author reaches
 			// from the diagnostic under their cursor, and the whole-file action an
