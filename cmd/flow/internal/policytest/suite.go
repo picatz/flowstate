@@ -37,7 +37,7 @@ import (
 	"github.com/picatz/flowstate/internal/strictyaml"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
-	"github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/principal"
 )
 
 // MaxSuiteBytes bounds a suite file, before it is parsed (invariant 5). The case
@@ -88,32 +88,24 @@ type Case struct {
 // subject is a case's identity as each evaluator takes it.
 type subject struct {
 	// egress is read by egress rules and by exec rules, which both take the
-	// netpolicy rendering.
-	egress netpolicy.Identity
+	// shared caller rendering.
+	egress principal.Caller
 
 	// task is read by task-shape rules.
 	task *v1.WorkloadIdentity
 }
 
 // subjectOf is the one place a case's identity fields become the evaluators'
-// identity types. The four policy surfaces each read `identity.<field>` through a
-// type of their own; mapping the case file onto them here, and nowhere else,
-// keeps the day those types become one a change to this function alone.
+// identity values. Egress, exec and task-shape rules all read the same
+// principal.Caller, rendered from the one WorkloadIdentity the case describes.
 func subjectOf(id *v1.PolicyTestIdentity) subject {
-	return subject{
-		egress: netpolicy.Identity{
-			Subject:   id.GetSubject(),
-			Issuer:    id.GetIssuer(),
-			Namespace: id.GetNamespace(),
-			Claims:    id.GetClaims(),
-		},
-		task: &v1.WorkloadIdentity{
-			Subject:   id.GetSubject(),
-			Issuer:    id.GetIssuer(),
-			Namespace: id.GetNamespace(),
-			Claims:    id.GetClaims(),
-		},
+	task := &v1.WorkloadIdentity{
+		Subject:   id.GetSubject(),
+		Issuer:    id.GetIssuer(),
+		Namespace: id.GetNamespace(),
+		Claims:    id.GetClaims(),
 	}
+	return subject{egress: v1.CallerOf(task), task: task}
 }
 
 // ParseSuite reads and validates a suite document.
