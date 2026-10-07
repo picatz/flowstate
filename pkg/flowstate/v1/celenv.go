@@ -419,7 +419,13 @@ func (e *Evaluator) EvalWithCost(ctx context.Context, env *cel.Env, ast *cel.Ast
 	if err != nil {
 		return nil, 0, &ExpressionError{Err: fmt.Errorf("compile expression: %w", err)}
 	}
-	return evalProgramWithCost(ctx, prg, activation)
+	return e.evalProgramWithCost(ctx, env, prg, activation, func() *expr.ParsedExpr {
+		parsed, err := cel.AstToParsedExpr(ordered)
+		if err != nil {
+			return nil
+		}
+		return parsed
+	})
 }
 
 // evalProgramWithCost runs a compiled program and classifies its failure, which is
@@ -427,13 +433,20 @@ func (e *Evaluator) EvalWithCost(ctx context.Context, env *cel.Env, ast *cel.Ast
 // share so a cached expression cannot fail with different words than an uncached
 // one. It returns the actual cost CEL tracked under [Limits.Cost]. A missing cost is zero, which is possible only
 // for evaluators whose tests deliberately disable cost tracking.
-func evalProgramWithCost(ctx context.Context, prg cel.Program, activation any) (ref.Val, uint64, error) {
+//
+// parsedOf returns the expression prg was built from, and is called only after a
+// failure: it is what lets [Evaluator.describeEvalFailure] say which operator
+// failed and on what, at no cost to an evaluation that succeeds (#1551).
+func (e *Evaluator) evalProgramWithCost(ctx context.Context, env *cel.Env, prg cel.Program, activation any, parsedOf func() *expr.ParsedExpr) (ref.Val, uint64, error) {
 	out, details, err := prg.ContextEval(ctx, activation)
 	var cost uint64
 	if details != nil && details.ActualCost() != nil {
 		cost = *details.ActualCost()
 	}
 	if err != nil {
+		if detail := e.describeEvalFailure(ctx, env, parsedOf(), activation, err); detail != "" {
+			return nil, cost, &ExpressionError{Err: fmt.Errorf("evaluate expression: %w (%s)", err, detail)}
+		}
 		return nil, cost, &ExpressionError{Err: fmt.Errorf("evaluate expression: %w", err)}
 	}
 	return out, cost, nil
@@ -534,7 +547,7 @@ func (e *Evaluator) EvalParsedWithCost(ctx context.Context, env *cel.Env, parsed
 		// dwarfs it.
 		e.programs.put(key, prg, proto.Size(parsed))
 	}
-	return evalProgramWithCost(ctx, prg, activation)
+	return e.evalProgramWithCost(ctx, env, prg, activation, func() *expr.ParsedExpr { return orderMapComprehensions(parsed) })
 }
 
 // DefaultProgramCacheSize bounds how many compiled programs an [Evaluator]
