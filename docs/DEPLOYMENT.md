@@ -723,10 +723,17 @@ needs; a loopback address also needs `allow_loopback: true`)
 ```
 
 The section is the trust policy's own `egress:` block, and its fields are the
-ones the worker's `--egress-policy` file takes: `schemes`, `allow_loopback`,
-`allow_private_networks` and `allow_networks`. A policy file that names a plain
-`http` issuer or `jwks_url` the section does not admit is refused when it loads,
-with the sentence above, rather than at the first token. The in-cluster case, an
+ones the worker's `--egress-policy` file takes (the complete set is
+`netpolicy.EgressConfig`: it also narrows with `deny_networks`, `allow_ports`,
+`deny_ports` and CEL rules, and sets timeouts, TLS and proxy). The four that
+widen what an identity provider may be are
+`schemes`, `allow_loopback`, `allow_private_networks` and `allow_networks`. A
+policy file whose issuer or `jwks_url` the section would refuse (a plain `http`
+URL it does not admit, or an IP-literal host in an address class it does not
+admit) is refused when it loads, with the sentence above, rather than at the
+first token. That check reads the exact request, and the address only when the
+host is a literal; a host name is not resolved at load, so one that points at a
+denied address is still refused at the first fetch. The in-cluster case, an
 identity provider on a private address, admits private networks and keeps https:
 
 ```yaml
@@ -985,7 +992,9 @@ is the v2.0 issuer below, with the directory's GUID in place of `TENANT`. The
 `tid` claim names the directory, so it maps a directory GUID to a namespace.
 Prefer app roles (`roles`) to `groups`, whose values are GUIDs and which Entra
 replaces with an overage indicator past a size limit; a token that carries the
-indicator is refused here (see above). The audience Entra puts in `aud` is the
+indicator (`_claim_names.groups`) is refused here even with `groups_claim: roles`
+(see above). `group_map` renames what a rule reads; it does not gate admission,
+which the audience, `require:` and the namespace rules decide. The audience Entra puts in `aud` is the
 application ID URI or client ID of your API: check a real token:
 
 ```yaml
