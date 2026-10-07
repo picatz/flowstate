@@ -17,7 +17,9 @@ import (
 // times, each copy with its own idea of what an absent action list meant; a
 // seventh copy would be a new place for that meaning to drift. Reading
 // an Actions list to answer the question belongs in this package, and in the
-// auth package that builds the list, and nowhere else.
+// auth package that builds the list, and nowhere else. The principal package
+// is the one other reader: it projects the list into a rule's CEL identity and
+// only smooths a nil list to an empty one; it decides nothing.
 func TestNoActionCheckOutsideAuthz(t *testing.T) {
 	root := filepath.Join("..", "..", "..", "..")
 
@@ -31,6 +33,7 @@ func TestNoActionCheckOutsideAuthz(t *testing.T) {
 
 			slash := filepath.ToSlash(path)
 			if strings.Contains(slash, "/pkg/flowstate/v1/authz/") || strings.Contains(slash, "/pkg/flowstate/v1/auth/") ||
+				strings.HasSuffix(slash, "/pkg/flowstate/v1/principal/principal.go") ||
 				strings.HasSuffix(slash, ".pb.go") {
 				return nil
 			}
