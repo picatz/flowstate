@@ -5,6 +5,7 @@ package anthropic.v1;
 option go_package = "github.com/picatz/flowstate/plugins/anthropic/gen/anthropic/v1;anthropicv1";
 
 import "flowstate/decision/v1/decision.proto";
+import "flowstate/v1/schema.proto";
 import "flowstate/v1/value.proto";
 
 // DecideInputs is this plugin's one task: put a named set of typed questions
@@ -38,7 +39,7 @@ message DecideInputs {
   // literal is refused before it can enter durable history. The resolved value
   // is capped at 4 KiB, sent only as the x-api-key header, and never appears
   // in an error.
-  flowstate.v1.Value api_key = 1;
+  flowstate.v1.Value api_key = 1 [(flowstate.v1.input).secret = SECRET_REQUIRED];
 
   // Model is the Anthropic model identifier the request names, required and
   // never defaulted here. It is passed through unchanged, so an alias or a

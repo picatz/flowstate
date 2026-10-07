@@ -71,6 +71,7 @@ inventory below remains the source of truth for every directory.
 | CLI, MCP, and DAP debugging, local and durable | [debugging](debugging), [loop-accumulate](loop-accumulate), [debugger guide](../docs/DEBUGGING.md) | testing/debugging/editor/agent journey |
 | LSP and editor setup | [editor setup](../docs/EDITORS.md), [VS Code client](../editors/vscode/README.md) | testing/debugging/editor/agent journey |
 | Task, egress, and identity policy | [task-shape-policy](task-shape-policy), [signal-rule-identity](signal-rule-identity), [http-secret](http-secret) | policy/governance |
+| Testing a deployment policy against cases | [policy-test](policy-test) | policy/governance |
 | Running a program under an operator's allowlist | [exec-checks](exec-checks) | policy/governance |
 | Holding a credential a step needs | [http-secret](http-secret), then [vault-secret](vault-secret), [http-federated](http-federated) | policy/governance |
 | One run at a time, and one tenant's fleet | [exclusive-cluster-drain](exclusive-cluster-drain), [operations/tenant-routing](operations/tenant-routing/) | policy/governance |
@@ -166,6 +167,7 @@ says otherwise.
 | [http-federated](http-federated) | Exchanging the workload identity for a short-lived API credential inside the task | yes |
 | [federation-flow-to-flow](federation-flow-to-flow) | The `assertion` target — presenting the minted assertion itself to a relying party that verifies OIDC, here another Flowstate deployment, with no exchange and no shared secret | yes |
 | [exec-checks](exec-checks) | The built-in `exec:` task, denied until an operator's `--exec-policy` names the programs, directories and environment — `argv` as a list, a nonzero exit as output, and a policy file whose rules are exact argv shapes. Read its README; `flow test` stubs it, nothing here starts a process | no |
+| [policy-test](policy-test) | `flow policy test` putting cases to the egress and task-shape policies already in this tree, refusals first, with the rule that denied each one named. Read its README; it runs no workflow | no |
 | [task-shape-policy](task-shape-policy) | A deployment-side `--task-policy` refusing a step whose own `if:` and `signals:` have already been stripped out — the author-proof complement to `approval-gate`'s in-file gate | no |
 | [simple-http-multi-step](simple-http-multi-step) | Using a response status code in a later step | yes |
 | [edition-and-descriptions](edition-and-descriptions) | `description:` as a property of the step, and the required `edition:` naming the grammar the file is written in | no |

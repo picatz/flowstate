@@ -1,0 +1,28 @@
+# Cases for ../task-shape-policy/task-policy.yaml, run with:
+#
+#   flow policy test examples/task-shape-policy/task-policy.yaml examples/policy-test/task-cases.yaml
+#
+# The policy is deny-only, so it narrows exactly what it names. The last case
+# pins that: a deny-only policy must not become an allowlist by accident.
+surface: task
+cases:
+  - name: the platform team dispatches log
+    identity: {namespace: platform}
+    request: {task: log}
+    expect: allow
+
+  - name: another tenant is refused log
+    identity: {namespace: team-a}
+    request: {task: log}
+    expect: deny
+    rule: 'task == "log" && identity.namespace != "platform"'
+
+  - name: an unattested run is refused log
+    request: {task: log}
+    expect: deny
+    rule: 'task == "log" && identity.namespace != "platform"'
+
+  - name: every other task is untouched
+    identity: {namespace: team-a}
+    request: {task: http}
+    expect: allow

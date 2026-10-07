@@ -423,7 +423,7 @@ func refusedCheckInputs(cmd *cobra.Command, workflow *v1.Workflow, submitted map
 }
 
 // writeCheckJSON writes the report in the format a job reads.
-func writeCheckJSON(cmd *cobra.Command, format OutputFormat, report policycheck.Report) error {
+func writeCheckJSON(cmd *cobra.Command, format OutputFormat, report any) error {
 	var (
 		encoded []byte
 		err     error
