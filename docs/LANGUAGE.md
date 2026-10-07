@@ -1349,7 +1349,7 @@ it. `manual:` can only narrow that:
   `allow: ${sender.identity.claims.team == "ops"}`, or
   `allow: ${sender.identity.principal in ["https://issuer.example.com#oncall@example.com"]}`
   for named callers, each written `"<issuer>#<subject>"`. It reads
-  `sender.identity.{principal,subject,issuer,namespace,kind,claims}` (the verified
+  `sender.identity.{principal,subject,issuer,namespace,kind,claims,actions}` (the verified
   caller) and `inputs` (the arguments submitted with this start), and nothing
   else; there is no run yet, so reading `run` is a compile error. Only a clean
   `true` allows, and a caller with no authenticated principal is refused. A
@@ -1456,7 +1456,7 @@ signals:
 
 Each entry is a signal name the workflow waits for, and `allow:` is one `${...}`
 predicate that says which senders may deliver it. It reads
-`sender.identity.{principal,subject,issuer,namespace,kind,claims}` (the verified sender;
+`sender.identity.{principal,subject,issuer,namespace,kind,claims,actions}` (the verified sender;
 `principal` is `"<issuer>#<subject>"`, and empty when either half is missing),
 `run.identity` (the starter, with the same fields) and `inputs`, and nothing else:
 
@@ -1465,6 +1465,10 @@ predicate that says which senders may deliver it. It reads
 - `sender.identity.claims.team == "release-managers"` matches a claim the server was
   configured to record (`flow server --identity-claim team`). A missing claim is an
   error, which refuses the sender.
+- A claim keeps its JSON shape: `"sre" in sender.identity.claims.groups` reads a list and
+  `sender.identity.claims.slack.user == "U1"` a nested object. Guard an absent one with
+  `has(sender.identity.claims.groups)`; reading one the sender lacks is an error, which
+  refuses. `sender.identity.actions` is the list of scopes the sender was granted.
 - `sender.identity.namespace == "payments"` is the sender's tenant.
 - `sender.identity.kind == "human"` requires a person, as the trust policy entry that admitted the sender says (`principal_kind:`); it is `""` when that entry says nothing, which is not a workload. Rehearse it with `--signal-as-kind` (and `--as-kind` for the starter) on `flow run local`, `flow signals check` (`--starter-kind`), or `kind:` in a test file.
 - `sender.identity.principal != run.identity.principal` requires that the sender is not

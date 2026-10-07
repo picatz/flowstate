@@ -4552,7 +4552,7 @@ still writes one is refused at parse with a sentence that names the key (never i
 value) and says to run `flow fix`, which rewrites each of them into the predicate; see
 [What `flow fix` writes](#what-flow-fix-writes-for-who-may-act).
 
-**The scope is closed.** `sender.identity.{principal,subject,issuer,namespace,kind,claims}`
+**The scope is closed.** `sender.identity.{principal,subject,issuer,namespace,kind,claims,actions}`
 is the server's own attestation of whoever is delivering. `run.identity` is the run's
 starter with the same fields, and `inputs` is the run's arguments. Nothing else is in
 scope: no steps, vars, clock or secrets, and a name outside it is a compile error
@@ -4577,6 +4577,14 @@ A token can carry `team` and the trust policy can verify it, and a predicate rea
 flag. The refusal of a predicate that reads claims therefore names which claim names
 the sender identity carried (or that it carried none), never their values, so an
 empty projection reads differently from a wrong value.
+
+**Claims keep their JSON shape.** The one `principal.Caller` every policy surface
+binds is read here too: `"sre" in sender.identity.claims.groups` reads a list claim,
+`sender.identity.claims.slack.user == "U1"` a nested object, and
+`sender.identity.actions` the scopes the sender was granted. The same fields are
+read as `identity.*` by `allow:`/`deny:` rules on egress, exec, task shape, secrets
+and assumption. A claim the caller does not carry is an error on every surface, so
+the rule denies; guard it with `has(...)` or `"k" in identity.claims`.
 
 **Narrowing is syntactic.** Whoever starts a run chooses its `inputs`, so a predicate
 over them alone would let the starter name their own approver. A predicate that reads

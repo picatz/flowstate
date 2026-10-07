@@ -143,11 +143,13 @@ var allowedSelfImports = map[string][]string{
 		"eval_task_http_def.go",
 		"eval_task_http_run.go",
 	},
-	// principal is the caller type egress, exec and task-shape rules bind; this
+	// principal is the caller type every policy surface binds; this
 	// package renders a WorkloadIdentity into it (CallerOf) and taskpolicy.go
-	// binds it for task-shape rules.
+	// binds it for task-shape rules, and signalpredicate.go for the signal and
+	// manual-start predicates' `sender` and `run`.
 	"principal": {
 		"run_identity.go",
+		"signalpredicate.go",
 		"taskpolicy.go",
 	},
 	"secrets": {

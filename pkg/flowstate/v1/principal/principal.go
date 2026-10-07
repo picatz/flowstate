@@ -1,10 +1,9 @@
 // Package principal is the CEL-typed rendering of an authenticated caller.
 //
-// Today it is the shape egress, exec and task-shape rules share: they bind the
-// same [Caller] type, so a field added here is readable in all three at once.
-// Secret access, credential assumption and signal predicates do not bind it
-// yet; they migrate in later slices, and until then they keep their own
-// spellings. The variable's name stays per surface (`identity`,
+// It is the one shape every policy surface shares: egress, exec, task-shape,
+// secret-access and credential-assumption rules, and the signal and manual-start
+// predicates, all bind the same [Caller] type, so a field added here is readable
+// on all of them at once. The variable's name stays per surface (`identity`,
 // `sender.identity`, `run.identity`); the type does not.
 //
 // The package is a leaf: it imports only the standard library and cel-go, so
