@@ -7,6 +7,7 @@ import (
 	"github.com/spf13/cobra"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/execpolicy"
 )
 
 // The built-in `exec` task is denied until a deployment says otherwise, and this
@@ -57,14 +58,9 @@ func applyExecPolicy(cmd *cobra.Command) error {
 		return nil
 	}
 
-	data, err := readBoundedFile(path, "an exec policy", v1.MaxExecPolicyBytes)
+	policy, err := loadExecPolicy(path)
 	if err != nil {
-		return fmt.Errorf("reading exec policy: %w", err)
-	}
-
-	policy, err := v1.ParseExecPolicy(data)
-	if err != nil {
-		return fmt.Errorf("exec policy %s: %w", path, err)
+		return err
 	}
 
 	if err := v1.DefaultRegistry().Replace(v1.ExecTaskDef(policy)); err != nil {
@@ -72,4 +68,21 @@ func applyExecPolicy(cmd *cobra.Command) error {
 	}
 
 	return nil
+}
+
+// loadExecPolicy reads, verifies and compiles an exec policy file, shared by
+// [applyExecPolicy], which registers it, and `flow policy test`, which asks it
+// questions.
+func loadExecPolicy(path string) (*execpolicy.Policy, error) {
+	data, err := readBoundedFile(path, "an exec policy", v1.MaxExecPolicyBytes)
+	if err != nil {
+		return nil, fmt.Errorf("reading exec policy: %w", err)
+	}
+
+	policy, err := v1.ParseExecPolicy(data)
+	if err != nil {
+		return nil, fmt.Errorf("exec policy %s: %w", path, err)
+	}
+
+	return policy, nil
 }
