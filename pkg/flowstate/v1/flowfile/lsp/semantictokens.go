@@ -169,7 +169,10 @@ func lexCEL(src string) []celToken {
 			case afterDot && call:
 				tok.kind = tokMethod
 				if bindsFirstArgument[word] {
-					if name, ok := firstArgument(src, j); ok {
+					// Past maxBindings an unclosed macro stops shadowing: every
+					// root is checked against the whole stack, so an uncapped one
+					// makes a document of repeated `.all(x,` quadratic to lex.
+					if name, ok := firstArgument(src, j); ok && len(bound) < maxBindings {
 						// The parenthesis that opens the call is not counted yet:
 						// the binding lives one level deeper than it.
 						bound = append(bound, binding{name, depth + 1})
@@ -236,6 +239,11 @@ func lexCEL(src string) []celToken {
 
 	return out
 }
+
+// maxBindings bounds how many comprehension variables lexCEL tracks at once. A
+// real expression nests a handful of macros; the cap only exists so an
+// author-controlled document cannot make the shadowing check quadratic.
+const maxBindings = 64
 
 var twoByteOperators = []string{"&&", "||", "==", "!=", "<=", ">="}
 

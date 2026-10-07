@@ -255,3 +255,28 @@ steps:
 		"4:17 0 number",
 	}, decodeTokens(t, src, c.semanticTokens("file:///where.yaml").Data))
 }
+
+// TestLexCELBoundsTheBindingsItTracks pins the work limit on shadowing: every
+// root is checked against the open bindings, so an author-controlled run of
+// unclosed macros must not grow that stack without bound. Past maxBindings a
+// further macro binds nothing, which is observable without timing anything.
+func TestLexCELBoundsTheBindingsItTracks(t *testing.T) {
+	t.Parallel()
+
+	rootMods := func(src string) uint32 {
+		var last uint32
+		for _, tok := range lexCEL(src) {
+			if tok.kind == tokVariable && src[tok.start:tok.end] == "inputs" {
+				last = tok.mods
+			}
+		}
+		return last
+	}
+
+	within := strings.Repeat("a.all(x, ", maxBindings-1) + "a.all(inputs, inputs)"
+	assert.Zero(t, rootMods(within), "a binding inside the cap still shadows the root")
+
+	past := strings.Repeat("a.all(x, ", maxBindings) + "a.all(inputs, inputs)"
+	assert.Equal(t, uint32(modDefaultLibrary), rootMods(past),
+		"a binding past the cap is not tracked, so the work stays bounded")
+}
