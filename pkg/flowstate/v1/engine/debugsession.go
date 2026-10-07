@@ -192,8 +192,8 @@ func (e *executor) applyTypedAsk(ask *v1.DebugAsk, parseErr error, sender *v1.Si
 	}
 	e.expireDebugSession(judged)
 
-	holder := d.attached() && v1.QualifiedSubject(d.carry.GetHolder().GetIssuer(), d.carry.GetHolder().GetSubject()) ==
-		v1.QualifiedSubject(sender.GetIdentity().GetIssuer(), sender.GetIdentity().GetSubject())
+	holder := d.attached() && v1.QualifiedSubject(d.carry.GetHolder().GetPrincipal().GetIssuer(), d.carry.GetHolder().GetPrincipal().GetSubject()) ==
+		v1.QualifiedSubject(sender.GetIdentity().GetPrincipal().GetIssuer(), sender.GetIdentity().GetPrincipal().GetSubject())
 	mine := d.attached() && d.carry.GetSessionId() == ask.Session && holder
 	// Held is judged at the same fence as expiry: a renewal accepted while
 	// the lease still ran renews it, even when a long step kept the run from
@@ -225,7 +225,7 @@ func (e *executor) applyTypedAsk(ask *v1.DebugAsk, parseErr error, sender *v1.Si
 			d.parsed = nil
 			e.debugPausePending(ask.Request)
 			logger.Info("debug session attached", "session", ask.Session,
-				"holder", v1.QualifiedSubject(sender.GetIdentity().GetIssuer(), sender.GetIdentity().GetSubject()),
+				"holder", v1.QualifiedSubject(sender.GetIdentity().GetPrincipal().GetIssuer(), sender.GetIdentity().GetPrincipal().GetSubject()),
 				"lease_expires_at", d.carry.GetLeaseExpiresAt().AsTime(), "session_ends_at", deadline)
 		case !mine:
 			d.receipt(ask.Request, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_CONFLICT,

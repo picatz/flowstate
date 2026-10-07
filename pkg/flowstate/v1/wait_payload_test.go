@@ -127,7 +127,7 @@ func TestASenderCannotClaimAnIdentity(t *testing.T) {
 	}}
 
 	attested := &v1.SignalSender{
-		Identity: &v1.WorkloadIdentity{Subject: "real-caller", Namespace: "team-a"},
+		Identity: &v1.WorkloadIdentity{Principal: &v1.Principal{Subject: "real-caller", Namespace: "team-a"}},
 	}
 
 	outputs := v1.SignalOutputs(hostile, attested, false)

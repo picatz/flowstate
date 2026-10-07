@@ -61,7 +61,7 @@ func TestAQuorumNeverCountsADeliveryQueuedPastItsDeadline(t *testing.T) {
 	approve := func(subject string) error {
 		return signals.DeliverFrom("release-approved",
 			&v1.Node_Outputs{NamedValues: map[string]*v1.Value{"approved": v1.NewLiteral(true)}},
-			&v1.SignalSender{Identity: &v1.WorkloadIdentity{Subject: subject, Issuer: "https://idp.example"}})
+			&v1.SignalSender{Identity: &v1.WorkloadIdentity{Principal: &v1.Principal{Subject: subject, Issuer: "https://idp.example"}}})
 	}
 
 	clock := &lateDeliveryClock{base: time.Unix(0, 0), release: make(chan struct{})}

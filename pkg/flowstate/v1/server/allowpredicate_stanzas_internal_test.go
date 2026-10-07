@@ -47,7 +47,7 @@ func debugRunMemo(t *testing.T, wf *v1types.Workflow, inputs map[string]*v1types
 	}
 	if starter != nil {
 		payload, err := converter.GetDefaultDataConverter().ToPayload(
-			v1types.QualifiedSubject(starter.GetIssuer(), starter.GetSubject()))
+			v1types.QualifiedSubject(starter.GetPrincipal().GetIssuer(), starter.GetPrincipal().GetSubject()))
 		require.NoError(t, err)
 		fields[starterMemoKey] = payload
 	}
@@ -58,10 +58,7 @@ func debugRunMemo(t *testing.T, wf *v1types.Workflow, inputs map[string]*v1types
 func TestADebugPredicateReadsTheRunScopeSubmitRecorded(t *testing.T) {
 	t.Parallel()
 
-	starter := &v1types.WorkloadIdentity{
-		Issuer: "https://issuer.example.com", Subject: "requester@example.com",
-		Claims: map[string]string{"team": "payments"},
-	}
+	starter := &v1types.WorkloadIdentity{Principal: &v1types.Principal{Issuer: "https://issuer.example.com", Subject: "requester@example.com", Claims: v1types.StringClaimValues(map[string]string{"team": "payments"})}}
 	inputs := map[string]*v1types.Value{"debugger": v1types.NewLiteral("sre-1@example.com")}
 	wf := debugPredicateWorkflow(`sender.identity.claims.team == run.identity.claims.team` +
 		` && sender.identity.principal == "https://issuer.example.com#" + inputs.debugger`)
@@ -88,7 +85,7 @@ func TestADebugPredicateReadsTheRunScopeSubmitRecorded(t *testing.T) {
 func TestADebugPredicateDeniesWhenWhatItReadsWasNeverRecorded(t *testing.T) {
 	t.Parallel()
 
-	starter := &v1types.WorkloadIdentity{Issuer: "https://issuer.example.com", Subject: "requester@example.com"}
+	starter := &v1types.WorkloadIdentity{Principal: &v1types.Principal{Issuer: "https://issuer.example.com", Subject: "requester@example.com"}}
 	wf := debugPredicateWorkflow(`sender.identity.principal != run.identity.principal`)
 	srv := mustNew(t, nil)
 	caller := sender("https://issuer.example.com", "sre-1@example.com", "", nil)
@@ -128,7 +125,7 @@ func TestADebugPredicateThatReadsNothingOfTheRunNeedsNoScope(t *testing.T) {
 	wf := debugPredicateWorkflow(`sender.identity.claims.team == "sre"`)
 	entries, err := policyMemoEntries(wf,
 		map[string]*v1types.Value{"secretish": v1types.NewLiteral("v")},
-		&v1types.WorkloadIdentity{Issuer: "i", Subject: "s", Claims: map[string]string{"team": "x"}})
+		&v1types.WorkloadIdentity{Principal: &v1types.Principal{Issuer: "i", Subject: "s", Claims: v1types.StringClaimValues(map[string]string{"team": "x"})}})
 	require.NoError(t, err)
 
 	assert.NotContains(t, entries, signalPolicyScopeMemoKey,
@@ -146,7 +143,7 @@ func TestADebugPredicateThatReadsNothingOfTheRunNeedsNoScope(t *testing.T) {
 func TestOneRecordedScopeServesSignalsAndDebugTogether(t *testing.T) {
 	t.Parallel()
 
-	starter := &v1types.WorkloadIdentity{Issuer: "https://i", Subject: "s", Claims: map[string]string{"team": "payments"}}
+	starter := &v1types.WorkloadIdentity{Principal: &v1types.Principal{Issuer: "https://i", Subject: "s", Claims: v1types.StringClaimValues(map[string]string{"team": "payments"})}}
 	inputs := map[string]*v1types.Value{"approver": v1types.NewLiteral("lead")}
 	wf := &v1types.Workflow{
 		Name:    "both",
@@ -165,7 +162,7 @@ func TestOneRecordedScopeServesSignalsAndDebugTogether(t *testing.T) {
 	scope := &v1types.Scope{}
 	require.NoError(t, proto.Unmarshal(entries[signalPolicyScopeMemoKey].([]byte), scope))
 	assert.Contains(t, scope.GetInputs(), "approver", "the signal predicate's inputs were dropped when debug joined the scope")
-	assert.Equal(t, "payments", scope.GetIdentity().GetClaims()["team"], "the debug predicate's starter was not recorded")
+	assert.Equal(t, "payments", scope.GetIdentity().GetPrincipal().GetClaims()["team"].GetStringValue(), "the debug predicate's starter was not recorded")
 }
 
 func TestADebugPredicateScopeOverItsBoundRefusesTheRun(t *testing.T) {

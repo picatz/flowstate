@@ -1489,7 +1489,7 @@ type DebugBinding_Rendered struct {
 	// The two disagree on any non-ASCII rendering, and a limit written down
 	// twice in two units is a boundary that refuses values its producer
 	// considers legal. Same unit, both layers — the rule
-	// `WorkloadIdentity.claims` states at length.
+	// `Principal.claims` states at length.
 	//
 	// 4160 rather than the content bound of 4096, because the marker is part
 	// of what travels and a bound that forgot it would refuse a value

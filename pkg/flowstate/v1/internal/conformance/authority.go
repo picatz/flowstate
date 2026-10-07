@@ -88,6 +88,10 @@ type Federation struct {
 	NoAllow bool
 	// Deny are assumption deny rules the broker is built with.
 	Deny []string
+	// Allow are assumption allow rules the broker is built with. Left empty,
+	// the broker allows every request unless NoAllow says otherwise; a case
+	// about what an assumption rule can read about the caller names its rule.
+	Allow []string
 }
 
 // HasSecrets reports whether this Authority configures a fixture secret store
@@ -154,7 +158,10 @@ func (a Authority) Broker(tb testing.TB) *auth.Broker {
 		auth.WithTarget(a.Federation.Target, fixtureExchanger{token: a.Federation.Token, calls: a.Federation.ExchangeCalls}),
 		auth.WithAssumeDenyRules(a.Federation.Deny...),
 	}
-	if !a.Federation.NoAllow {
+	switch {
+	case len(a.Federation.Allow) > 0:
+		options = append(options, auth.WithAssumeAllowRules(a.Federation.Allow...))
+	case !a.Federation.NoAllow:
 		options = append(options, auth.WithAssumeAllowRules("true"))
 	}
 	broker, err := auth.NewBroker(issuer, options...)
@@ -168,19 +175,13 @@ func (a Authority) Broker(tb testing.TB) *auth.Broker {
 // [v1.RunState.Identity] carries, for the durable driver to install at worker
 // registration.
 //
-// Claims is copied too, not just the four scalar fields: a case whose policy
+// Claims, kind and actions are copied too, not just the scalar fields: a case whose policy
 // keys on identity.claims["repository"] would otherwise see them on the local
 // driver, which installs auth.WorkloadIdentity directly, and lose them on the
 // durable driver, which only ever sees what crossed this conversion — a
 // driver disagreement the harness itself would have caused rather than caught.
 func (a Authority) ProtoIdentity() *v1.WorkloadIdentity {
-	return &v1.WorkloadIdentity{
-		Subject:    a.Identity.Subject,
-		Issuer:     a.Identity.Issuer,
-		Claims:     v1.StringClaims(a.Identity.Claims),
-		Namespace:  a.Identity.Namespace,
-		Deployment: a.Identity.Deployment,
-	}
+	return &v1.WorkloadIdentity{Principal: v1.ProtoPrincipal(a.Identity), Deployment: a.Identity.Deployment}
 }
 
 // fixtureSecretProvider always resolves to value, whatever name was asked
@@ -319,7 +320,7 @@ func AuthorityDenialCases() []AuthorityCase {
 		Subject: "svc-reader", Issuer: "https://issuer.example", Namespace: "acme-tenant",
 	}
 
-	return []AuthorityCase{
+	return append([]AuthorityCase{
 		{
 			Name: "a bearer reference fails closed with no runtime configured",
 			Workflow: &v1.Workflow{
@@ -474,7 +475,7 @@ func AuthorityDenialCases() []AuthorityCase {
 				ProviderCalls: new(atomic.Int32),
 			},
 		},
-	}
+	}, PrincipalCarrierDenialCases()...)
 }
 
 // AuthorityContainmentCases exercise a secret and a JIT credential that
@@ -530,7 +531,7 @@ func AuthorityContainmentCases(baseURL string) []AuthorityCase {
 		}},
 	}}
 
-	return []AuthorityCase{
+	return append([]AuthorityCase{
 		{
 			Name: "a resolved bearer secret is contained end to end",
 			Workflow: &v1.Workflow{
@@ -611,7 +612,7 @@ func AuthorityContainmentCases(baseURL string) []AuthorityCase {
 			},
 			ContainmentValue: jitMaterial,
 		},
-	}
+	}, PrincipalCarrierCases(baseURL)...)
 }
 
 // AssertNoLeak fails tb if material appears in any observable rendering of

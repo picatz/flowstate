@@ -256,7 +256,7 @@
 // custom claims and can only condition a trust policy on "sub" and "aud" — a
 // run-mode marker carried only as a claim would be unenforceable there. The
 // mode is set by which constructor built the [WorkloadIdentity]
-// ([NewLocalWorkloadIdentity] versus [IdentityFromPrincipal] or [IdentityFrom]),
+// ([NewLocalWorkloadIdentity] versus [IdentityFromPrincipal]),
 // never by a flag, since the field recording it is unexported.
 //
 // A local run's [ClaimNamespace] claim and the workload attributes an

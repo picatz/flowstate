@@ -72,21 +72,18 @@ func TestIdentityFromPrincipal(t *testing.T) {
 		require.Equal(t, []any{"eng", "oncall"}, caller.Claims.Map()["groups"])
 	})
 
-	t.Run("a claim over the bounds is not carried rather than trimmed", func(t *testing.T) {
-		many := make([]any, auth.MaxCarriedClaimNodes+1)
+	t.Run("a claim over the bounds is carried whole and refused, never trimmed", func(t *testing.T) {
+		many := make([]any, 400)
 		for i := range many {
-			many[i] = "g"
+			many[i] = strings.Repeat("g", 20)
 		}
-		deep := any("leaf")
-		for range auth.MaxCarriedClaimDepth + 1 {
-			deep = []any{deep}
-		}
-		big := auth.Principal{Subject: "s", Issuer: "i", Claims: map[string]any{
-			"many": many, "deep": deep, "long": strings.Repeat("x", auth.MaxCarriedClaimValueBytes+1), "ok": "v",
-		}}
+		big := auth.Principal{Subject: "s", Issuer: "i", Claims: map[string]any{"many": many, "ok": "v"}}
 
-		identity := auth.IdentityFromPrincipal(big, "", "", "many", "deep", "long", "ok")
-		require.Equal(t, map[string]any{"ok": "v"}, identity.Claims)
+		identity := auth.IdentityFromPrincipal(big, "", "", "many", "ok")
+		require.Len(t, identity.Claims["many"], 400, "nothing is trimmed")
+		require.ErrorIs(t, identity.Validate(), auth.ErrInvalidIdentity)
+		require.Contains(t, identity.Validate().Error(), "many")
+		require.NotContains(t, identity.Validate().Error(), "gggg", "a claim value never appears in an error")
 	})
 
 	t.Run("naming no claims carries none", func(t *testing.T) {
@@ -103,7 +100,7 @@ func TestIdentityFromPrincipal(t *testing.T) {
 }
 
 // TestClaimsRoundTripThroughTheWireForm pins that the proto reader and writer
-// agree with each other and refuse the same shapes the mint does.
+// agree with each other, and that what the reader will not walk is refused.
 func TestClaimsRoundTripThroughTheWireForm(t *testing.T) {
 	claims := map[string]any{
 		"groups": []any{"eng", "oncall"},
@@ -113,15 +110,22 @@ func TestClaimsRoundTripThroughTheWireForm(t *testing.T) {
 
 	wire := auth.ClaimsToStruct(claims)
 	require.Len(t, wire, 3)
-	require.Equal(t, claims, auth.ClaimsFromStruct(wire))
 
-	t.Run("a hostile value is bounded where it is read", func(t *testing.T) {
+	base := testIdentity()
+	got := base.WithWireClaims(wire)
+	require.Equal(t, claims, got.Claims)
+	require.NoError(t, got.Validate())
+
+	t.Run("a hostile value is bounded where it is read and refuses the identity", func(t *testing.T) {
 		deep := structpb.NewStringValue("leaf")
 		for range 10_000 {
 			deep = structpb.NewListValue(&structpb.ListValue{Values: []*structpb.Value{deep}})
 		}
-		got := auth.ClaimsFromStruct(map[string]*structpb.Value{"deep": deep, "ok": structpb.NewStringValue("v")})
-		require.Equal(t, map[string]any{"ok": "v"}, got)
+		got := base.WithWireClaims(map[string]*structpb.Value{"deep": deep, "ok": structpb.NewStringValue("v")})
+		require.Equal(t, map[string]any{"ok": "v"}, got.Claims, "the claim is left out, so a rule reading it errors")
+		require.ErrorIs(t, got.Validate(), auth.ErrInvalidIdentity, "and a mint is refused, not made without it")
+		require.Contains(t, got.Validate().Error(), "deep")
+		require.False(t, got.IsZero())
 	})
 
 	t.Run("no more than the claim count is read", func(t *testing.T) {
@@ -129,7 +133,9 @@ func TestClaimsRoundTripThroughTheWireForm(t *testing.T) {
 		for i := range auth.MaxCarriedClaims * 2 {
 			in[fmt.Sprintf("c%03d", i)] = structpb.NewStringValue("v")
 		}
-		require.Len(t, auth.ClaimsFromStruct(in), auth.MaxCarriedClaims)
+		got := base.WithWireClaims(in)
+		require.Len(t, got.Claims, auth.MaxCarriedClaims)
+		require.ErrorIs(t, got.Validate(), auth.ErrInvalidIdentity)
 	})
 }
 

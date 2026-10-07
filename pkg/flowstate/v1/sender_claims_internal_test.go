@@ -12,9 +12,7 @@ import (
 func TestSenderValueCarriesNoClaims(t *testing.T) {
 	t.Parallel()
 
-	got := signalSenderValue(&SignalSender{Identity: &WorkloadIdentity{
-		Subject: "alice", Issuer: "https://idp.example", Claims: map[string]string{"email": "alice@example.com"},
-	}})
+	got := signalSenderValue(&SignalSender{Identity: &WorkloadIdentity{Principal: &Principal{Subject: "alice", Issuer: "https://idp.example", Claims: StringClaimValues(map[string]string{"email": "alice@example.com"})}}})
 
 	var keys []string
 	for _, e := range got.GetLiteral().GetMapValue().GetEntries() {

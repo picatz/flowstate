@@ -43,8 +43,8 @@ func PluginIdentityTaskDef(needsScope bool) v1.TaskDef {
 			identity, present := plugin.IdentityFromContext(ctx)
 			return &v1.Node_Outputs{NamedValues: map[string]*v1.Value{
 				"present":   v1.NewLiteral(present),
-				"subject":   v1.NewLiteral(identity.GetSubject()),
-				"namespace": v1.NewLiteral(identity.GetNamespace()),
+				"subject":   v1.NewLiteral(identity.GetPrincipal().GetSubject()),
+				"namespace": v1.NewLiteral(identity.GetPrincipal().GetNamespace()),
 				"mode":      v1.NewLiteral(int64(identity.GetMode())),
 			}}, nil
 		},

@@ -477,10 +477,10 @@ func (t *QuorumTally) Take(ctx context.Context, delivery *SignalDelivery, scope 
 	}
 
 	identity := delivery.GetSender().GetIdentity()
-	key := QualifiedSubject(identity.GetIssuer(), identity.GetSubject())
+	key := QualifiedSubject(identity.GetPrincipal().GetIssuer(), identity.GetPrincipal().GetSubject())
 
 	distinct := quorumDistinct(t.quorum)
-	if distinct && identity.GetSubject() == "" {
+	if distinct && identity.GetPrincipal().GetSubject() == "" {
 		// Nobody to be distinct from: see [SignalQuorum.distinct].
 		return nil
 	}
@@ -572,7 +572,7 @@ func (t *QuorumTally) excludes(
 		}
 
 		if slices.ContainsFunc(subjects, func(subject string) bool {
-			return subject == identity.GetSubject() || subject == qualified
+			return subject == identity.GetPrincipal().GetSubject() || subject == qualified
 		}) {
 			return true, nil
 		}

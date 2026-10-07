@@ -62,10 +62,7 @@ func TestAnOperatorDenyRuleStopsASlackPost(t *testing.T) {
 		t.Fatalf("the launched plugin does not offer exactly slack.post: %v", defs)
 	}
 
-	ctx := plugin.NewContextWithIdentity(t.Context(), &flowstatev1.WorkloadIdentity{
-		Subject: "https://issuer.example.com#worker",
-		Mode:    flowstatev1.WorkloadIdentityMode_WORKLOAD_IDENTITY_MODE_PRODUCTION,
-	})
+	ctx := plugin.NewContextWithIdentity(t.Context(), &flowstatev1.WorkloadIdentity{Principal: &flowstatev1.Principal{Subject: "https://issuer.example.com#worker"}, Mode: flowstatev1.WorkloadIdentityMode_WORKLOAD_IDENTITY_MODE_PRODUCTION})
 	ctx = flowstatev1.ContextWithTaskRuntime(ctx, taskRuntimeResolvingTheTestToken(t))
 
 	// A whole secret reference, not a literal: the host refuses a literal for

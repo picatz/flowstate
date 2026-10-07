@@ -223,7 +223,7 @@ func (s *FlowstateServer) holderMayInspect(run *debugRun, events []*historypb.Hi
 
 	return func(snapshot *v1.DebugSnapshot) error {
 		holder := snapshot.GetSession().GetAttachedBy()
-		if holder != nil && v1.QualifiedSubject(holder.GetIssuer(), holder.GetSubject()) != v1.QualifiedSubject(caller.GetIssuer(), caller.GetSubject()) {
+		if holder != nil && v1.QualifiedSubject(holder.GetPrincipal().GetIssuer(), holder.GetPrincipal().GetSubject()) != v1.QualifiedSubject(caller.GetPrincipal().GetIssuer(), caller.GetPrincipal().GetSubject()) {
 			return errors.New("only the session's holder may inspect the past of a run that is still going")
 		}
 

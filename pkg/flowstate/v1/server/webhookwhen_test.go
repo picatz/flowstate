@@ -91,7 +91,7 @@ func TestADeclinedDeliveryIsRecordedAndStartsNothing(t *testing.T) {
 	assert.Equal(t, v1.AuditDenyCode_AUDIT_DENY_CODE_WEBHOOK_DECLINED, record.GetDenyCode())
 	assert.Equal(t, v1.AuditResourceKind_AUDIT_RESOURCE_KIND_WEBHOOK_ROUTE, record.GetResourceKind())
 	assert.Equal(t, "order-webhook/storefront", record.GetResourceKey())
-	assert.Equal(t, "order-webhook/storefront", record.GetIdentity().GetSubject())
+	assert.Equal(t, "order-webhook/storefront", record.GetIdentity().GetPrincipal().GetSubject())
 	assert.Empty(t, record.GetDeliveryId())
 
 	text := prototext.Format(record)

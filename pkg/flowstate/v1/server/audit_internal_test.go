@@ -69,7 +69,7 @@ func TestADecisionEmitsExactlyOneRecord(t *testing.T) {
 		require.Equal(t, v1.AuditDenyCode_AUDIT_DENY_CODE_UNSPECIFIED, record.GetDenyCode())
 		require.Equal(t, "production-issuer", record.GetIssuerName())
 		require.Equal(t, "operator", record.GetRole())
-		require.Empty(t, record.GetIdentity().GetClaims())
+		require.Empty(t, record.GetIdentity().GetPrincipal().GetClaims())
 		require.NotNil(t, record.GetDecidedAt())
 	})
 
@@ -119,7 +119,7 @@ func TestADecisionEmitsExactlyOneRecord(t *testing.T) {
 		record := sink.only(t)
 		require.Equal(t, v1.AuditDecision_AUDIT_DECISION_DENY, record.GetDecision())
 		require.Equal(t, v1.AuditDenyCode_AUDIT_DENY_CODE_TENANT_MISMATCH, record.GetDenyCode())
-		require.Equal(t, "acme", record.GetIdentity().GetNamespace())
+		require.Equal(t, "acme", record.GetIdentity().GetPrincipal().GetNamespace())
 	})
 
 	t.Run("an execution of another workflow type", func(t *testing.T) {

@@ -10,6 +10,101 @@ import (
 func init() {
 	protodocimpl.RegisterFile("flowstate/v1/identity.proto", []protodocimpl.Comment{
 		{
+			Name: "flowstate.v1.Principal",
+			Leading: " Principal is an authenticated party: who they are, which tenant they belong\n" +
+				" to, what sort of party they are, and what the operator chose to carry from\n" +
+				" the credential that admitted them.\n" +
+				"\n" +
+				" It is the one wire shape of \"the caller\". A run's [WorkloadIdentity] holds one,\n" +
+				" a policy-check row names one, and every operator-written policy surface (egress,\n" +
+				" exec, task shape, secret access, credential assumption, signal predicates)\n" +
+				" reads the same rendering of it as `identity`: `identity.issuer`,\n" +
+				" `identity.subject`, `identity.namespace`, `identity.kind`, `identity.principal`\n" +
+				" (the `issuer#subject` join), `identity.claims` and `identity.actions`.\n" +
+				"\n" +
+				" It holds identity, never credentials: it is persisted in workflow history,\n" +
+				" which is durable and broadly readable, so nothing secret may appear here.\n",
+		},
+		{
+			Name:    "flowstate.v1.Principal.issuer",
+			Leading: " Issuer is the identity provider that vouched for the subject.\n",
+		},
+		{
+			Name: "flowstate.v1.Principal.subject",
+			Leading: " Subject identifies the caller within the issuer, as established by\n" +
+				" authenticating their request. Empty when the run was started without\n" +
+				" authentication, which is only possible in development.\n",
+		},
+		{
+			Name: "flowstate.v1.Principal.namespace",
+			Leading: " Namespace is the tenant, and it is the boundary every authorization decision\n" +
+				" about a run turns on: the caller's namespace is compared against the one\n" +
+				" recorded on the run, and a mismatch is answered \"no such run\".\n" +
+				"\n" +
+				" It comes from the trust policy entry that admitted the caller, never from\n" +
+				" the request, and when the policy names none the deployment's own namespace\n" +
+				" is recorded here, so a run has exactly one tenant to compare.\n",
+		},
+		{
+			Name: "flowstate.v1.Principal.kind",
+			Leading: " Kind is what sort of party the subject is, as the operator's trust policy\n" +
+				" assigned it when it admitted the caller. UNSPECIFIED when the policy\n" +
+				" assigned none. A receiver that does not know a value treats it as\n" +
+				" UNSPECIFIED, so an unknown kind is never read as a more trusted one.\n",
+		},
+		{
+			Name: "flowstate.v1.Principal.issuer_entry",
+			Leading: " IssuerEntry is the name of the trust policy entry that admitted the caller,\n" +
+				" so an audit record names the rule that granted access and not only the\n" +
+				" issuer that signed the token.\n",
+		},
+		{
+			Name: "flowstate.v1.Principal.claims",
+			Leading: " Claims carries the non-secret claims from the caller's token that authorization\n" +
+				" decisions may key on, such as a repository, a team, or a `groups` list. Only\n" +
+				" claims an operator has named in the admitting entry are copied here, so this\n" +
+				" does not become a dumping ground for whole tokens. A value may be any JSON\n" +
+				" shape, so a rule reads `identity.claims.groups` as a list and\n" +
+				" `identity.claims.slack.user` as a nested object, and guards an absent claim\n" +
+				" with `\"k\" in identity.claims`; reading one the caller lacks is an error, and\n" +
+				" an errored rule denies.\n" +
+				"\n" +
+				" The bounds say the same thing the sentence above says, in a form the machine\n" +
+				" enforces. 32 pairs is ten times the largest set anything in this repository\n" +
+				" carries; the key length is the signal-policy comparison's own 128, since both\n" +
+				" name claims out of the same tokens. They are the schema half of\n" +
+				" `auth.MaxCarriedClaims` and its neighbours, which refuse the same sizes at\n" +
+				" mint: a claim set is a wire format that gets signed and cached by relying\n" +
+				" parties, so an oversized one has to be refused rather than truncated — a\n" +
+				" truncated claim set is a token that says something other than what was\n" +
+				" authorized.\n" +
+				"\n" +
+				" `max_bytes` and not `max_len`, deliberately. protovalidate's `max_len` is\n" +
+				" `this.size()`, which counts Unicode *code points*; `max_bytes` is\n" +
+				" `bytes(this).size()`, which is what Go's `len` on a string counts and what\n" +
+				" the Go bound therefore enforces. Under `max_len` a value of 700 two-byte runes\n" +
+				" passes the schema at 700 and is refused at the mint at 1400 bytes — one limit\n" +
+				" written down twice in two units. Same number, same unit, both layers.\n" +
+				"\n" +
+				" A string value is bounded at 1024 bytes, more than a match pattern's 256\n" +
+				" because a carried value is data (the longest real one measured here is a\n" +
+				" 63-byte GitHub Actions `job_workflow_ref`).\n" +
+				"\n" +
+				" What the schema cannot say is the shape of a value that is itself a list or\n" +
+				" an object: protovalidate has no recursion. The reader bounds that where the\n" +
+				" work is spent. `auth.WorkloadIdentity.WithWireClaims` walks no deeper than 4\n" +
+				" levels nor past 512 values in one claim, and a claim over either is left out\n" +
+				" and remembered as refused, so a rule reading it errors (which denies) and\n" +
+				" every credential mint for the identity fails. The mint then holds a list or\n" +
+				" object claim to 4096 bytes, by the same function that measured it.\n",
+		},
+		{
+			Name: "flowstate.v1.Principal.actions",
+			Leading: " Actions are the canonical action scopes the admitting entry granted, such as\n" +
+				" `run.start`; a rule reads them as `identity.actions`. Empty means none were\n" +
+				" carried, which a rule reads as no action matched, not as every action.\n",
+		},
+		{
 			Name: "flowstate.v1.WorkloadIdentity",
 			Leading: " WorkloadIdentity describes who a run acts as.\n" +
 				"\n" +
@@ -27,58 +122,10 @@ func init() {
 				" nothing secret may appear here.\n",
 		},
 		{
-			Name: "flowstate.v1.WorkloadIdentity.subject",
-			Leading: " Subject identifies the caller that requested the run, as established by\n" +
-				" authenticating their request. Empty when the run was started without\n" +
+			Name: "flowstate.v1.WorkloadIdentity.principal",
+			Leading: " Principal is the caller that requested the run, as established by\n" +
+				" authenticating their request. Unset when the run was started without\n" +
 				" authentication, which is only possible in development.\n",
-		},
-		{
-			Name:    "flowstate.v1.WorkloadIdentity.issuer",
-			Leading: " Issuer is the identity provider that vouched for the subject.\n",
-		},
-		{
-			Name: "flowstate.v1.WorkloadIdentity.claims",
-			Leading: " Claims carries additional non-secret claims from the caller's token that\n" +
-				" authorization decisions may key on, such as a repository, environment, or\n" +
-				" team. Only claims an operator has configured as relevant are copied here,\n" +
-				" so this does not become a dumping ground for whole tokens.\n" +
-				"\n" +
-				" The bounds say the same thing the sentence above says, in a form the\n" +
-				" machine enforces. They are the schema half of `auth.MaxCarriedClaims` and\n" +
-				" its neighbours, which refuse the same sizes at mint: a claim set is a wire\n" +
-				" format that gets signed and cached by relying parties, so an oversized one\n" +
-				" has to be refused rather than truncated — a truncated claim set is a token\n" +
-				" that says something other than what was authorized.\n" +
-				"\n" +
-				" 32 pairs is ten times the largest set anything in this repository carries\n" +
-				" and twice the sixteen claims a signal policy once compared; the key length\n" +
-				" is that comparison's own 128, since both name claims out of the same\n" +
-				" tokens. Values get 1024 rather than 256 because a carried value is data and\n" +
-				" not a match pattern — the longest real one measured here is a 63-byte GitHub\n" +
-				" Actions `job_workflow_ref`.\n" +
-				"\n" +
-				" `max_bytes` and not `max_len`, deliberately, and this is the whole reason\n" +
-				" the unit is named in these field names. protovalidate's `max_len` is\n" +
-				" `this.size()`, which counts Unicode *code points*; `max_bytes` is\n" +
-				" `bytes(this).size()`, which is what Go's `len` on a string counts and what\n" +
-				" `auth.validateCarriedClaims` therefore enforces. Under `max_len` a value of\n" +
-				" 700 two-byte runes passes the schema at 700 and is refused at the mint at\n" +
-				" 1400 bytes — one limit written down twice in two units, so the schema and\n" +
-				" the mint disagree about which identities are valid, and the identity that\n" +
-				" falls in the gap validates and then cannot obtain a credential. Same\n" +
-				" number, same unit, both layers.\n",
-		},
-		{
-			Name: "flowstate.v1.WorkloadIdentity.namespace",
-			Leading: " Namespace is the tenant, and it is the boundary every authorization decision\n" +
-				" about a run turns on: the caller's namespace is compared against the one\n" +
-				" recorded on the run, and a mismatch is answered \"no such run\".\n" +
-				"\n" +
-				" Worth stating outright, because this field used to be described alongside\n" +
-				" `deployment` as identifying \"which Flowstate installation is running the\n" +
-				" workload\". That is what `deployment` is for. Reading the two as a pair\n" +
-				" suggests both are labels for telling environments apart, and one of them\n" +
-				" decides who may act on what.\n",
 		},
 		{
 			Name: "flowstate.v1.WorkloadIdentity.deployment",
@@ -86,15 +133,15 @@ func init() {
 				" so an assertion from a staging deployment is distinguishable from a\n" +
 				" production one.\n" +
 				"\n" +
-				" Not the tenant, and not what run access turns on: that is `namespace`\n" +
-				" above. But not decorative either: an outbound authorization policy sees it as\n" +
-				" `workload.deployment` and may key on it, which is how a rule like\n" +
-				" `target == \"internal\" && workload.deployment == \"prod\"` keeps a staging\n" +
-				" installation from assuming a production role.\n" +
+				" Not the tenant, and not what run access turns on: that is\n" +
+				" `principal.namespace`. But not decorative either: an outbound authorization\n" +
+				" policy sees it as `workload.deployment` and may key on it, which is how a\n" +
+				" rule like `target == \"internal\" && workload.deployment == \"prod\"` keeps a\n" +
+				" staging installation from assuming a production role.\n" +
 				"\n" +
-				" So the two are load-bearing for different decisions. `namespace` decides who\n" +
-				" may act on a run; `deployment` is one of the attributes a policy may use to\n" +
-				" decide what a run may reach.\n",
+				" So the two are load-bearing for different decisions. `principal.namespace`\n" +
+				" decides who may act on a run; `deployment` is one of the attributes a policy\n" +
+				" may use to decide what a run may reach.\n",
 		},
 		{
 			Name: "flowstate.v1.WorkloadIdentity.mode",
@@ -113,12 +160,6 @@ func init() {
 				" plugin transport must authenticate the host and preserve that authority,\n" +
 				" or replace this value with UNSPECIFIED rather than relay a caller-supplied\n" +
 				" one.\n",
-		},
-		{
-			Name: "flowstate.v1.WorkloadIdentity.principal_kind",
-			Leading: " PrincipalKind is what sort of party the subject is, as the operator's trust\n" +
-				" policy assigned it when it admitted the caller. UNSPECIFIED when the policy\n" +
-				" assigned none. Identity, not a credential, so it is safe in durable history.\n",
 		},
 		{
 			Name: "flowstate.v1.WorkloadIdentityMode",

@@ -382,13 +382,13 @@ func TestSecretIdentityCrossesBoundary(t *testing.T) {
 		{
 			name:      "identity in the same namespace",
 			namespace: "team-a",
-			identity:  &flowstatev1.WorkloadIdentity{Subject: "ci", Namespace: "team-a"},
+			identity:  &flowstatev1.WorkloadIdentity{Principal: &flowstatev1.Principal{Subject: "ci", Namespace: "team-a"}},
 			want:      "value-for-k-in-team-a-as-ci",
 		},
 		{
 			name:      "identity with no namespace of its own",
 			namespace: "team-a",
-			identity:  &flowstatev1.WorkloadIdentity{Subject: "ci"},
+			identity:  &flowstatev1.WorkloadIdentity{Principal: &flowstatev1.Principal{Subject: "ci"}},
 			want:      "value-for-k-in-team-a-as-ci",
 		},
 		{
@@ -397,7 +397,7 @@ func TestSecretIdentityCrossesBoundary(t *testing.T) {
 			// another's namespace invites it to authorize against the wrong one.
 			name:      "identity from another namespace is not forwarded",
 			namespace: "team-a",
-			identity:  &flowstatev1.WorkloadIdentity{Subject: "ci", Namespace: "team-b"},
+			identity:  &flowstatev1.WorkloadIdentity{Principal: &flowstatev1.Principal{Subject: "ci", Namespace: "team-b"}},
 			want:      "value-for-k-in-team-a",
 		},
 	}
@@ -522,10 +522,7 @@ func TestTaskDefExecutes(t *testing.T) {
 		t.Fatal("the registered plugin task cannot be looked up")
 	}
 
-	ctx := NewContextWithIdentity(t.Context(), &flowstatev1.WorkloadIdentity{
-		Subject:   "ci",
-		Namespace: "team-a",
-	})
+	ctx := NewContextWithIdentity(t.Context(), &flowstatev1.WorkloadIdentity{Principal: &flowstatev1.Principal{Subject: "ci", Namespace: "team-a"}})
 
 	outputs, err := registered.Fn(ctx, map[string]*flowstatev1.Value{
 		"message": flowstatev1.NewLiteral("hello"),

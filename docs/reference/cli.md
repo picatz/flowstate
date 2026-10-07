@@ -2073,10 +2073,11 @@ Arguments are given as `flow run` takes them and are bound against the workflow'
 
   identities:
     - name: sre-lead
-      subject: sre-lead@example.com
-      issuer: https://issuer.example.com
-      claims: {team: release-managers}
-      starter: {subject: dev@example.com, issuer: https://issuer.example.com}
+      principal:
+        subject: sre-lead@example.com
+        issuer: https://issuer.example.com
+        claims: {team: release-managers}
+      starter: {principal: {subject: dev@example.com, issuer: https://issuer.example.com}}
       inputs: {expected_approver: sre-lead@example.com}
       expect: admitted
 

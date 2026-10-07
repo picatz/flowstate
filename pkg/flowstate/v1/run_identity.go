@@ -1,12 +1,12 @@
 package flowstatev1
 
 import (
-	"maps"
 	"slices"
 	"strings"
 	"time"
 
 	"github.com/google/cel-go/common/types/ref"
+	"google.golang.org/protobuf/types/known/structpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
@@ -99,30 +99,20 @@ func runRootValue(identity *WorkloadIdentity, local bool, address *RunAddress) r
 }
 
 // IdentityShape is the one rendering of a [WorkloadIdentity] an expression
-// reads: `subject`, `issuer`, `namespace`, `claims` (a map, sorted by key),
-// `principal`, and `kind`. Both `run.identity` ([runRootValue]) and a wait's
+// reads: `issuer`, `subject`, `namespace`, `kind`, `principal`, `claims` (any
+// JSON shape) and `actions`, the keys of the [principal.Caller] every policy
+// surface binds. Both `run.identity` ([runRootValue]) and a wait's
 // `sender.identity` ([signalSenderValue]) are built from it, so the two shapes
-// cannot drift; the sender drops `claims` and adds `deployment`.
+// cannot drift from each other or from the typed `identity`; the sender drops
+// `claims` and adds `deployment`.
 //
 // Claims are the run starter's own, which `run.identity.claims` already carries
 // to its author; a wait's sender is a third party and does not get them (see
 // [signalSenderValue]).
 //
-// A nil identity renders every string empty and claims empty.
+// A nil identity renders every string empty and claims and actions empty.
 func IdentityShape(identity *WorkloadIdentity) map[string]any {
-	claims := make(map[string]any, len(identity.GetClaims()))
-	for _, k := range slices.Sorted(maps.Keys(identity.GetClaims())) {
-		claims[k] = identity.GetClaims()[k]
-	}
-
-	return map[string]any{
-		"subject":   identity.GetSubject(),
-		"issuer":    identity.GetIssuer(),
-		"namespace": identity.GetNamespace(),
-		"claims":    claims,
-		"principal": Principal(identity.GetIssuer(), identity.GetSubject()),
-		"kind":      PrincipalKindName(identity.GetPrincipalKind()),
-	}
+	return CallerOf(identity).Map()
 }
 
 // CallerOf renders a [WorkloadIdentity] as the one [principal.Caller] a policy
@@ -148,22 +138,53 @@ func AuthIdentity(identity *WorkloadIdentity) auth.WorkloadIdentity {
 		return auth.WorkloadIdentity{}
 	}
 
-	var claims map[string]any
-	if len(identity.GetClaims()) > 0 {
-		claims = make(map[string]any, len(identity.GetClaims()))
-		for name, value := range identity.GetClaims() {
-			claims[name] = value
-		}
-	}
+	who := identity.GetPrincipal()
 
 	return auth.WorkloadIdentity{
-		Subject:    identity.GetSubject(),
-		Issuer:     identity.GetIssuer(),
-		Namespace:  identity.GetNamespace(),
-		Kind:       PrincipalKindName(identity.GetPrincipalKind()),
-		Claims:     claims,
-		Deployment: identity.GetDeployment(),
+		Subject:     who.GetSubject(),
+		Issuer:      who.GetIssuer(),
+		IssuerEntry: who.GetIssuerEntry(),
+		Namespace:   who.GetNamespace(),
+		Kind:        PrincipalKindName(who.GetKind()),
+		Actions:     slices.Clone(who.GetActions()),
+		Deployment:  identity.GetDeployment(),
+	}.WithWireClaims(who.GetClaims())
+}
+
+// ProtoPrincipal renders the caller half of an [auth.WorkloadIdentity] as the
+// wire [Principal], the inverse of what [AuthIdentity] reads. Nil when the
+// identity names no caller at all.
+func ProtoPrincipal(identity auth.WorkloadIdentity) *Principal {
+	if identity.Subject == "" && identity.Issuer == "" && identity.IssuerEntry == "" && identity.Namespace == "" &&
+		identity.Kind == "" && len(identity.Claims) == 0 && len(identity.Actions) == 0 {
+		return nil
 	}
+
+	return &Principal{
+		Issuer:      identity.Issuer,
+		Subject:     identity.Subject,
+		Namespace:   identity.Namespace,
+		Kind:        PrincipalKindNamed(identity.Kind),
+		IssuerEntry: identity.IssuerEntry,
+		Claims:      auth.ClaimsToStruct(identity.Claims),
+		Actions:     slices.Clone(identity.Actions),
+	}
+}
+
+// StringClaimValues is the wire form of an all-string claim set, which is what a
+// test file's `sender:` and a command-line identity name: each value becomes a
+// string [structpb.Value] on a [Principal].
+func StringClaimValues(claims map[string]string) map[string]*structpb.Value {
+	if len(claims) == 0 {
+		return nil
+	}
+
+	out := make(map[string]*structpb.Value, len(claims))
+	for name, value := range claims {
+		out[name] = structpb.NewStringValue(value)
+	}
+
+	return out
 }
 
 // PrincipalKindName is the lowercase name an expression and a trust policy
@@ -195,20 +216,4 @@ func PrincipalKindNamed(name string) PrincipalKind {
 	}
 
 	return kind
-}
-
-// Principal is `issuer#subject` ([QualifiedSubject]) when both halves are
-// present, and "" otherwise.
-//
-// The rule is decided once, here: an unauthenticated or local sender (no
-// identity) and an identity missing either half give "", never a half-formed
-// "#" or "issuer#". The empty value still equals itself, so a predicate that
-// compares a principal must treat "" as missing (require it non-empty) rather
-// than rely on the representation to keep anonymous callers apart.
-//
-// The join is injective because no trusted issuer contains '#' (policy
-// validation refuses one in either kind), so the first '#' always ends the
-// issuer and a subject may contain any further '#'.
-func Principal(issuer, subject string) string {
-	return principal.Qualified(issuer, subject)
 }

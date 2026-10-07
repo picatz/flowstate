@@ -15,12 +15,7 @@ import (
 
 // identity builds an attested caller for these tests.
 func debugIdentity(issuer, subject string, claims map[string]string) *v1.WorkloadIdentity {
-	return &v1.WorkloadIdentity{
-		Issuer:    issuer,
-		Subject:   subject,
-		Namespace: "team-a",
-		Claims:    claims,
-	}
+	return &v1.WorkloadIdentity{Principal: &v1.Principal{Issuer: issuer, Subject: subject, Namespace: "team-a", Claims: v1.StringClaimValues(claims)}}
 }
 
 // debugPolicy is the shape a `debug:` stanza compiles to.
@@ -183,9 +178,7 @@ func TestOnlyTheHolderMayBeTheHolder(t *testing.T) {
 
 	// Claims and namespace are deliberately not part of the comparison: a token
 	// refreshed with one fewer group must not make a lease unreleasable.
-	assert.True(t, v1.DebugLeaseHolder(lease, &v1.WorkloadIdentity{
-		Issuer: "https://idp.example", Subject: "sre-1", Namespace: "team-b",
-	}), "the holder is still the holder after their claims and namespace moved")
+	assert.True(t, v1.DebugLeaseHolder(lease, &v1.WorkloadIdentity{Principal: &v1.Principal{Issuer: "https://idp.example", Subject: "sre-1", Namespace: "team-b"}}), "the holder is still the holder after their claims and namespace moved")
 }
 
 // TestALeaseThatHasLapsedHoldsNothing pins the boundary condition, including
@@ -336,7 +329,7 @@ func TestADebugLeaseTakesEveryFactFromWhatWasAttested(t *testing.T) {
 	lease := v1.NewDebugLease("run-1/debug/0", &v1.RunAddress{RunId: "run-1"}, sender, noticed,
 		45*time.Second, v1.DebugHoldDeadline(noticed))
 
-	assert.Equal(t, "sre-1", lease.GetAttachedBy().GetSubject(),
+	assert.Equal(t, "sre-1", lease.GetAttachedBy().GetPrincipal().GetSubject(),
 		"the holder is the identity the server attested")
 	assert.Equal(t, accepted, lease.GetAttachedAt().AsTime(),
 		"attached_at is when the server accepted the ask, not when a boundary noticed it")
@@ -437,7 +430,7 @@ func TestARenewalIsTheSameSessionHeldLonger(t *testing.T) {
 		"a renewal is the same session, so it keeps its name")
 	assert.Equal(t, attached, renewed.GetAttachedAt().AsTime(),
 		"a renewal moved when the session says it attached")
-	assert.Equal(t, "sre-1", renewed.GetAttachedBy().GetSubject(),
+	assert.Equal(t, "sre-1", renewed.GetAttachedBy().GetPrincipal().GetSubject(),
 		"and who attached it")
 	assert.Equal(t, "run-1", renewed.GetRun().GetRunId(),
 		"and which run it is on")

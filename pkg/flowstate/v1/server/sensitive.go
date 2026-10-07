@@ -261,7 +261,7 @@ func declarationCost(d sensitiveDeclarations) int {
 }
 
 func (s *FlowstateServer) sensitiveDeclarationsOf(ctx context.Context, workflowID, runID string) sensitiveDeclarations {
-	namespace := s.identityFor(ctx).GetNamespace()
+	namespace := s.identityFor(ctx).GetPrincipal().GetNamespace()
 	key := namespace + "\x00" + workflowID + "\x00" + runID
 	if d, ok := s.declarations.get(key); ok {
 		return d

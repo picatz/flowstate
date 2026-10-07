@@ -24,13 +24,9 @@ func predicate(expression string) *v1.SignalPolicy {
 // fail-closed arms: every refusal here is one where the delivery would have
 // been admitted had the predicate been evaluated leniently.
 func signalPredicateCases() []RehearsalSignalCase {
-	starter := &v1.WorkloadIdentity{
-		Subject: "release-bot@example.com",
-		Issuer:  "https://issuer.example.com",
-		Claims:  map[string]string{"team": "release-managers"},
-	}
+	starter := &v1.WorkloadIdentity{Principal: &v1.Principal{Subject: "release-bot@example.com", Issuer: "https://issuer.example.com", Claims: v1.StringClaimValues(map[string]string{"team": "release-managers"})}}
 	alice := func(issuer string) *v1.WorkloadIdentity {
-		return &v1.WorkloadIdentity{Subject: "alice@example.com", Issuer: issuer}
+		return &v1.WorkloadIdentity{Principal: &v1.Principal{Subject: "alice@example.com", Issuer: issuer}}
 	}
 	byPrincipal := predicate(`sender.identity.principal == "` + issuerA + `#alice@example.com"`)
 
@@ -50,7 +46,7 @@ func signalPredicateCases() []RehearsalSignalCase {
 	pairwise := predicate(`inputs.items.all(a, inputs.items.all(b, a >= 0)) && sender.identity.claims["team"] == "release-managers"`)
 
 	kinded := func(kind v1.PrincipalKind) *v1.WorkloadIdentity {
-		return &v1.WorkloadIdentity{Subject: "alice@example.com", Issuer: issuerA, PrincipalKind: kind}
+		return &v1.WorkloadIdentity{Principal: &v1.Principal{Subject: "alice@example.com", Issuer: issuerA, Kind: kind}}
 	}
 	needsAPerson := predicate(`sender.identity.kind == "human"`)
 
@@ -72,12 +68,9 @@ func signalPredicateCases() []RehearsalSignalCase {
 		},
 		{
 			Name: "a predicate that reads the starter's kind", SignalName: "deploy-approved",
-			Policy: predicate(`run.identity.kind == "workload" && sender.identity.kind == "human"`),
-			Starter: &v1.WorkloadIdentity{
-				Subject: "release-bot@example.com", Issuer: "https://issuer.example.com",
-				PrincipalKind: v1.PrincipalKind_PRINCIPAL_KIND_WORKLOAD,
-			},
-			Sender: kinded(v1.PrincipalKind_PRINCIPAL_KIND_HUMAN), Admitted: true,
+			Policy:  predicate(`run.identity.kind == "workload" && sender.identity.kind == "human"`),
+			Starter: &v1.WorkloadIdentity{Principal: &v1.Principal{Subject: "release-bot@example.com", Issuer: "https://issuer.example.com", Kind: v1.PrincipalKind_PRINCIPAL_KIND_WORKLOAD}},
+			Sender:  kinded(v1.PrincipalKind_PRINCIPAL_KIND_HUMAN), Admitted: true,
 			Why: "run.identity carries the starter's kind on both drivers, not only its subject",
 		},
 		{
@@ -126,13 +119,10 @@ func signalPredicateCases() []RehearsalSignalCase {
 		},
 		{
 			Name: "a predicate comparing the sender's claim with another team's starter", SignalName: "deploy-approved",
-			Policy: predicate(`sender.identity.claims["team"] == run.identity.claims["team"]`),
-			Starter: &v1.WorkloadIdentity{
-				Subject: "release-bot@example.com", Issuer: "https://issuer.example.com",
-				Claims: map[string]string{"team": "someone-else"},
-			},
-			Sender: approver(),
-			Why:    "the negative direction of the case above",
+			Policy:  predicate(`sender.identity.claims["team"] == run.identity.claims["team"]`),
+			Starter: &v1.WorkloadIdentity{Principal: &v1.Principal{Subject: "release-bot@example.com", Issuer: "https://issuer.example.com", Claims: v1.StringClaimValues(map[string]string{"team": "someone-else"})}},
+			Sender:  approver(),
+			Why:     "the negative direction of the case above",
 		},
 		{
 			Name: "an input-derived predicate narrowed by a claim, for the named approver", SignalName: "deploy-approved",

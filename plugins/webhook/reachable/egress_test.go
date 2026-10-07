@@ -58,10 +58,7 @@ func launch(t *testing.T, operatorPolicy string) func(url, body string) (*flowst
 		t.Fatalf("the launched plugin does not offer exactly webhook.send: %v", defs)
 	}
 
-	ctx := plugin.NewContextWithIdentity(t.Context(), &flowstatev1.WorkloadIdentity{
-		Subject: "https://issuer.example.com#worker",
-		Mode:    flowstatev1.WorkloadIdentityMode_WORKLOAD_IDENTITY_MODE_PRODUCTION,
-	})
+	ctx := plugin.NewContextWithIdentity(t.Context(), &flowstatev1.WorkloadIdentity{Principal: &flowstatev1.Principal{Subject: "https://issuer.example.com#worker"}, Mode: flowstatev1.WorkloadIdentityMode_WORKLOAD_IDENTITY_MODE_PRODUCTION})
 	ctx = flowstatev1.ContextWithTaskRuntime(ctx, taskRuntimeResolvingTheTestKey(t))
 
 	return func(url, body string) (*flowstatev1.Node_Outputs, error) {

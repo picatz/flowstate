@@ -61,17 +61,13 @@ func TestRehearsedApprovalOpensAGateAndSaysItWasRehearsed(t *testing.T) {
 
 	// The starter `flow run local` records from --as-subject/--as-issuer,
 	// which is what a comparison with `run.identity` compares the sender against.
-	starter := &v1.WorkloadIdentity{Subject: "local-user", Issuer: "flowstate:local"}
+	starter := &v1.WorkloadIdentity{Principal: &v1.Principal{Subject: "local-user", Issuer: "flowstate:local"}}
 
 	signals := v1.NewPolicedLocalSignals(policy, starter, true, nil)
 
 	require.NoError(t, signals.DeliverFrom("deploy-approved",
 		&v1.Node_Outputs{NamedValues: map[string]*v1.Value{"approved": v1.NewLiteral(true)}},
-		v1.RehearsalSignalSender(&v1.WorkloadIdentity{
-			Subject: "sre-lead@example.com",
-			Issuer:  "https://issuer.example.com",
-			Claims:  map[string]string{"team": "release-managers"},
-		})))
+		v1.RehearsalSignalSender(&v1.WorkloadIdentity{Principal: &v1.Principal{Subject: "sre-lead@example.com", Issuer: "https://issuer.example.com", Claims: v1.StringClaimValues(map[string]string{"team": "release-managers"})}})))
 
 	ctx := v1.NewContextWithSignalWaiter(t.Context(), signals)
 
@@ -106,7 +102,7 @@ func TestRehearsedApprovalOpensAGateAndSaysItWasRehearsed(t *testing.T) {
 func TestRehearsedApprovalIsRefusedWhenItIsTheStarter(t *testing.T) {
 	t.Parallel()
 
-	starter := &v1.WorkloadIdentity{Subject: "sre-lead@example.com", Issuer: "https://issuer.example.com"}
+	starter := &v1.WorkloadIdentity{Principal: &v1.Principal{Subject: "sre-lead@example.com", Issuer: "https://issuer.example.com"}}
 
 	signals := v1.NewPolicedLocalSignals(map[string]*v1.SignalPolicy{
 		"deploy-approved": {
@@ -116,10 +112,7 @@ func TestRehearsedApprovalIsRefusedWhenItIsTheStarter(t *testing.T) {
 
 	err := signals.DeliverFrom("deploy-approved",
 		&v1.Node_Outputs{NamedValues: map[string]*v1.Value{"approved": v1.NewLiteral(true)}},
-		v1.RehearsalSignalSender(&v1.WorkloadIdentity{
-			Subject: "sre-lead@example.com",
-			Issuer:  "https://issuer.example.com",
-		}))
+		v1.RehearsalSignalSender(&v1.WorkloadIdentity{Principal: &v1.Principal{Subject: "sre-lead@example.com", Issuer: "https://issuer.example.com"}}))
 	require.Error(t, err,
 		"an approver approving their own run was admitted locally, which production refuses")
 	require.Contains(t, err.Error(), "allow predicate")
@@ -148,7 +141,7 @@ func TestRehearsedApprovalIsRefusedWhenItIsTheStarter(t *testing.T) {
 func TestRehearsalSenderIsDistinguishableFromEveryOtherSender(t *testing.T) {
 	t.Parallel()
 
-	rehearsal := v1.RehearsalSignalSender(&v1.WorkloadIdentity{Subject: "sre-lead@example.com"})
+	rehearsal := v1.RehearsalSignalSender(&v1.WorkloadIdentity{Principal: &v1.Principal{Subject: "sre-lead@example.com"}})
 	require.True(t, rehearsal.GetLocal(),
 		"a rehearsal sender that is not marked local is indistinguishable from an attested one")
 	require.True(t, v1.IsRehearsalSignalSender(rehearsal))
@@ -156,7 +149,7 @@ func TestRehearsalSenderIsDistinguishableFromEveryOtherSender(t *testing.T) {
 	require.False(t, v1.IsRehearsalSignalSender(v1.LocalSignalSender()),
 		"a delivery standing in for nobody was read as a rehearsal of somebody")
 
-	attested := &v1.SignalSender{Identity: &v1.WorkloadIdentity{Subject: "sre-lead@example.com"}}
+	attested := &v1.SignalSender{Identity: &v1.WorkloadIdentity{Principal: &v1.Principal{Subject: "sre-lead@example.com"}}}
 	require.False(t, v1.IsRehearsalSignalSender(attested),
 		"an attested production sender was read as a local rehearsal")
 }

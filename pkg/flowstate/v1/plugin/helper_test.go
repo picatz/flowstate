@@ -797,8 +797,8 @@ func (s *fakeSecretService) Resolve(ctx context.Context, req *connect.Request[pl
 	if ns := req.Msg.GetNamespace(); ns != "" {
 		value += "-in-" + ns
 	}
-	if identity := req.Msg.GetIdentity(); identity.GetSubject() != "" {
-		value += "-as-" + identity.GetSubject()
+	if identity := req.Msg.GetIdentity(); identity.GetPrincipal().GetSubject() != "" {
+		value += "-as-" + identity.GetPrincipal().GetSubject()
 	}
 
 	return connect.NewResponse(&pluginv1.ResolveResponse{Value: []byte(value)}), nil
@@ -952,7 +952,7 @@ func (s *fakeTaskService) Execute(ctx context.Context, req *connect.Request[plug
 			NamedValues: map[string]*flowstatev1.Value{
 				"result":    flowstatev1.NewLiteral(message),
 				"namespace": flowstatev1.NewLiteral(req.Msg.GetNamespace()),
-				"subject":   flowstatev1.NewLiteral(req.Msg.GetIdentity().GetSubject()),
+				"subject":   flowstatev1.NewLiteral(req.Msg.GetIdentity().GetPrincipal().GetSubject()),
 				"has_scope": flowstatev1.NewLiteral(req.Msg.GetScope() != nil),
 			},
 		},
@@ -994,9 +994,9 @@ func (s *fakeTaskService) ExecuteStream(ctx context.Context, req *connect.Reques
 						NamedValues: map[string]*flowstatev1.Value{
 							"result":    flowstatev1.NewLiteral(req.Msg.GetTask().GetInputs()["message"].GetLiteral().GetStringValue()),
 							"namespace": flowstatev1.NewLiteral(req.Msg.GetNamespace()),
-							"subject":   flowstatev1.NewLiteral(req.Msg.GetIdentity().GetSubject()),
+							"subject":   flowstatev1.NewLiteral(req.Msg.GetIdentity().GetPrincipal().GetSubject()),
 							"identity_namespace": flowstatev1.NewLiteral(
-								req.Msg.GetIdentity().GetNamespace()),
+								req.Msg.GetIdentity().GetPrincipal().GetNamespace()),
 						},
 					},
 				},

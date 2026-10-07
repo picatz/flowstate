@@ -396,6 +396,15 @@ func localWorkloadIdentity(cmd *cobra.Command) (auth.WorkloadIdentity, error) {
 	// supplies can turn it off. See [auth.WorkloadIdentity] and
 	// [auth.WorkloadIdentity.SubjectFor].
 	identity := auth.NewLocalWorkloadIdentity(subject, issuer, namespace, deployment, claims)
+
+	// The kind rides on the identity itself, so the secret and assumption rules,
+	// the plugin caller and the run's own scope all read the one `--as-kind`.
+	kind, err := localKindFlag(cmd, "as-kind")
+	if err != nil {
+		return auth.WorkloadIdentity{}, err
+	}
+	identity.Kind = v1.PrincipalKindName(kind)
+
 	if err := identity.Validate(); err != nil {
 		return auth.WorkloadIdentity{}, fmt.Errorf("local rehearsal identity: %w", err)
 	}
@@ -539,19 +548,7 @@ func withLocalTaskRuntimeUsing(cmd *cobra.Command, ctx context.Context, workflow
 	// [v1.ProtoWorkloadIdentity] to the wire shape [plugin.NewContextWithIdentity]
 	// carries, per the same rule engine/runtime.go's taskActivities.context
 	// follows for the durable driver.
-	kind, err := localKindFlag(cmd, "as-kind")
-	if err != nil {
-		return nil, err
-	}
-
-	// The kind is the one thing [auth.WorkloadIdentity] does not carry (it cannot
-	// name the generated enum), so it is set on each rendering from the same flag.
-	rehearsed := func() *v1.WorkloadIdentity {
-		proto := v1.ProtoWorkloadIdentity(identity)
-		proto.PrincipalKind = kind
-
-		return proto
-	}
+	rehearsed := func() *v1.WorkloadIdentity { return v1.ProtoWorkloadIdentity(identity) }
 
 	ctx = plugin.NewContextWithIdentity(ctx, rehearsed())
 

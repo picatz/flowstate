@@ -28,9 +28,9 @@ func TestProtoIdentityCarriesClaims(t *testing.T) {
 
 	proto := authority.ProtoIdentity()
 
-	require.Equal(t, "svc-reader", proto.GetSubject())
-	require.Equal(t, "https://issuer.example", proto.GetIssuer())
-	require.Equal(t, "acme-tenant", proto.GetNamespace())
+	require.Equal(t, "svc-reader", proto.GetPrincipal().GetSubject())
+	require.Equal(t, "https://issuer.example", proto.GetPrincipal().GetIssuer())
+	require.Equal(t, "acme-tenant", proto.GetPrincipal().GetNamespace())
 	require.Equal(t, "prod", proto.GetDeployment())
-	require.Equal(t, map[string]string{"repository": "acme/widgets"}, proto.GetClaims())
+	require.Equal(t, "acme/widgets", proto.GetPrincipal().GetClaims()["repository"].GetStringValue())
 }

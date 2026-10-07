@@ -17,6 +17,7 @@ import (
 	"github.com/google/cel-go/common/types"
 	"github.com/google/cel-go/common/types/ref"
 	"github.com/google/cel-go/ext"
+	"google.golang.org/protobuf/types/known/structpb"
 
 	"github.com/picatz/flowstate/pkg/flowstate/v1/celrule"
 )
@@ -547,8 +548,7 @@ func newSignalPolicyActor(identity *WorkloadIdentity) *signalPolicyActor {
 	// The same rendering `run.identity` and a wait's `sender.identity` read,
 	// so principal means one thing everywhere ([IdentityShape]).
 	shape := IdentityShape(identity)
-	claims := make(map[string]string, len(identity.GetClaims()))
-	maps.Copy(claims, identity.GetClaims())
+	claims := stringClaimsOf(identity.GetPrincipal())
 
 	return &signalPolicyActor{Identity: &signalPolicyIdentity{
 		Principal: shape["principal"].(string),
@@ -558,6 +558,21 @@ func newSignalPolicyActor(identity *WorkloadIdentity) *signalPolicyActor {
 		Namespace: shape["namespace"].(string),
 		Claims:    claims,
 	}}
+}
+
+// stringClaimsOf is the string-valued claims of a principal, which is all a
+// signal predicate's `claims` (still `map(string, string)`) can hold; a list or
+// object claim is left out and a predicate naming it errors, which denies. The
+// predicate surface moves to the shared [principal.Caller] with its own slice.
+func stringClaimsOf(who *Principal) map[string]string {
+	claims := make(map[string]string, len(who.GetClaims()))
+	for name, value := range who.GetClaims() {
+		if text, ok := value.GetKind().(*structpb.Value_StringValue); ok {
+			claims[name] = text.StringValue
+		}
+	}
+
+	return claims
 }
 
 func signalPolicyInputsValue(inputs map[string]*Value) ref.Val {
@@ -629,7 +644,7 @@ func senderClaimsHint(readsClaims bool, sender *WorkloadIdentity) string {
 		return ""
 	}
 
-	names := slices.Sorted(maps.Keys(sender.GetClaims()))
+	names := slices.Sorted(maps.Keys(sender.GetPrincipal().GetClaims()))
 	carried := "no claims"
 	if len(names) > 0 {
 		carried = "only the claims " + strings.Join(names, ", ")

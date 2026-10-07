@@ -171,11 +171,13 @@ secrets:
 - No `secrets:` section, or no `allow` rule, means nothing may be read. A `deny`
   that matches wins, and a rule that errors denies.
 - A rule sees `secret.scheme` and `secret.name`; the authenticated caller as
-  `identity.subject`, `identity.issuer`, `identity.namespace`, and
-  `identity.claims`; and the workload as `workload.namespace`,
+  `identity.subject`, `identity.issuer`, `identity.namespace`, `identity.kind`
+  (`human`, `workload` or `agent`), `identity.actions`, and `identity.claims`;
+  and the workload as `workload.namespace`,
   `workload.workflow`, `workload.run`, `workload.step`, and related fields.
   Reading a claim that is not present is an error, which denies; guard it with
-  `"team" in identity.claims`.
+  `"team" in identity.claims`. A claim keeps its JSON shape, so a list reads as
+  `"sre" in identity.claims.groups` and an object as `identity.claims.slack.user`.
 - The file must also contain at least one valid `issuers:` entry, even on a
   worker, which does not authenticate callers itself. A server and its workers
   normally share one reviewed file.

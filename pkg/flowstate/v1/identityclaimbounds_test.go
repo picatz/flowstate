@@ -33,25 +33,18 @@ func TestCarriedClaimBoundsAgreeAcrossSchemaAndMint(t *testing.T) {
 	require.Len(t, twoByteRune, 2, "the fixture has to actually be two bytes")
 
 	// schemaRefuses reports what the protovalidate rules say about an identity
-	// carrying this one claim.
+	// carrying this one claim: a string value is a CEL rule on the map, since a
+	// Value has no `max_bytes` of its own.
 	schemaRefuses := func(t *testing.T, value string) bool {
 		t.Helper()
-		return v1.Validate(&v1.WorkloadIdentity{
-			Subject: "repo:picatz/flowstate:ref:refs/heads/main",
-			Issuer:  "https://token.actions.githubusercontent.com",
-			Claims:  map[string]string{"repository": value},
-		}) != nil
+		return v1.Validate(&v1.WorkloadIdentity{Principal: &v1.Principal{Subject: "repo:picatz/flowstate:ref:refs/heads/main", Issuer: "https://token.actions.githubusercontent.com", Claims: v1.StringClaimValues(map[string]string{"repository": value})}}) != nil
 	}
 
 	// mintRefuses reports what the mint's own check says about the same claim,
 	// reached through the same conversion the server uses.
 	mintRefuses := func(t *testing.T, value string) bool {
 		t.Helper()
-		identity := v1.AuthIdentity(&v1.WorkloadIdentity{
-			Subject: "repo:picatz/flowstate:ref:refs/heads/main",
-			Issuer:  "https://token.actions.githubusercontent.com",
-			Claims:  map[string]string{"repository": value},
-		})
+		identity := v1.AuthIdentity(&v1.WorkloadIdentity{Principal: &v1.Principal{Subject: "repo:picatz/flowstate:ref:refs/heads/main", Issuer: "https://token.actions.githubusercontent.com", Claims: v1.StringClaimValues(map[string]string{"repository": value})}})
 		return identity.Validate() != nil
 	}
 
@@ -131,11 +124,7 @@ func TestCarriedClaimNameBoundsAgreeAcrossSchemaAndMint(t *testing.T) {
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			identity := &v1.WorkloadIdentity{
-				Subject: "repo:picatz/flowstate:ref:refs/heads/main",
-				Issuer:  "https://token.actions.githubusercontent.com",
-				Claims:  map[string]string{test.claim: "value"},
-			}
+			identity := &v1.WorkloadIdentity{Principal: &v1.Principal{Subject: "repo:picatz/flowstate:ref:refs/heads/main", Issuer: "https://token.actions.githubusercontent.com", Claims: v1.StringClaimValues(map[string]string{test.claim: "value"})}}
 
 			schema := v1.Validate(identity) != nil
 			mint := v1.AuthIdentity(identity).Validate() != nil

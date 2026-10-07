@@ -82,6 +82,25 @@ func (c Caller) Normalized() Caller {
 	return c
 }
 
+// Map renders the caller as the plain map an expression reads where the engine
+// builds the value itself rather than binding the typed [Caller]: a wait's
+// `sender.identity` and a run's `run.identity`. It has the same keys as the CEL
+// type's fields, so one rendering serves every surface; the zero Caller renders
+// every string empty and claims and actions empty.
+func (c Caller) Map() map[string]any {
+	c = c.Normalized()
+
+	return map[string]any{
+		"issuer":    c.Issuer,
+		"subject":   c.Subject,
+		"namespace": c.Namespace,
+		"kind":      c.Kind,
+		"principal": c.Principal,
+		"claims":    c.Claims.Map(),
+		"actions":   c.Actions,
+	}
+}
+
 // EnvOptions registers [Caller] as a CEL native type. Declaring the fields is
 // what makes a rule naming `identity.nonexistent` a compile-time error rather
 // than one that silently never matches.

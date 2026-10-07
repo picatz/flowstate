@@ -114,8 +114,8 @@ steps:
 
 	manual := workflow.GetTriggers().GetManual()
 	require.True(t, manual.GetRequireReason())
-	oncall := &v1.WorkloadIdentity{Issuer: "https://issuer.example.com", Subject: "oncall@example.com"}
-	intern := &v1.WorkloadIdentity{Issuer: "https://issuer.example.com", Subject: "intern@example.com"}
+	oncall := &v1.WorkloadIdentity{Principal: &v1.Principal{Issuer: "https://issuer.example.com", Subject: "oncall@example.com"}}
+	intern := &v1.WorkloadIdentity{Principal: &v1.Principal{Issuer: "https://issuer.example.com", Subject: "intern@example.com"}}
 
 	require.NoError(t, v1.CheckManualStart(t.Context(), workflow, oncall, "https://issuer.example.com#oncall@example.com", "rotating the leaked key", nil),
 		"an allowed principal with a reason is exactly what this block permits")

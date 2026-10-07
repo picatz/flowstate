@@ -16,7 +16,7 @@ import (
 func TestADurableObservationWithholdsSensitiveInputs(t *testing.T) {
 	const secret = "hunter2-correct-horse"
 	e := &executor{
-		scope: &v1.Scope{Identity: &v1.WorkloadIdentity{Namespace: "team-a"}, Inputs: map[string]*v1.Value{"token": v1.NewLiteral(secret)}},
+		scope: &v1.Scope{Identity: &v1.WorkloadIdentity{Principal: &v1.Principal{Namespace: "team-a"}}, Inputs: map[string]*v1.Value{"token": v1.NewLiteral(secret)}},
 		curSpec: &v1.Workflow{DeclaredInputs: []*v1.InputDeclaration{
 			{Name: "token", Type: v1.InputDeclaration_TYPE_STRING, Sensitive: true},
 		}},
@@ -46,7 +46,7 @@ func TestACalleeObservationWithholdsTheRunsSensitiveInputs(t *testing.T) {
 		{Name: "api_key", Type: v1.InputDeclaration_TYPE_STRING},
 	}}
 	e := &executor{
-		scope:   &v1.Scope{Identity: &v1.WorkloadIdentity{Namespace: "team-a"}, Inputs: map[string]*v1.Value{"api_key": v1.NewLiteral(secret)}},
+		scope:   &v1.Scope{Identity: &v1.WorkloadIdentity{Principal: &v1.Principal{Namespace: "team-a"}}, Inputs: map[string]*v1.Value{"api_key": v1.NewLiteral(secret)}},
 		curSpec: callee,
 		debug: &debugControl{
 			carry:         &v1.DebugCarry{SessionId: "s"},
@@ -71,7 +71,7 @@ func TestACalleeObservationWithholdsTheRunsSensitiveInputs(t *testing.T) {
 func TestADurableMissedUntilIsRedactedAndStillSaid(t *testing.T) {
 	until := strings.Repeat("ab/", 85) + "ab"
 	e := &executor{
-		scope: &v1.Scope{Identity: &v1.WorkloadIdentity{Namespace: "team-a"}, Inputs: map[string]*v1.Value{
+		scope: &v1.Scope{Identity: &v1.WorkloadIdentity{Principal: &v1.Principal{Namespace: "team-a"}}, Inputs: map[string]*v1.Value{
 			"word": v1.NewLiteral("run"), "pair": v1.NewLiteral("ab"),
 		}},
 		curSpec: &v1.Workflow{DeclaredInputs: []*v1.InputDeclaration{
@@ -111,7 +111,7 @@ func TestADurableMissedUntilIsRedactedAndStillSaid(t *testing.T) {
 func TestAMissedUntilInheritedFromACalleesHoldIsWithheld(t *testing.T) {
 	notice := func(depth int32) string {
 		e := &executor{
-			scope: &v1.Scope{Identity: &v1.WorkloadIdentity{Namespace: "team-a"}},
+			scope: &v1.Scope{Identity: &v1.WorkloadIdentity{Principal: &v1.Principal{Namespace: "team-a"}}},
 			debug: &debugControl{carry: &v1.DebugCarry{
 				SessionId: "s", Next: v1.DebugResumeAction_DEBUG_RESUME_ACTION_RUN_UNTIL, Until: "nested/greet", StepDepth: depth,
 			}},

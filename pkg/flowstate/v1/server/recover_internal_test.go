@@ -259,11 +259,11 @@ func TestAHandlerPanicIsLoggedCountedAuditedAndAnsweredWithACorrelationID(t *tes
 	require.Equal(t, v1.AuditResourceKind_AUDIT_RESOURCE_KIND_UNSPECIFIED, failure.GetResourceKind(),
 		"the interceptor does not read the request and does not guess the resource")
 	require.Equal(t, id, failure.GetCorrelationId())
-	require.Equal(t, "agent-1", failure.GetIdentity().GetSubject())
-	require.Equal(t, "acme", failure.GetIdentity().GetNamespace())
+	require.Equal(t, "agent-1", failure.GetIdentity().GetPrincipal().GetSubject())
+	require.Equal(t, "acme", failure.GetIdentity().GetPrincipal().GetNamespace())
 	require.Equal(t, "production-issuer", failure.GetIssuerName())
 	require.Equal(t, "operator", failure.GetRole())
-	require.Empty(t, failure.GetIdentity().GetClaims())
+	require.Empty(t, failure.GetIdentity().GetPrincipal().GetClaims())
 	require.NotContains(t, failure.String(), "boom", "the panic's words do not reach the durable sink")
 
 	// And the acceptance criterion the issue states: nothing reached the

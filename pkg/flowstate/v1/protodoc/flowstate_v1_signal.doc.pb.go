@@ -416,7 +416,7 @@ func init() {
 				" credential-shaped material may not go (ARCHITECTURE.md invariant 7). A digest is fixed-length,\n" +
 				" alphabet-safe, and says nothing about the key it names.\n" +
 				"\n" +
-				" It is here rather than in `WorkloadIdentity.claims` because it is not a\n" +
+				" It is here rather than in `Principal.claims` because it is not a\n" +
 				" claim about a principal — every delivery from one trigger attests the same\n" +
 				" principal and carries a different one of these. What it is for is the\n" +
 				" engine's own dedupe: a run records the ids it has consumed\n" +

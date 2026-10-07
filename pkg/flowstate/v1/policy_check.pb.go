@@ -97,8 +97,9 @@ func (x *PolicyCheckMatrix) GetIdentities() []*PolicyCheckRow {
 // PolicyCheckRow is one named identity: who attempts the act, who started the
 // hypothetical run, and what the check must answer.
 //
-// The identity fields sit directly on the row, as a test file's `sender:`
-// writes them. All of them absent is an unauthenticated caller.
+// The caller is the row's [Principal], the same shape a run records and a policy
+// reads as `identity`. A row whose principal is absent is an unauthenticated
+// caller.
 type PolicyCheckRow struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Name labels the row in the table and in a mismatch. Unique across the
@@ -107,13 +108,12 @@ type PolicyCheckRow struct {
 	// escape such as U+009B) and of Unicode format characters (category Cf, such
 	// as the bidirectional override U+202E), since it is printed.
 	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
-	// Subject, Issuer, Namespace and Claims are the identity attempting the act.
-	// A subject and an issuer travel together or not at all, which the reader
-	// enforces with the rule a test file's identities are held to.
-	Subject   string            `protobuf:"bytes,2,opt,name=subject,proto3" json:"subject,omitempty"`
-	Issuer    string            `protobuf:"bytes,3,opt,name=issuer,proto3" json:"issuer,omitempty"`
-	Namespace string            `protobuf:"bytes,4,opt,name=namespace,proto3" json:"namespace,omitempty"`
-	Claims    map[string]string `protobuf:"bytes,5,rep,name=claims,proto3" json:"claims,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	// Principal is the identity attempting the act. A subject and an issuer travel
+	// together or not at all, which the reader enforces with the rule a test
+	// file's identities are held to; its kind is the one the trust policy entry
+	// that admitted it would have assigned (`human`, `workload` or `agent`), and
+	// empty assigns none, which a predicate naming a kind refuses.
+	Principal *Principal `protobuf:"bytes,11,opt,name=principal,proto3" json:"principal,omitempty"`
 	// Starter is who started the hypothetical run, which a predicate reads as
 	// `run.identity`. Absent leaves the starter unknown, which refuses any
 	// predicate that reads it; present and empty (`starter: {}`) says the run
@@ -132,11 +132,7 @@ type PolicyCheckRow struct {
 	// ExpectByGate asserts an outcome per gate, keyed `signals.NAME`, `debug` or
 	// `triggers.manual`, and wins over [expect] for the gates it names. A key
 	// that is not a gate being checked is refused by the reader.
-	ExpectByGate map[string]string `protobuf:"bytes,9,rep,name=expect_by_gate,json=expectByGate,proto3" json:"expect_by_gate,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
-	// Kind is the sort of party the identity attempting the act is, as the trust
-	// policy entry that admitted it would have assigned it: `human`, `workload` or
-	// `agent`. Empty assigns none, which a predicate naming a kind refuses.
-	Kind          string `protobuf:"bytes,10,opt,name=kind,proto3" json:"kind,omitempty"`
+	ExpectByGate  map[string]string `protobuf:"bytes,9,rep,name=expect_by_gate,json=expectByGate,proto3" json:"expect_by_gate,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -178,30 +174,9 @@ func (x *PolicyCheckRow) GetName() string {
 	return ""
 }
 
-func (x *PolicyCheckRow) GetSubject() string {
+func (x *PolicyCheckRow) GetPrincipal() *Principal {
 	if x != nil {
-		return x.Subject
-	}
-	return ""
-}
-
-func (x *PolicyCheckRow) GetIssuer() string {
-	if x != nil {
-		return x.Issuer
-	}
-	return ""
-}
-
-func (x *PolicyCheckRow) GetNamespace() string {
-	if x != nil {
-		return x.Namespace
-	}
-	return ""
-}
-
-func (x *PolicyCheckRow) GetClaims() map[string]string {
-	if x != nil {
-		return x.Claims
+		return x.Principal
 	}
 	return nil
 }
@@ -234,22 +209,12 @@ func (x *PolicyCheckRow) GetExpectByGate() map[string]string {
 	return nil
 }
 
-func (x *PolicyCheckRow) GetKind() string {
-	if x != nil {
-		return x.Kind
-	}
-	return ""
-}
-
-// PolicyCheckIdentity is an identity a row names for the run's starter.
+// PolicyCheckIdentity is an identity a row names for the run's starter, read as
+// `run.identity`. It is a [Principal]: the same shape as the row's own caller.
 type PolicyCheckIdentity struct {
-	state     protoimpl.MessageState `protogen:"open.v1"`
-	Subject   string                 `protobuf:"bytes,1,opt,name=subject,proto3" json:"subject,omitempty"`
-	Issuer    string                 `protobuf:"bytes,2,opt,name=issuer,proto3" json:"issuer,omitempty"`
-	Namespace string                 `protobuf:"bytes,3,opt,name=namespace,proto3" json:"namespace,omitempty"`
-	Claims    map[string]string      `protobuf:"bytes,4,rep,name=claims,proto3" json:"claims,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
-	// Kind is the starter's kind, read as `run.identity.kind`; see the row's kind.
-	Kind          string `protobuf:"bytes,5,opt,name=kind,proto3" json:"kind,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Principal is the starter, with every field a caller has.
+	Principal     *Principal `protobuf:"bytes,6,opt,name=principal,proto3" json:"principal,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -284,77 +249,35 @@ func (*PolicyCheckIdentity) Descriptor() ([]byte, []int) {
 	return file_flowstate_v1_policy_check_proto_rawDescGZIP(), []int{2}
 }
 
-func (x *PolicyCheckIdentity) GetSubject() string {
+func (x *PolicyCheckIdentity) GetPrincipal() *Principal {
 	if x != nil {
-		return x.Subject
-	}
-	return ""
-}
-
-func (x *PolicyCheckIdentity) GetIssuer() string {
-	if x != nil {
-		return x.Issuer
-	}
-	return ""
-}
-
-func (x *PolicyCheckIdentity) GetNamespace() string {
-	if x != nil {
-		return x.Namespace
-	}
-	return ""
-}
-
-func (x *PolicyCheckIdentity) GetClaims() map[string]string {
-	if x != nil {
-		return x.Claims
+		return x.Principal
 	}
 	return nil
-}
-
-func (x *PolicyCheckIdentity) GetKind() string {
-	if x != nil {
-		return x.Kind
-	}
-	return ""
 }
 
 var File_flowstate_v1_policy_check_proto protoreflect.FileDescriptor
 
 const file_flowstate_v1_policy_check_proto_rawDesc = "" +
 	"\n" +
-	"\x1fflowstate/v1/policy_check.proto\x12\fflowstate.v1\x1a\x1bbuf/validate/validate.proto\x1a\x1cgoogle/protobuf/struct.proto\"^\n" +
+	"\x1fflowstate/v1/policy_check.proto\x12\fflowstate.v1\x1a\x1bbuf/validate/validate.proto\x1a\x1bflowstate/v1/identity.proto\x1a\x1cgoogle/protobuf/struct.proto\"^\n" +
 	"\x11PolicyCheckMatrix\x12I\n" +
 	"\n" +
 	"identities\x18\x01 \x03(\v2\x1c.flowstate.v1.PolicyCheckRowB\v\xbaH\b\x92\x01\x05\b\x01\x10\x80\x02R\n" +
-	"identities\"\xec\x05\n" +
+	"identities\"\xb3\x04\n" +
 	"\x0ePolicyCheckRow\x12?\n" +
-	"\x04name\x18\x01 \x01(\tB+\xbaH(r&\x10\x01\x18@2 ^[^\\x00-\\x1f\\x7f-\\x{9f}\\p{Cf}]+$R\x04name\x12\"\n" +
-	"\asubject\x18\x02 \x01(\tB\b\xbaH\x05r\x03\x18\x80\bR\asubject\x12 \n" +
-	"\x06issuer\x18\x03 \x01(\tB\b\xbaH\x05r\x03\x18\x80\bR\x06issuer\x12&\n" +
-	"\tnamespace\x18\x04 \x01(\tB\b\xbaH\x05r\x03\x18\x80\bR\tnamespace\x12X\n" +
-	"\x06claims\x18\x05 \x03(\v2(.flowstate.v1.PolicyCheckRow.ClaimsEntryB\x16\xbaH\x13\x9a\x01\x10\x10@\"\x05r\x03\x18\x80\x02*\x05r\x03\x18\x80 R\x06claims\x12;\n" +
+	"\x04name\x18\x01 \x01(\tB+\xbaH(r&\x10\x01\x18@2 ^[^\\x00-\\x1f\\x7f-\\x{9f}\\p{Cf}]+$R\x04name\x125\n" +
+	"\tprincipal\x18\v \x01(\v2\x17.flowstate.v1.PrincipalR\tprincipal\x12;\n" +
 	"\astarter\x18\x06 \x01(\v2!.flowstate.v1.PolicyCheckIdentityR\astarter\x12/\n" +
 	"\x06inputs\x18\a \x01(\v2\x17.google.protobuf.StructR\x06inputs\x122\n" +
 	"\x06expect\x18\b \x01(\tB\x1a\xbaH\x17r\x15R\x00R\badmittedR\arefusedR\x06expect\x12~\n" +
-	"\x0eexpect_by_gate\x18\t \x03(\v2..flowstate.v1.PolicyCheckRow.ExpectByGateEntryB(\xbaH%\x9a\x01\"\x10@\"\ar\x05\x10\x01\x18\x80\x02*\x15r\x13R\badmittedR\arefusedR\fexpectByGate\x123\n" +
-	"\x04kind\x18\n" +
-	" \x01(\tB\x1f\xbaH\x1cr\x1aR\x00R\x05humanR\bworkloadR\x05agentR\x04kind\x1a9\n" +
-	"\vClaimsEntry\x12\x10\n" +
-	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1a?\n" +
+	"\x0eexpect_by_gate\x18\t \x03(\v2..flowstate.v1.PolicyCheckRow.ExpectByGateEntryB(\xbaH%\x9a\x01\"\x10@\"\ar\x05\x10\x01\x18\x80\x02*\x15r\x13R\badmittedR\arefusedR\fexpectByGate\x1a?\n" +
 	"\x11ExpectByGateEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xd2\x02\n" +
-	"\x13PolicyCheckIdentity\x12\"\n" +
-	"\asubject\x18\x01 \x01(\tB\b\xbaH\x05r\x03\x18\x80\bR\asubject\x12 \n" +
-	"\x06issuer\x18\x02 \x01(\tB\b\xbaH\x05r\x03\x18\x80\bR\x06issuer\x12&\n" +
-	"\tnamespace\x18\x03 \x01(\tB\b\xbaH\x05r\x03\x18\x80\bR\tnamespace\x12]\n" +
-	"\x06claims\x18\x04 \x03(\v2-.flowstate.v1.PolicyCheckIdentity.ClaimsEntryB\x16\xbaH\x13\x9a\x01\x10\x10@\"\x05r\x03\x18\x80\x02*\x05r\x03\x18\x80 R\x06claims\x123\n" +
-	"\x04kind\x18\x05 \x01(\tB\x1f\xbaH\x1cr\x1aR\x00R\x05humanR\bworkloadR\x05agentR\x04kind\x1a9\n" +
-	"\vClaimsEntry\x12\x10\n" +
-	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01B\xaf\x01\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01J\x04\b\x02\x10\x03J\x04\b\x03\x10\x04J\x04\b\x04\x10\x05J\x04\b\x05\x10\x06J\x04\b\n" +
+	"\x10\vR\asubjectR\x06issuerR\tnamespaceR\x06claimsR\x04kind\"\x94\x01\n" +
+	"\x13PolicyCheckIdentity\x125\n" +
+	"\tprincipal\x18\x06 \x01(\v2\x17.flowstate.v1.PrincipalR\tprincipalJ\x04\b\x01\x10\x02J\x04\b\x02\x10\x03J\x04\b\x03\x10\x04J\x04\b\x04\x10\x05J\x04\b\x05\x10\x06R\asubjectR\x06issuerR\tnamespaceR\x06claimsR\x04kindB\xaf\x01\n" +
 	"\x10com.flowstate.v1B\x10PolicyCheckProtoP\x01Z8github.com/picatz/flowstate/pkg/flowstate/v1;flowstatev1\xa2\x02\x03FXX\xaa\x02\fFlowstate.V1\xca\x02\fFlowstate\\V1\xe2\x02\x18Flowstate\\V1\\GPBMetadata\xea\x02\rFlowstate::V1b\x06proto3"
 
 var (
@@ -369,23 +292,22 @@ func file_flowstate_v1_policy_check_proto_rawDescGZIP() []byte {
 	return file_flowstate_v1_policy_check_proto_rawDescData
 }
 
-var file_flowstate_v1_policy_check_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
+var file_flowstate_v1_policy_check_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
 var file_flowstate_v1_policy_check_proto_goTypes = []any{
 	(*PolicyCheckMatrix)(nil),   // 0: flowstate.v1.PolicyCheckMatrix
 	(*PolicyCheckRow)(nil),      // 1: flowstate.v1.PolicyCheckRow
 	(*PolicyCheckIdentity)(nil), // 2: flowstate.v1.PolicyCheckIdentity
-	nil,                         // 3: flowstate.v1.PolicyCheckRow.ClaimsEntry
-	nil,                         // 4: flowstate.v1.PolicyCheckRow.ExpectByGateEntry
-	nil,                         // 5: flowstate.v1.PolicyCheckIdentity.ClaimsEntry
-	(*structpb.Struct)(nil),     // 6: google.protobuf.Struct
+	nil,                         // 3: flowstate.v1.PolicyCheckRow.ExpectByGateEntry
+	(*Principal)(nil),           // 4: flowstate.v1.Principal
+	(*structpb.Struct)(nil),     // 5: google.protobuf.Struct
 }
 var file_flowstate_v1_policy_check_proto_depIdxs = []int32{
 	1, // 0: flowstate.v1.PolicyCheckMatrix.identities:type_name -> flowstate.v1.PolicyCheckRow
-	3, // 1: flowstate.v1.PolicyCheckRow.claims:type_name -> flowstate.v1.PolicyCheckRow.ClaimsEntry
+	4, // 1: flowstate.v1.PolicyCheckRow.principal:type_name -> flowstate.v1.Principal
 	2, // 2: flowstate.v1.PolicyCheckRow.starter:type_name -> flowstate.v1.PolicyCheckIdentity
-	6, // 3: flowstate.v1.PolicyCheckRow.inputs:type_name -> google.protobuf.Struct
-	4, // 4: flowstate.v1.PolicyCheckRow.expect_by_gate:type_name -> flowstate.v1.PolicyCheckRow.ExpectByGateEntry
-	5, // 5: flowstate.v1.PolicyCheckIdentity.claims:type_name -> flowstate.v1.PolicyCheckIdentity.ClaimsEntry
+	5, // 3: flowstate.v1.PolicyCheckRow.inputs:type_name -> google.protobuf.Struct
+	3, // 4: flowstate.v1.PolicyCheckRow.expect_by_gate:type_name -> flowstate.v1.PolicyCheckRow.ExpectByGateEntry
+	4, // 5: flowstate.v1.PolicyCheckIdentity.principal:type_name -> flowstate.v1.Principal
 	6, // [6:6] is the sub-list for method output_type
 	6, // [6:6] is the sub-list for method input_type
 	6, // [6:6] is the sub-list for extension type_name
@@ -398,13 +320,14 @@ func file_flowstate_v1_policy_check_proto_init() {
 	if File_flowstate_v1_policy_check_proto != nil {
 		return
 	}
+	file_flowstate_v1_identity_proto_init()
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_flowstate_v1_policy_check_proto_rawDesc), len(file_flowstate_v1_policy_check_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   6,
+			NumMessages:   4,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

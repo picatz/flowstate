@@ -78,18 +78,7 @@ func withLocalSignals(ctx context.Context, cmd *cobra.Command, workflow *v1.Work
 		return nil, err
 	}
 
-	starterKind, err := localKindFlag(cmd, "as-kind")
-	if err != nil {
-		return nil, err
-	}
-
-	signals := v1.NewPolicedLocalSignals(policies, &v1.WorkloadIdentity{
-		Subject:       starter.Subject,
-		Issuer:        starter.Issuer,
-		Claims:        v1.StringClaims(starter.Claims),
-		Namespace:     starter.Namespace,
-		PrincipalKind: starterKind,
-	}, true, bound)
+	signals := v1.NewPolicedLocalSignals(policies, &v1.WorkloadIdentity{Principal: v1.ProtoPrincipal(starter)}, true, bound)
 
 	reportRehearsalSender(cmd.ErrOrStderr(), sender)
 
@@ -158,13 +147,7 @@ func rehearsalSignalSender(cmd *cobra.Command, delivered int) (*v1.SignalSender,
 		return nil, err
 	}
 
-	return v1.RehearsalSignalSender(&v1.WorkloadIdentity{
-		Subject:       subject,
-		Issuer:        issuer,
-		Namespace:     namespace,
-		Claims:        claims,
-		PrincipalKind: kind,
-	}), nil
+	return v1.RehearsalSignalSender(&v1.WorkloadIdentity{Principal: &v1.Principal{Subject: subject, Issuer: issuer, Namespace: namespace, Claims: v1.StringClaimValues(claims), Kind: kind}}), nil
 }
 
 // localKindFlag reads a rehearsal's `--as-kind` or `--signal-as-kind`: one of
@@ -202,8 +185,8 @@ func reportRehearsalSender(out io.Writer, sender *v1.SignalSender) {
 
 	identity := sender.GetIdentity()
 
-	described := v1.QualifiedSubject(identity.GetIssuer(), identity.GetSubject())
-	if identity.GetSubject() == "" {
+	described := v1.QualifiedSubject(identity.GetPrincipal().GetIssuer(), identity.GetPrincipal().GetSubject())
+	if identity.GetPrincipal().GetSubject() == "" {
 		described = "an approver with no subject"
 	}
 

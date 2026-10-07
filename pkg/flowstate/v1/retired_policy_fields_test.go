@@ -9,6 +9,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/principal"
 )
 
 // legacyManualTrigger decodes real wire bytes an earlier release wrote for
@@ -57,8 +58,8 @@ func TestALegacyManualBlockIsRefusedNotReadAsOpen(t *testing.T) {
 	require.Error(t, v1.CheckManualTrigger(manual))
 
 	workflow := &v1.Workflow{Name: "legacy", Triggers: &v1.Triggers{Manual: manual}}
-	caller := &v1.WorkloadIdentity{Issuer: "https://issuer.example.com", Subject: "anyone"}
-	err := v1.CheckManualStart(t.Context(), workflow, caller, v1.Principal(caller.GetIssuer(), caller.GetSubject()), "", nil)
+	caller := &v1.WorkloadIdentity{Principal: &v1.Principal{Issuer: "https://issuer.example.com", Subject: "anyone"}}
+	err := v1.CheckManualStart(t.Context(), workflow, caller, principal.Qualified(caller.GetPrincipal().GetIssuer(), caller.GetPrincipal().GetSubject()), "", nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "flow fix")
 	assert.NotContains(t, err.Error(), "ops", "a refusal must not echo the retired values")
@@ -73,7 +74,7 @@ func TestALegacySignalPolicyIsRefusedByEveryDecisionPoint(t *testing.T) {
 	require.Error(t, v1.CheckPolicyShape("signals[\"go\"]", policy))
 	require.Error(t, v1.CheckSignalPolicyShape(map[string]*v1.SignalPolicy{"go": policy}))
 
-	sender := &v1.WorkloadIdentity{Issuer: "https://issuer.example.com", Subject: "approver"}
+	sender := &v1.WorkloadIdentity{Principal: &v1.Principal{Issuer: "https://issuer.example.com", Subject: "approver"}}
 	require.Error(t, v1.SignalPolicyCheck(t.Context(), policy, sender, nil, false, nil))
 	require.Error(t, v1.DebugPolicyCheck(t.Context(), policy, sender, nil, false, nil))
 }

@@ -62,6 +62,11 @@ type WorkloadIdentity struct {
 	// Deployment names the Flowstate deployment running the workload.
 	Deployment string
 
+	// unreadable is why some claims of a wire identity could not be read within the
+	// walk bounds ([WorkloadIdentity.WithWireClaims]). Nil for every identity that
+	// was not read from the wire, and for one whose claims all were.
+	unreadable error
+
 	// local marks an identity minted by `flow run local` rather than by a
 	// server-attested run. It is unexported and has no setter: a struct literal
 	// built outside this package can never set it, however many fields it names,
@@ -95,9 +100,9 @@ func isNilPointer(value any) bool {
 // submitting caller's token happened to contain, and claims copied here can end
 // up in an assertion sent to a third party.
 //
-// A named claim that is over the carried-claim bounds (see [MaxCarriedClaims]) is
-// not carried, rather than trimmed: a rule that reads it then errors, and an
-// errored rule denies, where a truncated list would grant on a prefix.
+// A named claim over the carried-claim bounds (see [MaxCarriedClaims]) is carried
+// whole and refused by [WorkloadIdentity.Validate], never trimmed: a truncated
+// list would grant on a prefix.
 func IdentityFromPrincipal(principal Principal, namespace, deployment string, claimNames ...string) WorkloadIdentity {
 	if principal.Namespace != "" {
 		namespace = principal.Namespace
@@ -115,7 +120,7 @@ func IdentityFromPrincipal(principal Principal, namespace, deployment string, cl
 
 	for _, name := range claimNames {
 		value, ok := principal.Claims[name]
-		if !ok || !claimWithinBounds(name, value) {
+		if !ok {
 			continue
 		}
 		if identity.Claims == nil {
@@ -134,8 +139,8 @@ func IdentityFromPrincipal(principal Principal, namespace, deployment string, cl
 // [WorkloadIdentity.SubjectFor] carries the [localComponent] segment, because
 // it is the only code outside this package that can set the unexported local
 // field — a struct literal cannot. The local driver calls this; the server
-// driver builds an identity through [IdentityFromPrincipal] or [IdentityFrom]
-// instead, and neither of those sets it either. So the distinction between a
+// driver builds an identity through [IdentityFromPrincipal]
+// instead, and that does not set it either. So the distinction between a
 // local rehearsal and a server-attested run is not something either driver
 // remembers to apply — it is which constructor the call site is, and only one
 // of the two call sites is this one. See [WorkloadIdentity.SubjectFor] for why
@@ -187,7 +192,7 @@ func (w WorkloadIdentity) IsLocalRehearsal() bool { return w.local }
 
 // IsZero reports whether the identity is unset.
 func (w WorkloadIdentity) IsZero() bool {
-	return w.Subject == "" && w.Issuer == "" && w.Namespace == "" && w.Deployment == "" && len(w.Claims) == 0
+	return w.unreadable == nil && w.Subject == "" && w.Issuer == "" && w.Namespace == "" && w.Deployment == "" && len(w.Claims) == 0
 }
 
 // String returns the identity in the form used in messages: the principal the
@@ -448,6 +453,10 @@ func orDefault(component string) string {
 // workload acts for, which a relying party would nonetheless accept as a
 // Flowstate workload.
 func (w WorkloadIdentity) Validate() error {
+	if w.unreadable != nil {
+		return w.unreadable
+	}
+
 	switch {
 	case w.IsZero():
 		return fmt.Errorf("%w: no identity was established for this workload", ErrInvalidIdentity)

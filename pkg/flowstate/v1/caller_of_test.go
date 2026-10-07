@@ -14,11 +14,7 @@ func TestCallerOf(t *testing.T) {
 	require.NotNil(t, v1.CallerOf(nil).Actions)
 	require.Empty(t, v1.CallerOf(nil).Principal)
 
-	got := v1.CallerOf(&v1.WorkloadIdentity{
-		Issuer: "https://idp", Subject: "ci", Namespace: "team-a",
-		Claims:        map[string]string{"repo": "x/y"},
-		PrincipalKind: v1.PrincipalKind_PRINCIPAL_KIND_AGENT,
-	})
+	got := v1.CallerOf(&v1.WorkloadIdentity{Principal: &v1.Principal{Issuer: "https://idp", Subject: "ci", Namespace: "team-a", Claims: v1.StringClaimValues(map[string]string{"repo": "x/y"}), Kind: v1.PrincipalKind_PRINCIPAL_KIND_AGENT}})
 	require.Equal(t, "agent", got.Kind)
 	require.Equal(t, "https://idp#ci", got.Principal)
 	require.Equal(t, "team-a", got.Namespace)
@@ -26,5 +22,5 @@ func TestCallerOf(t *testing.T) {
 	require.Empty(t, got.Actions)
 
 	// No kind assigned renders empty, never "workload".
-	require.Empty(t, v1.CallerOf(&v1.WorkloadIdentity{Subject: "s"}).Kind)
+	require.Empty(t, v1.CallerOf(&v1.WorkloadIdentity{Principal: &v1.Principal{Subject: "s"}}).Kind)
 }

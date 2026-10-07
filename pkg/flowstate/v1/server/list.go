@@ -168,7 +168,7 @@ func (s *FlowstateServer) List(ctx context.Context, req *connect.Request[v1.List
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
-	caller := s.identityFor(ctx).GetNamespace()
+	caller := s.identityFor(ctx).GetPrincipal().GetNamespace()
 
 	// The caller's own namespace decides which Temporal namespace is listed at
 	// all, exactly as it decides which runs are addressable. Where a deployment

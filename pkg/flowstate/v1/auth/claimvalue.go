@@ -2,6 +2,8 @@ package auth
 
 import (
 	"fmt"
+	"maps"
+	"slices"
 
 	"google.golang.org/protobuf/types/known/structpb"
 
@@ -144,33 +146,47 @@ func cloneClaim(value any) any {
 	}
 }
 
-// ClaimsFromStruct reads the wire form of a claim set (flowstate.v1.Principal's
-// `claims`) as the JSON-shaped Go values a [WorkloadIdentity] carries.
+// WithWireClaims returns the identity with its claims read from the wire form of
+// a claim set (flowstate.v1.Principal's `claims`).
 //
-// The read is where the bound is enforced for a message another process wrote,
-// since a plugin or a stored run can hold any Value: a claim that is over the
-// bounds of [MaxCarriedClaims] and its neighbours is left out, not trimmed, and
-// the walk of any one claim stops at [MaxCarriedClaimDepth] and
-// [MaxCarriedClaimNodes] rather than at the end of the message. A claim left out
-// is a claim a rule errors reading, which denies.
-func ClaimsFromStruct(claims map[string]*structpb.Value) map[string]any {
-	if len(claims) == 0 {
-		return nil
+// The read is where the walk is bounded for a message another process wrote,
+// since a plugin or a stored run can hold any Value and protovalidate cannot see
+// recursion: a claim nested deeper than [MaxCarriedClaimDepth] or holding more than
+// [MaxCarriedClaimNodes] values is not walked past the bound, and more than
+// [MaxCarriedClaims] claims are not read.
+//
+// What the walk refuses is refused, not trimmed. The claim is left out of
+// [WorkloadIdentity.Claims], so a rule that reads it errors and denies, and the
+// identity remembers that it was refused so that [WorkloadIdentity.Validate] (and
+// with it every mint) fails, naming the claim and never its value. A truncated
+// claim set would be an assertion that says something other than what was
+// authorized.
+func (w WorkloadIdentity) WithWireClaims(wire map[string]*structpb.Value) WorkloadIdentity {
+	w.Claims, w.unreadable = nil, nil
+	if len(wire) == 0 {
+		return w
 	}
 
-	out := make(map[string]any, min(len(claims), MaxCarriedClaims))
-	for name, value := range claims {
-		if len(out) >= MaxCarriedClaims {
+	w.Claims = make(map[string]any, min(len(wire), MaxCarriedClaims))
+	for i, name := range slices.Sorted(maps.Keys(wire)) {
+		if i >= MaxCarriedClaims {
+			w.unreadable = fmt.Errorf("%w: identity carries %d claims, and an assertion may carry at most %d",
+				ErrInvalidIdentity, len(wire), MaxCarriedClaims)
+
 			break
 		}
-		decoded, ok := decodeBounded(value)
-		if !ok || !claimWithinBounds(name, decoded) {
+
+		decoded, ok := decodeBounded(wire[name])
+		if !ok {
+			w.unreadable = fmt.Errorf("%w: carried claim %q nests deeper than %d or holds more than %d values",
+				ErrInvalidIdentity, textbound.Truncate(name, 64), MaxCarriedClaimDepth, MaxCarriedClaimNodes)
+
 			continue
 		}
-		out[name] = decoded
+		w.Claims[name] = decoded
 	}
 
-	return out
+	return w
 }
 
 // decodeBounded is structpb.Value.AsInterface with the depth and node bounds
@@ -227,8 +243,11 @@ func decodeBounded(value *structpb.Value) (any, bool) {
 	return walk(value, 0)
 }
 
-// ClaimsToStruct is the inverse of [ClaimsFromStruct]: the wire form of a
-// carried claim set. A claim that is not a bounded JSON value is left out.
+// ClaimsToStruct is the wire form of a carried claim set, the inverse of
+// [WorkloadIdentity.WithWireClaims]. It does not apply the size bounds: those are
+// [WorkloadIdentity.Validate]'s and the schema's to refuse, so an over-bound
+// claim reaches them whole instead of vanishing here. A value that is not
+// JSON-shaped cannot be encoded and is left out.
 func ClaimsToStruct(claims map[string]any) map[string]*structpb.Value {
 	if len(claims) == 0 {
 		return nil
@@ -236,9 +255,6 @@ func ClaimsToStruct(claims map[string]any) map[string]*structpb.Value {
 
 	out := make(map[string]*structpb.Value, len(claims))
 	for name, value := range claims {
-		if !claimWithinBounds(name, value) {
-			continue
-		}
 		encoded, err := structpb.NewValue(value)
 		if err != nil {
 			continue

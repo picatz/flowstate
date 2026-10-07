@@ -297,7 +297,7 @@ func (i secretIdentity) GetNamespace() string { return i.namespace }
 //
 // It exists on this side of the boundary rather than as a method on
 // auth.WorkloadIdentity because auth deliberately imports no other Flowstate
-// package — see [auth.IdentitySource] for why — so the direction that needs the
+// package — see the auth package documentation for why — so the direction that needs the
 // generated type has to do the converting. This is the local driver's half of
 // the identity the durable driver already has natively: engine/runtime.go's
 // activities receive *v1.WorkloadIdentity straight from RunState, while the
@@ -316,29 +316,8 @@ func ProtoWorkloadIdentity(identity auth.WorkloadIdentity) *WorkloadIdentity {
 	}
 
 	return &WorkloadIdentity{
-		Subject:       identity.Subject,
-		Issuer:        identity.Issuer,
-		Claims:        StringClaims(identity.Claims),
-		Namespace:     identity.Namespace,
-		Deployment:    identity.Deployment,
-		Mode:          mode,
-		PrincipalKind: PrincipalKindNamed(identity.Kind),
+		Principal:  ProtoPrincipal(identity),
+		Deployment: identity.Deployment,
+		Mode:       mode,
 	}
-}
-
-// StringClaims is the string-valued subset of a carried claim set, which is all
-// the wire identity carries until it holds a Principal; a list or object claim
-// is left out rather than flattened.
-func StringClaims(claims map[string]any) map[string]string {
-	var out map[string]string
-	for name, value := range claims {
-		if text, ok := value.(string); ok {
-			if out == nil {
-				out = make(map[string]string, len(claims))
-			}
-			out[name] = text
-		}
-	}
-
-	return out
 }
