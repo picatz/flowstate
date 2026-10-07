@@ -237,7 +237,7 @@ func (p Principal) ActingVia() string {
 // DelegationReport renders the actor chain and what is left of the trusted
 // issuer entry's actions once each actor has narrowed them, as two lines for
 // an operator: `acting via ...` and `actions: a, b`. It reports and decides
-// nothing; an enforcement point asks [authz.Decide]. It is empty for a caller
+// nothing; an enforcement point asks authz.Decide. It is empty for a caller
 // acting for themselves.
 func (p Principal) DelegationReport() string {
 	if !p.Delegated() {
