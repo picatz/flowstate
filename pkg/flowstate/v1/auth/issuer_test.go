@@ -276,7 +276,7 @@ func TestIssuerRoundTrip(t *testing.T) {
 
 	verifier := newVerifier(t,
 		auth.Policy{
-			Issuers: []auth.TrustedIssuer{{
+			Issuers: []auth.TrustedIssuer{{Actions: []string{},
 				Name:      "flowstate-self",
 				Issuer:    server.URL,
 				Audiences: []string{audience},
@@ -346,7 +346,7 @@ func TestIssuerAssertionIsAudienceScoped(t *testing.T) {
 	// A relying party that expects a different audience, verifying correctly.
 	other := newVerifier(t,
 		auth.Policy{
-			Issuers: []auth.TrustedIssuer{{
+			Issuers: []auth.TrustedIssuer{{Actions: []string{},
 				Name:      "someone-else",
 				Issuer:    server.URL,
 				Audiences: []string{"https://partner.example.com"},
@@ -370,7 +370,7 @@ func TestIssuerAssertionExpires(t *testing.T) {
 
 	verifier := newVerifier(t,
 		auth.Policy{
-			Issuers: []auth.TrustedIssuer{{
+			Issuers: []auth.TrustedIssuer{{Actions: []string{},
 				Name:      "flowstate-self",
 				Issuer:    server.URL,
 				Audiences: []string{"flowstate-test"},
@@ -532,7 +532,7 @@ func TestIssuerRotation(t *testing.T) {
 
 	verifier := newVerifier(t,
 		auth.Policy{
-			Issuers: []auth.TrustedIssuer{{
+			Issuers: []auth.TrustedIssuer{{Actions: []string{},
 				Name:      "flowstate-self",
 				Issuer:    server.URL,
 				Audiences: []string{audience},

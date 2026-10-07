@@ -31,6 +31,7 @@ issuers:
   # reading the tenant off the claim would refuse every caller from that org at
   # verification time. Naming the tenant here instead is the answer.
   - name: github-actions-acme
+    actions: [workload.run, workload.read]
     issuer: https://token.actions.githubusercontent.com
     audiences: [https://flowstate.example.com/rpc]
     algorithms: [RS256]
@@ -40,6 +41,7 @@ issuers:
     namespace: team-b
 
   - name: github-actions
+    actions: [workload.run, workload.read]
     issuer: https://token.actions.githubusercontent.com
     audiences: [https://flowstate.example.com/rpc]
     algorithms: [RS256]
@@ -62,6 +64,7 @@ issuers:
   # Both spellings are legal in one file; what is not legal is an issuer with
   # neither.
   - name: internal-ci
+    actions: [workload.run, workload.read]
     issuer: https://ci.internal.example.com
     audiences: [https://flowstate.example.com/rpc]
     algorithms: [RS256]

@@ -4,6 +4,7 @@ package slack.v1;
 
 option go_package = "github.com/picatz/flowstate/plugins/slack/gen/slack/v1;slackv1";
 
+import "flowstate/v1/schema.proto";
 import "flowstate/v1/value.proto";
 
 // PostInputs describes the deliberately small outbound Slack surface. It sends
@@ -14,7 +15,7 @@ message PostInputs {
   // this entire input to be a secret reference, which the host resolves before
   // execution. A literal token is refused before it can enter durable history;
   // the resolved credential is capped at 4 KiB before becoming an HTTP header.
-  flowstate.v1.Value token = 1;
+  flowstate.v1.Value token = 1 [(flowstate.v1.input).secret = SECRET_REQUIRED];
 
   // Channel is a Slack conversation ID. Names are deliberately refused: IDs do
   // not change when a channel is renamed and make the destination unambiguous.

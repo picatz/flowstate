@@ -1866,7 +1866,7 @@ still legal — the name is not reserved, since inside a trigger there is no ste
 for it to shadow — and `flow fix` knows the binding, so it will not root it.
 
 **Two keys are required, and fail closed.** `verify:` names at least one verification
-scheme (`hmac_sha256` or `stripe`, bound to a `${secret(...)}` reference, or `jwt`, bound to the name of a trust policy entry): there is
+scheme (`hmac_sha256`, `github`, `slack`, `shopify`, `linear` or `stripe`, bound to a `${secret(...)}` reference, or `jwt`, bound to the name of a trust policy entry): there is
 deliberately no spelling that means "accept anything", so an unverifiable delivery is
 refused rather than allowed on the grounds that it could not be checked, and a webhook
 with no scheme is inert rather than permissive. `idempotency_key:` names one delivery,
@@ -1989,8 +1989,11 @@ schemes are checked against what this build can verify, and every `verify:` key 
 resolved through the deployment's `--secret-*` providers — so a deployment that cannot
 serve a webhook fails to start rather than refusing deliveries at three in the morning.
 The generic `hmac_sha256` scheme reads `X-Flowstate-Signature` (hex, optionally
-`sha256=`-prefixed, over the raw body); `stripe` reads `Stripe-Signature` with its own
-five-minute replay window; `jwt: <name>` reads `Authorization: Bearer <token>` and checks it
+`sha256=`-prefixed, over the raw body); the provider schemes read the provider's own
+spelling, so no adapter sits in front of them: `github` (`X-Hub-Signature-256`), `shopify`
+(`X-Shopify-Hmac-Sha256`, base64), `linear` (`Linear-Signature`), `slack` (`X-Slack-Signature`
+over `v0:<timestamp>:<body>`, with `X-Slack-Request-Timestamp` held to the replay window) and
+`stripe` (`Stripe-Signature`, with its own five-minute replay window); `jwt: <name>` reads `Authorization: Bearer <token>` and checks it
 against the entry of the deployment's `--auth-policy` of that name, which must be a
 `kind: oidc` entry — a name no entry has, or a server with no trust policy, stops the
 server at startup. The delivery then acts as that token's principal, in the receiver's
@@ -2002,6 +2005,15 @@ a signing key beside it is still computed from the bound `secrets:`. A delivery 
 from `idempotency_key:`, so a redelivery joins that run instead of starting a second
 one, and both drivers ignore the block entirely — `flow run local` still runs a file
 with a webhook on it once, now.
+
+`event.body` is the delivery's one JSON document, or, when its `Content-Type` is
+`application/x-www-form-urlencoded` and the webhook verifies with `slack`, its form: a map of field to text, which is what a Slack
+slash command is. A form whose only field is `payload` (Slack interactivity) is that field's
+JSON document, so `event.body.actions[0].action_id` reads the same as it would in a JSON
+delivery. A form that repeats a field is refused, since two values for one name has no single
+reading. A webhook verified with `slack` also answers Slack's `url_verification` handshake
+with the challenge, after the signature verifies and without starting a run. In `flow test`,
+a form fixture states its `Content-Type` header and holds its exact bytes under `raw_body`.
 
 The mapping is the part a file controls, and it is the part `flow test` replays
 offline from a stored delivery, with no network and no receiver:
@@ -2117,8 +2129,8 @@ a workflow that needs two distinct people either side of a gate cannot get them 
 webhook today.
 
 **A bridge addresses itself from bytes its own `verify:` signs, and has to prove
-it.** `hmac_sha256` signs the raw body; `stripe` signs `<timestamp>.<body>`. Neither
-covers arbitrary request headers, so anybody who has once seen a valid delivery can
+it.** `hmac_sha256` signs the raw body; `stripe` signs `<timestamp>.<body>`; every provider scheme
+signs the body, a timestamp, or both. None covers arbitrary request headers, so anybody who has once seen a valid delivery can
 replay that exact body and signature with a header rewritten. On a trigger that
 *starts* a run that is bounded — the only things a header moves are the run's own id
 and its inputs, which the key holder could have sent anyway — but on a bridge it

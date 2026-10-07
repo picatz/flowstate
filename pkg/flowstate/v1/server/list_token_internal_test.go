@@ -214,10 +214,10 @@ func TestListRefusesAPageTokenFromAnotherNamespace(t *testing.T) {
 
 	server := mustNew(t, endlessNamespace())
 
-	teamA := auth.ContextWithPrincipal(t.Context(), auth.Principal{
+	teamA := auth.ContextWithPrincipal(t.Context(), auth.Principal{Actions: everyAction,
 		Issuer: "https://issuer.example.com", Subject: "a@example.com", Namespace: "team-a",
 	})
-	teamB := auth.ContextWithPrincipal(t.Context(), auth.Principal{
+	teamB := auth.ContextWithPrincipal(t.Context(), auth.Principal{Actions: everyAction,
 		Issuer: "https://issuer.example.com", Subject: "b@example.com", Namespace: "team-b",
 	})
 

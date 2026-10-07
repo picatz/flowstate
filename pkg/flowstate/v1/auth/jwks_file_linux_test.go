@@ -20,7 +20,7 @@ func TestOIDCVerifierRefusesAJWKSFIFOWithoutWaiting(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := auth.NewOIDCVerifier(auth.Policy{Issuers: []auth.TrustedIssuer{{
+		_, err := auth.NewOIDCVerifier(auth.Policy{Issuers: []auth.TrustedIssuer{{Actions: []string{},
 			Name:      "offline",
 			Issuer:    "https://issuer.example.com",
 			Audiences: []string{"flowstate"},

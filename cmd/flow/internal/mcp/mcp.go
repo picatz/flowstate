@@ -45,6 +45,7 @@ import (
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/audit"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/authz"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowstatev1connect"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/protodoc"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/server"
@@ -459,17 +460,17 @@ func wrapToolHandler(deps Deps, name string, handler mcp.ToolHandler) mcp.ToolHa
 // trust policy entry's list narrowed by the token's own scopes
 // ([auth.Principal.Actions]), do not include the action the tool requires.
 //
-// A nil list is the entry that restricts nothing and passes, as it does on the
-// RPC surface ([server.FlowstateServer]'s authorizeAction); a present list,
-// empty included, is an allowlist. A tool the schema binds to no action is
-// refused for a caller holding one, because an allowlist that a new tool
-// silently escaped would not be one. The refusal is a tool error naming the
+// A verified caller is held to its list, as it is on the RPC surface
+// ([server.FlowstateServer]'s authorizeAction): a nil or empty list grants
+// nothing. Only an anonymous caller passes unrestricted. A tool the schema
+// binds to no action is refused for a verified caller, because an allowlist
+// that a new tool silently escaped would not be one. The refusal is a tool error naming the
 // scope, never a protocol error, so a client can tell it from a transport
 // failure and request the scope.
 func withMCPActions(recorder *audit.Recorder, reportFailure func(error), tool string, next mcp.ToolHandler) mcp.ToolHandler {
 	return func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		principal, ok := auth.PrincipalFromContext(ctx)
-		if !ok || principal.Actions == nil {
+		if !authz.Restricted(principal, ok) {
 			return next(ctx, req)
 		}
 
@@ -478,10 +479,11 @@ func withMCPActions(recorder *audit.Recorder, reportFailure func(error), tool st
 			return ToolError(errors.New("this caller is restricted to a list of actions and this tool requires none it can be checked against")), nil
 		}
 
-		scope := v1.AuthorizationActionScope(action)
-		if slices.Contains(principal.Actions, scope) {
+		decision := authz.DecidePrincipal(principal, ok, action, authz.Implied)
+		if decision.Allowed {
 			return next(ctx, req)
 		}
+		scope := decision.Scope
 
 		if recorder != nil {
 			if err := recorder.Deny(ctx, audit.Subject{

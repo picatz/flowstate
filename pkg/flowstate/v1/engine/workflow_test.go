@@ -1375,6 +1375,19 @@ func TestRunWorkflowInputsRefused(t *testing.T) {
 	}
 }
 
+// TestRunWorkflowStepIDsRefused is the durable driver's half of the step-id scope
+// rules at the submit boundary (#1430), through the same [v1.BindRunInputs] the
+// server's submission reaches and the local driver's RunWithInputs calls.
+func TestRunWorkflowStepIDsRefused(t *testing.T) {
+	for _, test := range conformance.StepIDRefusalCases() {
+		t.Run(test.Name, func(t *testing.T) {
+			_, err := v1.BindRunInputs(test.Workflow, test.Inputs)
+			require.Error(t, err, "the submission was accepted")
+			require.Contains(t, err.Error(), test.Contains)
+		})
+	}
+}
+
 // TestRunWorkflowValueDepthRefused is the durable driver's half of the depth
 // bound on a literal the specification carries (#1765), through the same
 // [v1.BindRunInputs] the server's submission reaches.

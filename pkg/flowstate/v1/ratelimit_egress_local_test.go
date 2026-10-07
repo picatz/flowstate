@@ -80,7 +80,7 @@ func TestPerHostRateLimitIsRetriedByTheLocalDriver(t *testing.T) {
 	steps := make([]*v1.Node, 0, rate+1)
 	for i := range rate + 1 {
 		steps = append(steps, &v1.Node{
-			Id: "call-" + string(rune('a'+i)),
+			Id: "call_" + string(rune('a'+i)),
 			Kind: &v1.Node_Task{Task: &v1.Task{Name: "http", Inputs: map[string]*v1.Value{
 				"url": v1.NewLiteral(server.URL),
 			}}},

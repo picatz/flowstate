@@ -20,7 +20,7 @@ import (
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/audit"
-	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/authz"
 )
 
 // The durable debugger's RPCs (#928 stage 3, #2126): attach, read, resume,
@@ -635,23 +635,13 @@ func (s *FlowstateServer) authorizeDebugChannel(ctx context.Context, workflowID 
 	return nil
 }
 
-// requireDebugAction refuses a caller whose token carries an action list
-// without action, auditing the refusal under rpc. A caller with no action list
-// keeps the legacy posture [FlowstateServer.authorizeAction] documents.
+// requireDebugAction refuses a caller whose issuer entry does not list
+// action, auditing the refusal under rpc.
 func (s *FlowstateServer) requireDebugAction(ctx context.Context, rpc, workflowID string, action v1.AuthorizationAction, detail *v1.AuditDebugDetail) error {
-	principal, ok := auth.PrincipalFromContext(ctx)
-	if !ok || principal.Actions == nil {
+	refusal := authz.Decide(ctx, action, authz.Implied).Refusal()
+	if refusal == nil {
 		return nil
 	}
-
-	scope := v1.AuthorizationActionScope(action)
-	if slices.Contains(principal.Actions, scope) {
-		return nil
-	}
-
-	refusal := connect.NewError(connect.CodePermissionDenied,
-		fmt.Errorf("the caller is not authorized for required action %q", scope))
-	refusal.Meta().Set("WWW-Authenticate", fmt.Sprintf(`Bearer error="insufficient_scope", scope=%q`, scope))
 
 	return s.auditDebugDeny(ctx, rpc, workflowID, detail, v1.AuditDenyCode_AUDIT_DENY_CODE_POLICY_DENIED, refusal)
 }
@@ -663,12 +653,9 @@ func (s *FlowstateServer) requireDebugAction(ctx context.Context, rpc, workflowI
 // report definitions would, so a client that would resend the set refuses
 // rather than drop the expression — and without its message or its last
 // error, which quote the condition when it did not compile and the values it
-// read when it failed to evaluate. A caller with no action list
-// keeps the legacy posture [FlowstateServer.requireDebugAction] documents.
+// read when it failed to evaluate.
 func expressionsFor(ctx context.Context, snapshot *v1.DebugSnapshot) *v1.DebugSnapshot {
-	principal, ok := auth.PrincipalFromContext(ctx)
-	if !ok || principal.Actions == nil ||
-		slices.Contains(principal.Actions, v1.AuthorizationActionScope(v1.AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_DEBUG_INSPECT)) {
+	if holdsAction(ctx, v1.AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_DEBUG_INSPECT) {
 		return snapshot
 	}
 	// A run pinned to an interpreter from before definitions were reported

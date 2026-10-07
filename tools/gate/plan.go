@@ -41,7 +41,11 @@ const (
 	examplePluginDir      = "pkg/flowstate/v1/plugin/examples/flowstate-plugin-example/"
 	examplePluginProtoDir = examplePluginDir + "proto/"
 	examplePluginTemplate = examplePluginDir + "buf.gen.yaml"
-	examplePluginGenDir   = examplePluginDir + "gen/"
+	// examplePluginBufConfig puts the engine's schema beside the example's, so
+	// the example can import flowstate/v1/schema.proto as a plugin under
+	// plugins/ does; the Makefile's `check` target spells the same config.
+	examplePluginBufConfig = `{"version":"v2","modules":[{"path":"proto"},{"path":"` + examplePluginProtoDir + `"}],"deps":["buf.build/bufbuild/protovalidate","buf.build/googleapis/googleapis"]}`
+	examplePluginGenDir    = examplePluginDir + "gen/"
 )
 
 // docGeneratorDir is protoc-gen-flowstate-doc, the plugin that writes the

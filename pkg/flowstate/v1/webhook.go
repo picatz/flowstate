@@ -111,6 +111,24 @@ const (
 	// construction wrong is how signature checks come to pass on forged bodies.
 	WebhookSchemeStripe = "stripe"
 
+	// WebhookSchemeGitHub is GitHub's `X-Hub-Signature-256`: the generic
+	// construction under the header GitHub sends, so a GitHub webhook needs no
+	// adapter in front of it.
+	WebhookSchemeGitHub = "github"
+
+	// WebhookSchemeShopify is Shopify's `X-Shopify-Hmac-Sha256`: an HMAC-SHA256
+	// of the raw body, base64 rather than hex encoded.
+	WebhookSchemeShopify = "shopify"
+
+	// WebhookSchemeLinear is Linear's `Linear-Signature`: a hex HMAC-SHA256 of
+	// the raw body.
+	WebhookSchemeLinear = "linear"
+
+	// WebhookSchemeSlack is Slack's request signing: `X-Slack-Signature`, `v0=`
+	// and a hex HMAC-SHA256 over `v0:<timestamp>:<body>`, the timestamp being
+	// `X-Slack-Request-Timestamp` and held to [WebhookReplayWindow].
+	WebhookSchemeSlack = "slack"
+
 	// WebhookSchemeJWT admits a delivery that carries a bearer token from a
 	// trusted issuer, named by the deployment's trust policy. What the other two
 	// attest is a key holder; this attests a *sender*: the verified token's
@@ -154,6 +172,12 @@ const WebhookAuthorizationHeader = "authorization"
 var webhookSchemesSigningHeaders = map[string]bool{
 	WebhookSchemeHMACSHA256: false,
 	WebhookSchemeStripe:     false,
+	WebhookSchemeGitHub:     false,
+	WebhookSchemeShopify:    false,
+	WebhookSchemeLinear:     false,
+	// Slack signs its timestamp header and nothing else a Flowfile could
+	// address a run from.
+	WebhookSchemeSlack: false,
 	// A bearer token is a credential for the request, and covers neither the
 	// body nor any other header.
 	WebhookSchemeJWT: false,
@@ -176,7 +200,7 @@ func WebhookSchemeSignsHeaders(scheme string) bool {
 // one of them: it checks a credential against a trust policy rather than a body
 // against a key, and the constant-work loops in webhookverify.go range over this
 // set.
-var webhookVerificationSchemes = []string{WebhookSchemeHMACSHA256, WebhookSchemeStripe}
+var webhookVerificationSchemes = webhookSchemeNames()
 
 // WebhookSigningSchemes returns the schemes that sign a delivery's body with a
 // secret key: every scheme a `verify:` block may name except

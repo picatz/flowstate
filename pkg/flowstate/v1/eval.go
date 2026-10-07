@@ -193,69 +193,22 @@ func (e *StepsOutputActivation) ResolveName(name string) (any, bool) {
 		return v, true
 	}
 
-	// The rooted vars namespace, answered whole for the same reason [StepsRoot] is:
-	// CEL resolves `vars.a.b` by asking for that, then `vars.a`, then `vars`, so
-	// answering the shortest and letting CEL apply the rest means this needs no idea
-	// how deep a reference goes.
+	// A root is answered whole, before any step lookup: CEL resolves `vars.a.b` by
+	// asking for that, then `vars.a`, then `vars`, so answering the shortest and
+	// letting CEL apply the rest means this needs no idea how deep a reference goes.
 	//
-	// Asked before step outputs and after locals, which is a precedence that cannot
-	// actually be observed — `vars` is a reserved name that no step may take, and a
-	// local called `vars` would have to be a loop iterator named `vars`, which
-	// validation refuses. Ordered explicitly anyway, because "unreachable" is a
-	// property of today's rules and this is cheaper than rediscovering that.
-	if name == VarsRoot {
-		if len(e.AmbientVars) == 0 {
-			// An empty root still resolves, to an empty map. Otherwise a workflow
-			// with no vars makes `vars.missing` an *unresolved reference* rather
-			// than a missing key, and the diagnostic sends the author looking for
-			// the wrong mistake.
-			return types.NewStringInterfaceMap(TypeAdapter, nil), true
-		}
-
-		entries := make(map[ref.Val]ref.Val, len(e.AmbientVars))
-		for varName, v := range e.AmbientVars {
-			entries[types.String(varName)] = v
-		}
-
-		return types.NewRefValMap(TypeAdapter, entries), true
-	}
-
-	// The root resolves whether or not anything has run, which is what makes it a
-	// root rather than a name a particular moment happens to have.
-	//
-	// This used to sit below the guard on the next line, so a scope carrying no
-	// outputs answered `steps` as *unbound* while answering `vars` as an empty map —
-	// one root that is always there and one that appears once a step has finished.
-	// `size(steps)` before the first step is zero, not a mistake.
-	//
-	// Checked before the step lookup only for the empty case: where there *are*
-	// outputs, a step literally called `steps` still wins, which is the arm below and
-	// the reason it is answered last. A spec compiled before this root existed may
-	// contain one, and a worker evaluates the stored AST rather than re-parsing it.
-	if len(e.Prev.GetStepValues()) == 0 {
-		if name == StepsRoot {
-			return e.stepsMap(), true
-		}
-
-		return e.ambientRoot(name)
+	// There is no step to order it against. [CheckStepIDs] refuses a step named for
+	// a root at every submit path, so a root name and a step id never collide, and
+	// the resolver answers one namespace per name rather than per selector (#1430).
+	if v, ok := e.rootValue(name); ok {
+		return v, true
 	}
 
 	stepName, outputName, hasOutput := strings.Cut(name, ".")
 
-	outputs, hasVal := e.Prev.StepValues[stepName]
+	outputs, hasVal := e.Prev.GetStepValues()[stepName]
 	if !hasVal {
-		// Not a step. It may still be the root every step hangs from.
-		//
-		// Answered last so that nothing already resolvable changes meaning: a spec
-		// compiled before this root existed may contain a step literally called
-		// `steps`, and its own outputs still win. That matters because a worker
-		// evaluates the *stored* AST out of RunState rather than re-parsing, so a
-		// run started on an older build keeps resolving the way it always did —
-		// invariant 10, which is why this arm exists at all.
-		if name == StepsRoot {
-			return e.stepsMap(), true
-		}
-		return e.ambientRoot(name)
+		return nil, false
 	}
 	if !hasOutput {
 		// Return CEL-native values, not the protobuf message. CEL has no type
@@ -309,18 +262,34 @@ const StepsRoot = "steps"
 // better than `${vars.item.name}`.
 const VarsRoot = "vars"
 
-// ambientRoot answers a rooted namespace that is not `steps` and not `vars`, for
-// the two positions in [StepsOutputActivation.ResolveName] where a name has been
-// found not to be a step.
+// rootValue answers one of the five rooted namespaces whole (`steps`, `vars`,
+// `inputs`, `run` and `trigger`) and reports false for any other name.
 //
-// Answered *after* the step lookup, which is the same placement [StepsRoot] gets
-// and for the same reason: a specification compiled before a root existed may hold
-// a step of that name, and a worker evaluates the stored AST out of `RunState`
-// rather than re-parsing the file — so a run started on an older build keeps
-// resolving the way it always did (invariant 10). The compiler refuses the id, so
-// no new file can reach this precedence; it exists for the runs that predate the
-// root and for nothing else.
-func (e *StepsOutputActivation) ambientRoot(name string) (any, bool) {
+// Each resolves whether or not anything has run, which is what makes it a root
+// rather than a name a particular moment happens to have: `size(steps)` before
+// the first step is zero, not a mistake.
+func (e *StepsOutputActivation) rootValue(name string) (any, bool) {
+	switch name {
+	case StepsRoot:
+		return e.stepsMap(), true
+
+	case VarsRoot:
+		// An empty root still resolves, to an empty map. Otherwise a workflow
+		// with no vars makes `vars.missing` an *unresolved reference* rather
+		// than a missing key, and the diagnostic sends the author looking for
+		// the wrong mistake.
+		if len(e.AmbientVars) == 0 {
+			return types.NewStringInterfaceMap(TypeAdapter, nil), true
+		}
+
+		entries := make(map[ref.Val]ref.Val, len(e.AmbientVars))
+		for varName, v := range e.AmbientVars {
+			entries[types.String(varName)] = v
+		}
+
+		return types.NewRefValMap(TypeAdapter, entries), true
+	}
+
 	switch name {
 	case InputsRoot:
 		// An empty root still resolves, to an empty map, for the reason [VarsRoot]

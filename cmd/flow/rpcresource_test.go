@@ -11,7 +11,7 @@ import (
 // bearerPolicy is a trust policy with a kind: oidc entry — a deployment that
 // does have an audience to bind Connect RPC to.
 func bearerPolicy(audiences ...string) *auth.Policy {
-	return &auth.Policy{Issuers: []auth.TrustedIssuer{{
+	return &auth.Policy{Issuers: []auth.TrustedIssuer{{Actions: []string{},
 		Name: "idp", Issuer: "https://idp.example.com", Audiences: audiences,
 	}}}
 }

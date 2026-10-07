@@ -116,7 +116,7 @@ func (b *lockedBuffer) String() string {
 // name.
 func withTestPrincipal(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ctx := auth.ContextWithPrincipal(r.Context(), auth.Principal{
+		ctx := auth.ContextWithPrincipal(r.Context(), auth.Principal{Actions: everyAction,
 			Issuer:     "https://issuer.example",
 			IssuerName: "production-issuer",
 			Subject:    "agent-1",

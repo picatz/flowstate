@@ -288,6 +288,12 @@ func (l *linker) link(path string, depth int) (protoreflect.FileDescriptor, erro
 		}
 	}
 
+	// A plugin's own files only: an engine file never reaches here, so its
+	// `cel` rules (audit.proto's, the connect interceptor's) are untouched.
+	// What a plugin's descriptor may ask the host to evaluate is decided
+	// before it is linked; see [stripCELRules] (#1531).
+	stripCELRules(file)
+
 	linked, err := protodesc.NewFile(file, l)
 	if err != nil {
 		return nil, fmt.Errorf("%q: %w", textbound.Truncate(path, 128), err)

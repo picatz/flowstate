@@ -62,7 +62,7 @@ func TestEveryWebhookRefusalHashesExactlyOnce(t *testing.T) {
 		} {
 			t.Run(name, func(t *testing.T) {
 				calls, hashed := countedSigning(t)
-				_ = verifyHMACSHA256(key, headers, body)
+				_ = verifyBodyHMAC(genericScheme(), key, headers, body)
 
 				require.Equal(t, 1, *calls, "a refusal that skips the HMAC is a route oracle")
 				require.Equal(t, len(body), *hashed, "the work must be the body's size and nothing else")
@@ -153,13 +153,13 @@ func TestHMACSHA256VerificationBoundsCommaDelimitedFields(t *testing.T) {
 	header := hmacPrefix + SignWebhookBody(key, body) + strings.Repeat(",", 1<<20)
 	headers := map[string]string{WebhookSignatureHeader: header}
 
-	require.NoError(t, verifyHMACSHA256(key, headers, body),
+	require.NoError(t, verifyBodyHMAC(genericScheme(), key, headers, body),
 		"the valid signature is still the first field, ahead of the flood")
 
 	var before, after runtime.MemStats
 	runtime.ReadMemStats(&before)
 	for range 10 {
-		_ = verifyHMACSHA256(key, headers, body)
+		_ = verifyBodyHMAC(genericScheme(), key, headers, body)
 	}
 	runtime.ReadMemStats(&after)
 
@@ -337,7 +337,7 @@ func TestWebhookVerificationHashesTheBodyWithoutCopyingIt(t *testing.T) {
 
 	t.Run("hmac-sha256", func(t *testing.T) {
 		seen := hashedTheBodyItself(t)
-		require.NoError(t, verifyHMACSHA256(key,
+		require.NoError(t, verifyBodyHMAC(genericScheme(), key,
 			map[string]string{WebhookSignatureHeader: "sha256=" + SignWebhookBody(key, body)}, body))
 
 		require.True(t, *seen, "the body reached the hash as a copy")
@@ -351,4 +351,10 @@ func TestWebhookVerificationHashesTheBodyWithoutCopyingIt(t *testing.T) {
 		require.True(t, *seen,
 			"the body reached the hash as a copy, so this delivery paid a second body-sized pass the decoy does not")
 	})
+}
+
+func genericScheme() webhookScheme {
+	scheme, _ := lookupWebhookScheme(WebhookSchemeHMACSHA256)
+
+	return scheme
 }

@@ -188,7 +188,7 @@ func TestGitHubActionsSource_TokenAcquiredForOneAudienceRefusedForAnother(t *tes
 	require.True(t, ok)
 
 	verifier, err := auth.NewOIDCVerifier(auth.Policy{
-		Issuers: []auth.TrustedIssuer{{
+		Issuers: []auth.TrustedIssuer{{Actions: []string{},
 			Name:      "gha-stub",
 			Issuer:    issuer.URL(),
 			Audiences: []string{"https://flowstate.example.com/staging"},
@@ -204,7 +204,7 @@ func TestGitHubActionsSource_TokenAcquiredForOneAudienceRefusedForAnother(t *tes
 	// And it does verify against the audience it was actually acquired for,
 	// proving the refusal above is about the audience and nothing else.
 	sameAudienceVerifier, err := auth.NewOIDCVerifier(auth.Policy{
-		Issuers: []auth.TrustedIssuer{{
+		Issuers: []auth.TrustedIssuer{{Actions: []string{},
 			Name:      "gha-stub",
 			Issuer:    issuer.URL(),
 			Audiences: []string{"https://flowstate.example.com/prod"},

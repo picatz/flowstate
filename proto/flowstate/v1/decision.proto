@@ -1,0 +1,309 @@
+syntax = "proto3";
+
+package flowstate.v1;
+
+import "buf/validate/validate.proto";
+import "google/api/field_behavior.proto";
+
+option go_package = "flowstatev1";
+
+// The provider-neutral shape of a typed decision: a named question put to a
+// model, and the typed answer that comes back (#2376).
+//
+// # What this is, and is not
+//
+// This file is the contract a decision-making task plugin speaks, and nothing
+// else. It adds no Flowfile keyword and no task: a decision is an ordinary
+// plugin task call whose typed input and output descriptors are these
+// messages, consumed by the `if:`, `signals:` and `loop:` the language already
+// has. No vendor name appears here, and none may: a provider maps its own
+// wire format onto this shape inside its plugin, and a malformed provider
+// answer is rejected against the rules below rather than repaired.
+//
+// # Calibration is part of the type
+//
+// The one property vendors do not share is where a confidence number comes
+// from. A model that exposes token probabilities can report a calibrated
+// distribution; one that cannot can only ask the model to describe its own
+// certainty, which is a different kind of number. [Calibration] names which
+// one an [Answer] carries, so a threshold written as
+// `answer.calibration == CALIBRATION_MODEL_PROBABILITY && answer.confidence >=
+// 0.9` denies when a provider cannot supply that, instead of silently passing
+// on a number that means something weaker. The default value is deliberately
+// UNSPECIFIED and invalid, so an answer that forgot to say fails closed.
+//
+// # Where the rules live
+//
+// Every rule is a protovalidate rule on the message, enforced by
+// flowstatev1.Validate, so there is one spelling of "a well-formed decision".
+// A rule that relates a question to its answer cannot sit on [Answer] alone,
+// because an answer does not carry the options it chose among; [Decision]
+// pairs them for exactly that check.
+//
+// # Bounds
+//
+// Names, options, levels, instructions and the sets that hold them are bounded
+// here, because a question set and a provider's answer are both input another
+// party controls.
+
+// Calibration says where an answer's confidence and distribution came from.
+enum Calibration {
+  // The producer did not say. Never valid: an answer that does not state its
+  // provenance must not be mistaken for a calibrated one.
+  CALIBRATION_UNSPECIFIED = 0;
+
+  // The numbers are the model's own output probabilities, such as a vendor
+  // API that returns them directly. The only value a probability threshold
+  // should trust.
+  CALIBRATION_MODEL_PROBABILITY = 1;
+
+  // The model was asked to state how certain it is, so the number is a claim
+  // by the model about itself and not a measurement.
+  CALIBRATION_SELF_REPORTED = 2;
+
+  // The provider supplies no confidence at all. The answer then carries
+  // neither `confidence` nor `distribution`.
+  CALIBRATION_NONE = 3;
+}
+
+// Question is one named thing to decide, of exactly one of three kinds.
+//
+// The kinds are the intersection every provider can express: a yes/no
+// predicate, a choice among unordered options, and a score over ordered
+// levels. Dependent questions are separate calls, because one call is one
+// activity with one recorded [Answer].
+message Question {
+  // Name identifies the question within its set and is what a test scripts an
+  // answer against, so it is a bounded identifier in the manner of
+  // `Signal.name`.
+  string name = 1 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field).string = {
+      min_len: 1
+      max_len: 128
+      pattern: "^[A-Za-z0-9][A-Za-z0-9-_]*$"
+    }
+  ];
+
+  // Instructions say what is being decided and how to judge it. They are
+  // prose for the model, not for a policy, and are bounded because they are
+  // sent on every call.
+  string instructions = 2 [(buf.validate.field).string.max_bytes = 16384];
+
+  // Kind is what the answer must look like.
+  oneof kind {
+    option (buf.validate.oneof).required = true;
+
+    Predicate predicate = 3;
+    Choice choice = 4;
+    Score score = 5;
+  }
+
+  // Predicate asks a yes/no question. It has no fields: the question is its
+  // `instructions`.
+  message Predicate {}
+
+  // Choice picks one of a closed set of unordered options.
+  message Choice {
+    // Options are the values an answer may select. Non-empty, each non-empty
+    // and distinct, because a selected value is compared to them by equality.
+    repeated string options = 1 [(buf.validate.field).repeated = {
+      min_items: 1
+      max_items: 32
+      unique: true
+      items: {
+        string: {
+          min_len: 1
+          max_len: 128
+        }
+      }
+    }];
+  }
+
+  // Score places the subject on an ordered scale.
+  message Score {
+    // Levels are the scale from lowest to highest; the order is the meaning,
+    // so a producer that reorders them has changed the question. Non-empty,
+    // each non-empty and distinct.
+    repeated string levels = 1 [(buf.validate.field).repeated = {
+      min_items: 1
+      max_items: 32
+      unique: true
+      items: {
+        string: {
+          min_len: 1
+          max_len: 128
+        }
+      }
+    }];
+  }
+}
+
+// QuestionSet is the questions one decision call asks together. They are
+// independent of one another and are answered in the same call.
+message QuestionSet {
+  // Questions are non-empty and bounded, and no two share a name, because the
+  // name is how an answer is matched back to its question.
+  repeated Question questions = 1 [(buf.validate.field).repeated = {
+    min_items: 1
+    max_items: 32
+  }];
+
+  option (buf.validate.message).cel = {
+    id: "question_set.unique_names"
+    message: "question names must be unique within a set"
+    expression: "this.questions.map(q, q.name).unique()"
+  };
+}
+
+// Answer is a model's typed reply to one [Question].
+//
+// A predicate is always a `bool`, whatever the provider: a probability for it
+// is present only under CALIBRATION_MODEL_PROBABILITY, as `confidence` (how
+// likely the stated value is) and in `distribution`. That keeps every provider
+// producing one shape, differing only in what [Calibration] says its numbers
+// are.
+message Answer {
+  option (buf.validate.message).cel = {
+    id: "answer.calibration_none_has_no_numbers"
+    message: "calibration NONE means the answer carries no confidence and no distribution"
+    expression: "this.calibration != 3 || (!has(this.confidence) && this.distribution.size() == 0)"
+  };
+  // CEL has no sum, and protovalidate's environment adds no fold or list
+  // extension, so the total is written out over the 32 entries a distribution
+  // may hold (max_pairs below). Raising that bound means extending this sum,
+  // and the test that sums a full 32-entry distribution fails if it is not.
+  option (buf.validate.message).cel = {
+    id: "answer.distribution_sums_to_one"
+    message: "distribution must sum to 1 within 1e-3"
+    expression:
+      "this.distribution.size() == 0 || [this.distribution.map(k, this.distribution[k])].all(v, [\n"
+      "(v.size() > 0 ? v[0] : 0.0) + (v.size() > 1 ? v[1] : 0.0) + (v.size() > 2 ? v[2] : 0.0)"
+      " + (v.size() > 3 ? v[3] : 0.0) + (v.size() > 4 ? v[4] : 0.0) + (v.size() > 5 ? v[5] : 0.0)"
+      " + (v.size() > 6 ? v[6] : 0.0) + (v.size() > 7 ? v[7] : 0.0) + (v.size() > 8 ? v[8] : 0.0)"
+      " + (v.size() > 9 ? v[9] : 0.0) + (v.size() > 10 ? v[10] : 0.0) + (v.size() > 11 ? v[11] : 0.0)"
+      " + (v.size() > 12 ? v[12] : 0.0) + (v.size() > 13 ? v[13] : 0.0) + (v.size() > 14 ? v[14] : 0.0)"
+      " + (v.size() > 15 ? v[15] : 0.0) + (v.size() > 16 ? v[16] : 0.0) + (v.size() > 17 ? v[17] : 0.0)"
+      " + (v.size() > 18 ? v[18] : 0.0) + (v.size() > 19 ? v[19] : 0.0) + (v.size() > 20 ? v[20] : 0.0)"
+      " + (v.size() > 21 ? v[21] : 0.0) + (v.size() > 22 ? v[22] : 0.0) + (v.size() > 23 ? v[23] : 0.0)"
+      " + (v.size() > 24 ? v[24] : 0.0) + (v.size() > 25 ? v[25] : 0.0) + (v.size() > 26 ? v[26] : 0.0)"
+      " + (v.size() > 27 ? v[27] : 0.0) + (v.size() > 28 ? v[28] : 0.0) + (v.size() > 29 ? v[29] : 0.0)"
+      " + (v.size() > 30 ? v[30] : 0.0) + (v.size() > 31 ? v[31] : 0.0)"
+      "].all(s, s > 0.999 && s < 1.001))"
+  };
+  option (buf.validate.message).cel = {
+    id: "answer.distribution_covers_result"
+    message: "distribution must include the selected choice or level, or both true and false for a predicate"
+    expression: "this.distribution.size() == 0 || (has(this.predicate) ? ('true' in this.distribution && 'false' in this.distribution && this.distribution.size() == 2) : has(this.choice) ? this.choice in this.distribution : this.score in this.distribution)"
+  };
+
+  // Name is the name of the question this answers.
+  string name = 1 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field).string = {
+      min_len: 1
+      max_len: 128
+      pattern: "^[A-Za-z0-9][A-Za-z0-9-_]*$"
+    }
+  ];
+
+  // Result is the decision itself, of the kind the question asked for.
+  oneof result {
+    option (buf.validate.oneof).required = true;
+
+    // Predicate is the yes/no answer.
+    bool predicate = 2;
+
+    // Choice is the selected option, which [Decision] checks is one of the
+    // question's.
+    string choice = 3 [(buf.validate.field).string = {
+      min_len: 1
+      max_len: 128
+    }];
+
+    // Score is the selected level, which [Decision] checks is one of the
+    // question's.
+    string score = 4 [(buf.validate.field).string = {
+      min_len: 1
+      max_len: 128
+    }];
+  }
+
+  // Confidence is how sure the producer is of the result, from 0 to 1. Absent
+  // when the provider offers none; what it means is [Answer.calibration].
+  optional double confidence = 5 [(buf.validate.field).double = {
+    gte: 0
+    lte: 1
+    finite: true
+  }];
+
+  // Distribution maps each option, level, or `true`/`false` for a predicate
+  // to its probability. Empty when the provider offers none. When present it
+  // sums to 1 and covers the selected result; [Decision] checks its keys are
+  // exactly the question's.
+  map<string, double> distribution = 6 [(buf.validate.field).map = {
+    max_pairs: 32
+    keys: {
+      string: {
+        min_len: 1
+        max_len: 128
+      }
+    }
+    values: {
+      double: {
+        gte: 0
+        lte: 1
+        finite: true
+      }
+    }
+  }];
+
+  // Calibration says what `confidence` and `distribution` are. Required and
+  // never UNSPECIFIED.
+  Calibration calibration = 7 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field).enum = {defined_only: true}
+  ];
+}
+
+// Decision pairs a [Question] with its [Answer] so the rules that relate them
+// can be stated and enforced in the schema: the names match, the answer is of
+// the question's kind, the selected choice or level is one the question
+// offered, and a distribution is over exactly the question's options.
+//
+// A provider plugin validates the pair it built before returning it, so a
+// malformed provider answer is a typed error and never a partial result.
+message Decision {
+  option (buf.validate.message).cel = {
+    id: "decision.names_match"
+    message: "the answer must name the question it answers"
+    expression: "this.question.name == this.answer.name"
+  };
+  option (buf.validate.message).cel = {
+    id: "decision.result_matches_kind"
+    message: "the answer must be of the kind the question asked for"
+    expression: "has(this.question.predicate) ? has(this.answer.predicate) : has(this.question.choice) ? has(this.answer.choice) : has(this.answer.score)"
+  };
+  option (buf.validate.message).cel = {
+    id: "decision.selected_is_an_option"
+    message: "the selected choice or level must be one the question offered"
+    expression: "has(this.question.choice) ? (!has(this.answer.choice) || this.answer.choice in this.question.choice.options) : has(this.question.score) ? (!has(this.answer.score) || this.answer.score in this.question.score.levels) : true"
+  };
+  option (buf.validate.message).cel = {
+    id: "decision.distribution_is_over_the_options"
+    message: "a distribution must have exactly the question's options or levels as its keys"
+    expression: "this.answer.distribution.size() == 0 || (has(this.question.choice) ? (this.answer.distribution.size() == this.question.choice.options.size() && this.question.choice.options.all(o, o in this.answer.distribution)) : has(this.question.score) ? (this.answer.distribution.size() == this.question.score.levels.size() && this.question.score.levels.all(l, l in this.answer.distribution)) : true)"
+  };
+
+  Question question = 1 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED
+  ];
+  Answer answer = 2 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED
+  ];
+}

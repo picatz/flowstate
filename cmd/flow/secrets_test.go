@@ -27,6 +27,7 @@ func TestRunLocalResolvesAuthorizedBearer(t *testing.T) {
 	policy := filepath.Join(t.TempDir(), "auth.yaml")
 	require.NoError(t, os.WriteFile(policy, []byte(`issuers:
   - name: local
+    actions: []
     issuer: https://issuer.example
     audiences: [flowstate]
     algorithms: [RS256]

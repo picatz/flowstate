@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"maps"
 	"slices"
 	"strings"
@@ -61,7 +60,7 @@ import (
 // Verified is left false here and set by the case or computed from its bound
 // keys, deliberately: this function knows what arrived, not whether it was
 // genuine. See [TriggerDelivery].
-func loadDelivery(path string) (v1.WebhookDelivery, []byte, error) {
+func loadDelivery(path string, trigger *v1.WebhookTrigger) (v1.WebhookDelivery, []byte, error) {
 	data, err := readBounded(path, v1.MaxWebhookPayloadBytes, "delivery")
 	if err != nil {
 		return v1.WebhookDelivery{}, nil, fmt.Errorf("reading the delivery: %w", err)
@@ -106,35 +105,28 @@ func loadDelivery(path string) (v1.WebhookDelivery, []byte, error) {
 				"rehearsal must too; store the payload under `body`, or a captured one under `raw_body`", path)
 	}
 
-	// Numbers read the way a payload reads them rather than as float64s: see
-	// [v1.NormalizeDeliveryNumbers], which the live receiver applies to the
-	// identical decode so that a replayed delivery and a real one produce the same
-	// value for `"amount": 4200`.
-	var body any
-	{
-		bodyDecoder := json.NewDecoder(bytes.NewReader(raw))
-		bodyDecoder.UseNumber()
-		if err := bodyDecoder.Decode(&body); err != nil {
-			return v1.WebhookDelivery{}, nil, fmt.Errorf(
-				"the delivery %s carries a body that will not decode: %w", path, err)
-		}
-
-		// And nothing after it — the receiver's own rule (decodeDeliveryBody,
-		// server/webhook.go), which refuses `{"id":"a"} {"id":"b"}` as more
-		// than one document rather than starting a run from the prefix. A
-		// `body` value cannot carry a trailing document (a RawMessage is one
-		// token by construction), but `raw_body` is arbitrary bytes, and a
-		// rehearsal accepting what production refuses is the rehearsal lying
-		// about production (Codex, #1109).
-		var trailing json.RawMessage
-		if err := bodyDecoder.Decode(&trailing); !errors.Is(err, io.EOF) {
-			return v1.WebhookDelivery{}, nil, fmt.Errorf(
-				"the delivery %s carries more than one JSON document in its body; the receiver refuses "+
-					"such a delivery, so a rehearsal must too — store one document per delivery", path)
+	// Decoded by the receiver's own function, [v1.DecodeWebhookBody], so a
+	// stored delivery and a live one produce the same value for `"amount": 4200`,
+	// a form field, a Slack interactive `payload`, and the refusals alike: a
+	// rehearsal accepting what production refuses is the rehearsal lying about
+	// production (Codex, #1109).
+	var contentType string
+	for name, value := range stored.Headers {
+		if strings.EqualFold(name, "content-type") {
+			contentType = value
 		}
 	}
+	if stored.RawBody == nil && v1.WebhookReadsForms(trigger) && v1.IsWebhookFormContentType(contentType) {
+		return v1.WebhookDelivery{}, nil, fmt.Errorf(
+			"the delivery %s declares a form content type with `body`, which embeds a JSON value; a form "+
+				"is text, so store its exact bytes under `raw_body`", path)
+	}
+	body, err := v1.DecodeWebhookBody(trigger, contentType, raw)
+	if err != nil {
+		return v1.WebhookDelivery{}, nil, fmt.Errorf("the delivery %s carries a body that will not decode: %w", path, err)
+	}
 
-	return v1.WebhookDelivery{Headers: stored.Headers, Body: v1.NormalizeDeliveryNumbers(body)}, raw, nil
+	return v1.WebhookDelivery{Headers: stored.Headers, Body: body}, raw, nil
 }
 
 // replayDelivery runs one trigger case up to the point a run would start.
@@ -198,7 +190,7 @@ func replayDelivery(test *Test, deliveryPath string, workflow *v1.Workflow) (map
 			test.Trigger.Webhook, trigger.GetSignal().GetName())
 	}
 
-	delivery, rawBody, err := loadDelivery(deliveryPath)
+	delivery, rawBody, err := loadDelivery(deliveryPath, trigger)
 	if err != nil {
 		return nil, "", nil, fmt.Errorf("trigger %q: %w", test.Trigger.Webhook, err)
 	}

@@ -67,10 +67,10 @@ func TestManualStartHandlersUseIssuerQualifiedPrincipals(t *testing.T) {
 			}}}},
 		}},
 	}
-	issuerA := auth.ContextWithPrincipal(t.Context(), auth.Principal{
+	issuerA := auth.ContextWithPrincipal(t.Context(), auth.Principal{Actions: everyAction,
 		Issuer: "https://issuer-a.example.com", Subject: "runner",
 	})
-	issuerB := auth.ContextWithPrincipal(t.Context(), auth.Principal{
+	issuerB := auth.ContextWithPrincipal(t.Context(), auth.Principal{Actions: everyAction,
 		Issuer: "https://issuer-b.example.com", Subject: "runner",
 		Claims: map[string]any{"access_token": "must-not-appear"},
 	})
@@ -110,7 +110,7 @@ func TestManualStartHandlersUseIssuerQualifiedPrincipals(t *testing.T) {
 		})
 	}
 
-	mtls := auth.ContextWithPrincipal(t.Context(), auth.Principal{
+	mtls := auth.ContextWithPrincipal(t.Context(), auth.Principal{Actions: everyAction,
 		Issuer: "flowstate:mtls/mesh", Subject: "spiffe://example.test/ns/ops/sa/runner",
 	})
 	mtlsWorkflow := proto.Clone(workflow).(*v1.Workflow)

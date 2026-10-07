@@ -176,13 +176,5 @@ message Value {
     // A list or a mapping whose entries are values, which is the only shape
     // that can hold a [SecretRef] somewhere other than at the top.
     Structure structure = 5;
-    // TODO(kent): we're using "value" to represent a "literal" value, which isn't quite the same.
-    // So, this is probably worth revisiting. The "value" allows for more complex types, like a
-    // struct or list, while the "literal" is more of a primitive value like a string, int, or bool.
-    //
-    // https://github.com/googleapis/googleapis/blob/34b323e7ee72888dd9337cce8b24233ae078f23b/google/api/expr/v1beta1/expr.proto#L230-L241C9
-    // https://github.com/googleapis/googleapis/blob/34b323e7ee72888dd9337cce8b24233ae078f23b/google/api/expr/v1beta1/value.proto#L29-L72
-    //
-    // google.api.expr.v1alpha1.Literal literal = 2;
   }
 }

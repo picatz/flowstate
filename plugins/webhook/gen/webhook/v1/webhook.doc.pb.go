@@ -43,7 +43,8 @@ func init() {
 			Name: "webhook.v1.SendInputs.scheme",
 			Leading: " Scheme is how the body is signed, with the spelling a webhook trigger's\n" +
 				" `verify:` block uses: `hmac_sha256` (the default; a hex HMAC-SHA256 of the\n" +
-				" body in `X-Flowstate-Signature`) or `stripe` (`Stripe-Signature:\n" +
+				" body in `X-Flowstate-Signature`), a provider's own spelling (`github`,\n" +
+				" `shopify`, `linear`, `slack`) or `stripe` (`Stripe-Signature:\n" +
 				" t=<unix seconds>,v1=<hex>`, signed over the timestamp and the body, with a\n" +
 				" five-minute replay window at the receiver). An unknown scheme is refused.\n",
 		},

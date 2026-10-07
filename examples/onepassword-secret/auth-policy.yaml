@@ -1,5 +1,6 @@
 issuers:
   - name: github-actions
+    actions: [workload.run, workload.read]
     issuer: https://token.actions.githubusercontent.com
     audiences: [flowstate]
     algorithms: [RS256]

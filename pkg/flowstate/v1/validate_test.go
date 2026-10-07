@@ -43,7 +43,7 @@ func validWorkflow() *v1.Workflow {
 	return &v1.Workflow{
 		Name: "example",
 		Steps: []*v1.Node{{
-			Id: "step-1",
+			Id: "step_1",
 			Kind: &v1.Node_Task{Task: &v1.Task{
 				Name:   "log",
 				Inputs: map[string]*v1.Value{"message": v1.NewLiteral("hi")},
@@ -234,7 +234,7 @@ func TestValidate(t *testing.T) {
 			name: "run request nested step violations",
 			msg: &v1.RunRequest{Workflow: &v1.Workflow{
 				Name:  "example",
-				Steps: []*v1.Node{{Id: "step-1", Kind: &v1.Node_Task{Task: &v1.Task{Name: "log"}}}},
+				Steps: []*v1.Node{{Id: "step_1", Kind: &v1.Node_Task{Task: &v1.Task{Name: "log"}}}},
 			}},
 			want: []failure{{"workflow.steps[0].task.inputs", "required"}},
 		},

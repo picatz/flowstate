@@ -11,6 +11,7 @@ import (
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	descriptorpb "google.golang.org/protobuf/types/descriptorpb"
 	reflect "reflect"
+	sync "sync"
 	unsafe "unsafe"
 )
 
@@ -21,6 +22,124 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+// Secret says how a task input accepts a host secret reference: the claim a
+// task makes about one input, written on the field it describes rather than in
+// a parallel list of field names that can drift from the schema.
+//
+// Reading it fails closed: an input that sets no claim is no claim, and the
+// host refuses a secret reference there.
+type Secret int32
+
+const (
+	// SECRET_UNSPECIFIED is no claim. The input does not accept a secret
+	// reference, and the host refuses one written there.
+	Secret_SECRET_UNSPECIFIED Secret = 0
+	// SECRET_WHOLE_VALUE says the input accepts a secret reference as its entire
+	// value, which the host resolves where the task uses it. The field is a
+	// `flowstate.v1.Value`, which holds a reference unresolved, or a string, which
+	// a plugin task receives the resolved value in.
+	Secret_SECRET_WHOLE_VALUE Secret = 1
+	// SECRET_REQUIRED says the input must be supplied as a whole secret
+	// reference, never a literal or an expression. It implies
+	// SECRET_WHOLE_VALUE and is declared instead of it, not alongside it.
+	Secret_SECRET_REQUIRED Secret = 2
+	// SECRET_NESTED says a secret reference may sit inside a value the task
+	// itself encodes, such as an entry of a list or a map, and is resolved at
+	// exactly the moment the task writes that value out. The field is a
+	// `flowstate.v1.Value`, or a map whose values are.
+	Secret_SECRET_NESTED Secret = 3
+)
+
+// Enum value maps for Secret.
+var (
+	Secret_name = map[int32]string{
+		0: "SECRET_UNSPECIFIED",
+		1: "SECRET_WHOLE_VALUE",
+		2: "SECRET_REQUIRED",
+		3: "SECRET_NESTED",
+	}
+	Secret_value = map[string]int32{
+		"SECRET_UNSPECIFIED": 0,
+		"SECRET_WHOLE_VALUE": 1,
+		"SECRET_REQUIRED":    2,
+		"SECRET_NESTED":      3,
+	}
+)
+
+func (x Secret) Enum() *Secret {
+	p := new(Secret)
+	*p = x
+	return p
+}
+
+func (x Secret) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (Secret) Descriptor() protoreflect.EnumDescriptor {
+	return file_flowstate_v1_schema_proto_enumTypes[0].Descriptor()
+}
+
+func (Secret) Type() protoreflect.EnumType {
+	return &file_flowstate_v1_schema_proto_enumTypes[0]
+}
+
+func (x Secret) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use Secret.Descriptor instead.
+func (Secret) EnumDescriptor() ([]byte, []int) {
+	return file_flowstate_v1_schema_proto_rawDescGZIP(), []int{0}
+}
+
+// InputOptions are the options a task's input message sets on one of its
+// fields with the `input` extension.
+type InputOptions struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Secret is how the input accepts a secret reference. Unset is no claim.
+	Secret        Secret `protobuf:"varint,1,opt,name=secret,proto3,enum=flowstate.v1.Secret" json:"secret,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *InputOptions) Reset() {
+	*x = InputOptions{}
+	mi := &file_flowstate_v1_schema_proto_msgTypes[0]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *InputOptions) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*InputOptions) ProtoMessage() {}
+
+func (x *InputOptions) ProtoReflect() protoreflect.Message {
+	mi := &file_flowstate_v1_schema_proto_msgTypes[0]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use InputOptions.ProtoReflect.Descriptor instead.
+func (*InputOptions) Descriptor() ([]byte, []int) {
+	return file_flowstate_v1_schema_proto_rawDescGZIP(), []int{0}
+}
+
+func (x *InputOptions) GetSecret() Secret {
+	if x != nil {
+		return x.Secret
+	}
+	return Secret_SECRET_UNSPECIFIED
+}
+
 var file_flowstate_v1_schema_proto_extTypes = []protoimpl.ExtensionInfo{
 	{
 		ExtendedType:  (*descriptorpb.EnumValueOptions)(nil),
@@ -28,6 +147,14 @@ var file_flowstate_v1_schema_proto_extTypes = []protoimpl.ExtensionInfo{
 		Field:         50000,
 		Name:          "flowstate.v1.test_only",
 		Tag:           "varint,50000,opt,name=test_only",
+		Filename:      "flowstate/v1/schema.proto",
+	},
+	{
+		ExtendedType:  (*descriptorpb.FieldOptions)(nil),
+		ExtensionType: (*InputOptions)(nil),
+		Field:         50001,
+		Name:          "flowstate.v1.input",
+		Tag:           "bytes,50001,opt,name=input",
 		Filename:      "flowstate/v1/schema.proto",
 	},
 }
@@ -56,24 +183,62 @@ var (
 	E_TestOnly = &file_flowstate_v1_schema_proto_extTypes[0]
 )
 
+// Extension fields to descriptorpb.FieldOptions.
+var (
+	// input sets the [InputOptions] of a task input field. The host reads it from
+	// the descriptor of a task's input message, so the descriptor a plugin
+	// already ships carries the claims with the fields they describe.
+	//
+	// optional flowstate.v1.InputOptions input = 50001;
+	E_Input = &file_flowstate_v1_schema_proto_extTypes[1]
+)
+
 var File_flowstate_v1_schema_proto protoreflect.FileDescriptor
 
 const file_flowstate_v1_schema_proto_rawDesc = "" +
 	"\n" +
-	"\x19flowstate/v1/schema.proto\x12\fflowstate.v1\x1a google/protobuf/descriptor.proto:@\n" +
-	"\ttest_only\x12!.google.protobuf.EnumValueOptions\x18І\x03 \x01(\bR\btestOnlyB\xaa\x01\n" +
+	"\x19flowstate/v1/schema.proto\x12\fflowstate.v1\x1a google/protobuf/descriptor.proto\"<\n" +
+	"\fInputOptions\x12,\n" +
+	"\x06secret\x18\x01 \x01(\x0e2\x14.flowstate.v1.SecretR\x06secret*`\n" +
+	"\x06Secret\x12\x16\n" +
+	"\x12SECRET_UNSPECIFIED\x10\x00\x12\x16\n" +
+	"\x12SECRET_WHOLE_VALUE\x10\x01\x12\x13\n" +
+	"\x0fSECRET_REQUIRED\x10\x02\x12\x11\n" +
+	"\rSECRET_NESTED\x10\x03:@\n" +
+	"\ttest_only\x12!.google.protobuf.EnumValueOptions\x18І\x03 \x01(\bR\btestOnly:Q\n" +
+	"\x05input\x12\x1d.google.protobuf.FieldOptions\x18ц\x03 \x01(\v2\x1a.flowstate.v1.InputOptionsR\x05inputB\xaa\x01\n" +
 	"\x10com.flowstate.v1B\vSchemaProtoP\x01Z8github.com/picatz/flowstate/pkg/flowstate/v1;flowstatev1\xa2\x02\x03FXX\xaa\x02\fFlowstate.V1\xca\x02\fFlowstate\\V1\xe2\x02\x18Flowstate\\V1\\GPBMetadata\xea\x02\rFlowstate::V1b\x06proto3"
 
+var (
+	file_flowstate_v1_schema_proto_rawDescOnce sync.Once
+	file_flowstate_v1_schema_proto_rawDescData []byte
+)
+
+func file_flowstate_v1_schema_proto_rawDescGZIP() []byte {
+	file_flowstate_v1_schema_proto_rawDescOnce.Do(func() {
+		file_flowstate_v1_schema_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_flowstate_v1_schema_proto_rawDesc), len(file_flowstate_v1_schema_proto_rawDesc)))
+	})
+	return file_flowstate_v1_schema_proto_rawDescData
+}
+
+var file_flowstate_v1_schema_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
+var file_flowstate_v1_schema_proto_msgTypes = make([]protoimpl.MessageInfo, 1)
 var file_flowstate_v1_schema_proto_goTypes = []any{
-	(*descriptorpb.EnumValueOptions)(nil), // 0: google.protobuf.EnumValueOptions
+	(Secret)(0),                           // 0: flowstate.v1.Secret
+	(*InputOptions)(nil),                  // 1: flowstate.v1.InputOptions
+	(*descriptorpb.EnumValueOptions)(nil), // 2: google.protobuf.EnumValueOptions
+	(*descriptorpb.FieldOptions)(nil),     // 3: google.protobuf.FieldOptions
 }
 var file_flowstate_v1_schema_proto_depIdxs = []int32{
-	0, // 0: flowstate.v1.test_only:extendee -> google.protobuf.EnumValueOptions
-	1, // [1:1] is the sub-list for method output_type
-	1, // [1:1] is the sub-list for method input_type
-	1, // [1:1] is the sub-list for extension type_name
-	0, // [0:1] is the sub-list for extension extendee
-	0, // [0:0] is the sub-list for field type_name
+	0, // 0: flowstate.v1.InputOptions.secret:type_name -> flowstate.v1.Secret
+	2, // 1: flowstate.v1.test_only:extendee -> google.protobuf.EnumValueOptions
+	3, // 2: flowstate.v1.input:extendee -> google.protobuf.FieldOptions
+	1, // 3: flowstate.v1.input:type_name -> flowstate.v1.InputOptions
+	4, // [4:4] is the sub-list for method output_type
+	4, // [4:4] is the sub-list for method input_type
+	3, // [3:4] is the sub-list for extension type_name
+	1, // [1:3] is the sub-list for extension extendee
+	0, // [0:1] is the sub-list for field type_name
 }
 
 func init() { file_flowstate_v1_schema_proto_init() }
@@ -86,13 +251,15 @@ func file_flowstate_v1_schema_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_flowstate_v1_schema_proto_rawDesc), len(file_flowstate_v1_schema_proto_rawDesc)),
-			NumEnums:      0,
-			NumMessages:   0,
-			NumExtensions: 1,
+			NumEnums:      1,
+			NumMessages:   1,
+			NumExtensions: 2,
 			NumServices:   0,
 		},
 		GoTypes:           file_flowstate_v1_schema_proto_goTypes,
 		DependencyIndexes: file_flowstate_v1_schema_proto_depIdxs,
+		EnumInfos:         file_flowstate_v1_schema_proto_enumTypes,
+		MessageInfos:      file_flowstate_v1_schema_proto_msgTypes,
 		ExtensionInfos:    file_flowstate_v1_schema_proto_extTypes,
 	}.Build()
 	File_flowstate_v1_schema_proto = out.File

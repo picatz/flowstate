@@ -734,7 +734,7 @@ steps:
             value: ${"R"}
 `
 
-	require.Contains(t, diagnose(t, src), "id is already used outside branch",
+	require.Contains(t, diagnose(t, src), "duplicate id \"shared\"",
 		"a nested id colliding with a sibling branch's id was accepted")
 }
 

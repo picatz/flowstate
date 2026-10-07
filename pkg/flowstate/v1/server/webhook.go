@@ -1,7 +1,6 @@
 package server
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -722,13 +721,31 @@ func (r *WebhookReceiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	// [v1.BindWebhookTriggerInputs] documents and the reason a malformed body may
 	// safely be reported precisely: reaching this line means the sender holds the
 	// signing key, so nothing said from here on tells an outsider anything.
-	decoded, err := decodeDeliveryBody(body)
+	decoded, err := decodeDeliveryBody(route.trigger, headers, body)
 	if err != nil {
 		r.log.WarnContext(req.Context(), "a verified delivery did not decode",
 			"workflow", route.workflow.GetName(), "webhook", route.trigger.GetName(), "error", err)
 		r.refusedAtRoute(req.Context(), route, r.principalIdentity(req.Context(), route),
 			v1.AuditDenyCode_AUDIT_DENY_CODE_BINDING_FAILED)
 		http.Error(w, err.Error(), http.StatusBadRequest)
+
+		return
+	}
+
+	// A provider's endpoint handshake is answered before anything binds, and only
+	// after verification: it starts no run, and an unverified sender learns
+	// nothing from it. Recorded like any other decision not to start one.
+	if challenge, handshake := v1.SlackURLVerificationChallenge(route.trigger, decoded); handshake {
+		r.log.InfoContext(req.Context(), "answered a provider handshake",
+			"workflow", route.workflow.GetName(), "webhook", route.trigger.GetName())
+		if r.recordDeclined(req.Context(), route) != nil {
+			w.Header().Set("Retry-After", "5")
+			http.Error(w, "the delivery could not be recorded; retry", http.StatusServiceUnavailable)
+
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"challenge": challenge})
 
 		return
 	}
@@ -775,11 +792,7 @@ func (r *WebhookReceiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		// sender's to read.
 		r.log.InfoContext(ctx, "declined a delivery",
 			"workflow", route.workflow.GetName(), "webhook", route.trigger.GetName())
-		if recordErr := r.recordRefusal(ctx, route, v1.EnforcementSubject{
-			Identity:     r.principalIdentity(ctx, route),
-			ResourceKind: v1.AuditResourceKind_AUDIT_RESOURCE_KIND_WEBHOOK_ROUTE,
-			ResourceKey:  webhookRouteKey(route),
-		}, v1.AuditDenyCode_AUDIT_DENY_CODE_WEBHOOK_DECLINED, true); recordErr != nil {
+		if recordErr := r.recordDeclined(ctx, route); recordErr != nil {
 			// A required recorder that could not write the decision down: the
 			// deployment's failure, which the sender may retry, exactly as the
 			// bridge's own refusals are answered.
@@ -1250,42 +1263,12 @@ func webhookWorkflowID(namespace, workflow, trigger, key string) string {
 	return digestWorkflowID("flowstate-webhook-", namespace, workflow, trigger, key)
 }
 
-// decodeDeliveryBody reads the payload the way `flow test` reads a stored one.
-//
-// The same decoder settings, deliberately: [json.Decoder.UseNumber] followed by
-// [v1.NormalizeDeliveryNumbers], so `"amount": 4200` is an integer here exactly as
-// it is in a replayed delivery. A receiver that decoded numbers as float64s would
-// refuse an input declared `int` for a mapping that a rehearsal accepted, which is
-// the rehearsal lying about production.
-func decodeDeliveryBody(body []byte) (any, error) {
-	decoder := json.NewDecoder(bytes.NewReader(body))
-	decoder.UseNumber()
-
-	var decoded any
-	if err := decoder.Decode(&decoded); err != nil {
-		return nil, fmt.Errorf("the delivery body is not a JSON document: %w", err)
-	}
-
-	// And nothing after it. [json.Decoder.Decode] reads one value and stops, so
-	// `{"id":"a"} {"id":"b"}` — or a document followed by arbitrary bytes — decoded
-	// as the first value and silently discarded the rest, starting a run from a
-	// prefix that can mean something other than what the payload as a whole says.
-	// A delivery is one document, so end of input is part of the contract and is
-	// checked rather than assumed.
-	//
-	// This reads no more than the first decode could: the reader is over `body`,
-	// which [http.MaxBytesReader] bounded to [v1.MaxWebhookPayloadBytes] before a
-	// byte of it was read, and a [bytes.Reader] cannot yield more than it holds.
-	// Into a [json.RawMessage] so that nothing is built from what follows — the
-	// question is only whether anything does, and either answer that is not
-	// [io.EOF] is a refusal.
-	var trailing json.RawMessage
-	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
-		return nil, fmt.Errorf("the delivery body carries more than one JSON document: a delivery is a " +
-			"single JSON value with nothing after it, so send one document per delivery")
-	}
-
-	return v1.NormalizeDeliveryNumbers(decoded), nil
+// decodeDeliveryBody reads the payload the way `flow test` reads a stored one:
+// through [v1.DecodeWebhookBody], the one decoder both share, so that
+// `"amount": 4200` is an integer here exactly as it is in a replayed delivery and
+// a form-encoded delivery reads the same live as in a rehearsal.
+func decodeDeliveryBody(trigger *v1.WebhookTrigger, headers map[string]string, body []byte) (any, error) {
+	return v1.DecodeWebhookBody(trigger, headers["content-type"], body)
 }
 
 // withoutAuthorization removes the credential [v1.WebhookSchemeJWT] verified from
@@ -1381,4 +1364,14 @@ func writeWebhookJSON(w http.ResponseWriter, status int, document any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(document)
+}
+
+// recordDeclined writes down a delivery that verified and started nothing: the
+// workflow's own `when:` said no, or a provider handshake was answered.
+func (r *WebhookReceiver) recordDeclined(ctx context.Context, route *webhookRoute) error {
+	return r.recordRefusal(ctx, route, v1.EnforcementSubject{
+		Identity:     r.principalIdentity(ctx, route),
+		ResourceKind: v1.AuditResourceKind_AUDIT_RESOURCE_KIND_WEBHOOK_ROUTE,
+		ResourceKey:  webhookRouteKey(route),
+	}, v1.AuditDenyCode_AUDIT_DENY_CODE_WEBHOOK_DECLINED, true)
 }

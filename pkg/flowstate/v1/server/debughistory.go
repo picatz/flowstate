@@ -16,7 +16,7 @@ import (
 
 	"github.com/picatz/flowstate/internal/textbound"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
-	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/authz"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/engine"
 )
 
@@ -194,19 +194,14 @@ func (s *FlowstateServer) historyInspectAuthorized(ctx context.Context, workflow
 	if err != nil {
 		return connect.NewError(connect.CodeInternal, err)
 	}
-	scope := v1.AuthorizationActionScope(action)
 
-	// A caller with no action list keeps the posture [FlowstateServer.requireDebugAction] documents.
-	principal, ok := auth.PrincipalFromContext(ctx)
 	subject := s.debugAuditSubject(ctx, "DebugHistory", workflowID, detail)
 	subject.RequestField = historyInspectionsField
-	if !ok || principal.Actions == nil || slices.Contains(principal.Actions, scope) {
+
+	refusal := authz.Decide(ctx, action, authz.Implied).Refusal()
+	if refusal == nil {
 		return s.audit.Allow(ctx, subject)
 	}
-
-	refusal := connect.NewError(connect.CodePermissionDenied,
-		fmt.Errorf("the caller is not authorized for required action %q", scope))
-	refusal.Meta().Set("WWW-Authenticate", fmt.Sprintf(`Bearer error="insufficient_scope", scope=%q`, scope))
 	if err := s.audit.Deny(ctx, subject, v1.AuditDenyCode_AUDIT_DENY_CODE_POLICY_DENIED); err != nil {
 		return err
 	}

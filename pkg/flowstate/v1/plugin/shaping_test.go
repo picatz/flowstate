@@ -34,12 +34,15 @@ func TestAPluginInputNamedOutputsIsAnOrdinaryInput(t *testing.T) {
 	def, err := (&Plugin{name: "ordinary"}).taskDef(&pluginv1.TaskManifest{
 		Name:    "fetch",
 		Summary: "a task with an ordinary input that happens to be called outputs",
-		// The http task's messages, because they are the shape this is about:
-		// an input named `outputs` beside a declared set of outputs.
-		InputMessage:  "flowstate.v1.Task.HTTP.Inputs",
-		OutputMessage: "flowstate.v1.Task.HTTP.Outputs",
+		// The http task's shape, because it is what this is about: an input
+		// named `outputs` beside a declared set of outputs. The inputs are a
+		// descriptor of their own, since the engine's carries a nested secret
+		// claim no plugin task accepts.
+		InputDescriptor: fetchInputsDescriptor(t),
+		InputMessage:    "plugintest.v1.FetchInputs",
+		OutputMessage:   "flowstate.v1.Task.HTTP.Outputs",
 		// And nothing said about shaping, which is every plugin written so far.
-	}, Config{})
+	}, Config{}.withDefaults())
 	require.NoError(t, err)
 	require.False(t, def.ShapesOutputs, "a manifest that says nothing declares no shaping")
 
@@ -64,13 +67,14 @@ func TestAPluginThatDeclaresShapingIsTreatedAsShaping(t *testing.T) {
 	const task = "shaper.fetch"
 
 	def, err := (&Plugin{name: "shaper"}).taskDef(&pluginv1.TaskManifest{
-		Name:           "fetch",
-		Summary:        "a task that evaluates outputs as a replacement",
-		InputMessage:   "flowstate.v1.Task.HTTP.Inputs",
-		OutputMessage:  "flowstate.v1.Task.HTTP.Outputs",
-		DeferredInputs: []string{"outputs"},
-		ShapesOutputs:  true,
-	}, Config{})
+		Name:            "fetch",
+		Summary:         "a task that evaluates outputs as a replacement",
+		InputDescriptor: fetchInputsDescriptor(t),
+		InputMessage:    "plugintest.v1.FetchInputs",
+		OutputMessage:   "flowstate.v1.Task.HTTP.Outputs",
+		DeferredInputs:  []string{"outputs"},
+		ShapesOutputs:   true,
+	}, Config{}.withDefaults())
 	require.NoError(t, err)
 	require.True(t, def.ShapesOutputs, "the manifest declared it and the task definition does not carry it")
 

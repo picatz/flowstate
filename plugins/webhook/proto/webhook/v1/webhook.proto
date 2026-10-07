@@ -4,6 +4,7 @@ package webhook.v1;
 
 option go_package = "github.com/picatz/flowstate/plugins/webhook/gen/webhook/v1;webhookv1";
 
+import "flowstate/v1/schema.proto";
 import "flowstate/v1/value.proto";
 
 // SendInputs describes one signed outbound webhook delivery: the sending half
@@ -29,11 +30,12 @@ message SendInputs {
   // of use. A literal key is refused before it can enter durable history. The
   // key is only ever an input to the signature; it is never sent, returned or
   // echoed in an error.
-  flowstate.v1.Value signing_key = 3;
+  flowstate.v1.Value signing_key = 3 [(flowstate.v1.input).secret = SECRET_REQUIRED];
 
   // Scheme is how the body is signed, with the spelling a webhook trigger's
   // `verify:` block uses: `hmac_sha256` (the default; a hex HMAC-SHA256 of the
-  // body in `X-Flowstate-Signature`) or `stripe` (`Stripe-Signature:
+  // body in `X-Flowstate-Signature`), a provider's own spelling (`github`,
+  // `shopify`, `linear`, `slack`) or `stripe` (`Stripe-Signature:
   // t=<unix seconds>,v1=<hex>`, signed over the timestamp and the body, with a
   // five-minute replay window at the receiver). An unknown scheme is refused.
   string scheme = 4;

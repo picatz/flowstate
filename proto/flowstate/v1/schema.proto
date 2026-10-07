@@ -39,3 +39,46 @@ extend google.protobuf.EnumValueOptions {
   // replace it.
   bool test_only = 50000;
 }
+
+// Secret says how a task input accepts a host secret reference: the claim a
+// task makes about one input, written on the field it describes rather than in
+// a parallel list of field names that can drift from the schema.
+//
+// Reading it fails closed: an input that sets no claim is no claim, and the
+// host refuses a secret reference there.
+enum Secret {
+  // SECRET_UNSPECIFIED is no claim. The input does not accept a secret
+  // reference, and the host refuses one written there.
+  SECRET_UNSPECIFIED = 0;
+
+  // SECRET_WHOLE_VALUE says the input accepts a secret reference as its entire
+  // value, which the host resolves where the task uses it. The field is a
+  // `flowstate.v1.Value`, which holds a reference unresolved, or a string, which
+  // a plugin task receives the resolved value in.
+  SECRET_WHOLE_VALUE = 1;
+
+  // SECRET_REQUIRED says the input must be supplied as a whole secret
+  // reference, never a literal or an expression. It implies
+  // SECRET_WHOLE_VALUE and is declared instead of it, not alongside it.
+  SECRET_REQUIRED = 2;
+
+  // SECRET_NESTED says a secret reference may sit inside a value the task
+  // itself encodes, such as an entry of a list or a map, and is resolved at
+  // exactly the moment the task writes that value out. The field is a
+  // `flowstate.v1.Value`, or a map whose values are.
+  SECRET_NESTED = 3;
+}
+
+// InputOptions are the options a task's input message sets on one of its
+// fields with the `input` extension.
+message InputOptions {
+  // Secret is how the input accepts a secret reference. Unset is no claim.
+  Secret secret = 1;
+}
+
+extend google.protobuf.FieldOptions {
+  // input sets the [InputOptions] of a task input field. The host reads it from
+  // the descriptor of a task's input message, so the descriptor a plugin
+  // already ships carries the claims with the fields they describe.
+  InputOptions input = 50001;
+}

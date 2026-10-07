@@ -149,6 +149,14 @@ by bare number.
    cancelable, rules are compiled and type-checked when configuration is loaded rather than
    when a request arrives, and a rule that errors denies.
 
+   protovalidate is the one deliberate second CEL evaluator: it checks the `buf.validate`
+   rules on Flowstate's own protos, with its own environment and no cost limit, so it is
+   only ever given expressions this repository wrote. A peer-authored schema is not: the host
+   removes every expression-bearing rule (`cel`, `cel_expression`, predefined `cel`) from a
+   plugin's descriptor before linking it (`stripCELRules`), and honours the standard rules
+   (`string.max_len`, `repeated.min_items`, `in`, ...). A plugin that wants a computed or
+   cross-field rule enforces it in its own process, under its own limits.
+
    Note that CEL reserves identifiers that make plausible variable names, `namespace` among
    them (the full list is in `flowfile/validate.go`). Attributes are therefore better grouped
    under an object than declared flat, which also keeps compile-time field checking so a
@@ -941,14 +949,15 @@ resolver parses: CEL resolves a qualified name by trying successively shorter pr
 answering `steps` with the whole map and letting CEL apply `.<id>.<output>` itself means
 nothing here needs an opinion about how deep a reference goes.
 
-The resolver answers step ids first and the root only when no step claims the name, which
-is invariant 10 rather than a preference: a worker evaluates the AST stored in `RunState`,
-not the source, so a run that started before the root existed — possibly on a spec with a
-step literally called `steps` — keeps resolving exactly as it did. That precedence exists
-for those runs and for nothing else, because the compiler refuses the id: a step called
-`steps` would shadow the whole root for every expression after it, so `flow validate`
-rejects it wherever an id can be written — top level, loop body, parallel branch, and a
-loop's `as:`. The old runs keep their meaning; no new file can acquire it.
+The resolver answers a root name before it looks for a step, and there is nothing to
+order: a step named for a root is refused at every submit path (`flow validate` on source,
+and `v1.CheckStepIDs` on the specification, reached through `BindRunInputs` by the server's
+`RunWorkflow`, schedule creation, the webhook bridge and `flow run local`), at any nesting
+and inside a `call:`'s callee. The same check refuses a duplicate id in one namespace and
+an id that is not a CEL identifier, which `Node.id`'s schema pattern now requires too.
+Without it a hand-built spec's step called `vars` resolved `${vars.value}` to the step and
+`${vars.region}` to the root, one spelling in two namespaces (#1430). The check runs at
+submit and never at resume, and a run stored before it replays from its history.
 
 Because Temporal persists everything a workflow passes to an activity, the engine
 statically analyzes which references each remaining step actually needs and carries only

@@ -101,37 +101,6 @@ func TestTheStepsRootIsBoundBeforeAnythingHasRun(t *testing.T) {
 		"nothing has run and the steps root does not say so")
 }
 
-// TestAStepNamedStepsStillWinsOverTheRoot is the direction the fix could have broken.
-//
-// A spec compiled before this root existed may contain a step literally called `steps`,
-// and its outputs have to keep resolving — a worker evaluates the stored AST out of
-// RunState rather than re-parsing, so a run started on an older build must keep meaning
-// what it meant. That is invariant 10, and it is why the root is answered *last* where
-// there are outputs to check first.
-func TestAStepNamedStepsStillWinsOverTheRoot(t *testing.T) {
-	t.Parallel()
-
-	evaluator := v1.DefaultEvaluator()
-
-	env, err := evaluator.ProfileEnv(v1.CurrentProfile)
-	require.NoError(t, err)
-
-	ast, issues := env.Parse(v1.StepsRoot + ".result")
-	require.NoError(t, issues.Err())
-
-	scope := v1.NewScope(v1.CurrentProfile, &v1.Workflow_StepOutputs{
-		StepValues: map[string]*v1.Node_Outputs{
-			v1.StepsRoot: {NamedValues: map[string]*v1.Value{"result": v1.NewLiteral("mine")}},
-		},
-	})
-
-	got, err := evaluator.Eval(t.Context(), env, ast, scope.Activation(t.Context()))
-	require.NoError(t, err)
-	assert.Equal(t, "mine", got.Value(),
-		"a step named `steps` lost to the root, so a run compiled before the root existed "+
-			"changed meaning")
-}
-
 // TestTheCatalogNamesTheFunctionsAndNotOnlyTheLibraries is the same failure the
 // value roots exist for, one level down.
 //

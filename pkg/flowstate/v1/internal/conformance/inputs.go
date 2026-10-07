@@ -929,7 +929,7 @@ func InputRefusalCases() []Refusal {
 			Workflow: declares("calls-structural-only-input",
 				nil,
 				nil,
-				says("before-call", "side effect"),
+				says("before_call", "side effect"),
 				callNode("callee", declares("inputs-structural-only-callee",
 					[]*v1.InputDeclaration{{
 						Name: "region",

@@ -220,3 +220,40 @@ func TestAFanOutOfStoredExpressionsIsBoundedByWorkNotDepth(t *testing.T) {
 			*act.remaining, maxActivationEvaluations)
 	}
 }
+
+// TestStepsOutputActivationRootsAreOneNamespacePerName pins what the resolver
+// answers for each of the five roots (#1430): the bare name resolves to the whole
+// root, whether or not any step has run, and `<root>.<name>` is left unresolved so
+// CEL falls back to the shorter prefix and selects inside the root itself.
+//
+// One spelling, one namespace. A step named for a root used to win the longer
+// selector while the root won the bare name, so `${vars.value}` and `${vars.region}`
+// read two different things; [CheckStepIDs] now refuses such a step at every submit
+// path (see TestRunWorkflowStepIDsRefused), so nothing here has a step to order
+// against.
+func TestStepsOutputActivationRootsAreOneNamespacePerName(t *testing.T) {
+	t.Parallel()
+
+	scopes := map[string]*Workflow_StepOutputs{
+		"before any step ran": nil,
+		"after a step ran":    stepOutputsFixture(),
+	}
+
+	for scopeName, prev := range scopes {
+		act := &StepsOutputActivation{Prev: prev}
+
+		for _, root := range DeclarationRoots() {
+			t.Run(scopeName+"/"+root, func(t *testing.T) {
+				if _, ok := act.ResolveName(root); !ok {
+					t.Errorf("ResolveName(%q) did not resolve; a root is always there", root)
+				}
+
+				for _, selector := range []string{root + ".present", root + ".missing"} {
+					if _, ok := act.ResolveName(selector); ok {
+						t.Errorf("ResolveName(%q) resolved; the selection belongs to CEL applied to the root", selector)
+					}
+				}
+			})
+		}
+	}
+}

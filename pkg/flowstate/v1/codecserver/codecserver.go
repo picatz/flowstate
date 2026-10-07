@@ -80,6 +80,7 @@ import (
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/audit"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/authz"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/payloadcodec"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/payloadcodec/envelope"
 )
@@ -398,9 +399,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// Only a missing action is a scope problem a new token can fix; a
 		// namespace or shared-namespace refusal is not, and a client told
 		// otherwise would keep asking for a scope it already holds.
-		if scope := v1.AuthorizationActionScope(mustAction(endpoint)); status == http.StatusForbidden &&
-			!slices.Contains(principal.Actions, scope) {
-			header.Set("WWW-Authenticate", fmt.Sprintf(`Bearer error="insufficient_scope", scope=%q`, scope))
+		if decision := authz.DecidePrincipal(principal, true, mustAction(endpoint), authz.Explicit); status == http.StatusForbidden &&
+			!decision.Allowed {
+			header.Set("WWW-Authenticate", fmt.Sprintf(`Bearer error="insufficient_scope", scope=%q`, decision.Scope))
 		}
 		h.refuse(ctx, w, subject, code, status, msg)
 		return
@@ -547,10 +548,9 @@ func (h *Handler) authorize(principal auth.Principal, endpoint, namespace string
 		return http.StatusUnauthorized, "authentication required", v1.AuditDenyCode_AUDIT_DENY_CODE_POLICY_DENIED
 	}
 
-	scope := v1.AuthorizationActionScope(mustAction(endpoint))
-	if !slices.Contains(principal.Actions, scope) {
+	if decision := authz.DecidePrincipal(principal, true, mustAction(endpoint), authz.Explicit); !decision.Allowed {
 		return http.StatusForbidden,
-			fmt.Sprintf("the caller's policy entry does not grant %q, which this endpoint requires explicitly", scope),
+			fmt.Sprintf("the caller's policy entry does not grant %q, which this endpoint requires explicitly", decision.Scope),
 			v1.AuditDenyCode_AUDIT_DENY_CODE_POLICY_DENIED
 	}
 

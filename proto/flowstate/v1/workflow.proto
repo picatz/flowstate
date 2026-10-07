@@ -1588,13 +1588,20 @@ message Node {
   // Each node has a unique identifier within the workflow. This ID is used to reference the
   // node in the workflow's step outputs and can be used to access the outputs of the
   // node after the workflow has been executed.
+  //
+  // An ID is a CEL identifier, because expressions name a step as
+  // `steps.<id>`: a letter or underscore, then letters, digits and underscores.
+  // Uniqueness and the words an ID may not be (the five root names and the
+  // lexer's `true`, `false`, `null` and `in`) are whole-workflow rules that
+  // protovalidate cannot express per field; the submit boundary enforces them
+  // with the same check `flow validate` runs.
   string id = 1 [
     (buf.validate.field).required = true,
     (google.api.field_behavior) = REQUIRED,
     (buf.validate.field).string = {
       min_len: 1
       max_len: 128
-      pattern: "^[A-Za-z0-9-_]+$" // Alphanumeric, dashes, and underscores.
+      pattern: "^[A-Za-z_][A-Za-z0-9_]*$" // A CEL identifier.
     }
   ];
 

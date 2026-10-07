@@ -58,6 +58,10 @@ func (p *Plugin) taskDef(manifest *pluginv1.TaskManifest, cfg Config) (flowstate
 		return flowstatev1.TaskDef{}, err
 	}
 
+	if err := checkDescriptorSecretClaims(inputs, manifest.GetSecretInputs(), manifest.GetRequiredSecretInputs()); err != nil {
+		return flowstatev1.TaskDef{}, pluginError(p.name, p.path, fmt.Errorf("task %q: %w", textbound.Truncate(name, 64), err))
+	}
+
 	return flowstatev1.TaskDef{
 		Name:           qualified,
 		Summary:        manifest.GetSummary(),
@@ -131,6 +135,54 @@ func checkManifestInputNames(inputs protoreflect.MessageDescriptor, manifest *pl
 		return err
 	}
 	return check(manifest.GetRequiredSecretInputs(), "required_secret_inputs")
+}
+
+// checkDescriptorSecretClaims refuses a task whose manifest lists and whose
+// input descriptor disagree about which inputs accept a secret reference.
+//
+// The descriptor is the source of truth for the claims (the `flowstate.v1.input`
+// option on a field); the manifest lists are carried until the protocol drops
+// them, and a disagreement either way is a plugin the host cannot trust to mean
+// what it says. A nested claim is refused outright: no plugin task input accepts
+// a reference inside a list or a mapping (see [resolvePluginSecretInputs]).
+func checkDescriptorSecretClaims(inputs protoreflect.MessageDescriptor, secretInputs, requiredSecretInputs []string) error {
+	whole, required, nested, err := flowstatev1.SecretInputClaims(inputs)
+	if err != nil {
+		return fmt.Errorf("inputs: %w", err)
+	}
+	if len(nested) > 0 {
+		return fmt.Errorf("input %q declares SECRET_NESTED, which no plugin task input accepts",
+			textbound.Truncate(nested[0], 64))
+	}
+
+	for _, c := range []struct {
+		label    string
+		manifest []string
+		derived  []string
+	}{
+		{"secret_inputs", secretInputs, whole},
+		{"required_secret_inputs", requiredSecretInputs, required},
+	} {
+		declared := slices.Sorted(slices.Values(c.manifest))
+		declared = slices.Compact(declared)
+		if slices.Equal(declared, c.derived) {
+			continue
+		}
+		for _, name := range declared {
+			if !slices.Contains(c.derived, name) {
+				return fmt.Errorf("%s names %q but its input descriptor does not declare it with the flowstate.v1.input option",
+					c.label, textbound.Truncate(name, 64))
+			}
+		}
+		for _, name := range c.derived {
+			if !slices.Contains(declared, name) {
+				return fmt.Errorf("input %q is declared secret in its descriptor but %s does not name it",
+					textbound.Truncate(name, 64), c.label)
+			}
+		}
+	}
+
+	return nil
 }
 
 // taskFunc returns the function that executes a task by asking the plugin to.

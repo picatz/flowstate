@@ -254,9 +254,8 @@ func TestEveryDeclarableSchemeCanBeSigned(t *testing.T) {
 		}}}
 		keys := map[string]secrets.Secret{scheme: key}
 
-		header, value, err := v1.SignWebhookDelivery(scheme, key, body, now)
+		headers, err := v1.SignWebhookDelivery(scheme, key, body, now)
 		require.NoError(t, err, "scheme %q is verifiable and cannot be signed", scheme)
-		headers := map[string]string{header: value}
 
 		require.NoError(t, v1.VerifyWebhookDelivery(trigger, keys, headers, body, now),
 			"scheme %q: the verifier refused what the signer produced", scheme)
@@ -269,9 +268,9 @@ func TestEveryDeclarableSchemeCanBeSigned(t *testing.T) {
 	}
 
 	// The timestamp is part of the stripe payload and of its replay window.
-	header, value, err := v1.SignWebhookDelivery(v1.WebhookSchemeStripe, key, body, now)
+	headers, err := v1.SignWebhookDelivery(v1.WebhookSchemeStripe, key, body, now)
 	require.NoError(t, err)
-	headers := map[string]string{header: value}
+	header, value := v1.StripeSignatureHeader, headers[v1.StripeSignatureHeader]
 	stripe := stripeSignedTrigger()
 	keys := map[string]secrets.Secret{v1.WebhookSchemeStripe: key}
 	require.Error(t, v1.VerifyWebhookDelivery(stripe, keys, headers, body, now.Add(v1.WebhookReplayWindow+time.Minute)),
@@ -279,9 +278,9 @@ func TestEveryDeclarableSchemeCanBeSigned(t *testing.T) {
 	forged := map[string]string{header: strings.Replace(value, "t=1755043200", "t=1755043201", 1)}
 	require.Error(t, v1.VerifyWebhookDelivery(stripe, keys, forged, body, now), "a retimed signature verified")
 
-	_, _, err = v1.SignWebhookDelivery("sha1", key, body, now)
+	_, err = v1.SignWebhookDelivery("sha1", key, body, now)
 	require.Error(t, err, "an unknown scheme signed")
-	_, _, err = v1.SignWebhookDelivery(v1.WebhookSchemeHMACSHA256, secrets.Secret{}, body, now)
+	_, err = v1.SignWebhookDelivery(v1.WebhookSchemeHMACSHA256, secrets.Secret{}, body, now)
 	require.Error(t, err, "a zero key signed")
 }
 

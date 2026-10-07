@@ -1,0 +1,170 @@
+package flowstatev1
+
+import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"mime"
+	"net/url"
+	"strings"
+)
+
+// maxWebhookFormFields bounds how many fields a form-encoded delivery may carry.
+// The body is already held to [MaxWebhookPayloadBytes]; this bounds the map built
+// from it, which a body of nothing but `a&b&c&...` would otherwise make as large
+// as it likes.
+const maxWebhookFormFields = 256
+
+// webhookFormPayloadField is the one field whose value is a JSON document rather
+// than text: Slack sends an interactive component's payload as
+// `payload=<url-encoded JSON>` and nothing else.
+const webhookFormPayloadField = "payload"
+
+// DecodeWebhookBody reads a verified delivery's raw body into the value
+// `event.body` holds, by the delivery's declared media type.
+//
+// One function for the live receiver and for `flow test`, so a stored delivery
+// and a real one produce the same value: a rehearsal that decoded a form
+// differently from production would be the rehearsal lying about production.
+//
+//   - `application/x-www-form-urlencoded` becomes a map of field to text, which
+//     is what a Slack slash command is. A field that repeats is refused rather
+//     than resolved, because two values for one name is a delivery that means
+//     something other than what any one mapping would read. When the form
+//     carries exactly one field, `payload`, its value is decoded as the JSON
+//     document it is (Slack interactivity), so `event.body.actions[0]` reads
+//     the same as it does for a JSON delivery.
+//   - A form is read only for a trigger whose provider sends them, which is a
+//     Slack-verified one today. The Content-Type is not covered by any
+//     signature, so letting it select the parser for every trigger would let
+//     whoever replays a captured delivery choose how its signed bytes are
+//     read; a trigger that does not expect a form never reads one.
+//   - Anything else, including no media type, is one JSON document with nothing
+//     after it, as before. The receiver never trusted the media type to select a
+//     *looser* parser, and still does not.
+func DecodeWebhookBody(trigger *WebhookTrigger, contentType string, raw []byte) (any, error) {
+	if WebhookReadsForms(trigger) && IsWebhookFormContentType(contentType) {
+		return decodeWebhookForm(raw)
+	}
+
+	return decodeWebhookJSON(raw, "the delivery body")
+}
+
+// WebhookReadsForms reports whether a trigger's provider sends form-encoded
+// deliveries, so that [DecodeWebhookBody] may read one for it.
+func WebhookReadsForms(trigger *WebhookTrigger) bool {
+	_, slack := trigger.GetVerify()[WebhookSchemeSlack]
+
+	return slack
+}
+
+// IsWebhookFormContentType reports whether a Content-Type header names a form
+// body.
+func IsWebhookFormContentType(contentType string) bool {
+	mediaType, _, err := mime.ParseMediaType(contentType)
+
+	return err == nil && mediaType == "application/x-www-form-urlencoded"
+}
+
+func decodeWebhookJSON(raw []byte, what string) (any, error) {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+
+	var decoded any
+	if err := decoder.Decode(&decoded); err != nil {
+		return nil, fmt.Errorf("%s is not a JSON document: %w", what, err)
+	}
+
+	// And nothing after it. [json.Decoder.Decode] reads one value and stops, so
+	// `{"id":"a"} {"id":"b"}` — or a document followed by arbitrary bytes — would
+	// decode as the first value and silently discard the rest, starting a run
+	// from a prefix that can mean something other than what the payload as a
+	// whole says. A delivery is one document, so end of input is part of the
+	// contract and is checked rather than assumed. Into a [json.RawMessage] so
+	// that nothing is built from what follows: the question is only whether
+	// anything does.
+	var trailing json.RawMessage
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return nil, fmt.Errorf("%s carries more than one JSON document: a delivery is a "+
+			"single JSON value with nothing after it, so send one document per delivery", what)
+	}
+
+	return NormalizeDeliveryNumbers(decoded), nil
+}
+
+func decodeWebhookForm(raw []byte) (any, error) {
+	// Read pair by pair rather than through [url.ParseQuery], which builds every
+	// pair's value slice before anything can be counted: the bound has to land
+	// where the work is spent, and a signed megabyte of `a=&a=&...` would
+	// otherwise be fully allocated before the field count was ever consulted.
+	fields := make(map[string]any)
+	pairs := 0
+	for pair := range strings.SplitSeq(string(raw), "&") {
+		if pair == "" {
+			continue
+		}
+		if pairs++; pairs > maxWebhookFormFields {
+			return nil, fmt.Errorf("the delivery form carries more than %d fields", maxWebhookFormFields)
+		}
+		if strings.Contains(pair, ";") {
+			return nil, errors.New("the delivery body is not a form: a `;` separates nothing in a form field")
+		}
+
+		name, value, _ := strings.Cut(pair, "=")
+		name, err := url.QueryUnescape(name)
+		if err != nil {
+			return nil, fmt.Errorf("the delivery body is not a form: %w", err)
+		}
+		value, err = url.QueryUnescape(value)
+		if err != nil {
+			return nil, fmt.Errorf("the delivery body is not a form: %w", err)
+		}
+		if _, repeated := fields[name]; repeated {
+			return nil, fmt.Errorf("the delivery form repeats the field %q: a field with several values "+
+				"has no single reading, so send each field once", name)
+		}
+		fields[name] = value
+	}
+
+	if payload, only := fields[webhookFormPayloadField].(string); only && len(fields) == 1 {
+		return decodeWebhookJSON([]byte(payload), "the delivery form's `payload` field")
+	}
+
+	return fields, nil
+}
+
+// maxSlackChallengeBytes bounds the challenge a handshake echoes. Slack's own is
+// a few dozen characters; the bound is what keeps the echo from being a way to
+// return an attacker-sized body.
+const maxSlackChallengeBytes = 1024
+
+// SlackURLVerificationChallenge reports the challenge a Slack Events API
+// `url_verification` request asks to have echoed, and whether the delivery is
+// one.
+//
+// Only a trigger that verifies with [WebhookSchemeSlack] has a handshake to
+// answer, and the answer is for the receiver to give *after* verification, so an
+// outsider learns nothing about the route from it. A handshake starts nothing:
+// there is no run to bind, which is why this is decided before binding.
+func SlackURLVerificationChallenge(trigger *WebhookTrigger, body any) (string, bool) {
+	if _, slack := trigger.GetVerify()[WebhookSchemeSlack]; !slack {
+		return "", false
+	}
+
+	document, ok := body.(map[string]any)
+	if !ok {
+		return "", false
+	}
+	if kind, _ := document["type"].(string); kind != "url_verification" {
+		return "", false
+	}
+
+	challenge, ok := document["challenge"].(string)
+	if !ok || challenge == "" || len(challenge) > maxSlackChallengeBytes || strings.ContainsAny(challenge, "\r\n") {
+		return "", false
+	}
+
+	return challenge, true
+}

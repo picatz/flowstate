@@ -26,7 +26,7 @@ func TestOIDCVerifierMalformedClaims(t *testing.T) {
 
 	verifier := newVerifier(t,
 		auth.Policy{
-			Issuers: []auth.TrustedIssuer{{
+			Issuers: []auth.TrustedIssuer{{Actions: []string{},
 				Name:      "test",
 				Issuer:    issuer.URL(),
 				Audiences: []string{"flowstate"},
@@ -135,7 +135,7 @@ func TestOIDCVerifierBoundsClaimValuesInErrors(t *testing.T) {
 
 	verifier := newVerifier(t,
 		auth.Policy{
-			Issuers: []auth.TrustedIssuer{{
+			Issuers: []auth.TrustedIssuer{{Actions: []string{},
 				Name:      "test",
 				Issuer:    issuer.URL(),
 				Audiences: []string{"flowstate"},
@@ -184,7 +184,7 @@ func TestOIDCVerifierWithHTTPClient(t *testing.T) {
 
 	verifier := newVerifierWithClient(t,
 		auth.Policy{
-			Issuers: []auth.TrustedIssuer{{
+			Issuers: []auth.TrustedIssuer{{Actions: []string{},
 				Name:      "test",
 				Issuer:    issuer.URL(),
 				Audiences: []string{"flowstate"},
@@ -205,7 +205,7 @@ func TestOIDCVerifierWithHTTPClient(t *testing.T) {
 	// under it.
 	verifier = newVerifier(t,
 		auth.Policy{
-			Issuers: []auth.TrustedIssuer{{
+			Issuers: []auth.TrustedIssuer{{Actions: []string{},
 				Name:      "test",
 				Issuer:    issuer.URL(),
 				Audiences: []string{"flowstate"},

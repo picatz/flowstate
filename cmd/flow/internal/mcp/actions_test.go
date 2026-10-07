@@ -25,6 +25,12 @@ func actionsToolRequest(t *testing.T, granted auth.ActionScopes, claims map[stri
 	issuer := authtest.NewIssuer()
 	t.Cleanup(func() { _ = issuer.Close() })
 
+	// An entry must name its actions, so a test that is not about authority
+	// passes none and is given every one.
+	if granted == nil {
+		granted = everyAction
+	}
+
 	verifier, err := auth.NewOIDCVerifier(auth.Policy{
 		Issuers: []auth.TrustedIssuer{{
 			Name: "agent-idp", Issuer: issuer.URL(), Audiences: []string{principalTestResource}, Actions: granted,
@@ -55,7 +61,6 @@ func TestMCPToolsAreGatedByTheCallersEffectiveActions(t *testing.T) {
 		tool    string
 		allowed bool
 	}{
-		{"no action list restricts nothing", nil, nil, "flowstate_run_local", true},
 		{"listed action is allowed", auth.ActionScopes{"mcp.run_local"}, nil, "flowstate_run_local", true},
 		{"unlisted action is refused", auth.ActionScopes{"mcp.test"}, nil, "flowstate_run_local", false},
 		{"an empty list grants nothing", auth.ActionScopes{}, nil, "flowstate_run_local", false},

@@ -413,7 +413,7 @@ steps:
     for_each:
       items: ${[1, 2]}
       steps:
-        - id: inner-pause
+        - id: inner_pause
           sleep: 1s
 `)
 

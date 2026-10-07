@@ -14,10 +14,11 @@ func init() {
 			Leading: " AuthorizationActionBinding says which operations one action covers.\n" +
 				"\n" +
 				" The bindings are what keep the vocabulary attached to the surfaces it is a\n" +
-				" vocabulary of: TestEveryRPCHasExactlyOneAuthorizationAction walks\n" +
-				" flowstate.v1.WorkflowService's descriptor and fails when an RPC is named by\n" +
-				" no binding or by two, so an RPC added to the schema cannot arrive without an\n" +
-				" action, and a binding cannot name an RPC the service no longer declares.\n" +
+				" vocabulary of: each WorkflowService method carries its action in its\n" +
+				" authorization_action option, the bindings' rpcs are read from those options,\n" +
+				" and TestEveryRPCHasExactlyOneAuthorizationAction walks the service descriptor\n" +
+				" and fails when a method carries no option, so an RPC added to the schema\n" +
+				" cannot arrive without an action.\n" +
 				"\n" +
 				" rpcs holds RPC names only. The MCP tool projected from an RPC is derived\n" +
 				" from the RPC name and is deliberately not listed: which tools a given MCP\n" +
@@ -40,8 +41,9 @@ func init() {
 				" step-up challenge and the policy that provokes it read one relation.\n",
 		},
 		{
-			Name:    "flowstate.v1.AuthorizationActionBinding.rpcs",
-			Leading: " The WorkflowService methods this action covers, by their schema names.\n",
+			Name: "flowstate.v1.AuthorizationActionBinding.rpcs",
+			Leading: " The WorkflowService methods this action covers, by their schema names.\n" +
+				" Read from each method's authorization_action option, never written out.\n",
 		},
 		{
 			Name: "flowstate.v1.AuthorizationActionBinding.mcp_tools",
@@ -167,8 +169,8 @@ func init() {
 			Leading: " Releasing the plaintext of a Temporal namespace's stored payloads through\n" +
 				" the codec server (`flow codec serve`), which Temporal's Web UI and CLI\n" +
 				" call to display history. No RPC either. It reveals everything the\n" +
-				" namespace's runs wrote, so it is never implied: a principal whose policy\n" +
-				" entry lists no actions is not granted it, unlike the RPC actions above.\n",
+				" namespace's runs wrote, so it is never implied: a principal holds it only when its policy\n" +
+				" entry lists it.\n",
 		},
 		{
 			Name: "flowstate.v1.AUTHORIZATION_ACTION_PAYLOAD_ENCODE",
@@ -183,8 +185,18 @@ func init() {
 			Leading: " Reading the values a run's workflow declared `sensitive: true` in the\n" +
 				" clear, through GetRequest.reveal_sensitive or\n" +
 				" GetTimelineRequest.reveal_sensitive. Without it those RPCs withhold the\n" +
-				" values. It is never implied: a policy entry that lists no actions is not\n" +
-				" granted it, unlike the RPC actions above.\n",
+				" values. It is never implied: a caller holds it only when its policy entry lists it.\n",
+		},
+		{
+			Name: "flowstate.v1.authorization_action",
+			Leading: " authorization_action is the action a WorkflowService method is authorized\n" +
+				" as, set on the method itself so that the binding and the RPC cannot drift:\n" +
+				" a method without it is refused by TestEveryRPCHasExactlyOneAuthorizationAction,\n" +
+				" and AuthorizationActionBinding.rpcs is derived from it rather than written\n" +
+				" out beside the schema.\n" +
+				"\n" +
+				" Several methods may share an action; the grouping is the judgement the\n" +
+				" option records, and the reason for a non-obvious one belongs on the method.\n",
 		},
 	})
 }

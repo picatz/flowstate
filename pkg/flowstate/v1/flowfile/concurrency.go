@@ -236,7 +236,7 @@ func validateConcurrency(wf *v1.Workflow) Diagnostics {
 	}
 
 	for _, ref := range bare {
-		if isDeclarationRoot(ref) {
+		if v1.IsDeclarationRoot(ref) {
 			// A root as an operand rather than a selection through it, described
 			// by the loops above rather than by the general sentence below.
 			ds = append(ds, Diagnostic{

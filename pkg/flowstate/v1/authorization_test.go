@@ -17,11 +17,10 @@ import (
 // attached to the surface it is a vocabulary of.
 //
 // It walks flowstate.v1.WorkflowService's own descriptor rather than any list
-// of RPC names, in both directions: an RPC the schema declares and no binding
-// names fails, and a binding naming an RPC the schema no longer declares fails.
-// That is the whole reason the bindings may be hand-written — the judgement
-// about which RPCs share an action is recorded once, and the thing it is a
-// judgement about is read from the source of truth.
+// of RPC names: an RPC the schema declares without an authorization_action
+// option, or that reaches more than one binding, fails. The binding sits on the
+// method itself, so the judgement about which RPCs share an action is recorded
+// once, on the thing it is a judgement about.
 //
 // It also pins the *audited* surface (#1018), which is derived from the same
 // bindings: every RPC the schema declares reaches an action that

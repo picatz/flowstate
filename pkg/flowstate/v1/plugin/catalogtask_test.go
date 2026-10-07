@@ -45,8 +45,8 @@ func widgetManifest(t *testing.T) *pluginv1.TaskManifest {
 	return &pluginv1.TaskManifest{
 		Name:             "widget",
 		Summary:          "a task whose schema this binary has never compiled",
-		InputDescriptor:  descriptor,
-		InputMessage:     "plugintest.v1.Widget",
+		InputDescriptor:  claimedInputs(map[string]flowstatev1.Secret{"name": flowstatev1.Secret_SECRET_WHOLE_VALUE}),
+		InputMessage:     claimedMessage,
 		OutputDescriptor: descriptor,
 		OutputMessage:    "plugintest.v1.Widget",
 

@@ -110,8 +110,9 @@ type Principal struct {
 	Kind PrincipalKind `json:"kind,omitempty"`
 
 	// Actions is the policy-assigned allowlist of canonical Flowstate action
-	// scopes. Nil means the admitting policy entry did not restrict actions;
-	// present empty means it granted none. It never comes from token claims.
+	// scopes. A verified principal holds only what is listed, so nil and empty
+	// alike grant nothing; only the anonymous principal is unrestricted. It
+	// never comes from token claims.
 	Actions ActionScopes `json:"actions,omitzero"`
 
 	// IssuedAt is the token's "iat" claim.
