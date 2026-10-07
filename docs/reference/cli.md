@@ -141,7 +141,7 @@ flow breaking --against HEAD~1 examples/hello-world/workflow.yaml
 flow breaking --against origin/main \
   --moved shared/notify.yaml=workflows/notify.yaml .
 
-# A workflow deleted on purpose, with no callers left, is acknowledged by path:
+# A workflow deleted on purpose, with no callers left, is acknowledged:
 flow breaking --against origin/main \
   --removed examples/release-approval/workflow.yaml examples/
 ```
