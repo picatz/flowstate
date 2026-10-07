@@ -680,3 +680,20 @@ func AssertNoLeak(tb testing.TB, out *v1.Workflow_StepOutputs, material string) 
 		}
 	}
 }
+
+// RequireNoExchange fails t when the case's fixture exchanger minted a
+// credential. A case that names [Federation.ExchangeCalls] claims the request
+// was refused before the broker was reached, which a run that still ends in a
+// denial cannot show by itself. It is shared so both driver callers assert it
+// the same way, from one body.
+func RequireNoExchange(t *testing.T, c AuthorityCase) {
+	t.Helper()
+
+	if c.Authority.Federation == nil || c.Authority.Federation.ExchangeCalls == nil {
+		return
+	}
+
+	if calls := c.Authority.Federation.ExchangeCalls.Load(); calls != 0 {
+		t.Fatalf("the fixture broker exchanged a credential %d time(s) that the assumption policy should have denied first", calls)
+	}
+}
