@@ -89,7 +89,6 @@ type DriveResult struct {
 	Snapshot    *v1.DebugSnapshot
 	Inspect     *v1.DebugInspectResponse
 	Breakpoints []*v1.DebugBreakpointState
-	Completion  *Completion
 	Text        string
 
 	// Unarmed is the state of the breakpoint the line itself set — `break`
@@ -281,7 +280,7 @@ func (d *Driver) DoWith(ctx context.Context, line string, opts DoOptions) (*Driv
 			return nil, err
 		}
 
-		return &DriveResult{Completion: &answer, Text: RenderCompletion(answer)}, nil
+		return &DriveResult{Text: RenderCompletion(answer)}, nil
 
 	case "backtrace":
 		snapshot, err := d.target.Snapshot(ctx)

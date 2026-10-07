@@ -100,10 +100,30 @@ func TestADriverCompletesVerbsAndStepsFromWhatTheTargetSays(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []string{"done"}, candidateTexts(until), "the step the run is held at")
 
-	// Past an `if` the argument is an expression, so a step id is not offered.
-	condition, err := driver.Complete(t.Context(), "break price if ste")
+	// Past an `if` the argument is an expression, so a step id is not offered,
+	// and a `hit <count>` clause in front of it changes nothing about that.
+	for _, line := range []string{"break price if ste", "break price hit 2 if ste"} {
+		condition, err := driver.Complete(t.Context(), line)
+		require.NoError(t, err)
+		assert.Equal(t, []string{"steps."}, candidateTexts(condition), line)
+	}
+
+	// The driver's own grammar: past the step id there is nothing to complete
+	// for a `break` still naming its count, and `until` and `log` take no
+	// condition here, so an `if` after them is not an expression.
+	for _, line := range []string{"break price hit ", "break price hit 2 ", "break price ", "until done if ste", "until done ", "log price sa"} {
+		none, err := driver.Complete(t.Context(), line)
+		require.NoError(t, err)
+		assert.Empty(t, candidateTexts(none), line)
+	}
+
+	// A logpoint is deleted under a name with a space in it.
+	_, err = driver.Do(t.Context(), "log price saw {1}")
 	require.NoError(t, err)
-	assert.Equal(t, []string{"steps."}, candidateTexts(condition))
+	logs, err := driver.Complete(t.Context(), "delete log ")
+	require.NoError(t, err)
+	assert.Equal(t, "log ", logs.Prefix)
+	assert.Equal(t, []string{"log price"}, candidateTexts(logs))
 }
 
 // TestADriverWithoutInspectCompletesVerbsAndStepsOnly: a target that refuses an

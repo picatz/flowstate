@@ -54,28 +54,49 @@ func (d *Driver) Complete(ctx context.Context, line string) (Completion, error) 
 		return d.offerExpression(ctx, rest)
 
 	case completesStep:
-		// Past an `if` the argument is an expression, as at a prompt: a step id
-		// inserted into the middle of a condition is a name it cannot mean.
-		if _, condition, conditional, err := splitCondition(rest, grammarBreak); err == nil && conditional {
-			return d.offerExpression(ctx, condition)
+		// The grammar is the verb's own, read the way [Driver.DoWith] reads it
+		// and not the prompt's: `break` takes a `hit <count>` clause and a
+		// condition, and past an `if` the argument is an expression, so a step id
+		// inserted into a condition is a name it cannot mean. `until` and `log`
+		// take no condition here — a driver refuses a conditional `until`, and a
+		// logpoint's message is text with holes — so past the step id there is
+		// nothing to complete.
+		if known.verb == "break" {
+			stripped, hit, err := cutHitClause(rest)
+			if err != nil {
+				return Completion{}, nil
+			}
+			_, condition, conditional, err := splitCondition(stripped, grammarBreak)
+			if err != nil {
+				return Completion{}, nil
+			}
+			if conditional {
+				return d.offerExpression(ctx, condition)
+			}
+			if hit != "" {
+				return Completion{}, nil
+			}
+		}
+		if strings.ContainsAny(strings.TrimLeft(rest, " \t"), " \t") {
+			return Completion{}, nil
 		}
 
 		snapshot, err := d.target.Snapshot(ctx)
 		if err != nil {
 			return Completion{}, err
 		}
-		prefix := lastWord(rest)
 
-		return offerNamesFrom(prefix, stepIDs(snapshot), "a step this run is at or holds a breakpoint on"), nil
+		return offerNamesFrom(rest, stepIDs(snapshot), "a step this run is at or holds a breakpoint on"), nil
 
 	case completesBreakpoint:
 		snapshot, err := d.target.Snapshot(ctx)
 		if err != nil {
 			return Completion{}, err
 		}
-		prefix := lastWord(rest)
 
-		return offerNamesFrom(prefix, breakpointSteps(snapshot), "a breakpoint this session holds"), nil
+		// The whole argument, not its last word: a logpoint is deleted under the
+		// name `log <step>`, which has a space in it.
+		return offerNamesFrom(strings.TrimLeft(rest, " \t"), breakpointSteps(snapshot), "a breakpoint this session holds"), nil
 
 	default:
 		return Completion{}, nil
@@ -204,8 +225,8 @@ func (d *Driver) rootNames(ctx context.Context, revision uint64) []Candidate {
 
 	groups, err := d.target.Inspect(ctx, &v1.DebugInspectRequest{Revision: revision})
 	if err != nil {
-		d.roots, d.rootsRevision = out, revision
-
+		// Not remembered: a refusal or a failed round trip is not the stop's
+		// answer, and the next tab should ask again.
 		return out
 	}
 	for _, group := range groups.GetChildren() {
@@ -250,9 +271,9 @@ func offerNamesFrom(prefix string, names []string, detail string) Completion {
 }
 
 // neverWithheld is the withholding rule for a driver: it holds no redactor of its
-// own, because every name it offers came from a target that already redacted the
-// answer it was read from, and [isReference] refuses the marker that stands in for
-// a name it withheld.
+// own. The names it offers were listed by a target that already drops a scope
+// name its redactor would change, and [isReference] refuses the marker that
+// stands in for one it withheld.
 func neverWithheld(Candidate) bool { return false }
 
 // stepIDs are the steps a snapshot names: where the run is held, each frame
