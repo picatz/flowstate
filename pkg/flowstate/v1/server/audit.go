@@ -9,6 +9,7 @@ import (
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/audit"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/authz"
 )
 
 // Where an authorization decision is written down.
@@ -87,25 +88,15 @@ func (s *FlowstateServer) auditAllow(ctx context.Context, rpc string, kind v1.Au
 // The check is outside the recorder so that disabling audit output cannot
 // disable authorization.
 func (s *FlowstateServer) authorizeAction(ctx context.Context, rpc string, kind v1.AuditResourceKind, key string) error {
-	principal, ok := auth.PrincipalFromContext(ctx)
-	if !ok || principal.Actions == nil {
-		// A policy entry with no action list preserves legacy behavior.
-		return nil
-	}
-
 	action, err := v1.AuthorizationActionForRPC(rpc)
 	if err != nil {
 		return connect.NewError(connect.CodeInternal, err)
 	}
 
-	scope := v1.AuthorizationActionScope(action)
-	if slices.Contains(principal.Actions, scope) {
+	refusal := authz.Decide(ctx, action, authz.Implied).Refusal()
+	if refusal == nil {
 		return nil
 	}
-
-	refusal := connect.NewError(connect.CodePermissionDenied,
-		fmt.Errorf("the caller is not authorized for required action %q", scope))
-	refusal.Meta().Set("WWW-Authenticate", fmt.Sprintf(`Bearer error="insufficient_scope", scope=%q`, scope))
 
 	return s.auditDeny(ctx, rpc, kind, key, v1.AuditDenyCode_AUDIT_DENY_CODE_POLICY_DENIED, refusal)
 }

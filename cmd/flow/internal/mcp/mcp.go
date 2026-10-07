@@ -45,6 +45,7 @@ import (
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/audit"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/authz"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowstatev1connect"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/protodoc"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/server"
@@ -469,7 +470,7 @@ func wrapToolHandler(deps Deps, name string, handler mcp.ToolHandler) mcp.ToolHa
 func withMCPActions(recorder *audit.Recorder, reportFailure func(error), tool string, next mcp.ToolHandler) mcp.ToolHandler {
 	return func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		principal, ok := auth.PrincipalFromContext(ctx)
-		if !ok || principal.Actions == nil {
+		if !authz.Restricted(principal, ok) {
 			return next(ctx, req)
 		}
 
@@ -478,10 +479,11 @@ func withMCPActions(recorder *audit.Recorder, reportFailure func(error), tool st
 			return ToolError(errors.New("this caller is restricted to a list of actions and this tool requires none it can be checked against")), nil
 		}
 
-		scope := v1.AuthorizationActionScope(action)
-		if slices.Contains(principal.Actions, scope) {
+		decision := authz.DecidePrincipal(principal, ok, action, authz.Implied)
+		if decision.Allowed {
 			return next(ctx, req)
 		}
+		scope := decision.Scope
 
 		if recorder != nil {
 			if err := recorder.Deny(ctx, audit.Subject{
