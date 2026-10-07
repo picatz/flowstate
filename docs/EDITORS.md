@@ -400,7 +400,9 @@ filetype does not have to be `flowfile`:
 the design in [#585](https://github.com/picatz/flowstate/issues/585): the
 language client, the same filename/pattern association as the table above, and
 palette commands (`Flowstate: Validate/Test/Fix/Run Local`) that shell out to the
-matching subcommand and show its own output. See `editors/vscode/README.md` for
+matching subcommand and show its own output, and a TextMate grammar that colours
+the YAML and the CEL inside `${...}` and `must:` (the server's semantic tokens
+refine it). See `editors/vscode/README.md` for
 what it does, what it deliberately leaves out (a workflow tree view and a
 step-graph webview are both designed but not shipped yet), and exactly what has
 been compiled and unit-tested here versus what still needs a human with a real
