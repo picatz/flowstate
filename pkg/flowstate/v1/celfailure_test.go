@@ -161,3 +161,15 @@ func TestFailureDiagnosticsShareOneCostBudget(t *testing.T) {
 	require.True(t, counted.take())
 	assert.False(t, counted.take(), "the evaluation count bounds work even with no cost limit")
 }
+
+// TestAHyphenatedKeyIsNotListed pins that the shape is the canonical CEL
+// identifier the declarations are held to, so `api-token` is not listed.
+func TestAHyphenatedKeyIsNotListed(t *testing.T) {
+	t.Parallel()
+
+	assert.True(t, declaredNameShape("value"))
+	assert.True(t, declaredNameShape("_x9"))
+	assert.False(t, declaredNameShape("api-token"))
+	assert.False(t, declaredNameShape("9lives"))
+	assert.False(t, declaredNameShape(strings.Repeat("a", maxFailureNameLen+1)))
+}

@@ -382,17 +382,5 @@ func unparseNode(parsed *v1alpha1.ParsedExpr, node *v1alpha1.Expr) string {
 // a durable sentence even if a step kind ever put one there. It is defense in
 // depth, not the control: that is listing only `steps` and `steps.<id>`.
 func declaredNameShape(name string) bool {
-	if name == "" || len(name) > maxFailureNameLen {
-		return false
-	}
-	for i, r := range name {
-		switch {
-		case r == '_' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9':
-		case i > 0 && r == '-':
-		default:
-			return false
-		}
-	}
-
-	return true
+	return len(name) <= maxFailureNameLen && IsCELIdentifier(name)
 }
