@@ -50,12 +50,16 @@ func newPolicyTestCommand() *cobra.Command {
 			"  surface: egress\n" +
 			"  cases:\n" +
 			"    - name: team-b is refused team-a's partner API\n" +
-			"      identity: {namespace: team-b}\n" +
+			"      principal: {namespace: team-b}\n" +
 			"      request: {url: https://partner-a.example.com/v1}\n" +
 			"      expect: deny\n" +
 			"      rule: 'identity.namespace == \"team-a\" && host == \"partner-a.example.com\"'\n\n" +
-			"`identity` carries `subject`, `issuer`, `namespace` and `claims`, the fields every " +
-			"surface's rules read as `identity.<field>`; absent is no attested caller. `request` " +
+			"`principal` is the caller the case is made as, the same Principal a run records: " +
+			"`subject` and `issuer` (together), `namespace`, `kind` (`human`, `workload` or `agent`), " +
+			"`claims` of any shape (a `groups` list included), `actions` and `actors`, which every " +
+			"surface's rules read as `identity.<field>`. Absent is no attested caller, and a case " +
+			"carries only what it names: a rule on a `kind` or an action the case did not give it " +
+			"does not match. Nothing is attested. `request` " +
 			"depends on the surface: `url`, `method` (default GET) and optionally `ip` for egress; " +
 			"`task` for task shape; `argv`, `dir` and `env` for exec. A request carrying another " +
 			"surface's fields is refused.\n\n" +

@@ -250,3 +250,21 @@ func PrincipalKindNamed(name string) PrincipalKind {
 
 	return kind
 }
+
+// RespellPrincipalKind rewrites the `kind` of a decoded `principal:` mapping from
+// the name a trust policy and every other surface use (`human`) to the schema's
+// enum name, so a file read into a [Principal] spells it the one way. Only the
+// exact lowercase names are rewritten ([PrincipalKindNamed]); anything else is
+// left for the schema to refuse. A value that is not a mapping is left alone.
+func RespellPrincipalKind(principal *structpb.Value) {
+	fields := principal.GetStructValue().GetFields()
+
+	name, ok := fields["kind"].GetKind().(*structpb.Value_StringValue)
+	if !ok {
+		return
+	}
+
+	if kind := PrincipalKindNamed(name.StringValue); kind != PrincipalKind_PRINCIPAL_KIND_UNSPECIFIED {
+		fields["kind"] = structpb.NewStringValue(kind.String())
+	}
+}

@@ -108,9 +108,16 @@ type PolicyTestCase struct {
 	// reader), at most 128 characters, and free of control characters (C0, DEL and
 	// C1) and Unicode format characters (category Cf), since it is printed.
 	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
-	// Identity is who the request is made as. Absent is no attested caller, which
-	// a rule that scopes by tenant declines to match.
-	Identity *PolicyTestIdentity `protobuf:"bytes,2,opt,name=identity,proto3" json:"identity,omitempty"`
+	// Principal is who the request is made as: the [Principal] a run records, a
+	// trust policy entry assigns and every policy surface reads as
+	// `identity.<field>`, so a case can say its `kind`, a list or nested claim
+	// (`groups`), the `actions` it was granted and the `actors` acting for it, and
+	// a rule reads them exactly as it would on a worker. A subject and an issuer
+	// travel together or not at all, and `issuer_entry` is refused: it names a
+	// trust policy entry, which a case has none of. Absent is no attested caller,
+	// which a rule that scopes by tenant declines to match. Nothing here is
+	// attested, so a case never gains authority its principal does not carry.
+	Principal *Principal `protobuf:"bytes,6,opt,name=principal,proto3" json:"principal,omitempty"`
 	// Request is what is asked of the policy; which fields it may carry depends
 	// on the suite's surface, and one that carries another surface's is refused.
 	Request *PolicyTestRequest `protobuf:"bytes,3,opt,name=request,proto3" json:"request,omitempty"`
@@ -165,9 +172,9 @@ func (x *PolicyTestCase) GetName() string {
 	return ""
 }
 
-func (x *PolicyTestCase) GetIdentity() *PolicyTestIdentity {
+func (x *PolicyTestCase) GetPrincipal() *Principal {
 	if x != nil {
-		return x.Identity
+		return x.Principal
 	}
 	return nil
 }
@@ -191,76 +198,6 @@ func (x *PolicyTestCase) GetRule() string {
 		return x.Rule
 	}
 	return ""
-}
-
-// PolicyTestIdentity is the identity a case is made as: the fields every policy
-// surface reads as `identity.<field>`.
-type PolicyTestIdentity struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Subject       string                 `protobuf:"bytes,1,opt,name=subject,proto3" json:"subject,omitempty"`
-	Issuer        string                 `protobuf:"bytes,2,opt,name=issuer,proto3" json:"issuer,omitempty"`
-	Namespace     string                 `protobuf:"bytes,3,opt,name=namespace,proto3" json:"namespace,omitempty"`
-	Claims        map[string]string      `protobuf:"bytes,4,rep,name=claims,proto3" json:"claims,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *PolicyTestIdentity) Reset() {
-	*x = PolicyTestIdentity{}
-	mi := &file_flowstate_v1_policy_suite_proto_msgTypes[2]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *PolicyTestIdentity) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*PolicyTestIdentity) ProtoMessage() {}
-
-func (x *PolicyTestIdentity) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_policy_suite_proto_msgTypes[2]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use PolicyTestIdentity.ProtoReflect.Descriptor instead.
-func (*PolicyTestIdentity) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_policy_suite_proto_rawDescGZIP(), []int{2}
-}
-
-func (x *PolicyTestIdentity) GetSubject() string {
-	if x != nil {
-		return x.Subject
-	}
-	return ""
-}
-
-func (x *PolicyTestIdentity) GetIssuer() string {
-	if x != nil {
-		return x.Issuer
-	}
-	return ""
-}
-
-func (x *PolicyTestIdentity) GetNamespace() string {
-	if x != nil {
-		return x.Namespace
-	}
-	return ""
-}
-
-func (x *PolicyTestIdentity) GetClaims() map[string]string {
-	if x != nil {
-		return x.Claims
-	}
-	return nil
 }
 
 // PolicyTestRequest is the request a case puts to the policy.
@@ -290,7 +227,7 @@ type PolicyTestRequest struct {
 
 func (x *PolicyTestRequest) Reset() {
 	*x = PolicyTestRequest{}
-	mi := &file_flowstate_v1_policy_suite_proto_msgTypes[3]
+	mi := &file_flowstate_v1_policy_suite_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -302,7 +239,7 @@ func (x *PolicyTestRequest) String() string {
 func (*PolicyTestRequest) ProtoMessage() {}
 
 func (x *PolicyTestRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_policy_suite_proto_msgTypes[3]
+	mi := &file_flowstate_v1_policy_suite_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -315,7 +252,7 @@ func (x *PolicyTestRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PolicyTestRequest.ProtoReflect.Descriptor instead.
 func (*PolicyTestRequest) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_policy_suite_proto_rawDescGZIP(), []int{3}
+	return file_flowstate_v1_policy_suite_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *PolicyTestRequest) GetUrl() string {
@@ -371,24 +308,16 @@ var File_flowstate_v1_policy_suite_proto protoreflect.FileDescriptor
 
 const file_flowstate_v1_policy_suite_proto_rawDesc = "" +
 	"\n" +
-	"\x1fflowstate/v1/policy_suite.proto\x12\fflowstate.v1\x1a\x1bbuf/validate/validate.proto\"\x87\x01\n" +
+	"\x1fflowstate/v1/policy_suite.proto\x12\fflowstate.v1\x1a\x1bbuf/validate/validate.proto\x1a\x1bflowstate/v1/identity.proto\"\x87\x01\n" +
 	"\x0fPolicyTestSuite\x123\n" +
 	"\asurface\x18\x01 \x01(\tB\x19\xbaH\x16r\x14R\x06egressR\x04taskR\x04execR\asurface\x12?\n" +
-	"\x05cases\x18\x02 \x03(\v2\x1c.flowstate.v1.PolicyTestCaseB\v\xbaH\b\x92\x01\x05\b\x01\x10\x80\x04R\x05cases\"\x95\x02\n" +
+	"\x05cases\x18\x02 \x03(\v2\x1c.flowstate.v1.PolicyTestCaseB\v\xbaH\b\x92\x01\x05\b\x01\x10\x80\x04R\x05cases\"\x9e\x02\n" +
 	"\x0ePolicyTestCase\x12@\n" +
-	"\x04name\x18\x01 \x01(\tB,\xbaH)r'\x10\x01\x18\x80\x012 ^[^\\x00-\\x1f\\x7f-\\x{9f}\\p{Cf}]+$R\x04name\x12<\n" +
-	"\bidentity\x18\x02 \x01(\v2 .flowstate.v1.PolicyTestIdentityR\bidentity\x129\n" +
+	"\x04name\x18\x01 \x01(\tB,\xbaH)r'\x10\x01\x18\x80\x012 ^[^\\x00-\\x1f\\x7f-\\x{9f}\\p{Cf}]+$R\x04name\x125\n" +
+	"\tprincipal\x18\x06 \x01(\v2\x17.flowstate.v1.PrincipalR\tprincipal\x129\n" +
 	"\arequest\x18\x03 \x01(\v2\x1f.flowstate.v1.PolicyTestRequestR\arequest\x12*\n" +
 	"\x06expect\x18\x04 \x01(\tB\x12\xbaH\x0fr\rR\x05allowR\x04denyR\x06expect\x12\x1c\n" +
-	"\x04rule\x18\x05 \x01(\tB\b\xbaH\x05r\x03\x18\x80 R\x04rule\"\x9b\x02\n" +
-	"\x12PolicyTestIdentity\x12\"\n" +
-	"\asubject\x18\x01 \x01(\tB\b\xbaH\x05r\x03\x18\x80\bR\asubject\x12 \n" +
-	"\x06issuer\x18\x02 \x01(\tB\b\xbaH\x05r\x03\x18\x80\bR\x06issuer\x12&\n" +
-	"\tnamespace\x18\x03 \x01(\tB\b\xbaH\x05r\x03\x18\x80\bR\tnamespace\x12\\\n" +
-	"\x06claims\x18\x04 \x03(\v2,.flowstate.v1.PolicyTestIdentity.ClaimsEntryB\x16\xbaH\x13\x9a\x01\x10\x10@\"\x05r\x03\x18\x80\x02*\x05r\x03\x18\x80 R\x06claims\x1a9\n" +
-	"\vClaimsEntry\x12\x10\n" +
-	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xd5\x02\n" +
+	"\x04rule\x18\x05 \x01(\tB\b\xbaH\x05r\x03\x18\x80 R\x04ruleJ\x04\b\x02\x10\x03R\bidentity\"\xd5\x02\n" +
 	"\x11PolicyTestRequest\x12\x1a\n" +
 	"\x03url\x18\x01 \x01(\tB\b\xbaH\x05r\x03\x18\x80 R\x03url\x12\x1f\n" +
 	"\x06method\x18\x02 \x01(\tB\a\xbaH\x04r\x02\x18 R\x06method\x12\x17\n" +
@@ -415,26 +344,24 @@ func file_flowstate_v1_policy_suite_proto_rawDescGZIP() []byte {
 	return file_flowstate_v1_policy_suite_proto_rawDescData
 }
 
-var file_flowstate_v1_policy_suite_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
+var file_flowstate_v1_policy_suite_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
 var file_flowstate_v1_policy_suite_proto_goTypes = []any{
-	(*PolicyTestSuite)(nil),    // 0: flowstate.v1.PolicyTestSuite
-	(*PolicyTestCase)(nil),     // 1: flowstate.v1.PolicyTestCase
-	(*PolicyTestIdentity)(nil), // 2: flowstate.v1.PolicyTestIdentity
-	(*PolicyTestRequest)(nil),  // 3: flowstate.v1.PolicyTestRequest
-	nil,                        // 4: flowstate.v1.PolicyTestIdentity.ClaimsEntry
-	nil,                        // 5: flowstate.v1.PolicyTestRequest.EnvEntry
+	(*PolicyTestSuite)(nil),   // 0: flowstate.v1.PolicyTestSuite
+	(*PolicyTestCase)(nil),    // 1: flowstate.v1.PolicyTestCase
+	(*PolicyTestRequest)(nil), // 2: flowstate.v1.PolicyTestRequest
+	nil,                       // 3: flowstate.v1.PolicyTestRequest.EnvEntry
+	(*Principal)(nil),         // 4: flowstate.v1.Principal
 }
 var file_flowstate_v1_policy_suite_proto_depIdxs = []int32{
 	1, // 0: flowstate.v1.PolicyTestSuite.cases:type_name -> flowstate.v1.PolicyTestCase
-	2, // 1: flowstate.v1.PolicyTestCase.identity:type_name -> flowstate.v1.PolicyTestIdentity
-	3, // 2: flowstate.v1.PolicyTestCase.request:type_name -> flowstate.v1.PolicyTestRequest
-	4, // 3: flowstate.v1.PolicyTestIdentity.claims:type_name -> flowstate.v1.PolicyTestIdentity.ClaimsEntry
-	5, // 4: flowstate.v1.PolicyTestRequest.env:type_name -> flowstate.v1.PolicyTestRequest.EnvEntry
-	5, // [5:5] is the sub-list for method output_type
-	5, // [5:5] is the sub-list for method input_type
-	5, // [5:5] is the sub-list for extension type_name
-	5, // [5:5] is the sub-list for extension extendee
-	0, // [0:5] is the sub-list for field type_name
+	4, // 1: flowstate.v1.PolicyTestCase.principal:type_name -> flowstate.v1.Principal
+	2, // 2: flowstate.v1.PolicyTestCase.request:type_name -> flowstate.v1.PolicyTestRequest
+	3, // 3: flowstate.v1.PolicyTestRequest.env:type_name -> flowstate.v1.PolicyTestRequest.EnvEntry
+	4, // [4:4] is the sub-list for method output_type
+	4, // [4:4] is the sub-list for method input_type
+	4, // [4:4] is the sub-list for extension type_name
+	4, // [4:4] is the sub-list for extension extendee
+	0, // [0:4] is the sub-list for field type_name
 }
 
 func init() { file_flowstate_v1_policy_suite_proto_init() }
@@ -442,13 +369,14 @@ func file_flowstate_v1_policy_suite_proto_init() {
 	if File_flowstate_v1_policy_suite_proto != nil {
 		return
 	}
+	file_flowstate_v1_identity_proto_init()
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_flowstate_v1_policy_suite_proto_rawDesc), len(file_flowstate_v1_policy_suite_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   6,
+			NumMessages:   4,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

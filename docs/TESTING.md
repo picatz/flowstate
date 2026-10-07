@@ -762,7 +762,9 @@ that the requester cannot approve their own run. They do not reach
 stub answers the request that would have been checked), task-shape policy, or
 secret-access policy. A green case therefore says what the workflow does for a
 given identity; it says nothing about whether a deployment would let that
-identity do it.
+identity do it. The deployment's egress, task-shape and exec policies are
+tested against a declared `principal` (kind, list claims, actions and actors
+included) by [`flow policy test`](#a-deployments-policy-without-a-worker-flow-policy-test).
 
 The `flow test` command takes no deployment policy flags, so no task-shape
 policy applies and every dispatch is allowed. A suite run through the
@@ -885,19 +887,25 @@ with (`netpolicy.Policy.CheckURL` and `CheckAddr`, `TaskPolicy.Check`,
 surface: egress            # egress, task or exec; one per file
 cases:
   - name: team-a reaches its partner API
-    identity: {namespace: team-a}
+    principal: {namespace: team-a}
     request: {url: "https://partner-a.example.com/v1"}
     expect: allow
   - name: team-b is refused team-a's partner API   # the case that matters
-    identity: {namespace: team-b}
+    principal: {namespace: team-b}
     request: {url: "https://partner-a.example.com/v1"}
     expect: deny
     rule: allow rules
 ```
 
-`identity` carries `subject`, `issuer`, `namespace` and `claims`, which every
-surface's rules read as `identity.<field>`; absent is no attested caller, which a
-rule that scopes by tenant declines to match. The `request` depends on the
+`principal` is who the request is made as: the same `Principal` a run records,
+which every surface's rules read as `identity.<field>`. It carries `subject` and
+`issuer` (together, never one alone), `namespace`, `kind` (`human`, `workload`
+or `agent`), `claims` of any shape (a `groups` list included), `actions` and
+`actors`. A case carries only what it names, so a rule on a `kind`, a claim or
+an action the case did not declare does not match it, and a declared identity
+never gains authority it does not carry. `issuer_entry` is refused: it names a
+trust policy entry, which a case has none of. Absent is no attested caller,
+which a rule that scopes by tenant declines to match. The `request` depends on the
 surface: `url`, `method` (default GET) and `ip` for egress, `task` for task
 shape, `argv`, `dir` and `env` for exec. `expect` is `allow` or `deny` and is
 required. `rule:` on a denial asserts which rule made it: a deny rule's source

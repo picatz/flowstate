@@ -34,6 +34,9 @@ import (
 	"strconv"
 	"strings"
 
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/types/known/structpb"
+
 	"github.com/picatz/flowstate/internal/strictyaml"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
@@ -97,14 +100,10 @@ type subject struct {
 
 // subjectOf is the one place a case's identity fields become the evaluators'
 // identity values. Egress, exec and task-shape rules all read the same
-// principal.Caller, rendered from the one WorkloadIdentity the case describes.
-func subjectOf(id *v1.PolicyTestIdentity) subject {
-	task := &v1.WorkloadIdentity{Principal: &v1.Principal{
-		Subject:   id.GetSubject(),
-		Issuer:    id.GetIssuer(),
-		Namespace: id.GetNamespace(),
-		Claims:    v1.StringClaimValues(id.GetClaims()),
-	}}
+// principal.Caller, rendered from the one WorkloadIdentity the case describes,
+// which is the case's own [v1.Principal] and nothing a case did not write.
+func subjectOf(who *v1.Principal) subject {
+	task := &v1.WorkloadIdentity{Principal: who}
 	return subject{egress: v1.CallerOf(task), task: task}
 }
 
@@ -126,7 +125,7 @@ func ParseSuite(data []byte) (*Suite, error) {
 	}
 
 	var doc v1.PolicyTestSuite
-	if err := strictyaml.UnmarshalProto(data, &doc); err != nil {
+	if err := readSuite(data, &doc); err != nil {
 		return nil, fmt.Errorf("the suite is not a document of `surface:` and `cases:`: %w", err)
 	}
 
@@ -143,11 +142,15 @@ func ParseSuite(data []byte) (*Suite, error) {
 		}
 		seen[held.GetName()] = struct{}{}
 
+		if err := checkIdentity(held.GetPrincipal()); err != nil {
+			return nil, fmt.Errorf("case %q: %w", held.GetName(), err)
+		}
+
 		c := Case{
 			Name:    held.GetName(),
 			Expect:  held.GetExpect(),
 			Rule:    held.GetRule(),
-			subject: subjectOf(held.GetIdentity()),
+			subject: subjectOf(held.GetPrincipal()),
 			req:     held.GetRequest(),
 		}
 
@@ -163,6 +166,46 @@ func ParseSuite(data []byte) (*Suite, error) {
 	}
 
 	return suite, nil
+}
+
+// readSuite decodes the document into the schema's message, letting a case write
+// `kind: human`, the spelling a trust policy and every other surface use, where
+// the schema's own enum name is PRINCIPAL_KIND_HUMAN. It reads the document once
+// as a generic message to respell the kinds and then into the schema, so both
+// reads keep the strictness of [strictyaml.UnmarshalProto].
+func readSuite(data []byte, into *v1.PolicyTestSuite) error {
+	doc := &structpb.Struct{}
+	if err := strictyaml.UnmarshalProto(data, doc); err != nil {
+		return err
+	}
+
+	for _, held := range doc.GetFields()["cases"].GetListValue().GetValues() {
+		v1.RespellPrincipalKind(held.GetStructValue().GetFields()["principal"])
+	}
+
+	encoded, err := protojson.Marshal(doc)
+	if err != nil {
+		return err
+	}
+
+	return protojson.Unmarshal(encoded, into)
+}
+
+// checkIdentity refuses a principal no rule could read the way its author meant,
+// by the rules a worker's own identity is held to: a subject and an issuer
+// travel together, because a subject is only unique within its issuer, and
+// `issuer_entry` names the trust policy entry that admitted a caller, which a
+// case has none of and so could only invent.
+func checkIdentity(who *v1.Principal) error {
+	if (who.GetSubject() == "") != (who.GetIssuer() == "") {
+		return errors.New("principal names a subject or an issuer without the other; give both, because a subject is only unique within its issuer")
+	}
+
+	if who.GetIssuerEntry() != "" {
+		return errors.New("principal.issuer_entry names a trust policy entry, which a case has none of")
+	}
+
+	return nil
 }
 
 // bind checks the request carries what the surface needs and nothing of another
