@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -70,7 +71,7 @@ func TestCleanBranchPrintsItsPositiveLine(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out bytes.Buffer
-	if code := report(&out, r, false); code != 0 {
+	if code, err := report(&out, r, false); code != 0 || err != nil {
 		t.Fatalf("exit %d, output %q", code, out.String())
 	}
 	if got := out.String(); got != "mergecheck: clean against origin/main "+want+"\n" {
@@ -89,7 +90,7 @@ func TestConflictingBranchNamesThePath(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out bytes.Buffer
-	if code := report(&out, r, false); code != 1 {
+	if code, err := report(&out, r, false); code != 1 || err != nil {
 		t.Fatalf("exit %d, output %q", code, out.String())
 	}
 	if !strings.Contains(out.String(), "conflicts against origin/main") || !strings.Contains(out.String(), "  file.txt\n") {
@@ -111,7 +112,9 @@ func TestStaleOriginMainIsRefreshedBeforeTheAnswer(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out bytes.Buffer
-	report(&out, stale, true)
+	if _, err := report(&out, stale, true); err != nil {
+		t.Fatal(err)
+	}
 	if len(stale.conflicts) != 0 || !strings.Contains(out.String(), "not fetched") {
 		t.Fatalf("a stale check must say it was not fetched: %q", out.String())
 	}
@@ -154,5 +157,31 @@ func TestUnrelatedHistoriesFailClosed(t *testing.T) {
 
 	if _, err := check(context.Background(), clone, true); err == nil {
 		t.Fatal("no merge base must be an error, not a pass")
+	}
+}
+
+type failingWriter struct{}
+
+func (failingWriter) Write([]byte) (int, error) { return 0, errors.New("disk full") }
+
+func TestAnUnwritableVerdictIsAnErrorNotAPass(t *testing.T) {
+	if code, err := report(failingWriter{}, result{sha: "abc"}, false); err == nil || code != 0 {
+		t.Fatalf("a clean verdict that could not be written must fail: code %d, err %v", code, err)
+	}
+}
+
+func TestAFetchRefspecThatSkipsMainStillRefreshesIt(t *testing.T) {
+	clone, origin := repo(t)
+	write(t, clone, "file.txt", "feature change\n")
+	run(t, clone, "commit", "-q", "-am", "feature")
+	// A remote.origin.fetch that does not map refs/heads/main: a plain
+	// `git fetch origin main` would update FETCH_HEAD and leave origin/main
+	// stale, and the check would call the branch clean.
+	run(t, clone, "config", "remote.origin.fetch", "+refs/heads/other:refs/remotes/origin/other")
+	advanceMain(t, origin, "main change\n")
+
+	r, err := check(context.Background(), clone, false)
+	if err != nil || len(r.conflicts) == 0 {
+		t.Fatalf("the check must see main's new commit: %+v, %v", r, err)
 	}
 }

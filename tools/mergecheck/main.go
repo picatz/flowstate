@@ -12,10 +12,11 @@
 // which, because an empty output read as success is how a conflicting branch
 // reached #2245.
 //
-// Read-only and local-tier: it writes no ref and no working-tree file, and it
+// Local-tier: it leaves local branches and the working tree untouched, and it
 // does not decide which CI jobs a diff reaches (docs/CI.md keeps that in one
-// place). The fetch is the only network use; -no-fetch trades it for a
-// checkout whose origin/main may be stale, which the output then says.
+// place). The fetch is the only network use and updates only
+// refs/remotes/origin/main; -no-fetch trades it for a checkout whose
+// origin/main may be stale, which the output then says.
 package main
 
 import (
@@ -57,7 +58,10 @@ func git(ctx context.Context, dir string, args ...string) (string, error) {
 // fetches base first unless noFetch, and fails closed on every error.
 func check(ctx context.Context, dir string, noFetch bool) (result, error) {
 	if !noFetch {
-		if _, err := git(ctx, dir, "fetch", "--quiet", "origin", "main"); err != nil {
+		// An explicit destination, so a clone whose remote.origin.fetch does
+		// not map main still moves the ref the answer is read from, rather
+		// than fetching into FETCH_HEAD and then judging a stale origin/main.
+		if _, err := git(ctx, dir, "fetch", "--quiet", "origin", "+refs/heads/main:refs/remotes/origin/main"); err != nil {
 			return result{}, fmt.Errorf("cannot refresh %s: %w", base, err)
 		}
 	}
@@ -96,23 +100,29 @@ func check(ctx context.Context, dir string, noFetch bool) (result, error) {
 	return result{sha: sha, conflicts: conflicts}, nil
 }
 
-// report prints the verdict and returns the exit status.
-func report(w io.Writer, r result, noFetch bool) int {
+// report prints the verdict and returns the exit status. A verdict that could
+// not be written is an error, not a pass: the line is the whole point.
+func report(w io.Writer, r result, noFetch bool) (int, error) {
 	note := ""
 	if noFetch {
 		note = " (not fetched; origin/main may be stale)"
 	}
+	var b strings.Builder
+	code := 0
 	if len(r.conflicts) == 0 {
-		fmt.Fprintf(w, "mergecheck: clean against %s %s%s\n", base, r.sha, note)
-
-		return 0
+		fmt.Fprintf(&b, "mergecheck: clean against %s %s%s\n", base, r.sha, note)
+	} else {
+		code = 1
+		fmt.Fprintf(&b, "mergecheck: conflicts against %s %s%s\n", base, r.sha, note)
+		for _, path := range r.conflicts {
+			fmt.Fprintf(&b, "  %s\n", path)
+		}
 	}
-	fmt.Fprintf(w, "mergecheck: conflicts against %s %s%s\n", base, r.sha, note)
-	for _, path := range r.conflicts {
-		fmt.Fprintf(w, "  %s\n", path)
+	if _, err := io.WriteString(w, b.String()); err != nil {
+		return 0, fmt.Errorf("writing the verdict: %w", err)
 	}
 
-	return 1
+	return code, nil
 }
 
 func main() {
@@ -124,5 +134,10 @@ func main() {
 		fmt.Fprintf(os.Stderr, "mergecheck: %v\n", err)
 		os.Exit(2)
 	}
-	os.Exit(report(os.Stdout, r, *noFetch))
+	code, err := report(os.Stdout, r, *noFetch)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "mergecheck: %v\n", err)
+		os.Exit(2)
+	}
+	os.Exit(code)
 }
