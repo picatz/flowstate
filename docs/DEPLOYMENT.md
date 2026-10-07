@@ -849,6 +849,8 @@ name, an Entra GUID) to the Flowstate group a rule names, and when present it is
 also the allowlist: a value it does not list is not carried, so a rule that must
 deny on a group has to map that group. The name `groups` is reserved for
 `groups_claim`: a `carry_claims` entry that carries it is refused when the policy loads.
+The names `act` and `may_act` are reserved the same way, because they are RFC 8693
+delegation claims: carry such a claim under another name with `as`.
 
 A group list is never trimmed. At most 64 groups of 256 bytes are carried, and a
 token that exceeds that, or carries an overage indicator (Entra's

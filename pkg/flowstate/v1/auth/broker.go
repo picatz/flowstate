@@ -244,7 +244,8 @@ func (b *Broker) Credential(ctx context.Context, identity WorkloadIdentity, ref 
 	// cache key rather than through a name: a boundary that holds for every
 	// pair the key distinguishes and fails silently for the pair it does not.
 	//
-	// So a delegated exchange is not cached. The cost is stated rather than
+	// So a delegated exchange is not cached; today it is refused outright with
+	// [ErrDelegatedCaller], so this holds for whatever replaces that refusal. The cost is stated rather than
 	// hidden: one exchange per request against such a target, with no reuse
 	// inside the credential's lifetime. Caching per delegator instead would
 	// need a stable, non-secret discriminator for the delegator, which means

@@ -247,10 +247,10 @@ func compileAllowPredicate(src string, manual bool) (SignalPolicyPredicate, erro
 	}}, nil
 }
 
-const signalPolicyScopeDescription = "`sender.identity.{principal,subject,issuer,namespace,kind,claims,actions}`, " +
+const signalPolicyScopeDescription = "`sender.identity.{principal,subject,issuer,namespace,kind,claims,actions,actors,delegated}`, " +
 	"`run.identity` (the starter, same fields) and `inputs`"
 
-const manualPolicyScopeDescription = "`sender.identity.{principal,subject,issuer,namespace,kind,claims,actions}` " +
+const manualPolicyScopeDescription = "`sender.identity.{principal,subject,issuer,namespace,kind,claims,actions,actors,delegated}` " +
 	"(the caller) and `inputs` (the arguments submitted with this start); there is no `run` yet"
 
 // CheckManualAllowExpr reports why src is not an acceptable `manual: allow`

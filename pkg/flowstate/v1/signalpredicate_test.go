@@ -272,3 +272,16 @@ func TestCheckWorkflowPolicyInputsRefusesASensitiveInput(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `debug.allow reads the input "token"`)
 }
+
+func TestPolicyScopeDiagnosticNamesTheDelegationFields(t *testing.T) {
+	t.Parallel()
+
+	for name, check := range map[string]func(string) error{
+		"signal": v1.CheckSignalPolicyExpr,
+		"manual": v1.CheckManualAllowExpr,
+	} {
+		err := check(`sender.identity.bogus == "x"`)
+		require.Error(t, err, name)
+		assert.Contains(t, err.Error(), "claims,actions,actors,delegated}", name)
+	}
+}

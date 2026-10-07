@@ -10,6 +10,7 @@ import (
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/authz"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/principal"
 )
 
 func TestDecidePrincipal(t *testing.T) {
@@ -101,6 +102,15 @@ func TestRestrictOnlyNarrowsThePolicy(t *testing.T) {
 	})
 	ask(authz.Restrict(nil, mutating), holder)
 	require.Equal(t, auth.ActionScopes{"workload.run"}, holder.Actions, "an extra decider rewrote the caller's own action list")
+
+	actors := auth.Principal{Issuer: "https://issuer.example", Subject: "a", Actions: auth.ActionScopes{"workload.run"},
+		Actors: []principal.Actor{{Issuer: "https://bot.example", Subject: "bot"}}}
+	rewriting := authz.DeciderFunc(func(_ context.Context, req authz.Request) authz.Decision {
+		req.Principal.Actors[0].Subject = "someone-else"
+		return authz.Decision{Allowed: true}
+	})
+	ask(authz.Restrict(nil, rewriting), actors)
+	require.Equal(t, "bot", actors.Actors[0].Subject, "an extra decider rewrote the caller's own delegation chain")
 
 	calls := 0
 	counting := authz.DeciderFunc(func(context.Context, authz.Request) authz.Decision {
