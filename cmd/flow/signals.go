@@ -86,7 +86,7 @@ func withLocalSignals(ctx context.Context, cmd *cobra.Command, workflow *v1.Work
 	signals := v1.NewPolicedLocalSignals(policies, &v1.WorkloadIdentity{
 		Subject:       starter.Subject,
 		Issuer:        starter.Issuer,
-		Claims:        starter.Claims,
+		Claims:        v1.StringClaims(starter.Claims),
 		Namespace:     starter.Namespace,
 		PrincipalKind: starterKind,
 	}, true, bound)

@@ -30,7 +30,7 @@ func testIdentity() auth.WorkloadIdentity {
 		Issuer:     "https://token.actions.githubusercontent.com",
 		Namespace:  "acme",
 		Deployment: "prod",
-		Claims:     map[string]string{"repository": "picatz/flowstate"},
+		Claims:     map[string]any{"repository": "picatz/flowstate"},
 	}
 }
 
@@ -223,7 +223,7 @@ func TestIssuerMintRejects(t *testing.T) {
 			name: "a carried claim shadowing the subject",
 			identity: auth.WorkloadIdentity{
 				Subject: "someone", Issuer: "https://idp.example.com",
-				Claims: map[string]string{"sub": "flowstate:acme/prod/other/step"},
+				Claims: map[string]any{"sub": "flowstate:acme/prod/other/step"},
 			},
 			ref:      testStepRef(),
 			audience: "sts.amazonaws.com",
@@ -233,7 +233,7 @@ func TestIssuerMintRejects(t *testing.T) {
 			name: "a carried claim shadowing the delegation",
 			identity: auth.WorkloadIdentity{
 				Subject: "someone", Issuer: "https://idp.example.com",
-				Claims: map[string]string{auth.ClaimOnBehalfOf: "someone-else"},
+				Claims: map[string]any{auth.ClaimOnBehalfOf: "someone-else"},
 			},
 			ref:      testStepRef(),
 			audience: "sts.amazonaws.com",

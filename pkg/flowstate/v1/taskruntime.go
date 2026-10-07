@@ -316,11 +316,29 @@ func ProtoWorkloadIdentity(identity auth.WorkloadIdentity) *WorkloadIdentity {
 	}
 
 	return &WorkloadIdentity{
-		Subject:    identity.Subject,
-		Issuer:     identity.Issuer,
-		Claims:     identity.Claims,
-		Namespace:  identity.Namespace,
-		Deployment: identity.Deployment,
-		Mode:       mode,
+		Subject:       identity.Subject,
+		Issuer:        identity.Issuer,
+		Claims:        StringClaims(identity.Claims),
+		Namespace:     identity.Namespace,
+		Deployment:    identity.Deployment,
+		Mode:          mode,
+		PrincipalKind: PrincipalKindNamed(identity.Kind),
 	}
+}
+
+// StringClaims is the string-valued subset of a carried claim set, which is all
+// the wire identity carries until it holds a Principal; a list or object claim
+// is left out rather than flattened.
+func StringClaims(claims map[string]any) map[string]string {
+	var out map[string]string
+	for name, value := range claims {
+		if text, ok := value.(string); ok {
+			if out == nil {
+				out = make(map[string]string, len(claims))
+			}
+			out[name] = text
+		}
+	}
+
+	return out
 }

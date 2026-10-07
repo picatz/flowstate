@@ -177,7 +177,7 @@ func (a Authority) ProtoIdentity() *v1.WorkloadIdentity {
 	return &v1.WorkloadIdentity{
 		Subject:    a.Identity.Subject,
 		Issuer:     a.Identity.Issuer,
-		Claims:     a.Identity.Claims,
+		Claims:     v1.StringClaims(a.Identity.Claims),
 		Namespace:  a.Identity.Namespace,
 		Deployment: a.Identity.Deployment,
 	}

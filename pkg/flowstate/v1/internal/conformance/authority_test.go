@@ -22,7 +22,7 @@ func TestProtoIdentityCarriesClaims(t *testing.T) {
 			Issuer:     "https://issuer.example",
 			Namespace:  "acme-tenant",
 			Deployment: "prod",
-			Claims:     map[string]string{"repository": "acme/widgets"},
+			Claims:     map[string]any{"repository": "acme/widgets"},
 		},
 	}
 

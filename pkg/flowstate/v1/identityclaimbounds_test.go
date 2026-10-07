@@ -47,7 +47,7 @@ func TestCarriedClaimBoundsAgreeAcrossSchemaAndMint(t *testing.T) {
 	// reached through the same conversion the server uses.
 	mintRefuses := func(t *testing.T, value string) bool {
 		t.Helper()
-		identity := auth.IdentityFrom(&v1.WorkloadIdentity{
+		identity := v1.AuthIdentity(&v1.WorkloadIdentity{
 			Subject: "repo:picatz/flowstate:ref:refs/heads/main",
 			Issuer:  "https://token.actions.githubusercontent.com",
 			Claims:  map[string]string{"repository": value},
@@ -138,7 +138,7 @@ func TestCarriedClaimNameBoundsAgreeAcrossSchemaAndMint(t *testing.T) {
 			}
 
 			schema := v1.Validate(identity) != nil
-			mint := auth.IdentityFrom(identity).Validate() != nil
+			mint := v1.AuthIdentity(identity).Validate() != nil
 
 			require.Equal(t, test.want, schema, "the schema's verdict")
 			require.Equal(t, test.want, mint, "the mint's verdict")

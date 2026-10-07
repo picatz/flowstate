@@ -94,3 +94,18 @@ func EnvOptions() cel.EnvOption {
 func Var(name string) cel.EnvOption {
 	return cel.Variable(name, cel.ObjectType(TypeName))
 }
+
+// Qualified is the `principal` a rule compares: `issuer#subject` when both
+// halves are present, and "" otherwise. The rule lives here so every way of
+// building a [Caller] spells it once; an unauthenticated or half-formed caller
+// is "", never "#" or "issuer#", and a predicate must treat "" as missing.
+//
+// The join is injective because no trusted issuer contains '#' (policy
+// validation refuses one), so the first '#' always ends the issuer.
+func Qualified(issuer, subject string) string {
+	if issuer == "" || subject == "" {
+		return ""
+	}
+
+	return issuer + "#" + subject
+}

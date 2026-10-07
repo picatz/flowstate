@@ -2350,7 +2350,7 @@ func (s *FlowstateServer) identityFor(ctx context.Context) *v1.WorkloadIdentity 
 	return &v1.WorkloadIdentity{
 		Subject:    derived.Subject,
 		Issuer:     derived.Issuer,
-		Claims:     derived.Claims,
+		Claims:     v1.StringClaims(derived.Claims),
 		Namespace:  derived.Namespace,
 		Deployment: derived.Deployment,
 

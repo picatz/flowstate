@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/picatz/flowstate/internal/textbound"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/principal"
 )
 
 // WorkloadIdentity is who a running workload is, and on whose behalf it acts.
@@ -22,9 +23,12 @@ import (
 // It holds identity and never credentials, which is what makes it safe to
 // persist in workflow history and to log.
 //
-// This mirrors the flowstate.v1.WorkloadIdentity protobuf message. Use
-// [IdentityFrom] to convert one; this package deliberately does not import the
-// generated types, so that the package defining them can import this one.
+// This mirrors the flowstate.v1.WorkloadIdentity protobuf message and the
+// flowstate.v1.Principal inside it. The root package converts one to the other
+// (`AuthIdentity` and `ProtoWorkloadIdentity`); this package deliberately does
+// not import the generated types, so that the package defining them can import
+// this one. [WorkloadIdentity.Caller] renders it as the one [principal.Caller]
+// every policy surface binds.
 type WorkloadIdentity struct {
 	// Subject is the principal the workload acts for: the "sub" of the caller
 	// who submitted the run, such as
@@ -36,8 +40,21 @@ type WorkloadIdentity struct {
 	Issuer string
 
 	// Claims are the claims an operator chose to carry from the submitting
-	// caller's token, such as "repository" or "email".
-	Claims map[string]string
+	// caller's token, such as "repository", "email" or a "groups" list. Values
+	// are JSON-shaped (string, bool, float64, nil, []any, map[string]any) and
+	// bounded; see [MaxCarriedClaims].
+	Claims map[string]any
+
+	// Kind is the policy-assigned sort of party the caller is ("human",
+	// "workload", "agent"), or empty when the admitting entry assigned none.
+	Kind string
+
+	// Actions are the action scopes the caller was granted. Empty means none
+	// were carried, which a rule reads as no action matched.
+	Actions []string
+
+	// IssuerEntry is the name of the trust policy entry that admitted the caller.
+	IssuerEntry string
 
 	// Namespace is the tenant or environment the workload runs in.
 	Namespace string
@@ -56,63 +73,6 @@ type WorkloadIdentity struct {
 	local bool
 }
 
-// IdentitySource is anything that exposes a workload identity through the
-// accessors generated for the flowstate.v1.WorkloadIdentity protobuf message.
-//
-// # Why this is an interface and not that message
-//
-// This indirection looks like something to simplify away, and it is not.
-//
-// The package that defines the generated types has to be able to import this one:
-// the http task lives there, and a task resolving a credential calls [Broker].
-// If this package imported the generated types in return, that would be an import
-// cycle, and the build would fail. Naming only the accessors keeps the dependency
-// pointing one way, while [IdentityFrom] still takes a
-// *flowstatev1.WorkloadIdentity directly at the call site.
-//
-// So the rule is: this package never imports the package that defines the
-// generated types, nor anything that imports it (celrule and netpolicy are the
-// Flowstate packages it does import). Anything that needs to cross that line
-// crosses it as an interface or a plain Go value.
-type IdentitySource interface {
-	GetSubject() string
-	GetIssuer() string
-	GetClaims() map[string]string
-	GetNamespace() string
-	GetDeployment() string
-}
-
-// IdentityFrom converts a protobuf workload identity, or anything shaped like
-// one, into a [WorkloadIdentity]:
-//
-//	identity := auth.IdentityFrom(state.GetIdentity())
-//
-// It takes an [IdentitySource] rather than the generated message so that this
-// package never imports the generated types; see [IdentitySource] for why
-// that matters and why it must stay that way.
-//
-// An absent source yields the zero identity, which [WorkloadIdentity.Validate]
-// rejects, so an unset identity cannot silently become a usable one.
-//
-// A nil pointer counts as absent, not only a nil interface. An unset protobuf
-// field arrives as a typed nil wrapped in the interface, which is the common case
-// for a run submitted before any identity was established, and no method is called
-// on it: whether that would have been safe is a property of the caller's type, and
-// this is not the place to find out.
-func IdentityFrom(source IdentitySource) WorkloadIdentity {
-	if source == nil || isNilPointer(source) {
-		return WorkloadIdentity{}
-	}
-
-	return WorkloadIdentity{
-		Subject:    source.GetSubject(),
-		Issuer:     source.GetIssuer(),
-		Claims:     maps.Clone(source.GetClaims()),
-		Namespace:  source.GetNamespace(),
-		Deployment: source.GetDeployment(),
-	}
-}
-
 // isNilPointer reports whether an interface value holds a nil pointer, the shape
 // an unset protobuf message field takes once it is assigned to an interface.
 func isNilPointer(value any) bool {
@@ -129,29 +89,39 @@ func isNilPointer(value any) bool {
 // namespace supplied by the submitting request, rather than derived from the
 // verified token, would let a caller choose its own tenant.
 //
-// Only the named claims are carried. A workload's identity should assert what a
-// downstream relying party needs to authorize it, not everything the submitting
-// caller's token happened to contain, and claims copied here can end up in an
-// assertion sent to a third party.
+// Only the named claims are carried, whatever their JSON shape: a string, a
+// list such as `groups`, or a nested object. A workload's identity should assert
+// what a downstream relying party needs to authorize it, not everything the
+// submitting caller's token happened to contain, and claims copied here can end
+// up in an assertion sent to a third party.
+//
+// A named claim that is over the carried-claim bounds (see [MaxCarriedClaims]) is
+// not carried, rather than trimmed: a rule that reads it then errors, and an
+// errored rule denies, where a truncated list would grant on a prefix.
 func IdentityFromPrincipal(principal Principal, namespace, deployment string, claimNames ...string) WorkloadIdentity {
 	if principal.Namespace != "" {
 		namespace = principal.Namespace
 	}
 
 	identity := WorkloadIdentity{
-		Subject:    principal.Subject,
-		Issuer:     principal.Issuer,
-		Namespace:  namespace,
-		Deployment: deployment,
+		Subject:     principal.Subject,
+		Issuer:      principal.Issuer,
+		IssuerEntry: principal.IssuerName,
+		Namespace:   namespace,
+		Kind:        string(principal.Kind),
+		Actions:     slices.Clone(principal.Actions),
+		Deployment:  deployment,
 	}
 
 	for _, name := range claimNames {
-		if value, ok := principal.StringClaim(name); ok {
-			if identity.Claims == nil {
-				identity.Claims = make(map[string]string, len(claimNames))
-			}
-			identity.Claims[name] = value
+		value, ok := principal.Claims[name]
+		if !ok || !claimWithinBounds(name, value) {
+			continue
 		}
+		if identity.Claims == nil {
+			identity.Claims = make(map[string]any, len(claimNames))
+		}
+		identity.Claims[name] = cloneClaim(value)
 	}
 
 	return identity
@@ -172,14 +142,41 @@ func IdentityFromPrincipal(principal Principal, namespace, deployment string, cl
 // AWS, GCP, and every other RFC 8693 peer treat the two as unrelated
 // principals as a result, and not merely as differently labeled ones.
 func NewLocalWorkloadIdentity(subject, issuer, namespace, deployment string, claims map[string]string) WorkloadIdentity {
+	var carried map[string]any
+	if len(claims) > 0 {
+		carried = make(map[string]any, len(claims))
+		for name, value := range claims {
+			carried[name] = value
+		}
+	}
+
 	return WorkloadIdentity{
 		Subject:    subject,
 		Issuer:     issuer,
 		Namespace:  namespace,
 		Deployment: deployment,
-		Claims:     maps.Clone(claims),
+		Claims:     carried,
 		local:      true,
 	}
+}
+
+// Caller renders the identity as the [principal.Caller] every policy surface
+// binds as `identity`: egress, exec, task shape, secret access and credential
+// assumption all read the same value, so a clause about the caller means one
+// thing wherever it is written. Namespace is the raw attested value, never
+// [defaultComponent]: that substitution belongs to a minted subject, and a
+// `deny: identity.namespace == "_default"` rule must match the same unnamespaced
+// caller on every surface.
+func (w WorkloadIdentity) Caller() principal.Caller {
+	return principal.Caller{
+		Issuer:    w.Issuer,
+		Subject:   w.Subject,
+		Namespace: w.Namespace,
+		Kind:      w.Kind,
+		Principal: principal.Qualified(w.Issuer, w.Subject),
+		Claims:    principal.NewClaims(w.Claims),
+		Actions:   w.Actions,
+	}.Normalized()
 }
 
 // IsLocalRehearsal reports whether this identity was created by
@@ -272,7 +269,7 @@ const (
 // applied to the same data.
 //
 // [describePolicyIdentity]: https://github.com/picatz/flowstate/blob/main/pkg/flowstate/v1/taskpolicy.go
-func validateCarriedClaims(claims map[string]string) error {
+func validateCarriedClaims(claims map[string]any) error {
 	if len(claims) > MaxCarriedClaims {
 		return fmt.Errorf("%w: identity carries %d claims, and an assertion may carry at most %d",
 			ErrInvalidIdentity, len(claims), MaxCarriedClaims)
@@ -280,21 +277,24 @@ func validateCarriedClaims(claims map[string]string) error {
 
 	total := 0
 	for _, name := range slices.Sorted(maps.Keys(claims)) {
-		value := claims[name]
-
 		switch {
 		case name == "":
 			return fmt.Errorf("%w: identity carries a claim with no name", ErrInvalidIdentity)
 		case len(name) > MaxCarriedClaimNameBytes:
 			return fmt.Errorf("%w: carried claim name %q is %d bytes, and at most %d are allowed",
 				ErrInvalidIdentity, textbound.Truncate(name, 64), len(name), MaxCarriedClaimNameBytes)
-		case len(value) > MaxCarriedClaimValueBytes:
-			// The value's length, never the value.
-			return fmt.Errorf("%w: carried claim %q has a %d byte value, and at most %d are allowed",
-				ErrInvalidIdentity, textbound.Truncate(name, 64), len(value), MaxCarriedClaimValueBytes)
 		}
 
-		total += len(name) + len(value)
+		// The value's size, never the value.
+		if err := checkCarriedClaim(name, claims[name]); err != nil {
+			return err
+		}
+
+		size, _ := claimBytes(claims[name])
+		if text, ok := claims[name].(string); ok {
+			size = len(text)
+		}
+		total += len(name) + size
 	}
 
 	if total > MaxCarriedClaimBytes {

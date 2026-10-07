@@ -280,7 +280,7 @@
 // decides whether the workload may reach a target, mints an assertion for exactly
 // that target, exchanges it, and caches the result until shortly before it expires:
 //
-//	identity := auth.IdentityFrom(state.GetIdentity())
+//	identity := flowstatev1.AuthIdentity(state.GetIdentity())
 //	ref := auth.StepRef{Workflow: workflowName, Run: runID, Step: stepID}
 //
 //	credential, err := broker.Credential(ctx, identity, ref, "aws-prod")

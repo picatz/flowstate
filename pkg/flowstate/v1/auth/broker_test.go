@@ -420,7 +420,7 @@ func TestBrokerCacheIsolation(t *testing.T) {
 		}(),
 		"another carried claim": func() auth.WorkloadIdentity {
 			other := base
-			other.Claims = map[string]string{"repository": "attacker/fork"}
+			other.Claims = map[string]any{"repository": "attacker/fork"}
 			return other
 		}(),
 	}

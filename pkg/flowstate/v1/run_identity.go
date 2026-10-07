@@ -9,6 +9,7 @@ import (
 	"github.com/google/cel-go/common/types/ref"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/principal"
 )
 
@@ -125,23 +126,44 @@ func IdentityShape(identity *WorkloadIdentity) map[string]any {
 }
 
 // CallerOf renders a [WorkloadIdentity] as the one [principal.Caller] a policy
-// rule reads as `identity`: the egress, exec, and task-shape surfaces all bind
-// this value, so they cannot disagree about who is calling. A nil identity
-// renders the zero Caller ("no attested caller"), which a rule scoped to a
-// tenant, kind, or action declines to match.
-//
-// The identity carries no granted actions yet, so Actions renders empty; the
-// field is declared so a rule naming it is valid today and starts matching when
-// the identity carries them.
+// rule reads as `identity`: the egress, exec, task-shape, secret and assumption
+// surfaces all bind this value, so they cannot disagree about who is calling. A
+// nil identity renders the zero Caller ("no attested caller"), which a rule
+// scoped to a tenant, kind, or action declines to match.
 func CallerOf(identity *WorkloadIdentity) principal.Caller {
-	return principal.Caller{
-		Issuer:    identity.GetIssuer(),
-		Subject:   identity.GetSubject(),
-		Namespace: identity.GetNamespace(),
-		Kind:      PrincipalKindName(identity.GetPrincipalKind()),
-		Principal: Principal(identity.GetIssuer(), identity.GetSubject()),
-		Claims:    principal.StringClaims(identity.GetClaims()),
-	}.Normalized()
+	return AuthIdentity(identity).Caller()
+}
+
+// AuthIdentity reads a wire [WorkloadIdentity] as the [auth.WorkloadIdentity]
+// the rest of the engine acts on. It is the one place the wire shape is read, so
+// the Caller a rule sees, the identity a credential is minted for and the shape
+// an expression reads cannot disagree. A nil identity is the zero identity,
+// which [auth.WorkloadIdentity.Validate] rejects, so an unset identity cannot
+// silently become a usable one.
+//
+// Claims are copied; a later change to the run state cannot change what an
+// assertion will say.
+func AuthIdentity(identity *WorkloadIdentity) auth.WorkloadIdentity {
+	if identity == nil {
+		return auth.WorkloadIdentity{}
+	}
+
+	var claims map[string]any
+	if len(identity.GetClaims()) > 0 {
+		claims = make(map[string]any, len(identity.GetClaims()))
+		for name, value := range identity.GetClaims() {
+			claims[name] = value
+		}
+	}
+
+	return auth.WorkloadIdentity{
+		Subject:    identity.GetSubject(),
+		Issuer:     identity.GetIssuer(),
+		Namespace:  identity.GetNamespace(),
+		Kind:       PrincipalKindName(identity.GetPrincipalKind()),
+		Claims:     claims,
+		Deployment: identity.GetDeployment(),
+	}
 }
 
 // PrincipalKindName is the lowercase name an expression and a trust policy
@@ -188,9 +210,5 @@ func PrincipalKindNamed(name string) PrincipalKind {
 // validation refuses one in either kind), so the first '#' always ends the
 // issuer and a subject may contain any further '#'.
 func Principal(issuer, subject string) string {
-	if issuer == "" || subject == "" {
-		return ""
-	}
-
-	return QualifiedSubject(issuer, subject)
+	return principal.Qualified(issuer, subject)
 }

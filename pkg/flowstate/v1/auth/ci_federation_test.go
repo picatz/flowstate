@@ -665,9 +665,9 @@ func TestCIClaimsCarriedIntoRunIdentity(t *testing.T) {
 	require.NoError(t, err)
 
 	claims := ciClaims("octo-org", "octo-repo", "main")
-	// A claim that is not a string, to show what the carrying step does with
-	// one. A CI platform mints its own counters as strings, but an operator can
-	// name any claim here.
+	// A claim that is not a string, to show the carrying step keeps its type. A CI
+	// platform mints its own counters as strings, but an operator can name any
+	// claim here.
 	claims["private_repo"] = true
 
 	token := issuer.MintToken(claims,
@@ -691,18 +691,17 @@ func TestCIClaimsCarriedIntoRunIdentity(t *testing.T) {
 	// The verified caller's namespace wins over the deployment's fallback.
 	assert.Equal(t, "platform", identity.Namespace)
 
-	assert.Equal(t, map[string]string{
+	// A named claim is carried whatever its JSON type, so a rule can read a bool
+	// or a list as the token had it.
+	assert.Equal(t, map[string]any{
 		"repository":       "octo-org/octo-repo",
 		"ref":              "refs/heads/main",
 		"job_workflow_ref": "octo-org/octo-repo/.github/workflows/deploy.yml@refs/heads/main",
-	}, identity.Claims, "only the named string claims are carried")
-
-	// Named but not a string, so it is dropped silently rather than rendered.
-	_, carried := identity.Claims["private_repo"]
-	assert.False(t, carried, "a non-string claim is not carried")
+		"private_repo":     true,
+	}, identity.Claims, "only the named claims are carried")
 
 	// Claims nobody named stay behind, whatever the token held.
-	_, carried = identity.Claims["actor"]
+	_, carried := identity.Claims["actor"]
 	assert.False(t, carried, "an unnamed claim is not carried")
 
 	// The subject a downstream relying party sees for a step of this run. It is
