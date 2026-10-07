@@ -48,6 +48,10 @@ type Driver struct {
 	// than sent — a durable pause after a detach would attach the run anew.
 	detached bool
 
+	// roots is [Driver.Complete]'s root listing, read at rootsRevision.
+	roots         []Candidate
+	rootsRevision uint64
+
 	// Wait bounds how long a movement waits for the next stop. Zero waits
 	// until ctx ends.
 	Wait time.Duration
@@ -85,6 +89,7 @@ type DriveResult struct {
 	Snapshot    *v1.DebugSnapshot
 	Inspect     *v1.DebugInspectResponse
 	Breakpoints []*v1.DebugBreakpointState
+	Completion  *Completion
 	Text        string
 
 	// Unarmed is the state of the breakpoint the line itself set — `break`
@@ -111,6 +116,10 @@ func (d *Driver) Do(ctx context.Context, line string) (*DriveResult, error) {
 
 // DoWith runs one line with a caller's request id and expected revision.
 func (d *Driver) DoWith(ctx context.Context, line string, opts DoOptions) (*DriveResult, error) {
+	// Kept as typed, past its leading space: `complete` reads the end of the
+	// text after its verb, and a trailing space is what says the word the
+	// cursor is on is empty.
+	raw := strings.TrimLeft(line, " \t")
 	line = strings.TrimSpace(line)
 	if line == "" || IsComment(line) {
 		return &DriveResult{}, nil
@@ -264,6 +273,15 @@ func (d *Driver) DoWith(ctx context.Context, line string, opts DoOptions) (*Driv
 		return d.inspect(ctx, rest, true)
 	case "scope":
 		return d.scope(ctx)
+
+	case "complete":
+		_, text := cutWord(raw)
+		answer, err := d.Complete(ctx, text)
+		if err != nil {
+			return nil, err
+		}
+
+		return &DriveResult{Completion: &answer, Text: RenderCompletion(answer)}, nil
 
 	case "backtrace":
 		snapshot, err := d.target.Snapshot(ctx)

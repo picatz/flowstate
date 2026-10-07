@@ -168,7 +168,7 @@ nothing here is worth learning twice. `help` lists it.
 | `inspect <expr>`, `p` | every front | evaluate a CEL expression against this run's scope |
 | `expand <expr>` | prompt, driver | list a map's or list's children |
 | `scope` | every front | list what this run can name right now |
-| `complete <partial-command>` | prompt, autopsy | list what could be written at the end of that text |
+| `complete <partial-command>` | every front | list what could be written at the end of that text |
 | `status` | prompt, driver | where the run is, and why |
 | `info`, `step-info` | prompt | describe the step the run is stopped at |
 | `backtrace`, `bt` | prompt, driver | list this step and each iteration, branch, arm and call around it |
