@@ -235,10 +235,10 @@ federation:
         target_audience: https://api.example.com
 ```
 
-> [!WARNING]
-> With no `allow` or `deny` rules under `federation:`, **any workload may assume
-> any configured target**. This is the opposite of `secrets:`, where no rules
-> means nothing may be read. Write an `allow` rule for every target.
+> [!NOTE]
+> Like `secrets:`, `federation:` fails closed: with no `allow` rule, no workload
+> may assume any target, and `deny` rules alone permit nothing. Write an `allow`
+> rule for every target.
 
 A target is one of `token_exchange`, `client_credentials`, `gcp`, `aws`, or
 `assertion` (present the signed assertion itself to a relying party that

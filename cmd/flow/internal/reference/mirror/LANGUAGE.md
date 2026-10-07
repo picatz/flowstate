@@ -1532,9 +1532,7 @@ Three rules hold in both directions:
 - **A tenant comes from the authenticated caller, never from the workflow.** A
   verified caller whose tenant cannot be determined is refused.
 - **Policy fails closed.** A missing claim, an expression error, an unreachable
-  issuer, or a rule that cannot be evaluated refuses. The one exception, a
-  `federation:` section with no rules, is called out in
-  [Secrets](SECRETS.md#short-lived-credentials-instead-of-stored-ones).
+  issuer, or a rule that cannot be evaluated refuses.
 - **Credentials and tokens never enter a run's history.** A step names a
   `credential:` or `${secret(...)}`; the worker resolves it where it is used.
 

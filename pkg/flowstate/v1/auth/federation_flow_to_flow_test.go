@@ -185,6 +185,7 @@ targets:
 		elsewhere, err := auth.ParseFederationPolicy([]byte(`
 issuer: ` + deploymentA.URL + `
 declared_claims: [repository]
+allow: ['true']
 targets:
   - name: somewhere-else
     assertion:

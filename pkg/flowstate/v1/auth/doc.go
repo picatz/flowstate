@@ -358,9 +358,7 @@
 //	    - 'secret.name.endsWith("_ROOT")'
 //
 // A secret store calls [SecretPolicy.Authorize] before resolving a reference.
-// Unlike credential targets, **no rules means nothing is permitted**: a target has
-// to be configured before it exists, so an unconfigured one is already a refusal,
-// whereas a secret scheme becomes readable the moment a provider is registered. The
+// As with credential targets, **no rules means nothing is permitted**. The
 // refusal says so — naming the workload and the reference — rather than reporting
 // the secret as missing, because those need different fixes.
 //

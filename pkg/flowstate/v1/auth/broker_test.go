@@ -104,10 +104,21 @@ func TestBrokerAssumePolicy(t *testing.T) {
 		wantReason auth.AssumeReason
 	}{
 		{
-			name:     "no rules, so any workload may use a configured target",
-			identity: testIdentity(),
-			ref:      testStepRef(),
-			target:   "aws-prod",
+			name:       "no rules, so no workload may use a configured target",
+			identity:   testIdentity(),
+			ref:        testStepRef(),
+			target:     "aws-prod",
+			wantErr:    auth.ErrAssumeDenied,
+			wantReason: auth.ReasonAssumeNoAllowRule,
+		},
+		{
+			name:       "only a deny rule, so nothing is permitted",
+			deny:       []string{`target == "other"`},
+			identity:   testIdentity(),
+			ref:        testStepRef(),
+			target:     "aws-prod",
+			wantErr:    auth.ErrAssumeDenied,
+			wantReason: auth.ReasonAssumeNoAllowRule,
 		},
 		{
 			name:     "an allow rule that matches the workload",
@@ -148,6 +159,7 @@ func TestBrokerAssumePolicy(t *testing.T) {
 		},
 		{
 			name:       "a deny rule matches",
+			allow:      []string{"true"},
 			deny:       []string{`workload.step == "push-image"`},
 			identity:   testIdentity(),
 			ref:        testStepRef(),
@@ -253,6 +265,7 @@ func TestBrokerMintsScopedAssertions(t *testing.T) {
 
 	broker, err := auth.NewBroker(issuer,
 		auth.WithTarget("aws-prod", aws),
+		auth.WithAssumeAllowRules("true"),
 		auth.WithTarget("partner", partner),
 		auth.WithBrokerClock(clock.Now),
 	)
@@ -331,6 +344,7 @@ func TestBrokerCaching(t *testing.T) {
 
 	broker, err := auth.NewBroker(issuer,
 		auth.WithTarget("aws-prod", exchanger),
+		auth.WithAssumeAllowRules("true"),
 		auth.WithBrokerClock(clock.Now),
 		auth.WithRefreshMargin(time.Minute),
 	)
@@ -378,6 +392,7 @@ func TestBrokerCacheIsolation(t *testing.T) {
 
 	broker, err := auth.NewBroker(issuer,
 		auth.WithTarget("aws-prod", exchanger),
+		auth.WithAssumeAllowRules("true"),
 		auth.WithBrokerClock(clock.Now),
 	)
 	require.NoError(t, err)
@@ -445,6 +460,7 @@ func TestBrokerExchangeFailure(t *testing.T) {
 
 	broker, err := auth.NewBroker(issuer,
 		auth.WithTarget("aws-prod", exchanger),
+		auth.WithAssumeAllowRules("true"),
 		auth.WithBrokerClock(clock.Now),
 	)
 	require.NoError(t, err)
@@ -472,6 +488,7 @@ func TestBrokerRejectsUnusableCredentials(t *testing.T) {
 
 		broker, err := auth.NewBroker(issuer,
 			auth.WithTarget("forever", exchanger),
+			auth.WithAssumeAllowRules("true"),
 			auth.WithBrokerClock(clock.Now),
 		)
 		require.NoError(t, err)
@@ -486,6 +503,7 @@ func TestBrokerRejectsUnusableCredentials(t *testing.T) {
 
 		broker, err := auth.NewBroker(issuer,
 			auth.WithTarget("typeless", exchanger),
+			auth.WithAssumeAllowRules("true"),
 			auth.WithBrokerClock(clock.Now),
 		)
 		require.NoError(t, err)
@@ -645,6 +663,7 @@ func TestBrokerConcurrent(t *testing.T) {
 
 	broker, err := auth.NewBroker(issuer,
 		auth.WithTarget("aws-prod", aws),
+		auth.WithAssumeAllowRules("true"),
 		auth.WithTarget("partner", partner),
 		auth.WithBrokerClock(clock.Now),
 	)
@@ -683,6 +702,7 @@ func TestBrokerCacheIsBounded(t *testing.T) {
 
 	broker, err := auth.NewBroker(issuer,
 		auth.WithTarget("aws-prod", exchanger),
+		auth.WithAssumeAllowRules("true"),
 		auth.WithBrokerClock(clock.Now),
 		auth.WithMaxCachedCredentials(8),
 		auth.WithRefreshMargin(time.Second),
