@@ -35,8 +35,9 @@ func init() {
 		{
 			Name: "flowstate.v1.SECRET_WHOLE_VALUE",
 			Leading: " SECRET_WHOLE_VALUE says the input accepts a secret reference as its entire\n" +
-				" value, which the host resolves where the task uses it. The field must be a\n" +
-				" `flowstate.v1.Value`, the only shape that can hold a reference unresolved.\n",
+				" value, which the host resolves where the task uses it. The field is a\n" +
+				" `flowstate.v1.Value`, which holds a reference unresolved, or a string, which\n" +
+				" a plugin task receives the resolved value in.\n",
 		},
 		{
 			Name: "flowstate.v1.SECRET_REQUIRED",

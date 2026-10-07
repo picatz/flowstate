@@ -35,8 +35,9 @@ const (
 	// reference, and the host refuses one written there.
 	Secret_SECRET_UNSPECIFIED Secret = 0
 	// SECRET_WHOLE_VALUE says the input accepts a secret reference as its entire
-	// value, which the host resolves where the task uses it. The field must be a
-	// `flowstate.v1.Value`, the only shape that can hold a reference unresolved.
+	// value, which the host resolves where the task uses it. The field is a
+	// `flowstate.v1.Value`, which holds a reference unresolved, or a string, which
+	// a plugin task receives the resolved value in.
 	Secret_SECRET_WHOLE_VALUE Secret = 1
 	// SECRET_REQUIRED says the input must be supplied as a whole secret
 	// reference, never a literal or an expression. It implies
