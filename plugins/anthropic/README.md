@@ -22,7 +22,8 @@ Inputs are `api_key`, `model`, `evidence`, `question_set`, and optional
   question names are further limited to 64 bytes, the longest tool-schema
   property name the Messages API accepts.
 - `evidence` is text, up to 256 KiB. It is framed to the model as data to be
-  judged, not instructions to follow.
+  judged, not instructions to follow, and `&` and `<` are escaped in it so that
+  untrusted text cannot close the `<evidence>` element it is wrapped in.
 - `model` is passed through unchanged and never defaulted.
 - `max_tokens` defaults to 1,024 and may not exceed 8,192. The reply is only a
   tool call, so this bounds it tightly.
