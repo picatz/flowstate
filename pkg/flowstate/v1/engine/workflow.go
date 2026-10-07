@@ -688,6 +688,9 @@ func runWorkflow(ctx workflow.Context, dc converter.DataConverter, st *v1.RunSta
 		everyExpressionCharged bool
 	)
 	carriesHeld := workflow.GetVersion(ctx, heldFailureCarryChange, workflow.DefaultVersion, 1) != workflow.DefaultVersion
+	// Only meaningful alongside the held-failure carry: a failure the join hears is
+	// held, and held failures cross only under that marker.
+	joinsOnContinue := workflow.GetVersion(ctx, asyncContinueChange, workflow.DefaultVersion, 1) != workflow.DefaultVersion && carriesHeld
 	switch workflow.GetVersion(ctx, workflowSliceCostChange, workflow.DefaultVersion, 2) {
 	case workflow.DefaultVersion:
 	case 1:
@@ -717,6 +720,7 @@ func runWorkflow(ctx workflow.Context, dc converter.DataConverter, st *v1.RunSta
 		sliceCost:              sliceCost,
 		everyExpressionCharged: everyExpressionCharged,
 		carriesHeld:            carriesHeld,
+		joinsOnContinue:        joinsOnContinue,
 
 		// Signals that arrived before their step was reached, carried from the
 		// run that suspended. A wait consumes from here before it blocks.
