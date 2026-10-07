@@ -1,0 +1,11 @@
+[
+  {
+    "type": "image",
+    "image_url": "https://example.com/a.png",
+    "alt_text": "diagram",
+    "title": {
+      "type": "plain_text",
+      "text": "Architecture"
+    }
+  }
+]

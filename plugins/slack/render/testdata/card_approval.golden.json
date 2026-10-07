@@ -1,0 +1,104 @@
+[
+  {
+    "type": "header",
+    "block_id": "fs_header",
+    "text": {
+      "type": "plain_text",
+      "text": "Production deploy"
+    }
+  },
+  {
+    "type": "section",
+    "block_id": "fs_body",
+    "text": {
+      "type": "mrkdwn",
+      "text": "*api v1.4.2* requested by alice@example.com",
+      "verbatim": true
+    },
+    "fields": [
+      {
+        "type": "mrkdwn",
+        "text": "*Service*\napi",
+        "verbatim": true
+      },
+      {
+        "type": "mrkdwn",
+        "text": "*Version*\nv1.4.2",
+        "verbatim": true
+      },
+      {
+        "type": "mrkdwn",
+        "text": "*Region*\nus-east-1",
+        "verbatim": true
+      },
+      {
+        "type": "mrkdwn",
+        "text": "*Risk*\nlow",
+        "verbatim": true
+      }
+    ]
+  },
+  {
+    "type": "actions",
+    "block_id": "fs_actions",
+    "elements": [
+      {
+        "type": "button",
+        "text": {
+          "type": "plain_text",
+          "text": "Approve"
+        },
+        "action_id": "approve",
+        "value": "01HZ-run:deploy",
+        "style": "primary"
+      },
+      {
+        "type": "button",
+        "text": {
+          "type": "plain_text",
+          "text": "Reject"
+        },
+        "action_id": "reject",
+        "value": "01HZ-run:deploy",
+        "style": "danger",
+        "confirm": {
+          "title": {
+            "type": "plain_text",
+            "text": "Reject deploy?"
+          },
+          "text": {
+            "type": "plain_text",
+            "text": "This cannot be undone."
+          },
+          "confirm": {
+            "type": "plain_text",
+            "text": "Confirm"
+          },
+          "deny": {
+            "type": "plain_text",
+            "text": "Cancel"
+          }
+        }
+      },
+      {
+        "type": "button",
+        "text": {
+          "type": "plain_text",
+          "text": "Runbook"
+        },
+        "action_id": "link_2",
+        "url": "https://example.com/runbook"
+      }
+    ]
+  },
+  {
+    "type": "context",
+    "block_id": "fs_footer",
+    "elements": [
+      {
+        "type": "plain_text",
+        "text": "Expires in 24h"
+      }
+    ]
+  }
+]
