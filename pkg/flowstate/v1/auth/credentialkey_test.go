@@ -57,8 +57,9 @@ func TestCredentialKeyDistinguishesWhatARuleCanTellApart(t *testing.T) {
 		})
 	}
 
-	same := with(func(w *WorkloadIdentity) { w.Claims = map[string]any{"admin": true, "g": []any{"a"}} })
-	if credentialKey("target", "sub", same) != credentialKey("target", "sub", same) {
-		t.Fatal("the same identity must key the same credential")
+	first := with(func(w *WorkloadIdentity) { w.Claims = map[string]any{"admin": true, "g": []any{"a"}} })
+	again := with(func(w *WorkloadIdentity) { w.Claims = map[string]any{"g": []any{"a"}, "admin": true} })
+	if credentialKey("target", "sub", first) != credentialKey("target", "sub", again) {
+		t.Fatal("the same identity must key the same credential however its claims were built")
 	}
 }
