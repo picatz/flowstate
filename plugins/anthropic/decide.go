@@ -326,7 +326,9 @@ func token(value string) string {
 func bounded(value string) string {
 	value = strings.TrimSpace(value)
 	if len(value) > maxErrorBytes {
-		return value[:maxErrorBytes] + "…"
+		// A cut can land inside a multi-byte rune; dropping the broken tail keeps
+		// the text valid UTF-8 at the plugin's error boundary.
+		return strings.ToValidUTF8(value[:maxErrorBytes], "") + "…"
 	}
 	return value
 }
