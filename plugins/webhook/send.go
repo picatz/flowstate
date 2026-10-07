@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"net/url"
@@ -54,8 +55,13 @@ var ownedHeaders = []string{
 	"authorization", "proxy-authorization", "cookie",
 	"host", "content-length", "transfer-encoding", "connection", "expect", "te", "trailer", "upgrade",
 	strings.ToLower(idempotencyHeader),
-	strings.ToLower(flowstatev1.WebhookSignatureHeader),
-	strings.ToLower(flowstatev1.StripeSignatureHeader),
+}
+
+func init() {
+	// Every header any signing scheme writes is the task's own.
+	for _, name := range flowstatev1.WebhookSignatureHeaders() {
+		ownedHeaders = append(ownedHeaders, strings.ToLower(name))
+	}
 }
 
 func webhookSend(ctx context.Context, inputs map[string]*flowstatev1.Value, _ *flowstatev1.Scope) (*flowstatev1.Node_Outputs, error) {
@@ -165,7 +171,7 @@ func printableASCII(s string) bool {
 func deliver(ctx context.Context, client *http.Client, in *webhookv1.SendInputs, key secrets.Secret, now time.Time) (*webhookv1.SendOutputs, error) {
 	// The shared signer: the arithmetic the inbound verifier checks against, so
 	// there is no second implementation here to drift from it.
-	sigHeader, sigValue, err := flowstatev1.SignWebhookDelivery(schemeOf(in), key, []byte(in.GetBody()), now)
+	sigHeaders, err := flowstatev1.SignWebhookDelivery(schemeOf(in), key, []byte(in.GetBody()), now)
 	if err != nil {
 		return nil, sdk.InvalidInput("signing the delivery: %v", err)
 	}
@@ -185,7 +191,9 @@ func deliver(ctx context.Context, client *http.Client, in *webhookv1.SendInputs,
 	if req.Header.Get("Content-Type") == "" {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	req.Header.Set(sigHeader, sigValue)
+	for name, value := range sigHeaders {
+		req.Header.Set(name, value)
+	}
 	if k := in.GetIdempotencyKey(); k != "" {
 		req.Header.Set(idempotencyHeader, k)
 	}
@@ -207,7 +215,7 @@ func deliver(ctx context.Context, client *http.Client, in *webhookv1.SendInputs,
 
 	// Read past the cap by the longest thing to redact, so a secret that
 	// straddles the cut is redacted whole before the cut is made.
-	scrub := scrubTargets(key, sigValue)
+	scrub := scrubTargets(key, slices.Collect(maps.Values(sigHeaders)))
 	limit := int64(maxResponseBytes + maxKeyBytes + 1)
 	raw, readErr := io.ReadAll(io.LimitReader(resp.Body, limit))
 	truncated := int64(len(raw)) == limit
@@ -242,13 +250,18 @@ func deliver(ctx context.Context, client *http.Client, in *webhookv1.SendInputs,
 	}, nil
 }
 
-// scrubTargets lists what a receiver's echo must not return: the key, the
+// scrubTargets lists what a receiver's echo must not return: the key, each
 // whole signature header value, and the digest inside it, longest first so a
 // containing value is replaced before its parts.
-func scrubTargets(key secrets.Secret, sigValue string) []string {
-	targets := []string{key.Reveal(), sigValue}
-	if _, digest, ok := strings.Cut(sigValue, "v1="); ok {
-		targets = append(targets, digest)
+func scrubTargets(key secrets.Secret, sigValues []string) []string {
+	targets := []string{key.Reveal()}
+	for _, value := range sigValues {
+		targets = append(targets, value)
+		for _, marker := range []string{"v1=", "v0=", "sha256="} {
+			if _, digest, ok := strings.Cut(value, marker); ok {
+				targets = append(targets, digest)
+			}
+		}
 	}
 	slices.SortFunc(targets, func(a, b string) int { return cmp.Compare(len(b), len(a)) })
 	return slices.DeleteFunc(targets, func(s string) bool { return s == "" })

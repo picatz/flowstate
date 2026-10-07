@@ -47,7 +47,8 @@ type SendInputs struct {
 	SigningKey *v1.Value `protobuf:"bytes,3,opt,name=signing_key,json=signingKey,proto3" json:"signing_key,omitempty"`
 	// Scheme is how the body is signed, with the spelling a webhook trigger's
 	// `verify:` block uses: `hmac_sha256` (the default; a hex HMAC-SHA256 of the
-	// body in `X-Flowstate-Signature`) or `stripe` (`Stripe-Signature:
+	// body in `X-Flowstate-Signature`), a provider's own spelling (`github`,
+	// `shopify`, `linear`, `slack`) or `stripe` (`Stripe-Signature:
 	// t=<unix seconds>,v1=<hex>`, signed over the timestamp and the body, with a
 	// five-minute replay window at the receiver). An unknown scheme is refused.
 	Scheme string `protobuf:"bytes,4,opt,name=scheme,proto3" json:"scheme,omitempty"`

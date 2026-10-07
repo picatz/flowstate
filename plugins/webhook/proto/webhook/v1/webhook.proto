@@ -33,7 +33,8 @@ message SendInputs {
 
   // Scheme is how the body is signed, with the spelling a webhook trigger's
   // `verify:` block uses: `hmac_sha256` (the default; a hex HMAC-SHA256 of the
-  // body in `X-Flowstate-Signature`) or `stripe` (`Stripe-Signature:
+  // body in `X-Flowstate-Signature`), a provider's own spelling (`github`,
+  // `shopify`, `linear`, `slack`) or `stripe` (`Stripe-Signature:
   // t=<unix seconds>,v1=<hex>`, signed over the timestamp and the body, with a
   // five-minute replay window at the receiver). An unknown scheme is refused.
   string scheme = 4;
