@@ -78,7 +78,7 @@ flow audit -o json examples/ | jq '.totals'
 
 ## `flow auth`
 
-Diagnose caller authentication against an auth policy
+Diagnose caller authentication: check a token against a policy, or ask who the server sees
 
 ```
 flow auth [command]
@@ -109,6 +109,44 @@ flow auth check --auth-policy auth.yaml --token-file - < "$TOKEN_FILE"
 |---|---|---|---|---|
 | `--auth-policy <string>` | `string` | — | — | path to the auth policy to check the token against (required) |
 | `--token-file <string>` | `string` | — | — | file holding the bearer token, or "-" for stdin (required; a token is never accepted as an argument) |
+
+## `flow auth whoami`
+
+Show the identity the server established for this caller
+
+```
+flow auth whoami [flags]
+```
+
+Ask the server which principal it established for the credential this command presents: the issuer and subject, the namespace (tenant), the principal kind, the trust policy entry that admitted the caller (issuer_entry), the actions that entry grants, and the claims it carries. This is the answer to "why was I refused" and "which tenant am I in" before any workflow runs.
+
+Every authenticated caller may ask, whatever its policy entry's `actions:` list holds, because the answer is only the caller's own identity. A server that admits anonymous callers (`flow server dev` without `--auth`) answers `authenticated: false` rather than refusing. The credential itself is never printed.
+
+The credential is read as every server verb reads it: `--token-file`, FLOWSTATE_TOKEN_FILE or FLOWSTATE_TOKEN, or `--credential-source`.
+
+Examples:
+
+```sh
+# Who does the server think I am?
+flow auth whoami --address flowstate.example.com:9233 \
+  --token-file ~/.config/flowstate/token
+
+# Which tenant and policy entry admitted this CI job?
+flow auth whoami -o json \
+  --credential-source github-actions --audience flowstate \
+  | jq '{namespace: .principal.namespace, entry: .principal.issuerEntry}'
+```
+
+| Flag | Type | Default | Environment | Description |
+|---|---|---|---|---|
+| `--address <string>` | `string` | `localhost:9233` | `FLOWSTATE_ADDRESS` | address of the Flowstate server (overrides FLOWSTATE_ADDRESS); an explicit https:// scheme is honored |
+| `--audience <string>` | `string` | — | `FLOWSTATE_AUDIENCE` | the relying party a credential should be addressed to (overrides FLOWSTATE_AUDIENCE); required by `--credential-source=github-actions`, which mints a token for it. gitlab and terraform-cloud cannot mint on demand — their platform fixes the audience in the job or workspace configuration before the token exists — so for those it is checked against the token's own audience rather than requested, and a mismatch is refused with the setting to change |
+| `--credential-source <string>` | `string` | — | `FLOWSTATE_CREDENTIAL_SOURCE` | acquire a credential from a named source instead of `--token-file`/FLOWSTATE_TOKEN (overrides FLOWSTATE_CREDENTIAL_SOURCE); one of github-actions, gitlab, terraform-cloud, file, env. An unknown or unusable source is an error, never anonymous |
+| `-o, --output <string>` | `string` | `text` | — | output format: text, json, or jsonl |
+| `--tls-ca-file <string>` | `string` | — | `FLOWSTATE_TLS_CA_FILE` | PEM CA bundle to verify the server's certificate against, in place of the system roots (overrides FLOWSTATE_TLS_CA_FILE). Unset trusts the system roots, which is what reaches a server with a certificate from a public CA; set this to reach a server whose certificate chains to a private CA instead |
+| `--tls-client-cert-file <string>` | `string` | — | `FLOWSTATE_TLS_CLIENT_CERT_FILE` | PEM client certificate to present when a server requires one via `--tls-client-auth require` (overrides FLOWSTATE_TLS_CLIENT_CERT_FILE); must be given with `--tls-client-key-file`. Unset presents no certificate, which a server requiring one refuses at the handshake |
+| `--tls-client-key-file <string>` | `string` | — | `FLOWSTATE_TLS_CLIENT_KEY_FILE` | PEM private key matching `--tls-client-cert-file` (overrides FLOWSTATE_TLS_CLIENT_KEY_FILE) |
+| `--token-file <string>` | `string` | — | `FLOWSTATE_TOKEN_FILE` | file holding the bearer token to authenticate with (overrides FLOWSTATE_TOKEN_FILE); re-read per request, so a rotating token keeps working. Without it, FLOWSTATE_TOKEN is used, and neither means anonymous |
 
 ## `flow breaking`
 

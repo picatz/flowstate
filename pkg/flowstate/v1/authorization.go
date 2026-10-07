@@ -134,6 +134,22 @@ var authorizationActionBindings = []*AuthorizationActionBinding{
 			"flowstate.v1.GetTimelineRequest.reveal_sensitive",
 		},
 	},
+	{
+		// Whoami: every caller holds it, see [AuthorizationActionHeldByEveryCaller].
+		Action: AuthorizationAction_AUTHORIZATION_ACTION_IDENTITY_READ,
+	},
+}
+
+// AuthorizationActionHeldByEveryCaller reports whether every caller holds the
+// action without a policy entry listing it.
+//
+// Only identity.read is: it reveals nothing but the caller's own principal, so
+// withholding it would protect nothing and would make `flow auth whoami` fail
+// on exactly the misconfigured entries it exists to diagnose. Held in the
+// schema's package, beside the vocabulary, so [authz.DecidePrincipal] and the
+// documentation read one answer.
+func AuthorizationActionHeldByEveryCaller(action AuthorizationAction) bool {
+	return action == AuthorizationAction_AUTHORIZATION_ACTION_IDENTITY_READ
 }
 
 // boundActions fills each binding's rpcs from the authorization_action option
