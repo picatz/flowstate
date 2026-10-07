@@ -504,6 +504,56 @@ func TestBreakingMovedFile(t *testing.T) {
 	require.Contains(t, out, "workflows/notify.yaml", "the break is reported at the new path")
 }
 
+// TestBreakingRemovedFile pins the acknowledgement of a deliberate deletion: a
+// removed workflow is a finding, `--removed` with its path at the ref clears
+// exactly that one, and it does not clear another removal or a break elsewhere.
+func TestBreakingRemovedFile(t *testing.T) {
+	src := fixtureHeader() + fixtureStep
+	other := "edition: v2026.4\nname: other\n" + fixtureStep
+	dir := gitInitRepoFiles(t, map[string]string{
+		"a/workflow.yaml": src,
+		"b/workflow.yaml": other,
+		"c/workflow.yaml": "edition: v2026.4\nname: kept\n" + fixtureStep,
+	})
+	require.NoError(t, os.Remove(filepath.Join(dir, "a", "workflow.yaml")))
+
+	out, err := runBreakingCLI(t, dir, "--against", "HEAD", ".")
+	require.Error(t, err, "an unacknowledged removal is a break, got:\n%s", out)
+	require.Contains(t, out, `workflow "demo" was removed`)
+
+	out, err = runBreakingCLI(t, dir, "--against", "HEAD", "--removed", "a/workflow.yaml", ".")
+	require.NoError(t, err, "an acknowledged removal is clean, got:\n%s", out)
+
+	require.NoError(t, os.Remove(filepath.Join(dir, "b", "workflow.yaml")))
+	out, err = runBreakingCLI(t, dir, "--against", "HEAD", "--removed", "a/workflow.yaml", ".")
+	require.Error(t, err, "acknowledging one removal must not hide another, got:\n%s", out)
+	require.Contains(t, out, `workflow "other" was removed`)
+	require.NotContains(t, out, `workflow "demo" was removed`)
+
+	out, err = runBreakingCLI(t, dir, "--against", "HEAD", "--removed", "a/workflow.yaml", "--removed", "b/workflow.yaml", ".")
+	require.NoError(t, err, "the flag repeats, got:\n%s", out)
+}
+
+// TestBreakingRemovedFileRefusals pins what `--removed` will not do: acknowledge
+// a workflow that is still in the tree, which would hide a real break, or name a
+// path outside the repository. A path the ref does not have is accepted, so the
+// flag can stay in a command line after the removal it acknowledged has merged.
+func TestBreakingRemovedFileRefusals(t *testing.T) {
+	src := fixtureHeader() + fixtureStep
+	dir := gitInitRepoFiles(t, map[string]string{"a/workflow.yaml": src})
+
+	_, err := runBreakingCLI(t, dir, "--against", "HEAD", "--removed", "a/workflow.yaml", ".")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "a/workflow.yaml is still a Flowfile in the working tree")
+
+	_, err = runBreakingCLI(t, dir, "--against", "HEAD", "--removed", "../elsewhere.yaml", ".")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "outside the repository")
+
+	out, err := runBreakingCLI(t, dir, "--against", "HEAD", "--removed", "gone/workflow.yaml", ".")
+	require.NoError(t, err, "a path the ref never had acknowledges nothing and is not an error, got:\n%s", out)
+}
+
 // TestBreakingMovedFileFromSubdirectory pins the two spellings a `--moved` side
 // may use, from below the repository root and with the path arguments reaching
 // only the destination: relative to the working directory the way every other

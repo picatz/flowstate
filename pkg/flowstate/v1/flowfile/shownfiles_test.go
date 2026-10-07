@@ -38,7 +38,7 @@ func TestShownTestFilesLoad(t *testing.T) {
 
 // mirrorMarker pins the fenced block after it to a file in the repository:
 //
-//	<!-- mirrors: examples/release-approval/workflow.yaml -->
+//	<!-- mirrors: examples/refund-approval/workflow.yaml -->
 //	```yaml
 //	...
 //	```

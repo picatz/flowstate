@@ -139,10 +139,10 @@ var exampleSignals = map[string]map[string]*v1.Node_Outputs{
 		"released": {NamedValues: map[string]*v1.Value{}},
 	},
 
-	// release-approval is the getting-started tutorial's workflow, and this is
+	// refund-approval is the getting-started tutorial's workflow, and this is
 	// the payload the tutorial's own `flow signal` line sends.
-	"release-approval": {
-		"release-approved": {NamedValues: map[string]*v1.Value{
+	"refund-approval": {
+		"refund-approved": {NamedValues: map[string]*v1.Value{
 			"approved": v1.NewLiteral(true),
 		}},
 	},
