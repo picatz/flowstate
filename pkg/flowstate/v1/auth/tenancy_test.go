@@ -24,7 +24,7 @@ func TestNamespaceFromTrustPolicy(t *testing.T) {
 		{
 			name: "fixed for an issuer that belongs to one team",
 			issuer: func(url string) auth.TrustedIssuer {
-				return auth.TrustedIssuer{
+				return auth.TrustedIssuer{Actions: []string{},
 					Name: "cluster", Issuer: url, Audiences: []string{"flowstate"},
 					Namespace: "platform",
 				}
@@ -34,7 +34,7 @@ func TestNamespaceFromTrustPolicy(t *testing.T) {
 		{
 			name: "taken from a claim for an issuer serving several teams",
 			issuer: func(url string) auth.TrustedIssuer {
-				return auth.TrustedIssuer{
+				return auth.TrustedIssuer{Actions: []string{},
 					Name: "ci", Issuer: url, Audiences: []string{"flowstate"},
 					NamespaceClaim: "tenant",
 				}
@@ -45,14 +45,14 @@ func TestNamespaceFromTrustPolicy(t *testing.T) {
 		{
 			name: "single-tenant policy leaves it empty",
 			issuer: func(url string) auth.TrustedIssuer {
-				return auth.TrustedIssuer{Name: "idp", Issuer: url, Audiences: []string{"flowstate"}}
+				return auth.TrustedIssuer{Actions: []string{}, Name: "idp", Issuer: url, Audiences: []string{"flowstate"}}
 			},
 			wantNamespace: "",
 		},
 		{
 			name: "the claim is missing",
 			issuer: func(url string) auth.TrustedIssuer {
-				return auth.TrustedIssuer{
+				return auth.TrustedIssuer{Actions: []string{},
 					Name: "ci", Issuer: url, Audiences: []string{"flowstate"},
 					NamespaceClaim: "tenant",
 				}
@@ -62,7 +62,7 @@ func TestNamespaceFromTrustPolicy(t *testing.T) {
 		{
 			name: "the claim is empty",
 			issuer: func(url string) auth.TrustedIssuer {
-				return auth.TrustedIssuer{
+				return auth.TrustedIssuer{Actions: []string{},
 					Name: "ci", Issuer: url, Audiences: []string{"flowstate"},
 					NamespaceClaim: "tenant",
 				}
@@ -73,7 +73,7 @@ func TestNamespaceFromTrustPolicy(t *testing.T) {
 		{
 			name: "the claim is not a string",
 			issuer: func(url string) auth.TrustedIssuer {
-				return auth.TrustedIssuer{
+				return auth.TrustedIssuer{Actions: []string{},
 					Name: "ci", Issuer: url, Audiences: []string{"flowstate"},
 					NamespaceClaim: "tenant",
 				}
@@ -84,7 +84,7 @@ func TestNamespaceFromTrustPolicy(t *testing.T) {
 		{
 			name: "the claim spells out another tenant's path",
 			issuer: func(url string) auth.TrustedIssuer {
-				return auth.TrustedIssuer{
+				return auth.TrustedIssuer{Actions: []string{},
 					Name: "ci", Issuer: url, Audiences: []string{"flowstate"},
 					NamespaceClaim: "tenant",
 				}
@@ -160,29 +160,29 @@ func TestPolicyTenancyIsAllOrNothing(t *testing.T) {
 		{
 			name: "every issuer determines a namespace",
 			policy: auth.Policy{Issuers: []auth.TrustedIssuer{
-				{Name: "a", Issuer: "https://a.example.com", Audiences: []string{"flowstate"}, Namespace: "team-a"},
-				{Name: "b", Issuer: "https://b.example.com", Audiences: []string{"flowstate"}, NamespaceClaim: "tenant"},
+				{Actions: []string{}, Name: "a", Issuer: "https://a.example.com", Audiences: []string{"flowstate"}, Namespace: "team-a"},
+				{Actions: []string{}, Name: "b", Issuer: "https://b.example.com", Audiences: []string{"flowstate"}, NamespaceClaim: "tenant"},
 			}},
 		},
 		{
 			name: "no issuer determines a namespace",
 			policy: auth.Policy{Issuers: []auth.TrustedIssuer{
-				{Name: "a", Issuer: "https://a.example.com", Audiences: []string{"flowstate"}},
-				{Name: "b", Issuer: "https://b.example.com", Audiences: []string{"flowstate"}},
+				{Actions: []string{}, Name: "a", Issuer: "https://a.example.com", Audiences: []string{"flowstate"}},
+				{Actions: []string{}, Name: "b", Issuer: "https://b.example.com", Audiences: []string{"flowstate"}},
 			}},
 		},
 		{
 			name: "one does and one does not",
 			policy: auth.Policy{Issuers: []auth.TrustedIssuer{
-				{Name: "a", Issuer: "https://a.example.com", Audiences: []string{"flowstate"}, Namespace: "team-a"},
-				{Name: "b", Issuer: "https://b.example.com", Audiences: []string{"flowstate"}},
+				{Actions: []string{}, Name: "a", Issuer: "https://a.example.com", Audiences: []string{"flowstate"}, Namespace: "team-a"},
+				{Actions: []string{}, Name: "b", Issuer: "https://b.example.com", Audiences: []string{"flowstate"}},
 			}},
 			wantErr: true,
 		},
 		{
 			name: "an issuer naming both a fixed namespace and a claim",
 			policy: auth.Policy{Issuers: []auth.TrustedIssuer{
-				{
+				{Actions: []string{},
 					Name: "a", Issuer: "https://a.example.com", Audiences: []string{"flowstate"},
 					Namespace: "team-a", NamespaceClaim: "tenant",
 				},
@@ -304,7 +304,7 @@ func TestTemporalNamespaceMapping(t *testing.T) {
 		require.ErrorIs(t, tenancy.Validate(), auth.ErrInvalidPolicy)
 
 		policy := auth.Policy{
-			Issuers: []auth.TrustedIssuer{{Name: "a", Issuer: "https://a.example.com", Audiences: []string{"flowstate"}}},
+			Issuers: []auth.TrustedIssuer{{Actions: []string{}, Name: "a", Issuer: "https://a.example.com", Audiences: []string{"flowstate"}}},
 			Tenancy: tenancy,
 		}
 		require.ErrorIs(t, policy.Validate(), auth.ErrInvalidPolicy)

@@ -229,7 +229,7 @@ func TestALabelSelectionCannotReachAnotherTenantsRuns(t *testing.T) {
 
 	server := mustNew(t, pagingNamespace(t, all))
 
-	asTeamA := auth.ContextWithPrincipal(t.Context(), auth.Principal{
+	asTeamA := auth.ContextWithPrincipal(t.Context(), auth.Principal{Actions: everyAction,
 		Issuer:    "https://issuer.example",
 		Subject:   "operator@team-a.example",
 		Namespace: "team-a",
@@ -252,7 +252,7 @@ func TestALabelSelectionCannotReachAnotherTenantsRuns(t *testing.T) {
 	// And the same selector run as team-b reaches team-b's runs and none of
 	// team-a's, so the boundary is a boundary rather than one tenant being
 	// invisible to everybody.
-	asTeamB := auth.ContextWithPrincipal(t.Context(), auth.Principal{
+	asTeamB := auth.ContextWithPrincipal(t.Context(), auth.Principal{Actions: everyAction,
 		Issuer:    "https://issuer.example",
 		Subject:   "operator@team-b.example",
 		Namespace: "team-b",

@@ -36,7 +36,7 @@ func debuggableWorkflow() *v1.Workflow {
 }
 
 func as(ctx context.Context, subject string, actions ...string) context.Context {
-	principal := auth.Principal{Issuer: debugIssuer, Subject: subject}
+	principal := auth.Principal{Actions: everyAction, Issuer: debugIssuer, Subject: subject}
 	if len(actions) > 0 {
 		principal.Actions = actions
 	}

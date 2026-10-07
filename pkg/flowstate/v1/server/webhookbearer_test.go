@@ -35,7 +35,7 @@ func (v trustVerifier) Verify(_ context.Context, raw string) (auth.Principal, er
 		return auth.Principal{}, errors.New("not the token")
 	}
 
-	return auth.Principal{
+	return auth.Principal{Actions: everyAction,
 		Issuer: "https://token.actions.githubusercontent.com", IssuerName: v.name, Subject: "repo:acme/app",
 		Namespace: v.ns, Kind: auth.PrincipalKindWorkload,
 	}, nil
@@ -81,8 +81,8 @@ func TestABearerWebhookIsRefusedAtStartupForAnEntryItCannotUse(t *testing.T) {
 	t.Parallel()
 
 	tests := map[string]*auth.Policy{
-		"no such entry": trustPolicy(auth.TrustedIssuer{Name: "gitlab"}),
-		"a certificate": trustPolicy(auth.TrustedIssuer{Name: "github-actions", Kind: auth.IssuerKindMTLS}),
+		"no such entry": trustPolicy(auth.TrustedIssuer{Actions: []string{}, Name: "gitlab"}),
+		"a certificate": trustPolicy(auth.TrustedIssuer{Actions: []string{}, Name: "github-actions", Kind: auth.IssuerKindMTLS}),
 	}
 	for name, policy := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -100,7 +100,7 @@ func TestABearerWebhookIsRefusedAtStartupForAnEntryItCannotUse(t *testing.T) {
 func TestABearerWebhookAdmitsOnlyTheSenderItsEntryVouchesFor(t *testing.T) {
 	t.Parallel()
 
-	policy := trustPolicy(auth.TrustedIssuer{Name: "github-actions"}, auth.TrustedIssuer{Name: "gitlab"})
+	policy := trustPolicy(auth.TrustedIssuer{Actions: []string{}, Name: "github-actions"}, auth.TrustedIssuer{Actions: []string{}, Name: "gitlab"})
 
 	build := func(verifier auth.Verifier) http.Handler {
 		receiver, err := mustNew(t, unreachableTemporal(t)).NewWebhookReceiver(t.Context(), "",
@@ -138,7 +138,7 @@ func TestABearerWebhookAdmitsOnlyTheSenderItsEntryVouchesFor(t *testing.T) {
 func TestAKeylessBearerWebhookNeedsNoSecretStore(t *testing.T) {
 	t.Parallel()
 
-	policy := trustPolicy(auth.TrustedIssuer{Name: "github-actions"})
+	policy := trustPolicy(auth.TrustedIssuer{Actions: []string{}, Name: "github-actions"})
 	trust := server.WithWebhookTrust(trustVerifier{name: "github-actions"}, policy)
 
 	receiver, err := mustNew(t, nil).NewWebhookReceiver(t.Context(), "", []*v1.Workflow{bearerWorkflow()}, nil, trust)

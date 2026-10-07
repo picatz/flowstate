@@ -66,6 +66,7 @@
 //			Issuer:    "https://example.okta.com/oauth2/default",
 //			Audiences: []string{"flowstate"},
 //			Role:      "operator",
+//			Actions:   auth.ActionScopes{"workload.run", "workload.read"},
 //		}},
 //	}
 //
@@ -93,6 +94,7 @@
 //			auth.RequireClaim("ref", "refs/heads/main"),
 //		},
 //		Role:        "deployer",
+//		Actions:     auth.ActionScopes{"workload.run", "workload.read"},
 //		MaxTokenAge: 10 * time.Minute,
 //	}
 //
@@ -106,7 +108,8 @@
 //		Require: []auth.ClaimRule{
 //			auth.RequireClaim("sub", "system:serviceaccount:flowstate:runner"),
 //		},
-//		Role: "runner",
+//		Role:    "runner",
+//		Actions: auth.ActionScopes{"workload.run", "workload.read"},
 //	}
 //
 // That last one is inside the cluster, and outbound identity HTTP is bounded by

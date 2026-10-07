@@ -34,7 +34,7 @@ func TestOIDCVerifierRejectsHMACBeforeResolvingAKey(t *testing.T) {
 
 	verifier := newVerifier(t,
 		auth.Policy{
-			Issuers: []auth.TrustedIssuer{{
+			Issuers: []auth.TrustedIssuer{{Actions: []string{},
 				Name:      "test",
 				Issuer:    issuer.URL(),
 				Audiences: []string{"flowstate"},
@@ -73,7 +73,7 @@ func TestOIDCVerifierCancelledRequestDoesNotPoisonKeyCache(t *testing.T) {
 
 	verifier := newVerifier(t,
 		auth.Policy{
-			Issuers: []auth.TrustedIssuer{{
+			Issuers: []auth.TrustedIssuer{{Actions: []string{},
 				Name:      "test",
 				Issuer:    issuer.URL(),
 				Audiences: []string{"flowstate"},
@@ -136,7 +136,7 @@ func TestOIDCVerifierRefusesKeySetRedirectedToPlainHTTP(t *testing.T) {
 
 			verifier := newVerifier(t,
 				auth.Policy{
-					Issuers: []auth.TrustedIssuer{{
+					Issuers: []auth.TrustedIssuer{{Actions: []string{},
 						Name:      "test",
 						Issuer:    issuer.URL(),
 						Audiences: []string{"flowstate"},
@@ -172,7 +172,7 @@ func TestOIDCVerifierPrimeFailureDoesNotBlockRecovery(t *testing.T) {
 
 	verifier := newVerifier(t,
 		auth.Policy{
-			Issuers: []auth.TrustedIssuer{{
+			Issuers: []auth.TrustedIssuer{{Actions: []string{},
 				Name:      "test",
 				Issuer:    issuer.URL(),
 				Audiences: []string{"flowstate"},
@@ -207,7 +207,7 @@ func TestOIDCVerifierRejectsTokenNominatedKeys(t *testing.T) {
 
 	verifier := newVerifier(t,
 		auth.Policy{
-			Issuers: []auth.TrustedIssuer{{
+			Issuers: []auth.TrustedIssuer{{Actions: []string{},
 				Name:      "test",
 				Issuer:    issuer.URL(),
 				Audiences: []string{"flowstate"},
@@ -271,7 +271,7 @@ func TestOIDCVerifierKeyIDHandling(t *testing.T) {
 
 	verifier := newVerifier(t,
 		auth.Policy{
-			Issuers: []auth.TrustedIssuer{{
+			Issuers: []auth.TrustedIssuer{{Actions: []string{},
 				Name:      "test",
 				Issuer:    issuer.URL(),
 				Audiences: []string{"flowstate"},
@@ -346,7 +346,7 @@ func TestOIDCVerifierRejectsImplausibleTimestamps(t *testing.T) {
 
 	verifier := newVerifier(t,
 		auth.Policy{
-			Issuers: []auth.TrustedIssuer{{
+			Issuers: []auth.TrustedIssuer{{Actions: []string{},
 				Name:      "test",
 				Issuer:    issuer.URL(),
 				Audiences: []string{"flowstate"},
@@ -402,7 +402,7 @@ func TestOIDCVerifierRejectsAlgorithmHeaderTricks(t *testing.T) {
 
 	verifier := newVerifier(t,
 		auth.Policy{
-			Issuers: []auth.TrustedIssuer{{
+			Issuers: []auth.TrustedIssuer{{Actions: []string{},
 				Name:      "test",
 				Issuer:    issuer.URL(),
 				Audiences: []string{"flowstate"},
@@ -453,7 +453,7 @@ func TestOIDCVerifierRejectsOversizedToken(t *testing.T) {
 
 	verifier := newVerifier(t,
 		auth.Policy{
-			Issuers: []auth.TrustedIssuer{{
+			Issuers: []auth.TrustedIssuer{{Actions: []string{},
 				Name:      "test",
 				Issuer:    issuer.URL(),
 				Audiences: []string{"flowstate"},
@@ -492,7 +492,7 @@ func TestOIDCVerifierVerifiesEveryAdvertisedAlgorithm(t *testing.T) {
 
 			verifier := newVerifier(t,
 				auth.Policy{
-					Issuers: []auth.TrustedIssuer{{
+					Issuers: []auth.TrustedIssuer{{Actions: []string{},
 						Name:      "test",
 						Issuer:    issuer.URL(),
 						Audiences: []string{"flowstate"},

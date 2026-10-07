@@ -291,8 +291,7 @@ func init() {
 			Leading: " RevealSensitive asks for the values the run's workflow declared\n" +
 				" `sensitive: true` in the clear. The server withholds them by default, and\n" +
 				" honours this only for a caller whose policy entry lists the\n" +
-				" `workload.reveal_sensitive` action explicitly: an entry with no action list\n" +
-				" is not granted it. A caller without it is answered normally, with the\n" +
+				" `workload.reveal_sensitive` action explicitly: it is never implied. A caller without it is answered normally, with the\n" +
 				" values withheld and `sensitive_disclosure` saying so, rather than refused.\n",
 		},
 		{

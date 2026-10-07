@@ -13,7 +13,18 @@ import (
 // these cases distinct is how many of them run before any activity, timer, or
 // signal receive would otherwise return control to Temporal's scheduler.
 func WorkflowSliceCases() []Case {
-	const heavy = "lists.range(10000).map(i, i + 1).size()"
+	// heavyElements sizes each step so that one hundred of them cross the
+	// workflow-slice cost budget several times (about 15k CEL cost units each
+	// against 500k), which is what makes the durable run continue as new and the
+	// history assertion meaningful. It is deliberately not the list-element
+	// bound: a segment is cut by accumulated cost, so a segment under the race
+	// detector costs the same wall time however the budget is spent, but the
+	// total is cost times step count. At 10000 elements one hundred steps took
+	// about 290s of race-built CPU against the durable test's fixed five-minute
+	// chain bound, and a loaded runner turned that into a timeout that was never
+	// a hang (the run was healthy, mid-segment, when the wait expired).
+	const heavyElements = 1000
+	heavy := fmt.Sprintf("lists.range(%d).map(i, i + 1).size()", heavyElements)
 
 	values := make([]*v1.Node, 100)
 	wantValues := make(map[string]*v1.Node_Outputs, len(values))
@@ -23,10 +34,10 @@ func WorkflowSliceCases() []Case {
 		id := fmt.Sprintf("value_%03d", i)
 		values[i] = &v1.Node{Id: id, Kind: &v1.Node_Value{Value: v1.NewExpr(heavy)}}
 		wantValues[id] = &v1.Node_Outputs{NamedValues: map[string]*v1.Value{
-			v1.ValueOutput: v1.NewLiteral(int64(10000)),
+			v1.ValueOutput: v1.NewLiteral(int64(heavyElements)),
 		}}
 		refs[i] = `steps["` + id + `"].` + v1.ValueOutput
-		wantRunValues[i] = int64(10000)
+		wantRunValues[i] = int64(heavyElements)
 	}
 
 	return []Case{

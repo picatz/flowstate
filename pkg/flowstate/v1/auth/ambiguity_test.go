@@ -31,7 +31,7 @@ import (
 // starts.
 func tieredPolicy(issuerURL string) auth.Policy {
 	return auth.Policy{Issuers: []auth.TrustedIssuer{
-		{
+		{Actions: []string{},
 			Name:      "ci-main-only",
 			Issuer:    issuerURL,
 			Audiences: []string{"flowstate"},
@@ -42,7 +42,7 @@ func tieredPolicy(issuerURL string) auth.Policy {
 			Role:      "deployer",
 			Namespace: "acme",
 		},
-		{
+		{Actions: []string{},
 			Name:      "ci-other-branches",
 			Issuer:    issuerURL,
 			Audiences: []string{"flowstate"},
@@ -135,13 +135,13 @@ func TestVerifyRefusesEveryEntryThatMatchedAndAdmitsNoneOfThem(t *testing.T) {
 	issuer := newTestIssuer(t)
 
 	policy := auth.Policy{Issuers: []auth.TrustedIssuer{
-		{
+		{Actions: []string{},
 			Name: "team-a", Issuer: issuer.URL(), Audiences: []string{"flowstate"},
 			Require:   []auth.ClaimRule{auth.RequireClaim("repository", "picatz/flowstate")},
 			Role:      "deployer",
 			Namespace: "team-a",
 		},
-		{
+		{Actions: []string{},
 			Name: "team-b", Issuer: issuer.URL(), Audiences: []string{"flowstate"},
 			Require:   []auth.ClaimRule{auth.RequireClaim("repository", "picatz/flowstate")},
 			Role:      "viewer",
@@ -197,7 +197,7 @@ func TestVerifyStillRefusesWhenNoEntryMatches(t *testing.T) {
 func TestNoneOfRefusesAnExcludedValue(t *testing.T) {
 	issuer := newTestIssuer(t)
 
-	policy := auth.Policy{Issuers: []auth.TrustedIssuer{{
+	policy := auth.Policy{Issuers: []auth.TrustedIssuer{{Actions: []string{},
 		Name: "everyone-but-main", Issuer: issuer.URL(), Audiences: []string{"flowstate"},
 		Require: []auth.ClaimRule{
 			auth.RequireClaim("repository", "picatz/flowstate"),
@@ -246,7 +246,7 @@ func TestNoneOfRefusesAnExcludedValue(t *testing.T) {
 func TestNoneOfRefusesAnAbsentClaim(t *testing.T) {
 	issuer := newTestIssuer(t)
 
-	policy := auth.Policy{Issuers: []auth.TrustedIssuer{{
+	policy := auth.Policy{Issuers: []auth.TrustedIssuer{{Actions: []string{},
 		Name: "everyone-but-main", Issuer: issuer.URL(), Audiences: []string{"flowstate"},
 		Require: []auth.ClaimRule{
 			auth.RequireClaim("repository", "picatz/flowstate"),
@@ -292,7 +292,7 @@ func TestNoneOfRefusesAnAbsentClaim(t *testing.T) {
 func TestNoneOfRefusesAListCarryingAnExcludedElement(t *testing.T) {
 	issuer := newTestIssuer(t)
 
-	policy := auth.Policy{Issuers: []auth.TrustedIssuer{{
+	policy := auth.Policy{Issuers: []auth.TrustedIssuer{{Actions: []string{},
 		Name: "not-admins", Issuer: issuer.URL(), Audiences: []string{"flowstate"},
 		Require: []auth.ClaimRule{
 			auth.RequireClaimAnyOf("groups", "engineering", "support"),
@@ -335,7 +335,7 @@ func TestNoneOfRefusesAListCarryingAnExcludedElement(t *testing.T) {
 func TestAVerifierKeepsItsOwnExclusionsAfterTheCallerMutatesThePolicy(t *testing.T) {
 	issuer := newTestIssuer(t)
 
-	policy := auth.Policy{Issuers: []auth.TrustedIssuer{{
+	policy := auth.Policy{Issuers: []auth.TrustedIssuer{{Actions: []string{},
 		Name: "everyone-but-main", Issuer: issuer.URL(), Audiences: []string{"flowstate"},
 		Require: []auth.ClaimRule{
 			auth.RequireClaim("repository", "picatz/flowstate"),
@@ -378,7 +378,7 @@ func TestAVerifierKeepsItsOwnExclusionsAfterTheCallerMutatesThePolicy(t *testing
 // exists to stop a policy trusting all of GitHub Actions.
 func TestNoneOfIsNotAWayToPinAPublicMultiTenantIssuer(t *testing.T) {
 	entry := func(rules ...auth.ClaimRule) auth.Policy {
-		return auth.Policy{Issuers: []auth.TrustedIssuer{{
+		return auth.Policy{Issuers: []auth.TrustedIssuer{{Actions: []string{},
 			Name:      "github-actions",
 			Issuer:    "https://token.actions.githubusercontent.com",
 			Audiences: []string{"flowstate"},
@@ -431,7 +431,7 @@ func TestClaimRuleValidationRefusesRulesThatCannotBeMeant(t *testing.T) {
 		},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
-			policy := auth.Policy{Issuers: []auth.TrustedIssuer{{
+			policy := auth.Policy{Issuers: []auth.TrustedIssuer{{Actions: []string{},
 				Name: "corp", Issuer: "https://issuer.example", Audiences: []string{"flowstate"},
 				Require: []auth.ClaimRule{testCase.rule}, Namespace: "acme",
 			}}}
@@ -443,7 +443,7 @@ func TestClaimRuleValidationRefusesRulesThatCannotBeMeant(t *testing.T) {
 	}
 
 	// The control: the same entry with a rule that means something loads.
-	require.NoError(t, auth.Policy{Issuers: []auth.TrustedIssuer{{
+	require.NoError(t, auth.Policy{Issuers: []auth.TrustedIssuer{{Actions: []string{},
 		Name: "corp", Issuer: "https://issuer.example", Audiences: []string{"flowstate"},
 		Require: []auth.ClaimRule{{
 			Claim: "ref", AnyOf: []string{"refs/heads/dev"}, NoneOf: []string{"refs/heads/main"},
@@ -464,6 +464,7 @@ func TestNoneOfIsReachableFromAPolicyFile(t *testing.T) {
 	const document = `
 issuers:
   - name: ci-main-only
+    actions: []
     issuer: https://token.actions.githubusercontent.com
     audiences: [flowstate]
     role: deployer
@@ -474,6 +475,7 @@ issuers:
       - claim: ref
         any_of: [refs/heads/main]
   - name: ci-other-branches
+    actions: []
     issuer: https://token.actions.githubusercontent.com
     audiences: [flowstate]
     role: viewer
@@ -510,7 +512,7 @@ func TestAmbiguousIssuerErrorCarriesNothingFromTheCredential(t *testing.T) {
 	issuer := newTestIssuer(t)
 	claims := map[string]any{"repository": secretish}
 
-	narrow := auth.Policy{Issuers: []auth.TrustedIssuer{{
+	narrow := auth.Policy{Issuers: []auth.TrustedIssuer{{Actions: []string{},
 		Name: "only-this-repo", Issuer: issuer.URL(), Audiences: []string{"flowstate"},
 		Require: []auth.ClaimRule{auth.RequireClaim("repository", "picatz/flowstate")}, Namespace: "acme",
 	}}}
@@ -525,11 +527,11 @@ func TestAmbiguousIssuerErrorCarriesNothingFromTheCredential(t *testing.T) {
 		"a mismatch does report the value it saw, so the absence asserted below is a real absence")
 
 	overlapping := auth.Policy{Issuers: []auth.TrustedIssuer{
-		{
+		{Actions: []string{},
 			Name: "wide-one", Issuer: issuer.URL(), Audiences: []string{"flowstate"},
 			Require: []auth.ClaimRule{auth.RequireClaim("repository", secretish)}, Namespace: "acme",
 		},
-		{
+		{Actions: []string{},
 			Name: "wide-two", Issuer: issuer.URL(), Audiences: []string{"flowstate"},
 			Require: []auth.ClaimRule{auth.RequireClaim("repository", secretish)}, Namespace: "acme",
 		},
@@ -637,7 +639,7 @@ func TestAmbiguousIssuerErrorNamesPolicyRowsNotFilteredPositions(t *testing.T) {
 	t.Run("a bearer refusal past a leading mtls entry", func(t *testing.T) {
 		issuer := newTestIssuer(t)
 
-		overlapping := auth.TrustedIssuer{
+		overlapping := auth.TrustedIssuer{Actions: []string{},
 			Issuer: issuer.URL(), Audiences: []string{"flowstate"},
 			Require:   []auth.ClaimRule{auth.RequireClaim("repository", "picatz/flowstate")},
 			Namespace: "acme",
@@ -646,7 +648,7 @@ func TestAmbiguousIssuerErrorNamesPolicyRowsNotFilteredPositions(t *testing.T) {
 		first.Name, second.Name = "bearer-one", "bearer-two"
 
 		policy := auth.Policy{Issuers: []auth.TrustedIssuer{
-			{
+			{Actions: []string{},
 				Name: "mesh", Kind: auth.IssuerKindMTLS, Issuer: "flowstate:mtls/mesh",
 				ClientCAFile: caFile, SubjectFrom: auth.SubjectFromURISAN, Namespace: "acme",
 			},
@@ -674,7 +676,7 @@ func TestAmbiguousIssuerErrorNamesPolicyRowsNotFilteredPositions(t *testing.T) {
 	})
 
 	t.Run("a certificate refusal past a leading oidc entry", func(t *testing.T) {
-		mesh := auth.TrustedIssuer{
+		mesh := auth.TrustedIssuer{Actions: []string{},
 			Kind: auth.IssuerKindMTLS, Issuer: "flowstate:mtls/mesh",
 			ClientCAFile: caFile, SubjectFrom: auth.SubjectFromURISAN, Namespace: "acme",
 		}
@@ -682,7 +684,7 @@ func TestAmbiguousIssuerErrorNamesPolicyRowsNotFilteredPositions(t *testing.T) {
 		first.Name, second.Name = "mesh-one", "mesh-two"
 
 		policy := auth.Policy{Issuers: []auth.TrustedIssuer{
-			{
+			{Actions: []string{},
 				Name: "bearer", Issuer: "https://issuer.example", Audiences: []string{"flowstate"},
 				Require:   []auth.ClaimRule{auth.RequireClaim("repository", "picatz/flowstate")},
 				Namespace: "acme",
@@ -719,14 +721,14 @@ func TestVerifyPeerRefusesACertificateTwoEntriesAdmit(t *testing.T) {
 	caFile := ca.clientCAFile(t)
 
 	policy := auth.Policy{Issuers: []auth.TrustedIssuer{
-		{
+		{Actions: []string{},
 			Name: "mesh-runner", Kind: auth.IssuerKindMTLS, Issuer: "flowstate:mtls/mesh",
 			ClientCAFile: caFile, SubjectFrom: auth.SubjectFromURISAN,
 			Require:   []auth.ClaimRule{auth.RequireClaim("subject", "spiffe://example.org/ns/ci/sa/runner")},
 			Role:      "deployer",
 			Namespace: "acme",
 		},
-		{
+		{Actions: []string{},
 			Name: "mesh-any", Kind: auth.IssuerKindMTLS, Issuer: "flowstate:mtls/mesh",
 			ClientCAFile: caFile, SubjectFrom: auth.SubjectFromURISAN,
 			Role:      "viewer",
@@ -770,13 +772,13 @@ func TestVerifyPeerRefusesACertificateTwoSubjectFromsRead(t *testing.T) {
 	caFile := ca.clientCAFile(t)
 
 	policy := auth.Policy{Issuers: []auth.TrustedIssuer{
-		{
+		{Actions: []string{},
 			Name: "by-uri", Kind: auth.IssuerKindMTLS, Issuer: "flowstate:mtls/spiffe",
 			ClientCAFile: caFile, SubjectFrom: auth.SubjectFromURISAN,
 			Role:      "deployer",
 			Namespace: "acme",
 		},
-		{
+		{Actions: []string{},
 			Name: "by-dns", Kind: auth.IssuerKindMTLS, Issuer: "flowstate:mtls/legacy",
 			ClientCAFile: caFile, SubjectFrom: auth.SubjectFromDNSSAN,
 			Role:      "viewer",

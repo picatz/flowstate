@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -31,6 +32,15 @@ var referenceTime = time.Date(2026, time.July, 25, 12, 0, 0, 0, time.UTC)
 // not usable.
 func newVerifier(t *testing.T, policy auth.Policy, opts ...auth.Option) *auth.OIDCVerifier {
 	t.Helper()
+
+	// Most tests are about admission, not authority; an entry that names no
+	// actions is refused at load, so they grant none unless they list some.
+	policy.Issuers = slices.Clone(policy.Issuers)
+	for i := range policy.Issuers {
+		if policy.Issuers[i].Actions == nil {
+			policy.Issuers[i].Actions = []string{}
+		}
+	}
 
 	verifier, err := auth.NewOIDCVerifier(policy, append([]auth.Option{auth.WithEgressPolicy(authtest.EgressPolicy())}, opts...)...)
 	require.NoError(t, err)
@@ -69,7 +79,7 @@ func TestOIDCVerifierRejects(t *testing.T) {
 
 	verifier := newVerifier(t,
 		auth.Policy{
-			Issuers: []auth.TrustedIssuer{{
+			Issuers: []auth.TrustedIssuer{{Actions: []string{},
 				Name:      "test",
 				Issuer:    issuer.URL(),
 				Audiences: []string{"flowstate"},
@@ -564,7 +574,7 @@ func TestOIDCVerifierClockSkew(t *testing.T) {
 
 			verifier := newVerifier(t,
 				auth.Policy{
-					Issuers: []auth.TrustedIssuer{{
+					Issuers: []auth.TrustedIssuer{{Actions: []string{},
 						Name:      "test",
 						Issuer:    issuer.URL(),
 						Audiences: []string{"flowstate"},
@@ -601,7 +611,7 @@ func TestOIDCVerifierKeyRotation(t *testing.T) {
 
 	verifier := newVerifier(t,
 		auth.Policy{
-			Issuers: []auth.TrustedIssuer{{
+			Issuers: []auth.TrustedIssuer{{Actions: []string{},
 				Name:      "test",
 				Issuer:    issuer.URL(),
 				Audiences: []string{"flowstate"},
@@ -672,7 +682,7 @@ func TestOIDCVerifierRefetchRateLimit(t *testing.T) {
 
 	verifier := newVerifier(t,
 		auth.Policy{
-			Issuers: []auth.TrustedIssuer{{
+			Issuers: []auth.TrustedIssuer{{Actions: []string{},
 				Name:      "test",
 				Issuer:    issuer.URL(),
 				Audiences: []string{"flowstate"},
@@ -820,7 +830,7 @@ func TestOIDCVerifierIssuerUnavailable(t *testing.T) {
 
 			verifier := newVerifier(t,
 				auth.Policy{
-					Issuers: []auth.TrustedIssuer{{
+					Issuers: []auth.TrustedIssuer{{Actions: []string{},
 						Name:      "test",
 						Issuer:    issuer.URL(),
 						Audiences: []string{"flowstate"},
@@ -853,7 +863,7 @@ func TestOIDCVerifierPrime(t *testing.T) {
 
 	verifier := newVerifier(t,
 		auth.Policy{
-			Issuers: []auth.TrustedIssuer{{
+			Issuers: []auth.TrustedIssuer{{Actions: []string{},
 				Name:      "test",
 				Issuer:    issuer.URL(),
 				Audiences: []string{"flowstate"},
@@ -895,7 +905,7 @@ func TestOIDCVerifierPrime(t *testing.T) {
 // that label mints is not trusted.
 func TestOIDCVerifierIgnoresMTLSIssuers(t *testing.T) {
 	issuer := newTestIssuer(t)
-	verifier := newVerifier(t, auth.Policy{Issuers: []auth.TrustedIssuer{{
+	verifier := newVerifier(t, auth.Policy{Issuers: []auth.TrustedIssuer{{Actions: []string{},
 		Name:         "mesh",
 		Kind:         auth.IssuerKindMTLS,
 		Issuer:       issuer.URL(),
@@ -927,7 +937,7 @@ func TestOIDCVerifierConcurrent(t *testing.T) {
 
 	verifier := newVerifier(t,
 		auth.Policy{
-			Issuers: []auth.TrustedIssuer{{
+			Issuers: []auth.TrustedIssuer{{Actions: []string{},
 				Name:      "test",
 				Issuer:    issuer.URL(),
 				Audiences: []string{"flowstate"},
@@ -974,7 +984,7 @@ func TestOIDCVerifierStaticJWKSURL(t *testing.T) {
 
 	verifier := newVerifier(t,
 		auth.Policy{
-			Issuers: []auth.TrustedIssuer{{
+			Issuers: []auth.TrustedIssuer{{Actions: []string{},
 				Name:      "test",
 				Issuer:    issuer.URL(),
 				Audiences: []string{"flowstate"},
@@ -1007,7 +1017,7 @@ func TestOIDCVerifierJWKSFileNeedsNoNetworkAndDoesNotReloadPerRequest(t *testing
 	require.NoError(t, os.WriteFile(path, document, 0o600))
 
 	verifier := newVerifierWithClient(t,
-		auth.Policy{Issuers: []auth.TrustedIssuer{{
+		auth.Policy{Issuers: []auth.TrustedIssuer{{Actions: []string{},
 			Name:      "offline",
 			Issuer:    issuer.URL(),
 			Audiences: []string{"flowstate"},
@@ -1042,7 +1052,7 @@ func TestOIDCVerifierRefusesInvalidOrOversizedJWKSFileAtStartup(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "issuer.jwks")
 		require.NoError(t, os.WriteFile(path, data, 0o600))
 
-		_, err := auth.NewOIDCVerifier(auth.Policy{Issuers: []auth.TrustedIssuer{{
+		_, err := auth.NewOIDCVerifier(auth.Policy{Issuers: []auth.TrustedIssuer{{Actions: []string{},
 			Name:      "offline",
 			Issuer:    "https://issuer.example.com",
 			Audiences: []string{"flowstate"},
@@ -1065,7 +1075,7 @@ func TestOIDCVerifierRefusesInvalidOrOversizedJWKSFileAtStartup(t *testing.T) {
 	})
 
 	t.Run("not a regular file", func(t *testing.T) {
-		_, err := auth.NewOIDCVerifier(auth.Policy{Issuers: []auth.TrustedIssuer{{
+		_, err := auth.NewOIDCVerifier(auth.Policy{Issuers: []auth.TrustedIssuer{{Actions: []string{},
 			Name:      "offline",
 			Issuer:    "https://issuer.example.com",
 			Audiences: []string{"flowstate"},
@@ -1088,7 +1098,7 @@ func TestOIDCVerifierAmbiguousKey(t *testing.T) {
 
 	verifier := newVerifier(t,
 		auth.Policy{
-			Issuers: []auth.TrustedIssuer{{
+			Issuers: []auth.TrustedIssuer{{Actions: []string{},
 				Name:      "test",
 				Issuer:    issuer.URL(),
 				Audiences: []string{"flowstate"},
@@ -1126,14 +1136,14 @@ func TestOIDCVerifierPerIssuerAlgorithms(t *testing.T) {
 	verifier := newVerifier(t,
 		auth.Policy{
 			Issuers: []auth.TrustedIssuer{
-				{
+				{Actions: []string{},
 					Name:       "rsa-only",
 					Issuer:     issuer.URL(),
 					Audiences:  []string{"flowstate"},
 					Algorithms: []jwa.Algorithm{jwa.RS256},
 					Role:       "rsa-caller",
 				},
-				{
+				{Actions: []string{},
 					Name:       "ec-only",
 					Issuer:     issuer.URL(),
 					Audiences:  []string{"flowstate"},
@@ -1171,7 +1181,7 @@ func TestOIDCVerifierDeclaredAlgorithmMismatch(t *testing.T) {
 
 	verifier := newVerifier(t,
 		auth.Policy{
-			Issuers: []auth.TrustedIssuer{{
+			Issuers: []auth.TrustedIssuer{{Actions: []string{},
 				Name:      "test",
 				Issuer:    issuer.URL(),
 				Audiences: []string{"flowstate"},
@@ -1193,7 +1203,7 @@ func TestOIDCVerifierDeclaredAlgorithmMismatch(t *testing.T) {
 // TestNewOIDCVerifierRejectsBadConfiguration checks that unusable configuration
 // is reported when the verifier is built, not when a request arrives.
 func TestNewOIDCVerifierRejectsBadConfiguration(t *testing.T) {
-	validIssuer := auth.TrustedIssuer{
+	validIssuer := auth.TrustedIssuer{Actions: []string{},
 		Name:      "test",
 		Issuer:    "https://issuer.example.com",
 		Audiences: []string{"flowstate"},
@@ -1210,14 +1220,14 @@ func TestNewOIDCVerifierRejectsBadConfiguration(t *testing.T) {
 		},
 		{
 			name: "issuer name too long for exact audit provenance",
-			policy: auth.Policy{Issuers: []auth.TrustedIssuer{{
+			policy: auth.Policy{Issuers: []auth.TrustedIssuer{{Actions: []string{},
 				Name:   strings.Repeat("n", auth.MaxPolicyProvenanceBytes+1),
 				Issuer: validIssuer.Issuer, Audiences: validIssuer.Audiences,
 			}}},
 		},
 		{
 			name: "role too long for exact audit provenance",
-			policy: auth.Policy{Issuers: []auth.TrustedIssuer{{
+			policy: auth.Policy{Issuers: []auth.TrustedIssuer{{Actions: []string{},
 				Name: validIssuer.Name, Issuer: validIssuer.Issuer, Audiences: validIssuer.Audiences,
 				Role: strings.Repeat("r", auth.MaxPolicyProvenanceBytes+1),
 			}}},
@@ -1289,7 +1299,7 @@ func TestOIDCVerifierFetchTimeout(t *testing.T) {
 
 	verifier := newVerifier(t,
 		auth.Policy{
-			Issuers: []auth.TrustedIssuer{{
+			Issuers: []auth.TrustedIssuer{{Actions: []string{},
 				Name:      "test",
 				Issuer:    issuer.URL(),
 				Audiences: []string{"flowstate"},
@@ -1316,7 +1326,7 @@ func TestOIDCVerifierErrorDetail(t *testing.T) {
 
 	verifier := newVerifier(t,
 		auth.Policy{
-			Issuers: []auth.TrustedIssuer{{
+			Issuers: []auth.TrustedIssuer{{Actions: []string{},
 				Name:      "test",
 				Issuer:    issuer.URL(),
 				Audiences: []string{"flowstate"},

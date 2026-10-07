@@ -223,7 +223,6 @@ func TestGetGateAdvisesNoWhereSignalWillRefuseTheDebugChannel(t *testing.T) {
 	}{
 		"signal only":      {actions: []string{"workload.signal"}},
 		"signal and debug": {actions: []string{"workload.signal", "workload.debug"}, may: true},
-		"legacy, no list":  {actions: nil, may: true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()

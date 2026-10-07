@@ -1704,12 +1704,12 @@ var File_github_v1_github_proto protoreflect.FileDescriptor
 
 const file_github_v1_github_proto_rawDesc = "" +
 	"\n" +
-	"\x16github/v1/github.proto\x12\tgithub.v1\x1a\x18flowstate/v1/value.proto\x1a$google/api/expr/v1alpha1/value.proto\"\x9e\x01\n" +
+	"\x16github/v1/github.proto\x12\tgithub.v1\x1a\x19flowstate/v1/schema.proto\x1a\x18flowstate/v1/value.proto\x1a$google/api/expr/v1alpha1/value.proto\"\xa6\x01\n" +
 	"\x14PullRequestGetInputs\x12\x14\n" +
 	"\x05owner\x18\x01 \x01(\tR\x05owner\x12\x12\n" +
 	"\x04repo\x18\x02 \x01(\tR\x04repo\x12\x16\n" +
-	"\x06number\x18\x03 \x01(\x03R\x06number\x12)\n" +
-	"\x05token\x18\x04 \x01(\v2\x13.flowstate.v1.ValueR\x05token\x12\x19\n" +
+	"\x06number\x18\x03 \x01(\x03R\x06number\x121\n" +
+	"\x05token\x18\x04 \x01(\v2\x13.flowstate.v1.ValueB\x06\x8a\xb5\x18\x02\b\x02R\x05token\x12\x19\n" +
 	"\bbase_url\x18\x05 \x01(\tR\abaseUrl\"\x84\x02\n" +
 	"\x15PullRequestGetOutputs\x12\x14\n" +
 	"\x05title\x18\x01 \x01(\tR\x05title\x12\x12\n" +
@@ -1720,20 +1720,20 @@ const file_github_v1_github_proto_rawDesc = "" +
 	"\bhead_ref\x18\x06 \x01(\tR\aheadRef\x12\x19\n" +
 	"\bhead_sha\x18\a \x01(\tR\aheadSha\x12\x19\n" +
 	"\bbase_ref\x18\b \x01(\tR\abaseRef\x12\x19\n" +
-	"\bhtml_url\x18\t \x01(\tR\ahtmlUrl\"\xb0\x01\n" +
+	"\bhtml_url\x18\t \x01(\tR\ahtmlUrl\"\xb8\x01\n" +
 	"\x12IssueCommentInputs\x12\x14\n" +
 	"\x05owner\x18\x01 \x01(\tR\x05owner\x12\x12\n" +
 	"\x04repo\x18\x02 \x01(\tR\x04repo\x12\x16\n" +
 	"\x06number\x18\x03 \x01(\x03R\x06number\x12\x12\n" +
-	"\x04body\x18\x04 \x01(\tR\x04body\x12)\n" +
-	"\x05token\x18\x05 \x01(\v2\x13.flowstate.v1.ValueR\x05token\x12\x19\n" +
+	"\x04body\x18\x04 \x01(\tR\x04body\x121\n" +
+	"\x05token\x18\x05 \x01(\v2\x13.flowstate.v1.ValueB\x06\x8a\xb5\x18\x02\b\x02R\x05token\x12\x19\n" +
 	"\bbase_url\x18\x06 \x01(\tR\abaseUrl\"n\n" +
 	"\x13IssueCommentOutputs\x12\x1d\n" +
 	"\n" +
 	"comment_id\x18\x01 \x01(\x03R\tcommentId\x12\x19\n" +
 	"\bhtml_url\x18\x02 \x01(\tR\ahtmlUrl\x12\x1d\n" +
 	"\n" +
-	"created_at\x18\x03 \x01(\tR\tcreatedAt\"\xb0\x02\n" +
+	"created_at\x18\x03 \x01(\tR\tcreatedAt\"\xb8\x02\n" +
 	"\x15PullRequestListInputs\x12\x14\n" +
 	"\x05owner\x18\x01 \x01(\tR\x05owner\x12\x12\n" +
 	"\x04repo\x18\x02 \x01(\tR\x04repo\x12\x14\n" +
@@ -1741,8 +1741,8 @@ const file_github_v1_github_proto_rawDesc = "" +
 	"\x04base\x18\x04 \x01(\tR\x04base\x12\x12\n" +
 	"\x04head\x18\x05 \x01(\tR\x04head\x12\x1f\n" +
 	"\vmax_results\x18\x06 \x01(\x05R\n" +
-	"maxResults\x12)\n" +
-	"\x05token\x18\a \x01(\v2\x13.flowstate.v1.ValueR\x05token\x12\x19\n" +
+	"maxResults\x121\n" +
+	"\x05token\x18\a \x01(\v2\x13.flowstate.v1.ValueB\x06\x8a\xb5\x18\x02\b\x02R\x05token\x12\x19\n" +
 	"\bbase_url\x18\b \x01(\tR\abaseUrl\x12\x12\n" +
 	"\x04sort\x18\t \x01(\tR\x04sort\x12\x1c\n" +
 	"\tdirection\x18\n" +
@@ -1766,14 +1766,14 @@ const file_github_v1_github_proto_rawDesc = "" +
 	"\rpull_requests\x18\x01 \x03(\v2\x1f.google.api.expr.v1alpha1.ValueR\fpullRequests\x12\x1c\n" +
 	"\ttruncated\x18\x02 \x01(\bR\ttruncated\x12\x1f\n" +
 	"\vnext_cursor\x18\x03 \x01(\tR\n" +
-	"nextCursor\"\xd9\x01\n" +
+	"nextCursor\"\xe1\x01\n" +
 	"\x16PullRequestFilesInputs\x12\x14\n" +
 	"\x05owner\x18\x01 \x01(\tR\x05owner\x12\x12\n" +
 	"\x04repo\x18\x02 \x01(\tR\x04repo\x12\x16\n" +
 	"\x06number\x18\x03 \x01(\x03R\x06number\x12\x1f\n" +
 	"\vmax_results\x18\x04 \x01(\x05R\n" +
-	"maxResults\x12)\n" +
-	"\x05token\x18\x05 \x01(\v2\x13.flowstate.v1.ValueR\x05token\x12\x19\n" +
+	"maxResults\x121\n" +
+	"\x05token\x18\x05 \x01(\v2\x13.flowstate.v1.ValueB\x06\x8a\xb5\x18\x02\b\x02R\x05token\x12\x19\n" +
 	"\bbase_url\x18\x06 \x01(\tR\abaseUrl\x12\x16\n" +
 	"\x06cursor\x18\a \x01(\tR\x06cursor\"\xc8\x01\n" +
 	"\x0fPullRequestFile\x12\x1a\n" +
@@ -1787,12 +1787,12 @@ const file_github_v1_github_proto_rawDesc = "" +
 	"\x05files\x18\x01 \x03(\v2\x1f.google.api.expr.v1alpha1.ValueR\x05files\x12\x1c\n" +
 	"\ttruncated\x18\x02 \x01(\bR\ttruncated\x12\x1f\n" +
 	"\vnext_cursor\x18\x03 \x01(\tR\n" +
-	"nextCursor\"\x98\x01\n" +
+	"nextCursor\"\xa0\x01\n" +
 	"\x0eIssueGetInputs\x12\x14\n" +
 	"\x05owner\x18\x01 \x01(\tR\x05owner\x12\x12\n" +
 	"\x04repo\x18\x02 \x01(\tR\x04repo\x12\x16\n" +
-	"\x06number\x18\x03 \x01(\x03R\x06number\x12)\n" +
-	"\x05token\x18\x04 \x01(\v2\x13.flowstate.v1.ValueR\x05token\x12\x19\n" +
+	"\x06number\x18\x03 \x01(\x03R\x06number\x121\n" +
+	"\x05token\x18\x04 \x01(\v2\x13.flowstate.v1.ValueB\x06\x8a\xb5\x18\x02\b\x02R\x05token\x12\x19\n" +
 	"\bbase_url\x18\x05 \x01(\tR\abaseUrl\"\xc6\x02\n" +
 	"\x0fIssueGetOutputs\x12\x14\n" +
 	"\x05title\x18\x01 \x01(\tR\x05title\x12\x12\n" +
@@ -1808,7 +1808,7 @@ const file_github_v1_github_proto_rawDesc = "" +
 	"updated_at\x18\t \x01(\tR\tupdatedAt\x12\x1b\n" +
 	"\tclosed_at\x18\n" +
 	" \x01(\tR\bclosedAt\x12&\n" +
-	"\x0fis_pull_request\x18\v \x01(\bR\risPullRequest\"\xb0\x02\n" +
+	"\x0fis_pull_request\x18\v \x01(\bR\risPullRequest\"\xb8\x02\n" +
 	"\x0fIssueListInputs\x12\x14\n" +
 	"\x05owner\x18\x01 \x01(\tR\x05owner\x12\x12\n" +
 	"\x04repo\x18\x02 \x01(\tR\x04repo\x12\x14\n" +
@@ -1816,8 +1816,8 @@ const file_github_v1_github_proto_rawDesc = "" +
 	"\x06labels\x18\x04 \x03(\tR\x06labels\x12\x14\n" +
 	"\x05since\x18\x05 \x01(\tR\x05since\x12\x1f\n" +
 	"\vmax_results\x18\x06 \x01(\x05R\n" +
-	"maxResults\x12)\n" +
-	"\x05token\x18\a \x01(\v2\x13.flowstate.v1.ValueR\x05token\x12\x19\n" +
+	"maxResults\x121\n" +
+	"\x05token\x18\a \x01(\v2\x13.flowstate.v1.ValueB\x06\x8a\xb5\x18\x02\b\x02R\x05token\x12\x19\n" +
 	"\bbase_url\x18\b \x01(\tR\abaseUrl\x12\x12\n" +
 	"\x04sort\x18\t \x01(\tR\x04sort\x12\x1c\n" +
 	"\tdirection\x18\n" +

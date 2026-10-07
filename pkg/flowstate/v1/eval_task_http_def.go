@@ -124,6 +124,18 @@ func DefaultEgressPolicy() *netpolicy.Policy {
 	return defaultEgressPolicy()
 }
 
+// httpNestedSecretInputs reads the http task's nested secret claims from its
+// input descriptor once. The descriptor is compiled in, so an error is a build
+// defect. The task declares no whole-value secret input: its credentials are
+// authority inputs.
+var httpNestedSecretInputs = sync.OnceValue(func() []string {
+	_, _, nested, err := SecretInputClaims((&Task_HTTP_Inputs{}).ProtoReflect().Descriptor())
+	if err != nil {
+		panic("http task input secret claims: " + err.Error())
+	}
+	return nested
+})
+
 // HTTPTaskDef returns the http task definition enforcing the given egress policy.
 //
 // Registering the result replaces the built-in http task, which is how a
@@ -170,7 +182,10 @@ func HTTPTaskDef(policy *netpolicy.Policy) TaskDef {
 		// credential that reaches one is a credential published, so the position
 		// stays refused both here and, for a specification that never met this
 		// compiler, in `valueToQueryString`.
-		NestedSecretInputs: []string{"form", "headers", "json"},
+		//
+		// Declared on the input message with the `input` option, and read from
+		// its descriptor here, so the list cannot drift from the schema.
+		NestedSecretInputs: slices.Clone(httpNestedSecretInputs()),
 		// Takes no policy, deliberately. What it answers is what the *task* can
 		// request, which is the same in every deployment — see the file it lives
 		// in for why asking the policy instead would put DNS in an editor and

@@ -46,7 +46,7 @@ func TestMultiTenantIssuerRefusedWithoutPinning(t *testing.T) {
 
 	for _, known := range knownMultiTenantIssuers {
 		t.Run(known.platform, func(t *testing.T) {
-			policy := auth.Policy{Issuers: []auth.TrustedIssuer{{
+			policy := auth.Policy{Issuers: []auth.TrustedIssuer{{Actions: []string{},
 				Name:      "ci",
 				Issuer:    known.issuer,
 				Audiences: []string{"flowstate"},
@@ -81,7 +81,7 @@ func TestMultiTenantIssuerAcceptedWhenPinned(t *testing.T) {
 	const issuer = "https://token.actions.githubusercontent.com"
 
 	t.Run("a require rule narrows who is admitted", func(t *testing.T) {
-		policy := auth.Policy{Issuers: []auth.TrustedIssuer{{
+		policy := auth.Policy{Issuers: []auth.TrustedIssuer{{Actions: []string{},
 			Name:      "github-actions",
 			Issuer:    issuer,
 			Audiences: []string{"flowstate"},
@@ -96,7 +96,7 @@ func TestMultiTenantIssuerAcceptedWhenPinned(t *testing.T) {
 		// token for, but read the tenant off a claim the issuer signed, so no
 		// two accounts share a namespace. This is what
 		// examples/operations/tenant-routing/trust.yaml does.
-		policy := auth.Policy{Issuers: []auth.TrustedIssuer{{
+		policy := auth.Policy{Issuers: []auth.TrustedIssuer{{Actions: []string{},
 			Name:           "github-actions",
 			Issuer:         issuer,
 			Audiences:      []string{"flowstate"},
@@ -112,7 +112,7 @@ func TestMultiTenantIssuerAcceptedWhenPinned(t *testing.T) {
 		// workflow on GitHub lands in that one tenant together. This is the
 		// case most likely to look pinned to a reader, which is why it has its
 		// own test rather than a line in a table.
-		policy := auth.Policy{Issuers: []auth.TrustedIssuer{{
+		policy := auth.Policy{Issuers: []auth.TrustedIssuer{{Actions: []string{},
 			Name:      "github-actions",
 			Issuer:    issuer,
 			Audiences: []string{"flowstate"},
@@ -142,7 +142,7 @@ func TestMultiTenantPinningIgnoresRequesterChosenClaims(t *testing.T) {
 	const issuer = "https://token.actions.githubusercontent.com"
 
 	t.Run("an audience rule is not pinning", func(t *testing.T) {
-		policy := auth.Policy{Issuers: []auth.TrustedIssuer{{
+		policy := auth.Policy{Issuers: []auth.TrustedIssuer{{Actions: []string{},
 			Name:      "github-actions",
 			Issuer:    issuer,
 			Audiences: []string{"flowstate"},
@@ -173,7 +173,7 @@ func TestMultiTenantPinningIgnoresRequesterChosenClaims(t *testing.T) {
 		// Not forbidden, just not sufficient. An operator may legitimately
 		// layer an audience rule, and a check that refused the combination
 		// would be punishing defence in depth.
-		policy := auth.Policy{Issuers: []auth.TrustedIssuer{{
+		policy := auth.Policy{Issuers: []auth.TrustedIssuer{{Actions: []string{},
 			Name:      "github-actions",
 			Issuer:    issuer,
 			Audiences: []string{"flowstate"},
@@ -190,7 +190,7 @@ func TestMultiTenantPinningIgnoresRequesterChosenClaims(t *testing.T) {
 		// The narrowing rule is scoped to the known multi-tenant hosts. On a
 		// single-tenant IdP an audience rule is an ordinary thing to write and
 		// nothing here should have an opinion about it.
-		policy := auth.Policy{Issuers: []auth.TrustedIssuer{{
+		policy := auth.Policy{Issuers: []auth.TrustedIssuer{{Actions: []string{},
 			Name:      "idp",
 			Issuer:    "https://login.corp.example.com/oauth2/default",
 			Audiences: []string{"flowstate"},
@@ -218,7 +218,7 @@ func TestMultiTenantNamespaceClaimRefusesRequesterChosenClaims(t *testing.T) {
 	const issuer = "https://token.actions.githubusercontent.com"
 
 	t.Run("alone", func(t *testing.T) {
-		policy := auth.Policy{Issuers: []auth.TrustedIssuer{{
+		policy := auth.Policy{Issuers: []auth.TrustedIssuer{{Actions: []string{},
 			Name:           "github-actions",
 			Issuer:         issuer,
 			Audiences:      []string{"flowstate"},
@@ -232,7 +232,7 @@ func TestMultiTenantNamespaceClaimRefusesRequesterChosenClaims(t *testing.T) {
 	})
 
 	t.Run("even beside a require rule that does narrow who", func(t *testing.T) {
-		policy := auth.Policy{Issuers: []auth.TrustedIssuer{{
+		policy := auth.Policy{Issuers: []auth.TrustedIssuer{{Actions: []string{},
 			Name:           "github-actions",
 			Issuer:         issuer,
 			Audiences:      []string{"flowstate"},
@@ -246,7 +246,7 @@ func TestMultiTenantNamespaceClaimRefusesRequesterChosenClaims(t *testing.T) {
 	})
 
 	t.Run("a claim the platform assigns is what it asks for", func(t *testing.T) {
-		policy := auth.Policy{Issuers: []auth.TrustedIssuer{{
+		policy := auth.Policy{Issuers: []auth.TrustedIssuer{{Actions: []string{},
 			Name:           "github-actions",
 			Issuer:         issuer,
 			Audiences:      []string{"flowstate"},
@@ -283,7 +283,7 @@ func TestMultiTenantCheckLeavesOtherIssuersAlone(t *testing.T) {
 
 	for _, entry := range unaffected {
 		t.Run(entry.name, func(t *testing.T) {
-			policy := auth.Policy{Issuers: []auth.TrustedIssuer{{
+			policy := auth.Policy{Issuers: []auth.TrustedIssuer{{Actions: []string{},
 				Name:      "idp",
 				Issuer:    entry.issuer,
 				Audiences: []string{"flowstate"},
@@ -313,7 +313,7 @@ func TestMultiTenantIssuerMatchedRegardlessOfSpelling(t *testing.T) {
 
 	for _, spelling := range spellings {
 		t.Run(spelling.name, func(t *testing.T) {
-			policy := auth.Policy{Issuers: []auth.TrustedIssuer{{
+			policy := auth.Policy{Issuers: []auth.TrustedIssuer{{Actions: []string{},
 				Name:      "github-actions",
 				Issuer:    spelling.issuer,
 				Audiences: []string{"flowstate"},
@@ -335,6 +335,7 @@ func TestMultiTenantIssuerRefusedThroughParsePolicy(t *testing.T) {
 	unpinned := []byte(`
 issuers:
   - name: github-actions
+    actions: []
     issuer: https://token.actions.githubusercontent.com
     audiences: [flowstate]
     algorithms: [RS256]
@@ -352,6 +353,7 @@ issuers:
 	pinned := []byte(`
 issuers:
   - name: github-actions
+    actions: []
     issuer: https://token.actions.githubusercontent.com
     audiences: [flowstate]
     algorithms: [RS256]

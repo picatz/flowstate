@@ -47,7 +47,7 @@ func TestIdentityFetchesAreRefusedToInternalAddresses(t *testing.T) {
 			t.Parallel()
 
 			verifier, err := auth.NewOIDCVerifier(auth.Policy{
-				Issuers: []auth.TrustedIssuer{{
+				Issuers: []auth.TrustedIssuer{{Actions: []string{},
 					Name:      "internal",
 					Issuer:    "https://" + address,
 					Audiences: []string{"flowstate"},
@@ -135,7 +135,7 @@ func TestAPrivateIssuerIsReachedByANamedOptionAndNotByDisablingTheBoundary(t *te
 	)
 
 	policy := auth.Policy{
-		Issuers: []auth.TrustedIssuer{{
+		Issuers: []auth.TrustedIssuer{{Actions: []string{},
 			Name:      "internal",
 			Issuer:    issuer.URL(),
 			Audiences: []string{"flowstate"},
@@ -175,7 +175,7 @@ func TestPolicyBlockedFetchReportsBlockedNotUnavailable(t *testing.T) {
 	)
 
 	policy := auth.Policy{
-		Issuers: []auth.TrustedIssuer{{
+		Issuers: []auth.TrustedIssuer{{Actions: []string{},
 			Name:      "internal",
 			Issuer:    issuer.URL(),
 			Audiences: []string{"flowstate"},
@@ -220,6 +220,7 @@ func TestTrustPolicyEgressSectionReachesTheSameBoundary(t *testing.T) {
 	policy, err := auth.ParsePolicy([]byte(fmt.Sprintf(`
 issuers:
   - name: internal
+    actions: []
     issuer: %s
     audiences: [flowstate]
 egress:
@@ -249,6 +250,7 @@ func TestTrustPolicyEgressSectionIsCompiledWhenTheFileLoads(t *testing.T) {
 	_, err := auth.ParsePolicy([]byte(`
 issuers:
   - name: ci
+    actions: []
     issuer: https://issuer.example.com
     audiences: [flowstate]
 egress:
@@ -261,7 +263,7 @@ egress:
 	// And a policy built in Go rather than read from a file meets the same
 	// refusal, at the verifier rather than at the first fetch.
 	verifier, err := auth.NewOIDCVerifier(auth.Policy{
-		Issuers: []auth.TrustedIssuer{{
+		Issuers: []auth.TrustedIssuer{{Actions: []string{},
 			Name:      "ci",
 			Issuer:    "https://issuer.example.com",
 			Audiences: []string{"flowstate"},
@@ -281,7 +283,7 @@ func TestAClientAndAnEgressPolicyCannotBothBeConfigured(t *testing.T) {
 	t.Parallel()
 
 	policy := auth.Policy{
-		Issuers: []auth.TrustedIssuer{{
+		Issuers: []auth.TrustedIssuer{{Actions: []string{},
 			Name:      "ci",
 			Issuer:    "https://issuer.example.com",
 			Audiences: []string{"flowstate"},

@@ -573,12 +573,12 @@ var File_oci_v1_oci_proto protoreflect.FileDescriptor
 
 const file_oci_v1_oci_proto_rawDesc = "" +
 	"\n" +
-	"\x10oci/v1/oci.proto\x12\x06oci.v1\x1a\x18flowstate/v1/value.proto\x1a$google/api/expr/v1alpha1/value.proto\"\x96\x01\n" +
+	"\x10oci/v1/oci.proto\x12\x06oci.v1\x1a\x19flowstate/v1/schema.proto\x1a\x18flowstate/v1/value.proto\x1a$google/api/expr/v1alpha1/value.proto\"\x9e\x01\n" +
 	"\rResolveInputs\x12\x1c\n" +
 	"\treference\x18\x01 \x01(\tR\treference\x12\x1a\n" +
 	"\bplatform\x18\x02 \x01(\tR\bplatform\x12\x1a\n" +
-	"\busername\x18\x03 \x01(\tR\busername\x12/\n" +
-	"\bpassword\x18\x04 \x01(\v2\x13.flowstate.v1.ValueR\bpassword\"\xfc\x01\n" +
+	"\busername\x18\x03 \x01(\tR\busername\x127\n" +
+	"\bpassword\x18\x04 \x01(\v2\x13.flowstate.v1.ValueB\x06\x8a\xb5\x18\x02\b\x02R\bpassword\"\xfc\x01\n" +
 	"\x0eResolveOutputs\x12\x1c\n" +
 	"\treference\x18\x01 \x01(\tR\treference\x12\x16\n" +
 	"\x06digest\x18\x02 \x01(\tR\x06digest\x12\x1d\n" +
@@ -590,25 +590,25 @@ const file_oci_v1_oci_proto_rawDesc = "" +
 	"repository\x18\x06 \x01(\tR\n" +
 	"repository\x12\x1a\n" +
 	"\bplatform\x18\a \x01(\tR\bplatform\x12)\n" +
-	"\x10platform_matched\x18\b \x01(\bR\x0fplatformMatched\"\xb7\x01\n" +
+	"\x10platform_matched\x18\b \x01(\bR\x0fplatformMatched\"\xbf\x01\n" +
 	"\x0fReferrersInputs\x12\x1c\n" +
 	"\treference\x18\x01 \x01(\tR\treference\x12#\n" +
 	"\rartifact_type\x18\x02 \x01(\tR\fartifactType\x12\x14\n" +
 	"\x05limit\x18\x03 \x01(\x05R\x05limit\x12\x1a\n" +
-	"\busername\x18\x04 \x01(\tR\busername\x12/\n" +
-	"\bpassword\x18\x05 \x01(\v2\x13.flowstate.v1.ValueR\bpassword\"\x85\x01\n" +
+	"\busername\x18\x04 \x01(\tR\busername\x127\n" +
+	"\bpassword\x18\x05 \x01(\v2\x13.flowstate.v1.ValueB\x06\x8a\xb5\x18\x02\b\x02R\bpassword\"\x85\x01\n" +
 	"\x10ReferrersOutputs\x12=\n" +
 	"\treferrers\x18\x01 \x03(\v2\x1f.google.api.expr.v1alpha1.ValueR\treferrers\x12\x14\n" +
 	"\x05count\x18\x02 \x01(\x03R\x05count\x12\x1c\n" +
-	"\ttruncated\x18\x03 \x01(\bR\ttruncated\"\xb3\x01\n" +
+	"\ttruncated\x18\x03 \x01(\bR\ttruncated\"\xbb\x01\n" +
 	"\n" +
 	"BlobInputs\x12\x1c\n" +
 	"\treference\x18\x01 \x01(\tR\treference\x12\x1b\n" +
 	"\tmax_bytes\x18\x02 \x01(\x03R\bmaxBytes\x12\x1d\n" +
 	"\n" +
 	"parse_json\x18\x03 \x01(\bR\tparseJson\x12\x1a\n" +
-	"\busername\x18\x04 \x01(\tR\busername\x12/\n" +
-	"\bpassword\x18\x05 \x01(\v2\x13.flowstate.v1.ValueR\bpassword\"\xa7\x01\n" +
+	"\busername\x18\x04 \x01(\tR\busername\x127\n" +
+	"\bpassword\x18\x05 \x01(\v2\x13.flowstate.v1.ValueB\x06\x8a\xb5\x18\x02\b\x02R\bpassword\"\xa7\x01\n" +
 	"\vBlobOutputs\x12\x16\n" +
 	"\x06digest\x18\x01 \x01(\tR\x06digest\x12\x12\n" +
 	"\x04size\x18\x02 \x01(\x03R\x04size\x12\x18\n" +

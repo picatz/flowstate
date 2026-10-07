@@ -1161,9 +1161,9 @@ func (s *FlowstateServer) ListGates(ctx context.Context, req *connect.Request[v1
 }
 
 // holdsAction reports whether the caller holds action, the way
-// [FlowstateServer.authorizeAction] decides it: a caller with no principal or
-// no action list keeps the legacy posture and holds every action, and one with a
-// list holds what the list names. Asked, unlike authorizeAction, without
+// [FlowstateServer.authorizeAction] decides it: a caller holds what its issuer
+// entry's list names, and only a context with no authentication holds every
+// action. Asked, unlike authorizeAction, without
 // refusing or recording anything, for a decision about what to show.
 func holdsAction(ctx context.Context, action v1.AuthorizationAction) bool {
 	return authz.Decide(ctx, action, authz.Implied).Allowed

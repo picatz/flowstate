@@ -145,7 +145,7 @@ func TestAuthenticator(t *testing.T) {
 
 	verifier := newVerifier(t,
 		auth.Policy{
-			Issuers: []auth.TrustedIssuer{{
+			Issuers: []auth.TrustedIssuer{{Actions: []string{},
 				Name:      "idp",
 				Issuer:    issuer.URL(),
 				Audiences: []string{"flowstate"},
@@ -386,7 +386,7 @@ func TestAuthenticatorWithUnavailableIssuer(t *testing.T) {
 
 	verifier := newVerifier(t,
 		auth.Policy{
-			Issuers: []auth.TrustedIssuer{{
+			Issuers: []auth.TrustedIssuer{{Actions: []string{},
 				Name:      "idp",
 				Issuer:    issuer.URL(),
 				Audiences: []string{"flowstate"},

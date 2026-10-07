@@ -4,6 +4,7 @@ package git.v1;
 
 option go_package = "github.com/picatz/flowstate/plugins/git/gen/git/v1;gitv1";
 
+import "flowstate/v1/schema.proto";
 import "flowstate/v1/value.proto";
 
 // This plugin's own task schema: the rich, unapologetically git-specific
@@ -33,7 +34,7 @@ message LsRemoteInputs {
 
   // Token is a secret reference for HTTPS authentication, resolved inside
   // this task and never logged. A literal string here is refused.
-  flowstate.v1.Value token = 3;
+  flowstate.v1.Value token = 3 [(flowstate.v1.input).secret = SECRET_REQUIRED];
 
   // Username is the HTTP Basic-auth username paired with token. Empty means
   // this task's own default, "x-access-token" - the literal every version
@@ -145,7 +146,7 @@ message CommitPushInputs {
   // Token is a secret reference for HTTPS authentication, resolved inside
   // this task and never logged, and never carried in url itself. A literal
   // string here is refused.
-  flowstate.v1.Value token = 10;
+  flowstate.v1.Value token = 10 [(flowstate.v1.input).secret = SECRET_REQUIRED];
 
   // Username is the HTTP Basic-auth username paired with token - see
   // LsRemoteInputs.username for the full doc comment; the same default
@@ -235,7 +236,7 @@ message LogInputs {
   // Token is a secret reference for HTTPS authentication against a private
   // repository, resolved inside this task and never logged. A literal
   // string here is refused.
-  flowstate.v1.Value token = 6;
+  flowstate.v1.Value token = 6 [(flowstate.v1.input).secret = SECRET_REQUIRED];
 
   // Username is the HTTP Basic-auth username paired with token - see
   // LsRemoteInputs.username for the full doc comment and default.
@@ -370,7 +371,7 @@ message ReadFileInputs {
 
   // Token is a secret reference for HTTPS authentication. See
   // LogInputs.token.
-  flowstate.v1.Value token = 4;
+  flowstate.v1.Value token = 4 [(flowstate.v1.input).secret = SECRET_REQUIRED];
 
   // Username is the HTTP Basic-auth username paired with token - see
   // LsRemoteInputs.username.

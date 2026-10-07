@@ -104,7 +104,7 @@ func TestFetchingKeysStillFollowsARedirect(t *testing.T) {
 	}))
 	t.Cleanup(origin.Close)
 
-	verifier, err := auth.NewOIDCVerifier(auth.Policy{Issuers: []auth.TrustedIssuer{{
+	verifier, err := auth.NewOIDCVerifier(auth.Policy{Issuers: []auth.TrustedIssuer{{Actions: []string{},
 		Name:      "idp",
 		Issuer:    keys.URL,
 		Audiences: []string{"https://api.example.com"},

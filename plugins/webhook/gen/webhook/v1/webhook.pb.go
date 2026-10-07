@@ -212,12 +212,12 @@ var File_webhook_v1_webhook_proto protoreflect.FileDescriptor
 const file_webhook_v1_webhook_proto_rawDesc = "" +
 	"\n" +
 	"\x18webhook/v1/webhook.proto\x12\n" +
-	"webhook.v1\x1a\x18flowstate/v1/value.proto\"\xa4\x02\n" +
+	"webhook.v1\x1a\x19flowstate/v1/schema.proto\x1a\x18flowstate/v1/value.proto\"\xac\x02\n" +
 	"\n" +
 	"SendInputs\x12\x10\n" +
 	"\x03url\x18\x01 \x01(\tR\x03url\x12\x12\n" +
-	"\x04body\x18\x02 \x01(\tR\x04body\x124\n" +
-	"\vsigning_key\x18\x03 \x01(\v2\x13.flowstate.v1.ValueR\n" +
+	"\x04body\x18\x02 \x01(\tR\x04body\x12<\n" +
+	"\vsigning_key\x18\x03 \x01(\v2\x13.flowstate.v1.ValueB\x06\x8a\xb5\x18\x02\b\x02R\n" +
 	"signingKey\x12\x16\n" +
 	"\x06scheme\x18\x04 \x01(\tR\x06scheme\x12'\n" +
 	"\x0fidempotency_key\x18\x05 \x01(\tR\x0eidempotencyKey\x12=\n" +

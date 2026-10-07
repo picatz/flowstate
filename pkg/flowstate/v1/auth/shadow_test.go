@@ -29,7 +29,7 @@ func TestBroadEntryBesideNarrowOneRefusesTheToken(t *testing.T) {
 	issuer := newTestIssuer(t)
 
 	policy := auth.Policy{Issuers: []auth.TrustedIssuer{
-		{
+		{Actions: []string{},
 			Name:      "ci-any-branch",
 			Issuer:    issuer.URL(),
 			Audiences: []string{"flowstate"},
@@ -37,7 +37,7 @@ func TestBroadEntryBesideNarrowOneRefusesTheToken(t *testing.T) {
 			Role:      "admin",
 			Namespace: "acme",
 		},
-		{
+		{Actions: []string{},
 			Name:      "ci-main-only",
 			Issuer:    issuer.URL(),
 			Audiences: []string{"flowstate"},
@@ -84,7 +84,7 @@ func TestBroadEntryBesideNarrowOneRefusesTheToken(t *testing.T) {
 // CLAUDE.md's "Diagnostics are a feature".
 func TestUnreachableIssuersReportsShadowedEntry(t *testing.T) {
 	policy := auth.Policy{Issuers: []auth.TrustedIssuer{
-		{
+		{Actions: []string{},
 			Name:      "ci-any-branch",
 			Issuer:    "https://token.actions.githubusercontent.com",
 			Audiences: []string{"flowstate"},
@@ -92,7 +92,7 @@ func TestUnreachableIssuersReportsShadowedEntry(t *testing.T) {
 			Role:      "admin",
 			Namespace: "acme",
 		},
-		{
+		{Actions: []string{},
 			Name:      "ci-main-only",
 			Issuer:    "https://token.actions.githubusercontent.com",
 			Audiences: []string{"flowstate"},
@@ -153,7 +153,7 @@ func TestUnreachableIssuersDoesNotClaimOneEntryTakesEveryCaller(t *testing.T) {
 	const issuerURL = "https://token.actions.githubusercontent.com"
 
 	entry := func(name, role string, rules ...auth.ClaimRule) auth.TrustedIssuer {
-		return auth.TrustedIssuer{
+		return auth.TrustedIssuer{Actions: []string{},
 			Name: name, Issuer: issuerURL, Audiences: []string{"flowstate"},
 			Require: rules, Role: role, Namespace: "acme",
 		}
@@ -205,7 +205,7 @@ func TestUnreachableIssuersDoesNotClaimOneEntryTakesEveryCaller(t *testing.T) {
 // entry reachable.
 func TestUnreachableIssuersSilentOnDisjointEntries(t *testing.T) {
 	policy := auth.Policy{Issuers: []auth.TrustedIssuer{
-		{
+		{Actions: []string{},
 			Name:      "ci-main-only",
 			Issuer:    "https://token.actions.githubusercontent.com",
 			Audiences: []string{"flowstate"},
@@ -216,7 +216,7 @@ func TestUnreachableIssuersSilentOnDisjointEntries(t *testing.T) {
 			Role:      "deployer",
 			Namespace: "acme",
 		},
-		{
+		{Actions: []string{},
 			Name:      "ci-other-branches",
 			Issuer:    "https://token.actions.githubusercontent.com",
 			Audiences: []string{"flowstate"},
@@ -250,14 +250,14 @@ func TestUnreachableIssuersSilentOnDisjointEntries(t *testing.T) {
 // whether pairwise intersection is worth reporting at all.
 func TestUnreachableIssuersSilentOnAnOverlapItCannotProve(t *testing.T) {
 	entries := []auth.TrustedIssuer{
-		{
+		{Actions: []string{},
 			Name:      "any-repo-on-main",
 			Audiences: []string{"flowstate"},
 			Require:   []auth.ClaimRule{auth.RequireClaim("ref", "refs/heads/main")},
 			Role:      "deployer",
 			Namespace: "acme",
 		},
-		{
+		{Actions: []string{},
 			Name:      "one-repo-any-branch",
 			Audiences: []string{"flowstate"},
 			Require:   []auth.ClaimRule{auth.RequireClaim("repository", "picatz/flowstate")},
@@ -311,7 +311,7 @@ func TestUnreachableIssuersSilentOnAnOverlapItCannotProve(t *testing.T) {
 // and the same subject_from is what makes one entry able to shadow another.
 func TestUnreachableIssuersDetectsMTLSShadowing(t *testing.T) {
 	policy := auth.Policy{Issuers: []auth.TrustedIssuer{
-		{
+		{Actions: []string{},
 			Name:         "mesh-any",
 			Kind:         auth.IssuerKindMTLS,
 			Issuer:       "mesh-ca",
@@ -319,7 +319,7 @@ func TestUnreachableIssuersDetectsMTLSShadowing(t *testing.T) {
 			SubjectFrom:  auth.SubjectFromURISAN,
 			Namespace:    "acme",
 		},
-		{
+		{Actions: []string{},
 			Name:         "mesh-runner",
 			Kind:         auth.IssuerKindMTLS,
 			Issuer:       "mesh-ca",
@@ -346,7 +346,7 @@ func TestUnreachableIssuersStaysSilentOnUndetectedShapes(t *testing.T) {
 	const issuerURL = "https://token.actions.githubusercontent.com"
 
 	broad := func(mutate func(*auth.TrustedIssuer)) auth.TrustedIssuer {
-		entry := auth.TrustedIssuer{
+		entry := auth.TrustedIssuer{Actions: []string{},
 			Name:      "broad",
 			Issuer:    issuerURL,
 			Audiences: []string{"flowstate"},
@@ -356,7 +356,7 @@ func TestUnreachableIssuersStaysSilentOnUndetectedShapes(t *testing.T) {
 		return entry
 	}
 	narrow := func(mutate func(*auth.TrustedIssuer)) auth.TrustedIssuer {
-		entry := auth.TrustedIssuer{
+		entry := auth.TrustedIssuer{Actions: []string{},
 			Name:      "narrow",
 			Issuer:    issuerURL,
 			Audiences: []string{"flowstate"},
@@ -385,7 +385,7 @@ func TestUnreachableIssuersStaysSilentOnUndetectedShapes(t *testing.T) {
 			name: "different kinds",
 			why:  "reachable: an mtls entry and an oidc entry are reached by different verifiers",
 			issuers: []auth.TrustedIssuer{
-				{
+				{Actions: []string{},
 					Name: "mesh", Kind: auth.IssuerKindMTLS, Issuer: "mesh-ca",
 					ClientCAFile: "/etc/flowstate/mesh-ca.pem", SubjectFrom: auth.SubjectFromURISAN,
 					Namespace: "acme",
@@ -397,12 +397,12 @@ func TestUnreachableIssuersStaysSilentOnUndetectedShapes(t *testing.T) {
 			name: "mtls entries whose CA paths differ",
 			why:  "possibly the same certificates, but proving it means reading the files, which this pure function will not do",
 			issuers: []auth.TrustedIssuer{
-				{
+				{Actions: []string{},
 					Name: "mesh-any", Kind: auth.IssuerKindMTLS, Issuer: "mesh-ca",
 					ClientCAFile: "/etc/flowstate/mesh-ca.pem", SubjectFrom: auth.SubjectFromURISAN,
 					Namespace: "acme",
 				},
-				{
+				{Actions: []string{},
 					Name: "mesh-runner", Kind: auth.IssuerKindMTLS, Issuer: "mesh-ca",
 					ClientCAFile: "/etc/flowstate/mesh-ca-copy.pem", SubjectFrom: auth.SubjectFromURISAN,
 					Require:   []auth.ClaimRule{auth.RequireClaim("subject", "spiffe://acme/ns/flowstate/sa/runner")},
@@ -414,12 +414,12 @@ func TestUnreachableIssuersStaysSilentOnUndetectedShapes(t *testing.T) {
 			name: "mtls entries reading different SANs",
 			why:  "reachable: a certificate with no URI SAN fails the first entry and reaches the second",
 			issuers: []auth.TrustedIssuer{
-				{
+				{Actions: []string{},
 					Name: "mesh-uri", Kind: auth.IssuerKindMTLS, Issuer: "mesh-ca",
 					ClientCAFile: "/etc/flowstate/mesh-ca.pem", SubjectFrom: auth.SubjectFromURISAN,
 					Namespace: "acme",
 				},
-				{
+				{Actions: []string{},
 					Name: "mesh-dns", Kind: auth.IssuerKindMTLS, Issuer: "mesh-ca",
 					ClientCAFile: "/etc/flowstate/mesh-ca.pem", SubjectFrom: auth.SubjectFromDNSSAN,
 					Require:   []auth.ClaimRule{auth.RequireClaim("subject", "runner.acme.example")},
@@ -510,7 +510,7 @@ func TestUnreachableIssuersStaysSilentOnUndetectedShapes(t *testing.T) {
 func TestUnreachableIssuersReportsRegardlessOfOrder(t *testing.T) {
 	const issuerURL = "https://token.actions.githubusercontent.com"
 
-	narrow := auth.TrustedIssuer{
+	narrow := auth.TrustedIssuer{Actions: []string{},
 		Name: "ci-main-only", Issuer: issuerURL, Audiences: []string{"flowstate"},
 		Require: []auth.ClaimRule{
 			auth.RequireClaim("repository", "picatz/flowstate"),
@@ -518,7 +518,7 @@ func TestUnreachableIssuersReportsRegardlessOfOrder(t *testing.T) {
 		},
 		Role: "deployer", Namespace: "acme",
 	}
-	broad := auth.TrustedIssuer{
+	broad := auth.TrustedIssuer{Actions: []string{},
 		Name: "ci-any-branch", Issuer: issuerURL, Audiences: []string{"flowstate"},
 		Require: []auth.ClaimRule{auth.RequireClaim("repository", "picatz/flowstate")},
 		Role:    "viewer", Namespace: "acme",
@@ -570,7 +570,7 @@ func TestUnreachableIssuersReportsBothOfAMutuallyDeadPair(t *testing.T) {
 	const issuerURL = "https://token.actions.githubusercontent.com"
 
 	entry := func(name, role string) auth.TrustedIssuer {
-		return auth.TrustedIssuer{
+		return auth.TrustedIssuer{Actions: []string{},
 			Name: name, Issuer: issuerURL, Audiences: []string{"flowstate"},
 			Require:   []auth.ClaimRule{auth.RequireClaim("repository", "picatz/flowstate")},
 			Role:      role,
@@ -608,7 +608,7 @@ func TestUnreachableIssuersDoesNotProveAUnion(t *testing.T) {
 	const issuerURL = "https://token.actions.githubusercontent.com"
 
 	entry := func(name string, rules ...auth.ClaimRule) auth.TrustedIssuer {
-		return auth.TrustedIssuer{
+		return auth.TrustedIssuer{Actions: []string{},
 			Name: name, Issuer: issuerURL, Audiences: []string{"flowstate"},
 			Require: rules, Namespace: "acme",
 		}
@@ -641,7 +641,7 @@ func TestUnreachableIssuersDoesNotProveAUnion(t *testing.T) {
 func TestUnreachableIssuersHandlesAPolicyOfManyIssuers(t *testing.T) {
 	var issuers []auth.TrustedIssuer
 	for i := range 2_000 {
-		issuers = append(issuers, auth.TrustedIssuer{
+		issuers = append(issuers, auth.TrustedIssuer{Actions: []string{},
 			Name:      "issuer-" + strconv.Itoa(i),
 			Issuer:    "https://issuer-" + strconv.Itoa(i) + ".example",
 			Audiences: []string{"flowstate"},
@@ -660,7 +660,7 @@ func TestUnreachableIssuersReportsEachEntryOnce(t *testing.T) {
 	const issuerURL = "https://token.actions.githubusercontent.com"
 
 	entry := func(name string, rules ...auth.ClaimRule) auth.TrustedIssuer {
-		return auth.TrustedIssuer{
+		return auth.TrustedIssuer{Actions: []string{},
 			Name: name, Issuer: issuerURL, Audiences: []string{"flowstate"},
 			Require: rules, Namespace: "acme",
 		}
@@ -690,6 +690,7 @@ func TestUnreachableIssuersIsNotAValidationFailure(t *testing.T) {
 	document := []byte(`
 issuers:
   - name: ci-any-branch
+    actions: []
     issuer: https://token.actions.githubusercontent.com
     audiences: [flowstate]
     require:
@@ -698,6 +699,7 @@ issuers:
     role: admin
     namespace: acme
   - name: ci-main-only
+    actions: []
     issuer: https://token.actions.githubusercontent.com
     audiences: [flowstate]
     require:
