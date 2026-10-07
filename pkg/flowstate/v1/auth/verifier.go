@@ -74,6 +74,7 @@ type config struct {
 	cacheTTL     time.Duration
 	minRefresh   time.Duration
 	fetchTimeout time.Duration
+	claimMapper  ClaimMapper
 }
 
 // An Option configures an [OIDCVerifier].
@@ -208,6 +209,9 @@ type OIDCVerifier struct {
 
 	clock func() time.Time
 	skew  time.Duration
+
+	// claimMapper builds the admitted principal's claims; nil is [MapClaims].
+	claimMapper ClaimMapper
 }
 
 // Ensure OIDCVerifier satisfies the Verifier interface.
@@ -260,11 +264,12 @@ func NewOIDCVerifier(policy Policy, opts ...Option) (*OIDCVerifier, error) {
 	}
 
 	verifier := &OIDCVerifier{
-		entries:    make(map[string][]oidcEntry),
-		algorithms: make(map[string][]jwa.Algorithm),
-		keys:       make(map[string]*keySet),
-		clock:      cfg.clock,
-		skew:       cfg.skew,
+		entries:     make(map[string][]oidcEntry),
+		algorithms:  make(map[string][]jwa.Algorithm),
+		keys:        make(map[string]*keySet),
+		clock:       cfg.clock,
+		skew:        cfg.skew,
+		claimMapper: cfg.claimMapper,
 	}
 
 	for policyIndex, entry := range policy.Issuers {
@@ -509,6 +514,13 @@ func (v *OIDCVerifier) Verify(ctx context.Context, rawToken string) (Principal, 
 		return Principal{}, fmt.Errorf("trusted issuer %q: %w", entry.Name, err)
 	}
 
+	// Only what the entry carries reaches the principal, and so any policy
+	// surface; everything above this point read the whole verified token.
+	carried, err := principalClaims(v.claimMapper, entry, claims)
+	if err != nil {
+		return Principal{}, err
+	}
+
 	return Principal{
 		Issuer:     issuer,
 		IssuerName: entry.Name,
@@ -520,7 +532,7 @@ func (v *OIDCVerifier) Verify(ctx context.Context, rawToken string) (Principal, 
 		Actions:    actions,
 		IssuedAt:   lifetime.issuedAt,
 		ExpiresAt:  lifetime.expiresAt,
-		Claims:     claims,
+		Claims:     carried,
 	}, nil
 }
 

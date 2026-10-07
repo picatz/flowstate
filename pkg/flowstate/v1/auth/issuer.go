@@ -551,8 +551,8 @@ func WithSigningTimeout(timeout time.Duration) IssuerOption {
 //
 // In the same trust policy the rest of federation is configured in, as
 // `federation.declared_claims` — see [FederationPolicy.DeclaredClaims]. It is
-// the outbound counterpart to the server's own `--identity-claim`, which names
-// the caller-token claims carried *into* a run's identity: that flag decides
+// the outbound counterpart to an issuer entry's `carry_claims`, which names
+// the caller-token claims carried *into* a run's identity: that list decides
 // what is available to carry, and this decides what may be signed. They are two
 // processes' configuration and so cannot be one declaration, which is a drift
 // risk worth knowing about — an operator carrying a claim the issuer does not

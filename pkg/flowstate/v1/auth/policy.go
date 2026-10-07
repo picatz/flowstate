@@ -621,6 +621,33 @@ type TrustedIssuer struct {
 	// (goccy/go-yaml's yaml.go doc), so the YAML tag needs no change.
 	NamespaceMap NamespaceMap `json:"namespace_map,omitzero" yaml:"namespace_map,omitempty"`
 
+	// CarryClaims names the token claims this entry copies into the caller's
+	// [Principal] claims, each with the type it must have and an optional rename.
+	// Only these reach `identity.claims` on any policy surface, on either driver:
+	// a token holds far more than authorization needs, and what is carried is
+	// recorded with each run. See [CarryClaim] and [MapClaims].
+	//
+	// An empty list carries none, so a rule reading a claim the entry does not
+	// carry never matches; `flow validate --auth-policy` says so.
+	CarryClaims []CarryClaim `json:"carry_claims,omitempty" yaml:"carry_claims,omitempty"`
+
+	// GroupsClaim is the dotted path of the token claim holding the caller's
+	// groups, such as `groups` or `realm_access.roles`. The list is carried as
+	// the list-valued claim `groups`, so `"x" in identity.claims.groups` works on
+	// every policy surface. It is bounded by [MaxGroups] and [MaxGroupBytes], and
+	// a token that signals an overage (Entra's `_claim_names`/`hasgroups`) or
+	// exceeds a bound is refused with [ErrGroupsOverage], never read in part.
+	//
+	// A CarryClaims entry that is also named `groups` conflicts with this and is
+	// refused when the policy loads.
+	GroupsClaim string `json:"groups_claim,omitempty" yaml:"groups_claim,omitempty"`
+
+	// GroupMap maps an IdP's group value (a name, a GUID) to the Flowstate group
+	// a rule names. With it, only listed values are carried: the map is the
+	// allowlist of groups policy can refer to, so a rule that must deny on a
+	// group has to map it. Requires GroupsClaim.
+	GroupMap map[string]string `json:"group_map,omitempty" yaml:"group_map,omitempty"`
+
 	// JWKSURL is the issuer's JSON Web Key Set URL. Leave it empty to discover
 	// it from the issuer's /.well-known/openid-configuration document, which is
 	// the normal case; set it only for an issuer that publishes keys without a
@@ -1098,6 +1125,10 @@ func (t TrustedIssuer) validate() error {
 	if !t.PrincipalKind.valid() {
 		return fmt.Errorf("principal_kind %q is not supported: use %q, %q or %q, or omit it",
 			t.PrincipalKind, PrincipalKindHuman, PrincipalKindWorkload, PrincipalKindAgent)
+	}
+
+	if err := t.validateClaimCarriage(); err != nil {
+		return err
 	}
 
 	var err error
@@ -2011,6 +2042,8 @@ func (t TrustedIssuer) clone() TrustedIssuer {
 		clone.Require[i].NoneOf = slices.Clone(rule.NoneOf)
 	}
 	clone.NamespaceMap = maps.Clone(t.NamespaceMap)
+	clone.CarryClaims = slices.Clone(t.CarryClaims)
+	clone.GroupMap = maps.Clone(t.GroupMap)
 
 	return clone
 }

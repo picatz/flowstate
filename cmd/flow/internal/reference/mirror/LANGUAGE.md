@@ -1462,9 +1462,9 @@ predicate that says which senders may deliver it. It reads
 
 - `sender.identity.principal == "<issuer>#<subject>"` names one sender exactly. The
   right-hand side may be an expression over `inputs`, evaluated on every delivery.
-- `sender.identity.claims.team == "release-managers"` matches a claim the server was
-  configured to record (`flow server --identity-claim team`). A missing claim is an
-  error, which refuses the sender.
+- `sender.identity.claims.team == "release-managers"` matches a claim the issuer
+  entry that admitted the sender carries (`carry_claims: [{claim: team, type: string}]`
+  in the auth policy). A missing claim is an error, which refuses the sender.
 - A claim keeps its JSON shape: `"sre" in sender.identity.claims.groups` reads a list and
   `sender.identity.claims.slack.user == "U1"` a nested object. Guard an absent one with
   `has(sender.identity.claims.groups)`; reading one the sender lacks is an error, which
@@ -1528,7 +1528,7 @@ configured in the one trust policy, not in a Flowfile. Pass the same policy
 
 | Direction | The deployment configures | A Flowfile sees |
 | --- | --- | --- |
-| **Inbound**: who may reach Flowstate | `issuers:`, each `kind: oidc` (the default) or `kind: mtls`. An `oidc` entry takes `audiences`, claim rules, and a tenant fixed or read from `namespace_claim`. An `mtls` entry takes `client_ca_file` and `subject_from` and a fixed tenant, and refuses `audiences` and `namespace_claim`. Either may assign `principal_kind:` `human`, `workload` or `agent`, which a token cannot choose for itself | `run.identity` with `principal`, `subject`, `issuer`, `namespace`, `kind`, `claims`, and `sender.identity` the same, except that a wait's sender carries no `claims`. [Who may act](#who-may-act-on-a-run) |
+| **Inbound**: who may reach Flowstate | `issuers:`, each `kind: oidc` (the default) or `kind: mtls`. An `oidc` entry takes `audiences`, claim rules, a tenant fixed or read from `namespace_claim`, and the claims and groups policy may read (`carry_claims`, `groups_claim`, `group_map`). An `mtls` entry takes `client_ca_file` and `subject_from` and a fixed tenant, and refuses `audiences` and `namespace_claim`. Either may assign `principal_kind:` `human`, `workload` or `agent`, which a token cannot choose for itself | `run.identity` with `principal`, `subject`, `issuer`, `namespace`, `kind`, `claims`, and `sender.identity` the same, except that a wait's sender carries no `claims`. [Who may act](#who-may-act-on-a-run) |
 | **Outbound**: what a workload may become | `federation:` with `targets:` (`token_exchange`, `client_credentials`, `gcp`, `aws`, `assertion`) and `allow`/`deny` rules over `target`, `audience` and `workload` | `credential:` on a task such as `http`. [Secrets and credentials](SECRETS.md#short-lived-credentials-instead-of-stored-ones) |
 
 Three rules hold in both directions:

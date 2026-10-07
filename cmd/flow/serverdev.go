@@ -90,11 +90,6 @@ import (
 const (
 	devPostureAnonymous   = "authentication is disabled; every caller is anonymous and can start workflows"
 	devPostureUnversioned = "starting worker unversioned; deploying this binary changes every run in flight"
-	identityClaimUsage    = "caller token claim to carry into each run and signal sender identity " +
-		"(repeatable), such as team or email; only named claims are persisted, and they are what " +
-		"signals:, debug: and manual: allow predicates (sender.identity.claims[...]) and outbound " +
-		"policy rules (identity.claims[...]) read; a claim not named here is absent from the " +
-		"identity, so a rule requiring it never matches"
 )
 
 // devTemporalNamespace is the namespace the dev server registers at start-up and
@@ -202,7 +197,6 @@ flow server dev -o json`,
 			"verified against the generated local issuer with `--auth`, and a path inherited from "+
 			"$FLOWSTATE_AUTH_POLICY is refused rather than silently ignoring its issuers")
 	cmd.Flags().StringArray("identity-key", identityKeyDefault(), identityKeyUsage)
-	cmd.Flags().StringArray("identity-claim", nil, identityClaimUsage)
 
 	// picatz/flowstate#1018, same flag `flow server` takes: whether an audit
 	// sink's own failure fails the request. Auditing itself is unconditional —
@@ -632,8 +626,6 @@ func runServerDev(cmd *cobra.Command, args []string) error {
 		// eager dispatch to step around.
 		server.WithEagerWorkflowStart(),
 	}
-	identityClaims, _ := cmd.Flags().GetStringArray("identity-claim")
-	serverOpts = append(serverOpts, server.WithIdentityClaims(identityClaims...))
 
 	// picatz/flowstate#1018: this stack's own control plane gets the same audit
 	// trail `flow server` does. Built after the temporalConfig call above, for

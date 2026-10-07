@@ -418,6 +418,15 @@ func ExecCases(root string) []ExecCase {
 			ExpectedError: denied("allow rules", "no allow rule matched"),
 		},
 		{
+			Name:  "an allow rule refuses a claim the issuer entry did not carry",
+			Allow: []string{carrierUncarriedRule},
+			Workflow: execWorkflow("exec-identity-uncarried",
+				execStep("program", shArgv(`printf no`), root, nil)),
+			Identity:      carrierWorkloadIdentity(v1.PrincipalKind_PRINCIPAL_KIND_AGENT, "sre"),
+			ExpectedKind:  v1.ErrorKindPolicyDenied,
+			ExpectedError: denied("rule error", "no such key: team"),
+		},
+		{
 			Name:  "a run with no identity matches no tenant rule",
 			Allow: []string{`identity.namespace == "team-a"`},
 			Workflow: execWorkflow("exec-identity-absent",

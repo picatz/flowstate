@@ -80,7 +80,7 @@ type FederationPolicy struct {
 	// itself is not a tenant's to redefine.
 	//
 	// See [WithDeclaredClaims] for why this is an allowlist and for its
-	// relationship to the server's `--identity-claim`.
+	// relationship to an issuer entry's `carry_claims`.
 	DeclaredClaims []string `json:"declared_claims,omitempty" yaml:"declared_claims,omitempty"`
 
 	// Allow are CEL rules gating credential assumption. When any are present, a

@@ -210,7 +210,7 @@ func TaskPolicyCases() []TaskPolicyCase {
 				Steps:   []*v1.Node{says("report", "this may run")},
 			},
 			Identity:        carrierWorkloadIdentity(v1.PrincipalKind_PRINCIPAL_KIND_AGENT, "dev", "sre"),
-			Policy:          v1.TaskPolicyConfig{Allow: []string{`identity.kind == "agent" && "sre" in identity.claims.groups && identity.claims.slack.user == "U1"`}},
+			Policy:          v1.TaskPolicyConfig{Allow: []string{`identity.kind == "agent" && "sre" in identity.claims.groups && identity.claims.slack_user == "U1"`}},
 			ExpectedOutputs: held("report"),
 		},
 		{
@@ -221,9 +221,24 @@ func TaskPolicyCases() []TaskPolicyCase {
 				Steps:   []*v1.Node{says("report", "this must not run")},
 			},
 			Identity:       carrierWorkloadIdentity(v1.PrincipalKind_PRINCIPAL_KIND_AGENT, "dev"),
-			Policy:         v1.TaskPolicyConfig{Allow: []string{`identity.kind == "agent" && "sre" in identity.claims.groups && identity.claims.slack.user == "U1"`}},
+			Policy:         v1.TaskPolicyConfig{Allow: []string{`identity.kind == "agent" && "sre" in identity.claims.groups && identity.claims.slack_user == "U1"`}},
 			DeniedTask:     "log",
 			DeniedReason:   v1.TaskPolicyReasonNoAllowRule,
+			DeniedIdentity: "spiffe://acme/agent",
+		},
+		{
+			// A claim the token held and the issuer entry did not carry is not on
+			// the identity on either driver, so a rule reading it matches nobody.
+			Name: "an allow rule refuses a claim the issuer entry did not carry",
+			Workflow: &v1.Workflow{
+				Name:    "task-policy-identity-uncarried",
+				Profile: v1.CurrentProfile,
+				Steps:   []*v1.Node{says("report", "this must not run")},
+			},
+			Identity:       carrierWorkloadIdentity(v1.PrincipalKind_PRINCIPAL_KIND_AGENT, "sre"),
+			Policy:         v1.TaskPolicyConfig{Allow: []string{carrierUncarriedRule}},
+			DeniedTask:     "log",
+			DeniedReason:   v1.TaskPolicyReasonRuleError,
 			DeniedIdentity: "spiffe://acme/agent",
 		},
 		{

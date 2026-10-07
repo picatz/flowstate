@@ -4570,11 +4570,12 @@ recorded starter `run` is unbound, so a predicate that reads it errors and denie
 while one that never mentions it is unaffected. The refusal says what went wrong and
 never quotes an input or a claim.
 
-**Claims need `--identity-claim`.** `sender.identity.claims` holds only the claims
-the server was started to project (`flow server --identity-claim team`, repeatable).
-A token can carry `team` and the trust policy can verify it, and a predicate reading
-`sender.identity.claims.team` still never matches on a server not started with that
-flag. The refusal of a predicate that reads claims therefore names which claim names
+**Claims need `carry_claims`.** `sender.identity.claims` holds only the claims
+the issuer entry that admitted the sender carries (`carry_claims` and `groups_claim`
+in the auth policy; see [Carrying claims and groups into policy](DEPLOYMENT.md#carrying-claims-and-groups-into-policy)).
+A token can hold `team` and the trust policy can verify it, and a predicate reading
+`sender.identity.claims.team` still never matches when that entry does not carry it;
+`flow validate --auth-policy auth.yaml` reports the read before a server does. The refusal of a predicate that reads claims therefore names which claim names
 the sender identity carried (or that it carried none), never their values, so an
 empty projection reads differently from a wrong value.
 

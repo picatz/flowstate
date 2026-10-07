@@ -264,16 +264,6 @@ func WithMaxStepsPerRun(steps int) Option {
 	return func(s *FlowstateServer) error { s.maxStepsPerRun = steps; return nil }
 }
 
-// WithIdentityClaims names the caller token claims to carry into a run's
-// identity.
-//
-// Only named claims are copied, so the identity records what authorization
-// decisions actually need — a repository, an environment, a team — rather than
-// becoming a copy of whole tokens in workflow history.
-func WithIdentityClaims(claims ...string) Option {
-	return func(s *FlowstateServer) error { s.identityClaims = claims; return nil }
-}
-
 // WithCredentialTargets makes validation deployment-aware: a Flowfile naming a
 // JIT target this server's workers do not configure is refused before submission.
 func WithCredentialTargets(targets ...string) Option {
@@ -488,7 +478,6 @@ type FlowstateServer struct {
 
 	namespace                   string
 	deployment                  string
-	identityClaims              []string
 	credentialTargets           []string
 	credentialTargetsConfigured bool
 	pluginCatalog               *v1.PluginCatalog
@@ -2342,7 +2331,7 @@ func (s *FlowstateServer) identityFor(ctx context.Context) *v1.WorkloadIdentity 
 	// single tenant. The other order would make the tenant boundary decorative —
 	// a namespace determined by how the server was started rather than by who the
 	// caller is means every tenant shares one.
-	derived := auth.IdentityFromPrincipal(principal, s.namespace, s.deployment, s.identityClaims...)
+	derived := auth.IdentityFromPrincipal(principal, s.namespace, s.deployment)
 
 	return &v1.WorkloadIdentity{Principal: v1.ProtoPrincipal(derived), Deployment: derived.Deployment}
 }

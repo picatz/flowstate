@@ -19,7 +19,7 @@ import (
 // The identity below is the one `IdentityFromPrincipal` derives from a token a
 // CI platform minted, with GitHub Actions as the concrete shape: the subject is
 // the platform's own "repo:<owner>/<name>:ref:refs/heads/<branch>", and the
-// claims are the ones an operator named with `--identity-claim`.
+// claims are the ones an operator named in the entry's `carry_claims`.
 
 // ciIdentity is what a run started by a CI job acts as.
 func ciIdentity() *v1.WorkloadIdentity {

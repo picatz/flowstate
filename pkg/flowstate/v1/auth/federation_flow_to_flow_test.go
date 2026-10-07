@@ -84,6 +84,10 @@ func TestFlowstateToFlowstateFederation(t *testing.T) {
 					// two tenants in A stay two tenants in B.
 					NamespaceClaim: auth.ClaimNamespace,
 					Role:           "peer",
+					CarryClaims: []auth.CarryClaim{
+						{Claim: auth.ClaimWorkflow, Type: auth.ClaimTypeString},
+						{Claim: auth.ClaimRun, Type: auth.ClaimTypeString},
+					},
 				}},
 			},
 			auth.WithClock(clock.Now),

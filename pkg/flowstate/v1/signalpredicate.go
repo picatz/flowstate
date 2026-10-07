@@ -155,7 +155,7 @@ type SignalPolicyReads struct {
 	// Run: `run.identity`, the starter, including its claims.
 	Run bool
 	// Claims: `sender.identity.claims`, which carries only the claims the
-	// server was started to project (`--identity-claim`).
+	// admitting auth policy entry carries (`carry_claims`, `groups_claim`).
 	Claims bool
 }
 
@@ -416,7 +416,7 @@ func analyzeSignalPredicate(checked *cel.Ast) signalPredicateAnalysis {
 		switch {
 		case global(e, InputsRoot):
 			reads.inputs = true
-			if name, ok := signalPolicyInputKey(e); ok {
+			if name, ok := signalPolicyMapKey(e); ok {
 				reads.inputNames[name] = struct{}{}
 			} else {
 				reads.opaqueInputs = true
@@ -447,11 +447,12 @@ func analyzeSignalPredicate(checked *cel.Ast) signalPredicateAnalysis {
 	return out
 }
 
-// signalPolicyInputKey reports the one input name an `inputs` identifier is
+// signalPolicyMapKey reports the one key a map-valued node (the `inputs` identifier,
+// or a `claims` select, see [IdentityClaimReads]) is
 // used to read, from its parent: a field select, an index by a string literal,
 // or the right side of `"k" in inputs`. Anything else (a computed key, a call
 // taking the map, a comprehension over it, an optional select) names no key.
-func signalPolicyInputKey(ident celast.NavigableExpr) (string, bool) {
+func signalPolicyMapKey(ident celast.NavigableExpr) (string, bool) {
 	parent, ok := ident.Parent()
 	if !ok {
 		return "", false
@@ -601,7 +602,7 @@ func allowPredicateAllowsWithin(ctx context.Context, timeout time.Duration, labe
 // senderClaimsHint explains a refusal of a predicate that reads
 // `sender.identity.claims`: which claim names the sender identity carried, so an
 // empty projection reads differently from a wrong value. Names only, never
-// values. The sender identity holds only the claims the server projects, which
+// values. The sender identity holds only the claims its issuer entry carries, which
 // is the coupling an operator otherwise cannot see.
 func senderClaimsHint(readsClaims bool, sender *WorkloadIdentity) string {
 	if !readsClaims {
@@ -615,7 +616,7 @@ func senderClaimsHint(readsClaims bool, sender *WorkloadIdentity) string {
 	}
 
 	return fmt.Sprintf("; the predicate reads sender.identity.claims, and the sender identity carried %s "+
-		"(a server projects a token's claim into it only when started with `--identity-claim <name>`)", carried)
+		"(a server carries a token's claim into it only when the admitting issuer entry lists it under `carry_claims` or `groups_claim` in the auth policy)", carried)
 }
 
 // manualAllowExprAllows decides a `manual: allow: ${...}` start: the caller and

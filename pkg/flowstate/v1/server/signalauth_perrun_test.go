@@ -27,8 +27,8 @@ import (
 //
 // The comparison with the starter is there because a predicate over inputs is
 // required to carry something the run's own inputs cannot reach, and this is
-// the cheaper of the two such things to express here (claims would need the
-// server configured with an identity-claim allowlist). It is not incidental to
+// the cheaper of the two such things to express here (claims would need a
+// principal whose entry carries them). It is not incidental to
 // what these tests assert: the input naming the approver is chosen by whoever
 // starts the run, so without it the starter could name themselves — see
 // [v1.CheckSignalPolicyShape] for why a namespace comparison cannot serve

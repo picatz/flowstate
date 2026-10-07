@@ -19,7 +19,7 @@ import (
 func TestSignalPolicyRefusalNamesTheClaimsTheSenderCarried(t *testing.T) {
 	t.Parallel()
 
-	const hint = "--identity-claim"
+	const hint = "carry_claims"
 	policy := predicatePolicy(`sender.identity.claims.team == "platform"`)
 	check := func(claims map[string]string) error {
 		sender := &v1.WorkloadIdentity{Principal: &v1.Principal{Issuer: "https://i", Subject: "alice", Claims: v1.StringClaimValues(claims)}}

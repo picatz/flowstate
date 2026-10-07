@@ -198,6 +198,14 @@ func EgressIdentityCases() []EgressIdentityCase {
 			Denied:   true,
 		},
 		{
+			// The claim sat in the token and the issuer entry did not carry it,
+			// so no surface may see it: the rule can never match, on either driver.
+			Name:     "a claim the entry did not carry is absent from the rule",
+			Rule:     carrierUncarriedRule,
+			Identity: carrierWorkloadIdentity(v1.PrincipalKind_PRINCIPAL_KIND_AGENT, "sre"),
+			Denied:   true,
+		},
+		{
 			// A trust policy that assigned no kind is not a workload.
 			Name:     "an identity with no kind is refused by the same kind rule",
 			Rule:     EgressIdentityKindRule,

@@ -180,14 +180,11 @@ func TestADebugPredicateScopeOverItsBoundRefusesTheRun(t *testing.T) {
 
 // manual
 
-func manualPredicateServer(t *testing.T, claims ...string) (*FlowstateServer, *recordingEmitter) {
+func manualPredicateServer(t *testing.T) (*FlowstateServer, *recordingEmitter) {
 	t.Helper()
 
 	sink := &recordingEmitter{}
 	opts := []Option{WithAudit(recorderFor(t, sink))}
-	if len(claims) > 0 {
-		opts = append(opts, WithIdentityClaims(claims...))
-	}
 
 	return mustNew(t, &fakeRunClient{}, opts...), sink
 }
@@ -195,7 +192,7 @@ func manualPredicateServer(t *testing.T, claims ...string) (*FlowstateServer, *r
 func TestAuthorizeManualStartDecidesAPredicateOverTheCallerAndSubmittedInputs(t *testing.T) {
 	t.Parallel()
 
-	srv, sink := manualPredicateServer(t, "team")
+	srv, sink := manualPredicateServer(t)
 	ops := auth.ContextWithPrincipal(t.Context(), auth.Principal{
 		Issuer: "https://issuer.example.com", Subject: "ops@example.com", Claims: map[string]any{"team": "ops"},
 	})
@@ -243,7 +240,7 @@ func TestAManualPredicateRefusalNamesNoInputOrClaimValue(t *testing.T) {
 	t.Parallel()
 
 	const secret = "CLAIMSECRET123"
-	srv, _ := manualPredicateServer(t, "n")
+	srv, _ := manualPredicateServer(t)
 	ctx := auth.ContextWithPrincipal(t.Context(), auth.Principal{
 		Issuer: "https://issuer.example.com", Subject: "ops@example.com", Claims: map[string]any{"n": secret},
 	})

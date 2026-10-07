@@ -23,7 +23,7 @@ $ flow worker --allow-unversioned-interpreter --plugin-dir ./plugins \
     --plugin-env ssh=FLOWSTATE_SSH_GRANTS=$PWD/examples/plugins/ssh/grants.yaml \
     --egress-policy examples/plugins/ssh/egress-policy.yaml &
 $ flow server --plugin-dir ./plugins --auth-policy /path/to/auth-policy.yaml \
-    --rpc-resource https://flowstate.example.com/rpc --identity-claim team &
+    --rpc-resource https://flowstate.example.com/rpc &
 $ flow run examples/plugins/ssh/workflow.yaml \
     --input host=web-prod \
     --input service=nginx.service \
@@ -36,8 +36,8 @@ and its `plugins:` block, against the plugins it launched itself. It takes
 an `--auth-policy` trusting a real issuer, with the `--rpc-resource` its tokens
 are minted for, rather than `--insecure-no-auth`, because the approval below is
 a signal only an attested SRE other than the starter may send.
-It keeps the `team` claim (`--identity-claim team`), because the signal's rule
-reads it and a server persists only the claims it names. Every client command
+Its issuer entry carries the `team` claim (`carry_claims: [{claim: team, type: string}]`), because the signal's rule
+reads it and a run records only the claims an entry carries. Every client command
 below authenticates with `--token-file` (or `--credential-source`): an
 authenticated server refuses an anonymous caller.
 
