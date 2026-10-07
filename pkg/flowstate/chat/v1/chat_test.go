@@ -61,6 +61,13 @@ func TestChatRules(t *testing.T) {
 		}
 		return out
 	}
+	mentions := func(n int) []*chatv1.Mention {
+		out := make([]*chatv1.Mention, n)
+		for i := range out {
+			out[i] = &chatv1.Mention{Kind: &chatv1.Mention_User{User: "U0ALICE"}}
+		}
+		return out
+	}
 	with := func(f func(*chatv1.Approval)) *chatv1.Card {
 		a := approval()
 		f(a)
@@ -87,8 +94,8 @@ func TestChatRules(t *testing.T) {
 		{"missing title", false, with(func(a *chatv1.Approval) { a.Title = nil }), "approval.title"},
 		{"missing approve button", false, with(func(a *chatv1.Approval) { a.Approve = nil }), "approval.approve"},
 		{"empty card", false, &chatv1.Card{}, "kind"},
-		{"eight mentions", true, markup(&chatv1.Markup{Template: "hi", Mentions: make([]*chatv1.Mention, 8)}), ""},
-		{"nine mentions", false, markup(&chatv1.Markup{Template: "hi", Mentions: make([]*chatv1.Mention, 9)}), "approval.summary.markup.mentions"},
+		{"eight mentions", true, markup(&chatv1.Markup{Template: "hi", Mentions: mentions(8)}), ""},
+		{"nine mentions", false, markup(&chatv1.Markup{Template: "hi", Mentions: mentions(9)}), "approval.summary.markup.mentions"},
 		{"empty template", false, markup(&chatv1.Markup{}), "approval.summary.markup.template"},
 		{"valid arg key", true, markup(&chatv1.Markup{Template: "{who}", Args: map[string]string{"who_1": "x"}}), ""},
 		{"arg key with a capital", false, markup(&chatv1.Markup{Template: "{Who}", Args: map[string]string{"Who": "x"}}), "approval.summary.markup.args[\"Who\"]"},
@@ -96,8 +103,27 @@ func TestChatRules(t *testing.T) {
 		{"callback value with a space", false, with(func(a *chatv1.Approval) { a.Approve.Callback.Value = "run 1" }), "approval.approve.callback.value"},
 		{"callback action in the wrong case", false, with(func(a *chatv1.Approval) { a.Approve.Callback.Action = "Approve" }), "approval.approve.callback.action"},
 		{"callback action empty", false, with(func(a *chatv1.Approval) { a.Approve.Callback.Action = "" }), "approval.approve.callback.action"},
-		{"button url over http", false, with(func(a *chatv1.Approval) { a.Approve.Url = "http://example.com" }), "approval.approve.url"},
-		{"button url over https", true, with(func(a *chatv1.Approval) { a.Approve.Url = "https://example.com/x" }), ""},
+		{"link button over http", false, with(func(a *chatv1.Approval) {
+			a.Extra = []*chatv1.Button{{Label: plain("Docs"), Url: "http://example.com"}}
+		}), "approval.extra[0].url"},
+		{"link button over https", true, with(func(a *chatv1.Approval) {
+			a.Extra = []*chatv1.Button{{Label: plain("Docs"), Url: "https://example.com/x"}}
+		}), ""},
+		{"button with a callback and a url", false, with(func(a *chatv1.Approval) { a.Approve.Url = "https://example.com/x" }), "approval.approve"},
+		{"button with neither", false, with(func(a *chatv1.Approval) {
+			a.Extra = []*chatv1.Button{{Label: plain("Nothing")}}
+		}), "approval.extra[0]"},
+		{"button without a label", false, with(func(a *chatv1.Approval) { a.Extra = []*chatv1.Button{{Callback: &chatv1.Callback{Action: "x"}}} }), "approval.extra[0].label"},
+		{"approve that only links", false, with(func(a *chatv1.Approval) {
+			a.Approve = &chatv1.Button{Label: plain("Approve"), Url: "https://example.com/x"}
+		}), "approval"},
+		{"user mention", true, markup(&chatv1.Markup{Template: "hi", Mentions: []*chatv1.Mention{{Kind: &chatv1.Mention_User{User: "U0ALICE"}}}}), ""},
+		{"user mention that closes and opens markup", false, markup(&chatv1.Markup{Template: "hi", Mentions: []*chatv1.Mention{{Kind: &chatv1.Mention_User{User: "U1><!channel"}}}}), "approval.summary.markup.mentions[0].user"},
+		{"channel mention with a pipe", false, markup(&chatv1.Markup{Template: "hi", Mentions: []*chatv1.Mention{{Kind: &chatv1.Mention_Channel{Channel: "C1|x"}}}}), "approval.summary.markup.mentions[0].channel"},
+		{"empty mention", false, markup(&chatv1.Markup{Template: "hi", Mentions: []*chatv1.Mention{{}}}), "approval.summary.markup.mentions[0].kind"},
+		{"unspecified broadcast", false, markup(&chatv1.Markup{Template: "hi", Mentions: []*chatv1.Mention{{Kind: &chatv1.Mention_Broadcast{Broadcast: chatv1.Broadcast_BROADCAST_UNSPECIFIED}}}}), "approval.summary.markup.mentions[0].broadcast"},
+		{"undefined broadcast", false, markup(&chatv1.Markup{Template: "hi", Mentions: []*chatv1.Mention{{Kind: &chatv1.Mention_Broadcast{Broadcast: 9}}}}), "approval.summary.markup.mentions[0].broadcast"},
+		{"here broadcast", true, markup(&chatv1.Markup{Template: "hi", Mentions: []*chatv1.Mention{{Kind: &chatv1.Mention_Broadcast{Broadcast: chatv1.Broadcast_BROADCAST_HERE}}}}), ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()

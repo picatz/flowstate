@@ -576,12 +576,14 @@ type isMention_Kind interface {
 }
 
 type Mention_User struct {
-	// user is a platform user identifier.
+	// user is a platform user identifier. The alphabet excludes every character
+	// platform markup uses, so an identifier cannot close the mention it is
+	// written into and open another.
 	User string `protobuf:"bytes,1,opt,name=user,proto3,oneof"`
 }
 
 type Mention_Channel struct {
-	// channel is a platform channel identifier.
+	// channel is a platform channel identifier, bounded like user.
 	Channel string `protobuf:"bytes,2,opt,name=channel,proto3,oneof"`
 }
 
@@ -1689,21 +1691,23 @@ const file_flowstate_chat_v1_chat_proto_rawDesc = "" +
 	"\bmentions\x18\x03 \x03(\v2\x1a.flowstate.chat.v1.MentionB\b\xbaH\x05\x92\x01\x02\x10\bR\bmentions\x1a7\n" +
 	"\tArgsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x81\x01\n" +
-	"\aMention\x12\x14\n" +
-	"\x04user\x18\x01 \x01(\tH\x00R\x04user\x12\x1a\n" +
-	"\achannel\x18\x02 \x01(\tH\x00R\achannel\x12<\n" +
-	"\tbroadcast\x18\x03 \x01(\x0e2\x1c.flowstate.chat.v1.BroadcastH\x00R\tbroadcastB\x06\n" +
-	"\x04kind\"t\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xd2\x01\n" +
+	"\aMention\x123\n" +
+	"\x04user\x18\x01 \x01(\tB\x1d\xbaH\x1ar\x18\x10\x01\x18@2\x12^[A-Za-z0-9._:-]+$H\x00R\x04user\x129\n" +
+	"\achannel\x18\x02 \x01(\tB\x1d\xbaH\x1ar\x18\x10\x01\x18@2\x12^[A-Za-z0-9._:-]+$H\x00R\achannel\x12H\n" +
+	"\tbroadcast\x18\x03 \x01(\x0e2\x1c.flowstate.chat.v1.BroadcastB\n" +
+	"\xbaH\a\x82\x01\x04\x10\x01 \x00H\x00R\tbroadcastB\r\n" +
+	"\x04kind\x12\x05\xbaH\x02\b\x01\"t\n" +
 	"\bCallback\x124\n" +
 	"\x06action\x18\x01 \x01(\tB\x1c\xbaH\x19r\x17\x10\x01\x18@2\x11^[a-z][a-z0-9_]*$R\x06action\x122\n" +
-	"\x05value\x18\x02 \x01(\tB\x1c\xbaH\x19r\x17\x18\xe8\a2\x12^[A-Za-z0-9._:-]*$R\x05value\"\x82\x02\n" +
-	"\x06Button\x12-\n" +
-	"\x05label\x18\x01 \x01(\v2\x17.flowstate.chat.v1.TextR\x05label\x127\n" +
+	"\x05value\x18\x02 \x01(\tB\x1c\xbaH\x19r\x17\x18\xe8\a2\x12^[A-Za-z0-9._:-]*$R\x05value\"\x9f\x03\n" +
+	"\x06Button\x125\n" +
+	"\x05label\x18\x01 \x01(\v2\x17.flowstate.chat.v1.TextB\x06\xbaH\x03\xc8\x01\x01R\x05label\x127\n" +
 	"\bcallback\x18\x02 \x01(\v2\x1b.flowstate.chat.v1.CallbackR\bcallback\x12*\n" +
-	"\x03url\x18\x03 \x01(\tB\x18\xbaH\x15\xd8\x01\x01r\x10\x18\xb8\x17:\bhttps://\x88\x01\x01R\x03url\x12.\n" +
-	"\x05style\x18\x04 \x01(\x0e2\x18.flowstate.chat.v1.StyleR\x05style\x124\n" +
-	"\aconfirm\x18\x05 \x01(\v2\x1a.flowstate.chat.v1.ConfirmR\aconfirm\"\xc5\x01\n" +
+	"\x03url\x18\x03 \x01(\tB\x18\xbaH\x15\xd8\x01\x01r\x10\x18\xb8\x17:\bhttps://\x88\x01\x01R\x03url\x128\n" +
+	"\x05style\x18\x04 \x01(\x0e2\x18.flowstate.chat.v1.StyleB\b\xbaH\x05\x82\x01\x02\x10\x01R\x05style\x124\n" +
+	"\aconfirm\x18\x05 \x01(\v2\x1a.flowstate.chat.v1.ConfirmR\aconfirm:\x88\x01\xbaH\x84\x01\x1a\x81\x01\n" +
+	"\x17button.callback_xor_url\x12>a button carries a callback or a url, not both and not neither\x1a&has(this.callback) != (this.url != '')\"\xc5\x01\n" +
 	"\aConfirm\x12-\n" +
 	"\x05title\x18\x01 \x01(\v2\x17.flowstate.chat.v1.TextR\x05title\x12+\n" +
 	"\x04text\x18\x02 \x01(\v2\x17.flowstate.chat.v1.TextR\x04text\x121\n" +
@@ -1725,7 +1729,7 @@ const file_flowstate_chat_v1_chat_proto_rawDesc = "" +
 	"\x06status\x18\x02 \x01(\v2\x19.flowstate.chat.v1.StatusH\x00R\x06status\x12*\n" +
 	"\x03log\x18\x03 \x01(\v2\x16.flowstate.chat.v1.LogH\x00R\x03log\x123\n" +
 	"\x06notice\x18\x04 \x01(\v2\x19.flowstate.chat.v1.NoticeH\x00R\x06noticeB\r\n" +
-	"\x04kind\x12\x05\xbaH\x02\b\x01\"\x94\x03\n" +
+	"\x04kind\x12\x05\xbaH\x02\b\x01\"\xc4\x04\n" +
 	"\bApproval\x125\n" +
 	"\x05title\x18\x01 \x01(\v2\x17.flowstate.chat.v1.TextB\x06\xbaH\x03\xc8\x01\x01R\x05title\x121\n" +
 	"\asummary\x18\x02 \x01(\v2\x17.flowstate.chat.v1.TextR\asummary\x12:\n" +
@@ -1734,17 +1738,18 @@ const file_flowstate_chat_v1_chat_proto_rawDesc = "" +
 	"\aapprove\x18\x04 \x01(\v2\x19.flowstate.chat.v1.ButtonB\x06\xbaH\x03\xc8\x01\x01R\aapprove\x129\n" +
 	"\x06reject\x18\x05 \x01(\v2\x19.flowstate.chat.v1.ButtonB\x06\xbaH\x03\xc8\x01\x01R\x06reject\x129\n" +
 	"\x05extra\x18\x06 \x03(\v2\x19.flowstate.chat.v1.ButtonB\b\xbaH\x05\x92\x01\x02\x10\x03R\x05extra\x12/\n" +
-	"\x06footer\x18\a \x01(\v2\x17.flowstate.chat.v1.TextR\x06footer\"\xc3\x02\n" +
-	"\x06Status\x12.\n" +
-	"\x05state\x18\x01 \x01(\x0e2\x18.flowstate.chat.v1.StateR\x05state\x125\n" +
+	"\x06footer\x18\a \x01(\v2\x17.flowstate.chat.v1.TextR\x06footer:\xad\x01\xbaH\xa9\x01\x1a\xa6\x01\n" +
+	"\x19approval.decision_buttons\x12Papprove and reject each carry a callback, since a url button reports no decision\x1a7has(this.approve.callback) && has(this.reject.callback)\"\xcd\x02\n" +
+	"\x06Status\x128\n" +
+	"\x05state\x18\x01 \x01(\x0e2\x18.flowstate.chat.v1.StateB\b\xbaH\x05\x82\x01\x02\x10\x01R\x05state\x125\n" +
 	"\x05title\x18\x02 \x01(\v2\x17.flowstate.chat.v1.TextB\x06\xbaH\x03\xc8\x01\x01R\x05title\x12/\n" +
 	"\x06detail\x18\x03 \x01(\v2\x17.flowstate.chat.v1.TextR\x06detail\x12:\n" +
 	"\x06fields\x18\x04 \x03(\v2\x18.flowstate.chat.v1.FieldB\b\xbaH\x05\x92\x01\x02\x10\n" +
 	"R\x06fields\x127\n" +
 	"\bprogress\x18\x05 \x01(\v2\x1b.flowstate.chat.v1.ProgressR\bprogress\x12,\n" +
-	"\x04link\x18\x06 \x01(\tB\x18\xbaH\x15\xd8\x01\x01r\x10\x18\xb8\x17:\bhttps://\x88\x01\x01R\x04link\"\xda\x01\n" +
-	"\x03Log\x12.\n" +
-	"\x05level\x18\x01 \x01(\x0e2\x18.flowstate.chat.v1.LevelR\x05level\x129\n" +
+	"\x04link\x18\x06 \x01(\tB\x18\xbaH\x15\xd8\x01\x01r\x10\x18\xb8\x17:\bhttps://\x88\x01\x01R\x04link\"\xe4\x01\n" +
+	"\x03Log\x128\n" +
+	"\x05level\x18\x01 \x01(\x0e2\x18.flowstate.chat.v1.LevelB\b\xbaH\x05\x82\x01\x02\x10\x01R\x05level\x129\n" +
 	"\amessage\x18\x02 \x01(\v2\x17.flowstate.chat.v1.TextB\x06\xbaH\x03\xc8\x01\x01R\amessage\x12+\n" +
 	"\x04code\x18\x03 \x01(\v2\x17.flowstate.chat.v1.CodeR\x04code\x12;\n" +
 	"\acontext\x18\x04 \x03(\v2\x17.flowstate.chat.v1.TextB\b\xbaH\x05\x92\x01\x02\x10\x05R\acontext\"\xf1\x01\n" +
@@ -1754,25 +1759,25 @@ const file_flowstate_chat_v1_chat_proto_rawDesc = "" +
 	"R\x04body\x12=\n" +
 	"\abuttons\x18\x03 \x03(\v2\x19.flowstate.chat.v1.ButtonB\b\xbaH\x05\x92\x01\x02\x10\x05R\abuttons\x12:\n" +
 	"\x06fields\x18\x04 \x03(\v2\x18.flowstate.chat.v1.FieldB\b\xbaH\x05\x92\x01\x02\x10\n" +
-	"R\x06fields\"N\n" +
+	"R\x06fields\"l\n" +
 	"\n" +
-	"MessageRef\x12\x18\n" +
-	"\achannel\x18\x01 \x01(\tR\achannel\x12\x0e\n" +
-	"\x02id\x18\x02 \x01(\tR\x02id\x12\x16\n" +
-	"\x06thread\x18\x03 \x01(\tR\x06thread\"q\n" +
-	"\x05Actor\x12\x1a\n" +
-	"\bplatform\x18\x01 \x01(\tR\bplatform\x12\x1c\n" +
-	"\tworkspace\x18\x02 \x01(\tR\tworkspace\x12\x12\n" +
-	"\x04user\x18\x03 \x01(\tR\x04user\x12\x1a\n" +
-	"\busername\x18\x04 \x01(\tR\busername\"\x9b\x04\n" +
+	"MessageRef\x12\"\n" +
+	"\achannel\x18\x01 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x02R\achannel\x12\x18\n" +
+	"\x02id\x18\x02 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x02R\x02id\x12 \n" +
+	"\x06thread\x18\x03 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x02R\x06thread\"\x99\x01\n" +
+	"\x05Actor\x12$\n" +
+	"\bplatform\x18\x01 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x02R\bplatform\x12&\n" +
+	"\tworkspace\x18\x02 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x02R\tworkspace\x12\x1c\n" +
+	"\x04user\x18\x03 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x02R\x04user\x12$\n" +
+	"\busername\x18\x04 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x02R\busername\"\xbd\x04\n" +
 	"\vInteraction\x12.\n" +
 	"\x05actor\x18\x01 \x01(\v2\x18.flowstate.chat.v1.ActorR\x05actor\x127\n" +
 	"\amessage\x18\x02 \x01(\v2\x1d.flowstate.chat.v1.MessageRefR\amessage\x127\n" +
-	"\bcallback\x18\x03 \x01(\v2\x1b.flowstate.chat.v1.CallbackR\bcallback\x127\n" +
-	"\x04kind\x18\x04 \x01(\x0e2#.flowstate.chat.v1.Interaction.KindR\x04kind\x12F\n" +
-	"\x04form\x18\x05 \x03(\v2(.flowstate.chat.v1.Interaction.FormEntryB\b\xbaH\x05\x9a\x01\x02\x10@R\x04form\x12\x1d\n" +
+	"\bcallback\x18\x03 \x01(\v2\x1b.flowstate.chat.v1.CallbackR\bcallback\x12A\n" +
+	"\x04kind\x18\x04 \x01(\x0e2#.flowstate.chat.v1.Interaction.KindB\b\xbaH\x05\x82\x01\x02\x10\x01R\x04kind\x12T\n" +
+	"\x04form\x18\x05 \x03(\v2(.flowstate.chat.v1.Interaction.FormEntryB\x16\xbaH\x13\x9a\x01\x10\x10@\"\x05r\x03\x18\x80\x02*\x05r\x03\x18\xa0\x1fR\x04form\x12'\n" +
 	"\n" +
-	"respond_to\x18\x06 \x01(\tR\trespondTo\x1a7\n" +
+	"respond_to\x18\x06 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x10R\trespondTo\x1a7\n" +
 	"\tFormEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x90\x01\n" +

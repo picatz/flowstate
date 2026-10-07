@@ -58,12 +58,14 @@ func init() {
 				" platform markup.\n",
 		},
 		{
-			Name:    "flowstate.chat.v1.Mention.user",
-			Leading: " user is a platform user identifier.\n",
+			Name: "flowstate.chat.v1.Mention.user",
+			Leading: " user is a platform user identifier. The alphabet excludes every character\n" +
+				" platform markup uses, so an identifier cannot close the mention it is\n" +
+				" written into and open another.\n",
 		},
 		{
 			Name:    "flowstate.chat.v1.Mention.channel",
-			Leading: " channel is a platform channel identifier.\n",
+			Leading: " channel is a platform channel identifier, bounded like user.\n",
 		},
 		{
 			Name:    "flowstate.chat.v1.Mention.broadcast",

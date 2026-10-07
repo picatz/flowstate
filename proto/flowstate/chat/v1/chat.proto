@@ -72,14 +72,18 @@ message Markup {
 message Mention {
   // kind selects the mention target.
   oneof kind {
-    // user is a platform user identifier.
-    string user = 1;
+    option (buf.validate.oneof).required = true;
 
-    // channel is a platform channel identifier.
-    string channel = 2;
+    // user is a platform user identifier. The alphabet excludes every character
+    // platform markup uses, so an identifier cannot close the mention it is
+    // written into and open another.
+    string user = 1 [(buf.validate.field).string = {min_len: 1, max_len: 64, pattern: "^[A-Za-z0-9._:-]+$"}];
+
+    // channel is a platform channel identifier, bounded like user.
+    string channel = 2 [(buf.validate.field).string = {min_len: 1, max_len: 64, pattern: "^[A-Za-z0-9._:-]+$"}];
 
     // broadcast notifies everyone present in the conversation.
-    Broadcast broadcast = 3;
+    Broadcast broadcast = 3 [(buf.validate.field).enum = {defined_only: true, not_in: [0]}];
   }
 }
 
@@ -120,8 +124,14 @@ enum Style {
 
 // Button is a pressable control that either reports a [Callback] or opens a URL.
 message Button {
+  option (buf.validate.message).cel = {
+    id: "button.callback_xor_url"
+    message: "a button carries a callback or a url, not both and not neither"
+    expression: "has(this.callback) != (this.url != '')"
+  };
+
   // label is the text on the button.
-  Text label = 1;
+  Text label = 1 [(buf.validate.field).required = true];
 
   // callback is reported to the workflow when the button is pressed.
   Callback callback = 2;
@@ -133,7 +143,7 @@ message Button {
   ];
 
   // style is how prominently the button renders.
-  Style style = 4;
+  Style style = 4 [(buf.validate.field).enum.defined_only = true];
 
   // confirm asks the person to confirm before the press is reported.
   Confirm confirm = 5;
@@ -247,6 +257,12 @@ message Card {
 
 // Approval asks a person to approve or reject, the human gate of a workflow.
 message Approval {
+  option (buf.validate.message).cel = {
+    id: "approval.decision_buttons"
+    message: "approve and reject each carry a callback, since a url button reports no decision"
+    expression: "has(this.approve.callback) && has(this.reject.callback)"
+  };
+
   // title is the heading of the request.
   Text title = 1 [(buf.validate.field).required = true];
 
@@ -273,7 +289,7 @@ message Approval {
 // updated to once decided.
 message Status {
   // state is where the work stands.
-  State state = 1;
+  State state = 1 [(buf.validate.field).enum.defined_only = true];
 
   // title names the work.
   Text title = 2 [(buf.validate.field).required = true];
@@ -297,7 +313,7 @@ message Status {
 // Log reports a leveled message, optionally with code and context.
 message Log {
   // level is the severity.
-  Level level = 1;
+  Level level = 1 [(buf.validate.field).enum.defined_only = true];
 
   // message is the log line.
   Text message = 2 [(buf.validate.field).required = true];
@@ -327,28 +343,28 @@ message Notice {
 // MessageRef addresses a posted message so it can be updated or replied to.
 message MessageRef {
   // channel is the conversation (Slack channel, Discord channel_id).
-  string channel = 1;
+  string channel = 1 [(buf.validate.field).string.max_len = 256];
 
   // id is the message (Slack ts, Discord message_id).
-  string id = 2;
+  string id = 2 [(buf.validate.field).string.max_len = 256];
 
   // thread is the thread the message is in (Slack thread_ts, Discord thread_id).
-  string thread = 3;
+  string thread = 3 [(buf.validate.field).string.max_len = 256];
 }
 
 // Actor is the person behind an [Interaction], as the platform reports them.
 message Actor {
   // platform names the chat platform, such as `slack`.
-  string platform = 1;
+  string platform = 1 [(buf.validate.field).string.max_len = 256];
 
   // workspace is the platform's tenant (Slack team, Discord guild).
-  string workspace = 2;
+  string workspace = 2 [(buf.validate.field).string.max_len = 256];
 
   // user is the platform's stable user identifier.
-  string user = 3;
+  string user = 3 [(buf.validate.field).string.max_len = 256];
 
   // username is the display handle, informational only.
-  string username = 4;
+  string username = 4 [(buf.validate.field).string.max_len = 256];
 }
 
 // Interaction is what an adapter documents a platform's inbound event as. It is
@@ -389,11 +405,15 @@ message Interaction {
   Callback callback = 3;
 
   // kind is what the person did.
-  Kind kind = 4;
+  Kind kind = 4 [(buf.validate.field).enum.defined_only = true];
 
   // form holds submitted field values, at most 64.
-  map<string, string> form = 5 [(buf.validate.field).map.max_pairs = 64];
+  map<string, string> form = 5 [(buf.validate.field).map = {
+    max_pairs: 64
+    keys: {string: {max_len: 256}}
+    values: {string: {max_len: 4000}}
+  }];
 
   // respond_to is where to reply (Slack response_url, Discord interaction token).
-  string respond_to = 6;
+  string respond_to = 6 [(buf.validate.field).string.max_len = 2048];
 }
