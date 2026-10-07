@@ -426,6 +426,12 @@ type Issuer struct {
 	signingTimeout time.Duration
 	clock          func() time.Time
 
+	// tenant and tenantScoped say whose issuer this is. A scoped issuer signs
+	// for one tenant's workloads and refuses every other; an unscoped one, the
+	// library default, signs for any. See [WithTenant].
+	tenant       string
+	tenantScoped bool
+
 	// declared is the closed set of extension claim names an assertion minted
 	// here may carry, sorted. Nil means none: a deployment that declares
 	// nothing mints nothing beyond the claims the issuer sets itself. See
@@ -622,6 +628,20 @@ func WithIssuerClock(clock func() time.Time) IssuerOption {
 	}
 }
 
+// WithTenant scopes the issuer to one tenant, a Flowstate namespace, or to the
+// default tenant when it is empty. A scoped issuer mints only for workloads of
+// that namespace and refuses any other with [ErrTenantMismatch], so the "iss"
+// a relying party pinned for a tenant is never on an assertion about another.
+//
+// The issuer URL is the caller's to give: [FederationPolicy] derives one per
+// tenant ([FederationPolicy.TenantIssuerURL]) and passes this option beside it.
+func WithTenant(tenant string) IssuerOption {
+	return func(i *Issuer) {
+		i.tenant = tenant
+		i.tenantScoped = true
+	}
+}
+
 // NewIssuer returns an issuer that mints assertions signed with the given key.
 //
 // # Publish-only mode
@@ -664,6 +684,10 @@ func NewIssuer(issuerURL string, key SigningKey, opts ...IssuerOption) (*Issuer,
 
 	if err := validateIssuerURL(issuer.url); err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrInvalidPolicy, err)
+	}
+
+	if err := ValidateNamespace(issuer.tenant); err != nil {
+		return nil, fmt.Errorf("%w: issuer tenant: %w", ErrInvalidPolicy, err)
 	}
 
 	switch {
@@ -843,6 +867,10 @@ func validateDeclaredClaims(names []string) ([]string, error) {
 // carry, sorted. It is what [WithDeclaredClaims] was given, and what the
 // discovery document advertises beyond the claims every assertion has.
 func (i *Issuer) DeclaredClaims() []string { return slices.Clone(i.declared) }
+
+// Tenant reports the tenant this issuer is scoped to, and whether it is scoped
+// at all. The empty tenant of a scoped issuer is the default tenant.
+func (i *Issuer) Tenant() (string, bool) { return i.tenant, i.tenantScoped }
 
 // URL returns the issuer identifier, which is the "iss" claim of every assertion
 // it mints.
@@ -1065,6 +1093,13 @@ func (i *Issuer) mintFor(ctx context.Context, identity WorkloadIdentity, ref Ste
 	i.mu.RUnlock()
 	if publishOnly {
 		return Assertion{}, fmt.Errorf("%w: this issuer only publishes keys", ErrNoSigningKey)
+	}
+
+	// One tenant's issuer signs for that tenant alone. Checked before anything
+	// is built from the identity, and without echoing its namespace, which
+	// nothing has validated on this path yet.
+	if i.tenantScoped && identity.Namespace != i.tenant {
+		return Assertion{}, fmt.Errorf("%w: the issuer %s signs for %s only", ErrTenantMismatch, i.url, tenantLabel(i.tenant))
 	}
 
 	// The assertion has no "act" claim, so one minted for a delegated caller

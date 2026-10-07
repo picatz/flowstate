@@ -795,15 +795,27 @@ change is unaudited by Flowstate.
 
 ## 7. The issuer as a single point of failure
 
-**What compromise yields.** The issuer's private key signs the workload assertions
-Flowstate presents outbound. Anyone holding it can mint an assertion for any
-subject, namespace, workflow, run and step this deployment could, and present it to
-every relying party that trusts the published key set. That is the outbound half of
-the entire federation story in one file. The server that publishes the key set does
-not hold it: `flow server --identity-key` accepts only the PKIX public key and
-refuses a private one at start-up, so the process facing callers never reads
-signing material (`auth.NewIssuer` in publish-only mode; `cmd/flow` `identityPublisher`).
-Workers sign, so with a key file the key is on every worker that federates. With
+**What compromise yields.** A tenant's private key signs the workload assertions
+Flowstate presents outbound for that tenant. Anyone holding it can mint an assertion
+for any subject, workflow, run and step that tenant could, and present it to every
+relying party that trusts that tenant's issuer. It cannot mint one that verifies
+under another tenant's: each tenant listed in `federation.tenants` is its own issuer
+(`https://HOST/tenants/NAMESPACE`) with its own key set, a worker holds only its own
+tenant's key, and a relying party pins that tenant's `iss`. The server's key set for
+a tenant never contains another tenant's key, and the server refuses to start with
+one public key under two tenants. A worker's issuer also refuses to sign for any
+namespace but its own, so a mint for another tenant fails before a signature is made;
+that check is defence in depth, since a worker whose code is not ours signs by hand,
+and what stops it is that the other tenant's issuer publishes a different key
+(`auth.TenantIssuers`, `auth.WithTenant`; `TestTenantKeyCannotForgeAnotherTenantsIssuer`).
+The deployment's own issuer URL is the default tenant's, the runs that carry no
+namespace, and its key is the same kind of single point for those runs.
+
+The server that publishes the key sets does not hold any of them: `flow server
+--identity-key` and `--identity-key-dir` accept only PKIX public keys and refuse a
+private one at start-up, so the process facing callers never reads signing material
+(`auth.NewIssuer` in publish-only mode; `cmd/flow` `identityPublisher`).
+Workers sign, so with a key file the tenant's key is on every worker of that tenant. With
 `--identity-signer vault-transit://…` it is not: the key lives in a Vault or OpenBao
 Transit engine, non-exportable, and a worker holds only a token that may ask Transit
 to sign (`update` on `transit/sign/KEY`) and read the key's public versions; the
@@ -813,9 +825,12 @@ valid, which Vault's audit log records and revoking the token ends, rather than 
 key that signs anywhere forever; it does not narrow what those assertions may claim.
 The deployment guide recommends this shape past a single VM
 ([signing keys in Vault Transit](docs/DEPLOYMENT.md#signing-keys-in-vault-transit)).
-One shared signer across tenant workers remains a documented limit, and federation is a deployment-wide trust
-domain until per-tenant issuers land, so one tenant's worker compromise reaches every
-tenant's federated credentials.
+A tenant's worker is isolated from the others' keys only if it is deployed that way:
+one worker, one tenant, one key (`flow worker --tenant`). A shared worker with no
+`--tenant` is the default tenant's and signs for no named one, so it cannot be made
+to serve several tenants' federation at once. A tenant that shares a *worker process*
+with another still shares its key, which is what Tier 2 exists to end
+([docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#per-tenant-issuers)).
 
 **What bounds it today.** Assertions are short-lived by default and cannot be
 configured long: `DefaultAssertionLifetime` is five minutes and

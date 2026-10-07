@@ -1444,14 +1444,12 @@ files. [Secrets and credentials](SECRETS.md#signing-keys) covers rotation, which
 restarts both. Past one VM, [keep the key in Vault Transit](#signing-keys-in-vault-transit)
 instead of a file.
 
-The server holds no signing key, but the signing key is still shared: every
-worker that federates holds the same private key, and whoever holds it can sign
-an assertion for any subject or namespace
-([THREAT_MODEL.md §7](../THREAT_MODEL.md#7-the-issuer-as-a-single-point-of-failure)).
-So a compromise of any one tenant's worker reaches every tenant's federated
-credentials, because federation is one deployment-wide trust domain until
-per-tenant issuers land. The per-user isolation above keeps secret files apart;
-it does not narrow federation.
+The server holds no signing key. This shape has one key, so it federates one
+tenant, the default one: runs that carry no namespace, signed under
+`federation.issuer` itself. A deployment with named tenants gives each its own
+issuer and its own key, so that a compromise of one tenant's worker reaches that
+tenant's federated credentials and no other's:
+[per-tenant issuers](#per-tenant-issuers) below.
 
 `FLOWSTATE_IDENTITY_KEY` holds one path, and a rotation needs two for its
 overlap, so for that window the keys go on each unit's command line, new first.
@@ -1503,17 +1501,113 @@ finish it, and this recipe assumes the first:
 
 To reach Tier 2 on this shape: run a worker template per tenant, each as its
 own system user with its own secret and state directories (sharing only
-`flowstate-keys`, so one tenant's worker cannot read another's secrets, though
-federation stays shared as above), its own `TEMPORAL_NAMESPACE`, and its own
+`flowstate-keys`, so one tenant's worker cannot read another's secrets, and
+giving each its own signing key, as [per-tenant issuers](#per-tenant-issuers)
+describes), its own `TEMPORAL_NAMESPACE`, and its own
 `--egress-policy` / `--auth-policy` files, and map each tenant onto its namespace in the trust
 policy the server loads (`tenancy:` under `--auth-policy`, `auth.Tenancy` /
 `temporalclient.Pool`).
 
+### Per-tenant issuers
+
+Federation is per tenant. A tenant is a Flowstate namespace, and each one the trust
+policy lists is its own OIDC issuer, `https://HOST/tenants/NAMESPACE`, with its own
+discovery document, its own key set, and its own `iss` on every assertion minted
+for its runs. A relying party pins that URL: an AWS IAM OIDC provider, a Google
+workload identity pool provider, or an Azure federated credential configured for
+`acme` accepts `acme`'s assertions and has never heard of `globex`'s, because they
+come from a different issuer signed with a different key. The deployment's own
+`federation.issuer` stays the issuer of the default tenant, the runs that carry no
+namespace.
+
+```yaml
+federation:
+  issuer: https://flowstate.example.com
+  tenants: [acme, globex]
+  targets:
+    - name: aws-acme
+      aws:
+        role_arn: arn:aws:iam::123456789012:role/flowstate-acme
+        audience: sts.amazonaws.com
+```
+
+`tenants` is the whole roster, at most 256 names, each a namespace as the rest of
+Flowstate spells one (lowercase letters, digits and dashes, no leading dash). A
+namespace not listed has no issuer, no key and no URL: a worker for it does not
+start, and the server answers 404 for it, the same 404 it gives a path that is not
+a tenant at all, so the response does not say which tenants exist.
+
+Each tenant's key is its own, and each process holds only what it needs:
+
+- **A worker serves one tenant** (`flow worker --tenant acme`) and holds that
+  tenant's private key in `--identity-key`, or names that tenant's Transit key in
+  `--identity-signer`. Its issuer signs for `acme` and refuses an identity from any
+  other namespace, so a mint for `globex` fails before anything is signed. A worker
+  with no `--tenant` is the default tenant's, and signs for no named one. A `flow
+  run local` rehearsal signs for its `--as-namespace` the same way.
+- **The server holds public keys only.** `--identity-key-dir DIR` is a directory
+  of `DIR/TENANT/KEY.pem`, each a PKIX public key PEM (`flow keys public --in
+  KEY.pem --pem`; the file's base name is the key id, as it is for a worker), and
+  the server publishes each tenant's at that tenant's issuer. The default tenant's
+  keys are `--identity-key`, as before.
+
+```console
+$ flow keys generate --out /etc/flowstate/acme/identity-2026-10.pem
+$ sudo install -d /etc/flowstate/public-keys/acme
+$ flow keys public --in /etc/flowstate/acme/identity-2026-10.pem --pem \
+    | sudo tee /etc/flowstate/public-keys/acme/identity-2026-10.pem >/dev/null
+
+# acme's worker: its own key, and only its own
+$ flow worker --tenant acme --task-queue-prefix flowstate-run \
+    --identity-key /etc/flowstate/acme/identity-2026-10.pem
+
+# the server: every tenant's public keys, no private key anywhere
+$ flow server --auth-policy /etc/flowstate/policy.yaml \
+    --rpc-resource https://flowstate.example.com/rpc \
+    --identity-key-dir /etc/flowstate/public-keys
+```
+
+The server refuses to start rather than publish something it was not told to: a
+listed tenant with no key, a key directory for a tenant the policy does not list,
+a private key, more than 16 keys for one tenant, and one public key under two
+tenants (a key that verified at both issuers would be one worker able to sign for
+either). Its start-up log has one line per issuer, with the discovery URL to
+configure the relying party with.
+
+Rotation is the same restart it is for one key, per tenant: add the new public key
+to that tenant's directory, restart the server, then that tenant's worker with the
+new key first, and drop the old one after `federation.key_retention`. Adding a
+tenant is a policy edit plus a key directory, and a server restart.
+
+Nothing here is a flag-day for a deployment with no named tenants: the default
+tenant's issuer URL, key flags and assertions are what they were. A deployment
+whose runs carry namespaces did federate under one issuer before and must now list
+them, since an assertion for a namespace the policy does not list is refused. The
+subject (`flowstate:NAMESPACE/DEPLOYMENT/WORKFLOW/STEP`) and the `namespace` claim
+are unchanged; what changes is `iss`, so every relying party is reconfigured with
+the tenant's issuer URL once.
+
+With Vault or OpenBao Transit, one key per tenant is the same shape, and
+`{tenant}` in the key name makes one URL name them all, so the worker's and the
+server's units cannot disagree about whose key is whose:
+
+```ini
+FLOWSTATE_IDENTITY_SIGNER=vault-transit://vault.internal.example.com:8200/flowstate-{tenant}
+```
+
+A worker fills it with its `--tenant` (and a default-tenant worker, having no name
+to fill it with, refuses it), and the server fills it once for each tenant in
+`federation.tenants` and reads their public versions. Grant each tenant's worker
+`update` on its own `transit/sign/flowstate-TENANT` and nothing else, and the
+Vault policy, not Flowstate, is what keeps its token off another tenant's key. A
+`{tenant}` signer names the named tenants only; the default tenant's key is
+`--identity-key`, or a signer URL without the placeholder.
+
 ### Signing keys in Vault Transit
 
 A key file is the right shape for one VM and the wrong one past it. The
-`--identity-key` file is on every worker that federates, in each one's memory, and
-a compromise of any of them is a compromise of the issuer
+`--identity-key` file is on every worker of its tenant, in each one's memory, and
+a compromise of any of them is a compromise of that tenant's issuer
 ([THREAT_MODEL.md §7](../THREAT_MODEL.md#7-the-issuer-as-a-single-point-of-failure)).
 Past a single VM, **keep the key in a Vault or OpenBao Transit engine instead**: the
 key is created non-exportable, Flowstate asks Transit to sign, and the private half

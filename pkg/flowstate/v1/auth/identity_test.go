@@ -296,6 +296,7 @@ func TestFederationHTTPClientIsUsed(t *testing.T) {
 
 	policy, err := auth.ParseFederationPolicy([]byte(`
 issuer: https://flowstate.example.com
+tenants: [acme]
 declared_claims: [repository]
 allow: ['true']
 targets:
@@ -314,6 +315,7 @@ targets:
 	broker, err := policy.Broker(key,
 		auth.WithFederationHTTPClient(&http.Client{Transport: transport}),
 		auth.WithFederationClock(clock.Now),
+		auth.WithFederationTenant("acme"),
 	)
 	require.NoError(t, err)
 

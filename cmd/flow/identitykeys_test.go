@@ -70,17 +70,33 @@ func federatingPolicy() *auth.Policy {
 // Through the mux rather than off the issuer, because the acceptance is about
 // what a relying party can fetch: an issuer holding a key it does not serve
 // would satisfy an in-process assertion and none of the ones that matter.
-func servedKeyIDs(t *testing.T, issuer *auth.Issuer) []string {
+func servedKeyIDs(t *testing.T, issuers *auth.TenantIssuers) []string {
 	t.Helper()
 
-	handler := serverHandler(discardLogger(), refusingVerifier{}, nil, issuer, "", http.HandlerFunc(
+	handler := serverHandler(discardLogger(), refusingVerifier{}, nil, issuers, "", http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) },
 	), nil, nil)
+
+	return fetchKeyIDs(t, handler, issuers.Default().JWKSPath())
+}
+
+// workerKeyIDs is the key set a worker's own issuer would publish, fetched the
+// same way. A worker serves nothing to relying parties, so this is the issuer's
+// handler directly: it is what the key set of a server given the same keys must
+// equal.
+func workerKeyIDs(t *testing.T, issuer *auth.Issuer) []string {
+	t.Helper()
+
+	return fetchKeyIDs(t, issuer.Handler(), issuer.JWKSPath())
+}
+
+func fetchKeyIDs(t *testing.T, handler http.Handler, path string) []string {
+	t.Helper()
 
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
 
-	response, err := server.Client().Get(server.URL + issuer.JWKSPath())
+	response, err := server.Client().Get(server.URL + path)
 	require.NoError(t, err)
 	defer response.Body.Close()
 	require.Equal(t, http.StatusOK, response.StatusCode)
@@ -111,13 +127,13 @@ func TestIdentityKeysPublishEveryNamedKeyAndSignWithTheFirst(t *testing.T) {
 		oldest = writeIdentityPublicKey(t, dir, "2026-07")
 	)
 
-	broker, err := identityBroker(authFlags{identityKeyPaths: []string{fresh, older, oldest}}, federatingPolicy())
+	broker, err := identityBroker(authFlags{identityKeyPaths: []string{fresh, older, oldest}}, federatingPolicy(), "")
 	require.NoError(t, err)
 	require.NotNil(t, broker)
 
 	assert.Equal(t, "2026-09", broker.Issuer().ActiveKeyID(),
 		"the first --identity-key signs; a later one is published for verification only")
-	assert.Equal(t, []string{"2026-09", "2026-08", "2026-07"}, servedKeyIDs(t, broker.Issuer()),
+	assert.Equal(t, []string{"2026-09", "2026-08", "2026-07"}, workerKeyIDs(t, broker.Issuer()),
 		"every named key is published, so assertions signed before a restart still verify")
 	assert.Equal(t, []string{"2026-08", "2026-07"}, verifyOnlyKeyIDs(broker.Issuer()),
 		"the start-up line names the keys this process publishes but does not sign with")
@@ -128,11 +144,11 @@ func TestIdentityKeysPublishEveryNamedKeyAndSignWithTheFirst(t *testing.T) {
 func TestOneIdentityKeyIsUnchanged(t *testing.T) {
 	only := writeIdentityKey(t, t.TempDir(), "2026-09")
 
-	broker, err := identityBroker(authFlags{identityKeyPaths: []string{only}}, federatingPolicy())
+	broker, err := identityBroker(authFlags{identityKeyPaths: []string{only}}, federatingPolicy(), "")
 	require.NoError(t, err)
 
 	assert.Equal(t, "2026-09", broker.Issuer().ActiveKeyID())
-	assert.Equal(t, []string{"2026-09"}, servedKeyIDs(t, broker.Issuer()))
+	assert.Equal(t, []string{"2026-09"}, workerKeyIDs(t, broker.Issuer()))
 	assert.Empty(t, verifyOnlyKeyIDs(broker.Issuer()))
 }
 
@@ -190,7 +206,7 @@ func TestIdentityKeysRefuseRatherThanSkip(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			broker, err := identityBroker(authFlags{identityKeyPaths: tc.paths}, tc.policy)
+			broker, err := identityBroker(authFlags{identityKeyPaths: tc.paths}, tc.policy, "")
 
 			require.Error(t, err, "a key that cannot be published must refuse start-up")
 			require.Nil(t, broker)
@@ -209,7 +225,7 @@ func TestTwoIdentityKeysWithOneIDAreRefused(t *testing.T) {
 		second  = writeIdentityKey(t, t.TempDir(), "2026-08")
 	)
 
-	_, err := identityBroker(authFlags{identityKeyPaths: []string{signing, first, second}}, federatingPolicy())
+	_, err := identityBroker(authFlags{identityKeyPaths: []string{signing, first, second}}, federatingPolicy(), "")
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "given twice",

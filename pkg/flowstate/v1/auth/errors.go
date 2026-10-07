@@ -133,6 +133,17 @@ var (
 	// is the fail-closed outcome of a rotation that left none active.
 	ErrNoSigningKey = errors.New("auth: no active signing key")
 
+	// ErrUnknownTenant is returned when a tenant issuer is asked for a tenant the
+	// federation policy does not list. A tenant with no issuer has no key and
+	// no URL, so the answer is a refusal and never the deployment's own issuer.
+	ErrUnknownTenant = errors.New("auth: tenant has no issuer")
+
+	// ErrTenantMismatch is returned when a tenant-scoped issuer is asked to mint
+	// for a workload that belongs to another tenant. The issuer's URL and key
+	// are one tenant's, so signing for a different one would put that tenant's
+	// name under an issuer its relying parties never trusted for it.
+	ErrTenantMismatch = errors.New("auth: workload belongs to another tenant")
+
 	// ErrAssumeDenied is returned when the assumption policy refuses to let a
 	// workload obtain a credential for a target. See [AssumeDeniedError].
 	ErrAssumeDenied = errors.New("auth: denied by assumption policy")

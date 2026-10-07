@@ -288,6 +288,12 @@ every key to publish, newest first. To rotate:
 3. After `federation.key_retention` (default 24h), restart them all with the new
    key alone, and delete the old one.
 
+With named tenants each tenant has a key of its own: a worker's `--identity-key`
+is its `--tenant`'s alone, and the server publishes each tenant's public keys at
+that tenant's issuer from `--identity-key-dir DIR`, laid out as
+`DIR/TENANT/KEY.pem`. Rotation is the procedure above, for one tenant at a time.
+See [per-tenant issuers](DEPLOYMENT.md#per-tenant-issuers).
+
 The key need not be a file. `--identity-signer vault-transit://HOST/KEY` signs
 through a Vault or OpenBao Transit key whose private half never reaches the worker,
 and the server publishes the public versions it reads from the same key, in place

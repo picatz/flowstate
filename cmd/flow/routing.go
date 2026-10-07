@@ -72,7 +72,7 @@ import (
 // did not has no such route at all, which is the fail-closed default this file's
 // per-route wrapping exists to keep.
 func serverHandler(
-	logger *slog.Logger, verifier auth.Verifier, peerVerifier auth.PeerVerifier, issuer *auth.Issuer,
+	logger *slog.Logger, verifier auth.Verifier, peerVerifier auth.PeerVerifier, issuers *auth.TenantIssuers,
 	rpcResource string, rpc http.Handler, webhooks *server.WebhookReceiver, protectedResource *auth.ProtectedResource,
 	opts ...handlerOption,
 ) http.Handler {
@@ -139,10 +139,18 @@ func serverHandler(
 		mux.Handle(server.WebhookPathPrefix, webhooks)
 	}
 
-	if issuer != nil {
+	// The default tenant's issuer is the deployment's own URL, at the fixed
+	// well-known paths. Every named tenant's is its own URL under
+	// /tenants/<namespace>/, served from its own key set: one subtree, routed by a
+	// handler that answers only for the tenants the policy lists. See
+	// [auth.TenantIssuers.Handler].
+	if issuer := issuers.Default(); issuer != nil {
 		mux.Handle(auth.DiscoveryPath, issuer.Handler())
 		mux.Handle(auth.WorkloadIssuerMetadataPath, issuer.Handler())
 		mux.Handle(issuer.JWKSPath(), issuer.Handler())
+	}
+	if len(issuers.Tenants()) > 0 {
+		mux.Handle(issuers.PathPrefix(), issuers.Handler())
 	}
 
 	// Unconfigured (protectedResource nil) mounts nothing: see this function's

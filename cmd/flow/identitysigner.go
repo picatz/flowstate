@@ -44,6 +44,8 @@ func addIdentitySignerFlag(cmd *cobra.Command, publishing bool) {
 		usage += "The worker signs through Transit (`update` on transit/sign/KEY, `read` on transit/keys/KEY) and " +
 			"publishes the key's previous versions for the rotation overlap. "
 	}
+	usage += "A {tenant} in the key name stands for a tenant's namespace, so one URL names each tenant's own key: " +
+		"a worker fills it with its --tenant, and the server once per tenant `federation.tenants` lists. "
 	usage += "The Vault token is never part of the URL: it comes from token_file, $FLOWSTATE_SECRET_VAULT_TOKEN_FILE, " +
 		"$FLOWSTATE_SECRET_VAULT_TOKEN, or Kubernetes auth. Requests are bounded by the trust policy's `egress:` section"
 

@@ -140,9 +140,35 @@ The server that publishes this key set holds no signing key: its
 key workers sign with, and refuses a private key. Assertions are signed in the
 worker that runs the step, with the matching PKCS#8 private key, under the same
 key id (the file's base name). The server's key set therefore has no "active"
-key of its own; it lists exactly the public keys it was given. Every worker that
-shares a key signs as the same issuer, so federation is one deployment-wide trust
-domain until per-tenant issuers land.
+key of its own; it lists exactly the public keys it was given.
+
+## One issuer per tenant
+
+Every tenant listed in the trust policy's `federation.tenants` is its own issuer,
+and everything above is true of each one separately. For tenant `acme` under
+`federation.issuer: https://flowstate.example.com`:
+
+| | |
+| --- | --- |
+| issuer, and the `iss` of every assertion for `acme` | `https://flowstate.example.com/tenants/acme` |
+| discovery | `https://flowstate.example.com/tenants/acme/.well-known/openid-configuration` |
+| key set (`jwks_uri`) | `https://flowstate.example.com/tenants/acme/.well-known/jwks.json` |
+| workload issuer metadata | `https://flowstate.example.com/tenants/acme/.well-known/workload-identity-configuration` |
+
+The discovery document's `issuer` equals the URL it is served from and the `iss`
+of the assertions, which is what an AWS IAM OIDC provider checks byte for byte.
+The key set holds the keys of `acme`'s worker only. So an IAM provider, a Google
+pool provider or an Azure federated credential configured with `acme`'s URL
+accepts `acme`'s assertions and refuses `globex`'s: a different `iss`, and a
+signature no key in this key set made. The `sub` (`flowstate:acme/DEPLOYMENT/...`)
+and the `namespace` claim name the tenant as well, so a role trust policy can pin
+all of `iss`, `sub` and `aud`.
+
+The deployment's own issuer URL, without a `/tenants/` suffix, is the default
+tenant's: the assertions of runs that carry no namespace. A namespace the policy
+does not list has no issuer; asking for its documents is a 404, and minting for it
+is refused. See [per-tenant issuers](DEPLOYMENT.md#per-tenant-issuers) for the
+deployment.
 
 ## Consumer compatibility
 

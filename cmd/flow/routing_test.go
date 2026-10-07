@@ -33,11 +33,11 @@ import (
 func TestIdentityDocumentsAreReachableWithoutCredentials(t *testing.T) {
 	t.Parallel()
 
-	broker := testBroker(t)
+	issuers := testIssuers(t, "")
 
 	// A verifier that refuses everything, so an authenticated route answering at
 	// all would mean the middleware was not applied.
-	handler := serverHandler(discardLogger(), refusingVerifier{}, nil, broker.Issuer(), "", http.HandlerFunc(
+	handler := serverHandler(discardLogger(), refusingVerifier{}, nil, issuers, "", http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte(`{"api":"reached"}`))
@@ -82,7 +82,7 @@ func TestIdentityDocumentsAreReachableWithoutCredentials(t *testing.T) {
 	})
 
 	t.Run("the key set answers without a credential", func(t *testing.T) {
-		response, err := client.Get(server.URL + broker.Issuer().JWKSPath())
+		response, err := client.Get(server.URL + issuers.Default().JWKSPath())
 		require.NoError(t, err)
 		defer response.Body.Close()
 
@@ -157,23 +157,20 @@ func TestServerHandlerBindsConnectRPCToItsResource(t *testing.T) {
 	require.False(t, called, "an MCP-audience token reached the Connect RPC handler")
 }
 
-// testBroker builds a broker with a throwaway signing key.
-func testBroker(t *testing.T) *auth.Broker {
+// testIssuers builds what a server publishes for the default tenant, from a
+// throwaway public key: the server's side of a deployment, which holds no signing
+// key. jwksPath overrides the key set's path when it is not empty.
+func testIssuers(t *testing.T, jwksPath string) *auth.TenantIssuers {
 	t.Helper()
 
-	_, private, err := ed25519.GenerateKey(nil)
+	public, _, err := ed25519.GenerateKey(nil)
 	require.NoError(t, err)
 
-	key, err := auth.NewSigningKey("test-key", private)
+	issuers, err := auth.FederationPolicy{Issuer: "https://flowstate.test", JWKSPath: jwksPath}.PublishOnlyIssuers(
+		map[string][]auth.FederationOption{"": {auth.WithFederationVerifyOnlyKey("test-key", public)}})
 	require.NoError(t, err)
 
-	issuer, err := auth.NewIssuer("https://flowstate.test", key)
-	require.NoError(t, err)
-
-	broker, err := auth.NewBroker(issuer)
-	require.NoError(t, err)
-
-	return broker
+	return issuers
 }
 
 // TestHealthzAnswersWithoutCredentialsAndWithoutInformation pins both halves of
@@ -583,17 +580,9 @@ func TestResolveProtectedResourceUnconfiguredIsNil(t *testing.T) {
 func TestCheckProtectedResourceRouteCollisionRefusesJWKSPathCollision(t *testing.T) {
 	t.Parallel()
 
-	_, private, err := ed25519.GenerateKey(nil)
-	require.NoError(t, err)
-	key, err := auth.NewSigningKey("test-key", private)
-	require.NoError(t, err)
-
 	const collidingPath = auth.ProtectedResourceMetadataPath + "/mcp"
 
-	issuer, err := auth.NewIssuer("https://flowstate.test", key, auth.WithJWKSPath(collidingPath))
-	require.NoError(t, err)
-	broker, err := auth.NewBroker(issuer)
-	require.NoError(t, err)
+	issuers := testIssuers(t, collidingPath)
 
 	policy := &auth.Policy{Issuers: []auth.TrustedIssuer{
 		{Actions: []string{}, Name: "as", Issuer: "https://trusted.example.com", Audiences: []string{"https://flowstate.example.com/mcp"}},
@@ -605,14 +594,14 @@ func TestCheckProtectedResourceRouteCollisionRefusesJWKSPathCollision(t *testing
 	require.NoError(t, err)
 	require.Equal(t, collidingPath, pr.Path(), "test setup: the two paths must actually collide")
 
-	err = checkProtectedResourceRouteCollision(pr, broker.Issuer())
+	err = checkProtectedResourceRouteCollision(pr, issuers)
 	require.Error(t, err)
 	require.ErrorContains(t, err, collidingPath)
 
 	// And the positive control: what this check exists to prevent actually
 	// panics serverHandler if the check is skipped.
 	require.Panics(t, func() {
-		serverHandler(discardLogger(), refusingVerifier{}, nil, broker.Issuer(), "",
+		serverHandler(discardLogger(), refusingVerifier{}, nil, issuers, "",
 			http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}), nil, pr)
 	}, "a colliding route should panic serverHandler's mux.Handle, which is exactly what the check must catch first")
 }
@@ -624,7 +613,7 @@ func TestCheckProtectedResourceRouteCollisionRefusesJWKSPathCollision(t *testing
 func TestCheckProtectedResourceRouteCollisionAllowsTheOrdinaryCase(t *testing.T) {
 	t.Parallel()
 
-	broker := testBroker(t)
+	issuers := testIssuers(t, "")
 
 	policy := &auth.Policy{Issuers: []auth.TrustedIssuer{
 		{Actions: []string{}, Name: "as", Issuer: "https://trusted.example.com", Audiences: []string{"https://flowstate.example.com/mcp"}},
@@ -635,9 +624,9 @@ func TestCheckProtectedResourceRouteCollisionAllowsTheOrdinaryCase(t *testing.T)
 	}, policy)
 	require.NoError(t, err)
 
-	require.NoError(t, checkProtectedResourceRouteCollision(pr, broker.Issuer()))
+	require.NoError(t, checkProtectedResourceRouteCollision(pr, issuers))
 	require.NoError(t, checkProtectedResourceRouteCollision(pr, nil))
-	require.NoError(t, checkProtectedResourceRouteCollision(nil, broker.Issuer()))
+	require.NoError(t, checkProtectedResourceRouteCollision(nil, issuers))
 }
 
 // staticProvider resolves any reference to a fixed value, standing in for

@@ -65,12 +65,13 @@ func TestServerPublishesPublicIdentityKeysAndHoldsNoSigningKey(t *testing.T) {
 	fresh := writeIdentityPublicKey(t, dir, "2026-09")
 	older := writeIdentityPublicKey(t, dir, "2026-08")
 
-	issuer, err := identityPublisher(authFlags{identityKeyPaths: []string{fresh, older}}, federatingPolicy())
+	issuers, err := identityPublisher(authFlags{identityKeyPaths: []string{fresh, older}}, federatingPolicy())
 	require.NoError(t, err)
-	require.NotNil(t, issuer)
+	require.NotNil(t, issuers)
 
+	issuer := issuers.Default()
 	assert.Empty(t, issuer.ActiveKeyID(), "the server signs with nothing")
-	assert.Equal(t, []string{"2026-09", "2026-08"}, servedKeyIDs(t, issuer))
+	assert.Equal(t, []string{"2026-09", "2026-08"}, servedKeyIDs(t, issuers))
 	assert.Equal(t, []string{"2026-09", "2026-08"}, verifyOnlyKeyIDs(issuer))
 
 	_, err = issuer.Mint(t.Context(), auth.WorkloadIdentity{Subject: "alice", Issuer: "https://idp.example.com"}, auth.StepRef{Workflow: "wf", Step: "s"}, "aud")
@@ -136,7 +137,7 @@ func TestServerJWKSFromAPublicKeyVerifiesAWorkerAssertion(t *testing.T) {
 	relying.Config.Handler = serverHandler(discardLogger(), refusingVerifier{}, nil, server, "",
 		http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}), nil, nil)
 
-	worker, err := identityBroker(authFlags{identityKeyPaths: []string{privatePath}}, policy)
+	worker, err := identityBroker(authFlags{identityKeyPaths: []string{privatePath}}, policy, "")
 	require.NoError(t, err)
 	assertion, err := worker.Issuer().Mint(t.Context(),
 		auth.WorkloadIdentity{Subject: "alice", Issuer: "https://idp.example.com"},
