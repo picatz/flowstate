@@ -413,6 +413,14 @@ type TaskManifest struct {
 	// is what tells the host it may resolve one into this input rather than
 	// refusing it.
 	//
+	// The same grant covers a credential reference, `${credential('target')}`:
+	// the worker mints the credential for the step through the deployment's
+	// federation broker and assumption policy, and the plugin receives the
+	// bearer token as the string a stored secret would have been. Only a bearer
+	// token can be delivered as a single string, so a target that mints an AWS
+	// session is refused here. A credential reference in an input not named here
+	// is refused, like a secret reference.
+	//
 	// # Why the host resolves rather than the plugin
 	//
 	// A plugin can already resolve references under a scheme *it* provides — see

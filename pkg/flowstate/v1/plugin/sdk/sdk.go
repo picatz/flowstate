@@ -271,9 +271,15 @@ type Task struct {
 	// The host resolves the reference before this task ever runs: Fn always
 	// receives a value, never a [flowstatev1.SecretRef], because the whole
 	// point of naming an input here is that the plugin process never holds a
-	// reference or provider access of its own. See the manifest field this
-	// becomes, `TaskManifest.secret_inputs`, for why the host resolves rather
-	// than the plugin asking it to.
+	// reference or provider access of its own.
+	//
+	// The same grant covers `${credential('target')}`: the worker mints the
+	// credential for the step through the deployment's federation broker and
+	// assumption policy, and Fn receives its bearer token as a string. A
+	// target that mints an AWS session cannot be one string and is refused.
+	//
+	// See the manifest field this becomes, `TaskManifest.secret_inputs`, for
+	// why the host resolves rather than the plugin asking it to.
 	SecretInputs []string
 
 	// RequiredSecretInputs names inputs that must be supplied as whole secret

@@ -312,12 +312,14 @@ task's output and logs. `flow validate` refuses `${credential(...)}` on an input
 the task did not declare. Only a bearer token can be a single string: an AWS
 session is three values that have to sign a request, so a task that needs one
 takes it through an AWS-aware plugin rather than a secret input, and a `target:`
-that mints one is refused here after the policy has allowed it. Naming a target the deployment's `federation:` does not
+that mints one is refused here after the policy has allowed it.
+
+Naming a target that the deployment's `federation:` does not
 configure fails when the workflow is validated (`flow validate` against a
 server, `flow run local` with a trust policy) or submitted, with a diagnostic
 that names the target and lists the configured ones; with no trust policy
-configured there is nothing to check it against. The generic `http` task does not apply AWS session credentials,
-which require SigV4 signing. [examples/http-federated](../examples/http-federated/)
+configured there is nothing to check it against. The generic `http` task does
+not apply AWS session credentials, which require SigV4 signing. [examples/http-federated](../examples/http-federated/)
 and [examples/federation-flow-to-flow](../examples/federation-flow-to-flow/) are
 worked examples.
 

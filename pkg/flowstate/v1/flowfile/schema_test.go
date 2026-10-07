@@ -606,3 +606,30 @@ func TestALiteralOutputsMapIsStillAccepted(t *testing.T) {
 	assert.Empty(t, flowfile.Validate(workflow),
 		"a literal outputs map was refused, and the engine accepts it")
 }
+
+// TestCredentialReferenceIsRefusedForATaskWithNoInputDescriptor pins the
+// schema-less plugin shape: a task that declares no input descriptor cannot
+// declare secret_inputs, so validation refuses a credential reference exactly as
+// execution does, rather than returning early for want of a schema.
+func TestCredentialReferenceIsRefusedForATaskWithNoInputDescriptor(t *testing.T) {
+	const name = "test_credential_schemaless_probe"
+	require.NoError(t, v1.DefaultRegistry().Register(v1.TaskDef{
+		Name: name,
+		Fn: func(context.Context, map[string]*v1.Value, *v1.Scope) (*v1.Node_Outputs, error) {
+			return nil, nil
+		},
+	}))
+	t.Cleanup(func() { v1.DefaultRegistry().Unregister(name) })
+
+	ds, err := flowfile.ValidateSource([]byte(`edition: v2026.4
+name: t
+steps:
+  - id: a
+    ` + name + `:
+      token: ${credential('anthropic')}
+`))
+	require.NoError(t, err)
+	require.Len(t, ds, 1, ds.Error())
+	require.Equal(t, "token", ds[0].Field)
+	require.Contains(t, ds[0].Message, `does not accept a credential reference in input "token"`)
+}

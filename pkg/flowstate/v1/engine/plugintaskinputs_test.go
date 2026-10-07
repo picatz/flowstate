@@ -26,6 +26,10 @@ func TestPluginTaskInputsDurable(t *testing.T) {
 	for _, test := range conformance.PluginTaskInputCases() {
 		t.Run(test.Name, func(t *testing.T) {
 			runAuthorityCase(t, test)
+			if test.Authority.Federation != nil && test.Authority.Federation.ExchangeCalls != nil {
+				require.Zero(t, test.Authority.Federation.ExchangeCalls.Load(),
+					"the fixture broker exchanged a credential the assumption policy should have denied first")
+			}
 		})
 	}
 }
