@@ -55,6 +55,10 @@ func TestRunLocal_StarterIsHeldToTheManualBlock(t *testing.T) {
 	oncall := auth.Principal{Issuer: starterIssuer, Subject: "oncall"}
 	allow := "  - manual:\n      allow: ${sender.identity.principal in [\"" + starterIssuer + "#oncall\"]}"
 
+	teamOps := auth.Principal{Issuer: starterIssuer, Subject: "s", Claims: map[string]any{"team": "ops"}}
+	claimAllow := "  - manual:\n      allow: ${sender.identity.claims.team == \"ops\"}"
+	namespaceAllow := "  - manual:\n      allow: ${sender.identity.namespace == \"tenant-a\"}"
+
 	tests := []struct {
 		name    string
 		manual  string
@@ -73,6 +77,17 @@ func TestRunLocal_StarterIsHeldToTheManualBlock(t *testing.T) {
 		{"denied refuses every starter", "  - manual: denied", &Starter{Principal: oncall}, "manual: denied"},
 		{"a missing reason is refused", "  - manual:\n      require_reason: true", &Starter{Principal: oncall}, "requires a reason"},
 		{"a given reason starts", "  - manual:\n      require_reason: true", &Starter{Principal: oncall, Reason: "incident 42"}, ""},
+		{"a listed claim is readable", claimAllow,
+			&Starter{Principal: teamOps, Claims: []string{"team"}}, ""},
+		{"an unlisted claim is not copied", claimAllow, &Starter{Principal: teamOps}, "refuses this manual start"},
+		{"a claim with another value is refused", claimAllow,
+			&Starter{Principal: auth.Principal{Issuer: starterIssuer, Subject: "s", Claims: map[string]any{"team": "dev"}}, Claims: []string{"team"}},
+			"refuses this manual start"},
+		{"the fallback namespace is read", namespaceAllow, &Starter{Principal: oncall, Namespace: "tenant-a"}, ""},
+		{"no fallback namespace is refused", namespaceAllow, &Starter{Principal: oncall}, "refuses this manual start"},
+		{"the principal's namespace wins over the fallback", namespaceAllow,
+			&Starter{Principal: auth.Principal{Issuer: starterIssuer, Subject: "s", Namespace: "tenant-b"}, Namespace: "tenant-a"},
+			"refuses this manual start"},
 		{"no manual block admits any starter", "  - schedule: { cron: \"0 * * * *\" }", &Starter{}, ""},
 	}
 

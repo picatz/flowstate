@@ -381,7 +381,11 @@ predicate does not admit the caller, or it requires a reason and none was
 given. A zero or anonymous principal satisfies no `allow:` predicate, and a
 workflow with no `manual:` block admits any starter, as on a server. The
 program is the authority on who the caller is, so authenticate first and pass
-what the verifier returned. With `Starter` nil nothing is consulted.
+what the verifier returned. A predicate reads `sender.identity.claims.<name>`
+only for the names in `Starter.Claims` (none by default, as with a server's
+`WithIdentityClaims`), and a principal with no namespace falls into
+`Starter.Namespace`, which never overrides the principal's own. With `Starter`
+nil nothing is consulted.
 
 ## What is not curated here
 
