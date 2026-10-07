@@ -67,15 +67,16 @@ func (e *Evaluator) describeEvalFailure(ctx context.Context, env *cel.Env, parse
 	}
 
 	node, bound := findNode(parsed.GetExpr(), celErr.NodeID())
+	work := newFailureWork(e.limits.Cost)
 	if node == nil {
 		return ""
 	}
 
 	switch kind := node.GetExprKind().(type) {
 	case *v1alpha1.Expr_CallExpr:
-		return e.describeCall(ctx, env, parsed, activation, bound, node, kind.CallExpr)
+		return e.describeCall(ctx, env, parsed, activation, work, bound, node, kind.CallExpr)
 	case *v1alpha1.Expr_SelectExpr:
-		return e.describeSelect(ctx, env, parsed, activation, bound, node, kind.SelectExpr)
+		return e.describeSelect(ctx, env, parsed, activation, work, bound, node, kind.SelectExpr)
 	}
 
 	return ""
@@ -83,7 +84,7 @@ func (e *Evaluator) describeEvalFailure(ctx context.Context, env *cel.Env, parse
 
 // describeCall renders an operator or function failure: its name, the types it
 // saw, and the subexpression.
-func (e *Evaluator) describeCall(ctx context.Context, env *cel.Env, parsed *v1alpha1.ParsedExpr, activation any, bound []string, node *v1alpha1.Expr, call *v1alpha1.Expr_Call) string {
+func (e *Evaluator) describeCall(ctx context.Context, env *cel.Env, parsed *v1alpha1.ParsedExpr, activation any, work *failureWork, bound []string, node *v1alpha1.Expr, call *v1alpha1.Expr_Call) string {
 	var operands []*v1alpha1.Expr
 	if call.GetTarget() != nil {
 		operands = append(operands, call.GetTarget())
@@ -93,7 +94,7 @@ func (e *Evaluator) describeCall(ctx context.Context, env *cel.Env, parsed *v1al
 	names := make([]string, len(operands))
 	for i, operand := range operands {
 		names[i] = "?"
-		if value, ok := e.evalOperand(ctx, env, parsed, activation, bound, operand); ok {
+		if value, ok := e.evalOperand(ctx, env, parsed, activation, work, bound, operand); ok {
 			names[i] = value.Type().TypeName()
 		}
 	}
@@ -115,21 +116,21 @@ func (e *Evaluator) describeCall(ctx context.Context, env *cel.Env, parsed *v1al
 // author's own step ids and declared outputs, which `flow validate` already
 // prints. A map of data the run fetched is not listed, because its keys are the
 // data's and not the author's.
-func (e *Evaluator) describeSelect(ctx context.Context, env *cel.Env, parsed *v1alpha1.ParsedExpr, activation any, bound []string, node *v1alpha1.Expr, selection *v1alpha1.Expr_Select) string {
+func (e *Evaluator) describeSelect(ctx context.Context, env *cel.Env, parsed *v1alpha1.ParsedExpr, activation any, work *failureWork, bound []string, node *v1alpha1.Expr, selection *v1alpha1.Expr_Select) string {
 	text := fmt.Sprintf("selecting %q in `%s`", selection.GetField(), unparseNode(parsed, node))
 
 	if !stepsMapOperand(selection.GetOperand()) {
 		return text
 	}
 
-	value, ok := e.evalOperand(ctx, env, parsed, activation, bound, selection.GetOperand())
+	value, ok := e.evalOperand(ctx, env, parsed, activation, work, bound, selection.GetOperand())
 	if !ok {
 		// cel-go labels the outermost selection of a chain, but the key that is
 		// missing is the first one whose own operand does evaluate: for
 		// `steps.nope.value` the node named is `.value`, and `nope` is the miss.
 		// Walk inward to it.
 		if inner := selection.GetOperand().GetSelectExpr(); inner != nil {
-			return e.describeSelect(ctx, env, parsed, activation, bound, selection.GetOperand(), inner)
+			return e.describeSelect(ctx, env, parsed, activation, work, bound, selection.GetOperand(), inner)
 		}
 
 		return text
@@ -141,7 +142,7 @@ func (e *Evaluator) describeSelect(ctx context.Context, env *cel.Env, parsed *v1
 
 	var names []string
 	for it := mapper.Iterator(); it.HasNext() == types.True; {
-		if name, ok := it.Next().Value().(string); ok {
+		if name, ok := it.Next().Value().(string); ok && declaredNameShape(name) {
 			names = append(names, name)
 		}
 	}
@@ -159,21 +160,81 @@ func (e *Evaluator) describeSelect(ctx context.Context, env *cel.Env, parsed *v1
 	return fmt.Sprintf("%s; available: %s%s", text, strings.Join(names, ", "), more)
 }
 
+// maxFailureEvals bounds how many operands one failure re-evaluates: a call has
+// at most a target and a few arguments, and a missing-key walk a few levels.
+const maxFailureEvals = 8
+
+// maxFailureNameLen bounds one listed candidate name.
+const maxFailureNameLen = 64
+
+// failureWork is the one budget a failure's diagnostic work shares. Each operand
+// re-evaluation draws on the same cost the failed evaluation was allowed, so
+// describing a failure costs at most one more evaluation's worth in total, not
+// one per operand. A zero cost limit (tests) is unlimited, as it is elsewhere,
+// and the evaluation count still bounds the work.
+type failureWork struct {
+	remaining uint64
+	limited   bool
+	evals     int
+}
+
+func newFailureWork(cost uint64) *failureWork {
+	return &failureWork{remaining: cost, limited: cost > 0, evals: maxFailureEvals}
+}
+
+// take reserves one operand evaluation, or reports the budget spent.
+func (w *failureWork) take() bool {
+	if w.evals <= 0 || w.limited && w.remaining == 0 {
+		return false
+	}
+	w.evals--
+
+	return true
+}
+
+// limits returns l with its cost budget narrowed to what is left.
+func (w *failureWork) limits(l Limits) Limits {
+	if l.Cost > 0 {
+		l.Cost = max(w.remaining, 1)
+	}
+
+	return l
+}
+
+// spend charges an evaluation's actual cost; an evaluation that did not report
+// one (it failed before finishing) is charged what remained, so a cost-limit
+// failure ends the diagnostic work.
+func (w *failureWork) spend(details *cel.EvalDetails) {
+	if !w.limited || w.remaining == 0 {
+		return
+	}
+	if details == nil || details.ActualCost() == nil {
+		w.remaining = 0
+
+		return
+	}
+	w.remaining -= min(*details.ActualCost(), w.remaining)
+	if w.remaining == 0 {
+		w.evals = 0
+	}
+}
+
 // evalOperand evaluates one operand of the failing node under the activation
 // and the evaluator's limits.
-func (e *Evaluator) evalOperand(ctx context.Context, env *cel.Env, parsed *v1alpha1.ParsedExpr, activation any, bound []string, operand *v1alpha1.Expr) (value ref.Val, ok bool) {
-	if readsAny(operand, bound) {
+func (e *Evaluator) evalOperand(ctx context.Context, env *cel.Env, parsed *v1alpha1.ParsedExpr, activation any, work *failureWork, bound []string, operand *v1alpha1.Expr) (value ref.Val, ok bool) {
+	if readsAny(operand, bound) || !work.take() {
 		return nil, false
 	}
 	programEnv, err := e.extendedEnvFor(env)
 	if err != nil {
 		return nil, false
 	}
-	prg, err := programEnv.Program(cel.ParsedExprToAst(&v1alpha1.ParsedExpr{Expr: operand, SourceInfo: parsed.GetSourceInfo()}), e.limits.programOptions()...)
+	prg, err := programEnv.Program(cel.ParsedExprToAst(&v1alpha1.ParsedExpr{Expr: operand, SourceInfo: parsed.GetSourceInfo()}), work.limits(e.limits).programOptions()...)
 	if err != nil {
 		return nil, false
 	}
-	out, _, err := prg.ContextEval(ctx, activation)
+	out, details, err := prg.ContextEval(ctx, activation)
+	work.spend(details)
 	if err != nil || out == nil {
 		return nil, false
 	}
@@ -306,4 +367,25 @@ func unparseNode(parsed *v1alpha1.ParsedExpr, node *v1alpha1.Expr) string {
 	}
 
 	return textbound.Truncate(text, maxFailureSubexpr)
+}
+
+// declaredNameShape reports whether name is spelled like something an author
+// declares: a step id or an output name, which validation holds to identifiers.
+// The names listed come from the run's own map, so this is the guard that keeps
+// a key shaped like data (an address, a path, a token with punctuation) out of
+// a durable sentence even if a step kind ever put one there.
+func declaredNameShape(name string) bool {
+	if name == "" || len(name) > maxFailureNameLen {
+		return false
+	}
+	for i, r := range name {
+		switch {
+		case r == '_' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z':
+		case i > 0 && (r == '-' || r >= '0' && r <= '9'):
+		default:
+			return false
+		}
+	}
+
+	return true
 }

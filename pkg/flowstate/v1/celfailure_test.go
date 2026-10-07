@@ -116,3 +116,41 @@ func TestAFailureBoundsTheSubexpressionItEchoes(t *testing.T) {
 	assert.Contains(t, err.Error(), "no such overload")
 	assert.Less(t, len(err.Error()), 1024)
 }
+
+// TestAMissingKeyListsOnlyNamesSpelledLikeDeclarations pins the sweep's finding
+// that candidates come from the runtime map: a key shaped like data is never
+// listed, whichever map it sits in.
+func TestAMissingKeyListsOnlyNamesSpelledLikeDeclarations(t *testing.T) {
+	t.Parallel()
+
+	_, err := evalInProfile(t, `steps.fetch.nope`, map[string]any{
+		"steps": map[string]any{"fetch": map[string]any{
+			"value":             int64(1),
+			"alice@example.com": int64(2),
+			"/etc/passwd":       int64(3),
+		}},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "available: value")
+	assert.NotContains(t, err.Error(), "alice@example.com")
+	assert.NotContains(t, err.Error(), "/etc/passwd")
+}
+
+// TestFailureDiagnosticsShareOneCostBudget pins that re-evaluating operands is
+// paid from one budget: with the cost limit spent by the failed evaluation, the
+// operands are not re-run on fresh budgets, so the types read `?`.
+func TestFailureDiagnosticsShareOneCostBudget(t *testing.T) {
+	t.Parallel()
+
+	work := newFailureWork(10)
+	require.True(t, work.take())
+	work.spend(nil)
+	assert.Zero(t, work.remaining, "an evaluation that reported no cost spends what is left")
+	assert.False(t, work.take(), "nothing is left for another operand")
+
+	counted := newFailureWork(0)
+	counted.evals = 2
+	require.True(t, counted.take())
+	require.True(t, counted.take())
+	assert.False(t, counted.take(), "the evaluation count bounds work even with no cost limit")
+}
