@@ -14,6 +14,7 @@ import (
 	"github.com/google/cel-go/common/types/ref"
 	"github.com/google/cel-go/common/types/traits"
 	"github.com/google/cel-go/parser"
+	"github.com/picatz/flowstate/internal/textbound"
 	v1alpha1 "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 )
 
@@ -25,6 +26,11 @@ const maxFailureNodes = 4096
 
 // maxFailureCandidates bounds the names offered for a missing key.
 const maxFailureCandidates = 8
+
+// maxFailureSubexpr bounds the subexpression echoed into a failure sentence. An
+// authored expression may approach the specification limit, and a tolerated
+// failure records its text twice in durable state.
+const maxFailureSubexpr = 256
 
 // describeEvalFailure says what cel-go knew when it failed and the sentence
 // dropped: which operator or function, what types its operands had, the
@@ -299,5 +305,5 @@ func unparseNode(parsed *v1alpha1.ParsedExpr, node *v1alpha1.Expr) string {
 		return "?"
 	}
 
-	return text
+	return textbound.Truncate(text, maxFailureSubexpr)
 }

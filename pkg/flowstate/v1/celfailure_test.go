@@ -1,6 +1,7 @@
 package flowstatev1
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -99,5 +100,19 @@ func TestAComprehensionVariableIsNotResolvedFromTheOuterScope(t *testing.T) {
 	_, err := evalInProfile(t, `[1].map(x, x + "a")`, map[string]any{"x": "outer"})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no such overload")
+	assert.Contains(t, err.Error(), "(?, string)")
 	assert.NotContains(t, err.Error(), "(string, string)")
+}
+
+// TestAFailureBoundsTheSubexpressionItEchoes pins the Copilot finding on #2400:
+// the echoed subexpression is cut, so an oversized authored expression cannot
+// grow the durable failure text with it.
+func TestAFailureBoundsTheSubexpressionItEchoes(t *testing.T) {
+	t.Parallel()
+
+	long := `"` + strings.Repeat("a", 5000) + `" + 1`
+	_, err := evalInProfile(t, long, map[string]any{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no such overload")
+	assert.Less(t, len(err.Error()), 1024)
 }
