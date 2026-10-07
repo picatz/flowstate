@@ -1476,9 +1476,8 @@ path "transit/keys/flowstate-identity" { capabilities = ["read"] }
 path "transit/keys/flowstate-identity" { capabilities = ["read"] }
 ```
 
-Do not grant `create` on the sign path. Transit creates a key that does not exist
-when the policy allows it, so a deleted key would be replaced by one nobody
-published. Do not grant `export`, `rotate`, `config`, or `trim` to a Flowstate
+Withhold `create` on the sign path: Flowstate only ever signs with a key that
+already exists, so granting it adds nothing. Do not grant `export`, `rotate`, `config`, or `trim` to a Flowstate
 token: rotation is an operator's act, below.
 
 Point both processes at the key with `--identity-signer` (or
@@ -1496,7 +1495,9 @@ worker in with its service account instead of a token file, which is the better
 choice in a cluster since the token renews itself. The token is never part of the
 URL (one that is is refused), and never on a command line: it comes from the
 file, or from `FLOWSTATE_SECRET_VAULT_TOKEN`, the same places the Vault secrets
-provider reads it. The requests leave through the trust policy's `egress:` section
+provider reads it. A token file is re-read when Vault rejects the token in hand,
+and the request is retried once, so a Vault Agent sink that rotates the token is
+picked up without a restart; a static `FLOWSTATE_SECRET_VAULT_TOKEN` is not. The requests leave through the trust policy's `egress:` section
 like every other identity fetch, so a Vault on a private network is reached by
 naming that network there (`allow_networks`), and a redirect is never followed.
 `--identity-signer` and `--identity-key` are alternatives: giving both is refused.
@@ -1616,7 +1617,7 @@ There is exactly one probe endpoint — `flow server` does not expose a
 separate readiness or startup route. What makes `/healthz` usable as more than
 a bare liveness check is startup ordering: `flow server` dials Temporal with
 the SDK's eager `client.DialContext` (`pkg/flowstate/v1/temporalclient/temporalclient.go:269`,
-reached from `cmd/flow/main.go:274` through `temporalclient.DialWithNamespace`)
+reached from `cmd/flow/main.go:281` through `temporalclient.DialWithNamespace`)
 and mounts the HTTP mux — the one carrying `/healthz` — only after that dial,
 and every other startup check (TLS configuration, auth policy load, plugin
 catalog build), succeeds. So the first `200` from `/healthz` already implies

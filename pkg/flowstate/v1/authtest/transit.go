@@ -111,6 +111,7 @@ type Transit struct {
 	mu       sync.Mutex
 	keys     map[string]*transitKey
 	tokenOK  bool
+	token    string // the one token the Transit accepts
 	requests []TransitRequest
 
 	status      int           // answers every request with this status, when set
@@ -127,7 +128,7 @@ type Transit struct {
 // [Transit.URL] and [TransitToken], through [EgressPolicy] since it is on
 // loopback. It panics if the listener cannot be started.
 func NewTransit() *Transit {
-	transit := &Transit{keys: map[string]*transitKey{}, tokenOK: true}
+	transit := &Transit{keys: map[string]*transitKey{}, tokenOK: true, token: TransitToken}
 	transit.server = httptest.NewServer(http.HandlerFunc(transit.serve))
 	return transit
 }
@@ -214,6 +215,15 @@ func (t *Transit) RevokeToken() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.tokenOK = false
+}
+
+// AcceptToken makes the Transit accept the given token and refuse every other,
+// including [TransitToken], with 403: a Vault Agent having rotated the token a
+// worker holds.
+func (t *Transit) AcceptToken(token string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.token = token
 }
 
 // SetStatus answers every request with the given status and an error body, or
@@ -318,7 +328,7 @@ func (t *Transit) serve(w http.ResponseWriter, r *http.Request) {
 	body, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 
 	t.mu.Lock()
-	hadToken := r.Header.Get("X-Vault-Token") == TransitToken && t.tokenOK
+	hadToken := r.Header.Get("X-Vault-Token") == t.token && t.tokenOK
 	record := TransitRequest{Method: r.Method, Path: r.URL.Path, HadToken: hadToken}
 	status, hang, oversize := t.status, t.hang, t.oversize
 	t.mu.Unlock()

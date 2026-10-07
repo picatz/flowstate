@@ -5,6 +5,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -156,4 +158,22 @@ func tooManyVersions() string {
 	}
 	b.WriteString(`}}}`)
 	return b.String()
+}
+
+func Test_WithTokenFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "token")
+	require.NoError(t, os.WriteFile(path, []byte("file-token\n"), 0o600))
+
+	_, err := NewProvider("https://vault.example.com", WithTokenFile(path), WithToken("x"))
+	require.Error(t, err)
+	_, err = NewProvider("https://vault.example.com", WithTokenFile(path), WithKubernetesAuth("r"))
+	require.Error(t, err)
+
+	require.NoError(t, os.WriteFile(path, []byte("\n"), 0o600))
+	_, err = NewProvider("https://vault.example.com", WithTokenFile(path))
+	require.ErrorIs(t, err, secrets.ErrUnavailable)
+	require.NotContains(t, err.Error(), "file-token")
+
+	_, err = NewProvider("https://vault.example.com", WithTokenFile(path+".missing"))
+	require.Error(t, err)
 }

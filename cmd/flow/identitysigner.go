@@ -128,11 +128,9 @@ func parseIdentitySigner(raw string, policy *auth.Policy) (vaulttransit.Config, 
 	case tokenFile != "" && role != "":
 		return vaulttransit.Config{}, fmt.Errorf("configure one Vault authentication method, not both a token file and kubernetes_role")
 	case tokenFile != "":
-		token, err := readToken(tokenFile)
-		if err != nil {
-			return vaulttransit.Config{}, fmt.Errorf("reading the Vault token file: %w", err)
-		}
-		opts = append(opts, vault.WithToken(token))
+		// Re-read when Vault rejects the token, so an agent's rotated sink is
+		// picked up without a restart.
+		opts = append(opts, vault.WithTokenFile(tokenFile))
 	case role != "":
 		opts = append(opts, vault.WithKubernetesAuth(role))
 		if mount := query.Get("kubernetes_mount"); mount != "" {

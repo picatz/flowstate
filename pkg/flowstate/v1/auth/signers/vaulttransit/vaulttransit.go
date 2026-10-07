@@ -64,13 +64,13 @@
 //
 // The signing process needs "update" on <mount>/sign/<key> and "read" on
 // <mount>/keys/<key>, and nothing else. A process that only publishes keys
-// ([Read]) needs only the read. Do not grant "create" on sign: Transit creates a
-// key that does not exist when the policy allows it, which would replace a
-// deleted key with one nobody published.
+// ([Read]) needs only the read. Withhold "create" on sign: this package only signs
+// with a key that already exists, so granting it adds nothing.
 package vaulttransit
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto"
 	"crypto/ecdsa"
@@ -138,9 +138,12 @@ type Config struct {
 	MaxResponseBytes int64
 
 	// Vault holds the options the Vault client takes beyond those above:
-	// authentication ([vault.WithToken], [vault.WithKubernetesAuth]), a
-	// namespace, and TLS roots. Exactly one authentication method is required.
-	// The token is never part of Address.
+	// authentication ([vault.WithToken], [vault.WithTokenFile],
+	// [vault.WithKubernetesAuth]) and a namespace. Exactly one authentication
+	// method is required. The token is never part of Address. The transport is
+	// not configurable here: the egress policy's client, timeout and response
+	// bound are applied after these options, so an HTTP client among them is
+	// overridden, and TLS roots belong to the egress policy.
 	Vault []vault.Option
 }
 
@@ -351,14 +354,17 @@ func open(cfg Config) (*vault.Transit, error) {
 		limit = DefaultMaxResponseBytes
 	}
 
-	// Ours first, so a caller's options after them win where they overlap, and
-	// the Vault client reports a conflict (a TLS root beside a client the
-	// policy owns) rather than ours silently losing.
-	opts := append([]vault.Option{
+	// Ours last, so nothing in cfg.Vault can replace them. The egress policy's
+	// client is the boundary: a caller's [vault.WithHTTPClient] among the options
+	// would otherwise swap it for a client that dials anywhere, and the policy
+	// would be named in the configuration and enforced on nothing. With ours
+	// last, that option is overridden, and one that cannot be combined with a
+	// client the policy owns (a TLS root) is refused by the Vault client.
+	opts := append(slices.Clone(cfg.Vault),
 		vault.WithHTTPClient(policy.Client()),
 		vault.WithTimeout(timeout),
 		vault.WithMaxResponseBytes(limit),
-	}, cfg.Vault...)
+	)
 
 	transit, err := vault.NewTransit(cfg.Address, cfg.Mount, opts...)
 	if err != nil {
@@ -416,13 +422,19 @@ func read(ctx context.Context, transit *vault.Transit, key string) (KeySet, erro
 
 	set := KeySet{Current: current}
 
-	for version := held.LatestVersion - 1; version >= oldest && version > 0; version-- {
-		// A trimmed version is simply gone; the listing is the backend's word for
-		// what it still holds.
-		if _, listed := held.Versions[version]; !listed {
-			continue
+	// Iterate what the backend listed, not the span of version numbers: the
+	// listing is already capped, and a single entry at version 4294967295 must
+	// cost one entry, not four billion probes. A version missing from the
+	// listing is a trimmed one and is simply not there.
+	var older []uint32
+	for version := range held.Versions {
+		if version >= oldest && version < held.LatestVersion {
+			older = append(older, version)
 		}
+	}
+	slices.SortFunc(older, func(a, b uint32) int { return cmp.Compare(b, a) })
 
+	for _, version := range older {
 		previous, err := public(version)
 		if err != nil {
 			return KeySet{}, err

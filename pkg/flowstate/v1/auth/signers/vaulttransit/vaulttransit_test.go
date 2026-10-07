@@ -6,10 +6,14 @@ import (
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/rsa"
+	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
@@ -590,4 +594,87 @@ func TestSignerRendersWithoutTheToken(t *testing.T) {
 	} {
 		require.NotContains(t, rendered, authtest.TransitToken)
 	}
+}
+
+// TestCallerOptionsCannotReplaceTheEgressPolicy: a Vault option that brings its
+// own HTTP client does not get to dial where the policy forbids.
+func TestCallerOptionsCannotReplaceTheEgressPolicy(t *testing.T) {
+	transit := backend(t, authtest.TransitECDSAP256)
+
+	cfg := config(transit, vault.WithHTTPClient(&http.Client{}))
+	cfg.EgressPolicy = nil // the default, which denies loopback
+
+	_, err := vaulttransit.New(t.Context(), cfg)
+	require.ErrorIs(t, err, netpolicy.ErrDenied)
+	require.Empty(t, transit.Requests(), "the unrestricted client was never used")
+}
+
+// TestVersionsAreBoundedByTheListingNotTheirNumbers: one entry at the top of the
+// version range costs one entry.
+func TestVersionsAreBoundedByTheListingNotTheirNumbers(t *testing.T) {
+	public := base64.StdEncoding.EncodeToString(make([]byte, 32))
+	body := `{"data":{"type":"ed25519","latest_version":4294967295,"min_decryption_version":1,"keys":{` +
+		`"4294967295":{"name":"ed25519","public_key":"` + public + `"},` +
+		`"4294967290":{"name":"ed25519","public_key":"` + public + `"}}}}`
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, body)
+	}))
+	t.Cleanup(server.Close)
+
+	cfg := vaulttransit.Config{
+		Address:      server.URL,
+		Key:          keyName,
+		EgressPolicy: authtest.EgressPolicy(),
+		Vault:        []vault.Option{vault.WithToken("t")},
+	}
+
+	start := time.Now()
+	set, err := vaulttransit.Read(t.Context(), cfg)
+	require.NoError(t, err)
+	require.Less(t, time.Since(start), 2*time.Second)
+	require.Equal(t, keyName+"-v4294967295", set.Current.ID)
+	require.Len(t, set.Previous, 1)
+	require.Equal(t, uint32(4294967290), set.Previous[0].Version)
+}
+
+// TestTokenFileIsReReadWhenVaultRejectsTheToken is the Vault Agent sink: the
+// token rotates under the process, and the next signature picks it up.
+func TestTokenFileIsReReadWhenVaultRejectsTheToken(t *testing.T) {
+	transit := backend(t, authtest.TransitECDSAP256)
+
+	path := filepath.Join(t.TempDir(), "token")
+	require.NoError(t, os.WriteFile(path, []byte(authtest.TransitToken+"\n"), 0o600))
+
+	cfg := config(transit)
+	cfg.Vault = []vault.Option{vault.WithTokenFile(path)}
+
+	signer, err := vaulttransit.New(t.Context(), cfg)
+	require.NoError(t, err)
+
+	_, err = signer.Sign(t.Context(), claims())
+	require.NoError(t, err)
+
+	const rotated = "rotated-token-value"
+	transit.AcceptToken(rotated)
+
+	// The file still holds the rejected token: refused, and the error is clean.
+	_, err = signer.Sign(t.Context(), claims())
+	require.ErrorIs(t, err, secrets.ErrPermission)
+	require.NotContains(t, err.Error(), authtest.TransitToken)
+
+	// The agent writes the new one; the next call is rejected once, re-reads, and succeeds.
+	require.NoError(t, os.WriteFile(path, []byte(rotated+"\n"), 0o600))
+
+	raw, err := signer.Sign(t.Context(), claims())
+	require.NoError(t, err)
+	verify(t, transit, raw, 1)
+
+	// An unreadable file is a failure that names the path and not the token.
+	require.NoError(t, os.Remove(path))
+	transit.AcceptToken("another")
+
+	_, err = signer.Sign(t.Context(), claims())
+	require.Error(t, err)
+	require.NotContains(t, err.Error(), rotated)
 }

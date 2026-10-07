@@ -420,7 +420,7 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 		{
 			name:    "FLOWSTATE_SECRET_VAULT_TOKEN_FILE",
 			value:   "unset",
-			purpose: "Default for `--secret-vault-token-file`: a file holding a static Vault client token, re-read on every login so a rotated token is picked up without a restart.",
+			purpose: "Default for `--secret-vault-token-file`: a file holding a Vault client token, such as a Vault Agent sink, re-read (once, with one retry) when Vault rejects the token in hand so a rotated token is picked up without a restart. Also used by `--identity-signer`.",
 			read:    "cmd/flow/secrets.go, cmd/flow/identitysigner.go",
 		},
 		{

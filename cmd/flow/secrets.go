@@ -83,7 +83,7 @@ func addSecretFlags(cmd *cobra.Command) {
 		"address of the Vault or OpenBao instance vault: secrets are read from, such as "+
 			"https://vault.example.com:8200 (default $"+secretVaultAddrEnv+")")
 	cmd.Flags().String("secret-vault-token-file", os.Getenv(secretVaultTokenFileEnv),
-		"file holding a static Vault client token, re-read per login (default $"+secretVaultTokenFileEnv+
+		"file holding a Vault client token, re-read when Vault rejects the token in hand (default $"+secretVaultTokenFileEnv+
 			"; falls back to $"+secretVaultTokenEnv+" directly, for a development vault or a test)")
 	cmd.Flags().String("secret-vault-kubernetes-role", os.Getenv(secretVaultK8sRoleEnv),
 		"Vault role to authenticate as via the Kubernetes auth method, using this pod's "+
@@ -314,11 +314,7 @@ func registerVaultProvider(cmd *cobra.Command, registry *secrets.Registry) (bool
 			"configure one Vault authentication method, not both --secret-vault-token-file and " +
 				"--secret-vault-kubernetes-role")
 	case tokenFile != "":
-		token, err := readToken(tokenFile)
-		if err != nil {
-			return false, fmt.Errorf("reading %s: %w", secretVaultTokenFileEnv, err)
-		}
-		opts = append(opts, vault.WithToken(token))
+		opts = append(opts, vault.WithTokenFile(tokenFile))
 	case role != "":
 		opts = append(opts, vault.WithKubernetesAuth(role))
 		if mount, _ := cmd.Flags().GetString("secret-vault-kubernetes-mount"); mount != "" {

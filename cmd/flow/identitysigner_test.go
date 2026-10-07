@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/auth/signers/vaulttransit"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/authtest"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
 )
@@ -82,7 +83,10 @@ func TestParseIdentitySigner(t *testing.T) {
 		_, err := parseIdentitySigner("vault-transit://vault.example.com/key?token_file="+path, nil)
 		require.NoError(t, err)
 
-		_, err = parseIdentitySigner("vault-transit://vault.example.com/key?token_file="+path+".missing", nil)
+		// A missing file is refused when the client is built, not when the URL is parsed.
+		cfg, err := parseIdentitySigner("vault-transit://vault.example.com/key?token_file="+path+".missing", nil)
+		require.NoError(t, err)
+		_, err = vaulttransit.Read(t.Context(), cfg)
 		require.Error(t, err)
 	})
 }
