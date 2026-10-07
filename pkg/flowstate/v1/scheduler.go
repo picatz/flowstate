@@ -262,6 +262,9 @@ type SeededScheduler struct {
 	faultDraws int
 	decisions  int
 	truncated  bool
+	// swarm makes this seed run with only some of a case's faults on. See
+	// [SeededScheduler.SwarmMask].
+	swarm bool
 }
 
 // NewSeededScheduler returns a [SeededScheduler] whose every choice follows from
@@ -275,6 +278,46 @@ func NewSeededScheduler(seed uint64) *SeededScheduler {
 		rng:      rand.New(rand.NewPCG(seed, seed^0x9e3779b97f4a7c15)),
 		faultRNG: rand.New(rand.NewPCG(seed^0xc2b2ae3d27d4eb4f, seed+0x165667b19e3779f9)),
 	}
+}
+
+// EnableSwarm makes the scheduler a swarm one: [SeededScheduler.SwarmMask]
+// turns some of a case's faults off for this seed. Call it before the run.
+func (s *SeededScheduler) EnableSwarm() { s.swarm = true }
+
+// Swarm reports whether [SeededScheduler.EnableSwarm] was called.
+func (s *SeededScheduler) Swarm() bool { return s.swarm }
+
+// SwarmMask says which of n independent fault kinds this seed leaves on, for
+// swarm testing (Groce et al., "Swarm Testing", ISSTA 2012): a run that
+// enables every kind at once makes each one's effect hide the others', where a
+// run with a random subset on lets a failure that needs one kind alone, or two
+// without a third, actually occur. Each kind is on with even odds, and at
+// least one always is, so no seed explores a world with nothing wrong in it.
+// A scheduler that is not a swarm one leaves every kind on.
+//
+// A pure function of the seed and n, drawn from a stream of its own, so it
+// moves neither the schedule nor the fault draws a seed makes.
+func (s *SeededScheduler) SwarmMask(n int) []bool {
+	mask := make([]bool, n)
+	if !s.swarm {
+		for i := range mask {
+			mask[i] = true
+		}
+
+		return mask
+	}
+
+	rng := rand.New(rand.NewPCG(s.seed^0x27d4eb2f165667c5, s.seed+0x85ebca6b))
+	anyOn := false
+	for i := range mask {
+		mask[i] = rng.Uint64()&1 == 1
+		anyOn = anyOn || mask[i]
+	}
+	if !anyOn && n > 0 {
+		mask[rng.IntN(n)] = true
+	}
+
+	return mask
 }
 
 // Seed is the number this scheduler's every choice follows from, and the whole

@@ -342,9 +342,32 @@ type faultPlan struct {
 	// can be counted by [faultPlan.seen] and still not fire, when an earlier
 	// fault answered the call first, and that is a script that did not run.
 	pinnedFired [][]int
+	// off marks the drawn faults this seed leaves out under swarm testing; nil
+	// when none is. See [v1.SeededScheduler.SwarmMask].
+	off []bool
 	// script is the invocation numbers each drawn fault fired on, in order,
 	// from which [faultPlan.pinned] writes the regression case.
 	script [][]int
+}
+
+// applySwarm turns off the drawn faults the seed's swarm mask leaves out. A
+// pinned fault is a script, not a draw, and stays on.
+func (p *faultPlan) applySwarm(ctx context.Context) {
+	seeded, ok := v1.SchedulerFromContext(ctx).(*v1.SeededScheduler)
+	if !ok || !seeded.Swarm() {
+		return
+	}
+
+	var drawn []int
+	for i := range p.faults {
+		if len(p.faults[i].On) == 0 {
+			drawn = append(drawn, i)
+		}
+	}
+	p.off = make([]bool, len(p.faults))
+	for k, on := range seeded.SwarmMask(len(drawn)) {
+		p.off[drawn[k]] = !on
+	}
 }
 
 type faultPlanKey struct{}
@@ -469,6 +492,8 @@ func (p *faultPlan) decide(ctx context.Context, i int) bool {
 		if !slices.Contains(f.On, p.seen[i]) {
 			return false
 		}
+	case p.off != nil && p.off[i]:
+		return false
 	case p.decided[i] >= f.limit():
 		return false
 	case !v1.InjectFault(ctx, fmt.Sprintf("faults[%d]", i), f.rate()):

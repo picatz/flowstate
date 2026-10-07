@@ -521,6 +521,15 @@ any task faults, and the shrinker treats them alike. Duplicated and reordered
 deliveries are not faults: a second `signals:` entry with the same
 `delivery_id:` or a different `at:` already says them.
 
+`--swarm` (with `--seeds` or `--seed`) runs each seed with a random subset of
+the case's drawn `faults:` on instead of all of them, and at least one always on.
+Every kind of fault on at once lets each one's effect hide the others', so a
+failure that needs one kind alone, or two without a third, never occurs; a
+subset lets it. A pinned (`on:`) fault is a script and stays on. A finding under
+`--swarm` prints `--swarm` in its replay line, since the seed alone draws against
+every fault and is a different run; the printed pinned `faults:` list replays
+without either.
+
 A dropped delivery to a gate with no `timeout:` leaves a run nothing can wake.
 The harness reports that as a failure the moment it is true: `stuck: the run
 waits for signal "go" and nothing pending can deliver it`, naming any signal a

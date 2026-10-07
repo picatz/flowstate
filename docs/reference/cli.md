@@ -2335,6 +2335,7 @@ flow test -o jsonl examples/
 | `--seed <uint64>` | `uint64` | `0` | — | replay exactly one schedule, the seed a reported divergence names, instead of searching |
 | `--seed0 <uint64>` | `uint64` | `1` | — | the first seed `--seeds` walks upward from, to move the search to a different part of the seed space |
 | `--seeds <int>` | `int` | `0` | — | also run every case under N seeded schedules of the local driver's own choices (`parallel:` branch order, where an `async:` step's work happens), and fail when a case's observables depend on which one ran; 0, the default, runs written order only |
+| `--swarm` | `bool` | `false` | — | with `--seeds` or `--seed`, run each seed with a random subset of the case's `faults:` on instead of all of them, so a failure that needs one kind of fault alone, or two without a third, can occur; a reported seed replays only with the same flag |
 | `--timeout <duration>` | `duration` | `0s` | — | real-time limit for one case (default 30s, at most 10m); the virtual clock still decides what a workflow waits for, so this bounds a case that is stuck, not one that waits long |
 | `--watch` | `bool` | `false` | — | run once, then again after every change to a YAML file under the paths given, until interrupted; clears a terminal between runs and writes one document per run to a pipe; refused with --debug |
 
