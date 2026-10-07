@@ -951,8 +951,17 @@ jobs:
 
       # vhs refuses to start without ffmpeg, even for a text recording, so this
       # is a hard dependency rather than one only the GIF path needs.
+      #
+      # Bounded, because the runner image's mirrors stall: an unbounded
+      # `apt-get update` held this job for its whole 15-minute limit and
+      # cancelled it three times in one afternoon. A connect or read stall now
+      # fails in seconds and retries, and the step has a limit of its own.
       - name: Install ffmpeg
-        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+        timeout-minutes: 5
+        run: |
+          apt_opts=(-o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20)
+          sudo apt-get "${apt_opts[@]}" update
+          sudo apt-get "${apt_opts[@]}" install -y ffmpeg
 
       # ttyd is the terminal vhs drives. Upstream ships a static binary per
       # release; pinned by version for the same reason everything else here is,
