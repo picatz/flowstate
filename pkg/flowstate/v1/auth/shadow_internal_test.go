@@ -63,6 +63,7 @@ func TestTrustedIssuerFieldsAreAccountedFor(t *testing.T) {
 		"Require":      "admits checks every claim rule",
 		"ClientCAFile": "VerifyPeer selects candidates by CA pool intersection",
 		"SubjectFrom":  "a certificate carrying no such SAN fails the entry and reaches the next",
+		"Delegation":   "admits refuses an act chain the stanza does not list, so a token with one reaches only the entry that does",
 	}
 
 	// Fields shadows deliberately ignores, because they take no part in
@@ -318,4 +319,76 @@ func TestShadowKeySeparatesEntriesThatCannotCompete(t *testing.T) {
 	// the answer shadows gives it anyway.
 	require.NotEqual(t, future.shadowKey(), otherFuture.shadowKey())
 	require.False(t, future.shadows(otherFuture))
+}
+
+// TestShadowsMirrorsAdmitsForDelegation is the differential check for the one
+// condition the main grid leaves out: whether an entry accepts a token's `act`
+// chain. It is its own small grid because crossing it with the main one
+// multiplies the pairs without adding a distinction: the entries here differ
+// only in their stanza, the tokens only in their chain.
+func TestShadowsMirrorsAdmitsForDelegation(t *testing.T) {
+	row := func(subject string) DelegationActor {
+		return DelegationActor{Issuer: "https://agents.example", Subject: subject, Actions: []string{}}
+	}
+	stanzas := []*Delegation{
+		nil,
+		{Actors: []DelegationActor{row("a")}},
+		{Actors: []DelegationActor{row("a"), row("b")}},
+		{MaxDepth: 2, Actors: []DelegationActor{row("a")}},
+		{MaxDepth: 2, Actors: []DelegationActor{row("a"), row("b")}},
+		{MaxDepth: 2, Actors: []DelegationActor{row("b")}},
+	}
+	link := func(subject string, nested map[string]any) map[string]any {
+		out := map[string]any{"iss": "https://agents.example", "sub": subject}
+		if nested != nil {
+			out["act"] = nested
+		}
+		return out
+	}
+	chains := []map[string]any{
+		nil,
+		link("a", nil),
+		link("b", nil),
+		link("c", nil),
+		link("a", link("b", nil)),
+		link("b", link("a", nil)),
+		link("a", link("c", nil)),
+		link("a", link("b", link("a", nil))),
+	}
+
+	now := time.Now()
+	window := lifetime{now: now, issuedAt: now, expiresAt: now.Add(time.Hour)}
+
+	shadowing := 0
+	for _, earlier := range stanzas {
+		for _, later := range stanzas {
+			broad := TrustedIssuer{Actions: []string{}, Issuer: "https://issuer.example", Audiences: []string{"flowstate"}, Delegation: earlier}
+			narrow := TrustedIssuer{Actions: []string{}, Issuer: "https://issuer.example", Audiences: []string{"flowstate"}, Delegation: later}
+			if !broad.shadows(narrow) {
+				continue
+			}
+			shadowing++
+			for _, chain := range chains {
+				claims := map[string]any{}
+				if chain != nil {
+					claims["act"] = chain
+				}
+				if narrow.admits(jwa.ES256, []string{"flowstate"}, window, claims, 0) != nil {
+					continue
+				}
+				require.NoErrorf(t, broad.admits(jwa.ES256, []string{"flowstate"}, window, claims, 0),
+					"%+v shadows %+v, but only the shadowed entry admits the chain %v", earlier, later, chain)
+			}
+		}
+	}
+	require.Positive(t, shadowing, "no stanza pair shadowed another; the differential check was vacuous")
+
+	// And the direction that matters for the verdict: an entry with no stanza
+	// does not shadow one that has one, because a delegated token reaches only
+	// the second.
+	plain := TrustedIssuer{Actions: []string{}, Issuer: "https://issuer.example", Audiences: []string{"flowstate"}}
+	delegating := plain
+	delegating.Delegation = stanzas[1]
+	require.False(t, plain.shadows(delegating))
+	require.True(t, delegating.shadows(plain), "the entry that lists actors admits every token the plain one does")
 }

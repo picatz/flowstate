@@ -203,6 +203,28 @@ never matches, and an IdP that sends no overage marker for a list it cut gives
 Flowstate nothing to refuse on. `flow validate --auth-policy` is advisory and
 runs on the author's machine against a policy file the deployment may not share.
 
+**Delegation: actors are data the admitting issuer vouched for, and nothing
+more.** A token's RFC 8693 `act` chain is read only where the admitting entry has
+a `delegation:` stanza, and it is refused whole, never trimmed, when it is deeper
+than two, malformed, or names an actor the stanza does not list by exact issuer
+and subject (`pkg/flowstate/v1/auth/delegation.go`). The actors never
+authenticated to Flowstate: nothing proves the named party exists, holds the
+token, or consented, only that the issuer that signed it said so, so a chain is
+exactly as trustworthy as that issuer's signing key and its own discipline about
+whom it lets claim to act for whom. A compromised or careless issuer can therefore
+put any listed actor in front of any subject it signs for, and a rule that trusts
+an actor trusts the issuer's statement. What a chain cannot do is carry
+authority: `kind`, `issuer_entry`, namespace and the entry's `actions` come only
+from the entry, and an actor's `actions` are intersected with the subject's, so
+a listed actor can remove authority and never add it. The remaining exposure is a
+policy rule that reads `identity.actors` loosely; the rules exist to name an actor
+by its exact `issuer` and `subject`, and a rule that compares the subject alone
+trusts every issuer that mints that name. `may_act` is refused everywhere, and a
+delegated token presented beside a client certificate is refused as ambiguous,
+because the certificate's principal has no chain to record. Outbound delegation
+(an `actor_token` exchange) and an `act` claim on assertions Flowstate mints are
+separate work.
+
 **Declared-sensitive values.** `Get` and `GetTimeline` withhold values a run's
 workflow declared `sensitive: true` before the response leaves `flow server`,
 decided against the specification the run executed (read from its start input), and

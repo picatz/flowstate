@@ -147,6 +147,7 @@ func AuthIdentity(identity *WorkloadIdentity) auth.WorkloadIdentity {
 		Namespace:   who.GetNamespace(),
 		Kind:        PrincipalKindName(who.GetKind()),
 		Actions:     slices.Clone(who.GetActions()),
+		Actors:      actorsOf(who.GetActors()),
 		Deployment:  identity.GetDeployment(),
 	}.WithWireClaims(who.GetClaims())
 }
@@ -156,7 +157,7 @@ func AuthIdentity(identity *WorkloadIdentity) auth.WorkloadIdentity {
 // identity names no caller at all.
 func ProtoPrincipal(identity auth.WorkloadIdentity) *Principal {
 	if identity.Subject == "" && identity.Issuer == "" && identity.IssuerEntry == "" && identity.Namespace == "" &&
-		identity.Kind == "" && len(identity.Claims) == 0 && len(identity.Actions) == 0 {
+		identity.Kind == "" && len(identity.Claims) == 0 && len(identity.Actions) == 0 && len(identity.Actors) == 0 {
 		return nil
 	}
 
@@ -168,7 +169,39 @@ func ProtoPrincipal(identity auth.WorkloadIdentity) *Principal {
 		IssuerEntry: identity.IssuerEntry,
 		Claims:      auth.ClaimsToStruct(identity.Claims),
 		Actions:     slices.Clone(identity.Actions),
+		Actors:      ProtoActors(identity.Actors),
 	}
+}
+
+// ProtoActors renders an `act` chain as the wire [Actor] list, current actor
+// first, and nil for an empty one.
+func ProtoActors(actors []principal.Actor) []*Actor {
+	if len(actors) == 0 {
+		return nil
+	}
+
+	out := make([]*Actor, len(actors))
+	for i, actor := range actors {
+		out[i] = &Actor{Issuer: actor.Issuer, Subject: actor.Subject}
+	}
+
+	return out
+}
+
+// actorsOf reads the wire [Actor] list as the chain a rule and a credential see.
+// A nil entry reads as an actor with no name, which [auth.WorkloadIdentity.Validate]
+// refuses, so a malformed list cannot become a usable chain.
+func actorsOf(wire []*Actor) []principal.Actor {
+	if len(wire) == 0 {
+		return nil
+	}
+
+	out := make([]principal.Actor, len(wire))
+	for i, actor := range wire {
+		out[i] = principal.Actor{Issuer: actor.GetIssuer(), Subject: actor.GetSubject()}
+	}
+
+	return out
 }
 
 // StringClaimValues is the wire form of an all-string claim set, which is what a

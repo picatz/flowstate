@@ -457,9 +457,37 @@ func auditIdentity(identity *v1.WorkloadIdentity) *v1.WorkloadIdentity {
 			Subject:   who.GetSubject(),
 			Issuer:    who.GetIssuer(),
 			Namespace: who.GetNamespace(),
+			// The chain says who was acting for the subject, so a record
+			// reads "sub, acting via A". Issuer and subject only, as the
+			// wire Actor has no more, and bounded by the schema.
+			Actors: auditActors(who.GetActors()),
 		},
 		Deployment: identity.GetDeployment(),
 	}
+}
+
+// maxAuditActors is how many actors a record keeps: the depth the verifier
+// admits ([auth.MaxActorDepth]) and the schema's own bound. A wire identity
+// over it is cut at the bound rather than copied whole, since the record is a
+// report and not the authority; the decision was made on the full chain.
+const maxAuditActors = auth.MaxActorDepth
+
+// auditActors copies an actor chain for a record, current actor first, with
+// each name bounded like every other identity coordinate in it.
+func auditActors(actors []*v1.Actor) []*v1.Actor {
+	if len(actors) == 0 {
+		return nil
+	}
+
+	out := make([]*v1.Actor, 0, min(len(actors), maxAuditActors))
+	for _, actor := range actors[:min(len(actors), maxAuditActors)] {
+		out = append(out, &v1.Actor{
+			Issuer:  boundString(actor.GetIssuer(), auth.MaxActorFieldBytes),
+			Subject: boundString(actor.GetSubject(), auth.MaxActorFieldBytes),
+		})
+	}
+
+	return out
 }
 
 // boundResourceKey truncates on a rune boundary rather than mid-sequence, so a

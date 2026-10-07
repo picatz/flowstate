@@ -92,6 +92,19 @@ func EgressIdentityExpectedOutputs() *v1.Workflow_StepOutputs {
 // with itself.
 const EgressIdentityKindRule = `identity.kind == "workload"`
 
+// EgressIdentityActorRule is the allow rule the delegation rows run under: the
+// caller must be acting for someone, through exactly the actor the rule names
+// by issuer and subject. It is the one rule shared by the delegation rows, so
+// they discriminate the identity: a driver that lost the actor chain on its
+// route to the policy refuses the caller it should admit, and one that ignored
+// the chain admits an undelegated or differently-delegated caller.
+const EgressIdentityActorRule = `identity.delegated && identity.actors[0].issuer == "https://agents.example" && identity.actors[0].subject == "triage-bot"`
+
+// EgressIdentityUndelegatedRule is the allow rule for the opposite reading, the
+// way an operator writes "no agents on this egress": the caller must not be
+// delegated.
+const EgressIdentityUndelegatedRule = `!identity.delegated`
+
 // InstallEgressIdentityPolicy registers an http task enforcing the case's rule
 // ([EgressIdentityAllowRule] unless it names another) for the duration of the
 // test, restoring whatever was registered before.
@@ -203,6 +216,45 @@ func EgressIdentityCases() []EgressIdentityCase {
 			Name:     "a claim the entry did not carry is absent from the rule",
 			Rule:     carrierUncarriedRule,
 			Identity: carrierWorkloadIdentity(v1.PrincipalKind_PRINCIPAL_KIND_AGENT, "sre"),
+			Denied:   true,
+		},
+		{
+			// The act chain travels on its own field of the principal, as the kind
+			// does: a driver that carried everything else but dropped the actors
+			// passes every row above and fails these.
+			Name:     "a caller delegated through the named actor egresses",
+			Rule:     EgressIdentityActorRule,
+			Identity: delegatedWorkloadIdentity(actor("https://agents.example", "triage-bot")),
+		},
+		{
+			Name:     "a caller delegated through another actor is refused",
+			Rule:     EgressIdentityActorRule,
+			Identity: delegatedWorkloadIdentity(actor("https://agents.example", "other-bot")),
+			Denied:   true,
+		},
+		{
+			// The same subject under another issuer is another actor: the rule
+			// compares the pair.
+			Name:     "an actor with the right name under another issuer is refused",
+			Rule:     EgressIdentityActorRule,
+			Identity: delegatedWorkloadIdentity(actor("https://elsewhere.example", "triage-bot")),
+			Denied:   true,
+		},
+		{
+			Name:     "a caller acting for themselves is refused by the actor rule",
+			Rule:     EgressIdentityActorRule,
+			Identity: delegatedWorkloadIdentity(),
+			Denied:   true,
+		},
+		{
+			Name:     "a caller acting for themselves egresses under a rule that refuses delegation",
+			Rule:     EgressIdentityUndelegatedRule,
+			Identity: delegatedWorkloadIdentity(),
+		},
+		{
+			Name:     "a delegated caller is refused by a rule that refuses delegation",
+			Rule:     EgressIdentityUndelegatedRule,
+			Identity: delegatedWorkloadIdentity(actor("https://agents.example", "triage-bot")),
 			Denied:   true,
 		},
 		{

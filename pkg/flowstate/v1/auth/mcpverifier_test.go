@@ -15,6 +15,7 @@ import (
 
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/authtest"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/principal"
 )
 
 // The negative direction, first and mostly. CLAUDE.md's rule for a boundary is
@@ -635,6 +636,10 @@ func changedPrincipalField(t *testing.T, base auth.Principal, i int) auth.Princi
 		field.Set(reflect.ValueOf(auth.PrincipalKindAgent))
 	case auth.ActionScopes:
 		field.Set(reflect.ValueOf(auth.ActionScopes{"workload.read"}))
+	case []principal.Actor:
+		// A delegated session is not the same session as the subject acting
+		// alone, nor as one delegated through someone else.
+		field.Set(reflect.ValueOf([]principal.Actor{{Issuer: "https://agents.example.com", Subject: "triage-bot"}}))
 	case time.Time:
 		field.Set(reflect.ValueOf(value.Add(time.Hour)))
 	case map[string]any:

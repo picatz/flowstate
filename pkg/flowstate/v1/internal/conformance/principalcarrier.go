@@ -198,6 +198,21 @@ func PrincipalCarrierDenialCases() []AuthorityCase {
 	}
 }
 
+// actor is one link of an RFC 8693 `act` chain on the wire.
+func actor(issuer, subject string) *v1.Actor {
+	return &v1.Actor{Issuer: issuer, Subject: subject}
+}
+
+// delegatedWorkloadIdentity is a caller in team-a, acting for itself or, given
+// actors, through them (current actor first), for the surfaces whose cases
+// carry a [v1.WorkloadIdentity].
+func delegatedWorkloadIdentity(actors ...*v1.Actor) *v1.WorkloadIdentity {
+	return &v1.WorkloadIdentity{Principal: &v1.Principal{
+		Subject: "alice", Issuer: "https://issuer.example.com", Namespace: "team-a",
+		Actors: actors,
+	}}
+}
+
 // carrierWorkloadIdentity is the wire form of the same caller: a principal of
 // the given kind in team-a, admitted by [carrierEntry], for the surfaces whose
 // cases carry a [v1.WorkloadIdentity].

@@ -13,6 +13,7 @@ import (
 
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowstatev1connect"
+	leaf "github.com/picatz/flowstate/pkg/flowstate/v1/principal"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/server"
 )
 
@@ -53,6 +54,10 @@ func serveRealWhoami(t *testing.T) {
 				Kind:       auth.PrincipalKindWorkload,
 				Actions:    auth.ActionScopes{"workload.read"},
 				Claims:     carried,
+				Actors: []leaf.Actor{
+					{Issuer: "https://agents.example", Subject: "triage-bot"},
+					{Issuer: "https://platform.example", Subject: "orchestrator"},
+				},
 			}
 		}
 		handler.ServeHTTP(w, r.WithContext(auth.ContextWithPrincipal(r.Context(), principal)))
@@ -91,6 +96,7 @@ func TestAuthWhoamiPrintsThePrincipalAndNeverTheToken(t *testing.T) {
 		"kind: workload",
 		"issuer_entry: ci",
 		"actions: workload.read",
+		"actors: https://agents.example#triage-bot, via https://platform.example#orchestrator",
 		`  repository: "picatz/flowstate"`,
 	} {
 		require.Contains(t, text, want)
@@ -105,6 +111,9 @@ func TestAuthWhoamiPrintsThePrincipalAndNeverTheToken(t *testing.T) {
 	principal, _ := document["principal"].(map[string]any)
 	require.Equal(t, "runner-7", principal["subject"])
 	require.Equal(t, "ci", principal["issuerEntry"])
+	actors, _ := principal["actors"].([]any)
+	require.Len(t, actors, 2, "the chain is in the machine output, current actor first")
+	require.Equal(t, "triage-bot", actors[0].(map[string]any)["subject"])
 	require.Equal(t, true, document["authenticated"])
 
 	for name, output := range map[string]string{"text": text, "text stderr": textErr, "json": asJSON, "json stderr": jsonErr} {

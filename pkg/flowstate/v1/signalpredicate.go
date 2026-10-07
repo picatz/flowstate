@@ -47,8 +47,8 @@ import (
 //
 // # The scope is closed
 //
-//	sender.identity.{principal,subject,issuer,namespace,kind,claims,actions}
-//	run.identity.{principal,subject,issuer,namespace,kind,claims,actions}   (the starter)
+//	sender.identity.{principal,subject,issuer,namespace,kind,claims,actions,actors,delegated}
+//	run.identity.{principal,subject,issuer,namespace,kind,claims,actions,actors,delegated}   (the starter)
 //	inputs                                                      (the run's arguments)
 //
 // Nothing else: no steps, vars, secrets or clock. An unknown root or field is a
@@ -118,8 +118,7 @@ var manualPolicyEnv = sync.OnceValues(func() (*cel.Env, error) { return allowPol
 
 func allowPolicyEnv(withRun bool) (*cel.Env, error) {
 	opts := []cel.EnvOption{
-		ext.NativeTypes(ext.ParseStructTag("cel"),
-			reflect.TypeFor[signalPolicyActor](), reflect.TypeFor[principal.Caller]()),
+		ext.NativeTypes(append(principal.NativeTypeArgs(), reflect.TypeFor[signalPolicyActor]())...),
 		cel.Variable("sender", cel.ObjectType(signalPolicyActorTypeName)),
 		cel.Variable(InputsRoot, cel.MapType(cel.StringType, cel.DynType)),
 		ext.Strings(ext.StringsVersion(5)),

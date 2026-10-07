@@ -10,7 +10,7 @@
 [1;38;2;133;131;146mscope[m [2;38;2;133;131;146m-------------------------------------------------------------------------[m
   [1;38;2;241;239;239mvars.region[m          "eu-west-1"
   [1;38;2;241;239;239minputs.version[m       "2026.9.0"
-  [1;38;2;241;239;239mrun.identity[m         {"actions":[],"claims":{},"issuer":"","kind":"","namespac
+  [1;38;2;241;239;239mrun.identity[m         {"actions":[],"actors":[],"claims":{},"delegated":false,"
   [1;38;2;241;239;239mrun.local[m            true
   [1;38;2;241;239;239mrun.run_id[m           "local"
   [1;38;2;241;239;239mrun.started_at[m       "2026-08-03T09:00:00Z"
@@ -32,7 +32,7 @@
   [1;38;2;241;239;239msteps.checkout[m       {"artifact":"checkout.tar.gz"}
   [1;38;2;241;239;239mvars.region[m          "eu-west-1"
   [1;38;2;241;239;239minputs.version[m       "2026.9.0"
-  [1;38;2;241;239;239mrun.identity[m         {"actions":[],"claims":{},"issuer":"","kind":"","namespac
+  [1;38;2;241;239;239mrun.identity[m         {"actions":[],"actors":[],"claims":{},"delegated":false,"
   [1;38;2;241;239;239mrun.local[m            true
   [1;38;2;241;239;239mrun.run_id[m           "local"
   [1;38;2;241;239;239mrun.started_at[m       "2026-08-03T09:00:00Z"
@@ -54,7 +54,7 @@
   [1;38;2;241;239;239msteps.checkout[m   {"artifact":"checkout.tar.gz"}
   [1;38;2;241;239;239mvars.region[m      "eu-west-1"
   [1;38;2;241;239;239minputs.version[m   "2026.9.0"
-  [1;38;2;241;239;239mrun.identity[m     {"actions":[],"claims":{},"issuer":"","kind":"","namespace":"
+  [1;38;2;241;239;239mrun.identity[m     {"actions":[],"actors":[],"claims":{},"delegated":false,"issu
   [1;38;2;241;239;239mrun.local[m        true
   [1;38;2;241;239;239mrun.run_id[m       "local"
   [1;38;2;241;239;239mrun.started_at[m   "2026-08-03T09:00:00Z"
@@ -76,7 +76,7 @@
   [1;38;2;241;239;239msteps.flaky[m     {"error":"deliberate failure","failure":{"kind":"Internal","me
   [1;38;2;241;239;239mvars.region[m     "eu-west-1"
   [1;38;2;241;239;239minputs.version[m  "2026.9.0"
-  [1;38;2;241;239;239mrun.identity[m    {"actions":[],"claims":{},"issuer":"","kind":"","namespace":""
+  [1;38;2;241;239;239mrun.identity[m    {"actions":[],"actors":[],"claims":{},"delegated":false,"issue
   [1;38;2;241;239;239mrun.local[m       true
   [1;38;2;241;239;239mrun.run_id[m      "local"
   [1;38;2;241;239;239mrun.started_at[m  "2026-08-03T09:00:00Z"

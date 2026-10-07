@@ -204,4 +204,4 @@ An **open** zero case permits when nothing is configured and must say why. A **d
 
 ## Not yet listed
 
-Schedule tenancy and actions, the required audit recorder that refuses to release what it cannot record, the webhook `jwt` bearer scheme, the credential target catalog and the refusal of delegated (`act`) tokens each decide something and are not in the registry yet.
+Schedule tenancy and actions, the required audit recorder that refuses to release what it cannot record, the webhook `jwt` bearer scheme, the credential target catalog and the admission of delegated (`act`) tokens each decide something and are not in the registry yet.

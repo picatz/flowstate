@@ -868,6 +868,63 @@ carries is a diagnostic: a rule requiring it can never match. Embedders
 that need a different mapping pass `auth.WithClaimMapper` to the verifier; its
 result is held to the same bounds.
 
+### Accepting delegated tokens: the `act` chain
+
+An agent that acts for a person arrives with a token that says so: RFC 8693's
+`act` claim names the actor, and may nest the actor it acts for in turn. By
+default Flowstate refuses such a token (the status is 401, and the reason says
+`unsupported "act" delegation claim`), because admitting it as the bare subject
+would record the request as the person acting alone. An entry opts in with a
+`delegation:` stanza, naming every actor its tokens may list and what each leaves
+the caller able to do:
+
+```yaml
+issuers:
+  - name: agents-idp
+    issuer: https://idp.example.com
+    audiences: [https://flowstate.example.com/rpc]
+    namespace: acme
+    principal_kind: human
+    actions: [workload.run, workload.read, workload.signal]
+    delegation:
+      max_depth: 1            # 1 (default) or 2
+      actors:
+        - issuer: https://agents.example.com
+          subject: triage-bot
+          actions: [workload.read, workload.signal]
+```
+
+The token's chain is read as `{"act": {"iss": "https://agents.example.com",
+"sub": "triage-bot"}}`; each link needs a string `iss` and `sub` of at most 1024
+bytes. A token is refused whole, never trimmed, when its chain nests deeper than
+two or than `max_depth`, when a link is malformed, or when any actor is not listed
+by exact `issuer` and `subject` (no wildcard or pattern). `may_act` is refused on
+every entry.
+
+A delegated caller holds the **intersection** of what the entry grants the
+subject (itself narrowed by the token's own `scope`) and each actor's `actions`.
+An actor can take authority away and never add it, so the example above leaves a
+caller with `workload.read` and `workload.signal` and without `workload.run`,
+even though the person could run alone; an actor that lists an action the entry
+does not grant is refused when the policy loads. `kind`, `issuer_entry` and the
+namespace still come from the entry alone, and nothing in the chain is carried as
+a claim.
+
+What a policy sees is `identity.actors` (a list of `{issuer, subject}`, current
+actor first) and `identity.delegated` on every surface, on both drivers, and the
+audit record for each decision names the chain beside the subject
+(`flowstate.audit.identity.actors`). Guard a read with `delegated`:
+
+```cel
+!identity.delegated || identity.actors[0].subject == "triage-bot"
+```
+
+`flow auth check` and `flow auth whoami` print the chain and the narrowed actions,
+and `flow validate --auth-policy` reports a rule that reads `actors` or
+`delegated` when no entry has a `delegation:` stanza. The chain is vouched for only
+by the issuer that signed the token; see the threat model's note on delegation.
+A stanza must name at least one actor; there is no way to accept every actor.
+
 ### Trust policy per identity provider
 
 One issuer entry per identity provider, each pinning the issuer string exactly

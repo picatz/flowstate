@@ -1217,6 +1217,11 @@ func signalAllowScope(withRun bool) celcomplete.Scope {
 				Docs: "Claims of any JSON shape: `claims.team`, `claims.groups` (a list, so `\"sre\" in claims.groups`) or `claims.slack.user` (nested). A missing key is an error, which denies. Test with `has(...)`."},
 			{Name: "actions", Kind: celcomplete.KindField, Detail: "list(string)",
 				Docs: "The scopes the caller was granted; empty when none."},
+			{Name: "actors", Kind: celcomplete.KindField, Detail: "list(actor)",
+				Docs: "Who is acting on behalf of the subject (an RFC 8693 `act` chain), current actor first and at most two; each has an `issuer` and a `subject`. " +
+					"Data the admitting issuer vouched for, never authority; empty unless the trust policy entry has a `delegation:` stanza."},
+			{Name: "delegated", Kind: celcomplete.KindField, Detail: "bool",
+				Docs: "True when `actors` is not empty. Guard an actor read with it: `!identity.delegated || identity.actors[0].subject == \"triage-bot\"`."},
 		},
 	}
 

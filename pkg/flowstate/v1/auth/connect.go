@@ -280,6 +280,17 @@ func (a *Authenticator) Authenticate(ctx context.Context, req *http.Request) (an
 			}
 			return nil, a.unauthenticated(err)
 		}
+		// The certificate principal is the one returned, and a certificate names
+		// nobody acting on its behalf. A delegated token beside it would have its
+		// chain dropped and the request recorded as the subject acting alone,
+		// which is the statement delegation exists to prevent.
+		if tokenPrincipal.Delegated() {
+			err := fmt.Errorf("%w: the token is delegated and the certificate is not", ErrAmbiguousIdentity)
+			if a.observe != nil {
+				a.observe(ctx, req, err)
+			}
+			return nil, a.unauthenticated(err)
+		}
 	}
 
 	return peerPrincipal, nil

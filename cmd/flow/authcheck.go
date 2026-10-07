@@ -121,8 +121,20 @@ func runAuthCheck(cmd *cobra.Command, _ []string) error {
 
 	for index, entry := range policy.Issuers {
 		if entry.Name == principal.IssuerName {
-			_, err := fmt.Fprintf(cmd.OutOrStdout(), "accepted by issuers[%d] (%q)\n", index, entry.Name)
-			return err
+			if _, err := fmt.Fprintf(cmd.OutOrStdout(), "accepted by issuers[%d] (%q)\n", index, entry.Name); err != nil {
+				return err
+			}
+			if principal.Delegated() {
+				// The chain and what is left of the entry's actions once each
+				// actor has narrowed them: what a policy author needs to see
+				// to know what a delegated caller can do. Both are the
+				// issuer's statement and the entry's allowlist, never a token
+				// value beyond the actors' own names.
+				_, err := fmt.Fprintf(cmd.OutOrStdout(), "%s\nactions: %s\n",
+					principal.ActingVia(), strings.Join(principal.Actions, ", "))
+				return err
+			}
+			return nil
 		}
 	}
 

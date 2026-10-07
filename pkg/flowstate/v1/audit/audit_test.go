@@ -918,6 +918,75 @@ func TestAnInternalErrorRecordCarriesTheCorrelationIDAtErrorSeverity(t *testing.
 	require.Len(t, exportedAttributes(exporter.exported[2])["flowstate.audit.correlation_id"], audit.MaxCorrelationIDBytes)
 }
 
+// TestARecordShowsWhoWasActingForTheSubject is the audit half of delegation: a
+// record for a delegated caller reads "sub, acting via A", on the stderr line
+// as protojson and as an attribute on the OTel sink, in both cases with the
+// chain and nothing else the actor could carry; and a caller acting alone
+// carries no chain at all, so the attribute's presence is the delegation.
+func TestARecordShowsWhoWasActingForTheSubject(t *testing.T) {
+	t.Parallel()
+
+	delegated := &v1.WorkloadIdentity{Principal: &v1.Principal{
+		Subject: "alice", Issuer: "https://idp.example", Namespace: "acme",
+		Claims: v1.StringClaimValues(map[string]string{"secret": "claim-value"}),
+		Actors: []*v1.Actor{
+			{Issuer: "https://agents.example", Subject: "triage-bot"},
+			{Issuer: "https://platform.example", Subject: "orchestrator"},
+		},
+	}}
+
+	t.Run("the record and its line", func(t *testing.T) {
+		t.Parallel()
+
+		var out bytes.Buffer
+		recorder, err := audit.NewRecorder(audit.WithoutStderr(), audit.WithWriter(&out))
+		require.NoError(t, err)
+		require.NoError(t, recorder.Allow(t.Context(), audit.Subject{RPC: "Get", Identity: delegated}))
+		require.NoError(t, recorder.Allow(t.Context(), audit.Subject{RPC: "Get", Identity: &v1.WorkloadIdentity{
+			Principal: &v1.Principal{Subject: "alice", Issuer: "https://idp.example"},
+		}}))
+
+		lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+		require.Len(t, lines, 2)
+
+		var record v1.AuditRecord
+		require.NoError(t, protojson.Unmarshal([]byte(lines[0]), &record))
+		require.NoError(t, v1.Validate(&record))
+		require.Equal(t, "alice", record.GetIdentity().GetPrincipal().GetSubject())
+		require.Len(t, record.GetIdentity().GetPrincipal().GetActors(), 2)
+		require.Equal(t, "triage-bot", record.GetIdentity().GetPrincipal().GetActors()[0].GetSubject(), "current actor first")
+		require.Equal(t, "https://platform.example", record.GetIdentity().GetPrincipal().GetActors()[1].GetIssuer())
+		require.Empty(t, record.GetIdentity().GetPrincipal().GetClaims(), "claims stay out of the trail")
+		require.NotContains(t, lines[0], "claim-value")
+
+		var alone v1.AuditRecord
+		require.NoError(t, protojson.Unmarshal([]byte(lines[1]), &alone))
+		require.Empty(t, alone.GetIdentity().GetPrincipal().GetActors())
+		require.NotContains(t, lines[1], "actors")
+	})
+
+	t.Run("the OTel attribute", func(t *testing.T) {
+		t.Parallel()
+
+		exporter := &stubExporter{}
+		provider := sdklog.NewLoggerProvider(sdklog.WithProcessor(audit.NewSyncProcessor(exporter)))
+		t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
+		recorder, err := audit.NewRecorder(audit.WithoutStderr(), audit.WithEmitter(audit.NewLogEmitter(provider)), audit.Required())
+		require.NoError(t, err)
+
+		require.NoError(t, recorder.Allow(t.Context(), audit.Subject{RPC: "Get", Identity: delegated}))
+		require.NoError(t, recorder.Allow(t.Context(), audit.Subject{RPC: "Get", Identity: &v1.WorkloadIdentity{
+			Principal: &v1.Principal{Subject: "alice", Issuer: "https://idp.example"},
+		}}))
+		require.Len(t, exporter.exported, 2)
+
+		attrs := exportedAttributes(exporter.exported[0])
+		require.Equal(t, "alice", attrs["flowstate.audit.identity.subject"], "the subject stays the subject")
+		require.Equal(t, "[https://agents.example#triage-bot https://platform.example#orchestrator]", attrs["flowstate.audit.identity.actors"])
+		require.NotContains(t, exportedAttributes(exporter.exported[1]), "flowstate.audit.identity.actors")
+	})
+}
+
 // exportedAttributes flattens one exported record's attributes, the way the
 // assertions above and [TestTheSyncProcessorReportsAnExportFailureToTheEmitter]
 // both read them.

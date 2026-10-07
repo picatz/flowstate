@@ -65,18 +65,54 @@ type Caller struct {
 	Claims Claims `cel:"claims"`
 	// Actions are the scopes the caller was granted.
 	Actions []string `cel:"actions"`
+	// Actors is the RFC 8693 `act` chain the caller's token carried, current
+	// actor first and at most two deep: who is acting on behalf of Subject.
+	// It is data the admitting issuer vouched for, never a source of authority;
+	// see [Actor].
+	Actors []Actor `cel:"actors"`
+	// Delegated is true exactly when Actors is not empty. It is derived, not
+	// stored: [Caller.Normalized] sets it, so a Caller built by hand cannot
+	// disagree with its own chain.
+	Delegated bool `cel:"delegated"`
 }
 
+// Actor is one party in a caller's RFC 8693 `act` chain, as a rule reads it:
+// `identity.actors[0].issuer` and `identity.actors[0].subject`.
+//
+// An actor is the issuer's statement that this party is acting on behalf of
+// the caller's Subject, and is exactly as trustworthy as the issuer that
+// signed the token carrying it. It has no claims, no kind and no actions on
+// purpose: authority comes from the trust policy entry that admitted the token,
+// and a chain that could carry its own would be a way to widen it. A rule that
+// trusts an actor names its exact issuer and subject, as in
+// `identity.actors[0].issuer == "https://agents.example" && identity.actors[0].subject == "triage-bot"`.
+type Actor struct {
+	// Issuer is the actor's `iss`.
+	Issuer string `cel:"issuer"`
+	// Subject is the actor's `sub`.
+	Subject string `cel:"subject"`
+}
+
+// String renders the actor as `issuer#subject`, the spelling [Qualified] gives
+// a caller, so a log line or audit attribute names an actor the way a policy
+// rule names a principal.
+func (a Actor) String() string { return Qualified(a.Issuer, a.Subject) }
+
 // Normalized returns the caller a rule is evaluated against: the same fields
-// with actions guaranteed non-nil. CEL cannot take the size of a null list, so
-// `"x" in identity.actions` against a caller that carries none would error, and
-// an errored rule denies, where the intent is for it simply not to match. An
-// absent claim key still errors, which is the documented convention
-// (`"k" in identity.claims` guards it); [Claims] is already empty, never null.
+// with actions and actors guaranteed non-nil and delegated derived from the
+// chain. CEL cannot take the size of a null list, so `"x" in identity.actions`
+// against a caller that carries none would error, and an errored rule denies,
+// where the intent is for it simply not to match. An absent claim key still
+// errors, which is the documented convention (`"k" in identity.claims` guards
+// it); [Claims] is already empty, never null.
 func (c Caller) Normalized() Caller {
 	if c.Actions == nil {
 		c.Actions = []string{}
 	}
+	if c.Actors == nil {
+		c.Actors = []Actor{}
+	}
+	c.Delegated = len(c.Actors) > 0
 
 	return c
 }
@@ -85,9 +121,14 @@ func (c Caller) Normalized() Caller {
 // builds the value itself rather than binding the typed [Caller]: a wait's
 // `sender.identity` and a run's `run.identity`. It has the same keys as the CEL
 // type's fields, so one rendering serves every surface; the zero Caller renders
-// every string empty and claims and actions empty.
+// every string empty, claims, actions and actors empty, and delegated false.
 func (c Caller) Map() map[string]any {
 	c = c.Normalized()
+
+	actors := make([]any, len(c.Actors))
+	for i, actor := range c.Actors {
+		actors[i] = map[string]any{"issuer": actor.Issuer, "subject": actor.Subject}
+	}
 
 	return map[string]any{
 		"issuer":    c.Issuer,
@@ -97,14 +138,26 @@ func (c Caller) Map() map[string]any {
 		"principal": c.Principal,
 		"claims":    c.Claims.Map(),
 		"actions":   c.Actions,
+		"actors":    actors,
+		"delegated": c.Delegated,
 	}
 }
 
-// EnvOptions registers [Caller] as a CEL native type. Declaring the fields is
-// what makes a rule naming `identity.nonexistent` a compile-time error rather
-// than one that silently never matches.
+// NativeTypeArgs is the argument list a CEL environment hands to
+// [ext.NativeTypes] to bind a [Caller]: the `cel` struct-tag option, then the
+// Caller and the [Actor] its `actors` list holds. It is the one list, for
+// [EnvOptions] and for an environment that declares native types of its own
+// beside them (a wait's `sender`), so a type added to a Caller is registered
+// everywhere at once.
+func NativeTypeArgs() []any {
+	return []any{ext.ParseStructTag("cel"), reflect.TypeFor[Caller](), reflect.TypeFor[Actor]()}
+}
+
+// EnvOptions registers [Caller] and the [Actor] it lists as CEL native types.
+// Declaring the fields is what makes a rule naming `identity.nonexistent` a
+// compile-time error rather than one that silently never matches.
 func EnvOptions() cel.EnvOption {
-	return ext.NativeTypes(ext.ParseStructTag("cel"), reflect.TypeFor[Caller]())
+	return ext.NativeTypes(NativeTypeArgs()...)
 }
 
 // Var declares name as a variable of type [Caller]. It does not register the
