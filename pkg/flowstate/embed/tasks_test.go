@@ -315,6 +315,14 @@ func TestTaskFnClassifiedErrors(t *testing.T) {
 		wantKind v1.ErrorKind
 	}{
 		{"InvalidInput", InvalidInput, v1.ErrorKindInvalidInput},
+		// An inner classification stands: wrapping must neither re-label a
+		// permanent failure nor make it retryable.
+		{"Unavailable over UpstreamUnknown", func(err error) error {
+			return Unavailable(v1.NewTaskError("", v1.ErrorKindUpstreamUnknown, err))
+		}, v1.ErrorKindUpstreamUnknown},
+		{"InvalidInput over PolicyDenied", func(err error) error {
+			return InvalidInput(v1.NewTaskError("", v1.ErrorKindPolicyDenied, err))
+		}, v1.ErrorKindPolicyDenied},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			attempts := 0
@@ -347,5 +355,18 @@ func TestTaskFnClassifiedErrors(t *testing.T) {
 				t.Errorf("task ran %d times, want 1: a classified permanent failure is not retried", attempts)
 			}
 		})
+	}
+}
+
+// TestUnavailableClassifiesAsUpstream pins the kind Unavailable reports. It is
+// asserted on the error, not through a run: the default policy retries it, so
+// a run would hold for the backoff to prove what ClassifyError already says.
+func TestUnavailableClassifiesAsUpstream(t *testing.T) {
+	err := Unavailable(errors.New("connection reset"))
+	if got := v1.ClassifyError(err); got != v1.ErrorKindUpstream {
+		t.Errorf("ClassifyError = %q, want %q", got, v1.ErrorKindUpstream)
+	}
+	if !v1.RetryPermitted(err) {
+		t.Error("an Unavailable failure must be retryable")
 	}
 }
