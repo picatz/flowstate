@@ -2647,9 +2647,9 @@ func runParallel(ctx context.Context, id string, parallel *Parallel, scope *Scop
 	// does after its channel drain: the merged result is the same regardless of
 	// the order branches completed in, and nothing merges on failure.
 	for i, branch := range parallel.GetBranches() {
-		for _, node := range branch.GetSteps() {
-			if outputs, ok := branchResults[i].GetStepValues()[node.GetId()]; ok {
-				scope.Outputs.StepValues[node.GetId()] = outputs
+		for _, id := range MergedStepIDs(branch.GetSteps()) {
+			if outputs, ok := branchResults[i].GetStepValues()[id]; ok {
+				scope.Outputs.StepValues[id] = outputs
 			}
 		}
 	}

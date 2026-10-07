@@ -242,6 +242,46 @@ func ControlFlowCases(httpBaseURL string) []Case {
 			}},
 		},
 		{
+			// What a branch contributes to the scope after the block is decided
+			// once ([v1.MergedStepNodes]): a step nested inside a branch's switch
+			// merges out like the branch's own steps, because that is what the
+			// validator admits a later step to read (#1425). Each driver used to
+			// copy only the branch's top-level ids at the join, so a file the
+			// checker passed failed the run with `no such key`.
+			Name: "a step nested in a parallel branch's switch is visible after the block",
+			Workflow: &v1.Workflow{
+				Name: "parallel-nested-merge",
+				Steps: append([]*v1.Node{
+					{
+						Id: "fan",
+						Kind: &v1.Node_Parallel{Parallel: &v1.Parallel{
+							Branches: []*v1.Parallel_Branch{
+								{Steps: []*v1.Node{{
+									Id: "route",
+									Kind: &v1.Node_Switch{Switch: &v1.Switch{
+										Value: v1.NewLiteral("a"),
+										Cases: []*v1.Switch_Case{{
+											Values: []*v1.Value{v1.NewLiteral("a")},
+											Steps:  []*v1.Node{echoes("inner", httpBaseURL, `"I"`)},
+										}},
+									}},
+								}}},
+								{Steps: []*v1.Node{echoes("right", httpBaseURL, `"R"`)}},
+							},
+						}},
+					},
+				}, pins("after", `inner.said + right.said == "IR"`)...),
+			},
+			ExpectedOutputs: withStep(&v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
+				"inner": said("I"),
+				"right": said("R"),
+				"after": {},
+			}}, "route", map[string]*v1.Value{
+				"value": v1.NewLiteral("a"),
+				"case":  v1.NewLiteral("a"),
+			}),
+		},
+		{
 			Name: "condition inside a loop body",
 			Workflow: &v1.Workflow{
 				Name: "loop-condition",

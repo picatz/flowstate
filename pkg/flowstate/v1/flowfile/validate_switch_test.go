@@ -699,3 +699,56 @@ steps:
 		}
 	}
 }
+
+// TestParallelBranchesRefuseANestedIDTheOtherBranchAlsoMerges holds the
+// collision check to the rule the scope and both drivers' joins use (#1425):
+// an id nested in one branch's switch merges out beside the other branch's own
+// steps, so reusing it across branches would let one silently overwrite the
+// other.
+func TestParallelBranchesRefuseANestedIDTheOtherBranchAlsoMerges(t *testing.T) {
+	t.Parallel()
+
+	nested := `edition: v2026.4
+name: t
+steps:
+  - id: fan
+    parallel:
+      - steps:
+          - id: route
+            switch:
+              value: ${"a"}
+              cases:
+                - case: a
+                  steps:
+                    - id: inner
+                      value: ${"I"}
+      - steps:
+          - id: inner
+            value: ${"R"}
+`
+	assert.Contains(t, diagnosticMessages(validateSwitchSrc(t, nested)), "parallel branches share one output namespace")
+
+	// The reproducer from the issue is a legal file: the nested id is read by a
+	// later step, and no id repeats.
+	legal := `edition: v2026.4
+name: t
+steps:
+  - id: fan
+    parallel:
+      - steps:
+          - id: route
+            switch:
+              value: ${"a"}
+              cases:
+                - case: a
+                  steps:
+                    - id: inner
+                      value: ${"I"}
+      - steps:
+          - id: right
+            value: ${"R"}
+  - id: after
+    value: ${steps.inner.value}
+`
+	assert.Empty(t, validateSwitchSrc(t, legal))
+}

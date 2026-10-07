@@ -796,46 +796,18 @@ func validateCondition(id string, node *v1.Node, scope refScope, index int, wf *
 	return validateInputRefs(id, "if", node.GetCondition(), scope, index, wf)
 }
 
-// branchStepNodes returns every step across a parallel block's branches,
-// including those nested inside branch control flow whose outputs also merge out.
-func branchStepNodes(parallel *v1.Parallel) []*v1.Node {
-	var nodes []*v1.Node
-	for _, branch := range parallel.GetBranches() {
-		nodes = append(nodes, mergedStepNodes(branch.GetSteps())...)
-	}
-	return nodes
-}
-
 // mergedStepNodes returns the steps whose outputs become visible to steps
-// following a list of nodes.
-//
-// A loop contributes only itself, because its body's outputs are reported
-// through its `results` output rather than merged. A nested parallel block
-// contributes its branches' steps, because those are merged.
-//
-// The nodes rather than their ids, because a scope that holds only names cannot
-// answer what a name's outputs *are*: the check on `steps.<id>.<output>` used to
-// find its node by searching the whole workflow for that id, which is the wrong
-// step as soon as two blocks legally reuse one (#323). Recording what was put in
-// scope, at the point it is put there, is what makes the later lookup exact.
+// following a list of nodes. The rule is [v1.MergedStepNodes]: one spelling,
+// shared with both drivers' parallel joins, so what this scope admits is what
+// the runtime merges (#1425).
 func mergedStepNodes(nodes []*v1.Node) []*v1.Node {
-	var out []*v1.Node
-	for _, node := range nodes {
-		out = append(out, node)
-		if p, ok := node.GetKind().(*v1.Node_Parallel); ok {
-			out = append(out, branchStepNodes(p.Parallel)...)
-		}
-		if s, ok := node.GetKind().(*v1.Node_Switch); ok {
-			out = append(out, switchStepNodes(s.Switch)...)
-		}
-	}
-	return out
+	return v1.MergedStepNodes(nodes)
 }
 
 // recordStepInScope marks a finished step in the scope the steps after it are
 // checked against: its own id, plus — for a parallel block or a switch — the
 // nested ids whose outputs execution merges out, which is exactly
-// [mergedStepIDs] of this one node.
+// [v1.MergedStepNodes] of this one node.
 //
 // One helper for both walks, because they briefly disagreed: the top-level walk
 // merged a switch's case-body ids and [validateNested] recorded only the
@@ -1307,7 +1279,11 @@ func validateParallel(stepID string, parallel *v1.Parallel, enclosing refScope, 
 	}
 
 	for i, branch := range parallel.GetBranches() {
-		for _, node := range branch.GetSteps() {
+		// The ids that merge out, nested ones included: the same set the scope
+		// records and the drivers join, or two branches could each declare a
+		// nested `inner` that silently overwrite one another.
+		merged := mergedStepNodes(branch.GetSteps())
+		for _, node := range merged {
 			if seen[node.GetId()] {
 				ds = append(ds, Diagnostic{
 					Step: node.GetId(),
@@ -1321,7 +1297,7 @@ func validateParallel(stepID string, parallel *v1.Parallel, enclosing refScope, 
 		// steps, which is what validation must model to catch a cross-branch
 		// reference.
 		ds = append(ds, validateNested(branch.GetSteps(), enclosing, index, wf, profile, depth, v1.UndoScopeConcurrent)...)
-		for _, node := range branch.GetSteps() {
+		for _, node := range merged {
 			seen[node.GetId()] = true
 		}
 	}
