@@ -4,6 +4,7 @@ package jose.v1;
 
 option go_package = "github.com/picatz/flowstate/plugins/jose/gen/jose/v1;josev1";
 
+import "flowstate/v1/schema.proto";
 import "flowstate/v1/value.proto";
 import "google/api/expr/v1alpha1/value.proto";
 
@@ -21,7 +22,7 @@ message VerifyInputs {
   // into durable history like any other input. A token that arrived in this
   // run - a webhook body, a prior step's response - is already in history, and
   // passing it here does not make that worse.
-  flowstate.v1.Value token = 1;
+  flowstate.v1.Value token = 1 [(flowstate.v1.input).secret = SECRET_WHOLE_VALUE];
 
   // Trust names which entry of the operator's trust policy to verify against.
   // Empty verifies against the whole policy, which is what a deployment with

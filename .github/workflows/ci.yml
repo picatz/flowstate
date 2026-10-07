@@ -693,7 +693,7 @@ jobs:
         run: |
           go tool -modfile=tools/external/go.mod buf generate
           E=pkg/flowstate/v1/plugin/examples/flowstate-plugin-example
-          go tool -modfile=tools/external/go.mod buf generate "$E/proto" --template "$E/buf.gen.yaml" -o "$E" --clean
+          go tool -modfile=tools/external/go.mod buf generate --config "{\"version\":\"v2\",\"modules\":[{\"path\":\"proto\"},{\"path\":\"$E/proto\"}],\"deps\":[\"buf.build/bufbuild/protovalidate\",\"buf.build/googleapis/googleapis\"]}" --template "$E/buf.gen.yaml" --clean --path "$E/proto/example" -o "$E"
           make plugin-proto
           git add --intent-to-add -- .
           git diff --exit-code -- . || {

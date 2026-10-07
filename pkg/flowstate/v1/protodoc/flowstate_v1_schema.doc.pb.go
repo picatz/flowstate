@@ -10,6 +10,48 @@ import (
 func init() {
 	protodocimpl.RegisterFile("flowstate/v1/schema.proto", []protodocimpl.Comment{
 		{
+			Name: "flowstate.v1.InputOptions",
+			Leading: " InputOptions are the options a task's input message sets on one of its\n" +
+				" fields with the `input` extension.\n",
+		},
+		{
+			Name:    "flowstate.v1.InputOptions.secret",
+			Leading: " Secret is how the input accepts a secret reference. Unset is no claim.\n",
+		},
+		{
+			Name: "flowstate.v1.Secret",
+			Leading: " Secret says how a task input accepts a host secret reference: the claim a\n" +
+				" task makes about one input, written on the field it describes rather than in\n" +
+				" a parallel list of field names that can drift from the schema.\n" +
+				"\n" +
+				" Reading it fails closed: an input that sets no claim is no claim, and the\n" +
+				" host refuses a secret reference there.\n",
+		},
+		{
+			Name: "flowstate.v1.SECRET_UNSPECIFIED",
+			Leading: " SECRET_UNSPECIFIED is no claim. The input does not accept a secret\n" +
+				" reference, and the host refuses one written there.\n",
+		},
+		{
+			Name: "flowstate.v1.SECRET_WHOLE_VALUE",
+			Leading: " SECRET_WHOLE_VALUE says the input accepts a secret reference as its entire\n" +
+				" value, which the host resolves where the task uses it. The field must be a\n" +
+				" `flowstate.v1.Value`, the only shape that can hold a reference unresolved.\n",
+		},
+		{
+			Name: "flowstate.v1.SECRET_REQUIRED",
+			Leading: " SECRET_REQUIRED says the input must be supplied as a whole secret\n" +
+				" reference, never a literal or an expression. It implies\n" +
+				" SECRET_WHOLE_VALUE and is declared instead of it, not alongside it.\n",
+		},
+		{
+			Name: "flowstate.v1.SECRET_NESTED",
+			Leading: " SECRET_NESTED says a secret reference may sit inside a value the task\n" +
+				" itself encodes, such as an entry of a list or a map, and is resolved at\n" +
+				" exactly the moment the task writes that value out. The field is a\n" +
+				" `flowstate.v1.Value`, or a map whose values are.\n",
+		},
+		{
 			Name: "flowstate.v1.test_only",
 			Leading: " test_only marks an enum value the declaring program compiles into its\n" +
 				" test builds only, and whose released builds refuse at the point of use.\n" +
@@ -28,6 +70,12 @@ func init() {
 				" at dispatch. The declaring program still refuses it at the point of use,\n" +
 				" as it did before; this option moves the refusal earlier, it does not\n" +
 				" replace it.\n",
+		},
+		{
+			Name: "flowstate.v1.input",
+			Leading: " input sets the [InputOptions] of a task input field. The host reads it from\n" +
+				" the descriptor of a task's input message, so the descriptor a plugin\n" +
+				" already ships carries the claims with the fields they describe.\n",
 		},
 	})
 }

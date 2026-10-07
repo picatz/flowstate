@@ -1092,7 +1092,7 @@ var File_flowstate_v1_task_proto protoreflect.FileDescriptor
 
 const file_flowstate_v1_task_proto_rawDesc = "" +
 	"\n" +
-	"\x17flowstate/v1/task.proto\x12\fflowstate.v1\x1a\x1bbuf/validate/validate.proto\x1a\x18flowstate/v1/value.proto\x1a$google/api/expr/v1alpha1/value.proto\x1a\x1fgoogle/api/field_behavior.proto\"\xfc\x13\n" +
+	"\x17flowstate/v1/task.proto\x12\fflowstate.v1\x1a\x1bbuf/validate/validate.proto\x1a\x19flowstate/v1/schema.proto\x1a\x18flowstate/v1/value.proto\x1a$google/api/expr/v1alpha1/value.proto\x1a\x1fgoogle/api/field_behavior.proto\"\x94\x14\n" +
 	"\x04Task\x12J\n" +
 	"\x04name\x18\x01 \x01(\tB6\xe2A\x01\x02\xbaH/\xc8\x01\x01r*\x10\x01\x18\x80\x012#^[A-Za-z0-9-_]+(\\.[A-Za-z0-9-_]+)?$R\x04name\x12K\n" +
 	"\x06inputs\x18\x03 \x03(\v2\x1e.flowstate.v1.Task.InputsEntryB\x13\xe2A\x01\x01\xbaH\f\xc8\x01\x01\x9a\x01\x06\"\x04r\x02\x10\x01R\x06inputs\x1a\xe7\x02\n" +
@@ -1112,22 +1112,22 @@ const file_flowstate_v1_task_proto_rawDesc = "" +
 	"LEVEL_INFO\x10\x01\x12\x0e\n" +
 	"\n" +
 	"LEVEL_WARN\x10\x02\x12\x0f\n" +
-	"\vLEVEL_ERROR\x10\x03\x1a\xcd\n" +
+	"\vLEVEL_ERROR\x10\x03\x1a\xe5\n" +
 	"\n" +
-	"\x04HTTP\x1a\xbe\b\n" +
+	"\x04HTTP\x1a\xd6\b\n" +
 	"\x06Inputs\x12!\n" +
 	"\x03url\x18\x01 \x01(\tB\x0f\xe2A\x01\x02\xbaH\b\xc8\x01\x01r\x03\x88\x01\x01R\x03url\x12I\n" +
-	"\x06method\x18\x02 \x01(\tB,\xbaH)r'\x10\x03\x18\x062!^(?i)(GET|POST|PUT|PATCH|DELETE)$H\x00R\x06method\x88\x01\x01\x12E\n" +
-	"\aheaders\x18\x03 \x03(\v2+.flowstate.v1.Task.HTTP.Inputs.HeadersEntryR\aheaders\x12\x17\n" +
+	"\x06method\x18\x02 \x01(\tB,\xbaH)r'\x10\x03\x18\x062!^(?i)(GET|POST|PUT|PATCH|DELETE)$H\x00R\x06method\x88\x01\x01\x12M\n" +
+	"\aheaders\x18\x03 \x03(\v2+.flowstate.v1.Task.HTTP.Inputs.HeadersEntryB\x06\x8a\xb5\x18\x02\b\x03R\aheaders\x12\x17\n" +
 	"\x04body\x18\x04 \x01(\tH\x01R\x04body\x88\x01\x01\x12+\n" +
 	"\x06bearer\x18\f \x01(\v2\x13.flowstate.v1.ValueR\x06bearer\x12B\n" +
 	"\n" +
 	"credential\x18\r \x01(\tB\x1d\xbaH\x1ar\x18\x10\x01\x18\x80\x012\x11^[a-z][a-z0-9-]*$H\x02R\n" +
 	"credential\x88\x01\x01\x12E\n" +
 	"\aoutputs\x18\x05 \x03(\v2+.flowstate.v1.Task.HTTP.Inputs.OutputsEntryR\aoutputs\x12?\n" +
-	"\x05query\x18\x06 \x03(\v2).flowstate.v1.Task.HTTP.Inputs.QueryEntryR\x05query\x12'\n" +
-	"\x04json\x18\a \x01(\v2\x13.flowstate.v1.ValueR\x04json\x12<\n" +
-	"\x04form\x18\b \x03(\v2(.flowstate.v1.Task.HTTP.Inputs.FormEntryR\x04form\x12+\n" +
+	"\x05query\x18\x06 \x03(\v2).flowstate.v1.Task.HTTP.Inputs.QueryEntryR\x05query\x12/\n" +
+	"\x04json\x18\a \x01(\v2\x13.flowstate.v1.ValueB\x06\x8a\xb5\x18\x02\b\x03R\x04json\x12D\n" +
+	"\x04form\x18\b \x03(\v2(.flowstate.v1.Task.HTTP.Inputs.FormEntryB\x06\x8a\xb5\x18\x02\b\x03R\x04form\x12+\n" +
 	"\x06expect\x18\t \x01(\v2\x13.flowstate.v1.ValueR\x06expect\x12\"\n" +
 	"\n" +
 	"parse_json\x18\n" +
@@ -1253,6 +1253,7 @@ func file_flowstate_v1_task_proto_init() {
 	if File_flowstate_v1_task_proto != nil {
 		return
 	}
+	file_flowstate_v1_schema_proto_init()
 	file_flowstate_v1_value_proto_init()
 	file_flowstate_v1_task_proto_msgTypes[8].OneofWrappers = []any{}
 	type x struct{}
