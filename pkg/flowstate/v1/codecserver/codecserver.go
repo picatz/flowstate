@@ -401,13 +401,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if status, msg, code := h.authorize(r.Context(), principal, endpoint, namespace); status != 0 {
+	if status, msg, code, missing := h.authorize(r.Context(), principal, endpoint, namespace); status != 0 {
 		// Only a missing action is a scope problem a new token can fix; a
 		// namespace or shared-namespace refusal is not, and a client told
 		// otherwise would keep asking for a scope it already holds.
-		if decision := h.decide(ctx, principal, endpoint); status == http.StatusForbidden &&
-			!decision.Allowed && !decision.Embedder {
-			header.Set("WWW-Authenticate", fmt.Sprintf(`Bearer error="insufficient_scope", scope=%q`, decision.Scope))
+		if missing != "" {
+			header.Set("WWW-Authenticate", fmt.Sprintf(`Bearer error="insufficient_scope", scope=%q`, missing))
 		}
 		h.refuse(ctx, w, subject, code, status, msg)
 		return
@@ -553,37 +552,37 @@ func (h *Handler) decide(ctx context.Context, principal auth.Principal, endpoint
 // authorize answers 0 to proceed, or the status, message, and audit code of a
 // refusal. The messages say what is missing and never whether a namespace
 // exists.
-func (h *Handler) authorize(ctx context.Context, principal auth.Principal, endpoint, namespace string) (int, string, v1.AuditDenyCode) {
+func (h *Handler) authorize(ctx context.Context, principal auth.Principal, endpoint, namespace string) (status int, msg string, code v1.AuditDenyCode, missing string) {
 	if h.opts.Insecure {
-		return 0, "", 0
+		return 0, "", 0, ""
 	}
 	if principal.IsZero() {
-		return http.StatusUnauthorized, "authentication required", v1.AuditDenyCode_AUDIT_DENY_CODE_POLICY_DENIED
+		return http.StatusUnauthorized, "authentication required", v1.AuditDenyCode_AUDIT_DENY_CODE_POLICY_DENIED, ""
 	}
 
 	if decision := h.decide(ctx, principal, endpoint); !decision.Allowed {
 		if decision.Embedder {
 			return http.StatusForbidden, "the request was refused by this deployment's authorization rules",
-				v1.AuditDenyCode_AUDIT_DENY_CODE_POLICY_DENIED
+				v1.AuditDenyCode_AUDIT_DENY_CODE_POLICY_DENIED, ""
 		}
 
 		return http.StatusForbidden,
 			fmt.Sprintf("the caller's policy entry does not grant %q, which this endpoint requires explicitly", decision.Scope),
-			v1.AuditDenyCode_AUDIT_DENY_CODE_POLICY_DENIED
+			v1.AuditDenyCode_AUDIT_DENY_CODE_POLICY_DENIED, decision.Scope
 	}
 
 	own, shared, err := h.temporalNamespaceOf(principal.Namespace)
 	if err != nil || own != namespace {
 		return http.StatusForbidden, "the caller is not authorized for that namespace",
-			v1.AuditDenyCode_AUDIT_DENY_CODE_TENANT_MISMATCH
+			v1.AuditDenyCode_AUDIT_DENY_CODE_TENANT_MISMATCH, ""
 	}
 	if shared && !h.opts.AllowSharedNamespaces {
 		return http.StatusForbidden,
 			"that Temporal namespace is shared with other tenants, and a payload does not say whose it is; " +
 				"this server refuses shared namespaces unless started with --allow-shared-namespaces",
-			v1.AuditDenyCode_AUDIT_DENY_CODE_POLICY_DENIED
+			v1.AuditDenyCode_AUDIT_DENY_CODE_POLICY_DENIED, ""
 	}
-	return 0, "", 0
+	return 0, "", 0, ""
 }
 
 // temporalNamespaceOf is the Temporal namespace a tenant's runs execute in,

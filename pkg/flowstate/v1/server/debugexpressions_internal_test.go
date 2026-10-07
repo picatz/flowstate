@@ -10,6 +10,7 @@ import (
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/authz"
 )
 
 // TestBreakpointExpressionsNeedTheInspectAction: setting a condition or a log
@@ -61,4 +62,40 @@ func TestBreakpointExpressionsNeedTheInspectAction(t *testing.T) {
 	}
 	assert.True(t, withheld.GetBreakpoints()[1].GetVerified(), "withholding a definition changed whether it is armed")
 	assert.True(t, proto.Equal(original, snapshot), "the run's own snapshot was changed")
+}
+
+// TestAnEmbeddersDeciderGovernsWhatAResponseMayShow proves the extra decider
+// reaches the checks that choose what to show, not only the ones that refuse,
+// with no Temporal dependency.
+func TestAnEmbeddersDeciderGovernsWhatAResponseMayShow(t *testing.T) {
+	t.Parallel()
+
+	snapshot := &v1.DebugSnapshot{Revision: 1, Breakpoints: []*v1.DebugBreakpointState{
+		{Id: "peek", Verified: true, Definition: &v1.DebugBreakpoint{Id: "peek", Step: "after", Condition: `inputs.x == 1`}},
+	}}
+	holder := auth.ContextWithPrincipal(t.Context(), auth.Principal{
+		Issuer: "i", Subject: "s", Actions: auth.ActionScopes{"workload.debug", "workload.debug_inspect"},
+	})
+
+	refuse := &FlowstateServer{}
+	require.NoError(t, WithDecider(authz.DeciderFunc(func(context.Context, authz.Request) authz.Decision {
+		return authz.Decision{}
+	}))(refuse))
+
+	assert.False(t, refuse.holdsAction(holder, v1.AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_DEBUG_INSPECT),
+		"a refusing decider did not stop a held action from being reported as held")
+	assert.Nil(t, refuse.expressionsFor(holder, snapshot).GetBreakpoints()[0].GetDefinition(),
+		"a refusing decider still showed a definition the caller holds the action for")
+
+	plain := &FlowstateServer{}
+	assert.True(t, plain.holdsAction(holder, v1.AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_DEBUG_INSPECT))
+	assert.NotNil(t, plain.expressionsFor(holder, snapshot).GetBreakpoints()[0].GetDefinition())
+
+	// A decider that allows everything never shows what the policy withholds.
+	allow := &FlowstateServer{}
+	require.NoError(t, WithDecider(authz.DeciderFunc(func(context.Context, authz.Request) authz.Decision {
+		return authz.Decision{Allowed: true}
+	}))(allow))
+	stranger := auth.ContextWithPrincipal(t.Context(), auth.Principal{Issuer: "i", Subject: "n", Actions: auth.ActionScopes{}})
+	assert.False(t, allow.holdsAction(stranger, v1.AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_DEBUG_INSPECT))
 }

@@ -147,7 +147,12 @@ func Restrict(base, extra Decider) Decider {
 			}
 		}()
 
-		if extra := extra.Decide(ctx, req); !extra.Allowed {
+		// The extra decider gets its own copy of the action list, so a decider
+		// that writes to it cannot change what a later check on this request
+		// finds in the caller's principal.
+		isolated := req
+		isolated.Principal.Actions = slices.Clone(req.Principal.Actions)
+		if extra := extra.Decide(ctx, isolated); !extra.Allowed {
 			return Decision{Scope: decision.Scope, Embedder: true}
 		}
 

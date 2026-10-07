@@ -93,6 +93,15 @@ func TestRestrictOnlyNarrowsThePolicy(t *testing.T) {
 	require.False(t, ask(authz.Restrict(nil, panics), holder).Allowed, "a panicking extra check is a refusal")
 	require.Equal(t, authz.PolicyDecider{}, authz.Restrict(nil, nil))
 
+	mutating := authz.DeciderFunc(func(_ context.Context, req authz.Request) authz.Decision {
+		for i := range req.Principal.Actions {
+			req.Principal.Actions[i] = "workload.debug_inspect"
+		}
+		return authz.Decision{Allowed: true}
+	})
+	ask(authz.Restrict(nil, mutating), holder)
+	require.Equal(t, auth.ActionScopes{"workload.run"}, holder.Actions, "an extra decider rewrote the caller's own action list")
+
 	calls := 0
 	counting := authz.DeciderFunc(func(context.Context, authz.Request) authz.Decision {
 		calls++
