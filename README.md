@@ -66,7 +66,7 @@ steps:
     value: ${steps.total.value > vars.auto_limit_cents}
   - id: tell
     log:
-      message: '${"refund of %d cents on %s (needs review: %s)".format([steps.total.value, inputs.order_id, steps.needs_review.value])}'
+      message: ${"refund of " + string(steps.total.value) + " cents on " + string(inputs.order_id) + " (needs review " + string(steps.needs_review.value) + ")"}
 outputs:
   needs_review:
     value: ${steps.needs_review.value}
