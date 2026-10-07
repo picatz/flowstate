@@ -352,5 +352,43 @@ func SwitchCases() []Case {
 				return held && !failed
 			},
 		},
+		{
+			// A `switch:` or a nested `parallel:` inside a parallel branch merges its
+			// step ids out at the join, exactly as a top-level one does, so a step
+			// after the block reads them (#1425). The validator already allowed it
+			// and both drivers copied only each branch's own top-level ids, so the
+			// file validated and the run failed with `no such key`.
+			Name: "a step nested in a parallel branch's switch or parallel is visible after the join",
+			Workflow: &v1.Workflow{
+				Name:    "parallel-nested-merge",
+				Profile: v1.CurrentProfile,
+				Steps: append([]*v1.Node{{
+					Id: "fan",
+					Kind: &v1.Node_Parallel{Parallel: &v1.Parallel{Branches: []*v1.Parallel_Branch{
+						{Steps: []*v1.Node{{
+							Id: "route",
+							Kind: &v1.Node_Switch{Switch: &v1.Switch{
+								Value: v1.NewLiteral("a"),
+								Cases: []*v1.Switch_Case{{
+									Values: []*v1.Value{v1.NewLiteral("a")},
+									Steps:  []*v1.Node{{Id: "inner", Kind: &v1.Node_Value{Value: v1.NewExpr(`"I"`)}}},
+								}},
+							}},
+						}}},
+						{Steps: []*v1.Node{{
+							Id: "deeper",
+							Kind: &v1.Node_Parallel{Parallel: &v1.Parallel{Branches: []*v1.Parallel_Branch{
+								{Steps: []*v1.Node{{Id: "nested", Kind: &v1.Node_Value{Value: v1.NewExpr(`"N"`)}}}},
+							}}},
+						}}},
+					}}},
+				}}, pins("show", `steps.inner.value + steps.nested.value == "IN"`)...),
+			},
+			ExpectedOutputsPredicate: func(out *v1.Workflow_StepOutputs) bool {
+				_, held := out.GetStepValues()["show"]
+				_, failed := out.GetStepValues()["show_else"]
+				return held && !failed
+			},
+		},
 	}
 }

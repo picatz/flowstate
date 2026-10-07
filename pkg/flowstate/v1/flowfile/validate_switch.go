@@ -287,16 +287,6 @@ func validateSwitch(id string, sw *v1.Switch, enclosing refScope, index int, wf 
 	return ds
 }
 
-// switchStepNodes returns every step across a switch's bodies, including those
-// nested control flow merges out, mirroring [branchStepNodes].
-func switchStepNodes(sw *v1.Switch) []*v1.Node {
-	var nodes []*v1.Node
-	for _, body := range v1.SwitchBodies(sw) {
-		nodes = append(nodes, mergedStepNodes(body)...)
-	}
-	return nodes
-}
-
 // SwitchCaseField addresses one case literal the way its position was recorded:
 // the whole `case:` key for a scalar, the element for a list entry.
 //

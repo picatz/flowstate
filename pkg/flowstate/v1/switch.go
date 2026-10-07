@@ -289,3 +289,34 @@ func numericRefValue(v *expr.Value) (ref.Val, bool) {
 		return nil, false
 	}
 }
+
+// MergedSteps returns the steps whose outputs become visible to whatever follows
+// nodes: each node itself, plus — for a `parallel:` block or a `switch:` — the
+// steps nested inside it whose outputs merge out.
+//
+// It is the one spelling of that rule. The validator's scope walk, its
+// cross-branch id-collision check and both drivers' parallel joins all read it,
+// because they once disagreed: the validator let a later step read an id nested in
+// a branch's `switch:` or `parallel:`, and the drivers copied only each branch's
+// own top-level ids at the join, so the file validated and the run failed with
+// `no such key` (#1425). A `for_each` or `loop:` contributes only itself, because
+// its body's outputs are reported through its `results` rather than merged.
+func MergedSteps(nodes []*Node) []*Node {
+	var out []*Node
+	for _, node := range nodes {
+		out = append(out, node)
+
+		switch kind := node.GetKind().(type) {
+		case *Node_Parallel:
+			for _, branch := range kind.Parallel.GetBranches() {
+				out = append(out, MergedSteps(branch.GetSteps())...)
+			}
+		case *Node_Switch:
+			for _, body := range SwitchBodies(kind.Switch) {
+				out = append(out, MergedSteps(body)...)
+			}
+		}
+	}
+
+	return out
+}

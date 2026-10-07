@@ -2478,7 +2478,7 @@ func (e *executor) runParallel(node *v1.Node, parallel *v1.Parallel, depth, susp
 	// Merge after every branch has finished, so the merged result is the same
 	// regardless of the order they completed in.
 	for i, branch := range branches {
-		for _, node := range branch.GetSteps() {
+		for _, node := range v1.MergedSteps(branch.GetSteps()) {
 			if outputs, ok := scopes[i].GetStepValues()[node.GetId()]; ok {
 				e.scope.Outputs.StepValues[node.GetId()] = outputs
 			}

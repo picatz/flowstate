@@ -232,8 +232,9 @@ outputs:
 Outputs are evaluated once, after the last step, in the order written. They can
 read `inputs`, `vars`, `run`, `trigger`, and any step the top-level scope can
 see: top-level steps, the steps of the `switch:` arm that ran, and the steps
-written directly in a `parallel:` branch. Steps inside a `for_each:` or `loop:`
-body, or nested in a block inside a `parallel:` branch, are not visible. `value:` is required;
+written in a `parallel:` branch, including those inside a `switch:` or a nested
+`parallel:` in it. Steps inside a `for_each:` or `loop:` body are not visible.
+`value:` is required;
 `type:`, `values:`, and `must:` are checked when the value is computed, and
 `description:` and `sensitive:` mean what they do on an input. If an output
 cannot be computed, or fails its type or `must:`, the run fails and its
