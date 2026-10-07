@@ -852,6 +852,15 @@ deny on a group has to map that group. The name `groups` is reserved for
 The names `act` and `may_act` are reserved the same way, because they are RFC 8693
 delegation claims: carry such a claim under another name with `as`.
 
+A claim set that a run or plugin hands back over the carried-claim bounds (a
+claim nested deeper than four levels or holding more than 512 values, or more than
+32 claims) is refused, not trimmed, and the refusal travels with the identity:
+every policy rule that reads `identity.claims`, on egress, exec, task shape,
+secret, assumption and signal surfaces, is an evaluation error and denies. That
+includes a rule that only tests absence, such as `!("contractors" in identity.claims)`,
+which would otherwise read the dropped claim as missing and permit. Rules that
+read no claim are unchanged.
+
 A group list is never trimmed. At most 64 groups of 256 bytes are carried, and a
 token that exceeds that, or carries an overage indicator (Entra's
 `_claim_names.groups` and `hasgroups`, or `groups_truncated` from a gateway that

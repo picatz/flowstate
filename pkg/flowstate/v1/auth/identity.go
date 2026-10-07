@@ -176,18 +176,27 @@ func NewLocalWorkloadIdentity(subject, issuer, namespace, deployment string, cla
 // Caller renders the identity as the [principal.Caller] every policy surface
 // binds as `identity`: egress, exec, task shape, secret access and credential
 // assumption all read the same value, so a clause about the caller means one
-// thing wherever it is written. Namespace is the raw attested value, never
+// thing wherever it is written.
+//
+// An identity whose claims were refused ([WorkloadIdentity.WithWireClaims])
+// renders [principal.RefusedClaims], so every rule that reads a claim errors and
+// denies; a claim silently missing would let a rule that tests absence permit. Namespace is the raw attested value, never
 // [defaultComponent]: that substitution belongs to a minted subject, and a
 // `deny: identity.namespace == "_default"` rule must match the same unnamespaced
 // caller on every surface.
 func (w WorkloadIdentity) Caller() principal.Caller {
+	claims := principal.NewClaims(w.Claims)
+	if w.unreadable != nil {
+		claims = principal.RefusedClaims(w.Claims, w.unreadable)
+	}
+
 	return principal.Caller{
 		Issuer:    w.Issuer,
 		Subject:   w.Subject,
 		Namespace: w.Namespace,
 		Kind:      w.Kind,
 		Principal: principal.Qualified(w.Issuer, w.Subject),
-		Claims:    principal.NewClaims(w.Claims),
+		Claims:    claims,
 		Actions:   w.Actions,
 		Actors:    w.Actors,
 	}.Normalized()

@@ -130,13 +130,21 @@ func (c Caller) Map() map[string]any {
 		actors[i] = map[string]any{"issuer": actor.Issuer, "subject": actor.Subject}
 	}
 
+	// Refused claims render as the carrier itself, which errors on every read,
+	// not as the map of what was readable: a rule on `run.identity.claims` fails
+	// closed exactly as one on a bound `identity` does.
+	var claims any = c.Claims.Map()
+	if c.Claims.Refused() != nil {
+		claims = c.Claims
+	}
+
 	return map[string]any{
 		"issuer":    c.Issuer,
 		"subject":   c.Subject,
 		"namespace": c.Namespace,
 		"kind":      c.Kind,
 		"principal": c.Principal,
-		"claims":    c.Claims.Map(),
+		"claims":    claims,
 		"actions":   c.Actions,
 		"actors":    actors,
 		"delegated": c.Delegated,
