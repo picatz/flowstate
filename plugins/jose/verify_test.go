@@ -33,6 +33,12 @@ func trustedIssuer(t *testing.T, entries ...auth.TrustedIssuer) *authtest.Issuer
 			Issuer:    issuer.URL(),
 			JWKSURL:   issuer.JWKSURL(),
 			Audiences: []string{"flowstate"},
+			// Only claims an entry carries reach a workflow: the operator, not the
+			// token, decides which ones a policy decision may read.
+			CarryClaims: []auth.CarryClaim{
+				{Claim: "repository", Type: auth.ClaimTypeString},
+				{Claim: "ref", Type: auth.ClaimTypeString},
+			},
 		}}
 	}
 	for i := range entries {

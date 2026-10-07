@@ -75,8 +75,10 @@ func init() {
 		},
 		{
 			Name: "jose.v1.VerifyOutputs.claims",
-			Leading: " Claims is the whole verified claims set, for the issuer-specific claims a\n" +
-				" policy decision needs - a repository, an email, a group list.\n",
+			Leading: " Claims is the verified claims the matching trust entry carries\n" +
+				" (carry_claims and groups_claim), for the issuer-specific claims a policy\n" +
+				" decision needs - a repository, an email, a group list. A claim the entry\n" +
+				" does not carry is absent, whatever the token held.\n",
 		},
 	})
 }

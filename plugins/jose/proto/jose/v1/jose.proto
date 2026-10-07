@@ -60,7 +60,9 @@ message VerifyOutputs {
   // IssuedAt is the verified "iat" claim, as RFC 3339.
   string issued_at = 6;
 
-  // Claims is the whole verified claims set, for the issuer-specific claims a
-  // policy decision needs - a repository, an email, a group list.
+  // Claims is the verified claims the matching trust entry carries
+  // (carry_claims and groups_claim), for the issuer-specific claims a policy
+  // decision needs - a repository, an email, a group list. A claim the entry
+  // does not carry is absent, whatever the token held.
   google.api.expr.v1alpha1.Value claims = 7;
 }

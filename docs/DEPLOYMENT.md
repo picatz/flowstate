@@ -818,8 +818,8 @@ list-valued claim `groups`, so `"sre" in identity.claims.groups` reads the same
 on every surface whichever IdP supplies it. `group_map` renames IdP values (a
 name, an Entra GUID) to the Flowstate group a rule names, and when present it is
 also the allowlist: a value it does not list is not carried, so a rule that must
-deny on a group has to map that group. A `carry_claims` entry that also produces
-`groups` conflicts with `groups_claim` and is refused when the policy loads.
+deny on a group has to map that group. The name `groups` is reserved for
+`groups_claim`: a `carry_claims` entry that carries it is refused when the policy loads.
 
 A group list is never trimmed. At most 64 groups of 256 bytes are carried, and a
 token that exceeds that, or carries an overage indicator (Entra's
