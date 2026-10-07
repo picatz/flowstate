@@ -13,6 +13,7 @@ import (
 	"github.com/picatz/flowstate/pkg/flowstate/v1/audit"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/authtest"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/authz"
 )
 
 // actionsToolRequest verifies a real token against a policy entry holding
@@ -120,4 +121,44 @@ func TestMCPDeniedCallReportsARequiredSinkFailure(t *testing.T) {
 	text, ok := result.Content[0].(*mcp.TextContent)
 	require.True(t, ok)
 	require.NotContains(t, text.Text, privateSinkDetail)
+}
+
+// TestMCPExtraDeciderRefusesWhatThePolicyGrants proves an embedder's decider
+// narrows the trust policy on this surface and never widens it.
+func TestMCPExtraDeciderRefusesWhatThePolicyGrants(t *testing.T) {
+	t.Parallel()
+
+	refuse := authz.DeciderFunc(func(context.Context, authz.Request) authz.Decision {
+		return authz.Decision{Scope: "freeze"}
+	})
+	allow := authz.DeciderFunc(func(context.Context, authz.Request) authz.Decision {
+		return authz.Decision{Allowed: true}
+	})
+
+	for name, test := range map[string]struct {
+		extra   authz.Decider
+		granted auth.ActionScopes
+		allowed bool
+	}{
+		"a refusing decider narrows a grant":         {refuse, auth.ActionScopes{"mcp.run_local"}, false},
+		"an allowing decider changes nothing":        {allow, auth.ActionScopes{"mcp.run_local"}, true},
+		"an allowing decider never widens a refusal": {allow, auth.ActionScopes{"mcp.test"}, false},
+		"no decider is the trust policy alone":       {nil, auth.ActionScopes{"mcp.run_local"}, true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			var reached bool
+			handler := wrapToolHandler(Deps{Decider: test.extra}, "flowstate_run_local",
+				func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+					reached = true
+					return &mcp.CallToolResult{}, nil
+				})
+
+			result, err := handler(t.Context(), actionsToolRequest(t, test.granted, nil))
+			require.NoError(t, err)
+			require.Equal(t, test.allowed, reached)
+			require.Equal(t, !test.allowed, result.IsError)
+		})
+	}
 }

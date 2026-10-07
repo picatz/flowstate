@@ -17,6 +17,7 @@ import (
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/audit"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/authz"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/engine"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowstatev1connect"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
@@ -294,6 +295,17 @@ func WithAudit(recorder *audit.Recorder) Option {
 	return func(s *FlowstateServer) error { s.audit = recorder; return nil }
 }
 
+// WithDecider adds an authorization check to the trust policy's own. The
+// policy still decides first, from the caller's issuer entry, and the extra
+// decider is asked only about what the policy allows, so it can refuse
+// (a maintenance freeze, a per-tenant allowlist) and can never grant what the
+// policy withholds. It sees every action check the server makes, including
+// the ones that choose what a response may show. It must not block, and a panic
+// in it is a refusal. See [authz.Restrict].
+func WithDecider(extra authz.Decider) Option {
+	return func(s *FlowstateServer) error { s.decider = authz.Restrict(nil, extra); return nil }
+}
+
 // WithPluginCatalog supplies the server/worker capability snapshot used to pin
 // plugin requirements before a durable run is accepted.
 func WithPluginCatalog(catalog *v1.PluginCatalog) Option {
@@ -529,6 +541,10 @@ type FlowstateServer struct {
 	// process that serves rather than for the library. See [WithAudit] and
 	// pkg/flowstate/v1/audit.
 	audit *audit.Recorder
+
+	// decider is the authorization decision: the trust policy, narrowed by an
+	// embedder's [WithDecider]. Nil is the trust policy alone.
+	decider authz.Decider
 
 	// historySlots bounds how many [FlowstateServer.DebugHistory]
 	// reconstructions run at once. Set in [New].
