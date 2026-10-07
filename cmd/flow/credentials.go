@@ -112,9 +112,8 @@ func defaultLoginSource() credentialsource.Source {
 type defaultSource struct {
 	tokenFile string
 
-	// login is consulted last, and only by [credentialSourceFor]: nil for
-	// [readToken], whose callers want a token file or FLOWSTATE_TOKEN and
-	// nothing else.
+	// login is consulted last, and only by [credentialSourceFor]: nil where
+	// a caller wants a token file or FLOWSTATE_TOKEN and nothing else.
 	login credentialsource.Source
 }
 
@@ -146,22 +145,6 @@ func (d defaultSource) Token(ctx context.Context) (credentialsource.Token, error
 	}
 
 	return credentialsource.NewEnvSource("FLOWSTATE_TOKEN").Token(ctx)
-}
-
-// readToken reads a bearer token the CLI's original way: a file if one is
-// named, else FLOWSTATE_TOKEN, else empty.
-//
-// This exists for callers outside the server-credential path that still want
-// exactly that precedence — registerVaultProvider in secrets.go reads a
-// Vault token file through it, bounded and re-read per call the same way a
-// Flowstate server token is.
-func readToken(tokenFile string) (string, error) {
-	token, err := defaultSource{tokenFile: tokenFile}.Token(context.Background())
-	if err != nil {
-		return "", err
-	}
-	raw, _ := token.Bearer()
-	return raw, nil
 }
 
 // tokenFor returns the bearer token to present to the given base URL, from
