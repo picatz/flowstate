@@ -2887,7 +2887,7 @@ variables such as `LD_PRELOAD` and `DYLD_*` are refused), a required `timeout`
 (ceiling 1h) and `max_output_bytes` per stream (ceiling 128KiB), and CEL `allow` /
 `deny` rules over `argv`, `executable`, `name`, `dir`, `env_keys` (names, never
 values) and `identity` (`identity.subject`, `.issuer`, `.namespace`, `.claims`,
-`.principal`, `.kind`, `.actions`: the one caller shape every policy surface reads;
+`.principal`, `.kind`, `.actions`: the caller shape egress, exec and task-shape rules share;
 `kind` is `human`, `workload`, or `agent` and is empty when none was assigned, and
 `actions` is empty until the run's identity carries granted actions). Deny wins, and
 a rule that cannot be evaluated denies.

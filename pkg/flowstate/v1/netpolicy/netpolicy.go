@@ -70,8 +70,8 @@
 //   - method  string, the HTTP method as written
 //   - path    string, the URL path
 //   - ip      string, the resolved address the connection is being made to
-//     string fields subject, issuer, namespace, principal and kind, a claims map and an actions list — see
-//     string fields subject, issuer, and namespace and a claims map — see
+//   - identity object, the run's attested caller: string fields subject, issuer,
+//     namespace, principal and kind, a claims map and an actions list — see
 //     [principal.Caller]. On a shared worker this is what lets a rule scope egress by
 //     tenant, the same identity secret-access and task-shape rules already read.
 //     A run that carries no attested identity — a local run, or one that predates
