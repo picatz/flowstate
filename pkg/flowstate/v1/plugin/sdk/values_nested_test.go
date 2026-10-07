@@ -134,7 +134,7 @@ func TestDecodeInputsRefusesWhatNestedLiteralsGetWrong(t *testing.T) {
 		{"an unknown nested key", []any{map[string]any{"section": map[string]any{"txt": "x"}}}, `has no field "txt" in nested.v1.Section`},
 		{"two members of one oneof", []any{map[string]any{"section": map[string]any{}, "divider": map[string]any{}}}, "alternatives"},
 		{"a scalar where a message belongs", []any{map[string]any{"section": "hello"}}, "wants a map"},
-		{"a wrong-kind leaf", []any{map[string]any{"section": map[string]any{"text": 1}}}, "is not a string"},
+		{"a wrong-kind leaf", []any{map[string]any{"section": map[string]any{"text": 1}}}, "expected a string"},
 		{"a message where a list belongs", map[string]any{"section": map[string]any{}}, "wants a list"},
 		{"a list that is too long", make([]any, 1025), "at most"},
 	}

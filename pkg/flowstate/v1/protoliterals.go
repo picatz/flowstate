@@ -489,11 +489,13 @@ func populateProtoMessageFromValueMap(ctx context.Context, input map[string]*Val
 		if !ok {
 			continue // Field not provided in input map
 		}
-		// A field typed as one of the task's own messages, or a list or map of
-		// them, is converted by the same routine the plugin SDK fills its input
-		// with, so the host's check and the plugin's decode cannot disagree
-		// about what a nested input is. Everything else keeps the paths below.
-		if holdsNestedMessage(fieldDesc) {
+		// Every field that is not a flowstate.v1.Value, or a list or map of them,
+		// is converted by the same routine the plugin SDK fills its input with,
+		// so the host's check and the plugin's decode cannot disagree about what
+		// an input may hold, nested or not. A value that is neither a literal nor
+		// an expression — a secret reference, or a structure that may hold one —
+		// keeps the paths below, which say why such a value does not fit.
+		if sharedConversion(fieldDesc, val) {
 			literal, err := nestedLiteral(ctx, val, scope)
 			if err != nil {
 				return fmt.Errorf("field %q: %w", fieldName, err)
@@ -721,20 +723,29 @@ func PopulateLiterals(msg proto.Message, inputs map[string]*Value) error {
 	return populateProtoMessageFromValueMap(context.Background(), literals, msg, nil)
 }
 
-// holdsNestedMessage reports whether a field is one of the task's own messages,
-// or a list or a map of them: not flowstate.v1.Value, CEL's value, or a
-// protobuf well-known type, each of which has a path of its own.
-func holdsNestedMessage(field protoreflect.FieldDescriptor) bool {
+// sharedConversion reports whether a field's value is converted by
+// [SetLiteralField]: anything but flowstate.v1.Value (alone, in a list or as a
+// map's value), which carries what the author wrote unconverted, and anything
+// but a value that is not yet a literal or an expression.
+func sharedConversion(field protoreflect.FieldDescriptor, val *Value) bool {
+	switch val.GetKind().(type) {
+	case *Value_Literal, *Value_Expr:
+	default:
+		return false
+	}
+
 	element := field
 	if field.IsMap() {
 		element = field.MapValue()
 	}
-	if element.Kind() != protoreflect.MessageKind {
-		return false
+	if element.Kind() == protoreflect.MessageKind {
+		name := element.Message().FullName()
+		if name == flowValueName || name == celValueName {
+			return false
+		}
 	}
-	name := element.Message().FullName()
 
-	return name != flowValueName && name != celValueName && !strings.HasPrefix(string(name), "google.protobuf.")
+	return true
 }
 
 // nestedLiteral resolves a value written for a nested-message field to the

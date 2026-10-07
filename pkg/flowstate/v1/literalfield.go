@@ -96,7 +96,7 @@ func (d *literalDecoder) setLiteral(msg protoreflect.Message, field protoreflect
 
 			converted, err := d.scalar(field.MapValue(), entry.GetValue(), depth, mapValue.NewValue)
 			if err != nil {
-				return fmt.Errorf("map value for %q: %w", textbound.Truncate(key.StringValue, 64), err)
+				return fmt.Errorf("key %q: %w", textbound.Truncate(key.StringValue, 64), err)
 			}
 
 			mapValue.Set(protoreflect.ValueOfString(key.StringValue).MapKey(), converted)
@@ -182,14 +182,25 @@ func (d *literalDecoder) scalar(field protoreflect.FieldDescriptor, value *expr.
 			return protoreflect.ValueOfFloat64(f), nil
 		}
 	case protoreflect.EnumKind:
+		// The schema's own rules, shared with the diagnostics: either spelling of
+		// a name, any case, no zero by name, and nothing the schema marks
+		// test-only, which a released build refuses at the point of use. A number
+		// must name a value the enum defines, for the same reason.
 		if n, ok := integer(value); ok && n >= math.MinInt32 && n <= math.MaxInt32 {
-			return protoreflect.ValueOfEnum(protoreflect.EnumNumber(n)), nil
-		}
-		if v, ok := value.GetKind().(*expr.Value_StringValue); ok {
-			if enum := field.Enum().Values().ByName(protoreflect.Name(v.StringValue)); enum != nil {
+			if enum := field.Enum().Values().ByNumber(protoreflect.EnumNumber(n)); enum != nil && !EnumValueTestOnly(enum) {
 				return protoreflect.ValueOfEnum(enum.Number()), nil
 			}
-			return protoreflect.Value{}, fmt.Errorf("%q is not a value of %s", textbound.Truncate(v.StringValue, 64), field.Enum().FullName())
+			return protoreflect.Value{}, fmt.Errorf("%d is not one of %s", n, strings.Join(EnumValueNames(field.Enum()), ", "))
+		}
+		if v, ok := value.GetKind().(*expr.Value_StringValue); ok {
+			if n, known := EnumValueNumber(field.Enum(), v.StringValue); known {
+				return protoreflect.ValueOfEnum(n), nil
+			}
+			if EnumValueWithheld(field.Enum(), v.StringValue) {
+				return protoreflect.Value{}, fmt.Errorf("%q is compiled into test builds of %s only, and a released build refuses it",
+					textbound.Truncate(v.StringValue, 64), field.Enum().FullName())
+			}
+			return protoreflect.Value{}, fmt.Errorf("%q is not one of %s", textbound.Truncate(v.StringValue, 64), strings.Join(EnumValueNames(field.Enum()), ", "))
 		}
 	case protoreflect.MessageKind:
 		// A field, element, or map value whose declared type does not constrain
@@ -224,7 +235,7 @@ func (d *literalDecoder) scalar(field protoreflect.FieldDescriptor, value *expr.
 		)
 	}
 
-	return protoreflect.Value{}, fmt.Errorf("is not a %s", field.Kind())
+	return protoreflect.Value{}, fmt.Errorf("expected a %s, got %s", field.Kind(), literalKindName(value))
 }
 
 // message converts a map literal into a message of the given type.
