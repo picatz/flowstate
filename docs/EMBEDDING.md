@@ -332,7 +332,8 @@ program, run as a test.
 ## Identity and policy when you embed the server
 
 Two layers decide who may do what, and an embedder configures each in its own
-place.
+place. [AUTHORIZATION.md](AUTHORIZATION.md) lists every decision point and what each
+does when nothing is configured.
 
 - **Deployment authority** is the trust policy: which issuers are trusted and,
   for each, the `actions:` list its callers hold. The list is required; an
