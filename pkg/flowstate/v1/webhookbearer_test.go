@@ -194,6 +194,6 @@ func TestTheAuthorizationHeaderIsNotPartOfTheEvent(t *testing.T) {
 func TestTheSignerRefusesTheBearerScheme(t *testing.T) {
 	t.Parallel()
 
-	_, _, err := v1.SignWebhookDelivery(v1.WebhookSchemeJWT, signingKey("k"), []byte(`{}`), time.Now())
+	_, err := v1.SignWebhookDelivery(v1.WebhookSchemeJWT, signingKey("k"), []byte(`{}`), time.Now())
 	require.Error(t, err)
 }

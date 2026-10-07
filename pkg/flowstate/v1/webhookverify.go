@@ -69,10 +69,10 @@ const (
 
 // WebhookReplayWindow is how far a signed timestamp may be from now.
 //
-// It applies to [WebhookSchemeStripe], which is the scheme that signs one: a
-// signature with no timestamp in it is replayable forever by whoever captured it,
-// and the window is the whole reason the named scheme exists rather than the
-// generic one being pointed at Stripe's header.
+// It applies to [WebhookSchemeStripe] and [WebhookSchemeSlack], the schemes that
+// sign one: a signature with no timestamp in it is replayable forever by whoever
+// captured it, and the window is the whole reason a named scheme exists rather
+// than the generic one being pointed at a provider's header.
 //
 // Five minutes is Stripe's own documented default tolerance. It bounds the value
 // of a captured delivery rather than the cost of one, so it is deliberately not a
@@ -153,7 +153,7 @@ var (
 // # Constant work, regardless of what is declared
 //
 // This spends exactly one verification of every scheme this build knows —
-// [webhookVerificationSchemes], currently two — on every call, whatever the
+// [webhookVerificationSchemes], one row of the table each — on every call, whatever the
 // trigger declares and whatever keys resolved. A trigger naming one scheme, a
 // trigger naming both, and a trigger whose one scheme resolved no key all cost
 // the same: an outside party timing a known route could otherwise count how
@@ -342,18 +342,25 @@ func verifyWebhookSigning(trigger *WebhookTrigger, keys map[string]secrets.Secre
 // verifyScheme dispatches one scheme's arithmetic. Shared by
 // [VerifyWebhookDelivery], which uses the result, and
 // [SpendWebhookVerificationWork], which spends the same work and discards it.
-func verifyScheme(scheme string, key secrets.Secret, headers map[string]string, body []byte, now time.Time) error {
-	switch scheme {
-	case WebhookSchemeHMACSHA256:
-		return verifyHMACSHA256(key, headers, body)
-	case WebhookSchemeStripe:
-		return verifyStripe(key, headers, body, now)
-	default:
+func verifyScheme(name string, key secrets.Secret, headers map[string]string, body []byte, now time.Time) error {
+	scheme, ok := lookupWebhookScheme(name)
+	if !ok {
 		// Unreachable: both callers range over [webhookVerificationSchemes],
-		// which this switch covers exhaustively. Kept because the alternative to
-		// an arm here is a switch that falls through to acceptance, which is the
-		// one way this function must never be wrong.
-		return fmt.Errorf("scheme %q is not one this build can verify", scheme)
+		// which is derived from the same table. Kept because the alternative to
+		// this arm is a path that falls through to acceptance, which is the one
+		// way this function must never be wrong.
+		return fmt.Errorf("scheme %q is not one this build can verify", name)
+	}
+
+	switch scheme.kind {
+	case kindBodyHMAC:
+		return verifyBodyHMAC(scheme, key, headers, body)
+	case kindStripe:
+		return verifyStripe(key, headers, body, now)
+	case kindSlack:
+		return verifySlack(scheme, key, headers, body, now)
+	default:
+		return fmt.Errorf("scheme %q is not one this build can verify", name)
 	}
 }
 
@@ -401,25 +408,27 @@ func SpendWebhookVerificationWork(headers map[string]string, body []byte, now ti
 	}
 }
 
-// verifyHMACSHA256 checks the generic scheme: an HMAC-SHA256 of the raw body.
+// verifyBodyHMAC checks every scheme whose signature is an HMAC-SHA256 of the raw
+// body in one header: the generic scheme, GitHub, Shopify and Linear differ in
+// the header's name and the digest's encoding and nothing else.
 //
 // The *raw* body, before any decoding, which is the whole reason a receiver reads
 // the bytes once and keeps them: a signature over a re-encoded document is a
 // signature over whatever the encoder happened to produce, and JSON has enough
 // freedom (key order, escaping, number spelling) that a re-encoded body differs
 // from the signed one for reasons nobody can see.
-func verifyHMACSHA256(key secrets.Secret, headers map[string]string, body []byte) error {
-	supplied := webhookHeader(headers, WebhookSignatureHeader)
+func verifyBodyHMAC(scheme webhookScheme, key secrets.Secret, headers map[string]string, body []byte) error {
+	supplied := webhookHeader(headers, scheme.header)
 	// Compute the digest before inspecting the attacker-controlled header. An
 	// unrouted request spends this same body-sized work under a decoy key; an
 	// early return here would therefore reveal that this route exists.
 	expected := signWebhookPayload(key, body)
 	if supplied == "" {
-		return fmt.Errorf("%w: the delivery carried no %s header", ErrWebhookSignatureMissing, WebhookSignatureHeader)
+		return fmt.Errorf("%w: the delivery carried no %s header", ErrWebhookSignatureMissing, scheme.header)
 	}
 
-	for _, candidate := range splitSignatures(strings.TrimPrefix(supplied, hmacPrefix)) {
-		digest, err := hex.DecodeString(candidate)
+	for _, candidate := range splitSignatures(supplied) {
+		digest, err := scheme.decodeDigest(candidate)
 		if err != nil {
 			continue
 		}
@@ -429,7 +438,64 @@ func verifyHMACSHA256(key secrets.Secret, headers map[string]string, body []byte
 	}
 
 	return fmt.Errorf("%w: no signature in %s matched the body under this deployment's key",
-		ErrWebhookSignatureInvalid, WebhookSignatureHeader)
+		ErrWebhookSignatureInvalid, scheme.header)
+}
+
+// replaySkew is how far a signed timestamp is from now, in either direction.
+//
+// The later instant is always the minuend: [time.Time.Sub] saturates at the
+// extremes, and negating a saturated minimum overflows back to a negative, which
+// would make an enormously distant timestamp read as inside the window.
+func replaySkew(now time.Time, seconds int64) time.Duration {
+	signed := time.Unix(seconds, 0)
+	if signed.After(now) {
+		return signed.Sub(now)
+	}
+
+	return now.Sub(signed)
+}
+
+// verifySlack checks Slack's request signing: `v0=<hex>` over
+// `v0:<timestamp>:<body>`, with the timestamp held to [WebhookReplayWindow].
+//
+// Built like [verifyStripe]: the signed payload uses the *parsed* seconds, the
+// body-sized work is spent before any header-shape refusal, and an unparseable
+// timestamp contributes nothing to the hash rather than text the sender chose.
+func verifySlack(scheme webhookScheme, key secrets.Secret, headers map[string]string, body []byte, now time.Time) error {
+	supplied := webhookHeader(headers, scheme.header)
+	timestamp := webhookHeader(headers, scheme.timestampHeader)
+
+	seconds, secondsErr := strconv.ParseInt(timestamp, 10, 64)
+	var signingTimestamp string
+	if secondsErr == nil {
+		signingTimestamp = strconv.FormatInt(seconds, 10)
+	}
+
+	expected := signWebhookPayload(key, []byte(slackSignedVersionTag), []byte(signingTimestamp), stripeSignedSeparatorColon, body)
+
+	if supplied == "" {
+		return fmt.Errorf("%w: the delivery carried no %s header", ErrWebhookSignatureMissing, scheme.header)
+	}
+	if secondsErr != nil {
+		return fmt.Errorf("%w: the %s header is not a whole number of seconds",
+			ErrWebhookSignatureInvalid, scheme.timestampHeader)
+	}
+
+	skew := replaySkew(now, seconds)
+	if skew > WebhookReplayWindow {
+		return fmt.Errorf("%w: the %s header is %s away from now, outside the %s replay window",
+			ErrWebhookReplayWindow, scheme.timestampHeader, skew.Round(time.Second), WebhookReplayWindow)
+	}
+
+	candidate, ok := strings.CutPrefix(supplied, scheme.prefix)
+	if ok {
+		if digest, err := scheme.decodeDigest(candidate); err == nil && hmac.Equal(digest, expected) {
+			return nil
+		}
+	}
+
+	return fmt.Errorf("%w: the %s header did not match the signed payload under this deployment's key",
+		ErrWebhookSignatureInvalid, scheme.header)
 }
 
 // verifyStripe checks Stripe's `Stripe-Signature` construction.
@@ -516,10 +582,7 @@ func verifyStripe(key secrets.Secret, headers map[string]string, body []byte, no
 	// would let a captured delivery be replayed indefinitely by re-signing it
 	// with a timestamp far ahead — which the attacker cannot do without the key,
 	// but a clock that has jumped can hand them for free.
-	skew := now.Sub(time.Unix(seconds, 0))
-	if skew < 0 {
-		skew = -skew
-	}
+	skew := replaySkew(now, seconds)
 	if skew > WebhookReplayWindow {
 		return fmt.Errorf("%w: the %s header's timestamp is %s away from now, outside the %s replay window",
 			ErrWebhookReplayWindow, StripeSignatureHeader, skew.Round(time.Second), WebhookReplayWindow)
@@ -556,6 +619,10 @@ func verifyStripe(key secrets.Secret, headers map[string]string, body []byte, no
 // the payload it signs. A package-level slice so that hashing it allocates
 // nothing per delivery.
 var stripeSignedSeparator = []byte{'.'}
+
+// stripeSignedSeparatorColon is [stripeSignedSeparator]'s counterpart in the
+// payload Slack signs.
+var stripeSignedSeparatorColon = []byte{':'}
 
 var signWebhookPayload = signHMACSHA256
 
@@ -598,33 +665,48 @@ func SignStripeBody(key secrets.Secret, body []byte, at time.Time) string {
 	return fmt.Sprintf("t=%s,v1=%s", seconds, hex.EncodeToString(signHMACSHA256(key, signed)))
 }
 
-// SignWebhookDelivery is the outbound half of [verifyScheme]: the one header a
+// SignWebhookDelivery is the outbound half of [verifyScheme]: the headers a
 // sender attaches so that a receiver verifying under the same scheme and key
 // accepts the body.
 //
-// It returns the header's name and value for any scheme in
+// It returns header names and values for any scheme in
 // [WebhookSigningSchemes], and refuses a name outside that set. The two
 // directions are one table, not two: a scheme added for verification without a
-// case here makes TestEveryDeclarableSchemeCanBeSigned and TestEveryDeclarableSchemeIsImplemented fail, and so does the
-// reverse, so a sender and a receiver built from one tree cannot disagree about
-// what a scheme is. `at` is the time a timestamped scheme signs; the generic
-// scheme signs the body alone and ignores it.
+// signing arm makes TestEveryDeclarableSchemeCanBeSigned and
+// TestEveryDeclarableSchemeIsImplemented fail, and so does the reverse, so a
+// sender and a receiver built from one tree cannot disagree about what a scheme
+// is. `at` is the time a timestamped scheme signs; the body-only schemes ignore
+// it. Most schemes write one header; Slack writes its signature and the
+// timestamp it covers.
 //
 // The key is revealed into the digest inside [signHMACSHA256] and nowhere else,
 // and the error never carries it.
-func SignWebhookDelivery(scheme string, key secrets.Secret, body []byte, at time.Time) (header, value string, err error) {
+func SignWebhookDelivery(name string, key secrets.Secret, body []byte, at time.Time) (map[string]string, error) {
 	if key.IsZero() {
-		return "", "", fmt.Errorf("scheme %q has no signing key", scheme)
+		return nil, fmt.Errorf("scheme %q has no signing key", name)
 	}
 
-	switch scheme {
-	case WebhookSchemeHMACSHA256:
-		return WebhookSignatureHeader, SignWebhookBody(key, body), nil
-	case WebhookSchemeStripe:
-		return StripeSignatureHeader, SignStripeBody(key, body, at), nil
+	scheme, ok := lookupWebhookScheme(name)
+	if !ok {
+		return nil, fmt.Errorf("scheme %q is not one this build can sign with; it signs with %s",
+			name, strings.Join(webhookVerificationSchemes, ", "))
+	}
+
+	switch scheme.kind {
+	case kindBodyHMAC:
+		return map[string]string{scheme.header: scheme.prefix + scheme.encodeDigest(signHMACSHA256(key, body))}, nil
+	case kindStripe:
+		return map[string]string{scheme.header: SignStripeBody(key, body, at)}, nil
+	case kindSlack:
+		seconds := strconv.FormatInt(at.Unix(), 10)
+		digest := signHMACSHA256(key, []byte(slackSignedVersionTag), []byte(seconds), stripeSignedSeparatorColon, body)
+
+		return map[string]string{
+			scheme.header:          scheme.prefix + scheme.encodeDigest(digest),
+			scheme.timestampHeader: seconds,
+		}, nil
 	default:
-		return "", "", fmt.Errorf("scheme %q is not one this build can sign with; it signs with %s",
-			scheme, strings.Join(webhookVerificationSchemes, ", "))
+		return nil, fmt.Errorf("scheme %q is not one this build can sign with", name)
 	}
 }
 

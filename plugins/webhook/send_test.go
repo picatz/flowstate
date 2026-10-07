@@ -250,13 +250,17 @@ func TestTheKeyAndSignatureNeverComeBack(t *testing.T) {
 				t.Fatalf("deliver: %v", err)
 			}
 
-			sent := got.Load().header.Get(map[string]string{
-				flowstatev1.WebhookSchemeHMACSHA256: flowstatev1.WebhookSignatureHeader,
-				flowstatev1.WebhookSchemeStripe:     flowstatev1.StripeSignatureHeader,
-			}[scheme])
-			digest := sent[strings.LastIndex(sent, "=")+1:]
-			for _, secret := range []string{testKey, sent, digest} {
-				if strings.Contains(out.GetResponse(), secret) {
+			secretsSent := []string{testKey}
+			for _, name := range flowstatev1.WebhookSignatureHeaders() {
+				if sent := got.Load().header.Get(name); sent != "" {
+					secretsSent = append(secretsSent, sent, sent[strings.LastIndex(sent, "=")+1:])
+				}
+			}
+			if len(secretsSent) == 1 {
+				t.Fatal("the delivery carried no signature header")
+			}
+			for _, secret := range secretsSent {
+				if secret != "" && strings.Contains(out.GetResponse(), secret) {
 					t.Fatalf("the response output carried %q", secret)
 				}
 			}

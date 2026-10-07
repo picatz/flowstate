@@ -1386,7 +1386,7 @@ receives it at `POST /webhooks/<workflow>/<webhook>` when started with
 
 | Key | Meaning |
 | --- | --- |
-| `verify` | Required. How to check the delivery, every scheme written must hold: `hmac_sha256` (an `X-Flowstate-Signature` HMAC of the body) or `stripe` (Stripe's signature scheme), each keyed by a secret reference; and `jwt`, the name of a trust policy entry whose issuer's bearer token the delivery must carry. See [Identity and trust](#identity-and-trust). |
+| `verify` | Required. How to check the delivery, every scheme written must hold: `hmac_sha256` (an `X-Flowstate-Signature` HMAC of the body) or a provider's own scheme (`github`, `slack`, `shopify`, `linear`, `stripe`), each keyed by a secret reference; and `jwt`, the name of a trust policy entry whose issuer's bearer token the delivery must carry. See [Identity and trust](#identity-and-trust). |
 | `when` | Optional. A boolean over the delivery that admits it, such as `${event.body.action == "opened"}`. Only a clean `true` admits; `false` answers `204` and starts nothing, and an expression that errors, is not a bool, or exceeds its bound is refused. Applies to a `signal:` webhook too, before `correlate:` runs. |
 | `respond_within` | Optional. A duration, 100ms to 30s: hold the delivery open that long for the run's answer, then reply `completed` with the run's declared `outputs:`, `failed` with the failure sentence, or `running` (`202`) if the run is still going. Needs `outputs:`; refused with `signal:`. See [DSL.md](DSL.md). |
 | `idempotency_key` | Required. An expression over the delivery that names the *event*, such as `${event.body.id}`. A redelivery of the same event joins the run the first one started. Never key on a signature header, which changes on every retry. |

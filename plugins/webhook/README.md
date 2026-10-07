@@ -2,7 +2,7 @@
 
 `webhook.send` signs one body and POSTs it once to a receiver. It is the sending
 half of the `verify:` block a Flowstate webhook trigger declares: it speaks the
-same schemes, `hmac_sha256` (the default) and `stripe`, and computes the
+same schemes (`hmac_sha256`, the default, plus `github`, `slack`, `shopify`, `linear` and `stripe`), and computes the
 signature with the engine's own signer (`SignWebhookDelivery` in
 `pkg/flowstate/v1/webhookverify.go`), so a delivery from this task verifies at a
 Flowstate receiver holding the same key. One table of schemes serves both
@@ -26,7 +26,7 @@ Inputs are `url`, `body`, `signing_key`, and optional `scheme`,
   echoes the key or the signature in its response gets `[redacted]` in the
   `response` output instead.
 - `scheme: hmac_sha256` sends `X-Flowstate-Signature: <hex HMAC-SHA256 of the
-  body>`. `scheme: stripe` sends `Stripe-Signature: t=<unix seconds>,v1=<hex>`,
+  body>`. `github`, `shopify` and `linear` send the provider's own header over the same body; `scheme: slack` sends `X-Slack-Signature: v0=<hex>` and `X-Slack-Request-Timestamp`, signed over `v0:<t>:<body>`. `scheme: stripe` sends `Stripe-Signature: t=<unix seconds>,v1=<hex>`,
   signed over `<t>.<body>`; a Flowstate receiver enforces a five-minute replay
   window on it. An unknown scheme is refused.
 - `idempotency_key` is sent as `Idempotency-Key`. It is not covered by either
